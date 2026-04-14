@@ -6119,9 +6119,12 @@ DNS-over-HTTPS with IP:
         $c      = yaml_parse_file($f)['services'];
         $port   = explode(':', $c['hy']['ports'][0])[0];
         $domain = $this->getDomain();
+        $hy     = yaml_parse_file('/config/hysteria.yaml');
+        $sni    = parse_url($hy['masquerade']['proxy']['url'] ?? '', PHP_URL_HOST) ?: $domain;
         $text[] = "Menu -> Hysteria";
         $text[] = "server: " . ($port? "<code>$domain:$port</code>" : 'port unavailable');
         $text[] = "passwd: <code>{$pac['hysteria_pass']}</code>";
+        $text[] = "sni: <code>$sni</code>";
         $data[] = [
             [
                 'text'          => $this->i18n('change password'),

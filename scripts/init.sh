@@ -1,4 +1,37 @@
-TAG="${2:-master}"
+#!/usr/bin/env bash
+# Install vpnbot from a locally-extracted GitHub zip archive.
+# The archive (e.g. vpnbot-Trojan-gRPC.zip from
+# https://github.com/axiomshiftbit/vpnbot/archive/refs/heads/<BRANCH>.zip)
+# has no .git inside — the branch is already baked into the file tree.
+#
+# Usage:
+#   sudo bash scripts/init.sh <TG_BOT_KEY> [REPO_PATH]
+# Example:
+#   cd vpnbot-Trojan-gRPC
+#   sudo bash scripts/init.sh 123:ABC
+
+set -euo pipefail
+
+KEY="${1:?usage: init.sh <TG_BOT_KEY> [REPO_PATH]}"
+REPO_PATH="${2:-$(pwd)}"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "run as root" >&2
+    exit 1
+fi
+
+if [ ! -d "$REPO_PATH" ]; then
+    echo "repo path not found: $REPO_PATH" >&2
+    exit 1
+fi
+cd "$REPO_PATH"
+
+if [ ! -f "./makefile" ] && [ ! -f "./Makefile" ]; then
+    echo "not a vpnbot repo (no makefile in $REPO_PATH)" >&2
+    exit 1
+fi
+
+export DEBIAN_FRONTEND=noninteractive
 apt update
 apt install -y \
     ca-certificates \
@@ -11,11 +44,16 @@ apt install -y \
     iproute2 \
     xtables-addons-common \
     xtables-addons-dkms
-curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
-git clone https://github.com/mercurykd/vpnbot.git
-cd ./vpnbot
-git checkout $TAG
-echo "<?php
+if ! command -v docker >/dev/null 2>&1; then
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    sh /tmp/get-docker.sh
+    rm -f /tmp/get-docker.sh
+fi
 
-\$c = ['key' => '$1'];" > ./app/config.php
+cat > ./app/config.php <<EOF
+<?php
+
+\$c = ['key' => '$KEY'];
+EOF
+
 make u
