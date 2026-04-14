@@ -149,7 +149,7 @@ class Bot
             case preg_match('~^/changeWG (\d+)$~', $this->input['callback'], $m):
                 $this->changeWG($m[1]);
                 break;
-            case preg_match('~^/changeTransport(?: (\w+))?$~', $this->input['callback'], $m):
+            case preg_match('~^/changeTransport(?: ([\w-]+))?$~', $this->input['callback'], $m):
                 $this->changeTransport($m[1] ?? false);
                 break;
             case preg_match('~^/mirror$~', $this->input['message'], $m):
@@ -1211,6 +1211,10 @@ class Bot
         $this->ssh('pkill hysteria', 'hy');
         $c   = yaml_parse_file('/config/hysteria.yaml');
         $c['auth']['password'] = $pac['hysteria_pass'];
+        $domain = $this->getDomain();
+        if (!empty($domain)) {
+            $c['masquerade']['proxy']['url'] = "https://$domain";
+        }
         yaml_emit_file('/config/hysteria.yaml', $c);
         if (!empty($pac['hysteria_pass'])) {
             $this->ssh('hysteria server -c /config/hysteria.yaml', 'hy', false, '/logs/hysteria');
@@ -6005,7 +6009,7 @@ DNS-over-HTTPS with IP:
                                     . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
                         break;
                     case 'trojan-grpc':
-                        $link = "trojan://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
+                        $link = "trojan://{$c['inbounds'][0]['settings']['clients'][$i]['password']}@$domain:443"
                                     . "?type=grpc"
                                     . "&serviceName=grpc$hash"
                                     . "&security=tls"
@@ -6334,7 +6338,7 @@ DNS-over-HTTPS with IP:
             }
             $c['inbounds'][0]['settings']['clients'][] = match($p['transport']) {
                 'Reality'     => ['id' => $uuid, 'flow' => 'xtls-rprx-vision', 'email' => $user[0]],
-                'trojan-grpc' => ['id' => $uuid, 'password' => $uuid, 'email' => $user[0]],
+                'trojan-grpc' => ['id' => $uuid, 'password' => bin2hex(random_bytes(16)), 'email' => $user[0]],
                 default       => ['id' => $uuid, 'email' => $user[0]],
             };
         }
@@ -6415,7 +6419,7 @@ DNS-over-HTTPS with IP:
     public function setXrPwd($pwd, $i)
     {
         $c        = $this->getXray();
-        $password = trim($pwd) ?: trim($this->ssh('xray uuid', 'xr'));
+        $password = trim($pwd) ?: bin2hex(random_bytes(16));
         $c['inbounds'][0]['settings']['clients'][$i]['password'] = $password;
         $this->restartXray($c);
         $this->userXr($i);
@@ -6790,12 +6794,14 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n('Websocket') . ' ' . ($p['transport'] == 'Websocket' ? $this->i18n('on') : $this->i18n('off')),
                 'callback_data' => "/changeTransport Websocket",
             ],
+        ];
+        $data[] = [
             [
-                'text'          => $this->i18n('XHTTP') . ($p['transport'] == 'xhttp' ? $this->i18n('on') : $this->i18n('off')),
+                'text'          => $this->i18n('XHTTP') . ' ' . ($p['transport'] == 'xhttp' ? $this->i18n('on') : $this->i18n('off')),
                 'callback_data' => "/changeTransport xhttp",
             ],
             [
-                'text'          => 'Trojan-gRPC' . ($p['transport'] == 'trojan-grpc' ? ' ' . $this->i18n('on') : ' ' . $this->i18n('off')),
+                'text'          => 'Trojan-gRPC ' . ($p['transport'] == 'trojan-grpc' ? $this->i18n('on') : $this->i18n('off')),
                 'callback_data' => "/changeTransport trojan-grpc",
             ],
         ];
@@ -8000,7 +8006,7 @@ DNS-over-HTTPS with IP:
             '"~subnet~"'     => json_encode(array_keys(array_filter($pac['subnetlist'] ?: []))),
             '~dns~'          => "https://$domain/dns-query$hash/$uid",
             '~dnspath~'      => "/dns-query$hash/$uid",
-            '~uid~'          => $uid,
+            '~uid~'          => ($pac['transport'] == 'trojan-grpc' ? ($client['password'] ?? $uid) : $uid),
             '~domain~'       => $domain,
             '~directdomain~' => $pac['domain'],
             '~cdndomain~'    => $pac['linkdomain'],
@@ -9328,7 +9334,6 @@ DNS-over-HTTPS with IP:
             case 'xhttp':
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);
-                    unset($x['inbounds'][0]['settings']['clients'][$k]['password']);
                 }
                 $x['inbounds'][0]['protocol']       = 'vless';
                 $x['inbounds'][0]['streamSettings'] = [
@@ -9350,13 +9355,13 @@ DNS-over-HTTPS with IP:
             case 'trojan-grpc':
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);
-                    $x['inbounds'][0]['settings']['clients'][$k]['password'] = $v['id'];
+                    $x['inbounds'][0]['settings']['clients'][$k]['password'] = $v['password'] ?: bin2hex(random_bytes(16));
                 }
                 $x['inbounds'][0]['protocol']       = 'trojan';
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"      => "grpc",
                     "grpcSettings" => [
-                        "serviceName" => "grpc$h"
+                        "serviceName" => "grpc$h",
                     ]
                 ];
                 break;
@@ -9364,7 +9369,6 @@ DNS-over-HTTPS with IP:
             case 'Reality':
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     $x['inbounds'][0]['settings']['clients'][$k]['flow'] = 'xtls-rprx-vision';
-                    unset($x['inbounds'][0]['settings']['clients'][$k]['password']);
                 }
                 $x['inbounds'][0]['protocol']       = 'vless';
                 $x['inbounds'][0]['streamSettings'] = [
@@ -9378,7 +9382,7 @@ DNS-over-HTTPS with IP:
                         "serverNames"  => [
                             $p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]
                         ],
-                        "shortIds" => !empty($p['reality']['shortId']) ? [$p['reality']['shortId']] : $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds'],
+                        "shortIds" => [$p['reality']['shortId']] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0],
                         "show"     => false,
                         "xver"     => 0
                     ],
@@ -9402,7 +9406,6 @@ DNS-over-HTTPS with IP:
                 ];
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);
-                    unset($x['inbounds'][0]['settings']['clients'][$k]['password']);
                 }
                 break;
         }

@@ -30,5 +30,5 @@ speedTest: false
 masquerade:
   type: proxy
   proxy:
-    url: 
+    url: https://~domain~
     rewriteHost: true
