@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# Install vpnbot from a locally-extracted GitHub zip archive.
-# The archive (e.g. vpnbot-Trojan-gRPC.zip from
-# https://github.com/axiomshiftbit/vpnbot/archive/refs/heads/<BRANCH>.zip)
-# has no .git inside — the branch is already baked into the file tree.
-#
-# Usage:
-#   sudo bash scripts/init.sh <TG_BOT_KEY> [REPO_PATH]
-# Example:
-#   cd vpnbot-Trojan-gRPC
-#   sudo bash scripts/init.sh 123:ABC
 
 set -euo pipefail
 
