@@ -155,6 +155,9 @@ class Bot
             case preg_match('~^/changeFingerprint(?: (\w+))?$~', $this->input['callback'], $m):
                 $this->changeFingerprint($m[1] ?? false);
                 break;
+            case preg_match('~^/fingerprintMenu$~', $this->input['callback'], $m):
+                $this->fingerprintMenu();
+                break;
             case preg_match('~^/mirror$~', $this->input['message'], $m):
                 $this->menu('mirror');
                 break;
@@ -5129,7 +5132,33 @@ DNS-over-HTTPS with IP:
             $c['fingerprint'] = $current === 'chrome' ? 'firefox' : 'chrome';
         }
         $this->setPacConf($c);
-        $this->xray();
+        $this->fingerprintMenu();
+    }
+
+    public function fingerprintMenu()
+    {
+        $current = $this->getPacConf()['fingerprint'] ?: 'chrome';
+        $text[]  = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('fingerprint');
+        $text[]  = $this->i18n('fingerprint') . ': <code>' . $current . '</code>';
+
+        $data = [];
+        foreach (['chrome', 'firefox'] as $fp) {
+            $data[] = [[
+                'text'          => ucfirst($fp) . ' ' . ($current === $fp ? $this->i18n('on') : $this->i18n('off')),
+                'callback_data' => "/changeFingerprint $fp",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/xray',
+        ]];
+
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
     }
 
     public function switchIpLimit($limit)
@@ -6828,15 +6857,10 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/changeTransport trojan-grpc",
             ],
         ];
-        $fingerprint = $p['fingerprint'] ?: 'chrome';
         $data[] = [
             [
-                'text'          => $this->i18n('fingerprint') . ': Chrome ' . ($fingerprint == 'chrome' ? $this->i18n('on') : $this->i18n('off')),
-                'callback_data' => "/changeFingerprint chrome",
-            ],
-            [
-                'text'          => $this->i18n('fingerprint') . ': Firefox ' . ($fingerprint == 'firefox' ? $this->i18n('on') : $this->i18n('off')),
-                'callback_data' => "/changeFingerprint firefox",
+                'text'          => $this->i18n('fingerprint') . ': ' . ucfirst($p['fingerprint'] ?: 'chrome'),
+                'callback_data' => "/fingerprintMenu",
             ],
         ];
 
