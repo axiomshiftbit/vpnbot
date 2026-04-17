@@ -75,7 +75,7 @@
                 "security": "reality",
                 "realitySettings": {
                     "serverName": "~server_name~",
-                    "fingerprint": "chrome",
+                    "fingerprint": "~fingerprint~",
                     "show": false,
                     "publicKey": "~public_key~",
                     "shortId": "~short_id~",

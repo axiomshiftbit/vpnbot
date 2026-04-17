@@ -152,6 +152,9 @@ class Bot
             case preg_match('~^/changeTransport(?: ([\w-]+))?$~', $this->input['callback'], $m):
                 $this->changeTransport($m[1] ?? false);
                 break;
+            case preg_match('~^/changeFingerprint(?: (\w+))?$~', $this->input['callback'], $m):
+                $this->changeFingerprint($m[1] ?? false);
+                break;
             case preg_match('~^/mirror$~', $this->input['message'], $m):
                 $this->menu('mirror');
                 break;
@@ -5115,6 +5118,20 @@ DNS-over-HTTPS with IP:
         $this->xray();
     }
 
+    public function changeFingerprint($fingerprint = false)
+    {
+        $allowed = ['chrome', 'firefox'];
+        $c       = $this->getPacConf();
+        if ($fingerprint && in_array($fingerprint, $allowed, true)) {
+            $c['fingerprint'] = $fingerprint;
+        } else {
+            $current          = ($c['fingerprint'] ?? '') ?: 'chrome';
+            $c['fingerprint'] = $current === 'chrome' ? 'firefox' : 'chrome';
+        }
+        $this->setPacConf($c);
+        $this->xray();
+    }
+
     public function switchIpLimit($limit)
     {
         $limit = explode(':', $limit);
@@ -5964,6 +5981,7 @@ DNS-over-HTTPS with IP:
         $domain = $this->getDomain($pac['transport'] != 'Reality');
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
+        $fp     = $pac['fingerprint'] ?: 'chrome';
         $si     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
@@ -5987,7 +6005,7 @@ DNS-over-HTTPS with IP:
                         $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
                                     . "?security=reality"
                                     . "&sni={$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}"
-                                    . "&fp=chrome&pbk={$pac['xray']}"
+                                    . "&fp=$fp&pbk={$pac['xray']}"
                                     . "&sid={$c['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0]}"
                                     . "&type=tcp"
                                     . "&flow=xtls-rprx-vision"
@@ -6004,17 +6022,18 @@ DNS-over-HTTPS with IP:
                                     . "&mode=packet-up"
                                     . "&extra=%7B%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22maxConcurrency%22%3A%2216-32%22%2C%22maxConnections%22%3A0%2C%22hKeepAlivePeriod%22%3A0%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%7D%2C%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Afalse%2C%22xPaddingBytes%22%3A%22100-1000%22%2C%22scMaxEachPostBytes%22%3A1000000%2C%22scMinPostsIntervalMs%22%3A30%2C%22scStreamUpServerSecs%22%3A%2220-80%22%7D"
                                     . "&sni=$domain"
-                                    . "&fp=chrome"
+                                    . "&fp=$fp"
                                     . "&alpn=h2"
                                     . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
                         break;
                     case 'trojan-grpc':
-                        $link = "trojan://{$c['inbounds'][0]['settings']['clients'][$i]['password']}@$domain:443"
+                        $trojanPwd = rawurlencode($c['inbounds'][0]['settings']['clients'][$i]['password']);
+                        $link = "trojan://$trojanPwd@$domain:443"
                                     . "?type=grpc"
                                     . "&serviceName=grpc$hash"
                                     . "&security=tls"
                                     . "&sni=$domain"
-                                    . "&fp=chrome"
+                                    . "&fp=$fp"
                                     . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
                         break;
 
@@ -6024,7 +6043,7 @@ DNS-over-HTTPS with IP:
                                     . "&path=%2Fws$hash"
                                     . "&security=tls"
                                     . "&sni=$domain"
-                                    . "&fp=chrome"
+                                    . "&fp=$fp"
                                     . "&type=ws"
                                     . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
                         break;
@@ -6762,6 +6781,7 @@ DNS-over-HTTPS with IP:
             $text[] = "fake domain: <code>$fake</code>";
         }
         $text[] = 'transport: ' . ($p['transport'] ?: 'Websocket');
+        $text[] = 'fingerprint: ' . ($p['fingerprint'] ?: 'chrome');
         $st = $this->getXrayStats();
         $td = $this->getBytes($st['global']['download'] + $st['session']['download']);
         $tu = $this->getBytes($st['global']['upload'] + $st['session']['upload']);
@@ -6806,6 +6826,17 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => 'Trojan-gRPC ' . ($p['transport'] == 'trojan-grpc' ? $this->i18n('on') : $this->i18n('off')),
                 'callback_data' => "/changeTransport trojan-grpc",
+            ],
+        ];
+        $fingerprint = $p['fingerprint'] ?: 'chrome';
+        $data[] = [
+            [
+                'text'          => $this->i18n('fingerprint') . ': Chrome ' . ($fingerprint == 'chrome' ? $this->i18n('on') : $this->i18n('off')),
+                'callback_data' => "/changeFingerprint chrome",
+            ],
+            [
+                'text'          => $this->i18n('fingerprint') . ': Firefox ' . ($fingerprint == 'firefox' ? $this->i18n('on') : $this->i18n('off')),
+                'callback_data' => "/changeFingerprint firefox",
             ],
         ];
 
@@ -7750,6 +7781,8 @@ DNS-over-HTTPS with IP:
             }
         }
 
+        $fingerprint = $pac['fingerprint'] ?: 'chrome';
+
         switch ($_GET['t']) {
             case 's':
                 $c['outbounds'][$index]['settings']['vnext'][0]['address']  = '~domain~';
@@ -7757,7 +7790,6 @@ DNS-over-HTTPS with IP:
                     'id'         => '~uid~',
                     'encryption' => 'none',
                 ];
-                $fingerprint = $c['outbounds'][$index]['streamSettings']['realitySettings']['fingerprint'] ?? $c['outbounds'][$index]['streamSettings']['tlsSettings']['fingerprint'] ?? 'chrome';
                 switch ($pac['transport']) {
                     case 'Reality':
                         $c['outbounds'][$index]['settings']['vnext'][0]['users'][0]["flow"] = "xtls-rprx-vision";
@@ -7806,7 +7838,7 @@ DNS-over-HTTPS with IP:
                             "tlsSettings" => [
                                 "allowInsecure" => false,
                                 "alpn"          => ["h2", "http/1.1"],
-                                "fingerprint"   => "chrome",
+                                "fingerprint"   => $fingerprint,
                                 "serverName"    => "~domain~",
                                 "show"          => false
                             ]
@@ -7835,7 +7867,7 @@ DNS-over-HTTPS with IP:
                                 'tlsSettings'  => [
                                     'allowInsecure' => false,
                                     'alpn'          => ['h2'],
-                                    'fingerprint'   => 'chrome',
+                                    'fingerprint'   => $fingerprint,
                                     'serverName'    => '~domain~',
                                     'show'          => false
                                 ]
@@ -7914,6 +7946,10 @@ DNS-over-HTTPS with IP:
                             'insecure'    => false,
                             'server_name' => '~domain~',
                             'alpn'        => ['h2'],
+                            'utls'        => [
+                                'enabled'     => true,
+                                'fingerprint' => $fingerprint,
+                            ],
                         ];
                         break;
 
@@ -7949,7 +7985,7 @@ DNS-over-HTTPS with IP:
                         unset($c['proxies'][$index]['reality-opts']);
 
                         $c['proxies'][$index]['network']            = 'xhttp';
-                        $c['proxies'][$index]['client-fingerprint'] = 'chrome';
+                        $c['proxies'][$index]['client-fingerprint'] = $fingerprint;
                         $c['proxies'][$index]['tls']                = true;
                         $c['proxies'][$index]['alpn']               = ['h2'];
                         $c['proxies'][$index]['servername']         = '~domain~';
@@ -7982,6 +8018,7 @@ DNS-over-HTTPS with IP:
                         $c['proxies'][$index]['password']         = '~uid~';
                         $c['proxies'][$index]['network']          = 'grpc';
                         $c['proxies'][$index]['tls']              = true;
+                        $c['proxies'][$index]['alpn']             = ['h2'];
                         $c['proxies'][$index]['skip-cert-verify'] = false;
                         $c['proxies'][$index]['servername']       = '~domain~';
                         $c['proxies'][$index]['grpc-opts']        = [
@@ -8017,6 +8054,7 @@ DNS-over-HTTPS with IP:
             '~email~'        => $email,
             '~public_key~'   => $pac['xray'],
             '~server_name~'  => $xr['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0],
+            '~fingerprint~'  => $fingerprint,
             '~ip~'           => $this->ip,
         ]), true);
 
@@ -9333,12 +9371,13 @@ DNS-over-HTTPS with IP:
         }
 
 
+        $x['inbounds'][0]['protocol'] = 'vless';
+
         switch ($transport) {
             case 'xhttp':
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);
                 }
-                $x['inbounds'][0]['protocol']       = 'vless';
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"       => "xhttp",
                     "xhttpSettings" => [
@@ -9356,11 +9395,11 @@ DNS-over-HTTPS with IP:
                 break;
 
             case 'trojan-grpc':
+                $x['inbounds'][0]['protocol'] = 'trojan';
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);
-                    $x['inbounds'][0]['settings']['clients'][$k]['password'] = $v['password'] ?: bin2hex(random_bytes(16));
+                    $x['inbounds'][0]['settings']['clients'][$k]['password'] = $v['password'] ?? bin2hex(random_bytes(16));
                 }
-                $x['inbounds'][0]['protocol']       = 'trojan';
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"      => "grpc",
                     "grpcSettings" => [
@@ -9373,7 +9412,6 @@ DNS-over-HTTPS with IP:
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     $x['inbounds'][0]['settings']['clients'][$k]['flow'] = 'xtls-rprx-vision';
                 }
-                $x['inbounds'][0]['protocol']       = 'vless';
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"         => "tcp",
                     "realitySettings" => [
@@ -9400,7 +9438,6 @@ DNS-over-HTTPS with IP:
                 break;
 
             default:
-                $x['inbounds'][0]['protocol']       = 'vless';
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"    => "ws",
                     "wsSettings" => [

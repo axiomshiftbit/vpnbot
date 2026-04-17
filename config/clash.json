@@ -2,7 +2,7 @@
     "tcp-concurrent": true,
     "enable-process": true,
     "find-process-mode": "strict",
-    "global-client-fingerprint": "chrome",
+    "global-client-fingerprint": "~fingerprint~",
     "mode": "rule",
     "log-level": "info",
     "ipv6": false,
@@ -76,7 +76,7 @@
                 "short-id": "~short_id~"
             },
             "servername": "~server_name~",
-            "client-fingerprint": "chrome"
+            "client-fingerprint": "~fingerprint~"
         }
     ],
     "proxy-groups": [

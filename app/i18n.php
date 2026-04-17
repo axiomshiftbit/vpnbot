@@ -305,6 +305,10 @@ $i = [
         'en' => 'changeFakeDomain',
         'ru' => 'фейковый домен',
     ],
+    'fingerprint'  => [
+        'en' => 'fingerprint',
+        'ru' => 'отпечаток',
+    ],
     'selfFakeDomain'  => [
         'en' => 'steal from yourself',
         'ru' => 'steal from yourself',
