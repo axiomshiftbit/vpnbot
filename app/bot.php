@@ -1897,6 +1897,7 @@ class Bot
             'hy'            => yaml_parse_file('/config/hysteria.yaml'),
             'oc'            => file_get_contents('/config/ocserv.conf'),
             'ocu'           => file_get_contents('/config/ocserv.passwd'),
+            'tt'            => file_exists('/config/trusttunnel/credentials.toml') ? file_get_contents('/config/trusttunnel/credentials.toml') : '',
             'ss'            => $this->getSSConfig(),
             'sl'            => $this->getSSLocalConfig(),
             'xraystats'     => $this->getXrayStats(),
@@ -2039,6 +2040,14 @@ class Bot
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 yaml_emit_file('/config/hysteria.yaml', $json['hy']);
                 $this->restartHysteria();
+            }
+            // trusttunnel
+            if (!empty($json['tt'])) {
+                $out[] = 'update trusttunnel';
+                $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                @mkdir('/config/trusttunnel', 0755, true);
+                file_put_contents('/config/trusttunnel/credentials.toml', $json['tt']);
+                $this->restartTt();
             }
             if (!empty($json['pac']['domain'])) {
                 $this->setUpstreamDomainOcserv($json['pac']['domain']);
@@ -2517,6 +2526,7 @@ class Bot
             file_put_contents('/certs/cert_public', preg_replace('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', '', $bundle));
             $this->adguardSync();
             $this->cloakNginx();
+            $this->restartTt();
         } else {
             $this->update($this->input['chat'], $this->input['message_id'], "wrong format key");
         }
@@ -4928,6 +4938,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n($this->ssh('pgrep caddy', 'np') ? 'on' : 'off') . ' ' . $this->i18n('naive'),
                     $this->i18n($this->ssh('pgrep ocserv', 'oc') ? 'on' : 'off') . ' ' . $this->i18n('ocserv'),
                     $this->i18n($this->ssh('pgrep hysteria', 'hy') ? 'on' : 'off') . ' ' . $this->i18n('hysteria'),
+                    $this->i18n($this->ssh('pgrep trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . $this->i18n('TrustTunnel'),
                     $this->i18n($this->ssh('pgrep mtproto-proxy', 'tg') ? 'on' : 'off') . ' ' . $this->i18n('mtproto'),
                     $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off') . ' ' . $this->i18n('ad_title'),
                     $this->i18n($this->ssh('pgrep ssserver', 'ss') ? 'on' : 'off') . ' ' . $this->i18n('sh_title'),
@@ -4941,6 +4952,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n('on') . ' 443',
                     $this->i18n('on') . ' 443',
                     $this->i18n($hy_port ? 'on' : 'off') . ($hy_port ? " $hy_port" : 'port unavailable'),
+                    $this->i18n($c['tt'] ? 'on' : 'off') . ' ' . getenv('TTPORT'),
                     $this->i18n($c['tg'] ? 'on' : 'off') . ' ' . getenv('TGPORT'),
                     $this->i18n($c['ad'] ? 'on' : 'off') . ' 853',
                     $this->i18n($c['ss'] ? 'on' : 'off') . ' ' . getenv('SSPORT'),
@@ -5026,6 +5038,10 @@ DNS-over-HTTPS with IP:
                                 'text'          => $this->i18n('Hysteria'),
                                 'callback_data' => "/menu hy",
                             ],
+                            [
+                                'text'          => $this->i18n('TrustTunnel'),
+                                'callback_data' => "/menu tt",
+                            ],
                         ],
                         $conf['showdnstt'] ? [
                             [
@@ -5067,6 +5083,7 @@ DNS-over-HTTPS with IP:
             'oc'           => $type == 'oc'      ? $this->ocMenu()                         : false,
             'naive'        => $type == 'naive'   ? $this->naiveMenu()                      : false,
             'hy'           => $type == 'hy'      ? $this->hysteriaMenu()                   : false,
+            'tt'           => $type == 'tt'      ? $this->ttMenu()                         : false,
             'mirror'       => $type == 'mirror'  ? $this->mirrorMenu()                     : false,
             'update'       => $type == 'update'  ? $this->updatebot()                      : false,
         ];
@@ -10125,5 +10142,254 @@ DNS-over-HTTPS with IP:
             'message_id' => $message_id,
         ];
         return $this->request('unpinChatMessage', $data);
+    }
+
+    // ─── TrustTunnel ──────────────────────────────────────────────────────────
+    public function getClientsTt()
+    {
+        $f = '/config/trusttunnel/credentials.toml';
+        if (!file_exists($f)) {
+            return [];
+        }
+        $data = file_get_contents($f);
+        preg_match_all('~\[\[client\]\].*?username\s*=\s*"([^"]+)".*?password\s*=\s*"([^"]+)"~s', $data, $m, PREG_SET_ORDER);
+        $users = [];
+        foreach ($m as $row) {
+            $users[$row[1]] = $row[2];
+        }
+        return $users;
+    }
+
+    public function writeTtCredentials($users)
+    {
+        $out = "# TrustTunnel credentials. Generated by bot — do not edit manually.\n";
+        foreach ($users as $u => $p) {
+            $u = addcslashes($u, '"');
+            $p = addcslashes($p, '"');
+            $out .= "\n[[client]]\nusername = \"$u\"\npassword = \"$p\"\n";
+        }
+        file_put_contents('/config/trusttunnel/credentials.toml', $out);
+    }
+
+    public function writeTtHosts($domain)
+    {
+        $domain = $domain ?: 'vpn.example.com';
+        $out    = "[[main_hosts]]\nhostname = \"$domain\"\n"
+                . "cert_chain_path = \"/certs/cert_public\"\nprivate_key_path = \"/certs/cert_private\"\n";
+        file_put_contents('/config/trusttunnel/hosts.toml', $out);
+    }
+
+    public function setUpstreamPortTt($port)
+    {
+        $port  = (int) $port ?: 2443;
+        $nginx = file_get_contents('/config/upstream.conf');
+        $block = "#tt-port\n    server {\n        listen      $port reuseport;\n        proxy_pass  trusttunnel;\n    }\n    server {\n        listen      $port udp reuseport;\n        proxy_pass  trusttunnel;\n    }\n    #tt-port";
+        $t     = preg_replace('~#tt-port.+?#tt-port~s', $block, $nginx);
+        file_put_contents('/config/upstream.conf', $t);
+        $this->ssh('nginx -s reload 2>&1', 'up');
+    }
+
+    public function restartTt()
+    {
+        $pac    = $this->getPacConf();
+        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
+        $users  = $this->getClientsTt();
+
+        $this->writeTtHosts($domain);
+        $this->writeTtCredentials($users);
+        if (!file_exists('/config/trusttunnel/vpn.toml') || !file_exists('/config/trusttunnel/rules.toml')) {
+            return; // templates missing — init.sh ещё не развернул
+        }
+
+        $this->ssh('pkill trusttunnel_endpoint', 'tt');
+        $hasCert = file_exists('/certs/cert_public') && file_exists('/certs/cert_private');
+        if (!empty($users) && !empty($domain) && $hasCert) {
+            $this->ssh(
+                'cd /trusttunnel_endpoint && trusttunnel_endpoint vpn.toml hosts.toml',
+                'tt',
+                false,
+                '/logs/trusttunnel'
+            );
+        }
+    }
+
+    public function addTtUser()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter username",
+            $this->input['message_id'],
+            reply: 'enter username',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'addttus',
+            'args'           => [],
+        ];
+    }
+
+    public function addttus($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', $user);
+        if (empty($user)) {
+            $this->send($this->input['chat'], 'wrong username');
+            return $this->menu('tt');
+        }
+        $users = $this->getClientsTt();
+        if (isset($users[$user])) {
+            $this->send($this->input['chat'], "user $user already exists");
+            return $this->menu('tt');
+        }
+        $users[$user] = base64_encode(random_bytes(18));
+        $this->writeTtCredentials($users);
+        $this->restartTt();
+        $this->menu('tt');
+    }
+
+    public function delttus($user)
+    {
+        $users = $this->getClientsTt();
+        unset($users[$user]);
+        $this->writeTtCredentials($users);
+        $this->restartTt();
+        $this->menu('tt');
+    }
+
+    public function changeTtPass($user)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter password for $user",
+            $this->input['message_id'],
+            reply: 'enter password',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chttpass',
+            'args'           => [$user],
+        ];
+    }
+
+    public function chttpass($user, $pass)
+    {
+        $users = $this->getClientsTt();
+        if (!isset($users[$user]) || empty($pass)) {
+            return $this->menu('tt');
+        }
+        $users[$user] = $pass;
+        $this->writeTtCredentials($users);
+        $this->restartTt();
+        $this->menu('tt');
+    }
+
+    public function changeTtPort()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter port (1024-65535)",
+            $this->input['message_id'],
+            reply: 'enter port',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chttport',
+            'args'           => [],
+        ];
+    }
+
+    public function chttport($port)
+    {
+        $port = (int) $port;
+        if ($port < 1024 || $port > 65535) {
+            $this->send($this->input['chat'], 'port must be 1024..65535');
+            return $this->menu('tt');
+        }
+        $pac = $this->getPacConf();
+        $pac['tt_port'] = $port;
+        $this->setPacConf($pac);
+        $this->setUpstreamPortTt($port);
+        $this->send(
+            $this->input['chat'],
+            "TTPORT changed to $port. Update TTPORT in .env and run: make r"
+        );
+        $this->menu('tt');
+    }
+
+    public function getTtConfig($user)
+    {
+        $users  = $this->getClientsTt();
+        if (!isset($users[$user])) {
+            return $this->menu('tt');
+        }
+        $pac    = $this->getPacConf();
+        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
+        $port   = (int)($pac['tt_port'] ?? (getenv('TTPORT') ?: 2443));
+        $pass   = $users[$user];
+        $info   = "TrustTunnel connection info\n"
+                . "============================\n"
+                . "host:     $domain\n"
+                . "port:     $port\n"
+                . "username: $user\n"
+                . "password: $pass\n"
+                . "\nClient: https://github.com/TrustTunnel/TrustTunnel\n";
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile($info, "trusttunnel-$user.txt", 'text/plain')
+        );
+    }
+
+    public function ttMenu()
+    {
+        $pac    = $this->getPacConf();
+        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
+        $port   = (int)($pac['tt_port'] ?? (getenv('TTPORT') ?: 2443));
+        $users  = $this->getClientsTt();
+        $text[] = "Menu -> TrustTunnel";
+        $text[] = "server: " . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = 'clients: ' . count($users);
+        if (!file_exists('/certs/cert_public')) {
+            $text[] = "⚠ cert missing (/certs/cert_public)";
+        }
+        $data[] = [
+            [
+                'text'          => $this->i18n('change port') . ": $port",
+                'callback_data' => '/changeTtPort',
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('add peer'),
+                'callback_data' => '/addTtUser',
+            ],
+        ];
+        foreach ($users as $u => $_) {
+            $data[] = [
+                [
+                    'text'          => $this->i18n('download') . " $u",
+                    'callback_data' => "/getTtConfig $u",
+                ],
+                [
+                    'text'          => $this->i18n('change password'),
+                    'callback_data' => "/changeTtPass $u",
+                ],
+                [
+                    'text'          => $this->i18n('delete'),
+                    'callback_data' => "/delttus $u",
+                ],
+            ];
+        }
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => '/menu',
+            ],
+        ];
+        return [
+            'text' => implode("\n", $text),
+            'data' => $data,
+        ];
     }
 }

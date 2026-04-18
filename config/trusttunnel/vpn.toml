@@ -1,0 +1,14 @@
+listen_address = "0.0.0.0:8443"
+credentials_file = "credentials.toml"
+rules_file = "rules.toml"
+ipv6_available = false
+allow_private_network_connections = false
+tls_handshake_timeout_secs = 10
+client_listener_timeout_secs = 600
+
+[listen_protocols.http2]
+max_concurrent_streams = 1000
+
+[listen_protocols.quic]
+udp_payload_size = 1350
+early_data = true

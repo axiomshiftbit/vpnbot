@@ -37,6 +37,8 @@ services:
         ports:
             - 443:443/tcp
             - 443:443/udp
+            - ${TTPORT}:${TTPORT}/tcp
+            - ${TTPORT}:${TTPORT}/udp
         hostname: upstream
         container_name: upstream-${VER}
         depends_on:
@@ -47,6 +49,8 @@ services:
             oc:
                 condition: service_started
             np:
+                condition: service_started
+            tt:
                 condition: service_started
         env_file:
             - path: ./.env
@@ -213,6 +217,7 @@ services:
             - ss
             - dnstt
             - hy
+            - tt
     wg:
         image: mercurykd/vpnbot-wg:1.2
         build:
@@ -568,6 +573,36 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.16
+        logging: *default-logging
+    tt:
+        image: mercurykd/vpnbot-tt:1.0
+        build:
+            dockerfile: dockerfile/trusttunnel.dockerfile
+            args:
+                TT_REF: ${TT_REF:-main}
+        volumes:
+            - ./config/.profile:/root/.bashrc:ro
+            - ./ssh:/ssh
+            - ./config/sshd_config:/etc/ssh/sshd_config
+            - ./config/trusttunnel:/trusttunnel_endpoint
+            - ./certs:/certs:ro
+            - ./logs:/logs
+            - ./scripts/start_tt.sh:/start_tt.sh
+        hostname: trusttunnel
+        container_name: trusttunnel-${VER}
+        depends_on:
+            php:
+                condition: service_healthy
+        env_file:
+            - path: ./.env
+              required: true # default
+            - path: ./override.env
+              required: false
+        stop_grace_period: 1s
+        entrypoint: ["/bin/sh", "/start_tt.sh"]
+        networks:
+            default:
+                ipv4_address: 10.10.0.18
         logging: *default-logging
     hy:
         image: mercurykd/vpnbot-hysteria:1.0

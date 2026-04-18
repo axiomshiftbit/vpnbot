@@ -1,0 +1,4 @@
+[[main_hosts]]
+hostname = "vpn.example.com"
+cert_chain_path = "/certs/cert_public"
+private_key_path = "/certs/cert_private"

@@ -26,6 +26,7 @@ $bot->syncDeny();
 $bot->cleanDocker();
 $bot->dnsttStart();
 $bot->restartHysteria();
+$bot->restartTt();
 $c = $bot->getPacConf();
 $bot->setUpstreamDomain($c['transport'] != 'Reality' ? 't' : $c['reality']['domain']);
 $bot->setUpstreamDomainNaive($c['domain']);
