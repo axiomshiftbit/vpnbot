@@ -9700,7 +9700,8 @@ DNS-over-HTTPS with IP:
                 }
             }
 
-            // I1–I5: CPS decoy packets (2.0). Tags: <b HEX>, <r N>, <rc N>, <rd N>, <c>, <t>.
+            // I1–I5: CPS decoy packets (2.0). Tags supported by amneziawg-go: <b HEX>, <r N>, <rc N>, <rd N>, <t>.
+            // <c> is documented but NOT implemented (issue amnezia-vpn/amneziawg-go#120) — do not use.
             // I1 missing ⇒ chain (I2–I5) skipped ⇒ behaves like AmneziaWG 1.x.
             $c[$this->getInstanceWG(1) . 'amnezia_keys'] = [
                 'Jc'   => random_int(3, 10),
@@ -9715,9 +9716,9 @@ DNS-over-HTTPS with IP:
                 'H3'   => $h[2],
                 'H4'   => $h[3],
                 'I1'   => '<b 0xc000000001><r ' . random_int(80, 120) . '>',
-                'I2'   => '<c><r ' . random_int(40, 80) . '>',
-                'I3'   => '<t><r ' . random_int(50, 100) . '>',
-                'I4'   => '<r ' . random_int(30, 70) . '>',
+                'I2'   => '<t><r ' . random_int(40, 80) . '>',
+                'I3'   => '<r ' . random_int(50, 100) . '>',
+                'I4'   => '<rd ' . random_int(8, 16) . '><r ' . random_int(30, 60) . '>',
                 'I5'   => '<rc ' . random_int(20, 50) . '>',
             ];
             $this->setPacConf($c);
