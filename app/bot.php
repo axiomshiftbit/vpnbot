@@ -143,7 +143,7 @@ class Bot
             case preg_match('~^/menu (?P<type>addpeer) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>wg) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-            case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy)$~', $this->input['callback'], $m):
+            case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt)$~', $this->input['callback'], $m):
                 $this->menu(type: $m['type'] ?? false, arg: $m['arg'] ?? false);
                 break;
             case preg_match('~^/changeWG (\d+)$~', $this->input['callback'], $m):
@@ -427,6 +427,21 @@ class Bot
                 break;
             case preg_match('~^/changeHysteriaPass$~', $this->input['callback'], $m):
                 $this->changeHysteriaPass();
+                break;
+            case preg_match('~^/changeTtPort$~', $this->input['callback'], $m):
+                $this->changeTtPort();
+                break;
+            case preg_match('~^/addTtUser$~', $this->input['callback'], $m):
+                $this->addTtUser();
+                break;
+            case preg_match('~^/changeTtPass (\S+)$~', $this->input['callback'], $m):
+                $this->changeTtPass($m[1]);
+                break;
+            case preg_match('~^/delttus (\S+)$~', $this->input['callback'], $m):
+                $this->delttus($m[1]);
+                break;
+            case preg_match('~^/getTtConfig (\S+)$~', $this->input['callback'], $m):
+                $this->getTtConfig($m[1]);
                 break;
             case preg_match('~^/changeOcDns$~', $this->input['callback'], $m):
                 $this->changeOcDns();
