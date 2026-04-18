@@ -37,8 +37,8 @@ services:
         ports:
             - 443:443/tcp
             - 443:443/udp
-            - ${TTPORT}:${TTPORT}/tcp
-            - ${TTPORT}:${TTPORT}/udp
+            - ${TTPORT:-2443}:${TTPORT:-2443}/tcp
+            - ${TTPORT:-2443}:${TTPORT:-2443}/udp
         hostname: upstream
         container_name: upstream-${VER}
         depends_on:
