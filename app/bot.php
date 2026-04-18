@@ -2142,6 +2142,10 @@ class Bot
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['S3']);
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['S4']);
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I1']);
+                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I2']);
+                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I3']);
+                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I4']);
+                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I5']);
                 break;
 
             default:
@@ -2167,6 +2171,10 @@ class Bot
             unset($clients[$k]['interface']['H3']);
             unset($clients[$k]['interface']['H4']);
             unset($clients[$k]['interface']['I1']);
+            unset($clients[$k]['interface']['I2']);
+            unset($clients[$k]['interface']['I3']);
+            unset($clients[$k]['interface']['I4']);
+            unset($clients[$k]['interface']['I5']);
             if (!empty($amnezia)) {
                 $clients[$k]['peers'][0]['PresharedKey'] = $pk;
                 foreach ($ak as $j => $i) {
@@ -2189,6 +2197,10 @@ class Bot
         unset($wg['interface']['H3']);
         unset($wg['interface']['H4']);
         unset($wg['interface']['I1']);
+        unset($wg['interface']['I2']);
+        unset($wg['interface']['I3']);
+        unset($wg['interface']['I4']);
+        unset($wg['interface']['I5']);
         if (!empty($amnezia)) {
             foreach ($ak as $j => $i) {
                 $wg['interface'][$j] = $i;
@@ -9688,6 +9700,8 @@ DNS-over-HTTPS with IP:
                 }
             }
 
+            // I1–I5: CPS decoy packets (2.0). Tags: <b HEX>, <r N>, <rc N>, <rd N>, <c>, <t>.
+            // I1 missing ⇒ chain (I2–I5) skipped ⇒ behaves like AmneziaWG 1.x.
             $c[$this->getInstanceWG(1) . 'amnezia_keys'] = [
                 'Jc'   => random_int(3, 10),
                 'Jmin' => 64,
@@ -9700,7 +9714,11 @@ DNS-over-HTTPS with IP:
                 'H2'   => $h[1],
                 'H3'   => $h[2],
                 'H4'   => $h[3],
-                'I1'   => '<b 0xc000000001><r 100>',
+                'I1'   => '<b 0xc000000001><r ' . random_int(80, 120) . '>',
+                'I2'   => '<c><r ' . random_int(40, 80) . '>',
+                'I3'   => '<t><r ' . random_int(50, 100) . '>',
+                'I4'   => '<r ' . random_int(30, 70) . '>',
+                'I5'   => '<rc ' . random_int(20, 50) . '>',
             ];
             $this->setPacConf($c);
         }
