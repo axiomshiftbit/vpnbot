@@ -2,7 +2,7 @@
 # Update:
 #   docker compose build --no-cache tt
 #   или: TT_REF=<sha|tag> docker compose build tt
-ARG TT_REF=main
+ARG TT_REF=master
 
 FROM python:3.13-slim-bookworm AS build
 ARG TT_REF

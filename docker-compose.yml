@@ -579,7 +579,7 @@ services:
         build:
             dockerfile: dockerfile/trusttunnel.dockerfile
             args:
-                TT_REF: ${TT_REF:-main}
+                TT_REF: ${TT_REF:-master}
         volumes:
             - ./config/.profile:/root/.bashrc:ro
             - ./ssh:/ssh
