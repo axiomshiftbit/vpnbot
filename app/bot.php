@@ -10287,7 +10287,7 @@ DNS-over-HTTPS with IP:
         ];
     }
 
-    public function chttpass($user, $pass)
+    public function chttpass($pass, $user)
     {
         $users = $this->getClientsTt();
         if (!isset($users[$user]) || empty($pass)) {
@@ -10342,17 +10342,18 @@ DNS-over-HTTPS with IP:
         $pac    = $this->getPacConf();
         $domain = $this->getDomain() ?: $pac['domain'] ?? '';
         $port   = (int)($pac['tt_port'] ?? (getenv('TTPORT') ?: 2443));
-        $pass   = $users[$user];
-        $info   = "TrustTunnel connection info\n"
-                . "============================\n"
-                . "host:     $domain\n"
-                . "port:     $port\n"
-                . "username: $user\n"
-                . "password: $pass\n"
-                . "\nClient: https://github.com/TrustTunnel/TrustTunnel\n";
+        $pass   = addcslashes($users[$user], '"\\');
+        $u      = addcslashes($user, '"\\');
+        $toml   = "# TrustTunnel client config. Import via: trusttunnel client run <this-file>\n"
+                . "# Or replace [endpoint] section of an existing trusttunnel_client.toml.\n"
+                . "\n[endpoint]\n"
+                . "hostname = \"$domain\"\n"
+                . "addresses = [\"$domain:$port\"]\n"
+                . "username = \"$u\"\n"
+                . "password = \"$pass\"\n";
         $this->sendFile(
             $this->input['from'],
-            new CURLStringFile($info, "trusttunnel-$user.txt", 'text/plain')
+            new CURLStringFile($toml, "trusttunnel-$user.toml", 'application/toml')
         );
     }
 
