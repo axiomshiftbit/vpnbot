@@ -143,7 +143,7 @@ class Bot
             case preg_match('~^/menu (?P<type>addpeer) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>wg) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-            case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt)$~', $this->input['callback'], $m):
+            case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt|ovpn)$~', $this->input['callback'], $m):
                 $this->menu(type: $m['type'] ?? false, arg: $m['arg'] ?? false);
                 break;
             case preg_match('~^/changeWG (\d+)$~', $this->input['callback'], $m):
@@ -463,6 +463,9 @@ class Bot
                 break;
             case preg_match('~^/toggleOvpnIsolation$~', $this->input['callback'], $m):
                 $this->toggleOvpnIsolation();
+                break;
+            case preg_match('~^/toggleOvpnProto$~', $this->input['callback'], $m):
+                $this->toggleOvpnProto();
                 break;
             case preg_match('~^/showOvpnLog$~', $this->input['callback'], $m):
                 $this->showOvpnLog();
@@ -9333,10 +9336,11 @@ DNS-over-HTTPS with IP:
     public function setPort($port, $container)
     {
         $port  = (int) $port;
+        $ovpnProto = str_starts_with($this->getOvpnProto(), 'tcp') ? 'tcp' : 'udp';
         $ports = [
             'hy'   => ['443/udp'],
             'tt'   => ['8443/tcp', '8443/udp'],
-            'ovpn' => ['1194/udp'],
+            'ovpn' => ["1194/$ovpnProto"],
         ];
         // Port value that means "remove from override" for each service.
         // hy uses 443 (its in-container port); tt/ovpn have no port mapping in
@@ -9443,15 +9447,19 @@ DNS-over-HTTPS with IP:
         $this->ssh('nginx -s reload 2>&1', 'up');
     }
 
-    public function setUpstreamPortOvpn($port)
+    public function setUpstreamPortOvpn($port, $proto = null)
     {
         $port  = (int) $port ?: 1194;
+        $proto = $proto ?: $this->getOvpnProto();
         $f     = '/config/upstream.conf';
         if (!file_exists($f)) {
             return;
         }
-        $nginx = file_get_contents($f);
-        $block = "#ovpn-port\n    server {\n        listen      $port udp reuseport;\n        proxy_pass  openvpn;\n    }\n    #ovpn-port";
+        $nginx  = file_get_contents($f);
+        $listen = str_starts_with($proto, 'tcp')
+            ? "listen      $port reuseport;"
+            : "listen      $port udp reuseport;";
+        $block = "#ovpn-port\n    server {\n        $listen\n        proxy_pass  openvpn;\n    }\n    #ovpn-port";
         $re = '~^[ \t]*#ovpn-port[ \t]*\R.+?^[ \t]*#ovpn-port[ \t]*$~sm';
         if (!preg_match($re, $nginx)) {
             return;
@@ -10801,6 +10809,25 @@ DNS-over-HTTPS with IP:
         return (int) (getenv('OVPNPORT') ?: 1194);
     }
 
+    // Proto читается из server.conf (source of truth после первого запуска),
+    // с fallback на OVPNPROTO env для ранней стадии до создания конфига.
+    // Возвращает 'udp4' или 'tcp4' — формат OpenVPN CE.
+    public function getOvpnProto()
+    {
+        $p = $this->ovpnPaths();
+        if (file_exists($p['srv'])) {
+            $cfg = file_get_contents($p['srv']);
+            if (preg_match('~^\s*proto\s+(\S+)~m', $cfg, $m)) {
+                $v = $m[1];
+                if ($v === 'udp4' || $v === 'tcp4') {
+                    return $v;
+                }
+            }
+        }
+        $env = strtolower((string) getenv('OVPNPROTO'));
+        return ($env === 'tcp4') ? 'tcp4' : 'udp4';
+    }
+
     public function getOvpnUsers()
     {
         $p = $this->ovpnPaths();
@@ -10951,7 +10978,8 @@ DNS-over-HTTPS with IP:
         $domain = $this->getDomain() ?: ($this->getPacConf()['domain'] ?? '');
         $host   = $domain ?: getenv('IP');
         $port   = $this->getOvpnPort();
-        $ovpn   = "client\ndev tun\nproto udp4\nremote $host $port\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\ncipher AES-256-GCM\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
+        $proto  = $this->getOvpnProto();
+        $ovpn   = "client\ndev tun\nproto $proto\nremote $host $port\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\ncipher AES-256-GCM\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
         $ovpn  .= "<ca>\n$ca</ca>\n";
         $ovpn  .= "<cert>\n$crt\n</cert>\n";
         $ovpn  .= "<key>\n$key</key>\n";
@@ -11024,6 +11052,53 @@ DNS-over-HTTPS with IP:
         return !preg_match('~^\s*client-to-client\s*$~m', $m[1]);
     }
 
+    public function toggleOvpnProto()
+    {
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['srv'])) {
+            return $this->menu('ovpn');
+        }
+        $cur = $this->getOvpnProto();
+        $new = ($cur === 'tcp4') ? 'udp4' : 'tcp4';
+        $cfg = file_get_contents($p['srv']);
+        // Строка `proto XXX` генерируется start_ovpn.sh при первом запуске;
+        // дальше бот переписывает только её, остальной конфиг не трогаем.
+        if (!preg_match('~^\s*proto\s+\S+~m', $cfg)) {
+            return $this->menu('ovpn');
+        }
+        $cfg = preg_replace('~^\s*proto\s+\S+~m', "proto $new", $cfg, 1);
+        file_put_contents($p['srv'], $cfg);
+        $this->setEnvVar('OVPNPROTO', $new);
+        // Перестраиваем #ovpn-port блок upstream.conf с правильным listen —
+        // tcp без ключевого слова udp, udp — с ним. Также синхронизируем
+        // docker-compose override (ports: ["PORT:1194/proto"]), если задано
+        // прямое пробрасывание, иначе клиенты получат не тот транспорт.
+        $port = $this->getOvpnPort();
+        $this->setUpstreamPortOvpn($port, $new);
+        $this->syncOvpnOverridePort();
+        $this->restartOvpn();
+        $this->menu('ovpn');
+    }
+
+    // Если docker-compose override содержит ports для ovpn — обновляем proto
+    // суффикс под текущий getOvpnProto(). Вызывается после смены proto.
+    public function syncOvpnOverridePort()
+    {
+        $f = '/docker/compose';
+        if (!file_exists($f)) {
+            return;
+        }
+        $content = file_get_contents($f);
+        $c = $content ? yaml_parse($content) : [];
+        if (!isset($c['services']['ovpn']['ports'][0])) {
+            return;
+        }
+        $proto = str_starts_with($this->getOvpnProto(), 'tcp') ? 'tcp' : 'udp';
+        $host  = (int) explode(':', $c['services']['ovpn']['ports'][0])[0];
+        $c['services']['ovpn']['ports'] = ["$host:1194/$proto"];
+        file_put_contents($f, yaml_emit($c));
+    }
+
     public function toggleOvpnIsolation()
     {
         $p = $this->ovpnPaths();
@@ -11077,10 +11152,14 @@ DNS-over-HTTPS with IP:
         $isolated = $this->isOvpnIsolated();
         $p       = $this->ovpnPaths();
 
+        $proto  = $this->getOvpnProto();
+        $pshort = str_starts_with($proto, 'tcp') ? 'tcp' : 'udp';
+
         $text   = [];
         $text[] = "Menu -> " . $this->i18n('OpenVPN');
-        $text[] = "server: <code>$host:$port/udp</code>";
+        $text[] = "server: <code>$host:$port/$pshort</code>";
         $text[] = $this->i18n($running ? 'on' : 'off') . " openvpn";
+        $text[] = 'proto: ' . $pshort;
         $text[] = $this->i18n('inter-client') . ': ' . $this->i18n($isolated ? 'off' : 'on');
         $text[] = "clients: " . count($users) . " (" . count($online) . " " . $this->i18n('online') . ")";
         if (!file_exists($p['ca'])) {
@@ -11096,10 +11175,16 @@ DNS-over-HTTPS with IP:
         }
 
         $data   = [];
-        $data[] = [[
-            'text'          => $this->i18n('change port') . ": $port",
-            'callback_data' => '/changePort ovpn',
-        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('change port') . ": $port",
+                'callback_data' => '/changePort ovpn',
+            ],
+            [
+                'text'          => 'proto: ' . $pshort,
+                'callback_data' => '/toggleOvpnProto',
+            ],
+        ];
         $data[] = [[
             'text'          => $this->i18n('inter-client') . ': ' . $this->i18n($isolated ? 'off' : 'on'),
             'callback_data' => '/toggleOvpnIsolation',

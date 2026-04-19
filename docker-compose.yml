@@ -600,6 +600,7 @@ services:
               required: false
         environment:
             OVPNPORT: ${OVPNPORT:-1194}
+            OVPNPROTO: ${OVPNPROTO:-udp4}
             OVPNSUBNET: ${OVPNSUBNET:-10.8.0.0/24}
         cap_add:
             - NET_ADMIN

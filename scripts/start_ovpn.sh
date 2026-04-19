@@ -14,7 +14,8 @@ exec /usr/sbin/sshd -D -e "$@" &
 
 INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
 PORT="${OVPNPORT:-1194}"
-PROTO="udp4"
+PROTO="${OVPNPROTO:-udp4}"
+case "$PROTO" in udp4|tcp4) ;; *) PROTO="udp4" ;; esac
 SUBNET="${OVPNSUBNET:-10.8.0.0/24}"
 NET=$(echo "$SUBNET" | cut -d/ -f1)
 MASK=$(echo "$SUBNET" | awk -F/ '{
