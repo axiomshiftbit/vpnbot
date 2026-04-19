@@ -61,7 +61,11 @@ if [ ! -f "$PKI/issued/server.crt" ] || [ ! -f "$PKI/private/server.key" ]; then
     # и перевыпускаем server-cert полностью.
     rm -f "$PKI/reqs/server.req" "$PKI/private/server.key" "$PKI/issued/server.crt"
     log "build-server-full server"
-    "$EASYRSA_BIN" --req-cn="server" build-server-full server nopass >>/logs/openvpn.log 2>&1 || log "build-server-full FAILED"
+    # ВАЖНО: easy-rsa 3.1+ запрещает --req-cn вместе с build-server-full/
+    # build-client-full; CN берётся из имени файла. Попытка задать CN
+    # через флаг даёт "Option conflict: does not support setting an
+    # external commonName". Поэтому --req-cn тут НЕ пишем.
+    "$EASYRSA_BIN" build-server-full server nopass >>/logs/openvpn.log 2>&1 || log "build-server-full FAILED"
 fi
 
 if [ ! -f "$PKI/crl.pem" ]; then
