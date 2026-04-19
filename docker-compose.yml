@@ -598,9 +598,6 @@ services:
               required: false
         stop_grace_period: 1s
         entrypoint: ["/bin/sh", "/start_tt.sh"]
-        ports:
-            - ${TTPORT:-2443}:8443/tcp
-            - ${TTPORT:-2443}:8443/udp
         networks:
             default:
                 ipv4_address: 10.10.0.18

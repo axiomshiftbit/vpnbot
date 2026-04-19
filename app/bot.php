@@ -9168,10 +9168,37 @@ DNS-over-HTTPS with IP:
             file_put_contents($f, $yaml);
         }
 
+        // TT идёт через nginx в upstream-контейнере: client → host:PORT
+        // → DNAT (Docker iptables ИЛИ ручной nftables) → upstream:PORT
+        // → proxy_pass trusttunnel (tt:8443). Меняем listen-порт в
+        // upstream.conf и перезагружаем nginx, чтобы новый порт начал
+        // приниматься без полного recreate.
+        if ($container === 'tt') {
+            $listen = ($port > 0 && $port != ($disable['tt'] ?? 0)) ? $port : (int)(getenv('TTPORT') ?: 2443);
+            $this->setUpstreamPortTt($listen);
+        }
+
         $pac = $this->getPacConf();
         $pac['restart'] = 1;
         $this->setPacConf($pac);
         $this->ports();
+    }
+
+    public function setUpstreamPortTt($port)
+    {
+        $port  = (int) $port ?: 2443;
+        $f     = '/config/upstream.conf';
+        if (!file_exists($f)) {
+            return;
+        }
+        $nginx = file_get_contents($f);
+        $block = "#tt-port\n    server {\n        listen      $port reuseport;\n        proxy_pass  trusttunnel;\n    }\n    server {\n        listen      $port udp reuseport;\n        proxy_pass  trusttunnel;\n    }\n    #tt-port";
+        if (!preg_match('~#tt-port.+?#tt-port~s', $nginx)) {
+            return; // markers were stripped by manual edit; bail out
+        }
+        $nginx = preg_replace('~#tt-port.+?#tt-port~s', $block, $nginx);
+        file_put_contents($f, $nginx);
+        $this->ssh('nginx -s reload 2>&1', 'up');
     }
 
     public function branches()
