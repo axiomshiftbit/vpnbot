@@ -10406,6 +10406,9 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> TrustTunnel";
         $text[] = "server: " . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
         $text[] = 'clients: ' . count($users);
+        foreach ($users as $u => $p) {
+            $text[] = htmlspecialchars($u, ENT_QUOTES) . ': <code>' . htmlspecialchars($p, ENT_QUOTES) . '</code>';
+        }
         if (!file_exists('/certs/cert_public')) {
             $text[] = "⚠ cert missing (/certs/cert_public)";
         }
