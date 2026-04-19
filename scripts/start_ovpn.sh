@@ -34,37 +34,53 @@ EASYRSA_BIN=/usr/share/easy-rsa/easyrsa
 export EASYRSA_PKI="$PKI"
 export EASYRSA_BATCH=1
 
-mkdir -p "$PKI" /etc/openvpn/ccd /etc/openvpn/clients
+mkdir -p "$PKI" /etc/openvpn/ccd /etc/openvpn/clients /logs
+: >> /logs/openvpn.log
+
+log() { echo "[start_ovpn $(date +%H:%M:%S)] $*" >> /logs/openvpn.log; }
 
 # init-pki создаёт служебную разметку (serial, index.txt и пр.). Только
 # если её нет — иначе easyrsa отказывается работать в существующем PKI.
 if [ ! -f "$PKI/serial" ] && [ ! -f "$PKI/index.txt" ]; then
-    "$EASYRSA_BIN" init-pki >/dev/null 2>&1 || true
+    log "init-pki"
+    "$EASYRSA_BIN" init-pki >>/logs/openvpn.log 2>&1 || log "init-pki FAILED"
 fi
 
-if [ ! -f "$PKI/ca.crt" ]; then
-    "$EASYRSA_BIN" --req-cn="vpnbot-ovpn-ca" build-ca nopass >/dev/null 2>&1 || true
+if [ ! -f "$PKI/ca.crt" ] || [ ! -f "$PKI/private/ca.key" ]; then
+    # Битый CA — обе части нужны; чистим req/key чтобы build-ca не упёрся
+    # в "file already exists".
+    rm -f "$PKI/reqs/ca.req" "$PKI/private/ca.key" "$PKI/ca.crt"
+    log "build-ca"
+    "$EASYRSA_BIN" --req-cn="vpnbot-ovpn-ca" build-ca nopass >>/logs/openvpn.log 2>&1 || log "build-ca FAILED"
 fi
 
 if [ ! -f "$PKI/issued/server.crt" ] || [ ! -f "$PKI/private/server.key" ]; then
-    "$EASYRSA_BIN" --req-cn="server" build-server-full server nopass >/dev/null 2>&1 || true
+    # Главный source of bug, который ловил пользователя: stale reqs/server.req
+    # от прошлого частичного запуска блокировал build-server-full (easyrsa
+    # отказывается перезаписывать .req даже в batch). Удаляем артефакты
+    # и перевыпускаем server-cert полностью.
+    rm -f "$PKI/reqs/server.req" "$PKI/private/server.key" "$PKI/issued/server.crt"
+    log "build-server-full server"
+    "$EASYRSA_BIN" --req-cn="server" build-server-full server nopass >>/logs/openvpn.log 2>&1 || log "build-server-full FAILED"
 fi
 
 if [ ! -f "$PKI/crl.pem" ]; then
-    "$EASYRSA_BIN" gen-crl >/dev/null 2>&1 || true
+    log "gen-crl"
+    "$EASYRSA_BIN" gen-crl >>/logs/openvpn.log 2>&1 || log "gen-crl FAILED"
 fi
 
 if [ ! -f "$PKI/ta.key" ]; then
     # OpenVPN 2.5+: `--genkey secret FILE`. Fallback на старый синтаксис
     # `--genkey --secret FILE`, если попадётся 2.4 (маловероятно, но дёшево).
-    openvpn --genkey secret "$PKI/ta.key" 2>/dev/null \
-        || openvpn --genkey --secret "$PKI/ta.key" 2>/dev/null \
-        || true
+    log "genkey ta.key"
+    openvpn --genkey secret "$PKI/ta.key" 2>>/logs/openvpn.log \
+        || openvpn --genkey --secret "$PKI/ta.key" 2>>/logs/openvpn.log \
+        || log "genkey ta.key FAILED"
 fi
 
 # Если что-то всё равно не собралось — явный лог, чтобы бот мог его показать.
 for f in "$PKI/ca.crt" "$PKI/issued/server.crt" "$PKI/private/server.key" "$PKI/crl.pem" "$PKI/ta.key"; do
-    [ -f "$f" ] || echo "[start_ovpn] MISSING $f — PKI init failed; openvpn won't start" >> /logs/openvpn.log
+    [ -f "$f" ] || log "MISSING $f — PKI init failed; openvpn won't start"
 done
 
 if [ ! -f "$SRV" ]; then

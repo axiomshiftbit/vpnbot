@@ -10970,8 +10970,14 @@ DNS-over-HTTPS with IP:
             return $this->menu('ovpn');
         }
         $u = escapeshellarg($user);
+        // Та же болезнь, что у server-cert: если прошлый build-client-full
+        // упал после создания reqs/$user.req, повтор даст "file already
+        // exists". Чистим stale артефакты перед новой попыткой (для этого
+        // имени, не для всего PKI).
         $this->ssh(
-            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa build-client-full $u nopass",
+            "rm -f /etc/openvpn/pki/reqs/$u.req /etc/openvpn/pki/private/$u.key /etc/openvpn/pki/issued/$u.crt && " .
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
+            ">>/logs/openvpn.log 2>&1",
             'ovpn'
         );
         if (!in_array($user, $this->getOvpnUsers(), true)) {
