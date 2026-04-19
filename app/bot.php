@@ -2244,13 +2244,43 @@ class Bot
     {
         $c   = $this->getPacConf();
         $cur = $c[$this->getInstanceWG(1) . 'amnezia_keys']['I1'] ?? '—';
-        $r   = $this->send(
+
+        // Tap-to-copy CPS presets. Sources:
+        //   - docs.amnezia.org/documentation/instructions/new-amneziawg-selfhosted (DNS response example)
+        //   - habr.com/ru/companies/amnezia/articles/1014636 (QUIC examples)
+        //   - RFC 9000 (QUIC long-header first byte; version 0x00000001)
+        // All <b 0x..> values below have even hex length (byte-aligned).
+        $presets = [
+            'QUIC Initial (long header, v1)'
+                => '<b 0xc700000001><rc 8><t><r 100>',
+            'QUIC вариант (из офиц. доки Amnezia)'
+                => '<b 0xd100000001><rc 8><t><r 50>',
+            'DNS-ответ (пример Amnezia: yabs.yandex.ru)'
+                => '<b 0x8580000100010000000004796162730679616e6465780272750000010001c00c000100010001c00c000100010000026d000457fa27d1><r 20>',
+            'TLS 1.2 ClientHello (запись Handshake)'
+                => '<b 0x16030100><t><r 80>',
+            'Лёгкий профиль (умеренный трафик)'
+                => '<b 0xc000000001><r 50>',
+        ];
+        $lines = [
+            "@{$this->input['username']} введите строку I1 (CPS) или 0 — отключить цепочку 2.0.",
+            '',
+            'Текущее: <code>' . htmlspecialchars($cur) . '</code>',
+            '',
+            'Правило: внутри &lt;b 0x..&gt; количество hex-символов должно быть чётным (целое число байт) — иначе пакет молча отбросится.',
+            '',
+            'Готовые примеры (нажмите на строку — скопируется):',
+        ];
+        foreach ($presets as $label => $val) {
+            $lines[] = "• $label";
+            $lines[] = '<code>' . htmlspecialchars($val) . '</code>';
+        }
+
+        $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter I1 (e.g. <code>&lt;b 0xc000000001&gt;&lt;r 100&gt;</code>) or 0 to disable 2.0 chain.\n"
-            . "Current: <code>" . htmlspecialchars($cur) . "</code>\n"
-            . "Rule: hex inside &lt;b 0x..&gt; must have an even number of characters (whole bytes).",
+            implode("\n", $lines),
             $this->input['message_id'],
-            reply: 'enter I1 string or 0',
+            reply: 'введите I1 или 0',
         );
         $_SESSION['reply'][$r['result']['message_id']] = [
             'start_message'  => $this->input['message_id'],
