@@ -428,9 +428,6 @@ class Bot
             case preg_match('~^/changeHysteriaPass$~', $this->input['callback'], $m):
                 $this->changeHysteriaPass();
                 break;
-            case preg_match('~^/changeTtPort$~', $this->input['callback'], $m):
-                $this->changeTtPort();
-                break;
             case preg_match('~^/addTtUser$~', $this->input['callback'], $m):
                 $this->addTtUser();
                 break;
@@ -4953,7 +4950,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n($this->ssh('pgrep caddy', 'np') ? 'on' : 'off') . ' ' . $this->i18n('naive'),
                     $this->i18n($this->ssh('pgrep ocserv', 'oc') ? 'on' : 'off') . ' ' . $this->i18n('ocserv'),
                     $this->i18n($this->ssh('pgrep hysteria', 'hy') ? 'on' : 'off') . ' ' . $this->i18n('hysteria'),
-                    $this->i18n($this->ssh('pgrep trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . $this->i18n('TrustTunnel'),
+                    $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . $this->i18n('TrustTunnel'),
                     $this->i18n($this->ssh('pgrep mtproto-proxy', 'tg') ? 'on' : 'off') . ' ' . $this->i18n('mtproto'),
                     $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off') . ' ' . $this->i18n('ad_title'),
                     $this->i18n($this->ssh('pgrep ssserver', 'ss') ? 'on' : 'off') . ' ' . $this->i18n('sh_title'),
@@ -4967,7 +4964,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n('on') . ' 443',
                     $this->i18n('on') . ' 443',
                     $this->i18n($hy_port ? 'on' : 'off') . ($hy_port ? " $hy_port" : 'port unavailable'),
-                    $this->i18n($c['tt'] ? 'on' : 'off') . ' ' . getenv('TTPORT'),
+                    $this->i18n($c['tt'] ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
                     $this->i18n($c['tg'] ? 'on' : 'off') . ' ' . getenv('TGPORT'),
                     $this->i18n($c['ad'] ? 'on' : 'off') . ' 853',
                     $this->i18n($c['ss'] ? 'on' : 'off') . ' ' . getenv('SSPORT'),
@@ -9027,6 +9024,10 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n($c['hy'] ? 'on' : 'off') . ' ' . explode(':', $c['hy']['ports'][0])[0] . ' hysteria',
                 'callback_data' => "/changePort hy",
             ]],
+            [[
+                'text'          => $this->i18n($c['tt'] ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')) . ' TrustTunnel',
+                'callback_data' => "/changePort tt",
+            ]],
         ];
         if (!empty($pac['restart'])) {
             $data[] = [
@@ -9108,7 +9109,15 @@ DNS-over-HTTPS with IP:
     {
         $port  = (int) $port;
         $ports = [
-            'hy' => '443/udp',
+            'hy' => ['443/udp'],
+            'tt' => ['8443/tcp', '8443/udp'],
+        ];
+        // Port value that means "remove from override" for each service.
+        // hy uses 443 (its in-container port); tt has no built-in default,
+        // so 0/empty disables external exposure.
+        $disable = [
+            'hy' => 443,
+            'tt' => 0,
         ];
         $f = '/docker/compose';
         $content = file_exists($f) ? file_get_contents($f) : '';
@@ -9125,8 +9134,11 @@ DNS-over-HTTPS with IP:
         $c = $content ? yaml_parse($content) : [];
 
         // Изменяем структуру
-        if (!empty($port) && is_numeric($port) && $port != 443) {
-            $c['services'][$container]['ports'] = ["$port:$ports[$container]"];
+        if (!empty($port) && is_numeric($port) && $port != ($disable[$container] ?? 0) && !empty($ports[$container])) {
+            $c['services'][$container]['ports'] = array_map(
+                fn($p) => "$port:$p",
+                $ports[$container]
+            );
         } else {
             unset($c['services'][$container]);
         }
@@ -10194,16 +10206,6 @@ DNS-over-HTTPS with IP:
         file_put_contents('/config/trusttunnel/hosts.toml', $out);
     }
 
-    public function setUpstreamPortTt($port)
-    {
-        $port  = (int) $port ?: 2443;
-        $nginx = file_get_contents('/config/upstream.conf');
-        $block = "#tt-port\n    server {\n        listen      $port reuseport;\n        proxy_pass  trusttunnel;\n    }\n    server {\n        listen      $port udp reuseport;\n        proxy_pass  trusttunnel;\n    }\n    #tt-port";
-        $t     = preg_replace('~#tt-port.+?#tt-port~s', $block, $nginx);
-        file_put_contents('/config/upstream.conf', $t);
-        $this->ssh('nginx -s reload 2>&1', 'up');
-    }
-
     public function restartTt()
     {
         $pac    = $this->getPacConf();
@@ -10216,7 +10218,9 @@ DNS-over-HTTPS with IP:
             return; // templates missing — init.sh ещё не развернул
         }
 
-        $this->ssh('pkill trusttunnel_endpoint', 'tt');
+        // Linux truncates /proc/<pid>/comm to 15 chars, so the binary name
+        // "trusttunnel_endpoint" only matches via -f (full cmdline).
+        $this->ssh('pkill -9 -f trusttunnel_endpoint; while pgrep -f trusttunnel_endpoint >/dev/null; do sleep 0.2; done', 'tt');
         $hasCert = file_exists('/certs/cert_public') && file_exists('/certs/cert_private');
         if (!empty($users) && !empty($domain) && $hasCert) {
             $this->ssh(
@@ -10299,40 +10303,6 @@ DNS-over-HTTPS with IP:
         $this->menu('tt');
     }
 
-    public function changeTtPort()
-    {
-        $r = $this->send(
-            $this->input['chat'],
-            "@{$this->input['username']} enter port (1024-65535)",
-            $this->input['message_id'],
-            reply: 'enter port',
-        );
-        $_SESSION['reply'][$r['result']['message_id']] = [
-            'start_message'  => $this->input['message_id'],
-            'start_callback' => $this->input['callback_id'],
-            'callback'       => 'chttport',
-            'args'           => [],
-        ];
-    }
-
-    public function chttport($port)
-    {
-        $port = (int) $port;
-        if ($port < 1024 || $port > 65535) {
-            $this->send($this->input['chat'], 'port must be 1024..65535');
-            return $this->menu('tt');
-        }
-        $pac = $this->getPacConf();
-        $pac['tt_port'] = $port;
-        $this->setPacConf($pac);
-        $this->setUpstreamPortTt($port);
-        $this->send(
-            $this->input['chat'],
-            "TTPORT changed to $port. Update TTPORT in .env and run: make r"
-        );
-        $this->menu('tt');
-    }
-
     public function getTtConfig($user)
     {
         $users  = $this->getClientsTt();
@@ -10341,7 +10311,7 @@ DNS-over-HTTPS with IP:
         }
         $pac    = $this->getPacConf();
         $domain = $this->getDomain() ?: $pac['domain'] ?? '';
-        $port   = (int)($pac['tt_port'] ?? (getenv('TTPORT') ?: 2443));
+        $port   = $this->getTtPort();
         $pass   = addcslashes($users[$user], '"\\');
         $u      = addcslashes($user, '"\\');
         $toml   = "# TrustTunnel client config. Import via: trusttunnel client run <this-file>\n"
@@ -10357,11 +10327,23 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    public function getTtPort()
+    {
+        $f = '/docker/compose';
+        if (file_exists($f)) {
+            $c = yaml_parse_file($f)['services'] ?? [];
+            if (isset($c['tt']['ports'][0])) {
+                return (int) explode(':', $c['tt']['ports'][0])[0];
+            }
+        }
+        return (int) (getenv('TTPORT') ?: 2443);
+    }
+
     public function ttMenu()
     {
         $pac    = $this->getPacConf();
         $domain = $this->getDomain() ?: $pac['domain'] ?? '';
-        $port   = (int)($pac['tt_port'] ?? (getenv('TTPORT') ?: 2443));
+        $port   = $this->getTtPort();
         $users  = $this->getClientsTt();
         $text[] = "Menu -> TrustTunnel";
         $text[] = "server: " . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
@@ -10372,7 +10354,7 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          => $this->i18n('change port') . ": $port",
-                'callback_data' => '/changeTtPort',
+                'callback_data' => '/changePort tt',
             ],
         ];
         $data[] = [
