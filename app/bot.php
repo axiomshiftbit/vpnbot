@@ -10449,6 +10449,8 @@ DNS-over-HTTPS with IP:
                     'text'          => $this->i18n('change password'),
                     'callback_data' => "/changeTtPass $u",
                 ],
+            ];
+            $data[] = [
                 [
                     'text'          => $this->i18n('generate password'),
                     'callback_data' => "/genTtPass $u",
