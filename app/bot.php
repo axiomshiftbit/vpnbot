@@ -4964,7 +4964,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n('on') . ' 443',
                     $this->i18n('on') . ' 443',
                     $this->i18n($hy_port ? 'on' : 'off') . ($hy_port ? " $hy_port" : 'port unavailable'),
-                    $this->i18n($c['tt'] ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
+                    $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
                     $this->i18n($c['tg'] ? 'on' : 'off') . ' ' . getenv('TGPORT'),
                     $this->i18n($c['ad'] ? 'on' : 'off') . ' 853',
                     $this->i18n($c['ss'] ? 'on' : 'off') . ' ' . getenv('SSPORT'),
@@ -9025,7 +9025,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/changePort hy",
             ]],
             [[
-                'text'          => $this->i18n($c['tt'] ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')) . ' TrustTunnel',
+                'text'          => $this->i18n('on') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')) . ' TrustTunnel',
                 'callback_data' => "/changePort tt",
             ]],
         ];
@@ -9119,6 +9119,11 @@ DNS-over-HTTPS with IP:
             'hy' => 443,
             'tt' => 0,
         ];
+        // Сервисы, у которых ports заданы в основном compose — для них
+        // override.yml ДОЛЖЕН использовать !override, иначе docker-compose
+        // объединит массивы и контейнер получит и старый, и новый порт.
+        $forceOverride = ['tt' => true];
+
         $f = '/docker/compose';
         $content = file_exists($f) ? file_get_contents($f) : '';
 
@@ -9139,6 +9144,9 @@ DNS-over-HTTPS with IP:
                 fn($p) => "$port:$p",
                 $ports[$container]
             );
+            if (!empty($forceOverride[$container])) {
+                $overrides[$container] = true;
+            }
         } else {
             unset($c['services'][$container]);
         }
