@@ -121,6 +121,10 @@ $i = [
         'en' => 'change password',
         'ru' => 'изменить пароль',
     ],
+    'generate password'    => [
+        'en' => 'generate password',
+        'ru' => 'сгенерировать пароль',
+    ],
     'reset settings'       => [
         'en' => 'reset settings',
         'ru' => 'сбросить настройки',
