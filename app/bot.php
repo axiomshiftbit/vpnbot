@@ -443,6 +443,30 @@ class Bot
             case preg_match('~^/getTtConfig (\S+)$~', $this->input['callback'], $m):
                 $this->getTtConfig($m[1]);
                 break;
+            case preg_match('~^/addOvpnUser$~', $this->input['callback'], $m):
+                $this->addOvpnUser();
+                break;
+            case preg_match('~^/delOvpnUser (\S+)$~', $this->input['callback'], $m):
+                $this->delOvpnUser($m[1]);
+                break;
+            case preg_match('~^/getOvpnConfig (\S+)$~', $this->input['callback'], $m):
+                $this->getOvpnConfig($m[1]);
+                break;
+            case preg_match('~^/kickOvpn (\S+)$~', $this->input['callback'], $m):
+                $this->kickOvpn($m[1]);
+                break;
+            case preg_match('~^/disableOvpnUser (\S+)$~', $this->input['callback'], $m):
+                $this->disableOvpnUser($m[1]);
+                break;
+            case preg_match('~^/enableOvpnUser (\S+)$~', $this->input['callback'], $m):
+                $this->enableOvpnUser($m[1]);
+                break;
+            case preg_match('~^/toggleOvpnIsolation$~', $this->input['callback'], $m):
+                $this->toggleOvpnIsolation();
+                break;
+            case preg_match('~^/showOvpnLog$~', $this->input['callback'], $m):
+                $this->showOvpnLog();
+                break;
             case preg_match('~^/changeOcDns$~', $this->input['callback'], $m):
                 $this->changeOcDns();
                 break;
@@ -5141,6 +5165,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n($this->ssh('pgrep ocserv', 'oc') ? 'on' : 'off') . ' ' . $this->i18n('ocserv'),
                     $this->i18n($this->ssh('pgrep hysteria', 'hy') ? 'on' : 'off') . ' ' . $this->i18n('hysteria'),
                     $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . $this->i18n('TrustTunnel'),
+                    $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . $this->i18n('OpenVPN'),
                     $this->i18n($this->ssh('pgrep mtproto-proxy', 'tg') ? 'on' : 'off') . ' ' . $this->i18n('mtproto'),
                     $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off') . ' ' . $this->i18n('ad_title'),
                     $this->i18n($this->ssh('pgrep ssserver', 'ss') ? 'on' : 'off') . ' ' . $this->i18n('sh_title'),
@@ -5155,6 +5180,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n('on') . ' 443',
                     $this->i18n($hy_port ? 'on' : 'off') . ($hy_port ? " $hy_port" : 'port unavailable'),
                     $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
+                    $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . (isset($c['ovpn']['ports'][0]) ? explode(':', $c['ovpn']['ports'][0])[0] : getenv('OVPNPORT')),
                     $this->i18n($c['tg'] ? 'on' : 'off') . ' ' . getenv('TGPORT'),
                     $this->i18n($c['ad'] ? 'on' : 'off') . ' 853',
                     $this->i18n($c['ss'] ? 'on' : 'off') . ' ' . getenv('SSPORT'),
@@ -5244,6 +5270,10 @@ DNS-over-HTTPS with IP:
                                 'text'          => $this->i18n('TrustTunnel'),
                                 'callback_data' => "/menu tt",
                             ],
+                            [
+                                'text'          => $this->i18n('OpenVPN'),
+                                'callback_data' => "/menu ovpn",
+                            ],
                         ],
                         $conf['showdnstt'] ? [
                             [
@@ -5286,6 +5316,7 @@ DNS-over-HTTPS with IP:
             'naive'        => $type == 'naive'   ? $this->naiveMenu()                      : false,
             'hy'           => $type == 'hy'      ? $this->hysteriaMenu()                   : false,
             'tt'           => $type == 'tt'      ? $this->ttMenu()                         : false,
+            'ovpn'         => $type == 'ovpn'    ? $this->ovpnMenu()                       : false,
             'mirror'       => $type == 'mirror'  ? $this->mirrorMenu()                     : false,
             'update'       => $type == 'update'  ? $this->updatebot()                      : false,
         ];
@@ -9218,6 +9249,10 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n('on') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')) . ' TrustTunnel',
                 'callback_data' => "/changePort tt",
             ]],
+            [[
+                'text'          => $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . (isset($c['ovpn']['ports'][0]) ? explode(':', $c['ovpn']['ports'][0])[0] : getenv('OVPNPORT')) . ' OpenVPN',
+                'callback_data' => "/changePort ovpn",
+            ]],
         ];
         if (!empty($pac['restart'])) {
             $data[] = [
@@ -9299,15 +9334,17 @@ DNS-over-HTTPS with IP:
     {
         $port  = (int) $port;
         $ports = [
-            'hy' => ['443/udp'],
-            'tt' => ['8443/tcp', '8443/udp'],
+            'hy'   => ['443/udp'],
+            'tt'   => ['8443/tcp', '8443/udp'],
+            'ovpn' => ['1194/udp'],
         ];
         // Port value that means "remove from override" for each service.
-        // hy uses 443 (its in-container port); tt has no built-in default,
-        // so 0/empty disables external exposure.
+        // hy uses 443 (its in-container port); tt/ovpn have no port mapping in
+        // main compose, so 0/empty disables external exposure.
         $disable = [
-            'hy' => 443,
-            'tt' => 0,
+            'hy'   => 443,
+            'tt'   => 0,
+            'ovpn' => 0,
         ];
         // Сервисы, у которых ports заданы в основном compose — для них
         // override.yml ДОЛЖЕН использовать !override, иначе docker-compose
@@ -9370,6 +9407,15 @@ DNS-over-HTTPS with IP:
             $this->setEnvVar('TTPORT', (string) $listen);
         }
 
+        // Same architecture as TT: client → host:PORT → DNAT → upstream:PORT
+        // → proxy_pass openvpn (ovpn:1194/udp). Sync upstream listen + .env
+        // fallback. UDP-only, no TCP.
+        if ($container === 'ovpn') {
+            $listen = ($port > 0 && $port != ($disable['ovpn'] ?? 0)) ? $port : (int)(getenv('OVPNPORT') ?: 1194);
+            $this->setUpstreamPortOvpn($listen);
+            $this->setEnvVar('OVPNPORT', (string) $listen);
+        }
+
         $pac = $this->getPacConf();
         $pac['restart'] = 1;
         $this->setPacConf($pac);
@@ -9391,6 +9437,24 @@ DNS-over-HTTPS with IP:
         $re = '~^[ \t]*#tt-port[ \t]*\R.+?^[ \t]*#tt-port[ \t]*$~sm';
         if (!preg_match($re, $nginx)) {
             return; // markers were stripped by manual edit; bail out
+        }
+        $nginx = preg_replace($re, $block, $nginx);
+        file_put_contents($f, $nginx);
+        $this->ssh('nginx -s reload 2>&1', 'up');
+    }
+
+    public function setUpstreamPortOvpn($port)
+    {
+        $port  = (int) $port ?: 1194;
+        $f     = '/config/upstream.conf';
+        if (!file_exists($f)) {
+            return;
+        }
+        $nginx = file_get_contents($f);
+        $block = "#ovpn-port\n    server {\n        listen      $port udp reuseport;\n        proxy_pass  openvpn;\n    }\n    #ovpn-port";
+        $re = '~^[ \t]*#ovpn-port[ \t]*\R.+?^[ \t]*#ovpn-port[ \t]*$~sm';
+        if (!preg_match($re, $nginx)) {
+            return;
         }
         $nginx = preg_replace($re, $block, $nginx);
         file_put_contents($f, $nginx);
@@ -10696,6 +10760,390 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/menu',
             ],
         ];
+        return [
+            'text' => implode("\n", $text),
+            'data' => $data,
+        ];
+    }
+
+    // ─── OpenVPN ──────────────────────────────────────────────────────────
+    // Architecture mirrors TrustTunnel:
+    //   client → host:OVPNPORT/udp → (manual nft DNAT or docker port) →
+    //   upstream nginx (#ovpn-port stream block) → ovpn:1194/udp.
+    // PKI lives on a bind mount at /config/openvpn (visible inside the bot's
+    // php container), so we manipulate certs/files directly and invoke easyrsa
+    // inside the ovpn container only when issuing/revoking keys.
+
+    public function ovpnPaths()
+    {
+        return [
+            'pki'    => '/config/openvpn/pki',
+            'issued' => '/config/openvpn/pki/issued',
+            'priv'   => '/config/openvpn/pki/private',
+            'ta'     => '/config/openvpn/pki/ta.key',
+            'ca'     => '/config/openvpn/pki/ca.crt',
+            'srv'    => '/config/openvpn/server.conf',
+            'ccd'    => '/config/openvpn/ccd',
+            'status' => '/config/openvpn/openvpn-status.log',
+            'log'    => '/logs/openvpn.log',
+        ];
+    }
+
+    public function getOvpnPort()
+    {
+        $f = '/docker/compose';
+        if (file_exists($f)) {
+            $c = yaml_parse_file($f)['services'] ?? [];
+            if (isset($c['ovpn']['ports'][0])) {
+                return (int) explode(':', $c['ovpn']['ports'][0])[0];
+            }
+        }
+        return (int) (getenv('OVPNPORT') ?: 1194);
+    }
+
+    public function getOvpnUsers()
+    {
+        $p = $this->ovpnPaths();
+        if (!is_dir($p['issued'])) {
+            return [];
+        }
+        $users = [];
+        foreach (scandir($p['issued']) ?: [] as $f) {
+            if (!preg_match('~^([a-zA-Z0-9_.\-]+)\.crt$~', $f, $m)) {
+                continue;
+            }
+            if ($m[1] === 'server') {
+                continue;
+            }
+            $users[] = $m[1];
+        }
+        sort($users);
+        return $users;
+    }
+
+    public function isOvpnUserDisabled($user)
+    {
+        $p = $this->ovpnPaths();
+        $f = $p['ccd'] . '/' . $user;
+        return file_exists($f) && stripos(file_get_contents($f), 'disable') !== false;
+    }
+
+    public function getOvpnStatus()
+    {
+        // status-version 2 is CSV with HEADER rows. Parse CLIENT_LIST entries:
+        // CLIENT_LIST,CN,Real Address,Virtual Addr,Virtual IPv6,Bytes Received,
+        // Bytes Sent,Connected Since,Connected Since (s),Username,Client ID,...
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['status'])) {
+            return [];
+        }
+        $rows = explode("\n", file_get_contents($p['status']));
+        $out  = [];
+        foreach ($rows as $row) {
+            $cols = str_getcsv($row);
+            if (($cols[0] ?? '') !== 'CLIENT_LIST') {
+                continue;
+            }
+            $cn = $cols[1] ?? '';
+            if ($cn === '' || $cn === 'UNDEF') {
+                continue;
+            }
+            $out[$cn] = [
+                'real'    => $cols[2] ?? '',
+                'virtual' => $cols[3] ?? '',
+                'rx'      => (int) ($cols[5] ?? 0),
+                'tx'      => (int) ($cols[6] ?? 0),
+                'since'   => $cols[7] ?? '',
+                'cid'     => $cols[10] ?? '',
+            ];
+        }
+        return $out;
+    }
+
+    public function fmtBytes($n)
+    {
+        $n = (int) $n;
+        if ($n < 1024) return "{$n} B";
+        $units = ['KB', 'MB', 'GB', 'TB'];
+        $i = -1;
+        do { $n /= 1024; $i++; } while ($n >= 1024 && $i < count($units) - 1);
+        return sprintf('%.1f %s', $n, $units[$i]);
+    }
+
+    public function restartOvpn()
+    {
+        // pkill returns instantly; openvpn closes the management socket as it
+        // exits. Wait briefly so the new daemon can bind 127.0.0.1:7505.
+        $this->ssh('pkill -9 openvpn; while pgrep openvpn >/dev/null; do sleep 0.2; done', 'ovpn');
+        $this->ssh('openvpn --config /etc/openvpn/server.conf', 'ovpn', false, '/dev/null');
+    }
+
+    public function addOvpnUser()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter username",
+            $this->input['message_id'],
+            reply: 'enter username',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'addovus',
+            'args'           => [],
+        ];
+    }
+
+    public function addovus($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || $user === 'server') {
+            $this->send($this->input['chat'], 'wrong username');
+            return $this->menu('ovpn');
+        }
+        if (in_array($user, $this->getOvpnUsers(), true)) {
+            $this->send($this->input['chat'], "user $user already exists");
+            return $this->menu('ovpn');
+        }
+        $u = escapeshellarg($user);
+        $this->ssh(
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa build-client-full $u nopass",
+            'ovpn'
+        );
+        $this->menu('ovpn');
+    }
+
+    public function delOvpnUser($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || $user === 'server') {
+            return $this->menu('ovpn');
+        }
+        $u = escapeshellarg($user);
+        $this->ssh(
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u && " .
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa gen-crl",
+            'ovpn'
+        );
+        $p = $this->ovpnPaths();
+        @unlink($p['ccd'] . '/' . $user);
+        // crl.pem is re-read on every TLS handshake → new connections from
+        // this CN get rejected. Kick the live session, if any.
+        $this->ovpnMgmt(["kill $user", 'exit']);
+        $this->menu('ovpn');
+    }
+
+    public function getOvpnConfig($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !in_array($user, $this->getOvpnUsers(), true)) {
+            return $this->menu('ovpn');
+        }
+        $p     = $this->ovpnPaths();
+        $crt   = file_exists("{$p['issued']}/$user.crt") ? file_get_contents("{$p['issued']}/$user.crt") : '';
+        $key   = file_exists("{$p['priv']}/$user.key")   ? file_get_contents("{$p['priv']}/$user.key")   : '';
+        $ca    = file_exists($p['ca'])                    ? file_get_contents($p['ca'])                    : '';
+        $ta    = file_exists($p['ta'])                    ? file_get_contents($p['ta'])                    : '';
+        // strip easyrsa's pre-cert plaintext metadata; keep only the PEM block
+        if (preg_match('~-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----~s', $crt, $m)) {
+            $crt = $m[0];
+        }
+        $domain = $this->getDomain() ?: ($this->getPacConf()['domain'] ?? '');
+        $host   = $domain ?: getenv('IP');
+        $port   = $this->getOvpnPort();
+        $ovpn   = "client\ndev tun\nproto udp4\nremote $host $port\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\ncipher AES-256-GCM\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
+        $ovpn  .= "<ca>\n$ca</ca>\n";
+        $ovpn  .= "<cert>\n$crt\n</cert>\n";
+        $ovpn  .= "<key>\n$key</key>\n";
+        $ovpn  .= "<tls-crypt>\n$ta</tls-crypt>\n";
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile($ovpn, "$user.ovpn", 'application/x-openvpn-profile')
+        );
+    }
+
+    // Send a list of newline-terminated commands to openvpn's management
+    // interface and return raw response. Quiet on connection failures because
+    // openvpn might be restarting.
+    public function ovpnMgmt(array $cmds)
+    {
+        $script = implode('\n', array_map(fn($c) => str_replace("'", "'\\''", $c), $cmds));
+        // Use printf inside the container; nc with -q1 to wait for response.
+        return $this->ssh(
+            "printf '" . $script . "\\n' | nc -w 2 127.0.0.1 7505 2>/dev/null",
+            'ovpn'
+        );
+    }
+
+    public function kickOvpn($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            return $this->menu('ovpn');
+        }
+        $this->ovpnMgmt(["kill $user", 'exit']);
+        $this->menu('ovpn');
+    }
+
+    public function disableOvpnUser($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !in_array($user, $this->getOvpnUsers(), true)) {
+            return $this->menu('ovpn');
+        }
+        $p = $this->ovpnPaths();
+        @mkdir($p['ccd'], 0755, true);
+        file_put_contents($p['ccd'] . '/' . $user, "disable\n");
+        $this->ovpnMgmt(["kill $user", 'exit']);
+        $this->menu('ovpn');
+    }
+
+    public function enableOvpnUser($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !in_array($user, $this->getOvpnUsers(), true)) {
+            return $this->menu('ovpn');
+        }
+        $p = $this->ovpnPaths();
+        @unlink($p['ccd'] . '/' . $user);
+        $this->menu('ovpn');
+    }
+
+    public function isOvpnIsolated()
+    {
+        // "Isolated" means clients CANNOT reach each other → server.conf has
+        // NO `client-to-client` directive between markers. Default is isolated.
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['srv'])) {
+            return true;
+        }
+        $cfg = file_get_contents($p['srv']);
+        if (!preg_match('~^[ \t]*#ovpn-isolation[ \t]*\R(.+?)^[ \t]*#ovpn-isolation[ \t]*$~sm', $cfg, $m)) {
+            return true;
+        }
+        return !preg_match('~^\s*client-to-client\s*$~m', $m[1]);
+    }
+
+    public function toggleOvpnIsolation()
+    {
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['srv'])) {
+            return $this->menu('ovpn');
+        }
+        $cfg     = file_get_contents($p['srv']);
+        $isolated = $this->isOvpnIsolated();
+        // If currently isolated, ENABLE inter-client by adding the directive.
+        $body    = $isolated ? "client-to-client\n" : "";
+        $block   = "#ovpn-isolation\n$body#ovpn-isolation";
+        $re      = '~^[ \t]*#ovpn-isolation[ \t]*\R.+?^[ \t]*#ovpn-isolation[ \t]*$~sm';
+        if (!preg_match($re, $cfg)) {
+            return $this->menu('ovpn');
+        }
+        $cfg = preg_replace($re, $block, $cfg);
+        file_put_contents($p['srv'], $cfg);
+        $this->restartOvpn();
+        $this->menu('ovpn');
+    }
+
+    public function showOvpnLog()
+    {
+        $p = $this->ovpnPaths();
+        $tail = '';
+        if (file_exists($p['log'])) {
+            $lines = explode("\n", file_get_contents($p['log']));
+            $tail  = implode("\n", array_slice($lines, -40));
+        }
+        $text  = "Menu -> OpenVPN -> " . $this->i18n('log tail') . "\n";
+        $text .= "<pre>" . htmlspecialchars($tail ?: '(empty)', ENT_QUOTES) . "</pre>";
+        $data  = [[
+            ['text' => $this->i18n('back'), 'callback_data' => '/menu ovpn'],
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            $text,
+            $data,
+        );
+    }
+
+    public function ovpnMenu()
+    {
+        $port    = $this->getOvpnPort();
+        $domain  = $this->getDomain() ?: ($this->getPacConf()['domain'] ?? '');
+        $host    = $domain ?: getenv('IP');
+        $users   = $this->getOvpnUsers();
+        $online  = $this->getOvpnStatus();
+        $running = (bool) $this->ssh('pgrep openvpn', 'ovpn');
+        $isolated = $this->isOvpnIsolated();
+        $p       = $this->ovpnPaths();
+
+        $text   = [];
+        $text[] = "Menu -> " . $this->i18n('OpenVPN');
+        $text[] = "server: <code>$host:$port/udp</code>";
+        $text[] = $this->i18n($running ? 'on' : 'off') . " openvpn";
+        $text[] = $this->i18n('inter-client') . ': ' . $this->i18n($isolated ? 'off' : 'on');
+        $text[] = "clients: " . count($users) . " (" . count($online) . " " . $this->i18n('online') . ")";
+        if (!file_exists($p['ca'])) {
+            $text[] = "⚠ PKI not initialized — wait for ovpn container first start";
+        }
+        if (!empty($online)) {
+            $text[] = '';
+            foreach ($online as $cn => $s) {
+                $text[] = '🟢 <code>' . htmlspecialchars($cn, ENT_QUOTES) . '</code> '
+                    . $s['virtual'] . ' '
+                    . '↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
+            }
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('change port') . ": $port",
+            'callback_data' => '/changePort ovpn',
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('inter-client') . ': ' . $this->i18n($isolated ? 'off' : 'on'),
+            'callback_data' => '/toggleOvpnIsolation',
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('add peer'),
+            'callback_data' => '/addOvpnUser',
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('log tail'),
+            'callback_data' => '/showOvpnLog',
+        ]];
+        foreach ($users as $u) {
+            $isDis  = $this->isOvpnUserDisabled($u);
+            $isOn   = isset($online[$u]);
+            $marker = $isDis ? '🚫' : ($isOn ? '🟢' : '⚪');
+            $data[] = [[
+                'text'          => "$marker $u",
+                'callback_data' => '/menu ovpn', // header row, no-op refresh
+            ]];
+            $data[] = [
+                [
+                    'text'          => $this->i18n('download') . ' .ovpn',
+                    'callback_data' => "/getOvpnConfig $u",
+                ],
+                $isDis
+                    ? ['text' => $this->i18n('enable'),  'callback_data' => "/enableOvpnUser $u"]
+                    : ['text' => $this->i18n('disable'), 'callback_data' => "/disableOvpnUser $u"],
+            ];
+            $data[] = [
+                [
+                    'text'          => $this->i18n('kick'),
+                    'callback_data' => "/kickOvpn $u",
+                ],
+                [
+                    'text'          => $this->i18n('delete'),
+                    'callback_data' => "/delOvpnUser $u",
+                ],
+            ];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu',
+        ]];
         return [
             'text' => implode("\n", $text),
             'data' => $data,

@@ -50,6 +50,8 @@ services:
                 condition: service_started
             tt:
                 condition: service_started
+            ovpn:
+                condition: service_started
         env_file:
             - path: ./.env
               required: true # default
@@ -216,6 +218,7 @@ services:
             - dnstt
             - hy
             - tt
+            - ovpn
     wg:
         image: mercurykd/vpnbot-wg:1.2
         build:
@@ -571,6 +574,42 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.16
+        logging: *default-logging
+    ovpn:
+        image: mercurykd/vpnbot-ovpn:1.0
+        build:
+            dockerfile: dockerfile/openvpn.dockerfile
+            args:
+                image: ${IMAGE}
+        volumes:
+            - ./config/.profile:/root/.ashrc:ro
+            - ./config/openvpn:/etc/openvpn
+            - ./scripts/start_ovpn.sh:/start_ovpn.sh
+            - ./ssh:/ssh
+            - ./config/sshd_config:/etc/ssh/sshd_config
+            - ./logs:/logs
+        hostname: openvpn
+        container_name: openvpn-${VER}
+        depends_on:
+            php:
+                condition: service_healthy
+        env_file:
+            - path: ./.env
+              required: true # default
+            - path: ./override.env
+              required: false
+        environment:
+            OVPNPORT: ${OVPNPORT:-1194}
+            OVPNSUBNET: ${OVPNSUBNET:-10.8.0.0/24}
+        cap_add:
+            - NET_ADMIN
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        stop_grace_period: 1s
+        command: ["/bin/sh", "/start_ovpn.sh"]
+        networks:
+            default:
+                ipv4_address: 10.10.0.19
         logging: *default-logging
     tt:
         image: mercurykd/vpnbot-tt:1.0

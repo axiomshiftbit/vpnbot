@@ -413,6 +413,42 @@ $i = [
         'en' => 'restart',
         'ru' => 'перезагрузка',
     ],
+    'OpenVPN'  => [
+        'en' => 'OpenVPN',
+        'ru' => 'OpenVPN',
+    ],
+    'inter-client'  => [
+        'en' => 'inter-client routing',
+        'ru' => 'трафик между клиентами',
+    ],
+    'online'  => [
+        'en' => 'online',
+        'ru' => 'онлайн',
+    ],
+    'offline'  => [
+        'en' => 'offline',
+        'ru' => 'оффлайн',
+    ],
+    'traffic'  => [
+        'en' => 'traffic',
+        'ru' => 'трафик',
+    ],
+    'kick'  => [
+        'en' => 'kick',
+        'ru' => 'отключить',
+    ],
+    'disable'  => [
+        'en' => 'disable',
+        'ru' => 'заблокировать',
+    ],
+    'enable'  => [
+        'en' => 'enable',
+        'ru' => 'разблокировать',
+    ],
+    'log tail'  => [
+        'en' => 'log tail',
+        'ru' => 'журнал',
+    ],
 ];
 
 if (file_exists(__DIR__ . '/i18n.override.php')) {
