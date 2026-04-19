@@ -10897,8 +10897,37 @@ DNS-over-HTTPS with IP:
         return sprintf('%.1f %s', $n, $units[$i]);
     }
 
+    // Список файлов, без которых openvpn не стартует. Используется и для
+    // гейта в restartOvpn, и для диагностики в ovpnMenu.
+    public function ovpnPkiMissing()
+    {
+        $p       = $this->ovpnPaths();
+        $missing = [];
+        $require = [
+            'ca'               => $p['ca'],
+            'server cert'      => $p['issued'] . '/server.crt',
+            'server key'       => $p['priv'] . '/server.key',
+            'crl'              => $p['pki'] . '/crl.pem',
+            'tls-crypt (ta)'   => $p['ta'],
+            'server.conf'      => $p['srv'],
+        ];
+        foreach ($require as $name => $path) {
+            if (!file_exists($path)) {
+                $missing[] = $name;
+            }
+        }
+        return $missing;
+    }
+
     public function restartOvpn()
     {
+        // Без всех PKI-файлов openvpn немедленно падает с «Cannot pre-load
+        // keyfile» и бот показывает on→off. Лучше ничего не запускать, чтобы
+        // статус честно оставался off и пользователь увидел причину в меню.
+        if ($this->ovpnPkiMissing()) {
+            $this->ssh('pkill -9 openvpn 2>/dev/null || true', 'ovpn');
+            return;
+        }
         // pkill returns instantly; openvpn closes the management socket as it
         // exits. Wait briefly so the new daemon can bind 127.0.0.1:7505.
         $this->ssh('pkill -9 openvpn; while pgrep openvpn >/dev/null; do sleep 0.2; done', 'ovpn');
@@ -10932,11 +10961,22 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'], "user $user already exists");
             return $this->menu('ovpn');
         }
+        // Без ca.crt easyrsa build-client-full молча пишет в stderr и
+        // пользователь ничего не увидит. Блокируем заранее, пока PKI не
+        // доинициализирован.
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['ca']) || !file_exists($p['pki'] . '/private/ca.key')) {
+            $this->send($this->input['chat'], 'PKI not ready — restart ovpn container first');
+            return $this->menu('ovpn');
+        }
         $u = escapeshellarg($user);
         $this->ssh(
             "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa build-client-full $u nopass",
             'ovpn'
         );
+        if (!in_array($user, $this->getOvpnUsers(), true)) {
+            $this->send($this->input['chat'], "failed to issue cert for $user (check /logs/openvpn.log)");
+        }
         $this->menu('ovpn');
     }
 
@@ -11162,8 +11202,10 @@ DNS-over-HTTPS with IP:
         $text[] = 'proto: ' . $pshort;
         $text[] = $this->i18n('inter-client') . ': ' . $this->i18n($isolated ? 'off' : 'on');
         $text[] = "clients: " . count($users) . " (" . count($online) . " " . $this->i18n('online') . ")";
-        if (!file_exists($p['ca'])) {
-            $text[] = "⚠ PKI not initialized — wait for ovpn container first start";
+        $pkiMissing = $this->ovpnPkiMissing();
+        if ($pkiMissing) {
+            $text[] = '⚠ PKI incomplete, missing: ' . implode(', ', $pkiMissing);
+            $text[] = '   → <code>docker compose restart ovpn</code> чтобы доинициализировать';
         }
         if (!empty($online)) {
             $text[] = '';

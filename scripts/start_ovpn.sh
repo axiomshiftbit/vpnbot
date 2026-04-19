@@ -1,16 +1,22 @@
 #!/bin/sh
 # OpenVPN Community Edition entrypoint.
-# - Initializes easy-rsa PKI in /etc/openvpn/pki on first run.
-# - Writes server.conf only if missing — bot edits port/isolation in place.
-# - Runs sshd so the bot can `ssh ovpn ...` like every other container.
-# - Starts openvpn in background; container stays alive via tail. Bot restarts
-#   via `pkill openvpn; ssh ovpn 'openvpn --config ...'`.
+# - Каждый PKI-файл создаётся независимо (идемпотентно): если предыдущий
+#   запуск упал между build-ca и genkey, ta.key теперь догенерируется,
+#   а не игнорируется намертво из-за существующего ca.crt.
+# - server.conf пишется только если отсутствует — бот правит port/proto/
+#   isolation in-place.
+# - Runs sshd так же, как в других контейнерах.
+# - openvpn в фоне; контейнер живёт через tail. Бот рестартит через
+#   `pkill openvpn; ssh ovpn 'openvpn --config ...'`.
 
-set -e
+# Намеренно БЕЗ `set -e`: easyrsa иногда возвращает non-zero при
+# существующих артефактах (например при повторном build-ca), что
+# раньше убивало контейнер. Ошибки детектируем через проверку
+# наличия файлов на следующем шаге.
 
-cat /ssh/key.pub > /root/.ssh/authorized_keys
-ssh-keygen -A
-exec /usr/sbin/sshd -D -e "$@" &
+cat /ssh/key.pub > /root/.ssh/authorized_keys 2>/dev/null || true
+ssh-keygen -A >/dev/null 2>&1 || true
+/usr/sbin/sshd -D -e "$@" &
 
 INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
 PORT="${OVPNPORT:-1194}"
@@ -28,17 +34,38 @@ EASYRSA_BIN=/usr/share/easy-rsa/easyrsa
 export EASYRSA_PKI="$PKI"
 export EASYRSA_BATCH=1
 
-if [ ! -f "$PKI/ca.crt" ]; then
-    rm -rf "$PKI"
-    mkdir -p "$PKI"
-    "$EASYRSA_BIN" init-pki
-    "$EASYRSA_BIN" --req-cn="vpnbot-ovpn-ca" build-ca nopass
-    "$EASYRSA_BIN" --req-cn="server" build-server-full server nopass
-    "$EASYRSA_BIN" gen-crl
-    openvpn --genkey secret "$PKI/ta.key"
+mkdir -p "$PKI" /etc/openvpn/ccd /etc/openvpn/clients
+
+# init-pki создаёт служебную разметку (serial, index.txt и пр.). Только
+# если её нет — иначе easyrsa отказывается работать в существующем PKI.
+if [ ! -f "$PKI/serial" ] && [ ! -f "$PKI/index.txt" ]; then
+    "$EASYRSA_BIN" init-pki >/dev/null 2>&1 || true
 fi
 
-mkdir -p /etc/openvpn/ccd /etc/openvpn/clients
+if [ ! -f "$PKI/ca.crt" ]; then
+    "$EASYRSA_BIN" --req-cn="vpnbot-ovpn-ca" build-ca nopass >/dev/null 2>&1 || true
+fi
+
+if [ ! -f "$PKI/issued/server.crt" ] || [ ! -f "$PKI/private/server.key" ]; then
+    "$EASYRSA_BIN" --req-cn="server" build-server-full server nopass >/dev/null 2>&1 || true
+fi
+
+if [ ! -f "$PKI/crl.pem" ]; then
+    "$EASYRSA_BIN" gen-crl >/dev/null 2>&1 || true
+fi
+
+if [ ! -f "$PKI/ta.key" ]; then
+    # OpenVPN 2.5+: `--genkey secret FILE`. Fallback на старый синтаксис
+    # `--genkey --secret FILE`, если попадётся 2.4 (маловероятно, но дёшево).
+    openvpn --genkey secret "$PKI/ta.key" 2>/dev/null \
+        || openvpn --genkey --secret "$PKI/ta.key" 2>/dev/null \
+        || true
+fi
+
+# Если что-то всё равно не собралось — явный лог, чтобы бот мог его показать.
+for f in "$PKI/ca.crt" "$PKI/issued/server.crt" "$PKI/private/server.key" "$PKI/crl.pem" "$PKI/ta.key"; do
+    [ -f "$f" ] || echo "[start_ovpn] MISSING $f — PKI init failed; openvpn won't start" >> /logs/openvpn.log
+done
 
 if [ ! -f "$SRV" ]; then
     cat > "$SRV" <<EOF
@@ -96,6 +123,11 @@ mkdir -p /dev/net
 mkdir -p /logs
 [ -f /logs/openvpn.log ] || : > /logs/openvpn.log
 
-openvpn --config "$SRV" >/dev/null 2>&1 &
+# Запускаем openvpn только если все обязательные файлы PKI на месте.
+# Иначе бот показал бы «on» при падающем демоне; лучше честно off.
+if [ -f "$PKI/ca.crt" ] && [ -f "$PKI/issued/server.crt" ] \
+   && [ -f "$PKI/private/server.key" ] && [ -f "$PKI/crl.pem" ] && [ -f "$PKI/ta.key" ]; then
+    openvpn --config "$SRV" >/dev/null 2>&1 &
+fi
 
 tail -f /dev/null
