@@ -548,6 +548,12 @@ class Bot
             case preg_match('~^/reduceAmnezia (-?\d+)$~', $this->input['callback'], $m):
                 $this->reduceAmnezia($m[1]);
                 break;
+            case preg_match('~^/amneziaTemplates (-?\d+)$~', $this->input['callback'], $m):
+                $this->amneziaTemplates($m[1]);
+                break;
+            case preg_match('~^/amneziaTemplate (\w+) (-?\d+)$~', $this->input['callback'], $m):
+                $this->applyAmneziaTemplate($m[1], $m[2]);
+                break;
             case preg_match('~^/switchExchange (\d+)$~', $this->input['callback'], $m):
                 $this->switchExchange($m[1]);
                 break;
@@ -2152,7 +2158,62 @@ class Bot
         $this->switchAmnezia($page, false, 1);
     }
 
-    public function switchAmnezia($page = 0, $reset = false, $reduce = false)
+    public function applyAmneziaTemplate($template, $page = 0)
+    {
+        $allowed = ['standard_2', 'aggressive_2', 'mobile_2', 'classic_1'];
+        if (!in_array($template, $allowed, true)) {
+            return $this->menu('wg', $page);
+        }
+        $c = $this->getPacConf();
+        $prefix = $this->getInstanceWG(1);
+        $c[$prefix . 'amnezia']      = 1;
+        $c[$prefix . 'amnezia_tpl']  = $template;
+        $c[$prefix . 'amnezia_keys'] = $this->generateAmneziaKeys($template);
+        $this->setPacConf($c);
+        $this->switchAmnezia($page, false, false, 1);
+    }
+
+    public function amneziaTemplates($page = 0)
+    {
+        $prefix  = $this->getInstanceWG(1);
+        $current = $this->getPacConf()[$prefix . 'amnezia_tpl'] ?? '';
+        $labels  = [
+            'standard_2'   => 'Standard 2.0',
+            'aggressive_2' => 'Aggressive 2.0',
+            'mobile_2'     => 'Mobile 2.0',
+            'classic_1'    => 'Classic 1.x',
+        ];
+        $descs = [
+            'standard_2'   => 'балансир: умеренные junk-пакеты и I1–I5',
+            'aggressive_2' => 'против GFW-класса DPI; +10–15% трафика',
+            'mobile_2'     => 'мелкие junk, экономит батарею и трафик',
+            'classic_1'    => 'без 2.0-полей, совместимо со старыми клиентами',
+        ];
+        $text = ['Menu -> Wireguard -> amnezia templates', ''];
+        foreach ($labels as $k => $label) {
+            $mark = ($k === $current) ? '• ' : '';
+            $text[] = "$mark<b>$label</b> — " . $descs[$k];
+        }
+        $data = [];
+        foreach ($labels as $k => $label) {
+            $data[] = [[
+                'text'          => (($k === $current) ? '• ' : '') . $label,
+                'callback_data' => "/amneziaTemplate $k $page",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/menu wg $page",
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    public function switchAmnezia($page = 0, $reset = false, $reduce = false, $apply = false)
     {
         $c = $this->getPacConf();
         switch (true) {
@@ -2170,6 +2231,10 @@ class Bot
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I3']);
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I4']);
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I5']);
+                break;
+            case !empty($apply):
+                // Caller (applyAmneziaTemplate) has already set keys + amnezia=1.
+                $amnezia = 1;
                 break;
 
             default:
@@ -3497,6 +3562,12 @@ DNS-over-HTTPS with IP:
             ],
         ];
         if (!empty($am)) {
+            array_unshift($data, [
+                [
+                    'text'          => "templates",
+                    'callback_data' => "/amneziaTemplates $page",
+                ],
+            ]);
             array_unshift($data, [
                 [
                     'text'          => "reset obf-keys",
@@ -9789,46 +9860,88 @@ DNS-over-HTTPS with IP:
     public function amneziaKeys()
     {
         $c = $this->getPacConf();
-        if (empty($c[$this->getInstanceWG(1) . 'amnezia_keys'])) {
-            // S1 and S2: 0–64 bytes; constraint: S1 + 56 ≠ S2
-            $s1 = random_int(15, 64);
-            do {
-                $s2 = random_int(15, 64);
-            } while ($s1 + 56 === $s2);
-
-            // H1–H4: distinct 32-bit values (must not overlap)
-            $h = [];
-            while (count($h) < 4) {
-                $v = random_int(1, 4_294_967_295);
-                if (!in_array($v, $h)) {
-                    $h[] = $v;
-                }
-            }
-
-            // I1–I5: CPS decoy packets (2.0). Tags supported by amneziawg-go: <b HEX>, <r N>, <rc N>, <rd N>, <t>.
-            // <c> is documented but NOT implemented (issue amnezia-vpn/amneziawg-go#120) — do not use.
-            // I1 missing ⇒ chain (I2–I5) skipped ⇒ behaves like AmneziaWG 1.x.
-            $c[$this->getInstanceWG(1) . 'amnezia_keys'] = [
-                'Jc'   => random_int(3, 10),
-                'Jmin' => 64,
-                'Jmax' => 1000,
-                'S1'   => $s1,
-                'S2'   => $s2,
-                'S3'   => random_int(0, 64),
-                'S4'   => random_int(0, 32),
-                'H1'   => $h[0],
-                'H2'   => $h[1],
-                'H3'   => $h[2],
-                'H4'   => $h[3],
-                'I1'   => '<b 0xc000000001><r ' . random_int(80, 120) . '>',
-                'I2'   => '<t><r ' . random_int(40, 80) . '>',
-                'I3'   => '<r ' . random_int(50, 100) . '>',
-                'I4'   => '<rd ' . random_int(8, 16) . '><r ' . random_int(30, 60) . '>',
-                'I5'   => '<rc ' . random_int(20, 50) . '>',
-            ];
+        $k = $this->getInstanceWG(1) . 'amnezia_keys';
+        if (empty($c[$k])) {
+            $c[$k] = $this->generateAmneziaKeys($c[$this->getInstanceWG(1) . 'amnezia_tpl'] ?? 'standard_2');
             $this->setPacConf($c);
         }
-        return $c[$this->getInstanceWG(1) . 'amnezia_keys'];
+        return $c[$k];
+    }
+
+    // Templates for AmneziaWG key generation. Ranges follow official docs
+    // (docs.amnezia.org/documentation/amnezia-wg): Jc 0–10, Jmin/Jmax 64–1024,
+    // S1/S2/S3 0–64, S4 0–32, H1–H4 distinct 32-bit. Constraint S1+56 ≠ S2.
+    // I1 presence ⇒ 2.0; I1 absent ⇒ 1.x. CPS tags supported by amneziawg-go:
+    // <b HEX>, <r N>, <rc N>, <rd N>, <t>. (<c> removed upstream — not used.)
+    public function generateAmneziaKeys($template = 'standard_2')
+    {
+        // H1–H4: distinct non-zero 32-bit values
+        $h = [];
+        while (count($h) < 4) {
+            $v = random_int(1, 4_294_967_295);
+            if (!in_array($v, $h, true)) {
+                $h[] = $v;
+            }
+        }
+
+        $rngS = function ($min, $max) {
+            $s1 = random_int($min, $max);
+            do {
+                $s2 = random_int($min, $max);
+            } while ($s1 + 56 === $s2);
+            return [$s1, $s2];
+        };
+
+        $base = ['H1' => $h[0], 'H2' => $h[1], 'H3' => $h[2], 'H4' => $h[3]];
+
+        switch ($template) {
+            case 'aggressive_2':
+                [$s1, $s2] = $rngS(40, 64);
+                return $base + [
+                    'Jc' => 10, 'Jmin' => 256, 'Jmax' => 1024,
+                    'S1' => $s1, 'S2' => $s2,
+                    'S3' => random_int(32, 64), 'S4' => random_int(16, 32),
+                    'I1' => '<b 0xc000000001><r ' . random_int(150, 250) . '>',
+                    'I2' => '<t><r ' . random_int(80, 150) . '>',
+                    'I3' => '<r ' . random_int(100, 200) . '>',
+                    'I4' => '<rd ' . random_int(16, 24) . '><r ' . random_int(60, 100) . '>',
+                    'I5' => '<rc ' . random_int(50, 100) . '>',
+                ];
+
+            case 'mobile_2':
+                [$s1, $s2] = $rngS(15, 32);
+                return $base + [
+                    'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
+                    'S1' => $s1, 'S2' => $s2,
+                    'S3' => random_int(0, 32), 'S4' => random_int(0, 16),
+                    'I1' => '<b 0xc000000001><r ' . random_int(30, 60) . '>',
+                    'I2' => '<t><r ' . random_int(20, 40) . '>',
+                    'I3' => '<r ' . random_int(20, 40) . '>',
+                    'I4' => '<rd ' . random_int(4, 8) . '><r ' . random_int(15, 30) . '>',
+                    'I5' => '<rc ' . random_int(10, 20) . '>',
+                ];
+
+            case 'classic_1':
+                [$s1, $s2] = $rngS(15, 64);
+                return $base + [
+                    'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1000,
+                    'S1' => $s1, 'S2' => $s2,
+                ];
+
+            case 'standard_2':
+            default:
+                [$s1, $s2] = $rngS(15, 64);
+                return $base + [
+                    'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1000,
+                    'S1' => $s1, 'S2' => $s2,
+                    'S3' => random_int(0, 64), 'S4' => random_int(0, 32),
+                    'I1' => '<b 0xc000000001><r ' . random_int(80, 120) . '>',
+                    'I2' => '<t><r ' . random_int(40, 80) . '>',
+                    'I3' => '<r ' . random_int(50, 100) . '>',
+                    'I4' => '<rd ' . random_int(8, 16) . '><r ' . random_int(30, 60) . '>',
+                    'I5' => '<rc ' . random_int(20, 50) . '>',
+                ];
+        }
     }
 
     public function createPeer($ips_user = false, $name = false)
