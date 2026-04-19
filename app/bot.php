@@ -9172,10 +9172,12 @@ DNS-over-HTTPS with IP:
         // → DNAT (Docker iptables ИЛИ ручной nftables) → upstream:PORT
         // → proxy_pass trusttunnel (tt:8443). Меняем listen-порт в
         // upstream.conf и перезагружаем nginx, чтобы новый порт начал
-        // приниматься без полного recreate.
+        // приниматься без полного recreate. Заодно синхронизируем
+        // TTPORT в .env, чтобы fallback-значение для бота совпадало.
         if ($container === 'tt') {
             $listen = ($port > 0 && $port != ($disable['tt'] ?? 0)) ? $port : (int)(getenv('TTPORT') ?: 2443);
             $this->setUpstreamPortTt($listen);
+            $this->setEnvVar('TTPORT', (string) $listen);
         }
 
         $pac = $this->getPacConf();
@@ -9193,12 +9195,33 @@ DNS-over-HTTPS with IP:
         }
         $nginx = file_get_contents($f);
         $block = "#tt-port\n    server {\n        listen      $port reuseport;\n        proxy_pass  trusttunnel;\n    }\n    server {\n        listen      $port udp reuseport;\n        proxy_pass  trusttunnel;\n    }\n    #tt-port";
-        if (!preg_match('~#tt-port.+?#tt-port~s', $nginx)) {
+        // Маркер должен быть на собственной строке (с необязательным
+        // отступом), чтобы не совпасть с упоминанием "#tt-port" внутри
+        // комментариев выше по файлу.
+        $re = '~^[ \t]*#tt-port[ \t]*\R.+?^[ \t]*#tt-port[ \t]*$~sm';
+        if (!preg_match($re, $nginx)) {
             return; // markers were stripped by manual edit; bail out
         }
-        $nginx = preg_replace('~#tt-port.+?#tt-port~s', $block, $nginx);
+        $nginx = preg_replace($re, $block, $nginx);
         file_put_contents($f, $nginx);
         $this->ssh('nginx -s reload 2>&1', 'up');
+    }
+
+    public function setEnvVar($key, $value)
+    {
+        // Контейнер php монтирует корневой .env как /mirror/.env.
+        $f = '/mirror/.env';
+        if (!file_exists($f) || !preg_match('~^[A-Z_][A-Z0-9_]*$~', $key)) {
+            return;
+        }
+        $content = file_get_contents($f);
+        $line    = "$key=$value";
+        if (preg_match('~^' . preg_quote($key, '~') . '=.*$~m', $content)) {
+            $content = preg_replace('~^' . preg_quote($key, '~') . '=.*$~m', $line, $content);
+        } else {
+            $content = rtrim($content, "\n") . "\n$line\n";
+        }
+        file_put_contents($f, $content);
     }
 
     public function branches()
