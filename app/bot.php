@@ -554,6 +554,9 @@ class Bot
             case preg_match('~^/amneziaTemplate (\w+) (-?\d+)$~', $this->input['callback'], $m):
                 $this->applyAmneziaTemplate($m[1], $m[2]);
                 break;
+            case preg_match('~^/setAmneziaI1 (-?\d+)$~', $this->input['callback'], $m):
+                $this->setAmneziaI1($m[1]);
+                break;
             case preg_match('~^/switchExchange (\d+)$~', $this->input['callback'], $m):
                 $this->switchExchange($m[1]);
                 break;
@@ -2213,6 +2216,85 @@ class Bot
         );
     }
 
+    // Validates a CPS string for AmneziaWG 2.0 I1-I5 fields.
+    // Accepts only the tokens supported by amneziawg-go: <b 0xHEX>, <r N>, <rc N>, <rd N>, <t>.
+    // Critical rule (from amnezia article comments): hex inside <b 0x..> must have an
+    // EVEN number of hex chars — otherwise it's not a whole byte sequence and the peer
+    // silently rejects the signature packet.
+    public function validateCPSLine($s)
+    {
+        $s = trim($s);
+        if ($s === '') {
+            return 'empty';
+        }
+        if (!preg_match('~^(?:<b 0x[0-9a-fA-F]+>|<r \d+>|<rc \d+>|<rd \d+>|<t>)+$~', $s)) {
+            return 'bad syntax — allowed tokens: &lt;b 0xHEX&gt;, &lt;r N&gt;, &lt;rc N&gt;, &lt;rd N&gt;, &lt;t&gt; (no spaces between tokens)';
+        }
+        if (preg_match_all('~<b 0x([0-9a-fA-F]+)>~', $s, $m)) {
+            foreach ($m[1] as $hex) {
+                if (strlen($hex) % 2 !== 0) {
+                    return "hex in &lt;b 0x$hex&gt; has odd length — must be even (whole bytes)";
+                }
+            }
+        }
+        return '';
+    }
+
+    public function setAmneziaI1($page = 0)
+    {
+        $c   = $this->getPacConf();
+        $cur = $c[$this->getInstanceWG(1) . 'amnezia_keys']['I1'] ?? '—';
+        $r   = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter I1 (e.g. <code>&lt;b 0xc000000001&gt;&lt;r 100&gt;</code>) or 0 to disable 2.0 chain.\n"
+            . "Current: <code>" . htmlspecialchars($cur) . "</code>\n"
+            . "Rule: hex inside &lt;b 0x..&gt; must have an even number of characters (whole bytes).",
+            $this->input['message_id'],
+            reply: 'enter I1 string or 0',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'setAmneziaI1Value',
+            'args'           => [$page],
+        ];
+    }
+
+    public function setAmneziaI1Value($text, $page = 0)
+    {
+        $text   = trim($text);
+        $c      = $this->getPacConf();
+        $prefix = $this->getInstanceWG(1);
+        $k      = $prefix . 'amnezia_keys';
+
+        if ($text === '0' || $text === '') {
+            if (!empty($c[$k])) {
+                unset($c[$k]['I1']);
+                $this->setPacConf($c);
+                $this->switchAmnezia($page, false, false, 1);
+                return;
+            }
+            $this->menu('wg', $page);
+            return;
+        }
+
+        $err = $this->validateCPSLine($text);
+        if ($err) {
+            $this->update($this->input['chat'], $this->input['message_id'], "I1: $err");
+            sleep(3);
+            $this->menu('wg', $page);
+            return;
+        }
+
+        if (empty($c[$k])) {
+            $c[$k] = $this->generateAmneziaKeys($c[$prefix . 'amnezia_tpl'] ?? 'standard_2');
+        }
+        $c[$k]['I1']       = $text;
+        $c[$prefix . 'amnezia'] = 1;
+        $this->setPacConf($c);
+        $this->switchAmnezia($page, false, false, 1);
+    }
+
     public function switchAmnezia($page = 0, $reset = false, $reduce = false, $apply = false)
     {
         $c = $this->getPacConf();
@@ -3566,6 +3648,10 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => "templates",
                     'callback_data' => "/amneziaTemplates $page",
+                ],
+                [
+                    'text'          => "set I1",
+                    'callback_data' => "/setAmneziaI1 $page",
                 ],
             ]);
             array_unshift($data, [
