@@ -99,7 +99,6 @@ ca $PKI/ca.crt
 cert $PKI/issued/server.crt
 key $PKI/private/server.key
 dh none
-ecdh-curve prime256v1
 tls-crypt $PKI/ta.key
 crl-verify $PKI/crl.pem
 
@@ -128,11 +127,29 @@ status-version 2
 log-append /logs/openvpn.log
 verb 3
 
-management 127.0.0.1 7505
+management /var/run/openvpn-mgmt.sock unix
 
 persist-key
 persist-tun
 EOF
+fi
+
+# Миграции уже существующего server.conf (бот правит его in-place; мы тут
+# подтягиваем только безопасные для OpenSSL 3.0+ строки, ничего пользова-
+# тельского не перезаписывая).
+if [ -f "$SRV" ]; then
+    # ecdh-curve игнорируется в OpenSSL 3.0+ с warning'ом — убираем.
+    sed -i '/^ecdh-curve[[:space:]]/d' "$SRV"
+    # management через TCP на 127.0.0.1 → unix-сокет (убирает "TCP port
+    # WITHOUT passwords is STRONGLY discouraged" warning и безопаснее).
+    sed -i 's|^management[[:space:]]\+127\.0\.0\.1[[:space:]]\+7505[[:space:]]*$|management /var/run/openvpn-mgmt.sock unix|' "$SRV"
+    # explicit-exit-notify ignored for --proto tcp — держим только для UDP.
+    if grep -qE '^proto[[:space:]]+tcp' "$SRV"; then
+        sed -i '/^explicit-exit-notify[[:space:]]/d' "$SRV"
+    elif ! grep -qE '^explicit-exit-notify[[:space:]]' "$SRV"; then
+        # При возврате на UDP вернуть директиву, если её когда-то удаляли.
+        printf '\nexplicit-exit-notify 1\n' >> "$SRV"
+    fi
 fi
 
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true

@@ -10928,9 +10928,16 @@ DNS-over-HTTPS with IP:
             $this->ssh('pkill -9 openvpn 2>/dev/null || true', 'ovpn');
             return;
         }
-        // pkill returns instantly; openvpn closes the management socket as it
-        // exits. Wait briefly so the new daemon can bind 127.0.0.1:7505.
-        $this->ssh('pkill -9 openvpn; while pgrep openvpn >/dev/null; do sleep 0.2; done', 'ovpn');
+        // Гарантированная остановка: pkill -9 + ждём полного отсутствия
+        // процесса. Ранее, при быстрых двух toggleProto подряд, успевало
+        // подняться два демона (один TCP, один UDP на одном порту — не
+        // конфликтуют). Дополнительно убираем stale unix-socket.
+        $this->ssh(
+            'pkill -9 openvpn 2>/dev/null; ' .
+            'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep openvpn >/dev/null || break; sleep 0.2; done; ' .
+            'rm -f /var/run/openvpn-mgmt.sock',
+            'ovpn'
+        );
         $this->ssh('openvpn --config /etc/openvpn/server.conf', 'ovpn', false, '/dev/null');
     }
 
@@ -11038,13 +11045,13 @@ DNS-over-HTTPS with IP:
 
     // Send a list of newline-terminated commands to openvpn's management
     // interface and return raw response. Quiet on connection failures because
-    // openvpn might be restarting.
+    // openvpn might be restarting. Socket: unix (см. server.conf) — это
+    // убирает "management on TCP WITHOUT passwords" warning из лога.
     public function ovpnMgmt(array $cmds)
     {
         $script = implode('\n', array_map(fn($c) => str_replace("'", "'\\''", $c), $cmds));
-        // Use printf inside the container; nc with -q1 to wait for response.
         return $this->ssh(
-            "printf '" . $script . "\\n' | nc -w 2 127.0.0.1 7505 2>/dev/null",
+            "printf '" . $script . "\\n' | nc -U -w 2 /var/run/openvpn-mgmt.sock 2>/dev/null",
             'ovpn'
         );
     }
@@ -11113,6 +11120,13 @@ DNS-over-HTTPS with IP:
             return $this->menu('ovpn');
         }
         $cfg = preg_replace('~^\s*proto\s+\S+~m', "proto $new", $cfg, 1);
+        // explicit-exit-notify ignored for --proto tcp → удаляем для TCP и
+        // возвращаем для UDP. Иначе лог openvpn засорён "NOTICE: ... ignored".
+        if ($new === 'tcp4') {
+            $cfg = preg_replace('~^\s*explicit-exit-notify\s+\S+\s*\R?~m', '', $cfg);
+        } elseif (!preg_match('~^\s*explicit-exit-notify\s+~m', $cfg)) {
+            $cfg = rtrim($cfg, "\n") . "\nexplicit-exit-notify 1\n";
+        }
         file_put_contents($p['srv'], $cfg);
         $this->setEnvVar('OVPNPROTO', $new);
         // Перестраиваем #ovpn-port блок upstream.conf с правильным listen —
