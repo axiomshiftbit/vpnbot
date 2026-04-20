@@ -150,6 +150,21 @@ if [ -f "$SRV" ]; then
         # При возврате на UDP вернуть директиву, если её когда-то удаляли.
         printf '\nexplicit-exit-notify 1\n' >> "$SRV"
     fi
+    # Миграция #1: если в старом server.conf нет маркеров #ovpn-isolation —
+    # добавляем пустой блок. Без маркеров toggleOvpnIsolation silently no-op
+    # и кнопка «трафик между клиентами» всегда показывает off.
+    if ! grep -q '^#ovpn-isolation[[:space:]]*$' "$SRV"; then
+        printf '\n# Bot toggles client isolation between these markers — do not edit by hand.\n#ovpn-isolation\n#ovpn-isolation\n' >> "$SRV"
+    fi
+    # Миграция #2: без `status` директивы openvpn-status.log не пишется,
+    # из-за чего getOvpnStatus() возвращает пусто и все клиенты в меню
+    # отображаются как offline (⚪). Добавляем обе директивы, если их нет.
+    if ! grep -qE '^status[[:space:]]' "$SRV"; then
+        printf '\nstatus /etc/openvpn/openvpn-status.log 5\n' >> "$SRV"
+    fi
+    if ! grep -qE '^status-version[[:space:]]' "$SRV"; then
+        printf 'status-version 2\n' >> "$SRV"
+    fi
 fi
 
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true

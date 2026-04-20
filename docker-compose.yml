@@ -576,11 +576,14 @@ services:
                 ipv4_address: 10.10.0.16
         logging: *default-logging
     ovpn:
-        image: mercurykd/vpnbot-ovpn:1.0
+        image: mercurykd/vpnbot-ovpn:1.1
         build:
             dockerfile: dockerfile/openvpn.dockerfile
+            # Отдельная Alpine-база (новее глобального ${IMAGE}) — чтобы получить
+            # свежие openvpn 2.6.x и openssl 3.3.x без обновления остальных
+            # сервисов, которые пока завязаны на alpine 3.18.
             args:
-                image: ${IMAGE}
+                image: alpine:3.21
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/openvpn:/etc/openvpn
