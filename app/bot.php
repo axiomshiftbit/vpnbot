@@ -5276,10 +5276,6 @@ DNS-over-HTTPS with IP:
                                 'text'          => $this->i18n('TrustTunnel'),
                                 'callback_data' => "/menu tt",
                             ],
-                            [
-                                'text'          => $this->i18n('OpenVPN'),
-                                'callback_data' => "/menu ovpn",
-                            ],
                         ],
                         $conf['showdnstt'] ? [
                             [
@@ -5293,6 +5289,10 @@ DNS-over-HTTPS with IP:
                             [
                                 'text'          => $this->i18n('config'),
                                 'callback_data' => "/menu config",
+                            ],
+                            [
+                                'text'          => $this->i18n('OpenVPN'),
+                                'callback_data' => "/menu ovpn",
                             ],
                         ],
                         [
@@ -11332,11 +11332,11 @@ DNS-over-HTTPS with IP:
             $isDis
                 ? ['text' => $this->i18n('enable'),  'callback_data' => "/enableOvpnUser $user"]
                 : ['text' => $this->i18n('disable'), 'callback_data' => "/disableOvpnUser $user"],
-            [
-                'text'          => $this->i18n('kick'),
-                'callback_data' => "/kickOvpn $user",
-            ],
         ];
+        $data[] = [[
+            'text'          => $this->i18n('kick'),
+            'callback_data' => "/kickOvpn $user",
+        ]];
         $data[] = [[
             'text'          => $this->i18n('delete'),
             'callback_data' => "/delOvpnUser $user",
