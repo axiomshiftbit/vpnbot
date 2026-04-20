@@ -36,6 +36,39 @@ export EASYRSA_BATCH=1
 
 mkdir -p "$PKI" /etc/openvpn/ccd /etc/openvpn/clients /logs
 : >> /logs/openvpn.log
+: >> /logs/openvpn-connections.log
+
+# Hook для client-connect/disconnect: пишет UP/DOWN-события с CN и реальным
+# IP клиента в отдельный журнал /logs/openvpn-connections.log. Без script-
+# security 2 openvpn игнорирует этот хук. Обязательный `exit 0` — чтобы
+# падение скрипта не разорвало клиентскую сессию.
+HOOK=/etc/openvpn/connect.sh
+cat > "$HOOK" <<'HOOKEOF'
+#!/bin/sh
+# OpenVPN client-connect / client-disconnect hook.
+# Вызывается openvpn'ом с env vars:
+#   script_type             — client-connect | client-disconnect
+#   common_name             — CN клиента из TLS-сертификата
+#   trusted_ip, trusted_port — реальный публичный адрес клиента
+#   ifconfig_pool_remote_ip  — выданный внутренний IP (10.8.0.x)
+#   bytes_received, bytes_sent — только на disconnect
+LOG=/logs/openvpn-connections.log
+TS=$(date '+%Y-%m-%d %H:%M:%S')
+case "$script_type" in
+    client-connect)
+        printf '%s UP   %-20s %s:%s -> %s\n' \
+            "$TS" "$common_name" "$trusted_ip" "$trusted_port" \
+            "$ifconfig_pool_remote_ip" >> "$LOG"
+        ;;
+    client-disconnect)
+        printf '%s DOWN %-20s %s:%s  rx=%s tx=%s\n' \
+            "$TS" "$common_name" "$trusted_ip" "$trusted_port" \
+            "${bytes_received:-0}" "${bytes_sent:-0}" >> "$LOG"
+        ;;
+esac
+exit 0
+HOOKEOF
+chmod +x "$HOOK"
 
 log() { echo "[start_ovpn $(date +%H:%M:%S)] $*" >> /logs/openvpn.log; }
 
@@ -129,6 +162,12 @@ verb 3
 
 management /var/run/openvpn-mgmt.sock unix
 
+# Журнал подключений (UP/DOWN + real IP) через внешний hook.
+# script-security 2 разрешает вызов системных скриптов.
+script-security 2
+client-connect /etc/openvpn/connect.sh
+client-disconnect /etc/openvpn/connect.sh
+
 persist-key
 persist-tun
 EOF
@@ -164,6 +203,18 @@ if [ -f "$SRV" ]; then
     fi
     if ! grep -qE '^status-version[[:space:]]' "$SRV"; then
         printf 'status-version 2\n' >> "$SRV"
+    fi
+    # Миграция #3: client-connect/disconnect hook для журнала подключений
+    # (/logs/openvpn-connections.log с CN + real IP). Требует script-security 2.
+    # Без этой миграции существующие server.conf не увидят новый хук.
+    if ! grep -qE '^script-security[[:space:]]' "$SRV"; then
+        printf '\nscript-security 2\n' >> "$SRV"
+    fi
+    if ! grep -qE '^client-connect[[:space:]]' "$SRV"; then
+        printf 'client-connect /etc/openvpn/connect.sh\n' >> "$SRV"
+    fi
+    if ! grep -qE '^client-disconnect[[:space:]]' "$SRV"; then
+        printf 'client-disconnect /etc/openvpn/connect.sh\n' >> "$SRV"
     fi
 fi
 

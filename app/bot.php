@@ -10797,6 +10797,7 @@ DNS-over-HTTPS with IP:
             'ccd'    => '/config/openvpn/ccd',
             'status' => '/config/openvpn/openvpn-status.log',
             'log'    => '/logs/openvpn.log',
+            'conn'   => '/logs/openvpn-connections.log',
         ];
     }
 
@@ -11212,6 +11213,30 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // Журнал UP/DOWN-событий, который пишет /etc/openvpn/connect.sh через
+    // client-connect/client-disconnect hook (см. start_ovpn.sh).
+    // Содержит CN + реальный IP клиента — без шума из основного openvpn.log.
+    public function showOvpnConnLog()
+    {
+        $p = $this->ovpnPaths();
+        $tail = '';
+        if (file_exists($p['conn'])) {
+            $lines = explode("\n", file_get_contents($p['conn']));
+            $tail  = implode("\n", array_slice($lines, -40));
+        }
+        $text  = "Menu -> OpenVPN -> " . $this->i18n('connections') . "\n";
+        $text .= "<pre>" . htmlspecialchars($tail ?: '(empty)', ENT_QUOTES) . "</pre>";
+        $data  = [[
+            ['text' => $this->i18n('back'), 'callback_data' => '/menu ovpn'],
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            $text,
+            $data,
+        );
+    }
+
     public function ovpnMenu()
     {
         $port    = $this->getOvpnPort();
@@ -11266,10 +11291,16 @@ DNS-over-HTTPS with IP:
             'text'          => $this->i18n('add peer'),
             'callback_data' => '/addOvpnUser',
         ]];
-        $data[] = [[
-            'text'          => $this->i18n('log tail'),
-            'callback_data' => '/showOvpnLog',
-        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('log tail'),
+                'callback_data' => '/showOvpnLog',
+            ],
+            [
+                'text'          => $this->i18n('connections'),
+                'callback_data' => '/showOvpnConnLog',
+            ],
+        ];
         // One button per client: [marker] [name] → opens per-client submenu.
         // Marker logic: 🚫 disabled (ccd/<cn> contains `disable`), 🟢 online
         // (CLIENT_LIST row with this CN in openvpn-status.log), ⚪ offline.

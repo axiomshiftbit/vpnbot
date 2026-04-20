@@ -449,6 +449,10 @@ $i = [
         'en' => 'log tail',
         'ru' => 'журнал',
     ],
+    'connections'  => [
+        'en' => 'connections',
+        'ru' => 'подключения',
+    ],
     'status'  => [
         'en' => 'status',
         'ru' => 'статус',
