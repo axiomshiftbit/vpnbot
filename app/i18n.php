@@ -449,6 +449,18 @@ $i = [
         'en' => 'log tail',
         'ru' => 'журнал',
     ],
+    'status'  => [
+        'en' => 'status',
+        'ru' => 'статус',
+    ],
+    'disabled'  => [
+        'en' => 'disabled',
+        'ru' => 'заблокирован',
+    ],
+    'settings'  => [
+        'en' => 'settings',
+        'ru' => 'настройки',
+    ],
 ];
 
 if (file_exists(__DIR__ . '/i18n.override.php')) {
