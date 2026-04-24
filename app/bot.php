@@ -470,6 +470,12 @@ class Bot
             case preg_match('~^/showOvpnLog$~', $this->input['callback'], $m):
                 $this->showOvpnLog();
                 break;
+            case preg_match('~^/showOvpnConnLog$~', $this->input['callback'], $m):
+                $this->showOvpnConnLog();
+                break;
+            case preg_match('~^/refreshOvpn$~', $this->input['callback'], $m):
+                $this->refreshOvpn();
+                break;
             case preg_match('~^/ovpnClientMenu (\S+)$~', $this->input['callback'], $m):
                 $this->ovpnClientMenu($m[1]);
                 break;
@@ -10901,6 +10907,37 @@ DNS-over-HTTPS with IP:
         return sprintf('%.1f %s', $n, $units[$i]);
     }
 
+    // openvpn-status.log's Real Address is "IP:port" for IPv4 или "[v6]:port"
+    // для IPv6. Для UI достаточно хоста без порта — кратко и читаемо.
+    public function ovpnRealIp($real)
+    {
+        $real = trim((string) $real);
+        if ($real === '') {
+            return '';
+        }
+        // IPv6: [::1]:1234 → ::1
+        if (preg_match('~^\[([^\]]+)\]:\d+$~', $real, $m)) {
+            return $m[1];
+        }
+        // IPv4: 1.2.3.4:1234 → 1.2.3.4  (bare IP без порта тоже проходит)
+        if (preg_match('~^([0-9a-fA-F:.]+):\d+$~', $real, $m)) {
+            return $m[1];
+        }
+        return $real;
+    }
+
+    // Явная "обновить": перечитываем openvpn-status.log + перерендерим меню.
+    // Телеграм эдитит сообщение только при diff; чтобы клик не выглядел
+    // немым — отвечаем коротким toast'ом. callbackCheck не отправит второй
+    // answer, т.к. $this->callback уже будет выставлен answer()'ом.
+    public function refreshOvpn()
+    {
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('refreshed'));
+        }
+        $this->menu('ovpn');
+    }
+
     // Список файлов, без которых openvpn не стартует. Используется и для
     // гейта в restartOvpn, и для диагностики в ovpnMenu.
     public function ovpnPkiMissing()
@@ -11028,6 +11065,12 @@ DNS-over-HTTPS with IP:
         $key   = file_exists("{$p['priv']}/$user.key")   ? file_get_contents("{$p['priv']}/$user.key")   : '';
         $ca    = file_exists($p['ca'])                    ? file_get_contents($p['ca'])                    : '';
         $ta    = file_exists($p['ta'])                    ? file_get_contents($p['ta'])                    : '';
+        // Любой пустой компонент = битый .ovpn, клиент не подключится и будет
+        // ругаться на "VERIFY ERROR" без внятной подсказки. Лучше сказать явно.
+        if (empty($crt) || empty($key) || empty($ca) || empty($ta)) {
+            $this->send($this->input['chat'], "PKI for $user is incomplete — restart ovpn container");
+            return $this->menu('ovpn');
+        }
         // strip easyrsa's pre-cert plaintext metadata; keep only the PEM block
         if (preg_match('~-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----~s', $crt, $m)) {
             $crt = $m[0];
@@ -11256,7 +11299,15 @@ DNS-over-HTTPS with IP:
         $text[] = "server: <code>$host:$port/$pshort</code>";
         $text[] = $this->i18n($running ? 'on' : 'off') . " openvpn";
         $text[] = 'proto: ' . $pshort;
-        $text[] = $this->i18n('inter-client') . ': ' . $this->i18n($isolated ? 'off' : 'on');
+        // Inline hint clarifies what the adjacent toggle actually does — без
+        // этого пользователь видит "трафик между клиентами: off" и не
+        // понимает, в какую сторону флаг работает.
+        $interHint = $isolated
+            ? $this->i18n('inter-client off hint')
+            : $this->i18n('inter-client on hint');
+        $text[] = $this->i18n('inter-client') . ': '
+            . $this->i18n($isolated ? 'off' : 'on')
+            . ' <i>(' . $interHint . ')</i>';
         $text[] = "clients: " . count($users) . " (" . count($online) . " " . $this->i18n('online') . ")";
         $pkiMissing = $this->ovpnPkiMissing();
         if ($pkiMissing) {
@@ -11266,9 +11317,13 @@ DNS-over-HTTPS with IP:
         if (!empty($online)) {
             $text[] = '';
             foreach ($online as $cn => $s) {
+                // Real address из openvpn-status.log приходит в виде IP:port
+                // (или [v6]:port); порт в UI только шумит, режем до хоста.
+                $real = $this->ovpnRealIp($s['real'] ?? '');
                 $text[] = '🟢 <code>' . htmlspecialchars($cn, ENT_QUOTES) . '</code> '
-                    . $s['virtual'] . ' '
-                    . '↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
+                    . $s['virtual']
+                    . ($real !== '' ? ' · <code>' . htmlspecialchars($real, ENT_QUOTES) . '</code>' : '')
+                    . ' ↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
             }
         }
 
@@ -11301,6 +11356,13 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/showOvpnConnLog',
             ],
         ];
+        // Обновление статистики (онлайн/байты/real IP) для ВСЕХ клиентов —
+        // просто перерендер меню. Статус-файл openvpn-status.log пишется
+        // самим демоном каждые 5с, так что чтение заново даёт свежие цифры.
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/refreshOvpn',
+        ]];
         // One button per client: [marker] [name] → opens per-client submenu.
         // Marker logic: 🚫 disabled (ccd/<cn> contains `disable`), 🟢 online
         // (CLIENT_LIST row with this CN in openvpn-status.log), ⚪ offline.
@@ -11341,8 +11403,10 @@ DNS-over-HTTPS with IP:
         if ($isDis) {
             $status = '🚫 ' . $this->i18n('disabled');
         } elseif ($s) {
+            $real = $this->ovpnRealIp($s['real'] ?? '');
             $status = '🟢 ' . $this->i18n('online')
                 . ' · ' . htmlspecialchars($s['virtual'], ENT_QUOTES)
+                . ($real !== '' ? ' · ' . htmlspecialchars($real, ENT_QUOTES) : '')
                 . ' · ↓' . $this->fmtBytes($s['rx'])
                 . ' ↑' . $this->fmtBytes($s['tx']);
         } else {

@@ -421,6 +421,26 @@ $i = [
         'en' => 'inter-client routing',
         'ru' => 'трафик между клиентами',
     ],
+    'inter-client on hint'  => [
+        'en' => 'on: clients see each other',
+        'ru' => 'вкл: клиенты видят друг друга',
+    ],
+    'inter-client off hint'  => [
+        'en' => 'off: clients isolated',
+        'ru' => 'выкл: клиенты изолированы',
+    ],
+    'refresh'  => [
+        'en' => 'refresh',
+        'ru' => 'обновить',
+    ],
+    'refreshed'  => [
+        'en' => 'refreshed',
+        'ru' => 'обновлено',
+    ],
+    'real ip'  => [
+        'en' => 'real IP',
+        'ru' => 'реальный IP',
+    ],
     'online'  => [
         'en' => 'online',
         'ru' => 'онлайн',
