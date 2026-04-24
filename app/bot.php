@@ -5134,7 +5134,13 @@ DNS-over-HTTPS with IP:
             $cron   = $this->dontshowcron ? '' : $this->i18n($this->ssh('pgrep -f cron.php', 'service') ? 'on' : 'off') . ' cron';
             $f      = '/docker/compose';
             $c      = yaml_parse_file($f)['services'];
-            $main[] = 'v' . getenv('VER') . " $branch" . ($update ? ' (have updates)' : '');
+            // BUILD_COMMIT пишется post-receive скриптом в .env перед make r,
+            // чтобы в меню был идентификатор сборки даже когда VER
+            // (git describe --tags) пустой из-за отсутствия тегов в репе.
+            $commit = getenv('BUILD_COMMIT');
+            $main[] = 'v' . getenv('VER') . " $branch"
+                . ($commit ? " @$commit" : '')
+                . ($update ? ' (have updates)' : '');
 
             if (!empty($conf['domain'])) {
                 $main[] = '';
