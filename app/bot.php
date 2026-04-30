@@ -1449,6 +1449,41 @@ class Bot
         return $c;
     }
 
+    // Сборка ss://-ссылки с учётом активного плагина. Приоритет: cloak,
+    // если он включён (на $CKPORT), иначе v2ray-plugin (на 443/80) если
+    // ssserver запущен с plugin, иначе чистый shadowsocks на $SSPORT.
+    // Используется и в меню, и в QR-генерации, чтобы пользователь
+    // получал ссылку с актуальными UID/PublicKey/EncryptionMethod.
+    public function buildSSLink($hash = '')
+    {
+        $ss     = $this->getSSConfig();
+        $domain = $this->getDomain();
+        $ck     = $this->getCloakConfig();
+        $b64    = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}"));
+
+        if (!empty($ck['Enabled'])) {
+            $ckPort = (int) (getenv('CKPORT') ?: 8443);
+            $ckSrv  = $ck['ServerName'] ?? ($ck['RedirAddr'] ?? $domain);
+            $opts   = "ck-client;UID=" . ($ck['UID'] ?? '')
+                    . ";PublicKey=" . ($ck['PublicKey'] ?? '')
+                    . ";ServerName=$ckSrv"
+                    . ";ProxyMethod=shadowsocks"
+                    . ";EncryptionMethod=" . ($ck['EncryptionMethod'] ?? 'aes-256-gcm')
+                    . ";NumConn=" . ($ck['NumConn'] ?? 4)
+                    . ";BrowserSig=" . ($ck['BrowserSig'] ?? 'chrome');
+            return $b64 . "@$domain:$ckPort?plugin=" . urlencode($opts);
+        }
+
+        if (!empty($ss['plugin'])) {
+            $ssl  = $this->nginxGetTypeCert();
+            $port = $ssl ? 443 : 80;
+            $opts = "v2ray-plugin;path=/v2ray$hash;host=$domain" . ($ssl ? ';tls' : '');
+            return $b64 . "@$domain:$port?plugin=" . urlencode($opts);
+        }
+
+        return $b64 . "@$domain:" . getenv('SSPORT');
+    }
+
     public function setCloakConfig(array $c)
     {
         file_put_contents(
@@ -2693,13 +2728,7 @@ class Bot
 
     public function qrSS()
     {
-        $conf    = $this->getPacConf();
-        $ip      = $this->ip;
-        $domain  = $this->getDomain();
-        $scheme  = empty($ssl = $this->nginxGetTypeCert()) ? 'http' : 'https';
-        $ss      = $this->getSSConfig();
-        $port    = !empty($ss['plugin']) ? (!empty($ssl) ? 443 : 80) : getenv('SSPORT');
-        $ss_link = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}")) . "@$domain:$port" . (!empty($ss['plugin']) ? '?plugin=' . urlencode("v2ray-plugin;path=/v2ray;host=$domain" . (!empty($ssl) ? ';tls' : '')) : '');
+        $ss_link = $this->buildSSLink();
         $qr_file = __DIR__ . "/qr/shadowsocks.png";
         exec("qrencode -t png -o $qr_file '$ss_link'");
         $r = $this->sendPhoto(
@@ -5035,13 +5064,21 @@ DNS-over-HTTPS with IP:
         $domain  = $this->getDomain();
         $ss      = $this->getSSConfig();
         $v2ray   = !empty($ss['plugin']) ? 'ON' : 'OFF';
-        $port    = !empty($ss['plugin']) ? 443 : getenv('SSPORT');
-        $options = !empty($ss['plugin']) ? "tls;fast-open;path=/v2ray$hash;host=$domain" : "path=/v2ray$hash;host=$domain";
 
         $ck       = $this->getCloakConfig();
         $cloakOn  = !empty($ck['Enabled']);
         $ckPort   = (int) (getenv('CKPORT') ?: 8443);
         $ckSrv    = $ck['ServerName'] ?? ($ck['RedirAddr'] ?? 'www.bing.com');
+
+        // Порт для display: cloak важнее, потом v2ray, потом чистый ss.
+        if ($cloakOn) {
+            $port = $ckPort;
+        } elseif (!empty($ss['plugin'])) {
+            $port = 443;
+        } else {
+            $port = getenv('SSPORT');
+        }
+        $options = !empty($ss['plugin']) ? "tls;fast-open;path=/v2ray$hash;host=$domain" : "path=/v2ray$hash;host=$domain";
 
         $text = "Menu -> ShadowSocks";
         $data[] = [
@@ -5050,7 +5087,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/sspswd",
             ],
         ];
-        $ss_link = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}")) . "@$domain:$port" . (!empty($ss['plugin']) ? '?plugin=' . urlencode("v2ray-plugin;path=/v2ray$hash;host=$domain;tls") : '');
+        $ss_link = $this->buildSSLink($hash);
         $text .= "\n\n<code>$ss_link</code>\n";
         $text .= "\n\npassword: <span class='tg-spoiler'>{$ss['password']}</span>";
         $text .= "\n\nserver: <code>$domain:$port</code>";
@@ -5061,18 +5098,11 @@ DNS-over-HTTPS with IP:
             $text .= "\n\nv2ray options: <code>$options</code>";
         }
         if ($cloakOn) {
-            $ckOpts = "ck-client;UID=" . ($ck['UID'] ?? '')
-                    . ";PublicKey=" . ($ck['PublicKey'] ?? '')
-                    . ";ServerName=$ckSrv"
-                    . ";ProxyMethod=shadowsocks"
-                    . ";EncryptionMethod=aes-256-gcm"
-                    . ";NumConn=4";
-            $cloakLink = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}"))
-                       . "@$domain:$ckPort?plugin=" . urlencode($ckOpts);
-            $text .= "\n\ncloak: <code>$domain:$ckPort</code>";
+            $text .= "\n\nplugin: <code>cloak (ck-client)</code>";
             $text .= "\n\ncloak masq: <code>$ckSrv</code>";
             $text .= "\n\ncloak UID: <span class='tg-spoiler'>" . ($ck['UID'] ?? '') . "</span>";
-            $text .= "\n\ncloak link: <code>$cloakLink</code>";
+            $text .= "\n\ncloak pubkey: <span class='tg-spoiler'>" . ($ck['PublicKey'] ?? '') . "</span>";
+            $text .= "\n\ncloak method: <code>" . ($ck['EncryptionMethod'] ?? 'aes-256-gcm') . "</code>";
         }
         $data[] = [
             [
