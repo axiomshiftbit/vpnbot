@@ -527,9 +527,11 @@ services:
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/ssserver.json:/config.json
+            - ./config:/config
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./scripts/start_ss.sh:/start_ss.sh
+            - ./logs/:/logs/
         hostname: shadowsocks
         container_name: shadowsocks-${VER}
         depends_on:
@@ -540,6 +542,10 @@ services:
               required: true # default
             - path: ./override.env
               required: false
+        environment:
+            CKPORT: ${CKPORT:-8443}
+        ports:
+            - ${CKPORT:-8443}:${CKPORT:-8443}/tcp
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_ss.sh"]
         networks:

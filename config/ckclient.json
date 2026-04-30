@@ -1,0 +1,15 @@
+{
+    "Transport": "direct",
+    "ProxyMethod": "shadowsocks",
+    "EncryptionMethod": "aes-256-gcm",
+    "UID": "",
+    "PublicKey": "",
+    "ServerName": "www.bing.com",
+    "NumConn": 4,
+    "BrowserSig": "chrome",
+    "StreamTimeout": 300,
+    "RemoteHost": "",
+    "RemotePort": "8443",
+    "LocalHost": "127.0.0.1",
+    "LocalPort": "8388"
+}

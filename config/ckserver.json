@@ -1,0 +1,17 @@
+{
+    "ProxyBook": {
+        "shadowsocks": [
+            "tcp",
+            "127.0.0.1:8388"
+        ]
+    },
+    "BindAddr": [
+        ":8443"
+    ],
+    "BypassUID": [],
+    "RedirAddr": "www.bing.com",
+    "PrivateKey": "",
+    "AdminUID": "",
+    "DatabasePath": "/config/userinfo.db",
+    "StreamTimeout": 300
+}

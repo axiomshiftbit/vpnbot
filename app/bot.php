@@ -508,6 +508,15 @@ class Bot
             case preg_match('~^/v2ray$~', $this->input['callback'], $m):
                 $this->v2ray();
                 break;
+            case preg_match('~^/cloak$~', $this->input['callback'], $m):
+                $this->cloak();
+                break;
+            case preg_match('~^/cloakPort$~', $this->input['callback'], $m):
+                $this->changeCloakPort();
+                break;
+            case preg_match('~^/cloakDomain$~', $this->input['callback'], $m):
+                $this->changeCloakDomain();
+                break;
             case preg_match('~^/checkdns$~', $this->input['callback'], $m):
                 $this->checkdns();
                 break;
@@ -1432,6 +1441,153 @@ class Bot
         $this->ssh('sslocal -v -d -c /config.json', 'proxy');
         $this->menu('ss');
     }
+
+    public function getCloakConfig()
+    {
+        $f = '/config/ckserver.json';
+        $c = file_exists($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
+        return $c;
+    }
+
+    public function setCloakConfig(array $c)
+    {
+        file_put_contents(
+            '/config/ckserver.json',
+            json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+        );
+    }
+
+    // Лениво создаём ключи и UID через ck-server -key / -uid в ss-контейнере.
+    // Cloak печатает их в человекочитаемом формате с ANSI-цветами и
+    // выравниванием по ширине поля (%65s/%47s/%s после "Your X is:"),
+    // поэтому надёжнее искать сами base64-строки фиксированной длины:
+    // curve25519 ключ = 32 байта = 44 символа base64 с одним '=' в конце,
+    // UID = 16 байт = 22 символа + '==' (24 всего). Создаём один раз и
+    // храним, чтобы клиентские ссылки переживали recreate.
+    public function ensureCloakIdentity()
+    {
+        $c = $this->getCloakConfig();
+        if (empty($c['PrivateKey']) || empty($c['PublicKey']) || empty($c['UID'])) {
+            $key = $this->ssh('ck-server -key 2>&1', 'ss') ?: '';
+            $uid = $this->ssh('ck-server -uid 2>&1', 'ss') ?: '';
+            if (preg_match_all('~[A-Za-z0-9+/]{43}=~', $key, $m) && count($m[0]) >= 2) {
+                $c['PublicKey']  = $m[0][0];
+                $c['PrivateKey'] = $m[0][1];
+            }
+            if (preg_match('~[A-Za-z0-9+/]{22}==~', $uid, $m)) {
+                $c['UID'] = $m[0];
+            }
+            $this->setCloakConfig($c);
+        }
+        return $c;
+    }
+
+    // Toggle cloak on/off. Конфиг ckserver.json хранится в общей папке
+    // /config (разделяется между php и ss контейнерами); поле Enabled
+    // не понимается самим ck-server, мы используем его как флаг для
+    // start_ss.sh и для UI бота.
+    public function cloak()
+    {
+        $c = $this->ensureCloakIdentity();
+        $domain = $this->getPacConf()['domain'] ?: $this->ip;
+        $port   = (int) (getenv('CKPORT') ?: 8443);
+        $ssport = (int) (getenv('SSPORT') ?: 8388);
+
+        if (!empty($c['Enabled'])) {
+            $c['Enabled'] = 0;
+            $this->setCloakConfig($c);
+            $this->ssh('pkill -f ck-server', 'ss');
+        } else {
+            $c['Enabled']    = 1;
+            $c['BindAddr']   = [":$port"];
+            $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
+            $c['BypassUID']  = array_values(array_unique(array_filter(array_merge(
+                $c['BypassUID'] ?? [],
+                [$c['UID'] ?? '']
+            ))));
+            $c['RedirAddr']  = $c['RedirAddr'] ?: 'www.bing.com';
+            $c['ServerName'] = $c['ServerName'] ?: $domain;
+            $this->setCloakConfig($c);
+            // ck-server не понимает поле Enabled, поэтому передаём ему очищенную
+            // копию через /tmp (тот же приём, что и в start_ss.sh).
+            $this->ssh('pkill -f ck-server; jq "del(.Enabled)" /config/ckserver.json > /tmp/ckserver.json && nohup ck-server -c /tmp/ckserver.json >>/logs/ck-server.log 2>&1 &', 'ss');
+        }
+        $this->menu('ss');
+    }
+
+    public function changeCloakPort()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter cloak port",
+            $this->input['message_id'],
+            reply: 'enter cloak port',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chCloakPort',
+            'args'           => [],
+        ];
+    }
+
+    public function chCloakPort($port)
+    {
+        $port = (int) $port;
+        if ($port < 1 || $port > 65535) {
+            $this->menu('ss');
+            return;
+        }
+        // Главный compose уже разворачивает ${CKPORT:-8443}:${CKPORT:-8443}/tcp
+        // на сервисе ss, так что одного setEnvVar достаточно — после `make r`
+        // докер подхватит новое значение. Флаг restart в pac заставит бот
+        // напомнить пользователю про пересоздание контейнера.
+        $this->setEnvVar('CKPORT', (string) $port);
+        $c = $this->getCloakConfig();
+        if (!empty($c)) {
+            $c['BindAddr'] = [":$port"];
+            $this->setCloakConfig($c);
+        }
+        $pac = $this->getPacConf();
+        $pac['restart'] = 1;
+        $this->setPacConf($pac);
+        $this->menu('ss');
+    }
+
+    public function changeCloakDomain()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter masquerade domain (e.g. www.bing.com)",
+            $this->input['message_id'],
+            reply: 'enter masquerade domain',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chCloakDomain',
+            'args'           => [],
+        ];
+    }
+
+    public function chCloakDomain($domain)
+    {
+        $domain = trim($domain);
+        if (!preg_match('~^[A-Za-z0-9.-]+$~', $domain)) {
+            $this->menu('ss');
+            return;
+        }
+        $c = $this->ensureCloakIdentity();
+        $c['RedirAddr']  = $domain;
+        $c['ServerName'] = $domain;
+        $this->setCloakConfig($c);
+        if (!empty($c['Enabled'])) {
+            // Перезапускаем ck-server с новым RedirAddr/ServerName.
+            $this->ssh('pkill -f ck-server; jq "del(.Enabled)" /config/ckserver.json > /tmp/ckserver.json && nohup ck-server -c /tmp/ckserver.json >>/logs/ck-server.log 2>&1 &', 'ss');
+        }
+        $this->menu('ss');
+    }
+
 
     public function rename(int $client, $page)
     {
@@ -4882,6 +5038,11 @@ DNS-over-HTTPS with IP:
         $port    = !empty($ss['plugin']) ? 443 : getenv('SSPORT');
         $options = !empty($ss['plugin']) ? "tls;fast-open;path=/v2ray$hash;host=$domain" : "path=/v2ray$hash;host=$domain";
 
+        $ck       = $this->getCloakConfig();
+        $cloakOn  = !empty($ck['Enabled']);
+        $ckPort   = (int) (getenv('CKPORT') ?: 8443);
+        $ckSrv    = $ck['ServerName'] ?? ($ck['RedirAddr'] ?? 'www.bing.com');
+
         $text = "Menu -> ShadowSocks";
         $data[] = [
             [
@@ -4899,10 +5060,40 @@ DNS-over-HTTPS with IP:
             $text .= "\n\nplugin: <code>v2ray-plugin</code>";
             $text .= "\n\nv2ray options: <code>$options</code>";
         }
+        if ($cloakOn) {
+            $ckOpts = "ck-client;UID=" . ($ck['UID'] ?? '')
+                    . ";PublicKey=" . ($ck['PublicKey'] ?? '')
+                    . ";ServerName=$ckSrv"
+                    . ";ProxyMethod=shadowsocks"
+                    . ";EncryptionMethod=aes-256-gcm"
+                    . ";NumConn=4";
+            $cloakLink = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}"))
+                       . "@$domain:$ckPort?plugin=" . urlencode($ckOpts);
+            $text .= "\n\ncloak: <code>$domain:$ckPort</code>";
+            $text .= "\n\ncloak masq: <code>$ckSrv</code>";
+            $text .= "\n\ncloak UID: <span class='tg-spoiler'>" . ($ck['UID'] ?? '') . "</span>";
+            $text .= "\n\ncloak link: <code>$cloakLink</code>";
+        }
         $data[] = [
             [
                 'text'          => "v2ray: $v2ray",
                 'callback_data' => "/v2ray",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => 'cloak: ' . ($cloakOn ? 'ON' : 'OFF'),
+                'callback_data' => "/cloak",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => "cloak port: $ckPort",
+                'callback_data' => "/cloakPort",
+            ],
+            [
+                'text'          => "cloak masq: $ckSrv",
+                'callback_data' => "/cloakDomain",
             ],
         ];
         $data[] = [
