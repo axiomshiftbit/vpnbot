@@ -25,6 +25,21 @@ if [ -f /config/ckserver.json ] && [ "$(jq -r '.Enabled // 0' /config/ckserver.j
         | if (.AdminUID // "") == "" then del(.AdminUID) else . end
         | if (.DatabasePath // "") == "" then del(.DatabasePath) else . end' \
         /config/ckserver.json > /tmp/ckserver.json
+
+    # ck-server резолвит RedirAddr один раз на старте и падает с fatal,
+    # если DNS не ответил. Контейнерный резолвер 127.0.0.11 проксирует
+    # запрос в adguard (10.10.0.5), а тот при старте compose может быть
+    # ещё не готов — гонка: иногда стартуем за секунды до adguard.
+    # Ждём, пока имя резолвится (≤ ~30s), прежде чем поднимать ck-server.
+    REDIR=$(jq -r '.RedirAddr // empty' /tmp/ckserver.json | sed 's/:[0-9]*$//')
+    if [ -n "$REDIR" ]; then
+        i=0
+        while [ $i -lt 30 ] && ! nslookup "$REDIR" >/dev/null 2>&1; do
+            i=$((i + 1))
+            sleep 1
+        done
+    fi
+
     nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &
 fi
 
