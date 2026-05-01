@@ -517,6 +517,9 @@ class Bot
             case preg_match('~^/cloakDomain$~', $this->input['callback'], $m):
                 $this->changeCloakDomain();
                 break;
+            case preg_match('~^/cloakRegen$~', $this->input['callback'], $m):
+                $this->regenCloakKeys();
+                break;
             case preg_match('~^/checkdns$~', $this->input['callback'], $m):
                 $this->checkdns();
                 break;
@@ -1620,6 +1623,42 @@ class Bot
             // Перезапускаем ck-server с новым RedirAddr/ServerName.
             $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
         }
+        $this->menu('ss');
+    }
+
+    // Регенерация ключей cloak (PrivateKey/PublicKey/UID). После выполнения
+    // все ранее розданные клиентские ссылки/QR становятся невалидными —
+    // пользователю нужно заново раздать новый ss:// или скан QR. ck-server
+    // глушится перед очисткой, чтобы не держал старые ключи в памяти.
+    public function regenCloakKeys()
+    {
+        $c     = $this->getCloakConfig();
+        $wasOn = !empty($c['Enabled']);
+
+        $this->ssh('pkill -f ck-server', 'ss');
+
+        // Сбрасываем идентификационные поля. ensureCloakIdentity() их
+        // восстановит через ck-server -key / -uid.
+        unset($c['PrivateKey'], $c['PublicKey'], $c['UID'], $c['BypassUID']);
+        $this->setCloakConfig($c);
+
+        $c = $this->ensureCloakIdentity();
+
+        if ($wasOn) {
+            $domain = $this->getPacConf()['domain'] ?: $this->ip;
+            $port   = (int) (getenv('CKPORT') ?: 8443);
+            $ssport = (int) (getenv('SSPORT') ?: 8388);
+
+            $c['Enabled']    = 1;
+            $c['BindAddr']   = [":$port"];
+            $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
+            $c['BypassUID']  = [$c['UID'] ?? ''];
+            $c['RedirAddr']  = $c['RedirAddr'] ?: 'www.bing.com';
+            $c['ServerName'] = $c['ServerName'] ?: $domain;
+            $this->setCloakConfig($c);
+            $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
+        }
+
         $this->menu('ss');
     }
 
@@ -5124,6 +5163,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => "cloak masq: $ckSrv",
                 'callback_data' => "/cloakDomain",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => 'regen cloak keys',
+                'callback_data' => "/cloakRegen",
             ],
         ];
         $data[] = [
