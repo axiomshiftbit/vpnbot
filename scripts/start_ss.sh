@@ -43,4 +43,23 @@ if [ -f /config/ckserver.json ] && [ "$(jq -r '.Enabled // 0' /config/ckserver.j
     nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &
 fi
 
+# simple-tls (https://github.com/IrineSistiana/simple-tls): TLS-обёртка для SS,
+# слушает на $STLSPORT и форвардит расшифрованный shadowsocks-трафик в
+# ssserver на 127.0.0.1:$SSPORT. Использует тот же сертификат, что nginx:
+# letsencrypt-бандл (cert_public/cert_private) если есть, иначе self-signed.
+# Запускается только если /config/stlsserver.json содержит "Enabled":1.
+if [ -f /config/stlsserver.json ] && [ "$(jq -r '.Enabled // 0' /config/stlsserver.json 2>/dev/null)" = "1" ]; then
+    mkdir -p /logs
+    if [ -s /certs/cert_public ] && [ -s /certs/cert_private ]; then
+        STLS_CERT=/certs/cert_public
+        STLS_KEY=/certs/cert_private
+    else
+        STLS_CERT=/certs/self_public
+        STLS_KEY=/certs/self_private
+    fi
+    nohup setsid simple-tls -s -b ":${STLSPORT:-3443}" -d "127.0.0.1:${SSPORT:-8388}" \
+        -cert "$STLS_CERT" -key "$STLS_KEY" \
+        </dev/null >>/logs/simple-tls.log 2>&1 &
+fi
+
 tail -f /dev/null

@@ -526,6 +526,15 @@ class Bot
             case preg_match('~^/cloakMethod$~', $this->input['callback'], $m):
                 $this->cycleCloakMethod();
                 break;
+            case preg_match('~^/simpleTls$~', $this->input['callback'], $m):
+                $this->simpleTls();
+                break;
+            case preg_match('~^/stlsPort$~', $this->input['callback'], $m):
+                $this->changeStlsPort();
+                break;
+            case preg_match('~^/stlsSNI$~', $this->input['callback'], $m):
+                $this->changeStlsSNI();
+                break;
             case preg_match('~^/checkdns$~', $this->input['callback'], $m):
                 $this->checkdns();
                 break;
@@ -1437,6 +1446,20 @@ class Bot
             $l['server_port'] = (int) getenv('SSPORT');
             $c['server_port'] = (int) getenv('SSPORT');
         } else {
+            // v2ray и cloak/simple-tls конфликтуют: при v2ray ssserver работает
+            // через плагин и не отдаёт plain SS на 8388, поэтому глушим оба.
+            $ck = $this->getCloakConfig();
+            if (!empty($ck['Enabled'])) {
+                $ck['Enabled'] = 0;
+                $this->setCloakConfig($ck);
+                $this->ssh('pkill -f ck-server', 'ss');
+            }
+            $st = $this->getStlsConfig();
+            if (!empty($st['Enabled'])) {
+                $st['Enabled'] = 0;
+                $this->setStlsConfig($st);
+                $this->ssh('pkill -f simple-tls', 'ss');
+            }
             $hash             = $this->getHashBot();
             $c['plugin']      = 'v2ray-plugin';
             $c['plugin_opts'] = 'server;loglevel=none';
@@ -1452,6 +1475,112 @@ class Bot
         $this->menu('ss');
     }
 
+    public function getStlsConfig()
+    {
+        $f = '/config/stlsserver.json';
+        return file_exists($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
+    }
+
+    public function setStlsConfig(array $c)
+    {
+        file_put_contents(
+            '/config/stlsserver.json',
+            json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+        );
+    }
+
+    // simple-tls работает поверх plain ssserver (как cloak), поэтому при включении
+    // нужно выключить v2ray (там ssserver слушает с плагином, не plain). С cloak
+    // simple-tls сосуществует — оба форвардят в 127.0.0.1:$SSPORT, просто на
+    // разных внешних портах. В ss://-линке приоритет фиксированный: cloak >
+    // simple-tls > v2ray > plain (см. buildSSLink).
+    public function simpleTls()
+    {
+        $c = $this->getStlsConfig();
+        if (!empty($c['Enabled'])) {
+            $c['Enabled'] = 0;
+            $this->setStlsConfig($c);
+            $this->ssh('pkill -f simple-tls', 'ss');
+        } else {
+            $ss = $this->getSSConfig();
+            if (!empty($ss['plugin'])) {
+                $this->v2ray();
+                return;
+            }
+            $domain = $this->getPacConf()['domain'] ?: $this->ip;
+            $c['Enabled']    = 1;
+            $c['ServerName'] = $c['ServerName'] ?? $domain;
+            $this->setStlsConfig($c);
+            $this->ssh('pkill -f simple-tls', 'ss');
+            $port = (int) (getenv('STLSPORT') ?: 3443);
+            $ssport = (int) (getenv('SSPORT') ?: 8388);
+            $cert = $this->ssh('[ -s /certs/cert_public ] && [ -s /certs/cert_private ] && echo cert || echo self', 'ss');
+            $cert = trim($cert) === 'cert' ? '/certs/cert_public:/certs/cert_private' : '/certs/self_public:/certs/self_private';
+            [$cp, $kp] = explode(':', $cert);
+            $this->ssh("nohup setsid simple-tls -s -b :$port -d 127.0.0.1:$ssport -cert $cp -key $kp </dev/null >>/logs/simple-tls.log 2>&1 &", 'ss');
+        }
+        $this->menu('ss');
+    }
+
+    public function changeStlsPort()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter simple-tls port",
+            $this->input['message_id'],
+            reply: 'enter simple-tls port',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chStlsPort',
+            'args'           => [],
+        ];
+    }
+
+    public function chStlsPort($port)
+    {
+        $port = (int) $port;
+        if ($port < 1 || $port > 65535) {
+            $this->menu('ss');
+            return;
+        }
+        $this->setEnvVar('STLSPORT', (string) $port);
+        $pac = $this->getPacConf();
+        $pac['restart'] = 1;
+        $this->setPacConf($pac);
+        $this->menu('ss');
+    }
+
+    public function changeStlsSNI()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter simple-tls SNI (server name in cert, e.g. {$this->getDomain()})",
+            $this->input['message_id'],
+            reply: 'enter simple-tls SNI',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chStlsSNI',
+            'args'           => [],
+        ];
+    }
+
+    public function chStlsSNI($name)
+    {
+        $name = trim($name);
+        if (!preg_match('~^[A-Za-z0-9.-]+$~', $name)) {
+            $this->menu('ss');
+            return;
+        }
+        $c = $this->getStlsConfig();
+        $c['ServerName'] = $name;
+        $this->setStlsConfig($c);
+        $this->menu('ss');
+    }
+
     public function getCloakConfig()
     {
         $f = '/config/ckserver.json';
@@ -1459,16 +1588,17 @@ class Bot
         return $c;
     }
 
-    // Сборка ss://-ссылки с учётом активного плагина. Приоритет: cloak,
-    // если он включён (на $CKPORT), иначе v2ray-plugin (на 443/80) если
-    // ssserver запущен с plugin, иначе чистый shadowsocks на $SSPORT.
-    // Используется и в меню, и в QR-генерации, чтобы пользователь
-    // получал ссылку с актуальными UID/PublicKey/EncryptionMethod.
+    // Сборка ss://-ссылки с учётом активного плагина. Приоритет:
+    //   cloak > simple-tls > v2ray-plugin > чистый shadowsocks.
+    // cloak и simple-tls могут сосуществовать (оба слушают на отдельных
+    // внешних портах и форвардят в plain ssserver:$SSPORT), но в линке
+    // отдаём только cloak, как более защищённый.
     public function buildSSLink($hash = '')
     {
         $ss     = $this->getSSConfig();
         $domain = $this->getDomain();
         $ck     = $this->getCloakConfig();
+        $st     = $this->getStlsConfig();
         $b64    = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}"));
 
         if (!empty($ck['Enabled'])) {
@@ -1482,6 +1612,16 @@ class Bot
                     . ";NumConn=" . ($ck['NumConn'] ?? 4)
                     . ";BrowserSig=" . ($ck['BrowserSig'] ?? 'chrome');
             return $b64 . "@$domain:$ckPort/?plugin=" . urlencode($opts);
+        }
+
+        if (!empty($st['Enabled'])) {
+            $stPort  = (int) (getenv('STLSPORT') ?: 3443);
+            $stSrv   = $st['ServerName'] ?? $domain;
+            // Если используется self-signed cert — клиенту нужен no-verify,
+            // иначе TLS-handshake провалится. LE-бандл валидируется штатно.
+            $ssl     = $this->nginxGetTypeCert();
+            $opts    = "simple-tls;n=$stSrv" . ($ssl === 'letsencrypt' ? '' : ';no-verify');
+            return $b64 . "@$domain:$stPort/?plugin=" . urlencode($opts);
         }
 
         if (!empty($ss['plugin'])) {
@@ -1543,6 +1683,11 @@ class Bot
             $this->setCloakConfig($c);
             $this->ssh('pkill -f ck-server', 'ss');
         } else {
+            $ss = $this->getSSConfig();
+            if (!empty($ss['plugin'])) {
+                $this->v2ray();
+                return;
+            }
             $c['Enabled']    = 1;
             $c['BindAddr']   = [":$port"];
             $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
@@ -5156,9 +5301,17 @@ DNS-over-HTTPS with IP:
         $ckPort   = (int) (getenv('CKPORT') ?: 8443);
         $ckSrv    = $ck['ServerName'] ?? ($ck['RedirAddr'] ?? 'www.bing.com');
 
-        // Порт для display: cloak важнее, потом v2ray, потом чистый ss.
+        $st       = $this->getStlsConfig();
+        $stlsOn   = !empty($st['Enabled']);
+        $stPort   = (int) (getenv('STLSPORT') ?: 3443);
+        $stSrv    = $st['ServerName'] ?? $domain;
+
+        // Порт для display: тот же приоритет, что в buildSSLink
+        // (cloak > simple-tls > v2ray > plain).
         if ($cloakOn) {
             $port = $ckPort;
+        } elseif ($stlsOn) {
+            $port = $stPort;
         } elseif (!empty($ss['plugin'])) {
             $port = 443;
         } else {
@@ -5196,6 +5349,11 @@ DNS-over-HTTPS with IP:
             $text .= "\n\ncloak pubkey: <span class='tg-spoiler'>" . ($ck['PublicKey'] ?? '') . "</span>";
             $text .= "\n\ncloak method: <code>" . ($ck['EncryptionMethod'] ?? 'aes-256-gcm') . "</code>";
         }
+        if ($stlsOn) {
+            $text .= "\n\nplugin: <code>simple-tls</code>";
+            $text .= "\n\nstls SNI: <code>$stSrv</code>";
+            $text .= "\n\nstls port: <code>$stPort</code>";
+        }
         $data[] = [
             [
                 'text'          => "v2ray: $v2ray",
@@ -5229,6 +5387,24 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => $this->i18n('regen cloak keys'),
                     'callback_data' => "/cloakRegen",
+                ],
+            ];
+        }
+        $data[] = [
+            [
+                'text'          => 'simple-tls: ' . ($stlsOn ? 'ON' : 'OFF'),
+                'callback_data' => "/simpleTls",
+            ],
+        ];
+        if ($stlsOn) {
+            $data[] = [
+                [
+                    'text'          => $this->i18n('stls port:') . " $stPort",
+                    'callback_data' => "/stlsPort",
+                ],
+                [
+                    'text'          => $this->i18n('stls SNI:') . " $stSrv",
+                    'callback_data' => "/stlsSNI",
                 ],
             ];
         }
@@ -9566,8 +9742,11 @@ DNS-over-HTTPS with IP:
 
         $ssCfg  = $this->getSSConfig();
         $ckCfg  = $this->getCloakConfig();
+        $stCfg  = $this->getStlsConfig();
         if (!empty($ckCfg['Enabled'])) {
             $ssPort = (int) (getenv('CKPORT') ?: 8443);
+        } elseif (!empty($stCfg['Enabled'])) {
+            $ssPort = (int) (getenv('STLSPORT') ?: 3443);
         } elseif (!empty($ssCfg['plugin'])) {
             $ssPort = $this->nginxGetTypeCert() ? 443 : 80;
         } else {

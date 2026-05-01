@@ -1,6 +1,6 @@
 ARG image
 FROM $image
-RUN apk add openssh git xz jq \
+RUN apk add openssh git xz jq unzip \
     && mkdir /root/.ssh \
     && wget -O shadowsocks-rust.x86_64-unknown-linux-musl.tar.xz $(wget -q -O - https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases/latest | grep browser_download_url | cut -d\" -f4 | egrep '.x86_64-unknown-linux-musl.tar.xz$') \
     && tar -xf shadowsocks-rust.x86_64-unknown-linux-musl.tar.xz \
@@ -9,6 +9,11 @@ RUN apk add openssh git xz jq \
     && wget -O /usr/bin/ck-server $(wget -q -O - https://api.github.com/repos/cbeuw/Cloak/releases/latest | grep browser_download_url | cut -d\" -f4 | egrep 'ck-server-linux-amd64') \
     && wget -O /usr/bin/ck-client $(wget -q -O - https://api.github.com/repos/cbeuw/Cloak/releases/latest | grep browser_download_url | cut -d\" -f4 | egrep 'ck-client-linux-amd64') \
     && chmod +x /usr/bin/ck-server /usr/bin/ck-client \
+    && wget -O simple-tls.zip $(wget -q -O - https://api.github.com/repos/IrineSistiana/simple-tls/releases/latest | grep browser_download_url | cut -d\" -f4 | egrep 'simple-tls-linux-amd64\.zip$') \
+    && unzip -j -o simple-tls.zip -d /tmp/stls \
+    && mv /tmp/stls/simple-tls /usr/bin/simple-tls \
+    && chmod +x /usr/bin/simple-tls \
+    && rm -rf /tmp/stls simple-tls.zip \
     && mv sslocal /usr/bin/ \
     && mv ssserver /usr/bin/ \
     && mv ssmanager /usr/bin/ \

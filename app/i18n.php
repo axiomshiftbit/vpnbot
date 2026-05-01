@@ -141,6 +141,14 @@ $i = [
         'en' => 'cloak method:',
         'ru' => 'cloak метод:',
     ],
+    'stls port:'           => [
+        'en' => 'stls port:',
+        'ru' => 'stls порт:',
+    ],
+    'stls SNI:'            => [
+        'en' => 'stls SNI:',
+        'ru' => 'stls SNI:',
+    ],
     'reset settings'       => [
         'en' => 'reset settings',
         'ru' => 'сбросить настройки',
