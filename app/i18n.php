@@ -141,6 +141,14 @@ $i = [
         'en' => 'cloak method:',
         'ru' => 'cloak метод:',
     ],
+    'cloak users'          => [
+        'en' => 'cloak users',
+        'ru' => 'пользователи cloak',
+    ],
+    'add user'             => [
+        'en' => 'add user',
+        'ru' => 'добавить пользователя',
+    ],
     'stls port:'           => [
         'en' => 'stls port:',
         'ru' => 'stls порт:',

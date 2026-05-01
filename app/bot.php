@@ -526,6 +526,21 @@ class Bot
             case preg_match('~^/cloakMethod$~', $this->input['callback'], $m):
                 $this->cycleCloakMethod();
                 break;
+            case preg_match('~^/ckUsers$~', $this->input['callback'], $m):
+                $this->menuCkUsers();
+                break;
+            case preg_match('~^/ckUser ([a-f0-9]{12})$~', $this->input['callback'], $m):
+                $this->ckUserMenu($m[1]);
+                break;
+            case preg_match('~^/addCloakUser$~', $this->input['callback'], $m):
+                $this->addCloakUser();
+                break;
+            case preg_match('~^/delCloakUser ([a-f0-9]{12})$~', $this->input['callback'], $m):
+                $this->delCloakUser($m[1]);
+                break;
+            case preg_match('~^/qrCloakUser ([a-f0-9]{12})$~', $this->input['callback'], $m):
+                $this->qrCloakUser($m[1]);
+                break;
             case preg_match('~^/simpleTls$~', $this->input['callback'], $m):
                 $this->simpleTls();
                 break;
@@ -1502,11 +1517,11 @@ class Bot
             $this->setStlsConfig($c);
             $this->ssh('pkill -f simple-tls', 'ss');
         } else {
-            $ss = $this->getSSConfig();
-            if (!empty($ss['plugin'])) {
-                $this->v2ray();
-                return;
-            }
+            // Раньше при активном v2ray-plugin вызывался v2ray() с return —
+            // получался UX-баг: пользователь жмёт «simple-tls: OFF→ON»,
+            // а на деле просто выключается v2ray, simple-tls не запускается.
+            // Теперь снимаем плагин inline и идём дальше.
+            $this->disableV2rayPluginIfOn();
             $domain = $this->getPacConf()['domain'] ?: $this->ip;
             $c['Enabled']    = 1;
             $c['ServerName'] = $c['ServerName'] ?? $domain;
@@ -1593,7 +1608,10 @@ class Bot
     // cloak и simple-tls могут сосуществовать (оба слушают на отдельных
     // внешних портах и форвардят в plain ssserver:$SSPORT), но в линке
     // отдаём только cloak, как более защищённый.
-    public function buildSSLink($hash = '')
+    //
+    // $cloakUid — если задан, идёт в plugin-opts вместо $ck['UID']. Нужно
+    // для per-user QR из cloak users menu (Phase 2 multi-user).
+    public function buildSSLink($hash = '', $cloakUid = null)
     {
         $ss     = $this->getSSConfig();
         $domain = $this->getDomain();
@@ -1604,7 +1622,8 @@ class Bot
         if (!empty($ck['Enabled'])) {
             $ckPort = (int) (getenv('CKPORT') ?: 8443);
             $ckSrv  = $ck['ServerName'] ?? ($ck['RedirAddr'] ?? $domain);
-            $opts   = "ck-client;UID=" . ($ck['UID'] ?? '')
+            $effUid = $cloakUid !== null && $cloakUid !== '' ? $cloakUid : ($ck['UID'] ?? '');
+            $opts   = "ck-client;UID=" . $effUid
                     . ";PublicKey=" . ($ck['PublicKey'] ?? '')
                     . ";ServerName=$ckSrv"
                     . ";ProxyMethod=shadowsocks"
@@ -1667,6 +1686,95 @@ class Bot
         return $c;
     }
 
+    // ck-server не понимает поле Enabled (плюс пустые AdminUID/DatabasePath
+    // ломают bind), поэтому передаём ему очищенную копию через /tmp.
+    // Тот же приём, что и в start_ss.sh. Извлечено в один метод, потому что
+    // вызывается из cloak/cloakDomain/cloakMethod/regen/addUser/delUser.
+    private function ckServerRestartCmd(): string
+    {
+        return 'pkill -f ck-server; '
+            . 'jq "del(.Enabled) '
+            . '| if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end '
+            . '| if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" '
+            . '/config/ckserver.json > /tmp/ckserver.json '
+            . '&& nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &';
+    }
+
+    private function restartCloakIfRunning(): void
+    {
+        $c = $this->getCloakConfig();
+        if (!empty($c['Enabled'])) {
+            $this->ssh($this->ckServerRestartCmd(), 'ss');
+        }
+    }
+
+    // Phase 2 — multi-user storage для cloak. Параллельно ckserver.json
+    // (где BypassUID — список UID-ов, который читает сам ck-server) держим
+    // side-store /config/ckusers.json с метой: имя, UID, время создания.
+    // На первом чтении бутстрапим из текущего ckserver.json: основной UID
+    // → "default", всё, что лежало в BypassUID отдельно — "user2", "user3"…
+    // BypassUID всегда пересчитывается из ckusers.json через syncCloakBypassUIDs().
+    public function getCloakUsers(): array
+    {
+        $f = '/config/ckusers.json';
+        $list = file_exists($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
+        if (!empty($list)) {
+            return array_values($list);
+        }
+        // bootstrap from current ckserver.json
+        $c = $this->getCloakConfig();
+        $defaultUid = $c['UID'] ?? '';
+        if ($defaultUid !== '') {
+            $list[] = ['name' => 'default', 'uid' => $defaultUid, 'created' => time()];
+        }
+        $idx = 2;
+        foreach (($c['BypassUID'] ?? []) as $u) {
+            if ($u === '' || $u === $defaultUid) {
+                continue;
+            }
+            $list[] = ['name' => 'user' . $idx, 'uid' => $u, 'created' => time()];
+            $idx++;
+        }
+        if (!empty($list)) {
+            $this->setCloakUsers($list);
+        }
+        return $list;
+    }
+
+    public function setCloakUsers(array $list): void
+    {
+        file_put_contents(
+            '/config/ckusers.json',
+            json_encode(array_values($list), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+        );
+    }
+
+    // sha1-prefix как route id: UID содержит '/' и '+' и не лезет в callback
+    // напрямую без urlencode, что ломается на парсинге Telegram (пробел —
+    // разделитель аргументов). 12 hex-символов это 48 бит — коллизии
+    // практически невозможны при количестве пользователей в десятки.
+    public function findCloakUserByHash(string $hash): ?array
+    {
+        foreach ($this->getCloakUsers() as $u) {
+            if (substr(sha1($u['uid']), 0, 12) === $hash) {
+                return $u;
+            }
+        }
+        return null;
+    }
+
+    // BypassUID — то, что читает сам ck-server. Держим его в синхронизации
+    // с ckusers.json: после любого add/delete пересчитываем заново.
+    private function syncCloakBypassUIDs(): void
+    {
+        $c = $this->getCloakConfig();
+        $uids = array_values(array_unique(array_filter(
+            array_map(fn($u) => $u['uid'] ?? '', $this->getCloakUsers())
+        )));
+        $c['BypassUID'] = $uids;
+        $this->setCloakConfig($c);
+    }
+
     // Toggle cloak on/off. Конфиг ckserver.json хранится в общей папке
     // /config (разделяется между php и ss контейнерами); поле Enabled
     // не понимается самим ck-server, мы используем его как флаг для
@@ -1683,26 +1791,51 @@ class Bot
             $this->setCloakConfig($c);
             $this->ssh('pkill -f ck-server', 'ss');
         } else {
-            $ss = $this->getSSConfig();
-            if (!empty($ss['plugin'])) {
-                $this->v2ray();
-                return;
-            }
+            // v2ray-plugin несовместим с cloak (ssserver слушал бы с плагином,
+            // не plain). Раньше тут был return после v2ray()-toggle, что давало
+            // UX-баг: "включаю cloak" → выключился v2ray, cloak не включился.
+            // Теперь честно отключаем плагин inline и идём дальше.
+            $this->disableV2rayPluginIfOn();
+            // Гарантируем, что в ckusers.json есть default запись для текущего
+            // UID — getCloakUsers() сам бутстрапит, дальше syncCloakBypassUIDs()
+            // переписывает BypassUID из side-store.
+            $this->getCloakUsers();
+            $c = $this->getCloakConfig();
             $c['Enabled']    = 1;
             $c['BindAddr']   = [":$port"];
             $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
-            $c['BypassUID']  = array_values(array_unique(array_filter(array_merge(
-                $c['BypassUID'] ?? [],
-                [$c['UID'] ?? '']
-            ))));
             $c['RedirAddr']  = $c['RedirAddr'] ?: 'www.bing.com';
             $c['ServerName'] = $c['ServerName'] ?: $domain;
             $this->setCloakConfig($c);
-            // ck-server не понимает поле Enabled, поэтому передаём ему очищенную
-            // копию через /tmp (тот же приём, что и в start_ss.sh).
-            $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
+            $this->syncCloakBypassUIDs();
+            $this->ssh($this->ckServerRestartCmd(), 'ss');
         }
         $this->menu('ss');
+    }
+
+    // Снимает плагин v2ray-plugin с ssserver/sslocal без перерисовки меню.
+    // Раньше cloak()/simpleTls() при активном v2ray вызывали v2ray() и делали
+    // return — это рендерило меню от лица v2ray и обрывало текущий toggle,
+    // т.е. кнопка "включить cloak" фактически выключала v2ray. Теперь это
+    // выделено и вызывается inline перед собственным enable.
+    private function disableV2rayPluginIfOn(): void
+    {
+        $c = $this->getSSConfig();
+        if (empty($c['plugin'])) {
+            return;
+        }
+        $this->ssh('pkill sslocal', 'proxy');
+        $this->ssh('pkill ssserver', 'ss');
+        $l = $this->getSSLocalConfig();
+        unset($c['plugin'], $c['plugin_opts'], $l['plugin'], $l['plugin_opts']);
+        $ssport = (int) getenv('SSPORT');
+        $l['server']      = 'ss';
+        $l['server_port'] = $ssport;
+        $c['server_port'] = $ssport;
+        file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        file_put_contents('/config/sslocal.json',  json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->ssh('ssserver -v -d -c /config.json', 'ss');
+        $this->ssh('sslocal -v -d -c /config.json', 'proxy');
     }
 
     public function changeCloakPort()
@@ -1771,10 +1904,8 @@ class Bot
         $c['RedirAddr']  = $domain;
         $c['ServerName'] = $domain;
         $this->setCloakConfig($c);
-        if (!empty($c['Enabled'])) {
-            // Перезапускаем ck-server с новым RedirAddr/ServerName.
-            $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
-        }
+        // Перезапускаем ck-server с новым RedirAddr/ServerName.
+        $this->restartCloakIfRunning();
         $this->menu('ss');
     }
 
@@ -1794,9 +1925,7 @@ class Bot
         $i       = array_search($cur, $methods, true);
         $c['EncryptionMethod'] = $methods[($i === false ? 0 : $i + 1) % count($methods)];
         $this->setCloakConfig($c);
-        if (!empty($c['Enabled'])) {
-            $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
-        }
+        $this->restartCloakIfRunning();
         $this->menu('ss');
     }
 
@@ -1812,6 +1941,13 @@ class Bot
         unset($c['PrivateKey'], $c['PublicKey'], $c['UID'], $c['BypassUID']);
         $this->setCloakConfig($c);
 
+        // Старые UID-ы из ckusers.json (Phase 2 multi-user) теперь не подходят
+        // к новой паре PrivateKey/PublicKey — все ранее розданные клиентские
+        // ссылки и так умерли вместе с server-keys, поэтому стираем
+        // side-store, чтобы getCloakUsers() забутстрапился под новый
+        // default-UID. Без этого в списке остались бы «мёртвые» имена.
+        @unlink('/config/ckusers.json');
+
         $c = $this->ensureCloakIdentity();
 
         if ($wasOn) {
@@ -1822,14 +1958,195 @@ class Bot
             $c['Enabled']    = 1;
             $c['BindAddr']   = [":$port"];
             $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
-            $c['BypassUID']  = [$c['UID'] ?? ''];
             $c['RedirAddr']  = $c['RedirAddr'] ?: 'www.bing.com';
             $c['ServerName'] = $c['ServerName'] ?: $domain;
             $this->setCloakConfig($c);
-            $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
+            // bootstrap default user в ckusers.json и пересинхронизируем
+            // BypassUID — иначе ck-server стартует с пустым allow-list.
+            $this->getCloakUsers();
+            $this->syncCloakBypassUIDs();
+            $this->ssh($this->ckServerRestartCmd(), 'ss');
         }
 
         $this->menu('ss');
+    }
+
+    // ── cloak users (Phase 2) ────────────────────────────────────────
+
+    // Открывает prompt-режим для имени нового пользователя; ответ ловится
+    // sessions[]['callback'] => 'addCkUserSubmit' и передаётся в submit-метод.
+    public function addCloakUser()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter cloak user name",
+            $this->input['message_id'],
+            reply: 'enter cloak user name',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'addCkUserSubmit',
+            'args'           => [],
+        ];
+    }
+
+    // Регистрирует нового пользователя cloak. Имя нормализуется (тот же
+    // санитайзер, что у ovpn — буквы/цифры/_-.), UID берём через
+    // ck-server -uid (16 байт base64). Дальше переписываем BypassUID и
+    // рестартуем ck-server, если он крутится.
+    public function addCkUserSubmit($name)
+    {
+        $name = preg_replace('~[^a-zA-Z0-9_.\- ]~', '', (string) $name);
+        $name = trim($name);
+        if ($name === '') {
+            $this->send($this->input['chat'], 'wrong name');
+            return $this->menuCkUsers();
+        }
+        $list = $this->getCloakUsers();
+        foreach ($list as $u) {
+            if (($u['name'] ?? '') === $name) {
+                $this->send($this->input['chat'], "user $name already exists");
+                return $this->menuCkUsers();
+            }
+        }
+        $uidOut = $this->ssh('ck-server -uid 2>&1', 'ss') ?: '';
+        if (!preg_match('~[A-Za-z0-9+/]{22}==~', $uidOut, $m)) {
+            $this->send($this->input['chat'], 'failed to generate UID');
+            return $this->menuCkUsers();
+        }
+        $list[] = ['name' => $name, 'uid' => $m[0], 'created' => time()];
+        $this->setCloakUsers($list);
+        $this->syncCloakBypassUIDs();
+        $this->restartCloakIfRunning();
+        $this->menuCkUsers();
+    }
+
+    // Удаляет пользователя по sha1-prefix UID. Default user (тот, что лежит
+    // в $ck['UID']) защищён: он используется как admin/identity-маркер при
+    // регенерации, и часть кода (ensureCloakIdentity) на него полагается.
+    public function delCloakUser($hash)
+    {
+        $u = $this->findCloakUserByHash($hash);
+        if (!$u) {
+            return $this->menuCkUsers();
+        }
+        $c = $this->getCloakConfig();
+        if (($u['uid'] ?? '') === ($c['UID'] ?? '')) {
+            $this->send($this->input['chat'], 'cannot delete default user (use regen keys instead)');
+            return $this->menuCkUsers();
+        }
+        $list = array_values(array_filter(
+            $this->getCloakUsers(),
+            fn($x) => ($x['uid'] ?? '') !== ($u['uid'] ?? '')
+        ));
+        $this->setCloakUsers($list);
+        $this->syncCloakBypassUIDs();
+        $this->restartCloakIfRunning();
+        $this->menuCkUsers();
+    }
+
+    // Per-user QR. ss://-ссылка та же, что в qrSS, но в plugin-opts UID=
+    // подменяется на UID этого юзера. Файл именуем по name (с санитайзером,
+    // чтобы exec/qrencode не получили опасных символов в пути).
+    public function qrCloakUser($hash)
+    {
+        $u = $this->findCloakUserByHash($hash);
+        if (!$u) {
+            return $this->menuCkUsers();
+        }
+        $link    = $this->buildSSLink($this->getHashBot(), $u['uid']);
+        $safe    = preg_replace('~[^a-zA-Z0-9_.\-]~', '_', $u['name']);
+        $qr_file = __DIR__ . "/qr/cloak_$safe.png";
+        exec("qrencode -t png -o $qr_file '$link'");
+        $this->sendPhoto(
+            $this->input['chat'],
+            curl_file_create($qr_file),
+            "<code>$link</code>\n\n<b>" . htmlspecialchars($u['name'], ENT_QUOTES) . "</b>"
+        );
+        @unlink($qr_file);
+        if ($this->getPacConf()['blinkmenu']) {
+            $this->delete($this->input['chat'], $this->input['message_id']);
+            $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
+            $this->ckUserMenu($hash);
+        }
+    }
+
+    // Список всех cloak-пользователей. Default помечен ★. Если cloak
+    // отключён — всё равно показываем список (можно подготовить юзеров
+    // заранее, BypassUID применится при следующем enable).
+    public function menuCkUsers()
+    {
+        $users      = $this->getCloakUsers();
+        $c          = $this->getCloakConfig();
+        $defaultUid = $c['UID'] ?? '';
+        $cloakOn    = !empty($c['Enabled']);
+
+        $text   = [];
+        $text[] = 'Menu -> ShadowSocks -> ' . $this->i18n('cloak users');
+        $text[] = 'cloak: ' . $this->i18n($cloakOn ? 'on' : 'off');
+        $text[] = 'users: ' . count($users);
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('add user'),
+            'callback_data' => '/addCloakUser',
+        ]];
+        foreach ($users as $u) {
+            $hash   = substr(sha1($u['uid'] ?? ''), 0, 12);
+            $marker = (($u['uid'] ?? '') === $defaultUid) ? '★ ' : '';
+            $data[] = [[
+                'text'          => $marker . ($u['name'] ?? '?'),
+                'callback_data' => "/ckUser $hash",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu ss',
+        ]];
+
+        if (!empty($this->input['callback_id'])) {
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+        } else {
+            $this->send($this->input['chat'], implode("\n", $text), $this->input['message_id'], $data);
+        }
+    }
+
+    // Per-user submenu — мета (UID, дата) и actions (QR / delete).
+    public function ckUserMenu($hash)
+    {
+        $u = $this->findCloakUserByHash($hash);
+        if (!$u) {
+            return $this->menuCkUsers();
+        }
+        $c         = $this->getCloakConfig();
+        $isDefault = (($u['uid'] ?? '') === ($c['UID'] ?? ''));
+        $created   = !empty($u['created']) ? date('Y-m-d', (int) $u['created']) : '?';
+
+        $text   = [];
+        $text[] = 'Menu -> ShadowSocks -> ' . $this->i18n('cloak users')
+            . ' -> <code>' . htmlspecialchars($u['name'] ?? '?', ENT_QUOTES) . '</code>';
+        $text[] = ($isDefault ? '★ default' : '');
+        $text[] = "UID: <span class='tg-spoiler'>" . htmlspecialchars($u['uid'] ?? '', ENT_QUOTES) . "</span>";
+        $text[] = "created: $created";
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('show QR'),
+            'callback_data' => "/qrCloakUser $hash",
+        ]];
+        if (!$isDefault) {
+            $data[] = [[
+                'text'          => $this->i18n('delete'),
+                'callback_data' => "/delCloakUser $hash",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/ckUsers',
+        ]];
+
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", array_filter($text)), $data);
     }
 
 
@@ -2363,6 +2680,7 @@ class Bot
             'ss'            => $this->getSSConfig(),
             'sl'            => $this->getSSLocalConfig(),
             'cloak'         => file_exists('/config/ckserver.json') ? (json_decode(file_get_contents('/config/ckserver.json'), true) ?: null) : null,
+            'ckusers'       => file_exists('/config/ckusers.json') ? (json_decode(file_get_contents('/config/ckusers.json'), true) ?: null) : null,
             'ovpn'          => $this->exportOvpnPki(),
             'xraystats'     => $this->getXrayStats(),
         ];
@@ -2522,8 +2840,15 @@ class Bot
                     '/config/ckserver.json',
                     json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
                 );
+                // Восстанавливаем side-store с именами; если в бэкапе нет
+                // (старый формат) — getCloakUsers() забутстрапит из BypassUID.
+                if (!empty($json['ckusers']) && is_array($json['ckusers'])) {
+                    $this->setCloakUsers($json['ckusers']);
+                } else {
+                    @unlink('/config/ckusers.json');
+                }
                 if (!empty($json['cloak']['Enabled'])) {
-                    $this->ssh('jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
+                    $this->ssh($this->ckServerRestartCmd(), 'ss');
                 }
             }
             // openvpn (PKI + server.conf + ccd, восстановленные из inline-base64)
@@ -5387,6 +5712,13 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => $this->i18n('regen cloak keys'),
                     'callback_data' => "/cloakRegen",
+                ],
+            ];
+            $ckUserCount = count($this->getCloakUsers());
+            $data[] = [
+                [
+                    'text'          => $this->i18n('cloak users') . " ($ckUserCount)",
+                    'callback_data' => "/ckUsers",
                 ],
             ];
         }
