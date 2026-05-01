@@ -2192,6 +2192,8 @@ class Bot
             'tt'            => file_exists('/config/trusttunnel/credentials.toml') ? file_get_contents('/config/trusttunnel/credentials.toml') : '',
             'ss'            => $this->getSSConfig(),
             'sl'            => $this->getSSLocalConfig(),
+            'cloak'         => file_exists('/config/ckserver.json') ? (json_decode(file_get_contents('/config/ckserver.json'), true) ?: null) : null,
+            'ovpn'          => $this->exportOvpnPki(),
             'xraystats'     => $this->getXrayStats(),
         ];
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -2340,6 +2342,26 @@ class Bot
                 @mkdir('/config/trusttunnel', 0755, true);
                 file_put_contents('/config/trusttunnel/credentials.toml', $json['tt']);
                 $this->restartTt();
+            }
+            // cloak
+            if (!empty($json['cloak'])) {
+                $out[] = 'update cloak';
+                $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                $this->ssh('pkill -f ck-server', 'ss');
+                file_put_contents(
+                    '/config/ckserver.json',
+                    json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                );
+                if (!empty($json['cloak']['Enabled'])) {
+                    $this->ssh('jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
+                }
+            }
+            // openvpn (PKI + server.conf + ccd, восстановленные из inline-base64)
+            if (!empty($json['ovpn']) && is_array($json['ovpn'])) {
+                $out[] = 'update openvpn';
+                $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                $this->importOvpnPki($json['ovpn']);
+                $this->restartOvpn();
             }
             if (!empty($json['pac']['domain'])) {
                 $this->setUpstreamDomainOcserv($json['pac']['domain']);
@@ -11089,6 +11111,58 @@ DNS-over-HTTPS with IP:
             'log'    => '/logs/openvpn.log',
             'conn'   => '/logs/openvpn-connections.log',
         ];
+    }
+
+    // Снэпшот /config/openvpn — PKI (ca/server/issued/private/ta), serial,
+    // index.txt, crl.pem, server.conf, ccd/. Каждый файл хранится как base64
+    // в общем JSON-бэкапе; при восстановлении ключи получают chmod 600.
+    // Runtime-файлы (openvpn-status.log) исключаем — они генерятся демоном.
+    public function exportOvpnPki()
+    {
+        $root = '/config/openvpn';
+        if (!is_dir($root)) {
+            return null;
+        }
+        $skipBasenames = ['openvpn-status.log'];
+        $files         = [];
+        $rii = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($rii as $f) {
+            if (!$f->isFile() || $f->isLink()) {
+                continue;
+            }
+            if (in_array($f->getFilename(), $skipBasenames, true)) {
+                continue;
+            }
+            $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
+            $files[$rel] = base64_encode(file_get_contents($f->getPathname()));
+        }
+        return $files ?: null;
+    }
+
+    public function importOvpnPki(array $files)
+    {
+        $root = '/config/openvpn';
+        @mkdir($root, 0755, true);
+        foreach ($files as $rel => $b64) {
+            // Защита от path traversal: запрещаем .. и абсолютные пути,
+            // нормализуем разделители.
+            $rel = str_replace('\\', '/', $rel);
+            if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false) {
+                continue;
+            }
+            $path = "$root/$rel";
+            @mkdir(dirname($path), 0755, true);
+            file_put_contents($path, base64_decode($b64));
+        }
+        // OpenVPN отказывается стартовать с приватниками доступными группе/всем.
+        foreach (glob("$root/pki/private/*.key") ?: [] as $k) {
+            chmod($k, 0600);
+        }
+        if (file_exists("$root/pki/ta.key")) {
+            chmod("$root/pki/ta.key", 0600);
+        }
     }
 
     public function getOvpnPort()
