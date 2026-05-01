@@ -409,6 +409,9 @@ class Bot
             case preg_match('~^/sspswd$~', $this->input['callback'], $m):
                 $this->sspswd();
                 break;
+            case preg_match('~^/ssGenPswd$~', $this->input['callback'], $m):
+                $this->sspwdch(bin2hex(random_bytes(16)));
+                break;
             case preg_match('~^/changeCamouflage$~', $this->input['callback'], $m):
                 $this->changeCamouflage();
                 break;
@@ -5168,6 +5171,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('change password'),
                 'callback_data' => "/sspswd",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('generate password'),
+                'callback_data' => "/ssGenPswd",
             ],
         ];
         $ss_link = $this->buildSSLink($hash);
