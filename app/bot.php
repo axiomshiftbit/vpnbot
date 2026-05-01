@@ -1434,12 +1434,13 @@ class Bot
             $l['server_port'] = (int) getenv('SSPORT');
             $c['server_port'] = (int) getenv('SSPORT');
         } else {
+            $hash             = $this->getHashBot();
             $c['plugin']      = 'v2ray-plugin';
             $c['plugin_opts'] = 'server;loglevel=none';
             $l['server']      = 'up';
             $l['server_port'] = $ssl ? 443 : 80;
             $l['plugin']      = 'v2ray-plugin';
-            $l['plugin_opts'] = ($ssl ? 'tls;' : '') . "fast-open;path=/v2ray;host=$domain";
+            $l['plugin_opts'] = ($ssl ? 'tls;' : '') . "fast-open;path=/v2ray$hash;host=$domain";
         }
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         file_put_contents('/config/sslocal.json', json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
