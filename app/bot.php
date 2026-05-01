@@ -1545,7 +1545,7 @@ class Bot
             $this->setCloakConfig($c);
             // ck-server не понимает поле Enabled, поэтому передаём ему очищенную
             // копию через /tmp (тот же приём, что и в start_ss.sh).
-            $this->ssh('pkill -f ck-server; jq "del(.Enabled)" /config/ckserver.json > /tmp/ckserver.json && nohup ck-server -c /tmp/ckserver.json >>/logs/ck-server.log 2>&1 &', 'ss');
+            $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
         }
         $this->menu('ss');
     }
@@ -1618,7 +1618,7 @@ class Bot
         $this->setCloakConfig($c);
         if (!empty($c['Enabled'])) {
             // Перезапускаем ck-server с новым RedirAddr/ServerName.
-            $this->ssh('pkill -f ck-server; jq "del(.Enabled)" /config/ckserver.json > /tmp/ckserver.json && nohup ck-server -c /tmp/ckserver.json >>/logs/ck-server.log 2>&1 &', 'ss');
+            $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
         }
         $this->menu('ss');
     }
