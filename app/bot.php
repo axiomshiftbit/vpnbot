@@ -520,6 +520,9 @@ class Bot
             case preg_match('~^/cloakRegen$~', $this->input['callback'], $m):
                 $this->regenCloakKeys();
                 break;
+            case preg_match('~^/cloakMethod$~', $this->input['callback'], $m):
+                $this->cycleCloakMethod();
+                break;
             case preg_match('~^/checkdns$~', $this->input['callback'], $m):
                 $this->checkdns();
                 break;
@@ -1630,6 +1633,24 @@ class Bot
     // все ранее розданные клиентские ссылки/QR становятся невалидными —
     // пользователю нужно заново раздать новый ss:// или скан QR. ck-server
     // глушится перед очисткой, чтобы не держал старые ключи в памяти.
+    // Cloak принимает только фиксированный набор EncryptionMethod;
+    // совпадение с SS method (например chacha20-ietf-poly1305 у SS vs
+    // chacha20-poly1305 у Cloak) безопасно — это два независимых слоя
+    // шифрования с разными ключами.
+    public function cycleCloakMethod()
+    {
+        $methods = ['aes-256-gcm', 'aes-128-gcm', 'chacha20-poly1305', 'plain'];
+        $c       = $this->getCloakConfig();
+        $cur     = $c['EncryptionMethod'] ?? 'aes-256-gcm';
+        $i       = array_search($cur, $methods, true);
+        $c['EncryptionMethod'] = $methods[($i === false ? 0 : $i + 1) % count($methods)];
+        $this->setCloakConfig($c);
+        if (!empty($c['Enabled'])) {
+            $this->ssh('pkill -f ck-server; jq "del(.Enabled) | if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end | if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" /config/ckserver.json > /tmp/ckserver.json && nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &', 'ss');
+        }
+        $this->menu('ss');
+    }
+
     public function regenCloakKeys()
     {
         $c     = $this->getCloakConfig();
@@ -5186,6 +5207,12 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => "cloak masq: $ckSrv",
                     'callback_data' => "/cloakDomain",
+                ],
+            ];
+            $data[] = [
+                [
+                    'text'          => 'cloak method: ' . ($ck['EncryptionMethod'] ?? 'aes-256-gcm'),
+                    'callback_data' => "/cloakMethod",
                 ],
             ];
             $data[] = [
