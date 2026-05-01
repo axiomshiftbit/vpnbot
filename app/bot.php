@@ -5177,22 +5177,24 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/cloak",
             ],
         ];
-        $data[] = [
-            [
-                'text'          => "cloak port: $ckPort",
-                'callback_data' => "/cloakPort",
-            ],
-            [
-                'text'          => "cloak masq: $ckSrv",
-                'callback_data' => "/cloakDomain",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => 'regen cloak keys',
-                'callback_data' => "/cloakRegen",
-            ],
-        ];
+        if ($cloakOn) {
+            $data[] = [
+                [
+                    'text'          => "cloak port: $ckPort",
+                    'callback_data' => "/cloakPort",
+                ],
+                [
+                    'text'          => "cloak masq: $ckSrv",
+                    'callback_data' => "/cloakDomain",
+                ],
+            ];
+            $data[] = [
+                [
+                    'text'          => 'regen cloak keys',
+                    'callback_data' => "/cloakRegen",
+                ],
+            ];
+        }
         $data[] = [
             [
                 'text'          => $this->i18n('show QR'),
