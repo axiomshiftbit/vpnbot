@@ -125,6 +125,22 @@ $i = [
         'en' => 'generate password',
         'ru' => 'сгенерировать пароль',
     ],
+    'cloak port:'          => [
+        'en' => 'cloak port:',
+        'ru' => 'cloak порт:',
+    ],
+    'cloak masq:'          => [
+        'en' => 'cloak masq:',
+        'ru' => 'cloak маска:',
+    ],
+    'regen cloak keys'     => [
+        'en' => 'regen cloak keys',
+        'ru' => 'новые ключи cloak',
+    ],
+    'cloak method:'        => [
+        'en' => 'cloak method:',
+        'ru' => 'cloak метод:',
+    ],
     'reset settings'       => [
         'en' => 'reset settings',
         'ru' => 'сбросить настройки',

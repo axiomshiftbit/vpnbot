@@ -5211,23 +5211,23 @@ DNS-over-HTTPS with IP:
         if ($cloakOn) {
             $data[] = [
                 [
-                    'text'          => "cloak port: $ckPort",
+                    'text'          => $this->i18n('cloak port:') . " $ckPort",
                     'callback_data' => "/cloakPort",
                 ],
                 [
-                    'text'          => "cloak masq: $ckSrv",
+                    'text'          => $this->i18n('cloak masq:') . " $ckSrv",
                     'callback_data' => "/cloakDomain",
                 ],
             ];
             $data[] = [
                 [
-                    'text'          => 'cloak method: ' . ($ck['EncryptionMethod'] ?? 'aes-256-gcm'),
+                    'text'          => $this->i18n('cloak method:') . ' ' . ($ck['EncryptionMethod'] ?? 'aes-256-gcm'),
                     'callback_data' => "/cloakMethod",
                 ],
             ];
             $data[] = [
                 [
-                    'text'          => 'regen cloak keys',
+                    'text'          => $this->i18n('regen cloak keys'),
                     'callback_data' => "/cloakRegen",
                 ],
             ];
