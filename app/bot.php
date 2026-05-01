@@ -1474,17 +1474,17 @@ class Bot
                     . ";EncryptionMethod=" . ($ck['EncryptionMethod'] ?? 'aes-256-gcm')
                     . ";NumConn=" . ($ck['NumConn'] ?? 4)
                     . ";BrowserSig=" . ($ck['BrowserSig'] ?? 'chrome');
-            return $b64 . "@$domain:$ckPort?plugin=" . urlencode($opts);
+            return $b64 . "@$domain:$ckPort/?plugin=" . urlencode($opts);
         }
 
         if (!empty($ss['plugin'])) {
             $ssl  = $this->nginxGetTypeCert();
             $port = $ssl ? 443 : 80;
             $opts = "v2ray-plugin;path=/v2ray$hash;host=$domain" . ($ssl ? ';tls' : '');
-            return $b64 . "@$domain:$port?plugin=" . urlencode($opts);
+            return $b64 . "@$domain:$port/?plugin=" . urlencode($opts);
         }
 
-        return $b64 . "@$domain:" . getenv('SSPORT');
+        return $b64 . "@$domain:" . getenv('SSPORT') . '/';
     }
 
     public function setCloakConfig(array $c)
@@ -9524,6 +9524,17 @@ DNS-over-HTTPS with IP:
         $f      = '/docker/compose';
         $c      = yaml_parse_file($f)['services'];
         $pac = $this->getPacConf();
+
+        $ssCfg  = $this->getSSConfig();
+        $ckCfg  = $this->getCloakConfig();
+        if (!empty($ckCfg['Enabled'])) {
+            $ssPort = (int) (getenv('CKPORT') ?: 8443);
+        } elseif (!empty($ssCfg['plugin'])) {
+            $ssPort = $this->nginxGetTypeCert() ? 443 : 80;
+        } else {
+            $ssPort = (int) (getenv('SSPORT') ?: 8388);
+        }
+
         $data   = [
             [[
                 'text'          => $this->i18n($c['wg'] ? 'on' : 'off') . ' ' . getenv('WGPORT') . ' Wireguard',
@@ -9542,7 +9553,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/hidePort ad",
             ]],
             [[
-                'text'          => $this->i18n($c['ss'] ? 'on' : 'off') . ' 8388 Shadowsocks',
+                'text'          => $this->i18n($c['ss'] ? 'on' : 'off') . " $ssPort Shadowsocks",
                 'callback_data' => "/hidePort ss",
             ]],
             [[
