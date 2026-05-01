@@ -2810,7 +2810,7 @@ class Bot
 
     public function qrSS()
     {
-        $ss_link = $this->buildSSLink();
+        $ss_link = $this->buildSSLink($this->getHashBot());
         $qr_file = __DIR__ . "/qr/shadowsocks.png";
         exec("qrencode -t png -o $qr_file '$ss_link'");
         $r = $this->sendPhoto(
