@@ -11317,20 +11317,15 @@ DNS-over-HTTPS with IP:
 
     // Templates for AmneziaWG key generation. Ranges follow official docs
     // (docs.amnezia.org/documentation/amnezia-wg): Jc 0–10, Jmin/Jmax 64–1024,
-    // S1/S2/S3 0–64, S4 0–32, H1–H4 distinct 32-bit. Constraint S1+56 ≠ S2.
+    // S1/S2/S3 0–64, S4 0–32. Constraint S1+56 ≠ S2.
     // I1 presence ⇒ 2.0; I1 absent ⇒ 1.x. CPS tags supported by amneziawg-go:
     // <b HEX>, <r N>, <rc N>, <rd N>, <t>. (<c> removed upstream — not used.)
+    // H1–H4 format:
+    //   1.x: distinct non-zero 32-bit integers.
+    //   2.0: non-overlapping "MIN-MAX" ranges across uint32 space (server picks
+    //        a random value per session, raising DPI cost).
     public function generateAmneziaKeys($template = 'standard_2')
     {
-        // H1–H4: distinct non-zero 32-bit values
-        $h = [];
-        while (count($h) < 4) {
-            $v = random_int(1, 4_294_967_295);
-            if (!in_array($v, $h, true)) {
-                $h[] = $v;
-            }
-        }
-
         $rngS = function ($min, $max) {
             $s1 = random_int($min, $max);
             do {
@@ -11339,12 +11334,40 @@ DNS-over-HTTPS with IP:
             return [$s1, $s2];
         };
 
-        $base = ['H1' => $h[0], 'H2' => $h[1], 'H3' => $h[2], 'H4' => $h[3]];
+        // 2.0 H1-H4: non-overlapping ranges across 4 uint32 segments (shuffled).
+        $rngH2 = function () {
+            $range_width = random_int(5_000_000, 50_000_000);
+            $segments = [
+                [0x01000000, 0x3FFFFFFF],
+                [0x40000000, 0x6FFFFFFF],
+                [0x70000000, 0x9FFFFFFF],
+                [0xA0000000, 0xCFFFFFFF],
+            ];
+            shuffle($segments);
+            $h = [];
+            foreach ($segments as [$seg_min, $seg_max]) {
+                $start = random_int($seg_min, $seg_max - $range_width);
+                $h[] = "$start-" . ($start + $range_width);
+            }
+            return ['H1' => $h[0], 'H2' => $h[1], 'H3' => $h[2], 'H4' => $h[3]];
+        };
+
+        // 1.x H1-H4: distinct non-zero 32-bit integers.
+        $rngH1 = function () {
+            $h = [];
+            while (count($h) < 4) {
+                $v = random_int(1, 4_294_967_295);
+                if (!in_array($v, $h, true)) {
+                    $h[] = $v;
+                }
+            }
+            return ['H1' => $h[0], 'H2' => $h[1], 'H3' => $h[2], 'H4' => $h[3]];
+        };
 
         switch ($template) {
             case 'aggressive_2':
                 [$s1, $s2] = $rngS(40, 64);
-                return $base + [
+                return $rngH2() + [
                     'Jc' => 10, 'Jmin' => 256, 'Jmax' => 1024,
                     'S1' => $s1, 'S2' => $s2,
                     'S3' => random_int(32, 64), 'S4' => random_int(16, 32),
@@ -11357,7 +11380,7 @@ DNS-over-HTTPS with IP:
 
             case 'mobile_2':
                 [$s1, $s2] = $rngS(15, 32);
-                return $base + [
+                return $rngH2() + [
                     'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
                     'S1' => $s1, 'S2' => $s2,
                     'S3' => random_int(0, 32), 'S4' => random_int(0, 16),
@@ -11370,7 +11393,7 @@ DNS-over-HTTPS with IP:
 
             case 'classic_1':
                 [$s1, $s2] = $rngS(15, 64);
-                return $base + [
+                return $rngH1() + [
                     'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1000,
                     'S1' => $s1, 'S2' => $s2,
                 ];
@@ -11378,8 +11401,8 @@ DNS-over-HTTPS with IP:
             case 'standard_2':
             default:
                 [$s1, $s2] = $rngS(15, 64);
-                return $base + [
-                    'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1000,
+                return $rngH2() + [
+                    'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1024,
                     'S1' => $s1, 'S2' => $s2,
                     'S3' => random_int(0, 64), 'S4' => random_int(0, 32),
                     'I1' => '<b 0xc000000001><r ' . random_int(80, 120) . '>',
