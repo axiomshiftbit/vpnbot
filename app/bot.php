@@ -11379,16 +11379,19 @@ DNS-over-HTTPS with IP:
                 ];
 
             case 'mobile_2':
+                // Размеры I1-I5 подняты в рекомендуемый коридор 100-500 байт
+                // (habr.com/ru/companies/amnezia/articles/1014636/) — для mobile
+                // приоритет маскировки выше экономии батареи/трафика.
                 [$s1, $s2] = $rngS(15, 32);
                 return $rngH2() + [
                     'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
                     'S1' => $s1, 'S2' => $s2,
                     'S3' => random_int(0, 32), 'S4' => random_int(0, 16),
-                    'I1' => '<b 0xc000000001><r ' . random_int(30, 60) . '>',
-                    'I2' => '<t><r ' . random_int(20, 40) . '>',
-                    'I3' => '<r ' . random_int(20, 40) . '>',
-                    'I4' => '<rd ' . random_int(4, 8) . '><r ' . random_int(15, 30) . '>',
-                    'I5' => '<rc ' . random_int(10, 20) . '>',
+                    'I1' => '<b 0xc000000001><r ' . random_int(100, 150) . '>',
+                    'I2' => '<t><r ' . random_int(80, 120) . '>',
+                    'I3' => '<r ' . random_int(80, 120) . '>',
+                    'I4' => '<rd ' . random_int(6, 12) . '><r ' . random_int(80, 120) . '>',
+                    'I5' => '<rc ' . random_int(80, 120) . '>',
                 ];
 
             case 'classic_1':
@@ -11400,16 +11403,17 @@ DNS-over-HTTPS with IP:
 
             case 'standard_2':
             default:
+                // I1 в середине рекомендованного коридора 100-500 байт.
                 [$s1, $s2] = $rngS(15, 64);
                 return $rngH2() + [
                     'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1024,
                     'S1' => $s1, 'S2' => $s2,
                     'S3' => random_int(0, 64), 'S4' => random_int(0, 32),
-                    'I1' => '<b 0xc000000001><r ' . random_int(80, 120) . '>',
-                    'I2' => '<t><r ' . random_int(40, 80) . '>',
-                    'I3' => '<r ' . random_int(50, 100) . '>',
-                    'I4' => '<rd ' . random_int(8, 16) . '><r ' . random_int(30, 60) . '>',
-                    'I5' => '<rc ' . random_int(20, 50) . '>',
+                    'I1' => '<b 0xc000000001><r ' . random_int(120, 200) . '>',
+                    'I2' => '<t><r ' . random_int(60, 120) . '>',
+                    'I3' => '<r ' . random_int(80, 150) . '>',
+                    'I4' => '<rd ' . random_int(8, 16) . '><r ' . random_int(60, 120) . '>',
+                    'I5' => '<rc ' . random_int(40, 80) . '>',
                 ];
         }
     }
