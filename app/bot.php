@@ -11365,6 +11365,8 @@ DNS-over-HTTPS with IP:
         };
 
         switch ($template) {
+            // 2.0 templates: каждое из I1–I5 даёт пакет ≥100 байт
+            // (рекомендуемый минимум, habr.com/ru/companies/amnezia/articles/1014636/).
             case 'aggressive_2':
                 [$s1, $s2] = $rngS(40, 64);
                 return $rngH2() + [
@@ -11372,26 +11374,24 @@ DNS-over-HTTPS with IP:
                     'S1' => $s1, 'S2' => $s2,
                     'S3' => random_int(32, 64), 'S4' => random_int(16, 32),
                     'I1' => '<b 0xc000000001><r ' . random_int(150, 250) . '>',
-                    'I2' => '<t><r ' . random_int(80, 150) . '>',
+                    'I2' => '<t><r ' . random_int(100, 200) . '>',
                     'I3' => '<r ' . random_int(100, 200) . '>',
-                    'I4' => '<rd ' . random_int(16, 24) . '><r ' . random_int(60, 100) . '>',
-                    'I5' => '<rc ' . random_int(50, 100) . '>',
+                    'I4' => '<rd ' . random_int(16, 24) . '><r ' . random_int(100, 150) . '>',
+                    'I5' => '<rc ' . random_int(100, 150) . '>',
                 ];
 
             case 'mobile_2':
-                // Размеры I1-I5 подняты в рекомендуемый коридор 100-500 байт
-                // (habr.com/ru/companies/amnezia/articles/1014636/) — для mobile
-                // приоритет маскировки выше экономии батареи/трафика.
+                // Для mobile приоритет маскировки выше экономии батареи/трафика.
                 [$s1, $s2] = $rngS(15, 32);
                 return $rngH2() + [
                     'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
                     'S1' => $s1, 'S2' => $s2,
                     'S3' => random_int(0, 32), 'S4' => random_int(0, 16),
                     'I1' => '<b 0xc000000001><r ' . random_int(100, 150) . '>',
-                    'I2' => '<t><r ' . random_int(80, 120) . '>',
-                    'I3' => '<r ' . random_int(80, 120) . '>',
-                    'I4' => '<rd ' . random_int(6, 12) . '><r ' . random_int(80, 120) . '>',
-                    'I5' => '<rc ' . random_int(80, 120) . '>',
+                    'I2' => '<t><r ' . random_int(100, 130) . '>',
+                    'I3' => '<r ' . random_int(100, 130) . '>',
+                    'I4' => '<rd ' . random_int(6, 12) . '><r ' . random_int(100, 130) . '>',
+                    'I5' => '<rc ' . random_int(100, 130) . '>',
                 ];
 
             case 'classic_1':
@@ -11403,17 +11403,16 @@ DNS-over-HTTPS with IP:
 
             case 'standard_2':
             default:
-                // I1 в середине рекомендованного коридора 100-500 байт.
                 [$s1, $s2] = $rngS(15, 64);
                 return $rngH2() + [
                     'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1024,
                     'S1' => $s1, 'S2' => $s2,
                     'S3' => random_int(0, 64), 'S4' => random_int(0, 32),
                     'I1' => '<b 0xc000000001><r ' . random_int(120, 200) . '>',
-                    'I2' => '<t><r ' . random_int(60, 120) . '>',
-                    'I3' => '<r ' . random_int(80, 150) . '>',
-                    'I4' => '<rd ' . random_int(8, 16) . '><r ' . random_int(60, 120) . '>',
-                    'I5' => '<rc ' . random_int(40, 80) . '>',
+                    'I2' => '<t><r ' . random_int(100, 150) . '>',
+                    'I3' => '<r ' . random_int(100, 150) . '>',
+                    'I4' => '<rd ' . random_int(8, 16) . '><r ' . random_int(100, 150) . '>',
+                    'I5' => '<rc ' . random_int(100, 150) . '>',
                 ];
         }
     }
