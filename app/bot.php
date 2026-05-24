@@ -3092,6 +3092,61 @@ class Bot
         return '';
     }
 
+    // CPS-builders с согласованными полями длины. Возвращают строку CPS, у которой
+    // ВСЕ внутренние length-поля корректно соответствуют реальному размеру пакета.
+    // Это глубже обманывает DPI: первый pass-парсер не отбрасывает пакет как
+    // "битый" из-за рассогласования length-fields. target = желаемый итоговый
+    // размер пакета I1 в байтах (≥100).
+
+    // TLS 1.2/1.3 ClientHello (RFC 5246 / 8446). Структура wire-формата идентична,
+    // отличаются только расширения (которые в нашем junk-пакете отсутствуют).
+    // Layout: record_hdr(5) + handshake_hdr(4) + legacy_version(2) + random(32) + tail.
+    public function cpsTLS(int $target): string
+    {
+        $rec_len = $target - 5;
+        $hs_len  = $target - 9;
+        $hex = sprintf('160301%04x01%06x0303', $rec_len, $hs_len);
+        $pad = $target - 43;
+        return "<b 0x$hex><r 32><r $pad>";
+    }
+
+    // DTLS 1.2 ClientHello (RFC 6347). Отличается от TLS дополнительными
+    // полями в record/handshake-заголовках (epoch+seq, message_seq+frag_off+frag_len).
+    // Layout: record_hdr(13) + handshake_hdr(12) + inner_version(2) + random(32) + tail.
+    public function cpsDTLS(int $target): string
+    {
+        $rec_len  = $target - 13;
+        $hs_len   = $target - 25;
+        $hex = sprintf(
+            '16fefd0000000000000000%04x01%06x0000000000%06xfefd',
+            $rec_len, $hs_len, $hs_len,
+        );
+        $pad = $target - 59;
+        return "<b 0x$hex><r 32><r $pad>";
+    }
+
+    // STUN Binding Request (RFC 5389). msg_length указывает количество байт
+    // ПОСЛЕ 20-байтного STUN-заголовка (т.е. в attribute-секции).
+    // Layout: type(2) + length(2) + magic(4) + tx_id(12) + attrs(target-20).
+    public function cpsSTUN(int $target): string
+    {
+        $attrs = $target - 20;
+        $hex   = sprintf('0001%04x2112a442', $attrs);
+        return "<b 0x$hex><r 12><r $attrs>";
+    }
+
+    // HTTP/2 connection preface (RFC 7540 §3.5) + SETTINGS frame (тип 0x04).
+    // Frame_length указывает размер payload (3 байта); должен быть кратен 6
+    // если DPI глубоко парсит SETTINGS, но обычный pass-через DPI этого не делает.
+    // Layout: preface(24) + frame_hdr(9) + payload(target-33).
+    public function cpsHTTP2(int $target): string
+    {
+        $body = $target - 33;
+        $hex  = '505249202a20485454502f322e300d0a0d0a534d0d0a0d0a'
+              . sprintf('%06x040000000000', $body);
+        return "<b 0x$hex><r $body>";
+    }
+
     public function setAmneziaI1($page = 0)
     {
         $c   = $this->getPacConf();
@@ -3115,32 +3170,32 @@ class Bot
                     => '<b 0xd100000001><rc 8><t><r 100>',
             ],
             'DNS / mDNS (UDP/53)' => [
-                'Ответ: yabs.yandex.ru (пример Amnezia)'
+                'RU: Yandex DNS-ответ (yabs.yandex.ru)'
                     => '<b 0x8580000100010000000004796162730679616e6465780272750000010001c00c000100010001c00c000100010000026d000457fa27d1><r 50>',
-                'Ответ: widget.tickets.kinopoisk + Yandex Afisha'
+                'RU: Yandex DNS-ответ (widget.tickets.kinopoisk + Afisha)'
                     => '<b 0x084481800001000300000000077469636b65747306776964676574096b696e6f706f69736b0272750000010001c00c0005000100000039001806776964676574077469636b6574730679616e646578c025c0390005000100000039002b1765787465726e616c2d7469636b6574732d776964676574066166697368610679616e646578036e657400c05d000100010000001c000457fafe25>',
-                'Запрос A: www.google.com (recursion desired)'
+                'Global: DNS A-запрос www.google.com'
                     => '<r 2><b 0x012000010000000000000377777706676f6f676c6503636f6d0000010001><r 80>',
-                'mDNS-запрос: _services._dns-sd._udp.local'
+                'Global: DNS A-запрос cloudflare.com'
+                    => '<r 2><b 0x012000010000000000000a636c6f7564666c61726503636f6d0000010001><r 80>',
+                'Global: mDNS-запрос _services._dns-sd._udp.local'
                     => '<b 0x000000000001000000000000095f7365727669636573075f646e732d7364045f756470056c6f63616c00000c0001><r 80>',
             ],
             'TLS / DTLS' => [
-                'TLS 1.3 ClientHello (TCP/443)'
-                    => '<b 0x16030100fc010000f80303><r 32><r 80>',
-                'TLS 1.2 ClientHello (TCP/443)'
-                    => '<b 0x16030101fc010001f80303><r 32><r 80>',
-                'DTLS 1.2 ClientHello (UDP, RFC 6347)'
-                    => '<b 0x16fefd000000000000000000fc010000f000000000000000f0fefd><r 32><r 50>',
+                'TLS 1.2/1.3 ClientHello (consistent length fields)'
+                    => $this->cpsTLS(120),
+                'DTLS 1.2 ClientHello (consistent length fields, RFC 6347)'
+                    => $this->cpsDTLS(120),
             ],
             'HTTP' => [
-                'HTTP/2 connection preface (PRI…)'
-                    => '<b 0x505249202a20485454502f322e300d0a0d0a534d0d0a0d0a><r 100>',
-                'HTTP/1.1 GET / с Host-заголовком'
-                    => '<b 0x474554202f20485454502f312e310d0a486f73743a20><rc 30><r 80>',
+                'HTTP/2 preface + SETTINGS frame (consistent frame_len)'
+                    => $this->cpsHTTP2(120),
+                'HTTP/1.1 GET / с Host: cloudflare.com'
+                    => '<b 0x474554202f20485454502f312e310d0a486f73743a20636c6f7564666c6172652e636f6d0d0a4163636570743a202a2f2a0d0a0d0a><r 70>',
             ],
             'WebRTC / NTP (UDP)' => [
-                'STUN Binding Request (RFC 5389)'
-                    => '<b 0x000100002112a442><r 12><r 80>',
+                'STUN Binding Request (consistent msg_length, RFC 5389)'
+                    => $this->cpsSTUN(112),
                 'NTPv4 client request (mode 3, RFC 5905)'
                     => '<b 0x23000000000000000000000000000000><r 100>',
             ],
