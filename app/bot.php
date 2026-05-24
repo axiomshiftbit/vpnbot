@@ -3079,6 +3079,15 @@ class Bot
     // Critical rule (from amnezia article comments): hex inside <b 0x..> must have an
     // EVEN number of hex chars — otherwise it's not a whole byte sequence and the peer
     // silently rejects the signature packet.
+    //
+    // Upstream-limitation: amneziawg-go не предоставляет токенов для
+    //   <ra N>  — N случайных букв (a-zA-Z), полезно для имитации hostname/UA
+    //   <rh N>  — N символов из hostname-charset (a-zA-Z0-9-), без пунктуации
+    //   <ru N>  — N байт unicode-utf8 (для имитации SNI с IDN-доменами)
+    // Без них пресеты типа HTTP/1.1 "Host: " используют либо литералы (см.
+    // setAmneziaI1: Host: cloudflare.com), либо смесь <rc>/<rd>/<b>. При
+    // появлении новых токенов в upstream — расширить эту регулярку и токен-
+    // cheatsheet в setAmneziaI1.
     public function validateCPSLine($s)
     {
         $s = trim($s);
@@ -3153,6 +3162,28 @@ class Bot
         return "<b 0x$hex><r $body>";
     }
 
+    // Стандартный DNS-ответ на A-запрос (RFC 1035), пригодный для I1-junk.
+    // tx_id рандомизируется per-session через <r 2>; всё остальное — литералы:
+    // header (flags=0x8180 response+RA, qd=1 an=1) + question (name+A+IN) +
+    // answer (compressed name pointer 0xc00c + A + IN + TTL + rdlen + IPv4).
+    public function cpsDNSResponseA(string $domain, string $ipv4, int $target): string
+    {
+        $name_hex = '';
+        foreach (explode('.', $domain) as $part) {
+            $name_hex .= sprintf('%02x', strlen($part)) . bin2hex($part);
+        }
+        $name_hex .= '00';
+        $ip_hex = '';
+        foreach (explode('.', $ipv4) as $oct) {
+            $ip_hex .= sprintf('%02x', (int) $oct);
+        }
+        $literal  = '81800001000100000000';
+        $literal .= $name_hex . '00010001';
+        $literal .= 'c00c00010001000001230004' . $ip_hex;
+        $pad = $target - 2 - strlen($literal) / 2;
+        return "<r 2><b 0x$literal><r $pad>";
+    }
+
     public function setAmneziaI1($page = 0)
     {
         $c   = $this->getPacConf();
@@ -3171,18 +3202,22 @@ class Bot
         $presets = [
             'QUIC (UDP/443)' => [
                 'Initial v1 (long header, RFC 9000)'
-                    => '<b 0xc700000001><rc 8><t><r 100>',
+                    => '<b 0xc700000001><r 8><t><r 100>',
                 'Initial v1 (вариант из доки Amnezia)'
-                    => '<b 0xd100000001><rc 8><t><r 100>',
+                    => '<b 0xd100000001><r 8><t><r 100>',
             ],
             'DNS / mDNS (UDP/53)' => [
                 'RU: Yandex DNS-ответ (yabs.yandex.ru)'
                     => '<b 0x8580000100010000000004796162730679616e6465780272750000010001c00c000100010001c00c000100010000026d000457fa27d1><r 50>',
                 'RU: Yandex DNS-ответ (widget.tickets.kinopoisk + Afisha)'
                     => '<b 0x084481800001000300000000077469636b65747306776964676574096b696e6f706f69736b0272750000010001c00c0005000100000039001806776964676574077469636b6574730679616e646578c025c0390005000100000039002b1765787465726e616c2d7469636b6574732d776964676574066166697368610679616e646578036e657400c05d000100010000001c000457fafe25>',
-                'Global: DNS A-запрос www.google.com'
+                'Global: Cloudflare A-ответ (cloudflare.com → 104.16.132.229)'
+                    => $this->cpsDNSResponseA('cloudflare.com', '104.16.132.229', 120),
+                'Global: Google A-ответ (google.com → 142.250.80.46)'
+                    => $this->cpsDNSResponseA('google.com', '142.250.80.46', 120),
+                'Global: A-запрос www.google.com (recursion desired)'
                     => '<r 2><b 0x012000010000000000000377777706676f6f676c6503636f6d0000010001><r 80>',
-                'Global: DNS A-запрос cloudflare.com'
+                'Global: A-запрос cloudflare.com (recursion desired)'
                     => '<r 2><b 0x012000010000000000000a636c6f7564666c61726503636f6d0000010001><r 80>',
                 'Global: mDNS-запрос _services._dns-sd._udp.local'
                     => '<b 0x000000000001000000000000095f7365727669636573075f646e732d7364045f756470056c6f63616c00000c0001><r 80>',
@@ -3216,6 +3251,13 @@ class Bot
             'Текущее: <code>' . htmlspecialchars($cur) . '</code>',
             '',
             'Правила: hex в &lt;b 0x..&gt; — чётное число символов (целые байты); итоговый размер пакета ≥100 байт. Без пробелов между токенами.',
+            '',
+            'Токены CPS:',
+            '<code>&lt;b 0xHEX&gt;</code> — литерал-байты, для заголовков протоколов',
+            '<code>&lt;r N&gt;</code>     — N случайных байт, для CID/padding/IP/random fields',
+            '<code>&lt;rc N&gt;</code>    — N случайных printable-ASCII (буквы+цифры+пунктуация)',
+            '<code>&lt;rd N&gt;</code>    — N случайных ASCII-цифр (0-9), для числовых ID',
+            '<code>&lt;t&gt;</code>       — 4-байтный UNIX-timestamp',
             '',
             'I1 пишется одинаково в server и client (требование протокола: обе стороны должны консьюмить тот же junk-паттерн). Для разнообразия fingerprint\'а во времени включите авто-ротацию: rotate: every Nd.',
             '',
