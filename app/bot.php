@@ -3030,6 +3030,11 @@ class Bot
         $c[$prefix . 'amnezia']      = 1;
         $c[$prefix . 'amnezia_tpl']  = $template;
         $c[$prefix . 'amnezia_keys'] = $this->generateAmneziaKeys($template);
+        // Сбросить ротационный таймер: ручная смена шаблона = свежая генерация
+        // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
+        if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
+            $c[$prefix . 'amnezia_last_rotation'] = time();
+        }
         $this->setPacConf($c);
         $this->switchAmnezia($page, false, false, 1);
     }
@@ -3080,14 +3085,16 @@ class Bot
     // EVEN number of hex chars — otherwise it's not a whole byte sequence and the peer
     // silently rejects the signature packet.
     //
-    // Upstream-limitation: amneziawg-go не предоставляет токенов для
-    //   <ra N>  — N случайных букв (a-zA-Z), полезно для имитации hostname/UA
-    //   <rh N>  — N символов из hostname-charset (a-zA-Z0-9-), без пунктуации
-    //   <ru N>  — N байт unicode-utf8 (для имитации SNI с IDN-доменами)
-    // Без них пресеты типа HTTP/1.1 "Host: " используют либо литералы (см.
-    // setAmneziaI1: Host: cloudflare.com), либо смесь <rc>/<rd>/<b>. При
-    // появлении новых токенов в upstream — расширить эту регулярку и токен-
-    // cheatsheet в setAmneziaI1.
+    // Future-work (предложения для upstream amneziawg-go — пока НЕ существуют):
+    //   <ra N>  — N случайных букв a-zA-Z (для User-Agent, hostname-частей)
+    //   <rh N>  — N символов hostname-charset a-zA-Z0-9- (DNS-labels, SNI)
+    //   <ru N>  — N байт UTF-8 (теоретически для SNI с IDN-доменами,
+    //             хотя на практике IDN на wire — это уже Punycode-ASCII).
+    // Сейчас обходимся литералами через <b 0xHEX> (см. HTTP/1.1 пресет:
+    // "Host: cloudflare.com" целиком захардкожен). Если эти токены появятся
+    // upstream — нужно (1) добавить альтернативы в regex ниже, (2) добавить
+    // строки в cheatsheet setAmneziaI1, (3) при желании — pres-helpers
+    // типа cpsHTTPGet($host_random_len, ...).
     public function validateCPSLine($s)
     {
         $s = trim($s);
@@ -3116,8 +3123,12 @@ class Bot
     // TLS 1.2/1.3 ClientHello (RFC 5246 / 8446). Структура wire-формата идентична,
     // отличаются только расширения (которые в нашем junk-пакете отсутствуют).
     // Layout: record_hdr(5) + handshake_hdr(4) + legacy_version(2) + random(32) + tail.
+    // Min target = 43 (всё структурное без payload); рекомендуется ≥100 (амнезия 2.0).
     public function cpsTLS(int $target): string
     {
+        if ($target < 43) {
+            throw new InvalidArgumentException("cpsTLS: target=$target < 43 minimum");
+        }
         $rec_len = $target - 5;
         $hs_len  = $target - 9;
         $hex = sprintf('160301%04x01%06x0303', $rec_len, $hs_len);
@@ -3128,8 +3139,12 @@ class Bot
     // DTLS 1.2 ClientHello (RFC 6347). Отличается от TLS дополнительными
     // полями в record/handshake-заголовках (epoch+seq, message_seq+frag_off+frag_len).
     // Layout: record_hdr(13) + handshake_hdr(12) + inner_version(2) + random(32) + tail.
+    // Min target = 59.
     public function cpsDTLS(int $target): string
     {
+        if ($target < 59) {
+            throw new InvalidArgumentException("cpsDTLS: target=$target < 59 minimum");
+        }
         $rec_len  = $target - 13;
         $hs_len   = $target - 25;
         $hex = sprintf(
@@ -3143,19 +3158,33 @@ class Bot
     // STUN Binding Request (RFC 5389). msg_length указывает количество байт
     // ПОСЛЕ 20-байтного STUN-заголовка (т.е. в attribute-секции).
     // Layout: type(2) + length(2) + magic(4) + tx_id(12) + attrs(target-20).
+    // Min target = 20 (attrs=0); STUN attrs не обязаны быть кратны 4, но
+    // отдельные атрибуты — да; для junk-mimicry это не проверяется.
     public function cpsSTUN(int $target): string
     {
+        if ($target < 20) {
+            throw new InvalidArgumentException("cpsSTUN: target=$target < 20 minimum");
+        }
         $attrs = $target - 20;
         $hex   = sprintf('0001%04x2112a442', $attrs);
         return "<b 0x$hex><r 12><r $attrs>";
     }
 
     // HTTP/2 connection preface (RFC 7540 §3.5) + SETTINGS frame (тип 0x04).
-    // Frame_length указывает размер payload (3 байта); должен быть кратен 6
-    // если DPI глубоко парсит SETTINGS, но обычный pass-через DPI этого не делает.
+    // RFC 7540 §6.5: "A SETTINGS frame ... A SETTINGS frame whose length is not
+    // a multiple of 6 octets MUST be treated as a connection error". Поэтому
+    // target должен удовлетворять (target - 33) % 6 == 0, т.е. target ∈ {33,39,45,...,123,129,...}.
     // Layout: preface(24) + frame_hdr(9) + payload(target-33).
     public function cpsHTTP2(int $target): string
     {
+        if ($target < 33) {
+            throw new InvalidArgumentException("cpsHTTP2: target=$target < 33 minimum");
+        }
+        if (($target - 33) % 6 !== 0) {
+            throw new InvalidArgumentException(
+                "cpsHTTP2: target=$target — frame body " . ($target - 33) . " not multiple of 6 (RFC 7540 §6.5)"
+            );
+        }
         $body = $target - 33;
         $hex  = '505249202a20485454502f322e300d0a0d0a534d0d0a0d0a'
               . sprintf('%06x040000000000', $body);
@@ -3170,17 +3199,27 @@ class Bot
     {
         $name_hex = '';
         foreach (explode('.', $domain) as $part) {
+            if (strlen($part) > 63) {
+                throw new InvalidArgumentException("cpsDNSResponseA: label '$part' >63 bytes (RFC 1035 §2.3.4)");
+            }
             $name_hex .= sprintf('%02x', strlen($part)) . bin2hex($part);
         }
         $name_hex .= '00';
         $ip_hex = '';
         foreach (explode('.', $ipv4) as $oct) {
-            $ip_hex .= sprintf('%02x', (int) $oct);
+            $n = (int) $oct;
+            if ($n < 0 || $n > 255) {
+                throw new InvalidArgumentException("cpsDNSResponseA: octet $oct out of range");
+            }
+            $ip_hex .= sprintf('%02x', $n);
         }
         $literal  = '81800001000100000000';
         $literal .= $name_hex . '00010001';
         $literal .= 'c00c00010001000001230004' . $ip_hex;
         $pad = $target - 2 - strlen($literal) / 2;
+        if ($pad < 0) {
+            throw new InvalidArgumentException("cpsDNSResponseA: target=$target too small for '$domain'");
+        }
         return "<r 2><b 0x$literal><r $pad>";
     }
 
@@ -3230,7 +3269,7 @@ class Bot
             ],
             'HTTP' => [
                 'HTTP/2 preface + SETTINGS frame (consistent frame_len)'
-                    => $this->cpsHTTP2(120),
+                    => $this->cpsHTTP2(123),
                 'HTTP/1.1 GET / с Host: cloudflare.com'
                     => '<b 0x474554202f20485454502f312e310d0a486f73743a20636c6f7564666c6172652e636f6d0d0a4163636570743a202a2f2a0d0a0d0a><r 70>',
             ],
@@ -3432,6 +3471,23 @@ class Bot
             return;
         }
         $tpl = $c[$prefix . 'amnezia_tpl'] ?? 'standard_2';
+        // classic_1 — это 1.x-режим без I1-I5/S3-S4. Ротировать нечего, но
+        // обновим last_rotation чтобы maybeRotate не дёргался каждый менеджмент.
+        if ($tpl === 'classic_1') {
+            $c[$prefix . 'amnezia_last_rotation'] = time();
+            $this->setPacConf($c);
+            if (!$silent) {
+                $this->menu('wg', $page);
+            }
+            return;
+        }
+        // Defensive: гарантировать наличие полного набора ключей перед частичной
+        // ротацией. Закрывает race-окно между resetAmnezia и завершением
+        // switchAmnezia (когда amnezia_keys могут быть пусты, но amnezia=1).
+        if (empty($c[$prefix . 'amnezia_keys'])) {
+            $this->amneziaKeys();
+            $c = $this->getPacConf();
+        }
         $new = $this->generateAmneziaKeys($tpl);
         foreach (['I1', 'I2', 'I3', 'I4', 'I5', 'S3', 'S4'] as $k) {
             if (isset($new[$k])) {
