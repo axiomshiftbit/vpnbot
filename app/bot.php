@@ -661,6 +661,12 @@ class Bot
             case preg_match('~^/setAmneziaI1 (-?\d+)$~', $this->input['callback'], $m):
                 $this->setAmneziaI1($m[1]);
                 break;
+            case preg_match('~^/rotateAmnezia (-?\d+)$~', $this->input['callback'], $m):
+                $this->rotateAmneziaJunk(false, $m[1]);
+                break;
+            case preg_match('~^/setAmneziaRotation (-?\d+)$~', $this->input['callback'], $m):
+                $this->setAmneziaRotation($m[1]);
+                break;
             case preg_match('~^/switchExchange (\d+)$~', $this->input['callback'], $m):
                 $this->switchExchange($m[1]);
                 break;
@@ -3271,7 +3277,7 @@ class Bot
         $this->switchAmnezia($page, false, false, 1);
     }
 
-    public function switchAmnezia($page = 0, $reset = false, $reduce = false, $apply = false)
+    public function switchAmnezia($page = 0, $reset = false, $reduce = false, $apply = false, $silent = false)
     {
         $c = $this->getPacConf();
         switch (true) {
@@ -3362,6 +3368,100 @@ class Bot
             }
         }
         $this->restartWG($this->createConfig($wg), !$reset && !$reduce && !$apply);
+        if (!$silent) {
+            $this->menu('wg', $page);
+        }
+    }
+
+    // Ротация только "junk"-полей I1-I5 и S3-S4 (генерация заново по текущему
+    // шаблону). S1/S2/H1-H4/Jc/Jmin/Jmax и PSK сохраняются — они влияют на
+    // совместимость handshake между сервером и клиентами. После ротации
+    // клиентам нужно перекачать конфиги.
+    public function rotateAmneziaJunk($silent = false, $page = 0)
+    {
+        $c = $this->getPacConf();
+        $prefix = $this->getInstanceWG(1);
+        if (empty($c[$prefix . 'amnezia'])) {
+            if (!$silent) {
+                $this->menu('wg', $page);
+            }
+            return;
+        }
+        $tpl = $c[$prefix . 'amnezia_tpl'] ?? 'standard_2';
+        $new = $this->generateAmneziaKeys($tpl);
+        foreach (['I1', 'I2', 'I3', 'I4', 'I5', 'S3', 'S4'] as $k) {
+            if (isset($new[$k])) {
+                $c[$prefix . 'amnezia_keys'][$k] = $new[$k];
+            } else {
+                unset($c[$prefix . 'amnezia_keys'][$k]);
+            }
+        }
+        $c[$prefix . 'amnezia_last_rotation'] = time();
+        $this->setPacConf($c);
+        $this->switchAmnezia($page, false, false, 1, $silent);
+    }
+
+    // Ленивая проверка таймера ротации. Вызывается из statusWg при открытии
+    // wg-меню. Если ротация настроена и срок истёк — silent-перегенерация.
+    public function maybeRotateAmnezia()
+    {
+        $c = $this->getPacConf();
+        $prefix = $this->getInstanceWG(1);
+        if (empty($c[$prefix . 'amnezia'])) {
+            return;
+        }
+        $period_days = (int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0);
+        if ($period_days <= 0) {
+            return;
+        }
+        $last = (int) ($c[$prefix . 'amnezia_last_rotation'] ?? 0);
+        if (time() < $last + $period_days * 86400) {
+            return;
+        }
+        $this->rotateAmneziaJunk(true);
+    }
+
+    public function setAmneziaRotation($page = 0)
+    {
+        $c = $this->getPacConf();
+        $prefix = $this->getInstanceWG(1);
+        $cur = (int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0);
+        $last = (int) ($c[$prefix . 'amnezia_last_rotation'] ?? 0);
+        $last_str = $last ? date('Y-m-d H:i', $last) : '—';
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} введите период авто-ротации I1-I5/S3-S4 в днях (0 — выкл).\n\n"
+            . "Текущий период: <code>" . ($cur ?: 'выкл') . "</code>\n"
+            . "Последняя ротация: <code>$last_str</code>\n\n"
+            . "После ротации клиентам нужно перекачать конфиги (S1/S2/H1-H4/PSK сохраняются, рукопожатие совместимо, но junk-паттерн обновится).",
+            $this->input['message_id'],
+            reply: 'введите N или 0',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'setAmneziaRotationValue',
+            'args'           => [$page],
+        ];
+    }
+
+    public function setAmneziaRotationValue($text, $page = 0)
+    {
+        $text = trim($text);
+        if (!preg_match('~^\d+$~', $text)) {
+            $this->update($this->input['chat'], $this->input['message_id'], 'rotation: введите целое число дней или 0');
+            sleep(3);
+            $this->menu('wg', $page);
+            return;
+        }
+        $days = min((int) $text, 365);
+        $c = $this->getPacConf();
+        $prefix = $this->getInstanceWG(1);
+        $c[$prefix . 'amnezia_rotation_period'] = $days;
+        if ($days > 0 && empty($c[$prefix . 'amnezia_last_rotation'])) {
+            $c[$prefix . 'amnezia_last_rotation'] = time();
+        }
+        $this->setPacConf($c);
         $this->menu('wg', $page);
     }
 
@@ -4560,6 +4660,10 @@ DNS-over-HTTPS with IP:
 
     public function statusWg(int $page = 0)
     {
+        // Lazy auto-rotation: silently regenerates I1-I5/S3-S4 if the configured
+        // period has elapsed. Must run BEFORE loading pacconf so subsequent reads
+        // see the freshly rotated keys.
+        $this->maybeRotateAmnezia();
         $c       = $this->getPacConf();
         $conf    = $this->readConfig();
         $status  = $this->readStatus();
@@ -4625,6 +4729,8 @@ DNS-over-HTTPS with IP:
             ],
         ];
         if (!empty($am)) {
+            $rot_period = (int) ($c[$this->getInstanceWG(1) . 'amnezia_rotation_period'] ?? 0);
+            $rot_label  = $rot_period > 0 ? "rotate: every {$rot_period}d" : "rotate: off";
             array_unshift($data, [
                 [
                     'text'          => "templates",
@@ -4633,6 +4739,16 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => "set I1",
                     'callback_data' => "/setAmneziaI1 $page",
+                ],
+            ]);
+            array_unshift($data, [
+                [
+                    'text'          => "rotate now",
+                    'callback_data' => "/rotateAmnezia $page",
+                ],
+                [
+                    'text'          => $rot_label,
+                    'callback_data' => "/setAmneziaRotation $page",
                 ],
             ]);
             array_unshift($data, [
