@@ -3269,7 +3269,7 @@ class Bot
                 unset($wg['peers'][$k]['PresharedKey']);
             }
         }
-        $this->restartWG($this->createConfig($wg), !$reset && !$reduce);
+        $this->restartWG($this->createConfig($wg), !$reset && !$reduce && !$apply);
         $this->menu('wg', $page);
     }
 
