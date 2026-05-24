@@ -3097,37 +3097,74 @@ class Bot
         $c   = $this->getPacConf();
         $cur = $c[$this->getInstanceWG(1) . 'amnezia_keys']['I1'] ?? '—';
 
-        // Tap-to-copy CPS presets. Sources:
-        //   - docs.amnezia.org/documentation/instructions/new-amneziawg-selfhosted (DNS response example)
-        //   - habr.com/ru/companies/amnezia/articles/1014636 (QUIC examples)
-        //   - RFC 9000 (QUIC long-header first byte; version 0x00000001)
-        // All <b 0x..> values below have even hex length (byte-aligned).
+        // Tap-to-copy CPS presets. Стартовые байты имитируют реальный протокол, остаток —
+        // рандом-добивка до рекомендуемых ≥100 байт (habr.com/ru/companies/amnezia/articles/1014636).
+        // Hex внутри <b 0x..> всегда чётной длины (целые байты). Никаких пробелов между токенами.
+        // Источники структуры заголовков:
+        //   QUIC — RFC 9000, docs.amnezia.org
+        //   DNS  — RFC 1035; mDNS — RFC 6762
+        //   TLS  — RFC 5246 (1.2) / RFC 8446 (1.3); DTLS — RFC 6347
+        //   HTTP — RFC 7230 (1.1) / RFC 7540 (2)
+        //   STUN — RFC 5389 (magic cookie 0x2112A442)
+        //   NTP  — RFC 5905 (mode 3 client, first byte 0x23 = LI=0,VN=4,Mode=3)
         $presets = [
-            'QUIC Initial (long header, v1)'
-                => '<b 0xc700000001><rc 8><t><r 100>',
-            'QUIC вариант (из офиц. доки Amnezia)'
-                => '<b 0xd100000001><rc 8><t><r 50>',
-            'DNS-ответ (пример Amnezia: yabs.yandex.ru)'
-                => '<b 0x8580000100010000000004796162730679616e6465780272750000010001c00c000100010001c00c000100010000026d000457fa27d1><r 20>',
-            'DNS-ответ (widget.tickets.kinopoisk + Yandex Afisha)'
-                => '<b 0x084481800001000300000000077469636b65747306776964676574096b696e6f706f69736b0272750000010001c00c0005000100000039001806776964676574077469636b6574730679616e646578c025c0390005000100000039002b1765787465726e616c2d7469636b6574732d776964676574066166697368610679616e646578036e657400c05d000100010000001c000457fafe25>',
-            'TLS 1.2 ClientHello (запись Handshake)'
-                => '<b 0x16030100><t><r 80>',
-            'Лёгкий профиль (умеренный трафик)'
-                => '<b 0xc000000001><r 50>',
+            'QUIC (UDP/443)' => [
+                'Initial v1 (long header, RFC 9000)'
+                    => '<b 0xc700000001><rc 8><t><r 100>',
+                'Initial v1 (вариант из доки Amnezia)'
+                    => '<b 0xd100000001><rc 8><t><r 100>',
+            ],
+            'DNS / mDNS (UDP/53)' => [
+                'Ответ: yabs.yandex.ru (пример Amnezia)'
+                    => '<b 0x8580000100010000000004796162730679616e6465780272750000010001c00c000100010001c00c000100010000026d000457fa27d1><r 50>',
+                'Ответ: widget.tickets.kinopoisk + Yandex Afisha'
+                    => '<b 0x084481800001000300000000077469636b65747306776964676574096b696e6f706f69736b0272750000010001c00c0005000100000039001806776964676574077469636b6574730679616e646578c025c0390005000100000039002b1765787465726e616c2d7469636b6574732d776964676574066166697368610679616e646578036e657400c05d000100010000001c000457fafe25>',
+                'Запрос A: www.google.com (recursion desired)'
+                    => '<r 2><b 0x012000010000000000000377777706676f6f676c6503636f6d0000010001><r 80>',
+                'mDNS-запрос: _services._dns-sd._udp.local'
+                    => '<b 0x000000000001000000000000095f7365727669636573075f646e732d7364045f756470056c6f63616c00000c0001><r 80>',
+            ],
+            'TLS / DTLS' => [
+                'TLS 1.3 ClientHello (TCP/443)'
+                    => '<b 0x16030100fc010000f80303><r 32><r 80>',
+                'TLS 1.2 ClientHello (TCP/443)'
+                    => '<b 0x16030101fc010001f80303><r 32><r 80>',
+                'DTLS 1.2 ClientHello (UDP, RFC 6347)'
+                    => '<b 0x16fefd000000000000000000fc010000f000000000000000f0fefd><r 32><r 50>',
+            ],
+            'HTTP' => [
+                'HTTP/2 connection preface (PRI…)'
+                    => '<b 0x505249202a20485454502f322e300d0a0d0a534d0d0a0d0a><r 100>',
+                'HTTP/1.1 GET / с Host-заголовком'
+                    => '<b 0x474554202f20485454502f312e310d0a486f73743a20><rc 30><r 80>',
+            ],
+            'WebRTC / NTP (UDP)' => [
+                'STUN Binding Request (RFC 5389)'
+                    => '<b 0x000100002112a442><r 12><r 80>',
+                'NTPv4 client request (mode 3, RFC 5905)'
+                    => '<b 0x23000000000000000000000000000000><r 100>',
+            ],
+            'Прочее' => [
+                'Лёгкий профиль (минимальный валидный 2.0)'
+                    => '<b 0xc000000001><r 100>',
+            ],
         ];
         $lines = [
             "@{$this->input['username']} введите строку I1 (CPS) или 0 — отключить цепочку 2.0.",
             '',
             'Текущее: <code>' . htmlspecialchars($cur) . '</code>',
             '',
-            'Правило: внутри &lt;b 0x..&gt; количество hex-символов должно быть чётным (целое число байт) — иначе пакет молча отбросится.',
+            'Правила: hex в &lt;b 0x..&gt; — чётное число символов (целые байты); итоговый размер пакета ≥100 байт. Без пробелов между токенами.',
             '',
             'Готовые примеры (нажмите на строку — скопируется):',
         ];
-        foreach ($presets as $label => $val) {
-            $lines[] = "• $label";
-            $lines[] = '<code>' . htmlspecialchars($val) . '</code>';
+        foreach ($presets as $section => $items) {
+            $lines[] = '';
+            $lines[] = "<b>— $section —</b>";
+            foreach ($items as $label => $val) {
+                $lines[] = "• $label";
+                $lines[] = '<code>' . htmlspecialchars($val) . '</code>';
+            }
         }
 
         $r = $this->send(
