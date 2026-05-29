@@ -161,6 +161,18 @@ $i = [
         'en' => 'change sni',
         'ru' => 'изменить sni',
     ],
+    'masquerade'           => [
+        'en' => 'masquerade',
+        'ru' => 'маскировка',
+    ],
+    'masquerade host'      => [
+        'en' => 'decoy site',
+        'ru' => 'decoy-сайт',
+    ],
+    'masquerade hint'      => [
+        'en' => 'Pick a real third-party site to reverse-proxy probes to. Pointing at your own IP/domain is weak camouflage.',
+        'ru' => 'Выберите реальный сторонний сайт — на него будут проксироваться зонды. Указывать на свой IP/домен — слабая маскировка.',
+    ],
     'reset settings'       => [
         'en' => 'reset settings',
         'ru' => 'сбросить настройки',

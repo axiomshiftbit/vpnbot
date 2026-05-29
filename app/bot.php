@@ -471,6 +471,24 @@ class Bot
             case preg_match('~^/changeHySNI$~', $this->input['callback'], $m):
                 $this->changeHySNI();
                 break;
+            case preg_match('~^/toggleHyObfs$~', $this->input['callback'], $m):
+                $this->toggleHyObfs();
+                break;
+            case preg_match('~^/genHyObfs$~', $this->input['callback'], $m):
+                $this->genHyObfs();
+                break;
+            case preg_match('~^/hyMasqMenu$~', $this->input['callback'], $m):
+                $this->hyMasqMenu();
+                break;
+            case preg_match('~^/setHyMasq (\d+)$~', $this->input['callback'], $m):
+                $this->setHyMasq($m[1]);
+                break;
+            case preg_match('~^/changeHyBw$~', $this->input['callback'], $m):
+                $this->changeHyBw();
+                break;
+            case preg_match('~^/toggleHyInsecure$~', $this->input['callback'], $m):
+                $this->toggleHyInsecure();
+                break;
             case preg_match('~^/addTtUser$~', $this->input['callback'], $m):
                 $this->addTtUser();
                 break;
@@ -1400,16 +1418,89 @@ class Bot
         $this->ssh('pkill hysteria', 'hy');
         $c   = yaml_parse_file('/config/hysteria.yaml');
         $c['auth']['password'] = $pac['hysteria_pass'] ?? '';
-        // Кастомный SNI (masquerade host) из pac имеет приоритет над доменом;
-        // см. chHySNI(). Если ни SNI, ни домена нет — оставляем url как есть.
+
+        // Salamander obfs — XOR-обфускация QUIC-пакетов общим секретом, ломает
+        // QUIC-фингерпринтинг и активные пробы. Пароль ОБЯЗАН совпадать у всех
+        // клиентов (идёт в hy2://-ссылку). Пусто = obfs выключен.
+        if (!empty($pac['hysteria_obfs'])) {
+            $c['obfs'] = [
+                'type'       => 'salamander',
+                'salamander' => ['password' => $pac['hysteria_obfs']],
+            ];
+        } else {
+            unset($c['obfs']);
+        }
+
+        // bandwidth включает congestion control Brutal (агрессивный, лучше на
+        // потерях/перегруженных каналах). Без значений — остаётся BBR.
+        if (!empty($pac['hysteria_bw_up']) && !empty($pac['hysteria_bw_down'])) {
+            $c['bandwidth'] = [
+                'up'   => $pac['hysteria_bw_up'],
+                'down' => $pac['hysteria_bw_down'],
+            ];
+        } else {
+            unset($c['bandwidth']);
+        }
+
+        // Masquerade decoy host (server-only): reverse-proxy для зондов на тот
+        // же UDP-порт. Кастомный hysteria_sni имеет приоритет над доменом; см.
+        // chHySNI()/setHyMasq(). Это НЕ клиентский TLS SNI (тот = домен).
         $sni = !empty($pac['hysteria_sni']) ? $pac['hysteria_sni'] : $this->getDomain();
         if (!empty($sni)) {
-            $c['masquerade']['proxy']['url'] = "https://$sni";
+            $c['masquerade']['type']                 = 'proxy';
+            $c['masquerade']['proxy']['url']         = "https://$sni";
+            $c['masquerade']['proxy']['rewriteHost'] = true;
         }
         yaml_emit_file('/config/hysteria.yaml', $c);
         if (!empty($pac['hysteria_pass'])) {
             $this->ssh('hysteria server -c /config/hysteria.yaml', 'hy', false, '/logs/hysteria');
         }
+    }
+
+    // Список реальных decoy-сайтов для masquerade. Указывать на реальный
+    // сторонний сайт (а не на собственный IP/nip.io) — иначе зонд видит не
+    // убедительную легенду. Используется hyMasqMenu()/setHyMasq().
+    public function hyMasqPresets()
+    {
+        return [
+            'www.bing.com',
+            'news.ycombinator.com',
+            'www.cloudflare.com',
+            'www.microsoft.com',
+            'www.apple.com',
+            'mirror.gcr.io',
+        ];
+    }
+
+    // hy2://-ссылка для клиента. host/port — внешние (домен:порт-проброс),
+    // sni добавляем только при коннекте по IP без домена. obfs/insecure
+    // прокидываем из pac. Возвращает '' если нет пароля или порт скрыт.
+    public function linkHysteria()
+    {
+        $pac   = $this->getPacConf();
+        $ports = $this->getPorts();
+        $port  = $ports['hy']['enable'] ? $ports['hy']['port'] : null;
+        $pass  = $pac['hysteria_pass'] ?? '';
+        if (empty($pass) || empty($port)) {
+            return '';
+        }
+        $domain = $this->getDomain();
+        $host   = $domain ?: $this->ip;
+        $q = [];
+        // Клиентский TLS SNI = домен сертификата. Нужен в явном виде, если
+        // коннект идёт по IP (host != домен) — иначе SNI возьмётся из IP.
+        if (!empty($domain) && $host !== $domain) {
+            $q['sni'] = $domain;
+        }
+        if (!empty($pac['hysteria_insecure'])) {
+            $q['insecure'] = '1';
+        }
+        if (!empty($pac['hysteria_obfs'])) {
+            $q['obfs']          = 'salamander';
+            $q['obfs-password'] = $pac['hysteria_obfs'];
+        }
+        $query = $q ? '?' . http_build_query($q) : '';
+        return 'hysteria2://' . rawurlencode($pass) . "@$host:$port/$query";
     }
 
     public function chocdns($dns)
@@ -1520,6 +1611,126 @@ class Bot
         }
         $this->setPacConf($pac);
         $this->restartHysteria();
+        $this->menu('hy');
+    }
+
+    // Salamander obfs on/off. При включении генерируем пароль, если его нет;
+    // при выключении НЕ стираем пароль (чтобы повторное включение вернуло тот
+    // же секрет) — просто помечаем выключенным пустым значением.
+    public function toggleHyObfs()
+    {
+        $pac = $this->getPacConf();
+        if (!empty($pac['hysteria_obfs'])) {
+            $pac['hysteria_obfs_saved'] = $pac['hysteria_obfs'];
+            unset($pac['hysteria_obfs']);
+        } else {
+            $pac['hysteria_obfs'] = $pac['hysteria_obfs_saved'] ?? bin2hex(random_bytes(12));
+        }
+        $this->setPacConf($pac);
+        $this->restartHysteria();
+        $this->menu('hy');
+    }
+
+    // Сгенерировать новый obfs-пароль (только когда obfs включён). После смены
+    // все клиенты должны обновить obfs-password из новой hy2://-ссылки.
+    public function genHyObfs()
+    {
+        $pac = $this->getPacConf();
+        if (empty($pac['hysteria_obfs'])) {
+            return $this->menu('hy');
+        }
+        $pac['hysteria_obfs'] = bin2hex(random_bytes(12));
+        $this->setPacConf($pac);
+        $this->restartHysteria();
+        $this->menu('hy');
+    }
+
+    // Подменю выбора decoy-сайта для masquerade из пресетов + ручной ввод.
+    public function hyMasqMenu()
+    {
+        $pac     = $this->getPacConf();
+        $current = !empty($pac['hysteria_sni']) ? $pac['hysteria_sni'] : $this->getDomain();
+        $text    = "Menu -> Hysteria -> " . $this->i18n('masquerade') . "\n\n"
+                 . $this->i18n('masquerade host') . ": <code>$current</code>\n\n"
+                 . "<i>" . $this->i18n('masquerade hint') . "</i>";
+        $data = [];
+        foreach ($this->hyMasqPresets() as $i => $host) {
+            $mark   = ($host === $current) ? '✅ ' : '';
+            $data[] = [[
+                'text'          => "$mark$host",
+                'callback_data' => "/setHyMasq $i",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('change sni') . ' (custom)',
+            'callback_data' => "/changeHySNI",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/menu hy",
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    public function setHyMasq($i)
+    {
+        $presets = $this->hyMasqPresets();
+        $i       = (int) $i;
+        if (!isset($presets[$i])) {
+            return $this->hyMasqMenu();
+        }
+        $pac = $this->getPacConf();
+        $pac['hysteria_sni'] = $presets[$i];
+        $this->setPacConf($pac);
+        $this->restartHysteria();
+        $this->hyMasqMenu();
+    }
+
+    public function changeHyBw()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter bandwidth: up down (mbps), e.g. 200 200 — empty = BBR (auto)",
+            $this->input['message_id'],
+            reply: 'enter bandwidth',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chHyBw',
+            'args'           => [],
+        ];
+    }
+
+    // Парсим "up down" в mbps. Пусто/0 → удаляем bandwidth (Brutal off → BBR).
+    public function chHyBw($text)
+    {
+        $pac = $this->getPacConf();
+        $nums = preg_split('~[\s,]+~', trim((string) $text), -1, PREG_SPLIT_NO_EMPTY);
+        $up   = (int) ($nums[0] ?? 0);
+        $down = (int) ($nums[1] ?? $nums[0] ?? 0);
+        if ($up <= 0 || $down <= 0) {
+            unset($pac['hysteria_bw_up'], $pac['hysteria_bw_down']);
+        } else {
+            $pac['hysteria_bw_up']   = "$up mbps";
+            $pac['hysteria_bw_down'] = "$down mbps";
+        }
+        $this->setPacConf($pac);
+        $this->restartHysteria();
+        $this->menu('hy');
+    }
+
+    // Флаг insecure для клиентской hy2://-ссылки (нужен при self-signed серте,
+    // иначе TLS-handshake клиента падает). На сервер не влияет.
+    public function toggleHyInsecure()
+    {
+        $pac = $this->getPacConf();
+        if (!empty($pac['hysteria_insecure'])) {
+            unset($pac['hysteria_insecure']);
+        } else {
+            $pac['hysteria_insecure'] = 1;
+        }
+        $this->setPacConf($pac);
         $this->menu('hy');
     }
 
@@ -7894,10 +8105,24 @@ DNS-over-HTTPS with IP:
         $hy     = yaml_parse_file('/config/hysteria.yaml');
         $sni    = parse_url($hy['masquerade']['proxy']['url'] ?? '', PHP_URL_HOST) ?: $domain;
         $pass   = $pac['hysteria_pass'] ?? '';
+        $obfsOn = !empty($pac['hysteria_obfs']);
+        $obfs   = $pac['hysteria_obfs'] ?? '';
+        $insec  = !empty($pac['hysteria_insecure']);
+        $bwUp   = $pac['hysteria_bw_up']   ?? '';
+        $bwDown = $pac['hysteria_bw_down'] ?? '';
+        $cc     = ($bwUp && $bwDown) ? "brutal ($bwUp / $bwDown)" : 'bbr';
+        $link   = $this->linkHysteria();
+
         $text[] = "Menu -> Hysteria";
-        $text[] = "server: " . ($port? "<code>$domain:$port</code>" : 'port unavailable');
+        $text[] = "server: " . ($port ? "<code>$domain:$port</code>" : 'port unavailable');
         $text[] = "passwd: <code>$pass</code>";
-        $text[] = "sni: <code>$sni</code>";
+        $text[] = "masq (decoy): <code>$sni</code>";
+        $text[] = "obfs: " . ($obfsOn ? "salamander <code>$obfs</code>" : $this->i18n('off'));
+        $text[] = "cc: <code>$cc</code>";
+        $text[] = "insecure: " . $this->i18n($insec ? 'on' : 'off');
+        if ($link) {
+            $text[] = "\n<code>$link</code>";
+        }
         $data[] = [
             [
                 'text'          => $this->i18n('change password'),
@@ -7910,8 +8135,29 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => $this->i18n('change sni') . ": $sni",
-                'callback_data' => "/changeHySNI",
+                'text'          => $this->i18n('masquerade') . ": $sni",
+                'callback_data' => "/hyMasqMenu",
+            ],
+        ];
+        $obfsRow = [[
+            'text'          => 'obfs: ' . $this->i18n($obfsOn ? 'on' : 'off'),
+            'callback_data' => "/toggleHyObfs",
+        ]];
+        if ($obfsOn) {
+            $obfsRow[] = [
+                'text'          => $this->i18n('generate password'),
+                'callback_data' => "/genHyObfs",
+            ];
+        }
+        $data[] = $obfsRow;
+        $data[] = [
+            [
+                'text'          => "cc: $cc",
+                'callback_data' => "/changeHyBw",
+            ],
+            [
+                'text'          => 'insecure: ' . $this->i18n($insec ? 'on' : 'off'),
+                'callback_data' => "/toggleHyInsecure",
             ],
         ];
         $data[] = [
