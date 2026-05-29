@@ -1503,7 +1503,10 @@ class Bot
             $q['obfs-password'] = $pac['hysteria_obfs'];
         }
         $query = $q ? '?' . http_build_query($q) : '';
-        return 'hysteria2://' . rawurlencode($pass) . "@$host:$port/$query";
+        // #fragment — отображаемое имя подключения в клиенте; без него поле
+        // имени пустое. Используем хост (домен/IP) как узнаваемую метку.
+        $name = '#' . rawurlencode("hysteria $host");
+        return 'hysteria2://' . rawurlencode($pass) . "@$host:$port/$query$name";
     }
 
     public function chocdns($dns)
