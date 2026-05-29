@@ -1505,7 +1505,7 @@ class Bot
         $query = $q ? '?' . http_build_query($q) : '';
         // #fragment — отображаемое имя подключения в клиенте; без него поле
         // имени пустое. Используем хост (домен/IP) как узнаваемую метку.
-        $name = '#' . rawurlencode("hysteria $host");
+        $name = '#' . rawurlencode($host);
         return 'hysteria2://' . rawurlencode($pass) . "@$host:$port/$query$name";
     }
 
