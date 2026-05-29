@@ -32,6 +32,7 @@ class Bot
     public $time_xray_stats;
     public $admin;
     public $ports;
+    public $warpprofile;
 
     public function __construct($key, $i18n)
     {
@@ -10184,6 +10185,11 @@ DNS-over-HTTPS with IP:
                 }
                 break;
         }
+        // Cloudflare WARP profile of this server, exposed as template tags so a
+        // (per-user) template can embed a wireguard-WARP proxy with the dynamic
+        // server secrets. Empty array when warp isn't set up — the tags then
+        // resolve to empty strings / defaults.
+        $warp = $this->getWarpProfile() ?: [];
         $c = json_decode($this->replaceTags(json_encode($c), [
             '"~pac~"'        => json_encode(array_keys(array_filter($pac['includelist'] ?: []))),
             '"~block~"'      => json_encode(array_keys(array_filter($pac['blocklist'] ?: []))),
@@ -10191,6 +10197,12 @@ DNS-over-HTTPS with IP:
             '"~process~"'    => json_encode(array_keys(array_filter($pac['processlist'] ?: []))),
             '"~package~"'    => json_encode(array_keys(array_filter($pac['packagelist'] ?: []))),
             '"~subnet~"'     => json_encode(array_keys(array_filter($pac['subnetlist'] ?: []))),
+            '"~warp_port~"'      => (int) ($warp['port'] ?? 2408),
+            '"~warp_mtu~"'       => (int) ($warp['mtu'] ?? 1280),
+            '~warp_server~'      => $warp['server'] ?? '',
+            '~warp_ip~'          => $warp['ip'] ?? '',
+            '~warp_private_key~' => $warp['private-key'] ?? '',
+            '~warp_public_key~'  => $warp['public-key'] ?? '',
             '~dns~'          => "https://$domain/dns-query$hash/$uid",
             '~dnspath~'      => "/dns-query$hash/$uid",
             '~uid~'          => ($pac['transport'] == 'trojan-grpc' ? ($client['password'] ?? $uid) : $uid),
@@ -10425,6 +10437,58 @@ DNS-over-HTTPS with IP:
         }
         $c['rules'] = $tmp;
         return $c;
+    }
+
+    /**
+     * Parse the server's Cloudflare WARP wgcf profile (/etc/warp/wgcf-profile.conf,
+     * IPv6 already stripped by start_wp.sh) into the fields a mihomo wireguard
+     * proxy needs. Returns false when the profile is missing/unreadable so callers
+     * can fall back gracefully.
+     */
+    public function getWarpProfile()
+    {
+        // Cache per request: this runs on every config download (all types), and
+        // when the profile is absent the ssh fallback below would otherwise fire
+        // each time. null = not loaded yet; false/array = resolved result.
+        if ($this->warpprofile !== null) {
+            return $this->warpprofile;
+        }
+        $conf = @file_get_contents('/etc/warp/wgcf-profile.conf');
+        if (empty($conf)) {
+            // /etc/warp is mounted into this container, but fall back to the wp
+            // container over ssh just in case the volume isn't present.
+            $conf = $this->ssh('cat /etc/warp/wgcf-profile.conf 2>/dev/null', 'wp');
+        }
+        if (empty($conf) || !str_contains($conf, '[Peer]')) {
+            return $this->warpprofile = false;
+        }
+        $val = function ($key) use ($conf) {
+            return preg_match('~^\s*' . $key . '\s*=\s*(.+?)\s*$~mi', $conf, $m) ? trim($m[1]) : null;
+        };
+        $endpoint   = $val('Endpoint');
+        $privateKey = $val('PrivateKey');
+        $publicKey  = $val('PublicKey');
+        $address    = $val('Address');
+        if (empty($endpoint) || empty($privateKey) || empty($publicKey) || empty($address)) {
+            return $this->warpprofile = false;
+        }
+        // endpoint is host:port, but tolerate an IPv6 literal like [2606:..]:2408
+        if (preg_match('~^\[(.+)\]:(\d+)$~', $endpoint, $em)) {
+            $server = $em[1];
+            $port   = (int) $em[2];
+        } else {
+            $pos    = strrpos($endpoint, ':');
+            $server = substr($endpoint, 0, $pos);
+            $port   = (int) substr($endpoint, $pos + 1);
+        }
+        return $this->warpprofile = [
+            'server'      => $server,
+            'port'        => $port,
+            'ip'          => explode('/', $address)[0],
+            'private-key' => $privateKey,
+            'public-key'  => $publicKey,
+            'mtu'         => (int) ($val('MTU') ?: 1280),
+        ];
     }
 
     public function replaceTags($subject, $tags)
