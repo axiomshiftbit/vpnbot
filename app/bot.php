@@ -468,6 +468,9 @@ class Bot
             case preg_match('~^/genHyPass$~', $this->input['callback'], $m):
                 $this->genHyPass();
                 break;
+            case preg_match('~^/changeHySNI$~', $this->input['callback'], $m):
+                $this->changeHySNI();
+                break;
             case preg_match('~^/addTtUser$~', $this->input['callback'], $m):
                 $this->addTtUser();
                 break;
@@ -1397,9 +1400,11 @@ class Bot
         $this->ssh('pkill hysteria', 'hy');
         $c   = yaml_parse_file('/config/hysteria.yaml');
         $c['auth']['password'] = $pac['hysteria_pass'] ?? '';
-        $domain = $this->getDomain();
-        if (!empty($domain)) {
-            $c['masquerade']['proxy']['url'] = "https://$domain";
+        // Кастомный SNI (masquerade host) из pac имеет приоритет над доменом;
+        // см. chHySNI(). Если ни SNI, ни домена нет — оставляем url как есть.
+        $sni = !empty($pac['hysteria_sni']) ? $pac['hysteria_sni'] : $this->getDomain();
+        if (!empty($sni)) {
+            $c['masquerade']['proxy']['url'] = "https://$sni";
         }
         yaml_emit_file('/config/hysteria.yaml', $c);
         if (!empty($pac['hysteria_pass'])) {
@@ -1480,6 +1485,42 @@ class Bot
     public function genHyPass()
     {
         $this->chhypass(bin2hex(random_bytes(16)));
+    }
+
+    public function changeHySNI()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter hysteria SNI / masquerade host (e.g. {$this->getDomain()})",
+            $this->input['message_id'],
+            reply: 'enter hysteria SNI',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chHySNI',
+            'args'           => [],
+        ];
+    }
+
+    // SNI hysteria — это host в masquerade.proxy.url (decoy-сайт для
+    // неаутентифицированных запросов). Храним кастомный выбор в pac, чтобы
+    // restartHysteria() не затирал его доменом. Пустой ввод сбрасывает на
+    // домен по умолчанию.
+    public function chHySNI($name)
+    {
+        $name = trim($name);
+        $pac  = $this->getPacConf();
+        if ($name === '') {
+            unset($pac['hysteria_sni']);
+        } elseif (preg_match('~^[A-Za-z0-9.-]+$~', $name)) {
+            $pac['hysteria_sni'] = $name;
+        } else {
+            return $this->menu('hy');
+        }
+        $this->setPacConf($pac);
+        $this->restartHysteria();
+        $this->menu('hy');
     }
 
     public function chockey($pass)
@@ -7865,6 +7906,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('generate password'),
                 'callback_data' => "/genHyPass",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('change sni') . ": $sni",
+                'callback_data' => "/changeHySNI",
             ],
         ];
         $data[] = [

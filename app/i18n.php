@@ -157,6 +157,10 @@ $i = [
         'en' => 'stls SNI:',
         'ru' => 'stls SNI:',
     ],
+    'change sni'           => [
+        'en' => 'change sni',
+        'ru' => 'изменить sni',
+    ],
     'reset settings'       => [
         'en' => 'reset settings',
         'ru' => 'сбросить настройки',
