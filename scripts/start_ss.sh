@@ -6,7 +6,7 @@ cat change_port > /config.json
 ssserver -v -d -c /config.json
 
 # Cloak (ck-server) рядом с ssserver: терминирует TLS на $CKPORT и
-# форвардит расшифрованный shadowsocks-трафик в ssserver на 127.0.0.1:$SSPORT.
+# форвардит расшифрованный shadowsocks-трафик в ssserver на 127.0.0.1:8388.
 # Запускается только если бот включил cloak (поле "Enabled":1 в ckserver.json).
 # Поле Enabled нестандартное для самого ck-server — ниже мы его игнорируем,
 # потому что cloak его не понимает; используется чисто как флаг для нас.
@@ -45,7 +45,7 @@ fi
 
 # simple-tls (https://github.com/IrineSistiana/simple-tls): TLS-обёртка для SS,
 # слушает на $STLSPORT и форвардит расшифрованный shadowsocks-трафик в
-# ssserver на 127.0.0.1:$SSPORT. Использует тот же сертификат, что nginx:
+# ssserver на 127.0.0.1:8388. Использует тот же сертификат, что nginx:
 # letsencrypt-бандл (cert_public/cert_private) если есть, иначе self-signed.
 # Запускается только если /config/stlsserver.json содержит "Enabled":1.
 if [ -f /config/stlsserver.json ] && [ "$(jq -r '.Enabled // 0' /config/stlsserver.json 2>/dev/null)" = "1" ]; then

@@ -1524,16 +1524,21 @@ class Bot
         $ssl = $this->nginxGetTypeCert();
         $c = $this->getSSConfig();
         $l = $this->getSSLocalConfig();
-        $p = $this->getPorts();
         $domain = $this->getPacConf()['domain'] ?: $this->ip;
         if ($c['plugin']) {
             unset($c['plugin']);
             unset($c['plugin_opts']);
             unset($l['plugin']);
             unset($l['plugin_opts']);
+            // ssserver ВСЕГДА слушает внутренний 8388 (start_ss.sh хардкодит его,
+            // docker маппит host:EXT->ss:8388), а sslocal в proxy-контейнере
+            // коннектится к ss:8388. Внешний порт идёт только в ss://-ссылку
+            // (buildSSLink/menuSS), а не в конфиг демонов — иначе ssserver
+            // забиндит не тот порт и plain SS станет недоступен снаружи.
+            $ssport           = (int) (getenv('SSPORT') ?: 8388);
             $l['server']      = 'ss';
-            $l['server_port'] = (int) $p['ss']['port'];
-            $c['server_port'] = (int) $p['ss']['port'];
+            $l['server_port'] = $ssport;
+            $c['server_port'] = $ssport;
         } else {
             // v2ray и cloak/simple-tls конфликтуют: при v2ray ssserver работает
             // через плагин и не отдаёт plain SS на 8388, поэтому глушим оба.
@@ -1580,7 +1585,7 @@ class Bot
 
     // simple-tls работает поверх plain ssserver (как cloak), поэтому при включении
     // нужно выключить v2ray (там ssserver слушает с плагином, не plain). С cloak
-    // simple-tls сосуществует — оба форвардят в 127.0.0.1:$SSPORT, просто на
+    // simple-tls сосуществует — оба форвардят в 127.0.0.1:8388, просто на
     // разных внешних портах. В ss://-линке приоритет фиксированный: cloak >
     // simple-tls > v2ray > plain (см. buildSSLink).
     public function simpleTls()
@@ -1680,7 +1685,7 @@ class Bot
     // Сборка ss://-ссылки с учётом активного плагина. Приоритет:
     //   cloak > simple-tls > v2ray-plugin > чистый shadowsocks.
     // cloak и simple-tls могут сосуществовать (оба слушают на отдельных
-    // внешних портах и форвардят в plain ssserver:$SSPORT), но в линке
+    // внешних портах и форвардят в plain ssserver:8388), но в линке
     // отдаём только cloak, как более защищённый.
     //
     // $cloakUid — если задан, идёт в plugin-opts вместо $ck['UID']. Нужно
@@ -10840,6 +10845,39 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // Сервисы, у которых в текущем тексте override-compose стоит
+    // `ports: !override`. PHP yaml_emit не умеет кастомные YAML-теги, поэтому
+    // фиксируем их ДО парсинга и восстанавливаем ПОСЛЕ emit
+    // (см. emitComposeWithOverrides). Любой yaml_parse→yaml_emit roundtrip без
+    // этого молча теряет тег, и docker-compose сольёт ports основного файла и
+    // override — контейнер получит и старый, и новый порт.
+    private function detectComposeOverrides(string $content): array
+    {
+        $overrides = [];
+        if (preg_match_all('/(\w+):\s*\n\s+ports:\s*!override/m', $content, $matches)) {
+            foreach ($matches[1] as $service) {
+                $overrides[$service] = true;
+            }
+        }
+        return $overrides;
+    }
+
+    // Сериализует compose-структуру обратно в YAML и возвращает `ports: !override`
+    // тем сервисам, что перечислены в $overrides (см. detectComposeOverrides).
+    private function emitComposeWithOverrides(array $c, array $overrides): string
+    {
+        $yaml = yaml_emit($c);
+        foreach ($overrides as $service => $val) {
+            // Заменяем "ports:" на "ports: !override" для конкретного сервиса
+            $yaml = preg_replace(
+                '/(' . preg_quote($service, '/') . ':\s*\n\s+)ports:/m',
+                '${1}ports: !override',
+                $yaml
+            );
+        }
+        return $yaml;
+    }
+
     public function hidePort($container)
     {
         $ports = [
@@ -10849,13 +10887,8 @@ DNS-over-HTTPS with IP:
         $f = '/docker/compose';
         $content = is_file($f) ? file_get_contents($f) : '';
 
-        // Находим все сервисы с !override для ports
-        $overrides = [];
-        if (preg_match_all('/(\w+):\s*\n\s+ports:\s*!override/m', $content, $matches)) {
-            foreach ($matches[1] as $service) {
-                $overrides[$service] = true;
-            }
-        }
+        // Находим все сервисы с !override для ports (фиксируем до парсинга)
+        $overrides = $this->detectComposeOverrides($content);
 
         // Парсим YAML
         $c = $content ? yaml_parse($content) : [];
@@ -10867,21 +10900,11 @@ DNS-over-HTTPS with IP:
             $c['services'][$container]['ports'][] = $ports[$container];
         }
 
-        // Записываем обратно
+        // Записываем обратно (с восстановлением !override)
         if (empty($c['services'])) {
             file_put_contents($f, '');
         } else {
-            $yaml = yaml_emit($c);
-            // Восстанавливаем !override для ports тех сервисов где он был
-            foreach ($overrides as $service => $val) {
-                // Заменяем "ports:" на "ports: !override" для конкретного сервиса
-                $yaml = preg_replace(
-                    '/(' . preg_quote($service, '/') . ':\s*\n\s+)ports:/m',
-                    '${1}ports: !override',
-                    $yaml
-                );
-            }
-            file_put_contents($f, $yaml);
+            file_put_contents($f, $this->emitComposeWithOverrides($c, $overrides));
         }
 
         $pac = $this->getPacConf();
@@ -10920,13 +10943,8 @@ DNS-over-HTTPS with IP:
         $f = '/docker/compose';
         $content = is_file($f) ? file_get_contents($f) : '';
 
-        // Находим все сервисы с !override для ports
-        $overrides = [];
-        if (preg_match_all('/(\w+):\s*\n\s+ports:\s*!override/m', $content, $matches)) {
-            foreach ($matches[1] as $service) {
-                $overrides[$service] = true;
-            }
-        }
+        // Находим все сервисы с !override для ports (фиксируем до парсинга)
+        $overrides = $this->detectComposeOverrides($content);
 
         // Парсим YAML
         $c = $content ? yaml_parse($content) : [];
@@ -10944,21 +10962,11 @@ DNS-over-HTTPS with IP:
             unset($c['services'][$container]);
         }
 
-        // Записываем обратно
+        // Записываем обратно (с восстановлением !override)
         if (empty($c['services'])) {
             file_put_contents($f, '');
         } else {
-            $yaml = yaml_emit($c);
-            // Восстанавливаем !override для ports тех сервисов где он был
-            foreach ($overrides as $service => $val) {
-                // Заменяем "ports:" на "ports: !override" для конкретного сервиса
-                $yaml = preg_replace(
-                    '/(' . preg_quote($service, '/') . ':\s*\n\s+)ports:/m',
-                    '${1}ports: !override',
-                    $yaml
-                );
-            }
-            file_put_contents($f, $yaml);
+            file_put_contents($f, $this->emitComposeWithOverrides($c, $overrides));
         }
 
         // TT идёт через nginx в upstream-контейнере: client → host:PORT
@@ -11522,7 +11530,7 @@ DNS-over-HTTPS with IP:
     {
         $conf = $this->ssh('cat /etc/nginx/nginx.conf', 'ng');
         preg_match("/#~([^\s]+)/", $conf, $m);
-        return $m[1];
+        return $m[1] ?? '';
     }
 
     public function readStatus()
@@ -12869,6 +12877,10 @@ DNS-over-HTTPS with IP:
             return;
         }
         $content = file_get_contents($f);
+        // Фиксируем !override-сервисы до парсинга: yaml_emit ниже их теряет,
+        // и без восстановления docker-compose сольёт ports (например tt
+        // получит и старый TTPORT, и текущий override-порт).
+        $overrides = $this->detectComposeOverrides($content);
         $c = $content ? yaml_parse($content) : [];
         if (!isset($c['services']['ovpn']['ports'][0])) {
             return;
@@ -12876,7 +12888,7 @@ DNS-over-HTTPS with IP:
         $proto = str_starts_with($this->getOvpnProto(), 'tcp') ? 'tcp' : 'udp';
         $host  = (int) explode(':', $c['services']['ovpn']['ports'][0])[0];
         $c['services']['ovpn']['ports'] = ["$host:1194/$proto"];
-        file_put_contents($f, yaml_emit($c));
+        file_put_contents($f, $this->emitComposeWithOverrides($c, $overrides));
     }
 
     public function toggleOvpnIsolation()

@@ -19,7 +19,14 @@ ssh-keygen -A >/dev/null 2>&1 || true
 /usr/sbin/sshd -D -e "$@" &
 
 INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
-PORT="${OVPNPORT:-1194}"
+# Внутренний listen-порт openvpn ФИКСИРОВАН на 1194: и docker-override
+# (host:EXT -> ovpn:1194), и nginx upstream (`server ovpn:1194` в
+# upstream.conf, #ovpn-port stream-блок) целятся именно в 1194. OVPNPORT —
+# это ВНЕШНИЙ порт (host-side), он используется ботом только для маппинга и
+# клиентских .ovpn (remote host:OVPNPORT), но НЕ для bind внутри контейнера.
+# Если сюда подставить OVPNPORT, openvpn забиндится не на тот порт и трафик
+# из nginx/docker (1194) до него не дойдёт.
+PORT=1194
 PROTO="${OVPNPROTO:-udp4}"
 case "$PROTO" in udp4|tcp4) ;; *) PROTO="udp4" ;; esac
 SUBNET="${OVPNSUBNET:-10.8.0.0/24}"
@@ -177,6 +184,11 @@ fi
 # подтягиваем только безопасные для OpenSSL 3.0+ строки, ничего пользова-
 # тельского не перезаписывая).
 if [ -f "$SRV" ]; then
+    # Внутренний bind-порт всегда 1194 (см. комментарий к PORT выше). Старые
+    # server.conf, сгенерированные когда OVPNPORT≠1194, могли получить
+    # неправильный `port` — принудительно чиним, иначе nginx/docker (1194) не
+    # достучатся до демона и openvpn будет «on», но недоступен снаружи.
+    sed -i 's/^port[[:space:]]\+[0-9]\+[[:space:]]*$/port 1194/' "$SRV"
     # ecdh-curve игнорируется в OpenSSL 3.0+ с warning'ом — убираем.
     sed -i '/^ecdh-curve[[:space:]]/d' "$SRV"
     # management через TCP на 127.0.0.1 → unix-сокет (убирает "TCP port
