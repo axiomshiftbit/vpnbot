@@ -465,6 +465,9 @@ class Bot
             case preg_match('~^/changeHysteriaPass$~', $this->input['callback'], $m):
                 $this->changeHysteriaPass();
                 break;
+            case preg_match('~^/genHyPass$~', $this->input['callback'], $m):
+                $this->genHyPass();
+                break;
             case preg_match('~^/addTtUser$~', $this->input['callback'], $m):
                 $this->addTtUser();
                 break;
@@ -1469,6 +1472,14 @@ class Bot
         $this->setPacConf($pac);
         $this->restartHysteria();
         $this->menu('hy');
+    }
+
+    // Генерация случайного пароля для hysteria (32 hex-символа, как у SS).
+    // Переиспользуем chhypass(): он сохраняет pac, рестартит демон и
+    // перерисовывает меню.
+    public function genHyPass()
+    {
+        $this->chhypass(bin2hex(random_bytes(16)));
     }
 
     public function chockey($pass)
@@ -7850,6 +7861,10 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('change password'),
                 'callback_data' => "/changeHysteriaPass",
+            ],
+            [
+                'text'          => $this->i18n('generate password'),
+                'callback_data' => "/genHyPass",
             ],
         ];
         $data[] = [
