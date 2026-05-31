@@ -7744,7 +7744,7 @@ DNS-over-HTTPS with IP:
         ]];
         $data[] = [[
             'text'          => $this->i18n('back'),
-            'callback_data' => '/menu config',
+            'callback_data' => '/xray',
         ]];
         $this->update(
             $this->input['chat'],
@@ -9241,6 +9241,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('off') . " $off " . ($type ? "✅" : ''),
                 'callback_data' => "/listXr 1",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => '👥 ' . $this->i18n('online'),
+                'callback_data' => "/onlines",
             ],
         ];
 
