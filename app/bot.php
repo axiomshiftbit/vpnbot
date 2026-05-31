@@ -11409,10 +11409,6 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n('server status'),
                 'callback_data' => "/status",
             ],
-            [
-                'text'          => '👥 ' . $this->i18n('online'),
-                'callback_data' => "/onlines",
-            ],
         ];
 
         $data[] = [
