@@ -9139,6 +9139,13 @@ DNS-over-HTTPS with IP:
         }
 
         if (!empty($key)) {
+            $key = trim($key);
+            // WARP keys are alphanumeric + dashes only; reject anything else so the
+            // value can't break out of the sed/shell command below (it is interpolated raw).
+            if (!preg_match('~^[A-Za-z0-9-]+$~', $key)) {
+                $this->send($chat, $log . "invalid license key format\n");
+                return;
+            }
             $c['warp'] = $key;
             // Заменяем ключ в wgcf-account.toml
             if (!$step('setting license key', "sed -i 's/^license_key.*/license_key = \"$key\"/' /etc/warp/wgcf-account.toml", 'wp')) {
