@@ -268,6 +268,12 @@ class Bot
             case preg_match('~^/ipMenu$~', $this->input['callback'], $m):
                 $this->ipMenu();
                 break;
+            case preg_match('~^/status$~', $this->input['callback'], $m):
+                $this->serverStatus();
+                break;
+            case preg_match('~^/onlines$~', $this->input['callback'], $m):
+                $this->onlineClients();
+                break;
             case preg_match('~^/cleanDeny(?:\s(\d))?$~', $this->input['callback'], $m):
                 $this->cleanDeny($m[1]);
                 break;
@@ -7514,6 +7520,141 @@ DNS-over-HTTPS with IP:
         return $ret ?: [];
     }
 
+    // Host CPU usage in percent, sampled over a short interval. /proc/stat is the
+    // host kernel's view inside the container, so this reflects the whole machine.
+    public function cpuUsage()
+    {
+        $sample = function () {
+            $line = (@file('/proc/stat') ?: [''])[0];
+            $p    = array_map('intval', array_slice(preg_split('~\s+~', trim($line)), 1));
+            $idle = ($p[3] ?? 0) + ($p[4] ?? 0); // idle + iowait
+            return [$idle, array_sum($p)];
+        };
+        [$idle1, $total1] = $sample();
+        usleep(200000); // 200ms window
+        [$idle2, $total2] = $sample();
+        $dt = $total2 - $total1;
+        $di = $idle2 - $idle1;
+        return $dt > 0 ? (int) round((1 - $di / $dt) * 100) : 0;
+    }
+
+    public function cpuCores()
+    {
+        return max(1, preg_match_all('~^cpu\d+~m', @file_get_contents('/proc/stat') ?: ''));
+    }
+
+    // [usedBytes, totalBytes] from /proc/meminfo (host RAM as seen in the container).
+    public function memInfo()
+    {
+        $m   = @file_get_contents('/proc/meminfo') ?: '';
+        $get = fn($k) => preg_match('~^' . $k . ':\s+(\d+)\s*kB~m', $m, $x) ? (int) $x[1] * 1024 : 0;
+        $total = $get('MemTotal');
+        $avail = $get('MemAvailable') ?: ($get('MemFree') + $get('Buffers') + $get('Cached'));
+        return [max(0, $total - $avail), $total];
+    }
+
+    public function serverStatus()
+    {
+        $up    = (int) (float) (@file('/proc/uptime') ?: [0])[0];
+        $load  = sys_getloadavg() ?: [0, 0, 0];
+        [$memUsed, $memTotal] = $this->memInfo();
+        $dt    = @disk_total_space('/') ?: 0;
+        $df    = @disk_free_space('/') ?: 0;
+        $du    = max(0, $dt - $df);
+        $pct   = fn($u, $t) => $t > 0 ? round($u / $t * 100) : 0;
+
+        $text   = [];
+        $text[] = "Menu -> " . $this->i18n('server status');
+        $text[] = '';
+        $text[] = '<code>';
+        $text[] = 'uptime:  ' . $this->getTime(time() + $up);
+        $text[] = 'cpu:     ' . $this->cpuUsage() . '% (' . $this->cpuCores() . ' cores)';
+        $text[] = 'load:    ' . implode(' / ', array_map(fn($l) => round($l, 2), array_slice($load, 0, 3)));
+        $text[] = 'memory:  ' . $this->fmtBytes($memUsed) . ' / ' . $this->fmtBytes($memTotal) . ' (' . $pct($memUsed, $memTotal) . '%)';
+        $text[] = 'disk:    ' . $this->fmtBytes($du) . ' / ' . $this->fmtBytes($dt) . ' (' . $pct($du, $dt) . '%)';
+        $text[] = '</code>';
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('refresh'),
+            'callback_data' => '/status',
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu config',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Clients with a vless connection in the last $window seconds, grouped by email
+    // with their distinct source IPs. Parsed from the tail of the xray access log;
+    // log timestamps and time() share the container TZ (see app/timezone.php).
+    public function onlineClients()
+    {
+        $window  = 90;
+        $now     = time();
+        $clients = [];
+        $path    = '/logs/xray';
+        if (is_file($path) && ($r = fopen($path, 'r'))) {
+            $size  = filesize($path);
+            $chunk = 512 * 1024;
+            if ($size > $chunk) {
+                fseek($r, -$chunk, SEEK_END);
+                fgets($r); // drop the partial first line after the seek
+            }
+            while (($l = fgets($r)) !== false) {
+                if (preg_match('~^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}).*\sfrom\s(\d{1,3}(?:\.\d{1,3}){3}).*email:\s*(\S+)~', $l, $m)) {
+                    $d  = DateTime::createFromFormat('Y/m/d H:i:s', $m[1]);
+                    $ts = $d ? $d->getTimestamp() : 0;
+                    if ($ts && ($now - $ts) <= $window) {
+                        $clients[$m[3]]['ips'][$m[2]] = $ts;
+                        $clients[$m[3]]['last']       = max($clients[$m[3]]['last'] ?? 0, $ts);
+                    }
+                }
+            }
+            fclose($r);
+        }
+
+        $text   = [];
+        $text[] = "Menu -> " . $this->i18n('online');
+        $text[] = '';
+        if (empty($clients)) {
+            $text[] = $this->i18n('no one online');
+        } else {
+            uasort($clients, fn($a, $b) => $b['last'] <=> $a['last']);
+            $text[] = '<code>';
+            foreach ($clients as $email => $info) {
+                $ips    = array_keys($info['ips']);
+                $text[] = $email . ' (' . count($ips) . ')';
+                foreach ($ips as $ip) {
+                    $text[] = '  ' . $ip;
+                }
+            }
+            $text[] = '</code>';
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('refresh'),
+            'callback_data' => '/onlines',
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu config',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
     public function analysisIp(int $page = 0, $return = false)
     {
         $pac = $this->getPacConf();
@@ -11156,6 +11297,16 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('IP ban'),
                 'callback_data' => "/ipMenu",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('server status'),
+                'callback_data' => "/status",
+            ],
+            [
+                'text'          => $this->i18n('online'),
+                'callback_data' => "/onlines",
             ],
         ];
 

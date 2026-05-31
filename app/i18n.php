@@ -337,6 +337,22 @@ $i = [
         'en' => 'logs',
         'ru' => 'логи',
     ],
+    'server status'  => [
+        'en' => '📊 server status',
+        'ru' => '📊 статус сервера',
+    ],
+    'online'  => [
+        'en' => '👥 online',
+        'ru' => '👥 онлайн',
+    ],
+    'refresh'  => [
+        'en' => '🔄 refresh',
+        'ru' => '🔄 обновить',
+    ],
+    'no one online'  => [
+        'en' => 'no one online',
+        'ru' => 'никого онлайн',
+    ],
     'clear'  => [
         'en' => 'clear',
         'ru' => 'очистить',
