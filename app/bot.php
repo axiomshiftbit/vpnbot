@@ -7067,15 +7067,25 @@ DNS-over-HTTPS with IP:
         $this->xray();
     }
 
+    // uTLS fingerprints offered in the menu. All are valid Xray uTLS ids; for
+    // sing-box / clash configs `randomizednoalpn` is normalized away in
+    // subscription() because those cores don't accept it.
+    public function fingerprints()
+    {
+        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'randomizednoalpn'];
+    }
+
     public function changeFingerprint($fingerprint = false)
     {
-        $allowed = ['chrome', 'firefox'];
+        $allowed = $this->fingerprints();
         $c       = $this->getPacConf();
         if ($fingerprint && in_array($fingerprint, $allowed, true)) {
             $c['fingerprint'] = $fingerprint;
         } else {
+            // bare call (no/invalid arg): cycle to the next fingerprint in the list
             $current          = ($c['fingerprint'] ?? '') ?: 'chrome';
-            $c['fingerprint'] = $current === 'chrome' ? 'firefox' : 'chrome';
+            $i                = array_search($current, $allowed, true);
+            $c['fingerprint'] = $allowed[($i === false ? 0 : $i + 1) % count($allowed)];
         }
         $this->setPacConf($c);
         $this->fingerprintMenu();
@@ -7088,11 +7098,19 @@ DNS-over-HTTPS with IP:
         $text[]  = $this->i18n('fingerprint') . ': <code>' . $current . '</code>';
 
         $data = [];
-        foreach (['chrome', 'firefox'] as $fp) {
-            $data[] = [[
+        $row  = [];
+        foreach ($this->fingerprints() as $fp) {
+            $row[] = [
                 'text'          => ucfirst($fp) . ' ' . ($current === $fp ? $this->i18n('on') : $this->i18n('off')),
                 'callback_data' => "/changeFingerprint $fp",
-            ]];
+            ];
+            if (count($row) === 2) {
+                $data[] = $row;
+                $row    = [];
+            }
+        }
+        if ($row) {
+            $data[] = $row;
         }
         $data[] = [[
             'text'          => $this->i18n('back'),
@@ -9927,6 +9945,12 @@ DNS-over-HTTPS with IP:
         }
 
         $fingerprint = $pac['fingerprint'] ?: 'chrome';
+        // randomizednoalpn is an Xray-only uTLS id: sing-box errors on an unknown
+        // fingerprint and mihomo silently drops uTLS, so emit plain randomized for
+        // the sing-box (si) and clash (cl) configs instead.
+        if ($fingerprint === 'randomizednoalpn' && in_array($_GET['t'], ['si', 'cl'], true)) {
+            $fingerprint = 'randomized';
+        }
 
         switch ($_GET['t']) {
             case 's':
