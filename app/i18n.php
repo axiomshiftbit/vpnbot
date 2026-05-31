@@ -341,14 +341,6 @@ $i = [
         'en' => '📊 server status',
         'ru' => '📊 статус сервера',
     ],
-    'online'  => [
-        'en' => '👥 online',
-        'ru' => '👥 онлайн',
-    ],
-    'refresh'  => [
-        'en' => '🔄 refresh',
-        'ru' => '🔄 обновить',
-    ],
     'no one online'  => [
         'en' => 'no one online',
         'ru' => 'никого онлайн',

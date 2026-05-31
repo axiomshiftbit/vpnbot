@@ -272,7 +272,7 @@ class Bot
                 $this->serverStatus();
                 break;
             case preg_match('~^/onlines$~', $this->input['callback'], $m):
-                $this->onlineClients();
+                $this->onlinesView();
                 break;
             case preg_match('~^/cleanDeny(?:\s(\d))?$~', $this->input['callback'], $m):
                 $this->cleanDeny($m[1]);
@@ -5128,6 +5128,24 @@ DNS-over-HTTPS with IP:
             $page    = min($page, $all - 1);
             $page    = $page == -2 ? $all - 1 : $page;
             $conf['peers'] = array_slice($conf['peers'], $page * $this->limit, $this->limit, true);
+            // A peer is also "online" if its linked vless email is active right now.
+            // Map peer address (AllowedIPs) -> vless email via the canonical
+            // interface.Address <-> AllowedIPs link, then check the live online set.
+            $onlineEmails = $this->onlineClients();
+            $privEmail    = [];
+            foreach (($this->getXray()['inbounds'][0]['settings']['clients'] ?? []) as $vl) {
+                if (!empty($vl['awg']) && !empty($vl['email'])) {
+                    $privEmail[$vl['awg']] = $vl['email'];
+                }
+            }
+            $addrEmail = [];
+            foreach ($this->readClients() as $cl) {
+                $addr = $cl['interface']['Address'] ?? null;
+                $priv = $cl['interface']['PrivateKey'] ?? null;
+                if ($addr !== null && $priv !== null && isset($privEmail[$priv])) {
+                    $addrEmail[$addr] = $privEmail[$priv];
+                }
+            }
             foreach ($conf['peers'] as $k => $v) {
                 if (!empty($v['# PublicKey'])) {
                     $conf['peers'][$k]['online'] = 'off';
@@ -5143,10 +5161,15 @@ DNS-over-HTTPS with IP:
                 } else {
                     $tr = '';
                 }
+                $vlessEmail = $addrEmail[$v['AllowedIPs'] ?? ''] ?? null;
+                $vlessOn    = $vlessEmail !== null && isset($onlineEmails[$vlessEmail]);
+                $circle     = $v['online'] == 'off'
+                    ? '🚷'
+                    : (($v['online'] === 'online' || $vlessOn) ? '🟢' : '🔴');
                 $t = [
                     'name'    => $this->getName($v),
                     'time'    => $this->getTime(strtotime($v['## time'])),
-                    'status'  => $v['online'] == 'off' ? '🚷' : $this->i18n($v['online'] ? 'on' : 'off'),
+                    'status'  => $circle,
                     'traffic' => $tr,
                 ];
                 $pad = [
@@ -5169,7 +5192,7 @@ DNS-over-HTTPS with IP:
         $text = "Menu -> " . $this->getTitleWG() . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
         $data[] = [
             [
-                'text'          =>  $this->i18n('update status'),
+                'text'          =>  '🔄 ' . $this->i18n('refresh'),
                 'callback_data' => "/menu wg $page",
             ],
             [
@@ -7576,7 +7599,7 @@ DNS-over-HTTPS with IP:
 
         $data   = [];
         $data[] = [[
-            'text'          => $this->i18n('refresh'),
+            'text'          => '🔄 ' . $this->i18n('refresh'),
             'callback_data' => '/status',
         ]];
         $data[] = [[
@@ -7594,35 +7617,71 @@ DNS-over-HTTPS with IP:
     // Clients with a vless connection in the last $window seconds, grouped by email
     // with their distinct source IPs. Parsed from the tail of the xray access log;
     // log timestamps and time() share the container TZ (see app/timezone.php).
-    public function onlineClients()
+    // Vless clients active in the last $window seconds, grouped by email -> distinct
+    // source IPs (+ 'last' = newest timestamp). Pure data, no Telegram I/O.
+    //
+    // Robust against timezone and log-format quirks:
+    //  - filemtime() is a TZ-independent epoch gate: if the access log wasn't written
+    //    within the window, nobody is online.
+    //  - the per-client window compares each entry to the log's OWN newest timestamp
+    //    (log-clock vs log-clock), so it doesn't depend on PHP/xray TZ alignment.
+    //  - the match is lenient (any line prefix), mirroring frequencyAnalyze(), and if
+    //    timestamps can't be parsed at all it falls back to the last lines of the tail.
+    public function onlineClients(int $window = 5): array
     {
-        $window  = 90;
-        $now     = time();
-        $clients = [];
-        $path    = '/logs/xray';
-        if (is_file($path) && ($r = fopen($path, 'r'))) {
-            $size  = filesize($path);
-            $chunk = 512 * 1024;
-            if ($size > $chunk) {
-                fseek($r, -$chunk, SEEK_END);
-                fgets($r); // drop the partial first line after the seek
-            }
-            while (($l = fgets($r)) !== false) {
-                if (preg_match('~^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}).*\sfrom\s(\d{1,3}(?:\.\d{1,3}){3}).*email:\s*(\S+)~', $l, $m)) {
-                    $d  = DateTime::createFromFormat('Y/m/d H:i:s', $m[1]);
-                    $ts = $d ? $d->getTimestamp() : 0;
-                    if ($ts && ($now - $ts) <= $window) {
-                        $clients[$m[3]]['ips'][$m[2]] = $ts;
-                        $clients[$m[3]]['last']       = max($clients[$m[3]]['last'] ?? 0, $ts);
-                    }
+        $path = '/logs/xray';
+        if (!is_file($path)) {
+            return [];
+        }
+        clearstatcache(true, $path);
+        if (time() - filemtime($path) > $window) {
+            return [];
+        }
+        $r = fopen($path, 'r');
+        if (!$r) {
+            return [];
+        }
+        $size  = filesize($path);
+        $chunk = 256 * 1024;
+        if ($size > $chunk) {
+            fseek($r, -$chunk, SEEK_END);
+            fgets($r); // drop the partial line left by the seek
+        }
+        $rows  = [];
+        $maxTs = 0;
+        while (($l = fgets($r)) !== false) {
+            if (preg_match('~\sfrom\s(\d{1,3}(?:\.\d{1,3}){3})\D.*?email:\s*(\S+)~', $l, $m)) {
+                $ts = 0;
+                if (preg_match('~(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})~', $l, $d)) {
+                    $dt = DateTime::createFromFormat('Y/m/d H:i:s', $d[1]);
+                    $ts = $dt ? $dt->getTimestamp() : 0;
+                }
+                $rows[] = [$ts, $m[1], $m[2]];
+                if ($ts > $maxTs) {
+                    $maxTs = $ts;
                 }
             }
-            fclose($r);
         }
+        fclose($r);
 
-        $text   = [];
-        $text[] = "Menu -> " . $this->i18n('online');
-        $text[] = '';
+        if ($maxTs === 0 && $rows) {
+            $rows = array_slice($rows, -50); // no parseable timestamps: trust freshness gate
+        }
+        $clients = [];
+        foreach ($rows as [$ts, $ip, $email]) {
+            if ($maxTs === 0 || ($ts && ($maxTs - $ts) <= $window)) {
+                $clients[$email]['ips'][$ip] = $ts;
+                $clients[$email]['last']     = max($clients[$email]['last'] ?? 0, $ts);
+            }
+        }
+        return $clients;
+    }
+
+    public function onlinesView()
+    {
+        $clients = $this->onlineClients();
+        $text[]  = "Menu -> " . $this->i18n('online');
+        $text[]  = '';
         if (empty($clients)) {
             $text[] = $this->i18n('no one online');
         } else {
@@ -7630,9 +7689,9 @@ DNS-over-HTTPS with IP:
             $text[] = '<code>';
             foreach ($clients as $email => $info) {
                 $ips    = array_keys($info['ips']);
-                $text[] = $email . ' (' . count($ips) . ')';
+                $text[] = '🟢 ' . $email . ' (' . count($ips) . ')';
                 foreach ($ips as $ip) {
-                    $text[] = '  ' . $ip;
+                    $text[] = '   ' . $ip;
                 }
             }
             $text[] = '</code>';
@@ -7640,7 +7699,7 @@ DNS-over-HTTPS with IP:
 
         $data   = [];
         $data[] = [[
-            'text'          => $this->i18n('refresh'),
+            'text'          => '🔄 ' . $this->i18n('refresh'),
             'callback_data' => '/onlines',
         ]];
         $data[] = [[
@@ -11305,7 +11364,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/status",
             ],
             [
-                'text'          => $this->i18n('online'),
+                'text'          => '👥 ' . $this->i18n('online'),
                 'callback_data' => "/onlines",
             ],
         ];
