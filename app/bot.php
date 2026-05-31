@@ -2623,6 +2623,7 @@ class Bot
             $this->checkCert();
             $this->autoAnalyzeLogs();
             $this->xrayStatsUser();
+            $this->trackOnline();
             sleep($period);
         }
     }
@@ -7627,52 +7628,91 @@ DNS-over-HTTPS with IP:
     //    (log-clock vs log-clock), so it doesn't depend on PHP/xray TZ alignment.
     //  - the match is lenient (any line prefix), mirroring frequencyAnalyze(), and if
     //    timestamps can't be parsed at all it falls back to the last lines of the tail.
-    public function onlineClients(int $window = 5): array
+    public function getOnlineState(): array
+    {
+        return json_decode(@file_get_contents('/config/online.json'), true) ?: [];
+    }
+
+    public function setOnlineState($s)
+    {
+        // atomic write: cron and the webhook (separate containers, shared volume) both
+        // touch this file, so write to a unique temp and rename to avoid torn reads.
+        // uniqid() guards against the two containers sharing a PID number.
+        $tmp = '/config/online.json.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, json_encode($s)) !== false) {
+            rename($tmp, '/config/online.json');
+        } else {
+            @unlink($tmp);
+        }
+    }
+
+    // Continuously tracked last-seen per vless email. Incrementally tails the xray
+    // access log from a saved byte offset and stamps every newly-seen email with the
+    // wall clock at read time (like frequencyAnalyze) — no log-timestamp parsing, so
+    // it is immune to TZ/format quirks. Called every cron tick AND on each online
+    // read, so a single missed connection no longer makes a client flicker out: they
+    // stay listed until the window elapses without any new connection.
+    public function trackOnline(): array
     {
         $path = '/logs/xray';
         if (!is_file($path)) {
             return [];
         }
+        $state = $this->getOnlineState();
+        $seen  = $state['seen'] ?? [];
         clearstatcache(true, $path);
-        if (time() - filemtime($path) > $window) {
-            return [];
+        $size   = filesize($path);
+        $offset = $state['offset'] ?? null;
+        // first run or a rotated/truncated log: start at EOF so we don't import old
+        // history as "online" (a connection from an hour ago must not count as live).
+        if ($offset === null || $offset > $size) {
+            $offset = $size;
         }
-        $r = fopen($path, 'r');
-        if (!$r) {
-            return [];
-        }
-        $size  = filesize($path);
-        $chunk = 256 * 1024;
-        if ($size > $chunk) {
-            fseek($r, -$chunk, SEEK_END);
-            fgets($r); // drop the partial line left by the seek
-        }
-        $rows  = [];
-        $maxTs = 0;
-        while (($l = fgets($r)) !== false) {
-            if (preg_match('~\sfrom\s(\d{1,3}(?:\.\d{1,3}){3})\D.*?email:\s*(\S+)~', $l, $m)) {
-                $ts = 0;
-                if (preg_match('~(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})~', $l, $d)) {
-                    $dt = DateTime::createFromFormat('Y/m/d H:i:s', $d[1]);
-                    $ts = $dt ? $dt->getTimestamp() : 0;
-                }
-                $rows[] = [$ts, $m[1], $m[2]];
-                if ($ts > $maxTs) {
-                    $maxTs = $ts;
+        if ($size > $offset && ($r = fopen($path, 'r'))) {
+            fseek($r, $offset);
+            $now = time();
+            while (($l = fgets($r)) !== false) {
+                if (preg_match('~\sfrom\s(\d{1,3}(?:\.\d{1,3}){3})\D.*?email:\s*(\S+)~', $l, $m)) {
+                    $seen[$m[2]]['ts']         = $now;
+                    $seen[$m[2]]['ips'][$m[1]] = $now;
                 }
             }
+            $offset = ftell($r);
+            fclose($r);
         }
-        fclose($r);
+        // prune entries/IPs not seen in the last 10 min to keep the file small
+        $cutoff = time() - 600;
+        foreach ($seen as $email => $info) {
+            foreach (($info['ips'] ?? []) as $ip => $ts) {
+                if ($ts < $cutoff) {
+                    unset($seen[$email]['ips'][$ip]);
+                }
+            }
+            if (($info['ts'] ?? 0) < $cutoff) {
+                unset($seen[$email]);
+            }
+        }
+        $this->setOnlineState(['offset' => $offset, 'seen' => $seen]);
+        return $seen;
+    }
 
-        if ($maxTs === 0 && $rows) {
-            $rows = array_slice($rows, -50); // no parseable timestamps: trust freshness gate
-        }
+    // Vless clients seen within the last $window seconds, grouped by email -> IPs.
+    public function onlineClients(int $window = 60): array
+    {
+        $seen    = $this->trackOnline();
+        $now     = time();
         $clients = [];
-        foreach ($rows as [$ts, $ip, $email]) {
-            if ($maxTs === 0 || ($ts && ($maxTs - $ts) <= $window)) {
-                $clients[$email]['ips'][$ip] = $ts;
-                $clients[$email]['last']     = max($clients[$email]['last'] ?? 0, $ts);
+        foreach ($seen as $email => $info) {
+            if (($info['ts'] ?? 0) < $now - $window) {
+                continue;
             }
+            $ips = [];
+            foreach (($info['ips'] ?? []) as $ip => $ts) {
+                if ($ts >= $now - $window) {
+                    $ips[$ip] = $ts;
+                }
+            }
+            $clients[$email] = ['ips' => $ips, 'last' => $info['ts']];
         }
         return $clients;
     }
