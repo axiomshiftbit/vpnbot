@@ -7068,11 +7068,11 @@ DNS-over-HTTPS with IP:
     }
 
     // uTLS fingerprints offered in the menu. All are valid Xray uTLS ids; for
-    // sing-box / clash configs `randomizednoalpn` is normalized away in
-    // subscription() because those cores don't accept it.
+    // sing-box / clash configs the Xray-only ids (randomizednoalpn, unsafe) are
+    // normalized away in subscription() because those cores don't accept them.
     public function fingerprints()
     {
-        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'randomizednoalpn'];
+        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'randomized', 'randomizednoalpn', 'unsafe'];
     }
 
     public function changeFingerprint($fingerprint = false)
@@ -9945,11 +9945,11 @@ DNS-over-HTTPS with IP:
         }
 
         $fingerprint = $pac['fingerprint'] ?: 'chrome';
-        // randomizednoalpn is an Xray-only uTLS id: sing-box errors on an unknown
-        // fingerprint and mihomo silently drops uTLS, so emit plain randomized for
-        // the sing-box (si) and clash (cl) configs instead.
-        if ($fingerprint === 'randomizednoalpn' && in_array($_GET['t'], ['si', 'cl'], true)) {
-            $fingerprint = 'randomized';
+        // randomizednoalpn and unsafe are Xray-only uTLS ids: sing-box errors on an
+        // unknown fingerprint and mihomo silently drops uTLS, so map them to a
+        // supported value for the sing-box (si) and clash (cl) configs.
+        if (in_array($_GET['t'], ['si', 'cl'], true)) {
+            $fingerprint = ['randomizednoalpn' => 'randomized', 'unsafe' => 'chrome'][$fingerprint] ?? $fingerprint;
         }
 
         switch ($_GET['t']) {
