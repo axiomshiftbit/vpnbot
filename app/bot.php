@@ -7072,7 +7072,7 @@ DNS-over-HTTPS with IP:
     // normalized away in subscription() because those cores don't accept them.
     public function fingerprints()
     {
-        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'randomized', 'randomizednoalpn', 'unsafe'];
+        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized', 'randomizednoalpn', 'unsafe'];
     }
 
     public function changeFingerprint($fingerprint = false)
