@@ -7719,6 +7719,68 @@ DNS-over-HTTPS with IP:
         return $clients;
     }
 
+    // Persistent IP -> geo (country / org-ISP / city) cache, shared like online.json.
+    // ipinfo.io is rate-limited, so we cache for 7 days and keep the file bounded.
+    public function getGeoCache(): array
+    {
+        return json_decode(@file_get_contents('/config/geoip.json'), true) ?: [];
+    }
+
+    public function setGeoCache(array $cache)
+    {
+        // keep the newest 500 entries so the file can't grow without bound
+        if (count($cache) > 500) {
+            uasort($cache, fn($a, $b) => ($b['ts'] ?? 0) <=> ($a['ts'] ?? 0));
+            $cache = array_slice($cache, 0, 500, true);
+        }
+        // atomic write (cron + webhook share the volume), same pattern as online.json
+        $tmp = '/config/geoip.json.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, json_encode($cache)) !== false) {
+            rename($tmp, '/config/geoip.json');
+        } else {
+            @unlink($tmp);
+        }
+    }
+
+    // Look up an IP's country/ISP, serving from $cache when fresh and filling misses
+    // from ipinfo.io. $cache is updated in place; the caller persists it once.
+    public function geoLookup(string $ip, array &$cache): array
+    {
+        if (isset($cache[$ip]) && ($cache[$ip]['ts'] ?? 0) > time() - 604800) {
+            return $cache[$ip];
+        }
+        $info = @json_decode(@file_get_contents(
+            "https://ipinfo.io/$ip/json",
+            context: stream_context_create(['http' => ['timeout' => 2]])
+        ), true) ?: [];
+        // A network/rate-limit failure yields []; don't cache that or a transient blip
+        // would suppress this IP's geo for the whole 7-day TTL. A reachable ipinfo always
+        // echoes at least "ip" (even for bogons), so a non-empty reply means success.
+        if (!$info) {
+            return ['country' => '', 'org' => '', 'city' => '', 'ts' => 0];
+        }
+        // ipinfo's "org" is like "AS13335 Cloudflare, Inc." — drop the AS prefix for display
+        $org = trim(preg_replace('~^AS\d+\s*~', '', $info['org'] ?? ''));
+        $cache[$ip] = [
+            'country' => $info['country'] ?? '',
+            'org'     => $org,
+            'city'    => $info['city'] ?? '',
+            'ts'      => time(),
+        ];
+        return $cache[$ip];
+    }
+
+    // 2-letter ISO country code -> regional-indicator flag emoji ('' if invalid).
+    public function countryFlag(string $cc): string
+    {
+        if (strlen($cc) !== 2 || !ctype_alpha($cc)) {
+            return '';
+        }
+        $cc = strtoupper($cc);
+        return mb_chr(0x1F1E6 + ord($cc[0]) - 65, 'UTF-8')
+             . mb_chr(0x1F1E6 + ord($cc[1]) - 65, 'UTF-8');
+    }
+
     public function onlinesView()
     {
         $clients = $this->onlineClients();
@@ -7728,15 +7790,49 @@ DNS-over-HTTPS with IP:
             $text[] = $this->i18n('no one online');
         } else {
             uasort($clients, fn($a, $b) => $b['last'] <=> $a['last']);
+
+            // map vless email -> cumulative traffic (global + current session)
+            $xray  = $this->getXray();
+            $stats = $this->getXrayStats();
+            $byEmail = [];
+            foreach (($xray['inbounds'][0]['settings']['clients'] ?? []) as $k => $cl) {
+                $byEmail[$cl['email']] = [
+                    'down' => ($stats['users'][$k]['global']['download'] ?? 0) + ($stats['users'][$k]['session']['download'] ?? 0),
+                    'up'   => ($stats['users'][$k]['global']['upload'] ?? 0) + ($stats['users'][$k]['session']['upload'] ?? 0),
+                ];
+            }
+
+            $geo    = $this->getGeoCache();
+            $before = $geo;
+            $now    = time();
             $text[] = '<code>';
             foreach ($clients as $email => $info) {
                 $ips    = array_keys($info['ips']);
-                $text[] = '🟢 ' . $email . ' (' . count($ips) . ')';
+                $ago    = max(0, $now - ($info['last'] ?? $now));
+                // email is free-form user input and the message is parse_mode=HTML, so
+                // an unescaped & or < would 400 the whole view — escape it.
+                $text[] = '🟢 ' . htmlspecialchars($email, ENT_QUOTES) . ' (' . count($ips) . ')';
+
+                $line = '   ';
+                if ($tr = $byEmail[$email] ?? null) {
+                    $line .= '↓' . $this->fmtBytes($tr['down']) . '  ↑' . $this->fmtBytes($tr['up']) . '  · ';
+                }
+                $text[] = $line . $ago . 's ' . $this->i18n('ago');
+
                 foreach ($ips as $ip) {
-                    $text[] = '   ' . $ip;
+                    $g    = $this->geoLookup($ip, $geo);
+                    $flag = $this->countryFlag($g['country'] ?? '');
+                    // the flag already conveys the country, so only print the country code
+                    // as text when we couldn't render a flag; always append the ISP/org.
+                    $meta = array_filter([$flag ? '' : ($g['country'] ?? ''), $g['org'] ?? '']);
+                    $text[] = '   ' . trim(($flag ? "$flag " : '') . $ip
+                        . ($meta ? ' — ' . htmlspecialchars(implode(' · ', $meta), ENT_QUOTES) : ''));
                 }
             }
             $text[] = '</code>';
+            if ($geo !== $before) {
+                $this->setGeoCache($geo);
+            }
         }
 
         $data   = [];
@@ -9245,9 +9341,10 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/listXr 1",
             ],
         ];
+        $onlineCount = count($this->onlineClients());
         $data[] = [
             [
-                'text'          => '👥 ' . $this->i18n('online'),
+                'text'          => '👥 ' . $this->i18n('online') . ($onlineCount ? " ($onlineCount)" : ''),
                 'callback_data' => "/onlines",
             ],
         ];
