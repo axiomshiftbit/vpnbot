@@ -573,6 +573,15 @@ class Bot
             case preg_match('~^/resetXrStats$~', $this->input['callback'], $m):
                 $this->resetXrStats();
                 break;
+            case preg_match('~^/regenAllXr$~', $this->input['callback'], $m):
+                $this->regenAllXr();
+                break;
+            case preg_match('~^/regenRealityXr$~', $this->input['callback'], $m):
+                $this->regenRealityXr();
+                break;
+            case preg_match('~^/regenIdXr (\d+)$~', $this->input['callback'], $m):
+                $this->regenIdXr($m[1]);
+                break;
             case preg_match('~^/v2ray$~', $this->input['callback'], $m):
                 $this->v2ray();
                 break;
@@ -8842,6 +8851,90 @@ DNS-over-HTTPS with IP:
         $this->userXr($i);
     }
 
+    // Generate a fresh Reality keypair (matched private/public) + shortId.
+    // Same commands/parsing as the initial setup in changeTransport(); the pair
+    // comes from a single `xray x25519` call so private and public always match.
+    public function genRealityKeys(): array
+    {
+        $shortId = trim($this->ssh('openssl rand -hex 8', 'xr'));
+        $keys    = $this->ssh('xray x25519', 'xr');
+        preg_match('~^PrivateKey:\s([^\s]+)~m', $keys, $m);
+        $private = trim($m[1] ?? '');
+        preg_match('~^Password(?:\s*\(PublicKey\))?:\s([^\s]+)~m', $keys, $m);
+        $public  = trim($m[1] ?? '');
+        return ['private' => $private, 'public' => $public, 'shortId' => $shortId];
+    }
+
+    // Rotate the shared Reality parameters: pbk (keypair) + sid (shortId).
+    // Updates pac.json (pbk/privateKey/shortId) and xray.json in lock-step so the
+    // server private key matches the public key embedded in every client link.
+    // Invalidates all existing links — every client must re-import.
+    public function regenRealityXr()
+    {
+        $x = $this->getXray();
+        $p = $this->getPacConf();
+        if (empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
+            return $this->answer($this->input['callback_id'], 'reality only', true);
+        }
+        $k = $this->genRealityKeys();
+        if (empty($k['private']) || empty($k['public']) || empty($k['shortId'])) {
+            return $this->answer($this->input['callback_id'], 'keygen failed', true);
+        }
+        $p['xray']                  = $k['public'];
+        $p['reality']['privateKey'] = $k['private'];
+        $p['reality']['shortId']    = $k['shortId'];
+        $x['inbounds'][0]['streamSettings']['realitySettings']['privateKey'] = $k['private'];
+        $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = [$k['shortId']];
+        $this->setPacConf($p);
+        $this->restartXray($x);
+        $this->xray();
+    }
+
+    // Rotate a single client's UUID (clientID). For an enabled client this is the
+    // live credential; for a disabled one the real id lives in 'off' (the active
+    // 'id' is a throwaway), so rotate 'off' too. Invalidates only this client.
+    public function regenIdXr($i)
+    {
+        $x = $this->getXray();
+        if (!isset($x['inbounds'][0]['settings']['clients'][$i])) {
+            return $this->xray();
+        }
+        if (!empty($x['inbounds'][0]['settings']['clients'][$i]['off'])) {
+            $x['inbounds'][0]['settings']['clients'][$i]['off'] = $this->guidv4();
+        }
+        $x['inbounds'][0]['settings']['clients'][$i]['id'] = $this->guidv4();
+        $this->restartXray($x);
+        $this->userXr($i);
+    }
+
+    // Full rotation: shared Reality pbk+sid (if Reality) AND every client's UUID.
+    // One restart, all configs written consistently. Invalidates every link.
+    public function regenAllXr()
+    {
+        $x = $this->getXray();
+        $p = $this->getPacConf();
+        if (!empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
+            $k = $this->genRealityKeys();
+            if (empty($k['private']) || empty($k['public']) || empty($k['shortId'])) {
+                return $this->answer($this->input['callback_id'], 'keygen failed', true);
+            }
+            $p['xray']                  = $k['public'];
+            $p['reality']['privateKey'] = $k['private'];
+            $p['reality']['shortId']    = $k['shortId'];
+            $x['inbounds'][0]['streamSettings']['realitySettings']['privateKey'] = $k['private'];
+            $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = [$k['shortId']];
+        }
+        foreach ($x['inbounds'][0]['settings']['clients'] as $key => $v) {
+            if (!empty($v['off'])) {
+                $x['inbounds'][0]['settings']['clients'][$key]['off'] = $this->guidv4();
+            }
+            $x['inbounds'][0]['settings']['clients'][$key]['id'] = $this->guidv4();
+        }
+        $this->setPacConf($p);
+        $this->restartXray($x);
+        $this->xray();
+    }
+
     public function renXrUs($name, $i)
     {
         $c = $this->getXray();
@@ -9258,6 +9351,16 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => $this->i18n('selfFakeDomain'),
                     'callback_data' => "/selfFakeDomain",
+                ],
+            ];
+            $data[] = [
+                [
+                    'text'          => '🔄 ' . $this->i18n('rotate all'),
+                    'callback_data' => "/regenAllXr",
+                ],
+                [
+                    'text'          => '🔑 pbk+sid',
+                    'callback_data' => "/regenRealityXr",
                 ],
             ];
         }
@@ -9857,6 +9960,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n($c['off'] ? 'off' : 'on'),
                 'callback_data' => "/switchXr $i",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => '🆔 ' . $this->i18n('new clientID'),
+                'callback_data' => "/regenIdXr $i",
             ],
         ];
         $singtemplate  = $c['singtemplate'] ? base64_decode($c['singtemplate']) : 'default(' . ($pac['defaultsingtemplate'] && !empty($pac['singtemplates'][base64_decode($pac['defaultsingtemplate'])]) ? base64_decode($pac['defaultsingtemplate']) : 'origin') . ')';

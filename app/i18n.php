@@ -349,6 +349,14 @@ $i = [
         'en' => 'ago',
         'ru' => 'назад',
     ],
+    'rotate all'  => [
+        'en' => 'rotate all',
+        'ru' => 'ротация всего',
+    ],
+    'new clientID'  => [
+        'en' => 'new clientID',
+        'ru' => 'новый clientID',
+    ],
     'clear'  => [
         'en' => 'clear',
         'ru' => 'очистить',
