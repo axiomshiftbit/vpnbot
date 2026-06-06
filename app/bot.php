@@ -7699,12 +7699,27 @@ DNS-over-HTTPS with IP:
     }
 
     // Vless clients seen within the last $window seconds, grouped by email -> IPs.
+    // Cross-checked against the live xray roster: a client that was disabled (off
+    // flag) or deleted is dropped immediately instead of lingering for the whole
+    // access-log window. Disabling cuts the connection (xray restart) so no new log
+    // lines arrive, but its email would otherwise stay "online" until $window passed
+    // — the roster check makes /onlines reflect reality on the very next refresh.
     public function onlineClients(int $window = 60): array
     {
-        $seen    = $this->trackOnline();
-        $now     = time();
+        $seen = $this->trackOnline();
+        $now  = time();
+        // set of emails that currently exist AND are enabled in xray
+        $enabled = [];
+        foreach (($this->getXray()['inbounds'][0]['settings']['clients'] ?? []) as $cl) {
+            if (empty($cl['off']) && !empty($cl['email'])) {
+                $enabled[$cl['email']] = true;
+            }
+        }
         $clients = [];
         foreach ($seen as $email => $info) {
+            if (!isset($enabled[$email])) {
+                continue;
+            }
             if (($info['ts'] ?? 0) < $now - $window) {
                 continue;
             }
@@ -7785,7 +7800,8 @@ DNS-over-HTTPS with IP:
     public function onlinesView()
     {
         $clients = $this->onlineClients();
-        $text[]  = "Menu -> " . $this->i18n('online');
+        $n       = count($clients);
+        $text[]  = "Menu -> " . $this->i18n('online') . ($n ? "   ($n online)" : '');
         $text[]  = '';
         if (empty($clients)) {
             $text[] = $this->i18n('no one online');
