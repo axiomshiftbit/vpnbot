@@ -7773,7 +7773,8 @@ DNS-over-HTTPS with IP:
     // 2-letter ISO country code -> regional-indicator flag emoji ('' if invalid).
     public function countryFlag(string $cc): string
     {
-        if (strlen($cc) !== 2 || !ctype_alpha($cc)) {
+        // note: the php container has no ctype extension, so match with a regex
+        if (!preg_match('~^[A-Za-z]{2}$~', $cc)) {
             return '';
         }
         $cc = strtoupper($cc);
