@@ -567,6 +567,10 @@ class Bot
             case preg_match('~^/changeXrPwd (\d+)$~', $this->input['callback'], $m):
                 $this->changeXrPwd($m[1]);
                 break;
+            case preg_match('~^/genXrPwd (\d+)$~', $this->input['callback'], $m):
+                // empty password makes setXrPwd auto-generate (bin2hex(random_bytes(16)))
+                $this->setXrPwd('', $m[1]);
+                break;
             case preg_match('~^/resetXrUser (\d+)$~', $this->input['callback'], $m):
                 $this->resetXrUser($m[1]);
                 break;
@@ -9962,12 +9966,16 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/switchXr $i",
             ],
         ];
-        $data[] = [
-            [
-                'text'          => '🆔 ' . $this->i18n('new clientID'),
-                'callback_data' => "/regenIdXr $i",
-            ],
-        ];
+        // clientID (UUID) is the credential for vless transports; for trojan-grpc
+        // auth is by password, so the clientID button is pointless there — hide it.
+        if ($pac['transport'] != 'trojan-grpc') {
+            $data[] = [
+                [
+                    'text'          => '🆔 ' . $this->i18n('new clientID'),
+                    'callback_data' => "/regenIdXr $i",
+                ],
+            ];
+        }
         $singtemplate  = $c['singtemplate'] ? base64_decode($c['singtemplate']) : 'default(' . ($pac['defaultsingtemplate'] && !empty($pac['singtemplates'][base64_decode($pac['defaultsingtemplate'])]) ? base64_decode($pac['defaultsingtemplate']) : 'origin') . ')';
         $v2raytemplate = $c['v2raytemplate'] ? base64_decode($c['v2raytemplate']) : 'default(' . ($pac['defaultv2raytemplate'] && !empty($pac['v2raytemplates'][base64_decode($pac['defaultv2raytemplate'])]) ? base64_decode($pac['defaultv2raytemplate']) : 'origin') . ')';
         $clashtemplate = $c['clashtemplate'] ? base64_decode($c['clashtemplate']) : 'default(' . ($pac['defaultclashtemplate'] && !empty($pac['clashtemplates'][base64_decode($pac['defaultclashtemplate'])]) ? base64_decode($pac['defaultclashtemplate']) : 'origin') . ')';
@@ -10021,6 +10029,10 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => $this->i18n('change password'),
                     'callback_data' => "/changeXrPwd $i",
+                ],
+                [
+                    'text'          => $this->i18n('generate password'),
+                    'callback_data' => "/genXrPwd $i",
                 ],
             ];
         }
