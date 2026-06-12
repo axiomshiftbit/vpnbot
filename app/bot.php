@@ -997,14 +997,16 @@ class Bot
     // telemt.toml перегенерируется при каждом рестарте.
     public function telemtToml($conf = false)
     {
-        $conf   = $conf ?: $this->getPacConf();
+        [$conf] = $this->normalizeTelemtUsers($conf ?: $this->getPacConf());
         $domain = $conf['telemt_domain'] ?? 'www.google.com';
         $fast   = array_key_exists('telemt_fast', $conf) ? !empty($conf['telemt_fast']) : true;
         $users  = $conf['telemt_users'] ?? [];
         $announce = $this->ip;
         $b      = fn($v) => $v ? 'true' : 'false';
+        $q      = fn($v) => json_encode((string) $v, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-        $t  = "show_link = []\n\n";
+        $showLink = implode(', ', array_map($q, array_keys($users)));
+        $t  = "show_link = [$showLink]\n\n";
         $t .= "[general]\n";
         $t .= "prefer_ipv6 = false\n";
         $t .= "fast_mode = " . $b($fast) . "\n";
@@ -1025,9 +1027,9 @@ class Bot
         $t .= "enabled = false\n\n";
         $t .= "[[server.listeners]]\n";
         $t .= "ip = \"0.0.0.0\"\n";
-        $t .= "announce_ip = \"$announce\"\n\n";
+        $t .= "announce_ip = " . $q($announce) . "\n\n";
         $t .= "[censorship]\n";
-        $t .= "tls_domain = \"$domain\"\n";
+        $t .= "tls_domain = " . $q($domain) . "\n";
         $t .= "mask = true\n";
         $t .= "mask_port = 443\n";
         $t .= "fake_cert_len = 2048\n\n";
@@ -1036,7 +1038,7 @@ class Bot
         $t .= "ignore_time_skew = false\n\n";
         $t .= "[access.users]\n";
         foreach ($users as $name => $secret) {
-            $t .= "$name = \"$secret\"\n";
+            $t .= $q($name) . " = " . $q($secret) . "\n";
         }
         $t .= "\n[[upstreams]]\n";
         $t .= "type = \"direct\"\n";
@@ -1047,7 +1049,10 @@ class Bot
 
     public function restartTelemt()
     {
-        $conf = $this->getPacConf();
+        [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
+        if ($changed) {
+            $this->setPacConf($conf);
+        }
         @mkdir('/config/telemt/data', 0755, true);
         file_put_contents('/config/telemt/telemt.toml', $this->telemtToml($conf));
         $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
@@ -1056,15 +1061,70 @@ class Bot
         }
     }
 
+    public function telemtSecret()
+    {
+        return bin2hex(random_bytes(16));
+    }
+
+    public function normalizeTelemtUsers(array $conf): array
+    {
+        if (!isset($conf['telemt_users'])) {
+            return [$conf, false];
+        }
+        if (!is_array($conf['telemt_users'])) {
+            $conf['telemt_users'] = [];
+            return [$conf, true];
+        }
+        if (!$conf['telemt_users']) {
+            return [$conf, false];
+        }
+
+        $changed = false;
+        $seen    = [];
+        $mtproto = '';
+        if (is_file('/config/mtprotosecret')) {
+            $mtproto = strtolower(trim((string) file_get_contents('/config/mtprotosecret')));
+        }
+
+        foreach ($conf['telemt_users'] as $name => $secret) {
+            $secret = strtolower(trim((string) $secret));
+            if (
+                !preg_match('~^[a-f0-9]{32}$~', $secret)
+                || isset($seen[$secret])
+                || ($mtproto !== '' && hash_equals($mtproto, $secret))
+            ) {
+                do {
+                    $secret = $this->telemtSecret();
+                } while (isset($seen[$secret]) || ($mtproto !== '' && hash_equals($mtproto, $secret)));
+                $changed = true;
+            } elseif ($conf['telemt_users'][$name] !== $secret) {
+                $changed = true;
+            }
+
+            $conf['telemt_users'][$name] = $secret;
+            $seen[$secret] = true;
+        }
+
+        return [$conf, $changed];
+    }
+
     public function linkTelemt($name)
     {
-        $conf   = $this->getPacConf();
+        [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
+        if ($changed) {
+            $this->setPacConf($conf);
+            $this->restartTelemt();
+        }
         $secret = $conf['telemt_users'][$name] ?? '';
         $domain = $conf['telemt_domain'] ?? 'www.google.com';
         $dhex   = bin2hex($domain);
         $p      = $this->getPorts()['telemt']['port'];
         $ip     = $this->getDomain();
-        return "https://t.me/proxy?server=$ip&port=$p&secret=ee$secret$dhex";
+        return 'tg://proxy?' . http_build_query([
+            'server' => $ip,
+            'port'   => $p,
+            'secret' => "ee$secret$dhex",
+        ], '', '&', PHP_QUERY_RFC3986);
     }
 
     public function restartXray($c, $norestart = false)
@@ -6842,7 +6902,11 @@ DNS-over-HTTPS with IP:
 
     public function telemt($update = false)
     {
-        $conf   = $this->getPacConf();
+        [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
+        if ($changed) {
+            $this->setPacConf($conf);
+            $this->restartTelemt();
+        }
         $ports  = $this->getPorts()['telemt'];
         $domain = $conf['telemt_domain'] ?? 'www.google.com';
         $fast   = array_key_exists('telemt_fast', $conf) ? !empty($conf['telemt_fast']) : true;
@@ -6852,18 +6916,29 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> TeleMT (MTProto)\n";
         $text[] = "status: $st";
         $text[] = "port: " . ($ports['enable'] ? $ports['port'] : $this->i18n('port unavailable'));
-        $text[] = "fake-TLS domain: <code>$domain</code>";
+        $text[] = "fake-TLS domain: <code>" . htmlspecialchars($domain, ENT_QUOTES) . "</code>";
         $text[] = "fast mode: " . $this->i18n($fast ? 'on' : 'off');
         $text[] = "users: " . count($users);
         if (!$ports['enable']) {
             $text[] = "\n⚠ " . $this->i18n('telemt set port hint');
         }
+        if ($users) {
+            $text[] = '';
+            foreach ($users as $name => $secret) {
+                $safeName = htmlspecialchars((string) $name, ENT_QUOTES);
+                $text[] = "👤 <b>$safeName</b>";
+                $text[] = htmlspecialchars($this->linkTelemt($name), ENT_QUOTES);
+            }
+        }
 
         foreach ($users as $name => $secret) {
+            $link   = $this->linkTelemt($name);
             $data[] = [
-                ['text' => "🔗 $name", 'callback_data' => "/telemtQr $name"],
-                ['text' => '🔄',       'callback_data' => "/telemtRegen $name"],
-                ['text' => '❌',       'callback_data' => "/telemtDelUser $name"],
+                // url-кнопка: тап сразу открывает добавление прокси в Telegram.
+                ['text' => "🔗 $name", 'url' => $link],
+                ['text' => '📷',        'callback_data' => "/telemtQr $name"],
+                ['text' => '🔄',        'callback_data' => "/telemtRegen $name"],
+                ['text' => '❌',        'callback_data' => "/telemtDelUser $name"],
             ];
         }
         $data[] = [['text' => $this->i18n('telemt add user'),  'callback_data' => "/telemtAddUser"]];
@@ -6891,7 +6966,7 @@ DNS-over-HTTPS with IP:
         $this->sendPhoto(
             $this->input['chat'],
             curl_file_create($qr_file),
-            "<b>$name</b>\n<code>$link</code>"
+            '<b>' . htmlspecialchars((string) $name, ENT_QUOTES) . "</b>\n" . htmlspecialchars($link, ENT_QUOTES)
         );
         @unlink($qr_file);
         if ($this->getPacConf()['blinkmenu']) {
@@ -6924,7 +6999,7 @@ DNS-over-HTTPS with IP:
             return;
         }
         $conf = $this->getPacConf();
-        $conf['telemt_users'][$name] = bin2hex(random_bytes(16));
+        $conf['telemt_users'][$name] = $this->telemtSecret();
         $this->setPacConf($conf);
         $this->restartTelemt();
         $this->telemt(true);
@@ -6943,7 +7018,7 @@ DNS-over-HTTPS with IP:
     {
         $conf = $this->getPacConf();
         if (isset($conf['telemt_users'][$name])) {
-            $conf['telemt_users'][$name] = bin2hex(random_bytes(16));
+            $conf['telemt_users'][$name] = $this->telemtSecret();
             $this->setPacConf($conf);
             $this->restartTelemt();
         }
