@@ -25,7 +25,7 @@ if (empty($d)) {
 }
 $p = $bot->getPorts()['tg']['enable'];
 if (empty($p)) {
-    $bot->setPort(4443, 'tg');
+    $bot->setPort((int) (getenv('TGPORT') ?: 4443), 'tg');
     echo "need restart: make r\n";
 }
 // Вывод ссылки на MTProto-прокси

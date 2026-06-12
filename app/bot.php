@@ -12292,6 +12292,10 @@ DNS-over-HTTPS with IP:
             $this->setUpstreamPortOvpn($listen);
             $this->setEnvVar('OVPNPORT', (string) $listen);
         }
+        if ($container === 'tg') {
+            $listen = ($port > 0 && $port != ($disable['tg'] ?? 0)) ? $port : (int)(getenv('TGPORT') ?: 4443);
+            $this->setEnvVar('TGPORT', (string) $listen);
+        }
 
         $pac = $this->getPacConf();
         $pac['restart'] = 1;
