@@ -43,6 +43,8 @@ proxy: # консоль сервиса
 	docker compose exec proxy /bin/sh
 tg: # консоль сервиса
 	docker compose exec tg /bin/bash
+telemt: # консоль сервиса
+	docker compose exec telemt /bin/sh
 dnstt: # консоль сервиса
 	docker compose exec dnstt /bin/sh
 hy: # консоль сервиса

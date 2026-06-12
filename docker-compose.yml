@@ -360,6 +360,36 @@ services:
             default:
                 ipv4_address: 10.10.0.8
         logging: *default-logging
+    telemt:
+        image: mercurykd/vpnbot-telemt:1.0
+        build:
+            dockerfile: dockerfile/telemt.dockerfile
+            args:
+                image: ${IMAGE}
+                TELEMT_VERSION: ${TELEMT_VERSION:-3.4.18}
+        volumes:
+            - ./config/.profile:/root/.ashrc:ro
+            - ./ssh:/ssh
+            - ./config/sshd_config:/etc/ssh/sshd_config
+            - ./config/telemt:/telemt
+            - ./scripts/start_telemt.sh:/start_telemt.sh
+            - ./logs:/logs
+        hostname: telemt
+        container_name: telemt-${VER}
+        depends_on:
+            php:
+                condition: service_healthy
+        env_file:
+            - path: ./.env
+              required: true # default
+            - path: ./override.env
+              required: false
+        stop_grace_period: 1s
+        command: ["/bin/sh", "/start_telemt.sh"]
+        networks:
+            default:
+                ipv4_address: 10.10.0.20
+        logging: *default-logging
     xr:
         image: mercurykd/vpnbot-xr:1.7
         build:
