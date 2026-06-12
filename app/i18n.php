@@ -313,10 +313,6 @@ $i = [
         'en' => '➕ add user',
         'ru' => '➕ добавить юзера',
     ],
-    'set port'  => [
-        'en' => 'set port',
-        'ru' => 'указать порт',
-    ],
     'port unavailable'  => [
         'en' => 'port unavailable',
         'ru' => 'порт не задан',
@@ -330,12 +326,8 @@ $i = [
         'ru' => 'быстрый режим: выкл',
     ],
     'telemt set port hint'  => [
-        'en' => 'set a port and run "make r" to expose the proxy',
-        'ru' => 'укажите порт и выполните "make r", чтобы открыть прокси',
-    ],
-    'telemt need restart'  => [
-        'en' => 'port saved — run "make r" to apply',
-        'ru' => 'порт сохранён — выполните "make r" для применения',
+        'en' => 'set a port in Settings -> Ports to expose the proxy',
+        'ru' => 'задайте порт в "настройки -> Ports", чтобы открыть прокси',
     ],
     'generateSecret'  => [
         'en' => 'generateSecret',

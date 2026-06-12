@@ -352,9 +352,6 @@ class Bot
             case preg_match('~^/telemtDomain$~', $this->input['callback'], $m):
                 $this->telemtDomain();
                 break;
-            case preg_match('~^/telemtPort$~', $this->input['callback'], $m):
-                $this->telemtPort();
-                break;
             case preg_match('~^/telemtFast$~', $this->input['callback'], $m):
                 $this->telemtFast();
                 break;
@@ -6870,7 +6867,6 @@ DNS-over-HTTPS with IP:
             ];
         }
         $data[] = [['text' => $this->i18n('telemt add user'),  'callback_data' => "/telemtAddUser"]];
-        $data[] = [['text' => $this->i18n('set port'),         'callback_data' => "/telemtPort"]];
         $data[] = [['text' => $this->i18n('changeFakeDomain'), 'callback_data' => "/telemtDomain"]];
         $data[] = [['text' => $this->i18n($fast ? 'telemt fast off' : 'telemt fast on'), 'callback_data' => "/telemtFast"]];
         $data[] = [['text' => $this->i18n('back'),             'callback_data' => "/menu"]];
@@ -6995,30 +6991,6 @@ DNS-over-HTTPS with IP:
         }
         $this->setPacConf($conf);
         $this->restartTelemt();
-        $this->telemt(true);
-    }
-
-    public function telemtPort()
-    {
-        $r = $this->send(
-            $this->input['chat'],
-            "@{$this->input['username']} enter port (or 0 to disable)",
-            $this->input['message_id'],
-            reply: 'enter port',
-        );
-        $_SESSION['reply'][$r['result']['message_id']] = [
-            'start_message' => $this->input['message_id'],
-            'callback'      => 'setTelemtPort',
-            'args'          => [],
-        ];
-    }
-
-    public function setTelemtPort($port)
-    {
-        $this->setPort($port, 'telemt');
-        $this->restartTelemt();
-        $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('telemt need restart'));
-        sleep(2);
         $this->telemt(true);
     }
 
@@ -7258,6 +7230,10 @@ DNS-over-HTTPS with IP:
                                 'text'          => $this->i18n('telemt'),
                                 'callback_data' => "/telemt",
                             ],
+                            [
+                                'text'          => $this->i18n('TrustTunnel'),
+                                'callback_data' => "/menu tt",
+                            ],
                         ],
                         [
                             [
@@ -7282,10 +7258,6 @@ DNS-over-HTTPS with IP:
                     ],
                     [
                         [
-                            [
-                                'text'          => $this->i18n('TrustTunnel'),
-                                'callback_data' => "/menu tt",
-                            ],
                             [
                                 'text'          => $this->i18n('DNSTT'),
                                 'callback_data' => "/dnstt",
@@ -12049,6 +12021,10 @@ DNS-over-HTTPS with IP:
             [[
                 'text'          => $this->i18n($p['tg']['enable'] ? 'on' : 'off') . ($p['tg']['enable'] ? ' ' . $p['tg']['port'] : ' port unavailable') . ' MTProto ',
                 'callback_data' => "/changePort tg",
+            ]],
+            [[
+                'text'          => $this->i18n($p['telemt']['enable'] ? 'on' : 'off') . ($p['telemt']['enable'] ? ' ' . $p['telemt']['port'] : ' port unavailable') . ' TeleMT',
+                'callback_data' => "/changePort telemt",
             ]],
             [[
                 'text'          => $this->i18n(!empty($c['ad']) ? 'on' : 'off') . ' 853 AdguardHome DoT',
