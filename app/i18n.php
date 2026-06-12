@@ -313,17 +313,29 @@ $i = [
         'en' => '➕ add user',
         'ru' => '➕ добавить юзера',
     ],
+    'telemt users'  => [
+        'en' => 'users',
+        'ru' => 'пользователи',
+    ],
+    'telemt settings'  => [
+        'en' => 'settings',
+        'ru' => 'настройки',
+    ],
+    'telemt masking'  => [
+        'en' => 'masking',
+        'ru' => 'маскировка',
+    ],
+    'telemt diagnostics'  => [
+        'en' => 'diagnostics',
+        'ru' => 'диагностика',
+    ],
+    'telemt observe'  => [
+        'en' => 'show /beobachten',
+        'ru' => 'показать /beobachten',
+    ],
     'port unavailable'  => [
         'en' => 'port unavailable',
         'ru' => 'порт не задан',
-    ],
-    'telemt fast on'  => [
-        'en' => 'fast mode: on',
-        'ru' => 'быстрый режим: вкл',
-    ],
-    'telemt fast off'  => [
-        'en' => 'fast mode: off',
-        'ru' => 'быстрый режим: выкл',
     ],
     'telemt set port hint'  => [
         'en' => 'set a port in Settings -> Ports to expose the proxy',
