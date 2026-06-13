@@ -577,10 +577,10 @@ services:
             - path: ./override.env
               required: false
         environment:
-            CKPORT: ${CKPORT:-8443}
+            CKPORT: ${CKPORT:-7443}
             STLSPORT: ${STLSPORT:-3443}
         ports:
-            - ${CKPORT:-8443}:${CKPORT:-8443}/tcp
+            - ${CKPORT:-7443}:${CKPORT:-7443}/tcp
             - ${STLSPORT:-3443}:${STLSPORT:-3443}/tcp
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_ss.sh"]

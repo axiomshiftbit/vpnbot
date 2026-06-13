@@ -2271,7 +2271,7 @@ class Bot
         $b64    = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}"));
 
         if (!empty($ck['Enabled'])) {
-            $ckPort = (int) (getenv('CKPORT') ?: 8443);
+            $ckPort = (int) (getenv('CKPORT') ?: 7443);
             $ckSrv  = $ck['ServerName'] ?? ($ck['RedirAddr'] ?? $domain);
             $effUid = $cloakUid !== null && $cloakUid !== '' ? $cloakUid : ($ck['UID'] ?? '');
             $opts   = "ck-client;UID=" . $effUid
@@ -2435,7 +2435,7 @@ class Bot
     {
         $c = $this->ensureCloakIdentity();
         $domain = $this->getPacConf()['domain'] ?: $this->ip;
-        $port   = (int) (getenv('CKPORT') ?: 8443);
+        $port   = (int) (getenv('CKPORT') ?: 7443);
         $ssport = (int) (getenv('SSPORT') ?: 8388);
 
         if (!empty($c['Enabled'])) {
@@ -2513,7 +2513,7 @@ class Bot
             $this->menu('ss');
             return;
         }
-        // Главный compose уже разворачивает ${CKPORT:-8443}:${CKPORT:-8443}/tcp
+        // Главный compose уже разворачивает ${CKPORT:-7443}:${CKPORT:-7443}/tcp
         // на сервисе ss, так что одного setEnvVar достаточно — после `make r`
         // докер подхватит новое значение. Флаг restart в pac заставит бот
         // напомнить пользователю про пересоздание контейнера.
@@ -2604,7 +2604,7 @@ class Bot
 
         if ($wasOn) {
             $domain = $this->getPacConf()['domain'] ?: $this->ip;
-            $port   = (int) (getenv('CKPORT') ?: 8443);
+            $port   = (int) (getenv('CKPORT') ?: 7443);
             $ssport = (int) (getenv('SSPORT') ?: 8388);
 
             $c['Enabled']    = 1;
@@ -6796,7 +6796,7 @@ DNS-over-HTTPS with IP:
 
         $ck       = $this->getCloakConfig();
         $cloakOn  = !empty($ck['Enabled']);
-        $ckPort   = (int) (getenv('CKPORT') ?: 8443);
+        $ckPort   = (int) (getenv('CKPORT') ?: 7443);
         $ckSrv    = $ck['ServerName'] ?? ($ck['RedirAddr'] ?? 'www.bing.com');
 
         $st       = $this->getStlsConfig();
@@ -12535,7 +12535,7 @@ DNS-over-HTTPS with IP:
         $ckCfg  = $this->getCloakConfig();
         $stCfg  = $this->getStlsConfig();
         if (!empty($ckCfg['Enabled'])) {
-            $ssPort = (int) (getenv('CKPORT') ?: 8443);
+            $ssPort = (int) (getenv('CKPORT') ?: 7443);
         } elseif (!empty($stCfg['Enabled'])) {
             $ssPort = (int) (getenv('STLSPORT') ?: 3443);
         } elseif (!empty($ssCfg['plugin'])) {
