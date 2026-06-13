@@ -1112,6 +1112,13 @@ class Bot
         $t .= "mask_port = 443\n";
         $t .= "fake_cert_len = 2048\n";
         $t .= "tls_emulation = true\n";
+        // Реализм server-flight на КЛИЕНТСКОМ пути FakeTLS (не cover-path):
+        // настоящие TLS 1.3 серверы шлют NewSessionTicket в конце handshake.
+        // Эмулируем 2 как additive fallback к захваченному TLS-профилю, чтобы
+        // ранний серверный flight выглядел аутентично для DPI. Клиенты
+        // Telegram принимают это штатно (стандартный TLS), совместимость не
+        // страдает. alpn_enforce и server_hello_delay уже хороши по дефолту.
+        $t .= "tls_new_session_tickets = 2\n";
         $t .= "mask_shape_hardening = " . $b($maskHardening) . "\n";
         $t .= "mask_shape_bucket_floor_bytes = 512\n";
         $t .= "mask_shape_bucket_cap_bytes = 4096\n";
@@ -7141,6 +7148,11 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/telemtToggle $key masking",
             ]];
         }
+        // Эти 4 опции усиливают только anti-probe cover-path и не влияют на
+        // трафик реальных клиентов; реализм клиентского хендшейка (session
+        // tickets / полный ServerHello / ALPN-echo) включён всегда.
+        $text[] = "\nℹ " . $this->i18n('telemt masking note');
+        $text[] = $this->i18n('telemt realism');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }

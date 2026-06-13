@@ -325,6 +325,14 @@ $i = [
         'en' => 'masking',
         'ru' => 'маскировка',
     ],
+    'telemt masking note'  => [
+        'en' => 'These harden the anti-probe cover path only — real client traffic is unaffected, so enabling them is safe.',
+        'ru' => 'Усиливают только cover-path против active-probing — трафика реальных клиентов не касаются, включать безопасно.',
+    ],
+    'telemt realism'  => [
+        'en' => 'Client-path TLS realism (session tickets, full ServerHello, ALPN echo): always on.',
+        'ru' => 'Реализм TLS на клиентском пути (session tickets, полный ServerHello, ALPN echo): всегда включён.',
+    ],
     'telemt diagnostics'  => [
         'en' => 'diagnostics',
         'ru' => 'диагностика',
