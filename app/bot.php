@@ -1022,6 +1022,14 @@ class Bot
         return array_key_exists($key, $conf) ? !empty($conf[$key]) : $default;
     }
 
+    // Дефолты masking-флагов telemt. mask_shape_hardening у telemt включён по
+    // умолчанию (дёшево, работает только на mask-пути, ломает shape-анализ при
+    // активном пробинге) — не глушим его на свежем конфиге. Остальные — off.
+    public function telemtMaskDefault(string $key): bool
+    {
+        return $key === 'telemt_mask_hardening';
+    }
+
     public function telemtInt(array $conf, string $key, int $default, int $min, int $max): int
     {
         $value = (int) ($conf[$key] ?? $default);
@@ -1041,10 +1049,15 @@ class Bot
         $userEnabled = is_array($conf['telemt_user_enabled'] ?? null) ? $conf['telemt_user_enabled'] : [];
         $beobachten = $this->telemtBool($conf, 'telemt_beobachten', false);
         $beobachtenMinutes = $this->telemtInt($conf, 'telemt_beobachten_minutes', 10, 1, 1440);
-        $maskHardening = $this->telemtBool($conf, 'telemt_mask_hardening', false);
-        $maskAggressive = $this->telemtBool($conf, 'telemt_mask_aggressive', false);
-        $maskBlur = $this->telemtBool($conf, 'telemt_mask_blur', false);
-        $maskTiming = $this->telemtBool($conf, 'telemt_mask_timing', false);
+        $maskHardening = $this->telemtBool($conf, 'telemt_mask_hardening', $this->telemtMaskDefault('telemt_mask_hardening'));
+        $maskTiming = $this->telemtBool($conf, 'telemt_mask_timing', $this->telemtMaskDefault('telemt_mask_timing'));
+        // telemt отказывается стартовать, если aggressive/blur включены без
+        // mask_shape_hardening (load.rs: "requires mask_shape_hardening = true").
+        // UI-тоггл держит инвариант, но импортированный бэкап или правленый
+        // pac-conf могут принести несогласованную пару — гасим её здесь, в
+        // единственном месте, которое генерирует telemt.toml.
+        $maskAggressive = $maskHardening && $this->telemtBool($conf, 'telemt_mask_aggressive', $this->telemtMaskDefault('telemt_mask_aggressive'));
+        $maskBlur = $maskHardening && $this->telemtBool($conf, 'telemt_mask_blur', $this->telemtMaskDefault('telemt_mask_blur'));
         $announce = $this->ip;
         $b      = fn($v) => $v ? 'true' : 'false';
         $q      = fn($v) => json_encode((string) $v, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -1087,7 +1100,7 @@ class Bot
         $t .= "mask_shape_bucket_cap_bytes = 4096\n";
         $t .= "mask_shape_hardening_aggressive_mode = " . $b($maskAggressive) . "\n";
         $t .= "mask_shape_above_cap_blur = " . $b($maskBlur) . "\n";
-        $t .= "mask_shape_above_cap_blur_max_bytes = 64\n";
+        $t .= "mask_shape_above_cap_blur_max_bytes = 512\n";
         $t .= "mask_timing_normalization_enabled = " . $b($maskTiming) . "\n";
         $t .= "mask_timing_normalization_floor_ms = 180\n";
         $t .= "mask_timing_normalization_ceiling_ms = 320\n\n";
@@ -7010,10 +7023,10 @@ DNS-over-HTTPS with IP:
         $ports  = $this->getPorts()['telemt'];
         $domain = $conf['telemt_domain'] ?? 'www.google.com';
         $users  = $conf['telemt_users'] ?? [];
-        $masking = $this->telemtBool($conf, 'telemt_mask_hardening', false)
-            || $this->telemtBool($conf, 'telemt_mask_aggressive', false)
-            || $this->telemtBool($conf, 'telemt_mask_blur', false)
-            || $this->telemtBool($conf, 'telemt_mask_timing', false);
+        $masking = $this->telemtBool($conf, 'telemt_mask_hardening', $this->telemtMaskDefault('telemt_mask_hardening'))
+            || $this->telemtBool($conf, 'telemt_mask_aggressive', $this->telemtMaskDefault('telemt_mask_aggressive'))
+            || $this->telemtBool($conf, 'telemt_mask_blur', $this->telemtMaskDefault('telemt_mask_blur'))
+            || $this->telemtBool($conf, 'telemt_mask_timing', $this->telemtMaskDefault('telemt_mask_timing'));
         $diagnostics = $this->telemtBool($conf, 'telemt_beobachten', false);
         $st     = $this->ssh('pgrep -x telemt', 'telemt') ? 'on' : 'off';
 
@@ -7104,9 +7117,10 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt masking') . "\n";
         foreach ($items as $key => $title) {
-            $text[] = "$title: " . $this->telemtState($this->telemtBool($conf, $key, false));
+            $state = $this->telemtBool($conf, $key, $this->telemtMaskDefault($key));
+            $text[] = "$title: " . $this->telemtState($state);
             $data[] = [[
-                'text' => "$title: " . $this->telemtState($this->telemtBool($conf, $key, false)),
+                'text' => "$title: " . $this->telemtState($state),
                 'callback_data' => "/telemtToggle $key masking",
             ]];
         }
@@ -7151,7 +7165,7 @@ DNS-over-HTTPS with IP:
             return $this->telemt(true);
         }
         $conf = $this->getPacConf();
-        $new = $this->telemtBool($conf, $key, false) ? 0 : 1;
+        $new = $this->telemtBool($conf, $key, $this->telemtMaskDefault($key)) ? 0 : 1;
         $conf[$key] = $new;
         if ($new && in_array($key, ['telemt_mask_aggressive', 'telemt_mask_blur'], true)) {
             $conf['telemt_mask_hardening'] = 1;
