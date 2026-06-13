@@ -7062,7 +7062,7 @@ DNS-over-HTTPS with IP:
 
         foreach ($users as $name => $secret) {
             $link = $this->linkTelemt($name);
-            $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'on' : 'off';
+            $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
             $data[] = [
                 ['text' => "🔗 $name", 'url' => $link],
                 ['text' => $this->i18n($state), 'callback_data' => "/telemtToggleUser $name"],
@@ -7300,8 +7300,8 @@ DNS-over-HTTPS with IP:
         $conf   = $this->getPacConf();
         if ($domain === '' || $domain === '0') {
             $conf['telemt_domain'] = 'www.google.com';
-        } elseif (preg_match('~^[a-z0-9.-]+$~i', $domain)) {
-            $conf['telemt_domain'] = $domain;
+        } elseif (preg_match('~^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$~i', $domain)) {
+            $conf['telemt_domain'] = strtolower($domain);
         } else {
             $this->update($this->input['chat'], $this->input['message_id'], 'wrong domain');
             sleep(2);
