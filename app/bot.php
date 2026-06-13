@@ -2114,18 +2114,8 @@ class Bot
         } else {
             // v2ray и cloak/simple-tls конфликтуют: при v2ray ssserver работает
             // через плагин и не отдаёт plain SS на 8388, поэтому глушим оба.
-            $ck = $this->getCloakConfig();
-            if (!empty($ck['Enabled'])) {
-                $ck['Enabled'] = 0;
-                $this->setCloakConfig($ck);
-                $this->ssh('pkill -f ck-server', 'ss');
-            }
-            $st = $this->getStlsConfig();
-            if (!empty($st['Enabled'])) {
-                $st['Enabled'] = 0;
-                $this->setStlsConfig($st);
-                $this->ssh('pkill -f simple-tls', 'ss');
-            }
+            $this->disableCloakIfOn();
+            $this->disableSimpleTlsIfOn();
             $hash             = $this->getHashBot();
             $c['plugin']      = 'v2ray-plugin';
             $c['plugin_opts'] = 'server;loglevel=none';
@@ -2155,24 +2145,20 @@ class Bot
         );
     }
 
-    // simple-tls работает поверх plain ssserver (как cloak), поэтому при включении
-    // нужно выключить v2ray (там ssserver слушает с плагином, не plain). С cloak
-    // simple-tls сосуществует — оба форвардят в 127.0.0.1:8388, просто на
-    // разных внешних портах. В ss://-линке приоритет фиксированный: cloak >
-    // simple-tls > v2ray > plain (см. buildSSLink).
+    // simple-tls работает поверх plain ssserver (как cloak), но UI держит
+    // транспорты взаимоисключающими: при включении одного глушим остальные.
     public function simpleTls()
     {
         $c = $this->getStlsConfig();
         if (!empty($c['Enabled'])) {
-            $c['Enabled'] = 0;
-            $this->setStlsConfig($c);
-            $this->ssh('pkill -f simple-tls', 'ss');
+            $this->disableSimpleTlsIfOn();
         } else {
             // Раньше при активном v2ray-plugin вызывался v2ray() с return —
             // получался UX-баг: пользователь жмёт «simple-tls: OFF→ON»,
             // а на деле просто выключается v2ray, simple-tls не запускается.
             // Теперь снимаем плагин inline и идём дальше.
             $this->disableV2rayPluginIfOn();
+            $this->disableCloakIfOn();
             $domain = $this->getPacConf()['domain'] ?: $this->ip;
             $c['Enabled']    = 1;
             $c['ServerName'] = $c['ServerName'] ?? $domain;
@@ -2256,9 +2242,8 @@ class Bot
 
     // Сборка ss://-ссылки с учётом активного плагина. Приоритет:
     //   cloak > simple-tls > v2ray-plugin > чистый shadowsocks.
-    // cloak и simple-tls могут сосуществовать (оба слушают на отдельных
-    // внешних портах и форвардят в plain ssserver:8388), но в линке
-    // отдаём только cloak, как более защищённый.
+    // Переключатели выше держат плагины взаимоисключающими; приоритет нужен
+    // только для старых/ручных конфигов, где несколько флагов уже включены.
     //
     // $cloakUid — если задан, идёт в plugin-opts вместо $ck['UID']. Нужно
     // для per-user QR из cloak users menu (Phase 2 multi-user).
@@ -2448,6 +2433,7 @@ class Bot
             // UX-баг: "включаю cloak" → выключился v2ray, cloak не включился.
             // Теперь честно отключаем плагин inline и идём дальше.
             $this->disableV2rayPluginIfOn();
+            $this->disableSimpleTlsIfOn();
             // Гарантируем, что в ckusers.json есть default запись для текущего
             // UID — getCloakUsers() сам бутстрапит, дальше syncCloakBypassUIDs()
             // переписывает BypassUID из side-store.
@@ -2463,6 +2449,28 @@ class Bot
             $this->ssh($this->ckServerRestartCmd(), 'ss');
         }
         $this->menu('ss');
+    }
+
+    private function disableCloakIfOn(): void
+    {
+        $c = $this->getCloakConfig();
+        if (empty($c['Enabled'])) {
+            return;
+        }
+        $c['Enabled'] = 0;
+        $this->setCloakConfig($c);
+        $this->ssh('pkill -f ck-server', 'ss');
+    }
+
+    private function disableSimpleTlsIfOn(): void
+    {
+        $c = $this->getStlsConfig();
+        if (empty($c['Enabled'])) {
+            return;
+        }
+        $c['Enabled'] = 0;
+        $this->setStlsConfig($c);
+        $this->ssh('pkill -f simple-tls', 'ss');
     }
 
     // Снимает плагин v2ray-plugin с ssserver/sslocal без перерисовки меню.
