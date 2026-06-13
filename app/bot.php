@@ -6793,6 +6793,7 @@ DNS-over-HTTPS with IP:
         $ss      = $this->getSSConfig();
         $p       = $this->getPorts();
         $v2ray   = !empty($ss['plugin']) ? 'ON' : 'OFF';
+        $ssl     = $this->nginxGetTypeCert();
 
         $ck       = $this->getCloakConfig();
         $cloakOn  = !empty($ck['Enabled']);
@@ -6807,58 +6808,91 @@ DNS-over-HTTPS with IP:
         // Порт для display: тот же приоритет, что в buildSSLink
         // (cloak > simple-tls > v2ray > plain).
         if ($cloakOn) {
-            $port = $ckPort;
+            $port            = $ckPort;
+            $activeTransport = 'cloak';
         } elseif ($stlsOn) {
-            $port = $stPort;
+            $port            = $stPort;
+            $activeTransport = 'simple-tls';
         } elseif (!empty($ss['plugin'])) {
-            $port = 443;
+            $port            = $ssl ? 443 : 80;
+            $activeTransport = 'v2ray-plugin';
         } else {
-            $port = $p['ss']['port'];
+            $port            = $p['ss']['port'];
+            $activeTransport = 'plain';
         }
-        $options = !empty($ss['plugin']) ? "tls;fast-open;path=/v2ray$hash;host=$domain" : "path=/v2ray$hash;host=$domain";
+        $enabledTransports = [];
+        if (!empty($ss['plugin'])) {
+            $enabledTransports[] = 'v2ray-plugin';
+        }
+        if ($cloakOn) {
+            $enabledTransports[] = 'cloak';
+        }
+        if ($stlsOn) {
+            $enabledTransports[] = 'simple-tls';
+        }
+        if (empty($enabledTransports)) {
+            $enabledTransports[] = 'plain';
+        }
+        $options = !empty($ss['plugin'])
+            ? ($ssl ? 'tls;' : '') . "fast-open;path=/v2ray$hash;host=$domain"
+            : "path=/v2ray$hash;host=$domain";
 
-        $text = "Menu -> ShadowSocks";
+        $ss_link = $this->buildSSLink($hash);
+        $text    = [];
+        $text[]  = 'Menu -> ShadowSocks';
+        $text[]  = '';
+        $text[]  = '<b>Connection</b>';
+        $text[]  = "server: <code>$domain:$port</code>";
+        $text[]  = "transport: <code>$activeTransport</code>";
+        $text[]  = 'enabled: <code>' . implode(', ', $enabledTransports) . '</code>';
+        $text[]  = 'dns: <code>10.10.0.5</code>';
+        $text[]  = '';
+        $text[]  = '<b>Credentials</b>';
+        $text[]  = 'method: <code>' . htmlspecialchars($ss['method'] ?? '', ENT_QUOTES) . '</code>';
+        $text[]  = "password: <span class='tg-spoiler'>" . htmlspecialchars($ss['password'] ?? '', ENT_QUOTES) . '</span>';
+        $text[]  = 'link: <code>' . htmlspecialchars($ss_link, ENT_QUOTES) . '</code>';
+        if (!empty($ss['plugin'])) {
+            $text[] = '';
+            $text[] = '<b>v2ray-plugin</b>';
+            $text[] = "options: <code>$options</code>";
+        }
+        if ($cloakOn) {
+            $text[] = '';
+            $text[] = '<b>Cloak</b>';
+            $text[] = "port: <code>$ckPort</code>";
+            $text[] = 'masq: <code>' . htmlspecialchars($ckSrv, ENT_QUOTES) . '</code>';
+            $text[] = "UID: <span class='tg-spoiler'>" . htmlspecialchars($ck['UID'] ?? '', ENT_QUOTES) . '</span>';
+            $text[] = "pubkey: <span class='tg-spoiler'>" . htmlspecialchars($ck['PublicKey'] ?? '', ENT_QUOTES) . '</span>';
+            $text[] = 'method: <code>' . htmlspecialchars($ck['EncryptionMethod'] ?? 'aes-256-gcm', ENT_QUOTES) . '</code>';
+        }
+        if ($stlsOn) {
+            $text[] = '';
+            $text[] = '<b>simple-tls</b>';
+            $text[] = 'SNI: <code>' . htmlspecialchars($stSrv, ENT_QUOTES) . '</code>';
+            $text[] = "port: <code>$stPort</code>";
+        }
+
+        $data[] = [
+            [
+                'text'          => $this->i18n('show QR'),
+                'callback_data' => "/qrSS",
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('change password'),
                 'callback_data' => "/sspswd",
             ],
-        ];
-        $data[] = [
             [
                 'text'          => $this->i18n('generate password'),
                 'callback_data' => "/ssGenPswd",
             ],
         ];
-        $ss_link = $this->buildSSLink($hash);
-        $text .= "\n\n<code>$ss_link</code>\n";
-        $text .= "\n\npassword: <span class='tg-spoiler'>{$ss['password']}</span>";
-        $text .= "\n\nserver: <code>$domain:$port</code>";
-        $text .= "\n\nmethod: <code>{$ss['method']}</code>";
-        $text .= "\n\nnameserver: <code>10.10.0.5</code>";
-        if ($ss['plugin']) {
-            $text .= "\n\nplugin: <code>v2ray-plugin</code>";
-            $text .= "\n\nv2ray options: <code>$options</code>";
-        }
-        if ($cloakOn) {
-            $text .= "\n\nplugin: <code>cloak (ck-client)</code>";
-            $text .= "\n\ncloak masq: <code>$ckSrv</code>";
-            $text .= "\n\ncloak UID: <span class='tg-spoiler'>" . ($ck['UID'] ?? '') . "</span>";
-            $text .= "\n\ncloak pubkey: <span class='tg-spoiler'>" . ($ck['PublicKey'] ?? '') . "</span>";
-            $text .= "\n\ncloak method: <code>" . ($ck['EncryptionMethod'] ?? 'aes-256-gcm') . "</code>";
-        }
-        if ($stlsOn) {
-            $text .= "\n\nplugin: <code>simple-tls</code>";
-            $text .= "\n\nstls SNI: <code>$stSrv</code>";
-            $text .= "\n\nstls port: <code>$stPort</code>";
-        }
         $data[] = [
             [
                 'text'          => "v2ray: $v2ray",
                 'callback_data' => "/v2ray",
             ],
-        ];
-        $data[] = [
             [
                 'text'          => 'cloak: ' . ($cloakOn ? 'ON' : 'OFF'),
                 'callback_data' => "/cloak",
@@ -6915,18 +6949,12 @@ DNS-over-HTTPS with IP:
         }
         $data[] = [
             [
-                'text'          => $this->i18n('show QR'),
-                'callback_data' => "/qrSS",
-            ],
-        ];
-        $data[] = [
-            [
                 'text'          => $this->i18n('back'),
                 'callback_data' => "/menu",
             ],
         ];
         return [
-            'text' => $text,
+            'text' => implode("\n", $text),
             'data' => $data,
         ];
     }
