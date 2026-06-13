@@ -1064,8 +1064,12 @@ class Bot
 
         $showLink = implode(', ', array_map($q, array_keys($users)));
         $t  = "show_link = [$showLink]\n\n";
-        $t .= "log_level = \"normal\"\n\n";
         $t .= "[general]\n";
+        // log_level/disable_colors — поля [general] (а не top-level: там telemt
+        // их игнорирует). disable_colors убирает ANSI-escape из /logs/telemt;
+        // env NO_COLOR telemt не читает, только этот ключ.
+        $t .= "log_level = \"normal\"\n";
+        $t .= "disable_colors = true\n";
         $t .= "prefer_ipv6 = false\n";
         $t .= "fast_mode = true\n";
         $t .= "beobachten = " . $b($beobachten) . "\n";
