@@ -377,6 +377,9 @@ class Bot
             case preg_match('~^/telemtShowBeobachten$~', $this->input['callback'], $m):
                 $this->telemtShowBeobachten();
                 break;
+            case preg_match('~^/telemtReport$~', $this->input['callback'], $m):
+                $this->telemtReport();
+                break;
             case preg_match('~^/deleteAll (\w+)$~', $this->input['callback'], $m):
                 $this->deleteAll($m[1]);
                 break;
@@ -1088,12 +1091,16 @@ class Bot
         // наружу порт пробрасывается через override (setPort), как у tg.
         $t .= "port = 443\n";
         $t .= "listen_addr_ipv4 = \"0.0.0.0\"\n\n";
-        // Управляющий HTTP-API боту не нужен (диагностика читает файл
-        // beobachten напрямую). Держим его выключенным, чтобы порт 9091 не
-        // висел в bridge-сети vpnbot; listen/whitelist оставлены на случай
-        // ручной отладки и инертны при enabled = false.
+        // Управляющий HTTP-API нужен боту для расширенной диагностики
+        // (/v1/* эндпоинты: health, stats, security posture). Включаем его
+        // ТОЛЬКО когда включён beobachten, и строго на loopback внутри
+        // контейнера (listen 127.0.0.1 + whitelist). Наружу 9091 НЕ
+        // публикуется (нет ports: в compose), дополнительно режется nft на
+        // хосте; бот ходит к API по ssh изнутри контейнера. auth_header пуст —
+        // loopback-изоляции network namespace достаточно (как в upstream
+        // prod-образе). Когда диагностика выключена — сокет не открывается.
         $t .= "[server.api]\n";
-        $t .= "enabled = false\n";
+        $t .= "enabled = " . $b($beobachten) . "\n";
         $t .= "listen = \"127.0.0.1:9091\"\n";
         $t .= "whitelist = [\"127.0.0.1/32\", \"::1/128\"]\n\n";
         $t .= "[[server.listeners]]\n";
@@ -7144,10 +7151,20 @@ DNS-over-HTTPS with IP:
         $enabled = $this->telemtBool($conf, 'telemt_beobachten', false);
         $minutes = $this->telemtInt($conf, 'telemt_beobachten_minutes', 10, 1, 1440);
 
+        $st      = $this->ssh('pgrep -x telemt', 'telemt') ? 'on' : 'off';
+        $bfile   = '/config/telemt/data/beobachten.txt';
+        $btxt    = is_file($bfile) ? trim((string) file_get_contents($bfile)) : '';
+        $bcount  = $btxt === '' ? 0 : count(preg_split('~\R~', $btxt));
+
         $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt diagnostics') . "\n";
+        $text[] = "service: $st";
         $text[] = "beobachten: " . $this->telemtState($enabled);
         $text[] = "retention: $minutes min";
-        $text[] = "JA3/JA4: " . ($enabled ? 'logged — tap observe below' : 'off');
+        $text[] = "JA3/JA4 observed: " . ($enabled ? "$bcount line(s)" : 'off');
+        $text[] = "loopback API (127.0.0.1): " . $this->telemtState($enabled);
+        if ($enabled) {
+            $text[] = "\n📊 " . $this->i18n('telemt report') . " — health · traffic · users · masking · security";
+        }
 
         $data[] = [[
             'text' => 'beobachten: ' . $this->telemtState($enabled),
@@ -7157,6 +7174,9 @@ DNS-over-HTTPS with IP:
             'text' => "retention: $minutes min",
             'callback_data' => "/telemtCycleBeobachtenMinutes",
         ]];
+        if ($enabled) {
+            $data[] = [['text' => $this->i18n('telemt report'), 'callback_data' => "/telemtReport"]];
+        }
         $data[] = [['text' => $this->i18n('telemt observe'), 'callback_data' => "/telemtShowBeobachten"]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -7234,6 +7254,160 @@ DNS-over-HTTPS with IP:
             $out = ltrim(substr($out, -3500));
         }
         $this->send($this->input['chat'], "<pre>" . htmlspecialchars($out, ENT_QUOTES) . "</pre>", $this->input['message_id']);
+    }
+
+    // Один ssh-заход в контейнер telemt: дёргаем перечисленные /v1/* эндпоинты
+    // управляющего API на 127.0.0.1:9091. API слушает только loopback внутри
+    // контейнера и наружу не публикуется; включён лишь при beobachten = on.
+    // Возвращаем path => распакованный envelope.data (или null при ошибке).
+    public function telemtApiFetch(array $paths): array
+    {
+        $cmd = '';
+        foreach ($paths as $p) {
+            $url  = 'http://127.0.0.1:9091' . $p;
+            $cmd .= "printf '@@@%s@@@\\n' " . escapeshellarg($p) . "; "
+                  . "wget -qO- -T 3 " . escapeshellarg($url) . " 2>/dev/null; "
+                  . "printf '\\n'; ";
+        }
+        $raw    = (string) $this->ssh($cmd, 'telemt');
+        $result = array_fill_keys($paths, null);
+        // Режем вывод по маркерам @@@/v1/...@@@ и декодируем тело каждого.
+        $parts = preg_split('~@@@(/v1/[^@]+)@@@\n~', $raw, -1, PREG_SPLIT_DELIM_CAPTURE);
+        for ($i = 1; $i + 1 < count($parts); $i += 2) {
+            $body = trim($parts[$i + 1]);
+            if ($body === '') {
+                continue;
+            }
+            $j = json_decode($body, true);
+            if (is_array($j) && !empty($j['ok']) && array_key_exists('data', $j)) {
+                $result[$parts[$i]] = $j['data'];
+            }
+        }
+        return $result;
+    }
+
+    public function telemtReport()
+    {
+        $conf = $this->getPacConf();
+        if (!$this->telemtBool($conf, 'telemt_beobachten', false)) {
+            $this->answer($this->input['callback_id'], 'beobachten off', true);
+            return $this->telemtDiagnostics();
+        }
+        $api = $this->telemtApiFetch([
+            '/v1/health', '/v1/health/ready', '/v1/system/info',
+            '/v1/stats/summary', '/v1/stats/users', '/v1/security/posture',
+        ]);
+        $h     = $api['/v1/health'] ?? [];
+        $ready = $api['/v1/health/ready'] ?? [];
+        $info  = $api['/v1/system/info'] ?? [];
+        $sum   = $api['/v1/stats/summary'] ?? [];
+        $users = $api['/v1/stats/users'] ?? null;
+        $sec   = $api['/v1/security/posture'] ?? [];
+
+        $uptime = function ($s) {
+            $s = (int) $s;
+            $d = intdiv($s, 86400);
+            $s %= 86400;
+            return ($d ? "{$d}d " : '') . sprintf('%02d:%02d', intdiv($s, 3600), intdiv($s % 3600, 60));
+        };
+        $yn = fn($v) => !empty($v) ? '✓' : '✗';
+
+        $L   = ["TeleMT diagnostics"];
+
+        // ── Состояние ──
+        $L[] = "\n▌ Health / build";
+        if ($h || $ready || $info) {
+            $L[] = "live: " . (($h['status'] ?? '') === 'ok' ? '✓ ok' : '✗ ' . ($h['status'] ?? 'n/a'));
+            if ($ready) {
+                $rl = !empty($ready['ready']) ? '✓ ready' : '✗ ' . ($ready['status'] ?? 'not_ready');
+                if (!empty($ready['reason'])) {
+                    $rl .= " ({$ready['reason']})";
+                }
+                $L[] = "ready: $rl";
+                $L[] = "upstreams: " . ($ready['healthy_upstreams'] ?? '?') . "/" . ($ready['total_upstreams'] ?? '?') . " healthy";
+            }
+            if ($info) {
+                $L[] = "version: " . ($info['version'] ?? '?') . " (" . ($info['target_arch'] ?? '?') . "/" . ($info['target_os'] ?? '?') . ")";
+                $L[] = "uptime: " . $uptime($info['uptime_seconds'] ?? 0);
+                $hash = (string) ($info['config_hash'] ?? '');
+                $L[] = "config: " . ($hash !== '' ? substr($hash, 0, 12) : '?') . ", reloads: " . ($info['config_reload_count'] ?? 0);
+            }
+        } else {
+            $L[] = "API unreachable — beobachten just enabled? retry in a few seconds";
+        }
+
+        // ── Трафик ──
+        if ($sum) {
+            $L[] = "\n▌ Traffic (since start)";
+            $L[] = "connections: " . ($sum['connections_total'] ?? 0) . " (bad " . ($sum['connections_bad_total'] ?? 0) . ")";
+            $L[] = "handshake timeouts: " . ($sum['handshake_timeouts_total'] ?? 0);
+            foreach (['connections_bad_by_class' => 'bad', 'handshake_failures_by_class' => 'hs-fail'] as $k => $lbl) {
+                if (!empty($sum[$k]) && is_array($sum[$k])) {
+                    $cl = [];
+                    foreach (array_slice($sum[$k], 0, 6) as $c) {
+                        $cl[] = ($c['class'] ?? '?') . '=' . ($c['total'] ?? 0);
+                    }
+                    if ($cl) {
+                        $L[] = "$lbl: " . implode(', ', $cl);
+                    }
+                }
+            }
+        }
+
+        // ── Пользователи ──
+        $L[] = "\n▌ Users";
+        if (is_array($users)) {
+            $names = [];
+            foreach ($users as $u) {
+                $names[] = is_array($u) ? (string) ($u['username'] ?? $u['name'] ?? '?') : (string) $u;
+            }
+            $L[] = "active views: " . count($users)
+                . (isset($sum['configured_users']) ? " (configured " . $sum['configured_users'] . ")" : '');
+            if ($names) {
+                $L[] = implode(', ', array_slice($names, 0, 20)) . (count($names) > 20 ? ' …' : '');
+            }
+        } else {
+            $L[] = "n/a";
+        }
+
+        // ── Маскировка / fingerprint ──
+        $L[] = "\n▌ Masking / fingerprint (JA3/JA4)";
+        $L[] = "fake-TLS domain: " . ($conf['telemt_domain'] ?? 'www.google.com');
+        $maskRow = [];
+        foreach (['telemt_mask_hardening' => 'harden', 'telemt_mask_aggressive' => 'aggr', 'telemt_mask_blur' => 'blur', 'telemt_mask_timing' => 'timing'] as $k => $lbl) {
+            $maskRow[] = "$lbl " . ($this->telemtBool($conf, $k, $this->telemtMaskDefault($k)) ? 'on' : 'off');
+        }
+        $L[] = "shaping: " . implode(', ', $maskRow);
+        $bfile = '/config/telemt/data/beobachten.txt';
+        $btxt  = is_file($bfile) ? trim((string) file_get_contents($bfile)) : '';
+        if ($btxt === '') {
+            $L[] = "beobachten: no observations yet";
+        } else {
+            $blines = preg_split('~\R~', $btxt);
+            $L[] = "beobachten: " . count($blines) . " line(s), retention "
+                . $this->telemtInt($conf, 'telemt_beobachten_minutes', 10, 1, 1440) . "m — last:";
+            foreach (array_slice($blines, -8) as $bl) {
+                $L[] = "  " . $bl;
+            }
+        }
+
+        // ── Безопасность ──
+        if ($sec) {
+            $L[] = "\n▌ Security posture";
+            $L[] = "api: loopback 127.0.0.1 (not published, nft-dropped on host)";
+            $L[] = "read_only: " . $yn($sec['api_read_only'] ?? false)
+                . "  whitelist: " . ($sec['api_whitelist_entries'] ?? 0) . " cidr"
+                . "  auth_header: " . $yn($sec['api_auth_header_enabled'] ?? false);
+            $L[] = "log_level: " . ($sec['log_level'] ?? '?')
+                . "  telemetry: core " . $yn($sec['telemetry_core_enabled'] ?? false)
+                . ", user " . $yn($sec['telemetry_user_enabled'] ?? false);
+        }
+
+        $msg = implode("\n", $L);
+        if (mb_strlen($msg) > 3900) {
+            $msg = mb_substr($msg, 0, 3900) . "\n…";
+        }
+        $this->send($this->input['chat'], "<pre>" . htmlspecialchars($msg, ENT_QUOTES) . "</pre>", $this->input['message_id']);
     }
 
     public function telemtQr($name)
