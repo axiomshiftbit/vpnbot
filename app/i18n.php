@@ -330,8 +330,8 @@ $i = [
         'ru' => 'диагностика',
     ],
     'telemt observe'  => [
-        'en' => 'show /beobachten',
-        'ru' => 'показать /beobachten',
+        'en' => 'show beobachten log',
+        'ru' => 'показать журнал beobachten',
     ],
     'port unavailable'  => [
         'en' => 'port unavailable',

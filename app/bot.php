@@ -1070,6 +1070,10 @@ class Bot
         $t .= "fast_mode = true\n";
         $t .= "beobachten = " . $b($beobachten) . "\n";
         $t .= "beobachten_minutes = $beobachtenMinutes\n";
+        // beobachten пишет наблюдения JA3/JA4 в файл (НЕ в HTTP-API). Кладём
+        // его в data-path (/telemt/data ⇄ host ./config/telemt/data ⇄ php
+        // /config/telemt/data), чтобы бот читал журнал напрямую, без API.
+        $t .= "beobachten_file = " . $q('/telemt/data/beobachten.txt') . "\n";
         $t .= "use_middle_proxy = false\n\n";
         $t .= "[general.modes]\n";
         $t .= "classic = false\n";
@@ -1080,10 +1084,12 @@ class Bot
         // наружу порт пробрасывается через override (setPort), как у tg.
         $t .= "port = 443\n";
         $t .= "listen_addr_ipv4 = \"0.0.0.0\"\n\n";
-        // Управляющий HTTP-API нужен только для диагностики /beobachten.
-        // Наружу порт 9091 не публикуется и дополнительно закрыт nft.
+        // Управляющий HTTP-API боту не нужен (диагностика читает файл
+        // beobachten напрямую). Держим его выключенным, чтобы порт 9091 не
+        // висел в bridge-сети vpnbot; listen/whitelist оставлены на случай
+        // ручной отладки и инертны при enabled = false.
         $t .= "[server.api]\n";
-        $t .= "enabled = " . $b($beobachten) . "\n";
+        $t .= "enabled = false\n";
         $t .= "listen = \"127.0.0.1:9091\"\n";
         $t .= "whitelist = [\"127.0.0.1/32\", \"::1/128\"]\n\n";
         $t .= "[[server.listeners]]\n";
@@ -7137,7 +7143,7 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt diagnostics') . "\n";
         $text[] = "beobachten: " . $this->telemtState($enabled);
         $text[] = "retention: $minutes min";
-        $text[] = "JA3/JA4: " . ($enabled ? 'available through /beobachten' : 'off');
+        $text[] = "JA3/JA4: " . ($enabled ? 'logged — tap observe below' : 'off');
 
         $data[] = [[
             'text' => 'beobachten: ' . $this->telemtState($enabled),
@@ -7213,9 +7219,15 @@ DNS-over-HTTPS with IP:
             $this->answer($this->input['callback_id'], 'beobachten off', true);
             return $this->telemtDiagnostics();
         }
-        $out = trim($this->ssh('wget -qO- http://127.0.0.1:9091/beobachten 2>&1 | tail -c 3500', 'telemt'));
+        // beobachten ведёт журнал JA3/JA4 в файл (telemtToml: beobachten_file).
+        // /telemt/data в контейнере telemt = /config/telemt/data в php-контейнере.
+        $file = '/config/telemt/data/beobachten.txt';
+        $out  = is_file($file) ? trim((string) file_get_contents($file)) : '';
         if ($out === '') {
-            $out = 'no beobachten data';
+            $out = 'no beobachten data yet';
+        } else {
+            // хвост, чтобы уложиться в лимит сообщения Telegram
+            $out = ltrim(substr($out, -3500));
         }
         $this->send($this->input['chat'], "<pre>" . htmlspecialchars($out, ENT_QUOTES) . "</pre>", $this->input['message_id']);
     }
