@@ -9568,6 +9568,7 @@ DNS-over-HTTPS with IP:
             $link = $this->relayVlessLink($link, $pac['relays'][$_GET['relay']]);
         }
 
+        $this->subSecurityHeaders();
         header('Content-Type: text/plain; charset=utf-8');
         header('Profile-Update-Interval: 12');
         echo base64_encode($link);
@@ -12159,6 +12160,9 @@ DNS-over-HTTPS with IP:
             return json_encode($c);
         }
 
+        // The body carries client secrets (UUID/password, reality keys) — keep it
+        // out of any cache/index (defense-in-depth).
+        $this->subSecurityHeaders();
         if ($_GET['t'] == 'cl') {
             header('Content-type: text/yaml');
             echo yaml_emit($c);
@@ -12167,6 +12171,17 @@ DNS-over-HTTPS with IP:
 
         header('Content-type: application/json');
         echo json_encode($c);
+    }
+
+    // Response headers for any subscription body (contains client secrets): no
+    // caching, no indexing, no MIME sniffing. Mirrors the relay repo's nginx.
+    public function subSecurityHeaders()
+    {
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        header('X-Content-Type-Options: nosniff');
+        header('X-Robots-Tag: noindex, nofollow');
+        header('Referrer-Policy: no-referrer');
     }
 
     public function getAwgClient($pk)
