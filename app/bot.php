@@ -9537,6 +9537,61 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Classic xray subscription: base64 of the vless:///trojan:// share link(s).
+    // Needed for v2rayNG and similar xray clients, which expect a base64 share
+    // link list — NOT the full JSON config that t=s serves (they import that as
+    // a "custom config", i.e. raw JSON dumped into one field). When 'relay' is
+    // set, the link's endpoint host:port is swapped to the relay (SNI/host stay
+    // real, exactly like the JSON formats).
+    public function subVless()
+    {
+        $xr  = $this->getXray();
+        $pac = $this->getPacConf();
+        $i = $client = null;
+        foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
+            if ($v['id'] == $_GET['s']) {
+                $i      = $k;
+                $client = $v;
+                break;
+            }
+        }
+        if ($i === null || !empty($client['off'])) {
+            header('500', true, 500);
+            exit;
+        }
+        if (!$this->processHwidRequest($client)) {
+            exit;
+        }
+
+        $link = $this->linkXray($i);
+        if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']])) {
+            $link = $this->relayVlessLink($link, $pac['relays'][$_GET['relay']]);
+        }
+
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Profile-Update-Interval: 12');
+        echo base64_encode($link);
+    }
+
+    // Swap only the endpoint host:port of a vless://-/trojan:// share link to the
+    // relay (authority is the @host:port before the first ?/#). SNI, host and the
+    // #remark are left untouched. Port is mapped through the relay's portmap.
+    public function relayVlessLink($link, $relay)
+    {
+        if (empty($relay['address'])) {
+            return $link;
+        }
+        $map = $relay['portmap'] ?? [];
+        return preg_replace_callback(
+            '~^(\w+://[^@]*@)([^:/?#]+):(\d+)~',
+            function ($m) use ($relay, $map) {
+                $port = $map[$m[3]] ?? $m[3];
+                return $m[1] . $relay['address'] . ':' . $port;
+            },
+            $link,
+        );
+    }
+
     public function dockerApi($url, $method = 'GET', $data = [])
     {
         $ch = curl_init();
@@ -11262,9 +11317,18 @@ DNS-over-HTTPS with IP:
             $text[] = "<a href='$scheme://{$domain}/pac$hash?t=$t&r=$r&s={$c['id']}$rl#{$email}'>import://$label</a>";
         }
 
-        // Raw content URLs for clients where a subscription URL is pasted manually.
+        // Raw content URLs for clients where a subscription URL is pasted
+        // manually. 'vl' is the base64 vless:// share-link list for v2rayNG &
+        // other classic xray clients (paste into subscription settings) — the
+        // JSON 'xray' format below imports as a custom config (raw JSON), so
+        // v2rayNG users should use the v2rayNG line.
         $text[] = '';
-        foreach (['s' => 'xray', 'si' => 'sing-box', 'cl' => 'mihomo'] as $t => $label) {
+        foreach ([
+            'vl' => 'v2rayNG (base64)',
+            's'  => 'xray (json)',
+            'si' => 'sing-box',
+            'cl' => 'mihomo',
+        ] as $t => $label) {
             $url = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h'     => $hash,
                 't'     => $t,
