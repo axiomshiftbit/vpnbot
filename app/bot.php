@@ -741,6 +741,9 @@ class Bot
             case preg_match('~^/userRelay (\d+)$~', $this->input['callback'], $m):
                 $this->userRelay($m[1]);
                 break;
+            case preg_match('~^/relaySub (?P<arg>\d+_[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relaySub(...explode('_', $m['arg'], 2));
+                break;
             case preg_match('~^/choiceTemplate (.+)$~', $this->input['callback'], $m):
                 $this->choiceTemplate($m[1]);
                 break;
@@ -11183,10 +11186,9 @@ DNS-over-HTTPS with IP:
         );
     }
 
-    // Per-user relay subscription links, shown on their own screen (kept out of
-    // userXr to avoid the 4096-char editMessageText limit). One copyable token
-    // link per format per configured relay; subscription() applies the relay
-    // swap when it sees 'relay' => <name> in the token.
+    // Per-user relay subscriptions: pick a relay, then relaySub() renders that
+    // relay's full link set (one screen per relay keeps each message well under
+    // the 4096-char editMessageText limit even with many relays).
     public function userRelay($i)
     {
         $xray = $this->getXray();
@@ -11196,32 +11198,86 @@ DNS-over-HTTPS with IP:
             $this->userXr($i);
             return;
         }
-        $domain = $this->getDomain($pac['transport'] != 'Reality');
-        $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
-        $hash   = $this->getHashBot();
+        $relays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']));
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('relay subscriptions') . "\n";
-        $text[] = $this->i18n('relay hint') . "\n";
-        foreach ($pac['relays'] ?? [] as $name => $relay) {
-            if (empty($relay['address'])) {
-                continue;
-            }
-            $text[] = "<b>$name</b> ({$relay['address']}):";
-            foreach (['s' => 'xray', 'si' => 'sing-box', 'cl' => 'mihomo'] as $t => $label) {
-                $url = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
-                    'h'     => $hash,
-                    't'     => $t,
-                    's'     => $c['id'],
-                    'relay' => $name,
-                ]));
-                $text[] = "$label: <pre><code>$url</code></pre>";
-            }
-            $text[] = '';
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('relay subscriptions');
+        $text[] = $this->i18n('relay hint');
+
+        $data = [];
+        foreach ($relays as $name => $relay) {
+            $data[] = [
+                [
+                    'text'          => "🔗 $name: {$relay['address']}",
+                    'callback_data' => "/relaySub {$i}_{$name}",
+                ],
+            ];
         }
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
                 'callback_data' => "/userXr $i",
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data ?: false,
+        );
+    }
+
+    // Full link set for one relay, mirroring userXr's client links so every
+    // client gets its native one-tap import (the deep-link redirects in
+    // subscription()'s r= block are relay-aware), plus copyable content URLs for
+    // manual subscription paste. All links carry 'relay' => <name>, so the
+    // served config has only its endpoint address+port swapped to the relay.
+    public function relaySub($i, $name)
+    {
+        $xray  = $this->getXray();
+        $c     = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
+        $pac   = $this->getPacConf();
+        $relay = $pac['relays'][$name] ?? null;
+        if ($c === null || $relay === null || empty($relay['address'])) {
+            $this->userRelay($i);
+            return;
+        }
+        $domain = $this->getDomain($pac['transport'] != 'Reality');
+        $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
+        $hash   = $this->getHashBot();
+        $email  = $c['email'];
+        $rl     = '&relay=' . $name;
+
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> ({$relay['address']})\n";
+
+        // One-tap import deep links (work for every client), relay-flavoured.
+        foreach ([
+            ['s',  'v',  'v2rayng'],
+            ['si', 'si', 'sing-box'],
+            ['s',  'st', 'streisand'],
+            ['si', 'h',  'hiddify'],
+            ['si', 'k',  'karing'],
+            ['cl', 'c',  'mihomo'],
+            ['cl', 'rh', 'rabbit-hole'],
+        ] as [$t, $r, $label]) {
+            $text[] = "<a href='$scheme://{$domain}/pac$hash?t=$t&r=$r&s={$c['id']}$rl#{$email}'>import://$label</a>";
+        }
+
+        // Raw content URLs for clients where a subscription URL is pasted manually.
+        $text[] = '';
+        foreach (['s' => 'xray', 'si' => 'sing-box', 'cl' => 'mihomo'] as $t => $label) {
+            $url = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
+                'h'     => $hash,
+                't'     => $t,
+                's'     => $c['id'],
+                'relay' => $name,
+            ]));
+            $text[] = "$label: <pre><code>$url</code></pre>";
+        }
+
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => "/userRelay $i",
             ],
         ];
         $this->update(
@@ -11523,21 +11579,28 @@ DNS-over-HTTPS with IP:
         }
 
         if (!empty($_GET['r'])) {
+            // Relay variant: the import-remote-profile deep links must point at
+            // the relay-flavoured content URL (token carries 'relay' => <name>),
+            // otherwise the imported subscription would update straight from the
+            // origin instead of the relay.
+            $relayKey = (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]))
+                ? ['relay' => $_GET['relay']]
+                : [];
             $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 'si',
                 's' => $uid,
-            ]));
+            ] + $relayKey));
             $v2 = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 's',
                 's' => $uid,
-            ]));
+            ] + $relayKey));
             $cl = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 'cl',
                 's' => $uid,
-            ]));
+            ] + $relayKey));
             switch ($_GET['r']) {
                 case 'si':
                     header("Location: sing-box://import-remote-profile/?url=$si");
