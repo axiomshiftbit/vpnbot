@@ -9556,8 +9556,7 @@ DNS-over-HTTPS with IP:
             }
         }
         if ($i === null || !empty($client['off'])) {
-            header('500', true, 500);
-            exit;
+            $this->subNotFound();
         }
         if (!$this->processHwidRequest($client)) {
             exit;
@@ -11057,7 +11056,13 @@ DNS-over-HTTPS with IP:
     public function userXr($i)
     {
         $xray   = $this->getXray();
-        $c      = $xray['inbounds'][0]['settings']['clients'][$i];
+        $c      = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if ($c === null) {
+            // Stale callback (client deleted/re-indexed): fall back to the list
+            // instead of running the whole menu on null fields.
+            $this->xray();
+            return;
+        }
         $pac    = $this->getPacConf();
         $domain = $this->getDomain($pac['transport'] != 'Reality');
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
@@ -11603,7 +11608,7 @@ DNS-over-HTTPS with IP:
 
     public function subscription($return = false)
     {
-        switch ($_GET['t']) {
+        switch ($_GET['t'] ?? '') {
             case 's':
                 $type = 'v2ray';
                 break;
@@ -11613,17 +11618,25 @@ DNS-over-HTTPS with IP:
             case 'cl':
                 $type = 'clash';
                 break;
+            default:
+                // Unknown/missing format: bail cleanly instead of running on with an
+                // undefined $type (which would warn and emit a broken body).
+                if (!empty($return)) {
+                    return '';
+                }
+                $this->subNotFound('Unknown subscription format.');
         }
         $pac    = $this->getPacConf();
-        $domain = $_GET['cdn'] ?: ($_SERVER['SERVER_NAME'] ?: $this->getDomain($pac['transport'] != 'Reality'));
+        $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
         $xr     = $this->getXray();
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
 
         $flag = true;
         $client = null;
+        $sid    = $_GET['s'] ?? '';
         foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($v['id'] == $_GET['s']) {
+            if ($sid !== '' && $v['id'] == $sid) {
                 if (empty($v['off'])) {
                     $flag = false;
                 }
@@ -11635,8 +11648,10 @@ DNS-over-HTTPS with IP:
             }
         }
         if ($flag) {
-            header('500', true, 500);
-            exit;
+            if (!empty($return)) {
+                return '';
+            }
+            $this->subNotFound();
         }
 
         if (!$return && !$this->processHwidRequest($client)) {
@@ -12182,6 +12197,20 @@ DNS-over-HTTPS with IP:
         header('X-Content-Type-Options: nosniff');
         header('X-Robots-Tag: noindex, nofollow');
         header('Referrer-Policy: no-referrer');
+    }
+
+    // A missing/disabled/expired subscription must not look like a server crash:
+    // return a clean 404 with a short description so the client shows "not found"
+    // instead of treating a 500 as a transient error and hammering retries.
+    public function subNotFound($reason = 'Subscription not found or disabled.')
+    {
+        $this->subSecurityHeaders();
+        http_response_code(404);
+        header('Content-Type: text/html; charset=utf-8');
+        $reason = htmlspecialchars($reason, ENT_QUOTES, 'UTF-8');
+        echo "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title>"
+            . "<h1>404 Not Found</h1><p>$reason</p>";
+        exit;
     }
 
     public function getAwgClient($pk)
