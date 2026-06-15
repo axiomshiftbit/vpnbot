@@ -326,6 +326,24 @@ class Bot
             case preg_match('~^/addLinkDomain$~', $this->input['callback'], $m):
                 $this->addLinkDomain();
                 break;
+            case preg_match('~^/relayMenu$~', $this->input['callback'], $m):
+                $this->relayMenu();
+                break;
+            case preg_match('~^/relayAdd$~', $this->input['callback'], $m):
+                $this->relayAdd();
+                break;
+            case preg_match('~^/relayEdit (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayEdit($m['arg']);
+                break;
+            case preg_match('~^/setRelayAddress (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayAddressPrompt($m['arg']);
+                break;
+            case preg_match('~^/setRelayPortMap (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayPortMapPrompt($m['arg']);
+                break;
+            case preg_match('~^/relayDel (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayDel($m['arg']);
+                break;
             case preg_match('~^/id$~', $this->input['message'], $m):
                 $this->send($this->input['chat'], "your id: {$this->input['from']}\nchat id: {$this->input['chat']}", $this->input['message_id']);
                 break;
@@ -719,6 +737,9 @@ class Bot
                 break;
             case preg_match('~^/userXr (\d+)$~', $this->input['callback'], $m):
                 $this->userXr($m[1]);
+                break;
+            case preg_match('~^/userRelay (\d+)$~', $this->input['callback'], $m):
+                $this->userRelay($m[1]);
                 break;
             case preg_match('~^/choiceTemplate (.+)$~', $this->input['callback'], $m):
                 $this->choiceTemplate($m[1]);
@@ -4715,6 +4736,272 @@ class Bot
         }
         $this->setPacConf($c);
         $this->xray();
+    }
+
+    // ── Relay subscriptions ──────────────────────────────────────────────────
+    // Each relay is a front host that DNATs VPN traffic to this origin. The bot
+    // serves an alternate ("relay") subscription where only the endpoint
+    // address+port are swapped to the relay (SNI/serverName/host/DNS stay real).
+    // Stored as $pac['relays'][<name>] = ['address' => ..., 'portmap' => [src=>dst]].
+
+    public function relayMenu()
+    {
+        $p      = $this->getPacConf();
+        $relays = $p['relays'] ?? [];
+
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay');
+        $text[] = $this->i18n('relay hint');
+
+        $data = [];
+        foreach ($relays as $name => $r) {
+            $data[] = [
+                [
+                    'text'          => "$name: " . ($r['address'] ?: '—'),
+                    'callback_data' => "/relayEdit $name",
+                ],
+            ];
+        }
+        $data[] = [
+            [
+                'text'          => '➕ ' . $this->i18n('add relay'),
+                'callback_data' => '/relayAdd',
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => '/xray',
+            ],
+        ];
+
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data ?: false,
+        );
+    }
+
+    public function relayAdd()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay name'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay name'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayName',
+            'args'          => [],
+        ];
+    }
+
+    public function setRelayName($text)
+    {
+        $c    = $this->getPacConf();
+        $name = trim($text);
+        // Name is embedded in callback_data and in the &relay= link param, so
+        // keep it to a short word/host-safe token.
+        if (!preg_match('~^[\w.\-]{1,32}$~', $name) || isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $c['relays'][$name] = ['address' => '', 'portmap' => []];
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayEdit($name)
+    {
+        $p = $this->getPacConf();
+        $r = $p['relays'][$name] ?? null;
+        if ($r === null) {
+            $this->relayMenu();
+            return;
+        }
+
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay') . " -> <b>$name</b>";
+        $text[] = $this->i18n('relay address') . ': <code>' . ($r['address'] ?: '—') . '</code>';
+        if (!empty($r['portmap'])) {
+            $pm = [];
+            foreach ($r['portmap'] as $src => $dst) {
+                $pm[] = "$src:$dst";
+            }
+            $text[] = $this->i18n('relay port map') . ': <code>' . implode(', ', $pm) . '</code>';
+        } else {
+            $text[] = $this->i18n('relay port map') . ': —';
+        }
+
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay address'),
+                'callback_data' => "/setRelayAddress $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay port map'),
+                'callback_data' => "/setRelayPortMap $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay delete'),
+                'callback_data' => "/relayDel $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => '/relayMenu',
+            ],
+        ];
+
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data ?: false,
+        );
+    }
+
+    public function relayAddressPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay address'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay address'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayAddress',
+            'args'          => [$name],
+        ];
+    }
+
+    public function setRelayAddress($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $c['relays'][$name]['address'] = trim($text);
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayPortMapPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay port map'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay port map'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayPortMap',
+            'args'          => [$name],
+        ];
+    }
+
+    public function setRelayPortMap($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $c['relays'][$name]['portmap'] = $this->parseRelayPortMap($text);
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayDel($name)
+    {
+        $c = $this->getPacConf();
+        unset($c['relays'][$name]);
+        if (empty($c['relays'])) {
+            unset($c['relays']);
+        }
+        $this->setPacConf($c);
+        $this->relayMenu();
+    }
+
+    // Parse a 'src:dst,src:dst' port map (real port -> relay port). Both sides
+    // must be numeric; empty/blank segments are skipped. Mirrors _parse_port_map
+    // in the relay's sub_proxy.py. Invalid pairs are silently dropped here (the
+    // bot has no fail-fast restart loop to protect against).
+    public function parseRelayPortMap($text)
+    {
+        $map = [];
+        foreach (explode(',', (string) $text) as $pair) {
+            $pair = trim($pair);
+            if ($pair === '') {
+                continue;
+            }
+            $parts = explode(':', $pair);
+            if (count($parts) != 2) {
+                continue;
+            }
+            $src = trim($parts[0]);
+            $dst = trim($parts[1]);
+            if (!preg_match('~^\d+$~', $src) || !preg_match('~^\d+$~', $dst)) {
+                continue;
+            }
+            $map[$src] = $dst;
+        }
+        return $map;
+    }
+
+    // Swap only the endpoint address+port of the main outbound to the named
+    // relay; SNI/serverName/host and DNS domain are left untouched (TLS still
+    // terminates on origin via the relay's DNAT). $type is $_GET['t'] (s|si|cl),
+    // $index the main outbound/proxy index already resolved in subscription().
+    public function applyRelay(&$c, $type, $index, $relay)
+    {
+        if (empty($relay['address'])) {
+            return;
+        }
+        $map  = $relay['portmap'] ?? [];
+        $addr = $relay['address'];
+        $port = function ($cur) use ($map) {
+            $cur = (string) $cur;
+            return isset($map[$cur]) ? (int) $map[$cur] : (int) $cur;
+        };
+
+        switch ($type) {
+            case 's':
+                $ob = &$c['outbounds'][$index]['settings'];
+                if (isset($ob['vnext'][0])) {
+                    $ob['vnext'][0]['address'] = $addr;
+                    if (isset($ob['vnext'][0]['port'])) {
+                        $ob['vnext'][0]['port'] = $port($ob['vnext'][0]['port']);
+                    }
+                } elseif (isset($ob['servers'][0])) {
+                    $ob['servers'][0]['address'] = $addr;
+                    if (isset($ob['servers'][0]['port'])) {
+                        $ob['servers'][0]['port'] = $port($ob['servers'][0]['port']);
+                    }
+                }
+                unset($ob);
+                break;
+            case 'si':
+                $c['outbounds'][$index]['server'] = $addr;
+                if (isset($c['outbounds'][$index]['server_port'])) {
+                    $c['outbounds'][$index]['server_port'] = $port($c['outbounds'][$index]['server_port']);
+                }
+                break;
+            case 'cl':
+                $c['proxies'][$index]['server'] = $addr;
+                if (isset($c['proxies'][$index]['port'])) {
+                    $c['proxies'][$index]['port'] = $port($c['proxies'][$index]['port']);
+                }
+                break;
+        }
     }
 
     public function setSubdomain($text)
@@ -10134,6 +10421,12 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
+                'text'          => $this->i18n('relay') . ': ' . (!empty($p['relays']) ? count(array_filter($p['relays'], fn($e) => !empty($e['address']))) : $this->i18n('off')),
+                'callback_data' => '/relayMenu',
+            ],
+        ];
+        $data[] = [
+            [
                 'text'          => $this->i18n('RLTY') . ' ' . ($p['transport'] == 'Reality' ? $this->i18n('on') : $this->i18n('off')),
                 'callback_data' => "/changeTransport Reality",
             ],
@@ -10774,6 +11067,14 @@ DNS-over-HTTPS with IP:
                 'web_app' => ['url' => "https://{$domain}/pac$hash?t=cl&s={$c['id']}"]
             ],
         ];
+        if (!empty(array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address'])))) {
+            $data[] = [
+                [
+                    'text'          => '🔗 ' . $this->i18n('relay subscriptions'),
+                    'callback_data' => "/userRelay $i",
+                ],
+            ];
+        }
         $data[] = [
             [
                 'text'    => $this->i18n('v2ray ⬇️'),
@@ -10878,6 +11179,55 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->input['message_id'],
             implode("\n", $text ?: ['...']),
+            $data ?: false,
+        );
+    }
+
+    // Per-user relay subscription links, shown on their own screen (kept out of
+    // userXr to avoid the 4096-char editMessageText limit). One copyable token
+    // link per format per configured relay; subscription() applies the relay
+    // swap when it sees 'relay' => <name> in the token.
+    public function userRelay($i)
+    {
+        $xray = $this->getXray();
+        $c    = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
+        $pac  = $this->getPacConf();
+        if ($c === null) {
+            $this->userXr($i);
+            return;
+        }
+        $domain = $this->getDomain($pac['transport'] != 'Reality');
+        $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
+        $hash   = $this->getHashBot();
+
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('relay subscriptions') . "\n";
+        $text[] = $this->i18n('relay hint') . "\n";
+        foreach ($pac['relays'] ?? [] as $name => $relay) {
+            if (empty($relay['address'])) {
+                continue;
+            }
+            $text[] = "<b>$name</b> ({$relay['address']}):";
+            foreach (['s' => 'xray', 'si' => 'sing-box', 'cl' => 'mihomo'] as $t => $label) {
+                $url = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
+                    'h'     => $hash,
+                    't'     => $t,
+                    's'     => $c['id'],
+                    'relay' => $name,
+                ]));
+                $text[] = "$label: <pre><code>$url</code></pre>";
+            }
+            $text[] = '';
+        }
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => "/userXr $i",
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
             $data ?: false,
         );
     }
@@ -11669,6 +12019,11 @@ DNS-over-HTTPS with IP:
                     }
                 }
                 break;
+        }
+        // Relay variant: swap only the endpoint address+port to the chosen relay
+        // (selected by name via $_GET['relay']); everything else stays as-is.
+        if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]) && isset($index)) {
+            $this->applyRelay($c, $_GET['t'], $index, $pac['relays'][$_GET['relay']]);
         }
         if (!empty($return)) {
             if ($_GET['t'] == 'cl') {

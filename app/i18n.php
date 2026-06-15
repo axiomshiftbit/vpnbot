@@ -37,6 +37,46 @@ $i = [
         'en' => 'back',
         'ru' => 'назад',
     ],
+    'relay'                => [
+        'en' => 'relay',
+        'ru' => 'relay',
+    ],
+    'relay hint'           => [
+        'en' => 'Relay subscriptions swap only the server address+port to the relay; SNI/serverName/host and DNS stay real (TLS terminates on origin via DNAT).',
+        'ru' => 'Relay-подписки подменяют только адрес+порт сервера на relay; SNI/serverName/host и DNS остаются реальными (TLS терминируется на origin через DNAT).',
+    ],
+    'add relay'            => [
+        'en' => 'add relay',
+        'ru' => 'добавить relay',
+    ],
+    'relay subscriptions'  => [
+        'en' => 'relay subscriptions',
+        'ru' => 'relay-подписки',
+    ],
+    'relay delete'         => [
+        'en' => '🗑 delete relay',
+        'ru' => '🗑 удалить relay',
+    ],
+    'relay address'        => [
+        'en' => 'relay address',
+        'ru' => 'адрес relay',
+    ],
+    'relay port map'       => [
+        'en' => 'port map (src:dst)',
+        'ru' => 'маппинг портов (src:dst)',
+    ],
+    'enter relay name'     => [
+        'en' => 'enter relay name (letters, digits, - . _)',
+        'ru' => 'введите имя relay (буквы, цифры, - . _)',
+    ],
+    'enter relay address'  => [
+        'en' => 'enter relay address (domain or IP)',
+        'ru' => 'введите адрес relay (домен или IP)',
+    ],
+    'enter relay port map' => [
+        'en' => 'enter port map src:dst,src:dst (e.g. 443:8443), empty to clear',
+        'ru' => 'введите маппинг портов src:dst,src:dst (напр. 443:8443), пусто — очистить',
+    ],
     'import'               => [
         'en' => 'restore',
         'ru' => 'восстановить',
