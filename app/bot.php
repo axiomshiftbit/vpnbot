@@ -188,6 +188,18 @@ class Bot
             case preg_match('~^/fingerprintMenu$~', $this->input['callback'], $m):
                 $this->fingerprintMenu();
                 break;
+            case preg_match('~^/dpiMenu$~', $this->input['callback'], $m):
+                $this->dpiMenu();
+                break;
+            case preg_match('~^/dpiToggle (\w+)$~', $this->input['callback'], $m):
+                $this->dpiToggle($m[1]);
+                break;
+            case preg_match('~^/dpiSet (\w+)$~', $this->input['callback'], $m):
+                $this->dpiSet($m[1]);
+                break;
+            case preg_match('~^/mkcpHeader(?: (\S+))?$~', $this->input['callback'], $m):
+                $this->mkcpHeader($m[1] ?? false);
+                break;
             case preg_match('~^/mirror$~', $this->input['message'], $m):
                 $this->menu('mirror');
                 break;
@@ -8368,6 +8380,165 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // ---- DPI masking submenu (items 1/2/4/5). Everything defaults OFF; each row
+    // is an independent toggle/value so a technique can be disabled or retuned if
+    // it trips DPI or breaks clients, without code changes. ----
+    public function dpiMenu()
+    {
+        $p  = $this->getPacConf();
+        $f  = $p['dpi']['fragment'] ?? [];
+        $n  = $p['dpi']['noise'] ?? [];
+        $r  = $p['reality'] ?? [];
+        $tr = $p['transport'] ?? '';
+        $on = fn($v) => $this->i18n(!empty($v) ? 'on' : 'off');
+
+        $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking');
+        $text[] = $this->i18n('dpi hint');
+
+        $data = [];
+        $data[] = [['text' => $this->i18n('fragment') . ': ' . $on($f['enabled'] ?? 0), 'callback_data' => '/dpiToggle fragment']];
+        if (!empty($f['enabled'])) {
+            $data[] = [
+                ['text' => 'packets: ' . (($f['packets'] ?? '') ?: '1-3'),    'callback_data' => '/dpiSet fragment_packets'],
+                ['text' => 'length: ' . (($f['length'] ?? '') ?: '100-200'),  'callback_data' => '/dpiSet fragment_length'],
+                ['text' => 'interval: ' . (($f['interval'] ?? '') ?: '10-20'), 'callback_data' => '/dpiSet fragment_interval'],
+            ];
+        }
+        $data[] = [['text' => $this->i18n('noise') . ': ' . $on($n['enabled'] ?? 0), 'callback_data' => '/dpiToggle noise']];
+        if (!empty($n['enabled'])) {
+            $data[] = [
+                ['text' => 'type: ' . (($n['type'] ?? '') ?: 'rand'),     'callback_data' => '/dpiSet noise_type'],
+                ['text' => 'packet: ' . (($n['packet'] ?? '') ?: '10-20'), 'callback_data' => '/dpiSet noise_packet'],
+                ['text' => 'delay: ' . (($n['delay'] ?? '') ?: '10-16'),   'callback_data' => '/dpiSet noise_delay'],
+            ];
+        }
+        if (in_array($tr, ['Reality', 'mkcp'], true)) {
+            $text[] = "\n" . $this->i18n('mldsa hint');
+            $data[] = [['text' => $this->i18n('mldsa') . ': ' . $on($r['mldsa'] ?? 0), 'callback_data' => '/dpiToggle mldsa']];
+            $data[] = [
+                ['text' => 'maxTimeDiff: ' . (int) ($r['maxTimeDiff'] ?? 0), 'callback_data' => '/dpiSet r_maxTimeDiff'],
+                ['text' => 'xver: ' . (int) ($r['xver'] ?? 0),               'callback_data' => '/dpiSet r_xver'],
+            ];
+            $data[] = [
+                ['text' => 'minClientVer: ' . (($r['minClientVer'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_minClientVer'],
+                ['text' => 'maxClientVer: ' . (($r['maxClientVer'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_maxClientVer'],
+            ];
+            $data[] = [['text' => 'spiderX: ' . (($r['spiderX'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_spiderX']];
+        }
+        if ($tr === 'mkcp') {
+            $text[] = "\n" . $this->i18n('mkcp hint');
+            $data[] = [['text' => $this->i18n('mkcp header') . ': ' . ($p['mkcp']['header'] ?? 'none'), 'callback_data' => '/mkcpHeader']];
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
+
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    // Push the configurable Reality extras (mldsa seed + hardening params) onto the
+    // running inbound and restart, so toggles/edits take effect immediately.
+    public function syncRealityLive(array $p): void
+    {
+        $x = $this->getXray();
+        if (!empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
+            $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
+            $this->restartXray($x);
+        }
+    }
+
+    public function dpiToggle($what)
+    {
+        $p = $this->getPacConf();
+        switch ($what) {
+            case 'fragment':
+                $p['dpi']['fragment']['enabled'] = empty($p['dpi']['fragment']['enabled']) ? 1 : 0;
+                $this->setPacConf($p);
+                break;
+            case 'noise':
+                $p['dpi']['noise']['enabled'] = empty($p['dpi']['noise']['enabled']) ? 1 : 0;
+                $this->setPacConf($p);
+                break;
+            case 'mldsa':
+                if (empty($p['reality']['mldsa'])) {
+                    $mk = $this->genMldsaKeys();
+                    if (empty($mk['seed']) || empty($mk['verify'])) {
+                        return $this->answer($this->input['callback_id'], 'mldsa keygen failed (xray too old?)', true);
+                    }
+                    $p['reality']['mldsa']         = 1;
+                    $p['reality']['mldsa65Seed']   = $mk['seed'];
+                    $p['reality']['mldsa65Verify'] = $mk['verify'];
+                } else {
+                    $p['reality']['mldsa'] = 0;
+                }
+                $this->setPacConf($p);
+                $this->syncRealityLive($p);
+                break;
+        }
+        $this->dpiMenu();
+    }
+
+    public function dpiSet($field)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter value'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter value'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'saveDpi',
+            'args'           => [$field],
+        ];
+    }
+
+    public function saveDpi($val, $field)
+    {
+        $val = trim((string) $val);
+        $p   = $this->getPacConf();
+        $liveReality = false;
+        switch ($field) {
+            case 'fragment_packets':  $p['dpi']['fragment']['packets']  = $val; break;
+            case 'fragment_length':   $p['dpi']['fragment']['length']   = $val; break;
+            case 'fragment_interval': $p['dpi']['fragment']['interval'] = $val; break;
+            case 'noise_type':        $p['dpi']['noise']['type']        = $val ?: 'rand'; break;
+            case 'noise_packet':      $p['dpi']['noise']['packet']      = $val; break;
+            case 'noise_delay':       $p['dpi']['noise']['delay']       = $val; break;
+            case 'r_maxTimeDiff':     $p['reality']['maxTimeDiff']  = (int) $val; $liveReality = true; break;
+            case 'r_xver':            $p['reality']['xver']         = (int) $val; $liveReality = true; break;
+            case 'r_minClientVer':    $p['reality']['minClientVer'] = $val;       $liveReality = true; break;
+            case 'r_maxClientVer':    $p['reality']['maxClientVer'] = $val;       $liveReality = true; break;
+            case 'r_spiderX':         $p['reality']['spiderX']      = $val; break;
+        }
+        $this->setPacConf($p);
+        if ($liveReality) {
+            $this->syncRealityLive($p);
+        }
+        $this->dpiMenu();
+    }
+
+    public function mkcpHeader($type = false)
+    {
+        $types = ['none', 'srtp', 'utp', 'wechat-video', 'dtls', 'wireguard'];
+        $p     = $this->getPacConf();
+        $cur   = $p['mkcp']['header'] ?? 'none';
+        if ($type && in_array($type, $types, true)) {
+            $p['mkcp']['header'] = $type;
+        } else {
+            $i = array_search($cur, $types, true);
+            $p['mkcp']['header'] = $types[($i === false ? 0 : $i + 1) % count($types)];
+        }
+        $this->setPacConf($p);
+        if (($p['transport'] ?? '') === 'mkcp') {
+            $x = $this->getXray();
+            if (isset($x['inbounds'][0]['streamSettings']['kcpSettings'])) {
+                $x['inbounds'][0]['streamSettings']['kcpSettings']['header']['type'] = $p['mkcp']['header'] ?: 'none';
+                $this->restartXray($x);
+            }
+        }
+        $this->dpiMenu();
+    }
+
     public function switchIpLimit($limit)
     {
         $limit = explode(':', $limit);
@@ -9577,6 +9748,17 @@ DNS-over-HTTPS with IP:
                 return "sing-box://import-remote-profile/?url={$si}#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
 
             default:
+                // Reality client extras (items 2/4): spiderX (spx) and mldsa verify
+                // (pqv). Appended only when configured, so default links are byte
+                // identical to before.
+                $rExtra = '';
+                $spx    = (string) ($pac['reality']['spiderX'] ?? '');
+                if ($spx !== '' && $spx !== '/') {
+                    $rExtra .= '&spx=' . rawurlencode($spx);
+                }
+                if (!empty($pac['reality']['mldsa']) && !empty($pac['reality']['mldsa65Verify'])) {
+                    $rExtra .= '&pqv=' . rawurlencode($pac['reality']['mldsa65Verify']);
+                }
                 switch ($pac['transport']) {
                     case 'Reality':
                         $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
@@ -9586,6 +9768,20 @@ DNS-over-HTTPS with IP:
                                     . "&sid={$c['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0]}"
                                     . "&type=tcp"
                                     . "&flow=xtls-rprx-vision"
+                                    . $rExtra
+                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                        break;
+                    case 'mkcp':
+                        $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
+                                    . "?security=reality"
+                                    . "&sni={$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}"
+                                    . "&fp=$fp&pbk={$pac['xray']}"
+                                    . "&sid={$c['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0]}"
+                                    . "&type=kcp"
+                                    . "&headerType=" . ($pac['mkcp']['header'] ?? 'none')
+                                    . "&seed=" . rawurlencode($pac['mkcp']['seed'] ?? '')
+                                    . "&flow=xtls-rprx-vision"
+                                    . $rExtra
                                     . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
                         break;
                     case 'xhttp':
@@ -10144,6 +10340,37 @@ DNS-over-HTTPS with IP:
         return ['private' => $private, 'public' => $public, 'shortId' => $shortId];
     }
 
+    // Generate a post-quantum ML-DSA-65 keypair for Reality (item 2). `xray
+    // mldsa65` prints two lines: `Seed: ...` (server, realitySettings.mldsa65Seed)
+    // and `Verify: ...` (client link param `pqv` / config mldsa65Verify).
+    public function genMldsaKeys(): array
+    {
+        $keys = $this->ssh('xray mldsa65', 'xr');
+        preg_match('~^Seed:\s*([^\s]+)~mi', $keys, $m);
+        $seed = trim($m[1] ?? '');
+        preg_match('~^Verify:\s*([^\s]+)~mi', $keys, $m);
+        $verify = trim($m[1] ?? '');
+        return ['seed' => $seed, 'verify' => $verify];
+    }
+
+    // Apply the configurable Reality server-side extras to a realitySettings block:
+    // item 4 hardening params (maxTimeDiff/minClientVer/maxClientVer/xver, default
+    // to current values so nothing changes until tuned) and item 2 mldsa65Seed
+    // (added only when mldsa is enabled and a seed exists, unset otherwise).
+    // Centralized so changeTransport()/regenRealityXr()/regenAllXr() stay in sync.
+    public function applyRealityServerExtras(array &$rs, array $p): void
+    {
+        $rs['maxTimeDiff']  = (int) ($p['reality']['maxTimeDiff'] ?? 0);
+        $rs['minClientVer'] = (string) ($p['reality']['minClientVer'] ?? '');
+        $rs['maxClientVer'] = (string) ($p['reality']['maxClientVer'] ?? '');
+        $rs['xver']         = (int) ($p['reality']['xver'] ?? 0);
+        if (!empty($p['reality']['mldsa']) && !empty($p['reality']['mldsa65Seed'])) {
+            $rs['mldsa65Seed'] = $p['reality']['mldsa65Seed'];
+        } else {
+            unset($rs['mldsa65Seed']);
+        }
+    }
+
     // Rotate the shared Reality parameters: pbk (keypair) + sid (shortId).
     // Updates pac.json (pbk/privateKey/shortId) and xray.json in lock-step so the
     // server private key matches the public key embedded in every client link.
@@ -10164,6 +10391,14 @@ DNS-over-HTTPS with IP:
         $p['reality']['shortId']    = $k['shortId'];
         $x['inbounds'][0]['streamSettings']['realitySettings']['privateKey'] = $k['private'];
         $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = [$k['shortId']];
+        if (!empty($p['reality']['mldsa'])) {
+            $mk = $this->genMldsaKeys();
+            if (!empty($mk['seed']) && !empty($mk['verify'])) {
+                $p['reality']['mldsa65Seed']   = $mk['seed'];
+                $p['reality']['mldsa65Verify'] = $mk['verify'];
+            }
+        }
+        $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
         $this->setPacConf($p);
         $this->restartXray($x);
         $this->xray();
@@ -10202,6 +10437,14 @@ DNS-over-HTTPS with IP:
             $p['reality']['shortId']    = $k['shortId'];
             $x['inbounds'][0]['streamSettings']['realitySettings']['privateKey'] = $k['private'];
             $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = [$k['shortId']];
+            if (!empty($p['reality']['mldsa'])) {
+                $mk = $this->genMldsaKeys();
+                if (!empty($mk['seed']) && !empty($mk['verify'])) {
+                    $p['reality']['mldsa65Seed']   = $mk['seed'];
+                    $p['reality']['mldsa65Verify'] = $mk['verify'];
+                }
+            }
+            $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
         }
         foreach ($x['inbounds'][0]['settings']['clients'] as $key => $v) {
             if (!empty($v['off'])) {
@@ -10608,8 +10851,18 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
+                'text'          => 'mKCP ' . ($p['transport'] == 'mkcp' ? $this->i18n('on') : $this->i18n('off')),
+                'callback_data' => "/changeTransport mkcp",
+            ],
+        ];
+        $data[] = [
+            [
                 'text'          => $this->i18n('fingerprint') . ': ' . ucfirst($p['fingerprint'] ?: 'chrome'),
                 'callback_data' => "/fingerprintMenu",
+            ],
+            [
+                'text'          => $this->i18n('dpi masking'),
+                'callback_data' => "/dpiMenu",
             ],
         ];
 
@@ -11177,6 +11430,11 @@ DNS-over-HTTPS with IP:
         $hwidLimit    = $c['hwid_limit'] ? (int) $c['hwid_limit'] : $defaultHwid;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']}\n";
+        if (($pac['transport'] ?? '') === 'mkcp') {
+            // Under mkcp only the xray (v2rayNG) link works; the sing-box/mihomo
+            // links/configs below serve a clean 404 (subscription() guard).
+            $text[] = '⚠️ ' . $this->i18n('mkcp hint') . "\n";
+        }
         if (file_exists(__DIR__ . '/subscription.php')) {
             $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$c['id']}'>subscription</a>";
         }
@@ -11778,6 +12036,65 @@ DNS-over-HTTPS with IP:
         require __DIR__ . '/subscription.php';
     }
 
+    // Client-side Reality settings block for xray (case 's' / mkcp) configs. Base
+    // fields use ~placeholders~ filled by replaceTags(); spiderX (item 4) and
+    // mldsa65Verify (item 2) are appended only when configured, so a config with
+    // nothing tuned is byte-identical to before.
+    public function realityClientSettings($fingerprint, array $pac): array
+    {
+        $rs = [
+            "serverName"  => '~server_name~',
+            "fingerprint" => $fingerprint,
+            "publicKey"   => '~public_key~',
+            "shortId"     => '~short_id~',
+        ];
+        $spx = (string) ($pac['reality']['spiderX'] ?? '');
+        if ($spx !== '') {
+            $rs['spiderX'] = $spx;
+        }
+        if (!empty($pac['reality']['mldsa']) && !empty($pac['reality']['mldsa65Verify'])) {
+            $rs['mldsa65Verify'] = $pac['reality']['mldsa65Verify'];
+        }
+        return $rs;
+    }
+
+    // Item 1: inject a freedom outbound carrying TLS fragment and/or UDP noise and
+    // route the main proxy outbound through it via sockopt.dialerProxy (xray only).
+    // No-op unless at least one is enabled, so default configs are unchanged.
+    public function applyDpiFragment(array &$c, $index, array $pac): void
+    {
+        $frag  = !empty($pac['dpi']['fragment']['enabled']);
+        $noise = !empty($pac['dpi']['noise']['enabled']);
+        if (!$frag && !$noise) {
+            return;
+        }
+        $settings = ['domainStrategy' => 'AsIs'];
+        if ($frag) {
+            $f = $pac['dpi']['fragment'];
+            $settings['fragment'] = [
+                'packets'  => ($f['packets']  ?? '') ?: '1-3',
+                'length'   => ($f['length']   ?? '') ?: '100-200',
+                'interval' => ($f['interval'] ?? '') ?: '10-20',
+            ];
+        }
+        if ($noise) {
+            $n = $pac['dpi']['noise'];
+            $settings['noises'] = [[
+                'type'   => ($n['type']   ?? '') ?: 'rand',
+                'packet' => ($n['packet'] ?? '') ?: '10-20',
+                'delay'  => ($n['delay']  ?? '') ?: '10-16',
+            ]];
+        }
+        $c['outbounds'][] = [
+            'tag'      => 'dpi-fragment',
+            'protocol' => 'freedom',
+            'settings' => $settings,
+        ];
+        if (isset($c['outbounds'][$index])) {
+            $c['outbounds'][$index]['streamSettings']['sockopt']['dialerProxy'] = 'dpi-fragment';
+        }
+    }
+
     public function subscription($return = false)
     {
         switch ($_GET['t'] ?? '') {
@@ -11803,6 +12120,15 @@ DNS-over-HTTPS with IP:
         $xr     = $this->getXray();
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
+
+        // mKCP is xray-only: sing-box (si) and mihomo (cl) can't represent it, so
+        // don't serve a broken config for those formats under the mkcp transport.
+        if (($pac['transport'] ?? '') === 'mkcp' && in_array($_GET['t'] ?? '', ['si', 'cl'], true)) {
+            if (!empty($return)) {
+                return '';
+            }
+            $this->subNotFound('Not available for this transport (mKCP: xray clients only).');
+        }
 
         $flag = true;
         $client = null;
@@ -11951,12 +12277,31 @@ DNS-over-HTTPS with IP:
                         $c['outbounds'][$index]['streamSettings']                           = [
                             "network"         => "tcp",
                             "security"        => "reality",
-                            "realitySettings" => [
-                                "serverName"  => '~server_name~',
-                                "fingerprint" => $fingerprint,
-                                "publicKey"   => '~public_key~',
-                                "shortId"     => '~short_id~',
-                            ]
+                            "realitySettings" => $this->realityClientSettings($fingerprint, $pac),
+                        ];
+                        $c['outbounds'][$index]['mux'] = [
+                            "enabled"     => false,
+                            "concurrency" => -1
+                        ];
+                        break;
+                    case 'mkcp':
+                        // mKCP + Reality (item 5), xray clients only.
+                        $c['outbounds'][$index]['settings']['vnext'][0]['users'][0]["flow"] = "xtls-rprx-vision";
+                        $c['outbounds'][$index]['streamSettings'] = [
+                            "network"         => "mkcp",
+                            "security"        => "reality",
+                            "kcpSettings"     => [
+                                "mtu"              => 1350,
+                                "tti"              => 50,
+                                "uplinkCapacity"   => 100,
+                                "downlinkCapacity" => 100,
+                                "congestion"       => false,
+                                "readBufferSize"   => 2,
+                                "writeBufferSize"  => 2,
+                                "header"           => ["type" => $pac['mkcp']['header'] ?? 'none'],
+                                "seed"             => $pac['mkcp']['seed'] ?? '',
+                            ],
+                            "realitySettings" => $this->realityClientSettings($fingerprint, $pac),
                         ];
                         $c['outbounds'][$index]['mux'] = [
                             "enabled"     => false,
@@ -12046,6 +12391,8 @@ DNS-over-HTTPS with IP:
                         unset($c['outbounds'][$index]['mux']);
                         break;
                 }
+                // Item 1: TLS fragment / UDP noise via freedom dialerProxy (xray only).
+                $this->applyDpiFragment($c, $index, $pac);
 
                 break;
             case 'si':
@@ -13914,6 +14261,47 @@ DNS-over-HTTPS with IP:
                 ];
                 break;
 
+            case 'mkcp':
+                // mKCP + Reality (item 5): UDP transport with an obfuscated packet
+                // header, carrying Reality. xray clients only (no sing-box/mihomo).
+                // No acceptProxyProtocol here — mKCP is direct UDP, not fronted by
+                // the TCP nginx/haproxy. The server port must allow UDP (firewall).
+                if (empty($p['mkcp']['seed'])) {
+                    $p['mkcp']['seed'] = bin2hex(random_bytes(8));
+                }
+                foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
+                    $x['inbounds'][0]['settings']['clients'][$k]['flow'] = 'xtls-rprx-vision';
+                }
+                $x['inbounds'][0]['streamSettings'] = [
+                    "network"         => "mkcp",
+                    "kcpSettings"     => [
+                        "mtu"              => 1350,
+                        "tti"              => 50,
+                        "uplinkCapacity"   => 100,
+                        "downlinkCapacity" => 100,
+                        "congestion"       => false,
+                        "readBufferSize"   => 2,
+                        "writeBufferSize"  => 2,
+                        "header"           => ["type" => ($p['mkcp']['header'] ?? '') ?: 'none'],
+                        "seed"             => $p['mkcp']['seed'],
+                    ],
+                    "realitySettings" => [
+                        "dest"         => $p['reality']['destination'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['dest'],
+                        "maxClientVer" => "",
+                        "maxTimeDiff"  => 0,
+                        "minClientVer" => "",
+                        "privateKey"   => $p['reality']['privateKey'],
+                        "serverNames"  => [
+                            $p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]
+                        ],
+                        "shortIds" => [$p['reality']['shortId']] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0],
+                        "show"     => false,
+                        "xver"     => 0
+                    ],
+                    "security" => "reality"
+                ];
+                break;
+
             default:
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"    => "ws",
@@ -13927,7 +14315,13 @@ DNS-over-HTTPS with IP:
                 break;
         }
 
-        $this->setUpstreamDomain($transport == 'Reality'
+        // Apply configurable Reality extras (item 2 mldsa seed + item 4 hardening
+        // params) to whichever transport built a realitySettings block.
+        if (!empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
+            $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
+        }
+
+        $this->setUpstreamDomain(in_array($transport, ['Reality', 'mkcp'], true)
             ? ($p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0])
             : 't'
         );

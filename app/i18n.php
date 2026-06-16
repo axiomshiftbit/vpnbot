@@ -57,6 +57,46 @@ $i = [
         'en' => 'enter traffic limit in GB (0 or empty = unlimited)',
         'ru' => 'введите лимит трафика в ГБ (0 или пусто = безлимит)',
     ],
+    'dpi masking'          => [
+        'en' => '🛡 DPI masking',
+        'ru' => '🛡 маскировка DPI',
+    ],
+    'dpi hint'             => [
+        'en' => 'Anti-DPI tweaks. All default OFF — enable one at a time and turn it back off if it breaks connectivity. Fragment/noise affect only the xray (v2rayNG) config.',
+        'ru' => 'Настройки против DPI. Всё по умолчанию ВЫКЛ — включай по одной и выключай, если ломается связь. Fragment/noise влияют только на xray (v2rayNG) конфиг.',
+    ],
+    'fragment'             => [
+        'en' => 'TLS fragment',
+        'ru' => 'TLS-фрагментация',
+    ],
+    'noise'                => [
+        'en' => 'UDP noise',
+        'ru' => 'UDP-шум',
+    ],
+    'mldsa'                => [
+        'en' => 'Reality ML-DSA-65',
+        'ru' => 'Reality ML-DSA-65',
+    ],
+    'mldsa hint'           => [
+        'en' => '⚠️ Post-quantum Reality auth. Requires recent xray clients (v2rayNG/xray ≥ 25.x) — older clients will fail. Turn OFF to restore them.',
+        'ru' => '⚠️ Пост-квантовая аутентификация Reality. Требует свежих xray-клиентов (v2rayNG/xray ≥ 25.x) — старые перестанут подключаться. Выключи, чтобы вернуть их.',
+    ],
+    'mkcp hint'            => [
+        'en' => 'ℹ️ mKCP is UDP+Reality, xray clients only (no sing-box/mihomo). Open UDP on the server port first. Switch transport back to revert.',
+        'ru' => 'ℹ️ mKCP — это UDP+Reality, только xray-клиенты (без sing-box/mihomo). Сначала открой UDP на порту сервера. Переключи транспорт обратно для отката.',
+    ],
+    'mkcp header'          => [
+        'en' => 'mKCP header',
+        'ru' => 'mKCP-заголовок',
+    ],
+    'reality params'       => [
+        'en' => 'Reality params',
+        'ru' => 'параметры Reality',
+    ],
+    'enter value'          => [
+        'en' => 'enter value (empty = default)',
+        'ru' => 'введите значение (пусто = по умолчанию)',
+    ],
     'relay subscriptions'  => [
         'en' => 'relay subscriptions',
         'ru' => 'relay-подписки',
