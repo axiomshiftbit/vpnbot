@@ -8766,6 +8766,15 @@ DNS-over-HTTPS with IP:
             'noise_delay' => $ru
                 ? "Пример: <code>10-16</code>. Задержка перед шумовым UDP-пакетом в миллисекундах."
                 : "Example: <code>10-16</code>. Delay before the UDP noise packet in milliseconds.",
+            'r_maxTimeDiff' => $ru
+                ? "⚠️ Допуск расхождения часов клиент↔сервер в мс. <code>0</code> = проверка выключена (по умолч.). Только целое ≥ 0 — отрицательное значение не даст xray запуститься. Пример: <code>60000</code> (±60 с)."
+                : "⚠️ Allowed client↔server clock skew in ms. <code>0</code> = check disabled (default). Integer ≥ 0 only — a negative value stops xray from starting. Example: <code>60000</code> (±60 s).",
+            'r_xver' => $ru
+                ? "⚠️ Версия PROXY-протокола к dest: <code>0</code>, <code>1</code> или <code>2</code>. <code>0</code> = выкл (по умолч.). Только ≥ 0. Меняй только если знаешь, зачем — иначе ломает Reality."
+                : "⚠️ PROXY-protocol version to dest: <code>0</code>, <code>1</code> or <code>2</code>. <code>0</code> = off (default). Integer ≥ 0 only. Change only if you know why — otherwise it breaks Reality.",
+            'r_minClientVer', 'r_maxClientVer' => $ru
+                ? "Мин./макс. версия xray-клиента, напр. <code>1.8.0</code>. ⚠️ Не-xray клиенты (sing-box/mihomo) могут быть отклонены. Пусто/0/default = без проверки (по умолч.)."
+                : "Min/max xray client version, e.g. <code>1.8.0</code>. ⚠️ Non-xray clients (sing-box/mihomo) may be rejected. Empty/0/default = no check (default).",
             default => '',
         };
     }
