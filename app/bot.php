@@ -233,6 +233,9 @@ class Bot
             case preg_match('~^/setHwidUserLimit (\d+)$~', $this->input['callback'], $m):
                 $this->setHwidUserLimit($m[1]);
                 break;
+            case preg_match('~^/setTrafficXr (\d+)$~', $this->input['callback'], $m):
+                $this->setTrafficXr($m[1]);
+                break;
             case preg_match('~^/hwidUserDel (\d+)_(\d+) (.+)$~', $this->input['callback'], $m):
                 $this->hwidUserDel($m[1], $m[2], $m[3]);
                 break;
@@ -2951,6 +2954,7 @@ class Bot
             $this->checkCert();
             $this->autoAnalyzeLogs();
             $this->xrayStatsUser();
+            $this->checkTrafficLimits();
             $this->trackOnline();
             sleep($period);
         }
@@ -3307,6 +3311,78 @@ class Bot
             }
         } catch (Exception $e) {
         }
+    }
+
+    // Total bytes used by Xray client index $k (down+up, global+session) — same
+    // figure userXr() shows. $st is getXrayStats().
+    public function xrUserTraffic($st, $k)
+    {
+        $u = $st['users'][$k] ?? [];
+        return ($u['global']['download'] ?? 0) + ($u['session']['download'] ?? 0)
+             + ($u['global']['upload'] ?? 0) + ($u['session']['upload'] ?? 0);
+    }
+
+    // Cron enforcement of per-client traffic quotas ($client['traffic'] = byte
+    // limit, 0/unset = unlimited). Over-quota clients are disabled the same way
+    // switchXr does (rotate id/password so the live connection drops) and tagged
+    // 'traffic_off' so a stats reset can re-enable them. One restart for the batch.
+    public function checkTrafficLimits()
+    {
+        try {
+            $x  = $this->getXray();
+            $st = $this->getXrayStats();
+            $disabled = [];
+            foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
+                $limit = (int) ($v['traffic'] ?? 0);
+                if ($limit <= 0 || !empty($v['off'])) {
+                    continue;
+                }
+                if ($this->xrUserTraffic($st, $k) >= $limit) {
+                    $x['inbounds'][0]['settings']['clients'][$k]['off'] = $v['id'];
+                    $x['inbounds'][0]['settings']['clients'][$k]['id']  = trim($this->ssh('xray uuid', 'xr'));
+                    if (isset($v['password'])) {
+                        $x['inbounds'][0]['settings']['clients'][$k]['off_pwd']  = $v['password'];
+                        $x['inbounds'][0]['settings']['clients'][$k]['password'] = trim($this->ssh('xray uuid', 'xr'));
+                    }
+                    $x['inbounds'][0]['settings']['clients'][$k]['traffic_off'] = 1;
+                    $disabled[] = $v['email'];
+                }
+            }
+            if (!empty($disabled)) {
+                $this->restartXray($x);
+                require __DIR__ . '/config.php';
+                foreach (($c['admin'] ?? []) as $admin) {
+                    $this->send($admin, "vless: traffic limit reached, disabled:\n" . implode("\n", $disabled));
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+    }
+
+    // Re-enable clients that were auto-disabled by the traffic quota (called when
+    // stats are reset, so a new period restores access). $only limits it to one
+    // client index. Mutates and returns the xray config; caller persists it via
+    // restartXray().
+    public function reenableTrafficClients(array $x, $only = null): array
+    {
+        foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
+            if (empty($v['traffic_off'])) {
+                continue;
+            }
+            if ($only !== null && (string) $k !== (string) $only) {
+                continue;
+            }
+            if (!empty($v['off'])) {
+                $x['inbounds'][0]['settings']['clients'][$k]['id'] = $v['off'];
+                if (isset($v['password'])) {
+                    $x['inbounds'][0]['settings']['clients'][$k]['password'] = ($v['off_pwd'] ?? '') ?: $v['off'];
+                    unset($x['inbounds'][0]['settings']['clients'][$k]['off_pwd']);
+                }
+                unset($x['inbounds'][0]['settings']['clients'][$k]['off']);
+            }
+            unset($x['inbounds'][0]['settings']['clients'][$k]['traffic_off']);
+        }
+        return $x;
     }
 
     public function renameClient(string $name, int $client)
@@ -10139,13 +10215,18 @@ DNS-over-HTTPS with IP:
     {
         $c = $this->getXrayStats();
         unset($c['users'][$i]);
-        $this->restartXray($this->getXray());
+        // Persist the zeroed usage before restartXray (its collectSession()
+        // re-reads the stats file, so an unsaved unset would be discarded).
+        $this->setXrayStats($c);
+        // Zeroing this user's usage starts a new quota period — lift its ban.
+        $this->restartXray($this->reenableTrafficClients($this->getXray(), $i));
         $this->userXr($i);
     }
 
     public function resetXrStats($nomenu = false)
     {
-        $this->restartXray($this->getXray());
+        // Zeroing usage starts a new quota period, so lift any traffic-quota bans.
+        $this->restartXray($this->reenableTrafficClients($this->getXray()));
         $this->setXrayStats([]);
         if (empty($nomenu)) {
             $this->xray();
@@ -11109,12 +11190,24 @@ DNS-over-HTTPS with IP:
 
         $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$c['id']}'>windows service</a>";
         $st       = $this->getXrayStats();
-        $download = $this->getBytes($st['users'][$i]['global']['download'] + $st['users'][$i]['session']['download']);
-        $upload   = $this->getBytes($st['users'][$i]['global']['upload'] + $st['users'][$i]['session']['upload']);
+        $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0));
+        $upload   = $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0));
+        $limit    = (int) ($c['traffic'] ?? 0);
+        if ($limit > 0) {
+            $used = $this->getBytes($this->xrUserTraffic($st, $i));
+            $text[] = $this->i18n('traffic limit') . ": $used / " . $this->getBytes($limit)
+                . (!empty($c['traffic_off']) ? ' ⛔' : '');
+        }
         $data[]   = [
             [
                 'text'          => $this->i18n('reset stats') . ": ↓$download  ↑$upload",
                 'callback_data' => "/resetXrUser $i",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => '📊 ' . $this->i18n('traffic limit') . ($limit > 0 ? ': ' . $this->getBytes($limit) : ''),
+                'callback_data' => "/setTrafficXr $i",
             ],
         ];
         $data[] = [
@@ -11526,6 +11619,57 @@ DNS-over-HTTPS with IP:
         file_put_contents('/config/xray.json', json_encode($xray, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->send($this->input['chat'], $this->i18n('hwid notice'), $this->input['message_id']);
         $this->hwidUser($i);
+    }
+
+    public function setTrafficXr($i)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter traffic limit'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter traffic limit'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'saveTrafficXr',
+            'args'           => [$i],
+        ];
+    }
+
+    public function saveTrafficXr($gb, $i)
+    {
+        $x  = $this->getXray();
+        if (!isset($x['inbounds'][0]['settings']['clients'][$i])) {
+            $this->xray();
+            return;
+        }
+        // Accept a decimal number of GiB (matches getBytes display); 0/empty clears.
+        $gb = (float) str_replace(',', '.', trim((string) $gb));
+        $needsRestart = false;
+        if ($gb > 0) {
+            $limit = (int) round($gb * 1024 ** 3);
+            $x['inbounds'][0]['settings']['clients'][$i]['traffic'] = $limit;
+            // Raising the limit above current usage lifts this client's quota ban.
+            if (!empty($x['inbounds'][0]['settings']['clients'][$i]['traffic_off'])
+                && $this->xrUserTraffic($this->getXrayStats(), $i) < $limit) {
+                $x = $this->reenableTrafficClients($x, $i);
+                $needsRestart = true;
+            }
+        } else {
+            unset($x['inbounds'][0]['settings']['clients'][$i]['traffic']);
+            // Clearing the limit also lifts a prior quota ban; restoring the id
+            // needs a live restart for xray to accept connections again.
+            if (!empty($x['inbounds'][0]['settings']['clients'][$i]['traffic_off'])) {
+                $x = $this->reenableTrafficClients($x, $i);
+                $needsRestart = true;
+            }
+        }
+        // Persist via restartXray so the stats:{} object is normalized (raw
+        // json_encode turns {} into [] and xray rejects it). norestart unless we
+        // re-enabled a client — the limit value itself is bot-side only.
+        $this->restartXray($x, !$needsRestart);
+        $this->userXr($i);
     }
 
     public function hwidUserDel($i, $page, $hwid)

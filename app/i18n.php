@@ -49,6 +49,14 @@ $i = [
         'en' => 'add relay',
         'ru' => 'добавить relay',
     ],
+    'traffic limit'        => [
+        'en' => 'traffic limit',
+        'ru' => 'лимит трафика',
+    ],
+    'enter traffic limit'  => [
+        'en' => 'enter traffic limit in GB (0 or empty = unlimited)',
+        'ru' => 'введите лимит трафика в ГБ (0 или пусто = безлимит)',
+    ],
     'relay subscriptions'  => [
         'en' => 'relay subscriptions',
         'ru' => 'relay-подписки',
