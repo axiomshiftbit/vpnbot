@@ -78,16 +78,8 @@ $i = [
         'ru' => 'Reality ML-DSA-65',
     ],
     'mldsa hint'           => [
-        'en' => '⚠️ Post-quantum Reality auth. Requires recent xray clients (v2rayNG/xray ≥ 25.x) — older clients will fail. Turn OFF to restore them.',
-        'ru' => '⚠️ Пост-квантовая аутентификация Reality. Требует свежих xray-клиентов (v2rayNG/xray ≥ 25.x) — старые перестанут подключаться. Выключи, чтобы вернуть их.',
-    ],
-    'mkcp hint'            => [
-        'en' => 'ℹ️ mKCP is UDP+Reality, xray clients only (no sing-box/mihomo). Open UDP on the server port first. Switch transport back to revert.',
-        'ru' => 'ℹ️ mKCP — это UDP+Reality, только xray-клиенты (без sing-box/mihomo). Сначала открой UDP на порту сервера. Переключи транспорт обратно для отката.',
-    ],
-    'mkcp header'          => [
-        'en' => 'mKCP header',
-        'ru' => 'mKCP-заголовок',
+        'en' => 'ℹ️ Post-quantum Reality auth (extra cert signature). Backward compatible: only xray clients carrying the verify key check it; sing-box/mihomo and older clients keep working without it. Rotate Reality keys after enabling to re-issue links.',
+        'ru' => 'ℹ️ Пост-квантовая аутентификация Reality (доп. подпись сертификата). Обратно совместима: проверяют только xray-клиенты с verify-ключом; sing-box/mihomo и старые клиенты продолжают работать без него. После включения ротани ключи Reality, чтобы переиздать ссылки.',
     ],
     'reality params'       => [
         'en' => 'Reality params',

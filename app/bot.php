@@ -197,9 +197,6 @@ class Bot
             case preg_match('~^/dpiSet (\w+)$~', $this->input['callback'], $m):
                 $this->dpiSet($m[1]);
                 break;
-            case preg_match('~^/mkcpHeader(?: (\S+))?$~', $this->input['callback'], $m):
-                $this->mkcpHeader($m[1] ?? false);
-                break;
             case preg_match('~^/mirror$~', $this->input['message'], $m):
                 $this->menu('mirror');
                 break;
@@ -8412,7 +8409,7 @@ DNS-over-HTTPS with IP:
                 ['text' => 'delay: ' . (($n['delay'] ?? '') ?: '10-16'),   'callback_data' => '/dpiSet noise_delay'],
             ];
         }
-        if (in_array($tr, ['Reality', 'mkcp'], true)) {
+        if ($tr === 'Reality') {
             $text[] = "\n" . $this->i18n('mldsa hint');
             $data[] = [['text' => $this->i18n('mldsa') . ': ' . $on($r['mldsa'] ?? 0), 'callback_data' => '/dpiToggle mldsa']];
             $data[] = [
@@ -8424,10 +8421,6 @@ DNS-over-HTTPS with IP:
                 ['text' => 'maxClientVer: ' . (($r['maxClientVer'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_maxClientVer'],
             ];
             $data[] = [['text' => 'spiderX: ' . (($r['spiderX'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_spiderX']];
-        }
-        if ($tr === 'mkcp') {
-            $text[] = "\n" . $this->i18n('mkcp hint');
-            $data[] = [['text' => $this->i18n('mkcp header') . ': ' . ($p['mkcp']['header'] ?? 'none'), 'callback_data' => '/mkcpHeader']];
         }
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
 
@@ -8513,28 +8506,6 @@ DNS-over-HTTPS with IP:
         $this->setPacConf($p);
         if ($liveReality) {
             $this->syncRealityLive($p);
-        }
-        $this->dpiMenu();
-    }
-
-    public function mkcpHeader($type = false)
-    {
-        $types = ['none', 'srtp', 'utp', 'wechat-video', 'dtls', 'wireguard'];
-        $p     = $this->getPacConf();
-        $cur   = $p['mkcp']['header'] ?? 'none';
-        if ($type && in_array($type, $types, true)) {
-            $p['mkcp']['header'] = $type;
-        } else {
-            $i = array_search($cur, $types, true);
-            $p['mkcp']['header'] = $types[($i === false ? 0 : $i + 1) % count($types)];
-        }
-        $this->setPacConf($p);
-        if (($p['transport'] ?? '') === 'mkcp') {
-            $x = $this->getXray();
-            if (isset($x['inbounds'][0]['streamSettings']['kcpSettings'])) {
-                $x['inbounds'][0]['streamSettings']['kcpSettings']['header']['type'] = $p['mkcp']['header'] ?: 'none';
-                $this->restartXray($x);
-            }
         }
         $this->dpiMenu();
     }
@@ -9771,19 +9742,6 @@ DNS-over-HTTPS with IP:
                                     . $rExtra
                                     . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
                         break;
-                    case 'mkcp':
-                        $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
-                                    . "?security=reality"
-                                    . "&sni={$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}"
-                                    . "&fp=$fp&pbk={$pac['xray']}"
-                                    . "&sid={$c['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0]}"
-                                    . "&type=kcp"
-                                    . "&headerType=" . ($pac['mkcp']['header'] ?? 'none')
-                                    . "&seed=" . rawurlencode($pac['mkcp']['seed'] ?? '')
-                                    . "&flow=xtls-rprx-vision"
-                                    . $rExtra
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
-                        break;
                     case 'xhttp':
                         $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
                                     . "?security=tls"
@@ -10851,12 +10809,6 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => 'mKCP ' . ($p['transport'] == 'mkcp' ? $this->i18n('on') : $this->i18n('off')),
-                'callback_data' => "/changeTransport mkcp",
-            ],
-        ];
-        $data[] = [
-            [
                 'text'          => $this->i18n('fingerprint') . ': ' . ucfirst($p['fingerprint'] ?: 'chrome'),
                 'callback_data' => "/fingerprintMenu",
             ],
@@ -11430,11 +11382,6 @@ DNS-over-HTTPS with IP:
         $hwidLimit    = $c['hwid_limit'] ? (int) $c['hwid_limit'] : $defaultHwid;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']}\n";
-        if (($pac['transport'] ?? '') === 'mkcp') {
-            // Under mkcp only the xray (v2rayNG) link works; the sing-box/mihomo
-            // links/configs below serve a clean 404 (subscription() guard).
-            $text[] = '⚠️ ' . $this->i18n('mkcp hint') . "\n";
-        }
         if (file_exists(__DIR__ . '/subscription.php')) {
             $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$c['id']}'>subscription</a>";
         }
@@ -12036,7 +11983,7 @@ DNS-over-HTTPS with IP:
         require __DIR__ . '/subscription.php';
     }
 
-    // Client-side Reality settings block for xray (case 's' / mkcp) configs. Base
+    // Client-side Reality settings block for xray (case 's') configs. Base
     // fields use ~placeholders~ filled by replaceTags(); spiderX (item 4) and
     // mldsa65Verify (item 2) are appended only when configured, so a config with
     // nothing tuned is byte-identical to before.
@@ -12049,7 +11996,7 @@ DNS-over-HTTPS with IP:
             "shortId"     => '~short_id~',
         ];
         $spx = (string) ($pac['reality']['spiderX'] ?? '');
-        if ($spx !== '') {
+        if ($spx !== '' && $spx !== '/') {
             $rs['spiderX'] = $spx;
         }
         if (!empty($pac['reality']['mldsa']) && !empty($pac['reality']['mldsa65Verify'])) {
@@ -12120,15 +12067,6 @@ DNS-over-HTTPS with IP:
         $xr     = $this->getXray();
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
-
-        // mKCP is xray-only: sing-box (si) and mihomo (cl) can't represent it, so
-        // don't serve a broken config for those formats under the mkcp transport.
-        if (($pac['transport'] ?? '') === 'mkcp' && in_array($_GET['t'] ?? '', ['si', 'cl'], true)) {
-            if (!empty($return)) {
-                return '';
-            }
-            $this->subNotFound('Not available for this transport (mKCP: xray clients only).');
-        }
 
         $flag = true;
         $client = null;
@@ -12277,30 +12215,6 @@ DNS-over-HTTPS with IP:
                         $c['outbounds'][$index]['streamSettings']                           = [
                             "network"         => "tcp",
                             "security"        => "reality",
-                            "realitySettings" => $this->realityClientSettings($fingerprint, $pac),
-                        ];
-                        $c['outbounds'][$index]['mux'] = [
-                            "enabled"     => false,
-                            "concurrency" => -1
-                        ];
-                        break;
-                    case 'mkcp':
-                        // mKCP + Reality (item 5), xray clients only.
-                        $c['outbounds'][$index]['settings']['vnext'][0]['users'][0]["flow"] = "xtls-rprx-vision";
-                        $c['outbounds'][$index]['streamSettings'] = [
-                            "network"         => "mkcp",
-                            "security"        => "reality",
-                            "kcpSettings"     => [
-                                "mtu"              => 1350,
-                                "tti"              => 50,
-                                "uplinkCapacity"   => 100,
-                                "downlinkCapacity" => 100,
-                                "congestion"       => false,
-                                "readBufferSize"   => 2,
-                                "writeBufferSize"  => 2,
-                                "header"           => ["type" => $pac['mkcp']['header'] ?? 'none'],
-                                "seed"             => $pac['mkcp']['seed'] ?? '',
-                            ],
                             "realitySettings" => $this->realityClientSettings($fingerprint, $pac),
                         ];
                         $c['outbounds'][$index]['mux'] = [
@@ -14261,47 +14175,6 @@ DNS-over-HTTPS with IP:
                 ];
                 break;
 
-            case 'mkcp':
-                // mKCP + Reality (item 5): UDP transport with an obfuscated packet
-                // header, carrying Reality. xray clients only (no sing-box/mihomo).
-                // No acceptProxyProtocol here — mKCP is direct UDP, not fronted by
-                // the TCP nginx/haproxy. The server port must allow UDP (firewall).
-                if (empty($p['mkcp']['seed'])) {
-                    $p['mkcp']['seed'] = bin2hex(random_bytes(8));
-                }
-                foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
-                    $x['inbounds'][0]['settings']['clients'][$k]['flow'] = 'xtls-rprx-vision';
-                }
-                $x['inbounds'][0]['streamSettings'] = [
-                    "network"         => "mkcp",
-                    "kcpSettings"     => [
-                        "mtu"              => 1350,
-                        "tti"              => 50,
-                        "uplinkCapacity"   => 100,
-                        "downlinkCapacity" => 100,
-                        "congestion"       => false,
-                        "readBufferSize"   => 2,
-                        "writeBufferSize"  => 2,
-                        "header"           => ["type" => ($p['mkcp']['header'] ?? '') ?: 'none'],
-                        "seed"             => $p['mkcp']['seed'],
-                    ],
-                    "realitySettings" => [
-                        "dest"         => $p['reality']['destination'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['dest'],
-                        "maxClientVer" => "",
-                        "maxTimeDiff"  => 0,
-                        "minClientVer" => "",
-                        "privateKey"   => $p['reality']['privateKey'],
-                        "serverNames"  => [
-                            $p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]
-                        ],
-                        "shortIds" => [$p['reality']['shortId']] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0],
-                        "show"     => false,
-                        "xver"     => 0
-                    ],
-                    "security" => "reality"
-                ];
-                break;
-
             default:
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"    => "ws",
@@ -14321,7 +14194,7 @@ DNS-over-HTTPS with IP:
             $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
         }
 
-        $this->setUpstreamDomain(in_array($transport, ['Reality', 'mkcp'], true)
+        $this->setUpstreamDomain($transport == 'Reality'
             ? ($p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0])
             : 't'
         );
