@@ -8558,18 +8558,35 @@ DNS-over-HTTPS with IP:
     public function processHwidRequest(array $client)
     {
         $pac = $this->getPacConf();
+        // Informational HWID headers (Remnawave/Hiddify convention): let clients
+        // display device-limit status instead of just getting a 429.
         if (empty($pac['hwid_limit_enabled']) || !empty($client['hwid_disabled'])) {
+            header('x-hwid-active: false');
+            header('x-hwid-not-supported: false');
+            header('x-hwid-max-devices-reached: false');
+            header('x-hwid-limit: false');
             return true;
         }
 
         $limit = (int) ($client['hwid_limit'] ?: ($pac['hwid_device_count'] ?: 0));
         if ($limit <= 0) {
+            header('x-hwid-active: true');
+            header('x-hwid-not-supported: false');
+            header('x-hwid-max-devices-reached: false');
+            header('x-hwid-limit: false');
             return true;
         }
 
         $devices   = $this->getHwidDevicesByUser($client['id']);
         $hwid      = trim($_SERVER['HTTP_X_HWID'] ?? '');
         $isBrowser = $this->isBrowserRequest();
+
+        $hwidNotSupported = !$isBrowser && $hwid === '';
+        $hwidMaxReached   = count($devices) >= $limit;
+        header('x-hwid-active: true');
+        header('x-hwid-not-supported: ' . ($hwidNotSupported ? 'true' : 'false'));
+        header('x-hwid-max-devices-reached: ' . ($hwidMaxReached ? 'true' : 'false'));
+        header('x-hwid-limit: ' . ($hwidMaxReached ? 'true' : 'false'));
 
         if ($hwid === '') {
             if ($isBrowser) {
@@ -11888,15 +11905,21 @@ DNS-over-HTTPS with IP:
         $c = json_decode($this->replaceTags(json_encode($c), [
             '~outbound~' => $outbound,
         ]), true);
-        foreach ($c['outbounds'] as $k => $v) {
-            if ($v['tag'] == $outbound) {
-                $index = $k;
-                break;
+        // Clash/mihomo keeps the node in proxies[] (keyed by name); xray/sing-box
+        // use outbounds[] (keyed by tag). Search the array that matches the format:
+        // searching outbounds first would, for a clash template that also carries an
+        // outbounds block, pick an outbounds index and then mis-index into proxies[].
+        // The ?? [] also avoids a warning when the template lacks the other key.
+        if (($_GET['t'] ?? '') === 'cl') {
+            foreach ($c['proxies'] ?? [] as $k => $v) {
+                if (($v['name'] ?? '') == $outbound) {
+                    $index = $k;
+                    break;
+                }
             }
-        }
-        if (!isset($index)) {
-            foreach ($c['proxies'] as $k => $v) {
-                if ($v['name'] == $outbound) {
+        } else {
+            foreach ($c['outbounds'] ?? [] as $k => $v) {
+                if (($v['tag'] ?? '') == $outbound) {
                     $index = $k;
                     break;
                 }
