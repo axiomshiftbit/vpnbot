@@ -197,6 +197,15 @@ class Bot
             case preg_match('~^/dpiSet (\w+)$~', $this->input['callback'], $m):
                 $this->dpiSet($m[1]);
                 break;
+            case preg_match('~^/dpiDefault (\w+)$~', $this->input['callback'], $m):
+                $this->dpiDefault($m[1]);
+                break;
+            case preg_match('~^/dpiGenSpiderX$~', $this->input['callback'], $m):
+                $this->dpiGenSpiderX();
+                break;
+            case preg_match('~^/dpiGenMldsa$~', $this->input['callback'], $m):
+                $this->dpiGenMldsa();
+                break;
             case preg_match('~^/mirror$~', $this->input['message'], $m):
                 $this->menu('mirror');
                 break;
@@ -1346,6 +1355,7 @@ class Bot
                 ]
             ];
         }
+        $this->applySniffingToXray($c, $this->getPacConf());
         $c['stats'] = new stdClass();
         $c['api'] = [
             'services' => ['StatsService'],
@@ -8386,8 +8396,12 @@ DNS-over-HTTPS with IP:
         $f  = $p['dpi']['fragment'] ?? [];
         $n  = $p['dpi']['noise'] ?? [];
         $r  = $p['reality'] ?? [];
+        $x  = $this->getXray();
+        $s  = $this->sniffingSettings($p, $x['inbounds'][0]['sniffing'] ?? null);
         $tr = $p['transport'] ?? '';
         $on = fn($v) => $this->i18n(!empty($v) ? 'on' : 'off');
+        $spiderX = $this->normalizeSpiderXValue((string) ($r['spiderX'] ?? ''));
+        $mldsaReady = $this->mldsaReady($p);
 
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking');
         $text[] = $this->i18n('dpi hint');
@@ -8409,9 +8423,33 @@ DNS-over-HTTPS with IP:
                 ['text' => 'delay: ' . (($n['delay'] ?? '') ?: '10-16'),   'callback_data' => '/dpiSet noise_delay'],
             ];
         }
+        $text[] = "\n" . $this->i18n('sniffing');
+        $data[] = [['text' => $this->i18n('sniffing') . ': ' . $on($s['enabled'] ?? 0), 'callback_data' => '/dpiToggle sniffing']];
+        if (!empty($s['enabled'])) {
+            $data[] = [[
+                'text' => 'destOverride: ' . $this->shortListLabel($s['destOverride'] ?? []),
+                'callback_data' => '/dpiSet sniffing_destOverride',
+            ]];
+            $data[] = [
+                ['text' => 'metadataOnly: ' . $on($s['metadataOnly'] ?? 0), 'callback_data' => '/dpiToggle sniffingMetadataOnly'],
+                ['text' => 'routeOnly: ' . $on($s['routeOnly'] ?? 0),       'callback_data' => '/dpiToggle sniffingRouteOnly'],
+            ];
+            $data[] = [
+                ['text' => 'ipsExcluded: ' . $this->shortListLabel($s['ipsExcluded'] ?? []),         'callback_data' => '/dpiSet sniffing_ipsExcluded'],
+                ['text' => 'domainsExcluded: ' . $this->shortListLabel($s['domainsExcluded'] ?? []), 'callback_data' => '/dpiSet sniffing_domainsExcluded'],
+            ];
+        }
         if ($tr === 'Reality') {
             $text[] = "\n" . $this->i18n('mldsa hint');
-            $data[] = [['text' => $this->i18n('mldsa') . ': ' . $on($r['mldsa'] ?? 0), 'callback_data' => '/dpiToggle mldsa']];
+            $data[] = [
+                ['text' => $this->i18n('mldsa') . ': ' . $on($mldsaReady), 'callback_data' => '/dpiToggle mldsa'],
+                ['text' => '🎲 ' . $this->i18n('autogen'),                 'callback_data' => '/dpiGenMldsa'],
+                ['text' => $this->i18n('clear'),                           'callback_data' => '/dpiDefault r_mldsa65'],
+            ];
+            $data[] = [
+                ['text' => 'mldsa65 Seed: ' . $this->shortSecretLabel($r['mldsa65Seed'] ?? ''),     'callback_data' => '/dpiSet r_mldsa65Seed'],
+                ['text' => 'mldsa65 Verify: ' . $this->shortSecretLabel($r['mldsa65Verify'] ?? ''), 'callback_data' => '/dpiSet r_mldsa65Verify'],
+            ];
             $data[] = [
                 ['text' => 'maxTimeDiff: ' . (int) ($r['maxTimeDiff'] ?? 0), 'callback_data' => '/dpiSet r_maxTimeDiff'],
                 ['text' => 'xver: ' . (int) ($r['xver'] ?? 0),               'callback_data' => '/dpiSet r_xver'],
@@ -8420,7 +8458,11 @@ DNS-over-HTTPS with IP:
                 ['text' => 'minClientVer: ' . (($r['minClientVer'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_minClientVer'],
                 ['text' => 'maxClientVer: ' . (($r['maxClientVer'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_maxClientVer'],
             ];
-            $data[] = [['text' => 'spiderX: ' . (($r['spiderX'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_spiderX']];
+            $data[] = [
+                ['text' => 'spiderX: ' . ($spiderX ?: '—'),              'callback_data' => '/dpiSet r_spiderX'],
+                ['text' => '🎲 ' . $this->i18n('autogen'),               'callback_data' => '/dpiGenSpiderX'],
+                ['text' => $this->i18n('default'),                       'callback_data' => '/dpiDefault r_spiderX'],
+            ];
         }
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
 
@@ -8438,6 +8480,178 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    public function defaultSniffingSettings(): array
+    {
+        return [
+            'enabled'         => true,
+            'destOverride'    => ['http', 'tls', 'quic'],
+            'metadataOnly'    => false,
+            'routeOnly'       => false,
+            'ipsExcluded'     => [],
+            'domainsExcluded' => [],
+        ];
+    }
+
+    public function sniffingSettings(array $p, ?array $fallback = null): array
+    {
+        $raw = is_array($p['sniffing'] ?? null) ? $p['sniffing'] : ($fallback ?: []);
+        $d = $this->defaultSniffingSettings();
+        $dest = $this->parseSniffingDest($raw['destOverride'] ?? $d['destOverride']);
+
+        return [
+            'enabled'         => (bool) ($raw['enabled'] ?? $d['enabled']),
+            'destOverride'    => $dest ?: $d['destOverride'],
+            'metadataOnly'    => (bool) ($raw['metadataOnly'] ?? false),
+            'routeOnly'       => (bool) ($raw['routeOnly'] ?? false),
+            'ipsExcluded'     => $this->parseListValue($raw['ipsExcluded'] ?? []),
+            'domainsExcluded' => $this->parseListValue($raw['domainsExcluded'] ?? []),
+        ];
+    }
+
+    public function sniffingConfig(array $p): array
+    {
+        $s = $this->sniffingSettings($p);
+        if (empty($s['enabled'])) {
+            return ['enabled' => false];
+        }
+
+        $out = [
+            'enabled'      => true,
+            'destOverride' => $s['destOverride'],
+        ];
+        if (!empty($s['metadataOnly'])) {
+            $out['metadataOnly'] = true;
+        }
+        if (!empty($s['routeOnly'])) {
+            $out['routeOnly'] = true;
+        }
+        if (!empty($s['ipsExcluded'])) {
+            $out['ipsExcluded'] = $s['ipsExcluded'];
+        }
+        if (!empty($s['domainsExcluded'])) {
+            $out['domainsExcluded'] = $s['domainsExcluded'];
+        }
+        return $out;
+    }
+
+    public function parseSniffingDest($value): array
+    {
+        $items = is_array($value) ? $value : preg_split('~[\s,;]+~', strtolower((string) $value));
+        $allowed = ['http', 'tls', 'quic', 'fakedns'];
+        $out = [];
+        foreach ($items ?: [] as $v) {
+            $v = strtolower(trim((string) $v));
+            if (in_array($v, $allowed, true) && !in_array($v, $out, true)) {
+                $out[] = $v;
+            }
+        }
+        return $out;
+    }
+
+    public function parseListValue($value): array
+    {
+        $items = is_array($value) ? $value : preg_split('~[\s,;]+~', (string) $value);
+        $out = [];
+        foreach ($items ?: [] as $v) {
+            $v = trim((string) $v);
+            if ($v !== '' && !$this->isDefaultValue($v) && !in_array($v, $out, true)) {
+                $out[] = $v;
+            }
+        }
+        return $out;
+    }
+
+    public function shortListLabel(array $items): string
+    {
+        if (empty($items)) {
+            return '—';
+        }
+        $label = implode(',', $items);
+        return strlen($label) > 28 ? count($items) . ' items' : $label;
+    }
+
+    public function applySniffingToXray(array &$c, array $p): void
+    {
+        if (!is_array($p['sniffing'] ?? null)) {
+            return;
+        }
+
+        $sniffing = $this->sniffingConfig($p);
+        foreach ($c['inbounds'] as &$inbound) {
+            $tag = (string) ($inbound['tag'] ?? '');
+            if ($tag === 'api' || ($inbound['protocol'] ?? '') === 'dokodemo-door') {
+                continue;
+            }
+            $inbound['sniffing'] = $sniffing;
+        }
+        unset($inbound);
+    }
+
+    public function syncSniffingLive(array $p): void
+    {
+        $x = $this->getXray();
+        $this->applySniffingToXray($x, $p);
+        $this->restartXray($x);
+    }
+
+    public function isDefaultValue(string $val): bool
+    {
+        return in_array(strtolower(trim($val)), ['', '0', 'default', 'off', 'none', 'null', '-'], true);
+    }
+
+    public function normalizeSpiderXValue(string $val): string
+    {
+        $val = trim($val);
+        if ($this->isDefaultValue($val)) {
+            return '';
+        }
+        return str_starts_with($val, '/') ? $val : '/' . $val;
+    }
+
+    public function normalizeMldsaValue(string $val): string
+    {
+        $val = trim($val);
+        if ($this->isDefaultValue($val)) {
+            return '';
+        }
+        return preg_replace('~\s+~', '', $val);
+    }
+
+    public function parseMldsaKeysText(string $val): array
+    {
+        preg_match('~(?:^|\R)\s*Seed:\s*([A-Za-z0-9_-]+)~mi', $val, $seed);
+        preg_match('~(?:^|\R)\s*Verify:\s*([A-Za-z0-9_-]+)~mi', $val, $verify);
+        return [
+            'seed'   => $seed[1] ?? '',
+            'verify' => $verify[1] ?? '',
+        ];
+    }
+
+    public function mldsaReady(array $p): bool
+    {
+        return !empty($p['reality']['mldsa'])
+            && !empty($p['reality']['mldsa65Seed'])
+            && !empty($p['reality']['mldsa65Verify']);
+    }
+
+    public function refreshMldsaEnabled(array &$p): void
+    {
+        $p['reality']['mldsa'] = (!empty($p['reality']['mldsa65Seed']) && !empty($p['reality']['mldsa65Verify'])) ? 1 : 0;
+    }
+
+    public function shortSecretLabel($value): string
+    {
+        $value = (string) $value;
+        if ($value === '') {
+            return '—';
+        }
+        $len = strlen($value);
+        if ($len <= 24) {
+            return $value;
+        }
+        return substr($value, 0, 8) . '...' . substr($value, -8) . " ($len)";
+    }
+
     public function dpiToggle($what)
     {
         $p = $this->getPacConf();
@@ -8450,15 +8664,40 @@ DNS-over-HTTPS with IP:
                 $p['dpi']['noise']['enabled'] = empty($p['dpi']['noise']['enabled']) ? 1 : 0;
                 $this->setPacConf($p);
                 break;
+            case 'sniffing':
+                $x = $this->getXray();
+                $p['sniffing'] = $this->sniffingSettings($p, $x['inbounds'][0]['sniffing'] ?? null);
+                $p['sniffing']['enabled'] = empty($p['sniffing']['enabled']);
+                $this->setPacConf($p);
+                $this->syncSniffingLive($p);
+                break;
+            case 'sniffingMetadataOnly':
+                $x = $this->getXray();
+                $p['sniffing'] = $this->sniffingSettings($p, $x['inbounds'][0]['sniffing'] ?? null);
+                $p['sniffing']['metadataOnly'] = empty($p['sniffing']['metadataOnly']);
+                $this->setPacConf($p);
+                $this->syncSniffingLive($p);
+                break;
+            case 'sniffingRouteOnly':
+                $x = $this->getXray();
+                $p['sniffing'] = $this->sniffingSettings($p, $x['inbounds'][0]['sniffing'] ?? null);
+                $p['sniffing']['routeOnly'] = empty($p['sniffing']['routeOnly']);
+                $this->setPacConf($p);
+                $this->syncSniffingLive($p);
+                break;
             case 'mldsa':
                 if (empty($p['reality']['mldsa'])) {
-                    $mk = $this->genMldsaKeys();
-                    if (empty($mk['seed']) || empty($mk['verify'])) {
-                        return $this->answer($this->input['callback_id'], 'mldsa keygen failed (xray too old?)', true);
+                    if (!empty($p['reality']['mldsa65Seed']) && !empty($p['reality']['mldsa65Verify'])) {
+                        $p['reality']['mldsa'] = 1;
+                    } else {
+                        $mk = $this->genMldsaKeys();
+                        if (empty($mk['seed']) || empty($mk['verify'])) {
+                            return $this->answer($this->input['callback_id'], 'mldsa keygen failed (xray too old?)', true);
+                        }
+                        $p['reality']['mldsa']         = 1;
+                        $p['reality']['mldsa65Seed']   = $mk['seed'];
+                        $p['reality']['mldsa65Verify'] = $mk['verify'];
                     }
-                    $p['reality']['mldsa']         = 1;
-                    $p['reality']['mldsa65Seed']   = $mk['seed'];
-                    $p['reality']['mldsa65Verify'] = $mk['verify'];
                 } else {
                     $p['reality']['mldsa'] = 0;
                 }
@@ -8485,11 +8724,94 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    // A random short URL path for Reality's spiderX (item 4), so clients don't all
+    // share a fixed "/", which is trivially fingerprintable. e.g. "/3f9a2c".
+    public function genSpiderX(): string
+    {
+        return '/' . rtrim(strtr(base64_encode(random_bytes(random_int(6, 10))), '+/', '-_'), '=');
+    }
+
+    // Auto-generate spiderX. Client-side only (link &spx / config), so no restart;
+    // new links pick it up.
+    public function dpiGenSpiderX()
+    {
+        $p = $this->getPacConf();
+        $p['reality']['spiderX'] = $this->genSpiderX();
+        $this->setPacConf($p);
+        $this->dpiMenu();
+    }
+
+    public function dpiGenMldsa()
+    {
+        $mk = $this->genMldsaKeys();
+        if (empty($mk['seed']) || empty($mk['verify'])) {
+            return $this->answer($this->input['callback_id'], 'mldsa keygen failed (xray too old?)', true);
+        }
+
+        $p = $this->getPacConf();
+        $p['reality']['mldsa']         = 1;
+        $p['reality']['mldsa65Seed']   = $mk['seed'];
+        $p['reality']['mldsa65Verify'] = $mk['verify'];
+        $this->setPacConf($p);
+        $this->syncRealityLive($p);
+        $this->dpiMenu();
+    }
+
+    public function dpiDefault($field)
+    {
+        $p = $this->getPacConf();
+        $liveReality = false;
+        $liveSniffing = false;
+        switch ($field) {
+            case 'r_spiderX':
+                $p['reality']['spiderX'] = '';
+                break;
+            case 'r_mldsa65':
+                $p['reality']['mldsa'] = 0;
+                $p['reality']['mldsa65Seed'] = '';
+                $p['reality']['mldsa65Verify'] = '';
+                $liveReality = true;
+                break;
+            case 'r_minClientVer':
+                $p['reality']['minClientVer'] = '';
+                $liveReality = true;
+                break;
+            case 'r_maxClientVer':
+                $p['reality']['maxClientVer'] = '';
+                $liveReality = true;
+                break;
+            case 'sniffing_destOverride':
+                $p['sniffing'] = $this->sniffingSettings($p);
+                $p['sniffing']['destOverride'] = $this->defaultSniffingSettings()['destOverride'];
+                $liveSniffing = true;
+                break;
+            case 'sniffing_ipsExcluded':
+                $p['sniffing'] = $this->sniffingSettings($p);
+                $p['sniffing']['ipsExcluded'] = [];
+                $liveSniffing = true;
+                break;
+            case 'sniffing_domainsExcluded':
+                $p['sniffing'] = $this->sniffingSettings($p);
+                $p['sniffing']['domainsExcluded'] = [];
+                $liveSniffing = true;
+                break;
+        }
+        $this->setPacConf($p);
+        if ($liveReality) {
+            $this->syncRealityLive($p);
+        }
+        if ($liveSniffing) {
+            $this->syncSniffingLive($p);
+        }
+        $this->dpiMenu();
+    }
+
     public function saveDpi($val, $field)
     {
         $val = trim((string) $val);
         $p   = $this->getPacConf();
         $liveReality = false;
+        $liveSniffing = false;
         switch ($field) {
             case 'fragment_packets':  $p['dpi']['fragment']['packets']  = $val; break;
             case 'fragment_length':   $p['dpi']['fragment']['length']   = $val; break;
@@ -8499,13 +8821,58 @@ DNS-over-HTTPS with IP:
             case 'noise_delay':       $p['dpi']['noise']['delay']       = $val; break;
             case 'r_maxTimeDiff':     $p['reality']['maxTimeDiff']  = (int) $val; $liveReality = true; break;
             case 'r_xver':            $p['reality']['xver']         = (int) $val; $liveReality = true; break;
-            case 'r_minClientVer':    $p['reality']['minClientVer'] = $val;       $liveReality = true; break;
-            case 'r_maxClientVer':    $p['reality']['maxClientVer'] = $val;       $liveReality = true; break;
-            case 'r_spiderX':         $p['reality']['spiderX']      = $val; break;
+            case 'r_minClientVer':    $p['reality']['minClientVer'] = $this->isDefaultValue($val) ? '' : $val; $liveReality = true; break;
+            case 'r_maxClientVer':    $p['reality']['maxClientVer'] = $this->isDefaultValue($val) ? '' : $val; $liveReality = true; break;
+            case 'r_spiderX':         $p['reality']['spiderX']      = $this->normalizeSpiderXValue($val); break;
+            case 'r_mldsa65Seed':
+                $pair = $this->parseMldsaKeysText($val);
+                if (!empty($pair['seed'])) {
+                    $p['reality']['mldsa65Seed'] = $pair['seed'];
+                } else {
+                    $p['reality']['mldsa65Seed'] = $this->normalizeMldsaValue($val);
+                }
+                if (!empty($pair['verify'])) {
+                    $p['reality']['mldsa65Verify'] = $pair['verify'];
+                }
+                $this->refreshMldsaEnabled($p);
+                $liveReality = true;
+                break;
+            case 'r_mldsa65Verify':
+                $pair = $this->parseMldsaKeysText($val);
+                if (!empty($pair['verify'])) {
+                    $p['reality']['mldsa65Verify'] = $pair['verify'];
+                } else {
+                    $p['reality']['mldsa65Verify'] = $this->normalizeMldsaValue($val);
+                }
+                if (!empty($pair['seed'])) {
+                    $p['reality']['mldsa65Seed'] = $pair['seed'];
+                }
+                $this->refreshMldsaEnabled($p);
+                $liveReality = true;
+                break;
+            case 'sniffing_destOverride':
+                $p['sniffing'] = $this->sniffingSettings($p);
+                $dest = $this->parseSniffingDest($val);
+                $p['sniffing']['destOverride'] = $dest ?: $this->defaultSniffingSettings()['destOverride'];
+                $liveSniffing = true;
+                break;
+            case 'sniffing_ipsExcluded':
+                $p['sniffing'] = $this->sniffingSettings($p);
+                $p['sniffing']['ipsExcluded'] = $this->parseListValue($val);
+                $liveSniffing = true;
+                break;
+            case 'sniffing_domainsExcluded':
+                $p['sniffing'] = $this->sniffingSettings($p);
+                $p['sniffing']['domainsExcluded'] = $this->parseListValue($val);
+                $liveSniffing = true;
+                break;
         }
         $this->setPacConf($p);
         if ($liveReality) {
             $this->syncRealityLive($p);
+        }
+        if ($liveSniffing) {
+            $this->syncSniffingLive($p);
         }
         $this->dpiMenu();
     }
@@ -9723,11 +10090,11 @@ DNS-over-HTTPS with IP:
                 // (pqv). Appended only when configured, so default links are byte
                 // identical to before.
                 $rExtra = '';
-                $spx    = (string) ($pac['reality']['spiderX'] ?? '');
+                $spx    = $this->normalizeSpiderXValue((string) ($pac['reality']['spiderX'] ?? ''));
                 if ($spx !== '' && $spx !== '/') {
                     $rExtra .= '&spx=' . rawurlencode($spx);
                 }
-                if (!empty($pac['reality']['mldsa']) && !empty($pac['reality']['mldsa65Verify'])) {
+                if ($this->mldsaReady($pac)) {
                     $rExtra .= '&pqv=' . rawurlencode($pac['reality']['mldsa65Verify']);
                 }
                 switch ($pac['transport']) {
@@ -10322,7 +10689,7 @@ DNS-over-HTTPS with IP:
         $rs['minClientVer'] = (string) ($p['reality']['minClientVer'] ?? '');
         $rs['maxClientVer'] = (string) ($p['reality']['maxClientVer'] ?? '');
         $rs['xver']         = (int) ($p['reality']['xver'] ?? 0);
-        if (!empty($p['reality']['mldsa']) && !empty($p['reality']['mldsa65Seed'])) {
+        if ($this->mldsaReady($p)) {
             $rs['mldsa65Seed'] = $p['reality']['mldsa65Seed'];
         } else {
             unset($rs['mldsa65Seed']);
@@ -10355,6 +10722,11 @@ DNS-over-HTTPS with IP:
                 $p['reality']['mldsa65Seed']   = $mk['seed'];
                 $p['reality']['mldsa65Verify'] = $mk['verify'];
             }
+        }
+        // Refresh spiderX alongside the keys (only if already in use), so a rotation
+        // gives a fresh crawl path too. Client-side, no live effect.
+        if (!empty($p['reality']['spiderX'])) {
+            $p['reality']['spiderX'] = $this->genSpiderX();
         }
         $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
         $this->setPacConf($p);
@@ -10401,6 +10773,9 @@ DNS-over-HTTPS with IP:
                     $p['reality']['mldsa65Seed']   = $mk['seed'];
                     $p['reality']['mldsa65Verify'] = $mk['verify'];
                 }
+            }
+            if (!empty($p['reality']['spiderX'])) {
+                $p['reality']['spiderX'] = $this->genSpiderX();
             }
             $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
         }
@@ -11995,11 +12370,11 @@ DNS-over-HTTPS with IP:
             "publicKey"   => '~public_key~',
             "shortId"     => '~short_id~',
         ];
-        $spx = (string) ($pac['reality']['spiderX'] ?? '');
+        $spx = $this->normalizeSpiderXValue((string) ($pac['reality']['spiderX'] ?? ''));
         if ($spx !== '' && $spx !== '/') {
             $rs['spiderX'] = $spx;
         }
-        if (!empty($pac['reality']['mldsa']) && !empty($pac['reality']['mldsa65Verify'])) {
+        if ($this->mldsaReady($pac)) {
             $rs['mldsa65Verify'] = $pac['reality']['mldsa65Verify'];
         }
         return $rs;
@@ -12040,6 +12415,23 @@ DNS-over-HTTPS with IP:
         if (isset($c['outbounds'][$index])) {
             $c['outbounds'][$index]['streamSettings']['sockopt']['dialerProxy'] = 'dpi-fragment';
         }
+    }
+
+    public function applyClientSniffing(array &$c, array $pac): void
+    {
+        if (!is_array($pac['sniffing'] ?? null)) {
+            return;
+        }
+        $sniffing = $this->sniffingConfig($pac);
+        if (empty($c['inbounds']) || !is_array($c['inbounds'])) {
+            return;
+        }
+        foreach ($c['inbounds'] as &$inbound) {
+            if (isset($inbound['sniffing'])) {
+                $inbound['sniffing'] = $sniffing;
+            }
+        }
+        unset($inbound);
     }
 
     public function subscription($return = false)
@@ -12307,6 +12699,7 @@ DNS-over-HTTPS with IP:
                 }
                 // Item 1: TLS fragment / UDP noise via freedom dialerProxy (xray only).
                 $this->applyDpiFragment($c, $index, $pac);
+                $this->applyClientSniffing($c, $pac);
 
                 break;
             case 'si':

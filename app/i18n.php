@@ -73,6 +73,10 @@ $i = [
         'en' => 'UDP noise',
         'ru' => 'UDP-шум',
     ],
+    'sniffing'             => [
+        'en' => 'Sniffing',
+        'ru' => 'Сниффинг',
+    ],
     'mldsa'                => [
         'en' => 'Reality ML-DSA-65',
         'ru' => 'Reality ML-DSA-65',
@@ -86,8 +90,16 @@ $i = [
         'ru' => 'параметры Reality',
     ],
     'enter value'          => [
-        'en' => 'enter value (empty = default)',
-        'ru' => 'введите значение (пусто = по умолчанию)',
+        'en' => 'enter value (0/default/off = default)',
+        'ru' => 'введите значение (0/default/off = по умолчанию)',
+    ],
+    'autogen'              => [
+        'en' => 'autogen',
+        'ru' => 'авто',
+    ],
+    'default'              => [
+        'en' => 'default',
+        'ru' => 'по умолчанию',
     ],
     'relay subscriptions'  => [
         'en' => 'relay subscriptions',
