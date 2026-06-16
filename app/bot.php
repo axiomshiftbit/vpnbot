@@ -10095,6 +10095,10 @@ DNS-over-HTTPS with IP:
             }
             unset($c['inbounds'][0]['settings']['clients'][$i]['off']);
         }
+        // A manual enable/disable overrides any traffic-quota ban: drop the marker
+        // so a later stats reset (reenableTrafficClients) can't silently flip this
+        // client back, and userXr doesn't show a stale ⛔ on an enabled client.
+        unset($c['inbounds'][0]['settings']['clients'][$i]['traffic_off']);
         $this->restartXray($c);
         if (empty($nm)) {
             $this->userXr($i);
