@@ -8409,6 +8409,7 @@ DNS-over-HTTPS with IP:
         $data = [];
         $data[] = [['text' => $this->i18n('fragment') . ': ' . $on($f['enabled'] ?? 0), 'callback_data' => '/dpiToggle fragment']];
         if (!empty($f['enabled'])) {
+            $text[] = $this->dpiFieldHint('fragment');
             $data[] = [
                 ['text' => 'packets: ' . (($f['packets'] ?? '') ?: '1-3'),    'callback_data' => '/dpiSet fragment_packets'],
                 ['text' => 'length: ' . (($f['length'] ?? '') ?: '100-200'),  'callback_data' => '/dpiSet fragment_length'],
@@ -8417,6 +8418,7 @@ DNS-over-HTTPS with IP:
         }
         $data[] = [['text' => $this->i18n('noise') . ': ' . $on($n['enabled'] ?? 0), 'callback_data' => '/dpiToggle noise']];
         if (!empty($n['enabled'])) {
+            $text[] = $this->dpiFieldHint('noise');
             $data[] = [
                 ['text' => 'type: ' . (($n['type'] ?? '') ?: 'rand'),     'callback_data' => '/dpiSet noise_type'],
                 ['text' => 'packet: ' . (($n['packet'] ?? '') ?: '10-20'), 'callback_data' => '/dpiSet noise_packet'],
@@ -8715,9 +8717,14 @@ DNS-over-HTTPS with IP:
             return $this->answer($this->input['callback_id'], 'ML-DSA-65 uses autogen only', true);
         }
 
+        $prompt = "@{$this->input['username']} " . $this->i18n('enter value');
+        if ($hint = $this->dpiFieldHint($field)) {
+            $prompt .= "\n\n" . $hint;
+        }
+
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} " . $this->i18n('enter value'),
+            $prompt,
             $this->input['message_id'],
             reply: $this->i18n('enter value'),
         );
@@ -8727,6 +8734,38 @@ DNS-over-HTTPS with IP:
             'callback'       => 'saveDpi',
             'args'           => [$field],
         ];
+    }
+
+    public function dpiFieldHint(string $field): string
+    {
+        $ru = $this->language === 'ru';
+        return match ($field) {
+            'fragment' => $ru
+                ? "TLS-фрагментация: packets <code>1-3</code> или <code>tlshello</code>; length <code>100-200</code>; interval <code>10-20</code> мс."
+                : "TLS fragment: packets <code>1-3</code> or <code>tlshello</code>; length <code>100-200</code>; interval <code>10-20</code> ms.",
+            'fragment_packets' => $ru
+                ? "Пример: <code>1-3</code> или <code>tlshello</code>. Пусто/0/default/off = <code>1-3</code>."
+                : "Example: <code>1-3</code> or <code>tlshello</code>. Empty/0/default/off = <code>1-3</code>.",
+            'fragment_length' => $ru
+                ? "Пример: <code>100-200</code>. Это размер частей TLS ClientHello в байтах; не ставь 0."
+                : "Example: <code>100-200</code>. TLS ClientHello fragment size in bytes; do not use 0.",
+            'fragment_interval' => $ru
+                ? "Пример: <code>10-20</code>. Задержка между частями в миллисекундах. <code>0</code>/default = <code>10-20</code>."
+                : "Example: <code>10-20</code>. Delay between fragments in milliseconds. <code>0</code>/default = <code>10-20</code>.",
+            'noise' => $ru
+                ? "UDP-шум: type обычно <code>rand</code>; packet для rand <code>10-20</code>; delay <code>10-16</code> мс."
+                : "UDP noise: type is usually <code>rand</code>; packet for rand <code>10-20</code>; delay <code>10-16</code> ms.",
+            'noise_type' => $ru
+                ? "Допустимо: <code>rand</code>, <code>str</code>, <code>hex</code>, <code>base64</code>. Обычно используй <code>rand</code>."
+                : "Allowed: <code>rand</code>, <code>str</code>, <code>hex</code>, <code>base64</code>. Usually use <code>rand</code>.",
+            'noise_packet' => $ru
+                ? "Для type=<code>rand</code>: диапазон длины, например <code>10-20</code>. Для <code>str</code>/<code>hex</code>/<code>base64</code>: сам пакет."
+                : "For type=<code>rand</code>: length range, e.g. <code>10-20</code>. For <code>str</code>/<code>hex</code>/<code>base64</code>: the packet itself.",
+            'noise_delay' => $ru
+                ? "Пример: <code>10-16</code>. Задержка перед шумовым UDP-пакетом в миллисекундах."
+                : "Example: <code>10-16</code>. Delay before the UDP noise packet in milliseconds.",
+            default => '',
+        };
     }
 
     // 3x-ui style: "/" + random.Seq(15), i.e. alphanumeric only.
@@ -8822,12 +8861,12 @@ DNS-over-HTTPS with IP:
         $liveReality = false;
         $liveSniffing = false;
         switch ($field) {
-            case 'fragment_packets':  $p['dpi']['fragment']['packets']  = $val; break;
-            case 'fragment_length':   $p['dpi']['fragment']['length']   = $val; break;
-            case 'fragment_interval': $p['dpi']['fragment']['interval'] = $val; break;
-            case 'noise_type':        $p['dpi']['noise']['type']        = $val ?: 'rand'; break;
-            case 'noise_packet':      $p['dpi']['noise']['packet']      = $val; break;
-            case 'noise_delay':       $p['dpi']['noise']['delay']       = $val; break;
+            case 'fragment_packets':  $p['dpi']['fragment']['packets']  = $this->isDefaultValue($val) ? '' : $val; break;
+            case 'fragment_length':   $p['dpi']['fragment']['length']   = $this->isDefaultValue($val) ? '' : $val; break;
+            case 'fragment_interval': $p['dpi']['fragment']['interval'] = $this->isDefaultValue($val) ? '' : $val; break;
+            case 'noise_type':        $p['dpi']['noise']['type']        = $this->isDefaultValue($val) ? '' : $val; break;
+            case 'noise_packet':      $p['dpi']['noise']['packet']      = $this->isDefaultValue($val) ? '' : $val; break;
+            case 'noise_delay':       $p['dpi']['noise']['delay']       = $this->isDefaultValue($val) ? '' : $val; break;
             case 'r_maxTimeDiff':     $p['reality']['maxTimeDiff']  = (int) $val; $liveReality = true; break;
             case 'r_xver':            $p['reality']['xver']         = (int) $val; $liveReality = true; break;
             case 'r_minClientVer':    $p['reality']['minClientVer'] = $this->isDefaultValue($val) ? '' : $val; $liveReality = true; break;
@@ -10274,6 +10313,7 @@ DNS-over-HTTPS with IP:
         $ports  = $this->getPorts();
         $port   = $ports['hy']['enable'] ? $ports['hy']['port'] : null;
         $domain = $this->getDomain();
+        $version = $this->hysteriaVersion();
         $hy     = yaml_parse_file('/config/hysteria.yaml');
         $sni    = parse_url($hy['masquerade']['proxy']['url'] ?? '', PHP_URL_HOST) ?: $domain;
         $pass   = $pac['hysteria_pass'] ?? '';
@@ -10286,6 +10326,7 @@ DNS-over-HTTPS with IP:
         $link   = $this->linkHysteria();
 
         $text[] = "Menu -> Hysteria";
+        $text[] = "version: <code>$version</code>";
         $text[] = "server: " . ($port ? "<code>$domain:$port</code>" : 'port unavailable');
         $text[] = "passwd: <code>$pass</code>";
         $text[] = "masq (decoy): <code>$sni</code>";
@@ -10342,6 +10383,19 @@ DNS-over-HTTPS with IP:
             'text' => implode("\n", $text),
             'data' => $data,
         ];
+    }
+
+    public function hysteriaVersion(): string
+    {
+        $out = trim((string) $this->ssh("sh -c 'hysteria version 2>/dev/null || hysteria --version 2>/dev/null || hysteria -v 2>/dev/null'", 'hy'));
+        if ($out === '') {
+            return 'unknown';
+        }
+        if (preg_match('~\bv?\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?\b~', $out, $m)) {
+            return htmlspecialchars($m[0], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+        $line = trim(strtok($out, "\r\n"));
+        return htmlspecialchars(mb_substr($line, 0, 80, 'UTF-8'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
     public function mirrorMenu()
@@ -15018,6 +15072,7 @@ DNS-over-HTTPS with IP:
 
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
+        $data = "";
         try {
             $c = ssh2_connect($service, 22);
             if (empty($c)) {
@@ -15042,7 +15097,6 @@ DNS-over-HTTPS with IP:
                 throw new Exception("exec fail: \n$cmd\n" . var_export($s, true));
             }
 
-            $data = "";
             if ($wait) {
                 // Только для синхронных команд читаем вывод
                 stream_set_blocking($s, true);
