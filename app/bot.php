@@ -8446,10 +8446,8 @@ DNS-over-HTTPS with IP:
                 ['text' => '🎲 ' . $this->i18n('autogen'),                 'callback_data' => '/dpiGenMldsa'],
                 ['text' => $this->i18n('clear'),                           'callback_data' => '/dpiDefault r_mldsa65'],
             ];
-            $data[] = [
-                ['text' => 'mldsa65 Seed: ' . $this->shortSecretLabel($r['mldsa65Seed'] ?? ''),     'callback_data' => '/dpiSet r_mldsa65Seed'],
-                ['text' => 'mldsa65 Verify: ' . $this->shortSecretLabel($r['mldsa65Verify'] ?? ''), 'callback_data' => '/dpiSet r_mldsa65Verify'],
-            ];
+            $text[] = 'mldsa65 Seed: ' . $this->shortSecretLabel($r['mldsa65Seed'] ?? '');
+            $text[] = 'mldsa65 Verify: ' . $this->shortSecretLabel($r['mldsa65Verify'] ?? '');
             $data[] = [
                 ['text' => 'maxTimeDiff: ' . (int) ($r['maxTimeDiff'] ?? 0), 'callback_data' => '/dpiSet r_maxTimeDiff'],
                 ['text' => 'xver: ' . (int) ($r['xver'] ?? 0),               'callback_data' => '/dpiSet r_xver'],
@@ -8537,7 +8535,9 @@ DNS-over-HTTPS with IP:
     public function parseSniffingDest($value): array
     {
         $items = is_array($value) ? $value : preg_split('~[\s,;]+~', strtolower((string) $value));
-        $allowed = ['http', 'tls', 'quic', 'fakedns'];
+        // FakeDNS needs a matching dns/fakeDns config block; the bot does not
+        // manage that yet, so keep it out of generated configs.
+        $allowed = ['http', 'tls', 'quic'];
         $out = [];
         foreach ($items ?: [] as $v) {
             $v = strtolower(trim((string) $v));
@@ -8608,35 +8608,38 @@ DNS-over-HTTPS with IP:
         return str_starts_with($val, '/') ? $val : '/' . $val;
     }
 
-    public function normalizeMldsaValue(string $val): string
+    public function rawUrlBase64DecodedLength(string $value): int
     {
-        $val = trim($val);
-        if ($this->isDefaultValue($val)) {
-            return '';
+        $value = trim($value);
+        if ($value === '' || preg_match('~^[A-Za-z0-9_-]+$~', $value) !== 1) {
+            return -1;
         }
-        return preg_replace('~\s+~', '', $val);
+        $mod = strlen($value) % 4;
+        if ($mod === 1) {
+            return -1;
+        }
+        if ($mod > 0) {
+            $value .= str_repeat('=', 4 - $mod);
+        }
+        $decoded = base64_decode(strtr($value, '-_', '+/'), true);
+        return $decoded === false ? -1 : strlen($decoded);
     }
 
-    public function parseMldsaKeysText(string $val): array
+    public function isRawUrlBase64DecodedLength(string $value, int $bytes): bool
     {
-        preg_match('~(?:^|\R)\s*Seed:\s*([A-Za-z0-9_-]+)~mi', $val, $seed);
-        preg_match('~(?:^|\R)\s*Verify:\s*([A-Za-z0-9_-]+)~mi', $val, $verify);
-        return [
-            'seed'   => $seed[1] ?? '',
-            'verify' => $verify[1] ?? '',
-        ];
+        return $this->rawUrlBase64DecodedLength($value) === $bytes;
+    }
+
+    public function mldsaKeysValid(array $p): bool
+    {
+        return $this->isRawUrlBase64DecodedLength((string) ($p['reality']['mldsa65Seed'] ?? ''), 32)
+            && $this->isRawUrlBase64DecodedLength((string) ($p['reality']['mldsa65Verify'] ?? ''), 1952);
     }
 
     public function mldsaReady(array $p): bool
     {
         return !empty($p['reality']['mldsa'])
-            && !empty($p['reality']['mldsa65Seed'])
-            && !empty($p['reality']['mldsa65Verify']);
-    }
-
-    public function refreshMldsaEnabled(array &$p): void
-    {
-        $p['reality']['mldsa'] = (!empty($p['reality']['mldsa65Seed']) && !empty($p['reality']['mldsa65Verify'])) ? 1 : 0;
+            && $this->mldsaKeysValid($p);
     }
 
     public function shortSecretLabel($value): string
@@ -8686,20 +8689,18 @@ DNS-over-HTTPS with IP:
                 $this->syncSniffingLive($p);
                 break;
             case 'mldsa':
-                if (empty($p['reality']['mldsa'])) {
-                    if (!empty($p['reality']['mldsa65Seed']) && !empty($p['reality']['mldsa65Verify'])) {
-                        $p['reality']['mldsa'] = 1;
-                    } else {
+                if ($this->mldsaReady($p)) {
+                    $p['reality']['mldsa'] = 0;
+                } else {
+                    if (!$this->mldsaKeysValid($p)) {
                         $mk = $this->genMldsaKeys();
                         if (empty($mk['seed']) || empty($mk['verify'])) {
                             return $this->answer($this->input['callback_id'], 'mldsa keygen failed (xray too old?)', true);
                         }
-                        $p['reality']['mldsa']         = 1;
                         $p['reality']['mldsa65Seed']   = $mk['seed'];
                         $p['reality']['mldsa65Verify'] = $mk['verify'];
                     }
-                } else {
-                    $p['reality']['mldsa'] = 0;
+                    $p['reality']['mldsa'] = 1;
                 }
                 $this->setPacConf($p);
                 $this->syncRealityLive($p);
@@ -8710,6 +8711,10 @@ DNS-over-HTTPS with IP:
 
     public function dpiSet($field)
     {
+        if (in_array($field, ['r_mldsa65Seed', 'r_mldsa65Verify'], true)) {
+            return $this->answer($this->input['callback_id'], 'ML-DSA-65 uses autogen only', true);
+        }
+
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} " . $this->i18n('enter value'),
@@ -8724,10 +8729,15 @@ DNS-over-HTTPS with IP:
         ];
     }
 
-    // 3x-ui style: "/" + 15 URL-safe chars.
+    // 3x-ui style: "/" + random.Seq(15), i.e. alphanumeric only.
     public function genSpiderX(): string
     {
-        return '/' . substr(rtrim(strtr(base64_encode(random_bytes(12)), '+/', '-_'), '='), 0, 15);
+        $chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        $out = '';
+        for ($i = 0; $i < 15; $i++) {
+            $out .= $chars[random_int(0, strlen($chars) - 1)];
+        }
+        return '/' . $out;
     }
 
     // Auto-generate spiderX. Client-side only (link &spx / config), so no restart;
@@ -8823,32 +8833,6 @@ DNS-over-HTTPS with IP:
             case 'r_minClientVer':    $p['reality']['minClientVer'] = $this->isDefaultValue($val) ? '' : $val; $liveReality = true; break;
             case 'r_maxClientVer':    $p['reality']['maxClientVer'] = $this->isDefaultValue($val) ? '' : $val; $liveReality = true; break;
             case 'r_spiderX':         $p['reality']['spiderX']      = $this->normalizeSpiderXValue($val); break;
-            case 'r_mldsa65Seed':
-                $pair = $this->parseMldsaKeysText($val);
-                if (!empty($pair['seed'])) {
-                    $p['reality']['mldsa65Seed'] = $pair['seed'];
-                } else {
-                    $p['reality']['mldsa65Seed'] = $this->normalizeMldsaValue($val);
-                }
-                if (!empty($pair['verify'])) {
-                    $p['reality']['mldsa65Verify'] = $pair['verify'];
-                }
-                $this->refreshMldsaEnabled($p);
-                $liveReality = true;
-                break;
-            case 'r_mldsa65Verify':
-                $pair = $this->parseMldsaKeysText($val);
-                if (!empty($pair['verify'])) {
-                    $p['reality']['mldsa65Verify'] = $pair['verify'];
-                } else {
-                    $p['reality']['mldsa65Verify'] = $this->normalizeMldsaValue($val);
-                }
-                if (!empty($pair['seed'])) {
-                    $p['reality']['mldsa65Seed'] = $pair['seed'];
-                }
-                $this->refreshMldsaEnabled($p);
-                $liveReality = true;
-                break;
             case 'sniffing_destOverride':
                 $p['sniffing'] = $this->sniffingSettings($p);
                 $dest = $this->parseSniffingDest($val);
@@ -10674,6 +10658,9 @@ DNS-over-HTTPS with IP:
         $seed = trim($m[1] ?? '');
         preg_match('~^Verify:\s*([^\s]+)~mi', $keys, $m);
         $verify = trim($m[1] ?? '');
+        if (!$this->isRawUrlBase64DecodedLength($seed, 32) || !$this->isRawUrlBase64DecodedLength($verify, 1952)) {
+            return ['seed' => '', 'verify' => ''];
+        }
         return ['seed' => $seed, 'verify' => $verify];
     }
 
