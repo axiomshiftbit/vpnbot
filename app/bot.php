@@ -8724,11 +8724,10 @@ DNS-over-HTTPS with IP:
         ];
     }
 
-    // A random short URL path for Reality's spiderX (item 4), so clients don't all
-    // share a fixed "/", which is trivially fingerprintable. e.g. "/3f9a2c".
+    // 3x-ui style: "/" + 15 URL-safe chars.
     public function genSpiderX(): string
     {
-        return '/' . rtrim(strtr(base64_encode(random_bytes(random_int(6, 10))), '+/', '-_'), '=');
+        return '/' . substr(rtrim(strtr(base64_encode(random_bytes(12)), '+/', '-_'), '='), 0, 15);
     }
 
     // Auto-generate spiderX. Client-side only (link &spx / config), so no restart;
