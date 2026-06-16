@@ -8580,8 +8580,10 @@ DNS-over-HTTPS with IP:
 
         $sniffing = $this->sniffingConfig($p);
         foreach ($c['inbounds'] as &$inbound) {
-            $tag = (string) ($inbound['tag'] ?? '');
-            if ($tag === 'api' || ($inbound['protocol'] ?? '') === 'dokodemo-door') {
+            // Only the client-facing proxy inbound (the one with clients). Leave the
+            // internal api/wg-in inbounds alone — overwriting wg-in's own sniffing
+            // (e.g. disabling it) would silently break WG-over-xray domain routing.
+            if (empty($inbound['settings']['clients'])) {
                 continue;
             }
             $inbound['sniffing'] = $sniffing;
@@ -8867,8 +8869,10 @@ DNS-over-HTTPS with IP:
             case 'noise_type':        $p['dpi']['noise']['type']        = $this->isDefaultValue($val) ? '' : $val; break;
             case 'noise_packet':      $p['dpi']['noise']['packet']      = $this->isDefaultValue($val) ? '' : $val; break;
             case 'noise_delay':       $p['dpi']['noise']['delay']       = $this->isDefaultValue($val) ? '' : $val; break;
-            case 'r_maxTimeDiff':     $p['reality']['maxTimeDiff']  = (int) $val; $liveReality = true; break;
-            case 'r_xver':            $p['reality']['xver']         = (int) $val; $liveReality = true; break;
+            // xray REALITY maxTimeDiff/xver are uint64 — a negative value would make
+            // xray fail to parse the config (and not start), so clamp to >= 0.
+            case 'r_maxTimeDiff':     $p['reality']['maxTimeDiff']  = max(0, (int) $val); $liveReality = true; break;
+            case 'r_xver':            $p['reality']['xver']         = max(0, (int) $val); $liveReality = true; break;
             case 'r_minClientVer':    $p['reality']['minClientVer'] = $this->isDefaultValue($val) ? '' : $val; $liveReality = true; break;
             case 'r_maxClientVer':    $p['reality']['maxClientVer'] = $this->isDefaultValue($val) ? '' : $val; $liveReality = true; break;
             case 'r_spiderX':         $p['reality']['spiderX']      = $this->normalizeSpiderXValue($val); break;
@@ -10725,10 +10729,10 @@ DNS-over-HTTPS with IP:
     // Centralized so changeTransport()/regenRealityXr()/regenAllXr() stay in sync.
     public function applyRealityServerExtras(array &$rs, array $p): void
     {
-        $rs['maxTimeDiff']  = (int) ($p['reality']['maxTimeDiff'] ?? 0);
+        $rs['maxTimeDiff']  = max(0, (int) ($p['reality']['maxTimeDiff'] ?? 0));
         $rs['minClientVer'] = (string) ($p['reality']['minClientVer'] ?? '');
         $rs['maxClientVer'] = (string) ($p['reality']['maxClientVer'] ?? '');
-        $rs['xver']         = (int) ($p['reality']['xver'] ?? 0);
+        $rs['xver']         = max(0, (int) ($p['reality']['xver'] ?? 0));
         if ($this->mldsaReady($p)) {
             $rs['mldsa65Seed'] = $p['reality']['mldsa65Seed'];
         } else {
