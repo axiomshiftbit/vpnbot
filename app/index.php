@@ -52,8 +52,8 @@ switch (true) {
             $_GET = array_merge($_GET, $t);
         }
         $type    = $_GET['t'] ?? 'pac';
-        $address = $_GET['a'] ?: '127.0.0.1';
-        $port    = $_GET['p'] ?: '1080';
+        $address = ($_GET['a'] ?? '') ?: '127.0.0.1';
+        $port    = ($_GET['p'] ?? '') ?: '1080';
         switch ($type) {
             case 's':
             case 'si':

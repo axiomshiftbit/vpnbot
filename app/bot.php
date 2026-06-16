@@ -9624,8 +9624,9 @@ DNS-over-HTTPS with IP:
         $xr  = $this->getXray();
         $pac = $this->getPacConf();
         $i = $client = null;
+        $sid = $_GET['s'] ?? '';
         foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($v['id'] == $_GET['s']) {
+            if ($sid !== '' && $v['id'] == $sid) {
                 $i      = $k;
                 $client = $v;
                 break;
@@ -11698,29 +11699,35 @@ DNS-over-HTTPS with IP:
         $xr     = $this->getXray();
         $pac    = $this->getPacConf();
         $st     = $this->getXrayStats();
-        $domain = $_GET['cdn'] ?: ($_SERVER['SERVER_NAME'] ?: $this->getDomain($pac['transport'] != 'Reality'));
+        $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $flag   = true;
         $client = null;
+        $id     = $_GET['id'] ?? '';
         foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($v['id'] == $_GET['id']) {
+            if ($id !== '' && $v['id'] == $id) {
                 if (empty($v['off'])) {
                     $flag = false;
                 }
                 $uid    = $v['id'];
                 $email  = $v['email'];
-                $expire = $v['time'];
+                $expire = $v['time'] ?? '';
                 $client = $v;
                 break;
             }
         }
-        if (!$flag && !$this->processHwidRequest($client)) {
+        // Missing/disabled id: clean 404 instead of rendering the page with
+        // undefined $uid/$k (which would warn and break the body).
+        if ($flag) {
+            $this->subNotFound();
+        }
+        if (!$this->processHwidRequest($client)) {
             exit;
         }
         $suburl   = "<a href='$scheme://{$domain}/pac$hash/sub?id={$uid}'>subscription</a>";
-        $download = $this->getBytes($st['users'][$k]['global']['download'] + $st['users'][$k]['session']['download']);
-        $upload   = $this->getBytes($st['users'][$k]['global']['upload'] + $st['users'][$k]['session']['upload']);
+        $download = $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
+        $upload   = $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
         $singbox  = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
@@ -11784,7 +11791,7 @@ DNS-over-HTTPS with IP:
                 if (empty($v['off'])) {
                     $flag = false;
                 }
-                $template = base64_decode($v["{$type}template"]);
+                $template = base64_decode($v["{$type}template"] ?? '');
                 $uid      = $v['id'];
                 $email    = $v['email'];
                 $client   = $v;
