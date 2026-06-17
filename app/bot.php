@@ -1192,6 +1192,18 @@ class Bot
         $t .= "[censorship]\n";
         $t .= "tls_domain = " . $q($domain) . "\n";
         $t .= "mask = true\n";
+        // Поведение на ClientHello с ЧУЖИМ SNI (active-probe / сканер портов).
+        // Дефолт telemt — "drop" (молча закрыть соединение), но настоящий
+        // HTTPS-сервер так не делает: он отдаёт default-vhost или фатальный
+        // alert unrecognized_name. Тихий drop сам по себе — пассивный
+        // фингерпринт, отличающий прокси от обычного веб-сервера. Ставим
+        // "reject_handshake" — на проводе неотличимо от nginx с
+        // `ssl_reject_handshake on;` (RFC 6066, alert 112), без cert-mismatch
+        // и без исходящего соединения на каждый зонд (в отличие от "mask").
+        // Ветка ВАЛИДНОГО SNI + невалидного MTProto по-прежнему уходит в
+        // mask-fronting на mask_host (= tls_domain), где и работает весь
+        // shape/timing-хардненинг ниже.
+        $t .= "unknown_sni_action = \"reject_handshake\"\n";
         $t .= "mask_port = 443\n";
         $t .= "fake_cert_len = 2048\n";
         $t .= "tls_emulation = true\n";
