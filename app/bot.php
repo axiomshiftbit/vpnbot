@@ -2126,16 +2126,18 @@ class Bot
         $snippet = <<<NFT
 # ── Hysteria port hopping: реднат UDP-диапазона на реальный порт ──
 # Диапазон должен совпадать с тем, что в hy2://-ссылке ($hop).
-# 1) В table ip nat, chain prerouting (рядом со строкой Hysteria DNAT):
+# ОБЯЗАТЕЛЬНО (этого достаточно для работы хоппинга):
+# 1) table ip nat (dockernat), chain prerouting — рядом со строкой Hysteria DNAT:
         fib daddr type local udp dport $set dnat to \$HYSTERIA_IP:\$HYSTERIA_OUTPUT
-# 2) В table ip nat, chain output (рядом с такой же output-строкой Hysteria):
+# 2) table ip nat (dockernat), chain output — рядом с output-строкой Hysteria:
         ip daddr != 127.0.0.0/8 fib daddr type local udp dport $set dnat to \$HYSTERIA_IP:\$HYSTERIA_OUTPUT
-# 3) В chain input (рядом с INPUT-HYSTERIA accept):
-        meta mark { \$ASN, \$MY_SERVER } udp dport $set counter accept
-# 4) В chain forward (рядом с FWD-HYSTERIA accept, по daddr+OUTPUT порту это
-#    уже покрыто существующим правилом — добавлять НЕ нужно, т.к. после DNAT
-#    dport = \$HYSTERIA_OUTPUT, а не диапазон).
-# После правок: nft -f <твой_conf>  (проверь nft -c -f сначала).
+#
+# НЕ нужно (объясняю, чтобы не было соблазна добавить):
+# - FORWARD: после DNAT dport = \$HYSTERIA_OUTPUT (не диапазон), трафик уже
+#   покрыт существующим FWD-HYSTERIA (daddr \$HYSTERIA_IP + dport OUTPUT).
+# - INPUT: DNAT в prerouting срабатывает ДО INPUT, и пакет с daddr контейнера
+#   идёт в FORWARD, а не в INPUT — диапазон в INPUT хоппингу не требуется.
+# После правок: nft -c -f <твой_conf> (проверка) → nft -f <твой_conf>.
 NFT;
         $this->send(
             $this->input['chat'],
@@ -10483,7 +10485,7 @@ DNS-over-HTTPS with IP:
         $link   = $this->linkHysteria();
 
         $text[] = "Menu -> Hysteria";
-        $text[] = "version: <code>$version</code>";
+        $text[] = "version hysteria: <code>$version</code>";
         $text[] = "server: " . ($port ? "<code>$domain:$port</code>" : 'port unavailable');
         $text[] = "passwd: <code>$pass</code>";
         $text[] = "masq (decoy): <code>$sni</code>";
