@@ -8075,8 +8075,8 @@ DNS-over-HTTPS with IP:
             ]];
         }
         // Эти 4 опции усиливают только anti-probe cover-path и не влияют на
-        // трафик реальных клиентов; реализм клиентского хендшейка (session
-        // tickets / полный ServerHello / ALPN-echo) включён всегда.
+        // трафик реальных клиентов. TLS-эмуляция клиентского хендшейка включена;
+        // session tickets по дефолту telemt = 0 и переопределяются отдельно.
         $text[] = "\nℹ " . $this->i18n('telemt masking note');
         $text[] = $this->i18n('telemt realism');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
