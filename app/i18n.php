@@ -217,6 +217,10 @@ $i = [
         'en' => 'generate password',
         'ru' => 'сгенерировать пароль',
     ],
+    'obfs password'        => [
+        'en' => 'obfs password',
+        'ru' => 'пароль obfs',
+    ],
     'cloak port:'          => [
         'en' => 'cloak port:',
         'ru' => 'cloak порт:',

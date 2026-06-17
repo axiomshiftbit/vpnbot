@@ -10371,7 +10371,7 @@ DNS-over-HTTPS with IP:
         ]];
         if ($obfsOn) {
             $obfsRow[] = [
-                'text'          => $this->i18n('generate password'),
+                'text'          => $this->i18n('obfs password'),
                 'callback_data' => "/genHyObfs",
             ];
         }
