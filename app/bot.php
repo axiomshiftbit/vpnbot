@@ -1216,13 +1216,14 @@ class Bot
         $t .= "mask_port = 443\n";
         $t .= "fake_cert_len = 2048\n";
         $t .= "tls_emulation = true\n";
-        // Реализм server-flight на КЛИЕНТСКОМ пути FakeTLS (не cover-path):
-        // настоящие TLS 1.3 серверы шлют NewSessionTicket в конце handshake.
-        // Эмулируем 2 как additive fallback к захваченному TLS-профилю, чтобы
-        // ранний серверный flight выглядел аутентично для DPI. Клиенты
-        // Telegram принимают это штатно (стандартный TLS), совместимость не
-        // страдает. alpn_enforce и server_hello_delay уже хороши по дефолту.
-        $t .= "tls_new_session_tickets = 2\n";
+        // Кол-во post-handshake NewSessionTicket. Дефолт telemt И проверенного
+        // рабочего конфига = 0. Раньше бот жёстко слал 2
+        // «для реализма», но это единственная строка [censorship], меняющая сам
+        // КЛИЕНТСКИЙ handshake и отсутствующая в рабочем конфиге — а ровно там
+        // клиент рвал связь после TLS («expected 64 bytes, got 0»). Возвращаем
+        // дефолт 0; значение можно переопределить ключом telemt_session_tickets.
+        $tickets = max(0, min(8, (int) ($conf['telemt_session_tickets'] ?? 0)));
+        $t .= "tls_new_session_tickets = $tickets\n";
         $t .= "mask_shape_hardening = " . $b($maskHardening) . "\n";
         $t .= "mask_shape_bucket_floor_bytes = 512\n";
         $t .= "mask_shape_bucket_cap_bytes = 4096\n";

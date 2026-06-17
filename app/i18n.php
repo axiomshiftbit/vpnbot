@@ -486,8 +486,8 @@ $i = [
         'ru' => 'Усиливают только cover-path против active-probing — трафика реальных клиентов не касаются, включать безопасно.',
     ],
     'telemt realism'  => [
-        'en' => 'Client-path TLS realism (session tickets, full ServerHello, ALPN echo): always on.',
-        'ru' => 'Реализм TLS на клиентском пути (session tickets, полный ServerHello, ALPN echo): всегда включён.',
+        'en' => 'Client-path TLS emulation: on. Session tickets use telemt default (0) unless overridden.',
+        'ru' => 'TLS-эмуляция на клиентском пути: включена. Session tickets используют дефолт telemt (0), если не переопределены.',
     ],
     'telemt diagnostics'  => [
         'en' => 'diagnostics',
