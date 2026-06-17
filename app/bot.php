@@ -587,6 +587,12 @@ class Bot
             case preg_match('~^/hyConfig$~', $this->input['callback'], $m):
                 $this->hyConfig();
                 break;
+            case preg_match('~^/setHyHop$~', $this->input['callback'], $m):
+                $this->setHyHop();
+                break;
+            case preg_match('~^/hyHopNft$~', $this->input['callback'], $m):
+                $this->hyHopNft();
+                break;
             case preg_match('~^/addTtUser$~', $this->input['callback'], $m):
                 $this->addTtUser();
                 break;
@@ -1833,7 +1839,15 @@ class Bot
         $ports = $this->getPorts();
         $port  = $ports['hy']['enable'] ? $ports['hy']['port'] : null;
         $pass  = $pac['hysteria_pass'] ?? '';
-        if (empty($pass) || empty($port)) {
+        // Port hopping: клиент бьёт по диапазону портов, а firewall (ручной nft
+        // либо docker) реднатит весь диапазон на реальный порт Hysteria. Диапазон
+        // в Hysteria 2 кодируется прямо в host:port части ссылки (host:20000-50000,
+        // мультипорт через запятую/дефис) — НЕ отдельным query-параметром. Когда
+        // hopping включён, одиночный реальный порт в ссылке не нужен (клиент его
+        // не использует), поэтому ссылку отдаём даже если getPorts его не видит.
+        $hop      = $pac['hysteria_hop'] ?? '';
+        $portSpec = $hop !== '' ? $hop : $port;
+        if (empty($pass) || empty($portSpec)) {
             return '';
         }
         $domain = $this->getDomain();
@@ -1858,7 +1872,7 @@ class Bot
         // #fragment — отображаемое имя подключения в клиенте; без него поле
         // имени пустое. Используем хост (домен/IP) как узнаваемую метку.
         $name = '#' . rawurlencode($host);
-        return 'hysteria2://' . rawurlencode($pass) . "@$host:$port/$query$name";
+        return 'hysteria2://' . rawurlencode($pass) . "@$host:$portSpec/$query$name";
     }
 
     public function chocdns($dns)
@@ -2015,6 +2029,118 @@ class Bot
         }
         $conf = htmlspecialchars($conf, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $this->send($this->input['chat'], "<b>hysteria.yaml</b>\n<pre>$conf</pre>");
+    }
+
+    // Port hopping (multi-port). Клиент случайно скачет по диапазону UDP-портов,
+    // а firewall реднатит весь диапазон на реальный порт Hysteria — это сбивает
+    // блокировки по фиксированному порту/объёму на одном порту. Серверный конфиг
+    // Hysteria НЕ меняется (он слушает один порт), меняется только ссылка и
+    // правило firewall. Поэтому restartHysteria здесь не нужен.
+    public function setHyHop()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter UDP port range for hopping, e.g. <code>20000-50000</code> "
+            . "(comma/dash multi-port: <code>1234,5000-6000</code>) — empty = off.\n\n"
+            . "⚠️ " . $this->i18n('port hopping fw hint'),
+            $this->input['message_id'],
+            reply: 'enter port range',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chHyHop',
+            'args'           => [],
+        ];
+    }
+
+    // Нормализуем/валидируем строку мультипорта Hysteria: токены через запятую,
+    // каждый — либо одиночный порт N, либо диапазон N-M (1..65535, N<=M). Вернёт
+    // нормализованную строку или false, если формат неверный.
+    public function normalizeHyHop(string $s)
+    {
+        $s = trim($s);
+        if ($s === '') {
+            return '';
+        }
+        $tokens = preg_split('~\s*,\s*~', $s, -1, PREG_SPLIT_NO_EMPTY);
+        $out    = [];
+        foreach ($tokens as $t) {
+            if (preg_match('~^(\d{1,5})-(\d{1,5})$~', $t, $m)) {
+                $lo = (int) $m[1];
+                $hi = (int) $m[2];
+                if ($lo < 1 || $hi > 65535 || $lo > $hi) {
+                    return false;
+                }
+                $out[] = "$lo-$hi";
+            } elseif (preg_match('~^(\d{1,5})$~', $t, $m)) {
+                $p = (int) $m[1];
+                if ($p < 1 || $p > 65535) {
+                    return false;
+                }
+                $out[] = (string) $p;
+            } else {
+                return false;
+            }
+        }
+        return implode(',', $out);
+    }
+
+    public function chHyHop($text)
+    {
+        $hop = $this->normalizeHyHop((string) $text);
+        if ($hop === false) {
+            $this->send($this->input['chat'], $this->i18n('port hopping bad') . ': <code>' . htmlspecialchars((string) $text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>');
+            return $this->menu('hy');
+        }
+        $pac = $this->getPacConf();
+        if ($hop === '') {
+            unset($pac['hysteria_hop']);
+            $this->setPacConf($pac);
+            $this->send($this->input['chat'], 'port hopping: ' . $this->i18n('off'));
+            return $this->menu('hy');
+        }
+        $pac['hysteria_hop'] = $hop;
+        $this->setPacConf($pac);
+        // Сервер не трогаем — слушает один порт; правило firewall на стороне юзера.
+        $this->send($this->input['chat'], "port hopping: <code>$hop</code> ✅");
+        $this->hyHopNft();
+        $this->menu('hy');
+    }
+
+    // Готовое к вставке правило nft для ручного режима (nft_conf). Бот сам host-
+    // firewall НЕ трогает (он вне контейнера, hand-maintained), поэтому только
+    // показываем сниппет. Реднатим весь диапазон на реальный порт Hysteria
+    // ($HYSTERIA_IP:$HYSTERIA_OUTPUT) и пропускаем диапазон в INPUT/FORWARD —
+    // по аналогии с одиночным $HYSTERIA_INPUT в твоём конфиге.
+    public function hyHopNft()
+    {
+        $pac = $this->getPacConf();
+        $hop = $pac['hysteria_hop'] ?? '';
+        if ($hop === '') {
+            return $this->send($this->input['chat'], 'port hopping: ' . $this->i18n('off'));
+        }
+        // nft хочет диапазон через дефис (20000-50000); запятые-списки разворачиваем
+        // в anonymous set { ... } прямо в правиле.
+        $set = (strpos($hop, ',') !== false) ? '{ ' . str_replace(',', ', ', $hop) . ' }' : $hop;
+        $snippet = <<<NFT
+# ── Hysteria port hopping: реднат UDP-диапазона на реальный порт ──
+# Диапазон должен совпадать с тем, что в hy2://-ссылке ($hop).
+# 1) В table ip nat, chain prerouting (рядом со строкой Hysteria DNAT):
+        fib daddr type local udp dport $set dnat to \$HYSTERIA_IP:\$HYSTERIA_OUTPUT
+# 2) В table ip nat, chain output (рядом с такой же output-строкой Hysteria):
+        ip daddr != 127.0.0.0/8 fib daddr type local udp dport $set dnat to \$HYSTERIA_IP:\$HYSTERIA_OUTPUT
+# 3) В chain input (рядом с INPUT-HYSTERIA accept):
+        meta mark { \$ASN, \$MY_SERVER } udp dport $set counter accept
+# 4) В chain forward (рядом с FWD-HYSTERIA accept, по daddr+OUTPUT порту это
+#    уже покрыто существующим правилом — добавлять НЕ нужно, т.к. после DNAT
+#    dport = \$HYSTERIA_OUTPUT, а не диапазон).
+# После правок: nft -f <твой_conf>  (проверь nft -c -f сначала).
+NFT;
+        $this->send(
+            $this->input['chat'],
+            "<b>nft (manual mode)</b>\n<pre>" . htmlspecialchars($snippet, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</pre>",
+        );
     }
 
     // Подменю выбора decoy-сайта для masquerade из пресетов + ручной ввод.
@@ -10353,6 +10479,7 @@ DNS-over-HTTPS with IP:
         $bwUp   = $pac['hysteria_bw_up']   ?? '';
         $bwDown = $pac['hysteria_bw_down'] ?? '';
         $cc     = ($bwUp && $bwDown) ? "brutal ($bwUp / $bwDown)" : 'bbr';
+        $hop    = $pac['hysteria_hop'] ?? '';
         $link   = $this->linkHysteria();
 
         $text[] = "Menu -> Hysteria";
@@ -10363,6 +10490,7 @@ DNS-over-HTTPS with IP:
         $text[] = "obfs: " . ($obfsOn ? "salamander <code>$obfs</code>" : $this->i18n('off'));
         $text[] = "cc: <code>$cc</code>";
         $text[] = "insecure: " . $this->i18n($insec ? 'on' : 'off');
+        $text[] = "port hopping: " . ($hop !== '' ? "<code>$hop</code>" : $this->i18n('off'));
         if ($link) {
             $text[] = "\n<code>$link</code>";
         }
@@ -10403,6 +10531,17 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/toggleHyInsecure",
             ],
         ];
+        $hopRow = [[
+            'text'          => 'port hopping: ' . ($hop !== '' ? $hop : $this->i18n('off')),
+            'callback_data' => "/setHyHop",
+        ]];
+        if ($hop !== '') {
+            $hopRow[] = [
+                'text'          => 'nft rule',
+                'callback_data' => "/hyHopNft",
+            ];
+        }
+        $data[] = $hopRow;
         $data[] = [
             [
                 'text'          => 'config',

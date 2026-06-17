@@ -225,6 +225,14 @@ $i = [
         'en' => 'not found',
         'ru' => 'не найден',
     ],
+    'port hopping fw hint' => [
+        'en' => 'Port hopping needs a firewall rule that redirects the whole UDP range to the real Hysteria port. The bot will show the nft snippet — apply it yourself (manual nft / not auto-managed).',
+        'ru' => 'Для port hopping нужно правило firewall, реднатящее весь UDP-диапазон на реальный порт Hysteria. Бот покажет nft-сниппет — примени его сам (ручной nft, бот его не трогает).',
+    ],
+    'port hopping bad'     => [
+        'en' => 'invalid port range',
+        'ru' => 'неверный диапазон портов',
+    ],
     'cloak port:'          => [
         'en' => 'cloak port:',
         'ru' => 'cloak порт:',
