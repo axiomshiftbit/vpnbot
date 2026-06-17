@@ -584,6 +584,9 @@ class Bot
             case preg_match('~^/toggleHyInsecure$~', $this->input['callback'], $m):
                 $this->toggleHyInsecure();
                 break;
+            case preg_match('~^/hyConfig$~', $this->input['callback'], $m):
+                $this->hyConfig();
+                break;
             case preg_match('~^/addTtUser$~', $this->input['callback'], $m):
                 $this->addTtUser();
                 break;
@@ -1998,6 +2001,20 @@ class Bot
         $this->setPacConf($pac);
         $this->restartHysteria();
         $this->menu('hy');
+    }
+
+    // Показать используемый серверный конфиг Hysteria (/config/hysteria.yaml)
+    // отдельным сообщением, не трогая меню — по аналогии с тем, как warp()
+    // выводит wgcf-profile.conf. Паролей в чате не прячем: меню Hysteria и так
+    // показывает passwd/obfs открыто.
+    public function hyConfig()
+    {
+        $conf = @file_get_contents('/config/hysteria.yaml');
+        if ($conf === false || trim($conf) === '') {
+            return $this->send($this->input['chat'], 'hysteria.yaml: ' . $this->i18n('not found'));
+        }
+        $conf = htmlspecialchars($conf, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $this->send($this->input['chat'], "<b>hysteria.yaml</b>\n<pre>$conf</pre>");
     }
 
     // Подменю выбора decoy-сайта для masquerade из пресетов + ручной ввод.
@@ -10384,6 +10401,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => 'insecure: ' . $this->i18n($insec ? 'on' : 'off'),
                 'callback_data' => "/toggleHyInsecure",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => 'config',
+                'callback_data' => "/hyConfig",
             ],
         ];
         $data[] = [

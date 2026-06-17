@@ -221,6 +221,10 @@ $i = [
         'en' => 'obfs password',
         'ru' => 'пароль obfs',
     ],
+    'not found'            => [
+        'en' => 'not found',
+        'ru' => 'не найден',
+    ],
     'cloak port:'          => [
         'en' => 'cloak port:',
         'ru' => 'cloak порт:',
