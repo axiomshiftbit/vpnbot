@@ -386,6 +386,12 @@ class Bot
             case preg_match('~^/telemtSetMode (classic|secure|tls)$~', $this->input['callback'], $m):
                 $this->telemtSetMode($m[1]);
                 break;
+            case preg_match('~^/telemtSni$~', $this->input['callback'], $m):
+                $this->telemtSni();
+                break;
+            case preg_match('~^/telemtSetSni (mask|reject_handshake|drop)$~', $this->input['callback'], $m):
+                $this->telemtSetSni($m[1]);
+                break;
             case preg_match('~^/telemtRelays$~', $this->input['callback'], $m):
                 $this->telemtRelays();
                 break;
@@ -1163,8 +1169,7 @@ class Bot
         // Ровно один режим активен (radio). Секрет ссылки зависит от него:
         // classic = <hex>, secure = dd<hex>, tls = ee<hex><domainHex>
         // (linkTelemt держит ту же логику). Невалидное значение → tls.
-        $mode = in_array($conf['telemt_mode'] ?? 'tls', ['classic', 'secure', 'tls'], true)
-            ? $conf['telemt_mode'] : 'tls';
+        $mode = $this->telemtModeOf($conf);
         $t .= "[general.modes]\n";
         $t .= "classic = " . $b($mode === 'classic') . "\n";
         $t .= "secure = " . $b($mode === 'secure') . "\n";
@@ -1202,8 +1207,12 @@ class Bot
         // и без исходящего соединения на каждый зонд (в отличие от "mask").
         // Ветка ВАЛИДНОГО SNI + невалидного MTProto по-прежнему уходит в
         // mask-fronting на mask_host (= tls_domain), где и работает весь
-        // shape/timing-хардненинг ниже.
-        $t .= "unknown_sni_action = \"reject_handshake\"\n";
+        // shape/timing-хардненинг ниже. Значение настраивается в боте
+        // (TeleMT -> unknown SNI): mask — прозрачный фронт на mask_host для
+        // ЛЮБОГО SNI (FAQ-рекомендация при ошибке "Unknown TLS SNI", удобно при
+        // рассинхроне домена ссылки и tls_domain); drop — молчаливое закрытие.
+        $sni = $this->telemtSniOf($conf);
+        $t .= "unknown_sni_action = \"$sni\"\n";
         $t .= "mask_port = 443\n";
         $t .= "fake_cert_len = 2048\n";
         $t .= "tls_emulation = true\n";
@@ -1265,6 +1274,22 @@ class Bot
     public function telemtSecret()
     {
         return bin2hex(random_bytes(16));
+    }
+
+    // Validated active mode / unknown-SNI policy with safe defaults. NB: keep
+    // the bare-access OUT of the in_array ternary — `in_array($conf[k] ?? 'def')
+    // ? $conf[k] : 'def'` returns null (E_WARNING) when k is unset, because the
+    // true-branch reads the undefined key. Resolve via a temp var instead.
+    public function telemtModeOf(array $conf): string
+    {
+        $m = $conf['telemt_mode'] ?? 'tls';
+        return in_array($m, ['classic', 'secure', 'tls'], true) ? $m : 'tls';
+    }
+
+    public function telemtSniOf(array $conf): string
+    {
+        $a = $conf['telemt_unknown_sni'] ?? 'reject_handshake';
+        return in_array($a, ['mask', 'reject_handshake', 'drop'], true) ? $a : 'reject_handshake';
     }
 
     // Версия telemt = build-пин TELEMT_VERSION (.env → env_file php-контейнера,
@@ -1366,8 +1391,7 @@ class Bot
         $secret = $conf['telemt_users'][$name] ?? '';
         $domain = $conf['telemt_domain'] ?? 'www.google.com';
         $dhex   = bin2hex($domain);
-        $mode   = in_array($conf['telemt_mode'] ?? 'tls', ['classic', 'secure', 'tls'], true)
-            ? $conf['telemt_mode'] : 'tls';
+        $mode   = $this->telemtModeOf($conf);
         $secret = match ($mode) {
             'classic' => $secret,
             'secure'  => "dd$secret",
@@ -7702,8 +7726,7 @@ DNS-over-HTTPS with IP:
             || $this->telemtBool($conf, 'telemt_mask_blur', $this->telemtMaskDefault('telemt_mask_blur'))
             || $this->telemtBool($conf, 'telemt_mask_timing', $this->telemtMaskDefault('telemt_mask_timing'));
         $diagnostics = $this->telemtBool($conf, 'telemt_beobachten', false);
-        $mode    = in_array($conf['telemt_mode'] ?? 'tls', ['classic', 'secure', 'tls'], true)
-            ? $conf['telemt_mode'] : 'tls';
+        $mode    = $this->telemtModeOf($conf);
         $relays  = is_array($conf['telemt_relays'] ?? null)
             ? array_filter($conf['telemt_relays'], fn($r) => !empty($r['address'])) : [];
         $st     = $this->ssh('pgrep -x telemt', 'telemt') ? 'on' : 'off';
@@ -7725,6 +7748,7 @@ DNS-over-HTTPS with IP:
 
         $data[] = [['text' => $this->i18n('telemt users'), 'callback_data' => "/telemtUsers"]];
         $data[] = [['text' => $this->i18n('telemt mode'), 'callback_data' => "/telemtMode"]];
+        $data[] = [['text' => $this->i18n('telemt sni'), 'callback_data' => "/telemtSni"]];
         $data[] = [['text' => $this->i18n('telemt relays'), 'callback_data' => "/telemtRelays"]];
         $data[] = [['text' => $this->i18n('telemt settings'), 'callback_data' => "/telemtSettings"]];
         $data[] = [['text' => $this->i18n('telemt masking'), 'callback_data' => "/telemtMasking"]];
@@ -7803,8 +7827,7 @@ DNS-over-HTTPS with IP:
     public function telemtMode()
     {
         $conf = $this->getPacConf();
-        $mode = in_array($conf['telemt_mode'] ?? 'tls', ['classic', 'secure', 'tls'], true)
-            ? $conf['telemt_mode'] : 'tls';
+        $mode = $this->telemtModeOf($conf);
 
         $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt mode') . "\n";
         $text[] = "mode: " . $this->i18n("telemt mode $mode");
@@ -7832,6 +7855,43 @@ DNS-over-HTTPS with IP:
             $this->restartTelemt();
         }
         $this->telemtMode();
+    }
+
+    // Поведение на ClientHello с чужим SNI (censorship.unknown_sni_action).
+    // reject_handshake (дефолт) — как nginx ssl_reject_handshake; mask —
+    // прозрачный фронт на mask_host для любого SNI (спасает при рассинхроне
+    // домена ссылки и tls_domain); drop — молча закрыть.
+    public function telemtSni()
+    {
+        $conf = $this->getPacConf();
+        $sni  = $this->telemtSniOf($conf);
+
+        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt sni') . "\n";
+        $text[] = "unknown SNI: <code>$sni</code>";
+        $text[] = "\nℹ " . $this->i18n('telemt sni note');
+
+        foreach (['reject_handshake', 'mask', 'drop'] as $a) {
+            $data[] = [[
+                'text'          => ($sni === $a ? '✅ ' : '') . $this->i18n("telemt sni $a"),
+                'callback_data' => "/telemtSetSni $a",
+            ]];
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function telemtSetSni($action)
+    {
+        if (!in_array($action, ['mask', 'reject_handshake', 'drop'], true)) {
+            return $this->telemtSni();
+        }
+        $conf = $this->getPacConf();
+        if (($conf['telemt_unknown_sni'] ?? 'reject_handshake') !== $action) {
+            $conf['telemt_unknown_sni'] = $action;
+            $this->setPacConf($conf);
+            $this->restartTelemt();
+        }
+        $this->telemtSni();
     }
 
     // --- Dedicated TeleMT relays (separate from xray $pac['relays']) ----------

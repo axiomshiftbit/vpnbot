@@ -449,6 +449,26 @@ $i = [
         'en' => 'Only one mode is active. tls (ee) = Fake-TLS + SNI fronting (recommended); secure = dd-secret; classic = plain.',
         'ru' => 'Активен только один режим. tls (ee) = Fake-TLS + SNI fronting (рекомендуется); secure = dd-секрет; classic = обычный.',
     ],
+    'telemt sni'  => [
+        'en' => 'unknown SNI',
+        'ru' => 'неизвестный SNI',
+    ],
+    'telemt sni reject_handshake'  => [
+        'en' => 'reject_handshake (nginx-like)',
+        'ru' => 'reject_handshake (как nginx)',
+    ],
+    'telemt sni mask'  => [
+        'en' => 'mask (front any SNI)',
+        'ru' => 'mask (фронт любого SNI)',
+    ],
+    'telemt sni drop'  => [
+        'en' => 'drop (silent close)',
+        'ru' => 'drop (молча закрыть)',
+    ],
+    'telemt sni note'  => [
+        'en' => 'Action for a ClientHello whose SNI differs from the Fake-TLS domain. reject_handshake = look like a stock web server (default). mask = transparently front any SNI to the mask host — use to debug a link/domain mismatch ("Unknown TLS SNI"). drop = silently close.',
+        'ru' => 'Что делать с ClientHello, чей SNI не совпадает с Fake-TLS доменом. reject_handshake = вести себя как обычный веб-сервер (дефолт). mask = прозрачно фронтить любой SNI на mask-host — полезно при рассинхроне ссылки и домена ("Unknown TLS SNI"). drop = молча закрыть.',
+    ],
     'telemt relays'  => [
         'en' => 'relays',
         'ru' => 'релеи',
