@@ -1267,6 +1267,24 @@ class Bot
         return bin2hex(random_bytes(16));
     }
 
+    // Версия telemt = build-пин TELEMT_VERSION (.env → env_file php-контейнера,
+    // тот же source, что у getenv('VER')/'TTPORT'). Сам бинарь команды версии
+    // НЕ имеет: CLI telemt рукописный, неизвестный флаг вроде --version не
+    // печатает версию, а уходит в дефолтный Run — поэтому опрашивать бинарь по
+    // ssh, как hysteriaVersion(), нельзя. Пин совпадает с впечённым в образ
+    // бинарём (dockerfile/telemt.dockerfile: FROM ghcr.io/telemt/telemt:$ver).
+    public function telemtVersion(): string
+    {
+        $v = trim((string) getenv('TELEMT_VERSION'));
+        if ($v === '') {
+            return 'unknown';
+        }
+        if (preg_match('~\bv?\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?\b~', $v, $m)) {
+            return htmlspecialchars($m[0], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+        return htmlspecialchars(mb_substr($v, 0, 40, 'UTF-8'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
     public function normalizeTelemtUsers(array $conf): array
     {
         if (!isset($conf['telemt_users'])) {
@@ -7692,6 +7710,7 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> TeleMT (MTProto)\n";
         $text[] = "status: $st";
+        $text[] = "version: <code>" . $this->telemtVersion() . "</code>";
         $text[] = "port: " . ($ports['enable'] ? $ports['port'] : $this->i18n('port unavailable'));
         $text[] = "mode: " . $this->i18n("telemt mode $mode");
         $text[] = "fake-TLS domain: <code>" . htmlspecialchars($domain, ENT_QUOTES) . "</code>";
