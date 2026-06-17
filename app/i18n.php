@@ -429,6 +429,34 @@ $i = [
         'en' => 'settings',
         'ru' => 'настройки',
     ],
+    'telemt mode'  => [
+        'en' => 'mode',
+        'ru' => 'режим',
+    ],
+    'telemt mode classic'  => [
+        'en' => 'classic',
+        'ru' => 'classic',
+    ],
+    'telemt mode secure'  => [
+        'en' => 'secure (dd)',
+        'ru' => 'secure (dd)',
+    ],
+    'telemt mode tls'  => [
+        'en' => 'tls (ee)',
+        'ru' => 'tls (ee)',
+    ],
+    'telemt mode note'  => [
+        'en' => 'Only one mode is active. tls (ee) = Fake-TLS + SNI fronting (recommended); secure = dd-secret; classic = plain.',
+        'ru' => 'Активен только один режим. tls (ee) = Fake-TLS + SNI fronting (рекомендуется); secure = dd-секрет; classic = обычный.',
+    ],
+    'telemt relays'  => [
+        'en' => 'relays',
+        'ru' => 'релеи',
+    ],
+    'telemt direct'  => [
+        'en' => 'direct',
+        'ru' => 'напрямую',
+    ],
     'telemt masking'  => [
         'en' => 'masking',
         'ru' => 'маскировка',

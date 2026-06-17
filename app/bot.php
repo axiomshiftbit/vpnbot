@@ -377,8 +377,32 @@ class Bot
             case preg_match('~^/telemt$~', $this->input['callback'] ?: $this->input['message'], $m):
                 $this->telemt(!empty($this->input['callback']));
                 break;
-            case preg_match('~^/telemtUsers$~', $this->input['callback'], $m):
-                $this->telemtUsers();
+            case preg_match('~^/telemtUsers(?: (?P<r>[\w.\-]+))?$~', $this->input['callback'], $m):
+                $this->telemtUsers($m['r'] ?? '');
+                break;
+            case preg_match('~^/telemtMode$~', $this->input['callback'], $m):
+                $this->telemtMode();
+                break;
+            case preg_match('~^/telemtSetMode (classic|secure|tls)$~', $this->input['callback'], $m):
+                $this->telemtSetMode($m[1]);
+                break;
+            case preg_match('~^/telemtRelays$~', $this->input['callback'], $m):
+                $this->telemtRelays();
+                break;
+            case preg_match('~^/telemtRelayAdd$~', $this->input['callback'], $m):
+                $this->telemtRelayAdd();
+                break;
+            case preg_match('~^/telemtRelayEdit (?P<a>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->telemtRelayEdit($m['a']);
+                break;
+            case preg_match('~^/setTelemtRelayAddress (?P<a>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->telemtRelayAddressPrompt($m['a']);
+                break;
+            case preg_match('~^/setTelemtRelayPortMap (?P<a>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->telemtRelayPortMapPrompt($m['a']);
+                break;
+            case preg_match('~^/telemtRelayDel (?P<a>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->telemtRelayDel($m['a']);
                 break;
             case preg_match('~^/telemtSettings$~', $this->input['callback'], $m):
                 $this->telemtSettings();
@@ -401,8 +425,8 @@ class Bot
             case preg_match('~^/telemtRegen (\w+)$~', $this->input['callback'], $m):
                 $this->telemtRegen($m[1]);
                 break;
-            case preg_match('~^/telemtQr (\w+)$~', $this->input['callback'], $m):
-                $this->telemtQr($m[1]);
+            case preg_match('~^/telemtQr (?P<n>\w+)(?: (?P<r>[\w.\-]+))?$~', $this->input['callback'], $m):
+                $this->telemtQr($m['n'], $m['r'] ?? '');
                 break;
             case preg_match('~^/telemtDomain$~', $this->input['callback'], $m):
                 $this->telemtDomain();
@@ -1136,10 +1160,15 @@ class Bot
         // /config/telemt/data), чтобы бот читал журнал напрямую, без API.
         $t .= "beobachten_file = " . $q('/telemt/data/beobachten.txt') . "\n";
         $t .= "use_middle_proxy = false\n\n";
+        // Ровно один режим активен (radio). Секрет ссылки зависит от него:
+        // classic = <hex>, secure = dd<hex>, tls = ee<hex><domainHex>
+        // (linkTelemt держит ту же логику). Невалидное значение → tls.
+        $mode = in_array($conf['telemt_mode'] ?? 'tls', ['classic', 'secure', 'tls'], true)
+            ? $conf['telemt_mode'] : 'tls';
         $t .= "[general.modes]\n";
-        $t .= "classic = false\n";
-        $t .= "secure = false\n";
-        $t .= "tls = true\n\n";
+        $t .= "classic = " . $b($mode === 'classic') . "\n";
+        $t .= "secure = " . $b($mode === 'secure') . "\n";
+        $t .= "tls = " . $b($mode === 'tls') . "\n\n";
         $t .= "[server]\n";
         // В бридж-сети vpnbot telemt всегда слушает 443 внутри контейнера;
         // наружу порт пробрасывается через override (setPort), как у tg.
@@ -1284,7 +1313,20 @@ class Bot
         return [$conf, $changed];
     }
 
-    public function linkTelemt($name)
+    // Resolve a dedicated TeleMT relay by name → ['address'=>.., 'portmap'=>[..]]
+    // or null. Separate from the xray $pac['relays'] store on purpose.
+    public function telemtRelay($name)
+    {
+        $r = $this->getPacConf()['telemt_relays'][$name] ?? null;
+        return is_array($r) && !empty($r['address']) ? $r : null;
+    }
+
+    // Build a tg://proxy link. The secret format depends on the active mode
+    // (classic = <hex>, secure = dd<hex>, tls = ee<hex><domainHex>). When a
+    // $relay is given, only server+port are swapped (port through the relay's
+    // portmap); the secret and the Fake-TLS domain stay untouched — same idea as
+    // applyRelay keeping SNI real.
+    public function linkTelemt($name, $relay = null)
     {
         [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
         if ($changed) {
@@ -1294,12 +1336,24 @@ class Bot
         $secret = $conf['telemt_users'][$name] ?? '';
         $domain = $conf['telemt_domain'] ?? 'www.google.com';
         $dhex   = bin2hex($domain);
-        $p      = $this->getPorts()['telemt']['port'];
-        $ip     = $this->getDomain();
+        $mode   = in_array($conf['telemt_mode'] ?? 'tls', ['classic', 'secure', 'tls'], true)
+            ? $conf['telemt_mode'] : 'tls';
+        $secret = match ($mode) {
+            'classic' => $secret,
+            'secure'  => "dd$secret",
+            default   => "ee$secret$dhex",
+        };
+        $server = $this->getDomain();
+        $port   = $this->getPorts()['telemt']['port'];
+        if (is_array($relay) && !empty($relay['address'])) {
+            $server = $relay['address'];
+            $map    = $relay['portmap'] ?? [];
+            $port   = $map[(string) $port] ?? $port;
+        }
         return 'tg://proxy?' . http_build_query([
-            'server' => $ip,
-            'port'   => $p,
-            'secret' => "ee$secret$dhex",
+            'server' => $server,
+            'port'   => $port,
+            'secret' => $secret,
         ], '', '&', PHP_QUERY_RFC3986);
     }
 
@@ -7618,21 +7672,29 @@ DNS-over-HTTPS with IP:
             || $this->telemtBool($conf, 'telemt_mask_blur', $this->telemtMaskDefault('telemt_mask_blur'))
             || $this->telemtBool($conf, 'telemt_mask_timing', $this->telemtMaskDefault('telemt_mask_timing'));
         $diagnostics = $this->telemtBool($conf, 'telemt_beobachten', false);
+        $mode    = in_array($conf['telemt_mode'] ?? 'tls', ['classic', 'secure', 'tls'], true)
+            ? $conf['telemt_mode'] : 'tls';
+        $relays  = is_array($conf['telemt_relays'] ?? null)
+            ? array_filter($conf['telemt_relays'], fn($r) => !empty($r['address'])) : [];
         $st     = $this->ssh('pgrep -x telemt', 'telemt') ? 'on' : 'off';
 
         $text[] = "Menu -> TeleMT (MTProto)\n";
         $text[] = "status: $st";
         $text[] = "port: " . ($ports['enable'] ? $ports['port'] : $this->i18n('port unavailable'));
+        $text[] = "mode: " . $this->i18n("telemt mode $mode");
         $text[] = "fake-TLS domain: <code>" . htmlspecialchars($domain, ENT_QUOTES) . "</code>";
         $text[] = "fast mode: " . $this->i18n('on');
         $text[] = "masking: " . $this->telemtState($masking);
         $text[] = "diagnostics: " . $this->telemtState($diagnostics);
+        $text[] = "relays: " . (count($relays) ?: $this->i18n('off'));
         $text[] = "users: " . count($users);
         if (!$ports['enable']) {
             $text[] = "\n⚠ " . $this->i18n('telemt set port hint');
         }
 
         $data[] = [['text' => $this->i18n('telemt users'), 'callback_data' => "/telemtUsers"]];
+        $data[] = [['text' => $this->i18n('telemt mode'), 'callback_data' => "/telemtMode"]];
+        $data[] = [['text' => $this->i18n('telemt relays'), 'callback_data' => "/telemtRelays"]];
         $data[] = [['text' => $this->i18n('telemt settings'), 'callback_data' => "/telemtSettings"]];
         $data[] = [['text' => $this->i18n('telemt masking'), 'callback_data' => "/telemtMasking"]];
         $data[] = [['text' => $this->i18n('telemt diagnostics'), 'callback_data' => "/telemtDiagnostics"]];
@@ -7645,13 +7707,22 @@ DNS-over-HTTPS with IP:
         }
     }
 
-    public function telemtUsers()
+    public function telemtUsers($relay = '')
     {
         $conf = $this->getPacConf();
         $users = is_array($conf['telemt_users'] ?? null) ? $conf['telemt_users'] : [];
         $enabled = is_array($conf['telemt_user_enabled'] ?? null) ? $conf['telemt_user_enabled'] : [];
+        // Only relays with an address are selectable; an unknown/empty name
+        // resolves to null → direct links (server = real endpoint).
+        $relays = is_array($conf['telemt_relays'] ?? null)
+            ? array_filter($conf['telemt_relays'], fn($r) => !empty($r['address'])) : [];
+        $rl = $relay !== '' ? ($relays[$relay] ?? null) : null;
+        if ($rl === null) {
+            $relay = '';
+        }
 
-        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt users') . "\n";
+        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt users')
+            . ($relay !== '' ? " (via <b>" . htmlspecialchars($relay, ENT_QUOTES) . "</b>)" : '') . "\n";
         $text[] = "users: " . count($users);
         if ($users) {
             $text[] = '';
@@ -7659,24 +7730,221 @@ DNS-over-HTTPS with IP:
                 $safeName = htmlspecialchars((string) $name, ENT_QUOTES);
                 $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
                 $text[] = "👤 <b>$safeName</b> " . $this->i18n($state);
-                $text[] = htmlspecialchars($this->linkTelemt($name), ENT_QUOTES);
+                $text[] = htmlspecialchars($this->linkTelemt($name, $rl), ENT_QUOTES);
             }
         }
 
+        $rarg = $relay !== '' ? " $relay" : '';
         foreach ($users as $name => $secret) {
-            $link = $this->linkTelemt($name);
+            $link = $this->linkTelemt($name, $rl);
             $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
             $data[] = [
                 ['text' => "🔗 $name", 'url' => $link],
                 ['text' => $this->i18n($state), 'callback_data' => "/telemtToggleUser $name"],
-                ['text' => '📷', 'callback_data' => "/telemtQr $name"],
+                ['text' => '📷', 'callback_data' => "/telemtQr $name$rarg"],
                 ['text' => '🔄', 'callback_data' => "/telemtRegen $name"],
                 ['text' => '❌', 'callback_data' => "/telemtDelUser $name"],
             ];
         }
+        // Relay selector row: direct + each configured relay. Marks the active
+        // one; only shown when at least one telemt relay has an address.
+        if ($relays) {
+            $row = [[
+                'text'          => ($relay === '' ? '✅ ' : '') . $this->i18n('telemt direct'),
+                'callback_data' => "/telemtUsers",
+            ]];
+            foreach ($relays as $rname => $r) {
+                // $rname may be an int key when the relay name is all-digits
+                // (JSON-decoded array key), so compare as strings.
+                $rname = (string) $rname;
+                $row[] = [
+                    'text'          => ($relay === $rname ? '✅ ' : '') . $rname,
+                    'callback_data' => "/telemtUsers $rname",
+                ];
+            }
+            $data[] = $row;
+        }
         $data[] = [['text' => $this->i18n('telemt add user'), 'callback_data' => "/telemtAddUser"]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function telemtMode()
+    {
+        $conf = $this->getPacConf();
+        $mode = in_array($conf['telemt_mode'] ?? 'tls', ['classic', 'secure', 'tls'], true)
+            ? $conf['telemt_mode'] : 'tls';
+
+        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt mode') . "\n";
+        $text[] = "mode: " . $this->i18n("telemt mode $mode");
+        $text[] = "\nℹ " . $this->i18n('telemt mode note');
+
+        foreach (['classic', 'secure', 'tls'] as $m) {
+            $data[] = [[
+                'text'          => ($mode === $m ? '✅ ' : '') . $this->i18n("telemt mode $m"),
+                'callback_data' => "/telemtSetMode $m",
+            ]];
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function telemtSetMode($mode)
+    {
+        if (!in_array($mode, ['classic', 'secure', 'tls'], true)) {
+            return $this->telemtMode();
+        }
+        $conf = $this->getPacConf();
+        if (($conf['telemt_mode'] ?? 'tls') !== $mode) {
+            $conf['telemt_mode'] = $mode;
+            $this->setPacConf($conf);
+            $this->restartTelemt();
+        }
+        $this->telemtMode();
+    }
+
+    // --- Dedicated TeleMT relays (separate from xray $pac['relays']) ----------
+    // Stored as $pac['telemt_relays'][<name>] = ['address'=>'', 'portmap'=>[src=>dst]].
+    // Used only to rewrite the tg://proxy link server+port; never restarts telemt.
+
+    public function telemtRelays()
+    {
+        $relays = $this->getPacConf()['telemt_relays'] ?? [];
+
+        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt relays');
+        $text[] = $this->i18n('relay hint');
+
+        $data = [];
+        foreach ($relays as $name => $r) {
+            $data[] = [[
+                'text'          => "$name: " . ($r['address'] ?: '—'),
+                'callback_data' => "/telemtRelayEdit $name",
+            ]];
+        }
+        $data[] = [['text' => '➕ ' . $this->i18n('add relay'), 'callback_data' => '/telemtRelayAdd']];
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemt']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data ?: false);
+    }
+
+    public function telemtRelayAdd()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay name'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay name'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'telemtRelaySetName',
+            'args'          => [],
+        ];
+    }
+
+    public function telemtRelaySetName($text)
+    {
+        $c    = $this->getPacConf();
+        $name = trim($text);
+        if (!preg_match('~^[\w.\-]{1,32}$~', $name) || isset($c['telemt_relays'][$name])) {
+            $this->telemtRelays();
+            return;
+        }
+        $c['telemt_relays'][$name] = ['address' => '', 'portmap' => []];
+        $this->setPacConf($c);
+        $this->telemtRelayEdit($name);
+    }
+
+    public function telemtRelayEdit($name)
+    {
+        $p = $this->getPacConf();
+        $r = $p['telemt_relays'][$name] ?? null;
+        if ($r === null) {
+            $this->telemtRelays();
+            return;
+        }
+
+        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt relays') . " -> <b>$name</b>";
+        $text[] = $this->i18n('relay address') . ': <code>' . ($r['address'] ?: '—') . '</code>';
+        if (!empty($r['portmap'])) {
+            $pm = [];
+            foreach ($r['portmap'] as $src => $dst) {
+                $pm[] = "$src:$dst";
+            }
+            $text[] = $this->i18n('relay port map') . ': <code>' . implode(', ', $pm) . '</code>';
+        } else {
+            $text[] = $this->i18n('relay port map') . ': —';
+        }
+
+        $data[] = [['text' => $this->i18n('relay address'), 'callback_data' => "/setTelemtRelayAddress $name"]];
+        $data[] = [['text' => $this->i18n('relay port map'), 'callback_data' => "/setTelemtRelayPortMap $name"]];
+        $data[] = [['text' => $this->i18n('relay delete'), 'callback_data' => "/telemtRelayDel $name"]];
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemtRelays']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data ?: false);
+    }
+
+    public function telemtRelayAddressPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay address'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay address'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'telemtRelaySetAddress',
+            'args'          => [$name],
+        ];
+    }
+
+    public function telemtRelaySetAddress($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['telemt_relays'][$name])) {
+            $this->telemtRelays();
+            return;
+        }
+        $c['telemt_relays'][$name]['address'] = trim($text);
+        $this->setPacConf($c);
+        $this->telemtRelayEdit($name);
+    }
+
+    public function telemtRelayPortMapPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay port map'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay port map'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'telemtRelaySetPortMap',
+            'args'          => [$name],
+        ];
+    }
+
+    public function telemtRelaySetPortMap($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['telemt_relays'][$name])) {
+            $this->telemtRelays();
+            return;
+        }
+        $c['telemt_relays'][$name]['portmap'] = $this->parseRelayPortMap($text);
+        $this->setPacConf($c);
+        $this->telemtRelayEdit($name);
+    }
+
+    public function telemtRelayDel($name)
+    {
+        $c = $this->getPacConf();
+        unset($c['telemt_relays'][$name]);
+        if (empty($c['telemt_relays'])) {
+            unset($c['telemt_relays']);
+        }
+        $this->setPacConf($c);
+        $this->telemtRelays();
     }
 
     public function telemtSettings()
@@ -7988,14 +8256,14 @@ DNS-over-HTTPS with IP:
         $this->send($this->input['chat'], "<pre>" . htmlspecialchars($msg, ENT_QUOTES) . "</pre>", $this->input['message_id']);
     }
 
-    public function telemtQr($name)
+    public function telemtQr($name, $relay = '')
     {
         $conf = $this->getPacConf();
         if (empty($conf['telemt_users'][$name])) {
-            $this->telemtUsers();
+            $this->telemtUsers($relay);
             return;
         }
-        $link    = $this->linkTelemt($name);
+        $link    = $this->linkTelemt($name, $relay !== '' ? $this->telemtRelay($relay) : null);
         $qr_file = __DIR__ . "/qr/telemt.png";
         exec("qrencode -t png -o $qr_file " . escapeshellarg($link));
         $this->sendPhoto(
