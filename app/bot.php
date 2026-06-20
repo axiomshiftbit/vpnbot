@@ -11587,6 +11587,7 @@ DNS-over-HTTPS with IP:
             <code>~email~</code>
             <code>~public_key~</code>
             <code>~server_name~</code>
+            <code>~fingerprint~</code>
             <code>~ip~</code>
             TEXT;
         $templates = $pac["{$type}templates"];
