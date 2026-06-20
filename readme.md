@@ -19,9 +19,10 @@ environment: ubuntu 22.04/24.04, debian 11/12
 (fine-grained PAT, доступ только к `axiomshiftbit/vpnbot`, права `Contents: Read`).
 Без токена ни ссылка, ни клонирование не работают, и сам репозиторий другим не виден.
 
-Сохраните токен в переменной (держите в секрете):
+Сохраните токен в переменной (держите в секрете). Чтобы команда с токеном не
+попала в историю shell, поставьте пробел перед командой (` export GH_TOKEN=...`):
 ```shell
-export GH_TOKEN=github_pat_xxx
+ export GH_TOKEN=github_pat_xxx
 ```
 
 stable (master):
