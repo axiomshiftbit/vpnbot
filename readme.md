@@ -21,7 +21,7 @@ environment: ubuntu 22.04/24.04, debian 11/12
 
 Сохраните токен в переменной (держите в секрете):
 ```shell
-export GH_TOKEN=github_pat_xxx
+ export GH_TOKEN=github_pat_xxx
 ```
 
 stable (master):
