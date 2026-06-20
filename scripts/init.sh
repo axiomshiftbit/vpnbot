@@ -24,6 +24,21 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# Репозиторий приватный: установка из git и последующие обновления (update.sh
+# делает git fetch/pull) требуют GitHub-токена с read-доступом к axiomshiftbit/vpnbot.
+# Токен передаётся через переменную окружения GH_TOKEN (или VPNBOT_TOKEN) и
+# нигде не логируется. При установке из архива токен не нужен.
+TOKEN="${GH_TOKEN:-${VPNBOT_TOKEN:-}}"
+
+repo_clone_url() {
+    if [ -n "$TOKEN" ]; then
+        # x-access-token:<pat> — стандартная схема https-аутентификации GitHub.
+        printf 'https://x-access-token:%s@github.com/axiomshiftbit/vpnbot.git' "$TOKEN"
+    else
+        printf '%s' "$REPO_URL"
+    fi
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ARCHIVE=""
@@ -107,8 +122,15 @@ install_from_archive() {
 
 install_from_git() {
     echo "installing from git: $REPO_URL ($BRANCH)"
+    if [ -z "$TOKEN" ]; then
+        echo "private repo: set GH_TOKEN (read access to axiomshiftbit/vpnbot) for git install" >&2
+        echo "or place $ARCHIVE_NAME next to this script for offline archive install" >&2
+        exit 1
+    fi
     if [ -d "$INSTALL_DIR/.git" ]; then
         echo "repo already exists at $INSTALL_DIR, pulling latest..."
+        # обновляем origin токенизированным URL, чтобы fetch/pull прошли по приватному репо
+        git -C "$INSTALL_DIR" remote set-url origin "$(repo_clone_url)"
         git -C "$INSTALL_DIR" fetch origin "$BRANCH"
         git -C "$INSTALL_DIR" checkout "$BRANCH"
         git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
@@ -117,7 +139,8 @@ install_from_git() {
         echo "place $ARCHIVE_NAME next to this script for archive-mode update, or remove $INSTALL_DIR" >&2
         exit 1
     else
-        git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+        # origin сохранит токенизированный URL — update.sh сможет тянуть обновления приватного репо
+        git clone --branch "$BRANCH" "$(repo_clone_url)" "$INSTALL_DIR"
     fi
 }
 
