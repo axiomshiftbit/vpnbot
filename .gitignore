@@ -34,3 +34,12 @@ subscription.php
 location.conf
 override.conf
 i18n.override.php
+
+# не заливаем в релиз-репозиторий
+/post-receive
+/nft_conf/
+nftables.conf
+.venv/
+.codex/
+.claude/
+.agents/

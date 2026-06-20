@@ -7,7 +7,17 @@ INSTALL_DIR="/root/vpnbot"
 ARCHIVE_NAME="vpnbot.zip"
 
 KEY="${1:?usage: sudo bash init.sh <TG_BOT_KEY> [BRANCH]}"
-BRANCH="${2:-Trojan-gRPC}"
+# Стабильный релиз живёт в master, разработка — в dev. Поддерживаются только
+# эти две ветки — и для установки из git, и для установки из архива.
+BRANCH="${2:-master}"
+
+case "$BRANCH" in
+    master|dev) ;;
+    *)
+        echo "unsupported branch: '$BRANCH' (allowed: master, dev)" >&2
+        exit 1
+        ;;
+esac
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "run as root" >&2

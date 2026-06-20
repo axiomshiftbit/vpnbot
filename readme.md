@@ -15,8 +15,13 @@ environment: ubuntu 22.04/24.04, debian 11/12
 
 ## Install:
 
+stable (master):
 ```shell
-wget -O- https://raw.githubusercontent.com/mercurykd/vpnbot/master/scripts/init.sh | sh -s YOUR_TELEGRAM_BOT_KEY master
+wget -O- https://raw.githubusercontent.com/axiomshiftbit/vpnbot/master/scripts/init.sh | sh -s YOUR_TELEGRAM_BOT_KEY master
+```
+development (dev):
+```shell
+wget -O- https://raw.githubusercontent.com/axiomshiftbit/vpnbot/dev/scripts/init.sh | sh -s YOUR_TELEGRAM_BOT_KEY dev
 ```
 #### Restart:
 ```shell
