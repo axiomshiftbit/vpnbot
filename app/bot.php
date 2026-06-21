@@ -14552,14 +14552,14 @@ DNS-over-HTTPS with IP:
     // и затем reboot. Сообщения о ходе шлёт сам update.sh (host-side curl), как
     // и для restart/update.
     //
-    // pinBackup пишет полный бэкап в /update/json (как applyupdatebot): после
-    // reboot service.php->selfUpdate() найдёт его и через importFile()
-    // переприменит состояние (в т.ч. секрет mtproto -> restartTG), а также
-    // пришлёт подтверждение, что бот снова онлайн. /update/json переживает
-    // reboot (том ./update, gitignore, cmd=3 не делает git clean).
+    // НЕ создаём /update/json (pinBackup) — намеренно. Иначе после reboot
+    // selfUpdate() поднял бы selfupdate=true и запустил полный importFile():
+    // двойной перезапуск всех сервисов, перезапись конфига снапшотом, offWarp,
+    // спам в чат — на каждый апгрейд системы это лишнее. После reboot сервисы и
+    // так штатно поднимает service.php (restartTG/Telemt/Hysteria), а имена
+    // контейнеров корректны благодаря непустому VER (см. makefile).
     public function sysupgradeConfirm()
     {
-        $this->pinBackup($this->update);
         $r = $this->sendDraft($this->input['from'], 1, 'system upgrade...');
         file_put_contents('/update/reload_message', "{$this->input['from']}:{$r['result']['message_id']}");
         file_put_contents('/update/key', $this->key);
