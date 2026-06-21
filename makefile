@@ -2,6 +2,12 @@
 export
 
 IP := $(or $(IP),$(shell hostname -I | awk '{print $$1}'))
+# VER идёт в имена контейнеров (container_name: php-${VER} и т.д.). Если в клоне
+# нет тегов (теги не запушены в форк / не подтянуты), `git describe --tags`
+# отдаёт ПУСТО → имена схлопываются в "php-"/"mtproto-"/… → конфликт имён при
+# `up --force-recreate`, и бот/сервисы не стартуют. `--always` даёт короткий SHA
+# без тегов, `|| echo local` страхует, если git недоступен — VER не пустой.
+VER := $(shell git describe --tags --always 2>/dev/null || echo local)
 
 b:
 	docker compose build
@@ -9,7 +15,7 @@ preup:
 	bash ./update/update.sh &
 start: # запуск контейнеров
 	touch ./override.env ./docker-compose.override.yml ./config/location.conf ./config/override.conf
-	IP=$(IP) VER=$(shell git describe --tags) docker compose --env-file ./.env --env-file ./override.env up -d --force-recreate
+	IP=$(IP) VER=$(VER) docker compose --env-file ./.env --env-file ./override.env up -d --force-recreate
 u: preup start
 d: # остановка контейнеров
 	-kill -9 $(shell cat ./update/update_pid) > /dev/null
