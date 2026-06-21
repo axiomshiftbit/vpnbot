@@ -6092,6 +6092,53 @@ DNS-over-HTTPS with IP:
         return $this->i18n($c[$this->getInstanceWG(1) . 'amnezia'] ? 'amnezia' : 'wg_title') . ' ' . $c['wg_instance'];
     }
 
+    // Достаёт «vX.Y.Z…» из строки вывода, помеченной printf-префиксом «<tag>:».
+    // Возвращает null, если бинарь отсутствует (строка пустая) или версии нет.
+    public function pickVersion(string $out, string $tag): ?string
+    {
+        if (preg_match('~^' . preg_quote($tag, '~') . ':(.*)$~m', $out, $m)
+            && preg_match('~v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*~', $m[1], $v)) {
+            return $v[0];
+        }
+        return null;
+    }
+
+    // Версии ядра wireguard/amneziawg из wg-контейнера — информационная строка
+    // под заголовком меню. Один ssh-вызов (меню и так ходит в контейнер через
+    // readStatus), безопасный фолбэк: пусто, если бинари/контейнер недоступны.
+    public function wgVersion(): string
+    {
+        $out = (string) $this->ssh(
+            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1\'',
+            $this->getInstanceWG()
+        );
+        $parts = [];
+        if ($v = $this->pickVersion($out, 'awg')) {
+            $parts[] = "AmneziaWG: $v";
+        }
+        if ($v = $this->pickVersion($out, 'wg')) {
+            $parts[] = "WireGuard: $v";
+        }
+        return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
+    }
+
+    // Версии wgcf/warp-cli из warp-контейнера (wp) — по аналогии с wgVersion().
+    public function warpVersion(): string
+    {
+        $out = (string) $this->ssh(
+            'sh -c \'printf "wgcf:"; wgcf --version 2>/dev/null | head -1; printf "cli:"; warp-cli --version 2>/dev/null | head -1\'',
+            'wp'
+        );
+        $parts = [];
+        if ($v = $this->pickVersion($out, 'wgcf')) {
+            $parts[] = "wgcf: $v";
+        }
+        if ($v = $this->pickVersion($out, 'cli')) {
+            $parts[] = "warp-cli: $v";
+        }
+        return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
+    }
+
     public function statusWg(int $page = 0)
     {
         // Lazy auto-rotation: silently regenerates I1-I5/S3-S4 if the configured
@@ -6271,7 +6318,8 @@ DNS-over-HTTPS with IP:
                 ]);
             }
         }
-        $text = "Menu -> " . $this->getTitleWG() . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
+        $ver  = $this->wgVersion();
+        $text = "Menu -> " . $this->getTitleWG() . ($ver ? "\n$ver" : '') . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
         $data[] = [
             [
                 'text'          =>  '🔄 ' . $this->i18n('refresh'),
@@ -12363,6 +12411,9 @@ DNS-over-HTTPS with IP:
         $c      = file_get_contents('/etc/warp/wgcf-profile.conf');
         $a      = file_get_contents('/etc/warp/wgcf-account.toml');
         $text[] = "Menu -> " . $this->i18n('warp');
+        if ($ver = $this->warpVersion()) {
+            $text[] = $ver;
+        }
         $text[] = "status: <pre>" . $this->ssh('wgcf trace', 'wp') . '</pre>';
         $text[] = "key: <code>{$p['warp']}</code>";
         $text[] = "<pre>$a</pre>";
