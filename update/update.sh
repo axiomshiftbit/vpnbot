@@ -34,16 +34,8 @@ do
         _chat_id=$(echo "$_curl_data" | grep -o '"chat_id":[0-9-]*' | head -1 | cut -d: -f2)
         _message_id=$(echo "$_curl_data" | grep -o '"message_id":[0-9]*' | head -1 | cut -d: -f2)
 
-        tg_draft "stopping the bot"
-        docker compose down --remove-orphans
-
-        # cmd=3: системный апгрейд хоста и перезагрузка. Контейнеры уже остановлены
-        # штатно (как при update/restart) — это критично: ребут с работающими
-        # контейнерами глушит docker резко, а start_php.sh при старте делает
-        # `rm /ssh/key*` и регенерирует ssh-ключ; из-за нечистого состояния после
-        # reboot криво поднимался бот и ssh-в-tg, из-за чего mtproto-proxy не
-        # стартовал (status off, ключ выглядел «пропавшим»). После reboot всё
-        # штатно поднимет cron (@reboot make r).
+        # cmd=3: системный апгрейд хоста и перезагрузка. Обрабатываем до штатного
+        # down/start — после reboot всё поднимет cron (@reboot make r).
         if [[ "$cmd" == "3" ]]
         then
             tg_draft "updating system packages, this may take a while..."
@@ -61,6 +53,9 @@ do
             reboot
             exit 0
         fi
+
+        tg_draft "stopping the bot"
+        docker compose down --remove-orphans
 
         if [[ "$cmd" == "1" ]]
         then
