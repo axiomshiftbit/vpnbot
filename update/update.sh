@@ -37,31 +37,6 @@ do
         tg_draft "stopping the bot"
         docker compose down --remove-orphans
 
-        # cmd=3: системный апгрейд хоста и перезагрузка. Контейнеры уже остановлены
-        # штатно (как при update/restart) — это критично: ребут с работающими
-        # контейнерами глушит docker резко, а start_php.sh при старте делает
-        # `rm /ssh/key*` и регенерирует ssh-ключ; из-за нечистого состояния после
-        # reboot криво поднимался бот и ssh-в-tg, из-за чего mtproto-proxy не
-        # стартовал (status off, ключ выглядел «пропавшим»). После reboot всё
-        # штатно поднимет cron (@reboot make r).
-        if [[ "$cmd" == "3" ]]
-        then
-            tg_draft "updating system packages, this may take a while..."
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update && apt-get -y dist-upgrade && apt-get -y autoremove
-
-            : > "$pwd/update/pipe"
-            : > "$pwd/update/key"
-            : > "$pwd/update/curl"
-
-            curl -s -H "Content-Type: application/json" \
-                -X POST "https://$TELEGRAM_API/bot$_key/sendMessage" \
-                -d "{\"chat_id\":$_chat_id,\"text\":\"system upgraded, rebooting...\"}" > /dev/null
-
-            reboot
-            exit 0
-        fi
-
         if [[ "$cmd" == "1" ]]
         then
             tg_draft "clearing the directory"

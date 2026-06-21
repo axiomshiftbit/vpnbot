@@ -482,12 +482,6 @@ class Bot
             case preg_match('~^/restart$~', $this->input['callback'], $m):
                 $this->restart();
                 break;
-            case preg_match('~^/sysupgrade$~', $this->input['callback'], $m):
-                $this->sysupgrade();
-                break;
-            case preg_match('~^/sysupgradeConfirm$~', $this->input['callback'], $m):
-                $this->sysupgradeConfirm();
-                break;
             case preg_match('~^/branches$~', $this->input['callback'], $m):
                 $this->branches();
                 break;
@@ -6098,61 +6092,6 @@ DNS-over-HTTPS with IP:
         return $this->i18n($c[$this->getInstanceWG(1) . 'amnezia'] ? 'amnezia' : 'wg_title') . ' ' . $c['wg_instance'];
     }
 
-    // Достаёт «vX.Y.Z…» из строки вывода, помеченной printf-префиксом «<tag>:».
-    // Возвращает null, если бинарь отсутствует (строка пустая) или версии нет.
-    public function pickVersion(string $out, string $tag): ?string
-    {
-        if (preg_match('~^' . preg_quote($tag, '~') . ':(.*)$~m', $out, $m)
-            && preg_match('~v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*~', $m[1], $v)) {
-            return $v[0];
-        }
-        return null;
-    }
-
-    // Версии ядра wireguard/amneziawg из wg-контейнера — информационная строка
-    // под заголовком меню. Один ssh-вызов (меню и так ходит в контейнер через
-    // readStatus), безопасный фолбэк: пусто, если бинари/контейнер недоступны.
-    public function wgVersion(): string
-    {
-        $out = (string) $this->ssh(
-            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1\'',
-            $this->getInstanceWG()
-        );
-        $parts = [];
-        if ($v = $this->pickVersion($out, 'awg')) {
-            $parts[] = "AmneziaWG: $v";
-        }
-        if ($v = $this->pickVersion($out, 'wg')) {
-            $parts[] = "WireGuard: $v";
-        }
-        return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
-    }
-
-    // Версии из warp-контейнера (wp = образ wireguard + wgcf, warp-cli в образе
-    // нет). Часть сборок wgcf не знает `--version`, поэтому пробуем обе формы и
-    // забираем stdout+stderr; плюс показываем wireguard-tools, которым и
-    // поднимается WARP-туннель. Маркеры разделяют секции одного ssh-вызова.
-    public function warpVersion(): string
-    {
-        $out = (string) $this->ssh(
-            'sh -c \'echo ===wgcf===; wgcf --version 2>&1; wgcf version 2>&1; echo ===wg===; wg --version 2>/dev/null\'',
-            'wp'
-        );
-        $section = function (string $name) use ($out): string {
-            return preg_match('~===' . $name . '===(.*?)(?:===\w+===|$)~s', $out, $m) ? $m[1] : '';
-        };
-        $parts = [];
-        // wgcf печатает «wgcf version X.Y.Z» (без v); строгий x.y.z токен, чтобы
-        // не цепляться за мусор из usage/ошибок, если --version не поддержан.
-        if (preg_match('~\bv?\d+\.\d+\.\d+\b~', $section('wgcf'), $m)) {
-            $parts[] = 'wgcf: ' . ltrim($m[0], 'v');
-        }
-        if (preg_match('~v?\d+(?:\.\d+)+~', $section('wg'), $m)) {
-            $parts[] = 'WireGuard: ' . $m[0];
-        }
-        return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
-    }
-
     public function statusWg(int $page = 0)
     {
         // Lazy auto-rotation: silently regenerates I1-I5/S3-S4 if the configured
@@ -6332,8 +6271,7 @@ DNS-over-HTTPS with IP:
                 ]);
             }
         }
-        $ver  = $this->wgVersion();
-        $text = "Menu -> " . $this->getTitleWG() . ($ver ? "\n$ver" : '') . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
+        $text = "Menu -> " . $this->getTitleWG() . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
         $data[] = [
             [
                 'text'          =>  '🔄 ' . $this->i18n('refresh'),
@@ -8930,8 +8868,8 @@ DNS-over-HTTPS with IP:
                         ],
                         [
                             [
-                                'text'          => $this->i18n('sysupgrade'),
-                                'callback_data' => '/sysupgrade',
+                                'text' => $this->i18n('chat'),
+                                'url'  => base64_decode('aHR0cHM6Ly90Lm1lLys0RzMtUTRkX3ZGRXhPRGN5'),
                             ],
                             [
                                 'text' => $this->i18n('donate'),
@@ -12425,9 +12363,6 @@ DNS-over-HTTPS with IP:
         $c      = file_get_contents('/etc/warp/wgcf-profile.conf');
         $a      = file_get_contents('/etc/warp/wgcf-account.toml');
         $text[] = "Menu -> " . $this->i18n('warp');
-        if ($ver = $this->warpVersion()) {
-            $text[] = $ver;
-        }
         $text[] = "status: <pre>" . $this->ssh('wgcf trace', 'wp') . '</pre>';
         $text[] = "key: <code>{$p['warp']}</code>";
         $text[] = "<pre>$a</pre>";
@@ -14520,55 +14455,6 @@ DNS-over-HTTPS with IP:
             'text'       => '~t~'
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         file_put_contents('/update/pipe', '2');
-        $this->delete($this->input['from'], $this->input['message_id']);
-    }
-
-    // Перезагрузка сервера разрушительна (бот и VPN недоступны несколько минут),
-    // поэтому сначала спрашиваем подтверждение.
-    public function sysupgrade()
-    {
-        $this->update(
-            $this->input['chat'],
-            $this->input['message_id'],
-            $this->i18n('sysupgrade confirm'),
-            [
-                [
-                    [
-                        'text'          => $this->i18n('sysupgrade go'),
-                        'callback_data' => '/sysupgradeConfirm',
-                    ],
-                ],
-                [
-                    [
-                        'text'          => $this->i18n('back'),
-                        'callback_data' => '/menu',
-                    ],
-                ],
-            ],
-        );
-    }
-
-    // Команда cmd=3 для хостового update.sh: apt update/dist-upgrade/autoremove
-    // и затем reboot. Сообщения о ходе шлёт сам update.sh (host-side curl), как
-    // и для restart/update.
-    //
-    // НЕ создаём /update/json (pinBackup) — намеренно. Иначе после reboot
-    // selfUpdate() поднял бы selfupdate=true и запустил полный importFile():
-    // двойной перезапуск всех сервисов, перезапись конфига снапшотом, offWarp,
-    // спам в чат — на каждый апгрейд системы это лишнее. После reboot сервисы и
-    // так штатно поднимает service.php (restartTG/Telemt/Hysteria), а имена
-    // контейнеров корректны благодаря непустому VER (см. makefile).
-    public function sysupgradeConfirm()
-    {
-        $r = $this->sendDraft($this->input['from'], 1, 'system upgrade...');
-        file_put_contents('/update/reload_message', "{$this->input['from']}:{$r['result']['message_id']}");
-        file_put_contents('/update/key', $this->key);
-        file_put_contents('/update/curl', json_encode([
-            'chat_id'    => $this->input['chat'],
-            'message_id' => $r['result']['message_id'],
-            'text'       => '~t~'
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        file_put_contents('/update/pipe', '3');
         $this->delete($this->input['from'], $this->input['message_id']);
     }
 
