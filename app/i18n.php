@@ -33,18 +33,6 @@ $i = [
         'en' => 'chat',
         'ru' => 'чат поддержки',
     ],
-    'sysupgrade'           => [
-        'en' => '🔄 system upgrade',
-        'ru' => '🔄 обновить систему',
-    ],
-    'sysupgrade confirm'   => [
-        'en' => '⚠️ Run <code>apt update &amp;&amp; apt dist-upgrade -y &amp;&amp; apt autoremove -y</code> on the host and <b>reboot</b> the server afterwards? The bot and all VPN services will be unavailable for a few minutes.',
-        'ru' => '⚠️ Запустить на хосте <code>apt update &amp;&amp; apt dist-upgrade -y &amp;&amp; apt autoremove -y</code> и затем <b>перезагрузить</b> сервер? Бот и все VPN-сервисы будут недоступны несколько минут.',
-    ],
-    'sysupgrade go'        => [
-        'en' => '✅ upgrade & reboot',
-        'ru' => '✅ обновить и перезагрузить',
-    ],
     'back'                 => [
         'en' => 'back',
         'ru' => 'назад',

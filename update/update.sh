@@ -34,26 +34,6 @@ do
         _chat_id=$(echo "$_curl_data" | grep -o '"chat_id":[0-9-]*' | head -1 | cut -d: -f2)
         _message_id=$(echo "$_curl_data" | grep -o '"message_id":[0-9]*' | head -1 | cut -d: -f2)
 
-        # cmd=3: системный апгрейд хоста и перезагрузка. Обрабатываем до штатного
-        # down/start — после reboot всё поднимет cron (@reboot make r).
-        if [[ "$cmd" == "3" ]]
-        then
-            tg_draft "updating system packages, this may take a while..."
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update && apt-get -y dist-upgrade && apt-get -y autoremove
-
-            : > "$pwd/update/pipe"
-            : > "$pwd/update/key"
-            : > "$pwd/update/curl"
-
-            curl -s -H "Content-Type: application/json" \
-                -X POST "https://$TELEGRAM_API/bot$_key/sendMessage" \
-                -d "{\"chat_id\":$_chat_id,\"text\":\"system upgraded, rebooting...\"}" > /dev/null
-
-            reboot
-            exit 0
-        fi
-
         tg_draft "stopping the bot"
         docker compose down --remove-orphans
 
