@@ -8565,7 +8565,10 @@ DNS-over-HTTPS with IP:
             // BUILD_COMMIT пишется post-receive скриптом в .env перед make r,
             // чтобы в меню был идентификатор сборки даже когда VER
             // (git describe --tags) пустой из-за отсутствия тегов в репе.
-            $commit = getenv('BUILD_COMMIT');
+            // При установке по ссылке / git clone post-receive не вызывается,
+            // поэтому BUILD_COMMIT пуст — в этом случае берём короткий SHA
+            // прямо из git, чтобы в меню всё равно был номер коммита.
+            $commit = getenv('BUILD_COMMIT') ?: exec('git -C / rev-parse --short HEAD');
             $main[] = 'v' . getenv('VER') . " $branch"
                 . ($commit ? " @$commit" : '')
                 . ($update ? ' (have updates)' : '');
