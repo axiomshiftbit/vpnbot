@@ -3462,19 +3462,25 @@ NFT;
                 $this->time = time();
                 $current    = file_get_contents('/version');
                 $b          = exec('git -C / rev-parse --abbrev-ref HEAD');
-                $last       = file_get_contents("https://raw.githubusercontent.com/mercurykd/vpnbot/$b/version");
+                // Сверяемся со СВОИМ репозиторием, а не с upstream: raw для
+                // приватного репо недоступен, поэтому читаем version удалённой
+                // ветки через git (в remote уже встроен x-access-token).
+                exec('git -C / fetch -q 2>/dev/null');
+                $last       = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
                 if (!empty($last) && $last != $this->last && $last != $current) {
                     $this->last = $last;
                     $diff       = array_slice(explode("\n", $last), 0, count(explode("\n", $last)) - count(explode("\n", $current)));
                     $diff       = array_slice($diff, 0, 10);
                     if (!empty($diff)) {
                         exec('git -C / fetch');
+                        $hash   = $this->getHashBot();
+                        $domain = $this->getPacConf()['domain'] ?: $this->ip;
                         foreach ($c['admin'] as $k => $v) {
                             $this->send($v, implode("\n", $diff), 0, [
                                 [
                                     [
                                         'text'    => 'changelog',
-                                        'web_app' => ['url' => "https://raw.githubusercontent.com/mercurykd/vpnbot/$b/version"],
+                                        'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
                                     ],
                                     [
                                         'text'          => $this->i18n('update bot'),
@@ -8783,7 +8789,7 @@ DNS-over-HTTPS with IP:
             array_unshift($data, [
                 [
                     'text'    => 'changelog',
-                    'web_app' => ['url' => "https://raw.githubusercontent.com/mercurykd/vpnbot/$b/version"],
+                    'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
                 ],
                 [
                     'text'          => $this->i18n('update bot'),
@@ -14267,6 +14273,8 @@ DNS-over-HTTPS with IP:
     {
         $b = exec('git -C / rev-parse --abbrev-ref HEAD');
         $track  = trim(file_get_contents('/update/branch'));
+        $hash   = $this->getHashBot();
+        $domain = $this->getPacConf()['domain'] ?: $this->ip;
         $data = [
             [
                 [
@@ -14275,7 +14283,7 @@ DNS-over-HTTPS with IP:
                 ],
                 [
                     'text'    => $this->i18n('changelog'),
-                    'web_app' => ['url' => "https://raw.githubusercontent.com/mercurykd/vpnbot/$b/version"],
+                    'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
                 ],
             ],
             [
