@@ -482,6 +482,12 @@ class Bot
             case preg_match('~^/restart$~', $this->input['callback'], $m):
                 $this->restart();
                 break;
+            case preg_match('~^/sysupgrade$~', $this->input['callback'], $m):
+                $this->sysupgrade();
+                break;
+            case preg_match('~^/sysupgradeConfirm$~', $this->input['callback'], $m):
+                $this->sysupgradeConfirm();
+                break;
             case preg_match('~^/branches$~', $this->input['callback'], $m):
                 $this->branches();
                 break;
@@ -8868,8 +8874,8 @@ DNS-over-HTTPS with IP:
                         ],
                         [
                             [
-                                'text' => $this->i18n('chat'),
-                                'url'  => base64_decode('aHR0cHM6Ly90Lm1lLys0RzMtUTRkX3ZGRXhPRGN5'),
+                                'text'          => $this->i18n('sysupgrade'),
+                                'callback_data' => '/sysupgrade',
                             ],
                             [
                                 'text' => $this->i18n('donate'),
@@ -14455,6 +14461,48 @@ DNS-over-HTTPS with IP:
             'text'       => '~t~'
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         file_put_contents('/update/pipe', '2');
+        $this->delete($this->input['from'], $this->input['message_id']);
+    }
+
+    // Перезагрузка сервера разрушительна (бот и VPN недоступны несколько минут),
+    // поэтому сначала спрашиваем подтверждение.
+    public function sysupgrade()
+    {
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            $this->i18n('sysupgrade confirm'),
+            [
+                [
+                    [
+                        'text'          => $this->i18n('sysupgrade go'),
+                        'callback_data' => '/sysupgradeConfirm',
+                    ],
+                ],
+                [
+                    [
+                        'text'          => $this->i18n('back'),
+                        'callback_data' => '/menu',
+                    ],
+                ],
+            ],
+        );
+    }
+
+    // Команда cmd=3 для хостового update.sh: apt update/dist-upgrade/autoremove
+    // и затем reboot. Сообщения о ходе шлёт сам update.sh (host-side curl), как
+    // и для restart/update.
+    public function sysupgradeConfirm()
+    {
+        $r = $this->sendDraft($this->input['from'], 1, 'system upgrade...');
+        file_put_contents('/update/reload_message', "{$this->input['from']}:{$r['result']['message_id']}");
+        file_put_contents('/update/key', $this->key);
+        file_put_contents('/update/curl', json_encode([
+            'chat_id'    => $this->input['chat'],
+            'message_id' => $r['result']['message_id'],
+            'text'       => '~t~'
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        file_put_contents('/update/pipe', '3');
         $this->delete($this->input['from'], $this->input['message_id']);
     }
 
