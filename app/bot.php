@@ -6122,19 +6122,27 @@ DNS-over-HTTPS with IP:
         return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
     }
 
-    // Версии wgcf/warp-cli из warp-контейнера (wp) — по аналогии с wgVersion().
+    // Версии из warp-контейнера (wp = образ wireguard + wgcf, warp-cli в образе
+    // нет). Часть сборок wgcf не знает `--version`, поэтому пробуем обе формы и
+    // забираем stdout+stderr; плюс показываем wireguard-tools, которым и
+    // поднимается WARP-туннель. Маркеры разделяют секции одного ssh-вызова.
     public function warpVersion(): string
     {
         $out = (string) $this->ssh(
-            'sh -c \'printf "wgcf:"; wgcf --version 2>/dev/null | head -1; printf "cli:"; warp-cli --version 2>/dev/null | head -1\'',
+            'sh -c \'echo ===wgcf===; wgcf --version 2>&1; wgcf version 2>&1; echo ===wg===; wg --version 2>/dev/null\'',
             'wp'
         );
+        $section = function (string $name) use ($out): string {
+            return preg_match('~===' . $name . '===(.*?)(?:===\w+===|$)~s', $out, $m) ? $m[1] : '';
+        };
         $parts = [];
-        if ($v = $this->pickVersion($out, 'wgcf')) {
-            $parts[] = "wgcf: $v";
+        // wgcf печатает «wgcf version X.Y.Z» (без v); строгий x.y.z токен, чтобы
+        // не цепляться за мусор из usage/ошибок, если --version не поддержан.
+        if (preg_match('~\bv?\d+\.\d+\.\d+\b~', $section('wgcf'), $m)) {
+            $parts[] = 'wgcf: ' . ltrim($m[0], 'v');
         }
-        if ($v = $this->pickVersion($out, 'cli')) {
-            $parts[] = "warp-cli: $v";
+        if (preg_match('~v?\d+(?:\.\d+)+~', $section('wg'), $m)) {
+            $parts[] = 'WireGuard: ' . $m[0];
         }
         return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
     }
