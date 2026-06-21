@@ -129,6 +129,22 @@ $i = [
         'en' => 'enter port map src:dst,src:dst (e.g. 443:8443), empty to clear',
         'ru' => 'введите маппинг портов src:dst,src:dst (напр. 443:8443), пусто — очистить',
     ],
+    'relay awg address'    => [
+        'en' => 'WG/AWG relay address',
+        'ru' => 'адрес relay для WG/AWG',
+    ],
+    'relay awg port map'   => [
+        'en' => 'WG/AWG port map (src:dst)',
+        'ru' => 'маппинг портов WG/AWG (src:dst)',
+    ],
+    'enter relay awg address' => [
+        'en' => 'enter WG/AWG relay address (domain or IP), empty to clear',
+        'ru' => 'введите адрес relay для WG/AWG (домен или IP), пусто — очистить',
+    ],
+    'enter relay awg port map' => [
+        'en' => 'enter WG/AWG port map src:dst,src:dst (e.g. 51820:443), empty to clear',
+        'ru' => 'введите маппинг портов WG/AWG src:dst,src:dst (напр. 51820:443), пусто — очистить',
+    ],
     'import'               => [
         'en' => 'restore',
         'ru' => 'восстановить',

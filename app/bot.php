@@ -362,6 +362,12 @@ class Bot
             case preg_match('~^/setRelayPortMap (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayPortMapPrompt($m['arg']);
                 break;
+            case preg_match('~^/setRelayAwgAddress (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayAwgAddressPrompt($m['arg']);
+                break;
+            case preg_match('~^/setRelayAwgPortMap (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayAwgPortMapPrompt($m['arg']);
+                break;
             case preg_match('~^/relayDel (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayDel($m['arg']);
                 break;
@@ -5114,7 +5120,7 @@ NFT;
         foreach ($relays as $name => $r) {
             $data[] = [
                 [
-                    'text'          => "$name: " . ($r['address'] ?: '—'),
+                    'text'          => "$name: " . ($r['address'] ?: ($r['awg_address'] ?? '') ?: '—'),
                     'callback_data' => "/relayEdit $name",
                 ],
             ];
@@ -5190,6 +5196,17 @@ NFT;
         } else {
             $text[] = $this->i18n('relay port map') . ': —';
         }
+        // Отдельный relay для wireguard/awg-прокси внутри mihomo-конфига.
+        $text[] = $this->i18n('relay awg address') . ': <code>' . ($r['awg_address'] ?? '' ?: '—') . '</code>';
+        if (!empty($r['awg_portmap'])) {
+            $pm = [];
+            foreach ($r['awg_portmap'] as $src => $dst) {
+                $pm[] = "$src:$dst";
+            }
+            $text[] = $this->i18n('relay awg port map') . ': <code>' . implode(', ', $pm) . '</code>';
+        } else {
+            $text[] = $this->i18n('relay awg port map') . ': —';
+        }
 
         $data[] = [
             [
@@ -5201,6 +5218,18 @@ NFT;
             [
                 'text'          => $this->i18n('relay port map'),
                 'callback_data' => "/setRelayPortMap $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay awg address'),
+                'callback_data' => "/setRelayAwgAddress $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay awg port map'),
+                'callback_data' => "/setRelayAwgPortMap $name",
             ],
         ];
         $data[] = [
@@ -5274,6 +5303,70 @@ NFT;
             return;
         }
         $c['relays'][$name]['portmap'] = $this->parseRelayPortMap($text);
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayAwgAddressPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay awg address'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay awg address'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayAwgAddress',
+            'args'          => [$name],
+        ];
+    }
+
+    public function setRelayAwgAddress($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $addr = trim($text);
+        if ($addr === '') {
+            unset($c['relays'][$name]['awg_address']);
+        } else {
+            $c['relays'][$name]['awg_address'] = $addr;
+        }
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayAwgPortMapPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay awg port map'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay awg port map'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayAwgPortMap',
+            'args'          => [$name],
+        ];
+    }
+
+    public function setRelayAwgPortMap($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $map = $this->parseRelayPortMap($text);
+        if (empty($map)) {
+            unset($c['relays'][$name]['awg_portmap']);
+        } else {
+            $c['relays'][$name]['awg_portmap'] = $map;
+        }
         $this->setPacConf($c);
         $this->relayEdit($name);
     }
@@ -5359,6 +5452,30 @@ NFT;
                     $c['proxies'][$index]['port'] = $port($c['proxies'][$index]['port']);
                 }
                 break;
+        }
+    }
+
+    // Swap the endpoint of the embedded wireguard/awg sub-proxy (named 'awg' in
+    // the mihomo config) to the relay's separate WG/AWG endpoint. Independent of
+    // applyRelay: the main proxy and the awg proxy can sit behind different
+    // relays/ports. No-op unless the relay has awg_address set and an 'awg' proxy
+    // exists (mihomo/'cl' configs only). Covers both plain WG and AmneziaWG —
+    // they are the same wireguard proxy, differing only by amnezia-wg-option.
+    public function applyAwgRelay(&$c, $relay)
+    {
+        if (empty($relay['awg_address']) || empty($c['proxies']) || !is_array($c['proxies'])) {
+            return;
+        }
+        $map = $relay['awg_portmap'] ?? [];
+        foreach ($c['proxies'] as $k => $p) {
+            if (($p['name'] ?? '') !== 'awg' || ($p['type'] ?? '') !== 'wireguard') {
+                continue;
+            }
+            $c['proxies'][$k]['server'] = $relay['awg_address'];
+            if (isset($c['proxies'][$k]['port'])) {
+                $cur = (string) $c['proxies'][$k]['port'];
+                $c['proxies'][$k]['port'] = isset($map[$cur]) ? (int) $map[$cur] : (int) $cur;
+            }
         }
     }
 
@@ -12413,7 +12530,7 @@ DNS-over-HTTPS with IP:
                 'web_app' => ['url' => "https://{$domain}/pac$hash?t=cl&s={$c['id']}"]
             ],
         ];
-        if (!empty(array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address'])))) {
+        if (!empty(array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']) || !empty($e['awg_address'])))) {
             $data[] = [
                 [
                     'text'          => '🔗 ' . $this->i18n('relay subscriptions'),
@@ -12541,7 +12658,7 @@ DNS-over-HTTPS with IP:
             $this->userXr($i);
             return;
         }
-        $relays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']));
+        $relays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']) || !empty($e['awg_address']));
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('relay subscriptions');
         $text[] = $this->i18n('relay hint');
@@ -12550,7 +12667,7 @@ DNS-over-HTTPS with IP:
         foreach ($relays as $name => $relay) {
             $data[] = [
                 [
-                    'text'          => "🔗 $name: {$relay['address']}",
+                    'text'          => "🔗 $name: " . ($relay['address'] ?: $relay['awg_address']),
                     'callback_data' => "/relaySub {$i}_{$name}",
                 ],
             ];
@@ -12580,7 +12697,7 @@ DNS-over-HTTPS with IP:
         $c     = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
         $pac   = $this->getPacConf();
         $relay = $pac['relays'][$name] ?? null;
-        if ($c === null || $relay === null || empty($relay['address'])) {
+        if ($c === null || $relay === null || (empty($relay['address']) && empty($relay['awg_address']))) {
             $this->userRelay($i);
             return;
         }
@@ -12590,7 +12707,7 @@ DNS-over-HTTPS with IP:
         $email  = $c['email'];
         $rl     = '&relay=' . $name;
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> ({$relay['address']})\n";
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> (" . ($relay['address'] ?: $relay['awg_address']) . ")\n";
 
         // One-tap import deep links (work for every client), relay-flavoured.
         foreach ([
@@ -13586,6 +13703,12 @@ DNS-over-HTTPS with IP:
         // (selected by name via $_GET['relay']); everything else stays as-is.
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]) && isset($index)) {
             $this->applyRelay($c, $_GET['t'], $index, $pac['relays'][$_GET['relay']]);
+            // Mihomo-конфиг может нести встроенный wireguard/awg-прокси; его
+            // эндпоинт подменяем на отдельный WG/AWG-relay (если задан), чтобы
+            // основной прокси и awg ходили через разные relay/порты.
+            if ($_GET['t'] == 'cl') {
+                $this->applyAwgRelay($c, $pac['relays'][$_GET['relay']]);
+            }
         }
         if (!empty($return)) {
             if ($_GET['t'] == 'cl') {
