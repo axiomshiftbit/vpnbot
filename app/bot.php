@@ -15142,16 +15142,24 @@ DNS-over-HTTPS with IP:
         $this->input['chat']        = $rm[0];
         $this->input['message_id']  = $mid;
         $this->input['callback_id'] = $mid;
+        // Импорт настроек после обновления — НЕкритичный шаг. Любая ошибка здесь
+        // не должна ронять service.php до restartTG/restartTelemt. И /update/json
+        // снимаем в любом случае, иначе сбой повторяется при каждом старте.
         if (file_exists($this->update)) {
             $this->selfupdate = true;
-            if (!empty($m)) {
-                $this->send($this->input['chat'], "<pre>$m</pre>", $mid);
+            try {
+                if (!empty($m)) {
+                    $this->send($this->input['chat'], "<pre>$m</pre>", $mid);
+                }
+                $r = $this->send($this->input['chat'], "import settings");
+                $this->input['message_id']  = $r['result']['message_id'] ?? $mid;
+                $this->input['callback_id'] = $r['result']['message_id'] ?? $mid;
+                $this->importFile($this->update);
+            } catch (\Throwable $e) {
+                error_log('selfUpdate import skipped: ' . $e->getMessage());
+            } finally {
+                @unlink($this->update);
             }
-            $r = $this->send($this->input['chat'], "import settings");
-            $this->input['message_id']  = $r['result']['message_id'];
-            $this->input['callback_id'] = $r['result']['message_id'];
-            $this->importFile($this->update);
-            unlink($this->update);
         }
         file_put_contents('/update/message', '');
         file_put_contents('/update/reload_message', '');
