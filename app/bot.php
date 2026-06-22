@@ -12436,7 +12436,12 @@ DNS-over-HTTPS with IP:
         if ($ver = $this->warpVersion()) {
             $text[] = $ver;
         }
-        $text[] = "status: <pre>" . $this->ssh('wgcf trace', 'wp') . '</pre>';
+        // wgcf печатает trace в stdout, а лог-строки ("Using config file") в
+        // stderr — ssh() читает только stdout, поэтому трейс чистый. Если WARP
+        // не поднят, trace пуст: показываем явный "off", чтобы строка статуса
+        // не выглядела пустой/сломанной.
+        $trace  = trim((string) $this->ssh('wgcf trace', 'wp'));
+        $text[] = "status: " . ($trace !== '' ? "<pre>$trace</pre>" : '<code>off</code>');
         $text[] = "key: <code>{$p['warp']}</code>";
         $text[] = "<pre>$a</pre>";
         $text[] = "<pre>$c</pre>";
