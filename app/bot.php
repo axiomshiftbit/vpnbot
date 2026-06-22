@@ -11880,6 +11880,18 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Версия Xray-core из контейнера. `xray version` печатает строку вида
+    // "Xray 1.8.24 (Xray, Penetrates Everything.) ..." — берём номер версии.
+    // Не требует запущенного процесса, поэтому работает даже когда xray off.
+    public function getXrayVersion()
+    {
+        $out = $this->ssh('xray version 2>&1 | head -n1', 'xr');
+        if (preg_match('~Xray\s+v?(\S+)~i', (string) $out, $m)) {
+            return $m[1];
+        }
+        return '';
+    }
+
     public function xray($page = 0)
     {
         $c      = $this->getXray();
@@ -11888,6 +11900,8 @@ DNS-over-HTTPS with IP:
         if (!empty($c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0])) {
             $text[] = "fake domain: <code>{$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}</code>";
         }
+        $xrayVersion = $this->getXrayVersion();
+        $text[] = 'xray version: ' . ($xrayVersion !== '' ? "<code>$xrayVersion</code>" : '?');
         $text[] = 'transport: ' . ($p['transport'] ?: 'Websocket');
         $text[] = 'fingerprint: ' . ($p['fingerprint'] ?: 'chrome');
         $st = $this->getXrayStats();
