@@ -15135,13 +15135,17 @@ DNS-over-HTTPS with IP:
         $ip                         = getenv('IP');
         $rm                         = explode(':', trim(file_get_contents('/update/reload_message')));
         $m                          = file_get_contents('/update/message');
+        // message_id может прийти пустым (reload_message вида "chat:") — тогда
+        // передавать его в send(?int $to) нельзя: '' → TypeError и фатал в
+        // service.php до restartTG/restartTelemt. Приводим к ?int.
+        $mid                        = (isset($rm[1]) && $rm[1] !== '') ? (int) $rm[1] : null;
         $this->input['chat']        = $rm[0];
-        $this->input['message_id']  = $rm[1] ?? false;
-        $this->input['callback_id'] = $rm[1] ?? false;
+        $this->input['message_id']  = $mid;
+        $this->input['callback_id'] = $mid;
         if (file_exists($this->update)) {
             $this->selfupdate = true;
             if (!empty($m)) {
-                $this->send($this->input['chat'], "<pre>$m</pre>", $rm[1]);
+                $this->send($this->input['chat'], "<pre>$m</pre>", $mid);
             }
             $r = $this->send($this->input['chat'], "import settings");
             $this->input['message_id']  = $r['result']['message_id'];
