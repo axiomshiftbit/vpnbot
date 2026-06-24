@@ -10891,9 +10891,11 @@ DNS-over-HTTPS with IP:
                         $link = "trojan://$trojanPwd@$domain:443"
                                     . "?type=grpc"
                                     . "&serviceName=grpc$hash"
+                                    . "&mode=gun"
                                     . "&security=tls"
                                     . "&sni=$domain"
                                     . "&fp=$fp"
+                                    . "&alpn=h2"
                                     . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
                         break;
 
