@@ -3598,6 +3598,10 @@ NFT;
                 }
             }
         } catch (Exception $e) {
+        } finally {
+            // не оставляем выбранный инстанс протекать в последующие шаги cron
+            // (getInstanceWG читает $this->wg раньше pac-конфига) — как syncPortClients
+            unset($this->wg);
         }
     }
 
@@ -15752,19 +15756,31 @@ DNS-over-HTTPS with IP:
         $ipnet     = explode('/', $conf['interface']['Address']);
         $server_ip = ip2long($ipnet[0]);
         $ips       = [$server_ip];
-        $bitmask   = $ipnet[1];
+        $bitmask   = (int) $ipnet[1];
         if (!empty($conf['peers'])) {
             foreach ($conf['peers'] as $k => $v) {
                 $ips[] = ip2long(explode('/', $v['AllowedIPs'] ?: $v['# AllowedIPs'])[0]);
             }
         }
-        $ip_count = (1 << (32 - $bitmask)) - count($ips) - 1;
-        for ($i = 1; $i < $ip_count; $i++) {
-            $ip = $i + $server_ip;
-            if (!in_array($ip, $ips)) {
+        // Перебираем ВЕСЬ диапазон хостов подсети (network+1 … broadcast-1) и
+        // берём первый свободный. Старый код искал `$i + $server_ip` с границей
+        // `$ip_count`, которая уменьшалась с числом пиров → во фрагментированной
+        // почти-полной подсети свободный адрес (например удалённый в середине) не
+        // находился, $client_ip оставался undefined и создавался битый пир
+        // «AllowedIPs = /32». Здесь же при исчерпании подсети выходим явно.
+        $size      = 1 << (32 - $bitmask);
+        $net       = $server_ip & ~($size - 1);
+        $broadcast = $net | ($size - 1);
+        $client_ip = null;
+        for ($ip = $net + 1; $ip < $broadcast; $ip++) {
+            if (!in_array($ip, $ips, true)) {
                 $client_ip = long2ip($ip);
                 break;
             }
+        }
+        if ($client_ip === null) {
+            $this->send($this->input['chat'] ?? '', 'wireguard: подсеть исчерпана, свободных адресов нет', $this->input['message_id'] ?? null);
+            return;
         }
         $public_server_key = trim($this->ssh("echo {$conf['interface']['PrivateKey']} | {$this->getWGType()} pubkey", $this->getInstanceWG()));
         $private_peer_key  = trim($this->ssh("{$this->getWGType()} genkey", $this->getInstanceWG()));
@@ -15846,7 +15862,14 @@ DNS-over-HTTPS with IP:
 
     public function restartWG($conf_str, $switch = false)
     {
-        $this->ssh("echo '$conf_str' > /etc/wireguard/wg0.conf", $this->getInstanceWG());
+        // Конфиг пишем через base64, а НЕ `echo '$conf_str'`. Имя клиента
+        // (## name) — сырой пользовательский ввод (см. renameClient/addWg), и
+        // одиночная кавычка в нём рвала bash-строку `echo '...'` →
+        // wg0.conf обрезался/не записывался, а следующий wg-quick up падал с
+        // битым конфигом → туннель ложился. base64 выдаёт только [A-Za-z0-9+/=],
+        // что безопасно внутри одинарных кавычек при любом содержимом конфига.
+        $b64 = base64_encode($conf_str);
+        $this->ssh("echo '$b64' | base64 -d > /etc/wireguard/wg0.conf", $this->getInstanceWG());
         $this->ssh("{$this->getWGType((int) $switch)}-quick down wg0", $this->getInstanceWG());
         $this->ssh("{$this->getWGType()}-quick up wg0", $this->getInstanceWG());
         return true;
