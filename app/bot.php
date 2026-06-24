@@ -1507,6 +1507,26 @@ class Bot
         }
     }
 
+    // Безопасная запись xray.json для функций, которые меняют лишь метаданные
+    // клиента (шаблоны подписки, HWID) и НЕ перезапускают ядро. getXray() читает
+    // конфиг как ассоц-массив, из-за чего json round-trip превращает пустые/
+    // числовые-ключ объекты `stats:{}` → `[]` и `policy.levels:{"0":..}` → `[..]`,
+    // а xray такой конфиг ОТВЕРГАЕТ ("cannot unmarshal array into ... stats") и не
+    // стартует при следующем старте контейнера. Восстанавливаем тип объекта (как
+    // это делает restartXray) перед записью.
+    public function saveXray(array $c): void
+    {
+        $c['stats'] = new stdClass();
+        if (isset($c['policy']['levels']) && is_array($c['policy']['levels'])) {
+            $lv = new stdClass();
+            foreach ($c['policy']['levels'] as $k => $v) {
+                $lv->{(string) $k} = $v;
+            }
+            $c['policy']['levels'] = $lv;
+        }
+        file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
     public function collectSession() {
         $p = $this->getXrayStats();
         $p['global'] = [
@@ -12511,7 +12531,7 @@ DNS-over-HTTPS with IP:
         } else {
             unset($c['inbounds'][0]['settings']['clients'][$arg[1]]["{$arg[0]}template"]);
         }
-        file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->saveXray($c);
         $this->userXr($arg[1]);
     }
 
@@ -13000,7 +13020,7 @@ DNS-over-HTTPS with IP:
         } else {
             $xray['inbounds'][0]['settings']['clients'][$i]['hwid_disabled'] = 1;
         }
-        file_put_contents('/config/xray.json', json_encode($xray, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->saveXray($xray);
         $this->answer($this->input['callback_id'], $this->i18n('hwid notice'), true);
         $this->hwidUser($i);
     }
@@ -13009,7 +13029,7 @@ DNS-over-HTTPS with IP:
     {
         $xray = $this->getXray();
         unset($xray['inbounds'][0]['settings']['clients'][$i]['hwid_limit']);
-        file_put_contents('/config/xray.json', json_encode($xray, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->saveXray($xray);
         $this->hwidUser($i);
     }
 
@@ -13037,7 +13057,7 @@ DNS-over-HTTPS with IP:
         } else {
             unset($xray['inbounds'][0]['settings']['clients'][$i]['hwid_limit']);
         }
-        file_put_contents('/config/xray.json', json_encode($xray, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->saveXray($xray);
         $this->send($this->input['chat'], $this->i18n('hwid notice'), $this->input['message_id']);
         $this->hwidUser($i);
     }
@@ -13648,7 +13668,10 @@ DNS-over-HTTPS with IP:
                         $c['proxies'][$index]['tls']              = true;
                         $c['proxies'][$index]['alpn']             = ['h2'];
                         $c['proxies'][$index]['skip-cert-verify'] = false;
-                        $c['proxies'][$index]['servername']       = '~domain~';
+                        // Clash.Meta trojan читает SNI из поля `sni`, а НЕ `servername`
+                        // (последнее — только для vless/vmess и trojan'ом игнорируется).
+                        unset($c['proxies'][$index]['servername']);
+                        $c['proxies'][$index]['sni']              = '~domain~';
                         $c['proxies'][$index]['grpc-opts']        = [
                             'grpc-service-name' => "grpc$hash",
                         ];
