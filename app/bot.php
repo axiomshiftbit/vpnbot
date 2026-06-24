@@ -2372,7 +2372,7 @@ NFT;
         $this->setPacConf($pac);
         $clients = $this->getClientsOc();
         foreach ($clients as $k => $v) {
-            $this->ssh("echo '$pass' | ocpasswd -c /etc/ocserv/ocserv.passwd $v", 'oc');
+            $this->ssh("echo " . escapeshellarg($pass) . " | ocpasswd -c /etc/ocserv/ocserv.passwd " . escapeshellarg($v), 'oc');
         }
         $this->restartOcserv(file_get_contents('/config/ocserv.conf'));
         $this->menu('oc');
@@ -8660,11 +8660,11 @@ DNS-over-HTTPS with IP:
         $this->ssh('pkill dnstt', 'dnstt');
         if (!empty($c['dnsttDomain']) && !empty($c['dnsttPassword'])) {
             $this->ssh("adduser -D -s /bin/sh vpnbot", 'dnstt');
-            $this->ssh("echo 'vpnbot:{$c['dnsttPassword']}' | chpasswd", 'dnstt');
+            $this->ssh("echo " . escapeshellarg("vpnbot:{$c['dnsttPassword']}") . " | chpasswd", 'dnstt');
             if (!file_exists('/config/dnstt/server.key')) {
                 $this->ssh("dnstt-server -gen-key -privkey-file /dnstt/server.key -pubkey-file /dnstt/server.pub", 'dnstt');
             }
-            $this->ssh("dnstt-server -udp :53 -privkey-file /dnstt/server.key {$c['dnsttDomain']} 127.0.0.1:22", 'dnstt' , false, '/logs/dnstt');
+            $this->ssh("dnstt-server -udp :53 -privkey-file /dnstt/server.key " . escapeshellarg($c['dnsttDomain']) . " 127.0.0.1:22", 'dnstt' , false, '/logs/dnstt');
         }
     }
 
@@ -11280,7 +11280,7 @@ DNS-over-HTTPS with IP:
         $clients = $this->getClientsOc();
         foreach ($clients as $k => $v) {
             if ($i == $k) {
-                $this->ssh("ocpasswd -c /etc/ocserv/ocserv.passwd -d $v", 'oc');
+                $this->ssh("ocpasswd -c /etc/ocserv/ocserv.passwd -d " . escapeshellarg($v), 'oc');
                 break;
             }
         }
@@ -11314,7 +11314,7 @@ DNS-over-HTTPS with IP:
     public function addocus($user)
     {
         $pac = $this->getPacConf();
-        $this->ssh("echo '{$pac['ocserv']}' | ocpasswd -c /etc/ocserv/ocserv.passwd $user", 'oc');
+        $this->ssh("echo " . escapeshellarg($pac['ocserv']) . " | ocpasswd -c /etc/ocserv/ocserv.passwd " . escapeshellarg($user), 'oc');
         $this->menu('oc');
     }
 
