@@ -3223,18 +3223,34 @@ NFT;
     public function cron()
     {
         $period = 10;
+        // cron.php — foreground-процесс service-контейнера. Любой неперехваченный
+        // Throwable из шага ниже (часть из них без своего try/catch) уронил бы
+        // весь процесс → контейнер уходит в рестарт-цикл, и на каждом рестарте
+        // заново гоняется selfUpdate (импорт настроек, telegram-сообщения,
+        // offWarp). Изолируем каждый шаг: сбой одного не должен останавливать
+        // остальную периодику (expiry-shutdown, traffic limits, cert renewal,
+        // backup) и не должен ронять демон.
+        $steps = [
+            'shutdownClient',
+            'shutdownClientXr',
+            'checkVersion',
+            'checkBackup',
+            'checkLogs',
+            'checkResetXrayStats',
+            'checkCert',
+            'autoAnalyzeLogs',
+            'xrayStatsUser',
+            'checkTrafficLimits',
+            'trackOnline',
+        ];
         while (true) {
-            $this->shutdownClient();
-            $this->shutdownClientXr();
-            $this->checkVersion();
-            $this->checkBackup();
-            $this->checkLogs();
-            $this->checkResetXrayStats();
-            $this->checkCert();
-            $this->autoAnalyzeLogs();
-            $this->xrayStatsUser();
-            $this->checkTrafficLimits();
-            $this->trackOnline();
+            foreach ($steps as $step) {
+                try {
+                    $this->$step();
+                } catch (\Throwable $e) {
+                    error_log("cron[$step]: " . $e->getMessage());
+                }
+            }
             sleep($period);
         }
     }
@@ -12322,32 +12338,49 @@ DNS-over-HTTPS with IP:
 
     public function analyzeXray()
     {
+        // iplimit.php запущен в фоне (`php iplimit.php &`): если этот while(true)
+        // упадёт с Throwable, процесс тихо умрёт и IP-limit защита отключится
+        // навсегда без следов до перезапуска контейнера. Поэтому и внешний
+        // (setup: fopen/fseek), и внутренний (per-line обработка) циклы изолируем
+        // try/catch — транзиентная ошибка не должна ронять демон.
         while (true) {
-            if (!empty($this->getPacConf()['ip_limit'])) {
-                $this->pool = [];
-                $log = '/logs/xray';
-                $r   = fopen($log, 'r');
-                fseek($r, 0, SEEK_END);
-                while (true) {
-                    $pac = $this->getPacConf();
-                    if (empty($pac['ip_limit'])) {
-                        break;
+            try {
+                if (!empty($this->getPacConf()['ip_limit'])) {
+                    $this->pool = [];
+                    $log = '/logs/xray';
+                    $r   = fopen($log, 'r');
+                    if ($r === false) {
+                        sleep(10);
+                        continue;
                     }
-                    $currentPosition = ftell($r);
-                    clearstatcache();
-                    $fileSize = filesize($log);
-                    if ($fileSize > $currentPosition) {
-                        fseek($r, $currentPosition); // сброс флага feof
-                        while (!feof($r)) {
-                            $line = fgets($r);
-                            if ($line !== false) {
-                                $this->frequencyAnalyze($line, $pac);
-                            }
+                    fseek($r, 0, SEEK_END);
+                    while (true) {
+                        $pac = $this->getPacConf();
+                        if (empty($pac['ip_limit'])) {
+                            break;
                         }
+                        try {
+                            $currentPosition = ftell($r);
+                            clearstatcache();
+                            $fileSize = filesize($log);
+                            if ($fileSize > $currentPosition) {
+                                fseek($r, $currentPosition); // сброс флага feof
+                                while (!feof($r)) {
+                                    $line = fgets($r);
+                                    if ($line !== false) {
+                                        $this->frequencyAnalyze($line, $pac);
+                                    }
+                                }
+                            }
+                        } catch (\Throwable $e) {
+                            error_log('analyzeXray: ' . $e->getMessage());
+                        }
+                        sleep(1);
                     }
-                    sleep(1);
+                    fclose($r);
                 }
-                fclose($r);
+            } catch (\Throwable $e) {
+                error_log('analyzeXray(setup): ' . $e->getMessage());
             }
             sleep(10);
         }
