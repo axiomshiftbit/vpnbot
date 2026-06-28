@@ -132,6 +132,24 @@ switch (true) {
                     exit;
                 }
 
+            case 'changelog':
+                // Changelog показываем из СВОЕГО репозитория, а не из upstream.
+                // raw.githubusercontent для приватного репо отдаёт 404 (токена
+                // в web_app-URL не передать), поэтому берём version-файл через
+                // git: в remote приватного репо уже встроен x-access-token, так
+                // что fetch/show работают. Показываем версию из удалённой ветки
+                // (то, что приедет при обновлении); если git недоступен —
+                // откатываемся на локально установленный /version.
+                header('Content-Type: text/plain; charset=utf-8');
+                $b = exec('git -C / rev-parse --abbrev-ref HEAD');
+                exec('git -C / fetch -q 2>/dev/null');
+                $log = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
+                if (empty(trim((string) $log))) {
+                    $log = @file_get_contents('/version');
+                }
+                echo $log;
+                exit;
+
             default:
                 if (file_exists($file = __DIR__ . "/zapretlists/$type")) {
                     $pac = file_get_contents($file);

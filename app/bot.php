@@ -362,6 +362,12 @@ class Bot
             case preg_match('~^/setRelayPortMap (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayPortMapPrompt($m['arg']);
                 break;
+            case preg_match('~^/setRelayAwgAddress (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayAwgAddressPrompt($m['arg']);
+                break;
+            case preg_match('~^/setRelayAwgPortMap (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayAwgPortMapPrompt($m['arg']);
+                break;
             case preg_match('~^/relayDel (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayDel($m['arg']);
                 break;
@@ -1474,6 +1480,7 @@ class Bot
             ];
         }
         $this->applySniffingToXray($c, $this->getPacConf());
+        $this->ensureFreedomCompat($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
             'services' => ['StatsService'],
@@ -1499,6 +1506,95 @@ class Bot
         } else {
             file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         }
+    }
+
+    // Безопасная запись xray.json для функций, которые меняют лишь метаданные
+    // клиента (шаблоны подписки, HWID) и НЕ перезапускают ядро. getXray() читает
+    // конфиг как ассоц-массив, из-за чего json round-trip превращает пустые/
+    // числовые-ключ объекты `stats:{}` → `[]` и `policy.levels:{"0":..}` → `[..]`,
+    // а xray такой конфиг ОТВЕРГАЕТ ("cannot unmarshal array into ... stats") и не
+    // стартует при следующем старте контейнера. Восстанавливаем тип объекта (как
+    // это делает restartXray) перед записью.
+    public function saveXray(array $c): void
+    {
+        $c['stats'] = new stdClass();
+        if (isset($c['policy']['levels']) && is_array($c['policy']['levels'])) {
+            $lv = new stdClass();
+            foreach ($c['policy']['levels'] as $k => $v) {
+                $lv->{(string) $k} = $v;
+            }
+            $c['policy']['levels'] = $lv;
+        }
+        $this->ensureFreedomCompat($c);
+        file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    // Xray >= v26.4.15 (PR #5947, «Direct/Freedom outbound: default safe policy»)
+    // вешает на freedom/direct-outbound встроенное правило, которое МОЛЧА рвёт
+    // любое соединение, чей адрес назначения попадает в приватный/зарезерви-
+    // рованный диапазон (0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12,
+    // 192.168/16, 198.18/15, CGNAT, …), и принудительно резолвит домен ДО дозвона.
+    // Срабатывает, когда исходящий inbound — vless/vmess/trojan/hysteria/wireguard
+    // /shadowsocks. Именно это ломает warp (socks → microsocks @ 10.10.0.13) и
+    // любой внутрикластерный/LAN-адрес, идущий через "direct": поэтому warp
+    // работает на v26.4.13 и отваливается начиная с v26.4.15.
+    //
+    // Возвращаем работоспособность warp, перекрывая встроенное правило своим
+    // явным finalRules (матчится раньше default-правила; первое совпадение
+    // выигрывает — см. proxy/freedom/freedom.go: matchFinalRule). Вместо «глухого»
+    // allow-all делаем «закалённый» вариант, сохраняющий защиту от SSRF:
+    //   1) allow 10.10.0.0/16 — внутренние docker-сети проекта (10.10.0.0/24 и
+    //      10.10.1.0/24), сюда входит warp-socks @ 10.10.0.13 и прочие контейнеры;
+    //   2) block — полный приватный/зарезервированный набор (как в апстрим-политике
+    //      #5947: loopback, CGNAT, link-local/metadata 169.254.169.254, RFC1918,
+    //      IPv6 ULA/link-local), чтобы клиент не дотянулся через "direct" до
+    //      внутренностей хоста/LAN/облачного metadata.
+    // Публичные адреса не матчат ни одно правило → default Allow. ВАЖНО: при
+    // наличии ip-матчера в finalRules ядро форс-резолвит домен ДО дозвона (как и
+    // штатная safe policy), что требует рабочего системного резолвера в контейнере
+    // xr — у нас он есть. Ядра < v26.4.17 не знают поля "finalRules" и игнорируют
+    // его (нестрогий JSON-загрузчик), а safe policy там либо отсутствует
+    // (<= v26.4.13) — регрессий нет. Конфиги с собственными finalRules не трогаем.
+    public function ensureFreedomCompat(array &$c): void
+    {
+        if (empty($c['outbounds']) || !is_array($c['outbounds'])) {
+            return;
+        }
+        $finalRules = [
+            ['action' => 'allow', 'ip' => ['10.10.0.0/16']],
+            ['action' => 'block', 'ip' => [
+                '0.0.0.0/8',
+                '10.0.0.0/8',
+                '100.64.0.0/10',
+                '127.0.0.0/8',
+                '169.254.0.0/16',
+                '172.16.0.0/12',
+                '192.0.0.0/24',
+                '192.0.2.0/24',
+                '192.88.99.0/24',
+                '192.168.0.0/16',
+                '198.18.0.0/15',
+                '198.51.100.0/24',
+                '203.0.113.0/24',
+                '224.0.0.0/3',
+                '::/127',
+                'fc00::/7',
+                'fe80::/10',
+                'ff00::/8',
+            ]],
+        ];
+        foreach ($c['outbounds'] as &$ob) {
+            if (($ob['protocol'] ?? '') !== 'freedom') {
+                continue;
+            }
+            if (!isset($ob['settings']) || !is_array($ob['settings'])) {
+                $ob['settings'] = [];
+            }
+            if (!array_key_exists('finalRules', $ob['settings'])) {
+                $ob['settings']['finalRules'] = $finalRules;
+            }
+        }
+        unset($ob);
     }
 
     public function collectSession() {
@@ -2366,7 +2462,7 @@ NFT;
         $this->setPacConf($pac);
         $clients = $this->getClientsOc();
         foreach ($clients as $k => $v) {
-            $this->ssh("echo '$pass' | ocpasswd -c /etc/ocserv/ocserv.passwd $v", 'oc');
+            $this->ssh("echo " . escapeshellarg($pass) . " | ocpasswd -c /etc/ocserv/ocserv.passwd " . escapeshellarg($v), 'oc');
         }
         $this->restartOcserv(file_get_contents('/config/ocserv.conf'));
         $this->menu('oc');
@@ -3217,18 +3313,34 @@ NFT;
     public function cron()
     {
         $period = 10;
+        // cron.php — foreground-процесс service-контейнера. Любой неперехваченный
+        // Throwable из шага ниже (часть из них без своего try/catch) уронил бы
+        // весь процесс → контейнер уходит в рестарт-цикл, и на каждом рестарте
+        // заново гоняется selfUpdate (импорт настроек, telegram-сообщения,
+        // offWarp). Изолируем каждый шаг: сбой одного не должен останавливать
+        // остальную периодику (expiry-shutdown, traffic limits, cert renewal,
+        // backup) и не должен ронять демон.
+        $steps = [
+            'shutdownClient',
+            'shutdownClientXr',
+            'checkVersion',
+            'checkBackup',
+            'checkLogs',
+            'checkResetXrayStats',
+            'checkCert',
+            'autoAnalyzeLogs',
+            'xrayStatsUser',
+            'checkTrafficLimits',
+            'trackOnline',
+        ];
         while (true) {
-            $this->shutdownClient();
-            $this->shutdownClientXr();
-            $this->checkVersion();
-            $this->checkBackup();
-            $this->checkLogs();
-            $this->checkResetXrayStats();
-            $this->checkCert();
-            $this->autoAnalyzeLogs();
-            $this->xrayStatsUser();
-            $this->checkTrafficLimits();
-            $this->trackOnline();
+            foreach ($steps as $step) {
+                try {
+                    $this->$step();
+                } catch (\Throwable $e) {
+                    error_log("cron[$step]: " . $e->getMessage());
+                }
+            }
             sleep($period);
         }
     }
@@ -3462,19 +3574,25 @@ NFT;
                 $this->time = time();
                 $current    = file_get_contents('/version');
                 $b          = exec('git -C / rev-parse --abbrev-ref HEAD');
-                $last       = file_get_contents("https://raw.githubusercontent.com/mercurykd/vpnbot/$b/version");
+                // Сверяемся со СВОИМ репозиторием, а не с upstream: raw для
+                // приватного репо недоступен, поэтому читаем version удалённой
+                // ветки через git (в remote уже встроен x-access-token).
+                exec('git -C / fetch -q 2>/dev/null');
+                $last       = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
                 if (!empty($last) && $last != $this->last && $last != $current) {
                     $this->last = $last;
                     $diff       = array_slice(explode("\n", $last), 0, count(explode("\n", $last)) - count(explode("\n", $current)));
                     $diff       = array_slice($diff, 0, 10);
                     if (!empty($diff)) {
                         exec('git -C / fetch');
+                        $hash   = $this->getHashBot();
+                        $domain = $this->getPacConf()['domain'] ?: $this->ip;
                         foreach ($c['admin'] as $k => $v) {
                             $this->send($v, implode("\n", $diff), 0, [
                                 [
                                     [
                                         'text'    => 'changelog',
-                                        'web_app' => ['url' => "https://raw.githubusercontent.com/mercurykd/vpnbot/$b/version"],
+                                        'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
                                     ],
                                     [
                                         'text'          => $this->i18n('update bot'),
@@ -3570,6 +3688,10 @@ NFT;
                 }
             }
         } catch (Exception $e) {
+        } finally {
+            // не оставляем выбранный инстанс протекать в последующие шаги cron
+            // (getInstanceWG читает $this->wg раньше pac-конфига) — как syncPortClients
+            unset($this->wg);
         }
     }
 
@@ -5108,7 +5230,7 @@ NFT;
         foreach ($relays as $name => $r) {
             $data[] = [
                 [
-                    'text'          => "$name: " . ($r['address'] ?: '—'),
+                    'text'          => "$name: " . ($r['address'] ?: ($r['awg_address'] ?? '') ?: '—'),
                     'callback_data' => "/relayEdit $name",
                 ],
             ];
@@ -5184,6 +5306,17 @@ NFT;
         } else {
             $text[] = $this->i18n('relay port map') . ': —';
         }
+        // Отдельный relay для wireguard/awg-прокси внутри mihomo-конфига.
+        $text[] = $this->i18n('relay awg address') . ': <code>' . ($r['awg_address'] ?? '' ?: '—') . '</code>';
+        if (!empty($r['awg_portmap'])) {
+            $pm = [];
+            foreach ($r['awg_portmap'] as $src => $dst) {
+                $pm[] = "$src:$dst";
+            }
+            $text[] = $this->i18n('relay awg port map') . ': <code>' . implode(', ', $pm) . '</code>';
+        } else {
+            $text[] = $this->i18n('relay awg port map') . ': —';
+        }
 
         $data[] = [
             [
@@ -5195,6 +5328,18 @@ NFT;
             [
                 'text'          => $this->i18n('relay port map'),
                 'callback_data' => "/setRelayPortMap $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay awg address'),
+                'callback_data' => "/setRelayAwgAddress $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay awg port map'),
+                'callback_data' => "/setRelayAwgPortMap $name",
             ],
         ];
         $data[] = [
@@ -5268,6 +5413,70 @@ NFT;
             return;
         }
         $c['relays'][$name]['portmap'] = $this->parseRelayPortMap($text);
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayAwgAddressPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay awg address'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay awg address'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayAwgAddress',
+            'args'          => [$name],
+        ];
+    }
+
+    public function setRelayAwgAddress($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $addr = trim($text);
+        if ($addr === '') {
+            unset($c['relays'][$name]['awg_address']);
+        } else {
+            $c['relays'][$name]['awg_address'] = $addr;
+        }
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayAwgPortMapPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay awg port map'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay awg port map'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayAwgPortMap',
+            'args'          => [$name],
+        ];
+    }
+
+    public function setRelayAwgPortMap($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $map = $this->parseRelayPortMap($text);
+        if (empty($map)) {
+            unset($c['relays'][$name]['awg_portmap']);
+        } else {
+            $c['relays'][$name]['awg_portmap'] = $map;
+        }
         $this->setPacConf($c);
         $this->relayEdit($name);
     }
@@ -5353,6 +5562,30 @@ NFT;
                     $c['proxies'][$index]['port'] = $port($c['proxies'][$index]['port']);
                 }
                 break;
+        }
+    }
+
+    // Swap the endpoint of the embedded wireguard/awg sub-proxy (named 'awg' in
+    // the mihomo config) to the relay's separate WG/AWG endpoint. Independent of
+    // applyRelay: the main proxy and the awg proxy can sit behind different
+    // relays/ports. No-op unless the relay has awg_address set and an 'awg' proxy
+    // exists (mihomo/'cl' configs only). Covers both plain WG and AmneziaWG —
+    // they are the same wireguard proxy, differing only by amnezia-wg-option.
+    public function applyAwgRelay(&$c, $relay)
+    {
+        if (empty($relay['awg_address']) || empty($c['proxies']) || !is_array($c['proxies'])) {
+            return;
+        }
+        $map = $relay['awg_portmap'] ?? [];
+        foreach ($c['proxies'] as $k => $p) {
+            if (($p['name'] ?? '') !== 'awg' || ($p['type'] ?? '') !== 'wireguard') {
+                continue;
+            }
+            $c['proxies'][$k]['server'] = $relay['awg_address'];
+            if (isset($c['proxies'][$k]['port'])) {
+                $cur = (string) $c['proxies'][$k]['port'];
+                $c['proxies'][$k]['port'] = isset($map[$cur]) ? (int) $map[$cur] : (int) $cur;
+            }
         }
     }
 
@@ -5969,6 +6202,61 @@ DNS-over-HTTPS with IP:
         return $this->i18n($c[$this->getInstanceWG(1) . 'amnezia'] ? 'amnezia' : 'wg_title') . ' ' . $c['wg_instance'];
     }
 
+    // Достаёт «vX.Y.Z…» из строки вывода, помеченной printf-префиксом «<tag>:».
+    // Возвращает null, если бинарь отсутствует (строка пустая) или версии нет.
+    public function pickVersion(string $out, string $tag): ?string
+    {
+        if (preg_match('~^' . preg_quote($tag, '~') . ':(.*)$~m', $out, $m)
+            && preg_match('~v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*~', $m[1], $v)) {
+            return $v[0];
+        }
+        return null;
+    }
+
+    // Версии ядра wireguard/amneziawg из wg-контейнера — информационная строка
+    // под заголовком меню. Один ssh-вызов (меню и так ходит в контейнер через
+    // readStatus), безопасный фолбэк: пусто, если бинари/контейнер недоступны.
+    public function wgVersion(): string
+    {
+        $out = (string) $this->ssh(
+            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1\'',
+            $this->getInstanceWG()
+        );
+        $parts = [];
+        if ($v = $this->pickVersion($out, 'awg')) {
+            $parts[] = "AmneziaWG: $v";
+        }
+        if ($v = $this->pickVersion($out, 'wg')) {
+            $parts[] = "WireGuard: $v";
+        }
+        return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
+    }
+
+    // Версии из warp-контейнера (wp = образ wireguard + wgcf, warp-cli в образе
+    // нет). Часть сборок wgcf не знает `--version`, поэтому пробуем обе формы и
+    // забираем stdout+stderr; плюс показываем wireguard-tools, которым и
+    // поднимается WARP-туннель. Маркеры разделяют секции одного ssh-вызова.
+    public function warpVersion(): string
+    {
+        $out = (string) $this->ssh(
+            'sh -c \'echo ===wgcf===; wgcf --version 2>&1; wgcf version 2>&1; echo ===wg===; wg --version 2>/dev/null\'',
+            'wp'
+        );
+        $section = function (string $name) use ($out): string {
+            return preg_match('~===' . $name . '===(.*?)(?:===\w+===|$)~s', $out, $m) ? $m[1] : '';
+        };
+        $parts = [];
+        // wgcf печатает «wgcf version X.Y.Z» (без v); строгий x.y.z токен, чтобы
+        // не цепляться за мусор из usage/ошибок, если --version не поддержан.
+        if (preg_match('~\bv?\d+\.\d+\.\d+\b~', $section('wgcf'), $m)) {
+            $parts[] = 'wgcf: ' . ltrim($m[0], 'v');
+        }
+        if (preg_match('~v?\d+(?:\.\d+)+~', $section('wg'), $m)) {
+            $parts[] = 'WireGuard: ' . $m[0];
+        }
+        return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
+    }
+
     public function statusWg(int $page = 0)
     {
         // Lazy auto-rotation: silently regenerates I1-I5/S3-S4 if the configured
@@ -6148,7 +6436,8 @@ DNS-over-HTTPS with IP:
                 ]);
             }
         }
-        $text = "Menu -> " . $this->getTitleWG() . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
+        $ver  = $this->wgVersion();
+        $text = "Menu -> " . $this->getTitleWG() . ($ver ? "\n$ver" : '') . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
         $data[] = [
             [
                 'text'          =>  '🔄 ' . $this->i18n('refresh'),
@@ -8461,11 +8750,11 @@ DNS-over-HTTPS with IP:
         $this->ssh('pkill dnstt', 'dnstt');
         if (!empty($c['dnsttDomain']) && !empty($c['dnsttPassword'])) {
             $this->ssh("adduser -D -s /bin/sh vpnbot", 'dnstt');
-            $this->ssh("echo 'vpnbot:{$c['dnsttPassword']}' | chpasswd", 'dnstt');
+            $this->ssh("echo " . escapeshellarg("vpnbot:{$c['dnsttPassword']}") . " | chpasswd", 'dnstt');
             if (!file_exists('/config/dnstt/server.key')) {
                 $this->ssh("dnstt-server -gen-key -privkey-file /dnstt/server.key -pubkey-file /dnstt/server.pub", 'dnstt');
             }
-            $this->ssh("dnstt-server -udp :53 -privkey-file /dnstt/server.key {$c['dnsttDomain']} 127.0.0.1:22", 'dnstt' , false, '/logs/dnstt');
+            $this->ssh("dnstt-server -udp :53 -privkey-file /dnstt/server.key " . escapeshellarg($c['dnsttDomain']) . " 127.0.0.1:22", 'dnstt' , false, '/logs/dnstt');
         }
     }
 
@@ -8565,7 +8854,10 @@ DNS-over-HTTPS with IP:
             // BUILD_COMMIT пишется post-receive скриптом в .env перед make r,
             // чтобы в меню был идентификатор сборки даже когда VER
             // (git describe --tags) пустой из-за отсутствия тегов в репе.
-            $commit = getenv('BUILD_COMMIT');
+            // При установке по ссылке / git clone post-receive не вызывается,
+            // поэтому BUILD_COMMIT пуст — в этом случае берём короткий SHA
+            // прямо из git, чтобы в меню всё равно был номер коммита.
+            $commit = getenv('BUILD_COMMIT') ?: exec('git -C / rev-parse --short HEAD');
             $main[] = 'v' . getenv('VER') . " $branch"
                 . ($commit ? " @$commit" : '')
                 . ($update ? ' (have updates)' : '');
@@ -8780,7 +9072,7 @@ DNS-over-HTTPS with IP:
             array_unshift($data, [
                 [
                     'text'    => 'changelog',
-                    'web_app' => ['url' => "https://raw.githubusercontent.com/mercurykd/vpnbot/$b/version"],
+                    'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
                 ],
                 [
                     'text'          => $this->i18n('update bot'),
@@ -10669,9 +10961,11 @@ DNS-over-HTTPS with IP:
                         $link = "trojan://$trojanPwd@$domain:443"
                                     . "?type=grpc"
                                     . "&serviceName=grpc$hash"
+                                    . "&mode=gun"
                                     . "&security=tls"
                                     . "&sni=$domain"
                                     . "&fp=$fp"
+                                    . "&alpn=h2"
                                     . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
                         break;
 
@@ -11078,7 +11372,7 @@ DNS-over-HTTPS with IP:
         $clients = $this->getClientsOc();
         foreach ($clients as $k => $v) {
             if ($i == $k) {
-                $this->ssh("ocpasswd -c /etc/ocserv/ocserv.passwd -d $v", 'oc');
+                $this->ssh("ocpasswd -c /etc/ocserv/ocserv.passwd -d " . escapeshellarg($v), 'oc');
                 break;
             }
         }
@@ -11112,7 +11406,7 @@ DNS-over-HTTPS with IP:
     public function addocus($user)
     {
         $pac = $this->getPacConf();
-        $this->ssh("echo '{$pac['ocserv']}' | ocpasswd -c /etc/ocserv/ocserv.passwd $user", 'oc');
+        $this->ssh("echo " . escapeshellarg($pac['ocserv']) . " | ocpasswd -c /etc/ocserv/ocserv.passwd " . escapeshellarg($user), 'oc');
         $this->menu('oc');
     }
 
@@ -11698,6 +11992,18 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Версия Xray-core из контейнера. `xray version` печатает строку вида
+    // "Xray 1.8.24 (Xray, Penetrates Everything.) ..." — берём номер версии.
+    // Не требует запущенного процесса, поэтому работает даже когда xray off.
+    public function getXrayVersion()
+    {
+        $out = $this->ssh('xray version 2>&1 | head -n1', 'xr');
+        if (preg_match('~Xray\s+v?(\S+)~i', (string) $out, $m)) {
+            return $m[1];
+        }
+        return '';
+    }
+
     public function xray($page = 0)
     {
         $c      = $this->getXray();
@@ -11706,6 +12012,8 @@ DNS-over-HTTPS with IP:
         if (!empty($c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0])) {
             $text[] = "fake domain: <code>{$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}</code>";
         }
+        $xrayVersion = $this->getXrayVersion();
+        $text[] = 'xray version: ' . ($xrayVersion !== '' ? "<code>$xrayVersion</code>" : '?');
         $text[] = 'transport: ' . ($p['transport'] ?: 'Websocket');
         $text[] = 'fingerprint: ' . ($p['fingerprint'] ?: 'chrome');
         $st = $this->getXrayStats();
@@ -12126,32 +12434,49 @@ DNS-over-HTTPS with IP:
 
     public function analyzeXray()
     {
+        // iplimit.php запущен в фоне (`php iplimit.php &`): если этот while(true)
+        // упадёт с Throwable, процесс тихо умрёт и IP-limit защита отключится
+        // навсегда без следов до перезапуска контейнера. Поэтому и внешний
+        // (setup: fopen/fseek), и внутренний (per-line обработка) циклы изолируем
+        // try/catch — транзиентная ошибка не должна ронять демон.
         while (true) {
-            if (!empty($this->getPacConf()['ip_limit'])) {
-                $this->pool = [];
-                $log = '/logs/xray';
-                $r   = fopen($log, 'r');
-                fseek($r, 0, SEEK_END);
-                while (true) {
-                    $pac = $this->getPacConf();
-                    if (empty($pac['ip_limit'])) {
-                        break;
+            try {
+                if (!empty($this->getPacConf()['ip_limit'])) {
+                    $this->pool = [];
+                    $log = '/logs/xray';
+                    $r   = fopen($log, 'r');
+                    if ($r === false) {
+                        sleep(10);
+                        continue;
                     }
-                    $currentPosition = ftell($r);
-                    clearstatcache();
-                    $fileSize = filesize($log);
-                    if ($fileSize > $currentPosition) {
-                        fseek($r, $currentPosition); // сброс флага feof
-                        while (!feof($r)) {
-                            $line = fgets($r);
-                            if ($line !== false) {
-                                $this->frequencyAnalyze($line, $pac);
-                            }
+                    fseek($r, 0, SEEK_END);
+                    while (true) {
+                        $pac = $this->getPacConf();
+                        if (empty($pac['ip_limit'])) {
+                            break;
                         }
+                        try {
+                            $currentPosition = ftell($r);
+                            clearstatcache();
+                            $fileSize = filesize($log);
+                            if ($fileSize > $currentPosition) {
+                                fseek($r, $currentPosition); // сброс флага feof
+                                while (!feof($r)) {
+                                    $line = fgets($r);
+                                    if ($line !== false) {
+                                        $this->frequencyAnalyze($line, $pac);
+                                    }
+                                }
+                            }
+                        } catch (\Throwable $e) {
+                            error_log('analyzeXray: ' . $e->getMessage());
+                        }
+                        sleep(1);
                     }
-                    sleep(1);
+                    fclose($r);
                 }
-                fclose($r);
+            } catch (\Throwable $e) {
+                error_log('analyzeXray(setup): ' . $e->getMessage());
             }
             sleep(10);
         }
@@ -12237,7 +12562,15 @@ DNS-over-HTTPS with IP:
         $c      = file_get_contents('/etc/warp/wgcf-profile.conf');
         $a      = file_get_contents('/etc/warp/wgcf-account.toml');
         $text[] = "Menu -> " . $this->i18n('warp');
-        $text[] = "status: <pre>" . $this->ssh('wgcf trace', 'wp') . '</pre>';
+        if ($ver = $this->warpVersion()) {
+            $text[] = $ver;
+        }
+        // wgcf печатает trace в stdout, а лог-строки ("Using config file") в
+        // stderr — ssh() читает только stdout, поэтому трейс чистый. Если WARP
+        // не поднят, trace пуст: показываем явный "off", чтобы строка статуса
+        // не выглядела пустой/сломанной.
+        $trace  = trim((string) $this->ssh('wgcf trace', 'wp'));
+        $text[] = "status: " . ($trace !== '' ? "<pre>$trace</pre>" : '<code>off</code>');
         $text[] = "key: <code>{$p['warp']}</code>";
         $text[] = "<pre>$a</pre>";
         $text[] = "<pre>$c</pre>";
@@ -12270,7 +12603,7 @@ DNS-over-HTTPS with IP:
         } else {
             unset($c['inbounds'][0]['settings']['clients'][$arg[1]]["{$arg[0]}template"]);
         }
-        file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->saveXray($c);
         $this->userXr($arg[1]);
     }
 
@@ -12404,7 +12737,7 @@ DNS-over-HTTPS with IP:
                 'web_app' => ['url' => "https://{$domain}/pac$hash?t=cl&s={$c['id']}"]
             ],
         ];
-        if (!empty(array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address'])))) {
+        if (!empty(array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']) || !empty($e['awg_address'])))) {
             $data[] = [
                 [
                     'text'          => '🔗 ' . $this->i18n('relay subscriptions'),
@@ -12532,7 +12865,7 @@ DNS-over-HTTPS with IP:
             $this->userXr($i);
             return;
         }
-        $relays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']));
+        $relays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']) || !empty($e['awg_address']));
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('relay subscriptions');
         $text[] = $this->i18n('relay hint');
@@ -12541,7 +12874,7 @@ DNS-over-HTTPS with IP:
         foreach ($relays as $name => $relay) {
             $data[] = [
                 [
-                    'text'          => "🔗 $name: {$relay['address']}",
+                    'text'          => "🔗 $name: " . ($relay['address'] ?: $relay['awg_address']),
                     'callback_data' => "/relaySub {$i}_{$name}",
                 ],
             ];
@@ -12571,7 +12904,7 @@ DNS-over-HTTPS with IP:
         $c     = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
         $pac   = $this->getPacConf();
         $relay = $pac['relays'][$name] ?? null;
-        if ($c === null || $relay === null || empty($relay['address'])) {
+        if ($c === null || $relay === null || (empty($relay['address']) && empty($relay['awg_address']))) {
             $this->userRelay($i);
             return;
         }
@@ -12581,7 +12914,7 @@ DNS-over-HTTPS with IP:
         $email  = $c['email'];
         $rl     = '&relay=' . $name;
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> ({$relay['address']})\n";
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> (" . ($relay['address'] ?: $relay['awg_address']) . ")\n";
 
         // One-tap import deep links (work for every client), relay-flavoured.
         foreach ([
@@ -12759,7 +13092,7 @@ DNS-over-HTTPS with IP:
         } else {
             $xray['inbounds'][0]['settings']['clients'][$i]['hwid_disabled'] = 1;
         }
-        file_put_contents('/config/xray.json', json_encode($xray, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->saveXray($xray);
         $this->answer($this->input['callback_id'], $this->i18n('hwid notice'), true);
         $this->hwidUser($i);
     }
@@ -12768,7 +13101,7 @@ DNS-over-HTTPS with IP:
     {
         $xray = $this->getXray();
         unset($xray['inbounds'][0]['settings']['clients'][$i]['hwid_limit']);
-        file_put_contents('/config/xray.json', json_encode($xray, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->saveXray($xray);
         $this->hwidUser($i);
     }
 
@@ -12796,7 +13129,7 @@ DNS-over-HTTPS with IP:
         } else {
             unset($xray['inbounds'][0]['settings']['clients'][$i]['hwid_limit']);
         }
-        file_put_contents('/config/xray.json', json_encode($xray, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->saveXray($xray);
         $this->send($this->input['chat'], $this->i18n('hwid notice'), $this->input['message_id']);
         $this->hwidUser($i);
     }
@@ -13407,7 +13740,10 @@ DNS-over-HTTPS with IP:
                         $c['proxies'][$index]['tls']              = true;
                         $c['proxies'][$index]['alpn']             = ['h2'];
                         $c['proxies'][$index]['skip-cert-verify'] = false;
-                        $c['proxies'][$index]['servername']       = '~domain~';
+                        // Clash.Meta trojan читает SNI из поля `sni`, а НЕ `servername`
+                        // (последнее — только для vless/vmess и trojan'ом игнорируется).
+                        unset($c['proxies'][$index]['servername']);
+                        $c['proxies'][$index]['sni']              = '~domain~';
                         $c['proxies'][$index]['grpc-opts']        = [
                             'grpc-service-name' => "grpc$hash",
                         ];
@@ -13577,6 +13913,12 @@ DNS-over-HTTPS with IP:
         // (selected by name via $_GET['relay']); everything else stays as-is.
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]) && isset($index)) {
             $this->applyRelay($c, $_GET['t'], $index, $pac['relays'][$_GET['relay']]);
+            // Mihomo-конфиг может нести встроенный wireguard/awg-прокси; его
+            // эндпоинт подменяем на отдельный WG/AWG-relay (если задан), чтобы
+            // основной прокси и awg ходили через разные relay/порты.
+            if ($_GET['t'] == 'cl') {
+                $this->applyAwgRelay($c, $pac['relays'][$_GET['relay']]);
+            }
         }
         if (!empty($return)) {
             if ($_GET['t'] == 'cl') {
@@ -14264,6 +14606,8 @@ DNS-over-HTTPS with IP:
     {
         $b = exec('git -C / rev-parse --abbrev-ref HEAD');
         $track  = trim(file_get_contents('/update/branch'));
+        $hash   = $this->getHashBot();
+        $domain = $this->getPacConf()['domain'] ?: $this->ip;
         $data = [
             [
                 [
@@ -14272,7 +14616,7 @@ DNS-over-HTTPS with IP:
                 ],
                 [
                     'text'    => $this->i18n('changelog'),
-                    'web_app' => ['url' => "https://raw.githubusercontent.com/mercurykd/vpnbot/$b/version"],
+                    'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
                 ],
             ],
             [
@@ -14928,19 +15272,31 @@ DNS-over-HTTPS with IP:
         $ip                         = getenv('IP');
         $rm                         = explode(':', trim(file_get_contents('/update/reload_message')));
         $m                          = file_get_contents('/update/message');
+        // message_id может прийти пустым (reload_message вида "chat:") — тогда
+        // передавать его в send(?int $to) нельзя: '' → TypeError и фатал в
+        // service.php до restartTG/restartTelemt. Приводим к ?int.
+        $mid                        = (isset($rm[1]) && $rm[1] !== '') ? (int) $rm[1] : null;
         $this->input['chat']        = $rm[0];
-        $this->input['message_id']  = $rm[1] ?? false;
-        $this->input['callback_id'] = $rm[1] ?? false;
+        $this->input['message_id']  = $mid;
+        $this->input['callback_id'] = $mid;
+        // Импорт настроек после обновления — НЕкритичный шаг. Любая ошибка здесь
+        // не должна ронять service.php до restartTG/restartTelemt. И /update/json
+        // снимаем в любом случае, иначе сбой повторяется при каждом старте.
         if (file_exists($this->update)) {
             $this->selfupdate = true;
-            if (!empty($m)) {
-                $this->send($this->input['chat'], "<pre>$m</pre>", $rm[1]);
+            try {
+                if (!empty($m)) {
+                    $this->send($this->input['chat'], "<pre>$m</pre>", $mid);
+                }
+                $r = $this->send($this->input['chat'], "import settings");
+                $this->input['message_id']  = $r['result']['message_id'] ?? $mid;
+                $this->input['callback_id'] = $r['result']['message_id'] ?? $mid;
+                $this->importFile($this->update);
+            } catch (\Throwable $e) {
+                error_log('selfUpdate import skipped: ' . $e->getMessage());
+            } finally {
+                @unlink($this->update);
             }
-            $r = $this->send($this->input['chat'], "import settings");
-            $this->input['message_id']  = $r['result']['message_id'];
-            $this->input['callback_id'] = $r['result']['message_id'];
-            $this->importFile($this->update);
-            unlink($this->update);
         }
         file_put_contents('/update/message', '');
         file_put_contents('/update/reload_message', '');
@@ -15495,19 +15851,31 @@ DNS-over-HTTPS with IP:
         $ipnet     = explode('/', $conf['interface']['Address']);
         $server_ip = ip2long($ipnet[0]);
         $ips       = [$server_ip];
-        $bitmask   = $ipnet[1];
+        $bitmask   = (int) $ipnet[1];
         if (!empty($conf['peers'])) {
             foreach ($conf['peers'] as $k => $v) {
                 $ips[] = ip2long(explode('/', $v['AllowedIPs'] ?: $v['# AllowedIPs'])[0]);
             }
         }
-        $ip_count = (1 << (32 - $bitmask)) - count($ips) - 1;
-        for ($i = 1; $i < $ip_count; $i++) {
-            $ip = $i + $server_ip;
-            if (!in_array($ip, $ips)) {
+        // Перебираем ВЕСЬ диапазон хостов подсети (network+1 … broadcast-1) и
+        // берём первый свободный. Старый код искал `$i + $server_ip` с границей
+        // `$ip_count`, которая уменьшалась с числом пиров → во фрагментированной
+        // почти-полной подсети свободный адрес (например удалённый в середине) не
+        // находился, $client_ip оставался undefined и создавался битый пир
+        // «AllowedIPs = /32». Здесь же при исчерпании подсети выходим явно.
+        $size      = 1 << (32 - $bitmask);
+        $net       = $server_ip & ~($size - 1);
+        $broadcast = $net | ($size - 1);
+        $client_ip = null;
+        for ($ip = $net + 1; $ip < $broadcast; $ip++) {
+            if (!in_array($ip, $ips, true)) {
                 $client_ip = long2ip($ip);
                 break;
             }
+        }
+        if ($client_ip === null) {
+            $this->send($this->input['chat'] ?? '', 'wireguard: подсеть исчерпана, свободных адресов нет', $this->input['message_id'] ?? null);
+            return;
         }
         $public_server_key = trim($this->ssh("echo {$conf['interface']['PrivateKey']} | {$this->getWGType()} pubkey", $this->getInstanceWG()));
         $private_peer_key  = trim($this->ssh("{$this->getWGType()} genkey", $this->getInstanceWG()));
@@ -15589,7 +15957,14 @@ DNS-over-HTTPS with IP:
 
     public function restartWG($conf_str, $switch = false)
     {
-        $this->ssh("echo '$conf_str' > /etc/wireguard/wg0.conf", $this->getInstanceWG());
+        // Конфиг пишем через base64, а НЕ `echo '$conf_str'`. Имя клиента
+        // (## name) — сырой пользовательский ввод (см. renameClient/addWg), и
+        // одиночная кавычка в нём рвала bash-строку `echo '...'` →
+        // wg0.conf обрезался/не записывался, а следующий wg-quick up падал с
+        // битым конфигом → туннель ложился. base64 выдаёт только [A-Za-z0-9+/=],
+        // что безопасно внутри одинарных кавычек при любом содержимом конфига.
+        $b64 = base64_encode($conf_str);
+        $this->ssh("echo '$b64' | base64 -d > /etc/wireguard/wg0.conf", $this->getInstanceWG());
         $this->ssh("{$this->getWGType((int) $switch)}-quick down wg0", $this->getInstanceWG());
         $this->ssh("{$this->getWGType()}-quick up wg0", $this->getInstanceWG());
         return true;

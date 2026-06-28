@@ -396,6 +396,7 @@ services:
             dockerfile: dockerfile/xray.dockerfile
             args:
                 image: ${IMAGE}
+                XRAY_VERSION: ${XRAY_VERSION:-}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
