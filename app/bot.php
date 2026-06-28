@@ -1480,6 +1480,7 @@ class Bot
             ];
         }
         $this->applySniffingToXray($c, $this->getPacConf());
+        $this->ensureFreedomCompat($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
             'services' => ['StatsService'],
@@ -1524,7 +1525,45 @@ class Bot
             }
             $c['policy']['levels'] = $lv;
         }
+        $this->ensureFreedomCompat($c);
         file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    // Xray >= v26.4.15 (PR #5947, «Direct/Freedom outbound: default safe policy»)
+    // вешает на freedom/direct-outbound встроенное правило, которое МОЛЧА рвёт
+    // любое соединение, чей адрес назначения попадает в приватный/зарезерви-
+    // рованный диапазон (0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12,
+    // 192.168/16, 198.18/15, CGNAT, …), и принудительно резолвит домен ДО дозвона.
+    // Срабатывает, когда исходящий inbound — vless/vmess/trojan/hysteria/wireguard
+    // /shadowsocks. Именно это ломает warp (socks → microsocks @ 10.10.0.13) и
+    // любой внутрикластерный/LAN-адрес, идущий через "direct": поэтому warp
+    // работает на v26.4.13 и отваливается начиная с v26.4.15.
+    //
+    // Возвращаем поведение до v26.4.15, выдавая каждому freedom-outbound явное
+    // allow-all правило finalRules. Оно матчится раньше встроенного default-
+    // правила и подавляет его, а заодно отключает пред-дозвонный форс-резолв
+    // (см. proxy/freedom/freedom.go: matchFinalRule / shouldResolveDomainBefore-
+    // FinalRules). Ядра < v26.4.17 не знают поля "finalRules" и просто игнорируют
+    // его (нестрогий JSON-загрузчик), а safe policy там либо отсутствует
+    // (<= v26.4.13), либо снимается этим же правилом — регрессий нет.
+    // Конфиги с собственными finalRules не трогаем.
+    public function ensureFreedomCompat(array &$c): void
+    {
+        if (empty($c['outbounds']) || !is_array($c['outbounds'])) {
+            return;
+        }
+        foreach ($c['outbounds'] as &$ob) {
+            if (($ob['protocol'] ?? '') !== 'freedom') {
+                continue;
+            }
+            if (!isset($ob['settings']) || !is_array($ob['settings'])) {
+                $ob['settings'] = [];
+            }
+            if (!array_key_exists('finalRules', $ob['settings'])) {
+                $ob['settings']['finalRules'] = [['action' => 'allow']];
+            }
+        }
+        unset($ob);
     }
 
     public function collectSession() {
