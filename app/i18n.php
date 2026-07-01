@@ -149,6 +149,14 @@ $i = [
         'en' => 'strict sub token',
         'ru' => 'строгий токен подписки',
     ],
+    'relay aggregate'      => [
+        'en' => 'relays in one sub',
+        'ru' => 'relay одной подпиской',
+    ],
+    'relay health'         => [
+        'en' => 'health',
+        'ru' => 'статус',
+    ],
     'relay delete'         => [
         'en' => '🗑 delete relay',
         'ru' => '🗑 удалить relay',

@@ -31,6 +31,7 @@ class Bot
     public $time3;
     public $time_xray_stats;
     public $time_extsub;
+    public $time_relayhealth;
     public $subtokens_done;
     public $admin;
     public $ports;
@@ -351,6 +352,9 @@ class Bot
                 break;
             case preg_match('~^/relayMenu$~', $this->input['callback'], $m):
                 $this->relayMenu();
+                break;
+            case preg_match('~^/switchRelayAggregate$~', $this->input['callback'], $m):
+                $this->switchRelayAggregate();
                 break;
             case preg_match('~^/relayAdd$~', $this->input['callback'], $m):
                 $this->relayAdd();
@@ -3357,6 +3361,7 @@ NFT;
             'trackOnline',
             'refreshExtSubCache',
             'backfillSubTokens',
+            'checkRelayHealth',
         ];
         while (true) {
             foreach ($steps as $step) {
@@ -5253,13 +5258,20 @@ NFT;
 
         $data = [];
         foreach ($relays as $name => $r) {
+            $hl = $this->relayHealthLabel($name);
             $data[] = [
                 [
-                    'text'          => "$name: " . ($r['address'] ?: ($r['awg_address'] ?? '') ?: '—'),
+                    'text'          => "$name: " . ($r['address'] ?: ($r['awg_address'] ?? '') ?: '—') . ($hl !== '' ? "  $hl" : ''),
                     'callback_data' => "/relayEdit $name",
                 ],
             ];
         }
+        $data[] = [
+            [
+                'text'          => '🧬 ' . $this->i18n('relay aggregate') . ': ' . $this->i18n(!empty($p['relay_aggregate']) ? 'on' : 'off'),
+                'callback_data' => '/switchRelayAggregate',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => '➕ ' . $this->i18n('add relay'),
@@ -5279,6 +5291,16 @@ NFT;
             implode("\n", $text),
             $data ?: false,
         );
+    }
+
+    // Global toggle: include every enabled/reachable relay as its own node in the
+    // base64 (v2rayNG) subscription, so one link exposes origin + all relays.
+    public function switchRelayAggregate()
+    {
+        $c = $this->getPacConf();
+        $c['relay_aggregate'] = empty($c['relay_aggregate']) ? 1 : 0;
+        $this->setPacConf($c);
+        $this->relayMenu();
     }
 
     public function relayAdd()
@@ -5322,6 +5344,9 @@ NFT;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay') . " -> <b>$name</b>";
         $text[] = $this->i18n('relay address') . ': <code>' . ($r['address'] ?: '—') . '</code>';
+        if (!empty($r['address']) && ($hl = $this->relayHealthLabel($name, true)) !== '') {
+            $text[] = $this->i18n('relay health') . ": $hl";
+        }
         if (!empty($r['portmap'])) {
             $pm = [];
             foreach ($r['portmap'] as $src => $dst) {
@@ -11093,31 +11118,24 @@ DNS-over-HTTPS with IP:
             exit;
         }
 
-        $link = $this->linkXray($i);
+        $native = $this->linkXray($i);
+        $links  = [$native];
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']])) {
-            $relay = $pac['relays'][$_GET['relay']];
-            $link  = $this->relayVlessLink($link, $relay);
-            // relayVlessLink only swaps the endpoint when the relay has a main
-            // 'address' (awg_address doesn't affect the vless link). Re-flag the
-            // #remark only then — the traffic now hops relay → origin, so show the
-            // relay flag first and the origin (destination) flag second. Otherwise
-            // the endpoint is still the origin and linkXray's origin flag stands.
-            if (!empty($relay['address'])) {
-                $link = preg_replace_callback(
-                    '~#[^#]*$~',
-                    fn() => '#' . $this->flagName($client['email'], [$relay['address'], $this->ip]),
-                    $link,
-                    1,
-                );
+            // Explicit relay requested: serve only that relay's node (unchanged).
+            $links = [$this->relaySwapLink($native, $pac['relays'][$_GET['relay']], $client['email'])];
+        } elseif (!empty($pac['relay_aggregate'])) {
+            // Aggregated sub: origin node + one node per enabled & reachable relay,
+            // so a single link exposes every exit as a selectable node.
+            foreach ($this->activeRelaysForSub($pac) as $relay) {
+                $links[] = $this->relaySwapLink($native, $relay, $client['email']);
             }
         }
 
         // Splice in this client's external share links + remote-subscription
-        // links (from other servers) after its own node, so one base64 sub
-        // aggregates them all. Relay swap applies only to the native link above;
-        // external links are foreign and passed through untouched. A client with
-        // no ext rows yields byte-for-byte the previous single-link output.
-        $body = implode("\n", array_merge([$link], $this->expandClientExt($client)));
+        // links (from other servers). A client with no relays/ext rows yields
+        // byte-for-byte the previous single-link output. Dedup guards against
+        // two relays resolving to the same endpoint.
+        $body = implode("\n", array_values(array_unique(array_merge($links, $this->expandClientExt($client)))));
 
         $this->subSecurityHeaders();
         header('Content-Type: text/plain; charset=utf-8');
@@ -11142,6 +11160,113 @@ DNS-over-HTTPS with IP:
             },
             $link,
         );
+    }
+
+    // ── Relay: link swap + reachability (health) ─────────────────────────────
+    // Swap a share link's endpoint to $relay and re-flag its #remark (relay flag
+    // first, origin second) when the endpoint actually moved. Shared by the
+    // single-relay and aggregated-subscription paths.
+    public function relaySwapLink(string $link, array $relay, string $email): string
+    {
+        $out = $this->relayVlessLink($link, $relay);
+        if (!empty($relay['address'])) {
+            $out = preg_replace_callback(
+                '~#[^#]*$~',
+                fn() => '#' . $this->flagName($email, [$relay['address'], $this->ip]),
+                $out,
+                1,
+            );
+        }
+        return $out;
+    }
+
+    // Relays eligible for the aggregated base64 subscription: those with a TCP
+    // 'address' (a vless link can only carry a TCP endpoint) that are not known to
+    // be down. Health is fail-open — unknown/never-probed relays are included.
+    public function activeRelaysForSub(array $pac): array
+    {
+        $health = $this->readRelayHealth();
+        $out    = [];
+        foreach ($pac['relays'] ?? [] as $name => $r) {
+            if (empty($r['address'])) {
+                continue;
+            }
+            $h = $health[$name] ?? null;
+            if ($h !== null && empty($h['ok'])) {
+                continue; // known-dead → skip so clients don't get a broken node
+            }
+            $out[$name] = $r;
+        }
+        return $out;
+    }
+
+    // TCP connect probe with latency. No payload is sent; used only to tell if a
+    // relay endpoint accepts connections. Relay addresses are admin-configured.
+    public function tcpProbe(string $host, int $port, float $timeout = 3.0): array
+    {
+        $t0    = microtime(true);
+        $errno = 0;
+        $errstr = '';
+        $fp = @fsockopen($host, $port, $errno, $errstr, $timeout);
+        if ($fp) {
+            fclose($fp);
+            return ['ok' => true, 'ms' => (int) round((microtime(true) - $t0) * 1000), 'at' => time(), 'err' => ''];
+        }
+        return ['ok' => false, 'ms' => 0, 'at' => time(), 'err' => trim("$errno $errstr") ?: 'unreachable'];
+    }
+
+    // Cron step: probe every relay's main endpoint (address : portmap[443] ?? 443)
+    // and cache the result. Interval-gated so the 10 s cron loop probes at most
+    // once a minute. awg-only relays (no TCP address) are not probed.
+    public function checkRelayHealth(): void
+    {
+        if (!empty($this->time_relayhealth) && time() - $this->time_relayhealth < 60) {
+            return;
+        }
+        $pac = $this->getPacConf();
+        if (!is_array($pac)) {
+            return; // corrupt/unreadable config: don't wipe the health cache
+        }
+        $this->time_relayhealth = time();
+        $health = [];
+        foreach ($pac['relays'] ?? [] as $name => $r) {
+            if (empty($r['address'])) {
+                continue;
+            }
+            $port = (int) ($r['portmap']['443'] ?? 443);
+            $health[$name] = $this->tcpProbe($r['address'], $port);
+        }
+        $this->writeRelayHealth($health);
+    }
+
+    public function readRelayHealth(): array
+    {
+        $f = '/config/relay.health';
+        if (!is_file($f)) {
+            return [];
+        }
+        return json_decode((string) file_get_contents($f), true) ?: [];
+    }
+
+    public function writeRelayHealth(array $health): void
+    {
+        file_put_contents('/config/relay.health', json_encode($health, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    // Short human label for a relay's last probe: "✅ 42ms", "⛔ error", or ''
+    // (never probed). $age true appends how long ago (e.g. " · 15s").
+    public function relayHealthLabel(string $name, bool $age = false): string
+    {
+        $h = $this->readRelayHealth()[$name] ?? null;
+        if ($h === null) {
+            return '';
+        }
+        $label = !empty($h['ok']) ? '✅ ' . (int) ($h['ms'] ?? 0) . 'ms' : '⛔ ' . ($h['err'] ?: 'down');
+        if ($age && !empty($h['at'])) {
+            $s = max(0, time() - (int) $h['at']);
+            $label .= ' · ' . ($s < 60 ? "{$s}s" : floor($s / 60) . 'm');
+        }
+        return $label;
     }
 
     // ── External links & remote subscriptions (3x-ui port) ───────────────────
@@ -13630,9 +13755,10 @@ DNS-over-HTTPS with IP:
 
         $data = [];
         foreach ($relays as $name => $relay) {
+            $hl = $this->relayHealthLabel($name);
             $data[] = [
                 [
-                    'text'          => "🔗 $name: " . ($relay['address'] ?: $relay['awg_address']),
+                    'text'          => "🔗 $name: " . ($relay['address'] ?: $relay['awg_address']) . ($hl !== '' ? "  $hl" : ''),
                     'callback_data' => "/relaySub {$i}_{$name}",
                 ],
             ];
