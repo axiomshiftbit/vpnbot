@@ -145,6 +145,10 @@ $i = [
         'en' => 'rotate sub link',
         'ru' => 'сменить ссылку подписки',
     ],
+    'subtoken strict'      => [
+        'en' => 'strict sub token',
+        'ru' => 'строгий токен подписки',
+    ],
     'relay delete'         => [
         'en' => '🗑 delete relay',
         'ru' => '🗑 удалить relay',

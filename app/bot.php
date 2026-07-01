@@ -830,6 +830,9 @@ class Bot
             case preg_match('~^/rotateSub (\d+)$~', $this->input['callback'], $m):
                 $this->rotateSubToken($m[1]);
                 break;
+            case preg_match('~^/switchSubtokenStrict$~', $this->input['callback'], $m):
+                $this->switchSubtokenStrict();
+                break;
             case preg_match('~^/choiceTemplate (.+)$~', $this->input['callback'], $m):
                 $this->choiceTemplate($m[1]);
                 break;
@@ -11081,7 +11084,7 @@ DNS-over-HTTPS with IP:
         $xr  = $this->getXray();
         $pac = $this->getPacConf();
         // Resolve by subtoken (preferred) or id (pre-subtoken links).
-        $i      = $this->findClientBySid($xr, $_GET['s'] ?? '');
+        $i      = $this->findClientBySid($xr, $_GET['s'] ?? '', !empty($pac['subtoken_strict']));
         $client = $i === null ? null : $xr['inbounds'][0]['settings']['clients'][$i];
         if ($client === null || !empty($client['off'])) {
             $this->subNotFound();
@@ -11229,8 +11232,10 @@ DNS-over-HTTPS with IP:
     }
 
     // Resolve a sub `s`/`id` value to a client index: subtoken first, then id as
-    // a backward-compatible fallback. Returns null when nothing matches.
-    public function findClientBySid(array $xr, string $sid): ?int
+    // a backward-compatible fallback. In $strict mode (pac.subtoken_strict) the
+    // uuid fallback is dropped, so previously shared/leaked uuid-addressed sub
+    // URLs are dead — only the subtoken resolves. Returns null when nothing matches.
+    public function findClientBySid(array $xr, string $sid, bool $strict = false): ?int
     {
         if ($sid === '') {
             return null;
@@ -11240,6 +11245,9 @@ DNS-over-HTTPS with IP:
             if (($v['subtoken'] ?? '') === $sid) {
                 return $k;
             }
+        }
+        if ($strict) {
+            return null;
         }
         foreach ($clients as $k => $v) {
             if (($v['id'] ?? '') == $sid) {
@@ -11279,6 +11287,25 @@ DNS-over-HTTPS with IP:
             $this->saveXray($xr);
         }
         $this->subtokens_done = true;
+    }
+
+    // Global toggle: strict subscription addressing. When ON, findClientBySid no
+    // longer falls back to the uuid, so old uuid-addressed sub URLs stop working
+    // (hard cutoff). Before enabling, backfill every client's subtoken so no
+    // subscription breaks for lack of one.
+    public function switchSubtokenStrict()
+    {
+        $pac    = $this->getPacConf();
+        $enable = empty($pac['subtoken_strict']);
+        if ($enable) {
+            $xr = $this->getXray();
+            if (is_array($xr) && $this->ensureSubTokens($xr)) {
+                $this->saveXray($xr);
+            }
+        }
+        $pac['subtoken_strict'] = $enable ? 1 : 0;
+        $this->setPacConf($pac);
+        $this->xray();
     }
 
     // Rotate a client's subtoken: previously shared/leaked sub URLs stop working,
@@ -12619,6 +12646,12 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/setHwidDevices xray',
             ],
         ];
+        $data[] = [
+            [
+                'text'          => '🔒 ' . $this->i18n('subtoken strict') . ': ' . $this->i18n(!empty($p['subtoken_strict']) ? 'on' : 'off'),
+                'callback_data' => '/switchSubtokenStrict',
+            ],
+        ];
         if ($p['transport'] == 'Reality') {
             $data[] = [
                 [
@@ -13944,7 +13977,7 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         // Resolve by subtoken (preferred) or, for pre-subtoken links, the id.
-        $k      = $this->findClientBySid($xr, $_GET['id'] ?? '');
+        $k      = $this->findClientBySid($xr, $_GET['id'] ?? '', !empty($pac['subtoken_strict']));
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
         // Missing/disabled id: clean 404 instead of rendering the page with
         // undefined fields (which would warn and break the body).
@@ -14093,7 +14126,7 @@ DNS-over-HTTPS with IP:
 
         // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $sid    = $_GET['s'] ?? '';
-        $k      = $this->findClientBySid($xr, $sid);
+        $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
         if ($client === null || !empty($client['off'])) {
             if (!empty($return)) {
