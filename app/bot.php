@@ -10366,6 +10366,42 @@ DNS-over-HTTPS with IP:
              . mb_chr(0x1F1E6 + ord($cc[1]) - 65, 'UTF-8');
     }
 
+    // Country-flag emoji for a server endpoint (IP or hostname), via the shared
+    // geoIP cache. ipinfo needs an IP, so a hostname is resolved first. Returns
+    // '' when the country can't be determined (bad host / geo miss). Cached for
+    // 7 days like the online view, so a subscription request only pays a network
+    // round-trip on a cold cache for each distinct server/relay IP.
+    public function serverFlag(string $host): string
+    {
+        $host = trim($host);
+        if ($host === '') {
+            return '';
+        }
+        if (!filter_var($host, FILTER_VALIDATE_IP)) {
+            $ip = gethostbyname($host); // returns $host unchanged on failure
+            if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+                return '';
+            }
+            $host = $ip;
+        }
+        $cache  = $this->getGeoCache();
+        $before = $cache;
+        $g      = $this->geoLookup($host, $cache);
+        if ($cache !== $before) {
+            $this->setGeoCache($cache);
+        }
+        return $this->countryFlag($g['country'] ?? '');
+    }
+
+    // Prefix a subscription/node display name with the server-country flag, e.g.
+    // "🇫🇷 email". Falls back to the bare name when the country is unknown so a
+    // geo failure never blanks the name.
+    public function flagName(string $name, string $host): string
+    {
+        $flag = $this->serverFlag($host);
+        return $flag !== '' ? "$flag $name" : $name;
+    }
+
     public function onlinesView()
     {
         $clients = $this->onlineClients();
@@ -10900,6 +10936,10 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $fp     = $pac['fingerprint'] ?: 'chrome';
+        // Share-link #remark shown as the node name in the client, prefixed with
+        // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
+        // this with the relay's country for relay subscriptions.
+        $remark = $this->flagName($c['inbounds'][0]['settings']['clients'][$i]['email'], $this->ip);
         $si     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
@@ -10915,7 +10955,7 @@ DNS-over-HTTPS with IP:
             case 1:
                 return "v2rayng://install-config?url=$v2#{$c['inbounds'][0]['settings']['clients'][$i]['id']}";
             case 2:
-                return "sing-box://import-remote-profile/?url={$si}#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                return "sing-box://import-remote-profile/?url={$si}#{$remark}";
 
             default:
                 // Reality client extras (items 2/4): spiderX (spx) and mldsa verify
@@ -10939,7 +10979,7 @@ DNS-over-HTTPS with IP:
                                     . "&type=tcp"
                                     . "&flow=xtls-rprx-vision"
                                     . $rExtra
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                                    . "#{$remark}";
                         break;
                     case 'xhttp':
                         $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
@@ -10954,7 +10994,7 @@ DNS-over-HTTPS with IP:
                                     . "&sni=$domain"
                                     . "&fp=$fp"
                                     . "&alpn=h2"
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                                    . "#{$remark}";
                         break;
                     case 'trojan-grpc':
                         $trojanPwd = rawurlencode($c['inbounds'][0]['settings']['clients'][$i]['password']);
@@ -10966,7 +11006,7 @@ DNS-over-HTTPS with IP:
                                     . "&sni=$domain"
                                     . "&fp=$fp"
                                     . "&alpn=h2"
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                                    . "#{$remark}";
                         break;
 
                     default:
@@ -10977,7 +11017,7 @@ DNS-over-HTTPS with IP:
                                     . "&sni=$domain"
                                     . "&fp=$fp"
                                     . "&type=ws"
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                                    . "#{$remark}";
                         break;
                 }
                 return $link;
@@ -11013,7 +11053,20 @@ DNS-over-HTTPS with IP:
 
         $link = $this->linkXray($i);
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']])) {
-            $link = $this->relayVlessLink($link, $pac['relays'][$_GET['relay']]);
+            $relay = $pac['relays'][$_GET['relay']];
+            $link  = $this->relayVlessLink($link, $relay);
+            // relayVlessLink only swaps the endpoint when the relay has a main
+            // 'address' (awg_address doesn't affect the vless link). Re-flag the
+            // #remark with the relay's country only then — otherwise the endpoint
+            // is still the origin and linkXray's origin flag must stand.
+            if (!empty($relay['address'])) {
+                $link = preg_replace_callback(
+                    '~#[^#]*$~',
+                    fn() => '#' . $this->flagName($client['email'], $relay['address']),
+                    $link,
+                    1,
+                );
+            }
         }
 
         $this->subSecurityHeaders();
@@ -13473,6 +13526,18 @@ DNS-over-HTTPS with IP:
         }
 
         $outbound = $pac['outbound'] ?: 'proxy';
+        // Prefix the outbound/proxy name with the server-country flag so the client
+        // shows e.g. "🇫🇷 proxy" next to the node. For relay subscriptions the flag
+        // reflects the relay's endpoint country, otherwise the origin server's. The
+        // tag is substituted consistently everywhere (proxy-groups, routing), so the
+        // internal references stay intact — only the visible name changes.
+        $relayCfg = (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]))
+            ? $pac['relays'][$_GET['relay']]
+            : null;
+        $flagHost = $relayCfg
+            ? ($relayCfg['address'] ?: ($relayCfg['awg_address'] ?? ''))
+            : $this->ip;
+        $outbound = $this->flagName($outbound, $flagHost);
         $c = json_decode($this->replaceTags(json_encode($c), [
             '~outbound~' => $outbound,
         ]), true);
