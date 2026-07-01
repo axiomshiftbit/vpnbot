@@ -30,6 +30,8 @@ class Bot
     public $time2;
     public $time3;
     public $time_xray_stats;
+    public $time_extsub;
+    public $subtokens_done;
     public $admin;
     public $ports;
     public $warpprofile;
@@ -809,6 +811,24 @@ class Bot
                 break;
             case preg_match('~^/relaySub (?P<arg>\d+_[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relaySub(...explode('_', $m['arg'], 2));
+                break;
+            case preg_match('~^/extUser (\d+)$~', $this->input['callback'], $m):
+                $this->extUser($m[1]);
+                break;
+            case preg_match('~^/extAdd (\d+) (link|sub)$~', $this->input['callback'], $m):
+                $this->extAddPrompt($m[1], $m[2]);
+                break;
+            case preg_match('~^/extRename (\d+)_(\d+)$~', $this->input['callback'], $m):
+                $this->extRename($m[1], $m[2]);
+                break;
+            case preg_match('~^/extToggle (\d+)_(\d+)$~', $this->input['callback'], $m):
+                $this->extToggle($m[1], $m[2]);
+                break;
+            case preg_match('~^/extDel (\d+)_(\d+)$~', $this->input['callback'], $m):
+                $this->extDel($m[1], $m[2]);
+                break;
+            case preg_match('~^/rotateSub (\d+)$~', $this->input['callback'], $m):
+                $this->rotateSubToken($m[1]);
                 break;
             case preg_match('~^/choiceTemplate (.+)$~', $this->input['callback'], $m):
                 $this->choiceTemplate($m[1]);
@@ -3332,6 +3352,8 @@ NFT;
             'xrayStatsUser',
             'checkTrafficLimits',
             'trackOnline',
+            'refreshExtSubCache',
+            'backfillSubTokens',
         ];
         while (true) {
             foreach ($steps as $step) {
@@ -10962,15 +10984,16 @@ DNS-over-HTTPS with IP:
         // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
         // this with the relay's country for relay subscriptions.
         $remark = $this->flagName($c['inbounds'][0]['settings']['clients'][$i]['email'], $this->ip);
+        $stok   = $this->sidOf($c['inbounds'][0]['settings']['clients'][$i]); // sub locator
         $si     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
-            's' => $c['inbounds'][0]['settings']['clients'][$i]['id'],
+            's' => $stok,
         ]));
         $v2     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 's',
-            's' => $c['inbounds'][0]['settings']['clients'][$i]['id'],
+            's' => $stok,
         ]));
 
         switch ($s) {
@@ -11057,16 +11080,10 @@ DNS-over-HTTPS with IP:
     {
         $xr  = $this->getXray();
         $pac = $this->getPacConf();
-        $i = $client = null;
-        $sid = $_GET['s'] ?? '';
-        foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($sid !== '' && $v['id'] == $sid) {
-                $i      = $k;
-                $client = $v;
-                break;
-            }
-        }
-        if ($i === null || !empty($client['off'])) {
+        // Resolve by subtoken (preferred) or id (pre-subtoken links).
+        $i      = $this->findClientBySid($xr, $_GET['s'] ?? '');
+        $client = $i === null ? null : $xr['inbounds'][0]['settings']['clients'][$i];
+        if ($client === null || !empty($client['off'])) {
             $this->subNotFound();
         }
         if (!$this->processHwidRequest($client)) {
@@ -11092,10 +11109,17 @@ DNS-over-HTTPS with IP:
             }
         }
 
+        // Splice in this client's external share links + remote-subscription
+        // links (from other servers) after its own node, so one base64 sub
+        // aggregates them all. Relay swap applies only to the native link above;
+        // external links are foreign and passed through untouched. A client with
+        // no ext rows yields byte-for-byte the previous single-link output.
+        $body = implode("\n", array_merge([$link], $this->expandClientExt($client)));
+
         $this->subSecurityHeaders();
         header('Content-Type: text/plain; charset=utf-8');
         header('Profile-Update-Interval: 12');
-        echo base64_encode($link);
+        echo base64_encode($body);
     }
 
     // Swap only the endpoint host:port of a vless://-/trojan:// share link to the
@@ -11115,6 +11139,423 @@ DNS-over-HTTPS with IP:
             },
             $link,
         );
+    }
+
+    // ── External links & remote subscriptions (3x-ui port) ───────────────────
+    // A client may carry extra share links from OTHER servers, kept in
+    // clients[$i]['ext'] as rows: ['kind'=>'link'|'sub','value'=>..,'remark'=>..,'off'=>0].
+    // 'link' rows contribute one share link (optionally renamed); 'sub' rows are
+    // remote subscription URLs we fetch and whose links we splice in. They are
+    // merged into the base64 share-link subscription (subVless / t=vl) so the
+    // client gets both its native node and the external ones from ONE link.
+    // Storage-only metadata — xray ignores the field, so saving needs no reload.
+
+    // Expand a client's ext rows into a flat list of concrete share links.
+    // Never throws: a dead/slow remote sub yields nothing (or its stale cache),
+    // so the client's own link is always served.
+    public function expandClientExt(array $client): array
+    {
+        $max  = 200; // hard cap so a hostile/broken remote can't inflate a sub
+        $seen = [];
+        foreach ($client['ext'] ?? [] as $e) {
+            if (!empty($e['off'])) {
+                continue;
+            }
+            $kind  = ($e['kind'] ?? 'link') === 'sub' ? 'sub' : 'link';
+            $value = trim((string) ($e['value'] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+            if ($kind === 'sub') {
+                // Remote subscription: keep each fetched link's own name.
+                foreach ($this->fetchExtSubLinks($value) as $l) {
+                    $seen[$l] = true;
+                }
+            } elseif ($this->isKnownShareLink($value)) {
+                $seen[$this->applyExtRemark($value, (string) ($e['remark'] ?? ''))] = true;
+            }
+            if (count($seen) >= $max) {
+                break;
+            }
+        }
+        return array_slice(array_keys($seen), 0, $max);
+    }
+
+    // Rewrite a share link's display name to $remark (when set), leaving the rest
+    // byte-for-byte. vmess carries its remark in the base64 JSON `ps`; every other
+    // scheme carries it in the URL #fragment.
+    public function applyExtRemark(string $link, string $remark): string
+    {
+        $link = trim($link);
+        if ($remark === '') {
+            return $link;
+        }
+        if (str_starts_with($link, 'vmess://')) {
+            return $this->applyVmessExtRemark($link, $remark);
+        }
+        if (($h = strpos($link, '#')) !== false) {
+            $link = substr($link, 0, $h);
+        }
+        return $link . '#' . rawurlencode($remark);
+    }
+
+    public function applyVmessExtRemark(string $link, string $remark): string
+    {
+        $b64 = substr($link, strlen('vmess://'));
+        $raw = $this->tryExtB64($b64);
+        if ($raw === null) {
+            return $link;
+        }
+        $j = json_decode($raw, true);
+        if (!is_array($j)) {
+            return $link;
+        }
+        $j['ps'] = $remark;
+        return 'vmess://' . base64_encode(json_encode($j, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    // ── Subscription addressing (subtoken, decoupled from the credential) ────
+    // The `s`/`id` URL param only LOCATES the client record; the real credential
+    // (uuid/password) is embedded in the served link/config by linkXray/
+    // subscription regardless. So we address by a random per-client subtoken:
+    // leaking/sharing the sub URL no longer leaks the credential, and the token
+    // can be rotated without regenerating the uuid.
+
+    // Value to place in a freshly-minted sub URL: subtoken when present, else the
+    // id (so links minted before this feature keep resolving).
+    public function sidOf(array $client): string
+    {
+        return (string) ($client['subtoken'] ?? $client['id'] ?? '');
+    }
+
+    // Resolve a sub `s`/`id` value to a client index: subtoken first, then id as
+    // a backward-compatible fallback. Returns null when nothing matches.
+    public function findClientBySid(array $xr, string $sid): ?int
+    {
+        if ($sid === '') {
+            return null;
+        }
+        $clients = $xr['inbounds'][0]['settings']['clients'] ?? [];
+        foreach ($clients as $k => $v) {
+            if (($v['subtoken'] ?? '') === $sid) {
+                return $k;
+            }
+        }
+        foreach ($clients as $k => $v) {
+            if (($v['id'] ?? '') == $sid) {
+                return $k;
+            }
+        }
+        return null;
+    }
+
+    // Backfill a subtoken for any client minted before this feature. Returns true
+    // when $xr changed (caller persists). Idempotent no-op once all have one.
+    public function ensureSubTokens(array &$xr): bool
+    {
+        $changed = false;
+        foreach ($xr['inbounds'][0]['settings']['clients'] ?? [] as $k => $v) {
+            if (empty($v['subtoken'])) {
+                $xr['inbounds'][0]['settings']['clients'][$k]['subtoken'] = bin2hex(random_bytes(16));
+                $changed = true;
+            }
+        }
+        return $changed;
+    }
+
+    // Cron step: one-shot backfill of subtokens for existing clients so a deploy
+    // upgraded to this feature converges without waiting for each client's menu /
+    // sub request. Idempotent; runs at most once per cron process.
+    public function backfillSubTokens(): void
+    {
+        if (!empty($this->subtokens_done)) {
+            return;
+        }
+        $xr = $this->getXray();
+        if (!is_array($xr)) {
+            return; // retry next tick; don't feed null to ensureSubTokens(array&)
+        }
+        if ($this->ensureSubTokens($xr)) {
+            $this->saveXray($xr);
+        }
+        $this->subtokens_done = true;
+    }
+
+    // Rotate a client's subtoken: previously shared/leaked sub URLs stop working,
+    // while the uuid credential (and thus the actual VPN access) is untouched.
+    public function rotateSubToken($i)
+    {
+        $c = $this->getXray();
+        if (isset($c['inbounds'][0]['settings']['clients'][$i])) {
+            $c['inbounds'][0]['settings']['clients'][$i]['subtoken'] = bin2hex(random_bytes(16));
+            $this->saveXray($c);
+        }
+        $this->userXr($i);
+    }
+
+    // Request-time read of a remote subscription's links: cache ONLY, never a
+    // live fetch. Refreshing is done out-of-band by refreshExtSubCache() (cron)
+    // and once at add-time, so a client's subscription request never triggers a
+    // server-side outbound call (no request-time SSRF surface, no added latency)
+    // and always renders instantly from the last good snapshot.
+    public function fetchExtSubLinks(string $url): array
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return [];
+        }
+        $cache = $this->readExtSubCache();
+        return $cache[$url]['links'] ?? [];
+    }
+
+    // One fetch attempt. Returns the decoded link list on success, or a short
+    // error string on any failure (unsafe target, redirect, timeout, non-2xx,
+    // oversize). Redirects are followed manually so each hop is re-validated
+    // against the SSRF/HTTPS guard. Only ever called from the background refresh.
+    public function doFetchExtSub(string $url): array|string
+    {
+        $max = 2 << 20; // 2 MiB
+        for ($redir = 0; $redir < 4; $redir++) {
+            if (!$this->isSafeExtUrl($url)) {
+                return 'blocked: non-https or private/unresolvable host';
+            }
+            $buf      = '';
+            $location = '';
+            $ch       = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL            => $url,
+                CURLOPT_CONNECTTIMEOUT => 4,
+                CURLOPT_TIMEOUT        => 6,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_USERAGENT      => 'v2rayNG/1.8.5',
+                CURLOPT_PROTOCOLS      => CURLPROTO_HTTPS,
+                CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+                CURLOPT_WRITEFUNCTION  => function ($ch, $chunk) use (&$buf, $max) {
+                    $buf .= $chunk;
+                    // Abort the transfer once the body exceeds the cap.
+                    return strlen($buf) > $max ? 0 : strlen($chunk);
+                },
+                CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$location) {
+                    if (stripos($header, 'location:') === 0) {
+                        $location = trim(substr($header, strlen('location:')));
+                    }
+                    return strlen($header);
+                },
+            ]);
+            curl_exec($ch);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if (strlen($buf) > $max) {
+                return 'response too large';
+            }
+            if ($code >= 300 && $code < 400 && $location !== '') {
+                // Only follow absolute https redirects (avoids resolving relative
+                // URLs and keeps the SSRF re-check simple); anything else fails.
+                if (!preg_match('~^https://~i', $location)) {
+                    return 'unsafe redirect target';
+                }
+                $url = $location;
+                continue;
+            }
+            if ($code < 200 || $code >= 300) {
+                return $code ? "http $code" : 'connection/timeout error';
+            }
+            return $this->decodeExtSubBody($buf);
+        }
+        return 'too many redirects';
+    }
+
+    // Refresh one remote-sub URL into the cache: record links + success time on
+    // success, or keep the last good links and stamp the error on failure (so the
+    // client keeps working while the menu can surface the stale/error state).
+    public function refreshExtSubOne(string $url): void
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return;
+        }
+        $r = $this->doFetchExtSub($url);
+        if (is_array($r)) {
+            $this->updateExtSubCache($url, ['ts' => time(), 'at' => time(), 'links' => $r, 'err' => '']);
+        } else {
+            $this->updateExtSubCache($url, ['at' => time(), 'err' => (string) $r]);
+        }
+    }
+
+    // Cron step: refresh every distinct remote-sub URL referenced by any client,
+    // then drop cache entries no longer referenced. Interval-gated so the 10 s
+    // cron loop actually fetches at most every 5 min.
+    public function refreshExtSubCache(): void
+    {
+        if (!empty($this->time_extsub) && time() - $this->time_extsub < 300) {
+            return;
+        }
+        $xr = $this->getXray();
+        // Bail on an unreadable/corrupt config: don't let a transient read failure
+        // prune the whole cache (pruneExtSubCache with an empty keep-set would
+        // drop every entry).
+        if (!is_array($xr)) {
+            return;
+        }
+        $this->time_extsub = time();
+        $urls = [];
+        foreach ($xr['inbounds'][0]['settings']['clients'] ?? [] as $c) {
+            foreach ($c['ext'] ?? [] as $e) {
+                if (($e['kind'] ?? '') === 'sub' && !empty($e['value'])) {
+                    $urls[trim($e['value'])] = true;
+                }
+            }
+        }
+        foreach (array_keys($urls) as $u) {
+            $this->refreshExtSubOne($u);
+        }
+        $this->pruneExtSubCache($urls);
+    }
+
+    // Known share-link schemes we accept for external 'link' rows and when
+    // filtering a fetched subscription body. Anything else (http(s) pages,
+    // data:/javascript:/file: and other junk a hostile remote might inject) is
+    // dropped, so only real node links ever reach a client's subscription.
+    public function isKnownShareLink(string $s): bool
+    {
+        return (bool) preg_match('~^(vless|vmess|trojan|ss|ssr|hysteria2?|hy2|tuic|wireguard|anytls|snell|socks)://~i', trim($s));
+    }
+
+    // SSRF guard + transport guard: HTTPS only (never plaintext http, so a
+    // remote provider's configs never traverse the network in the clear), and
+    // every resolved IP of the host must be public. Blocks loopback/private/
+    // reserved/link-local targets and unresolvable hosts (in the spirit of
+    // saveXray()'s freedom finalRules hardening).
+    public function isSafeExtUrl(string $url): bool
+    {
+        $p = parse_url($url);
+        if (!is_array($p) || empty($p['scheme']) || empty($p['host']) || strtolower($p['scheme']) !== 'https') {
+            return false;
+        }
+        $host  = $p['host'];
+        $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            $ips = [$host];
+        } else {
+            $ips = gethostbynamel($host) ?: [];
+            foreach (@dns_get_record($host, DNS_AAAA) ?: [] as $r) {
+                if (!empty($r['ipv6'])) {
+                    $ips[] = $r['ipv6'];
+                }
+            }
+        }
+        if (empty($ips)) {
+            return false;
+        }
+        foreach ($ips as $ip) {
+            if (!filter_var($ip, FILTER_VALIDATE_IP, $flags)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Decode a subscription body: the common base64 newline list, or plain text.
+    // Keeps only lines that are real share links (known scheme), de-duplicated —
+    // a hostile/broken remote can't inject junk or inflate the list with repeats.
+    public function decodeExtSubBody(string $body): array
+    {
+        $text = trim($body);
+        if ($text === '') {
+            return [];
+        }
+        if (($dec = $this->tryExtB64($text)) !== null) {
+            $text = trim($dec);
+        }
+        $seen = [];
+        foreach (preg_split('~[\r\n]+~', $text) as $ln) {
+            $ln = trim($ln);
+            if ($ln === '' || !$this->isKnownShareLink($ln)) {
+                continue;
+            }
+            $seen[$ln] = true;
+        }
+        return array_keys($seen);
+    }
+
+    // Strict base64 decode (standard, then url-safe) after stripping whitespace.
+    // Returns null when the input isn't base64 — a plain share-link list contains
+    // ':'/'/' which aren't in the alphabet, so it round-trips through untouched.
+    public function tryExtB64(string $s): ?string
+    {
+        $clean = preg_replace('~\s+~', '', $s);
+        if (($d = base64_decode($clean, true)) !== false) {
+            return $d;
+        }
+        $u = strtr(rtrim($clean, '='), '-_', '+/');
+        $u .= str_repeat('=', (4 - strlen($u) % 4) % 4);
+        if (($d = base64_decode($u, true)) !== false) {
+            return $d;
+        }
+        return null;
+    }
+
+    public function readExtSubCache(): array
+    {
+        $f = '/config/extsub.cache';
+        if (!is_file($f)) {
+            return [];
+        }
+        return json_decode((string) file_get_contents($f), true) ?: [];
+    }
+
+    // Locked read-modify-write of the cache. $mutator receives the current cache
+    // array and returns the new one; entries untouched for >1d are pruned first so
+    // the file can't grow without bound. The file holds decoded remote configs
+    // (foreign credentials) at rest → kept owner-only (0600, as for keys).
+    public function mutateExtSubCache(callable $mutator): void
+    {
+        $f  = '/config/extsub.cache';
+        $fp = fopen($f, 'c+');
+        if (!$fp) {
+            return;
+        }
+        @chmod($f, 0600);
+        if (flock($fp, LOCK_EX)) {
+            $cache = json_decode((string) stream_get_contents($fp), true) ?: [];
+            $now   = time();
+            foreach ($cache as $k => $v) {
+                if ($now - (int) ($v['at'] ?? $v['ts'] ?? 0) > 86400) {
+                    unset($cache[$k]);
+                }
+            }
+            $cache = $mutator($cache) ?? $cache;
+            ftruncate($fp, 0);
+            rewind($fp);
+            fwrite($fp, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            fflush($fp);
+            flock($fp, LOCK_UN);
+        }
+        fclose($fp);
+    }
+
+    // Merge $fields into the cache entry for $url (ts/at/links/err).
+    public function updateExtSubCache(string $url, array $fields): void
+    {
+        $this->mutateExtSubCache(function ($cache) use ($url, $fields) {
+            $cache[$url] = array_merge($cache[$url] ?? [], $fields);
+            return $cache;
+        });
+    }
+
+    // Drop cache entries whose URL is no longer referenced by any client ($keep
+    // is a url=>true set), so removed subscriptions stop lingering on disk.
+    public function pruneExtSubCache(array $keep): void
+    {
+        $this->mutateExtSubCache(function ($cache) use ($keep) {
+            foreach (array_keys($cache) as $k) {
+                if (empty($keep[$k])) {
+                    unset($cache[$k]);
+                }
+            }
+            return $cache;
+        });
     }
 
     public function dockerApi($url, $method = 'GET', $data = [])
@@ -11502,10 +11943,14 @@ DNS-over-HTTPS with IP:
                 $this->send($this->input['chat'], "user {$user[0]} already exists");
                 return $this->xray();
             }
+            // subtoken addresses the subscription independently of the id (which
+            // is the VLESS credential), so a leaked/shared sub URL never exposes
+            // the credential and can be rotated without regenerating the id.
+            $stok = bin2hex(random_bytes(16));
             $c['inbounds'][0]['settings']['clients'][] = match($p['transport']) {
-                'Reality'     => ['id' => $uuid, 'flow' => 'xtls-rprx-vision', 'email' => $user[0]],
-                'trojan-grpc' => ['id' => $uuid, 'password' => bin2hex(random_bytes(16)), 'email' => $user[0]],
-                default       => ['id' => $uuid, 'email' => $user[0]],
+                'Reality'     => ['id' => $uuid, 'flow' => 'xtls-rprx-vision', 'email' => $user[0], 'subtoken' => $stok],
+                'trojan-grpc' => ['id' => $uuid, 'password' => bin2hex(random_bytes(16)), 'email' => $user[0], 'subtoken' => $stok],
+                default       => ['id' => $uuid, 'email' => $user[0], 'subtoken' => $stok],
             };
         }
         $this->restartXray($c);
@@ -12738,6 +13183,15 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
 
+        // Backfill the subscription token for clients created before this feature,
+        // so their sub links are addressed by the token (not the credential).
+        if (empty($c['subtoken'])) {
+            $c['subtoken'] = bin2hex(random_bytes(16));
+            $xray['inbounds'][0]['settings']['clients'][$i]['subtoken'] = $c['subtoken'];
+            $this->saveXray($xray);
+        }
+        $stok = $this->sidOf($c); // subscription locator (not the credential)
+
         $devices      = $this->getHwidDevicesByUser($c['id']);
         $hwidEnabled  = !empty($pac['hwid_limit_enabled']) && empty($c['hwid_disabled']);
         $defaultHwid  = max(1, (int) ($pac['hwid_device_count'] ?: 1));
@@ -12745,39 +13199,47 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']}\n";
         if (file_exists(__DIR__ . '/subscription.php')) {
-            $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$c['id']}'>subscription</a>";
+            $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         }
         $text[] = "<pre><code>{$this->linkXray($i)}</code></pre>\n";
 
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=v&s={$c['id']}#{$c['email']}'>import://v2rayng</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=si&s={$c['id']}#{$c['email']}'>import://sing-box</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=st&s={$c['id']}#{$c['email']}'>import://streisand</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=h&s={$c['id']}#{$c['email']}'>import://hiddify</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=k&s={$c['id']}#{$c['email']}'>import://karing</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=c&s={$c['id']}#{$c['email']}'>import://mihomo</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=rh&s={$c['id']}#{$c['email']}'>import://rabbit-hole</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=v&s={$stok}#{$c['email']}'>import://v2rayng</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=si&s={$stok}#{$c['email']}'>import://sing-box</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=st&s={$stok}#{$c['email']}'>import://streisand</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=h&s={$stok}#{$c['email']}'>import://hiddify</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=k&s={$stok}#{$c['email']}'>import://karing</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=c&s={$stok}#{$c['email']}'>import://mihomo</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=rh&s={$stok}#{$c['email']}'>import://rabbit-hole</a>";
 
         $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
-            's' => $c['id'],
+            's' => $stok,
         ]));
         $xr = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 's',
-            's' => $c['id'],
+            's' => $stok,
         ]));
         $cl = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'cl',
-            's' => $c['id'],
+            's' => $stok,
+        ]));
+        // base64 vless share-link list (subVless) — the aggregating subscription
+        // that also carries this client's external links / remote subscriptions.
+        $vl = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
+            'h' => $hash,
+            't' => 'vl',
+            's' => $stok,
         ]));
 
         $text[] = "\nxray config: <pre><code>$xr</code></pre>";
         $text[] = "sing-box config: <pre><code>$si</code></pre>";
         $text[] = "mihomo config: <pre><code>$cl</code></pre>";
+        $text[] = "v2rayNG (base64): <pre><code>$vl</code></pre>";
 
-        $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$c['id']}'>windows service</a>";
+        $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$stok}'>windows service</a>";
         $st       = $this->getXrayStats();
         $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0));
         $upload   = $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0));
@@ -12802,15 +13264,15 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'    => $this->i18n('v2ray'),
-                'web_app' => ['url' => "https://{$domain}/pac$hash?t=s&s={$c['id']}"]
+                'web_app' => ['url' => "https://{$domain}/pac$hash?t=s&s={$stok}"]
             ],
             [
                 'text'    => $this->i18n('singbox'),
-                'web_app' => ['url' => "https://{$domain}/pac$hash?t=si&s={$c['id']}"]
+                'web_app' => ['url' => "https://{$domain}/pac$hash?t=si&s={$stok}"]
             ],
             [
                 'text'    => $this->i18n('mihomo'),
-                'web_app' => ['url' => "https://{$domain}/pac$hash?t=cl&s={$c['id']}"]
+                'web_app' => ['url' => "https://{$domain}/pac$hash?t=cl&s={$stok}"]
             ],
         ];
         if (!empty(array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']) || !empty($e['awg_address'])))) {
@@ -12821,6 +13283,17 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
+        $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
+        $data[] = [
+            [
+                'text'          => '🧩 ' . $this->i18n('external links') . ($extOn ? " ($extOn)" : ''),
+                'callback_data' => "/extUser $i",
+            ],
+            [
+                'text'          => '🔁 ' . $this->i18n('rotate subscription'),
+                'callback_data' => "/rotateSub $i",
+            ],
+        ];
         $data[] = [
             [
                 'text'    => $this->i18n('v2ray ⬇️'),
@@ -12929,6 +13402,182 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // Per-client external links / remote subscriptions (3x-ui port). Lists the
+    // client's ext rows with per-row toggle / rename / delete, plus add buttons.
+    // Rows feed expandClientExt() → the base64 subscription (subVless / t=vl).
+    public function extUser($i)
+    {
+        $xray = $this->getXray();
+        $c    = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if ($c === null) {
+            $this->xray();
+            return;
+        }
+        $ext   = $c['ext'] ?? [];
+        $cache = $this->readExtSubCache();
+
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('external links');
+        $text[] = $this->i18n('external hint') . "\n";
+
+        $data = [];
+        foreach ($ext as $k => $e) {
+            $icon  = ($e['kind'] ?? 'link') === 'sub' ? '📥' : '🔗';
+            $short = mb_strimwidth((string) (($e['remark'] ?? '') !== '' ? $e['remark'] : ($e['value'] ?? '')), 0, 28, '…');
+            $line  = ($k + 1) . ". " . (empty($e['off']) ? '✅' : '⛔') . " $icon <code>" . htmlspecialchars($short) . "</code>";
+            // For remote subscriptions, surface the last-fetch status from cache:
+            // node count + age on success, or the recorded error.
+            if (($e['kind'] ?? '') === 'sub') {
+                $st = $cache[trim((string) ($e['value'] ?? ''))] ?? null;
+                if ($st === null) {
+                    $line .= ' — ' . $this->i18n('ext status pending');
+                } elseif (!empty($st['err'])) {
+                    $line .= ' — ⚠️ ' . htmlspecialchars((string) $st['err']);
+                } else {
+                    $n    = count($st['links'] ?? []);
+                    $secs = !empty($st['ts']) ? max(0, time() - (int) $st['ts']) : null;
+                    $age  = $secs === null ? '?' : ($secs < 3600 ? floor($secs / 60) . 'm' : floor($secs / 3600) . 'h');
+                    $line .= " — $n " . $this->i18n('ext status nodes') . " · $age";
+                }
+            }
+            $text[] = $line;
+            $data[] = [
+                [
+                    'text'          => (empty($e['off']) ? '✅' : '⛔') . " $icon $short",
+                    'callback_data' => "/extToggle {$i}_{$k}",
+                ],
+                [
+                    'text'          => '✏️',
+                    'callback_data' => "/extRename {$i}_{$k}",
+                ],
+                [
+                    'text'          => '🗑',
+                    'callback_data' => "/extDel {$i}_{$k}",
+                ],
+            ];
+        }
+        $data[] = [
+            [
+                'text'          => '🔗 ' . $this->i18n('add external link'),
+                'callback_data' => "/extAdd {$i} link",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => '📥 ' . $this->i18n('add external subscription'),
+                'callback_data' => "/extAdd {$i} sub",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => "/userXr $i",
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data ?: false,
+        );
+    }
+
+    // Prompt the admin for a share link (kind=link) or remote subscription URL
+    // (kind=sub); the reply is captured and routed to extAddSave().
+    public function extAddPrompt($i, $kind)
+    {
+        $kind = $kind === 'sub' ? 'sub' : 'link';
+        $r    = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n($kind === 'sub' ? 'enter external subscription' : 'enter external link'),
+            $this->input['message_id'],
+            reply: $this->i18n($kind === 'sub' ? 'enter external subscription' : 'enter external link'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'extAddSave',
+            'args'           => [$i, $kind],
+        ];
+    }
+
+    public function extAddSave($text, $i, $kind)
+    {
+        $kind  = $kind === 'sub' ? 'sub' : 'link';
+        $value = trim((string) $text);
+        // link: a known-scheme share link; sub: an HTTPS URL (no plaintext http,
+        // so the remote provider's configs never traverse the network in clear).
+        $valid = $kind === 'sub'
+            ? (bool) preg_match('~^https://\S+~i', $value)
+            : $this->isKnownShareLink($value);
+        if ($valid) {
+            $c   = $this->getXray();
+            $cli = $c['inbounds'][0]['settings']['clients'][$i] ?? null;
+            if ($cli !== null) {
+                $c['inbounds'][0]['settings']['clients'][$i]['ext'][] = [
+                    'kind'   => $kind,
+                    'value'  => $value,
+                    'remark' => '',
+                    'off'    => 0,
+                ];
+                $this->saveXray($c);
+                // Populate the cache now so the node shows up on the next
+                // subscription request without waiting for the cron tick.
+                if ($kind === 'sub') {
+                    $this->refreshExtSubOne($value);
+                }
+            }
+        }
+        $this->extUser($i);
+    }
+
+    public function extRename($i, $k)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter remark'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter remark'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'extRenameSave',
+            'args'           => [$i, $k],
+        ];
+    }
+
+    public function extRenameSave($text, $i, $k)
+    {
+        $c = $this->getXray();
+        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
+            $c['inbounds'][0]['settings']['clients'][$i]['ext'][$k]['remark'] = trim((string) $text);
+            $this->saveXray($c);
+        }
+        $this->extUser($i);
+    }
+
+    public function extToggle($i, $k)
+    {
+        $c = $this->getXray();
+        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
+            $e = &$c['inbounds'][0]['settings']['clients'][$i]['ext'][$k];
+            $e['off'] = empty($e['off']) ? 1 : 0;
+            unset($e);
+            $this->saveXray($c);
+        }
+        $this->extUser($i);
+    }
+
+    public function extDel($i, $k)
+    {
+        $c = $this->getXray();
+        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
+            array_splice($c['inbounds'][0]['settings']['clients'][$i]['ext'], $k, 1);
+            $this->saveXray($c);
+        }
+        $this->extUser($i);
+    }
+
     // Per-user relay subscriptions: pick a relay, then relaySub() renders that
     // relay's full link set (one screen per relay keeps each message well under
     // the 4096-char editMessageText limit even with many relays).
@@ -12988,6 +13637,7 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $email  = $c['email'];
+        $stok   = $this->sidOf($c); // subscription locator (not the credential)
         $rl     = '&relay=' . $name;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> (" . ($relay['address'] ?: $relay['awg_address']) . ")\n";
@@ -13002,7 +13652,7 @@ DNS-over-HTTPS with IP:
             ['cl', 'c',  'mihomo'],
             ['cl', 'rh', 'rabbit-hole'],
         ] as [$t, $r, $label]) {
-            $text[] = "<a href='$scheme://{$domain}/pac$hash?t=$t&r=$r&s={$c['id']}$rl#{$email}'>import://$label</a>";
+            $text[] = "<a href='$scheme://{$domain}/pac$hash?t=$t&r=$r&s={$stok}$rl#{$email}'>import://$label</a>";
         }
 
         // Raw content URLs for clients where a subscription URL is pasted
@@ -13020,7 +13670,7 @@ DNS-over-HTTPS with IP:
             $url = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h'     => $hash,
                 't'     => $t,
-                's'     => $c['id'],
+                's'     => $stok,
                 'relay' => $name,
             ]));
             $text[] = "$label: <pre><code>$url</code></pre>";
@@ -13284,56 +13934,50 @@ DNS-over-HTTPS with IP:
 
     public function sub()
     {
+        // No token backfill here: this is a public GET endpoint, so we avoid
+        // writing xray.json on the hot path (concurrent requests). sidOf() falls
+        // back to the uuid when a subtoken is absent; cron/userXr backfill tokens.
         $xr     = $this->getXray();
         $pac    = $this->getPacConf();
         $st     = $this->getXrayStats();
         $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
-        $flag   = true;
-        $client = null;
-        $id     = $_GET['id'] ?? '';
-        foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($id !== '' && $v['id'] == $id) {
-                if (empty($v['off'])) {
-                    $flag = false;
-                }
-                $uid    = $v['id'];
-                $email  = $v['email'];
-                $expire = $v['time'] ?? '';
-                $client = $v;
-                break;
-            }
-        }
+        // Resolve by subtoken (preferred) or, for pre-subtoken links, the id.
+        $k      = $this->findClientBySid($xr, $_GET['id'] ?? '');
+        $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
         // Missing/disabled id: clean 404 instead of rendering the page with
-        // undefined $uid/$k (which would warn and break the body).
-        if ($flag) {
+        // undefined fields (which would warn and break the body).
+        if ($client === null || !empty($client['off'])) {
             $this->subNotFound();
         }
         if (!$this->processHwidRequest($client)) {
             exit;
         }
-        $suburl   = "<a href='$scheme://{$domain}/pac$hash/sub?id={$uid}'>subscription</a>";
+        $email  = $client['email'];
+        $expire = $client['time'] ?? '';
+        $stok   = $this->sidOf($client); // subscription locator (not the credential)
+        $suburl   = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         $download = $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
         $upload   = $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
         $singbox  = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
-            's' => $uid,
+            's' => $stok,
         ]));
         $xray = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 's',
-            's' => $uid,
+            's' => $stok,
         ]));
         $clash = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'cl',
-            's' => $uid,
+            's' => $stok,
         ]));
         $vless   = $this->linkXray($k);
-        $windows = "$scheme://{$domain}/pac$hash?t=si&r=w&s=$uid";
-        $_GET['s'] = $uid;
+        $windows = "$scheme://{$domain}/pac$hash?t=si&r=w&s=$stok";
+        $_GET['s'] = $stok;
         foreach ([
           'xray'    => 's',
           'singbox' => 'si',
@@ -13447,27 +14091,20 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
 
-        $flag = true;
-        $client = null;
+        // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $sid    = $_GET['s'] ?? '';
-        foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($sid !== '' && $v['id'] == $sid) {
-                if (empty($v['off'])) {
-                    $flag = false;
-                }
-                $template = base64_decode($v["{$type}template"] ?? '');
-                $uid      = $v['id'];
-                $email    = $v['email'];
-                $client   = $v;
-                break;
-            }
-        }
-        if ($flag) {
+        $k      = $this->findClientBySid($xr, $sid);
+        $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
+        if ($client === null || !empty($client['off'])) {
             if (!empty($return)) {
                 return '';
             }
             $this->subNotFound();
         }
+        $template = base64_decode($client["{$type}template"] ?? '');
+        $uid      = $client['id'];               // credential (embedded in config)
+        $email    = $client['email'];
+        $stok     = $this->sidOf($client);       // subscription locator only
 
         if (!$return && !$this->processHwidRequest($client)) {
             exit;
@@ -13484,17 +14121,17 @@ DNS-over-HTTPS with IP:
             $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 'si',
-                's' => $uid,
+                's' => $stok,
             ] + $relayKey));
             $v2 = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 's',
-                's' => $uid,
+                's' => $stok,
             ] + $relayKey));
             $cl = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 'cl',
-                's' => $uid,
+                's' => $stok,
             ] + $relayKey));
             switch ($_GET['r']) {
                 case 'si':
@@ -13976,7 +14613,7 @@ DNS-over-HTTPS with IP:
                 break;
             case 'si':
                 $c['route'] = $this->addRuleSet($c['route']);
-                $c['route'] = $this->createRuleSet($c['route'], $uid, $domain);
+                $c['route'] = $this->createRuleSet($c['route'], $stok, $domain);
                 if (!empty($c['route']['rules'])) {
                     foreach ($c['route']['rules'] as $k => $v) {
                         if (count($v) == 1 && array_key_exists('outbound', $v)) {
@@ -13992,7 +14629,7 @@ DNS-over-HTTPS with IP:
             case 'cl':
                 $c = $this->addClashRuleSet($c);
                 if (!empty($c['rules'])) {
-                    $c = $this->clashRules($c, $uid, $domain);
+                    $c = $this->clashRules($c, $stok, $domain);
                     if (count($c['rules']) == 1) {
                         unset($c['rules']);
                     }
@@ -14039,6 +14676,13 @@ DNS-over-HTTPS with IP:
         header('X-Content-Type-Options: nosniff');
         header('X-Robots-Tag: noindex, nofollow');
         header('Referrer-Policy: no-referrer');
+        // Pin TLS so a client that once reached the sub over HTTPS never silently
+        // falls back to plaintext http (where the config would be sniffable). Only
+        // meaningful when a cert is configured (nginx serves 443); browsers ignore
+        // it over plain http anyway.
+        if (!empty($this->nginxGetTypeCert())) {
+            header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+        }
     }
 
     // A missing/disabled/expired subscription must not look like a server crash:
