@@ -10366,12 +10366,12 @@ DNS-over-HTTPS with IP:
              . mb_chr(0x1F1E6 + ord($cc[1]) - 65, 'UTF-8');
     }
 
-    // Country-flag emoji for a server endpoint (IP or hostname), via the shared
-    // geoIP cache. ipinfo needs an IP, so a hostname is resolved first. Returns
-    // '' when the country can't be determined (bad host / geo miss). Cached for
-    // 7 days like the online view, so a subscription request only pays a network
-    // round-trip on a cold cache for each distinct server/relay IP.
-    public function serverFlag(string $host): string
+    // Country-flag emoji for one server endpoint (IP or hostname), resolving the
+    // country from the caller-provided geo cache (updated in place, persisted by
+    // the caller). ipinfo needs an IP, so a hostname is resolved first; only a
+    // validated IP is ever passed to geoLookup (no untrusted string reaches the
+    // ipinfo URL). Returns '' when the country can't be determined.
+    public function hostFlag(string $host, array &$cache): string
     {
         $host = trim($host);
         if ($host === '') {
@@ -10384,22 +10384,44 @@ DNS-over-HTTPS with IP:
             }
             $host = $ip;
         }
+        return $this->countryFlag($this->geoLookup($host, $cache)['country'] ?? '');
+    }
+
+    // Single-endpoint flag with its own cache load/save. Cached for 7 days like
+    // the online view, so a request only pays a network round-trip on a cold
+    // cache for each distinct server/relay IP.
+    public function serverFlag(string $host): string
+    {
         $cache  = $this->getGeoCache();
         $before = $cache;
-        $g      = $this->geoLookup($host, $cache);
+        $flag   = $this->hostFlag($host, $cache);
         if ($cache !== $before) {
             $this->setGeoCache($cache);
         }
-        return $this->countryFlag($g['country'] ?? '');
+        return $flag;
     }
 
-    // Prefix a subscription/node display name with the server-country flag, e.g.
-    // "🇫🇷 email". Falls back to the bare name when the country is unknown so a
-    // geo failure never blanks the name.
-    public function flagName(string $name, string $host): string
+    // Prefix a subscription/node display name with server-country flag(s), e.g.
+    // "🇫🇷 email". $hosts is one endpoint or an ordered list; each resolvable
+    // endpoint contributes one flag and they are concatenated in order (for a
+    // relay subscription: relay endpoint first, then the origin — "🇫🇷🇩🇪 email").
+    // Unknown/empty flags are skipped; when none resolve the bare name is
+    // returned so a geo failure never blanks or space-pads the name. Two adjacent
+    // flags are two 2-letter regional-indicator pairs, so clients render them as
+    // two distinct flags without a separator. The geo cache is loaded/saved once
+    // for the whole list so a multi-hop (relay) name costs a single file r/w.
+    public function flagName(string $name, string|array $hosts): string
     {
-        $flag = $this->serverFlag($host);
-        return $flag !== '' ? "$flag $name" : $name;
+        $cache  = $this->getGeoCache();
+        $before = $cache;
+        $flags  = '';
+        foreach ((array) $hosts as $host) {
+            $flags .= $this->hostFlag((string) $host, $cache);
+        }
+        if ($cache !== $before) {
+            $this->setGeoCache($cache);
+        }
+        return $flags !== '' ? "$flags $name" : $name;
     }
 
     public function onlinesView()
@@ -11057,12 +11079,13 @@ DNS-over-HTTPS with IP:
             $link  = $this->relayVlessLink($link, $relay);
             // relayVlessLink only swaps the endpoint when the relay has a main
             // 'address' (awg_address doesn't affect the vless link). Re-flag the
-            // #remark with the relay's country only then — otherwise the endpoint
-            // is still the origin and linkXray's origin flag must stand.
+            // #remark only then — the traffic now hops relay → origin, so show the
+            // relay flag first and the origin (destination) flag second. Otherwise
+            // the endpoint is still the origin and linkXray's origin flag stands.
             if (!empty($relay['address'])) {
                 $link = preg_replace_callback(
                     '~#[^#]*$~',
-                    fn() => '#' . $this->flagName($client['email'], $relay['address']),
+                    fn() => '#' . $this->flagName($client['email'], [$relay['address'], $this->ip]),
                     $link,
                     1,
                 );
@@ -13526,18 +13549,20 @@ DNS-over-HTTPS with IP:
         }
 
         $outbound = $pac['outbound'] ?: 'proxy';
-        // Prefix the outbound/proxy name with the server-country flag so the client
-        // shows e.g. "🇫🇷 proxy" next to the node. For relay subscriptions the flag
-        // reflects the relay's endpoint country, otherwise the origin server's. The
-        // tag is substituted consistently everywhere (proxy-groups, routing), so the
-        // internal references stay intact — only the visible name changes.
+        // Prefix the outbound/proxy name with server-country flag(s) so the client
+        // shows e.g. "🇫🇷 proxy" next to the node. A relay subscription hops
+        // relay → origin, so it gets two flags — the relay endpoint's first, then
+        // the origin (destination) server's ("🇫🇷🇩🇪 proxy"); a plain subscription
+        // gets just the origin's. The tag is substituted consistently everywhere
+        // (proxy-groups, routing), so internal references stay intact — only the
+        // visible name changes.
         $relayCfg = (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]))
             ? $pac['relays'][$_GET['relay']]
             : null;
-        $flagHost = $relayCfg
-            ? ($relayCfg['address'] ?: ($relayCfg['awg_address'] ?? ''))
-            : $this->ip;
-        $outbound = $this->flagName($outbound, $flagHost);
+        $flagHosts = $relayCfg
+            ? [($relayCfg['address'] ?: ($relayCfg['awg_address'] ?? '')), $this->ip]
+            : [$this->ip];
+        $outbound = $this->flagName($outbound, $flagHosts);
         $c = json_decode($this->replaceTags(json_encode($c), [
             '~outbound~' => $outbound,
         ]), true);
