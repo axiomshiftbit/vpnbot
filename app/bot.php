@@ -32,6 +32,7 @@ class Bot
     public $time_xray_stats;
     public $time_extsub;
     public $time_relayhealth;
+    public $time_geowarm;
     public $subtokens_done;
     public $admin;
     public $ports;
@@ -3362,6 +3363,7 @@ NFT;
             'refreshExtSubCache',
             'backfillSubTokens',
             'checkRelayHealth',
+            'warmGeoCache',
         ];
         while (true) {
             foreach ($steps as $step) {
@@ -5256,9 +5258,10 @@ NFT;
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay');
         $text[] = $this->i18n('relay hint');
 
-        $data = [];
+        $data   = [];
+        $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $r) {
-            $hl = $this->relayHealthLabel($name);
+            $hl = $this->relayHealthLabel($name, false, $health);
             $data[] = [
                 [
                     'text'          => "$name: " . ($r['address'] ?: ($r['awg_address'] ?? '') ?: '—') . ($hl !== '' ? "  $hl" : ''),
@@ -10378,10 +10381,16 @@ DNS-over-HTTPS with IP:
 
     // Look up an IP's country/ISP, serving from $cache when fresh and filling misses
     // from ipinfo.io. $cache is updated in place; the caller persists it once.
-    public function geoLookup(string $ip, array &$cache): array
+    // $cacheOnly: never touch the network — return the cached entry or an empty
+    // (ts=0) miss. Used on the subscription hot path so a client's request never
+    // blocks on ipinfo (the cron warmGeoCache() fills the cache out-of-band).
+    public function geoLookup(string $ip, array &$cache, bool $cacheOnly = false): array
     {
         if (isset($cache[$ip]) && ($cache[$ip]['ts'] ?? 0) > time() - 604800) {
             return $cache[$ip];
+        }
+        if ($cacheOnly) {
+            return ['country' => '', 'org' => '', 'city' => '', 'ts' => 0];
         }
         $info = @json_decode(@file_get_contents(
             "https://ipinfo.io/$ip/json",
@@ -10416,39 +10425,48 @@ DNS-over-HTTPS with IP:
              . mb_chr(0x1F1E6 + ord($cc[1]) - 65, 'UTF-8');
     }
 
+    // Resolve a hostname to an IP, memoised in the geo cache under a "host:" key
+    // (the geo cache is keyed by IP, so a bare hostname endpoint needs its own
+    // mapping). In $cacheOnly mode a cold entry returns '' instead of doing a
+    // live DNS lookup — the cron warmGeoCache() fills it — so the subscription
+    // hot path never blocks on gethostbyname().
+    public function resolveHost(string $host, array &$cache, bool $cacheOnly = true): string
+    {
+        $key = 'host:' . strtolower($host);
+        if (isset($cache[$key]['ip']) && ($cache[$key]['ts'] ?? 0) > time() - 604800) {
+            return (string) $cache[$key]['ip'];
+        }
+        if ($cacheOnly) {
+            return '';
+        }
+        $ip = gethostbyname($host); // returns $host unchanged on failure
+        if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+            return '';
+        }
+        $cache[$key] = ['ip' => $ip, 'ts' => time()];
+        return $ip;
+    }
+
     // Country-flag emoji for one server endpoint (IP or hostname), resolving the
     // country from the caller-provided geo cache (updated in place, persisted by
     // the caller). ipinfo needs an IP, so a hostname is resolved first; only a
     // validated IP is ever passed to geoLookup (no untrusted string reaches the
-    // ipinfo URL). Returns '' when the country can't be determined.
-    public function hostFlag(string $host, array &$cache): string
+    // ipinfo URL). Returns '' when the country can't be determined. $cacheOnly
+    // (the default) forbids any network I/O — see geoLookup()/resolveHost().
+    public function hostFlag(string $host, array &$cache, bool $cacheOnly = true): string
     {
         $host = trim($host);
         if ($host === '') {
             return '';
         }
         if (!filter_var($host, FILTER_VALIDATE_IP)) {
-            $ip = gethostbyname($host); // returns $host unchanged on failure
-            if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+            $ip = $this->resolveHost($host, $cache, $cacheOnly);
+            if ($ip === '') {
                 return '';
             }
             $host = $ip;
         }
-        return $this->countryFlag($this->geoLookup($host, $cache)['country'] ?? '');
-    }
-
-    // Single-endpoint flag with its own cache load/save. Cached for 7 days like
-    // the online view, so a request only pays a network round-trip on a cold
-    // cache for each distinct server/relay IP.
-    public function serverFlag(string $host): string
-    {
-        $cache  = $this->getGeoCache();
-        $before = $cache;
-        $flag   = $this->hostFlag($host, $cache);
-        if ($cache !== $before) {
-            $this->setGeoCache($cache);
-        }
-        return $flag;
+        return $this->countryFlag($this->geoLookup($host, $cache, $cacheOnly)['country'] ?? '');
     }
 
     // Prefix a subscription/node display name with server-country flag(s), e.g.
@@ -10458,20 +10476,57 @@ DNS-over-HTTPS with IP:
     // Unknown/empty flags are skipped; when none resolve the bare name is
     // returned so a geo failure never blanks or space-pads the name. Two adjacent
     // flags are two 2-letter regional-indicator pairs, so clients render them as
-    // two distinct flags without a separator. The geo cache is loaded/saved once
-    // for the whole list so a multi-hop (relay) name costs a single file r/w.
-    public function flagName(string $name, string|array $hosts): string
+    // two distinct flags without a separator. $cacheOnly (the default) keeps this
+    // OFF the network: on the subscription hot path a flag appears only once the
+    // cron warmGeoCache() has resolved it, so the rendered name is stable across
+    // refreshes (no ipinfo blip flips it back to the bare name and makes clients
+    // re-add the node). In cache-only mode nothing mutates $cache, so no write.
+    public function flagName(string $name, string|array $hosts, bool $cacheOnly = true): string
     {
         $cache  = $this->getGeoCache();
         $before = $cache;
         $flags  = '';
         foreach ((array) $hosts as $host) {
-            $flags .= $this->hostFlag((string) $host, $cache);
+            $flags .= $this->hostFlag((string) $host, $cache, $cacheOnly);
         }
         if ($cache !== $before) {
             $this->setGeoCache($cache);
         }
         return $flags !== '' ? "$flags $name" : $name;
+    }
+
+    // Cron step: warm the geo cache (country flags) for the origin server IP and
+    // every relay endpoint — live and OFF the request path. Flag rendering on the
+    // subscription hot path is cache-only (flagName/geoLookup $cacheOnly), so
+    // without this warmer a node simply shows no flag; here the flag is resolved
+    // once and served from cache (7-day TTL) thereafter. Interval-gated so the
+    // 10 s cron loop resolves at most once every 10 min.
+    public function warmGeoCache(): void
+    {
+        if (!empty($this->time_geowarm) && time() - $this->time_geowarm < 600) {
+            return;
+        }
+        $this->time_geowarm = time();
+        $pac = $this->getPacConf();
+        if (!is_array($pac)) {
+            return; // corrupt/unreadable config: retry next tick
+        }
+        $hosts = [$this->ip];
+        foreach ($pac['relays'] ?? [] as $r) {
+            foreach ([$r['address'] ?? '', $r['awg_address'] ?? ''] as $h) {
+                if (trim((string) $h) !== '') {
+                    $hosts[] = $h;
+                }
+            }
+        }
+        $cache  = $this->getGeoCache();
+        $before = $cache;
+        foreach (array_unique($hosts) as $h) {
+            $this->hostFlag((string) $h, $cache, false); // live resolve + fill
+        }
+        if ($cache !== $before) {
+            $this->setGeoCache($cache);
+        }
     }
 
     public function onlinesView()
@@ -11254,10 +11309,12 @@ DNS-over-HTTPS with IP:
     }
 
     // Short human label for a relay's last probe: "✅ 42ms", "⛔ error", or ''
-    // (never probed). $age true appends how long ago (e.g. " · 15s").
-    public function relayHealthLabel(string $name, bool $age = false): string
+    // (never probed). $age true appends how long ago (e.g. " · 15s"). Pass a
+    // pre-read $health map when labelling many relays in a loop so the health
+    // file is read+decoded once, not once per relay.
+    public function relayHealthLabel(string $name, bool $age = false, ?array $health = null): string
     {
-        $h = $this->readRelayHealth()[$name] ?? null;
+        $h = ($health ?? $this->readRelayHealth())[$name] ?? null;
         if ($h === null) {
             return '';
         }
@@ -11468,14 +11525,23 @@ DNS-over-HTTPS with IP:
     {
         $max = 2 << 20; // 2 MiB
         for ($redir = 0; $redir < 4; $redir++) {
-            if (!$this->isSafeExtUrl($url)) {
+            $ips = $this->safeExtUrlIps($url);
+            if ($ips === []) {
                 return 'blocked: non-https or private/unresolvable host';
             }
+            // Pin the connection to the exact IPs that just passed the SSRF check
+            // so curl can't re-resolve $host to a private address between the
+            // check and the connect (DNS-rebinding TOCTOU). One rule per IP; an
+            // IPv6 address is passed as-is (curl reads it as the trailing field).
+            $p       = parse_url($url);
+            $port    = (int) ($p['port'] ?? 443);
+            $resolve = array_map(fn($ip) => "{$p['host']}:$port:$ip", $ips);
             $buf      = '';
             $location = '';
             $ch       = curl_init();
             curl_setopt_array($ch, [
                 CURLOPT_URL            => $url,
+                CURLOPT_RESOLVE        => $resolve,
                 CURLOPT_CONNECTTIMEOUT => 4,
                 CURLOPT_TIMEOUT        => 6,
                 CURLOPT_FOLLOWLOCATION => false,
@@ -11574,16 +11640,25 @@ DNS-over-HTTPS with IP:
         return (bool) preg_match('~^(vless|vmess|trojan|ss|ssr|hysteria2?|hy2|tuic|wireguard|anytls|snell|socks)://~i', trim($s));
     }
 
+    public function isSafeExtUrl(string $url): bool
+    {
+        return $this->safeExtUrlIps($url) !== [];
+    }
+
     // SSRF guard + transport guard: HTTPS only (never plaintext http, so a
     // remote provider's configs never traverse the network in the clear), and
     // every resolved IP of the host must be public. Blocks loopback/private/
     // reserved/link-local targets and unresolvable hosts (in the spirit of
-    // saveXray()'s freedom finalRules hardening).
-    public function isSafeExtUrl(string $url): bool
+    // saveXray()'s freedom finalRules hardening). Returns the validated public
+    // IPs ([] when unsafe) so the caller can PIN the fetch to exactly these
+    // addresses (CURLOPT_RESOLVE) — otherwise curl re-resolves $host itself and
+    // a low-TTL domain could hand back a private IP (169.254.169.254, 127.0.0.1)
+    // between this check and the connect (DNS-rebinding TOCTOU), defeating the guard.
+    public function safeExtUrlIps(string $url): array
     {
         $p = parse_url($url);
         if (!is_array($p) || empty($p['scheme']) || empty($p['host']) || strtolower($p['scheme']) !== 'https') {
-            return false;
+            return [];
         }
         $host  = $p['host'];
         $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
@@ -11598,14 +11673,14 @@ DNS-over-HTTPS with IP:
             }
         }
         if (empty($ips)) {
-            return false;
+            return [];
         }
         foreach ($ips as $ip) {
             if (!filter_var($ip, FILTER_VALIDATE_IP, $flags)) {
-                return false;
+                return [];
             }
         }
-        return true;
+        return array_values(array_unique($ips));
     }
 
     // Decode a subscription body: the common base64 newline list, or plain text.
@@ -13753,9 +13828,10 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('relay subscriptions');
         $text[] = $this->i18n('relay hint');
 
-        $data = [];
+        $data   = [];
+        $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $relay) {
-            $hl = $this->relayHealthLabel($name);
+            $hl = $this->relayHealthLabel($name, false, $health);
             $data[] = [
                 [
                     'text'          => "🔗 $name: " . ($relay['address'] ?: $relay['awg_address']) . ($hl !== '' ? "  $hl" : ''),
@@ -14367,6 +14443,7 @@ DNS-over-HTTPS with IP:
         // searching outbounds first would, for a clash template that also carries an
         // outbounds block, pick an outbounds index and then mis-index into proxies[].
         // The ?? [] also avoids a warning when the template lacks the other key.
+        $index = null;
         if (($_GET['t'] ?? '') === 'cl') {
             foreach ($c['proxies'] ?? [] as $k => $v) {
                 if (($v['name'] ?? '') == $outbound) {
@@ -14381,6 +14458,16 @@ DNS-over-HTTPS with IP:
                     break;
                 }
             }
+        }
+        // No matching node (e.g. a custom template that hard-codes the tag instead
+        // of using the ~outbound~ placeholder, so the flag-prefixed name no longer
+        // matches): bail with a clean 404 rather than indexing $c[...][null] and
+        // silently serving a config with the real endpoint/uid never injected.
+        if ($index === null) {
+            if (!empty($return)) {
+                return '';
+            }
+            $this->subNotFound('Subscription template has no matching outbound.');
         }
 
         $fingerprint = $pac['fingerprint'] ?: 'chrome';
