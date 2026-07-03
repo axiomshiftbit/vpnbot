@@ -15,6 +15,12 @@ preup:
 	bash ./update/update.sh &
 start: # запуск контейнеров
 	touch ./override.env ./docker-compose.override.yml ./config/location.conf ./config/override.conf
+	# L2TP/IPsec (сервис ipsec) требует модуль ядра l2tp_ppp на ХОСТЕ — контейнер
+	# его загрузить не может. Дублирует шаг из init.sh, но покрывает ПУТЬ ОБНОВЛЕНИЯ
+	# (кнопка бота -> update.sh -> make start) и ребут (cron make r), где init.sh не
+	# запускается. Префикс `-` обязателен: без модуля в ядре make не должен ронять
+	# запуск контейнеров (L2TP отвалится, IKEv2 и остальное работают).
+	-modprobe l2tp_ppp 2>/dev/null && echo l2tp_ppp > /etc/modules-load.d/vpnbot-l2tp.conf || echo "WARN: l2tp_ppp unavailable — L2TP off, IKEv2 ok"
 	IP=$(IP) VER=$(VER) docker compose --env-file ./.env --env-file ./override.env up -d --force-recreate
 u: preup start
 d: # остановка контейнеров
