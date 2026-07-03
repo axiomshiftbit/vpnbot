@@ -15,7 +15,19 @@ WARP_LICENSE_KEY=$(cat /config/pac.json | jq -r '.warp // empty')
 mkdir -p "$WGCF_DIR"
 cd "$WGCF_DIR"
 
-if [ ! -f "$WGCF_CONF" ]; then
+# Профиль wgcf-profile.conf — единственное, что нужно wg-quick для подъёма
+# туннеля. Аккаунт wgcf-account.toml нужен лишь чтобы СГЕНЕРИРОВАТЬ профиль.
+# Раньше оба шага (register и generate) сидели под одним условием
+# `[ ! -f profile.conf ]`. Когда аккаунт уже был, а профиль пропадал (частый
+# кейс после ручной пересборки: named-volume vpnbot_warp сохраняет
+# account.toml, но profile.conf в нём не оказывалось), скрипт всё равно шёл
+# регистрироваться, `wgcf register` падал с "existing account detected", а
+# из-за set -e умирал весь скрипт → контейнер в креш-луп (off/красный).
+# Поэтому условия РАЗДЕЛЕНЫ и теперь независимы:
+#   1) регистрируем аккаунт, только если его нет;
+#   2) генерируем профиль, только если его нет (в т.ч. восстанавливаем
+#      пропавший профиль из уже существующего аккаунта — чинит случай рабочего сервера).
+if [ ! -f "$WGCF_TOML" ]; then
     echo "[warp] Registering WARP account..."
     wgcf register --accept-tos
     if [ -n "$WARP_LICENSE_KEY" ]; then
@@ -26,6 +38,9 @@ if [ ! -f "$WGCF_CONF" ]; then
         fi
         wgcf update
     fi
+fi
+
+if [ ! -f "$WGCF_CONF" ]; then
     echo "[warp] Generating WireGuard profile..."
     wgcf generate
     echo "[warp] Stripping IPv6 from profile..."
