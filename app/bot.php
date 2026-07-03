@@ -9169,18 +9169,16 @@ DNS-over-HTTPS with IP:
                                 'text'          => $this->i18n('OpenVPN'),
                                 'callback_data' => "/menu ovpn",
                             ],
-                        ],
-                        [
                             [
                                 'text'          => 'L2TP/IPsec',
                                 'callback_data' => "/menu l2tp",
                             ],
+                        ],
+                        [
                             [
                                 'text'          => 'IKEv2',
                                 'callback_data' => "/menu ikev2",
                             ],
-                        ],
-                        [
                             [
                                 'text'          => $this->i18n('config'),
                                 'callback_data' => "/menu config",
