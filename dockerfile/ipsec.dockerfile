@@ -28,7 +28,11 @@ RUN set -eux; \
         openssl \
         netcat-openbsd; \
     mkdir -p /root/.ssh /etc/swanctl /config/ipsec; \
-    /usr/sbin/ipsec version || true; \
-    swanctl --version; \
-    xl2tpd --version 2>&1 | head -n1 || true; \
+    # Санити-гейт: без vici-демона `swanctl --version` падает (exit 2), поэтому
+    # проверяем НАЛИЧИЕ критичных бинарей — сборка честно валится, если alpine
+    # перестанет класть charon/pki/swanctl/xl2tpd по ожидаемым путям.
+    command -v swanctl; \
+    command -v xl2tpd; \
+    command -v pki; \
+    { ls /usr/lib/ipsec/charon || ls /usr/lib/strongswan/charon || ls /usr/libexec/ipsec/charon; }; \
     openssl version
