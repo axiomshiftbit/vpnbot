@@ -177,7 +177,7 @@ class Bot
             case preg_match('~^/menu (?P<type>addpeer) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>wg) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-            case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt|ovpn)$~', $this->input['callback'], $m):
+            case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt|ovpn|l2tp|ikev2)$~', $this->input['callback'], $m):
                 $this->menu(type: $m['type'] ?? false, arg: $m['arg'] ?? false);
                 break;
             case preg_match('~^/changeWG (\d+)$~', $this->input['callback'], $m):
@@ -689,6 +689,75 @@ class Bot
                 break;
             case preg_match('~^/ovpnClientLog (\S+)$~', $this->input['callback'], $m):
                 $this->ovpnClientLog($m[1]);
+                break;
+            case preg_match('~^/addL2tpUser$~', $this->input['callback'], $m):
+                $this->addL2tpUser();
+                break;
+            case preg_match('~^/delL2tpUser (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->delL2tpUser($m[1], !empty($m[2]));
+                break;
+            case preg_match('~^/disableL2tpUser (\S+)$~', $this->input['callback'], $m):
+                $this->disableL2tpUser($m[1]);
+                break;
+            case preg_match('~^/enableL2tpUser (\S+)$~', $this->input['callback'], $m):
+                $this->enableL2tpUser($m[1]);
+                break;
+            case preg_match('~^/kickL2tp (\S+)$~', $this->input['callback'], $m):
+                $this->kickL2tp($m[1]);
+                break;
+            case preg_match('~^/l2tpClientMenu (\S+)$~', $this->input['callback'], $m):
+                $this->l2tpClientMenu($m[1]);
+                break;
+            case preg_match('~^/l2tpClientLog (\S+)$~', $this->input['callback'], $m):
+                $this->l2tpClientLog($m[1]);
+                break;
+            case preg_match('~^/getL2tpCreds (\S+)$~', $this->input['callback'], $m):
+                $this->sendL2tpCreds($m[1]);
+                break;
+            case preg_match('~^/showL2tpLog$~', $this->input['callback'], $m):
+                $this->showL2tpLog();
+                break;
+            case preg_match('~^/showIpsecConnLog (\S+)$~', $this->input['callback'], $m):
+                $this->showIpsecConnLog($m[1]);
+                break;
+            case preg_match('~^/refreshL2tp$~', $this->input['callback'], $m):
+                $this->refreshL2tp();
+                break;
+            case preg_match('~^/addIkev2User$~', $this->input['callback'], $m):
+                $this->addIkev2User();
+                break;
+            case preg_match('~^/delIkev2User (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->delIkev2User($m[1], !empty($m[2]));
+                break;
+            case preg_match('~^/disableIkev2User (\S+)$~', $this->input['callback'], $m):
+                $this->disableIkev2User($m[1]);
+                break;
+            case preg_match('~^/enableIkev2User (\S+)$~', $this->input['callback'], $m):
+                $this->enableIkev2User($m[1]);
+                break;
+            case preg_match('~^/kickIkev2 (\S+)$~', $this->input['callback'], $m):
+                $this->kickIkev2($m[1]);
+                break;
+            case preg_match('~^/ikev2ClientMenu (\S+)$~', $this->input['callback'], $m):
+                $this->ikev2ClientMenu($m[1]);
+                break;
+            case preg_match('~^/getIkev2Profile (\S+)$~', $this->input['callback'], $m):
+                $this->sendIkev2Profile($m[1]);
+                break;
+            case preg_match('~^/getIkev2Sswan (\S+)$~', $this->input['callback'], $m):
+                $this->sendIkev2Sswan($m[1]);
+                break;
+            case preg_match('~^/getIkev2Creds (\S+)$~', $this->input['callback'], $m):
+                $this->sendIkev2Creds($m[1]);
+                break;
+            case preg_match('~^/getIkev2Ca$~', $this->input['callback'], $m):
+                $this->getIkev2Ca();
+                break;
+            case preg_match('~^/showIkev2Log$~', $this->input['callback'], $m):
+                $this->showIkev2Log();
+                break;
+            case preg_match('~^/refreshIkev2$~', $this->input['callback'], $m):
+                $this->refreshIkev2();
                 break;
             case preg_match('~^/changeOcDns$~', $this->input['callback'], $m):
                 $this->changeOcDns();
@@ -3874,6 +3943,7 @@ NFT;
             'cloak'         => file_exists('/config/ckserver.json') ? (json_decode(file_get_contents('/config/ckserver.json'), true) ?: null) : null,
             'ckusers'       => file_exists('/config/ckusers.json') ? (json_decode(file_get_contents('/config/ckusers.json'), true) ?: null) : null,
             'ovpn'          => $this->exportOvpnPki(),
+            'ipsec'         => $this->exportIpsecPki(),
             'xraystats'     => $this->getXrayStats(),
         ];
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -4064,6 +4134,13 @@ NFT;
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->importOvpnPki($json['ovpn']);
                 $this->restartOvpn();
+            }
+            // ipsec (PSK + CA/server cert + chap-secrets + ikev2-юзеры)
+            if (!empty($json['ipsec']) && is_array($json['ipsec'])) {
+                $out[] = 'update ipsec';
+                $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                $this->importIpsecPki($json['ipsec']);
+                $this->restartIpsec();
             }
             if (!empty($json['pac']['domain'])) {
                 $this->setUpstreamDomainOcserv($json['pac']['domain']);
@@ -8948,6 +9025,11 @@ DNS-over-HTTPS with IP:
             $ports  = $this->getPorts();
             $main[] = '';
 
+            // Один ssh-раунд на контейнер ipsec вместо четырёх: статусы
+            // нужны и в колонке сервисов, и в колонке портов.
+            $ipsecXl2tpOn  = (bool) $this->ssh('pgrep xl2tpd', 'ipsec');
+            $ipsecCharonOn = (bool) $this->ssh('pgrep charon', 'ipsec');
+
             $main[] = '<code>';
             $main[] = $this->alignColumns([
                 [
@@ -8959,6 +9041,8 @@ DNS-over-HTTPS with IP:
                     $this->i18n($this->ssh('pgrep hysteria', 'hy') ? 'on' : 'off') . ' ' . $this->i18n('hysteria'),
                     $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . $this->i18n('TrustTunnel'),
                     $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . $this->i18n('OpenVPN'),
+                    $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . ' L2TP/IPsec',
+                    $this->i18n($ipsecCharonOn ? 'on' : 'off') . ' IKEv2',
                     $this->i18n($this->ssh('pgrep mtproto-proxy', 'tg') ? 'on' : 'off') . ' ' . $this->i18n('mtproto'),
                     $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off') . ' ' . $this->i18n('ad_title'),
                     $this->i18n($this->ssh('pgrep ssserver', 'ss') ? 'on' : 'off') . ' ' . $this->i18n('sh_title'),
@@ -8975,6 +9059,8 @@ DNS-over-HTTPS with IP:
                     $this->i18n($ports['hy']['enable'] ? 'on' : 'off') . ($ports['hy']['enable'] ? ' ' . $ports['hy']['port'] : ' port unavailable'),
                     $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
                     $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . (isset($c['ovpn']['ports'][0]) ? explode(':', $c['ovpn']['ports'][0])[0] : getenv('OVPNPORT')),
+                    $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . ' 500,4500',
+                    $this->i18n($ipsecCharonOn ? 'on' : 'off') . ' 500,4500',
                     $this->i18n($ports['tg']['enable'] ? 'on' : 'off') . ($ports['tg']['enable'] ? ' ' . $ports['tg']['port'] : ' port unavailable'),
                     $this->i18n($ports['ad']['enable'] ? 'on' : 'off') . ($ports['ad']['enable'] ? ' ' . $ports['ad']['port'] : ' port unavailable'),
                     $this->i18n($ports['ss']['enable'] ? 'on' : 'off') . ($ports['ss']['enable'] ? ' ' . $ports['ss']['port'] : ' port unavailable'),
@@ -9090,6 +9176,16 @@ DNS-over-HTTPS with IP:
                         ],
                         [
                             [
+                                'text'          => 'L2TP/IPsec',
+                                'callback_data' => "/menu l2tp",
+                            ],
+                            [
+                                'text'          => 'IKEv2',
+                                'callback_data' => "/menu ikev2",
+                            ],
+                        ],
+                        [
+                            [
                                 'text' => $this->i18n('chat'),
                                 'url'  => base64_decode('aHR0cHM6Ly90Lm1lLys0RzMtUTRkX3ZGRXhPRGN5'),
                             ],
@@ -9116,6 +9212,8 @@ DNS-over-HTTPS with IP:
             'hy'           => $type == 'hy'      ? $this->hysteriaMenu()                   : false,
             'tt'           => $type == 'tt'      ? $this->ttMenu()                         : false,
             'ovpn'         => $type == 'ovpn'    ? $this->ovpnMenu()                       : false,
+            'l2tp'         => $type == 'l2tp'    ? $this->l2tpMenu()                       : false,
+            'ikev2'        => $type == 'ikev2'   ? $this->ikev2Menu()                      : false,
             'mirror'       => $type == 'mirror'  ? $this->mirrorMenu()                     : false,
             'update'       => $type == 'update'  ? $this->updatebot()                      : false,
         ];
@@ -18416,5 +18514,1058 @@ DNS-over-HTTPS with IP:
             $text,
             $data,
         );
+    }
+
+    // ─── IPsec: L2TP/IPsec + IKEv2 ────────────────────────────────────────
+    // Один контейнер `ipsec` (strongswan + xl2tpd), но ДВА независимых меню
+    // с раздельными пользователями:
+    //   l2tp  — IKEv1 + общий PSK + CHAP-юзеры в /config/ipsec/chap-secrets
+    //           (pppd перечитывает файл на каждом коннекте — reload не нужен);
+    //   ikev2 — cert-auth сервера (собственный CA из start_ipsec.sh) +
+    //           EAP-MSCHAPv2; юзеры в users_ikev2.json, из которого бот
+    //           регенерирует swanctl-секцию secrets.conf ЦЕЛИКОМ (парсить
+    //           swanctl-синтаксис обратно ненадёжно) + swanctl --load-creds.
+    // Трафик: client → host:500,4500/udp → nft DNAT → ipsec:500/4500. ESP/50
+    // не используется: за DNAT клиенты всегда в NAT-T. Порты фиксированы
+    // протоколом, кнопки «сменить порт» нет.
+
+    public function ipsecPaths()
+    {
+        return [
+            'conf'    => '/config/ipsec',
+            'psk'     => '/config/ipsec/psk',
+            'chap'    => '/config/ipsec/chap-secrets',
+            'secrets' => '/config/ipsec/secrets.conf',
+            'users'   => '/config/ipsec/users_ikev2.json',
+            'ca'      => '/config/ipsec/pki/ca.crt',
+            'srv'     => '/config/ipsec/pki/server.crt',
+            'log'     => '/logs/ipsec.log',
+            'l2tp'    => '/logs/l2tp.log',
+            'conn'    => '/logs/ipsec-connections.log',
+        ];
+    }
+
+    public function getIpsecPsk()
+    {
+        $p = $this->ipsecPaths();
+        return file_exists($p['psk']) ? trim((string) file_get_contents($p['psk'])) : '';
+    }
+
+    // Хост для клиентских профилей: ВСЕГДА IP. Серверный серт IKEv2 выписан
+    // start_ipsec.sh с SAN=IP (+домен, если задан), но IP гарантирован —
+    // профиль работает и без домена/LE.
+    public function ipsecHost()
+    {
+        return (string) getenv('IP');
+    }
+
+    // Снэпшот /config/ipsec для общего JSON-бэкапа (паттерн exportOvpnPki):
+    // psk, PKI (ca/server), chap-secrets, users_ikev2.json, secrets.conf,
+    // swanctl.conf. Все файлы маленькие, runtime-файлов в каталоге нет.
+    public function exportIpsecPki()
+    {
+        $root = '/config/ipsec';
+        if (!is_dir($root)) {
+            return null;
+        }
+        $files = [];
+        $rii = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($rii as $f) {
+            if (!$f->isFile() || $f->isLink()) {
+                continue;
+            }
+            $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
+            $files[$rel] = base64_encode(file_get_contents($f->getPathname()));
+        }
+        return $files ?: null;
+    }
+
+    public function importIpsecPki(array $files)
+    {
+        $root = '/config/ipsec';
+        @mkdir($root, 0755, true);
+        foreach ($files as $rel => $b64) {
+            // Защита от path traversal — как в importOvpnPki.
+            $rel = str_replace('\\', '/', $rel);
+            if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false) {
+                continue;
+            }
+            $path = "$root/$rel";
+            @mkdir(dirname($path), 0755, true);
+            file_put_contents($path, base64_decode($b64));
+        }
+        foreach (['psk', 'chap-secrets', 'secrets.conf'] as $f) {
+            if (file_exists("$root/$f")) {
+                chmod("$root/$f", 0600);
+            }
+        }
+        foreach (glob("$root/pki/*.key") ?: [] as $k) {
+            chmod($k, 0600);
+        }
+    }
+
+    public function restartIpsec()
+    {
+        // Гарантированная остановка обоих демонов, затем перезапуск через
+        // /etc/run_ipsec_daemons.sh (его генерирует start_ipsec.sh — там
+        // ожидание vici-сокета + swanctl --load-all).
+        $this->ssh(
+            'pkill -9 charon 2>/dev/null; pkill -9 xl2tpd 2>/dev/null; ' .
+            'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep charon >/dev/null || break; sleep 0.2; done',
+            'ipsec'
+        );
+        $this->ssh('sh /etc/run_ipsec_daemons.sh', 'ipsec', false, '/dev/null');
+    }
+
+    // ─── L2TP/IPsec: пользователи (chap-secrets) ─────────────────────────
+
+    // Файл пишет только бот, формат канонический: `"user" * "pass" *`,
+    // заблокированный юзер — та же строка, закомментированная `#`.
+    public function getL2tpUsers()
+    {
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['chap'])) {
+            return [];
+        }
+        $users = [];
+        foreach (explode("\n", file_get_contents($p['chap'])) as $line) {
+            if (preg_match('~^(#)?"([a-zA-Z0-9_.\-]+)"\s+\*\s+"([^"]*)"\s+\*$~', trim($line), $m)) {
+                $users[$m[2]] = [
+                    'pass'     => $m[3],
+                    'disabled' => $m[1] === '#',
+                ];
+            }
+        }
+        ksort($users);
+        return $users;
+    }
+
+    public function saveL2tpUsers(array $users)
+    {
+        $p     = $this->ipsecPaths();
+        $lines = ['# Managed by vpnbot — chap-secrets for xl2tpd/pppd.'];
+        foreach ($users as $u => $v) {
+            $lines[] = ($v['disabled'] ? '#' : '') . "\"$u\" * \"{$v['pass']}\" *";
+        }
+        @mkdir($p['conf'], 0755, true);
+        file_put_contents($p['chap'], implode("\n", $lines) . "\n", LOCK_EX);
+        @chmod($p['chap'], 0600);
+    }
+
+    // Живые сессии из /var/run/l2tp-sessions (ведут ip-up/ip-down хуки pppd):
+    // имя файла = юзер, внутри "IP PID". PID нужен для kick.
+    public function getL2tpOnline()
+    {
+        $raw = $this->ssh(
+            'for f in /var/run/l2tp-sessions/*; do [ -f "$f" ] && printf \'%s %s\n\' "$(basename "$f")" "$(cat "$f")"; done 2>/dev/null',
+            'ipsec'
+        );
+        $out = [];
+        foreach (explode("\n", (string) $raw) as $line) {
+            if (preg_match('~^([a-zA-Z0-9_.\-]+) (\S+) (\d+)$~', trim($line), $m)) {
+                $out[$m[1]] = ['ip' => $m[2], 'pid' => (int) $m[3]];
+            }
+        }
+        return $out;
+    }
+
+    public function refreshL2tp()
+    {
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('refreshed'));
+        }
+        $this->menu('l2tp');
+    }
+
+    public function l2tpMenu()
+    {
+        $host    = $this->ipsecHost();
+        $psk     = $this->getIpsecPsk();
+        $users   = $this->getL2tpUsers();
+        $online  = $this->getL2tpOnline();
+        $running = (bool) $this->ssh('pgrep xl2tpd', 'ipsec');
+        $charon  = (bool) $this->ssh('pgrep charon', 'ipsec');
+
+        $text   = [];
+        $text[] = 'Menu -> L2TP/IPsec';
+        $text[] = "server: <code>$host</code> · udp/500,4500";
+        $text[] = $this->i18n($charon ? 'on' : 'off') . ' strongswan (IKE)';
+        $text[] = $this->i18n($running ? 'on' : 'off') . ' xl2tpd (L2TP)';
+        if ($psk !== '') {
+            $text[] = 'PSK: <code>' . htmlspecialchars($psk, ENT_QUOTES) . '</code>';
+        } else {
+            $text[] = '⚠ PSK missing — restart ipsec container';
+        }
+        $text[] = 'clients: ' . count($users) . ' (' . count($online) . ' ' . $this->i18n('online') . ')';
+        // Android 12+ выпилил нативный L2TP/IPsec — предупреждаем сразу в
+        // меню, чтобы не дебажить «не подключается» на новых андроидах.
+        $text[] = '<i>Android 12+: ' . $this->i18n('no native l2tp') . '</i>';
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('add peer'),
+            'callback_data' => '/addL2tpUser',
+        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('log tail'),
+                'callback_data' => '/showL2tpLog',
+            ],
+            [
+                'text'          => $this->i18n('connections'),
+                'callback_data' => '/showIpsecConnLog l2tp',
+            ],
+        ];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/refreshL2tp',
+        ]];
+        foreach ($users as $u => $v) {
+            $marker = $v['disabled'] ? '🚫' : (isset($online[$u]) ? '🟢' : '⚪');
+            $data[] = [[
+                'text'          => "$marker $u",
+                'callback_data' => "/l2tpClientMenu $u",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu',
+        ]];
+        return [
+            'text' => implode("\n", $text),
+            'data' => $data,
+        ];
+    }
+
+    public function addL2tpUser()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter username",
+            $this->input['message_id'],
+            reply: 'enter username',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'addl2us',
+            'args'           => [],
+        ];
+    }
+
+    public function addl2us($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            $this->send($this->input['chat'], 'wrong username');
+            return $this->menu('l2tp');
+        }
+        // Лимит как у ovpn: callback_data телеграма 64 байта на строку
+        // "/delL2tpUser <name> confirm".
+        if (strlen($user) > 40) {
+            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            return $this->menu('l2tp');
+        }
+        $users = $this->getL2tpUsers();
+        if (isset($users[$user])) {
+            $this->send($this->input['chat'], "user $user already exists");
+            return $this->menu('l2tp');
+        }
+        // 16 hex-символов: безопасно для chap-secrets/MSCHAPv2/копипасты.
+        $users[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
+        $this->saveL2tpUsers($users);
+        // Сразу отдаём реквизиты — как auto-send .ovpn у OpenVPN.
+        $this->sendL2tpCreds($user);
+        $this->menu('l2tp');
+    }
+
+    // Реквизиты + краткие инструкции по платформам отдельным сообщением,
+    // чтобы их можно было переслать пользователю as-is.
+    public function sendL2tpCreds($user)
+    {
+        $users = $this->getL2tpUsers();
+        if (!isset($users[$user])) {
+            return false;
+        }
+        $host = $this->ipsecHost();
+        $psk  = $this->getIpsecPsk();
+        $t   = [];
+        $t[] = '<b>L2TP/IPsec</b> — <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'server: <code>' . htmlspecialchars($host, ENT_QUOTES) . '</code>';
+        $t[] = 'PSK: <code>' . htmlspecialchars($psk, ENT_QUOTES) . '</code>';
+        $t[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'password: <code>' . htmlspecialchars($users[$user]['pass'], ENT_QUOTES) . '</code>';
+        $t[] = '';
+        $t[] = 'Windows: VPN type "L2TP/IPsec with pre-shared key", MS-CHAP v2';
+        $t[] = 'iOS/macOS: Settings → VPN → L2TP (Secret = PSK)';
+        $t[] = 'Android 12+: ' . $this->i18n('no native l2tp');
+        $this->send($this->input['from'], implode("\n", $t));
+        return true;
+    }
+
+    public function delL2tpUser($user, $confirm = false)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getL2tpUsers();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('l2tp');
+        }
+        if (!$confirm) {
+            $text = 'Menu -> L2TP/IPsec -> <code>'
+                . htmlspecialchars($user, ENT_QUOTES) . '</code>' . "\n"
+                . '⚠ ' . $this->i18n('confirm delete user');
+            $data = [
+                [['text' => '❌ ' . $this->i18n('delete forever'), 'callback_data' => "/delL2tpUser $user confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/l2tpClientMenu $user"]],
+            ];
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
+        unset($users[$user]);
+        $this->saveL2tpUsers($users);
+        $this->kickL2tpSession($user);
+        $this->menu('l2tp');
+    }
+
+    public function disableL2tpUser($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getL2tpUsers();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('l2tp');
+        }
+        $users[$user]['disabled'] = true;
+        $this->saveL2tpUsers($users);
+        // chap-secrets проверяется только на новых коннектах — живую сессию
+        // рвём принудительно.
+        $this->kickL2tpSession($user);
+        $this->l2tpClientMenu($user);
+    }
+
+    public function enableL2tpUser($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getL2tpUsers();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('l2tp');
+        }
+        $users[$user]['disabled'] = false;
+        $this->saveL2tpUsers($users);
+        $this->l2tpClientMenu($user);
+    }
+
+    // Убить pppd конкретного юзера по PID из session-файла (пишет ip-up).
+    public function kickL2tpSession($user)
+    {
+        $u = escapeshellarg($user);
+        $this->ssh(
+            "f=/var/run/l2tp-sessions/$u; [ -f \"\$f\" ] && kill \$(awk '{print \$2}' \"\$f\") 2>/dev/null; true",
+            'ipsec'
+        );
+    }
+
+    public function kickL2tp($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            return $this->menu('l2tp');
+        }
+        $this->kickL2tpSession($user);
+        if (isset($this->getL2tpUsers()[$user])) {
+            return $this->l2tpClientMenu($user);
+        }
+        $this->menu('l2tp');
+    }
+
+    public function l2tpClientMenu($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getL2tpUsers();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('l2tp');
+        }
+        $isDis  = $users[$user]['disabled'];
+        $online = $this->getL2tpOnline();
+        $s      = $online[$user] ?? null;
+
+        if ($isDis) {
+            $status = '🚫 ' . $this->i18n('disabled');
+        } elseif ($s) {
+            $status = '🟢 ' . $this->i18n('online') . ' · ' . htmlspecialchars($s['ip'], ENT_QUOTES);
+        } else {
+            $status = '⚪ ' . $this->i18n('offline');
+        }
+
+        $text   = [];
+        $text[] = 'Menu -> L2TP/IPsec -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $text[] = $this->i18n('status') . ': ' . $status;
+        if (!$isDis && !$s) {
+            $seen   = $this->ipsecLastSeen($user);
+            $text[] = $this->i18n('last seen') . ': '
+                . ($seen ? "{$seen['ts']} ({$seen['dir']})" : $this->i18n('never'));
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('credentials'),
+            'callback_data' => "/getL2tpCreds $user",
+        ]];
+        $data[] = [
+            $isDis
+                ? ['text' => $this->i18n('enable'),  'callback_data' => "/enableL2tpUser $user"]
+                : ['text' => $this->i18n('disable'), 'callback_data' => "/disableL2tpUser $user"],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('kick'),
+            'callback_data' => "/kickL2tp $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('history'),
+            'callback_data' => "/l2tpClientLog $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('delete'),
+            'callback_data' => "/delL2tpUser $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu l2tp',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Последнее событие юзера в /logs/ipsec-connections.log (пишут
+    // ip-up/ip-down хуки pppd; формат тот же, что у ovpn connect.sh).
+    public function ipsecLastSeen($user)
+    {
+        static $lines = null;
+        if ($lines === null) {
+            $p     = $this->ipsecPaths();
+            $lines = file_exists($p['conn'])
+                ? explode("\n", file_get_contents($p['conn']))
+                : [];
+        }
+        for ($i = count($lines) - 1; $i >= 0; $i--) {
+            if (preg_match('~^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (UP|DOWN)\s+(\S+)\s~', $lines[$i], $m)
+                && $m[3] === $user) {
+                return ['ts' => $m[1], 'dir' => $m[2]];
+            }
+        }
+        return null;
+    }
+
+    public function l2tpClientLog($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !isset($this->getL2tpUsers()[$user])) {
+            return $this->menu('l2tp');
+        }
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['conn'], 15, 3500, $user);
+        $text = 'Menu -> L2TP/IPsec -> <code>'
+            . htmlspecialchars($user, ENT_QUOTES) . '</code> -> ' . $this->i18n('history') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => "/l2tpClientMenu $user"],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    public function showL2tpLog()
+    {
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['l2tp']);
+        $text = 'Menu -> L2TP/IPsec -> ' . $this->i18n('log tail') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => '/menu l2tp'],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    // Общий журнал UP/DOWN контейнера ipsec; $ret — куда вести кнопку назад
+    // (экран доступен из обоих меню).
+    public function showIpsecConnLog($ret = 'l2tp')
+    {
+        $ret  = $ret === 'ikev2' ? 'ikev2' : 'l2tp';
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['conn']);
+        $text = 'Menu -> IPsec -> ' . $this->i18n('connections') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => "/menu $ret"],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    // ─── IKEv2: пользователи (users_ikev2.json → secrets.conf) ───────────
+
+    public function getIkev2Users()
+    {
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['users'])) {
+            return [];
+        }
+        $u = json_decode(file_get_contents($p['users']), true);
+        return is_array($u) ? $u : [];
+    }
+
+    // JSON — source of truth; swanctl-файл секретов регенерируется целиком
+    // (PSK для l2tp-конна + eap-секции только НЕзаблокированных юзеров),
+    // затем charon перечитывает креды. Блокировка = юзер выпадает из
+    // secrets.conf, EAP сразу перестаёт проходить.
+    public function saveIkev2Users(array $users)
+    {
+        $p = $this->ipsecPaths();
+        @mkdir($p['conf'], 0755, true);
+        file_put_contents($p['users'], json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
+        @chmod($p['users'], 0600);
+
+        $psk   = $this->getIpsecPsk();
+        $out   = [];
+        $out[] = '# Managed by vpnbot — regenerated from users_ikev2.json, do not edit.';
+        $out[] = 'secrets {';
+        $out[] = '    ike-l2tp {';
+        $out[] = '        secret = "' . $psk . '"';
+        $out[] = '    }';
+        // Имена секций — порядковые (eap-1, eap-2, …): юзернейм с точкой
+        // ломал бы swanctl-парсер (точка — разделитель секций), а матчится
+        // всё равно только значение id.
+        $i = 0;
+        foreach ($users as $u => $v) {
+            if (!empty($v['disabled'])) {
+                continue;
+            }
+            $i++;
+            $out[] = "    eap-$i {";
+            $out[] = '        id = "' . $u . '"';
+            $out[] = '        secret = "' . $v['pass'] . '"';
+            $out[] = '    }';
+        }
+        $out[] = '}';
+        file_put_contents($p['secrets'], implode("\n", $out) . "\n", LOCK_EX);
+        @chmod($p['secrets'], 0600);
+        $this->ssh('swanctl --load-creds >/dev/null 2>&1; true', 'ipsec');
+    }
+
+    // Онлайн-статус IKEv2 из `swanctl --list-sas`: юзер (EAP identity) →
+    // uid IKE_SA (для kick), реальный адрес, виртуальный IP, байты, аптайм.
+    public function getIkev2Status()
+    {
+        $raw = (string) $this->ssh('swanctl --list-sas 2>/dev/null', 'ipsec');
+        $out = [];
+        $cur = null;   // буфер полей IKE_SA, пока EAP identity ещё не встретилась
+        $key = null;   // имя юзера — после него пишем сразу в $out[$key]
+        foreach (explode("\n", $raw) as $line) {
+            if (preg_match('~^\S+: #(\d+), ESTABLISHED~', $line, $m)) {
+                $cur = ['uid' => (int) $m[1], 'real' => '', 'virtual' => '', 'rx' => 0, 'tx' => 0, 'since' => ''];
+                $key = null;
+                continue;
+            }
+            if ($cur === null && $key === null) {
+                continue;
+            }
+            if (preg_match("~^\\s*remote '[^']*' @ ([^\\[\\s]+)\\[\\d+\\](?: EAP: '([^']+)')?~", $line, $m)) {
+                $cur['real'] = $m[1];
+                if (!empty($m[2])) {
+                    // EAP identity = имя юзера; дальше child-SA строки
+                    // (байты, virtual IP) дополняют запись в $out.
+                    $key       = $m[2];
+                    $out[$key] = $cur;
+                    $cur       = null;
+                }
+                continue;
+            }
+            $ref = $key !== null ? $key : null;
+            if (preg_match('~established (\d+)s ago~', $line, $m)) {
+                if ($ref !== null) { $out[$ref]['since'] = (int) $m[1]; } else { $cur['since'] = (int) $m[1]; }
+                continue;
+            }
+            if ($ref === null) {
+                continue;
+            }
+            if (preg_match('~^\s*in\s+\S+,\s*(\d+) bytes~', $line, $m)) {
+                $out[$ref]['rx'] += (int) $m[1];
+                continue;
+            }
+            if (preg_match('~^\s*out\s+\S+,\s*(\d+) bytes~', $line, $m)) {
+                $out[$ref]['tx'] += (int) $m[1];
+                continue;
+            }
+            if (preg_match('~^\s*remote ([0-9.]+)/32$~', $line, $m)) {
+                $out[$ref]['virtual'] = $m[1];
+                continue;
+            }
+        }
+        return $out;
+    }
+
+    public function refreshIkev2()
+    {
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('refreshed'));
+        }
+        $this->menu('ikev2');
+    }
+
+    public function ikev2Menu()
+    {
+        $host    = $this->ipsecHost();
+        $users   = $this->getIkev2Users();
+        $online  = $this->getIkev2Status();
+        $running = (bool) $this->ssh('pgrep charon', 'ipsec');
+        $p       = $this->ipsecPaths();
+
+        $text   = [];
+        $text[] = 'Menu -> IKEv2';
+        $text[] = "server: <code>$host</code> · udp/500,4500";
+        $text[] = $this->i18n($running ? 'on' : 'off') . ' strongswan (IKEv2)';
+        if (!file_exists($p['ca']) || !file_exists($p['srv'])) {
+            $text[] = '⚠ PKI missing — restart ipsec container';
+        }
+        $text[] = 'clients: ' . count($users) . ' (' . count($online) . ' ' . $this->i18n('online') . ')';
+        foreach ($online as $u => $s) {
+            if (!isset($users[$u])) {
+                continue;
+            }
+            $text[] = '🟢 <code>' . htmlspecialchars($u, ENT_QUOTES) . '</code> '
+                . htmlspecialchars($s['virtual'], ENT_QUOTES)
+                . ($s['real'] !== '' ? ' · <code>' . htmlspecialchars($s['real'], ENT_QUOTES) . '</code>' : '')
+                . ' ↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('add peer'),
+            'callback_data' => '/addIkev2User',
+        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('log tail'),
+                'callback_data' => '/showIkev2Log',
+            ],
+            [
+                'text'          => 'CA (Windows)',
+                'callback_data' => '/getIkev2Ca',
+            ],
+        ];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/refreshIkev2',
+        ]];
+        foreach ($users as $u => $v) {
+            $marker = !empty($v['disabled']) ? '🚫' : (isset($online[$u]) ? '🟢' : '⚪');
+            $data[] = [[
+                'text'          => "$marker $u",
+                'callback_data' => "/ikev2ClientMenu $u",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu',
+        ]];
+        return [
+            'text' => implode("\n", $text),
+            'data' => $data,
+        ];
+    }
+
+    public function addIkev2User()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter username",
+            $this->input['message_id'],
+            reply: 'enter username',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'addik2us',
+            'args'           => [],
+        ];
+    }
+
+    public function addik2us($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            $this->send($this->input['chat'], 'wrong username');
+            return $this->menu('ikev2');
+        }
+        if (strlen($user) > 40) {
+            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            return $this->menu('ikev2');
+        }
+        $users = $this->getIkev2Users();
+        if (isset($users[$user])) {
+            $this->send($this->input['chat'], "user $user already exists");
+            return $this->menu('ikev2');
+        }
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['ca'])) {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container first');
+            return $this->menu('ikev2');
+        }
+        $users[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
+        $this->saveIkev2Users($users);
+        // Профиль iOS/macOS + реквизиты сразу, без похода в подменю.
+        $this->sendIkev2Profile($user);
+        $this->sendIkev2Creds($user);
+        $this->menu('ikev2');
+    }
+
+    public function sendIkev2Creds($user)
+    {
+        $users = $this->getIkev2Users();
+        if (!isset($users[$user])) {
+            return false;
+        }
+        $host = $this->ipsecHost();
+        $t   = [];
+        $t[] = '<b>IKEv2</b> — <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'server: <code>' . htmlspecialchars($host, ENT_QUOTES) . '</code>';
+        $t[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'password: <code>' . htmlspecialchars($users[$user]['pass'], ENT_QUOTES) . '</code>';
+        $t[] = 'auth: EAP-MSCHAPv2 (username + password)';
+        $t[] = '';
+        $t[] = 'iOS/macOS: ' . $this->i18n('profile') . ' .mobileconfig (CA внутри)';
+        $t[] = 'Android: strongSwan app + .sswan ' . $this->i18n('profile');
+        $t[] = 'Windows: CA (кнопка в меню) + PowerShell:';
+        $t[] = '<pre>certutil -addstore -f Root ca.pem'
+            . "\nAdd-VpnConnection -Name vpnbot -ServerAddress $host -TunnelType IKEv2 -AuthenticationMethod EAP -EncryptionLevel Required"
+            . "\nSet-VpnConnectionIPsecConfiguration -ConnectionName vpnbot -AuthenticationTransformConstants SHA256128 -CipherTransformConstants AES256 -EncryptionMethod AES256 -IntegrityCheckMethod SHA256 -DHGroup Group14 -PfsGroup None -Force</pre>";
+        $this->send($this->input['from'], implode("\n", $t));
+        return true;
+    }
+
+    // base64(DER) CA-сертификата: тело PEM и есть base64 от DER — ровно то,
+    // что ждут <data> в mobileconfig и remote.cert в .sswan.
+    public function ikev2CaB64()
+    {
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['ca'])) {
+            return '';
+        }
+        return preg_replace('~-----[^-]+-----|\s~', '', file_get_contents($p['ca']));
+    }
+
+    // Детерминированный UUID v4-формата из md5 — при повторной выдаче
+    // профиля iOS видит тот же PayloadUUID и обновляет, а не дублирует.
+    public function ikev2Uuid($seed)
+    {
+        $h = md5('vpnbot-ipsec-' . $seed);
+        return sprintf(
+            '%s-%s-4%s-a%s-%s',
+            substr($h, 0, 8),
+            substr($h, 8, 4),
+            substr($h, 13, 3),
+            substr($h, 17, 3),
+            substr($h, 20, 12)
+        );
+    }
+
+    public function sendIkev2Profile($user)
+    {
+        $users = $this->getIkev2Users();
+        $caB64 = $this->ikev2CaB64();
+        if (!isset($users[$user]) || $caB64 === '') {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            return false;
+        }
+        $host = $this->ipsecHost();
+        $pass = $users[$user]['pass'];
+        $eu   = htmlspecialchars($user, ENT_QUOTES | ENT_XML1);
+        $eh   = htmlspecialchars($host, ENT_QUOTES | ENT_XML1);
+        $ep   = htmlspecialchars($pass, ENT_QUOTES | ENT_XML1);
+        $vpnUuid  = $this->ikev2Uuid("vpn-$host-$user");
+        $certUuid = $this->ikev2Uuid("ca-$host");
+        $topUuid  = $this->ikev2Uuid("top-$host-$user");
+        $xml = <<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key><string>com.apple.vpn.managed</string>
+            <key>PayloadIdentifier</key><string>org.vpnbot.ikev2.$eu</string>
+            <key>PayloadUUID</key><string>$vpnUuid</string>
+            <key>PayloadVersion</key><integer>1</integer>
+            <key>PayloadDisplayName</key><string>vpnbot IKEv2</string>
+            <key>UserDefinedName</key><string>vpnbot $eu</string>
+            <key>VPNType</key><string>IKEv2</string>
+            <key>IKEv2</key>
+            <dict>
+                <key>RemoteAddress</key><string>$eh</string>
+                <key>RemoteIdentifier</key><string>$eh</string>
+                <key>LocalIdentifier</key><string>$eu</string>
+                <key>AuthenticationMethod</key><string>None</string>
+                <key>ExtendedAuthEnabled</key><integer>1</integer>
+                <key>AuthName</key><string>$eu</string>
+                <key>AuthPassword</key><string>$ep</string>
+                <key>DeadPeerDetectionRate</key><string>Medium</string>
+                <key>DisableMOBIKE</key><integer>0</integer>
+                <key>DisableRedirect</key><integer>1</integer>
+                <key>EnablePFS</key><integer>0</integer>
+                <key>IKESecurityAssociationParameters</key>
+                <dict>
+                    <key>EncryptionAlgorithm</key><string>AES-256</string>
+                    <key>IntegrityAlgorithm</key><string>SHA2-256</string>
+                    <key>DiffieHellmanGroup</key><integer>14</integer>
+                    <key>LifeTimeInMinutes</key><integer>1440</integer>
+                </dict>
+                <key>ChildSecurityAssociationParameters</key>
+                <dict>
+                    <key>EncryptionAlgorithm</key><string>AES-256</string>
+                    <key>IntegrityAlgorithm</key><string>SHA2-256</string>
+                    <key>DiffieHellmanGroup</key><integer>14</integer>
+                    <key>LifeTimeInMinutes</key><integer>1440</integer>
+                </dict>
+            </dict>
+        </dict>
+        <dict>
+            <key>PayloadType</key><string>com.apple.security.root</string>
+            <key>PayloadIdentifier</key><string>org.vpnbot.ikev2.ca</string>
+            <key>PayloadUUID</key><string>$certUuid</string>
+            <key>PayloadVersion</key><integer>1</integer>
+            <key>PayloadDisplayName</key><string>vpnbot-ipsec-ca</string>
+            <key>PayloadContent</key><data>$caB64</data>
+        </dict>
+    </array>
+    <key>PayloadType</key><string>Configuration</string>
+    <key>PayloadIdentifier</key><string>org.vpnbot.ikev2.profile.$eu</string>
+    <key>PayloadUUID</key><string>$topUuid</string>
+    <key>PayloadVersion</key><integer>1</integer>
+    <key>PayloadDisplayName</key><string>vpnbot IKEv2 ($eu)</string>
+</dict>
+</plist>
+XML;
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile($xml, "$user.mobileconfig", 'application/x-apple-aspen-config')
+        );
+        return true;
+    }
+
+    public function sendIkev2Sswan($user)
+    {
+        $users = $this->getIkev2Users();
+        $caB64 = $this->ikev2CaB64();
+        if (!isset($users[$user]) || $caB64 === '') {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            return false;
+        }
+        $host = $this->ipsecHost();
+        // Формат импорта профилей strongSwan для Android:
+        // https://docs.strongswan.org/docs/latest/os/androidVpnClientProfiles.html
+        // remote.cert — base64(DER) CA; пароль клиент спросит и запомнит сам.
+        $profile = [
+            'uuid'   => $this->ikev2Uuid("sswan-$host-$user"),
+            'name'   => "vpnbot $user",
+            'type'   => 'ikev2-eap',
+            'remote' => [
+                'addr' => $host,
+                'id'   => $host,
+                'cert' => $caB64,
+            ],
+            'local'  => [
+                'eap_id' => $user,
+            ],
+        ];
+        $json = json_encode($profile, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile($json, "$user.sswan", 'application/vnd.strongswan.profile')
+        );
+        return true;
+    }
+
+    public function getIkev2Ca()
+    {
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['ca'])) {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            return $this->menu('ikev2');
+        }
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile(file_get_contents($p['ca']), 'ca.pem', 'application/x-pem-file')
+        );
+    }
+
+    public function delIkev2User($user, $confirm = false)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getIkev2Users();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('ikev2');
+        }
+        if (!$confirm) {
+            $text = 'Menu -> IKEv2 -> <code>'
+                . htmlspecialchars($user, ENT_QUOTES) . '</code>' . "\n"
+                . '⚠ ' . $this->i18n('confirm delete user');
+            $data = [
+                [['text' => '❌ ' . $this->i18n('delete forever'), 'callback_data' => "/delIkev2User $user confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/ikev2ClientMenu $user"]],
+            ];
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
+        unset($users[$user]);
+        $this->saveIkev2Users($users);
+        $this->kickIkev2Session($user);
+        $this->menu('ikev2');
+    }
+
+    public function disableIkev2User($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getIkev2Users();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('ikev2');
+        }
+        $users[$user]['disabled'] = true;
+        // saveIkev2Users выкидывает юзера из secrets.conf + load-creds —
+        // новые коннекты отвалятся; живую SA рвём явно.
+        $this->saveIkev2Users($users);
+        $this->kickIkev2Session($user);
+        $this->ikev2ClientMenu($user);
+    }
+
+    public function enableIkev2User($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getIkev2Users();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('ikev2');
+        }
+        $users[$user]['disabled'] = false;
+        $this->saveIkev2Users($users);
+        $this->ikev2ClientMenu($user);
+    }
+
+    // Разорвать IKE_SA юзера по uid из swanctl --list-sas.
+    public function kickIkev2Session($user)
+    {
+        $s = $this->getIkev2Status()[$user] ?? null;
+        if ($s && !empty($s['uid'])) {
+            $uid = (int) $s['uid'];
+            $this->ssh("swanctl --terminate --ike-id $uid >/dev/null 2>&1; true", 'ipsec');
+        }
+    }
+
+    public function kickIkev2($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            return $this->menu('ikev2');
+        }
+        $this->kickIkev2Session($user);
+        if (isset($this->getIkev2Users()[$user])) {
+            return $this->ikev2ClientMenu($user);
+        }
+        $this->menu('ikev2');
+    }
+
+    public function ikev2ClientMenu($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getIkev2Users();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('ikev2');
+        }
+        $isDis  = !empty($users[$user]['disabled']);
+        $online = $this->getIkev2Status();
+        $s      = $online[$user] ?? null;
+
+        if ($isDis) {
+            $status = '🚫 ' . $this->i18n('disabled');
+        } elseif ($s) {
+            $status = '🟢 ' . $this->i18n('online')
+                . ' · ' . htmlspecialchars($s['virtual'], ENT_QUOTES)
+                . ($s['real'] !== '' ? ' · ' . htmlspecialchars($s['real'], ENT_QUOTES) : '')
+                . ' · ↓' . $this->fmtBytes($s['rx'])
+                . ' ↑' . $this->fmtBytes($s['tx']);
+        } else {
+            $status = '⚪ ' . $this->i18n('offline');
+        }
+
+        $text   = [];
+        $text[] = 'Menu -> IKEv2 -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $text[] = $this->i18n('status') . ': ' . $status;
+        if ($s && $s['since'] !== '') {
+            $text[] = $this->i18n('since') . ': ' . $this->uptimeHuman((int) $s['since']);
+        }
+
+        $data   = [];
+        $data[] = [
+            [
+                'text'          => '.mobileconfig',
+                'callback_data' => "/getIkev2Profile $user",
+            ],
+            [
+                'text'          => '.sswan',
+                'callback_data' => "/getIkev2Sswan $user",
+            ],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('credentials'),
+            'callback_data' => "/getIkev2Creds $user",
+        ]];
+        $data[] = [
+            $isDis
+                ? ['text' => $this->i18n('enable'),  'callback_data' => "/enableIkev2User $user"]
+                : ['text' => $this->i18n('disable'), 'callback_data' => "/disableIkev2User $user"],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('kick'),
+            'callback_data' => "/kickIkev2 $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('delete'),
+            'callback_data' => "/delIkev2User $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu ikev2',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // «established N seconds ago» → короткая человекочитаемая длительность.
+    public function uptimeHuman($sec)
+    {
+        $sec = (int) $sec;
+        if ($sec < 60) {
+            return "{$sec}s";
+        }
+        if ($sec < 3600) {
+            return floor($sec / 60) . 'm ' . ($sec % 60) . 's';
+        }
+        return floor($sec / 3600) . 'h ' . floor(($sec % 3600) / 60) . 'm';
+    }
+
+    public function showIkev2Log()
+    {
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['log']);
+        $text = 'Menu -> IKEv2 -> ' . $this->i18n('log tail') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => '/menu ikev2'],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
     }
 }

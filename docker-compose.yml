@@ -658,6 +658,50 @@ services:
             default:
                 ipv4_address: 10.10.0.19
         logging: *default-logging
+    ipsec:
+        image: mercurykd/vpnbot-ipsec:1.0
+        build:
+            dockerfile: dockerfile/ipsec.dockerfile
+            # Отдельная Alpine-база (новее глобального ${IMAGE}) — свежие
+            # strongswan/openssl, как у сервиса ovpn.
+            args:
+                image: alpine:3.22
+        volumes:
+            - ./config/.profile:/root/.ashrc:ro
+            - ./config/ipsec:/config/ipsec
+            - ./scripts/start_ipsec.sh:/start_ipsec.sh
+            - ./ssh:/ssh
+            - ./config/sshd_config:/etc/ssh/sshd_config
+            - ./logs:/logs
+        hostname: ipsec
+        container_name: ipsec-${VER}
+        depends_on:
+            php:
+                condition: service_healthy
+        env_file:
+            - path: ./.env
+              required: true # default
+            - path: ./override.env
+              required: false
+        environment:
+            L2TPSUBNET: ${L2TPSUBNET:-10.9.1.0/24}
+            IKEV2SUBNET: ${IKEV2SUBNET:-10.9.2.0/24}
+        cap_add:
+            - NET_ADMIN
+        # charon ставит XFRM-политики в netns контейнера; форвардинг пакетов
+        # клиентов включаем через sysctl (docker разрешает net.ipv4.*).
+        sysctls:
+            net.ipv4.ip_forward: 1
+        # /dev/ppp НЕ пробрасываем устройством: его может не быть на хосте до
+        # modprobe ppp_generic, и compose тогда не поднимет контейнер вовсе.
+        # start_ipsec.sh делает mknod сам (CAP_MKNOD есть по умолчанию).
+        # Для L2TP на хосте должен быть загружен модуль l2tp_ppp (см. nft-конфиг).
+        stop_grace_period: 1s
+        command: ["/bin/sh", "/start_ipsec.sh"]
+        networks:
+            default:
+                ipv4_address: 10.10.0.21
+        logging: *default-logging
     tt:
         image: mercurykd/vpnbot-tt:1.0
         build:

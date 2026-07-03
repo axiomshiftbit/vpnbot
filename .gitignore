@@ -13,6 +13,10 @@
 /config/hwid.json
 /config/openvpn/*
 !/config/openvpn/.gitkeep
+# рантайм ipsec: PSK, приватные ключи CA/сервера, chap-secrets, юзеры —
+# никогда не коммитим
+/config/ipsec/*
+!/config/ipsec/.gitkeep
 /todo.todo
 /app/zapretlists/*
 !/app/zapretlists/.gitkeep
@@ -35,9 +39,10 @@ location.conf
 override.conf
 i18n.override.php
 
-# не заливаем в релиз-репозиторий
+# не заливаем в релиз-репозиторий (host-специфичные nft-конфиги)
 /post-receive
 /nft_conf/
+/nft/
 nftables.conf
 .venv/
 .codex/

@@ -865,6 +865,22 @@ $i = [
         'en' => 'cancel',
         'ru' => 'отмена',
     ],
+    'credentials'  => [
+        'en' => 'credentials',
+        'ru' => 'реквизиты',
+    ],
+    'profile'  => [
+        'en' => 'profile',
+        'ru' => 'профиль',
+    ],
+    'confirm delete user'  => [
+        'en' => 'delete user permanently?',
+        'ru' => 'удалить пользователя безвозвратно?',
+    ],
+    'no native l2tp'  => [
+        'en' => 'no native L2TP client, use IKEv2 instead',
+        'ru' => 'нет нативного L2TP-клиента, используйте IKEv2',
+    ],
 ];
 
 if (file_exists(__DIR__ . '/i18n.override.php')) {
