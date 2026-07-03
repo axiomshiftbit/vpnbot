@@ -18799,6 +18799,10 @@ DNS-over-HTTPS with IP:
         $t[] = 'password: <code>' . htmlspecialchars($users[$user]['pass'], ENT_QUOTES) . '</code>';
         $t[] = '';
         $t[] = 'Windows: VPN type "L2TP/IPsec with pre-shared key", MS-CHAP v2';
+        // Windows за NAT (домашний роутер) молча не подключается по L2TP без
+        // этого ключа реестра — классические грабли, даём команду сразу.
+        $t[] = 'Windows ' . $this->i18n('behind NAT') . ':';
+        $t[] = '<pre>reg add "HKLM\SYSTEM\CurrentControlSet\Services\PolicyAgent" /v AssumeUDPEncapsulationContextOnSendRule /t REG_DWORD /d 2 /f</pre>';
         $t[] = 'iOS/macOS: Settings → VPN → L2TP (Secret = PSK)';
         $t[] = 'Android 12+: ' . $this->i18n('no native l2tp');
         $this->send($this->input['from'], implode("\n", $t));

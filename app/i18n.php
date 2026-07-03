@@ -881,6 +881,10 @@ $i = [
         'en' => 'no native L2TP client, use IKEv2 instead',
         'ru' => 'нет нативного L2TP-клиента, используйте IKEv2',
     ],
+    'behind NAT'  => [
+        'en' => 'behind NAT (registry fix + reboot)',
+        'ru' => 'за NAT (правка реестра + перезагрузка)',
+    ],
 ];
 
 if (file_exists(__DIR__ . '/i18n.override.php')) {
