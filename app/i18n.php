@@ -825,6 +825,46 @@ $i = [
         'en' => 'settings',
         'ru' => 'настройки',
     ],
+    'expires'  => [
+        'en' => 'expires',
+        'ru' => 'истекает',
+    ],
+    'expired'  => [
+        'en' => 'expired',
+        'ru' => 'истёк',
+    ],
+    'created'  => [
+        'en' => 'created',
+        'ru' => 'создан',
+    ],
+    'last seen'  => [
+        'en' => 'last seen',
+        'ru' => 'был в сети',
+    ],
+    'never'  => [
+        'en' => 'never',
+        'ru' => 'никогда',
+    ],
+    'since'  => [
+        'en' => 'since',
+        'ru' => 'подключён с',
+    ],
+    'history'  => [
+        'en' => 'history',
+        'ru' => 'история',
+    ],
+    'confirm delete ovpn'  => [
+        'en' => 'delete client? this revokes the certificate irreversibly',
+        'ru' => 'удалить клиента? сертификат будет безвозвратно отозван',
+    ],
+    'delete forever'  => [
+        'en' => 'delete forever',
+        'ru' => 'удалить навсегда',
+    ],
+    'cancel'  => [
+        'en' => 'cancel',
+        'ru' => 'отмена',
+    ],
 ];
 
 if (file_exists(__DIR__ . '/i18n.override.php')) {

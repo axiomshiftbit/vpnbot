@@ -654,8 +654,8 @@ class Bot
             case preg_match('~^/addOvpnUser$~', $this->input['callback'], $m):
                 $this->addOvpnUser();
                 break;
-            case preg_match('~^/delOvpnUser (\S+)$~', $this->input['callback'], $m):
-                $this->delOvpnUser($m[1]);
+            case preg_match('~^/delOvpnUser (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->delOvpnUser($m[1], !empty($m[2]));
                 break;
             case preg_match('~^/getOvpnConfig (\S+)$~', $this->input['callback'], $m):
                 $this->getOvpnConfig($m[1]);
@@ -686,6 +686,9 @@ class Bot
                 break;
             case preg_match('~^/ovpnClientMenu (\S+)$~', $this->input['callback'], $m):
                 $this->ovpnClientMenu($m[1]);
+                break;
+            case preg_match('~^/ovpnClientLog (\S+)$~', $this->input['callback'], $m):
+                $this->ovpnClientLog($m[1]);
                 break;
             case preg_match('~^/changeOcDns$~', $this->input['callback'], $m):
                 $this->changeOcDns();
@@ -17681,6 +17684,57 @@ DNS-over-HTTPS with IP:
         return sprintf('%.1f %s', $n, $units[$i]);
     }
 
+    // Сроки сертификата клиента: ['from' => ts, 'to' => ts] или null, если
+    // серта нет/не парсится. static-кэш на время запроса — ovpnMenu зовёт
+    // для каждого клиента, а файл и парс не меняются в рамках апдейта.
+    public function ovpnCertInfo($user)
+    {
+        static $cache = [];
+        if (array_key_exists($user, $cache)) {
+            return $cache[$user];
+        }
+        $p = $this->ovpnPaths();
+        $f = "{$p['issued']}/$user.crt";
+        if (!file_exists($f)) {
+            return $cache[$user] = null;
+        }
+        $crt = file_get_contents($f);
+        // easyrsa кладёт перед PEM plaintext-метаданные — openssl_x509_parse
+        // на них может споткнуться, оставляем только сам блок сертификата.
+        if (preg_match('~-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----~s', $crt, $m)) {
+            $crt = $m[0];
+        }
+        $x = @openssl_x509_parse($crt);
+        if (empty($x['validTo_time_t'])) {
+            return $cache[$user] = null;
+        }
+        return $cache[$user] = [
+            'from' => (int) ($x['validFrom_time_t'] ?? 0),
+            'to'   => (int) $x['validTo_time_t'],
+        ];
+    }
+
+    // Последнее событие клиента из журнала подключений (connect.sh пишет
+    // "YYYY-mm-dd HH:MM:SS UP/DOWN cn ..."): ['ts' => ..., 'dir' => 'UP'|'DOWN']
+    // или null. Лог может быть большим — читаем один раз на запрос в static.
+    public function ovpnLastSeen($user)
+    {
+        static $lines = null;
+        if ($lines === null) {
+            $p     = $this->ovpnPaths();
+            $lines = file_exists($p['conn'])
+                ? explode("\n", file_get_contents($p['conn']))
+                : [];
+        }
+        for ($i = count($lines) - 1; $i >= 0; $i--) {
+            if (preg_match('~^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (UP|DOWN)\s+(\S+)\s~', $lines[$i], $m)
+                && $m[3] === $user) {
+                return ['ts' => $m[1], 'dir' => $m[2]];
+            }
+        }
+        return null;
+    }
+
     // openvpn-status.log's Real Address is "IP:port" for IPv4 или "[v6]:port"
     // для IPv6. Для UI достаточно хоста без порта — кратко и читаемо.
     public function ovpnRealIp($real)
@@ -17689,12 +17743,19 @@ DNS-over-HTTPS with IP:
         if ($real === '') {
             return '';
         }
-        // IPv6: [::1]:1234 → ::1
+        // IPv6 c портом в скобках: [::1]:1234 → ::1
         if (preg_match('~^\[([^\]]+)\]:\d+$~', $real, $m)) {
             return $m[1];
         }
-        // IPv4: 1.2.3.4:1234 → 1.2.3.4  (bare IP без порта тоже проходит)
-        if (preg_match('~^([0-9a-fA-F:.]+):\d+$~', $real, $m)) {
+        // IPv4:port → IPv4
+        if (preg_match('~^(\d{1,3}(?:\.\d{1,3}){3}):\d+$~', $real, $m)) {
+            return $m[1];
+        }
+        // status-v2 пишет IPv6 БЕЗ скобок: "2001:db8::1:51820". Отрезаем
+        // последний ":port" только если остаток — валидный IPv6; голый
+        // адрес без порта ("2001:db8::1") так не покалечится.
+        if (preg_match('~^(.+):\d+$~', $real, $m)
+            && filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
             return $m[1];
         }
         return $real;
@@ -17779,6 +17840,13 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'], 'wrong username');
             return $this->menu('ovpn');
         }
+        // X.509 ограничивает CN 64 символами (easyrsa падает с невнятной
+        // ошибкой), а callback_data телеграма — 64 БАЙТАМИ на всю строку
+        // "/delOvpnUser <name> confirm". 40 укладывается в оба лимита.
+        if (strlen($user) > 40) {
+            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            return $this->menu('ovpn');
+        }
         if (in_array($user, $this->getOvpnUsers(), true)) {
             $this->send($this->input['chat'], "user $user already exists");
             return $this->menu('ovpn');
@@ -17798,29 +17866,53 @@ DNS-over-HTTPS with IP:
         // имени, не для всего PKI).
         $this->ssh(
             "rm -f /etc/openvpn/pki/reqs/$u.req /etc/openvpn/pki/private/$u.key /etc/openvpn/pki/issued/$u.crt && " .
-            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE=3650 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
             ">>/logs/openvpn.log 2>&1",
             'ovpn'
         );
         if (!in_array($user, $this->getOvpnUsers(), true)) {
             $this->send($this->input['chat'], "failed to issue cert for $user (check /logs/openvpn.log)");
+        } else {
+            // Сразу отдаём готовый .ovpn — иначе админу пришлось бы лезть
+            // в подменю клиента ради единственного очевидного действия.
+            $this->sendOvpnConfigFile($user);
         }
         $this->menu('ovpn');
     }
 
-    public function delOvpnUser($user)
+    public function delOvpnUser($user, $confirm = false)
     {
         $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
         if (empty($user) || $user === 'server') {
             return $this->menu('ovpn');
         }
+        if (!$confirm) {
+            // Одно нажатие = безвозвратный revoke — слишком дёшево для такой
+            // операции. Показываем явный вопрос с отдельной кнопкой.
+            $text = 'Menu -> ' . $this->i18n('OpenVPN') . ' -> <code>'
+                . htmlspecialchars($user, ENT_QUOTES) . '</code>' . "\n"
+                . '⚠ ' . $this->i18n('confirm delete ovpn');
+            $data = [
+                [['text' => '❌ ' . $this->i18n('delete forever'), 'callback_data' => "/delOvpnUser $user confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/ovpnClientMenu $user"]],
+            ];
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
         $u = escapeshellarg($user);
         $this->ssh(
             "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u && " .
-            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa gen-crl",
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 /usr/share/easy-rsa/easyrsa gen-crl",
             'ovpn'
         );
         $p = $this->ovpnPaths();
+        // easy-rsa 3.1+ при успешном revoke ПЕРЕМЕЩАЕТ crt в
+        // revoked/certs_by_serial. Если issued/$user.crt остался — revoke
+        // упал (битый index.txt и т.п.). Вручную rm нельзя: cert остался бы
+        // валидным без записи в CRL.
+        if (file_exists($p['issued'] . '/' . $user . '.crt')) {
+            $this->send($this->input['chat'], '❌ ' . $this->i18n('error') . ": easyrsa revoke $user failed (check /logs/openvpn.log)");
+            return $this->menu('ovpn');
+        }
         @unlink($p['ccd'] . '/' . $user);
         // crl.pem is re-read on every TLS handshake → new connections from
         // this CN get rejected. Kick the live session, if any.
@@ -17834,6 +17926,14 @@ DNS-over-HTTPS with IP:
         if (empty($user) || !in_array($user, $this->getOvpnUsers(), true)) {
             return $this->menu('ovpn');
         }
+        $this->sendOvpnConfigFile($user);
+    }
+
+    // Сборка и отправка .ovpn без каких-либо menu()-вызовов: используется и
+    // кнопкой скачивания, и addovus (авто-выдача после выпуска серта), где
+    // меню рендерится отдельно. Возвращает false при неполном PKI.
+    public function sendOvpnConfigFile($user)
+    {
         $p     = $this->ovpnPaths();
         $crt   = file_exists("{$p['issued']}/$user.crt") ? file_get_contents("{$p['issued']}/$user.crt") : '';
         $key   = file_exists("{$p['priv']}/$user.key")   ? file_get_contents("{$p['priv']}/$user.key")   : '';
@@ -17843,7 +17943,7 @@ DNS-over-HTTPS with IP:
         // ругаться на "VERIFY ERROR" без внятной подсказки. Лучше сказать явно.
         if (empty($crt) || empty($key) || empty($ca) || empty($ta)) {
             $this->send($this->input['chat'], "PKI for $user is incomplete — restart ovpn container");
-            return $this->menu('ovpn');
+            return false;
         }
         // strip easyrsa's pre-cert plaintext metadata; keep only the PEM block
         if (preg_match('~-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----~s', $crt, $m)) {
@@ -17862,6 +17962,7 @@ DNS-over-HTTPS with IP:
             $this->input['from'],
             new CURLStringFile($ovpn, "$user.ovpn", 'application/x-openvpn-profile')
         );
+        return true;
     }
 
     // Send a list of newline-terminated commands to openvpn's management
@@ -18013,16 +18114,45 @@ DNS-over-HTTPS with IP:
         $this->menu('ovpn');
     }
 
+    // Хвост лога с бюджетом по СИМВОЛАМ после htmlspecialchars: editMessageText
+    // молча падает на >4096, и кнопка выглядит мёртвой. Набираем строки с
+    // конца, пока влезают; 3500 оставляет запас на заголовок и <pre>-теги.
+    // $filterCn — оставить только события этого CN (журнал подключений).
+    // Возвращает УЖЕ экранированный текст — второй htmlspecialchars не нужен.
+    public function ovpnLogTail($path, $maxLines = 40, $budget = 3500, $filterCn = null)
+    {
+        if (!file_exists($path)) {
+            return '';
+        }
+        $lines = explode("\n", rtrim(file_get_contents($path), "\n"));
+        if ($filterCn !== null) {
+            $lines = array_values(array_filter(
+                $lines,
+                fn($l) => preg_match('~^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (UP|DOWN)\s+(\S+)\s~', $l, $m)
+                    && $m[2] === $filterCn
+            ));
+        }
+        $lines = array_slice($lines, -$maxLines);
+        $out   = [];
+        $used  = 0;
+        for ($i = count($lines) - 1; $i >= 0; $i--) {
+            $esc  = htmlspecialchars($lines[$i], ENT_QUOTES);
+            $need = mb_strlen($esc, 'utf-8') + 1;
+            if ($used + $need > $budget) {
+                break;
+            }
+            $used += $need;
+            array_unshift($out, $esc);
+        }
+        return implode("\n", $out);
+    }
+
     public function showOvpnLog()
     {
-        $p = $this->ovpnPaths();
-        $tail = '';
-        if (file_exists($p['log'])) {
-            $lines = explode("\n", file_get_contents($p['log']));
-            $tail  = implode("\n", array_slice($lines, -40));
-        }
+        $p    = $this->ovpnPaths();
+        $tail = $this->ovpnLogTail($p['log']);
         $text  = "Menu -> OpenVPN -> " . $this->i18n('log tail') . "\n";
-        $text .= "<pre>" . htmlspecialchars($tail ?: '(empty)', ENT_QUOTES) . "</pre>";
+        $text .= "<pre>" . ($tail !== '' ? $tail : '(empty)') . "</pre>";
         $data  = [[
             ['text' => $this->i18n('back'), 'callback_data' => '/menu ovpn'],
         ]];
@@ -18039,14 +18169,10 @@ DNS-over-HTTPS with IP:
     // Содержит CN + реальный IP клиента — без шума из основного openvpn.log.
     public function showOvpnConnLog()
     {
-        $p = $this->ovpnPaths();
-        $tail = '';
-        if (file_exists($p['conn'])) {
-            $lines = explode("\n", file_get_contents($p['conn']));
-            $tail  = implode("\n", array_slice($lines, -40));
-        }
+        $p    = $this->ovpnPaths();
+        $tail = $this->ovpnLogTail($p['conn']);
         $text  = "Menu -> OpenVPN -> " . $this->i18n('connections') . "\n";
-        $text .= "<pre>" . htmlspecialchars($tail ?: '(empty)', ENT_QUOTES) . "</pre>";
+        $text .= "<pre>" . ($tail !== '' ? $tail : '(empty)') . "</pre>";
         $data  = [[
             ['text' => $this->i18n('back'), 'callback_data' => '/menu ovpn'],
         ]];
@@ -18099,7 +18225,7 @@ DNS-over-HTTPS with IP:
                 // (или [v6]:port); порт в UI только шумит, режем до хоста.
                 $real = $this->ovpnRealIp($s['real'] ?? '');
                 $text[] = '🟢 <code>' . htmlspecialchars($cn, ENT_QUOTES) . '</code> '
-                    . $s['virtual']
+                    . htmlspecialchars($s['virtual'], ENT_QUOTES)
                     . ($real !== '' ? ' · <code>' . htmlspecialchars($real, ENT_QUOTES) . '</code>' : '')
                     . ' ↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
             }
@@ -18149,8 +18275,19 @@ DNS-over-HTTPS with IP:
             $isDis  = $this->isOvpnUserDisabled($u);
             $isOn   = isset($online[$u]);
             $marker = $isDis ? '🚫' : ($isOn ? '🟢' : '⚪');
+            // ⚠/❌ по сроку сертификата — иначе клиент «внезапно» отваливается
+            // без какого-либо сигнала в UI (x509-парс дешёвый + static-кэш).
+            $ci   = $this->ovpnCertInfo($u);
+            $warn = '';
+            if ($ci) {
+                if ($ci['to'] < time()) {
+                    $warn = ' ❌';
+                } elseif ($ci['to'] < time() + 30 * 86400) {
+                    $warn = ' ⚠';
+                }
+            }
             $data[] = [[
-                'text'          => "$marker $u",
+                'text'          => "$marker $u$warn",
                 'callback_data' => "/ovpnClientMenu $u",
             ]];
         }
@@ -18195,6 +18332,31 @@ DNS-over-HTTPS with IP:
         $text[] = 'Menu -> ' . $this->i18n('OpenVPN') . ' -> <code>'
             . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $text[] = $this->i18n('status') . ': ' . $status;
+        if ($s && !empty($s['since'])) {
+            $text[] = $this->i18n('since') . ': ' . htmlspecialchars($s['since'], ENT_QUOTES);
+        }
+        // Сроки сертификата: единственный способ увидеть приближающийся
+        // expiry ДО того, как клиент внезапно перестанет подключаться.
+        $ci = $this->ovpnCertInfo($user);
+        if ($ci) {
+            if (!empty($ci['from'])) {
+                $text[] = $this->i18n('created') . ': ' . date('Y-m-d', $ci['from']);
+            }
+            $days = (int) ceil(($ci['to'] - time()) / 86400);
+            if ($ci['to'] < time()) {
+                $text[] = '❌ ' . $this->i18n('expired') . ': ' . date('Y-m-d', $ci['to']);
+            } else {
+                $text[] = ($days < 30 ? '⚠ ' : '')
+                    . $this->i18n('expires') . ': ' . date('Y-m-d', $ci['to']) . " ($days d)";
+            }
+        }
+        // Для оффлайн-клиента (не заблокированного) — когда его видели в
+        // последний раз, по журналу подключений.
+        if (!$isDis && !$s) {
+            $seen   = $this->ovpnLastSeen($user);
+            $text[] = $this->i18n('last seen') . ': '
+                . ($seen ? "{$seen['ts']} ({$seen['dir']})" : $this->i18n('never'));
+        }
 
         $data   = [];
         $data[] = [[
@@ -18211,6 +18373,10 @@ DNS-over-HTTPS with IP:
             'callback_data' => "/kickOvpn $user",
         ]];
         $data[] = [[
+            'text'          => $this->i18n('history'),
+            'callback_data' => "/ovpnClientLog $user",
+        ]];
+        $data[] = [[
             'text'          => $this->i18n('delete'),
             'callback_data' => "/delOvpnUser $user",
         ]];
@@ -18223,6 +18389,31 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->input['message_id'],
             implode("\n", $text),
+            $data,
+        );
+    }
+
+    // История подключений одного клиента: события UP/DOWN только его CN из
+    // журнала connect.sh. Отдельный экран, чтобы общий connections-лог не
+    // приходилось выискивать глазами.
+    public function ovpnClientLog($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !in_array($user, $this->getOvpnUsers(), true)) {
+            return $this->menu('ovpn');
+        }
+        $p    = $this->ovpnPaths();
+        $tail = $this->ovpnLogTail($p['conn'], 15, 3500, $user);
+        $text = 'Menu -> ' . $this->i18n('OpenVPN') . ' -> <code>'
+            . htmlspecialchars($user, ENT_QUOTES) . '</code> -> ' . $this->i18n('history') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => "/ovpnClientMenu $user"],
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            $text,
             $data,
         );
     }
