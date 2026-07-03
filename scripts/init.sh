@@ -71,6 +71,19 @@ apt install -y \
     xtables-addons-common \
     xtables-addons-dkms
 
+# L2TP/IPsec (сервис ipsec) требует на ХОСТЕ модуль l2tp_ppp — контейнер его
+# загрузить не может (только NET_ADMIN, без /lib/modules). Тянет за собой
+# l2tp_core, l2tp_netlink, pppox, ppp_generic. Не критично для остальных
+# протоколов, поэтому НЕ роняем установку (set -e активен) — только
+# предупреждаем. IKEv2 работает и без модуля, он нужен исключительно для L2TP.
+if modprobe l2tp_ppp 2>/dev/null; then
+    # автозагрузка после перезагрузки хоста
+    echo 'l2tp_ppp' > /etc/modules-load.d/vpnbot-l2tp.conf
+    echo "kernel module l2tp_ppp loaded (L2TP/IPsec ready)"
+else
+    echo "WARN: kernel module l2tp_ppp unavailable — L2TP won't work; IKEv2 still fine" >&2
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
     curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
     sh /tmp/get-docker.sh
