@@ -9166,10 +9166,6 @@ DNS-over-HTTPS with IP:
                     [
                         [
                             [
-                                'text'          => $this->i18n('config'),
-                                'callback_data' => "/menu config",
-                            ],
-                            [
                                 'text'          => $this->i18n('OpenVPN'),
                                 'callback_data' => "/menu ovpn",
                             ],
@@ -9186,14 +9182,8 @@ DNS-over-HTTPS with IP:
                         ],
                         [
                             [
-                                'text' => $this->i18n('chat'),
-                                'url'  => base64_decode('aHR0cHM6Ly90Lm1lLys0RzMtUTRkX3ZGRXhPRGN5'),
-                            ],
-                            [
-                                'text' => $this->i18n('donate'),
-                                'web_app' => [
-                                    'url'  => "https://$domain/webapp$hash/donate.html",
-                                ]
+                                'text'          => $this->i18n('config'),
+                                'callback_data' => "/menu config",
                             ],
                         ],
                     ],
