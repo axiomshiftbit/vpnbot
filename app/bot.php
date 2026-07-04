@@ -590,6 +590,9 @@ class Bot
             case preg_match('~^/changeOcPass$~', $this->input['callback'], $m):
                 $this->changeOcPass();
                 break;
+            case preg_match('~^/genOcPass$~', $this->input['callback'], $m):
+                $this->chocpass(bin2hex(random_bytes(16)));
+                break;
             case preg_match('~^/changeNaiveUser$~', $this->input['callback'], $m):
                 $this->changeNaiveUser();
                 break;
@@ -12112,9 +12115,15 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n('change secret'),
                 'callback_data' => "/changeCamouflage",
             ],
+        ];
+        $data[] = [
             [
                 'text'          => $this->i18n('change password'),
                 'callback_data' => "/changeOcPass",
+            ],
+            [
+                'text'          => $this->i18n('generate password'),
+                'callback_data' => "/genOcPass",
             ],
         ];
         $data[] = [
