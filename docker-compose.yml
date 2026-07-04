@@ -398,6 +398,7 @@ services:
             dockerfile: dockerfile/ocserv.dockerfile
             args:
                 image: ${IMAGE}
+                OCSERV_VERSION: ${OCSERV_VERSION:-1.5.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh

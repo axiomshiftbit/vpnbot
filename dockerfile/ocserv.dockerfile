@@ -4,6 +4,7 @@ FROM $image
 # Версия релиза ocserv (https://gitlab.com/openconnect/ocserv/-/releases).
 # С 1.4.2 апстрим собирается только meson'ом (autotools удалены из дерева),
 # поэтому сборка идёт из релизного тарболла, а не из git master.
+# Задаётся в .env (OCSERV_VERSION=…) и пробрасывается через args в compose.
 ARG OCSERV_VERSION=1.5.0
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
@@ -48,11 +49,15 @@ RUN set -eux; \
     curl -fsSL "https://gitlab.com/openconnect/ocserv/-/archive/${OCSERV_VERSION}/ocserv-${OCSERV_VERSION}.tar.gz" \
         | tar xz -C /tmp; \
     cd /tmp/ocserv-${OCSERV_VERSION}; \
-    meson setup build -Dbuildtype=release -Dfirewall-script=iptables; \
+    meson setup build -Dbuildtype=release -Dstrip=true -Dfirewall-script=iptables; \
     ninja -C build; \
     meson install -C build; \
     cd /; \
     rm -rf /tmp/ocserv-*; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
-    ocserv --version 2>&1 | head -n2
+    # sanity: все нужные боту бинарники на месте, и ocserv запускается
+    # (без пайпа — код возврата не маскируется, set -e уронит сборку)
+    command -v ocpasswd; \
+    command -v occtl; \
+    ocserv --version 2>&1
