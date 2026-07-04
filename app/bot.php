@@ -209,6 +209,9 @@ class Bot
             case preg_match('~^/dpiDefault (\w+)$~', $this->input['callback'], $m):
                 $this->dpiDefault($m[1]);
                 break;
+            case preg_match('~^/dpiFragPreset (\w+)$~', $this->input['callback'], $m):
+                $this->dpiFragPreset($m[1]);
+                break;
             case preg_match('~^/dpiGenSpiderX$~', $this->input['callback'], $m):
                 $this->dpiGenSpiderX();
                 break;
@@ -9195,6 +9198,21 @@ DNS-over-HTTPS with IP:
             $data[] = [
                 ['text' => 'maxSplit: ' . (($f['maxSplit'] ?? '') ?: '—'), 'callback_data' => '/dpiSet fragment_maxSplit'],
             ];
+            // Готовые проверенные наборы: один тап заполняет все 4 поля
+            // корректными значениями под конкретный сценарий (см.
+            // fragmentPresets). Раскладка по 2 кнопки в ряд.
+            $text[] = $this->fragmentPresetsHint();
+            $presetRow = [];
+            foreach ($this->fragmentPresets() as $key => $ps) {
+                $presetRow[] = ['text' => $ps['label'], 'callback_data' => "/dpiFragPreset $key"];
+                if (count($presetRow) === 2) {
+                    $data[] = $presetRow;
+                    $presetRow = [];
+                }
+            }
+            if ($presetRow) {
+                $data[] = $presetRow;
+            }
         }
         $data[] = [['text' => $this->i18n('noise') . ': ' . $on($n['enabled'] ?? 0), 'callback_data' => '/dpiToggle noise']];
         if (!empty($n['enabled'])) {
@@ -9268,6 +9286,82 @@ DNS-over-HTTPS with IP:
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
 
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    // Проверенные наборы фрагментации (packets · length · interval · maxSplit).
+    // Все — для скрытия SNI, кроме 'stream' (режет первые TCP-записи, когда
+    // tlshello не помогает). Значения подобраны так, чтобы граница между
+    // кусками попадала внутрь зоны SNI (~100–300 б), а maxSplit ограничивал
+    // число пакетов. Единый источник для кнопок меню и подсказки.
+    public function fragmentPresets(): array
+    {
+        $ru = $this->language === 'ru';
+        return [
+            'sni' => [
+                'label'    => $ru ? '🎯 Скрытие SNI (реком.)' : '🎯 SNI hide (rec.)',
+                'packets'  => 'tlshello', 'length' => '10-50', 'interval' => '10-20', 'maxSplit' => '4-8',
+            ],
+            'universal' => [
+                'label'    => $ru ? '🌊 Универсальный' : '🌊 Universal',
+                'packets'  => 'tlshello', 'length' => '100-200', 'interval' => '10-20', 'maxSplit' => '',
+            ],
+            'gentle' => [
+                'label'    => $ru ? '🍃 Мягкий' : '🍃 Gentle',
+                'packets'  => 'tlshello', 'length' => '40-80', 'interval' => '10-20', 'maxSplit' => '2-3',
+            ],
+            'fast' => [
+                'label'    => $ru ? '⚡ Быстрый' : '⚡ Fast (low latency)',
+                'packets'  => 'tlshello', 'length' => '40-100', 'interval' => '1-3', 'maxSplit' => '3-5',
+            ],
+            'aggressive' => [
+                'label'    => $ru ? '🛡 Агрессивный (ПК)' : '🛡 Aggressive (PC)',
+                'packets'  => 'tlshello', 'length' => '6-16', 'interval' => '5-10', 'maxSplit' => '10-20',
+            ],
+            'mobile' => [
+                'label'    => $ru ? '📱 Мобильный (экономный)' : '📱 Mobile (battery)',
+                'packets'  => 'tlshello', 'length' => '40-80', 'interval' => '20-40', 'maxSplit' => '2-3',
+            ],
+            'stream' => [
+                'label'    => $ru ? '🧬 Весь поток (1-5)' : '🧬 Whole stream (1-5)',
+                'packets'  => '1-5', 'length' => '40-80', 'interval' => '10-20', 'maxSplit' => '',
+            ],
+        ];
+    }
+
+    // Текстовая расшифровка шаблонов для меню: имя → значения полей.
+    public function fragmentPresetsHint(): string
+    {
+        $ru = $this->language === 'ru';
+        $head = $ru
+            ? "Шаблоны (packets · length · interval · maxSplit) — тап применяет все поля:"
+            : "Presets (packets · length · interval · maxSplit) — a tap fills all fields:";
+        $lines = [$head];
+        foreach ($this->fragmentPresets() as $ps) {
+            $ms = $ps['maxSplit'] !== '' ? $ps['maxSplit'] : '—';
+            $lines[] = "• {$ps['label']}: <code>{$ps['packets']}</code> · <code>{$ps['length']}</code> · <code>{$ps['interval']}</code> · <code>{$ms}</code>";
+        }
+        return implode("\n", $lines);
+    }
+
+    // Применить шаблон фрагментации: заполняет все 4 поля и включает fragment.
+    // Клиентская настройка (freedom-outbound в подписке) — рестарт xray не нужен.
+    public function dpiFragPreset($key): void
+    {
+        $presets = $this->fragmentPresets();
+        if (!isset($presets[$key])) {
+            $this->answer($this->input['callback_id'], 'unknown preset', true);
+            return;
+        }
+        $ps = $presets[$key];
+        $p = $this->getPacConf();
+        $p['dpi']['fragment']['enabled']  = 1;
+        $p['dpi']['fragment']['packets']  = $ps['packets'];
+        $p['dpi']['fragment']['length']   = $ps['length'];
+        $p['dpi']['fragment']['interval'] = $ps['interval'];
+        $p['dpi']['fragment']['maxSplit'] = $ps['maxSplit'];
+        $this->setPacConf($p);
+        $this->answer($this->input['callback_id'], $ps['label']);
+        $this->dpiMenu();
     }
 
     // Push the configurable Reality extras (mldsa seed + hardening params) onto the
