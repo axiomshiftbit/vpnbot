@@ -9190,6 +9190,11 @@ DNS-over-HTTPS with IP:
                 ['text' => 'length: ' . (($f['length'] ?? '') ?: '100-200'),  'callback_data' => '/dpiSet fragment_length'],
                 ['text' => 'interval: ' . (($f['interval'] ?? '') ?: '10-20'), 'callback_data' => '/dpiSet fragment_interval'],
             ];
+            // maxSplit — потолок числа фрагментов; пусто = без лимита (дефолт
+            // xray), поэтому показываем «—», а не число.
+            $data[] = [
+                ['text' => 'maxSplit: ' . (($f['maxSplit'] ?? '') ?: '—'), 'callback_data' => '/dpiSet fragment_maxSplit'],
+            ];
         }
         $data[] = [['text' => $this->i18n('noise') . ': ' . $on($n['enabled'] ?? 0), 'callback_data' => '/dpiToggle noise']];
         if (!empty($n['enabled'])) {
@@ -9574,15 +9579,15 @@ DNS-over-HTTPS with IP:
         return match ($field) {
             'fragment' => $ru
                 ? "TCP/TLS-фрагментация: режущий трафик рвётся на куски, чтобы DPI не собрал SNI. "
-                    . "Готовые наборы (packets · length · interval):\n"
-                    . "• универсальный: <code>tlshello</code> · <code>100-200</code> · <code>10-20</code>\n"
-                    . "• мягкий: <code>1-3</code> · <code>40-80</code> · <code>1-3</code>\n"
-                    . "• агрессивный (ПК): <code>1-1</code> · <code>1-4</code> · <code>0</code>"
+                    . "Готовые наборы (packets · length · interval · maxSplit):\n"
+                    . "• универсальный: <code>tlshello</code> · <code>100-200</code> · <code>10-20</code> · <code>—</code>\n"
+                    . "• мягкий: <code>1-3</code> · <code>40-80</code> · <code>1-3</code> · <code>3-5</code>\n"
+                    . "• агрессивный (ПК): <code>1-1</code> · <code>1-4</code> · <code>0</code> · <code>10-20</code>"
                 : "TCP/TLS fragment: outgoing bytes are sliced so DPI can't reassemble the SNI. "
-                    . "Ready sets (packets · length · interval):\n"
-                    . "• general: <code>tlshello</code> · <code>100-200</code> · <code>10-20</code>\n"
-                    . "• gentle: <code>1-3</code> · <code>40-80</code> · <code>1-3</code>\n"
-                    . "• aggressive (PC): <code>1-1</code> · <code>1-4</code> · <code>0</code>",
+                    . "Ready sets (packets · length · interval · maxSplit):\n"
+                    . "• general: <code>tlshello</code> · <code>100-200</code> · <code>10-20</code> · <code>—</code>\n"
+                    . "• gentle: <code>1-3</code> · <code>40-80</code> · <code>1-3</code> · <code>3-5</code>\n"
+                    . "• aggressive (PC): <code>1-1</code> · <code>1-4</code> · <code>0</code> · <code>10-20</code>",
             'fragment_packets' => $ru
                 ? "Что резать:\n"
                     . "• <code>tlshello</code> — только TLS ClientHello (прячет SNI)\n"
@@ -9604,6 +9609,15 @@ DNS-over-HTTPS with IP:
                     . "<code>0</code>/default = <code>10-20</code>."
                 : "Delay between chunks in ms, a number or a range. Examples: <code>0</code> (no pause), <code>1-3</code>, <code>10-20</code>, <code>20-50</code>. "
                     . "<code>0</code>/default = <code>10-20</code>.",
+            'fragment_maxSplit' => $ru
+                ? "Потолок числа фрагментов: достигнув его, остаток данных досылается одним куском. "
+                    . "Полезно с маленьким <code>length</code>, чтобы ClientHello не распался на десятки записей.\n"
+                    . "Число или диапазон: <code>2-3</code> (минимум кусков), <code>3-5</code> (сбалансированно), <code>10-20</code> (много мелких).\n"
+                    . "Пусто/0/default = без лимита (режет, пока хватает данных)."
+                : "Cap on the number of fragments: once reached, the rest is sent as one chunk. "
+                    . "Useful with a small <code>length</code> so the ClientHello isn't split into dozens of records.\n"
+                    . "A number or range: <code>2-3</code> (fewest chunks), <code>3-5</code> (balanced), <code>10-20</code> (many small).\n"
+                    . "Empty/0/default = no cap (slice while data remains).",
             'noise' => $ru
                 ? "UDP-шум: несколько пакетов шлются подряд перед реальным трафиком. "
                     . "Поля: type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
@@ -9803,6 +9817,9 @@ DNS-over-HTTPS with IP:
             case 'fragment_packets':  $p['dpi']['fragment']['packets']  = $this->isDefaultValue($val) ? '' : $val; break;
             case 'fragment_length':   $p['dpi']['fragment']['length']   = $this->isDefaultValue($val) ? '' : $val; break;
             case 'fragment_interval': $p['dpi']['fragment']['interval'] = $this->isDefaultValue($val) ? '' : $val; break;
+            // maxSplit опционален: пусто/0/default → снимаем ограничение, чтобы
+            // applyDpiFragment не писал поле и поведение осталось дефолтным.
+            case 'fragment_maxSplit': $p['dpi']['fragment']['maxSplit'] = $this->isDefaultValue($val) ? '' : $val; break;
             // xray REALITY maxTimeDiff/xver are uint64 — a negative value would make
             // xray fail to parse the config (and not start), so clamp to >= 0.
             case 'r_maxTimeDiff':     $p['reality']['maxTimeDiff']  = max(0, (int) $val); $liveReality = true; break;
@@ -14343,6 +14360,12 @@ DNS-over-HTTPS with IP:
                 'length'   => ($f['length']   ?? '') ?: '100-200',
                 'interval' => ($f['interval'] ?? '') ?: '10-20',
             ];
+            // maxSplit пишем ТОЛЬКО когда задан: пустое поле = дефолт xray (без
+            // лимита числа фрагментов), поэтому не добавляем его в конфиг.
+            // xray принимает и число, и диапазон-строку ("3-5") как Int32Range.
+            if (($f['maxSplit'] ?? '') !== '') {
+                $settings['fragment']['maxSplit'] = $f['maxSplit'];
+            }
         }
         if ($noise) {
             // Xray читает noises как МАССИВ — шлём все заданные пакеты подряд.
