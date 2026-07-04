@@ -198,6 +198,12 @@ class Bot
             case preg_match('~^/dpiToggle (\w+)$~', $this->input['callback'], $m):
                 $this->dpiToggle($m[1]);
                 break;
+            case preg_match('~^/dpiNoiseAdd$~', $this->input['callback'], $m):
+                $this->dpiNoiseAdd();
+                break;
+            case preg_match('~^/dpiNoiseDel (\d+)$~', $this->input['callback'], $m):
+                $this->dpiNoiseDel((int) $m[1]);
+                break;
             case preg_match('~^/dpiSet (\w+)$~', $this->input['callback'], $m):
                 $this->dpiSet($m[1]);
                 break;
@@ -9365,11 +9371,18 @@ DNS-over-HTTPS with IP:
         $data[] = [['text' => $this->i18n('noise') . ': ' . $on($n['enabled'] ?? 0), 'callback_data' => '/dpiToggle noise']];
         if (!empty($n['enabled'])) {
             $text[] = $this->dpiFieldHint('noise');
-            $data[] = [
-                ['text' => 'type: ' . (($n['type'] ?? '') ?: 'rand'),     'callback_data' => '/dpiSet noise_type'],
-                ['text' => 'packet: ' . (($n['packet'] ?? '') ?: '10-20'), 'callback_data' => '/dpiSet noise_packet'],
-                ['text' => 'delay: ' . (($n['delay'] ?? '') ?: '10-16'),   'callback_data' => '/dpiSet noise_delay'],
-            ];
+            // noises — массив: несколько пакетов с разными типами/задержками
+            // эффективнее против анализа трафика, чем один фиксированный.
+            $noises = $this->dpiNoiseList($p);
+            foreach ($noises as $i => $ne) {
+                $data[] = [
+                    ['text' => 'type: ' . (($ne['type'] ?? '') ?: 'rand'),      'callback_data' => "/dpiSet noise{$i}_type"],
+                    ['text' => 'packet: ' . (($ne['packet'] ?? '') ?: '10-20'), 'callback_data' => "/dpiSet noise{$i}_packet"],
+                    ['text' => 'delay: ' . (($ne['delay'] ?? '') ?: '10-16'),   'callback_data' => "/dpiSet noise{$i}_delay"],
+                    ['text' => '🗑',                                            'callback_data' => "/dpiNoiseDel {$i}"],
+                ];
+            }
+            $data[] = [['text' => '➕ noise packet', 'callback_data' => '/dpiNoiseAdd']];
         }
         $text[] = "\n" . $this->i18n('sniffing');
         $data[] = [['text' => $this->i18n('sniffing') . ': ' . $on($s['enabled'] ?? 0), 'callback_data' => '/dpiToggle sniffing']];
@@ -9619,6 +9632,11 @@ DNS-over-HTTPS with IP:
                 break;
             case 'noise':
                 $p['dpi']['noise']['enabled'] = empty($p['dpi']['noise']['enabled']) ? 1 : 0;
+                // При включении с пустым списком засеваем один дефолтный пакет,
+                // чтобы в меню сразу была видна редактируемая строка noise.
+                if (!empty($p['dpi']['noise']['enabled']) && !$this->dpiNoiseList($p)) {
+                    $p['dpi']['noise']['list'] = [['type' => 'rand', 'packet' => '10-20', 'delay' => '10-16']];
+                }
                 $this->setPacConf($p);
                 break;
             case 'sniffing':
@@ -9691,6 +9709,9 @@ DNS-over-HTTPS with IP:
     public function dpiFieldHint(string $field): string
     {
         $ru = $this->language === 'ru';
+        // Индексированные noise-поля (noise0_type…) делят подсказку с базовым
+        // noise_type/packet/delay — снимаем индекс перед match.
+        $field = preg_replace('~^noise\d+_(type|packet|delay)$~', 'noise_$1', $field);
         return match ($field) {
             'fragment' => $ru
                 ? "TLS-фрагментация: packets <code>1-3</code> или <code>tlshello</code>; length <code>100-200</code>; interval <code>10-20</code> мс."
@@ -9738,6 +9759,34 @@ DNS-over-HTTPS with IP:
             $out .= $chars[random_int(0, strlen($chars) - 1)];
         }
         return '/' . $out;
+    }
+
+    // Добавить пакет UDP-noise. Пишем список в новом формате ['noise']['list'];
+    // при первом добавлении мигрируем старый одиночный noise через dpiNoiseList.
+    // Клиентская настройка (freedom-outbound в подписке) — рестарт xray не нужен.
+    public function dpiNoiseAdd()
+    {
+        $p = $this->getPacConf();
+        $list = $this->dpiNoiseList($p);
+        $list[] = ['type' => 'rand', 'packet' => '50-150', 'delay' => '10-16'];
+        $p['dpi']['noise']['list'] = array_values($list);
+        // Legacy-поля больше не источник истины — убираем, чтобы не дублировать.
+        unset($p['dpi']['noise']['type'], $p['dpi']['noise']['packet'], $p['dpi']['noise']['delay']);
+        $this->setPacConf($p);
+        $this->dpiMenu();
+    }
+
+    public function dpiNoiseDel($i)
+    {
+        $p = $this->getPacConf();
+        $list = $this->dpiNoiseList($p);
+        if (isset($list[$i])) {
+            array_splice($list, $i, 1);
+        }
+        $p['dpi']['noise']['list'] = array_values($list);
+        unset($p['dpi']['noise']['type'], $p['dpi']['noise']['packet'], $p['dpi']['noise']['delay']);
+        $this->setPacConf($p);
+        $this->dpiMenu();
     }
 
     // Auto-generate spiderX. Client-side only (link &spx / config), so no restart;
@@ -9839,13 +9888,24 @@ DNS-over-HTTPS with IP:
         $p   = $this->getPacConf();
         $liveReality = false;
         $liveSniffing = false;
+        // Индексированный noise-пакет (noise{i}_type|packet|delay): пишем в список,
+        // мигрировав старый одиночный noise. switch ниже — по литеральному $field,
+        // поэтому динамический ключ разбираем отдельным if с ранним выходом.
+        if (preg_match('~^noise(\d+)_(type|packet|delay)$~', $field, $nm)) {
+            $list = $this->dpiNoiseList($p);
+            $idx  = (int) $nm[1];
+            if (isset($list[$idx])) {
+                $list[$idx][$nm[2]] = $this->isDefaultValue($val) ? '' : $val;
+                $p['dpi']['noise']['list'] = array_values($list);
+                unset($p['dpi']['noise']['type'], $p['dpi']['noise']['packet'], $p['dpi']['noise']['delay']);
+                $this->setPacConf($p);
+            }
+            return $this->dpiMenu();
+        }
         switch ($field) {
             case 'fragment_packets':  $p['dpi']['fragment']['packets']  = $this->isDefaultValue($val) ? '' : $val; break;
             case 'fragment_length':   $p['dpi']['fragment']['length']   = $this->isDefaultValue($val) ? '' : $val; break;
             case 'fragment_interval': $p['dpi']['fragment']['interval'] = $this->isDefaultValue($val) ? '' : $val; break;
-            case 'noise_type':        $p['dpi']['noise']['type']        = $this->isDefaultValue($val) ? '' : $val; break;
-            case 'noise_packet':      $p['dpi']['noise']['packet']      = $this->isDefaultValue($val) ? '' : $val; break;
-            case 'noise_delay':       $p['dpi']['noise']['delay']       = $this->isDefaultValue($val) ? '' : $val; break;
             // xray REALITY maxTimeDiff/xver are uint64 — a negative value would make
             // xray fail to parse the config (and not start), so clamp to >= 0.
             case 'r_maxTimeDiff':     $p['reality']['maxTimeDiff']  = max(0, (int) $val); $liveReality = true; break;
@@ -14384,12 +14444,27 @@ DNS-over-HTTPS with IP:
             ];
         }
         if ($noise) {
-            $n = $pac['dpi']['noise'];
-            $settings['noises'] = [[
-                'type'   => ($n['type']   ?? '') ?: 'rand',
-                'packet' => ($n['packet'] ?? '') ?: '10-20',
-                'delay'  => ($n['delay']  ?? '') ?: '10-16',
-            ]];
+            // Xray читает noises как МАССИВ — шлём все заданные пакеты подряд.
+            // Пустой список при включённом noise = один дефолтный rand-пакет
+            // (прежнее поведение). Для str/hex/base64 packet обязателен —
+            // запись без него пропускаем, чтобы xray не упал на парсинге.
+            $noises = [];
+            foreach ($this->dpiNoiseList($pac) as $n) {
+                $type   = ($n['type']   ?? '') ?: 'rand';
+                $packet = (string) ($n['packet'] ?? '');
+                if ($type !== 'rand' && $packet === '') {
+                    continue;
+                }
+                $noises[] = [
+                    'type'   => $type,
+                    'packet' => $packet !== '' ? $packet : '10-20',
+                    'delay'  => ($n['delay'] ?? '') ?: '10-16',
+                ];
+            }
+            if (!$noises) {
+                $noises[] = ['type' => 'rand', 'packet' => '10-20', 'delay' => '10-16'];
+            }
+            $settings['noises'] = $noises;
         }
         $c['outbounds'][] = [
             'tag'      => 'dpi-fragment',
@@ -14399,6 +14474,25 @@ DNS-over-HTTPS with IP:
         if (isset($c['outbounds'][$index])) {
             $c['outbounds'][$index]['streamSettings']['sockopt']['dialerProxy'] = 'dpi-fragment';
         }
+    }
+
+    // UDP-noise как список пакетов. Новый формат — $pac['dpi']['noise']['list'];
+    // старый одиночный noise (type/packet/delay прямо в ['noise']) мигрируем в
+    // list[0] на лету, чтобы существующие конфиги не потеряли настройку.
+    public function dpiNoiseList(array $pac): array
+    {
+        $n = $pac['dpi']['noise'] ?? [];
+        if (isset($n['list']) && is_array($n['list'])) {
+            return array_values($n['list']);
+        }
+        if (($n['type'] ?? '') !== '' || ($n['packet'] ?? '') !== '' || ($n['delay'] ?? '') !== '') {
+            return [[
+                'type'   => $n['type']   ?? '',
+                'packet' => $n['packet'] ?? '',
+                'delay'  => $n['delay']  ?? '',
+            ]];
+        }
+        return [];
     }
 
     public function applyClientSniffing(array &$c, array $pac): void
