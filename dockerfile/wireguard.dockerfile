@@ -60,6 +60,9 @@ RUN set -eux; \
     rm -f tun2socks.zip; \
     wget -O /usr/bin/wgcf https://github.com/ViRb3/wgcf/releases/download/${WGCF_VERSION}/wgcf_${WGCF_VERSION#v}_linux_amd64; \
     chmod +x /usr/bin/wgcf; \
+    # у wgcf нет `--version`/`version` — версию для меню бота (warpVersion)
+    # фиксируем в файл на этапе сборки
+    printf '%s\n' "${WGCF_VERSION#v}" > /etc/wgcf_version; \
     sed -i 's/sysctl -q net\.ipv4\.conf\.all\.src_valid_mark=1/echo "skip sysctl src_valid_mark"/' $(which wg-quick); \
     # sanity: все бинарники, которые зовут бот и start_wg.sh, на месте
     # (без пайпов — код возврата не маскируется, set -e уронит сборку)

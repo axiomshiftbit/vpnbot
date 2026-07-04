@@ -6205,13 +6205,15 @@ DNS-over-HTTPS with IP:
     }
 
     // Версии из warp-контейнера (wp = образ wireguard + wgcf, warp-cli в образе
-    // нет). Часть сборок wgcf не знает `--version`, поэтому пробуем обе формы и
-    // забираем stdout+stderr; плюс показываем wireguard-tools, которым и
-    // поднимается WARP-туннель. Маркеры разделяют секции одного ssh-вызова.
+    // нет). Свежие wgcf (2.2.31+) не знают ни `--version`, ни `version`, поэтому
+    // сначала читаем /etc/wgcf_version, записанный при сборке образа
+    // (wireguard.dockerfile), и лишь потом пробуем обе CLI-формы для старых
+    // образов; плюс показываем wireguard-tools, которым и поднимается
+    // WARP-туннель. Маркеры разделяют секции одного ssh-вызова.
     public function warpVersion(): string
     {
         $out = (string) $this->ssh(
-            'sh -c \'echo ===wgcf===; wgcf --version 2>&1; wgcf version 2>&1; echo ===wg===; wg --version 2>/dev/null\'',
+            'sh -c \'echo ===wgcf===; cat /etc/wgcf_version 2>/dev/null; wgcf --version 2>&1; wgcf version 2>&1; echo ===wg===; wg --version 2>/dev/null\'',
             'wp'
         );
         $section = function (string $name) use ($out): string {
