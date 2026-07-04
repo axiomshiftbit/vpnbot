@@ -13470,8 +13470,11 @@ DNS-over-HTTPS with IP:
             return;
         }
 
-        // Регистрируем новый аккаунт
-        if (!$step('[warp] Registering WARP account...', 'cd /etc/warp && wgcf register --accept-tos', 'wp')) {
+        // Регистрируем новый аккаунт. wgcf >= 2.2.31 печатает таблицу аккаунта
+        // в stdout, а $step трактует ЛЮБОЙ stdout как провал (флоу обрывался
+        // сразу после register, уже удалив старый аккаунт) — stdout глушим,
+        // stderr показываем только при ненулевом коде выхода.
+        if (!$step('[warp] Registering WARP account...', 'cd /etc/warp && err=$(wgcf register --accept-tos 2>&1 >/dev/null) || printf "%s\n" "${err:-register failed}"', 'wp')) {
             $this->send($chat, $log);
             return;
         }
@@ -13490,8 +13493,8 @@ DNS-over-HTTPS with IP:
                 $this->send($chat, $log);
                 return;
             }
-            // Обновляем аккаунт с ключом
-            if (!$step('applying license key', 'cd /etc/warp && wgcf update', 'wp')) {
+            // Обновляем аккаунт с ключом (stdout глушим — как у register)
+            if (!$step('applying license key', 'cd /etc/warp && err=$(wgcf update 2>&1 >/dev/null) || printf "%s\n" "${err:-update failed}"', 'wp')) {
                 $this->send($chat, $log);
                 return;
             }
@@ -13500,7 +13503,7 @@ DNS-over-HTTPS with IP:
         }
         $this->setPacConf($c);
 
-        if (!$step('generating profile', 'cd /etc/warp && wgcf generate', 'wp')) {
+        if (!$step('generating profile', 'cd /etc/warp && err=$(wgcf generate 2>&1 >/dev/null) || printf "%s\n" "${err:-generate failed}"', 'wp')) {
             $this->send($chat, $log);
             return;
         }
