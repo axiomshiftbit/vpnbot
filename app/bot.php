@@ -9726,14 +9726,40 @@ DNS-over-HTTPS with IP:
                 ? "Пример: <code>10-20</code>. Задержка между частями в миллисекундах. <code>0</code>/default = <code>10-20</code>."
                 : "Example: <code>10-20</code>. Delay between fragments in milliseconds. <code>0</code>/default = <code>10-20</code>.",
             'noise' => $ru
-                ? "UDP-шум: type обычно <code>rand</code>; packet для rand <code>10-20</code>; delay <code>10-16</code> мс."
-                : "UDP noise: type is usually <code>rand</code>; packet for rand <code>10-20</code>; delay <code>10-16</code> ms.",
+                ? "UDP-шум: несколько пакетов шлются подряд перед реальным трафиком. "
+                    . "type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
+                    . "packet — значение для типа (для rand — длина <code>10-20</code>); delay — задержка после пакета в мс (<code>10-16</code>). "
+                    . "Подробнее — в подсказке при нажатии на type/packet."
+                : "UDP noise: several packets are sent in sequence before real traffic. "
+                    . "type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
+                    . "packet is the value for that type (for rand — length <code>10-20</code>); delay is the wait after the packet in ms (<code>10-16</code>). "
+                    . "See the hint when tapping type/packet for details.",
             'noise_type' => $ru
-                ? "Допустимо: <code>rand</code>, <code>str</code>, <code>hex</code>, <code>base64</code>. Обычно используй <code>rand</code>."
-                : "Allowed: <code>rand</code>, <code>str</code>, <code>hex</code>, <code>base64</code>. Usually use <code>rand</code>.",
+                ? "Тип содержимого шумового пакета:\n"
+                    . "• <code>rand</code> — случайные байты (packet = длина/диапазон)\n"
+                    . "• <code>str</code> — обычный текст как есть (packet = сама строка)\n"
+                    . "• <code>hex</code> — байты в hex (packet = hex без пробелов)\n"
+                    . "• <code>base64</code> — байты в base64 (packet = base64-строка)\n"
+                    . "Обычно достаточно <code>rand</code>."
+                : "Noise packet content type:\n"
+                    . "• <code>rand</code> — random bytes (packet = length/range)\n"
+                    . "• <code>str</code> — plain text as-is (packet = the string)\n"
+                    . "• <code>hex</code> — bytes in hex (packet = hex, no spaces)\n"
+                    . "• <code>base64</code> — bytes in base64 (packet = base64 string)\n"
+                    . "<code>rand</code> is usually enough.",
             'noise_packet' => $ru
-                ? "Для type=<code>rand</code>: диапазон длины, например <code>10-20</code>. Для <code>str</code>/<code>hex</code>/<code>base64</code>: сам пакет."
-                : "For type=<code>rand</code>: length range, e.g. <code>10-20</code>. For <code>str</code>/<code>hex</code>/<code>base64</code>: the packet itself.",
+                ? "Значение зависит от type:\n"
+                    . "• <code>rand</code>: длина в байтах — число <code>50</code> или диапазон <code>10-20</code>\n"
+                    . "• <code>str</code>: текст, напр. <code>hello</code>\n"
+                    . "• <code>hex</code>: чётное число hex-цифр без пробелов/<code>0x</code>, напр. <code>deadbeef</code>\n"
+                    . "• <code>base64</code>: корректная base64, напр. <code>7nQBAAA=</code>\n"
+                    . "⚠️ Для str/hex/base64 поле обязательно — пустой пакет пропускается."
+                : "Value depends on type:\n"
+                    . "• <code>rand</code>: length in bytes — number <code>50</code> or range <code>10-20</code>\n"
+                    . "• <code>str</code>: text, e.g. <code>hello</code>\n"
+                    . "• <code>hex</code>: even count of hex digits, no spaces/<code>0x</code>, e.g. <code>deadbeef</code>\n"
+                    . "• <code>base64</code>: valid base64, e.g. <code>7nQBAAA=</code>\n"
+                    . "⚠️ For str/hex/base64 this is required — an empty packet is skipped.",
             'noise_delay' => $ru
                 ? "Пример: <code>10-16</code>. Задержка перед шумовым UDP-пакетом в миллисекундах."
                 : "Example: <code>10-16</code>. Delay before the UDP noise packet in milliseconds.",
