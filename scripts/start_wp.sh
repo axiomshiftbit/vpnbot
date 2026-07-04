@@ -48,7 +48,12 @@ if [ ! -f "$WGCF_TOML" ]; then
         if grep -q '^license_key' "$WGCF_TOML"; then
             sed -i "s/^license_key.*/license_key = \"$WARP_LICENSE_KEY\"/" "$WGCF_TOML"
         fi
-        retry wgcf update
+        # Провал update (невалидный/исчерпанный ключ) НЕ фатален: иначе скрипт
+        # умирал до generate, рестартился, на втором проходе блок пропускался
+        # (toml уже есть) — и warp молча поднимался free-tier. Лучше явный
+        # WARNING в лог и тот же free-tier без лишнего краш-цикла.
+        retry wgcf update || \
+            echo "[warp] WARNING: wgcf update failed — license key NOT applied, continuing free tier"
     fi
 fi
 
@@ -57,18 +62,11 @@ if [ ! -f "$WGCF_CONF" ]; then
     retry wgcf generate
 fi
 
-# Фиксапы профиля — БЕЗУСЛОВНО при каждом старте, а не при генерации: профиль
-# обычно уже лежит в named-volume, и блок генерации выше не выполняется.
-# - IPv6 вырезаем из Address/AllowedIPs (в контейнере нет v6);
-# - DNS= убираем: openresolv 3.17.4 (alpine edge) в docker падает («could not
-#   detect a useable init system» / «signature mismatch»), из-за чего wg-quick
-#   откатывал интерфейс и контейнер уходил в Exited(1);
-# - PersistentKeepalive держит handshake живым и без полезного трафика.
-sed -i '/^Address.*:/d' "$WGCF_CONF"
-sed -i '/^AllowedIPs.*::/d' "$WGCF_CONF"
-sed -i '/^DNS[[:space:]]*=/d' "$WGCF_CONF"
-grep -q '^PersistentKeepalive' "$WGCF_CONF" || \
-    sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WGCF_CONF"
+# Фиксапы профиля (IPv6 из списков, DNS-строка, PersistentKeepalive) — общий
+# с кнопкой «set key» бота скрипт, правки только в warp_fixup.sh. Выполняется
+# БЕЗУСЛОВНО при каждом старте, а не при генерации: профиль обычно уже лежит
+# в named-volume, и блок генерации выше не выполняется.
+sh /warp_fixup.sh
 
 echo "[warp] Starting WireGuard (WARP)..."
 # best-effort down: чистит хвосты (интерфейс/маршруты) после нештатного рестарта
@@ -85,8 +83,9 @@ microsocks -p "$SOCKS_PORT" &
 MS_PID=$!
 
 # ---- watchdog ----
-# Раз в 60с проверяем ВСЮ цепочку socks → DNS (резолвит microsocks, socks5h) →
-# туннель: trace Cloudflare должен ответить warp=on|plus. 3 подряд провала →
+# Раз в 60с — warp_probe.sh (общий с healthcheck'ом): trace Cloudflare через
+# socks5h должен ответить warp=on|plus, а при отсутствии curl в образе
+# (stale/апстримный) — fallback на возраст handshake. 3 подряд провала →
 # пере-поднимаем туннель (свежий handshake + пере-резолв endpoint). Если и
 # после 3 пере-поднятий подряд не ожил — exit 1: контейнер перезапустит
 # restart-политика (unless-stopped в compose), это чинит и умерший sshd/т.п.
@@ -102,8 +101,7 @@ while true; do
         microsocks -p "$SOCKS_PORT" &
         MS_PID=$!
     fi
-    if curl -m 10 -s -x "socks5h://127.0.0.1:$SOCKS_PORT" \
-            https://www.cloudflare.com/cdn-cgi/trace | grep -qE '^warp=(on|plus)'; then
+    if sh /warp_probe.sh; then
         FAILS=0
         BOUNCES=0
         continue

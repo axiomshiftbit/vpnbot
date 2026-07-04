@@ -13504,10 +13504,19 @@ DNS-over-HTTPS with IP:
             $this->send($chat, $log);
             return;
         }
-        $this->ssh("sed -i '/^Address.*:/d' /etc/warp/wgcf-profile.conf", 'wp');
-        $this->ssh("sed -i '/^AllowedIPs.*::/d' /etc/warp/wgcf-profile.conf", 'wp');
+        // Фиксапы профиля — общий с start_wp.sh скрипт (warp_fixup.sh), а не
+        // локальные sed'ы: раньше они разошлись — тут не вырезался DNS (wg-quick
+        // падал на resolvconf с alpine edge), а delete-sed'ы сносили
+        // однострочные Address/AllowedIPs новых wgcf (>= 2.2.31) целиком,
+        // вместе с v4-частью.
+        if (!$step('fixing up profile', 'sh /warp_fixup.sh', 'wp')) {
+            $this->send($chat, $log);
+            return;
+        }
 
-        $started = $step('starting warp', 'out=$(wg-quick up /etc/warp/wgcf-profile.conf 2>&1 | grep -v "skip sysctl"); ec=${PIPESTATUS[0]}; [ "$ec" -ne 0 ] && printf "%s" "$out"; exit $ec', 'wp');
+        // Без bash-измов: root-шелл в контейнере — busybox ash, ${PIPESTATUS[0]}
+        // там «bad substitution», команда падала, даже не дойдя до wg-quick up.
+        $started = $step('starting warp', 'out=$(wg-quick up /etc/warp/wgcf-profile.conf 2>&1); ec=$?; [ "$ec" -ne 0 ] && printf "%s\n" "$out" | grep -v "skip sysctl"; exit $ec', 'wp');
 
         if (!$started) {
             $this->send($chat, $log);
