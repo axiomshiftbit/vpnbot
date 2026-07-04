@@ -209,6 +209,9 @@ class Bot
             case preg_match('~^/dpiDefault (\w+)$~', $this->input['callback'], $m):
                 $this->dpiDefault($m[1]);
                 break;
+            case preg_match('~^/dpiFragPresets$~', $this->input['callback'], $m):
+                $this->dpiFragPresetsMenu();
+                break;
             case preg_match('~^/dpiFragPreset (\w+)$~', $this->input['callback'], $m):
                 $this->dpiFragPreset($m[1]);
                 break;
@@ -9198,21 +9201,9 @@ DNS-over-HTTPS with IP:
             $data[] = [
                 ['text' => 'maxSplit: ' . (($f['maxSplit'] ?? '') ?: '—'), 'callback_data' => '/dpiSet fragment_maxSplit'],
             ];
-            // Готовые проверенные наборы: один тап заполняет все 4 поля
-            // корректными значениями под конкретный сценарий (см.
-            // fragmentPresets). Раскладка по 2 кнопки в ряд.
-            $text[] = $this->fragmentPresetsHint();
-            $presetRow = [];
-            foreach ($this->fragmentPresets() as $key => $ps) {
-                $presetRow[] = ['text' => $ps['label'], 'callback_data' => "/dpiFragPreset $key"];
-                if (count($presetRow) === 2) {
-                    $data[] = $presetRow;
-                    $presetRow = [];
-                }
-            }
-            if ($presetRow) {
-                $data[] = $presetRow;
-            }
+            // Готовые наборы спрятаны в отдельное подменю (/dpiFragPresets),
+            // чтобы не загромождать основное DPI-меню семью кнопками.
+            $data[] = [['text' => '📋 ' . $this->i18n('presets'), 'callback_data' => '/dpiFragPresets']];
         }
         $data[] = [['text' => $this->i18n('noise') . ': ' . $on($n['enabled'] ?? 0), 'callback_data' => '/dpiToggle noise']];
         if (!empty($n['enabled'])) {
@@ -9341,6 +9332,30 @@ DNS-over-HTTPS with IP:
             $lines[] = "• {$ps['label']}: <code>{$ps['packets']}</code> · <code>{$ps['length']}</code> · <code>{$ps['interval']}</code> · <code>{$ms}</code>";
         }
         return implode("\n", $lines);
+    }
+
+    // Подменю шаблонов фрагментации: легенда + кнопки (по 2 в ряд) + назад.
+    // Вынесено из dpiMenu, чтобы основное меню не пухло от кнопок.
+    public function dpiFragPresetsMenu(): void
+    {
+        $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> ' . $this->i18n('presets');
+        $text[] = $this->fragmentPresetsHint();
+
+        $data = [];
+        $row = [];
+        foreach ($this->fragmentPresets() as $key => $ps) {
+            $row[] = ['text' => $ps['label'], 'callback_data' => "/dpiFragPreset $key"];
+            if (count($row) === 2) {
+                $data[] = $row;
+                $row = [];
+            }
+        }
+        if ($row) {
+            $data[] = $row;
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/dpiMenu']];
+
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
     // Применить шаблон фрагментации: заполняет все 4 поля и включает fragment.
