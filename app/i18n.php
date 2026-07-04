@@ -473,10 +473,6 @@ $i = [
         'en' => 'calc CIDR',
         'ru' => 'calc CIDR',
     ],
-    'mtproto'  => [
-        'en' => 'MTProto',
-        'ru' => 'MTProto',
-    ],
     'telemt'  => [
         'en' => 'TeleMT',
         'ru' => 'TeleMT',
@@ -572,18 +568,6 @@ $i = [
     'telemt set port hint'  => [
         'en' => 'set a port in Settings -> Ports to expose the proxy',
         'ru' => 'задайте порт в "настройки -> Ports", чтобы открыть прокси',
-    ],
-    'generateSecret'  => [
-        'en' => 'generateSecret',
-        'ru' => 'сгенерировать ключ',
-    ],
-    'setSecret'  => [
-        'en' => 'setSecret',
-        'ru' => 'установить свой ключ',
-    ],
-    'setAdTag'  => [
-        'en' => 'set adtag',
-        'ru' => 'установить adtag',
     ],
     'defaultDNS'  => [
         'en' => 'defaultDNS',

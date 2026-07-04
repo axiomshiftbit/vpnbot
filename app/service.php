@@ -14,7 +14,6 @@ $bot = new Bot($c['key'], $i);
 
 $bot->selfUpdate();
 $bot->ssPswdCheck();
-$bot->restartTG();
 $bot->restartTelemt();
 if (!empty($bot->selfupdate)) {
     $bot->offWarp();

@@ -4,7 +4,7 @@ export
 IP := $(or $(IP),$(shell hostname -I | awk '{print $$1}'))
 # VER идёт в имена контейнеров (container_name: php-${VER} и т.д.). Если в клоне
 # нет тегов (теги не запушены в форк / не подтянуты), `git describe --tags`
-# отдаёт ПУСТО → имена схлопываются в "php-"/"mtproto-"/… → конфликт имён при
+# отдаёт ПУСТО → имена схлопываются в "php-"/"telemt-"/… → конфликт имён при
 # `up --force-recreate`, и бот/сервисы не стартуют. `--always` даёт короткий SHA
 # без тегов, `|| echo local` страхует, если git недоступен — VER не пустой.
 VER := $(shell git describe --tags --always 2>/dev/null || echo local)
@@ -53,8 +53,6 @@ wp: # консоль сервиса
 	docker compose exec wp /bin/sh
 proxy: # консоль сервиса
 	docker compose exec proxy /bin/sh
-tg: # консоль сервиса
-	docker compose exec tg /bin/bash
 telemt: # консоль сервиса
 	docker compose exec telemt /bin/sh
 dnstt: # консоль сервиса
@@ -90,8 +88,6 @@ reset:
 	make u
 backup:
 	docker compose exec php php backup.php > backup.json
-mtproto:
-	docker compose exec php php mtproto.php
 cron: # установка задачи в cron для автозапуска при перезагрузке
 	@(crontab -l 2>/dev/null | grep -v "cd /root/vpnbot && make r"; echo "@reboot cd /root/vpnbot && make r") | crontab -
 uncron: # удаление задачи из cron

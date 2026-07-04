@@ -73,7 +73,6 @@ class Bot
             'wg'    => '51820/udp',
             'wg1'   => '51820/udp',
             'ss'    => '8388',
-            'tg'    => '443',
             'ad'    => '853',
             'dnstt' => '53/udp',
             'telemt' => '443',
@@ -393,9 +392,6 @@ class Bot
             case preg_match('~^/adguardChBr$~', $this->input['callback'], $m):
                 $this->adguardChBr();
                 break;
-            case preg_match('~^/mtproto$~', $this->input['callback'], $m):
-                $this->mtproto();
-                break;
             case preg_match('~^/telemt$~', $this->input['callback'] ?: $this->input['message'], $m):
                 $this->telemt(!empty($this->input['callback']));
                 break;
@@ -545,12 +541,6 @@ class Bot
                 break;
             case preg_match('~^/backup$~', $this->input['callback'], $m):
                 $this->backup();
-                break;
-            case preg_match('~^/generateSecret$~', $this->input['callback'], $m):
-                $this->generateSecret();
-                break;
-            case preg_match('~^/setSecret$~', $this->input['callback'], $m):
-                $this->setSecret();
                 break;
             case preg_match('~^/defaultDNS (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
                 $this->defaultDNS(...explode('_', $m['arg']));
@@ -992,9 +982,6 @@ class Bot
             case preg_match('~^/qrXray (\d+)(?:_(\d+))?$~', $this->input['callback'], $m):
                 $this->qrXray($m[1], $m[2] ?: false);
                 break;
-            case preg_match('~^/qrMtproto$~', $this->input['callback'], $m):
-                $this->qrMtproto();
-                break;
             case preg_match('~^/delupstream (\d+)$~', $this->input['callback'], $m):
                 $this->delupstream($m[1]);
                 break;
@@ -1109,12 +1096,6 @@ class Bot
             case preg_match('~^/selfFakeDomain$~', $this->input['callback'], $m):
                 $this->selfFakeDomain();
                 break;
-            case preg_match('~^/changeTGDomain$~', $this->input['callback'], $m):
-                $this->changeTGDomain();
-                break;
-            case preg_match('~^/setTGAdtag$~', $this->input['callback'], $m):
-                $this->changeTGAdtag();
-                break;
             case preg_match('~^/include (\w+)$~', $this->input['callback'], $m):
                 $this->include($m[1]);
                 break;
@@ -1154,74 +1135,10 @@ class Bot
         }
     }
 
-    public function generateSecret()
-    {
-        $this->secretSet(exec('head -c 16 /dev/urandom | xxd -ps'));
-    }
-
-    public function setSecret()
-    {
-        $r = $this->send(
-            $this->input['chat'],
-            "@{$this->input['username']} enter key or 0 for stop mtproto",
-            $this->input['message_id'],
-            reply: 'enter key or 0 for stop mtproto',
-        );
-        $_SESSION['reply'][$r['result']['message_id']] = [
-            'start_message'  => $this->input['message_id'],
-            'start_callback' => $this->input['callback_id'],
-            'callback'       => 'secretSet',
-            'args'           => [],
-        ];
-    }
-
-    public function secretSet($secret)
-    {
-        file_put_contents('/config/mtprotosecret', $secret);
-        $this->restartTG();
-        $this->mtproto();
-    }
-
-    public function setTelegramDomain($domain)
-    {
-        file_put_contents('/config/mtprotodomain', $domain);
-        $this->restartTG();
-        $this->mtproto();
-    }
-
-    public function setTelegramAdtag($adtag)
-    {
-        $adtag = trim($adtag);
-        if ($adtag === '0') {
-            $adtag = '';
-        } elseif (!preg_match('~^[a-f0-9]{32}$~i', $adtag)) {
-            $this->update($this->input['chat'], $this->input['message_id'], 'wrong adtag');
-            sleep(2);
-            $this->mtproto();
-            return;
-        }
-        file_put_contents('/config/mtprotoadtag', strtolower($adtag));
-        $this->restartTG();
-        $this->mtproto();
-    }
-
-    public function restartTG()
-    {
-        $secret     = file_get_contents('/config/mtprotosecret');
-        $fakedomain = file_get_contents('/config/mtprotodomain') ?: 'yandex.ru';
-        $adtag      = trim(file_exists('/config/mtprotoadtag') ? file_get_contents('/config/mtprotoadtag') : '');
-        $this->ssh('pkill mtproto-proxy', 'tg');
-        if (preg_match('~^\w{32}$~', $secret)) {
-            $proxyTag = $adtag ? " -P " . escapeshellarg($adtag) : '';
-            $this->ssh("mtproto-proxy --domain $fakedomain -u nobody -H 443 --nat-info 10.10.0.8:{$this->ip} -S $secret --aes-pwd /proxy-secret /proxy-multi.conf -M 1$proxyTag", 'tg', false, '/logs/mtproto');
-        }
-    }
-
     // ── telemt (TeleMT) ─────────────────────────────────────────────────
-    // Отдельный MTProto-прокси (Rust, fake-TLS) из проекта telemt/telemt.
-    // Не пересекается со встроенным MTProto (restartTG) — это вторая,
-    // независимая кнопка. Конфиг хранится в pac-conf (telemt_*), сам
-    // telemt.toml перегенерируется при каждом рестарте.
+    // MTProto-прокси (Rust, fake-TLS) из проекта telemt/telemt. Конфиг
+    // хранится в pac-conf (telemt_*), сам telemt.toml перегенерируется при
+    // каждом рестарте.
     public function telemtBool(array $conf, string $key, bool $default = false): bool
     {
         return array_key_exists($key, $conf) ? !empty($conf[$key]) : $default;
@@ -1451,21 +1368,16 @@ class Bot
 
         $changed = false;
         $seen    = [];
-        $mtproto = '';
-        if (is_file('/config/mtprotosecret')) {
-            $mtproto = strtolower(trim((string) file_get_contents('/config/mtprotosecret')));
-        }
 
         foreach ($conf['telemt_users'] as $name => $secret) {
             $secret = strtolower(trim((string) $secret));
             if (
                 !preg_match('~^[a-f0-9]{32}$~', $secret)
                 || isset($seen[$secret])
-                || ($mtproto !== '' && hash_equals($mtproto, $secret))
             ) {
                 do {
                     $secret = $this->telemtSecret();
-                } while (isset($seen[$secret]) || ($mtproto !== '' && hash_equals($mtproto, $secret)));
+                } while (isset($seen[$secret]));
                 $changed = true;
             } elseif ($conf['telemt_users'][$name] !== $secret) {
                 $changed = true;
@@ -1726,72 +1638,6 @@ class Bot
             $p['users'][$k]['session']['upload']    = 0;
         }
         $this->setXrayStats($p);
-    }
-
-    public function linkMtproto()
-    {
-        $s  = file_get_contents('/config/mtprotosecret');
-        $p  = $this->getPorts()['tg']['port'];
-        $d  = trim(file_get_contents('/config/mtprotodomain') ?: 'yandex.ru');
-        $d  = exec("echo $d | tr -d '\\n' | xxd -ps -c 200");
-        $ip = $this->getDomain();
-        return "https://t.me/proxy?server=$ip&port=$p&secret=ee$s$d";
-    }
-
-    public function mtproto()
-    {
-        $d      = file_get_contents('/config/mtprotodomain') ?: 'yandex.ru';
-        $adtag  = trim(file_exists('/config/mtprotoadtag') ? file_get_contents('/config/mtprotoadtag') : '');
-        $st     = $this->ssh('pgrep mtproto-proxy', 'tg') ? 'on' : 'off';
-        $text[] = "Menu -> MTProto\n";
-        $text[] = "status: $st\n";
-        $text[] = "fake domain: <code>$d</code>\n";
-        $text[] = "adtag: <code>" . ($adtag ?: 'off') . "</code>\n";
-        if ($st == 'on') {
-            $text[] = $this->linkMtproto();
-        }
-        $data[] = [
-            [
-                'text'          => $this->i18n('generateSecret'),
-                'callback_data' => "/generateSecret",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('setSecret'),
-                'callback_data' => "/setSecret",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('changeFakeDomain'),
-                'callback_data' => "/changeTGDomain",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('setAdTag'),
-                'callback_data' => "/setTGAdtag",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('show QR'),
-                'callback_data' => "/qrMtproto",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('back'),
-                'callback_data' => "/menu",
-            ],
-        ];
-        $this->update(
-            $this->input['chat'],
-            $this->input['message_id'],
-            implode("\n", $text ?: ['...']),
-            $data ?: false,
-        );
     }
 
     public function setLang($lang)
@@ -3942,9 +3788,6 @@ NFT;
                 'private' => file_get_contents('/config/dnstt/server.key'),
                 'public'  => file_get_contents('/config/dnstt/server.pub'),
             ] : false,
-            'mtproto'       => file_get_contents('/config/mtprotosecret'),
-            'mtprotodomain' => file_get_contents('/config/mtprotodomain'),
-            'mtprotoadtag'  => file_exists('/config/mtprotoadtag') ? file_get_contents('/config/mtprotoadtag') : '',
             'xray'          => $this->getXray(),
             'hy'            => yaml_parse_file('/config/hysteria.yaml'),
             'oc'            => file_get_contents('/config/ocserv.conf'),
@@ -4067,15 +3910,6 @@ NFT;
                 $this->ssh('pkill sslocal', 'proxy');
                 file_put_contents('/config/sslocal.json', json_encode($json['sl'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
                 $this->ssh('sslocal -v -d -c /config.json', 'proxy');
-            }
-            // mtproto
-            if (!empty($json['mtproto'])) {
-                $out[] = 'update mtproto';
-                $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                file_put_contents('/config/mtprotosecret', $json['mtproto']);
-                file_put_contents('/config/mtprotodomain', $json['mtprotodomain'] ?: '');
-                file_put_contents('/config/mtprotoadtag', trim($json['mtprotoadtag'] ?? ''));
-                $this->restartTG();
             }
             // hwid
             if (array_key_exists('hwid', $json)) {
@@ -4899,24 +4733,6 @@ NFT;
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->xray();
-        }
-    }
-
-    public function qrMtproto()
-    {
-        $link    = $this->linkMtproto();
-        $qr_file = __DIR__ . "/qr/mtproto.png";
-        exec("qrencode -t png -o $qr_file '$link'");
-        $r = $this->sendPhoto(
-            $this->input['chat'],
-            curl_file_create($qr_file),
-            "<code>$link</code>"
-        );
-        unlink($qr_file);
-        if ($this->getPacConf()['blinkmenu']) {
-            $this->delete($this->input['chat'], $this->input['message_id']);
-            $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
-            $this->mtproto();
         }
     }
 
@@ -9056,7 +8872,6 @@ DNS-over-HTTPS with IP:
                     $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . $this->i18n('OpenVPN'),
                     $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . ' L2TP/IPsec',
                     $this->i18n($ipsecCharonOn ? 'on' : 'off') . ' IKEv2',
-                    $this->i18n($this->ssh('pgrep mtproto-proxy', 'tg') ? 'on' : 'off') . ' ' . $this->i18n('mtproto'),
                     $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off') . ' ' . $this->i18n('ad_title'),
                     $this->i18n($this->ssh('pgrep ssserver', 'ss') ? 'on' : 'off') . ' ' . $this->i18n('sh_title'),
                     $this->i18n($this->ssh('pgrep dnstt', 'dnstt') ? 'on' : 'off') . ' ' . $this->i18n('dnstt'),
@@ -9074,7 +8889,6 @@ DNS-over-HTTPS with IP:
                     $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . (isset($c['ovpn']['ports'][0]) ? explode(':', $c['ovpn']['ports'][0])[0] : getenv('OVPNPORT')),
                     $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
                     $this->i18n($ipsecCharonOn ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
-                    $this->i18n($ports['tg']['enable'] ? 'on' : 'off') . ($ports['tg']['enable'] ? ' ' . $ports['tg']['port'] : ' port unavailable'),
                     $this->i18n($ports['ad']['enable'] ? 'on' : 'off') . ($ports['ad']['enable'] ? ' ' . $ports['ad']['port'] : ' port unavailable'),
                     $this->i18n($ports['ss']['enable'] ? 'on' : 'off') . ($ports['ss']['enable'] ? ' ' . $ports['ss']['port'] : ' port unavailable'),
                     $this->i18n($ports['dnstt']['enable'] ? 'on' : 'off') . ($ports['dnstt']['enable'] ? ' ' . $ports['dnstt']['port'] : ' port unavailable'),
@@ -9129,15 +8943,11 @@ DNS-over-HTTPS with IP:
                                 'callback_data' => "/menu oc",
                             ],
                             [
-                                'text'          => $this->i18n('mtproto'),
-                                'callback_data' => "/mtproto",
-                            ],
-                        ],
-                        [
-                            [
                                 'text'          => $this->i18n('telemt'),
                                 'callback_data' => "/telemt",
                             ],
+                        ],
+                        [
                             [
                                 'text'          => $this->i18n('TrustTunnel'),
                                 'callback_data' => "/menu tt",
@@ -9371,6 +9181,9 @@ DNS-over-HTTPS with IP:
         $data[] = [['text' => $this->i18n('noise') . ': ' . $on($n['enabled'] ?? 0), 'callback_data' => '/dpiToggle noise']];
         if (!empty($n['enabled'])) {
             $text[] = $this->dpiFieldHint('noise');
+            // Готовые примеры значений — прямо в тексте меню, а не только во
+            // всплывающей подсказке по тапу (её легко пропустить).
+            $text[] = $this->noiseExamplesHint();
             // noises — массив: несколько пакетов с разными типами/задержками
             // эффективнее против анализа трафика, чем один фиксированный.
             $noises = $this->dpiNoiseList($p);
@@ -9705,6 +9518,32 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    // Готовые значения packet для каждого типа noise. Один источник и для
+    // подсказки по тапу (dpiFieldHint('noise_packet')), и для показа прямо в
+    // меню — чтобы примеры были видны, а не спрятаны за нажатием.
+    public function noiseExamplesHint(): string
+    {
+        return $this->language === 'ru'
+            ? "Готовые значения packet по типам (можно копировать):\n"
+                . "• <code>rand</code> — длина в байтах: <code>50</code>, <code>100</code>, <code>10-20</code>, <code>50-150</code>, <code>200-400</code>\n"
+                . "• <code>str</code> — текст как есть: <code>hello</code>, <code>ping</code>, <code>keepalive</code>\n"
+                . "• <code>hex</code> — чётное число hex-цифр, без пробелов/<code>0x</code>:\n"
+                . "   <code>deadbeef</code>, <code>48656c6c6f</code> (=Hello), <code>000102030405</code>, <code>cafebabe</code>\n"
+                . "• <code>base64</code> — корректная base64:\n"
+                . "   <code>SGVsbG8=</code> (=Hello), <code>dGVzdA==</code> (=test), <code>AAECAwQF</code>,\n"
+                . "   <code>7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=</code> (DNS-запрос)\n"
+                . "⚠️ Для str/hex/base64 поле обязательно — пустой пакет пропускается."
+            : "Ready-to-paste packet values per type (copyable):\n"
+                . "• <code>rand</code> — length in bytes: <code>50</code>, <code>100</code>, <code>10-20</code>, <code>50-150</code>, <code>200-400</code>\n"
+                . "• <code>str</code> — plain text as-is: <code>hello</code>, <code>ping</code>, <code>keepalive</code>\n"
+                . "• <code>hex</code> — even count of hex digits, no spaces/<code>0x</code>:\n"
+                . "   <code>deadbeef</code>, <code>48656c6c6f</code> (=Hello), <code>000102030405</code>, <code>cafebabe</code>\n"
+                . "• <code>base64</code> — valid base64:\n"
+                . "   <code>SGVsbG8=</code> (=Hello), <code>dGVzdA==</code> (=test), <code>AAECAwQF</code>,\n"
+                . "   <code>7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=</code> (DNS query)\n"
+                . "⚠️ For str/hex/base64 this is required — an empty packet is skipped.";
+    }
+
     public function dpiFieldHint(string $field): string
     {
         $ru = $this->language === 'ru';
@@ -9749,14 +9588,12 @@ DNS-over-HTTPS with IP:
                     . "Поля: type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
                     . "packet — значение для типа; delay — задержка после пакета в мс.\n"
                     . "Пример хорошей последовательности: пакет1 <code>rand</code>·<code>50-150</code>·<code>10-16</code>, "
-                    . "пакет2 <code>rand</code>·<code>200-400</code>·<code>20-50</code>.\n"
-                    . "Готовые значения packet — в подсказке при нажатии на type/packet."
+                    . "пакет2 <code>rand</code>·<code>200-400</code>·<code>20-50</code>."
                 : "UDP noise: several packets are sent in sequence before real traffic. "
                     . "Fields: type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
                     . "packet is the value for that type; delay is the wait after the packet in ms.\n"
                     . "A good sequence example: packet1 <code>rand</code>·<code>50-150</code>·<code>10-16</code>, "
-                    . "packet2 <code>rand</code>·<code>200-400</code>·<code>20-50</code>.\n"
-                    . "Ready-to-paste packet values — in the hint when tapping type/packet.",
+                    . "packet2 <code>rand</code>·<code>200-400</code>·<code>20-50</code>.",
             'noise_type' => $ru
                 ? "Тип содержимого шумового пакета:\n"
                     . "• <code>rand</code> — случайные байты (packet = длина/диапазон)\n"
@@ -9770,25 +9607,7 @@ DNS-over-HTTPS with IP:
                     . "• <code>hex</code> — bytes in hex (packet = hex, no spaces)\n"
                     . "• <code>base64</code> — bytes in base64 (packet = base64 string)\n"
                     . "<code>rand</code> is usually enough.",
-            'noise_packet' => $ru
-                ? "Значение зависит от type. Готовые примеры для вставки:\n"
-                    . "• <code>rand</code> — длина в байтах: <code>50</code>, <code>100</code>, <code>10-20</code>, <code>50-150</code>, <code>200-400</code>\n"
-                    . "• <code>str</code> — текст как есть: <code>hello</code>, <code>ping</code>, <code>keepalive</code>\n"
-                    . "• <code>hex</code> — чётное число hex-цифр, без пробелов/<code>0x</code>:\n"
-                    . "   <code>deadbeef</code>, <code>48656c6c6f</code> (=Hello), <code>000102030405</code>, <code>cafebabe</code>\n"
-                    . "• <code>base64</code> — корректная base64:\n"
-                    . "   <code>SGVsbG8=</code> (=Hello), <code>dGVzdA==</code> (=test), <code>AAECAwQF</code>,\n"
-                    . "   <code>7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=</code> (DNS-запрос)\n"
-                    . "⚠️ Для str/hex/base64 поле обязательно — пустой пакет пропускается."
-                : "Value depends on type. Ready-to-paste examples:\n"
-                    . "• <code>rand</code> — length in bytes: <code>50</code>, <code>100</code>, <code>10-20</code>, <code>50-150</code>, <code>200-400</code>\n"
-                    . "• <code>str</code> — plain text as-is: <code>hello</code>, <code>ping</code>, <code>keepalive</code>\n"
-                    . "• <code>hex</code> — even count of hex digits, no spaces/<code>0x</code>:\n"
-                    . "   <code>deadbeef</code>, <code>48656c6c6f</code> (=Hello), <code>000102030405</code>, <code>cafebabe</code>\n"
-                    . "• <code>base64</code> — valid base64:\n"
-                    . "   <code>SGVsbG8=</code> (=Hello), <code>dGVzdA==</code> (=test), <code>AAECAwQF</code>,\n"
-                    . "   <code>7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=</code> (DNS query)\n"
-                    . "⚠️ For str/hex/base64 this is required — an empty packet is skipped.",
+            'noise_packet' => $this->noiseExamplesHint(),
             'noise_delay' => $ru
                 ? "Задержка после этого пакета в миллисекундах, число или диапазон. "
                     . "Примеры: <code>0</code> (без задержки), <code>5</code>, <code>10-16</code>, <code>20-50</code>, <code>100-200</code>."
@@ -12244,13 +12063,11 @@ DNS-over-HTTPS with IP:
         $p = $this->getPorts();
         $t = str_replace([
             '~ip~',
-            '~tg~',
             '~ss~',
             '~wg1~',
             '~wg2~',
         ], [
             getenv('IP'),
-            $p['tg']['port'],
             $p['ss']['port'],
             $p['wg']['port'],
             $p['wg1']['port'],
@@ -16119,10 +15936,6 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/changePort wg1",
             ]],
             [[
-                'text'          => $this->i18n($p['tg']['enable'] ? 'on' : 'off') . ($p['tg']['enable'] ? ' ' . $p['tg']['port'] : ' port unavailable') . ' MTProto ',
-                'callback_data' => "/changePort tg",
-            ]],
-            [[
                 'text'          => $this->i18n($p['telemt']['enable'] ? 'on' : 'off') . ($p['telemt']['enable'] ? ' ' . $p['telemt']['port'] : ' port unavailable') . ' TeleMT',
                 'callback_data' => "/changePort telemt",
             ]],
@@ -16258,7 +16071,6 @@ DNS-over-HTTPS with IP:
         // main compose, so 0/empty disables external exposure.
         $disable = [
             'hy'   => 443,
-            'tg'   => 443,
             'tt'   => 0,
             'ovpn' => 0,
         ];
@@ -16316,10 +16128,6 @@ DNS-over-HTTPS with IP:
             $listen = ($port > 0 && $port != ($disable['ovpn'] ?? 0)) ? $port : (int)(getenv('OVPNPORT') ?: 1194);
             $this->setUpstreamPortOvpn($listen);
             $this->setEnvVar('OVPNPORT', (string) $listen);
-        }
-        if ($container === 'tg') {
-            $listen = ($port > 0 && $port != ($disable['tg'] ?? 0)) ? $port : (int)(getenv('TGPORT') ?: 4443);
-            $this->setEnvVar('TGPORT', (string) $listen);
         }
 
         $pac = $this->getPacConf();
@@ -16523,13 +16331,13 @@ DNS-over-HTTPS with IP:
         $m                          = file_get_contents('/update/message');
         // message_id может прийти пустым (reload_message вида "chat:") — тогда
         // передавать его в send(?int $to) нельзя: '' → TypeError и фатал в
-        // service.php до restartTG/restartTelemt. Приводим к ?int.
+        // service.php до restartTelemt. Приводим к ?int.
         $mid                        = (isset($rm[1]) && $rm[1] !== '') ? (int) $rm[1] : null;
         $this->input['chat']        = $rm[0];
         $this->input['message_id']  = $mid;
         $this->input['callback_id'] = $mid;
         // Импорт настроек после обновления — НЕкритичный шаг. Любая ошибка здесь
-        // не должна ронять service.php до restartTG/restartTelemt. И /update/json
+        // не должна ронять service.php до restartTelemt. И /update/json
         // снимаем в любом случае, иначе сбой повторяется при каждом старте.
         if (file_exists($this->update)) {
             $this->selfupdate = true;
@@ -16598,38 +16406,6 @@ DNS-over-HTTPS with IP:
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setFakeDomain',
-            'args'           => [],
-        ];
-    }
-
-    public function changeTGDomain()
-    {
-        $r = $this->send(
-            $this->input['chat'],
-            "@{$this->input['username']} enter domain",
-            $this->input['message_id'],
-            reply: 'enter domain',
-        );
-        $_SESSION['reply'][$r['result']['message_id']] = [
-            'start_message'  => $this->input['message_id'],
-            'start_callback' => $this->input['callback_id'],
-            'callback'       => 'setTelegramDomain',
-            'args'           => [],
-        ];
-    }
-
-    public function changeTGAdtag()
-    {
-        $r = $this->send(
-            $this->input['chat'],
-            "@{$this->input['username']} enter adtag or 0 for disable",
-            $this->input['message_id'],
-            reply: 'enter adtag or 0 for disable',
-        );
-        $_SESSION['reply'][$r['result']['message_id']] = [
-            'start_message'  => $this->input['message_id'],
-            'start_callback' => $this->input['callback_id'],
-            'callback'       => 'setTelegramAdtag',
             'args'           => [],
         ];
     }

@@ -6,7 +6,7 @@ telegram bot to manage servers (inside the bot)
 - Wireguard
 - Amnezia
 - AdguardHome
-- MTProto
+- TeleMT (MTProto)
 - PAC
 - automatic ssl
 
