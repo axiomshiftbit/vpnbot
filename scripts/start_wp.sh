@@ -15,6 +15,18 @@ WARP_LICENSE_KEY=$(cat /config/pac.json | jq -r '.warp // empty')
 mkdir -p "$WGCF_DIR"
 cd "$WGCF_DIR"
 
+# wgcf ходит в API Cloudflare, а сеть на старте контейнера может быть ещё не
+# готова — все вызовы wgcf идут с ретраями (4 попытки, бэкофф 5/15/30с).
+retry() {
+    local delay
+    for delay in 5 15 30; do
+        "$@" && return 0
+        echo "[warp] '$*' failed, retry in ${delay}s..."
+        sleep "$delay"
+    done
+    "$@"
+}
+
 # Профиль wgcf-profile.conf — единственное, что нужно wg-quick для подъёма
 # туннеля. Аккаунт wgcf-account.toml нужен лишь чтобы СГЕНЕРИРОВАТЬ профиль.
 # Раньше оба шага (register и generate) сидели под одним условием
@@ -29,34 +41,84 @@ cd "$WGCF_DIR"
 #      пропавший профиль из уже существующего аккаунта — чинит случай рабочего сервера).
 if [ ! -f "$WGCF_TOML" ]; then
     echo "[warp] Registering WARP account..."
-    wgcf register --accept-tos
+    retry wgcf register --accept-tos
     if [ -n "$WARP_LICENSE_KEY" ]; then
         echo "[warp] Applying license key..."
         # Заменяем license_key в wgcf-account.toml на WARP_LICENSE_KEY
         if grep -q '^license_key' "$WGCF_TOML"; then
             sed -i "s/^license_key.*/license_key = \"$WARP_LICENSE_KEY\"/" "$WGCF_TOML"
         fi
-        wgcf update
+        retry wgcf update
     fi
 fi
 
 if [ ! -f "$WGCF_CONF" ]; then
     echo "[warp] Generating WireGuard profile..."
-    wgcf generate
-    echo "[warp] Stripping IPv6 from profile..."
-    sed -i '/^Address.*:/d' "$WGCF_CONF"
-    sed -i '/^AllowedIPs.*::/d' "$WGCF_CONF"
+    retry wgcf generate
 fi
 
-# DNS= вырезаем БЕЗУСЛОВНО (не под условием генерации выше): профиль обычно
-# уже лежит в named-volume, а resolv.conf в контейнере управляет Docker.
-# openresolv 3.17.4 (alpine edge) в docker падает («could not detect a useable
-# init system» / «signature mismatch: /etc/resolv.conf»), из-за чего wg-quick
-# откатывал интерфейс и контейнер уходил в Exited(1).
+# Фиксапы профиля — БЕЗУСЛОВНО при каждом старте, а не при генерации: профиль
+# обычно уже лежит в named-volume, и блок генерации выше не выполняется.
+# - IPv6 вырезаем из Address/AllowedIPs (в контейнере нет v6);
+# - DNS= убираем: openresolv 3.17.4 (alpine edge) в docker падает («could not
+#   detect a useable init system» / «signature mismatch»), из-за чего wg-quick
+#   откатывал интерфейс и контейнер уходил в Exited(1);
+# - PersistentKeepalive держит handshake живым и без полезного трафика.
+sed -i '/^Address.*:/d' "$WGCF_CONF"
+sed -i '/^AllowedIPs.*::/d' "$WGCF_CONF"
 sed -i '/^DNS[[:space:]]*=/d' "$WGCF_CONF"
+grep -q '^PersistentKeepalive' "$WGCF_CONF" || \
+    sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WGCF_CONF"
 
 echo "[warp] Starting WireGuard (WARP)..."
+# best-effort down: чистит хвосты (интерфейс/маршруты) после нештатного рестарта
+wg-quick down "$WGCF_CONF" 2>/dev/null || true
 wg-quick up "$WGCF_CONF"
 
+# DNS контейнера — через туннель. Пишем напрямую, без resolvconf (он в docker
+# не работает, см. выше). 1.1.1.1 доступен и БЕЗ туннеля, поэтому резолв
+# endpoint'а (engage.cloudflareclient.com) при пере-поднятии не ломается.
+printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > /etc/resolv.conf
+
 echo "[warp] Starting microsocks on port $SOCKS_PORT..."
-exec microsocks -p "$SOCKS_PORT"
+microsocks -p "$SOCKS_PORT" &
+MS_PID=$!
+
+# ---- watchdog ----
+# Раз в 60с проверяем ВСЮ цепочку socks → DNS (резолвит microsocks, socks5h) →
+# туннель: trace Cloudflare должен ответить warp=on|plus. 3 подряд провала →
+# пере-поднимаем туннель (свежий handshake + пере-резолв endpoint). Если и
+# после 3 пере-поднятий подряд не ожил — exit 1: контейнер перезапустит
+# restart-политика (unless-stopped в compose), это чинит и умерший sshd/т.п.
+# Профиль и аккаунт НЕ трогаем: авто-перегенерация при ложном срабатывании
+# потеряла бы аккаунт с license key.
+set +e
+FAILS=0
+BOUNCES=0
+while true; do
+    sleep 60
+    if ! kill -0 "$MS_PID" 2>/dev/null; then
+        echo "[warp] microsocks died — restarting..."
+        microsocks -p "$SOCKS_PORT" &
+        MS_PID=$!
+    fi
+    if curl -m 10 -s -x "socks5h://127.0.0.1:$SOCKS_PORT" \
+            https://www.cloudflare.com/cdn-cgi/trace | grep -qE '^warp=(on|plus)'; then
+        FAILS=0
+        BOUNCES=0
+        continue
+    fi
+    FAILS=$((FAILS + 1))
+    echo "[warp] health check failed ($FAILS/3)"
+    if [ "$FAILS" -ge 3 ]; then
+        BOUNCES=$((BOUNCES + 1))
+        if [ "$BOUNCES" -gt 3 ]; then
+            echo "[warp] tunnel did not recover after 3 restarts — exiting for container restart"
+            exit 1
+        fi
+        echo "[warp] restarting tunnel (bounce $BOUNCES/3)..."
+        wg-quick down "$WGCF_CONF" 2>/dev/null
+        wg-quick up "$WGCF_CONF"
+        FAILS=0
+    fi
+done

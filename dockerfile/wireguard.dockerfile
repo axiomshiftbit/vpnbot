@@ -30,6 +30,7 @@ RUN set -eux; \
         xtables-addons \
         openssh \
         wireguard-tools \
+        curl \
         jq \
         bash \
         htop; \
