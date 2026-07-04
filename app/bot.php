@@ -30,6 +30,10 @@ class Bot
     public $time2;
     public $time3;
     public $time_xray_stats;
+    public $time_extsub;
+    public $time_relayhealth;
+    public $time_geowarm;
+    public $subtokens_done;
     public $admin;
     public $ports;
     public $warpprofile;
@@ -173,7 +177,7 @@ class Bot
             case preg_match('~^/menu (?P<type>addpeer) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>wg) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-            case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt|ovpn)$~', $this->input['callback'], $m):
+            case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt|ovpn|l2tp|ikev2)$~', $this->input['callback'], $m):
                 $this->menu(type: $m['type'] ?? false, arg: $m['arg'] ?? false);
                 break;
             case preg_match('~^/changeWG (\d+)$~', $this->input['callback'], $m):
@@ -205,6 +209,9 @@ class Bot
                 break;
             case preg_match('~^/dpiGenMldsa$~', $this->input['callback'], $m):
                 $this->dpiGenMldsa();
+                break;
+            case preg_match('~^/dpiShowMldsa$~', $this->input['callback'], $m):
+                $this->dpiShowMldsa();
                 break;
             case preg_match('~^/mirror$~', $this->input['message'], $m):
                 $this->menu('mirror');
@@ -349,6 +356,9 @@ class Bot
                 break;
             case preg_match('~^/relayMenu$~', $this->input['callback'], $m):
                 $this->relayMenu();
+                break;
+            case preg_match('~^/switchRelayAggregate$~', $this->input['callback'], $m):
+                $this->switchRelayAggregate();
                 break;
             case preg_match('~^/relayAdd$~', $this->input['callback'], $m):
                 $this->relayAdd();
@@ -647,8 +657,8 @@ class Bot
             case preg_match('~^/addOvpnUser$~', $this->input['callback'], $m):
                 $this->addOvpnUser();
                 break;
-            case preg_match('~^/delOvpnUser (\S+)$~', $this->input['callback'], $m):
-                $this->delOvpnUser($m[1]);
+            case preg_match('~^/delOvpnUser (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->delOvpnUser($m[1], !empty($m[2]));
                 break;
             case preg_match('~^/getOvpnConfig (\S+)$~', $this->input['callback'], $m):
                 $this->getOvpnConfig($m[1]);
@@ -679,6 +689,81 @@ class Bot
                 break;
             case preg_match('~^/ovpnClientMenu (\S+)$~', $this->input['callback'], $m):
                 $this->ovpnClientMenu($m[1]);
+                break;
+            case preg_match('~^/ovpnClientLog (\S+)$~', $this->input['callback'], $m):
+                $this->ovpnClientLog($m[1]);
+                break;
+            case preg_match('~^/addL2tpUser$~', $this->input['callback'], $m):
+                $this->addL2tpUser();
+                break;
+            case preg_match('~^/delL2tpUser (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->delL2tpUser($m[1], !empty($m[2]));
+                break;
+            case preg_match('~^/disableL2tpUser (\S+)$~', $this->input['callback'], $m):
+                $this->disableL2tpUser($m[1]);
+                break;
+            case preg_match('~^/enableL2tpUser (\S+)$~', $this->input['callback'], $m):
+                $this->enableL2tpUser($m[1]);
+                break;
+            case preg_match('~^/kickL2tp (\S+)$~', $this->input['callback'], $m):
+                $this->kickL2tp($m[1]);
+                break;
+            case preg_match('~^/l2tpClientMenu (\S+)$~', $this->input['callback'], $m):
+                $this->l2tpClientMenu($m[1]);
+                break;
+            case preg_match('~^/l2tpClientLog (\S+)$~', $this->input['callback'], $m):
+                $this->l2tpClientLog($m[1]);
+                break;
+            case preg_match('~^/getL2tpCreds (\S+)$~', $this->input['callback'], $m):
+                $this->sendL2tpCreds($m[1]);
+                break;
+            case preg_match('~^/showL2tpLog$~', $this->input['callback'], $m):
+                $this->showL2tpLog();
+                break;
+            case preg_match('~^/showIpsecConnLog (\S+)$~', $this->input['callback'], $m):
+                $this->showIpsecConnLog($m[1]);
+                break;
+            case preg_match('~^/refreshL2tp$~', $this->input['callback'], $m):
+                $this->refreshL2tp();
+                break;
+            case preg_match('~^/addIkev2User$~', $this->input['callback'], $m):
+                $this->addIkev2User();
+                break;
+            case preg_match('~^/delIkev2User (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->delIkev2User($m[1], !empty($m[2]));
+                break;
+            case preg_match('~^/disableIkev2User (\S+)$~', $this->input['callback'], $m):
+                $this->disableIkev2User($m[1]);
+                break;
+            case preg_match('~^/enableIkev2User (\S+)$~', $this->input['callback'], $m):
+                $this->enableIkev2User($m[1]);
+                break;
+            case preg_match('~^/kickIkev2 (\S+)$~', $this->input['callback'], $m):
+                $this->kickIkev2($m[1]);
+                break;
+            case preg_match('~^/ikev2ClientMenu (\S+)$~', $this->input['callback'], $m):
+                $this->ikev2ClientMenu($m[1]);
+                break;
+            case preg_match('~^/getIkev2Profile (\S+)$~', $this->input['callback'], $m):
+                $this->sendIkev2Profile($m[1]);
+                break;
+            case preg_match('~^/getIkev2Sswan (\S+)$~', $this->input['callback'], $m):
+                $this->sendIkev2Sswan($m[1]);
+                break;
+            case preg_match('~^/getIkev2Creds (\S+)$~', $this->input['callback'], $m):
+                $this->sendIkev2Creds($m[1]);
+                break;
+            case preg_match('~^/getIkev2Ca$~', $this->input['callback'], $m):
+                $this->getIkev2Ca();
+                break;
+            case preg_match('~^/showIkev2Log$~', $this->input['callback'], $m):
+                $this->showIkev2Log();
+                break;
+            case preg_match('~^/refreshIkev2$~', $this->input['callback'], $m):
+                $this->refreshIkev2();
+                break;
+            case preg_match('~^/changeIpsecPort (ike|natt) (l2tp|ikev2)$~', $this->input['callback'], $m):
+                $this->changeIpsecPort($m[1], $m[2]);
                 break;
             case preg_match('~^/changeOcDns$~', $this->input['callback'], $m):
                 $this->changeOcDns();
@@ -809,6 +894,27 @@ class Bot
                 break;
             case preg_match('~^/relaySub (?P<arg>\d+_[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relaySub(...explode('_', $m['arg'], 2));
+                break;
+            case preg_match('~^/extUser (\d+)$~', $this->input['callback'], $m):
+                $this->extUser($m[1]);
+                break;
+            case preg_match('~^/extAdd (\d+) (link|sub)$~', $this->input['callback'], $m):
+                $this->extAddPrompt($m[1], $m[2]);
+                break;
+            case preg_match('~^/extRename (\d+)_(\d+)$~', $this->input['callback'], $m):
+                $this->extRename($m[1], $m[2]);
+                break;
+            case preg_match('~^/extToggle (\d+)_(\d+)$~', $this->input['callback'], $m):
+                $this->extToggle($m[1], $m[2]);
+                break;
+            case preg_match('~^/extDel (\d+)_(\d+)$~', $this->input['callback'], $m):
+                $this->extDel($m[1], $m[2]);
+                break;
+            case preg_match('~^/rotateSub (\d+)$~', $this->input['callback'], $m):
+                $this->rotateSubToken($m[1]);
+                break;
+            case preg_match('~^/switchSubtokenStrict$~', $this->input['callback'], $m):
+                $this->switchSubtokenStrict();
                 break;
             case preg_match('~^/choiceTemplate (.+)$~', $this->input['callback'], $m):
                 $this->choiceTemplate($m[1]);
@@ -3332,6 +3438,10 @@ NFT;
             'xrayStatsUser',
             'checkTrafficLimits',
             'trackOnline',
+            'refreshExtSubCache',
+            'backfillSubTokens',
+            'checkRelayHealth',
+            'warmGeoCache',
         ];
         while (true) {
             foreach ($steps as $step) {
@@ -3839,6 +3949,7 @@ NFT;
             'cloak'         => file_exists('/config/ckserver.json') ? (json_decode(file_get_contents('/config/ckserver.json'), true) ?: null) : null,
             'ckusers'       => file_exists('/config/ckusers.json') ? (json_decode(file_get_contents('/config/ckusers.json'), true) ?: null) : null,
             'ovpn'          => $this->exportOvpnPki(),
+            'ipsec'         => $this->exportIpsecPki(),
             'xraystats'     => $this->getXrayStats(),
         ];
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -4029,6 +4140,13 @@ NFT;
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->importOvpnPki($json['ovpn']);
                 $this->restartOvpn();
+            }
+            // ipsec (PSK + CA/server cert + chap-secrets + ikev2-юзеры)
+            if (!empty($json['ipsec']) && is_array($json['ipsec'])) {
+                $out[] = 'update ipsec';
+                $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                $this->importIpsecPki($json['ipsec']);
+                $this->restartIpsec();
             }
             if (!empty($json['pac']['domain'])) {
                 $this->setUpstreamDomainOcserv($json['pac']['domain']);
@@ -5226,15 +5344,23 @@ NFT;
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay');
         $text[] = $this->i18n('relay hint');
 
-        $data = [];
+        $data   = [];
+        $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $r) {
+            $hl = $this->relayHealthLabel($name, false, $health);
             $data[] = [
                 [
-                    'text'          => "$name: " . ($r['address'] ?: ($r['awg_address'] ?? '') ?: '—'),
+                    'text'          => "$name: " . ($r['address'] ?: ($r['awg_address'] ?? '') ?: '—') . ($hl !== '' ? "  $hl" : ''),
                     'callback_data' => "/relayEdit $name",
                 ],
             ];
         }
+        $data[] = [
+            [
+                'text'          => '🧬 ' . $this->i18n('relay aggregate') . ': ' . $this->i18n(!empty($p['relay_aggregate']) ? 'on' : 'off'),
+                'callback_data' => '/switchRelayAggregate',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => '➕ ' . $this->i18n('add relay'),
@@ -5254,6 +5380,16 @@ NFT;
             implode("\n", $text),
             $data ?: false,
         );
+    }
+
+    // Global toggle: include every enabled/reachable relay as its own node in the
+    // base64 (v2rayNG) subscription, so one link exposes origin + all relays.
+    public function switchRelayAggregate()
+    {
+        $c = $this->getPacConf();
+        $c['relay_aggregate'] = empty($c['relay_aggregate']) ? 1 : 0;
+        $this->setPacConf($c);
+        $this->relayMenu();
     }
 
     public function relayAdd()
@@ -5297,6 +5433,9 @@ NFT;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay') . " -> <b>$name</b>";
         $text[] = $this->i18n('relay address') . ': <code>' . ($r['address'] ?: '—') . '</code>';
+        if (!empty($r['address']) && ($hl = $this->relayHealthLabel($name, true)) !== '') {
+            $text[] = $this->i18n('relay health') . ": $hl";
+        }
         if (!empty($r['portmap'])) {
             $pm = [];
             foreach ($r['portmap'] as $src => $dst) {
@@ -8892,6 +9031,12 @@ DNS-over-HTTPS with IP:
             $ports  = $this->getPorts();
             $main[] = '';
 
+            // Один ssh-раунд на контейнер ipsec вместо четырёх: статусы
+            // нужны и в колонке сервисов, и в колонке портов.
+            $ipsecXl2tpOn  = (bool) $this->ssh('pgrep xl2tpd', 'ipsec');
+            $ipsecCharonOn = (bool) $this->ssh('pgrep charon', 'ipsec');
+            $ipsecPorts    = $this->ipsecPorts();
+
             $main[] = '<code>';
             $main[] = $this->alignColumns([
                 [
@@ -8903,6 +9048,8 @@ DNS-over-HTTPS with IP:
                     $this->i18n($this->ssh('pgrep hysteria', 'hy') ? 'on' : 'off') . ' ' . $this->i18n('hysteria'),
                     $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . $this->i18n('TrustTunnel'),
                     $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . $this->i18n('OpenVPN'),
+                    $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . ' L2TP/IPsec',
+                    $this->i18n($ipsecCharonOn ? 'on' : 'off') . ' IKEv2',
                     $this->i18n($this->ssh('pgrep mtproto-proxy', 'tg') ? 'on' : 'off') . ' ' . $this->i18n('mtproto'),
                     $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off') . ' ' . $this->i18n('ad_title'),
                     $this->i18n($this->ssh('pgrep ssserver', 'ss') ? 'on' : 'off') . ' ' . $this->i18n('sh_title'),
@@ -8919,6 +9066,8 @@ DNS-over-HTTPS with IP:
                     $this->i18n($ports['hy']['enable'] ? 'on' : 'off') . ($ports['hy']['enable'] ? ' ' . $ports['hy']['port'] : ' port unavailable'),
                     $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
                     $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . (isset($c['ovpn']['ports'][0]) ? explode(':', $c['ovpn']['ports'][0])[0] : getenv('OVPNPORT')),
+                    $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
+                    $this->i18n($ipsecCharonOn ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
                     $this->i18n($ports['tg']['enable'] ? 'on' : 'off') . ($ports['tg']['enable'] ? ' ' . $ports['tg']['port'] : ' port unavailable'),
                     $this->i18n($ports['ad']['enable'] ? 'on' : 'off') . ($ports['ad']['enable'] ? ' ' . $ports['ad']['port'] : ' port unavailable'),
                     $this->i18n($ports['ss']['enable'] ? 'on' : 'off') . ($ports['ss']['enable'] ? ' ' . $ports['ss']['port'] : ' port unavailable'),
@@ -9024,24 +9173,22 @@ DNS-over-HTTPS with IP:
                     [
                         [
                             [
-                                'text'          => $this->i18n('config'),
-                                'callback_data' => "/menu config",
-                            ],
-                            [
                                 'text'          => $this->i18n('OpenVPN'),
                                 'callback_data' => "/menu ovpn",
+                            ],
+                            [
+                                'text'          => 'L2TP/IPsec',
+                                'callback_data' => "/menu l2tp",
                             ],
                         ],
                         [
                             [
-                                'text' => $this->i18n('chat'),
-                                'url'  => base64_decode('aHR0cHM6Ly90Lm1lLys0RzMtUTRkX3ZGRXhPRGN5'),
+                                'text'          => 'IKEv2',
+                                'callback_data' => "/menu ikev2",
                             ],
                             [
-                                'text' => $this->i18n('donate'),
-                                'web_app' => [
-                                    'url'  => "https://$domain/webapp$hash/donate.html",
-                                ]
+                                'text'          => $this->i18n('config'),
+                                'callback_data' => "/menu config",
                             ],
                         ],
                     ],
@@ -9060,6 +9207,8 @@ DNS-over-HTTPS with IP:
             'hy'           => $type == 'hy'      ? $this->hysteriaMenu()                   : false,
             'tt'           => $type == 'tt'      ? $this->ttMenu()                         : false,
             'ovpn'         => $type == 'ovpn'    ? $this->ovpnMenu()                       : false,
+            'l2tp'         => $type == 'l2tp'    ? $this->l2tpMenu()                       : false,
+            'ikev2'        => $type == 'ikev2'   ? $this->ikev2Menu()                      : false,
             'mirror'       => $type == 'mirror'  ? $this->mirrorMenu()                     : false,
             'update'       => $type == 'update'  ? $this->updatebot()                      : false,
         ];
@@ -9247,6 +9396,10 @@ DNS-over-HTTPS with IP:
             ];
             $text[] = 'mldsa65 Seed: ' . $this->shortSecretLabel($r['mldsa65Seed'] ?? '');
             $text[] = 'mldsa65 Verify: ' . $this->shortSecretLabel($r['mldsa65Verify'] ?? '');
+            $text[] = 'spiderX: <code>' . htmlspecialchars($spiderX ?: '/', ENT_QUOTES) . '</code>';
+            // Полные значения не влезают в текст меню (Verify ~2.6k символов) —
+            // отдаём отдельным сообщением в <code>, чтобы копировались тапом.
+            $data[] = [['text' => '📋 mldsa65 Seed/Verify', 'callback_data' => '/dpiShowMldsa']];
             $data[] = [
                 ['text' => 'maxTimeDiff: ' . (int) ($r['maxTimeDiff'] ?? 0), 'callback_data' => '/dpiSet r_maxTimeDiff'],
                 ['text' => 'xver: ' . (int) ($r['xver'] ?? 0),               'callback_data' => '/dpiSet r_xver'],
@@ -9611,6 +9764,24 @@ DNS-over-HTTPS with IP:
         $this->setPacConf($p);
         $this->syncRealityLive($p);
         $this->dpiMenu();
+    }
+
+    // Полные mldsa65-ключи отдельным сообщением: в тексте dpiMenu они урезаны
+    // (shortSecretLabel), а из <code> копируются тапом целиком.
+    public function dpiShowMldsa()
+    {
+        $p      = $this->getPacConf();
+        $seed   = (string) ($p['reality']['mldsa65Seed'] ?? '');
+        $verify = (string) ($p['reality']['mldsa65Verify'] ?? '');
+        if ($seed === '' && $verify === '') {
+            return $this->answer($this->input['callback_id'], 'mldsa65 keys are empty — use autogen', true);
+        }
+        $t   = [];
+        $t[] = 'mldsa65 Seed:';
+        $t[] = '<code>' . htmlspecialchars($seed ?: '—', ENT_QUOTES) . '</code>';
+        $t[] = 'mldsa65 Verify:';
+        $t[] = '<code>' . htmlspecialchars($verify ?: '—', ENT_QUOTES) . '</code>';
+        $this->send($this->input['from'], implode("\n", $t));
     }
 
     public function dpiDefault($field)
@@ -10328,10 +10499,16 @@ DNS-over-HTTPS with IP:
 
     // Look up an IP's country/ISP, serving from $cache when fresh and filling misses
     // from ipinfo.io. $cache is updated in place; the caller persists it once.
-    public function geoLookup(string $ip, array &$cache): array
+    // $cacheOnly: never touch the network — return the cached entry or an empty
+    // (ts=0) miss. Used on the subscription hot path so a client's request never
+    // blocks on ipinfo (the cron warmGeoCache() fills the cache out-of-band).
+    public function geoLookup(string $ip, array &$cache, bool $cacheOnly = false): array
     {
         if (isset($cache[$ip]) && ($cache[$ip]['ts'] ?? 0) > time() - 604800) {
             return $cache[$ip];
+        }
+        if ($cacheOnly) {
+            return ['country' => '', 'org' => '', 'city' => '', 'ts' => 0];
         }
         $info = @json_decode(@file_get_contents(
             "https://ipinfo.io/$ip/json",
@@ -10364,6 +10541,110 @@ DNS-over-HTTPS with IP:
         $cc = strtoupper($cc);
         return mb_chr(0x1F1E6 + ord($cc[0]) - 65, 'UTF-8')
              . mb_chr(0x1F1E6 + ord($cc[1]) - 65, 'UTF-8');
+    }
+
+    // Resolve a hostname to an IP, memoised in the geo cache under a "host:" key
+    // (the geo cache is keyed by IP, so a bare hostname endpoint needs its own
+    // mapping). In $cacheOnly mode a cold entry returns '' instead of doing a
+    // live DNS lookup — the cron warmGeoCache() fills it — so the subscription
+    // hot path never blocks on gethostbyname().
+    public function resolveHost(string $host, array &$cache, bool $cacheOnly = true): string
+    {
+        $key = 'host:' . strtolower($host);
+        if (isset($cache[$key]['ip']) && ($cache[$key]['ts'] ?? 0) > time() - 604800) {
+            return (string) $cache[$key]['ip'];
+        }
+        if ($cacheOnly) {
+            return '';
+        }
+        $ip = gethostbyname($host); // returns $host unchanged on failure
+        if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+            return '';
+        }
+        $cache[$key] = ['ip' => $ip, 'ts' => time()];
+        return $ip;
+    }
+
+    // Country-flag emoji for one server endpoint (IP or hostname), resolving the
+    // country from the caller-provided geo cache (updated in place, persisted by
+    // the caller). ipinfo needs an IP, so a hostname is resolved first; only a
+    // validated IP is ever passed to geoLookup (no untrusted string reaches the
+    // ipinfo URL). Returns '' when the country can't be determined. $cacheOnly
+    // (the default) forbids any network I/O — see geoLookup()/resolveHost().
+    public function hostFlag(string $host, array &$cache, bool $cacheOnly = true): string
+    {
+        $host = trim($host);
+        if ($host === '') {
+            return '';
+        }
+        if (!filter_var($host, FILTER_VALIDATE_IP)) {
+            $ip = $this->resolveHost($host, $cache, $cacheOnly);
+            if ($ip === '') {
+                return '';
+            }
+            $host = $ip;
+        }
+        return $this->countryFlag($this->geoLookup($host, $cache, $cacheOnly)['country'] ?? '');
+    }
+
+    // Prefix a subscription/node display name with server-country flag(s), e.g.
+    // "🇫🇷 email". $hosts is one endpoint or an ordered list; each resolvable
+    // endpoint contributes one flag and they are concatenated in order (for a
+    // relay subscription: relay endpoint first, then the origin — "🇫🇷🇩🇪 email").
+    // Unknown/empty flags are skipped; when none resolve the bare name is
+    // returned so a geo failure never blanks or space-pads the name. Two adjacent
+    // flags are two 2-letter regional-indicator pairs, so clients render them as
+    // two distinct flags without a separator. $cacheOnly (the default) keeps this
+    // OFF the network: on the subscription hot path a flag appears only once the
+    // cron warmGeoCache() has resolved it, so the rendered name is stable across
+    // refreshes (no ipinfo blip flips it back to the bare name and makes clients
+    // re-add the node). In cache-only mode nothing mutates $cache, so no write.
+    public function flagName(string $name, string|array $hosts, bool $cacheOnly = true): string
+    {
+        $cache  = $this->getGeoCache();
+        $before = $cache;
+        $flags  = '';
+        foreach ((array) $hosts as $host) {
+            $flags .= $this->hostFlag((string) $host, $cache, $cacheOnly);
+        }
+        if ($cache !== $before) {
+            $this->setGeoCache($cache);
+        }
+        return $flags !== '' ? "$flags $name" : $name;
+    }
+
+    // Cron step: warm the geo cache (country flags) for the origin server IP and
+    // every relay endpoint — live and OFF the request path. Flag rendering on the
+    // subscription hot path is cache-only (flagName/geoLookup $cacheOnly), so
+    // without this warmer a node simply shows no flag; here the flag is resolved
+    // once and served from cache (7-day TTL) thereafter. Interval-gated so the
+    // 10 s cron loop resolves at most once every 10 min.
+    public function warmGeoCache(): void
+    {
+        if (!empty($this->time_geowarm) && time() - $this->time_geowarm < 600) {
+            return;
+        }
+        $this->time_geowarm = time();
+        $pac = $this->getPacConf();
+        if (!is_array($pac)) {
+            return; // corrupt/unreadable config: retry next tick
+        }
+        $hosts = [$this->ip];
+        foreach ($pac['relays'] ?? [] as $r) {
+            foreach ([$r['address'] ?? '', $r['awg_address'] ?? ''] as $h) {
+                if (trim((string) $h) !== '') {
+                    $hosts[] = $h;
+                }
+            }
+        }
+        $cache  = $this->getGeoCache();
+        $before = $cache;
+        foreach (array_unique($hosts) as $h) {
+            $this->hostFlag((string) $h, $cache, false); // live resolve + fill
+        }
+        if ($cache !== $before) {
+            $this->setGeoCache($cache);
+        }
     }
 
     public function onlinesView()
@@ -10900,22 +11181,27 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $fp     = $pac['fingerprint'] ?: 'chrome';
+        // Share-link #remark shown as the node name in the client, prefixed with
+        // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
+        // this with the relay's country for relay subscriptions.
+        $remark = $this->flagName($c['inbounds'][0]['settings']['clients'][$i]['email'], $this->ip);
+        $stok   = $this->sidOf($c['inbounds'][0]['settings']['clients'][$i]); // sub locator
         $si     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
-            's' => $c['inbounds'][0]['settings']['clients'][$i]['id'],
+            's' => $stok,
         ]));
         $v2     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 's',
-            's' => $c['inbounds'][0]['settings']['clients'][$i]['id'],
+            's' => $stok,
         ]));
 
         switch ($s) {
             case 1:
                 return "v2rayng://install-config?url=$v2#{$c['inbounds'][0]['settings']['clients'][$i]['id']}";
             case 2:
-                return "sing-box://import-remote-profile/?url={$si}#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                return "sing-box://import-remote-profile/?url={$si}#{$remark}";
 
             default:
                 // Reality client extras (items 2/4): spiderX (spx) and mldsa verify
@@ -10939,7 +11225,7 @@ DNS-over-HTTPS with IP:
                                     . "&type=tcp"
                                     . "&flow=xtls-rprx-vision"
                                     . $rExtra
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                                    . "#{$remark}";
                         break;
                     case 'xhttp':
                         $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
@@ -10954,7 +11240,7 @@ DNS-over-HTTPS with IP:
                                     . "&sni=$domain"
                                     . "&fp=$fp"
                                     . "&alpn=h2"
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                                    . "#{$remark}";
                         break;
                     case 'trojan-grpc':
                         $trojanPwd = rawurlencode($c['inbounds'][0]['settings']['clients'][$i]['password']);
@@ -10966,7 +11252,7 @@ DNS-over-HTTPS with IP:
                                     . "&sni=$domain"
                                     . "&fp=$fp"
                                     . "&alpn=h2"
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                                    . "#{$remark}";
                         break;
 
                     default:
@@ -10977,7 +11263,7 @@ DNS-over-HTTPS with IP:
                                     . "&sni=$domain"
                                     . "&fp=$fp"
                                     . "&type=ws"
-                                    . "#{$c['inbounds'][0]['settings']['clients'][$i]['email']}";
+                                    . "#{$remark}";
                         break;
                 }
                 return $link;
@@ -10995,31 +11281,39 @@ DNS-over-HTTPS with IP:
     {
         $xr  = $this->getXray();
         $pac = $this->getPacConf();
-        $i = $client = null;
-        $sid = $_GET['s'] ?? '';
-        foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($sid !== '' && $v['id'] == $sid) {
-                $i      = $k;
-                $client = $v;
-                break;
-            }
-        }
-        if ($i === null || !empty($client['off'])) {
+        // Resolve by subtoken (preferred) or id (pre-subtoken links).
+        $i      = $this->findClientBySid($xr, $_GET['s'] ?? '', !empty($pac['subtoken_strict']));
+        $client = $i === null ? null : $xr['inbounds'][0]['settings']['clients'][$i];
+        if ($client === null || !empty($client['off'])) {
             $this->subNotFound();
         }
         if (!$this->processHwidRequest($client)) {
             exit;
         }
 
-        $link = $this->linkXray($i);
+        $native = $this->linkXray($i);
+        $links  = [$native];
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']])) {
-            $link = $this->relayVlessLink($link, $pac['relays'][$_GET['relay']]);
+            // Explicit relay requested: serve only that relay's node (unchanged).
+            $links = [$this->relaySwapLink($native, $pac['relays'][$_GET['relay']], $client['email'])];
+        } elseif (!empty($pac['relay_aggregate'])) {
+            // Aggregated sub: origin node + one node per enabled & reachable relay,
+            // so a single link exposes every exit as a selectable node.
+            foreach ($this->activeRelaysForSub($pac) as $relay) {
+                $links[] = $this->relaySwapLink($native, $relay, $client['email']);
+            }
         }
+
+        // Splice in this client's external share links + remote-subscription
+        // links (from other servers). A client with no relays/ext rows yields
+        // byte-for-byte the previous single-link output. Dedup guards against
+        // two relays resolving to the same endpoint.
+        $body = implode("\n", array_values(array_unique(array_merge($links, $this->expandClientExt($client)))));
 
         $this->subSecurityHeaders();
         header('Content-Type: text/plain; charset=utf-8');
         header('Profile-Update-Interval: 12');
-        echo base64_encode($link);
+        echo base64_encode($body);
     }
 
     // Swap only the endpoint host:port of a vless://-/trojan:// share link to the
@@ -11039,6 +11333,574 @@ DNS-over-HTTPS with IP:
             },
             $link,
         );
+    }
+
+    // ── Relay: link swap + reachability (health) ─────────────────────────────
+    // Swap a share link's endpoint to $relay and re-flag its #remark (relay flag
+    // first, origin second) when the endpoint actually moved. Shared by the
+    // single-relay and aggregated-subscription paths.
+    public function relaySwapLink(string $link, array $relay, string $email): string
+    {
+        $out = $this->relayVlessLink($link, $relay);
+        if (!empty($relay['address'])) {
+            $out = preg_replace_callback(
+                '~#[^#]*$~',
+                fn() => '#' . $this->flagName($email, [$relay['address'], $this->ip]),
+                $out,
+                1,
+            );
+        }
+        return $out;
+    }
+
+    // Relays eligible for the aggregated base64 subscription: those with a TCP
+    // 'address' (a vless link can only carry a TCP endpoint) that are not known to
+    // be down. Health is fail-open — unknown/never-probed relays are included.
+    public function activeRelaysForSub(array $pac): array
+    {
+        $health = $this->readRelayHealth();
+        $out    = [];
+        foreach ($pac['relays'] ?? [] as $name => $r) {
+            if (empty($r['address'])) {
+                continue;
+            }
+            $h = $health[$name] ?? null;
+            if ($h !== null && empty($h['ok'])) {
+                continue; // known-dead → skip so clients don't get a broken node
+            }
+            $out[$name] = $r;
+        }
+        return $out;
+    }
+
+    // TCP connect probe with latency. No payload is sent; used only to tell if a
+    // relay endpoint accepts connections. Relay addresses are admin-configured.
+    public function tcpProbe(string $host, int $port, float $timeout = 3.0): array
+    {
+        $t0    = microtime(true);
+        $errno = 0;
+        $errstr = '';
+        $fp = @fsockopen($host, $port, $errno, $errstr, $timeout);
+        if ($fp) {
+            fclose($fp);
+            return ['ok' => true, 'ms' => (int) round((microtime(true) - $t0) * 1000), 'at' => time(), 'err' => ''];
+        }
+        return ['ok' => false, 'ms' => 0, 'at' => time(), 'err' => trim("$errno $errstr") ?: 'unreachable'];
+    }
+
+    // Cron step: probe every relay's main endpoint (address : portmap[443] ?? 443)
+    // and cache the result. Interval-gated so the 10 s cron loop probes at most
+    // once a minute. awg-only relays (no TCP address) are not probed.
+    public function checkRelayHealth(): void
+    {
+        if (!empty($this->time_relayhealth) && time() - $this->time_relayhealth < 60) {
+            return;
+        }
+        $pac = $this->getPacConf();
+        if (!is_array($pac)) {
+            return; // corrupt/unreadable config: don't wipe the health cache
+        }
+        $this->time_relayhealth = time();
+        $health = [];
+        foreach ($pac['relays'] ?? [] as $name => $r) {
+            if (empty($r['address'])) {
+                continue;
+            }
+            $port = (int) ($r['portmap']['443'] ?? 443);
+            $health[$name] = $this->tcpProbe($r['address'], $port);
+        }
+        $this->writeRelayHealth($health);
+    }
+
+    public function readRelayHealth(): array
+    {
+        $f = '/config/relay.health';
+        if (!is_file($f)) {
+            return [];
+        }
+        return json_decode((string) file_get_contents($f), true) ?: [];
+    }
+
+    public function writeRelayHealth(array $health): void
+    {
+        file_put_contents('/config/relay.health', json_encode($health, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    // Short human label for a relay's last probe: "✅ 42ms", "⛔ error", or ''
+    // (never probed). $age true appends how long ago (e.g. " · 15s"). Pass a
+    // pre-read $health map when labelling many relays in a loop so the health
+    // file is read+decoded once, not once per relay.
+    public function relayHealthLabel(string $name, bool $age = false, ?array $health = null): string
+    {
+        $h = ($health ?? $this->readRelayHealth())[$name] ?? null;
+        if ($h === null) {
+            return '';
+        }
+        $label = !empty($h['ok']) ? '✅ ' . (int) ($h['ms'] ?? 0) . 'ms' : '⛔ ' . ($h['err'] ?: 'down');
+        if ($age && !empty($h['at'])) {
+            $s = max(0, time() - (int) $h['at']);
+            $label .= ' · ' . ($s < 60 ? "{$s}s" : floor($s / 60) . 'm');
+        }
+        return $label;
+    }
+
+    // ── External links & remote subscriptions (3x-ui port) ───────────────────
+    // A client may carry extra share links from OTHER servers, kept in
+    // clients[$i]['ext'] as rows: ['kind'=>'link'|'sub','value'=>..,'remark'=>..,'off'=>0].
+    // 'link' rows contribute one share link (optionally renamed); 'sub' rows are
+    // remote subscription URLs we fetch and whose links we splice in. They are
+    // merged into the base64 share-link subscription (subVless / t=vl) so the
+    // client gets both its native node and the external ones from ONE link.
+    // Storage-only metadata — xray ignores the field, so saving needs no reload.
+
+    // Expand a client's ext rows into a flat list of concrete share links.
+    // Never throws: a dead/slow remote sub yields nothing (or its stale cache),
+    // so the client's own link is always served.
+    public function expandClientExt(array $client): array
+    {
+        $max  = 200; // hard cap so a hostile/broken remote can't inflate a sub
+        $seen = [];
+        foreach ($client['ext'] ?? [] as $e) {
+            if (!empty($e['off'])) {
+                continue;
+            }
+            $kind  = ($e['kind'] ?? 'link') === 'sub' ? 'sub' : 'link';
+            $value = trim((string) ($e['value'] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+            if ($kind === 'sub') {
+                // Remote subscription: keep each fetched link's own name.
+                foreach ($this->fetchExtSubLinks($value) as $l) {
+                    $seen[$l] = true;
+                }
+            } elseif ($this->isKnownShareLink($value)) {
+                $seen[$this->applyExtRemark($value, (string) ($e['remark'] ?? ''))] = true;
+            }
+            if (count($seen) >= $max) {
+                break;
+            }
+        }
+        return array_slice(array_keys($seen), 0, $max);
+    }
+
+    // Rewrite a share link's display name to $remark (when set), leaving the rest
+    // byte-for-byte. vmess carries its remark in the base64 JSON `ps`; every other
+    // scheme carries it in the URL #fragment.
+    public function applyExtRemark(string $link, string $remark): string
+    {
+        $link = trim($link);
+        if ($remark === '') {
+            return $link;
+        }
+        if (str_starts_with($link, 'vmess://')) {
+            return $this->applyVmessExtRemark($link, $remark);
+        }
+        if (($h = strpos($link, '#')) !== false) {
+            $link = substr($link, 0, $h);
+        }
+        return $link . '#' . rawurlencode($remark);
+    }
+
+    public function applyVmessExtRemark(string $link, string $remark): string
+    {
+        $b64 = substr($link, strlen('vmess://'));
+        $raw = $this->tryExtB64($b64);
+        if ($raw === null) {
+            return $link;
+        }
+        $j = json_decode($raw, true);
+        if (!is_array($j)) {
+            return $link;
+        }
+        $j['ps'] = $remark;
+        return 'vmess://' . base64_encode(json_encode($j, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    // ── Subscription addressing (subtoken, decoupled from the credential) ────
+    // The `s`/`id` URL param only LOCATES the client record; the real credential
+    // (uuid/password) is embedded in the served link/config by linkXray/
+    // subscription regardless. So we address by a random per-client subtoken:
+    // leaking/sharing the sub URL no longer leaks the credential, and the token
+    // can be rotated without regenerating the uuid.
+
+    // Value to place in a freshly-minted sub URL: subtoken when present, else the
+    // id (so links minted before this feature keep resolving).
+    public function sidOf(array $client): string
+    {
+        return (string) ($client['subtoken'] ?? $client['id'] ?? '');
+    }
+
+    // Resolve a sub `s`/`id` value to a client index: subtoken first, then id as
+    // a backward-compatible fallback. In $strict mode (pac.subtoken_strict) the
+    // uuid fallback is dropped, so previously shared/leaked uuid-addressed sub
+    // URLs are dead — only the subtoken resolves. Returns null when nothing matches.
+    public function findClientBySid(array $xr, string $sid, bool $strict = false): ?int
+    {
+        if ($sid === '') {
+            return null;
+        }
+        $clients = $xr['inbounds'][0]['settings']['clients'] ?? [];
+        foreach ($clients as $k => $v) {
+            if (($v['subtoken'] ?? '') === $sid) {
+                return $k;
+            }
+        }
+        if ($strict) {
+            return null;
+        }
+        foreach ($clients as $k => $v) {
+            if (($v['id'] ?? '') == $sid) {
+                return $k;
+            }
+        }
+        return null;
+    }
+
+    // Backfill a subtoken for any client minted before this feature. Returns true
+    // when $xr changed (caller persists). Idempotent no-op once all have one.
+    public function ensureSubTokens(array &$xr): bool
+    {
+        $changed = false;
+        foreach ($xr['inbounds'][0]['settings']['clients'] ?? [] as $k => $v) {
+            if (empty($v['subtoken'])) {
+                $xr['inbounds'][0]['settings']['clients'][$k]['subtoken'] = bin2hex(random_bytes(16));
+                $changed = true;
+            }
+        }
+        return $changed;
+    }
+
+    // Cron step: one-shot backfill of subtokens for existing clients so a deploy
+    // upgraded to this feature converges without waiting for each client's menu /
+    // sub request. Idempotent; runs at most once per cron process.
+    public function backfillSubTokens(): void
+    {
+        if (!empty($this->subtokens_done)) {
+            return;
+        }
+        $xr = $this->getXray();
+        if (!is_array($xr)) {
+            return; // retry next tick; don't feed null to ensureSubTokens(array&)
+        }
+        if ($this->ensureSubTokens($xr)) {
+            $this->saveXray($xr);
+        }
+        $this->subtokens_done = true;
+    }
+
+    // Global toggle: strict subscription addressing. When ON, findClientBySid no
+    // longer falls back to the uuid, so old uuid-addressed sub URLs stop working
+    // (hard cutoff). Before enabling, backfill every client's subtoken so no
+    // subscription breaks for lack of one.
+    public function switchSubtokenStrict()
+    {
+        $pac    = $this->getPacConf();
+        $enable = empty($pac['subtoken_strict']);
+        if ($enable) {
+            $xr = $this->getXray();
+            if (is_array($xr) && $this->ensureSubTokens($xr)) {
+                $this->saveXray($xr);
+            }
+        }
+        $pac['subtoken_strict'] = $enable ? 1 : 0;
+        $this->setPacConf($pac);
+        $this->xray();
+    }
+
+    // Rotate a client's subtoken: previously shared/leaked sub URLs stop working,
+    // while the uuid credential (and thus the actual VPN access) is untouched.
+    public function rotateSubToken($i)
+    {
+        $c = $this->getXray();
+        if (isset($c['inbounds'][0]['settings']['clients'][$i])) {
+            $c['inbounds'][0]['settings']['clients'][$i]['subtoken'] = bin2hex(random_bytes(16));
+            $this->saveXray($c);
+        }
+        $this->userXr($i);
+    }
+
+    // Request-time read of a remote subscription's links: cache ONLY, never a
+    // live fetch. Refreshing is done out-of-band by refreshExtSubCache() (cron)
+    // and once at add-time, so a client's subscription request never triggers a
+    // server-side outbound call (no request-time SSRF surface, no added latency)
+    // and always renders instantly from the last good snapshot.
+    public function fetchExtSubLinks(string $url): array
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return [];
+        }
+        $cache = $this->readExtSubCache();
+        return $cache[$url]['links'] ?? [];
+    }
+
+    // One fetch attempt. Returns the decoded link list on success, or a short
+    // error string on any failure (unsafe target, redirect, timeout, non-2xx,
+    // oversize). Redirects are followed manually so each hop is re-validated
+    // against the SSRF/HTTPS guard. Only ever called from the background refresh.
+    public function doFetchExtSub(string $url): array|string
+    {
+        $max = 2 << 20; // 2 MiB
+        for ($redir = 0; $redir < 4; $redir++) {
+            $ips = $this->safeExtUrlIps($url);
+            if ($ips === []) {
+                return 'blocked: non-https or private/unresolvable host';
+            }
+            // Pin the connection to the exact IPs that just passed the SSRF check
+            // so curl can't re-resolve $host to a private address between the
+            // check and the connect (DNS-rebinding TOCTOU). One rule per IP; an
+            // IPv6 address is passed as-is (curl reads it as the trailing field).
+            $p       = parse_url($url);
+            $port    = (int) ($p['port'] ?? 443);
+            $resolve = array_map(fn($ip) => "{$p['host']}:$port:$ip", $ips);
+            $buf      = '';
+            $location = '';
+            $ch       = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL            => $url,
+                CURLOPT_RESOLVE        => $resolve,
+                CURLOPT_CONNECTTIMEOUT => 4,
+                CURLOPT_TIMEOUT        => 6,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_USERAGENT      => 'v2rayNG/1.8.5',
+                CURLOPT_PROTOCOLS      => CURLPROTO_HTTPS,
+                CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+                CURLOPT_WRITEFUNCTION  => function ($ch, $chunk) use (&$buf, $max) {
+                    $buf .= $chunk;
+                    // Abort the transfer once the body exceeds the cap.
+                    return strlen($buf) > $max ? 0 : strlen($chunk);
+                },
+                CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$location) {
+                    if (stripos($header, 'location:') === 0) {
+                        $location = trim(substr($header, strlen('location:')));
+                    }
+                    return strlen($header);
+                },
+            ]);
+            curl_exec($ch);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if (strlen($buf) > $max) {
+                return 'response too large';
+            }
+            if ($code >= 300 && $code < 400 && $location !== '') {
+                // Only follow absolute https redirects (avoids resolving relative
+                // URLs and keeps the SSRF re-check simple); anything else fails.
+                if (!preg_match('~^https://~i', $location)) {
+                    return 'unsafe redirect target';
+                }
+                $url = $location;
+                continue;
+            }
+            if ($code < 200 || $code >= 300) {
+                return $code ? "http $code" : 'connection/timeout error';
+            }
+            return $this->decodeExtSubBody($buf);
+        }
+        return 'too many redirects';
+    }
+
+    // Refresh one remote-sub URL into the cache: record links + success time on
+    // success, or keep the last good links and stamp the error on failure (so the
+    // client keeps working while the menu can surface the stale/error state).
+    public function refreshExtSubOne(string $url): void
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return;
+        }
+        $r = $this->doFetchExtSub($url);
+        if (is_array($r)) {
+            $this->updateExtSubCache($url, ['ts' => time(), 'at' => time(), 'links' => $r, 'err' => '']);
+        } else {
+            $this->updateExtSubCache($url, ['at' => time(), 'err' => (string) $r]);
+        }
+    }
+
+    // Cron step: refresh every distinct remote-sub URL referenced by any client,
+    // then drop cache entries no longer referenced. Interval-gated so the 10 s
+    // cron loop actually fetches at most every 5 min.
+    public function refreshExtSubCache(): void
+    {
+        if (!empty($this->time_extsub) && time() - $this->time_extsub < 300) {
+            return;
+        }
+        $xr = $this->getXray();
+        // Bail on an unreadable/corrupt config: don't let a transient read failure
+        // prune the whole cache (pruneExtSubCache with an empty keep-set would
+        // drop every entry).
+        if (!is_array($xr)) {
+            return;
+        }
+        $this->time_extsub = time();
+        $urls = [];
+        foreach ($xr['inbounds'][0]['settings']['clients'] ?? [] as $c) {
+            foreach ($c['ext'] ?? [] as $e) {
+                if (($e['kind'] ?? '') === 'sub' && !empty($e['value'])) {
+                    $urls[trim($e['value'])] = true;
+                }
+            }
+        }
+        foreach (array_keys($urls) as $u) {
+            $this->refreshExtSubOne($u);
+        }
+        $this->pruneExtSubCache($urls);
+    }
+
+    // Known share-link schemes we accept for external 'link' rows and when
+    // filtering a fetched subscription body. Anything else (http(s) pages,
+    // data:/javascript:/file: and other junk a hostile remote might inject) is
+    // dropped, so only real node links ever reach a client's subscription.
+    public function isKnownShareLink(string $s): bool
+    {
+        return (bool) preg_match('~^(vless|vmess|trojan|ss|ssr|hysteria2?|hy2|tuic|wireguard|anytls|snell|socks)://~i', trim($s));
+    }
+
+    public function isSafeExtUrl(string $url): bool
+    {
+        return $this->safeExtUrlIps($url) !== [];
+    }
+
+    // SSRF guard + transport guard: HTTPS only (never plaintext http, so a
+    // remote provider's configs never traverse the network in the clear), and
+    // every resolved IP of the host must be public. Blocks loopback/private/
+    // reserved/link-local targets and unresolvable hosts (in the spirit of
+    // saveXray()'s freedom finalRules hardening). Returns the validated public
+    // IPs ([] when unsafe) so the caller can PIN the fetch to exactly these
+    // addresses (CURLOPT_RESOLVE) — otherwise curl re-resolves $host itself and
+    // a low-TTL domain could hand back a private IP (169.254.169.254, 127.0.0.1)
+    // between this check and the connect (DNS-rebinding TOCTOU), defeating the guard.
+    public function safeExtUrlIps(string $url): array
+    {
+        $p = parse_url($url);
+        if (!is_array($p) || empty($p['scheme']) || empty($p['host']) || strtolower($p['scheme']) !== 'https') {
+            return [];
+        }
+        $host  = $p['host'];
+        $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            $ips = [$host];
+        } else {
+            $ips = gethostbynamel($host) ?: [];
+            foreach (@dns_get_record($host, DNS_AAAA) ?: [] as $r) {
+                if (!empty($r['ipv6'])) {
+                    $ips[] = $r['ipv6'];
+                }
+            }
+        }
+        if (empty($ips)) {
+            return [];
+        }
+        foreach ($ips as $ip) {
+            if (!filter_var($ip, FILTER_VALIDATE_IP, $flags)) {
+                return [];
+            }
+        }
+        return array_values(array_unique($ips));
+    }
+
+    // Decode a subscription body: the common base64 newline list, or plain text.
+    // Keeps only lines that are real share links (known scheme), de-duplicated —
+    // a hostile/broken remote can't inject junk or inflate the list with repeats.
+    public function decodeExtSubBody(string $body): array
+    {
+        $text = trim($body);
+        if ($text === '') {
+            return [];
+        }
+        if (($dec = $this->tryExtB64($text)) !== null) {
+            $text = trim($dec);
+        }
+        $seen = [];
+        foreach (preg_split('~[\r\n]+~', $text) as $ln) {
+            $ln = trim($ln);
+            if ($ln === '' || !$this->isKnownShareLink($ln)) {
+                continue;
+            }
+            $seen[$ln] = true;
+        }
+        return array_keys($seen);
+    }
+
+    // Strict base64 decode (standard, then url-safe) after stripping whitespace.
+    // Returns null when the input isn't base64 — a plain share-link list contains
+    // ':'/'/' which aren't in the alphabet, so it round-trips through untouched.
+    public function tryExtB64(string $s): ?string
+    {
+        $clean = preg_replace('~\s+~', '', $s);
+        if (($d = base64_decode($clean, true)) !== false) {
+            return $d;
+        }
+        $u = strtr(rtrim($clean, '='), '-_', '+/');
+        $u .= str_repeat('=', (4 - strlen($u) % 4) % 4);
+        if (($d = base64_decode($u, true)) !== false) {
+            return $d;
+        }
+        return null;
+    }
+
+    public function readExtSubCache(): array
+    {
+        $f = '/config/extsub.cache';
+        if (!is_file($f)) {
+            return [];
+        }
+        return json_decode((string) file_get_contents($f), true) ?: [];
+    }
+
+    // Locked read-modify-write of the cache. $mutator receives the current cache
+    // array and returns the new one; entries untouched for >1d are pruned first so
+    // the file can't grow without bound. The file holds decoded remote configs
+    // (foreign credentials) at rest → kept owner-only (0600, as for keys).
+    public function mutateExtSubCache(callable $mutator): void
+    {
+        $f  = '/config/extsub.cache';
+        $fp = fopen($f, 'c+');
+        if (!$fp) {
+            return;
+        }
+        @chmod($f, 0600);
+        if (flock($fp, LOCK_EX)) {
+            $cache = json_decode((string) stream_get_contents($fp), true) ?: [];
+            $now   = time();
+            foreach ($cache as $k => $v) {
+                if ($now - (int) ($v['at'] ?? $v['ts'] ?? 0) > 86400) {
+                    unset($cache[$k]);
+                }
+            }
+            $cache = $mutator($cache) ?? $cache;
+            ftruncate($fp, 0);
+            rewind($fp);
+            fwrite($fp, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            fflush($fp);
+            flock($fp, LOCK_UN);
+        }
+        fclose($fp);
+    }
+
+    // Merge $fields into the cache entry for $url (ts/at/links/err).
+    public function updateExtSubCache(string $url, array $fields): void
+    {
+        $this->mutateExtSubCache(function ($cache) use ($url, $fields) {
+            $cache[$url] = array_merge($cache[$url] ?? [], $fields);
+            return $cache;
+        });
+    }
+
+    // Drop cache entries whose URL is no longer referenced by any client ($keep
+    // is a url=>true set), so removed subscriptions stop lingering on disk.
+    public function pruneExtSubCache(array $keep): void
+    {
+        $this->mutateExtSubCache(function ($cache) use ($keep) {
+            foreach (array_keys($cache) as $k) {
+                if (empty($keep[$k])) {
+                    unset($cache[$k]);
+                }
+            }
+            return $cache;
+        });
     }
 
     public function dockerApi($url, $method = 'GET', $data = [])
@@ -11426,10 +12288,14 @@ DNS-over-HTTPS with IP:
                 $this->send($this->input['chat'], "user {$user[0]} already exists");
                 return $this->xray();
             }
+            // subtoken addresses the subscription independently of the id (which
+            // is the VLESS credential), so a leaked/shared sub URL never exposes
+            // the credential and can be rotated without regenerating the id.
+            $stok = bin2hex(random_bytes(16));
             $c['inbounds'][0]['settings']['clients'][] = match($p['transport']) {
-                'Reality'     => ['id' => $uuid, 'flow' => 'xtls-rprx-vision', 'email' => $user[0]],
-                'trojan-grpc' => ['id' => $uuid, 'password' => bin2hex(random_bytes(16)), 'email' => $user[0]],
-                default       => ['id' => $uuid, 'email' => $user[0]],
+                'Reality'     => ['id' => $uuid, 'flow' => 'xtls-rprx-vision', 'email' => $user[0], 'subtoken' => $stok],
+                'trojan-grpc' => ['id' => $uuid, 'password' => bin2hex(random_bytes(16)), 'email' => $user[0], 'subtoken' => $stok],
+                default       => ['id' => $uuid, 'email' => $user[0], 'subtoken' => $stok],
             };
         }
         $this->restartXray($c);
@@ -12098,6 +12964,12 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/setHwidDevices xray',
             ],
         ];
+        $data[] = [
+            [
+                'text'          => '🔒 ' . $this->i18n('subtoken strict') . ': ' . $this->i18n(!empty($p['subtoken_strict']) ? 'on' : 'off'),
+                'callback_data' => '/switchSubtokenStrict',
+            ],
+        ];
         if ($p['transport'] == 'Reality') {
             $data[] = [
                 [
@@ -12662,6 +13534,15 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
 
+        // Backfill the subscription token for clients created before this feature,
+        // so their sub links are addressed by the token (not the credential).
+        if (empty($c['subtoken'])) {
+            $c['subtoken'] = bin2hex(random_bytes(16));
+            $xray['inbounds'][0]['settings']['clients'][$i]['subtoken'] = $c['subtoken'];
+            $this->saveXray($xray);
+        }
+        $stok = $this->sidOf($c); // subscription locator (not the credential)
+
         $devices      = $this->getHwidDevicesByUser($c['id']);
         $hwidEnabled  = !empty($pac['hwid_limit_enabled']) && empty($c['hwid_disabled']);
         $defaultHwid  = max(1, (int) ($pac['hwid_device_count'] ?: 1));
@@ -12669,39 +13550,47 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']}\n";
         if (file_exists(__DIR__ . '/subscription.php')) {
-            $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$c['id']}'>subscription</a>";
+            $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         }
         $text[] = "<pre><code>{$this->linkXray($i)}</code></pre>\n";
 
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=v&s={$c['id']}#{$c['email']}'>import://v2rayng</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=si&s={$c['id']}#{$c['email']}'>import://sing-box</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=st&s={$c['id']}#{$c['email']}'>import://streisand</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=h&s={$c['id']}#{$c['email']}'>import://hiddify</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=k&s={$c['id']}#{$c['email']}'>import://karing</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=c&s={$c['id']}#{$c['email']}'>import://mihomo</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=rh&s={$c['id']}#{$c['email']}'>import://rabbit-hole</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=v&s={$stok}#{$c['email']}'>import://v2rayng</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=si&s={$stok}#{$c['email']}'>import://sing-box</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=st&s={$stok}#{$c['email']}'>import://streisand</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=h&s={$stok}#{$c['email']}'>import://hiddify</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=k&s={$stok}#{$c['email']}'>import://karing</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=c&s={$stok}#{$c['email']}'>import://mihomo</a>";
+        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=rh&s={$stok}#{$c['email']}'>import://rabbit-hole</a>";
 
         $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
-            's' => $c['id'],
+            's' => $stok,
         ]));
         $xr = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 's',
-            's' => $c['id'],
+            's' => $stok,
         ]));
         $cl = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'cl',
-            's' => $c['id'],
+            's' => $stok,
+        ]));
+        // base64 vless share-link list (subVless) — the aggregating subscription
+        // that also carries this client's external links / remote subscriptions.
+        $vl = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
+            'h' => $hash,
+            't' => 'vl',
+            's' => $stok,
         ]));
 
         $text[] = "\nxray config: <pre><code>$xr</code></pre>";
         $text[] = "sing-box config: <pre><code>$si</code></pre>";
         $text[] = "mihomo config: <pre><code>$cl</code></pre>";
+        $text[] = "v2rayNG (base64): <pre><code>$vl</code></pre>";
 
-        $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$c['id']}'>windows service</a>";
+        $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$stok}'>windows service</a>";
         $st       = $this->getXrayStats();
         $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0));
         $upload   = $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0));
@@ -12726,15 +13615,15 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'    => $this->i18n('v2ray'),
-                'web_app' => ['url' => "https://{$domain}/pac$hash?t=s&s={$c['id']}"]
+                'web_app' => ['url' => "https://{$domain}/pac$hash?t=s&s={$stok}"]
             ],
             [
                 'text'    => $this->i18n('singbox'),
-                'web_app' => ['url' => "https://{$domain}/pac$hash?t=si&s={$c['id']}"]
+                'web_app' => ['url' => "https://{$domain}/pac$hash?t=si&s={$stok}"]
             ],
             [
                 'text'    => $this->i18n('mihomo'),
-                'web_app' => ['url' => "https://{$domain}/pac$hash?t=cl&s={$c['id']}"]
+                'web_app' => ['url' => "https://{$domain}/pac$hash?t=cl&s={$stok}"]
             ],
         ];
         if (!empty(array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']) || !empty($e['awg_address'])))) {
@@ -12745,6 +13634,17 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
+        $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
+        $data[] = [
+            [
+                'text'          => '🧩 ' . $this->i18n('external links') . ($extOn ? " ($extOn)" : ''),
+                'callback_data' => "/extUser $i",
+            ],
+            [
+                'text'          => '🔁 ' . $this->i18n('rotate subscription'),
+                'callback_data' => "/rotateSub $i",
+            ],
+        ];
         $data[] = [
             [
                 'text'    => $this->i18n('v2ray ⬇️'),
@@ -12853,6 +13753,182 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // Per-client external links / remote subscriptions (3x-ui port). Lists the
+    // client's ext rows with per-row toggle / rename / delete, plus add buttons.
+    // Rows feed expandClientExt() → the base64 subscription (subVless / t=vl).
+    public function extUser($i)
+    {
+        $xray = $this->getXray();
+        $c    = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if ($c === null) {
+            $this->xray();
+            return;
+        }
+        $ext   = $c['ext'] ?? [];
+        $cache = $this->readExtSubCache();
+
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('external links');
+        $text[] = $this->i18n('external hint') . "\n";
+
+        $data = [];
+        foreach ($ext as $k => $e) {
+            $icon  = ($e['kind'] ?? 'link') === 'sub' ? '📥' : '🔗';
+            $short = mb_strimwidth((string) (($e['remark'] ?? '') !== '' ? $e['remark'] : ($e['value'] ?? '')), 0, 28, '…');
+            $line  = ($k + 1) . ". " . (empty($e['off']) ? '✅' : '⛔') . " $icon <code>" . htmlspecialchars($short) . "</code>";
+            // For remote subscriptions, surface the last-fetch status from cache:
+            // node count + age on success, or the recorded error.
+            if (($e['kind'] ?? '') === 'sub') {
+                $st = $cache[trim((string) ($e['value'] ?? ''))] ?? null;
+                if ($st === null) {
+                    $line .= ' — ' . $this->i18n('ext status pending');
+                } elseif (!empty($st['err'])) {
+                    $line .= ' — ⚠️ ' . htmlspecialchars((string) $st['err']);
+                } else {
+                    $n    = count($st['links'] ?? []);
+                    $secs = !empty($st['ts']) ? max(0, time() - (int) $st['ts']) : null;
+                    $age  = $secs === null ? '?' : ($secs < 3600 ? floor($secs / 60) . 'm' : floor($secs / 3600) . 'h');
+                    $line .= " — $n " . $this->i18n('ext status nodes') . " · $age";
+                }
+            }
+            $text[] = $line;
+            $data[] = [
+                [
+                    'text'          => (empty($e['off']) ? '✅' : '⛔') . " $icon $short",
+                    'callback_data' => "/extToggle {$i}_{$k}",
+                ],
+                [
+                    'text'          => '✏️',
+                    'callback_data' => "/extRename {$i}_{$k}",
+                ],
+                [
+                    'text'          => '🗑',
+                    'callback_data' => "/extDel {$i}_{$k}",
+                ],
+            ];
+        }
+        $data[] = [
+            [
+                'text'          => '🔗 ' . $this->i18n('add external link'),
+                'callback_data' => "/extAdd {$i} link",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => '📥 ' . $this->i18n('add external subscription'),
+                'callback_data' => "/extAdd {$i} sub",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => "/userXr $i",
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data ?: false,
+        );
+    }
+
+    // Prompt the admin for a share link (kind=link) or remote subscription URL
+    // (kind=sub); the reply is captured and routed to extAddSave().
+    public function extAddPrompt($i, $kind)
+    {
+        $kind = $kind === 'sub' ? 'sub' : 'link';
+        $r    = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n($kind === 'sub' ? 'enter external subscription' : 'enter external link'),
+            $this->input['message_id'],
+            reply: $this->i18n($kind === 'sub' ? 'enter external subscription' : 'enter external link'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'extAddSave',
+            'args'           => [$i, $kind],
+        ];
+    }
+
+    public function extAddSave($text, $i, $kind)
+    {
+        $kind  = $kind === 'sub' ? 'sub' : 'link';
+        $value = trim((string) $text);
+        // link: a known-scheme share link; sub: an HTTPS URL (no plaintext http,
+        // so the remote provider's configs never traverse the network in clear).
+        $valid = $kind === 'sub'
+            ? (bool) preg_match('~^https://\S+~i', $value)
+            : $this->isKnownShareLink($value);
+        if ($valid) {
+            $c   = $this->getXray();
+            $cli = $c['inbounds'][0]['settings']['clients'][$i] ?? null;
+            if ($cli !== null) {
+                $c['inbounds'][0]['settings']['clients'][$i]['ext'][] = [
+                    'kind'   => $kind,
+                    'value'  => $value,
+                    'remark' => '',
+                    'off'    => 0,
+                ];
+                $this->saveXray($c);
+                // Populate the cache now so the node shows up on the next
+                // subscription request without waiting for the cron tick.
+                if ($kind === 'sub') {
+                    $this->refreshExtSubOne($value);
+                }
+            }
+        }
+        $this->extUser($i);
+    }
+
+    public function extRename($i, $k)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter remark'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter remark'),
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'extRenameSave',
+            'args'           => [$i, $k],
+        ];
+    }
+
+    public function extRenameSave($text, $i, $k)
+    {
+        $c = $this->getXray();
+        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
+            $c['inbounds'][0]['settings']['clients'][$i]['ext'][$k]['remark'] = trim((string) $text);
+            $this->saveXray($c);
+        }
+        $this->extUser($i);
+    }
+
+    public function extToggle($i, $k)
+    {
+        $c = $this->getXray();
+        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
+            $e = &$c['inbounds'][0]['settings']['clients'][$i]['ext'][$k];
+            $e['off'] = empty($e['off']) ? 1 : 0;
+            unset($e);
+            $this->saveXray($c);
+        }
+        $this->extUser($i);
+    }
+
+    public function extDel($i, $k)
+    {
+        $c = $this->getXray();
+        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
+            array_splice($c['inbounds'][0]['settings']['clients'][$i]['ext'], $k, 1);
+            $this->saveXray($c);
+        }
+        $this->extUser($i);
+    }
+
     // Per-user relay subscriptions: pick a relay, then relaySub() renders that
     // relay's full link set (one screen per relay keeps each message well under
     // the 4096-char editMessageText limit even with many relays).
@@ -12870,11 +13946,13 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('relay subscriptions');
         $text[] = $this->i18n('relay hint');
 
-        $data = [];
+        $data   = [];
+        $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $relay) {
+            $hl = $this->relayHealthLabel($name, false, $health);
             $data[] = [
                 [
-                    'text'          => "🔗 $name: " . ($relay['address'] ?: $relay['awg_address']),
+                    'text'          => "🔗 $name: " . ($relay['address'] ?: $relay['awg_address']) . ($hl !== '' ? "  $hl" : ''),
                     'callback_data' => "/relaySub {$i}_{$name}",
                 ],
             ];
@@ -12912,6 +13990,7 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $email  = $c['email'];
+        $stok   = $this->sidOf($c); // subscription locator (not the credential)
         $rl     = '&relay=' . $name;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> (" . ($relay['address'] ?: $relay['awg_address']) . ")\n";
@@ -12926,7 +14005,7 @@ DNS-over-HTTPS with IP:
             ['cl', 'c',  'mihomo'],
             ['cl', 'rh', 'rabbit-hole'],
         ] as [$t, $r, $label]) {
-            $text[] = "<a href='$scheme://{$domain}/pac$hash?t=$t&r=$r&s={$c['id']}$rl#{$email}'>import://$label</a>";
+            $text[] = "<a href='$scheme://{$domain}/pac$hash?t=$t&r=$r&s={$stok}$rl#{$email}'>import://$label</a>";
         }
 
         // Raw content URLs for clients where a subscription URL is pasted
@@ -12944,7 +14023,7 @@ DNS-over-HTTPS with IP:
             $url = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h'     => $hash,
                 't'     => $t,
-                's'     => $c['id'],
+                's'     => $stok,
                 'relay' => $name,
             ]));
             $text[] = "$label: <pre><code>$url</code></pre>";
@@ -13208,56 +14287,50 @@ DNS-over-HTTPS with IP:
 
     public function sub()
     {
+        // No token backfill here: this is a public GET endpoint, so we avoid
+        // writing xray.json on the hot path (concurrent requests). sidOf() falls
+        // back to the uuid when a subtoken is absent; cron/userXr backfill tokens.
         $xr     = $this->getXray();
         $pac    = $this->getPacConf();
         $st     = $this->getXrayStats();
         $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
-        $flag   = true;
-        $client = null;
-        $id     = $_GET['id'] ?? '';
-        foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($id !== '' && $v['id'] == $id) {
-                if (empty($v['off'])) {
-                    $flag = false;
-                }
-                $uid    = $v['id'];
-                $email  = $v['email'];
-                $expire = $v['time'] ?? '';
-                $client = $v;
-                break;
-            }
-        }
+        // Resolve by subtoken (preferred) or, for pre-subtoken links, the id.
+        $k      = $this->findClientBySid($xr, $_GET['id'] ?? '', !empty($pac['subtoken_strict']));
+        $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
         // Missing/disabled id: clean 404 instead of rendering the page with
-        // undefined $uid/$k (which would warn and break the body).
-        if ($flag) {
+        // undefined fields (which would warn and break the body).
+        if ($client === null || !empty($client['off'])) {
             $this->subNotFound();
         }
         if (!$this->processHwidRequest($client)) {
             exit;
         }
-        $suburl   = "<a href='$scheme://{$domain}/pac$hash/sub?id={$uid}'>subscription</a>";
+        $email  = $client['email'];
+        $expire = $client['time'] ?? '';
+        $stok   = $this->sidOf($client); // subscription locator (not the credential)
+        $suburl   = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         $download = $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
         $upload   = $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
         $singbox  = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
-            's' => $uid,
+            's' => $stok,
         ]));
         $xray = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 's',
-            's' => $uid,
+            's' => $stok,
         ]));
         $clash = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'cl',
-            's' => $uid,
+            's' => $stok,
         ]));
         $vless   = $this->linkXray($k);
-        $windows = "$scheme://{$domain}/pac$hash?t=si&r=w&s=$uid";
-        $_GET['s'] = $uid;
+        $windows = "$scheme://{$domain}/pac$hash?t=si&r=w&s=$stok";
+        $_GET['s'] = $stok;
         foreach ([
           'xray'    => 's',
           'singbox' => 'si',
@@ -13371,27 +14444,20 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
 
-        $flag = true;
-        $client = null;
+        // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $sid    = $_GET['s'] ?? '';
-        foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($sid !== '' && $v['id'] == $sid) {
-                if (empty($v['off'])) {
-                    $flag = false;
-                }
-                $template = base64_decode($v["{$type}template"] ?? '');
-                $uid      = $v['id'];
-                $email    = $v['email'];
-                $client   = $v;
-                break;
-            }
-        }
-        if ($flag) {
+        $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
+        $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
+        if ($client === null || !empty($client['off'])) {
             if (!empty($return)) {
                 return '';
             }
             $this->subNotFound();
         }
+        $template = base64_decode($client["{$type}template"] ?? '');
+        $uid      = $client['id'];               // credential (embedded in config)
+        $email    = $client['email'];
+        $stok     = $this->sidOf($client);       // subscription locator only
 
         if (!$return && !$this->processHwidRequest($client)) {
             exit;
@@ -13408,17 +14474,17 @@ DNS-over-HTTPS with IP:
             $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 'si',
-                's' => $uid,
+                's' => $stok,
             ] + $relayKey));
             $v2 = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 's',
-                's' => $uid,
+                's' => $stok,
             ] + $relayKey));
             $cl = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 'cl',
-                's' => $uid,
+                's' => $stok,
             ] + $relayKey));
             switch ($_GET['r']) {
                 case 'si':
@@ -13473,6 +14539,20 @@ DNS-over-HTTPS with IP:
         }
 
         $outbound = $pac['outbound'] ?: 'proxy';
+        // Prefix the outbound/proxy name with server-country flag(s) so the client
+        // shows e.g. "🇫🇷 proxy" next to the node. A relay subscription hops
+        // relay → origin, so it gets two flags — the relay endpoint's first, then
+        // the origin (destination) server's ("🇫🇷🇩🇪 proxy"); a plain subscription
+        // gets just the origin's. The tag is substituted consistently everywhere
+        // (proxy-groups, routing), so internal references stay intact — only the
+        // visible name changes.
+        $relayCfg = (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]))
+            ? $pac['relays'][$_GET['relay']]
+            : null;
+        $flagHosts = $relayCfg
+            ? [($relayCfg['address'] ?: ($relayCfg['awg_address'] ?? '')), $this->ip]
+            : [$this->ip];
+        $outbound = $this->flagName($outbound, $flagHosts);
         $c = json_decode($this->replaceTags(json_encode($c), [
             '~outbound~' => $outbound,
         ]), true);
@@ -13481,6 +14561,7 @@ DNS-over-HTTPS with IP:
         // searching outbounds first would, for a clash template that also carries an
         // outbounds block, pick an outbounds index and then mis-index into proxies[].
         // The ?? [] also avoids a warning when the template lacks the other key.
+        $index = null;
         if (($_GET['t'] ?? '') === 'cl') {
             foreach ($c['proxies'] ?? [] as $k => $v) {
                 if (($v['name'] ?? '') == $outbound) {
@@ -13495,6 +14576,16 @@ DNS-over-HTTPS with IP:
                     break;
                 }
             }
+        }
+        // No matching node (e.g. a custom template that hard-codes the tag instead
+        // of using the ~outbound~ placeholder, so the flag-prefixed name no longer
+        // matches): bail with a clean 404 rather than indexing $c[...][null] and
+        // silently serving a config with the real endpoint/uid never injected.
+        if ($index === null) {
+            if (!empty($return)) {
+                return '';
+            }
+            $this->subNotFound('Subscription template has no matching outbound.');
         }
 
         $fingerprint = $pac['fingerprint'] ?: 'chrome';
@@ -13886,7 +14977,7 @@ DNS-over-HTTPS with IP:
                 break;
             case 'si':
                 $c['route'] = $this->addRuleSet($c['route']);
-                $c['route'] = $this->createRuleSet($c['route'], $uid, $domain);
+                $c['route'] = $this->createRuleSet($c['route'], $stok, $domain);
                 if (!empty($c['route']['rules'])) {
                     foreach ($c['route']['rules'] as $k => $v) {
                         if (count($v) == 1 && array_key_exists('outbound', $v)) {
@@ -13902,7 +14993,7 @@ DNS-over-HTTPS with IP:
             case 'cl':
                 $c = $this->addClashRuleSet($c);
                 if (!empty($c['rules'])) {
-                    $c = $this->clashRules($c, $uid, $domain);
+                    $c = $this->clashRules($c, $stok, $domain);
                     if (count($c['rules']) == 1) {
                         unset($c['rules']);
                     }
@@ -13949,6 +15040,13 @@ DNS-over-HTTPS with IP:
         header('X-Content-Type-Options: nosniff');
         header('X-Robots-Tag: noindex, nofollow');
         header('Referrer-Policy: no-referrer');
+        // Pin TLS so a client that once reached the sub over HTTPS never silently
+        // falls back to plaintext http (where the config would be sniffable). Only
+        // meaningful when a cert is configured (nginx serves 443); browsers ignore
+        // it over plain http anyway.
+        if (!empty($this->nginxGetTypeCert())) {
+            header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+        }
     }
 
     // A missing/disabled/expired subscription must not look like a server crash:
@@ -16701,6 +17799,57 @@ DNS-over-HTTPS with IP:
         return sprintf('%.1f %s', $n, $units[$i]);
     }
 
+    // Сроки сертификата клиента: ['from' => ts, 'to' => ts] или null, если
+    // серта нет/не парсится. static-кэш на время запроса — ovpnMenu зовёт
+    // для каждого клиента, а файл и парс не меняются в рамках апдейта.
+    public function ovpnCertInfo($user)
+    {
+        static $cache = [];
+        if (array_key_exists($user, $cache)) {
+            return $cache[$user];
+        }
+        $p = $this->ovpnPaths();
+        $f = "{$p['issued']}/$user.crt";
+        if (!file_exists($f)) {
+            return $cache[$user] = null;
+        }
+        $crt = file_get_contents($f);
+        // easyrsa кладёт перед PEM plaintext-метаданные — openssl_x509_parse
+        // на них может споткнуться, оставляем только сам блок сертификата.
+        if (preg_match('~-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----~s', $crt, $m)) {
+            $crt = $m[0];
+        }
+        $x = @openssl_x509_parse($crt);
+        if (empty($x['validTo_time_t'])) {
+            return $cache[$user] = null;
+        }
+        return $cache[$user] = [
+            'from' => (int) ($x['validFrom_time_t'] ?? 0),
+            'to'   => (int) $x['validTo_time_t'],
+        ];
+    }
+
+    // Последнее событие клиента из журнала подключений (connect.sh пишет
+    // "YYYY-mm-dd HH:MM:SS UP/DOWN cn ..."): ['ts' => ..., 'dir' => 'UP'|'DOWN']
+    // или null. Лог может быть большим — читаем один раз на запрос в static.
+    public function ovpnLastSeen($user)
+    {
+        static $lines = null;
+        if ($lines === null) {
+            $p     = $this->ovpnPaths();
+            $lines = file_exists($p['conn'])
+                ? explode("\n", file_get_contents($p['conn']))
+                : [];
+        }
+        for ($i = count($lines) - 1; $i >= 0; $i--) {
+            if (preg_match('~^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (UP|DOWN)\s+(\S+)\s~', $lines[$i], $m)
+                && $m[3] === $user) {
+                return ['ts' => $m[1], 'dir' => $m[2]];
+            }
+        }
+        return null;
+    }
+
     // openvpn-status.log's Real Address is "IP:port" for IPv4 или "[v6]:port"
     // для IPv6. Для UI достаточно хоста без порта — кратко и читаемо.
     public function ovpnRealIp($real)
@@ -16709,12 +17858,19 @@ DNS-over-HTTPS with IP:
         if ($real === '') {
             return '';
         }
-        // IPv6: [::1]:1234 → ::1
+        // IPv6 c портом в скобках: [::1]:1234 → ::1
         if (preg_match('~^\[([^\]]+)\]:\d+$~', $real, $m)) {
             return $m[1];
         }
-        // IPv4: 1.2.3.4:1234 → 1.2.3.4  (bare IP без порта тоже проходит)
-        if (preg_match('~^([0-9a-fA-F:.]+):\d+$~', $real, $m)) {
+        // IPv4:port → IPv4
+        if (preg_match('~^(\d{1,3}(?:\.\d{1,3}){3}):\d+$~', $real, $m)) {
+            return $m[1];
+        }
+        // status-v2 пишет IPv6 БЕЗ скобок: "2001:db8::1:51820". Отрезаем
+        // последний ":port" только если остаток — валидный IPv6; голый
+        // адрес без порта ("2001:db8::1") так не покалечится.
+        if (preg_match('~^(.+):\d+$~', $real, $m)
+            && filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
             return $m[1];
         }
         return $real;
@@ -16799,6 +17955,13 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'], 'wrong username');
             return $this->menu('ovpn');
         }
+        // X.509 ограничивает CN 64 символами (easyrsa падает с невнятной
+        // ошибкой), а callback_data телеграма — 64 БАЙТАМИ на всю строку
+        // "/delOvpnUser <name> confirm". 40 укладывается в оба лимита.
+        if (strlen($user) > 40) {
+            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            return $this->menu('ovpn');
+        }
         if (in_array($user, $this->getOvpnUsers(), true)) {
             $this->send($this->input['chat'], "user $user already exists");
             return $this->menu('ovpn');
@@ -16818,29 +17981,53 @@ DNS-over-HTTPS with IP:
         // имени, не для всего PKI).
         $this->ssh(
             "rm -f /etc/openvpn/pki/reqs/$u.req /etc/openvpn/pki/private/$u.key /etc/openvpn/pki/issued/$u.crt && " .
-            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE=3650 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
             ">>/logs/openvpn.log 2>&1",
             'ovpn'
         );
         if (!in_array($user, $this->getOvpnUsers(), true)) {
             $this->send($this->input['chat'], "failed to issue cert for $user (check /logs/openvpn.log)");
+        } else {
+            // Сразу отдаём готовый .ovpn — иначе админу пришлось бы лезть
+            // в подменю клиента ради единственного очевидного действия.
+            $this->sendOvpnConfigFile($user);
         }
         $this->menu('ovpn');
     }
 
-    public function delOvpnUser($user)
+    public function delOvpnUser($user, $confirm = false)
     {
         $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
         if (empty($user) || $user === 'server') {
             return $this->menu('ovpn');
         }
+        if (!$confirm) {
+            // Одно нажатие = безвозвратный revoke — слишком дёшево для такой
+            // операции. Показываем явный вопрос с отдельной кнопкой.
+            $text = 'Menu -> ' . $this->i18n('OpenVPN') . ' -> <code>'
+                . htmlspecialchars($user, ENT_QUOTES) . '</code>' . "\n"
+                . '⚠ ' . $this->i18n('confirm delete ovpn');
+            $data = [
+                [['text' => '❌ ' . $this->i18n('delete forever'), 'callback_data' => "/delOvpnUser $user confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/ovpnClientMenu $user"]],
+            ];
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
         $u = escapeshellarg($user);
         $this->ssh(
             "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u && " .
-            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa gen-crl",
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 /usr/share/easy-rsa/easyrsa gen-crl",
             'ovpn'
         );
         $p = $this->ovpnPaths();
+        // easy-rsa 3.1+ при успешном revoke ПЕРЕМЕЩАЕТ crt в
+        // revoked/certs_by_serial. Если issued/$user.crt остался — revoke
+        // упал (битый index.txt и т.п.). Вручную rm нельзя: cert остался бы
+        // валидным без записи в CRL.
+        if (file_exists($p['issued'] . '/' . $user . '.crt')) {
+            $this->send($this->input['chat'], '❌ ' . $this->i18n('error') . ": easyrsa revoke $user failed (check /logs/openvpn.log)");
+            return $this->menu('ovpn');
+        }
         @unlink($p['ccd'] . '/' . $user);
         // crl.pem is re-read on every TLS handshake → new connections from
         // this CN get rejected. Kick the live session, if any.
@@ -16854,6 +18041,14 @@ DNS-over-HTTPS with IP:
         if (empty($user) || !in_array($user, $this->getOvpnUsers(), true)) {
             return $this->menu('ovpn');
         }
+        $this->sendOvpnConfigFile($user);
+    }
+
+    // Сборка и отправка .ovpn без каких-либо menu()-вызовов: используется и
+    // кнопкой скачивания, и addovus (авто-выдача после выпуска серта), где
+    // меню рендерится отдельно. Возвращает false при неполном PKI.
+    public function sendOvpnConfigFile($user)
+    {
         $p     = $this->ovpnPaths();
         $crt   = file_exists("{$p['issued']}/$user.crt") ? file_get_contents("{$p['issued']}/$user.crt") : '';
         $key   = file_exists("{$p['priv']}/$user.key")   ? file_get_contents("{$p['priv']}/$user.key")   : '';
@@ -16863,7 +18058,7 @@ DNS-over-HTTPS with IP:
         // ругаться на "VERIFY ERROR" без внятной подсказки. Лучше сказать явно.
         if (empty($crt) || empty($key) || empty($ca) || empty($ta)) {
             $this->send($this->input['chat'], "PKI for $user is incomplete — restart ovpn container");
-            return $this->menu('ovpn');
+            return false;
         }
         // strip easyrsa's pre-cert plaintext metadata; keep only the PEM block
         if (preg_match('~-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----~s', $crt, $m)) {
@@ -16882,6 +18077,7 @@ DNS-over-HTTPS with IP:
             $this->input['from'],
             new CURLStringFile($ovpn, "$user.ovpn", 'application/x-openvpn-profile')
         );
+        return true;
     }
 
     // Send a list of newline-terminated commands to openvpn's management
@@ -17033,16 +18229,45 @@ DNS-over-HTTPS with IP:
         $this->menu('ovpn');
     }
 
+    // Хвост лога с бюджетом по СИМВОЛАМ после htmlspecialchars: editMessageText
+    // молча падает на >4096, и кнопка выглядит мёртвой. Набираем строки с
+    // конца, пока влезают; 3500 оставляет запас на заголовок и <pre>-теги.
+    // $filterCn — оставить только события этого CN (журнал подключений).
+    // Возвращает УЖЕ экранированный текст — второй htmlspecialchars не нужен.
+    public function ovpnLogTail($path, $maxLines = 40, $budget = 3500, $filterCn = null)
+    {
+        if (!file_exists($path)) {
+            return '';
+        }
+        $lines = explode("\n", rtrim(file_get_contents($path), "\n"));
+        if ($filterCn !== null) {
+            $lines = array_values(array_filter(
+                $lines,
+                fn($l) => preg_match('~^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (UP|DOWN)\s+(\S+)\s~', $l, $m)
+                    && $m[2] === $filterCn
+            ));
+        }
+        $lines = array_slice($lines, -$maxLines);
+        $out   = [];
+        $used  = 0;
+        for ($i = count($lines) - 1; $i >= 0; $i--) {
+            $esc  = htmlspecialchars($lines[$i], ENT_QUOTES);
+            $need = mb_strlen($esc, 'utf-8') + 1;
+            if ($used + $need > $budget) {
+                break;
+            }
+            $used += $need;
+            array_unshift($out, $esc);
+        }
+        return implode("\n", $out);
+    }
+
     public function showOvpnLog()
     {
-        $p = $this->ovpnPaths();
-        $tail = '';
-        if (file_exists($p['log'])) {
-            $lines = explode("\n", file_get_contents($p['log']));
-            $tail  = implode("\n", array_slice($lines, -40));
-        }
+        $p    = $this->ovpnPaths();
+        $tail = $this->ovpnLogTail($p['log']);
         $text  = "Menu -> OpenVPN -> " . $this->i18n('log tail') . "\n";
-        $text .= "<pre>" . htmlspecialchars($tail ?: '(empty)', ENT_QUOTES) . "</pre>";
+        $text .= "<pre>" . ($tail !== '' ? $tail : '(empty)') . "</pre>";
         $data  = [[
             ['text' => $this->i18n('back'), 'callback_data' => '/menu ovpn'],
         ]];
@@ -17059,14 +18284,10 @@ DNS-over-HTTPS with IP:
     // Содержит CN + реальный IP клиента — без шума из основного openvpn.log.
     public function showOvpnConnLog()
     {
-        $p = $this->ovpnPaths();
-        $tail = '';
-        if (file_exists($p['conn'])) {
-            $lines = explode("\n", file_get_contents($p['conn']));
-            $tail  = implode("\n", array_slice($lines, -40));
-        }
+        $p    = $this->ovpnPaths();
+        $tail = $this->ovpnLogTail($p['conn']);
         $text  = "Menu -> OpenVPN -> " . $this->i18n('connections') . "\n";
-        $text .= "<pre>" . htmlspecialchars($tail ?: '(empty)', ENT_QUOTES) . "</pre>";
+        $text .= "<pre>" . ($tail !== '' ? $tail : '(empty)') . "</pre>";
         $data  = [[
             ['text' => $this->i18n('back'), 'callback_data' => '/menu ovpn'],
         ]];
@@ -17119,7 +18340,7 @@ DNS-over-HTTPS with IP:
                 // (или [v6]:port); порт в UI только шумит, режем до хоста.
                 $real = $this->ovpnRealIp($s['real'] ?? '');
                 $text[] = '🟢 <code>' . htmlspecialchars($cn, ENT_QUOTES) . '</code> '
-                    . $s['virtual']
+                    . htmlspecialchars($s['virtual'], ENT_QUOTES)
                     . ($real !== '' ? ' · <code>' . htmlspecialchars($real, ENT_QUOTES) . '</code>' : '')
                     . ' ↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
             }
@@ -17169,8 +18390,19 @@ DNS-over-HTTPS with IP:
             $isDis  = $this->isOvpnUserDisabled($u);
             $isOn   = isset($online[$u]);
             $marker = $isDis ? '🚫' : ($isOn ? '🟢' : '⚪');
+            // ⚠/❌ по сроку сертификата — иначе клиент «внезапно» отваливается
+            // без какого-либо сигнала в UI (x509-парс дешёвый + static-кэш).
+            $ci   = $this->ovpnCertInfo($u);
+            $warn = '';
+            if ($ci) {
+                if ($ci['to'] < time()) {
+                    $warn = ' ❌';
+                } elseif ($ci['to'] < time() + 30 * 86400) {
+                    $warn = ' ⚠';
+                }
+            }
             $data[] = [[
-                'text'          => "$marker $u",
+                'text'          => "$marker $u$warn",
                 'callback_data' => "/ovpnClientMenu $u",
             ]];
         }
@@ -17215,6 +18447,31 @@ DNS-over-HTTPS with IP:
         $text[] = 'Menu -> ' . $this->i18n('OpenVPN') . ' -> <code>'
             . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $text[] = $this->i18n('status') . ': ' . $status;
+        if ($s && !empty($s['since'])) {
+            $text[] = $this->i18n('since') . ': ' . htmlspecialchars($s['since'], ENT_QUOTES);
+        }
+        // Сроки сертификата: единственный способ увидеть приближающийся
+        // expiry ДО того, как клиент внезапно перестанет подключаться.
+        $ci = $this->ovpnCertInfo($user);
+        if ($ci) {
+            if (!empty($ci['from'])) {
+                $text[] = $this->i18n('created') . ': ' . date('Y-m-d', $ci['from']);
+            }
+            $days = (int) ceil(($ci['to'] - time()) / 86400);
+            if ($ci['to'] < time()) {
+                $text[] = '❌ ' . $this->i18n('expired') . ': ' . date('Y-m-d', $ci['to']);
+            } else {
+                $text[] = ($days < 30 ? '⚠ ' : '')
+                    . $this->i18n('expires') . ': ' . date('Y-m-d', $ci['to']) . " ($days d)";
+            }
+        }
+        // Для оффлайн-клиента (не заблокированного) — когда его видели в
+        // последний раз, по журналу подключений.
+        if (!$isDis && !$s) {
+            $seen   = $this->ovpnLastSeen($user);
+            $text[] = $this->i18n('last seen') . ': '
+                . ($seen ? "{$seen['ts']} ({$seen['dir']})" : $this->i18n('never'));
+        }
 
         $data   = [];
         $data[] = [[
@@ -17231,6 +18488,10 @@ DNS-over-HTTPS with IP:
             'callback_data' => "/kickOvpn $user",
         ]];
         $data[] = [[
+            'text'          => $this->i18n('history'),
+            'callback_data' => "/ovpnClientLog $user",
+        ]];
+        $data[] = [[
             'text'          => $this->i18n('delete'),
             'callback_data' => "/delOvpnUser $user",
         ]];
@@ -17245,5 +18506,1186 @@ DNS-over-HTTPS with IP:
             implode("\n", $text),
             $data,
         );
+    }
+
+    // История подключений одного клиента: события UP/DOWN только его CN из
+    // журнала connect.sh. Отдельный экран, чтобы общий connections-лог не
+    // приходилось выискивать глазами.
+    public function ovpnClientLog($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !in_array($user, $this->getOvpnUsers(), true)) {
+            return $this->menu('ovpn');
+        }
+        $p    = $this->ovpnPaths();
+        $tail = $this->ovpnLogTail($p['conn'], 15, 3500, $user);
+        $text = 'Menu -> ' . $this->i18n('OpenVPN') . ' -> <code>'
+            . htmlspecialchars($user, ENT_QUOTES) . '</code> -> ' . $this->i18n('history') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => "/ovpnClientMenu $user"],
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            $text,
+            $data,
+        );
+    }
+
+    // ─── IPsec: L2TP/IPsec + IKEv2 ────────────────────────────────────────
+    // Один контейнер `ipsec` (strongswan + xl2tpd), но ДВА независимых меню
+    // с раздельными пользователями:
+    //   l2tp  — IKEv1 + общий PSK + CHAP-юзеры в /config/ipsec/chap-secrets
+    //           (pppd перечитывает файл на каждом коннекте — reload не нужен);
+    //   ikev2 — cert-auth сервера (собственный CA из start_ipsec.sh) +
+    //           EAP-MSCHAPv2; юзеры в users_ikev2.json, из которого бот
+    //           регенерирует swanctl-секцию secrets.conf ЦЕЛИКОМ (парсить
+    //           swanctl-синтаксис обратно ненадёжно) + swanctl --load-creds.
+    // Трафик: client → host:500,4500/udp → nft DNAT → ipsec:500/4500. ESP/50
+    // не используется: за DNAT клиенты всегда в NAT-T. Порты фиксированы
+    // протоколом, кнопки «сменить порт» нет.
+
+    public function ipsecPaths()
+    {
+        return [
+            'conf'    => '/config/ipsec',
+            'psk'     => '/config/ipsec/psk',
+            'chap'    => '/config/ipsec/chap-secrets',
+            'secrets' => '/config/ipsec/secrets.conf',
+            'users'   => '/config/ipsec/users_ikev2.json',
+            'ca'      => '/config/ipsec/pki/ca.crt',
+            'srv'     => '/config/ipsec/pki/server.crt',
+            'log'     => '/logs/ipsec.log',
+            'l2tp'    => '/logs/l2tp.log',
+            'conn'    => '/logs/ipsec-connections.log',
+        ];
+    }
+
+    public function getIpsecPsk()
+    {
+        $p = $this->ipsecPaths();
+        return file_exists($p['psk']) ? trim((string) file_get_contents($p['psk'])) : '';
+    }
+
+    // Хост для клиентских профилей: ВСЕГДА IP. Серверный серт IKEv2 выписан
+    // start_ipsec.sh с SAN=IP (+домен, если задан), но IP гарантирован —
+    // профиль работает и без домена/LE.
+    public function ipsecHost()
+    {
+        return (string) getenv('IP');
+    }
+
+    // Порты charon (IKE + NAT-T) — общие для L2TP/IPsec и IKEv2: контейнер
+    // один, charon один. Меняются через меню (setEnvVar), контейнер применяет
+    // их в start_ipsec.sh (charon.port/port_nat_t); DNAT в nft хоста —
+    // порт-в-порт, defines IPSEC_IKE/IPSEC_NATT правятся вручную.
+    public function ipsecPorts()
+    {
+        return [
+            'ike'  => (int) (getenv('IPSECIKEPORT') ?: 500),
+            'natt' => (int) (getenv('IPSECNATTPORT') ?: 4500),
+        ];
+    }
+
+    public function changeIpsecPort($which, $menu)
+    {
+        $label = $which === 'ike' ? 'IKE' : 'NAT-T';
+        $def   = $which === 'ike' ? 500 : 4500;
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter $label port (default $def)\n\n"
+                . "⚠️ Порт общий для L2TP/IPsec и IKEv2 (strongswan один). "
+                . "Нативные клиенты снаружи ждут 500/4500 — нестандартный порт "
+                . "требует ручного DNAT в nft (defines IPSEC_IKE/IPSEC_NATT).",
+            $this->input['message_id'],
+            reply: "enter $label port",
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'setIpsecPort',
+            'args'           => [$which, $menu],
+        ];
+    }
+
+    public function setIpsecPort($port, $which, $menu)
+    {
+        $port  = (int) $port;
+        $ports = $this->ipsecPorts();
+        $other = $which === 'ike' ? $ports['natt'] : $ports['ike'];
+        if ($port < 1 || $port > 65535 || $port === $other) {
+            // charon не может слушать одинаковые port и port_nat_t.
+            $this->send($this->input['chat'], "wrong port (1-65535, must differ from $other)");
+            return $this->menu($menu);
+        }
+        $var = $which === 'ike' ? 'IPSECIKEPORT' : 'IPSECNATTPORT';
+        $this->setEnvVar($var, (string) $port);
+        // setEnvVar меняет только .env: без putenv getenv() до рестарта php
+        // отдавал бы старый порт в меню и в сообщении ниже.
+        putenv("$var=$port");
+        // Контейнер ipsec читает .env через env_file — после `make r` (recreate)
+        // start_ipsec.sh перепишет charon.port/port_nat_t. Флаг restart в pac
+        // заставит бот напомнить про пересоздание (как у cloak/stls).
+        $pac = $this->getPacConf();
+        $pac['restart'] = 1;
+        $this->setPacConf($pac);
+        $this->send(
+            $this->input['chat'],
+            "⚠️ nft на хосте правится вручную: define IPSEC_IKE = {$this->ipsecPorts()['ike']}, "
+                . "define IPSEC_NATT = {$this->ipsecPorts()['natt']} + перезагрузка nftables.",
+        );
+        $this->menu($menu);
+    }
+
+    // Снэпшот /config/ipsec для общего JSON-бэкапа (паттерн exportOvpnPki):
+    // psk, PKI (ca/server), chap-secrets, users_ikev2.json, secrets.conf,
+    // swanctl.conf. Все файлы маленькие, runtime-файлов в каталоге нет.
+    public function exportIpsecPki()
+    {
+        $root = '/config/ipsec';
+        if (!is_dir($root)) {
+            return null;
+        }
+        $files = [];
+        $rii = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($rii as $f) {
+            if (!$f->isFile() || $f->isLink()) {
+                continue;
+            }
+            $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
+            $files[$rel] = base64_encode(file_get_contents($f->getPathname()));
+        }
+        return $files ?: null;
+    }
+
+    public function importIpsecPki(array $files)
+    {
+        $root = '/config/ipsec';
+        @mkdir($root, 0755, true);
+        foreach ($files as $rel => $b64) {
+            // Защита от path traversal — как в importOvpnPki.
+            $rel = str_replace('\\', '/', $rel);
+            if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false) {
+                continue;
+            }
+            $path = "$root/$rel";
+            @mkdir(dirname($path), 0755, true);
+            file_put_contents($path, base64_decode($b64));
+        }
+        foreach (['psk', 'chap-secrets', 'secrets.conf'] as $f) {
+            if (file_exists("$root/$f")) {
+                chmod("$root/$f", 0600);
+            }
+        }
+        foreach (glob("$root/pki/*.key") ?: [] as $k) {
+            chmod($k, 0600);
+        }
+    }
+
+    public function restartIpsec()
+    {
+        // Гарантированная остановка обоих демонов, затем перезапуск через
+        // /etc/run_ipsec_daemons.sh (его генерирует start_ipsec.sh — там
+        // ожидание vici-сокета + swanctl --load-all).
+        $this->ssh(
+            'pkill -9 charon 2>/dev/null; pkill -9 xl2tpd 2>/dev/null; ' .
+            'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep charon >/dev/null || break; sleep 0.2; done',
+            'ipsec'
+        );
+        $this->ssh('sh /etc/run_ipsec_daemons.sh', 'ipsec', false, '/dev/null');
+    }
+
+    // ─── L2TP/IPsec: пользователи (chap-secrets) ─────────────────────────
+
+    // Файл пишет только бот, формат канонический: `"user" * "pass" *`,
+    // заблокированный юзер — та же строка, закомментированная `#`.
+    public function getL2tpUsers()
+    {
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['chap'])) {
+            return [];
+        }
+        $users = [];
+        foreach (explode("\n", file_get_contents($p['chap'])) as $line) {
+            if (preg_match('~^(#)?"([a-zA-Z0-9_.\-]+)"\s+\*\s+"([^"]*)"\s+\*$~', trim($line), $m)) {
+                $users[$m[2]] = [
+                    'pass'     => $m[3],
+                    'disabled' => $m[1] === '#',
+                ];
+            }
+        }
+        ksort($users);
+        return $users;
+    }
+
+    public function saveL2tpUsers(array $users)
+    {
+        $p     = $this->ipsecPaths();
+        $lines = ['# Managed by vpnbot — chap-secrets for xl2tpd/pppd.'];
+        foreach ($users as $u => $v) {
+            $lines[] = ($v['disabled'] ? '#' : '') . "\"$u\" * \"{$v['pass']}\" *";
+        }
+        @mkdir($p['conf'], 0755, true);
+        file_put_contents($p['chap'], implode("\n", $lines) . "\n", LOCK_EX);
+        @chmod($p['chap'], 0600);
+    }
+
+    // Живые сессии из /var/run/l2tp-sessions (ведут ip-up/ip-down хуки pppd):
+    // имя файла = юзер, внутри "IP PID". PID нужен для kick.
+    public function getL2tpOnline()
+    {
+        $raw = $this->ssh(
+            'for f in /var/run/l2tp-sessions/*; do [ -f "$f" ] && printf \'%s %s\n\' "$(basename "$f")" "$(cat "$f")"; done 2>/dev/null',
+            'ipsec'
+        );
+        $out = [];
+        foreach (explode("\n", (string) $raw) as $line) {
+            if (preg_match('~^([a-zA-Z0-9_.\-]+) (\S+) (\d+)$~', trim($line), $m)) {
+                $out[$m[1]] = ['ip' => $m[2], 'pid' => (int) $m[3]];
+            }
+        }
+        return $out;
+    }
+
+    public function refreshL2tp()
+    {
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('refreshed'));
+        }
+        $this->menu('l2tp');
+    }
+
+    public function l2tpMenu()
+    {
+        $host    = $this->ipsecHost();
+        $psk     = $this->getIpsecPsk();
+        $users   = $this->getL2tpUsers();
+        $online  = $this->getL2tpOnline();
+        $running = (bool) $this->ssh('pgrep xl2tpd', 'ipsec');
+        $charon  = (bool) $this->ssh('pgrep charon', 'ipsec');
+        $ports   = $this->ipsecPorts();
+
+        $text   = [];
+        $text[] = 'Menu -> L2TP/IPsec';
+        $text[] = "server: <code>$host</code> · udp/{$ports['ike']},{$ports['natt']}";
+        $text[] = $this->i18n($charon ? 'on' : 'off') . ' strongswan (IKE)';
+        $text[] = $this->i18n($running ? 'on' : 'off') . ' xl2tpd (L2TP)';
+        if ($psk !== '') {
+            $text[] = 'PSK: <code>' . htmlspecialchars($psk, ENT_QUOTES) . '</code>';
+        } else {
+            $text[] = '⚠ PSK missing — restart ipsec container';
+        }
+        $text[] = 'clients: ' . count($users) . ' (' . count($online) . ' ' . $this->i18n('online') . ')';
+        // Android 12+ выпилил нативный L2TP/IPsec — предупреждаем сразу в
+        // меню, чтобы не дебажить «не подключается» на новых андроидах.
+        $text[] = '<i>Android 12+: ' . $this->i18n('no native l2tp') . '</i>';
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('add peer'),
+            'callback_data' => '/addL2tpUser',
+        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('log tail'),
+                'callback_data' => '/showL2tpLog',
+            ],
+            [
+                'text'          => $this->i18n('connections'),
+                'callback_data' => '/showIpsecConnLog l2tp',
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => "IKE port: {$ports['ike']}",
+                'callback_data' => '/changeIpsecPort ike l2tp',
+            ],
+            [
+                'text'          => "NAT-T port: {$ports['natt']}",
+                'callback_data' => '/changeIpsecPort natt l2tp',
+            ],
+        ];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/refreshL2tp',
+        ]];
+        foreach ($users as $u => $v) {
+            $marker = $v['disabled'] ? '🚫' : (isset($online[$u]) ? '🟢' : '⚪');
+            $data[] = [[
+                'text'          => "$marker $u",
+                'callback_data' => "/l2tpClientMenu $u",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu',
+        ]];
+        return [
+            'text' => implode("\n", $text),
+            'data' => $data,
+        ];
+    }
+
+    public function addL2tpUser()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter username",
+            $this->input['message_id'],
+            reply: 'enter username',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'addl2us',
+            'args'           => [],
+        ];
+    }
+
+    public function addl2us($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            $this->send($this->input['chat'], 'wrong username');
+            return $this->menu('l2tp');
+        }
+        // Лимит как у ovpn: callback_data телеграма 64 байта на строку
+        // "/delL2tpUser <name> confirm".
+        if (strlen($user) > 40) {
+            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            return $this->menu('l2tp');
+        }
+        $users = $this->getL2tpUsers();
+        if (isset($users[$user])) {
+            $this->send($this->input['chat'], "user $user already exists");
+            return $this->menu('l2tp');
+        }
+        // 16 hex-символов: безопасно для chap-secrets/MSCHAPv2/копипасты.
+        $users[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
+        $this->saveL2tpUsers($users);
+        // Сразу отдаём реквизиты — как auto-send .ovpn у OpenVPN.
+        $this->sendL2tpCreds($user);
+        $this->menu('l2tp');
+    }
+
+    // Реквизиты + краткие инструкции по платформам отдельным сообщением,
+    // чтобы их можно было переслать пользователю as-is.
+    public function sendL2tpCreds($user)
+    {
+        $users = $this->getL2tpUsers();
+        if (!isset($users[$user])) {
+            return false;
+        }
+        $host  = $this->ipsecHost();
+        $psk   = $this->getIpsecPsk();
+        $ports = $this->ipsecPorts();
+        $t   = [];
+        $t[] = '<b>L2TP/IPsec</b> — <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'server: <code>' . htmlspecialchars($host, ENT_QUOTES) . '</code>';
+        $t[] = "ports: udp/{$ports['ike']} (IKE), udp/{$ports['natt']} (NAT-T)";
+        $t[] = 'PSK: <code>' . htmlspecialchars($psk, ENT_QUOTES) . '</code>';
+        $t[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'password: <code>' . htmlspecialchars($users[$user]['pass'], ENT_QUOTES) . '</code>';
+        $t[] = '';
+        $t[] = 'Windows: VPN type "L2TP/IPsec with pre-shared key", MS-CHAP v2';
+        // Windows за NAT (домашний роутер) молча не подключается по L2TP без
+        // этого ключа реестра — классические грабли, даём команду сразу.
+        $t[] = 'Windows ' . $this->i18n('behind NAT') . ':';
+        $t[] = '<pre>reg add "HKLM\SYSTEM\CurrentControlSet\Services\PolicyAgent" /v AssumeUDPEncapsulationContextOnSendRule /t REG_DWORD /d 2 /f</pre>';
+        $t[] = 'iOS/macOS: Settings → VPN → L2TP (Secret = PSK)';
+        $t[] = 'Android 12+: ' . $this->i18n('no native l2tp');
+        $this->send($this->input['from'], implode("\n", $t));
+        return true;
+    }
+
+    public function delL2tpUser($user, $confirm = false)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getL2tpUsers();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('l2tp');
+        }
+        if (!$confirm) {
+            $text = 'Menu -> L2TP/IPsec -> <code>'
+                . htmlspecialchars($user, ENT_QUOTES) . '</code>' . "\n"
+                . '⚠ ' . $this->i18n('confirm delete user');
+            $data = [
+                [['text' => '❌ ' . $this->i18n('delete forever'), 'callback_data' => "/delL2tpUser $user confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/l2tpClientMenu $user"]],
+            ];
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
+        unset($users[$user]);
+        $this->saveL2tpUsers($users);
+        $this->kickL2tpSession($user);
+        $this->menu('l2tp');
+    }
+
+    public function disableL2tpUser($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getL2tpUsers();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('l2tp');
+        }
+        $users[$user]['disabled'] = true;
+        $this->saveL2tpUsers($users);
+        // chap-secrets проверяется только на новых коннектах — живую сессию
+        // рвём принудительно.
+        $this->kickL2tpSession($user);
+        $this->l2tpClientMenu($user);
+    }
+
+    public function enableL2tpUser($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getL2tpUsers();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('l2tp');
+        }
+        $users[$user]['disabled'] = false;
+        $this->saveL2tpUsers($users);
+        $this->l2tpClientMenu($user);
+    }
+
+    // Убить pppd конкретного юзера по PID из session-файла (пишет ip-up).
+    public function kickL2tpSession($user)
+    {
+        $u = escapeshellarg($user);
+        $this->ssh(
+            "f=/var/run/l2tp-sessions/$u; [ -f \"\$f\" ] && kill \$(awk '{print \$2}' \"\$f\") 2>/dev/null; true",
+            'ipsec'
+        );
+    }
+
+    public function kickL2tp($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            return $this->menu('l2tp');
+        }
+        $this->kickL2tpSession($user);
+        if (isset($this->getL2tpUsers()[$user])) {
+            return $this->l2tpClientMenu($user);
+        }
+        $this->menu('l2tp');
+    }
+
+    public function l2tpClientMenu($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getL2tpUsers();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('l2tp');
+        }
+        $isDis  = $users[$user]['disabled'];
+        $online = $this->getL2tpOnline();
+        $s      = $online[$user] ?? null;
+
+        if ($isDis) {
+            $status = '🚫 ' . $this->i18n('disabled');
+        } elseif ($s) {
+            $status = '🟢 ' . $this->i18n('online') . ' · ' . htmlspecialchars($s['ip'], ENT_QUOTES);
+        } else {
+            $status = '⚪ ' . $this->i18n('offline');
+        }
+
+        $text   = [];
+        $text[] = 'Menu -> L2TP/IPsec -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $text[] = $this->i18n('status') . ': ' . $status;
+        if (!$isDis && !$s) {
+            $seen   = $this->ipsecLastSeen($user);
+            $text[] = $this->i18n('last seen') . ': '
+                . ($seen ? "{$seen['ts']} ({$seen['dir']})" : $this->i18n('never'));
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('credentials'),
+            'callback_data' => "/getL2tpCreds $user",
+        ]];
+        $data[] = [
+            $isDis
+                ? ['text' => $this->i18n('enable'),  'callback_data' => "/enableL2tpUser $user"]
+                : ['text' => $this->i18n('disable'), 'callback_data' => "/disableL2tpUser $user"],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('kick'),
+            'callback_data' => "/kickL2tp $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('history'),
+            'callback_data' => "/l2tpClientLog $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('delete'),
+            'callback_data' => "/delL2tpUser $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu l2tp',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Последнее событие юзера в /logs/ipsec-connections.log (пишут
+    // ip-up/ip-down хуки pppd; формат тот же, что у ovpn connect.sh).
+    public function ipsecLastSeen($user)
+    {
+        static $lines = null;
+        if ($lines === null) {
+            $p     = $this->ipsecPaths();
+            $lines = file_exists($p['conn'])
+                ? explode("\n", file_get_contents($p['conn']))
+                : [];
+        }
+        for ($i = count($lines) - 1; $i >= 0; $i--) {
+            if (preg_match('~^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (UP|DOWN)\s+(\S+)\s~', $lines[$i], $m)
+                && $m[3] === $user) {
+                return ['ts' => $m[1], 'dir' => $m[2]];
+            }
+        }
+        return null;
+    }
+
+    public function l2tpClientLog($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !isset($this->getL2tpUsers()[$user])) {
+            return $this->menu('l2tp');
+        }
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['conn'], 15, 3500, $user);
+        $text = 'Menu -> L2TP/IPsec -> <code>'
+            . htmlspecialchars($user, ENT_QUOTES) . '</code> -> ' . $this->i18n('history') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => "/l2tpClientMenu $user"],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    public function showL2tpLog()
+    {
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['l2tp']);
+        $text = 'Menu -> L2TP/IPsec -> ' . $this->i18n('log tail') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => '/menu l2tp'],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    // Общий журнал UP/DOWN контейнера ipsec; $ret — куда вести кнопку назад
+    // (экран доступен из обоих меню).
+    public function showIpsecConnLog($ret = 'l2tp')
+    {
+        $ret  = $ret === 'ikev2' ? 'ikev2' : 'l2tp';
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['conn']);
+        $text = 'Menu -> IPsec -> ' . $this->i18n('connections') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => "/menu $ret"],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    // ─── IKEv2: пользователи (users_ikev2.json → secrets.conf) ───────────
+
+    public function getIkev2Users()
+    {
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['users'])) {
+            return [];
+        }
+        $u = json_decode(file_get_contents($p['users']), true);
+        return is_array($u) ? $u : [];
+    }
+
+    // JSON — source of truth; swanctl-файл секретов регенерируется целиком
+    // (PSK для l2tp-конна + eap-секции только НЕзаблокированных юзеров),
+    // затем charon перечитывает креды. Блокировка = юзер выпадает из
+    // secrets.conf, EAP сразу перестаёт проходить.
+    public function saveIkev2Users(array $users)
+    {
+        $p = $this->ipsecPaths();
+        @mkdir($p['conf'], 0755, true);
+        file_put_contents($p['users'], json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
+        @chmod($p['users'], 0600);
+
+        $psk   = $this->getIpsecPsk();
+        $out   = [];
+        $out[] = '# Managed by vpnbot — regenerated from users_ikev2.json, do not edit.';
+        $out[] = 'secrets {';
+        $out[] = '    ike-l2tp {';
+        $out[] = '        secret = "' . $psk . '"';
+        $out[] = '    }';
+        // Имена секций — порядковые (eap-1, eap-2, …): юзернейм с точкой
+        // ломал бы swanctl-парсер (точка — разделитель секций), а матчится
+        // всё равно только значение id.
+        $i = 0;
+        foreach ($users as $u => $v) {
+            if (!empty($v['disabled'])) {
+                continue;
+            }
+            $i++;
+            $out[] = "    eap-$i {";
+            $out[] = '        id = "' . $u . '"';
+            $out[] = '        secret = "' . $v['pass'] . '"';
+            $out[] = '    }';
+        }
+        $out[] = '}';
+        file_put_contents($p['secrets'], implode("\n", $out) . "\n", LOCK_EX);
+        @chmod($p['secrets'], 0600);
+        $this->ssh('swanctl --load-creds >/dev/null 2>&1; true', 'ipsec');
+    }
+
+    // Онлайн-статус IKEv2 из `swanctl --list-sas`: юзер (EAP identity) →
+    // uid IKE_SA (для kick), реальный адрес, виртуальный IP, байты, аптайм.
+    public function getIkev2Status()
+    {
+        $raw = (string) $this->ssh('swanctl --list-sas 2>/dev/null', 'ipsec');
+        $out = [];
+        $cur = null;   // буфер полей IKE_SA, пока EAP identity ещё не встретилась
+        $key = null;   // имя юзера — после него пишем сразу в $out[$key]
+        foreach (explode("\n", $raw) as $line) {
+            if (preg_match('~^\S+: #(\d+), ESTABLISHED~', $line, $m)) {
+                $cur = ['uid' => (int) $m[1], 'real' => '', 'virtual' => '', 'rx' => 0, 'tx' => 0, 'since' => ''];
+                $key = null;
+                continue;
+            }
+            if ($cur === null && $key === null) {
+                continue;
+            }
+            if (preg_match("~^\\s*remote '[^']*' @ ([^\\[\\s]+)\\[\\d+\\](?: EAP: '([^']+)')?~", $line, $m)) {
+                $cur['real'] = $m[1];
+                if (!empty($m[2])) {
+                    // EAP identity = имя юзера; дальше child-SA строки
+                    // (байты, virtual IP) дополняют запись в $out.
+                    $key       = $m[2];
+                    $out[$key] = $cur;
+                    $cur       = null;
+                }
+                continue;
+            }
+            $ref = $key !== null ? $key : null;
+            if (preg_match('~established (\d+)s ago~', $line, $m)) {
+                if ($ref !== null) { $out[$ref]['since'] = (int) $m[1]; } else { $cur['since'] = (int) $m[1]; }
+                continue;
+            }
+            if ($ref === null) {
+                continue;
+            }
+            if (preg_match('~^\s*in\s+\S+,\s*(\d+) bytes~', $line, $m)) {
+                $out[$ref]['rx'] += (int) $m[1];
+                continue;
+            }
+            if (preg_match('~^\s*out\s+\S+,\s*(\d+) bytes~', $line, $m)) {
+                $out[$ref]['tx'] += (int) $m[1];
+                continue;
+            }
+            if (preg_match('~^\s*remote ([0-9.]+)/32$~', $line, $m)) {
+                $out[$ref]['virtual'] = $m[1];
+                continue;
+            }
+        }
+        return $out;
+    }
+
+    public function refreshIkev2()
+    {
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('refreshed'));
+        }
+        $this->menu('ikev2');
+    }
+
+    public function ikev2Menu()
+    {
+        $host    = $this->ipsecHost();
+        $users   = $this->getIkev2Users();
+        $online  = $this->getIkev2Status();
+        $running = (bool) $this->ssh('pgrep charon', 'ipsec');
+        $p       = $this->ipsecPaths();
+        $ports   = $this->ipsecPorts();
+
+        $text   = [];
+        $text[] = 'Menu -> IKEv2';
+        $text[] = "server: <code>$host</code> · udp/{$ports['ike']},{$ports['natt']}";
+        $text[] = $this->i18n($running ? 'on' : 'off') . ' strongswan (IKEv2)';
+        if (!file_exists($p['ca']) || !file_exists($p['srv'])) {
+            $text[] = '⚠ PKI missing — restart ipsec container';
+        }
+        $text[] = 'clients: ' . count($users) . ' (' . count($online) . ' ' . $this->i18n('online') . ')';
+        foreach ($online as $u => $s) {
+            if (!isset($users[$u])) {
+                continue;
+            }
+            $text[] = '🟢 <code>' . htmlspecialchars($u, ENT_QUOTES) . '</code> '
+                . htmlspecialchars($s['virtual'], ENT_QUOTES)
+                . ($s['real'] !== '' ? ' · <code>' . htmlspecialchars($s['real'], ENT_QUOTES) . '</code>' : '')
+                . ' ↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => $this->i18n('add peer'),
+            'callback_data' => '/addIkev2User',
+        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('log tail'),
+                'callback_data' => '/showIkev2Log',
+            ],
+            [
+                'text'          => 'CA (Windows)',
+                'callback_data' => '/getIkev2Ca',
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => "IKE port: {$ports['ike']}",
+                'callback_data' => '/changeIpsecPort ike ikev2',
+            ],
+            [
+                'text'          => "NAT-T port: {$ports['natt']}",
+                'callback_data' => '/changeIpsecPort natt ikev2',
+            ],
+        ];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/refreshIkev2',
+        ]];
+        foreach ($users as $u => $v) {
+            $marker = !empty($v['disabled']) ? '🚫' : (isset($online[$u]) ? '🟢' : '⚪');
+            $data[] = [[
+                'text'          => "$marker $u",
+                'callback_data' => "/ikev2ClientMenu $u",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu',
+        ]];
+        return [
+            'text' => implode("\n", $text),
+            'data' => $data,
+        ];
+    }
+
+    public function addIkev2User()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter username",
+            $this->input['message_id'],
+            reply: 'enter username',
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'addik2us',
+            'args'           => [],
+        ];
+    }
+
+    public function addik2us($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            $this->send($this->input['chat'], 'wrong username');
+            return $this->menu('ikev2');
+        }
+        if (strlen($user) > 40) {
+            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            return $this->menu('ikev2');
+        }
+        $users = $this->getIkev2Users();
+        if (isset($users[$user])) {
+            $this->send($this->input['chat'], "user $user already exists");
+            return $this->menu('ikev2');
+        }
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['ca'])) {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container first');
+            return $this->menu('ikev2');
+        }
+        $users[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
+        $this->saveIkev2Users($users);
+        // Профиль iOS/macOS + реквизиты сразу, без похода в подменю.
+        $this->sendIkev2Profile($user);
+        $this->sendIkev2Creds($user);
+        $this->menu('ikev2');
+    }
+
+    public function sendIkev2Creds($user)
+    {
+        $users = $this->getIkev2Users();
+        if (!isset($users[$user])) {
+            return false;
+        }
+        $host  = $this->ipsecHost();
+        $ports = $this->ipsecPorts();
+        $t   = [];
+        $t[] = '<b>IKEv2</b> — <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'server: <code>' . htmlspecialchars($host, ENT_QUOTES) . '</code>';
+        $t[] = "ports: udp/{$ports['ike']} (IKE), udp/{$ports['natt']} (NAT-T)";
+        $t[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'password: <code>' . htmlspecialchars($users[$user]['pass'], ENT_QUOTES) . '</code>';
+        // Совпадает с LocalIdentifier (.mobileconfig) и local.eap_id (.sswan);
+        // сервер не ограничивает клиентский id (eap_id = %any).
+        $t[] = 'IPsec identifier: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $t[] = 'auth: EAP-MSCHAPv2 (username + password)';
+        $t[] = '';
+        $t[] = 'iOS/macOS: ' . $this->i18n('profile') . ' .mobileconfig (CA внутри)';
+        $t[] = 'Android: strongSwan app + .sswan ' . $this->i18n('profile');
+        $t[] = 'Android (встроенный VPN): тип IKEv2/IPSec MSCHAPv2, IPsec identifier = login';
+        $t[] = 'Windows: CA (кнопка в меню) + PowerShell:';
+        $t[] = '<pre>certutil -addstore -f Root ca.pem'
+            . "\nAdd-VpnConnection -Name vpnbot -ServerAddress $host -TunnelType IKEv2 -AuthenticationMethod EAP -EncryptionLevel Required"
+            . "\nSet-VpnConnectionIPsecConfiguration -ConnectionName vpnbot -AuthenticationTransformConstants SHA256128 -CipherTransformConstants AES256 -EncryptionMethod AES256 -IntegrityCheckMethod SHA256 -DHGroup Group14 -PfsGroup None -Force</pre>";
+        $this->send($this->input['from'], implode("\n", $t));
+        return true;
+    }
+
+    // base64(DER) CA-сертификата: тело PEM и есть base64 от DER — ровно то,
+    // что ждут <data> в mobileconfig и remote.cert в .sswan.
+    public function ikev2CaB64()
+    {
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['ca'])) {
+            return '';
+        }
+        return preg_replace('~-----[^-]+-----|\s~', '', file_get_contents($p['ca']));
+    }
+
+    // Детерминированный UUID v4-формата из md5 — при повторной выдаче
+    // профиля iOS видит тот же PayloadUUID и обновляет, а не дублирует.
+    public function ikev2Uuid($seed)
+    {
+        $h = md5('vpnbot-ipsec-' . $seed);
+        return sprintf(
+            '%s-%s-4%s-a%s-%s',
+            substr($h, 0, 8),
+            substr($h, 8, 4),
+            substr($h, 13, 3),
+            substr($h, 17, 3),
+            substr($h, 20, 12)
+        );
+    }
+
+    public function sendIkev2Profile($user)
+    {
+        $users = $this->getIkev2Users();
+        $caB64 = $this->ikev2CaB64();
+        if (!isset($users[$user]) || $caB64 === '') {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            return false;
+        }
+        $host = $this->ipsecHost();
+        $pass = $users[$user]['pass'];
+        $eu   = htmlspecialchars($user, ENT_QUOTES | ENT_XML1);
+        $eh   = htmlspecialchars($host, ENT_QUOTES | ENT_XML1);
+        $ep   = htmlspecialchars($pass, ENT_QUOTES | ENT_XML1);
+        $vpnUuid  = $this->ikev2Uuid("vpn-$host-$user");
+        $certUuid = $this->ikev2Uuid("ca-$host");
+        $topUuid  = $this->ikev2Uuid("top-$host-$user");
+        $xml = <<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key><string>com.apple.vpn.managed</string>
+            <key>PayloadIdentifier</key><string>org.vpnbot.ikev2.$eu</string>
+            <key>PayloadUUID</key><string>$vpnUuid</string>
+            <key>PayloadVersion</key><integer>1</integer>
+            <key>PayloadDisplayName</key><string>vpnbot IKEv2</string>
+            <key>UserDefinedName</key><string>vpnbot $eu</string>
+            <key>VPNType</key><string>IKEv2</string>
+            <key>IKEv2</key>
+            <dict>
+                <key>RemoteAddress</key><string>$eh</string>
+                <key>RemoteIdentifier</key><string>$eh</string>
+                <key>LocalIdentifier</key><string>$eu</string>
+                <key>AuthenticationMethod</key><string>None</string>
+                <key>ExtendedAuthEnabled</key><integer>1</integer>
+                <key>AuthName</key><string>$eu</string>
+                <key>AuthPassword</key><string>$ep</string>
+                <key>DeadPeerDetectionRate</key><string>Medium</string>
+                <key>DisableMOBIKE</key><integer>0</integer>
+                <key>DisableRedirect</key><integer>1</integer>
+                <key>EnablePFS</key><integer>0</integer>
+                <key>IKESecurityAssociationParameters</key>
+                <dict>
+                    <key>EncryptionAlgorithm</key><string>AES-256</string>
+                    <key>IntegrityAlgorithm</key><string>SHA2-256</string>
+                    <key>DiffieHellmanGroup</key><integer>14</integer>
+                    <key>LifeTimeInMinutes</key><integer>1440</integer>
+                </dict>
+                <key>ChildSecurityAssociationParameters</key>
+                <dict>
+                    <key>EncryptionAlgorithm</key><string>AES-256</string>
+                    <key>IntegrityAlgorithm</key><string>SHA2-256</string>
+                    <key>DiffieHellmanGroup</key><integer>14</integer>
+                    <key>LifeTimeInMinutes</key><integer>1440</integer>
+                </dict>
+            </dict>
+        </dict>
+        <dict>
+            <key>PayloadType</key><string>com.apple.security.root</string>
+            <key>PayloadIdentifier</key><string>org.vpnbot.ikev2.ca</string>
+            <key>PayloadUUID</key><string>$certUuid</string>
+            <key>PayloadVersion</key><integer>1</integer>
+            <key>PayloadDisplayName</key><string>vpnbot-ipsec-ca</string>
+            <key>PayloadContent</key><data>$caB64</data>
+        </dict>
+    </array>
+    <key>PayloadType</key><string>Configuration</string>
+    <key>PayloadIdentifier</key><string>org.vpnbot.ikev2.profile.$eu</string>
+    <key>PayloadUUID</key><string>$topUuid</string>
+    <key>PayloadVersion</key><integer>1</integer>
+    <key>PayloadDisplayName</key><string>vpnbot IKEv2 ($eu)</string>
+</dict>
+</plist>
+XML;
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile($xml, "$user.mobileconfig", 'application/x-apple-aspen-config')
+        );
+        return true;
+    }
+
+    public function sendIkev2Sswan($user)
+    {
+        $users = $this->getIkev2Users();
+        $caB64 = $this->ikev2CaB64();
+        if (!isset($users[$user]) || $caB64 === '') {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            return false;
+        }
+        $host = $this->ipsecHost();
+        // Формат импорта профилей strongSwan для Android:
+        // https://docs.strongswan.org/docs/latest/os/androidVpnClientProfiles.html
+        // remote.cert — base64(DER) CA; пароль клиент спросит и запомнит сам.
+        $profile = [
+            'uuid'   => $this->ikev2Uuid("sswan-$host-$user"),
+            'name'   => "vpnbot $user",
+            'type'   => 'ikev2-eap',
+            'remote' => [
+                'addr' => $host,
+                'id'   => $host,
+                'cert' => $caB64,
+            ],
+            'local'  => [
+                'eap_id' => $user,
+            ],
+        ];
+        // Нестандартный порт: strongSwan-клиент на любом порту, кроме 500,
+        // использует NAT-T-инкапсуляцию — указываем именно NAT-T-порт.
+        // При дефолте ключ опускаем: клиент сам ходит 500→4500.
+        $ports = $this->ipsecPorts();
+        if ($ports['natt'] !== 4500) {
+            $profile['remote']['port'] = $ports['natt'];
+        }
+        $json = json_encode($profile, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile($json, "$user.sswan", 'application/vnd.strongswan.profile')
+        );
+        return true;
+    }
+
+    public function getIkev2Ca()
+    {
+        $p = $this->ipsecPaths();
+        if (!file_exists($p['ca'])) {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            return $this->menu('ikev2');
+        }
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile(file_get_contents($p['ca']), 'ca.pem', 'application/x-pem-file')
+        );
+    }
+
+    public function delIkev2User($user, $confirm = false)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getIkev2Users();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('ikev2');
+        }
+        if (!$confirm) {
+            $text = 'Menu -> IKEv2 -> <code>'
+                . htmlspecialchars($user, ENT_QUOTES) . '</code>' . "\n"
+                . '⚠ ' . $this->i18n('confirm delete user');
+            $data = [
+                [['text' => '❌ ' . $this->i18n('delete forever'), 'callback_data' => "/delIkev2User $user confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/ikev2ClientMenu $user"]],
+            ];
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
+        unset($users[$user]);
+        $this->saveIkev2Users($users);
+        $this->kickIkev2Session($user);
+        $this->menu('ikev2');
+    }
+
+    public function disableIkev2User($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getIkev2Users();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('ikev2');
+        }
+        $users[$user]['disabled'] = true;
+        // saveIkev2Users выкидывает юзера из secrets.conf + load-creds —
+        // новые коннекты отвалятся; живую SA рвём явно.
+        $this->saveIkev2Users($users);
+        $this->kickIkev2Session($user);
+        $this->ikev2ClientMenu($user);
+    }
+
+    public function enableIkev2User($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getIkev2Users();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('ikev2');
+        }
+        $users[$user]['disabled'] = false;
+        $this->saveIkev2Users($users);
+        $this->ikev2ClientMenu($user);
+    }
+
+    // Разорвать IKE_SA юзера по uid из swanctl --list-sas.
+    public function kickIkev2Session($user)
+    {
+        $s = $this->getIkev2Status()[$user] ?? null;
+        if ($s && !empty($s['uid'])) {
+            $uid = (int) $s['uid'];
+            $this->ssh("swanctl --terminate --ike-id $uid >/dev/null 2>&1; true", 'ipsec');
+        }
+    }
+
+    public function kickIkev2($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user)) {
+            return $this->menu('ikev2');
+        }
+        $this->kickIkev2Session($user);
+        if (isset($this->getIkev2Users()[$user])) {
+            return $this->ikev2ClientMenu($user);
+        }
+        $this->menu('ikev2');
+    }
+
+    public function ikev2ClientMenu($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getIkev2Users();
+        if (empty($user) || !isset($users[$user])) {
+            return $this->menu('ikev2');
+        }
+        $isDis  = !empty($users[$user]['disabled']);
+        $online = $this->getIkev2Status();
+        $s      = $online[$user] ?? null;
+
+        if ($isDis) {
+            $status = '🚫 ' . $this->i18n('disabled');
+        } elseif ($s) {
+            $status = '🟢 ' . $this->i18n('online')
+                . ' · ' . htmlspecialchars($s['virtual'], ENT_QUOTES)
+                . ($s['real'] !== '' ? ' · ' . htmlspecialchars($s['real'], ENT_QUOTES) : '')
+                . ' · ↓' . $this->fmtBytes($s['rx'])
+                . ' ↑' . $this->fmtBytes($s['tx']);
+        } else {
+            $status = '⚪ ' . $this->i18n('offline');
+        }
+
+        $text   = [];
+        $text[] = 'Menu -> IKEv2 -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $text[] = $this->i18n('status') . ': ' . $status;
+        if ($s && $s['since'] !== '') {
+            $text[] = $this->i18n('since') . ': ' . $this->uptimeHuman((int) $s['since']);
+        }
+
+        $data   = [];
+        $data[] = [
+            [
+                'text'          => '.mobileconfig',
+                'callback_data' => "/getIkev2Profile $user",
+            ],
+            [
+                'text'          => '.sswan',
+                'callback_data' => "/getIkev2Sswan $user",
+            ],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('credentials'),
+            'callback_data' => "/getIkev2Creds $user",
+        ]];
+        $data[] = [
+            $isDis
+                ? ['text' => $this->i18n('enable'),  'callback_data' => "/enableIkev2User $user"]
+                : ['text' => $this->i18n('disable'), 'callback_data' => "/disableIkev2User $user"],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('kick'),
+            'callback_data' => "/kickIkev2 $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('delete'),
+            'callback_data' => "/delIkev2User $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu ikev2',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // «established N seconds ago» → короткая человекочитаемая длительность.
+    public function uptimeHuman($sec)
+    {
+        $sec = (int) $sec;
+        if ($sec < 60) {
+            return "{$sec}s";
+        }
+        if ($sec < 3600) {
+            return floor($sec / 60) . 'm ' . ($sec % 60) . 's';
+        }
+        return floor($sec / 3600) . 'h ' . floor(($sec % 3600) / 60) . 'm';
+    }
+
+    public function showIkev2Log()
+    {
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['log']);
+        $text = 'Menu -> IKEv2 -> ' . $this->i18n('log tail') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => '/menu ikev2'],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
     }
 }

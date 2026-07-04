@@ -40,6 +40,12 @@ SRV=/etc/openvpn/server.conf
 EASYRSA_BIN=/usr/share/easy-rsa/easyrsa
 export EASYRSA_PKI="$PKI"
 export EASYRSA_BATCH=1
+# Дефолты easy-rsa: сертификаты 825 дней, CRL 180 дней. Оба тихо протухают:
+# клиенты перестают коннектиться через ~2.3 года, а из-за crl-verify ВСЕ
+# новые handshake падают через полгода ("CRL has expired"). 3650 дней = 10
+# лет, как у CA.
+export EASYRSA_CERT_EXPIRE=3650
+export EASYRSA_CRL_DAYS=3650
 
 mkdir -p "$PKI" /etc/openvpn/ccd /etc/openvpn/clients /logs
 : >> /logs/openvpn.log
@@ -108,9 +114,16 @@ if [ ! -f "$PKI/issued/server.crt" ] || [ ! -f "$PKI/private/server.key" ]; then
     "$EASYRSA_BIN" build-server-full server nopass >>/logs/openvpn.log 2>&1 || log "build-server-full FAILED"
 fi
 
-if [ ! -f "$PKI/crl.pem" ]; then
-    log "gen-crl"
+# CRL перегенерируем на КАЖДОМ старте, а не только при отсутствии: nextUpdate
+# у старых CRL мог быть выписан с дефолтными 180 днями, и после его истечения
+# openvpn с crl-verify отвергает все новые подключения. gen-crl дёшев и
+# идемпотентен. Без ca.key генерация невозможна (импортированный PKI без
+# приватника CA) — тогда оставляем существующий crl.pem как есть.
+if [ -f "$PKI/private/ca.key" ]; then
+    log "gen-crl (refresh, EASYRSA_CRL_DAYS=$EASYRSA_CRL_DAYS)"
     "$EASYRSA_BIN" gen-crl >>/logs/openvpn.log 2>&1 || log "gen-crl FAILED"
+elif [ ! -f "$PKI/crl.pem" ]; then
+    log "gen-crl SKIPPED: no ca.key and no crl.pem"
 fi
 
 if [ ! -f "$PKI/ta.key" ]; then

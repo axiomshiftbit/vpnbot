@@ -105,6 +105,58 @@ $i = [
         'en' => 'relay subscriptions',
         'ru' => 'relay-подписки',
     ],
+    'external links'       => [
+        'en' => 'external links',
+        'ru' => 'внешние ссылки',
+    ],
+    'external hint'        => [
+        'en' => 'Add third-party share links and remote subscription URLs from other servers — they are merged into this client\'s base64 (v2rayNG) subscription.',
+        'ru' => 'Добавьте сторонние share-ссылки и URL удалённых подписок с других серверов — они подмешиваются в base64-подписку (v2rayNG) этого клиента.',
+    ],
+    'add external link'    => [
+        'en' => 'add external link',
+        'ru' => 'добавить внешнюю ссылку',
+    ],
+    'add external subscription' => [
+        'en' => 'add external subscription',
+        'ru' => 'добавить внешнюю подписку',
+    ],
+    'enter external link'  => [
+        'en' => 'enter a share link (vless://, vmess://, trojan://, ss:// …)',
+        'ru' => 'отправьте share-ссылку (vless://, vmess://, trojan://, ss:// …)',
+    ],
+    'enter external subscription' => [
+        'en' => 'enter a remote subscription URL (https only)',
+        'ru' => 'отправьте URL удалённой подписки (только https)',
+    ],
+    'enter remark'         => [
+        'en' => 'enter a display name (empty to keep the original)',
+        'ru' => 'введите отображаемое имя (пусто — оставить как есть)',
+    ],
+    'ext status pending'   => [
+        'en' => 'not fetched yet',
+        'ru' => 'ещё не загружено',
+    ],
+    'ext status nodes'     => [
+        'en' => 'nodes',
+        'ru' => 'узлов',
+    ],
+    'rotate subscription'  => [
+        'en' => 'rotate sub link',
+        'ru' => 'сменить ссылку подписки',
+    ],
+    'subtoken strict'      => [
+        'en' => 'strict sub token',
+        'ru' => 'строгий токен подписки',
+    ],
+    'relay aggregate'      => [
+        'en' => 'relays in one sub',
+        'ru' => 'relay одной подпиской',
+    ],
+    'relay health'         => [
+        'en' => 'health',
+        'ru' => 'статус',
+    ],
     'relay delete'         => [
         'en' => '🗑 delete relay',
         'ru' => '🗑 удалить relay',
@@ -772,6 +824,66 @@ $i = [
     'settings'  => [
         'en' => 'settings',
         'ru' => 'настройки',
+    ],
+    'expires'  => [
+        'en' => 'expires',
+        'ru' => 'истекает',
+    ],
+    'expired'  => [
+        'en' => 'expired',
+        'ru' => 'истёк',
+    ],
+    'created'  => [
+        'en' => 'created',
+        'ru' => 'создан',
+    ],
+    'last seen'  => [
+        'en' => 'last seen',
+        'ru' => 'был в сети',
+    ],
+    'never'  => [
+        'en' => 'never',
+        'ru' => 'никогда',
+    ],
+    'since'  => [
+        'en' => 'since',
+        'ru' => 'подключён с',
+    ],
+    'history'  => [
+        'en' => 'history',
+        'ru' => 'история',
+    ],
+    'confirm delete ovpn'  => [
+        'en' => 'delete client? this revokes the certificate irreversibly',
+        'ru' => 'удалить клиента? сертификат будет безвозвратно отозван',
+    ],
+    'delete forever'  => [
+        'en' => 'delete forever',
+        'ru' => 'удалить навсегда',
+    ],
+    'cancel'  => [
+        'en' => 'cancel',
+        'ru' => 'отмена',
+    ],
+    'credentials'  => [
+        'en' => 'credentials',
+        'ru' => 'реквизиты',
+    ],
+    'profile'  => [
+        'en' => 'profile',
+        'ru' => 'профиль',
+    ],
+    'confirm delete user'  => [
+        'en' => 'delete user permanently?',
+        'ru' => 'удалить пользователя безвозвратно?',
+    ],
+    'no native l2tp'  => [
+        'en' => 'no native L2TP client, use IKEv2 instead',
+        'ru' => 'нет нативного L2TP-клиента, используйте IKEv2',
+    ],
+    'behind NAT'  => [
+        'en' => 'behind NAT (registry fix + reboot)',
+        'ru' => 'за NAT (правка реестра + перезагрузка)',
     ],
 ];
 
