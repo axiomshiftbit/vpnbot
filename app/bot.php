@@ -210,6 +210,9 @@ class Bot
             case preg_match('~^/dpiGenMldsa$~', $this->input['callback'], $m):
                 $this->dpiGenMldsa();
                 break;
+            case preg_match('~^/dpiShowMldsa$~', $this->input['callback'], $m):
+                $this->dpiShowMldsa();
+                break;
             case preg_match('~^/mirror$~', $this->input['message'], $m):
                 $this->menu('mirror');
                 break;
@@ -758,6 +761,9 @@ class Bot
                 break;
             case preg_match('~^/refreshIkev2$~', $this->input['callback'], $m):
                 $this->refreshIkev2();
+                break;
+            case preg_match('~^/changeIpsecPort (ike|natt) (l2tp|ikev2)$~', $this->input['callback'], $m):
+                $this->changeIpsecPort($m[1], $m[2]);
                 break;
             case preg_match('~^/changeOcDns$~', $this->input['callback'], $m):
                 $this->changeOcDns();
@@ -9029,6 +9035,7 @@ DNS-over-HTTPS with IP:
             // нужны и в колонке сервисов, и в колонке портов.
             $ipsecXl2tpOn  = (bool) $this->ssh('pgrep xl2tpd', 'ipsec');
             $ipsecCharonOn = (bool) $this->ssh('pgrep charon', 'ipsec');
+            $ipsecPorts    = $this->ipsecPorts();
 
             $main[] = '<code>';
             $main[] = $this->alignColumns([
@@ -9059,8 +9066,8 @@ DNS-over-HTTPS with IP:
                     $this->i18n($ports['hy']['enable'] ? 'on' : 'off') . ($ports['hy']['enable'] ? ' ' . $ports['hy']['port'] : ' port unavailable'),
                     $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
                     $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . (isset($c['ovpn']['ports'][0]) ? explode(':', $c['ovpn']['ports'][0])[0] : getenv('OVPNPORT')),
-                    $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . ' 500,4500',
-                    $this->i18n($ipsecCharonOn ? 'on' : 'off') . ' 500,4500',
+                    $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
+                    $this->i18n($ipsecCharonOn ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
                     $this->i18n($ports['tg']['enable'] ? 'on' : 'off') . ($ports['tg']['enable'] ? ' ' . $ports['tg']['port'] : ' port unavailable'),
                     $this->i18n($ports['ad']['enable'] ? 'on' : 'off') . ($ports['ad']['enable'] ? ' ' . $ports['ad']['port'] : ' port unavailable'),
                     $this->i18n($ports['ss']['enable'] ? 'on' : 'off') . ($ports['ss']['enable'] ? ' ' . $ports['ss']['port'] : ' port unavailable'),
@@ -9390,6 +9397,9 @@ DNS-over-HTTPS with IP:
             $text[] = 'mldsa65 Seed: ' . $this->shortSecretLabel($r['mldsa65Seed'] ?? '');
             $text[] = 'mldsa65 Verify: ' . $this->shortSecretLabel($r['mldsa65Verify'] ?? '');
             $text[] = 'spiderX: <code>' . htmlspecialchars($spiderX ?: '/', ENT_QUOTES) . '</code>';
+            // Полные значения не влезают в текст меню (Verify ~2.6k символов) —
+            // отдаём отдельным сообщением в <code>, чтобы копировались тапом.
+            $data[] = [['text' => '📋 mldsa65 Seed/Verify', 'callback_data' => '/dpiShowMldsa']];
             $data[] = [
                 ['text' => 'maxTimeDiff: ' . (int) ($r['maxTimeDiff'] ?? 0), 'callback_data' => '/dpiSet r_maxTimeDiff'],
                 ['text' => 'xver: ' . (int) ($r['xver'] ?? 0),               'callback_data' => '/dpiSet r_xver'],
@@ -9754,6 +9764,24 @@ DNS-over-HTTPS with IP:
         $this->setPacConf($p);
         $this->syncRealityLive($p);
         $this->dpiMenu();
+    }
+
+    // Полные mldsa65-ключи отдельным сообщением: в тексте dpiMenu они урезаны
+    // (shortSecretLabel), а из <code> копируются тапом целиком.
+    public function dpiShowMldsa()
+    {
+        $p      = $this->getPacConf();
+        $seed   = (string) ($p['reality']['mldsa65Seed'] ?? '');
+        $verify = (string) ($p['reality']['mldsa65Verify'] ?? '');
+        if ($seed === '' && $verify === '') {
+            return $this->answer($this->input['callback_id'], 'mldsa65 keys are empty — use autogen', true);
+        }
+        $t   = [];
+        $t[] = 'mldsa65 Seed:';
+        $t[] = '<code>' . htmlspecialchars($seed ?: '—', ENT_QUOTES) . '</code>';
+        $t[] = 'mldsa65 Verify:';
+        $t[] = '<code>' . htmlspecialchars($verify ?: '—', ENT_QUOTES) . '</code>';
+        $this->send($this->input['from'], implode("\n", $t));
     }
 
     public function dpiDefault($field)
@@ -18548,6 +18576,68 @@ DNS-over-HTTPS with IP:
         return (string) getenv('IP');
     }
 
+    // Порты charon (IKE + NAT-T) — общие для L2TP/IPsec и IKEv2: контейнер
+    // один, charon один. Меняются через меню (setEnvVar), контейнер применяет
+    // их в start_ipsec.sh (charon.port/port_nat_t); DNAT в nft хоста —
+    // порт-в-порт, defines IPSEC_IKE/IPSEC_NATT правятся вручную.
+    public function ipsecPorts()
+    {
+        return [
+            'ike'  => (int) (getenv('IPSECIKEPORT') ?: 500),
+            'natt' => (int) (getenv('IPSECNATTPORT') ?: 4500),
+        ];
+    }
+
+    public function changeIpsecPort($which, $menu)
+    {
+        $label = $which === 'ike' ? 'IKE' : 'NAT-T';
+        $def   = $which === 'ike' ? 500 : 4500;
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter $label port (default $def)\n\n"
+                . "⚠️ Порт общий для L2TP/IPsec и IKEv2 (strongswan один). "
+                . "Нативные клиенты снаружи ждут 500/4500 — нестандартный порт "
+                . "требует ручного DNAT в nft (defines IPSEC_IKE/IPSEC_NATT).",
+            $this->input['message_id'],
+            reply: "enter $label port",
+        );
+        $_SESSION['reply'][$r['result']['message_id']] = [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'setIpsecPort',
+            'args'           => [$which, $menu],
+        ];
+    }
+
+    public function setIpsecPort($port, $which, $menu)
+    {
+        $port  = (int) $port;
+        $ports = $this->ipsecPorts();
+        $other = $which === 'ike' ? $ports['natt'] : $ports['ike'];
+        if ($port < 1 || $port > 65535 || $port === $other) {
+            // charon не может слушать одинаковые port и port_nat_t.
+            $this->send($this->input['chat'], "wrong port (1-65535, must differ from $other)");
+            return $this->menu($menu);
+        }
+        $var = $which === 'ike' ? 'IPSECIKEPORT' : 'IPSECNATTPORT';
+        $this->setEnvVar($var, (string) $port);
+        // setEnvVar меняет только .env: без putenv getenv() до рестарта php
+        // отдавал бы старый порт в меню и в сообщении ниже.
+        putenv("$var=$port");
+        // Контейнер ipsec читает .env через env_file — после `make r` (recreate)
+        // start_ipsec.sh перепишет charon.port/port_nat_t. Флаг restart в pac
+        // заставит бот напомнить про пересоздание (как у cloak/stls).
+        $pac = $this->getPacConf();
+        $pac['restart'] = 1;
+        $this->setPacConf($pac);
+        $this->send(
+            $this->input['chat'],
+            "⚠️ nft на хосте правится вручную: define IPSEC_IKE = {$this->ipsecPorts()['ike']}, "
+                . "define IPSEC_NATT = {$this->ipsecPorts()['natt']} + перезагрузка nftables.",
+        );
+        $this->menu($menu);
+    }
+
     // Снэпшот /config/ipsec для общего JSON-бэкапа (паттерн exportOvpnPki):
     // psk, PKI (ca/server), chap-secrets, users_ikev2.json, secrets.conf,
     // swanctl.conf. Все файлы маленькие, runtime-файлов в каталоге нет.
@@ -18676,10 +18766,11 @@ DNS-over-HTTPS with IP:
         $online  = $this->getL2tpOnline();
         $running = (bool) $this->ssh('pgrep xl2tpd', 'ipsec');
         $charon  = (bool) $this->ssh('pgrep charon', 'ipsec');
+        $ports   = $this->ipsecPorts();
 
         $text   = [];
         $text[] = 'Menu -> L2TP/IPsec';
-        $text[] = "server: <code>$host</code> · udp/500,4500";
+        $text[] = "server: <code>$host</code> · udp/{$ports['ike']},{$ports['natt']}";
         $text[] = $this->i18n($charon ? 'on' : 'off') . ' strongswan (IKE)';
         $text[] = $this->i18n($running ? 'on' : 'off') . ' xl2tpd (L2TP)';
         if ($psk !== '') {
@@ -18705,6 +18796,16 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('connections'),
                 'callback_data' => '/showIpsecConnLog l2tp',
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => "IKE port: {$ports['ike']}",
+                'callback_data' => '/changeIpsecPort ike l2tp',
+            ],
+            [
+                'text'          => "NAT-T port: {$ports['natt']}",
+                'callback_data' => '/changeIpsecPort natt l2tp',
             ],
         ];
         $data[] = [[
@@ -18778,11 +18879,13 @@ DNS-over-HTTPS with IP:
         if (!isset($users[$user])) {
             return false;
         }
-        $host = $this->ipsecHost();
-        $psk  = $this->getIpsecPsk();
+        $host  = $this->ipsecHost();
+        $psk   = $this->getIpsecPsk();
+        $ports = $this->ipsecPorts();
         $t   = [];
         $t[] = '<b>L2TP/IPsec</b> — <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $t[] = 'server: <code>' . htmlspecialchars($host, ENT_QUOTES) . '</code>';
+        $t[] = "ports: udp/{$ports['ike']} (IKE), udp/{$ports['natt']} (NAT-T)";
         $t[] = 'PSK: <code>' . htmlspecialchars($psk, ENT_QUOTES) . '</code>';
         $t[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $t[] = 'password: <code>' . htmlspecialchars($users[$user]['pass'], ENT_QUOTES) . '</code>';
@@ -19114,10 +19217,11 @@ DNS-over-HTTPS with IP:
         $online  = $this->getIkev2Status();
         $running = (bool) $this->ssh('pgrep charon', 'ipsec');
         $p       = $this->ipsecPaths();
+        $ports   = $this->ipsecPorts();
 
         $text   = [];
         $text[] = 'Menu -> IKEv2';
-        $text[] = "server: <code>$host</code> · udp/500,4500";
+        $text[] = "server: <code>$host</code> · udp/{$ports['ike']},{$ports['natt']}";
         $text[] = $this->i18n($running ? 'on' : 'off') . ' strongswan (IKEv2)';
         if (!file_exists($p['ca']) || !file_exists($p['srv'])) {
             $text[] = '⚠ PKI missing — restart ipsec container';
@@ -19146,6 +19250,16 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => 'CA (Windows)',
                 'callback_data' => '/getIkev2Ca',
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => "IKE port: {$ports['ike']}",
+                'callback_data' => '/changeIpsecPort ike ikev2',
+            ],
+            [
+                'text'          => "NAT-T port: {$ports['natt']}",
+                'callback_data' => '/changeIpsecPort natt ikev2',
             ],
         ];
         $data[] = [[
@@ -19220,10 +19334,12 @@ DNS-over-HTTPS with IP:
         if (!isset($users[$user])) {
             return false;
         }
-        $host = $this->ipsecHost();
+        $host  = $this->ipsecHost();
+        $ports = $this->ipsecPorts();
         $t   = [];
         $t[] = '<b>IKEv2</b> — <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $t[] = 'server: <code>' . htmlspecialchars($host, ENT_QUOTES) . '</code>';
+        $t[] = "ports: udp/{$ports['ike']} (IKE), udp/{$ports['natt']} (NAT-T)";
         $t[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $t[] = 'password: <code>' . htmlspecialchars($users[$user]['pass'], ENT_QUOTES) . '</code>';
         // Совпадает с LocalIdentifier (.mobileconfig) и local.eap_id (.sswan);
@@ -19377,6 +19493,13 @@ XML;
                 'eap_id' => $user,
             ],
         ];
+        // Нестандартный порт: strongSwan-клиент на любом порту, кроме 500,
+        // использует NAT-T-инкапсуляцию — указываем именно NAT-T-порт.
+        // При дефолте ключ опускаем: клиент сам ходит 500→4500.
+        $ports = $this->ipsecPorts();
+        if ($ports['natt'] !== 4500) {
+            $profile['remote']['port'] = $ports['natt'];
+        }
         $json = json_encode($profile, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         $this->sendFile(
             $this->input['from'],

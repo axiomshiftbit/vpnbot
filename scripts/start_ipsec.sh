@@ -4,8 +4,9 @@
 #   живут на bind mount /config/ipsec — их правит бот из php-контейнера.
 # - Конфиги в /etc/* (xl2tpd, ppp options, charon logging) НЕ персистентны и
 #   переписываются на каждом старте: единственный source of truth — этот скрипт.
-# - Клиенты за DNAT всегда работают через NAT-T (udp/4500) — ESP/50 наружу не
-#   нужен, nft-конфиг хоста открывает только udp 500/4500.
+# - Клиенты за DNAT всегда работают через NAT-T — ESP/50 наружу не нужен,
+#   nft-конфиг хоста открывает только udp IKE/NAT-T (по умолчанию 500/4500,
+#   меняются ботом через IPSECIKEPORT/IPSECNATTPORT).
 # - L2TP требует на ХОСТЕ загруженный модуль l2tp_ppp (modprobe l2tp_ppp +
 #   /etc/modules-load.d/vpnbot-l2tp.conf). Без него IKEv2 работает, L2TP — нет.
 #
@@ -23,6 +24,10 @@ INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
 
 L2TP_SUBNET="${L2TPSUBNET:-10.9.1.0/24}"
 IKEV2_SUBNET="${IKEV2SUBNET:-10.9.2.0/24}"
+# Порты charon (общие для L2TP и IKEv2 — charon один). Задаются ботом в .env
+# (IPSECIKEPORT/IPSECNATTPORT); DNAT в nft хоста порт-в-порт правится вручную.
+IKE_PORT="${IPSECIKEPORT:-500}"
+NATT_PORT="${IPSECNATTPORT:-4500}"
 L2TP_BASE=$(echo "$L2TP_SUBNET" | cut -d/ -f1 | cut -d. -f1-3)
 DNS=10.10.0.5
 
@@ -197,8 +202,19 @@ fi
 rm -f /etc/swanctl/swanctl.conf
 ln -s "$CONF/swanctl.conf" /etc/swanctl/swanctl.conf
 
-# ─── charon logging → /logs/ipsec.log (переписываем всегда) ──────────────
+# ─── charon: порты IKE/NAT-T (переписываем всегда) ───────────────────────
+# Нативные клиенты снаружи умеют только 500/4500 — при нестандартных портах
+# пользователь сам решает это DNAT'ом в nft (500/4500 → кастомные) либо
+# клиентом strongSwan (умеет произвольный порт).
 mkdir -p /etc/strongswan.d
+cat > /etc/strongswan.d/vpnbot-ports.conf <<EOF
+charon {
+    port = $IKE_PORT
+    port_nat_t = $NATT_PORT
+}
+EOF
+
+# ─── charon logging → /logs/ipsec.log (переписываем всегда) ──────────────
 cat > /etc/strongswan.d/vpnbot-logging.conf <<EOF
 charon {
     filelog {
