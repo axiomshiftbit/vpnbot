@@ -48,6 +48,13 @@ if [ ! -f "$WGCF_CONF" ]; then
     sed -i '/^AllowedIPs.*::/d' "$WGCF_CONF"
 fi
 
+# DNS= вырезаем БЕЗУСЛОВНО (не под условием генерации выше): профиль обычно
+# уже лежит в named-volume, а resolv.conf в контейнере управляет Docker.
+# openresolv 3.17.4 (alpine edge) в docker падает («could not detect a useable
+# init system» / «signature mismatch: /etc/resolv.conf»), из-за чего wg-quick
+# откатывал интерфейс и контейнер уходил в Exited(1).
+sed -i '/^DNS[[:space:]]*=/d' "$WGCF_CONF"
+
 echo "[warp] Starting WireGuard (WARP)..."
 wg-quick up "$WGCF_CONF"
 
