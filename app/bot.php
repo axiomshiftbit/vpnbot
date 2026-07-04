@@ -9389,6 +9389,7 @@ DNS-over-HTTPS with IP:
             ];
             $text[] = 'mldsa65 Seed: ' . $this->shortSecretLabel($r['mldsa65Seed'] ?? '');
             $text[] = 'mldsa65 Verify: ' . $this->shortSecretLabel($r['mldsa65Verify'] ?? '');
+            $text[] = 'spiderX: <code>' . htmlspecialchars($spiderX ?: '/', ENT_QUOTES) . '</code>';
             $data[] = [
                 ['text' => 'maxTimeDiff: ' . (int) ($r['maxTimeDiff'] ?? 0), 'callback_data' => '/dpiSet r_maxTimeDiff'],
                 ['text' => 'xver: ' . (int) ($r['xver'] ?? 0),               'callback_data' => '/dpiSet r_xver'],
@@ -19225,10 +19226,14 @@ DNS-over-HTTPS with IP:
         $t[] = 'server: <code>' . htmlspecialchars($host, ENT_QUOTES) . '</code>';
         $t[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $t[] = 'password: <code>' . htmlspecialchars($users[$user]['pass'], ENT_QUOTES) . '</code>';
+        // Совпадает с LocalIdentifier (.mobileconfig) и local.eap_id (.sswan);
+        // сервер не ограничивает клиентский id (eap_id = %any).
+        $t[] = 'IPsec identifier: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $t[] = 'auth: EAP-MSCHAPv2 (username + password)';
         $t[] = '';
         $t[] = 'iOS/macOS: ' . $this->i18n('profile') . ' .mobileconfig (CA внутри)';
         $t[] = 'Android: strongSwan app + .sswan ' . $this->i18n('profile');
+        $t[] = 'Android (встроенный VPN): тип IKEv2/IPSec MSCHAPv2, IPsec identifier = login';
         $t[] = 'Windows: CA (кнопка в меню) + PowerShell:';
         $t[] = '<pre>certutil -addstore -f Root ca.pem'
             . "\nAdd-VpnConnection -Name vpnbot -ServerAddress $host -TunnelType IKEv2 -AuthenticationMethod EAP -EncryptionLevel Required"
