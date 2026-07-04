@@ -81,10 +81,6 @@ $i = [
         'en' => 'Reality ML-DSA-65',
         'ru' => 'Reality ML-DSA-65',
     ],
-    'mldsa hint'           => [
-        'en' => 'ℹ️ Post-quantum Reality auth (extra cert signature). Backward compatible: only xray clients carrying the verify key check it; sing-box/mihomo and older clients keep working without it. Rotate Reality keys after enabling to re-issue links.',
-        'ru' => 'ℹ️ Пост-квантовая аутентификация Reality (доп. подпись сертификата). Обратно совместима: проверяют только xray-клиенты с verify-ключом; sing-box/mihomo и старые клиенты продолжают работать без него. После включения ротани ключи Reality, чтобы переиздать ссылки.',
-    ],
     'reality params'       => [
         'en' => 'Reality params',
         'ru' => 'параметры Reality',

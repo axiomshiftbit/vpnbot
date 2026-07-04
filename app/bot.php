@@ -9401,7 +9401,6 @@ DNS-over-HTTPS with IP:
             ];
         }
         if ($tr === 'Reality') {
-            $text[] = "\n" . $this->i18n('mldsa hint');
             $data[] = [
                 ['text' => $this->i18n('mldsa') . ': ' . $on($mldsaReady), 'callback_data' => '/dpiToggle mldsa'],
                 ['text' => '🎲 ' . $this->i18n('autogen'),                 'callback_data' => '/dpiGenMldsa'],
@@ -9714,26 +9713,50 @@ DNS-over-HTTPS with IP:
         $field = preg_replace('~^noise\d+_(type|packet|delay)$~', 'noise_$1', $field);
         return match ($field) {
             'fragment' => $ru
-                ? "TLS-фрагментация: packets <code>1-3</code> или <code>tlshello</code>; length <code>100-200</code>; interval <code>10-20</code> мс."
-                : "TLS fragment: packets <code>1-3</code> or <code>tlshello</code>; length <code>100-200</code>; interval <code>10-20</code> ms.",
+                ? "TCP/TLS-фрагментация: режущий трафик рвётся на куски, чтобы DPI не собрал SNI. "
+                    . "Готовые наборы (packets · length · interval):\n"
+                    . "• универсальный: <code>tlshello</code> · <code>100-200</code> · <code>10-20</code>\n"
+                    . "• мягкий: <code>1-3</code> · <code>40-80</code> · <code>1-3</code>\n"
+                    . "• агрессивный (ПК): <code>1-1</code> · <code>1-4</code> · <code>0</code>"
+                : "TCP/TLS fragment: outgoing bytes are sliced so DPI can't reassemble the SNI. "
+                    . "Ready sets (packets · length · interval):\n"
+                    . "• general: <code>tlshello</code> · <code>100-200</code> · <code>10-20</code>\n"
+                    . "• gentle: <code>1-3</code> · <code>40-80</code> · <code>1-3</code>\n"
+                    . "• aggressive (PC): <code>1-1</code> · <code>1-4</code> · <code>0</code>",
             'fragment_packets' => $ru
-                ? "Пример: <code>1-3</code> или <code>tlshello</code>. Пусто/0/default/off = <code>1-3</code>."
-                : "Example: <code>1-3</code> or <code>tlshello</code>. Empty/0/default/off = <code>1-3</code>.",
+                ? "Что резать:\n"
+                    . "• <code>tlshello</code> — только TLS ClientHello (прячет SNI)\n"
+                    . "• <code>1-3</code> — 1..3-ю TCP-запись клиента\n"
+                    . "• <code>1-1</code> / <code>1-2</code> — конкретные записи\n"
+                    . "Пусто/0/default/off = <code>1-3</code>."
+                : "What to slice:\n"
+                    . "• <code>tlshello</code> — only the TLS ClientHello (hides SNI)\n"
+                    . "• <code>1-3</code> — the client's 1st..3rd TCP write\n"
+                    . "• <code>1-1</code> / <code>1-2</code> — specific writes\n"
+                    . "Empty/0/default/off = <code>1-3</code>.",
             'fragment_length' => $ru
-                ? "Пример: <code>100-200</code>. Это размер частей TLS ClientHello в байтах; не ставь 0."
-                : "Example: <code>100-200</code>. TLS ClientHello fragment size in bytes; do not use 0.",
+                ? "Размер кусков в байтах, число или диапазон. Примеры: <code>1-4</code>, <code>10-20</code>, <code>40-80</code>, <code>100-200</code>. "
+                    . "⚠️ Для <code>tlshello</code> минимум 6; не ставь 0."
+                : "Chunk size in bytes, a number or a range. Examples: <code>1-4</code>, <code>10-20</code>, <code>40-80</code>, <code>100-200</code>. "
+                    . "⚠️ For <code>tlshello</code> minimum is 6; do not use 0.",
             'fragment_interval' => $ru
-                ? "Пример: <code>10-20</code>. Задержка между частями в миллисекундах. <code>0</code>/default = <code>10-20</code>."
-                : "Example: <code>10-20</code>. Delay between fragments in milliseconds. <code>0</code>/default = <code>10-20</code>.",
+                ? "Задержка между кусками в мс, число или диапазон. Примеры: <code>0</code> (без пауз), <code>1-3</code>, <code>10-20</code>, <code>20-50</code>. "
+                    . "<code>0</code>/default = <code>10-20</code>."
+                : "Delay between chunks in ms, a number or a range. Examples: <code>0</code> (no pause), <code>1-3</code>, <code>10-20</code>, <code>20-50</code>. "
+                    . "<code>0</code>/default = <code>10-20</code>.",
             'noise' => $ru
                 ? "UDP-шум: несколько пакетов шлются подряд перед реальным трафиком. "
-                    . "type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
-                    . "packet — значение для типа (для rand — длина <code>10-20</code>); delay — задержка после пакета в мс (<code>10-16</code>). "
-                    . "Подробнее — в подсказке при нажатии на type/packet."
+                    . "Поля: type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
+                    . "packet — значение для типа; delay — задержка после пакета в мс.\n"
+                    . "Пример хорошей последовательности: пакет1 <code>rand</code>·<code>50-150</code>·<code>10-16</code>, "
+                    . "пакет2 <code>rand</code>·<code>200-400</code>·<code>20-50</code>.\n"
+                    . "Готовые значения packet — в подсказке при нажатии на type/packet."
                 : "UDP noise: several packets are sent in sequence before real traffic. "
-                    . "type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
-                    . "packet is the value for that type (for rand — length <code>10-20</code>); delay is the wait after the packet in ms (<code>10-16</code>). "
-                    . "See the hint when tapping type/packet for details.",
+                    . "Fields: type = <code>rand</code>/<code>str</code>/<code>hex</code>/<code>base64</code>; "
+                    . "packet is the value for that type; delay is the wait after the packet in ms.\n"
+                    . "A good sequence example: packet1 <code>rand</code>·<code>50-150</code>·<code>10-16</code>, "
+                    . "packet2 <code>rand</code>·<code>200-400</code>·<code>20-50</code>.\n"
+                    . "Ready-to-paste packet values — in the hint when tapping type/packet.",
             'noise_type' => $ru
                 ? "Тип содержимого шумового пакета:\n"
                     . "• <code>rand</code> — случайные байты (packet = длина/диапазон)\n"
@@ -9748,21 +9771,29 @@ DNS-over-HTTPS with IP:
                     . "• <code>base64</code> — bytes in base64 (packet = base64 string)\n"
                     . "<code>rand</code> is usually enough.",
             'noise_packet' => $ru
-                ? "Значение зависит от type:\n"
-                    . "• <code>rand</code>: длина в байтах — число <code>50</code> или диапазон <code>10-20</code>\n"
-                    . "• <code>str</code>: текст, напр. <code>hello</code>\n"
-                    . "• <code>hex</code>: чётное число hex-цифр без пробелов/<code>0x</code>, напр. <code>deadbeef</code>\n"
-                    . "• <code>base64</code>: корректная base64, напр. <code>7nQBAAA=</code>\n"
+                ? "Значение зависит от type. Готовые примеры для вставки:\n"
+                    . "• <code>rand</code> — длина в байтах: <code>50</code>, <code>100</code>, <code>10-20</code>, <code>50-150</code>, <code>200-400</code>\n"
+                    . "• <code>str</code> — текст как есть: <code>hello</code>, <code>ping</code>, <code>keepalive</code>\n"
+                    . "• <code>hex</code> — чётное число hex-цифр, без пробелов/<code>0x</code>:\n"
+                    . "   <code>deadbeef</code>, <code>48656c6c6f</code> (=Hello), <code>000102030405</code>, <code>cafebabe</code>\n"
+                    . "• <code>base64</code> — корректная base64:\n"
+                    . "   <code>SGVsbG8=</code> (=Hello), <code>dGVzdA==</code> (=test), <code>AAECAwQF</code>,\n"
+                    . "   <code>7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=</code> (DNS-запрос)\n"
                     . "⚠️ Для str/hex/base64 поле обязательно — пустой пакет пропускается."
-                : "Value depends on type:\n"
-                    . "• <code>rand</code>: length in bytes — number <code>50</code> or range <code>10-20</code>\n"
-                    . "• <code>str</code>: text, e.g. <code>hello</code>\n"
-                    . "• <code>hex</code>: even count of hex digits, no spaces/<code>0x</code>, e.g. <code>deadbeef</code>\n"
-                    . "• <code>base64</code>: valid base64, e.g. <code>7nQBAAA=</code>\n"
+                : "Value depends on type. Ready-to-paste examples:\n"
+                    . "• <code>rand</code> — length in bytes: <code>50</code>, <code>100</code>, <code>10-20</code>, <code>50-150</code>, <code>200-400</code>\n"
+                    . "• <code>str</code> — plain text as-is: <code>hello</code>, <code>ping</code>, <code>keepalive</code>\n"
+                    . "• <code>hex</code> — even count of hex digits, no spaces/<code>0x</code>:\n"
+                    . "   <code>deadbeef</code>, <code>48656c6c6f</code> (=Hello), <code>000102030405</code>, <code>cafebabe</code>\n"
+                    . "• <code>base64</code> — valid base64:\n"
+                    . "   <code>SGVsbG8=</code> (=Hello), <code>dGVzdA==</code> (=test), <code>AAECAwQF</code>,\n"
+                    . "   <code>7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=</code> (DNS query)\n"
                     . "⚠️ For str/hex/base64 this is required — an empty packet is skipped.",
             'noise_delay' => $ru
-                ? "Пример: <code>10-16</code>. Задержка перед шумовым UDP-пакетом в миллисекундах."
-                : "Example: <code>10-16</code>. Delay before the UDP noise packet in milliseconds.",
+                ? "Задержка после этого пакета в миллисекундах, число или диапазон. "
+                    . "Примеры: <code>0</code> (без задержки), <code>5</code>, <code>10-16</code>, <code>20-50</code>, <code>100-200</code>."
+                : "Delay after this packet in milliseconds, a number or a range. "
+                    . "Examples: <code>0</code> (no delay), <code>5</code>, <code>10-16</code>, <code>20-50</code>, <code>100-200</code>.",
             'r_maxTimeDiff' => $ru
                 ? "⚠️ Допуск расхождения часов клиент↔сервер в мс. <code>0</code> = проверка выключена (по умолч.). Только целое ≥ 0 — отрицательное значение не даст xray запуститься. Пример: <code>60000</code> (±60 с)."
                 : "⚠️ Allowed client↔server clock skew in ms. <code>0</code> = check disabled (default). Integer ≥ 0 only — a negative value stops xray from starting. Example: <code>60000</code> (±60 s).",
