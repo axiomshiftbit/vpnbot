@@ -7,7 +7,7 @@ FROM $image
 # Дефолт статичный — обычный build переиспользует кеш.
 ARG APK_REFRESH=2026-07-03
 
-# edge/main + edge/community дают свежие strongswan 5.9.x (IKEv1 для
+# edge/main + edge/community дают свежий strongswan 6.0.x (IKEv1 для
 # L2TP/IPsec + IKEv2 EAP-MSCHAPv2) и openssl 3.5.x LTS.
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \

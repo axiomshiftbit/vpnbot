@@ -9193,6 +9193,14 @@ DNS-over-HTTPS with IP:
         }
         $data[] = [['text' => $this->i18n('noise') . ': ' . $on($n['enabled'] ?? 0), 'callback_data' => '/dpiToggle noise']];
         if (!empty($n['enabled'])) {
+            // noises в xray-freedom применяется ТОЛЬКО к UDP-соединениям; все
+            // транспорты Vless тут (Reality/Websocket/xhttp/trojan-grpc) — TCP,
+            // поэтому по туннелю шум не отправляется и DPI не маскирует. Явно
+            // предупреждаем, чтобы не собрать бесполезную комбинацию (noise ON,
+            // fragment OFF). $tr пуст только до выбора транспорта.
+            if ($tr !== '') {
+                $text[] = str_replace('%s', htmlspecialchars($tr, ENT_QUOTES), $this->i18n('noise tcp warn'));
+            }
             $text[] = $this->dpiFieldHint('noise');
             // Готовые примеры значений — прямо в тексте меню, а не только во
             // всплывающей подсказке по тапу (её легко пропустить).

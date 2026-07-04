@@ -73,6 +73,10 @@ $i = [
         'en' => 'UDP noise',
         'ru' => 'UDP-шум',
     ],
+    'noise tcp warn'       => [
+        'en' => '⚠️ Your transport (%s) runs over TCP — UDP noise is NOT sent over it and masks nothing. For TCP enable TLS fragmentation instead. Noise only helps a UDP transport.',
+        'ru' => '⚠️ Ваш транспорт (%s) работает по TCP — UDP-шум по нему НЕ отправляется и ничего не маскирует. Для TCP включите TLS-фрагментацию. noise полезен только для UDP-транспорта.',
+    ],
     'sniffing'             => [
         'en' => 'Sniffing',
         'ru' => 'Сниффинг',
