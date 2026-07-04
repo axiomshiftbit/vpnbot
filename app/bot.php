@@ -215,6 +215,12 @@ class Bot
             case preg_match('~^/dpiFragPreset (\w+)$~', $this->input['callback'], $m):
                 $this->dpiFragPreset($m[1]);
                 break;
+            case preg_match('~^/dpiNoisePresets$~', $this->input['callback'], $m):
+                $this->dpiNoisePresetsMenu();
+                break;
+            case preg_match('~^/dpiNoisePreset (\w+)$~', $this->input['callback'], $m):
+                $this->dpiNoisePreset($m[1]);
+                break;
             case preg_match('~^/dpiGenSpiderX$~', $this->input['callback'], $m):
                 $this->dpiGenSpiderX();
                 break;
@@ -9230,7 +9236,10 @@ DNS-over-HTTPS with IP:
                     ['text' => '🗑',                                            'callback_data' => "/dpiNoiseDel {$i}"],
                 ];
             }
-            $data[] = [['text' => '➕ noise packet', 'callback_data' => '/dpiNoiseAdd']];
+            $data[] = [
+                ['text' => '➕ noise packet',                        'callback_data' => '/dpiNoiseAdd'],
+                ['text' => '📋 ' . $this->i18n('presets'),           'callback_data' => '/dpiNoisePresets'],
+            ];
         }
         $text[] = "\n" . $this->i18n('sniffing');
         $data[] = [['text' => $this->i18n('sniffing') . ': ' . $on($s['enabled'] ?? 0), 'callback_data' => '/dpiToggle sniffing']];
@@ -9312,6 +9321,14 @@ DNS-over-HTTPS with IP:
                 'label'    => $ru ? '📱 Мобильный (экономный)' : '📱 Mobile (battery)',
                 'packets'  => 'tlshello', 'length' => '40-80', 'interval' => '20-40', 'maxSplit' => '2-3',
             ],
+            'reality' => [
+                'label'    => $ru ? '🔮 Reality-оптим.' : '🔮 Reality-tuned',
+                'packets'  => 'tlshello', 'length' => '20-40', 'interval' => '10-20', 'maxSplit' => '5-8',
+            ],
+            'tspu' => [
+                'label'    => $ru ? '🧱 Против ТСПУ/РКН' : '🧱 Anti-TSPU',
+                'packets'  => 'tlshello', 'length' => '2-8', 'interval' => '3-8', 'maxSplit' => '15-30',
+            ],
             'stream' => [
                 'label'    => $ru ? '🧬 Весь поток (1-5)' : '🧬 Whole stream (1-5)',
                 'packets'  => '1-5', 'length' => '40-80', 'interval' => '10-20', 'maxSplit' => '',
@@ -9374,6 +9391,129 @@ DNS-over-HTTPS with IP:
         $p['dpi']['fragment']['length']   = $ps['length'];
         $p['dpi']['fragment']['interval'] = $ps['interval'];
         $p['dpi']['fragment']['maxSplit'] = $ps['maxSplit'];
+        $this->setPacConf($p);
+        $this->answer($this->input['callback_id'], $ps['label']);
+        $this->dpiMenu();
+    }
+
+    // Проверенные наборы UDP-шума (список пакетов type/packet/delay). Работают
+    // ТОЛЬКО для UDP-транспорта (см. 'noise tcp warn'). Часть шаблонов мимикрирует
+    // под реальные UDP-протоколы (DNS/QUIC/WireGuard/STUN), чтобы первый пакет
+    // выглядел легитимным для DPI. Единый источник для кнопок и подсказки.
+    public function noisePresets(): array
+    {
+        $ru = $this->language === 'ru';
+        // Готовый DNS A-запрос (base64) и STUN Binding Request (hex) — валидные
+        // пакеты соответствующих протоколов, а не случайный мусор.
+        $dns  = '7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=';
+        $stun = '000100002112a442000000000000000000000001';
+        return [
+            'rand1' => [
+                'label' => $ru ? '🎲 rand одиночный' : '🎲 rand single',
+                'list'  => [['type' => 'rand', 'packet' => '50-150', 'delay' => '10-16']],
+            ],
+            'rand2' => [
+                'label' => $ru ? '🎲 rand двойной (реком.)' : '🎲 rand double (rec.)',
+                'list'  => [
+                    ['type' => 'rand', 'packet' => '50-150',  'delay' => '10-16'],
+                    ['type' => 'rand', 'packet' => '200-400', 'delay' => '20-50'],
+                ],
+            ],
+            'soft' => [
+                'label' => $ru ? '🍃 Мягкий' : '🍃 Gentle',
+                'list'  => [['type' => 'rand', 'packet' => '40-80', 'delay' => '5-10']],
+            ],
+            'aggressive' => [
+                'label' => $ru ? '🛡 Агрессивный' : '🛡 Aggressive',
+                'list'  => [
+                    ['type' => 'rand', 'packet' => '100-300', 'delay' => '10-20'],
+                    ['type' => 'rand', 'packet' => '300-600', 'delay' => '20-40'],
+                    ['type' => 'rand', 'packet' => '600-900', 'delay' => '30-60'],
+                ],
+            ],
+            'dns' => [
+                'label' => $ru ? '🌐 Под DNS' : '🌐 DNS-like',
+                'list'  => [['type' => 'base64', 'packet' => $dns, 'delay' => '10-20']],
+            ],
+            'quic' => [
+                'label' => $ru ? '⚡ Под QUIC' : '⚡ QUIC-like',
+                'list'  => [['type' => 'rand', 'packet' => '1200-1252', 'delay' => '10-20']],
+            ],
+            'wireguard' => [
+                'label' => $ru ? '🔒 Под WireGuard' : '🔒 WireGuard-like',
+                'list'  => [['type' => 'rand', 'packet' => '148', 'delay' => '5-10']],
+            ],
+            'stun' => [
+                'label' => $ru ? '📞 Под STUN' : '📞 STUN-like',
+                'list'  => [['type' => 'hex', 'packet' => $stun, 'delay' => '10-20']],
+            ],
+            'mix' => [
+                'label' => $ru ? '🧬 Тройной микс' : '🧬 Triple mix',
+                'list'  => [
+                    ['type' => 'rand', 'packet' => '50-100',  'delay' => '5-10'],
+                    ['type' => 'rand', 'packet' => '200-300', 'delay' => '10-20'],
+                    ['type' => 'rand', 'packet' => '400-600', 'delay' => '20-40'],
+                ],
+            ],
+        ];
+    }
+
+    // Текстовая расшифровка noise-шаблонов: имя → последовательность пакетов.
+    public function noisePresetsHint(): string
+    {
+        $ru = $this->language === 'ru';
+        $lines = [$ru
+            ? "Шаблоны UDP-шума (последовательность type·packet·delay) — тап применяет:"
+            : "UDP noise presets (sequence type·packet·delay) — a tap applies:"];
+        foreach ($this->noisePresets() as $ps) {
+            $parts = [];
+            foreach ($ps['list'] as $pk) {
+                $pkt = mb_strlen($pk['packet']) > 14 ? mb_substr($pk['packet'], 0, 12) . '…' : $pk['packet'];
+                $parts[] = "<code>{$pk['type']}·{$pkt}·{$pk['delay']}</code>";
+            }
+            $lines[] = "• {$ps['label']}: " . implode(' + ', $parts);
+        }
+        return implode("\n", $lines);
+    }
+
+    // Подменю noise-шаблонов: легенда + кнопки (по 2 в ряд) + назад.
+    public function dpiNoisePresetsMenu(): void
+    {
+        $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> ' . $this->i18n('noise') . ' ' . $this->i18n('presets');
+        $text[] = $this->noisePresetsHint();
+
+        $data = [];
+        $row = [];
+        foreach ($this->noisePresets() as $key => $ps) {
+            $row[] = ['text' => $ps['label'], 'callback_data' => "/dpiNoisePreset $key"];
+            if (count($row) === 2) {
+                $data[] = $row;
+                $row = [];
+            }
+        }
+        if ($row) {
+            $data[] = $row;
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/dpiMenu']];
+
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    // Применить noise-шаблон: заменяет список пакетов и включает noise.
+    // Клиентская настройка (freedom-outbound в подписке) — рестарт xray не нужен.
+    public function dpiNoisePreset($key): void
+    {
+        $presets = $this->noisePresets();
+        if (!isset($presets[$key])) {
+            $this->answer($this->input['callback_id'], 'unknown preset', true);
+            return;
+        }
+        $ps = $presets[$key];
+        $p = $this->getPacConf();
+        $p['dpi']['noise']['enabled'] = 1;
+        $p['dpi']['noise']['list']    = $ps['list'];
+        // Legacy одиночный noise больше не источник истины — убираем, как в dpiNoiseAdd.
+        unset($p['dpi']['noise']['type'], $p['dpi']['noise']['packet'], $p['dpi']['noise']['delay']);
         $this->setPacConf($p);
         $this->answer($this->input['callback_id'], $ps['label']);
         $this->dpiMenu();
