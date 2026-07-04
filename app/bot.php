@@ -1228,7 +1228,15 @@ class Bot
         $t .= "whitelist = [\"127.0.0.1/32\", \"::1/128\"]\n\n";
         $t .= "[[server.listeners]]\n";
         $t .= "ip = \"0.0.0.0\"\n";
-        $t .= "announce_ip = " . $q($announce) . "\n\n";
+        // telemt отвергает пустой announce_ip ("invalid IP address syntax") и не
+        // стартует вовсе. getenv('IP') бывает пуст, когда стек подняли не через
+        // make (make экспортирует IP из hostname -I; .env держит IP пустым, а
+        // bare `docker compose up` даёт IP=""). В этом случае ключ опускаем —
+        // telemt сам определит announce-адрес, а не падает.
+        if ($announce !== '') {
+            $t .= "announce_ip = " . $q($announce) . "\n";
+        }
+        $t .= "\n";
         $t .= "[censorship]\n";
         $t .= "tls_domain = " . $q($domain) . "\n";
         $t .= "mask = true\n";
@@ -8949,12 +8957,6 @@ DNS-over-HTTPS with IP:
                         ],
                         [
                             [
-                                'text'          => $this->i18n('TrustTunnel'),
-                                'callback_data' => "/menu tt",
-                            ],
-                        ],
-                        [
-                            [
                                 'text'          => $this->i18n('ad_title'),
                                 'callback_data' => "/menu adguard",
                             ],
@@ -9002,6 +9004,12 @@ DNS-over-HTTPS with IP:
                                 'text'          => 'IKEv2',
                                 'callback_data' => "/menu ikev2",
                             ],
+                            [
+                                'text'          => $this->i18n('TrustTunnel'),
+                                'callback_data' => "/menu tt",
+                            ],
+                        ],
+                        [
                             [
                                 'text'          => $this->i18n('config'),
                                 'callback_data' => "/menu config",
