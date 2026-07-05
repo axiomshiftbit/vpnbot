@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/ClashTemplateValidator.php';
+
 class Bot
 {
     public $input;
@@ -109,6 +111,12 @@ class Bot
         $this->auth();
         if ($this->admin) {
             $this->session();
+            // Отпускаем session lock ДО диспатча: PHP сериализует запросы
+            // одного юзера на файловом локе сессии, и долгий хендлер (certbot,
+            // рестарты, ssh-пробы) замораживал все следующие нажатия. Чтения
+            // $_SESSION дальше работают из памяти; точечные записи идут через
+            // stashReply()/unstashReply() (reopen → write → close).
+            session_write_close();
             $this->action();
         }
         $this->callbackCheck();
@@ -151,6 +159,40 @@ class Bot
         }
     }
 
+    // Записи в закрытую сессию (input() отпускает lock до action()) молча
+    // теряются, поэтому все записи $_SESSION['reply'] идут через эти хелперы:
+    // короткий reopen → write → close, лок держится миллисекунды.
+    protected function sessionApply(callable $fn)
+    {
+        $reopened = false;
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            session_id((string) $this->input['from']);
+            @session_start();
+            $reopened = true;
+        }
+        $fn();
+        if ($reopened) {
+            session_write_close();
+        }
+    }
+
+    public function stashReply($r, array $state)
+    {
+        if (empty($r['result']['message_id'])) {
+            return;
+        }
+        $this->sessionApply(function () use ($r, $state) {
+            $_SESSION['reply'][$r['result']['message_id']] = $state;
+        });
+    }
+
+    public function unstashReply($messageId)
+    {
+        $this->sessionApply(function () use ($messageId) {
+            unset($_SESSION['reply'][$messageId]);
+        });
+    }
+
     public function sd($var, $log = false, $json = false, $raw = false)
     {
         if ($log) {
@@ -178,6 +220,15 @@ class Bot
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt|ovpn|l2tp|ikev2)$~', $this->input['callback'], $m):
                 $this->menu(type: $m['type'] ?? false, arg: $m['arg'] ?? false);
+                break;
+            case preg_match('~^/refreshMain$~', $this->input['callback'], $m):
+                $this->refreshMain();
+                break;
+            case preg_match('~^/domainAlias$~', $this->input['callback'], $m):
+                $this->domainAliasPrompt();
+                break;
+            case preg_match('~^/delDomainAlias (\d+)$~', $this->input['callback'], $m):
+                $this->delDomainAlias($m[1]);
                 break;
             case preg_match('~^/changeWG (\d+)$~', $this->input['callback'], $m):
                 $this->changeWG($m[1]);
@@ -926,6 +977,9 @@ class Bot
                 break;
             case preg_match('~^/switchSubtokenStrict$~', $this->input['callback'], $m):
                 $this->switchSubtokenStrict();
+                break;
+            case preg_match('~^/rotateAllSubTokens$~', $this->input['callback'], $m):
+                $this->rotateAllSubTokens();
                 break;
             case preg_match('~^/choiceTemplate (.+)$~', $this->input['callback'], $m):
                 $this->choiceTemplate($m[1]);
@@ -1679,12 +1733,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter url',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'urlcheck',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function urlcheck($url)
@@ -1718,12 +1772,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'sspwdch',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function ssPswdCheck()
@@ -1742,12 +1796,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter camouflage key',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chockey',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function changeOcDomain()
@@ -1758,12 +1812,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter subdomain',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chOcSubdomain',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function changeOcDns()
@@ -1774,12 +1828,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chocdns',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function changeOcPass()
@@ -1790,12 +1844,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chocpass',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function changeNaiveUser()
@@ -1806,12 +1860,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter login',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chnplogin',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function changeNaiveSubdomain()
@@ -1822,12 +1876,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter subdomain',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chNpSubdomain',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function changeNaivePass()
@@ -1838,12 +1892,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chnppass',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function changeHysteriaPass()
@@ -1854,12 +1908,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chhypass',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function addOcUser()
@@ -1870,12 +1924,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter name',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addocus',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function addXrUser()
@@ -1886,12 +1940,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter name:uuid [,name:uuid]',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addxrus',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function renameXrUser($i)
@@ -1902,12 +1956,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'renXrUs',
             'args'           => [$i],
-        ];
+        ]);
     }
 
     public function addOverrideHtml()
@@ -1918,12 +1972,12 @@ class Bot
             $this->input['message_id'],
             reply: 'attach html',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setOverrideHtml',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function setOverrideHtml()
@@ -2144,12 +2198,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter hysteria SNI',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chHySNI',
             'args'           => [],
-        ];
+        ]);
     }
 
     // SNI hysteria — это host в masquerade.proxy.url (decoy-сайт для
@@ -2232,12 +2286,12 @@ class Bot
             $this->input['message_id'],
             reply: 'enter port range',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chHyHop',
             'args'           => [],
-        ];
+        ]);
     }
 
     // Нормализуем/валидируем строку мультипорта Hysteria: токены через запятую,
@@ -2380,12 +2434,12 @@ NFT;
             $this->input['message_id'],
             reply: 'enter bandwidth',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chHyBw',
             'args'           => [],
-        ];
+        ]);
     }
 
     // Парсим "up down" в mbps. Пусто/0 → удаляем bandwidth (Brutal off → BBR).
@@ -2559,12 +2613,12 @@ NFT;
             $this->input['message_id'],
             reply: 'enter simple-tls port',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chStlsPort',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function chStlsPort($port)
@@ -2589,12 +2643,12 @@ NFT;
             $this->input['message_id'],
             reply: 'enter simple-tls SNI',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chStlsSNI',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function chStlsSNI($name)
@@ -2883,12 +2937,12 @@ NFT;
             $this->input['message_id'],
             reply: 'enter cloak port',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chCloakPort',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function chCloakPort($port)
@@ -2922,12 +2976,12 @@ NFT;
             $this->input['message_id'],
             reply: 'enter masquerade domain',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chCloakDomain',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function chCloakDomain($domain)
@@ -3020,12 +3074,12 @@ NFT;
             $this->input['message_id'],
             reply: 'enter cloak user name',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addCkUserSubmit',
             'args'           => [],
-        ];
+        ]);
     }
 
     // Регистрирует нового пользователя cloak. Имя нормализуется (тот же
@@ -3195,12 +3249,12 @@ NFT;
             $this->input['message_id'],
             reply: 'enter the title:',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'renameClient',
             'args'           => [$client, $page],
-        ];
+        ]);
     }
 
     public function timer(int $client, $page)
@@ -3211,12 +3265,12 @@ NFT;
             $this->input['message_id'],
             reply: 'enter time like https://www.php.net/manual/ru/function.strtotime.php:',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'timerClient',
             'args'           => [$client, $page],
-        ];
+        ]);
     }
 
     public function importList($type)
@@ -3227,12 +3281,12 @@ NFT;
             $this->input['message_id'],
             reply: 'send the export file:',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'importListFile',
             'args'           => [$type],
-        ];
+        ]);
     }
 
     public function importListFile($message = '', $type)
@@ -3317,6 +3371,7 @@ NFT;
             'backfillSubTokens',
             'checkRelayHealth',
             'warmGeoCache',
+            'refreshMenuStatusCache',
         ];
         while (true) {
             foreach ($steps as $step) {
@@ -3845,12 +3900,12 @@ NFT;
             $this->input['message_id'],
             reply: 'send the export file:',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'importFile',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function importFile($file = false)
@@ -4397,12 +4452,12 @@ NFT;
             $this->input['message_id'],
             reply: 'введите I1 или 0',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setAmneziaI1Value',
             'args'           => [$page],
-        ];
+        ]);
     }
 
     public function setAmneziaI1Value($text, $page = 0)
@@ -4617,12 +4672,12 @@ NFT;
             $this->input['message_id'],
             reply: 'введите N или 0',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setAmneziaRotationValue',
             'args'           => [$page],
-        ];
+        ]);
     }
 
     public function setAmneziaRotationValue($text, $page = 0)
@@ -4798,7 +4853,9 @@ NFT;
             $this->input['message_id'] = $this->input['callback_id'] = $_SESSION['reply'][$this->input['reply']]['start_message'];
             $this->{$callback}($this->input['message'], ...$_SESSION['reply'][$this->input['reply']]['args']);
             $this->answer($_SESSION['reply'][$this->input['reply']]['start_message']);
-            unset($_SESSION['reply'][$this->input['reply']]);
+            // Сессия к этому моменту закрыта (см. input()) — unset через хелпер,
+            // иначе изменение не сохранится и prompt останется висеть.
+            $this->unstashReply($this->input['reply']);
         }
     }
 
@@ -4823,6 +4880,66 @@ NFT;
             sleep(3);
             $this->menu('config');
         }
+    }
+
+    // ── Алиасы домена ────────────────────────────────────────────────────
+    // Дополнительные домены того же сервера: попадают в SAN LE-серта и в
+    // server_name nginx. SNI-роутинг upstream не трогаем — неизвестные хосты
+    // и так падают в `default other`. Подписки продолжают выдаваться на
+    // основном домене; oc/np/adguard-субдомены — только у основного.
+    public function domainAliasPrompt()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} send alias domain (extra SAN, routed same as main)",
+            $this->input['message_id'],
+            reply: 'send alias domain',
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'addDomainAlias',
+            'args'           => [],
+        ]);
+    }
+
+    public function addDomainAlias($domain)
+    {
+        $domain = (string) idn_to_ascii(trim((string) $domain));
+        $conf   = $this->getPacConf();
+        // Домен уходит в exec (certbot) и в nginx.conf — принимаем только
+        // безопасный синтаксис hostname, никаких shell-метасимволов.
+        if (!preg_match('~^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$~i', $domain)) {
+            $this->send($this->input['chat'], "$domain - wrong domain format", $this->input['message_id']);
+            $this->menu('config');
+            return;
+        }
+        if ($domain === ($conf['domain'] ?? '') || in_array($domain, $conf['domain_aliases'] ?? [], true)) {
+            $this->menu('config');
+            return;
+        }
+        $conf['domain_aliases'][] = $domain;
+        $this->setPacConf($conf);
+        // nginx начинает принимать алиас сразу; серт — после «renew SSL».
+        $this->cloakNginx();
+        $this->send($this->input['chat'], "alias added — press «renew SSL» to include it in the certificate", $this->input['message_id']);
+        $this->menu('config');
+    }
+
+    public function delDomainAlias($i)
+    {
+        $conf    = $this->getPacConf();
+        $aliases = array_values($conf['domain_aliases'] ?? []);
+        unset($aliases[(int) $i]);
+        $aliases = array_values($aliases);
+        if ($aliases) {
+            $conf['domain_aliases'] = $aliases;
+        } else {
+            unset($conf['domain_aliases']);
+        }
+        $this->setPacConf($conf);
+        $this->cloakNginx();
+        $this->menu('config');
     }
 
     public function sslip()
@@ -4898,7 +5015,13 @@ NFT;
                 $adguardClient = $conf['adguardkey'] ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
                 $oc = $this->getHashSubdomain('oc');
                 $np = $this->getHashSubdomain('np');
-                exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . " $adguardClient --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
+                // Алиасы — дополнительные SAN того же серта (формат каждого
+                // провалидирован в addDomainAlias, в shell попадает безопасно).
+                $aliases = '';
+                foreach ($conf['domain_aliases'] ?? [] as $a) {
+                    $aliases .= ' -d ' . escapeshellarg($a);
+                }
+                exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
                 if ($code > 0) {
                     $this->send($this->input['chat'], "ERROR\n" . implode("\n", $out));
                     break;
@@ -4955,6 +5078,8 @@ NFT;
         $this->deleteSSL(1);
         $conf = $this->getPacConf();
         unset($conf['domain']);
+        // Алиасы без основного домена не имеют смысла (серт удалён).
+        unset($conf['domain_aliases']);
         $this->setPacConf($conf);
         $this->setUpstreamDomainOcserv('');
         $this->chocdomain('');
@@ -4971,11 +5096,11 @@ NFT;
             $this->input['message_id'],
             reply: 'list subnets separated by commas',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'createPeer',
             'args'          => ['subnet'],
-        ];
+        ]);
     }
 
     public function getPacConf()
@@ -4996,11 +5121,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter domain',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'addDomain',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function selfssl()
@@ -5011,11 +5136,11 @@ NFT;
             $this->input['message_id'],
             reply: 'send file with your certificate chain and private key',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'selfsslInstall',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function adguardSync()
@@ -5043,11 +5168,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'chpsswd',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function setAdguardKey()
@@ -5058,11 +5183,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter key',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setAdKey',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function timerXr($k)
@@ -5073,11 +5198,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter time like https://www.php.net/manual/ru/function.strtotime.php:',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setTimerXr',
             'args'          => [$k],
-        ];
+        ]);
     }
 
     public function setAdKey($key)
@@ -5096,11 +5221,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter id',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'addAdmin',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function addSubdomain()
@@ -5111,11 +5236,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter subdomain',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setSubdomain',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function setIpLimit()
@@ -5126,11 +5251,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter seconds:count_ip',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'switchIpLimit',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function changePort($container)
@@ -5141,11 +5266,11 @@ NFT;
             $this->input['message_id'],
             reply: 'number port',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setPort',
             'args'          => [$container],
-        ];
+        ]);
     }
 
     public function addLinkDomain()
@@ -5156,11 +5281,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter domain for link',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setLinkDomain',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function setLinkDomain($text)
@@ -5245,11 +5370,11 @@ NFT;
             $this->input['message_id'],
             reply: $this->i18n('enter relay name'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setRelayName',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function setRelayName($text)
@@ -5355,11 +5480,11 @@ NFT;
             $this->input['message_id'],
             reply: $this->i18n('enter relay address'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setRelayAddress',
             'args'          => [$name],
-        ];
+        ]);
     }
 
     public function setRelayAddress($text, $name = '')
@@ -5382,11 +5507,11 @@ NFT;
             $this->input['message_id'],
             reply: $this->i18n('enter relay port map'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setRelayPortMap',
             'args'          => [$name],
-        ];
+        ]);
     }
 
     public function setRelayPortMap($text, $name = '')
@@ -5409,11 +5534,11 @@ NFT;
             $this->input['message_id'],
             reply: $this->i18n('enter relay awg address'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setRelayAwgAddress',
             'args'          => [$name],
-        ];
+        ]);
     }
 
     public function setRelayAwgAddress($text, $name = '')
@@ -5441,11 +5566,11 @@ NFT;
             $this->input['message_id'],
             reply: $this->i18n('enter relay awg port map'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setRelayAwgPortMap',
             'args'          => [$name],
-        ];
+        ]);
     }
 
     public function setRelayAwgPortMap($text, $name = '')
@@ -5593,11 +5718,11 @@ NFT;
             $this->input['message_id'],
             reply: 'enter limit on page',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setPage',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function setPage($text) {
@@ -5729,11 +5854,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter command',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'dnscheck',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function dnscheck($dns)
@@ -5756,11 +5881,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter address upstream',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'upstream',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function upstream($url)
@@ -5827,11 +5952,11 @@ DNS-over-HTTPS with IP:
                 );
                 break;
         }
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'addInclude',
             'args'          => [$type],
-        ];
+        ]);
     }
 
     public function addInclude(string $domains, $type)
@@ -6036,11 +6161,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'list domains separated by commas',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'addReverse',
             'args'          => [$count],
-        ];
+        ]);
     }
 
     public function addReverse(string $domains, int $count)
@@ -6068,11 +6193,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'list subdomains separated by commas',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'addSubzones',
             'args'          => [$count],
-        ];
+        ]);
     }
 
     public function addSubzones(string $domains, int $count)
@@ -6100,11 +6225,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter regular expression',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'addExclude',
             'args'          => [$count],
-        ];
+        ]);
     }
 
     public function addExclude(string $reg, int $count)
@@ -6448,12 +6573,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter dns separated by commas',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setDNS',
             'args'           => [$page],
-        ];
+        ]);
     }
 
     public function defaultMTU($page = 0)
@@ -6464,12 +6589,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter MTU',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setMTU',
             'args'           => [$page],
-        ];
+        ]);
     }
 
     public function changeMTU($client, $page = 0)
@@ -6480,12 +6605,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter MTU',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'changeClientMTU',
             'args'           => [$client, $page],
-        ];
+        ]);
     }
 
     public function setDNS($text, $page = 0)
@@ -6532,12 +6657,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter subnet separated by commas',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'subnetSave',
             'args'           => [$wgpage, $page, $openconnect],
-        ];
+        ]);
     }
 
     public function subnetSave($text, $wgpage, $page, $openconnect)
@@ -6595,12 +6720,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter like \'10.0.0.0/24, -10.0.0.5/32\'',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'calcSubnet',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function calcSubnet($text)
@@ -6759,11 +6884,11 @@ DNS-over-HTTPS with IP:
                     $this->input['message_id'],
                     reply: 'list subnets separated by commas',
                 );
-                $_SESSION['reply'][$r['result']['message_id']] = [
+                $this->stashReply($r, [
                     'start_message' => $this->input['message_id'],
                     'callback'      => 'setIps',
                     'args'          => [$k, $page],
-                ];
+                ]);
                 break;
             case 'list':
                 $this->setIps(implode(',', $this->getPacConf()['subnets']), $k, $page);
@@ -7125,7 +7250,11 @@ DNS-over-HTTPS with IP:
 
     public function pacMenu($page = 0)
     {
-        unset($_SESSION['proxylistentry']);
+        // Сессия закрыта с момента диспатча (input()) — флаг снимаем через
+        // хелпер, иначе unset не переживёт запрос.
+        $this->sessionApply(function () {
+            unset($_SESSION['proxylistentry']);
+        });
         $rmpac  = stat(__DIR__ . '/zapretlists/rmpac');
         $rpac   = stat(__DIR__ . '/zapretlists/rpac');
         $mpac   = stat(__DIR__ . '/zapretlists/mpac');
@@ -7463,7 +7592,12 @@ DNS-over-HTTPS with IP:
 
     public function xtlsproxy($page = 0)
     {
-        $_SESSION['proxylistentry'] = 1;
+        // Флаг «пришли из proxy list» читается СЛЕДУЮЩИМ запросом (pacUpdate)
+        // — запись обязана пережить текущий, пишем через хелпер (сессия
+        // закрыта с момента диспатча).
+        $this->sessionApply(function () {
+            $_SESSION['proxylistentry'] = 1;
+        });
         $p = $this->getPacConf();
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> proxy list';
         [$data] = $this->listPac('includelist', $page, 'xtlsproxy');
@@ -7939,11 +8073,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter domain',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setdnsttDomain',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function dnsttPassword()
@@ -7954,11 +8088,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setdnsttPassword',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function setdnsttPassword($text)
@@ -8201,11 +8335,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: $this->i18n('enter relay name'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'telemtRelaySetName',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function telemtRelaySetName($text)
@@ -8257,11 +8391,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: $this->i18n('enter relay address'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'telemtRelaySetAddress',
             'args'          => [$name],
-        ];
+        ]);
     }
 
     public function telemtRelaySetAddress($text, $name = '')
@@ -8284,11 +8418,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: $this->i18n('enter relay port map'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'telemtRelaySetPortMap',
             'args'          => [$name],
-        ];
+        ]);
     }
 
     public function telemtRelaySetPortMap($text, $name = '')
@@ -8654,11 +8788,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter user name',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'telemtUserAdd',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function telemtUserAdd($name)
@@ -8704,11 +8838,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter domain',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'setTelemtDomain',
             'args'          => [],
-        ];
+        ]);
     }
 
     public function setTelemtDomain($domain)
@@ -8818,6 +8952,71 @@ DNS-over-HTTPS with IP:
         return $r;
     }
 
+    // Живые пробы всех сервисов для главного меню: 15+ ssh-раундов + exec —
+    // дорого (секунды). Напрямую из меню не вызывать — только через
+    // serviceStatuses()/refreshMenuStatusCache().
+    public function probeServiceStatuses()
+    {
+        $pac = $this->getPacConf();
+        return [
+            'wg'     => (bool) $this->ssh(!empty($pac['amnezia']) ? 'awg' : 'wg', 'wg'),
+            'wg1'    => (bool) $this->ssh(!empty($pac['wg1_amnezia']) ? 'awg' : 'wg', 'wg1'),
+            'xray'   => (bool) $this->ssh('pgrep xray', 'xr'),
+            'naive'  => (bool) $this->ssh('pgrep caddy', 'np'),
+            'oc'     => (bool) $this->ssh('pgrep ocserv', 'oc'),
+            'hy'     => (bool) $this->ssh('pgrep hysteria', 'hy'),
+            'tt'     => (bool) $this->ssh('pgrep -f trusttunnel_endpoint', 'tt'),
+            'ovpn'   => (bool) $this->ssh('pgrep openvpn', 'ovpn'),
+            'l2tp'   => (bool) $this->ssh('pgrep xl2tpd', 'ipsec'),
+            'ikev2'  => (bool) $this->ssh('pgrep charon', 'ipsec'),
+            'ad'     => (bool) exec("JSON=1 timeout 2 dnslookup google.com ad"),
+            'ss'     => (bool) $this->ssh('pgrep ssserver', 'ss'),
+            'dnstt'  => (bool) $this->ssh('pgrep dnstt', 'dnstt'),
+            'telemt' => (bool) $this->ssh('pgrep -x telemt', 'telemt'),
+            'warp'   => $this->warpStatus(),
+            'cron'   => (bool) $this->ssh('pgrep -f cron.php', 'service'),
+        ];
+    }
+
+    // Статусы для главного меню из кэша (/logs общий у php- и service-
+    // контейнеров; cron держит кэш тёплым). Возвращает ['ts' => …, 'st' => …].
+    // 90с = три пропущенных cron-цикла: считаем кэш мёртвым (cron лежит?)
+    // и пробуем живьём, как раньше.
+    public function serviceStatuses($force = false)
+    {
+        $f = '/logs/menu_status.json';
+        if (!$force && is_file($f)) {
+            $c = json_decode((string) file_get_contents($f), true);
+            if (!empty($c['ts']) && time() - $c['ts'] < 90 && !empty($c['st'])) {
+                return $c;
+            }
+        }
+        $r = ['ts' => time(), 'st' => $this->probeServiceStatuses()];
+        file_put_contents($f, json_encode($r), LOCK_EX);
+        return $r;
+    }
+
+    // Шаг cron() (service-контейнер): обновляем кэш каждые ~30с, чтобы рендер
+    // главного меню никогда не ходил по ssh сам.
+    public function refreshMenuStatusCache()
+    {
+        $f = '/logs/menu_status.json';
+        $c = is_file($f) ? json_decode((string) file_get_contents($f), true) : [];
+        if (empty($c['ts']) || time() - $c['ts'] >= 30) {
+            $this->serviceStatuses(true);
+        }
+    }
+
+    // Кнопка 🔄 главного меню: живые пробы + перерисовка.
+    public function refreshMain()
+    {
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('refreshed'));
+        }
+        $this->serviceStatuses(true);
+        $this->menu();
+    }
+
     public function menu($type = false, $arg = false, $return = false)
     {
         $conf   = $this->getPacConf();
@@ -8834,7 +9033,11 @@ DNS-over-HTTPS with IP:
                     $backup = "{$conf['backup']} - wrong format";
                 }
             }
-            $cron   = $this->dontshowcron ? '' : $this->i18n($this->ssh('pgrep -f cron.php', 'service') ? 'on' : 'off') . ' cron';
+            // Статусы сервисов — из кэша (cron обновляет каждые ~30с):
+            // рендер главного меню больше не делает 15+ ssh-проб сам.
+            $status = $this->serviceStatuses();
+            $st     = $status['st'];
+            $cron   = $this->dontshowcron ? '' : $this->i18n($st['cron'] ? 'on' : 'off') . ' cron';
             $f      = '/docker/compose';
             $c      = is_file($f) ? (yaml_parse_file($f)['services'] ?? []) : [];
             // BUILD_COMMIT пишется post-receive скриптом в .env перед make r,
@@ -8868,6 +9071,9 @@ DNS-over-HTTPS with IP:
                     if (!empty($conf['adguardkey'])) {
                         $main[] = "{$conf['adguardkey']}.{$conf['domain']}" . (in_array("{$conf['adguardkey']}.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
                     }
+                    foreach ($conf['domain_aliases'] ?? [] as $a) {
+                        $main[] = "alias $a" . (in_array($a, $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
+                    }
                     $main[] = "</blockquote>";
                 } else {
                     $main[] = $this->i18n('domain explain');
@@ -8878,30 +9084,26 @@ DNS-over-HTTPS with IP:
             $ports  = $this->getPorts();
             $main[] = '';
 
-            // Один ssh-раунд на контейнер ipsec вместо четырёх: статусы
-            // нужны и в колонке сервисов, и в колонке портов.
-            $ipsecXl2tpOn  = (bool) $this->ssh('pgrep xl2tpd', 'ipsec');
-            $ipsecCharonOn = (bool) $this->ssh('pgrep charon', 'ipsec');
-            $ipsecPorts    = $this->ipsecPorts();
+            $ipsecPorts = $this->ipsecPorts();
 
             $main[] = '<code>';
             $main[] = $this->alignColumns([
                 [
-                    $this->i18n($this->ssh(!empty($this->getPacConf()['amnezia']) ? 'awg' : 'wg', 'wg') ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['amnezia']) ? 'amnezia' : 'wg_title'),
-                    $this->i18n($this->ssh(!empty($this->getPacConf()['wg1_amnezia']) ? 'awg' : 'wg', 'wg1') ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['wg1_amnezia']) ? 'amnezia' : 'wg_title'),
-                    $this->i18n($this->ssh('pgrep xray', 'xr') ? 'on' : 'off') . ' ' . $this->i18n('xray'),
-                    $this->i18n($this->ssh('pgrep caddy', 'np') ? 'on' : 'off') . ' ' . $this->i18n('naive'),
-                    $this->i18n($this->ssh('pgrep ocserv', 'oc') ? 'on' : 'off') . ' ' . $this->i18n('ocserv'),
-                    $this->i18n($this->ssh('pgrep hysteria', 'hy') ? 'on' : 'off') . ' ' . $this->i18n('hysteria'),
-                    $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . $this->i18n('TrustTunnel'),
-                    $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . $this->i18n('OpenVPN'),
-                    $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . ' L2TP/IPsec',
-                    $this->i18n($ipsecCharonOn ? 'on' : 'off') . ' IKEv2',
-                    $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off') . ' ' . $this->i18n('ad_title'),
-                    $this->i18n($this->ssh('pgrep ssserver', 'ss') ? 'on' : 'off') . ' ' . $this->i18n('sh_title'),
-                    $this->i18n($this->ssh('pgrep dnstt', 'dnstt') ? 'on' : 'off') . ' ' . $this->i18n('dnstt'),
-                    $this->i18n($this->ssh('pgrep -x telemt', 'telemt') ? 'on' : 'off') . ' ' . $this->i18n('telemt'),
-                    $this->i18n($this->warpStatus()) . ' ' . $this->i18n('warp'),
+                    $this->i18n($st['wg'] ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['amnezia']) ? 'amnezia' : 'wg_title'),
+                    $this->i18n($st['wg1'] ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['wg1_amnezia']) ? 'amnezia' : 'wg_title'),
+                    $this->i18n($st['xray'] ? 'on' : 'off') . ' ' . $this->i18n('xray'),
+                    $this->i18n($st['naive'] ? 'on' : 'off') . ' ' . $this->i18n('naive'),
+                    $this->i18n($st['oc'] ? 'on' : 'off') . ' ' . $this->i18n('ocserv'),
+                    $this->i18n($st['hy'] ? 'on' : 'off') . ' ' . $this->i18n('hysteria'),
+                    $this->i18n($st['tt'] ? 'on' : 'off') . ' ' . $this->i18n('TrustTunnel'),
+                    $this->i18n($st['ovpn'] ? 'on' : 'off') . ' ' . $this->i18n('OpenVPN'),
+                    $this->i18n($st['l2tp'] ? 'on' : 'off') . ' L2TP/IPsec',
+                    $this->i18n($st['ikev2'] ? 'on' : 'off') . ' IKEv2',
+                    $this->i18n($st['ad'] ? 'on' : 'off') . ' ' . $this->i18n('ad_title'),
+                    $this->i18n($st['ss'] ? 'on' : 'off') . ' ' . $this->i18n('sh_title'),
+                    $this->i18n($st['dnstt'] ? 'on' : 'off') . ' ' . $this->i18n('dnstt'),
+                    $this->i18n($st['telemt'] ? 'on' : 'off') . ' ' . $this->i18n('telemt'),
+                    $this->i18n($st['warp']) . ' ' . $this->i18n('warp'),
                 ],
                 [
                     $this->i18n($ports['wg']['enable'] ? 'on' : 'off') . ($ports['wg']['enable'] ? ' ' . $ports['wg']['port'] : ' port unavailable'),
@@ -8910,10 +9112,10 @@ DNS-over-HTTPS with IP:
                     $this->i18n('on') . ' 443',
                     $this->i18n('on') . ' 443',
                     $this->i18n($ports['hy']['enable'] ? 'on' : 'off') . ($ports['hy']['enable'] ? ' ' . $ports['hy']['port'] : ' port unavailable'),
-                    $this->i18n($this->ssh('pgrep -f trusttunnel_endpoint', 'tt') ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
-                    $this->i18n($this->ssh('pgrep openvpn', 'ovpn') ? 'on' : 'off') . ' ' . (isset($c['ovpn']['ports'][0]) ? explode(':', $c['ovpn']['ports'][0])[0] : getenv('OVPNPORT')),
-                    $this->i18n($ipsecXl2tpOn ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
-                    $this->i18n($ipsecCharonOn ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
+                    $this->i18n($st['tt'] ? 'on' : 'off') . ' ' . (isset($c['tt']['ports'][0]) ? explode(':', $c['tt']['ports'][0])[0] : getenv('TTPORT')),
+                    $this->i18n($st['ovpn'] ? 'on' : 'off') . ' ' . (isset($c['ovpn']['ports'][0]) ? explode(':', $c['ovpn']['ports'][0])[0] : getenv('OVPNPORT')),
+                    $this->i18n($st['l2tp'] ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
+                    $this->i18n($st['ikev2'] ? 'on' : 'off') . " {$ipsecPorts['ike']},{$ipsecPorts['natt']}",
                     $this->i18n($ports['ad']['enable'] ? 'on' : 'off') . ($ports['ad']['enable'] ? ' ' . $ports['ad']['port'] : ' port unavailable'),
                     $this->i18n($ports['ss']['enable'] ? 'on' : 'off') . ($ports['ss']['enable'] ? ' ' . $ports['ss']['port'] : ' port unavailable'),
                     $this->i18n($ports['dnstt']['enable'] ? 'on' : 'off') . ($ports['dnstt']['enable'] ? ' ' . $ports['dnstt']['port'] : ' port unavailable'),
@@ -9030,6 +9232,14 @@ DNS-over-HTTPS with IP:
                             [
                                 'text'          => $this->i18n('config'),
                                 'callback_data' => "/menu config",
+                            ],
+                        ],
+                        [
+                            [
+                                // Возраст кэша статусов прямо в подписи кнопки:
+                                // видно, насколько свежи on/off в тексте меню.
+                                'text'          => '🔄 status: ' . (isset($status['ts']) ? (time() - $status['ts']) . 's ago' : '…'),
+                                'callback_data' => '/refreshMain',
                             ],
                         ],
                     ],
@@ -9785,12 +9995,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: $this->i18n('enter value'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'saveDpi',
             'args'           => [$field],
-        ];
+        ]);
     }
 
     // Готовые значения packet для каждого типа noise. Один источник и для
@@ -10179,11 +10389,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter hwid devices count',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'saveHwidDevices',
             'args'          => [$context],
-        ];
+        ]);
     }
 
     public function saveHwidDevices($count, $context = null)
@@ -10258,21 +10468,27 @@ DNS-over-HTTPS with IP:
 
     protected function rememberHwidToken($scope, $hwid)
     {
-        if (!isset($_SESSION['hwidTokens'])) {
-            $_SESSION['hwidTokens'] = [];
-        }
-        if (!isset($_SESSION['hwidTokens'][$scope])) {
-            $_SESSION['hwidTokens'][$scope] = [];
-        }
-        do {
-            try {
-                $token = bin2hex(random_bytes(5));
-            } catch (\Throwable $e) {
-                $token = substr(hash('sha256', $hwid . microtime(true)), 0, 10);
+        // Токен резолвится СЛЕДУЮЩИМ запросом (кнопка удаления) — запись
+        // обязана пережить текущий: сессия закрыта с диспатча, пишем через
+        // sessionApply.
+        $token = '';
+        $this->sessionApply(function () use ($scope, $hwid, &$token) {
+            if (!isset($_SESSION['hwidTokens'])) {
+                $_SESSION['hwidTokens'] = [];
             }
-        } while (isset($_SESSION['hwidTokens'][$scope][$token]));
+            if (!isset($_SESSION['hwidTokens'][$scope])) {
+                $_SESSION['hwidTokens'][$scope] = [];
+            }
+            do {
+                try {
+                    $token = bin2hex(random_bytes(5));
+                } catch (\Throwable $e) {
+                    $token = substr(hash('sha256', $hwid . microtime(true)), 0, 10);
+                }
+            } while (isset($_SESSION['hwidTokens'][$scope][$token]));
 
-        $_SESSION['hwidTokens'][$scope][$token] = $hwid;
+            $_SESSION['hwidTokens'][$scope][$token] = $hwid;
+        });
 
         return $token;
     }
@@ -10281,7 +10497,10 @@ DNS-over-HTTPS with IP:
     {
         if (isset($_SESSION['hwidTokens'][$scope][$token])) {
             $hwid = $_SESSION['hwidTokens'][$scope][$token];
-            unset($_SESSION['hwidTokens'][$scope][$token]);
+            // Одноразовость токена должна пережить запрос — unset через хелпер.
+            $this->sessionApply(function () use ($scope, $token) {
+                unset($_SESSION['hwidTokens'][$scope][$token]);
+            });
             return $hwid;
         }
 
@@ -11504,6 +11723,7 @@ DNS-over-HTTPS with IP:
     {
         $xr  = $this->getXray();
         $pac = $this->getPacConf();
+        $this->subRateLimit($_GET['s'] ?? '');
         // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $i      = $this->findClientBySid($xr, $_GET['s'] ?? '', !empty($pac['subtoken_strict']));
         $client = $i === null ? null : $xr['inbounds'][0]['settings']['clients'][$i];
@@ -11841,6 +12061,33 @@ DNS-over-HTTPS with IP:
             $this->saveXray($c);
         }
         $this->userXr($i);
+    }
+
+    // Массовая ротация ссылок подписок: новый subtoken у ВСЕХ клиентов — все
+    // ранее розданные sub-URL умирают разом, клиенты берут свежие через бота.
+    // Кредентиалы (uuid) не трогаем — VPN-доступ не прерывается. При
+    // выключенном subtoken_strict старые uuid-ссылки продолжают резолвиться
+    // (fallback) — предупреждаем в ответе.
+    public function rotateAllSubTokens()
+    {
+        $c = $this->getXray();
+        if (!is_array($c) || empty($c['inbounds'][0]['settings']['clients'])) {
+            $this->xray();
+            return;
+        }
+        foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
+            $c['inbounds'][0]['settings']['clients'][$k]['subtoken'] = bin2hex(random_bytes(16));
+        }
+        $this->saveXray($c);
+        if (!empty($this->input['callback_id'])) {
+            $this->answer(
+                $this->input['callback_id'],
+                empty($this->getPacConf()['subtoken_strict'])
+                    ? '⚠ rotated, but strict off — old uuid links still resolve'
+                    : '🔄 all subscription links rotated'
+            );
+        }
+        $this->xray();
     }
 
     // Request-time read of a remote subscription's links: cache ONLY, never a
@@ -12595,12 +12842,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter xr password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setXrPwd',
             'args'           => [$i],
-        ];
+        ]);
     }
 
     public function setXrPwd($pwd, $i)
@@ -12811,12 +13058,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'send the template file:',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addTemplate',
             'args'           => [$type],
-        ];
+        ]);
     }
 
     public function autoScanTimeout()
@@ -12827,12 +13074,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'send time like 1 hour or 1 day etc',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setAutoScanTimeout',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function setAutoScanTimeout($time)
@@ -12859,12 +13106,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'send the template name',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'copyTemplate',
             'args'           => [$type],
-        ];
+        ]);
     }
 
     public function addTemplate($n, $type)
@@ -12874,10 +13121,19 @@ DNS-over-HTTPS with IP:
             return;
         }
         $r    = $this->request('getFile', ['file_id' => $this->input['file_id']]);
-        $json = json_decode(file_get_contents($this->file . $r['result']['file_path']), true);
-        if ($json === false) {
+        $json = json_decode((string) file_get_contents($this->file . $r['result']['file_path']), true);
+        // json_decode возвращает null (не false) на битом JSON.
+        if (!is_array($json)) {
             $this->send($this->input['chat'], 'wrong format');
             return;
+        }
+        $v = $this->validateTemplate($type, $json);
+        if (!$v['ok']) {
+            $this->send($this->input['chat'], "template rejected:\n" . implode("\n", array_slice($v['errors'], 0, 10)));
+            return;
+        }
+        if ($v['warnings']) {
+            $this->send($this->input['chat'], "⚠ template warnings:\n" . implode("\n", array_slice($v['warnings'], 0, 10)));
         }
         $pac = $this->getPacConf();
         $pac["{$type}templates"][$this->input['caption']] = $json;
@@ -12885,27 +13141,48 @@ DNS-over-HTTPS with IP:
         $this->templates($type);
     }
 
+    // Валидация шаблона перед сохранением: для clash — структура + плейсхолдеры,
+    // для sing/v2ray — только опечатки в ~плейсхолдерах~. errors блокируют
+    // сохранение, warnings — нет (текст возвращается вызывающему коду).
+    public function validateTemplate($type, array $template)
+    {
+        return $type === 'clash'
+            ? ClashTemplateValidator::validate($template)
+            : ClashTemplateValidator::validatePlaceholders($template);
+    }
+
     public function saveTemplate($name, $type, $json)
     {
-        if (json_decode($json, true) === false) {
+        $decoded = json_decode($json, true);
+        // json_decode возвращает null (не false) на битом JSON; шаблон обязан
+        // быть объектом — скаляр/строка тоже «wrong format».
+        if (!is_array($decoded)) {
             return [
                 'status'  => false,
                 'message' => 'wrong format',
             ];
         }
+        $v = $this->validateTemplate($type, $decoded);
+        if (!$v['ok']) {
+            return [
+                'status'  => false,
+                'message' => implode('; ', array_slice($v['errors'], 0, 5)),
+            ];
+        }
         $pac = $this->getPacConf();
         switch ($name) {
             case 'origin':
-                file_put_contents("/config/$type.json", json_encode(json_decode($json, true), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                file_put_contents("/config/$type.json", json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
                 break;
 
             default:
-                $pac["{$type}templates"][$name] = json_decode($json, true);
+                $pac["{$type}templates"][$name] = $decoded;
                 break;
         }
         $this->setPacConf($pac);
         return [
-            'status' => true,
+            'status'  => true,
+            'message' => $v['warnings'] ? '⚠ ' . implode('; ', array_slice($v['warnings'], 0, 5)) : '',
         ];
     }
 
@@ -13046,12 +13323,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'send name',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setMainOutbound',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function setMainOutbound($text)
@@ -13195,6 +13472,10 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => '🔒 ' . $this->i18n('subtoken strict') . ': ' . $this->i18n(!empty($p['subtoken_strict']) ? 'on' : 'off'),
                 'callback_data' => '/switchSubtokenStrict',
+            ],
+            [
+                'text'          => '🔄 rotate sub links',
+                'callback_data' => '/rotateAllSubTokens',
             ],
         ];
         if ($p['transport'] == 'Reality') {
@@ -13436,12 +13717,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter key',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addWarpPlus',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function addWarpPlus($key)
@@ -14082,12 +14363,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: $this->i18n($kind === 'sub' ? 'enter external subscription' : 'enter external link'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'extAddSave',
             'args'           => [$i, $kind],
-        ];
+        ]);
     }
 
     public function extAddSave($text, $i, $kind)
@@ -14128,12 +14409,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: $this->i18n('enter remark'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'extRenameSave',
             'args'           => [$i, $k],
-        ];
+        ]);
     }
 
     public function extRenameSave($text, $i, $k)
@@ -14290,10 +14571,14 @@ DNS-over-HTTPS with IP:
 
         $devices = $this->getHwidDevicesByUser($client['id']);
         $scope   = $this->getHwidTokenScope($i);
-        if (!isset($_SESSION['hwidTokens'])) {
-            $_SESSION['hwidTokens'] = [];
-        }
-        $_SESSION['hwidTokens'][$scope] = [];
+        // Сброс scope перед перегенерацией токенов страницы — тоже должен
+        // сохраниться (сессия закрыта с диспатча).
+        $this->sessionApply(function () use ($scope) {
+            if (!isset($_SESSION['hwidTokens'])) {
+                $_SESSION['hwidTokens'] = [];
+            }
+            $_SESSION['hwidTokens'][$scope] = [];
+        });
         uasort($devices, fn($a, $b) => ($b['time'] ?? 0) <=> ($a['time'] ?? 0));
         $hwids        = array_keys($devices);
         $perPage      = max(1, $this->limit ?: 5);
@@ -14431,11 +14716,11 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter hwid devices count',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'saveHwidUserLimit',
             'args'          => [$i],
-        ];
+        ]);
     }
 
     public function saveHwidUserLimit($count, $i)
@@ -14460,12 +14745,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: $this->i18n('enter traffic limit'),
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'saveTrafficXr',
             'args'           => [$i],
-        ];
+        ]);
     }
 
     public function saveTrafficXr($gb, $i)
@@ -14535,6 +14820,7 @@ DNS-over-HTTPS with IP:
         $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
+        $this->subRateLimit($_GET['id'] ?? '');
         // Resolve by subtoken (preferred) or, for pre-subtoken links, the id.
         $k      = $this->findClientBySid($xr, $_GET['id'] ?? '', !empty($pac['subtoken_strict']));
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
@@ -14725,6 +15011,11 @@ DNS-over-HTTPS with IP:
 
         // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $sid    = $_GET['s'] ?? '';
+        // Лимитируем только реальные HTTP-запросы: внутренние вызовы
+        // (subscription(true) из кода бота) не должны крутить счётчик.
+        if (empty($return)) {
+            $this->subRateLimit($sid);
+        }
         $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
         if ($client === null || !empty($client['off'])) {
@@ -15328,6 +15619,57 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Rate-limit подписочных эндпоинтов: файловый счётчик окно+лимит на пару
+    // (sid, IP). Тормозит перебор sid и выкачивание подписок ботами; легитимный
+    // клиент обновляется раз в часы — дефолт 30 req / 5 мин не заденет даже
+    // ручные переимпорты. Настройка: pac.sub_rate_max (0 = выкл) /
+    // pac.sub_rate_window (сек). Вызывается ДО резолва sid — невалидные sid
+    // тоже считаются (анти-brute-force).
+    public function subRateLimit($sid)
+    {
+        $pac    = $this->getPacConf();
+        $max    = (int) ($pac['sub_rate_max'] ?? 30);
+        $window = (int) ($pac['sub_rate_window'] ?? 300);
+        if ($max <= 0 || $window <= 0) {
+            return;
+        }
+        // За nginx REMOTE_ADDR — адрес прокси; XFF ставит наш же nginx.
+        // Спуфабельность XFF здесь не критична: ключ содержит и sid, так что
+        // лимит на конкретную подписку обойти сменой заголовка нельзя.
+        $ip  = trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]) ?: (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+        $key = substr(hash('sha256', "$sid|$ip"), 0, 16);
+        $f   = '/logs/sub_ratelimit.json';
+        $h   = @fopen($f, 'c+');
+        if ($h === false) {
+            return; // лимитер вспомогательный: не роняем выдачу подписки
+        }
+        $over = false;
+        if (flock($h, LOCK_EX)) {
+            $data = json_decode((string) stream_get_contents($h), true) ?: [];
+            $now  = time();
+            foreach ($data as $k => $v) {
+                if (!is_array($v) || ($v[1] ?? 0) + $window < $now) {
+                    unset($data[$k]);
+                }
+            }
+            $data[$key] = [($data[$key][0] ?? 0) + 1, $data[$key][1] ?? $now];
+            $over = $data[$key][0] > $max;
+            ftruncate($h, 0);
+            rewind($h);
+            fwrite($h, json_encode($data));
+            flock($h, LOCK_UN);
+        }
+        fclose($h);
+        if ($over) {
+            $this->subSecurityHeaders();
+            http_response_code(429);
+            header('Retry-After: ' . $window);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'Too Many Requests';
+            exit;
+        }
+    }
+
     // A missing/disabled/expired subscription must not look like a server crash:
     // return a clean 404 with a short description so the client shows "not found"
     // instead of treating a 500 as a transient error and hammering retries.
@@ -15707,7 +16049,13 @@ DNS-over-HTTPS with IP:
         $conf     = $this->getPacConf();
         $template = file_get_contents('/config/nginx_default.conf');
         // $template = preg_replace('~server_name ip~', "server_name {$this->ip}", $template);
-        $template = preg_replace('~server_name domain~', "server_name " . ($conf['domain'] ? " *.{$conf['domain']} {$conf['domain']}" : '_'), $template);
+        // Алиасы принимаем тем же server-блоком: серт после «renew SSL» их
+        // покрывает, upstream шлёт их сюда через `default other`.
+        $aliasNames = '';
+        foreach ($conf['domain_aliases'] ?? [] as $a) {
+            $aliasNames .= " *.$a $a";
+        }
+        $template = preg_replace('~server_name domain~', "server_name " . ($conf['domain'] ? " *.{$conf['domain']} {$conf['domain']}$aliasNames" : '_'), $template);
         if ($conf['domain'] && $conf['letsencrypt']) {
             $template = preg_replace('/#~([^\n]+)?/', "#~{$conf['letsencrypt']}", $template);
             preg_match_all('~#-domain.+?#-domain~s', $template, $m);
@@ -16062,6 +16410,9 @@ DNS-over-HTTPS with IP:
             if (!empty($conf['adguardkey'])) {
                 $text[] = "{$conf['adguardkey']}.{$conf['domain']}" . (in_array("{$conf['adguardkey']}.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
             }
+            foreach ($conf['domain_aliases'] ?? [] as $a) {
+                $text[] = "alias $a" . (in_array($a, $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : ' (no ssl — renew SSL)');
+            }
             $text[] = "</blockquote>";
         } else {
             $text[] = $this->i18n('domain explain');
@@ -16079,6 +16430,24 @@ DNS-over-HTTPS with IP:
                 ],
             ],
         ];
+        if ($conf['domain']) {
+            $aliasRow = [
+                [
+                    'text'          => '+ alias domain',
+                    'callback_data' => '/domainAlias',
+                ],
+            ];
+            foreach (array_values($conf['domain_aliases'] ?? []) as $i => $a) {
+                $aliasRow[] = [
+                    'text'          => "❌ $a",
+                    'callback_data' => "/delDomainAlias $i",
+                ];
+            }
+            // Не больше 3 кнопок в ряд — дальше переносим.
+            foreach (array_chunk($aliasRow, 3) as $chunk) {
+                $data[] = $chunk;
+            }
+        }
         if ($conf['domain']) {
             if ($cert = $this->nginxGetTypeCert()) {
                 switch ($cert) {
@@ -16681,12 +17050,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter like: now / 12 hours',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setBackup',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function autoCleanLogs()
@@ -16697,12 +17066,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter like: now / 12 hours',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setAutoCleanLogs',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function changeFakeDomain()
@@ -16713,12 +17082,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter domain',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setFakeDomain',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function setFakeDomain($domain, $self = false)
@@ -17323,7 +17692,13 @@ DNS-over-HTTPS with IP:
     {
         $data = "";
         try {
+            // ssh2_connect не принимает таймаут и по умолчанию ждёт TCP-коннект
+            // минутами (лежащий контейнер = зависший вебхук-воркер). 5с хватает
+            // внутри docker-сети с запасом.
+            $prevTimeout = ini_get('default_socket_timeout');
+            ini_set('default_socket_timeout', '5');
             $c = ssh2_connect($service, 22);
+            ini_set('default_socket_timeout', $prevTimeout);
             if (empty($c)) {
                 throw new Exception("no connection to $service: \n$cmd\n" . var_export($c, true));
             }
@@ -17375,20 +17750,34 @@ DNS-over-HTTPS with IP:
             CURLOPT_URL            => $this->api . $method,
             CURLOPT_CUSTOMREQUEST  => 'POST',
             CURLOPT_RETURNTRANSFER => true,
+            // Без таймаутов зависший Telegram API держит php-worker вечно
+            // (вместе с session lock юзера). Запросам с файлом (CURLFile —
+            // бэкапы через sendDocument бывают большими) даём 300с, остальным
+            // хватает 30с (getUpdates long-poll timeout=5 укладывается).
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT        => is_array($data) && array_filter($data, fn ($v) => $v instanceof CURLFile || $v instanceof CURLStringFile) ? 300 : 30,
             CURLOPT_HTTPHEADER => $json_header ? [
                 'Content-Type: application/json'
             ] : [],
             CURLOPT_POSTFIELDS     => $data,
         ]);
-        $res = curl_exec($ch);
-        $r   = json_decode($res, true);
-        if (!empty($res['description']) || is_null($res)) {
+        $res  = curl_exec($ch);
+        $cerr = $res === false ? curl_error($ch) : '';
+        $r    = json_decode((string) $res, true);
+        // $res — строка (или false): старая проверка $res['description']
+        // не срабатывала никогда. Ошибку определяем по декодированному
+        // ответу: у Telegram успех — всегда ok=true. «message is not
+        // modified» — штатный ответ на перерисовку меню без изменений,
+        // им лог не засоряем.
+        if ((!is_array($r) || empty($r['ok']))
+            && !str_contains((string) ($r['description'] ?? ''), 'message is not modified')) {
             file_put_contents('/logs/requests_error', var_export([
                 'r' => [
                     'method' => $method,
                     'data'   => $data,
                 ],
-                'a' => $res,
+                'a' => is_array($r) ? $r : $res,
+                'curl' => $cerr,
             ], true) . "\n", FILE_APPEND);
         }
         return $r;
@@ -17689,12 +18078,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter username',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addttus',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function addttus($user)
@@ -17732,12 +18121,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter password',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chttpass',
             'args'           => [$user],
-        ];
+        ]);
     }
 
     public function chttpass($pass, $user)
@@ -18178,12 +18567,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter username',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addovus',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function addovus($user)
@@ -18839,12 +19228,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: "enter $label port",
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setIpsecPort',
             'args'           => [$which, $menu],
-        ];
+        ]);
     }
 
     public function setIpsecPort($port, $which, $menu)
@@ -19075,12 +19464,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter username',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addl2us',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function addl2us($user)
@@ -19529,12 +19918,12 @@ DNS-over-HTTPS with IP:
             $this->input['message_id'],
             reply: 'enter username',
         );
-        $_SESSION['reply'][$r['result']['message_id']] = [
+        $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'addik2us',
             'args'           => [],
-        ];
+        ]);
     }
 
     public function addik2us($user)
