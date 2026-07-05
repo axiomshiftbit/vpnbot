@@ -7015,6 +7015,17 @@ DNS-over-HTTPS with IP:
         return $result;
     }
 
+    // 'awg_for_vless' хранится как '<префикс инстанса>:<индекс клиента>'
+    // (':N' / 'wg1_:N'). Старые бэкапы могли записать имя сервиса ('wg:N' /
+    // 'wg1:N') — приводим к текущему формату, иначе toggle не снимает
+    // привязку, а getAwgVless берёт clients-файл и ключи не того инстанса.
+    public function normalizeAwgForVless($v)
+    {
+        [$container, $client] = array_pad(explode(':', (string) $v, 2), 2, '');
+        $container = ['wg' => '', 'wg1' => 'wg1_'][$container] ?? $container;
+        return $container . ':' . $client;
+    }
+
     public function setAsVlessTransport($k, $page)
     {
         $c = $this->getPacConf();
@@ -7022,7 +7033,7 @@ DNS-over-HTTPS with IP:
         // (''/'wg1_'), а не имя контейнера — иначе сравнение никогда не
         // совпадает и повторное нажатие не снимает привязку.
         $key = $this->getInstanceWG(1) . ':' . $k;
-        if (($c['awg_for_vless'] ?? '') === $key) {
+        if (!empty($c['awg_for_vless']) && $this->normalizeAwgForVless($c['awg_for_vless']) === $key) {
             unset($c['awg_for_vless']);
         } else {
             $c['awg_for_vless'] = $key;
@@ -7037,13 +7048,21 @@ DNS-over-HTTPS with IP:
         if (empty($c['awg_for_vless'])) {
             return false;
         }
-        $container = explode(':', $c['awg_for_vless'])[0] ?? '';
-        $client    = explode(':', $c['awg_for_vless'])[1] ?? false;
+        $v         = $this->normalizeAwgForVless($c['awg_for_vless']);
+        $container = explode(':', $v)[0];
+        $client    = explode(':', $v)[1];
+        if ($client === '') {
+            return false;
+        }
 
-        // Клиентов читаем из файла сохранённого инстанса, а не текущего
-        // (readClients() зависит от глобального wg_instance).
-        $clients = json_decode(file_get_contents($container === 'wg1_' ? $this->clients1 : $this->clients), true) ?: [];
-        if ($client === false || empty($clients[$client])) {
+        // Клиентов читаем через readClients() с временным переопределением
+        // инстанса ($this->wg резолвится раньше глобального wg_instance) —
+        // тот же приём, что в shutdownClient/export/syncPortClients.
+        $prev = $this->wg ?? null;
+        $this->wg = $container === 'wg1_' ? 1 : 0;
+        $clients = $this->readClients();
+        $this->wg = $prev;
+        if (empty($clients[$client])) {
             return false;
         }
         return [
