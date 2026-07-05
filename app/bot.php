@@ -215,6 +215,13 @@ class Bot
             case preg_match('~^/menu$~', $this->input['message'], $m):
             case preg_match('~^/start$~', $this->input['message'], $m):
             case preg_match('~^/menu$~', $this->input['callback'], $m):
+            // wg-меню с явным инстансом: сначала пере-пиним wg_instance, дальше
+            // обычный рендер. Роут без инстанса ниже оставлен для старых
+            // сообщений в чатах (они работают через глобальный указатель).
+            case preg_match('~^/menu (?P<type>wg) (?P<inst>[01]) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m['inst']);
+                $this->menu(type: $m['type'], arg: $m['arg']);
+                break;
             case preg_match('~^/menu (?P<type>addpeer) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>wg) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
@@ -1005,26 +1012,62 @@ class Bot
             case preg_match('~^/switchEndpoint (\d+)$~', $this->input['callback'], $m):
                 $this->switchEndpoint($m[1]);
                 break;
+            // Amnezia-кнопки несут номер инстанса в callback_data: кнопка из
+            // устаревшего сообщения действует на «свой» инстанс, а не на
+            // последний открытый (wg_instance глобален для всех меню/устройств).
+            // Роуты без инстанса ниже оставлены для старых сообщений.
+            case preg_match('~^/switchAmnezia ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->switchAmnezia($m[2]);
+                break;
             case preg_match('~^/switchAmnezia (-?\d+)$~', $this->input['callback'], $m):
                 $this->switchAmnezia($m[1]);
+                break;
+            case preg_match('~^/resetAmnezia ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->resetAmnezia($m[2]);
                 break;
             case preg_match('~^/resetAmnezia (-?\d+)$~', $this->input['callback'], $m):
                 $this->resetAmnezia($m[1]);
                 break;
+            case preg_match('~^/reduceAmnezia ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->reduceAmnezia($m[2]);
+                break;
             case preg_match('~^/reduceAmnezia (-?\d+)$~', $this->input['callback'], $m):
                 $this->reduceAmnezia($m[1]);
+                break;
+            case preg_match('~^/amneziaTemplates ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->amneziaTemplates($m[2]);
                 break;
             case preg_match('~^/amneziaTemplates (-?\d+)$~', $this->input['callback'], $m):
                 $this->amneziaTemplates($m[1]);
                 break;
+            case preg_match('~^/amneziaTemplate (\w+) ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[2]);
+                $this->applyAmneziaTemplate($m[1], $m[3]);
+                break;
             case preg_match('~^/amneziaTemplate (\w+) (-?\d+)$~', $this->input['callback'], $m):
                 $this->applyAmneziaTemplate($m[1], $m[2]);
+                break;
+            case preg_match('~^/setAmneziaI1 ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->setAmneziaI1($m[2]);
                 break;
             case preg_match('~^/setAmneziaI1 (-?\d+)$~', $this->input['callback'], $m):
                 $this->setAmneziaI1($m[1]);
                 break;
+            case preg_match('~^/rotateAmnezia ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->rotateAmneziaJunk(false, $m[2]);
+                break;
             case preg_match('~^/rotateAmnezia (-?\d+)$~', $this->input['callback'], $m):
                 $this->rotateAmneziaJunk(false, $m[1]);
+                break;
+            case preg_match('~^/setAmneziaRotation ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->setAmneziaRotation($m[2]);
                 break;
             case preg_match('~^/setAmneziaRotation (-?\d+)$~', $this->input['callback'], $m):
                 $this->setAmneziaRotation($m[1]);
@@ -4195,6 +4238,7 @@ NFT;
             'mobile_2'     => 'мелкие junk, экономит батарею и трафик',
             'classic_1'    => 'без 2.0-полей, совместимо со старыми клиентами',
         ];
+        $inst = $this->wgNum();
         $text = ['Menu -> Wireguard -> amnezia templates', ''];
         foreach ($labels as $k => $label) {
             $mark = ($k === $current) ? '• ' : '';
@@ -4204,12 +4248,12 @@ NFT;
         foreach ($labels as $k => $label) {
             $data[] = [[
                 'text'          => (($k === $current) ? '• ' : '') . $label,
-                'callback_data' => "/amneziaTemplate $k $page",
+                'callback_data' => "/amneziaTemplate $k $inst $page",
             ]];
         }
         $data[] = [[
             'text'          => $this->i18n('back'),
-            'callback_data' => "/menu wg $page",
+            'callback_data' => "/menu wg $inst $page",
         ]];
         $this->update(
             $this->input['chat'],
@@ -4461,12 +4505,15 @@ NFT;
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setAmneziaI1Value',
-            'args'           => [$page],
+            // Инстанс кладём в stash: ответ придёт отдельным запросом, где
+            // глобальный wg_instance мог смениться другим меню/устройством.
+            'args'           => [$this->wgNum(), $page],
         ]);
     }
 
-    public function setAmneziaI1Value($text, $page = 0)
+    public function setAmneziaI1Value($text, $inst = 0, $page = 0)
     {
+        $this->selectWG($inst);
         $text   = trim($text);
         $c      = $this->getPacConf();
         $prefix = $this->getInstanceWG(1);
@@ -4681,12 +4728,14 @@ NFT;
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setAmneziaRotationValue',
-            'args'           => [$page],
+            // Инстанс в stash — по той же причине, что и в setAmneziaI1.
+            'args'           => [$this->wgNum(), $page],
         ]);
     }
 
-    public function setAmneziaRotationValue($text, $page = 0)
+    public function setAmneziaRotationValue($text, $inst = 0, $page = 0)
     {
+        $this->selectWG($inst);
         $text = trim($text);
         if (!preg_match('~^\d+$~', $text)) {
             $this->update($this->input['chat'], $this->input['message_id'], 'rotation: введите целое число дней или 0');
@@ -6443,44 +6492,45 @@ DNS-over-HTTPS with IP:
                 ],
             ],
         ];
+        $inst = $this->wgNum();
         if (!empty($am)) {
             $rot_period = (int) ($c[$this->getInstanceWG(1) . 'amnezia_rotation_period'] ?? 0);
             $rot_label  = $rot_period > 0 ? "rotate: every {$rot_period}d" : "rotate: off";
             array_unshift($data, [
                 [
                     'text'          => "templates",
-                    'callback_data' => "/amneziaTemplates $page",
+                    'callback_data' => "/amneziaTemplates $inst $page",
                 ],
                 [
                     'text'          => "set I1",
-                    'callback_data' => "/setAmneziaI1 $page",
+                    'callback_data' => "/setAmneziaI1 $inst $page",
                 ],
             ]);
             array_unshift($data, [
                 [
                     'text'          => "rotate now",
-                    'callback_data' => "/rotateAmnezia $page",
+                    'callback_data' => "/rotateAmnezia $inst $page",
                 ],
                 [
                     'text'          => $rot_label,
-                    'callback_data' => "/setAmneziaRotation $page",
+                    'callback_data' => "/setAmneziaRotation $inst $page",
                 ],
             ]);
             array_unshift($data, [
                 [
                     'text'          => "reset obf-keys",
-                    'callback_data' => "/resetAmnezia $page",
+                    'callback_data' => "/resetAmnezia $inst $page",
                 ],
                 [
                     'text'          => "reduce to 1",
-                    'callback_data' => "/reduceAmnezia $page",
+                    'callback_data' => "/reduceAmnezia $inst $page",
                 ],
             ]);
         }
         array_unshift($data, [
             [
                 'text'          => $this->i18n($am ? 'on' : 'off') . " amnezia",
-                'callback_data' => "/switchAmnezia $page",
+                'callback_data' => "/switchAmnezia $inst $page",
             ],
         ]);
         if ($clients) {
@@ -6557,7 +6607,7 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          =>  '🔄 ' . $this->i18n('refresh'),
-                'callback_data' => "/menu wg $page",
+                'callback_data' => "/menu wg $inst $page",
             ],
             [
                 'text'          => $this->i18n('back'),
@@ -6820,7 +6870,7 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
-                'callback_data' => $openconnect ? '/menu oc' : "/menu wg $wgpage",
+                'callback_data' => $openconnect ? '/menu oc' : "/menu wg {$this->wgNum()} $wgpage",
             ],
         ];
         $this->update(
@@ -6968,11 +7018,14 @@ DNS-over-HTTPS with IP:
     public function setAsVlessTransport($k, $page)
     {
         $c = $this->getPacConf();
-        $key = $this->getInstanceWG() . ':' . $k;
-        if ($key == $c['awg_for_vless']) {
+        // Формат ключа единый с хранением и getAwgVless: префикс инстанса
+        // (''/'wg1_'), а не имя контейнера — иначе сравнение никогда не
+        // совпадает и повторное нажатие не снимает привязку.
+        $key = $this->getInstanceWG(1) . ':' . $k;
+        if (($c['awg_for_vless'] ?? '') === $key) {
             unset($c['awg_for_vless']);
         } else {
-            $c['awg_for_vless'] = $this->getInstanceWG(1) . ':' . $k;
+            $c['awg_for_vless'] = $key;
         }
         $this->setPacConf($c);
         $this->menu('wg', $page);
@@ -6987,7 +7040,9 @@ DNS-over-HTTPS with IP:
         $container = explode(':', $c['awg_for_vless'])[0] ?? '';
         $client    = explode(':', $c['awg_for_vless'])[1] ?? false;
 
-        $clients = $this->readClients();
+        // Клиентов читаем из файла сохранённого инстанса, а не текущего
+        // (readClients() зависит от глобального wg_instance).
+        $clients = json_decode(file_get_contents($container === 'wg1_' ? $this->clients1 : $this->clients), true) ?: [];
         if ($client === false || empty($clients[$client])) {
             return false;
         }
@@ -7065,7 +7120,7 @@ DNS-over-HTTPS with IP:
                         ],
                         [
                             'text'          => $this->i18n('back'),
-                            'callback_data' => "/menu wg $page",
+                            'callback_data' => "/menu wg {$this->wgNum()} $page",
                         ],
                     ],
                 ],
@@ -7155,7 +7210,7 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
-                'callback_data' => "/menu wg $page_wg",
+                'callback_data' => "/menu wg {$this->wgNum()} $page_wg",
             ],
         ];
         $this->update(
@@ -7196,18 +7251,19 @@ DNS-over-HTTPS with IP:
                 ];
             }
             if ($page != -1 && $all > 1) {
+                $inst = $this->wgNum();
                 $data[] = [
                     [
                         'text'          => '<<',
-                        'callback_data' => "/menu wg " . ($page - 1 >= 0 ? $page - 1 : $all - 1),
+                        'callback_data' => "/menu wg $inst " . ($page - 1 >= 0 ? $page - 1 : $all - 1),
                     ],
                     [
                         'text'          => $page + 1,
-                        'callback_data' => "/menu wg $page",
+                        'callback_data' => "/menu wg $inst $page",
                     ],
                     [
                         'text'          => '>>',
-                        'callback_data' => "/menu wg " . ($page < $all - 1 ? $page + 1 : 0),
+                        'callback_data' => "/menu wg $inst " . ($page < $all - 1 ? $page + 1 : 0),
                     ]
                 ];
             }
@@ -8025,11 +8081,29 @@ DNS-over-HTTPS with IP:
         return $this->i18n[$menu][$this->language] ?: $menu;
     }
 
-    public function changeWG($i)
+    // Пере-пиниваем глобальный выбранный инстанс (wg_instance в pac.json) на
+    // инстанс нажатой кнопки. Пишем и в pac.json, а не только в $this->wg:
+    // после перерисовки меню остальные кнопки без инстанса (add peer, DNS,
+    // torrent, пагинация) резолвятся через wg_instance и должны попадать в тот
+    // же инстанс, что и меню, с которым пользователь реально работает.
+    public function selectWG($i)
     {
+        $i = (int) $i ? 1 : 0;
+        $this->wg = $i;
         $c = $this->getPacConf();
         $c['wg_instance'] = $i;
         $this->setPacConf($c);
+    }
+
+    // Текущий инстанс как число 0/1 — для подстановки в callback_data.
+    public function wgNum(): int
+    {
+        return $this->getInstanceWG(1) ? 1 : 0;
+    }
+
+    public function changeWG($i)
+    {
+        $this->selectWG($i);
         $this->menu('wg', 0);
     }
 
@@ -16147,7 +16221,7 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
-                'callback_data' => "/menu wg $page",
+                'callback_data' => "/menu wg {$this->wgNum()} $page",
             ]
         ];
         return [
