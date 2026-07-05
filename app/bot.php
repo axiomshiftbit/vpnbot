@@ -1405,15 +1405,20 @@ class Bot
         return in_array($a, ['mask', 'reject_handshake', 'drop'], true) ? $a : 'reject_handshake';
     }
 
-    // Версия telemt = build-пин TELEMT_VERSION (.env → env_file php-контейнера,
-    // тот же source, что у getenv('VER')/'TTPORT'). Сам бинарь команды версии
-    // НЕ имеет: CLI telemt рукописный, неизвестный флаг вроде --version не
-    // печатает версию, а уходит в дефолтный Run — поэтому опрашивать бинарь по
-    // ssh, как hysteriaVersion(), нельзя. Пин совпадает с впечённым в образ
-    // бинарём (dockerfile/telemt.dockerfile: FROM ghcr.io/telemt/telemt:$ver).
+    // Версия telemt. Сам бинарь команды версии НЕ имеет (CLI рукописный,
+    // неизвестный флаг вроде --version уходит в дефолтный Run — опрашивать
+    // бинарь по ssh, как hysteriaVersion(), нельзя), поэтому версию при
+    // сборке впекаем в образ файлом /etc/telemt_version
+    // (dockerfile/telemt.dockerfile) и читаем ПО SSH ИЗ КОНТЕЙНЕРА — это
+    // версия реально запущенного образа. Fallback — build-пин TELEMT_VERSION
+    // из .env (образы, собранные до появления файла): он может расходиться с
+    // контейнером, пока образ не пересобран.
     public function telemtVersion(): string
     {
-        $v = trim((string) getenv('TELEMT_VERSION'));
+        $v = trim((string) $this->ssh('cat /etc/telemt_version 2>/dev/null', 'telemt'));
+        if ($v === '') {
+            $v = trim((string) getenv('TELEMT_VERSION'));
+        }
         if ($v === '') {
             return 'unknown';
         }
