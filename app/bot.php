@@ -212,16 +212,19 @@ class Bot
     {
         switch (true) {
             // смена айпи сервера
-            case preg_match('~^/menu$~', $this->input['message'], $m):
-            case preg_match('~^/start$~', $this->input['message'], $m):
-            case preg_match('~^/menu$~', $this->input['callback'], $m):
             // wg-меню с явным инстансом: сначала пере-пиним wg_instance, дальше
             // обычный рендер. Роут без инстанса ниже оставлен для старых
             // сообщений в чатах (они работают через глобальный указатель).
+            // ВАЖНО: case с телом должен стоять ВЫШЕ безтеловой группы
+            // /menu|/start — иначе те проваливаются (fall-through) в это тело
+            // и каждый /start делает selectWG(null) → сброс wg_instance в 0.
             case preg_match('~^/menu (?P<type>wg) (?P<inst>[01]) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
                 $this->selectWG($m['inst']);
                 $this->menu(type: $m['type'], arg: $m['arg']);
                 break;
+            case preg_match('~^/menu$~', $this->input['message'], $m):
+            case preg_match('~^/start$~', $this->input['message'], $m):
+            case preg_match('~^/menu$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>addpeer) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>wg) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
@@ -4013,6 +4016,10 @@ NFT;
                 $this->restartWG($this->createConfig($json['wg1']['server']), $switch_wg1amnezia);
                 $this->iptablesWG();
             }
+            // выбранный для restore инстанс не должен протекать в остаток
+            // запроса (финальный menu(), getInstanceWG-рендеры) — как в
+            // shutdownClient/syncPortClients
+            unset($this->wg);
             // ad
             if (!empty($json['ad'])) {
                 $out[] = 'update adguard';
@@ -4513,6 +4520,13 @@ NFT;
 
     public function setAmneziaI1Value($text, $inst = 0, $page = 0)
     {
+        // Стэш, созданный до деплоя, нёс args=[$page]: старая страница
+        // приходит в $inst. Значение вне 0/1 — легаси-страница: возвращаем её
+        // в $page и берём текущий глобальный инстанс (прежнее поведение).
+        if ((int) $inst !== 0 && (int) $inst !== 1) {
+            $page = (int) $inst;
+            $inst = $this->wgNum();
+        }
         $this->selectWG($inst);
         $text   = trim($text);
         $c      = $this->getPacConf();
@@ -4735,6 +4749,12 @@ NFT;
 
     public function setAmneziaRotationValue($text, $inst = 0, $page = 0)
     {
+        // Легаси-стэш args=[$page] — та же миграционная защита, что и в
+        // setAmneziaI1Value.
+        if ((int) $inst !== 0 && (int) $inst !== 1) {
+            $page = (int) $inst;
+            $inst = $this->wgNum();
+        }
         $this->selectWG($inst);
         $text = trim($text);
         if (!preg_match('~^\d+$~', $text)) {
@@ -5164,7 +5184,10 @@ NFT;
 
     public function setPacConf(array $conf)
     {
-        return file_put_contents($this->pac, json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        // LOCK_EX — как у остальных json-писателей файла: параллельные
+        // вебхук-воркеры пишут pac.json чаще после selectWG, без лока
+        // возможна порванная запись при одновременном file_put_contents.
+        return file_put_contents($this->pac, json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
     }
 
     public function domain()
@@ -8110,8 +8133,14 @@ DNS-over-HTTPS with IP:
         $i = (int) $i ? 1 : 0;
         $this->wg = $i;
         $c = $this->getPacConf();
-        $c['wg_instance'] = $i;
-        $this->setPacConf($c);
+        // Пишем только при реальной смене: инструментированные кнопки зовут
+        // selectWG на каждый клик, а read-modify-write всего pac.json — это ещё
+        // и окно для затирания параллельной записи (второй воркер, cron-ротация).
+        // Строгое !== с int заодно один раз нормализует легаси-строку "0"/"1".
+        if (($c['wg_instance'] ?? null) !== $i) {
+            $c['wg_instance'] = $i;
+            $this->setPacConf($c);
+        }
     }
 
     // Текущий инстанс как число 0/1 — для подстановки в callback_data.
@@ -17401,10 +17430,12 @@ DNS-over-HTTPS with IP:
 
     public function getInstanceWG($k = false)
     {
+        // ?? 0 — на свежей установке pac.json = {} и ключа wg_instance нет;
+        // без фолбэка каждый вызов сыпал бы «Undefined array key».
         if (!empty($k)) {
-            return ($this->wg ?? $this->getPacConf()['wg_instance']) ? 'wg1_' : '';
+            return ($this->wg ?? $this->getPacConf()['wg_instance'] ?? 0) ? 'wg1_' : '';
         }
-        return ($this->wg ?? $this->getPacConf()['wg_instance']) ? 'wg1' : 'wg';
+        return ($this->wg ?? $this->getPacConf()['wg_instance'] ?? 0) ? 'wg1' : 'wg';
     }
 
     public function readConfig()
