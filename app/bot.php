@@ -210,6 +210,13 @@ class Bot
 
     public function action()
     {
+        // Инстанс нажатого сообщения (карта wg_msg.json) — пер-запросный
+        // $this->wg: кнопки без инстанса в callback_data (delete, client,
+        // torrent…) действуют на инстанс СВОЕГО меню, а не на глобальный
+        // указатель. Явные роуты с инстансом ниже перекрывают через selectWG.
+        if (!empty($this->input['callback']) && ($mi = $this->getWgMsg()) !== null) {
+            $this->wg = (int) $mi;
+        }
         switch (true) {
             // смена айпи сервера
             // wg-меню с явным инстансом: сначала пере-пиним wg_instance, дальше
@@ -4925,6 +4932,11 @@ NFT;
             $this->delete($this->input['chat'], $this->input['message_id']);
             $callback = $_SESSION['reply'][$this->input['reply']]['callback'];
             $this->input['message_id'] = $this->input['callback_id'] = $_SESSION['reply'][$this->input['reply']]['start_message'];
+            // message_id уже указывает на сообщение меню — ответ на промпт
+            // (DNS, MTU, имя пира…) применяется к инстансу этого меню.
+            if (($mi = $this->getWgMsg()) !== null) {
+                $this->wg = (int) $mi;
+            }
             $this->{$callback}($this->input['message'], ...$_SESSION['reply'][$this->input['reply']]['args']);
             $this->answer($_SESSION['reply'][$this->input['reply']]['start_message']);
             // Сессия к этому моменту закрыта (см. input()) — unset через хелпер,
@@ -8149,6 +8161,57 @@ DNS-over-HTTPS with IP:
         return $this->getInstanceWG(1) ? 1 : 0;
     }
 
+    // ── Карта «сообщение → инстанс» ─────────────────────────────────────
+    // wg_instance в pac.json глобален, а кнопки wg-меню (delete, client,
+    // addpeer, torrent, DNS…) не несут инстанс в callback_data. Поэтому
+    // каждое сообщение с wg-меню запоминает СВОЙ инстанс в wg_msg.json:
+    // при нажатии любой кнопки (action) и при ответе на промпт (reply)
+    // инстанс берётся из карты как пер-запросный $this->wg — без записи в
+    // глобальный указатель. Сообщения, отрендеренные до этого механизма,
+    // в карте отсутствуют и работают по-старому через wg_instance.
+    // Файл эфемерный: в бэкап не входит, при потере — просто фолбэк.
+    public function wgMsgFile()
+    {
+        return dirname($this->pac) . '/wg_msg.json';
+    }
+
+    public function getWgMsg()
+    {
+        if (empty($this->input['chat']) || empty($this->input['message_id'])) {
+            return null;
+        }
+        $f = $this->wgMsgFile();
+        $m = is_file($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
+        return $m["{$this->input['chat']}:{$this->input['message_id']}"] ?? null;
+    }
+
+    // $inst 0/1 — записать; null — удалить (сообщение больше не wg-меню).
+    public function setWgMsg($inst)
+    {
+        if (empty($this->input['chat']) || empty($this->input['message_id'])) {
+            return;
+        }
+        $k = "{$this->input['chat']}:{$this->input['message_id']}";
+        $f = $this->wgMsgFile();
+        $m = is_file($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
+        if ($inst === null) {
+            if (!array_key_exists($k, $m)) {
+                return;
+            }
+            unset($m[$k]);
+        } else {
+            if (($m[$k] ?? null) === (int) $inst) {
+                return;
+            }
+            // Пере-вставка в конец + отсечка: карта живёт как LRU на ~100
+            // сообщений, старые записи вытесняются, файл не растёт.
+            unset($m[$k]);
+            $m[$k] = (int) $inst;
+            $m = array_slice($m, -100, null, true);
+        }
+        file_put_contents($f, json_encode($m), LOCK_EX);
+    }
+
     public function changeWG($i)
     {
         $this->selectWG($i);
@@ -9425,6 +9488,14 @@ DNS-over-HTTPS with IP:
                 $text,
                 $data ?: false,
             );
+            // Сообщение показывает wg-меню (или его подменю) — фиксируем его
+            // инстанс в карте; любое другое меню — снимаем запись, чтобы
+            // устаревшая привязка не влияла на кнопки нового содержимого.
+            if (in_array($type, ['wg', 'client', 'addpeer'], true)) {
+                $this->setWgMsg($this->wgNum());
+            } else {
+                $this->setWgMsg(null);
+            }
         } else {
             $this->send(
                 $this->input['chat'],
