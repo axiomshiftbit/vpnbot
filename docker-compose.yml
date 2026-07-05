@@ -677,6 +677,11 @@ services:
             - path: ./override.env
               required: false
         environment:
+            # IP обязателен: start_ipsec.sh гейтит на нём выпуск server.crt
+            # (SAN=IP) и генерацию swanctl.conf. Из env_file (.env) приходит
+            # пустая строка IP= — реальное значение передаёт makefile при
+            # `docker compose up` (IP=$(IP) …), поэтому берём его отсюда.
+            IP: ${IP}
             L2TPSUBNET: ${L2TPSUBNET:-10.9.1.0/24}
             IKEV2SUBNET: ${IKEV2SUBNET:-10.9.2.0/24}
         cap_add:
