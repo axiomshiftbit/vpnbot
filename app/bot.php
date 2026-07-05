@@ -9015,14 +9015,14 @@ DNS-over-HTTPS with IP:
         return empty($c['ts']) ? null : max(0, time() - (int) $c['ts']);
     }
 
-    // Кнопка 🔄 status в меню Vless: живые пробы + перерисовка меню.
+    // Кнопка 🔄 status главного меню: живые пробы + перерисовка.
     public function refreshMain()
     {
         if (!empty($this->input['callback_id'])) {
             $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('refreshed'));
         }
         $this->serviceStatuses(true);
-        $this->xray();
+        $this->menu();
     }
 
     public function menu($type = false, $arg = false, $return = false)
@@ -9240,6 +9240,12 @@ DNS-over-HTTPS with IP:
                             [
                                 'text'          => $this->i18n('config'),
                                 'callback_data' => "/menu config",
+                            ],
+                            [
+                                // Возраст кэша статусов: видно, насколько свежи
+                                // on/off в тексте меню; нажатие — живые пробы.
+                                'text'          => ($age = $this->menuStatusAge()) === null ? '🔄 status: …' : "🔄 status: {$age}s ago",
+                                'callback_data' => '/refreshMain',
                             ],
                         ],
                     ],
@@ -13476,14 +13482,6 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => '🔄 rotate sub links',
                 'callback_data' => '/rotateAllSubTokens',
-            ],
-        ];
-        $data[] = [
-            [
-                // Возраст кэша статусов сервисов (из него рендерится главное
-                // меню); нажатие — живые пробы + перезапись кэша.
-                'text'          => ($age = $this->menuStatusAge()) === null ? '🔄 status: …' : "🔄 status: {$age}s ago",
-                'callback_data' => '/refreshMain',
             ],
         ];
         if ($p['transport'] == 'Reality') {
