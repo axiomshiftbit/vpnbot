@@ -13468,12 +13468,12 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n('ip limit') . ' ' . (!empty($p['ip_limit']) ? ": {$p['ip_limit']} sec & $ip_count" : $this->i18n('off')),
                 'callback_data' => "/setIpLimit",
             ],
-        ];
-        $data[] = [
             [
                 'text'          => $this->i18n('hwid limit') . ': ' . $this->i18n($hwidEnabled ? 'on' : 'off') . " ({$defaultHwids})",
                 'callback_data' => '/toggleHwidLimit xray',
             ],
+        ];
+        $data[] = [
             [
                 'text'          => $this->i18n('set hwid devices count'),
                 'callback_data' => '/setHwidDevices xray',
@@ -13484,6 +13484,8 @@ DNS-over-HTTPS with IP:
                 'text'          => '🔒 ' . $this->i18n('subtoken strict') . ': ' . $this->i18n(!empty($p['subtoken_strict']) ? 'on' : 'off'),
                 'callback_data' => '/switchSubtokenStrict',
             ],
+        ];
+        $data[] = [
             [
                 'text'          => '🔄 rotate sub links',
                 'callback_data' => '/rotateAllSubTokens',
