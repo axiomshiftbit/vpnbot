@@ -5,6 +5,7 @@ require_once __DIR__ . '/ClashTemplateValidator.php';
 class Bot
 {
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
+    private const OC_USERS = 'ocserv_users';
 
     public $input;
     public $adguard;
@@ -678,11 +679,17 @@ class Bot
             case preg_match('~^/changeOcDomain$~', $this->input['callback'], $m):
                 $this->changeOcDomain();
                 break;
+            case preg_match('~^/changeOcPass (\d+)$~', $this->input['callback'], $m):
+                $this->changeOcPass($m[1]);
+                break;
             case preg_match('~^/changeOcPass$~', $this->input['callback'], $m):
-                $this->changeOcPass();
+                $this->menu('oc');
+                break;
+            case preg_match('~^/genOcPass (\d+)$~', $this->input['callback'], $m):
+                $this->genOcPass($m[1]);
                 break;
             case preg_match('~^/genOcPass$~', $this->input['callback'], $m):
-                $this->chocpass(bin2hex(random_bytes(16)));
+                $this->menu('oc');
                 break;
             case preg_match('~^/changeNaiveUser$~', $this->input['callback'], $m):
                 $this->changeNaiveUser();
@@ -1920,11 +1927,18 @@ class Bot
         ]);
     }
 
-    public function changeOcPass()
+    public function changeOcPass($i = null)
     {
+        $clients = $this->getClientsOc();
+        if ($i === null || !isset($clients[$i])) {
+            $this->menu('oc');
+            return;
+        }
+
+        $user = htmlspecialchars($clients[$i], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter pass",
+            "@{$this->input['username']} enter password for <code>$user</code>",
             $this->input['message_id'],
             reply: 'enter password',
         );
@@ -1932,7 +1946,7 @@ class Bot
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'chocpass',
-            'args'           => [],
+            'args'           => [$i],
         ]);
     }
 
@@ -2148,6 +2162,69 @@ class Bot
         return 'https://' . $host . '/' . ($secret === '' ? '' : '?' . rawurlencode($secret));
     }
 
+    protected function normalizeOcUsername($user)
+    {
+        $user = trim((string) $user);
+        if (!preg_match('#^[A-Za-z0-9._-]{1,64}$#', $user)) {
+            return false;
+        }
+        return $user;
+    }
+
+    protected function normalizeOcPassword($pass)
+    {
+        $pass = trim((string) $pass);
+        if ($pass === '' || strlen($pass) > 128 || preg_match('/[\r\n]/', $pass)) {
+            return false;
+        }
+        return $pass;
+    }
+
+    protected function genOcPassword(): string
+    {
+        return bin2hex(random_bytes(16));
+    }
+
+    protected function persistOcUsers(array $users): void
+    {
+        $pac = $this->getPacConf() ?: [];
+        $pac[self::OC_USERS] = $users;
+        $this->setPacConf($pac);
+    }
+
+    protected function syncOcUsers(?array $clients = null): array
+    {
+        $clients = $clients ?? $this->getClientsOc();
+        $pac     = $this->getPacConf() ?: [];
+        $current = is_array($pac[self::OC_USERS] ?? null) ? $pac[self::OC_USERS] : [];
+        $legacy  = (string) ($pac['ocserv'] ?? '');
+        $users   = [];
+
+        foreach ($clients as $user) {
+            if (array_key_exists($user, $current)) {
+                $users[$user] = (string) $current[$user];
+            } elseif ($legacy !== '') {
+                $users[$user] = $legacy;
+            }
+        }
+
+        if (($pac[self::OC_USERS] ?? null) !== $users) {
+            $pac[self::OC_USERS] = $users;
+            $this->setPacConf($pac);
+        }
+
+        return $users;
+    }
+
+    protected function setOcUserPassword(string $user, string $pass): void
+    {
+        $this->ssh("echo " . escapeshellarg($pass) . " | ocpasswd -c /etc/ocserv/ocserv.passwd " . escapeshellarg($user), 'oc');
+        $users = $this->syncOcUsers($this->getClientsOc());
+        $users[$user] = $pass;
+        $this->persistOcUsers($users);
+        $this->restartOcserv(file_get_contents('/config/ocserv.conf'));
+    }
+
     public function syncOcservCamouflage()
     {
         $conf   = file_get_contents('/config/ocserv.conf');
@@ -2167,7 +2244,10 @@ class Bot
         file_put_contents('/config/ocserv.conf', $conf);
         $this->ssh('pkill ocserv', 'oc');
         $pac = $this->getPacConf();
-        if (!empty($pac['ocserv']) && !empty($this->getHashSubdomain('oc'))) {
+        $ocUsers = is_array($pac[self::OC_USERS] ?? null)
+            ? array_filter($pac[self::OC_USERS], fn ($pass) => (string) $pass !== '')
+            : [];
+        if ((!empty($pac['ocserv']) || !empty($ocUsers)) && !empty($this->getHashSubdomain('oc'))) {
             $this->ssh('ocserv -c /etc/ocserv/ocserv.conf', 'oc');
         }
     }
@@ -2793,17 +2873,28 @@ NFT;
         $this->restartOcserv($t);
     }
 
-    public function chocpass($pass)
+    public function chocpass($pass, $i = null)
     {
-        $pac = $this->getPacConf();
-        $pac['ocserv'] = $pass;
-        $this->setPacConf($pac);
         $clients = $this->getClientsOc();
-        foreach ($clients as $k => $v) {
-            $this->ssh("echo " . escapeshellarg($pass) . " | ocpasswd -c /etc/ocserv/ocserv.passwd " . escapeshellarg($v), 'oc');
+        if ($i === null || !isset($clients[$i])) {
+            $this->menu('oc');
+            return;
         }
-        $this->restartOcserv(file_get_contents('/config/ocserv.conf'));
-        $this->menu('oc');
+
+        $pass = $this->normalizeOcPassword($pass);
+        if ($pass === false) {
+            $this->send($this->input['chat'], 'OpenConnect password: use 1-128 chars, no new lines');
+            $this->ocUser($i);
+            return;
+        }
+
+        $this->setOcUserPassword($clients[$i], $pass);
+        $this->ocUser($i);
+    }
+
+    public function genOcPass($i)
+    {
+        $this->chocpass($this->genOcPassword(), $i);
     }
 
     public function sspwdch($pass, $nomenu = false)
@@ -13267,19 +13358,18 @@ DNS-over-HTTPS with IP:
 
     public function ocMenu()
     {
-        $pac    = $this->getPacConf();
         $ocserv = file_get_contents('/config/ocserv.conf');
         $cs     = $this->ocCamouflageSecretForConf($ocserv);
         preg_match('~^dns = ([^\n]+)~sm', $ocserv, $m);
         $dns = $m[1] ?? '';
         preg_match('~^expose-iroutes = (true)~sm', $ocserv, $m);
         $expose = !empty($m[1]);
-        $pass   = htmlspecialchars($pac['ocserv'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $url    = htmlspecialchars($this->ocConnectionUrl($cs), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $clients = $this->getClientsOc();
+        $this->syncOcUsers($clients);
         $text[] = "Menu -> OpenConnect";
         $text[] = $this->i18n('camouflage') . ': ' . $this->i18n($cs === '' ? 'off' : 'on');
         $text[] = $this->i18n('server') . ": <code>$url</code>";
-        $text[] = $this->i18n('password') . ": <span class='tg-spoiler'>$pass</span>";
         $data[] = [
             [
                 'text'          => $this->i18n('change subdomain'),
@@ -13299,16 +13389,6 @@ DNS-over-HTTPS with IP:
             ];
         }
         $data[] = $row;
-        $data[] = [
-            [
-                'text'          => $this->i18n('change password'),
-                'callback_data' => "/changeOcPass",
-            ],
-            [
-                'text'          => $this->i18n('generate password'),
-                'callback_data' => "/genOcPass",
-            ],
-        ];
         $data[] = [
             [
                 'text'          => $this->i18n('dns') . ": $dns",
@@ -13333,7 +13413,6 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/addOcUser",
             ],
         ];
-        $clients = $this->getClientsOc();
         foreach ($clients as $k => $v) {
             $data[] = [
                 [
@@ -13362,12 +13441,12 @@ DNS-over-HTTPS with IP:
             return;
         }
 
-        $pac    = $this->getPacConf();
+        $users  = $this->syncOcUsers($clients);
         $ocserv = file_get_contents('/config/ocserv.conf');
         $cs     = $this->ocCamouflageSecretForConf($ocserv);
         $url    = htmlspecialchars($this->ocConnectionUrl($cs), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $user   = htmlspecialchars($clients[$i], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        $pass   = htmlspecialchars($pac['ocserv'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $pass   = htmlspecialchars($users[$clients[$i]] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
         $text[] = "Menu -> OpenConnect -> $user";
         $text[] = $this->i18n('server') . ": <code>$url</code>";
@@ -13375,6 +13454,16 @@ DNS-over-HTTPS with IP:
         $text[] = $this->i18n('password') . ": <span class='tg-spoiler'>$pass</span>";
         $text[] = $this->i18n('camouflage') . ': ' . $this->i18n($cs === '' ? 'off' : 'on');
 
+        $data[] = [
+            [
+                'text'          => $this->i18n('change password'),
+                'callback_data' => "/changeOcPass $i",
+            ],
+            [
+                'text'          => $this->i18n('generate password'),
+                'callback_data' => "/genOcPass $i",
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('delete'),
@@ -13411,6 +13500,9 @@ DNS-over-HTTPS with IP:
         foreach ($clients as $k => $v) {
             if ($i == $k) {
                 $this->ssh("ocpasswd -c /etc/ocserv/ocserv.passwd -d " . escapeshellarg($v), 'oc');
+                $users = $this->syncOcUsers($clients);
+                unset($users[$v]);
+                $this->persistOcUsers($users);
                 break;
             }
         }
@@ -13443,9 +13535,28 @@ DNS-over-HTTPS with IP:
 
     public function addocus($user)
     {
-        $pac = $this->getPacConf();
-        $this->ssh("echo " . escapeshellarg($pac['ocserv']) . " | ocpasswd -c /etc/ocserv/ocserv.passwd " . escapeshellarg($user), 'oc');
-        $this->menu('oc');
+        $user = $this->normalizeOcUsername($user);
+        if ($user === false) {
+            $this->send($this->input['chat'], 'OpenConnect username: use 1-64 chars: A-Z a-z 0-9 . _ -');
+            $this->menu('oc');
+            return;
+        }
+
+        $clients = $this->getClientsOc();
+        if (in_array($user, $clients, true)) {
+            $this->ocUser(array_search($user, $clients, true));
+            return;
+        }
+
+        $this->setOcUserPassword($user, $this->genOcPassword());
+        $clients = $this->getClientsOc();
+        $i = array_search($user, $clients, true);
+        if ($i === false) {
+            $this->menu('oc');
+            return;
+        }
+
+        $this->ocUser($i);
     }
 
     public function addxrus($users)
