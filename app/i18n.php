@@ -49,6 +49,14 @@ $i = [
         'en' => 'add relay',
         'ru' => 'добавить relay',
     ],
+    'hysteria relay hint'  => [
+        'en' => 'The link swaps only address+port to the relay (ports via portmap); password/SNI/obfs stay from origin. The relay must DNAT the hysteria UDP port (and the hopping range, if set) to origin.',
+        'ru' => 'Ссылка подменяет только адрес+порт на relay (порты через portmap); пароль/SNI/obfs остаются от origin. Relay должен DNAT-ить UDP-порт hysteria (и диапазон hopping, если задан) на origin.',
+    ],
+    'hysteria relay no link' => [
+        'en' => 'no link: set the hysteria password and open the port (or enable port hopping)',
+        'ru' => 'ссылки нет: задайте пароль hysteria и откройте порт (или включите port hopping)',
+    ],
     'traffic limit'        => [
         'en' => 'traffic limit',
         'ru' => 'лимит трафика',

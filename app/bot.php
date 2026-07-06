@@ -718,6 +718,12 @@ class Bot
             case preg_match('~^/hyHopNft$~', $this->input['callback'], $m):
                 $this->hyHopNft();
                 break;
+            case preg_match('~^/hyRelay$~', $this->input['callback'], $m):
+                $this->hyRelay();
+                break;
+            case preg_match('~^/hyRelaySub (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->hyRelaySub($m['arg']);
+                break;
             case preg_match('~^/addTtUser$~', $this->input['callback'], $m):
                 $this->addTtUser();
                 break;
@@ -2131,7 +2137,10 @@ class Bot
     // hy2://-ссылка для клиента. host/port — внешние (домен:порт-проброс),
     // sni добавляем только при коннекте по IP без домена. obfs/insecure
     // прокидываем из pac. Возвращает '' если нет пароля или порт скрыт.
-    public function linkHysteria()
+    // $relay (запись из $pac['relays'] с 'address') подменяет ТОЛЬКО адрес и
+    // порт (через portmap) на relay — sni/obfs/пароль остаются от origin, как
+    // в relay-подписках vless: TLS/QUIC терминируется на origin через DNAT.
+    public function linkHysteria($relay = null)
     {
         $pac   = $this->getPacConf();
         $ports = $this->getPorts();
@@ -2150,6 +2159,23 @@ class Bot
         }
         $domain = $this->getDomain();
         $host   = $domain ?: $this->ip;
+        $label  = $host;
+        if (is_array($relay) && !empty($relay['address'])) {
+            // Одиночные порты прогоняем через portmap (как relayVlessLink);
+            // диапазоны N-M хоппинга через одиночную карту не отобразить —
+            // остаются как есть (relay должен реднатить тот же диапазон).
+            $map      = $relay['portmap'] ?? [];
+            $portSpec = implode(',', array_map(
+                fn($t) => preg_match('~^\d+$~', $t) ? (string) ($map[$t] ?? $t) : $t,
+                preg_split('~,~', (string) $portSpec, -1, PREG_SPLIT_NO_EMPTY),
+            ));
+            if ($portSpec === '') {
+                return '';
+            }
+            $host  = $relay['address'];
+            // Метка в стиле relay-подписок: флаг relay, затем origin.
+            $label = $this->flagName($host, [$relay['address'], $this->ip]);
+        }
         $q = [];
         // Клиентский TLS SNI = домен сертификата. Указываем ВСЕГДА, когда домен
         // известен: многие клиенты не подставляют SNI из host автоматически
@@ -2168,8 +2194,9 @@ class Bot
         }
         $query = $q ? '?' . http_build_query($q) : '';
         // #fragment — отображаемое имя подключения в клиенте; без него поле
-        // имени пустое. Используем хост (домен/IP) как узнаваемую метку.
-        $name = '#' . rawurlencode($host);
+        // имени пустое. Используем хост (домен/IP) как узнаваемую метку; для
+        // relay — адрес relay с флагами (relay + origin).
+        $name = '#' . rawurlencode($label);
         return 'hysteria2://' . rawurlencode($pass) . "@$host:$portSpec/$query$name";
     }
 
@@ -2440,6 +2467,82 @@ NFT;
         $this->send(
             $this->input['chat'],
             "<b>nft (manual mode)</b>\n<pre>" . htmlspecialchars($snippet, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</pre>",
+        );
+    }
+
+    // Выбор relay для Hysteria из общего стора $pac['relays'] (тот же, что у
+    // relay-подписок vless): список relay с health, тап — экран hyRelaySub с
+    // hy2://-ссылкой через выбранный relay. Годятся только relay с 'address'
+    // (awg_address — отдельный wg/awg-канал, к hysteria отношения не имеет).
+    public function hyRelay()
+    {
+        $pac    = $this->getPacConf();
+        $relays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']));
+        if (empty($relays)) {
+            return $this->menu('hy');
+        }
+        $text[] = "Menu -> Hysteria -> " . $this->i18n('relay');
+        $text[] = $this->i18n('hysteria relay hint');
+
+        $data   = [];
+        $health = $this->readRelayHealth(); // read once for the whole list
+        foreach ($relays as $name => $relay) {
+            // Имя из одних цифр JSON-декодер делает int-ключом — приводим.
+            $name   = (string) $name;
+            $hl     = $this->relayHealthLabel($name, false, $health);
+            $data[] = [
+                [
+                    'text'          => "🔗 $name: {$relay['address']}" . ($hl !== '' ? "  $hl" : ''),
+                    'callback_data' => "/hyRelaySub $name",
+                ],
+            ];
+        }
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => '/menu hy',
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // hy2://-ссылка через один relay: linkHysteria() с подменой адреса+порта
+    // (portmap), всё остальное — от origin. Health показываем с возрастом, как
+    // на карточке relay в xray-меню.
+    public function hyRelaySub($name)
+    {
+        $pac   = $this->getPacConf();
+        $relay = $pac['relays'][$name] ?? null;
+        if ($relay === null || empty($relay['address'])) {
+            return $this->hyRelay();
+        }
+        $link = $this->linkHysteria($relay);
+
+        $text[] = "Menu -> Hysteria -> " . $this->i18n('relay') . " -> <b>$name</b> ({$relay['address']})";
+        if (($hl = $this->relayHealthLabel($name, true)) !== '') {
+            $text[] = $this->i18n('relay health') . ": $hl";
+        }
+        $text[] = $this->i18n('hysteria relay hint');
+        $text[] = $link !== ''
+            ? "\n<code>$link</code>"
+            : "\n" . $this->i18n('hysteria relay no link');
+
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => '/hyRelay',
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
         );
     }
 
@@ -12734,6 +12837,17 @@ DNS-over-HTTPS with IP:
             ];
         }
         $data[] = $hopRow;
+        // Relay-ссылки поверх общих relay xray: показываем кнопку только когда
+        // есть хотя бы один relay с TCP/UDP-адресом (awg-only не годятся).
+        $hyRelays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']));
+        if (!empty($hyRelays)) {
+            $data[] = [
+                [
+                    'text'          => '🔗 ' . $this->i18n('relay') . ' (' . count($hyRelays) . ')',
+                    'callback_data' => '/hyRelay',
+                ],
+            ];
+        }
         $data[] = [
             [
                 'text'          => 'config',
