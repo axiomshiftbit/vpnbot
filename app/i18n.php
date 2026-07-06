@@ -209,6 +209,14 @@ $i = [
         'en' => 'enter WG/AWG port map src:dst,src:dst (e.g. 51820:443), empty to clear',
         'ru' => 'введите маппинг портов WG/AWG src:dst,src:dst (напр. 51820:443), пусто — очистить',
     ],
+    'relay hy port map'    => [
+        'en' => 'Hysteria port map (src:dst)',
+        'ru' => 'маппинг портов Hysteria (src:dst)',
+    ],
+    'enter relay hy port map' => [
+        'en' => 'enter Hysteria port map src:dst,src:dst (e.g. 36712:443), empty = use the common port map',
+        'ru' => 'введите маппинг портов Hysteria src:dst,src:dst (напр. 36712:443), пусто — использовать общий маппинг',
+    ],
     'import'               => [
         'en' => 'restore',
         'ru' => 'восстановить',

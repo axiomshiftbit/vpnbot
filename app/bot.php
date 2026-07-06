@@ -463,6 +463,9 @@ class Bot
             case preg_match('~^/setRelayAwgPortMap (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayAwgPortMapPrompt($m['arg']);
                 break;
+            case preg_match('~^/setRelayHyPortMap (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayHyPortMapPrompt($m['arg']);
+                break;
             case preg_match('~^/relayDel (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayDel($m['arg']);
                 break;
@@ -2164,7 +2167,9 @@ class Bot
             // Одиночные порты прогоняем через portmap (как relayVlessLink);
             // диапазоны N-M хоппинга через одиночную карту не отобразить —
             // остаются как есть (relay должен реднатить тот же диапазон).
-            $map      = $relay['portmap'] ?? [];
+            // hy_portmap (если задан) имеет приоритет над общим portmap:
+            // UDP-порт hysteria у relay обычно проброшен отдельно от TCP vless.
+            $map      = !empty($relay['hy_portmap']) ? $relay['hy_portmap'] : ($relay['portmap'] ?? []);
             $portSpec = implode(',', array_map(
                 fn($t) => preg_match('~^\d+$~', $t) ? (string) ($map[$t] ?? $t) : $t,
                 preg_split('~,~', (string) $portSpec, -1, PREG_SPLIT_NO_EMPTY),
@@ -2526,6 +2531,18 @@ NFT;
         $text[] = "Menu -> Hysteria -> " . $this->i18n('relay') . " -> <b>$name</b> ({$relay['address']})";
         if (($hl = $this->relayHealthLabel($name, true)) !== '') {
             $text[] = $this->i18n('relay health') . ": $hl";
+        }
+        // Действующий маппинг: hy_portmap, иначе общий portmap (тот же выбор,
+        // что делает linkHysteria). Подписываем источник, чтобы было видно,
+        // какой из двух маппингов применён к ссылке ниже.
+        $hyMap = !empty($relay['hy_portmap']);
+        $map   = $hyMap ? $relay['hy_portmap'] : ($relay['portmap'] ?? []);
+        if (!empty($map)) {
+            $pm = [];
+            foreach ($map as $src => $dst) {
+                $pm[] = "$src:$dst";
+            }
+            $text[] = $this->i18n($hyMap ? 'relay hy port map' : 'relay port map') . ': <code>' . implode(', ', $pm) . '</code>';
         }
         $text[] = $this->i18n('hysteria relay hint');
         $text[] = $link !== ''
@@ -5618,6 +5635,17 @@ NFT;
         } else {
             $text[] = $this->i18n('relay awg port map') . ': —';
         }
+        // Отдельный маппинг портов для hy2://-ссылок; без него linkHysteria
+        // берёт общий portmap.
+        if (!empty($r['hy_portmap'])) {
+            $pm = [];
+            foreach ($r['hy_portmap'] as $src => $dst) {
+                $pm[] = "$src:$dst";
+            }
+            $text[] = $this->i18n('relay hy port map') . ': <code>' . implode(', ', $pm) . '</code>';
+        } else {
+            $text[] = $this->i18n('relay hy port map') . ': —';
+        }
 
         $data[] = [
             [
@@ -5641,6 +5669,12 @@ NFT;
             [
                 'text'          => $this->i18n('relay awg port map'),
                 'callback_data' => "/setRelayAwgPortMap $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay hy port map'),
+                'callback_data' => "/setRelayHyPortMap $name",
             ],
         ];
         $data[] = [
@@ -5777,6 +5811,41 @@ NFT;
             unset($c['relays'][$name]['awg_portmap']);
         } else {
             $c['relays'][$name]['awg_portmap'] = $map;
+        }
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayHyPortMapPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay hy port map'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay hy port map'),
+        );
+        $this->stashReply($r, [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayHyPortMap',
+            'args'          => [$name],
+        ]);
+    }
+
+    // Отдельный маппинг портов для hy2://-ссылок (UDP-порт hysteria у relay
+    // обычно не совпадает с TCP-портами vless). Пустой ввод сносит поле —
+    // linkHysteria вернётся к общему portmap.
+    public function setRelayHyPortMap($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $map = $this->parseRelayPortMap($text);
+        if (empty($map)) {
+            unset($c['relays'][$name]['hy_portmap']);
+        } else {
+            $c['relays'][$name]['hy_portmap'] = $map;
         }
         $this->setPacConf($c);
         $this->relayEdit($name);
