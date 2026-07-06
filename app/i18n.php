@@ -50,8 +50,8 @@ $i = [
         'ru' => 'добавить relay',
     ],
     'hysteria relay hint'  => [
-        'en' => 'The link swaps only address+port to the relay (ports via portmap); password/SNI/obfs stay from origin. The relay must DNAT the hysteria UDP port (and the hopping range, if set) to origin.',
-        'ru' => 'Ссылка подменяет только адрес+порт на relay (порты через portmap); пароль/SNI/obfs остаются от origin. Relay должен DNAT-ить UDP-порт hysteria (и диапазон hopping, если задан) на origin.',
+        'en' => 'The link swaps only address+port to the relay (Hysteria address and port map from the relay card in the xray menu); password/SNI/obfs stay from origin. The relay must DNAT the hysteria UDP port (and the hopping range, if set) to origin.',
+        'ru' => 'Ссылка подменяет только адрес+порт на relay (адрес и маппинг Hysteria — из карточки relay в xray-меню); пароль/SNI/obfs остаются от origin. Relay должен DNAT-ить UDP-порт hysteria (и диапазон hopping, если задан) на origin.',
     ],
     'hysteria relay no link' => [
         'en' => 'no link: set the hysteria password and open the port (or enable port hopping)',
@@ -209,13 +209,21 @@ $i = [
         'en' => 'enter WG/AWG port map src:dst,src:dst (e.g. 51820:443), empty to clear',
         'ru' => 'введите маппинг портов WG/AWG src:dst,src:dst (напр. 51820:443), пусто — очистить',
     ],
+    'relay hy address'     => [
+        'en' => 'Hysteria relay address',
+        'ru' => 'адрес relay для Hysteria',
+    ],
+    'enter relay hy address' => [
+        'en' => 'enter Hysteria relay address (domain or IP), empty to clear',
+        'ru' => 'введите адрес relay для Hysteria (домен или IP), пусто — очистить',
+    ],
     'relay hy port map'    => [
         'en' => 'Hysteria port map (src:dst)',
         'ru' => 'маппинг портов Hysteria (src:dst)',
     ],
     'enter relay hy port map' => [
-        'en' => 'enter Hysteria port map src:dst,src:dst (e.g. 36712:443), empty = use the common port map',
-        'ru' => 'введите маппинг портов Hysteria src:dst,src:dst (напр. 36712:443), пусто — использовать общий маппинг',
+        'en' => 'enter Hysteria port map src:dst,src:dst (e.g. 36712:443), empty to clear',
+        'ru' => 'введите маппинг портов Hysteria src:dst,src:dst (напр. 36712:443), пусто — очистить',
     ],
     'import'               => [
         'en' => 'restore',
