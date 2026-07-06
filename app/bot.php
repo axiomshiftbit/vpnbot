@@ -4,6 +4,8 @@ require_once __DIR__ . '/ClashTemplateValidator.php';
 
 class Bot
 {
+    private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
+
     public $input;
     public $adguard;
     public $update;
@@ -670,6 +672,9 @@ class Bot
             case preg_match('~^/changeCamouflage$~', $this->input['callback'], $m):
                 $this->changeCamouflage();
                 break;
+            case preg_match('~^/disableOcCamouflage$~', $this->input['callback'], $m):
+                $this->disableOcCamouflage();
+                break;
             case preg_match('~^/changeOcDomain$~', $this->input['callback'], $m):
                 $this->changeOcDomain();
                 break;
@@ -976,6 +981,9 @@ class Bot
                 break;
             case preg_match('~^/deloc (\d+)$~', $this->input['callback'], $m):
                 $this->deloc($m[1]);
+                break;
+            case preg_match('~^/ocUser (\d+)$~', $this->input['callback'], $m):
+                $this->ocUser($m[1]);
                 break;
             case preg_match('~^/userXr (\d+)$~', $this->input['callback'], $m):
                 $this->userXr($m[1]);
@@ -2064,8 +2072,98 @@ class Bot
         }
     }
 
-    public function restartOcserv($conf)
+    protected function normalizeOcCamouflageSecret($secret)
     {
+        $secret = trim((string) $secret);
+        if ($secret === '') {
+            return '';
+        }
+        if (!preg_match('#^[A-Za-z0-9._~-]{1,128}$#', $secret)) {
+            return false;
+        }
+        return $secret;
+    }
+
+    protected function extractOcCamouflageSecret(string $conf): string
+    {
+        if (preg_match('~^camouflage_secret\s*=\s*"((?:\\\\.|[^"\\\\])*)"~m', $conf, $m)) {
+            return stripcslashes($m[1]);
+        }
+        if (preg_match('~^camouflage_secret\s*=\s*([^\s#]+)~m', $conf, $m)) {
+            return trim($m[1], "\"'");
+        }
+        return '';
+    }
+
+    protected function ocCamouflageSecretForConf(string $conf, bool $migrate = false): string
+    {
+        $pac    = $this->getPacConf() ?: [];
+        $secret = $this->normalizeOcCamouflageSecret($pac[self::OC_CAMOUFLAGE_SECRET] ?? '');
+        if ($secret === false) {
+            $secret = '';
+        }
+
+        if ($secret === '') {
+            $legacy = $this->normalizeOcCamouflageSecret($this->extractOcCamouflageSecret($conf));
+            if ($legacy !== false && $legacy !== '') {
+                $secret = $legacy;
+                if ($migrate) {
+                    $pac[self::OC_CAMOUFLAGE_SECRET] = $secret;
+                    $this->setPacConf($pac);
+                }
+            }
+        }
+
+        return $secret;
+    }
+
+    protected function applyOcCamouflage(string $conf, string $secret): string
+    {
+        $enabled    = $secret === '' ? 'false' : 'true';
+        $secretLine = 'camouflage_secret = "' . addcslashes($secret, "\\\"") . '"';
+
+        $conf = preg_replace('~^camouflage\s*=.*$~m', "camouflage = $enabled", $conf, 1, $count);
+        if (!$count) {
+            $conf .= "\ncamouflage = $enabled\n";
+        }
+
+        $conf = preg_replace_callback('~^camouflage_secret\s*=.*$~m', fn () => $secretLine, $conf, 1, $count);
+        if (!$count) {
+            $conf .= "$secretLine\n";
+        }
+
+        return $conf;
+    }
+
+    protected function ocConnectionUrl(string $secret = ''): string
+    {
+        $domain = $this->getDomain();
+        $oc     = $this->getHashSubdomain('oc');
+        $host   = trim(($oc ? "$oc." : '') . $domain, '.');
+
+        if ($host === '') {
+            $host = $this->ip;
+        }
+
+        return 'https://' . $host . '/' . ($secret === '' ? '' : '?' . rawurlencode($secret));
+    }
+
+    public function syncOcservCamouflage()
+    {
+        $conf   = file_get_contents('/config/ocserv.conf');
+        $secret = $this->ocCamouflageSecretForConf($conf, true);
+        $next   = $this->applyOcCamouflage($conf, $secret);
+
+        if ($next !== $conf) {
+            $this->restartOcserv($next, false);
+        }
+    }
+
+    public function restartOcserv($conf, bool $syncCamouflage = true)
+    {
+        if ($syncCamouflage) {
+            $conf = $this->applyOcCamouflage($conf, $this->ocCamouflageSecretForConf($conf, true));
+        }
         file_put_contents('/config/ocserv.conf', $conf);
         $this->ssh('pkill ocserv', 'oc');
         $pac = $this->getPacConf();
@@ -2661,10 +2759,30 @@ NFT;
 
     public function chockey($pass)
     {
+        $pass = $this->normalizeOcCamouflageSecret($pass);
+        if ($pass === false) {
+            $this->send($this->input['chat'], 'camouflage secret: use 1-128 chars: A-Z a-z 0-9 . _ ~ -');
+            $this->menu('oc');
+            return;
+        }
+
+        $pac = $this->getPacConf() ?: [];
+        if ($pass === '') {
+            unset($pac[self::OC_CAMOUFLAGE_SECRET]);
+        } else {
+            $pac[self::OC_CAMOUFLAGE_SECRET] = $pass;
+        }
+        $this->setPacConf($pac);
+
         $c = file_get_contents('/config/ocserv.conf');
-        $t = preg_replace('~^camouflage_secret[^\n]+~sm', "camouflage_secret = \"$pass\"", $c);
-        $this->restartOcserv($t);
+        $t = $this->applyOcCamouflage($c, $pass);
+        $this->restartOcserv($t, false);
         $this->menu('oc');
+    }
+
+    public function disableOcCamouflage()
+    {
+        $this->chockey('');
     }
 
     public function chocdomain($domain)
@@ -13150,33 +13268,37 @@ DNS-over-HTTPS with IP:
     public function ocMenu()
     {
         $pac    = $this->getPacConf();
-        $domain = $this->getDomain();
         $ocserv = file_get_contents('/config/ocserv.conf');
-        preg_match('~^camouflage_secret[^\n]+?"([^"]+)*"~sm', $ocserv, $m);
-        $cs = $m[1];
+        $cs     = $this->ocCamouflageSecretForConf($ocserv);
         preg_match('~^dns = ([^\n]+)~sm', $ocserv, $m);
-        $dns = $m[1];
+        $dns = $m[1] ?? '';
         preg_match('~^expose-iroutes = (true)~sm', $ocserv, $m);
-        $expose = $m[1];
-        $pass   = htmlspecialchars($pac['ocserv']);
+        $expose = !empty($m[1]);
+        $pass   = htmlspecialchars($pac['ocserv'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $url    = htmlspecialchars($this->ocConnectionUrl($cs), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $text[] = "Menu -> OpenConnect";
-        if (!empty($cs)) {
-            $oc = $this->getHashSubdomain('oc');
-            $text[] = "<code>https://$oc.$domain/?$cs</code>";
-        }
-        $text[] = "password: <span class='tg-spoiler'>$pass</span>";
+        $text[] = $this->i18n('camouflage') . ': ' . $this->i18n($cs === '' ? 'off' : 'on');
+        $text[] = $this->i18n('server') . ": <code>$url</code>";
+        $text[] = $this->i18n('password') . ": <span class='tg-spoiler'>$pass</span>";
         $data[] = [
             [
                 'text'          => $this->i18n('change subdomain'),
                 'callback_data' => "/changeOcDomain",
             ],
         ];
-        $data[] = [
+        $row = [
             [
                 'text'          => $this->i18n('change secret'),
                 'callback_data' => "/changeCamouflage",
             ],
         ];
+        if ($cs !== '') {
+            $row[] = [
+                'text'          => $this->i18n('disable secret'),
+                'callback_data' => "/disableOcCamouflage",
+            ];
+        }
+        $data[] = $row;
         $data[] = [
             [
                 'text'          => $this->i18n('change password'),
@@ -13215,8 +13337,8 @@ DNS-over-HTTPS with IP:
         foreach ($clients as $k => $v) {
             $data[] = [
                 [
-                    'text'          => $this->i18n('delete') . " $v",
-                    'callback_data' => "/deloc $k",
+                    'text'          => $v,
+                    'callback_data' => "/ocUser $k",
                 ],
             ];
         }
@@ -13230,6 +13352,48 @@ DNS-over-HTTPS with IP:
             'text' => implode("\n", $text),
             'data' => $data,
         ];
+    }
+
+    public function ocUser($i)
+    {
+        $clients = $this->getClientsOc();
+        if (!isset($clients[$i])) {
+            $this->menu('oc');
+            return;
+        }
+
+        $pac    = $this->getPacConf();
+        $ocserv = file_get_contents('/config/ocserv.conf');
+        $cs     = $this->ocCamouflageSecretForConf($ocserv);
+        $url    = htmlspecialchars($this->ocConnectionUrl($cs), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $user   = htmlspecialchars($clients[$i], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $pass   = htmlspecialchars($pac['ocserv'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        $text[] = "Menu -> OpenConnect -> $user";
+        $text[] = $this->i18n('server') . ": <code>$url</code>";
+        $text[] = $this->i18n('username') . ": <code>$user</code>";
+        $text[] = $this->i18n('password') . ": <span class='tg-spoiler'>$pass</span>";
+        $text[] = $this->i18n('camouflage') . ': ' . $this->i18n($cs === '' ? 'off' : 'on');
+
+        $data[] = [
+            [
+                'text'          => $this->i18n('delete'),
+                'callback_data' => "/deloc $i",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => "/menu oc",
+            ],
+        ];
+
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
     }
 
     public function changeOcExpose()

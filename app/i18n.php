@@ -701,6 +701,26 @@ $i = [
         'en' => 'change secret',
         'ru' => 'секретное слово',
     ],
+    'disable secret'  => [
+        'en' => 'disable secret',
+        'ru' => 'отключить секрет',
+    ],
+    'camouflage'  => [
+        'en' => 'camouflage',
+        'ru' => 'маскировка',
+    ],
+    'server'  => [
+        'en' => 'server',
+        'ru' => 'сервер',
+    ],
+    'username'  => [
+        'en' => 'username',
+        'ru' => 'логин',
+    ],
+    'password'  => [
+        'en' => 'password',
+        'ru' => 'пароль',
+    ],
     'dns'  => [
         'en' => 'dns',
         'ru' => 'днс',
