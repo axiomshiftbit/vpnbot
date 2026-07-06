@@ -4236,6 +4236,7 @@ NFT;
 
     public function export()
     {
+        $this->syncOcUsers();
         $this->wg = 0;
         $wg = [
             'server'  => $this->readConfig(),
@@ -4412,7 +4413,10 @@ NFT;
             if (!empty($json['oc'])) {
                 $out[] = 'update ocserv';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                file_put_contents('/config/ocserv.passwd', $json['ocu']);
+                if (array_key_exists('ocu', $json)) {
+                    file_put_contents('/config/ocserv.passwd', $json['ocu']);
+                    $this->syncOcUsers();
+                }
                 $this->restartOcserv($json['oc']);
             }
             // hysteria
@@ -4464,9 +4468,10 @@ NFT;
                 $this->importIpsecPki($json['ipsec']);
                 $this->restartIpsec();
             }
-            if (!empty($json['pac']['domain'])) {
-                $this->setUpstreamDomainOcserv($json['pac']['domain']);
-                $this->setUpstreamDomainNaive($json['pac']['domain']);
+            if (array_key_exists('pac', $json)) {
+                $domain = $json['pac']['domain'] ?? '';
+                $this->setUpstreamDomainOcserv($domain);
+                $this->setUpstreamDomainNaive($domain);
             }
             // dnstt
             if (!empty($json['dnstt'])) {
