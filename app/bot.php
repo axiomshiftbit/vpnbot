@@ -66,6 +66,7 @@ class Bot
             'nginx_domain_access',
             'upstream_access',
             'xray',
+            'ocserv.log',
             'telemt',
         ];
         $this->reg = '~' . implode('|', [
@@ -2225,6 +2226,28 @@ class Bot
         $this->restartOcserv(file_get_contents('/config/ocserv.conf'));
     }
 
+    protected function getOcOnlineUsers(?array $clients = null): array
+    {
+        $clients = $clients ?? $this->getClientsOc();
+        if (empty($clients)) {
+            return [];
+        }
+
+        $out = (string) $this->ssh('occtl show users 2>/dev/null', 'oc');
+        if (trim($out) === '') {
+            return [];
+        }
+
+        $online = [];
+        foreach ($clients as $user) {
+            if (preg_match('~(?<![A-Za-z0-9._-])' . preg_quote($user, '~') . '(?![A-Za-z0-9._-])~', $out)) {
+                $online[$user] = true;
+            }
+        }
+
+        return $online;
+    }
+
     public function syncOcservCamouflage()
     {
         $conf   = file_get_contents('/config/ocserv.conf');
@@ -2248,7 +2271,8 @@ class Bot
             ? array_filter($pac[self::OC_USERS], fn ($pass) => (string) $pass !== '')
             : [];
         if ((!empty($pac['ocserv']) || !empty($ocUsers)) && !empty($this->getHashSubdomain('oc'))) {
-            $this->ssh('ocserv -c /etc/ocserv/ocserv.conf', 'oc');
+            $this->ssh('mkdir -p /logs; touch /logs/ocserv.log', 'oc');
+            $this->ssh('ocserv -f -c /etc/ocserv/ocserv.conf', 'oc', false, '/logs/ocserv.log');
         }
     }
 
@@ -13372,6 +13396,7 @@ DNS-over-HTTPS with IP:
         $url    = htmlspecialchars($this->ocConnectionUrl($cs), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $clients = $this->getClientsOc();
         $this->syncOcUsers($clients);
+        $online = $this->getOcOnlineUsers($clients);
         $text[] = "Menu -> OpenConnect";
         $text[] = $this->i18n('camouflage') . ': ' . $this->i18n($cs === '' ? 'off' : 'on');
         $text[] = $this->i18n('server') . ": <code>$url</code>";
@@ -13421,7 +13446,7 @@ DNS-over-HTTPS with IP:
         foreach ($clients as $k => $v) {
             $data[] = [
                 [
-                    'text'          => $v,
+                    'text'          => (!empty($online[$v]) ? '🟢 ' : '🔴 ') . $v,
                     'callback_data' => "/ocUser $k",
                 ],
             ];
@@ -13452,11 +13477,13 @@ DNS-over-HTTPS with IP:
         $url    = htmlspecialchars($this->ocConnectionUrl($cs), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $user   = htmlspecialchars($clients[$i], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $pass   = htmlspecialchars($users[$clients[$i]] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $online = !empty($this->getOcOnlineUsers([$clients[$i]])[$clients[$i]]);
 
         $text[] = "Menu -> OpenConnect -> $user";
         $text[] = $this->i18n('server') . ": <code>$url</code>";
         $text[] = $this->i18n('username') . ": <code>$user</code>";
         $text[] = $this->i18n('password') . ": <span class='tg-spoiler'>$pass</span>";
+        $text[] = $this->i18n('status') . ': ' . ($online ? '🟢 ' . $this->i18n('online') : '🔴 ' . $this->i18n('offline'));
         $text[] = $this->i18n('camouflage') . ': ' . $this->i18n($cs === '' ? 'off' : 'on');
 
         $data[] = [

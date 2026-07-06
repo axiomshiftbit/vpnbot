@@ -411,6 +411,7 @@ services:
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config:/etc/ocserv
             - ./certs:/certs
+            - ./logs:/logs
             - ./scripts/start_oc.sh:/start_oc.sh
         hostname: ocserv
         container_name: openconnect-${VER}
