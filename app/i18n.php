@@ -186,12 +186,12 @@ $i = [
         'ru' => 'введите имя relay (буквы, цифры, - . _)',
     ],
     'enter relay address'  => [
-        'en' => 'enter relay address (domain or IP)',
-        'ru' => 'введите адрес relay (домен или IP)',
+        'en' => 'enter relay address (domain or IP), 0 to clear',
+        'ru' => 'введите адрес relay (домен или IP), 0 — очистить',
     ],
     'enter relay port map' => [
-        'en' => 'enter port map src:dst,src:dst (e.g. 443:8443), empty to clear',
-        'ru' => 'введите маппинг портов src:dst,src:dst (напр. 443:8443), пусто — очистить',
+        'en' => 'enter port map src:dst,src:dst (e.g. 443:8443), 0 to clear',
+        'ru' => 'введите маппинг портов src:dst,src:dst (напр. 443:8443), 0 — очистить',
     ],
     'relay awg address'    => [
         'en' => 'WG/AWG relay address',
@@ -202,12 +202,12 @@ $i = [
         'ru' => 'маппинг портов WG/AWG (src:dst)',
     ],
     'enter relay awg address' => [
-        'en' => 'enter WG/AWG relay address (domain or IP), empty to clear',
-        'ru' => 'введите адрес relay для WG/AWG (домен или IP), пусто — очистить',
+        'en' => 'enter WG/AWG relay address (domain or IP), 0 to clear',
+        'ru' => 'введите адрес relay для WG/AWG (домен или IP), 0 — очистить',
     ],
     'enter relay awg port map' => [
-        'en' => 'enter WG/AWG port map src:dst,src:dst (e.g. 51820:443), empty to clear',
-        'ru' => 'введите маппинг портов WG/AWG src:dst,src:dst (напр. 51820:443), пусто — очистить',
+        'en' => 'enter WG/AWG port map src:dst,src:dst (e.g. 51820:443), 0 to clear',
+        'ru' => 'введите маппинг портов WG/AWG src:dst,src:dst (напр. 51820:443), 0 — очистить',
     ],
     'direct'               => [
         'en' => 'direct',
@@ -222,16 +222,16 @@ $i = [
         'ru' => 'адрес relay для Hysteria',
     ],
     'enter relay hy address' => [
-        'en' => 'enter Hysteria relay address (domain or IP), empty to clear',
-        'ru' => 'введите адрес relay для Hysteria (домен или IP), пусто — очистить',
+        'en' => 'enter Hysteria relay address (domain or IP), 0 to clear',
+        'ru' => 'введите адрес relay для Hysteria (домен или IP), 0 — очистить',
     ],
     'relay hy port map'    => [
         'en' => 'Hysteria port map (src:dst)',
         'ru' => 'маппинг портов Hysteria (src:dst)',
     ],
     'enter relay hy port map' => [
-        'en' => 'enter Hysteria port map src:dst,src:dst (e.g. 36712:443), empty to clear',
-        'ru' => 'введите маппинг портов Hysteria src:dst,src:dst (напр. 36712:443), пусто — очистить',
+        'en' => 'enter Hysteria port map src:dst,src:dst (e.g. 36712:443), 0 to clear',
+        'ru' => 'введите маппинг портов Hysteria src:dst,src:dst (напр. 36712:443), 0 — очистить',
     ],
     'import'               => [
         'en' => 'restore',

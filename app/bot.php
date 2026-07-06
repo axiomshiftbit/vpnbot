@@ -5800,7 +5800,9 @@ NFT;
             $this->relayMenu();
             return;
         }
-        $c['relays'][$name]['address'] = trim($text);
+        // 0/пусто — очистка: relay выпадает из vless-подписок/списков (ключ
+        // остаётся с '', как при создании), но awg/hy-каналы не трогаем.
+        $c['relays'][$name]['address'] = $this->relayClearInput($text) ? '' : trim($text);
         $this->setPacConf($c);
         $this->relayEdit($name);
     }
@@ -5827,7 +5829,9 @@ NFT;
             $this->relayMenu();
             return;
         }
-        $c['relays'][$name]['portmap'] = $this->parseRelayPortMap($text);
+        // 0/пусто — очистка (parseRelayPortMap('0') и так даст [], но явная
+        // ветка фиксирует контракт всех relay-сеттеров).
+        $c['relays'][$name]['portmap'] = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
         $this->setPacConf($c);
         $this->relayEdit($name);
     }
@@ -5855,7 +5859,7 @@ NFT;
             return;
         }
         $addr = trim($text);
-        if ($addr === '') {
+        if ($this->relayClearInput($addr)) {
             unset($c['relays'][$name]['awg_address']);
         } else {
             $c['relays'][$name]['awg_address'] = $addr;
@@ -5886,7 +5890,8 @@ NFT;
             $this->relayMenu();
             return;
         }
-        $map = $this->parseRelayPortMap($text);
+        // 0/пусто — очистка (невалидный ввод парсер тоже сведёт к []).
+        $map = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
         if (empty($map)) {
             unset($c['relays'][$name]['awg_portmap']);
         } else {
@@ -5922,7 +5927,7 @@ NFT;
             return;
         }
         $addr = trim($text);
-        if ($addr === '') {
+        if ($this->relayClearInput($addr)) {
             unset($c['relays'][$name]['hy_address']);
         } else {
             $c['relays'][$name]['hy_address'] = $addr;
@@ -5956,7 +5961,8 @@ NFT;
             $this->relayMenu();
             return;
         }
-        $map = $this->parseRelayPortMap($text);
+        // 0/пусто — очистка (невалидный ввод парсер тоже сведёт к []).
+        $map = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
         if (empty($map)) {
             unset($c['relays'][$name]['hy_portmap']);
         } else {
@@ -5975,6 +5981,14 @@ NFT;
         }
         $this->setPacConf($c);
         $this->relayMenu();
+    }
+
+    // Ввод-«очистка» для полей relay (адреса и маппинги, включая telemt):
+    // '0' или пустая строка. Telegram не даёт отправить пустое сообщение
+    // реплаем, поэтому единый явный сентинел — 0.
+    public function relayClearInput($text): bool
+    {
+        return in_array(trim((string) $text), ['', '0'], true);
     }
 
     // Parse a 'src:dst,src:dst' port map (real port -> relay port). Both sides
@@ -8901,7 +8915,9 @@ DNS-over-HTTPS with IP:
             $this->telemtRelays();
             return;
         }
-        $c['telemt_relays'][$name]['address'] = trim($text);
+        // 0/пусто — очистка: relay выпадает из селектора telemtUsers
+        // (там фильтр по непустому address).
+        $c['telemt_relays'][$name]['address'] = $this->relayClearInput($text) ? '' : trim($text);
         $this->setPacConf($c);
         $this->telemtRelayEdit($name);
     }
@@ -8928,7 +8944,8 @@ DNS-over-HTTPS with IP:
             $this->telemtRelays();
             return;
         }
-        $c['telemt_relays'][$name]['portmap'] = $this->parseRelayPortMap($text);
+        // 0/пусто — очистка (parseRelayPortMap('0') и так даст []).
+        $c['telemt_relays'][$name]['portmap'] = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
         $this->setPacConf($c);
         $this->telemtRelayEdit($name);
     }
