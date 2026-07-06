@@ -1034,6 +1034,12 @@ class Bot
             case preg_match('~^/switchEndpoint (\d+)$~', $this->input['callback'], $m):
                 $this->switchEndpoint($m[1]);
                 break;
+            case preg_match('~^/wgRelayMenu (?P<page>\d+)$~', $this->input['callback'], $m):
+                $this->wgRelayMenu((int) $m['page']);
+                break;
+            case preg_match('~^/setWgRelay (?P<page>\d+)(?: (?P<name>[\w.\-]+))?$~', $this->input['callback'], $m):
+                $this->setWgRelay((int) $m['page'], $m['name'] ?? '');
+                break;
             // Amnezia-кнопки несут номер инстанса в callback_data: кнопка из
             // устаревшего сообщения действует на «свой» инстанс, а не на
             // последний открытый (wg_instance глобален для всех меню/устройств).
@@ -4920,6 +4926,72 @@ NFT;
         $this->menu('wg', $page);
     }
 
+    // Выбор relay для wg/awg-конфигов инстанса: «напрямую» + relay с заданным
+    // awg_address (общий стор relay xray). Выбор постоянный (pacconf
+    // '{inst}relay') и действует на ВСЕ генерируемые конфиги/QR/download этого
+    // инстанса — у wg нет подписок, конфиг статичен, поэтому per-client выбора
+    // (как relay-подписки vless) здесь нет. Инстанс — из карты сообщения
+    // (wg_msg), как у соседних кнопок wg-меню без инстанса в callback_data.
+    public function wgRelayMenu($page = 0)
+    {
+        $c      = $this->getPacConf();
+        $relays = array_filter($c['relays'] ?? [], fn($e) => !empty($e['awg_address']));
+        $cur    = (string) ($c[$this->getInstanceWG(1) . 'relay'] ?? '');
+        if (empty($relays) && $cur === '') {
+            return $this->menu('wg', $page);
+        }
+        $text[] = "Menu -> " . $this->getTitleWG() . " -> " . $this->i18n('relay');
+        $text[] = $this->i18n('wg relay hint');
+
+        $data[] = [
+            [
+                'text'          => ($this->wgRelay() === null ? '✅ ' : '') . $this->i18n('direct'),
+                'callback_data' => "/setWgRelay $page",
+            ],
+        ];
+        $health = $this->readRelayHealth(); // read once for the whole list
+        foreach ($relays as $name => $r) {
+            // Имя из одних цифр JSON-декодер делает int-ключом — приводим.
+            // Health — TCP-проба основного address; для awg-only relay её нет.
+            $name   = (string) $name;
+            $hl     = $this->relayHealthLabel($name, false, $health);
+            $data[] = [
+                [
+                    'text'          => ($cur === $name ? '✅ ' : '') . "🔗 $name: {$r['awg_address']}" . ($hl !== '' ? "  $hl" : ''),
+                    'callback_data' => "/setWgRelay $page $name",
+                ],
+            ];
+        }
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => "/menu wg {$this->wgNum()} $page",
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Пустое/неизвестное имя и relay без awg_address снимают выбор (direct):
+    // так же лечится и устаревшая запись после удаления relay.
+    public function setWgRelay($page = 0, $name = '')
+    {
+        $c   = $this->getPacConf();
+        $key = $this->getInstanceWG(1) . 'relay';
+        $r   = $c['relays'][$name] ?? null;
+        if ($name === '' || !is_array($r) || empty($r['awg_address'])) {
+            unset($c[$key]);
+        } else {
+            $c[$key] = $name;
+        }
+        $this->setPacConf($c);
+        $this->wgRelayMenu($page);
+    }
+
     public function iptablesWG()
     {
         $c = $this->getPacConf();
@@ -6742,6 +6814,19 @@ DNS-over-HTTPS with IP:
                 ],
             ],
         ];
+        // Relay для генерируемых конфигов (Endpoint через awg_address/awg_portmap
+        // общих relay xray). Кнопка видна, когда есть кандидаты либо выбор ещё
+        // хранит имя (даже устаревшее — чтобы его можно было снять руками).
+        $wgRelays = array_filter($c['relays'] ?? [], fn($e) => !empty($e['awg_address']));
+        $rlName   = (string) ($c[$this->getInstanceWG(1) . 'relay'] ?? '');
+        if (!empty($wgRelays) || $rlName !== '') {
+            $data[] = [
+                [
+                    'text'          => '🔗 ' . $this->i18n('relay') . ': ' . ($this->wgRelay() !== null ? $rlName : $this->i18n('direct')),
+                    'callback_data' => "/wgRelayMenu $page",
+                ],
+            ];
+        }
         $inst = $this->wgNum();
         if (!empty($am)) {
             $rot_period = (int) ($c[$this->getInstanceWG(1) . 'amnezia_rotation_period'] ?? 0);
@@ -7220,6 +7305,12 @@ DNS-over-HTTPS with IP:
         $dns           = array_map('trim', explode(',', $dnsRaw));
         $ports         = $this->getPorts();
         $wgPort        = (int) $ports[$this->getInstanceWG()]['port'];
+        // Relay инстанса: hostName/port ссылки — как Endpoint в createConfig()
+        // (сам вложенный 'config' там уже подменён тем же wgRelay()).
+        if (($relay = $this->wgRelay()) !== null) {
+            $domain = $relay['awg_address'];
+            $wgPort = (int) ($relay['awg_portmap'][$wgPort] ?? $wgPort);
+        }
         $amneziaKeys   = $this->amneziaKeys();
         $protoVer      = array_key_exists('I1', $amneziaKeys) ? "2" : "1";
         $containerName = $protoVer === "2" ? "amnezia-awg2" : "amnezia-awg";
@@ -17815,6 +17906,22 @@ DNS-over-HTTPS with IP:
         return $name;
     }
 
+    // Выбранный relay для генерируемых wg/awg-конфигов текущего инстанса
+    // (pacconf '{inst}relay' — имя из $pac['relays']). Возвращает запись relay
+    // с awg_address или null (не выбран / удалён / адрес снят) — тогда конфиги
+    // идут напрямую. Reuse awg_address/awg_portmap: это тот же wg/awg-канал
+    // relay, что применяет applyAwgRelay к 'awg'-прокси в mihomo.
+    public function wgRelay(): ?array
+    {
+        $c    = $this->getPacConf();
+        $name = (string) ($c[$this->getInstanceWG(1) . 'relay'] ?? '');
+        if ($name === '') {
+            return null;
+        }
+        $r = $c['relays'][$name] ?? null;
+        return (is_array($r) && !empty($r['awg_address'])) ? $r : null;
+    }
+
     public function createConfig($data)
     {
         $pac = $this->getPacConf();
@@ -17831,12 +17938,22 @@ DNS-over-HTTPS with IP:
             $conf[] = "$k = $v";
         }
         $ports = $this->getPorts();
+        // Relay инстанса (если выбран в wg-меню): Endpoint подменяется на
+        // адрес relay для WG/AWG, порт — через awg_portmap (как applyAwgRelay).
+        // Ключи/DNS/AllowedIPs не трогаем — WG-туннель терминируется на origin.
+        $relay = $this->wgRelay();
         if (!empty($data['peers'])) {
             foreach ($data['peers'] as $peer) {
                 $conf[] = '';
                 $conf[] = $peer['# PublicKey'] ? '# [Peer]' : '[Peer]';
                 if (!empty($peer['Endpoint'])) {
-                    $peer['Endpoint'] = ($pac[$this->getInstanceWG(1) . 'endpoint'] ? $this->ip : $this->getDomain()) . ":" . $ports[$this->getInstanceWG()]['port'];
+                    $host = $pac[$this->getInstanceWG(1) . 'endpoint'] ? $this->ip : $this->getDomain();
+                    $port = $ports[$this->getInstanceWG()]['port'];
+                    if ($relay !== null) {
+                        $host = $relay['awg_address'];
+                        $port = $relay['awg_portmap'][$port] ?? $port;
+                    }
+                    $peer['Endpoint'] = "$host:$port";
                 }
                 foreach ($peer as $k => $v) {
                     $conf[] = "$k = $v";

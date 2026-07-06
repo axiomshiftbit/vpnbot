@@ -209,6 +209,14 @@ $i = [
         'en' => 'enter WG/AWG port map src:dst,src:dst (e.g. 51820:443), empty to clear',
         'ru' => 'введите маппинг портов WG/AWG src:dst,src:dst (напр. 51820:443), пусто — очистить',
     ],
+    'direct'               => [
+        'en' => 'direct',
+        'ru' => 'напрямую',
+    ],
+    'wg relay hint'        => [
+        'en' => 'Relay swaps only the Endpoint of generated configs/QR to the WG/AWG relay address (ports via the WG/AWG port map); keys/DNS stay from origin. The relay must DNAT the WG UDP port to origin. Already imported client configs keep their old Endpoint until re-imported.',
+        'ru' => 'Relay подменяет только Endpoint генерируемых конфигов/QR на адрес relay для WG/AWG (порты через маппинг WG/AWG); ключи/DNS остаются от origin. Relay должен DNAT-ить UDP-порт WG на origin. Уже импортированные клиентами конфиги сохраняют старый Endpoint до переимпорта.',
+    ],
     'relay hy address'     => [
         'en' => 'Hysteria relay address',
         'ru' => 'адрес relay для Hysteria',
