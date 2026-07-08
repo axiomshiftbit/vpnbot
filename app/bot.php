@@ -16377,8 +16377,9 @@ DNS-over-HTTPS with IP:
         switch ($_GET['t']) {
             case 's':
                 if (!empty($c['routing']['rules'])) {
-                    $ips = $domains = [];
+                    $ips = $domains = $other = [];
                     foreach ($c['routing']['rules'] as $k => $v) {
+                        $matched = false;
                         if (array_key_exists('domain', $v) && !empty($v['domain'])) {
                             foreach ($v['domain'] as $j) {
                                 if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $j)) {
@@ -16387,6 +16388,7 @@ DNS-over-HTTPS with IP:
                                     $ips[$v['outboundTag']][] = $j;
                                 }
                             }
+                            $matched = true;
                         }
                         if (array_key_exists('ip', $v) && !empty($v['ip'])) {
                             foreach ($v['ip'] as $j) {
@@ -16396,6 +16398,12 @@ DNS-over-HTTPS with IP:
                                     $ips[$v['outboundTag']][] = $j;
                                 }
                             }
+                            $matched = true;
+                        }
+                        // Правила без domain/ip (port/protocol/inboundTag и т.п.)
+                        // сохраняем как есть, иначе они молча пропадали.
+                        if (!$matched) {
+                            $other[] = $v;
                         }
                     }
                     $c['routing']['rules'] = [];
@@ -16417,6 +16425,9 @@ DNS-over-HTTPS with IP:
                                 "ip"          => $v
                             ];
                         }
+                    }
+                    foreach ($other as $v) {
+                        $c['routing']['rules'][] = $v;
                     }
                 }
                 break;
