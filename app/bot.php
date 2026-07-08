@@ -16142,7 +16142,7 @@ DNS-over-HTTPS with IP:
                             "path" => "/ws$hash",
                             "xmux" => [
                                 "max_concurrency"   => "16-32",
-                                "max_connections"   => "0-1",
+                                "max_connections"   => "0",
                                 "c_max_reuse_times" => "0-1",
                                 "h_max_request_times" => "600-900",
                                 "h_max_reusable_secs" => "1800-3000",
