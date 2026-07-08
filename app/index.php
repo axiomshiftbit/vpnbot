@@ -66,16 +66,22 @@ switch (true) {
                 exit;
 
             case 'te':
+                // $_GET['ty'] попадает в путь /config/<ty>.json и ключ конфига —
+                // ограничиваем словом (\w), иначе `ty=../..` читает произвольный .json.
+                $ty = preg_match('~^\w+$~', $_GET['ty'] ?? '') ? $_GET['ty'] : '';
+                if ($ty === '') {
+                    break;
+                }
                 if (!empty($_GET['te'])) {
-                    $t = $bot->getPacConf()["{$_GET['ty']}templates"][$_GET['te']];
+                    $t = $bot->getPacConf()["{$ty}templates"][$_GET['te']];
                 } else {
-                    $t = json_decode(file_get_contents("/config/{$_GET['ty']}.json"), true);
+                    $t = json_decode(file_get_contents("/config/$ty.json"), true);
                 }
                 if ($t) {
                     header('Content-Type: text/html');
                     $t = json_encode($t, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                     $name = $_GET['te'] ?: 'origin';
-                    $type = $_GET['ty'];
+                    $type = $ty;
                     echo <<<HTML
                         <!DOCTYPE HTML>
                         <html lang="en" style="height:100%">
@@ -131,6 +137,7 @@ switch (true) {
                         HTML;
                     exit;
                 }
+                break;
 
             case 'changelog':
                 // Changelog показываем из СВОЕГО репозитория, а не из upstream.

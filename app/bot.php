@@ -3819,8 +3819,10 @@ NFT;
                 if (!empty($users = $x['inbounds'][0]['settings']['clients'])) {
                     $tmp = [];
                     foreach ($users as $k => $v) {
-                        $d = json_decode($this->ssh('xray api stats --server=127.0.0.1:8080 -name "user>>>' . $v['email'] . '>>>traffic>>>downlink" 2>&1', 'xr'), true)['stat']['value'] ?: 0;
-                        $u = json_decode($this->ssh('xray api stats --server=127.0.0.1:8080 -name "user>>>' . $v['email'] . '>>>traffic>>>uplink" 2>&1', 'xr'), true)['stat']['value'] ?: 0;
+                        $dlname = escapeshellarg('user>>>' . $v['email'] . '>>>traffic>>>downlink');
+                        $ulname = escapeshellarg('user>>>' . $v['email'] . '>>>traffic>>>uplink');
+                        $d = json_decode($this->ssh("xray api stats --server=127.0.0.1:8080 -name $dlname 2>&1", 'xr'), true)['stat']['value'] ?: 0;
+                        $u = json_decode($this->ssh("xray api stats --server=127.0.0.1:8080 -name $ulname 2>&1", 'xr'), true)['stat']['value'] ?: 0;
                         $tmp[$k] = [
                             'session' => [
                                 'download' => $d,
@@ -16154,7 +16156,11 @@ DNS-over-HTTPS with IP:
                             "enabled"     => true,
                             "insecure"    => false,
                             "server_name" => "~domain~",
-                            "alpn"        => ["h2"]
+                            "alpn"        => ["h2"],
+                            "utls"        => [
+                                "enabled"     => true,
+                                "fingerprint" => $fingerprint,
+                            ],
                         ];
                         break;
                     case 'trojan-grpc':
@@ -16235,7 +16241,7 @@ DNS-over-HTTPS with IP:
                             ],
                         ];
                         break;
-                    case 'trojan-grpc':
+                    case $pac['transport'] == 'trojan-grpc':
                         unset($c['proxies'][$index]['ws-opts']);
                         unset($c['proxies'][$index]['flow']);
                         unset($c['proxies'][$index]['reality-opts']);
@@ -16269,7 +16275,7 @@ DNS-over-HTTPS with IP:
 
 
                     if (!empty($client['awg']) && !empty($awg = $this->getAwgClient($client['awg']))) {
-                        $c['proxies'][$index + 1] = [
+                        $awgproxy = [
                             "name"        => 'awg',
                             "type"        => 'wireguard',
                             "server"      => $awg['server'],
@@ -16285,11 +16291,12 @@ DNS-over-HTTPS with IP:
                             "udp"                  => true,
                         ];
                         if (!empty($awg['pre-shared-key'])) {
-                            $c['proxies'][$index + 1]['pre-shared-key'] = $awg['pre-shared-key'];
+                            $awgproxy['pre-shared-key'] = $awg['pre-shared-key'];
                         }
                         if (!empty($awg['amnezia-wg-option'])) {
-                            $c['proxies'][$index + 1]['amnezia-wg-option'] = $awg['amnezia-wg-option'];
+                            $awgproxy['amnezia-wg-option'] = $awg['amnezia-wg-option'];
                         }
+                        $c['proxies'][] = $awgproxy;
                         $c['proxy-groups'][0]['proxies'][] = 'awg';
                     }
 
@@ -16361,7 +16368,7 @@ DNS-over-HTTPS with IP:
                             }
                         }
                         if (array_key_exists('ip', $v) && !empty($v['ip'])) {
-                            foreach ($v['domain'] as $j) {
+                            foreach ($v['ip'] as $j) {
                                 if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $j)) {
                                     $domains[$v['outboundTag']][] = $j;
                                 } else {
@@ -16778,6 +16785,7 @@ DNS-over-HTTPS with IP:
         $f = "/tmp/$name" . time() . rand(1, 100);
         foreach ($rules as $k => $v) {
             if (array_key_exists('domain_suffix', $v)) {
+                $domains = $ips = [];
                 foreach ($v['domain_suffix'] as $j) {
                     if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $j, $m)) {
                         $domains[] = $j;
