@@ -73,7 +73,9 @@ function getSize($url)
     ]);
     $r = curl_exec($ch);
     curl_close($ch);
-    preg_match('~content-length.+?(\d+)~ius', $r, $m);
+    if (!preg_match('~content-length.+?(\d+)~ius', (string) $r, $m)) {
+        return 0;
+    }
     return (int) $m[1];
 }
 
@@ -89,8 +91,12 @@ function start()
 
     $conf = $bot->getPacConf();
 
+    // Список subzone'ов для исключения из PAC (используется ниже как $exclude).
+    // Раньше присваивался в неиспользуемую $subzones, а $exclude был не определён,
+    // из-за чего исключение не работало вовсе.
+    $exclude = [];
     if (!empty($conf['subzoneslist'])) {
-        $subzones = array_keys(array_filter($conf['subzoneslist'], fn($x) => $x == true));
+        $exclude = array_keys(array_filter($conf['subzoneslist'], fn($x) => $x == true));
     }
 
     // check && exclude
@@ -162,6 +168,14 @@ function start()
     } else {
         $domains = array_keys($domains);
 
+        // reverse-PAC строится из СВОИХ доменов: цикл ниже закомментирован,
+        // поэтому $t перестраиваем здесь, иначе в json ушёл бы $t от прямого PAC.
+        $t = [];
+        foreach ($domains as $v) {
+            preg_match('~(.+)\.([^.]+)$~', $v, $m);
+            $t[$m[2]][strlen($m[1])][] = $m[1];
+        }
+
         // $size = count($domains);
         // $curr = $j = 0;
         // $time = microtime(true);
@@ -221,7 +235,13 @@ function endScript($text)
 function download($index)
 {
     global $source;
-    file_put_contents($source[$index]['dest'], file_get_contents($source[$index]['source']));
+    $data = @file_get_contents($source[$index]['source']);
+    // Не затираем локальный список (nxdomain.txt/dump.csv) пустотой, если
+    // источник недоступен.
+    if ($data === false || $data === '') {
+        return;
+    }
+    file_put_contents($source[$index]['dest'], $data);
 }
 
 ini_set('memory_limit', '256M');

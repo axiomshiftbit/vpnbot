@@ -2281,7 +2281,9 @@ class Bot
         $pac = $this->getPacConf();
         $this->ssh('pkill caddy', 'np');
         $c = file_get_contents('/config/Caddyfile');
-        $t = preg_replace('~^(\t+)?basic_auth[^\n]+~sm', '$1basic_auth ' . ($pac['naive']['user'] ?? '_') . ' ' . ($pac['naive']['pass'] ?? '__'), $c);
+        // preg_replace_callback, а не preg_replace: user/pass идут в замену как
+        // литералы (иначе `$`/`\` в пароле трактуются как backreference).
+        $t = preg_replace_callback('~^(\t+)?basic_auth[^\n]+~sm', fn($m) => ($m[1] ?? '') . 'basic_auth ' . ($pac['naive']['user'] ?? '_') . ' ' . ($pac['naive']['pass'] ?? '__'), $c);
         file_put_contents('/config/Caddyfile', $t);
         if (!empty($pac['naive']['pass']) && !empty($this->getHashSubdomain('np'))) {
             $this->ssh('caddy run -c /config/Caddyfile', 'np', false);
@@ -2420,7 +2422,7 @@ class Bot
     public function chocdns($dns)
     {
         $c = file_get_contents('/config/ocserv.conf');
-        $t = preg_replace('~^dns[^\n]+~sm', "dns = $dns", $c);
+        $t = preg_replace_callback('~^dns[^\n]+~sm', fn() => "dns = $dns", $c);
         $this->restartOcserv($t);
         $this->menu('oc');
     }
@@ -2893,7 +2895,7 @@ NFT;
     {
         $oc = $this->getHashSubdomain('oc');
         $c  = file_get_contents('/config/ocserv.conf');
-        $t  = preg_replace('~^default-domain[^\n]+~sm', "default-domain = $oc.$domain", $c);
+        $t  = preg_replace_callback('~^default-domain[^\n]+~sm', fn() => "default-domain = $oc.$domain", $c);
         $this->restartOcserv($t);
     }
 
@@ -3567,7 +3569,7 @@ NFT;
         $link    = $this->buildSSLink($this->getHashBot(), $u['uid']);
         $safe    = preg_replace('~[^a-zA-Z0-9_.\-]~', '_', $u['name']);
         $qr_file = __DIR__ . "/qr/cloak_$safe.png";
-        exec("qrencode -t png -o $qr_file '$link'");
+        exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($link));
         $this->sendPhoto(
             $this->input['chat'],
             curl_file_create($qr_file),
@@ -5265,7 +5267,7 @@ NFT;
     {
         $qr      = preg_replace(['~\s+~', '~\(~', '~\)~'], ['_'], $name);
         $qr_file = __DIR__ . "/qr/$qr.png";
-        exec("qrencode -t png -o $qr_file '$code'");
+        exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($code));
         $r = $this->sendPhoto(
             $this->input['chat'],
             curl_file_create($qr_file),
@@ -5296,7 +5298,7 @@ NFT;
     {
         $ss_link = $this->buildSSLink($this->getHashBot());
         $qr_file = __DIR__ . "/qr/shadowsocks.png";
-        exec("qrencode -t png -o $qr_file '$ss_link'");
+        exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($ss_link));
         $r = $this->sendPhoto(
             $this->input['chat'],
             curl_file_create($qr_file),
@@ -5314,7 +5316,7 @@ NFT;
     {
         $link    = $this->linkXray($i, $s);
         $qr_file = __DIR__ . "/qr/xray.png";
-        exec("qrencode -t png -o $qr_file '$link'");
+        exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($link));
         $r = $this->sendPhoto(
             $this->input['chat'],
             curl_file_create($qr_file),
@@ -5529,6 +5531,14 @@ NFT;
         $conf = $this->getPacConf();
         switch ($name) {
             case 'letsencrypt':
+                // Домен уходит в shell (certbot) в нескольких местах без кавычек.
+                // Валидный хостнейм состоит только из [a-z0-9.-], поэтому отвергаем
+                // всё остальное — это закрывает инъекцию проще, чем экранировать
+                // каждую подстановку.
+                if (!preg_match('~^[a-zA-Z0-9.-]+$~', (string) ($conf['domain'] ?? ''))) {
+                    $this->send($this->input['chat'], 'ERROR: invalid domain');
+                    break;
+                }
                 $out[] = 'Install certificate:';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $adguardClient = $conf['adguardkey'] ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
@@ -5629,10 +5639,16 @@ NFT;
 
     public function setPacConf(array $conf)
     {
-        // LOCK_EX — как у остальных json-писателей файла: параллельные
-        // вебхук-воркеры пишут pac.json чаще после selectWG, без лока
-        // возможна порванная запись при одновременном file_put_contents.
-        return file_put_contents($this->pac, json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+        // Пишем во временный файл и атомарно переименовываем: параллельные
+        // вебхук-воркеры пишут pac.json часто (после selectWG), а getPacConf
+        // читает без лока — rename() атомарен, поэтому читатель всегда видит
+        // либо старый, либо новый ЦЕЛЫЙ файл, но никогда порванный.
+        $data = json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $tmp  = $this->pac . '.' . getmypid() . '.tmp';
+        if (file_put_contents($tmp, $data, LOCK_EX) === false) {
+            return false;
+        }
+        return rename($tmp, $this->pac);
     }
 
     public function domain()
@@ -6493,7 +6509,10 @@ DNS-over-HTTPS with IP:
 
     public function dnscheck($dns)
     {
-        exec("JSON=1 dnslookup $dns", $out, $code);
+        // $dns — до трёх токенов (домен [сервер [ip]]); экранируем каждый,
+        // сохраняя разбиение на аргументы, иначе shell-инъекция через ответ.
+        $safe = implode(' ', array_map('escapeshellarg', preg_split('~\s+~', trim($dns)) ?: []));
+        exec("JSON=1 dnslookup $safe", $out, $code);
         if ($code) {
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out), mode: false);
         } else {
@@ -7661,8 +7680,8 @@ DNS-over-HTTPS with IP:
             return false;
         }
         return [
-            "amnezia-wg-option" => $c["{$container}amnezia_keys"],
-            "pre-shared-key"    => $c["{$container}presharedkey"],
+            "amnezia-wg-option" => $c["{$container}amnezia_keys"] ?? '',
+            "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
             "server"            => explode(':', $clients[$client]['peers'][0]['Endpoint'])[0],
             "port"              => explode(':', $clients[$client]['peers'][0]['Endpoint'])[1],
             "ip"                => explode('/', $clients[$client]['interface']['Address'])[0],
@@ -12334,7 +12353,9 @@ DNS-over-HTTPS with IP:
     public function cleanLogs($ip, $nodelete = false)
     {
         foreach ($this->logs as $v) {
-            exec("sed -i '/$ip/d' /logs/$v");
+            // Экранируем и sed-делимитер (/), и shell (одиночная кавычка/$() в $ip).
+            $pattern = str_replace('/', '\/', $ip);
+            exec('sed -i ' . escapeshellarg("/$pattern/d") . ' ' . escapeshellarg("/logs/$v"));
         }
         if (empty($nodelete)) {
             $this->delete($this->input['from'], $this->input['message_id']);
@@ -14411,7 +14432,7 @@ DNS-over-HTTPS with IP:
             $time     = !empty($v['time']) ? $this->getTime($v['time']) : '';
             $data[]   = [
                 [
-                    'text'          => "{$v['email']}" . ($time ? ": $time" : '') . " (↓$download  ↑$upload)" . (!empty($v['awg']) ? " {$wg_clients[$v['awg']]['container']}-{$wg_clients[$v['awg']]['name']}" : ''),
+                    'text'          => "{$v['email']}" . ($time ? ": $time" : '') . " (↓$download  ↑$upload)" . (!empty($v['awg']) && !empty($wg_clients[$v['awg']]) ? " {$wg_clients[$v['awg']]['container']}-{$wg_clients[$v['awg']]['name']}" : ''),
                     'callback_data' => "/userXr $k",
                 ],
             ];
@@ -14752,7 +14773,7 @@ DNS-over-HTTPS with IP:
                         foreach ($c['admin'] as $admin) {
                             $this->send($admin, "vless: {$m['email']} limit ip " . count($this->pool[$m['email']]['ips']) . ' > ' . ($pac['ip_count'] ?: 1), button: [[
                                 [
-                                    'text'          => $this->i18n($c['off'] ? 'off' : 'on'),
+                                    'text'          => $this->i18n(!empty($v['off']) ? 'off' : 'on'),
                                     'callback_data' => "/switchXr $k",
                                 ],
                             ]]);
@@ -16563,8 +16584,8 @@ DNS-over-HTTPS with IP:
         }
 
         return [
-            "amnezia-wg-option" => $c["{$container}amnezia_keys"],
-            "pre-shared-key"    => $c["{$container}presharedkey"],
+            "amnezia-wg-option" => $c["{$container}amnezia_keys"] ?? '',
+            "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
             "server"            => explode(':', $cl['peers'][0]['Endpoint'])[0],
             "port"              => explode(':', $cl['peers'][0]['Endpoint'])[1],
             "ip"                => explode('/', $cl['interface']['Address'])[0],
@@ -16740,8 +16761,9 @@ DNS-over-HTTPS with IP:
             if (!empty($p['rulessetlist'])) {
                 foreach ($p['rulessetlist'] as $k => $v) {
                     if (!empty($v)) {
-                        [$type, $time, $url] = explode(':', $k, 3);
-                        if (preg_match('~\.srs$~', $url) && !empty($route['rules'][$t[$type]])) {
+                        // Ключ rulessetlist: type:behavior:time:url (как в addClashRuleSet).
+                        [$type, $behavior, $time, $url] = explode(':', $k, 4);
+                        if (isset($t[$type]) && preg_match('~\.srs$~', $url) && !empty($route['rules'][$t[$type]])) {
                             $route['rule_set'][] = [
                                 "tag"             => $k,
                                 "type"            => "remote",
@@ -18048,7 +18070,7 @@ DNS-over-HTTPS with IP:
                         "serverNames"  => [
                             $p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]
                         ],
-                        "shortIds" => [$p['reality']['shortId']] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0],
+                        "shortIds" => [$p['reality']['shortId'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0]],
                         "show"     => false,
                         "xver"     => 0
                     ],

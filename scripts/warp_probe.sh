@@ -14,6 +14,8 @@ else
     # обновляется каждые ~2 мин, 300с — с запасом. Без fallback'а watchdog
     # считал бы ЗДОРОВЫЙ туннель мёртвым (curl: not found) и бесконечно
     # рвал его bounce'ами и рестартами контейнера.
-    hs=$(wg show wgcf-profile latest-handshakes 2>/dev/null | awk '{print $2}')
+    # Берём самое свежее рукопожатие среди всех пиров (одна строка), иначе при
+    # нескольких пирах $hs многострочный и `[ "$hs" -gt 0 ]` падает.
+    hs=$(wg show wgcf-profile latest-handshakes 2>/dev/null | awk '{print $2}' | sort -n | tail -1)
     [ -n "$hs" ] && [ "$hs" -gt 0 ] && [ $(( $(date +%s) - hs )) -lt 300 ]
 fi

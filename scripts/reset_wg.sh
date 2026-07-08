@@ -1,4 +1,7 @@
-INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
+#!/bin/sh
+INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
+# route (net-tools) может отсутствовать — берём дефолтный интерфейс через ip.
+[ -z "$INTERFACE" ] && INTERFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
 PRIVATEKEY=$(wg genkey | tee /etc/wireguard/privatekey)
 echo "[Interface]" > /etc/wireguard/wg0.conf
 echo "PrivateKey = $PRIVATEKEY" >> /etc/wireguard/wg0.conf
