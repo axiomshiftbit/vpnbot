@@ -6593,9 +6593,15 @@ DNS-over-HTTPS with IP:
                 break;
 
             default:
+                // Для доменных списков подсказываем xray-совместимые префиксы
+                // маршрутизации. Каждая запись — с новой строки или через запятую
+                // (regexp: не режется по запятой — regex может содержать запятые).
+                $hint = in_array($type, ['includelist', 'blocklist', 'warplist'])
+                    ? "\nregexp: keyword: full: domain: — prefixes supported (one per line or comma-separated)"
+                    : '';
                 $r = $this->send(
                     $this->input['chat'],
-                    "@{$this->input['username']} list separated by commas",
+                    "@{$this->input['username']} list separated by commas$hint",
                     $this->input['message_id'],
                     reply: 'list separated by commas',
                 );
@@ -6614,20 +6620,25 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['from'], 'wrong pattern, enter [direct|block|proxy|custom outbound]:time:URL');
             return;
         }
-        $domains = explode(',', $domains);
-        $domains = array_filter($domains, fn($x) => !empty(trim($x)));
+        $domains = $this->splitRouteInput($domains);
         if (!empty($domains)) {
-            $conf = $this->getPacConf();
-            foreach ($domains as $k => $v) {
+            $conf    = $this->getPacConf();
+            $lastKey = null;
+            foreach ($domains as $v) {
                 if (in_array($type, ['white', 'deny'])) {
                     $conf[$type][] = $v;
+                    $lastKey       = $v;
+                } elseif (in_array($type, ['rulessetlist', 'packagelist', 'processlist'])) {
+                    $lastKey             = trim($v);
+                    $conf[$type][$lastKey] = true;
                 } else {
-                    $conf[$type][in_array($type, ['rulessetlist', 'packagelist', 'processlist']) ? trim($v) : idn_to_ascii(trim($v))] = true;
+                    $lastKey             = $this->normalizeRouteEntry($v);
+                    $conf[$type][$lastKey] = true;
                 }
             }
             ksort($conf[$type]);
             $this->setPacConf($conf);
-            $page = (int) floor(array_search($v, array_keys($conf[$type])) / $this->limit);
+            $page = (int) floor(array_search($lastKey, array_keys($conf[$type])) / $this->limit);
         }
         $page = $page ?: -2;
         $this->backXtlsList($type, $page);
@@ -6676,6 +6687,124 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    /**
+     * Классифицирует запись маршрутизации из pac-списка по xray-совместимому
+     * префиксу. Поддерживаются regexp:/keyword:/full:/domain:; голая запись —
+     * suffix (домен + поддомены), IPv4[/cidr] — ip.
+     *
+     * @return array{kind:string,value:string} kind ∈ regexp|keyword|full|domain|suffix|ip
+     */
+    public function classifyRouteEntry(string $e): array
+    {
+        $e = trim($e);
+        // Флаг s: regex-значение теоретически может содержать перевод строки.
+        if (preg_match('~^(regexp|keyword|full|domain):(.*)$~is', $e, $m)) {
+            return ['kind' => strtolower($m[1]), 'value' => $m[2]];
+        }
+        if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $e)) {
+            return ['kind' => 'ip', 'value' => $e];
+        }
+        return ['kind' => 'suffix', 'value' => $e];
+    }
+
+    /**
+     * Строит элемент xray-поля "domain" из классифицированной записи либо null,
+     * если это IP (его место в поле "ip"). У xray нет префикса keyword: — голая
+     * строка в поле domain уже трактуется как substring/keyword-совпадение.
+     */
+    public function xrayDomainToken(array $c): ?string
+    {
+        switch ($c['kind']) {
+            case 'ip':
+                return null;
+            case 'keyword':
+            case 'suffix':
+                return $c['value'];
+            default: // regexp, full, domain — xray понимает эти префиксы нативно
+                return "{$c['kind']}:{$c['value']}";
+        }
+    }
+
+    /**
+     * Раскладывает pac-список (ключ=>bool) на xray-поля domain/ip с учётом
+     * префиксов маршрутизации.
+     *
+     * @return array{domain:array,ip:array}
+     */
+    public function listToXrayRules(array $list): array
+    {
+        $domain = $ip = [];
+        foreach (array_keys(array_filter($list)) as $e) {
+            $c = $this->classifyRouteEntry($e);
+            if ($c['kind'] == 'ip') {
+                $ip[] = $c['value'];
+            } else {
+                $domain[] = $this->xrayDomainToken($c);
+            }
+        }
+        return ['domain' => $domain, 'ip' => $ip];
+    }
+
+    /**
+     * Нормализует запись маршрутизации перед сохранением в pac-список:
+     * hostname-часть прогоняется через idn_to_ascii (punycode), префикс
+     * сохраняется. Значения regexp:/keyword: не нормализуются (это regex/подстрока).
+     */
+    public function normalizeRouteEntry(string $e): string
+    {
+        $c = $this->classifyRouteEntry($e);
+        switch ($c['kind']) {
+            case 'regexp':
+            case 'keyword':
+                return "{$c['kind']}:{$c['value']}";
+            case 'ip':
+                return $c['value'];
+            case 'full':
+            case 'domain':
+                $v = idn_to_ascii($c['value']);
+                return "{$c['kind']}:" . ($v === false ? $c['value'] : $v);
+            default: // suffix
+                $v = idn_to_ascii($c['value']);
+                return $v === false ? $c['value'] : $v;
+        }
+    }
+
+    /**
+     * Разбивает пользовательский ввод списка на записи: по переводам строк, затем
+     * по запятым — КРОМЕ строк, начинающихся с regexp: (regex может содержать
+     * запятые, напр. a{1,3}). Пустые записи отбрасываются.
+     */
+    public function splitRouteInput(string $input): array
+    {
+        $out = [];
+        foreach (preg_split('~\r\n|\r|\n~', $input) as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            if (preg_match('~^regexp:~i', $line)) {
+                $out[] = $line;
+                continue;
+            }
+            $parts = explode(',', $line);
+            foreach ($parts as $i => $part) {
+                // regexp: поглощает остаток строки — regex может содержать запятые.
+                if (preg_match('~^\s*regexp:~i', $part)) {
+                    $rest = trim(implode(',', array_slice($parts, $i)));
+                    if ($rest !== '') {
+                        $out[] = $rest;
+                    }
+                    break;
+                }
+                $part = trim($part);
+                if ($part !== '') {
+                    $out[] = $part;
+                }
+            }
+        }
+        return $out;
+    }
+
     public function xrayUpdateRules()
     {
         $c  = $this->getPacConf();
@@ -6702,99 +6831,26 @@ DNS-over-HTTPS with IP:
                 ],
             ],
         ];
-        if (!empty($c['blocklist']) && !empty(array_filter($c['blocklist']))) {
-            $domains = array_keys(array_filter($c['blocklist'], function ($v, $k){
-                    if (!empty($v)) {
-                        if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $k)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }, ARRAY_FILTER_USE_BOTH));
-            if (!empty($domains)) {
+        $rules = [];
+        // block/warp: раскладываем каждый список на xray domain/ip с учётом
+        // префиксов маршрутизации (regexp:/keyword:/full:/domain:).
+        foreach (['block' => 'blocklist', 'warp' => 'warplist'] as $tag => $list) {
+            if (empty($c[$list]) || empty(array_filter($c[$list]))) {
+                continue;
+            }
+            $x = $this->listToXrayRules($c[$list]);
+            if (!empty($x['domain'])) {
                 $rules[] = [
                     "type"        => "field",
-                    "outboundTag" => "block",
-                    "domain"      => array_keys(array_filter($c['blocklist'], function ($v, $k){
-                        if (!empty($v)) {
-                            if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $k)) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }, ARRAY_FILTER_USE_BOTH)),
+                    "outboundTag" => $tag,
+                    "domain"      => $x['domain'],
                 ];
             }
-        }
-        if (!empty($c['blocklist']) && !empty(array_filter($c['blocklist']))) {
-            $ips = array_keys(array_filter($c['blocklist'], function ($v, $k){
-                    if (!empty($v)) {
-                        if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $k)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }, ARRAY_FILTER_USE_BOTH));
-            if (!empty($ips)) {
+            if (!empty($x['ip'])) {
                 $rules[] = [
                     "type"        => "field",
-                    "outboundTag" => "block",
-                    "ip"          => array_keys(array_filter($c['blocklist'], function ($v, $k){
-                        if (!empty($v)) {
-                            if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $k)) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }, ARRAY_FILTER_USE_BOTH)),
-                ];
-            }
-        }
-        if (!empty($c['warplist']) && !empty(array_filter($c['warplist']))) {
-            $domains = array_keys(array_filter($c['warplist'], function ($v, $k){
-                    if (!empty($v)) {
-                        if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $k)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }, ARRAY_FILTER_USE_BOTH));
-            if (!empty($domains)) {
-                $rules[] = [
-                    "type"        => "field",
-                    "outboundTag" => "warp",
-                    "domain"      => array_keys(array_filter($c['warplist'], function ($v, $k){
-                        if (!empty($v)) {
-                            if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $k)) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }, ARRAY_FILTER_USE_BOTH)),
-                ];
-            }
-        }
-        if (!empty($c['warplist']) && !empty(array_filter($c['warplist']))) {
-            $ips = array_keys(array_filter($c['warplist'], function ($v, $k){
-                    if (!empty($v)) {
-                        if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $k)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }, ARRAY_FILTER_USE_BOTH));
-            if (!empty($ips)) {
-                $rules[] = [
-                    "type"        => "field",
-                    "outboundTag" => "warp",
-                    "ip"          => array_keys(array_filter($c['warplist'], function ($v, $k){
-                        if (!empty($v)) {
-                            if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $k)) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }, ARRAY_FILTER_USE_BOTH)),
+                    "outboundTag" => $tag,
+                    "ip"          => $x['ip'],
                 ];
             }
         }
@@ -16382,20 +16438,22 @@ DNS-over-HTTPS with IP:
                         $matched = false;
                         if (array_key_exists('domain', $v) && !empty($v['domain'])) {
                             foreach ($v['domain'] as $j) {
-                                if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $j)) {
-                                    $domains[$v['outboundTag']][] = $j;
+                                $cl = $this->classifyRouteEntry($j);
+                                if ($cl['kind'] == 'ip') {
+                                    $ips[$v['outboundTag']][] = $cl['value'];
                                 } else {
-                                    $ips[$v['outboundTag']][] = $j;
+                                    $domains[$v['outboundTag']][] = $this->xrayDomainToken($cl);
                                 }
                             }
                             $matched = true;
                         }
                         if (array_key_exists('ip', $v) && !empty($v['ip'])) {
                             foreach ($v['ip'] as $j) {
-                                if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $j)) {
-                                    $domains[$v['outboundTag']][] = $j;
+                                $cl = $this->classifyRouteEntry($j);
+                                if ($cl['kind'] == 'ip') {
+                                    $ips[$v['outboundTag']][] = $cl['value'];
                                 } else {
-                                    $ips[$v['outboundTag']][] = $j;
+                                    $domains[$v['outboundTag']][] = $this->xrayDomainToken($cl);
                                 }
                             }
                             $matched = true;
@@ -16669,10 +16727,18 @@ DNS-over-HTTPS with IP:
 
                             default:
                                 echo yaml_emit(['payload' => array_map(function($e) {
-                                    if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $e, $m)) {
-                                        return "IP-CIDR,$e" . (empty($m[1]) ? '/32' : '');
-                                    } else {
-                                        return "DOMAIN-SUFFIX,$e";
+                                    $cl = $this->classifyRouteEntry($e);
+                                    switch ($cl['kind']) {
+                                        case 'ip':
+                                            return 'IP-CIDR,' . (str_contains($cl['value'], '/') ? $cl['value'] : $cl['value'] . '/32');
+                                        case 'regexp':
+                                            return "DOMAIN-REGEX,{$cl['value']}";
+                                        case 'keyword':
+                                            return "DOMAIN-KEYWORD,{$cl['value']}";
+                                        case 'full':
+                                            return "DOMAIN,{$cl['value']}";
+                                        default: // domain, suffix
+                                            return "DOMAIN-SUFFIX,{$cl['value']}";
                                     }
                                 }, $v['list'])]);
                                 break;
@@ -16866,20 +16932,40 @@ DNS-over-HTTPS with IP:
         $f = "/tmp/$name" . time() . rand(1, 100);
         foreach ($rules as $k => $v) {
             if (array_key_exists('domain_suffix', $v)) {
-                $domains = $ips = [];
+                // Раскладываем записи по полям sing-box rule-set с учётом префиксов
+                // маршрутизации. Порядок ключей задаёт форму итогового правила.
+                $buckets = [
+                    'domain_regex'   => [],
+                    'domain_keyword' => [],
+                    'domain'         => [], // exact-match (full:)
+                    'domain_suffix'  => [],
+                    'ip_cidr'        => [],
+                ];
                 foreach ($v['domain_suffix'] as $j) {
-                    if (!preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $j, $m)) {
-                        $domains[] = $j;
-                    } else {
-                        $ips[] = $j . (empty($m[1]) ? '/32' : '');
+                    $cl = $this->classifyRouteEntry($j);
+                    switch ($cl['kind']) {
+                        case 'ip':
+                            $buckets['ip_cidr'][] = str_contains($cl['value'], '/') ? $cl['value'] : $cl['value'] . '/32';
+                            break;
+                        case 'regexp':
+                            $buckets['domain_regex'][] = $cl['value'];
+                            break;
+                        case 'keyword':
+                            $buckets['domain_keyword'][] = $cl['value'];
+                            break;
+                        case 'full':
+                            $buckets['domain'][] = $cl['value'];
+                            break;
+                        default: // domain, suffix
+                            $buckets['domain_suffix'][] = $cl['value'];
+                            break;
                     }
                 }
                 unset($rules[$k]['domain_suffix']);
-                if (!empty($domains)) {
-                    $rules[$k]['domain_suffix'] = $domains;
-                }
-                if (!empty($ips)) {
-                    $rules[$k]['ip_cidr'] = $ips;
+                foreach ($buckets as $field => $vals) {
+                    if (!empty($vals)) {
+                        $rules[$k][$field] = $vals;
+                    }
                 }
             }
         }

@@ -48,3 +48,81 @@ make r
 crontab -e
 ```
 add `@reboot cd /root/vpnbot && make r` and save
+
+---
+
+## Routes: правила маршрутизации (regexp / keyword / full / domain)
+
+Списки маршрутизации (**routes** в боте) поддерживают xray-совместимые префиксы,
+которые единообразно транслируются в конфиги всех движков — **xray, sing-box,
+mihomo/clash** — и работают в том числе для маршрута через **warp**.
+
+Префиксы можно использовать в списках:
+- **proxy (domains)** — завернуть в прокси;
+- **block** — заблокировать (blackhole / REJECT);
+- **warp** — направить через WARP.
+
+### Как вводить
+
+После нажатия **add** отправьте список записей. Разделитель — **перевод строки
+или запятая**. Записи с `regexp:` пишите **каждую с новой строки**: регулярное
+выражение может само содержать запятые (например `a{1,3}`), поэтому по запятой
+такая строка не разбивается.
+
+```
+regexp:.*\.ru$
+regexp:^([\w\-\.]+\.)xn--p1ai$
+keyword:reddit
+full:example.com
+domain:пример.рф
+google.com
+```
+
+Или в одну строку через запятую (без regexp):
+```
+keyword:gigabyte, keyword:reddit, domain:vk.com, 1.2.3.4/24
+```
+
+### Префиксы
+
+| Префикс         | Что делает                          | Пример                     |
+|-----------------|-------------------------------------|----------------------------|
+| `regexp:`       | регулярное выражение                | `regexp:.*\.ru$`           |
+| `keyword:`      | совпадение по подстроке             | `keyword:reddit`           |
+| `full:`         | точное совпадение домена            | `full:example.com`         |
+| `domain:`       | домен и все его поддомены            | `domain:vk.com`            |
+| *(без префикса)*| домен-суффикс (как раньше)          | `google.com`               |
+| *(IPv4[/cidr])* | IP-адрес / подсеть                  | `1.2.3.4`, `10.0.0.0/24`   |
+
+Домены (кроме `regexp:`/`keyword:`) автоматически приводятся к punycode
+(`domain:пример.рф` → `domain:xn--e1afmkfd.xn--p1ai`).
+
+### Во что транслируется
+
+| Ввод          | xray `domain[]` | sing-box         | mihomo/clash       |
+|---------------|-----------------|------------------|--------------------|
+| `regexp:X`    | `regexp:X`      | `domain_regex`   | `DOMAIN-REGEX,X`   |
+| `keyword:X`   | `X` *(подстрока)* | `domain_keyword` | `DOMAIN-KEYWORD,X` |
+| `full:X`      | `full:X`        | `domain`         | `DOMAIN,X`         |
+| `domain:X`    | `domain:X`      | `domain_suffix`  | `DOMAIN-SUFFIX,X`  |
+| голый домен   | `X`             | `domain_suffix`  | `DOMAIN-SUFFIX,X`  |
+| IPv4[/cidr]   | поле `ip`       | `ip_cidr`        | `IP-CIDR,X/32`     |
+
+> У xray нет отдельного префикса `keyword:` — голая строка в поле `domain`
+> уже означает совпадение по подстроке, поэтому `keyword:X` отдаётся как `X`.
+
+### Пример: домены зоны RU через один список
+
+```
+regexp:.*\.ru$
+regexp:.*\.by$
+regexp:.*\.su$
+regexp:.*\.xn--p1ai$
+regexp:^([\w\-\.]+\.)ru$
+regexp:^([\w\-\.]+\.)xn--p1ai$
+regexp:^([\w\-\.]+\.)moscow$
+keyword:gigabyte
+keyword:ventusky
+keyword:qbittorrent
+keyword:reddit
+```
