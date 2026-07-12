@@ -6699,7 +6699,16 @@ DNS-over-HTTPS with IP:
         $e = trim($e);
         // Флаг s: regex-значение теоретически может содержать перевод строки.
         if (preg_match('~^(regexp|keyword|full|domain):(.*)$~is', $e, $m)) {
-            return ['kind' => strtolower($m[1]), 'value' => $m[2]];
+            $kind  = strtolower($m[1]);
+            $value = $m[2];
+            // Частый кейс: regexp копируют из JSON-списка, где обратный слэш
+            // экранирован (\\.  \\w  \\-). Доменные имена не содержат литеральных
+            // бэкслэшей, поэтому схлопываем \\ -> \ — иначе паттерн вида .*\\.ru$
+            // в RE2 требует литеральный бэкслэш и не матчит ни один домен.
+            if ($kind === 'regexp') {
+                $value = str_replace('\\\\', '\\', $value);
+            }
+            return ['kind' => $kind, 'value' => $value];
         }
         if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $e)) {
             return ['kind' => 'ip', 'value' => $e];
