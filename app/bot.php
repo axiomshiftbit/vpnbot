@@ -16434,6 +16434,11 @@ DNS-over-HTTPS with IP:
             case 'si':
                 $c['route'] = $this->addRuleSet($c['route']);
                 $c['route'] = $this->createRuleSet($c['route'], $stok, $domain);
+                // Защита: убрать из dns/route правил ссылки на rule_set, которые
+                // не были определены в route.rule_set (напр. запись есть в
+                // dns-шаблоне, но отсутствует в rulessetlist) — иначе клиент
+                // падает с "rule-set not found" и весь конфиг не импортируется.
+                $c = $this->pruneRuleSetRefs($c);
                 if (!empty($c['route']['rules'])) {
                     foreach ($c['route']['rules'] as $k => $v) {
                         if (count($v) == 1 && array_key_exists('outbound', $v)) {
@@ -16765,7 +16770,16 @@ DNS-over-HTTPS with IP:
         if (!empty($route['rules'])) {
             foreach ($route['rules'] as $k => $v) {
                 if (!empty($v['addruleset'])) {
-                    $t[$v['outbound'] ?: 'block'] = $k;
+                    $ob      = ($v['outbound'] ?? '') ?: 'block';
+                    $t[$ob]  = $k;
+                    // Имя основного аутбаунда несёт флаг-префикс страны
+                    // ("🇫🇷 proxy" через flagName/~outbound~), а ключ rulessetlist
+                    // использует логическое имя ("proxy"). Регистрируем и его,
+                    // иначе isset($t[$type]) не срабатывает и proxy:-теги теряются.
+                    $base = preg_replace('~^[\x{1F1E6}-\x{1F1FF}]+\s+~u', '', $ob);
+                    if ($base !== '' && $base !== $ob) {
+                        $t[$base] = $k;
+                    }
                 }
             }
             $p = $this->getPacConf();
@@ -16794,6 +16808,39 @@ DNS-over-HTTPS with IP:
             }
         }
         return $route;
+    }
+
+    // Удаляет из dns.rules/route.rules ссылки на rule_set, для которых нет
+    // определения в route.rule_set. sing-box отвергает конфиг целиком при
+    // ссылке на несуществующий rule-set ("rule-set not found"); лучше тихо
+    // пропустить незарегистрированный набор, чем сломать импорт.
+    public function pruneRuleSetRefs($c)
+    {
+        $defined = array_flip(array_column($c['route']['rule_set'] ?? [], 'tag'));
+        foreach (['dns', 'route'] as $sec) {
+            if (empty($c[$sec]['rules'])) {
+                continue;
+            }
+            foreach ($c[$sec]['rules'] as $k => $v) {
+                if (!array_key_exists('rule_set', $v)) {
+                    continue;
+                }
+                $kept = array_values(array_filter(
+                    (array) $v['rule_set'],
+                    fn($tag) => isset($defined[$tag])
+                ));
+                if (empty($kept)) {
+                    // Все ссылки висячие — правило было rule_set-селектором;
+                    // удаляем целиком, иначе останется условие-без-условия,
+                    // матчащее весь трафик.
+                    unset($c[$sec]['rules'][$k]);
+                } else {
+                    $c[$sec]['rules'][$k]['rule_set'] = $kept;
+                }
+            }
+            $c[$sec]['rules'] = array_values($c[$sec]['rules']);
+        }
+        return $c;
     }
 
     public function cleanEmptyKeys(array $arr)
