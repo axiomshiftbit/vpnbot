@@ -16772,8 +16772,9 @@ DNS-over-HTTPS with IP:
             if (!empty($p['rulessetlist'])) {
                 foreach ($p['rulessetlist'] as $k => $v) {
                     if (!empty($v)) {
-                        // Ключ rulessetlist: type:behavior:time:url (как в addClashRuleSet).
-                        [$type, $behavior, $time, $url] = explode(':', $k, 4);
+                        // Ключ rulessetlist для sing-box (.srs): type:time:url — без behavior
+                        // (behavior есть только у Clash/mihomo .mrs/.yaml в addClashRuleSet).
+                        [$type, $time, $url] = explode(':', $k, 3);
                         if (isset($t[$type]) && preg_match('~\.srs$~', $url) && !empty($route['rules'][$t[$type]])) {
                             $route['rule_set'][] = [
                                 "tag"             => $k,
