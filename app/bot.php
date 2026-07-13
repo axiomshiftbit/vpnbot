@@ -6594,10 +6594,21 @@ DNS-over-HTTPS with IP:
 
             default:
                 // Для доменных списков подсказываем xray-совместимые префиксы
-                // маршрутизации. Каждая запись — с новой строки или через запятую
-                // (regexp: не режется по запятой — regex может содержать запятые).
+                // маршрутизации. Префиксы обёрнуты в <code> — в Telegram их можно
+                // скопировать одним тапом. Каждая запись — с новой строки или через
+                // запятую (regexp: не режется по запятой — regex может содержать запятые).
                 $hint = in_array($type, ['includelist', 'blocklist', 'warplist'])
-                    ? "\nregexp: keyword: full: domain: — prefixes supported (one per line or comma-separated)"
+                    ? "\n\n<b>Префиксы</b> (нажмите на слово, чтобы скопировать):\n"
+                        . "<code>domain:</code> — домен и все его поддомены, напр. domain:vk.com\n"
+                        . "<code>full:</code> — точное совпадение домена, напр. full:example.com\n"
+                        . "<code>keyword:</code> — совпадение по подстроке, напр. keyword:reddit\n"
+                        . "<code>regexp:</code> — регулярное выражение, напр. regexp:.*\\.ru\$\n"
+                        . "без префикса — домен-суффикс; IPv4/IPv6[/cidr] — как есть.\n\n"
+                        . "<b>Как вводить:</b> в столбик (по одной записи на строку) "
+                        . "или в строку через запятую и пробел, напр. "
+                        . "<code>domain:vk.com, keyword:reddit</code>\n"
+                        . "Записи <code>regexp:</code> — каждую с новой строки "
+                        . "(regex может содержать запятые)."
                     : '';
                 $r = $this->send(
                     $this->input['chat'],
