@@ -6819,7 +6819,7 @@ DNS-over-HTTPS with IP:
             case 'suffix':
                 return $c['value'];
             case 'ext': // ext домен-dat: xray принимает "ext:file.dat:tag" в domain[]
-                return "ext:{$c['value']}";
+                return 'ext:' . $this->extAssetRef($c['value']);
             default: // regexp, full, domain — xray понимает эти префиксы нативно
                 return "{$c['kind']}:{$c['value']}";
         }
@@ -6844,7 +6844,7 @@ DNS-over-HTTPS with IP:
             if ($c['kind'] == 'ip') {
                 $ip[] = $c['value'];
             } elseif ($c['kind'] == 'extip') {
-                $ip[] = "ext:{$c['value']}"; // ext ip-dat в поле ip[]
+                $ip[] = 'ext:' . $this->extAssetRef($c['value']); // ext ip-dat в поле ip[]
             } else {
                 $domain[] = $this->xrayDomainToken($c);
             }
@@ -7003,6 +7003,15 @@ DNS-over-HTTPS with IP:
         return $file !== '' && is_file($this->datPath($file));
     }
 
+    // Нормализует ext-значение "file.dat:tag" в токен для xray: file-часть → basename
+    // (защита от путей вне asset-каталога и согласованность с datFileReady/datPath).
+    public function extAssetRef(string $value): string
+    {
+        [$file, $tag] = array_pad(explode(':', $value, 2), 2, null);
+        $ref = basename((string) $file);
+        return $tag === null ? $ref : "$ref:$tag";
+    }
+
     // Скачивание .dat по URL с тем же SSRF-guard (safeExtUrlIps) и ручным обходом
     // редиректов, что и doFetchExtSub, но без декодирования тела и с бОльшим лимитом
     // (.dat бывают в несколько МБ). Возвращает ['ok'=>bool,'body'=>...,'err'=>...].
@@ -7029,6 +7038,9 @@ DNS-over-HTTPS with IP:
                 CURLOPT_USERAGENT       => 'vpnbot',
                 CURLOPT_PROTOCOLS       => CURLPROTO_HTTPS,
                 CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+                // Прозрачно распаковываем gzip/deflate/br: .dat — бинарь, нужен
+                // сырой, а зеркало может отдать со сжатием (иначе файл битый).
+                CURLOPT_ENCODING        => '',
                 CURLOPT_WRITEFUNCTION   => function ($ch, $chunk) use (&$buf, $max) {
                     $buf .= $chunk;
                     return strlen($buf) > $max ? 0 : strlen($chunk);
