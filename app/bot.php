@@ -1701,7 +1701,10 @@ class Bot
             $this->collectSession();
             file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
             $this->ssh('pkill xray', 'xr');
-            $this->ssh('xray run -config /xray.json > /dev/null 2>&1 &', 'xr');
+            // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
+            // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
+            // старта — не требует правки override.env и совпадает с datDir().
+            $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json > /dev/null 2>&1 &', 'xr');
         } else {
             file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         }
@@ -6993,7 +6996,8 @@ DNS-over-HTTPS with IP:
     // Реестр ссылок на geosite/geoip-совместимые .dat: запись "name.dat:https://url"
     // (ключ=>bool). Бот качает файлы в общий каталог /logs/geodata (виден и php, и
     // контейнеру xr), а правила block/warp ссылаются на них через ext:/extip:.
-    // Требует одноразовой настройки XRAY_LOCATION_ASSET=/logs/geodata в override.env.
+    // Asset-путь ядру задаётся автоматически при старте xray (restartXray +
+    // start_xray.sh: XRAY_LOCATION_ASSET=/logs/geodata) — ручных шагов не нужно.
 
     public function datDir(): string
     {
