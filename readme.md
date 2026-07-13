@@ -93,6 +93,7 @@ keyword:gigabyte, keyword:reddit, domain:vk.com, 1.2.3.4/24
 | `domain:`       | домен и все его поддомены            | `domain:vk.com`            |
 | *(без префикса)*| домен-суффикс (как раньше)          | `google.com`               |
 | *(IPv4[/cidr])* | IP-адрес / подсеть                  | `1.2.3.4`, `10.0.0.0/24`   |
+| *(IPv6[/cidr])* | IPv6-адрес / подсеть                | `2001:db8::1`, `2001:db8::/32` |
 
 Домены (кроме `regexp:`/`keyword:`) автоматически приводятся к punycode
 (`domain:пример.рф` → `domain:xn--e1afmkfd.xn--p1ai`).
@@ -107,6 +108,7 @@ keyword:gigabyte, keyword:reddit, domain:vk.com, 1.2.3.4/24
 | `domain:X`    | `domain:X`      | `domain_suffix`  | `DOMAIN-SUFFIX,X`  |
 | голый домен   | `X`             | `domain_suffix`  | `DOMAIN-SUFFIX,X`  |
 | IPv4[/cidr]   | поле `ip`       | `ip_cidr`        | `IP-CIDR,X/32`     |
+| IPv6[/cidr]   | поле `ip`       | `ip_cidr`        | `IP-CIDR6,X/128`   |
 
 > У xray нет отдельного префикса `keyword:` — голая строка в поле `domain`
 > уже означает совпадение по подстроке, поэтому `keyword:X` отдаётся как `X`.

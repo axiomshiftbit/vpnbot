@@ -6690,7 +6690,7 @@ DNS-over-HTTPS with IP:
     /**
      * Классифицирует запись маршрутизации из pac-списка по xray-совместимому
      * префиксу. Поддерживаются regexp:/keyword:/full:/domain:; голая запись —
-     * suffix (домен + поддомены), IPv4[/cidr] — ip.
+     * suffix (домен + поддомены), IPv4[/cidr] и IPv6[/cidr] — ip.
      *
      * @return array{kind:string,value:string} kind ∈ regexp|keyword|full|domain|suffix|ip
      */
@@ -6712,6 +6712,20 @@ DNS-over-HTTPS with IP:
         }
         if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $e)) {
             return ['kind' => 'ip', 'value' => $e];
+        }
+        // IPv6[/cidr]: регексом надёжно не описать — валидируем адрес через
+        // filter_var, отделив опциональный /prefix. Двоеточие в записи —
+        // необходимое условие IPv6 (домены/keyword его в этой позиции не имеют).
+        if (str_contains($e, ':')) {
+            $addr = $e;
+            $suffix = '';
+            if (preg_match('~^(.+)/(\d{1,3})$~', $e, $mm)) {
+                $addr   = $mm[1];
+                $suffix = '/' . $mm[2];
+            }
+            if (filter_var($addr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
+                return ['kind' => 'ip', 'value' => $addr . $suffix];
+            }
         }
         return ['kind' => 'suffix', 'value' => $e];
     }
@@ -6752,6 +6766,19 @@ DNS-over-HTTPS with IP:
             }
         }
         return ['domain' => $domain, 'ip' => $ip];
+    }
+
+    /**
+     * Дописывает host-маску к «голому» IP для форматов, требующих обязательный
+     * CIDR (sing-box ip_cidr, mihomo IP-CIDR/IP-CIDR6). Уже указанный /prefix не
+     * трогаем. IPv6 -> /128, IPv4 -> /32.
+     */
+    public function ipWithCidr(string $ip): string
+    {
+        if (str_contains($ip, '/')) {
+            return $ip;
+        }
+        return $ip . (str_contains($ip, ':') ? '/128' : '/32');
     }
 
     /**
@@ -16739,7 +16766,9 @@ DNS-over-HTTPS with IP:
                                     $cl = $this->classifyRouteEntry($e);
                                     switch ($cl['kind']) {
                                         case 'ip':
-                                            return 'IP-CIDR,' . (str_contains($cl['value'], '/') ? $cl['value'] : $cl['value'] . '/32');
+                                            $v = $this->ipWithCidr($cl['value']);
+                                            // mihomo/Clash: IPv6 требует правило IP-CIDR6.
+                                            return (str_contains($v, ':') ? 'IP-CIDR6,' : 'IP-CIDR,') . $v;
                                         case 'regexp':
                                             return "DOMAIN-REGEX,{$cl['value']}";
                                         case 'keyword':
@@ -16954,7 +16983,7 @@ DNS-over-HTTPS with IP:
                     $cl = $this->classifyRouteEntry($j);
                     switch ($cl['kind']) {
                         case 'ip':
-                            $buckets['ip_cidr'][] = str_contains($cl['value'], '/') ? $cl['value'] : $cl['value'] . '/32';
+                            $buckets['ip_cidr'][] = $this->ipWithCidr($cl['value']);
                             break;
                         case 'regexp':
                             $buckets['domain_regex'][] = $cl['value'];
@@ -16976,6 +17005,16 @@ DNS-over-HTTPS with IP:
                         $rules[$k][$field] = $vals;
                     }
                 }
+            }
+            // Нормализуем ip_cidr: ~subnet~ шаблон кладёт записи напрямую в это
+            // поле (минуя domain_suffix-бакетизацию выше). sing-box принимает и
+            // голый IP (неявно /32 или /128), но приводим к явной маске ради
+            // паритета с xray/mihomo. Идемпотентно: запись с /prefix не трогаем.
+            if (!empty($rules[$k]['ip_cidr'])) {
+                $rules[$k]['ip_cidr'] = array_map(
+                    fn($ip) => $this->ipWithCidr($ip),
+                    $rules[$k]['ip_cidr'],
+                );
             }
         }
         file_put_contents($f, json_encode([
