@@ -6,6 +6,15 @@ class Bot
 {
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
+    private const DAT_UPDATE_INTERVALS = [
+        0      => 'off',
+        3600   => '1h',
+        21600  => '6h',
+        43200  => '12h',
+        86400  => '1d',
+        259200 => '3d',
+        604800 => '7d',
+    ];
 
     public $input;
     public $adguard;
@@ -1227,6 +1236,12 @@ class Bot
                 break;
             case preg_match('~^/datrefresh$~', $this->input['callback'], $m):
                 $this->datRefresh();
+                break;
+            case preg_match('~^/datschedule$~', $this->input['callback'], $m):
+                $this->datSchedule();
+                break;
+            case preg_match('~^/datscheduleset (\d+)$~', $this->input['callback'], $m):
+                $this->datScheduleSet((int) $m[1]);
                 break;
             case preg_match('~^/templateCopy (\w+)(?: (.+))?$~', $this->input['callback'], $m):
                 $this->templateCopy($m[1], $m[2]);
@@ -3801,6 +3816,7 @@ NFT;
             'checkTrafficLimits',
             'trackOnline',
             'refreshExtSubCache',
+            'checkDatUpdates',
             'backfillSubTokens',
             'checkRelayHealth',
             'warmGeoCache',
@@ -7091,8 +7107,10 @@ DNS-over-HTTPS with IP:
     }
 
     // Качает один .dat и атомарно (temp+rename) кладёт в /logs/geodata. '' — успех.
-    public function datDownload(string $name, string $url): string
+    // $changed сообщает планировщику, надо ли перезагрузить xray.
+    public function datDownload(string $name, string $url, ?bool &$changed = null): string
     {
+        $changed = false;
         $r = $this->datFetchRaw($url);
         if (empty($r['ok'])) {
             return $r['err'] ?? 'fetch failed';
@@ -7102,6 +7120,13 @@ DNS-over-HTTPS with IP:
             @mkdir($dir, 0755, true);
         }
         $dest = $this->datPath($name);
+        if (is_file($dest)) {
+            $oldHash = hash_file('sha256', $dest);
+            $newHash = hash('sha256', $r['body']);
+            if (is_string($oldHash) && hash_equals($oldHash, $newHash)) {
+                return ''; // источник проверен, содержимое не изменилось
+            }
+        }
         $tmp  = $dest . '.' . getmypid() . '.' . uniqid();
         if (file_put_contents($tmp, $r['body']) === false) {
             @unlink($tmp);
@@ -7111,14 +7136,17 @@ DNS-over-HTTPS with IP:
             @unlink($tmp);
             return 'rename failed';
         }
+        $changed = true;
         return '';
     }
 
     // Синхронизирует /logs/geodata с реестром datlist: качает недостающие файлы
     // ($force=true — перекачивает все, для кнопки «обновить») и удаляет осиротевшие
-    // (которых больше нет в реестре). Возвращает карту name=>error для неудач.
-    public function datSync(bool $force = false): array
+    // (которых больше нет в реестре). Возвращает карту name=>error для неудач;
+    // $changed=true, если хотя бы один файл заменён или удалён.
+    public function datSync(bool $force = false, ?bool &$changed = null): array
     {
+        $changed = false;
         $conf    = $this->getPacConf();
         $enabled = array_keys(array_filter($conf['datlist'] ?? []));
         $dir     = $this->datDir();
@@ -7136,23 +7164,53 @@ DNS-over-HTTPS with IP:
             if (!$force && is_file($this->datPath($name))) {
                 continue; // уже скачан — не дёргаем сеть на каждый toggle/delete
             }
-            if ($err = $this->datDownload($name, $m[2])) {
+            $fileChanged = false;
+            if ($err = $this->datDownload($name, $m[2], $fileChanged)) {
                 $errors[$name] = $err;
+            } elseif ($fileChanged) {
+                $changed = true;
             }
         }
         foreach (glob($dir . '/*') ?: [] as $f) {
             if (is_file($f) && empty($keep[basename($f)])) {
-                @unlink($f);
+                if (@unlink($f)) {
+                    $changed = true;
+                }
             }
         }
         return $errors;
     }
 
+    public function datRecordUpdate(int $at, bool $success = false): void
+    {
+        $conf = $this->getPacConf();
+        if (!is_array($conf)) {
+            return;
+        }
+        $conf['dat_update_last_attempt'] = $at;
+        if (!array_key_exists('dat_update_last_success', $conf)) {
+            $conf['dat_update_last_success'] = 0;
+        }
+        $interval = (int) ($conf['dat_update_interval'] ?? 0);
+        if (isset(self::DAT_UPDATE_INTERVALS[$interval]) && $interval > 0) {
+            $conf['dat_update_next'] = $at + $interval;
+        }
+        if ($success) {
+            $conf['dat_update_last_success'] = $at;
+        }
+        $this->setPacConf($conf);
+    }
+
     // Кнопка «обновить»: перекачать все .dat, пересобрать серверные правила, отчёт.
     public function datRefresh()
     {
+        $runAt = time();
+        $this->datRecordUpdate($runAt);
         $errors = $this->datSync(true); // принудительно перекачать все .dat
         $this->xrayUpdateRules();
+        if (!$errors) {
+            $this->datRecordUpdate($runAt, true);
+        }
         if ($errors) {
             $lines = [];
             foreach ($errors as $name => $err) {
@@ -7163,13 +7221,136 @@ DNS-over-HTTPS with IP:
         $this->xtlsdat();
     }
 
-    // Меню routes -> dat: реестр ссылок на .dat + кнопка обновления.
+    // Cron: обновляет включённые источники по выбранному интервалу. Время
+    // попытки сохраняется до сети, чтобы ошибка/рестарт cron не создали цикл
+    // скачивания каждые 10 секунд. Xray перезапускается только при изменении .dat.
+    public function checkDatUpdates(): void
+    {
+        $conf     = $this->getPacConf();
+        $interval = (int) ($conf['dat_update_interval'] ?? 0);
+        if (
+            !isset(self::DAT_UPDATE_INTERVALS[$interval])
+            || $interval === 0
+            || empty(array_filter($conf['datlist'] ?? []))
+        ) {
+            return;
+        }
+        $now  = time();
+        $next = (int) ($conf['dat_update_next'] ?? 0);
+        if ($next > $now) {
+            return;
+        }
+
+        $this->datRecordUpdate($now);
+        $changed = false;
+        $errors  = $this->datSync(true, $changed);
+        if ($changed) {
+            $this->xrayUpdateRules();
+        }
+        if (!$errors) {
+            $this->datRecordUpdate($now, true);
+            return;
+        }
+        foreach ($errors as $name => $err) {
+            error_log("dat auto-update[$name]: $err");
+        }
+    }
+
+    public function datUpdateIntervalLabel(int $interval): string
+    {
+        return self::DAT_UPDATE_INTERVALS[$interval] ?? 'off';
+    }
+
+    public function datScheduleSet(int $interval): void
+    {
+        if (!isset(self::DAT_UPDATE_INTERVALS[$interval])) {
+            $this->xtlsdat();
+            return;
+        }
+        $conf = $this->getPacConf();
+        $conf['dat_update_interval'] = $interval;
+        if ($interval > 0) {
+            // После выбора интервала первая автоматическая проверка будет через
+            // полный период; для немедленной загрузки остаётся кнопка «обновить».
+            $conf['dat_update_next'] = time() + $interval;
+        } else {
+            unset($conf['dat_update_next']);
+        }
+        $this->setPacConf($conf);
+        $this->datSchedule();
+    }
+
+    public function datSchedule(): void
+    {
+        $current = (int) ($this->getPacConf()['dat_update_interval'] ?? 0);
+        $text = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes')
+            . " -> dat -> auto update\nSelect update interval:";
+        $data = [];
+        $row  = [];
+        foreach (self::DAT_UPDATE_INTERVALS as $seconds => $label) {
+            $row[] = [
+                'text'          => ($current === $seconds ? '✅ ' : '') . $label,
+                'callback_data' => "/datscheduleset $seconds",
+            ];
+            if (count($row) === 2) {
+                $data[] = $row;
+                $row = [];
+            }
+        }
+        if ($row) {
+            $data[] = $row;
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/xtlsdat',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            $text,
+            $data,
+        );
+    }
+
+    public function datLastUpdateAt(array $conf): int
+    {
+        if (array_key_exists('dat_update_last_success', $conf)) {
+            return (int) $conf['dat_update_last_success'];
+        }
+        $last = 0;
+        // Для установок, обновившихся с версии без timestamp, показываем время
+        // реально лежащего на диске самого свежего .dat.
+        foreach (glob($this->datDir() . '/*.dat') ?: [] as $file) {
+            $last = max($last, (int) @filemtime($file));
+        }
+        return $last;
+    }
+
+    // Меню routes -> dat: реестр ссылок, расписание и ручное обновление.
     public function xtlsdat($page = 0)
     {
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> dat';
 
+        $conf     = $this->getPacConf();
+        $interval = (int) ($conf['dat_update_interval'] ?? 0);
+        $last     = $this->datLastUpdateAt($conf);
+        $text[]   = 'auto update: ' . $this->datUpdateIntervalLabel($interval);
+        $text[]   = 'last update: ' . ($last > 0 ? date('Y-m-d H:i:s', $last) : '—');
+        if ($interval > 0) {
+            $next = (int) ($conf['dat_update_next'] ?? 0);
+            $text[] = 'next update: ' . ($next > 0
+                ? date('Y-m-d H:i:s', $next)
+                : 'soon');
+        }
+
         [$data, $tmp] = $this->listPac('datlist', $page, 'xtlsdat', 1);
         $text = array_merge($text, $tmp ?: []);
+        $data[] = [
+            [
+                'text'          => '⏱ auto update: ' . $this->datUpdateIntervalLabel($interval),
+                'callback_data' => '/datschedule',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => '🔄 ' . $this->i18n('update'),
