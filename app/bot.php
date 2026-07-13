@@ -7038,7 +7038,7 @@ DNS-over-HTTPS with IP:
             }
             $p       = parse_url($url);
             $port    = (int) ($p['port'] ?? 443);
-            $resolve = array_map(fn($ip) => "{$p['host']}:$port:$ip", $ips);
+            $resolve = $this->curlResolveEntries($p['host'], $port, $ips);
             $buf      = '';
             $location = '';
             $ch       = curl_init();
@@ -13349,11 +13349,10 @@ DNS-over-HTTPS with IP:
             }
             // Pin the connection to the exact IPs that just passed the SSRF check
             // so curl can't re-resolve $host to a private address between the
-            // check and the connect (DNS-rebinding TOCTOU). One rule per IP; an
-            // IPv6 address is passed as-is (curl reads it as the trailing field).
+            // check and the connect (DNS-rebinding TOCTOU).
             $p       = parse_url($url);
             $port    = (int) ($p['port'] ?? 443);
-            $resolve = array_map(fn($ip) => "{$p['host']}:$port:$ip", $ips);
+            $resolve = $this->curlResolveEntries($p['host'], $port, $ips);
             $buf      = '';
             $location = '';
             $ch       = curl_init();
@@ -13461,6 +13460,20 @@ DNS-over-HTTPS with IP:
     public function isSafeExtUrl(string $url): bool
     {
         return $this->safeExtUrlIps($url) !== [];
+    }
+
+    // CURLOPT_RESOLVE expects one HOST:PORT rule with comma-separated addresses.
+    // Repeating HOST:PORT replaces the previous cache entry, while bare IPv6
+    // addresses are ambiguous because ':' also separates the rule fields.
+    public function curlResolveEntries(string $host, int $port, array $ips): array
+    {
+        $addresses = array_map(
+            static fn(string $ip): string => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)
+                ? "[$ip]"
+                : $ip,
+            $ips
+        );
+        return ["$host:$port:" . implode(',', $addresses)];
     }
 
     // SSRF guard + transport guard: HTTPS only (never plaintext http, so a
