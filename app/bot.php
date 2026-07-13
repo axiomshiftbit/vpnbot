@@ -7043,10 +7043,20 @@ DNS-over-HTTPS with IP:
 
     // Скачивание .dat по URL с тем же SSRF-guard (safeExtUrlIps) и ручным обходом
     // редиректов, что и doFetchExtSub, но без декодирования тела и с бОльшим лимитом
-    // (.dat бывают в несколько МБ). Возвращает ['ok'=>bool,'body'=>...,'err'=>...].
-    public function datFetchRaw(string $url): array
+    // (.dat бывают в несколько МБ). $validators (etag/last_modified) включают
+    // условный GET: если ресурс не изменился, сервер отвечает 304 без тела.
+    // Возвращает ['ok'=>bool,'body'=>...,'etag'=>...,'last_modified'=>...,
+    // 'not_modified'=>bool,'err'=>...].
+    public function datFetchRaw(string $url, array $validators = []): array
     {
         $max = 64 << 20; // 64 MiB
+        $reqHeaders = [];
+        if (!empty($validators['etag'])) {
+            $reqHeaders[] = 'If-None-Match: ' . $validators['etag'];
+        }
+        if (!empty($validators['last_modified'])) {
+            $reqHeaders[] = 'If-Modified-Since: ' . $validators['last_modified'];
+        }
         for ($redir = 0; $redir < 5; $redir++) {
             $ips = $this->safeExtUrlIps($url);
             if ($ips === []) {
@@ -7057,10 +7067,13 @@ DNS-over-HTTPS with IP:
             $resolve = $this->curlResolveEntries($p['host'], $port, $ips);
             $buf      = '';
             $location = '';
+            $etag     = '';
+            $lastMod  = '';
             $ch       = curl_init();
             curl_setopt_array($ch, [
                 CURLOPT_URL             => $url,
                 CURLOPT_RESOLVE         => $resolve,
+                CURLOPT_HTTPHEADER      => $reqHeaders,
                 CURLOPT_CONNECTTIMEOUT  => 5,
                 CURLOPT_TIMEOUT         => 30,
                 CURLOPT_FOLLOWLOCATION  => false,
@@ -7074,9 +7087,13 @@ DNS-over-HTTPS with IP:
                     $buf .= $chunk;
                     return strlen($buf) > $max ? 0 : strlen($chunk);
                 },
-                CURLOPT_HEADERFUNCTION  => function ($ch, $header) use (&$location) {
+                CURLOPT_HEADERFUNCTION  => function ($ch, $header) use (&$location, &$etag, &$lastMod) {
                     if (stripos($header, 'location:') === 0) {
                         $location = trim(substr($header, strlen('location:')));
+                    } elseif (stripos($header, 'etag:') === 0) {
+                        $etag = trim(substr($header, strlen('etag:')));
+                    } elseif (stripos($header, 'last-modified:') === 0) {
+                        $lastMod = trim(substr($header, strlen('last-modified:')));
                     }
                     return strlen($header);
                 },
@@ -7087,6 +7104,10 @@ DNS-over-HTTPS with IP:
 
             if (strlen($buf) > $max) {
                 return ['ok' => false, 'err' => 'response too large'];
+            }
+            // 304 Not Modified: ресурс не менялся, тело не передавалось.
+            if ($code === 304) {
+                return ['ok' => true, 'not_modified' => true];
             }
             if ($code >= 300 && $code < 400 && $location !== '') {
                 if (!preg_match('~^https://~i', $location)) {
@@ -7101,33 +7122,81 @@ DNS-over-HTTPS with IP:
             if ($buf === '') {
                 return ['ok' => false, 'err' => 'empty body'];
             }
-            return ['ok' => true, 'body' => $buf];
+            return ['ok' => true, 'body' => $buf, 'etag' => $etag, 'last_modified' => $lastMod];
         }
         return ['ok' => false, 'err' => 'too many redirects'];
     }
 
+    // Путь sidecar-файла с HTTP-валидаторами (etag/last_modified/sha) рядом с .dat.
+    public function datMetaPath(string $name): string
+    {
+        return $this->datPath($name) . '.meta';
+    }
+
+    public function datReadMeta(string $name): array
+    {
+        $f = $this->datMetaPath($name);
+        if (!is_file($f)) {
+            return [];
+        }
+        $m = json_decode((string) @file_get_contents($f), true);
+        return is_array($m) ? $m : [];
+    }
+
+    public function datWriteMeta(string $name, array $meta): void
+    {
+        $f   = $this->datMetaPath($name);
+        $tmp = $f . '.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, json_encode($meta)) !== false) {
+            @rename($tmp, $f);
+        } else {
+            @unlink($tmp);
+        }
+    }
+
     // Качает один .dat и атомарно (temp+rename) кладёт в /logs/geodata. '' — успех.
-    // $changed сообщает планировщику, надо ли перезагрузить xray.
+    // $changed сообщает планировщику, надо ли перезагрузить xray. Условный GET:
+    // если файл уже есть, шлём сохранённые etag/last_modified — при 304 тело не
+    // качается вовсе (экономия трафика на больших .dat при частом расписании).
     public function datDownload(string $name, string $url, ?bool &$changed = null): string
     {
         $changed = false;
-        $r = $this->datFetchRaw($url);
+        $dest    = $this->datPath($name);
+        $exists  = is_file($dest);
+        // Валидаторы шлём только когда файл на месте: иначе 304 оставил бы нас
+        // без файла. Нет файла → полная загрузка.
+        $meta = $exists ? $this->datReadMeta($name) : [];
+        $r = $this->datFetchRaw($url, $meta);
         if (empty($r['ok'])) {
             return $r['err'] ?? 'fetch failed';
+        }
+        if (!empty($r['not_modified'])) {
+            return ''; // сервер подтвердил 304 — файл актуален, тело не качали
         }
         $dir = $this->datDir();
         if (!is_dir($dir)) {
             @mkdir($dir, 0755, true);
         }
-        $dest = $this->datPath($name);
-        if (is_file($dest)) {
-            $oldHash = hash_file('sha256', $dest);
-            $newHash = hash('sha256', $r['body']);
-            if (is_string($oldHash) && hash_equals($oldHash, $newHash)) {
-                return ''; // источник проверен, содержимое не изменилось
+        $newSha  = hash('sha256', $r['body']);
+        $newMeta = [
+            'etag'          => (string) ($r['etag'] ?? ''),
+            'last_modified' => (string) ($r['last_modified'] ?? ''),
+            'sha'           => $newSha,
+        ];
+        // Тело пришло (200). Если байты те же (сервер не поддержал 304, но контент
+        // не изменился) — только освежаем валидаторы, файл и xray не трогаем.
+        if ($exists) {
+            $oldSha = (string) ($meta['sha'] ?? '');
+            if ($oldSha === '') {
+                $h = @hash_file('sha256', $dest);
+                $oldSha = is_string($h) ? $h : '';
+            }
+            if ($oldSha !== '' && hash_equals($oldSha, $newSha)) {
+                $this->datWriteMeta($name, $newMeta);
+                return '';
             }
         }
-        $tmp  = $dest . '.' . getmypid() . '.' . uniqid();
+        $tmp = $dest . '.' . getmypid() . '.' . uniqid();
         if (file_put_contents($tmp, $r['body']) === false) {
             @unlink($tmp);
             return 'write failed';
@@ -7136,6 +7205,7 @@ DNS-over-HTTPS with IP:
             @unlink($tmp);
             return 'rename failed';
         }
+        $this->datWriteMeta($name, $newMeta);
         $changed = true;
         return '';
     }
@@ -7172,10 +7242,18 @@ DNS-over-HTTPS with IP:
             }
         }
         foreach (glob($dir . '/*') ?: [] as $f) {
-            if (is_file($f) && empty($keep[basename($f)])) {
-                if (@unlink($f)) {
-                    $changed = true;
-                }
+            if (!is_file($f)) {
+                continue;
+            }
+            $base  = basename($f);
+            // sidecar валидаторов принадлежит своему .dat — чистим их заодно.
+            $isMeta = str_ends_with($base, '.meta');
+            $owner  = $isMeta ? substr($base, 0, -5) : $base;
+            if (!empty($keep[$owner])) {
+                continue;
+            }
+            if (@unlink($f) && !$isMeta) {
+                $changed = true; // удаление .meta не требует рестарта xray
             }
         }
         return $errors;

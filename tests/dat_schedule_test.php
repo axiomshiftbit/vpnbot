@@ -13,15 +13,26 @@ class DatDownloadTestBot extends Bot
 {
     public string $testDir;
     public string $body = 'first';
+    public bool $notModified = false;
+    public array $lastValidators = [];
 
     public function datDir(): string
     {
         return $this->testDir;
     }
 
-    public function datFetchRaw(string $url): array
+    public function datFetchRaw(string $url, array $validators = []): array
     {
-        return ['ok' => true, 'body' => $this->body];
+        $this->lastValidators = $validators;
+        if ($this->notModified) {
+            return ['ok' => true, 'not_modified' => true];
+        }
+        return [
+            'ok'            => true,
+            'body'          => $this->body,
+            'etag'          => '"e-' . md5($this->body) . '"',
+            'last_modified' => '',
+        ];
     }
 }
 
@@ -98,6 +109,16 @@ try {
     datTestAssert($download->datDownload('sample.dat', 'https://example.test/a', $changed) === '', 'changed-body refresh failed');
     datTestAssert($changed === true, 'changed body must be marked changed');
     datTestAssert(file_get_contents("$dir/sample.dat") === 'second', 'updated body mismatch');
+
+    // Условный GET: сохранённый etag ушёл в запрос, а 304 не трогает файл.
+    $download->notModified = true;
+    $changed = null;
+    datTestAssert($download->datDownload('sample.dat', 'https://example.test/a', $changed) === '', '304 refresh failed');
+    datTestAssert($changed === false, '304 must not be marked changed');
+    datTestAssert(file_get_contents("$dir/sample.dat") === 'second', '304 must not alter file');
+    datTestAssert(($download->lastValidators['etag'] ?? '') === '"e-' . md5('second') . '"', 'stored etag was not sent as validator');
+    $download->notModified = false;
+
     datTestAssert($download->datLastUpdateAt([]) > 0, 'file mtime fallback is missing');
     datTestAssert($download->datLastUpdateAt(['dat_update_last_success' => 123]) === 123, 'stored success timestamp must win');
 
