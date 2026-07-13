@@ -4438,6 +4438,15 @@ NFT;
                 $out[] = 'update xray';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->restartXray($json['xray']);
+                // Сами .dat в бэкап не входят (перекачиваемые по URL из datlist), а
+                // восстановленный конфиг может ссылаться на ext:. Докачиваем файлы и
+                // пересобираем block/warp-правила с guard'ом — dead URL не уронит xray.
+                if (!empty($json['pac']['datlist'])) {
+                    $out[] = 'update dat';
+                    $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                    $this->datSync(true);
+                    $this->xrayUpdateRules();
+                }
                 $this->adguardXrayClients();
                 $this->setUpstreamDomain($json['pac']['transport'] != 'Reality' ? 't' : ($json['pac']['reality']['domain'] ?: $json['xray']['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]));
             }
