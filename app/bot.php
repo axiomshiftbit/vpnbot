@@ -1222,6 +1222,12 @@ class Bot
             case preg_match('~^/xtlsrulesset(?: (\d+))?$~', $this->input['callback'], $m):
                 $this->xtlsrulesset($m[1] ?: 0);
                 break;
+            case preg_match('~^/xtlsdat(?: (\d+))?$~', $this->input['callback'], $m):
+                $this->xtlsdat($m[1] ?: 0);
+                break;
+            case preg_match('~^/datrefresh$~', $this->input['callback'], $m):
+                $this->datRefresh();
+                break;
             case preg_match('~^/templateCopy (\w+)(?: (.+))?$~', $this->input['callback'], $m):
                 $this->templateCopy($m[1], $m[2]);
                 break;
@@ -3719,6 +3725,10 @@ NFT;
                     $t = explode(';', $s);
                     if ($type == 'rulessetlist') {
                         if (preg_match('~^.+:.+:https?://.+~', $t[0])) {
+                            $list[$t[0]] = (bool) $t[1];
+                        }
+                    } elseif ($type == 'datlist') {
+                        if (preg_match('~^[\w.\-]+\.dat:https://.+~i', $t[0])) {
                             $list[$t[0]] = (bool) $t[1];
                         }
                     } else {
@@ -6592,6 +6602,34 @@ DNS-over-HTTPS with IP:
                 );
                 break;
 
+            case 'datlist':
+                // Реестр внешних xray .dat: "name.dat:URL" (по одной на строку).
+                $r = $this->send(
+                    $this->input['chat'],
+                    "@{$this->input['username']} <b>name.dat:URL</b> — ссылка на xray .dat "
+                        . "(geosite/geoip-формат). Пример:\n"
+                        . "<code>dlc.dat:https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat</code>\n"
+                        . "Несколько источников — по одному на строку.\n"
+                        . "Затем в block/warp ссылайтесь: <code>ext:dlc.dat:github</code> "
+                        . "(домены) или <code>extip:zkeenip.dat:akamai</code> (IP).",
+                    $this->input['message_id'],
+                    reply: 'name.dat:URL',
+                );
+                break;
+
+            case 'subnetlist':
+                // Список IP-подсетей (идёт прямо в ip-поля) — доменные префиксы не применяются.
+                $r = $this->send(
+                    $this->input['chat'],
+                    "@{$this->input['username']} список IP-подсетей: <b>IPv4/IPv6[/cidr]</b>, "
+                        . "напр. <code>10.0.0.0/24</code>, <code>2001:db8::/32</code>.\n\n"
+                        . "<b>Как вводить:</b> в столбик (по одной на строку) или в строку "
+                        . "через запятую и пробел: <code>10.0.0.0/24, 2001:db8::/32</code>.",
+                    $this->input['message_id'],
+                    reply: 'list separated by commas',
+                );
+                break;
+
             default:
                 // Для доменных списков подсказываем xray-совместимые префиксы
                 // маршрутизации. Префиксы обёрнуты в <code> — в Telegram их можно
@@ -6610,6 +6648,14 @@ DNS-over-HTTPS with IP:
                         . "Записи <code>regexp:</code> — каждую с новой строки "
                         . "(regex может содержать запятые)."
                     : '';
+                // ext:/extip: — только для block/warp (применяются на сервере;
+                // на клиенте .dat нет). Сначала .dat добавляется в routes → dat.
+                if (in_array($type, ['blocklist', 'warplist'])) {
+                    $hint .= "\n\n<b>Внешние .dat</b> (только на сервере):\n"
+                        . "<code>ext:</code> — категория доменов из .dat, напр. ext:dlc.dat:github\n"
+                        . "<code>extip:</code> — категория IP из .dat, напр. extip:zkeenip.dat:akamai\n"
+                        . "Сначала добавьте .dat в routes → dat.";
+                }
                 $r = $this->send(
                     $this->input['chat'],
                     "@{$this->input['username']} list separated by commas$hint",
@@ -6627,6 +6673,10 @@ DNS-over-HTTPS with IP:
 
     public function addInclude(string $domains, $type)
     {
+        if ($type == 'datlist') {
+            $this->addDat($domains);
+            return;
+        }
         if ($type == 'rulessetlist' && !preg_match('~^.+:.+:https?://.+~', $domains)) {
             $this->send($this->input['from'], 'wrong pattern, enter [direct|block|proxy|custom outbound]:time:URL');
             return;
@@ -6672,6 +6722,13 @@ DNS-over-HTTPS with IP:
                 $this->xrayUpdateRules();
                 $this->xtlswarp($page);
                 break;
+            case 'datlist':
+                // toggle/delete/import источника: досинхронизировать файлы
+                // (удалить осиротевшие) и пересобрать серверные ext-правила.
+                $this->datSync();
+                $this->xrayUpdateRules();
+                $this->xtlsdat($page);
+                break;
             case 'processlist':
                 $this->xtlsprocess($page);
                 break;
@@ -6700,14 +6757,20 @@ DNS-over-HTTPS with IP:
 
     /**
      * Классифицирует запись маршрутизации из pac-списка по xray-совместимому
-     * префиксу. Поддерживаются regexp:/keyword:/full:/domain:; голая запись —
-     * suffix (домен + поддомены), IPv4[/cidr] и IPv6[/cidr] — ip.
+     * префиксу. Поддерживаются regexp:/keyword:/full:/domain:; ext:/extip: —
+     * ссылка на категорию внешнего xray .dat (ext = домен-dat, extip = ip-dat);
+     * голая запись — suffix (домен + поддомены), IPv4[/cidr] и IPv6[/cidr] — ip.
      *
-     * @return array{kind:string,value:string} kind ∈ regexp|keyword|full|domain|suffix|ip
+     * @return array{kind:string,value:string} kind ∈ regexp|keyword|full|domain|ext|extip|suffix|ip
      */
     public function classifyRouteEntry(string $e): array
     {
         $e = trim($e);
+        // ext:/extip: — ссылка на внешний xray .dat (значение = "file.dat:tag").
+        // Матчим ПЕРВЫМ: value содержит двоеточие, иначе его перехватит IPv6-ветка.
+        if (preg_match('~^(ext|extip):(.*)$~is', $e, $m)) {
+            return ['kind' => strtolower($m[1]), 'value' => $m[2]];
+        }
         // Флаг s: regex-значение теоретически может содержать перевод строки.
         if (preg_match('~^(regexp|keyword|full|domain):(.*)$~is', $e, $m)) {
             $kind  = strtolower($m[1]);
@@ -6750,10 +6813,13 @@ DNS-over-HTTPS with IP:
     {
         switch ($c['kind']) {
             case 'ip':
+            case 'extip': // ext ip-dat — его место в поле "ip", не "domain"
                 return null;
             case 'keyword':
             case 'suffix':
                 return $c['value'];
+            case 'ext': // ext домен-dat: xray принимает "ext:file.dat:tag" в domain[]
+                return "ext:{$c['value']}";
             default: // regexp, full, domain — xray понимает эти префиксы нативно
                 return "{$c['kind']}:{$c['value']}";
         }
@@ -6770,8 +6836,15 @@ DNS-over-HTTPS with IP:
         $domain = $ip = [];
         foreach (array_keys(array_filter($list)) as $e) {
             $c = $this->classifyRouteEntry($e);
+            // ext:/extip: ссылаются на внешний .dat — не пишем ссылку в серверный
+            // конфиг, пока файл не скачан, иначе xray упадёт на отсутствующем asset.
+            if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
+                continue;
+            }
             if ($c['kind'] == 'ip') {
                 $ip[] = $c['value'];
+            } elseif ($c['kind'] == 'extip') {
+                $ip[] = "ext:{$c['value']}"; // ext ip-dat в поле ip[]
             } else {
                 $domain[] = $this->xrayDomainToken($c);
             }
@@ -6803,6 +6876,8 @@ DNS-over-HTTPS with IP:
         switch ($c['kind']) {
             case 'regexp':
             case 'keyword':
+            case 'ext':   // ext:/extip: — ссылка на .dat (file.dat:tag), не hostname
+            case 'extip':
                 return "{$c['kind']}:{$c['value']}";
             case 'ip':
                 return $c['value'];
@@ -6903,6 +6978,229 @@ DNS-over-HTTPS with IP:
         }
         $xr['routing']['rules'] = $rules ?: [];
         $this->restartXray($xr);
+    }
+
+    // ── Внешние xray .dat (реестр datlist) ──────────────────────────────────
+    // Реестр ссылок на geosite/geoip-совместимые .dat: запись "name.dat:https://url"
+    // (ключ=>bool). Бот качает файлы в общий каталог /logs/geodata (виден и php, и
+    // контейнеру xr), а правила block/warp ссылаются на них через ext:/extip:.
+    // Требует одноразовой настройки XRAY_LOCATION_ASSET=/logs/geodata в override.env.
+
+    public function datDir(): string
+    {
+        return '/logs/geodata';
+    }
+
+    public function datPath(string $name): string
+    {
+        return $this->datDir() . '/' . basename($name);
+    }
+
+    // Готов ли .dat для ext-значения "file.dat:tag" (файл уже скачан на сервере).
+    public function datFileReady(string $value): bool
+    {
+        $file = explode(':', $value, 2)[0];
+        return $file !== '' && is_file($this->datPath($file));
+    }
+
+    // Скачивание .dat по URL с тем же SSRF-guard (safeExtUrlIps) и ручным обходом
+    // редиректов, что и doFetchExtSub, но без декодирования тела и с бОльшим лимитом
+    // (.dat бывают в несколько МБ). Возвращает ['ok'=>bool,'body'=>...,'err'=>...].
+    public function datFetchRaw(string $url): array
+    {
+        $max = 64 << 20; // 64 MiB
+        for ($redir = 0; $redir < 5; $redir++) {
+            $ips = $this->safeExtUrlIps($url);
+            if ($ips === []) {
+                return ['ok' => false, 'err' => 'blocked: non-https or private/unresolvable host'];
+            }
+            $p       = parse_url($url);
+            $port    = (int) ($p['port'] ?? 443);
+            $resolve = array_map(fn($ip) => "{$p['host']}:$port:$ip", $ips);
+            $buf      = '';
+            $location = '';
+            $ch       = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL             => $url,
+                CURLOPT_RESOLVE         => $resolve,
+                CURLOPT_CONNECTTIMEOUT  => 5,
+                CURLOPT_TIMEOUT         => 30,
+                CURLOPT_FOLLOWLOCATION  => false,
+                CURLOPT_USERAGENT       => 'vpnbot',
+                CURLOPT_PROTOCOLS       => CURLPROTO_HTTPS,
+                CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+                CURLOPT_WRITEFUNCTION   => function ($ch, $chunk) use (&$buf, $max) {
+                    $buf .= $chunk;
+                    return strlen($buf) > $max ? 0 : strlen($chunk);
+                },
+                CURLOPT_HEADERFUNCTION  => function ($ch, $header) use (&$location) {
+                    if (stripos($header, 'location:') === 0) {
+                        $location = trim(substr($header, strlen('location:')));
+                    }
+                    return strlen($header);
+                },
+            ]);
+            curl_exec($ch);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if (strlen($buf) > $max) {
+                return ['ok' => false, 'err' => 'response too large'];
+            }
+            if ($code >= 300 && $code < 400 && $location !== '') {
+                if (!preg_match('~^https://~i', $location)) {
+                    return ['ok' => false, 'err' => 'unsafe redirect target'];
+                }
+                $url = $location;
+                continue;
+            }
+            if ($code < 200 || $code >= 300) {
+                return ['ok' => false, 'err' => $code ? "http $code" : 'connection/timeout error'];
+            }
+            if ($buf === '') {
+                return ['ok' => false, 'err' => 'empty body'];
+            }
+            return ['ok' => true, 'body' => $buf];
+        }
+        return ['ok' => false, 'err' => 'too many redirects'];
+    }
+
+    // Качает один .dat и атомарно (temp+rename) кладёт в /logs/geodata. '' — успех.
+    public function datDownload(string $name, string $url): string
+    {
+        $r = $this->datFetchRaw($url);
+        if (empty($r['ok'])) {
+            return $r['err'] ?? 'fetch failed';
+        }
+        $dir = $this->datDir();
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        $dest = $this->datPath($name);
+        $tmp  = $dest . '.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, $r['body']) === false) {
+            @unlink($tmp);
+            return 'write failed';
+        }
+        if (!rename($tmp, $dest)) {
+            @unlink($tmp);
+            return 'rename failed';
+        }
+        return '';
+    }
+
+    // Синхронизирует /logs/geodata с реестром datlist: качает недостающие файлы
+    // ($force=true — перекачивает все, для кнопки «обновить») и удаляет осиротевшие
+    // (которых больше нет в реестре). Возвращает карту name=>error для неудач.
+    public function datSync(bool $force = false): array
+    {
+        $conf    = $this->getPacConf();
+        $enabled = array_keys(array_filter($conf['datlist'] ?? []));
+        $dir     = $this->datDir();
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        $errors = [];
+        $keep   = [];
+        foreach ($enabled as $key) {
+            if (!preg_match('~^([\w.\-]+\.dat):(https://.+)$~i', $key, $m)) {
+                continue;
+            }
+            $name = basename($m[1]);
+            $keep[$name] = true;
+            if (!$force && is_file($this->datPath($name))) {
+                continue; // уже скачан — не дёргаем сеть на каждый toggle/delete
+            }
+            if ($err = $this->datDownload($name, $m[2])) {
+                $errors[$name] = $err;
+            }
+        }
+        foreach (glob($dir . '/*') ?: [] as $f) {
+            if (is_file($f) && empty($keep[basename($f)])) {
+                @unlink($f);
+            }
+        }
+        return $errors;
+    }
+
+    // Кнопка «обновить»: перекачать все .dat, пересобрать серверные правила, отчёт.
+    public function datRefresh()
+    {
+        $errors = $this->datSync(true); // принудительно перекачать все .dat
+        $this->xrayUpdateRules();
+        if ($errors) {
+            $lines = [];
+            foreach ($errors as $name => $err) {
+                $lines[] = "$name — $err";
+            }
+            $this->send($this->input['from'], "dat: ошибки загрузки:\n" . implode("\n", $lines));
+        }
+        $this->xtlsdat();
+    }
+
+    // Меню routes -> dat: реестр ссылок на .dat + кнопка обновления.
+    public function xtlsdat($page = 0)
+    {
+        $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> dat';
+
+        [$data, $tmp] = $this->listPac('datlist', $page, 'xtlsdat', 1);
+        $text = array_merge($text, $tmp ?: []);
+        $data[] = [
+            [
+                'text'          => '🔄 ' . $this->i18n('update'),
+                'callback_data' => "/datrefresh",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => "/routes",
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text ?: ['...']),
+            $data ?: false,
+        );
+    }
+
+    // Разбор пользовательского ввода источников .dat (по строкам), скачивание,
+    // сохранение реестра и пересборка серверных правил.
+    public function addDat(string $input)
+    {
+        $conf    = $this->getPacConf();
+        $errors  = [];
+        $lastKey = null;
+        foreach (preg_split('~\r\n|\r|\n~', $input) as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            if (!preg_match('~^[\w.\-]+\.dat:https://.+~i', $line)) {
+                $errors[] = "неверный формат: $line";
+                continue;
+            }
+            $conf['datlist'][$line] = true;
+            $lastKey = $line;
+        }
+        if ($lastKey !== null) {
+            ksort($conf['datlist']);
+            $this->setPacConf($conf);
+        }
+        $dlerr = $this->datSync();
+        $this->xrayUpdateRules();
+        if ($errors || $dlerr) {
+            $lines = $errors;
+            foreach ($dlerr as $name => $err) {
+                $lines[] = "$name — $err";
+            }
+            $this->send($this->input['from'], "dat:\n" . implode("\n", $lines));
+        }
+        $page = $lastKey !== null
+            ? (int) floor(array_search($lastKey, array_keys($conf['datlist'])) / $this->limit)
+            : 0;
+        $this->xtlsdat($page);
     }
 
     public function reverse(int $count)
@@ -8177,6 +8475,11 @@ DNS-over-HTTPS with IP:
             case 'rulessetlist':
                 $this->xtlsrulesset();
                 break;
+            case 'datlist':
+                $this->datSync();       // реестр пуст → удалит все .dat файлы
+                $this->xrayUpdateRules();
+                $this->xtlsdat();
+                break;
         }
     }
 
@@ -8203,6 +8506,9 @@ DNS-over-HTTPS with IP:
                 break;
             case 'rulessetlist':
                 $dir = 'rulesset';
+                break;
+            case 'datlist':
+                $dir = 'dat';
                 break;
         }
         $text   = <<<text
@@ -8268,6 +8574,14 @@ DNS-over-HTTPS with IP:
                     [
                         'text'          => $this->i18n('back'),
                         'callback_data' => "/xtlsrulesset",
+                    ],
+                ];
+                break;
+            case 'datlist':
+                $data[] = [
+                    [
+                        'text'          => $this->i18n('back'),
+                        'callback_data' => "/xtlsdat",
                     ],
                 ];
                 break;
@@ -8538,12 +8852,12 @@ DNS-over-HTTPS with IP:
             $domains = array_slice($domains, $page * $this->limit, $this->limit, true);
             $i = 0;
             foreach ($domains as $k => $v) {
-                if ($type == 'rulessetlist') {
+                if (in_array($type, ['rulessetlist', 'datlist'])) {
                     $text[] = "<blockquote><code>$k</code></blockquote>";
                 }
                 $data[] = [
                     [
-                        'text'          => $this->i18n($v ? 'on' : 'off') . ' ' . ($basename ? basename($k) . ' ' : '') . (in_array($type, ['rulessetlist', 'packagelist', 'processlist', 'subnetlist']) ? $k : idn_to_utf8($k)),
+                        'text'          => $this->i18n($v ? 'on' : 'off') . ' ' . ($basename ? basename($k) . ' ' : '') . (in_array($type, ['rulessetlist', 'datlist', 'packagelist', 'processlist', 'subnetlist']) ? $k : idn_to_utf8($k)),
                         'callback_data' => "/change$type " . ($i + $page * $this->limit) . " $page",
                     ],
                     [
@@ -14625,6 +14939,10 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n('rulesset'),
                 'callback_data' => "/xtlsrulesset",
             ]],
+            [[
+                'text'          => 'dat',
+                'callback_data' => "/xtlsdat",
+            ]],
         ];
         $data[] = [
             [
@@ -16486,6 +16804,10 @@ DNS-over-HTTPS with IP:
                         if (array_key_exists('domain', $v) && !empty($v['domain'])) {
                             foreach ($v['domain'] as $j) {
                                 $cl = $this->classifyRouteEntry($j);
+                                // ext:/extip: — серверные .dat, на клиенте файла нет.
+                                if (in_array($cl['kind'], ['ext', 'extip'], true)) {
+                                    continue;
+                                }
                                 if ($cl['kind'] == 'ip') {
                                     $ips[$v['outboundTag']][] = $cl['value'];
                                 } else {
@@ -16497,6 +16819,9 @@ DNS-over-HTTPS with IP:
                         if (array_key_exists('ip', $v) && !empty($v['ip'])) {
                             foreach ($v['ip'] as $j) {
                                 $cl = $this->classifyRouteEntry($j);
+                                if (in_array($cl['kind'], ['ext', 'extip'], true)) {
+                                    continue;
+                                }
                                 if ($cl['kind'] == 'ip') {
                                     $ips[$v['outboundTag']][] = $cl['value'];
                                 } else {
@@ -16773,9 +17098,12 @@ DNS-over-HTTPS with IP:
                                 break;
 
                             default:
-                                echo yaml_emit(['payload' => array_map(function($e) {
+                                echo yaml_emit(['payload' => array_values(array_filter(array_map(function($e) {
                                     $cl = $this->classifyRouteEntry($e);
                                     switch ($cl['kind']) {
+                                        case 'ext':   // xray-only .dat — mihomo не понимает
+                                        case 'extip':
+                                            return null;
                                         case 'ip':
                                             $v = $this->ipWithCidr($cl['value']);
                                             // mihomo/Clash: IPv6 требует правило IP-CIDR6.
@@ -16789,7 +17117,7 @@ DNS-over-HTTPS with IP:
                                         default: // domain, suffix
                                             return "DOMAIN-SUFFIX,{$cl['value']}";
                                     }
-                                }, $v['list'])]);
+                                }, $v['list']), fn($r) => $r !== null))]);
                                 break;
 
                         }
@@ -16993,6 +17321,9 @@ DNS-over-HTTPS with IP:
                 foreach ($v['domain_suffix'] as $j) {
                     $cl = $this->classifyRouteEntry($j);
                     switch ($cl['kind']) {
+                        case 'ext':   // xray-only .dat — sing-box не понимает, пропускаем
+                        case 'extip':
+                            continue 2;
                         case 'ip':
                             $buckets['ip_cidr'][] = $this->ipWithCidr($cl['value']);
                             break;

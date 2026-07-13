@@ -94,9 +94,11 @@ keyword:gigabyte, keyword:reddit, domain:vk.com, 1.2.3.4/24
 | *(без префикса)*| домен-суффикс (как раньше)          | `google.com`               |
 | *(IPv4[/cidr])* | IP-адрес / подсеть                  | `1.2.3.4`, `10.0.0.0/24`   |
 | *(IPv6[/cidr])* | IPv6-адрес / подсеть                | `2001:db8::1`, `2001:db8::/32` |
+| `ext:`          | категория доменов из внешнего xray `.dat` (**только block/warp, сервер**) | `ext:dlc.dat:github` |
+| `extip:`        | категория IP из внешнего xray `.dat` (**только block/warp, сервер**)       | `extip:zkeenip.dat:akamai` |
 
-Домены (кроме `regexp:`/`keyword:`) автоматически приводятся к punycode
-(`domain:пример.рф` → `domain:xn--e1afmkfd.xn--p1ai`).
+Домены (кроме `regexp:`/`keyword:`/`ext:`/`extip:`) автоматически приводятся к
+punycode (`domain:пример.рф` → `domain:xn--e1afmkfd.xn--p1ai`).
 
 ### Во что транслируется
 
@@ -109,9 +111,39 @@ keyword:gigabyte, keyword:reddit, domain:vk.com, 1.2.3.4/24
 | голый домен   | `X`             | `domain_suffix`  | `DOMAIN-SUFFIX,X`  |
 | IPv4[/cidr]   | поле `ip`       | `ip_cidr`        | `IP-CIDR,X/32`     |
 | IPv6[/cidr]   | поле `ip`       | `ip_cidr`        | `IP-CIDR6,X/128`   |
+| `ext:file:tag`   | `ext:file:tag` в `domain[]` | *(вырезается)* | *(вырезается)* |
+| `extip:file:tag` | `ext:file:tag` в `ip[]`     | *(вырезается)* | *(вырезается)* |
 
 > У xray нет отдельного префикса `keyword:` — голая строка в поле `domain`
 > уже означает совпадение по подстроке, поэтому `keyword:X` отдаётся как `X`.
+
+### Внешние xray `.dat` (меню routes → dat)
+
+Xray-ядро умеет матчить домены/IP по внешним `.dat` файлам (формат
+`geosite.dat`/`geoip.dat`) через токены `ext:file:tag` (домены) и `ext:file:tag`
+в поле `ip` (IP). Бот сам качает `.dat` по URL на сервер и подставляет ссылки в
+серверные правила `block`/`warp`.
+
+- **routes → dat** — реестр источников. Формат записи: `name.dat:URL`, напр.
+  `dlc.dat:https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat`.
+  Несколько — по одному на строку. Кнопка **🔄 обновить** перекачивает все `.dat`.
+- В списках **block**/**warp** ссылайтесь на категории: `ext:dlc.dat:github`
+  (домены) или `extip:zkeenip.dat:akamai` (IP).
+- Работает **только на сервере** (block/warp применяются серверным ядром xray).
+  В клиентские подписки (xray/sing-box/mihomo) `ext:`/`extip:` не попадают — у
+  клиента этих `.dat` нет; для клиента используйте `geosite:`/`geoip:` вручную в
+  шаблоне. `includelist`(domains)/`subnetlist` префиксы `.dat` не поддерживают.
+
+**Разовая настройка сервера:** бот кладёт `.dat` в общий каталог `/logs/geodata`
+(виден контейнеру `xr`). Чтобы xray их находил, один раз добавьте в `override.env`:
+
+```
+XRAY_LOCATION_ASSET=/logs/geodata
+```
+
+и пересоздайте контейнер: `docker compose up -d xr`. До этого шага правила
+`ext:`/`extip:` собираются, но xray их не резолвит (guard не пишет ссылку в конфиг,
+пока файл не скачан, — ядро не падает).
 
 ### `full:` — полный (точный) домен
 
