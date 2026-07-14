@@ -14479,7 +14479,12 @@ DNS-over-HTTPS with IP:
     public function applyRealityServerExtras(array &$rs, array $p): void
     {
         $rs['maxTimeDiff']  = max(0, (int) ($p['reality']['maxTimeDiff'] ?? 0));
-        $rs['minClientVer'] = (string) ($p['reality']['minClientVer'] ?? '');
+        // Since Xray-core v26.7.11 (PR #6181) an empty "minClientVer" no longer means
+        // "no restriction": the server now defaults it to 26.3.27, which rejects the
+        // many clients built on older cores. Emit "0.0.0" when the user set nothing so
+        // the pre-v26.7.11 "accept any client" behaviour is preserved; a real value
+        // typed via the hardening menu is still honoured verbatim.
+        $rs['minClientVer'] = ((string) ($p['reality']['minClientVer'] ?? '')) ?: '0.0.0';
         $rs['maxClientVer'] = (string) ($p['reality']['maxClientVer'] ?? '');
         $rs['xver']         = max(0, (int) ($p['reality']['xver'] ?? 0));
         if ($this->mldsaReady($p)) {
@@ -18897,7 +18902,7 @@ DNS-over-HTTPS with IP:
                         "dest"         => $p['reality']['destination'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['dest'],
                         "maxClientVer" => "",
                         "maxTimeDiff"  => 0,
-                        "minClientVer" => "",
+                        "minClientVer" => "0.0.0",
                         "privateKey"   => $p['reality']['privateKey'],
                         "serverNames"  => [
                             $p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]
