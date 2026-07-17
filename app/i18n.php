@@ -49,6 +49,14 @@ $i = [
         'en' => 'add relay',
         'ru' => 'добавить relay',
     ],
+    'hysteria relay hint'  => [
+        'en' => 'The link swaps only address+port to the relay (Hysteria address and port map from the relay card in the xray menu); password/SNI/obfs stay from origin. The relay must DNAT the hysteria UDP port (and the hopping range, if set) to origin.',
+        'ru' => 'Ссылка подменяет только адрес+порт на relay (адрес и маппинг Hysteria — из карточки relay в xray-меню); пароль/SNI/obfs остаются от origin. Relay должен DNAT-ить UDP-порт hysteria (и диапазон hopping, если задан) на origin.',
+    ],
+    'hysteria relay no link' => [
+        'en' => 'no link: set the hysteria password and open the port (or enable port hopping)',
+        'ru' => 'ссылки нет: задайте пароль hysteria и откройте порт (или включите port hopping)',
+    ],
     'traffic limit'        => [
         'en' => 'traffic limit',
         'ru' => 'лимит трафика',
@@ -73,6 +81,14 @@ $i = [
         'en' => 'UDP noise',
         'ru' => 'UDP-шум',
     ],
+    'presets'              => [
+        'en' => 'presets',
+        'ru' => 'шаблоны',
+    ],
+    'noise tcp warn'       => [
+        'en' => '⚠️ Your transport (%s) runs over TCP — UDP noise is NOT sent over it and masks nothing. For TCP enable TLS fragmentation instead. Noise only helps a UDP transport.',
+        'ru' => '⚠️ Ваш транспорт (%s) работает по TCP — UDP-шум по нему НЕ отправляется и ничего не маскирует. Для TCP включите TLS-фрагментацию. noise полезен только для UDP-транспорта.',
+    ],
     'sniffing'             => [
         'en' => 'Sniffing',
         'ru' => 'Сниффинг',
@@ -80,10 +96,6 @@ $i = [
     'mldsa'                => [
         'en' => 'Reality ML-DSA-65',
         'ru' => 'Reality ML-DSA-65',
-    ],
-    'mldsa hint'           => [
-        'en' => 'ℹ️ Post-quantum Reality auth (extra cert signature). Backward compatible: only xray clients carrying the verify key check it; sing-box/mihomo and older clients keep working without it. Rotate Reality keys after enabling to re-issue links.',
-        'ru' => 'ℹ️ Пост-квантовая аутентификация Reality (доп. подпись сертификата). Обратно совместима: проверяют только xray-клиенты с verify-ключом; sing-box/mihomo и старые клиенты продолжают работать без него. После включения ротани ключи Reality, чтобы переиздать ссылки.',
     ],
     'reality params'       => [
         'en' => 'Reality params',
@@ -174,12 +186,12 @@ $i = [
         'ru' => 'введите имя relay (буквы, цифры, - . _)',
     ],
     'enter relay address'  => [
-        'en' => 'enter relay address (domain or IP)',
-        'ru' => 'введите адрес relay (домен или IP)',
+        'en' => 'enter relay address (domain or IP), 0 to clear',
+        'ru' => 'введите адрес relay (домен или IP), 0 — очистить',
     ],
     'enter relay port map' => [
-        'en' => 'enter port map src:dst,src:dst (e.g. 443:8443), empty to clear',
-        'ru' => 'введите маппинг портов src:dst,src:dst (напр. 443:8443), пусто — очистить',
+        'en' => 'enter port map src:dst,src:dst (e.g. 443:8443), 0 to clear',
+        'ru' => 'введите маппинг портов src:dst,src:dst (напр. 443:8443), 0 — очистить',
     ],
     'relay awg address'    => [
         'en' => 'WG/AWG relay address',
@@ -190,12 +202,36 @@ $i = [
         'ru' => 'маппинг портов WG/AWG (src:dst)',
     ],
     'enter relay awg address' => [
-        'en' => 'enter WG/AWG relay address (domain or IP), empty to clear',
-        'ru' => 'введите адрес relay для WG/AWG (домен или IP), пусто — очистить',
+        'en' => 'enter WG/AWG relay address (domain or IP), 0 to clear',
+        'ru' => 'введите адрес relay для WG/AWG (домен или IP), 0 — очистить',
     ],
     'enter relay awg port map' => [
-        'en' => 'enter WG/AWG port map src:dst,src:dst (e.g. 51820:443), empty to clear',
-        'ru' => 'введите маппинг портов WG/AWG src:dst,src:dst (напр. 51820:443), пусто — очистить',
+        'en' => 'enter WG/AWG port map src:dst,src:dst (e.g. 51820:443), 0 to clear',
+        'ru' => 'введите маппинг портов WG/AWG src:dst,src:dst (напр. 51820:443), 0 — очистить',
+    ],
+    'direct'               => [
+        'en' => 'direct',
+        'ru' => 'напрямую',
+    ],
+    'wg relay hint'        => [
+        'en' => 'Relay swaps only the Endpoint of generated configs/QR to the WG/AWG relay address (ports via the WG/AWG port map); keys/DNS stay from origin. The relay must DNAT the WG UDP port to origin. Already imported client configs keep their old Endpoint until re-imported.',
+        'ru' => 'Relay подменяет только Endpoint генерируемых конфигов/QR на адрес relay для WG/AWG (порты через маппинг WG/AWG); ключи/DNS остаются от origin. Relay должен DNAT-ить UDP-порт WG на origin. Уже импортированные клиентами конфиги сохраняют старый Endpoint до переимпорта.',
+    ],
+    'relay hy address'     => [
+        'en' => 'Hysteria relay address',
+        'ru' => 'адрес relay для Hysteria',
+    ],
+    'enter relay hy address' => [
+        'en' => 'enter Hysteria relay address (domain or IP), 0 to clear',
+        'ru' => 'введите адрес relay для Hysteria (домен или IP), 0 — очистить',
+    ],
+    'relay hy port map'    => [
+        'en' => 'Hysteria port map (src:dst)',
+        'ru' => 'маппинг портов Hysteria (src:dst)',
+    ],
+    'enter relay hy port map' => [
+        'en' => 'enter Hysteria port map src:dst,src:dst (e.g. 36712:443), 0 to clear',
+        'ru' => 'введите маппинг портов Hysteria src:dst,src:dst (напр. 36712:443), 0 — очистить',
     ],
     'import'               => [
         'en' => 'restore',
@@ -477,10 +513,6 @@ $i = [
         'en' => 'calc CIDR',
         'ru' => 'calc CIDR',
     ],
-    'mtproto'  => [
-        'en' => 'MTProto',
-        'ru' => 'MTProto',
-    ],
     'telemt'  => [
         'en' => 'TeleMT',
         'ru' => 'TeleMT',
@@ -577,18 +609,6 @@ $i = [
         'en' => 'set a port in Settings -> Ports to expose the proxy',
         'ru' => 'задайте порт в "настройки -> Ports", чтобы открыть прокси',
     ],
-    'generateSecret'  => [
-        'en' => 'generateSecret',
-        'ru' => 'сгенерировать ключ',
-    ],
-    'setSecret'  => [
-        'en' => 'setSecret',
-        'ru' => 'установить свой ключ',
-    ],
-    'setAdTag'  => [
-        'en' => 'set adtag',
-        'ru' => 'установить adtag',
-    ],
     'defaultDNS'  => [
         'en' => 'defaultDNS',
         'ru' => 'дефолтный днс',
@@ -680,6 +700,26 @@ $i = [
     'change secret'  => [
         'en' => 'change secret',
         'ru' => 'секретное слово',
+    ],
+    'disable secret'  => [
+        'en' => 'disable secret',
+        'ru' => 'отключить секрет',
+    ],
+    'camouflage'  => [
+        'en' => 'camouflage',
+        'ru' => 'маскировка',
+    ],
+    'server'  => [
+        'en' => 'server',
+        'ru' => 'сервер',
+    ],
+    'username'  => [
+        'en' => 'username',
+        'ru' => 'логин',
+    ],
+    'password'  => [
+        'en' => 'password',
+        'ru' => 'пароль',
     ],
     'dns'  => [
         'en' => 'dns',

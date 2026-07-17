@@ -158,7 +158,11 @@ connections {
     }
     ikev2 {
         version = 2
-        proposals = aes256-sha256-ecp256,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha256-modp2048,default
+        # AEAD (aes256gcm16/chacha20poly1305 + ecp384/ecp256/curve25519) в НАЧАЛЕ
+        # — сервер предпочтёт их с современными нативными клиентами (iOS/macOS
+        # шлют AES-GCM). Legacy-хвост оставлен как fallback: Windows с CBC-only
+        # согласует aes256-sha256-modp2048. Аддитивно — ничего не ломается.
+        proposals = aes256gcm16-prfsha384-ecp384,aes256gcm16-prfsha256-ecp256,aes256gcm16-prfsha256-curve25519,chacha20poly1305-prfsha256-curve25519,aes256-sha256-ecp256,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha256-modp2048,default
         fragmentation = yes
         dpd_delay = 30s
         pools = ikev2-pool
@@ -177,7 +181,7 @@ connections {
         children {
             ikev2 {
                 local_ts = 0.0.0.0/0
-                esp_proposals = aes256-sha256,aes256-sha1,aes128-sha256,default
+                esp_proposals = aes256gcm16-ecp384,aes256gcm16-ecp256,aes256gcm16,chacha20poly1305,aes256-sha256,aes256-sha1,aes128-sha256,default
                 dpd_action = clear
                 rekey_time = 0s
             }
@@ -198,6 +202,15 @@ fi
 # несовпадении IDr с SAN. Правим только строку с маркером managed-server-id.
 if [ -f "$CONF/swanctl.conf" ] && [ -n "$IP" ]; then
     sed -i "s|^\([[:space:]]*\)id = .* # managed-server-id\$|\1id = $IP # managed-server-id|" "$CONF/swanctl.conf"
+fi
+# Миграция крипто: prepend AEAD-proposals к conn ikev2 в уже существующих
+# swanctl.conf. Матчим ТОЧНЫЕ старые строки ikev2 (они отличаются от l2tp:
+# у l2tp esp_proposals заканчивается на aes128-sha1 без `default`, а IKE-
+# proposals — без ecp256), поэтому l2tp не заденет. Идемпотентно: после
+# замены старая строка не совпадает. swanctl --load-all ниже применит.
+if [ -f "$CONF/swanctl.conf" ]; then
+    sed -i "s|^\([[:space:]]*\)proposals = aes256-sha256-ecp256,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha256-modp2048,default\$|\1proposals = aes256gcm16-prfsha384-ecp384,aes256gcm16-prfsha256-ecp256,aes256gcm16-prfsha256-curve25519,chacha20poly1305-prfsha256-curve25519,aes256-sha256-ecp256,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha256-modp2048,default|" "$CONF/swanctl.conf"
+    sed -i "s|^\([[:space:]]*\)esp_proposals = aes256-sha256,aes256-sha1,aes128-sha256,default\$|\1esp_proposals = aes256gcm16-ecp384,aes256gcm16-ecp256,aes256gcm16,chacha20poly1305,aes256-sha256,aes256-sha1,aes128-sha256,default|" "$CONF/swanctl.conf"
 fi
 rm -f /etc/swanctl/swanctl.conf
 ln -s "$CONF/swanctl.conf" /etc/swanctl/swanctl.conf

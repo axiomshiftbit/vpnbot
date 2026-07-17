@@ -10,6 +10,8 @@
 /sftp-config.json
 /tg.pyr
 /config/wg0.conf
+# эфемерная карта «сообщение → wg-инстанс» (см. wgMsgFile в bot.php)
+/config/wg_msg.json
 /config/hwid.json
 /config/openvpn/*
 !/config/openvpn/.gitkeep

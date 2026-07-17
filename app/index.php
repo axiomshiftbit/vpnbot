@@ -22,12 +22,12 @@ if (!empty($_GET['hash'])) {
     }
     $s      = implode("\n", $s);
     $sk     = hash_hmac('sha256', $c['key'], "WebAppData", true);
-    $webapp = hash_hmac('sha256', $s, $sk) == $_GET['hash'];
+    $webapp = hash_equals(hash_hmac('sha256', $s, $sk), (string) $_GET['hash']);
 }
 
 switch (true) {
     // tlgrm
-    case 'POST' == $_SERVER['REQUEST_METHOD'] && preg_match('~^/tlgrm~', $_SERVER['REQUEST_URI']) && $_GET['k'] == $c['key']:
+    case 'POST' == $_SERVER['REQUEST_METHOD'] && preg_match('~^/tlgrm~', $_SERVER['REQUEST_URI']) && hash_equals($c['key'], (string) ($_GET['k'] ?? '')):
         $bot->input();
         break;
 
@@ -48,7 +48,9 @@ switch (true) {
 
     // subs & pac
     case preg_match('~^' . preg_quote("/pac$hash") . '~', $_SERVER['REQUEST_URI']):
-        if (!empty($t = unserialize(base64_decode(explode('/', $_SERVER['REQUEST_URI'])[2])))) { // fix sing-box import
+        // allowed_classes=false: payload — массив GET-параметров, объекты не
+        // нужны; запрет их инстанцирования закрывает PHP object injection.
+        if (!empty($t = @unserialize((string) base64_decode(explode('/', $_SERVER['REQUEST_URI'])[2]), ['allowed_classes' => false]))) { // fix sing-box import
             $_GET = array_merge($_GET, $t);
         }
         $type    = $_GET['t'] ?? 'pac';
@@ -66,16 +68,22 @@ switch (true) {
                 exit;
 
             case 'te':
+                // $_GET['ty'] попадает в путь /config/<ty>.json и ключ конфига —
+                // ограничиваем словом (\w), иначе `ty=../..` читает произвольный .json.
+                $ty = preg_match('~^\w+$~', $_GET['ty'] ?? '') ? $_GET['ty'] : '';
+                if ($ty === '') {
+                    break;
+                }
                 if (!empty($_GET['te'])) {
-                    $t = $bot->getPacConf()["{$_GET['ty']}templates"][$_GET['te']];
+                    $t = $bot->getPacConf()["{$ty}templates"][$_GET['te']];
                 } else {
-                    $t = json_decode(file_get_contents("/config/{$_GET['ty']}.json"), true);
+                    $t = json_decode(file_get_contents("/config/$ty.json"), true);
                 }
                 if ($t) {
                     header('Content-Type: text/html');
                     $t = json_encode($t, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                     $name = $_GET['te'] ?: 'origin';
-                    $type = $_GET['ty'];
+                    $type = $ty;
                     echo <<<HTML
                         <!DOCTYPE HTML>
                         <html lang="en" style="height:100%">
@@ -131,6 +139,7 @@ switch (true) {
                         HTML;
                     exit;
                 }
+                break;
 
             case 'changelog':
                 // Changelog показываем из СВОЕГО репозитория, а не из upstream.

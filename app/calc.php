@@ -23,9 +23,9 @@ class Calc
         } elseif ($b[0] > $a[0] && $b[1] < $a[1]) {
             return [[$a[0], $b[0] - 1], [$b[1] + 1, $a[1]]];
         } elseif ($b[0] <= $a[0]) {
-            return [$b[1] + 1, $a[1]];
+            return [[$b[1] + 1, $a[1]]];
         } else {
-            return [$a[0], $b[1] - 1];
+            return [[$a[0], $b[0] - 1]];
         }
     }
 
@@ -44,15 +44,18 @@ class Calc
     {
         $include = $this->alignment($include);
         if (!empty($exclude)) {
-            $tmp = [];
             $exclude = $this->alignment($exclude);
-            foreach ($exclude as $k => $v) {
-                foreach ($include as $i => $j) {
+            $result  = $include;
+            // Каждый exclude вычитаем из ТЕКУЩЕГО результата, а не из исходного
+            // include, иначе при >1 исключении диапазоны накапливаются с дублями.
+            foreach ($exclude as $v) {
+                $tmp = [];
+                foreach ($result as $j) {
                     $tmp = array_merge($tmp, $this->substract($j, $v));
                 }
-                $d = array_filter($tmp);
+                $result = $tmp;
             }
-            return $tmp;
+            return $result;
         }
         return $include;
     }

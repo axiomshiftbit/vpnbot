@@ -15,8 +15,16 @@ ARG TELEMT_VERSION=3.4.18
 FROM ghcr.io/telemt/telemt:${TELEMT_VERSION} AS dl
 
 FROM $image
+# ARG до FROM не виден после него — объявляем повторно для финальной стадии.
+ARG TELEMT_VERSION=3.4.18
 COPY --from=dl /app/telemt /usr/local/bin/telemt
+# У бинаря telemt нет команды версии (неизвестный флаг уходит в Run), поэтому
+# версию впекаем в образ файлом — бот читает её по ssh из контейнера
+# (telemtVersion()), как /etc/wgcf_version у warp. Это версия РЕАЛЬНО
+# запущенного образа, а не пин из .env (они расходятся, пока образ не
+# пересобран после смены TELEMT_VERSION).
 RUN apk add --no-cache openssh \
     && chmod +x /usr/local/bin/telemt \
+    && echo "${TELEMT_VERSION}" > /etc/telemt_version \
     && mkdir -p /root/.ssh
 ENV ENV="/root/.ashrc"

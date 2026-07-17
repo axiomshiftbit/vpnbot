@@ -210,7 +210,6 @@ services:
             - wg
             - wg1
             - ad
-            - tg
             - xr
             - oc
             - np
@@ -226,6 +225,9 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg0.conf:/etc/wireguard/wg0.conf
@@ -264,6 +266,9 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg1.conf:/etc/wireguard/wg0.conf
@@ -330,35 +335,6 @@ services:
         cap_add:
             - NET_ADMIN
         entrypoint: ["/bin/sh", "/start_ad.sh"]
-        logging: *default-logging
-    tg:
-        image: mercurykd/vpnbot-tg:1.3
-        build:
-            dockerfile: dockerfile/telegram.dockerfile
-        volumes:
-            - ./config/.profile:/root/.bashrc:ro
-            - ./ssh:/ssh
-            - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./scripts/start_tg.sh:/start_tg.sh
-            - ./config/mtprotosecret:/mtprotosecret
-            - ./logs/:/logs/
-        hostname: telegram
-        container_name: mtproto-${VER}
-        depends_on:
-            php:
-                condition: service_healthy
-        environment:
-            IP: ${IP}
-        env_file:
-            - path: ./.env
-              required: true # default
-            - path: ./override.env
-              required: false
-        stop_grace_period: 1s
-        command: ["/bin/sh", "/start_tg.sh"]
-        networks:
-            default:
-                ipv4_address: 10.10.0.8
         logging: *default-logging
     telemt:
         image: mercurykd/vpnbot-telemt:1.0
@@ -428,12 +404,14 @@ services:
             dockerfile: dockerfile/ocserv.dockerfile
             args:
                 image: ${IMAGE}
+                OCSERV_VERSION: ${OCSERV_VERSION:-1.5.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config:/etc/ocserv
             - ./certs:/certs
+            - ./logs:/logs
             - ./scripts/start_oc.sh:/start_oc.sh
         hostname: ocserv
         container_name: openconnect-${VER}
@@ -492,6 +470,9 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
         cap_add:
             - NET_ADMIN
         sysctls:
@@ -504,10 +485,23 @@ services:
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config:/config
             - ./scripts/start_wp.sh:/start_wp.sh
+            - ./scripts/warp_fixup.sh:/warp_fixup.sh
+            - ./scripts/warp_probe.sh:/warp_probe.sh
             - warp:/etc/warp
         hostname: warp
         container_name: warp-${VER}
         command: ["/bin/sh", "/start_wp.sh"]
+        # unless-stopped: упавший warp поднимается сам (ручной docker stop
+        # уважается); start_wp.sh делает exit 1, если туннель не оживает.
+        restart: unless-stopped
+        healthcheck:
+            # та же проба, что у watchdog в start_wp.sh (curl-трейс через
+            # socks5h, при отсутствии curl — возраст handshake)
+            test: ["CMD", "sh", "/warp_probe.sh"]
+            interval: 60s
+            timeout: 15s
+            retries: 3
+            start_period: 90s
         depends_on:
             php:
                 condition: service_healthy
@@ -684,6 +678,11 @@ services:
             - path: ./override.env
               required: false
         environment:
+            # IP обязателен: start_ipsec.sh гейтит на нём выпуск server.crt
+            # (SAN=IP) и генерацию swanctl.conf. Из env_file (.env) приходит
+            # пустая строка IP= — реальное значение передаёт makefile при
+            # `docker compose up` (IP=$(IP) …), поэтому берём его отсюда.
+            IP: ${IP}
             L2TPSUBNET: ${L2TPSUBNET:-10.9.1.0/24}
             IKEV2SUBNET: ${IKEV2SUBNET:-10.9.2.0/24}
         cap_add:

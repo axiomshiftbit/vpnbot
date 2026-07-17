@@ -14,7 +14,6 @@ $bot = new Bot($c['key'], $i);
 
 $bot->selfUpdate();
 $bot->ssPswdCheck();
-$bot->restartTG();
 $bot->restartTelemt();
 if (!empty($bot->selfupdate)) {
     $bot->offWarp();
@@ -32,4 +31,5 @@ $c = $bot->getPacConf();
 $bot->setUpstreamDomain($c['transport'] != 'Reality' ? 't' : $c['reality']['domain']);
 $bot->setUpstreamDomainNaive($c['domain']);
 $bot->setUpstreamDomainOcserv($c['domain']);
+$bot->syncOcservCamouflage();
 $bot->xrayUpdateRules();
