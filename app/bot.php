@@ -6725,7 +6725,15 @@ DNS-over-HTTPS with IP:
                     $lastKey             = trim($v);
                     $conf[$type][$lastKey] = true;
                 } else {
-                    $lastKey             = $this->normalizeRouteEntry($v);
+                    // Мусорный ввод (пустой префикс "keyword:", битый IP вроде
+                    // 1.2.3.4/64) нормализуется в пустую строку — не заводим под
+                    // него пустой ключ в списке, иначе он навсегда осядет в меню
+                    // неудаляемой пустой кнопкой.
+                    $key = $this->normalizeRouteEntry($v);
+                    if (trim($key) === '') {
+                        continue;
+                    }
+                    $lastKey             = $key;
                     $conf[$type][$lastKey] = true;
                 }
             }
@@ -6922,14 +6930,14 @@ DNS-over-HTTPS with IP:
         $domain = $ip = [];
         foreach (array_keys(array_filter($list)) as $e) {
             $c = $this->classifyRouteEntry($e);
+            // Пустое значение префикса / битый IP — конфиг сломается или, хуже,
+            // пустой keyword совпадёт со всеми доменами. Отсекаем до раскладки.
+            if (!$this->routeEntryUsable($c)) {
+                continue;
+            }
             // ext:/extip: ссылаются на внешний .dat — не пишем ссылку в серверный
             // конфиг, пока файл не скачан, иначе xray упадёт на отсутствующем asset.
-            // Тег обязателен по той же причине: ext:dlc.dat без ":категория" ядро
-            // не разбирает и не стартует.
-            if (
-                in_array($c['kind'], ['ext', 'extip'], true)
-                && (!$this->extRefValid($c['value']) || !$this->datFileReady($c['value']))
-            ) {
+            if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
                 continue;
             }
             if ($c['kind'] == 'ip') {
@@ -7371,6 +7379,14 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             $base  = basename($f);
+            // Временные файлы чужого datDownload/datWriteMeta (".<pid>.<uniqid>")
+            // лежат в этом же каталоге и в реестре, разумеется, не значатся. Без
+            // этой проверки параллельный запуск (cron + кнопка «обновить»)
+            // удалял бы их прямо перед rename() — вторая сторона падала с
+            // "rename failed". Их подчистит сам породивший процесс.
+            if (preg_match('~\.\d+\.[0-9a-f]+$~', $base)) {
+                continue;
+            }
             // sidecar валидаторов принадлежит своему .dat — чистим их заодно.
             $isMeta = str_ends_with($base, '.meta');
             $owner  = $isMeta ? substr($base, 0, -5) : $base;
@@ -17266,7 +17282,9 @@ DNS-over-HTTPS with IP:
                     $sort = function ($j, $tag) use (&$ips, &$domains) {
                         $cl = $this->classifyRouteEntry($j);
                         // ext:/extip: — серверные .dat, на клиенте файла нет.
-                        if (in_array($cl['kind'], ['ext', 'extip'], true)) {
+                        // Пустые/битые записи не отдаём клиенту по той же причине,
+                        // что и серверу: пустой токен в domain[] матчит всё.
+                        if (in_array($cl['kind'], ['ext', 'extip'], true) || !$this->routeEntryUsable($cl)) {
                             return;
                         }
                         if ($cl['kind'] == 'ip') {
@@ -17563,6 +17581,9 @@ DNS-over-HTTPS with IP:
                             default:
                                 echo yaml_emit(['payload' => array_values(array_filter(array_map(function($e) {
                                     $cl = $this->classifyRouteEntry($e);
+                                    if (!$this->routeEntryUsable($cl)) {
+                                        return null; // пустое значение / битый IP
+                                    }
                                     switch ($cl['kind']) {
                                         case 'ext':   // xray-only .dat — mihomo не понимает
                                         case 'extip':
@@ -17785,6 +17806,9 @@ DNS-over-HTTPS with IP:
                 ];
                 foreach ($v['domain_suffix'] as $j) {
                     $cl = $this->classifyRouteEntry($j);
+                    if (!$this->routeEntryUsable($cl)) {
+                        continue; // пустое значение / битый IP
+                    }
                     switch ($cl['kind']) {
                         case 'ext':   // xray-only .dat — sing-box не понимает, пропускаем
                         case 'extip':
