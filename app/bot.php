@@ -6791,9 +6791,11 @@ DNS-over-HTTPS with IP:
      * Классифицирует запись маршрутизации из pac-списка по xray-совместимому
      * префиксу. Поддерживаются regexp:/keyword:/full:/domain:; ext:/extip: —
      * ссылка на категорию внешнего xray .dat (ext = домен-dat, extip = ip-dat);
+     * geosite:/geoip: — категория из штатных geosite.dat/geoip.dat ядра;
      * голая запись — suffix (домен + поддомены), IPv4[/cidr] и IPv6[/cidr] — ip.
      *
-     * @return array{kind:string,value:string} kind ∈ regexp|keyword|full|domain|ext|extip|suffix|ip
+     * @return array{kind:string,value:string}
+     *         kind ∈ regexp|keyword|full|domain|ext|extip|geosite|geoip|suffix|ip
      */
     public function classifyRouteEntry(string $e): array
     {
@@ -6801,6 +6803,12 @@ DNS-over-HTTPS with IP:
         // ext:/extip: — ссылка на внешний xray .dat (значение = "file.dat:tag").
         // Матчим ПЕРВЫМ: value содержит двоеточие, иначе его перехватит IPv6-ветка.
         if (preg_match('~^(ext|extip):(.*)$~is', $e, $m)) {
+            return ['kind' => strtolower($m[1]), 'value' => $m[2]];
+        }
+        // geosite:/geoip: — встроенные категории ядра. Без этой ветки geoip:cn
+        // классифицировался как suffix и уезжал в поле domain[], где xray его не
+        // принимает: конфиг отвергается и ядро не стартует.
+        if (preg_match('~^(geosite|geoip):(.+)$~is', $e, $m)) {
             return ['kind' => strtolower($m[1]), 'value' => $m[2]];
         }
         // Флаг s: regex-значение теоретически может содержать перевод строки.
@@ -6816,8 +6824,20 @@ DNS-over-HTTPS with IP:
             }
             return ['kind' => $kind, 'value' => $value];
         }
-        if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?$~', $e)) {
-            return ['kind' => 'ip', 'value' => $e];
+        // IPv4[/cidr]: форму мало проверить регекспом — октеты и длину префикса
+        // надо валидировать по значению. Прежде сюда проходили 999.1.1.1 и
+        // 1.2.3.4/64: такая запись уезжала в ip[], xray её не разбирал и ядро
+        // не стартовало — одна опечатка в block-списке роняла весь VPN.
+        if (preg_match('~^(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?$~', $e, $m4)) {
+            if (
+                filter_var($m4[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+                && (!isset($m4[2]) || $m4[2] === '' || (int) $m4[2] <= 32)
+            ) {
+                return ['kind' => 'ip', 'value' => $e];
+            }
+            // Битый IPv4 доменом быть тоже не может — пусть отсеется как невалидная
+            // запись (routeEntryUsable), а не станет doменным суффиксом.
+            return ['kind' => 'ip', 'value' => ''];
         }
         // IPv6[/cidr]: регексом надёжно не описать — валидируем адрес через
         // filter_var, отделив опциональный /prefix. Двоеточие в записи —
@@ -6828,6 +6848,9 @@ DNS-over-HTTPS with IP:
             if (preg_match('~^(.+)/(\d{1,3})$~', $e, $mm)) {
                 $addr   = $mm[1];
                 $suffix = '/' . $mm[2];
+                if ((int) $mm[2] > 128) {
+                    return ['kind' => 'ip', 'value' => ''];
+                }
             }
             if (filter_var($addr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
                 return ['kind' => 'ip', 'value' => $addr . $suffix];
@@ -6846,15 +6869,46 @@ DNS-over-HTTPS with IP:
         switch ($c['kind']) {
             case 'ip':
             case 'extip': // ext ip-dat — его место в поле "ip", не "domain"
+            case 'geoip': // встроенная geoip-категория — тоже только в "ip"
                 return null;
             case 'keyword':
             case 'suffix':
                 return $c['value'];
             case 'ext': // ext домен-dat: xray принимает "ext:file.dat:tag" в domain[]
                 return 'ext:' . $this->extAssetRef($c['value']);
-            default: // regexp, full, domain — xray понимает эти префиксы нативно
+            default: // regexp, full, domain, geosite — xray понимает эти префиксы нативно
                 return "{$c['kind']}:{$c['value']}";
         }
+    }
+
+    /**
+     * Валиден ли ext-указатель "file.dat:tag" для xray. Тег обязателен: xray
+     * принимает только форму ext:<файл>:<категория>, а запись без тега (ext:dlc.dat)
+     * или с пустым тегом (ext:dlc.dat:) отвергается на разборе конфига — ядро
+     * не стартует вовсе. Достижимо обычной опечаткой в block/warp-списке.
+     */
+    public function extRefValid(string $value): bool
+    {
+        [$file, $tag] = array_pad(explode(':', $value, 2), 2, null);
+        return trim((string) $file) !== '' && trim((string) $tag) !== '';
+    }
+
+    /**
+     * Пригодна ли классифицированная запись для выдачи в конфиг любого ядра.
+     *
+     * Отсеивает записи с пустым значением. Это не косметика: опечатка вида
+     * "keyword:" отдельной строкой давала пустой токен в xray-поле domain[], где
+     * голая строка означает совпадение по подстроке — а пустая подстрока входит
+     * в ЛЮБОЙ домен. Весь block-список превращался в «блокировать всё».
+     * Симметрично, пустой suffix/regexp/domain и битый IP (classifyRouteEntry
+     * отдаёт для них value='') конфиг только ломают.
+     */
+    public function routeEntryUsable(array $c): bool
+    {
+        if (in_array($c['kind'], ['ext', 'extip'], true)) {
+            return $this->extRefValid($c['value']);
+        }
+        return trim((string) $c['value']) !== '';
     }
 
     /**
@@ -6870,13 +6924,20 @@ DNS-over-HTTPS with IP:
             $c = $this->classifyRouteEntry($e);
             // ext:/extip: ссылаются на внешний .dat — не пишем ссылку в серверный
             // конфиг, пока файл не скачан, иначе xray упадёт на отсутствующем asset.
-            if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
+            // Тег обязателен по той же причине: ext:dlc.dat без ":категория" ядро
+            // не разбирает и не стартует.
+            if (
+                in_array($c['kind'], ['ext', 'extip'], true)
+                && (!$this->extRefValid($c['value']) || !$this->datFileReady($c['value']))
+            ) {
                 continue;
             }
             if ($c['kind'] == 'ip') {
                 $ip[] = $c['value'];
             } elseif ($c['kind'] == 'extip') {
                 $ip[] = 'ext:' . $this->extAssetRef($c['value']); // ext ip-dat в поле ip[]
+            } elseif ($c['kind'] == 'geoip') {
+                $ip[] = "geoip:{$c['value']}"; // встроенная категория — поле ip[]
             } else {
                 $domain[] = $this->xrayDomainToken($c);
             }
@@ -6910,6 +6971,8 @@ DNS-over-HTTPS with IP:
             case 'keyword':
             case 'ext':   // ext:/extip: — ссылка на .dat (file.dat:tag), не hostname
             case 'extip':
+            case 'geosite': // категория ядра, а не доменное имя — punycode неприменим
+            case 'geoip':
                 return "{$c['kind']}:{$c['value']}";
             case 'ip':
                 return $c['value'];
@@ -6957,6 +7020,41 @@ DNS-over-HTTPS with IP:
             }
         }
         return $out;
+    }
+
+    /**
+     * Человекочитаемая подпись записи маршрутизации для кнопок меню: punycode
+     * разворачивается обратно в unicode, но ТОЛЬКО в hostname-части — префикс
+     * сохраняется как есть.
+     *
+     * Раньше в idn_to_utf8() уезжала вся строка целиком, включая префикс. Для
+     * regexp:/keyword:/ext: это не доменное имя, и IDNA возвращает false, как
+     * только строка нарушает его ограничения — например, метка длиннее 63
+     * символов (обычный regexp без точек), — а false приводится к '' и Telegram
+     * отклоняет ВСЁ сообщение (текст кнопки не может быть пустым): меню
+     * block/warp переставало открываться. Симметрично normalizeRouteEntry(),
+     * которая на записи уже применяет префикс-осведомлённый idn_to_ascii().
+     */
+    public function routeEntryLabel(string $e): string
+    {
+        $c = $this->classifyRouteEntry($e);
+        switch ($c['kind']) {
+            case 'regexp':
+            case 'keyword':
+            case 'ext':
+            case 'extip':
+            case 'geosite':
+            case 'geoip':
+            case 'ip':
+                return $e;
+            case 'full':
+            case 'domain':
+                $v = idn_to_utf8($c['value']);
+                return "{$c['kind']}:" . ($v === false ? $c['value'] : $v);
+            default: // suffix
+                $v = idn_to_utf8($c['value']);
+                return $v === false ? $e : $v;
+        }
     }
 
     public function xrayUpdateRules()
@@ -7170,6 +7268,12 @@ DNS-over-HTTPS with IP:
         // Валидаторы шлём только когда файл на месте: иначе 304 оставил бы нас
         // без файла. Нет файла → полная загрузка.
         $meta = $exists ? $this->datReadMeta($name) : [];
+        // ...и только если он скачан с ЭТОГО же URL. Иначе ETag от прежнего
+        // источника ушёл бы новому: совпадение (или слабый валидатор вроде
+        // W/"0") дало бы 304, и мы бы вечно держали файл от старой ссылки.
+        if (($meta['url'] ?? $url) !== $url) {
+            $meta = [];
+        }
         $r = $this->datFetchRaw($url, $meta);
         if (empty($r['ok'])) {
             return $r['err'] ?? 'fetch failed';
@@ -7186,6 +7290,9 @@ DNS-over-HTTPS with IP:
             'etag'          => (string) ($r['etag'] ?? ''),
             'last_modified' => (string) ($r['last_modified'] ?? ''),
             'sha'           => $newSha,
+            // Источник, из которого лежащий на диске файл реально скачан:
+            // datSync() по нему понимает, что URL в реестре сменили.
+            'url'           => $url,
         ];
         // Тело пришло (200). Если байты те же (сервер не поддержал 304, но контент
         // не изменился) — только освежаем валидаторы, файл и xray не трогаем.
@@ -7229,13 +7336,27 @@ DNS-over-HTTPS with IP:
         }
         $errors = [];
         $keep   = [];
+        $source = [];
         foreach ($enabled as $key) {
             if (!preg_match('~^([\w.\-]+\.dat):(https://.+)$~i', $key, $m)) {
                 continue;
             }
             $name = basename($m[1]);
+            // Имя файла — первичный ключ на диске, а реестр допускает две записи
+            // с одним именем и разными URL. Молча побеждала бы та, что скачалась
+            // первой, причём навсегда; сообщаем об этом вместо тихой путаницы.
+            if (isset($source[$name]) && $source[$name] !== $m[2]) {
+                $errors[$name] = 'имя занято другим источником: ' . $source[$name];
+                continue;
+            }
+            $source[$name] = $m[2];
             $keep[$name] = true;
-            if (!$force && is_file($this->datPath($name))) {
+            // Пропускаем скачивание, только если на диске лежит файл ИМЕННО с
+            // этого URL. Прежде проверялось лишь наличие файла, поэтому смена
+            // ссылки в реестре (при сохранённом имени) не подхватывалась никогда.
+            if (!$force && is_file($this->datPath($name))
+                && ($this->datReadMeta($name)['url'] ?? $m[2]) === $m[2]
+            ) {
                 continue; // уже скачан — не дёргаем сеть на каждый toggle/delete
             }
             $fileChanged = false;
@@ -9141,11 +9262,14 @@ DNS-over-HTTPS with IP:
             $i = 0;
             foreach ($domains as $k => $v) {
                 if (in_array($type, ['rulessetlist', 'datlist'])) {
-                    $text[] = "<blockquote><code>$k</code></blockquote>";
+                    // Ключ — "name.dat:URL"/"outbound:time:URL": в URL встречаются
+                    // & и =, а parse_mode=HTML отвергает всё сообщение на
+                    // неэкранированном амперсанде, и список переставал открываться.
+                    $text[] = '<blockquote><code>' . htmlspecialchars($k, ENT_QUOTES) . '</code></blockquote>';
                 }
                 $data[] = [
                     [
-                        'text'          => $this->i18n($v ? 'on' : 'off') . ' ' . ($basename ? basename($k) . ' ' : '') . (in_array($type, ['rulessetlist', 'datlist', 'packagelist', 'processlist', 'subnetlist']) ? $k : idn_to_utf8($k)),
+                        'text'          => $this->i18n($v ? 'on' : 'off') . ' ' . ($basename ? basename($k) . ' ' : '') . (in_array($type, ['rulessetlist', 'datlist', 'packagelist', 'processlist', 'subnetlist']) ? $k : $this->routeEntryLabel($k)),
                         'callback_data' => "/change$type " . ($i + $page * $this->limit) . " $page",
                     ],
                     [
@@ -17135,34 +17259,35 @@ DNS-over-HTTPS with IP:
             case 's':
                 if (!empty($c['routing']['rules'])) {
                     $ips = $domains = $other = [];
+                    // Раскладывает запись в ip[]/domain[] по её типу, а не по тому,
+                    // из какого поля она пришла: шаблон может держать geoip: в ip[],
+                    // а домен — по ошибке там же. geosite:/geoip: НЕ вырезаем —
+                    // клиент тоже xray, штатная geodata у него есть.
+                    $sort = function ($j, $tag) use (&$ips, &$domains) {
+                        $cl = $this->classifyRouteEntry($j);
+                        // ext:/extip: — серверные .dat, на клиенте файла нет.
+                        if (in_array($cl['kind'], ['ext', 'extip'], true)) {
+                            return;
+                        }
+                        if ($cl['kind'] == 'ip') {
+                            $ips[$tag][] = $cl['value'];
+                        } elseif ($cl['kind'] == 'geoip') {
+                            $ips[$tag][] = "geoip:{$cl['value']}";
+                        } else {
+                            $domains[$tag][] = $this->xrayDomainToken($cl);
+                        }
+                    };
                     foreach ($c['routing']['rules'] as $k => $v) {
                         $matched = false;
                         if (array_key_exists('domain', $v) && !empty($v['domain'])) {
                             foreach ($v['domain'] as $j) {
-                                $cl = $this->classifyRouteEntry($j);
-                                // ext:/extip: — серверные .dat, на клиенте файла нет.
-                                if (in_array($cl['kind'], ['ext', 'extip'], true)) {
-                                    continue;
-                                }
-                                if ($cl['kind'] == 'ip') {
-                                    $ips[$v['outboundTag']][] = $cl['value'];
-                                } else {
-                                    $domains[$v['outboundTag']][] = $this->xrayDomainToken($cl);
-                                }
+                                $sort($j, $v['outboundTag']);
                             }
                             $matched = true;
                         }
                         if (array_key_exists('ip', $v) && !empty($v['ip'])) {
                             foreach ($v['ip'] as $j) {
-                                $cl = $this->classifyRouteEntry($j);
-                                if (in_array($cl['kind'], ['ext', 'extip'], true)) {
-                                    continue;
-                                }
-                                if ($cl['kind'] == 'ip') {
-                                    $ips[$v['outboundTag']][] = $cl['value'];
-                                } else {
-                                    $domains[$v['outboundTag']][] = $this->xrayDomainToken($cl);
-                                }
+                                $sort($j, $v['outboundTag']);
                             }
                             $matched = true;
                         }
@@ -17441,6 +17566,8 @@ DNS-over-HTTPS with IP:
                                     switch ($cl['kind']) {
                                         case 'ext':   // xray-only .dat — mihomo не понимает
                                         case 'extip':
+                                        case 'geosite': // встроенные категории xray —
+                                        case 'geoip':   // у mihomo своя geodata, токен чужой
                                             return null;
                                         case 'ip':
                                             $v = $this->ipWithCidr($cl['value']);
@@ -17661,6 +17788,8 @@ DNS-over-HTTPS with IP:
                     switch ($cl['kind']) {
                         case 'ext':   // xray-only .dat — sing-box не понимает, пропускаем
                         case 'extip':
+                        case 'geosite': // встроенные категории xray: в sing-box их роль
+                        case 'geoip':   // играют rule-set'ы, голый токен невалиден
                             continue 2;
                         case 'ip':
                             $buckets['ip_cidr'][] = $this->ipWithCidr($cl['value']);

@@ -91,11 +91,20 @@ keyword:gigabyte, keyword:reddit, domain:vk.com, 1.2.3.4/24
 | `keyword:`      | совпадение по подстроке             | `keyword:reddit`           |
 | `full:`         | точное совпадение домена            | `full:example.com`         |
 | `domain:`       | домен и все его поддомены            | `domain:vk.com`            |
-| *(без префикса)*| домен-суффикс (как раньше)          | `google.com`               |
+| *(без префикса)*| суффикс на sing-box/mihomo, **подстрока на xray** (см. ниже) | `google.com` |
 | *(IPv4[/cidr])* | IP-адрес / подсеть                  | `1.2.3.4`, `10.0.0.0/24`   |
 | *(IPv6[/cidr])* | IPv6-адрес / подсеть                | `2001:db8::1`, `2001:db8::/32` |
 | `ext:`          | категория доменов из внешнего xray `.dat` (**только block/warp, сервер**) | `ext:dlc.dat:github` |
 | `extip:`        | категория IP из внешнего xray `.dat` (**только block/warp, сервер**)       | `extip:zkeenip.dat:akamai` |
+| `geosite:`      | категория доменов из штатной geodata xray | `geosite:category-ads-all` |
+| `geoip:`        | категория IP из штатной geodata xray      | `geoip:cn`                 |
+
+У `ext:`/`extip:` **категория обязательна**: `ext:dlc.dat` без `:категория`
+xray не разбирает и не стартует, поэтому такие записи вырезаются из серверного
+конфига (в списке они остаются, но ни на что не влияют).
+
+`geosite:`/`geoip:` понимает только xray — в правила sing-box и mihomo они не
+попадают (у тех своя geodata и свой синтаксис).
 
 Домены (кроме `regexp:`/`keyword:`/`ext:`/`extip:`) автоматически приводятся к
 punycode (`domain:пример.рф` → `domain:xn--e1afmkfd.xn--p1ai`).
@@ -113,6 +122,8 @@ punycode (`domain:пример.рф` → `domain:xn--e1afmkfd.xn--p1ai`).
 | IPv6[/cidr]   | поле `ip`       | `ip_cidr`        | `IP-CIDR6,X/128`   |
 | `ext:file:tag`   | `ext:file:tag` в `domain[]` | *(вырезается)* | *(вырезается)* |
 | `extip:file:tag` | `ext:file:tag` в `ip[]`     | *(вырезается)* | *(вырезается)* |
+| `geosite:X`      | `geosite:X` в `domain[]`    | *(вырезается)* | *(вырезается)* |
+| `geoip:X`        | `geoip:X` в `ip[]`          | *(вырезается)* | *(вырезается)* |
 
 > У xray нет отдельного префикса `keyword:` — голая строка в поле `domain`
 > уже означает совпадение по подстроке, поэтому `keyword:X` отдаётся как `X`.
