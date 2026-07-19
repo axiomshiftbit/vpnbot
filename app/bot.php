@@ -4308,6 +4308,10 @@ NFT;
             'server'  => $this->readConfig(),
             'clients' => json_decode(file_get_contents($this->clients1), true) ?: [],
         ];
+        // Инстанс, выбранный для снятия дампа, не должен протекать в остаток
+        // запроса (финальный menu(), getInstanceWG-рендеры) — как в import()
+        // и shutdownClient/syncPortClients.
+        unset($this->wg);
         $conf = [
             'wg'  => $wg,
             'wg1' => $wg1,
@@ -5276,14 +5280,20 @@ NFT;
         $this->wgRelayMenu($page);
     }
 
+    // Ключи exchange/blocktorrent — per-instance ('' / 'wg1_'), как их пишут
+    // switchExchange/switchTorrent и как их читает start_wg.sh при старте
+    // контейнера. Беспрефиксное чтение накатывало на wg1 правила wg: тумблеры
+    // в меню wg1 не применялись вовсе, хотя ответ бота показывал новое
+    // значение. То же било по restore — import() зовёт iptablesWG() для обоих.
     public function iptablesWG()
     {
-        $c = $this->getPacConf();
+        $c      = $this->getPacConf();
+        $prefix = $this->getInstanceWG(1);
         $this->ssh('iptables -F', $this->getInstanceWG());
-        if ($c['exchange']) {
+        if ($c[$prefix . 'exchange']) {
             $this->ssh('bash /block_exchange.sh', $this->getInstanceWG());
         }
-        if ($c['blocktorrent']) {
+        if ($c[$prefix . 'blocktorrent']) {
             $this->ssh('bash /block_torrent.sh', $this->getInstanceWG());
         }
     }
@@ -9610,6 +9620,10 @@ DNS-over-HTTPS with IP:
     }
 
     // $inst 0/1 — записать; null — удалить (сообщение больше не wg-меню).
+    // Read-modify-write без общей блокировки на чтении (LOCK_EX только на
+    // записи): параллельные воркеры могут потерять запись. Осознанно — карта
+    // эфемерная и LRU, потеря деградирует до фолбэка на глобальный
+    // wg_instance, ради этого не тащим сюда файловый лок.
     public function setWgMsg($inst)
     {
         if (empty($this->input['chat']) || empty($this->input['message_id'])) {
@@ -18515,7 +18529,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/changePort wg",
             ]],
             [[
-                'text'          => $this->i18n($p['wg1']['enable'] ? 'on' : 'off') . ($p['wg1']['enable'] ? ' ' . $p['wg1']['port'] : ' port unavailable') . ' Wireguard',
+                'text'          => $this->i18n($p['wg1']['enable'] ? 'on' : 'off') . ($p['wg1']['enable'] ? ' ' . $p['wg1']['port'] : ' port unavailable') . ' Wireguard 1',
                 'callback_data' => "/changePort wg1",
             ]],
             [[
