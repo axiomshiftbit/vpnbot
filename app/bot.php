@@ -4390,10 +4390,14 @@ NFT;
             if (!empty($json['pac'])) {
                 $out[] = 'update pac';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                if ($this->getPacConf()['amnezia'] != $json['pac']['amnezia']) {
+                // ?? — бэкап, снятый до появления второго инстанса, не содержит
+                // wg1_amnezia, а свежая установка не содержит и amnezia
+                // (pac.json = {}): без фолбэка restore сыпал «Undefined array key».
+                // Сравнение приводим к 0/1, чтобы null и 0 не считались сменой.
+                if ((int) ($this->getPacConf()['amnezia'] ?? 0) != (int) ($json['pac']['amnezia'] ?? 0)) {
                     $switch_amnezia = 1;
                 }
-                if ($this->getPacConf()['wg1_amnezia'] != $json['pac']['wg1_amnezia']) {
+                if ((int) ($this->getPacConf()['wg1_amnezia'] ?? 0) != (int) ($json['pac']['wg1_amnezia'] ?? 0)) {
                     $switch_wg1amnezia = 1;
                 }
                 $this->setPacConf($json['pac']);
@@ -5008,7 +5012,7 @@ NFT;
                 break;
 
             default:
-                $amnezia = $c[$this->getInstanceWG(1) . 'amnezia'] = $c[$this->getInstanceWG(1) . 'amnezia'] ? 0 : 1;
+                $amnezia = $c[$this->getInstanceWG(1) . 'amnezia'] = ($c[$this->getInstanceWG(1) . 'amnezia'] ?? false) ? 0 : 1;
                 break;
         }
         $this->setPacConf($c);
@@ -7798,7 +7802,7 @@ DNS-over-HTTPS with IP:
         // кнопках с явным инстансом заголовок расходился с содержимым меню
         // («AmneziaWG 1» над настройками нулевого и наоборот). Заодно уходит
         // «Undefined array key wg_instance» на свежей установке (pac.json = {}).
-        return $this->i18n($c[$this->getInstanceWG(1) . 'amnezia'] ? 'amnezia' : 'wg_title') . ' ' . $this->wgNum();
+        return $this->i18n(($c[$this->getInstanceWG(1) . 'amnezia'] ?? false) ? 'amnezia' : 'wg_title') . ' ' . $this->wgNum();
     }
 
     // Достаёт «vX.Y.Z…» из строки вывода, помеченной printf-префиксом «<tag>:».
@@ -19538,12 +19542,16 @@ DNS-over-HTTPS with IP:
 
         $name = ($name ? "$name" : '') . time();
 
+        // Один раз на инстанс: три ветки ниже читали ключ порознь и без ??,
+        // что на свежей установке (pac.json = {}) давало «Undefined array key».
+        $amnezia = $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'] ?? false;
+
         $conf['peers'][] = array_merge([
                 '## name'    => $name,
                 'PublicKey'  => $public_peer_key,
                 'AllowedIPs' => "$client_ip/32",
             ],
-            $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'] ? ['PresharedKey' => $this->presharedKey()] : []
+            $amnezia ? ['PresharedKey' => $this->presharedKey()] : []
         );
         $client_conf = [
             'interface' => array_merge(
@@ -19552,7 +19560,7 @@ DNS-over-HTTPS with IP:
                     'PrivateKey' => $private_peer_key,
                     'Address'    => "$client_ip/32",
                 ],
-                $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'] ? $this->amneziaKeys() : []
+                $amnezia ? $this->amneziaKeys() : []
             ),
             'peers' => [
                     array_merge(
@@ -19561,7 +19569,7 @@ DNS-over-HTTPS with IP:
                             'AllowedIPs'          => $ips_user ?: "0.0.0.0/0",
                             'PersistentKeepalive' => 20,
                         ],
-                        $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'] ? ['PresharedKey' => $this->presharedKey()] : []
+                        $amnezia ? ['PresharedKey' => $this->presharedKey()] : []
                     ),
                 ],
         ];
@@ -19606,7 +19614,9 @@ DNS-over-HTTPS with IP:
 
     public function getWGType($revert = 0)
     {
-        $wg = $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'];
+        // ?? false — на свежей установке pac.json = {} и ключа amnezia нет;
+        // без фолбэка каждый вызов сыпал «Undefined array key» (ср. getInstanceWG).
+        $wg = $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'] ?? false;
         return ($revert ? !$wg : $wg) ? 'awg' : 'wg';
     }
 
