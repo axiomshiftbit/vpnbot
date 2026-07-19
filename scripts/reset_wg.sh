@@ -6,23 +6,24 @@ INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
 # поднимал туннель обычным wg даже при amnezia=1 — бот при следующем restartWG
 # звал awg-quick down над чужим интерфейсом.
 #
-# Почему не jq по /pac.json, как в start_wg.sh: файл прокинут в контейнер
-# bind-mount'ом на ФАЙЛ, а setPacConf() пишет во временный файл и делает
-# rename() — инод меняется, и внутри работающего контейнера /pac.json навсегда
-# застывает на той версии, что была на момент старта (на рабочем сервере там осталось «{}»).
-# start_wg.sh это не задевает — он читает один раз при старте, когда монтирование
-# только что разрешилось; reset_wg.sh же зовётся по живому, и pac.json ему врёт.
 # wg/awg — разные netlink-семейства, поэтому `wg show wg0` на amneziawg-интерфейсе
 # возвращает ошибку, и наоборот: это надёжный признак (проверено на обоих
-# инстансах). Если wg0 не поднят — падаем на pac.json с оговоркой выше.
+# инстансах). Если wg0 не поднят — падаем на pac.json.
+#
+# pac.json читаем через КАТАЛОГ (/config): bind-mount на файл прибит к иноду, а
+# setPacConf() пишет tmp + rename(), поэтому старый /pac.json внутри контейнера
+# застывает на версии момента создания контейнера и врёт. /pac.json оставлен
+# фолбэком для контейнеров со старым docker-compose.yml.
+PAC=/config/pac.json
+[ -f "$PAC" ] || PAC=/pac.json
 if awg show wg0 >/dev/null 2>&1; then
     WG=awg
 elif wg show wg0 >/dev/null 2>&1; then
     WG=wg
 elif [ "$HOSTNAME" = "wireguard1" ]; then
-    [ "$(jq -r '.wg1_amnezia // 0' /pac.json 2>/dev/null)" = "1" ] && WG=awg || WG=wg
+    [ "$(jq -r '.wg1_amnezia // 0' "$PAC" 2>/dev/null)" = "1" ] && WG=awg || WG=wg
 else
-    [ "$(jq -r '.amnezia // 0' /pac.json 2>/dev/null)" = "1" ] && WG=awg || WG=wg
+    [ "$(jq -r '.amnezia // 0' "$PAC" 2>/dev/null)" = "1" ] && WG=awg || WG=wg
 fi
 PRIVATEKEY=$($WG genkey | tee /etc/wireguard/privatekey)
 echo "[Interface]" > /etc/wireguard/wg0.conf

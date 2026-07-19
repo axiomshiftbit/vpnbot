@@ -7793,7 +7793,12 @@ DNS-over-HTTPS with IP:
     public function getTitleWG()
     {
         $c = $this->getPacConf();
-        return $this->i18n($c[$this->getInstanceWG(1) . 'amnezia'] ? 'amnezia' : 'wg_title') . ' ' . $c['wg_instance'];
+        // Номер — из wgNum(), а не из глобального $c['wg_instance']: флаг amnezia
+        // рядом читается с префиксом пер-запросного инстанса ($this->wg), и на
+        // кнопках с явным инстансом заголовок расходился с содержимым меню
+        // («AmneziaWG 1» над настройками нулевого и наоборот). Заодно уходит
+        // «Undefined array key wg_instance» на свежей установке (pac.json = {}).
+        return $this->i18n($c[$this->getInstanceWG(1) . 'amnezia'] ? 'amnezia' : 'wg_title') . ' ' . $this->wgNum();
     }
 
     // Достаёт «vX.Y.Z…» из строки вывода, помеченной printf-префиксом «<tag>:».

@@ -231,7 +231,7 @@ services:
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg0.conf:/etc/wireguard/wg0.conf
-            - ./config/pac.json:/pac.json
+            - ./config:/config
             - ./scripts/start_wg.sh:/start_wg.sh
             - ./scripts/reset_wg.sh:/reset_wg.sh
             - ./scripts/block_torrent.sh:/block_torrent.sh
@@ -272,7 +272,7 @@ services:
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg1.conf:/etc/wireguard/wg0.conf
-            - ./config/pac.json:/pac.json
+            - ./config:/config
             - ./scripts/start_wg.sh:/start_wg.sh
             - ./scripts/reset_wg.sh:/reset_wg.sh
             - ./scripts/block_torrent.sh:/block_torrent.sh
