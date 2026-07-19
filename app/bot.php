@@ -5293,12 +5293,32 @@ NFT;
     {
         $c      = $this->getPacConf();
         $prefix = $this->getInstanceWG(1);
-        $this->ssh('iptables -F', $this->getInstanceWG());
-        if ($c[$prefix . 'exchange']) {
-            $this->ssh('bash /block_exchange.sh', $this->getInstanceWG());
+        $inst   = $this->getInstanceWG();
+        $this->ssh('iptables -F', $inst);
+        // `iptables -F` сносит ВСЮ таблицу filter, включая FORWARD-правила для
+        // tun0, которые ставит start_wg.sh при старте контейнера. Бот их не
+        // восстанавливал, поэтому после любого тумблера torrent/exchange (и
+        // после import()) они пропадали до пересоздания контейнера. Спасала
+        // только политика `-P FORWARD ACCEPT` — при DROP туннель лёг бы, и
+        // причина зависела бы от того, дёргали ли меню после старта.
+        //
+        // -C || -A — идемпотентно: сразу после -F таблица пуста, но метод
+        // зовётся и из import() несколько раз подряд.
+        //
+        // Порядок не важен: tun0 идёт через -A (в хвост), а block_*.sh — через
+        // -I (в голову), поэтому фильтры торрента в любом случае проверяются
+        // раньше, чем ACCEPT для tun0, и не обходятся им.
+        foreach (['-i', '-o'] as $dir) {
+            $rule = "FORWARD $dir tun0 -j ACCEPT";
+            $this->ssh("iptables -C $rule 2>/dev/null || iptables -A $rule", $inst);
         }
+        // Порядок torrent → exchange — как в start_wg.sh, чтобы оба пути
+        // приводили таблицу к одинаковому виду.
         if ($c[$prefix . 'blocktorrent']) {
-            $this->ssh('bash /block_torrent.sh', $this->getInstanceWG());
+            $this->ssh('bash /block_torrent.sh', $inst);
+        }
+        if ($c[$prefix . 'exchange']) {
+            $this->ssh('bash /block_exchange.sh', $inst);
         }
     }
     public function switchExchange($page)
