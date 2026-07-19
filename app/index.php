@@ -50,7 +50,13 @@ switch (true) {
     case preg_match('~^' . preg_quote("/pac$hash") . '~', $_SERVER['REQUEST_URI']):
         // allowed_classes=false: payload — массив GET-параметров, объекты не
         // нужны; запрет их инстанцирования закрывает PHP object injection.
-        if (!empty($t = @unserialize((string) base64_decode(explode('/', $_SERVER['REQUEST_URI'])[2]), ['allowed_classes' => false]))) { // fix sing-box import
+        // is_array: подделанный токен может нести скаляр («s:3:"abc";»), а
+        // array_merge со скаляром — фатальный TypeError в PHP 8 вместо 404.
+        if (is_array($t = @unserialize((string) base64_decode(explode('/', $_SERVER['REQUEST_URI'])[2]), ['allowed_classes' => false])) && $t) { // fix sing-box import
+            // Запоминаем состав токена до слияния: subscription() отличает по нему
+            // выборку rule-set'а ядром (параметры из токена) от deep-link'а
+            // импорта (те же имена параметров, но из query-string).
+            $bot->subToken = $t;
             $_GET = array_merge($_GET, $t);
         }
         $type    = $_GET['t'] ?? 'pac';

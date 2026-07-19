@@ -48,6 +48,10 @@ class Bot
     public $time_relayhealth;
     public $time_geowarm;
     public $subtokens_done;
+    // Параметры, пришедшие именно из base64-токена в пути (/pac<hash>/<token>),
+    // а не из query-string. Различие существенно: rule-set URL'ы строятся только
+    // токеном, а deep-link'и импорта — только query-string (см. subscription()).
+    public $subToken = [];
     public $admin;
     public $ports;
     public $warpprofile;
@@ -16576,6 +16580,16 @@ DNS-over-HTTPS with IP:
         unset($inbound);
     }
 
+    // Коды one-tap deep-link'ов импорта, приходящие в query-параметре 'r'
+    // (ссылки строятся в relaySub() и в карточке клиента). Список намеренно
+    // плоский, без привязки к 't': целевой URL редиректа строится независимо от
+    // формата подписки, поэтому пары вроде t=si&r=c исторически валидны и
+    // остаются рабочими в старых сообщениях чата.
+    protected function deepLinkCodes(): array
+    {
+        return ['v', 'st', 'si', 'h', 'k', 'w', 'c', 'rh'];
+    }
+
     public function subscription($return = false)
     {
         switch ($_GET['t'] ?? '') {
@@ -16596,6 +16610,12 @@ DNS-over-HTTPS with IP:
                 }
                 $this->subNotFound('Unknown subscription format.');
         }
+        // Периодическая выборка rule-set'а ядром: mihomo тянет rule-providers
+        // (clashRules(), t=cl), sing-box — SRS (createRuleSet(), t=si). Такие URL
+        // строятся ТОЛЬКО base64-токеном в пути, поэтому наличие 'r' в токене —
+        // надёжный признак, не пересекающийся с именами deep-link'ов импорта.
+        $ruleSetReq = in_array($type, ['clash', 'sing'], true)
+            && (string) ($this->subToken['r'] ?? '') !== '';
         $pac    = $this->getPacConf();
         $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
         $xr     = $this->getXray();
@@ -16606,8 +16626,11 @@ DNS-over-HTTPS with IP:
         $sid    = $_GET['s'] ?? '';
         // Лимитируем только реальные HTTP-запросы: внутренние вызовы
         // (subscription(true) из кода бота) не должны крутить счётчик.
+        // Обновления rule-set'ов идут в отдельном ведре: несколько списков с
+        // коротким interval иначе выедали бы общий бюджет, и 429 прилетал бы
+        // самой подписке.
         if (empty($return)) {
-            $this->subRateLimit($sid);
+            $this->subRateLimit($sid, $ruleSetReq ? 'rs' : '');
         }
         $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
@@ -16622,11 +16645,22 @@ DNS-over-HTTPS with IP:
         $email    = $client['email'];
         $stok     = $this->sidOf($client);       // subscription locator only
 
-        if (!$return && !$this->processHwidRequest($client)) {
+        // HWID неприменим к выборке rule-set'а: это запрос ядра за списком правил,
+        // а не устройство пользователя, и заголовок X-HWID оно не шлёт — иначе
+        // лимитер отдавал бы 429 и правила молча оставались пустыми. Утечки нет:
+        // rule-set содержит только домены/адреса правил, без credential'ов.
+        if (!$return && !$ruleSetReq && !$this->processHwidRequest($client)) {
             exit;
         }
 
-        if (!empty($_GET['r'])) {
+        // Deep-link импорта — только если 'r' пришёл не из токена (иначе это
+        // выборка rule-set'а) и совпадает с известным кодом клиента. Без первого
+        // условия rule-set с именем 'c'/'si'/… перехватывался бы этим свитчом и
+        // вместо списка правил уходил редирект в клиент.
+        $isDeepLink = !$ruleSetReq
+            && in_array((string) ($_GET['r'] ?? ''), $this->deepLinkCodes(), true);
+
+        if ($isDeepLink) {
             // Relay variant: the import-remote-profile deep links must point at
             // the relay-flavoured content URL (token carries 'relay' => <name>),
             // otherwise the imported subscription would update straight from the
@@ -17248,7 +17282,9 @@ DNS-over-HTTPS with IP:
     // ручные переимпорты. Настройка: pac.sub_rate_max (0 = выкл) /
     // pac.sub_rate_window (сек). Вызывается ДО резолва sid — невалидные sid
     // тоже считаются (анти-brute-force).
-    public function subRateLimit($sid)
+    // $scope разводит счётчики по независимым вёдрам (напр. 'rs' — периодические
+    // выборки rule-set'ов), чтобы фоновый трафик не расходовал бюджет подписки.
+    public function subRateLimit($sid, $scope = '')
     {
         $pac    = $this->getPacConf();
         $max    = (int) ($pac['sub_rate_max'] ?? 30);
@@ -17260,7 +17296,7 @@ DNS-over-HTTPS with IP:
         // Спуфабельность XFF здесь не критична: ключ содержит и sid, так что
         // лимит на конкретную подписку обойти сменой заголовка нельзя.
         $ip  = trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]) ?: (string) ($_SERVER['REMOTE_ADDR'] ?? '');
-        $key = substr(hash('sha256', "$sid|$ip"), 0, 16);
+        $key = substr(hash('sha256', "$sid|$ip|$scope"), 0, 16);
         $f   = '/logs/sub_ratelimit.json';
         $h   = @fopen($f, 'c+');
         if ($h === false) {
