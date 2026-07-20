@@ -231,7 +231,11 @@ services:
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg0.conf:/etc/wireguard/wg0.conf
-            - ./config:/config
+            # :ro — каталог смонтирован ради чтения /config/pac.json (start_wg.sh,
+            # reset_wg.sh). Без него контейнер, терминирующий недоверенный
+            # клиентский трафик, имел запись в xray.json, clients.json,
+            # ocserv.passwd и credentials.toml. wg0.conf монтируется отдельно.
+            - ./config:/config:ro
             - ./scripts/start_wg.sh:/start_wg.sh
             - ./scripts/reset_wg.sh:/reset_wg.sh
             - ./scripts/block_torrent.sh:/block_torrent.sh
@@ -272,7 +276,8 @@ services:
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg1.conf:/etc/wireguard/wg0.conf
-            - ./config:/config
+            # :ro — см. комментарий у wg0-сервиса.
+            - ./config:/config:ro
             - ./scripts/start_wg.sh:/start_wg.sh
             - ./scripts/reset_wg.sh:/reset_wg.sh
             - ./scripts/block_torrent.sh:/block_torrent.sh

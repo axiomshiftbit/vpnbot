@@ -17,6 +17,10 @@ if (!empty($_GET['hash'])) {
     $t = $_GET;
     unset($t['hash']);
     ksort($t);
+    // Инициализация обязательна: запрос вида ?hash=... без единого другого
+    // GET-параметра оставлял $s необъявленной, и implode() падал с TypeError,
+    // роняя обработчик до switch (анонимный DoS на любой URI).
+    $s = [];
     foreach ($t as $k => $v) {
         $s[] = "$k=$v";
     }
@@ -34,6 +38,26 @@ switch (true) {
     // save template
     case preg_match('~^' . preg_quote("/webapp$hash/save") . '~', $_SERVER['REQUEST_URI']) && $webapp && !empty($_POST['json']):
         echo json_encode($bot->saveTemplate($_POST['name'], $_POST['type'], $_POST['json']));
+        break;
+
+    // load template — содержимое редактора отдаём ТОЛЬКО по подписанному
+    // initData. Параметры кладём в POST-тело, а не в query: HMAC считается по
+    // всем $_GET, и лишний параметр в строке запроса сломал бы проверку.
+    case preg_match('~^' . preg_quote("/webapp$hash/load") . '~', $_SERVER['REQUEST_URI']) && $webapp:
+        header('Content-Type: application/json');
+        $ty = preg_match('~^\w+$~', $_POST['ty'] ?? '') ? $_POST['ty'] : '';
+        if ($ty === '') {
+            echo json_encode(['status' => false]);
+            break;
+        }
+        $te = (string) ($_POST['te'] ?? '');
+        $t  = $te !== ''
+            ? ($bot->getPacConf()["{$ty}templates"][$te] ?? null)
+            : json_decode((string) @file_get_contents("/config/$ty.json"), true);
+        echo json_encode([
+            'status' => (bool) $t,
+            'json'   => $t ?: new stdClass(),
+        ]);
         break;
 
     // adguard cookie
@@ -80,17 +104,21 @@ switch (true) {
                 if ($ty === '') {
                     break;
                 }
-                if (!empty($_GET['te'])) {
-                    $t = $bot->getPacConf()["{$ty}templates"][$_GET['te']];
-                } else {
-                    $t = json_decode(file_get_contents("/config/$ty.json"), true);
-                }
-                if ($t) {
-                    header('Content-Type: text/html');
-                    $t = json_encode($t, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-                    $name = $_GET['te'] ?: 'origin';
-                    $type = $ty;
-                    echo <<<HTML
+                // Содержимое шаблона (xray.json — uuid/password/subtoken всех
+                // клиентов, pac.json — reality privateKey и adpswd) в страницу
+                // НЕ встраиваем: этот GET ничем не аутентифицирован, а $hash в
+                // URI есть у любого владельца подписки. Telegram передаёт
+                // initData во фрагменте, серверу он не виден, поэтому редактор
+                // забирает JSON отдельным подписанным POST /webapp$hash/load —
+                // тем же способом, что уже используется для save.
+                header('Content-Type: text/html');
+                $te   = (string) ($_GET['te'] ?? '');
+                $name = $te ?: 'origin';
+                // Имена уходят в JS-литералы: кавычка в ?te= давала XSS.
+                $jsName = json_encode($name, JSON_UNESCAPED_UNICODE);
+                $jsType = json_encode($ty, JSON_UNESCAPED_UNICODE);
+                $jsTe   = json_encode($te, JSON_UNESCAPED_UNICODE);
+                echo <<<HTML
                         <!DOCTYPE HTML>
                         <html lang="en" style="height:100%">
                         <head>
@@ -113,15 +141,33 @@ switch (true) {
                                     const container = document.getElementById("jsoneditor")
                                     const options = {}
                                     const editor = new JSONEditor(container, options)
-                                    editor.set({$t})
+                                    editor.set({})
+                                    // Данные приходят отдельным запросом, подписанным initData.
+                                    $.ajax({
+                                        url: '/webapp$hash/load?' + tg.initData,
+                                        method: 'POST',
+                                        data: {
+                                            ty: {$jsType},
+                                            te: {$jsTe}
+                                        },
+                                        dataType: 'json'
+                                    }).done(function (r) {
+                                        if (r && r.status == true) {
+                                            editor.set(r.json);
+                                        } else {
+                                            tg.MainButton.setText('{$bot->i18n('error')}')
+                                        }
+                                    }).fail(function (r) {
+                                        tg.MainButton.setText('{$bot->i18n('error')}')
+                                    });
                                     tg.MainButton.show().setText('{$bot->i18n('save')}').onClick(function (e) {
                                         var self = this;
                                         $.ajax({
                                             url: '/webapp$hash/save?' + tg.initData,
                                             method: 'POST',
                                             data: {
-                                                name: '$name',
-                                                type: '$type',
+                                                name: {$jsName},
+                                                type: {$jsType},
                                                 json: editor.getText()
                                             },
                                             dataType: 'json'
@@ -143,9 +189,7 @@ switch (true) {
                         </body>
                         </html>
                         HTML;
-                    exit;
-                }
-                break;
+                exit;
 
             case 'changelog':
                 // Changelog показываем из СВОЕГО репозитория, а не из upstream.
@@ -166,7 +210,12 @@ switch (true) {
                 exit;
 
             default:
-                if (file_exists($file = __DIR__ . "/zapretlists/$type")) {
+                // $type приходит из query и подставляется в путь. Без проверки
+                // ?t=../config.php отдавал app/config.php с токеном бота, а $hash
+                // в URI известен любому владельцу подписки. Разрешаем только имя
+                // файла: словарные символы, точка и дефис, и никаких «..».
+                if (preg_match('~^[\w.-]+$~', (string) $type) && !str_contains((string) $type, '..')
+                    && file_exists($file = __DIR__ . "/zapretlists/$type")) {
                     $pac = file_get_contents($file);
                     header('Content-Type: text/plain');
                     echo str_replace([

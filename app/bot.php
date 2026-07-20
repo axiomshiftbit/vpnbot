@@ -17,6 +17,10 @@ class Bot
     ];
 
     public $input;
+    // Взводится ssh() при любой неудаче (нет коннекта/авторизации/exec).
+    // Нужен, потому что ssh() возвращает "" и по возвращаемому значению
+    // «команда не выполнилась» неотличимо от «команда не дала вывода».
+    public $sshFailed = false;
     public $adguard;
     public $update;
     public $ip;
@@ -5342,6 +5346,10 @@ NFT;
     public function sendQr($name, $code, $title = false)
     {
         $qr      = preg_replace(['~\s+~', '~\(~', '~\)~'], ['_'], $name);
+        // $name — сырое имя пира: «../../config/xray» уводил запись и unlink()
+        // за пределы /qr. Оставляем только безопасные для имени файла символы.
+        $qr      = preg_replace('~[^\w.-]~u', '_', (string) $qr);
+        $qr      = trim(str_replace('..', '_', $qr), '.') ?: 'qr';
         $qr_file = __DIR__ . "/qr/$qr.png";
         exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($code));
         $r = $this->sendPhoto(
@@ -5357,11 +5365,14 @@ NFT;
         $cl      = $client;
         $client  = $this->readClients()[$client];
         $name    = $this->getName($client['interface']);
+        // Подпись уходит в sendPhoto с parse_mode=html — имя надо экранировать,
+        // иначе фото с именем вида «Home <PC>» не отправляется (Telegram 400).
+        $cap     = htmlspecialchars($name);
         if ($this->getWGType() == 'awg') {
-            $this->sendQr($name, preg_replace('/^vpn:\/\//', '', $this->getAmneziaShortLink($client)), "$name for AmneziaVPN");
-            $this->sendQr($name, $this->createConfig($client), "$name for AmneziaWG");
+            $this->sendQr($name, preg_replace('/^vpn:\/\//', '', $this->getAmneziaShortLink($client)), "$cap for AmneziaVPN");
+            $this->sendQr($name, $this->createConfig($client), "$cap for AmneziaWG");
         } else {
-            $this->sendQr($name, $this->createConfig($client), "$name for Wireguard");
+            $this->sendQr($name, $this->createConfig($client), "$cap for Wireguard");
         }
         if ($this->getPacConf()['blinkmenu']) {
             $this->delete($this->input['chat'], $this->input['message_id']);
@@ -5617,6 +5628,13 @@ NFT;
                 }
                 $out[] = 'Install certificate:';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                // adguardkey — сырой ответ пользователя (setAdKey) и подставляется
+                // в shell-строку certbot без кавычек. Валидируем как метку хоста:
+                // рядом domain_aliases экранированы, а этот параметр пропустили.
+                if (!empty($conf['adguardkey']) && !preg_match('~^[a-zA-Z0-9-]+$~', (string) $conf['adguardkey'])) {
+                    $this->send($this->input['chat'], 'ERROR: invalid adguard subdomain');
+                    break;
+                }
                 $adguardClient = $conf['adguardkey'] ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
                 $oc = $this->getHashSubdomain('oc');
                 $np = $this->getHashSubdomain('np');
@@ -5760,7 +5778,12 @@ NFT;
     public function adguardSync()
     {
         $pac = $this->getPacConf();
-        $pac['adpswd'] = $pac['adpswd'] ?: substr(hash('md5', time()), 0, 10);
+        // md5(time()) выводится из момента установки: окно сужается по notBefore
+        // TLS-сертификата до десятков тысяч кандидатов и подбирается офлайн, а
+        // панель доступна снаружи через cloakNginx() по $hash из подписки.
+        // Ветка ?: сохраняет уже выданный пароль — существующие установки не
+        // ломаются, но старый пароль надо сменить вручную.
+        $pac['adpswd'] = $pac['adpswd'] ?: bin2hex(random_bytes(8));
         $this->setPacConf($pac);
         $ssl = $this->nginxGetTypeCert();
         $c   = yaml_parse_file($this->adguard);
@@ -8357,7 +8380,8 @@ DNS-over-HTTPS with IP:
     public function changeAllowedIps($k, $page = 0)
     {
         $clients = $this->readClients();
-        $name    = $this->getName($clients[$k]['interface']);
+        // parse_mode HTML: сырое имя клиента ломает разметку (см. getClient).
+        $name    = htmlspecialchars($this->getName($clients[$k]['interface']));
         $text    = "Menu -> Wireguard -> $name -> Change AllowedIPs\n\n";
         $data[]  = [
             [
@@ -8561,10 +8585,15 @@ DNS-over-HTTPS with IP:
     {
         $clients = $this->readClients();
         if ($clients) {
-            $name = $this->getName($clients[$client]['interface']);
+            // Имя клиента — сырой ввод (renameClient/addWg) и уходит в parse_mode
+            // HTML. Без экранирования имя вида «Home <PC>» даёт невалидную
+            // разметку → Telegram 400 → карточка не открывается уже НИКОГДА,
+            // потому что имя лежит в clients.json. $conf экранировали, имя нет.
+            $name = htmlspecialchars($this->getName($clients[$client]['interface']));
             $conf = htmlspecialchars($this->createConfig($clients[$client]));
+            $sl   = '';
             if ($this->getWGType() == 'awg') {
-                $sl = $this->getAmneziaShortLink($clients[$client]);
+                $sl = htmlspecialchars($this->getAmneziaShortLink($clients[$client]));
             }
             return [
                 'text' => "<pre>$conf</pre>\n\n<code>$sl</code>\n\n<b>$name</b> ({$this->getTitleWG()})",
@@ -17734,7 +17763,25 @@ DNS-over-HTTPS with IP:
 
     public function replaceTags($subject, $tags)
     {
-        return str_replace(array_keys($tags), array_values($tags), $subject);
+        $keys = [];
+        $vals = [];
+        foreach ($tags as $k => $v) {
+            $keys[] = $k;
+            // Ключи вида "~pac~" (вместе с кавычками) заменяют JSON-значение
+            // целиком — их подставляем как есть. Голые ~outbound~/~domain~ стоят
+            // ВНУТРИ строкового литерала уже сериализованного JSON, поэтому
+            // значение надо экранировать по правилам JSON: одна кавычка в имени
+            // аутбаунда (setMainOutbound принимает любой текст из Telegram) рвала
+            // документ, json_decode возвращал null, и подписки у ВСЕХ клиентов
+            // молча отдавали пустое тело с HTTP 200.
+            $raw    = strlen($k) > 1 && '"' === $k[0] && '"' === $k[strlen($k) - 1];
+            $vals[] = $raw
+                ? $v
+                // substr, а не trim: значение может само оканчиваться на \" —
+                // trim('"') съел бы и экранированную кавычку.
+                : substr(json_encode((string) $v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 1, -1);
+        }
+        return str_replace($keys, $vals, $subject);
     }
 
     public function addRuleSet($route)
@@ -17951,8 +17998,22 @@ DNS-over-HTTPS with IP:
         return json_decode(file_get_contents('/config/xray.json'), true);
     }
 
+    /** Валидный хостнейм — единственное, что можно пускать в nginx-конфиг. */
+    public function isHostname($d): bool
+    {
+        return (bool) preg_match('~^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$~', (string) $d);
+    }
+
     public function setUpstreamDomain($domain)
     {
+        // $domain правится из Telegram (reality.domain/serverNames) и попадает в
+        // replacement preg_replace, где «$1»/«\1» — обратные ссылки, а затем в
+        // конфиг nginx. Битый конфиг `nginx -s reload` не применит, поэтому
+        // поломка всплыла бы только при следующем рестарте контейнера — 443 не
+        // поднимется и весь внешний доступ ляжет.
+        if (!$this->isHostname($domain)) {
+            return;
+        }
         $nginx = file_get_contents('/config/upstream.conf');
         $t = preg_replace('~#domain.+#domain~s', "#domain\n$domain reality;\n#domain", $nginx);
         file_put_contents('/config/upstream.conf', $t);
@@ -17961,6 +18022,11 @@ DNS-over-HTTPS with IP:
 
     public function setUpstreamDomainOcserv($domain)
     {
+        // Пустая строка — штатный «сброс» (см. вызов при удалении домена),
+        // остальное обязано быть хостнеймом: см. комментарий в setUpstreamDomain.
+        if ('' !== (string) $domain && !$this->isHostname($domain)) {
+            return;
+        }
         $sub   = $this->getHashSubdomain('oc');
         $nginx = file_get_contents('/config/upstream.conf');
         $t     = preg_replace('~#ocserv.+#ocserv~s', $domain ? "#ocserv\n" . ($sub ? '' : '#' ) . "$sub.$domain ocserv;\n#ocserv" : "#ocserv\n#$sub.\$domain ocserv;\n#ocserv", $nginx);
@@ -17970,6 +18036,10 @@ DNS-over-HTTPS with IP:
 
     public function setUpstreamDomainNaive($domain)
     {
+        // См. setUpstreamDomainOcserv: пустая строка допустима, мусор — нет.
+        if ('' !== (string) $domain && !$this->isHostname($domain)) {
+            return;
+        }
         $sub   = $this->getHashSubdomain('np');
         $nginx = file_get_contents('/config/upstream.conf');
         $t = preg_replace('~#naive.+#naive~s', $domain ? "#naive\n" . ($sub ? '' : '#' ) . "$sub.$domain naive;\n#naive" : "#naive\n#$sub.\$domain naive;\n#naive", $nginx);
@@ -19560,6 +19630,15 @@ DNS-over-HTTPS with IP:
         $private_peer_key  = trim($this->ssh("{$this->getWGType()} genkey", $this->getInstanceWG()));
         $public_peer_key   = trim($this->ssh("echo $private_peer_key | {$this->getWGType()} pubkey", $this->getInstanceWG()));
 
+        // ssh() отдаёт "" при недоступном контейнере, и раньше пир с пустыми
+        // ключами молча уезжал в clients.json (локальная запись-то проходит) —
+        // пользователь получал «успех» и нерабочий конфиг, который потом
+        // приходилось вычищать руками. Лучше не создавать ничего.
+        if ('' === $public_server_key || '' === $private_peer_key || '' === $public_peer_key) {
+            $this->send($this->input['chat'] ?? '', 'wireguard: не удалось сгенерировать ключи (контейнер недоступен), пир не создан', $this->input['message_id'] ?? null);
+            return;
+        }
+
         $name = ($name ? "$name" : '') . time();
 
         // Один раз на инстанс: три ветки ниже читали ключ порознь и без ??,
@@ -19649,10 +19728,17 @@ DNS-over-HTTPS with IP:
         // битым конфигом → туннель ложился. base64 выдаёт только [A-Za-z0-9+/=],
         // что безопасно внутри одинарных кавычек при любом содержимом конфига.
         $b64 = base64_encode($conf_str);
+        // Раньше возвращали true безусловно: при лежащем контейнере ssh() отдаёт
+        // "" и пользователю показывался «успех» на невыполненной операции.
+        // Запись конфига — единственный шаг, который обязан пройти; на down
+        // ошибку игнорируем (интерфейс мог быть не поднят — это норма).
         $this->ssh("echo '$b64' | base64 -d > /etc/wireguard/wg0.conf", $this->getInstanceWG());
+        if ($this->sshFailed) {
+            return false;
+        }
         $this->ssh("{$this->getWGType((int) $switch)}-quick down wg0", $this->getInstanceWG());
         $this->ssh("{$this->getWGType()}-quick up wg0", $this->getInstanceWG());
-        return true;
+        return !$this->sshFailed;
     }
 
     public function autoupdate()
@@ -19671,6 +19757,7 @@ DNS-over-HTTPS with IP:
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $data = "";
+        $this->sshFailed = false;
         try {
             // ssh2_connect не принимает таймаут и по умолчанию ждёт TCP-коннект
             // минутами (лежащий контейнер = зависший вебхук-воркер). 5с хватает
@@ -19716,6 +19803,11 @@ DNS-over-HTTPS with IP:
             fclose($s);
             ssh2_disconnect($c);
         } catch (Exception | Error $e) {
+            $this->sshFailed = true;
+            // Молчаливое проглатывание приводило к «успеху» на сломанной
+            // операции; в лог пишем всегда, пользователю — как и раньше,
+            // только в debug-режиме.
+            error_log('ssh(' . $service . ') failed: ' . $e->getMessage());
             if (!empty($GLOBALS['debug'])) {
                 $this->send($this->input['chat'], $e->getMessage(), $this->input['message_id']);
             }
@@ -19864,6 +19956,46 @@ DNS-over-HTTPS with IP:
         return $r;
     }
 
+    /**
+     * Делает каждый кусок самодостаточным по HTML: незакрытые в куске теги
+     * закрываются в его конце и переоткрываются в начале следующего.
+     * Текст без тегов не меняется вовсе.
+     */
+    public function balanceHtmlChunks(array $chunks): array
+    {
+        $open = [];
+        foreach ($chunks as $i => $chunk) {
+            $prefix = '';
+            foreach ($open as $t) {
+                $prefix .= $t['raw'];
+            }
+            $chunk = $prefix . $chunk;
+            preg_match_all('~<(/?)([a-z0-9-]+)([^>]*)>~i', $chunk, $m, PREG_SET_ORDER);
+            $stack = [];
+            foreach ($m as $tag) {
+                $name = strtolower($tag[2]);
+                if ('/' === $tag[1]) {
+                    // Закрываем ближайший одноимённый открытый тег.
+                    for ($j = count($stack) - 1; $j >= 0; $j--) {
+                        if ($stack[$j]['name'] === $name) {
+                            array_splice($stack, $j, 1);
+                            break;
+                        }
+                    }
+                } else {
+                    $stack[] = ['name' => $name, 'raw' => $tag[0]];
+                }
+            }
+            $suffix = '';
+            for ($j = count($stack) - 1; $j >= 0; $j--) {
+                $suffix .= '</' . $stack[$j]['name'] . '>';
+            }
+            $chunks[$i] = $chunk . $suffix;
+            $open       = $stack;
+        }
+        return $chunks;
+    }
+
     public function splitText($text, $size = 4096)
     {
         $tails = preg_split('~\n~', $text);
@@ -19877,9 +20009,14 @@ DNS-over-HTTPS with IP:
             $i = 0;
             foreach ($lines as $v) {
                 $i += $v['length'];
-                $output[ceil($i / $size)] .= $v['text'] . "\n";
+                $k = ceil($i / $size);
+                $output[$k] = ($output[$k] ?? '') . $v['text'] . "\n";
             }
-            return array_values($output);
+            // Куски уходят в sendMessage с parse_mode HTML: раньше делили строго
+            // по \n, ничего не зная о тегах, и <pre> оставался в первом куске, а
+            // </pre> — в последнем. Telegram отвергал ОБА, из-за чего
+            // telemtDiagnostics/telemtShowBeobachten молча не работали.
+            return $this->balanceHtmlChunks(array_values($output));
         } else {
             return [$text];
         }
