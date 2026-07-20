@@ -127,12 +127,21 @@ function start()
                 $time = microtime(true);
                 $j++;
             }
-            if ($exclude && preg_match('~' . implode('|', $exclude) . '~', $v)) {
+            // preg_quote по каждому элементу: subzone — это домен, где «.»
+            // матчила любой символ, а один спецсимвол (скобка, «+») ломал
+            // регулярку целиком, и тогда preg_match молча возвращал false —
+            // исключения переставали работать вообще.
+            if ($exclude && preg_match('~' . implode('|', array_map('preg_quote', $exclude)) . '~', $v)) {
                 continue;
             }
             fwrite($f, preg_quote($v) . "\n");
 
-            preg_match('~(.+)\.([^.]+)$~', $v, $m);
+            // Без точки в имени совпадения нет: $m остаётся пустым, и в PAC
+            // уезжал мусор вида {"":[[null]]}, а strlen(null) в PHP 9 станет
+            // TypeError. Такую строку просто пропускаем.
+            if (!preg_match('~(.+)\.([^.]+)$~', $v, $m)) {
+                continue;
+            }
             $t[$m[2]][strlen($m[1])][] = $m[1];
         }
         fclose($f);

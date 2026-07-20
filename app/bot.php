@@ -5318,10 +5318,12 @@ NFT;
         }
         // Порядок torrent → exchange — как в start_wg.sh, чтобы оба пути
         // приводили таблицу к одинаковому виду.
-        if ($c[$prefix . 'blocktorrent']) {
+        // ?? false — на свежей установке pac.json = {} и ключей нет: без
+        // фолбэка каждый вызов сыпал «Undefined array key» (ср. getWGType).
+        if ($c[$prefix . 'blocktorrent'] ?? false) {
             $this->ssh('bash /block_torrent.sh', $inst);
         }
-        if ($c[$prefix . 'exchange']) {
+        if ($c[$prefix . 'exchange'] ?? false) {
             $this->ssh('bash /block_exchange.sh', $inst);
         }
     }
@@ -13227,9 +13229,26 @@ DNS-over-HTTPS with IP:
             $this->delete($this->input['from'], $this->input['message_id']);
         }
         $this->syncDeny();
-        if (!empty($fun)) {
-            $this->{$fun}($page, $white);
+        $this->callIpReturn($fun, $page, $white);
+    }
+
+    /**
+     * $fun приезжает из callback_data (свободная группа `(.+?)` в регулярке) и
+     * вызывается динамически. Кнопки строят ровно два значения — analysisIp и
+     * denyList (см. «/searchLogs $k analysisIp» и «/searchLogs $v denyList»),
+     * поэтому остальное отбрасываем: иначе подделанная callback_data дёргала бы
+     * произвольный метод Bot с подконтрольными аргументами.
+     */
+    private function callIpReturn($fun, $page, $white)
+    {
+        if (empty($fun)) {
+            return;
         }
+        if (in_array($fun, ['analysisIp', 'denyList'], true)) {
+            $this->{$fun}((int) $page, $white);
+            return;
+        }
+        $this->ipMenu();
     }
 
     public function whiteIp($ip, $fun = false, $page = 0, $white = 0)
@@ -13253,9 +13272,7 @@ DNS-over-HTTPS with IP:
             $this->delete($this->input['from'], $this->input['message_id']);
         }
         $this->syncDeny();
-        if (!empty($fun)) {
-            $this->{$fun}($page, $white);
-        }
+        $this->callIpReturn($fun, $page, $white);
     }
 
     public function allowIp($ip, $page, $white = 0)
@@ -19324,6 +19341,11 @@ DNS-over-HTTPS with IP:
         $r = $this->ssh('cat /etc/wireguard/wg0.conf', $this->getInstanceWG());
         $r = explode(PHP_EOL, $r);
         $r = array_filter($r);
+        // Инициализация: при недоступном контейнере ssh() отдаёт "", цикл ниже
+        // не выполняется ни разу и foreach по $data сыпал «Undefined variable».
+        // Возврат null сохранён — вызывающий код на него уже рассчитывает.
+        $data = [];
+        $d    = null;
         $i = 0;
         foreach ($r as $k => $v) {
             if (preg_match('~\[(.+)\]~', $v, $m)) {
@@ -19597,6 +19619,12 @@ DNS-over-HTTPS with IP:
     public function createPeer($ips_user = false, $name = false)
     {
         $conf      = $this->readConfig();
+        // readConfig() возвращает null, если контейнер недоступен: без проверки
+        // дальше шли обращения к null и создавался пир с битым адресом.
+        if (empty($conf['interface']['Address'])) {
+            $this->send($this->input['chat'] ?? '', 'wireguard: конфиг недоступен (контейнер не отвечает), пир не создан', $this->input['message_id'] ?? null);
+            return;
+        }
         $ipnet     = explode('/', $conf['interface']['Address']);
         $server_ip = ip2long($ipnet[0]);
         $ips       = [$server_ip];
@@ -19807,7 +19835,11 @@ DNS-over-HTTPS with IP:
             // Молчаливое проглатывание приводило к «успеху» на сломанной
             // операции; в лог пишем всегда, пользователю — как и раньше,
             // только в debug-режиме.
-            error_log('ssh(' . $service . ') failed: ' . $e->getMessage());
+            //
+            // В лог идёт ТОЛЬКО первая строка сообщения: дальше в нём лежит
+            // сам $cmd, а он бывает вида «echo <PrivateKey> | wg pubkey»
+            // (createPeer) — писать это в лог нельзя.
+            error_log('ssh(' . $service . ') failed: ' . strtok($e->getMessage(), "\n"));
             if (!empty($GLOBALS['debug'])) {
                 $this->send($this->input['chat'], $e->getMessage(), $this->input['message_id']);
             }

@@ -32,8 +32,17 @@ class Calc
     public function alignment(array $arr): array
     {
         usort($arr, fn ($a, $b) => $a[0] <=> $b[0]);
-        $tmp = [[]];
-        foreach ($arr as $k => $v) {
+        // Затравка [[]] уходила первым аргументом в merge(), где читаются $a[0]
+        // и $a[1]: «Undefined array key 1» на КАЖДОМ вызове, а для диапазона,
+        // начинающегося с 0/1, ветка else давала ещё и битый [null, $b[1]]
+        // (null+1 = 1, поэтому $b[0] > $a[1]+1 не срабатывало).
+        // Первый элемент просто берём как есть — сливать его не с чем.
+        $tmp = [];
+        foreach ($arr as $v) {
+            if (empty($tmp)) {
+                $tmp = [$v];
+                continue;
+            }
             $t   = array_pop($tmp);
             $tmp = array_merge($tmp, $this->merge($t, $v));
         }

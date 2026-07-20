@@ -200,12 +200,22 @@ switch (true) {
                 // (то, что приедет при обновлении); если git недоступен —
                 // откатываемся на локально установленный /version.
                 header('Content-Type: text/plain; charset=utf-8');
+                // `git fetch` — сетевая операция, а эндпоинт доступен любому
+                // владельцу ссылки подписки и ничем не ограничен: в цикле это
+                // сколько угодно параллельных fetch'ей. Отдаём из кэша не чаще
+                // раза в минуту (инъекции нет, escapeshellarg на месте).
+                $cache = sys_get_temp_dir() . '/changelog.cache';
+                if (is_file($cache) && time() - filemtime($cache) < 60) {
+                    echo (string) file_get_contents($cache);
+                    exit;
+                }
                 $b = exec('git -C / rev-parse --abbrev-ref HEAD');
                 exec('git -C / fetch -q 2>/dev/null');
                 $log = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
                 if (empty(trim((string) $log))) {
                     $log = @file_get_contents('/version');
                 }
+                @file_put_contents($cache, (string) $log);
                 echo $log;
                 exit;
 

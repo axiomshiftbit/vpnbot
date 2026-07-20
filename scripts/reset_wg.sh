@@ -30,7 +30,12 @@ echo "[Interface]" > /etc/wireguard/wg0.conf
 echo "PrivateKey = $PRIVATEKEY" >> /etc/wireguard/wg0.conf
 echo "Address = $1" >> /etc/wireguard/wg0.conf
 echo "ListenPort = $2" >> /etc/wireguard/wg0.conf
-echo "PostUp = iptables -t nat -A POSTROUTING --destination 10.10.0.5 -j ACCEPT;iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE" >> /etc/wireguard/wg0.conf
+# RETURN для клиентской подсети обязан стоять ПЕРЕД MASQUERADE: он уводит
+# трафик клиентов в tun0/xray, иначе тот выйдет напрямую с публичного IP —
+# туннель «работает», но это утечка. start_wg.sh ставит правило один раз при
+# старте контейнера, а здесь его не было вовсе; -C || -I делает восстановление
+# идемпотентным, поэтому дубли не копятся при каждом wg-quick up.
+echo "PostUp = iptables -t nat -A POSTROUTING --destination 10.10.0.5 -j ACCEPT;iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE;iptables -t nat -C POSTROUTING -s $1 -j RETURN 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s $1 -j RETURN" >> /etc/wireguard/wg0.conf
 echo "PostDown = iptables -t nat -D POSTROUTING --destination 10.10.0.5 -j ACCEPT;iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE" >> /etc/wireguard/wg0.conf
 $WG-quick down wg0
 $WG-quick up wg0
