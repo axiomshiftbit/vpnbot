@@ -4388,6 +4388,11 @@ NFT;
                 $out[] = 'update certificates';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 file_put_contents('/certs/cert_private', $json['ssl']['private']);
+                // file_put_contents создаёт файл по umask (0644): приватный ключ
+                // TLS оказывался читаемым всем, тогда как соседний self_private
+                // от openssl — 0600. ./certs смонтирован в девять контейнеров, а
+                // на хосте ключ мог прочитать любой локальный пользователь.
+                @chmod('/certs/cert_private', 0600);
                 file_put_contents('/certs/cert_public', $json['ssl']['public']);
             }
             // pac
@@ -5665,6 +5670,8 @@ NFT;
         if (preg_match('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', $bundle, $m)) {
             $this->setPacConf($conf);
             file_put_contents('/certs/cert_private', $m[0]);
+            // 0600 — см. комментарий в importFile(): по umask ключ создавался 0644.
+            @chmod('/certs/cert_private', 0600);
             file_put_contents('/certs/cert_public', preg_replace('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', '', $bundle));
             $this->adguardSync();
             $this->cloakNginx();

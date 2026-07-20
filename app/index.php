@@ -242,5 +242,8 @@ switch (true) {
         break;
 
     default:
-        header('500', true, 500);
+        // Было header('500', true, 500): PHP ждёт «Header: value», получал «500»
+        // и слал его как мусорный заголовок — Unit на каждый ответ писал
+        // «colon not found in header '500'». Статус выставляем напрямую.
+        http_response_code(500);
 }
