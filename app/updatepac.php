@@ -127,11 +127,7 @@ function start()
                 $time = microtime(true);
                 $j++;
             }
-            // preg_quote по каждому элементу: subzone — это домен, где «.»
-            // матчила любой символ, а один спецсимвол (скобка, «+») ломал
-            // регулярку целиком, и тогда preg_match молча возвращал false —
-            // исключения переставали работать вообще.
-            if ($exclude && preg_match('~' . implode('|', array_map('preg_quote', $exclude)) . '~', $v)) {
+            if ($exclude && preg_match(excludePattern($exclude), $v)) {
                 continue;
             }
             fwrite($f, preg_quote($v) . "\n");
@@ -255,6 +251,7 @@ function download($index)
 
 ini_set('memory_limit', '256M');
 require __DIR__ . '/timezone.php';
+require_once __DIR__ . '/exclude_pattern.php';
 // require __DIR__ . '/debug.php';
 require __DIR__ . '/bot.php';
 require __DIR__ . '/config.php';

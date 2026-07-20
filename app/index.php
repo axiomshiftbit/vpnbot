@@ -13,21 +13,9 @@ if (file_exists(__DIR__ . '/override.php')) {
 }
 $bot  = new Bot($c['key'], $i);
 $hash = $bot->getHashBot();
-if (!empty($_GET['hash'])) {
-    $t = $_GET;
-    unset($t['hash']);
-    ksort($t);
-    // Инициализация обязательна: запрос вида ?hash=... без единого другого
-    // GET-параметра оставлял $s необъявленной, и implode() падал с TypeError,
-    // роняя обработчик до switch (анонимный DoS на любой URI).
-    $s = [];
-    foreach ($t as $k => $v) {
-        $s[] = "$k=$v";
-    }
-    $s      = implode("\n", $s);
-    $sk     = hash_hmac('sha256', $c['key'], "WebAppData", true);
-    $webapp = hash_equals(hash_hmac('sha256', $s, $sk), (string) $_GET['hash']);
-}
+// Проверка initData вынесена в Bot::webappAuth(): подпись + окно жизни
+// auth_date + сверка user.id со списком админов. Подробности — там же.
+$webapp = $bot->webappAuth($_GET, $c['key'], (array) ($c['admin'] ?? []));
 
 switch (true) {
     // tlgrm
@@ -204,7 +192,11 @@ switch (true) {
                 // владельцу ссылки подписки и ничем не ограничен: в цикле это
                 // сколько угодно параллельных fetch'ей. Отдаём из кэша не чаще
                 // раза в минуту (инъекции нет, escapeshellarg на месте).
-                $cache = sys_get_temp_dir() . '/changelog.cache';
+                // Имя выводим из ключа бота, а не берём предсказуемое: файл
+                // лежит в общем /tmp, и заранее созданный кем-то другим
+                // changelog.cache заставил бы @file_put_contents молча
+                // провалиться, а нас — отдавать чужое содержимое.
+                $cache = sys_get_temp_dir() . '/changelog_' . hash('sha256', $c['key']) . '.cache';
                 if (is_file($cache) && time() - filemtime($cache) < 60) {
                     echo (string) file_get_contents($cache);
                     exit;

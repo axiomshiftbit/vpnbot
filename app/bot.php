@@ -143,6 +143,79 @@ class Bot
         $this->callbackCheck();
     }
 
+    /**
+     * Проверка Telegram initData для эндпоинтов /webapp$hash/*.
+     *
+     * Три независимых условия, все обязательны:
+     *
+     * 1) Подпись. HMAC по отсортированным парам ключ=значение, ключ выводится
+     *    из токена бота. Доказывает только то, что initData выдан Telegram
+     *    для ЭТОГО бота.
+     * 2) Свежесть (auth_date). initData уезжает query-строкой в POST
+     *    /webapp$hash/{save,load} и попадал в access_log целиком. Без окна
+     *    жизни строка из лога остаётся валидным пропуском НАВСЕГДА, а он даёт
+     *    xray.json (uuid/password/subtoken всех клиентов) и запись шаблонов.
+     * 3) Владелец (user.id). Подпись не говорит, КТО открыл webapp: Telegram
+     *    подписывает initData любого пользователя тем же ключом. Сейчас
+     *    не-админ не получает web_app-кнопку (диспетчер админ-гейтед), но это
+     *    соглашение, а не проверка, — сверяем со списком админов явно.
+     */
+    public function webappAuth(array $get, string $key, array $admins, int $maxAge = 86400, ?int $now = null): bool
+    {
+        if (empty($get['hash'])) {
+            return false;
+        }
+        $t = $get;
+        unset($t['hash']);
+        ksort($t);
+        $s = [];
+        foreach ($t as $k => $v) {
+            $s[] = "$k=$v";
+        }
+        $sk = hash_hmac('sha256', $key, 'WebAppData', true);
+        if (!hash_equals(hash_hmac('sha256', implode("\n", $s), $sk), (string) $get['hash'])) {
+            return false;
+        }
+
+        $authDate = (int) ($get['auth_date'] ?? 0);
+        $now      = $now ?? time();
+        if ($authDate <= 0 || $now - $authDate > $maxAge) {
+            return false;
+        }
+
+        // Пустой список админов — бот ещё не присвоен (auth() заполняет его
+        // первым написавшим). Пускать в этом состоянии некого.
+        if (empty($admins)) {
+            return false;
+        }
+        $wu = json_decode((string) ($get['user'] ?? ''), true);
+        if (empty($wu['id'])) {
+            return false;
+        }
+
+        return in_array((string) $wu['id'], array_map('strval', $admins), true);
+    }
+
+    /**
+     * Запись приватного ключа TLS с правами 0600 БЕЗ окна на 0644.
+     *
+     * file_put_contents создаёт файл по umask, то есть 0644, и ./certs
+     * смонтирован в девять контейнеров — ключ был читаем всем. Проставить
+     * chmod после записи мало: между созданием и chmod ключ уже лежит на
+     * диске с открытыми правами. Поэтому сначала создаём пустой файл и
+     * сужаем права, и только потом пишем содержимое.
+     */
+    public function writePrivateKey(string $path, string $data): void
+    {
+        if (!file_exists($path)) {
+            @touch($path);
+        }
+        @chmod($path, 0600);
+        file_put_contents($path, $data);
+        // Существовавший ранее файл мог быть создан старой версией с 0644.
+        @chmod($path, 0600);
+    }
+
     public function auth()
     {
         $file = __DIR__ . '/config.php';
@@ -4387,12 +4460,7 @@ NFT;
             if (!empty($json['ssl'])) {
                 $out[] = 'update certificates';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                file_put_contents('/certs/cert_private', $json['ssl']['private']);
-                // file_put_contents создаёт файл по umask (0644): приватный ключ
-                // TLS оказывался читаемым всем, тогда как соседний self_private
-                // от openssl — 0600. ./certs смонтирован в девять контейнеров, а
-                // на хосте ключ мог прочитать любой локальный пользователь.
-                @chmod('/certs/cert_private', 0600);
+                $this->writePrivateKey('/certs/cert_private', $json['ssl']['private']);
                 file_put_contents('/certs/cert_public', $json['ssl']['public']);
             }
             // pac
@@ -5669,9 +5737,7 @@ NFT;
         }
         if (preg_match('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', $bundle, $m)) {
             $this->setPacConf($conf);
-            file_put_contents('/certs/cert_private', $m[0]);
-            // 0600 — см. комментарий в importFile(): по umask ключ создавался 0644.
-            @chmod('/certs/cert_private', 0600);
+            $this->writePrivateKey('/certs/cert_private', $m[0]);
             file_put_contents('/certs/cert_public', preg_replace('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', '', $bundle));
             $this->adguardSync();
             $this->cloakNginx();
