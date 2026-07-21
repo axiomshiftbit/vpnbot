@@ -162,7 +162,9 @@ class Bot
      */
     public function webappAuth(array $get, string $key, array $admins, int $maxAge = 86400, ?int $now = null): bool
     {
-        if (empty($get['hash'])) {
+        // Массив в hash (?hash[]=x) прошёл бы empty() и упёрся в (string) на
+        // массиве — «Array to string conversion» и сравнение со строкой «Array».
+        if (empty($get['hash']) || !is_string($get['hash'])) {
             return false;
         }
         $t = $get;
@@ -170,30 +172,54 @@ class Bot
         ksort($t);
         $s = [];
         foreach ($t as $k => $v) {
+            // Любой параметр массивом («?x[]=1») тоже даёт warning на "$k=$v" и
+            // мусор в подписываемой строке. Telegram шлёт только скаляры.
+            if (!is_scalar($v)) {
+                return $this->webappReject('non-scalar param');
+            }
             $s[] = "$k=$v";
         }
         $sk = hash_hmac('sha256', $key, 'WebAppData', true);
-        if (!hash_equals(hash_hmac('sha256', implode("\n", $s), $sk), (string) $get['hash'])) {
-            return false;
+        if (!hash_equals(hash_hmac('sha256', implode("\n", $s), $sk), $get['hash'])) {
+            return $this->webappReject('bad signature');
         }
 
         $authDate = (int) ($get['auth_date'] ?? 0);
         $now      = $now ?? time();
         if ($authDate <= 0 || $now - $authDate > $maxAge) {
-            return false;
+            return $this->webappReject('stale auth_date');
         }
 
         // Пустой список админов — бот ещё не присвоен (auth() заполняет его
         // первым написавшим). Пускать в этом состоянии некого.
         if (empty($admins)) {
-            return false;
+            return $this->webappReject('no admins configured');
         }
-        $wu = json_decode((string) ($get['user'] ?? ''), true);
+        $wu = is_string($get['user'] ?? null) ? json_decode($get['user'], true) : null;
         if (empty($wu['id'])) {
-            return false;
+            return $this->webappReject('no user.id');
         }
 
-        return in_array((string) $wu['id'], array_map('strval', $admins), true);
+        if (!in_array((string) $wu['id'], array_map('strval', $admins), true)) {
+            // Штатно сюда попадает чужой, но сюда же попадёт и САМ владелец,
+            // если бот присвоен каналом/группой: там auth() кладёт в admin
+            // chat.id канала, а initData несёт личный user.id нажавшего. Без
+            // этой строки редактор шаблонов просто показывал бы «error».
+            return $this->webappReject('user is not admin');
+        }
+
+        return true;
+    }
+
+    /**
+     * Причина отказа — в лог, без единого значения из initData: сама строка
+     * (в т.ч. hash) остаётся валидным пропуском до истечения окна.
+     */
+    private function webappReject(string $reason): bool
+    {
+        error_log("webappAuth: rejected ($reason)");
+
+        return false;
     }
 
     /**

@@ -48,6 +48,15 @@ switch (true) {
         ]);
         break;
 
+    // Любой /webapp$hash/*, не прошедший гейт, до этой ветки проваливался в
+    // default и отвечал 500 — неотличимо от настоящей поломки, а в редакторе
+    // виден одинаковый «error». Причина отказа уходит в лог из webappAuth().
+    case preg_match('~^' . preg_quote("/webapp$hash/") . '~', $_SERVER['REQUEST_URI']) && !$webapp:
+        http_response_code(403);
+        header('Content-Type: application/json');
+        echo json_encode(['status' => false]);
+        break;
+
     // adguard cookie
     case preg_match('~^' . preg_quote("/webapp$hash/check") . '~', $_SERVER['REQUEST_URI']) && $webapp:
         setcookie('c', $hash, 0, '/');
@@ -90,6 +99,7 @@ switch (true) {
                 // ограничиваем словом (\w), иначе `ty=../..` читает произвольный .json.
                 $ty = preg_match('~^\w+$~', $_GET['ty'] ?? '') ? $_GET['ty'] : '';
                 if ($ty === '') {
+                    http_response_code(404);
                     break;
                 }
                 // Содержимое шаблона (xray.json — uuid/password/subtoken всех
@@ -229,6 +239,9 @@ switch (true) {
                     ], $pac);
                     exit;
                 }
+                // Отбитый traversal и просто несуществующий список отдавали
+                // пустой 200 — «файл есть, но пустой» вместо «нет такого».
+                http_response_code(404);
                 break;
         }
         break;

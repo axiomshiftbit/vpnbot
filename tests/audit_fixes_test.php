@@ -85,6 +85,21 @@ auditAssert(
     'admin-id строкой должен сопоставляться с числовым user.id'
 );
 
+// Массивы в query («?hash[]=1», «?user[]=1») не должны ни проходить, ни давать
+// «Array to string conversion»: hash попадал в (string), остальное — в "$k=$v".
+set_error_handler(function ($no, $str) {
+    throw new RuntimeException("PHP notice/warning в webappAuth: $str");
+});
+auditAssert(!$bot->webappAuth(['hash' => ['x']], $key, $admins, 86400, $now), 'hash массивом не должен проходить');
+auditAssert(
+    !$bot->webappAuth(['hash' => str_repeat('0', 64), 'x' => ['y']], $key, $admins, 86400, $now),
+    'параметр массивом не должен проходить'
+);
+$userArr         = $valid;
+$userArr['user'] = ['id' => 111];
+auditAssert(!$bot->webappAuth($userArr, $key, $admins, 86400, $now), 'user массивом не должен проходить');
+restore_error_handler();
+
 // ── callIpReturn(): whitelist динамического вызова ───────────────────────────
 // $fun приезжает из callback_data и вызывался как $this->{$fun}().
 $spy = new class extends Bot {
