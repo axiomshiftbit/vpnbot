@@ -12736,6 +12736,9 @@ DNS-over-HTTPS with IP:
             $log[$email]['ips'][$ip]['count'] = ($log[$email]['ips'][$ip]['count'] ?? 0) + 1;
             if (!empty($e['dst'])) {
                 $host = $e['dst'];
+                if (!isset($log[$email]['ips'][$ip]['dst'][$host]['first'])) {
+                    $log[$email]['ips'][$ip]['dst'][$host]['first'] = $ts;
+                }
                 $log[$email]['ips'][$ip]['dst'][$host]['last']  = $ts;
                 $log[$email]['ips'][$ip]['dst'][$host]['count'] = ($log[$email]['ips'][$ip]['dst'][$host]['count'] ?? 0) + 1;
             }
@@ -13159,6 +13162,15 @@ DNS-over-HTTPS with IP:
                         . ' (x' . (int) ($d['count'] ?? 0) . ')';
                     $out[]  = $line;
                     $chars += mb_strlen($line) + 1;
+                    // first→last time span of this destination on its own line
+                    // (records written before the per-dst 'first' field fall back
+                    // to 'last', so the range collapses to a single stamp)
+                    $dLast  = (int) ($d['last'] ?? $rec['last'] ?? time());
+                    $dFirst = (int) ($d['first'] ?? $dLast);
+                    $tline  = '        ' . date('d.m.Y H:i', $dFirst)
+                        . ' → ' . date('d.m.Y H:i', $dLast);
+                    $out[]  = $tline;
+                    $chars += mb_strlen($tline) + 1;
                 }
             } else {
                 $out[] = '  ' . $head . ' · ' . (int) ($rec['count'] ?? 0)
@@ -13447,6 +13459,9 @@ DNS-over-HTTPS with IP:
                 $log[$inst][$name]['ips'][$ip]['last'] = $ts;
             }
             foreach (($e['dst'] ?? []) as $dstHost) {
+                if (!isset($log[$inst][$name]['ips'][$ip]['dst'][$dstHost]['first'])) {
+                    $log[$inst][$name]['ips'][$ip]['dst'][$dstHost]['first'] = $ts;
+                }
                 $log[$inst][$name]['ips'][$ip]['dst'][$dstHost]['last']  = $ts;
                 $log[$inst][$name]['ips'][$ip]['dst'][$dstHost]['count'] =
                     ($log[$inst][$name]['ips'][$ip]['dst'][$dstHost]['count'] ?? 0) + 1;
