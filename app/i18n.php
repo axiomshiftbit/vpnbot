@@ -841,6 +841,14 @@ $i = [
         'en' => 'no connections logged yet',
         'ru' => 'подключений пока не зафиксировано',
     ],
+    'clear log'  => [
+        'en' => 'clear log',
+        'ru' => 'очистить лог',
+    ],
+    'log cleared'  => [
+        'en' => 'connection log cleared',
+        'ru' => 'лог подключений очищен',
+    ],
     'traffic'  => [
         'en' => 'traffic',
         'ru' => 'трафик',

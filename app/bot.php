@@ -515,14 +515,26 @@ class Bot
             case preg_match('~^/vlessLog(?:\s(\d+))?$~', $this->input['callback'], $m):
                 $this->vlessLogView((int) ($m[1] ?? 0));
                 break;
+            case preg_match('~^/vlessLogClear$~', $this->input['callback'], $m):
+                $this->vlessLogClear();
+                break;
             case preg_match('~^/clientLog (\d+)$~', $this->input['callback'], $m):
                 $this->clientLogView((int) $m[1]);
+                break;
+            case preg_match('~^/clientLogClear (\d+)$~', $this->input['callback'], $m):
+                $this->clientLogClear((int) $m[1]);
                 break;
             case preg_match('~^/wgLog ([01])(?:\s(\d+))?$~', $this->input['callback'], $m):
                 $this->wgLogView((int) $m[1], (int) ($m[2] ?? 0));
                 break;
+            case preg_match('~^/wgLogClear ([01])$~', $this->input['callback'], $m):
+                $this->wgLogClear((int) $m[1]);
+                break;
             case preg_match('~^/wgClientLog ([01]) (\d+)(?:\s(\d+))?$~', $this->input['callback'], $m):
                 $this->wgClientLogView((int) $m[1], (int) $m[2], (int) ($m[3] ?? 0));
+                break;
+            case preg_match('~^/wgClientLogClear ([01]) (\d+)(?:\s(\d+))?$~', $this->input['callback'], $m):
+                $this->wgClientLogClear((int) $m[1], (int) $m[2], (int) ($m[3] ?? 0));
                 break;
             case preg_match('~^/cleanDeny(?:\s(\d))?$~', $this->input['callback'], $m):
                 $this->cleanDeny($m[1]);
@@ -13294,6 +13306,12 @@ DNS-over-HTTPS with IP:
                 ['text' => '>>', 'callback_data' => '/vlessLog ' . ($page < $all - 1 ? $page + 1 : 0)],
             ];
         }
+        if (!empty($log)) {
+            $data[] = [[
+                'text'          => '🗑 ' . $this->i18n('clear log'),
+                'callback_data' => '/vlessLogClear',
+            ]];
+        }
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/xray',
@@ -13304,6 +13322,16 @@ DNS-over-HTTPS with IP:
             implode("\n", $text),
             $data,
         );
+    }
+
+    // Wipe the entire vless connection log, then re-render the (now empty) view.
+    public function vlessLogClear()
+    {
+        $this->setConnLog([]);
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
+        }
+        $this->vlessLogView(0);
     }
 
     // Admin view: full connection history for a single client (by xray client index),
@@ -13344,6 +13372,12 @@ DNS-over-HTTPS with IP:
             'text'          => '🔄 ' . $this->i18n('refresh'),
             'callback_data' => "/clientLog $i",
         ]];
+        if (!empty($info['ips'])) {
+            $data[] = [[
+                'text'          => '🗑 ' . $this->i18n('clear log'),
+                'callback_data' => "/clientLogClear $i",
+            ]];
+        }
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => "/userXr $i",
@@ -13354,6 +13388,22 @@ DNS-over-HTTPS with IP:
             implode("\n", $text),
             $data,
         );
+    }
+
+    // Drop just this client's entry from the vless connection log, then re-render.
+    public function clientLogClear(int $i)
+    {
+        $cl    = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+        $email = $cl['email'] ?? '';
+        if ($email !== '') {
+            $log = $this->getConnLog();
+            unset($log[$email]);
+            $this->setConnLog($log);
+        }
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
+        }
+        $this->clientLogView($i);
     }
 
     // Extract the bare IP from a wireguard "endpoint" field (host:port, or an
@@ -13622,6 +13672,12 @@ DNS-over-HTTPS with IP:
                 ['text' => '>>', 'callback_data' => "/wgLog $inst " . ($page < $all - 1 ? $page + 1 : 0)],
             ];
         }
+        if (!empty($log)) {
+            $data[] = [[
+                'text'          => '🗑 ' . $this->i18n('clear log'),
+                'callback_data' => "/wgLogClear $inst",
+            ]];
+        }
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => "/menu wg $inst 0",
@@ -13632,6 +13688,19 @@ DNS-over-HTTPS with IP:
             implode("\n", $text),
             $data,
         );
+    }
+
+    // Wipe the whole connection log for one wg/awg instance, then re-render.
+    public function wgLogClear(int $inst)
+    {
+        $inst = $inst ? 1 : 0;
+        $log  = $this->getWgConnLog();
+        unset($log[$inst]);
+        $this->setWgConnLog($log);
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
+        }
+        $this->wgLogView($inst, 0);
     }
 
     // Admin view: full wg/awg connection history for one client (by instance +
@@ -13676,6 +13745,12 @@ DNS-over-HTTPS with IP:
             'text'          => '🔄 ' . $this->i18n('refresh'),
             'callback_data' => "/wgClientLog $inst $index $page",
         ]];
+        if (!empty($info['ips'])) {
+            $data[] = [[
+                'text'          => '🗑 ' . $this->i18n('clear log'),
+                'callback_data' => "/wgClientLogClear $inst $index $page",
+            ]];
+        }
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => "/menu client {$index}_$page",
@@ -13686,6 +13761,27 @@ DNS-over-HTTPS with IP:
             implode("\n", $text),
             $data,
         );
+    }
+
+    // Drop just this wg/awg client's entry from the instance log, then re-render.
+    public function wgClientLogClear(int $inst, int $index, int $page = 0)
+    {
+        $inst     = $inst ? 1 : 0;
+        $saved    = $this->wg;
+        $this->wg = $inst;
+        $clients  = $this->readClients();
+        $this->wg = $saved;
+        $iface    = $clients[$index]['interface'] ?? null;
+        if ($iface !== null) {
+            $name = $this->getName($iface);
+            $log  = $this->getWgConnLog();
+            unset($log[$inst][$name]);
+            $this->setWgConnLog($log);
+        }
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
+        }
+        $this->wgClientLogView($inst, $index, $page);
     }
 
     public function analysisIp(int $page = 0, $return = false)
@@ -14599,10 +14695,25 @@ DNS-over-HTTPS with IP:
     // while the uuid credential (and thus the actual VPN access) is untouched.
     public function rotateSubToken($i)
     {
-        $c = $this->getXray();
+        $c    = $this->getXray();
+        $done = false;
         if (isset($c['inbounds'][0]['settings']['clients'][$i])) {
             $c['inbounds'][0]['settings']['clients'][$i]['subtoken'] = bin2hex(random_bytes(16));
             $this->saveXray($c);
+            $done = true;
+        }
+        // The new token only changes the (hidden) href of the sub links — the
+        // visible button/link labels stay identical, so without an explicit toast
+        // the action looks like it did nothing. Confirm it out loud.
+        if (!empty($this->input['callback_id'])) {
+            $this->answer(
+                $this->input['callback_id'],
+                $done
+                    ? (empty($this->getPacConf()['subtoken_strict'])
+                        ? '⚠ ' . $this->i18n('rotate subscription') . ' — strict off, old links still resolve'
+                        : '🔁 ' . $this->i18n('rotate subscription'))
+                    : '⚠ not found'
+            );
         }
         $this->userXr($i);
     }
@@ -16803,16 +16914,14 @@ DNS-over-HTTPS with IP:
             ];
         }
         $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
-        $data[] = [
-            [
-                'text'          => '🧩 ' . $this->i18n('external links') . ($extOn ? " ($extOn)" : ''),
-                'callback_data' => "/extUser $i",
-            ],
-            [
-                'text'          => '🔁 ' . $this->i18n('rotate subscription'),
-                'callback_data' => "/rotateSub $i",
-            ],
-        ];
+        $data[] = [[
+            'text'          => '🧩 ' . $this->i18n('external links') . ($extOn ? " ($extOn)" : ''),
+            'callback_data' => "/extUser $i",
+        ]];
+        $data[] = [[
+            'text'          => '🔁 ' . $this->i18n('rotate subscription'),
+            'callback_data' => "/rotateSub $i",
+        ]];
         $data[] = [
             [
                 'text'    => $this->i18n('v2ray ⬇️'),
