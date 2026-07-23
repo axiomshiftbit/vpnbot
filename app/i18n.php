@@ -829,6 +829,18 @@ $i = [
         'en' => 'offline',
         'ru' => 'оффлайн',
     ],
+    'connection log'  => [
+        'en' => 'connection log',
+        'ru' => 'лог подключений',
+    ],
+    'connections'  => [
+        'en' => 'connections',
+        'ru' => 'подкл.',
+    ],
+    'no log'  => [
+        'en' => 'no connections logged yet',
+        'ru' => 'подключений пока не зафиксировано',
+    ],
     'traffic'  => [
         'en' => 'traffic',
         'ru' => 'трафик',

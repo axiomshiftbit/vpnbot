@@ -511,6 +511,12 @@ class Bot
             case preg_match('~^/onlines$~', $this->input['callback'], $m):
                 $this->onlinesView();
                 break;
+            case preg_match('~^/vlessLog(?:\s(\d+))?$~', $this->input['callback'], $m):
+                $this->vlessLogView((int) ($m[1] ?? 0));
+                break;
+            case preg_match('~^/clientLog (\d+)$~', $this->input['callback'], $m):
+                $this->clientLogView((int) $m[1]);
+                break;
             case preg_match('~^/cleanDeny(?:\s(\d))?$~', $this->input['callback'], $m):
                 $this->cleanDeny($m[1]);
                 break;
@@ -12634,6 +12640,90 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Persistent per-client vless connection history: email -> IPs -> destinations,
+    // kept bounded and pruned to a 30-day window. Shared across the php/cron
+    // containers via the same atomic write as online.json/geoip.json. Fed from the
+    // single access-log tail in trackOnline() (see recordConnLog), so every line is
+    // accounted exactly once; read by the /vlessLog and /clientLog admin views.
+    public function getConnLog(): array
+    {
+        return json_decode(@file_get_contents('/config/connlog.json'), true) ?: [];
+    }
+
+    public function setConnLog(array $log)
+    {
+        $ttl = time() - 2592000; // 30 days
+        foreach ($log as $email => $info) {
+            foreach (($info['ips'] ?? []) as $ip => $rec) {
+                // prune stale destinations first, then the IP itself
+                foreach (($rec['dst'] ?? []) as $host => $d) {
+                    if (($d['last'] ?? 0) < $ttl) {
+                        unset($log[$email]['ips'][$ip]['dst'][$host]);
+                    }
+                }
+                if (($rec['last'] ?? 0) < $ttl) {
+                    unset($log[$email]['ips'][$ip]);
+                    continue;
+                }
+                // cap destinations per IP: keep the 30 most-used (ties: most recent)
+                $dst = $log[$email]['ips'][$ip]['dst'] ?? [];
+                if (count($dst) > 30) {
+                    uasort($dst, fn($a, $b) => (($b['count'] ?? 0) <=> ($a['count'] ?? 0))
+                        ?: (($b['last'] ?? 0) <=> ($a['last'] ?? 0)));
+                    $log[$email]['ips'][$ip]['dst'] = array_slice($dst, 0, 30, true);
+                }
+            }
+            // cap IPs per client: keep the 20 most-recent
+            $ips = $log[$email]['ips'] ?? [];
+            if (count($ips) > 20) {
+                uasort($ips, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0));
+                $log[$email]['ips'] = array_slice($ips, 0, 20, true);
+            }
+            if (empty($log[$email]['ips'])) {
+                unset($log[$email]);
+            }
+        }
+        // cap clients: keep the 200 most-recently-active
+        if (count($log) > 200) {
+            uasort($log, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0));
+            $log = array_slice($log, 0, 200, true);
+        }
+        // atomic write (cron + webhook share the volume), same pattern as online.json
+        $tmp = '/config/connlog.json.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, json_encode($log)) !== false) {
+            rename($tmp, '/config/connlog.json');
+        } else {
+            @unlink($tmp);
+        }
+    }
+
+    // Merge newly-parsed access-log events into the persistent connection history.
+    // $events: list of ['email'=>, 'ip'=>, 'dst'=> 'host:port'|null, 'ts'=>].
+    public function recordConnLog(array $events)
+    {
+        if (empty($events)) {
+            return;
+        }
+        $log = $this->getConnLog();
+        foreach ($events as $e) {
+            $email = $e['email'];
+            $ip    = $e['ip'];
+            $ts    = $e['ts'];
+            if (!isset($log[$email]['ips'][$ip])) {
+                $log[$email]['ips'][$ip] = ['first' => $ts, 'last' => $ts, 'count' => 0, 'dst' => []];
+            }
+            $log[$email]['ips'][$ip]['last']  = $ts;
+            $log[$email]['ips'][$ip]['count'] = ($log[$email]['ips'][$ip]['count'] ?? 0) + 1;
+            if (!empty($e['dst'])) {
+                $host = $e['dst'];
+                $log[$email]['ips'][$ip]['dst'][$host]['last']  = $ts;
+                $log[$email]['ips'][$ip]['dst'][$host]['count'] = ($log[$email]['ips'][$ip]['dst'][$host]['count'] ?? 0) + 1;
+            }
+            $log[$email]['last'] = $ts;
+        }
+        $this->setConnLog($log);
+    }
+
     // Continuously tracked last-seen per vless email. Incrementally tails the xray
     // access log from a saved byte offset and stamps every newly-seen email with the
     // wall clock at read time (like frequencyAnalyze) — no log-timestamp parsing, so
@@ -12656,17 +12746,30 @@ DNS-over-HTTPS with IP:
         if ($offset === null || $offset > $size) {
             $offset = $size;
         }
+        $events = [];
         if ($size > $offset && ($r = fopen($path, 'r'))) {
             fseek($r, $offset);
             $now = time();
             while (($l = fgets($r)) !== false) {
-                if (preg_match('~\sfrom\s(\d{1,3}(?:\.\d{1,3}){3})\D.*?email:\s*(\S+)~', $l, $m)) {
+                // primary match: IP + destination host:port + email in one pass, for
+                // the connection-history log. Falls back to the IP+email-only match on
+                // lines without an "accepted …" clause so online tracking never degrades.
+                if (preg_match('~\sfrom\s(\d{1,3}(?:\.\d{1,3}){3})\D.*?accepted\s+\S+?:([^\s]+):(\d+).*?email:\s*(\S+)~', $l, $m)) {
+                    $seen[$m[4]]['ts']         = $now;
+                    $seen[$m[4]]['ips'][$m[1]] = $now;
+                    $events[] = ['email' => $m[4], 'ip' => $m[1], 'dst' => $m[2] . ':' . $m[3], 'ts' => $now];
+                } elseif (preg_match('~\sfrom\s(\d{1,3}(?:\.\d{1,3}){3})\D.*?email:\s*(\S+)~', $l, $m)) {
                     $seen[$m[2]]['ts']         = $now;
                     $seen[$m[2]]['ips'][$m[1]] = $now;
+                    $events[] = ['email' => $m[2], 'ip' => $m[1], 'dst' => null, 'ts' => $now];
                 }
             }
             $offset = ftell($r);
             fclose($r);
+        }
+        // persist the connection history (own bounded file) from the same single pass
+        if (!empty($events)) {
+            $this->recordConnLog($events);
         }
         // prune entries/IPs not seen in the last 10 min to keep the file small
         $cutoff = time() - 600;
@@ -12954,8 +13057,159 @@ DNS-over-HTTPS with IP:
             'callback_data' => '/onlines',
         ]];
         $data[] = [[
+            'text'          => '📜 ' . $this->i18n('connection log'),
+            'callback_data' => '/vlessLog',
+        ]];
+        $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/xray',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Render one client's connection history as HTML <code> lines, shared by the
+    // global (/vlessLog) and per-client (/clientLog) views. $geo is updated in place
+    // (caller persists once). $detail=false → compact summary (top IPs, no dst);
+    // $detail=true → per-IP first/last, count and top destinations. email/host are
+    // free-form and the message is parse_mode=HTML, so both are escaped.
+    public function connLogCard(string $email, array $info, array &$geo, bool $detail = false): array
+    {
+        $out = [];
+        $ips = $info['ips'] ?? [];
+        uasort($ips, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0)); // newest first
+        $maxIps = $detail ? 8 : 3;
+        $out[]  = '👤 ' . htmlspecialchars($email, ENT_QUOTES) . ' (' . count($ips) . ')';
+        foreach (array_slice($ips, 0, $maxIps, true) as $ip => $rec) {
+            $g    = $this->geoLookup($ip, $geo);
+            $flag = $this->countryFlag($g['country'] ?? '');
+            // the flag conveys the country; only print the code when no flag rendered
+            $meta = array_filter([$flag ? '' : ($g['country'] ?? ''), $g['org'] ?? '']);
+            $head = trim(($flag ? "$flag " : '') . $ip
+                . ($meta ? ' — ' . htmlspecialchars(implode(' · ', $meta), ENT_QUOTES) : ''));
+            if ($detail) {
+                $out[] = '  ' . $head;
+                $out[] = '     ' . date('d.m.Y H:i', $rec['first'] ?? time())
+                    . ' → ' . date('d.m.Y H:i', $rec['last'] ?? time())
+                    . ' · ' . (int) ($rec['count'] ?? 0) . ' ' . $this->i18n('connections');
+                $dst = $rec['dst'] ?? [];
+                uasort($dst, fn($a, $b) => ($b['count'] ?? 0) <=> ($a['count'] ?? 0));
+                foreach (array_slice($dst, 0, 8, true) as $host => $d) {
+                    $out[] = '     → ' . htmlspecialchars($host, ENT_QUOTES) . ' (x' . (int) ($d['count'] ?? 0) . ')';
+                }
+            } else {
+                $out[] = '  ' . $head . ' · ' . (int) ($rec['count'] ?? 0)
+                    . ' · ' . date('d.m H:i', $rec['last'] ?? time());
+            }
+        }
+        if (count($ips) > $maxIps) {
+            $out[] = '  … +' . (count($ips) - $maxIps);
+        }
+        return $out;
+    }
+
+    // Admin view: connection history across all vless clients, paginated, newest
+    // client first. Compact cards (top IPs + geo/ISP); per-client destinations live
+    // in /clientLog. Reachable from the online view and the xray menu.
+    public function vlessLogView(int $page = 0)
+    {
+        $this->trackOnline(); // flush any pending access-log lines into history first
+        $log = $this->getConnLog();
+        uasort($log, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0));
+
+        $perPage = 5;
+        $all     = max(1, (int) ceil(count($log) / $perPage));
+        $page    = $page < 0 ? $all - 1 : min($page, $all - 1);
+
+        $text[] = 'Menu -> ' . $this->i18n('connection log');
+        $text[] = '';
+        if (empty($log)) {
+            $text[] = $this->i18n('no log');
+        } else {
+            $geo    = $this->getGeoCache();
+            $before = $geo;
+            $text[] = '<code>';
+            foreach (array_slice($log, $page * $perPage, $perPage, true) as $email => $info) {
+                foreach ($this->connLogCard($email, $info, $geo, false) as $line) {
+                    $text[] = $line;
+                }
+                $text[] = '';
+            }
+            $text[] = '</code>';
+            if ($geo !== $before) {
+                $this->setGeoCache($geo);
+            }
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => "/vlessLog $page",
+        ]];
+        if ($all > 1) {
+            $data[] = [
+                ['text' => '<<', 'callback_data' => '/vlessLog ' . ($page - 1 >= 0 ? $page - 1 : $all - 1)],
+                ['text' => ($page + 1) . "/$all", 'callback_data' => "/vlessLog $page"],
+                ['text' => '>>', 'callback_data' => '/vlessLog ' . ($page < $all - 1 ? $page + 1 : 0)],
+            ];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/xray',
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Admin view: full connection history for a single client (by xray client index),
+    // with per-IP first/last, counts and top destinations. Back button → /userXr $i.
+    public function clientLogView(int $i)
+    {
+        $cl = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if (empty($cl['email'])) {
+            $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('no log'), [[
+                ['text' => $this->i18n('back'), 'callback_data' => "/userXr $i"],
+            ]]);
+            return;
+        }
+        $email = $cl['email'];
+        $this->trackOnline(); // flush pending access-log lines into history first
+        $info = $this->getConnLog()[$email] ?? [];
+
+        $text[] = 'Menu -> ' . $this->i18n('connection log');
+        $text[] = htmlspecialchars($email, ENT_QUOTES);
+        $text[] = '';
+        if (empty($info['ips'])) {
+            $text[] = $this->i18n('no log');
+        } else {
+            $geo    = $this->getGeoCache();
+            $before = $geo;
+            $text[] = '<code>';
+            foreach ($this->connLogCard($email, $info, $geo, true) as $line) {
+                $text[] = $line;
+            }
+            $text[] = '</code>';
+            if ($geo !== $before) {
+                $this->setGeoCache($geo);
+            }
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => "/clientLog $i",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/userXr $i",
         ]];
         $this->update(
             $this->input['chat'],
@@ -16159,6 +16413,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('hwid limit') . ': ' . ($hwidEnabled ? $hwidLimit : $this->i18n('off')) . ' (' . count($devices) . ')',
                 'callback_data' => "/hwidUser $i",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => '📜 ' . $this->i18n('connection log'),
+                'callback_data' => "/clientLog $i",
             ],
         ];
         $data[] = [
