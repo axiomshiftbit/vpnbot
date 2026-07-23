@@ -4,7 +4,7 @@
 			"pass": "applications/php"
 		},
 		"*:8090": {
-			"pass": "applications/php"
+			"pass": "applications/panel"
 		}
 	},
 	"applications": {
@@ -17,6 +17,18 @@
 			"processes": {
 				"max": 6,
 				"spare": 2,
+				"idle_timeout": 60
+			}
+		},
+		"panel": {
+			"type": "php",
+			"root": "/app",
+			"script": "panel/entry.php",
+			"user": "root",
+			"group": "root",
+			"processes": {
+				"max": 4,
+				"spare": 1,
 				"idle_timeout": 60
 			}
 		}

@@ -20,7 +20,7 @@ $hash = $bot->getHashBot();
 // проброшен на 127.0.0.1 хоста и доступен через ssh -L. На публичном 443 её
 // маршрутов нет вовсе — поэтому в nginx для неё ничего не заводится, а
 // /panel<hash> снаружи отвечает так же, как любой несуществующий путь.
-if (Panel::isPanelPort()) {
+if (Panel::isPanelListener()) {
     $panel = new Panel($bot, $c);
     if ($panel->matches($_SERVER['REQUEST_URI'])) {
         $panel->route($_SERVER['REQUEST_URI']);

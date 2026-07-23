@@ -53,10 +53,16 @@ class Panel
      * Панель обслуживается ТОЛЬКО своим слушателем. На публичном 443 её
      * маршруты не существуют — поэтому в nginx для неё ничего не заводится и
      * снаружи она не отвечает даже 401.
+     *
+     * Проверять SERVER_PORT нельзя: unit 1.31 подставляет PHP 80 на любом
+     * слушателе (проверено на 1.31.1 — панель отвечала 404 на своём же порту).
+     * SERVER_NAME/Host тоже не годятся — их задаёт клиент. Признак даёт
+     * config/unit.json: у *:8090 своё приложение со script panel/entry.php,
+     * и только этот файл объявляет константу.
      */
-    public static function isPanelPort()
+    public static function isPanelListener()
     {
-        return (int) ($_SERVER['SERVER_PORT'] ?? 0) === self::port();
+        return defined('PANEL_LISTENER');
     }
 
     public function prefix()
