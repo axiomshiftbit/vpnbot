@@ -222,6 +222,30 @@ class PanelStore
         return $id;
     }
 
+    /**
+     * Удаляет файлы, на которые не ссылается ни одно сообщение ленты и
+     * которые старше суток. Это загруженные через панель конфиги: привязать
+     * их к баблу нельзя (Bot::reply() удаляет наше сообщение раньше, чем
+     * обработчик прочитает файл), поэтому вытеснение ленты их не трогает.
+     */
+    public function pruneUploads($olderThan = 86400)
+    {
+        $used = [];
+        foreach ($this->read()['messages'] as $m) {
+            if (!empty($m['attach']['file'])) {
+                $used[$m['attach']['file']] = true;
+            }
+        }
+        foreach (glob($this->filesDir . '/*') ?: [] as $f) {
+            if (isset($used[basename($f)])) {
+                continue;
+            }
+            if (time() - (int) @filemtime($f) > $olderThan) {
+                @unlink($f);
+            }
+        }
+    }
+
     public function fileExists($id)
     {
         return $this->isSafeId($id) && is_file($this->filesDir . '/' . $id);

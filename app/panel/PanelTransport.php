@@ -169,10 +169,22 @@ class PanelTransport
                 ];
             }
 
-            return ['kind' => 'link', 'url' => $src, 'name' => $src, 'file' => null];
+            return self::safeUrl($src)
+                ? ['kind' => 'link', 'url' => $src, 'name' => $src, 'file' => null]
+                : null;
         }
 
         return null;
+    }
+
+    /**
+     * Кнопки и вложения-ссылки уходят прямо в href. Схемы клиентских
+     * deep-link'ов (vless://, sing-box://…) нужны, поэтому запрещаем не всё
+     * кроме http, а только то, что исполняется в странице.
+     */
+    public static function safeUrl($url)
+    {
+        return is_string($url) && !preg_match('~^\s*(javascript|data|vbscript)\s*:~i', $url);
     }
 
     private function kindOf($name, $mime)
@@ -213,10 +225,10 @@ class PanelTransport
                 $btn = ['text' => (string) $b['text']];
                 if (isset($b['callback_data'])) {
                     $btn['cb'] = (string) $b['callback_data'];
-                } elseif (isset($b['web_app']['url'])) {
+                } elseif (isset($b['web_app']['url']) && self::safeUrl($b['web_app']['url'])) {
                     $btn['url']    = (string) $b['web_app']['url'];
                     $btn['webapp'] = true;
-                } elseif (isset($b['url'])) {
+                } elseif (isset($b['url']) && self::safeUrl($b['url'])) {
                     $btn['url'] = (string) $b['url'];
                 } else {
                     continue;

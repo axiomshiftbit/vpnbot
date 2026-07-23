@@ -227,6 +227,13 @@ async function poll(){
       if (m.deleted) delete state[m.id];
     }
     rev = d.rev;
+    // Сервер держит последние 300 сообщений и о вытесненных не сообщает —
+    // подрезаем ленту сами, иначе за долгую сессию DOM растёт без предела.
+    while (feed.children.length > 400){
+      const first = feed.firstElementChild;
+      delete state[+first.id.slice(1)];
+      first.remove();
+    }
     if (d.toast) toast(d.toast.text, d.toast.alert);
     if (d.messages.length){ refreshReply(); if (stick) feed.scrollTop = feed.scrollHeight; }
   }catch(e){

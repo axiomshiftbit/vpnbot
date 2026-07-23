@@ -167,6 +167,36 @@ panelAssert(str_contains($h, '<a href="https://ok.test/x" target="_blank"'), 'ht
 $h = Panel::renderText('<span class="tg-spoiler">секрет</span>');
 panelAssert(str_contains($h, '<span class="tg-spoiler">секрет</span>'), 'спойлер сохраняется');
 
+// В <pre> перенос уже отображается сам (white-space: pre-wrap) — <br> внутри
+// давал бы двойные пустые строки во всех диагностиках и логах.
+$h = Panel::renderText("шапка\n<pre>строка1\nстрока2</pre>\nхвост");
+preg_match('~<pre>(.*?)</pre>~s', $h, $m);
+panelAssert(!str_contains($m[1] ?? '<br>', '<br>'), 'внутри <pre> переносы не дублируются');
+panelAssert(str_contains(explode('<pre>', $h)[0], '<br>'), 'вне <pre> переносы становятся <br>');
+
+// ── опасные схемы в кнопках и вложениях ──────────────────────────────────────
+$bot->send(777, 'ссылки', 0, [[
+    ['text' => 'плохая', 'url' => 'javascript:alert(1)'],
+    ['text' => 'хорошая', 'url' => 'https://ok.test'],
+    ['text' => 'клиент', 'url' => 'vless://uuid@host'],
+]]);
+$btns = $store->read()['messages'][array_key_last($store->read()['messages'])]['buttons'][0];
+panelAssert(count($btns) === 2, 'javascript-кнопка выброшена');
+panelAssert($btns[1]['url'] === 'vless://uuid@host', 'deep-link клиента сохраняется');
+panelAssert(null === (new ReflectionMethod(PanelTransport::class, 'ingest'))
+    ->invoke($transport, 'data:text/html,<script>'), 'data:-вложение не создаётся');
+
+// ── уборка загруженных файлов ────────────────────────────────────────────────
+$orphan = $store->storeFile('x', 'old.json');
+touch($store->filePath($orphan), time() - 90000);
+$store->pruneUploads();
+panelAssert(!$store->fileExists($orphan), 'старый загруженный файл удаляется');
+$fresh = $store->storeFile('x', 'new.json');
+$store->pruneUploads();
+panelAssert($store->fileExists($fresh), 'свежий загруженный файл остаётся');
+$att = $store->read()['messages'][$last]['attach'];
+panelAssert($store->fileExists($att['file']), 'вложение сообщения уборкой не трогается');
+
 // ── очистка ленты ────────────────────────────────────────────────────────────
 $store->reset();
 panelAssert([] === $store->read()['messages'], 'reset() чистит ленту');

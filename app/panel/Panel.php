@@ -79,6 +79,16 @@ class Panel
         $action = trim(substr($path, strlen($this->prefix)), '/');
         $post   = 'POST' === ($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
+        // Кука выдаётся на путь /panel<hash>/ и на сам /panel<hash> браузером
+        // уже не отправляется — без редиректа страница без слэша всегда
+        // показывала бы форму входа, хотя вход выполнен.
+        if ($path === $this->prefix && !$post) {
+            http_response_code(302);
+            header('Location: ' . $this->prefix . '/');
+
+            return;
+        }
+
         // Все изменяющие запросы обязаны нести собственный заголовок: браузер
         // не поставит его в кросс-сайтовой форме, поэтому CSRF отпадает даже
         // без токена в теле.
@@ -272,12 +282,26 @@ class Panel
         header('Content-Type: text/html; charset=utf-8');
         header('X-Frame-Options: DENY');
         header('Referrer-Policy: no-referrer');
+        self::csp();
         $html = (string) file_get_contents(__DIR__ . '/ui.html');
         echo strtr($html, [
             '{{PREFIX}}' => htmlspecialchars($this->prefix, ENT_QUOTES),
             '{{AUTH}}'   => $authed ? '1' : '0',
             '{{NOTE}}'   => htmlspecialchars($this->bootNote(), ENT_QUOTES),
         ]);
+    }
+
+    /**
+     * Страница целиком своя (стили и скрипты инлайном, сторонних загрузок нет),
+     * поэтому политика узкая: всё только со своего происхождения. Текст меню
+     * приходит из логов и данных клиентов — если санитайзер когда-нибудь
+     * пропустит тег, ему всё равно некуда будет обратиться.
+     */
+    private static function csp()
+    {
+        header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; "
+            . "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+            . "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
     }
 
     /** Подсказка на экране входа, если бот ещё не готов принимать команды. */
@@ -374,6 +398,10 @@ class Panel
         }
         $te   = (string) ($_GET['te'] ?? '');
         $name = $te ?: 'origin';
+        // CSP здесь намеренно не ставим: JSONEditor поднимает Ace-воркер через
+        // blob: и в режиме code полагается на eval — под политикой панели
+        // редактор просто перестал бы открываться. Страница целиком своя и
+        // грузит только собственную статику.
         header('Content-Type: text/html; charset=utf-8');
         $jPrefix = json_encode($this->prefix);
         $jTy     = json_encode($ty, JSON_UNESCAPED_UNICODE);
@@ -482,7 +510,17 @@ class Panel
         }, $e);
         $e = str_replace('&lt;/a&gt;', '</a>', $e);
 
-        return nl2br($e, false);
+        // Переносы превращаем в <br> ВЕЗДЕ, КРОМЕ <pre>: там перенос уже
+        // отображается сам (white-space: pre-wrap), и <br> внутри давал бы
+        // двойные пустые строки во всех диагностиках и логах.
+        $parts = preg_split('~(<pre>.*?</pre>)~s', $e, -1, PREG_SPLIT_DELIM_CAPTURE);
+        foreach ($parts as $i => $p) {
+            if (!str_starts_with($p, '<pre>')) {
+                $parts[$i] = nl2br($p, false);
+            }
+        }
+
+        return implode('', $parts);
     }
 
     private function file()
@@ -495,8 +533,18 @@ class Panel
         }
         $path = $this->store->filePath($id);
         $name = preg_replace('~^[0-9a-f]{16}_~', '', $id);
-        $img  = (bool) preg_match('~\.(png|jpe?g|gif|webp)$~i', $name);
-        header('Content-Type: ' . ($img ? 'image/' . strtolower(pathinfo($name, PATHINFO_EXTENSION)) : 'application/octet-stream'));
+        // nosniff ниже означает, что браузер поверит типу буквально: «image/jpg»
+        // (такого типа нет) не отрисовался бы вовсе — сопоставляем явно.
+        $imgTypes = [
+            'png'  => 'image/png',
+            'jpg'  => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'gif'  => 'image/gif',
+            'webp' => 'image/webp',
+        ];
+        $type = $imgTypes[strtolower(pathinfo($name, PATHINFO_EXTENSION))] ?? null;
+        $img  = null !== $type;
+        header('Content-Type: ' . ($type ?: 'application/octet-stream'));
         header('Content-Length: ' . filesize($path));
         header('Content-Disposition: ' . ($img ? 'inline' : 'attachment') . '; filename="' . str_replace('"', '', $name) . '"');
         header('X-Content-Type-Options: nosniff');
@@ -542,13 +590,24 @@ class Panel
 
     private function upload()
     {
-        $f = $_FILES['file'] ?? null;
+        $limit = $this->uploadLimit();
+        $f     = $_FILES['file'] ?? null;
+        // Превышение post_max_size PHP отбрасывает ДО нас: $_FILES и $_POST
+        // пустые, ошибки в них нет. Без отдельной проверки пользователь видел
+        // бы невнятное «upload failed» на любом большом файле.
+        if (empty($_FILES) && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $limit) {
+            return $this->json(['ok' => false, 'error' => 'файл больше ' . $this->human($limit) . ' (php.ini)'], 413);
+        }
         if (empty($f) || !is_uploaded_file($f['tmp_name'] ?? '') || ($f['error'] ?? 1) !== UPLOAD_ERR_OK) {
             return $this->json(['ok' => false, 'error' => 'upload failed'], 400);
         }
-        if (($f['size'] ?? 0) > self::MAX_UPLOAD) {
-            return $this->json(['ok' => false, 'error' => 'file too large'], 413);
+        if (($f['size'] ?? 0) > $limit) {
+            return $this->json(['ok' => false, 'error' => 'файл больше ' . $this->human($limit)], 413);
         }
+        // Загруженные файлы к сообщениям не привязаны (reply() удаляет наш
+        // бабл ДО того, как обработчик прочитает файл), поэтому их не
+        // подчистит вытеснение ленты — убираем старьё сами.
+        $this->store->pruneUploads();
         $body = (string) file_get_contents($f['tmp_name']);
         $name = (string) ($f['name'] ?? 'file');
         // Имя в хранилище работает как file_id: обработчики импорта берут
@@ -562,6 +621,32 @@ class Panel
             'caption'  => $caption,
             'text'     => '',
         ], (int) ($_POST['reply_to'] ?? 0), '📎 ' . $name . ($caption ? " ($caption)" : '')));
+    }
+
+    /** Реальный потолок загрузки: меньшее из наших 20 МиБ и лимитов php.ini. */
+    private function uploadLimit()
+    {
+        $bytes = function ($v) {
+            $n = (int) $v;
+            switch (strtolower(substr(trim((string) $v), -1))) {
+                case 'g': return $n * 1024 * 1024 * 1024;
+                case 'm': return $n * 1024 * 1024;
+                case 'k': return $n * 1024;
+            }
+
+            return $n;
+        };
+
+        return min(array_filter([
+            self::MAX_UPLOAD,
+            $bytes(ini_get('upload_max_filesize')),
+            $bytes(ini_get('post_max_size')),
+        ]));
+    }
+
+    private function human($bytes)
+    {
+        return $bytes >= 1048576 ? round($bytes / 1048576, 1) . ' МиБ' : round($bytes / 1024) . ' КиБ';
     }
 
     /**
@@ -617,6 +702,13 @@ class Panel
         // session_id вручную, а PHPSESSID в браузере — это утечка id админа и
         // лишний конфликт при следующем запросе.
         ini_set('session.use_cookies', 0);
+        // В Telegram обработчики крутятся в CLI-процессе polling'а, где лимита
+        // нет. Здесь это обычный запрос под unit с max_execution_time = 30 из
+        // php.ini — обновление, certbot и рестарты обрывались бы на середине.
+        // ignore_user_abort: закрытая вкладка не должна ронять уже начатую
+        // перенастройку.
+        set_time_limit(0);
+        ignore_user_abort(true);
         $this->attach();
         try {
             $this->bot->input($update);
@@ -648,6 +740,9 @@ class Panel
     {
         http_response_code($code);
         header('Content-Type: application/json; charset=utf-8');
+        // Опрос ленты идёт по одному и тому же URL, пока не поменяется rev —
+        // кэш браузера тут только мешает.
+        header('Cache-Control: no-store');
         echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 }

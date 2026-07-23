@@ -20869,6 +20869,12 @@ DNS-over-HTTPS with IP:
             // sleep(1) и молотил getUpdates раз в секунду всё время блокировки.
             if (!is_array($r)) {
                 error_log('getUpdates: no response from ' . parse_url($this->api, PHP_URL_HOST));
+                // /start взводим и здесь: check_file.sh проверяет наличие этого
+                // файла, а на нём висит healthcheck php, от которого зависит
+                // старт nginx/warp/wg. Без этой строки недоступность Telegram
+                // (ровно тот случай, ради которого сделана панель) не давала бы
+                // подняться всему стеку.
+                file_put_contents('/start', 1);
                 sleep(5);
                 continue;
             }
