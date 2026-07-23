@@ -12685,19 +12685,19 @@ DNS-over-HTTPS with IP:
                     unset($log[$email]['ips'][$ip]);
                     continue;
                 }
-                // cap destinations per IP: keep the 30 most-used (ties: most recent)
+                // cap destinations per IP: keep the 50 most-used (ties: most recent)
                 $dst = $log[$email]['ips'][$ip]['dst'] ?? [];
-                if (count($dst) > 30) {
+                if (count($dst) > 50) {
                     uasort($dst, fn($a, $b) => (($b['count'] ?? 0) <=> ($a['count'] ?? 0))
                         ?: (($b['last'] ?? 0) <=> ($a['last'] ?? 0)));
-                    $log[$email]['ips'][$ip]['dst'] = array_slice($dst, 0, 30, true);
+                    $log[$email]['ips'][$ip]['dst'] = array_slice($dst, 0, 50, true);
                 }
             }
-            // cap IPs per client: keep the 20 most-recent
+            // cap IPs per client: keep the 50 most-recent
             $ips = $log[$email]['ips'] ?? [];
-            if (count($ips) > 20) {
+            if (count($ips) > 50) {
                 uasort($ips, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0));
-                $log[$email]['ips'] = array_slice($ips, 0, 20, true);
+                $log[$email]['ips'] = array_slice($ips, 0, 50, true);
             }
             if (empty($log[$email]['ips'])) {
                 unset($log[$email]);
@@ -13102,24 +13102,63 @@ DNS-over-HTTPS with IP:
         $out = [];
         $ips = $info['ips'] ?? [];
         uasort($ips, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0)); // newest first
-        $maxIps = $detail ? 8 : 3;
+        // detail (one client) shows up to 50 source IPs and 50 destinations per IP;
+        // the compact global list stays tight (top 3, no destinations).
+        $maxIps = $detail ? 50 : 3;
+        // per-render budget for live reverse-DNS / ipinfo misses on destinations, so
+        // a single client card can't stall the admin view on hundreds of cold IPs.
+        $budget = 50;
+        // Telegram caps a message at 4096 chars; a 50-IP × 50-dst detail card would
+        // blow past it and 400 the whole edit (admin sees nothing). Track the running
+        // length and stop with a "…" marker before we get close (the caller wraps
+        // this in <code> + header/footer, so leave headroom).
+        $chars = 0;
+        $limit = 3600;
         $out[]  = '👤 ' . htmlspecialchars($email, ENT_QUOTES) . ' (' . count($ips) . ')';
         foreach (array_slice($ips, 0, $maxIps, true) as $ip => $rec) {
-            $g    = $this->geoLookup($ip, $geo);
+            if ($chars > $limit) {
+                $out[] = '  …';
+                break;
+            }
+            // source-IP geo shares the same live-lookup budget as destinations, so
+            // one card can never fan out to more than $budget cold ipinfo calls
+            // (a client with 50 fresh source IPs stays within one render's budget).
+            $freshIp = isset($geo[$ip]) && ($geo[$ip]['ts'] ?? 0) > time() - 604800;
+            $co      = true;
+            if (!$freshIp && $budget > 0) {
+                $budget--;
+                $co = false;
+            }
+            $g    = $this->geoLookup($ip, $geo, $co);
             $flag = $this->countryFlag($g['country'] ?? '');
             // the flag conveys the country; only print the code when no flag rendered
             $meta = array_filter([$flag ? '' : ($g['country'] ?? ''), $g['org'] ?? '']);
             $head = trim(($flag ? "$flag " : '') . $ip
                 . ($meta ? ' — ' . htmlspecialchars(implode(' · ', $meta), ENT_QUOTES) : ''));
             if ($detail) {
-                $out[] = '  ' . $head;
-                $out[] = '     ' . date('d.m.Y H:i', $rec['first'] ?? time())
+                $l1     = '  ' . $head;
+                $l2     = '     ' . date('d.m.Y H:i', $rec['first'] ?? time())
                     . ' → ' . date('d.m.Y H:i', $rec['last'] ?? time())
                     . ' · ' . (int) ($rec['count'] ?? 0) . ' ' . $this->i18n('connections');
+                $out[]  = $l1;
+                $out[]  = $l2;
+                $chars += mb_strlen($l1) + mb_strlen($l2) + 2;
                 $dst = $rec['dst'] ?? [];
                 uasort($dst, fn($a, $b) => ($b['count'] ?? 0) <=> ($a['count'] ?? 0));
-                foreach (array_slice($dst, 0, 8, true) as $host => $d) {
-                    $out[] = '     → ' . htmlspecialchars($host, ENT_QUOTES) . ' (x' . (int) ($d['count'] ?? 0) . ')';
+                // per destination: raw host/IP + who it belongs to (reverse-DNS
+                // domain for bare IPs, country flag, ISP/org) so the log shows
+                // WHERE the client connected, not just an opaque address.
+                foreach (array_slice($dst, 0, 50, true) as $host => $d) {
+                    if ($chars > $limit) {
+                        $out[] = '     …';
+                        break;
+                    }
+                    $who  = $this->dstMeta((string) $host, $geo, $budget);
+                    $line = '     → ' . htmlspecialchars((string) $host, ENT_QUOTES)
+                        . ($who !== '' ? '  ' . $who : '')
+                        . ' (x' . (int) ($d['count'] ?? 0) . ')';
+                    $out[]  = $line;
+                    $chars += mb_strlen($line) + 1;
                 }
             } else {
                 $out[] = '  ' . $head . ' · ' . (int) ($rec['count'] ?? 0)
@@ -13130,6 +13169,72 @@ DNS-over-HTTPS with IP:
             $out[] = '  … +' . (count($ips) - $maxIps);
         }
         return $out;
+    }
+
+    // Resolve one destination endpoint ("host:port", a bare host, or an IP) to a
+    // compact "ownership" label — reverse-DNS name (for bare IPs, e.g. WG conntrack
+    // records only IPs), country flag and ISP/org — so the connection log shows
+    // WHOSE address a client reached, not just the raw host. A domain is forward-
+    // resolved to an IP; a bare IP is geo-looked-up directly. $geo is the shared geo
+    // cache (updated in place; the caller persists once). $budget caps live DNS /
+    // ipinfo misses per render so an admin card can't stall on hundreds of cold
+    // destinations — once spent, the rest render from cache only ('' when cold).
+    // Returns '' when nothing could be determined (caller then shows the bare host).
+    public function dstMeta(string $hostport, array &$geo, int &$budget): string
+    {
+        $host = $hostport;
+        if (preg_match('~^\[(.+)\]:\d+$~', $hostport, $m)) {        // [IPv6]:port
+            $host = $m[1];
+        } elseif (preg_match('~^(.+):\d+$~', $hostport, $m)) {      // host:port / IPv4:port
+            $host = $m[1];
+        }
+        $host  = trim($host, '[]');
+        $parts = [];
+        $now   = time();
+
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            // bare IP: reverse-DNS a domain-ish label (memoised under a "ptr:" key)
+            $ip    = $host;
+            $pkey  = 'ptr:' . $host;
+            $fresh = isset($geo[$pkey]) && ($geo[$pkey]['ts'] ?? 0) > $now - 604800;
+            if (!$fresh && $budget > 0) {
+                $budget--;
+                $name       = @gethostbyaddr($host);
+                $geo[$pkey] = ['name' => ($name && $name !== $host) ? $name : '', 'ts' => $now];
+                $fresh      = true;
+            }
+            if ($fresh && ($geo[$pkey]['name'] ?? '') !== '') {
+                $parts[] = htmlspecialchars($geo[$pkey]['name'], ENT_QUOTES);
+            }
+        } else {
+            // domain: forward-resolve to an IP (memoised under a "host:" key)
+            $hkey  = 'host:' . strtolower($host);
+            $fresh = isset($geo[$hkey]['ip']) && ($geo[$hkey]['ts'] ?? 0) > $now - 604800;
+            if (!$fresh && $budget > 0) {
+                $budget--;
+                $fresh = true;
+            }
+            $ip = $fresh ? $this->resolveHost($host, $geo, false) : '';
+        }
+
+        if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP)) {
+            $fresh = isset($geo[$ip]) && ($geo[$ip]['ts'] ?? 0) > $now - 604800;
+            if (!$fresh && $budget > 0) {
+                $budget--;
+                $fresh = true;
+            }
+            if ($fresh) {
+                $g    = $this->geoLookup($ip, $geo, false);
+                $flag = $this->countryFlag($g['country'] ?? '');
+                $meta = array_filter([$flag ? '' : ($g['country'] ?? ''), $g['org'] ?? '']);
+                $lbl  = trim(($flag ? "$flag " : '')
+                    . ($meta ? htmlspecialchars(implode(' · ', $meta), ENT_QUOTES) : ''));
+                if ($lbl !== '') {
+                    $parts[] = $lbl;
+                }
+            }
+        }
+        return implode(' · ', $parts);
     }
 
     // Admin view: connection history across all vless clients, paginated, newest
@@ -13271,15 +13376,29 @@ DNS-over-HTTPS with IP:
         foreach ($log as $inst => $clients) {
             foreach ($clients as $name => $info) {
                 foreach (($info['ips'] ?? []) as $ip => $rec) {
+                    // prune stale destinations first, then the IP itself
+                    foreach (($rec['dst'] ?? []) as $host => $d) {
+                        if (($d['last'] ?? 0) < $ttl) {
+                            unset($log[$inst][$name]['ips'][$ip]['dst'][$host]);
+                        }
+                    }
                     if (($rec['last'] ?? 0) < $ttl) {
                         unset($log[$inst][$name]['ips'][$ip]);
+                        continue;
+                    }
+                    // cap destinations per IP: keep the 50 most-used (ties: recent)
+                    $dst = $log[$inst][$name]['ips'][$ip]['dst'] ?? [];
+                    if (count($dst) > 50) {
+                        uasort($dst, fn($a, $b) => (($b['count'] ?? 0) <=> ($a['count'] ?? 0))
+                            ?: (($b['last'] ?? 0) <=> ($a['last'] ?? 0)));
+                        $log[$inst][$name]['ips'][$ip]['dst'] = array_slice($dst, 0, 50, true);
                     }
                 }
-                // cap IPs per client: keep the 20 most-recent
+                // cap IPs per client: keep the 50 most-recent
                 $ips = $log[$inst][$name]['ips'] ?? [];
-                if (count($ips) > 20) {
+                if (count($ips) > 50) {
                     uasort($ips, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0));
-                    $log[$inst][$name]['ips'] = array_slice($ips, 0, 20, true);
+                    $log[$inst][$name]['ips'] = array_slice($ips, 0, 50, true);
                 }
                 if (empty($log[$inst][$name]['ips'])) {
                     unset($log[$inst][$name]);
@@ -13305,6 +13424,10 @@ DNS-over-HTTPS with IP:
     // Merge observations into the wg history. 'count' tracks reconnect sessions: it
     // only increments when the same client+IP reappears after a >5 min gap, so a
     // continuously-online peer sampled every tick is one session, not thousands.
+    // $e['dst'] (optional) is the list of destination IPs the peer's tunnel address
+    // reached this tick (from conntrack); each is folded into a per-IP dst bucket
+    // (host -> last/count) with the same shape as the vless log, so connLogCard
+    // renders wg and vless destinations identically.
     public function recordWgConnLog(int $inst, array $events)
     {
         if (empty($events)) {
@@ -13316,16 +13439,57 @@ DNS-over-HTTPS with IP:
             $ip   = $e['ip'];
             $ts   = $e['ts'];
             if (!isset($log[$inst][$name]['ips'][$ip])) {
-                $log[$inst][$name]['ips'][$ip] = ['first' => $ts, 'last' => $ts, 'count' => 1];
+                $log[$inst][$name]['ips'][$ip] = ['first' => $ts, 'last' => $ts, 'count' => 1, 'dst' => []];
             } else {
                 if ($ts - ($log[$inst][$name]['ips'][$ip]['last'] ?? 0) > 300) {
                     $log[$inst][$name]['ips'][$ip]['count'] = ($log[$inst][$name]['ips'][$ip]['count'] ?? 0) + 1;
                 }
                 $log[$inst][$name]['ips'][$ip]['last'] = $ts;
             }
+            foreach (($e['dst'] ?? []) as $dstHost) {
+                $log[$inst][$name]['ips'][$ip]['dst'][$dstHost]['last']  = $ts;
+                $log[$inst][$name]['ips'][$ip]['dst'][$dstHost]['count'] =
+                    ($log[$inst][$name]['ips'][$ip]['dst'][$dstHost]['count'] ?? 0) + 1;
+            }
             $log[$inst][$name]['last'] = $ts;
         }
         $this->setWgConnLog($log);
+    }
+
+    // Sample an instance's conntrack table and map each tunnel source IP (the 10.x
+    // a peer owns via AllowedIPs) to the set of external destination IPs it reached.
+    // WG is a plain tunnel with no per-destination logging, so this is the only way
+    // to see where a wg client connects. Reads /proc/net/nf_conntrack (no extra
+    // binary — present whenever nf_conntrack is loaded, which it is because the
+    // instance NATs); output is line-capped and RFC1918/loopback destinations are
+    // dropped as tunnel-internal/LAN noise. Empty (graceful) when conntrack is
+    // absent or the container is down (ssh() returns "" and sets sshFailed).
+    public function wgConntrackDsts(string $service): array
+    {
+        $raw = $this->ssh('cat /proc/net/nf_conntrack 2>/dev/null | head -n 20000', $service);
+        if ($this->sshFailed || trim((string) $raw) === '') {
+            return [];
+        }
+        $map = [];
+        foreach (explode("\n", $raw) as $l) {
+            // the first src=/dst= pair is the original direction (client -> server)
+            if (!preg_match('~\bsrc=(\d{1,3}(?:\.\d{1,3}){3})\s+dst=(\d{1,3}(?:\.\d{1,3}){3})~', $l, $m)) {
+                continue;
+            }
+            [$src, $dst] = [$m[1], $m[2]];
+            if ($dst === $src) {
+                continue;
+            }
+            // skip RFC1918 / loopback / link-local destinations (tunnel-internal, LAN)
+            if (preg_match('~^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)~', $dst)) {
+                continue;
+            }
+            $map[$src][$dst] = true;
+        }
+        foreach ($map as $src => $set) {
+            $map[$src] = array_slice(array_keys($set), 0, 50);
+        }
+        return $map;
     }
 
     // Cron step: sample both wg/awg instances and record which client is connected
@@ -13357,6 +13521,10 @@ DNS-over-HTTPS with IP:
                         $names[$p['PublicKey']] = $this->getName($p);
                     }
                 }
+                // destinations per tunnel IP (peer AllowedIPs, e.g. 10.10.0.5) from
+                // the instance conntrack table — WG has no per-destination log, so
+                // this is the only window into where a wg client actually connected.
+                $dsts   = $this->wgConntrackDsts($this->getInstanceWG());
                 $now    = time();
                 $events = [];
                 foreach ($status['peers'] as $p) {
@@ -13368,8 +13536,21 @@ DNS-over-HTTPS with IP:
                     if ($ip === '') {
                         continue;
                     }
-                    $name     = $names[$p['peer'] ?? ''] ?? ($p['allowed ips'] ?? 'unknown');
-                    $events[] = ['name' => $name, 'ip' => $ip, 'ts' => $now];
+                    $name = $names[$p['peer'] ?? ''] ?? ($p['allowed ips'] ?? 'unknown');
+                    // gather destinations for every tunnel IP this peer owns
+                    $dst = [];
+                    foreach (preg_split('~[\s,]+~', (string) ($p['allowed ips'] ?? '')) as $a) {
+                        $t = strtok(trim($a), '/');
+                        if ($t !== false && $t !== '' && !empty($dsts[$t])) {
+                            $dst = array_merge($dst, $dsts[$t]);
+                        }
+                    }
+                    $events[] = [
+                        'name' => $name,
+                        'ip'   => $ip,
+                        'dst'  => array_slice(array_values(array_unique($dst)), 0, 50),
+                        'ts'   => $now,
+                    ];
                 }
                 if ($events) {
                     $this->recordWgConnLog($inst, $events);
