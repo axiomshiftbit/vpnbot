@@ -51,6 +51,7 @@ class Bot
     public $time_extsub;
     public $time_relayhealth;
     public $time_geowarm;
+    public $time_wgtrack;
     public $subtokens_done;
     // Параметры, пришедшие именно из base64-токена в пути (/pac<hash>/<token>),
     // а не из query-string. Различие существенно: rule-set URL'ы строятся только
@@ -516,6 +517,12 @@ class Bot
                 break;
             case preg_match('~^/clientLog (\d+)$~', $this->input['callback'], $m):
                 $this->clientLogView((int) $m[1]);
+                break;
+            case preg_match('~^/wgLog ([01])(?:\s(\d+))?$~', $this->input['callback'], $m):
+                $this->wgLogView((int) $m[1], (int) ($m[2] ?? 0));
+                break;
+            case preg_match('~^/wgClientLog ([01]) (\d+)(?:\s(\d+))?$~', $this->input['callback'], $m):
+                $this->wgClientLogView((int) $m[1], (int) $m[2], (int) ($m[3] ?? 0));
                 break;
             case preg_match('~^/cleanDeny(?:\s(\d))?$~', $this->input['callback'], $m):
                 $this->cleanDeny($m[1]);
@@ -3928,6 +3935,7 @@ NFT;
             'xrayStatsUser',
             'checkTrafficLimits',
             'trackOnline',
+            'trackWgOnline',
             'refreshExtSubCache',
             'checkDatUpdates',
             'backfillSubTokens',
@@ -8209,6 +8217,12 @@ DNS-over-HTTPS with IP:
         $text = "Menu -> " . $this->getTitleWG() . ($ver ? "\n$ver" : '') . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
         $data[] = [
             [
+                'text'          => '📜 ' . $this->i18n('connection log'),
+                'callback_data' => "/wgLog $inst",
+            ],
+        ];
+        $data[] = [
+            [
                 'text'          =>  '🔄 ' . $this->i18n('refresh'),
                 'callback_data' => "/menu wg $inst $page",
             ],
@@ -8745,6 +8759,12 @@ DNS-over-HTTPS with IP:
                         [
                             'text'          => $this->i18n('MTU') . " " . ($clients[$client]['interface']['MTU'] ?: $this->getPacConf()[$this->getInstanceWG(1) . 'mtu'] ?: $this->mtu),
                             'callback_data' => "/changeMTU {$client}_$page",
+                        ],
+                    ],
+                    [
+                        [
+                            'text'          => '📜 ' . $this->i18n('connection log'),
+                            'callback_data' => "/wgClientLog {$this->wgNum()} {$client} $page",
                         ],
                     ],
                     [
@@ -13210,6 +13230,259 @@ DNS-over-HTTPS with IP:
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => "/userXr $i",
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Extract the bare IP from a wireguard "endpoint" field (host:port, or an
+    // IPv6 literal like [2606:..]:2408). Mirrors the parse in getAwgClient(). Returns
+    // '' for an empty/"(none)" endpoint.
+    public function endpointIp(string $endpoint): string
+    {
+        $endpoint = trim($endpoint);
+        if ($endpoint === '' || stripos($endpoint, 'none') !== false) {
+            return '';
+        }
+        if (preg_match('~^\[(.+)\]:\d+$~', $endpoint, $m)) { // [IPv6]:port
+            return $m[1];
+        }
+        $pos = strrpos($endpoint, ':');
+        return $pos !== false ? substr($endpoint, 0, $pos) : $endpoint;
+    }
+
+    // Persistent per-client connection history for the wg/awg instances, analogous
+    // to the vless connlog. Keyed by instance (0=wg, 1=wg1) -> client name -> source
+    // IPs. WG is a tunnel with no per-destination logging, so we record the peer's
+    // endpoint IP and reconnect sessions (not destinations). Bounded/pruned like the
+    // vless log; shared across containers via the same atomic write.
+    public function getWgConnLog(): array
+    {
+        return json_decode(@file_get_contents('/config/wgconnlog.json'), true) ?: [];
+    }
+
+    public function setWgConnLog(array $log)
+    {
+        $ttl = time() - 2592000; // 30 days
+        foreach ($log as $inst => $clients) {
+            foreach ($clients as $name => $info) {
+                foreach (($info['ips'] ?? []) as $ip => $rec) {
+                    if (($rec['last'] ?? 0) < $ttl) {
+                        unset($log[$inst][$name]['ips'][$ip]);
+                    }
+                }
+                // cap IPs per client: keep the 20 most-recent
+                $ips = $log[$inst][$name]['ips'] ?? [];
+                if (count($ips) > 20) {
+                    uasort($ips, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0));
+                    $log[$inst][$name]['ips'] = array_slice($ips, 0, 20, true);
+                }
+                if (empty($log[$inst][$name]['ips'])) {
+                    unset($log[$inst][$name]);
+                }
+            }
+            // cap clients per instance: keep the 200 most-recently-active
+            if (count($log[$inst] ?? []) > 200) {
+                uasort($log[$inst], fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0));
+                $log[$inst] = array_slice($log[$inst], 0, 200, true);
+            }
+            if (empty($log[$inst])) {
+                unset($log[$inst]);
+            }
+        }
+        $tmp = '/config/wgconnlog.json.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, json_encode($log)) !== false) {
+            rename($tmp, '/config/wgconnlog.json');
+        } else {
+            @unlink($tmp);
+        }
+    }
+
+    // Merge observations into the wg history. 'count' tracks reconnect sessions: it
+    // only increments when the same client+IP reappears after a >5 min gap, so a
+    // continuously-online peer sampled every tick is one session, not thousands.
+    public function recordWgConnLog(int $inst, array $events)
+    {
+        if (empty($events)) {
+            return;
+        }
+        $log = $this->getWgConnLog();
+        foreach ($events as $e) {
+            $name = $e['name'];
+            $ip   = $e['ip'];
+            $ts   = $e['ts'];
+            if (!isset($log[$inst][$name]['ips'][$ip])) {
+                $log[$inst][$name]['ips'][$ip] = ['first' => $ts, 'last' => $ts, 'count' => 1];
+            } else {
+                if ($ts - ($log[$inst][$name]['ips'][$ip]['last'] ?? 0) > 300) {
+                    $log[$inst][$name]['ips'][$ip]['count'] = ($log[$inst][$name]['ips'][$ip]['count'] ?? 0) + 1;
+                }
+                $log[$inst][$name]['ips'][$ip]['last'] = $ts;
+            }
+            $log[$inst][$name]['last'] = $ts;
+        }
+        $this->setWgConnLog($log);
+    }
+
+    // Cron step: sample both wg/awg instances and record which client is connected
+    // from which source IP. Reads live "wg show" status (endpoint + latest
+    // handshake) and maps the peer's public key to its name via the server config.
+    // Only peers with a fresh handshake (same rule as the wg menu) are logged, so a
+    // stale endpoint from an old session never counts as a live connection. Rate-
+    // gated to ~30s: handshakes refresh every ~2 min, so this never misses an online
+    // peer while avoiding an ssh round-trip on every 10 s tick.
+    public function trackWgOnline(): void
+    {
+        if (!empty($this->time_wgtrack) && time() - $this->time_wgtrack < 30) {
+            return;
+        }
+        $this->time_wgtrack = time();
+        $saved = $this->wg;
+        foreach ([0, 1] as $inst) {
+            try {
+                $this->wg = $inst;
+                $status = $this->readStatus();
+                // instance container down / interface absent → readStatus() is null
+                if (empty($status) || empty($status['peers'])) {
+                    continue;
+                }
+                $config = $this->readConfig();
+                $names  = [];
+                foreach ((is_array($config) ? ($config['peers'] ?? []) : []) as $p) {
+                    if (!empty($p['PublicKey'])) {
+                        $names[$p['PublicKey']] = $this->getName($p);
+                    }
+                }
+                $now    = time();
+                $events = [];
+                foreach ($status['peers'] as $p) {
+                    // online only: a fresh handshake, mirroring the wg menu's rule
+                    if (!preg_match('~^(\d+ seconds|[12] minute)~', $p['latest handshake'] ?? '')) {
+                        continue;
+                    }
+                    $ip = $this->endpointIp($p['endpoint'] ?? '');
+                    if ($ip === '') {
+                        continue;
+                    }
+                    $name     = $names[$p['peer'] ?? ''] ?? ($p['allowed ips'] ?? 'unknown');
+                    $events[] = ['name' => $name, 'ip' => $ip, 'ts' => $now];
+                }
+                if ($events) {
+                    $this->recordWgConnLog($inst, $events);
+                }
+            } catch (\Throwable $e) {
+                error_log('trackWgOnline[' . $inst . ']: ' . $e->getMessage());
+            }
+        }
+        $this->wg = $saved;
+    }
+
+    // Admin view: wg/awg connection history for one instance, paginated, newest
+    // client first. Reuses the vless connLogCard renderer (WG records carry no
+    // destinations, so only IP + geo/ISP + first/last + reconnect count show).
+    public function wgLogView(int $inst, int $page = 0)
+    {
+        $inst = $inst ? 1 : 0;
+        $log  = $this->getWgConnLog()[$inst] ?? [];
+        uasort($log, fn($a, $b) => ($b['last'] ?? 0) <=> ($a['last'] ?? 0));
+
+        $perPage = 5;
+        $all     = max(1, (int) ceil(count($log) / $perPage));
+        $page    = $page < 0 ? $all - 1 : min($page, $all - 1);
+
+        $text[] = 'Menu -> ' . $this->i18n('connection log') . ' (' . ($inst ? 'wg1' : 'wg') . ')';
+        $text[] = '';
+        if (empty($log)) {
+            $text[] = $this->i18n('no log');
+        } else {
+            $geo    = $this->getGeoCache();
+            $before = $geo;
+            $text[] = '<code>';
+            foreach (array_slice($log, $page * $perPage, $perPage, true) as $name => $info) {
+                foreach ($this->connLogCard((string) $name, $info, $geo, false) as $line) {
+                    $text[] = $line;
+                }
+                $text[] = '';
+            }
+            $text[] = '</code>';
+            if ($geo !== $before) {
+                $this->setGeoCache($geo);
+            }
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => "/wgLog $inst $page",
+        ]];
+        if ($all > 1) {
+            $data[] = [
+                ['text' => '<<', 'callback_data' => "/wgLog $inst " . ($page - 1 >= 0 ? $page - 1 : $all - 1)],
+                ['text' => ($page + 1) . "/$all", 'callback_data' => "/wgLog $inst $page"],
+                ['text' => '>>', 'callback_data' => "/wgLog $inst " . ($page < $all - 1 ? $page + 1 : 0)],
+            ];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/menu wg $inst 0",
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Admin view: full wg/awg connection history for one client (by instance +
+    // numeric client index), resolved to the client name and looked up in the log.
+    public function wgClientLogView(int $inst, int $index, int $page = 0)
+    {
+        $inst     = $inst ? 1 : 0;
+        $saved    = $this->wg;
+        $this->wg = $inst;
+        $clients  = $this->readClients();
+        $this->wg = $saved;
+        $iface    = $clients[$index]['interface'] ?? null;
+        if ($iface === null) {
+            $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('no log'), [[
+                ['text' => $this->i18n('back'), 'callback_data' => "/menu wg $inst $page"],
+            ]]);
+            return;
+        }
+        $name = $this->getName($iface);
+        $info = $this->getWgConnLog()[$inst][$name] ?? [];
+
+        $text[] = 'Menu -> ' . $this->i18n('connection log');
+        $text[] = htmlspecialchars((string) $name, ENT_QUOTES);
+        $text[] = '';
+        if (empty($info['ips'])) {
+            $text[] = $this->i18n('no log');
+        } else {
+            $geo    = $this->getGeoCache();
+            $before = $geo;
+            $text[] = '<code>';
+            foreach ($this->connLogCard((string) $name, $info, $geo, true) as $line) {
+                $text[] = $line;
+            }
+            $text[] = '</code>';
+            if ($geo !== $before) {
+                $this->setGeoCache($geo);
+            }
+        }
+
+        $data   = [];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => "/wgClientLog $inst $index $page",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/menu client {$index}_$page",
         ]];
         $this->update(
             $this->input['chat'],
