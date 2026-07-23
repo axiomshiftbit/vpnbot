@@ -57,6 +57,10 @@ class Bot
     // а не из query-string. Различие существенно: rule-set URL'ы строятся только
     // токеном, а deep-link'и импорта — только query-string (см. subscription()).
     public $subToken = [];
+    // Подменяемый транспорт Bot API (см. request()). null — обычный curl к
+    // api.telegram.org; объект с методом call($method, $data, $json_header) —
+    // локальная панель.
+    public $transport;
     public $admin;
     public $ports;
     public $warpprofile;
@@ -20795,6 +20799,12 @@ DNS-over-HTTPS with IP:
 
     public function request($method, $data, $json_header = 0)
     {
+        // Панель (app/panel/) подменяет транспорт: те же методы обслуживаются
+        // локальным хранилищем, наружу ничего не уходит. В обычном режиме
+        // $transport пуст и всё работает как раньше.
+        if ($this->transport) {
+            return $this->transport->call($method, $data, $json_header);
+        }
         $ch = curl_init();
         curl_setopt_array($ch, [
             CURLOPT_URL            => $this->api . $method,
@@ -20811,6 +20821,13 @@ DNS-over-HTTPS with IP:
             ] : [],
             CURLOPT_POSTFIELDS     => $data,
         ]);
+        // Исходящие к Telegram могут быть зарезаны у хостера/провайдера. Схема
+        // берётся из самого значения (http://, socks5h://…), поэтому отдельного
+        // CURLOPT_PROXYTYPE не нужно. socks5h:// заодно уводит в прокси и DNS —
+        // при блокировке по имени резолв на сервере тоже врёт.
+        if ($proxy = getenv('TELEGRAM_PROXY')) {
+            curl_setopt($ch, CURLOPT_PROXY, $proxy);
+        }
         $res  = curl_exec($ch);
         $cerr = $res === false ? curl_error($ch) : '';
         $r    = json_decode((string) $res, true);
@@ -20845,6 +20862,14 @@ DNS-over-HTTPS with IP:
             if (!empty($r['description'])) {
                 error_log('getUpdates error: ' . $r['description']);
                 sleep(3);
+                continue;
+            }
+            // Сеть до Telegram недоступна: curl вернул false, декодировать
+            // нечего, описания ошибки нет. Без этой ветки цикл уходил в
+            // sleep(1) и молотил getUpdates раз в секунду всё время блокировки.
+            if (!is_array($r)) {
+                error_log('getUpdates: no response from ' . parse_url($this->api, PHP_URL_HOST));
+                sleep(5);
                 continue;
             }
             file_put_contents('/start', 1);

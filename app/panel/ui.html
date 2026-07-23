@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vpnbot panel</title>
+<style>
+:root{
+  --bg:#0e1621; --panel:#17212b; --bubble:#182533; --own:#2b5278; --text:#e9edf1;
+  --dim:#7f91a4; --line:#22303c; --accent:#3b82c4; --btn:#20303f; --btnh:#2a445c;
+}
+@media (prefers-color-scheme: light){
+  :root{ --bg:#eef1f5; --panel:#fff; --bubble:#fff; --own:#d7ecff; --text:#12212f;
+         --dim:#66788a; --line:#dde3ea; --accent:#2f6fa8; --btn:#f0f3f7; --btnh:#e2e8f0; }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,Segoe UI,Roboto,Ubuntu,sans-serif;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}
+header b{font-weight:600}
+header .sp{flex:1}
+header button{background:var(--btn);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:13px}
+header button:hover{background:var(--btnh)}
+#feed{flex:1 1 auto;overflow-y:auto;padding:14px 12px 4px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:min(820px,95%);align-self:flex-start;background:var(--bubble);border:1px solid var(--line);border-radius:12px;padding:9px 12px;word-wrap:break-word;overflow-wrap:anywhere}
+.msg.own{align-self:flex-end;background:var(--own);border-color:transparent}
+.msg .body{white-space:normal}
+.msg .body pre{white-space:pre-wrap;background:rgba(127,145,164,.14);padding:8px;border-radius:6px;margin:6px 0;overflow-x:auto}
+.msg .body code{background:rgba(127,145,164,.16);padding:1px 4px;border-radius:4px;cursor:pointer}
+.msg .body blockquote{border-left:3px solid var(--accent);margin:6px 0;padding:2px 0 2px 10px;color:var(--dim)}
+.msg .body a{color:var(--accent)}
+.msg .body .tg-spoiler{background:var(--dim);color:transparent;border-radius:3px;cursor:pointer}
+.msg .body .tg-spoiler.show{background:transparent;color:inherit}
+.msg .time{color:var(--dim);font-size:11px;margin-top:4px}
+.kb{display:flex;flex-direction:column;gap:5px;margin-top:8px}
+.kb .row{display:flex;gap:5px;flex-wrap:wrap}
+.kb button,.kb a{flex:1 1 120px;background:var(--btn);border:1px solid var(--line);color:var(--text);border-radius:8px;
+  padding:8px 10px;cursor:pointer;font-size:13px;text-align:center;text-decoration:none;min-width:0;word-break:break-word}
+.kb button:hover,.kb a:hover{background:var(--btnh)}
+.kb button:disabled{opacity:.5;cursor:default}
+.att img{max-width:100%;border-radius:8px;margin-top:6px;display:block}
+.att a{display:inline-block;margin-top:6px;color:var(--accent)}
+footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);padding:8px 12px}
+#replybar{display:none;font-size:12px;color:var(--dim);padding-bottom:6px}
+#replybar.on{display:block}
+.inputrow{display:flex;gap:8px;align-items:flex-end}
+#text{flex:1;resize:none;min-height:38px;max-height:160px;background:var(--bg);color:var(--text);
+  border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit}
+.inputrow button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 14px;cursor:pointer}
+.inputrow label{background:var(--btn);border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:84px;background:#000c;color:#fff;
+  padding:10px 16px;border-radius:8px;max-width:80%;display:none;z-index:5;white-space:pre-wrap}
+#busy{position:fixed;top:0;left:0;height:2px;width:0;background:var(--accent);transition:width .2s;z-index:6}
+#login{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;z-index:10}
+#login.on{display:flex}
+#login form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;width:320px;max-width:92%}
+#login h1{font-size:16px;margin:0 0 12px}
+#login input{width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
+#login button{width:100%;margin-top:10px;background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px;cursor:pointer}
+#login .err,#login .note{color:#e06a6a;font-size:12px;margin-top:8px;min-height:16px;white-space:pre-wrap}
+#login .note{color:var(--dim)}
+</style>
+</head>
+<body>
+<div id="busy"></div>
+<header>
+  <b>vpnbot</b><span id="dot" style="color:var(--dim)">•</span>
+  <span class="sp"></span>
+  <button id="menu">/menu</button>
+  <button id="clear">очистить</button>
+  <button id="out">выход</button>
+</header>
+
+<div id="feed"></div>
+
+<footer>
+  <div id="replybar"></div>
+  <div class="inputrow">
+    <textarea id="text" rows="1" placeholder="сообщение или команда"></textarea>
+    <label title="отправить файл">📎<input id="file" type="file" hidden></label>
+    <button id="send">➤</button>
+  </div>
+</footer>
+
+<div id="toast"></div>
+
+<div id="login">
+  <form id="loginform">
+    <h1>Панель управления</h1>
+    <input id="pass" type="password" placeholder="пароль" autocomplete="current-password">
+    <button type="submit">Войти</button>
+    <div class="err" id="loginerr"></div>
+    <div class="note">{{NOTE}}</div>
+  </form>
+</div>
+
+<script>
+const PREFIX = "{{PREFIX}}";
+let rev = 0, replyTo = 0, replyHint = "", timer = null, inflight = false;
+
+const $ = id => document.getElementById(id);
+const feed = $("feed");
+
+function api(path, body, opts){
+  const o = Object.assign({headers:{"X-Panel":"1"}}, opts||{});
+  if (body !== undefined){ o.method = "POST"; o.body = body; }
+  return fetch(PREFIX + "/" + path, o);
+}
+function form(obj){
+  const f = new FormData();
+  for (const k in obj) f.append(k, obj[k]);
+  return f;
+}
+function busy(on){ $("busy").style.width = on ? "70%" : "0"; }
+
+function toast(t, alert){
+  const el = $("toast");
+  el.textContent = t;
+  el.style.display = "block";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.style.display = "none", alert ? 6000 : 3000);
+}
+
+function atBottom(){ return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120; }
+
+function render(m){
+  let el = document.getElementById("m" + m.id);
+  if (m.deleted){ if (el) el.remove(); return; }
+  if (!el){
+    el = document.createElement("div");
+    el.id = "m" + m.id;
+    el.className = "msg" + (m.own ? " own" : "");
+    // Лента строго по возрастанию id: правки приходят вперемешку с новыми.
+    let next = null;
+    for (const c of feed.children) if (+c.id.slice(1) > m.id){ next = c; break; }
+    feed.insertBefore(el, next);
+  }
+  el.innerHTML = "";
+
+  const body = document.createElement("div");
+  body.className = "body";
+  body.innerHTML = m.html || "";
+  el.appendChild(body);
+
+  if (m.attach){
+    const a = document.createElement("div");
+    a.className = "att";
+    if (m.attach.kind === "photo" && m.attach.file){
+      const img = document.createElement("img");
+      img.src = PREFIX + "/file?id=" + encodeURIComponent(m.attach.file);
+      a.appendChild(img);
+    } else if (m.attach.file){
+      const l = document.createElement("a");
+      l.href = PREFIX + "/file?id=" + encodeURIComponent(m.attach.file);
+      l.textContent = "⬇ " + (m.attach.name || "файл");
+      l.setAttribute("download", m.attach.name || "");
+      a.appendChild(l);
+    } else if (m.attach.url){
+      const l = document.createElement("a");
+      l.href = m.attach.url; l.target = "_blank"; l.rel = "noopener";
+      l.textContent = m.attach.name || m.attach.url;
+      a.appendChild(l);
+    }
+    el.appendChild(a);
+  }
+
+  if (m.buttons && m.buttons.length){
+    const kb = document.createElement("div");
+    kb.className = "kb";
+    for (const row of m.buttons){
+      const r = document.createElement("div");
+      r.className = "row";
+      for (const b of row){
+        if (b.cb !== undefined){
+          const btn = document.createElement("button");
+          btn.textContent = b.text;
+          btn.onclick = () => click(m.id, b.cb, btn);
+          r.appendChild(btn);
+        } else {
+          const a = document.createElement("a");
+          a.textContent = b.text + (b.webapp ? " ↗" : "");
+          a.href = b.url; a.target = "_blank"; a.rel = "noopener";
+          r.appendChild(a);
+        }
+      }
+      kb.appendChild(r);
+    }
+    el.appendChild(kb);
+  }
+
+  const t = document.createElement("div");
+  t.className = "time";
+  t.textContent = new Date((m.date || 0) * 1000).toLocaleTimeString();
+  el.appendChild(t);
+}
+
+// force_reply: последний живой запрос бота задаёт, куда уйдёт наш ответ.
+function refreshReply(){
+  let hint = "", to = 0;
+  for (let i = feed.children.length - 1; i >= 0; i--){
+    const id = +feed.children[i].id.slice(1);
+    const m = state[id];
+    if (m && m.reply !== null && m.reply !== undefined && !m.own){ hint = m.reply; to = id; break; }
+    if (m && m.buttons && m.buttons.length) break;
+  }
+  replyTo = to; replyHint = hint;
+  $("replybar").className = to ? "on" : "";
+  $("replybar").textContent = to ? "↩ ответ на запрос: " + (hint || "введите значение") : "";
+  $("text").placeholder = hint || "сообщение или команда";
+}
+
+let state = {};
+
+async function poll(){
+  if (inflight) return;
+  inflight = true;
+  try{
+    const r = await api("state?since=" + rev);
+    if (r.status === 401){ showLogin(); return; }
+    const d = await r.json();
+    if (!d.ok) return;
+    $("dot").style.color = "var(--accent)";
+    const stick = atBottom();
+    for (const m of d.messages){
+      state[m.id] = m;
+      render(m);
+      if (m.deleted) delete state[m.id];
+    }
+    rev = d.rev;
+    if (d.toast) toast(d.toast.text, d.toast.alert);
+    if (d.messages.length){ refreshReply(); if (stick) feed.scrollTop = feed.scrollHeight; }
+  }catch(e){
+    $("dot").style.color = "#e06a6a";
+  }finally{ inflight = false; }
+}
+
+async function click(id, data, btn){
+  if (btn){ btn.disabled = true; }
+  busy(true);
+  try{
+    const r = await api("click", form({message_id:id, data:data}));
+    if (r.status === 401) showLogin();
+  }catch(e){ toast("сеть недоступна"); }
+  finally{ busy(false); if (btn) btn.disabled = false; poll(); }
+}
+
+async function send(){
+  const t = $("text").value;
+  if (!t.trim()) return;
+  $("text").value = ""; $("text").style.height = "auto";
+  busy(true);
+  try{
+    const r = await api("text", form({text:t, reply_to:replyTo}));
+    if (r.status === 401) showLogin();
+  }catch(e){ toast("сеть недоступна"); }
+  finally{ busy(false); poll(); }
+}
+
+async function upload(f){
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("reply_to", replyTo);
+  const cap = prompt("подпись к файлу (для импорта шаблона — его имя), можно пусто:", "");
+  fd.append("caption", cap === null ? "" : cap);
+  busy(true);
+  try{ await api("upload", fd); }
+  catch(e){ toast("не удалось отправить файл"); }
+  finally{ busy(false); poll(); }
+}
+
+function showLogin(){ $("login").className = "on"; clearInterval(timer); timer = null; $("pass").focus(); }
+function start(){
+  $("login").className = "";
+  if (!timer) timer = setInterval(poll, 1000);
+  poll();
+}
+
+$("send").onclick = send;
+$("text").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(); }
+});
+$("text").addEventListener("input", function(){
+  this.style.height = "auto";
+  this.style.height = Math.min(this.scrollHeight, 160) + "px";
+});
+$("file").onchange = function(){ if (this.files[0]) upload(this.files[0]); this.value = ""; };
+$("menu").onclick = () => api("text", form({text:"/menu", reply_to:0})).then(poll);
+$("clear").onclick = () => {
+  if (!confirm("очистить ленту панели? (на настройках бота не сказывается)")) return;
+  api("reset", form({})).then(() => { feed.innerHTML = ""; state = {}; rev = 0; poll(); });
+};
+$("out").onclick = () => api("logout", form({})).then(showLogin);
+
+document.addEventListener("click", e => {
+  if (e.target.classList.contains("tg-spoiler")) e.target.classList.toggle("show");
+  if (e.target.tagName === "CODE" && navigator.clipboard){
+    navigator.clipboard.writeText(e.target.textContent).then(() => toast("скопировано"));
+  }
+});
+
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); });
+
+$("loginform").onsubmit = async e => {
+  e.preventDefault();
+  $("loginerr").textContent = "";
+  const r = await api("login", form({password: $("pass").value}));
+  const d = await r.json().catch(() => ({}));
+  if (d.ok){ $("pass").value = ""; start(); }
+  else $("loginerr").textContent = r.status === 429 ? "слишком много попыток, подождите" : "неверный пароль";
+};
+
+if ("{{AUTH}}" === "1") start(); else showLogin();
+</script>
+</body>
+</html>

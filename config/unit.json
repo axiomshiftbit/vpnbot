@@ -2,6 +2,9 @@
 	"listeners": {
 		"*:80": {
 			"pass": "applications/php"
+		},
+		"*:8090": {
+			"pass": "applications/php"
 		}
 	},
 	"applications": {
@@ -10,7 +13,12 @@
 			"root": "/app",
 			"script": "index.php",
 			"user": "root",
-			"group": "root"
+			"group": "root",
+			"processes": {
+				"max": 6,
+				"spare": 2,
+				"idle_timeout": 60
+			}
 		}
 	},
 	"access_log": "/logs/unit_access"

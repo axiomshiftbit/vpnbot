@@ -11,8 +11,22 @@ require __DIR__ . '/i18n.php';
 if (file_exists(__DIR__ . '/override.php')) {
     include __DIR__ . '/override.php';
 }
+require __DIR__ . '/panel/Panel.php';
+
 $bot  = new Bot($c['key'], $i);
 $hash = $bot->getHashBot();
+
+// Веб-панель существует ТОЛЬКО на своём слушателе unit (PANEL_PORT), который
+// проброшен на 127.0.0.1 хоста и доступен через ssh -L. На публичном 443 её
+// маршрутов нет вовсе — поэтому в nginx для неё ничего не заводится, а
+// /panel<hash> снаружи отвечает так же, как любой несуществующий путь.
+if (Panel::isPanelPort()) {
+    $panel = new Panel($bot, $c);
+    if ($panel->matches($_SERVER['REQUEST_URI'])) {
+        $panel->route($_SERVER['REQUEST_URI']);
+        exit;
+    }
+}
 // Проверка initData вынесена в Bot::webappAuth(): подпись + окно жизни
 // auth_date + сверка user.id со списком админов. Подробности — там же.
 $webapp = $bot->webappAuth($_GET, $c['key'], (array) ($c['admin'] ?? []));
@@ -244,6 +258,14 @@ switch (true) {
                 http_response_code(404);
                 break;
         }
+        break;
+
+    // Панель обслуживается только своим слушателем (ветка выше). Отдельная
+    // ветка нужна, чтобы с публичного 443 путь выглядел обычным «нет такой
+    // страницы», а не 500 из default — по 500 факт существования панели
+    // угадывался бы.
+    case preg_match('~^/panel~', $_SERVER['REQUEST_URI']):
+        http_response_code(404);
         break;
 
     default:
