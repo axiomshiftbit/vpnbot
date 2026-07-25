@@ -21,6 +21,9 @@ class Panel
     private const TRY_WINDOW = 300;
     private const MAX_UPLOAD = 20971520; // 20 MiB
 
+    /** Действия, меняющие состояние: только POST (см. route()). */
+    private const MUTATING = ['login', 'logout', 'click', 'text', 'upload', 'reset', 'tload', 'tsave'];
+
     private $bot;
     private $key;
     private $admins;
@@ -65,6 +68,147 @@ class Panel
         return defined('PANEL_LISTENER');
     }
 
+    /**
+     * Кто вообще вправе обратиться к панели.
+     *
+     * Слушатель unit висит на *:8090 ВНУТРИ контейнера, то есть доступен всей
+     * docker-сети 10.10.0.0/24 — а freedom-outbound xray её явно разрешает
+     * (Bot::ensureFreedomCompat: allow 10.10.0.0/16, иначе ломается warp).
+     * Значит любой vless/vmess/trojan-клиент мог открыть
+     * http://10.10.0.7:8090/panel<hash>/ и получить форму входа: <hash> лежит в
+     * каждой ссылке подписки, угадывать его не надо. «Снаружи панели нет»
+     * держалось только на том, что порт опубликован на 127.0.0.1 хоста, но
+     * контейнерную сеть публикация не закрывает.
+     *
+     * Легитимный источник ровно один — шлюз docker-сети (10.10.0.1): с него
+     * приходит и проброшенный порт (docker-proxy/DNAT), и обращение с хоста
+     * напрямую на 10.10.0.7. Соседний контейнер приходит со своего адреса
+     * (xray — 10.10.0.9, wg — 10.10.0.4), и подменить его VPN-клиент не может:
+     * наружу идёт новое TCP-соединение самого контейнера.
+     *
+     * PANEL_TRUSTED (.env) добавляет адреса/CIDR, '*' снимает проверку.
+     */
+    public static function clientAllowed($ip = null)
+    {
+        $ip  = trim((string) ($ip ?? ($_SERVER['REMOTE_ADDR'] ?? '')));
+        $env = trim((string) getenv('PANEL_TRUSTED'));
+        if ('*' === $env) {
+            return true;
+        }
+        if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+        $allow = ['127.0.0.0/8', '::1'];
+        if ('' !== ($gw = self::defaultGateway())) {
+            $allow[] = $gw;
+        }
+        if ('' !== $env) {
+            $allow = array_merge($allow, preg_split('~[\s,]+~', $env, -1, PREG_SPLIT_NO_EMPTY) ?: []);
+        }
+        foreach ($allow as $rule) {
+            if (self::ipMatch($ip, $rule)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Шлюз сети контейнера: маршрут по умолчанию из /proc/net/route. */
+    private static function defaultGateway()
+    {
+        static $gw;
+        if (null !== $gw) {
+            return $gw;
+        }
+        $gw = '';
+        foreach (preg_split('~\R~', (string) @file_get_contents('/proc/net/route')) as $line) {
+            $f = preg_split('~\s+~', trim($line));
+            // Iface Destination Gateway …: маршрут по умолчанию — Destination 0,
+            // адрес записан hex'ом в сетевом порядке байтов задом наперёд.
+            if (count($f) > 2 && '00000000' === $f[1]
+                && preg_match('~^[0-9A-Fa-f]{8}$~', $f[2]) && '00000000' !== $f[2]) {
+                $gw = implode('.', array_map('hexdec', array_reverse(str_split($f[2], 2))));
+                break;
+            }
+        }
+
+        return $gw;
+    }
+
+    /** Сверка адреса с правилом «IP» либо «сеть/длина префикса» (v4 и v6). */
+    private static function ipMatch($ip, $rule)
+    {
+        $a = @inet_pton($ip);
+        if (false === $a) {
+            return false;
+        }
+        if (!str_contains((string) $rule, '/')) {
+            return ($b = @inet_pton((string) $rule)) !== false && $a === $b;
+        }
+        [$net, $bits] = explode('/', (string) $rule, 2);
+        $b = @inet_pton($net);
+        if (false === $b || strlen($a) !== strlen($b)) {
+            return false;
+        }
+        $bits = max(0, min((int) $bits, strlen($a) * 8));
+        $full = intdiv($bits, 8);
+        if (0 !== strncmp($a, $b, $full)) {
+            return false;
+        }
+        $rest = $bits % 8;
+        if (0 === $rest || $full >= strlen($a)) {
+            return true;
+        }
+        $mask = chr((0xFF << (8 - $rest)) & 0xFF);
+
+        return ($a[$full] & $mask) === ($b[$full] & $mask);
+    }
+
+    /**
+     * Защита от DNS rebinding.
+     *
+     * Слушатель проброшен на 127.0.0.1 хоста, но «только loopback» браузер не
+     * гарантирует: страница злоумышленника может перепривязать своё имя на
+     * 127.0.0.1 и обращаться к панели уже как к своему origin'у — без CORS, а
+     * значит и заголовок X-Panel ей поставить никто не мешает. Куки админа при
+     * этом не уедут (домен другой), но форма входа окажется доступна для
+     * перебора, а /panel<hash> угадывать не надо: хеш виден в любой ссылке
+     * подписки.
+     *
+     * Rebinding возможен только по ИМЕНИ, поэтому literal-IP в Host пропускаем
+     * как есть (ssh -L можно поднять на любой адрес), а имена — по списку.
+     * PANEL_HOSTS расширяет его через .env, '*' отключает проверку.
+     */
+    public static function hostAllowed($host = null)
+    {
+        $host = strtolower(trim((string) ($host ?? ($_SERVER['HTTP_HOST'] ?? ''))));
+        $env  = strtolower(trim((string) getenv('PANEL_HOSTS')));
+        if ('*' === $env) {
+            return true;
+        }
+        if ('' === $host) {
+            return false;
+        }
+        // Host: [::1]:8090 | 127.0.0.1:8090 | localhost
+        if (preg_match('~^\[([0-9a-f:.]+)\](?::(\d{1,5}))?$~', $host, $m)) {
+            $name = $m[1];
+        } elseif (preg_match('~^([^:]+)(?::(\d{1,5}))?$~', $host, $m)) {
+            $name = $m[1];
+        } else {
+            return false;
+        }
+        if (filter_var($name, FILTER_VALIDATE_IP)) {
+            return true;
+        }
+        $allow = ['localhost'];
+        if ('' !== $env) {
+            $allow = array_merge($allow, preg_split('~[\s,]+~', $env, -1, PREG_SPLIT_NO_EMPTY) ?: []);
+        }
+
+        return in_array($name, $allow, true);
+    }
+
     public function prefix()
     {
         return $this->prefix;
@@ -85,6 +229,32 @@ class Panel
         $action = trim(substr($path, strlen($this->prefix)), '/');
         $post   = 'POST' === ($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
+        // Первым делом — откуда пришли: слушатель виден всей docker-сети, а её
+        // freedom-outbound xray разрешает (см. clientAllowed()).
+        if (!self::clientAllowed()) {
+            http_response_code(403);
+            header('Content-Type: text/plain; charset=utf-8');
+            $from = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+            $p    = self::port();
+            echo 'panel: доступ с ' . (filter_var($from, FILTER_VALIDATE_IP) ? $from : 'неизвестного адреса')
+                . " запрещён. Панель — только с хоста (ssh -L $p:127.0.0.1:$p), "
+                . "иначе задайте PANEL_TRUSTED в .env\n";
+
+            return;
+        }
+
+        // Чужое имя в Host — это либо DNS rebinding, либо запрос не туда, куда
+        // думает клиент. Дальше Host уходит в origin панельных ссылок
+        // (panelizeUrl), так что проверка нужна и для них.
+        if (!self::hostAllowed()) {
+            http_response_code(403);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo "panel: Host \"" . htmlspecialchars((string) ($_SERVER['HTTP_HOST'] ?? ''), ENT_QUOTES)
+                . "\" не разрешён. Ходите по 127.0.0.1/localhost (ssh -L) либо задайте PANEL_HOSTS в .env\n";
+
+            return;
+        }
+
         // Кука выдаётся на путь /panel<hash>/ и на сам /panel<hash> браузером
         // уже не отправляется — без редиректа страница без слэша всегда
         // показывала бы форму входа, хотя вход выполнен.
@@ -100,6 +270,16 @@ class Panel
         // без токена в теле.
         if ($post && empty($_SERVER['HTTP_X_PANEL'])) {
             return $this->json(['ok' => false, 'error' => 'bad request'], 400);
+        }
+
+        // Проверка X-Panel выше касается только POST'ов, поэтому изменяющее
+        // действие, доступное по GET, обходило бы её целиком: `<img
+        // src=".../reset">` со стороннего сайта чистил ленту (от куки спасала
+        // одна лишь SameSite=Strict). Метод фиксируем явно.
+        if (!$post && in_array($action, self::MUTATING, true)) {
+            header('Allow: POST');
+
+            return $this->json(['ok' => false, 'error' => 'method not allowed'], 405);
         }
 
         if ('login' === $action && $post) {
@@ -170,7 +350,7 @@ class Panel
      */
     public function ensurePassword()
     {
-        $conf = $this->bot->getPacConf() ?: [];
+        $conf = $this->pacConf();
         if (!empty($conf['panelpswd'])) {
             return null;
         }
@@ -187,32 +367,56 @@ class Panel
 
     public function setPassword($plain)
     {
-        $conf              = $this->bot->getPacConf() ?: [];
+        $conf              = $this->pacConf();
         $conf['panelpswd'] = password_hash((string) $plain, PASSWORD_DEFAULT);
         $this->bot->setPacConf($conf);
         @unlink($this->store->dir() . '/initial_password.txt');
     }
 
+    /**
+     * pac.json перед записью пароля. getPacConf() отдаёт null, если файл
+     * недоступен или битый: с прежним `?: []` мы записали бы поверх него
+     * конфиг из одного поля panelpswd, то есть потеряли бы все настройки бота
+     * (клиентов, ключи reality, шаблоны). Пустой МАССИВ — законное состояние
+     * («{}»), а null — нет.
+     */
+    private function pacConf()
+    {
+        $conf = $this->bot->getPacConf();
+        if (!is_array($conf)) {
+            throw new RuntimeException('pac.json недоступен или повреждён — пароль панели не записан');
+        }
+
+        return $conf;
+    }
+
     private function passwordHash()
     {
-        return (string) (($this->bot->getPacConf() ?: [])['panelpswd'] ?? '');
+        $conf = $this->bot->getPacConf();
+
+        return (string) (is_array($conf) ? ($conf['panelpswd'] ?? '') : '');
     }
 
     private function login()
     {
-        if (!$this->rateOk()) {
+        // Попытку считаем ДО проверки пароля и одной операцией под локом:
+        // «прочитать счётчик → проверить → записать» разными вызовами — это
+        // check-then-act, а панель обслуживают до 4 воркеров unit, так что
+        // параллельные POST'ы видели один и тот же счётчик и лимит 5/300с
+        // превращался в «5 на каждый одновременный запрос».
+        if (!$this->rateHit()) {
             return $this->json(['ok' => false, 'error' => 'too many attempts'], 429);
         }
         $hash = $this->passwordHash();
         $pass = (string) ($_POST['password'] ?? '');
         if ('' === $hash || !password_verify($pass, $hash)) {
-            $this->rateHit();
             // Пауза сглаживает перебор и разницу во времени между «пароль не
             // задан» и «пароль неверный».
             usleep(300000);
 
             return $this->json(['ok' => false, 'error' => 'wrong password'], 403);
         }
+        $this->rateClear();
         $exp = time() + self::TTL;
         setcookie(self::COOKIE, $exp . '.' . $this->sign($exp), [
             'expires'  => $exp,
@@ -247,6 +451,15 @@ class Panel
 
     public function authed()
     {
+        // Секрет подписи — токен бота, соль — хеш пароля. Пока пароля нет,
+        // login() всё равно никого не пускает, но кука проверялась бы по
+        // "panel|<exp>|" с ключом $c['key'] — а на свежей установке (config.php
+        // ещё без токена) он пуст, то есть подпись считается из одних лишь
+        // общеизвестных данных и подделывается тривиально. Нет пароля или
+        // ключа — нет и сессий.
+        if ('' === $this->key || '' === $this->passwordHash()) {
+            return false;
+        }
         $v = (string) ($_COOKIE[self::COOKIE] ?? '');
         if (!preg_match('~^(\d+)\.([0-9a-f]{64})$~', $v, $m)) {
             return false;
@@ -263,22 +476,43 @@ class Panel
         return $this->store->dir() . '/login_attempts.json';
     }
 
-    private function rateOk()
-    {
-        $t = json_decode((string) @file_get_contents($this->rateFile()), true) ?: [];
-        $t = array_filter((array) $t, fn ($ts) => $ts > time() - self::TRY_WINDOW);
-
-        return count($t) < self::MAX_TRIES;
-    }
-
+    /**
+     * Записывает попытку входа и отвечает, была ли она в пределах лимита.
+     * Чтение, подрезка окна и запись идут под одним LOCK_EX — иначе счётчик
+     * гонялся между воркерами, а file_put_contents без лока мог оставить
+     * порванный JSON, который json_decode вернул бы как null (счётчик с нуля).
+     */
     private function rateHit()
     {
-        $t   = json_decode((string) @file_get_contents($this->rateFile()), true) ?: [];
-        $t   = array_values(array_filter((array) $t, fn ($ts) => $ts > time() - self::TRY_WINDOW));
+        $f = $this->rateFile();
+        $h = @fopen($f, 'c+');
+        if (!$h) {
+            // Посчитать не вышло — пускаем к проверке пароля: иначе сломанный
+            // файл запер бы админа снаружи навсегда, а барьер пароля остаётся.
+            return true;
+        }
+        @chmod($f, 0600);
+        flock($h, LOCK_EX);
+        $t   = json_decode((string) stream_get_contents($h), true);
+        $t   = array_values(array_filter((array) $t, fn ($ts) => is_numeric($ts) && $ts > time() - self::TRY_WINDOW));
+        $ok  = count($t) < self::MAX_TRIES;
         $t[] = time();
-        @touch($this->rateFile());
-        @chmod($this->rateFile(), 0600);
-        file_put_contents($this->rateFile(), json_encode($t));
+        // Держим не больше двух окон попыток: файл не должен расти от долбёжки.
+        $t = array_slice($t, -2 * self::MAX_TRIES);
+        rewind($h);
+        ftruncate($h, 0);
+        fwrite($h, (string) json_encode($t));
+        fflush($h);
+        flock($h, LOCK_UN);
+        fclose($h);
+
+        return $ok;
+    }
+
+    /** Удачный вход обнуляет счётчик — иначе он копил бы и легальные заходы. */
+    private function rateClear()
+    {
+        @unlink($this->rateFile());
     }
 
     // ── страница ────────────────────────────────────────────────────────────
@@ -288,6 +522,9 @@ class Panel
         header('Content-Type: text/html; charset=utf-8');
         header('X-Frame-Options: DENY');
         header('Referrer-Policy: no-referrer');
+        // Страница знает, выполнен ли вход ({{AUTH}}), и несёт подсказку о
+        // состоянии установки — в кэш (в т.ч. общий) ей попадать незачем.
+        header('Cache-Control: no-store');
         self::csp();
         $html = (string) file_get_contents(__DIR__ . '/ui.html');
         echo strtr($html, [
@@ -389,7 +626,8 @@ class Panel
             return;
         }
         header('Content-Type: ' . $types[$ext]);
-        header('Cache-Control: max-age=86400');
+        header('X-Content-Type-Options: nosniff');
+        header('Cache-Control: private, max-age=86400');
         readfile($path);
     }
 
@@ -409,6 +647,11 @@ class Panel
         // редактор просто перестал бы открываться. Страница целиком своя и
         // грузит только собственную статику.
         header('Content-Type: text/html; charset=utf-8');
+        // Framing и Referrer к CSP отношения не имеют, а редактор — такая же
+        // страница панели: без них его можно было положить в чужой iframe.
+        header('X-Frame-Options: DENY');
+        header('Referrer-Policy: no-referrer');
+        header('X-Content-Type-Options: nosniff');
         $jPrefix = json_encode($this->prefix);
         $jTy     = json_encode($ty, JSON_UNESCAPED_UNICODE);
         $jTe     = json_encode($te, JSON_UNESCAPED_UNICODE);
@@ -604,7 +847,12 @@ class Panel
         if (empty($_FILES) && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $limit) {
             return $this->json(['ok' => false, 'error' => 'файл больше ' . $this->human($limit) . ' (php.ini)'], 413);
         }
-        if (empty($f) || !is_uploaded_file($f['tmp_name'] ?? '') || ($f['error'] ?? 1) !== UPLOAD_ERR_OK) {
+        // Поле, отправленное как file[], даёт массивы в каждом ключе $_FILES;
+        // is_uploaded_file(array) — TypeError, то есть фатал вместо ответа.
+        if (!is_array($f) || is_array($f['tmp_name'] ?? null)) {
+            return $this->json(['ok' => false, 'error' => 'upload failed'], 400);
+        }
+        if (!is_uploaded_file($f['tmp_name'] ?? '') || ($f['error'] ?? 1) !== UPLOAD_ERR_OK) {
             return $this->json(['ok' => false, 'error' => 'upload failed'], 400);
         }
         if (($f['size'] ?? 0) > $limit) {
@@ -746,6 +994,7 @@ class Panel
     {
         http_response_code($code);
         header('Content-Type: application/json; charset=utf-8');
+        header('X-Content-Type-Options: nosniff');
         // Опрос ленты идёт по одному и тому же URL, пока не поменяется rev —
         // кэш браузера тут только мешает.
         header('Cache-Control: no-store');

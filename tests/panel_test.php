@@ -151,7 +151,60 @@ panelAssert(!$panel->authed(), 'просроченная кука не пуск�
 $_COOKIE['panel'] = $exp . '.' . $sign->invoke($panel, $exp);
 $panel->setPassword('another one');
 panelAssert(!$panel->authed(), 'смена пароля сбрасывает выданные сессии');
+
+// Пока пароля нет, подпись куки считается по "panel|<exp>|" и ключу бота — на
+// свежей установке он пуст, то есть кука подделывается кем угодно.
+$noPass                  = new PanelTestBot();
+$noPass->transport       = $transport;
+$blank                   = new Panel($noPass, ['key' => 'test-token:AAH', 'admin' => [111]], $store);
+$blankSign               = $sign->invoke($blank, $exp);
+$_COOKIE['panel']        = $exp . '.' . $blankSign;
+panelAssert(!$blank->authed(), 'без заданного пароля кука не пускает');
+$noKey            = new Panel($bot, ['key' => '', 'admin' => [111]], $store);
+$_COOKIE['panel'] = $exp . '.' . $sign->invoke($noKey, $exp);
+panelAssert(!$noKey->authed(), 'без ключа бота кука не пускает');
 unset($_COOKIE['panel']);
+
+// pac.json недоступен/битый → getPacConf() отдаёт null. Записать поверх него
+// конфиг из одного panelpswd означало бы потерять все настройки бота.
+class PanelBrokenPacBot extends PanelTestBot
+{
+    public function getPacConf()
+    {
+        return null;
+    }
+}
+$broken = new Panel(new PanelBrokenPacBot(), ['key' => 'k', 'admin' => [111]], $store);
+$threw  = false;
+try {
+    $broken->setPassword('whatever!');
+} catch (RuntimeException $e) {
+    $threw = true;
+}
+panelAssert($threw, 'битый pac.json не затирается паролем панели');
+
+// ── лимит попыток входа ──────────────────────────────────────────────────────
+// Попытка записывается ДО проверки пароля и одной операцией под локом, иначе
+// параллельные воркеры unit видели один и тот же счётчик.
+$hit   = new ReflectionMethod(Panel::class, 'rateHit');
+$clear = new ReflectionMethod(Panel::class, 'rateClear');
+$rl    = new Panel($bot, ['key' => 'k', 'admin' => [111]], $store);
+$clear->invoke($rl);
+for ($i = 1; $i <= 5; $i++) {
+    panelAssert($hit->invoke($rl), "попытка $i в пределах лимита");
+}
+panelAssert(!$hit->invoke($rl), 'шестая попытка за окно отклоняется');
+$clear->invoke($rl);
+panelAssert($hit->invoke($rl), 'удачный вход обнуляет счётчик');
+$clear->invoke($rl);
+
+// ── Host: защита от DNS rebinding ────────────────────────────────────────────
+panelAssert(Panel::hostAllowed('127.0.0.1:8090'), 'loopback-адрес разрешён');
+panelAssert(Panel::hostAllowed('localhost:8090'), 'localhost разрешён');
+panelAssert(Panel::hostAllowed('[::1]:8090'), 'IPv6-loopback разрешён');
+panelAssert(Panel::hostAllowed('10.0.0.5'), 'literal-IP разрешён: rebinding идёт по имени');
+panelAssert(!Panel::hostAllowed('rebind.attacker.test:8090'), 'чужое имя в Host отклоняется');
+panelAssert(!Panel::hostAllowed(''), 'пустой Host отклоняется');
 
 // ── санитайзер телеграмного HTML ─────────────────────────────────────────────
 $h = Panel::renderText('<b>ok</b> <script>alert(1)</script> <code>x</code>');
@@ -186,6 +239,15 @@ panelAssert($btns[1]['url'] === 'vless://uuid@host', 'deep-link клиента �
 panelAssert(null === (new ReflectionMethod(PanelTransport::class, 'ingest'))
     ->invoke($transport, 'data:text/html,<script>'), 'data:-вложение не создаётся');
 
+// Браузер выбрасывает управляющие символы внутри схемы: "java\tscript:" — это
+// javascript:. Проверка должна смотреть на ту же строку, что и он.
+panelAssert(!PanelTransport::safeUrl("java\tscript:alert(1)"), 'схема с табом внутри не проходит');
+panelAssert(!PanelTransport::safeUrl("java\nscript:alert(1)"), 'схема с переносом внутри не проходит');
+panelAssert(!PanelTransport::safeUrl("\x01javascript:alert(1)"), 'управляющий символ перед схемой не спасает');
+panelAssert(!PanelTransport::safeUrl(' DATA:text/html,x'), 'регистр и пробел схему не прячут');
+panelAssert(PanelTransport::safeUrl('https://ok.test/a?b=c'), 'обычная ссылка проходит');
+panelAssert(PanelTransport::safeUrl('sing-box://import?u=1'), 'deep-link клиента проходит');
+
 // ── уборка загруженных файлов ────────────────────────────────────────────────
 $orphan = $store->storeFile('x', 'old.json');
 touch($store->filePath($orphan), time() - 90000);
@@ -198,8 +260,40 @@ $att = $store->read()['messages'][$last]['attach'];
 panelAssert($store->fileExists($att['file']), 'вложение сообщения уборкой не трогается');
 
 // ── очистка ленты ────────────────────────────────────────────────────────────
+// $fresh только что создан и ни к какому сообщению ещё не привязан — ровно тот
+// случай, когда длинный обработчик уже записал вложение через storeFile(), но
+// не успел отправить сообщение. Прежний reset() сносил такой файл, и в ленте
+// оставался бабл с битой картинкой.
 $store->reset();
 panelAssert([] === $store->read()['messages'], 'reset() чистит ленту');
-panelAssert([] === (glob("$dir/files/*") ?: []), 'reset() чистит файлы');
+panelAssert(!$store->fileExists($att['file']), 'reset() удаляет вложения ленты');
+panelAssert($store->fileExists($fresh), 'reset() не трогает файл, ещё не привязанный к сообщению');
+touch($store->filePath($fresh), time() - 120);
+$store->reset();
+panelAssert(!$store->fileExists($fresh), 'осиротевший файл убирается следующей очисткой');
+
+// ── откуда пускаем: слушатель виден всей docker-сети ─────────────────────────
+$gw = (new ReflectionMethod(Panel::class, 'defaultGateway'))->invoke(null);
+panelAssert(Panel::clientAllowed('127.0.0.1'), 'loopback пускаем');
+panelAssert(Panel::clientAllowed('::1'), 'IPv6-loopback пускаем');
+// xray-контейнер (10.10.0.9) ходит через freedom-outbound, которому разрешена
+// вся 10.10.0.0/16 — так VPN-клиент дотягивался до панели на 10.10.0.7:8090.
+panelAssert(!Panel::clientAllowed('10.10.0.9'), 'соседний контейнер не пускаем');
+if ('10.10.0.1' !== $gw) {
+    panelAssert(!Panel::clientAllowed('10.10.0.1'), 'чужой шлюз сам по себе не пускаем');
+}
+panelAssert(!Panel::clientAllowed(''), 'пустой адрес не пускаем');
+panelAssert(!Panel::clientAllowed('не-адрес'), 'мусор вместо адреса не пускаем');
+if ('' !== $gw) {
+    panelAssert(Panel::clientAllowed($gw), 'шлюз своей сети (проброшенный порт и хост) пускаем');
+}
+putenv('PANEL_TRUSTED=10.10.0.0/24 203.0.113.7');
+panelAssert(Panel::clientAllowed('10.10.0.9'), 'PANEL_TRUSTED открывает сеть по CIDR');
+panelAssert(Panel::clientAllowed('203.0.113.7'), 'PANEL_TRUSTED открывает одиночный адрес');
+panelAssert(!Panel::clientAllowed('10.10.1.9'), 'соседний CIDR не попадает под PANEL_TRUSTED');
+putenv('PANEL_TRUSTED=*');
+panelAssert(Panel::clientAllowed('198.51.100.4'), 'PANEL_TRUSTED=* снимает проверку');
+putenv('PANEL_TRUSTED');
+panelAssert(!Panel::clientAllowed('198.51.100.4'), 'без PANEL_TRUSTED внешний адрес закрыт');
 
 echo "panel_test: OK\n";

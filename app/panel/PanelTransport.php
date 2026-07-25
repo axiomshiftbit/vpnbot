@@ -184,7 +184,16 @@ class PanelTransport
      */
     public static function safeUrl($url)
     {
-        return is_string($url) && !preg_match('~^\s*(javascript|data|vbscript)\s*:~i', $url);
+        if (!is_string($url)) {
+            return false;
+        }
+        // Перед разбором схемы браузер выбрасывает из URL пробельные и
+        // управляющие символы: "java\tscript:alert(1)" и "\njavascript:…"
+        // исполняются, а прежний шаблон (^\s* и \s* только вокруг) их
+        // пропускал. Сверяем ту же строку, что увидит браузер.
+        $u = (string) preg_replace('~[\x00-\x20\x7f]~', '', $url);
+
+        return !preg_match('~^(javascript|data|vbscript):~i', $u);
     }
 
     private function kindOf($name, $mime)

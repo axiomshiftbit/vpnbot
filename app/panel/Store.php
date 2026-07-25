@@ -16,7 +16,8 @@
  *   toast    — последний answerCallbackQuery
  *
  * Все записи идут под flock: панельные запросы обслуживаются несколькими
- * процессами unit, а при включённом TeeTransport сюда же пишет cron.
+ * процессами unit (см. applications/panel в config/unit.json), и опрос ленты
+ * идёт параллельно с длинным обработчиком.
  */
 class PanelStore
 {
@@ -288,13 +289,24 @@ class PanelStore
         ];
     }
 
-    /** Полная очистка ленты (кнопка «очистить» в панели). */
+    /**
+     * Полная очистка ленты (кнопка «очистить» в панели).
+     *
+     * Файлы убираем ВНУТРИ блокировки и только те, на которые ссылается лента:
+     * прежний `glob() + unlink` до mutate() сносил в том числе вложение,
+     * которое параллельный обработчик уже записал через storeFile(), но ещё не
+     * успел прикрепить к сообщению, — в ленте оставался бабл с битой
+     * картинкой. Осиротевшие остатки подчищает pruneUploads() ниже: свежие
+     * (моложе минуты) переживают очистку, как и должны.
+     */
     public function reset()
     {
-        foreach (glob($this->filesDir . '/*') ?: [] as $f) {
-            @unlink($f);
-        }
         $this->mutate(function (&$state) {
+            foreach ($state['messages'] as $m) {
+                if (!empty($m['attach']['file'])) {
+                    @unlink($this->filesDir . '/' . $m['attach']['file']);
+                }
+            }
             $next             = $state['next_id'];
             $rev              = $state['rev'];
             $state            = $this->blank();
@@ -303,5 +315,6 @@ class PanelStore
 
             return true;
         });
+        $this->pruneUploads(60);
     }
 }

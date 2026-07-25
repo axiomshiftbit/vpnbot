@@ -15910,6 +15910,17 @@ DNS-over-HTTPS with IP:
 
     public function saveTemplate($name, $type, $json)
     {
+        // $type подставляется в путь "/config/$type.json" (ветка 'origin') и в
+        // ключ pac.json. Приходит он из POST — и в /webapp$hash/save, и в
+        // панельном /tsave, — а проверялся только на входе load'а: type вида
+        // "../app/x" писал бы json мимо /config. Ограничиваем словом, как это
+        // уже сделано для ?ty= в index.php.
+        if (!preg_match('~^\w+$~', (string) $type)) {
+            return [
+                'status'  => false,
+                'message' => 'wrong type',
+            ];
+        }
         $decoded = json_decode($json, true);
         // json_decode возвращает null (не false) на битом JSON; шаблон обязан
         // быть объектом — скаляр/строка тоже «wrong format».
@@ -15927,6 +15938,16 @@ DNS-over-HTTPS with IP:
             ];
         }
         $pac = $this->getPacConf();
+        // getPacConf() отдаёт null, если pac.json недоступен или битый. Дальше
+        // $pac["{$type}templates"][$name] = … создало бы массив из ОДНОГО ключа
+        // и setPacConf() записал бы его поверх конфига: клиенты, ключи reality,
+        // остальные шаблоны — всё пропало бы ради сохранения одного шаблона.
+        if (!is_array($pac)) {
+            return [
+                'status'  => false,
+                'message' => 'pac.json unavailable',
+            ];
+        }
         switch ($name) {
             case 'origin':
                 file_put_contents("/config/$type.json", json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
@@ -15946,6 +15967,13 @@ DNS-over-HTTPS with IP:
     public function delTemplate($type, $name)
     {
         $pac = $this->getPacConf();
+        // Как и в saveTemplate(): null вместо конфига — не повод записать поверх
+        // pac.json массив из одних шаблонов.
+        if (!is_array($pac)) {
+            $this->templates($type);
+
+            return;
+        }
         unset($pac["{$type}templates"][base64_decode($name)]);
         $this->setPacConf($pac);
         $this->templates($type);
@@ -15953,7 +15981,12 @@ DNS-over-HTTPS with IP:
 
     public function copyTemplate($name, $type)
     {
-        $pac  = $this->getPacConf();
+        $pac = $this->getPacConf();
+        if (!is_array($pac)) {
+            $this->templates($type);
+
+            return;
+        }
         $pac["{$type}templates"][$name] = json_decode(file_get_contents("/config/$type.json"), true);
         $this->setPacConf($pac);
         $this->templates($type);
