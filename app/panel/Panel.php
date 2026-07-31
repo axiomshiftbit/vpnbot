@@ -90,7 +90,7 @@ class Panel
      */
     public static function clientAllowed($ip = null)
     {
-        $ip  = trim((string) ($ip ?? ($_SERVER['REMOTE_ADDR'] ?? '')));
+        $ip  = self::normalizeIp((string) ($ip ?? ($_SERVER['REMOTE_ADDR'] ?? '')));
         $env = trim((string) getenv('PANEL_TRUSTED'));
         if ('*' === $env) {
             return true;
@@ -112,6 +112,26 @@ class Panel
         }
 
         return false;
+    }
+
+    /**
+     * IPv4-mapped IPv6 → обычный IPv4.
+     *
+     * Слушатель может оказаться dual-stack (unit биндит по AF_INET6), и тогда
+     * подключение с 127.0.0.1 приходит как «::ffff:127.0.0.1». Правила ниже
+     * сравниваются побайтово через inet_pton, где v4 — 4 байта, а v6 — 16, то
+     * есть mapped-адрес не совпал бы ни с loopback, ни со шлюзом: панель
+     * ответила бы 403 самому админу. Приводим обе стороны к одному виду.
+     */
+    private static function normalizeIp($ip)
+    {
+        $ip = trim((string) $ip);
+        if (preg_match('~^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$~i', $ip, $m)
+            && filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return $m[1];
+        }
+
+        return $ip;
     }
 
     /** Шлюз сети контейнера: маршрут по умолчанию из /proc/net/route. */
@@ -139,15 +159,15 @@ class Panel
     /** Сверка адреса с правилом «IP» либо «сеть/длина префикса» (v4 и v6). */
     private static function ipMatch($ip, $rule)
     {
-        $a = @inet_pton($ip);
+        $a = @inet_pton(self::normalizeIp($ip));
         if (false === $a) {
             return false;
         }
         if (!str_contains((string) $rule, '/')) {
-            return ($b = @inet_pton((string) $rule)) !== false && $a === $b;
+            return ($b = @inet_pton(self::normalizeIp($rule))) !== false && $a === $b;
         }
         [$net, $bits] = explode('/', (string) $rule, 2);
-        $b = @inet_pton($net);
+        $b = @inet_pton(self::normalizeIp($net));
         if (false === $b || strlen($a) !== strlen($b)) {
             return false;
         }
@@ -209,6 +229,29 @@ class Panel
         return in_array($name, $allow, true);
     }
 
+    /** 403 «не тот источник» — общий для route() и гейта слушателя в index.php. */
+    public static function denyClient()
+    {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        header('X-Content-Type-Options: nosniff');
+        $from = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+        $p    = self::port();
+        echo 'panel: доступ с ' . (filter_var($from, FILTER_VALIDATE_IP) ? $from : 'неизвестного адреса')
+            . " запрещён. Панель — только с хоста (ssh -L $p:127.0.0.1:$p), "
+            . "иначе задайте PANEL_TRUSTED в .env\n";
+    }
+
+    /** 403 «чужое имя в Host» (DNS rebinding). */
+    public static function denyHost()
+    {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        header('X-Content-Type-Options: nosniff');
+        echo "panel: Host \"" . htmlspecialchars((string) ($_SERVER['HTTP_HOST'] ?? ''), ENT_QUOTES)
+            . "\" не разрешён. Ходите по 127.0.0.1/localhost (ssh -L) либо задайте PANEL_HOSTS в .env\n";
+    }
+
     public function prefix()
     {
         return $this->prefix;
@@ -230,15 +273,11 @@ class Panel
         $post   = 'POST' === ($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
         // Первым делом — откуда пришли: слушатель виден всей docker-сети, а её
-        // freedom-outbound xray разрешает (см. clientAllowed()).
+        // freedom-outbound xray разрешает (см. clientAllowed()). Тот же барьер
+        // стоит на весь слушатель в index.php; здесь он остаётся вторым рубежом
+        // на случай, если route() позовут откуда-то ещё.
         if (!self::clientAllowed()) {
-            http_response_code(403);
-            header('Content-Type: text/plain; charset=utf-8');
-            $from = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
-            $p    = self::port();
-            echo 'panel: доступ с ' . (filter_var($from, FILTER_VALIDATE_IP) ? $from : 'неизвестного адреса')
-                . " запрещён. Панель — только с хоста (ssh -L $p:127.0.0.1:$p), "
-                . "иначе задайте PANEL_TRUSTED в .env\n";
+            self::denyClient();
 
             return;
         }
@@ -247,10 +286,7 @@ class Panel
         // думает клиент. Дальше Host уходит в origin панельных ссылок
         // (panelizeUrl), так что проверка нужна и для них.
         if (!self::hostAllowed()) {
-            http_response_code(403);
-            header('Content-Type: text/plain; charset=utf-8');
-            echo "panel: Host \"" . htmlspecialchars((string) ($_SERVER['HTTP_HOST'] ?? ''), ENT_QUOTES)
-                . "\" не разрешён. Ходите по 127.0.0.1/localhost (ssh -L) либо задайте PANEL_HOSTS в .env\n";
+            self::denyHost();
 
             return;
         }
@@ -634,13 +670,15 @@ class Panel
     /** Редактор шаблонов: та же JSONEditor-страница, но без Telegram. */
     private function editor()
     {
-        $ty = preg_match('~^\w+$~', $_GET['ty'] ?? '') ? $_GET['ty'] : '';
+        // is_string ДО preg_match: «?ty[]=x» — это TypeError, то есть фатал
+        // вместо 404 (см. тот же разбор для /pac<hash>?t=te в index.php).
+        $ty = (is_string($_GET['ty'] ?? null) && preg_match('~^\w+$~', $_GET['ty'])) ? $_GET['ty'] : '';
         if ('' === $ty) {
             http_response_code(404);
 
             return;
         }
-        $te   = (string) ($_GET['te'] ?? '');
+        $te   = is_string($_GET['te'] ?? null) ? $_GET['te'] : '';
         $name = $te ?: 'origin';
         // CSP здесь намеренно не ставим: JSONEditor поднимает Ace-воркер через
         // blob: и в режиме code полагается на eval — под политикой панели
@@ -708,11 +746,11 @@ class Panel
 
     private function tload()
     {
-        $ty = preg_match('~^\w+$~', $_POST['ty'] ?? '') ? $_POST['ty'] : '';
+        $ty = (is_string($_POST['ty'] ?? null) && preg_match('~^\w+$~', $_POST['ty'])) ? $_POST['ty'] : '';
         if ('' === $ty) {
             return $this->json(['status' => false]);
         }
-        $te = (string) ($_POST['te'] ?? '');
+        $te = is_string($_POST['te'] ?? null) ? $_POST['te'] : '';
         $t  = '' !== $te
             ? ($this->bot->getPacConf()["{$ty}templates"][$te] ?? null)
             : json_decode((string) @file_get_contents("/config/$ty.json"), true);

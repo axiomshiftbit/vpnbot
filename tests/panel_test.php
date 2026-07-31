@@ -296,4 +296,51 @@ panelAssert(Panel::clientAllowed('198.51.100.4'), 'PANEL_TRUSTED=* снимае�
 putenv('PANEL_TRUSTED');
 panelAssert(!Panel::clientAllowed('198.51.100.4'), 'без PANEL_TRUSTED внешний адрес закрыт');
 
+// Dual-stack слушатель отдаёт loopback как «::ffff:127.0.0.1»: побайтовое
+// сравнение v6 (16 байт) с правилом v4 (4 байта) не совпало бы никогда, и
+// панель ответила бы 403 самому админу.
+panelAssert(Panel::clientAllowed('::ffff:127.0.0.1'), 'IPv4-mapped loopback пускаем');
+panelAssert(!Panel::clientAllowed('::ffff:10.10.0.9'), 'IPv4-mapped адрес контейнера по-прежнему закрыт');
+putenv('PANEL_TRUSTED=10.10.0.0/24');
+panelAssert(Panel::clientAllowed('::ffff:10.10.0.9'), 'IPv4-mapped адрес попадает под CIDR из PANEL_TRUSTED');
+putenv('PANEL_TRUSTED');
+
+// ── массивы в query/POST не должны быть фаталом ──────────────────────────────
+// preg_match с массивом во втором аргументе — TypeError, то есть 500 вместо
+// ответа. Для /pac<hash>?t=te этот путь вообще не аутентифицирован.
+$tload = new ReflectionMethod(Panel::class, 'tload');
+$tload->setAccessible(true);
+$_POST = ['ty' => ['x'], 'te' => ['y']];
+ob_start();
+$tload->invoke($panel);
+$outJson = json_decode((string) ob_get_clean(), true);
+panelAssert(is_array($outJson) && false === ($outJson['status'] ?? null), 'tload с ty[] отвечает, а не падает');
+
+$editor = new ReflectionMethod(Panel::class, 'editor');
+$editor->setAccessible(true);
+$_GET = ['ty' => ['x']];
+ob_start();
+$editor->invoke($panel);
+panelAssert('' === trim((string) ob_get_clean()), 'editor с ty[] отвечает пустым 404, а не падает');
+$_GET = $_POST = [];
+
+// ── шаблоны: тип/имя/тело из POST приходят как есть ──────────────────────────
+$tpl = new PanelTestBot();
+panelAssert(false === $tpl->saveTemplate('origin', '../app/x', '{}')['status'], 'type с траверсалом отвергается');
+panelAssert(false === $tpl->saveTemplate(['a'], 'xray', '{}')['status'], 'name массивом отвергается');
+panelAssert(false === $tpl->saveTemplate('t', ['xray'], '{}')['status'], 'type массивом отвергается');
+panelAssert(false === $tpl->saveTemplate('t', 'xray', ['{}'])['status'], 'json массивом отвергается');
+panelAssert(false === $tpl->saveTemplate('', 'xray', '{}')['status'], 'пустое имя отвергается');
+
+// ── битые байты в ленте не должны стирать её целиком ─────────────────────────
+// json_encode() возвращает FALSE на невалидном UTF-8, а file_put_contents($f,
+// false) пишет пустой файл и рапортует об успехе: прежний save() подменял бы
+// state.json нулями, теряя всю переписку.
+$store->reset();
+$keep = $store->put(['text' => 'важное']);
+$store->put(['text' => "вывод \xB1\x31 команды"]);
+$after = $store->read();
+panelAssert(isset($after['messages'][$keep]), 'сообщение с битыми байтами не уносит ленту с собой');
+panelAssert(count($after['messages']) === 2, 'битый текст сохраняется с подстановкой, а не теряется');
+
 echo "panel_test: OK\n";

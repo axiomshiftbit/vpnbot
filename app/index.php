@@ -21,6 +21,23 @@ $hash = $bot->getHashBot();
 // маршрутов нет вовсе — поэтому в nginx для неё ничего не заводится, а
 // /panel<hash> снаружи отвечает так же, как любой несуществующий путь.
 if (Panel::isPanelListener()) {
+    // Проверка источника стоит на ВЕСЬ слушатель, а не только на /panel<hash>.
+    // Слушатель висит на *:8090 внутри контейнера, то есть виден всей
+    // 10.10.0.0/24, которую freedom-outbound xray разрешает явно, — и всё, что
+    // не панель, обслуживал бы этот же index.php: подписки /pac<hash>,
+    // t=changelog (а он дёргает `git fetch`), /webapp<hash>/*, вебхук /tlgrm.
+    // На публичном 443 те же маршруты стоят за nginx, а тут — голый unit.
+    // Панельные ссылки (panelizeUrl ведёт web_app-кнопки на этот же origin)
+    // открывает админ с хоста, то есть с loopback/шлюза, и под запрет не
+    // попадает.
+    if (!Panel::clientAllowed()) {
+        Panel::denyClient();
+        exit;
+    }
+    if (!Panel::hostAllowed()) {
+        Panel::denyHost();
+        exit;
+    }
     $panel = new Panel($bot, $c);
     if ($panel->matches($_SERVER['REQUEST_URI'])) {
         $panel->route($_SERVER['REQUEST_URI']);
@@ -47,7 +64,10 @@ switch (true) {
     // всем $_GET, и лишний параметр в строке запроса сломал бы проверку.
     case preg_match('~^' . preg_quote("/webapp$hash/load") . '~', $_SERVER['REQUEST_URI']) && $webapp:
         header('Content-Type: application/json');
-        $ty = preg_match('~^\w+$~', $_POST['ty'] ?? '') ? $_POST['ty'] : '';
+        // is_string ДО preg_match: «ty[]=x» приходит массивом, а preg_match с
+        // массивом во втором аргументе — TypeError, то есть фатал вместо ответа
+        // (та же находка, что уже закрыта в webappAuth для параметров подписи).
+        $ty = (is_string($_POST['ty'] ?? null) && preg_match('~^\w+$~', $_POST['ty'])) ? $_POST['ty'] : '';
         if ($ty === '') {
             echo json_encode(['status' => false]);
             break;
@@ -111,7 +131,9 @@ switch (true) {
             case 'te':
                 // $_GET['ty'] попадает в путь /config/<ty>.json и ключ конфига —
                 // ограничиваем словом (\w), иначе `ty=../..` читает произвольный .json.
-                $ty = preg_match('~^\w+$~', $_GET['ty'] ?? '') ? $_GET['ty'] : '';
+                // is_string обязателен: «?t=te&ty[]=x» доступен любому владельцу
+                // ссылки подписки и без него давал TypeError → 500 вместо 404.
+                $ty = (is_string($_GET['ty'] ?? null) && preg_match('~^\w+$~', $_GET['ty'])) ? $_GET['ty'] : '';
                 if ($ty === '') {
                     http_response_code(404);
                     break;

@@ -23,6 +23,15 @@ $panel = new Panel($bot, $c);
 $cmd   = $argv[1] ?? 'url';
 $port  = Panel::port();
 
+// Пароль пишется в pac.json, и Panel::pacConf() бросает исключение, когда файл
+// недоступен или повреждён (записать поверх него конфиг из одного panelpswd
+// значило бы потерять клиентов и ключи reality). В CLI это выглядело фаталом со
+// стектрейсом — говорим по-человечески.
+set_exception_handler(function (Throwable $e) {
+    fwrite(STDERR, 'panel: ' . $e->getMessage() . "\n");
+    exit(1);
+});
+
 switch ($cmd) {
     case 'url':
         $plain = $panel->ensurePassword();

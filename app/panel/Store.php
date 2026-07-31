@@ -108,12 +108,27 @@ class PanelStore
 
     private function save(array $state)
     {
+        // Текст сообщений — это вывод команд и ssh-проб, то есть сырые байты:
+        // невалидный UTF-8 заставляет json_encode() вернуть FALSE, а
+        // file_put_contents($f, false) пишет ПУСТОЙ файл и рапортует об успехе —
+        // rename() ниже подменил бы всю ленту нулями. Лучше потерять один ответ
+        // (SUBSTITUTE подставит U+FFFD), чем всю переписку.
+        $json = json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (false === $json) {
+            error_log('panel store: json_encode failed — ' . json_last_error_msg());
+
+            return;
+        }
         $tmp = $this->file . '.tmp';
         if (!file_exists($this->file)) {
             @touch($this->file);
             @chmod($this->file, 0600);
         }
-        file_put_contents($tmp, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        if (file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+
+            return;
+        }
         @chmod($tmp, 0600);
         rename($tmp, $this->file);
     }

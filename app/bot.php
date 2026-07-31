@@ -1848,16 +1848,28 @@ class Bot
             "statsOutboundUplink"   => true,
             "statsOutboundDownlink" => true
         ];
+        // Кодируем ДО записи и до pkill: json_encode() возвращает FALSE на
+        // невалидном UTF-8 (имя/комментарий клиента из импорта, байты из
+        // ssh-вывода), а file_put_contents($f, false) пишет ПУСТОЙ файл и
+        // рапортует об успехе — то есть xray.json обнулялся, а следом мы гасили
+        // ядро, которое с пустым конфигом уже не поднималось. Лучше не
+        // перезапускать вовсе: старый конфиг на диске остаётся рабочим.
+        $json = json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (false === $json) {
+            error_log('restartXray: xray.json not written — ' . json_last_error_msg());
+
+            return;
+        }
         if (empty($norestart)) {
             $this->collectSession();
-            file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            file_put_contents('/config/xray.json', $json);
             $this->ssh('pkill xray', 'xr');
             // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
             // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
             // старта — не требует правки override.env и совпадает с datDir().
             $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json > /dev/null 2>&1 &', 'xr');
         } else {
-            file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            file_put_contents('/config/xray.json', $json);
         }
     }
 
@@ -1879,7 +1891,16 @@ class Bot
             $c['policy']['levels'] = $lv;
         }
         $this->ensureFreedomCompat($c);
-        file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        // Как и в restartXray(): FALSE от кодировщика превратился бы в пустой
+        // xray.json (file_put_contents($f, false) пишет '' и рапортует успех),
+        // то есть в потерю всех клиентов при следующем старте ядра.
+        $json = json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (false === $json) {
+            error_log('saveXray: xray.json not written — ' . json_last_error_msg());
+
+            return;
+        }
+        file_put_contents('/config/xray.json', $json);
     }
 
     // Xray >= v26.4.15 (PR #5947, «Direct/Freedom outbound: default safe policy»)
@@ -5869,7 +5890,17 @@ NFT;
         // читает без лока — rename() атомарен, поэтому читатель всегда видит
         // либо старый, либо новый ЦЕЛЫЙ файл, но никогда порванный.
         $data = json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        $tmp  = $this->pac . '.' . getmypid() . '.tmp';
+        // json_encode() возвращает FALSE на невалидном UTF-8 (имя клиента или
+        // шаблон, приехавшие из импорта/ssh-вывода), а file_put_contents($f,
+        // false) пишет ПУСТУЮ строку и рапортует об успехе — rename() тут же
+        // подменял бы pac.json нулевым файлом. Это ровно та потеря конфига, от
+        // которой защищают проверки is_array() в saveTemplate()/панели, только
+        // с другого конца.
+        if (false === $data) {
+            error_log('setPacConf: json_encode failed — ' . json_last_error_msg());
+            return false;
+        }
+        $tmp = $this->pac . '.' . getmypid() . '.tmp';
         if (file_put_contents($tmp, $data, LOCK_EX) === false) {
             return false;
         }
@@ -12668,12 +12699,7 @@ DNS-over-HTTPS with IP:
         // atomic write: cron and the webhook (separate containers, shared volume) both
         // touch this file, so write to a unique temp and rename to avoid torn reads.
         // uniqid() guards against the two containers sharing a PID number.
-        $tmp = '/config/online.json.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, json_encode($s)) !== false) {
-            rename($tmp, '/config/online.json');
-        } else {
-            @unlink($tmp);
-        }
+        $this->atomicJson('/config/online.json', (array) $s);
     }
 
     // Persistent per-client vless connection history: email -> IPs -> destinations,
@@ -12725,12 +12751,28 @@ DNS-over-HTTPS with IP:
             $log = array_slice($log, 0, 200, true);
         }
         // atomic write (cron + webhook share the volume), same pattern as online.json
-        $tmp = '/config/connlog.json.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, json_encode($log)) !== false) {
-            rename($tmp, '/config/connlog.json');
-        } else {
-            @unlink($tmp);
+        $this->atomicJson('/config/connlog.json', $log);
+    }
+
+    // Atomic JSON write shared by the online/connlog/geo caches: encode first, and
+    // bail out when the encoder fails. json_encode() returns FALSE on invalid UTF-8
+    // — and the destination hosts here come straight out of the xray access log and
+    // conntrack, i.e. raw bytes we do not control — while file_put_contents($f,
+    // false) writes an EMPTY file and reports success, so the rename() below used to
+    // replace a whole history with 0 bytes and lose it silently.
+    private function atomicJson(string $path, array $data): bool
+    {
+        $json = json_encode($data);
+        if (false === $json) {
+            error_log('atomicJson: ' . basename($path) . ' not written — ' . json_last_error_msg());
+            return false;
         }
+        $tmp = $path . '.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+            return false;
+        }
+        return rename($tmp, $path);
     }
 
     // Merge newly-parsed access-log events into the persistent connection history.
@@ -12877,12 +12919,7 @@ DNS-over-HTTPS with IP:
             $cache = array_slice($cache, 0, 500, true);
         }
         // atomic write (cron + webhook share the volume), same pattern as online.json
-        $tmp = '/config/geoip.json.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, json_encode($cache)) !== false) {
-            rename($tmp, '/config/geoip.json');
-        } else {
-            @unlink($tmp);
-        }
+        $this->atomicJson('/config/geoip.json', $cache);
     }
 
     // Look up an IP's country/ISP, serving from $cache when fresh and filling misses
@@ -13238,11 +13275,22 @@ DNS-over-HTTPS with IP:
             // domain: forward-resolve to an IP (memoised under a "host:" key)
             $hkey  = 'host:' . strtolower($host);
             $fresh = isset($geo[$hkey]['ip']) && ($geo[$hkey]['ts'] ?? 0) > $now - 604800;
-            if (!$fresh && $budget > 0) {
+            $ip    = '';
+            if ($fresh) {
+                $ip = $this->resolveHost($host, $geo, false);
+            } elseif ($budget > 0) {
                 $budget--;
-                $fresh = true;
+                $ip = $this->resolveHost($host, $geo, false);
+                // resolveHost() ничего не пишет в кэш, когда имя не резолвится,
+                // — а гасшие домены в логе остаются навсегда. Без отрицательной
+                // записи каждая перерисовка карточки снова тратит бюджет и
+                // блокируется на gethostbyname() (до 5 с на имя, 50 имён на
+                // карточку). Помним отказ ~час: ts кладём так, чтобы обычная
+                // семидневная проверка свежести истекла через 3600 с.
+                if ('' === $ip) {
+                    $geo[$hkey] = ['ip' => '', 'ts' => $now - 604800 + 3600];
+                }
             }
-            $ip = $fresh ? $this->resolveHost($host, $geo, false) : '';
         }
 
         if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP)) {
@@ -13479,12 +13527,7 @@ DNS-over-HTTPS with IP:
                 unset($log[$inst]);
             }
         }
-        $tmp = '/config/wgconnlog.json.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, json_encode($log)) !== false) {
-            rename($tmp, '/config/wgconnlog.json');
-        } else {
-            @unlink($tmp);
-        }
+        $this->atomicJson('/config/wgconnlog.json', $log);
     }
 
     // Merge observations into the wg history. 'count' tracks reconnect sessions: it
@@ -15915,10 +15958,20 @@ DNS-over-HTTPS with IP:
         // панельном /tsave, — а проверялся только на входе load'а: type вида
         // "../app/x" писал бы json мимо /config. Ограничиваем словом, как это
         // уже сделано для ?ty= в index.php.
-        if (!preg_match('~^\w+$~', (string) $type)) {
+        if (!is_string($type) || !preg_match('~^\w+$~', $type)) {
             return [
                 'status'  => false,
                 'message' => 'wrong type',
+            ];
+        }
+        // $name и $json приходят из POST как есть. Массив («name[]=x», «json[]=x»)
+        // проходил empty()/preg_match и падал уже внутри: json_decode(array) —
+        // TypeError, $pac[...][$name] с массивом-ключом — «illegal offset type».
+        // То есть 500 вместо ответа, а в редакторе — немой «error».
+        if (!is_string($name) || '' === $name || !is_string($json)) {
+            return [
+                'status'  => false,
+                'message' => 'wrong format',
             ];
         }
         $decoded = json_decode($json, true);
