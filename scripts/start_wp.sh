@@ -3,7 +3,10 @@ set -e
 
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A
-exec /usr/sbin/sshd -D -e "$@" &
+# Без exec: `exec cmd &` порождает подоболочку, которую exec собой и заменяет,
+# т.е. работает как обычный фоновый запуск, но читается как «заменить текущий
+# процесс» — и сбивает с толку при чтении скрипта.
+/usr/sbin/sshd -D -e "$@" &
 
 WGCF_DIR="/etc/warp"
 WGCF_CONF="$WGCF_DIR/wgcf-profile.conf"

@@ -17661,18 +17661,33 @@ DNS-over-HTTPS with IP:
             return;
         }
 
-        // Удаляем старые профиль и аккаунт
-        if (!$step('removing old profile', 'rm -f /etc/warp/wgcf-profile.conf /etc/warp/wgcf-account.toml', 'wp')) {
+        // Старый аккаунт УБИРАЕМ В СТОРОНУ, а не удаляем: дальше идёт wgcf
+        // register — сетевой вызов к API Cloudflare, который вполне может
+        // упасть. Раньше здесь стоял rm -f, и на упавшей регистрации аккаунт
+        // с ОПЛАЧЕННЫМ WARP+ пропадал безвозвратно: восстановить его без
+        // сохранённого private_key/token невозможно. Теперь любой сбой ниже
+        // возвращает прежнюю пару файлов на место (restore()).
+        if (!$step('backing up old profile', 'cd /etc/warp && rm -rf .bak && mkdir -p .bak && '
+            . 'for f in wgcf-profile.conf wgcf-account.toml; do [ -f "$f" ] && mv "$f" ".bak/$f"; done; true', 'wp')) {
             $this->send($chat, $log);
             return;
         }
+        // Возврат к прежнему аккаунту + подъём туннеля, чтобы неудачная смена
+        // ключа не оставляла warp лежащим.
+        $restore = function () use ($chat, &$log) {
+            $this->ssh('cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
+                . '[ -f ".bak/$f" ] && mv -f ".bak/$f" "$f"; done; rmdir .bak 2>/dev/null; '
+                . 'wg-quick up /etc/warp/wgcf-profile.conf >/dev/null 2>&1; true', 'wp');
+            $log .= "\nprevious account restored\n";
+            $this->send($chat, $log);
+        };
 
         // Регистрируем новый аккаунт. wgcf >= 2.2.31 печатает таблицу аккаунта
         // в stdout, а $step трактует ЛЮБОЙ stdout как провал (флоу обрывался
         // сразу после register, уже удалив старый аккаунт) — stdout глушим,
         // stderr показываем только при ненулевом коде выхода.
         if (!$step('[warp] Registering WARP account...', 'cd /etc/warp && err=$(wgcf register --accept-tos 2>&1 >/dev/null) || printf "%s\n" "${err:-register failed}"', 'wp')) {
-            $this->send($chat, $log);
+            $restore();
             return;
         }
 
@@ -17681,18 +17696,19 @@ DNS-over-HTTPS with IP:
             // WARP keys are alphanumeric + dashes only; reject anything else so the
             // value can't break out of the sed/shell command below (it is interpolated raw).
             if (!preg_match('~^[A-Za-z0-9-]+$~', $key)) {
-                $this->send($chat, $log . "invalid license key format\n");
+                $log .= "invalid license key format\n";
+                $restore();
                 return;
             }
             $c['warp'] = $key;
             // Заменяем ключ в wgcf-account.toml
             if (!$step('setting license key', "sed -i 's/^license_key.*/license_key = \"$key\"/' /etc/warp/wgcf-account.toml", 'wp')) {
-                $this->send($chat, $log);
+                $restore();
                 return;
             }
             // Обновляем аккаунт с ключом (stdout глушим — как у register)
             if (!$step('applying license key', 'cd /etc/warp && err=$(wgcf update 2>&1 >/dev/null) || printf "%s\n" "${err:-update failed}"', 'wp')) {
-                $this->send($chat, $log);
+                $restore();
                 return;
             }
         } else {
@@ -17701,7 +17717,7 @@ DNS-over-HTTPS with IP:
         $this->setPacConf($c);
 
         if (!$step('generating profile', 'cd /etc/warp && err=$(wgcf generate 2>&1 >/dev/null) || printf "%s\n" "${err:-generate failed}"', 'wp')) {
-            $this->send($chat, $log);
+            $restore();
             return;
         }
         // Фиксапы профиля — общий с start_wp.sh скрипт (warp_fixup.sh), а не
@@ -17710,7 +17726,7 @@ DNS-over-HTTPS with IP:
         // однострочные Address/AllowedIPs новых wgcf (>= 2.2.31) целиком,
         // вместе с v4-частью.
         if (!$step('fixing up profile', 'sh /warp_fixup.sh', 'wp')) {
-            $this->send($chat, $log);
+            $restore();
             return;
         }
 
@@ -17719,9 +17735,10 @@ DNS-over-HTTPS with IP:
         $started = $step('starting warp', 'out=$(wg-quick up /etc/warp/wgcf-profile.conf 2>&1); ec=$?; [ "$ec" -ne 0 ] && printf "%s\n" "$out" | grep -v "skip sysctl"; exit $ec', 'wp');
 
         if (!$started) {
-            $this->send($chat, $log);
+            $restore();
             return;
         }
+        $this->ssh('rm -rf /etc/warp/.bak', 'wp');
 
         sleep(1);
         // sendMessageDraft closes only when sendMessage is called — send a dummy and delete it
