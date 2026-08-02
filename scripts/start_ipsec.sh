@@ -138,7 +138,11 @@ connections {
     l2tp {
         version = 1
         local_addrs = %any
-        proposals = aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha1-modp2048
+        # Хвост с modp1024 (DH group 2) — ради нативных клиентов: Windows и
+        # macOS/iOS в IKEv1 для L2TP предлагают именно его, а strongSwan по
+        # умолчанию его больше не предлагает. Порядок = предпочтение сервера,
+        # поэтому клиент, умеющий modp2048, получит modp2048.
+        proposals = aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha1-modp2048,aes256-sha256-modp1024,aes256-sha1-modp1024,aes128-sha1-modp1024
         rekey_time = 8h
         local {
             auth = psk
@@ -151,7 +155,7 @@ connections {
                 local_ts = dynamic[udp/1701]
                 remote_ts = dynamic
                 mode = transport
-                esp_proposals = aes256-sha256,aes256-sha1,aes128-sha1
+                esp_proposals = aes256gcm16,aes128gcm16,aes256-sha256,aes256-sha1,aes128-sha1
                 rekey_time = 1h
             }
         }
@@ -183,6 +187,7 @@ connections {
                 local_ts = 0.0.0.0/0
                 esp_proposals = aes256gcm16-ecp384,aes256gcm16-ecp256,aes256gcm16,chacha20poly1305,aes256-sha256,aes256-sha1,aes128-sha256,default
                 dpd_action = clear
+                updown = /etc/ipsec-updown.sh
                 rekey_time = 0s
             }
         }
@@ -197,21 +202,11 @@ pools {
 include /config/ipsec/secrets.conf
 EOF
 fi
-# Миграция: при смене IP сервера серт выше перевыпускается автоматически,
-# но `id` в conn ikev2 остался бы старым — клиенты рвали бы соединение на
-# несовпадении IDr с SAN. Правим только строку с маркером managed-server-id.
-if [ -f "$CONF/swanctl.conf" ] && [ -n "$IP" ]; then
-    sed -i "s|^\([[:space:]]*\)id = .* # managed-server-id\$|\1id = $IP # managed-server-id|" "$CONF/swanctl.conf"
-fi
-# Миграция крипто: prepend AEAD-proposals к conn ikev2 в уже существующих
-# swanctl.conf. Матчим ТОЧНЫЕ старые строки ikev2 (они отличаются от l2tp:
-# у l2tp esp_proposals заканчивается на aes128-sha1 без `default`, а IKE-
-# proposals — без ecp256), поэтому l2tp не заденет. Идемпотентно: после
-# замены старая строка не совпадает. swanctl --load-all ниже применит.
-if [ -f "$CONF/swanctl.conf" ]; then
-    sed -i "s|^\([[:space:]]*\)proposals = aes256-sha256-ecp256,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha256-modp2048,default\$|\1proposals = aes256gcm16-prfsha384-ecp384,aes256gcm16-prfsha256-ecp256,aes256gcm16-prfsha256-curve25519,chacha20poly1305-prfsha256-curve25519,aes256-sha256-ecp256,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha256-modp2048,default|" "$CONF/swanctl.conf"
-    sed -i "s|^\([[:space:]]*\)esp_proposals = aes256-sha256,aes256-sha1,aes128-sha256,default\$|\1esp_proposals = aes256gcm16-ecp384,aes256gcm16-ecp256,aes256gcm16,chacha20poly1305,aes256-sha256,aes256-sha1,aes128-sha256,default|" "$CONF/swanctl.conf"
-fi
+# Миграции существующего swanctl.conf вынесены в отдельный скрипт: тот же
+# набор правок обязан применяться и когда бот восстанавливает swanctl.conf из
+# бэкапа (importIpsecPki), а контейнер при этом не пересоздаётся.
+sh /ipsec_migrate.sh "$CONF/swanctl.conf"
+
 rm -f /etc/swanctl/swanctl.conf
 ln -s "$CONF/swanctl.conf" /etc/swanctl/swanctl.conf
 
@@ -313,6 +308,36 @@ rm -f "$SESS/${PEERNAME:-unknown}"
 exit 0
 HOOKEOF
 chmod +x /etc/ppp/ip-up /etc/ppp/ip-down
+
+# ─── updown-хук charon: журнал подключений IKEv2 ─────────────────────────
+# У IKEv2 нет ppp, поэтому события берём из плагина updown (он загружен по
+# умолчанию). env-переменные — src/libcharon/plugins/updown/updown_listener.c:
+#   PLUTO_VERB        up-client|down-client (+ -v6 для IPv6)
+#   PLUTO_XAUTH_ID    EAP-identity, выставляется при COND_EAP_AUTHENTICATED —
+#                     это и есть логин, независимо от того, совпал ли он с IKE-id
+#   PLUTO_PEER        реальный адрес клиента
+#   PLUTO_PEER_CLIENT виртуальный IP клиента с маской
+# Формат строки СОВПАДАЕТ с ppp-хуками и openvpn: бот разбирает их одним
+# регекспом (ipsecLastSeen/ovpnLogTail).
+cat > /etc/ipsec-updown.sh <<'HOOKEOF'
+#!/bin/sh
+LOG=/logs/ipsec-connections.log
+TS=$(date '+%Y-%m-%d %H:%M:%S')
+CN=${PLUTO_XAUTH_ID:-${PLUTO_PEER_ID:-unknown}}
+VIP=${PLUTO_PEER_CLIENT%%/*}
+case "$PLUTO_VERB" in
+    up-*)
+        printf '%s UP   %-20s %s %s from %s\n' \
+            "$TS" "$CN" "${PLUTO_CONNECTION:-ikev2}" "$VIP" "$PLUTO_PEER" >> "$LOG"
+        ;;
+    down-*)
+        printf '%s DOWN %-20s %s %s from %s\n' \
+            "$TS" "$CN" "${PLUTO_CONNECTION:-ikev2}" "$VIP" "$PLUTO_PEER" >> "$LOG"
+        ;;
+esac
+exit 0
+HOOKEOF
+chmod +x /etc/ipsec-updown.sh
 
 # ─── NAT + MSS clamp ─────────────────────────────────────────────────────
 iptables -t nat -A POSTROUTING -s "$L2TP_SUBNET"  -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true

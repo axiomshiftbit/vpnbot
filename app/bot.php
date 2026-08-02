@@ -1039,6 +1039,9 @@ class Bot
             case preg_match('~^/refreshL2tp$~', $this->input['callback'], $m):
                 $this->refreshL2tp();
                 break;
+            case preg_match('~^/restartIpsecMenu (\S+)$~', $this->input['callback'], $m):
+                $this->restartIpsecMenu($m[1]);
+                break;
             case preg_match('~^/addIkev2User$~', $this->input['callback'], $m):
                 $this->addIkev2User();
                 break;
@@ -1053,6 +1056,9 @@ class Bot
                 break;
             case preg_match('~^/kickIkev2 (\S+)$~', $this->input['callback'], $m):
                 $this->kickIkev2($m[1]);
+                break;
+            case preg_match('~^/ikev2ClientLog (\S+)$~', $this->input['callback'], $m):
+                $this->ikev2ClientLog($m[1]);
                 break;
             case preg_match('~^/ikev2ClientMenu (\S+)$~', $this->input['callback'], $m):
                 $this->ikev2ClientMenu($m[1]);
@@ -24220,8 +24226,18 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // swanctl.conf лежит в бэкапе, и importIpsecPki() кладёт снимок обратно —
+    // вместе со всем, что чинят миграции start_ipsec.sh. Контейнер при
+    // восстановлении не пересоздаётся, поэтому гоняем тот же скрипт сами перед
+    // каждым перезапуском демонов (тот же класс бага, что был найден у ovpn).
+    public function migrateIpsecConf()
+    {
+        return $this->ssh('sh /ipsec_migrate.sh 2>/dev/null || true', 'ipsec');
+    }
+
     public function restartIpsec()
     {
+        $this->migrateIpsecConf();
         // Гарантированная остановка обоих демонов, затем перезапуск через
         // /etc/run_ipsec_daemons.sh (его генерирует start_ipsec.sh — там
         // ожидание vici-сокета + swanctl --load-all).
@@ -24231,6 +24247,19 @@ DNS-over-HTTPS with IP:
             'ipsec'
         );
         $this->ssh('sh /etc/run_ipsec_daemons.sh', 'ipsec', false, '/dev/null');
+    }
+
+    // Явный рестарт charon+xl2tpd из меню: после ручных правок swanctl.conf,
+    // восстановления бэкапа или когда демон отвалился. Заодно прогоняет
+    // миграции конфига (см. migrateIpsecConf).
+    public function restartIpsecMenu($menu = 'l2tp')
+    {
+        $menu = $menu === 'ikev2' ? 'ikev2' : 'l2tp';
+        $this->restartIpsec();
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '♻️ ' . $this->i18n('restart'));
+        }
+        $this->menu($menu);
     }
 
     // ─── L2TP/IPsec: пользователи (chap-secrets) ─────────────────────────
@@ -24319,10 +24348,16 @@ DNS-over-HTTPS with IP:
         $text[] = '<i>Android 12+: ' . $this->i18n('no native l2tp') . '</i>';
 
         $data   = [];
-        $data[] = [[
-            'text'          => $this->i18n('add peer'),
-            'callback_data' => '/addL2tpUser',
-        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('add peer'),
+                'callback_data' => '/addL2tpUser',
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('restart'),
+                'callback_data' => '/restartIpsecMenu l2tp',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('log tail'),
@@ -24430,6 +24465,11 @@ DNS-over-HTTPS with IP:
         // этого ключа реестра — классические грабли, даём команду сразу.
         $t[] = 'Windows ' . $this->i18n('behind NAT') . ':';
         $t[] = '<pre>reg add "HKLM\SYSTEM\CurrentControlSet\Services\PolicyAgent" /v AssumeUDPEncapsulationContextOnSendRule /t REG_DWORD /d 2 /f</pre>';
+        // Сервер предлагает modp2048 первым и modp1024 в хвосте — нативный
+        // Windows договорится и без правок. Ключ ниже нужен только тем, кто
+        // хочет запретить DH2 на клиенте и ходить строго через modp2048.
+        $t[] = 'Windows (' . $this->i18n('optional') . ', force DH2048):';
+        $t[] = '<pre>reg add "HKLM\SYSTEM\CurrentControlSet\Services\RasMan\Parameters" /v NegotiateDH2048_AES256 /t REG_DWORD /d 2 /f</pre>';
         $t[] = 'iOS/macOS: Settings → VPN → L2TP (Secret = PSK)';
         $t[] = 'Android 12+: ' . $this->i18n('no native l2tp');
         $this->send($this->input['from'], implode("\n", $t));
@@ -24685,13 +24725,21 @@ DNS-over-HTTPS with IP:
         $this->ssh('swanctl --load-creds >/dev/null 2>&1; true', 'ipsec');
     }
 
-    // Онлайн-статус IKEv2 из `swanctl --list-sas`: юзер (EAP identity) →
-    // uid IKE_SA (для kick), реальный адрес, виртуальный IP, байты, аптайм.
+    // Онлайн-статус IKEv2 из `swanctl --list-sas`: юзер → uid IKE_SA (для kick),
+    // реальный адрес, виртуальный IP, байты, аптайм.
+    //
+    // Формат строки (src/swanctl/commands/list_sas.c, strongSwan 6.0):
+    //   remote '<remote-id>' @ <host>[<port>][ EAP: '<eap-id>'][ [<vips>]]
+    // `EAP: '...'` печатается ТОЛЬКО когда EAP-identity отличается от IKE-id.
+    // Наш .mobileconfig задаёт LocalIdentifier = имя юзера, поэтому iOS/macOS
+    // шлют IKE-id = логин и блок EAP не выводится вовсе — раньше такие сессии
+    // терялись, клиент висел в меню как ⚪ offline и не киковался. Проверено
+    // на живом сервере обоими вариантами клиента.
     public function getIkev2Status()
     {
         $raw = (string) $this->ssh('swanctl --list-sas 2>/dev/null', 'ipsec');
         $out = [];
-        $cur = null;   // буфер полей IKE_SA, пока EAP identity ещё не встретилась
+        $cur = null;   // буфер полей IKE_SA, пока имя юзера ещё не известно
         $key = null;   // имя юзера — после него пишем сразу в $out[$key]
         foreach (explode("\n", $raw) as $line) {
             if (preg_match('~^\S+: #(\d+), ESTABLISHED~', $line, $m)) {
@@ -24702,12 +24750,20 @@ DNS-over-HTTPS with IP:
             if ($cur === null && $key === null) {
                 continue;
             }
-            if (preg_match("~^\\s*remote '[^']*' @ ([^\\[\\s]+)\\[\\d+\\](?: EAP: '([^']+)')?~", $line, $m)) {
-                $cur['real'] = $m[1];
-                if (!empty($m[2])) {
-                    // EAP identity = имя юзера; дальше child-SA строки
-                    // (байты, virtual IP) дополняют запись в $out.
-                    $key       = $m[2];
+            if (preg_match("~^\\s*remote '([^']*)' @ ([^\\[\\s]+)\\[\\d+\\](?: EAP: '([^']+)')?(?: XAuth: '[^']+')?(?: \\[([^\\]]+)\\])?~", $line, $m)) {
+                if ($cur === null) {
+                    continue;
+                }
+                $cur['real'] = $m[2];
+                // Виртуальный IP печатается прямо здесь; для нескольких vips
+                // берём первый. Ниже есть фолбэк на TS дочерней SA.
+                if (!empty($m[4])) {
+                    $cur['virtual'] = trim(explode(',', $m[4])[0]);
+                }
+                // EAP-identity, если она есть, иначе IKE-identity.
+                $name = !empty($m[3]) ? $m[3] : $m[1];
+                if ($name !== '') {
+                    $key       = $name;
                     $out[$key] = $cur;
                     $cur       = null;
                 }
@@ -24729,7 +24785,7 @@ DNS-over-HTTPS with IP:
                 $out[$ref]['tx'] += (int) $m[1];
                 continue;
             }
-            if (preg_match('~^\s*remote ([0-9.]+)/32$~', $line, $m)) {
+            if ($out[$ref]['virtual'] === '' && preg_match('~^\s*remote ([0-9.]+)/32\s*$~', $line, $m)) {
                 $out[$ref]['virtual'] = $m[1];
                 continue;
             }
@@ -24761,11 +24817,12 @@ DNS-over-HTTPS with IP:
         if (!file_exists($p['ca']) || !file_exists($p['srv'])) {
             $text[] = '⚠ PKI missing — restart ipsec container';
         }
-        $text[] = 'clients: ' . count($users) . ' (' . count($online) . ' ' . $this->i18n('online') . ')';
-        foreach ($online as $u => $s) {
-            if (!isset($users[$u])) {
-                continue;
-            }
+        // Считаем только СВОИХ: в list-sas попадают и чужие/устаревшие SA
+        // (например, после переименования юзера) — они не должны раздувать
+        // счётчик онлайна.
+        $onlineKnown = array_intersect_key($online, $users);
+        $text[] = 'clients: ' . count($users) . ' (' . count($onlineKnown) . ' ' . $this->i18n('online') . ')';
+        foreach ($onlineKnown as $u => $s) {
             $text[] = '🟢 <code>' . htmlspecialchars($u, ENT_QUOTES) . '</code> '
                 . htmlspecialchars($s['virtual'], ENT_QUOTES)
                 . ($s['real'] !== '' ? ' · <code>' . htmlspecialchars($s['real'], ENT_QUOTES) . '</code>' : '')
@@ -24773,20 +24830,30 @@ DNS-over-HTTPS with IP:
         }
 
         $data   = [];
-        $data[] = [[
-            'text'          => $this->i18n('add peer'),
-            'callback_data' => '/addIkev2User',
-        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('add peer'),
+                'callback_data' => '/addIkev2User',
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('restart'),
+                'callback_data' => '/restartIpsecMenu ikev2',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('log tail'),
                 'callback_data' => '/showIkev2Log',
             ],
             [
-                'text'          => 'CA (Windows)',
-                'callback_data' => '/getIkev2Ca',
+                'text'          => $this->i18n('connections'),
+                'callback_data' => '/showIpsecConnLog ikev2',
             ],
         ];
+        $data[] = [[
+            'text'          => 'CA (Windows)',
+            'callback_data' => '/getIkev2Ca',
+        ]];
         $data[] = [
             [
                 'text'          => "IKE port: {$ports['ike']}",
@@ -25028,13 +25095,19 @@ XML;
                 'eap_id' => $user,
             ],
         ];
-        // Нестандартный порт: strongSwan-клиент на любом порту, кроме 500,
-        // использует NAT-T-инкапсуляцию — указываем именно NAT-T-порт.
-        // При дефолте ключ опускаем: клиент сам ходит 500→4500.
+        // remote.port по документации strongSwan — порт СЕРВЕРА, куда клиент
+        // шлёт IKE_SA_INIT, дефолт 500. Раньше сюда писался NAT-T-порт и только
+        // при нестандартном NAT-T: если админ менял IKE-порт, профиль всё равно
+        // вёл на 500, где уже никто не слушает. Пишем IKE-порт.
+        // (strongSwan-клиент на любом порту, кроме 500, сразу инкапсулирует в
+        // UDP, поэтому дальше он попадёт на NAT-T-порт сервера сам.)
         $ports = $this->ipsecPorts();
-        if ($ports['natt'] !== 4500) {
-            $profile['remote']['port'] = $ports['natt'];
+        if ($ports['ike'] !== 500) {
+            $profile['remote']['port'] = $ports['ike'];
         }
+        // Пароль кладём в профиль: .mobileconfig для iOS уже несёт AuthPassword,
+        // держать Android в другом режиме — лишний повод для «а какой пароль?».
+        $profile['local']['shared_secret'] = $users[$user]['pass'];
         $json = json_encode($profile, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         $this->sendFile(
             $this->input['from'],
@@ -25158,6 +25231,13 @@ XML;
         if ($s && $s['since'] !== '') {
             $text[] = $this->i18n('since') . ': ' . $this->uptimeHuman((int) $s['since']);
         }
+        // События пишет updown-хук charon (см. start_ipsec.sh) — тот же
+        // журнал, что у L2TP, поэтому читается тем же ipsecLastSeen().
+        if (!$isDis && !$s) {
+            $seen   = $this->ipsecLastSeen($user);
+            $text[] = $this->i18n('last seen') . ': '
+                . ($seen ? "{$seen['ts']} ({$seen['dir']})" : $this->i18n('never'));
+        }
 
         $data   = [];
         $data[] = [
@@ -25184,6 +25264,10 @@ XML;
             'callback_data' => "/kickIkev2 $user",
         ]];
         $data[] = [[
+            'text'          => $this->i18n('history'),
+            'callback_data' => "/ikev2ClientLog $user",
+        ]];
+        $data[] = [[
             'text'          => $this->i18n('delete'),
             'callback_data' => "/delIkev2User $user",
         ]];
@@ -25197,6 +25281,25 @@ XML;
             implode("\n", $text),
             $data,
         );
+    }
+
+    // История подключений одного клиента IKEv2 — из того же журнала, что и
+    // L2TP: события пишет updown-хук charon.
+    public function ikev2ClientLog($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !isset($this->getIkev2Users()[$user])) {
+            return $this->menu('ikev2');
+        }
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['conn'], 15, 3500, $user);
+        $text = 'Menu -> IKEv2 -> <code>'
+            . htmlspecialchars($user, ENT_QUOTES) . '</code> -> ' . $this->i18n('history') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => "/ikev2ClientMenu $user"],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
     }
 
     // «established N seconds ago» → короткая человекочитаемая длительность.

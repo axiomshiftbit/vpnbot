@@ -677,6 +677,9 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/ipsec:/config/ipsec
             - ./scripts/start_ipsec.sh:/start_ipsec.sh
+            # Миграции swanctl.conf отдельным файлом: их дёргает и стартовый
+            # скрипт, и бот после восстановления конфигурации из бэкапа.
+            - ./scripts/ipsec_migrate.sh:/ipsec_migrate.sh
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs

@@ -945,6 +945,10 @@ $i = [
         'en' => 'behind NAT (registry fix + reboot)',
         'ru' => 'за NAT (правка реестра + перезагрузка)',
     ],
+    'optional'  => [
+        'en' => 'optional',
+        'ru' => 'необязательно',
+    ],
     'change port'  => [
         'en' => 'change port',
         'ru' => 'сменить порт',
