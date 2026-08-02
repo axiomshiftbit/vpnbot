@@ -155,7 +155,9 @@ dh none
 tls-crypt $PKI/ta.key
 crl-verify $PKI/crl.pem
 
-cipher AES-256-GCM
+# В TLS-режиме OpenVPN 2.6 директива "cipher" ИГНОРИРУЕТСЯ (шифр выбирается
+# согласованием по data-ciphers) и остаётся только ради --secret. Не пишем её,
+# чтобы не собирать deprecation-предупреждения в журнале.
 auth SHA256
 data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
 data-ciphers-fallback AES-256-GCM
@@ -165,7 +167,15 @@ server $NET $MASK
 ifconfig-pool-persist /etc/openvpn/ipp.txt
 push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS 10.10.0.5"
-push "block-outside-dns"
+
+# block-outside-dns разбирается в options.c только под #ifdef _WIN32. Для
+# любого не-Windows клиента это НЕИЗВЕСТНАЯ push-опция, а неизвестная опция в
+# PUSH_REPLY фатальна: apply_push_options() возвращает ошибку и соединение
+# рвётся ещё до поднятия туннеля. Поэтому по умолчанию не пушим; включить
+# можно кнопкой в меню бота (актуально для Windows-only парка).
+# Bot toggles the Windows-only DNS-leak guard between these markers.
+#ovpn-winblockdns
+#ovpn-winblockdns
 
 client-config-dir /etc/openvpn/ccd
 keepalive 10 60
@@ -241,6 +251,20 @@ if [ -f "$SRV" ]; then
     if ! grep -qE '^client-disconnect[[:space:]]' "$SRV"; then
         printf 'client-disconnect /etc/openvpn/connect.sh\n' >> "$SRV"
     fi
+    # Миграция #4: `push "block-outside-dns"` роняет ВСЕХ не-Windows клиентов
+    # (неизвестная опция в PUSH_REPLY = фатальная ошибка на стороне клиента).
+    # Убираем безусловный push и заводим маркеры, между которыми бот включает
+    # его обратно по кнопке — осознанно и только там, где парк на Windows.
+    if ! grep -q '^#ovpn-winblockdns[[:space:]]*$' "$SRV"; then
+        if grep -qE '^[[:space:]]*push[[:space:]]+"block-outside-dns"' "$SRV"; then
+            log 'migration: push "block-outside-dns" disabled (breaks non-Windows clients); re-enable via bot menu'
+        fi
+        sed -i '/^[[:space:]]*push[[:space:]]\+"block-outside-dns"/d' "$SRV"
+        printf '\n# Bot toggles the Windows-only DNS-leak guard between these markers.\n#ovpn-winblockdns\n#ovpn-winblockdns\n' >> "$SRV"
+    fi
+    # Миграция #5: `cipher` в TLS-режиме игнорируется с 2.6 и только засоряет
+    # лог deprecation-предупреждением. data-ciphers/-fallback уже заданы.
+    sed -i '/^[[:space:]]*cipher[[:space:]]/d' "$SRV"
 fi
 
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true

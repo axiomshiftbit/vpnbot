@@ -837,10 +837,6 @@ $i = [
         'en' => 'connection log',
         'ru' => 'лог подключений',
     ],
-    'connections'  => [
-        'en' => 'connections',
-        'ru' => 'подкл.',
-    ],
     'no log'  => [
         'en' => 'no connections logged yet',
         'ru' => 'подключений пока не зафиксировано',
@@ -948,6 +944,54 @@ $i = [
     'behind NAT'  => [
         'en' => 'behind NAT (registry fix + reboot)',
         'ru' => 'за NAT (правка реестра + перезагрузка)',
+    ],
+    'change port'  => [
+        'en' => 'change port',
+        'ru' => 'сменить порт',
+    ],
+    'TrustTunnel'  => [
+        'en' => 'TrustTunnel',
+        'ru' => 'TrustTunnel',
+    ],
+    'link'  => [
+        'en' => 'link',
+        'ru' => 'ссылка',
+    ],
+    'tt config hint'  => [
+        'en' => 'endpoint config: setup_wizard --mode non-interactive --endpoint_config &lt;file&gt; --settings trusttunnel_client.toml',
+        'ru' => 'конфиг эндпоинта: setup_wizard --mode non-interactive --endpoint_config &lt;файл&gt; --settings trusttunnel_client.toml',
+    ],
+    'tt fallback'  => [
+        'en' => 'built without the endpoint binary — check the tt container',
+        'ru' => 'собран без обращения к бинарю эндпоинта — проверьте контейнер tt',
+    ],
+    'tt no deeplink'  => [
+        'en' => 'endpoint did not return a deep link (is the tt container up?)',
+        'ru' => 'эндпоинт не отдал deep link (контейнер tt поднят?)',
+    ],
+    'tt blocked'  => [
+        'en' => 'not started, missing',
+        'ru' => 'не запущен, не хватает',
+    ],
+    'tt client hint'  => [
+        'en' => 'link — for mobile apps, file — for the CLI client',
+        'ru' => 'ссылка — для мобильных приложений, файл — для CLI-клиента',
+    ],
+    'tt bad name'  => [
+        'en' => 'name is unsupported by the bot, rename it in credentials.toml',
+        'ru' => 'имя не поддерживается ботом, переименуйте в credentials.toml',
+    ],
+    'win dns guard'  => [
+        'en' => 'block-outside-dns (Windows)',
+        'ru' => 'block-outside-dns (Windows)',
+    ],
+    'win dns warn'  => [
+        'en' => 'Windows-only: non-Windows clients fail to connect',
+        'ru' => 'только Windows: остальные клиенты не подключатся',
+    ],
+    'ip via nginx'  => [
+        'en' => 'address of the nginx proxy, not the client: OpenVPN has no PROXY protocol',
+        'ru' => 'это адрес nginx-прокси, а не клиента: OpenVPN не понимает PROXY protocol',
     ],
 ];
 

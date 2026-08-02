@@ -6,7 +6,10 @@ ARG TT_REF=master
 
 FROM python:3.13-slim-bookworm AS build
 ARG TT_REF
-ARG RUST_VERSION=1.85
+# Держим в синхроне с rust-toolchain.toml апстрима (сейчас channel = "1.95").
+# Если разойдётся — rustup всё равно доскачает нужный канал по toolchain-файлу
+# из клона, но это лишний слой и минуты сборки.
+ARG RUST_VERSION=1.95
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential cmake curl make git libclang-dev ca-certificates pkg-config \

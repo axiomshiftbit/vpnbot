@@ -937,11 +937,26 @@ class Bot
             case preg_match('~^/genTtPass (\S+)$~', $this->input['callback'], $m):
                 $this->genTtPass($m[1]);
                 break;
-            case preg_match('~^/delttus (\S+)$~', $this->input['callback'], $m):
-                $this->delttus($m[1]);
+            case preg_match('~^/delttus (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->delttus($m[1], !empty($m[2]));
                 break;
             case preg_match('~^/getTtConfig (\S+)$~', $this->input['callback'], $m):
                 $this->getTtConfig($m[1]);
+                break;
+            case preg_match('~^/getTtLink (\S+)$~', $this->input['callback'], $m):
+                $this->getTtLink($m[1]);
+                break;
+            case preg_match('~^/ttClientMenu (\S+)$~', $this->input['callback'], $m):
+                $this->ttClientMenu($m[1]);
+                break;
+            case preg_match('~^/restartTtMenu$~', $this->input['callback'], $m):
+                $this->restartTtMenu();
+                break;
+            case preg_match('~^/showTtLog$~', $this->input['callback'], $m):
+                $this->showTtLog();
+                break;
+            case preg_match('~^/clearTtLog$~', $this->input['callback'], $m):
+                $this->clearTtLog();
                 break;
             case preg_match('~^/addOvpnUser$~', $this->input['callback'], $m):
                 $this->addOvpnUser();
@@ -966,6 +981,15 @@ class Bot
                 break;
             case preg_match('~^/toggleOvpnProto$~', $this->input['callback'], $m):
                 $this->toggleOvpnProto();
+                break;
+            case preg_match('~^/toggleOvpnWinBlockDns$~', $this->input['callback'], $m):
+                $this->toggleOvpnWinBlockDns();
+                break;
+            case preg_match('~^/restartOvpnMenu$~', $this->input['callback'], $m):
+                $this->restartOvpnMenu();
+                break;
+            case preg_match('~^/clearOvpnConnLog$~', $this->input['callback'], $m):
+                $this->clearOvpnConnLog();
                 break;
             case preg_match('~^/showOvpnLog$~', $this->input['callback'], $m):
                 $this->showOvpnLog();
@@ -22439,64 +22463,168 @@ DNS-over-HTTPS with IP:
     }
 
     // ─── TrustTunnel ──────────────────────────────────────────────────────────
+    // Раскладка файлов — по CONFIGURATION.md апстрима:
+    //   vpn.toml         — ядро настроек (listen_address + пути к
+    //                      credentials_file/rules_file), шаблон в репозитории;
+    //   hosts.toml       — TLS-хосты: hostname + цепочка/ключ (пишет бот);
+    //   credentials.toml — [[client]] username/password (пишет бот);
+    //   rules.toml       — фильтры по CIDR / client_random; пустой = всё
+    //                      разрешено (правило по умолчанию — allow).
+    // Клиентский конфиг НЕ собирается вручную: его печатает сам бинарь
+    //   trusttunnel_endpoint vpn.toml hosts.toml -c <user> -a <host:port> \
+    //       --format toml|deeplink
+    // Только так в конфиг попадает self-signed сертификат и ровно тот набор
+    // полей, который ждёт клиент. Формат плоский — секции [endpoint] в нём нет.
+    public function ttPaths()
+    {
+        $d = '/config/trusttunnel';
+        return [
+            'dir'   => $d,
+            'vpn'   => "$d/vpn.toml",
+            'hosts' => "$d/hosts.toml",
+            'cred'  => "$d/credentials.toml",
+            'rules' => "$d/rules.toml",
+            'log'   => '/logs/trusttunnel.log',
+        ];
+    }
+
+    // Домен для TT берём ИМЕННО из pac.json, без фолбэка getDomain() на IP:
+    // hostname в hosts.toml обязан совпадать с CN/SAN сертификата, иначе
+    // клиент отвергает TLS-цепочку. Пустой домен = TT не поднимаем.
+    public function ttDomain()
+    {
+        return (string) ($this->getPacConf()['domain'] ?? '');
+    }
+
+    // TOML-строка в двойных кавычках не допускает сырых управляющих символов.
+    // Пароль приходит ответом в Telegram и может содержать перевод строки —
+    // одна такая правка ломала credentials.toml целиком, эндпоинт падал на
+    // разборе и молча не поднимался.
+    public function ttSanitize($s, $max = 128)
+    {
+        $s = preg_replace('~[\x00-\x1F\x7F]~', '', (string) $s);
+        return mb_substr(trim((string) $s), 0, $max);
+    }
+
     public function getClientsTt()
     {
-        $f = '/config/trusttunnel/credentials.toml';
-        if (!file_exists($f)) {
+        $p = $this->ttPaths();
+        if (!file_exists($p['cred'])) {
             return [];
         }
-        $data = file_get_contents($f);
-        preg_match_all('~\[\[client\]\].*?username\s*=\s*"([^"]+)".*?password\s*=\s*"([^"]+)"~s', $data, $m, PREG_SET_ORDER);
+        $data  = (string) file_get_contents($p['cred']);
         $users = [];
-        foreach ($m as $row) {
-            $users[$row[1]] = $row[2];
+        // Разбираем поблочно. Один ленивый шаблон через весь файл склеивал
+        // username одного клиента с password следующего, если в блоке не
+        // хватало поля (последствие ручной правки credentials.toml).
+        foreach (preg_split('~^[ \t]*\[\[client\]\][ \t]*$~m', $data) as $block) {
+            if (!preg_match('~^[ \t]*username[ \t]*=[ \t]*"((?:[^"\\\\]|\\\\.)*)"~m', $block, $u)) {
+                continue;
+            }
+            if (!preg_match('~^[ \t]*password[ \t]*=[ \t]*"((?:[^"\\\\]|\\\\.)*)"~m', $block, $pw)) {
+                continue;
+            }
+            $users[stripcslashes($u[1])] = stripcslashes($pw[1]);
         }
         return $users;
     }
 
     public function writeTtCredentials($users)
     {
+        $p = $this->ttPaths();
+        @mkdir($p['dir'], 0755, true);
         $out = "# TrustTunnel credentials. Generated by bot — do not edit manually.\n";
-        foreach ($users as $u => $p) {
-            $u = addcslashes($u, '"\\');
-            $p = addcslashes($p, '"\\');
-            $out .= "\n[[client]]\nusername = \"$u\"\npassword = \"$p\"\n";
+        foreach ($users as $u => $pass) {
+            $u    = $this->ttSanitize($u, 64);
+            $pass = $this->ttSanitize($pass);
+            if ($u === '' || $pass === '') {
+                continue;
+            }
+            $out .= "\n[[client]]\nusername = \"" . addcslashes($u, '"\\') . "\"\n"
+                 .  "password = \"" . addcslashes($pass, '"\\') . "\"\n";
         }
-        file_put_contents('/config/trusttunnel/credentials.toml', $out);
+        file_put_contents($p['cred'], $out);
     }
 
+    // hosts.toml переписывается целиком на каждом рестарте: ping_hosts /
+    // speedtest_hosts / reverse_proxy_hosts, добавленные руками, не переживут
+    // перезапуск — это осознанный компромисс, бот владеет файлом.
     public function writeTtHosts($domain)
     {
-        $domain = $domain ?: 'vpn.example.com';
-        $out    = "[[main_hosts]]\nhostname = \"$domain\"\n"
+        $p      = $this->ttPaths();
+        @mkdir($p['dir'], 0755, true);
+        $domain = addcslashes($this->ttSanitize($domain ?: 'vpn.example.com', 253), '"\\');
+        $out    = "# Generated by bot — do not edit manually.\n"
+                . "[[main_hosts]]\nhostname = \"$domain\"\n"
                 . "cert_chain_path = \"/certs/cert_public\"\nprivate_key_path = \"/certs/cert_private\"\n";
-        file_put_contents('/config/trusttunnel/hosts.toml', $out);
+        file_put_contents($p['hosts'], $out);
+    }
+
+    // Всё, из-за чего демон не поднимется. Один список и для гейта в
+    // restartTt(), и для показа в меню: раньше бот просто молчал, а кнопка
+    // выглядела рабочей.
+    public function ttBlockers()
+    {
+        $p      = $this->ttPaths();
+        $out    = [];
+        $domain = $this->ttDomain();
+        if (!file_exists($p['vpn'])) {
+            $out[] = 'vpn.toml';
+        }
+        if (!file_exists($p['rules'])) {
+            $out[] = 'rules.toml';
+        }
+        if (empty($domain)) {
+            $out[] = 'domain';
+        }
+        if (!file_exists('/certs/cert_public') || !file_exists('/certs/cert_private')) {
+            $out[] = 'cert';
+        }
+        if (empty($this->getClientsTt())) {
+            $out[] = 'clients';
+        }
+        return $out;
     }
 
     public function restartTt()
     {
-        $pac    = $this->getPacConf();
-        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
+        $p      = $this->ttPaths();
+        $domain = $this->ttDomain();
         $users  = $this->getClientsTt();
 
         $this->writeTtHosts($domain);
         $this->writeTtCredentials($users);
-        if (!file_exists('/config/trusttunnel/vpn.toml') || !file_exists('/config/trusttunnel/rules.toml')) {
-            return; // templates missing — init.sh ещё не развернул
+        if (!file_exists($p['vpn']) || !file_exists($p['rules'])) {
+            return false; // templates missing — init.sh ещё не развернул
         }
 
         // Linux truncates /proc/<pid>/comm to 15 chars, so the binary name
         // "trusttunnel_endpoint" only matches via -f (full cmdline).
         $this->ssh('pkill -9 -f trusttunnel_endpoint; while pgrep -f trusttunnel_endpoint >/dev/null; do sleep 0.2; done', 'tt');
-        $hasCert = file_exists('/certs/cert_public') && file_exists('/certs/cert_private');
-        if (!empty($users) && !empty($domain) && $hasCert) {
-            $this->ssh(
-                'cd /trusttunnel_endpoint && trusttunnel_endpoint vpn.toml hosts.toml',
-                'tt',
-                false,
-                '/logs/trusttunnel.log'
-            );
+        if (!empty($this->ttBlockers())) {
+            return false;
         }
+        $this->ssh(
+            'cd /trusttunnel_endpoint && trusttunnel_endpoint vpn.toml hosts.toml',
+            'tt',
+            false,
+            $p['log']
+        );
+        return true;
+    }
+
+    public function ttRunning()
+    {
+        return (bool) $this->ssh('pgrep -f trusttunnel_endpoint', 'tt');
+    }
+
+    public function restartTtMenu()
+    {
+        $ok = $this->restartTt();
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], ($ok ? '♻️ ' : '⚠ ') . $this->i18n('restart'));
+        }
+        $this->menu('tt');
     }
 
     public function addTtUser()
@@ -22517,9 +22645,15 @@ DNS-over-HTTPS with IP:
 
     public function addttus($user)
     {
-        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', $user);
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
         if (empty($user)) {
             $this->send($this->input['chat'], 'wrong username');
+            return $this->menu('tt');
+        }
+        // callback_data телеграма — 64 БАЙТА на всю строку, самая длинная у нас
+        // "/delttus <name> confirm" (21 + имя). 40 символов укладываются.
+        if (strlen($user) > 40) {
+            $this->send($this->input['chat'], 'username too long (max 40 chars)');
             return $this->menu('tt');
         }
         $users = $this->getClientsTt();
@@ -22533,9 +22667,24 @@ DNS-over-HTTPS with IP:
         $this->menu('tt');
     }
 
-    public function delttus($user)
+    public function delttus($user, $confirm = false)
     {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
         $users = $this->getClientsTt();
+        if ($user === '' || !isset($users[$user])) {
+            return $this->menu('tt');
+        }
+        if (!$confirm) {
+            // Одно нажатие = мгновенный отзыв доступа. Как и у OpenVPN,
+            // спрашиваем подтверждение отдельной кнопкой.
+            $text = 'Menu -> TrustTunnel -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>' . "\n"
+                . '⚠ ' . $this->i18n('confirm delete user');
+            $data = [
+                [['text' => '❌ ' . $this->i18n('delete forever'), 'callback_data' => "/delttus $user confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/ttClientMenu $user"]],
+            ];
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
         unset($users[$user]);
         $this->writeTtCredentials($users);
         $this->restartTt();
@@ -22561,7 +22710,8 @@ DNS-over-HTTPS with IP:
     public function chttpass($pass, $user)
     {
         $users = $this->getClientsTt();
-        if (!isset($users[$user]) || empty($pass)) {
+        $pass  = $this->ttSanitize($pass);
+        if (!isset($users[$user]) || $pass === '') {
             return $this->menu('tt');
         }
         $users[$user] = $pass;
@@ -22579,31 +22729,157 @@ DNS-over-HTTPS with IP:
         $users[$user] = base64_encode(random_bytes(18));
         $this->writeTtCredentials($users);
         $this->restartTt();
-        $this->menu('tt');
+        $this->ttClientMenu($user);
+    }
+
+    // Экспорт конфига штатным путём — печатью из самого бинаря. --logfile
+    // уводит журнал из stdout, чтобы в выводе остался только конфиг.
+    public function ttExport($user, $format = 'toml')
+    {
+        if (!in_array($format, ['toml', 'deeplink'], true)) {
+            return '';
+        }
+        $host = $this->ttDomain();
+        if ($host === '') {
+            return '';
+        }
+        $u   = escapeshellarg($user);
+        $a   = escapeshellarg($host . ':' . $this->getTtPort());
+        $out = (string) $this->ssh(
+            "cd /trusttunnel_endpoint && trusttunnel_endpoint vpn.toml hosts.toml "
+                . "-c $u -a $a --format $format --logfile /dev/null 2>/dev/null",
+            'tt'
+        );
+        if ($format === 'deeplink') {
+            return preg_match('~tt://\S+~', $out, $m) ? $m[0] : '';
+        }
+        // Отбраковываем диагностику/пустой вывод: без этих двух полей конфиг
+        // всё равно нерабочий, лучше отдать fallback.
+        return (strpos($out, 'hostname') !== false && strpos($out, 'password') !== false) ? $out : '';
+    }
+
+    // Резервный сборщик на случай, если контейнер tt лежит или бинарь старше
+    // --format. Формат ПЛОСКИЙ, как у compose_toml() апстрима: секции
+    // [endpoint] в клиентском конфиге нет, клиент её не разберёт.
+    public function ttFallbackConfig($user, $pass)
+    {
+        $pac  = $this->getPacConf();
+        $host = $this->ttDomain();
+        $port = $this->getTtPort();
+        $esc  = fn($v) => addcslashes((string) $v, '"\\');
+        // Сертификат нужен клиенту, только если цепочку не проверяют системные
+        // CA — то есть при загруженном вручную self-signed. Для Let's Encrypt
+        // апстрим оставляет поле пустым, повторяем это же поведение.
+        $cert = '';
+        if (($pac['letsencrypt'] ?? '') !== 'letsencrypt' && file_exists('/certs/cert_public')) {
+            $cert = trim((string) file_get_contents('/certs/cert_public'));
+        }
+        $toml  = "# TrustTunnel endpoint config (fallback, собран ботом).\n"
+               . "# Применение:\n"
+               . "#   setup_wizard --mode non-interactive \\\n"
+               . "#       --endpoint_config <этот файл> --settings trusttunnel_client.toml\n"
+               . "#   trusttunnel_client -c trusttunnel_client.toml\n\n";
+        $toml .= 'hostname = "' . $esc($host) . "\"\n";
+        $toml .= 'addresses = ["' . $esc("$host:$port") . "\"]\n";
+        $toml .= "custom_sni = \"\"\n";
+        $toml .= "has_ipv6 = true\n";
+        $toml .= 'username = "' . $esc($user) . "\"\n";
+        $toml .= 'password = "' . $esc($pass) . "\"\n";
+        $toml .= "client_random_prefix = \"\"\n";
+        $toml .= "skip_verification = false\n";
+        $toml .= $cert === ''
+            ? "certificate = \"\"\n"
+            : "certificate = \"\"\"\n$cert\n\"\"\"\n";
+        $toml .= "upstream_protocol = \"http2\"\n";
+        $toml .= "anti_dpi = false\n";
+        return $toml;
     }
 
     public function getTtConfig($user)
     {
-        $users  = $this->getClientsTt();
-        if (!isset($users[$user])) {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getClientsTt();
+        if ($user === '' || !isset($users[$user])) {
             return $this->menu('tt');
         }
-        $pac    = $this->getPacConf();
-        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
-        $port   = $this->getTtPort();
-        $pass   = addcslashes($users[$user], '"\\');
-        $u      = addcslashes($user, '"\\');
-        $toml   = "# TrustTunnel client config. Import via: trusttunnel client run <this-file>\n"
-                . "# Or replace [endpoint] section of an existing trusttunnel_client.toml.\n"
-                . "\n[endpoint]\n"
-                . "hostname = \"$domain\"\n"
-                . "addresses = [\"$domain:$port\"]\n"
-                . "username = \"$u\"\n"
-                . "password = \"$pass\"\n";
+        $toml = $this->ttExport($user, 'toml');
+        $cap  = $this->i18n('tt config hint');
+        if ($toml === '') {
+            $toml = $this->ttFallbackConfig($user, $users[$user]);
+            $cap  = '⚠ ' . $this->i18n('tt fallback') . "\n" . $cap;
+        }
         $this->sendFile(
             $this->input['from'],
-            new CURLStringFile($toml, "trusttunnel-$user.toml", 'application/toml')
+            new CURLStringFile($toml, "trusttunnel-$user.toml", 'application/toml'),
+            $cap
         );
+    }
+
+    // tt://?… — основной формат для мобильных клиентов (QR + ссылка).
+    public function getTtLink($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getClientsTt();
+        if ($user === '' || !isset($users[$user])) {
+            return $this->menu('tt');
+        }
+        $link = $this->ttExport($user, 'deeplink');
+        if ($link === '') {
+            $this->send($this->input['chat'], '❌ ' . $this->i18n('tt no deeplink'));
+            return;
+        }
+        $safe = '<code>' . htmlspecialchars($link, ENT_QUOTES) . '</code>';
+        // Со встроенным self-signed сертификатом ссылка распухает: подпись у
+        // sendPhoto ограничена 1024 символами, а qrencode не возьмёт больше
+        // ~2.9 КБ. В таком случае отдаём просто текст.
+        if (strlen($link) > 900) {
+            $this->send($this->input['chat'], $safe);
+            return;
+        }
+        $qr_file = __DIR__ . "/qr/trusttunnel.png";
+        exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($link));
+        if (file_exists($qr_file)) {
+            $this->sendPhoto($this->input['chat'], curl_file_create($qr_file), $safe);
+            unlink($qr_file);
+        } else {
+            $this->send($this->input['chat'], $safe);
+        }
+    }
+
+    public function showTtLog()
+    {
+        $p    = $this->ttPaths();
+        // Формат журнала свой, фильтра по CN тут нет — берём общий хвост.
+        $tail = $this->ovpnLogTail($p['log']);
+        $text  = "Menu -> TrustTunnel -> " . $this->i18n('log tail') . "\n";
+        $text .= "<pre>" . ($tail !== '' ? $tail : '(empty)') . "</pre>";
+        $data  = [];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/showTtLog',
+        ]];
+        if ($tail !== '') {
+            $data[] = [[
+                'text'          => '🗑 ' . $this->i18n('clear log'),
+                'callback_data' => '/clearTtLog',
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu tt',
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    // Обнуляем внутри контейнера: у запущенного эндпоинта открыт fd на файл, и
+    // truncate снаружи оставил бы дыру из \0 до текущего смещения.
+    public function clearTtLog()
+    {
+        $this->ssh(': > /logs/trusttunnel.log', 'tt');
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
+        }
+        $this->showTtLog();
     }
 
     public function getTtPort()
@@ -22618,25 +22894,87 @@ DNS-over-HTTPS with IP:
         return (int) (getenv('TTPORT') ?: 2443);
     }
 
+    // Подменю клиента: реквизиты и все действия по нему на одном экране.
+    // В списке клиентов паролей больше нет — они оседали в истории чата
+    // (в том числе группового) при каждом открытии меню.
+    public function ttClientMenu($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getClientsTt();
+        if ($user === '' || !isset($users[$user])) {
+            return $this->menu('tt');
+        }
+        $domain = $this->ttDomain();
+        $port   = $this->getTtPort();
+
+        $text   = [];
+        $text[] = 'Menu -> TrustTunnel -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $text[] = 'server: ' . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $text[] = 'password: <code>' . htmlspecialchars($users[$user], ENT_QUOTES) . '</code>';
+
+        $data   = [];
+        $data[] = [
+            [
+                'text'          => '📄 ' . $this->i18n('download'),
+                'callback_data' => "/getTtConfig $user",
+            ],
+            [
+                'text'          => '🔗 ' . $this->i18n('link'),
+                'callback_data' => "/getTtLink $user",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('change password'),
+                'callback_data' => "/changeTtPass $user",
+            ],
+            [
+                'text'          => $this->i18n('generate password'),
+                'callback_data' => "/genTtPass $user",
+            ],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('delete'),
+            'callback_data' => "/delttus $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu tt',
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
     public function ttMenu()
     {
-        $pac    = $this->getPacConf();
-        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
-        $port   = $this->getTtPort();
-        $users  = $this->getClientsTt();
+        $domain   = $this->ttDomain();
+        $port     = $this->getTtPort();
+        $users    = $this->getClientsTt();
+        $running  = $this->ttRunning();
+        $blockers = $this->ttBlockers();
+
+        $text   = [];
         $text[] = "Menu -> TrustTunnel";
         $text[] = "server: " . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = $this->i18n($running ? 'on' : 'off') . ' trusttunnel';
         $text[] = 'clients: ' . count($users);
-        foreach ($users as $u => $p) {
-            $text[] = htmlspecialchars($u, ENT_QUOTES) . ': <code>' . htmlspecialchars($p, ENT_QUOTES) . '</code>';
+        // Раньше меню молчало обо всём, кроме отсутствующего сертификата, и
+        // выключенный демон выглядел необъяснимо.
+        if (!$running && $blockers) {
+            $text[] = '⚠ ' . $this->i18n('tt blocked') . ': ' . implode(', ', $blockers);
         }
-        if (!file_exists('/certs/cert_public')) {
-            $text[] = "⚠ cert missing (/certs/cert_public)";
-        }
+        $text[] = '';
+        $text[] = '<i>' . $this->i18n('tt client hint') . '</i>';
+
+        $data   = [];
         $data[] = [
             [
                 'text'          => $this->i18n('change port') . ": $port",
                 'callback_data' => '/changePort tt',
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('restart'),
+                'callback_data' => '/restartTtMenu',
             ],
         ];
         $data[] = [
@@ -22644,28 +22982,24 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n('add peer'),
                 'callback_data' => '/addTtUser',
             ],
+            [
+                'text'          => $this->i18n('log tail'),
+                'callback_data' => '/showTtLog',
+            ],
         ];
         foreach ($users as $u => $_) {
-            $data[] = [
-                [
-                    'text'          => $this->i18n('download') . " $u",
-                    'callback_data' => "/getTtConfig $u",
-                ],
-                [
-                    'text'          => $this->i18n('change password'),
-                    'callback_data' => "/changeTtPass $u",
-                ],
-            ];
-            $data[] = [
-                [
-                    'text'          => $this->i18n('generate password'),
-                    'callback_data' => "/genTtPass $u",
-                ],
-                [
-                    'text'          => $this->i18n('delete'),
-                    'callback_data' => "/delttus $u",
-                ],
-            ];
+            // callback_data не переживает пробелы (роутер разбирает \S+), а имя
+            // могло появиться и ручной правкой credentials.toml. Такие клиенты
+            // показываем строкой, а не мёртвой кнопкой.
+            if (!preg_match('~^[a-zA-Z0-9_.\-]{1,40}$~', (string) $u)) {
+                $text[] = '⚠ <code>' . htmlspecialchars((string) $u, ENT_QUOTES) . '</code> — '
+                    . $this->i18n('tt bad name');
+                continue;
+            }
+            $data[] = [[
+                'text'          => "🔑 $u",
+                'callback_data' => "/ttClientMenu $u",
+            ]];
         }
         $data[] = [
             [
@@ -22806,11 +23140,15 @@ DNS-over-HTTPS with IP:
         return $users;
     }
 
+    // Блокировка клиента = директива `disable` в ccd/<CN>. Проверяем ИМЕННО
+    // строку-директиву: подстрочный поиск ловил и комментарии («# disabled by
+    // admin»), из-за чего активный клиент показывался как заблокированный.
     public function isOvpnUserDisabled($user)
     {
         $p = $this->ovpnPaths();
         $f = $p['ccd'] . '/' . $user;
-        return file_exists($f) && stripos(file_get_contents($f), 'disable') !== false;
+        return file_exists($f)
+            && (bool) preg_match('~^[ \t]*disable[ \t]*$~m', (string) file_get_contents($f));
     }
 
     public function getOvpnStatus()
@@ -23124,7 +23462,10 @@ DNS-over-HTTPS with IP:
         $host   = $domain ?: getenv('IP');
         $port   = $this->getOvpnPort();
         $proto  = $this->getOvpnProto();
-        $ovpn   = "client\ndev tun\nproto $proto\nremote $host $port\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\ncipher AES-256-GCM\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
+        // `cipher` намеренно отсутствует: в TLS-режиме OpenVPN 2.6 её значение
+        // игнорируется (шифр согласуется по data-ciphers), а сама директива
+        // помечена deprecated и печатает предупреждение при каждом старте.
+        $ovpn   = "client\ndev tun\nproto $proto\nremote $host $port\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
         $ovpn  .= "<ca>\n$ca</ca>\n";
         $ovpn  .= "<cert>\n$crt\n</cert>\n";
         $ovpn  .= "<key>\n$key</key>\n";
@@ -23203,6 +23544,60 @@ DNS-over-HTTPS with IP:
             return true;
         }
         return !preg_match('~^\s*client-to-client\s*$~m', $m[1]);
+    }
+
+    // Windows-only защита от DNS-leak. Живёт между маркерами #ovpn-winblockdns,
+    // по умолчанию ВЫКЛЮЧЕНА: `block-outside-dns` разбирается в options.c
+    // только под #ifdef _WIN32, а неизвестная опция в PUSH_REPLY для клиента
+    // фатальна — Linux/macOS/роутерные клиенты не подключаются вообще.
+    public function isOvpnWinBlockDns()
+    {
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['srv'])) {
+            return false;
+        }
+        $cfg = file_get_contents($p['srv']);
+        if (!preg_match('~^[ \t]*#ovpn-winblockdns[ \t]*\R(.*?)^[ \t]*#ovpn-winblockdns[ \t]*$~sm', $cfg, $m)) {
+            return false;
+        }
+        return (bool) preg_match('~^\s*push\s+"block-outside-dns"~m', $m[1]);
+    }
+
+    public function toggleOvpnWinBlockDns()
+    {
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['srv'])) {
+            return $this->menu('ovpn');
+        }
+        $cfg = file_get_contents($p['srv']);
+        $re  = '~^[ \t]*#ovpn-winblockdns[ \t]*\R.*?^[ \t]*#ovpn-winblockdns[ \t]*$~sm';
+        if (!preg_match($re, $cfg)) {
+            // Маркеров нет — старый server.conf до миграции в start_ovpn.sh.
+            $this->send($this->input['chat'], 'server.conf without #ovpn-winblockdns markers — restart ovpn container first');
+            return $this->menu('ovpn');
+        }
+        $on   = $this->isOvpnWinBlockDns();
+        $body = $on ? '' : "push \"block-outside-dns\"\n";
+        $cfg  = preg_replace($re, "#ovpn-winblockdns\n$body#ovpn-winblockdns", $cfg);
+        file_put_contents($p['srv'], $cfg);
+        if (!$on) {
+            $this->send(
+                $this->input['chat'],
+                '⚠️ ' . $this->i18n('win dns warn')
+            );
+        }
+        $this->restartOvpn();
+        $this->menu('ovpn');
+    }
+
+    // Трафик может идти двумя путями: напрямую (docker-публикация порта, nft
+    // DNAT на контейнер) — тогда openvpn видит настоящий адрес клиента; или
+    // через nginx stream (#ovpn-port), который проксирует пакеты от своего
+    // имени — тогда во всех Real Address и в журнале подключений стоит адрес
+    // upstream-контейнера. Различаем по принадлежности к docker-сети проекта.
+    public function ovpnIpIsProxied($ip)
+    {
+        return (bool) preg_match('~^10\.10\.0\.\d{1,3}$~', (string) $ip);
     }
 
     public function toggleOvpnProto()
@@ -23344,8 +23739,20 @@ DNS-over-HTTPS with IP:
         $tail = $this->ovpnLogTail($p['conn']);
         $text  = "Menu -> OpenVPN -> " . $this->i18n('connections') . "\n";
         $text .= "<pre>" . ($tail !== '' ? $tail : '(empty)') . "</pre>";
-        $data  = [[
-            ['text' => $this->i18n('back'), 'callback_data' => '/menu ovpn'],
+        $data  = [];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/showOvpnConnLog',
+        ]];
+        if ($tail !== '') {
+            $data[] = [[
+                'text'          => '🗑 ' . $this->i18n('clear log'),
+                'callback_data' => '/clearOvpnConnLog',
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu ovpn',
         ]];
         $this->update(
             $this->input['chat'],
@@ -23353,6 +23760,29 @@ DNS-over-HTTPS with IP:
             $text,
             $data,
         );
+    }
+
+    // Журнал пишет hook внутри контейнера ovpn — обнуляем именно там же
+    // (bind-mount /logs общий, но truncate из php оставил бы у openvpn открытый
+    // fd со старым смещением, и следующая запись вернула бы дыру из \0).
+    public function clearOvpnConnLog()
+    {
+        $this->ssh(': > /logs/openvpn-connections.log', 'ovpn');
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
+        }
+        $this->showOvpnConnLog();
+    }
+
+    // Явный рестарт демона из меню: после ручных правок server.conf или когда
+    // PKI доинициализировался, а openvpn всё ещё лежит.
+    public function restartOvpnMenu()
+    {
+        $this->restartOvpn();
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('restart'));
+        }
+        $this->menu('ovpn');
     }
 
     public function ovpnMenu()
@@ -23383,6 +23813,12 @@ DNS-over-HTTPS with IP:
         $text[] = $this->i18n('inter-client') . ': '
             . $this->i18n($isolated ? 'off' : 'on')
             . ' <i>(' . $interHint . ')</i>';
+        // Отдельно подсвечиваем, что включённая защита ломает не-Windows.
+        $winDns = $this->isOvpnWinBlockDns();
+        if ($winDns) {
+            $text[] = '⚠ ' . $this->i18n('win dns guard') . ': '
+                . $this->i18n('on') . ' <i>(' . $this->i18n('win dns warn') . ')</i>';
+        }
         $text[] = "clients: " . count($users) . " (" . count($online) . " " . $this->i18n('online') . ")";
         $pkiMissing = $this->ovpnPkiMissing();
         if ($pkiMissing) {
@@ -23390,15 +23826,22 @@ DNS-over-HTTPS with IP:
             $text[] = '   → <code>docker compose restart ovpn</code> чтобы доинициализировать';
         }
         if (!empty($online)) {
-            $text[] = '';
+            $text[]  = '';
+            $proxied = false;
             foreach ($online as $cn => $s) {
                 // Real address из openvpn-status.log приходит в виде IP:port
                 // (или [v6]:port); порт в UI только шумит, режем до хоста.
-                $real = $this->ovpnRealIp($s['real'] ?? '');
+                $real     = $this->ovpnRealIp($s['real'] ?? '');
+                $proxied  = $proxied || $this->ovpnIpIsProxied($real);
                 $text[] = '🟢 <code>' . htmlspecialchars($cn, ENT_QUOTES) . '</code> '
                     . htmlspecialchars($s['virtual'], ENT_QUOTES)
                     . ($real !== '' ? ' · <code>' . htmlspecialchars($real, ENT_QUOTES) . '</code>' : '')
                     . ' ↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
+            }
+            // Честно говорим, что показанный адрес — не клиентский: openvpn не
+            // понимает PROXY protocol, и через nginx stream реальный IP теряется.
+            if ($proxied) {
+                $text[] = 'ℹ️ <i>' . $this->i18n('ip via nginx') . '</i>';
             }
         }
 
@@ -23418,9 +23861,19 @@ DNS-over-HTTPS with IP:
             'callback_data' => '/toggleOvpnIsolation',
         ]];
         $data[] = [[
-            'text'          => $this->i18n('add peer'),
-            'callback_data' => '/addOvpnUser',
+            'text'          => $this->i18n('win dns guard') . ': ' . $this->i18n($winDns ? 'on' : 'off'),
+            'callback_data' => '/toggleOvpnWinBlockDns',
         ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('add peer'),
+                'callback_data' => '/addOvpnUser',
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('restart'),
+                'callback_data' => '/restartOvpnMenu',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('log tail'),
@@ -23492,7 +23945,8 @@ DNS-over-HTTPS with IP:
             $real = $this->ovpnRealIp($s['real'] ?? '');
             $status = '🟢 ' . $this->i18n('online')
                 . ' · ' . htmlspecialchars($s['virtual'], ENT_QUOTES)
-                . ($real !== '' ? ' · ' . htmlspecialchars($real, ENT_QUOTES) : '')
+                . ($real !== '' ? ' · ' . htmlspecialchars($real, ENT_QUOTES)
+                    . ($this->ovpnIpIsProxied($real) ? ' <i>(nginx)</i>' : '') : '')
                 . ' · ↓' . $this->fmtBytes($s['rx'])
                 . ' ↑' . $this->fmtBytes($s['tx']);
         } else {
