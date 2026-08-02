@@ -7,7 +7,7 @@ FROM $image
 # копировался в образ целиком и оставался в рантайме).
 ARG AWG_GO_VERSION=v3.0.3
 ARG AWG_TOOLS_VERSION=v3.0.20260730
-ARG WGCF_VERSION=v2.2.31
+ARG WGCF_VERSION=v2.2.32
 ARG TUN2SOCKS_VERSION=v2.6.0
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка

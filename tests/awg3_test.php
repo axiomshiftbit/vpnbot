@@ -132,10 +132,40 @@ $mih  = Bot::amneziaKeysForMihomo($full);
 foreach (Bot::AWG_KEYS_3 as $k) {
     awgAssert(!isset($mih[$k]), "mihomo: 3.0-ключ $k просочился в amnezia-wg-option");
 }
+foreach (Bot::MIHOMO_AWG3_KEYS as $mk) {
+    awgAssert(!isset($mih[$mk]), "mihomo: поле $mk отдано при выключенном тумблере");
+}
+awgAssert(!isset($mih['version']), 'mihomo: version не должен появляться без 3.0-блока');
 foreach (array_merge(Bot::AWG_KEYS_1, Bot::AWG_KEYS_2) as $k) {
     awgAssert(isset($mih[$k]), "mihomo: потерян ключ $k");
 }
 awgAssert(Bot::amneziaKeysForMihomo('') === [], 'mihomo: пустой вход должен дать []');
+
+// mihomo + awg3: имена полей ТОЛЬКО из карты (регистронезависимого совпадения
+// декодеру mihomo для них не хватает) плюс обязательный version = 3.
+$mih3 = Bot::amneziaKeysForMihomo($full, true);
+awgAssert(($mih3['version'] ?? null) === 3, 'mihomo awg3: нет version = 3');
+foreach (Bot::MIHOMO_AWG3_KEYS as $k => $mk) {
+    awgAssert(isset($mih3[$mk]), "mihomo awg3: нет поля $mk");
+    awgAssert((string) $mih3[$mk] === (string) $full[$k], "mihomo awg3: $mk не совпадает с $k");
+    awgAssert(!isset($mih3[$k]), "mihomo awg3: исходное имя $k не должно попадать в YAML");
+}
+foreach (array_merge(Bot::AWG_KEYS_1, Bot::AWG_KEYS_2) as $k) {
+    awgAssert(isset($mih3[$k]), "mihomo awg3: потерян ключ $k");
+}
+// Тумблер включён, но набор ещё 2.0 — ни version, ни 3.0-полей быть не должно.
+$mih2 = Bot::amneziaKeysForMihomo($bot->generateAmneziaKeys('standard_2'), true);
+awgAssert(!isset($mih2['version']), 'mihomo awg3: version на наборе 2.0');
+foreach (Bot::MIHOMO_AWG3_KEYS as $mk) {
+    awgAssert(!isset($mih2[$mk]), "mihomo awg3: поле $mk на наборе 2.0");
+}
+
+// ── 6b. keepaliveInt ────────────────────────────────────────────────────────
+awgAssert(Bot::keepaliveInt('20-30') === 20, 'keepaliveInt: диапазон → нижняя граница');
+awgAssert(Bot::keepaliveInt('25') === 25, 'keepaliveInt: число');
+awgAssert(Bot::keepaliveInt(25) === 25, 'keepaliveInt: int на входе');
+awgAssert(Bot::keepaliveInt('') === 20, 'keepaliveInt: пусто → 20');
+awgAssert(Bot::keepaliveInt('0') === 20, 'keepaliveInt: 0 → 20');
 
 // ── 7. amneziaProtoVer ──────────────────────────────────────────────────────
 awgAssert(Bot::amneziaProtoVer($bot->generateAmneziaKeys('classic_1')) === 1, 'classic_1 !== 1');

@@ -1331,6 +1331,10 @@ class Bot
                 $this->selectWG($m[1]);
                 $this->awgVerRefresh($m[2]);
                 break;
+            case preg_match('~^/awg3mihomo ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->toggleMihomoAwg3($m[2]);
+                break;
             case preg_match('~^/amneziaProto ([01]) (-?\d+)$~', $this->input['callback'], $m):
                 $this->selectWG($m[1]);
                 $this->amneziaProtoMenu($m[2]);
@@ -4935,13 +4939,34 @@ NFT;
         return $keys;
     }
 
+    // Имя параметра в wg0.conf → имя поля в amnezia-wg-option у mihomo.
+    // Отдельная карта нужна, потому что для 3.0-полей регистронезависимого
+    // совпадения НЕ хватает: декодер mihomo (common/structure) сверяет ключи
+    // через EqualFold, предварительно заменив «_» на «-», поэтому «Jc»→«jc»
+    // совпадает, а «HeaderProtectionKey»→«header-protection-key» — нет.
+    public const MIHOMO_AWG3_KEYS = [
+        'HeaderProtectionKey'    => 'header-protection-key',
+        'ContentPaddingAddition' => 'content-padding-addition',
+        'RekeyAfterTime'         => 'rekey-after-time',
+        'RekeyTimeout'           => 'rekey-timeout',
+        'RejectAfterTime'        => 'reject-after-time',
+        'KeepaliveTimeout'       => 'keepalive-timeout',
+        'MaxHandshakeAttempts'   => 'max-handshake-attempts',
+    ];
+
     // Whitelist для mihomo (amnezia-wg-option): отдаём только те поля, которые
     // mihomo действительно знает. Именно whitelist, а не blacklist — иначе
-    // следующий добавленный сюда 3.x-параметр молча утечёт в клиентский YAML и
-    // сломает разбор конфига у всех подписчиков.
-    // NB: H1-H4 в формате 2.0 («MIN-MAX») mihomo не понимает и сейчас — это
-    // отдельный, более старый баг, вне объёма поддержки 3.0.
-    public static function amneziaKeysForMihomo($keys): array
+    // следующий добавленный сюда параметр молча утечёт в клиентский YAML.
+    //
+    // $awg3 включает блок 3.0. Он же требует `version: 3` — только по этому
+    // полю mihomo выбирает v3-реализацию устройства (adapter/outbound/
+    // wireguard.go: «Only version 3 uses the v3 implementation»).
+    // Ключ header-protection-key mihomo принимает в base64 и сам переводит в
+    // hex, т.е. значение отдаём ровно тем же, что лежит в wg0.conf.
+    //
+    // NB: H1-H4 в формате 2.0 («MIN-MAX») mihomo понимает начиная с той же
+    // сборки, что и 3.0; на старых сборках h1-h4 разбирались только как uint32.
+    public static function amneziaKeysForMihomo($keys, bool $awg3 = false): array
     {
         if (!is_array($keys)) {
             return [];
@@ -4952,7 +4977,24 @@ NFT;
                 $out[$k] = $keys[$k];
             }
         }
+        if (!$awg3 || self::amneziaProtoVer($keys) !== 3) {
+            return $out;
+        }
+        $out['version'] = 3;
+        foreach (self::MIHOMO_AWG3_KEYS as $k => $mk) {
+            if (isset($keys[$k]) && $keys[$k] !== '') {
+                $out[$mk] = (string) $keys[$k];
+            }
+        }
         return $out;
+    }
+
+    // mihomo объявляет persistent-keepalive целым числом, диапазон «20-30» он не
+    // разберёт. Отдаём нижнюю границу — поведение как у клиента, не знающего
+    // про рандомизацию.
+    public static function keepaliveInt($v): int
+    {
+        return self::awgRangeBounds((string) $v)[0] ?: 20;
     }
 
     // Короткий отпечаток секрета для сверки сервер↔клиент без его раскрытия.
@@ -5240,6 +5282,8 @@ NFT;
         $text[] = 'Все поля, кроме HeaderProtectionKey, задаются числом или диапазоном <code>LO-HI</code>; <code>0</code> — вернуть значение по умолчанию.';
         $text[] = '';
         $text[] = '⚠️ Любое изменение здесь ломает уже розданные конфиги: клиентам нужно перекачать их заново. Header protection дополнительно требует S1–S4 ≥ ' . self::AWG_HPK_MIN_S . '.';
+        $text[] = '';
+        $text[] = '<b>mihomo awg3</b> — отдавать ли блок 3.0 в подписке mihomo (<code>amnezia-wg-option</code> + <code>version: 3</code>). Нужны свежие сборки mihomo/Clash.Meta; старые эти поля просто игнорируют, и awg-прокси к 3.0-серверу у них работать не будет в любом случае.';
 
         $data = [
             [
@@ -5272,6 +5316,12 @@ NFT;
         if ($row) {
             $data[] = $row;
         }
+        $data[] = [
+            [
+                'text'          => 'mihomo awg3: ' . (!empty($c['mihomo_awg3']) ? 'on' : 'off'),
+                'callback_data' => "/awg3mihomo $inst $page",
+            ],
+        ];
         $data[] = [
             ['text' => 'reset 3.0',     'callback_data' => "/awg3reset $inst $page"],
             ['text' => 'recheck tools', 'callback_data' => "/awgVerRefresh $inst $page"],
@@ -5377,6 +5427,17 @@ NFT;
     public function awgVerRefresh($page = 0)
     {
         $this->awgToolsVersion(true);
+        $this->awg3Menu($page);
+    }
+
+    // Флаг глобальный, а не по инстансу: он описывает возможности КЛИЕНТСКОГО
+    // приложения подписчика, а не сервера. Рестарт wg не нужен — меняется
+    // только то, что отдаётся в подписке.
+    public function toggleMihomoAwg3($page = 0)
+    {
+        $c = $this->getPacConf();
+        $c['mihomo_awg3'] = empty($c['mihomo_awg3']) ? 1 : 0;
+        $this->setPacConf($c);
         $this->awg3Menu($page);
     }
 
@@ -9511,10 +9572,17 @@ DNS-over-HTTPS with IP:
             return false;
         }
         return [
-            // mihomo знает только поля 1.x/2.0 — 3.0-ключи отфильтровываем,
-            // иначе незнакомые записи ломают разбор конфига у подписчика.
-            "amnezia-wg-option" => self::amneziaKeysForMihomo($c["{$container}amnezia_keys"] ?? ''),
+            // Блок 3.0 уезжает в mihomo только при включённом тумблере
+            // mihomo_awg3: его понимают лишь свежие сборки, а нужные ИМЕНА
+            // полей у mihomo свои (см. MIHOMO_AWG3_KEYS).
+            "amnezia-wg-option" => self::amneziaKeysForMihomo(
+                $c["{$container}amnezia_keys"] ?? '',
+                !empty($c['mihomo_awg3'])
+            ),
             "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
+            // Диапазон приводится к числу уже на месте сборки прокси
+            // (keepaliveInt): ssh сюда звать нельзя — это путь подписки.
+            "persistent-keepalive" => $c["{$container}amnezia_keepalive"] ?? 20,
             "server"            => explode(':', $clients[$client]['peers'][0]['Endpoint'])[0],
             "port"              => explode(':', $clients[$client]['peers'][0]['Endpoint'])[1],
             "ip"                => explode('/', $clients[$client]['interface']['Address'])[0],
@@ -19042,7 +19110,8 @@ DNS-over-HTTPS with IP:
                                 "0.0.0.0/0",
                             ],
                             "mtu"                  => $awg['mtu'],
-                            "persistent-keepalive" => 20,
+                            // Целое число: диапазон 3.0 mihomo здесь не примет.
+                            "persistent-keepalive" => self::keepaliveInt($awg['persistent-keepalive'] ?? 20),
                             "udp"                  => true,
                         ];
                         if (!empty($awg['pre-shared-key'])) {
@@ -19357,10 +19426,17 @@ DNS-over-HTTPS with IP:
         }
 
         return [
-            // mihomo знает только поля 1.x/2.0 — 3.0-ключи отфильтровываем,
-            // иначе незнакомые записи ломают разбор конфига у подписчика.
-            "amnezia-wg-option" => self::amneziaKeysForMihomo($c["{$container}amnezia_keys"] ?? ''),
+            // Блок 3.0 уезжает в mihomo только при включённом тумблере
+            // mihomo_awg3: его понимают лишь свежие сборки, а нужные ИМЕНА
+            // полей у mihomo свои (см. MIHOMO_AWG3_KEYS).
+            "amnezia-wg-option" => self::amneziaKeysForMihomo(
+                $c["{$container}amnezia_keys"] ?? '',
+                !empty($c['mihomo_awg3'])
+            ),
             "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
+            // Диапазон приводится к числу уже на месте сборки прокси
+            // (keepaliveInt): ssh сюда звать нельзя — это путь подписки.
+            "persistent-keepalive" => $c["{$container}amnezia_keepalive"] ?? 20,
             "server"            => explode(':', $cl['peers'][0]['Endpoint'])[0],
             "port"              => explode(':', $cl['peers'][0]['Endpoint'])[1],
             "ip"                => explode('/', $cl['interface']['Address'])[0],
