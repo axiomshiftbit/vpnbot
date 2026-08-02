@@ -198,74 +198,16 @@ script-security 2
 client-connect /etc/openvpn/connect.sh
 client-disconnect /etc/openvpn/connect.sh
 
-persist-key
+# persist-key не пишем: 2.7 отвечает «DEPRECATED OPTION: --persist-key
+# option ignored. Keys are now always persisted across restarts.»
 persist-tun
 EOF
 fi
 
-# Миграции уже существующего server.conf (бот правит его in-place; мы тут
-# подтягиваем только безопасные для OpenSSL 3.0+ строки, ничего пользова-
-# тельского не перезаписывая).
-if [ -f "$SRV" ]; then
-    # Внутренний bind-порт всегда 1194 (см. комментарий к PORT выше). Старые
-    # server.conf, сгенерированные когда OVPNPORT≠1194, могли получить
-    # неправильный `port` — принудительно чиним, иначе nginx/docker (1194) не
-    # достучатся до демона и openvpn будет «on», но недоступен снаружи.
-    sed -i 's/^port[[:space:]]\+[0-9]\+[[:space:]]*$/port 1194/' "$SRV"
-    # ecdh-curve игнорируется в OpenSSL 3.0+ с warning'ом — убираем.
-    sed -i '/^ecdh-curve[[:space:]]/d' "$SRV"
-    # management через TCP на 127.0.0.1 → unix-сокет (убирает "TCP port
-    # WITHOUT passwords is STRONGLY discouraged" warning и безопаснее).
-    sed -i 's|^management[[:space:]]\+127\.0\.0\.1[[:space:]]\+7505[[:space:]]*$|management /var/run/openvpn-mgmt.sock unix|' "$SRV"
-    # explicit-exit-notify ignored for --proto tcp — держим только для UDP.
-    if grep -qE '^proto[[:space:]]+tcp' "$SRV"; then
-        sed -i '/^explicit-exit-notify[[:space:]]/d' "$SRV"
-    elif ! grep -qE '^explicit-exit-notify[[:space:]]' "$SRV"; then
-        # При возврате на UDP вернуть директиву, если её когда-то удаляли.
-        printf '\nexplicit-exit-notify 1\n' >> "$SRV"
-    fi
-    # Миграция #1: если в старом server.conf нет маркеров #ovpn-isolation —
-    # добавляем пустой блок. Без маркеров toggleOvpnIsolation silently no-op
-    # и кнопка «трафик между клиентами» всегда показывает off.
-    if ! grep -q '^#ovpn-isolation[[:space:]]*$' "$SRV"; then
-        printf '\n# Bot toggles client isolation between these markers — do not edit by hand.\n#ovpn-isolation\n#ovpn-isolation\n' >> "$SRV"
-    fi
-    # Миграция #2: без `status` директивы openvpn-status.log не пишется,
-    # из-за чего getOvpnStatus() возвращает пусто и все клиенты в меню
-    # отображаются как offline (⚪). Добавляем обе директивы, если их нет.
-    if ! grep -qE '^status[[:space:]]' "$SRV"; then
-        printf '\nstatus /etc/openvpn/openvpn-status.log 5\n' >> "$SRV"
-    fi
-    if ! grep -qE '^status-version[[:space:]]' "$SRV"; then
-        printf 'status-version 2\n' >> "$SRV"
-    fi
-    # Миграция #3: client-connect/disconnect hook для журнала подключений
-    # (/logs/openvpn-connections.log с CN + real IP). Требует script-security 2.
-    # Без этой миграции существующие server.conf не увидят новый хук.
-    if ! grep -qE '^script-security[[:space:]]' "$SRV"; then
-        printf '\nscript-security 2\n' >> "$SRV"
-    fi
-    if ! grep -qE '^client-connect[[:space:]]' "$SRV"; then
-        printf 'client-connect /etc/openvpn/connect.sh\n' >> "$SRV"
-    fi
-    if ! grep -qE '^client-disconnect[[:space:]]' "$SRV"; then
-        printf 'client-disconnect /etc/openvpn/connect.sh\n' >> "$SRV"
-    fi
-    # Миграция #4: `push "block-outside-dns"` роняет ВСЕХ не-Windows клиентов
-    # (неизвестная опция в PUSH_REPLY = фатальная ошибка на стороне клиента).
-    # Убираем безусловный push и заводим маркеры, между которыми бот включает
-    # его обратно по кнопке — осознанно и только там, где парк на Windows.
-    if ! grep -q '^#ovpn-winblockdns[[:space:]]*$' "$SRV"; then
-        if grep -qE '^[[:space:]]*push[[:space:]]+"block-outside-dns"' "$SRV"; then
-            log 'migration: push "block-outside-dns" disabled (breaks non-Windows clients); re-enable via bot menu'
-        fi
-        sed -i '/^[[:space:]]*push[[:space:]]\+"block-outside-dns"/d' "$SRV"
-        printf '\n# Bot toggles the Windows-only DNS-leak guard between these markers.\n#ovpn-winblockdns\n#ovpn-winblockdns\n' >> "$SRV"
-    fi
-    # Миграция #5: `cipher` в TLS-режиме игнорируется с 2.6 и только засоряет
-    # лог deprecation-предупреждением. data-ciphers/-fallback уже заданы.
-    sed -i '/^[[:space:]]*cipher[[:space:]]/d' "$SRV"
-fi
+# Миграции существующего server.conf вынесены в отдельный скрипт: тот же
+# набор правок обязан применяться и когда бот восстанавливает server.conf из
+# бэкапа (importOvpnPki), а контейнер при этом не пересоздаётся.
+sh /ovpn_migrate.sh "$SRV"
 
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true
 

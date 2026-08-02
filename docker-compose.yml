@@ -635,6 +635,9 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/openvpn:/etc/openvpn
             - ./scripts/start_ovpn.sh:/start_ovpn.sh
+            # Миграции server.conf отдельным файлом: их дёргает и стартовый
+            # скрипт, и бот после восстановления конфигурации из бэкапа.
+            - ./scripts/ovpn_migrate.sh:/ovpn_migrate.sh
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs

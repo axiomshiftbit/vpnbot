@@ -154,6 +154,40 @@ $offBl = preg_replace($re, "#ovpn-winblockdns\n#ovpn-winblockdns", $onBl);
 ttAssert(strpos($offBl, 'block-outside-dns"') === false, 'выключение убирает push целиком');
 ttAssert(strpos($offBl, 'verb 3') !== false && strpos($offBl, 'port 1194') !== false, 'переключение не съедает остальной конфиг');
 
+// Миграции обязаны жить в отдельном скрипте: их гоняет и стартовый скрипт
+// контейнера, и бот перед каждым стартом демона. Иначе восстановление из
+// бэкапа (importOvpnPki кладёт server.conf из снимка целиком) молча
+// откатывает их — ровно это и случилось на живом сервере.
+$mig = file_get_contents(__DIR__ . '/../scripts/ovpn_migrate.sh');
+ttAssert(strpos($mig, '#ovpn-winblockdns') !== false, 'ovpn_migrate.sh заводит маркеры winblockdns');
+ttAssert(
+    strpos($mig, "sed -i '/^[[:space:]]*push[[:space:]]\\+\"block-outside-dns\"/d'") !== false,
+    'ovpn_migrate.sh снимает безусловный push "block-outside-dns"'
+);
+ttAssert(strpos($mig, 'persist-key') !== false, 'ovpn_migrate.sh убирает deprecated persist-key');
+$startOvpn = file_get_contents(__DIR__ . '/../scripts/start_ovpn.sh');
+ttAssert(strpos($startOvpn, 'sh /ovpn_migrate.sh') !== false, 'start_ovpn.sh зовёт общий скрипт миграций');
+$botSrc = file_get_contents(__DIR__ . '/../app/bot.php');
+ttAssert(
+    strpos($botSrc, 'sh /ovpn_migrate.sh') !== false,
+    'бот применяет миграции сам (иначе restore бэкапа откатывает их)'
+);
+ttAssert(
+    (bool) preg_match('~function restartOvpn\(\)\s*\{\s*\$this->migrateOvpnServerConf\(\);~', $botSrc),
+    'restartOvpn() применяет миграции до старта демона'
+);
+ttAssert(
+    strpos($botSrc, 'nobind\\npersist-tun\\nremote-cert-tls server') !== false,
+    'клиентский .ovpn без deprecated persist-key'
+);
+
+// TrustTunnel: эндпоинт паникует на credentials.toml без [[client]]
+// («invalid value: Not an array of clients») — стартовый скрипт обязан
+// гейтить это так же, как ttBlockers() в боте.
+$startTt = file_get_contents(__DIR__ . '/../scripts/start_tt.sh');
+ttAssert(strpos($startTt, '[[client]]') !== false, 'start_tt.sh проверяет наличие [[client]]');
+ttAssert(strpos($startTt, 'cert_private') !== false, 'start_tt.sh проверяет наличие сертификатов');
+
 // Генерируемый server.conf не должен пушить опцию безусловно.
 $srv = file_get_contents(__DIR__ . '/../scripts/start_ovpn.sh');
 ttAssert(

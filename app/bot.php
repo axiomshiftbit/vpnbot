@@ -23304,8 +23304,19 @@ DNS-over-HTTPS with IP:
         return $missing;
     }
 
+    // server.conf лежит в бэкапе целиком, и importOvpnPki() кладёт снимок
+    // обратно — вместе со всем, что чинят миграции start_ovpn.sh. Контейнер
+    // при восстановлении не пересоздаётся, поэтому гоняем тот же скрипт сами
+    // перед каждым стартом демона: иначе после каждого restore возвращались
+    // cipher и push "block-outside-dns" (проверено на живом сервере).
+    public function migrateOvpnServerConf()
+    {
+        return $this->ssh('sh /ovpn_migrate.sh 2>/dev/null || true', 'ovpn');
+    }
+
     public function restartOvpn()
     {
+        $this->migrateOvpnServerConf();
         // Без всех PKI-файлов openvpn немедленно падает с «Cannot pre-load
         // keyfile» и бот показывает on→off. Лучше ничего не запускать, чтобы
         // статус честно оставался off и пользователь увидел причину в меню.
@@ -23462,10 +23473,11 @@ DNS-over-HTTPS with IP:
         $host   = $domain ?: getenv('IP');
         $port   = $this->getOvpnPort();
         $proto  = $this->getOvpnProto();
-        // `cipher` намеренно отсутствует: в TLS-режиме OpenVPN 2.6 её значение
-        // игнорируется (шифр согласуется по data-ciphers), а сама директива
-        // помечена deprecated и печатает предупреждение при каждом старте.
-        $ovpn   = "client\ndev tun\nproto $proto\nremote $host $port\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
+        // `cipher` намеренно отсутствует: в TLS-режиме её значение игнорируется
+        // начиная с 2.6 (шифр согласуется по data-ciphers), а сама директива
+        // помечена deprecated. `persist-key` убран по той же причине — 2.7
+        // отвечает «DEPRECATED OPTION: --persist-key option ignored».
+        $ovpn   = "client\ndev tun\nproto $proto\nremote $host $port\nresolv-retry infinite\nnobind\npersist-tun\nremote-cert-tls server\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
         $ovpn  .= "<ca>\n$ca</ca>\n";
         $ovpn  .= "<cert>\n$crt\n</cert>\n";
         $ovpn  .= "<key>\n$key</key>\n";
@@ -23569,11 +23581,16 @@ DNS-over-HTTPS with IP:
         if (!file_exists($p['srv'])) {
             return $this->menu('ovpn');
         }
-        $cfg = file_get_contents($p['srv']);
         $re  = '~^[ \t]*#ovpn-winblockdns[ \t]*\R.*?^[ \t]*#ovpn-winblockdns[ \t]*$~sm';
+        $cfg = file_get_contents($p['srv']);
         if (!preg_match($re, $cfg)) {
-            // Маркеров нет — старый server.conf до миграции в start_ovpn.sh.
-            $this->send($this->input['chat'], 'server.conf without #ovpn-winblockdns markers — restart ovpn container first');
+            // Маркеров нет — конфиг из бэкапа или с прошлой версии. Не отсылаем
+            // пользователя пересоздавать контейнер, а доносим миграции сами.
+            $this->migrateOvpnServerConf();
+            $cfg = file_get_contents($p['srv']);
+        }
+        if (!preg_match($re, $cfg)) {
+            $this->send($this->input['chat'], 'server.conf without #ovpn-winblockdns markers — check /logs/openvpn.log');
             return $this->menu('ovpn');
         }
         $on   = $this->isOvpnWinBlockDns();
