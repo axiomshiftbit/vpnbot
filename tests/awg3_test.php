@@ -219,6 +219,70 @@ awgAssert(strpos($rep, 'SECRETVALUE') !== false, 'report: без маски кл
 $rep = Bot::amneziaKeysReport(['Jc' => 4, 'S1' => 20], true, ['S1']);
 awgAssert($rep === 'S1: 20', 'report: фильтр $only не работает');
 
+// ── 12. amneziaKeysUsable: один срез для сервера и для подписок ─────────────
+// Подписка mihomo обязана описывать ТО ЖЕ, что уехало в wg0.conf. Иначе клиент
+// поднимает v3-устройство с header protection против сервера без него и молча
+// не проходит handshake.
+$set3 = $bot->generateAmneziaKeys('standard_3');
+$u = Bot::amneziaKeysUsable($set3, false);
+foreach (Bot::AWG_KEYS_3 as $k) {
+    awgAssert(!isset($u[$k]), "usable: при старых tools $k должен быть срезан");
+}
+awgAssert(isset($u['I1']), 'usable: 2.0-поля срезать не нужно');
+awgAssert(isset(Bot::amneziaKeysUsable($set3, null)['HeaderProtectionKey']),
+    'usable: при неизвестной версии срезать нельзя');
+$low = $set3;
+$low['S3'] = 4;
+$u = Bot::amneziaKeysUsable($low, true);
+awgAssert(!isset($u['HeaderProtectionKey']), 'usable: HPK при S3 < 12 должен быть срезан');
+awgAssert(isset($u['RekeyAfterTime']), 'usable: остальные 3.0-поля остаются');
+awgAssert(Bot::amneziaKeysUsable('nonsense', true) === [], 'usable: мусор на входе → []');
+// Тот же срез, прогнанный до mihomo: блока 3.0 быть не должно вовсе.
+$mihOld = Bot::amneziaKeysForMihomo(Bot::amneziaKeysUsable($set3, false), true);
+awgAssert(!isset($mihOld['version']), 'mihomo: version:3 при старых tools на сервере');
+foreach (Bot::MIHOMO_AWG3_KEYS as $mk) {
+    awgAssert(!isset($mihOld[$mk]), "mihomo: $mk отдан клиенту, хотя на сервере блока 3.0 нет");
+}
+
+// ── 13. awgHeadersToV1: понижение до 1.x снимает диапазоны заголовков ───────
+for ($i = 0; $i < 100; $i++) {
+    $k   = $bot->generateAmneziaKeys('standard_2');
+    $v1  = Bot::awgHeadersToV1($k);
+    $seen = [];
+    foreach (['H1', 'H2', 'H3', 'H4'] as $h) {
+        awgAssert(is_int($v1[$h]), "awgHeadersToV1: $h не число");
+        awgAssert($v1[$h] > 0, "awgHeadersToV1: $h нулевой");
+        awgAssert($v1[$h] <= 4_294_967_295, "awgHeadersToV1: $h вне uint32");
+        awgAssert(!in_array($v1[$h], $seen, true), "awgHeadersToV1: $h дублируется");
+        $seen[] = $v1[$h];
+    }
+    // Остальные поля не трогаются.
+    awgAssert($v1['S1'] === $k['S1'] && $v1['Jc'] === $k['Jc'], 'awgHeadersToV1: задеты чужие поля');
+}
+// Уже одиночные значения сохраняются как есть, отсутствующие не создаются.
+$v1 = Bot::awgHeadersToV1(['H1' => 7, 'H2' => '9']);
+awgAssert($v1['H1'] === 7 && $v1['H2'] === 9, 'awgHeadersToV1: одиночные значения должны сохраняться');
+awgAssert(!isset($v1['H3']), 'awgHeadersToV1: отсутствующие заголовки не создаются');
+// Совпадающие нижние границы обязаны разъехаться.
+$v1 = Bot::awgHeadersToV1(['H1' => '100-200', 'H2' => '100-300']);
+awgAssert($v1['H1'] !== $v1['H2'], 'awgHeadersToV1: одинаковые lo не разведены');
+// Ноль недопустим — это «поле не задано».
+awgAssert(Bot::awgHeadersToV1(['H1' => '0-50'])['H1'] > 0, 'awgHeadersToV1: ноль должен быть заменён');
+
+// ── 14. awgTimingConflict ──────────────────────────────────────────────────
+awgAssert(Bot::awgTimingConflict($bot->generateAmneziaKeys('standard_3')) === '',
+    'timing: сгенерированный набор не должен конфликтовать');
+awgAssert(Bot::awgTimingConflict([]) === '', 'timing: дефолты 120/180 не конфликтуют');
+awgAssert(Bot::awgTimingConflict(['RekeyAfterTime' => '200']) !== '',
+    'timing: Rekey 200 против дефолтного Reject 180 — конфликт');
+awgAssert(Bot::awgTimingConflict(['RejectAfterTime' => '100']) !== '',
+    'timing: Reject 100 против дефолтного Rekey 120 — конфликт');
+awgAssert(Bot::awgTimingConflict(['RekeyAfterTime' => '110-130', 'RejectAfterTime' => '130-140']) !== '',
+    'timing: границы не должны соприкасаться');
+awgAssert(Bot::awgTimingConflict(['RekeyAfterTime' => '110-130', 'RejectAfterTime' => '131-140']) === '',
+    'timing: Reject.lo > Rekey.hi — валидно');
+awgAssert(Bot::awgTimingConflict('nonsense') === '', 'timing: мусор на входе не должен падать');
+
 if ($failed) {
     echo "awg3_test FAILED ($failed)\n";
     exit(1);

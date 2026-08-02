@@ -4962,6 +4962,91 @@ NFT;
         return $keys;
     }
 
+    // Срез набора до того, что РЕАЛЬНО уезжает в wg0.conf. Чистая функция —
+    // единственный источник правды и для серверного конфига
+    // (amneziaKeysEffective), и для клиентских подписок: раньше mihomo получал
+    // сырой набор из pac.json и мог объявить header protection, которого на
+    // сервере нет (старые tools режут весь блок 3.0, S1..S4 < 12 режет HPK).
+    // Клиент при этом поднимает v3-устройство и молча не проходит handshake.
+    //
+    // $supports3: true — 3.0 есть, false — заведомо нет, null — неизвестно.
+    // При null НЕ режем: моргнувший ssh не повод выкинуть рабочий блок из
+    // конфигов всех клиентов.
+    public static function amneziaKeysUsable($keys, ?bool $supports3): array
+    {
+        if (!is_array($keys)) {
+            return [];
+        }
+        if ($supports3 === false) {
+            foreach (self::AWG_KEYS_3 as $j) {
+                unset($keys[$j]);
+            }
+        }
+        if (!self::awgHeaderProtectionOk($keys)) {
+            unset($keys['HeaderProtectionKey']);
+        }
+        return $keys;
+    }
+
+    // Дефолты amneziawg-go (device/constants.go) для полей, которые не заданы:
+    // пустое значение = «использовать встроенный», а не «ноль».
+    public const AWG3_DEFAULTS = [
+        'RekeyAfterTime'   => 120,
+        'RejectAfterTime'  => 180,
+        'RekeyTimeout'     => 5,
+        'KeepaliveTimeout' => 10,
+    ];
+
+    // Единственная связка между таймингами, которую amneziawg НЕ проверяет сам:
+    // сессия обязана жить дольше, чем срок до рекея. При RejectAfterTime <=
+    // RekeyAfterTime пир выбрасывает ключи раньше, чем успевает передоговориться,
+    // и туннель рвётся каждые пару минут — при этом конфиг синтаксически
+    // корректен, setconf его принимает, и awgApplyGuarded ничего не замечает.
+    // Сравниваем худший случай: верх Rekey против низа Reject.
+    // Возвращает '' при отсутствии конфликта.
+    public static function awgTimingConflict($keys): string
+    {
+        $keys = is_array($keys) ? $keys : [];
+        $val  = function (string $k) use ($keys) {
+            $v = (string) ($keys[$k] ?? '');
+            return $v === '' ? (string) self::AWG3_DEFAULTS[$k] : $v;
+        };
+        [, $rekeyHi]  = self::awgRangeBounds($val('RekeyAfterTime'));
+        [$rejectLo, ] = self::awgRangeBounds($val('RejectAfterTime'));
+        if ($rejectLo <= $rekeyHi) {
+            return "RejectAfterTime ($rejectLo) должен быть больше верхней границы RekeyAfterTime ($rekeyHi), "
+                . 'иначе пир отбросит сессию раньше, чем попробует рекей';
+        }
+        return '';
+    }
+
+    // H1..H4 в форму 1.x: одиночные ненулевые различающиеся uint32.
+    // Диапазон «LO-HI» — это фича 2.0, и клиент/ядро 1.x его не разберёт;
+    // без этой конвертации понижение до classic_1 снимало I1-I5 и S3/S4, но
+    // оставляло заголовки в 2.0-синтаксисе, т.е. «совместимый со старыми
+    // клиентами» профиль на старом клиенте всё равно не поднимался.
+    // Берём нижнюю границу: диапазоны генератора не пересекаются, значит и
+    // нижние границы различны, а набор меняется минимально.
+    public static function awgHeadersToV1($keys): array
+    {
+        $keys = is_array($keys) ? $keys : [];
+        $seen = [];
+        foreach (['H1', 'H2', 'H3', 'H4'] as $h) {
+            if (!isset($keys[$h]) || $keys[$h] === '') {
+                continue;
+            }
+            $v = self::awgRangeBounds((string) $keys[$h])[0];
+            // Ноль запрещён (это «поле не задано»), дубль сделал бы два типа
+            // пакетов неразличимыми — в обоих случаях берём свободное значение.
+            while ($v <= 0 || in_array($v, $seen, true)) {
+                $v = random_int(1, 4_294_967_295);
+            }
+            $seen[]   = $v;
+            $keys[$h] = $v;
+        }
+        return $keys;
+    }
+
     // Имя параметра в wg0.conf → имя поля в amnezia-wg-option у mihomo.
     // Отдельная карта нужна, потому что для 3.0-полей регистронезависимого
     // совпадения НЕ хватает: декодер mihomo (common/structure) сверяет ключи
@@ -5263,7 +5348,15 @@ NFT;
             if ($ver === 3) {
                 $keys = self::enforceHeaderProtection($keys);
             } else {
+                // Диапазонный PersistentKeepalive — тоже 3.0: на 1.x/2.0 он
+                // просто не разберётся.
                 unset($c[$prefix . 'amnezia_keepalive']);
+            }
+            if ($ver === 1) {
+                // Заголовки-диапазоны — фича 2.0; в 1.x они обязаны стать
+                // одиночными числами, иначе профиль «для старых клиентов» на
+                // старом клиенте не поднимется. См. awgHeadersToV1().
+                $keys = self::awgHeadersToV1($keys);
             }
 
             $c[$prefix . 'amnezia']      = 1;
@@ -5507,7 +5600,36 @@ NFT;
         $prefix = $this->getInstanceWG(1);
         $text   = trim($text);
 
-        if ($text === '' || $text === '0' || $text === '-') {
+        $reset = $text === '' || $text === '0' || $text === '-';
+
+        if (!$reset && ($err = self::validateAwgRange($text, $min, $max))) {
+            $this->update($this->input['chat'], $this->input['message_id'], "$key: $err");
+            sleep(3);
+            $this->menu('wg', $page);
+            return;
+        }
+
+        // Кросс-проверка Rekey/Reject: по отдельности оба значения валидны, а
+        // вместе рвут туннель — и сброс в дефолт тоже способен создать конфликт
+        // (снятый RejectAfterTime = 180 против выставленного RekeyAfterTime).
+        // Поэтому проверяем ИТОГОВЫЙ набор, а не введённую строку.
+        if (in_array($key, ['RekeyAfterTime', 'RejectAfterTime'], true)) {
+            $next = $this->getPacConf()[$prefix . 'amnezia_keys'] ?? [];
+            $next = is_array($next) ? $next : [];
+            if ($reset) {
+                unset($next[$key]);
+            } else {
+                $next[$key] = $text;
+            }
+            if ($err = self::awgTimingConflict($next)) {
+                $this->update($this->input['chat'], $this->input['message_id'], $err);
+                sleep(3);
+                $this->menu('wg', $page);
+                return;
+            }
+        }
+
+        if ($reset) {
             $this->awgApplyGuarded($page, function () use ($prefix, $key) {
                 $c = $this->getPacConf();
                 if ($key === 'PersistentKeepalive') {
@@ -5517,13 +5639,6 @@ NFT;
                 }
                 $this->setPacConf($c);
             });
-            return;
-        }
-
-        if ($err = self::validateAwgRange($text, $min, $max)) {
-            $this->update($this->input['chat'], $this->input['message_id'], "$key: $err");
-            sleep(3);
-            $this->menu('wg', $page);
             return;
         }
 
@@ -9598,8 +9713,15 @@ DNS-over-HTTPS with IP:
             // Блок 3.0 уезжает в mihomo только при включённом тумблере
             // mihomo_awg3: его понимают лишь свежие сборки, а нужные ИМЕНА
             // полей у mihomo свои (см. MIHOMO_AWG3_KEYS).
+            // Набор прогоняем через amneziaKeysUsable() — тот же срез, что
+            // уходит в wg0.conf: иначе подписка объявила бы клиенту header
+            // protection, которого на сервере нет, и handshake молча не прошёл
+            // бы. Версию tools берём из кеша: ssh на пути подписки нельзя.
             "amnezia-wg-option" => self::amneziaKeysForMihomo(
-                $c["{$container}amnezia_keys"] ?? '',
+                self::amneziaKeysUsable(
+                    $c["{$container}amnezia_keys"] ?? '',
+                    $this->awgSupports3Cached($container)
+                ),
                 !empty($c['mihomo_awg3'])
             ),
             "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
@@ -19560,8 +19682,15 @@ DNS-over-HTTPS with IP:
             // Блок 3.0 уезжает в mihomo только при включённом тумблере
             // mihomo_awg3: его понимают лишь свежие сборки, а нужные ИМЕНА
             // полей у mihomo свои (см. MIHOMO_AWG3_KEYS).
+            // Набор прогоняем через amneziaKeysUsable() — тот же срез, что
+            // уходит в wg0.conf: иначе подписка объявила бы клиенту header
+            // protection, которого на сервере нет, и handshake молча не прошёл
+            // бы. Версию tools берём из кеша: ssh на пути подписки нельзя.
             "amnezia-wg-option" => self::amneziaKeysForMihomo(
-                $c["{$container}amnezia_keys"] ?? '',
+                self::amneziaKeysUsable(
+                    $c["{$container}amnezia_keys"] ?? '',
+                    $this->awgSupports3Cached($container)
+                ),
                 !empty($c['mihomo_awg3'])
             ),
             "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
@@ -21507,19 +21636,17 @@ DNS-over-HTTPS with IP:
     // повод выкинуть рабочую конфигурацию из конфигов всех клиентов.
     public function amneziaKeysEffective(): array
     {
-        $k = $this->amneziaKeys();
-        if (!is_array($k)) {
-            return [];
-        }
-        if ($this->awgSupports3() === false) {
-            foreach (self::AWG_KEYS_3 as $j) {
-                unset($k[$j]);
-            }
-        }
-        if (!self::awgHeaderProtectionOk($k)) {
-            unset($k['HeaderProtectionKey']);
-        }
-        return $k;
+        return self::amneziaKeysUsable($this->amneziaKeys(), $this->awgSupports3());
+    }
+
+    // То же решение, что awgSupports3(), но БЕЗ ssh: только кеш в pac.json,
+    // который пишет awgToolsVersion(). Нужен путям подписки — они выполняются
+    // на каждый запрос клиента, и лишний ssh там превратился бы в задержку и в
+    // зависимость выдачи конфига от живости wg-контейнера.
+    public function awgSupports3Cached(string $prefix = ''): ?bool
+    {
+        $v = $this->getPacConf()[$prefix . 'awg_tools_ver']['v'] ?? null;
+        return $v === null ? null : version_compare(ltrim((string) $v, 'vV'), '3.0', '>=');
     }
 
     // Ключ header protection — тот же формат, что и обычный ключ wireguard
