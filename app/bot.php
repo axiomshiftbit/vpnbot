@@ -17735,7 +17735,10 @@ DNS-over-HTTPS with IP:
 
     public function warpStatus()
     {
-        $st = $this->ssh('curl -m 1 -x socks5://wp:1080 https://cloudflare.com/cdn-cgi/trace', 'xr');
+        // socks5h (резолв на стороне microsocks, т.е. через туннель) и таймаут
+        // 8с: с прежним `-m 1` и локальным резолвом живой WARP регулярно
+        // показывался как off на медленном первом соединении.
+        $st = $this->ssh('curl -m 8 -s -x socks5h://wp:1080 https://www.cloudflare.com/cdn-cgi/trace', 'xr');
         preg_match('~warp=(\w+)~', $st, $m);
         return trim($m[1]) ?: 'off';
     }
@@ -17833,42 +17836,52 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Включение/выключение туннеля. Раньше вся функция была построена на
+    // warp-cli/warp-svc (официальный клиент Cloudflare), которых в образе wp
+    // НЕТ — там только wgcf + wg + microsocks. То есть каждая команда
+    // возвращала "not found", туннель не менялся, но флаг warpoff в pac.json
+    // всё равно переключался: состояние бота расходилось с реальностью.
+    // Теперь выключаем ровно тем же способом, каким поднимаем — wg-quick,
+    // а флаг читает ещё и watchdog в start_wp.sh (иначе он поднял бы туннель
+    // обратно через три минуты).
     public function offWarp()
     {
-        $p    = $this->getPacConf();
+        $p   = $this->getPacConf();
+        $off = !empty($p['warpoff']);
+
         if (!empty($this->selfupdate)) {
-            if (!empty($p['warpoff'])) {
-                $this->ssh('warp-cli --accept-tos registration delete 2>&1', 'wp');
-                $this->ssh('pkill warp-svc', 'wp');
+            // Автообновление: ничего не переключаем, только уважаем флаг.
+            if ($off) {
+                $this->ssh('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
             }
-        } elseif (!empty($p['warpoff'])) {
-            $this->ssh('warp-svc > /dev/null 2>&1 &', 'wp');
-            sleep(3);
-            if (empty($this->ssh('[ -f "/var/lib/cloudflare-warp/conf.json" ] && echo 1', 'wp'))) {
-                $this->send($this->input['chat'], 'Registration: ' . $this->ssh('warp-cli --accept-tos registration new 2>&1', 'wp'));
-                if (!empty($p['warp'])) {
-                    $this->send($this->input['chat'], 'License: ' . $this->ssh("warp-cli --accept-tos registration license {$p['warp']} 2>&1", 'wp'));
-                }
+            return;
+        }
+
+        if ($off) {
+            $out = trim((string) $this->ssh(
+                'out=$(wg-quick up /etc/warp/wgcf-profile.conf 2>&1); ec=$?; '
+                    . '[ "$ec" -ne 0 ] && printf "%s\n" "$out" | grep -v "skip sysctl"; exit $ec',
+                'wp'
+            ));
+            if ($out !== '') {
+                $this->send($this->input['chat'], "warp up failed:\n<pre>"
+                    . htmlspecialchars($out, ENT_QUOTES) . '</pre>');
+                return $this->warp();
             }
-            $this->send($this->input['chat'], 'Proxy mode: ' . $this->ssh('warp-cli --accept-tos mode proxy 2>&1', 'wp'));
-            $this->send($this->input['chat'], 'Connect: ' . $this->ssh('warp-cli --accept-tos connect 2>&1', 'wp'));
             unset($p['warpoff']);
         } else {
-            $this->send($this->input['chat'], 'Registration delete: ' . $this->ssh('warp-cli --accept-tos registration delete 2>&1', 'wp'));
-            $this->ssh('pkill warp-svc', 'wp');
+            $this->ssh('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
             $p['warpoff'] = 1;
         }
         $this->setPacConf($p);
-        if (empty($this->selfupdate)) {
-            $this->warp();
-        }
+        $this->warp();
     }
 
     public function warp()
     {
         $p      = $this->getPacConf();
-        $c      = file_get_contents('/etc/warp/wgcf-profile.conf');
-        $a      = file_get_contents('/etc/warp/wgcf-account.toml');
+        $off    = !empty($p['warpoff']);
+        $prof   = $this->getWarpProfile();
         $text[] = "Menu -> " . $this->i18n('warp');
         if ($ver = $this->warpVersion()) {
             $text[] = $ver;
@@ -17879,13 +17892,33 @@ DNS-over-HTTPS with IP:
         // не выглядела пустой/сломанной.
         $trace  = trim((string) $this->ssh('wgcf trace', 'wp'));
         $text[] = "status: " . ($trace !== '' ? "<pre>$trace</pre>" : '<code>off</code>');
-        $text[] = "key: <code>{$p['warp']}</code>";
-        $text[] = "<pre>$a</pre>";
-        $text[] = "<pre>$c</pre>";
+        // Раньше сюда целиком печатались wgcf-account.toml и wgcf-profile.conf.
+        // В первом лежат private_key аккаунта и access_token (им управляют
+        // подпиской WARP+), во втором — PrivateKey интерфейса; всё это оседало
+        // в истории чата при КАЖДОМ открытии меню. Показываем только то, что
+        // не является секретом.
+        if ($prof) {
+            $text[] = 'endpoint: <code>' . htmlspecialchars($prof['server'] . ':' . $prof['port'], ENT_QUOTES) . '</code>';
+            $text[] = 'address: <code>' . htmlspecialchars($prof['ip'], ENT_QUOTES) . '</code>'
+                . ' · mtu: <code>' . (int) $prof['mtu'] . '</code>';
+            $text[] = 'peer key: <code>' . htmlspecialchars($prof['public-key'], ENT_QUOTES) . '</code>';
+        } else {
+            $text[] = '⚠ ' . $this->i18n('warp no profile');
+        }
+        $key    = (string) ($p['warp'] ?? '');
+        $text[] = 'key: ' . ($key === ''
+            ? '<code>-</code> (free)'
+            : '<code>' . htmlspecialchars(substr($key, 0, 4) . '…' . substr($key, -4), ENT_QUOTES) . '</code>');
+        $text[] = '<i>' . $this->i18n('warp keys hint') . '</i>';
+
         $data[] = [
             [
                 'text'          => $this->i18n('set key'),
                 'callback_data' => "/warpPlus",
+            ],
+            [
+                'text'          => $this->i18n('warp') . ': ' . $this->i18n($off ? 'off' : 'on'),
+                'callback_data' => "/offWarp",
             ],
         ];
         $data[] = [

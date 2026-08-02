@@ -12,6 +12,17 @@ SOCKS_PORT="${SOCKS_PORT:-1080}"
 
 WARP_LICENSE_KEY=$(cat /config/pac.json | jq -r '.warp // empty')
 
+# Кто имеет право пользоваться SOCKS'ом (см. блок фильтра ниже). Резолвим
+# ИМЕННО ЗДЕСЬ: ниже мы перепишем /etc/resolv.conf на 1.1.1.1 и docker-DNS
+# (127.0.0.11), который знает имена контейнеров, станет недоступен.
+# Единственный легитимный потребитель прокси — xray (outbound tag "warp" и
+# проверка статуса в боте). Он ходит сюда с адреса своего интерфейса в
+# сети проекта; docker-DNS на имя сервиса отдаёт именно его. Берём ВСЕ
+# адреса: у xray их два (вторая сеть 10.10.1.0/24), и хотя маршрут до нас
+# идёт через первую, лишний ACCEPT ничего не ослабляет.
+XRAY_IPS=$(getent hosts xr 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+SOCKS_ALLOW="${WARP_SOCKS_ALLOW:-${XRAY_IPS:-10.10.0.9}}"
+
 mkdir -p "$WGCF_DIR"
 cd "$WGCF_DIR"
 
@@ -62,21 +73,57 @@ if [ ! -f "$WGCF_CONF" ]; then
     retry wgcf generate
 fi
 
+# wgcf кладёт account.toml с 0644, а в нём лежат private_key аккаунта и
+# access_token — им управляют подпиской WARP+. Профиль wg-quick и так требует
+# 0600, аккаунт приводим к тому же.
+chmod 600 "$WGCF_TOML" "$WGCF_CONF" 2>/dev/null || true
+
 # Фиксапы профиля (IPv6 из списков, DNS-строка, PersistentKeepalive) — общий
 # с кнопкой «set key» бота скрипт, правки только в warp_fixup.sh. Выполняется
 # БЕЗУСЛОВНО при каждом старте, а не при генерации: профиль обычно уже лежит
 # в named-volume, и блок генерации выше не выполняется.
 sh /warp_fixup.sh
 
-echo "[warp] Starting WireGuard (WARP)..."
+# Кнопка «warp on/off» в боте пишет флаг warpoff в pac.json. Читаем его И на
+# старте, И в watchdog'е: иначе сторож через три минуты поднял бы туннель
+# обратно, и выключатель выглядел бы сломанным.
+warp_disabled() {
+    [ "$(jq -r '.warpoff // empty' /config/pac.json 2>/dev/null)" = "1" ]
+}
+
 # best-effort down: чистит хвосты (интерфейс/маршруты) после нештатного рестарта
 wg-quick down "$WGCF_CONF" 2>/dev/null || true
-wg-quick up "$WGCF_CONF"
+if warp_disabled; then
+    echo "[warp] disabled via warpoff in pac.json — tunnel not started"
+else
+    echo "[warp] Starting WireGuard (WARP)..."
+    wg-quick up "$WGCF_CONF"
+fi
 
 # DNS контейнера — через туннель. Пишем напрямую, без resolvconf (он в docker
 # не работает, см. выше). 1.1.1.1 доступен и БЕЗ туннеля, поэтому резолв
 # endpoint'а (engage.cloudflareclient.com) при пере-поднятии не ломается.
 printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > /etc/resolv.conf
+
+# microsocks не умеет ACL и слушает 0.0.0.0, а в docker-сети проекта он виден
+# КАЖДОМУ контейнеру. Клиент любого VPN тоже попадает сюда: его трафик
+# маскируется под адрес своего контейнера (например 10.8.0.0/24 -> 10.10.0.19
+# у openvpn), то есть выглядит как обычный внутренний источник. В итоге прокси
+# работал как открытый SOCKS5 без пароля: и выход наружу через WARP, и доступ
+# к внутренним сервисам проекта (проверено — adguard отвечал через него).
+# Пускаем только петлю (warp_probe.sh + healthcheck) и xray, ради outbound
+# которого прокси и существует. Список переопределяется WARP_SOCKS_ALLOW
+# (адреса через пробел) — на случай нестандартной адресации в override.
+echo "[warp] Restricting SOCKS $SOCKS_PORT to: lo $SOCKS_ALLOW"
+echo "[warp] (override with WARP_SOCKS_ALLOW=\"ip1 ip2\" if xray lives elsewhere)"
+if iptables -N WARP_SOCKS 2>/dev/null; then :; else iptables -F WARP_SOCKS; fi
+iptables -C INPUT -p tcp --dport "$SOCKS_PORT" -j WARP_SOCKS 2>/dev/null \
+    || iptables -I INPUT -p tcp --dport "$SOCKS_PORT" -j WARP_SOCKS
+iptables -A WARP_SOCKS -i lo -j ACCEPT
+for ip in $SOCKS_ALLOW; do
+    iptables -A WARP_SOCKS -s "$ip" -j ACCEPT
+done
+iptables -A WARP_SOCKS -j DROP
 
 echo "[warp] Starting microsocks on port $SOCKS_PORT..."
 microsocks -p "$SOCKS_PORT" &
@@ -100,6 +147,12 @@ while true; do
         echo "[warp] microsocks died — restarting..."
         microsocks -p "$SOCKS_PORT" &
         MS_PID=$!
+    fi
+    # Выключен намеренно — сторожу тут делать нечего.
+    if warp_disabled; then
+        FAILS=0
+        BOUNCES=0
+        continue
     fi
     if sh /warp_probe.sh; then
         FAILS=0
