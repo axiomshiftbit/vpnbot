@@ -1912,6 +1912,7 @@ class Bot
             ];
         }
         $this->applySniffingToXray($c, $this->getPacConf());
+        $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
@@ -1941,6 +1942,28 @@ class Bot
         } else {
             file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         }
+    }
+
+    // Дотягивает sockopt.trustedXForwardedFor на клиентский inbound, если его
+    // транспорт слушает за nginx (ws / xhttp / grpc). changeTransport ставит его
+    // сам, но только в момент переключения транспорта — у всех, кто уже сидит на
+    // ws/xhttp/trojan-grpc, конфиг иначе остался бы без него до ручного
+    // перещёлкивания кнопки. Ставим ровно один раз и не трогаем уже заданное
+    // значение: админ мог прописать своё имя заголовка руками в webapp.
+    // Чем это лечится — см. nginxFrontedSockopt().
+    public function ensureTrustedXff(array &$c): void
+    {
+        $net = $c['inbounds'][0]['streamSettings']['network'] ?? '';
+        if (!in_array($net, ['ws', 'xhttp', 'grpc'], true)) {
+            return;
+        }
+        if (!empty($c['inbounds'][0]['streamSettings']['sockopt']['trustedXForwardedFor'])) {
+            return;
+        }
+        $c['inbounds'][0]['streamSettings']['sockopt'] = array_merge(
+            $c['inbounds'][0]['streamSettings']['sockopt'] ?? [],
+            $this->nginxFrontedSockopt(),
+        );
     }
 
     // Безопасная запись xray.json для функций, которые меняют лишь метаданные
@@ -15212,7 +15235,15 @@ DNS-over-HTTPS with IP:
                                     . "#{$remark}";
                         break;
                     case 'trojan-grpc':
-                        $trojanPwd = rawurlencode($c['inbounds'][0]['settings']['clients'][$i]['password']);
+                        // password появляется у клиента при переключении на
+                        // trojan-grpc (changeTransport) и при добавлении (addxrus).
+                        // Клиент, заведённый мимо них — правкой xray.json в
+                        // webapp или восстановлением старого бэкапа, — его не
+                        // имеет: без запасного значения тут был бы undefined key
+                        // и ссылка вида trojan://@host. Падаем на id, ровно как
+                        // подстановка ~uid~ в json-конфигах.
+                        $trojanPwd = rawurlencode($c['inbounds'][0]['settings']['clients'][$i]['password']
+                            ?? $c['inbounds'][0]['settings']['clients'][$i]['id']);
                         $link = "trojan://$trojanPwd@$domain:443"
                                     . "?type=grpc"
                                     . "&serviceName=grpc$hash"
@@ -17904,7 +17935,7 @@ DNS-over-HTTPS with IP:
             ],
         ];
         if ($pac['transport'] == 'trojan-grpc') {
-            $text[] = "\npassword: <span class='tg-spoiler'>{$c['password']}</span>";
+            $text[] = "\npassword: <span class='tg-spoiler'>" . ($c['password'] ?? $c['id']) . "</span>";
             $data[] = [
                 [
                     'text'          => $this->i18n('change password'),
@@ -18544,6 +18575,29 @@ DNS-over-HTTPS with IP:
             $rs['mldsa65Verify'] = $pac['reality']['mldsa65Verify'];
         }
         return $rs;
+    }
+
+    // sockopt для inbound'ов, которые слушают ЗА nginx (xhttp, trojan-grpc,
+    // websocket). Без него xray видит источником каждого соединения сам nginx
+    // (10.10.0.2), а не клиента, потому что TLS терминирует nginx и никакого
+    // PROXY-протокола до xray не доходит (он есть только у Reality). Ломается
+    // сразу три вещи: `from <ip>` в /logs/xray у всех клиентов одинаковый →
+    // журнал подключений (recordConnLog) бесполезен, ip_limit никогда не
+    // срабатывает (у email всегда ровно один IP), а сам xray на КАЖДЫЙ запрос
+    // пишет warning «received "X-Forwarded-For" … but "sockopt.
+    // trustedXForwardedFor" is not configured» — в packet-up это до 30 строк в
+    // секунду на клиента, лог пухнет на ровном месте.
+    //
+    // Значение — список ИМЁН заголовков (не адресов!): xray доверяет XFF, если
+    // в запросе присутствует любой из них (common/protocol/http/headers.go,
+    // ApplyTrustedXForwardedFor + headers_test.go). X-Real-IP ставит сам nginx
+    // через proxy_set_header/grpc_set_header, т.е. клиент его подделать не
+    // может — заголовок клиента при этом ЗАМЕЩАЕТСЯ, а не дополняется. Сам IP
+    // берётся из ПЕРВОГО элемента X-Forwarded-For, поэтому в nginx он выставлен
+    // в $remote_addr, а не в $proxy_add_x_forwarded_for (см. локацию /ws).
+    public function nginxFrontedSockopt(): array
+    {
+        return ['trustedXForwardedFor' => ['X-Real-IP']];
     }
 
     // Единый источник правды для клиентской части XHTTP (xray-core).
@@ -21118,7 +21172,9 @@ DNS-over-HTTPS with IP:
                             "scMaxEachPostBytes"   => 1000000,
                             "scStreamUpServerSecs" => "20-80"
                         ]
-                    ]
+                    ],
+                    // Реальный IP клиента вместо адреса nginx, см. nginxFrontedSockopt().
+                    "sockopt" => $this->nginxFrontedSockopt(),
                 ];
                 break;
 
@@ -21132,7 +21188,8 @@ DNS-over-HTTPS with IP:
                     "network"      => "grpc",
                     "grpcSettings" => [
                         "serviceName" => "grpc$h",
-                    ]
+                    ],
+                    "sockopt" => $this->nginxFrontedSockopt(),
                 ];
                 break;
 
@@ -21170,7 +21227,10 @@ DNS-over-HTTPS with IP:
                     "network"    => "ws",
                     "wsSettings" => [
                         "path" => "/ws$h"
-                    ]
+                    ],
+                    // Websocket делит с xhttp ту же локацию /ws у nginx и ту же
+                    // проблему с подменой источника, см. nginxFrontedSockopt().
+                    "sockopt" => $this->nginxFrontedSockopt(),
                 ];
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);

@@ -105,5 +105,58 @@ xhAssert(strpos($sb[0], 'x_padding_bytes') !== false,
 xhAssert(strpos($sb[0], '"max_connections"   => "0"') !== false,
     'sing-box xhttp: max_connections должен остаться нулевым при заданном max_concurrency');
 
+// --- padding: диапазон сервера и клиентов обязан совпадать -------------------
+// hub.go валидирует ДЛИНУ падинга каждого входящего запроса по своему же
+// xPaddingBytes (IsPaddingValid). Клиент вне серверного диапазона получает 400
+// на каждый POST, т.е. транспорт не работает вовсе — а разъехаться легко, потому
+// что значение живёт в четырёх местах (сервер, xray-extra, sing-box, mihomo).
+preg_match_all('~(?:xPaddingBytes|x_padding_bytes|x-padding-bytes)[\'"]\s*=>\s*[\'"](\d+(?:-\d+)?)[\'"]~', $src, $pads);
+xhAssert(count($pads[1]) >= 4, 'падинг должен быть задан и на сервере, и во всех трёх клиентских диалектах');
+xhAssert(count(array_unique($pads[1])) === 1,
+    'xPaddingBytes должен быть один и тот же везде, иначе сервер отвечает 400: ' . implode(', ', array_unique($pads[1])));
+
+// --- реальный IP клиента за nginx -------------------------------------------
+// trustedXForwardedFor — список ИМЁН заголовков (headers_test.go в xray), а не
+// адресов; xray берёт при этом ПЕРВЫЙ элемент X-Forwarded-For.
+$sockopt = $bot->nginxFrontedSockopt();
+xhAssert(!empty($sockopt['trustedXForwardedFor']) && is_array($sockopt['trustedXForwardedFor']),
+    'sockopt.trustedXForwardedFor должен быть непустым списком');
+$nginx = file_get_contents(__DIR__ . '/../config/nginx_default.conf');
+// Локацию /ws делят websocket и xhttp, поэтому заголовки нужны обоим — и в
+// активной копии, и в закомментированной (её раскомментирует updateNginx для
+// домена с letsencrypt).
+preg_match_all('~location /ws \{(.+?)\n\s*(?:#\s*)?\}~s', $nginx, $ws);
+xhAssert(count($ws[1]) === 2, 'в nginx должны быть обе локации /ws — активная и доменная, найдено: ' . count($ws[1]));
+foreach ($ws[1] as $body) {
+    foreach ($sockopt['trustedXForwardedFor'] as $hdr) {
+        xhAssert((bool) preg_match('~^\s*#?\s*proxy_set_header ' . preg_quote($hdr, '~') . '\s+\$remote_addr;~mi', $body),
+            "nginx обязан сам ставить доверенный заголовок $hdr в локации /ws");
+    }
+}
+// Первый элемент XFF = реальный клиент только при $remote_addr. С
+// $proxy_add_x_forwarded_for первым остался бы заголовок самого клиента, и IP
+// в журнале/ip_limit подделывался бы одним curl'ом.
+preg_match_all('~^\s*#?\s*(?:proxy|grpc)_set_header X-Forwarded-For\s+(\S+);~mi', $nginx, $xff);
+xhAssert($xff[1] !== [], 'nginx должен ставить X-Forwarded-For для xray');
+xhAssert(array_unique($xff[1]) === ['$remote_addr'],
+    'X-Forwarded-For к xray должен быть $remote_addr, а не $proxy_add_x_forwarded_for: ' . implode(', ', array_unique($xff[1])));
+
+// ensureTrustedXff дотягивает sockopt на уже существующие конфиги, но не
+// перетирает то, что админ задал руками.
+foreach (['ws', 'xhttp', 'grpc'] as $net) {
+    $cfg = ['inbounds' => [['streamSettings' => ['network' => $net]]]];
+    $bot->ensureTrustedXff($cfg);
+    xhAssert(!empty($cfg['inbounds'][0]['streamSettings']['sockopt']['trustedXForwardedFor']),
+        "ensureTrustedXff должен сработать для network=$net");
+}
+$cfg = ['inbounds' => [['streamSettings' => ['network' => 'tcp', 'sockopt' => ['acceptProxyProtocol' => true]]]]];
+$bot->ensureTrustedXff($cfg);
+xhAssert(empty($cfg['inbounds'][0]['streamSettings']['sockopt']['trustedXForwardedFor']),
+    'Reality (tcp + PROXY-протокол) трогать нельзя — там источник и так настоящий');
+$cfg = ['inbounds' => [['streamSettings' => ['network' => 'ws', 'sockopt' => ['trustedXForwardedFor' => ['X-Own']]]]]];
+$bot->ensureTrustedXff($cfg);
+xhAssert($cfg['inbounds'][0]['streamSettings']['sockopt']['trustedXForwardedFor'] === ['X-Own'],
+    'заданный вручную trustedXForwardedFor перетирать нельзя');
+
 echo $failed ? "xhttp_test FAILED ($failed)\n" : "xhttp_test OK\n";
 exit($failed ? 1 : 0);
