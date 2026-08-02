@@ -5446,8 +5446,10 @@ NFT;
         // Диапазонный PersistentKeepalive — тоже фича 3.0: старые tools не
         // разберут «20-30» и на клиенте, и на сервере.
         if ($this->awgSupports3() !== true) {
-            $this->answer($this->input['callback_id'] ?? null, $this->awg3UnsupportedText(), true);
-            return $this->menu('wg', $page);
+            $this->update($this->input['chat'], $this->input['message_id'], $this->awg3UnsupportedText());
+            sleep(3);
+            $this->menu('wg', $page);
+            return;
         }
 
         $this->awgApplyGuarded($page, function () use ($prefix, $key, $text) {
@@ -5889,7 +5891,11 @@ NFT;
         $this->setPacConf($c);
         $this->switchAmnezia($page, false, false, 1, true);
         if (!$silent) {
-            $this->answer($this->input['callback_id'] ?? null, 'конфиг отвергнут amneziawg — изменения откачены', true);
+            // Не alert-попапом: сюда приходят и нажатия кнопок, и ответы на
+            // промпты, а в reply() callback_id подменён на message_id меню —
+            // answerCallbackQuery по нему молча ничего не покажет.
+            $this->update($this->input['chat'], $this->input['message_id'], 'amneziawg отверг конфиг — изменения откачены');
+            sleep(3);
             $this->menu('wg', $page);
         }
         return false;
