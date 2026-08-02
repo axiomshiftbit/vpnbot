@@ -225,8 +225,8 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.3}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260730}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -270,8 +270,8 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.3}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260730}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -477,8 +477,8 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.3}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260730}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
         cap_add:
             - NET_ADMIN

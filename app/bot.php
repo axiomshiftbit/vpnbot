@@ -6,6 +6,48 @@ class Bot
 {
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
+
+    // ── AmneziaWG: набор ключей [Interface] по версиям протокола ──────────────
+    // ЕДИНСТВЕННЫЙ источник правды. Любой новый параметр обязан попасть сюда,
+    // иначе switchAmnezia() не вычистит его при переключении версии/выключении
+    // амнезии и в wg0.conf останется «хвост» от прошлой конфигурации.
+    // Проверяется тестом tests/awg3_test.php (диффом ключей генератора).
+    public const AWG_KEYS_1 = ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
+    public const AWG_KEYS_2 = ['S3', 'S4', 'I1', 'I2', 'I3', 'I4', 'I5'];
+    // AWG 3.0 (amneziawg-tools v3.0.x / amneziawg-go v3.x). Имена — ровно как в
+    // src/config.c:548-575 и в client/core/utils/constants/configKeys.h
+    // приложения AmneziaVPN, поэтому один и тот же массив годится и для
+    // wg0.conf, и для JSON короткой ссылки.
+    public const AWG_KEYS_3 = [
+        'HeaderProtectionKey', 'ContentPaddingAddition', 'RekeyAfterTime',
+        'RekeyTimeout', 'RejectAfterTime', 'KeepaliveTimeout', 'MaxHandshakeAttempts',
+    ];
+    // device/noise-types.go: HeaderCipherNonceSize. amneziawg-go отвергает
+    // конфиг с непустым HeaderProtectionKey, если хоть один из S1..S4 меньше:
+    // «S%d must be more then 12 to use headerProtection» (device/uapi.go).
+    public const AWG_HPK_MIN_S = 12;
+    // Поля, которые перегенерируются авто-ротацией. HeaderProtectionKey включён
+    // осознанно: он даёт самый заметный статический отпечаток, но после каждой
+    // ротации ВСЕ клиенты обязаны перекачать конфиг — рассинхрон HPK рвёт
+    // handshake молча, без диагностики (см. текст в setAmneziaRotation).
+    public const AWG_ROTATE_KEYS = [
+        'I1', 'I2', 'I3', 'I4', 'I5', 'S3', 'S4',
+        'HeaderProtectionKey', 'ContentPaddingAddition', 'RekeyAfterTime',
+        'RekeyTimeout', 'RejectAfterTime', 'KeepaliveTimeout', 'MaxHandshakeAttempts',
+    ];
+    // Токен кнопки → [ключ конфига, min, max, подсказка]. Токен короткий, чтобы
+    // callback_data влезал в лимит Telegram (64 байта) вместе с инстансом и
+    // страницей. PersistentKeepalive живёт в [Peer], а не в amnezia_keys —
+    // хранится отдельным ключом pac.json (см. awgKeepalive()).
+    public const AWG3_FIELDS = [
+        'pad' => ['ContentPaddingAddition', 0, 65535, 'рек. 10-40'],
+        'rka' => ['RekeyAfterTime',         1, 65535, 'сек, дефолт 120, рек. 110-130'],
+        'rkt' => ['RekeyTimeout',           1, 65535, 'сек, дефолт 5, рек. 5-10'],
+        'rja' => ['RejectAfterTime',        1, 65535, 'сек, дефолт 180, рек. 170-190'],
+        'kat' => ['KeepaliveTimeout',       1, 65535, 'сек, дефолт 10, рек. 10-15'],
+        'mha' => ['MaxHandshakeAttempts',   1, 65535, 'дефолт 18, рек. 15-25'],
+        'pka' => ['PersistentKeepalive',    0, 65535, '[Peer], дефолт 20, рек. 20-30'],
+    ];
     private const DAT_UPDATE_INTERVALS = [
         0      => 'off',
         3600   => '1h',
@@ -60,6 +102,8 @@ class Bot
     public $admin;
     public $ports;
     public $warpprofile;
+    // Мемо версий wg/awg на инстанс в пределах одного запроса (см. wgVersions).
+    public $wgVerCache = [];
 
     public function __construct($key, $i18n)
     {
@@ -1256,6 +1300,44 @@ class Bot
                 break;
             case preg_match('~^/setAmneziaRotation (-?\d+)$~', $this->input['callback'], $m):
                 $this->setAmneziaRotation($m[1]);
+                break;
+            // AWG 3.0. Новые кнопки всегда несут инстанс — легаси-форм без него
+            // не существует, поэтому вторых веток здесь нет.
+            case preg_match('~^/awg3 ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->awg3Menu($m[2]);
+                break;
+            case preg_match('~^/awg3hpk ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->toggleHeaderProtection($m[2]);
+                break;
+            case preg_match('~^/awg3hpkGen ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->regenHeaderProtection($m[2]);
+                break;
+            case preg_match('~^/awg3hpkShow ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->showHeaderProtectionKey($m[2]);
+                break;
+            case preg_match('~^/awg3set (\w{2,4}) ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[2]);
+                $this->setAwg3Field($m[1], $m[3]);
+                break;
+            case preg_match('~^/awg3reset ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->resetAwg3($m[2]);
+                break;
+            case preg_match('~^/awgVerRefresh ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->awgVerRefresh($m[2]);
+                break;
+            case preg_match('~^/amneziaProto ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->amneziaProtoMenu($m[2]);
+                break;
+            case preg_match('~^/setAmneziaProto ([123]) ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[2]);
+                $this->setAmneziaProto($m[1], $m[3]);
                 break;
             case preg_match('~^/switchExchange (\d+)$~', $this->input['callback'], $m):
                 $this->switchExchange($m[1]);
@@ -4756,31 +4838,211 @@ NFT;
         $this->restartWG($this->createConfig($server));
     }
 
+    // ── AmneziaWG: чистые хелперы (без ssh/pac.json, покрыты awg3_test.php) ───
+
+    // Имена ключей [Interface] по версии протокола: 0 — все, 1|2|3 — срез.
+    // Спред в const-выражениях не используем: прод крутится на PHP 8.1.
+    public static function awgKeyNames(int $ver = 0): array
+    {
+        switch ($ver) {
+            case 1:
+                return self::AWG_KEYS_1;
+            case 2:
+                return self::AWG_KEYS_2;
+            case 3:
+                return self::AWG_KEYS_3;
+            default:
+                return array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2, self::AWG_KEYS_3);
+        }
+    }
+
+    // Валидатор range-значений AWG 3.0. Формат ровно тот, что понимает
+    // u16_range_from_string() из amneziawg-tools: «N» либо «LO-HI» при HI >= LO.
+    // Ни «off», ни пустая строка, ни пробелы вокруг дефиса не принимаются —
+    // strtoul() упрётся в первый нецифровой символ и вернёт ошибку, а конфиг с
+    // такой строкой не применится целиком. Возвращает '' при успехе.
+    public static function validateAwgRange(string $s, int $min = 0, int $max = 65535): string
+    {
+        if (!preg_match('~^(\d{1,5})(?:-(\d{1,5}))?$~', $s, $m)) {
+            return 'формат: N или LO-HI (только цифры и один дефис, без пробелов)';
+        }
+        $lo = (int) $m[1];
+        $hi = isset($m[2]) ? (int) $m[2] : $lo;
+        if ($hi < $lo) {
+            return "верхняя граница ($hi) меньше нижней ($lo)";
+        }
+        if ($lo < $min || $hi > $max) {
+            return "значения допустимы в пределах $min..$max";
+        }
+        return '';
+    }
+
+    // [lo, hi] из уже валидной range-строки. Для кросс-проверок между полями.
+    public static function awgRangeBounds(string $s): array
+    {
+        [$lo, $hi] = array_pad(explode('-', $s, 2), 2, null);
+        $lo = (int) $lo;
+        return [$lo, $hi === null ? $lo : (int) $hi];
+    }
+
+    // Версия протокола выводится ИЗ НАБОРА КЛЮЧЕЙ, а не хранится отдельно:
+    // так она не может разойтись с тем, что реально лежит в wg0.conf.
+    public static function amneziaProtoVer($keys): int
+    {
+        $keys = is_array($keys) ? $keys : [];
+        foreach (self::AWG_KEYS_3 as $k) {
+            if (isset($keys[$k]) && $keys[$k] !== '') {
+                return 3;
+            }
+        }
+        return isset($keys['I1']) && $keys['I1'] !== '' ? 2 : 1;
+    }
+
+    // Инвариант amneziawg-go: при непустом HeaderProtectionKey каждый из S1..S4
+    // обязан быть >= 12, иначе setconf отвергает конфиг и интерфейс не встаёт.
+    public static function awgHeaderProtectionOk($keys): bool
+    {
+        $keys = is_array($keys) ? $keys : [];
+        if (empty($keys['HeaderProtectionKey'])) {
+            return true;
+        }
+        foreach (['S1', 'S2', 'S3', 'S4'] as $k) {
+            if (!isset($keys[$k]) || (int) $keys[$k] < self::AWG_HPK_MIN_S) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Поднимает S1..S4 до порога header protection, сохраняя исходные инварианты
+    // паддингов (S1 !== S2 и S1 + 56 !== S2 — иначе init- и response-пакеты
+    // становятся одинакового размера и их легко скоррелировать).
+    public static function enforceHeaderProtection($keys): array
+    {
+        $keys = is_array($keys) ? $keys : [];
+        $min  = self::AWG_HPK_MIN_S;
+        $s1   = max($min, (int) ($keys['S1'] ?? 0));
+        $s2   = max($min, (int) ($keys['S2'] ?? 0));
+        // Верхняя граница подбора та же, что у шаблонов 2.0/3.0 ($rngS 15..64).
+        $tries = 0;
+        while (($s1 === $s2 || $s1 + 56 === $s2) && $tries++ < 100) {
+            $s2 = random_int($min, 64);
+        }
+        $keys['S1'] = $s1;
+        $keys['S2'] = $s2;
+        $keys['S3'] = max($min, (int) ($keys['S3'] ?? 0));
+        $keys['S4'] = max($min, (int) ($keys['S4'] ?? 0));
+        return $keys;
+    }
+
+    // Whitelist для mihomo (amnezia-wg-option): отдаём только те поля, которые
+    // mihomo действительно знает. Именно whitelist, а не blacklist — иначе
+    // следующий добавленный сюда 3.x-параметр молча утечёт в клиентский YAML и
+    // сломает разбор конфига у всех подписчиков.
+    // NB: H1-H4 в формате 2.0 («MIN-MAX») mihomo не понимает и сейчас — это
+    // отдельный, более старый баг, вне объёма поддержки 3.0.
+    public static function amneziaKeysForMihomo($keys): array
+    {
+        if (!is_array($keys)) {
+            return [];
+        }
+        $out = [];
+        foreach (array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2) as $k) {
+            if (isset($keys[$k])) {
+                $out[$k] = $keys[$k];
+            }
+        }
+        return $out;
+    }
+
+    // Короткий отпечаток секрета для сверки сервер↔клиент без его раскрытия.
+    public static function awgKeyFingerprint($v): string
+    {
+        return '#' . substr(sha1((string) $v), 0, 8);
+    }
+
+    // Рендер набора ключей для <code>-блока. HeaderProtectionKey при $mask
+    // заменяется отпечатком: полный ключ иначе оседает в истории чата, откуда
+    // его уже не отозвать.
+    public static function amneziaKeysReport($keys, bool $mask = true, array $only = []): string
+    {
+        $keys  = is_array($keys) ? $keys : [];
+        $lines = [];
+        foreach ($keys as $k => $v) {
+            if ($only && !in_array($k, $only, true)) {
+                continue;
+            }
+            if ($mask && $k === 'HeaderProtectionKey') {
+                $v = 'set ' . self::awgKeyFingerprint($v);
+            }
+            $lines[] = htmlspecialchars((string) $k, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+                . ': ' . htmlspecialchars((string) $v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+        return implode("\n", $lines);
+    }
+
     public function resetAmnezia($page = 0) {
         $this->switchAmnezia($page, 1);
     }
 
+    // Историческая кнопка «reduce to 1» — теперь просто понижение версии.
     public function reduceAmnezia($page = 0) {
-        $this->switchAmnezia($page, false, 1);
+        $this->setAmneziaProto(1, $page);
     }
+
+    public const AMNEZIA_TEMPLATE_LABELS = [
+        'standard_2'   => 'Standard 2.0',
+        'aggressive_2' => 'Aggressive 2.0',
+        'mobile_2'     => 'Mobile 2.0',
+        'classic_1'    => 'Classic 1.x',
+        'standard_3'   => 'Standard 3.0',
+        'aggressive_3' => 'Aggressive 3.0',
+        'mobile_3'     => 'Mobile 3.0',
+    ];
+
+    public const AMNEZIA_TEMPLATE_DESCS = [
+        'standard_2'   => 'балансир: умеренные junk-пакеты и I1–I5',
+        'aggressive_2' => 'против GFW-класса DPI; +10–15% трафика',
+        'mobile_2'     => 'мелкие junk, экономит батарею и трафик',
+        'classic_1'    => 'без 2.0-полей, совместимо со старыми клиентами',
+        'standard_3'   => 'балансир + header protection и рандомные тайминги',
+        'aggressive_3' => 'максимум обфускации 3.0; +10–15% трафика',
+        'mobile_3'     => 'мелкие junk, редкий рекей — экономит батарею',
+    ];
 
     public function applyAmneziaTemplate($template, $page = 0)
     {
-        $allowed = ['standard_2', 'aggressive_2', 'mobile_2', 'classic_1'];
-        if (!in_array($template, $allowed, true)) {
+        if (!isset(self::AMNEZIA_TEMPLATE_LABELS[$template])) {
             return $this->menu('wg', $page);
         }
-        $c = $this->getPacConf();
-        $prefix = $this->getInstanceWG(1);
-        $c[$prefix . 'amnezia']      = 1;
-        $c[$prefix . 'amnezia_tpl']  = $template;
-        $c[$prefix . 'amnezia_keys'] = $this->generateAmneziaKeys($template);
-        // Сбросить ротационный таймер: ручная смена шаблона = свежая генерация
-        // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
-        if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
-            $c[$prefix . 'amnezia_last_rotation'] = time();
+        $is3 = substr($template, -2) === '_3';
+        if ($is3 && $this->awgSupports3() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg3UnsupportedText(), true);
+            return $this->menu('wg', $page);
         }
-        $this->setPacConf($c);
+        $prefix = $this->getInstanceWG(1);
+        $mutate = function () use ($template, $prefix, $is3) {
+            $c = $this->getPacConf();
+            $c[$prefix . 'amnezia']      = 1;
+            $c[$prefix . 'amnezia_tpl']  = $template;
+            $c[$prefix . 'amnezia_keys'] = $this->generateAmneziaKeys(
+                $template,
+                $is3 ? fn() => $this->genHeaderProtectionKey() : null
+            );
+            // Сбросить ротационный таймер: ручная смена шаблона = свежая генерация
+            // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
+            if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
+                $c[$prefix . 'amnezia_last_rotation'] = time();
+            }
+            $this->setPacConf($c);
+        };
+        // 3.0-шаблон способен получить отказ от setconf (например, если в
+        // контейнере вдруг оказались старые tools) — применяем с откатом.
+        if ($is3) {
+            $this->awgApplyGuarded($page, $mutate);
+            return;
+        }
+        $mutate();
         $this->switchAmnezia($page, false, false, 1);
     }
 
@@ -4788,20 +5050,17 @@ NFT;
     {
         $prefix  = $this->getInstanceWG(1);
         $current = $this->getPacConf()[$prefix . 'amnezia_tpl'] ?? '';
-        $labels  = [
-            'standard_2'   => 'Standard 2.0',
-            'aggressive_2' => 'Aggressive 2.0',
-            'mobile_2'     => 'Mobile 2.0',
-            'classic_1'    => 'Classic 1.x',
-        ];
-        $descs = [
-            'standard_2'   => 'балансир: умеренные junk-пакеты и I1–I5',
-            'aggressive_2' => 'против GFW-класса DPI; +10–15% трафика',
-            'mobile_2'     => 'мелкие junk, экономит батарею и трафик',
-            'classic_1'    => 'без 2.0-полей, совместимо со старыми клиентами',
-        ];
+        // Профили показываем только для текущей версии протокола: смена версии
+        // живёт в отдельном меню (amneziaProtoMenu), иначе список из семи
+        // пунктов не даёт понять, что именно переключаешь.
+        $ver     = self::amneziaProtoVer($this->getPacConf()[$prefix . 'amnezia_keys'] ?? []);
+        $labels  = [];
+        foreach (self::amneziaTemplateList($ver) as $k) {
+            $labels[$k] = self::AMNEZIA_TEMPLATE_LABELS[$k];
+        }
+        $descs = self::AMNEZIA_TEMPLATE_DESCS;
         $inst = $this->wgNum();
-        $text = ['Menu -> Wireguard -> amnezia templates', ''];
+        $text = ['Menu -> Wireguard -> amnezia templates (' . $this->amneziaProtoLabel($ver) . ')', ''];
         foreach ($labels as $k => $label) {
             $mark = ($k === $current) ? '• ' : '';
             $text[] = "$mark<b>$label</b> — " . $descs[$k];
@@ -4823,6 +5082,383 @@ NFT;
             implode("\n", $text),
             $data,
         );
+    }
+
+    // ── Версия протокола: выбор и применение ─────────────────────────────────
+
+    public function amneziaProtoLabel(int $ver): string
+    {
+        return [1 => '1.x', 2 => '2.0', 3 => '3.0'][$ver] ?? '1.x';
+    }
+
+    public function awg3UnsupportedText(): string
+    {
+        $v = $this->awgToolsVersion();
+        return 'AWG 3.0 недоступен: в контейнере amneziawg-tools '
+            . ($v === null ? '(версия неизвестна, контейнер не отвечает)' : $v)
+            . ', нужна ≥ 3.0 — пересоберите wg-контейнер';
+    }
+
+    public function amneziaProtoMenu($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $keys   = $this->getPacConf()[$prefix . 'amnezia_keys'] ?? [];
+        $cur    = self::amneziaProtoVer($keys);
+        $sup3   = $this->awgSupports3();
+        $inst   = $this->wgNum();
+
+        $text = [
+            'Menu -> Wireguard -> версия протокола amnezia',
+            '',
+            '<b>1.x</b> — Jc/Jmin/Jmax, S1-S2, H1-H4. Понимают все клиенты.',
+            '<b>2.0</b> — плюс S3/S4 и сигнатурные пакеты I1-I5.',
+            '<b>3.0</b> — плюс header protection, рандомизированный паддинг и тайминги.',
+            '',
+            'Смена версии не перегенерирует уже подобранные поля — только добавляет или снимает те, которых нет в целевой версии.',
+            '',
+            '⚠️ После смены версии клиентам нужно перекачать конфиги, иначе связь пропадёт.',
+        ];
+        if ($sup3 !== true) {
+            $text[] = '';
+            $text[] = '⛔ ' . htmlspecialchars($this->awg3UnsupportedText(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+
+        $data = [];
+        foreach ([1, 2, 3] as $v) {
+            $mark  = $v === $cur ? '• ' : '';
+            $badge = ($v === 3 && $sup3 !== true) ? ' ⛔' : '';
+            $data[] = [[
+                'text'          => $mark . $this->amneziaProtoLabel($v) . $badge,
+                'callback_data' => "/setAmneziaProto $v $inst $page",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/menu wg $inst $page",
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Понижение/повышение версии БЕЗ перегенерации всего набора: S1/S2/H1-H4/Jc
+    // и PSK сохраняются, меняется только состав полей. Полная перегенерация —
+    // это отдельное действие (templates / reset obf-keys).
+    public function setAmneziaProto($ver, $page = 0)
+    {
+        $ver    = (int) $ver;
+        $prefix = $this->getInstanceWG(1);
+        if (!in_array($ver, [1, 2, 3], true)) {
+            return $this->menu('wg', $page);
+        }
+        if ($ver === 3 && $this->awgSupports3() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg3UnsupportedText(), true);
+            return $this->menu('wg', $page);
+        }
+
+        $mutate = function () use ($ver, $prefix) {
+            $c   = $this->getPacConf();
+            $tpl = $c[$prefix . 'amnezia_tpl'] ?? 'standard_2';
+            // Профиль внутри версии сохраняем (standard→standard и т.д.).
+            $base = preg_replace('~_\d$~', '', $tpl) ?: 'standard';
+            if ($ver === 1) {
+                $tpl_new = 'classic_1';
+            } else {
+                $tpl_new = "{$base}_$ver";
+                if (!isset(self::AMNEZIA_TEMPLATE_LABELS[$tpl_new])) {
+                    $tpl_new = "standard_$ver";
+                }
+            }
+            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+            if (!$keys) {
+                $keys = $this->generateAmneziaKeys($tpl_new, fn() => $this->genHeaderProtectionKey());
+            }
+
+            // Снять всё, что выше целевой версии.
+            for ($v = $ver + 1; $v <= 3; $v++) {
+                foreach (self::awgKeyNames($v) as $k) {
+                    unset($keys[$k]);
+                }
+            }
+            // Добить недостающее до целевой версии из свежего набора того же
+            // профиля — существующие поля не трогаем.
+            if ($ver >= 2) {
+                $fresh = $this->generateAmneziaKeys($tpl_new, fn() => $this->genHeaderProtectionKey());
+                for ($v = 2; $v <= $ver; $v++) {
+                    foreach (self::awgKeyNames($v) as $k) {
+                        if (!isset($keys[$k]) && isset($fresh[$k])) {
+                            $keys[$k] = $fresh[$k];
+                        }
+                    }
+                }
+            }
+            if ($ver === 3) {
+                $keys = self::enforceHeaderProtection($keys);
+            } else {
+                unset($c[$prefix . 'amnezia_keepalive']);
+            }
+
+            $c[$prefix . 'amnezia']      = 1;
+            $c[$prefix . 'amnezia_tpl']  = $tpl_new;
+            $c[$prefix . 'amnezia_keys'] = $keys;
+            $this->setPacConf($c);
+        };
+
+        if ($ver === 3) {
+            $this->awgApplyGuarded($page, $mutate);
+            return;
+        }
+        $mutate();
+        $this->switchAmnezia($page, false, false, 1);
+    }
+
+    // ── Подменю AWG 3.0 ──────────────────────────────────────────────────────
+
+    public function awg3Menu($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        $keys   = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+        $sup3   = $this->awgSupports3();
+        $inst   = $this->wgNum();
+        $hpk    = (string) ($keys['HeaderProtectionKey'] ?? '');
+
+        $text = [
+            'Menu -> Wireguard -> AWG 3.0',
+            '',
+            'amneziawg-tools: <code>' . htmlspecialchars((string) ($this->awgToolsVersion() ?? '—'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
+                . ($sup3 === true ? ' ✅' : ($sup3 === false ? ' ⛔ нужна ≥ 3.0' : ' ⚠️ контейнер не отвечает')),
+            '',
+        ];
+        $report = self::amneziaKeysReport($keys, true, self::AWG_KEYS_3);
+        $text[] = '<code>' . ($report !== '' ? $report : '3.0-поля не заданы') . '</code>';
+        $text[] = 'PersistentKeepalive: <code>' . htmlspecialchars((string) $this->awgKeepalive(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
+        $text[] = '';
+        $text[] = 'Все поля, кроме HeaderProtectionKey, задаются числом или диапазоном <code>LO-HI</code>; <code>0</code> — вернуть значение по умолчанию.';
+        $text[] = '';
+        $text[] = '⚠️ Любое изменение здесь ломает уже розданные конфиги: клиентам нужно перекачать их заново. Header protection дополнительно требует S1–S4 ≥ ' . self::AWG_HPK_MIN_S . '.';
+
+        $data = [
+            [
+                [
+                    'text'          => 'HPK: ' . ($hpk !== '' ? 'on ' . self::awgKeyFingerprint($hpk) : 'off'),
+                    'callback_data' => "/awg3hpk $inst $page",
+                ],
+            ],
+        ];
+        if ($hpk !== '') {
+            $data[] = [
+                ['text' => 'regen HPK', 'callback_data' => "/awg3hpkGen $inst $page"],
+                ['text' => 'show HPK',  'callback_data' => "/awg3hpkShow $inst $page"],
+            ];
+        }
+        $row = [];
+        foreach (self::AWG3_FIELDS as $tok => [$key, , , ]) {
+            $cur = $key === 'PersistentKeepalive'
+                ? (string) $this->awgKeepalive()
+                : (string) ($keys[$key] ?? '—');
+            $row[] = [
+                'text'          => self::awg3FieldShort($tok) . ": $cur",
+                'callback_data' => "/awg3set $tok $inst $page",
+            ];
+            if (count($row) === 2) {
+                $data[] = $row;
+                $row = [];
+            }
+        }
+        if ($row) {
+            $data[] = $row;
+        }
+        $data[] = [
+            ['text' => 'reset 3.0',     'callback_data' => "/awg3reset $inst $page"],
+            ['text' => 'recheck tools', 'callback_data' => "/awgVerRefresh $inst $page"],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/menu wg $inst $page",
+        ]];
+
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Короткая подпись кнопки: полное имя параметра не влезает в ряд из двух.
+    public static function awg3FieldShort(string $tok): string
+    {
+        return [
+            'pad' => 'padding',
+            'rka' => 'rekey after',
+            'rkt' => 'rekey timeout',
+            'rja' => 'reject after',
+            'kat' => 'keepalive t/o',
+            'mha' => 'max handshake',
+            'pka' => 'keepalive',
+        ][$tok] ?? $tok;
+    }
+
+    public function toggleHeaderProtection($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        $keys   = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+
+        if (!empty($keys['HeaderProtectionKey'])) {
+            $this->awgApplyGuarded($page, function () use ($prefix) {
+                $c = $this->getPacConf();
+                unset($c[$prefix . 'amnezia_keys']['HeaderProtectionKey']);
+                $this->setPacConf($c);
+            });
+            return;
+        }
+
+        if ($this->awgSupports3() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg3UnsupportedText(), true);
+            return $this->menu('wg', $page);
+        }
+        // Header protection использует S1-S4 как nonce, поэтому паддинги обязаны
+        // существовать и быть >= 12. Набор 1.x их просто не содержит.
+        if (!isset($keys['S3'], $keys['S4'])) {
+            $this->answer($this->input['callback_id'] ?? null, 'сначала переключитесь на 2.0 или 3.0: header protection требует S3/S4', true);
+            return $this->menu('wg', $page);
+        }
+
+        $this->awgApplyGuarded($page, function () use ($prefix) {
+            $c    = $this->getPacConf();
+            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+            $keys['HeaderProtectionKey'] = $this->genHeaderProtectionKey();
+            $c[$prefix . 'amnezia_keys'] = self::enforceHeaderProtection($keys);
+            $this->setPacConf($c);
+        });
+    }
+
+    public function regenHeaderProtection($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        if (empty($c[$prefix . 'amnezia_keys']['HeaderProtectionKey'])) {
+            return $this->menu('wg', $page);
+        }
+        $this->awgApplyGuarded($page, function () use ($prefix) {
+            $c = $this->getPacConf();
+            $c[$prefix . 'amnezia_keys']['HeaderProtectionKey'] = $this->genHeaderProtectionKey();
+            $this->setPacConf($c);
+        });
+    }
+
+    // Полное значение отдаём alert-попапом: в отличие от сообщения, оно не
+    // остаётся в истории чата и не попадает в бэкапы переписки.
+    public function showHeaderProtectionKey($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $hpk    = (string) ($this->getPacConf()[$prefix . 'amnezia_keys']['HeaderProtectionKey'] ?? '');
+        $this->answer($this->input['callback_id'] ?? null, $hpk !== '' ? $hpk : 'HeaderProtectionKey не задан', true);
+    }
+
+    public function resetAwg3($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $this->awgApplyGuarded($page, function () use ($prefix) {
+            $c = $this->getPacConf();
+            foreach (self::AWG_KEYS_3 as $k) {
+                unset($c[$prefix . 'amnezia_keys'][$k]);
+            }
+            unset($c[$prefix . 'amnezia_keepalive']);
+            $this->setPacConf($c);
+        });
+    }
+
+    public function awgVerRefresh($page = 0)
+    {
+        $this->awgToolsVersion(true);
+        $this->awg3Menu($page);
+    }
+
+    public function setAwg3Field($tok, $page = 0)
+    {
+        if (!isset(self::AWG3_FIELDS[$tok])) {
+            return $this->menu('wg', $page);
+        }
+        [$key, $min, $max, $hint] = self::AWG3_FIELDS[$tok];
+        $prefix = $this->getInstanceWG(1);
+        $cur    = $key === 'PersistentKeepalive'
+            ? (string) $this->awgKeepalive()
+            : (string) ($this->getPacConf()[$prefix . 'amnezia_keys'][$key] ?? '—');
+
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} введите значение <b>$key</b> — число или диапазон <code>LO-HI</code> ($hint).\n\n"
+            . "Текущее: <code>" . htmlspecialchars($cur, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n"
+            . "Допустимо: $min..$max. <code>0</code> — вернуть значение по умолчанию.\n\n"
+            . "Диапазон пишется без пробелов (<code>110-130</code>): amneziawg отвергает конфиг целиком при любой ошибке разбора.\n"
+            . "После изменения клиентам нужно перекачать конфиги.",
+            $this->input['message_id'],
+            reply: "введите $key",
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'setAwg3FieldValue',
+            // Инстанс в stash — ответ придёт отдельным запросом, где глобальный
+            // wg_instance мог смениться другим меню/устройством.
+            'args'           => [$tok, $this->wgNum(), $page],
+        ]);
+    }
+
+    // Легаси-защиты вида «args=[$page]» здесь нет намеренно: колбэк новый,
+    // стэшей старого формата для него не существует.
+    public function setAwg3FieldValue($text, $tok = '', $inst = 0, $page = 0)
+    {
+        if (!isset(self::AWG3_FIELDS[$tok])) {
+            return $this->menu('wg', $page);
+        }
+        $this->selectWG($inst);
+        [$key, $min, $max] = self::AWG3_FIELDS[$tok];
+        $prefix = $this->getInstanceWG(1);
+        $text   = trim($text);
+
+        if ($text === '' || $text === '0' || $text === '-') {
+            $this->awgApplyGuarded($page, function () use ($prefix, $key) {
+                $c = $this->getPacConf();
+                if ($key === 'PersistentKeepalive') {
+                    unset($c[$prefix . 'amnezia_keepalive']);
+                } else {
+                    unset($c[$prefix . 'amnezia_keys'][$key]);
+                }
+                $this->setPacConf($c);
+            });
+            return;
+        }
+
+        if ($err = self::validateAwgRange($text, $min, $max)) {
+            $this->update($this->input['chat'], $this->input['message_id'], "$key: $err");
+            sleep(3);
+            $this->menu('wg', $page);
+            return;
+        }
+
+        // Диапазонный PersistentKeepalive — тоже фича 3.0: старые tools не
+        // разберут «20-30» и на клиенте, и на сервере.
+        if ($this->awgSupports3() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg3UnsupportedText(), true);
+            return $this->menu('wg', $page);
+        }
+
+        $this->awgApplyGuarded($page, function () use ($prefix, $key, $text) {
+            $c = $this->getPacConf();
+            if ($key === 'PersistentKeepalive') {
+                $c[$prefix . 'amnezia_keepalive'] = $text;
+            } else {
+                $c[$prefix . 'amnezia_keys'][$key] = $text;
+            }
+            $this->setPacConf($c);
+        });
     }
 
     // Validates a CPS string for AmneziaWG 2.0 I1-I5 fields.
@@ -5124,16 +5760,15 @@ NFT;
                 $amnezia = 1;
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keys']);
                 unset($c[$this->getInstanceWG(1) . 'presharedkey']);
+                unset($c[$this->getInstanceWG(1) . 'amnezia_keepalive']);
                 break;
             case !empty($reduce):
+                // Понижение до 1.x: снимаем и 2.0-, и 3.0-поля. Оставить
+                // HeaderProtectionKey без S3/S4 нельзя — конфиг был бы отвергнут.
                 $amnezia = 1;
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['S3']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['S4']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I1']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I2']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I3']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I4']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I5']);
+                foreach (array_merge(self::AWG_KEYS_2, self::AWG_KEYS_3) as $j) {
+                    unset($c[$this->getInstanceWG(1) . 'amnezia_keys'][$j]);
+                }
                 break;
             case !empty($apply):
                 // Caller (applyAmneziaTemplate) has already set keys + amnezia=1.
@@ -5147,52 +5782,36 @@ NFT;
         $this->setPacConf($c);
 
         $pk = $this->presharedKey();
-        $ak = $this->amneziaKeys();
+        $ak = $this->amneziaKeysEffective();
+        // Списки чистки — из awgKeyNames(), а не перечислением: иначе каждый
+        // новый параметр протокола пришлось бы дописывать в двух местах, и
+        // забытый ключ остался бы в конфиге «хвостом» от прошлой версии.
+        $strip   = self::awgKeyNames();
+        $keepal  = $this->awgKeepalive();
         $clients = $this->readClients();
         foreach ($clients as $k => $v) {
             unset($clients[$k]['peers'][0]['PresharedKey']);
-            unset($clients[$k]['interface']['Jc']);
-            unset($clients[$k]['interface']['Jmin']);
-            unset($clients[$k]['interface']['Jmax']);
-            unset($clients[$k]['interface']['S1']);
-            unset($clients[$k]['interface']['S2']);
-            unset($clients[$k]['interface']['S3']);
-            unset($clients[$k]['interface']['S4']);
-            unset($clients[$k]['interface']['H1']);
-            unset($clients[$k]['interface']['H2']);
-            unset($clients[$k]['interface']['H3']);
-            unset($clients[$k]['interface']['H4']);
-            unset($clients[$k]['interface']['I1']);
-            unset($clients[$k]['interface']['I2']);
-            unset($clients[$k]['interface']['I3']);
-            unset($clients[$k]['interface']['I4']);
-            unset($clients[$k]['interface']['I5']);
+            foreach ($strip as $j) {
+                unset($clients[$k]['interface'][$j]);
+            }
             if (!empty($amnezia)) {
                 $clients[$k]['peers'][0]['PresharedKey'] = $pk;
                 foreach ($ak as $j => $i) {
                     $clients[$k]['interface'][$j] = $i;
                 }
             }
+            // PersistentKeepalive живёт в [Peer] и потому не входит в набор
+            // amnezia_keys; при выключенной амнезии возвращаем фиксированные 20.
+            if (isset($clients[$k]['peers'][0]['PersistentKeepalive'])) {
+                $clients[$k]['peers'][0]['PersistentKeepalive'] = !empty($amnezia) ? $keepal : 20;
+            }
         }
         $this->saveClients($clients);
 
         $wg = $this->readConfig();
-        unset($wg['interface']['Jc']);
-        unset($wg['interface']['Jmin']);
-        unset($wg['interface']['Jmax']);
-        unset($wg['interface']['S1']);
-        unset($wg['interface']['S2']);
-        unset($wg['interface']['S3']);
-        unset($wg['interface']['S4']);
-        unset($wg['interface']['H1']);
-        unset($wg['interface']['H2']);
-        unset($wg['interface']['H3']);
-        unset($wg['interface']['H4']);
-        unset($wg['interface']['I1']);
-        unset($wg['interface']['I2']);
-        unset($wg['interface']['I3']);
-        unset($wg['interface']['I4']);
-        unset($wg['interface']['I5']);
+        foreach ($strip as $j) {
+            unset($wg['interface'][$j]);
+        }
         if (!empty($amnezia)) {
             foreach ($ak as $j => $i) {
                 $wg['interface'][$j] = $i;
@@ -5212,10 +5831,75 @@ NFT;
         }
     }
 
-    // Ротация только "junk"-полей I1-I5 и S3-S4 (генерация заново по текущему
-    // шаблону). S1/S2/H1-H4/Jc/Jmin/Jmax и PSK сохраняются — они влияют на
-    // совместимость handshake между сервером и клиентами. После ротации
-    // клиентам нужно перекачать конфиги.
+    // Поднялся ли интерфейс. `awg show wg0` печатает «interface: wg0» только для
+    // существующего устройства; при отвергнутом конфиге awg-quick падает на
+    // setconf и устройства нет вовсе.
+    public function awgLinkUp(): bool
+    {
+        $out = (string) $this->ssh("{$this->getWGType()} show wg0", $this->getInstanceWG());
+        if ($this->sshFailed) {
+            // Контейнер недоступен — про интерфейс ничего не известно. Считаем
+            // «поднят», чтобы не откатывать корректную правку из-за сбоя ssh.
+            return true;
+        }
+        return (bool) preg_match('~^interface:~m', $out);
+    }
+
+    // Применение изменений, которые способны сделать конфиг невалидным
+    // (3.0-поля, header protection, ручные диапазоны). amneziawg-tools отвергают
+    // весь файл целиком при любой ошибке, а restartWG() успех `up` не проверяет —
+    // поэтому: снимок → правка → применение → проверка линка → при неудаче откат.
+    //
+    // Снимок ограничен amnezia-ключами инстанса, а не всем pac.json: параллельный
+    // воркер (cron, другой чат) мог тем временем поменять несвязанные поля, и
+    // восстановление целого файла затёрло бы его работу.
+    public function awgApplyGuarded(int $page, callable $mutate, bool $silent = false): bool
+    {
+        $prefix = $this->getInstanceWG(1);
+        $snapKeys = [
+            $prefix . 'amnezia_keys',
+            $prefix . 'amnezia_tpl',
+            $prefix . 'amnezia_keepalive',
+            $prefix . 'amnezia',
+        ];
+        $before = [];
+        $c = $this->getPacConf();
+        foreach ($snapKeys as $k) {
+            $before[$k] = $c[$k] ?? null;
+        }
+
+        $mutate();
+        $this->switchAmnezia($page, false, false, 1, true);
+
+        if ($this->awgLinkUp()) {
+            if (!$silent) {
+                $this->menu('wg', $page);
+            }
+            return true;
+        }
+
+        $c = $this->getPacConf();
+        foreach ($before as $k => $v) {
+            if ($v === null) {
+                unset($c[$k]);
+            } else {
+                $c[$k] = $v;
+            }
+        }
+        $this->setPacConf($c);
+        $this->switchAmnezia($page, false, false, 1, true);
+        if (!$silent) {
+            $this->answer($this->input['callback_id'] ?? null, 'конфиг отвергнут amneziawg — изменения откачены', true);
+            $this->menu('wg', $page);
+        }
+        return false;
+    }
+
+    // Ротация полей из AWG_ROTATE_KEYS (генерация заново по текущему шаблону):
+    // I1-I5, S3-S4 и весь блок 3.0, включая HeaderProtectionKey.
+    // S1/S2/H1-H4/Jc/Jmin/Jmax и PSK сохраняются — они влияют на совместимость
+    // handshake между сервером и клиентами. После ротации клиентам ОБЯЗАТЕЛЬНО
+    // нужно перекачать конфиги: рассинхрон HeaderProtectionKey рвёт связь молча.
     public function rotateAmneziaJunk($silent = false, $page = 0)
     {
         $c = $this->getPacConf();
@@ -5244,16 +5928,37 @@ NFT;
             $this->amneziaKeys();
             $c = $this->getPacConf();
         }
-        $new = $this->generateAmneziaKeys($tpl);
-        foreach (['I1', 'I2', 'I3', 'I4', 'I5', 'S3', 'S4'] as $k) {
-            if (isset($new[$k])) {
-                $c[$prefix . 'amnezia_keys'][$k] = $new[$k];
-            } else {
-                unset($c[$prefix . 'amnezia_keys'][$k]);
-            }
+        $has3 = self::amneziaProtoVer($c[$prefix . 'amnezia_keys'] ?? []) === 3;
+        // Ротируем по шаблону ТЕКУЩЕЙ версии набора, а не по записанному tpl:
+        // header protection можно включить кнопкой поверх набора 2.0, и шаблон
+        // *_2 не сгенерировал бы 3.0-поля — ротация просто стёрла бы их.
+        if ($has3 && substr($tpl, -2) !== '_3') {
+            $base = preg_replace('~_\d$~', '', $tpl) ?: 'standard';
+            $tpl  = isset(self::AMNEZIA_TEMPLATE_LABELS["{$base}_3"]) ? "{$base}_3" : 'standard_3';
         }
-        $c[$prefix . 'amnezia_last_rotation'] = time();
-        $this->setPacConf($c);
+        $mutate = function () use ($prefix, $tpl) {
+            $c   = $this->getPacConf();
+            $new = $this->generateAmneziaKeys($tpl, fn() => $this->genHeaderProtectionKey());
+            foreach (self::AWG_ROTATE_KEYS as $k) {
+                if (isset($new[$k])) {
+                    $c[$prefix . 'amnezia_keys'][$k] = $new[$k];
+                } else {
+                    unset($c[$prefix . 'amnezia_keys'][$k]);
+                }
+            }
+            // Свежие S3/S4 из 2.0-шаблона могут выпасть меньше 12 — при живом
+            // header protection это тихо уронит интерфейс после ротации.
+            if (!empty($c[$prefix . 'amnezia_keys']['HeaderProtectionKey'])) {
+                $c[$prefix . 'amnezia_keys'] = self::enforceHeaderProtection($c[$prefix . 'amnezia_keys']);
+            }
+            $c[$prefix . 'amnezia_last_rotation'] = time();
+            $this->setPacConf($c);
+        };
+        if ($has3) {
+            $this->awgApplyGuarded($page, $mutate, $silent);
+            return;
+        }
+        $mutate();
         $this->switchAmnezia($page, false, false, 1, $silent);
     }
 
@@ -5274,6 +5979,11 @@ NFT;
         if (time() < $last + $period_days * 86400) {
             return;
         }
+        // Набор 3.0 вслепую не ротируем: без ответа от контейнера непонятно,
+        // переживёт ли новый конфиг setconf, а откатывать будет уже нечем.
+        if (self::amneziaProtoVer($c[$prefix . 'amnezia_keys'] ?? []) === 3 && $this->awgSupports3() === null) {
+            return;
+        }
         $this->rotateAmneziaJunk(true);
     }
 
@@ -5286,10 +5996,11 @@ NFT;
         $last_str = $last ? date('Y-m-d H:i', $last) : '—';
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} введите период авто-ротации I1-I5/S3-S4 в днях (0 — выкл).\n\n"
+            "@{$this->input['username']} введите период авто-ротации junk-полей в днях (0 — выкл).\n\n"
             . "Текущий период: <code>" . ($cur ?: 'выкл') . "</code>\n"
             . "Последняя ротация: <code>$last_str</code>\n\n"
-            . "После ротации клиентам нужно перекачать конфиги (S1/S2/H1-H4/PSK сохраняются, рукопожатие совместимо, но junk-паттерн обновится).",
+            . "Ротируются I1-I5, S3-S4 и весь блок 3.0, включая HeaderProtectionKey. S1/S2/H1-H4/Jc/PSK сохраняются.\n\n"
+            . "⚠️ На наборе 3.0 после каждой ротации клиенты ОБЯЗАНЫ перекачать конфиги: старый HeaderProtectionKey перестанет подходить, и связь пропадёт без сообщения об ошибке.",
             $this->input['message_id'],
             reply: 'введите N или 0',
         );
@@ -7991,18 +8702,74 @@ DNS-over-HTTPS with IP:
     // readStatus), безопасный фолбэк: пусто, если бинари/контейнер недоступны.
     public function wgVersion(): string
     {
-        $out = (string) $this->ssh(
-            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1\'',
-            $this->getInstanceWG()
-        );
+        $v = $this->wgVersions();
         $parts = [];
-        if ($v = $this->pickVersion($out, 'awg')) {
-            $parts[] = "AmneziaWG: $v";
+        if (!empty($v['awg'])) {
+            $parts[] = "AmneziaWG: {$v['awg']}";
         }
-        if ($v = $this->pickVersion($out, 'wg')) {
-            $parts[] = "WireGuard: $v";
+        if (!empty($v['wg'])) {
+            $parts[] = "WireGuard: {$v['wg']}";
         }
         return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
+    }
+
+    // Один ssh на инстанс за запрос: wgVersion() (шапка меню) и awgSupports3()
+    // (гейт 3.0, дёргается из нескольких мест на одной отрисовке) делят результат.
+    public function wgVersions(bool $force = false): array
+    {
+        $inst = $this->getInstanceWG();
+        if (!$force && isset($this->wgVerCache[$inst])) {
+            return $this->wgVerCache[$inst];
+        }
+        $out = (string) $this->ssh(
+            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1\'',
+            $inst
+        );
+        return $this->wgVerCache[$inst] = [
+            'wg'  => $this->pickVersion($out, 'wg'),
+            'awg' => $this->pickVersion($out, 'awg'),
+        ];
+    }
+
+    // Версия amneziawg-tools («amneziawg-tools v3.0.20260730 - https://amnezia.org»).
+    // ВАЖНО: определять поддержку 3.0 можно ТОЛЬКО по tools — amneziawg-go даже в
+    // теге v3.0.3 печатает захардкоженное «amneziawg-go 0.0.20250522» (version.go),
+    // так что его строка версии ни о чём не говорит.
+    //
+    // Кешируется в pac.json, потому что тот же ответ нужен путям без меню
+    // (ротация из cron, выдача клиентских конфигов), где лишний ssh — это
+    // задержка на каждый запрос.
+    public function awgToolsVersion(bool $force = false): ?string
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        $cache  = $c[$prefix . 'awg_tools_ver'] ?? null;
+        if (!$force && is_array($cache) && !empty($cache['v']) && time() - (int) ($cache['at'] ?? 0) < 3600) {
+            return $cache['v'];
+        }
+        $v = $this->wgVersions($force)['awg'] ?? null;
+        if ($v === null) {
+            // ssh лёг / бинаря нет — держимся за прошлое значение, если оно есть:
+            // «версия неизвестна» и «версия старая» должны различаться.
+            return is_array($cache) && !empty($cache['v']) ? $cache['v'] : null;
+        }
+        $c = $this->getPacConf();
+        $c[$prefix . 'awg_tools_ver'] = ['v' => $v, 'at' => time()];
+        $this->setPacConf($c);
+        return $v;
+    }
+
+    // true — поддержка AWG 3.0 есть, false — заведомо нет, null — неизвестно
+    // (контейнер недоступен и кеша нет). Три состояния, а не два: при null
+    // включать 3.0 нельзя, но и срезать уже включённые поля нельзя — иначе
+    // моргнувший ssh молча обнулит рабочую конфигурацию у всех клиентов.
+    public function awgSupports3(): ?bool
+    {
+        $v = $this->awgToolsVersion();
+        if ($v === null) {
+            return null;
+        }
+        return version_compare(ltrim($v, 'vV'), '3.0', '>=');
     }
 
     // Версии из warp-контейнера (wp = образ wireguard + wgcf, warp-cli в образе
@@ -8061,8 +8828,26 @@ DNS-over-HTTPS with IP:
         $end     = $c[$this->getInstanceWG(1) . 'endpoint'] ?? false;
 
         if (!empty($am)) {
-            $ak     = $this->amneziaKeys();
-            $text[] = '<code>' . implode("\n", array_map(fn($k, $v) => htmlspecialchars($k) . ': ' . htmlspecialchars($v), array_keys($ak), $ak)) . "</code>\n";
+            $ak      = $this->amneziaKeys();
+            // 1.x/2.0-поля печатаем как раньше; 3.0-блок сворачиваем в одну
+            // строку-сводку (полный листинг — в подменю AWG 3.0), а секретный
+            // HeaderProtectionKey всегда маскируется отпечатком.
+            $base    = array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2);
+            $text[]  = '<code>' . self::amneziaKeysReport($ak, true, $base) . "</code>\n";
+            $awg3    = self::amneziaKeysReport($ak, true, self::AWG_KEYS_3);
+            if ($awg3 !== '') {
+                $text[] = '<code>' . str_replace("\n", ' · ', $awg3) . "</code>\n";
+                // Поля видны в меню, но в конфиг не попали — без этой пометки
+                // пользователь уверен, что 3.0 работает. Причины две, и лечатся
+                // они по-разному, поэтому различаем их в тексте.
+                $eff = $this->amneziaKeysEffective();
+                if ($eff != $ak) {
+                    $why = !self::awgHeaderProtectionOk($ak)
+                        ? 'header protection выключен: S1–S4 должны быть ≥ ' . self::AWG_HPK_MIN_S
+                        : $this->awg3UnsupportedText();
+                    $text[] = '⚠️ ' . htmlspecialchars($why, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
+                }
+            }
         }
         $data   = [
             [
@@ -8139,14 +8924,26 @@ DNS-over-HTTPS with IP:
                     'callback_data' => "/setAmneziaRotation $inst $page",
                 ],
             ]);
+            $ver  = self::amneziaProtoVer($c[$this->getInstanceWG(1) . 'amnezia_keys'] ?? []);
+            $sup3 = $this->awgSupports3();
+            // Кнопка подменю 3.0 бесполезна на заведомо старых tools — но если
+            // 3.0-поля уже сохранены, показываем её, чтобы их можно было снять.
+            if ($sup3 !== false || $ver === 3) {
+                array_unshift($data, [
+                    [
+                        'text'          => '⚙ AWG 3.0' . ($ver === 3 ? ' ✅' : ($sup3 === true ? '' : ' ⛔')),
+                        'callback_data' => "/awg3 $inst $page",
+                    ],
+                ]);
+            }
             array_unshift($data, [
                 [
                     'text'          => "reset obf-keys",
                     'callback_data' => "/resetAmnezia $inst $page",
                 ],
                 [
-                    'text'          => "reduce to 1",
-                    'callback_data' => "/reduceAmnezia $inst $page",
+                    'text'          => 'proto: ' . $this->amneziaProtoLabel($ver) . ' ▸',
+                    'callback_data' => "/amneziaProto $inst $page",
                 ],
             ]);
         }
@@ -8606,7 +9403,13 @@ DNS-over-HTTPS with IP:
             $domain = $relay['awg_address'];
             $wgPort = (int) ($relay['awg_portmap'][$wgPort] ?? $wgPort);
         }
-        $amneziaKeys   = $this->amneziaKeys();
+        $amneziaKeys   = $this->amneziaKeysEffective();
+        // protocol_version остаётся "2" даже для набора 3.0: у приложения
+        // AmneziaVPN есть только контейнеры amnezia-awg / amnezia-awg2 и
+        // константы версий "1.5"/"2" (containerUtils.cpp, protocolConstants.h).
+        // Сами 3.0-поля клиент читает из last_config безусловно, по тем же
+        // именам ключей, что и в wg0.conf (configKeys.h) — отдельная версия
+        // контейнера для них не нужна.
         $protoVer      = array_key_exists('I1', $amneziaKeys) ? "2" : "1";
         $containerName = $protoVer === "2" ? "amnezia-awg2" : "amnezia-awg";
         $c             = [
@@ -8625,7 +9428,7 @@ DNS-over-HTTPS with IP:
                             "psk_key"          => $client['peers'][0]['PresharedKey'],
                             "server_pub_key"   => $client['peers'][0]['PublicKey'],
                             "allowed_ips"      => array_map('trim', explode(',', $client['peers'][0]['AllowedIPs'])),
-                            "persistent_keep_alive" => "25"
+                            "persistent_keep_alive" => (string) $this->awgKeepalive()
                         ])),
                         "port" => $wgPort,
                         "transport_proto" => "udp",
@@ -8702,7 +9505,9 @@ DNS-over-HTTPS with IP:
             return false;
         }
         return [
-            "amnezia-wg-option" => $c["{$container}amnezia_keys"] ?? '',
+            // mihomo знает только поля 1.x/2.0 — 3.0-ключи отфильтровываем,
+            // иначе незнакомые записи ломают разбор конфига у подписчика.
+            "amnezia-wg-option" => self::amneziaKeysForMihomo($c["{$container}amnezia_keys"] ?? ''),
             "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
             "server"            => explode(':', $clients[$client]['peers'][0]['Endpoint'])[0],
             "port"              => explode(':', $clients[$client]['peers'][0]['Endpoint'])[1],
@@ -18546,7 +19351,9 @@ DNS-over-HTTPS with IP:
         }
 
         return [
-            "amnezia-wg-option" => $c["{$container}amnezia_keys"] ?? '',
+            // mihomo знает только поля 1.x/2.0 — 3.0-ключи отфильтровываем,
+            // иначе незнакомые записи ломают разбор конфига у подписчика.
+            "amnezia-wg-option" => self::amneziaKeysForMihomo($c["{$container}amnezia_keys"] ?? ''),
             "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
             "server"            => explode(':', $cl['peers'][0]['Endpoint'])[0],
             "port"              => explode(':', $cl['peers'][0]['Endpoint'])[1],
@@ -20458,6 +21265,56 @@ DNS-over-HTTPS with IP:
         return $c[$k];
     }
 
+    // Набор, который РЕАЛЬНО можно записать в конфиг прямо сейчас.
+    // Отличается от amneziaKeys() (сырое хранилище) двумя срезами:
+    //  1) старые amneziawg-tools роняют `setconf` на любом незнакомом ключе
+    //     («Line unrecognized»), поэтому при заведомо старой версии 3.0-поля
+    //     не пишем вовсе — иначе интерфейс просто не поднимется;
+    //  2) HeaderProtectionKey без S1..S4 >= 12 отвергается amneziawg-go.
+    // При awgSupports3() === null (ssh недоступен) НЕ срезаем: неизвестность не
+    // повод выкинуть рабочую конфигурацию из конфигов всех клиентов.
+    public function amneziaKeysEffective(): array
+    {
+        $k = $this->amneziaKeys();
+        if (!is_array($k)) {
+            return [];
+        }
+        if ($this->awgSupports3() === false) {
+            foreach (self::AWG_KEYS_3 as $j) {
+                unset($k[$j]);
+            }
+        }
+        if (!self::awgHeaderProtectionOk($k)) {
+            unset($k['HeaderProtectionKey']);
+        }
+        return $k;
+    }
+
+    // Ключ header protection — тот же формат, что и обычный ключ wireguard
+    // (32 байта base64), поэтому генерим его штатным `awg genkey`. Фолбэк на
+    // random_bytes нужен, чтобы недоступный контейнер не блокировал настройку:
+    // ключ всё равно уедет в конфиг через restartWG, когда ssh поднимется.
+    public function genHeaderProtectionKey(): string
+    {
+        $v = trim((string) $this->ssh("{$this->getWGType()} genkey", $this->getInstanceWG()));
+        if ($v === '' || strlen((string) base64_decode($v, true)) !== 32) {
+            $v = base64_encode(random_bytes(32));
+        }
+        return $v;
+    }
+
+    // PersistentKeepalive пира. AWG 3.0 разрешает диапазон («20-30»), что убирает
+    // строго периодический keepalive как признак туннеля. Значение гейтится
+    // версией tools: старый клиентский стек на «20-30» упадёт при разборе.
+    public function awgKeepalive()
+    {
+        $v = (string) ($this->getPacConf()[$this->getInstanceWG(1) . 'amnezia_keepalive'] ?? '');
+        if ($v === '' || $this->awgSupports3() !== true) {
+            return 20;
+        }
+        return $v;
+    }
+
     // Templates for AmneziaWG key generation. Ranges follow official docs
     // (docs.amnezia.org/documentation/amnezia-wg): Jc 0–10, Jmin/Jmax 64–1024,
     // S1/S2/S3 0–64, S4 0–32. Constraints: S1+56 ≠ S2 and S1 ≠ S2.
@@ -20467,8 +21324,28 @@ DNS-over-HTTPS with IP:
     //   1.x: distinct non-zero 32-bit integers.
     //   2.0: non-overlapping "MIN-MAX" ranges across uint32 space (server picks
     //        a random value per session, raising DPI cost).
-    public function generateAmneziaKeys($template = 'standard_2')
+    // 3.0 (шаблоны *_3) добавляет device-параметры AWG_KEYS_3: header protection
+    // + рандомизированные тайминги/паддинг в виде диапазонов. Диапазоны выбраны
+    // вокруг дефолтов amneziawg-go (rekey 120 / reject 180 / keepalive 10 /
+    // handshake 18): слишком широкий разброс ломает совместимость с пирами,
+    // которые ещё не перекачали конфиг. S1..S4 в *_3 всегда >= AWG_HPK_MIN_S —
+    // иначе setconf отвергнет конфиг из-за header protection.
+    //
+    // $hpk — генератор ключа header protection. Вынесен параметром, чтобы
+    // функция оставалась чистой и тестируемой; вызывающий код передаёт
+    // genHeaderProtectionKey() (ssh `awg genkey`).
+    public function generateAmneziaKeys($template = 'standard_2', ?callable $hpk = null)
     {
+        $hpk = $hpk ?: fn() => base64_encode(random_bytes(32));
+
+        // Диапазон «LO-HI»: нижняя граница из [lo_min, lo_max], ширина из
+        // [span_min, span_max], верх подрезан hard_max.
+        $rngRange = function (int $lo_min, int $lo_max, int $span_min, int $span_max, int $hard_max) {
+            $lo = random_int($lo_min, $lo_max);
+            $hi = min($hard_max, $lo + random_int($span_min, $span_max));
+            return "$lo-$hi";
+        };
+
         $rngS = function ($min, $max) {
             $s1 = random_int($min, $max);
             do {
@@ -20546,6 +21423,74 @@ DNS-over-HTTPS with IP:
                     'S1' => $s1, 'S2' => $s2,
                 ];
 
+            // 3.0 templates: 2.0-набор + AWG_KEYS_3. S1..S4 держим >= 12
+            // (AWG_HPK_MIN_S) — обязательное условие header protection.
+            // RejectAfterTime всегда начинается позже, чем заканчивается
+            // RekeyAfterTime: иначе пир отбросит сессию раньше, чем попробует
+            // сделать рекей, и туннель будет рвать раз в пару минут.
+            case 'aggressive_3':
+                [$s1, $s2] = $rngS(40, 64);
+                return $rngH2() + [
+                    'Jc' => 10, 'Jmin' => 256, 'Jmax' => 1024,
+                    'S1' => $s1, 'S2' => $s2,
+                    'S3' => random_int(32, 64), 'S4' => random_int(16, 32),
+                    'I1' => '<b 0xc000000001><r ' . random_int(150, 250) . '>',
+                    'I2' => '<t><r ' . random_int(100, 200) . '>',
+                    'I3' => '<r ' . random_int(100, 200) . '>',
+                    'I4' => '<rd ' . random_int(16, 24) . '><r ' . random_int(100, 150) . '>',
+                    'I5' => '<rc ' . random_int(100, 150) . '>',
+                    'HeaderProtectionKey'    => $hpk(),
+                    'ContentPaddingAddition' => $rngRange(25, 30, 5, 10, 40),
+                    'RekeyAfterTime'         => $rngRange(110, 118, 5, 12, 130),
+                    'RekeyTimeout'           => $rngRange(5, 6, 1, 2, 8),
+                    'RejectAfterTime'        => $rngRange(170, 178, 5, 7, 185),
+                    'KeepaliveTimeout'       => $rngRange(10, 11, 1, 2, 13),
+                    'MaxHandshakeAttempts'   => $rngRange(20, 22, 2, 3, 25),
+                ];
+
+            case 'mobile_3':
+                [$s1, $s2] = $rngS(self::AWG_HPK_MIN_S, 32);
+                return $rngH2() + [
+                    'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
+                    'S1' => $s1, 'S2' => $s2,
+                    'S3' => random_int(self::AWG_HPK_MIN_S, 32),
+                    'S4' => random_int(self::AWG_HPK_MIN_S, 16),
+                    'I1' => '<b 0xc000000001><r ' . random_int(100, 150) . '>',
+                    'I2' => '<t><r ' . random_int(100, 130) . '>',
+                    'I3' => '<r ' . random_int(100, 130) . '>',
+                    'I4' => '<rd ' . random_int(6, 12) . '><r ' . random_int(100, 130) . '>',
+                    'I5' => '<rc ' . random_int(100, 130) . '>',
+                    'HeaderProtectionKey'    => $hpk(),
+                    'ContentPaddingAddition' => $rngRange(10, 14, 4, 6, 20),
+                    // Мобильный профиль реже дёргает рекей — экономия батареи.
+                    'RekeyAfterTime'         => $rngRange(115, 122, 5, 8, 130),
+                    'RekeyTimeout'           => $rngRange(6, 8, 1, 2, 10),
+                    'RejectAfterTime'        => $rngRange(175, 182, 5, 8, 190),
+                    'KeepaliveTimeout'       => $rngRange(12, 13, 1, 2, 15),
+                    'MaxHandshakeAttempts'   => $rngRange(15, 17, 2, 3, 20),
+                ];
+
+            case 'standard_3':
+                [$s1, $s2] = $rngS(self::AWG_HPK_MIN_S, 64);
+                return $rngH2() + [
+                    'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1024,
+                    'S1' => $s1, 'S2' => $s2,
+                    'S3' => random_int(self::AWG_HPK_MIN_S, 64),
+                    'S4' => random_int(self::AWG_HPK_MIN_S, 32),
+                    'I1' => '<b 0xc000000001><r ' . random_int(120, 200) . '>',
+                    'I2' => '<t><r ' . random_int(100, 150) . '>',
+                    'I3' => '<r ' . random_int(100, 150) . '>',
+                    'I4' => '<rd ' . random_int(8, 16) . '><r ' . random_int(100, 150) . '>',
+                    'I5' => '<rc ' . random_int(100, 150) . '>',
+                    'HeaderProtectionKey'    => $hpk(),
+                    'ContentPaddingAddition' => $rngRange(10, 20, 10, 20, 40),
+                    'RekeyAfterTime'         => $rngRange(110, 118, 5, 12, 130),
+                    'RekeyTimeout'           => $rngRange(5, 7, 2, 3, 10),
+                    'RejectAfterTime'        => $rngRange(170, 180, 5, 10, 190),
+                    'KeepaliveTimeout'       => $rngRange(10, 12, 2, 3, 15),
+                    'MaxHandshakeAttempts'   => $rngRange(15, 20, 3, 5, 25),
+                ];
+
             case 'standard_2':
             default:
                 [$s1, $s2] = $rngS(15, 64);
@@ -20559,6 +21504,19 @@ DNS-over-HTTPS with IP:
                     'I4' => '<rd ' . random_int(8, 16) . '><r ' . random_int(100, 150) . '>',
                     'I5' => '<rc ' . random_int(100, 150) . '>',
                 ];
+        }
+    }
+
+    // Шаблоны, доступные для версии протокола. Порядок = порядок кнопок.
+    public static function amneziaTemplateList(int $ver): array
+    {
+        switch ($ver) {
+            case 3:
+                return ['standard_3', 'aggressive_3', 'mobile_3'];
+            case 2:
+                return ['standard_2', 'aggressive_2', 'mobile_2'];
+            default:
+                return ['classic_1'];
         }
     }
 
@@ -20633,14 +21591,16 @@ DNS-over-HTTPS with IP:
                     'PrivateKey' => $private_peer_key,
                     'Address'    => "$client_ip/32",
                 ],
-                $amnezia ? $this->amneziaKeys() : []
+                $amnezia ? $this->amneziaKeysEffective() : []
             ),
             'peers' => [
                     array_merge(
                         [
                             'PublicKey'           => $public_server_key,
                             'AllowedIPs'          => $ips_user ?: "0.0.0.0/0",
-                            'PersistentKeepalive' => 20,
+                            // AWG 3.0 допускает диапазон («20-30»); awgKeepalive()
+                            // отдаёт фиксированные 20, если 3.0 недоступен.
+                            'PersistentKeepalive' => $amnezia ? $this->awgKeepalive() : 20,
                         ],
                         $amnezia ? ['PresharedKey' => $this->presharedKey()] : []
                     ),
