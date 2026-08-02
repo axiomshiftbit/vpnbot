@@ -175,6 +175,100 @@ warpAssert(
     'очистка .bak идёт последней, после всех точек восстановления'
 );
 
+// ── 5c. Персональный WARP-аккаунт на каждого клиента ───────────────────────
+// Общий серверный ключ в клиентских конфигах означал бы, что сессии выбивают
+// друг друга: у пира в WireGuard ровно один endpoint, и handshake с нового
+// источника переписывает предыдущий.
+$wdir = sys_get_temp_dir() . '/warpcli_' . getmypid();
+@mkdir($wdir . '/clients', 0755, true);
+$wbox = new class ($wdir) extends Bot {
+    public $cmds = [];
+    private $root;
+    public function __construct($root)
+    {
+        $this->root       = $root;
+        $this->warpclients = [];
+    }
+    public function warpClientDir($email)
+    {
+        return $this->root . '/clients/' . substr(sha1($email), 0, 8);
+    }
+    public function getPacConf(): array
+    {
+        return ['warp' => 'AAAA-BBBB-CCCC'];
+    }
+    // Эмулируем контейнер wp: команда register/generate «создаёт» профиль.
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
+    {
+        $this->cmds[] = $cmd;
+        if (strpos($cmd, 'wgcf register') !== false
+            && preg_match('~mkdir -p \x27([^\x27]+)\x27~', $cmd, $m)) {
+            @mkdir($m[1], 0755, true);
+            file_put_contents($m[1] . '/wgcf-profile.conf',
+                "[Interface]\nPrivateKey = CLIENTKEY\nAddress = 172.16.0.7/32\nMTU = 1280\n"
+                . "[Peer]\nPublicKey = PEERKEY\nAllowedIPs = 0.0.0.0/0\nEndpoint = engage.cloudflareclient.com:2408\n");
+        }
+        return '';
+    }
+};
+$p1 = $wbox->warpClientProfile('alice@example.com');
+warpAssert(is_array($p1) && ($p1['private-key'] ?? '') === 'CLIENTKEY', 'клиенту заводится персональный профиль');
+$cmd = implode("\n", $wbox->cmds);
+warpAssert(strpos($cmd, '--config wgcf-account.toml') !== false, 'wgcf работает в отдельном каталоге клиента (--config)');
+warpAssert(strpos($cmd, '--profile wgcf-profile.conf') !== false, 'профиль пишется туда же (--profile)');
+warpAssert(strpos($cmd, 'sh /warp_fixup.sh') !== false, 'к клиентскому профилю применяются те же фиксапы');
+warpAssert(strpos($cmd, 'chmod 600') !== false, 'ключи клиента лежат с правами 0600');
+warpAssert(strpos($cmd, 'license_key = "AAAA-BBBB-CCCC"') !== false, 'лицензионный ключ применяется и к клиентскому аккаунту');
+warpAssert(strpos($cmd, '--name') !== false, 'устройство подписывается именем клиента (видно в панели 1.1.1.1)');
+
+// Второй вызов не должен снова ходить в API.
+$n = count($wbox->cmds);
+$wbox->warpClientProfile('alice@example.com');
+warpAssert(count($wbox->cmds) === $n, 'повторный вызов берёт готовый профиль из кэша');
+
+// Разные клиенты — разные каталоги и, значит, разные ключи.
+warpAssert(
+    $wbox->warpClientDir('alice@example.com') !== $wbox->warpClientDir('bob@example.com'),
+    'у разных клиентов разные каталоги аккаунтов'
+);
+$bot2 = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+warpAssert(
+    !preg_match('~[^a-zA-Z0-9_./\-]~', $bot2->warpClientDir("a b;rm -rf /\n\$(id)")),
+    'имя каталога санитайзится — email уходит в shell-команду'
+);
+warpAssert(
+    $bot2->warpClientDir('x@y') === $bot2->warpClientDir('x@y'),
+    'путь детерминирован'
+);
+warpAssert(
+    $bot2->warpClientDir('a_b') !== $bot2->warpClientDir('a-b'),
+    'разные email не схлопываются в один каталог после санитайза'
+);
+
+// Пустой email не должен приводить к общему каталогу на всех.
+warpAssert($bot2->warpClientProfile('') === false, 'без email персональный профиль не выдаётся');
+
+// Профиль генерируется ЛЕНИВО: только когда шаблон реально просит ключ.
+warpAssert(
+    strpos($botSrc, "str_contains(\$json, '~warp_private_key~')") !== false,
+    'регистрация только при наличии warp-тега в шаблоне'
+);
+// Удаление клиента убирает и его аккаунт.
+warpAssert(
+    (bool) preg_match('~deleteHwidUser\(.*\n.*\n.*\n.*\n.*deleteWarpClient~', $botSrc),
+    'delxr() удаляет персональный WARP-аккаунт клиента'
+);
+warpAssert(strpos($botSrc, "rm -rf ' . escapeshellarg(\$this->warpClientDir(\$email))") !== false, 'каталог клиента удаляется через escapeshellarg');
+
+foreach (glob($wdir . '/clients/*/*') ?: [] as $f) {
+    @unlink($f);
+}
+foreach (glob($wdir . '/clients/*') ?: [] as $d) {
+    @rmdir($d);
+}
+@rmdir($wdir . '/clients');
+@rmdir($wdir);
+
 // ── 6. Проба живости ───────────────────────────────────────────────────────
 warpAssert(strpos($probe, 'socks5h://127.0.0.1') !== false, 'проба ходит через сам SOCKS (socks5h — резолв в туннеле)');
 warpAssert(strpos($probe, "warp=(on|plus)") !== false, 'проба требует именно warp=on|plus, а не просто ответ');

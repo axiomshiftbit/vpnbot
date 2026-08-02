@@ -102,6 +102,8 @@ class Bot
     public $admin;
     public $ports;
     public $warpprofile;
+    // email клиента => персональный WARP-профиль (или false)
+    public $warpclients = [];
     // Мемо версий wg/awg на инстанс в пределах одного запроса (см. wgVersions).
     public $wgVerCache = [];
 
@@ -16601,6 +16603,10 @@ DNS-over-HTTPS with IP:
         foreach ($r['inbounds'][0]['settings']['clients'] as $k => $v) {
             if ($i == $k) {
                 $this->deleteHwidUser($r['inbounds'][0]['settings']['clients'][$k]['id']);
+                // Персональный WARP-аккаунт живёт вне xray.json — убираем его
+                // здесь, иначе каталоги копятся, а устройства навсегда висят
+                // на аккаунте Cloudflare.
+                $this->deleteWarpClient($r['inbounds'][0]['settings']['clients'][$k]['email'] ?? '');
                 unset($r['inbounds'][0]['settings']['clients'][$k]);
                 unset($st['users'][$k]);
                 $this->setXrayStats($st);
@@ -19554,12 +19560,21 @@ DNS-over-HTTPS with IP:
                 }
                 break;
         }
-        // Cloudflare WARP profile of this server, exposed as template tags so a
-        // (per-user) template can embed a wireguard-WARP proxy with the dynamic
-        // server secrets. Empty array when warp isn't set up — the tags then
-        // resolve to empty strings / defaults.
-        $warp = $this->getWarpProfile() ?: [];
-        $c = json_decode($this->replaceTags(json_encode($c), [
+        // WARP-теги шаблона. У каждого клиента СВОЙ wgcf-аккаунт: общий
+        // серверный ключ означал бы, что сессии клиентов и самого сервера
+        // выбивают друг друга (в WireGuard у пира ровно один endpoint, и
+        // handshake с нового источника переписывает предыдущий).
+        //
+        // Регистрация ленивая и делается только если шаблон реально просит
+        // ключ — иначе каждая подписка любого клиента ходила бы в API
+        // Cloudflare заводить лишний аккаунт. Если персональный завести не
+        // удалось (сеть/лимит), теги останутся пустыми: пусть warp-прокси в
+        // конфиге будет нерабочим, чем рабочим, но конфликтующим с сервером.
+        $json = json_encode($c);
+        $warp = str_contains($json, '~warp_private_key~')
+            ? ($this->warpClientProfile($client['email'] ?? '') ?: [])
+            : [];
+        $c = json_decode($this->replaceTags($json, [
             '"~pac~"'        => json_encode(array_keys(array_filter($pac['includelist'] ?: []))),
             '"~block~"'      => json_encode(array_keys(array_filter($pac['blocklist'] ?: []))),
             '"~warp~"'       => json_encode(array_keys(array_filter($pac['warplist'] ?: []))),
@@ -19984,6 +19999,118 @@ DNS-over-HTTPS with IP:
      * proxy needs. Returns false when the profile is missing/unreadable so callers
      * can fall back gracefully.
      */
+    // Разбор wgcf-profile.conf в поля, которые нужны клиентским конфигам.
+    // Вынесено из getWarpProfile(), потому что теперь тем же разбором читаются
+    // и персональные профили клиентов (warpClientProfile).
+    public function parseWarpProfile($conf)
+    {
+        $conf = (string) $conf;
+        if ($conf === '' || !str_contains($conf, '[Peer]')) {
+            return false;
+        }
+        $val = function ($key) use ($conf) {
+            return preg_match('~^\s*' . $key . '\s*=\s*(.+?)\s*$~mi', $conf, $m) ? trim($m[1]) : null;
+        };
+        $endpoint   = $val('Endpoint');
+        $privateKey = $val('PrivateKey');
+        $publicKey  = $val('PublicKey');
+        $address    = $val('Address');
+        if (empty($endpoint) || empty($privateKey) || empty($publicKey) || empty($address)) {
+            return false;
+        }
+        // endpoint is host:port, but tolerate an IPv6 literal like [2606:..]:2408
+        if (preg_match('~^\[(.+)\]:(\d+)$~', $endpoint, $em)) {
+            $server = $em[1];
+            $port   = (int) $em[2];
+        } else {
+            $pos    = strrpos($endpoint, ':');
+            $server = substr($endpoint, 0, $pos);
+            $port   = (int) substr($endpoint, $pos + 1);
+        }
+        return [
+            'server'      => $server,
+            'port'        => $port,
+            'ip'          => explode('/', $address)[0],
+            'private-key' => $privateKey,
+            'public-key'  => $publicKey,
+            'mtu'         => (int) ($val('MTU') ?: 1280),
+        ];
+    }
+
+    // Каталог персонального WARP-аккаунта клиента внутри тома warp (он же
+    // смонтирован в php, поэтому профиль читается напрямую, без ssh).
+    // Имя = санитизированный email + хвост sha1: email приходит из Telegram и
+    // попадает в shell-команды, а хеш убирает коллизии после санитайза.
+    public function warpClientDir($email)
+    {
+        $email = (string) $email;
+        $safe  = substr(preg_replace('~[^a-zA-Z0-9_.\-]~', '_', $email), 0, 32);
+        return '/etc/warp/clients/' . $safe . '-' . substr(sha1($email), 0, 8);
+    }
+
+    // Персональный WARP-аккаунт клиента: у каждого свой ключ, а не общий
+    // серверный. Один и тот же WireGuard-ключ на сервере и у клиентов означал
+    // бы, что их сессии выбивают друг друга — у пира в WireGuard ровно один
+    // endpoint, и handshake с нового источника переписывает предыдущий.
+    //
+    // Генерация ленивая (wgcf register — сетевой вызов к API Cloudflare) и
+    // выполняется только когда шаблон реально просит warp-теги. Готовый
+    // профиль дальше просто читается с тома.
+    public function warpClientProfile($email)
+    {
+        $email = (string) $email;
+        if ($email === '') {
+            return false;
+        }
+        if (array_key_exists($email, $this->warpclients)) {
+            return $this->warpclients[$email];
+        }
+        $dir  = $this->warpClientDir($email);
+        $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
+        if ($prof !== false) {
+            return $this->warpclients[$email] = $prof;
+        }
+
+        $d   = escapeshellarg($dir);
+        $pac = $this->getPacConf();
+        $key = (string) ($pac['warp'] ?? '');
+        // Ключ уже провалидирован в addWarpPlus, но сюда он приезжает из
+        // pac.json — проверяем повторно, раз значение уходит в shell.
+        $lic = preg_match('~^[A-Za-z0-9-]+$~', $key)
+            ? "sed -i 's/^license_key.*/license_key = \"$key\"/' wgcf-account.toml && "
+                . 'wgcf update --config wgcf-account.toml >/dev/null 2>&1; '
+            : '';
+        // Имя устройства видно в панели 1.1.1.1 — подписываем клиентом.
+        $name = escapeshellarg('vpnbot-' . substr(preg_replace('~[^a-zA-Z0-9_.\-]~', '_', $email), 0, 32));
+        $this->ssh(
+            "mkdir -p $d && cd $d && "
+                . "wgcf register --accept-tos --config wgcf-account.toml --name $name >/dev/null 2>&1 && "
+                . $lic
+                . 'wgcf generate --config wgcf-account.toml --profile wgcf-profile.conf >/dev/null 2>&1 && '
+                . "chmod 600 wgcf-account.toml wgcf-profile.conf && "
+                . "WGCF_CONF=$d/wgcf-profile.conf sh /warp_fixup.sh",
+            'wp'
+        );
+        $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
+        if ($prof === false) {
+            // Не оставляем полуфабрикат: иначе следующий запрос увидит каталог
+            // и решит, что регистрация уже была.
+            $this->ssh("rm -rf $d", 'wp');
+        }
+        return $this->warpclients[$email] = $prof;
+    }
+
+    // Клиента удалили — удаляем и его WARP-аккаунт, иначе каталоги копятся, а
+    // устройства навсегда остаются висеть на аккаунте Cloudflare.
+    public function deleteWarpClient($email)
+    {
+        if ((string) $email === '') {
+            return;
+        }
+        unset($this->warpclients[(string) $email]);
+        $this->ssh('rm -rf ' . escapeshellarg($this->warpClientDir($email)), 'wp');
+    }
+
     public function getWarpProfile()
     {
         // Cache per request: this runs on every config download (all types), and
@@ -19998,36 +20125,7 @@ DNS-over-HTTPS with IP:
             // container over ssh just in case the volume isn't present.
             $conf = $this->ssh('cat /etc/warp/wgcf-profile.conf 2>/dev/null', 'wp');
         }
-        if (empty($conf) || !str_contains($conf, '[Peer]')) {
-            return $this->warpprofile = false;
-        }
-        $val = function ($key) use ($conf) {
-            return preg_match('~^\s*' . $key . '\s*=\s*(.+?)\s*$~mi', $conf, $m) ? trim($m[1]) : null;
-        };
-        $endpoint   = $val('Endpoint');
-        $privateKey = $val('PrivateKey');
-        $publicKey  = $val('PublicKey');
-        $address    = $val('Address');
-        if (empty($endpoint) || empty($privateKey) || empty($publicKey) || empty($address)) {
-            return $this->warpprofile = false;
-        }
-        // endpoint is host:port, but tolerate an IPv6 literal like [2606:..]:2408
-        if (preg_match('~^\[(.+)\]:(\d+)$~', $endpoint, $em)) {
-            $server = $em[1];
-            $port   = (int) $em[2];
-        } else {
-            $pos    = strrpos($endpoint, ':');
-            $server = substr($endpoint, 0, $pos);
-            $port   = (int) substr($endpoint, $pos + 1);
-        }
-        return $this->warpprofile = [
-            'server'      => $server,
-            'port'        => $port,
-            'ip'          => explode('/', $address)[0],
-            'private-key' => $privateKey,
-            'public-key'  => $publicKey,
-            'mtu'         => (int) ($val('MTU') ?: 1280),
-        ];
+        return $this->warpprofile = $this->parseWarpProfile($conf);
     }
 
     public function replaceTags($subject, $tags)
