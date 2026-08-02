@@ -945,6 +945,14 @@ $i = [
         'en' => 'behind NAT (registry fix + reboot)',
         'ru' => 'за NAT (правка реестра + перезагрузка)',
     ],
+    'fp hint'  => [
+        'en' => 'uTLS masks the TLS ClientHello (JA3/JA4). chrome is the safest default; random/randomized change the fingerprint per connection, which is itself unusual for a browser.',
+        'ru' => 'uTLS маскирует TLS ClientHello (JA3/JA4). chrome — самый безопасный выбор; random/randomized меняют отпечаток на каждое соединение, что для браузера само по себе нетипично.',
+    ],
+    'fp noalpn warn'  => [
+        'en' => 'randomizednoalpn sends no ALPN: gRPC will not negotiate h2 and XHTTP falls back to http/1.1',
+        'ru' => 'randomizednoalpn не отправляет ALPN: gRPC не согласует h2, а XHTTP откатится на http/1.1',
+    ],
     'optional'  => [
         'en' => 'optional',
         'ru' => 'необязательно',

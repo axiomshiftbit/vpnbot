@@ -12237,12 +12237,62 @@ DNS-over-HTTPS with IP:
         $this->xray();
     }
 
-    // uTLS fingerprints offered in the menu. All are valid Xray uTLS ids; for
-    // sing-box / clash configs the Xray-only ids (randomizednoalpn, unsafe) are
-    // normalized away in subscription() because those cores don't accept them.
+    // uTLS-отпечатки, предлагаемые в меню. Список — PresetFingerprints из
+    // Xray-core (transport/internet/tls/tls.go) МИНУС "unsafe".
+    //
+    // "unsafe" был скопирован из 3x-ui, но пользы от него нет ни в одном
+    // сценарии:
+    //   * Reality — infra/conf/transport_security.go отвергает конфиг целиком:
+    //     `invalid "fingerprint": unsafe` (проверка идёт до GetFingerprint);
+    //   * обычный TLS — GetFingerprint() возвращает nil, и все диалеры
+    //     (tcp/websocket/grpc/splithttp) откатываются на tls.Client(), то есть
+    //     на стандартный Go-ClientHello. Это ровно тот отпечаток, от которого
+    //     uTLS и защищает: маскировка молча выключается.
+    // Поэтому значение не предлагаем, а уже сохранённое подменяем в
+    // fingerprint().
     public function fingerprints()
     {
-        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized', 'randomizednoalpn', 'unsafe'];
+        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized', 'randomizednoalpn'];
+    }
+
+    // Единая точка чтения отпечатка: пустое, неизвестное или снятое с
+    // поддержки значение (например "unsafe" из старого pac.json) превращается
+    // в chrome — так же, как это делает сам Xray для пустой строки.
+    public function fingerprint()
+    {
+        $fp = (string) ($this->getPacConf()['fingerprint'] ?? '');
+        return in_array($fp, $this->fingerprints(), true) ? $fp : 'chrome';
+    }
+
+    // Ядра клиентов знают РАЗНЫЕ наборы имён, и ведут себя при незнакомом
+    // значении по-разному:
+    //   sing-box (common/tls/utls_client.go) — ошибка «unknown uTLS
+    //     fingerprint», конфиг не запускается; знает всё, кроме
+    //     randomizednoalpn;
+    //   mihomo (component/tls/utls.go) — GetFingerprint() пишет warning и
+    //     возвращает false, после чего uTLS ПРОСТО НЕ ПРИМЕНЯЕТСЯ и клиент
+    //     уходит с Go-отпечатком. Его карта не содержит ни randomized, ни
+    //     randomizednoalpn — то есть «рандомизированный» отпечаток там молча
+    //     превращался в самый узнаваемый из возможных.
+    // Поэтому для mihomo оба рандомных варианта отображаем в его собственный
+    // `random` (выбирает chrome/safari/ios/firefox), а не в `randomized`.
+    public function normalizeFingerprint($fp, $core)
+    {
+        if ($core === 'singbox') {
+            return ['randomizednoalpn' => 'randomized'][$fp] ?? $fp;
+        }
+        if ($core === 'mihomo') {
+            return ['randomized' => 'random', 'randomizednoalpn' => 'random'][$fp] ?? $fp;
+        }
+        return $fp;
+    }
+
+    // Отпечатки, которые НЕ отправляют ALPN-расширение. Для транспортов, где
+    // h2 обязателен (gRPC) или желателен (XHTTP), это ломает согласование:
+    // сервер без ALPN откатится на http/1.1, а grpc_pass в nginx требует h2.
+    public function fingerprintNoAlpn($fp)
+    {
+        return $fp === 'randomizednoalpn';
     }
 
     public function changeFingerprint($fingerprint = false)
@@ -12253,7 +12303,7 @@ DNS-over-HTTPS with IP:
             $c['fingerprint'] = $fingerprint;
         } else {
             // bare call (no/invalid arg): cycle to the next fingerprint in the list
-            $current          = ($c['fingerprint'] ?? '') ?: 'chrome';
+            $current          = $this->fingerprint();
             $i                = array_search($current, $allowed, true);
             $c['fingerprint'] = $allowed[($i === false ? 0 : $i + 1) % count($allowed)];
         }
@@ -12263,9 +12313,24 @@ DNS-over-HTTPS with IP:
 
     public function fingerprintMenu()
     {
-        $current = $this->getPacConf()['fingerprint'] ?: 'chrome';
+        $pac     = $this->getPacConf();
+        $current = $this->fingerprint();
         $text[]  = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('fingerprint');
         $text[]  = $this->i18n('fingerprint') . ': <code>' . $current . '</code>';
+        // Один и тот же выбор доезжает до трёх разных ядер под разными
+        // именами — показываем, во что он превращается, иначе «почему в clash
+        // другой отпечаток» выясняется только чтением исходников.
+        $si = $this->normalizeFingerprint($current, 'singbox');
+        $cl = $this->normalizeFingerprint($current, 'mihomo');
+        if ($si !== $current || $cl !== $current) {
+            $text[] = 'sing-box: <code>' . $si . '</code> · mihomo: <code>' . $cl . '</code>';
+        }
+        // randomizednoalpn не шлёт ALPN — gRPC без h2 не поедет вовсе, а XHTTP
+        // откатится на http/1.1.
+        if ($this->fingerprintNoAlpn($current) && in_array($pac['transport'] ?? '', ['trojan-grpc', 'xhttp'], true)) {
+            $text[] = '⚠ ' . $this->i18n('fp noalpn warn');
+        }
+        $text[] = '<i>' . $this->i18n('fp hint') . '</i>';
 
         $data = [];
         $row  = [];
@@ -15331,7 +15396,7 @@ DNS-over-HTTPS with IP:
         $domain = $this->getDomain($pac['transport'] != 'Reality');
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
-        $fp     = $pac['fingerprint'] ?: 'chrome';
+        $fp     = $this->fingerprint();
         // Share-link #remark shown as the node name in the client, prefixed with
         // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
         // this with the relay's country for relay subscriptions.
@@ -17230,7 +17295,7 @@ DNS-over-HTTPS with IP:
         if (($p['transport'] ?? '') === 'xhttp') {
             $text[] = $this->i18n('xhttp singbox warn');
         }
-        $text[] = 'fingerprint: ' . ($p['fingerprint'] ?: 'chrome');
+        $text[] = 'fingerprint: ' . $this->fingerprint();
         $st = $this->getXrayStats();
         $td = $this->getBytes($st['global']['download'] + $st['session']['download']);
         $tu = $this->getBytes($st['global']['upload'] + $st['session']['upload']);
@@ -17285,7 +17350,7 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => $this->i18n('fingerprint') . ': ' . ucfirst($p['fingerprint'] ?: 'chrome'),
+                'text'          => $this->i18n('fingerprint') . ': ' . ucfirst($this->fingerprint()),
                 'callback_data' => "/fingerprintMenu",
             ],
             [
@@ -19103,12 +19168,12 @@ DNS-over-HTTPS with IP:
             $this->subNotFound('Subscription template has no matching outbound.');
         }
 
-        $fingerprint = $pac['fingerprint'] ?: 'chrome';
-        // randomizednoalpn and unsafe are Xray-only uTLS ids: sing-box errors on an
-        // unknown fingerprint and mihomo silently drops uTLS, so map them to a
-        // supported value for the sing-box (si) and clash (cl) configs.
-        if (in_array($_GET['t'], ['si', 'cl'], true)) {
-            $fingerprint = ['randomizednoalpn' => 'randomized', 'unsafe' => 'chrome'][$fingerprint] ?? $fingerprint;
+        // У каждого ядра свой набор допустимых имён — см. normalizeFingerprint().
+        $fingerprint = $this->fingerprint();
+        if ($_GET['t'] === 'si') {
+            $fingerprint = $this->normalizeFingerprint($fingerprint, 'singbox');
+        } elseif ($_GET['t'] === 'cl') {
+            $fingerprint = $this->normalizeFingerprint($fingerprint, 'mihomo');
         }
 
         switch ($_GET['t']) {
