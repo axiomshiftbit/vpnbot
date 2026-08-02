@@ -89,6 +89,10 @@ $i = [
         'en' => '⚠️ Your transport (%s) runs over TCP — UDP noise is NOT sent over it and masks nothing. For TCP enable TLS fragmentation instead. Noise only helps a UDP transport.',
         'ru' => '⚠️ Ваш транспорт (%s) работает по TCP — UDP-шум по нему НЕ отправляется и ничего не маскирует. Для TCP включите TLS-фрагментацию. noise полезен только для UDP-транспорта.',
     ],
+    'xhttp singbox warn'   => [
+        'en' => '⚠️ XHTTP is an Xray transport: stock sing-box has no such transport type and will reject the config. Use v2rayNG / v2rayN / mihomo, or a sing-box build with XHTTP support.',
+        'ru' => '⚠️ XHTTP — транспорт Xray: в обычном sing-box такого типа нет, конфиг он не примет. Используйте v2rayNG / v2rayN / mihomo либо сборку sing-box с поддержкой XHTTP.',
+    ],
     'sniffing'             => [
         'en' => 'Sniffing',
         'ru' => 'Сниффинг',

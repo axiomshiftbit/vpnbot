@@ -15189,6 +15189,14 @@ DNS-over-HTTPS with IP:
                                     . "#{$remark}";
                         break;
                     case 'xhttp':
+                        // extra берём из общего массива, а не из захардкоженного
+                        // блоба: раньше ссылка и json-конфиг (case 's') правились
+                        // порознь и незаметно расходились.
+                        // alpn — тот же список, что в tlsSettings json-конфига:
+                        // одно и то же ядро (xray) должно вести себя одинаково,
+                        // импортировали его ссылкой или файлом. h2+http/1.1 — это
+                        // ещё и то, что предлагает настоящий Chrome, т.е. совпадает
+                        // с заявленным fp; nginx всё равно выберет h2.
                         $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
                                     . "?security=tls"
                                     . "&type=xhttp"
@@ -15197,10 +15205,10 @@ DNS-over-HTTPS with IP:
                                     . "&host=$domain"
                                     . "&flow="
                                     . "&mode=packet-up"
-                                    . "&extra=%7B%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22maxConcurrency%22%3A%2216-32%22%2C%22maxConnections%22%3A0%2C%22hKeepAlivePeriod%22%3A0%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%7D%2C%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Afalse%2C%22xPaddingBytes%22%3A%22100-1000%22%2C%22scMaxEachPostBytes%22%3A1000000%2C%22scMinPostsIntervalMs%22%3A30%2C%22scStreamUpServerSecs%22%3A%2220-80%22%7D"
+                                    . "&extra=" . rawurlencode(json_encode($this->xhttpClientExtra(), JSON_UNESCAPED_SLASHES))
                                     . "&sni=$domain"
                                     . "&fp=$fp"
-                                    . "&alpn=h2"
+                                    . "&alpn=" . rawurlencode('h2,http/1.1')
                                     . "#{$remark}";
                         break;
                     case 'trojan-grpc':
@@ -17017,6 +17025,13 @@ DNS-over-HTTPS with IP:
         $xrayVersion = $this->getXrayVersion();
         $text[] = 'xray version: ' . ($xrayVersion !== '' ? "<code>$xrayVersion</code>" : '?');
         $text[] = 'transport: ' . ($p['transport'] ?: 'Websocket');
+        // XHTTP в апстримном sing-box отсутствует (он есть только в xray и
+        // mihomo), поэтому подписка t=si/hiddify/karing с этим транспортом
+        // импортируется лишь в сборках-форках с поддержкой xhttp. Говорим об
+        // этом сразу, а не оставляем пользователя с «unknown transport type».
+        if (($p['transport'] ?? '') === 'xhttp') {
+            $text[] = $this->i18n('xhttp singbox warn');
+        }
         $text[] = 'fingerprint: ' . ($p['fingerprint'] ?: 'chrome');
         $st = $this->getXrayStats();
         $td = $this->getBytes($st['global']['download'] + $st['session']['download']);
@@ -18531,6 +18546,43 @@ DNS-over-HTTPS with IP:
         return $rs;
     }
 
+    // Единый источник правды для клиентской части XHTTP (xray-core).
+    //
+    // Xray собирает xhttpSettings так (infra/conf/transport_method.go, Build()):
+    // если задан "extra", он парсится КАК ЦЕЛЫЙ SplitHTTPConfig и заменяет собой
+    // внешний объект — из внешнего переносятся только host/path/mode. Поэтому все
+    // остальные поля обязаны лежать внутри "extra", а не рядом с ним.
+    //
+    // Тот же самый набор уходит в vless://…&extra=<urlencoded json> — раньше в
+    // ссылке лежал захардкоженный процент-энкоженный блоб, и любая правка JSON-
+    // конфига молча расходилась со ссылкой. Теперь оба берут массив отсюда.
+    //
+    // Значения: xray-дефолты (scMaxEachPostBytes 1000000, scMinPostsIntervalMs 30,
+    // xPaddingBytes 100-1000) плюс xmux с maxConcurrency 16-32. maxConnections
+    // держим на 0: при обоих ненулевых Build() падает с "maxConnections cannot be
+    // specified together with maxConcurrency".
+    public function xhttpClientExtra(): array
+    {
+        return [
+            "xmux" => [
+                "cMaxReuseTimes"   => 0,
+                "maxConcurrency"   => "16-32",
+                "maxConnections"   => 0,
+                "hKeepAlivePeriod" => 0,
+                "hMaxRequestTimes" => "600-900",
+                "hMaxReusableSecs" => "1800-3000",
+            ],
+            "noGRPCHeader"         => false,
+            "xPaddingBytes"        => "100-1000",
+            "scMaxEachPostBytes"   => 1000000,
+            "scMinPostsIntervalMs" => 30,
+            // Серверная опция (периодический keep-alive в stream-up); на клиенте
+            // инертна, но оставлена — xray её принимает, а конфиг и ссылка должны
+            // совпадать байт-в-байт с тем, что уже роздано пользователям.
+            "scStreamUpServerSecs" => "20-80",
+        ];
+    }
+
     // Item 1: inject a freedom outbound carrying TLS fragment and/or UDP noise and
     // route the main proxy outbound through it via sockopt.dialerProxy (xray only).
     // No-op unless at least one is enabled, so default configs are unchanged.
@@ -18863,26 +18915,17 @@ DNS-over-HTTPS with IP:
                             "network"  => "xhttp",
                             "security" => "tls",
 
+                            // mode пинуем на packet-up, а не auto: при TLS+h2 auto
+                            // выбрал бы stream-up, а он за nginx требует grpc_pass
+                            // (см. XHTTP: Beyond REALITY). Локация /ws у нас на
+                            // proxy_pass и обслуживает ещё и websocket, поэтому
+                            // единственный совместимый режим — packet-up.
+                            // Сервер слушает mode=auto и принимает его.
                             "xhttpSettings" => [
-                                "host" => "~domain~",
-                                "mode" => "packet-up",
-                                "path" => "/ws$hash",
-
-                                "extra" => [
-                                    "scMaxEachPostBytes"    => 1000000,
-                                    "scMinPostsIntervalMs"  => 30,
-                                    "scStreamUpServerSecs"  => "20-80",
-                                    "xmux" => [
-                                        "cMaxReuseTimes"    => 0,
-                                        "hKeepAlivePeriod"  => 0,
-                                        "hMaxRequestTimes"  => "600-900",
-                                        "hMaxReusableSecs"  => "1800-3000",
-                                        "maxConcurrency"    => "16-32",
-                                        "maxConnections"    => 0,
-                                    ],
-                                    "xPaddingBytes" => "100-1000",
-                                    "noGRPCHeader"  => false
-                                ]
+                                "host"  => "~domain~",
+                                "mode"  => "packet-up",
+                                "path"  => "/ws$hash",
+                                "extra" => $this->xhttpClientExtra(),
                             ],
 
                             "tlsSettings" => [
@@ -18960,15 +19003,40 @@ DNS-over-HTTPS with IP:
                         unset($c['outbounds'][$index]['flow']);
                         unset($c['outbounds'][$index]['tls']['reality']);
 
+                        // ВАЖНО: XHTTP нет в апстримном sing-box — option/
+                        // v2ray_transport.go знает только http/ws/quic/grpc/
+                        // httpupgrade и на чужом type падает с "unknown transport
+                        // type". Транспорт есть только в сборках-форках
+                        // (sing-box-extended и производные), и снейк-кейс ниже —
+                        // именно их диалект. Пользователя предупреждаем в меню
+                        // xray ('xhttp singbox warn').
+                        //
+                        // x_padding_bytes обязателен: валидатор форка смотрит на
+                        // сырое поле, а не на нормализованное, и при отсутствии
+                        // ключа падает с "x_padding_bytes cannot be disabled" —
+                        // без него КАЖДЫЙ сгенерированный конфиг отвергался.
+                        // Остальные значения выровнены с xhttpClientExtra(),
+                        // чтобы один и тот же сервер вёл себя одинаково во всех
+                        // клиентах; c_max_reuse_times "0-1" ломал переиспользование
+                        // соединений почти на каждом втором (0 = без лимита).
+                        // max_connections держим на "0": при обоих ненулевых форк
+                        // отвечает "max_connections cannot be specified together
+                        // with max_concurrency".
                         $c['outbounds'][$index]["transport"] = [
                             "type" => "xhttp",
                             "host" => "~domain~",
                             "mode" => "packet-up",
                             "path" => "/ws$hash",
+                            // Диапазоны шлём строками, как уже работающие
+                            // max_concurrency/max_connections: у форка это
+                            // Range-тип, строковая форма разбирается заведомо.
+                            "x_padding_bytes"          => "100-1000",
+                            "sc_max_each_post_bytes"   => "1000000",
+                            "sc_min_posts_interval_ms" => "30",
                             "xmux" => [
                                 "max_concurrency"   => "16-32",
                                 "max_connections"   => "0",
-                                "c_max_reuse_times" => "0-1",
+                                "c_max_reuse_times" => "0",
                                 "h_max_request_times" => "600-900",
                                 "h_max_reusable_secs" => "1800-3000",
                                 "h_keep_alive_period" => 60
@@ -19048,18 +19116,27 @@ DNS-over-HTTPS with IP:
                         $c['proxies'][$index]['servername']         = '~domain~';
                         $c['proxies'][$index]['skip-cert-verify']   = false;
 
+                        // Имена ключей — kebab-диалект mihomo (adapter/outbound/
+                        // vless.go, XHTTPOptions/XHTTPReuseSettings); xmux там
+                        // называется reuse-settings.
+                        // Значения выровнены с xhttpClientExtra(): было
+                        // max-concurrency 8-16 и h-max-request-times 100-200,
+                        // т.е. вдвое меньше параллелизма и переоткрытие соединения
+                        // каждые 100-200 POST'ов (в packet-up один POST = один
+                        // запрос, это секунды). Дефолт xray — 600-900.
                         $c['proxies'][$index]['xhttp-opts'] = [
-                            'host'                   => '~domain~',
-                            'path'                   => "/ws$hash",
-                            'mode'                   => 'packet-up',
-                            'no-grpc-header'         => false,
-                            'x-padding-bytes'        => '100-1000',
-                            'sc-max-each-post-bytes' => 1000000,
-                            'reuse-settings'         => [
+                            'host'                     => '~domain~',
+                            'path'                     => "/ws$hash",
+                            'mode'                     => 'packet-up',
+                            'no-grpc-header'           => false,
+                            'x-padding-bytes'          => '100-1000',
+                            'sc-max-each-post-bytes'   => 1000000,
+                            'sc-min-posts-interval-ms' => 30,
+                            'reuse-settings'           => [
                                 'max-connections'   => '0',
-                                'max-concurrency'   => '8-16',
+                                'max-concurrency'   => '16-32',
                                 'c-max-reuse-times' => '0',
-                                'h-max-request-times' => '100-200',
+                                'h-max-request-times' => '600-900',
                                 'h-max-reusable-secs' => '1800-3000',
                             ],
                         ];
@@ -21016,13 +21093,26 @@ DNS-over-HTTPS with IP:
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);
                 }
+                // TLS терминирует nginx, поэтому у inbound'а нет ни security, ни
+                // tlsSettings — xray слушает голый H1/H2C на xr:443.
+                // mode=auto на сервере означает «принимаю любой режим», клиент
+                // выбирает сам (у нас — packet-up, см. xhttpClientExtra()).
+                // Всё, кроме host/path/mode, обязано лежать в extra: при заданном
+                // extra xray заменяет им внешний объект целиком.
+                //
+                // noSSEHeader НЕ ставим. true убирает у даунлинка заголовок
+                // Content-Type: text/event-stream — а он тут работает и как
+                // маскировка (поток выглядит обычным SSE), и как сигнал
+                // промежуточным прокси/CDN не буферизовать ответ. Буферизация у
+                // нас и так снята дважды: xray сам шлёт X-Accel-Buffering: no
+                // (hub.go), а в локации /ws стоит proxy_buffering off. Дефолт
+                // xray — false.
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"       => "xhttp",
                     "xhttpSettings" => [
                         "mode"  => "auto",
                         "path"  => "/ws$h",
                         "extra" => [
-                            "noSSEHeader"          => true,
                             "xPaddingBytes"        => "100-1000",
                             "scMaxBufferedPosts"   => 30,
                             "scMaxEachPostBytes"   => 1000000,
