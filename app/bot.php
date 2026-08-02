@@ -17892,24 +17892,21 @@ DNS-over-HTTPS with IP:
         // не выглядела пустой/сломанной.
         $trace  = trim((string) $this->ssh('wgcf trace', 'wp'));
         $text[] = "status: " . ($trace !== '' ? "<pre>$trace</pre>" : '<code>off</code>');
-        // Раньше сюда целиком печатались wgcf-account.toml и wgcf-profile.conf.
-        // В первом лежат private_key аккаунта и access_token (им управляют
-        // подпиской WARP+), во втором — PrivateKey интерфейса; всё это оседало
-        // в истории чата при КАЖДОМ открытии меню. Показываем только то, что
-        // не является секретом.
-        if ($prof) {
-            $text[] = 'endpoint: <code>' . htmlspecialchars($prof['server'] . ':' . $prof['port'], ENT_QUOTES) . '</code>';
-            $text[] = 'address: <code>' . htmlspecialchars($prof['ip'], ENT_QUOTES) . '</code>'
-                . ' · mtu: <code>' . (int) $prof['mtu'] . '</code>';
-            $text[] = 'peer key: <code>' . htmlspecialchars($prof['public-key'], ENT_QUOTES) . '</code>';
-        } else {
+        // Профиль и аккаунт печатаются ЦЕЛИКОМ — осознанное решение владельца:
+        // меню warp задумано как «всё под рукой», ключи оттуда копируют в
+        // сторонние клиенты. Держим в уме, что в wgcf-account.toml лежат
+        // private_key и access_token аккаунта, а в профиле — PrivateKey
+        // интерфейса, и всё это остаётся в истории чата.
+        // Чтение с @ и ?? — файлов может не быть на свежей установке, и без
+        // подавления меню падало бы в PHP-warning вместо показа статуса.
+        $a      = (string) @file_get_contents('/etc/warp/wgcf-account.toml');
+        $c      = (string) @file_get_contents('/etc/warp/wgcf-profile.conf');
+        $text[] = "key: <code>" . ($p['warp'] ?? '') . "</code>";
+        $text[] = "<pre>$a</pre>";
+        $text[] = "<pre>$c</pre>";
+        if (!$prof) {
             $text[] = '⚠ ' . $this->i18n('warp no profile');
         }
-        $key    = (string) ($p['warp'] ?? '');
-        $text[] = 'key: ' . ($key === ''
-            ? '<code>-</code> (free)'
-            : '<code>' . htmlspecialchars(substr($key, 0, 4) . '…' . substr($key, -4), ENT_QUOTES) . '</code>');
-        $text[] = '<i>' . $this->i18n('warp keys hint') . '</i>';
 
         $data[] = [
             [

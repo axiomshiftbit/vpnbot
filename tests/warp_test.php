@@ -82,16 +82,34 @@ warpAssert(
     'выключение делается тем же способом, что и включение (wg-quick)'
 );
 
-// ── 4. Секреты не утекают в чат ────────────────────────────────────────────
+// ── 4. Меню warp: профиль и аккаунт показываются целиком ───────────────────
+// Осознанное решение владельца: ключи из меню копируют в сторонние клиенты.
+// Тест фиксирует это как намеренное поведение, чтобы вывод не «оптимизировали»
+// обратно, и одновременно требует, чтобы чтение не падало на свежей установке.
 warpAssert(
-    strpos($botSrc, "file_get_contents('/etc/warp/wgcf-account.toml')") === false,
-    'меню не читает wgcf-account.toml (в нём private_key и access_token аккаунта)'
+    (bool) preg_match('~\$text\[\] = "<pre>\$a</pre>";~', $botSrc),
+    'wgcf-account.toml печатается в меню целиком'
 );
 warpAssert(
-    !preg_match('~\$text\[\] = "<pre>\$[ac]</pre>";~', $botSrc),
-    'профиль и аккаунт больше не печатаются в чат целиком'
+    (bool) preg_match('~\$text\[\] = "<pre>\$c</pre>";~', $botSrc),
+    'wgcf-profile.conf печатается в меню целиком'
 );
-warpAssert(strpos($startWp, 'chmod 600 "$WGCF_TOML"') !== false, 'аккаунт wgcf получает права 0600');
+warpAssert(
+    (bool) preg_match("~@file_get_contents\('/etc/warp/wgcf-account\.toml'\)~", $botSrc)
+        && (bool) preg_match("~@file_get_contents\('/etc/warp/wgcf-profile\.conf'\)~", $botSrc),
+    'файлы читаются с подавлением warning — на свежей установке их ещё нет'
+);
+warpAssert(
+    strpos($botSrc, '"key: <code>" . ($p[\'warp\'] ?? \'\')') !== false,
+    'лицензионный ключ показывается полностью, без Undefined-key при его отсутствии'
+);
+// Приложение бота работает от root (config/unit.json: "user": "root"),
+// поэтому 0600 на файлах warp не мешает меню их прочитать.
+warpAssert(
+    strpos(file_get_contents(__DIR__ . '/../config/unit.json'), '"user": "root"') !== false,
+    'unit запускает приложение от root — иначе профиль 0600 не прочитался бы'
+);
+warpAssert(strpos($startWp, 'chmod 600 "$WGCF_TOML"') !== false, 'аккаунт wgcf получает права 0600 на диске');
 
 // ── 5. Профиль: разбор и фиксапы ───────────────────────────────────────────
 warpAssert(strpos($fixup, "sed -i '/^DNS[[:space:]]*=/d'") !== false, 'DNS= вырезается (resolvconf ломает wg-quick в docker)');

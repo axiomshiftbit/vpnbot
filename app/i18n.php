@@ -949,10 +949,6 @@ $i = [
         'en' => 'wgcf profile is missing — restart the wp container',
         'ru' => 'профиль wgcf отсутствует — перезапустите контейнер wp',
     ],
-    'warp keys hint'  => [
-        'en' => 'private keys are not shown: they live in /etc/warp inside the wp container',
-        'ru' => 'приватные ключи не показываются: они лежат в /etc/warp контейнера wp',
-    ],
     'fp hint'  => [
         'en' => 'uTLS masks the TLS ClientHello (JA3/JA4). chrome is the safest default; random/randomized change the fingerprint per connection, which is itself unusual for a browser.',
         'ru' => 'uTLS маскирует TLS ClientHello (JA3/JA4). chrome — самый безопасный выбор; random/randomized меняют отпечаток на каждое соединение, что для браузера само по себе нетипично.',
