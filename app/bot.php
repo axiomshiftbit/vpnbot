@@ -5540,9 +5540,24 @@ NFT;
         });
     }
 
+    // Перечитать версию amneziawg-tools в обход часового кеша в pac.json.
+    // Нужна после пересборки wg-контейнера: до неё меню продолжало бы показывать
+    // старую версию и держать 3.0 заблокированным.
     public function awgVerRefresh($page = 0)
     {
-        $this->awgToolsVersion(true);
+        $v = $this->awgToolsVersion(true);
+        // Тост обязателен. awg3Menu() перерисовывает то же самое сообщение, а
+        // когда версия не изменилась (обычный случай), текст и клавиатура выходят
+        // байт-в-байт прежними — Telegram на такой editMessageText отвечает
+        // «message is not modified» и не меняет ничего. Без этой строки кнопка
+        // выглядела полностью мёртвой, хотя ssh-опрос выполнялся. Тот же приём,
+        // что в refreshMain().
+        if (!empty($this->input['callback_id'])) {
+            $this->answer(
+                $this->input['callback_id'],
+                '🔄 amneziawg-tools: ' . ($v ?? 'контейнер не отвечает'),
+            );
+        }
         $this->awg3Menu($page);
     }
 
