@@ -2479,6 +2479,11 @@ class Bot
         }
         $this->setEnvVar('CADDY_VERSION', $v);
         $this->setEnvVar('FORWARDPROXY_VERSION', "$v-naive");
+        // setEnvVar меняет только .env: без putenv getenv() до рестарта php
+        // отдавал бы старый пин, и меню показывало бы, что ничего не изменилось
+        // (тот же приём, что в setIpsecPort).
+        putenv("CADDY_VERSION=$v");
+        putenv("FORWARDPROXY_VERSION=$v-naive");
         $this->menu('naive');
     }
 
