@@ -1,4 +1,9 @@
 #!/bin/sh
+# РУЧНОЙ инструмент: пересоздать ключ инстанса и поднять wg0 заново
+# (`sh /reset_wg.sh <Address> <ListenPort>` внутри контейнера). Из бота НЕ
+# вызывается — restartWG() пишет конфиг и делает {wg|awg}-quick down/up сам.
+# Скрипт смонтирован в оба wg-контейнера и обязан оставаться
+# инстанс-нейтральным: тип стека определяется по живому wg0/$HOSTNAME (ниже).
 INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
 # route (net-tools) может отсутствовать — берём дефолтный интерфейс через ip.
 [ -z "$INTERFACE" ] && INTERFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')

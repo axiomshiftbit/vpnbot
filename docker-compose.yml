@@ -240,7 +240,11 @@ services:
             - ./scripts/reset_wg.sh:/reset_wg.sh
             - ./scripts/block_torrent.sh:/block_torrent.sh
             - ./scripts/block_exchange.sh:/block_exchange.sh
-            - ./ssh:/ssh
+            # Только ПУБЛИЧНЫЙ ключ (./ssh/pub кладёт start_php.sh). Полный /ssh
+            # содержит и приватный ключ, которым бот заходит root'ом во ВСЕ
+            # контейнеры, — а этот контейнер терминирует недоверенный клиентский
+            # трафик. start_wg.sh нужен только key.pub для authorized_keys.
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
         hostname: wireguard
         container_name: wireguard-${VER}
@@ -282,7 +286,8 @@ services:
             - ./scripts/reset_wg.sh:/reset_wg.sh
             - ./scripts/block_torrent.sh:/block_torrent.sh
             - ./scripts/block_exchange.sh:/block_exchange.sh
-            - ./ssh:/ssh
+            # Только публичный ключ — см. комментарий у сервиса wg.
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
         hostname: wireguard1
         container_name: wireguard1-${VER}

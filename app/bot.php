@@ -138,6 +138,9 @@ class Bot
             'GET /favicon.ico HTTP',
             preg_quote($this->getHashBot(1))
         ]) . '~';
+        // Значение — порт ВНУТРИ контейнера (setPort строит из него маппинг
+        // "внешний:внутренний"). Внешний фолбэк, когда секции сервиса нет в
+        // /docker/compose, задаётся отдельно — см. getPorts()/PORT_FALLBACK.
         $this->ports = [
             'hy'    => '443/udp',
             'wg'    => '51820/udp',
@@ -383,6 +386,17 @@ class Bot
         // указатель. Явные роуты с инстансом ниже перекрывают через selectWG.
         if (!empty($this->input['callback']) && ($mi = $this->getWgMsg()) !== null) {
             $this->wg = (int) $mi;
+        }
+        // Инстанс, вшитый в саму кнопку (cbWG, см. WG_CB_INST) — сильнее карты:
+        // он не зависит ни от её вытеснения, ни от того, чем перерисовали
+        // сообщение. Снимаем префикс здесь, чтобы роуты ниже разбирали команду
+        // в прежнем виде. selectWG (а не просто $this->wg) — как в роуте
+        // «/menu wg <inst>»: остальные кнопки того же меню, отрисованные до
+        // деплоя и потому без префикса, должны резолвиться в тот же инстанс.
+        if (!empty($this->input['callback'])
+            && preg_match('~^wg(?P<inst>[01]):(?P<cb>.+)$~s', $this->input['callback'], $mw)) {
+            $this->selectWG($mw['inst']);
+            $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
             // смена айпи сервера
@@ -1946,6 +1960,7 @@ class Bot
         $this->applySniffingToXray($c, $this->getPacConf());
         $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
+        $this->ensureWgGuard($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
             'services' => ['StatsService'],
@@ -1963,17 +1978,97 @@ class Bot
             "statsOutboundUplink"   => true,
             "statsOutboundDownlink" => true
         ];
+        // Кодируем ДО записи и до pkill: json_encode() возвращает FALSE на
+        // невалидном UTF-8 (имя/комментарий клиента из импорта, байты из
+        // ssh-вывода), а file_put_contents($f, false) пишет ПУСТОЙ файл и
+        // рапортует об успехе — то есть xray.json обнулялся, а следом мы гасили
+        // ядро, которое с пустым конфигом уже не поднималось. Лучше не
+        // перезапускать вовсе: старый конфиг на диске остаётся рабочим.
+        $json = json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (false === $json) {
+            error_log('restartXray: xray.json not written — ' . json_last_error_msg());
+
+            return;
+        }
         if (empty($norestart)) {
             $this->collectSession();
-            file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            file_put_contents('/config/xray.json', $json);
             $this->ssh('pkill xray', 'xr');
             // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
             // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
             // старта — не требует правки override.env и совпадает с datDir().
             $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json > /dev/null 2>&1 &', 'xr');
         } else {
-            file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            file_put_contents('/config/xray.json', $json);
         }
+    }
+
+    // Подсеть docker-compose сборки: в ней живут adguard (10.10.0.5), панель,
+    // sshd всех контейнеров и warp. Клиентские подсети wg/awg сюда НЕ входят
+    // (WGADDRESS/WG1ADDRESS по умолчанию 10.0.1.0/24 и 10.0.3.0/24).
+    public const DOCKER_NET = '10.10.0.0/16';
+    // Внутренний DNS, который бот сам прописывает клиентам кнопкой
+    // «set internal dns» — единственное, что клиенту в этой подсети нужно.
+    public const INTERNAL_DNS = '10.10.0.5/32';
+
+    // Клиенты wg/awg входят в xray через socks-inbound 'wg-in' (tun2socks в
+    // wg-контейнерах), а `ip rule from $ADDRESS table 100` в start_wg.sh уводит
+    // туда ВЕСЬ их трафик — включая назначения внутри docker-сети. Отдельного
+    // ограничения на этот inbound не было, а ensureFreedomCompat даже явно
+    // allow'ит 10.10.0.0/16 на freedom, так что клиент VPN мог открыть
+    // соединение к adguard, к sshd любого контейнера или к панели — и оно
+    // уходило с адреса xr-контейнера, то есть ИЗНУТРИ доверенной зоны.
+    // Тот же класс, что закрывали для WARP-SOCKS.
+    //
+    // Режем ровно docker-сеть (остальное приватное пространство уже закрыто
+    // finalRules у freedom) и оставляем одну дырку — внутренний DNS.
+    // Клиентские подсети и маршруты в LAN пользователя не затрагиваются.
+    //
+    // Правила ставим В НАЧАЛО: xray берёт первое совпавшее, и пользовательские
+    // block/warp-списки (xrayUpdateRules) не должны их обгонять. Матчим по
+    // явным CIDR, а не по 'geoip:private': последнее требует geoip.dat в
+    // XRAY_LOCATION_ASSET, и без файла ядро не стартует вовсе.
+    public function ensureWgGuard(array &$c): void
+    {
+        $allow = [
+            'type'        => 'field',
+            'inboundTag'  => ['wg-in'],
+            'ip'          => [self::INTERNAL_DNS],
+            'port'        => '53',
+            'outboundTag' => 'direct',
+        ];
+        $block = [
+            'type'        => 'field',
+            'inboundTag'  => ['wg-in'],
+            'ip'          => [self::DOCKER_NET],
+            'outboundTag' => 'block',
+        ];
+
+        // blackhole обязан существовать: правило с несуществующим тегом
+        // молча теряет смысл. Свои outbounds админа не трогаем.
+        $hasBlock = false;
+        foreach (($c['outbounds'] ?? []) as $o) {
+            if (($o['tag'] ?? '') === 'block') {
+                $hasBlock = true;
+                break;
+            }
+        }
+        if (!$hasBlock) {
+            $c['outbounds'][] = ['protocol' => 'blackhole', 'tag' => 'block'];
+        }
+
+        // Снимаем прежние копии этих же правил и кладём заново — так порядок
+        // (allow перед block) и содержимое остаются верными после
+        // xrayUpdateRules(), который переписывает routing.rules целиком.
+        $rules = [];
+        foreach (($c['routing']['rules'] ?? []) as $r) {
+            if ($r == $allow || $r == $block) {
+                continue;
+            }
+            $rules[] = $r;
+        }
+        array_unshift($rules, $allow, $block);
+        $c['routing']['rules'] = $rules;
     }
 
     // Дотягивает sockopt.trustedXForwardedFor на клиентский inbound, если его
@@ -2016,7 +2111,20 @@ class Bot
             $c['policy']['levels'] = $lv;
         }
         $this->ensureFreedomCompat($c);
-        file_put_contents('/config/xray.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        // По той же причине, что и ensureFreedomCompat: этот путь пишет
+        // xray.json из редактора, и гейт wg-in не должен теряться при ручной
+        // правке конфига.
+        $this->ensureWgGuard($c);
+        // Как и в restartXray(): FALSE от кодировщика превратился бы в пустой
+        // xray.json (file_put_contents($f, false) пишет '' и рапортует успех),
+        // то есть в потерю всех клиентов при следующем старте ядра.
+        $json = json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (false === $json) {
+            error_log('saveXray: xray.json not written — ' . json_last_error_msg());
+
+            return;
+        }
+        file_put_contents('/config/xray.json', $json);
     }
 
     // Xray >= v26.4.15 (PR #5947, «Direct/Freedom outbound: default safe policy»)
@@ -3970,7 +4078,8 @@ NFT;
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'renameClient',
-            'args'           => [$client, $page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$client, $page, $this->wgNum()],
         ]);
     }
 
@@ -3986,7 +4095,8 @@ NFT;
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'timerClient',
-            'args'           => [$client, $page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$client, $page, $this->wgNum()],
         ]);
     }
 
@@ -4034,36 +4144,40 @@ NFT;
         $this->backXtlsList($type);
     }
 
-    public function timerClient(string $time, int $client)
+    public function timerClient(string $time, int $client, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
         $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return $this->menu('wg', $page);
+        }
         if ($clients[$client]['# off']) {
             $this->switchClient($client);
             $clients = $this->readClients();
         }
         $server = $this->readConfig();
+        // Пир — по адресу (peerIndexByClient), а не перебором с прямым чтением
+        // 'AllowedIPs': у выключенного пира ключ закомментирован, и старый
+        // цикл сыпал «Undefined array key» на каждом таком соседе.
+        $i = $this->peerIndexByClient($server, $clients[$client]);
         switch (true) {
             case preg_match('~^0$~', $time):
                 unset($clients[$client]['interface']['## time']);
-                foreach ($server['peers'] as $k => $v) {
-                    if ($v['AllowedIPs'] == $clients[$client]['interface']['Address']) {
-                        unset($server['peers'][$k]['## time']);
-                    }
+                if ($i !== null) {
+                    unset($server['peers'][$i]['## time']);
                 }
                 break;
             default:
                 $date = date('Y-m-d H:i:s', strtotime($time));
                 $clients[$client]['interface']['## time'] = $date;
-                foreach ($server['peers'] as $k => $v) {
-                    if ($v['AllowedIPs'] == $clients[$client]['interface']['Address']) {
-                        $server['peers'][$k]['## time'] = $date;
-                    }
+                if ($i !== null) {
+                    $server['peers'][$i]['## time'] = $date;
                 }
                 break;
         }
         $this->saveClients($clients);
         $this->restartWG($this->createConfig($server));
-        $this->menu('client', implode('_', $_SESSION['reply'][$this->input['reply']]['args']));
+        $this->menu('client', "{$client}_$page");
     }
 
     public function cron()
@@ -4089,6 +4203,7 @@ NFT;
             'checkTrafficLimits',
             'trackOnline',
             'trackWgOnline',
+            'rotateAmneziaCron',
             'refreshExtSubCache',
             'checkDatUpdates',
             'backfillSubTokens',
@@ -4545,24 +4660,37 @@ NFT;
         return $x;
     }
 
-    public function renameClient(string $name, int $client)
+    public function renameClient(string $name, int $client, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
+        $name    = self::sanitizeConfValue($name);
         $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return $this->menu('wg', $page);
+        }
         $clients[$client]['interface']['## name'] = $name;
         $this->saveClients($clients);
         $server = $this->readConfig();
-        foreach ($server['peers'] as $k => $v) {
-            if ($v['AllowedIPs'] == $clients[$client]['interface']['Address']) {
-                $server['peers'][$k]['## name'] = $name;
-            }
+        // peerIndexByClient понимает и выключенного пира ('# AllowedIPs'):
+        // раньше переименование выключенного клиента меняло только
+        // clients.json, а в wg0.conf оставалось старое имя, и оно
+        // «возвращалось» при включении.
+        $i = $this->peerIndexByClient($server, $clients[$client]);
+        if ($i !== null) {
+            $off = !isset($server['peers'][$i]['AllowedIPs']);
+            $server['peers'][$i][$off ? '# ## name' : '## name'] = $name;
         }
         $this->restartWG($this->createConfig($server));
-        $this->menu('client', implode('_', $_SESSION['reply'][$this->input['reply']]['args']));
+        $this->menu('client', "{$client}_$page");
     }
 
     public function readClients(): array
     {
-        return json_decode(file_get_contents($this->getInstanceWG(1) ? $this->clients1 : $this->clients), true) ?: [];
+        // is_file — на свежей установке clients1.json может ещё не быть, а
+        // file_get_contents на отсутствующем файле сыпал warning в лог на
+        // каждый рендер меню.
+        $f = $this->getInstanceWG(1) ? $this->clients1 : $this->clients;
+        return is_file($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
     }
 
     public function export()
@@ -4873,6 +5001,17 @@ NFT;
     public function switchClient($client)
     {
         $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return;
+        }
+        // Пира ищем по адресу, а не по индексу: при рассинхроне clients.json и
+        // wg0.conf тумблер «по индексу» выключал СОСЕДНЕГО клиента (см.
+        // peerIndexByClient). Локальный флаг переключаем в любом случае —
+        // иначе истёкший клиент, пира которого на сервере уже нет, каждые 10
+        // секунд заново приезжал бы в shutdownClient и сыпал в лог.
+        $server = $this->readConfig();
+        $i      = $this->peerIndexByClient($server, $clients[$client]);
+
         if ($clients[$client]['# off']) {
             unset($clients[$client]['# off']);
         } else {
@@ -4881,19 +5020,25 @@ NFT;
         unset($clients[$client]['interface']['## time']);
         $this->saveClients($clients);
 
-        $server = $this->readConfig();
-        if (array_key_exists('# PublicKey', $server['peers'][$client])) {
-            foreach ($server['peers'][$client] as $k => $v) {
+        if ($i === null) {
+            error_log('switchClient: peer not found in ' . $this->getInstanceWG() . ' config for client #' . $client);
+
+            return;
+        }
+
+        $new = [];
+        if (array_key_exists('# PublicKey', $server['peers'][$i])) {
+            foreach ($server['peers'][$i] as $k => $v) {
                 $new[trim(preg_replace('~#~', '', $k, 1))] = $v;
             }
         } else {
-            foreach ($server['peers'][$client] as $k => $v) {
+            foreach ($server['peers'][$i] as $k => $v) {
                 $new["# $k"] = $v;
             }
         }
         unset($new['## time']);
         unset($new['# ## time']);
-        $server['peers'][$client] = $new;
+        $server['peers'][$i] = $new;
         $this->restartWG($this->createConfig($server));
     }
 
@@ -6239,6 +6384,26 @@ NFT;
         $this->rotateAmneziaJunk(true);
     }
 
+    // Шаг cron: maybeRotateAmnezia() исторически дёргался только из statusWg(),
+    // то есть ротация случалась ровно тогда, когда админ открывал меню этого
+    // инстанса. У второго инстанса меню могут не открывать месяцами — кнопка
+    // обещала «rotate: every Nd», а ключи не менялись вовсе. Обходим оба
+    // инстанса, как trackWgOnline; сам maybeRotateAmnezia уже проверяет период,
+    // включённость amnezia и доступность tools для набора 3.0.
+    public function rotateAmneziaCron(): void
+    {
+        $saved = $this->wg;
+        foreach ([0, 1] as $inst) {
+            try {
+                $this->wg = $inst;
+                $this->maybeRotateAmnezia();
+            } catch (\Throwable $e) {
+                error_log('rotateAmneziaCron[' . $inst . ']: ' . $e->getMessage());
+            }
+        }
+        $this->wg = $saved;
+    }
+
     public function setAmneziaRotation($page = 0)
     {
         $c = $this->getPacConf();
@@ -6330,7 +6495,7 @@ NFT;
         $data[] = [
             [
                 'text'          => ($this->wgRelay() === null ? '✅ ' : '') . $this->i18n('direct'),
-                'callback_data' => "/setWgRelay $page",
+                'callback_data' => $this->cbWG("/setWgRelay $page"),
             ],
         ];
         $health = $this->readRelayHealth(); // read once for the whole list
@@ -6342,7 +6507,7 @@ NFT;
             $data[] = [
                 [
                     'text'          => ($cur === $name ? '✅ ' : '') . "🔗 $name: {$r['awg_address']}" . ($hl !== '' ? "  $hl" : ''),
-                    'callback_data' => "/setWgRelay $page $name",
+                    'callback_data' => $this->cbWG("/setWgRelay $page $name"),
                 ],
             ];
         }
@@ -6812,7 +6977,8 @@ NFT;
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'createPeer',
-            'args'          => ['subnet'],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'          => ['subnet', $this->wgNum()],
         ]);
     }
 
@@ -6827,9 +6993,22 @@ NFT;
         // вебхук-воркеры пишут pac.json часто (после selectWG), а getPacConf
         // читает без лока — rename() атомарен, поэтому читатель всегда видит
         // либо старый, либо новый ЦЕЛЫЙ файл, но никогда порванный.
+        //
+        // json_encode() возвращает FALSE на невалидном UTF-8 (имя клиента из
+        // импорта, байты из ssh-вывода), а file_put_contents($f, false) пишет
+        // ПУСТОЙ файл и рапортует об успехе — то есть «атомарная» запись
+        // подменяла pac.json нулями и уносила с собой клиентов, ключи reality и
+        // все шаблоны. Проверяем результат кодировщика до записи.
         $data = json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (false === $data) {
+            error_log('setPacConf: pac.json not written — ' . json_last_error_msg());
+
+            return false;
+        }
         $tmp  = $this->pac . '.' . getmypid() . '.tmp';
         if (file_put_contents($tmp, $data, LOCK_EX) === false) {
+            @unlink($tmp);
+
             return false;
         }
         return rename($tmp, $this->pac);
@@ -8892,12 +9071,47 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // Индекс пира в серверном конфиге по клиентской записи. Порядки в wg0.conf и
+    // в clients.json совпадают, только пока обе стороны менялись вместе, а
+    // restartWG() умеет вернуть false (контейнер лёг) уже ПОСЛЕ записи
+    // clients.json — с этого момента индексы разъезжаются, и удаление или
+    // выключение «по индексу» попадало в соседнего пира. Сопоставляем по
+    // адресу: он уникален внутри подсети инстанса и присутствует у пира в любом
+    // состоянии — 'AllowedIPs' у включённого, '# AllowedIPs' у выключенного
+    // (switchClient комментирует все ключи).
+    public function peerIndexByClient(array $conf, array $client): ?int
+    {
+        $addr = $client['interface']['Address'] ?? null;
+        if (empty($addr)) {
+            return null;
+        }
+        foreach (($conf['peers'] ?? []) as $k => $v) {
+            $ips = $v['AllowedIPs'] ?? $v['# AllowedIPs'] ?? null;
+            if ($ips !== null && $ips === $addr) {
+                return (int) $k;
+            }
+        }
+        return null;
+    }
+
     public function deletePeer($client, $page, $menu = true)
     {
-        $conf = $this->readConfig();
+        $conf    = $this->readConfig();
+        $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return $menu ? $this->menu('wg', $page) : null;
+        }
+        // Пира ищем по адресу, а не по индексу: если совпадения нет, значит на
+        // сервере его уже нет — удаление «по индексу» в этом случае снесло бы
+        // ЧУЖОГО пира, то есть отключило бы постороннего клиента.
+        $i = $this->peerIndexByClient($conf, $clients[$client]);
         $this->deleteClient($client);
-        unset($conf['peers'][$client]);
-        $this->restartWG($this->createConfig($conf));
+        if ($i !== null) {
+            unset($conf['peers'][$i]);
+            $this->restartWG($this->createConfig($conf));
+        } else {
+            error_log('deletePeer: peer not found in ' . $this->getInstanceWG() . ' config for client #' . $client);
+        }
         if ($menu) {
             $this->menu('wg', $page);
         }
@@ -9105,37 +9319,37 @@ DNS-over-HTTPS with IP:
             [
                 [
                     'text'          => $this->i18n(!$bt ? 'on' : 'off') . " {$this->i18n('torrent')} ",
-                    'callback_data' => "/switchTorrent $page",
+                    'callback_data' => $this->cbWG("/switchTorrent $page"),
                 ],
                 [
                     'text'          => $this->i18n(!$ex ? 'on' : 'off') . " {$this->i18n('exchange')} ",
-                    'callback_data' => "/switchExchange $page",
+                    'callback_data' => $this->cbWG("/switchExchange $page"),
                 ],
                 [
                     'text'          =>  $this->i18n('listSubnet'),
-                    'callback_data' => "/subnet $page",
+                    'callback_data' => $this->cbWG("/subnet $page"),
                 ],
             ],
             [
                 [
                     'text'          =>  $this->i18n('defaultDNS') . ': ' . ($dns ?: $this->dns),
-                    'callback_data' => "/defaultDNS $page",
+                    'callback_data' => $this->cbWG("/defaultDNS $page"),
                 ],
                 [
                     'text'          =>  $this->i18n('defaultMTU') . ': ' . $mtu,
-                    'callback_data' => "/defaultMTU $page",
+                    'callback_data' => $this->cbWG("/defaultMTU $page"),
                 ],
             ],
             [
                 [
                     'text'          => $this->i18n('endpoint') . ': ' . ($end ? $this->ip : $this->getDomain()),
-                    'callback_data' => "/switchEndpoint $page",
+                    'callback_data' => $this->cbWG("/switchEndpoint $page"),
                 ],
             ],
             [
                 [
                     'text'          =>  $this->i18n('add peer'),
-                    'callback_data' => "/menu addpeer $page",
+                    'callback_data' => $this->cbWG("/menu addpeer $page"),
                 ],
             ],
         ];
@@ -9148,7 +9362,7 @@ DNS-over-HTTPS with IP:
             $data[] = [
                 [
                     'text'          => '🔗 ' . $this->i18n('relay') . ': ' . ($this->wgRelay() !== null ? $rlName : $this->i18n('direct')),
-                    'callback_data' => "/wgRelayMenu $page",
+                    'callback_data' => $this->cbWG("/wgRelayMenu $page"),
                 ],
             ];
         }
@@ -9310,7 +9524,8 @@ DNS-over-HTTPS with IP:
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setDNS',
-            'args'           => [$page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$page, $this->wgNum()],
         ]);
     }
 
@@ -9326,7 +9541,8 @@ DNS-over-HTTPS with IP:
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setMTU',
-            'args'           => [$page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$page, $this->wgNum()],
         ]);
     }
 
@@ -9342,12 +9558,15 @@ DNS-over-HTTPS with IP:
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'changeClientMTU',
-            'args'           => [$client, $page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$client, $page, $this->wgNum()],
         ]);
     }
 
-    public function setDNS($text, $page = 0)
+    public function setDNS($text, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
+        $text = self::sanitizeConfValue($text);
         $c = $this->getPacConf();
         if ($text) {
             $c[$this->getInstanceWG(1) . 'dns'] = $text;
@@ -9358,8 +9577,10 @@ DNS-over-HTTPS with IP:
         $this->menu('wg', $page);
     }
 
-    public function setMTU($text, $page = 0)
+    public function setMTU($text, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
+        $text = self::sanitizeConfValue($text);
         $c = $this->getPacConf();
         if ($text) {
             $c[$this->getInstanceWG(1) . 'mtu'] = $text;
@@ -9370,11 +9591,15 @@ DNS-over-HTTPS with IP:
         $this->menu('wg', $page);
     }
 
-    public function changeClientMTU($text, $client, $page = 0)
+    public function changeClientMTU($text, $client, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
         $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return $this->menu('wg', $page);
+        }
         if (!empty((int) $text)) {
-            $clients[$client]['interface']['MTU'] = $text;
+            $clients[$client]['interface']['MTU'] = (int) $text;
         } else {
             unset($clients[$client]['interface']['MTU']);
         }
@@ -9568,33 +9793,33 @@ DNS-over-HTTPS with IP:
         $data[]  = [
             [
                 'text'          =>  $this->i18n('all traffic'),
-                'callback_data' => "/changeIps all_{$k}_$page",
+                'callback_data' => $this->cbWG("/changeIps all_{$k}_$page"),
             ]
         ];
         $data[] = [
             [
                 'text'          =>  $this->i18n('subnet'),
-                'callback_data' => "/changeIps subnet_{$k}_$page",
+                'callback_data' => $this->cbWG("/changeIps subnet_{$k}_$page"),
             ]
         ];
         if ($this->getPacConf()['subnets']) {
             $data[] = [
                 [
                     'text'          =>  $this->i18n('listSubnet'),
-                    'callback_data' => "/changeIps list_{$k}_$page",
+                    'callback_data' => $this->cbWG("/changeIps list_{$k}_$page"),
                 ]
             ];
         }
         $data[] = [
             [
                 'text'          =>  $this->i18n('proxy ip'),
-                'callback_data' => "/changeIps proxy_{$k}_$page",
+                'callback_data' => $this->cbWG("/changeIps proxy_{$k}_$page"),
             ]
         ];
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
-                'callback_data' => "/menu client {$k}_$page",
+                'callback_data' => $this->cbWG("/menu client {$k}_$page"),
             ]
         ];
         $this->update(
@@ -9621,7 +9846,8 @@ DNS-over-HTTPS with IP:
                 $this->stashReply($r, [
                     'start_message' => $this->input['message_id'],
                     'callback'      => 'setIps',
-                    'args'          => [$k, $page],
+                    // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+                    'args'          => [$k, $page, $this->wgNum()],
                 ]);
                 break;
             case 'list':
@@ -9633,10 +9859,16 @@ DNS-over-HTTPS with IP:
         }
     }
 
-    public function setIps($ips, $k, $page = 0)
+    // $inst передаётся только с пути промпта (changeIps 'subnet'); прямые вызовы
+    // из changeIps идут в том же запросе и инстанс уже верный — там null.
+    public function setIps($ips, $k, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
         $clients = $this->readClients();
-        $clients[$k]['peers'][0]['AllowedIPs'] = $ips;
+        if (empty($clients[$k])) {
+            return $this->menu('wg', $page);
+        }
+        $clients[$k]['peers'][0]['AllowedIPs'] = self::sanitizeConfValue($ips);
         $this->saveClients($clients);
         $this->menu('client', "{$k}_$page");
     }
@@ -9706,6 +9938,14 @@ DNS-over-HTTPS with IP:
         return $result;
     }
 
+    // ── НЕИСПОЛЬЗУЕМАЯ ВЕТКА (awg_for_vless) ────────────────────────────
+    // normalizeAwgForVless/setAsVlessTransport/getAwgVless сейчас никем не
+    // вызываются: кнопки «/setAsVlessTransport» нет ни в одном рендере (роут в
+    // action() остался), а getAwgVless() не читает никто — mihomo-подписка
+    // собирает awg-прокси через getAwgClient() по приватному ключу пира.
+    // Код оставлен рабочим и инстанс-корректным на случай возврата кнопки;
+    // если она не нужна — удалять надо все три метода вместе с роутом.
+    //
     // 'awg_for_vless' хранится как '<префикс инстанса>:<индекс клиента>'
     // (':N' / 'wg1_:N'). Старые бэкапы могли записать имя сервиса ('wg:N' /
     // 'wg1:N') — приводим к текущему формату, иначе toggle не снимает
@@ -9805,43 +10045,43 @@ DNS-over-HTTPS with IP:
                     [
                         [
                             'text'          =>  $this->i18n('rename'),
-                            'callback_data' => "/rename {$client}_$page",
+                            'callback_data' => $this->cbWG("/rename {$client}_$page"),
                         ],
                         [
                             'text'          =>  $this->i18n('timer'),
-                            'callback_data' => "/timer {$client}_$page",
+                            'callback_data' => $this->cbWG("/timer {$client}_$page"),
                         ],
                     ],
                     [
                         [
                             'text'          => $this->i18n('show QR'),
-                            'callback_data' => "/qr $client",
+                            'callback_data' => $this->cbWG("/qr $client"),
                         ],
                         [
                             'text'          => $this->i18n('download config'),
-                            'callback_data' => "/download $client",
+                            'callback_data' => $this->cbWG("/download $client"),
                         ],
                     ],
                     [
                         [
                             'text'          => $this->i18n($clients[$client]['# off'] ? 'off' : 'on'),
-                            'callback_data' => "/switchClient {$client}_$page",
+                            'callback_data' => $this->cbWG("/switchClient {$client}_$page"),
                         ],
                         [
                             'text'          => $this->i18n($clients[$client]['interface']['DNS'] ? 'delete internal dns' : 'set internal dns'),
-                            'callback_data' => "/" . ($clients[$client]['interface']['DNS'] ? 'delete' : '') . "dns {$client}_$page",
+                            'callback_data' => $this->cbWG("/" . ($clients[$client]['interface']['DNS'] ? 'delete' : '') . "dns {$client}_$page"),
                         ],
                     ],
                     [
                         [
                             'text'          => $this->i18n('AllowedIPs'),
-                            'callback_data' => "/changeAllowedIps {$client}_$page",
+                            'callback_data' => $this->cbWG("/changeAllowedIps {$client}_$page"),
                         ],
                     ],
                     [
                         [
                             'text'          => $this->i18n('MTU') . " " . ($clients[$client]['interface']['MTU'] ?: $this->getPacConf()[$this->getInstanceWG(1) . 'mtu'] ?: $this->mtu),
-                            'callback_data' => "/changeMTU {$client}_$page",
+                            'callback_data' => $this->cbWG("/changeMTU {$client}_$page"),
                         ],
                     ],
                     [
@@ -9853,7 +10093,7 @@ DNS-over-HTTPS with IP:
                     [
                         [
                             'text'          => $this->i18n('delete'),
-                            'callback_data' => "/delete {$client}_$page",
+                            'callback_data' => $this->cbWG("/delete {$client}_$page"),
                         ],
                         [
                             'text'          => $this->i18n('back'),
@@ -9908,7 +10148,7 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          => $this->i18n('delete'),
-                'callback_data' => "/unsetVlessLink {$i}_$page_wg",
+                'callback_data' => $this->cbWG("/unsetVlessLink {$i}_$page_wg"),
             ],
         ];
 
@@ -9923,7 +10163,7 @@ DNS-over-HTTPS with IP:
             $data[]   = [
                 [
                     'text'          => "{$v['email']}",
-                    'callback_data' => "/setVlessLink {$k}_{$i}_$page_wg",
+                    'callback_data' => $this->cbWG("/setVlessLink {$k}_{$i}_$page_wg"),
                 ],
             ];
         }
@@ -9931,15 +10171,15 @@ DNS-over-HTTPS with IP:
             $data[] = [
                 [
                     'text'          => '<<',
-                    'callback_data' => "/choiceVless {$i}_{$page_wg}_" . ($page_vl - 1 >= 0 ? $page_vl - 1 : $all - 1),
+                    'callback_data' => $this->cbWG("/choiceVless {$i}_{$page_wg}_" . ($page_vl - 1 >= 0 ? $page_vl - 1 : $all - 1)),
                 ],
                 [
                     'text'          => $page_vl + 1,
-                    'callback_data' => "/choiceVless {$i}_{$page_wg}_$page_vl",
+                    'callback_data' => $this->cbWG("/choiceVless {$i}_{$page_wg}_$page_vl"),
                 ],
                 [
                     'text'          => '>>',
-                    'callback_data' => "/choiceVless {$i}_{$page_wg}_" . ($page_vl < $all - 1 ? $page_vl + 1 : 0),
+                    'callback_data' => $this->cbWG("/choiceVless {$i}_{$page_wg}_" . ($page_vl < $all - 1 ? $page_vl + 1 : 0)),
                 ],
             ];
         }
@@ -9979,11 +10219,11 @@ DNS-over-HTTPS with IP:
                 $data[] = [
                     [
                         'text'          => $this->getName($v['interface']),
-                        'callback_data' => "/menu client {$k}_$page",
+                        'callback_data' => $this->cbWG("/menu client {$k}_$page"),
                     ],
                     [
                         'text'          => $this->i18n('vless') . ': ' . $this->i18n($vless != false ? 'on' : 'off') . ($vless != false ? " $vless" : ''),
-                        'callback_data' => "/choiceVless {$k}_{$page}_0",
+                        'callback_data' => $this->cbWG("/choiceVless {$k}_{$page}_0"),
                     ],
                 ];
             }
@@ -10863,6 +11103,46 @@ DNS-over-HTTPS with IP:
         return $this->getInstanceWG(1) ? 1 : 0;
     }
 
+    // ── WG_CB_INST ──────────────────────────────────────────────────────
+    // callback_data кнопки wg-меню с вшитым инстансом: префикс «wgN:» перед
+    // самой командой. action() снимает префикс и пере-пинивает инстанс ДО
+    // разбора команды, поэтому все существующие роуты остаются как есть, а
+    // сообщения, отрисованные до этой правки, продолжают работать по-старому
+    // (карта wg_msg → глобальный wg_instance).
+    //
+    // Зачем: карта «сообщение → инстанс» — LRU и эфемерна, а сообщения в
+    // Telegram кликабельны вечно. Вытесненная запись превращала «удалить» на
+    // старом меню wg1 в удаление ЧУЖОГО пира (deletePeer необратим). Кнопки с
+    // явным инстансом от состояния карты не зависят вовсе.
+    //
+    // Не оборачивать команды, которые уже несут инстанс аргументом
+    // (/menu wg N …, /awg3 N …, /wgLog N, /wgClientLog N …) — двойного
+    // указания не нужно.
+    public function cbWG(string $cb): string
+    {
+        return 'wg' . $this->wgNum() . ':' . $cb;
+    }
+
+    // ── WG_PROMPT_INST ──────────────────────────────────────────────────
+    // Инстанс, переданный ПОСЛЕДНИМ аргументом stash'а промпта (rename,
+    // defaultDNS, defaultMTU, changeMTU, changeIps). Ответ на промпт приходит
+    // ОТДЕЛЬНЫМ запросом, а reply() резолвит инстанс по карте wg_msg для
+    // сообщения-меню — но то же сообщение за это время могло быть перерисовано
+    // другим инстансом (кнопка «wg 1» рисует в него же), и ответ уезжал не
+    // туда: DNS/MTU ложились в чужой префикс pac.json, переименование и
+    // AllowedIPs — в чужой clients.json.
+    //
+    // null — стэш, созданный до этой правки (в $_SESSION их переживает
+    // перезапуск): молча оставляем прежнее поведение (карта → wg_instance).
+    // Инстанс идёт последним именно ради этого: у легаси-стэша аргумент просто
+    // отсутствует, и различать его от валидной страницы не приходится.
+    public function promptInstWG($inst): void
+    {
+        if ($inst !== null) {
+            $this->selectWG($inst);
+        }
+    }
+
     // ── Карта «сообщение → инстанс» ─────────────────────────────────────
     // wg_instance в pac.json глобален, а кнопки wg-меню (delete, client,
     // addpeer, torrent, DNS…) не несут инстанс в callback_data. Поэтому
@@ -10887,11 +11167,18 @@ DNS-over-HTTPS with IP:
         return $m["{$this->input['chat']}:{$this->input['message_id']}"] ?? null;
     }
 
+    // Сколько сообщений держим в карте. Кап общий на ВСЕ чаты, поэтому при
+    // нескольких админах прежние 100 вытеснялись за пару дней активной работы,
+    // а вытесненная запись — это молчаливый фолбэк на глобальный wg_instance
+    // (кнопка старого меню уходит в чужой инстанс). Файл крошечный: 1000
+    // записей — это ~30 КБ.
+    public const WG_MSG_MAX = 1000;
+
     // $inst 0/1 — записать; null — удалить (сообщение больше не wg-меню).
-    // Read-modify-write без общей блокировки на чтении (LOCK_EX только на
-    // записи): параллельные воркеры могут потерять запись. Осознанно — карта
-    // эфемерная и LRU, потеря деградирует до фолбэка на глобальный
-    // wg_instance, ради этого не тащим сюда файловый лок.
+    // Read-modify-write без общей блокировки на чтении: параллельные воркеры
+    // могут потерять запись. Осознанно — карта эфемерная и LRU, потеря
+    // деградирует до фолбэка на глобальный wg_instance, ради этого не тащим
+    // сюда файловый лок.
     public function setWgMsg($inst)
     {
         if (empty($this->input['chat']) || empty($this->input['message_id'])) {
@@ -10909,13 +11196,25 @@ DNS-over-HTTPS with IP:
             if (($m[$k] ?? null) === (int) $inst) {
                 return;
             }
-            // Пере-вставка в конец + отсечка: карта живёт как LRU на ~100
-            // сообщений, старые записи вытесняются, файл не растёт.
+            // Пере-вставка в конец + отсечка: карта живёт как LRU,
+            // старые записи вытесняются, файл не растёт.
             unset($m[$k]);
             $m[$k] = (int) $inst;
-            $m = array_slice($m, -100, null, true);
+            $m = array_slice($m, -self::WG_MSG_MAX, null, true);
         }
-        file_put_contents($f, json_encode($m), LOCK_EX);
+        // tmp + rename, как в setWgConnLog(): LOCK_EX защищал только от
+        // одновременной ЗАПИСИ, а getWgMsg() читает без LOCK_SH — на
+        // truncate+write он ловил файл в момент усечения, json_decode падал в
+        // null, `?: []` отдавал пустую карту и инстанс молча брался из
+        // глобального wg_instance. rename() атомарен: читатель видит либо
+        // старую, либо новую карту целиком.
+        $tmp  = $f . '.' . getmypid() . '.tmp';
+        $json = json_encode($m);
+        if (false === $json || file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+            return;
+        }
+        rename($tmp, $f);
     }
 
     public function changeWG($i)
@@ -11837,6 +12136,17 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Внешний порт сервиса, когда его секции нет в /docker/compose (маппинг снят
+    // через меню портов). По умолчанию берётся порт внутри контейнера, но у wg1
+    // он совпадает с wg — а этот фолбэк уезжает клиентам в Endpoint
+    // (saveClients/createConfig/getAmneziaShortLink читают
+    // ports[getInstanceWG()]['port']), и владельцы пиров ПЕРВОГО инстанса
+    // получали конфиг, указывающий на НУЛЕВОЙ. 51821 — как в
+    // docker-compose.override.yml.
+    public const PORT_FALLBACK = [
+        'wg1' => '51821',
+    ];
+
     public function getPorts()
     {
         $f = '/docker/compose';
@@ -11844,7 +12154,9 @@ DNS-over-HTTPS with IP:
         $r = [];
         foreach ($this->ports as $k => $v) {
             $r[$k] = [
-                'port'   => !empty($c['services'][$k]['ports']) ? explode(':', $c['services'][$k]['ports'][0])[0] : explode('/', $v)[0],
+                'port'   => !empty($c['services'][$k]['ports'])
+                    ? explode(':', $c['services'][$k]['ports'][0])[0]
+                    : (self::PORT_FALLBACK[$k] ?? explode('/', $v)[0]),
                 'enable' => !empty($c['services'][$k]['ports']),
             ];
         }
@@ -20497,20 +20809,20 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          =>  $this->i18n('all traffic'),
-                'callback_data' => "/add",
+                'callback_data' => $this->cbWG("/add"),
             ]
         ];
         $data[] = [
             [
                 'text'          =>  $this->i18n('subnet'),
-                'callback_data' => "/add_ips",
+                'callback_data' => $this->cbWG("/add_ips"),
             ]
         ];
         if ($this->getPacConf()['subnets']) {
             $data[] = [
                 [
                     'text'          =>  $this->i18n('listSubnet'),
-                    'callback_data' => "/addSubnets $page",
+                    'callback_data' => $this->cbWG("/addSubnets $page"),
                 ]
             ];
         }
@@ -21806,6 +22118,18 @@ DNS-over-HTTPS with IP:
         return (is_array($r) && !empty($r['awg_address'])) ? $r : null;
     }
 
+    // Значение, которое уедет строкой «ключ = значение» в wg0.conf (имя пира,
+    // DNS, MTU, AllowedIPs). Всё это — сырой ввод из Telegram, а createConfig()
+    // просто склеивает строки: перевод строки в имени пира дописывал в
+    // СЕРВЕРНЫЙ конфиг произвольные директивы (вплоть до лишнего [Peer]).
+    // base64 в restartWG() спасал только от кавычек в shell-команде, не от
+    // структуры самого конфига. Схлопываем переводы строк и режем длину.
+    public static function sanitizeConfValue($v, int $max = 256): string
+    {
+        $v = preg_replace('~[\r\n]+~', ' ', (string) $v);
+        return mb_substr(trim($v), 0, $max);
+    }
+
     public function createConfig($data)
     {
         $pac = $this->getPacConf();
@@ -22134,8 +22458,9 @@ DNS-over-HTTPS with IP:
         }
     }
 
-    public function createPeer($ips_user = false, $name = false)
+    public function createPeer($ips_user = false, $name = false, $inst = null)
     {
+        $this->promptInstWG($inst);
         $conf      = $this->readConfig();
         // readConfig() возвращает null, если контейнер недоступен: без проверки
         // дальше шли обращения к null и создавался пир с битым адресом.
@@ -22185,7 +22510,7 @@ DNS-over-HTTPS with IP:
             return;
         }
 
-        $name = ($name ? "$name" : '') . time();
+        $name = self::sanitizeConfValue(($name ? "$name" : '') . time());
 
         // Один раз на инстанс: три ветки ниже читали ключ порознь и без ??,
         // что на свежей установке (pac.json = {}) давало «Undefined array key».
@@ -22256,7 +22581,26 @@ DNS-over-HTTPS with IP:
         foreach ($clients as $k => $v) {
             $clients[$k]['peers'][0]['Endpoint'] = $domain;
         }
-        file_put_contents($this->getInstanceWG(1) ? $this->clients1 : $this->clients, json_encode($clients, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $f = $this->getInstanceWG(1) ? $this->clients1 : $this->clients;
+        // json_encode() отдаёт FALSE на невалидном UTF-8 (имя пира — сырой ввод
+        // из Telegram, имена из чужого бэкапа), а file_put_contents($f, false)
+        // пишет ПУСТОЙ файл и рапортует об успехе — то есть база пиров инстанса
+        // молча обнулялась. Плюс сама запись шла truncate+write, и параллельный
+        // readClients() мог прочитать обрезанный файл. Кодируем заранее, пишем
+        // во временный и переименовываем (rename атомарен).
+        $json = json_encode($clients, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (false === $json) {
+            error_log('saveClients: ' . basename($f) . ' not written — ' . json_last_error_msg());
+
+            return false;
+        }
+        $tmp = $f . '.' . getmypid() . '.tmp';
+        if (file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+
+            return false;
+        }
+        return rename($tmp, $f);
     }
 
     public function getWGType($revert = 0)
