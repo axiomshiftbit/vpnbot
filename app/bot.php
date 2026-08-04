@@ -2011,14 +2011,29 @@ class Bot
     // «set internal dns» — единственное, что клиенту в этой подсети нужно.
     public const INTERNAL_DNS = '10.10.0.5/32';
 
+    // Внутренние socks-inbound'ы без авторизации, слушающие в docker-сети.
+    // 'wg-in' (10808) создаёт restartXray() — в него tun2socks отдаёт трафик
+    // wg/awg-клиентов. 'socks-in' (10085) в этом репозитории и в upstream не
+    // создаётся вовсе, но лежит в рантайме на боевых хостах (добавлен когда-то
+    // вручную и переживает все рестарты: restartXray() чужие inbound'ы не
+    // трогает). Потребителей у него нет — ноль записей в логе ядра за двое
+    // суток, ноль упоминаний в pac.json и в конфигах контейнеров.
+    //
+    // Гейт ниже вешаем на оба: пока inbound существует, он одинаково пригоден
+    // для бокового движения по сети.
+    public const INTERNAL_SOCKS_TAGS = ['wg-in', 'socks-in'];
+
     // Клиенты wg/awg входят в xray через socks-inbound 'wg-in' (tun2socks в
     // wg-контейнерах), а `ip rule from $ADDRESS table 100` в start_wg.sh уводит
     // туда ВЕСЬ их трафик — включая назначения внутри docker-сети. Отдельного
     // ограничения на этот inbound не было, а ensureFreedomCompat даже явно
     // allow'ит 10.10.0.0/16 на freedom, так что клиент VPN мог открыть
     // соединение к adguard, к sshd любого контейнера или к панели — и оно
-    // уходило с адреса xr-контейнера, то есть ИЗНУТРИ доверенной зоны.
-    // Тот же класс, что закрывали для WARP-SOCKS.
+    // уходило с адреса xr-контейнера, то есть ИЗНУТРИ доверенной зоны (проверено
+    // на рабочем сервере: через xr:10808 снимался ssh-баннер service-контейнера, где лежит
+    // приватный ключ, и открывалась панель, до которой сам wg-контейнер
+    // напрямую не доходит — её закрывает nft). Тот же класс, что закрывали для
+    // WARP-SOCKS.
     //
     // Режем ровно docker-сеть (остальное приватное пространство уже закрыто
     // finalRules у freedom) и оставляем одну дырку — внутренний DNS.
@@ -2030,19 +2045,37 @@ class Bot
     // XRAY_LOCATION_ASSET, и без файла ядро не стартует вовсе.
     public function ensureWgGuard(array &$c): void
     {
-        $allow = [
-            'type'        => 'field',
-            'inboundTag'  => ['wg-in'],
-            'ip'          => [self::INTERNAL_DNS],
-            'port'        => '53',
-            'outboundTag' => 'direct',
-        ];
-        $block = [
-            'type'        => 'field',
-            'inboundTag'  => ['wg-in'],
-            'ip'          => [self::DOCKER_NET],
-            'outboundTag' => 'block',
-        ];
+        // Теги берём из фактических inbound'ов, а не списком константы: правило
+        // на несуществующий тег — мёртвый груз в конфиге, а набор inbound'ов на
+        // разных хостах разный.
+        $tags = [];
+        foreach (($c['inbounds'] ?? []) as $i) {
+            $t = $i['tag'] ?? '';
+            if (in_array($t, self::INTERNAL_SOCKS_TAGS, true) && !in_array($t, $tags, true)) {
+                $tags[] = $t;
+            }
+        }
+
+        // Снимаем прежние копии гейта — их inboundTag мог быть у́же (например
+        // до появления socks-in на хосте), поэтому опознаём по сигнатуре, а не
+        // сравнением с готовым правилом, иначе после смены набора тегов старые
+        // остались бы дублями.
+        $rules = [];
+        foreach (($c['routing']['rules'] ?? []) as $r) {
+            $in = (array) ($r['inboundTag'] ?? []);
+            $ip = (array) ($r['ip'] ?? []);
+            $isGuard = $in !== []
+                && empty(array_diff($in, self::INTERNAL_SOCKS_TAGS))
+                && ($ip === [self::DOCKER_NET] || $ip === [self::INTERNAL_DNS]);
+            if (!$isGuard) {
+                $rules[] = $r;
+            }
+        }
+
+        if (empty($tags)) {
+            $c['routing']['rules'] = $rules;
+            return;
+        }
 
         // blackhole обязан существовать: правило с несуществующим тегом
         // молча теряет смысл. Свои outbounds админа не трогаем.
@@ -2057,17 +2090,24 @@ class Bot
             $c['outbounds'][] = ['protocol' => 'blackhole', 'tag' => 'block'];
         }
 
-        // Снимаем прежние копии этих же правил и кладём заново — так порядок
-        // (allow перед block) и содержимое остаются верными после
-        // xrayUpdateRules(), который переписывает routing.rules целиком.
-        $rules = [];
-        foreach (($c['routing']['rules'] ?? []) as $r) {
-            if ($r == $allow || $r == $block) {
-                continue;
-            }
-            $rules[] = $r;
-        }
-        array_unshift($rules, $allow, $block);
+        // Порядок: allow внутреннего DNS обязан стоять перед блоком подсети —
+        // xray берёт первое совпавшее правило.
+        array_unshift(
+            $rules,
+            [
+                'type'        => 'field',
+                'inboundTag'  => $tags,
+                'ip'          => [self::INTERNAL_DNS],
+                'port'        => '53',
+                'outboundTag' => 'direct',
+            ],
+            [
+                'type'        => 'field',
+                'inboundTag'  => $tags,
+                'ip'          => [self::DOCKER_NET],
+                'outboundTag' => 'block',
+            ]
+        );
         $c['routing']['rules'] = $rules;
     }
 

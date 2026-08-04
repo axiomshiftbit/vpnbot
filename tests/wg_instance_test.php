@@ -165,15 +165,18 @@ wgAssert((Bot::PORT_FALLBACK['wg'] ?? '51820') !== (Bot::PORT_FALLBACK['wg1'] ??
     'фолбэки портов wg и wg1 не совпадают');
 
 // ── 7. ensureWgGuard ────────────────────────────────────────────────────────
-$x = [
+$mk = fn(array $tags) => [
+    'inbounds'  => array_map(fn($t) => ['tag' => $t, 'protocol' => 'socks'], $tags),
     'outbounds' => [['protocol' => 'freedom', 'tag' => 'direct']],
     'routing'   => ['rules' => [
         ['type' => 'field', 'outboundTag' => 'block', 'domain' => ['example.com']],
     ]],
 ];
+
+$x = $mk(['wg-in']);
 $bot->ensureWgGuard($x);
-$tags = array_column($x['outbounds'], 'tag');
-wgAssert(in_array('block', $tags, true), 'blackhole-outbound добавлен, если его не было');
+wgAssert(in_array('block', array_column($x['outbounds'], 'tag'), true),
+    'blackhole-outbound добавлен, если его не было');
 $r = $x['routing']['rules'];
 wgAssert(count($r) === 3, 'к существующим правилам добавлены ровно два');
 wgAssert(($r[0]['outboundTag'] ?? '') === 'direct' && ($r[0]['port'] ?? '') === '53'
@@ -198,6 +201,31 @@ $x['routing']['rules'] = [['type' => 'field', 'outboundTag' => 'warp', 'ip' => [
 $bot->ensureWgGuard($x);
 wgAssert(($x['routing']['rules'][0]['inboundTag'] ?? null) === ['wg-in'],
     'после перезаписи правил гейт снова впереди пользовательских');
+
+// На боевых хостах рядом лежит второй внутренний socks без авторизации
+// ('socks-in', 10085) — он не создаётся ни этим репозиторием, ни upstream, но
+// переживает рестарты и одинаково годится для бокового движения по сети.
+$y = $mk(['wg-in', 'socks-in']);
+$bot->ensureWgGuard($y);
+wgAssert($y['routing']['rules'][0]['inboundTag'] === ['wg-in', 'socks-in']
+    && $y['routing']['rules'][1]['inboundTag'] === ['wg-in', 'socks-in'],
+    'гейт покрывает оба внутренних socks-inbound');
+
+// Появление socks-in на хосте не должно оставить старую (у́же) копию гейта.
+$bot->ensureWgGuard($x);
+$x['inbounds'][] = ['tag' => 'socks-in', 'protocol' => 'socks'];
+$bot->ensureWgGuard($x);
+$guards = array_filter($x['routing']['rules'], fn($r) => !empty($r['inboundTag']));
+wgAssert(count($guards) === 2, 'после расширения набора тегов старые правила сняты, а не продублированы');
+wgAssert($x['routing']['rules'][0]['inboundTag'] === ['wg-in', 'socks-in'],
+    'гейт перевыставлен на актуальный набор тегов');
+
+// Хост без внутренних socks — правил быть не должно (мёртвый груз в конфиге).
+$z = $mk([]);
+$bot->ensureWgGuard($z);
+wgAssert(count($z['routing']['rules']) === 1
+    && empty($z['routing']['rules'][0]['inboundTag']),
+    'без внутренних socks-inbound гейт не добавляется');
 
 // Клиентские подсети wg/awg (по умолчанию 10.0.1.0/24 и 10.0.3.0/24) не входят
 // в блокируемый диапазон — иначе поломали бы сам туннель.
