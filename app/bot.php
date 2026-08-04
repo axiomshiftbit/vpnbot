@@ -10824,7 +10824,8 @@ DNS-over-HTTPS with IP:
     {
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> block list';
 
-        [$data] = $this->listPac('blocklist', $page, 'xtlsblock');
+        [$data, $tmp] = $this->listPac('blocklist', $page, 'xtlsblock');
+        $text = array_merge($text, $tmp ?: []);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -10843,7 +10844,8 @@ DNS-over-HTTPS with IP:
     {
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> warp list';
 
-        [$data] = $this->listPac('warplist', $page, 'xtlswarp');
+        [$data, $tmp] = $this->listPac('warplist', $page, 'xtlswarp');
+        $text = array_merge($text, $tmp ?: []);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -10868,7 +10870,8 @@ DNS-over-HTTPS with IP:
         });
         $p = $this->getPacConf();
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> proxy list';
-        [$data] = $this->listPac('includelist', $page, 'xtlsproxy');
+        [$data, $tmp] = $this->listPac('includelist', $page, 'xtlsproxy');
+        $text = array_merge($text, $tmp ?: []);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -10993,8 +10996,12 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // Второй элемент возврата — строки для тела сообщения. Инициализация нужна:
+    // на пустом списке ветка ниже до неё не доходила, и `return [$data, $text]`
+    // сыпал «Undefined variable $text».
     public function listPac($type, $page, $menu, $basename = false)
     {
+        $text = [];
         $data[] = [
             [
                 'text'          => $this->i18n('add'),
@@ -11008,12 +11015,45 @@ DNS-over-HTTPS with IP:
             $page    = $page < 0 ? $all - 1 : $page;
             $domains = array_slice($domains, $page * $this->limit, $this->limit, true);
             $i = 0;
+            // Бюджет на тело сообщения. Telegram отвергает сообщение целиком
+            // при длине > 4096 символов, а число записей на странице задаётся
+            // пользователем (pacconf limitpage) и по умолчанию равно 5 —
+            // достаточно поднять его и добавить длинных regexp/URL, чтобы
+            // меню перестало открываться совсем. Кнопки при этом не страдают,
+            // поэтому режем только текст и честно помечаем обрыв.
+            $budget = 3500;
+            $used   = 0;
+            $cut    = false;
+            $push   = function (string $line) use (&$text, &$used, &$cut, $budget) {
+                if ($cut) {
+                    return;
+                }
+                if ($used + mb_strlen($line) > $budget) {
+                    $text[] = '…';
+                    $cut = true;
+                    return;
+                }
+                $used += mb_strlen($line);
+                $text[] = $line;
+            };
             foreach ($domains as $k => $v) {
                 if (in_array($type, ['rulessetlist', 'datlist'])) {
                     // Ключ — "name.dat:URL"/"outbound:time:URL": в URL встречаются
                     // & и =, а parse_mode=HTML отвергает всё сообщение на
                     // неэкранированном амперсанде, и список переставал открываться.
-                    $text[] = '<blockquote><code>' . htmlspecialchars($k, ENT_QUOTES) . '</code></blockquote>';
+                    $push('<blockquote><code>' . htmlspecialchars($k, ENT_QUOTES) . '</code></blockquote>');
+                } elseif (in_array($type, ['blocklist', 'warplist', 'includelist'])) {
+                    // block/warp/proxy: в кнопке длинная запись обрезается
+                    // Telegram'ом, поэтому дублируем её в тело сообщения —
+                    // как у rulesset list. Берём routeEntryLabel(), а не сырой
+                    // ключ: у него idn-домены разворачиваются из punycode, то
+                    // есть в чате видно ровно то же, что на кнопке, но целиком
+                    // и с возможностью скопировать. Экранирование обязательно:
+                    // в regexp:/keyword: попадаются & и <, а на неэкранированном
+                    // амперсанде Telegram отвергает всё сообщение целиком.
+                    $push('<blockquote><code>'
+                        . htmlspecialchars($this->routeEntryLabel($k), ENT_QUOTES)
+                        . '</code></blockquote>');
                 }
                 $data[] = [
                     [
