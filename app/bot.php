@@ -3526,7 +3526,10 @@ NFT;
         $c = $this->getSSConfig();
         $l = $this->getSSLocalConfig();
         $domain = $this->getPacConf()['domain'] ?: $this->ip;
-        if ($c['plugin']) {
+        // ?? — в ssserver.json ключа plugin нет, пока плагин ни разу не
+        // включали (шаблон в репозитории без него): голое $c['plugin'] давало
+        // «Undefined array key» на каждый первый вход в тумблер.
+        if (!empty($c['plugin'])) {
             unset($c['plugin']);
             unset($c['plugin_opts']);
             unset($l['plugin']);
@@ -3592,7 +3595,7 @@ NFT;
             $c['Enabled']    = 1;
             $c['ServerName'] = $c['ServerName'] ?? $domain;
             $this->setStlsConfig($c);
-            $this->ssh('pkill -f simple-tls', 'ss');
+            $this->ssh(self::PKILL_STLS, 'ss');
             $port = (int) (getenv('STLSPORT') ?: 3443);
             $ssport = (int) (getenv('SSPORT') ?: 8388);
             $cert = $this->ssh('[ -s /certs/cert_public ] && [ -s /certs/cert_private ] && echo cert || echo self', 'ss');
@@ -3682,7 +3685,13 @@ NFT;
         $domain = $this->getDomain();
         $ck     = $this->getCloakConfig();
         $st     = $this->getStlsConfig();
-        $b64    = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}"));
+        // SIP002: userinfo — websafe-base64 (base64url) без паддинга.
+        // Раньше был обычный base64_encode + вырезание «==» регуляркой по всей
+        // строке: алфавит остаётся стандартным, поэтому в userinfo могли
+        // попасть '+' и особенно '/', который часть клиентов принимает за
+        // начало path и рвёт ссылку; одиночный '=' при этом не срезался вовсе.
+        // strtr на '-_' + rtrim('=') даёт ровно то, что описывает спека.
+        $b64    = 'ss://' . rtrim(strtr(base64_encode("{$ss['method']}:{$ss['password']}"), '+/', '-_'), '=');
 
         if (!empty($ck['Enabled'])) {
             $ckPort = (int) (getenv('CKPORT') ?: 7443);
@@ -3756,9 +3765,25 @@ NFT;
     // ломают bind), поэтому передаём ему очищенную копию через /tmp.
     // Тот же приём, что и в start_ss.sh. Извлечено в один метод, потому что
     // вызывается из cloak/cloakDomain/cloakMethod/regen/addUser/delUser.
+    // ВАЖНО про `pkill -f`: он матчит ПОЛНУЮ командную строку, включая строку
+    // самого шелла, которому мы её отдали (sshd запускает команду как
+    // `sh -c "<вся строка>"`). Строка ниже содержит «ck-server», поэтому
+    // беззащитный `pkill -f ck-server` убивал СВОЙ ЖЕ шелл — цепочка
+    // обрывалась на первой команде, jq и ck-server не выполнялись вообще, и
+    // /logs/ck-server.log даже не создавался. Снаружи это выглядело как
+    // «включил cloak в боте, а он не работает и молчит»: Enabled=1 в конфиге,
+    // процесса нет, лога нет. Поднимался ck-server только при рестарте
+    // контейнера — там его запускает start_ss.sh, где pkill нет.
+    //
+    // `[c]k-server` — регулярка, которая матчит литерал «ck-server» у чужих
+    // процессов, но НЕ матчит собственную командную строку (в ней стоят
+    // скобки). Проверено на рабочем сервере: с трюком шелл выживает, без него — Terminated.
+    public const PKILL_CK = "pkill -f '[c]k-server'";
+    public const PKILL_STLS = "pkill -f '[s]imple-tls'";
+
     private function ckServerRestartCmd(): string
     {
-        return 'pkill -f ck-server; '
+        return self::PKILL_CK . '; '
             . 'jq "del(.Enabled) '
             . '| if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end '
             . '| if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" '
@@ -3855,7 +3880,7 @@ NFT;
         if (!empty($c['Enabled'])) {
             $c['Enabled'] = 0;
             $this->setCloakConfig($c);
-            $this->ssh('pkill -f ck-server', 'ss');
+            $this->ssh(self::PKILL_CK, 'ss');
         } else {
             // v2ray-plugin несовместим с cloak (ssserver слушал бы с плагином,
             // не plain). Раньше тут был return после v2ray()-toggle, что давало
@@ -3872,7 +3897,15 @@ NFT;
             $c['BindAddr']   = [":$port"];
             $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
             $c['RedirAddr']  = $c['RedirAddr'] ?: 'www.bing.com';
-            $c['ServerName'] = $c['ServerName'] ?: $domain;
+            // ServerName — это SNI, который клиент показывает провайдеру.
+            // README Cloak: «the domain you want to make your ISP or firewall
+            // think you are visiting… ideally it should match RedirAddr in the
+            // server's configuration, a major site the censor allows».
+            // Раньше по умолчанию подставлялся СОБСТВЕННЫЙ домен установки —
+            // то есть в SNI на порту cloak светился реальный домен VPN, ровно
+            // то, что Cloak и должен прятать. Дефолт = RedirAddr; заданное
+            // вручную значение (cloakDomain) не трогаем.
+            $c['ServerName'] = $c['ServerName'] ?: $c['RedirAddr'];
             $this->setCloakConfig($c);
             $this->syncCloakBypassUIDs();
             $this->ssh($this->ckServerRestartCmd(), 'ss');
@@ -3888,7 +3921,7 @@ NFT;
         }
         $c['Enabled'] = 0;
         $this->setCloakConfig($c);
-        $this->ssh('pkill -f ck-server', 'ss');
+        $this->ssh(self::PKILL_CK, 'ss');
     }
 
     private function disableSimpleTlsIfOn(): void
@@ -3899,7 +3932,7 @@ NFT;
         }
         $c['Enabled'] = 0;
         $this->setStlsConfig($c);
-        $this->ssh('pkill -f simple-tls', 'ss');
+        $this->ssh(self::PKILL_STLS, 'ss');
     }
 
     // Снимает плагин v2ray-plugin с ssserver/sslocal без перерисовки меню.
@@ -4023,7 +4056,7 @@ NFT;
         $c     = $this->getCloakConfig();
         $wasOn = !empty($c['Enabled']);
 
-        $this->ssh('pkill -f ck-server', 'ss');
+        $this->ssh(self::PKILL_CK, 'ss');
 
         // Сбрасываем идентификационные поля. ensureCloakIdentity() их
         // восстановит через ck-server -key / -uid.
@@ -4048,7 +4081,15 @@ NFT;
             $c['BindAddr']   = [":$port"];
             $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
             $c['RedirAddr']  = $c['RedirAddr'] ?: 'www.bing.com';
-            $c['ServerName'] = $c['ServerName'] ?: $domain;
+            // ServerName — это SNI, который клиент показывает провайдеру.
+            // README Cloak: «the domain you want to make your ISP or firewall
+            // think you are visiting… ideally it should match RedirAddr in the
+            // server's configuration, a major site the censor allows».
+            // Раньше по умолчанию подставлялся СОБСТВЕННЫЙ домен установки —
+            // то есть в SNI на порту cloak светился реальный домен VPN, ровно
+            // то, что Cloak и должен прятать. Дефолт = RedirAddr; заданное
+            // вручную значение (cloakDomain) не трогаем.
+            $c['ServerName'] = $c['ServerName'] ?: $c['RedirAddr'];
             $this->setCloakConfig($c);
             // bootstrap default user в ckusers.json и пересинхронизируем
             // BypassUID — иначе ck-server стартует с пустым allow-list.
@@ -5087,7 +5128,7 @@ NFT;
             if (!empty($json['cloak'])) {
                 $out[] = 'update cloak';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->ssh('pkill -f ck-server', 'ss');
+                $this->ssh(self::PKILL_CK, 'ss');
                 file_put_contents(
                     '/config/ckserver.json',
                     json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
