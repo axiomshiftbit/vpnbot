@@ -449,6 +449,12 @@ services:
             dockerfile: dockerfile/naive.dockerfile
             args:
                 image: ${IMAGE}
+                # CADDY_VERSION и FORWARDPROXY_VERSION меняются ТОЛЬКО парой:
+                # тег плагина = версия caddy + суффикс -naive (см. dockerfile).
+                CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.25}
+                XCADDY_VERSION: ${XCADDY_VERSION:-v0.4.5}
+                CADDY_VERSION: ${CADDY_VERSION:-v2.11.2}
+                FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.2-naive}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
@@ -457,6 +463,10 @@ services:
             # php-контейнера), свои данные держит в /root/.local/share/caddy.
             - ./config:/config:ro
             - ./certs:/certs
+            # Нужен для лога caddy (/logs/caddy): его пишет и start_np.sh, и
+            # сам caddy блоком `log` из Caddyfile. Без монтирования лог оседал
+            # бы в эфемерной ФС контейнера и пропадал при recreate.
+            - ./logs/:/logs/
             - ./scripts/start_np.sh:/start_np.sh
         hostname: naive
         container_name: naive-${VER}

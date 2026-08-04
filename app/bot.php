@@ -132,6 +132,9 @@ class Bot
             'xray',
             'ocserv.log',
             'telemt',
+            // caddy (naive): появился вместе с блоком `log` в Caddyfile —
+            // раньше вывод уходил в /dev/null и причину падения было не узнать.
+            'caddy',
         ];
         $this->reg = '~' . implode('|', [
             'GET / HTTP',
@@ -901,6 +904,9 @@ class Bot
                 break;
             case preg_match('~^/changeNaivePass$~', $this->input['callback'], $m):
                 $this->changeNaivePass();
+                break;
+            case preg_match('~^/changeCaddyVersion$~', $this->input['callback'], $m):
+                $this->changeCaddyVersion();
                 break;
             case preg_match('~^/changeHysteriaPass$~', $this->input['callback'], $m):
                 $this->changeHysteriaPass();
@@ -1785,6 +1791,20 @@ class Bot
     // версия реально запущенного образа. Fallback — build-пин TELEMT_VERSION
     // из .env (образы, собранные до появления файла): он может расходиться с
     // контейнером, пока образ не пересобран.
+    // Версия caddy в контейнере np. `caddy version` печатает «v2.11.2 h1:…» —
+    // берём первый токен версии. Фолбэк — build-пин CADDY_VERSION из .env
+    // (контейнер не отвечает); он может расходиться с образом, пока тот не
+    // пересобран, поэтому источник помечаем в меню.
+    public function naiveVersion(): array
+    {
+        $out = trim((string) $this->ssh('caddy version 2>/dev/null', 'np'));
+        $run = preg_match('~v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*~', $out, $m) ? $m[0] : '';
+        return [
+            'running' => $run,
+            'pinned'  => trim((string) getenv('CADDY_VERSION')),
+        ];
+    }
+
     public function telemtVersion(): string
     {
         $v = trim((string) $this->ssh('cat /etc/telemt_version 2>/dev/null', 'telemt'));
@@ -2428,6 +2448,40 @@ class Bot
         ]);
     }
 
+    public function changeCaddyVersion()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} введите версию caddy тегом <code>vX.Y.Z</code> (например <code>v2.11.2</code>).\n\n"
+            . "Плагин forwardproxy пиннится ПАРОЙ автоматически: <code>vX.Y.Z-naive</code>. "
+            . "У klzgrad теги названы по версии caddy, под которую плагин проверен, и другой пары upstream не проверял.\n\n"
+            . "Пин ложится в .env; чтобы он применился, образ нужно пересобрать: <code>docker compose build np</code>, затем <code>make r</code>.",
+            $this->input['message_id'],
+            reply: 'введите версию caddy',
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chCaddyVersion',
+            'args'           => [],
+        ]);
+    }
+
+    // Пин пишем только парой: рассинхрон caddy ↔ forwardproxy — это сборка с
+    // непроверенной комбинацией, и ломается она в рантайме, а не при build.
+    public function chCaddyVersion($v)
+    {
+        $v = trim((string) $v);
+        if (!preg_match('~^v\d+\.\d+\.\d+$~', $v)) {
+            $this->update($this->input['chat'], $this->input['message_id'], 'нужен тег вида vX.Y.Z (например v2.11.2)');
+            sleep(3);
+            return $this->menu('naive');
+        }
+        $this->setEnvVar('CADDY_VERSION', $v);
+        $this->setEnvVar('FORWARDPROXY_VERSION', "$v-naive");
+        $this->menu('naive');
+    }
+
     public function changeNaivePass()
     {
         $r = $this->send(
@@ -2721,18 +2775,70 @@ class Bot
         }
     }
 
+    // Логин/пароль naive уезжают в Caddyfile строкой «basic_auth <user> <pass>»,
+    // то есть в СИНТАКСИС конфига. Пробел разбил бы директиву на лишние
+    // аргументы, `}` или перевод строки — развалили бы блок, `#` съел бы
+    // остаток строки, и caddy просто не поднялся бы. Разрешаем только то, что
+    // заведомо безопасно и внутри Caddyfile, и в userinfo ссылки.
+    //
+    // Разделитель регулярки — '#', а не привычный '~': '~' входит в разрешённый
+    // набор (unreserved по RFC 3986), и как делимитр он обрывал шаблон на
+    // середине класса — preg_match ругался «Unknown modifier '!'» и возвращал
+    // false ВСЕГДА, то есть любой пароль считался бы негодным и naive гасился
+    // бы на рестарте.
+    public static function naiveCredOk($v): bool
+    {
+        return is_string($v) && $v !== '' && strlen($v) <= 128
+            && (bool) preg_match('#^[A-Za-z0-9._~!$&\'()*+,;=:@%-]+$#', $v);
+    }
+
     public function restartNaive()
     {
-        $pac = $this->getPacConf();
-        $this->ssh('pkill caddy', 'np');
-        $c = file_get_contents('/config/Caddyfile');
+        $pac  = $this->getPacConf();
+        $user = (string) ($pac['naive']['user'] ?? '');
+        $pass = (string) ($pac['naive']['pass'] ?? '');
+        $c    = file_get_contents('/config/Caddyfile');
+        // Плейсхолдер — то же значение, что в шаблоне config/Caddyfile: пока
+        // креды не заданы, caddy не должен подниматься (тот же гард в
+        // start_np.sh), иначе сервис работает с угадываемым паролем.
+        $ok = self::naiveCredOk($user) && self::naiveCredOk($pass);
         // preg_replace_callback, а не preg_replace: user/pass идут в замену как
         // литералы (иначе `$`/`\` в пароле трактуются как backreference).
-        $t = preg_replace_callback('~^(\t+)?basic_auth[^\n]+~sm', fn($m) => ($m[1] ?? '') . 'basic_auth ' . ($pac['naive']['user'] ?? '_') . ' ' . ($pac['naive']['pass'] ?? '__'), $c);
-        file_put_contents('/config/Caddyfile', $t);
-        if (!empty($pac['naive']['pass']) && !empty($this->getHashSubdomain('np'))) {
-            $this->ssh('caddy run -c /config/Caddyfile', 'np', false);
+        $t = preg_replace_callback(
+            '~^(\t+)?basic_auth[^\n]+~sm',
+            fn($m) => ($m[1] ?? '') . 'basic_auth ' . ($ok ? "$user $pass" : 'CHANGEME CHANGEME'),
+            $c
+        );
+        // json_encode-класс: file_put_contents с пустым/битым содержимым угробил
+        // бы конфиг. preg_replace_callback отдаёт null при ошибке движка.
+        if (!is_string($t) || $t === '') {
+            error_log('restartNaive: Caddyfile not written — preg_replace_callback failed');
+
+            return false;
         }
+        $this->ssh('pkill caddy', 'np');
+        file_put_contents('/config/Caddyfile', $t);
+        if (!$ok || empty($this->getHashSubdomain('np'))) {
+            return false;
+        }
+        // Проверяем конфиг ДО старта: caddy запускается в фоне и раньше при
+        // любой ошибке молча не поднимался — в меню это выглядело как «naive
+        // off» без причины. Вывод validate короткий и в чат не уходит целиком.
+        $v = (string) $this->ssh('caddy validate -c /config/Caddyfile 2>&1', 'np');
+        if (!preg_match('~Valid configuration~', $v)) {
+            error_log('restartNaive: caddy validate failed — ' . strtok($v, "\n"));
+            if (!empty($this->input['chat'])) {
+                $this->send(
+                    $this->input['chat'],
+                    'naive: caddy отверг конфиг, сервис не запущен — ' . htmlspecialchars(strtok($v, "\n"), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
+                    $this->input['message_id'] ?? null
+                );
+            }
+
+            return false;
+        }
+        $this->ssh('caddy run -c /config/Caddyfile', 'np', false, '/logs/caddy');
+        return true;
     }
 
     public function restartHysteria()
@@ -2900,8 +3006,26 @@ class Bot
         $this->menu('naive');
     }
 
+    // Отказ вместо тихой поломки: значение уходит в синтаксис Caddyfile, и
+    // раньше пробел или `}` в пароле роняли caddy без единого сообщения
+    // (см. naiveCredOk / restartNaive).
+    public function naiveCredReject(): void
+    {
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            'значение не принято: допустимы латиница, цифры и . _ ~ - ! $ & \' ( ) * + , ; = : @ % (до 128 символов), без пробелов'
+        );
+        sleep(3);
+        $this->menu('naive');
+    }
+
     public function chnplogin($user)
     {
+        $user = trim((string) $user);
+        if (!self::naiveCredOk($user)) {
+            return $this->naiveCredReject();
+        }
         $pac = $this->getPacConf();
         $pac['naive']['user'] = $user;
         $this->setPacConf($pac);
@@ -2911,6 +3035,10 @@ class Bot
 
     public function chnppass($pass)
     {
+        $pass = trim((string) $pass);
+        if (!self::naiveCredOk($pass)) {
+            return $this->naiveCredReject();
+        }
         $pac = $this->getPacConf();
         $pac['naive']['pass'] = $pass;
         $this->setPacConf($pac);
@@ -16594,11 +16722,33 @@ DNS-over-HTTPS with IP:
         $domain = $this->getDomain();
         $text[] = "Menu -> NaiveProxy";
         $np     = $this->getHashSubdomain('np');
-        $text[] = "<code>https://{$pac['naive']['user']}:{$pac['naive']['pass']}@$np.$domain</code>";
+        // Схема ровно как в README naiveproxy: «https://user:pass@example.com».
+        // rawurlencode на userinfo — пароль сюда приходит сырым вводом из
+        // Telegram, а '@', ':', '/', '#' в нём иначе рвут URL. htmlspecialchars
+        // на всю строку — сообщение уходит с parse_mode HTML.
+        $link   = 'https://' . rawurlencode((string) ($pac['naive']['user'] ?? ''))
+            . ':' . rawurlencode((string) ($pac['naive']['pass'] ?? ''))
+            . "@$np.$domain";
+        $text[] = '<code>' . htmlspecialchars($link, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
+        $ver    = $this->naiveVersion();
+        if ($ver['running'] !== '' || $ver['pinned'] !== '') {
+            // Расхождение running/pinned = образ ещё не пересобран под новый пин.
+            $text[] = '';
+            $text[] = 'caddy: ' . htmlspecialchars($ver['running'] ?: '—', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+                . ($ver['pinned'] !== '' && $ver['pinned'] !== $ver['running']
+                    ? '  (пин: ' . htmlspecialchars($ver['pinned'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . ', нужна пересборка)'
+                    : '');
+        }
         $data[] = [
             [
                 'text'          => $this->i18n('change subdomain'),
                 'callback_data' => "/changeNaiveSubdomain",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => 'caddy: ' . ($ver['pinned'] ?: '—'),
+                'callback_data' => "/changeCaddyVersion",
             ],
         ];
         $data[] = [
@@ -20761,7 +20911,11 @@ DNS-over-HTTPS with IP:
         }
         $sub   = $this->getHashSubdomain('np');
         $nginx = file_get_contents('/config/upstream.conf');
-        $t = preg_replace('~#naive.+#naive~s', $domain ? "#naive\n" . ($sub ? '' : '#' ) . "$sub.$domain naive;\n#naive" : "#naive\n#$sub.\$domain naive;\n#naive", $nginx);
+        // Нежадный .+? вместо .+ — маркер парный, и любое ТРЕТЬЕ его упоминание
+        // ниже по файлу (достаточно слова в комментарии) при жадном матче
+        // расширило бы замену до него и снесло всё между — включая соседние
+        // server-блоки. Поведение при штатных двух маркерах не меняется.
+        $t = preg_replace('~#naive.+?#naive~s', $domain ? "#naive\n" . ($sub ? '' : '#' ) . "$sub.$domain naive;\n#naive" : "#naive\n#$sub.\$domain naive;\n#naive", $nginx);
         file_put_contents('/config/upstream.conf', $t);
         $this->ssh("nginx -s reload 2>&1", 'up');
     }

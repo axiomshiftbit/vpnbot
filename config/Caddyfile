@@ -1,8 +1,35 @@
 {
 	order forward_proxy before file_server
+	# Логи caddy. Раньше их не было вовсе, а вывод процесса уходил в /dev/null
+	# (start_np.sh) и в `tee -a /dev/null` (бот запускает caddy через ssh в
+	# фоне) — упавший caddy выглядел в меню как «naive off» без единой строки о
+	# причине. /logs смонтирован во все контейнеры.
+	log {
+		output file /logs/caddy {
+			roll_size 10MiB
+			roll_keep 3
+		}
+		exclude http.log.error
+	}
 	servers {
+		# Дефолт caddy — «h1 h2 h3». h3 убран намеренно: QUIC до этого
+		# контейнера не доходит. Внешний 443 разбирает upstream-nginx по SNI
+		# через ssl_preread, а тот читает SNI только из TLS ClientHello по TCP
+		# (у QUIC он лежит в зашифрованных Initial-пакетах) — весь UDP-443
+		# уходит в default-ветку, где h3 никто не слушает. С анонсом
+		# `alt-svc: h3=":443"` клиент честно пробовал QUIC, ждал таймаут и лишь
+		# потом откатывался на h2. Схема `quic://` у naive по той же причине
+		# недоступна — она требует рабочего h3 на сервере.
+		protocols h1 h2
 		listener_wrappers {
-			proxy_protocol
+			# proxy_protocol обязан идти ПЕРЕД tls: он читает открытый текст в
+			# начале соединения (docs: caddyfile/options). allow ограничивает,
+			# кому верить: без него любой, кто дотянулся до np:443 изнутри
+			# docker-сети, мог подделать IP клиента. Внешний трафик приходит
+			# через upstream-nginx (10.10.0.10).
+			proxy_protocol {
+				allow 10.10.0.0/16
+			}
 			tls
 		}
 	}
@@ -11,9 +38,29 @@
 :443 {
 	tls /certs/cert_public /certs/cert_private
 	forward_proxy {
-		basic_auth _ __
+		# Строку basic_auth перезаписывает бот (restartNaive). Плейсхолдер ниже
+		# заведомо нерабочий: start_np.sh не поднимает caddy, пока он не заменён.
+		# Иначе на свежей установке сервис уезжал в сеть с угадываемыми кредами
+		# «_ __», а поддомен не секрет — он попадает в SAN сертификата и,
+		# значит, в Certificate Transparency.
+		basic_auth CHANGEME CHANGEME
 		hide_ip
 		hide_via
+		# probe_resistance имеет смысл только вместе с basic_auth (README
+		# forwardproxy) — он и стоит выше.
 		probe_resistance
+		# Официальный пример naiveproxy содержит `ports 80 443`: без белого
+		# списка аутентифицированный клиент может открыть CONNECT на любой порт
+		# (SMTP и прочее) от имени сервера.
+		ports 80 443
+		# forwardproxy сам запрещает 10/8, 127/8, 172.16/12, 192.168/16, ::1 и
+		# fe80::/10 (правила добавляются в Provision ДО пользовательских), но
+		# IPv4 link-local и CGNAT в этот список НЕ входят. 169.254.169.254 —
+		# metadata-сервис почти всех облаков, то есть прямая утечка.
+		acl {
+			deny 169.254.0.0/16
+			deny 100.64.0.0/10
+			allow all
+		}
 	}
 }
