@@ -6114,10 +6114,25 @@ NFT;
     }
 
     // Validates a CPS string for AmneziaWG 2.0 I1-I5 fields.
-    // Accepts only the tokens supported by amneziawg-go: <b 0xHEX>, <r N>, <rc N>, <rd N>, <t>.
-    // Critical rule (from amnezia article comments): hex inside <b 0x..> must have an
-    // EVEN number of hex chars — otherwise it's not a whole byte sequence and the peer
-    // silently rejects the signature packet.
+    // Принимаются только теги, которые бот умеет строить осмысленно:
+    // <b 0xHEX>, <r N>, <rc N>, <rd N>, <t>. Парсер amneziawg-go (device/obf.go,
+    // obfBuilders) знает ещё d/ds/dz — они подставляют данные самого пакета и для
+    // отдельного сигнатурного пакета смысла не имеют, поэтому здесь их нет.
+    //
+    // Критическое правило: число hex-символов в <b 0x..> обязано быть ЧЁТНЫМ.
+    // Источник — device/obf_bytes.go: `strings.TrimPrefix(val, "0x")`, затем
+    // `len(val)%2 != 0 → errors.New("odd amount of symbols")`, и только потом
+    // hex.DecodeString. Нечётная строка роняет РАЗБОР ВСЕГО конфига: у клиента
+    // AmneziaVPN это выглядит как «wgTurnOn вернул -1» без указания причины
+    // (habr.com/ru/companies/amnezia/articles/1014636 — тред ku4in ↔ AmneziaLover,
+    // после него в самой статье поправили пример).
+    // ВАЖНО: считаются ВСЕ символы, включая ведущие нули — `0c7000000010` это
+    // 12 символов, то есть валидные 6 байт. В том же треде представитель Amnezia
+    // ответил, что «значащих символов всё ещё нечётное количество», но код так не
+    // считает: TrimPrefix убирает ровно префикс «0x», а дальше идёт голый len().
+    // Минимального размера у сигнатурного пакета нет вовсе — send.go выделяет
+    // ровно `ipacket.ObfuscatedLen(0)` байт и шлёт как есть; рекомендация «≥100
+    // байт» из статьи — про правдоподобие имитации, а не про требование парсера.
     //
     // Future-work (предложения для upstream amneziawg-go — пока НЕ существуют):
     //   <ra N>  — N случайных букв a-zA-Z (для User-Agent, hostname-частей)
