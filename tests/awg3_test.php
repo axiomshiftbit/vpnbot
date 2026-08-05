@@ -336,6 +336,30 @@ awgAssert(Bot::awgTimingConflict(['RejectAfterTime' => '170-190', 'RekeyAfterTim
     'KeepaliveTimeout' => '10-15', 'RekeyTimeout' => '5-10']) === '',
     'timing: типовой набор 3.0 не должен считаться конфликтным');
 
+// ── 14b. validateCPSLine: синтаксис CPS и офф. потолок длины тегов ──────────
+// Границы — из docs.amnezia.org (таблица Tag Types): у <r>/<rc>/<rd> N <= 1000.
+// amneziawg-go его не проверяет, поэтому ловить перебор обязан бот.
+$cps = (new ReflectionClass(Awg3TestBot::class))->newInstanceWithoutConstructor();
+foreach (['<b 0xc000000001><r 150>', '<t><r 100>', '<rd 16><r 120>', '<rc 1000>', '<r 1000>'] as $ok) {
+    awgAssert($cps->validateCPSLine($ok) === '', "CPS '$ok' должен пройти");
+}
+foreach (['', '<r 1001>', '<rc 1001>', '<rd 5000>', '<b 0xabc>', '<x 5>', '<r 10> <t>', '<r>'] as $bad) {
+    awgAssert($cps->validateCPSLine($bad) !== '', "CPS '$bad' должен упасть");
+}
+// Перебор ловится в любой позиции цепочки, а не только в первом теге.
+awgAssert($cps->validateCPSLine('<b 0xdead><r 100><rd 2000>') !== '', 'CPS: длина проверяется во всех тегах');
+// Шаблоны обязаны укладываться в потолок — иначе сигнатурный пакет упрётся в MTU.
+foreach (array_keys(Bot::AMNEZIA_TEMPLATE_LABELS) as $tpl) {
+    for ($i = 0; $i < 200; $i++) {
+        $k = $bot->generateAmneziaKeys($tpl);
+        foreach (['I1', 'I2', 'I3', 'I4', 'I5'] as $ik) {
+            if (isset($k[$ik])) {
+                awgAssert($cps->validateCPSLine($k[$ik]) === '', "$tpl: $ik не проходит validateCPSLine — {$k[$ik]}");
+            }
+        }
+    }
+}
+
 // ── 15. awgTemplateForVer ───────────────────────────────────────────────────
 awgAssert(Bot::awgTemplateForVer('standard_3', 2) === 'standard_2', 'tplForVer: standard_3 → standard_2');
 awgAssert(Bot::awgTemplateForVer('mobile_2', 3) === 'mobile_3', 'tplForVer: mobile_2 → mobile_3');

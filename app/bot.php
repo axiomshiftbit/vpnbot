@@ -39,6 +39,9 @@ class Bot
     // H1-H4 (receive.go: DeterminePacketTypeAndPadding) — при совпадении
     // размеров ветки начинают спорить за один и тот же пакет.
     public const AWG_PACKET_BASE = ['S1' => 148, 'S2' => 92, 'S3' => 64, 'S4' => 32];
+    // Потолок N у CPS-тегов <r>/<rc>/<rd> из офф. таблицы Tag Types
+    // (docs.amnezia.org/documentation/amnezia-wg). См. validateCPSLine().
+    public const CPS_MAX_LEN = 1000;
     // Поля, которые перегенерируются авто-ротацией. HeaderProtectionKey включён
     // осознанно: он даёт самый заметный статический отпечаток, но после каждой
     // ротации ВСЕ клиенты обязаны перекачать конфиг — рассинхрон HPK рвёт
@@ -6139,6 +6142,20 @@ NFT;
             foreach ($m[1] as $hex) {
                 if (strlen($hex) % 2 !== 0) {
                     return "hex in &lt;b 0x$hex&gt; has odd length — must be even (whole bytes)";
+                }
+            }
+        }
+        // Официальный потолок длины у <r|rc|rd N> — 1000
+        // (docs.amnezia.org/documentation/amnezia-wg, таблица Tag Types).
+        // amneziawg-go его не проверяет (obf_rand.go — просто Atoi), поэтому
+        // слишком длинный тег даёт не отказ конфига, а junk-пакет, который
+        // упрётся в MTU: сигнатурный пакет уйдёт обрезанным или не уйдёт вовсе.
+        // Генератор шаблонов сюда не упирается (максимум 250), а вот ручной
+        // ввод — вполне.
+        if (preg_match_all('~<(r|rc|rd) (\d+)>~', $s, $m, PREG_SET_ORDER)) {
+            foreach ($m as [, $tag, $len]) {
+                if ((int) $len > self::CPS_MAX_LEN) {
+                    return "N in &lt;$tag $len&gt; exceeds " . self::CPS_MAX_LEN . ' — official limit for &lt;r&gt;/&lt;rc&gt;/&lt;rd&gt;';
                 }
             }
         }
