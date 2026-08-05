@@ -25,7 +25,20 @@ class Bot
     // device/noise-types.go: HeaderCipherNonceSize. amneziawg-go отвергает
     // конфиг с непустым HeaderProtectionKey, если хоть один из S1..S4 меньше:
     // «S%d must be more then 12 to use headerProtection» (device/uapi.go).
+    // Первые 12 байт junk-паддинга каждого пакета — это nonce шифра заголовков
+    // (receive.go: HeaderProtectionCipher(packet[:HeaderCipherNonceSize])),
+    // поэтому паддинг обязан их содержать.
     public const AWG_HPK_MIN_S = 12;
+    // Размер пакета каждого типа на проводе = база + соответствующий S.
+    // Константы — из amnezia-client (awgProtocolConfig.h: messageInitiationSize
+    // 148, messageResponseSize 92, messageCookieReplySize 64,
+    // messageTransportSize 32) и совпадают с amneziawg-go (noise-protocol.go).
+    // Четыре размера обязаны различаться: официальный клиент отказывается
+    // сохранять такой набор (AwgProtocolConfig::isPacketSizeEqual), а
+    // amneziawg-go определяет тип пакета сначала по размеру и лишь потом по
+    // H1-H4 (receive.go: DeterminePacketTypeAndPadding) — при совпадении
+    // размеров ветки начинают спорить за один и тот же пакет.
+    public const AWG_PACKET_BASE = ['S1' => 148, 'S2' => 92, 'S3' => 64, 'S4' => 32];
     // Поля, которые перегенерируются авто-ротацией. HeaderProtectionKey включён
     // осознанно: он даёт самый заметный статический отпечаток, но после каждой
     // ротации ВСЕ клиенты обязаны перекачать конфиг — рассинхрон HPK рвёт
@@ -5332,24 +5345,43 @@ NFT;
         return true;
     }
 
-    // Поднимает S1..S4 до порога header protection, сохраняя исходные инварианты
-    // паддингов (S1 !== S2 и S1 + 56 !== S2 — иначе init- и response-пакеты
-    // становятся одинакового размера и их легко скоррелировать).
+    // Размеры пакетов всех четырёх типов различны? Проверяются только те S,
+    // которые в наборе есть: у 1.x нет S3/S4, и тогда правило вырождается в
+    // «S2 !== S1 + 56» — ровно тот инвариант, что был здесь до 3.0.
+    public static function awgPacketSizesOk($keys): bool
+    {
+        $keys  = is_array($keys) ? $keys : [];
+        $sizes = [];
+        foreach (self::AWG_PACKET_BASE as $k => $base) {
+            if (isset($keys[$k]) && $keys[$k] !== '') {
+                $sizes[] = $base + (int) $keys[$k];
+            }
+        }
+        return count($sizes) === count(array_unique($sizes));
+    }
+
+    // Поднимает S1..S4 до порога header protection, сохраняя инварианты
+    // паддингов: S1 !== S2 и различающиеся размеры пакетов на проводе
+    // (awgPacketSizesOk) — иначе два типа пакетов становятся одного размера и
+    // их легко скоррелировать, а официальный клиент такой набор не сохранит.
     public static function enforceHeaderProtection($keys): array
     {
         $keys = is_array($keys) ? $keys : [];
         $min  = self::AWG_HPK_MIN_S;
-        $s1   = max($min, (int) ($keys['S1'] ?? 0));
-        $s2   = max($min, (int) ($keys['S2'] ?? 0));
-        // Верхняя граница подбора та же, что у шаблонов 2.0/3.0 ($rngS 15..64).
-        $tries = 0;
-        while (($s1 === $s2 || $s1 + 56 === $s2) && $tries++ < 100) {
-            $s2 = random_int($min, 64);
+        // Верхние границы подбора те же, что у шаблонов 2.0/3.0. Уже заданные
+        // значения выше границы не срезаем — они могли прийти из ручной правки.
+        $max  = ['S1' => 64, 'S2' => 64, 'S3' => 64, 'S4' => 32];
+        foreach (array_keys($max) as $k) {
+            $keys[$k] = max($min, (int) ($keys[$k] ?? 0));
         }
-        $keys['S1'] = $s1;
-        $keys['S2'] = $s2;
-        $keys['S3'] = max($min, (int) ($keys['S3'] ?? 0));
-        $keys['S4'] = max($min, (int) ($keys['S4'] ?? 0));
+        // S1 держим неизменным (он же init-пакет — самый заметный), пере-роллим
+        // остальные, пока набор не станет валидным.
+        $tries = 0;
+        while (($keys['S1'] === $keys['S2'] || !self::awgPacketSizesOk($keys)) && $tries++ < 200) {
+            foreach (['S2', 'S3', 'S4'] as $k) {
+                $keys[$k] = random_int($min, $max[$k]);
+            }
+        }
         return $keys;
     }
 
@@ -5388,13 +5420,10 @@ NFT;
         'KeepaliveTimeout' => 10,
     ];
 
-    // Единственная связка между таймингами, которую amneziawg НЕ проверяет сам:
-    // сессия обязана жить дольше, чем срок до рекея. При RejectAfterTime <=
-    // RekeyAfterTime пир выбрасывает ключи раньше, чем успевает передоговориться,
-    // и туннель рвётся каждые пару минут — при этом конфиг синтаксически
-    // корректен, setconf его принимает, и awgApplyGuarded ничего не замечает.
-    // Сравниваем худший случай: верх Rekey против низа Reject.
-    // Возвращает '' при отсутствии конфликта.
+    // Связки между таймингами, которые amneziawg НЕ проверяет сам: конфиг
+    // синтаксически корректен, setconf его принимает, awgApplyGuarded ничего не
+    // замечает, а туннель после этого рвётся. Сравниваем худший случай:
+    // верх Rekey против низа Reject. Возвращает '' при отсутствии конфликта.
     public static function awgTimingConflict($keys): string
     {
         $keys = is_array($keys) ? $keys : [];
@@ -5404,9 +5433,23 @@ NFT;
         };
         [, $rekeyHi]  = self::awgRangeBounds($val('RekeyAfterTime'));
         [$rejectLo, ] = self::awgRangeBounds($val('RejectAfterTime'));
+        // 1. Сессия обязана жить дольше, чем срок до рекея: иначе пир
+        // выбрасывает ключи раньше, чем успевает передоговориться
+        // (timers.go: keyRefreshTimeoutSending против keychainExpireTime).
         if ($rejectLo <= $rekeyHi) {
             return "RejectAfterTime ($rejectLo) должен быть больше верхней границы RekeyAfterTime ($rekeyHi), "
                 . 'иначе пир отбросит сессию раньше, чем попробует рекей';
+        }
+        // 2. Принимающая сторона рекеит через
+        // max(0, RejectAfterTime - KeepaliveTimeout.lo - RekeyTimeout.lo)
+        // (timers.go: keyRefreshTimeoutReceiving). Если вычитаемое дотягивается
+        // до RejectAfterTime, окно схлопывается в ноль и ответчик уходит в
+        // handshake на каждом принятом пакете.
+        [$kaLo, ]  = self::awgRangeBounds($val('KeepaliveTimeout'));
+        [$rktLo, ] = self::awgRangeBounds($val('RekeyTimeout'));
+        if ($rejectLo <= $kaLo + $rktLo) {
+            return "RejectAfterTime ($rejectLo) должен быть больше KeepaliveTimeout ($kaLo) + RekeyTimeout ($rktLo), "
+                . 'иначе принимающая сторона уходит в рекей на каждом пакете';
         }
         return '';
     }
@@ -5704,15 +5747,7 @@ NFT;
             $c   = $this->getPacConf();
             $tpl = $c[$prefix . 'amnezia_tpl'] ?? 'standard_2';
             // Профиль внутри версии сохраняем (standard→standard и т.д.).
-            $base = preg_replace('~_\d$~', '', $tpl) ?: 'standard';
-            if ($ver === 1) {
-                $tpl_new = 'classic_1';
-            } else {
-                $tpl_new = "{$base}_$ver";
-                if (!isset(self::AMNEZIA_TEMPLATE_LABELS[$tpl_new])) {
-                    $tpl_new = "standard_$ver";
-                }
-            }
+            $tpl_new = self::awgTemplateForVer($tpl, $ver);
             $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
             if (!$keys) {
                 $keys = $this->generateAmneziaKeys($tpl_new, fn() => $this->genHeaderProtectionKey());
@@ -5927,6 +5962,13 @@ NFT;
                 unset($c[$prefix . 'amnezia_keys'][$k]);
             }
             unset($c[$prefix . 'amnezia_keepalive']);
+            // Шаблон обязан уехать вместе с полями: AWG_ROTATE_KEYS содержит
+            // весь блок 3.0, и ближайшая ротация по оставшемуся *_3 вернула бы
+            // его целиком — вместе с header protection, который только что сняли.
+            $tpl = (string) ($c[$prefix . 'amnezia_tpl'] ?? '');
+            if (substr($tpl, -2) === '_3') {
+                $c[$prefix . 'amnezia_tpl'] = self::awgTemplateForVer($tpl, 2);
+            }
             $this->setPacConf($c);
         });
     }
@@ -6015,11 +6057,11 @@ NFT;
             return;
         }
 
-        // Кросс-проверка Rekey/Reject: по отдельности оба значения валидны, а
-        // вместе рвут туннель — и сброс в дефолт тоже способен создать конфликт
+        // Кросс-проверка таймингов: по отдельности значения валидны, а вместе
+        // рвут туннель — и сброс в дефолт тоже способен создать конфликт
         // (снятый RejectAfterTime = 180 против выставленного RekeyAfterTime).
         // Поэтому проверяем ИТОГОВЫЙ набор, а не введённую строку.
-        if (in_array($key, ['RekeyAfterTime', 'RejectAfterTime'], true)) {
+        if (in_array($key, ['RekeyAfterTime', 'RejectAfterTime', 'RekeyTimeout', 'KeepaliveTimeout'], true)) {
             $next = $this->getPacConf()[$prefix . 'amnezia_keys'] ?? [];
             $next = is_array($next) ? $next : [];
             if ($reset) {
@@ -6540,12 +6582,13 @@ NFT;
             $c = $this->getPacConf();
         }
         $has3 = self::amneziaProtoVer($c[$prefix . 'amnezia_keys'] ?? []) === 3;
-        // Ротируем по шаблону ТЕКУЩЕЙ версии набора, а не по записанному tpl:
-        // header protection можно включить кнопкой поверх набора 2.0, и шаблон
-        // *_2 не сгенерировал бы 3.0-поля — ротация просто стёрла бы их.
-        if ($has3 && substr($tpl, -2) !== '_3') {
-            $base = preg_replace('~_\d$~', '', $tpl) ?: 'standard';
-            $tpl  = isset(self::AMNEZIA_TEMPLATE_LABELS["{$base}_3"]) ? "{$base}_3" : 'standard_3';
+        // Ротируем по шаблону ТЕКУЩЕЙ версии набора, а не по записанному tpl —
+        // в обе стороны. Вверх: header protection можно включить кнопкой поверх
+        // набора 2.0, и шаблон *_2 не сгенерировал бы 3.0-поля, ротация просто
+        // стёрла бы их. Вниз: набор без блока 3.0 при шаблоне *_3 получил бы
+        // его обратно, причём мимо awgApplyGuarded (ветка $has3 ниже).
+        if ($has3 !== (substr($tpl, -2) === '_3')) {
+            $tpl = self::awgTemplateForVer($tpl, $has3 ? 3 : 2);
         }
         $mutate = function () use ($prefix, $tpl) {
             $c   = $this->getPacConf();
@@ -22508,27 +22551,32 @@ DNS-over-HTTPS with IP:
         return $v === null ? null : version_compare(ltrim((string) $v, 'vV'), '3.0', '>=');
     }
 
-    // Ключ header protection — тот же формат, что и обычный ключ wireguard
-    // (32 байта base64), поэтому генерим его штатным `awg genkey`. Фолбэк на
-    // random_bytes нужен, чтобы недоступный контейнер не блокировал настройку:
-    // ключ всё равно уедет в конфиг через restartWG, когда ssh поднимется.
+    // Ключ header protection. Формат на проводе тот же, что у ключей wireguard
+    // (32 байта base64, key_from_base64 в encoding.c), но это СИММЕТРИЧНЫЙ ключ
+    // шифра заголовков (HeaderCipherKey [32]byte, noise-types.go), а не ключ
+    // curve25519: `awg genkey` прогнал бы его через curve25519_clamp_secret и
+    // зафиксировал 5 бит, ничего не дав взамен. Поэтому генерим локально —
+    // заодно настройка перестаёт зависеть от живости контейнера.
     public function genHeaderProtectionKey(): string
     {
-        $v = trim((string) $this->ssh("{$this->getWGType()} genkey", $this->getInstanceWG()));
-        if ($v === '' || strlen((string) base64_decode($v, true)) !== 32) {
-            $v = base64_encode(random_bytes(32));
-        }
-        return $v;
+        return base64_encode(random_bytes(32));
     }
 
     // PersistentKeepalive пира. AWG 3.0 разрешает диапазон («20-30»), что убирает
-    // строго периодический keepalive как признак туннеля. Значение гейтится
-    // версией tools: старый клиентский стек на «20-30» упадёт при разборе.
+    // строго периодический keepalive как признак туннеля.
     public function awgKeepalive()
     {
         $v = (string) ($this->getPacConf()[$this->getInstanceWG(1) . 'amnezia_keepalive'] ?? '');
-        if ($v === '' || $this->awgSupports3() !== true) {
+        if ($v === '') {
             return 20;
+        }
+        // Диапазон разбирают только tools 3.0, одиночное число — любые.
+        // Гасим ровно диапазон и ровно при заведомо старой версии: на null
+        // (контейнер не ответил) понижать нельзя — иначе моргнувший ssh молча
+        // перепишет keepalive во всех клиентских конфигах. Тот же принцип, что
+        // в amneziaKeysUsable().
+        if (strpos($v, '-') !== false && $this->awgSupports3() === false) {
+            return self::keepaliveInt($v);
         }
         return $v;
     }
@@ -22564,12 +22612,21 @@ DNS-over-HTTPS with IP:
             return "$lo-$hi";
         };
 
-        $rngS = function ($min, $max) {
-            $s1 = random_int($min, $max);
-            do {
-                $s2 = random_int($min, $max);
-            } while ($s1 + 56 === $s2 || $s1 === $s2);
-            return [$s1, $s2];
+        // Подбор S1..S4 по границам шаблона. Два инварианта: S1 !== S2 и
+        // различающиеся размеры пакетов на проводе (awgPacketSizesOk —
+        // официальное правило AmneziaVPN, см. AWG_PACKET_BASE). Диапазоны
+        // шаблонов узкие, коллизии редки — rejection sampling с потолком.
+        $rngSizes = function (array $bounds) {
+            $out = [];
+            for ($try = 0; $try < 200; $try++) {
+                foreach ($bounds as $k => [$lo, $hi]) {
+                    $out[$k] = random_int($lo, $hi);
+                }
+                if ($out['S1'] !== $out['S2'] && self::awgPacketSizesOk($out)) {
+                    break;
+                }
+            }
+            return $out;
         };
 
         // 2.0 H1-H4: non-overlapping ranges in AWG 2.0 "MIN-MAX" format.
@@ -22608,11 +22665,11 @@ DNS-over-HTTPS with IP:
             // 2.0 templates: каждое из I1–I5 даёт пакет ≥100 байт
             // (рекомендуемый минимум, habr.com/ru/companies/amnezia/articles/1014636/).
             case 'aggressive_2':
-                [$s1, $s2] = $rngS(40, 64);
+                $s = $rngSizes(['S1' => [40, 64], 'S2' => [40, 64], 'S3' => [32, 64], 'S4' => [16, 32]]);
                 return $rngH2() + [
                     'Jc' => 10, 'Jmin' => 256, 'Jmax' => 1024,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(32, 64), 'S4' => random_int(16, 32),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(150, 250) . '>',
                     'I2' => '<t><r ' . random_int(100, 200) . '>',
                     'I3' => '<r ' . random_int(100, 200) . '>',
@@ -22622,11 +22679,11 @@ DNS-over-HTTPS with IP:
 
             case 'mobile_2':
                 // Для mobile приоритет маскировки выше экономии батареи/трафика.
-                [$s1, $s2] = $rngS(15, 32);
+                $s = $rngSizes(['S1' => [15, 32], 'S2' => [15, 32], 'S3' => [0, 32], 'S4' => [0, 16]]);
                 return $rngH2() + [
                     'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(0, 32), 'S4' => random_int(0, 16),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(100, 150) . '>',
                     'I2' => '<t><r ' . random_int(100, 130) . '>',
                     'I3' => '<r ' . random_int(100, 130) . '>',
@@ -22635,10 +22692,10 @@ DNS-over-HTTPS with IP:
                 ];
 
             case 'classic_1':
-                [$s1, $s2] = $rngS(15, 64);
+                $s = $rngSizes(['S1' => [15, 64], 'S2' => [15, 64]]);
                 return $rngH1() + [
                     'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1000,
-                    'S1' => $s1, 'S2' => $s2,
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
                 ];
 
             // 3.0 templates: 2.0-набор + AWG_KEYS_3. S1..S4 держим >= 12
@@ -22647,11 +22704,11 @@ DNS-over-HTTPS with IP:
             // RekeyAfterTime: иначе пир отбросит сессию раньше, чем попробует
             // сделать рекей, и туннель будет рвать раз в пару минут.
             case 'aggressive_3':
-                [$s1, $s2] = $rngS(40, 64);
+                $s = $rngSizes(['S1' => [40, 64], 'S2' => [40, 64], 'S3' => [32, 64], 'S4' => [16, 32]]);
                 return $rngH2() + [
                     'Jc' => 10, 'Jmin' => 256, 'Jmax' => 1024,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(32, 64), 'S4' => random_int(16, 32),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(150, 250) . '>',
                     'I2' => '<t><r ' . random_int(100, 200) . '>',
                     'I3' => '<r ' . random_int(100, 200) . '>',
@@ -22667,12 +22724,14 @@ DNS-over-HTTPS with IP:
                 ];
 
             case 'mobile_3':
-                [$s1, $s2] = $rngS(self::AWG_HPK_MIN_S, 32);
+                $s = $rngSizes([
+                    'S1' => [self::AWG_HPK_MIN_S, 32], 'S2' => [self::AWG_HPK_MIN_S, 32],
+                    'S3' => [self::AWG_HPK_MIN_S, 32], 'S4' => [self::AWG_HPK_MIN_S, 16],
+                ]);
                 return $rngH2() + [
                     'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(self::AWG_HPK_MIN_S, 32),
-                    'S4' => random_int(self::AWG_HPK_MIN_S, 16),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(100, 150) . '>',
                     'I2' => '<t><r ' . random_int(100, 130) . '>',
                     'I3' => '<r ' . random_int(100, 130) . '>',
@@ -22689,12 +22748,14 @@ DNS-over-HTTPS with IP:
                 ];
 
             case 'standard_3':
-                [$s1, $s2] = $rngS(self::AWG_HPK_MIN_S, 64);
+                $s = $rngSizes([
+                    'S1' => [self::AWG_HPK_MIN_S, 64], 'S2' => [self::AWG_HPK_MIN_S, 64],
+                    'S3' => [self::AWG_HPK_MIN_S, 64], 'S4' => [self::AWG_HPK_MIN_S, 32],
+                ]);
                 return $rngH2() + [
                     'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1024,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(self::AWG_HPK_MIN_S, 64),
-                    'S4' => random_int(self::AWG_HPK_MIN_S, 32),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(120, 200) . '>',
                     'I2' => '<t><r ' . random_int(100, 150) . '>',
                     'I3' => '<r ' . random_int(100, 150) . '>',
@@ -22711,11 +22772,11 @@ DNS-over-HTTPS with IP:
 
             case 'standard_2':
             default:
-                [$s1, $s2] = $rngS(15, 64);
+                $s = $rngSizes(['S1' => [15, 64], 'S2' => [15, 64], 'S3' => [0, 64], 'S4' => [0, 32]]);
                 return $rngH2() + [
                     'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1024,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(0, 64), 'S4' => random_int(0, 32),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(120, 200) . '>',
                     'I2' => '<t><r ' . random_int(100, 150) . '>',
                     'I3' => '<r ' . random_int(100, 150) . '>',
@@ -22723,6 +22784,19 @@ DNS-over-HTTPS with IP:
                     'I5' => '<rc ' . random_int(100, 150) . '>',
                 ];
         }
+    }
+
+    // Профиль того же семейства для другой версии протокола (standard_3 →
+    // standard_2). Нужен везде, где версия набора и записанный amnezia_tpl
+    // могут разъехаться: иначе ротация генерирует поля по шаблону чужой версии.
+    public static function awgTemplateForVer(string $tpl, int $ver): string
+    {
+        if ($ver === 1) {
+            return 'classic_1';
+        }
+        $base = preg_replace('~_\d$~', '', $tpl) ?: 'standard';
+        $out  = "{$base}_$ver";
+        return isset(self::AMNEZIA_TEMPLATE_LABELS[$out]) ? $out : "standard_$ver";
     }
 
     // Шаблоны, доступные для версии протокола. Порядок = порядок кнопок.
