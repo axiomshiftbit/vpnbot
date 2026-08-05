@@ -17144,6 +17144,25 @@ DNS-over-HTTPS with IP:
         $this->sendFile($this->input['from'], new CURLStringFile($t, 'socat.sh', 'application/x-sh'));
     }
 
+    // Версия ocserv в контейнере oc. `ocserv --version` печатает
+    // «OpenConnect VPN Server 1.5.0», затем «Compiled with: …» и «GnuTLS
+    // version: …». Берём и версию сервера, и GnuTLS: именно она определяет
+    // доступный набор TLS-шифров, а меняется независимо от пина —
+    // её тянет базовый образ, а не OCSERV_VERSION.
+    //
+    // Фолбэк — build-пин OCSERV_VERSION из .env (контейнер не отвечает);
+    // он может расходиться с образом, пока тот не пересобран, поэтому
+    // расхождение помечаем в меню — так же, как у caddy (naiveVersion()).
+    public function ocservVersion(): array
+    {
+        $out = (string) $this->ssh('ocserv --version 2>&1', 'oc');
+        return [
+            'running' => preg_match('~OpenConnect VPN Server\s+(v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*)~i', $out, $m) ? $m[1] : '',
+            'pinned'  => trim((string) getenv('OCSERV_VERSION')),
+            'gnutls'  => preg_match('~GnuTLS version:\s*(\S+)~i', $out, $m) ? $m[1] : '',
+        ];
+    }
+
     public function ocMenu()
     {
         $ocserv = file_get_contents('/config/ocserv.conf');
@@ -17157,6 +17176,23 @@ DNS-over-HTTPS with IP:
         $this->syncOcUsers($clients);
         $online = $this->getOcOnlineUsers($clients);
         $text[] = "Menu -> OpenConnect";
+        $ver    = $this->ocservVersion();
+        if ($ver['running'] !== '' || $ver['pinned'] !== '') {
+            $esc  = fn($v) => htmlspecialchars((string) $v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $line = 'ocserv: <code>' . $esc($ver['running'] ?: '—') . '</code>';
+            // Три разных состояния, и путать их нельзя: пустой running — это
+            // «контейнер не ответил», а не «пин разошёлся с образом».
+            // Сравниваем без ведущей «v»: в .env пин записан как «1.5.0».
+            if ($ver['pinned'] !== '' && $ver['running'] === '') {
+                $line .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, контейнер не отвечает)';
+            } elseif ($ver['pinned'] !== '' && ltrim($ver['pinned'], 'vV') !== ltrim($ver['running'], 'vV')) {
+                $line .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, нужна пересборка)';
+            }
+            if ($ver['gnutls'] !== '') {
+                $line .= '  GnuTLS: <code>' . $esc($ver['gnutls']) . '</code>';
+            }
+            $text[] = $line;
+        }
         $text[] = $this->i18n('camouflage') . ': ' . $this->i18n($cs === '' ? 'off' : 'on');
         $text[] = $this->i18n('server') . ": <code>$url</code>";
         $data[] = [
