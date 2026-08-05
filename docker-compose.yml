@@ -226,7 +226,7 @@ services:
             args:
                 image: ${IMAGE}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260730}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -275,7 +275,7 @@ services:
             args:
                 image: ${IMAGE}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260730}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -493,7 +493,7 @@ services:
             args:
                 image: ${IMAGE}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260730}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
         cap_add:
             - NET_ADMIN

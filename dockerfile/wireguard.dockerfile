@@ -11,7 +11,7 @@ FROM $image
 # receive.go `len(elem.packet) == 0`), а паддинг эту длину меняет — keepalive
 # считались данными и наоборот («fix: keepalives are ignored»).
 ARG AWG_GO_VERSION=v3.0.20260805
-ARG AWG_TOOLS_VERSION=v3.0.20260730
+ARG AWG_TOOLS_VERSION=v3.0.20260805
 ARG WGCF_VERSION=v2.2.32
 ARG TUN2SOCKS_VERSION=v2.6.0
 
