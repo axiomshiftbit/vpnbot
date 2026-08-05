@@ -42,6 +42,13 @@ class Bot
     // Потолок N у CPS-тегов <r>/<rc>/<rd> из офф. таблицы Tag Types
     // (docs.amnezia.org/documentation/amnezia-wg). См. validateCPSLine().
     public const CPS_MAX_LEN = 1000;
+    // Границы MTU клиентского конфига. Взяты из валидатора самого AmneziaVPN
+    // (client/ui/qml/Pages2/PageProtocolAwgClientSettings.qml:
+    // IntValidator { bottom: 576; top: 65535 }) — значение вне диапазона
+    // приложение не примет, и узнает об этом пользователь уже при импорте,
+    // а не в момент настройки. См. validateMTU().
+    public const MTU_MIN = 576;
+    public const MTU_MAX = 65535;
     // Поля, которые перегенерируются авто-ротацией. HeaderProtectionKey включён
     // осознанно: он даёт самый заметный статический отпечаток, но после каждой
     // ротации ВСЕ клиенты обязаны перекачать конфиг — рассинхрон HPK рвёт
@@ -9822,7 +9829,10 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter MTU",
+            "@{$this->input['username']} enter MTU\n\n"
+            . 'Допустимо: <code>' . self::MTU_MIN . '..' . self::MTU_MAX . '</code> — вне этих границ конфиг не примет клиент AmneziaVPN. '
+            . "Пусто или <code>0</code> — вернуть значение по умолчанию ({$this->mtu}).\n"
+            . 'Ниже 1280 в туннеле перестанет работать IPv6.',
             $this->input['message_id'],
             reply: 'enter MTU',
         );
@@ -9839,7 +9849,10 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter MTU",
+            "@{$this->input['username']} enter MTU\n\n"
+            . 'Допустимо: <code>' . self::MTU_MIN . '..' . self::MTU_MAX . '</code> — вне этих границ конфиг не примет клиент AmneziaVPN. '
+            . "Пусто или <code>0</code> — вернуть значение инстанса.\n"
+            . 'Ниже 1280 в туннеле перестанет работать IPv6.',
             $this->input['message_id'],
             reply: 'enter MTU',
         );
@@ -9866,15 +9879,36 @@ DNS-over-HTTPS with IP:
         $this->menu('wg', $page);
     }
 
+    // Пусто или 0 — сброс на дефолт бота, это не ошибка. Всё остальное обязано
+    // быть числом в допустимых границах: раньше сюда проходила любая строка
+    // (sanitizeConfValue только режет переводы строк), уезжала в MTU клиентских
+    // конфигов и ломала их уже у пользователя. См. validateMTU().
+    public static function validateMTU(string $s): string
+    {
+        if (!preg_match('~^\d{1,5}$~', $s)) {
+            return 'MTU задаётся числом (без пробелов, знаков и единиц измерения)';
+        }
+        $v = (int) $s;
+        if ($v < self::MTU_MIN || $v > self::MTU_MAX) {
+            return "MTU допустим в пределах " . self::MTU_MIN . '..' . self::MTU_MAX
+                . ": конфиг с $v клиент AmneziaVPN не примет";
+        }
+        return '';
+    }
+
     public function setMTU($text, $page = 0, $inst = null)
     {
         $this->promptInstWG($inst);
-        $text = self::sanitizeConfValue($text);
-        $c = $this->getPacConf();
-        if ($text) {
-            $c[$this->getInstanceWG(1) . 'mtu'] = $text;
-        } else {
+        $text = trim((string) self::sanitizeConfValue($text));
+        $c    = $this->getPacConf();
+        if ($text === '' || $text === '0') {
             unset($c[$this->getInstanceWG(1) . 'mtu']);
+        } elseif ($err = self::validateMTU($text)) {
+            $this->update($this->input['chat'], $this->input['message_id'], $err);
+            sleep(3);
+            return $this->menu('wg', $page);
+        } else {
+            $c[$this->getInstanceWG(1) . 'mtu'] = (int) $text;
         }
         $this->setPacConf($c);
         $this->menu('wg', $page);
@@ -9887,10 +9921,17 @@ DNS-over-HTTPS with IP:
         if (empty($clients[$client])) {
             return $this->menu('wg', $page);
         }
-        if (!empty((int) $text)) {
-            $clients[$client]['interface']['MTU'] = (int) $text;
-        } else {
+        // Раньше здесь стоял `(int) $text`, и мусор вроде «abc» молча давал 0,
+        // то есть тихий сброс MTU вместо сообщения об ошибке.
+        $text = trim((string) $text);
+        if ($text === '' || $text === '0') {
             unset($clients[$client]['interface']['MTU']);
+        } elseif ($err = self::validateMTU($text)) {
+            $this->update($this->input['chat'], $this->input['message_id'], $err);
+            sleep(3);
+            return $this->menu('client', "{$client}_$page");
+        } else {
+            $clients[$client]['interface']['MTU'] = (int) $text;
         }
         $this->saveClients($clients);
         $this->menu('client', "{$client}_$page");

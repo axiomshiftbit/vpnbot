@@ -240,6 +240,21 @@ wgAssert(mb_strlen(Bot::sanitizeConfValue(str_repeat('x', 500))) === 256, 'дл�
 wgAssert(!str_contains(Bot::sanitizeConfValue("ok\n[Peer]\nPublicKey = evil"), "\n"),
     'инъекция строк конфига через имя пира невозможна');
 
+// ── validateMTU(): границы клиента AmneziaVPN ───────────────────────────────
+// IntValidator { bottom: 576; top: 65535 } в PageProtocolAwgClientSettings.qml.
+// До этой проверки в MTU уезжала любая строка и ломала конфиг уже у клиента.
+foreach (['576', '1280', '1350', '65535'] as $ok) {
+    wgAssert(Bot::validateMTU($ok) === '', "validateMTU('$ok') должен пройти");
+}
+foreach (['575', '0', '65536', '99999', 'abc', '1350 ', '', '-1', '1350.0', '1e3', '013500'] as $bad) {
+    wgAssert(Bot::validateMTU($bad) !== '', "validateMTU('$bad') должен упасть");
+}
+// Границы именно те, что у клиента, — если константы разъедутся, тест упадёт.
+wgAssert(Bot::MTU_MIN === 576 && Bot::MTU_MAX === 65535, 'границы MTU разъехались с валидатором AmneziaVPN');
+wgAssert(Bot::validateMTU((string) (Bot::MTU_MIN - 1)) !== '' && Bot::validateMTU((string) Bot::MTU_MIN) === '',
+    'нижняя граница MTU невключительна');
+wgAssert(Bot::validateMTU((string) Bot::MTU_MAX) === '', 'верхняя граница MTU должна приниматься');
+
 if ($failed) {
     echo "wg_instance_test FAILED ($failed)\n";
     exit(1);
