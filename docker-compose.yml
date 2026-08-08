@@ -316,7 +316,10 @@ services:
         build:
             dockerfile: dockerfile/adguard.dockerfile
             args:
-                image: ${IMAGE}
+                # Форма :-default обязательна: голое ${ADGUARD_VERSION} при
+                # отсутствии переменной передаёт пустую строку, она перекрывает
+                # дефолт ARG, и FROM adguard/adguardhome: роняет сборку.
+                ADGUARD_VERSION: ${ADGUARD_VERSION:-v0.107.78}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - type: volume

@@ -931,6 +931,9 @@ class Bot
             case preg_match('~^/changeCaddyVersion$~', $this->input['callback'], $m):
                 $this->changeCaddyVersion();
                 break;
+            case preg_match('~^/changeAdguardVersion$~', $this->input['callback'], $m):
+                $this->changeAdguardVersion();
+                break;
             case preg_match('~^/changeHysteriaPass$~', $this->input['callback'], $m):
                 $this->changeHysteriaPass();
                 break;
@@ -21612,6 +21615,67 @@ DNS-over-HTTPS with IP:
         $this->menu('adguard');
     }
 
+    // Версия AdGuardHome в контейнере ad. `AdGuardHome --version` печатает
+    // «AdGuard Home, version v0.107.78» и сразу выходит, конфига не требует.
+    // Полный путь обязателен — бинаря нет в PATH; 2>&1 обязателен — ssh()
+    // читает только stdout. Тем же транспортом бот уже стартует и гасит демон
+    // (startAd/stopAd), так что новых точек отказа не появляется.
+    //
+    // Не через HTTP API /control/status: порт веб-панели живёт в
+    // /config/AdGuardHome.yaml и меняется пользователем, плюс нужен basic-auth —
+    // две лишние причины не получить версию там, где хватает одной команды.
+    //
+    // Фолбэк — build-пин ADGUARD_VERSION из .env (контейнер не отвечает); он
+    // расходится с образом, пока тот не пересобран, поэтому расхождение
+    // помечаем в меню — так же, как у ocserv и caddy.
+    public function adguardVersion(): array
+    {
+        $out = (string) $this->ssh('/opt/adguardhome/AdGuardHome --version 2>&1', 'ad');
+        return [
+            'running' => preg_match('~AdGuard\s*Home,?\s*version\s+(v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*)~i', $out, $m) ? $m[1] : '',
+            'pinned'  => trim((string) getenv('ADGUARD_VERSION')),
+        ];
+    }
+
+    public function changeAdguardVersion()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} введите версию AdGuardHome тегом <code>vX.Y.Z</code> (например <code>v0.107.78</code>).\n\n"
+            . "Теги — на hub.docker.com/r/adguard/adguardhome/tags.\n\n"
+            . "ВНИМАНИЕ: понижать версию нельзя. AdGuardHome мигрирует "
+            . "<code>/config/AdGuardHome.yaml</code> вперёд без обратной совместимости — "
+            . "после отката старая версия свой же конфиг не прочитает.\n\n"
+            . "Пин ложится в .env; чтобы он применился, образ нужно пересобрать: "
+            . "<code>docker compose build ad</code>, затем <code>make r</code>.",
+            $this->input['message_id'],
+            reply: 'введите версию AdGuardHome',
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chAdguardVersion',
+            'args'           => [],
+        ]);
+    }
+
+    public function chAdguardVersion($v)
+    {
+        $v = trim((string) $v);
+        // Теги AdGuard: v0.107.78, изредка беты вида v0.108.0-b.90.
+        if (!preg_match('~^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$~', $v)) {
+            $this->update($this->input['chat'], $this->input['message_id'], 'нужен тег вида vX.Y.Z (например v0.107.78)');
+            sleep(3);
+            return $this->menu('adguard');
+        }
+        $this->setEnvVar('ADGUARD_VERSION', $v);
+        // setEnvVar меняет только .env: без putenv getenv() до рестарта php
+        // отдавал бы старый пин, и меню показывало бы, что ничего не изменилось
+        // (тот же приём, что в chCaddyVersion).
+        putenv("ADGUARD_VERSION=$v");
+        $this->menu('adguard');
+    }
+
     public function adguardMenu()
     {
         $conf   = $this->getPacConf();
@@ -21627,6 +21691,19 @@ DNS-over-HTTPS with IP:
         $status = $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off');
         $safesearch = yaml_parse_file($this->adguard)['filtering']['safe_search']['enabled'];
         $text .= "\n\nstatus: $status\t\tsafesearch: " . $this->i18n($safesearch ? 'on' : 'off');
+        $ver = $this->adguardVersion();
+        if ($ver['running'] !== '' || $ver['pinned'] !== '') {
+            $esc   = fn($v) => htmlspecialchars((string) $v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $text .= "\nAdGuardHome: <code>" . $esc($ver['running'] ?: '—') . '</code>';
+            // Три разных состояния, и путать их нельзя: пустой running — это
+            // «контейнер не ответил», а не «пин разошёлся с образом».
+            // Сравниваем без ведущей «v» — так же, как в ocMenu.
+            if ($ver['pinned'] !== '' && $ver['running'] === '') {
+                $text .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, контейнер не отвечает)';
+            } elseif ($ver['pinned'] !== '' && ltrim($ver['pinned'], 'vV') !== ltrim($ver['running'], 'vV')) {
+                $text .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, нужна пересборка)';
+            }
+        }
         $allowedClients = yaml_parse_file($this->adguard)['dns']['allowed_clients'];
         $text .= $allowedClients ? "\n\nallowed clients: \n - " . implode("\n - ", $allowedClients) : '';
 
@@ -21652,6 +21729,12 @@ DNS-over-HTTPS with IP:
                     'text'          => 'ClientID' . ($conf['adguardkey'] ? ": {$conf['adguardkey']}" : ''),
                     'callback_data' => "/setAdguardKey",
                 ],
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => 'AdGuardHome: ' . ($ver['pinned'] ?: '—'),
+                'callback_data' => '/changeAdguardVersion',
             ],
         ];
         $data[] = [
