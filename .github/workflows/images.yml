@@ -157,6 +157,13 @@ jobs:
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
           echo "count=$(echo "${MATRIX}" | jq 'length')" >> "$GITHUB_OUTPUT"
           echo "Собираем: ${SEL:-(нечего)}"
+          # В сводку запуска: иначе, чтобы понять, почему собралось 14 образов
+          # вместо одного, приходится лезть в лог джоба.
+          {
+            echo "### Образы к сборке"
+            echo ""
+            echo "${SEL:-_нечего: правка не задела ни одного образа_}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: plan
