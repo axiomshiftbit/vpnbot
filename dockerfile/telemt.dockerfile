@@ -9,7 +9,7 @@
 #
 # Бинарь запускается ботом по ssh: restartTelemt() пишет /telemt/telemt.toml
 # и поднимает `telemt run`.
-ARG image=alpine:3.18.2
+ARG image=alpine:3.23
 ARG TELEMT_VERSION=3.4.25
 
 FROM ghcr.io/telemt/telemt:${TELEMT_VERSION} AS dl

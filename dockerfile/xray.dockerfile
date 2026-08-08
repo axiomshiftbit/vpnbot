@@ -1,4 +1,4 @@
-ARG image=alpine:3.18.2
+ARG image=alpine:3.23
 FROM $image
 
 # ── Версия Xray-core ──────────────────────────────────────────────────────────

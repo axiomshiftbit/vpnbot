@@ -257,7 +257,10 @@ ttAssert(
 
 // ── 6. status-version 2: порядок колонок ────────────────────────────────────
 $row  = 'CLIENT_LIST,alice,203.0.113.7:51820,10.8.0.2,,1024,2048,2026-08-02 10:00:00,1785600000,UNDEF,3,4,AES-256-GCM';
-$cols = str_getcsv($row);
+// $escape задаём явно: в PHP 8.4 вызов без него — deprecated, а с 9.0 значение
+// по умолчанию меняется на "" (сейчас "\"). OpenVPN status-version 2 экранирования
+// не использует, поэтому пустая строка — то же поведение, но зафиксированное.
+$cols = str_getcsv($row, ',', '"', '');
 ttAssert($cols[1] === 'alice', 'колонка 1 — Common Name');
 ttAssert($cols[2] === '203.0.113.7:51820', 'колонка 2 — Real Address');
 ttAssert($cols[3] === '10.8.0.2', 'колонка 3 — Virtual Address');
