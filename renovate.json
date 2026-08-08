@@ -41,10 +41,9 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Базовый alpine трогаем только в пределах минорной ветки: смена мажора тянет за собой пересборку всех образов и другой набор пакетов.",
+      "description": "Alpine нельзя поднимать выше 3.23: начиная с 3.24 из репозиториев вырезан пакет unit (NGINX Unit), которым запускается php-контейнер, — образ php просто перестанет собираться. Снимать потолок только вместе с переездом php на другой сервер приложений.",
       "matchDepNames": ["alpine"],
-      "matchUpdateTypes": ["major"],
-      "enabled": false
+      "allowedVersions": "<3.24"
     },
     {
       "description": "amneziawg-go и amneziawg-tools обязаны идти одной версией — иначе awg-tools не понимает формат ядра.",
