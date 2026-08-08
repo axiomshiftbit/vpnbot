@@ -1569,6 +1569,9 @@ class Bot
             case preg_match('~^/include (\w+)$~', $this->input['callback'], $m):
                 $this->include($m[1]);
                 break;
+            case preg_match('~^/dedupeList (\w+)(?: (\d+))?$~', $this->input['callback'], $m):
+                $this->dedupeList($m[1], (int) ($m[2] ?? 0));
+                break;
             case preg_match('~^/exclude (\d+)$~', $this->input['callback'], $m):
                 $this->exclude($m[1]);
                 break;
@@ -4358,25 +4361,49 @@ NFT;
         $r = $this->request('getFile', ['file_id' => $this->input['file_id']]);
         $f = file_get_contents($this->file . $r['result']['file_path']);
         if (!empty($f)) {
+            // Инициализация обязательна: без неё файл, в котором не нашлось ни
+            // одной валидной строки, оставлял $list неопределённым, и присвоение
+            // ниже стирало весь список пользователя.
+            $list   = [];
+            $merged = 0;
             foreach (explode("\n", $f) as $v) {
                 if (!empty($s = trim($v))) {
                     $t = explode(';', $s);
+                    // Формат экспорта — «запись;1», но импортируют и простые
+                    // списки доменов без второй колонки. Раньше отсутствующий
+                    // $t[1] давал false, и весь импорт приезжал выключенным.
+                    $on = (bool) ($t[1] ?? 1);
                     if ($type == 'rulessetlist') {
                         if (preg_match('~^.+:.+:https?://.+~', $t[0])) {
-                            $list[$t[0]] = (bool) $t[1];
+                            $list[$t[0]] = $on;
                         }
                     } elseif ($type == 'datlist') {
                         if (preg_match('~^[\w.\-]+\.dat:https://.+~i', $t[0])) {
-                            $list[$t[0]] = (bool) $t[1];
+                            $list[$t[0]] = $on;
+                        }
+                    } elseif ($this->isRouteEntryList($type)) {
+                        // Тот же путь, что у ручного ввода: punycode и отсев
+                        // мусора. Импорт шёл мимо него, и в списке оседали
+                        // записи, которые ядро потом молча выбрасывало.
+                        $key = $this->normalizeRouteEntry($t[0]);
+                        if (trim($key) !== '') {
+                            $list[$key] = $on;
                         }
                     } else {
-                        $list[$t[0]] = (bool) $t[1];
+                        $list[$t[0]] = $on;
                     }
                 }
+            }
+            if ($this->isRouteEntryList($type)) {
+                ['list' => $list, 'removed' => $merged] = $this->dedupeRouteList($list);
+                ksort($list);
             }
             $p = $this->getPacConf();
             $p[$type] = $list;
             $this->setPacConf($p);
+            if ($merged > 0) {
+                $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
+            }
         }
         $this->backXtlsList($type);
     }
@@ -8339,12 +8366,32 @@ DNS-over-HTTPS with IP:
         if (!empty($domains)) {
             $conf    = $this->getPacConf();
             $lastKey = null;
+            $dups    = 0;
+            $merged  = 0;
+            // Канон уже накопленных записей: добавляемое сравниваем не с текстом
+            // ключа, а со смыслом — vk.com, domain:vk.com, VK.com и vk.com. это
+            // одна запись, и вторая копия лишь засоряет список и конфиги ядер.
+            $seen = [];
+            if ($this->isRouteEntryList($type)) {
+                foreach (array_keys($conf[$type] ?? []) as $k) {
+                    if (($canon = $this->routeEntryCanonKey((string) $k)) !== '') {
+                        $seen[$canon] = (string) $k;
+                    }
+                }
+            }
             foreach ($domains as $v) {
                 if (in_array($type, ['white', 'deny'])) {
                     $conf[$type][] = $v;
                     $lastKey       = $v;
                 } elseif (in_array($type, ['rulessetlist', 'packagelist', 'processlist'])) {
-                    $lastKey             = trim($v);
+                    $lastKey = trim($v);
+                    // Доменного канона у URL правил и имён процессов нет, но
+                    // буквальный повтор всё равно не должен сбрасывать тумблер
+                    // уже существующей записи.
+                    if (array_key_exists($lastKey, $conf[$type] ?? [])) {
+                        $dups++;
+                        continue;
+                    }
                     $conf[$type][$lastKey] = true;
                 } else {
                     // Мусорный ввод (пустой префикс "keyword:", битый IP вроде
@@ -8355,13 +8402,41 @@ DNS-over-HTTPS with IP:
                     if (trim($key) === '') {
                         continue;
                     }
+                    $canon = $this->routeEntryCanonKey($key);
+                    if ($canon !== '' && isset($seen[$canon])) {
+                        // Повтор уже имеющейся записи. Её состояние НЕ трогаем:
+                        // раньше повторное добавление молча включало обратно то,
+                        // что пользователь выключил тумблером. Навигацию уводим
+                        // на страницу существующей записи.
+                        $dups++;
+                        $lastKey = $seen[$canon];
+                        continue;
+                    }
+                    // $seen новыми записями НЕ пополняем: дубли внутри одной
+                    // пачки схлопнёт dedupeRouteList ниже — он, в отличие от
+                    // порядка ввода, выберет более явную форму.
                     $lastKey             = $key;
                     $conf[$type][$lastKey] = true;
                 }
             }
+            if (in_array($type, ['white', 'deny'])) {
+                // Список без ключей: буквальные повторы копятся молча.
+                $conf[$type] = array_values(array_unique($conf[$type]));
+            } elseif ($this->isRouteEntryList($type)) {
+                // Заодно схлопываем дубли, накопленные до появления канона (и
+                // те, что раньше означали разное: голая запись в xray была
+                // подстрокой, а domain: — суффиксом).
+                ['list' => $conf[$type], 'removed' => $merged] = $this->dedupeRouteList($conf[$type]);
+            }
             ksort($conf[$type]);
             $this->setPacConf($conf);
             $page = (int) floor(array_search($lastKey, array_keys($conf[$type])) / $this->limit);
+            if ($dups > 0) {
+                $this->send($this->input['from'], $this->i18n('duplicates skipped') . ": $dups");
+            }
+            if ($merged > 0) {
+                $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
+            }
         }
         $page = $page ?: -2;
         $this->backXtlsList($type, $page);
@@ -8593,7 +8668,7 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             if ($c['kind'] == 'ip') {
-                $ip[] = $c['value'];
+                $ip[] = $this->ipCanon($c['value']);
             } elseif ($c['kind'] == 'extip') {
                 $ip[] = 'ext:' . $this->extAssetRef($c['value']); // ext ip-dat в поле ip[]
             } elseif ($c['kind'] == 'geoip') {
@@ -8602,20 +8677,186 @@ DNS-over-HTTPS with IP:
                 $domain[] = $this->xrayDomainToken($c);
             }
         }
-        return ['domain' => $domain, 'ip' => $ip];
+        // Разные по написанию, но одинаковые по смыслу записи (1.2.3.4 и
+        // 1.2.3.4/32, vk.com и domain:vk.com) дают здесь один и тот же токен —
+        // в конфиг он должен попасть однажды.
+        return [
+            'domain' => array_values(array_unique($domain)),
+            'ip'     => array_values(array_unique($ip)),
+        ];
+    }
+
+    /**
+     * Канонический вид IP-записи: одинаковые адреса, записанные по-разному,
+     * дают одну строку. IPv6 сжимается и опускается в нижний регистр
+     * (2001:0DB8:0000::1 -> 2001:db8::1), host-маска (/32 у IPv4, /128 у IPv6)
+     * отбрасывается — 1.2.3.4 и 1.2.3.4/32 это один и тот же одиночный адрес.
+     *
+     * Сеть НЕ пересчитывается: 1.2.3.4/24 остаётся как введено, а не
+     * превращается в 1.2.3.0/24. Привести её «правильно» значило бы молча
+     * поменять смысл записи за пользователя.
+     */
+    public function ipCanon(string $ip): string
+    {
+        $ip     = trim($ip);
+        $prefix = null;
+        if (preg_match('~^(.+)/(\d{1,3})$~', $ip, $m)) {
+            $ip     = $m[1];
+            $prefix = (int) $m[2];
+        }
+        if (str_contains($ip, ':') && ($bin = @inet_pton($ip)) !== false) {
+            $ip = inet_ntop($bin);
+        }
+        $host = str_contains($ip, ':') ? 128 : 32;
+        if ($prefix === null || $prefix === $host) {
+            return $ip;
+        }
+        return "$ip/$prefix";
     }
 
     /**
      * Дописывает host-маску к «голому» IP для форматов, требующих обязательный
      * CIDR (sing-box ip_cidr, mihomo IP-CIDR/IP-CIDR6). Уже указанный /prefix не
      * трогаем. IPv6 -> /128, IPv4 -> /32.
+     *
+     * Адресная часть проходит через ipCanon, иначе 1.2.3.4 и 1.2.3.4/32 дают
+     * два разных элемента ip_cidr, и array_unique их не схлопнет.
      */
     public function ipWithCidr(string $ip): string
     {
+        $ip = $this->ipCanon($ip);
         if (str_contains($ip, '/')) {
             return $ip;
         }
         return $ip . (str_contains($ip, ':') ? '/128' : '/32');
+    }
+
+    /**
+     * Канонический вид hostname для сравнения: punycode + нижний регистр,
+     * завершающая точка отброшена (vk.com. — та же зона, что vk.com).
+     *
+     * Точку режем ДО idn_to_ascii: пустая последняя метка нарушает IDNA, и
+     * функция вернула бы false на совершенно нормальном имени.
+     */
+    public function hostCanon(string $host): string
+    {
+        $host = rtrim(trim($host), '.');
+        // Сюда ходит и отрисовка меню списка (кнопка «схлопнуть дубли»), а intl
+        // есть не в каждой сборке php: без него обходимся без punycode —
+        // unicode-домены схлопнутся лишь при точном совпадении, — но меню
+        // обязано открыться. Симметрично routeEntryLabel(), которая по той же
+        // причине не полагается на idn_to_utf8() безусловно.
+        $a = function_exists('idn_to_ascii') ? idn_to_ascii($host) : false;
+        return mb_strtolower($a === false ? $host : $a);
+    }
+
+    /**
+     * Ключ, по которому две записи маршрутизации считаются одной и той же.
+     * НЕ хранится и НЕ показывается: в списке остаётся форма пользователя
+     * (её же показывает routeEntryLabel), канон нужен только для сравнения —
+     * поэтому старые записи в pac.json не нуждаются в миграции.
+     *
+     * Одинаковыми считаются:
+     *   vk.com == domain:vk.com == VK.com == vk.com.   (после выравнивания
+     *       xray голая запись и domain: означают один и тот же суффикс)
+     *   1.2.3.4 == 1.2.3.4/32 ; 2001:DB8::1 == 2001:db8::1
+     *   keyword:Reddit == keyword:reddit ; geoip:CN == geoip:cn
+     * Разными остаются full: и domain: (exact-match против суффикса) и любые
+     * два regexp:, отличающиеся регистром — RE2 регистрозависим, regexp:VK и
+     * regexp:vk матчат разное.
+     *
+     * Пустая строка означает «канона нет» (пустой префикс, битый IP): такие
+     * записи схлопывать не с чем, их отсеивает routeEntryUsable на выдаче.
+     */
+    public function routeEntryCanonKey(string $e): string
+    {
+        $c = $this->classifyRouteEntry($e);
+        if (!$this->routeEntryUsable($c)) {
+            return '';
+        }
+        $v = trim($c['value']);
+        switch ($c['kind']) {
+            case 'ip':
+                return 'i:' . $this->ipCanon($v);
+            case 'regexp':
+                return 'r:' . $v;
+            case 'keyword':
+                return 'k:' . mb_strtolower($v);
+            case 'geosite':
+                return 'gs:' . mb_strtolower($v);
+            case 'geoip':
+                return 'gi:' . mb_strtolower($v);
+            // ext:/extip: — ссылка file.dat:tag; xray сам приводит категорию к
+            // нижнему регистру при чтении .dat, так что регистр тега не значим.
+            case 'ext':
+                return 'x:' . mb_strtolower($v);
+            case 'extip':
+                return 'xi:' . mb_strtolower($v);
+            case 'full':
+                return 'f:' . $this->hostCanon($v);
+            default: // domain и голая запись (suffix) — один и тот же суффикс
+                return 'd:' . $this->hostCanon($v);
+        }
+    }
+
+    /**
+     * Списки маршрутизации, записи которых сравнимы по смыслу
+     * (routeEntryCanonKey). Остальные списки хранят не хосты, а URL правил и
+     * имена процессов/пакетов — доменный канон к ним неприменим.
+     */
+    public function isRouteEntryList(string $type): bool
+    {
+        return in_array($type, ['blocklist', 'warplist', 'includelist', 'subnetlist'], true);
+    }
+
+    /**
+     * Схлопывает семантические дубли в pac-списке (ключ => вкл/выкл).
+     *
+     * Победителем остаётся более явная форма (domain:vk.com берёт верх над
+     * vk.com): явный префикс читается одинаково всеми тремя ядрами. Состояние
+     * объединяется по ИЛИ — включённая копия не должна пропасть из-за
+     * выключенного дубля.
+     *
+     * @return array{list:array,removed:int}
+     */
+    public function dedupeRouteList(array $list): array
+    {
+        $winner = []; // канон => ключ, оставленный в списке
+        $out     = [];
+        $removed = 0;
+        foreach ($list as $k => $on) {
+            $k     = (string) $k;
+            $canon = $this->routeEntryCanonKey($k);
+            if ($canon === '') {
+                $out[$k] = $on; // канона нет — сравнивать не с чем
+                continue;
+            }
+            if (!isset($winner[$canon])) {
+                $winner[$canon] = $k;
+                $out[$k]        = (bool) $on;
+                continue;
+            }
+            $removed++;
+            $prev = $winner[$canon];
+            $on   = ((bool) $on) || $out[$prev];
+            if ($this->routeEntryExplicit($k) && !$this->routeEntryExplicit($prev)) {
+                unset($out[$prev]);
+                $winner[$canon] = $k;
+                $out[$k]        = $on;
+            } else {
+                $out[$prev] = $on;
+            }
+        }
+        return ['list' => $out, 'removed' => $removed];
+    }
+
+    /**
+     * Записана ли запись с явным префиксом (domain:/full:/keyword:/…), а не
+     * голым хостом. Используется при выборе победителя среди дублей.
+     */
+    public function routeEntryExplicit(string $e): bool
+    {
+        return $this->classifyRouteEntry($e)['kind'] !== 'suffix';
     }
 
     /**
@@ -11148,13 +11389,25 @@ DNS-over-HTTPS with IP:
     public function listPac($type, $page, $menu, $basename = false)
     {
         $text = [];
+        $domains = $this->getPacConf()[$type];
         $data[] = [
             [
                 'text'          => $this->i18n('add'),
                 'callback_data' => "/include $type",
             ],
         ];
-        $domains = $this->getPacConf()[$type];
+        // Кнопка чистки — только когда есть что чистить. Списки, накопленные до
+        // появления канона, держат дубли, которые глазами в меню не разглядеть:
+        // vk.com и domain:vk.com стоят в разных местах отсортированного списка.
+        if ($this->isRouteEntryList($type) && !empty($domains)) {
+            $dupes = $this->dedupeRouteList($domains)['removed'];
+            if ($dupes > 0) {
+                $data[0][] = [
+                    'text'          => $this->i18n('dedupe') . " ($dupes)",
+                    'callback_data' => "/dedupeList $type $page",
+                ];
+            }
+        }
         if (!empty($domains)) {
             $all     = (int) ceil(count($domains) / $this->limit);
             $page    = min($page, $all - 1);
@@ -11252,6 +11505,30 @@ DNS-over-HTTPS with IP:
             ];
         }
         return [$data, $text];
+    }
+
+    /**
+     * Схлопывает семантические дубли в уже накопленном списке по кнопке.
+     *
+     * Отдельным действием, а не автоматически в getPacConf()/setPacConf():
+     * getPacConf() зовётся десятки раз за запрос, а setPacConf() — из
+     * параллельных вебхук-воркеров, и молча переписывать там пользовательские
+     * списки нельзя.
+     */
+    public function dedupeList($type, $page = 0)
+    {
+        if (!$this->isRouteEntryList($type)) {
+            return;
+        }
+        $conf = $this->getPacConf();
+        ['list' => $list, 'removed' => $removed] = $this->dedupeRouteList($conf[$type] ?? []);
+        if ($removed > 0) {
+            ksort($list);
+            $conf[$type] = $list;
+            $this->setPacConf($conf);
+        }
+        $this->answer($this->input['callback_id'], $this->i18n('duplicates merged') . ": $removed");
+        $this->backXtlsList($type, $page);
     }
 
     public function listPacChange($type, $action, $key, $page = 0)
@@ -20707,7 +20984,10 @@ DNS-over-HTTPS with IP:
                                 break;
 
                             default:
-                                echo yaml_emit(['payload' => array_values(array_filter(array_map(function($e) {
+                                // array_unique в конце: vk.com и domain:vk.com дают
+                                // одно и то же DOMAIN-SUFFIX-правило, 1.2.3.4 и
+                                // 1.2.3.4/32 — один IP-CIDR.
+                                echo yaml_emit(['payload' => array_values(array_unique(array_filter(array_map(function($e) {
                                     $cl = $this->classifyRouteEntry($e);
                                     if (!$this->routeEntryUsable($cl)) {
                                         return null; // пустое значение / битый IP
@@ -20725,13 +21005,13 @@ DNS-over-HTTPS with IP:
                                         case 'regexp':
                                             return "DOMAIN-REGEX,{$cl['value']}";
                                         case 'keyword':
-                                            return "DOMAIN-KEYWORD,{$cl['value']}";
+                                            return 'DOMAIN-KEYWORD,' . mb_strtolower($cl['value']);
                                         case 'full':
-                                            return "DOMAIN,{$cl['value']}";
+                                            return 'DOMAIN,' . $this->hostCanon($cl['value']);
                                         default: // domain, suffix
-                                            return "DOMAIN-SUFFIX,{$cl['value']}";
+                                            return 'DOMAIN-SUFFIX,' . $this->hostCanon($cl['value']);
                                     }
-                                }, $v['list']), fn($r) => $r !== null))]);
+                                }, $v['list']), fn($r) => $r !== null)))]);
                                 break;
 
                         }
@@ -21016,6 +21296,58 @@ DNS-over-HTTPS with IP:
         return $arr;
     }
 
+    /**
+     * Раскладывает записи pac-списка по полям sing-box rule-set с учётом
+     * префиксов маршрутизации. Порядок ключей задаёт форму итогового правила.
+     *
+     * Вынесено из createSrs() отдельным методом: та функция пишет заголовки и
+     * заканчивается exit, так что покрыть раскладку тестом иначе невозможно.
+     *
+     * @return array<string,array>
+     */
+    public function srsBuckets(array $entries): array
+    {
+        $buckets = [
+            'domain_regex'   => [],
+            'domain_keyword' => [],
+            'domain'         => [], // exact-match (full:)
+            'domain_suffix'  => [],
+            'ip_cidr'        => [],
+        ];
+        foreach ($entries as $j) {
+            $cl = $this->classifyRouteEntry($j);
+            if (!$this->routeEntryUsable($cl)) {
+                continue; // пустое значение / битый IP
+            }
+            switch ($cl['kind']) {
+                case 'ext':   // xray-only .dat — sing-box не понимает, пропускаем
+                case 'extip':
+                case 'geosite': // встроенные категории xray: в sing-box их роль
+                case 'geoip':   // играют rule-set'ы, голый токен невалиден
+                    continue 2;
+                case 'ip':
+                    $buckets['ip_cidr'][] = $this->ipWithCidr($cl['value']);
+                    break;
+                case 'regexp':
+                    $buckets['domain_regex'][] = $cl['value'];
+                    break;
+                case 'keyword':
+                    $buckets['domain_keyword'][] = mb_strtolower($cl['value']);
+                    break;
+                case 'full':
+                    $buckets['domain'][] = $this->hostCanon($cl['value']);
+                    break;
+                default: // domain, suffix
+                    $buckets['domain_suffix'][] = $this->hostCanon($cl['value']);
+                    break;
+            }
+        }
+        // vk.com и domain:vk.com дают один и тот же domain_suffix, 1.2.3.4 и
+        // 1.2.3.4/32 — один ip_cidr: в скомпилированный rule-set они должны
+        // попасть по разу.
+        return array_map(fn($v) => array_values(array_unique($v)), $buckets);
+    }
+
     public function createSrs(string $name, array $rules)
     {
         $rules = $this->cleanEmptyKeys($rules);
@@ -21024,45 +21356,8 @@ DNS-over-HTTPS with IP:
         $f = "/tmp/$name" . time() . rand(1, 100);
         foreach ($rules as $k => $v) {
             if (array_key_exists('domain_suffix', $v)) {
-                // Раскладываем записи по полям sing-box rule-set с учётом префиксов
-                // маршрутизации. Порядок ключей задаёт форму итогового правила.
-                $buckets = [
-                    'domain_regex'   => [],
-                    'domain_keyword' => [],
-                    'domain'         => [], // exact-match (full:)
-                    'domain_suffix'  => [],
-                    'ip_cidr'        => [],
-                ];
-                foreach ($v['domain_suffix'] as $j) {
-                    $cl = $this->classifyRouteEntry($j);
-                    if (!$this->routeEntryUsable($cl)) {
-                        continue; // пустое значение / битый IP
-                    }
-                    switch ($cl['kind']) {
-                        case 'ext':   // xray-only .dat — sing-box не понимает, пропускаем
-                        case 'extip':
-                        case 'geosite': // встроенные категории xray: в sing-box их роль
-                        case 'geoip':   // играют rule-set'ы, голый токен невалиден
-                            continue 2;
-                        case 'ip':
-                            $buckets['ip_cidr'][] = $this->ipWithCidr($cl['value']);
-                            break;
-                        case 'regexp':
-                            $buckets['domain_regex'][] = $cl['value'];
-                            break;
-                        case 'keyword':
-                            $buckets['domain_keyword'][] = $cl['value'];
-                            break;
-                        case 'full':
-                            $buckets['domain'][] = $cl['value'];
-                            break;
-                        default: // domain, suffix
-                            $buckets['domain_suffix'][] = $cl['value'];
-                            break;
-                    }
-                }
                 unset($rules[$k]['domain_suffix']);
-                foreach ($buckets as $field => $vals) {
+                foreach ($this->srsBuckets($v['domain_suffix']) as $field => $vals) {
                     if (!empty($vals)) {
                         $rules[$k][$field] = $vals;
                     }
@@ -21073,10 +21368,10 @@ DNS-over-HTTPS with IP:
             // голый IP (неявно /32 или /128), но приводим к явной маске ради
             // паритета с xray/mihomo. Идемпотентно: запись с /prefix не трогаем.
             if (!empty($rules[$k]['ip_cidr'])) {
-                $rules[$k]['ip_cidr'] = array_map(
+                $rules[$k]['ip_cidr'] = array_values(array_unique(array_map(
                     fn($ip) => $this->ipWithCidr($ip),
                     $rules[$k]['ip_cidr'],
-                );
+                )));
             }
         }
         file_put_contents($f, json_encode([

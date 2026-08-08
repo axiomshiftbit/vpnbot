@@ -253,6 +253,18 @@ $i = [
         'en' => 'add',
         'ru' => 'добавить',
     ],
+    'dedupe'               => [
+        'en' => 'merge duplicates',
+        'ru' => 'схлопнуть дубли',
+    ],
+    'duplicates skipped'   => [
+        'en' => 'duplicates skipped',
+        'ru' => 'дубли пропущены',
+    ],
+    'duplicates merged'    => [
+        'en' => 'duplicates merged',
+        'ru' => 'дубли объединены',
+    ],
     'donate'               => [
         'en' => 'donate',
         'ru' => 'донат',
