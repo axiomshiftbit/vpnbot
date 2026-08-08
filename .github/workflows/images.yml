@@ -171,6 +171,15 @@ jobs:
     runs-on: ubuntu-latest
     # tt компилирует два Rust-бинаря с нуля; остальные укладываются в 20 минут.
     timeout-minutes: 120
+    # bake-action по умолчанию заливает build record (*.dockerbuild) артефактом
+    # прогона: трасса сборки вместе с окружением раннера. Репозиторий приватный,
+    # образы тянет тот же владелец — читать эту трассу некому, а лежит она
+    # рядом с логами. Выключаем по той же логике, что provenance/sbom ниже.
+    # Кавычки не для красоты: actions/toolkit читает эти переменные как строку и
+    # сравнивает с 'false' — YAML-булев сюда попадает только через сериализацию.
+    env:
+      DOCKER_BUILD_SUMMARY: 'false'
+      DOCKER_BUILD_RECORD_UPLOAD: 'false'
     strategy:
       fail-fast: false
       matrix:
