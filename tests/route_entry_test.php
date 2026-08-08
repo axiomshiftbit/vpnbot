@@ -53,8 +53,11 @@ foreach (['keyword:', 'regexp:', 'domain:', 'full:', 'ext:', 'extip:', 'ext:dlc.
     $c = $bot->classifyRouteEntry($empty);
     routeTestAssert(!$bot->routeEntryUsable($c), "пустая запись [$empty] не должна считаться пригодной");
 }
+// Голая запись уезжает в конфиг как domain: — то есть суффиксом, а не
+// подстрокой: иначе "vk.com" матчил бы и "myvk.community.org", расходясь с
+// sing-box (domain_suffix) и mihomo (DOMAIN-SUFFIX) на том же списке.
 $rules = $bot->listToXrayRules(['keyword:' => true, 'vk.com' => true]);
-routeTestAssert($rules['domain'] === ['vk.com'], 'пустой keyword: должен отсеиваться, домен — оставаться');
+routeTestAssert($rules['domain'] === ['domain:vk.com'], 'пустой keyword: должен отсеиваться, домен — оставаться');
 
 // ── geoip/geosite раскладываются по правильным полям xray ────────────────────
 $rules = $bot->listToXrayRules(['geoip:cn' => true, 'geosite:cn' => true]);

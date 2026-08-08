@@ -8493,6 +8493,15 @@ DNS-over-HTTPS with IP:
      * Строит элемент xray-поля "domain" из классифицированной записи либо null,
      * если это IP (его место в поле "ip"). У xray нет префикса keyword: — голая
      * строка в поле domain уже трактуется как substring/keyword-совпадение.
+     *
+     * Голая запись списка (kind=suffix) отдаётся ИМЕННО как "domain:", а не
+     * голой строкой: голая строка в xray — это подстрока, то есть "vk.com"
+     * матчит и "myvk.community.org". sing-box (createSrs) и mihomo
+     * (clashRules) кладут такую запись в domain_suffix/DOMAIN-SUFFIX, то есть
+     * трактуют её как суффикс, — и пользователь, добавивший домен в block,
+     * ожидает именно суффикс. Раньше три ядра расходились на одном и том же
+     * списке; теперь голая строка остаётся только за keyword:, для которого у
+     * xray отдельного префикса действительно нет.
      */
     public function xrayDomainToken(array $c): ?string
     {
@@ -8501,14 +8510,35 @@ DNS-over-HTTPS with IP:
             case 'extip': // ext ip-dat — его место в поле "ip", не "domain"
             case 'geoip': // встроенная geoip-категория — тоже только в "ip"
                 return null;
-            case 'keyword':
-            case 'suffix':
+            case 'keyword': // у xray нет префикса keyword: — только голая строка
                 return $c['value'];
+            case 'suffix':
+                return 'domain:' . $c['value'];
             case 'ext': // ext домен-dat: xray принимает "ext:file.dat:tag" в domain[]
                 return 'ext:' . $this->extAssetRef($c['value']);
             default: // regexp, full, domain, geosite — xray понимает эти префиксы нативно
                 return "{$c['kind']}:{$c['value']}";
         }
+    }
+
+    /**
+     * Разбирает токен ИЗ ГОТОВОГО xray-конфига (routing.rules[].domain), а не
+     * запись pac-списка. Отличие ровно одно, но принципиальное: голая строка в
+     * xray означает совпадение по подстроке, то есть keyword, — тогда как в
+     * pac-списке голая запись означает суффикс домена.
+     *
+     * Нужно там, где конфиг перечитывается сам из себя (клиентская пересборка
+     * при t=s): без этого keyword-запись, у которой в xray нет префикса, на
+     * втором проходе классифицировалась бы как suffix и уезжала в конфиг уже
+     * как "domain:" — молча меняя правило с подстроки на суффикс.
+     */
+    public function classifyXrayToken(string $token): array
+    {
+        $c = $this->classifyRouteEntry($token);
+        if ($c['kind'] === 'suffix') {
+            $c['kind'] = 'keyword';
+        }
+        return $c;
     }
 
     /**
@@ -20351,7 +20381,9 @@ DNS-over-HTTPS with IP:
                     // а домен — по ошибке там же. geosite:/geoip: НЕ вырезаем —
                     // клиент тоже xray, штатная geodata у него есть.
                     $sort = function ($j, $tag) use (&$ips, &$domains) {
-                        $cl = $this->classifyRouteEntry($j);
+                        // Вход — токены уже собранного xray-конфига, а не записи
+                        // pac-списка: голая строка здесь значит keyword, не суффикс.
+                        $cl = $this->classifyXrayToken($j);
                         // ext:/extip: — серверные .dat, на клиенте файла нет.
                         // Пустые/битые записи не отдаём клиенту по той же причине,
                         // что и серверу: пустой токен в domain[] матчит всё.
