@@ -129,6 +129,10 @@ class Bot
     public $warpclients = [];
     // Мемо версий wg/awg на инстанс в пределах одного запроса (см. wgVersions).
     public $wgVerCache = [];
+    // Ответ на callback уже отправлен (выставляет answer()). Объявлено явно:
+    // с PHP 8.2 запись в необъявленное свойство — deprecated, а на 8.4 это
+    // сыпало бы предупреждением на каждое нажатие кнопки.
+    public $callback = false;
 
     public function __construct($key, $i18n)
     {
@@ -4361,7 +4365,11 @@ NFT;
         ]);
     }
 
-    public function importListFile($message = '', $type)
+    // $message без значения по умолчанию: параметр со значением ПЕРЕД
+    // обязательным PHP считает обязательным и с 8.0 пишет об этом deprecation
+    // на каждый разбор файла. Вызов один — из reply() и всегда с обоими
+    // аргументами ($message, $type), так что дефолт был декоративным.
+    public function importListFile($message, $type)
     {
         $r = $this->request('getFile', ['file_id' => $this->input['file_id']]);
         $f = file_get_contents($this->file . $r['result']['file_path']);

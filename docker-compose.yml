@@ -651,11 +651,8 @@ services:
         image: ghcr.io/axiomshiftbit/vpnbot-ovpn:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/openvpn.dockerfile
-            # Отдельная Alpine-база (новее глобального ${IMAGE}) — чтобы получить
-            # openssl 3.5 LTS и свежий openvpn 2.6.x без обновления остальных
-            # сервисов, которые пока завязаны на alpine 3.18.
             args:
-                image: alpine:3.22
+                image: ${IMAGE:-alpine:3.23}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/openvpn:/etc/openvpn
@@ -694,10 +691,8 @@ services:
         image: ghcr.io/axiomshiftbit/vpnbot-ipsec:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/ipsec.dockerfile
-            # Отдельная Alpine-база (новее глобального ${IMAGE}) — свежие
-            # strongswan/openssl, как у сервиса ovpn.
             args:
-                image: alpine:3.22
+                image: ${IMAGE:-alpine:3.23}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/ipsec:/config/ipsec
