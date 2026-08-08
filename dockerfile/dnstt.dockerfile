@@ -1,4 +1,4 @@
-ARG image
+ARG image=alpine:3.18.2
 FROM golang:alpine AS go
 RUN apk add --no-cache git \
     && git clone https://www.bamsoftware.com/git/dnstt.git \

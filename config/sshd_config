@@ -117,9 +117,23 @@ Subsystem	sftp	internal-sftp
 #	ForceCommand cvs server
 HostKeyAlgorithms +ssh-rsa
 PubkeyAcceptedKeyTypes +ssh-rsa
-PasswordAuthentication yes
-AllowTcpForwarding yes
-PermitTunnel yes
-GatewayPorts yes
-X11Forwarding yes
-LogLevel QUIET
+
+# Этот файл монтируется во ВСЕ контейнеры, включая wg/wg1, которые терминируют
+# недоверенный клиентский трафик и доступны из клиентского сегмента.
+# Единственный потребитель этих sshd — Bot::ssh(): ssh2_auth_pubkey_file +
+# ssh2_exec. Ни forwarding, ни tunnel, ни пароли, ни X11 ему не нужны, а для
+# того, кто дотянулся до порта 22 контейнера, это готовый прокси внутрь
+# docker-сети. Оставляем ровно то, чем пользуемся.
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+AllowTcpForwarding no
+PermitTunnel no
+GatewayPorts no
+X11Forwarding no
+AllowAgentForwarding no
+# QUIET прятал в том числе неудачные попытки входа — на контейнере, доступном
+# из клиентского сегмента, это ровно тот лог, который нужен.
+LogLevel INFO

@@ -127,12 +127,17 @@ function start()
                 $time = microtime(true);
                 $j++;
             }
-            if ($exclude && preg_match('~' . implode('|', $exclude) . '~', $v)) {
+            if ($exclude && preg_match(excludePattern($exclude), $v)) {
                 continue;
             }
             fwrite($f, preg_quote($v) . "\n");
 
-            preg_match('~(.+)\.([^.]+)$~', $v, $m);
+            // Без точки в имени совпадения нет: $m остаётся пустым, и в PAC
+            // уезжал мусор вида {"":[[null]]}, а strlen(null) в PHP 9 станет
+            // TypeError. Такую строку просто пропускаем.
+            if (!preg_match('~(.+)\.([^.]+)$~', $v, $m)) {
+                continue;
+            }
             $t[$m[2]][strlen($m[1])][] = $m[1];
         }
         fclose($f);
@@ -246,6 +251,7 @@ function download($index)
 
 ini_set('memory_limit', '256M');
 require __DIR__ . '/timezone.php';
+require_once __DIR__ . '/exclude_pattern.php';
 // require __DIR__ . '/debug.php';
 require __DIR__ . '/bot.php';
 require __DIR__ . '/config.php';

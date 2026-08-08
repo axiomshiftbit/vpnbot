@@ -20,12 +20,12 @@ volumes:
 
 services:
     up:
-        image: mercurykd/vpnbot-ng:1.1
+        image: ghcr.io/axiomshiftbit/vpnbot-ng:${VPNBOT_TAG:-dev}
         build:
             context: dockerfile
             dockerfile: nginx.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/upstream.conf:/etc/nginx/nginx.conf
@@ -64,12 +64,12 @@ services:
                 ipv4_address: 10.10.0.10
         logging: *default-logging
     ng:
-        image: mercurykd/vpnbot-ng:1.1
+        image: ghcr.io/axiomshiftbit/vpnbot-ng:${VPNBOT_TAG:-dev}
         build:
             context: dockerfile
             dockerfile: nginx.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/nginx.conf:/etc/nginx/nginx.conf
@@ -114,11 +114,11 @@ services:
             timeout: 5s
             retries: 3
     php:
-        image: mercurykd/vpnbot-php:1.7
+        image: ghcr.io/axiomshiftbit/vpnbot-php:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         ports:
             - 127.0.0.1:8081:8080
         volumes:
@@ -166,11 +166,11 @@ services:
             timeout: 5s
             retries: 5
     service:
-        image: mercurykd/vpnbot-php:1.7
+        image: ghcr.io/axiomshiftbit/vpnbot-php:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/php.ini:/etc/php81/php.ini
@@ -220,23 +220,31 @@ services:
             - tt
             - ovpn
     wg:
-        image: mercurykd/vpnbot-wg:1.5
+        image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
+                image: ${IMAGE:-alpine:3.18.2}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg0.conf:/etc/wireguard/wg0.conf
-            - ./config/pac.json:/pac.json
+            # :ro — каталог смонтирован ради чтения /config/pac.json (start_wg.sh,
+            # reset_wg.sh). Без него контейнер, терминирующий недоверенный
+            # клиентский трафик, имел запись в xray.json, clients.json,
+            # ocserv.passwd и credentials.toml. wg0.conf монтируется отдельно.
+            - ./config:/config:ro
             - ./scripts/start_wg.sh:/start_wg.sh
             - ./scripts/reset_wg.sh:/reset_wg.sh
             - ./scripts/block_torrent.sh:/block_torrent.sh
             - ./scripts/block_exchange.sh:/block_exchange.sh
-            - ./ssh:/ssh
+            # Только ПУБЛИЧНЫЙ ключ (./ssh/pub кладёт start_php.sh). Полный /ssh
+            # содержит и приватный ключ, которым бот заходит root'ом во ВСЕ
+            # контейнеры, — а этот контейнер терминирует недоверенный клиентский
+            # трафик. start_wg.sh нужен только key.pub для authorized_keys.
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
         hostname: wireguard
         container_name: wireguard-${VER}
@@ -261,23 +269,25 @@ services:
                 ipv4_address: 10.10.0.4
         logging: *default-logging
     wg1:
-        image: mercurykd/vpnbot-wg:1.5
+        image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
+                image: ${IMAGE:-alpine:3.18.2}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg1.conf:/etc/wireguard/wg0.conf
-            - ./config/pac.json:/pac.json
+            # :ro — см. комментарий у wg0-сервиса.
+            - ./config:/config:ro
             - ./scripts/start_wg.sh:/start_wg.sh
             - ./scripts/reset_wg.sh:/reset_wg.sh
             - ./scripts/block_torrent.sh:/block_torrent.sh
             - ./scripts/block_exchange.sh:/block_exchange.sh
-            - ./ssh:/ssh
+            # Только публичный ключ — см. комментарий у сервиса wg.
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
         hostname: wireguard1
         container_name: wireguard1-${VER}
@@ -302,11 +312,14 @@ services:
                 ipv4_address: 10.10.0.14
         logging: *default-logging
     ad:
-        image: mercurykd/vpnbot-ad:1.4
+        image: ghcr.io/axiomshiftbit/vpnbot-ad:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/adguard.dockerfile
             args:
-                image: ${IMAGE}
+                # Форма :-default обязательна: голое ${ADGUARD_VERSION} при
+                # отсутствии переменной передаёт пустую строку, она перекрывает
+                # дефолт ARG, и FROM adguard/adguardhome: роняет сборку.
+                ADGUARD_VERSION: ${ADGUARD_VERSION:-v0.107.78}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - type: volume
@@ -337,12 +350,12 @@ services:
         entrypoint: ["/bin/sh", "/start_ad.sh"]
         logging: *default-logging
     telemt:
-        image: mercurykd/vpnbot-telemt:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-telemt:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/telemt.dockerfile
             args:
-                image: ${IMAGE}
-                TELEMT_VERSION: ${TELEMT_VERSION:-3.4.18}
+                image: ${IMAGE:-alpine:3.18.2}
+                TELEMT_VERSION: ${TELEMT_VERSION:-3.4.25}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
@@ -367,11 +380,11 @@ services:
                 ipv4_address: 10.10.0.20
         logging: *default-logging
     xr:
-        image: mercurykd/vpnbot-xr:1.7
+        image: ghcr.io/axiomshiftbit/vpnbot-xr:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/xray.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 XRAY_VERSION: ${XRAY_VERSION:-}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -399,11 +412,11 @@ services:
                 ipv4_address: 10.10.1.9
         logging: *default-logging
     oc:
-        image: mercurykd/vpnbot-oc:1.2
+        image: ghcr.io/axiomshiftbit/vpnbot-oc:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/ocserv.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 OCSERV_VERSION: ${OCSERV_VERSION:-1.5.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -434,17 +447,29 @@ services:
                 ipv4_address: 10.10.0.11
         logging: *default-logging
     np:
-        image: mercurykd/vpnbot-np:1.3
+        image: ghcr.io/axiomshiftbit/vpnbot-np:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/naive.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
+                # CADDY_VERSION и FORWARDPROXY_VERSION меняются ТОЛЬКО парой:
+                # тег плагина = версия caddy + суффикс -naive (см. dockerfile).
+                CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.25}
+                XCADDY_VERSION: ${XCADDY_VERSION:-v0.4.5}
+                CADDY_VERSION: ${CADDY_VERSION:-v2.11.2}
+                FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.2-naive}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./config:/config
+            # :ro — caddy только читает /config/Caddyfile (пишет его бот из
+            # php-контейнера), свои данные держит в /root/.local/share/caddy.
+            - ./config:/config:ro
             - ./certs:/certs
+            # Нужен для лога caddy (/logs/caddy): его пишет и start_np.sh, и
+            # сам caddy блоком `log` из Caddyfile. Без монтирования лог оседал
+            # бы в эфемерной ФС контейнера и пропадал при recreate.
+            - ./logs/:/logs/
             - ./scripts/start_np.sh:/start_np.sh
         hostname: naive
         container_name: naive-${VER}
@@ -465,14 +490,14 @@ services:
                 ipv4_address: 10.10.0.12
         logging: *default-logging
     wp:
-        image: mercurykd/vpnbot-wg:1.5
+        image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v0.2.19}
-                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v1.0.20260618-2}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.2.31}
+                image: ${IMAGE:-alpine:3.18.2}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
+                AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
         cap_add:
             - NET_ADMIN
         sysctls:
@@ -483,7 +508,8 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./config:/config
+            # :ro — start_wp.sh только читает /config/pac.json.
+            - ./config:/config:ro
             - ./scripts/start_wp.sh:/start_wp.sh
             - ./scripts/warp_fixup.sh:/warp_fixup.sh
             - ./scripts/warp_probe.sh:/warp_probe.sh
@@ -517,11 +543,11 @@ services:
                 ipv4_address: 10.10.0.13
         logging: *default-logging
     proxy:
-        image: mercurykd/vpnbot-ss:1.4
+        image: ghcr.io/axiomshiftbit/vpnbot-ss:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/sslocal.json:/config.json
@@ -547,15 +573,24 @@ services:
         command: ["/bin/sh", "/start_proxy.sh"]
         logging: *default-logging
     ss:
-        image: mercurykd/vpnbot-ss:1.4
+        image: ghcr.io/axiomshiftbit/vpnbot-ss:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
+                # Пустое значение любого из четырёх = releases/latest
+                # (прежнее поведение). Значения по умолчанию — то, что стоит
+                # в бою; менять здесь не нужно, правьте .env.
+                SS_RUST_VERSION: ${SS_RUST_VERSION:-v1.24.0}
+                V2RAY_PLUGIN_VERSION: ${V2RAY_PLUGIN_VERSION:-v5.49.0}
+                CLOAK_VERSION: ${CLOAK_VERSION:-v2.12.0}
+                SIMPLE_TLS_VERSION: ${SIMPLE_TLS_VERSION:-v0.8.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/ssserver.json:/config.json
-            - ./config:/config
+            # :ro — start_ss.sh читает ck/stls-конфиги и пишет только в /tmp;
+            # рабочий /config.json смонтирован отдельным файлом выше.
+            - ./config:/config:ro
             - ./certs:/certs:ro
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
@@ -584,11 +619,11 @@ services:
                 ipv4_address: 10.10.0.6
         logging: *default-logging
     dnstt:
-        image: mercurykd/vpnbot-dnstt:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-dnstt:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/dnstt.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
@@ -613,7 +648,7 @@ services:
                 ipv4_address: 10.10.0.16
         logging: *default-logging
     ovpn:
-        image: mercurykd/vpnbot-ovpn:1.2
+        image: ghcr.io/axiomshiftbit/vpnbot-ovpn:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/openvpn.dockerfile
             # Отдельная Alpine-база (новее глобального ${IMAGE}) — чтобы получить
@@ -625,6 +660,9 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/openvpn:/etc/openvpn
             - ./scripts/start_ovpn.sh:/start_ovpn.sh
+            # Миграции server.conf отдельным файлом: их дёргает и стартовый
+            # скрипт, и бот после восстановления конфигурации из бэкапа.
+            - ./scripts/ovpn_migrate.sh:/ovpn_migrate.sh
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs
@@ -653,7 +691,7 @@ services:
                 ipv4_address: 10.10.0.19
         logging: *default-logging
     ipsec:
-        image: mercurykd/vpnbot-ipsec:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-ipsec:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/ipsec.dockerfile
             # Отдельная Alpine-база (новее глобального ${IMAGE}) — свежие
@@ -664,6 +702,9 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/ipsec:/config/ipsec
             - ./scripts/start_ipsec.sh:/start_ipsec.sh
+            # Миграции swanctl.conf отдельным файлом: их дёргает и стартовый
+            # скрипт, и бот после восстановления конфигурации из бэкапа.
+            - ./scripts/ipsec_migrate.sh:/ipsec_migrate.sh
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs
@@ -702,7 +743,7 @@ services:
                 ipv4_address: 10.10.0.21
         logging: *default-logging
     tt:
-        image: mercurykd/vpnbot-tt:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-tt:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/trusttunnel.dockerfile
             args:
@@ -735,18 +776,21 @@ services:
                 ipv4_address: 10.10.0.18
         logging: *default-logging
     hy:
-        image: mercurykd/vpnbot-hysteria:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-hysteria:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/hysteria.dockerfile
             args:
-                image: ${IMAGE}
+                # :-default обязателен: пустая подстановка перекрыла бы дефолт
+                # ARG, и FROM с пустым тегом уронил бы сборку.
+                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.12.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./certs:/certs
             - ./logs:/logs
-            - ./config:/config
+            # :ro — hysteria только читает /config/hysteria.yaml (пишет его бот).
+            - ./config:/config:ro
             - ./scripts/start_hysteria.sh:/start_hysteria.sh
         hostname: hysteria
         container_name: hysteria-${VER}

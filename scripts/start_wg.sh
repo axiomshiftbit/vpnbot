@@ -21,40 +21,38 @@ else
 fi
 iptables -t nat -A POSTROUTING --destination 10.10.0.5 -j ACCEPT
 iptables -t nat -A POSTROUTING -o "$INTERFACE" -j MASQUERADE
-ln -s /etc/wireguard/wg0.conf /etc/amnezia/amneziawg/wg0.conf
+# -f: на рестарте контейнера симлинк уже есть, и голый `ln -s` только шумел
+# ошибкой в лог.
+ln -sf /etc/wireguard/wg0.conf /etc/amnezia/amneziawg/wg0.conf
+
+# Читаем pac.json через КАТАЛОГ (/config), а не через bind-mount на файл.
+# setPacConf() пишет во временный файл и делает rename() — инод меняется, а
+# bind-mount на файл прибит к старому иноду, поэтому /pac.json внутри контейнера
+# навсегда застывает на версии момента создания контейнера (на рабочем сервере там «{}» при
+# 218 КБ на хосте). Из-за этого wireguard1 при каждом рестарте поднимался
+# обычным wg-quick, хотя wg1_amnezia=1, и без block_torrent/block_exchange —
+# корректное состояние возвращал только следующий restartWG/iptablesWG из бота.
+# Монтирование каталога переживает rename; /pac.json оставлен фолбэком на
+# случай контейнера, поднятого со старым docker-compose.yml.
+PAC=/config/pac.json
+[ -f "$PAC" ] || PAC=/pac.json
 if [ "$HOSTNAME" = "wireguard1" ]
 then
-    if [ "$(jq -r '.wg1_amnezia // 0' /pac.json)" -eq 1 ]
-    then
-        awg-quick up wg0
-    else
-        wg-quick up wg0
-    fi
-    if [ "$(jq -r '.wg1_blocktorrent // 0' /pac.json)" -eq 1 ]
-    then
-        sh /block_torrent.sh
-    fi
-    if [ "$(jq -r '.wg1_exchange // 0' /pac.json)" -eq 1 ]
-    then
-        sh /block_exchange.sh
-    fi
+    PFX=wg1_
 else
-    if [ "$(jq -r '.amnezia // 0' /pac.json)" -eq 1 ]
-    then
-        awg-quick up wg0
-    else
-        wg-quick up wg0
-    fi
-    if [ "$(jq -r '.blocktorrent // 0' /pac.json)" -eq 1 ]
-    then
-        sh /block_torrent.sh
-    fi
-    if [ "$(jq -r '.exchange // 0' /pac.json)" -eq 1 ]
-    then
-        sh /block_exchange.sh
-    fi
+    PFX=
 fi
-
+# pac() печатает 1/0: битый или отсутствующий pac.json не должен ронять старт
+# сравнением `[ "" -eq 1 ]` — отдаём 0 и поднимаем инстанс в дефолтном виде.
+pac() {
+    v=$(jq -r ".${PFX}$1 // 0" "$PAC" 2>/dev/null)
+    [ "$v" = "1" ] && echo 1 || echo 0
+}
+# ВАЖЕН ПОРЯДОК: tun0, policy-routing и RETURN для клиентской подсети ставим ДО
+# поднятия wg0. Раньше интерфейс поднимался первым, а эти правила — на 15 строк
+# ниже: клиент, успевший подключиться в это окно, попадал под MASQUERADE (стр.
+# выше) и выходил в интернет НАПРЯМУЮ с публичным IP сервера, мимо tun0/xray.
+# Туннель при этом «работал», поэтому утечка была незаметной.
 ip tuntap add mode tun dev $INTERFACE_VPN || true
 ip addr add 10.255.0.1/24 dev $INTERFACE_VPN || true
 ip link set up dev $INTERFACE_VPN
@@ -64,5 +62,23 @@ iptables -A FORWARD -i $INTERFACE_VPN -j ACCEPT
 iptables -A FORWARD -o $INTERFACE_VPN -j ACCEPT
 iptables -t nat -I POSTROUTING 1 -s "$ADDRESS" -j RETURN
 tun2socks -device $INTERFACE_VPN -proxy socks5://xr:10808 &
+
+if [ "$(pac amnezia)" -eq 1 ]
+then
+    awg-quick up wg0
+else
+    wg-quick up wg0
+fi
+# block_*.sh вставляют правила через -I (в голову FORWARD), а ACCEPT для tun0
+# выше добавлен через -A (в хвост) — фильтры торрента проверяются раньше и не
+# обходятся им, порядок как был.
+if [ "$(pac blocktorrent)" -eq 1 ]
+then
+    sh /block_torrent.sh
+fi
+if [ "$(pac exchange)" -eq 1 ]
+then
+    sh /block_exchange.sh
+fi
 
 tail -f /dev/null

@@ -89,6 +89,10 @@ $i = [
         'en' => '⚠️ Your transport (%s) runs over TCP — UDP noise is NOT sent over it and masks nothing. For TCP enable TLS fragmentation instead. Noise only helps a UDP transport.',
         'ru' => '⚠️ Ваш транспорт (%s) работает по TCP — UDP-шум по нему НЕ отправляется и ничего не маскирует. Для TCP включите TLS-фрагментацию. noise полезен только для UDP-транспорта.',
     ],
+    'xhttp singbox warn'   => [
+        'en' => '⚠️ XHTTP is an Xray transport: stock sing-box has no such transport type and will reject the config. Use v2rayNG / v2rayN / mihomo, or a sing-box build with XHTTP support.',
+        'ru' => '⚠️ XHTTP — транспорт Xray: в обычном sing-box такого типа нет, конфиг он не примет. Используйте v2rayNG / v2rayN / mihomo либо сборку sing-box с поддержкой XHTTP.',
+    ],
     'sniffing'             => [
         'en' => 'Sniffing',
         'ru' => 'Сниффинг',
@@ -248,6 +252,18 @@ $i = [
     'add'                  => [
         'en' => 'add',
         'ru' => 'добавить',
+    ],
+    'dedupe'               => [
+        'en' => 'merge duplicates',
+        'ru' => 'схлопнуть дубли',
+    ],
+    'duplicates skipped'   => [
+        'en' => 'duplicates skipped',
+        'ru' => 'дубли пропущены',
+    ],
+    'duplicates merged'    => [
+        'en' => 'duplicates merged',
+        'ru' => 'дубли объединены',
     ],
     'donate'               => [
         'en' => 'donate',
@@ -829,6 +845,22 @@ $i = [
         'en' => 'offline',
         'ru' => 'оффлайн',
     ],
+    'connection log'  => [
+        'en' => 'connection log',
+        'ru' => 'лог подключений',
+    ],
+    'no log'  => [
+        'en' => 'no connections logged yet',
+        'ru' => 'подключений пока не зафиксировано',
+    ],
+    'clear log'  => [
+        'en' => 'clear log',
+        'ru' => 'очистить лог',
+    ],
+    'log cleared'  => [
+        'en' => 'connection log cleared',
+        'ru' => 'лог подключений очищен',
+    ],
     'traffic'  => [
         'en' => 'traffic',
         'ru' => 'трафик',
@@ -924,6 +956,70 @@ $i = [
     'behind NAT'  => [
         'en' => 'behind NAT (registry fix + reboot)',
         'ru' => 'за NAT (правка реестра + перезагрузка)',
+    ],
+    'warp no profile'  => [
+        'en' => 'wgcf profile is missing — restart the wp container',
+        'ru' => 'профиль wgcf отсутствует — перезапустите контейнер wp',
+    ],
+    'fp hint'  => [
+        'en' => 'uTLS masks the TLS ClientHello (JA3/JA4). chrome is the safest default; random/randomized change the fingerprint per connection, which is itself unusual for a browser.',
+        'ru' => 'uTLS маскирует TLS ClientHello (JA3/JA4). chrome — самый безопасный выбор; random/randomized меняют отпечаток на каждое соединение, что для браузера само по себе нетипично.',
+    ],
+    'fp noalpn warn'  => [
+        'en' => 'randomizednoalpn sends no ALPN: gRPC will not negotiate h2 and XHTTP falls back to http/1.1',
+        'ru' => 'randomizednoalpn не отправляет ALPN: gRPC не согласует h2, а XHTTP откатится на http/1.1',
+    ],
+    'optional'  => [
+        'en' => 'optional',
+        'ru' => 'необязательно',
+    ],
+    'change port'  => [
+        'en' => 'change port',
+        'ru' => 'сменить порт',
+    ],
+    'TrustTunnel'  => [
+        'en' => 'TrustTunnel',
+        'ru' => 'TrustTunnel',
+    ],
+    'link'  => [
+        'en' => 'link',
+        'ru' => 'ссылка',
+    ],
+    'tt config hint'  => [
+        'en' => 'endpoint config: setup_wizard --mode non-interactive --endpoint_config &lt;file&gt; --settings trusttunnel_client.toml',
+        'ru' => 'конфиг эндпоинта: setup_wizard --mode non-interactive --endpoint_config &lt;файл&gt; --settings trusttunnel_client.toml',
+    ],
+    'tt fallback'  => [
+        'en' => 'built without the endpoint binary — check the tt container',
+        'ru' => 'собран без обращения к бинарю эндпоинта — проверьте контейнер tt',
+    ],
+    'tt no deeplink'  => [
+        'en' => 'endpoint did not return a deep link (is the tt container up?)',
+        'ru' => 'эндпоинт не отдал deep link (контейнер tt поднят?)',
+    ],
+    'tt blocked'  => [
+        'en' => 'not started, missing',
+        'ru' => 'не запущен, не хватает',
+    ],
+    'tt client hint'  => [
+        'en' => 'link — for mobile apps, file — for the CLI client',
+        'ru' => 'ссылка — для мобильных приложений, файл — для CLI-клиента',
+    ],
+    'tt bad name'  => [
+        'en' => 'name is unsupported by the bot, rename it in credentials.toml',
+        'ru' => 'имя не поддерживается ботом, переименуйте в credentials.toml',
+    ],
+    'win dns guard'  => [
+        'en' => 'block-outside-dns (Windows)',
+        'ru' => 'block-outside-dns (Windows)',
+    ],
+    'win dns warn'  => [
+        'en' => 'Windows-only: non-Windows clients fail to connect',
+        'ru' => 'только Windows: остальные клиенты не подключатся',
+    ],
+    'ip via nginx'  => [
+        'en' => 'address of the nginx proxy, not the client: OpenVPN has no PROXY protocol',
+        'ru' => 'это адрес nginx-прокси, а не клиента: OpenVPN не понимает PROXY protocol',
     ],
 ];
 

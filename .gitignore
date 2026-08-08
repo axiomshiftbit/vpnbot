@@ -9,7 +9,15 @@
 !/app/zaprelists/.gitkeep
 /sftp-config.json
 /tg.pyr
+# ВНИМАНИЕ: wg0.conf/wg1.conf (как и clients*.json, pac.json, xray.json)
+# ОТСЛЕЖИВАЮТСЯ git'ом как пустые шаблоны — на уже добавленные файлы .gitignore
+# не действует, и эти строки влияют только на свежий клон. Правки на сервере
+# видны как «modified», а `update/update.sh` при обновлении с очисткой
+# (git reset --hard) возвращает их к шаблонам — это задумано, бэкап снимается
+# отдельно. Раньше здесь был только wg0.conf, из-за чего казалось, что второй
+# инстанс чем-то отличается: не отличается.
 /config/wg0.conf
+/config/wg1.conf
 # эфемерная карта «сообщение → wg-инстанс» (см. wgMsgFile в bot.php)
 /config/wg_msg.json
 /config/hwid.json

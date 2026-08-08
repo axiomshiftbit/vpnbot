@@ -1,4 +1,4 @@
-ARG image
+ARG image=alpine:3.18.2
 FROM $image
 RUN apk add --no-cache --update php81 \
     php81-mbstring \

@@ -1,0 +1,220 @@
+# Сборка и публикация образов сервисов в ghcr.io/axiomshiftbit.
+#
+# Зачем: docker-compose.yml ссылался на чужие образы mercurykd/vpnbot-*, а
+# `docker compose up` при дефолтном pull_policy=missing сначала делает pull и
+# только потом собирает недостающее. Форк переписал часть dockerfile'ов, не
+# поднимая теги, — на чистом хосте скачивались образы автора, и правки форка
+# не применялись. Плюс пять образов (ss, ovpn, ipsec, tt, telemt) у автора не
+# существуют вовсе, а сборка tt — это cargo build двух Rust-бинарей, который
+# на VPS с 1-2 ГБ падает по OOM. Собираем всё здесь, на хост приезжает готовое.
+#
+# Сборка идёт через `docker buildx bake` поверх самого docker-compose.yml:
+# bake читает оттуда dockerfile, context и build.args (то есть все пины версий
+# из .env) — дублировать два десятка переменных в этом файле не нужно.
+
+name: images
+
+on:
+  push:
+    branches: [dev, master]
+    paths:
+      - 'dockerfile/**'
+      - '.env'
+      - 'docker-compose.yml'
+      - '.github/workflows/images.yml'
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Сервисы через запятую (ng,php,wg,...). Пусто — все 14.'
+        required: false
+        default: ''
+  # Базовые образы запиннены не все (golang:alpine, python:3.13-slim,
+  # debian:bookworm-slim), а часть сборок тянет релизы с github. Еженедельный
+  # прогон подбирает патчи безопасности.
+  schedule:
+    - cron: '0 4 * * 1'
+
+permissions:
+  contents: read
+  packages: write
+
+# Отменять на полпути нельзя: половина образов уже была бы опубликована.
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      count: ${{ steps.pick.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SERVICES: ${{ inputs.services }}
+        run: |
+          set -euo pipefail
+          ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy"
+
+          # Какие образы задевает правка .env. Раньше любая строка (хоть смена
+          # таймзоны) пересобирала все 14, а это десятки минут CI из-за tt.
+          # Неизвестная переменная — повод собрать всё: пропустить нужную
+          # пересборку хуже, чем сделать лишнюю.
+          env_targets() {
+            git show "${BEFORE}:.env" 2>/dev/null | grep -E '^[A-Za-z_]+=' | sort > /tmp/env.old || true
+            git show "${GITHUB_SHA}:.env"          | grep -E '^[A-Za-z_]+=' | sort > /tmp/env.new
+            out=""
+            for v in $(diff /tmp/env.old /tmp/env.new | sed -nE 's/^[<>] ([A-Za-z_]+)=.*/\1/p' | sort -u); do
+              case "$v" in
+                XRAY_VERSION)                      out="$out xr" ;;
+                OCSERV_VERSION)                    out="$out oc" ;;
+                ADGUARD_VERSION)                   out="$out ad" ;;
+                HYSTERIA_VERSION)                  out="$out hy" ;;
+                TELEMT_VERSION)                    out="$out telemt" ;;
+                TT_REF)                            out="$out tt" ;;
+                AWG_GO_VERSION|AWG_TOOLS_VERSION|WGCF_VERSION)
+                                                   out="$out wg" ;;
+                CADDY_GO_VERSION|XCADDY_VERSION|CADDY_VERSION|FORWARDPROXY_VERSION)
+                                                   out="$out np" ;;
+                SS_RUST_VERSION|V2RAY_PLUGIN_VERSION|CLOAK_VERSION|SIMPLE_TLS_VERSION)
+                                                   out="$out ss" ;;
+                # Рантайм-настройки: в сборку не уходят вовсе.
+                TZ|IP|VER|VPNBOT_TAG|TELEGRAM_API|ENV|WGADDRESS|WG1ADDRESS|CKPORT|STLSPORT|TTPORT|OVPNPORT|OVPNPROTO|OVPNSUBNET|L2TPSUBNET|IKEV2SUBNET)
+                                                   ;;
+                # IMAGE — базовый alpine для большинства образов; всё прочее
+                # неизвестно.
+                *)                                 out="${ALL}"; break ;;
+              esac
+            done
+            echo "$out"
+          }
+
+          df2svc() {
+            case "$1" in
+              nginx.dockerfile)       echo ng ;;
+              php.dockerfile)         echo php ;;
+              wireguard.dockerfile)   echo wg ;;
+              adguard.dockerfile)     echo ad ;;
+              telemt.dockerfile)      echo telemt ;;
+              xray.dockerfile)        echo xr ;;
+              ocserv.dockerfile)      echo oc ;;
+              naive.dockerfile)       echo np ;;
+              shadowsocks.dockerfile) echo ss ;;
+              dnstt.dockerfile)       echo dnstt ;;
+              openvpn.dockerfile)     echo ovpn ;;
+              ipsec.dockerfile)       echo ipsec ;;
+              trusttunnel.dockerfile) echo tt ;;
+              hysteria.dockerfile)    echo hy ;;
+            esac
+          }
+
+          if [ -n "${SERVICES}" ]; then
+            SEL=$(echo "${SERVICES}" | tr ',' ' ')
+          elif [ "${EVENT}" != 'push' ]; then
+            SEL="${ALL}"
+          elif [ -z "${BEFORE}" ] || [ "${BEFORE}" = '0000000000000000000000000000000000000000' ]; then
+            # Первый push ветки: сравнивать не с чем.
+            SEL="${ALL}"
+          else
+            CHANGED=$(git diff --name-only "${BEFORE}" "${GITHUB_SHA}" || echo '')
+            # compose держит build.args и контексты всех сервисов, сам workflow —
+            # правила сборки: и то и другое влияет на любой образ.
+            if echo "${CHANGED}" | grep -qE '^(docker-compose\.yml|\.github/workflows/images\.yml)$'; then
+              SEL="${ALL}"
+            else
+              SEL=""
+              for f in $(echo "${CHANGED}" | grep '^dockerfile/' || true); do
+                s=$(df2svc "$(basename "$f")")
+                [ -n "$s" ] && SEL="${SEL} ${s}"
+              done
+              if echo "${CHANGED}" | grep -qE '^\.env$'; then
+                SEL="${SEL} $(env_targets)"
+              fi
+            fi
+          fi
+
+          # Уникализируем: два сервиса одного образа не должны собираться дважды.
+          # || true обязателен: при пустом SEL (правка не задела ни одного
+          # dockerfile) grep возвращает 1 и set -e уронил бы весь job.
+          SEL=$(echo "${SEL}" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' || true)
+
+          MATRIX='[]'
+          for s in ${SEL}; do
+            case "$s" in
+              hy) img=hysteria ;;   # единственное расхождение имени сервиса и образа
+              *)  img="$s" ;;
+            esac
+            MATRIX=$(echo "${MATRIX}" | jq -c --arg s "$s" --arg i "$img" '. + [{service:$s, image:$i}]')
+          done
+
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "count=$(echo "${MATRIX}" | jq 'length')" >> "$GITHUB_OUTPUT"
+          echo "Собираем: ${SEL:-(нечего)}"
+          # В сводку запуска: иначе, чтобы понять, почему собралось 14 образов
+          # вместо одного, приходится лезть в лог джоба.
+          {
+            echo "### Образы к сборке"
+            echo ""
+            echo "${SEL:-_нечего: правка не задела ни одного образа_}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    # tt компилирует два Rust-бинаря с нуля; остальные укладываются в 20 минут.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # compose объявляет override.env как необязательный, но bake разбирает
+      # весь файл целиком — пусть файл существует.
+      - run: touch override.env
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Канал публикации
+        run: echo "CHANNEL=${{ github.ref_name == 'master' && 'latest' || 'dev' }}" >> "$GITHUB_ENV"
+
+      - uses: docker/bake-action@v6
+        with:
+          files: docker-compose.yml
+          targets: ${{ matrix.service }}
+          push: true
+          # platform задаём явно: в php/wg/ss/xray жёстко зашиты ассеты
+          # linux-amd64/x86_64, на arm-раннере собралось бы нерабочее.
+          # Кеш со scope на сервис — с общим scope 14 сборок затирают друг друга.
+          # image.source нужен, чтобы пакет сам привязался к репозиторию.
+          #
+          # provenance=mode=min ОБЯЗАТЕЛЕН, пока пакеты публичные, а репозиторий
+          # приватный. В GitHub Actions buildx по умолчанию пишет mode=max, а
+          # туда попадает весь github_event_payload: тексты коммит-сообщений,
+          # имя и e-mail автора, ссылки на приватный репо. Attestation лежит
+          # рядом с образом в registry, то есть всё это утекало бы вместе с
+          # публичным пакетом. mode=min оставляет только источник и коммит.
+          set: |
+            *.platform=linux/amd64
+            *.attest=type=provenance,mode=min
+            *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:${{ env.CHANNEL }}
+            *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:sha-${{ github.sha }}
+            *.cache-from=type=gha,scope=${{ matrix.service }}
+            *.cache-to=type=gha,mode=max,scope=${{ matrix.service }}
+            *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            *.labels.org.opencontainers.image.revision=${{ github.sha }}
