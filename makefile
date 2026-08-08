@@ -13,7 +13,17 @@ b:
 	docker compose build
 preup:
 	bash ./update/update.sh &
-start: # запуск контейнеров
+pull: # обновление образов из ghcr.io/axiomshiftbit
+	touch ./override.env
+	# Тег канала (dev/latest) плавающий, а pull_policy по умолчанию = missing:
+	# `up` НЕ станет обновлять уже лежащий локально образ с тем же тегом, поэтому
+	# pull делается явно. Префикс `-` и --ignore-pull-failures обязательны:
+	# недоступный registry не должен мешать запуску — останутся локальные образы,
+	# а чего нет вовсе, соберётся из dockerfile (секции build: сохранены).
+	# --ignore-buildable здесь НЕ годится: build: есть у всех сервисов, и она
+	# пропустила бы вообще всё.
+	-docker compose --env-file ./.env --env-file ./override.env pull --ignore-pull-failures
+start: pull # запуск контейнеров
 	touch ./override.env ./docker-compose.override.yml ./config/location.conf ./config/override.conf
 	# L2TP/IPsec (сервис ipsec) требует модуль ядра l2tp_ppp на ХОСТЕ — контейнер
 	# его загрузить не может. Дублирует шаг из init.sh, но покрывает ПУТЬ ОБНОВЛЕНИЯ
@@ -70,8 +80,12 @@ delete:
 	docker system prune -f -a
 	docker volume prune -f -a
 	rm -rf /root/vpnbot
-push:
-	docker compose push
+push: # образы публикует CI, вручную не пушим
+	@echo "Образы собирает и публикует CI: .github/workflows/images.yml -> ghcr.io/axiomshiftbit."
+	@echo "Ручной 'docker compose push' перезаписал бы их сборкой с этой машины —"
+	@echo "с другими версиями базовых образов и без записи о том, из какого коммита."
+	@echo "Нужна внеочередная сборка: gh workflow run images.yml [-f services=ss,tt]"
+	@exit 1
 s:
 	git status -su
 c:

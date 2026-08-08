@@ -2484,7 +2484,9 @@ class Bot
             "@{$this->input['username']} введите версию caddy тегом <code>vX.Y.Z</code> (например <code>v2.11.2</code>).\n\n"
             . "Плагин forwardproxy пиннится ПАРОЙ автоматически: <code>vX.Y.Z-naive</code>. "
             . "У klzgrad теги названы по версии caddy, под которую плагин проверен, и другой пары upstream не проверял.\n\n"
-            . "Пин ложится в .env; чтобы он применился, образ нужно пересобрать: <code>docker compose build np</code>, затем <code>make r</code>.",
+            . "Пин ложится в .env, но образы приезжают готовыми из ghcr.io — сам по себе он ничего не изменит.\n"
+            . "Применить локально: <code>docker compose build np</code>, затем <code>make r</code>.\n"
+            . "Либо закоммитить .env в репозиторий: CI пересоберёт образ, и <code>make r</code> подтянет его.",
             $this->input['message_id'],
             reply: 'введите версию caddy',
         );
@@ -21646,8 +21648,9 @@ DNS-over-HTTPS with IP:
             . "ВНИМАНИЕ: понижать версию нельзя. AdGuardHome мигрирует "
             . "<code>/config/AdGuardHome.yaml</code> вперёд без обратной совместимости — "
             . "после отката старая версия свой же конфиг не прочитает.\n\n"
-            . "Пин ложится в .env; чтобы он применился, образ нужно пересобрать: "
-            . "<code>docker compose build ad</code>, затем <code>make r</code>.",
+            . "Пин ложится в .env, но образы приезжают готовыми из ghcr.io — сам по себе он ничего не изменит.\n"
+            . "Применить локально: <code>docker compose build ad</code>, затем <code>make r</code>.\n"
+            . "Либо закоммитить .env в репозиторий: CI пересоберёт образ, и <code>make r</code> подтянет его.",
             $this->input['message_id'],
             reply: 'введите версию AdGuardHome',
         );

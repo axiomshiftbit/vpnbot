@@ -20,7 +20,7 @@ volumes:
 
 services:
     up:
-        image: mercurykd/vpnbot-ng:1.1
+        image: ghcr.io/axiomshiftbit/vpnbot-ng:${VPNBOT_TAG:-dev}
         build:
             context: dockerfile
             dockerfile: nginx.dockerfile
@@ -64,7 +64,7 @@ services:
                 ipv4_address: 10.10.0.10
         logging: *default-logging
     ng:
-        image: mercurykd/vpnbot-ng:1.1
+        image: ghcr.io/axiomshiftbit/vpnbot-ng:${VPNBOT_TAG:-dev}
         build:
             context: dockerfile
             dockerfile: nginx.dockerfile
@@ -114,7 +114,7 @@ services:
             timeout: 5s
             retries: 3
     php:
-        image: mercurykd/vpnbot-php:1.7
+        image: ghcr.io/axiomshiftbit/vpnbot-php:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
@@ -166,7 +166,7 @@ services:
             timeout: 5s
             retries: 5
     service:
-        image: mercurykd/vpnbot-php:1.7
+        image: ghcr.io/axiomshiftbit/vpnbot-php:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
@@ -220,7 +220,7 @@ services:
             - tt
             - ovpn
     wg:
-        image: mercurykd/vpnbot-wg:1.5
+        image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
@@ -269,7 +269,7 @@ services:
                 ipv4_address: 10.10.0.4
         logging: *default-logging
     wg1:
-        image: mercurykd/vpnbot-wg:1.5
+        image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
@@ -312,7 +312,7 @@ services:
                 ipv4_address: 10.10.0.14
         logging: *default-logging
     ad:
-        image: mercurykd/vpnbot-ad:1.4
+        image: ghcr.io/axiomshiftbit/vpnbot-ad:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/adguard.dockerfile
             args:
@@ -350,7 +350,7 @@ services:
         entrypoint: ["/bin/sh", "/start_ad.sh"]
         logging: *default-logging
     telemt:
-        image: mercurykd/vpnbot-telemt:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-telemt:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/telemt.dockerfile
             args:
@@ -380,7 +380,7 @@ services:
                 ipv4_address: 10.10.0.20
         logging: *default-logging
     xr:
-        image: mercurykd/vpnbot-xr:1.7
+        image: ghcr.io/axiomshiftbit/vpnbot-xr:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/xray.dockerfile
             args:
@@ -412,7 +412,7 @@ services:
                 ipv4_address: 10.10.1.9
         logging: *default-logging
     oc:
-        image: mercurykd/vpnbot-oc:1.2
+        image: ghcr.io/axiomshiftbit/vpnbot-oc:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/ocserv.dockerfile
             args:
@@ -447,7 +447,7 @@ services:
                 ipv4_address: 10.10.0.11
         logging: *default-logging
     np:
-        image: mercurykd/vpnbot-np:1.3
+        image: ghcr.io/axiomshiftbit/vpnbot-np:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/naive.dockerfile
             args:
@@ -490,7 +490,7 @@ services:
                 ipv4_address: 10.10.0.12
         logging: *default-logging
     wp:
-        image: mercurykd/vpnbot-wg:1.5
+        image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
@@ -543,7 +543,7 @@ services:
                 ipv4_address: 10.10.0.13
         logging: *default-logging
     proxy:
-        image: mercurykd/vpnbot-ss:1.4
+        image: ghcr.io/axiomshiftbit/vpnbot-ss:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
@@ -573,7 +573,7 @@ services:
         command: ["/bin/sh", "/start_proxy.sh"]
         logging: *default-logging
     ss:
-        image: mercurykd/vpnbot-ss:1.4
+        image: ghcr.io/axiomshiftbit/vpnbot-ss:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
@@ -619,7 +619,7 @@ services:
                 ipv4_address: 10.10.0.6
         logging: *default-logging
     dnstt:
-        image: mercurykd/vpnbot-dnstt:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-dnstt:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/dnstt.dockerfile
             args:
@@ -648,7 +648,7 @@ services:
                 ipv4_address: 10.10.0.16
         logging: *default-logging
     ovpn:
-        image: mercurykd/vpnbot-ovpn:1.2
+        image: ghcr.io/axiomshiftbit/vpnbot-ovpn:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/openvpn.dockerfile
             # Отдельная Alpine-база (новее глобального ${IMAGE}) — чтобы получить
@@ -691,7 +691,7 @@ services:
                 ipv4_address: 10.10.0.19
         logging: *default-logging
     ipsec:
-        image: mercurykd/vpnbot-ipsec:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-ipsec:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/ipsec.dockerfile
             # Отдельная Alpine-база (новее глобального ${IMAGE}) — свежие
@@ -743,7 +743,7 @@ services:
                 ipv4_address: 10.10.0.21
         logging: *default-logging
     tt:
-        image: mercurykd/vpnbot-tt:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-tt:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/trusttunnel.dockerfile
             args:
@@ -776,7 +776,7 @@ services:
                 ipv4_address: 10.10.0.18
         logging: *default-logging
     hy:
-        image: mercurykd/vpnbot-hysteria:1.0
+        image: ghcr.io/axiomshiftbit/vpnbot-hysteria:${VPNBOT_TAG:-dev}
         build:
             dockerfile: dockerfile/hysteria.dockerfile
             args:
