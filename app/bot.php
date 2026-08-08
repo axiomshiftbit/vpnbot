@@ -6,6 +6,71 @@ class Bot
 {
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
+
+    // ── AmneziaWG: набор ключей [Interface] по версиям протокола ──────────────
+    // ЕДИНСТВЕННЫЙ источник правды. Любой новый параметр обязан попасть сюда,
+    // иначе switchAmnezia() не вычистит его при переключении версии/выключении
+    // амнезии и в wg0.conf останется «хвост» от прошлой конфигурации.
+    // Проверяется тестом tests/awg3_test.php (диффом ключей генератора).
+    public const AWG_KEYS_1 = ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
+    public const AWG_KEYS_2 = ['S3', 'S4', 'I1', 'I2', 'I3', 'I4', 'I5'];
+    // AWG 3.0 (amneziawg-tools v3.0.x / amneziawg-go v3.x). Имена — ровно как в
+    // src/config.c:548-575 и в client/core/utils/constants/configKeys.h
+    // приложения AmneziaVPN, поэтому один и тот же массив годится и для
+    // wg0.conf, и для JSON короткой ссылки.
+    public const AWG_KEYS_3 = [
+        'HeaderProtectionKey', 'ContentPaddingAddition', 'RekeyAfterTime',
+        'RekeyTimeout', 'RejectAfterTime', 'KeepaliveTimeout', 'MaxHandshakeAttempts',
+    ];
+    // device/noise-types.go: HeaderCipherNonceSize. amneziawg-go отвергает
+    // конфиг с непустым HeaderProtectionKey, если хоть один из S1..S4 меньше:
+    // «S%d must be more then 12 to use headerProtection» (device/uapi.go).
+    // Первые 12 байт junk-паддинга каждого пакета — это nonce шифра заголовков
+    // (receive.go: HeaderProtectionCipher(packet[:HeaderCipherNonceSize])),
+    // поэтому паддинг обязан их содержать.
+    public const AWG_HPK_MIN_S = 12;
+    // Размер пакета каждого типа на проводе = база + соответствующий S.
+    // Константы — из amnezia-client (awgProtocolConfig.h: messageInitiationSize
+    // 148, messageResponseSize 92, messageCookieReplySize 64,
+    // messageTransportSize 32) и совпадают с amneziawg-go (noise-protocol.go).
+    // Четыре размера обязаны различаться: официальный клиент отказывается
+    // сохранять такой набор (AwgProtocolConfig::isPacketSizeEqual), а
+    // amneziawg-go определяет тип пакета сначала по размеру и лишь потом по
+    // H1-H4 (receive.go: DeterminePacketTypeAndPadding) — при совпадении
+    // размеров ветки начинают спорить за один и тот же пакет.
+    public const AWG_PACKET_BASE = ['S1' => 148, 'S2' => 92, 'S3' => 64, 'S4' => 32];
+    // Потолок N у CPS-тегов <r>/<rc>/<rd> из офф. таблицы Tag Types
+    // (docs.amnezia.org/documentation/amnezia-wg). См. validateCPSLine().
+    public const CPS_MAX_LEN = 1000;
+    // Границы MTU клиентского конфига. Взяты из валидатора самого AmneziaVPN
+    // (client/ui/qml/Pages2/PageProtocolAwgClientSettings.qml:
+    // IntValidator { bottom: 576; top: 65535 }) — значение вне диапазона
+    // приложение не примет, и узнает об этом пользователь уже при импорте,
+    // а не в момент настройки. См. validateMTU().
+    public const MTU_MIN = 576;
+    public const MTU_MAX = 65535;
+    // Поля, которые перегенерируются авто-ротацией. HeaderProtectionKey включён
+    // осознанно: он даёт самый заметный статический отпечаток, но после каждой
+    // ротации ВСЕ клиенты обязаны перекачать конфиг — рассинхрон HPK рвёт
+    // handshake молча, без диагностики (см. текст в setAmneziaRotation).
+    public const AWG_ROTATE_KEYS = [
+        'I1', 'I2', 'I3', 'I4', 'I5', 'S3', 'S4',
+        'HeaderProtectionKey', 'ContentPaddingAddition', 'RekeyAfterTime',
+        'RekeyTimeout', 'RejectAfterTime', 'KeepaliveTimeout', 'MaxHandshakeAttempts',
+    ];
+    // Токен кнопки → [ключ конфига, min, max, подсказка]. Токен короткий, чтобы
+    // callback_data влезал в лимит Telegram (64 байта) вместе с инстансом и
+    // страницей. PersistentKeepalive живёт в [Peer], а не в amnezia_keys —
+    // хранится отдельным ключом pac.json (см. awgKeepalive()).
+    public const AWG3_FIELDS = [
+        'pad' => ['ContentPaddingAddition', 0, 65535, 'рек. 10-40'],
+        'rka' => ['RekeyAfterTime',         1, 65535, 'сек, дефолт 120, рек. 110-130'],
+        'rkt' => ['RekeyTimeout',           1, 65535, 'сек, дефолт 5, рек. 5-10'],
+        'rja' => ['RejectAfterTime',        1, 65535, 'сек, дефолт 180, рек. 170-190'],
+        'kat' => ['KeepaliveTimeout',       1, 65535, 'сек, дефолт 10, рек. 10-15'],
+        'mha' => ['MaxHandshakeAttempts',   1, 65535, 'дефолт 18, рек. 15-25'],
+        'pka' => ['PersistentKeepalive',    0, 65535, '[Peer], дефолт 20, рек. 20-30'],
+    ];
     private const DAT_UPDATE_INTERVALS = [
         0      => 'off',
         3600   => '1h',
@@ -64,6 +129,14 @@ class Bot
     public $admin;
     public $ports;
     public $warpprofile;
+    // email клиента => персональный WARP-профиль (или false)
+    public $warpclients = [];
+    // Мемо версий wg/awg на инстанс в пределах одного запроса (см. wgVersions).
+    public $wgVerCache = [];
+    // Ответ на callback уже отправлен (выставляет answer()). Объявлено явно:
+    // с PHP 8.2 запись в необъявленное свойство — deprecated, а на 8.4 это
+    // сыпало бы предупреждением на каждое нажатие кнопки.
+    public $callback = false;
 
     public function __construct($key, $i18n)
     {
@@ -90,12 +163,18 @@ class Bot
             'xray',
             'ocserv.log',
             'telemt',
+            // caddy (naive): появился вместе с блоком `log` в Caddyfile —
+            // раньше вывод уходил в /dev/null и причину падения было не узнать.
+            'caddy',
         ];
         $this->reg = '~' . implode('|', [
             'GET / HTTP',
             'GET /favicon.ico HTTP',
             preg_quote($this->getHashBot(1))
         ]) . '~';
+        // Значение — порт ВНУТРИ контейнера (setPort строит из него маппинг
+        // "внешний:внутренний"). Внешний фолбэк, когда секции сервиса нет в
+        // /docker/compose, задаётся отдельно — см. getPorts()/PORT_FALLBACK.
         $this->ports = [
             'hy'    => '443/udp',
             'wg'    => '51820/udp',
@@ -341,6 +420,17 @@ class Bot
         // указатель. Явные роуты с инстансом ниже перекрывают через selectWG.
         if (!empty($this->input['callback']) && ($mi = $this->getWgMsg()) !== null) {
             $this->wg = (int) $mi;
+        }
+        // Инстанс, вшитый в саму кнопку (cbWG, см. WG_CB_INST) — сильнее карты:
+        // он не зависит ни от её вытеснения, ни от того, чем перерисовали
+        // сообщение. Снимаем префикс здесь, чтобы роуты ниже разбирали команду
+        // в прежнем виде. selectWG (а не просто $this->wg) — как в роуте
+        // «/menu wg <inst>»: остальные кнопки того же меню, отрисованные до
+        // деплоя и потому без префикса, должны резолвиться в тот же инстанс.
+        if (!empty($this->input['callback'])
+            && preg_match('~^wg(?P<inst>[01]):(?P<cb>.+)$~s', $this->input['callback'], $mw)) {
+            $this->selectWG($mw['inst']);
+            $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
             // смена айпи сервера
@@ -846,6 +936,12 @@ class Bot
             case preg_match('~^/changeNaivePass$~', $this->input['callback'], $m):
                 $this->changeNaivePass();
                 break;
+            case preg_match('~^/changeCaddyVersion$~', $this->input['callback'], $m):
+                $this->changeCaddyVersion();
+                break;
+            case preg_match('~^/changeAdguardVersion$~', $this->input['callback'], $m):
+                $this->changeAdguardVersion();
+                break;
             case preg_match('~^/changeHysteriaPass$~', $this->input['callback'], $m):
                 $this->changeHysteriaPass();
                 break;
@@ -897,11 +993,26 @@ class Bot
             case preg_match('~^/genTtPass (\S+)$~', $this->input['callback'], $m):
                 $this->genTtPass($m[1]);
                 break;
-            case preg_match('~^/delttus (\S+)$~', $this->input['callback'], $m):
-                $this->delttus($m[1]);
+            case preg_match('~^/delttus (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->delttus($m[1], !empty($m[2]));
                 break;
             case preg_match('~^/getTtConfig (\S+)$~', $this->input['callback'], $m):
                 $this->getTtConfig($m[1]);
+                break;
+            case preg_match('~^/getTtLink (\S+)$~', $this->input['callback'], $m):
+                $this->getTtLink($m[1]);
+                break;
+            case preg_match('~^/ttClientMenu (\S+)$~', $this->input['callback'], $m):
+                $this->ttClientMenu($m[1]);
+                break;
+            case preg_match('~^/restartTtMenu$~', $this->input['callback'], $m):
+                $this->restartTtMenu();
+                break;
+            case preg_match('~^/showTtLog$~', $this->input['callback'], $m):
+                $this->showTtLog();
+                break;
+            case preg_match('~^/clearTtLog$~', $this->input['callback'], $m):
+                $this->clearTtLog();
                 break;
             case preg_match('~^/addOvpnUser$~', $this->input['callback'], $m):
                 $this->addOvpnUser();
@@ -926,6 +1037,15 @@ class Bot
                 break;
             case preg_match('~^/toggleOvpnProto$~', $this->input['callback'], $m):
                 $this->toggleOvpnProto();
+                break;
+            case preg_match('~^/toggleOvpnWinBlockDns$~', $this->input['callback'], $m):
+                $this->toggleOvpnWinBlockDns();
+                break;
+            case preg_match('~^/restartOvpnMenu$~', $this->input['callback'], $m):
+                $this->restartOvpnMenu();
+                break;
+            case preg_match('~^/clearOvpnConnLog$~', $this->input['callback'], $m):
+                $this->clearOvpnConnLog();
                 break;
             case preg_match('~^/showOvpnLog$~', $this->input['callback'], $m):
                 $this->showOvpnLog();
@@ -975,6 +1095,9 @@ class Bot
             case preg_match('~^/refreshL2tp$~', $this->input['callback'], $m):
                 $this->refreshL2tp();
                 break;
+            case preg_match('~^/restartIpsecMenu (\S+)$~', $this->input['callback'], $m):
+                $this->restartIpsecMenu($m[1]);
+                break;
             case preg_match('~^/addIkev2User$~', $this->input['callback'], $m):
                 $this->addIkev2User();
                 break;
@@ -989,6 +1112,9 @@ class Bot
                 break;
             case preg_match('~^/kickIkev2 (\S+)$~', $this->input['callback'], $m):
                 $this->kickIkev2($m[1]);
+                break;
+            case preg_match('~^/ikev2ClientLog (\S+)$~', $this->input['callback'], $m):
+                $this->ikev2ClientLog($m[1]);
                 break;
             case preg_match('~^/ikev2ClientMenu (\S+)$~', $this->input['callback'], $m):
                 $this->ikev2ClientMenu($m[1]);
@@ -1261,6 +1387,48 @@ class Bot
             case preg_match('~^/setAmneziaRotation (-?\d+)$~', $this->input['callback'], $m):
                 $this->setAmneziaRotation($m[1]);
                 break;
+            // AWG 3.0. Новые кнопки всегда несут инстанс — легаси-форм без него
+            // не существует, поэтому вторых веток здесь нет.
+            case preg_match('~^/awg3 ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->awg3Menu($m[2]);
+                break;
+            case preg_match('~^/awg3hpk ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->toggleHeaderProtection($m[2]);
+                break;
+            case preg_match('~^/awg3hpkGen ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->regenHeaderProtection($m[2]);
+                break;
+            case preg_match('~^/awg3hpkShow ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->showHeaderProtectionKey($m[2]);
+                break;
+            case preg_match('~^/awg3set (\w{2,4}) ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[2]);
+                $this->setAwg3Field($m[1], $m[3]);
+                break;
+            case preg_match('~^/awg3reset ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->resetAwg3($m[2]);
+                break;
+            case preg_match('~^/awgVerRefresh ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->awgVerRefresh($m[2]);
+                break;
+            case preg_match('~^/awg3mihomo ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->toggleMihomoAwg3($m[2]);
+                break;
+            case preg_match('~^/amneziaProto ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->amneziaProtoMenu($m[2]);
+                break;
+            case preg_match('~^/setAmneziaProto ([123]) ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[2]);
+                $this->setAmneziaProto($m[1], $m[3]);
+                break;
             case preg_match('~^/switchExchange (\d+)$~', $this->input['callback'], $m):
                 $this->switchExchange($m[1]);
                 break;
@@ -1411,6 +1579,9 @@ class Bot
                 break;
             case preg_match('~^/include (\w+)$~', $this->input['callback'], $m):
                 $this->include($m[1]);
+                break;
+            case preg_match('~^/dedupeList (\w+)(?: (\d+))?$~', $this->input['callback'], $m):
+                $this->dedupeList($m[1], (int) ($m[2] ?? 0));
                 break;
             case preg_match('~^/exclude (\d+)$~', $this->input['callback'], $m):
                 $this->exclude($m[1]);
@@ -1657,6 +1828,20 @@ class Bot
     // версия реально запущенного образа. Fallback — build-пин TELEMT_VERSION
     // из .env (образы, собранные до появления файла): он может расходиться с
     // контейнером, пока образ не пересобран.
+    // Версия caddy в контейнере np. `caddy version` печатает «v2.11.2 h1:…» —
+    // берём первый токен версии. Фолбэк — build-пин CADDY_VERSION из .env
+    // (контейнер не отвечает); он может расходиться с образом, пока тот не
+    // пересобран, поэтому источник помечаем в меню.
+    public function naiveVersion(): array
+    {
+        $out = trim((string) $this->ssh('caddy version 2>/dev/null', 'np'));
+        $run = preg_match('~v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*~', $out, $m) ? $m[0] : '';
+        return [
+            'running' => $run,
+            'pinned'  => trim((string) getenv('CADDY_VERSION')),
+        ];
+    }
+
     public function telemtVersion(): string
     {
         $v = trim((string) $this->ssh('cat /etc/telemt_version 2>/dev/null', 'telemt'));
@@ -1830,7 +2015,9 @@ class Bot
             ];
         }
         $this->applySniffingToXray($c, $this->getPacConf());
+        $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
+        $this->ensureWgGuard($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
             'services' => ['StatsService'],
@@ -1873,6 +2060,136 @@ class Bot
         }
     }
 
+    // Подсеть docker-compose сборки: в ней живут adguard (10.10.0.5), панель,
+    // sshd всех контейнеров и warp. Клиентские подсети wg/awg сюда НЕ входят
+    // (WGADDRESS/WG1ADDRESS по умолчанию 10.0.1.0/24 и 10.0.3.0/24).
+    public const DOCKER_NET = '10.10.0.0/16';
+    // Внутренний DNS, который бот сам прописывает клиентам кнопкой
+    // «set internal dns» — единственное, что клиенту в этой подсети нужно.
+    public const INTERNAL_DNS = '10.10.0.5/32';
+
+    // Внутренние socks-inbound'ы без авторизации, слушающие в docker-сети.
+    // 'wg-in' (10808) создаёт restartXray() — в него tun2socks отдаёт трафик
+    // wg/awg-клиентов. 'socks-in' (10085) в этом репозитории и в upstream не
+    // создаётся вовсе, но лежит в рантайме на боевых хостах (добавлен когда-то
+    // вручную и переживает все рестарты: restartXray() чужие inbound'ы не
+    // трогает). Потребителей у него нет — ноль записей в логе ядра за двое
+    // суток, ноль упоминаний в pac.json и в конфигах контейнеров.
+    //
+    // Гейт ниже вешаем на оба: пока inbound существует, он одинаково пригоден
+    // для бокового движения по сети.
+    public const INTERNAL_SOCKS_TAGS = ['wg-in', 'socks-in'];
+
+    // Клиенты wg/awg входят в xray через socks-inbound 'wg-in' (tun2socks в
+    // wg-контейнерах), а `ip rule from $ADDRESS table 100` в start_wg.sh уводит
+    // туда ВЕСЬ их трафик — включая назначения внутри docker-сети. Отдельного
+    // ограничения на этот inbound не было, а ensureFreedomCompat даже явно
+    // allow'ит 10.10.0.0/16 на freedom, так что клиент VPN мог открыть
+    // соединение к adguard, к sshd любого контейнера или к панели — и оно
+    // уходило с адреса xr-контейнера, то есть ИЗНУТРИ доверенной зоны (проверено
+    // на рабочем сервере: через xr:10808 снимался ssh-баннер service-контейнера, где лежит
+    // приватный ключ, и открывалась панель, до которой сам wg-контейнер
+    // напрямую не доходит — её закрывает nft). Тот же класс, что закрывали для
+    // WARP-SOCKS.
+    //
+    // Режем ровно docker-сеть (остальное приватное пространство уже закрыто
+    // finalRules у freedom) и оставляем одну дырку — внутренний DNS.
+    // Клиентские подсети и маршруты в LAN пользователя не затрагиваются.
+    //
+    // Правила ставим В НАЧАЛО: xray берёт первое совпавшее, и пользовательские
+    // block/warp-списки (xrayUpdateRules) не должны их обгонять. Матчим по
+    // явным CIDR, а не по 'geoip:private': последнее требует geoip.dat в
+    // XRAY_LOCATION_ASSET, и без файла ядро не стартует вовсе.
+    public function ensureWgGuard(array &$c): void
+    {
+        // Теги берём из фактических inbound'ов, а не списком константы: правило
+        // на несуществующий тег — мёртвый груз в конфиге, а набор inbound'ов на
+        // разных хостах разный.
+        $tags = [];
+        foreach (($c['inbounds'] ?? []) as $i) {
+            $t = $i['tag'] ?? '';
+            if (in_array($t, self::INTERNAL_SOCKS_TAGS, true) && !in_array($t, $tags, true)) {
+                $tags[] = $t;
+            }
+        }
+
+        // Снимаем прежние копии гейта — их inboundTag мог быть у́же (например
+        // до появления socks-in на хосте), поэтому опознаём по сигнатуре, а не
+        // сравнением с готовым правилом, иначе после смены набора тегов старые
+        // остались бы дублями.
+        $rules = [];
+        foreach (($c['routing']['rules'] ?? []) as $r) {
+            $in = (array) ($r['inboundTag'] ?? []);
+            $ip = (array) ($r['ip'] ?? []);
+            $isGuard = $in !== []
+                && empty(array_diff($in, self::INTERNAL_SOCKS_TAGS))
+                && ($ip === [self::DOCKER_NET] || $ip === [self::INTERNAL_DNS]);
+            if (!$isGuard) {
+                $rules[] = $r;
+            }
+        }
+
+        if (empty($tags)) {
+            $c['routing']['rules'] = $rules;
+            return;
+        }
+
+        // blackhole обязан существовать: правило с несуществующим тегом
+        // молча теряет смысл. Свои outbounds админа не трогаем.
+        $hasBlock = false;
+        foreach (($c['outbounds'] ?? []) as $o) {
+            if (($o['tag'] ?? '') === 'block') {
+                $hasBlock = true;
+                break;
+            }
+        }
+        if (!$hasBlock) {
+            $c['outbounds'][] = ['protocol' => 'blackhole', 'tag' => 'block'];
+        }
+
+        // Порядок: allow внутреннего DNS обязан стоять перед блоком подсети —
+        // xray берёт первое совпавшее правило.
+        array_unshift(
+            $rules,
+            [
+                'type'        => 'field',
+                'inboundTag'  => $tags,
+                'ip'          => [self::INTERNAL_DNS],
+                'port'        => '53',
+                'outboundTag' => 'direct',
+            ],
+            [
+                'type'        => 'field',
+                'inboundTag'  => $tags,
+                'ip'          => [self::DOCKER_NET],
+                'outboundTag' => 'block',
+            ]
+        );
+        $c['routing']['rules'] = $rules;
+    }
+
+    // Дотягивает sockopt.trustedXForwardedFor на клиентский inbound, если его
+    // транспорт слушает за nginx (ws / xhttp / grpc). changeTransport ставит его
+    // сам, но только в момент переключения транспорта — у всех, кто уже сидит на
+    // ws/xhttp/trojan-grpc, конфиг иначе остался бы без него до ручного
+    // перещёлкивания кнопки. Ставим ровно один раз и не трогаем уже заданное
+    // значение: админ мог прописать своё имя заголовка руками в webapp.
+    // Чем это лечится — см. nginxFrontedSockopt().
+    public function ensureTrustedXff(array &$c): void
+    {
+        $net = $c['inbounds'][0]['streamSettings']['network'] ?? '';
+        if (!in_array($net, ['ws', 'xhttp', 'grpc'], true)) {
+            return;
+        }
+        if (!empty($c['inbounds'][0]['streamSettings']['sockopt']['trustedXForwardedFor'])) {
+            return;
+        }
+        $c['inbounds'][0]['streamSettings']['sockopt'] = array_merge(
+            $c['inbounds'][0]['streamSettings']['sockopt'] ?? [],
+            $this->nginxFrontedSockopt(),
+        );
+    }
+
     // Безопасная запись xray.json для функций, которые меняют лишь метаданные
     // клиента (шаблоны подписки, HWID) и НЕ перезапускают ядро. getXray() читает
     // конфиг как ассоц-массив, из-за чего json round-trip превращает пустые/
@@ -1891,6 +2208,10 @@ class Bot
             $c['policy']['levels'] = $lv;
         }
         $this->ensureFreedomCompat($c);
+        // По той же причине, что и ensureFreedomCompat: этот путь пишет
+        // xray.json из редактора, и гейт wg-in не должен теряться при ручной
+        // правке конфига.
+        $this->ensureWgGuard($c);
         // Как и в restartXray(): FALSE от кодировщика превратился бы в пустой
         // xray.json (file_put_contents($f, false) пишет '' и рапортует успех),
         // то есть в потерю всех клиентов при следующем старте ядра.
@@ -2162,6 +2483,47 @@ class Bot
             'callback'       => 'chNpSubdomain',
             'args'           => [],
         ]);
+    }
+
+    public function changeCaddyVersion()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} введите версию caddy тегом <code>vX.Y.Z</code> (например <code>v2.11.2</code>).\n\n"
+            . "Плагин forwardproxy пиннится ПАРОЙ автоматически: <code>vX.Y.Z-naive</code>. "
+            . "У klzgrad теги названы по версии caddy, под которую плагин проверен, и другой пары upstream не проверял.\n\n"
+            . "Пин ложится в .env, но образы приезжают готовыми из ghcr.io — сам по себе он ничего не изменит.\n"
+            . "Применить локально: <code>docker compose build np</code>, затем <code>make r</code>.\n"
+            . "Либо закоммитить .env в репозиторий: CI пересоберёт образ, и <code>make r</code> подтянет его.",
+            $this->input['message_id'],
+            reply: 'введите версию caddy',
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chCaddyVersion',
+            'args'           => [],
+        ]);
+    }
+
+    // Пин пишем только парой: рассинхрон caddy ↔ forwardproxy — это сборка с
+    // непроверенной комбинацией, и ломается она в рантайме, а не при build.
+    public function chCaddyVersion($v)
+    {
+        $v = trim((string) $v);
+        if (!preg_match('~^v\d+\.\d+\.\d+$~', $v)) {
+            $this->update($this->input['chat'], $this->input['message_id'], 'нужен тег вида vX.Y.Z (например v2.11.2)');
+            sleep(3);
+            return $this->menu('naive');
+        }
+        $this->setEnvVar('CADDY_VERSION', $v);
+        $this->setEnvVar('FORWARDPROXY_VERSION', "$v-naive");
+        // setEnvVar меняет только .env: без putenv getenv() до рестарта php
+        // отдавал бы старый пин, и меню показывало бы, что ничего не изменилось
+        // (тот же приём, что в setIpsecPort).
+        putenv("CADDY_VERSION=$v");
+        putenv("FORWARDPROXY_VERSION=$v-naive");
+        $this->menu('naive');
     }
 
     public function changeNaivePass()
@@ -2457,18 +2819,70 @@ class Bot
         }
     }
 
+    // Логин/пароль naive уезжают в Caddyfile строкой «basic_auth <user> <pass>»,
+    // то есть в СИНТАКСИС конфига. Пробел разбил бы директиву на лишние
+    // аргументы, `}` или перевод строки — развалили бы блок, `#` съел бы
+    // остаток строки, и caddy просто не поднялся бы. Разрешаем только то, что
+    // заведомо безопасно и внутри Caddyfile, и в userinfo ссылки.
+    //
+    // Разделитель регулярки — '#', а не привычный '~': '~' входит в разрешённый
+    // набор (unreserved по RFC 3986), и как делимитр он обрывал шаблон на
+    // середине класса — preg_match ругался «Unknown modifier '!'» и возвращал
+    // false ВСЕГДА, то есть любой пароль считался бы негодным и naive гасился
+    // бы на рестарте.
+    public static function naiveCredOk($v): bool
+    {
+        return is_string($v) && $v !== '' && strlen($v) <= 128
+            && (bool) preg_match('#^[A-Za-z0-9._~!$&\'()*+,;=:@%-]+$#', $v);
+    }
+
     public function restartNaive()
     {
-        $pac = $this->getPacConf();
-        $this->ssh('pkill caddy', 'np');
-        $c = file_get_contents('/config/Caddyfile');
+        $pac  = $this->getPacConf();
+        $user = (string) ($pac['naive']['user'] ?? '');
+        $pass = (string) ($pac['naive']['pass'] ?? '');
+        $c    = file_get_contents('/config/Caddyfile');
+        // Плейсхолдер — то же значение, что в шаблоне config/Caddyfile: пока
+        // креды не заданы, caddy не должен подниматься (тот же гард в
+        // start_np.sh), иначе сервис работает с угадываемым паролем.
+        $ok = self::naiveCredOk($user) && self::naiveCredOk($pass);
         // preg_replace_callback, а не preg_replace: user/pass идут в замену как
         // литералы (иначе `$`/`\` в пароле трактуются как backreference).
-        $t = preg_replace_callback('~^(\t+)?basic_auth[^\n]+~sm', fn($m) => ($m[1] ?? '') . 'basic_auth ' . ($pac['naive']['user'] ?? '_') . ' ' . ($pac['naive']['pass'] ?? '__'), $c);
-        file_put_contents('/config/Caddyfile', $t);
-        if (!empty($pac['naive']['pass']) && !empty($this->getHashSubdomain('np'))) {
-            $this->ssh('caddy run -c /config/Caddyfile', 'np', false);
+        $t = preg_replace_callback(
+            '~^(\t+)?basic_auth[^\n]+~sm',
+            fn($m) => ($m[1] ?? '') . 'basic_auth ' . ($ok ? "$user $pass" : 'CHANGEME CHANGEME'),
+            $c
+        );
+        // json_encode-класс: file_put_contents с пустым/битым содержимым угробил
+        // бы конфиг. preg_replace_callback отдаёт null при ошибке движка.
+        if (!is_string($t) || $t === '') {
+            error_log('restartNaive: Caddyfile not written — preg_replace_callback failed');
+
+            return false;
         }
+        $this->ssh('pkill caddy', 'np');
+        file_put_contents('/config/Caddyfile', $t);
+        if (!$ok || empty($this->getHashSubdomain('np'))) {
+            return false;
+        }
+        // Проверяем конфиг ДО старта: caddy запускается в фоне и раньше при
+        // любой ошибке молча не поднимался — в меню это выглядело как «naive
+        // off» без причины. Вывод validate короткий и в чат не уходит целиком.
+        $v = (string) $this->ssh('caddy validate -c /config/Caddyfile 2>&1', 'np');
+        if (!preg_match('~Valid configuration~', $v)) {
+            error_log('restartNaive: caddy validate failed — ' . strtok($v, "\n"));
+            if (!empty($this->input['chat'])) {
+                $this->send(
+                    $this->input['chat'],
+                    'naive: caddy отверг конфиг, сервис не запущен — ' . htmlspecialchars(strtok($v, "\n"), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
+                    $this->input['message_id'] ?? null
+                );
+            }
+
+            return false;
+        }
+        $this->ssh('caddy run -c /config/Caddyfile', 'np', false, '/logs/caddy');
+        return true;
     }
 
     public function restartHysteria()
@@ -2636,8 +3050,26 @@ class Bot
         $this->menu('naive');
     }
 
+    // Отказ вместо тихой поломки: значение уходит в синтаксис Caddyfile, и
+    // раньше пробел или `}` в пароле роняли caddy без единого сообщения
+    // (см. naiveCredOk / restartNaive).
+    public function naiveCredReject(): void
+    {
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            'значение не принято: допустимы латиница, цифры и . _ ~ - ! $ & \' ( ) * + , ; = : @ % (до 128 символов), без пробелов'
+        );
+        sleep(3);
+        $this->menu('naive');
+    }
+
     public function chnplogin($user)
     {
+        $user = trim((string) $user);
+        if (!self::naiveCredOk($user)) {
+            return $this->naiveCredReject();
+        }
         $pac = $this->getPacConf();
         $pac['naive']['user'] = $user;
         $this->setPacConf($pac);
@@ -2647,6 +3079,10 @@ class Bot
 
     public function chnppass($pass)
     {
+        $pass = trim((string) $pass);
+        if (!self::naiveCredOk($pass)) {
+            return $this->naiveCredReject();
+        }
         $pac = $this->getPacConf();
         $pac['naive']['pass'] = $pass;
         $this->setPacConf($pac);
@@ -3129,7 +3565,10 @@ NFT;
         $c = $this->getSSConfig();
         $l = $this->getSSLocalConfig();
         $domain = $this->getPacConf()['domain'] ?: $this->ip;
-        if ($c['plugin']) {
+        // ?? — в ssserver.json ключа plugin нет, пока плагин ни разу не
+        // включали (шаблон в репозитории без него): голое $c['plugin'] давало
+        // «Undefined array key» на каждый первый вход в тумблер.
+        if (!empty($c['plugin'])) {
             unset($c['plugin']);
             unset($c['plugin_opts']);
             unset($l['plugin']);
@@ -3195,7 +3634,7 @@ NFT;
             $c['Enabled']    = 1;
             $c['ServerName'] = $c['ServerName'] ?? $domain;
             $this->setStlsConfig($c);
-            $this->ssh('pkill -f simple-tls', 'ss');
+            $this->ssh(self::PKILL_STLS, 'ss');
             $port = (int) (getenv('STLSPORT') ?: 3443);
             $ssport = (int) (getenv('SSPORT') ?: 8388);
             $cert = $this->ssh('[ -s /certs/cert_public ] && [ -s /certs/cert_private ] && echo cert || echo self', 'ss');
@@ -3285,7 +3724,13 @@ NFT;
         $domain = $this->getDomain();
         $ck     = $this->getCloakConfig();
         $st     = $this->getStlsConfig();
-        $b64    = preg_replace('~==~', '', 'ss://' . base64_encode("{$ss['method']}:{$ss['password']}"));
+        // SIP002: userinfo — websafe-base64 (base64url) без паддинга.
+        // Раньше был обычный base64_encode + вырезание «==» регуляркой по всей
+        // строке: алфавит остаётся стандартным, поэтому в userinfo могли
+        // попасть '+' и особенно '/', который часть клиентов принимает за
+        // начало path и рвёт ссылку; одиночный '=' при этом не срезался вовсе.
+        // strtr на '-_' + rtrim('=') даёт ровно то, что описывает спека.
+        $b64    = 'ss://' . rtrim(strtr(base64_encode("{$ss['method']}:{$ss['password']}"), '+/', '-_'), '=');
 
         if (!empty($ck['Enabled'])) {
             $ckPort = (int) (getenv('CKPORT') ?: 7443);
@@ -3359,9 +3804,25 @@ NFT;
     // ломают bind), поэтому передаём ему очищенную копию через /tmp.
     // Тот же приём, что и в start_ss.sh. Извлечено в один метод, потому что
     // вызывается из cloak/cloakDomain/cloakMethod/regen/addUser/delUser.
+    // ВАЖНО про `pkill -f`: он матчит ПОЛНУЮ командную строку, включая строку
+    // самого шелла, которому мы её отдали (sshd запускает команду как
+    // `sh -c "<вся строка>"`). Строка ниже содержит «ck-server», поэтому
+    // беззащитный `pkill -f ck-server` убивал СВОЙ ЖЕ шелл — цепочка
+    // обрывалась на первой команде, jq и ck-server не выполнялись вообще, и
+    // /logs/ck-server.log даже не создавался. Снаружи это выглядело как
+    // «включил cloak в боте, а он не работает и молчит»: Enabled=1 в конфиге,
+    // процесса нет, лога нет. Поднимался ck-server только при рестарте
+    // контейнера — там его запускает start_ss.sh, где pkill нет.
+    //
+    // `[c]k-server` — регулярка, которая матчит литерал «ck-server» у чужих
+    // процессов, но НЕ матчит собственную командную строку (в ней стоят
+    // скобки). Проверено на рабочем сервере: с трюком шелл выживает, без него — Terminated.
+    public const PKILL_CK = "pkill -f '[c]k-server'";
+    public const PKILL_STLS = "pkill -f '[s]imple-tls'";
+
     private function ckServerRestartCmd(): string
     {
-        return 'pkill -f ck-server; '
+        return self::PKILL_CK . '; '
             . 'jq "del(.Enabled) '
             . '| if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end '
             . '| if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" '
@@ -3458,7 +3919,7 @@ NFT;
         if (!empty($c['Enabled'])) {
             $c['Enabled'] = 0;
             $this->setCloakConfig($c);
-            $this->ssh('pkill -f ck-server', 'ss');
+            $this->ssh(self::PKILL_CK, 'ss');
         } else {
             // v2ray-plugin несовместим с cloak (ssserver слушал бы с плагином,
             // не plain). Раньше тут был return после v2ray()-toggle, что давало
@@ -3475,7 +3936,15 @@ NFT;
             $c['BindAddr']   = [":$port"];
             $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
             $c['RedirAddr']  = $c['RedirAddr'] ?: 'www.bing.com';
-            $c['ServerName'] = $c['ServerName'] ?: $domain;
+            // ServerName — это SNI, который клиент показывает провайдеру.
+            // README Cloak: «the domain you want to make your ISP or firewall
+            // think you are visiting… ideally it should match RedirAddr in the
+            // server's configuration, a major site the censor allows».
+            // Раньше по умолчанию подставлялся СОБСТВЕННЫЙ домен установки —
+            // то есть в SNI на порту cloak светился реальный домен VPN, ровно
+            // то, что Cloak и должен прятать. Дефолт = RedirAddr; заданное
+            // вручную значение (cloakDomain) не трогаем.
+            $c['ServerName'] = $c['ServerName'] ?: $c['RedirAddr'];
             $this->setCloakConfig($c);
             $this->syncCloakBypassUIDs();
             $this->ssh($this->ckServerRestartCmd(), 'ss');
@@ -3491,7 +3960,7 @@ NFT;
         }
         $c['Enabled'] = 0;
         $this->setCloakConfig($c);
-        $this->ssh('pkill -f ck-server', 'ss');
+        $this->ssh(self::PKILL_CK, 'ss');
     }
 
     private function disableSimpleTlsIfOn(): void
@@ -3502,7 +3971,7 @@ NFT;
         }
         $c['Enabled'] = 0;
         $this->setStlsConfig($c);
-        $this->ssh('pkill -f simple-tls', 'ss');
+        $this->ssh(self::PKILL_STLS, 'ss');
     }
 
     // Снимает плагин v2ray-plugin с ssserver/sslocal без перерисовки меню.
@@ -3626,7 +4095,7 @@ NFT;
         $c     = $this->getCloakConfig();
         $wasOn = !empty($c['Enabled']);
 
-        $this->ssh('pkill -f ck-server', 'ss');
+        $this->ssh(self::PKILL_CK, 'ss');
 
         // Сбрасываем идентификационные поля. ensureCloakIdentity() их
         // восстановит через ck-server -key / -uid.
@@ -3651,7 +4120,15 @@ NFT;
             $c['BindAddr']   = [":$port"];
             $c['ProxyBook']  = ['shadowsocks' => ['tcp', "127.0.0.1:$ssport"]];
             $c['RedirAddr']  = $c['RedirAddr'] ?: 'www.bing.com';
-            $c['ServerName'] = $c['ServerName'] ?: $domain;
+            // ServerName — это SNI, который клиент показывает провайдеру.
+            // README Cloak: «the domain you want to make your ISP or firewall
+            // think you are visiting… ideally it should match RedirAddr in the
+            // server's configuration, a major site the censor allows».
+            // Раньше по умолчанию подставлялся СОБСТВЕННЫЙ домен установки —
+            // то есть в SNI на порту cloak светился реальный домен VPN, ровно
+            // то, что Cloak и должен прятать. Дефолт = RedirAddr; заданное
+            // вручную значение (cloakDomain) не трогаем.
+            $c['ServerName'] = $c['ServerName'] ?: $c['RedirAddr'];
             $this->setCloakConfig($c);
             // bootstrap default user в ckusers.json и пересинхронизируем
             // BypassUID — иначе ck-server стартует с пустым allow-list.
@@ -3854,7 +4331,8 @@ NFT;
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'renameClient',
-            'args'           => [$client, $page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$client, $page, $this->wgNum()],
         ]);
     }
 
@@ -3870,7 +4348,8 @@ NFT;
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'timerClient',
-            'args'           => [$client, $page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$client, $page, $this->wgNum()],
         ]);
     }
 
@@ -3890,64 +4369,96 @@ NFT;
         ]);
     }
 
-    public function importListFile($message = '', $type)
+    // $message без значения по умолчанию: параметр со значением ПЕРЕД
+    // обязательным PHP считает обязательным и с 8.0 пишет об этом deprecation
+    // на каждый разбор файла. Вызов один — из reply() и всегда с обоими
+    // аргументами ($message, $type), так что дефолт был декоративным.
+    public function importListFile($message, $type)
     {
         $r = $this->request('getFile', ['file_id' => $this->input['file_id']]);
         $f = file_get_contents($this->file . $r['result']['file_path']);
         if (!empty($f)) {
+            // Инициализация обязательна: без неё файл, в котором не нашлось ни
+            // одной валидной строки, оставлял $list неопределённым, и присвоение
+            // ниже стирало весь список пользователя.
+            $list   = [];
+            $merged = 0;
             foreach (explode("\n", $f) as $v) {
                 if (!empty($s = trim($v))) {
                     $t = explode(';', $s);
+                    // Формат экспорта — «запись;1», но импортируют и простые
+                    // списки доменов без второй колонки. Раньше отсутствующий
+                    // $t[1] давал false, и весь импорт приезжал выключенным.
+                    $on = (bool) ($t[1] ?? 1);
                     if ($type == 'rulessetlist') {
                         if (preg_match('~^.+:.+:https?://.+~', $t[0])) {
-                            $list[$t[0]] = (bool) $t[1];
+                            $list[$t[0]] = $on;
                         }
                     } elseif ($type == 'datlist') {
                         if (preg_match('~^[\w.\-]+\.dat:https://.+~i', $t[0])) {
-                            $list[$t[0]] = (bool) $t[1];
+                            $list[$t[0]] = $on;
+                        }
+                    } elseif ($this->isRouteEntryList($type)) {
+                        // Тот же путь, что у ручного ввода: punycode и отсев
+                        // мусора. Импорт шёл мимо него, и в списке оседали
+                        // записи, которые ядро потом молча выбрасывало.
+                        $key = $this->normalizeRouteEntry($t[0]);
+                        if (trim($key) !== '') {
+                            $list[$key] = $on;
                         }
                     } else {
-                        $list[$t[0]] = (bool) $t[1];
+                        $list[$t[0]] = $on;
                     }
                 }
+            }
+            if ($this->isRouteEntryList($type)) {
+                ['list' => $list, 'removed' => $merged] = $this->dedupeRouteList($list);
+                ksort($list);
             }
             $p = $this->getPacConf();
             $p[$type] = $list;
             $this->setPacConf($p);
+            if ($merged > 0) {
+                $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
+            }
         }
         $this->backXtlsList($type);
     }
 
-    public function timerClient(string $time, int $client)
+    public function timerClient(string $time, int $client, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
         $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return $this->menu('wg', $page);
+        }
         if ($clients[$client]['# off']) {
             $this->switchClient($client);
             $clients = $this->readClients();
         }
         $server = $this->readConfig();
+        // Пир — по адресу (peerIndexByClient), а не перебором с прямым чтением
+        // 'AllowedIPs': у выключенного пира ключ закомментирован, и старый
+        // цикл сыпал «Undefined array key» на каждом таком соседе.
+        $i = $this->peerIndexByClient($server, $clients[$client]);
         switch (true) {
             case preg_match('~^0$~', $time):
                 unset($clients[$client]['interface']['## time']);
-                foreach ($server['peers'] as $k => $v) {
-                    if ($v['AllowedIPs'] == $clients[$client]['interface']['Address']) {
-                        unset($server['peers'][$k]['## time']);
-                    }
+                if ($i !== null) {
+                    unset($server['peers'][$i]['## time']);
                 }
                 break;
             default:
                 $date = date('Y-m-d H:i:s', strtotime($time));
                 $clients[$client]['interface']['## time'] = $date;
-                foreach ($server['peers'] as $k => $v) {
-                    if ($v['AllowedIPs'] == $clients[$client]['interface']['Address']) {
-                        $server['peers'][$k]['## time'] = $date;
-                    }
+                if ($i !== null) {
+                    $server['peers'][$i]['## time'] = $date;
                 }
                 break;
         }
         $this->saveClients($clients);
         $this->restartWG($this->createConfig($server));
-        $this->menu('client', implode('_', $_SESSION['reply'][$this->input['reply']]['args']));
+        $this->menu('client', "{$client}_$page");
     }
 
     public function cron()
@@ -3973,6 +4484,7 @@ NFT;
             'checkTrafficLimits',
             'trackOnline',
             'trackWgOnline',
+            'rotateAmneziaCron',
             'refreshExtSubCache',
             'checkDatUpdates',
             'backfillSubTokens',
@@ -4429,24 +4941,37 @@ NFT;
         return $x;
     }
 
-    public function renameClient(string $name, int $client)
+    public function renameClient(string $name, int $client, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
+        $name    = self::sanitizeConfValue($name);
         $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return $this->menu('wg', $page);
+        }
         $clients[$client]['interface']['## name'] = $name;
         $this->saveClients($clients);
         $server = $this->readConfig();
-        foreach ($server['peers'] as $k => $v) {
-            if ($v['AllowedIPs'] == $clients[$client]['interface']['Address']) {
-                $server['peers'][$k]['## name'] = $name;
-            }
+        // peerIndexByClient понимает и выключенного пира ('# AllowedIPs'):
+        // раньше переименование выключенного клиента меняло только
+        // clients.json, а в wg0.conf оставалось старое имя, и оно
+        // «возвращалось» при включении.
+        $i = $this->peerIndexByClient($server, $clients[$client]);
+        if ($i !== null) {
+            $off = !isset($server['peers'][$i]['AllowedIPs']);
+            $server['peers'][$i][$off ? '# ## name' : '## name'] = $name;
         }
         $this->restartWG($this->createConfig($server));
-        $this->menu('client', implode('_', $_SESSION['reply'][$this->input['reply']]['args']));
+        $this->menu('client', "{$client}_$page");
     }
 
     public function readClients(): array
     {
-        return json_decode(file_get_contents($this->getInstanceWG(1) ? $this->clients1 : $this->clients), true) ?: [];
+        // is_file — на свежей установке clients1.json может ещё не быть, а
+        // file_get_contents на отсутствующем файле сыпал warning в лог на
+        // каждый рендер меню.
+        $f = $this->getInstanceWG(1) ? $this->clients1 : $this->clients;
+        return is_file($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
     }
 
     public function export()
@@ -4670,7 +5195,7 @@ NFT;
             if (!empty($json['cloak'])) {
                 $out[] = 'update cloak';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->ssh('pkill -f ck-server', 'ss');
+                $this->ssh(self::PKILL_CK, 'ss');
                 file_put_contents(
                     '/config/ckserver.json',
                     json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
@@ -4757,6 +5282,17 @@ NFT;
     public function switchClient($client)
     {
         $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return;
+        }
+        // Пира ищем по адресу, а не по индексу: при рассинхроне clients.json и
+        // wg0.conf тумблер «по индексу» выключал СОСЕДНЕГО клиента (см.
+        // peerIndexByClient). Локальный флаг переключаем в любом случае —
+        // иначе истёкший клиент, пира которого на сервере уже нет, каждые 10
+        // секунд заново приезжал бы в shutdownClient и сыпал в лог.
+        $server = $this->readConfig();
+        $i      = $this->peerIndexByClient($server, $clients[$client]);
+
         if ($clients[$client]['# off']) {
             unset($clients[$client]['# off']);
         } else {
@@ -4765,47 +5301,386 @@ NFT;
         unset($clients[$client]['interface']['## time']);
         $this->saveClients($clients);
 
-        $server = $this->readConfig();
-        if (array_key_exists('# PublicKey', $server['peers'][$client])) {
-            foreach ($server['peers'][$client] as $k => $v) {
+        if ($i === null) {
+            error_log('switchClient: peer not found in ' . $this->getInstanceWG() . ' config for client #' . $client);
+
+            return;
+        }
+
+        $new = [];
+        if (array_key_exists('# PublicKey', $server['peers'][$i])) {
+            foreach ($server['peers'][$i] as $k => $v) {
                 $new[trim(preg_replace('~#~', '', $k, 1))] = $v;
             }
         } else {
-            foreach ($server['peers'][$client] as $k => $v) {
+            foreach ($server['peers'][$i] as $k => $v) {
                 $new["# $k"] = $v;
             }
         }
         unset($new['## time']);
         unset($new['# ## time']);
-        $server['peers'][$client] = $new;
+        $server['peers'][$i] = $new;
         $this->restartWG($this->createConfig($server));
+    }
+
+    // ── AmneziaWG: чистые хелперы (без ssh/pac.json, покрыты awg3_test.php) ───
+
+    // Имена ключей [Interface] по версии протокола: 0 — все, 1|2|3 — срез.
+    // Спред в const-выражениях не используем: прод крутится на PHP 8.1.
+    public static function awgKeyNames(int $ver = 0): array
+    {
+        switch ($ver) {
+            case 1:
+                return self::AWG_KEYS_1;
+            case 2:
+                return self::AWG_KEYS_2;
+            case 3:
+                return self::AWG_KEYS_3;
+            default:
+                return array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2, self::AWG_KEYS_3);
+        }
+    }
+
+    // Валидатор range-значений AWG 3.0. Формат ровно тот, что понимает
+    // u16_range_from_string() из amneziawg-tools: «N» либо «LO-HI» при HI >= LO.
+    // Ни «off», ни пустая строка, ни пробелы вокруг дефиса не принимаются —
+    // strtoul() упрётся в первый нецифровой символ и вернёт ошибку, а конфиг с
+    // такой строкой не применится целиком. Возвращает '' при успехе.
+    public static function validateAwgRange(string $s, int $min = 0, int $max = 65535): string
+    {
+        if (!preg_match('~^(\d{1,5})(?:-(\d{1,5}))?$~', $s, $m)) {
+            return 'формат: N или LO-HI (только цифры и один дефис, без пробелов)';
+        }
+        $lo = (int) $m[1];
+        $hi = isset($m[2]) ? (int) $m[2] : $lo;
+        if ($hi < $lo) {
+            return "верхняя граница ($hi) меньше нижней ($lo)";
+        }
+        if ($lo < $min || $hi > $max) {
+            return "значения допустимы в пределах $min..$max";
+        }
+        return '';
+    }
+
+    // [lo, hi] из уже валидной range-строки. Для кросс-проверок между полями.
+    public static function awgRangeBounds(string $s): array
+    {
+        [$lo, $hi] = array_pad(explode('-', $s, 2), 2, null);
+        $lo = (int) $lo;
+        return [$lo, $hi === null ? $lo : (int) $hi];
+    }
+
+    // Версия протокола выводится ИЗ НАБОРА КЛЮЧЕЙ, а не хранится отдельно:
+    // так она не может разойтись с тем, что реально лежит в wg0.conf.
+    public static function amneziaProtoVer($keys): int
+    {
+        $keys = is_array($keys) ? $keys : [];
+        foreach (self::AWG_KEYS_3 as $k) {
+            if (isset($keys[$k]) && $keys[$k] !== '') {
+                return 3;
+            }
+        }
+        return isset($keys['I1']) && $keys['I1'] !== '' ? 2 : 1;
+    }
+
+    // Инвариант amneziawg-go: при непустом HeaderProtectionKey каждый из S1..S4
+    // обязан быть >= 12, иначе setconf отвергает конфиг и интерфейс не встаёт.
+    public static function awgHeaderProtectionOk($keys): bool
+    {
+        $keys = is_array($keys) ? $keys : [];
+        if (empty($keys['HeaderProtectionKey'])) {
+            return true;
+        }
+        foreach (['S1', 'S2', 'S3', 'S4'] as $k) {
+            if (!isset($keys[$k]) || (int) $keys[$k] < self::AWG_HPK_MIN_S) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Размеры пакетов всех четырёх типов различны? Проверяются только те S,
+    // которые в наборе есть: у 1.x нет S3/S4, и тогда правило вырождается в
+    // «S2 !== S1 + 56» — ровно тот инвариант, что был здесь до 3.0.
+    public static function awgPacketSizesOk($keys): bool
+    {
+        $keys  = is_array($keys) ? $keys : [];
+        $sizes = [];
+        foreach (self::AWG_PACKET_BASE as $k => $base) {
+            if (isset($keys[$k]) && $keys[$k] !== '') {
+                $sizes[] = $base + (int) $keys[$k];
+            }
+        }
+        return count($sizes) === count(array_unique($sizes));
+    }
+
+    // Поднимает S1..S4 до порога header protection, сохраняя инварианты
+    // паддингов: S1 !== S2 и различающиеся размеры пакетов на проводе
+    // (awgPacketSizesOk) — иначе два типа пакетов становятся одного размера и
+    // их легко скоррелировать, а официальный клиент такой набор не сохранит.
+    public static function enforceHeaderProtection($keys): array
+    {
+        $keys = is_array($keys) ? $keys : [];
+        $min  = self::AWG_HPK_MIN_S;
+        // Верхние границы подбора те же, что у шаблонов 2.0/3.0. Уже заданные
+        // значения выше границы не срезаем — они могли прийти из ручной правки.
+        $max  = ['S1' => 64, 'S2' => 64, 'S3' => 64, 'S4' => 32];
+        foreach (array_keys($max) as $k) {
+            $keys[$k] = max($min, (int) ($keys[$k] ?? 0));
+        }
+        // S1 держим неизменным (он же init-пакет — самый заметный), пере-роллим
+        // остальные, пока набор не станет валидным.
+        $tries = 0;
+        while (($keys['S1'] === $keys['S2'] || !self::awgPacketSizesOk($keys)) && $tries++ < 200) {
+            foreach (['S2', 'S3', 'S4'] as $k) {
+                $keys[$k] = random_int($min, $max[$k]);
+            }
+        }
+        return $keys;
+    }
+
+    // Срез набора до того, что РЕАЛЬНО уезжает в wg0.conf. Чистая функция —
+    // единственный источник правды и для серверного конфига
+    // (amneziaKeysEffective), и для клиентских подписок: раньше mihomo получал
+    // сырой набор из pac.json и мог объявить header protection, которого на
+    // сервере нет (старые tools режут весь блок 3.0, S1..S4 < 12 режет HPK).
+    // Клиент при этом поднимает v3-устройство и молча не проходит handshake.
+    //
+    // $supports3: true — 3.0 есть, false — заведомо нет, null — неизвестно.
+    // При null НЕ режем: моргнувший ssh не повод выкинуть рабочий блок из
+    // конфигов всех клиентов.
+    public static function amneziaKeysUsable($keys, ?bool $supports3): array
+    {
+        if (!is_array($keys)) {
+            return [];
+        }
+        if ($supports3 === false) {
+            foreach (self::AWG_KEYS_3 as $j) {
+                unset($keys[$j]);
+            }
+        }
+        if (!self::awgHeaderProtectionOk($keys)) {
+            unset($keys['HeaderProtectionKey']);
+        }
+        return $keys;
+    }
+
+    // Дефолты amneziawg-go (device/constants.go) для полей, которые не заданы:
+    // пустое значение = «использовать встроенный», а не «ноль».
+    public const AWG3_DEFAULTS = [
+        'RekeyAfterTime'   => 120,
+        'RejectAfterTime'  => 180,
+        'RekeyTimeout'     => 5,
+        'KeepaliveTimeout' => 10,
+    ];
+
+    // Связки между таймингами, которые amneziawg НЕ проверяет сам: конфиг
+    // синтаксически корректен, setconf его принимает, awgApplyGuarded ничего не
+    // замечает, а туннель после этого рвётся. Сравниваем худший случай:
+    // верх Rekey против низа Reject. Возвращает '' при отсутствии конфликта.
+    public static function awgTimingConflict($keys): string
+    {
+        $keys = is_array($keys) ? $keys : [];
+        $val  = function (string $k) use ($keys) {
+            $v = (string) ($keys[$k] ?? '');
+            return $v === '' ? (string) self::AWG3_DEFAULTS[$k] : $v;
+        };
+        [, $rekeyHi]  = self::awgRangeBounds($val('RekeyAfterTime'));
+        [$rejectLo, ] = self::awgRangeBounds($val('RejectAfterTime'));
+        // 1. Сессия обязана жить дольше, чем срок до рекея: иначе пир
+        // выбрасывает ключи раньше, чем успевает передоговориться
+        // (timers.go: keyRefreshTimeoutSending против keychainExpireTime).
+        if ($rejectLo <= $rekeyHi) {
+            return "RejectAfterTime ($rejectLo) должен быть больше верхней границы RekeyAfterTime ($rekeyHi), "
+                . 'иначе пир отбросит сессию раньше, чем попробует рекей';
+        }
+        // 2. Принимающая сторона рекеит через
+        // max(0, RejectAfterTime - KeepaliveTimeout.lo - RekeyTimeout.lo)
+        // (timers.go: keyRefreshTimeoutReceiving). Если вычитаемое дотягивается
+        // до RejectAfterTime, окно схлопывается в ноль и ответчик уходит в
+        // handshake на каждом принятом пакете.
+        [$kaLo, ]  = self::awgRangeBounds($val('KeepaliveTimeout'));
+        [$rktLo, ] = self::awgRangeBounds($val('RekeyTimeout'));
+        if ($rejectLo <= $kaLo + $rktLo) {
+            return "RejectAfterTime ($rejectLo) должен быть больше KeepaliveTimeout ($kaLo) + RekeyTimeout ($rktLo), "
+                . 'иначе принимающая сторона уходит в рекей на каждом пакете';
+        }
+        return '';
+    }
+
+    // H1..H4 в форму 1.x: одиночные ненулевые различающиеся uint32.
+    // Диапазон «LO-HI» — это фича 2.0, и клиент/ядро 1.x его не разберёт;
+    // без этой конвертации понижение до classic_1 снимало I1-I5 и S3/S4, но
+    // оставляло заголовки в 2.0-синтаксисе, т.е. «совместимый со старыми
+    // клиентами» профиль на старом клиенте всё равно не поднимался.
+    // Берём нижнюю границу: диапазоны генератора не пересекаются, значит и
+    // нижние границы различны, а набор меняется минимально.
+    public static function awgHeadersToV1($keys): array
+    {
+        $keys = is_array($keys) ? $keys : [];
+        $seen = [];
+        foreach (['H1', 'H2', 'H3', 'H4'] as $h) {
+            if (!isset($keys[$h]) || $keys[$h] === '') {
+                continue;
+            }
+            $v = self::awgRangeBounds((string) $keys[$h])[0];
+            // Ноль запрещён (это «поле не задано»), дубль сделал бы два типа
+            // пакетов неразличимыми — в обоих случаях берём свободное значение.
+            while ($v <= 0 || in_array($v, $seen, true)) {
+                $v = random_int(1, 4_294_967_295);
+            }
+            $seen[]   = $v;
+            $keys[$h] = $v;
+        }
+        return $keys;
+    }
+
+    // Имя параметра в wg0.conf → имя поля в amnezia-wg-option у mihomo.
+    // Отдельная карта нужна, потому что для 3.0-полей регистронезависимого
+    // совпадения НЕ хватает: декодер mihomo (common/structure) сверяет ключи
+    // через EqualFold, предварительно заменив «_» на «-», поэтому «Jc»→«jc»
+    // совпадает, а «HeaderProtectionKey»→«header-protection-key» — нет.
+    public const MIHOMO_AWG3_KEYS = [
+        'HeaderProtectionKey'    => 'header-protection-key',
+        'ContentPaddingAddition' => 'content-padding-addition',
+        'RekeyAfterTime'         => 'rekey-after-time',
+        'RekeyTimeout'           => 'rekey-timeout',
+        'RejectAfterTime'        => 'reject-after-time',
+        'KeepaliveTimeout'       => 'keepalive-timeout',
+        'MaxHandshakeAttempts'   => 'max-handshake-attempts',
+    ];
+
+    // Whitelist для mihomo (amnezia-wg-option): отдаём только те поля, которые
+    // mihomo действительно знает. Именно whitelist, а не blacklist — иначе
+    // следующий добавленный сюда параметр молча утечёт в клиентский YAML.
+    //
+    // $awg3 включает блок 3.0. Он же требует `version: 3` — только по этому
+    // полю mihomo выбирает v3-реализацию устройства (adapter/outbound/
+    // wireguard.go: «Only version 3 uses the v3 implementation»).
+    // Ключ header-protection-key mihomo принимает в base64 и сам переводит в
+    // hex, т.е. значение отдаём ровно тем же, что лежит в wg0.conf.
+    //
+    // NB: H1-H4 в формате 2.0 («MIN-MAX») mihomo понимает начиная с той же
+    // сборки, что и 3.0; на старых сборках h1-h4 разбирались только как uint32.
+    public static function amneziaKeysForMihomo($keys, bool $awg3 = false): array
+    {
+        if (!is_array($keys)) {
+            return [];
+        }
+        $out = [];
+        foreach (array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2) as $k) {
+            if (isset($keys[$k])) {
+                $out[$k] = $keys[$k];
+            }
+        }
+        if (!$awg3 || self::amneziaProtoVer($keys) !== 3) {
+            return $out;
+        }
+        $out['version'] = 3;
+        foreach (self::MIHOMO_AWG3_KEYS as $k => $mk) {
+            if (isset($keys[$k]) && $keys[$k] !== '') {
+                $out[$mk] = (string) $keys[$k];
+            }
+        }
+        return $out;
+    }
+
+    // mihomo объявляет persistent-keepalive целым числом, диапазон «20-30» он не
+    // разберёт. Отдаём нижнюю границу — поведение как у клиента, не знающего
+    // про рандомизацию.
+    public static function keepaliveInt($v): int
+    {
+        return self::awgRangeBounds((string) $v)[0] ?: 20;
+    }
+
+    // Короткий отпечаток секрета для сверки сервер↔клиент без его раскрытия.
+    public static function awgKeyFingerprint($v): string
+    {
+        return '#' . substr(sha1((string) $v), 0, 8);
+    }
+
+    // Рендер набора ключей для <code>-блока. HeaderProtectionKey при $mask
+    // заменяется отпечатком: полный ключ иначе оседает в истории чата, откуда
+    // его уже не отозвать.
+    public static function amneziaKeysReport($keys, bool $mask = true, array $only = []): string
+    {
+        $keys  = is_array($keys) ? $keys : [];
+        $lines = [];
+        foreach ($keys as $k => $v) {
+            if ($only && !in_array($k, $only, true)) {
+                continue;
+            }
+            if ($mask && $k === 'HeaderProtectionKey') {
+                $v = 'set ' . self::awgKeyFingerprint($v);
+            }
+            $lines[] = htmlspecialchars((string) $k, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+                . ': ' . htmlspecialchars((string) $v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+        return implode("\n", $lines);
     }
 
     public function resetAmnezia($page = 0) {
         $this->switchAmnezia($page, 1);
     }
 
+    // Историческая кнопка «reduce to 1» — теперь просто понижение версии.
     public function reduceAmnezia($page = 0) {
-        $this->switchAmnezia($page, false, 1);
+        $this->setAmneziaProto(1, $page);
     }
+
+    public const AMNEZIA_TEMPLATE_LABELS = [
+        'standard_2'   => 'Standard 2.0',
+        'aggressive_2' => 'Aggressive 2.0',
+        'mobile_2'     => 'Mobile 2.0',
+        'classic_1'    => 'Classic 1.x',
+        'standard_3'   => 'Standard 3.0',
+        'aggressive_3' => 'Aggressive 3.0',
+        'mobile_3'     => 'Mobile 3.0',
+    ];
+
+    public const AMNEZIA_TEMPLATE_DESCS = [
+        'standard_2'   => 'балансир: умеренные junk-пакеты и I1–I5',
+        'aggressive_2' => 'против GFW-класса DPI; +10–15% трафика',
+        'mobile_2'     => 'мелкие junk, экономит батарею и трафик',
+        'classic_1'    => 'без 2.0-полей, совместимо со старыми клиентами',
+        'standard_3'   => 'балансир + header protection и рандомные тайминги',
+        'aggressive_3' => 'максимум обфускации 3.0; +10–15% трафика',
+        'mobile_3'     => 'мелкие junk, редкий рекей — экономит батарею',
+    ];
 
     public function applyAmneziaTemplate($template, $page = 0)
     {
-        $allowed = ['standard_2', 'aggressive_2', 'mobile_2', 'classic_1'];
-        if (!in_array($template, $allowed, true)) {
+        if (!isset(self::AMNEZIA_TEMPLATE_LABELS[$template])) {
             return $this->menu('wg', $page);
         }
-        $c = $this->getPacConf();
-        $prefix = $this->getInstanceWG(1);
-        $c[$prefix . 'amnezia']      = 1;
-        $c[$prefix . 'amnezia_tpl']  = $template;
-        $c[$prefix . 'amnezia_keys'] = $this->generateAmneziaKeys($template);
-        // Сбросить ротационный таймер: ручная смена шаблона = свежая генерация
-        // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
-        if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
-            $c[$prefix . 'amnezia_last_rotation'] = time();
+        $is3 = substr($template, -2) === '_3';
+        if ($is3 && $this->awgSupports3() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg3UnsupportedText(), true);
+            return $this->menu('wg', $page);
         }
-        $this->setPacConf($c);
+        $prefix = $this->getInstanceWG(1);
+        $mutate = function () use ($template, $prefix, $is3) {
+            $c = $this->getPacConf();
+            $c[$prefix . 'amnezia']      = 1;
+            $c[$prefix . 'amnezia_tpl']  = $template;
+            $c[$prefix . 'amnezia_keys'] = $this->generateAmneziaKeys(
+                $template,
+                $is3 ? fn() => $this->genHeaderProtectionKey() : null
+            );
+            // Сбросить ротационный таймер: ручная смена шаблона = свежая генерация
+            // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
+            if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
+                $c[$prefix . 'amnezia_last_rotation'] = time();
+            }
+            $this->setPacConf($c);
+        };
+        // 3.0-шаблон способен получить отказ от setconf (например, если в
+        // контейнере вдруг оказались старые tools) — применяем с откатом.
+        if ($is3) {
+            $this->awgApplyGuarded($page, $mutate);
+            return;
+        }
+        $mutate();
         $this->switchAmnezia($page, false, false, 1);
     }
 
@@ -4813,20 +5688,17 @@ NFT;
     {
         $prefix  = $this->getInstanceWG(1);
         $current = $this->getPacConf()[$prefix . 'amnezia_tpl'] ?? '';
-        $labels  = [
-            'standard_2'   => 'Standard 2.0',
-            'aggressive_2' => 'Aggressive 2.0',
-            'mobile_2'     => 'Mobile 2.0',
-            'classic_1'    => 'Classic 1.x',
-        ];
-        $descs = [
-            'standard_2'   => 'балансир: умеренные junk-пакеты и I1–I5',
-            'aggressive_2' => 'против GFW-класса DPI; +10–15% трафика',
-            'mobile_2'     => 'мелкие junk, экономит батарею и трафик',
-            'classic_1'    => 'без 2.0-полей, совместимо со старыми клиентами',
-        ];
+        // Профили показываем только для текущей версии протокола: смена версии
+        // живёт в отдельном меню (amneziaProtoMenu), иначе список из семи
+        // пунктов не даёт понять, что именно переключаешь.
+        $ver     = self::amneziaProtoVer($this->getPacConf()[$prefix . 'amnezia_keys'] ?? []);
+        $labels  = [];
+        foreach (self::amneziaTemplateList($ver) as $k) {
+            $labels[$k] = self::AMNEZIA_TEMPLATE_LABELS[$k];
+        }
+        $descs = self::AMNEZIA_TEMPLATE_DESCS;
         $inst = $this->wgNum();
-        $text = ['Menu -> Wireguard -> amnezia templates', ''];
+        $text = ['Menu -> Wireguard -> amnezia templates (' . $this->amneziaProtoLabel($ver) . ')', ''];
         foreach ($labels as $k => $label) {
             $mark = ($k === $current) ? '• ' : '';
             $text[] = "$mark<b>$label</b> — " . $descs[$k];
@@ -4850,11 +5722,468 @@ NFT;
         );
     }
 
+    // ── Версия протокола: выбор и применение ─────────────────────────────────
+
+    public function amneziaProtoLabel(int $ver): string
+    {
+        return [1 => '1.x', 2 => '2.0', 3 => '3.0'][$ver] ?? '1.x';
+    }
+
+    public function awg3UnsupportedText(): string
+    {
+        $v = $this->awgToolsVersion();
+        return 'AWG 3.0 недоступен: в контейнере amneziawg-tools '
+            . ($v === null ? '(версия неизвестна, контейнер не отвечает)' : $v)
+            . ', нужна ≥ 3.0 — пересоберите wg-контейнер';
+    }
+
+    public function amneziaProtoMenu($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $keys   = $this->getPacConf()[$prefix . 'amnezia_keys'] ?? [];
+        $cur    = self::amneziaProtoVer($keys);
+        $sup3   = $this->awgSupports3();
+        $inst   = $this->wgNum();
+
+        $text = [
+            'Menu -> Wireguard -> версия протокола amnezia',
+            '',
+            '<b>1.x</b> — Jc/Jmin/Jmax, S1-S2, H1-H4. Понимают все клиенты.',
+            '<b>2.0</b> — плюс S3/S4 и сигнатурные пакеты I1-I5.',
+            '<b>3.0</b> — плюс header protection, рандомизированный паддинг и тайминги.',
+            '',
+            'Смена версии не перегенерирует уже подобранные поля — только добавляет или снимает те, которых нет в целевой версии.',
+            '',
+            '⚠️ После смены версии клиентам нужно перекачать конфиги, иначе связь пропадёт.',
+        ];
+        if ($sup3 !== true) {
+            $text[] = '';
+            $text[] = '⛔ ' . htmlspecialchars($this->awg3UnsupportedText(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+
+        $data = [];
+        foreach ([1, 2, 3] as $v) {
+            $mark  = $v === $cur ? '• ' : '';
+            $badge = ($v === 3 && $sup3 !== true) ? ' ⛔' : '';
+            $data[] = [[
+                'text'          => $mark . $this->amneziaProtoLabel($v) . $badge,
+                'callback_data' => "/setAmneziaProto $v $inst $page",
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/menu wg $inst $page",
+        ]];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Понижение/повышение версии БЕЗ перегенерации всего набора: S1/S2/H1-H4/Jc
+    // и PSK сохраняются, меняется только состав полей. Полная перегенерация —
+    // это отдельное действие (templates / reset obf-keys).
+    public function setAmneziaProto($ver, $page = 0)
+    {
+        $ver    = (int) $ver;
+        $prefix = $this->getInstanceWG(1);
+        if (!in_array($ver, [1, 2, 3], true)) {
+            return $this->menu('wg', $page);
+        }
+        if ($ver === 3 && $this->awgSupports3() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg3UnsupportedText(), true);
+            return $this->menu('wg', $page);
+        }
+
+        $mutate = function () use ($ver, $prefix) {
+            $c   = $this->getPacConf();
+            $tpl = $c[$prefix . 'amnezia_tpl'] ?? 'standard_2';
+            // Профиль внутри версии сохраняем (standard→standard и т.д.).
+            $tpl_new = self::awgTemplateForVer($tpl, $ver);
+            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+            if (!$keys) {
+                $keys = $this->generateAmneziaKeys($tpl_new, fn() => $this->genHeaderProtectionKey());
+            }
+
+            // Снять всё, что выше целевой версии.
+            for ($v = $ver + 1; $v <= 3; $v++) {
+                foreach (self::awgKeyNames($v) as $k) {
+                    unset($keys[$k]);
+                }
+            }
+            // Добить недостающее до целевой версии из свежего набора того же
+            // профиля — существующие поля не трогаем.
+            if ($ver >= 2) {
+                $fresh = $this->generateAmneziaKeys($tpl_new, fn() => $this->genHeaderProtectionKey());
+                for ($v = 2; $v <= $ver; $v++) {
+                    foreach (self::awgKeyNames($v) as $k) {
+                        if (!isset($keys[$k]) && isset($fresh[$k])) {
+                            $keys[$k] = $fresh[$k];
+                        }
+                    }
+                }
+            }
+            if ($ver === 3) {
+                $keys = self::enforceHeaderProtection($keys);
+            } else {
+                // Диапазонный PersistentKeepalive — тоже 3.0: на 1.x/2.0 он
+                // просто не разберётся.
+                unset($c[$prefix . 'amnezia_keepalive']);
+            }
+            if ($ver === 1) {
+                // Заголовки-диапазоны — фича 2.0; в 1.x они обязаны стать
+                // одиночными числами, иначе профиль «для старых клиентов» на
+                // старом клиенте не поднимется. См. awgHeadersToV1().
+                $keys = self::awgHeadersToV1($keys);
+            }
+
+            $c[$prefix . 'amnezia']      = 1;
+            $c[$prefix . 'amnezia_tpl']  = $tpl_new;
+            $c[$prefix . 'amnezia_keys'] = $keys;
+            $this->setPacConf($c);
+        };
+
+        if ($ver === 3) {
+            $this->awgApplyGuarded($page, $mutate);
+            return;
+        }
+        $mutate();
+        $this->switchAmnezia($page, false, false, 1);
+    }
+
+    // ── Подменю AWG 3.0 ──────────────────────────────────────────────────────
+
+    public function awg3Menu($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        $keys   = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+        $sup3   = $this->awgSupports3();
+        $inst   = $this->wgNum();
+        $hpk    = (string) ($keys['HeaderProtectionKey'] ?? '');
+
+        $text = [
+            'Menu -> Wireguard -> AWG 3.0',
+            '',
+            'amneziawg-tools: <code>' . htmlspecialchars((string) ($this->awgToolsVersion() ?? '—'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
+                . ($sup3 === true ? ' ✅' : ($sup3 === false ? ' ⛔ нужна ≥ 3.0' : ' ⚠️ контейнер не отвечает')),
+            '',
+        ];
+        $report = self::amneziaKeysReport($keys, true, self::AWG_KEYS_3);
+        $text[] = '<code>' . ($report !== '' ? $report : '3.0-поля не заданы') . '</code>';
+        $text[] = 'PersistentKeepalive: <code>' . htmlspecialchars((string) $this->awgKeepalive(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
+        $text[] = '';
+        $text[] = 'Все поля, кроме HeaderProtectionKey, задаются числом или диапазоном <code>LO-HI</code>; <code>0</code> — вернуть значение по умолчанию.';
+        $text[] = '';
+        $text[] = '⚠️ Любое изменение здесь ломает уже розданные конфиги: клиентам нужно перекачать их заново. Header protection дополнительно требует S1–S4 ≥ ' . self::AWG_HPK_MIN_S . '.';
+        $text[] = '';
+        $text[] = '<b>mihomo awg3</b> — отдавать ли блок 3.0 в подписке mihomo (<code>amnezia-wg-option</code> + <code>version: 3</code>). Нужны свежие сборки mihomo/Clash.Meta; старые эти поля просто игнорируют, и awg-прокси к 3.0-серверу у них работать не будет в любом случае.';
+
+        $data = [
+            [
+                [
+                    'text'          => 'HPK: ' . ($hpk !== '' ? 'on ' . self::awgKeyFingerprint($hpk) : 'off'),
+                    'callback_data' => "/awg3hpk $inst $page",
+                ],
+            ],
+        ];
+        if ($hpk !== '') {
+            $data[] = [
+                ['text' => 'regen HPK', 'callback_data' => "/awg3hpkGen $inst $page"],
+                ['text' => 'show HPK',  'callback_data' => "/awg3hpkShow $inst $page"],
+            ];
+        }
+        $row = [];
+        foreach (self::AWG3_FIELDS as $tok => [$key, , , ]) {
+            $cur = $key === 'PersistentKeepalive'
+                ? (string) $this->awgKeepalive()
+                : (string) ($keys[$key] ?? '—');
+            $row[] = [
+                'text'          => self::awg3FieldShort($tok) . ": $cur",
+                'callback_data' => "/awg3set $tok $inst $page",
+            ];
+            if (count($row) === 2) {
+                $data[] = $row;
+                $row = [];
+            }
+        }
+        if ($row) {
+            $data[] = $row;
+        }
+        $data[] = [
+            [
+                'text'          => 'mihomo awg3: ' . (!empty($c['mihomo_awg3']) ? 'on' : 'off'),
+                'callback_data' => "/awg3mihomo $inst $page",
+            ],
+        ];
+        $data[] = [
+            ['text' => 'reset 3.0',     'callback_data' => "/awg3reset $inst $page"],
+            ['text' => 'recheck tools', 'callback_data' => "/awgVerRefresh $inst $page"],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => "/menu wg $inst $page",
+        ]];
+
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Короткая подпись кнопки: полное имя параметра не влезает в ряд из двух.
+    public static function awg3FieldShort(string $tok): string
+    {
+        return [
+            'pad' => 'padding',
+            'rka' => 'rekey after',
+            'rkt' => 'rekey timeout',
+            'rja' => 'reject after',
+            'kat' => 'keepalive t/o',
+            'mha' => 'max handshake',
+            'pka' => 'keepalive',
+        ][$tok] ?? $tok;
+    }
+
+    public function toggleHeaderProtection($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        $keys   = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+
+        if (!empty($keys['HeaderProtectionKey'])) {
+            $this->awgApplyGuarded($page, function () use ($prefix) {
+                $c = $this->getPacConf();
+                unset($c[$prefix . 'amnezia_keys']['HeaderProtectionKey']);
+                $this->setPacConf($c);
+            });
+            return;
+        }
+
+        if ($this->awgSupports3() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg3UnsupportedText(), true);
+            return $this->menu('wg', $page);
+        }
+        // Header protection использует S1-S4 как nonce, поэтому паддинги обязаны
+        // существовать и быть >= 12. Набор 1.x их просто не содержит.
+        if (!isset($keys['S3'], $keys['S4'])) {
+            $this->answer($this->input['callback_id'] ?? null, 'сначала переключитесь на 2.0 или 3.0: header protection требует S3/S4', true);
+            return $this->menu('wg', $page);
+        }
+
+        $this->awgApplyGuarded($page, function () use ($prefix) {
+            $c    = $this->getPacConf();
+            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+            $keys['HeaderProtectionKey'] = $this->genHeaderProtectionKey();
+            $c[$prefix . 'amnezia_keys'] = self::enforceHeaderProtection($keys);
+            $this->setPacConf($c);
+        });
+    }
+
+    public function regenHeaderProtection($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        if (empty($c[$prefix . 'amnezia_keys']['HeaderProtectionKey'])) {
+            return $this->menu('wg', $page);
+        }
+        $this->awgApplyGuarded($page, function () use ($prefix) {
+            $c = $this->getPacConf();
+            $c[$prefix . 'amnezia_keys']['HeaderProtectionKey'] = $this->genHeaderProtectionKey();
+            $this->setPacConf($c);
+        });
+    }
+
+    // Полное значение отдаём alert-попапом: в отличие от сообщения, оно не
+    // остаётся в истории чата и не попадает в бэкапы переписки.
+    public function showHeaderProtectionKey($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $hpk    = (string) ($this->getPacConf()[$prefix . 'amnezia_keys']['HeaderProtectionKey'] ?? '');
+        $this->answer($this->input['callback_id'] ?? null, $hpk !== '' ? $hpk : 'HeaderProtectionKey не задан', true);
+    }
+
+    public function resetAwg3($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $this->awgApplyGuarded($page, function () use ($prefix) {
+            $c = $this->getPacConf();
+            foreach (self::AWG_KEYS_3 as $k) {
+                unset($c[$prefix . 'amnezia_keys'][$k]);
+            }
+            unset($c[$prefix . 'amnezia_keepalive']);
+            // Шаблон обязан уехать вместе с полями: AWG_ROTATE_KEYS содержит
+            // весь блок 3.0, и ближайшая ротация по оставшемуся *_3 вернула бы
+            // его целиком — вместе с header protection, который только что сняли.
+            $tpl = (string) ($c[$prefix . 'amnezia_tpl'] ?? '');
+            if (substr($tpl, -2) === '_3') {
+                $c[$prefix . 'amnezia_tpl'] = self::awgTemplateForVer($tpl, 2);
+            }
+            $this->setPacConf($c);
+        });
+    }
+
+    // Перечитать версию amneziawg-tools в обход часового кеша в pac.json.
+    // Нужна после пересборки wg-контейнера: до неё меню продолжало бы показывать
+    // старую версию и держать 3.0 заблокированным.
+    public function awgVerRefresh($page = 0)
+    {
+        $v = $this->awgToolsVersion(true);
+        // Тост обязателен. awg3Menu() перерисовывает то же самое сообщение, а
+        // когда версия не изменилась (обычный случай), текст и клавиатура выходят
+        // байт-в-байт прежними — Telegram на такой editMessageText отвечает
+        // «message is not modified» и не меняет ничего. Без этой строки кнопка
+        // выглядела полностью мёртвой, хотя ssh-опрос выполнялся. Тот же приём,
+        // что в refreshMain().
+        if (!empty($this->input['callback_id'])) {
+            $this->answer(
+                $this->input['callback_id'],
+                '🔄 amneziawg-tools: ' . ($v ?? 'контейнер не отвечает'),
+            );
+        }
+        $this->awg3Menu($page);
+    }
+
+    // Флаг глобальный, а не по инстансу: он описывает возможности КЛИЕНТСКОГО
+    // приложения подписчика, а не сервера. Рестарт wg не нужен — меняется
+    // только то, что отдаётся в подписке.
+    public function toggleMihomoAwg3($page = 0)
+    {
+        $c = $this->getPacConf();
+        $c['mihomo_awg3'] = empty($c['mihomo_awg3']) ? 1 : 0;
+        $this->setPacConf($c);
+        $this->awg3Menu($page);
+    }
+
+    public function setAwg3Field($tok, $page = 0)
+    {
+        if (!isset(self::AWG3_FIELDS[$tok])) {
+            return $this->menu('wg', $page);
+        }
+        [$key, $min, $max, $hint] = self::AWG3_FIELDS[$tok];
+        $prefix = $this->getInstanceWG(1);
+        $cur    = $key === 'PersistentKeepalive'
+            ? (string) $this->awgKeepalive()
+            : (string) ($this->getPacConf()[$prefix . 'amnezia_keys'][$key] ?? '—');
+
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} введите значение <b>$key</b> — число или диапазон <code>LO-HI</code> ($hint).\n\n"
+            . "Текущее: <code>" . htmlspecialchars($cur, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n"
+            . "Допустимо: $min..$max. <code>0</code> — вернуть значение по умолчанию.\n\n"
+            . "Диапазон пишется без пробелов (<code>110-130</code>): amneziawg отвергает конфиг целиком при любой ошибке разбора.\n"
+            . "После изменения клиентам нужно перекачать конфиги.",
+            $this->input['message_id'],
+            reply: "введите $key",
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'setAwg3FieldValue',
+            // Инстанс в stash — ответ придёт отдельным запросом, где глобальный
+            // wg_instance мог смениться другим меню/устройством.
+            'args'           => [$tok, $this->wgNum(), $page],
+        ]);
+    }
+
+    // Легаси-защиты вида «args=[$page]» здесь нет намеренно: колбэк новый,
+    // стэшей старого формата для него не существует.
+    public function setAwg3FieldValue($text, $tok = '', $inst = 0, $page = 0)
+    {
+        if (!isset(self::AWG3_FIELDS[$tok])) {
+            return $this->menu('wg', $page);
+        }
+        $this->selectWG($inst);
+        [$key, $min, $max] = self::AWG3_FIELDS[$tok];
+        $prefix = $this->getInstanceWG(1);
+        $text   = trim($text);
+
+        $reset = $text === '' || $text === '0' || $text === '-';
+
+        if (!$reset && ($err = self::validateAwgRange($text, $min, $max))) {
+            $this->update($this->input['chat'], $this->input['message_id'], "$key: $err");
+            sleep(3);
+            $this->menu('wg', $page);
+            return;
+        }
+
+        // Кросс-проверка таймингов: по отдельности значения валидны, а вместе
+        // рвут туннель — и сброс в дефолт тоже способен создать конфликт
+        // (снятый RejectAfterTime = 180 против выставленного RekeyAfterTime).
+        // Поэтому проверяем ИТОГОВЫЙ набор, а не введённую строку.
+        if (in_array($key, ['RekeyAfterTime', 'RejectAfterTime', 'RekeyTimeout', 'KeepaliveTimeout'], true)) {
+            $next = $this->getPacConf()[$prefix . 'amnezia_keys'] ?? [];
+            $next = is_array($next) ? $next : [];
+            if ($reset) {
+                unset($next[$key]);
+            } else {
+                $next[$key] = $text;
+            }
+            if ($err = self::awgTimingConflict($next)) {
+                $this->update($this->input['chat'], $this->input['message_id'], $err);
+                sleep(3);
+                $this->menu('wg', $page);
+                return;
+            }
+        }
+
+        if ($reset) {
+            $this->awgApplyGuarded($page, function () use ($prefix, $key) {
+                $c = $this->getPacConf();
+                if ($key === 'PersistentKeepalive') {
+                    unset($c[$prefix . 'amnezia_keepalive']);
+                } else {
+                    unset($c[$prefix . 'amnezia_keys'][$key]);
+                }
+                $this->setPacConf($c);
+            });
+            return;
+        }
+
+        // Диапазонный PersistentKeepalive — тоже фича 3.0: старые tools не
+        // разберут «20-30» и на клиенте, и на сервере.
+        if ($this->awgSupports3() !== true) {
+            $this->update($this->input['chat'], $this->input['message_id'], $this->awg3UnsupportedText());
+            sleep(3);
+            $this->menu('wg', $page);
+            return;
+        }
+
+        $this->awgApplyGuarded($page, function () use ($prefix, $key, $text) {
+            $c = $this->getPacConf();
+            if ($key === 'PersistentKeepalive') {
+                $c[$prefix . 'amnezia_keepalive'] = $text;
+            } else {
+                $c[$prefix . 'amnezia_keys'][$key] = $text;
+            }
+            $this->setPacConf($c);
+        });
+    }
+
     // Validates a CPS string for AmneziaWG 2.0 I1-I5 fields.
-    // Accepts only the tokens supported by amneziawg-go: <b 0xHEX>, <r N>, <rc N>, <rd N>, <t>.
-    // Critical rule (from amnezia article comments): hex inside <b 0x..> must have an
-    // EVEN number of hex chars — otherwise it's not a whole byte sequence and the peer
-    // silently rejects the signature packet.
+    // Принимаются только теги, которые бот умеет строить осмысленно:
+    // <b 0xHEX>, <r N>, <rc N>, <rd N>, <t>. Парсер amneziawg-go (device/obf.go,
+    // obfBuilders) знает ещё d/ds/dz — они подставляют данные самого пакета и для
+    // отдельного сигнатурного пакета смысла не имеют, поэтому здесь их нет.
+    //
+    // Критическое правило: число hex-символов в <b 0x..> обязано быть ЧЁТНЫМ.
+    // Источник — device/obf_bytes.go: `strings.TrimPrefix(val, "0x")`, затем
+    // `len(val)%2 != 0 → errors.New("odd amount of symbols")`, и только потом
+    // hex.DecodeString. Нечётная строка роняет РАЗБОР ВСЕГО конфига: у клиента
+    // AmneziaVPN это выглядит как «wgTurnOn вернул -1» без указания причины
+    // (habr.com/ru/companies/amnezia/articles/1014636 — тред ku4in ↔ AmneziaLover,
+    // после него в самой статье поправили пример).
+    // ВАЖНО: считаются ВСЕ символы, включая ведущие нули — `0c7000000010` это
+    // 12 символов, то есть валидные 6 байт. В том же треде представитель Amnezia
+    // ответил, что «значащих символов всё ещё нечётное количество», но код так не
+    // считает: TrimPrefix убирает ровно префикс «0x», а дальше идёт голый len().
+    // Минимального размера у сигнатурного пакета нет вовсе — send.go выделяет
+    // ровно `ipacket.ObfuscatedLen(0)` байт и шлёт как есть; рекомендация «≥100
+    // байт» из статьи — про правдоподобие имитации, а не про требование парсера.
     //
     // Future-work (предложения для upstream amneziawg-go — пока НЕ существуют):
     //   <ra N>  — N случайных букв a-zA-Z (для User-Agent, hostname-частей)
@@ -4879,6 +6208,20 @@ NFT;
             foreach ($m[1] as $hex) {
                 if (strlen($hex) % 2 !== 0) {
                     return "hex in &lt;b 0x$hex&gt; has odd length — must be even (whole bytes)";
+                }
+            }
+        }
+        // Официальный потолок длины у <r|rc|rd N> — 1000
+        // (docs.amnezia.org/documentation/amnezia-wg, таблица Tag Types).
+        // amneziawg-go его не проверяет (obf_rand.go — просто Atoi), поэтому
+        // слишком длинный тег даёт не отказ конфига, а junk-пакет, который
+        // упрётся в MTU: сигнатурный пакет уйдёт обрезанным или не уйдёт вовсе.
+        // Генератор шаблонов сюда не упирается (максимум 250), а вот ручной
+        // ввод — вполне.
+        if (preg_match_all('~<(r|rc|rd) (\d+)>~', $s, $m, PREG_SET_ORDER)) {
+            foreach ($m as [, $tag, $len]) {
+                if ((int) $len > self::CPS_MAX_LEN) {
+                    return "N in &lt;$tag $len&gt; exceeds " . self::CPS_MAX_LEN . ' — official limit for &lt;r&gt;/&lt;rc&gt;/&lt;rd&gt;';
                 }
             }
         }
@@ -5149,16 +6492,15 @@ NFT;
                 $amnezia = 1;
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keys']);
                 unset($c[$this->getInstanceWG(1) . 'presharedkey']);
+                unset($c[$this->getInstanceWG(1) . 'amnezia_keepalive']);
                 break;
             case !empty($reduce):
+                // Понижение до 1.x: снимаем и 2.0-, и 3.0-поля. Оставить
+                // HeaderProtectionKey без S3/S4 нельзя — конфиг был бы отвергнут.
                 $amnezia = 1;
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['S3']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['S4']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I1']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I2']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I3']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I4']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']['I5']);
+                foreach (array_merge(self::AWG_KEYS_2, self::AWG_KEYS_3) as $j) {
+                    unset($c[$this->getInstanceWG(1) . 'amnezia_keys'][$j]);
+                }
                 break;
             case !empty($apply):
                 // Caller (applyAmneziaTemplate) has already set keys + amnezia=1.
@@ -5172,52 +6514,36 @@ NFT;
         $this->setPacConf($c);
 
         $pk = $this->presharedKey();
-        $ak = $this->amneziaKeys();
+        $ak = $this->amneziaKeysEffective();
+        // Списки чистки — из awgKeyNames(), а не перечислением: иначе каждый
+        // новый параметр протокола пришлось бы дописывать в двух местах, и
+        // забытый ключ остался бы в конфиге «хвостом» от прошлой версии.
+        $strip   = self::awgKeyNames();
+        $keepal  = $this->awgKeepalive();
         $clients = $this->readClients();
         foreach ($clients as $k => $v) {
             unset($clients[$k]['peers'][0]['PresharedKey']);
-            unset($clients[$k]['interface']['Jc']);
-            unset($clients[$k]['interface']['Jmin']);
-            unset($clients[$k]['interface']['Jmax']);
-            unset($clients[$k]['interface']['S1']);
-            unset($clients[$k]['interface']['S2']);
-            unset($clients[$k]['interface']['S3']);
-            unset($clients[$k]['interface']['S4']);
-            unset($clients[$k]['interface']['H1']);
-            unset($clients[$k]['interface']['H2']);
-            unset($clients[$k]['interface']['H3']);
-            unset($clients[$k]['interface']['H4']);
-            unset($clients[$k]['interface']['I1']);
-            unset($clients[$k]['interface']['I2']);
-            unset($clients[$k]['interface']['I3']);
-            unset($clients[$k]['interface']['I4']);
-            unset($clients[$k]['interface']['I5']);
+            foreach ($strip as $j) {
+                unset($clients[$k]['interface'][$j]);
+            }
             if (!empty($amnezia)) {
                 $clients[$k]['peers'][0]['PresharedKey'] = $pk;
                 foreach ($ak as $j => $i) {
                     $clients[$k]['interface'][$j] = $i;
                 }
             }
+            // PersistentKeepalive живёт в [Peer] и потому не входит в набор
+            // amnezia_keys; при выключенной амнезии возвращаем фиксированные 20.
+            if (isset($clients[$k]['peers'][0]['PersistentKeepalive'])) {
+                $clients[$k]['peers'][0]['PersistentKeepalive'] = !empty($amnezia) ? $keepal : 20;
+            }
         }
         $this->saveClients($clients);
 
         $wg = $this->readConfig();
-        unset($wg['interface']['Jc']);
-        unset($wg['interface']['Jmin']);
-        unset($wg['interface']['Jmax']);
-        unset($wg['interface']['S1']);
-        unset($wg['interface']['S2']);
-        unset($wg['interface']['S3']);
-        unset($wg['interface']['S4']);
-        unset($wg['interface']['H1']);
-        unset($wg['interface']['H2']);
-        unset($wg['interface']['H3']);
-        unset($wg['interface']['H4']);
-        unset($wg['interface']['I1']);
-        unset($wg['interface']['I2']);
-        unset($wg['interface']['I3']);
-        unset($wg['interface']['I4']);
-        unset($wg['interface']['I5']);
+        foreach ($strip as $j) {
+            unset($wg['interface'][$j]);
+        }
         if (!empty($amnezia)) {
             foreach ($ak as $j => $i) {
                 $wg['interface'][$j] = $i;
@@ -5237,10 +6563,79 @@ NFT;
         }
     }
 
-    // Ротация только "junk"-полей I1-I5 и S3-S4 (генерация заново по текущему
-    // шаблону). S1/S2/H1-H4/Jc/Jmin/Jmax и PSK сохраняются — они влияют на
-    // совместимость handshake между сервером и клиентами. После ротации
-    // клиентам нужно перекачать конфиги.
+    // Поднялся ли интерфейс. `awg show wg0` печатает «interface: wg0» только для
+    // существующего устройства; при отвергнутом конфиге awg-quick падает на
+    // setconf и устройства нет вовсе.
+    public function awgLinkUp(): bool
+    {
+        $out = (string) $this->ssh("{$this->getWGType()} show wg0", $this->getInstanceWG());
+        if ($this->sshFailed) {
+            // Контейнер недоступен — про интерфейс ничего не известно. Считаем
+            // «поднят», чтобы не откатывать корректную правку из-за сбоя ssh.
+            return true;
+        }
+        return (bool) preg_match('~^interface:~m', $out);
+    }
+
+    // Применение изменений, которые способны сделать конфиг невалидным
+    // (3.0-поля, header protection, ручные диапазоны). amneziawg-tools отвергают
+    // весь файл целиком при любой ошибке, а restartWG() успех `up` не проверяет —
+    // поэтому: снимок → правка → применение → проверка линка → при неудаче откат.
+    //
+    // Снимок ограничен amnezia-ключами инстанса, а не всем pac.json: параллельный
+    // воркер (cron, другой чат) мог тем временем поменять несвязанные поля, и
+    // восстановление целого файла затёрло бы его работу.
+    public function awgApplyGuarded(int $page, callable $mutate, bool $silent = false): bool
+    {
+        $prefix = $this->getInstanceWG(1);
+        $snapKeys = [
+            $prefix . 'amnezia_keys',
+            $prefix . 'amnezia_tpl',
+            $prefix . 'amnezia_keepalive',
+            $prefix . 'amnezia',
+        ];
+        $before = [];
+        $c = $this->getPacConf();
+        foreach ($snapKeys as $k) {
+            $before[$k] = $c[$k] ?? null;
+        }
+
+        $mutate();
+        $this->switchAmnezia($page, false, false, 1, true);
+
+        if ($this->awgLinkUp()) {
+            if (!$silent) {
+                $this->menu('wg', $page);
+            }
+            return true;
+        }
+
+        $c = $this->getPacConf();
+        foreach ($before as $k => $v) {
+            if ($v === null) {
+                unset($c[$k]);
+            } else {
+                $c[$k] = $v;
+            }
+        }
+        $this->setPacConf($c);
+        $this->switchAmnezia($page, false, false, 1, true);
+        if (!$silent) {
+            // Не alert-попапом: сюда приходят и нажатия кнопок, и ответы на
+            // промпты, а в reply() callback_id подменён на message_id меню —
+            // answerCallbackQuery по нему молча ничего не покажет.
+            $this->update($this->input['chat'], $this->input['message_id'], 'amneziawg отверг конфиг — изменения откачены');
+            sleep(3);
+            $this->menu('wg', $page);
+        }
+        return false;
+    }
+
+    // Ротация полей из AWG_ROTATE_KEYS (генерация заново по текущему шаблону):
+    // I1-I5, S3-S4 и весь блок 3.0, включая HeaderProtectionKey.
+    // S1/S2/H1-H4/Jc/Jmin/Jmax и PSK сохраняются — они влияют на совместимость
+    // handshake между сервером и клиентами. После ротации клиентам ОБЯЗАТЕЛЬНО
+    // нужно перекачать конфиги: рассинхрон HeaderProtectionKey рвёт связь молча.
     public function rotateAmneziaJunk($silent = false, $page = 0)
     {
         $c = $this->getPacConf();
@@ -5269,16 +6664,38 @@ NFT;
             $this->amneziaKeys();
             $c = $this->getPacConf();
         }
-        $new = $this->generateAmneziaKeys($tpl);
-        foreach (['I1', 'I2', 'I3', 'I4', 'I5', 'S3', 'S4'] as $k) {
-            if (isset($new[$k])) {
-                $c[$prefix . 'amnezia_keys'][$k] = $new[$k];
-            } else {
-                unset($c[$prefix . 'amnezia_keys'][$k]);
-            }
+        $has3 = self::amneziaProtoVer($c[$prefix . 'amnezia_keys'] ?? []) === 3;
+        // Ротируем по шаблону ТЕКУЩЕЙ версии набора, а не по записанному tpl —
+        // в обе стороны. Вверх: header protection можно включить кнопкой поверх
+        // набора 2.0, и шаблон *_2 не сгенерировал бы 3.0-поля, ротация просто
+        // стёрла бы их. Вниз: набор без блока 3.0 при шаблоне *_3 получил бы
+        // его обратно, причём мимо awgApplyGuarded (ветка $has3 ниже).
+        if ($has3 !== (substr($tpl, -2) === '_3')) {
+            $tpl = self::awgTemplateForVer($tpl, $has3 ? 3 : 2);
         }
-        $c[$prefix . 'amnezia_last_rotation'] = time();
-        $this->setPacConf($c);
+        $mutate = function () use ($prefix, $tpl) {
+            $c   = $this->getPacConf();
+            $new = $this->generateAmneziaKeys($tpl, fn() => $this->genHeaderProtectionKey());
+            foreach (self::AWG_ROTATE_KEYS as $k) {
+                if (isset($new[$k])) {
+                    $c[$prefix . 'amnezia_keys'][$k] = $new[$k];
+                } else {
+                    unset($c[$prefix . 'amnezia_keys'][$k]);
+                }
+            }
+            // Свежие S3/S4 из 2.0-шаблона могут выпасть меньше 12 — при живом
+            // header protection это тихо уронит интерфейс после ротации.
+            if (!empty($c[$prefix . 'amnezia_keys']['HeaderProtectionKey'])) {
+                $c[$prefix . 'amnezia_keys'] = self::enforceHeaderProtection($c[$prefix . 'amnezia_keys']);
+            }
+            $c[$prefix . 'amnezia_last_rotation'] = time();
+            $this->setPacConf($c);
+        };
+        if ($has3) {
+            $this->awgApplyGuarded($page, $mutate, $silent);
+            return;
+        }
+        $mutate();
         $this->switchAmnezia($page, false, false, 1, $silent);
     }
 
@@ -5299,7 +6716,32 @@ NFT;
         if (time() < $last + $period_days * 86400) {
             return;
         }
+        // Набор 3.0 вслепую не ротируем: без ответа от контейнера непонятно,
+        // переживёт ли новый конфиг setconf, а откатывать будет уже нечем.
+        if (self::amneziaProtoVer($c[$prefix . 'amnezia_keys'] ?? []) === 3 && $this->awgSupports3() === null) {
+            return;
+        }
         $this->rotateAmneziaJunk(true);
+    }
+
+    // Шаг cron: maybeRotateAmnezia() исторически дёргался только из statusWg(),
+    // то есть ротация случалась ровно тогда, когда админ открывал меню этого
+    // инстанса. У второго инстанса меню могут не открывать месяцами — кнопка
+    // обещала «rotate: every Nd», а ключи не менялись вовсе. Обходим оба
+    // инстанса, как trackWgOnline; сам maybeRotateAmnezia уже проверяет период,
+    // включённость amnezia и доступность tools для набора 3.0.
+    public function rotateAmneziaCron(): void
+    {
+        $saved = $this->wg;
+        foreach ([0, 1] as $inst) {
+            try {
+                $this->wg = $inst;
+                $this->maybeRotateAmnezia();
+            } catch (\Throwable $e) {
+                error_log('rotateAmneziaCron[' . $inst . ']: ' . $e->getMessage());
+            }
+        }
+        $this->wg = $saved;
     }
 
     public function setAmneziaRotation($page = 0)
@@ -5311,10 +6753,11 @@ NFT;
         $last_str = $last ? date('Y-m-d H:i', $last) : '—';
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} введите период авто-ротации I1-I5/S3-S4 в днях (0 — выкл).\n\n"
+            "@{$this->input['username']} введите период авто-ротации junk-полей в днях (0 — выкл).\n\n"
             . "Текущий период: <code>" . ($cur ?: 'выкл') . "</code>\n"
             . "Последняя ротация: <code>$last_str</code>\n\n"
-            . "После ротации клиентам нужно перекачать конфиги (S1/S2/H1-H4/PSK сохраняются, рукопожатие совместимо, но junk-паттерн обновится).",
+            . "Ротируются I1-I5, S3-S4 и весь блок 3.0, включая HeaderProtectionKey. S1/S2/H1-H4/Jc/PSK сохраняются.\n\n"
+            . "⚠️ На наборе 3.0 после каждой ротации клиенты ОБЯЗАНЫ перекачать конфиги: старый HeaderProtectionKey перестанет подходить, и связь пропадёт без сообщения об ошибке.",
             $this->input['message_id'],
             reply: 'введите N или 0',
         );
@@ -5392,7 +6835,7 @@ NFT;
         $data[] = [
             [
                 'text'          => ($this->wgRelay() === null ? '✅ ' : '') . $this->i18n('direct'),
-                'callback_data' => "/setWgRelay $page",
+                'callback_data' => $this->cbWG("/setWgRelay $page"),
             ],
         ];
         $health = $this->readRelayHealth(); // read once for the whole list
@@ -5404,7 +6847,7 @@ NFT;
             $data[] = [
                 [
                     'text'          => ($cur === $name ? '✅ ' : '') . "🔗 $name: {$r['awg_address']}" . ($hl !== '' ? "  $hl" : ''),
-                    'callback_data' => "/setWgRelay $page $name",
+                    'callback_data' => $this->cbWG("/setWgRelay $page $name"),
                 ],
             ];
         }
@@ -5874,7 +7317,8 @@ NFT;
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
             'callback'      => 'createPeer',
-            'args'          => ['subnet'],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'          => ['subnet', $this->wgNum()],
         ]);
     }
 
@@ -5889,19 +7333,22 @@ NFT;
         // вебхук-воркеры пишут pac.json часто (после selectWG), а getPacConf
         // читает без лока — rename() атомарен, поэтому читатель всегда видит
         // либо старый, либо новый ЦЕЛЫЙ файл, но никогда порванный.
+        //
+        // json_encode() возвращает FALSE на невалидном UTF-8 (имя клиента из
+        // импорта, байты из ssh-вывода), а file_put_contents($f, false) пишет
+        // ПУСТОЙ файл и рапортует об успехе — то есть «атомарная» запись
+        // подменяла pac.json нулями и уносила с собой клиентов, ключи reality и
+        // все шаблоны. Проверяем результат кодировщика до записи.
         $data = json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        // json_encode() возвращает FALSE на невалидном UTF-8 (имя клиента или
-        // шаблон, приехавшие из импорта/ssh-вывода), а file_put_contents($f,
-        // false) пишет ПУСТУЮ строку и рапортует об успехе — rename() тут же
-        // подменял бы pac.json нулевым файлом. Это ровно та потеря конфига, от
-        // которой защищают проверки is_array() в saveTemplate()/панели, только
-        // с другого конца.
         if (false === $data) {
-            error_log('setPacConf: json_encode failed — ' . json_last_error_msg());
+            error_log('setPacConf: pac.json not written — ' . json_last_error_msg());
+
             return false;
         }
-        $tmp = $this->pac . '.' . getmypid() . '.tmp';
+        $tmp  = $this->pac . '.' . getmypid() . '.tmp';
         if (file_put_contents($tmp, $data, LOCK_EX) === false) {
+            @unlink($tmp);
+
             return false;
         }
         return rename($tmp, $this->pac);
@@ -6936,12 +8383,32 @@ DNS-over-HTTPS with IP:
         if (!empty($domains)) {
             $conf    = $this->getPacConf();
             $lastKey = null;
+            $dups    = 0;
+            $merged  = 0;
+            // Канон уже накопленных записей: добавляемое сравниваем не с текстом
+            // ключа, а со смыслом — vk.com, domain:vk.com, VK.com и vk.com. это
+            // одна запись, и вторая копия лишь засоряет список и конфиги ядер.
+            $seen = [];
+            if ($this->isRouteEntryList($type)) {
+                foreach (array_keys($conf[$type] ?? []) as $k) {
+                    if (($canon = $this->routeEntryCanonKey((string) $k)) !== '') {
+                        $seen[$canon] = (string) $k;
+                    }
+                }
+            }
             foreach ($domains as $v) {
                 if (in_array($type, ['white', 'deny'])) {
                     $conf[$type][] = $v;
                     $lastKey       = $v;
                 } elseif (in_array($type, ['rulessetlist', 'packagelist', 'processlist'])) {
-                    $lastKey             = trim($v);
+                    $lastKey = trim($v);
+                    // Доменного канона у URL правил и имён процессов нет, но
+                    // буквальный повтор всё равно не должен сбрасывать тумблер
+                    // уже существующей записи.
+                    if (array_key_exists($lastKey, $conf[$type] ?? [])) {
+                        $dups++;
+                        continue;
+                    }
                     $conf[$type][$lastKey] = true;
                 } else {
                     // Мусорный ввод (пустой префикс "keyword:", битый IP вроде
@@ -6952,13 +8419,41 @@ DNS-over-HTTPS with IP:
                     if (trim($key) === '') {
                         continue;
                     }
+                    $canon = $this->routeEntryCanonKey($key);
+                    if ($canon !== '' && isset($seen[$canon])) {
+                        // Повтор уже имеющейся записи. Её состояние НЕ трогаем:
+                        // раньше повторное добавление молча включало обратно то,
+                        // что пользователь выключил тумблером. Навигацию уводим
+                        // на страницу существующей записи.
+                        $dups++;
+                        $lastKey = $seen[$canon];
+                        continue;
+                    }
+                    // $seen новыми записями НЕ пополняем: дубли внутри одной
+                    // пачки схлопнёт dedupeRouteList ниже — он, в отличие от
+                    // порядка ввода, выберет более явную форму.
                     $lastKey             = $key;
                     $conf[$type][$lastKey] = true;
                 }
             }
+            if (in_array($type, ['white', 'deny'])) {
+                // Список без ключей: буквальные повторы копятся молча.
+                $conf[$type] = array_values(array_unique($conf[$type]));
+            } elseif ($this->isRouteEntryList($type)) {
+                // Заодно схлопываем дубли, накопленные до появления канона (и
+                // те, что раньше означали разное: голая запись в xray была
+                // подстрокой, а domain: — суффиксом).
+                ['list' => $conf[$type], 'removed' => $merged] = $this->dedupeRouteList($conf[$type]);
+            }
             ksort($conf[$type]);
             $this->setPacConf($conf);
             $page = (int) floor(array_search($lastKey, array_keys($conf[$type])) / $this->limit);
+            if ($dups > 0) {
+                $this->send($this->input['from'], $this->i18n('duplicates skipped') . ": $dups");
+            }
+            if ($merged > 0) {
+                $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
+            }
         }
         $page = $page ?: -2;
         $this->backXtlsList($type, $page);
@@ -7090,6 +8585,15 @@ DNS-over-HTTPS with IP:
      * Строит элемент xray-поля "domain" из классифицированной записи либо null,
      * если это IP (его место в поле "ip"). У xray нет префикса keyword: — голая
      * строка в поле domain уже трактуется как substring/keyword-совпадение.
+     *
+     * Голая запись списка (kind=suffix) отдаётся ИМЕННО как "domain:", а не
+     * голой строкой: голая строка в xray — это подстрока, то есть "vk.com"
+     * матчит и "myvk.community.org". sing-box (createSrs) и mihomo
+     * (clashRules) кладут такую запись в domain_suffix/DOMAIN-SUFFIX, то есть
+     * трактуют её как суффикс, — и пользователь, добавивший домен в block,
+     * ожидает именно суффикс. Раньше три ядра расходились на одном и том же
+     * списке; теперь голая строка остаётся только за keyword:, для которого у
+     * xray отдельного префикса действительно нет.
      */
     public function xrayDomainToken(array $c): ?string
     {
@@ -7098,14 +8602,35 @@ DNS-over-HTTPS with IP:
             case 'extip': // ext ip-dat — его место в поле "ip", не "domain"
             case 'geoip': // встроенная geoip-категория — тоже только в "ip"
                 return null;
-            case 'keyword':
-            case 'suffix':
+            case 'keyword': // у xray нет префикса keyword: — только голая строка
                 return $c['value'];
+            case 'suffix':
+                return 'domain:' . $c['value'];
             case 'ext': // ext домен-dat: xray принимает "ext:file.dat:tag" в domain[]
                 return 'ext:' . $this->extAssetRef($c['value']);
             default: // regexp, full, domain, geosite — xray понимает эти префиксы нативно
                 return "{$c['kind']}:{$c['value']}";
         }
+    }
+
+    /**
+     * Разбирает токен ИЗ ГОТОВОГО xray-конфига (routing.rules[].domain), а не
+     * запись pac-списка. Отличие ровно одно, но принципиальное: голая строка в
+     * xray означает совпадение по подстроке, то есть keyword, — тогда как в
+     * pac-списке голая запись означает суффикс домена.
+     *
+     * Нужно там, где конфиг перечитывается сам из себя (клиентская пересборка
+     * при t=s): без этого keyword-запись, у которой в xray нет префикса, на
+     * втором проходе классифицировалась бы как suffix и уезжала в конфиг уже
+     * как "domain:" — молча меняя правило с подстроки на суффикс.
+     */
+    public function classifyXrayToken(string $token): array
+    {
+        $c = $this->classifyRouteEntry($token);
+        if ($c['kind'] === 'suffix') {
+            $c['kind'] = 'keyword';
+        }
+        return $c;
     }
 
     /**
@@ -7160,7 +8685,7 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             if ($c['kind'] == 'ip') {
-                $ip[] = $c['value'];
+                $ip[] = $this->ipCanon($c['value']);
             } elseif ($c['kind'] == 'extip') {
                 $ip[] = 'ext:' . $this->extAssetRef($c['value']); // ext ip-dat в поле ip[]
             } elseif ($c['kind'] == 'geoip') {
@@ -7169,20 +8694,186 @@ DNS-over-HTTPS with IP:
                 $domain[] = $this->xrayDomainToken($c);
             }
         }
-        return ['domain' => $domain, 'ip' => $ip];
+        // Разные по написанию, но одинаковые по смыслу записи (1.2.3.4 и
+        // 1.2.3.4/32, vk.com и domain:vk.com) дают здесь один и тот же токен —
+        // в конфиг он должен попасть однажды.
+        return [
+            'domain' => array_values(array_unique($domain)),
+            'ip'     => array_values(array_unique($ip)),
+        ];
+    }
+
+    /**
+     * Канонический вид IP-записи: одинаковые адреса, записанные по-разному,
+     * дают одну строку. IPv6 сжимается и опускается в нижний регистр
+     * (2001:0DB8:0000::1 -> 2001:db8::1), host-маска (/32 у IPv4, /128 у IPv6)
+     * отбрасывается — 1.2.3.4 и 1.2.3.4/32 это один и тот же одиночный адрес.
+     *
+     * Сеть НЕ пересчитывается: 1.2.3.4/24 остаётся как введено, а не
+     * превращается в 1.2.3.0/24. Привести её «правильно» значило бы молча
+     * поменять смысл записи за пользователя.
+     */
+    public function ipCanon(string $ip): string
+    {
+        $ip     = trim($ip);
+        $prefix = null;
+        if (preg_match('~^(.+)/(\d{1,3})$~', $ip, $m)) {
+            $ip     = $m[1];
+            $prefix = (int) $m[2];
+        }
+        if (str_contains($ip, ':') && ($bin = @inet_pton($ip)) !== false) {
+            $ip = inet_ntop($bin);
+        }
+        $host = str_contains($ip, ':') ? 128 : 32;
+        if ($prefix === null || $prefix === $host) {
+            return $ip;
+        }
+        return "$ip/$prefix";
     }
 
     /**
      * Дописывает host-маску к «голому» IP для форматов, требующих обязательный
      * CIDR (sing-box ip_cidr, mihomo IP-CIDR/IP-CIDR6). Уже указанный /prefix не
      * трогаем. IPv6 -> /128, IPv4 -> /32.
+     *
+     * Адресная часть проходит через ipCanon, иначе 1.2.3.4 и 1.2.3.4/32 дают
+     * два разных элемента ip_cidr, и array_unique их не схлопнет.
      */
     public function ipWithCidr(string $ip): string
     {
+        $ip = $this->ipCanon($ip);
         if (str_contains($ip, '/')) {
             return $ip;
         }
         return $ip . (str_contains($ip, ':') ? '/128' : '/32');
+    }
+
+    /**
+     * Канонический вид hostname для сравнения: punycode + нижний регистр,
+     * завершающая точка отброшена (vk.com. — та же зона, что vk.com).
+     *
+     * Точку режем ДО idn_to_ascii: пустая последняя метка нарушает IDNA, и
+     * функция вернула бы false на совершенно нормальном имени.
+     */
+    public function hostCanon(string $host): string
+    {
+        $host = rtrim(trim($host), '.');
+        // Сюда ходит и отрисовка меню списка (кнопка «схлопнуть дубли»), а intl
+        // есть не в каждой сборке php: без него обходимся без punycode —
+        // unicode-домены схлопнутся лишь при точном совпадении, — но меню
+        // обязано открыться. Симметрично routeEntryLabel(), которая по той же
+        // причине не полагается на idn_to_utf8() безусловно.
+        $a = function_exists('idn_to_ascii') ? idn_to_ascii($host) : false;
+        return mb_strtolower($a === false ? $host : $a);
+    }
+
+    /**
+     * Ключ, по которому две записи маршрутизации считаются одной и той же.
+     * НЕ хранится и НЕ показывается: в списке остаётся форма пользователя
+     * (её же показывает routeEntryLabel), канон нужен только для сравнения —
+     * поэтому старые записи в pac.json не нуждаются в миграции.
+     *
+     * Одинаковыми считаются:
+     *   vk.com == domain:vk.com == VK.com == vk.com.   (после выравнивания
+     *       xray голая запись и domain: означают один и тот же суффикс)
+     *   1.2.3.4 == 1.2.3.4/32 ; 2001:DB8::1 == 2001:db8::1
+     *   keyword:Reddit == keyword:reddit ; geoip:CN == geoip:cn
+     * Разными остаются full: и domain: (exact-match против суффикса) и любые
+     * два regexp:, отличающиеся регистром — RE2 регистрозависим, regexp:VK и
+     * regexp:vk матчат разное.
+     *
+     * Пустая строка означает «канона нет» (пустой префикс, битый IP): такие
+     * записи схлопывать не с чем, их отсеивает routeEntryUsable на выдаче.
+     */
+    public function routeEntryCanonKey(string $e): string
+    {
+        $c = $this->classifyRouteEntry($e);
+        if (!$this->routeEntryUsable($c)) {
+            return '';
+        }
+        $v = trim($c['value']);
+        switch ($c['kind']) {
+            case 'ip':
+                return 'i:' . $this->ipCanon($v);
+            case 'regexp':
+                return 'r:' . $v;
+            case 'keyword':
+                return 'k:' . mb_strtolower($v);
+            case 'geosite':
+                return 'gs:' . mb_strtolower($v);
+            case 'geoip':
+                return 'gi:' . mb_strtolower($v);
+            // ext:/extip: — ссылка file.dat:tag; xray сам приводит категорию к
+            // нижнему регистру при чтении .dat, так что регистр тега не значим.
+            case 'ext':
+                return 'x:' . mb_strtolower($v);
+            case 'extip':
+                return 'xi:' . mb_strtolower($v);
+            case 'full':
+                return 'f:' . $this->hostCanon($v);
+            default: // domain и голая запись (suffix) — один и тот же суффикс
+                return 'd:' . $this->hostCanon($v);
+        }
+    }
+
+    /**
+     * Списки маршрутизации, записи которых сравнимы по смыслу
+     * (routeEntryCanonKey). Остальные списки хранят не хосты, а URL правил и
+     * имена процессов/пакетов — доменный канон к ним неприменим.
+     */
+    public function isRouteEntryList(string $type): bool
+    {
+        return in_array($type, ['blocklist', 'warplist', 'includelist', 'subnetlist'], true);
+    }
+
+    /**
+     * Схлопывает семантические дубли в pac-списке (ключ => вкл/выкл).
+     *
+     * Победителем остаётся более явная форма (domain:vk.com берёт верх над
+     * vk.com): явный префикс читается одинаково всеми тремя ядрами. Состояние
+     * объединяется по ИЛИ — включённая копия не должна пропасть из-за
+     * выключенного дубля.
+     *
+     * @return array{list:array,removed:int}
+     */
+    public function dedupeRouteList(array $list): array
+    {
+        $winner = []; // канон => ключ, оставленный в списке
+        $out     = [];
+        $removed = 0;
+        foreach ($list as $k => $on) {
+            $k     = (string) $k;
+            $canon = $this->routeEntryCanonKey($k);
+            if ($canon === '') {
+                $out[$k] = $on; // канона нет — сравнивать не с чем
+                continue;
+            }
+            if (!isset($winner[$canon])) {
+                $winner[$canon] = $k;
+                $out[$k]        = (bool) $on;
+                continue;
+            }
+            $removed++;
+            $prev = $winner[$canon];
+            $on   = ((bool) $on) || $out[$prev];
+            if ($this->routeEntryExplicit($k) && !$this->routeEntryExplicit($prev)) {
+                unset($out[$prev]);
+                $winner[$canon] = $k;
+                $out[$k]        = $on;
+            } else {
+                $out[$prev] = $on;
+            }
+        }
+        return ['list' => $out, 'removed' => $removed];
+    }
+
+    /**
+     * Записана ли запись с явным префиксом (domain:/full:/keyword:/…), а не
+     * голым хостом. Используется при выборе победителя среди дублей.
+     */
+    public function routeEntryExplicit(string $e): bool
+    {
+        return $this->classifyRouteEntry($e)['kind'] !== 'suffix';
     }
 
     /**
@@ -7964,12 +9655,47 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // Индекс пира в серверном конфиге по клиентской записи. Порядки в wg0.conf и
+    // в clients.json совпадают, только пока обе стороны менялись вместе, а
+    // restartWG() умеет вернуть false (контейнер лёг) уже ПОСЛЕ записи
+    // clients.json — с этого момента индексы разъезжаются, и удаление или
+    // выключение «по индексу» попадало в соседнего пира. Сопоставляем по
+    // адресу: он уникален внутри подсети инстанса и присутствует у пира в любом
+    // состоянии — 'AllowedIPs' у включённого, '# AllowedIPs' у выключенного
+    // (switchClient комментирует все ключи).
+    public function peerIndexByClient(array $conf, array $client): ?int
+    {
+        $addr = $client['interface']['Address'] ?? null;
+        if (empty($addr)) {
+            return null;
+        }
+        foreach (($conf['peers'] ?? []) as $k => $v) {
+            $ips = $v['AllowedIPs'] ?? $v['# AllowedIPs'] ?? null;
+            if ($ips !== null && $ips === $addr) {
+                return (int) $k;
+            }
+        }
+        return null;
+    }
+
     public function deletePeer($client, $page, $menu = true)
     {
-        $conf = $this->readConfig();
+        $conf    = $this->readConfig();
+        $clients = $this->readClients();
+        if (empty($clients[$client])) {
+            return $menu ? $this->menu('wg', $page) : null;
+        }
+        // Пира ищем по адресу, а не по индексу: если совпадения нет, значит на
+        // сервере его уже нет — удаление «по индексу» в этом случае снесло бы
+        // ЧУЖОГО пира, то есть отключило бы постороннего клиента.
+        $i = $this->peerIndexByClient($conf, $clients[$client]);
         $this->deleteClient($client);
-        unset($conf['peers'][$client]);
-        $this->restartWG($this->createConfig($conf));
+        if ($i !== null) {
+            unset($conf['peers'][$i]);
+            $this->restartWG($this->createConfig($conf));
+        } else {
+            error_log('deletePeer: peer not found in ' . $this->getInstanceWG() . ' config for client #' . $client);
+        }
         if ($menu) {
             $this->menu('wg', $page);
         }
@@ -8026,18 +9752,74 @@ DNS-over-HTTPS with IP:
     // readStatus), безопасный фолбэк: пусто, если бинари/контейнер недоступны.
     public function wgVersion(): string
     {
-        $out = (string) $this->ssh(
-            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1\'',
-            $this->getInstanceWG()
-        );
+        $v = $this->wgVersions();
         $parts = [];
-        if ($v = $this->pickVersion($out, 'awg')) {
-            $parts[] = "AmneziaWG: $v";
+        if (!empty($v['awg'])) {
+            $parts[] = "AmneziaWG: {$v['awg']}";
         }
-        if ($v = $this->pickVersion($out, 'wg')) {
-            $parts[] = "WireGuard: $v";
+        if (!empty($v['wg'])) {
+            $parts[] = "WireGuard: {$v['wg']}";
         }
         return $parts ? htmlspecialchars(implode('  ', $parts), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : '';
+    }
+
+    // Один ssh на инстанс за запрос: wgVersion() (шапка меню) и awgSupports3()
+    // (гейт 3.0, дёргается из нескольких мест на одной отрисовке) делят результат.
+    public function wgVersions(bool $force = false): array
+    {
+        $inst = $this->getInstanceWG();
+        if (!$force && isset($this->wgVerCache[$inst])) {
+            return $this->wgVerCache[$inst];
+        }
+        $out = (string) $this->ssh(
+            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1\'',
+            $inst
+        );
+        return $this->wgVerCache[$inst] = [
+            'wg'  => $this->pickVersion($out, 'wg'),
+            'awg' => $this->pickVersion($out, 'awg'),
+        ];
+    }
+
+    // Версия amneziawg-tools («amneziawg-tools v3.0.20260730 - https://amnezia.org»).
+    // ВАЖНО: определять поддержку 3.0 можно ТОЛЬКО по tools — amneziawg-go даже в
+    // теге v3.0.3 печатает захардкоженное «amneziawg-go 0.0.20250522» (version.go),
+    // так что его строка версии ни о чём не говорит.
+    //
+    // Кешируется в pac.json, потому что тот же ответ нужен путям без меню
+    // (ротация из cron, выдача клиентских конфигов), где лишний ssh — это
+    // задержка на каждый запрос.
+    public function awgToolsVersion(bool $force = false): ?string
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        $cache  = $c[$prefix . 'awg_tools_ver'] ?? null;
+        if (!$force && is_array($cache) && !empty($cache['v']) && time() - (int) ($cache['at'] ?? 0) < 3600) {
+            return $cache['v'];
+        }
+        $v = $this->wgVersions($force)['awg'] ?? null;
+        if ($v === null) {
+            // ssh лёг / бинаря нет — держимся за прошлое значение, если оно есть:
+            // «версия неизвестна» и «версия старая» должны различаться.
+            return is_array($cache) && !empty($cache['v']) ? $cache['v'] : null;
+        }
+        $c = $this->getPacConf();
+        $c[$prefix . 'awg_tools_ver'] = ['v' => $v, 'at' => time()];
+        $this->setPacConf($c);
+        return $v;
+    }
+
+    // true — поддержка AWG 3.0 есть, false — заведомо нет, null — неизвестно
+    // (контейнер недоступен и кеша нет). Три состояния, а не два: при null
+    // включать 3.0 нельзя, но и срезать уже включённые поля нельзя — иначе
+    // моргнувший ssh молча обнулит рабочую конфигурацию у всех клиентов.
+    public function awgSupports3(): ?bool
+    {
+        $v = $this->awgToolsVersion();
+        if ($v === null) {
+            return null;
+        }
+        return version_compare(ltrim($v, 'vV'), '3.0', '>=');
     }
 
     // Версии из warp-контейнера (wp = образ wireguard + wgcf, warp-cli в образе
@@ -8096,44 +9878,62 @@ DNS-over-HTTPS with IP:
         $end     = $c[$this->getInstanceWG(1) . 'endpoint'] ?? false;
 
         if (!empty($am)) {
-            $ak     = $this->amneziaKeys();
-            $text[] = '<code>' . implode("\n", array_map(fn($k, $v) => htmlspecialchars($k) . ': ' . htmlspecialchars($v), array_keys($ak), $ak)) . "</code>\n";
+            $ak      = $this->amneziaKeys();
+            // 1.x/2.0-поля печатаем как раньше; 3.0-блок сворачиваем в одну
+            // строку-сводку (полный листинг — в подменю AWG 3.0), а секретный
+            // HeaderProtectionKey всегда маскируется отпечатком.
+            $base    = array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2);
+            $text[]  = '<code>' . self::amneziaKeysReport($ak, true, $base) . "</code>\n";
+            $awg3    = self::amneziaKeysReport($ak, true, self::AWG_KEYS_3);
+            if ($awg3 !== '') {
+                $text[] = '<code>' . str_replace("\n", ' · ', $awg3) . "</code>\n";
+                // Поля видны в меню, но в конфиг не попали — без этой пометки
+                // пользователь уверен, что 3.0 работает. Причины две, и лечатся
+                // они по-разному, поэтому различаем их в тексте.
+                $eff = $this->amneziaKeysEffective();
+                if ($eff != $ak) {
+                    $why = !self::awgHeaderProtectionOk($ak)
+                        ? 'header protection выключен: S1–S4 должны быть ≥ ' . self::AWG_HPK_MIN_S
+                        : $this->awg3UnsupportedText();
+                    $text[] = '⚠️ ' . htmlspecialchars($why, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
+                }
+            }
         }
         $data   = [
             [
                 [
                     'text'          => $this->i18n(!$bt ? 'on' : 'off') . " {$this->i18n('torrent')} ",
-                    'callback_data' => "/switchTorrent $page",
+                    'callback_data' => $this->cbWG("/switchTorrent $page"),
                 ],
                 [
                     'text'          => $this->i18n(!$ex ? 'on' : 'off') . " {$this->i18n('exchange')} ",
-                    'callback_data' => "/switchExchange $page",
+                    'callback_data' => $this->cbWG("/switchExchange $page"),
                 ],
                 [
                     'text'          =>  $this->i18n('listSubnet'),
-                    'callback_data' => "/subnet $page",
+                    'callback_data' => $this->cbWG("/subnet $page"),
                 ],
             ],
             [
                 [
                     'text'          =>  $this->i18n('defaultDNS') . ': ' . ($dns ?: $this->dns),
-                    'callback_data' => "/defaultDNS $page",
+                    'callback_data' => $this->cbWG("/defaultDNS $page"),
                 ],
                 [
                     'text'          =>  $this->i18n('defaultMTU') . ': ' . $mtu,
-                    'callback_data' => "/defaultMTU $page",
+                    'callback_data' => $this->cbWG("/defaultMTU $page"),
                 ],
             ],
             [
                 [
                     'text'          => $this->i18n('endpoint') . ': ' . ($end ? $this->ip : $this->getDomain()),
-                    'callback_data' => "/switchEndpoint $page",
+                    'callback_data' => $this->cbWG("/switchEndpoint $page"),
                 ],
             ],
             [
                 [
                     'text'          =>  $this->i18n('add peer'),
-                    'callback_data' => "/menu addpeer $page",
+                    'callback_data' => $this->cbWG("/menu addpeer $page"),
                 ],
             ],
         ];
@@ -8146,7 +9946,7 @@ DNS-over-HTTPS with IP:
             $data[] = [
                 [
                     'text'          => '🔗 ' . $this->i18n('relay') . ': ' . ($this->wgRelay() !== null ? $rlName : $this->i18n('direct')),
-                    'callback_data' => "/wgRelayMenu $page",
+                    'callback_data' => $this->cbWG("/wgRelayMenu $page"),
                 ],
             ];
         }
@@ -8174,14 +9974,26 @@ DNS-over-HTTPS with IP:
                     'callback_data' => "/setAmneziaRotation $inst $page",
                 ],
             ]);
+            $ver  = self::amneziaProtoVer($c[$this->getInstanceWG(1) . 'amnezia_keys'] ?? []);
+            $sup3 = $this->awgSupports3();
+            // Кнопка подменю 3.0 бесполезна на заведомо старых tools — но если
+            // 3.0-поля уже сохранены, показываем её, чтобы их можно было снять.
+            if ($sup3 !== false || $ver === 3) {
+                array_unshift($data, [
+                    [
+                        'text'          => '⚙ AWG 3.0' . ($ver === 3 ? ' ✅' : ($sup3 === true ? '' : ' ⛔')),
+                        'callback_data' => "/awg3 $inst $page",
+                    ],
+                ]);
+            }
             array_unshift($data, [
                 [
                     'text'          => "reset obf-keys",
                     'callback_data' => "/resetAmnezia $inst $page",
                 ],
                 [
-                    'text'          => "reduce to 1",
-                    'callback_data' => "/reduceAmnezia $inst $page",
+                    'text'          => 'proto: ' . $this->amneziaProtoLabel($ver) . ' ▸',
+                    'callback_data' => "/amneziaProto $inst $page",
                 ],
             ]);
         }
@@ -8296,7 +10108,8 @@ DNS-over-HTTPS with IP:
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setDNS',
-            'args'           => [$page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$page, $this->wgNum()],
         ]);
     }
 
@@ -8304,7 +10117,10 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter MTU",
+            "@{$this->input['username']} enter MTU\n\n"
+            . 'Допустимо: <code>' . self::MTU_MIN . '..' . self::MTU_MAX . '</code> — вне этих границ конфиг не примет клиент AmneziaVPN. '
+            . "Пусто или <code>0</code> — вернуть значение по умолчанию ({$this->mtu}).\n"
+            . 'Ниже 1280 в туннеле перестанет работать IPv6.',
             $this->input['message_id'],
             reply: 'enter MTU',
         );
@@ -8312,7 +10128,8 @@ DNS-over-HTTPS with IP:
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'setMTU',
-            'args'           => [$page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$page, $this->wgNum()],
         ]);
     }
 
@@ -8320,7 +10137,10 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter MTU",
+            "@{$this->input['username']} enter MTU\n\n"
+            . 'Допустимо: <code>' . self::MTU_MIN . '..' . self::MTU_MAX . '</code> — вне этих границ конфиг не примет клиент AmneziaVPN. '
+            . "Пусто или <code>0</code> — вернуть значение инстанса.\n"
+            . 'Ниже 1280 в туннеле перестанет работать IPv6.',
             $this->input['message_id'],
             reply: 'enter MTU',
         );
@@ -8328,12 +10148,15 @@ DNS-over-HTTPS with IP:
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'changeClientMTU',
-            'args'           => [$client, $page],
+            // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+            'args'           => [$client, $page, $this->wgNum()],
         ]);
     }
 
-    public function setDNS($text, $page = 0)
+    public function setDNS($text, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
+        $text = self::sanitizeConfValue($text);
         $c = $this->getPacConf();
         if ($text) {
             $c[$this->getInstanceWG(1) . 'dns'] = $text;
@@ -8344,25 +10167,59 @@ DNS-over-HTTPS with IP:
         $this->menu('wg', $page);
     }
 
-    public function setMTU($text, $page = 0)
+    // Пусто или 0 — сброс на дефолт бота, это не ошибка. Всё остальное обязано
+    // быть числом в допустимых границах: раньше сюда проходила любая строка
+    // (sanitizeConfValue только режет переводы строк), уезжала в MTU клиентских
+    // конфигов и ломала их уже у пользователя. См. validateMTU().
+    public static function validateMTU(string $s): string
     {
-        $c = $this->getPacConf();
-        if ($text) {
-            $c[$this->getInstanceWG(1) . 'mtu'] = $text;
-        } else {
+        if (!preg_match('~^\d{1,5}$~', $s)) {
+            return 'MTU задаётся числом (без пробелов, знаков и единиц измерения)';
+        }
+        $v = (int) $s;
+        if ($v < self::MTU_MIN || $v > self::MTU_MAX) {
+            return "MTU допустим в пределах " . self::MTU_MIN . '..' . self::MTU_MAX
+                . ": конфиг с $v клиент AmneziaVPN не примет";
+        }
+        return '';
+    }
+
+    public function setMTU($text, $page = 0, $inst = null)
+    {
+        $this->promptInstWG($inst);
+        $text = trim((string) self::sanitizeConfValue($text));
+        $c    = $this->getPacConf();
+        if ($text === '' || $text === '0') {
             unset($c[$this->getInstanceWG(1) . 'mtu']);
+        } elseif ($err = self::validateMTU($text)) {
+            $this->update($this->input['chat'], $this->input['message_id'], $err);
+            sleep(3);
+            return $this->menu('wg', $page);
+        } else {
+            $c[$this->getInstanceWG(1) . 'mtu'] = (int) $text;
         }
         $this->setPacConf($c);
         $this->menu('wg', $page);
     }
 
-    public function changeClientMTU($text, $client, $page = 0)
+    public function changeClientMTU($text, $client, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
         $clients = $this->readClients();
-        if (!empty((int) $text)) {
-            $clients[$client]['interface']['MTU'] = $text;
-        } else {
+        if (empty($clients[$client])) {
+            return $this->menu('wg', $page);
+        }
+        // Раньше здесь стоял `(int) $text`, и мусор вроде «abc» молча давал 0,
+        // то есть тихий сброс MTU вместо сообщения об ошибке.
+        $text = trim((string) $text);
+        if ($text === '' || $text === '0') {
             unset($clients[$client]['interface']['MTU']);
+        } elseif ($err = self::validateMTU($text)) {
+            $this->update($this->input['chat'], $this->input['message_id'], $err);
+            sleep(3);
+            return $this->menu('client', "{$client}_$page");
+        } else {
+            $clients[$client]['interface']['MTU'] = (int) $text;
         }
         $this->saveClients($clients);
         $this->menu('client', "{$client}_$page");
@@ -8554,33 +10411,33 @@ DNS-over-HTTPS with IP:
         $data[]  = [
             [
                 'text'          =>  $this->i18n('all traffic'),
-                'callback_data' => "/changeIps all_{$k}_$page",
+                'callback_data' => $this->cbWG("/changeIps all_{$k}_$page"),
             ]
         ];
         $data[] = [
             [
                 'text'          =>  $this->i18n('subnet'),
-                'callback_data' => "/changeIps subnet_{$k}_$page",
+                'callback_data' => $this->cbWG("/changeIps subnet_{$k}_$page"),
             ]
         ];
         if ($this->getPacConf()['subnets']) {
             $data[] = [
                 [
                     'text'          =>  $this->i18n('listSubnet'),
-                    'callback_data' => "/changeIps list_{$k}_$page",
+                    'callback_data' => $this->cbWG("/changeIps list_{$k}_$page"),
                 ]
             ];
         }
         $data[] = [
             [
                 'text'          =>  $this->i18n('proxy ip'),
-                'callback_data' => "/changeIps proxy_{$k}_$page",
+                'callback_data' => $this->cbWG("/changeIps proxy_{$k}_$page"),
             ]
         ];
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
-                'callback_data' => "/menu client {$k}_$page",
+                'callback_data' => $this->cbWG("/menu client {$k}_$page"),
             ]
         ];
         $this->update(
@@ -8607,7 +10464,8 @@ DNS-over-HTTPS with IP:
                 $this->stashReply($r, [
                     'start_message' => $this->input['message_id'],
                     'callback'      => 'setIps',
-                    'args'          => [$k, $page],
+                    // Инстанс — последним аргументом (см. WG_PROMPT_INST).
+                    'args'          => [$k, $page, $this->wgNum()],
                 ]);
                 break;
             case 'list':
@@ -8619,10 +10477,16 @@ DNS-over-HTTPS with IP:
         }
     }
 
-    public function setIps($ips, $k, $page = 0)
+    // $inst передаётся только с пути промпта (changeIps 'subnet'); прямые вызовы
+    // из changeIps идут в том же запросе и инстанс уже верный — там null.
+    public function setIps($ips, $k, $page = 0, $inst = null)
     {
+        $this->promptInstWG($inst);
         $clients = $this->readClients();
-        $clients[$k]['peers'][0]['AllowedIPs'] = $ips;
+        if (empty($clients[$k])) {
+            return $this->menu('wg', $page);
+        }
+        $clients[$k]['peers'][0]['AllowedIPs'] = self::sanitizeConfValue($ips);
         $this->saveClients($clients);
         $this->menu('client', "{$k}_$page");
     }
@@ -8641,7 +10505,13 @@ DNS-over-HTTPS with IP:
             $domain = $relay['awg_address'];
             $wgPort = (int) ($relay['awg_portmap'][$wgPort] ?? $wgPort);
         }
-        $amneziaKeys   = $this->amneziaKeys();
+        $amneziaKeys   = $this->amneziaKeysEffective();
+        // protocol_version остаётся "2" даже для набора 3.0: у приложения
+        // AmneziaVPN есть только контейнеры amnezia-awg / amnezia-awg2 и
+        // константы версий "1.5"/"2" (containerUtils.cpp, protocolConstants.h).
+        // Сами 3.0-поля клиент читает из last_config безусловно, по тем же
+        // именам ключей, что и в wg0.conf (configKeys.h) — отдельная версия
+        // контейнера для них не нужна.
         $protoVer      = array_key_exists('I1', $amneziaKeys) ? "2" : "1";
         $containerName = $protoVer === "2" ? "amnezia-awg2" : "amnezia-awg";
         $c             = [
@@ -8660,7 +10530,7 @@ DNS-over-HTTPS with IP:
                             "psk_key"          => $client['peers'][0]['PresharedKey'],
                             "server_pub_key"   => $client['peers'][0]['PublicKey'],
                             "allowed_ips"      => array_map('trim', explode(',', $client['peers'][0]['AllowedIPs'])),
-                            "persistent_keep_alive" => "25"
+                            "persistent_keep_alive" => (string) $this->awgKeepalive()
                         ])),
                         "port" => $wgPort,
                         "transport_proto" => "udp",
@@ -8686,6 +10556,14 @@ DNS-over-HTTPS with IP:
         return $result;
     }
 
+    // ── НЕИСПОЛЬЗУЕМАЯ ВЕТКА (awg_for_vless) ────────────────────────────
+    // normalizeAwgForVless/setAsVlessTransport/getAwgVless сейчас никем не
+    // вызываются: кнопки «/setAsVlessTransport» нет ни в одном рендере (роут в
+    // action() остался), а getAwgVless() не читает никто — mihomo-подписка
+    // собирает awg-прокси через getAwgClient() по приватному ключу пира.
+    // Код оставлен рабочим и инстанс-корректным на случай возврата кнопки;
+    // если она не нужна — удалять надо все три метода вместе с роутом.
+    //
     // 'awg_for_vless' хранится как '<префикс инстанса>:<индекс клиента>'
     // (':N' / 'wg1_:N'). Старые бэкапы могли записать имя сервиса ('wg:N' /
     // 'wg1:N') — приводим к текущему формату, иначе toggle не снимает
@@ -8737,8 +10615,24 @@ DNS-over-HTTPS with IP:
             return false;
         }
         return [
-            "amnezia-wg-option" => $c["{$container}amnezia_keys"] ?? '',
+            // Блок 3.0 уезжает в mihomo только при включённом тумблере
+            // mihomo_awg3: его понимают лишь свежие сборки, а нужные ИМЕНА
+            // полей у mihomo свои (см. MIHOMO_AWG3_KEYS).
+            // Набор прогоняем через amneziaKeysUsable() — тот же срез, что
+            // уходит в wg0.conf: иначе подписка объявила бы клиенту header
+            // protection, которого на сервере нет, и handshake молча не прошёл
+            // бы. Версию tools берём из кеша: ssh на пути подписки нельзя.
+            "amnezia-wg-option" => self::amneziaKeysForMihomo(
+                self::amneziaKeysUsable(
+                    $c["{$container}amnezia_keys"] ?? '',
+                    $this->awgSupports3Cached($container)
+                ),
+                !empty($c['mihomo_awg3'])
+            ),
             "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
+            // Диапазон приводится к числу уже на месте сборки прокси
+            // (keepaliveInt): ssh сюда звать нельзя — это путь подписки.
+            "persistent-keepalive" => $c["{$container}amnezia_keepalive"] ?? 20,
             "server"            => explode(':', $clients[$client]['peers'][0]['Endpoint'])[0],
             "port"              => explode(':', $clients[$client]['peers'][0]['Endpoint'])[1],
             "ip"                => explode('/', $clients[$client]['interface']['Address'])[0],
@@ -8769,43 +10663,43 @@ DNS-over-HTTPS with IP:
                     [
                         [
                             'text'          =>  $this->i18n('rename'),
-                            'callback_data' => "/rename {$client}_$page",
+                            'callback_data' => $this->cbWG("/rename {$client}_$page"),
                         ],
                         [
                             'text'          =>  $this->i18n('timer'),
-                            'callback_data' => "/timer {$client}_$page",
+                            'callback_data' => $this->cbWG("/timer {$client}_$page"),
                         ],
                     ],
                     [
                         [
                             'text'          => $this->i18n('show QR'),
-                            'callback_data' => "/qr $client",
+                            'callback_data' => $this->cbWG("/qr $client"),
                         ],
                         [
                             'text'          => $this->i18n('download config'),
-                            'callback_data' => "/download $client",
+                            'callback_data' => $this->cbWG("/download $client"),
                         ],
                     ],
                     [
                         [
                             'text'          => $this->i18n($clients[$client]['# off'] ? 'off' : 'on'),
-                            'callback_data' => "/switchClient {$client}_$page",
+                            'callback_data' => $this->cbWG("/switchClient {$client}_$page"),
                         ],
                         [
                             'text'          => $this->i18n($clients[$client]['interface']['DNS'] ? 'delete internal dns' : 'set internal dns'),
-                            'callback_data' => "/" . ($clients[$client]['interface']['DNS'] ? 'delete' : '') . "dns {$client}_$page",
+                            'callback_data' => $this->cbWG("/" . ($clients[$client]['interface']['DNS'] ? 'delete' : '') . "dns {$client}_$page"),
                         ],
                     ],
                     [
                         [
                             'text'          => $this->i18n('AllowedIPs'),
-                            'callback_data' => "/changeAllowedIps {$client}_$page",
+                            'callback_data' => $this->cbWG("/changeAllowedIps {$client}_$page"),
                         ],
                     ],
                     [
                         [
                             'text'          => $this->i18n('MTU') . " " . ($clients[$client]['interface']['MTU'] ?: $this->getPacConf()[$this->getInstanceWG(1) . 'mtu'] ?: $this->mtu),
-                            'callback_data' => "/changeMTU {$client}_$page",
+                            'callback_data' => $this->cbWG("/changeMTU {$client}_$page"),
                         ],
                     ],
                     [
@@ -8817,7 +10711,7 @@ DNS-over-HTTPS with IP:
                     [
                         [
                             'text'          => $this->i18n('delete'),
-                            'callback_data' => "/delete {$client}_$page",
+                            'callback_data' => $this->cbWG("/delete {$client}_$page"),
                         ],
                         [
                             'text'          => $this->i18n('back'),
@@ -8872,7 +10766,7 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          => $this->i18n('delete'),
-                'callback_data' => "/unsetVlessLink {$i}_$page_wg",
+                'callback_data' => $this->cbWG("/unsetVlessLink {$i}_$page_wg"),
             ],
         ];
 
@@ -8887,7 +10781,7 @@ DNS-over-HTTPS with IP:
             $data[]   = [
                 [
                     'text'          => "{$v['email']}",
-                    'callback_data' => "/setVlessLink {$k}_{$i}_$page_wg",
+                    'callback_data' => $this->cbWG("/setVlessLink {$k}_{$i}_$page_wg"),
                 ],
             ];
         }
@@ -8895,15 +10789,15 @@ DNS-over-HTTPS with IP:
             $data[] = [
                 [
                     'text'          => '<<',
-                    'callback_data' => "/choiceVless {$i}_{$page_wg}_" . ($page_vl - 1 >= 0 ? $page_vl - 1 : $all - 1),
+                    'callback_data' => $this->cbWG("/choiceVless {$i}_{$page_wg}_" . ($page_vl - 1 >= 0 ? $page_vl - 1 : $all - 1)),
                 ],
                 [
                     'text'          => $page_vl + 1,
-                    'callback_data' => "/choiceVless {$i}_{$page_wg}_$page_vl",
+                    'callback_data' => $this->cbWG("/choiceVless {$i}_{$page_wg}_$page_vl"),
                 ],
                 [
                     'text'          => '>>',
-                    'callback_data' => "/choiceVless {$i}_{$page_wg}_" . ($page_vl < $all - 1 ? $page_vl + 1 : 0),
+                    'callback_data' => $this->cbWG("/choiceVless {$i}_{$page_wg}_" . ($page_vl < $all - 1 ? $page_vl + 1 : 0)),
                 ],
             ];
         }
@@ -8943,11 +10837,11 @@ DNS-over-HTTPS with IP:
                 $data[] = [
                     [
                         'text'          => $this->getName($v['interface']),
-                        'callback_data' => "/menu client {$k}_$page",
+                        'callback_data' => $this->cbWG("/menu client {$k}_$page"),
                     ],
                     [
                         'text'          => $this->i18n('vless') . ': ' . $this->i18n($vless != false ? 'on' : 'off') . ($vless != false ? " $vless" : ''),
-                        'callback_data' => "/choiceVless {$k}_{$page}_0",
+                        'callback_data' => $this->cbWG("/choiceVless {$k}_{$page}_0"),
                     ],
                 ];
             }
@@ -9334,7 +11228,8 @@ DNS-over-HTTPS with IP:
     {
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> block list';
 
-        [$data] = $this->listPac('blocklist', $page, 'xtlsblock');
+        [$data, $tmp] = $this->listPac('blocklist', $page, 'xtlsblock');
+        $text = array_merge($text, $tmp ?: []);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -9353,7 +11248,8 @@ DNS-over-HTTPS with IP:
     {
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> warp list';
 
-        [$data] = $this->listPac('warplist', $page, 'xtlswarp');
+        [$data, $tmp] = $this->listPac('warplist', $page, 'xtlswarp');
+        $text = array_merge($text, $tmp ?: []);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -9378,7 +11274,8 @@ DNS-over-HTTPS with IP:
         });
         $p = $this->getPacConf();
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> proxy list';
-        [$data] = $this->listPac('includelist', $page, 'xtlsproxy');
+        [$data, $tmp] = $this->listPac('includelist', $page, 'xtlsproxy');
+        $text = array_merge($text, $tmp ?: []);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -9503,27 +11400,76 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    // Второй элемент возврата — строки для тела сообщения. Инициализация нужна:
+    // на пустом списке ветка ниже до неё не доходила, и `return [$data, $text]`
+    // сыпал «Undefined variable $text».
     public function listPac($type, $page, $menu, $basename = false)
     {
+        $text = [];
+        $domains = $this->getPacConf()[$type];
         $data[] = [
             [
                 'text'          => $this->i18n('add'),
                 'callback_data' => "/include $type",
             ],
         ];
-        $domains = $this->getPacConf()[$type];
+        // Кнопка чистки — только когда есть что чистить. Списки, накопленные до
+        // появления канона, держат дубли, которые глазами в меню не разглядеть:
+        // vk.com и domain:vk.com стоят в разных местах отсортированного списка.
+        if ($this->isRouteEntryList($type) && !empty($domains)) {
+            $dupes = $this->dedupeRouteList($domains)['removed'];
+            if ($dupes > 0) {
+                $data[0][] = [
+                    'text'          => $this->i18n('dedupe') . " ($dupes)",
+                    'callback_data' => "/dedupeList $type $page",
+                ];
+            }
+        }
         if (!empty($domains)) {
             $all     = (int) ceil(count($domains) / $this->limit);
             $page    = min($page, $all - 1);
             $page    = $page < 0 ? $all - 1 : $page;
             $domains = array_slice($domains, $page * $this->limit, $this->limit, true);
             $i = 0;
+            // Бюджет на тело сообщения. Telegram отвергает сообщение целиком
+            // при длине > 4096 символов, а число записей на странице задаётся
+            // пользователем (pacconf limitpage) и по умолчанию равно 5 —
+            // достаточно поднять его и добавить длинных regexp/URL, чтобы
+            // меню перестало открываться совсем. Кнопки при этом не страдают,
+            // поэтому режем только текст и честно помечаем обрыв.
+            $budget = 3500;
+            $used   = 0;
+            $cut    = false;
+            $push   = function (string $line) use (&$text, &$used, &$cut, $budget) {
+                if ($cut) {
+                    return;
+                }
+                if ($used + mb_strlen($line) > $budget) {
+                    $text[] = '…';
+                    $cut = true;
+                    return;
+                }
+                $used += mb_strlen($line);
+                $text[] = $line;
+            };
             foreach ($domains as $k => $v) {
                 if (in_array($type, ['rulessetlist', 'datlist'])) {
                     // Ключ — "name.dat:URL"/"outbound:time:URL": в URL встречаются
                     // & и =, а parse_mode=HTML отвергает всё сообщение на
                     // неэкранированном амперсанде, и список переставал открываться.
-                    $text[] = '<blockquote><code>' . htmlspecialchars($k, ENT_QUOTES) . '</code></blockquote>';
+                    $push('<blockquote><code>' . htmlspecialchars($k, ENT_QUOTES) . '</code></blockquote>');
+                } elseif (in_array($type, ['blocklist', 'warplist', 'includelist'])) {
+                    // block/warp/proxy: в кнопке длинная запись обрезается
+                    // Telegram'ом, поэтому дублируем её в тело сообщения —
+                    // как у rulesset list. Берём routeEntryLabel(), а не сырой
+                    // ключ: у него idn-домены разворачиваются из punycode, то
+                    // есть в чате видно ровно то же, что на кнопке, но целиком
+                    // и с возможностью скопировать. Экранирование обязательно:
+                    // в regexp:/keyword: попадаются & и <, а на неэкранированном
+                    // амперсанде Telegram отвергает всё сообщение целиком.
+                    $push('<blockquote><code>'
+                        . htmlspecialchars($this->routeEntryLabel($k), ENT_QUOTES)
+                        . '</code></blockquote>');
                 }
                 $data[] = [
                     [
@@ -9576,6 +11522,30 @@ DNS-over-HTTPS with IP:
             ];
         }
         return [$data, $text];
+    }
+
+    /**
+     * Схлопывает семантические дубли в уже накопленном списке по кнопке.
+     *
+     * Отдельным действием, а не автоматически в getPacConf()/setPacConf():
+     * getPacConf() зовётся десятки раз за запрос, а setPacConf() — из
+     * параллельных вебхук-воркеров, и молча переписывать там пользовательские
+     * списки нельзя.
+     */
+    public function dedupeList($type, $page = 0)
+    {
+        if (!$this->isRouteEntryList($type)) {
+            return;
+        }
+        $conf = $this->getPacConf();
+        ['list' => $list, 'removed' => $removed] = $this->dedupeRouteList($conf[$type] ?? []);
+        if ($removed > 0) {
+            ksort($list);
+            $conf[$type] = $list;
+            $this->setPacConf($conf);
+        }
+        $this->answer($this->input['callback_id'], $this->i18n('duplicates merged') . ": $removed");
+        $this->backXtlsList($type, $page);
     }
 
     public function listPacChange($type, $action, $key, $page = 0)
@@ -9827,6 +11797,46 @@ DNS-over-HTTPS with IP:
         return $this->getInstanceWG(1) ? 1 : 0;
     }
 
+    // ── WG_CB_INST ──────────────────────────────────────────────────────
+    // callback_data кнопки wg-меню с вшитым инстансом: префикс «wgN:» перед
+    // самой командой. action() снимает префикс и пере-пинивает инстанс ДО
+    // разбора команды, поэтому все существующие роуты остаются как есть, а
+    // сообщения, отрисованные до этой правки, продолжают работать по-старому
+    // (карта wg_msg → глобальный wg_instance).
+    //
+    // Зачем: карта «сообщение → инстанс» — LRU и эфемерна, а сообщения в
+    // Telegram кликабельны вечно. Вытесненная запись превращала «удалить» на
+    // старом меню wg1 в удаление ЧУЖОГО пира (deletePeer необратим). Кнопки с
+    // явным инстансом от состояния карты не зависят вовсе.
+    //
+    // Не оборачивать команды, которые уже несут инстанс аргументом
+    // (/menu wg N …, /awg3 N …, /wgLog N, /wgClientLog N …) — двойного
+    // указания не нужно.
+    public function cbWG(string $cb): string
+    {
+        return 'wg' . $this->wgNum() . ':' . $cb;
+    }
+
+    // ── WG_PROMPT_INST ──────────────────────────────────────────────────
+    // Инстанс, переданный ПОСЛЕДНИМ аргументом stash'а промпта (rename,
+    // defaultDNS, defaultMTU, changeMTU, changeIps). Ответ на промпт приходит
+    // ОТДЕЛЬНЫМ запросом, а reply() резолвит инстанс по карте wg_msg для
+    // сообщения-меню — но то же сообщение за это время могло быть перерисовано
+    // другим инстансом (кнопка «wg 1» рисует в него же), и ответ уезжал не
+    // туда: DNS/MTU ложились в чужой префикс pac.json, переименование и
+    // AllowedIPs — в чужой clients.json.
+    //
+    // null — стэш, созданный до этой правки (в $_SESSION их переживает
+    // перезапуск): молча оставляем прежнее поведение (карта → wg_instance).
+    // Инстанс идёт последним именно ради этого: у легаси-стэша аргумент просто
+    // отсутствует, и различать его от валидной страницы не приходится.
+    public function promptInstWG($inst): void
+    {
+        if ($inst !== null) {
+            $this->selectWG($inst);
+        }
+    }
+
     // ── Карта «сообщение → инстанс» ─────────────────────────────────────
     // wg_instance в pac.json глобален, а кнопки wg-меню (delete, client,
     // addpeer, torrent, DNS…) не несут инстанс в callback_data. Поэтому
@@ -9851,11 +11861,18 @@ DNS-over-HTTPS with IP:
         return $m["{$this->input['chat']}:{$this->input['message_id']}"] ?? null;
     }
 
+    // Сколько сообщений держим в карте. Кап общий на ВСЕ чаты, поэтому при
+    // нескольких админах прежние 100 вытеснялись за пару дней активной работы,
+    // а вытесненная запись — это молчаливый фолбэк на глобальный wg_instance
+    // (кнопка старого меню уходит в чужой инстанс). Файл крошечный: 1000
+    // записей — это ~30 КБ.
+    public const WG_MSG_MAX = 1000;
+
     // $inst 0/1 — записать; null — удалить (сообщение больше не wg-меню).
-    // Read-modify-write без общей блокировки на чтении (LOCK_EX только на
-    // записи): параллельные воркеры могут потерять запись. Осознанно — карта
-    // эфемерная и LRU, потеря деградирует до фолбэка на глобальный
-    // wg_instance, ради этого не тащим сюда файловый лок.
+    // Read-modify-write без общей блокировки на чтении: параллельные воркеры
+    // могут потерять запись. Осознанно — карта эфемерная и LRU, потеря
+    // деградирует до фолбэка на глобальный wg_instance, ради этого не тащим
+    // сюда файловый лок.
     public function setWgMsg($inst)
     {
         if (empty($this->input['chat']) || empty($this->input['message_id'])) {
@@ -9873,13 +11890,25 @@ DNS-over-HTTPS with IP:
             if (($m[$k] ?? null) === (int) $inst) {
                 return;
             }
-            // Пере-вставка в конец + отсечка: карта живёт как LRU на ~100
-            // сообщений, старые записи вытесняются, файл не растёт.
+            // Пере-вставка в конец + отсечка: карта живёт как LRU,
+            // старые записи вытесняются, файл не растёт.
             unset($m[$k]);
             $m[$k] = (int) $inst;
-            $m = array_slice($m, -100, null, true);
+            $m = array_slice($m, -self::WG_MSG_MAX, null, true);
         }
-        file_put_contents($f, json_encode($m), LOCK_EX);
+        // tmp + rename, как в setWgConnLog(): LOCK_EX защищал только от
+        // одновременной ЗАПИСИ, а getWgMsg() читает без LOCK_SH — на
+        // truncate+write он ловил файл в момент усечения, json_decode падал в
+        // null, `?: []` отдавал пустую карту и инстанс молча брался из
+        // глобального wg_instance. rename() атомарен: читатель видит либо
+        // старую, либо новую карту целиком.
+        $tmp  = $f . '.' . getmypid() . '.tmp';
+        $json = json_encode($m);
+        if (false === $json || file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+            return;
+        }
+        rename($tmp, $f);
     }
 
     public function changeWG($i)
@@ -10801,6 +12830,17 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Внешний порт сервиса, когда его секции нет в /docker/compose (маппинг снят
+    // через меню портов). По умолчанию берётся порт внутри контейнера, но у wg1
+    // он совпадает с wg — а этот фолбэк уезжает клиентам в Endpoint
+    // (saveClients/createConfig/getAmneziaShortLink читают
+    // ports[getInstanceWG()]['port']), и владельцы пиров ПЕРВОГО инстанса
+    // получали конфиг, указывающий на НУЛЕВОЙ. 51821 — как в
+    // docker-compose.override.yml.
+    public const PORT_FALLBACK = [
+        'wg1' => '51821',
+    ];
+
     public function getPorts()
     {
         $f = '/docker/compose';
@@ -10808,7 +12848,9 @@ DNS-over-HTTPS with IP:
         $r = [];
         foreach ($this->ports as $k => $v) {
             $r[$k] = [
-                'port'   => !empty($c['services'][$k]['ports']) ? explode(':', $c['services'][$k]['ports'][0])[0] : explode('/', $v)[0],
+                'port'   => !empty($c['services'][$k]['ports'])
+                    ? explode(':', $c['services'][$k]['ports'][0])[0]
+                    : (self::PORT_FALLBACK[$k] ?? explode('/', $v)[0]),
                 'enable' => !empty($c['services'][$k]['ports']),
             ];
         }
@@ -11203,12 +13245,62 @@ DNS-over-HTTPS with IP:
         $this->xray();
     }
 
-    // uTLS fingerprints offered in the menu. All are valid Xray uTLS ids; for
-    // sing-box / clash configs the Xray-only ids (randomizednoalpn, unsafe) are
-    // normalized away in subscription() because those cores don't accept them.
+    // uTLS-отпечатки, предлагаемые в меню. Список — PresetFingerprints из
+    // Xray-core (transport/internet/tls/tls.go) МИНУС "unsafe".
+    //
+    // "unsafe" был скопирован из 3x-ui, но пользы от него нет ни в одном
+    // сценарии:
+    //   * Reality — infra/conf/transport_security.go отвергает конфиг целиком:
+    //     `invalid "fingerprint": unsafe` (проверка идёт до GetFingerprint);
+    //   * обычный TLS — GetFingerprint() возвращает nil, и все диалеры
+    //     (tcp/websocket/grpc/splithttp) откатываются на tls.Client(), то есть
+    //     на стандартный Go-ClientHello. Это ровно тот отпечаток, от которого
+    //     uTLS и защищает: маскировка молча выключается.
+    // Поэтому значение не предлагаем, а уже сохранённое подменяем в
+    // fingerprint().
     public function fingerprints()
     {
-        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized', 'randomizednoalpn', 'unsafe'];
+        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized', 'randomizednoalpn'];
+    }
+
+    // Единая точка чтения отпечатка: пустое, неизвестное или снятое с
+    // поддержки значение (например "unsafe" из старого pac.json) превращается
+    // в chrome — так же, как это делает сам Xray для пустой строки.
+    public function fingerprint()
+    {
+        $fp = (string) ($this->getPacConf()['fingerprint'] ?? '');
+        return in_array($fp, $this->fingerprints(), true) ? $fp : 'chrome';
+    }
+
+    // Ядра клиентов знают РАЗНЫЕ наборы имён, и ведут себя при незнакомом
+    // значении по-разному:
+    //   sing-box (common/tls/utls_client.go) — ошибка «unknown uTLS
+    //     fingerprint», конфиг не запускается; знает всё, кроме
+    //     randomizednoalpn;
+    //   mihomo (component/tls/utls.go) — GetFingerprint() пишет warning и
+    //     возвращает false, после чего uTLS ПРОСТО НЕ ПРИМЕНЯЕТСЯ и клиент
+    //     уходит с Go-отпечатком. Его карта не содержит ни randomized, ни
+    //     randomizednoalpn — то есть «рандомизированный» отпечаток там молча
+    //     превращался в самый узнаваемый из возможных.
+    // Поэтому для mihomo оба рандомных варианта отображаем в его собственный
+    // `random` (выбирает chrome/safari/ios/firefox), а не в `randomized`.
+    public function normalizeFingerprint($fp, $core)
+    {
+        if ($core === 'singbox') {
+            return ['randomizednoalpn' => 'randomized'][$fp] ?? $fp;
+        }
+        if ($core === 'mihomo') {
+            return ['randomized' => 'random', 'randomizednoalpn' => 'random'][$fp] ?? $fp;
+        }
+        return $fp;
+    }
+
+    // Отпечатки, которые НЕ отправляют ALPN-расширение. Для транспортов, где
+    // h2 обязателен (gRPC) или желателен (XHTTP), это ломает согласование:
+    // сервер без ALPN откатится на http/1.1, а grpc_pass в nginx требует h2.
+    public function fingerprintNoAlpn($fp)
+    {
+        return $fp === 'randomizednoalpn';
     }
 
     public function changeFingerprint($fingerprint = false)
@@ -11219,7 +13311,7 @@ DNS-over-HTTPS with IP:
             $c['fingerprint'] = $fingerprint;
         } else {
             // bare call (no/invalid arg): cycle to the next fingerprint in the list
-            $current          = ($c['fingerprint'] ?? '') ?: 'chrome';
+            $current          = $this->fingerprint();
             $i                = array_search($current, $allowed, true);
             $c['fingerprint'] = $allowed[($i === false ? 0 : $i + 1) % count($allowed)];
         }
@@ -11229,9 +13321,24 @@ DNS-over-HTTPS with IP:
 
     public function fingerprintMenu()
     {
-        $current = $this->getPacConf()['fingerprint'] ?: 'chrome';
+        $pac     = $this->getPacConf();
+        $current = $this->fingerprint();
         $text[]  = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('fingerprint');
         $text[]  = $this->i18n('fingerprint') . ': <code>' . $current . '</code>';
+        // Один и тот же выбор доезжает до трёх разных ядер под разными
+        // именами — показываем, во что он превращается, иначе «почему в clash
+        // другой отпечаток» выясняется только чтением исходников.
+        $si = $this->normalizeFingerprint($current, 'singbox');
+        $cl = $this->normalizeFingerprint($current, 'mihomo');
+        if ($si !== $current || $cl !== $current) {
+            $text[] = 'sing-box: <code>' . $si . '</code> · mihomo: <code>' . $cl . '</code>';
+        }
+        // randomizednoalpn не шлёт ALPN — gRPC без h2 не поедет вовсе, а XHTTP
+        // откатится на http/1.1.
+        if ($this->fingerprintNoAlpn($current) && in_array($pac['transport'] ?? '', ['trojan-grpc', 'xhttp'], true)) {
+            $text[] = '⚠ ' . $this->i18n('fp noalpn warn');
+        }
+        $text[] = '<i>' . $this->i18n('fp hint') . '</i>';
 
         $data = [];
         $row  = [];
@@ -14309,7 +16416,7 @@ DNS-over-HTTPS with IP:
         $domain = $this->getDomain($pac['transport'] != 'Reality');
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
-        $fp     = $pac['fingerprint'] ?: 'chrome';
+        $fp     = $this->fingerprint();
         // Share-link #remark shown as the node name in the client, prefixed with
         // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
         // this with the relay's country for relay subscriptions.
@@ -14357,6 +16464,14 @@ DNS-over-HTTPS with IP:
                                     . "#{$remark}";
                         break;
                     case 'xhttp':
+                        // extra берём из общего массива, а не из захардкоженного
+                        // блоба: раньше ссылка и json-конфиг (case 's') правились
+                        // порознь и незаметно расходились.
+                        // alpn — тот же список, что в tlsSettings json-конфига:
+                        // одно и то же ядро (xray) должно вести себя одинаково,
+                        // импортировали его ссылкой или файлом. h2+http/1.1 — это
+                        // ещё и то, что предлагает настоящий Chrome, т.е. совпадает
+                        // с заявленным fp; nginx всё равно выберет h2.
                         $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
                                     . "?security=tls"
                                     . "&type=xhttp"
@@ -14365,14 +16480,22 @@ DNS-over-HTTPS with IP:
                                     . "&host=$domain"
                                     . "&flow="
                                     . "&mode=packet-up"
-                                    . "&extra=%7B%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22maxConcurrency%22%3A%2216-32%22%2C%22maxConnections%22%3A0%2C%22hKeepAlivePeriod%22%3A0%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%7D%2C%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Afalse%2C%22xPaddingBytes%22%3A%22100-1000%22%2C%22scMaxEachPostBytes%22%3A1000000%2C%22scMinPostsIntervalMs%22%3A30%2C%22scStreamUpServerSecs%22%3A%2220-80%22%7D"
+                                    . "&extra=" . rawurlencode(json_encode($this->xhttpClientExtra(), JSON_UNESCAPED_SLASHES))
                                     . "&sni=$domain"
                                     . "&fp=$fp"
-                                    . "&alpn=h2"
+                                    . "&alpn=" . rawurlencode('h2,http/1.1')
                                     . "#{$remark}";
                         break;
                     case 'trojan-grpc':
-                        $trojanPwd = rawurlencode($c['inbounds'][0]['settings']['clients'][$i]['password']);
+                        // password появляется у клиента при переключении на
+                        // trojan-grpc (changeTransport) и при добавлении (addxrus).
+                        // Клиент, заведённый мимо них — правкой xray.json в
+                        // webapp или восстановлением старого бэкапа, — его не
+                        // имеет: без запасного значения тут был бы undefined key
+                        // и ссылка вида trojan://@host. Падаем на id, ровно как
+                        // подстановка ~uid~ в json-конфигах.
+                        $trojanPwd = rawurlencode($c['inbounds'][0]['settings']['clients'][$i]['password']
+                            ?? $c['inbounds'][0]['settings']['clients'][$i]['id']);
                         $link = "trojan://$trojanPwd@$domain:443"
                                     . "?type=grpc"
                                     . "&serviceName=grpc$hash"
@@ -15137,11 +17260,33 @@ DNS-over-HTTPS with IP:
         $domain = $this->getDomain();
         $text[] = "Menu -> NaiveProxy";
         $np     = $this->getHashSubdomain('np');
-        $text[] = "<code>https://{$pac['naive']['user']}:{$pac['naive']['pass']}@$np.$domain</code>";
+        // Схема ровно как в README naiveproxy: «https://user:pass@example.com».
+        // rawurlencode на userinfo — пароль сюда приходит сырым вводом из
+        // Telegram, а '@', ':', '/', '#' в нём иначе рвут URL. htmlspecialchars
+        // на всю строку — сообщение уходит с parse_mode HTML.
+        $link   = 'https://' . rawurlencode((string) ($pac['naive']['user'] ?? ''))
+            . ':' . rawurlencode((string) ($pac['naive']['pass'] ?? ''))
+            . "@$np.$domain";
+        $text[] = '<code>' . htmlspecialchars($link, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
+        $ver    = $this->naiveVersion();
+        if ($ver['running'] !== '' || $ver['pinned'] !== '') {
+            // Расхождение running/pinned = образ ещё не пересобран под новый пин.
+            $text[] = '';
+            $text[] = 'caddy: ' . htmlspecialchars($ver['running'] ?: '—', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+                . ($ver['pinned'] !== '' && $ver['pinned'] !== $ver['running']
+                    ? '  (пин: ' . htmlspecialchars($ver['pinned'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . ', нужна пересборка)'
+                    : '');
+        }
         $data[] = [
             [
                 'text'          => $this->i18n('change subdomain'),
                 'callback_data' => "/changeNaiveSubdomain",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => 'caddy: ' . ($ver['pinned'] ?: '—'),
+                'callback_data' => "/changeCaddyVersion",
             ],
         ];
         $data[] = [
@@ -15335,6 +17480,25 @@ DNS-over-HTTPS with IP:
         $this->sendFile($this->input['from'], new CURLStringFile($t, 'socat.sh', 'application/x-sh'));
     }
 
+    // Версия ocserv в контейнере oc. `ocserv --version` печатает
+    // «OpenConnect VPN Server 1.5.0», затем «Compiled with: …» и «GnuTLS
+    // version: …». Берём и версию сервера, и GnuTLS: именно она определяет
+    // доступный набор TLS-шифров, а меняется независимо от пина —
+    // её тянет базовый образ, а не OCSERV_VERSION.
+    //
+    // Фолбэк — build-пин OCSERV_VERSION из .env (контейнер не отвечает);
+    // он может расходиться с образом, пока тот не пересобран, поэтому
+    // расхождение помечаем в меню — так же, как у caddy (naiveVersion()).
+    public function ocservVersion(): array
+    {
+        $out = (string) $this->ssh('ocserv --version 2>&1', 'oc');
+        return [
+            'running' => preg_match('~OpenConnect VPN Server\s+(v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*)~i', $out, $m) ? $m[1] : '',
+            'pinned'  => trim((string) getenv('OCSERV_VERSION')),
+            'gnutls'  => preg_match('~GnuTLS version:\s*(\S+)~i', $out, $m) ? $m[1] : '',
+        ];
+    }
+
     public function ocMenu()
     {
         $ocserv = file_get_contents('/config/ocserv.conf');
@@ -15348,6 +17512,23 @@ DNS-over-HTTPS with IP:
         $this->syncOcUsers($clients);
         $online = $this->getOcOnlineUsers($clients);
         $text[] = "Menu -> OpenConnect";
+        $ver    = $this->ocservVersion();
+        if ($ver['running'] !== '' || $ver['pinned'] !== '') {
+            $esc  = fn($v) => htmlspecialchars((string) $v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $line = 'ocserv: <code>' . $esc($ver['running'] ?: '—') . '</code>';
+            // Три разных состояния, и путать их нельзя: пустой running — это
+            // «контейнер не ответил», а не «пин разошёлся с образом».
+            // Сравниваем без ведущей «v»: в .env пин записан как «1.5.0».
+            if ($ver['pinned'] !== '' && $ver['running'] === '') {
+                $line .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, контейнер не отвечает)';
+            } elseif ($ver['pinned'] !== '' && ltrim($ver['pinned'], 'vV') !== ltrim($ver['running'], 'vV')) {
+                $line .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, нужна пересборка)';
+            }
+            if ($ver['gnutls'] !== '') {
+                $line .= '  GnuTLS: <code>' . $esc($ver['gnutls']) . '</code>';
+            }
+            $text[] = $line;
+        }
         $text[] = $this->i18n('camouflage') . ': ' . $this->i18n($cs === '' ? 'off' : 'on');
         $text[] = $this->i18n('server') . ": <code>$url</code>";
         $data[] = [
@@ -15498,6 +17679,10 @@ DNS-over-HTTPS with IP:
         foreach ($r['inbounds'][0]['settings']['clients'] as $k => $v) {
             if ($i == $k) {
                 $this->deleteHwidUser($r['inbounds'][0]['settings']['clients'][$k]['id']);
+                // Персональный WARP-аккаунт живёт вне xray.json — убираем его
+                // здесь, иначе каталоги копятся, а устройства навсегда висят
+                // на аккаунте Cloudflare.
+                $this->deleteWarpClient($r['inbounds'][0]['settings']['clients'][$k]['email'] ?? '');
                 unset($r['inbounds'][0]['settings']['clients'][$k]);
                 unset($st['users'][$k]);
                 $this->setXrayStats($st);
@@ -16228,7 +18413,14 @@ DNS-over-HTTPS with IP:
         $xrayVersion = $this->getXrayVersion();
         $text[] = 'xray version: ' . ($xrayVersion !== '' ? "<code>$xrayVersion</code>" : '?');
         $text[] = 'transport: ' . ($p['transport'] ?: 'Websocket');
-        $text[] = 'fingerprint: ' . ($p['fingerprint'] ?: 'chrome');
+        // XHTTP в апстримном sing-box отсутствует (он есть только в xray и
+        // mihomo), поэтому подписка t=si/hiddify/karing с этим транспортом
+        // импортируется лишь в сборках-форках с поддержкой xhttp. Говорим об
+        // этом сразу, а не оставляем пользователя с «unknown transport type».
+        if (($p['transport'] ?? '') === 'xhttp') {
+            $text[] = $this->i18n('xhttp singbox warn');
+        }
+        $text[] = 'fingerprint: ' . $this->fingerprint();
         $st = $this->getXrayStats();
         $td = $this->getBytes($st['global']['download'] + $st['session']['download']);
         $tu = $this->getBytes($st['global']['upload'] + $st['session']['upload']);
@@ -16283,7 +18475,7 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => $this->i18n('fingerprint') . ': ' . ucfirst($p['fingerprint'] ?: 'chrome'),
+                'text'          => $this->i18n('fingerprint') . ': ' . ucfirst($this->fingerprint()),
                 'callback_data' => "/fingerprintMenu",
             ],
             [
@@ -16594,18 +18786,33 @@ DNS-over-HTTPS with IP:
             return;
         }
 
-        // Удаляем старые профиль и аккаунт
-        if (!$step('removing old profile', 'rm -f /etc/warp/wgcf-profile.conf /etc/warp/wgcf-account.toml', 'wp')) {
+        // Старый аккаунт УБИРАЕМ В СТОРОНУ, а не удаляем: дальше идёт wgcf
+        // register — сетевой вызов к API Cloudflare, который вполне может
+        // упасть. Раньше здесь стоял rm -f, и на упавшей регистрации аккаунт
+        // с ОПЛАЧЕННЫМ WARP+ пропадал безвозвратно: восстановить его без
+        // сохранённого private_key/token невозможно. Теперь любой сбой ниже
+        // возвращает прежнюю пару файлов на место (restore()).
+        if (!$step('backing up old profile', 'cd /etc/warp && rm -rf .bak && mkdir -p .bak && '
+            . 'for f in wgcf-profile.conf wgcf-account.toml; do [ -f "$f" ] && mv "$f" ".bak/$f"; done; true', 'wp')) {
             $this->send($chat, $log);
             return;
         }
+        // Возврат к прежнему аккаунту + подъём туннеля, чтобы неудачная смена
+        // ключа не оставляла warp лежащим.
+        $restore = function () use ($chat, &$log) {
+            $this->ssh('cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
+                . '[ -f ".bak/$f" ] && mv -f ".bak/$f" "$f"; done; rmdir .bak 2>/dev/null; '
+                . 'wg-quick up /etc/warp/wgcf-profile.conf >/dev/null 2>&1; true', 'wp');
+            $log .= "\nprevious account restored\n";
+            $this->send($chat, $log);
+        };
 
         // Регистрируем новый аккаунт. wgcf >= 2.2.31 печатает таблицу аккаунта
         // в stdout, а $step трактует ЛЮБОЙ stdout как провал (флоу обрывался
         // сразу после register, уже удалив старый аккаунт) — stdout глушим,
         // stderr показываем только при ненулевом коде выхода.
         if (!$step('[warp] Registering WARP account...', 'cd /etc/warp && err=$(wgcf register --accept-tos 2>&1 >/dev/null) || printf "%s\n" "${err:-register failed}"', 'wp')) {
-            $this->send($chat, $log);
+            $restore();
             return;
         }
 
@@ -16614,18 +18821,19 @@ DNS-over-HTTPS with IP:
             // WARP keys are alphanumeric + dashes only; reject anything else so the
             // value can't break out of the sed/shell command below (it is interpolated raw).
             if (!preg_match('~^[A-Za-z0-9-]+$~', $key)) {
-                $this->send($chat, $log . "invalid license key format\n");
+                $log .= "invalid license key format\n";
+                $restore();
                 return;
             }
             $c['warp'] = $key;
             // Заменяем ключ в wgcf-account.toml
             if (!$step('setting license key', "sed -i 's/^license_key.*/license_key = \"$key\"/' /etc/warp/wgcf-account.toml", 'wp')) {
-                $this->send($chat, $log);
+                $restore();
                 return;
             }
             // Обновляем аккаунт с ключом (stdout глушим — как у register)
             if (!$step('applying license key', 'cd /etc/warp && err=$(wgcf update 2>&1 >/dev/null) || printf "%s\n" "${err:-update failed}"', 'wp')) {
-                $this->send($chat, $log);
+                $restore();
                 return;
             }
         } else {
@@ -16634,7 +18842,7 @@ DNS-over-HTTPS with IP:
         $this->setPacConf($c);
 
         if (!$step('generating profile', 'cd /etc/warp && err=$(wgcf generate 2>&1 >/dev/null) || printf "%s\n" "${err:-generate failed}"', 'wp')) {
-            $this->send($chat, $log);
+            $restore();
             return;
         }
         // Фиксапы профиля — общий с start_wp.sh скрипт (warp_fixup.sh), а не
@@ -16643,7 +18851,7 @@ DNS-over-HTTPS with IP:
         // однострочные Address/AllowedIPs новых wgcf (>= 2.2.31) целиком,
         // вместе с v4-частью.
         if (!$step('fixing up profile', 'sh /warp_fixup.sh', 'wp')) {
-            $this->send($chat, $log);
+            $restore();
             return;
         }
 
@@ -16652,9 +18860,10 @@ DNS-over-HTTPS with IP:
         $started = $step('starting warp', 'out=$(wg-quick up /etc/warp/wgcf-profile.conf 2>&1); ec=$?; [ "$ec" -ne 0 ] && printf "%s\n" "$out" | grep -v "skip sysctl"; exit $ec', 'wp');
 
         if (!$started) {
-            $this->send($chat, $log);
+            $restore();
             return;
         }
+        $this->ssh('rm -rf /etc/warp/.bak', 'wp');
 
         sleep(1);
         // sendMessageDraft closes only when sendMessage is called — send a dummy and delete it
@@ -16668,7 +18877,10 @@ DNS-over-HTTPS with IP:
 
     public function warpStatus()
     {
-        $st = $this->ssh('curl -m 1 -x socks5://wp:1080 https://cloudflare.com/cdn-cgi/trace', 'xr');
+        // socks5h (резолв на стороне microsocks, т.е. через туннель) и таймаут
+        // 8с: с прежним `-m 1` и локальным резолвом живой WARP регулярно
+        // показывался как off на медленном первом соединении.
+        $st = $this->ssh('curl -m 8 -s -x socks5h://wp:1080 https://www.cloudflare.com/cdn-cgi/trace', 'xr');
         preg_match('~warp=(\w+)~', $st, $m);
         return trim($m[1]) ?: 'off';
     }
@@ -16766,42 +18978,52 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Включение/выключение туннеля. Раньше вся функция была построена на
+    // warp-cli/warp-svc (официальный клиент Cloudflare), которых в образе wp
+    // НЕТ — там только wgcf + wg + microsocks. То есть каждая команда
+    // возвращала "not found", туннель не менялся, но флаг warpoff в pac.json
+    // всё равно переключался: состояние бота расходилось с реальностью.
+    // Теперь выключаем ровно тем же способом, каким поднимаем — wg-quick,
+    // а флаг читает ещё и watchdog в start_wp.sh (иначе он поднял бы туннель
+    // обратно через три минуты).
     public function offWarp()
     {
-        $p    = $this->getPacConf();
+        $p   = $this->getPacConf();
+        $off = !empty($p['warpoff']);
+
         if (!empty($this->selfupdate)) {
-            if (!empty($p['warpoff'])) {
-                $this->ssh('warp-cli --accept-tos registration delete 2>&1', 'wp');
-                $this->ssh('pkill warp-svc', 'wp');
+            // Автообновление: ничего не переключаем, только уважаем флаг.
+            if ($off) {
+                $this->ssh('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
             }
-        } elseif (!empty($p['warpoff'])) {
-            $this->ssh('warp-svc > /dev/null 2>&1 &', 'wp');
-            sleep(3);
-            if (empty($this->ssh('[ -f "/var/lib/cloudflare-warp/conf.json" ] && echo 1', 'wp'))) {
-                $this->send($this->input['chat'], 'Registration: ' . $this->ssh('warp-cli --accept-tos registration new 2>&1', 'wp'));
-                if (!empty($p['warp'])) {
-                    $this->send($this->input['chat'], 'License: ' . $this->ssh("warp-cli --accept-tos registration license {$p['warp']} 2>&1", 'wp'));
-                }
+            return;
+        }
+
+        if ($off) {
+            $out = trim((string) $this->ssh(
+                'out=$(wg-quick up /etc/warp/wgcf-profile.conf 2>&1); ec=$?; '
+                    . '[ "$ec" -ne 0 ] && printf "%s\n" "$out" | grep -v "skip sysctl"; exit $ec',
+                'wp'
+            ));
+            if ($out !== '') {
+                $this->send($this->input['chat'], "warp up failed:\n<pre>"
+                    . htmlspecialchars($out, ENT_QUOTES) . '</pre>');
+                return $this->warp();
             }
-            $this->send($this->input['chat'], 'Proxy mode: ' . $this->ssh('warp-cli --accept-tos mode proxy 2>&1', 'wp'));
-            $this->send($this->input['chat'], 'Connect: ' . $this->ssh('warp-cli --accept-tos connect 2>&1', 'wp'));
             unset($p['warpoff']);
         } else {
-            $this->send($this->input['chat'], 'Registration delete: ' . $this->ssh('warp-cli --accept-tos registration delete 2>&1', 'wp'));
-            $this->ssh('pkill warp-svc', 'wp');
+            $this->ssh('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
             $p['warpoff'] = 1;
         }
         $this->setPacConf($p);
-        if (empty($this->selfupdate)) {
-            $this->warp();
-        }
+        $this->warp();
     }
 
     public function warp()
     {
         $p      = $this->getPacConf();
-        $c      = file_get_contents('/etc/warp/wgcf-profile.conf');
-        $a      = file_get_contents('/etc/warp/wgcf-account.toml');
+        $off    = !empty($p['warpoff']);
+        $prof   = $this->getWarpProfile();
         $text[] = "Menu -> " . $this->i18n('warp');
         if ($ver = $this->warpVersion()) {
             $text[] = $ver;
@@ -16812,13 +19034,30 @@ DNS-over-HTTPS with IP:
         // не выглядела пустой/сломанной.
         $trace  = trim((string) $this->ssh('wgcf trace', 'wp'));
         $text[] = "status: " . ($trace !== '' ? "<pre>$trace</pre>" : '<code>off</code>');
-        $text[] = "key: <code>{$p['warp']}</code>";
+        // Профиль и аккаунт печатаются ЦЕЛИКОМ — осознанное решение владельца:
+        // меню warp задумано как «всё под рукой», ключи оттуда копируют в
+        // сторонние клиенты. Держим в уме, что в wgcf-account.toml лежат
+        // private_key и access_token аккаунта, а в профиле — PrivateKey
+        // интерфейса, и всё это остаётся в истории чата.
+        // Чтение с @ и ?? — файлов может не быть на свежей установке, и без
+        // подавления меню падало бы в PHP-warning вместо показа статуса.
+        $a      = (string) @file_get_contents('/etc/warp/wgcf-account.toml');
+        $c      = (string) @file_get_contents('/etc/warp/wgcf-profile.conf');
+        $text[] = "key: <code>" . ($p['warp'] ?? '') . "</code>";
         $text[] = "<pre>$a</pre>";
         $text[] = "<pre>$c</pre>";
+        if (!$prof) {
+            $text[] = '⚠ ' . $this->i18n('warp no profile');
+        }
+
         $data[] = [
             [
                 'text'          => $this->i18n('set key'),
                 'callback_data' => "/warpPlus",
+            ],
+            [
+                'text'          => $this->i18n('warp') . ': ' . $this->i18n($off ? 'off' : 'on'),
+                'callback_data' => "/offWarp",
             ],
         ];
         $data[] = [
@@ -17100,7 +19339,7 @@ DNS-over-HTTPS with IP:
             ],
         ];
         if ($pac['transport'] == 'trojan-grpc') {
-            $text[] = "\npassword: <span class='tg-spoiler'>{$c['password']}</span>";
+            $text[] = "\npassword: <span class='tg-spoiler'>" . ($c['password'] ?? $c['id']) . "</span>";
             $data[] = [
                 [
                     'text'          => $this->i18n('change password'),
@@ -17742,6 +19981,66 @@ DNS-over-HTTPS with IP:
         return $rs;
     }
 
+    // sockopt для inbound'ов, которые слушают ЗА nginx (xhttp, trojan-grpc,
+    // websocket). Без него xray видит источником каждого соединения сам nginx
+    // (10.10.0.2), а не клиента, потому что TLS терминирует nginx и никакого
+    // PROXY-протокола до xray не доходит (он есть только у Reality). Ломается
+    // сразу три вещи: `from <ip>` в /logs/xray у всех клиентов одинаковый →
+    // журнал подключений (recordConnLog) бесполезен, ip_limit никогда не
+    // срабатывает (у email всегда ровно один IP), а сам xray на КАЖДЫЙ запрос
+    // пишет warning «received "X-Forwarded-For" … but "sockopt.
+    // trustedXForwardedFor" is not configured» — в packet-up это до 30 строк в
+    // секунду на клиента, лог пухнет на ровном месте.
+    //
+    // Значение — список ИМЁН заголовков (не адресов!): xray доверяет XFF, если
+    // в запросе присутствует любой из них (common/protocol/http/headers.go,
+    // ApplyTrustedXForwardedFor + headers_test.go). X-Real-IP ставит сам nginx
+    // через proxy_set_header/grpc_set_header, т.е. клиент его подделать не
+    // может — заголовок клиента при этом ЗАМЕЩАЕТСЯ, а не дополняется. Сам IP
+    // берётся из ПЕРВОГО элемента X-Forwarded-For, поэтому в nginx он выставлен
+    // в $remote_addr, а не в $proxy_add_x_forwarded_for (см. локацию /ws).
+    public function nginxFrontedSockopt(): array
+    {
+        return ['trustedXForwardedFor' => ['X-Real-IP']];
+    }
+
+    // Единый источник правды для клиентской части XHTTP (xray-core).
+    //
+    // Xray собирает xhttpSettings так (infra/conf/transport_method.go, Build()):
+    // если задан "extra", он парсится КАК ЦЕЛЫЙ SplitHTTPConfig и заменяет собой
+    // внешний объект — из внешнего переносятся только host/path/mode. Поэтому все
+    // остальные поля обязаны лежать внутри "extra", а не рядом с ним.
+    //
+    // Тот же самый набор уходит в vless://…&extra=<urlencoded json> — раньше в
+    // ссылке лежал захардкоженный процент-энкоженный блоб, и любая правка JSON-
+    // конфига молча расходилась со ссылкой. Теперь оба берут массив отсюда.
+    //
+    // Значения: xray-дефолты (scMaxEachPostBytes 1000000, scMinPostsIntervalMs 30,
+    // xPaddingBytes 100-1000) плюс xmux с maxConcurrency 16-32. maxConnections
+    // держим на 0: при обоих ненулевых Build() падает с "maxConnections cannot be
+    // specified together with maxConcurrency".
+    public function xhttpClientExtra(): array
+    {
+        return [
+            "xmux" => [
+                "cMaxReuseTimes"   => 0,
+                "maxConcurrency"   => "16-32",
+                "maxConnections"   => 0,
+                "hKeepAlivePeriod" => 0,
+                "hMaxRequestTimes" => "600-900",
+                "hMaxReusableSecs" => "1800-3000",
+            ],
+            "noGRPCHeader"         => false,
+            "xPaddingBytes"        => "100-1000",
+            "scMaxEachPostBytes"   => 1000000,
+            "scMinPostsIntervalMs" => 30,
+            // Серверная опция (периодический keep-alive в stream-up); на клиенте
+            // инертна, но оставлена — xray её принимает, а конфиг и ссылка должны
+            // совпадать байт-в-байт с тем, что уже роздано пользователям.
+            "scStreamUpServerSecs" => "20-80",
+        ];
+    }
+
     // Item 1: inject a freedom outbound carrying TLS fragment and/or UDP noise and
     // route the main proxy outbound through it via sockopt.dialerProxy (xray only).
     // No-op unless at least one is enabled, so default configs are unchanged.
@@ -18041,12 +20340,12 @@ DNS-over-HTTPS with IP:
             $this->subNotFound('Subscription template has no matching outbound.');
         }
 
-        $fingerprint = $pac['fingerprint'] ?: 'chrome';
-        // randomizednoalpn and unsafe are Xray-only uTLS ids: sing-box errors on an
-        // unknown fingerprint and mihomo silently drops uTLS, so map them to a
-        // supported value for the sing-box (si) and clash (cl) configs.
-        if (in_array($_GET['t'], ['si', 'cl'], true)) {
-            $fingerprint = ['randomizednoalpn' => 'randomized', 'unsafe' => 'chrome'][$fingerprint] ?? $fingerprint;
+        // У каждого ядра свой набор допустимых имён — см. normalizeFingerprint().
+        $fingerprint = $this->fingerprint();
+        if ($_GET['t'] === 'si') {
+            $fingerprint = $this->normalizeFingerprint($fingerprint, 'singbox');
+        } elseif ($_GET['t'] === 'cl') {
+            $fingerprint = $this->normalizeFingerprint($fingerprint, 'mihomo');
         }
 
         switch ($_GET['t']) {
@@ -18074,26 +20373,17 @@ DNS-over-HTTPS with IP:
                             "network"  => "xhttp",
                             "security" => "tls",
 
+                            // mode пинуем на packet-up, а не auto: при TLS+h2 auto
+                            // выбрал бы stream-up, а он за nginx требует grpc_pass
+                            // (см. XHTTP: Beyond REALITY). Локация /ws у нас на
+                            // proxy_pass и обслуживает ещё и websocket, поэтому
+                            // единственный совместимый режим — packet-up.
+                            // Сервер слушает mode=auto и принимает его.
                             "xhttpSettings" => [
-                                "host" => "~domain~",
-                                "mode" => "packet-up",
-                                "path" => "/ws$hash",
-
-                                "extra" => [
-                                    "scMaxEachPostBytes"    => 1000000,
-                                    "scMinPostsIntervalMs"  => 30,
-                                    "scStreamUpServerSecs"  => "20-80",
-                                    "xmux" => [
-                                        "cMaxReuseTimes"    => 0,
-                                        "hKeepAlivePeriod"  => 0,
-                                        "hMaxRequestTimes"  => "600-900",
-                                        "hMaxReusableSecs"  => "1800-3000",
-                                        "maxConcurrency"    => "16-32",
-                                        "maxConnections"    => 0,
-                                    ],
-                                    "xPaddingBytes" => "100-1000",
-                                    "noGRPCHeader"  => false
-                                ]
+                                "host"  => "~domain~",
+                                "mode"  => "packet-up",
+                                "path"  => "/ws$hash",
+                                "extra" => $this->xhttpClientExtra(),
                             ],
 
                             "tlsSettings" => [
@@ -18171,15 +20461,40 @@ DNS-over-HTTPS with IP:
                         unset($c['outbounds'][$index]['flow']);
                         unset($c['outbounds'][$index]['tls']['reality']);
 
+                        // ВАЖНО: XHTTP нет в апстримном sing-box — option/
+                        // v2ray_transport.go знает только http/ws/quic/grpc/
+                        // httpupgrade и на чужом type падает с "unknown transport
+                        // type". Транспорт есть только в сборках-форках
+                        // (sing-box-extended и производные), и снейк-кейс ниже —
+                        // именно их диалект. Пользователя предупреждаем в меню
+                        // xray ('xhttp singbox warn').
+                        //
+                        // x_padding_bytes обязателен: валидатор форка смотрит на
+                        // сырое поле, а не на нормализованное, и при отсутствии
+                        // ключа падает с "x_padding_bytes cannot be disabled" —
+                        // без него КАЖДЫЙ сгенерированный конфиг отвергался.
+                        // Остальные значения выровнены с xhttpClientExtra(),
+                        // чтобы один и тот же сервер вёл себя одинаково во всех
+                        // клиентах; c_max_reuse_times "0-1" ломал переиспользование
+                        // соединений почти на каждом втором (0 = без лимита).
+                        // max_connections держим на "0": при обоих ненулевых форк
+                        // отвечает "max_connections cannot be specified together
+                        // with max_concurrency".
                         $c['outbounds'][$index]["transport"] = [
                             "type" => "xhttp",
                             "host" => "~domain~",
                             "mode" => "packet-up",
                             "path" => "/ws$hash",
+                            // Диапазоны шлём строками, как уже работающие
+                            // max_concurrency/max_connections: у форка это
+                            // Range-тип, строковая форма разбирается заведомо.
+                            "x_padding_bytes"          => "100-1000",
+                            "sc_max_each_post_bytes"   => "1000000",
+                            "sc_min_posts_interval_ms" => "30",
                             "xmux" => [
                                 "max_concurrency"   => "16-32",
                                 "max_connections"   => "0",
-                                "c_max_reuse_times" => "0-1",
+                                "c_max_reuse_times" => "0",
                                 "h_max_request_times" => "600-900",
                                 "h_max_reusable_secs" => "1800-3000",
                                 "h_keep_alive_period" => 60
@@ -18259,18 +20574,27 @@ DNS-over-HTTPS with IP:
                         $c['proxies'][$index]['servername']         = '~domain~';
                         $c['proxies'][$index]['skip-cert-verify']   = false;
 
+                        // Имена ключей — kebab-диалект mihomo (adapter/outbound/
+                        // vless.go, XHTTPOptions/XHTTPReuseSettings); xmux там
+                        // называется reuse-settings.
+                        // Значения выровнены с xhttpClientExtra(): было
+                        // max-concurrency 8-16 и h-max-request-times 100-200,
+                        // т.е. вдвое меньше параллелизма и переоткрытие соединения
+                        // каждые 100-200 POST'ов (в packet-up один POST = один
+                        // запрос, это секунды). Дефолт xray — 600-900.
                         $c['proxies'][$index]['xhttp-opts'] = [
-                            'host'                   => '~domain~',
-                            'path'                   => "/ws$hash",
-                            'mode'                   => 'packet-up',
-                            'no-grpc-header'         => false,
-                            'x-padding-bytes'        => '100-1000',
-                            'sc-max-each-post-bytes' => 1000000,
-                            'reuse-settings'         => [
+                            'host'                     => '~domain~',
+                            'path'                     => "/ws$hash",
+                            'mode'                     => 'packet-up',
+                            'no-grpc-header'           => false,
+                            'x-padding-bytes'          => '100-1000',
+                            'sc-max-each-post-bytes'   => 1000000,
+                            'sc-min-posts-interval-ms' => 30,
+                            'reuse-settings'           => [
                                 'max-connections'   => '0',
-                                'max-concurrency'   => '8-16',
+                                'max-concurrency'   => '16-32',
                                 'c-max-reuse-times' => '0',
-                                'h-max-request-times' => '100-200',
+                                'h-max-request-times' => '600-900',
                                 'h-max-reusable-secs' => '1800-3000',
                             ],
                         ];
@@ -18321,7 +20645,8 @@ DNS-over-HTTPS with IP:
                                 "0.0.0.0/0",
                             ],
                             "mtu"                  => $awg['mtu'],
-                            "persistent-keepalive" => 20,
+                            // Целое число: диапазон 3.0 mihomo здесь не примет.
+                            "persistent-keepalive" => self::keepaliveInt($awg['persistent-keepalive'] ?? 20),
                             "udp"                  => true,
                         ];
                         if (!empty($awg['pre-shared-key'])) {
@@ -18354,12 +20679,21 @@ DNS-over-HTTPS with IP:
                 }
                 break;
         }
-        // Cloudflare WARP profile of this server, exposed as template tags so a
-        // (per-user) template can embed a wireguard-WARP proxy with the dynamic
-        // server secrets. Empty array when warp isn't set up — the tags then
-        // resolve to empty strings / defaults.
-        $warp = $this->getWarpProfile() ?: [];
-        $c = json_decode($this->replaceTags(json_encode($c), [
+        // WARP-теги шаблона. У каждого клиента СВОЙ wgcf-аккаунт: общий
+        // серверный ключ означал бы, что сессии клиентов и самого сервера
+        // выбивают друг друга (в WireGuard у пира ровно один endpoint, и
+        // handshake с нового источника переписывает предыдущий).
+        //
+        // Регистрация ленивая и делается только если шаблон реально просит
+        // ключ — иначе каждая подписка любого клиента ходила бы в API
+        // Cloudflare заводить лишний аккаунт. Если персональный завести не
+        // удалось (сеть/лимит), теги останутся пустыми: пусть warp-прокси в
+        // конфиге будет нерабочим, чем рабочим, но конфликтующим с сервером.
+        $json = json_encode($c);
+        $warp = str_contains($json, '~warp_private_key~')
+            ? ($this->warpClientProfile($client['email'] ?? '') ?: [])
+            : [];
+        $c = json_decode($this->replaceTags($json, [
             '"~pac~"'        => json_encode(array_keys(array_filter($pac['includelist'] ?: []))),
             '"~block~"'      => json_encode(array_keys(array_filter($pac['blocklist'] ?: []))),
             '"~warp~"'       => json_encode(array_keys(array_filter($pac['warplist'] ?: []))),
@@ -18396,7 +20730,9 @@ DNS-over-HTTPS with IP:
                     // а домен — по ошибке там же. geosite:/geoip: НЕ вырезаем —
                     // клиент тоже xray, штатная geodata у него есть.
                     $sort = function ($j, $tag) use (&$ips, &$domains) {
-                        $cl = $this->classifyRouteEntry($j);
+                        // Вход — токены уже собранного xray-конфига, а не записи
+                        // pac-списка: голая строка здесь значит keyword, не суффикс.
+                        $cl = $this->classifyXrayToken($j);
                         // ext:/extip: — серверные .dat, на клиенте файла нет.
                         // Пустые/битые записи не отдаём клиенту по той же причине,
                         // что и серверу: пустой токен в domain[] матчит всё.
@@ -18636,8 +20972,24 @@ DNS-over-HTTPS with IP:
         }
 
         return [
-            "amnezia-wg-option" => $c["{$container}amnezia_keys"] ?? '',
+            // Блок 3.0 уезжает в mihomo только при включённом тумблере
+            // mihomo_awg3: его понимают лишь свежие сборки, а нужные ИМЕНА
+            // полей у mihomo свои (см. MIHOMO_AWG3_KEYS).
+            // Набор прогоняем через amneziaKeysUsable() — тот же срез, что
+            // уходит в wg0.conf: иначе подписка объявила бы клиенту header
+            // protection, которого на сервере нет, и handshake молча не прошёл
+            // бы. Версию tools берём из кеша: ssh на пути подписки нельзя.
+            "amnezia-wg-option" => self::amneziaKeysForMihomo(
+                self::amneziaKeysUsable(
+                    $c["{$container}amnezia_keys"] ?? '',
+                    $this->awgSupports3Cached($container)
+                ),
+                !empty($c['mihomo_awg3'])
+            ),
             "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
+            // Диапазон приводится к числу уже на месте сборки прокси
+            // (keepaliveInt): ssh сюда звать нельзя — это путь подписки.
+            "persistent-keepalive" => $c["{$container}amnezia_keepalive"] ?? 20,
             "server"            => explode(':', $cl['peers'][0]['Endpoint'])[0],
             "port"              => explode(':', $cl['peers'][0]['Endpoint'])[1],
             "ip"                => explode('/', $cl['interface']['Address'])[0],
@@ -18704,7 +21056,10 @@ DNS-over-HTTPS with IP:
                                 break;
 
                             default:
-                                echo yaml_emit(['payload' => array_values(array_filter(array_map(function($e) {
+                                // array_unique в конце: vk.com и domain:vk.com дают
+                                // одно и то же DOMAIN-SUFFIX-правило, 1.2.3.4 и
+                                // 1.2.3.4/32 — один IP-CIDR.
+                                echo yaml_emit(['payload' => array_values(array_unique(array_filter(array_map(function($e) {
                                     $cl = $this->classifyRouteEntry($e);
                                     if (!$this->routeEntryUsable($cl)) {
                                         return null; // пустое значение / битый IP
@@ -18722,13 +21077,13 @@ DNS-over-HTTPS with IP:
                                         case 'regexp':
                                             return "DOMAIN-REGEX,{$cl['value']}";
                                         case 'keyword':
-                                            return "DOMAIN-KEYWORD,{$cl['value']}";
+                                            return 'DOMAIN-KEYWORD,' . mb_strtolower($cl['value']);
                                         case 'full':
-                                            return "DOMAIN,{$cl['value']}";
+                                            return 'DOMAIN,' . $this->hostCanon($cl['value']);
                                         default: // domain, suffix
-                                            return "DOMAIN-SUFFIX,{$cl['value']}";
+                                            return 'DOMAIN-SUFFIX,' . $this->hostCanon($cl['value']);
                                     }
-                                }, $v['list']), fn($r) => $r !== null))]);
+                                }, $v['list']), fn($r) => $r !== null)))]);
                                 break;
 
                         }
@@ -18768,6 +21123,118 @@ DNS-over-HTTPS with IP:
      * proxy needs. Returns false when the profile is missing/unreadable so callers
      * can fall back gracefully.
      */
+    // Разбор wgcf-profile.conf в поля, которые нужны клиентским конфигам.
+    // Вынесено из getWarpProfile(), потому что теперь тем же разбором читаются
+    // и персональные профили клиентов (warpClientProfile).
+    public function parseWarpProfile($conf)
+    {
+        $conf = (string) $conf;
+        if ($conf === '' || !str_contains($conf, '[Peer]')) {
+            return false;
+        }
+        $val = function ($key) use ($conf) {
+            return preg_match('~^\s*' . $key . '\s*=\s*(.+?)\s*$~mi', $conf, $m) ? trim($m[1]) : null;
+        };
+        $endpoint   = $val('Endpoint');
+        $privateKey = $val('PrivateKey');
+        $publicKey  = $val('PublicKey');
+        $address    = $val('Address');
+        if (empty($endpoint) || empty($privateKey) || empty($publicKey) || empty($address)) {
+            return false;
+        }
+        // endpoint is host:port, but tolerate an IPv6 literal like [2606:..]:2408
+        if (preg_match('~^\[(.+)\]:(\d+)$~', $endpoint, $em)) {
+            $server = $em[1];
+            $port   = (int) $em[2];
+        } else {
+            $pos    = strrpos($endpoint, ':');
+            $server = substr($endpoint, 0, $pos);
+            $port   = (int) substr($endpoint, $pos + 1);
+        }
+        return [
+            'server'      => $server,
+            'port'        => $port,
+            'ip'          => explode('/', $address)[0],
+            'private-key' => $privateKey,
+            'public-key'  => $publicKey,
+            'mtu'         => (int) ($val('MTU') ?: 1280),
+        ];
+    }
+
+    // Каталог персонального WARP-аккаунта клиента внутри тома warp (он же
+    // смонтирован в php, поэтому профиль читается напрямую, без ssh).
+    // Имя = санитизированный email + хвост sha1: email приходит из Telegram и
+    // попадает в shell-команды, а хеш убирает коллизии после санитайза.
+    public function warpClientDir($email)
+    {
+        $email = (string) $email;
+        $safe  = substr(preg_replace('~[^a-zA-Z0-9_.\-]~', '_', $email), 0, 32);
+        return '/etc/warp/clients/' . $safe . '-' . substr(sha1($email), 0, 8);
+    }
+
+    // Персональный WARP-аккаунт клиента: у каждого свой ключ, а не общий
+    // серверный. Один и тот же WireGuard-ключ на сервере и у клиентов означал
+    // бы, что их сессии выбивают друг друга — у пира в WireGuard ровно один
+    // endpoint, и handshake с нового источника переписывает предыдущий.
+    //
+    // Генерация ленивая (wgcf register — сетевой вызов к API Cloudflare) и
+    // выполняется только когда шаблон реально просит warp-теги. Готовый
+    // профиль дальше просто читается с тома.
+    public function warpClientProfile($email)
+    {
+        $email = (string) $email;
+        if ($email === '') {
+            return false;
+        }
+        if (array_key_exists($email, $this->warpclients)) {
+            return $this->warpclients[$email];
+        }
+        $dir  = $this->warpClientDir($email);
+        $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
+        if ($prof !== false) {
+            return $this->warpclients[$email] = $prof;
+        }
+
+        $d   = escapeshellarg($dir);
+        $pac = $this->getPacConf();
+        $key = (string) ($pac['warp'] ?? '');
+        // Ключ уже провалидирован в addWarpPlus, но сюда он приезжает из
+        // pac.json — проверяем повторно, раз значение уходит в shell.
+        $lic = preg_match('~^[A-Za-z0-9-]+$~', $key)
+            ? "sed -i 's/^license_key.*/license_key = \"$key\"/' wgcf-account.toml && "
+                . 'wgcf update --config wgcf-account.toml >/dev/null 2>&1; '
+            : '';
+        // Имя устройства видно в панели 1.1.1.1 — подписываем клиентом.
+        $name = escapeshellarg('vpnbot-' . substr(preg_replace('~[^a-zA-Z0-9_.\-]~', '_', $email), 0, 32));
+        $this->ssh(
+            "mkdir -p $d && cd $d && "
+                . "wgcf register --accept-tos --config wgcf-account.toml --name $name >/dev/null 2>&1 && "
+                . $lic
+                . 'wgcf generate --config wgcf-account.toml --profile wgcf-profile.conf >/dev/null 2>&1 && '
+                . "chmod 600 wgcf-account.toml wgcf-profile.conf && "
+                . "WGCF_CONF=$d/wgcf-profile.conf sh /warp_fixup.sh",
+            'wp'
+        );
+        $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
+        if ($prof === false) {
+            // Не оставляем полуфабрикат: иначе следующий запрос увидит каталог
+            // и решит, что регистрация уже была.
+            $this->ssh("rm -rf $d", 'wp');
+        }
+        return $this->warpclients[$email] = $prof;
+    }
+
+    // Клиента удалили — удаляем и его WARP-аккаунт, иначе каталоги копятся, а
+    // устройства навсегда остаются висеть на аккаунте Cloudflare.
+    public function deleteWarpClient($email)
+    {
+        if ((string) $email === '') {
+            return;
+        }
+        unset($this->warpclients[(string) $email]);
+        $this->ssh('rm -rf ' . escapeshellarg($this->warpClientDir($email)), 'wp');
+    }
+
     public function getWarpProfile()
     {
         // Cache per request: this runs on every config download (all types), and
@@ -18782,36 +21249,7 @@ DNS-over-HTTPS with IP:
             // container over ssh just in case the volume isn't present.
             $conf = $this->ssh('cat /etc/warp/wgcf-profile.conf 2>/dev/null', 'wp');
         }
-        if (empty($conf) || !str_contains($conf, '[Peer]')) {
-            return $this->warpprofile = false;
-        }
-        $val = function ($key) use ($conf) {
-            return preg_match('~^\s*' . $key . '\s*=\s*(.+?)\s*$~mi', $conf, $m) ? trim($m[1]) : null;
-        };
-        $endpoint   = $val('Endpoint');
-        $privateKey = $val('PrivateKey');
-        $publicKey  = $val('PublicKey');
-        $address    = $val('Address');
-        if (empty($endpoint) || empty($privateKey) || empty($publicKey) || empty($address)) {
-            return $this->warpprofile = false;
-        }
-        // endpoint is host:port, but tolerate an IPv6 literal like [2606:..]:2408
-        if (preg_match('~^\[(.+)\]:(\d+)$~', $endpoint, $em)) {
-            $server = $em[1];
-            $port   = (int) $em[2];
-        } else {
-            $pos    = strrpos($endpoint, ':');
-            $server = substr($endpoint, 0, $pos);
-            $port   = (int) substr($endpoint, $pos + 1);
-        }
-        return $this->warpprofile = [
-            'server'      => $server,
-            'port'        => $port,
-            'ip'          => explode('/', $address)[0],
-            'private-key' => $privateKey,
-            'public-key'  => $publicKey,
-            'mtu'         => (int) ($val('MTU') ?: 1280),
-        ];
+        return $this->warpprofile = $this->parseWarpProfile($conf);
     }
 
     public function replaceTags($subject, $tags)
@@ -18930,6 +21368,58 @@ DNS-over-HTTPS with IP:
         return $arr;
     }
 
+    /**
+     * Раскладывает записи pac-списка по полям sing-box rule-set с учётом
+     * префиксов маршрутизации. Порядок ключей задаёт форму итогового правила.
+     *
+     * Вынесено из createSrs() отдельным методом: та функция пишет заголовки и
+     * заканчивается exit, так что покрыть раскладку тестом иначе невозможно.
+     *
+     * @return array<string,array>
+     */
+    public function srsBuckets(array $entries): array
+    {
+        $buckets = [
+            'domain_regex'   => [],
+            'domain_keyword' => [],
+            'domain'         => [], // exact-match (full:)
+            'domain_suffix'  => [],
+            'ip_cidr'        => [],
+        ];
+        foreach ($entries as $j) {
+            $cl = $this->classifyRouteEntry($j);
+            if (!$this->routeEntryUsable($cl)) {
+                continue; // пустое значение / битый IP
+            }
+            switch ($cl['kind']) {
+                case 'ext':   // xray-only .dat — sing-box не понимает, пропускаем
+                case 'extip':
+                case 'geosite': // встроенные категории xray: в sing-box их роль
+                case 'geoip':   // играют rule-set'ы, голый токен невалиден
+                    continue 2;
+                case 'ip':
+                    $buckets['ip_cidr'][] = $this->ipWithCidr($cl['value']);
+                    break;
+                case 'regexp':
+                    $buckets['domain_regex'][] = $cl['value'];
+                    break;
+                case 'keyword':
+                    $buckets['domain_keyword'][] = mb_strtolower($cl['value']);
+                    break;
+                case 'full':
+                    $buckets['domain'][] = $this->hostCanon($cl['value']);
+                    break;
+                default: // domain, suffix
+                    $buckets['domain_suffix'][] = $this->hostCanon($cl['value']);
+                    break;
+            }
+        }
+        // vk.com и domain:vk.com дают один и тот же domain_suffix, 1.2.3.4 и
+        // 1.2.3.4/32 — один ip_cidr: в скомпилированный rule-set они должны
+        // попасть по разу.
+        return array_map(fn($v) => array_values(array_unique($v)), $buckets);
+    }
+
     public function createSrs(string $name, array $rules)
     {
         $rules = $this->cleanEmptyKeys($rules);
@@ -18938,45 +21428,8 @@ DNS-over-HTTPS with IP:
         $f = "/tmp/$name" . time() . rand(1, 100);
         foreach ($rules as $k => $v) {
             if (array_key_exists('domain_suffix', $v)) {
-                // Раскладываем записи по полям sing-box rule-set с учётом префиксов
-                // маршрутизации. Порядок ключей задаёт форму итогового правила.
-                $buckets = [
-                    'domain_regex'   => [],
-                    'domain_keyword' => [],
-                    'domain'         => [], // exact-match (full:)
-                    'domain_suffix'  => [],
-                    'ip_cidr'        => [],
-                ];
-                foreach ($v['domain_suffix'] as $j) {
-                    $cl = $this->classifyRouteEntry($j);
-                    if (!$this->routeEntryUsable($cl)) {
-                        continue; // пустое значение / битый IP
-                    }
-                    switch ($cl['kind']) {
-                        case 'ext':   // xray-only .dat — sing-box не понимает, пропускаем
-                        case 'extip':
-                        case 'geosite': // встроенные категории xray: в sing-box их роль
-                        case 'geoip':   // играют rule-set'ы, голый токен невалиден
-                            continue 2;
-                        case 'ip':
-                            $buckets['ip_cidr'][] = $this->ipWithCidr($cl['value']);
-                            break;
-                        case 'regexp':
-                            $buckets['domain_regex'][] = $cl['value'];
-                            break;
-                        case 'keyword':
-                            $buckets['domain_keyword'][] = $cl['value'];
-                            break;
-                        case 'full':
-                            $buckets['domain'][] = $cl['value'];
-                            break;
-                        default: // domain, suffix
-                            $buckets['domain_suffix'][] = $cl['value'];
-                            break;
-                    }
-                }
                 unset($rules[$k]['domain_suffix']);
-                foreach ($buckets as $field => $vals) {
+                foreach ($this->srsBuckets($v['domain_suffix']) as $field => $vals) {
                     if (!empty($vals)) {
                         $rules[$k][$field] = $vals;
                     }
@@ -18987,10 +21440,10 @@ DNS-over-HTTPS with IP:
             // голый IP (неявно /32 или /128), но приводим к явной маске ради
             // паритета с xray/mihomo. Идемпотентно: запись с /prefix не трогаем.
             if (!empty($rules[$k]['ip_cidr'])) {
-                $rules[$k]['ip_cidr'] = array_map(
+                $rules[$k]['ip_cidr'] = array_values(array_unique(array_map(
                     fn($ip) => $this->ipWithCidr($ip),
                     $rules[$k]['ip_cidr'],
-                );
+                )));
             }
         }
         file_put_contents($f, json_encode([
@@ -19095,7 +21548,11 @@ DNS-over-HTTPS with IP:
         }
         $sub   = $this->getHashSubdomain('np');
         $nginx = file_get_contents('/config/upstream.conf');
-        $t = preg_replace('~#naive.+#naive~s', $domain ? "#naive\n" . ($sub ? '' : '#' ) . "$sub.$domain naive;\n#naive" : "#naive\n#$sub.\$domain naive;\n#naive", $nginx);
+        // Нежадный .+? вместо .+ — маркер парный, и любое ТРЕТЬЕ его упоминание
+        // ниже по файлу (достаточно слова в комментарии) при жадном матче
+        // расширило бы замену до него и снесло всё между — включая соседние
+        // server-блоки. Поведение при штатных двух маркерах не меняется.
+        $t = preg_replace('~#naive.+?#naive~s', $domain ? "#naive\n" . ($sub ? '' : '#' ) . "$sub.$domain naive;\n#naive" : "#naive\n#$sub.\$domain naive;\n#naive", $nginx);
         file_put_contents('/config/upstream.conf', $t);
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
@@ -19183,20 +21640,20 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          =>  $this->i18n('all traffic'),
-                'callback_data' => "/add",
+                'callback_data' => $this->cbWG("/add"),
             ]
         ];
         $data[] = [
             [
                 'text'          =>  $this->i18n('subnet'),
-                'callback_data' => "/add_ips",
+                'callback_data' => $this->cbWG("/add_ips"),
             ]
         ];
         if ($this->getPacConf()['subnets']) {
             $data[] = [
                 [
                     'text'          =>  $this->i18n('listSubnet'),
-                    'callback_data' => "/addSubnets $page",
+                    'callback_data' => $this->cbWG("/addSubnets $page"),
                 ]
             ];
         }
@@ -19227,6 +21684,68 @@ DNS-over-HTTPS with IP:
         $this->menu('adguard');
     }
 
+    // Версия AdGuardHome в контейнере ad. `AdGuardHome --version` печатает
+    // «AdGuard Home, version v0.107.78» и сразу выходит, конфига не требует.
+    // Полный путь обязателен — бинаря нет в PATH; 2>&1 обязателен — ssh()
+    // читает только stdout. Тем же транспортом бот уже стартует и гасит демон
+    // (startAd/stopAd), так что новых точек отказа не появляется.
+    //
+    // Не через HTTP API /control/status: порт веб-панели живёт в
+    // /config/AdGuardHome.yaml и меняется пользователем, плюс нужен basic-auth —
+    // две лишние причины не получить версию там, где хватает одной команды.
+    //
+    // Фолбэк — build-пин ADGUARD_VERSION из .env (контейнер не отвечает); он
+    // расходится с образом, пока тот не пересобран, поэтому расхождение
+    // помечаем в меню — так же, как у ocserv и caddy.
+    public function adguardVersion(): array
+    {
+        $out = (string) $this->ssh('/opt/adguardhome/AdGuardHome --version 2>&1', 'ad');
+        return [
+            'running' => preg_match('~AdGuard\s*Home,?\s*version\s+(v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*)~i', $out, $m) ? $m[1] : '',
+            'pinned'  => trim((string) getenv('ADGUARD_VERSION')),
+        ];
+    }
+
+    public function changeAdguardVersion()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} введите версию AdGuardHome тегом <code>vX.Y.Z</code> (например <code>v0.107.78</code>).\n\n"
+            . "Теги — на hub.docker.com/r/adguard/adguardhome/tags.\n\n"
+            . "ВНИМАНИЕ: понижать версию нельзя. AdGuardHome мигрирует "
+            . "<code>/config/AdGuardHome.yaml</code> вперёд без обратной совместимости — "
+            . "после отката старая версия свой же конфиг не прочитает.\n\n"
+            . "Пин ложится в .env, но образы приезжают готовыми из ghcr.io — сам по себе он ничего не изменит.\n"
+            . "Применить локально: <code>docker compose build ad</code>, затем <code>make r</code>.\n"
+            . "Либо закоммитить .env в репозиторий: CI пересоберёт образ, и <code>make r</code> подтянет его.",
+            $this->input['message_id'],
+            reply: 'введите версию AdGuardHome',
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'chAdguardVersion',
+            'args'           => [],
+        ]);
+    }
+
+    public function chAdguardVersion($v)
+    {
+        $v = trim((string) $v);
+        // Теги AdGuard: v0.107.78, изредка беты вида v0.108.0-b.90.
+        if (!preg_match('~^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$~', $v)) {
+            $this->update($this->input['chat'], $this->input['message_id'], 'нужен тег вида vX.Y.Z (например v0.107.78)');
+            sleep(3);
+            return $this->menu('adguard');
+        }
+        $this->setEnvVar('ADGUARD_VERSION', $v);
+        // setEnvVar меняет только .env: без putenv getenv() до рестарта php
+        // отдавал бы старый пин, и меню показывало бы, что ничего не изменилось
+        // (тот же приём, что в chCaddyVersion).
+        putenv("ADGUARD_VERSION=$v");
+        $this->menu('adguard');
+    }
+
     public function adguardMenu()
     {
         $conf   = $this->getPacConf();
@@ -19242,6 +21761,19 @@ DNS-over-HTTPS with IP:
         $status = $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off');
         $safesearch = yaml_parse_file($this->adguard)['filtering']['safe_search']['enabled'];
         $text .= "\n\nstatus: $status\t\tsafesearch: " . $this->i18n($safesearch ? 'on' : 'off');
+        $ver = $this->adguardVersion();
+        if ($ver['running'] !== '' || $ver['pinned'] !== '') {
+            $esc   = fn($v) => htmlspecialchars((string) $v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $text .= "\nAdGuardHome: <code>" . $esc($ver['running'] ?: '—') . '</code>';
+            // Три разных состояния, и путать их нельзя: пустой running — это
+            // «контейнер не ответил», а не «пин разошёлся с образом».
+            // Сравниваем без ведущей «v» — так же, как в ocMenu.
+            if ($ver['pinned'] !== '' && $ver['running'] === '') {
+                $text .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, контейнер не отвечает)';
+            } elseif ($ver['pinned'] !== '' && ltrim($ver['pinned'], 'vV') !== ltrim($ver['running'], 'vV')) {
+                $text .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, нужна пересборка)';
+            }
+        }
         $allowedClients = yaml_parse_file($this->adguard)['dns']['allowed_clients'];
         $text .= $allowedClients ? "\n\nallowed clients: \n - " . implode("\n - ", $allowedClients) : '';
 
@@ -19267,6 +21799,12 @@ DNS-over-HTTPS with IP:
                     'text'          => 'ClientID' . ($conf['adguardkey'] ? ": {$conf['adguardkey']}" : ''),
                     'callback_data' => "/setAdguardKey",
                 ],
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => 'AdGuardHome: ' . ($ver['pinned'] ?: '—'),
+                'callback_data' => '/changeAdguardVersion',
             ],
         ];
         $data[] = [
@@ -20217,19 +22755,34 @@ DNS-over-HTTPS with IP:
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);
                 }
+                // TLS терминирует nginx, поэтому у inbound'а нет ни security, ни
+                // tlsSettings — xray слушает голый H1/H2C на xr:443.
+                // mode=auto на сервере означает «принимаю любой режим», клиент
+                // выбирает сам (у нас — packet-up, см. xhttpClientExtra()).
+                // Всё, кроме host/path/mode, обязано лежать в extra: при заданном
+                // extra xray заменяет им внешний объект целиком.
+                //
+                // noSSEHeader НЕ ставим. true убирает у даунлинка заголовок
+                // Content-Type: text/event-stream — а он тут работает и как
+                // маскировка (поток выглядит обычным SSE), и как сигнал
+                // промежуточным прокси/CDN не буферизовать ответ. Буферизация у
+                // нас и так снята дважды: xray сам шлёт X-Accel-Buffering: no
+                // (hub.go), а в локации /ws стоит proxy_buffering off. Дефолт
+                // xray — false.
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"       => "xhttp",
                     "xhttpSettings" => [
                         "mode"  => "auto",
                         "path"  => "/ws$h",
                         "extra" => [
-                            "noSSEHeader"          => true,
                             "xPaddingBytes"        => "100-1000",
                             "scMaxBufferedPosts"   => 30,
                             "scMaxEachPostBytes"   => 1000000,
                             "scStreamUpServerSecs" => "20-80"
                         ]
-                    ]
+                    ],
+                    // Реальный IP клиента вместо адреса nginx, см. nginxFrontedSockopt().
+                    "sockopt" => $this->nginxFrontedSockopt(),
                 ];
                 break;
 
@@ -20243,7 +22796,8 @@ DNS-over-HTTPS with IP:
                     "network"      => "grpc",
                     "grpcSettings" => [
                         "serviceName" => "grpc$h",
-                    ]
+                    ],
+                    "sockopt" => $this->nginxFrontedSockopt(),
                 ];
                 break;
 
@@ -20281,7 +22835,10 @@ DNS-over-HTTPS with IP:
                     "network"    => "ws",
                     "wsSettings" => [
                         "path" => "/ws$h"
-                    ]
+                    ],
+                    // Websocket делит с xhttp ту же локацию /ws у nginx и ту же
+                    // проблему с подменой источника, см. nginxFrontedSockopt().
+                    "sockopt" => $this->nginxFrontedSockopt(),
                 ];
                 foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                     unset($x['inbounds'][0]['settings']['clients'][$k]['flow']);
@@ -20473,6 +23030,18 @@ DNS-over-HTTPS with IP:
         return (is_array($r) && !empty($r['awg_address'])) ? $r : null;
     }
 
+    // Значение, которое уедет строкой «ключ = значение» в wg0.conf (имя пира,
+    // DNS, MTU, AllowedIPs). Всё это — сырой ввод из Telegram, а createConfig()
+    // просто склеивает строки: перевод строки в имени пира дописывал в
+    // СЕРВЕРНЫЙ конфиг произвольные директивы (вплоть до лишнего [Peer]).
+    // base64 в restartWG() спасал только от кавычек в shell-команде, не от
+    // структуры самого конфига. Схлопываем переводы строк и режем длину.
+    public static function sanitizeConfValue($v, int $max = 256): string
+    {
+        $v = preg_replace('~[\r\n]+~', ' ', (string) $v);
+        return mb_substr(trim($v), 0, $max);
+    }
+
     public function createConfig($data)
     {
         $pac = $this->getPacConf();
@@ -20548,6 +23117,59 @@ DNS-over-HTTPS with IP:
         return $c[$k];
     }
 
+    // Набор, который РЕАЛЬНО можно записать в конфиг прямо сейчас.
+    // Отличается от amneziaKeys() (сырое хранилище) двумя срезами:
+    //  1) старые amneziawg-tools роняют `setconf` на любом незнакомом ключе
+    //     («Line unrecognized»), поэтому при заведомо старой версии 3.0-поля
+    //     не пишем вовсе — иначе интерфейс просто не поднимется;
+    //  2) HeaderProtectionKey без S1..S4 >= 12 отвергается amneziawg-go.
+    // При awgSupports3() === null (ssh недоступен) НЕ срезаем: неизвестность не
+    // повод выкинуть рабочую конфигурацию из конфигов всех клиентов.
+    public function amneziaKeysEffective(): array
+    {
+        return self::amneziaKeysUsable($this->amneziaKeys(), $this->awgSupports3());
+    }
+
+    // То же решение, что awgSupports3(), но БЕЗ ssh: только кеш в pac.json,
+    // который пишет awgToolsVersion(). Нужен путям подписки — они выполняются
+    // на каждый запрос клиента, и лишний ssh там превратился бы в задержку и в
+    // зависимость выдачи конфига от живости wg-контейнера.
+    public function awgSupports3Cached(string $prefix = ''): ?bool
+    {
+        $v = $this->getPacConf()[$prefix . 'awg_tools_ver']['v'] ?? null;
+        return $v === null ? null : version_compare(ltrim((string) $v, 'vV'), '3.0', '>=');
+    }
+
+    // Ключ header protection. Формат на проводе тот же, что у ключей wireguard
+    // (32 байта base64, key_from_base64 в encoding.c), но это СИММЕТРИЧНЫЙ ключ
+    // шифра заголовков (HeaderCipherKey [32]byte, noise-types.go), а не ключ
+    // curve25519: `awg genkey` прогнал бы его через curve25519_clamp_secret и
+    // зафиксировал 5 бит, ничего не дав взамен. Поэтому генерим локально —
+    // заодно настройка перестаёт зависеть от живости контейнера.
+    public function genHeaderProtectionKey(): string
+    {
+        return base64_encode(random_bytes(32));
+    }
+
+    // PersistentKeepalive пира. AWG 3.0 разрешает диапазон («20-30»), что убирает
+    // строго периодический keepalive как признак туннеля.
+    public function awgKeepalive()
+    {
+        $v = (string) ($this->getPacConf()[$this->getInstanceWG(1) . 'amnezia_keepalive'] ?? '');
+        if ($v === '') {
+            return 20;
+        }
+        // Диапазон разбирают только tools 3.0, одиночное число — любые.
+        // Гасим ровно диапазон и ровно при заведомо старой версии: на null
+        // (контейнер не ответил) понижать нельзя — иначе моргнувший ssh молча
+        // перепишет keepalive во всех клиентских конфигах. Тот же принцип, что
+        // в amneziaKeysUsable().
+        if (strpos($v, '-') !== false && $this->awgSupports3() === false) {
+            return self::keepaliveInt($v);
+        }
+        return $v;
+    }
+
     // Templates for AmneziaWG key generation. Ranges follow official docs
     // (docs.amnezia.org/documentation/amnezia-wg): Jc 0–10, Jmin/Jmax 64–1024,
     // S1/S2/S3 0–64, S4 0–32. Constraints: S1+56 ≠ S2 and S1 ≠ S2.
@@ -20557,14 +23179,43 @@ DNS-over-HTTPS with IP:
     //   1.x: distinct non-zero 32-bit integers.
     //   2.0: non-overlapping "MIN-MAX" ranges across uint32 space (server picks
     //        a random value per session, raising DPI cost).
-    public function generateAmneziaKeys($template = 'standard_2')
+    // 3.0 (шаблоны *_3) добавляет device-параметры AWG_KEYS_3: header protection
+    // + рандомизированные тайминги/паддинг в виде диапазонов. Диапазоны выбраны
+    // вокруг дефолтов amneziawg-go (rekey 120 / reject 180 / keepalive 10 /
+    // handshake 18): слишком широкий разброс ломает совместимость с пирами,
+    // которые ещё не перекачали конфиг. S1..S4 в *_3 всегда >= AWG_HPK_MIN_S —
+    // иначе setconf отвергнет конфиг из-за header protection.
+    //
+    // $hpk — генератор ключа header protection. Вынесен параметром, чтобы
+    // функция оставалась чистой и тестируемой; вызывающий код передаёт
+    // genHeaderProtectionKey() (ssh `awg genkey`).
+    public function generateAmneziaKeys($template = 'standard_2', ?callable $hpk = null)
     {
-        $rngS = function ($min, $max) {
-            $s1 = random_int($min, $max);
-            do {
-                $s2 = random_int($min, $max);
-            } while ($s1 + 56 === $s2 || $s1 === $s2);
-            return [$s1, $s2];
+        $hpk = $hpk ?: fn() => base64_encode(random_bytes(32));
+
+        // Диапазон «LO-HI»: нижняя граница из [lo_min, lo_max], ширина из
+        // [span_min, span_max], верх подрезан hard_max.
+        $rngRange = function (int $lo_min, int $lo_max, int $span_min, int $span_max, int $hard_max) {
+            $lo = random_int($lo_min, $lo_max);
+            $hi = min($hard_max, $lo + random_int($span_min, $span_max));
+            return "$lo-$hi";
+        };
+
+        // Подбор S1..S4 по границам шаблона. Два инварианта: S1 !== S2 и
+        // различающиеся размеры пакетов на проводе (awgPacketSizesOk —
+        // официальное правило AmneziaVPN, см. AWG_PACKET_BASE). Диапазоны
+        // шаблонов узкие, коллизии редки — rejection sampling с потолком.
+        $rngSizes = function (array $bounds) {
+            $out = [];
+            for ($try = 0; $try < 200; $try++) {
+                foreach ($bounds as $k => [$lo, $hi]) {
+                    $out[$k] = random_int($lo, $hi);
+                }
+                if ($out['S1'] !== $out['S2'] && self::awgPacketSizesOk($out)) {
+                    break;
+                }
+            }
+            return $out;
         };
 
         // 2.0 H1-H4: non-overlapping ranges in AWG 2.0 "MIN-MAX" format.
@@ -20603,11 +23254,11 @@ DNS-over-HTTPS with IP:
             // 2.0 templates: каждое из I1–I5 даёт пакет ≥100 байт
             // (рекомендуемый минимум, habr.com/ru/companies/amnezia/articles/1014636/).
             case 'aggressive_2':
-                [$s1, $s2] = $rngS(40, 64);
+                $s = $rngSizes(['S1' => [40, 64], 'S2' => [40, 64], 'S3' => [32, 64], 'S4' => [16, 32]]);
                 return $rngH2() + [
                     'Jc' => 10, 'Jmin' => 256, 'Jmax' => 1024,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(32, 64), 'S4' => random_int(16, 32),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(150, 250) . '>',
                     'I2' => '<t><r ' . random_int(100, 200) . '>',
                     'I3' => '<r ' . random_int(100, 200) . '>',
@@ -20617,11 +23268,11 @@ DNS-over-HTTPS with IP:
 
             case 'mobile_2':
                 // Для mobile приоритет маскировки выше экономии батареи/трафика.
-                [$s1, $s2] = $rngS(15, 32);
+                $s = $rngSizes(['S1' => [15, 32], 'S2' => [15, 32], 'S3' => [0, 32], 'S4' => [0, 16]]);
                 return $rngH2() + [
                     'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(0, 32), 'S4' => random_int(0, 16),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(100, 150) . '>',
                     'I2' => '<t><r ' . random_int(100, 130) . '>',
                     'I3' => '<r ' . random_int(100, 130) . '>',
@@ -20630,19 +23281,91 @@ DNS-over-HTTPS with IP:
                 ];
 
             case 'classic_1':
-                [$s1, $s2] = $rngS(15, 64);
+                $s = $rngSizes(['S1' => [15, 64], 'S2' => [15, 64]]);
                 return $rngH1() + [
                     'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1000,
-                    'S1' => $s1, 'S2' => $s2,
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                ];
+
+            // 3.0 templates: 2.0-набор + AWG_KEYS_3. S1..S4 держим >= 12
+            // (AWG_HPK_MIN_S) — обязательное условие header protection.
+            // RejectAfterTime всегда начинается позже, чем заканчивается
+            // RekeyAfterTime: иначе пир отбросит сессию раньше, чем попробует
+            // сделать рекей, и туннель будет рвать раз в пару минут.
+            case 'aggressive_3':
+                $s = $rngSizes(['S1' => [40, 64], 'S2' => [40, 64], 'S3' => [32, 64], 'S4' => [16, 32]]);
+                return $rngH2() + [
+                    'Jc' => 10, 'Jmin' => 256, 'Jmax' => 1024,
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
+                    'I1' => '<b 0xc000000001><r ' . random_int(150, 250) . '>',
+                    'I2' => '<t><r ' . random_int(100, 200) . '>',
+                    'I3' => '<r ' . random_int(100, 200) . '>',
+                    'I4' => '<rd ' . random_int(16, 24) . '><r ' . random_int(100, 150) . '>',
+                    'I5' => '<rc ' . random_int(100, 150) . '>',
+                    'HeaderProtectionKey'    => $hpk(),
+                    'ContentPaddingAddition' => $rngRange(25, 30, 5, 10, 40),
+                    'RekeyAfterTime'         => $rngRange(110, 118, 5, 12, 130),
+                    'RekeyTimeout'           => $rngRange(5, 6, 1, 2, 8),
+                    'RejectAfterTime'        => $rngRange(170, 178, 5, 7, 185),
+                    'KeepaliveTimeout'       => $rngRange(10, 11, 1, 2, 13),
+                    'MaxHandshakeAttempts'   => $rngRange(20, 22, 2, 3, 25),
+                ];
+
+            case 'mobile_3':
+                $s = $rngSizes([
+                    'S1' => [self::AWG_HPK_MIN_S, 32], 'S2' => [self::AWG_HPK_MIN_S, 32],
+                    'S3' => [self::AWG_HPK_MIN_S, 32], 'S4' => [self::AWG_HPK_MIN_S, 16],
+                ]);
+                return $rngH2() + [
+                    'Jc' => random_int(2, 4), 'Jmin' => 64, 'Jmax' => 256,
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
+                    'I1' => '<b 0xc000000001><r ' . random_int(100, 150) . '>',
+                    'I2' => '<t><r ' . random_int(100, 130) . '>',
+                    'I3' => '<r ' . random_int(100, 130) . '>',
+                    'I4' => '<rd ' . random_int(6, 12) . '><r ' . random_int(100, 130) . '>',
+                    'I5' => '<rc ' . random_int(100, 130) . '>',
+                    'HeaderProtectionKey'    => $hpk(),
+                    'ContentPaddingAddition' => $rngRange(10, 14, 4, 6, 20),
+                    // Мобильный профиль реже дёргает рекей — экономия батареи.
+                    'RekeyAfterTime'         => $rngRange(115, 122, 5, 8, 130),
+                    'RekeyTimeout'           => $rngRange(6, 8, 1, 2, 10),
+                    'RejectAfterTime'        => $rngRange(175, 182, 5, 8, 190),
+                    'KeepaliveTimeout'       => $rngRange(12, 13, 1, 2, 15),
+                    'MaxHandshakeAttempts'   => $rngRange(15, 17, 2, 3, 20),
+                ];
+
+            case 'standard_3':
+                $s = $rngSizes([
+                    'S1' => [self::AWG_HPK_MIN_S, 64], 'S2' => [self::AWG_HPK_MIN_S, 64],
+                    'S3' => [self::AWG_HPK_MIN_S, 64], 'S4' => [self::AWG_HPK_MIN_S, 32],
+                ]);
+                return $rngH2() + [
+                    'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1024,
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
+                    'I1' => '<b 0xc000000001><r ' . random_int(120, 200) . '>',
+                    'I2' => '<t><r ' . random_int(100, 150) . '>',
+                    'I3' => '<r ' . random_int(100, 150) . '>',
+                    'I4' => '<rd ' . random_int(8, 16) . '><r ' . random_int(100, 150) . '>',
+                    'I5' => '<rc ' . random_int(100, 150) . '>',
+                    'HeaderProtectionKey'    => $hpk(),
+                    'ContentPaddingAddition' => $rngRange(10, 20, 10, 20, 40),
+                    'RekeyAfterTime'         => $rngRange(110, 118, 5, 12, 130),
+                    'RekeyTimeout'           => $rngRange(5, 7, 2, 3, 10),
+                    'RejectAfterTime'        => $rngRange(170, 180, 5, 10, 190),
+                    'KeepaliveTimeout'       => $rngRange(10, 12, 2, 3, 15),
+                    'MaxHandshakeAttempts'   => $rngRange(15, 20, 3, 5, 25),
                 ];
 
             case 'standard_2':
             default:
-                [$s1, $s2] = $rngS(15, 64);
+                $s = $rngSizes(['S1' => [15, 64], 'S2' => [15, 64], 'S3' => [0, 64], 'S4' => [0, 32]]);
                 return $rngH2() + [
                     'Jc' => random_int(3, 10), 'Jmin' => 64, 'Jmax' => 1024,
-                    'S1' => $s1, 'S2' => $s2,
-                    'S3' => random_int(0, 64), 'S4' => random_int(0, 32),
+                    'S1' => $s['S1'], 'S2' => $s['S2'],
+                    'S3' => $s['S3'], 'S4' => $s['S4'],
                     'I1' => '<b 0xc000000001><r ' . random_int(120, 200) . '>',
                     'I2' => '<t><r ' . random_int(100, 150) . '>',
                     'I3' => '<r ' . random_int(100, 150) . '>',
@@ -20652,8 +23375,35 @@ DNS-over-HTTPS with IP:
         }
     }
 
-    public function createPeer($ips_user = false, $name = false)
+    // Профиль того же семейства для другой версии протокола (standard_3 →
+    // standard_2). Нужен везде, где версия набора и записанный amnezia_tpl
+    // могут разъехаться: иначе ротация генерирует поля по шаблону чужой версии.
+    public static function awgTemplateForVer(string $tpl, int $ver): string
     {
+        if ($ver === 1) {
+            return 'classic_1';
+        }
+        $base = preg_replace('~_\d$~', '', $tpl) ?: 'standard';
+        $out  = "{$base}_$ver";
+        return isset(self::AMNEZIA_TEMPLATE_LABELS[$out]) ? $out : "standard_$ver";
+    }
+
+    // Шаблоны, доступные для версии протокола. Порядок = порядок кнопок.
+    public static function amneziaTemplateList(int $ver): array
+    {
+        switch ($ver) {
+            case 3:
+                return ['standard_3', 'aggressive_3', 'mobile_3'];
+            case 2:
+                return ['standard_2', 'aggressive_2', 'mobile_2'];
+            default:
+                return ['classic_1'];
+        }
+    }
+
+    public function createPeer($ips_user = false, $name = false, $inst = null)
+    {
+        $this->promptInstWG($inst);
         $conf      = $this->readConfig();
         // readConfig() возвращает null, если контейнер недоступен: без проверки
         // дальше шли обращения к null и создавался пир с битым адресом.
@@ -20703,7 +23453,7 @@ DNS-over-HTTPS with IP:
             return;
         }
 
-        $name = ($name ? "$name" : '') . time();
+        $name = self::sanitizeConfValue(($name ? "$name" : '') . time());
 
         // Один раз на инстанс: три ветки ниже читали ключ порознь и без ??,
         // что на свежей установке (pac.json = {}) давало «Undefined array key».
@@ -20723,14 +23473,16 @@ DNS-over-HTTPS with IP:
                     'PrivateKey' => $private_peer_key,
                     'Address'    => "$client_ip/32",
                 ],
-                $amnezia ? $this->amneziaKeys() : []
+                $amnezia ? $this->amneziaKeysEffective() : []
             ),
             'peers' => [
                     array_merge(
                         [
                             'PublicKey'           => $public_server_key,
                             'AllowedIPs'          => $ips_user ?: "0.0.0.0/0",
-                            'PersistentKeepalive' => 20,
+                            // AWG 3.0 допускает диапазон («20-30»); awgKeepalive()
+                            // отдаёт фиксированные 20, если 3.0 недоступен.
+                            'PersistentKeepalive' => $amnezia ? $this->awgKeepalive() : 20,
                         ],
                         $amnezia ? ['PresharedKey' => $this->presharedKey()] : []
                     ),
@@ -20772,7 +23524,26 @@ DNS-over-HTTPS with IP:
         foreach ($clients as $k => $v) {
             $clients[$k]['peers'][0]['Endpoint'] = $domain;
         }
-        file_put_contents($this->getInstanceWG(1) ? $this->clients1 : $this->clients, json_encode($clients, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $f = $this->getInstanceWG(1) ? $this->clients1 : $this->clients;
+        // json_encode() отдаёт FALSE на невалидном UTF-8 (имя пира — сырой ввод
+        // из Telegram, имена из чужого бэкапа), а file_put_contents($f, false)
+        // пишет ПУСТОЙ файл и рапортует об успехе — то есть база пиров инстанса
+        // молча обнулялась. Плюс сама запись шла truncate+write, и параллельный
+        // readClients() мог прочитать обрезанный файл. Кодируем заранее, пишем
+        // во временный и переименовываем (rename атомарен).
+        $json = json_encode($clients, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (false === $json) {
+            error_log('saveClients: ' . basename($f) . ' not written — ' . json_last_error_msg());
+
+            return false;
+        }
+        $tmp = $f . '.' . getmypid() . '.tmp';
+        if (file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+
+            return false;
+        }
+        return rename($tmp, $f);
     }
 
     public function getWGType($revert = 0)
@@ -21222,64 +23993,176 @@ DNS-over-HTTPS with IP:
     }
 
     // ─── TrustTunnel ──────────────────────────────────────────────────────────
+    // Раскладка файлов — по CONFIGURATION.md апстрима:
+    //   vpn.toml         — ядро настроек (listen_address + пути к
+    //                      credentials_file/rules_file), шаблон в репозитории;
+    //   hosts.toml       — TLS-хосты: hostname + цепочка/ключ (пишет бот);
+    //   credentials.toml — [[client]] username/password (пишет бот);
+    //   rules.toml       — фильтры по CIDR / client_random; пустой = всё
+    //                      разрешено (правило по умолчанию — allow).
+    // Клиентский конфиг НЕ собирается вручную: его печатает сам бинарь
+    //   trusttunnel_endpoint vpn.toml hosts.toml -c <user> -a <host:port> \
+    //       --format toml|deeplink
+    // Только так в конфиг попадает self-signed сертификат и ровно тот набор
+    // полей, который ждёт клиент. Формат плоский — секции [endpoint] в нём нет.
+    public function ttPaths()
+    {
+        $d = '/config/trusttunnel';
+        return [
+            'dir'   => $d,
+            'vpn'   => "$d/vpn.toml",
+            'hosts' => "$d/hosts.toml",
+            'cred'  => "$d/credentials.toml",
+            'rules' => "$d/rules.toml",
+            'log'   => '/logs/trusttunnel.log',
+        ];
+    }
+
+    // Домен для TT берём ИМЕННО из pac.json, без фолбэка getDomain() на IP:
+    // hostname в hosts.toml обязан совпадать с CN/SAN сертификата, иначе
+    // клиент отвергает TLS-цепочку. Пустой домен = TT не поднимаем.
+    public function ttDomain()
+    {
+        return (string) ($this->getPacConf()['domain'] ?? '');
+    }
+
+    // TOML-строка в двойных кавычках не допускает сырых управляющих символов.
+    // Пароль приходит ответом в Telegram и может содержать перевод строки —
+    // одна такая правка ломала credentials.toml целиком, эндпоинт падал на
+    // разборе и молча не поднимался.
+    //
+    // $max = 0 (по умолчанию) — БЕЗ обрезки. Это важно для writeTtCredentials:
+    // она перезаписывает файл, восстановленный из бэкапа, и укорачивание
+    // пароля там означало бы молчаливую потерю доступа у клиента. Лимит
+    // применяем только к тому, что вводит пользователь прямо сейчас.
+    public function ttSanitize($s, $max = 0)
+    {
+        $s = trim(preg_replace('~[\x00-\x1F\x7F]~', '', (string) $s));
+        return $max > 0 ? mb_substr($s, 0, $max) : $s;
+    }
+
     public function getClientsTt()
     {
-        $f = '/config/trusttunnel/credentials.toml';
-        if (!file_exists($f)) {
+        $p = $this->ttPaths();
+        if (!file_exists($p['cred'])) {
             return [];
         }
-        $data = file_get_contents($f);
-        preg_match_all('~\[\[client\]\].*?username\s*=\s*"([^"]+)".*?password\s*=\s*"([^"]+)"~s', $data, $m, PREG_SET_ORDER);
+        $data  = (string) file_get_contents($p['cred']);
         $users = [];
-        foreach ($m as $row) {
-            $users[$row[1]] = $row[2];
+        // Разбираем поблочно. Один ленивый шаблон через весь файл склеивал
+        // username одного клиента с password следующего, если в блоке не
+        // хватало поля (последствие ручной правки credentials.toml).
+        foreach (preg_split('~^[ \t]*\[\[client\]\][ \t]*$~m', $data) as $block) {
+            if (!preg_match('~^[ \t]*username[ \t]*=[ \t]*"((?:[^"\\\\]|\\\\.)*)"~m', $block, $u)) {
+                continue;
+            }
+            if (!preg_match('~^[ \t]*password[ \t]*=[ \t]*"((?:[^"\\\\]|\\\\.)*)"~m', $block, $pw)) {
+                continue;
+            }
+            $users[stripcslashes($u[1])] = stripcslashes($pw[1]);
         }
         return $users;
     }
 
     public function writeTtCredentials($users)
     {
+        $p = $this->ttPaths();
+        @mkdir($p['dir'], 0755, true);
         $out = "# TrustTunnel credentials. Generated by bot — do not edit manually.\n";
-        foreach ($users as $u => $p) {
-            $u = addcslashes($u, '"\\');
-            $p = addcslashes($p, '"\\');
-            $out .= "\n[[client]]\nusername = \"$u\"\npassword = \"$p\"\n";
+        foreach ($users as $u => $pass) {
+            // Без обрезки: сюда приезжают и уже существующие клиенты (в том
+            // числе из восстановленного бэкапа), укоротить им пароль = отнять
+            // доступ. Длину ограничиваем на вводе, в chttpass/addttus.
+            $u    = $this->ttSanitize($u);
+            $pass = $this->ttSanitize($pass);
+            if ($u === '' || $pass === '') {
+                continue;
+            }
+            $out .= "\n[[client]]\nusername = \"" . addcslashes($u, '"\\') . "\"\n"
+                 .  "password = \"" . addcslashes($pass, '"\\') . "\"\n";
         }
-        file_put_contents('/config/trusttunnel/credentials.toml', $out);
+        file_put_contents($p['cred'], $out);
     }
 
+    // hosts.toml переписывается целиком на каждом рестарте: ping_hosts /
+    // speedtest_hosts / reverse_proxy_hosts, добавленные руками, не переживут
+    // перезапуск — это осознанный компромисс, бот владеет файлом.
     public function writeTtHosts($domain)
     {
-        $domain = $domain ?: 'vpn.example.com';
-        $out    = "[[main_hosts]]\nhostname = \"$domain\"\n"
+        $p      = $this->ttPaths();
+        @mkdir($p['dir'], 0755, true);
+        $domain = addcslashes($this->ttSanitize($domain ?: 'vpn.example.com', 253), '"\\');
+        $out    = "# Generated by bot — do not edit manually.\n"
+                . "[[main_hosts]]\nhostname = \"$domain\"\n"
                 . "cert_chain_path = \"/certs/cert_public\"\nprivate_key_path = \"/certs/cert_private\"\n";
-        file_put_contents('/config/trusttunnel/hosts.toml', $out);
+        file_put_contents($p['hosts'], $out);
+    }
+
+    // Всё, из-за чего демон не поднимется. Один список и для гейта в
+    // restartTt(), и для показа в меню: раньше бот просто молчал, а кнопка
+    // выглядела рабочей.
+    public function ttBlockers()
+    {
+        $p      = $this->ttPaths();
+        $out    = [];
+        $domain = $this->ttDomain();
+        if (!file_exists($p['vpn'])) {
+            $out[] = 'vpn.toml';
+        }
+        if (!file_exists($p['rules'])) {
+            $out[] = 'rules.toml';
+        }
+        if (empty($domain)) {
+            $out[] = 'domain';
+        }
+        if (!file_exists('/certs/cert_public') || !file_exists('/certs/cert_private')) {
+            $out[] = 'cert';
+        }
+        if (empty($this->getClientsTt())) {
+            $out[] = 'clients';
+        }
+        return $out;
     }
 
     public function restartTt()
     {
-        $pac    = $this->getPacConf();
-        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
+        $p      = $this->ttPaths();
+        $domain = $this->ttDomain();
         $users  = $this->getClientsTt();
 
         $this->writeTtHosts($domain);
         $this->writeTtCredentials($users);
-        if (!file_exists('/config/trusttunnel/vpn.toml') || !file_exists('/config/trusttunnel/rules.toml')) {
-            return; // templates missing — init.sh ещё не развернул
+        if (!file_exists($p['vpn']) || !file_exists($p['rules'])) {
+            return false; // templates missing — init.sh ещё не развернул
         }
 
         // Linux truncates /proc/<pid>/comm to 15 chars, so the binary name
         // "trusttunnel_endpoint" only matches via -f (full cmdline).
         $this->ssh('pkill -9 -f trusttunnel_endpoint; while pgrep -f trusttunnel_endpoint >/dev/null; do sleep 0.2; done', 'tt');
-        $hasCert = file_exists('/certs/cert_public') && file_exists('/certs/cert_private');
-        if (!empty($users) && !empty($domain) && $hasCert) {
-            $this->ssh(
-                'cd /trusttunnel_endpoint && trusttunnel_endpoint vpn.toml hosts.toml',
-                'tt',
-                false,
-                '/logs/trusttunnel.log'
-            );
+        if (!empty($this->ttBlockers())) {
+            return false;
         }
+        $this->ssh(
+            'cd /trusttunnel_endpoint && trusttunnel_endpoint vpn.toml hosts.toml',
+            'tt',
+            false,
+            $p['log']
+        );
+        return true;
+    }
+
+    public function ttRunning()
+    {
+        return (bool) $this->ssh('pgrep -f trusttunnel_endpoint', 'tt');
+    }
+
+    public function restartTtMenu()
+    {
+        $ok = $this->restartTt();
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], ($ok ? '♻️ ' : '⚠ ') . $this->i18n('restart'));
+        }
+        $this->menu('tt');
     }
 
     public function addTtUser()
@@ -21300,9 +24183,15 @@ DNS-over-HTTPS with IP:
 
     public function addttus($user)
     {
-        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', $user);
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
         if (empty($user)) {
             $this->send($this->input['chat'], 'wrong username');
+            return $this->menu('tt');
+        }
+        // callback_data телеграма — 64 БАЙТА на всю строку, самая длинная у нас
+        // "/delttus <name> confirm" (21 + имя). 40 символов укладываются.
+        if (strlen($user) > 40) {
+            $this->send($this->input['chat'], 'username too long (max 40 chars)');
             return $this->menu('tt');
         }
         $users = $this->getClientsTt();
@@ -21316,9 +24205,24 @@ DNS-over-HTTPS with IP:
         $this->menu('tt');
     }
 
-    public function delttus($user)
+    public function delttus($user, $confirm = false)
     {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
         $users = $this->getClientsTt();
+        if ($user === '' || !isset($users[$user])) {
+            return $this->menu('tt');
+        }
+        if (!$confirm) {
+            // Одно нажатие = мгновенный отзыв доступа. Как и у OpenVPN,
+            // спрашиваем подтверждение отдельной кнопкой.
+            $text = 'Menu -> TrustTunnel -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>' . "\n"
+                . '⚠ ' . $this->i18n('confirm delete user');
+            $data = [
+                [['text' => '❌ ' . $this->i18n('delete forever'), 'callback_data' => "/delttus $user confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/ttClientMenu $user"]],
+            ];
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
         unset($users[$user]);
         $this->writeTtCredentials($users);
         $this->restartTt();
@@ -21344,7 +24248,8 @@ DNS-over-HTTPS with IP:
     public function chttpass($pass, $user)
     {
         $users = $this->getClientsTt();
-        if (!isset($users[$user]) || empty($pass)) {
+        $pass  = $this->ttSanitize($pass, 128);
+        if (!isset($users[$user]) || $pass === '') {
             return $this->menu('tt');
         }
         $users[$user] = $pass;
@@ -21362,31 +24267,157 @@ DNS-over-HTTPS with IP:
         $users[$user] = base64_encode(random_bytes(18));
         $this->writeTtCredentials($users);
         $this->restartTt();
-        $this->menu('tt');
+        $this->ttClientMenu($user);
+    }
+
+    // Экспорт конфига штатным путём — печатью из самого бинаря. --logfile
+    // уводит журнал из stdout, чтобы в выводе остался только конфиг.
+    public function ttExport($user, $format = 'toml')
+    {
+        if (!in_array($format, ['toml', 'deeplink'], true)) {
+            return '';
+        }
+        $host = $this->ttDomain();
+        if ($host === '') {
+            return '';
+        }
+        $u   = escapeshellarg($user);
+        $a   = escapeshellarg($host . ':' . $this->getTtPort());
+        $out = (string) $this->ssh(
+            "cd /trusttunnel_endpoint && trusttunnel_endpoint vpn.toml hosts.toml "
+                . "-c $u -a $a --format $format --logfile /dev/null 2>/dev/null",
+            'tt'
+        );
+        if ($format === 'deeplink') {
+            return preg_match('~tt://\S+~', $out, $m) ? $m[0] : '';
+        }
+        // Отбраковываем диагностику/пустой вывод: без этих двух полей конфиг
+        // всё равно нерабочий, лучше отдать fallback.
+        return (strpos($out, 'hostname') !== false && strpos($out, 'password') !== false) ? $out : '';
+    }
+
+    // Резервный сборщик на случай, если контейнер tt лежит или бинарь старше
+    // --format. Формат ПЛОСКИЙ, как у compose_toml() апстрима: секции
+    // [endpoint] в клиентском конфиге нет, клиент её не разберёт.
+    public function ttFallbackConfig($user, $pass)
+    {
+        $pac  = $this->getPacConf();
+        $host = $this->ttDomain();
+        $port = $this->getTtPort();
+        $esc  = fn($v) => addcslashes((string) $v, '"\\');
+        // Сертификат нужен клиенту, только если цепочку не проверяют системные
+        // CA — то есть при загруженном вручную self-signed. Для Let's Encrypt
+        // апстрим оставляет поле пустым, повторяем это же поведение.
+        $cert = '';
+        if (($pac['letsencrypt'] ?? '') !== 'letsencrypt' && file_exists('/certs/cert_public')) {
+            $cert = trim((string) file_get_contents('/certs/cert_public'));
+        }
+        $toml  = "# TrustTunnel endpoint config (fallback, собран ботом).\n"
+               . "# Применение:\n"
+               . "#   setup_wizard --mode non-interactive \\\n"
+               . "#       --endpoint_config <этот файл> --settings trusttunnel_client.toml\n"
+               . "#   trusttunnel_client -c trusttunnel_client.toml\n\n";
+        $toml .= 'hostname = "' . $esc($host) . "\"\n";
+        $toml .= 'addresses = ["' . $esc("$host:$port") . "\"]\n";
+        $toml .= "custom_sni = \"\"\n";
+        $toml .= "has_ipv6 = true\n";
+        $toml .= 'username = "' . $esc($user) . "\"\n";
+        $toml .= 'password = "' . $esc($pass) . "\"\n";
+        $toml .= "client_random_prefix = \"\"\n";
+        $toml .= "skip_verification = false\n";
+        $toml .= $cert === ''
+            ? "certificate = \"\"\n"
+            : "certificate = \"\"\"\n$cert\n\"\"\"\n";
+        $toml .= "upstream_protocol = \"http2\"\n";
+        $toml .= "anti_dpi = false\n";
+        return $toml;
     }
 
     public function getTtConfig($user)
     {
-        $users  = $this->getClientsTt();
-        if (!isset($users[$user])) {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getClientsTt();
+        if ($user === '' || !isset($users[$user])) {
             return $this->menu('tt');
         }
-        $pac    = $this->getPacConf();
-        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
-        $port   = $this->getTtPort();
-        $pass   = addcslashes($users[$user], '"\\');
-        $u      = addcslashes($user, '"\\');
-        $toml   = "# TrustTunnel client config. Import via: trusttunnel client run <this-file>\n"
-                . "# Or replace [endpoint] section of an existing trusttunnel_client.toml.\n"
-                . "\n[endpoint]\n"
-                . "hostname = \"$domain\"\n"
-                . "addresses = [\"$domain:$port\"]\n"
-                . "username = \"$u\"\n"
-                . "password = \"$pass\"\n";
+        $toml = $this->ttExport($user, 'toml');
+        $cap  = $this->i18n('tt config hint');
+        if ($toml === '') {
+            $toml = $this->ttFallbackConfig($user, $users[$user]);
+            $cap  = '⚠ ' . $this->i18n('tt fallback') . "\n" . $cap;
+        }
         $this->sendFile(
             $this->input['from'],
-            new CURLStringFile($toml, "trusttunnel-$user.toml", 'application/toml')
+            new CURLStringFile($toml, "trusttunnel-$user.toml", 'application/toml'),
+            $cap
         );
+    }
+
+    // tt://?… — основной формат для мобильных клиентов (QR + ссылка).
+    public function getTtLink($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getClientsTt();
+        if ($user === '' || !isset($users[$user])) {
+            return $this->menu('tt');
+        }
+        $link = $this->ttExport($user, 'deeplink');
+        if ($link === '') {
+            $this->send($this->input['chat'], '❌ ' . $this->i18n('tt no deeplink'));
+            return;
+        }
+        $safe = '<code>' . htmlspecialchars($link, ENT_QUOTES) . '</code>';
+        // Со встроенным self-signed сертификатом ссылка распухает: подпись у
+        // sendPhoto ограничена 1024 символами, а qrencode не возьмёт больше
+        // ~2.9 КБ. В таком случае отдаём просто текст.
+        if (strlen($link) > 900) {
+            $this->send($this->input['chat'], $safe);
+            return;
+        }
+        $qr_file = __DIR__ . "/qr/trusttunnel.png";
+        exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($link));
+        if (file_exists($qr_file)) {
+            $this->sendPhoto($this->input['chat'], curl_file_create($qr_file), $safe);
+            unlink($qr_file);
+        } else {
+            $this->send($this->input['chat'], $safe);
+        }
+    }
+
+    public function showTtLog()
+    {
+        $p    = $this->ttPaths();
+        // Формат журнала свой, фильтра по CN тут нет — берём общий хвост.
+        $tail = $this->ovpnLogTail($p['log']);
+        $text  = "Menu -> TrustTunnel -> " . $this->i18n('log tail') . "\n";
+        $text .= "<pre>" . ($tail !== '' ? $tail : '(empty)') . "</pre>";
+        $data  = [];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/showTtLog',
+        ]];
+        if ($tail !== '') {
+            $data[] = [[
+                'text'          => '🗑 ' . $this->i18n('clear log'),
+                'callback_data' => '/clearTtLog',
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu tt',
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+    }
+
+    // Обнуляем внутри контейнера: у запущенного эндпоинта открыт fd на файл, и
+    // truncate снаружи оставил бы дыру из \0 до текущего смещения.
+    public function clearTtLog()
+    {
+        $this->ssh(': > /logs/trusttunnel.log', 'tt');
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
+        }
+        $this->showTtLog();
     }
 
     public function getTtPort()
@@ -21401,25 +24432,87 @@ DNS-over-HTTPS with IP:
         return (int) (getenv('TTPORT') ?: 2443);
     }
 
+    // Подменю клиента: реквизиты и все действия по нему на одном экране.
+    // В списке клиентов паролей больше нет — они оседали в истории чата
+    // (в том числе группового) при каждом открытии меню.
+    public function ttClientMenu($user)
+    {
+        $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        $users = $this->getClientsTt();
+        if ($user === '' || !isset($users[$user])) {
+            return $this->menu('tt');
+        }
+        $domain = $this->ttDomain();
+        $port   = $this->getTtPort();
+
+        $text   = [];
+        $text[] = 'Menu -> TrustTunnel -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $text[] = 'server: ' . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
+        $text[] = 'password: <code>' . htmlspecialchars($users[$user], ENT_QUOTES) . '</code>';
+
+        $data   = [];
+        $data[] = [
+            [
+                'text'          => '📄 ' . $this->i18n('download'),
+                'callback_data' => "/getTtConfig $user",
+            ],
+            [
+                'text'          => '🔗 ' . $this->i18n('link'),
+                'callback_data' => "/getTtLink $user",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('change password'),
+                'callback_data' => "/changeTtPass $user",
+            ],
+            [
+                'text'          => $this->i18n('generate password'),
+                'callback_data' => "/genTtPass $user",
+            ],
+        ];
+        $data[] = [[
+            'text'          => $this->i18n('delete'),
+            'callback_data' => "/delttus $user",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu tt',
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
     public function ttMenu()
     {
-        $pac    = $this->getPacConf();
-        $domain = $this->getDomain() ?: $pac['domain'] ?? '';
-        $port   = $this->getTtPort();
-        $users  = $this->getClientsTt();
+        $domain   = $this->ttDomain();
+        $port     = $this->getTtPort();
+        $users    = $this->getClientsTt();
+        $running  = $this->ttRunning();
+        $blockers = $this->ttBlockers();
+
+        $text   = [];
         $text[] = "Menu -> TrustTunnel";
         $text[] = "server: " . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = $this->i18n($running ? 'on' : 'off') . ' trusttunnel';
         $text[] = 'clients: ' . count($users);
-        foreach ($users as $u => $p) {
-            $text[] = htmlspecialchars($u, ENT_QUOTES) . ': <code>' . htmlspecialchars($p, ENT_QUOTES) . '</code>';
+        // Раньше меню молчало обо всём, кроме отсутствующего сертификата, и
+        // выключенный демон выглядел необъяснимо.
+        if (!$running && $blockers) {
+            $text[] = '⚠ ' . $this->i18n('tt blocked') . ': ' . implode(', ', $blockers);
         }
-        if (!file_exists('/certs/cert_public')) {
-            $text[] = "⚠ cert missing (/certs/cert_public)";
-        }
+        $text[] = '';
+        $text[] = '<i>' . $this->i18n('tt client hint') . '</i>';
+
+        $data   = [];
         $data[] = [
             [
                 'text'          => $this->i18n('change port') . ": $port",
                 'callback_data' => '/changePort tt',
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('restart'),
+                'callback_data' => '/restartTtMenu',
             ],
         ];
         $data[] = [
@@ -21427,28 +24520,24 @@ DNS-over-HTTPS with IP:
                 'text'          => $this->i18n('add peer'),
                 'callback_data' => '/addTtUser',
             ],
+            [
+                'text'          => $this->i18n('log tail'),
+                'callback_data' => '/showTtLog',
+            ],
         ];
         foreach ($users as $u => $_) {
-            $data[] = [
-                [
-                    'text'          => $this->i18n('download') . " $u",
-                    'callback_data' => "/getTtConfig $u",
-                ],
-                [
-                    'text'          => $this->i18n('change password'),
-                    'callback_data' => "/changeTtPass $u",
-                ],
-            ];
-            $data[] = [
-                [
-                    'text'          => $this->i18n('generate password'),
-                    'callback_data' => "/genTtPass $u",
-                ],
-                [
-                    'text'          => $this->i18n('delete'),
-                    'callback_data' => "/delttus $u",
-                ],
-            ];
+            // callback_data не переживает пробелы (роутер разбирает \S+), а имя
+            // могло появиться и ручной правкой credentials.toml. Такие клиенты
+            // показываем строкой, а не мёртвой кнопкой.
+            if (!preg_match('~^[a-zA-Z0-9_.\-]{1,40}$~', (string) $u)) {
+                $text[] = '⚠ <code>' . htmlspecialchars((string) $u, ENT_QUOTES) . '</code> — '
+                    . $this->i18n('tt bad name');
+                continue;
+            }
+            $data[] = [[
+                'text'          => "🔑 $u",
+                'callback_data' => "/ttClientMenu $u",
+            ]];
         }
         $data[] = [
             [
@@ -21589,11 +24678,15 @@ DNS-over-HTTPS with IP:
         return $users;
     }
 
+    // Блокировка клиента = директива `disable` в ccd/<CN>. Проверяем ИМЕННО
+    // строку-директиву: подстрочный поиск ловил и комментарии («# disabled by
+    // admin»), из-за чего активный клиент показывался как заблокированный.
     public function isOvpnUserDisabled($user)
     {
         $p = $this->ovpnPaths();
         $f = $p['ccd'] . '/' . $user;
-        return file_exists($f) && stripos(file_get_contents($f), 'disable') !== false;
+        return file_exists($f)
+            && (bool) preg_match('~^[ \t]*disable[ \t]*$~m', (string) file_get_contents($f));
     }
 
     public function getOvpnStatus()
@@ -21749,8 +24842,19 @@ DNS-over-HTTPS with IP:
         return $missing;
     }
 
+    // server.conf лежит в бэкапе целиком, и importOvpnPki() кладёт снимок
+    // обратно — вместе со всем, что чинят миграции start_ovpn.sh. Контейнер
+    // при восстановлении не пересоздаётся, поэтому гоняем тот же скрипт сами
+    // перед каждым стартом демона: иначе после каждого restore возвращались
+    // cipher и push "block-outside-dns" (проверено на живом сервере).
+    public function migrateOvpnServerConf()
+    {
+        return $this->ssh('sh /ovpn_migrate.sh 2>/dev/null || true', 'ovpn');
+    }
+
     public function restartOvpn()
     {
+        $this->migrateOvpnServerConf();
         // Без всех PKI-файлов openvpn немедленно падает с «Cannot pre-load
         // keyfile» и бот показывает on→off. Лучше ничего не запускать, чтобы
         // статус честно оставался off и пользователь увидел причину в меню.
@@ -21907,7 +25011,11 @@ DNS-over-HTTPS with IP:
         $host   = $domain ?: getenv('IP');
         $port   = $this->getOvpnPort();
         $proto  = $this->getOvpnProto();
-        $ovpn   = "client\ndev tun\nproto $proto\nremote $host $port\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\ncipher AES-256-GCM\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
+        // `cipher` намеренно отсутствует: в TLS-режиме её значение игнорируется
+        // начиная с 2.6 (шифр согласуется по data-ciphers), а сама директива
+        // помечена deprecated. `persist-key` убран по той же причине — 2.7
+        // отвечает «DEPRECATED OPTION: --persist-key option ignored».
+        $ovpn   = "client\ndev tun\nproto $proto\nremote $host $port\nresolv-retry infinite\nnobind\npersist-tun\nremote-cert-tls server\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
         $ovpn  .= "<ca>\n$ca</ca>\n";
         $ovpn  .= "<cert>\n$crt\n</cert>\n";
         $ovpn  .= "<key>\n$key</key>\n";
@@ -21986,6 +25094,65 @@ DNS-over-HTTPS with IP:
             return true;
         }
         return !preg_match('~^\s*client-to-client\s*$~m', $m[1]);
+    }
+
+    // Windows-only защита от DNS-leak. Живёт между маркерами #ovpn-winblockdns,
+    // по умолчанию ВЫКЛЮЧЕНА: `block-outside-dns` разбирается в options.c
+    // только под #ifdef _WIN32, а неизвестная опция в PUSH_REPLY для клиента
+    // фатальна — Linux/macOS/роутерные клиенты не подключаются вообще.
+    public function isOvpnWinBlockDns()
+    {
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['srv'])) {
+            return false;
+        }
+        $cfg = file_get_contents($p['srv']);
+        if (!preg_match('~^[ \t]*#ovpn-winblockdns[ \t]*\R(.*?)^[ \t]*#ovpn-winblockdns[ \t]*$~sm', $cfg, $m)) {
+            return false;
+        }
+        return (bool) preg_match('~^\s*push\s+"block-outside-dns"~m', $m[1]);
+    }
+
+    public function toggleOvpnWinBlockDns()
+    {
+        $p = $this->ovpnPaths();
+        if (!file_exists($p['srv'])) {
+            return $this->menu('ovpn');
+        }
+        $re  = '~^[ \t]*#ovpn-winblockdns[ \t]*\R.*?^[ \t]*#ovpn-winblockdns[ \t]*$~sm';
+        $cfg = file_get_contents($p['srv']);
+        if (!preg_match($re, $cfg)) {
+            // Маркеров нет — конфиг из бэкапа или с прошлой версии. Не отсылаем
+            // пользователя пересоздавать контейнер, а доносим миграции сами.
+            $this->migrateOvpnServerConf();
+            $cfg = file_get_contents($p['srv']);
+        }
+        if (!preg_match($re, $cfg)) {
+            $this->send($this->input['chat'], 'server.conf without #ovpn-winblockdns markers — check /logs/openvpn.log');
+            return $this->menu('ovpn');
+        }
+        $on   = $this->isOvpnWinBlockDns();
+        $body = $on ? '' : "push \"block-outside-dns\"\n";
+        $cfg  = preg_replace($re, "#ovpn-winblockdns\n$body#ovpn-winblockdns", $cfg);
+        file_put_contents($p['srv'], $cfg);
+        if (!$on) {
+            $this->send(
+                $this->input['chat'],
+                '⚠️ ' . $this->i18n('win dns warn')
+            );
+        }
+        $this->restartOvpn();
+        $this->menu('ovpn');
+    }
+
+    // Трафик может идти двумя путями: напрямую (docker-публикация порта, nft
+    // DNAT на контейнер) — тогда openvpn видит настоящий адрес клиента; или
+    // через nginx stream (#ovpn-port), который проксирует пакеты от своего
+    // имени — тогда во всех Real Address и в журнале подключений стоит адрес
+    // upstream-контейнера. Различаем по принадлежности к docker-сети проекта.
+    public function ovpnIpIsProxied($ip)
+    {
+        return (bool) preg_match('~^10\.10\.0\.\d{1,3}$~', (string) $ip);
     }
 
     public function toggleOvpnProto()
@@ -22127,8 +25294,20 @@ DNS-over-HTTPS with IP:
         $tail = $this->ovpnLogTail($p['conn']);
         $text  = "Menu -> OpenVPN -> " . $this->i18n('connections') . "\n";
         $text .= "<pre>" . ($tail !== '' ? $tail : '(empty)') . "</pre>";
-        $data  = [[
-            ['text' => $this->i18n('back'), 'callback_data' => '/menu ovpn'],
+        $data  = [];
+        $data[] = [[
+            'text'          => '🔄 ' . $this->i18n('refresh'),
+            'callback_data' => '/showOvpnConnLog',
+        ]];
+        if ($tail !== '') {
+            $data[] = [[
+                'text'          => '🗑 ' . $this->i18n('clear log'),
+                'callback_data' => '/clearOvpnConnLog',
+            ]];
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/menu ovpn',
         ]];
         $this->update(
             $this->input['chat'],
@@ -22136,6 +25315,29 @@ DNS-over-HTTPS with IP:
             $text,
             $data,
         );
+    }
+
+    // Журнал пишет hook внутри контейнера ovpn — обнуляем именно там же
+    // (bind-mount /logs общий, но truncate из php оставил бы у openvpn открытый
+    // fd со старым смещением, и следующая запись вернула бы дыру из \0).
+    public function clearOvpnConnLog()
+    {
+        $this->ssh(': > /logs/openvpn-connections.log', 'ovpn');
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
+        }
+        $this->showOvpnConnLog();
+    }
+
+    // Явный рестарт демона из меню: после ручных правок server.conf или когда
+    // PKI доинициализировался, а openvpn всё ещё лежит.
+    public function restartOvpnMenu()
+    {
+        $this->restartOvpn();
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('restart'));
+        }
+        $this->menu('ovpn');
     }
 
     public function ovpnMenu()
@@ -22166,6 +25368,12 @@ DNS-over-HTTPS with IP:
         $text[] = $this->i18n('inter-client') . ': '
             . $this->i18n($isolated ? 'off' : 'on')
             . ' <i>(' . $interHint . ')</i>';
+        // Отдельно подсвечиваем, что включённая защита ломает не-Windows.
+        $winDns = $this->isOvpnWinBlockDns();
+        if ($winDns) {
+            $text[] = '⚠ ' . $this->i18n('win dns guard') . ': '
+                . $this->i18n('on') . ' <i>(' . $this->i18n('win dns warn') . ')</i>';
+        }
         $text[] = "clients: " . count($users) . " (" . count($online) . " " . $this->i18n('online') . ")";
         $pkiMissing = $this->ovpnPkiMissing();
         if ($pkiMissing) {
@@ -22173,15 +25381,22 @@ DNS-over-HTTPS with IP:
             $text[] = '   → <code>docker compose restart ovpn</code> чтобы доинициализировать';
         }
         if (!empty($online)) {
-            $text[] = '';
+            $text[]  = '';
+            $proxied = false;
             foreach ($online as $cn => $s) {
                 // Real address из openvpn-status.log приходит в виде IP:port
                 // (или [v6]:port); порт в UI только шумит, режем до хоста.
-                $real = $this->ovpnRealIp($s['real'] ?? '');
+                $real     = $this->ovpnRealIp($s['real'] ?? '');
+                $proxied  = $proxied || $this->ovpnIpIsProxied($real);
                 $text[] = '🟢 <code>' . htmlspecialchars($cn, ENT_QUOTES) . '</code> '
                     . htmlspecialchars($s['virtual'], ENT_QUOTES)
                     . ($real !== '' ? ' · <code>' . htmlspecialchars($real, ENT_QUOTES) . '</code>' : '')
                     . ' ↓' . $this->fmtBytes($s['rx']) . ' ↑' . $this->fmtBytes($s['tx']);
+            }
+            // Честно говорим, что показанный адрес — не клиентский: openvpn не
+            // понимает PROXY protocol, и через nginx stream реальный IP теряется.
+            if ($proxied) {
+                $text[] = 'ℹ️ <i>' . $this->i18n('ip via nginx') . '</i>';
             }
         }
 
@@ -22201,9 +25416,19 @@ DNS-over-HTTPS with IP:
             'callback_data' => '/toggleOvpnIsolation',
         ]];
         $data[] = [[
-            'text'          => $this->i18n('add peer'),
-            'callback_data' => '/addOvpnUser',
+            'text'          => $this->i18n('win dns guard') . ': ' . $this->i18n($winDns ? 'on' : 'off'),
+            'callback_data' => '/toggleOvpnWinBlockDns',
         ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('add peer'),
+                'callback_data' => '/addOvpnUser',
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('restart'),
+                'callback_data' => '/restartOvpnMenu',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('log tail'),
@@ -22275,7 +25500,8 @@ DNS-over-HTTPS with IP:
             $real = $this->ovpnRealIp($s['real'] ?? '');
             $status = '🟢 ' . $this->i18n('online')
                 . ' · ' . htmlspecialchars($s['virtual'], ENT_QUOTES)
-                . ($real !== '' ? ' · ' . htmlspecialchars($real, ENT_QUOTES) : '')
+                . ($real !== '' ? ' · ' . htmlspecialchars($real, ENT_QUOTES)
+                    . ($this->ovpnIpIsProxied($real) ? ' <i>(nginx)</i>' : '') : '')
                 . ' · ↓' . $this->fmtBytes($s['rx'])
                 . ' ↑' . $this->fmtBytes($s['tx']);
         } else {
@@ -22524,8 +25750,18 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // swanctl.conf лежит в бэкапе, и importIpsecPki() кладёт снимок обратно —
+    // вместе со всем, что чинят миграции start_ipsec.sh. Контейнер при
+    // восстановлении не пересоздаётся, поэтому гоняем тот же скрипт сами перед
+    // каждым перезапуском демонов (тот же класс бага, что был найден у ovpn).
+    public function migrateIpsecConf()
+    {
+        return $this->ssh('sh /ipsec_migrate.sh 2>/dev/null || true', 'ipsec');
+    }
+
     public function restartIpsec()
     {
+        $this->migrateIpsecConf();
         // Гарантированная остановка обоих демонов, затем перезапуск через
         // /etc/run_ipsec_daemons.sh (его генерирует start_ipsec.sh — там
         // ожидание vici-сокета + swanctl --load-all).
@@ -22535,6 +25771,19 @@ DNS-over-HTTPS with IP:
             'ipsec'
         );
         $this->ssh('sh /etc/run_ipsec_daemons.sh', 'ipsec', false, '/dev/null');
+    }
+
+    // Явный рестарт charon+xl2tpd из меню: после ручных правок swanctl.conf,
+    // восстановления бэкапа или когда демон отвалился. Заодно прогоняет
+    // миграции конфига (см. migrateIpsecConf).
+    public function restartIpsecMenu($menu = 'l2tp')
+    {
+        $menu = $menu === 'ikev2' ? 'ikev2' : 'l2tp';
+        $this->restartIpsec();
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], '♻️ ' . $this->i18n('restart'));
+        }
+        $this->menu($menu);
     }
 
     // ─── L2TP/IPsec: пользователи (chap-secrets) ─────────────────────────
@@ -22623,10 +25872,16 @@ DNS-over-HTTPS with IP:
         $text[] = '<i>Android 12+: ' . $this->i18n('no native l2tp') . '</i>';
 
         $data   = [];
-        $data[] = [[
-            'text'          => $this->i18n('add peer'),
-            'callback_data' => '/addL2tpUser',
-        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('add peer'),
+                'callback_data' => '/addL2tpUser',
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('restart'),
+                'callback_data' => '/restartIpsecMenu l2tp',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('log tail'),
@@ -22734,6 +25989,11 @@ DNS-over-HTTPS with IP:
         // этого ключа реестра — классические грабли, даём команду сразу.
         $t[] = 'Windows ' . $this->i18n('behind NAT') . ':';
         $t[] = '<pre>reg add "HKLM\SYSTEM\CurrentControlSet\Services\PolicyAgent" /v AssumeUDPEncapsulationContextOnSendRule /t REG_DWORD /d 2 /f</pre>';
+        // Сервер предлагает modp2048 первым и modp1024 в хвосте — нативный
+        // Windows договорится и без правок. Ключ ниже нужен только тем, кто
+        // хочет запретить DH2 на клиенте и ходить строго через modp2048.
+        $t[] = 'Windows (' . $this->i18n('optional') . ', force DH2048):';
+        $t[] = '<pre>reg add "HKLM\SYSTEM\CurrentControlSet\Services\RasMan\Parameters" /v NegotiateDH2048_AES256 /t REG_DWORD /d 2 /f</pre>';
         $t[] = 'iOS/macOS: Settings → VPN → L2TP (Secret = PSK)';
         $t[] = 'Android 12+: ' . $this->i18n('no native l2tp');
         $this->send($this->input['from'], implode("\n", $t));
@@ -22989,13 +26249,21 @@ DNS-over-HTTPS with IP:
         $this->ssh('swanctl --load-creds >/dev/null 2>&1; true', 'ipsec');
     }
 
-    // Онлайн-статус IKEv2 из `swanctl --list-sas`: юзер (EAP identity) →
-    // uid IKE_SA (для kick), реальный адрес, виртуальный IP, байты, аптайм.
+    // Онлайн-статус IKEv2 из `swanctl --list-sas`: юзер → uid IKE_SA (для kick),
+    // реальный адрес, виртуальный IP, байты, аптайм.
+    //
+    // Формат строки (src/swanctl/commands/list_sas.c, strongSwan 6.0):
+    //   remote '<remote-id>' @ <host>[<port>][ EAP: '<eap-id>'][ [<vips>]]
+    // `EAP: '...'` печатается ТОЛЬКО когда EAP-identity отличается от IKE-id.
+    // Наш .mobileconfig задаёт LocalIdentifier = имя юзера, поэтому iOS/macOS
+    // шлют IKE-id = логин и блок EAP не выводится вовсе — раньше такие сессии
+    // терялись, клиент висел в меню как ⚪ offline и не киковался. Проверено
+    // на живом сервере обоими вариантами клиента.
     public function getIkev2Status()
     {
         $raw = (string) $this->ssh('swanctl --list-sas 2>/dev/null', 'ipsec');
         $out = [];
-        $cur = null;   // буфер полей IKE_SA, пока EAP identity ещё не встретилась
+        $cur = null;   // буфер полей IKE_SA, пока имя юзера ещё не известно
         $key = null;   // имя юзера — после него пишем сразу в $out[$key]
         foreach (explode("\n", $raw) as $line) {
             if (preg_match('~^\S+: #(\d+), ESTABLISHED~', $line, $m)) {
@@ -23006,12 +26274,20 @@ DNS-over-HTTPS with IP:
             if ($cur === null && $key === null) {
                 continue;
             }
-            if (preg_match("~^\\s*remote '[^']*' @ ([^\\[\\s]+)\\[\\d+\\](?: EAP: '([^']+)')?~", $line, $m)) {
-                $cur['real'] = $m[1];
-                if (!empty($m[2])) {
-                    // EAP identity = имя юзера; дальше child-SA строки
-                    // (байты, virtual IP) дополняют запись в $out.
-                    $key       = $m[2];
+            if (preg_match("~^\\s*remote '([^']*)' @ ([^\\[\\s]+)\\[\\d+\\](?: EAP: '([^']+)')?(?: XAuth: '[^']+')?(?: \\[([^\\]]+)\\])?~", $line, $m)) {
+                if ($cur === null) {
+                    continue;
+                }
+                $cur['real'] = $m[2];
+                // Виртуальный IP печатается прямо здесь; для нескольких vips
+                // берём первый. Ниже есть фолбэк на TS дочерней SA.
+                if (!empty($m[4])) {
+                    $cur['virtual'] = trim(explode(',', $m[4])[0]);
+                }
+                // EAP-identity, если она есть, иначе IKE-identity.
+                $name = !empty($m[3]) ? $m[3] : $m[1];
+                if ($name !== '') {
+                    $key       = $name;
                     $out[$key] = $cur;
                     $cur       = null;
                 }
@@ -23033,7 +26309,7 @@ DNS-over-HTTPS with IP:
                 $out[$ref]['tx'] += (int) $m[1];
                 continue;
             }
-            if (preg_match('~^\s*remote ([0-9.]+)/32$~', $line, $m)) {
+            if ($out[$ref]['virtual'] === '' && preg_match('~^\s*remote ([0-9.]+)/32\s*$~', $line, $m)) {
                 $out[$ref]['virtual'] = $m[1];
                 continue;
             }
@@ -23065,11 +26341,12 @@ DNS-over-HTTPS with IP:
         if (!file_exists($p['ca']) || !file_exists($p['srv'])) {
             $text[] = '⚠ PKI missing — restart ipsec container';
         }
-        $text[] = 'clients: ' . count($users) . ' (' . count($online) . ' ' . $this->i18n('online') . ')';
-        foreach ($online as $u => $s) {
-            if (!isset($users[$u])) {
-                continue;
-            }
+        // Считаем только СВОИХ: в list-sas попадают и чужие/устаревшие SA
+        // (например, после переименования юзера) — они не должны раздувать
+        // счётчик онлайна.
+        $onlineKnown = array_intersect_key($online, $users);
+        $text[] = 'clients: ' . count($users) . ' (' . count($onlineKnown) . ' ' . $this->i18n('online') . ')';
+        foreach ($onlineKnown as $u => $s) {
             $text[] = '🟢 <code>' . htmlspecialchars($u, ENT_QUOTES) . '</code> '
                 . htmlspecialchars($s['virtual'], ENT_QUOTES)
                 . ($s['real'] !== '' ? ' · <code>' . htmlspecialchars($s['real'], ENT_QUOTES) . '</code>' : '')
@@ -23077,20 +26354,30 @@ DNS-over-HTTPS with IP:
         }
 
         $data   = [];
-        $data[] = [[
-            'text'          => $this->i18n('add peer'),
-            'callback_data' => '/addIkev2User',
-        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('add peer'),
+                'callback_data' => '/addIkev2User',
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('restart'),
+                'callback_data' => '/restartIpsecMenu ikev2',
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('log tail'),
                 'callback_data' => '/showIkev2Log',
             ],
             [
-                'text'          => 'CA (Windows)',
-                'callback_data' => '/getIkev2Ca',
+                'text'          => $this->i18n('connections'),
+                'callback_data' => '/showIpsecConnLog ikev2',
             ],
         ];
+        $data[] = [[
+            'text'          => 'CA (Windows)',
+            'callback_data' => '/getIkev2Ca',
+        ]];
         $data[] = [
             [
                 'text'          => "IKE port: {$ports['ike']}",
@@ -23332,13 +26619,19 @@ XML;
                 'eap_id' => $user,
             ],
         ];
-        // Нестандартный порт: strongSwan-клиент на любом порту, кроме 500,
-        // использует NAT-T-инкапсуляцию — указываем именно NAT-T-порт.
-        // При дефолте ключ опускаем: клиент сам ходит 500→4500.
+        // remote.port по документации strongSwan — порт СЕРВЕРА, куда клиент
+        // шлёт IKE_SA_INIT, дефолт 500. Раньше сюда писался NAT-T-порт и только
+        // при нестандартном NAT-T: если админ менял IKE-порт, профиль всё равно
+        // вёл на 500, где уже никто не слушает. Пишем IKE-порт.
+        // (strongSwan-клиент на любом порту, кроме 500, сразу инкапсулирует в
+        // UDP, поэтому дальше он попадёт на NAT-T-порт сервера сам.)
         $ports = $this->ipsecPorts();
-        if ($ports['natt'] !== 4500) {
-            $profile['remote']['port'] = $ports['natt'];
+        if ($ports['ike'] !== 500) {
+            $profile['remote']['port'] = $ports['ike'];
         }
+        // Пароль кладём в профиль: .mobileconfig для iOS уже несёт AuthPassword,
+        // держать Android в другом режиме — лишний повод для «а какой пароль?».
+        $profile['local']['shared_secret'] = $users[$user]['pass'];
         $json = json_encode($profile, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         $this->sendFile(
             $this->input['from'],
@@ -23462,6 +26755,13 @@ XML;
         if ($s && $s['since'] !== '') {
             $text[] = $this->i18n('since') . ': ' . $this->uptimeHuman((int) $s['since']);
         }
+        // События пишет updown-хук charon (см. start_ipsec.sh) — тот же
+        // журнал, что у L2TP, поэтому читается тем же ipsecLastSeen().
+        if (!$isDis && !$s) {
+            $seen   = $this->ipsecLastSeen($user);
+            $text[] = $this->i18n('last seen') . ': '
+                . ($seen ? "{$seen['ts']} ({$seen['dir']})" : $this->i18n('never'));
+        }
 
         $data   = [];
         $data[] = [
@@ -23488,6 +26788,10 @@ XML;
             'callback_data' => "/kickIkev2 $user",
         ]];
         $data[] = [[
+            'text'          => $this->i18n('history'),
+            'callback_data' => "/ikev2ClientLog $user",
+        ]];
+        $data[] = [[
             'text'          => $this->i18n('delete'),
             'callback_data' => "/delIkev2User $user",
         ]];
@@ -23501,6 +26805,25 @@ XML;
             implode("\n", $text),
             $data,
         );
+    }
+
+    // История подключений одного клиента IKEv2 — из того же журнала, что и
+    // L2TP: события пишет updown-хук charon.
+    public function ikev2ClientLog($user)
+    {
+        $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
+        if (empty($user) || !isset($this->getIkev2Users()[$user])) {
+            return $this->menu('ikev2');
+        }
+        $p    = $this->ipsecPaths();
+        $tail = $this->ovpnLogTail($p['conn'], 15, 3500, $user);
+        $text = 'Menu -> IKEv2 -> <code>'
+            . htmlspecialchars($user, ENT_QUOTES) . '</code> -> ' . $this->i18n('history') . "\n"
+            . '<pre>' . ($tail !== '' ? $tail : '(empty)') . '</pre>';
+        $data = [[
+            ['text' => $this->i18n('back'), 'callback_data' => "/ikev2ClientMenu $user"],
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
     }
 
     // «established N seconds ago» → короткая человекочитаемая длительность.

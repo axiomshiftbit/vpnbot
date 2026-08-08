@@ -1,14 +1,28 @@
+# TrustTunnel endpoint: основные настройки.
+# Имена ключей — строго по CONFIGURATION.md апстрима: serde НЕ отвергает
+# неизвестные поля, поэтому опечатка не даёт ошибки, а просто молча
+# игнорируется (значение остаётся дефолтным).
+
+# Внутренний порт контейнера. Внешний порт задаётся ботом (TTPORT) —
+# docker-маппинг TTPORT:8443 и/или nginx stream (#tt-port).
 listen_address = "0.0.0.0:8443"
 credentials_file = "credentials.toml"
 rules_file = "rules.toml"
+# Docker-сеть проекта — IPv4-only, маршрутизировать IPv6 наружу эндпоинт не
+# может. В клиентском конфиге апстрим всё равно печатает has_ipv6 = true, и мы
+# это НЕ правим: has_ipv6 = false увёл бы IPv6-трафик мимо туннеля (утечка),
+# а при true он просто не установится и приложение уйдёт на IPv4.
 ipv6_available = false
 allow_private_network_connections = false
 tls_handshake_timeout_secs = 10
 client_listener_timeout_secs = 600
 
+# Включённые listener'ы. HTTP/1.1 намеренно выключен: официальные клиенты
+# ходят только по http2/http3 (upstream_protocol в клиентском конфиге).
 [listen_protocols.http2]
 max_concurrent_streams = 1000
 
 [listen_protocols.quic]
-udp_payload_size = 1350
-early_data = true
+recv_udp_payload_size = 1350
+send_udp_payload_size = 1350
+enable_early_data = true

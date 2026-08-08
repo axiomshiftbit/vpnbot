@@ -9,7 +9,34 @@ mkdir -p /logs
 [ -f /logs/trusttunnel.log ] || : > /logs/trusttunnel.log
 
 CFG=/trusttunnel_endpoint
-[ -f "$CFG/vpn.toml" ] && [ -f "$CFG/hosts.toml" ] && [ -f "$CFG/credentials.toml" ] && [ -f "$CFG/rules.toml" ] \
-    && cd "$CFG" \
-    && trusttunnel_endpoint vpn.toml hosts.toml >>/logs/trusttunnel.log 2>&1 &
+
+# Условия старта те же, что в боте (ttBlockers): наличия четырёх файлов мало.
+#  - credentials.toml без единого [[client]] = паника на разборе настроек
+#    («invalid value: Not an array of clients»), потому что credentials_file
+#    десериализуется в Vec<Client>, а публичный listen_address без клиентов
+#    эндпоинт считает ошибкой безопасности. Шаблон в репозитории — это только
+#    комментарии, так что на свежей установке демон гарантированно падал;
+#  - без cert_public/cert_private нечем поднять TLS-хост.
+# Не стартуем молча и пишем причину в журнал, который показывает бот.
+ttlog() { echo "[start_tt $(date +%H:%M:%S)] $*" >> /logs/trusttunnel.log; }
+
+start_ok=1
+for f in vpn.toml hosts.toml credentials.toml rules.toml; do
+    if [ ! -f "$CFG/$f" ]; then
+        ttlog "not started: missing $f"
+        start_ok=0
+    fi
+done
+if [ "$start_ok" = 1 ] && ! grep -q '^[[:space:]]*\[\[client\]\]' "$CFG/credentials.toml"; then
+    ttlog "not started: credentials.toml has no [[client]] — add a peer via the bot menu"
+    start_ok=0
+fi
+if [ "$start_ok" = 1 ] && { [ ! -f /certs/cert_public ] || [ ! -f /certs/cert_private ]; }; then
+    ttlog "not started: missing /certs/cert_public or /certs/cert_private"
+    start_ok=0
+fi
+
+if [ "$start_ok" = 1 ]; then
+    cd "$CFG" && trusttunnel_endpoint vpn.toml hosts.toml >>/logs/trusttunnel.log 2>&1 &
+fi
 tail -f /dev/null

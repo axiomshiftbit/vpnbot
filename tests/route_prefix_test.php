@@ -102,11 +102,35 @@ foreach ($out['domain'] as $d) {
 }
 
 // Перечитывание собственного domain[] (так делает пересборка клиентского
-// конфига при t=s) не должно менять смысл доменных записей.
-$again = $bot->listToXrayRules(array_fill_keys($out['domain'], true));
+// конфига при t=s) не должно менять смысл доменных записей. Разбирать при этом
+// надо по xray-семантике: голая строка в конфиге — keyword, а не суффикс,
+// поэтому здесь classifyXrayToken, ровно как в $sort() клиентской пересборки.
+$again = array_map(
+    fn($t) => $bot->xrayDomainToken($bot->classifyXrayToken($t)),
+    $out['domain'],
+);
 routeAssert(
-    $again['domain'] === $out['domain'],
-    'domain[] не идемпотентен: ' . json_encode($again['domain']),
+    $again === $out['domain'],
+    'domain[] не идемпотентен: ' . json_encode($again),
+);
+
+// ── голая запись списка → суффикс, keyword → голая строка ───────────────────
+// Голая строка в xray domain[] означает подстроку: "vk.com" матчил бы и
+// "myvk.community.org". Список у пользователя означает суффикс — как в
+// sing-box (domain_suffix) и mihomo (DOMAIN-SUFFIX).
+$bare = $bot->listToXrayRules(['google.com' => true, 'keyword:reddit' => true]);
+routeAssert(
+    $bare['domain'] === ['domain:google.com', 'reddit'],
+    'голая запись/keyword в domain[]: ' . json_encode($bare['domain']),
+);
+// А вот при разборе уже готового конфига голая строка обязана остаться keyword.
+routeAssert(
+    $bot->classifyXrayToken('reddit')['kind'] === 'keyword',
+    'голый токен xray-конфига — keyword, не suffix',
+);
+routeAssert(
+    $bot->classifyXrayToken('domain:vk.com')['kind'] === 'domain',
+    'domain:-токен xray-конфига должен остаться domain',
 );
 
 // ── normalizeRouteEntry: категории ядра не трогаем ──────────────────────────

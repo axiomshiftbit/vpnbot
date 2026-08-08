@@ -1,13 +1,18 @@
-ARG image
+ARG image=alpine:3.23
 FROM $image
 
 # Пины версий (задаются в .env, пробрасываются через args в compose).
-# amneziawg-go с v0.2.19 требует go >= 1.24.4 — Go ставится пакетом из edge
+# amneziawg-go с v3.0.3 требует go >= 1.24.4 — Go ставится пакетом из edge
 # в .build-deps и удаляется после сборки (раньше golang:1.22.3-alpine
 # копировался в образ целиком и оставался в рантайме).
-ARG AWG_GO_VERSION=v0.2.19
-ARG AWG_TOOLS_VERSION=v1.0.20260618-2
-ARG WGCF_VERSION=v2.2.31
+#
+# v3.0.20260805 обязателен для 3.0 с ContentPaddingAddition: до него keepalive
+# опознавался по длине пакета (send.go `len(elem.packet) != MessageKeepaliveSize`,
+# receive.go `len(elem.packet) == 0`), а паддинг эту длину меняет — keepalive
+# считались данными и наоборот («fix: keepalives are ignored»).
+ARG AWG_GO_VERSION=v3.0.20260805
+ARG AWG_TOOLS_VERSION=v3.0.20260805
+ARG WGCF_VERSION=v2.2.32
 ARG TUN2SOCKS_VERSION=v2.6.0
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
