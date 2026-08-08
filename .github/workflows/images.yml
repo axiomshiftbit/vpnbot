@@ -50,7 +50,7 @@ jobs:
       matrix: ${{ steps.pick.outputs.matrix }}
       count: ${{ steps.pick.outputs.count }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -169,7 +169,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # compose объявляет override.env как необязательный, но bake разбирает
       # весь файл целиком — пусть файл существует.
@@ -195,8 +195,16 @@ jobs:
           # linux-amd64/x86_64, на arm-раннере собралось бы нерабочее.
           # Кеш со scope на сервис — с общим scope 14 сборок затирают друг друга.
           # image.source нужен, чтобы пакет сам привязался к репозиторию.
+          #
+          # provenance=mode=min ОБЯЗАТЕЛЕН, пока пакеты публичные, а репозиторий
+          # приватный. В GitHub Actions buildx по умолчанию пишет mode=max, а
+          # туда попадает весь github_event_payload: тексты коммит-сообщений,
+          # имя и e-mail автора, ссылки на приватный репо. Attestation лежит
+          # рядом с образом в registry, то есть всё это утекало бы вместе с
+          # публичным пакетом. mode=min оставляет только источник и коммит.
           set: |
             *.platform=linux/amd64
+            *.attest=type=provenance,mode=min
             *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:${{ env.CHANNEL }}
             *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:sha-${{ github.sha }}
             *.cache-from=type=gha,scope=${{ matrix.service }}

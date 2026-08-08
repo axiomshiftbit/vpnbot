@@ -25,7 +25,7 @@ services:
             context: dockerfile
             dockerfile: nginx.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/upstream.conf:/etc/nginx/nginx.conf
@@ -69,7 +69,7 @@ services:
             context: dockerfile
             dockerfile: nginx.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/nginx.conf:/etc/nginx/nginx.conf
@@ -118,7 +118,7 @@ services:
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         ports:
             - 127.0.0.1:8081:8080
         volumes:
@@ -170,7 +170,7 @@ services:
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/php.ini:/etc/php81/php.ini
@@ -224,7 +224,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
@@ -273,7 +273,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
@@ -354,7 +354,7 @@ services:
         build:
             dockerfile: dockerfile/telemt.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 TELEMT_VERSION: ${TELEMT_VERSION:-3.4.25}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -384,7 +384,7 @@ services:
         build:
             dockerfile: dockerfile/xray.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 XRAY_VERSION: ${XRAY_VERSION:-}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -416,7 +416,7 @@ services:
         build:
             dockerfile: dockerfile/ocserv.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 OCSERV_VERSION: ${OCSERV_VERSION:-1.5.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -451,7 +451,7 @@ services:
         build:
             dockerfile: dockerfile/naive.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 # CADDY_VERSION и FORWARDPROXY_VERSION меняются ТОЛЬКО парой:
                 # тег плагина = версия caddy + суффикс -naive (см. dockerfile).
                 CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.25}
@@ -494,7 +494,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
@@ -547,7 +547,7 @@ services:
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/sslocal.json:/config.json
@@ -577,7 +577,7 @@ services:
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
                 # Пустое значение любого из четырёх = releases/latest
                 # (прежнее поведение). Значения по умолчанию — то, что стоит
                 # в бою; менять здесь не нужно, правьте .env.
@@ -623,7 +623,7 @@ services:
         build:
             dockerfile: dockerfile/dnstt.dockerfile
             args:
-                image: ${IMAGE}
+                image: ${IMAGE:-alpine:3.18.2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh

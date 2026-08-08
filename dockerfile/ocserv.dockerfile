@@ -1,4 +1,4 @@
-ARG image
+ARG image=alpine:3.18.2
 FROM $image
 
 # Версия релиза ocserv (https://gitlab.com/openconnect/ocserv/-/releases).
