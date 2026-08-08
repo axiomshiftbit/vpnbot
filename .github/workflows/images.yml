@@ -63,6 +63,39 @@ jobs:
           set -euo pipefail
           ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy"
 
+          # Какие образы задевает правка .env. Раньше любая строка (хоть смена
+          # таймзоны) пересобирала все 14, а это десятки минут CI из-за tt.
+          # Неизвестная переменная — повод собрать всё: пропустить нужную
+          # пересборку хуже, чем сделать лишнюю.
+          env_targets() {
+            git show "${BEFORE}:.env" 2>/dev/null | grep -E '^[A-Za-z_]+=' | sort > /tmp/env.old || true
+            git show "${GITHUB_SHA}:.env"          | grep -E '^[A-Za-z_]+=' | sort > /tmp/env.new
+            out=""
+            for v in $(diff /tmp/env.old /tmp/env.new | sed -nE 's/^[<>] ([A-Za-z_]+)=.*/\1/p' | sort -u); do
+              case "$v" in
+                XRAY_VERSION)                      out="$out xr" ;;
+                OCSERV_VERSION)                    out="$out oc" ;;
+                ADGUARD_VERSION)                   out="$out ad" ;;
+                HYSTERIA_VERSION)                  out="$out hy" ;;
+                TELEMT_VERSION)                    out="$out telemt" ;;
+                TT_REF)                            out="$out tt" ;;
+                AWG_GO_VERSION|AWG_TOOLS_VERSION|WGCF_VERSION)
+                                                   out="$out wg" ;;
+                CADDY_GO_VERSION|XCADDY_VERSION|CADDY_VERSION|FORWARDPROXY_VERSION)
+                                                   out="$out np" ;;
+                SS_RUST_VERSION|V2RAY_PLUGIN_VERSION|CLOAK_VERSION|SIMPLE_TLS_VERSION)
+                                                   out="$out ss" ;;
+                # Рантайм-настройки: в сборку не уходят вовсе.
+                TZ|IP|VER|VPNBOT_TAG|TELEGRAM_API|ENV|WGADDRESS|WG1ADDRESS|CKPORT|STLSPORT|TTPORT|OVPNPORT|OVPNPROTO|OVPNSUBNET|L2TPSUBNET|IKEV2SUBNET)
+                                                   ;;
+                # IMAGE — базовый alpine для большинства образов; всё прочее
+                # неизвестно.
+                *)                                 out="${ALL}"; break ;;
+              esac
+            done
+            echo "$out"
+          }
+
           df2svc() {
             case "$1" in
               nginx.dockerfile)       echo ng ;;
@@ -91,8 +124,9 @@ jobs:
             SEL="${ALL}"
           else
             CHANGED=$(git diff --name-only "${BEFORE}" "${GITHUB_SHA}" || echo '')
-            # Пины версий и сам compose влияют на любой образ.
-            if echo "${CHANGED}" | grep -qE '^(\.env|docker-compose\.yml|\.github/workflows/images\.yml)$'; then
+            # compose держит build.args и контексты всех сервисов, сам workflow —
+            # правила сборки: и то и другое влияет на любой образ.
+            if echo "${CHANGED}" | grep -qE '^(docker-compose\.yml|\.github/workflows/images\.yml)$'; then
               SEL="${ALL}"
             else
               SEL=""
@@ -100,6 +134,9 @@ jobs:
                 s=$(df2svc "$(basename "$f")")
                 [ -n "$s" ] && SEL="${SEL} ${s}"
               done
+              if echo "${CHANGED}" | grep -qE '^\.env$'; then
+                SEL="${SEL} $(env_targets)"
+              fi
             fi
           fi
 

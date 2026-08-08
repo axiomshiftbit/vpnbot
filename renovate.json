@@ -1,0 +1,58 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommitTypeAll(build)"],
+  "timezone": "Europe/Samara",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 3,
+  "labels": ["upstream"],
+  "baseBranches": ["dev"],
+  "customManagers": [
+    {
+      "description": "Пины версий сервисов лежат в .env и уходят в сборку как build.args — Dockerfile'ы их не содержат, поэтому штатный docker-менеджер их не видит. Читаем аннотации '# renovate:' над каждой переменной.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.env$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+[A-Z0-9_]+=(?<currentValue>\\S+)"
+      ],
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver-coerced{{/if}}"
+    },
+    {
+      "description": "IMAGE хранит образ вместе с тегом (alpine:3.18.2), а не голую версию, поэтому имя берётся из значения, а не из аннотации.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.env$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+)\\s+IMAGE=(?<depName>[^:\\s]+):(?<currentValue>\\S+)"
+      ],
+      "versioningTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Мажорные обновления ядер VPN не автоматизируем: они меняют формат конфигов, а конфиги генерирует бот.",
+      "matchDepNames": [
+        "XTLS/Xray-core",
+        "SagerNet/sing-box",
+        "MetaCubeX/mihomo",
+        "adguard/adguardhome",
+        "tobyxdd/hysteria",
+        "openconnect/ocserv"
+      ],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Базовый alpine трогаем только в пределах минорной ветки: смена мажора тянет за собой пересборку всех образов и другой набор пакетов.",
+      "matchDepNames": ["alpine"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "amneziawg-go и amneziawg-tools обязаны идти одной версией — иначе awg-tools не понимает формат ядра.",
+      "matchDepNames": [
+        "amnezia-vpn/amneziawg-go",
+        "amnezia-vpn/amneziawg-tools"
+      ],
+      "groupName": "amneziawg"
+    }
+  ]
+}

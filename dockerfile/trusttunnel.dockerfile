@@ -1,8 +1,8 @@
 # TrustTunnel endpoint: build from source.
 # Update:
-#   docker compose build --no-cache tt
-#   или: TT_REF=<sha|tag> docker compose build tt
-ARG TT_REF=master
+#   поменять TT_REF в .env (пин на коммит/тег) и закоммитить — CI пересоберёт
+#   или локально: TT_REF=<sha|tag> docker compose build tt
+ARG TT_REF=aae4b79f5e470deac76928379c241040811b50f0
 
 FROM python:3.13-slim-bookworm AS build
 ARG TT_REF
@@ -19,8 +19,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 ENV PATH="/root/.cargo/bin:${PATH}" \
     CARGO_NET_GIT_FETCH_WITH_CLI=true
 WORKDIR /src
-RUN git clone --depth 50 https://github.com/TrustTunnel/TrustTunnel.git . \
-    && git checkout "${TT_REF}"
+# Фетчим ровно нужный ref, а не клонируем ветку: `clone --depth 50` + checkout
+# работал только пока пин лежал в последних 50 коммитах master, а с пином на
+# коммит это вопрос времени. GitHub отдаёт fetch по sha, так что depth 1
+# хватает и для тега, и для коммита.
+RUN git init -q . \
+    && git remote add origin https://github.com/TrustTunnel/TrustTunnel.git \
+    && git fetch -q --depth 1 origin "${TT_REF}" \
+    && git checkout -q FETCH_HEAD
 RUN cargo build --release --bin trusttunnel_endpoint \
     && cargo build --release --bin setup_wizard \
     && strip target/release/trusttunnel_endpoint target/release/setup_wizard
