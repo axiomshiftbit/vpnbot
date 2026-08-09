@@ -1,4 +1,10 @@
 -include .env
+# override.env подключается ВТОРЫМ и обязательно здесь, а не только через
+# --env-file у compose: `export` ниже выкладывает все переменные .env в
+# ОКРУЖЕНИЕ процесса, а окружение у compose приоритетнее любого --env-file.
+# Без этой строки override.env молча не работал для всего, что уже есть в
+# .env (VPNBOT_TAG, TZ, IP, порты) — правка в нём просто игнорировалась.
+-include override.env
 export
 
 IP := $(or $(IP),$(shell hostname -I | awk '{print $$1}'))
