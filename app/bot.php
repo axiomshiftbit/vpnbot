@@ -8780,7 +8780,7 @@ DNS-over-HTTPS with IP:
         // unicode-домены схлопнутся лишь при точном совпадении, — но меню
         // обязано открыться. Симметрично routeEntryLabel(), которая по той же
         // причине не полагается на idn_to_utf8() безусловно.
-        $a = function_exists('idn_to_ascii') ? idn_to_ascii($host) : false;
+        $a = $this->idnAscii($host);
         return mb_strtolower($a === false ? $host : $a);
     }
 
@@ -8898,6 +8898,45 @@ DNS-over-HTTPS with IP:
      * hostname-часть прогоняется через idn_to_ascii (punycode), префикс
      * сохраняется. Значения regexp:/keyword: не нормализуются (это regex/подстрока).
      */
+    /**
+     * idn_to_ascii, безопасный к пустой строке и к отсутствию intl.
+     *
+     * В PHP 8 idn_to_ascii('') бросает ValueError («must not be empty»), а не
+     * возвращает false — то есть запись «domain:» или «full:» без значения
+     * роняла ФАТАЛОМ весь обработчик сообщения: бот молча переставал отвечать
+     * на добавление в список. В контейнере intl загружен, поэтому вылезало
+     * только в бою; в тестах, где idn_to_ascii подменяют полифиллом, — нет.
+     *
+     * Пустое значение здесь законно: classifyRouteEntry отдаёт value='' для
+     * префикса без содержимого, а отсеивает такие записи routeEntryUsable
+     * ПОСЛЕ нормализации.
+     */
+    public function idnAscii(string $host)
+    {
+        if ('' === trim($host) || !function_exists('idn_to_ascii')) {
+            return false; // вызывающий подставит исходное значение
+        }
+
+        return idn_to_ascii($host);
+    }
+
+    /**
+     * Обратная сторона idnAscii() — для показа записи пользователю.
+     *
+     * Опаснее, чем кажется: routeEntryLabel() зовут на КАЖДУЮ кнопку меню
+     * списка, и записи «domain:»/«full:» без значения в старых списках уже
+     * лежат (до правки addInclude они туда проходили). ValueError из
+     * idn_to_utf8('') валил бы не добавление, а само открытие меню block/warp.
+     */
+    public function idnUtf8(string $host)
+    {
+        if ('' === trim($host) || !function_exists('idn_to_utf8')) {
+            return false;
+        }
+
+        return idn_to_utf8($host);
+    }
+
     public function normalizeRouteEntry(string $e): string
     {
         $c = $this->classifyRouteEntry($e);
@@ -8913,10 +8952,10 @@ DNS-over-HTTPS with IP:
                 return $c['value'];
             case 'full':
             case 'domain':
-                $v = idn_to_ascii($c['value']);
+                $v = $this->idnAscii($c['value']);
                 return "{$c['kind']}:" . ($v === false ? $c['value'] : $v);
             default: // suffix
-                $v = idn_to_ascii($c['value']);
+                $v = $this->idnAscii($c['value']);
                 return $v === false ? $c['value'] : $v;
         }
     }
@@ -8984,10 +9023,10 @@ DNS-over-HTTPS with IP:
                 return $e;
             case 'full':
             case 'domain':
-                $v = idn_to_utf8($c['value']);
+                $v = $this->idnUtf8($c['value']);
                 return "{$c['kind']}:" . ($v === false ? $c['value'] : $v);
             default: // suffix
-                $v = idn_to_utf8($c['value']);
+                $v = $this->idnUtf8($c['value']);
                 return $v === false ? $e : $v;
         }
     }
