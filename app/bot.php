@@ -4398,8 +4398,12 @@ NFT;
                         // Тот же путь, что у ручного ввода: punycode и отсев
                         // мусора. Импорт шёл мимо него, и в списке оседали
                         // записи, которые ядро потом молча выбрасывало.
+                        // Отсев тем же routeEntryUsable, что и в addInclude:
+                        // пустая строка бывает только у битого IP, а "keyword:"
+                        // и прочие префиксы без значения нормализуются сами в
+                        // себя и осели бы в списке.
                         $key = $this->normalizeRouteEntry($t[0]);
-                        if (trim($key) !== '') {
+                        if ($this->routeEntryUsable($this->classifyRouteEntry($key))) {
                             $list[$key] = $on;
                         }
                     } else {
@@ -8407,12 +8411,16 @@ DNS-over-HTTPS with IP:
                     }
                     $conf[$type][$lastKey] = true;
                 } else {
-                    // Мусорный ввод (пустой префикс "keyword:", битый IP вроде
-                    // 1.2.3.4/64) нормализуется в пустую строку — не заводим под
-                    // него пустой ключ в списке, иначе он навсегда осядет в меню
-                    // неудаляемой пустой кнопкой.
+                    // Мусорный ввод не заводим в список: он всё равно отсеется
+                    // на выдаче в конфиги, но останется висеть кнопкой в меню.
+                    //
+                    // Проверять пустоту нормализованной строки НЕДОСТАТОЧНО:
+                    // пустую строку даёт только битый IP, а "keyword:" и прочие
+                    // префиксы без значения нормализуются сами в себя и оседали
+                    // в списке. Спрашиваем тем же routeEntryUsable, которым
+                    // генераторы конфигов решают, годится ли запись.
                     $key = $this->normalizeRouteEntry($v);
-                    if (trim($key) === '') {
+                    if (!$this->routeEntryUsable($this->classifyRouteEntry($key))) {
                         continue;
                     }
                     $canon = $this->routeEntryCanonKey($key);
@@ -8439,8 +8447,14 @@ DNS-over-HTTPS with IP:
                 // Заодно схлопываем дубли, накопленные до появления канона (и
                 // те, что раньше означали разное: голая запись в xray была
                 // подстрокой, а domain: — суффиксом).
-                ['list' => $conf[$type], 'removed' => $merged] = $this->dedupeRouteList($conf[$type]);
+                //
+                // ?? [] обязателен: на свежей установке pac.json пуст ({}), и
+                // если ВЕСЬ ввод отсеялся как мусор, ни одна ветка выше ключ
+                // $type не создала — dedupeRouteList(null) роняла бота с
+                // TypeError прямо в обработчике сообщения.
+                ['list' => $conf[$type], 'removed' => $merged] = $this->dedupeRouteList($conf[$type] ?? []);
             }
+            $conf[$type] ??= [];
             ksort($conf[$type]);
             $this->setPacConf($conf);
             $page = (int) floor(array_search($lastKey, array_keys($conf[$type])) / $this->limit);
@@ -8526,7 +8540,14 @@ DNS-over-HTTPS with IP:
         // geosite:/geoip: — встроенные категории ядра. Без этой ветки geoip:cn
         // классифицировался как suffix и уезжал в поле domain[], где xray его не
         // принимает: конфиг отвергается и ядро не стартует.
-        if (preg_match('~^(geosite|geoip):(.+)$~is', $e, $m)) {
+        //
+        // Значение (.*), а не (.+), как и у остальных префиксов: с (.+) запись
+        // "geosite:" без категории не матчилась здесь, проваливалась мимо всех
+        // веток и возвращалась как suffix со значением "geosite:" — то есть
+        // считалась ВАЛИДНЫМ доменом и уезжала в конфиги как domain:geosite:
+        // (xray) и domain_suffix "geosite:" (sing-box). С (.*) пустая категория
+        // даёт value='' и отсеивается routeEntryUsable, как пустой keyword:.
+        if (preg_match('~^(geosite|geoip):(.*)$~is', $e, $m)) {
             return ['kind' => strtolower($m[1]), 'value' => $m[2]];
         }
         // Флаг s: regex-значение теоретически может содержать перевод строки.
