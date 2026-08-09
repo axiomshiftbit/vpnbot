@@ -233,3 +233,52 @@ jobs:
             *.cache-to=type=gha,mode=max,scope=${{ matrix.service }}
             *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             *.labels.org.opencontainers.image.revision=${{ github.sha }}
+
+  # Старые версии образов копятся навсегда: registry их не вытесняет, а каждый
+  # прогон кладёт новый sha-тег. За месяц ежедневных сборок это десятки гигабайт
+  # у аккаунта, и найти нужную версию в списке становится нельзя.
+  #
+  # Держим три последних на пакет: текущая (её же тянут серверы по latest/dev)
+  # и две предыдущие на откат. Тег latest всегда на самой свежей, поэтому
+  # min-versions-to-keep никогда его не заденет.
+  #
+  # Чистим все 14 пакетов, а не только собранные в этом прогоне: сборка обычно
+  # частичная (plan сужает матрицу), и пакеты, которые давно не пересобирались,
+  # иначе копили бы хвост вечно. Лишнего не удалит — если версий три или меньше,
+  # шаг ничего не делает.
+  prune:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ng
+          - php
+          - wg
+          - ad
+          - telemt
+          - xr
+          - oc
+          - np
+          - ss
+          - dnstt
+          - ovpn
+          - ipsec
+          - tt
+          - hysteria
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          owner: axiomshiftbit
+          package-name: vpnbot-${{ matrix.image }}
+          package-type: container
+          min-versions-to-keep: 3
+          # github.token хватает, пока у репозитория роль admin в настройках
+          # пакета (её выдаёт сама публикация из Actions). Если GitHub однажды
+          # ответит 403, класть в секрет GHCR_PRUNE_TOKEN отдельный PAT с
+          # read:packages + delete:packages — и НИЧЕГО больше: этот токен
+          # умеет только удалять образы.
+          token: ${{ secrets.GHCR_PRUNE_TOKEN || github.token }}
