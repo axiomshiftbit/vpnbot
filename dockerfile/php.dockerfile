@@ -1,5 +1,12 @@
 ARG image=alpine:3.23
 FROM $image
+
+# libqrencode-tools, а НЕ libqrencode: второй кладёт только libqrencode.so, а
+# sendQr() запускает CLI `qrencode`. С миграции на alpine (c421dc2, где
+# debian-пакет qrencode заменили на libqrencode) бинаря в образе не было вовсе,
+# и «show QR» молча не работал: qrencode не находился, png не создавался,
+# sendPhoto уходил с несуществующим путём. Пакет лежит в репозитории community,
+# он включён в /etc/apk/repositories базового образа.
 RUN apk add --no-cache --update php84 \
     php84-mbstring \
     php84-session \
@@ -16,7 +23,7 @@ RUN apk add --no-cache --update php84 \
     unit-php84 \
     xxd \
     certbot \
-    libqrencode \
+    libqrencode-tools \
     openssh \
     openssl \
     curl \
