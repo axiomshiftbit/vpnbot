@@ -239,9 +239,17 @@ jobs:
   # прогон кладёт новый sha-тег. За месяц ежедневных сборок это десятки гигабайт
   # у аккаунта, и найти нужную версию в списке становится нельзя.
   #
-  # Держим три последних на пакет: текущая (её же тянут серверы по latest/dev)
-  # и две предыдущие на откат. Тег latest всегда на самой свежей, поэтому
-  # min-versions-to-keep никогда его не заденет.
+  # Держим три последних sha-версии на пакет: на откат. Версии, несущие
+  # КАНАЛЬНЫЙ тег (latest, dev), не удаляются никогда — независимо от возраста.
+  #
+  # Раньше здесь стоял actions/delete-package-versions с min-versions-to-keep: 3
+  # и рассуждением «тег latest всегда на самой свежей, поэтому удержание его не
+  # заденет». Для latest это верно, а для dev — НЕТ: сборки с master кладут
+  # новые версии, dev-версия уезжает за третье место и удаляется ВМЕСТЕ С ТЕГОМ.
+  # К 2026-08-09 тег :dev остался ровно у одного пакета из 14, а
+  # docker-compose.yml по умолчанию тянет ${VPNBOT_TAG:-dev} и .env ставит
+  # VPNBOT_TAG=dev — то есть свежая установка падала на «manifest unknown»
+  # для 13 образов. Спасало только override.env с latest на боевых хостах.
   #
   # Чистим все 14 пакетов, а не только собранные в этом прогоне: сборка обычно
   # частичная (plan сужает матрицу), и пакеты, которые давно не пересобирались,
@@ -271,15 +279,44 @@ jobs:
           - tt
           - hysteria
     steps:
-      - uses: actions/delete-package-versions@v5
-        with:
-          owner: axiomshiftbit
-          package-name: vpnbot-${{ matrix.image }}
-          package-type: container
-          min-versions-to-keep: 3
-          # github.token хватает, пока у репозитория роль admin в настройках
-          # пакета (её выдаёт сама публикация из Actions). Если GitHub однажды
-          # ответит 403, класть в секрет GHCR_PRUNE_TOKEN отдельный PAT с
-          # read:packages + delete:packages — и НИЧЕГО больше: этот токен
-          # умеет только удалять образы.
-          token: ${{ secrets.GHCR_PRUNE_TOKEN || github.token }}
+      # Своим шагом, а не actions/delete-package-versions: у того удержание
+      # считается по всем версиям подряд и канальный тег защитить нечем
+      # (ignore-versions матчится по имени версии, а у container-пакета это
+      # digest, не тег).
+      #
+      # github.token хватает, пока у репозитория роль admin в настройках пакета
+      # (её выдаёт сама публикация из Actions). Если GitHub однажды ответит 403,
+      # класть в секрет GHCR_PRUNE_TOKEN отдельный PAT с read:packages +
+      # delete:packages — и НИЧЕГО больше: этот токен умеет только удалять образы.
+      - name: Удалить старые sha-версии, сохранив канальные теги
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_PRUNE_TOKEN || github.token }}
+          PKG: vpnbot-${{ matrix.image }}
+          KEEP: '3'
+        run: |
+          set -euo pipefail
+          gh api "/users/axiomshiftbit/packages/container/${PKG}/versions?per_page=100" > versions.json
+
+          # Кандидат на удаление — версия, у которой ВСЕ теги вида sha-… либо
+          # тегов нет вовсе (осиротевший манифест). Версия с latest/dev в
+          # список не попадает никогда. `[] | all` — true, поэтому untagged
+          # тоже кандидат, и это правильно.
+          ids=$(jq -r --argjson keep "${KEEP}" '
+            [ .[] | select((.metadata.container.tags // []) | map(startswith("sha-")) | all) ]
+            | sort_by(.created_at) | reverse | .[$keep:] | .[].id
+          ' versions.json)
+
+          kept=$(jq -r '
+            [ .[] | select(((.metadata.container.tags // []) | map(startswith("sha-")) | all) | not) ]
+            | map(.metadata.container.tags | join(",")) | join(" ")
+          ' versions.json)
+          echo "${PKG}: канальные версии сохраняются -> ${kept:-(нет)}"
+
+          if [ -z "${ids}" ]; then
+            echo "${PKG}: удалять нечего"
+            exit 0
+          fi
+          for id in ${ids}; do
+            echo "${PKG}: удаляю версию ${id}"
+            gh api --method DELETE "/users/axiomshiftbit/packages/container/${PKG}/versions/${id}"
+          done
