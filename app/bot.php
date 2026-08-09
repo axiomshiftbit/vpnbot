@@ -18058,29 +18058,49 @@ DNS-over-HTTPS with IP:
         return $r;
     }
 
+    // Образ этой инсталляции vpnbot — независимо от реестра и владельца.
+    // Проверка была прибита к «^mercurykd/vpnbot», и после перехода на
+    // ghcr.io/axiomshiftbit/vpnbot-* (aca3ea2) перестала совпадать вообще ни с чем:
+    // массив совпадений оставался НЕинициализированным, array_diff(null, …)
+    // выбрасывал TypeError, и service.php умирал на 26-й строке. То есть при
+    // каждом старте контейнера не выполнялись dnsttStart, restartHysteria,
+    // restartTt, setUpstreamDomain/Naive/Ocserv, syncOcservCamouflage и
+    // xrayUpdateRules — молча, потому что фатал уходил только в php_error.
+    //
+    // Границы обязательны с ОБЕИХ сторон, потому что функция УДАЛЯЕТ образы:
+    // слева (^|/) отсекает чужой «myvpnbot-…», справа [-:/]|$ — чужой
+    // «vpnbotcompany-tools/…». Наши имена — vpnbot, vpnbot-php, с тегом и без.
+    public static function isVpnbotImage($name): bool
+    {
+        return is_string($name) && $name !== '' && (bool) preg_match('~(^|/)vpnbot([-:/]|$)~', $name);
+    }
+
     public function cleanDocker()
     {
-        $r = $this->dockerApi('/images/json');
-        foreach ($r as $v) {
-            if (!empty($v['RepoTags'])) {
-                foreach ($v['RepoTags'] as $j) {
-                    if (preg_match('~^mercurykd/vpnbot~', $j)) {
-                        $i[] = $v['Id'];
-                        break;
-                    }
+        $i = [];
+        $c = [];
+        // (array) вокруг ответа: dockerApi() отдаёт null, когда сокет недоступен
+        // или ответ не JSON, а foreach по null — это warning на каждом проходе.
+        // is_array($v) — на случай ответа-ошибки вида {"message":"..."}: он
+        // декодируется в массив строк, и $v['RepoTags'] полез бы в строку.
+        foreach ((array) $this->dockerApi('/images/json') as $v) {
+            if (!is_array($v)) {
+                continue;
+            }
+            foreach ((array) ($v['RepoTags'] ?? []) as $j) {
+                if (self::isVpnbotImage($j)) {
+                    $i[] = $v['Id'] ?? null;
+                    break;
                 }
             }
         }
-        $r = $this->dockerApi('/containers/json?all=1');
-        foreach ($r as $v) {
-            if (preg_match('~^mercurykd/vpnbot~', $v['Image'])) {
-                $c[] = $v['ImageID'];
+        foreach ((array) $this->dockerApi('/containers/json?all=1') as $v) {
+            if (is_array($v) && self::isVpnbotImage($v['Image'] ?? null)) {
+                $c[] = $v['ImageID'] ?? null;
             }
         }
-        if (!empty($d = array_diff($i, $c))) {
-            foreach ($d as $v) {
-                $this->dockerApi("/images/$v", 'DELETE');
-            }
+        foreach (array_diff(array_filter($i), array_filter($c)) as $v) {
+            $this->dockerApi("/images/$v", 'DELETE');
         }
         $this->dockerApi('/images/prune', 'POST', ['dangling' => true]);
         $this->dockerApi('/build/prune', 'POST');
