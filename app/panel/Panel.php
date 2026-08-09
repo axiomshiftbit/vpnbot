@@ -797,14 +797,33 @@ class Panel
         }, $e);
         $e = str_replace('&lt;/a&gt;', '</a>', $e);
 
-        // Переносы превращаем в <br> ВЕЗДЕ, КРОМЕ <pre>: там перенос уже
+        // Переносы превращаем в <br> ВЕЗДЕ, КРОМЕ <pre> и <code>: там перенос
         // отображается сам (white-space: pre-wrap), и <br> внутри давал бы
         // двойные пустые строки во всех диагностиках и логах.
-        $parts = preg_split('~(<pre>.*?</pre>)~s', $e, -1, PREG_SPLIT_DELIM_CAPTURE);
+        //
+        // <code> попал сюда вместе с pre-wrap в ui.html. Бот выравнивает
+        // колонки пробелами (alignColumns) и заворачивает такие блоки — статусы
+        // сервисов, версии — именно в <code>; при white-space:normal браузер
+        // схлопывал кратные пробелы, и таблицы слипались в сплошной текст.
+        // Одного CSS мало: nl2br() ОСТАВЛЯЕТ исходный \n и лишь дописывает <br>
+        // перед ним, так что с pre-wrap каждая строка ломалась бы дважды.
+        //
+        // <pre> в альтернативе первым не случайно: у бота есть разметка
+        // <pre><code class="language-shell">…</code></pre> (updatebot), и pre
+        // должен съесть блок целиком, а не отдать внутренний code отдельно.
+        $parts = preg_split('~(<pre>.*?</pre>|<code[^>]*>.*?</code>)~s', $e, -1, PREG_SPLIT_DELIM_CAPTURE);
         foreach ($parts as $i => $p) {
-            if (!str_starts_with($p, '<pre>')) {
-                $parts[$i] = nl2br($p, false);
+            if (str_starts_with($p, '<pre>')) {
+                continue;
             }
+            if (str_starts_with($p, '<code')) {
+                // Браузер съедает первый перевод строки только внутри <pre>;
+                // в <code> он остался бы пустой первой строкой — блок начинается
+                // с «<code>\n», потому что бот собирает меню через implode("\n").
+                $parts[$i] = preg_replace('~(<code[^>]*>)\n~', '$1', $p, 1);
+                continue;
+            }
+            $parts[$i] = nl2br($p, false);
         }
 
         return implode('', $parts);

@@ -26,7 +26,13 @@ header button:hover{background:var(--btnh)}
 .msg.own{align-self:flex-end;background:var(--own);border-color:transparent}
 .msg .body{white-space:normal}
 .msg .body pre{white-space:pre-wrap;background:rgba(127,145,164,.14);padding:8px;border-radius:6px;margin:6px 0;overflow-x:auto}
-.msg .body code{background:rgba(127,145,164,.16);padding:1px 4px;border-radius:4px;cursor:pointer}
+/* pre-wrap, а не normal: бот выравнивает колонки пробелами (alignColumns) и
+   заворачивает такие блоки — статусы сервисов, версии — в <code>. При normal
+   браузер схлопывал кратные пробелы и таблицы слипались в сплошной текст.
+   Парная правка в Panel::renderText(): <code> исключён из nl2br, иначе перенос
+   считался бы дважды. Пузырь не растянется: pre-wrap переносит по пробелам,
+   а элемент остаётся инлайновым (overflow к нему всё равно неприменим). */
+.msg .body code{background:rgba(127,145,164,.16);padding:1px 4px;border-radius:4px;cursor:pointer;white-space:pre-wrap}
 .msg .body blockquote{border-left:3px solid var(--accent);margin:6px 0;padding:2px 0 2px 10px;color:var(--dim)}
 .msg .body a{color:var(--accent)}
 .msg .body .tg-spoiler{background:var(--dim);color:transparent;border-radius:3px;cursor:pointer}
