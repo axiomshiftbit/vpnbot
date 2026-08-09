@@ -1369,6 +1369,9 @@ class Bot
             case preg_match('~^/setAmneziaI1 (-?\d+)$~', $this->input['callback'], $m):
                 $this->setAmneziaI1($m[1]);
                 break;
+            case preg_match('~^/genQuicInitial ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->genQuicInitial($m[1], $m[2]);
+                break;
             case preg_match('~^/rotateAmnezia ([01]) (-?\d+)$~', $this->input['callback'], $m):
                 $this->selectWG($m[1]);
                 $this->rotateAmneziaJunk(false, $m[2]);
@@ -6349,19 +6352,77 @@ NFT;
         return "<b 0x$hex><r 32><r $pad>";
     }
 
-    // STUN Binding Request (RFC 5389). msg_length указывает количество байт
-    // ПОСЛЕ 20-байтного STUN-заголовка (т.е. в attribute-секции).
-    // Layout: type(2) + length(2) + magic(4) + tx_id(12) + attrs(target-20).
-    // Min target = 20 (attrs=0); STUN attrs не обязаны быть кратны 4, но
-    // отдельные атрибуты — да; для junk-mimicry это не проверяется.
-    public function cpsSTUN(int $target): string
+    // STUN Binding Request (RFC 5389 / RFC 8489), ICE connectivity check.
+    // Layout: type(2) + length(2) + magic(4) + tx_id(12) + attrs.
+    //
+    // Прежняя версия добивала attribute-секцию сплошным <r N>. Длина в
+    // заголовке при этом сходилась, но сама секция — это TLV-поток, и любой
+    // настоящий разборщик (Wireshark, RFC 5389 §15) читает первые два байта
+    // как тип атрибута, следующие два как его длину и уходит по мусорному
+    // смещению: пакет помечается malformed на первом же атрибуте. Здесь
+    // собран реальный набор атрибутов ICE-проверки, а <r> стоит ровно там,
+    // где у настоящего клиента тоже случайные байты.
+    //
+    // FINGERPRINT (0x8028) сознательно НЕ добавляем: его значение —
+    // CRC32 всего сообщения XOR 0x5354554e, а сообщение содержит теги <r>,
+    // раскрываемые на стороне клиента при отправке. Посчитать CRC заранее
+    // невозможно, а неверный FINGERPRINT разборщик отмечает явной ошибкой —
+    // это хуже, чем его отсутствие (атрибут опциональный).
+    // MESSAGE-INTEGRITY, наоборот, оставляем: это HMAC-SHA1 на пароле ICE,
+    // проверить его без пароля нельзя, поэтому 20 случайных байт неотличимы.
+    public function cpsSTUN(): string
     {
-        if ($target < 20) {
-            throw new InvalidArgumentException("cpsSTUN: target=$target < 20 minimum");
+        // [тип, CPS значения, длина значения, байт паддинга до кратности 4].
+        // Длина в TLV — это длина ЗНАЧЕНИЯ без паддинга (RFC 5389 §15),
+        // а в общую длину сообщения паддинг входит.
+        $attrs = [
+            // USERNAME: "ufrag:ufrag" — 9 байт значения, 3 байта паддинга.
+            ['0006', '<rc 4><b 0x3a><rc 4>', 9, 3],
+            // PRIORITY: типовой приоритет host-кандидата (2130706431).
+            ['0024', '<b 0x7effffff>', 4, 0],
+            // ICE-CONTROLLING: 8-байтный tiebreaker, у клиента тоже случайный.
+            ['802a', '<r 8>', 8, 0],
+            // MESSAGE-INTEGRITY: HMAC-SHA1, обязан идти последним (RFC 5389 §15.4).
+            ['0008', '<r 20>', 20, 0],
+        ];
+        $body = '';
+        $len  = 0;
+        foreach ($attrs as [$type, $value, $vlen, $pad]) {
+            $body .= "<b 0x$type" . sprintf('%04x', $vlen) . '>' . $value
+                   . ($pad > 0 ? '<b 0x' . str_repeat('00', $pad) . '>' : '');
+            $len  += 4 + $vlen + $pad;
         }
-        $attrs = $target - 20;
-        $hex   = sprintf('0001%04x2112a442', $attrs);
-        return "<b 0x$hex><r 12><r $attrs>";
+        $hdr = sprintf('0001%04x2112a442', $len);
+        return $this->cpsJoin("<b 0x$hdr><r 12>" . $body);
+    }
+
+    // Схлопывает соседние <b 0x..> в один тег. Отдельные билдеры собирают
+    // пакет по полям, и без склейки в строке остаются куски вида
+    // «<b 0x000000><b 0x00240004>» — валидные, но нечитаемые, а главное
+    // маскирующие ошибку чётности: два нечётных куска рядом дают чётную сумму
+    // байт, но каждый по отдельности уронит разбор конфига у клиента.
+    public function cpsJoin(string $s): string
+    {
+        return preg_replace_callback(
+            '~(?:<b 0x[0-9a-fA-F]+>){2,}~',
+            fn ($m) => '<b 0x' . implode('', preg_split('~<b 0x|>~', $m[0], -1, PREG_SPLIT_NO_EMPTY)) . '>',
+            $s
+        ) ?? $s;
+    }
+
+    // NTPv4 client request (RFC 5905 §7.3). Пакет клиента — РОВНО 48 байт:
+    // всё, что длиннее, для ntpd/chrony это extension fields, и отсутствие у
+    // них корректных заголовков видно разборщику сразу. Прежний пресет добивал
+    // 16 байт литерала случайными <r 100>, то есть отправлял 116-байтный
+    // «NTP» — размер, которого у клиентского запроса не бывает.
+    // Заполнено только поле Transmit Timestamp: так делает и настоящий клиент,
+    // а рандом в нём штатен (многие реализации кладут туда nonce).
+    public function cpsNTP(): string
+    {
+        // LI=0, VN=4, Mode=3 (client) | stratum=0 | poll=6 | precision=-20
+        // + rootdelay(4) + rootdisp(4) + refid(4) + ref/orig/recv ts (8*3)
+        $hex = '230006ec' . str_repeat('00', 12) . str_repeat('00', 24);
+        return "<b 0x$hex><r 8>";
     }
 
     // HTTP/2 connection preface (RFC 7540 §3.5) + SETTINGS frame (тип 0x04).
@@ -6417,27 +6478,280 @@ NFT;
         return "<r 2><b 0x$literal><r $pad>";
     }
 
-    public function setAmneziaI1($page = 0)
-    {
-        $c   = $this->getPacConf();
-        $cur = $c[$this->getInstanceWG(1) . 'amnezia_keys']['I1'] ?? '—';
+    // ── QUIC (RFC 9000 / RFC 9001) ─────────────────────────────────────────
 
-        // Tap-to-copy CPS presets. Стартовые байты имитируют реальный протокол, остаток —
-        // рандом-добивка до рекомендуемых ≥100 байт (habr.com/ru/companies/amnezia/articles/1014636).
-        // Hex внутри <b 0x..> всегда чётной длины (целые байты). Никаких пробелов между токенами.
-        // Источники структуры заголовков:
-        //   QUIC — RFC 9000, docs.amnezia.org
-        //   DNS  — RFC 1035; mDNS — RFC 6762
-        //   TLS  — RFC 5246 (1.2) / RFC 8446 (1.3); DTLS — RFC 6347
-        //   HTTP — RFC 7230 (1.1) / RFC 7540 (2)
-        //   STUN — RFC 5389 (magic cookie 0x2112A442)
-        //   NTP  — RFC 5905 (mode 3 client, first byte 0x23 = LI=0,VN=4,Mode=3)
-        $presets = [
+    // Variable-length integer, RFC 9000 §16. Два старших бита кодируют длину:
+    // 00=1 байт, 01=2, 10=4, 11=8. §16 прямо разрешает НЕминимальную запись
+    // («values do not need to be encoded on the minimum number of bytes»),
+    // чем мы и пользуемся: поле Length всегда пишем 2-байтной формой, иначе
+    // его размер зависел бы от значения и ломал арифметику пакета.
+    public static function quicVarint(int $v): string
+    {
+        if ($v < 0) {
+            throw new InvalidArgumentException("quicVarint: negative value $v");
+        }
+        if ($v <= 63) {
+            return chr($v);
+        }
+        if ($v <= 16383) {
+            return pack('n', 0x4000 | $v);
+        }
+        if ($v <= 1073741823) {
+            return pack('N', 0x80000000 | $v);
+        }
+        throw new InvalidArgumentException("quicVarint: $v exceeds 4-byte form");
+    }
+
+    // Структурно корректный клиентский Initial-пакет БЕЗ шифрования.
+    //
+    // Прежние два пресета QUIC («<b 0xc700000001><r 8>…») клали случайный байт
+    // на место поля Destination Connection ID Length. RFC 9000 §17.2 разрешает
+    // длину CID не больше 20, то есть 236 значений из 256 — сразу malformed,
+    // а в остальных случаях по битому смещению разъезжаются SCID, Token и
+    // Length. Здесь все поля длин прибиты, а <r> стоит там, где у настоящего
+    // клиента тоже случайные байты: сами Connection ID, номер пакета и тело
+    // (в реальном QUIC оно зашифровано, то есть неотличимо от случайного).
+    //
+    // Дальше диссектора со СВОИМ QUIC-расшифровщиком (он выводит ключи из
+    // DCID и проверяет AEAD-тег) этот пакет не пройдёт — для такого случая
+    // есть cpsQUICInitial(). Зато здесь каждое соединение шлёт разные байты,
+    // а не один и тот же вечный пакет.
+    public function cpsQUIC(int $target = 1200): string
+    {
+        // 6 (флаги+версия+DCID len) + 8 DCID + 1 SCID len + 8 SCID
+        // + 1 Token len + 2 Length + 4 Packet Number.
+        $overhead = 30;
+        // Sample для header protection берётся с pn_offset+4 и равен 16 байтам,
+        // поэтому тело короче 16 байт в природе не встречается (RFC 9001 §5.4.2).
+        if ($target < $overhead + 16) {
+            throw new InvalidArgumentException("cpsQUIC: target=$target < " . ($overhead + 16) . ' minimum');
+        }
+        $payload = $target - $overhead;
+        $len     = 4 + $payload;
+        if ($len > 16383) {
+            throw new InvalidArgumentException("cpsQUIC: target=$target too large for 2-byte Length varint");
+        }
+        // Тело режем на куски: официальный потолок N у <r> — CPS_MAX_LEN.
+        $body = '';
+        for ($left = $payload; $left > 0; $left -= self::CPS_MAX_LEN) {
+            $body .= '<r ' . min($left, self::CPS_MAX_LEN) . '>';
+        }
+        return $this->cpsJoin(
+            // c3 = long header, fixed bit, тип Initial, PN len 4 байта
+            '<b 0xc30000000108>' . '<r 8>'          // версия 1, DCID len 8, DCID
+            . '<b 0x08>' . '<r 8>'                  // SCID len 8, SCID
+            . '<b 0x00' . bin2hex(self::quicVarint2($len)) . '>'  // Token len 0, Length
+            . '<r 4>'                               // Packet Number
+            . $body
+        );
+    }
+
+    // Length в Initial обязан быть предсказуемого размера — всегда 2 байта.
+    private static function quicVarint2(int $v): string
+    {
+        if ($v > 16383) {
+            throw new InvalidArgumentException("quicVarint2: $v exceeds 2-byte form");
+        }
+        return pack('n', 0x4000 | $v);
+    }
+
+    // HKDF-Expand, RFC 5869 §2.3. Штатный hash_hkdf() делает Extract+Expand
+    // одним вызовом, а TLS 1.3 и QUIC требуют Expand ОТДЕЛЬНО, поверх уже
+    // готового PRK — поэтому цикл здесь свой.
+    private static function hkdfExpand(string $prk, string $info, int $len): string
+    {
+        $out = '';
+        $t   = '';
+        for ($i = 1; strlen($out) < $len; $i++) {
+            $t    = hash_hmac('sha256', $t . $info . chr($i), $prk, true);
+            $out .= $t;
+        }
+        return substr($out, 0, $len);
+    }
+
+    // HKDF-Expand-Label, RFC 8446 §7.1 (его же использует RFC 9001).
+    private static function hkdfExpandLabel(string $secret, string $label, string $ctx, int $len): string
+    {
+        $l    = 'tls13 ' . $label;
+        $info = pack('n', $len) . chr(strlen($l)) . $l . chr(strlen($ctx)) . $ctx;
+        return self::hkdfExpand($secret, $info, $len);
+    }
+
+    // Ключи защиты клиентского Initial, RFC 9001 §5.2. Выводятся ИЗ DCID —
+    // никаких секретов не нужно, ровно поэтому Wireshark умеет расшифровывать
+    // чужие Initial-пакеты, и ровно поэтому подделка обязана быть настоящей.
+    private static function quicInitialKeys(string $dcid): array
+    {
+        $salt    = hex2bin('38762cf7f55934b34d179ae6a4c80cadccbb7f0a'); // initial_salt, QUIC v1
+        $initial = hash_hmac('sha256', $dcid, $salt, true);             // HKDF-Extract
+        $client  = self::hkdfExpandLabel($initial, 'client in', '', 32);
+        return [
+            self::hkdfExpandLabel($client, 'quic key', '', 16),
+            self::hkdfExpandLabel($client, 'quic iv', '', 12),
+            self::hkdfExpandLabel($client, 'quic hp', '', 16),
+        ];
+    }
+
+    private static function tlsExt(int $type, string $data): string
+    {
+        return pack('n', $type) . pack('n', strlen($data)) . $data;
+    }
+
+    // TLS 1.3 ClientHello для QUIC (RFC 8446 §4.1.2 + RFC 9001 §8).
+    // legacy_session_id обязан быть пустым — RFC 9001 §8.4, сервер обязан
+    // отбросить Initial с непустым session_id.
+    private function quicClientHello(string $sni, string $scid): string
+    {
+        $ext  = self::tlsExt(0x0000, pack('n', strlen($sni) + 3) . "\x00" . pack('n', strlen($sni)) . $sni);
+        $ext .= self::tlsExt(0x000a, pack('n', 2) . "\x00\x1d");        // supported_groups: x25519
+        $ext .= self::tlsExt(0x0010, pack('n', 3) . "\x02" . 'h3');     // ALPN: h3
+        $sigs = "\x04\x03\x08\x04\x04\x01\x05\x03\x08\x05\x05\x01\x08\x06\x06\x01";
+        $ext .= self::tlsExt(0x000d, pack('n', strlen($sigs)) . $sigs); // signature_algorithms
+        $ks   = "\x00\x1d" . pack('n', 32) . random_bytes(32);          // key_share: x25519
+        $ext .= self::tlsExt(0x0033, pack('n', strlen($ks)) . $ks);
+        $ext .= self::tlsExt(0x002b, "\x02\x03\x04");                   // supported_versions: TLS 1.3
+        // quic_transport_parameters (RFC 9001 §8.2): id/len/value, всё varint.
+        $tp   = self::quicVarint(0x01) . self::quicVarint(4) . self::quicVarint(30000)   // max_idle_timeout
+              . self::quicVarint(0x04) . self::quicVarint(4) . self::quicVarint(1048576) // initial_max_data
+              . self::quicVarint(0x08) . self::quicVarint(1) . self::quicVarint(100)     // initial_max_streams_bidi
+              . self::quicVarint(0x0f) . self::quicVarint(strlen($scid)) . $scid;        // initial_source_connection_id
+        $ext .= self::tlsExt(0x0039, $tp);
+
+        $body = "\x03\x03" . random_bytes(32)                  // legacy_version + random
+              . "\x00"                                          // legacy_session_id: пусто
+              . pack('n', 6) . "\x13\x01\x13\x02\x13\x03"       // TLS_AES_128_GCM / AES_256_GCM / CHACHA20
+              . "\x01\x00"                                      // legacy_compression_methods
+              . pack('n', strlen($ext)) . $ext;
+        return "\x01" . substr(pack('N', strlen($body)), 1) . $body;
+    }
+
+    // НАСТОЯЩИЙ клиентский Initial: ClientHello в CRYPTO-фрейме, AES-128-GCM
+    // и header protection по RFC 9001. Такой пакет Wireshark расшифровывает и
+    // разбирает как обычный QUIC — включая SNI внутри.
+    //
+    // РАЗМЕН, о котором надо помнить: AEAD-тег покрывает весь пакет, поэтому
+    // внутрь нельзя вставить ни одного <r> — вся 1200-байтная строка уходит
+    // одним статическим <b 0xHEX>, и КАЖДЫЙ хендшейк шлёт побайтово один и тот
+    // же пакет. Настоящий клиент меняет DCID и key_share на каждое соединение,
+    // так что бесконечный повтор одного Initial — сам по себе аномалия.
+    // Компенсируется ротацией (rotate: every Nd) и кнопкой перегенерации.
+    // Если это неприемлемо — берите cpsQUIC(): он структурно валиден и
+    // случаен на каждом пакете, но не переживёт расшифровку.
+    public function cpsQUICInitial(string $sni = 'www.cloudflare.com'): string
+    {
+        if (!preg_match('~^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$~i', $sni)) {
+            throw new InvalidArgumentException("cpsQUICInitial: bad SNI '$sni'");
+        }
+        $dcid = random_bytes(8);
+        $scid = random_bytes(8);
+        $pnB  = pack('N', 0);                       // Packet Number 0, длина 4
+
+        $ch     = $this->quicClientHello($sni, $scid);
+        $crypto = "\x06" . self::quicVarint(0) . self::quicVarint(strlen($ch)) . $ch;
+
+        // RFC 9000 §14.1: датаграмму с клиентским Initial доводят до 1200 байт,
+        // иначе сервер ОБЯЗАН её отбросить — короткий Initial сам по себе метка.
+        // Добиваем PADDING-фреймами (0x00).
+        $total = 1200;
+        $ptLen = $total - 24 - 2 - 4 - 16;          // header + Length + PN + GCM tag
+        if (strlen($crypto) > $ptLen) {
+            throw new InvalidArgumentException('cpsQUICInitial: ClientHello does not fit into a 1200-byte Initial');
+        }
+        $pt  = $crypto . str_repeat("\x00", $ptLen - strlen($crypto));
+        $hdr = "\xc3\x00\x00\x00\x01"
+             . chr(strlen($dcid)) . $dcid
+             . chr(strlen($scid)) . $scid
+             . "\x00"
+             . self::quicVarint2(4 + $ptLen + 16)
+             . $pnB;
+
+        [$key, $iv, $hp] = self::quicInitialKeys($dcid);
+        // nonce = iv XOR номер пакета, выровненный вправо (RFC 9001 §5.3).
+        $nonce = $iv ^ (str_repeat("\x00", strlen($iv) - strlen($pnB)) . $pnB);
+
+        $tag = '';
+        $ct  = openssl_encrypt($pt, 'aes-128-gcm', $key, OPENSSL_RAW_DATA, $nonce, $tag, $hdr, 16);
+        if ($ct === false) {
+            throw new RuntimeException('cpsQUICInitial: AES-128-GCM failed');
+        }
+        $ct .= $tag;
+
+        // Header protection, RFC 9001 §5.4.3: маска — AES-ECB от 16 байт тела,
+        // начиная с pn_offset+4 (то есть с самого начала шифротекста).
+        $mask = openssl_encrypt(substr($ct, 0, 16), 'aes-128-ecb', $hp, OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING);
+        if ($mask === false) {
+            throw new RuntimeException('cpsQUICInitial: AES-128-ECB failed');
+        }
+        // У long header маскируются 4 младших бита первого байта.
+        $hdr[0] = chr(ord($hdr[0]) ^ (ord($mask[0]) & 0x0f));
+        $pnOff  = strlen($hdr) - 4;
+        for ($i = 0; $i < 4; $i++) {
+            $hdr[$pnOff + $i] = chr(ord($hdr[$pnOff + $i]) ^ ord($mask[1 + $i]));
+        }
+        return '<b 0x' . bin2hex($hdr . $ct) . '>';
+    }
+
+    // ── BitTorrent DHT / uTP ───────────────────────────────────────────────
+
+    // DHT KRPC-запрос, BEP 5. Bencode самоописателен, полей длины нет вообще —
+    // поэтому случайные части (20-байтный node id, 2-байтный transaction id,
+    // 20-байтный target) вставляются тегами <r> без единого согласования.
+    // Ключи словаря идут в лексикографическом порядке, как требует bencode.
+    //
+    // Размер намеренно НЕ добивается до рекомендуемых ≥100 байт: настоящий
+    // ping — это ровно 56 байт, а find_node 91, и любой довесок сделал бы
+    // пакет менее правдоподобным, а не более. Рекомендация из статьи Amnezia
+    // про правдоподобие имитации, и здесь она работает наоборот.
+    public function cpsDHT(bool $findNode = false): string
+    {
+        $h = fn (string $s) => '<b 0x' . bin2hex($s) . '>';
+        if ($findNode) {
+            return $h('d1:ad2:id20:') . '<r 20>' . $h('6:target20:') . '<r 20>'
+                 . $h('e1:q9:find_node1:t2:') . '<r 2>' . $h('1:y1:qe');
+        }
+        return $h('d1:ad2:id20:') . '<r 20>' . $h('e1:q4:ping1:t2:') . '<r 2>' . $h('1:y1:qe');
+    }
+
+    // uTP ST_SYN, BEP 29. Заголовок ровно 20 байт, полей длины нет.
+    // <r> — connection_id, timestamp_microseconds и seq_nr: у настоящего
+    // клиента все три тоже непредсказуемы. timestamp_difference на SYN равен
+    // нулю (отвечать ещё некому), ack_nr тоже.
+    public function cpsUTP(): string
+    {
+        // 0x41 = type ST_SYN (4) в старших 4 битах | версия 1; extension 0x00.
+        return $this->cpsJoin(
+            '<b 0x4100><r 2><r 4>'
+            . '<b 0x00000000>'   // timestamp_difference_microseconds
+            . '<b 0x00100000>'   // wnd_size = 1 MiB
+            . '<r 2>'            // seq_nr
+            . '<b 0x0000>'       // ack_nr
+        );
+    }
+
+    // Tap-to-copy CPS presets, сгруппированные по протоколу. Вынесены из
+    // setAmneziaI1() отдельным методом, чтобы tests/cps_presets_test.php мог
+    // разобрать КАЖДЫЙ пресет как бинарный пакет и сверить поля длин: два
+    // прежних QUIC-пресета годами лежали здесь сломанными именно потому, что
+    // проверить их было нечем.
+    //
+    // Стартовые байты имитируют реальный протокол, теги <r>/<rc> стоят там,
+    // где у настоящего клиента тоже непредсказуемые данные (Random, tx_id,
+    // Connection ID, node id) — а не просто добивают длину.
+    // Hex внутри <b 0x..> всегда чётной длины (целые байты). Без пробелов.
+    // Источники структуры заголовков:
+    //   QUIC — RFC 9000 §17.2, RFC 9001 (шифрование Initial)
+    //   DNS  — RFC 1035; mDNS — RFC 6762
+    //   TLS  — RFC 5246 (1.2) / RFC 8446 (1.3); DTLS — RFC 6347
+    //   HTTP — RFC 7230 (1.1) / RFC 7540 (2)
+    //   STUN — RFC 5389 (magic cookie 0x2112A442)
+    //   NTP  — RFC 5905 §7.3 (mode 3 client, первый байт 0x23)
+    //   BitTorrent — BEP 5 (DHT KRPC), BEP 29 (uTP)
+    public function cpsPresets(): array
+    {
+        return [
             'QUIC (UDP/443)' => [
-                'Initial v1 (long header, RFC 9000)'
-                    => '<b 0xc700000001><r 8><t><r 100>',
-                'Initial v1 (вариант из доки Amnezia)'
-                    => '<b 0xd100000001><r 8><t><r 100>',
+                'Initial v1, связные DCID/SCID/Length (RFC 9000 §17.2)'
+                    => $this->cpsQUIC(1200),
             ],
             'DNS / mDNS (UDP/53)' => [
                 'RU: Yandex DNS-ответ (yabs.yandex.ru)'
@@ -6468,22 +6782,41 @@ NFT;
                     => '<b 0x474554202f20485454502f312e310d0a486f73743a20636c6f7564666c6172652e636f6d0d0a4163636570743a202a2f2a0d0a0d0a><r 70>',
             ],
             'WebRTC / NTP (UDP)' => [
-                'STUN Binding Request (consistent msg_length, RFC 5389)'
-                    => $this->cpsSTUN(112),
-                'NTPv4 client request (mode 3, RFC 5905)'
-                    => '<b 0x23000000000000000000000000000000><r 100>',
+                'STUN Binding Request, ICE-атрибуты TLV (RFC 5389)'
+                    => $this->cpsSTUN(),
+                'NTPv4 client request, ровно 48 байт (RFC 5905 §7.3)'
+                    => $this->cpsNTP(),
+            ],
+            'BitTorrent (UDP)' => [
+                'DHT ping, 56 байт (BEP 5)'
+                    => $this->cpsDHT(),
+                'DHT find_node, 92 байта (BEP 5)'
+                    => $this->cpsDHT(true),
+                'uTP ST_SYN, 20 байт (BEP 29)'
+                    => $this->cpsUTP(),
             ],
             'Прочее' => [
                 'Лёгкий профиль (минимальный валидный 2.0)'
                     => '<b 0xc000000001><r 100>',
             ],
         ];
-        $lines = [
+    }
+
+    public function setAmneziaI1($page = 0)
+    {
+        $c       = $this->getPacConf();
+        $cur     = $c[$this->getInstanceWG(1) . 'amnezia_keys']['I1'] ?? '—';
+        $presets = $this->cpsPresets();
+        $lines   = [
             "@{$this->input['username']} введите строку I1 (CPS) или 0 — отключить цепочку 2.0.",
             '',
             'Текущее: <code>' . htmlspecialchars($cur) . '</code>',
             '',
-            'Правила: hex в &lt;b 0x..&gt; — чётное число символов (целые байты); итоговый размер пакета ≥100 байт. Без пробелов между токенами.',
+            'Правила: hex в &lt;b 0x..&gt; — чётное число символов (целые байты). Без пробелов между токенами.',
+            '',
+            'Про размер: рекомендация «≥100 байт» — про правдоподобие, а не требование парсера. Для имитации конкретного протокола ВЕРНЕЕ совпасть с его настоящим размером: клиентский NTP — ровно 48 байт, DHT ping — 56, uTP SYN — 20, и добивка сделала бы их подозрительнее, а не незаметнее.',
+            '',
+            'Кнопка «QUIC Initial» в меню генерирует и сразу ставит настоящий шифрованный Initial (RFC 9001): 1200 байт, расшифровывается Wireshark как обычный QUIC. Платой идёт статичность — AEAD-тег покрывает пакет целиком, поэтому теги &lt;r&gt; внутрь не вставить и все хендшейки шлют один и тот же пакет. Держите включённой авто-ротацию либо берите пресет QUIC из списка ниже — он случаен на каждом пакете, но расшифровку не переживёт.',
             '',
             'Токены CPS:',
             '<code>&lt;b 0xHEX&gt;</code> — литерал-байты, для заголовков протоколов',
@@ -6493,18 +6826,40 @@ NFT;
             '<code>&lt;t&gt;</code>       — 4-байтный UNIX-timestamp',
             '',
             'I1 пишется одинаково в server и client (требование протокола: обе стороны должны консьюмить тот же junk-паттерн). Для разнообразия fingerprint\'а во времени включите авто-ротацию: rotate: every Nd.',
-            '',
-            'Готовые примеры (нажмите на строку — скопируется):',
         ];
+
+        // Пресеты уезжают ОТДЕЛЬНЫМИ сообщениями, а не в одном со шпаргалкой:
+        // у Telegram потолок 4096 символов на sendMessage, и общий текст упёрся
+        // в него ещё до появления DHT/uTP (3648 из 4096). Одно длинное hex-тело
+        // вроде яндексового DNS-ответа — это сразу ~270 символов, поэтому режем
+        // по секциям с запасом, а не «когда-нибудь потом».
+        $chunks = [];
+        $cur    = ['Готовые примеры (нажмите на строку — скопируется):'];
+        $curLen = mb_strlen($cur[0]);
         foreach ($presets as $section => $items) {
-            $lines[] = '';
-            $lines[] = "<b>— $section —</b>";
+            $block = ['', "<b>— $section —</b>"];
             foreach ($items as $label => $val) {
-                $lines[] = "• $label";
-                $lines[] = '<code>' . htmlspecialchars($val) . '</code>';
+                $block[] = "• $label";
+                $block[] = '<code>' . htmlspecialchars($val) . '</code>';
             }
+            $blockLen = mb_strlen(implode("\n", $block)) + 1;
+            // 3800, а не 4096: запас на служебную обвязку и на то, что счёт у
+            // Telegram идёт по UTF-16, а не по символам PHP.
+            if ($curLen + $blockLen > 3800 && count($cur) > 1) {
+                $chunks[] = implode("\n", $cur);
+                $cur      = [];
+                $curLen   = 0;
+            }
+            $cur    = array_merge($cur, $block);
+            $curLen += $blockLen;
+        }
+        $chunks[] = implode("\n", $cur);
+        foreach ($chunks as $chunk) {
+            $this->send($this->input['chat'], $chunk, $this->input['message_id']);
         }
 
+        // Промпт с ForceReply шлём ПОСЛЕДНИМ: ответ пользователя должен
+        // прицепиться именно к нему, иначе stash не найдёт свой message_id.
         $r = $this->send(
             $this->input['chat'],
             implode("\n", $lines),
@@ -6562,6 +6917,39 @@ NFT;
         $c[$prefix . 'amnezia'] = 1;
         $this->setPacConf($c);
         $this->switchAmnezia($page, false, false, 1);
+    }
+
+    // Генерирует НАСТОЯЩИЙ шифрованный QUIC Initial и сразу ставит его в I1.
+    // Отдельной кнопкой, а не строкой в шпаргалке пресетов: 1200-байтный пакет
+    // — это 2400 hex-символов, а сообщение со шпаргалкой само по себе ~2.5 КБ,
+    // вместе они вышли бы за лимит Telegram в 4096 символов. Копировать такую
+    // строку руками тоже незачем — применяем на месте, через тот же путь,
+    // что и ручной ввод (валидация + switchAmnezia).
+    //
+    // SNI берём из списка заведомо популярных хостов, а НЕ из своего домена:
+    // собственный reality/fake-домен в junk-пакете дал бы наблюдателю прямую
+    // связку «этот junk ↔ этот сервер».
+    public function genQuicInitial($inst = 0, $page = 0)
+    {
+        $hosts = ['www.cloudflare.com', 'www.google.com', 'www.youtube.com', 'www.microsoft.com'];
+        try {
+            $cps = $this->cpsQUICInitial($hosts[random_int(0, count($hosts) - 1)]);
+        } catch (\Throwable $e) {
+            $this->update($this->input['chat'], $this->input['message_id'], 'QUIC Initial: ' . $e->getMessage());
+            sleep(3);
+            $this->menu('wg', $page);
+            return;
+        }
+        // Предупреждаем ДО применения: 2406 символов в I1 раздувают клиентский
+        // конфиг за потолок ёмкости QR (2953 байта), и «show QR» для AWG
+        // начнёт отдавать .conf файлом вместо картинки. Это не поломка —
+        // sendQr() деградирует осознанно, — но поведение меняется заметно.
+        $this->send(
+            $this->input['chat'],
+            'QUIC Initial: ' . strlen($cps) . " символов в I1.\n"
+            . 'Клиентский конфиг с ним не помещается в QR — «show QR» для AWG будет отдавать .conf файлом.'
+        );
+        $this->setAmneziaI1Value($cps, $inst, $page);
     }
 
     public function switchAmnezia($page = 0, $reset = false, $reduce = false, $apply = false, $silent = false)
@@ -7018,6 +7406,10 @@ NFT;
         $this->menu('config');
     }
 
+    // Потолок ёмкости QR-кода: version 40, EC level L, бинарный режим.
+    // Выше него qrencode просто отказывается кодировать вход.
+    public const QR_MAX_BYTES = 2953;
+
     public function sendQr($name, $code, $title = false)
     {
         $qr      = preg_replace(['~\s+~', '~\(~', '~\)~'], ['_'], $name);
@@ -7025,12 +7417,45 @@ NFT;
         // за пределы /qr. Оставляем только безопасные для имени файла символы.
         $qr      = preg_replace('~[^\w.-]~u', '_', (string) $qr);
         $qr      = trim(str_replace('..', '_', $qr), '.') ?: 'qr';
+        $code    = (string) $code;
+        $caption = (string) ($title ?: $name);
+        // Слишком длинный вход qrencode не кодирует ВООБЩЕ: png не создаётся,
+        // sendPhoto уходит с несуществующим путём, а unlink() сыпет warning'ом,
+        // и пользователь видит просто молчание. Достижимо это стало с
+        // шифрованным QUIC Initial в I1 — один этот параметр занимает 2406
+        // символов, и awg-конфиг с ним в QR не влезает ни при каком раскладе.
+        // Отдаём файлом: конфиг всё равно импортируется и так.
+        if (strlen($code) > self::QR_MAX_BYTES) {
+            $this->upload("$qr.conf", $code);
+            $this->send(
+                $this->input['chat'],
+                htmlspecialchars($caption) . ' — ' . strlen($code) . ' байт, в QR не помещается (потолок '
+                . self::QR_MAX_BYTES . '). Отправлено файлом.'
+            );
+            return;
+        }
         $qr_file = __DIR__ . "/qr/$qr.png";
-        exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($code));
-        $r = $this->sendPhoto(
+        exec('qrencode -t png -o ' . escapeshellarg($qr_file) . ' ' . escapeshellarg($code), $out, $rc);
+        // qrPeer() зовёт sendQr дважды подряд с ОДНИМ именем (короткая ссылка
+        // и полный конфиг) — то есть по одному и тому же пути. Без сброса
+        // stat-кэша второй вызов мог бы прочитать размер от первого.
+        clearstatcache(true, $qr_file);
+        // Отдельно от лимита: qrencode может не отработать и по другой причине
+        // (нет бинаря, нет прав на /qr). Без этой проверки отказ выглядел бы
+        // так же — тишиной.
+        if ($rc !== 0 || !is_file($qr_file) || filesize($qr_file) === 0) {
+            @unlink($qr_file);
+            $this->upload("$qr.conf", $code);
+            $this->send(
+                $this->input['chat'],
+                htmlspecialchars($caption) . ' — QR не сгенерировался (qrencode rc=' . (int) $rc . '). Отправлено файлом.'
+            );
+            return;
+        }
+        $this->sendPhoto(
             $this->input['chat'],
             curl_file_create($qr_file),
-            $title ?: $name
+            $caption
         );
         unlink($qr_file);
     }
@@ -10124,6 +10549,10 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => "set I1",
                     'callback_data' => "/setAmneziaI1 $inst $page",
+                ],
+                [
+                    'text'          => "QUIC Initial",
+                    'callback_data' => "/genQuicInitial $inst $page",
                 ],
             ]);
             array_unshift($data, [
