@@ -46,6 +46,12 @@
       "allowedVersions": "<3.24"
     },
     {
+      "description": "nginx собирается из исходников (dockerfile/nginx.dockerfile), версия — в NGINX_VERSION. Ветку выбираем по чётности минора: 1.30 — stable, 1.31 — mainline. Автоматически берём только патчи внутри текущей стабильной ветки; смена минора (в том числе прыжок на mainline) — вручную, через dependency dashboard: ровно там меняется поведение — с 1.29 proxy_http_version по умолчанию 1.1, keepalive к бэкенду включён, Host валидируется по RFC 3986.",
+      "matchDepNames": ["nginx"],
+      "matchUpdateTypes": ["major", "minor"],
+      "dependencyDashboardApproval": true
+    },
+    {
       "description": "amneziawg-go и amneziawg-tools обязаны идти одной версией — иначе awg-tools не понимает формат ядра.",
       "matchDepNames": [
         "amnezia-vpn/amneziawg-go",
