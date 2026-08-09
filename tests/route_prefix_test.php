@@ -52,7 +52,24 @@ foreach ($cases as $in => [$kind, $value]) {
 }
 
 // Голое двоеточие не должно превращать не-IPv6 в ip.
-routeAssert($bot->classifyRouteEntry('geoip:')['kind'] === 'suffix', 'geoip: без категории — не geoip');
+routeAssert($bot->classifyRouteEntry('geoip:')['kind'] !== 'ip', 'geoip: без категории — не ip');
+
+// ...но и суффиксом такая запись быть не должна. Раньше geosite:/geoip: без
+// категории не матчились своей веткой (там стояло (.+)), проваливались во все
+// остальные и возвращались как suffix со значением "geoip:" — то есть считались
+// валидным доменом и уезжали в конфиги правилом domain:geoip: (xray) и
+// domain_suffix "geoip:" (sing-box). Теперь категория пустая, а запись целиком
+// отсеивается routeEntryUsable — как и пустой keyword:.
+foreach (['geoip:' => 'geoip', 'geosite:' => 'geosite'] as $in => $kind) {
+    $c = $bot->classifyRouteEntry($in);
+    routeAssert($c['kind'] === $kind, "classify($in): kind={$c['kind']}, ждали $kind");
+    routeAssert($c['value'] === '', "classify($in): value должно быть пустым");
+    routeAssert(!$bot->routeEntryUsable($c), "$in не должна попадать в конфиги");
+}
+routeAssert(
+    $bot->listToXrayRules(['geoip:' => true, 'geosite:' => true]) === ['domain' => [], 'ip' => []],
+    'пустые geoip:/geosite: не уезжают в xray-правила',
+);
 
 // ── extRefValid ─────────────────────────────────────────────────────────────
 routeAssert($bot->extRefValid('dlc.dat:github'), 'ext с тегом валиден');

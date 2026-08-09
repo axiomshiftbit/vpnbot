@@ -199,6 +199,34 @@ dedupAssert($b['domain_suffix'] === ['vk.com'], 'sing-box domain_suffix: ' . jso
 dedupAssert($b['ip_cidr'] === ['1.2.3.4/32'], 'sing-box ip_cidr: ' . json_encode($b['ip_cidr']));
 dedupAssert($b['domain_keyword'] === ['x'], 'sing-box domain_keyword: ' . json_encode($b['domain_keyword']));
 
+// ── addInclude на списке, которого ещё нет в pac.json ───────────────────────
+// Свежая установка: config/pac.json это {} — ни одного списка. Если весь ввод
+// отсеялся как мусор, ключ $type не создавала ни одна ветка, и
+// dedupeRouteList($conf[$type]) получала null → TypeError валил обработчик
+// сообщения целиком (бот молча переставал отвечать на добавление в список).
+foreach (['blocklist' => '1.2.3.4/64', 'subnetlist' => 'keyword:', 'warplist' => 'geoip:'] as $type => $junk) {
+    $bot->pacFake = [];
+    $bot->sent    = [];
+    $bot->addInclude($junk, $type);
+    dedupAssert(
+        ($bot->pacFake[$type] ?? null) === [],
+        "addInclude('$junk', '$type') на пустом pac.json: " . json_encode($bot->pacFake[$type] ?? null),
+    );
+}
+
+// Мусор не должен оседать и в существующем списке: в конфиги он всё равно не
+// уйдёт (routeEntryUsable), но останется висеть кнопкой в меню. Пустая строка
+// после нормализации бывает только у битого IP — "keyword:" нормализуется сам
+// в себя, поэтому проверка на пустоту его пропускала.
+foreach (['keyword:', 'regexp:', 'domain:', 'full:', 'geosite:', 'geoip:', '1.2.3.4/64'] as $junk) {
+    $bot->pacFake = ['blocklist' => ['vk.com' => true]];
+    $bot->addInclude($junk, 'blocklist');
+    dedupAssert(
+        array_keys($bot->pacFake['blocklist']) === ['vk.com'],
+        "мусор [$junk] осел в списке: " . json_encode(array_keys($bot->pacFake['blocklist'])),
+    );
+}
+
 // ── importListFile-регрессии на чистой части логики ─────────────────────────
 // Простой список доменов без второй колонки обязан приезжать ВКЛЮЧЁННЫМ:
 // (bool) $t[1] на отсутствующем индексе давал false и выключал весь импорт.
