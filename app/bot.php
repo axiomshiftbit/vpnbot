@@ -2298,6 +2298,11 @@ class Bot
             'download' => 0,
             'upload'   => 0,
         ];
+        // Разбивка по inbound'ам — снимок тех же счётчиков xray, которые его
+        // рестарт обнуляет. В global она не сворачивается (это диагностика, не
+        // учёт), но и оставлять её означало бы показывать в меню до минуты
+        // цифры, которых в ядре уже нет.
+        unset($p['inbounds']);
         foreach ($p['users'] as $k => $v) {
             $p['users'][$k]['global']['download']  += $v['session']['download'];
             $p['users'][$k]['session']['download']  = 0;
@@ -4505,34 +4510,108 @@ NFT;
         }
     }
 
+    // Все счётчики xray одним вызовом `xray api statsquery` вместо 2+2N вызовов
+    // `xray api stats -name ...`: при 50 клиентах прежний цикл поднимал 102
+    // ssh-сессии каждую минуту, и каждый ответ разбирался выражением
+    // json_decode(...)['stat']['value'] ?: 0 — то есть обращением к индексу у
+    // null на любом отказе (xray лежит, api не поднят, счётчика ещё нет).
+    // В лог сыпался warning, а наружу уходил неотличимый от правды ноль.
+    // Побочно: имена счётчиков больше не идут в шелл, escapeshellarg не нужен.
+    //
+    // Возвращает карту «имя счётчика => байты». null — прочитать НЕ удалось;
+    // это отличается от пустой карты, которая значит «xray жив, счётчиков ещё
+    // нет» (штатное состояние простаивающего сервера сразу после рестарта).
+    public function xrayStatCounters(): ?array
+    {
+        $raw = $this->ssh('xray api statsquery --server=127.0.0.1:8080 2>&1', 'xr');
+        if ($this->sshFailed) {
+            // ssh() уже записал причину — второй раз не дублируем.
+            return null;
+        }
+        if (trim((string) $raw) === '') {
+            error_log('xrayStatCounters: empty output from xray api statsquery');
+            return null;
+        }
+        $j = json_decode($raw, true);
+        if (!is_array($j)) {
+            $head = trim($raw);
+            // Имена счётчиков содержат email'ы клиентов, поэтому в лог уходит
+            // только то, что заведомо НЕ обрывок ответа: текст ошибки самого
+            // xray (api выключен, ядро без statsquery). Всё, что начинается
+            // как JSON, — недочитанный/битый ответ, пишем один факт и размер.
+            if ($head !== '' && ($head[0] === '{' || $head[0] === '[')) {
+                error_log('xrayStatCounters: malformed JSON from statsquery (' . strlen($raw) . ' bytes)');
+            } else {
+                error_log('xrayStatCounters: ' . substr((string) strtok($head, "\n"), 0, 200));
+            }
+            return null;
+        }
+        $map = [];
+        foreach (($j['stat'] ?? []) as $s) {
+            if (!is_array($s) || !isset($s['name'])) {
+                continue;
+            }
+            // protojson опускает поле value, когда счётчик равен нулю.
+            $map[(string) $s['name']] = (int) ($s['value'] ?? 0);
+        }
+        return $map;
+    }
+
     public function xrayStatsUser()
     {
         if (empty($this->time_xray_stats) || time() - $this->time_xray_stats > 60) {
             $this->time_xray_stats = time();
             try {
-                $x  = $this->getXray();
-                $td = json_decode($this->ssh('xray api stats --server=127.0.0.1:8080 -name "inbound>>>vless_tls>>>traffic>>>downlink" 2>&1', 'xr'), true)['stat']['value'] ?: 0;
-                $tu = json_decode($this->ssh('xray api stats --server=127.0.0.1:8080 -name "inbound>>>vless_tls>>>traffic>>>uplink" 2>&1', 'xr'), true)['stat']['value'] ?: 0;
-                $p  = $this->getXrayStats();
+                $counters = $this->xrayStatCounters();
+                // Прочитать не удалось — прежние показания НЕ трогаем. Раньше
+                // сюда приезжали нули, и session (меню, панель подписки,
+                // квоты) на цикл обнулялся из-за лежащего контейнера.
+                if ($counters === null) {
+                    return;
+                }
+                $x = $this->getXray();
+                $p = $this->getXrayStats();
+                // Тег пользовательского inbound берём из конфига: он не обязан
+                // быть 'vless_tls' (restore бэкапа, правка xray.json из webapp),
+                // а захардкоженное имя давало тихий ноль без единого сообщения.
+                $tag = (string) ($x['inbounds'][0]['tag'] ?? 'vless_tls');
                 $p['session'] = [
-                    'download' => $td,
-                    'upload'   => $tu,
+                    'download' => $counters["inbound>>>$tag>>>traffic>>>downlink"] ?? 0,
+                    'upload'   => $counters["inbound>>>$tag>>>traffic>>>uplink"] ?? 0,
                 ];
+                // Разбивка по inbound'ам, кроме служебного api. Нужна ради
+                // 'wg-in' (socks :10808, через него наружу ходят WG/AWG-клиенты):
+                // его трафик не попадает ни в session, ни в пользовательские
+                // счётчики, т.е. до сих пор не был виден нигде.
+                // session СМЫСЛА НЕ МЕНЯЕТ и остаётся только по inbounds[0]:
+                // он копится в global через collectSession() и участвует в
+                // квотах, подмешать туда wg-in задним числом нельзя.
+                $p['inbounds'] = [];
+                foreach (($x['inbounds'] ?? []) as $in) {
+                    $t = (string) ($in['tag'] ?? '');
+                    if ($t === '' || $t === 'api' || isset($p['inbounds'][$t])) {
+                        continue;
+                    }
+                    $p['inbounds'][$t] = [
+                        'download' => $counters["inbound>>>$t>>>traffic>>>downlink"] ?? 0,
+                        'upload'   => $counters["inbound>>>$t>>>traffic>>>uplink"] ?? 0,
+                    ];
+                }
                 if (!empty($users = $x['inbounds'][0]['settings']['clients'])) {
                     $tmp = [];
                     foreach ($users as $k => $v) {
-                        $dlname = escapeshellarg('user>>>' . $v['email'] . '>>>traffic>>>downlink');
-                        $ulname = escapeshellarg('user>>>' . $v['email'] . '>>>traffic>>>uplink');
-                        $d = json_decode($this->ssh("xray api stats --server=127.0.0.1:8080 -name $dlname 2>&1", 'xr'), true)['stat']['value'] ?: 0;
-                        $u = json_decode($this->ssh("xray api stats --server=127.0.0.1:8080 -name $ulname 2>&1", 'xr'), true)['stat']['value'] ?: 0;
+                        $email = (string) ($v['email'] ?? '');
                         $tmp[$k] = [
                             'session' => [
-                                'download' => $d,
-                                'upload'   => $u,
+                                'download' => $counters["user>>>$email>>>traffic>>>downlink"] ?? 0,
+                                'upload'   => $counters["user>>>$email>>>traffic>>>uplink"] ?? 0,
                             ],
+                            // ?? — у только что добавленного клиента записи в
+                            // xraystats.json ещё нет, прежний код сыпал здесь
+                            // «Undefined array key» на каждый цикл крона.
                             'global' => [
-                                'download' => $p['users'][$k]['global']['download'],
-                                'upload'   => $p['users'][$k]['global']['upload'],
+                                'download' => $p['users'][$k]['global']['download'] ?? 0,
+                                'upload'   => $p['users'][$k]['global']['upload'] ?? 0,
                             ]
                         ];
                     }
@@ -7146,6 +7225,25 @@ NFT;
         $this->menu('config');
     }
 
+    // Домены, на которых бот обещает DNS-эндпоинты AdGuardHome (DoH/DoT):
+    // главный плюс алиасы. Оба обслуживаются ОДНИМ server-блоком nginx
+    // (cloakNginx кладёт алиасы в server_name) и покрываются одним сертом
+    // после «renew SSL», поэтому список для вывода в меню и для подписки
+    // общий. Формат каждого алиаса уже провалидирован в addDomainAlias().
+    public function dnsDomains($conf = null): array
+    {
+        $conf    = is_array($conf) ? $conf : $this->getPacConf();
+        $domains = array_merge(
+            [(string) ($conf['domain'] ?? '')],
+            array_values($conf['domain_aliases'] ?? [])
+        );
+        $domains = array_filter(
+            array_map(fn ($d) => trim((string) $d), $domains),
+            fn ($d) => $d !== ''
+        );
+        return array_values(array_unique($domains));
+    }
+
     public function sslip()
     {
         require __DIR__ . '/config.php';
@@ -7239,6 +7337,13 @@ NFT;
                 $aliases = '';
                 foreach ($conf['domain_aliases'] ?? [] as $a) {
                     $aliases .= ' -d ' . escapeshellarg($a);
+                    // DoT AdGuardHome отвечает по имени adguardkey.<домен>, и
+                    // меню теперь печатает эту точку входа для КАЖДОГО домена.
+                    // Без своего SAN на алиасе клиент упирался бы в
+                    // несовпадение имени в сертификате.
+                    if (!empty($conf['adguardkey'])) {
+                        $aliases .= ' -d ' . escapeshellarg($conf['adguardkey'] . '.' . $a);
+                    }
                 }
                 exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
                 if ($code > 0) {
@@ -13290,6 +13395,12 @@ DNS-over-HTTPS with IP:
                     }
                     foreach ($conf['domain_aliases'] ?? [] as $a) {
                         $main[] = "alias $a" . (in_array($a, $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
+                        // У алиаса та же точка входа DoT, что и у главного
+                        // домена: «renew SSL» кладёт adguardkey.<алиас> в SAN.
+                        // Без этой строки её нигде не было видно.
+                        if (!empty($conf['adguardkey'])) {
+                            $main[] = "{$conf['adguardkey']}.$a" . (in_array("{$conf['adguardkey']}.$a", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
+                        }
                     }
                     $main[] = "</blockquote>";
                 } else {
@@ -18674,6 +18785,24 @@ DNS-over-HTTPS with IP:
         $td = $this->getBytes($st['global']['download'] + $st['session']['download']);
         $tu = $this->getBytes($st['global']['upload'] + $st['session']['upload']);
         $text[] = "↓$td  ↑$tu";
+        // Строка выше — global+session ПОЛЬЗОВАТЕЛЬСКОГО inbound'а. Ниже —
+        // только текущая сессия (счётчики xray обнуляются его рестартом) и
+        // только по тем inbound'ам, которых в ней не видно: прежде всего
+        // 'wg-in' (socks :10808, через него наружу ходят WG/AWG-клиенты) —
+        // его трафик не учитывался нигде. Пустых строк не плодим.
+        $mainTag = (string) ($c['inbounds'][0]['tag'] ?? 'vless_tls');
+        $extra   = [];
+        foreach (($st['inbounds'] ?? []) as $t => $v) {
+            if ((string) $t === $mainTag || ((int) ($v['download'] ?? 0) + (int) ($v['upload'] ?? 0)) <= 0) {
+                continue;
+            }
+            $extra[] = htmlspecialchars((string) $t, ENT_QUOTES)
+                . ' ↓' . $this->getBytes((int) ($v['download'] ?? 0))
+                . ' ↑' . $this->getBytes((int) ($v['upload'] ?? 0));
+        }
+        if (!empty($extra)) {
+            $text[] = 'session: ' . implode('  ', $extra);
+        }
         $data[] = [
             [
                 'text'          => $this->i18n('reset stats'),
@@ -21069,6 +21198,30 @@ DNS-over-HTTPS with IP:
                         unset($c['rules']);
                     }
                 }
+                // Довесок к ~dns~: тот же DoH-эндпоинт на каждом настроенном
+                // домене. ~dns~ строится из $domain, а он приходит из
+                // ?cdn=/Host запроса — то есть покрывает ровно тот адрес, по
+                // которому клиент скачал подписку. Остальные домены сюда
+                // никогда не попадали, хотя обслуживаются тем же nginx и тем
+                // же сертом. mihomo опрашивает nameserver'ы параллельно, так
+                // что это отказоустойчивость: заблокируют один домен —
+                // резолвер продолжит работать со второго.
+                //
+                // Список берём ТОЛЬКО из pac-конфига (dnsDomains), не из
+                // $domain: Host-заголовок задаёт клиент, и подмешивать его в
+                // выдачу нельзя. Трогаем лишь шаблоны, где nameserver уже
+                // есть, — если в шаблоне DNS-блока нет, это осознанный выбор.
+                if (isset($c['dns']['nameserver'])) {
+                    $ns = $c['dns']['nameserver'];
+                    $ns = is_array($ns) ? $ns : [$ns];
+                    foreach ($this->dnsDomains($pac) as $d) {
+                        $ns[] = "https://$d/dns-query$hash/$uid";
+                    }
+                    // SORT_REGULAR, а не дефолтный SORT_STRING: шаблон
+                    // пользовательский, и вложенный массив в nameserver дал бы
+                    // «Array to string conversion» на каждой выдаче подписки.
+                    $c['dns']['nameserver'] = array_values(array_unique($ns, SORT_REGULAR));
+                }
                 break;
         }
         // Relay variant: swap only the endpoint address+port to the chosen relay
@@ -22004,8 +22157,22 @@ DNS-over-HTTPS with IP:
         $scheme = empty($ssl = $this->nginxGetTypeCert()) ? 'http' : 'https';
         $text   = "$scheme://$domain/adguard$hash\nLogin: admin\nPass: <span class='tg-spoiler'>{$conf['adpswd']}</span>\n\n";
         if ($ssl) {
-            $text .= "DNS over HTTPS:\n<code>$ip</code>\n<code>$scheme://$domain/dns-query$hash" . (!empty($conf['adguardkey']) ? "/{$conf['adguardkey']}" : '') . "</code>\n\n";
-            $text .= "DNS over TLS:\n<code>tls://" . (!empty($conf['adguardkey'] )? "{$conf['adguardkey']}." : '') . "$domain</code>";
+            // Алиасы обслуживаются тем же server-блоком nginx (cloakNginx кладёт
+            // их в server_name) и покрыты тем же сертом после «renew SSL» —
+            // печатаем точку входа на КАЖДЫЙ домен, иначе вторая половина
+            // мультидомена для пользователя просто не существует.
+            // Фолбэк на $domain: без настроенного домена это IP, и dnsDomains()
+            // пуст — вывод должен остаться прежним.
+            $dnsDomains = $this->dnsDomains($conf) ?: [$domain];
+            $adkey      = !empty($conf['adguardkey']) ? $conf['adguardkey'] : '';
+            $doh        = [];
+            $dot        = [];
+            foreach ($dnsDomains as $d) {
+                $doh[] = "<code>$scheme://$d/dns-query$hash" . ($adkey !== '' ? "/$adkey" : '') . "</code>";
+                $dot[] = "<code>tls://" . ($adkey !== '' ? "$adkey." : '') . "$d</code>";
+            }
+            $text .= "DNS over HTTPS:\n<code>$ip</code>\n" . implode("\n", $doh) . "\n\n";
+            $text .= "DNS over TLS:\n" . implode("\n", $dot);
         }
         $status = $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off');
         $safesearch = yaml_parse_file($this->adguard)['filtering']['safe_search']['enabled'];
@@ -22268,6 +22435,12 @@ DNS-over-HTTPS with IP:
             }
             foreach ($conf['domain_aliases'] ?? [] as $a) {
                 $text[] = "alias $a" . (in_array($a, $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : ' (no ssl — renew SSL)');
+                // У алиаса та же точка входа DoT, что и у главного домена:
+                // «renew SSL» кладёт adguardkey.<алиас> в SAN. До этого строки
+                // не было, и DoT на алиасе выглядел несуществующим.
+                if (!empty($conf['adguardkey'])) {
+                    $text[] = "{$conf['adguardkey']}.$a" . (in_array("{$conf['adguardkey']}.$a", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : ' (no ssl — renew SSL)') . ' adguard DOT';
+                }
             }
             $text[] = "</blockquote>";
         } else {
