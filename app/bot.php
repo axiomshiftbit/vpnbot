@@ -12978,6 +12978,11 @@ DNS-over-HTTPS with IP:
     }
 
     // ── Версии сервисов для главного меню ────────────────────────────────────
+    // Путь вынесен в константу, а не размазан литералом по пяти методам: одно
+    // место правки и возможность подменить файл в тестах (обращение через
+    // static::, поэтому наследник может переопределить).
+    protected const MENU_VERSIONS_FILE = '/logs/menu_versions.json';
+
     // Кэш ОТДЕЛЬНЫЙ от статусов, и TTL у него на три порядка больше. Статус
     // меняется сам по себе (процесс упал) и потому обновляется каждые ~30с,
     // а версия — только при пересборке образа, то есть между рестартами
@@ -12990,6 +12995,44 @@ DNS-over-HTTPS with IP:
     // а нормальный путь обновления показывает новые версии сразу.
     public const MENU_VERSIONS_TTL = 3600;
 
+    // Пока снялись не все версии — повторяем через две минуты, а не через час.
+    // Нужен ровно для одного, зато частого случая: selfUpdate() снимает кэш на
+    // старте service-контейнера, а первый заход cron приходится на момент,
+    // когда часть контейнеров ещё поднимает sshd. Без короткого ретрая
+    // «медленный» сервис (ipsec, ovpn) выпадал бы из меню на целый час.
+    public const MENU_VERSIONS_RETRY_TTL = 120;
+
+    // Потолок коротких ретраев. Без него неполный снимок ретраился бы вечно:
+    // достаточно одного контейнера, остановленного насовсем, — и cron каждые
+    // две минуты гонял бы 15 ssh, упираясь в 5-секундный таймаут на мёртвом.
+    // Пять заходов (~10 минут) хватает, чтобы дождаться медленно стартующих
+    // (ipsec, ovpn), дальше переходим на штатный час. Счётчик обнуляется, как
+    // только снимок собрался полностью.
+    public const MENU_VERSIONS_RETRY_MAX = 5;
+
+    // Ключ пробы → подпись в меню. Константа, а не литерал в рендере: тот же
+    // список задаёт ПОЛНОТУ ответа для refreshMenuVersionsCache(), и разъехаться
+    // эти два места не должны.
+    public const MENU_VERSION_LABELS = [
+        'wg'     => 'wg',
+        'awg'    => 'awg',
+        'warp'   => 'wgcf',
+        'xray'   => 'xray',
+        'ad'     => 'adguard',
+        'oc'     => 'ocserv',
+        'np'     => 'naive',
+        'hy'     => 'hysteria',
+        'telemt' => 'telemt',
+        'ss'     => 'shadowsocks',
+        'tt'     => 'trusttunnel',
+        'ovpn'   => 'openvpn',
+        'ipsec'  => 'strongswan',
+        'l2tp'   => 'xl2tpd',
+        'ng'     => 'nginx',
+        'php'    => 'php',
+        'unit'   => 'unit',
+    ];
+
     // Один ssh на КОНТЕЙНЕР, а не на бинарь: несколько версий из одного
     // контейнера снимаются одной командой с printf-метками — приём wgVersions().
     // head -1 обязателен почти везде: hysteria, openvpn, ipsec и unitd печатают
@@ -13001,6 +13044,9 @@ DNS-over-HTTPS with IP:
     // не переиспользуются).
     public function probeServiceVersions(): array
     {
+        // ВНИМАНИЕ: $cmd подставляется в ОДИНАРНЫЕ кавычки — одиночная кавычка
+        // внутри команды порвёт строку. Все команды тут литеральные и обходятся
+        // двойными; при правке это условие надо сохранять.
         $ask = function (string $service, string $cmd): string {
             return (string) $this->ssh("sh -c '$cmd'", $service);
         };
@@ -13052,29 +13098,61 @@ DNS-over-HTTPS with IP:
 
     public function serviceVersions(bool $force = false): array
     {
-        $f = '/logs/menu_versions.json';
-        if (!$force && is_file($f)) {
-            $c = json_decode((string) file_get_contents($f), true);
-            // isset, а не !empty: если все пробы легли (контейнеры не отвечают),
-            // в кэше лежит пустой массив — и с !empty каждый нефорсированный
-            // вызов заново гонял бы 15 ssh, то есть ровно в тот момент, когда
-            // ssh и так не работает. Пустой ответ — тоже ответ, ждём TTL.
-            if (!empty($c['ts']) && time() - $c['ts'] < self::MENU_VERSIONS_TTL && isset($c['v'])) {
-                return $c;
-            }
+        $c = $this->menuVersionsCache();
+        // isset, а не !empty: если все пробы легли (контейнеры не отвечают), в
+        // кэше лежит пустой массив — и с !empty каждый нефорсированный вызов
+        // заново гонял бы 15 ssh, то есть ровно тогда, когда ssh и так не
+        // работает. Пустой ответ — тоже ответ, ждём TTL.
+        if (!$force && !empty($c['ts']) && time() - $c['ts'] < self::MENU_VERSIONS_TTL && isset($c['v'])) {
+            return $c;
         }
-        $r = ['ts' => time(), 'v' => $this->probeServiceVersions()];
-        file_put_contents($f, json_encode($r), LOCK_EX);
+        // Объединение с прошлым снимком, а не замена: сервис, не ответивший в
+        // этот заход, показывает прежнее значение вместо того, чтобы пропасть
+        // из меню до следующего TTL. Принцип тот же, что в awgToolsVersion():
+        // «ssh лёг» и «версии нет» — разные вещи, и моргнувший ssh не должен
+        // стирать уже известное. Ключи из свежей пробы приоритетны (оператор +
+        // сохраняет левый операнд), поэтому обновление версии не теряется.
+        $v    = $this->probeServiceVersions() + $this->menuVersions();
+        $full = count($v) >= count(self::MENU_VERSION_LABELS);
+        $r    = [
+            'ts'  => time(),
+            'try' => $full ? 0 : ((int) ($c['try'] ?? 0)) + 1,
+            'v'   => $v,
+        ];
+        file_put_contents(static::MENU_VERSIONS_FILE, json_encode($r), LOCK_EX);
         return $r;
     }
 
     // Шаг cron() (service-контейнер).
     public function refreshMenuVersionsCache()
     {
-        $f = '/logs/menu_versions.json';
-        $c = is_file($f) ? json_decode((string) file_get_contents($f), true) : [];
-        if (empty($c['ts']) || time() - $c['ts'] >= self::MENU_VERSIONS_TTL) {
+        $c = $this->menuVersionsCache();
+        // Неполный снимок — короткий ретрай: часть контейнеров могла не успеть
+        // поднять sshd (см. MENU_VERSIONS_RETRY_TTL). Но не бесконечно — после
+        // MENU_VERSIONS_RETRY_MAX заходов считаем, что сервиса просто нет, и
+        // возвращаемся к штатному часу.
+        $full = is_array($c['v'] ?? null) && count($c['v']) >= count(self::MENU_VERSION_LABELS);
+        $ttl  = (!$full && (int) ($c['try'] ?? 0) < self::MENU_VERSIONS_RETRY_MAX)
+            ? self::MENU_VERSIONS_RETRY_TTL
+            : self::MENU_VERSIONS_TTL;
+        if (empty($c['ts']) || time() - $c['ts'] >= $ttl) {
             $this->serviceVersions(true);
+        }
+    }
+
+    // Пометить кэш версий протухшим, не трогая значения: cron переснимет их на
+    // ближайшем цикле (≤10с), а меню до тех пор показывает прошлые. Именно
+    // «протухшим», а не удалённым, — иначе блок версий моргал бы пустотой.
+    public function expireMenuVersionsCache(): void
+    {
+        $f = static::MENU_VERSIONS_FILE;
+        if (!is_file($f)) {
+            return;
+        }
+        $c = json_decode((string) file_get_contents($f), true);
+        if (is_array($c)) {
+            $c['ts'] = 0;
+            file_put_contents($f, json_encode($c), LOCK_EX);
         }
     }
 
@@ -13086,9 +13164,19 @@ DNS-over-HTTPS with IP:
     // кэш, блок версий просто не выводится.
     public function menuVersions(): array
     {
-        $f = '/logs/menu_versions.json';
-        $c = is_file($f) ? json_decode((string) file_get_contents($f), true) : [];
+        $c = $this->menuVersionsCache();
         return is_array($c['v'] ?? null) ? $c['v'] : [];
+    }
+
+    // Разобранный файл кэша целиком (ts / try / v). Отдельный метод, потому что
+    // читать его нужно из трёх мест, а json_decode отдаёт null и на пустом
+    // файле, и на мусоре: cleanLog() ЗАТИРАЕТ всё в /logs пустотой, так что
+    // пустой файл здесь — штатное состояние, а не поломка.
+    protected function menuVersionsCache(): array
+    {
+        $f = static::MENU_VERSIONS_FILE;
+        $c = is_file($f) ? json_decode((string) file_get_contents($f), true) : null;
+        return is_array($c) ? $c : [];
     }
 
     // Кнопка 🔄 status главного меню: живые пробы + перерисовка.
@@ -13098,10 +13186,14 @@ DNS-over-HTTPS with IP:
             $this->answer($this->input['callback_id'], '🔄 ' . $this->i18n('refreshed'));
         }
         $this->serviceStatuses(true);
-        // И версии заодно: это единственный способ обновить их руками, не
-        // дожидаясь TTL. Callback уже отвечен выше, так что лишние ssh
-        // пользователь видит как задержку перерисовки, а не как «бот завис».
-        $this->serviceVersions(true);
+        // Версии — только помечаем протухшими, переснимет cron. Опрашивать их
+        // здесь живьём нельзя: serviceStatuses(true) выше это уже 16 ssh, и на
+        // лежащих контейнерах каждый упирается в 5-секундный таймаут коннекта.
+        // Ещё 15 проб удвоили бы худшее время удержания вебхук-воркера (~80с →
+        // ~150с), а Telegram на таких паузах успевает переслать апдейт заново.
+        // Выгоды никакой: версия меняется только с образом, а этот путь и так
+        // накрыт selfUpdate() на старте контейнера.
+        $this->expireMenuVersionsCache();
         $this->menu();
     }
 
@@ -13138,6 +13230,43 @@ DNS-over-HTTPS with IP:
             $main[] = 'v' . getenv('VER') . " $branch"
                 . ($commit ? " @$commit" : '')
                 . ($update ? ' (have updates)' : '');
+
+            // Версии сервисов — сразу под версией самого бота: обе строки про
+            // «что здесь стоит», логично держать их вместе. В ДВЕ колонки, а не
+            // в одну: 17 строк — половина экрана, а лимит сообщения (4096
+            // символов) на сервере с доменом и алиасами расходуется и без того
+            // заметно.
+            //
+            // Цитата обычная, не <blockquote expandable>: сворачиваемый вариант
+            // выглядел бы аккуратнее, но проверить его, не отправив сообщение в
+            // боевой чат, нельзя, а ошибка разбора HTML роняет не блок версий,
+            // а весь рендер главного меню. Обычный <blockquote><code> в этом
+            // файле уже используется и работает.
+            $ver   = $this->menuVersions();
+            $cells = [];
+            foreach (self::MENU_VERSION_LABELS as $k => $label) {
+                if (!empty($ver[$k])) {
+                    $cells[] = $label . ' ' . htmlspecialchars((string) $ver[$k], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                }
+            }
+            if (!empty($cells)) {
+                // Раскладка по столбцам, а не по строкам: alignColumns()
+                // выравнивает КАЖДЫЙ столбец по своей ширине, поэтому левый
+                // столбец должен содержать первую половину списка целиком.
+                $half  = (int) ceil(count($cells) / 2);
+                $left  = array_slice($cells, 0, $half);
+                // alignColumns() индексирует все столбцы по длине первого —
+                // добиваем короткий пустыми ячейками, иначе Undefined key.
+                $right = array_pad(array_slice($cells, $half), count($left), '');
+                $main[] = '<blockquote><code>';
+                $main[] = 'versions';
+                // rtrim: alignColumns() добивает пробелами и ПОСЛЕДНИЙ столбец,
+                // то есть каждая строка тащит хвост из невидимых пробелов. На
+                // семнадцати строках это под сотню символов из лимита в 4096,
+                // который на сервере с доменом и алиасами не бесконечный.
+                $main[] = implode("\n", array_map('rtrim', explode("\n", $this->alignColumns([$left, $right]))));
+                $main[] = '</code></blockquote>';
+            }
 
             if (!empty($conf['domain'])) {
                 $main[] = '';
@@ -13226,60 +13355,6 @@ DNS-over-HTTPS with IP:
             ]);
             $main[] = '</code>';
 
-            // Версии сервисов. Порядок — как в статусном блоке выше, чтобы
-            // глазом сопоставлялось; в ДВЕ колонки, а не в одну: 17 строк в
-            // главном меню — половина экрана, а лимит сообщения (4096 символов)
-            // на сервере с доменом и алиасами расходуется и без того заметно.
-            //
-            // Цитата обычная, не <blockquote expandable>: сворачиваемый вариант
-            // выглядел бы аккуратнее, но проверить его, не отправив сообщение в
-            // боевой чат, нельзя, а ошибка разбора HTML роняет не блок версий,
-            // а весь рендер главного меню. Обычный <blockquote><code> в этом
-            // файле уже используется и работает.
-            $ver = $this->menuVersions();
-            if (!empty($ver)) {
-                $labels = [
-                    'wg'     => 'wg',
-                    'awg'    => 'awg',
-                    'warp'   => 'wgcf',
-                    'xray'   => 'xray',
-                    'ad'     => 'adguard',
-                    'oc'     => 'ocserv',
-                    'np'     => 'naive',
-                    'hy'     => 'hysteria',
-                    'telemt' => 'telemt',
-                    'ss'     => 'shadowsocks',
-                    'tt'     => 'trusttunnel',
-                    'ovpn'   => 'openvpn',
-                    'ipsec'  => 'strongswan',
-                    'l2tp'   => 'xl2tpd',
-                    'ng'     => 'nginx',
-                    'php'    => 'php',
-                    'unit'   => 'unit',
-                ];
-                $cells = [];
-                foreach ($labels as $k => $label) {
-                    if (!empty($ver[$k])) {
-                        $cells[] = $label . ' ' . htmlspecialchars((string) $ver[$k], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-                    }
-                }
-                if (!empty($cells)) {
-                    // Раскладка по столбцам, а не по строкам: alignColumns()
-                    // выравнивает КАЖДЫЙ столбец по своей ширине, поэтому левый
-                    // столбец должен содержать первую половину списка целиком.
-                    $half  = (int) ceil(count($cells) / 2);
-                    $left  = array_slice($cells, 0, $half);
-                    $right = array_slice($cells, $half);
-                    // alignColumns() индексирует столбцы по длине первого —
-                    // добиваем короткий пустыми ячейками, иначе Undefined key.
-                    $right = array_pad($right, count($left), '');
-                    $main[] = '';
-                    $main[] = '<blockquote><code>';
-                    $main[] = 'versions';
-                    $main[] = $this->alignColumns([$left, $right]);
-                    $main[] = '</code></blockquote>';
-                }
-            }
         }
         $menu   = [
             'main' => [
@@ -22791,7 +22866,7 @@ DNS-over-HTTPS with IP:
         // он бы врал до часа. selfUpdate() зовётся из service.php на каждом
         // старте контейнера, то есть ровно тогда, когда версии и могли
         // измениться: снимаем кэш, cron наполнит его заново на первом же цикле.
-        @unlink('/logs/menu_versions.json');
+        @unlink(static::MENU_VERSIONS_FILE);
         $ip                         = getenv('IP');
         $rm                         = explode(':', trim(file_get_contents('/update/reload_message')));
         $m                          = file_get_contents('/update/message');
