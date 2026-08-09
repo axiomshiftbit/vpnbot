@@ -23506,7 +23506,12 @@ DNS-over-HTTPS with IP:
             $this->selfupdate = true;
             try {
                 if (!empty($m)) {
-                    $this->send($this->input['chat'], "<pre>$m</pre>", $mid);
+                    // htmlspecialchars обязателен: с этого момента в
+                    // /update/message приходят СУБЪЕКТЫ коммитов, а в них
+                    // встречаются < > & (те же теги CPS вида <b 0x..>).
+                    // parse_mode=HTML на таком тексте отдаёт 400, и отчёт об
+                    // обновлении молча не доходил бы.
+                    $this->send($this->input['chat'], '<pre>' . htmlspecialchars($m) . '</pre>', $mid);
                 }
                 $r = $this->send($this->input['chat'], "import settings");
                 $this->input['message_id']  = $r['result']['message_id'] ?? $mid;
