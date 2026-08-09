@@ -14,6 +14,11 @@ ARG AWG_GO_VERSION=v3.0.20260805
 ARG AWG_TOOLS_VERSION=v3.0.20260805
 ARG WGCF_VERSION=v2.2.32
 ARG TUN2SOCKS_VERSION=v2.6.0
+# microsocks пинится коммитом, а не тегом: последний тег v1.0.5 от 2024-05-24,
+# master с тех пор ушёл на два коммита вперёд, и клонировался как раз master —
+# то есть образ менялся молча от пересборки к пересборке. Приём тот же, что у
+# TT_REF. Обновлять: сменить MICROSOCKS_REF в .env и закоммитить.
+ARG MICROSOCKS_REF=96bf8a87408c36951b73b7957687f42904e620f8
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
 # реально сходила в edge за свежими wireguard-tools/openssh без --no-cache.
@@ -46,7 +51,12 @@ RUN set -eux; \
         linux-headers; \
     git clone --depth 1 --branch ${AWG_GO_VERSION} https://github.com/amnezia-vpn/amneziawg-go; \
     git clone --depth 1 --branch ${AWG_TOOLS_VERSION} https://github.com/amnezia-vpn/amneziawg-tools.git; \
-    git clone --depth 1 https://github.com/rofl0r/microsocks; \
+    mkdir -p /microsocks; \
+    cd /microsocks; \
+    git init -q .; \
+    git remote add origin https://github.com/rofl0r/microsocks.git; \
+    git fetch -q --depth 1 origin "${MICROSOCKS_REF}"; \
+    git checkout -q FETCH_HEAD; \
     cd /amneziawg-go; \
     make install; \
     cd /amneziawg-tools/src; \

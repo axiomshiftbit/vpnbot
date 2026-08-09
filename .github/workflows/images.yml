@@ -79,7 +79,8 @@ jobs:
                 HYSTERIA_VERSION)                  out="$out hy" ;;
                 TELEMT_VERSION)                    out="$out telemt" ;;
                 TT_REF)                            out="$out tt" ;;
-                AWG_GO_VERSION|AWG_TOOLS_VERSION|WGCF_VERSION)
+                DNSTT_REF)                         out="$out dnstt" ;;
+                AWG_GO_VERSION|AWG_TOOLS_VERSION|WGCF_VERSION|MICROSOCKS_REF)
                                                    out="$out wg" ;;
                 CADDY_GO_VERSION|XCADDY_VERSION|CADDY_VERSION|FORWARDPROXY_VERSION)
                                                    out="$out np" ;;
