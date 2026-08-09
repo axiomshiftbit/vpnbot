@@ -228,6 +228,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
+                MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg0.conf:/etc/wireguard/wg0.conf
@@ -277,6 +278,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
+                MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg1.conf:/etc/wireguard/wg0.conf
@@ -498,6 +500,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.0.20260805}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.0.20260805}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
+                MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
         cap_add:
             - NET_ADMIN
         sysctls:
@@ -624,6 +627,7 @@ services:
             dockerfile: dockerfile/dnstt.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
+                DNSTT_REF: ${DNSTT_REF:-0c5c52a57d899c05428c116898941761a2ed83c2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh
