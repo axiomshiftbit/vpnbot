@@ -704,6 +704,15 @@ class Bot
             case preg_match('~^/setRelayHyPortMap (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayHyPortMapPrompt($m['arg']);
                 break;
+            case preg_match('~^/setRelayHyPort (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayHyPortPrompt($m['arg']);
+                break;
+            case preg_match('~^/setRelayNpAddress (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayNpAddressPrompt($m['arg']);
+                break;
+            case preg_match('~^/setRelayNpPort (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayNpPortPrompt($m['arg']);
+                break;
             case preg_match('~^/relayDel (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayDel($m['arg']);
                 break;
@@ -742,6 +751,9 @@ class Bot
                 break;
             case preg_match('~^/setTelemtRelayAddress (?P<a>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->telemtRelayAddressPrompt($m['a']);
+                break;
+            case preg_match('~^/setTelemtRelayPort (?P<a>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->telemtRelayPortPrompt($m['a']);
                 break;
             case preg_match('~^/setTelemtRelayPortMap (?P<a>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->telemtRelayPortMapPrompt($m['a']);
@@ -931,6 +943,12 @@ class Bot
                 break;
             case preg_match('~^/changeNaivePass$~', $this->input['callback'], $m):
                 $this->changeNaivePass();
+                break;
+            case preg_match('~^/npRelay$~', $this->input['callback'], $m):
+                $this->npRelay();
+                break;
+            case preg_match('~^/npRelaySub (?P<n>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->npRelaySub($m['n']);
                 break;
             case preg_match('~^/changeCaddyVersion$~', $this->input['callback'], $m):
                 $this->changeCaddyVersion();
@@ -1919,9 +1937,9 @@ class Bot
 
     // Build a tg://proxy link. The secret format depends on the active mode
     // (classic = <hex>, secure = dd<hex>, tls = ee<hex><domainHex>). When a
-    // $relay is given, only server+port are swapped (port through the relay's
-    // portmap); the secret and the Fake-TLS domain stay untouched — same idea as
-    // applyRelay keeping SNI real.
+    // $relay is given, only server+port are swapped (port through relayPort():
+    // explicit 'port' wins over 'portmap'); the secret and the Fake-TLS domain
+    // stay untouched — same idea as applyRelay keeping SNI real.
     public function linkTelemt($name, $relay = null)
     {
         [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
@@ -1942,8 +1960,7 @@ class Bot
         $port   = $this->getPorts()['telemt']['port'];
         if (is_array($relay) && !empty($relay['address'])) {
             $server = $relay['address'];
-            $map    = $relay['portmap'] ?? [];
-            $port   = $map[(string) $port] ?? $port;
+            $port   = self::relayPort($relay, $port);
         }
         return 'tg://proxy?' . http_build_query([
             'server' => $server,
@@ -2840,6 +2857,19 @@ class Bot
             && (bool) preg_match('#^[A-Za-z0-9._~!$&\'()*+,;=:@%-]+$#', $v);
     }
 
+    // Есть ли смысл показывать ссылку naive: пока креды пустые/негодные,
+    // restartNaive пишет в Caddyfile плейсхолдер, а start_np.sh по нему гасит
+    // caddy — ссылка вела бы в никуда. CHANGEME проверяем отдельно: формально
+    // он валиден (naiveCredOk), но это ровно то значение, по которому гард в
+    // start_np.sh не поднимает сервис.
+    public static function naiveReady($pac): bool
+    {
+        $user = $pac['naive']['user'] ?? null;
+        $pass = $pac['naive']['pass'] ?? null;
+        return self::naiveCredOk($user) && self::naiveCredOk($pass)
+            && !($user === 'CHANGEME' && $pass === 'CHANGEME');
+    }
+
     public function restartNaive()
     {
         $pac  = $this->getPacConf();
@@ -2978,15 +3008,21 @@ class Bot
         $host   = $domain ?: $this->ip;
         $label  = $host;
         if (is_array($relay) && !empty($relay['hy_address'])) {
-            // Одиночные порты прогоняем через hy_portmap (как applyAwgRelay —
-            // только своя карта, без отката на общий vless-portmap); диапазоны
-            // N-M хоппинга через одиночную карту не отобразить — остаются как
-            // есть (relay должен реднатить тот же диапазон).
+            // Явный hy_port перебивает всё: relay слушает один UDP-порт, и
+            // диапазон хоппинга в ссылке схлопывается в него (сам хоппинг на
+            // origin при этом остаётся — им пользуются прямые подключения).
+            // Иначе одиночные порты прогоняем через hy_portmap (как
+            // applyAwgRelay — только своя карта, без отката на общий
+            // vless-portmap); диапазоны N-M через одиночную карту не
+            // отобразить — остаются как есть (relay должен реднатить тот же
+            // диапазон).
             $map      = $relay['hy_portmap'] ?? [];
-            $portSpec = implode(',', array_map(
-                fn($t) => preg_match('~^\d+$~', $t) ? (string) ($map[$t] ?? $t) : $t,
-                preg_split('~,~', (string) $portSpec, -1, PREG_SPLIT_NO_EMPTY),
-            ));
+            $portSpec = ($fixed = self::relayPortInput($relay['hy_port'] ?? '')) !== ''
+                ? $fixed
+                : implode(',', array_map(
+                    fn($t) => preg_match('~^\d+$~', $t) ? (string) ($map[$t] ?? $t) : $t,
+                    preg_split('~,~', (string) $portSpec, -1, PREG_SPLIT_NO_EMPTY),
+                ));
             if ($portSpec === '') {
                 return '';
             }
@@ -3369,7 +3405,10 @@ NFT;
         if (($hl = $this->relayHealthLabel($name, true)) !== '') {
             $text[] = $this->i18n('relay health') . ": $hl";
         }
-        if (!empty($relay['hy_portmap'])) {
+        // Явный порт перебивает карту — показываем то, что реально в ссылке.
+        if (($hp = self::relayPortInput($relay['hy_port'] ?? '')) !== '') {
+            $text[] = $this->i18n('relay hy port') . ": <code>$hp</code>";
+        } elseif (!empty($relay['hy_portmap'])) {
             $pm = [];
             foreach ($relay['hy_portmap'] as $src => $dst) {
                 $pm[] = "$src:$dst";
@@ -7831,6 +7870,9 @@ NFT;
         unset($conf['domain_aliases']);
         $this->setPacConf($conf);
         $this->setUpstreamDomainOcserv('');
+        // Сброс SNI-маршрутов naive (основной поддомен + адреса relay): серт
+        // удалён, а строки в map пережили бы удаление домена.
+        $this->setUpstreamDomainNaive('');
         $this->chocdomain('');
         $this->adguardSync();
         $this->cloakNginx();
@@ -8204,8 +8246,9 @@ NFT;
             $text[] = $this->i18n('relay awg port map') . ': —';
         }
         // Отдельный relay-канал для Hysteria (hy2://-ссылки в меню Hysteria):
-        // hy_address включает relay в выбор, hy_portmap мапит его порты.
+        // hy_address включает relay в выбор, hy_port/hy_portmap мапят его порты.
         $text[] = $this->i18n('relay hy address') . ': <code>' . ($r['hy_address'] ?? '' ?: '—') . '</code>';
+        $text[] = $this->i18n('relay hy port') . ': <code>' . (($r['hy_port'] ?? '') ?: '—') . '</code>';
         if (!empty($r['hy_portmap'])) {
             $pm = [];
             foreach ($r['hy_portmap'] as $src => $dst) {
@@ -8215,14 +8258,18 @@ NFT;
         } else {
             $text[] = $this->i18n('relay hy port map') . ': —';
         }
+        // Отдельный relay-канал для NaiveProxy: порт один (TLS), карта портов
+        // не нужна — только адрес и опциональный порт.
+        $text[] = $this->i18n('relay np address') . ': <code>' . ($r['np_address'] ?? '' ?: '—') . '</code>';
+        $text[] = $this->i18n('relay np port') . ': <code>' . (($r['np_port'] ?? '') ?: '—') . '</code>';
 
+        // По две кнопки в строке: каналов уже четыре, в столбик карточка не
+        // помещается на экран.
         $data[] = [
             [
                 'text'          => $this->i18n('relay address'),
                 'callback_data' => "/setRelayAddress $name",
             ],
-        ];
-        $data[] = [
             [
                 'text'          => $this->i18n('relay port map'),
                 'callback_data' => "/setRelayPortMap $name",
@@ -8233,8 +8280,6 @@ NFT;
                 'text'          => $this->i18n('relay awg address'),
                 'callback_data' => "/setRelayAwgAddress $name",
             ],
-        ];
-        $data[] = [
             [
                 'text'          => $this->i18n('relay awg port map'),
                 'callback_data' => "/setRelayAwgPortMap $name",
@@ -8245,11 +8290,25 @@ NFT;
                 'text'          => $this->i18n('relay hy address'),
                 'callback_data' => "/setRelayHyAddress $name",
             ],
+            [
+                'text'          => $this->i18n('relay hy port'),
+                'callback_data' => "/setRelayHyPort $name",
+            ],
         ];
         $data[] = [
             [
                 'text'          => $this->i18n('relay hy port map'),
                 'callback_data' => "/setRelayHyPortMap $name",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('relay np address'),
+                'callback_data' => "/setRelayNpAddress $name",
+            ],
+            [
+                'text'          => $this->i18n('relay np port'),
+                'callback_data' => "/setRelayNpPort $name",
             ],
         ];
         $data[] = [
@@ -8467,23 +8526,178 @@ NFT;
         $this->relayEdit($name);
     }
 
+    public function relayHyPortPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay hy port'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay hy port'),
+        );
+        $this->stashReply($r, [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayHyPort',
+            'args'          => [$name],
+        ]);
+    }
+
+    // Один UDP-порт relay для hy2://-ссылок: перебивает и hy_portmap, и
+    // диапазон port hopping (см. linkHysteria). 0/мусор — очистка.
+    public function setRelayHyPort($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        if (($p = self::relayPortInput($text)) === '') {
+            unset($c['relays'][$name]['hy_port']);
+        } else {
+            $c['relays'][$name]['hy_port'] = $p;
+        }
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
+    public function relayNpAddressPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay np address'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay np address'),
+        );
+        $this->stashReply($r, [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayNpAddress',
+            'args'          => [$name],
+        ]);
+    }
+
+    // Отдельный relay-адрес для naiveproxy (по образцу hy_address): только
+    // relay с np_address попадают в выбор меню NaiveProxy. В отличие от
+    // остальных каналов адрес обязан быть доменом из сертификата origin —
+    // клиент naive берёт SNI из хоста ссылки и проверяет по нему сертификат
+    // (см. i18n 'naive relay hint'). Пустой ввод сносит поле.
+    public function setRelayNpAddress($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        $addr = trim($text);
+        if ($this->relayClearInput($addr)) {
+            unset($c['relays'][$name]['np_address']);
+            $addr = '';
+        } else {
+            $c['relays'][$name]['np_address'] = $addr;
+        }
+        $this->setPacConf($c);
+        // SNI-маршрут upstream-nginx: без строки в map трафик relay уедет в
+        // cloak вместо caddy (см. naiveSniHosts). Домена нет — и маршрута нет,
+        // naive без серта всё равно не работает.
+        $domain = (string) ($c['domain'] ?? '');
+        $this->setUpstreamDomainNaive($domain);
+        // Адрес принят, но в map не попал (голый IP / основной домен) — молча
+        // отдать нерабочую ссылку хуже, чем сказать об этом сразу.
+        if ($addr !== ''
+            && !in_array($addr, self::naiveSniHosts($this->getHashSubdomain('np'), $domain, $c), true)
+        ) {
+            $this->send(
+                $this->input['chat'],
+                '⚠️ ' . $this->i18n('naive relay sni skipped'),
+                $this->input['message_id'],
+            );
+        }
+        $this->relayEdit($name);
+    }
+
+    public function relayNpPortPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay np port'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay np port'),
+        );
+        $this->stashReply($r, [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'setRelayNpPort',
+            'args'          => [$name],
+        ]);
+    }
+
+    // Порт relay для naive: у origin он всегда 443, поэтому карта портов не
+    // нужна — либо порт задан явно, либо в ссылке его нет вовсе. 0 — очистка.
+    public function setRelayNpPort($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['relays'][$name])) {
+            $this->relayMenu();
+            return;
+        }
+        if (($p = self::relayPortInput($text)) === '') {
+            unset($c['relays'][$name]['np_port']);
+        } else {
+            $c['relays'][$name]['np_port'] = $p;
+        }
+        $this->setPacConf($c);
+        $this->relayEdit($name);
+    }
+
     public function relayDel($name)
     {
         $c = $this->getPacConf();
+        // Адрес naive-канала жил ещё и в SNI-map upstream-nginx — оставить там
+        // хост удалённого relay значит и дальше отдавать его трафик в caddy.
+        $hadNp = !empty($c['relays'][$name]['np_address']);
         unset($c['relays'][$name]);
         if (empty($c['relays'])) {
             unset($c['relays']);
         }
         $this->setPacConf($c);
+        if ($hadNp) {
+            $this->setUpstreamDomainNaive((string) ($c['domain'] ?? ''));
+        }
         $this->relayMenu();
     }
 
     // Ввод-«очистка» для полей relay (адреса и маппинги, включая telemt):
     // '0' или пустая строка. Telegram не даёт отправить пустое сообщение
     // реплаем, поэтому единый явный сентинел — 0.
-    public function relayClearInput($text): bool
+    public static function relayClearInput($text): bool
     {
         return in_array(trim((string) $text), ['', '0'], true);
+    }
+
+    // Ввод «порт relay» → нормализованная строка порта или '' (= очистить).
+    // Мусор и порт вне 1..65535 трактуем как очистку: у поля нет «ошибочного»
+    // состояния — либо валидный порт, либо его нет. '0' здесь и сентинел
+    // очистки, и невалидный порт, так что отдельная ветка не нужна.
+    public static function relayPortInput($text): string
+    {
+        $v = trim((string) $text);
+        if (!preg_match('~^\d{1,5}$~', $v)) {
+            return '';
+        }
+        $n = (int) $v;
+        return ($n >= 1 && $n <= 65535) ? (string) $n : '';
+    }
+
+    // Порт relay для канала $ch ('' — vless/telemt, 'awg_', 'hy_', 'np_').
+    // Приоритет: явный <ch>port (одно число на весь канал) → <ch>portmap по
+    // порту origin → порт origin как есть.
+    public static function relayPort($relay, $port, $ch = ''): string
+    {
+        if (!is_array($relay)) {
+            return (string) $port;
+        }
+        if (($p = self::relayPortInput($relay[$ch . 'port'] ?? '')) !== '') {
+            return $p;
+        }
+        $map = $relay[$ch . 'portmap'] ?? [];
+        return (string) (is_array($map) ? ($map[(string) $port] ?? $port) : $port);
     }
 
     // Parse a 'src:dst,src:dst' port map (real port -> relay port). Both sides
@@ -12830,7 +13044,7 @@ DNS-over-HTTPS with IP:
             $this->telemtRelays();
             return;
         }
-        $c['telemt_relays'][$name] = ['address' => '', 'portmap' => []];
+        $c['telemt_relays'][$name] = ['address' => '', 'port' => '', 'portmap' => []];
         $this->setPacConf($c);
         $this->telemtRelayEdit($name);
     }
@@ -12846,6 +13060,8 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt relays') . " -> <b>$name</b>";
         $text[] = $this->i18n('relay address') . ': <code>' . ($r['address'] ?: '—') . '</code>';
+        // Явный порт перебивает карту портов — показываем это прямо в карточке.
+        $text[] = $this->i18n('relay port') . ': <code>' . (($r['port'] ?? '') ?: '—') . '</code>';
         if (!empty($r['portmap'])) {
             $pm = [];
             foreach ($r['portmap'] as $src => $dst) {
@@ -12857,7 +13073,10 @@ DNS-over-HTTPS with IP:
         }
 
         $data[] = [['text' => $this->i18n('relay address'), 'callback_data' => "/setTelemtRelayAddress $name"]];
-        $data[] = [['text' => $this->i18n('relay port map'), 'callback_data' => "/setTelemtRelayPortMap $name"]];
+        $data[] = [
+            ['text' => $this->i18n('relay port'), 'callback_data' => "/setTelemtRelayPort $name"],
+            ['text' => $this->i18n('relay port map'), 'callback_data' => "/setTelemtRelayPortMap $name"],
+        ];
         $data[] = [['text' => $this->i18n('relay delete'), 'callback_data' => "/telemtRelayDel $name"]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemtRelays']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data ?: false);
@@ -12888,6 +13107,35 @@ DNS-over-HTTPS with IP:
         // 0/пусто — очистка: relay выпадает из селектора telemtUsers
         // (там фильтр по непустому address).
         $c['telemt_relays'][$name]['address'] = $this->relayClearInput($text) ? '' : trim($text);
+        $this->setPacConf($c);
+        $this->telemtRelayEdit($name);
+    }
+
+    public function telemtRelayPortPrompt($name)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter relay port'),
+            $this->input['message_id'],
+            reply: $this->i18n('enter relay port'),
+        );
+        $this->stashReply($r, [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'telemtRelaySetPort',
+            'args'          => [$name],
+        ]);
+    }
+
+    // У telemt ровно один порт, поэтому явный порт — обычный путь, а portmap
+    // остаётся для совместимости со старыми записями. 0/мусор — очистка.
+    public function telemtRelaySetPort($text, $name = '')
+    {
+        $c = $this->getPacConf();
+        if (!isset($c['telemt_relays'][$name])) {
+            $this->telemtRelays();
+            return;
+        }
+        $c['telemt_relays'][$name]['port'] = self::relayPortInput($text);
         $this->setPacConf($c);
         $this->telemtRelayEdit($name);
     }
@@ -16001,7 +16249,12 @@ DNS-over-HTTPS with IP:
         }
         $hosts = [$this->ip];
         foreach ($pac['relays'] ?? [] as $r) {
-            foreach ([$r['address'] ?? '', $r['awg_address'] ?? '', $r['hy_address'] ?? ''] as $h) {
+            foreach ([
+                $r['address'] ?? '',
+                $r['awg_address'] ?? '',
+                $r['hy_address'] ?? '',
+                $r['np_address'] ?? '',
+            ] as $h) {
                 if (trim((string) $h) !== '') {
                     $hosts[] = $h;
                 }
@@ -18106,20 +18359,39 @@ DNS-over-HTTPS with IP:
         $this->dockerApi('/build/prune', 'POST');
     }
 
-    public function naiveMenu()
+    // Ссылка naiveproxy. $relay (запись из $pac['relays'] с 'np_address')
+    // подменяет ТОЛЬКО хост и порт — логин/пароль остаются от origin, TLS
+    // терминируется на origin через DNAT. В отличие от прочих каналов адрес
+    // relay обязан входить в сертификат origin: клиент naive берёт SNI из
+    // хоста ссылки и по нему же проверяет сертификат (см. 'naive relay hint').
+    public function linkNaive($relay = null)
     {
         $pac    = $this->getPacConf();
         $domain = $this->getDomain();
-        $text[] = "Menu -> NaiveProxy";
-        $np     = $this->getHashSubdomain('np');
+        $host   = $this->getHashSubdomain('np') . ".$domain";
+        $port   = '';
+        if (is_array($relay) && !empty($relay['np_address'])) {
+            $host = $relay['np_address'];
+            $port = self::relayPortInput($relay['np_port'] ?? '');
+        }
         // Схема ровно как в README naiveproxy: «https://user:pass@example.com».
         // rawurlencode на userinfo — пароль сюда приходит сырым вводом из
-        // Telegram, а '@', ':', '/', '#' в нём иначе рвут URL. htmlspecialchars
-        // на всю строку — сообщение уходит с parse_mode HTML.
-        $link   = 'https://' . rawurlencode((string) ($pac['naive']['user'] ?? ''))
+        // Telegram, а '@', ':', '/', '#' в нём иначе рвут URL.
+        return 'https://' . rawurlencode((string) ($pac['naive']['user'] ?? ''))
             . ':' . rawurlencode((string) ($pac['naive']['pass'] ?? ''))
-            . "@$np.$domain";
-        $text[] = '<code>' . htmlspecialchars($link, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
+            . "@$host" . ($port !== '' ? ":$port" : '');
+    }
+
+    public function naiveMenu()
+    {
+        $pac    = $this->getPacConf();
+        $text[] = "Menu -> NaiveProxy";
+        // Пока креды не заданы, caddy не поднят (гард в start_np.sh) — ссылка
+        // вида «https://:@np.domain» только путала бы. Тот же гард, что на
+        // экране relay. htmlspecialchars — сообщение уходит с parse_mode HTML.
+        $text[] = self::naiveReady($pac)
+            ? '<code>' . htmlspecialchars($this->linkNaive(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
+            : $this->i18n('naive no link');
         $ver    = $this->naiveVersion();
         if ($ver['running'] !== '' || $ver['pinned'] !== '') {
             // Расхождение running/pinned = образ ещё не пересобран под новый пин.
@@ -18151,6 +18423,17 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/changeNaivePass",
             ],
         ];
+        // Relay-ссылки поверх общих relay xray: кнопка только когда хотя бы у
+        // одного relay задан np_address (карточка relay в xray-меню).
+        $npRelays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['np_address']));
+        if (!empty($npRelays)) {
+            $data[] = [
+                [
+                    'text'          => '🔗 ' . $this->i18n('relay') . ' (' . count($npRelays) . ')',
+                    'callback_data' => '/npRelay',
+                ],
+            ];
+        }
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -18161,6 +18444,85 @@ DNS-over-HTTPS with IP:
             'text' => implode("\n", $text),
             'data' => $data,
         ];
+    }
+
+    // Список relay для naiveproxy — зеркало hyRelay(): в выбор попадают relay
+    // с непустым np_address (задаётся в карточке relay xray-меню).
+    public function npRelay()
+    {
+        $pac    = $this->getPacConf();
+        $relays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['np_address']));
+        if (empty($relays)) {
+            return $this->menu('naive');
+        }
+        $text[] = "Menu -> NaiveProxy -> " . $this->i18n('relay');
+        $text[] = $this->i18n('naive relay hint');
+
+        $data   = [];
+        $health = $this->readRelayHealth(); // read once for the whole list
+        foreach ($relays as $name => $relay) {
+            // Имя из одних цифр JSON-декодер делает int-ключом — приводим.
+            // Health — TCP-проба основного address; для np-only relay её нет.
+            $name   = (string) $name;
+            $hl     = $this->relayHealthLabel($name, false, $health);
+            $data[] = [
+                [
+                    'text'          => "🔗 $name: {$relay['np_address']}" . ($hl !== '' ? "  $hl" : ''),
+                    'callback_data' => "/npRelaySub $name",
+                ],
+            ];
+        }
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => '/menu naive',
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Ссылка naiveproxy через один relay: linkNaive() с подменой адреса+порта,
+    // всё остальное — от origin.
+    public function npRelaySub($name)
+    {
+        $pac   = $this->getPacConf();
+        $relay = $pac['relays'][$name] ?? null;
+        if ($relay === null || empty($relay['np_address'])) {
+            return $this->npRelay();
+        }
+        // Пока креды плейсхолдерные/пустые, caddy не поднят (гард в
+        // start_np.sh) — ссылку отдавать нечего.
+        $link = self::naiveReady($pac) ? $this->linkNaive($relay) : '';
+
+        $text[] = "Menu -> NaiveProxy -> " . $this->i18n('relay') . " -> <b>$name</b> ({$relay['np_address']})";
+        if (($hl = $this->relayHealthLabel($name, true)) !== '') {
+            $text[] = $this->i18n('relay health') . ": $hl";
+        }
+        if (($np = self::relayPortInput($relay['np_port'] ?? '')) !== '') {
+            $text[] = $this->i18n('relay np port') . ": <code>$np</code>";
+        }
+        $text[] = $this->i18n('naive relay hint');
+        $text[] = $link !== ''
+            ? "\n<code>" . htmlspecialchars($link, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
+            : "\n" . $this->i18n('naive no link');
+
+        $data[] = [
+            [
+                'text'          => $this->i18n('back'),
+                'callback_data' => '/npRelay',
+            ],
+        ];
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
     }
 
     public function hysteriaMenu()
@@ -22391,6 +22753,36 @@ DNS-over-HTTPS with IP:
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
 
+    // Хосты, которые upstream-nginx по SNI отдаёт контейнеру naive: основной
+    // <hash>.<domain> плюс адреса relay ($pac['relays'][*]['np_address']).
+    // Relay нужен здесь ОТДЕЛЬНОЙ строкой, в отличие от vless/hysteria: там
+    // подмена адреса не трогает SNI (он берётся из конфига клиента), а клиент
+    // naive берёт SNI из хоста ссылки — на origin после DNAT приходит SNI
+    // relay-домена. Без своей строки в map он попадает в `default other`
+    // (cloak-nginx), и вместо прокси клиент получает маскировочный сайт.
+    // Отсеиваем: не-хостнеймы и голые IP (по IP клиент SNI не шлёт) и сам
+    // основной домен — отдать его в naive значит увести туда панель,
+    // подписки и cloak. Чистая функция: конфиг и субдомен передаются извне,
+    // чтобы её можно было прогнать тестами без инстанса.
+    public static function naiveSniHosts(string $sub, string $domain, array $conf): array
+    {
+        $hosts = [];
+        if ($sub !== '' && $domain !== '') {
+            $hosts[] = "$sub.$domain";
+        }
+        $main = trim((string) ($conf['domain'] ?? ''));
+        foreach ($conf['relays'] ?? [] as $r) {
+            $h = trim((string) ($r['np_address'] ?? ''));
+            if ($h === '' || $h === $main || filter_var($h, FILTER_VALIDATE_IP)) {
+                continue;
+            }
+            if (preg_match('~^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$~', $h)) {
+                $hosts[] = $h;
+            }
+        }
+        return array_values(array_unique($hosts));
+    }
+
     public function setUpstreamDomainNaive($domain)
     {
         // См. setUpstreamDomainOcserv: пустая строка допустима, мусор — нет.
@@ -22399,11 +22791,20 @@ DNS-over-HTTPS with IP:
         }
         $sub   = $this->getHashSubdomain('np');
         $nginx = file_get_contents('/config/upstream.conf');
+        // Строк может быть несколько: основной поддомен + адреса relay для
+        // naive (naiveSniHosts). Пусто — закомментированный плейсхолдер, как до
+        // задания домена.
+        $hosts = $domain ? self::naiveSniHosts($sub, (string) $domain, $this->getPacConf()) : [];
+        $body  = $hosts
+            ? implode("\n", array_map(fn($h) => "$h naive;", $hosts))
+            : "#$sub.\$domain naive;";
         // Нежадный .+? вместо .+ — маркер парный, и любое ТРЕТЬЕ его упоминание
         // ниже по файлу (достаточно слова в комментарии) при жадном матче
         // расширило бы замену до него и снесло всё между — включая соседние
         // server-блоки. Поведение при штатных двух маркерах не меняется.
-        $t = preg_replace('~#naive.+?#naive~s', $domain ? "#naive\n" . ($sub ? '' : '#' ) . "$sub.$domain naive;\n#naive" : "#naive\n#$sub.\$domain naive;\n#naive", $nginx);
+        // preg_replace_callback, а не preg_replace: хосты идут в замену как
+        // литералы (в replacement «$…»/«\…» — обратные ссылки).
+        $t = preg_replace_callback('~#naive.+?#naive~s', fn() => "#naive\n$body\n#naive", $nginx);
         file_put_contents('/config/upstream.conf', $t);
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
