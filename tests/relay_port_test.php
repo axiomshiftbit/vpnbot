@@ -10,7 +10,12 @@
 //  - linkHysteria(): явный hy_port схлопывает диапазон port hopping (relay
 //    слушает один UDP-порт), а без него работает старый путь через hy_portmap;
 //  - linkNaive(): порт дописывается ТОЛЬКО когда задан (иначе клиент должен
-//    идти на 443 по умолчанию), userinfo по-прежнему percent-encoded.
+//    идти на 443 по умолчанию), userinfo по-прежнему percent-encoded;
+//  - naiveSniHosts(): без строки в SNI-map upstream-nginx трафик relay уходит в
+//    cloak вместо caddy, а лишний хост в map (основной домен) увёл бы туда
+//    панель и подписки — оба промаха молчаливые;
+//  - naiveReady(): ссылку нельзя показывать, пока caddy погашен гардом
+//    start_np.sh.
 
 require_once __DIR__ . '/../app/bot.php';
 
@@ -141,6 +146,64 @@ rpAssert(!preg_match('~^/setRelayHyPort (?P<a>[\w.\-]+)$~', '/setRelayHyPortMap 
     '/setRelayHyPortMap не должен ловиться веткой /setRelayHyPort');
 rpAssert(!preg_match('~^/setTelemtRelayPort (?P<a>[\w.\-]+)$~', '/setTelemtRelayPortMap r'),
     '/setTelemtRelayPortMap не должен ловиться веткой /setTelemtRelayPort');
+
+// ── 7. SNI-маршрут naive для relay ──────────────────────────────────────────
+// Клиент naive берёт SNI из хоста ссылки, поэтому на origin после DNAT приходит
+// SNI relay-домена. Без своей строки в map upstream-nginx он уходит в
+// `default other` (cloak) — ссылка тихо ведёт на маскировочный сайт вместо
+// прокси. Здесь же проверяем отсев того, что маршрутизировать нельзя.
+$conf = [
+    'domain' => 'example.com',
+    'relays' => [
+        'r1' => ['address' => '1.2.3.4', 'np_address' => 'np1.alias.com'],
+        'r2' => ['address' => '5.6.7.8'],                       // np-канала нет
+        'r3' => ['np_address' => '203.0.113.7'],                // голый IP
+        'r4' => ['np_address' => 'example.com'],                // основной домен
+        'r5' => ['np_address' => '  np2.alias.com  '],          // хвостовые пробелы
+        'r6' => ['np_address' => 'bad host!'],                  // мусор
+        'r7' => ['np_address' => 'np1.alias.com'],              // дубль r1
+    ],
+];
+$hosts = Bot::naiveSniHosts('abcd1234', 'example.com', $conf);
+rpAssert($hosts === ['abcd1234.example.com', 'np1.alias.com', 'np2.alias.com'],
+    'в map попадают основной поддомен и домены relay, по одному разу: ' . implode(',', $hosts));
+rpAssert(!in_array('203.0.113.7', $hosts, true), 'голый IP не маршрутизируется: SNI по нему не шлют');
+rpAssert(!in_array('example.com', $hosts, true),
+    'основной домен в naive не уводим — там панель, подписки и cloak');
+rpAssert(!in_array('bad host!', $hosts, true), 'мусор не должен попасть в конфиг nginx');
+rpAssert(Bot::naiveSniHosts('abcd1234', '', $conf) === ['np1.alias.com', 'np2.alias.com'],
+    'без домена основной строки нет');
+rpAssert(Bot::naiveSniHosts('abcd1234', 'example.com', []) === ['abcd1234.example.com'],
+    'без relay — только основной поддомен');
+
+// Замена внутри маркеров #naive на реальном шаблоне upstream.conf: тело
+// многострочное, маркеры обязаны уцелеть, а соседние блоки — не пострадать.
+$tpl = @file_get_contents(__DIR__ . '/../config/upstream.conf');
+if ($tpl !== false) {
+    $body = implode("\n", array_map(fn($h) => "$h naive;", $hosts));
+    $out  = preg_replace_callback('~#naive.+?#naive~s', fn() => "#naive\n$body\n#naive", $tpl);
+    rpAssert(substr_count($out, '#naive') === 2, 'маркеры остались парными');
+    rpAssert(str_contains($out, "np1.alias.com naive;\nnp2.alias.com naive;"),
+        'обе relay-строки внутри маркеров');
+    rpAssert(substr_count($out, '#ocserv') === substr_count($tpl, '#ocserv')
+        && str_contains($out, 'upstream naive {'),
+        'соседние блоки (#ocserv, upstream naive) не задеты');
+    // '$' в теле замены не должен трактоваться как обратная ссылка — ради
+    // этого preg_replace_callback вместо preg_replace.
+    $ph  = preg_replace_callback('~#naive.+?#naive~s', fn() => "#naive\n#sub.\$domain naive;\n#naive", $tpl);
+    rpAssert(str_contains($ph, '#sub.$domain naive;'), 'плейсхолдер сохраняет литеральный $domain');
+}
+
+// ── 8. Гард ссылки naive ────────────────────────────────────────────────────
+// Пока креды не заданы (или это плейсхолдер из Caddyfile), caddy не поднят
+// гардом start_np.sh — ссылку показывать нельзя ни в меню, ни на экране relay.
+rpAssert(Bot::naiveReady(['naive' => ['user' => 'u', 'pass' => 'p']]) === true, 'обычные креды');
+rpAssert(Bot::naiveReady([]) === false, 'нет секции naive — ссылки нет');
+rpAssert(Bot::naiveReady(['naive' => ['user' => 'u', 'pass' => '']]) === false, 'пустой пароль');
+rpAssert(Bot::naiveReady(['naive' => ['user' => 'a b', 'pass' => 'p']]) === false,
+    'логин с пробелом развалил бы Caddyfile');
+rpAssert(Bot::naiveReady(['naive' => ['user' => 'CHANGEME', 'pass' => 'CHANGEME']]) === false,
+    'плейсхолдер синтаксически валиден, но caddy с ним не поднимается');
 
 echo $failed ? "\n$failed test(s) failed\n" : "OK\n";
 exit($failed ? 1 : 0);

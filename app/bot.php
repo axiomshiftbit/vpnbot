@@ -2857,6 +2857,19 @@ class Bot
             && (bool) preg_match('#^[A-Za-z0-9._~!$&\'()*+,;=:@%-]+$#', $v);
     }
 
+    // Есть ли смысл показывать ссылку naive: пока креды пустые/негодные,
+    // restartNaive пишет в Caddyfile плейсхолдер, а start_np.sh по нему гасит
+    // caddy — ссылка вела бы в никуда. CHANGEME проверяем отдельно: формально
+    // он валиден (naiveCredOk), но это ровно то значение, по которому гард в
+    // start_np.sh не поднимает сервис.
+    public static function naiveReady($pac): bool
+    {
+        $user = $pac['naive']['user'] ?? null;
+        $pass = $pac['naive']['pass'] ?? null;
+        return self::naiveCredOk($user) && self::naiveCredOk($pass)
+            && !($user === 'CHANGEME' && $pass === 'CHANGEME');
+    }
+
     public function restartNaive()
     {
         $pac  = $this->getPacConf();
@@ -7857,6 +7870,9 @@ NFT;
         unset($conf['domain_aliases']);
         $this->setPacConf($conf);
         $this->setUpstreamDomainOcserv('');
+        // Сброс SNI-маршрутов naive (основной поддомен + адреса relay): серт
+        // удалён, а строки в map пережили бы удаление домена.
+        $this->setUpstreamDomainNaive('');
         $this->chocdomain('');
         $this->adguardSync();
         $this->cloakNginx();
@@ -8275,14 +8291,14 @@ NFT;
                 'callback_data' => "/setRelayHyAddress $name",
             ],
             [
-                'text'          => $this->i18n('relay hy port map'),
-                'callback_data' => "/setRelayHyPortMap $name",
+                'text'          => $this->i18n('relay hy port'),
+                'callback_data' => "/setRelayHyPort $name",
             ],
         ];
         $data[] = [
             [
-                'text'          => $this->i18n('relay hy port'),
-                'callback_data' => "/setRelayHyPort $name",
+                'text'          => $this->i18n('relay hy port map'),
+                'callback_data' => "/setRelayHyPortMap $name",
             ],
         ];
         $data[] = [
@@ -8573,10 +8589,27 @@ NFT;
         $addr = trim($text);
         if ($this->relayClearInput($addr)) {
             unset($c['relays'][$name]['np_address']);
+            $addr = '';
         } else {
             $c['relays'][$name]['np_address'] = $addr;
         }
         $this->setPacConf($c);
+        // SNI-маршрут upstream-nginx: без строки в map трафик relay уедет в
+        // cloak вместо caddy (см. naiveSniHosts). Домена нет — и маршрута нет,
+        // naive без серта всё равно не работает.
+        $domain = (string) ($c['domain'] ?? '');
+        $this->setUpstreamDomainNaive($domain);
+        // Адрес принят, но в map не попал (голый IP / основной домен) — молча
+        // отдать нерабочую ссылку хуже, чем сказать об этом сразу.
+        if ($addr !== ''
+            && !in_array($addr, self::naiveSniHosts($this->getHashSubdomain('np'), $domain, $c), true)
+        ) {
+            $this->send(
+                $this->input['chat'],
+                '⚠️ ' . $this->i18n('naive relay sni skipped'),
+                $this->input['message_id'],
+            );
+        }
         $this->relayEdit($name);
     }
 
@@ -8616,11 +8649,17 @@ NFT;
     public function relayDel($name)
     {
         $c = $this->getPacConf();
+        // Адрес naive-канала жил ещё и в SNI-map upstream-nginx — оставить там
+        // хост удалённого relay значит и дальше отдавать его трафик в caddy.
+        $hadNp = !empty($c['relays'][$name]['np_address']);
         unset($c['relays'][$name]);
         if (empty($c['relays'])) {
             unset($c['relays']);
         }
         $this->setPacConf($c);
+        if ($hadNp) {
+            $this->setUpstreamDomainNaive((string) ($c['domain'] ?? ''));
+        }
         $this->relayMenu();
     }
 
@@ -18347,9 +18386,12 @@ DNS-over-HTTPS with IP:
     {
         $pac    = $this->getPacConf();
         $text[] = "Menu -> NaiveProxy";
-        // htmlspecialchars — сообщение уходит с parse_mode HTML.
-        $link   = $this->linkNaive();
-        $text[] = '<code>' . htmlspecialchars($link, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
+        // Пока креды не заданы, caddy не поднят (гард в start_np.sh) — ссылка
+        // вида «https://:@np.domain» только путала бы. Тот же гард, что на
+        // экране relay. htmlspecialchars — сообщение уходит с parse_mode HTML.
+        $text[] = self::naiveReady($pac)
+            ? '<code>' . htmlspecialchars($this->linkNaive(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
+            : $this->i18n('naive no link');
         $ver    = $this->naiveVersion();
         if ($ver['running'] !== '' || $ver['pinned'] !== '') {
             // Расхождение running/pinned = образ ещё не пересобран под новый пин.
@@ -18455,10 +18497,7 @@ DNS-over-HTTPS with IP:
         }
         // Пока креды плейсхолдерные/пустые, caddy не поднят (гард в
         // start_np.sh) — ссылку отдавать нечего.
-        $creds = $pac['naive'] ?? [];
-        $link  = (self::naiveCredOk($creds['user'] ?? null) && self::naiveCredOk($creds['pass'] ?? null))
-            ? $this->linkNaive($relay)
-            : '';
+        $link = self::naiveReady($pac) ? $this->linkNaive($relay) : '';
 
         $text[] = "Menu -> NaiveProxy -> " . $this->i18n('relay') . " -> <b>$name</b> ({$relay['np_address']})";
         if (($hl = $this->relayHealthLabel($name, true)) !== '') {
@@ -18470,7 +18509,7 @@ DNS-over-HTTPS with IP:
         $text[] = $this->i18n('naive relay hint');
         $text[] = $link !== ''
             ? "\n<code>" . htmlspecialchars($link, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
-            : "\n" . $this->i18n('naive relay no link');
+            : "\n" . $this->i18n('naive no link');
 
         $data[] = [
             [
@@ -22714,6 +22753,36 @@ DNS-over-HTTPS with IP:
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
 
+    // Хосты, которые upstream-nginx по SNI отдаёт контейнеру naive: основной
+    // <hash>.<domain> плюс адреса relay ($pac['relays'][*]['np_address']).
+    // Relay нужен здесь ОТДЕЛЬНОЙ строкой, в отличие от vless/hysteria: там
+    // подмена адреса не трогает SNI (он берётся из конфига клиента), а клиент
+    // naive берёт SNI из хоста ссылки — на origin после DNAT приходит SNI
+    // relay-домена. Без своей строки в map он попадает в `default other`
+    // (cloak-nginx), и вместо прокси клиент получает маскировочный сайт.
+    // Отсеиваем: не-хостнеймы и голые IP (по IP клиент SNI не шлёт) и сам
+    // основной домен — отдать его в naive значит увести туда панель,
+    // подписки и cloak. Чистая функция: конфиг и субдомен передаются извне,
+    // чтобы её можно было прогнать тестами без инстанса.
+    public static function naiveSniHosts(string $sub, string $domain, array $conf): array
+    {
+        $hosts = [];
+        if ($sub !== '' && $domain !== '') {
+            $hosts[] = "$sub.$domain";
+        }
+        $main = trim((string) ($conf['domain'] ?? ''));
+        foreach ($conf['relays'] ?? [] as $r) {
+            $h = trim((string) ($r['np_address'] ?? ''));
+            if ($h === '' || $h === $main || filter_var($h, FILTER_VALIDATE_IP)) {
+                continue;
+            }
+            if (preg_match('~^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$~', $h)) {
+                $hosts[] = $h;
+            }
+        }
+        return array_values(array_unique($hosts));
+    }
+
     public function setUpstreamDomainNaive($domain)
     {
         // См. setUpstreamDomainOcserv: пустая строка допустима, мусор — нет.
@@ -22722,11 +22791,20 @@ DNS-over-HTTPS with IP:
         }
         $sub   = $this->getHashSubdomain('np');
         $nginx = file_get_contents('/config/upstream.conf');
+        // Строк может быть несколько: основной поддомен + адреса relay для
+        // naive (naiveSniHosts). Пусто — закомментированный плейсхолдер, как до
+        // задания домена.
+        $hosts = $domain ? self::naiveSniHosts($sub, (string) $domain, $this->getPacConf()) : [];
+        $body  = $hosts
+            ? implode("\n", array_map(fn($h) => "$h naive;", $hosts))
+            : "#$sub.\$domain naive;";
         // Нежадный .+? вместо .+ — маркер парный, и любое ТРЕТЬЕ его упоминание
         // ниже по файлу (достаточно слова в комментарии) при жадном матче
         // расширило бы замену до него и снесло всё между — включая соседние
         // server-блоки. Поведение при штатных двух маркерах не меняется.
-        $t = preg_replace('~#naive.+?#naive~s', $domain ? "#naive\n" . ($sub ? '' : '#' ) . "$sub.$domain naive;\n#naive" : "#naive\n#$sub.\$domain naive;\n#naive", $nginx);
+        // preg_replace_callback, а не preg_replace: хосты идут в замену как
+        // литералы (в replacement «$…»/«\…» — обратные ссылки).
+        $t = preg_replace_callback('~#naive.+?#naive~s', fn() => "#naive\n$body\n#naive", $nginx);
         file_put_contents('/config/upstream.conf', $t);
         $this->ssh("nginx -s reload 2>&1", 'up');
     }

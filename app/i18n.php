@@ -270,10 +270,14 @@ $i = [
         'ru' => 'введите порт relay для NaiveProxy 1-65535 (пусто = 443), 0 — очистить',
     ],
     'naive relay hint'     => [
-        'en' => 'The link swaps only address+port to the relay; login/password stay from origin and TLS terminates on origin via DNAT. IMPORTANT: the naive client takes the SNI from the link host and validates the certificate against it, so the relay address must be a DOMAIN present in the origin certificate (add it as a domain alias and renew SSL) with an A record pointing at the relay. A bare IP will fail certificate validation.',
-        'ru' => 'Ссылка подменяет только адрес+порт на relay; логин/пароль остаются от origin, TLS терминируется на origin через DNAT. ВАЖНО: клиент naive берёт SNI из хоста ссылки и по нему проверяет сертификат, поэтому адрес relay должен быть ДОМЕНОМ, входящим в сертификат origin (добавьте его алиасом домена и обновите SSL), с A-записью на relay. С голым IP проверка сертификата упадёт.',
+        'en' => 'The link swaps only address+port to the relay; login/password stay from origin and TLS terminates on origin via DNAT. IMPORTANT: the naive client takes the SNI from the link host and validates the certificate against it, so the relay address must be a DOMAIN present in the origin certificate (add it as a domain alias and renew SSL) with an A record pointing at the relay. A bare IP will fail certificate validation. The SNI route on the origin (upstream nginx) is added by the bot itself when the address is set — that host then goes wholly to naive, so cloak/DoH on it stop working.',
+        'ru' => 'Ссылка подменяет только адрес+порт на relay; логин/пароль остаются от origin, TLS терминируется на origin через DNAT. ВАЖНО: клиент naive берёт SNI из хоста ссылки и по нему проверяет сертификат, поэтому адрес relay должен быть ДОМЕНОМ, входящим в сертификат origin (добавьте его алиасом домена и обновите SSL), с A-записью на relay. С голым IP проверка сертификата упадёт. SNI-маршрут на origin (upstream nginx) бот добавляет сам при задании адреса — этот хост целиком уходит в naive, поэтому cloak/DoH на нём работать перестанут.',
     ],
-    'naive relay no link'  => [
+    'naive relay sni skipped' => [
+        'en' => 'the address is saved, but no SNI route was added on the origin: only a domain other than the main one works (clients send no SNI for a bare IP) — the link through this relay will land on the cloak site instead of the proxy',
+        'ru' => 'адрес сохранён, но SNI-маршрут на origin не добавлен: годится только домен, отличный от основного (по голому IP клиент SNI не шлёт) — ссылка через этот relay попадёт на cloak-сайт вместо прокси',
+    ],
+    'naive no link'        => [
         'en' => 'no link: set the NaiveProxy login and password first',
         'ru' => 'ссылки нет: сначала задайте логин и пароль NaiveProxy',
     ],
