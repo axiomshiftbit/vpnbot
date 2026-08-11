@@ -50,8 +50,8 @@ $i = [
         'ru' => 'добавить relay',
     ],
     'hysteria relay hint'  => [
-        'en' => 'The link swaps only address+port to the relay (Hysteria address and port map from the relay card in the xray menu); password/SNI/obfs stay from origin. The relay must DNAT the hysteria UDP port (and the hopping range, if set) to origin.',
-        'ru' => 'Ссылка подменяет только адрес+порт на relay (адрес и маппинг Hysteria — из карточки relay в xray-меню); пароль/SNI/obfs остаются от origin. Relay должен DNAT-ить UDP-порт hysteria (и диапазон hopping, если задан) на origin.',
+        'en' => 'The link swaps only address+port to the relay (Hysteria address, port and port map from the relay card in the xray menu); password/SNI/obfs stay from origin. The relay must DNAT the hysteria UDP port (and the hopping range, if set) to origin. An explicit relay port overrides the port map and collapses the hopping range in the link to that single port.',
+        'ru' => 'Ссылка подменяет только адрес+порт на relay (адрес, порт и маппинг Hysteria — из карточки relay в xray-меню); пароль/SNI/obfs остаются от origin. Relay должен DNAT-ить UDP-порт hysteria (и диапазон hopping, если задан) на origin. Явный порт relay перебивает маппинг и схлопывает диапазон hopping в ссылке в этот единственный порт.',
     ],
     'hysteria relay no link' => [
         'en' => 'no link: set the hysteria password and open the port (or enable port hopping)',
@@ -185,6 +185,14 @@ $i = [
         'en' => 'port map (src:dst)',
         'ru' => 'маппинг портов (src:dst)',
     ],
+    'relay port'           => [
+        'en' => 'relay port',
+        'ru' => 'порт relay',
+    ],
+    'enter relay port'     => [
+        'en' => 'enter relay port 1-65535 (overrides the port map), 0 to clear',
+        'ru' => 'введите порт relay 1-65535 (перебивает маппинг портов), 0 — очистить',
+    ],
     'enter relay name'     => [
         'en' => 'enter relay name (letters, digits, - . _)',
         'ru' => 'введите имя relay (буквы, цифры, - . _)',
@@ -236,6 +244,38 @@ $i = [
     'enter relay hy port map' => [
         'en' => 'enter Hysteria port map src:dst,src:dst (e.g. 36712:443), 0 to clear',
         'ru' => 'введите маппинг портов Hysteria src:dst,src:dst (напр. 36712:443), 0 — очистить',
+    ],
+    'relay hy port'        => [
+        'en' => 'Hysteria relay port',
+        'ru' => 'порт relay для Hysteria',
+    ],
+    'enter relay hy port'  => [
+        'en' => 'enter the single Hysteria relay UDP port 1-65535 (overrides the port map and the hopping range in the link), 0 to clear',
+        'ru' => 'введите единственный UDP-порт relay для Hysteria 1-65535 (перебивает маппинг портов и диапазон hopping в ссылке), 0 — очистить',
+    ],
+    'relay np address'     => [
+        'en' => 'NaiveProxy relay address',
+        'ru' => 'адрес relay для NaiveProxy',
+    ],
+    'enter relay np address' => [
+        'en' => 'enter NaiveProxy relay address — a domain covered by the origin certificate, 0 to clear',
+        'ru' => 'введите адрес relay для NaiveProxy — домен, входящий в сертификат origin, 0 — очистить',
+    ],
+    'relay np port'        => [
+        'en' => 'NaiveProxy relay port',
+        'ru' => 'порт relay для NaiveProxy',
+    ],
+    'enter relay np port'  => [
+        'en' => 'enter NaiveProxy relay port 1-65535 (empty = 443), 0 to clear',
+        'ru' => 'введите порт relay для NaiveProxy 1-65535 (пусто = 443), 0 — очистить',
+    ],
+    'naive relay hint'     => [
+        'en' => 'The link swaps only address+port to the relay; login/password stay from origin and TLS terminates on origin via DNAT. IMPORTANT: the naive client takes the SNI from the link host and validates the certificate against it, so the relay address must be a DOMAIN present in the origin certificate (add it as a domain alias and renew SSL) with an A record pointing at the relay. A bare IP will fail certificate validation.',
+        'ru' => 'Ссылка подменяет только адрес+порт на relay; логин/пароль остаются от origin, TLS терминируется на origin через DNAT. ВАЖНО: клиент naive берёт SNI из хоста ссылки и по нему проверяет сертификат, поэтому адрес relay должен быть ДОМЕНОМ, входящим в сертификат origin (добавьте его алиасом домена и обновите SSL), с A-записью на relay. С голым IP проверка сертификата упадёт.',
+    ],
+    'naive relay no link'  => [
+        'en' => 'no link: set the NaiveProxy login and password first',
+        'ru' => 'ссылки нет: сначала задайте логин и пароль NaiveProxy',
     ],
     'import'               => [
         'en' => 'restore',
