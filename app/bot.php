@@ -2071,14 +2071,14 @@ class Bot
         }
         if (empty($norestart)) {
             $this->collectSession();
-            file_put_contents('/config/xray.json', $json);
+            $this->writeXrayJson($json);
             $this->ssh('pkill xray', 'xr');
             // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
             // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
             // старта — не требует правки override.env и совпадает с datDir().
             $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json > /dev/null 2>&1 &', 'xr');
         } else {
-            file_put_contents('/config/xray.json', $json);
+            $this->writeXrayJson($json);
         }
     }
 
@@ -2243,7 +2243,26 @@ class Bot
 
             return;
         }
-        file_put_contents('/config/xray.json', $json);
+        $this->writeXrayJson($json);
+    }
+
+    // Атомарная запись xray.json — тем же способом, что setPacConf() пишет
+    // pac.json. Файл читается публичными эндпоинтами подписки (sub(),
+    // subscription()) из нескольких воркеров без лока: при обычном
+    // file_put_contents читатель ловил файл на середине записи, json_decode()
+    // отдавал null, и findClientBySid(array $xr, …) падал с TypeError — 500
+    // вместо конфига. rename() атомарен, поэтому виден либо старый, либо новый
+    // ЦЕЛЫЙ файл.
+    public function writeXrayJson(string $json): bool
+    {
+        $tmp = '/config/xray.json.' . getmypid() . '.tmp';
+        if (file_put_contents($tmp, $json, LOCK_EX) === false) {
+            @unlink($tmp);
+            error_log('writeXrayJson: xray.json not written');
+
+            return false;
+        }
+        return rename($tmp, '/config/xray.json');
     }
 
     // Xray >= v26.4.15 (PR #5947, «Direct/Freedom outbound: default safe policy»)
@@ -2314,11 +2333,15 @@ class Bot
         unset($ob);
     }
 
-    public function collectSession() {
-        $p = $this->getXrayStats();
+    // Свернуть session в global — общий и по каждому клиенту. Вынесено из
+    // collectSession() чистой функцией: то же самое нужно сделать, когда ядро
+    // перезапустилось МИМО нас (см. xrayStatsUser), и читать/писать файл там
+    // второй раз незачем.
+    public static function foldSession(array $p): array
+    {
         $p['global'] = [
-            'download' => $p['global']['download'] + $p['session']['download'],
-            'upload'   => $p['global']['upload'] + $p['session']['upload'],
+            'download' => ($p['global']['download'] ?? 0) + ($p['session']['download'] ?? 0),
+            'upload'   => ($p['global']['upload'] ?? 0) + ($p['session']['upload'] ?? 0),
         ];
         $p['session'] = [
             'download' => 0,
@@ -2329,13 +2352,17 @@ class Bot
         // учёт), но и оставлять её означало бы показывать в меню до минуты
         // цифры, которых в ядре уже нет.
         unset($p['inbounds']);
-        foreach ($p['users'] as $k => $v) {
-            $p['users'][$k]['global']['download']  += $v['session']['download'];
-            $p['users'][$k]['session']['download']  = 0;
-            $p['users'][$k]['global']['upload']    += $v['session']['upload'];
-            $p['users'][$k]['session']['upload']    = 0;
+        foreach (($p['users'] ?? []) as $k => $v) {
+            $p['users'][$k]['global']['download'] = ($v['global']['download'] ?? 0) + ($v['session']['download'] ?? 0);
+            $p['users'][$k]['global']['upload']   = ($v['global']['upload'] ?? 0) + ($v['session']['upload'] ?? 0);
+            $p['users'][$k]['session']['download'] = 0;
+            $p['users'][$k]['session']['upload']   = 0;
         }
-        $this->setXrayStats($p);
+        return $p;
+    }
+
+    public function collectSession() {
+        $this->setXrayStats(self::foldSession($this->getXrayStats()));
     }
 
     public function setLang($lang)
@@ -4622,15 +4649,34 @@ NFT;
                     return;
                 }
                 $x = $this->getXray();
+                // Конфиг нечитаем — снимок отложим до следующего тика: без
+                // списка клиентов users[] пришлось бы затирать пустым.
+                if (!is_array($x)) {
+                    return;
+                }
                 $p = $this->getXrayStats();
                 // Тег пользовательского inbound берём из конфига: он не обязан
                 // быть 'vless_tls' (restore бэкапа, правка xray.json из webapp),
                 // а захардкоженное имя давало тихий ноль без единого сообщения.
                 $tag = (string) ($x['inbounds'][0]['tag'] ?? 'vless_tls');
-                $p['session'] = [
+                $session = [
                     'download' => $counters["inbound>>>$tag>>>traffic>>>downlink"] ?? 0,
                     'upload'   => $counters["inbound>>>$tag>>>traffic>>>uplink"] ?? 0,
                 ];
+                // session — АБСОЛЮТНЫЙ снимок счётчиков ядра, а они монотонно
+                // растут и обнуляются только его рестартом. Свой рестарт
+                // (restartXray) сворачивает session в global сам, а внешний
+                // (docker restart xr, OOM, ребут хоста, start_xray.sh) до сих
+                // пор просто терял накопленное: следующий тик записывал сюда
+                // нули, и квоты начинали считать заново. Просевший счётчик —
+                // это и есть признак чужого рестарта: сворачиваем прошлую
+                // сессию (общую и по каждому клиенту) до применения снимка.
+                if ($session['download'] < ($p['session']['download'] ?? 0)
+                    || $session['upload'] < ($p['session']['upload'] ?? 0)
+                ) {
+                    $p = self::foldSession($p);
+                }
+                $p['session'] = $session;
                 // Разбивка по inbound'ам, кроме служебного api. Нужна ради
                 // 'wg-in' (socks :10808, через него наружу ходят WG/AWG-клиенты):
                 // его трафик не попадает ни в session, ни в пользовательские
@@ -4649,7 +4695,7 @@ NFT;
                         'upload'   => $counters["inbound>>>$t>>>traffic>>>uplink"] ?? 0,
                     ];
                 }
-                if (!empty($users = $x['inbounds'][0]['settings']['clients'])) {
+                if (!empty($users = $x['inbounds'][0]['settings']['clients'] ?? [])) {
                     $tmp = [];
                     foreach ($users as $k => $v) {
                         $email = (string) ($v['email'] ?? '');
@@ -4993,7 +5039,12 @@ NFT;
         try {
             $c = $this->getXray();
             foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
-                if (!empty($v['time']) && ($v['time'] < time())) {
+                // switchXr() — ТУМБЛЕР: на уже выключенном клиенте он
+                // восстанавливает id из 'off' и снимает traffic_off. Без
+                // проверки 'off' клиент, отключённый по исчерпанной квоте
+                // (checkTrafficLimits ставит 'off', 'time' не трогает), после
+                // наступления даты снова включался — со старой ссылкой.
+                if (!empty($v['time']) && ($v['time'] < time()) && empty($v['off'])) {
                     $this->switchXr($k, 1);
                 }
             }
@@ -5008,6 +5059,22 @@ NFT;
         $u = $st['users'][$k] ?? [];
         return ($u['global']['download'] ?? 0) + ($u['session']['download'] ?? 0)
              + ($u['global']['upload'] ?? 0) + ($u['session']['upload'] ?? 0);
+    }
+
+    // UUID v4 для vless-клиента. Раньше значение брали у ядра (`xray uuid`), и
+    // при недоступном контейнере ssh() отдавал пустую строку: пустой id уезжал
+    // в clients[] и сохранялся: ядро с таким конфигом не поднимается вовсе —
+    // падал весь VLESS, причём в самых неудачных местах (отключение по квоте,
+    // switchXr, добавление пользователя). Внешняя зависимость здесь не нужна:
+    // `xray uuid` печатает обычный случайный UUID.
+    public static function xrayUuid(): string
+    {
+        $b    = random_bytes(16);
+        $b[6] = chr((ord($b[6]) & 0x0f) | 0x40); // версия 4
+        $b[8] = chr((ord($b[8]) & 0x3f) | 0x80); // вариант RFC 4122
+        $h    = bin2hex($b);
+        return substr($h, 0, 8) . '-' . substr($h, 8, 4) . '-' . substr($h, 12, 4)
+            . '-' . substr($h, 16, 4) . '-' . substr($h, 20, 12);
     }
 
     // Cron enforcement of per-client traffic quotas ($client['traffic'] = byte
@@ -5027,10 +5094,10 @@ NFT;
                 }
                 if ($this->xrUserTraffic($st, $k) >= $limit) {
                     $x['inbounds'][0]['settings']['clients'][$k]['off'] = $v['id'];
-                    $x['inbounds'][0]['settings']['clients'][$k]['id']  = trim($this->ssh('xray uuid', 'xr'));
+                    $x['inbounds'][0]['settings']['clients'][$k]['id']  = self::xrayUuid();
                     if (isset($v['password'])) {
                         $x['inbounds'][0]['settings']['clients'][$k]['off_pwd']  = $v['password'];
-                        $x['inbounds'][0]['settings']['clients'][$k]['password'] = trim($this->ssh('xray uuid', 'xr'));
+                        $x['inbounds'][0]['settings']['clients'][$k]['password'] = self::xrayUuid();
                     }
                     $x['inbounds'][0]['settings']['clients'][$k]['traffic_off'] = 1;
                     $disabled[] = $v['email'];
@@ -18978,6 +19045,15 @@ DNS-over-HTTPS with IP:
                 $this->deleteWarpClient($r['inbounds'][0]['settings']['clients'][$k]['email'] ?? '');
                 unset($r['inbounds'][0]['settings']['clients'][$k]);
                 unset($st['users'][$k]);
+                // Статистика привязана к клиенту ПОЗИЦИЕЙ в списке (см. сборку
+                // $p['users'] в checkTrafficLimits и чтение в userXr/sub), а
+                // restartXray() делает clients = array_values(). Без такой же
+                // переиндексации здесь ключи расходились: накопленный трафик
+                // всех, кто ниже удалённого, доставался соседу сверху, а
+                // последний клиент терял свой global — квоты считались с нуля.
+                if (!empty($st['users'])) {
+                    $st['users'] = array_values($st['users']);
+                }
                 $this->setXrayStats($st);
                 $this->restartXray($r);
                 $this->adguardXrayClients();
@@ -19030,7 +19106,7 @@ DNS-over-HTTPS with IP:
             $emails[] = $v['email'];
         }
         foreach ($users as $user) {
-            $uuid = $user[1] ?: trim($this->ssh('xray uuid', 'xr'));
+            $uuid = $user[1] ?: self::xrayUuid();
             if (in_array($uuid, $uuids ?: []) || in_array($user[0], $emails ?: [])) {
                 $this->send($this->input['chat'], "user {$user[0]} already exists");
                 return $this->xray();
@@ -19083,10 +19159,10 @@ DNS-over-HTTPS with IP:
         }
         if (empty($c['inbounds'][0]['settings']['clients'][$i]['off'])) {
             $c['inbounds'][0]['settings']['clients'][$i]['off'] = $c['inbounds'][0]['settings']['clients'][$i]['id'];
-            $c['inbounds'][0]['settings']['clients'][$i]['id']  = trim($this->ssh('xray uuid', 'xr'));
+            $c['inbounds'][0]['settings']['clients'][$i]['id']  = self::xrayUuid();
             if (isset($c['inbounds'][0]['settings']['clients'][$i]['password'])) {
                 $c['inbounds'][0]['settings']['clients'][$i]['off_pwd']  = $c['inbounds'][0]['settings']['clients'][$i]['password'];
-                $c['inbounds'][0]['settings']['clients'][$i]['password'] = trim($this->ssh('xray uuid', 'xr'));
+                $c['inbounds'][0]['settings']['clients'][$i]['password'] = self::xrayUuid();
             }
         } else {
             $c['inbounds'][0]['settings']['clients'][$i]['id'] = $c['inbounds'][0]['settings']['clients'][$i]['off'];
@@ -21175,6 +21251,11 @@ DNS-over-HTTPS with IP:
         // writing xray.json on the hot path (concurrent requests). sidOf() falls
         // back to the uuid when a subtoken is absent; cron/userXr backfill tokens.
         $xr     = $this->getXray();
+        // Конфиг нечитаем (файла нет, битый JSON) — findClientBySid(array $xr, …)
+        // упал бы с TypeError, то есть 500 вместо честного ответа.
+        if (!is_array($xr)) {
+            $this->subNotFound('Subscription temporarily unavailable.');
+        }
         $pac    = $this->getPacConf();
         $st     = $this->getXrayStats();
         $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
@@ -21442,6 +21523,14 @@ DNS-over-HTTPS with IP:
         $pac    = $this->getPacConf();
         $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
         $xr     = $this->getXray();
+        // Как в sub(): нечитаемый конфиг — это 404/'', а не TypeError в
+        // findClientBySid(array $xr, …) и 500 у клиента.
+        if (!is_array($xr)) {
+            if (!empty($return)) {
+                return '';
+            }
+            $this->subNotFound('Subscription temporarily unavailable.');
+        }
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
 
@@ -22791,9 +22880,16 @@ DNS-over-HTTPS with IP:
         return $route;
     }
 
+    // null — «конфиг прочитать не удалось» (файла нет, битый JSON, скаляр).
+    // Раньше отдавалось всё, что вернул json_decode: строка или число из
+    // повреждённого файла доезжали до `$xr['inbounds'][0]` и давали не
+    // диагностируемый набор warning'ов вместо явного отказа. Вызывающие,
+    // которым null неприемлем, проверяют его — см. backfillSubTokens(),
+    // refreshExtSubCache(), sub(), subscription().
     public function getXray()
     {
-        return json_decode(file_get_contents('/config/xray.json'), true);
+        $c = json_decode((string) @file_get_contents('/config/xray.json'), true);
+        return is_array($c) ? $c : null;
     }
 
     /** Валидный хостнейм — единственное, что можно пускать в nginx-конфиг. */
