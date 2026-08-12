@@ -331,15 +331,35 @@ class Bot
      * диске с открытыми правами. Поэтому сначала создаём пустой файл и
      * сужаем права, и только потом пишем содержимое.
      */
-    public function writePrivateKey(string $path, string $data): void
+    public function writePrivateKey(string $path, string $data): bool
     {
-        if (!file_exists($path)) {
-            @touch($path);
+        // Пишем во временный файл и подменяем rename'ом: права сужаются, пока
+        // файл ещё ПУСТ, а секрет попадает сразу в файл с 0600 — окна на 0644
+        // не остаётся вовсе (прежний вариант с touch+chmod сужал его, но не
+        // закрывал, вопреки докблоку). rename сохраняет права временного файла
+        // и атомарен для читателей.
+        $tmp = $path . '.' . getmypid() . '.tmp';
+        $h   = @fopen($tmp, 'w');
+        if ($h === false) {
+            error_log("writePrivateKey: cannot create $tmp");
+
+            return false;
         }
-        @chmod($path, 0600);
-        file_put_contents($path, $data);
+        @chmod($tmp, 0600);
+        $ok = fwrite($h, $data) !== false;
+        fclose($h);
+        // Результат записи раньше не проверялся: при переполненном диске в
+        // ./certs оставался обрезанный ключ, а nginx падал на рестарте.
+        if (!$ok || !rename($tmp, $path)) {
+            @unlink($tmp);
+            error_log("writePrivateKey: $path not written");
+
+            return false;
+        }
         // Существовавший ранее файл мог быть создан старой версией с 0644.
         @chmod($path, 0600);
+
+        return true;
     }
 
     public function auth()
@@ -370,7 +390,11 @@ class Bot
     public function callbackCheck()
     {
         if (empty($this->callback) && !empty($this->input['callback_id'])) {
-            $this->answer($this->input['callback_id'], $GLOBALS['debug'] ? $this->input['callback'] : false);
+            // !empty вместо прямого чтения: $GLOBALS['debug'] объявляется только
+            // в debug-режиме (см. index.php), и в обычном каждое нажатие кнопки
+            // давало «Undefined array key debug». Тот же глобал в ssh() читается
+            // именно так.
+            $this->answer($this->input['callback_id'], !empty($GLOBALS['debug']) ? $this->input['callback'] : false);
         }
     }
 
@@ -593,7 +617,7 @@ class Bot
                 $this->searchLogs($m[1]);
                 break;
             case preg_match('~^/searchLogs (.+?)(?:\s(.+?))?(?:\s(.+?))?(?:\s(.+?))?$~', $this->input['callback'], $m):
-                $this->searchLogs($m[1], $m[2], $m[3], $m[4]);
+                $this->searchLogs($m[1], $m[2] ?? false, $m[3] ?? 0, $m[4] ?? 0);
                 break;
             case preg_match('~^/switchSilence$~', $this->input['callback'], $m):
                 $this->switchSilence();
@@ -620,7 +644,7 @@ class Bot
                 $this->ports();
                 break;
             case preg_match('~^/analysisIp(?:\s(\d+))?$~', $this->input['callback'], $m):
-                $this->analysisIp($m[1] ?: 0);
+                $this->analysisIp(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/ipMenu$~', $this->input['callback'], $m):
                 $this->ipMenu();
@@ -656,16 +680,16 @@ class Bot
                 $this->wgClientLogClear((int) $m[1], (int) $m[2], (int) ($m[3] ?? 0));
                 break;
             case preg_match('~^/cleanDeny(?:\s(\d))?$~', $this->input['callback'], $m):
-                $this->cleanDeny($m[1]);
+                $this->cleanDeny($m[1] ?? false);
                 break;
             case preg_match('~^/denyList (.+?)(?:\s(\d))?$~', $this->input['callback'], $m):
-                $this->denyList($m[1], $m[2] ?: 0);
+                $this->denyList($m[1], ($m[2] ?? '') ?: 0);
                 break;
             case preg_match('~^/cleanLogs (.+?)(?:\s(1))?$~', $this->input['callback'], $m):
-                $this->cleanLogs($m[1], $m[2]);
+                $this->cleanLogs($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/allowIp (.+?) (\d+)(?:\s(\d+))?$~', $this->input['callback'], $m):
-                $this->allowIp($m[1], $m[2], $m[3]);
+                $this->allowIp($m[1], $m[2], $m[3] ?? 0);
                 break;
             case preg_match('~^/searchIp (.+)$~', $this->input['callback'], $m):
                 $this->searchIp($m[1]);
@@ -674,13 +698,13 @@ class Bot
                 $this->searchSuspiciousIp($m[1]);
                 break;
             case preg_match('~^/denyIp (.+?)(?:\s(.+?)\s(\d+?)\s(\d))?$~', $this->input['callback'], $m):
-                $this->denyIp($m[1], $m[2], $m[3], $m[4]);
+                $this->denyIp($m[1], $m[2] ?? false, $m[3] ?? 0, $m[4] ?? 0);
                 break;
             case preg_match('~^/whiteIp (.+?)(?:\s(.+?)\s(\d+?)\s(\d))?$~', $this->input['callback'], $m):
-                $this->whiteIp($m[1], $m[2], $m[3], $m[4]);
+                $this->whiteIp($m[1], $m[2] ?? false, $m[3] ?? 0, $m[4] ?? 0);
                 break;
             case preg_match('~^/adgFillAllowedClients(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->adgFillAllowedClients($m[1] ?: false);
+                $this->adgFillAllowedClients(($m[1] ?? '') ?: false);
                 break;
             case preg_match('~^/appOutbound$~', $this->input['callback'], $m):
                 $this->appOutbound();
@@ -1495,7 +1519,7 @@ class Bot
                 $this->qrSS();
                 break;
             case preg_match('~^/qrXray (\d+)(?:_(\d+))?$~', $this->input['callback'], $m):
-                $this->qrXray($m[1], $m[2] ?: false);
+                $this->qrXray($m[1], ($m[2] ?? '') ?: false);
                 break;
             case preg_match('~^/delupstream (\d+)$~', $this->input['callback'], $m):
                 $this->delupstream($m[1]);
@@ -1516,7 +1540,7 @@ class Bot
                 $this->addNipdomain();
                 break;
             case preg_match('~^/(?P<action>change|delete)(?P<typelist>\w+) (?P<arg>\d+)(?: (?P<page>\d+))?$~', $this->input['callback'], $m):
-                $this->listPacChange($m['typelist'], $m['action'], $m['arg'], $m['page'] ?: 0);
+                $this->listPacChange($m['typelist'], $m['action'], $m['arg'], ($m['page'] ?? '') ?: 0);
                 break;
             case preg_match('~^/paczapret$~', $this->input['callback'], $m):
                 $this->pacZapret();
@@ -1540,19 +1564,19 @@ class Bot
                 $this->warpPlus();
                 break;
             case preg_match('~^/xray(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xray($m[1] ?: 0);
+                $this->xray(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsblock(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsblock($m[1] ?: 0);
+                $this->xtlsblock(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/routes(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->routes($m[1] ?: 0);
+                $this->routes(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/tun$~', $this->input['callback'], $m):
                 $this->tun();
                 break;
             case preg_match('~^/tunpackage(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->tunpackage($m[1] ?: 0);
+                $this->tunpackage(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/tunpackagemode$~', $this->input['callback'], $m):
                 $this->tunpackagemode();
@@ -1561,28 +1585,28 @@ class Bot
                 $this->tunprocessmode();
                 break;
             case preg_match('~^/tunprocess(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->tunprocess($m[1] ?: 0);
+                $this->tunprocess(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlswarp(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlswarp($m[1] ?: 0);
+                $this->xtlswarp(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsproxy(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsproxy($m[1] ?: 0);
+                $this->xtlsproxy(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsapp(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsapp($m[1] ?: 0);
+                $this->xtlsapp(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsprocess(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsprocess($m[1] ?: 0);
+                $this->xtlsprocess(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlssubnet(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlssubnet($m[1] ?: 0);
+                $this->xtlssubnet(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsrulesset(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsrulesset($m[1] ?: 0);
+                $this->xtlsrulesset(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsdat(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsdat($m[1] ?: 0);
+                $this->xtlsdat(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/datrefresh$~', $this->input['callback'], $m):
                 $this->datRefresh();
@@ -1594,19 +1618,19 @@ class Bot
                 $this->datScheduleSet((int) $m[1]);
                 break;
             case preg_match('~^/templateCopy (\w+)(?: (.+))?$~', $this->input['callback'], $m):
-                $this->templateCopy($m[1], $m[2]);
+                $this->templateCopy($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/delTemplate (\w+)(?: (.+))?$~', $this->input['callback'], $m):
-                $this->delTemplate($m[1], $m[2]);
+                $this->delTemplate($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/downloadOrigin (\w+)$~', $this->input['callback'], $m):
                 $this->downloadOrigin($m[1]);
                 break;
             case preg_match('~^/downloadTemplate (\w+)(?: (.+))?$~', $this->input['callback'], $m):
-                $this->downloadTemplate($m[1], $m[2]);
+                $this->downloadTemplate($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/defaultTemplate (\w+)(?: (.+))?$~', $this->input['callback'], $m):
-                $this->defaultTemplate($m[1], $m[2]);
+                $this->defaultTemplate($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/templates (\w+)$~', $this->input['callback'], $m):
                 $this->templates($m[1]);
@@ -9455,7 +9479,9 @@ DNS-over-HTTPS with IP:
     {
         switch ($type) {
             case 'includelist':
-                $this->pacUpdate($_SESSION['proxylistentry']);
+                // ?? — ключа нет, пока пользователь не тронул proxy-список;
+                // строкой ниже он и так читается через !empty().
+                $this->pacUpdate($_SESSION['proxylistentry'] ?? null);
                 if (!empty($_SESSION['proxylistentry'])) {
                     $this->xtlsproxy($page);
                 }
