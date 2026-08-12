@@ -18025,7 +18025,11 @@ DNS-over-HTTPS with IP:
         // Share-link #remark shown as the node name in the client, prefixed with
         // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
         // this with the relay's country for relay subscriptions.
-        $remark = $this->flagName($c['inbounds'][0]['settings']['clients'][$i]['email'], $this->ip);
+        // rawurlencode, как в applyExtRemark(): #fragment ссылки — часть URI, а
+        // email клиента произволен. Символ «#» в нём обрывал имя узла у клиента
+        // и ломал подмену имени в relaySwapLink (та режет по ~#[^#]*$~), пробел
+        // и кириллица уезжали в ссылку сырыми.
+        $remark = rawurlencode($this->flagName($c['inbounds'][0]['settings']['clients'][$i]['email'], $this->ip));
         $stok   = $this->sidOf($c['inbounds'][0]['settings']['clients'][$i]); // sub locator
         $si     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
@@ -18134,8 +18138,34 @@ DNS-over-HTTPS with IP:
     // a "custom config", i.e. raw JSON dumped into one field). When 'relay' is
     // set, the link's endpoint host:port is swapped to the relay (SNI/host stay
     // real, exactly like the JSON formats).
+    /**
+     * Приводит параметры подписочного запроса к скалярам.
+     *
+     * Любой из них может приехать массивом: и из query-string (?s[]=1), и из
+     * base64-токена в пути (index.php сливает его в $_GET). Дальше значение
+     * уходит в findClientBySid(string $sid) и в $pac['relays'][$_GET['relay']],
+     * то есть TypeError и HTTP 500 вместо честного 404 — заодно бесплатная
+     * пробоотборка «жив ли сервер» для любого прохожего.
+     */
+    public function normalizeSubGet(): void
+    {
+        foreach ($_GET as $k => $v) {
+            if (!is_scalar($v)) {
+                unset($_GET[$k]);
+            }
+        }
+        // subToken разбирается отдельно от $_GET (см. subscription): вложенный
+        // массив в нём — тот же случай.
+        foreach ((array) $this->subToken as $k => $v) {
+            if (!is_scalar($v)) {
+                unset($this->subToken[$k]);
+            }
+        }
+    }
+
     public function subVless()
     {
+        $this->normalizeSubGet();
         $xr  = $this->getXray();
         $pac = $this->getPacConf();
         $this->subRateLimit($_GET['s'] ?? '');
@@ -18203,7 +18233,7 @@ DNS-over-HTTPS with IP:
         if (!empty($relay['address'])) {
             $out = preg_replace_callback(
                 '~#[^#]*$~',
-                fn() => '#' . $this->flagName($email, [$relay['address'], $this->ip]),
+                fn() => '#' . rawurlencode($this->flagName($email, [$relay['address'], $this->ip])),
                 $out,
                 1,
             );
@@ -18372,7 +18402,16 @@ DNS-over-HTTPS with IP:
             return $link;
         }
         $j['ps'] = $remark;
-        return 'vmess://' . base64_encode(json_encode($j, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        // json_encode отдаёт false на невалидном UTF-8 (а $j приходит из ЧУЖОЙ
+        // подписки), и base64_encode(false) — это пустая строка: клиент получал
+        // «vmess://» без содержимого. Оставляем исходную ссылку как есть.
+        $json = json_encode($j, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            error_log('applyVmessExtRemark: ' . json_last_error_msg());
+
+            return $link;
+        }
+        return 'vmess://' . base64_encode($json);
     }
 
     // ── Subscription addressing (subtoken, decoupled from the credential) ────
@@ -18707,11 +18746,34 @@ DNS-over-HTTPS with IP:
             return [];
         }
         foreach ($ips as $ip) {
-            if (!filter_var($ip, FILTER_VALIDATE_IP, $flags)) {
+            if (!filter_var($ip, FILTER_VALIDATE_IP, $flags) || self::isCarrierRange($ip)) {
                 return [];
             }
         }
         return array_values(array_unique($ips));
+    }
+
+    /**
+     * Диапазоны, которые FILTER_FLAG_NO_PRIV_RANGE|NO_RES_RANGE не покрывает,
+     * а до внутренней сети через них дотянуться можно:
+     *  - 100.64.0.0/10 — CGNAT (RFC 6598): в него смотрят роутеры провайдера и
+     *    внутренние адреса многих хостингов;
+     *  - 64:ff9b::/96 и 64:ff9b:1::/48 — NAT64 (RFC 6052, RFC 8215): любой
+     *    IPv4-адрес, включая 127.0.0.1, представим таким IPv6.
+     * Классические обходы (2130706433, 127.1, 0177.0.0.1) фильтр отбивает сам —
+     * он проверяет уже разрешённый адрес, а не строку из URL.
+     */
+    public static function isCarrierRange(string $ip): bool
+    {
+        $bin = @inet_pton($ip);
+        if ($bin === false) {
+            return false;
+        }
+        if (strlen($bin) === 4) {
+            return (ip2long($ip) & ~((1 << 22) - 1)) === ip2long('100.64.0.0');
+        }
+        return str_starts_with($bin, "\x00\x64\xff\x9b\x00\x00\x00\x00\x00\x00\x00\x00")  // 64:ff9b::/96
+            || str_starts_with($bin, "\x00\x64\xff\x9b\x00\x01");                          // 64:ff9b:1::/48
     }
 
     // Decode a subscription body: the common base64 newline list, or plain text.
@@ -19475,13 +19537,20 @@ DNS-over-HTTPS with IP:
         $p     = $this->getPacConf();
         $users = array_map(fn ($e) => trim($e), explode(',', $users));
         $users = array_map(fn ($e) => explode(':', $e), $users);
+        // Инициализация: без клиентов в конфиге (свежая установка) цикл ниже не
+        // выполнялся ни разу, и обе переменные оставались необъявленными.
+        $uuids  = [];
+        $emails = [];
         foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
             $uuids[]  = $v['id'];
             $emails[] = $v['email'];
         }
         foreach ($users as $user) {
-            $uuid = $user[1] ?: self::xrayUuid();
-            if (in_array($uuid, $uuids ?: []) || in_array($user[0], $emails ?: [])) {
+            // Формат ввода — «email» или «email:uuid»: без второй части ключа
+            // $user[1] попросту нет, и на каждом обычном добавлении шло
+            // «Undefined array key 1».
+            $uuid = ($user[1] ?? '') ?: self::xrayUuid();
+            if (in_array($uuid, $uuids) || in_array($user[0], $emails)) {
                 $this->send($this->input['chat'], "user {$user[0]} already exists");
                 return $this->xray();
             }
@@ -19494,6 +19563,11 @@ DNS-over-HTTPS with IP:
                 'trojan-grpc' => ['id' => $uuid, 'password' => bin2hex(random_bytes(16)), 'email' => $user[0], 'subtoken' => $stok],
                 default       => ['id' => $uuid, 'email' => $user[0], 'subtoken' => $stok],
             };
+            // Пополняем списки в цикле: иначе дубликаты ВНУТРИ одной пачки
+            // («a@x,a@x») проходили проверку и заводили двух клиентов с одним
+            // email — статистика xray считается как раз по email.
+            $uuids[]  = $uuid;
+            $emails[] = $user[0];
         }
         $this->restartXray($c);
         $this->adguardXrayClients();
@@ -20122,8 +20196,10 @@ DNS-over-HTTPS with IP:
         }
         $text[] = 'fingerprint: ' . $this->fingerprint();
         $st = $this->getXrayStats();
-        $td = $this->getBytes($st['global']['download'] + $st['session']['download']);
-        $tu = $this->getBytes($st['global']['upload'] + $st['session']['upload']);
+        // ?? 0 — на свежей установке (или сразу после resetXrStats) файла
+        // статистики нет вовсе, и меню xray открывалось с warning'ами.
+        $td = $this->getBytes(($st['global']['download'] ?? 0) + ($st['session']['download'] ?? 0));
+        $tu = $this->getBytes(($st['global']['upload'] ?? 0) + ($st['session']['upload'] ?? 0));
         $text[] = "↓$td  ↑$tu";
         // Строка выше — global+session ПОЛЬЗОВАТЕЛЬСКОГО inbound'а. Ниже —
         // только текущая сессия (счётчики xray обнуляются его рестартом) и
@@ -20312,8 +20388,10 @@ DNS-over-HTTPS with IP:
         $page    = $page == -2 ? $all - 1 : $page;
         $clients = $page != -1 ? array_slice($clients, $page * $this->limit, $this->limit, true) : $clients;
         foreach ($clients as $k => $v) {
-            $download = $this->getBytes($st['users'][$k]['global']['download'] + $st['users'][$k]['session']['download']);
-            $upload   = $this->getBytes($st['users'][$k]['global']['upload'] + $st['users'][$k]['session']['upload']);
+            // Тот же ?? 0, что в userXr() и sub(): у только что добавленного
+            // клиента записи в статистике ещё нет.
+            $download = $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
+            $upload   = $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
             $time     = !empty($v['time']) ? $this->getTime($v['time']) : '';
             $data[]   = [
                 [
@@ -21321,7 +21399,10 @@ DNS-over-HTTPS with IP:
         $hash   = $this->getHashBot();
         $email  = $c['email'];
         $stok   = $this->sidOf($c); // subscription locator (not the credential)
-        $rl     = '&relay=' . $name;
+        // Имя relay задаёт админ, а отсюда оно уходит в query-string ссылки:
+        // пробел или & в имени резали параметр (и всё, что за ним) — клиент
+        // импортировал подписку origin вместо relay.
+        $rl     = '&relay=' . rawurlencode($name);
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> (" . ($relay['address'] ?: $relay['awg_address']) . ")\n";
 
@@ -21641,6 +21722,7 @@ DNS-over-HTTPS with IP:
 
     public function sub()
     {
+        $this->normalizeSubGet();
         // No token backfill here: this is a public GET endpoint, so we avoid
         // writing xray.json on the hot path (concurrent requests). sidOf() falls
         // back to the uuid when a subtoken is absent; cron/userXr backfill tokens.
@@ -21944,6 +22026,7 @@ DNS-over-HTTPS with IP:
 
     public function subscription($return = false)
     {
+        $this->normalizeSubGet();
         switch ($_GET['t'] ?? '') {
             case 's':
                 $type = 'v2ray';
@@ -22518,10 +22601,13 @@ DNS-over-HTTPS with IP:
             '~domain~'       => $domain,
             '~directdomain~' => $pac['domain'],
             '~cdndomain~'    => $pac['linkdomain'],
-            '~short_id~'     => $xr['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0],
+            // ?? '' — Reality-поля есть только у Reality-транспорта, а
+            // changeTransport() заменяет streamSettings целиком: на ws/xhttp
+            // каждая выдача подписки давала здесь два warning'а.
+            '~short_id~'     => $xr['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0] ?? '',
             '~email~'        => $email,
             '~public_key~'   => $pac['xray'],
-            '~server_name~'  => $xr['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0],
+            '~server_name~'  => $xr['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] ?? '',
             '~fingerprint~'  => $fingerprint,
             '~ip~'           => $this->ip,
             '~outbound~'     => $outbound,
