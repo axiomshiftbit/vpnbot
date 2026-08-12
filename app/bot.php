@@ -2416,7 +2416,12 @@ class Bot
     {
         if (file_exists(__DIR__ . '/zapretlists/mpac')) {
             $domains = explode("\n", file_get_contents(__DIR__ . '/zapretlists/mpac'));
-            foreach ($domains as $k => $v) {
+            // Проверка отвечала «match» ВСЕГДА: файл заканчивается переводом
+            // строки, поэтому последним элементом идёт '', а preg_match('~~',…)
+            // истинно для любой строки. Пустые строки отбрасываем, а $flag
+            // инициализируем — иначе warning на каждом «not match».
+            $flag = 0;
+            foreach (array_filter($domains, fn($e) => trim($e) !== '') as $k => $v) {
                 if (preg_match("~$v~", $url)) {
                     $flag = 1;
                     break;
@@ -12203,6 +12208,18 @@ DNS-over-HTTPS with IP:
                 $this->xrayUpdateRules();
                 $this->xtlsdat();
                 break;
+            // Кнопка «delete all» рисуется для КАЖДОГО списка (listPac), а
+            // веток здесь было меньше: список стирался, но ни одного update()
+            // не следовало — меню «зависало» на экране подтверждения.
+            case 'subnetlist':
+                $this->xtlssubnet();
+                break;
+            case 'tunpackage':
+                $this->tunpackage();
+                break;
+            case 'tunprocess':
+                $this->tunprocess();
+                break;
         }
     }
 
@@ -12232,6 +12249,17 @@ DNS-over-HTTPS with IP:
                 break;
             case 'datlist':
                 $dir = 'dat';
+                break;
+            // Для tun-списков ветки не было вовсе, и заголовок собирался из
+            // неопределённой переменной.
+            case 'tunpackage':
+                $dir = 'TUN PACKAGE';
+                break;
+            case 'tunprocess':
+                $dir = 'TUN PROCESS';
+                break;
+            default:
+                $dir = $type;
                 break;
         }
         $text   = <<<text
@@ -12305,6 +12333,15 @@ DNS-over-HTTPS with IP:
                     [
                         'text'          => $this->i18n('back'),
                         'callback_data' => "/xtlsdat",
+                    ],
+                ];
+                break;
+            case 'tunpackage':
+            case 'tunprocess':
+                $data[] = [
+                    [
+                        'text'          => $this->i18n('back'),
+                        'callback_data' => "/$type",
                     ],
                 ];
                 break;
