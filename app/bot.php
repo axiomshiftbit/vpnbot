@@ -49,6 +49,12 @@ class Bot
     // а не в момент настройки. См. validateMTU().
     public const MTU_MIN = 576;
     public const MTU_MAX = 65535;
+    // Предел для AllowedIPs: это СПИСОК подсетей (кнопка «listSubnet» склеивает
+    // весь список маршрутов через запятую), и дефолтные 256 символов
+    // sanitizeConfValue() резали его посреди CIDR — в конфиг уезжала запись
+    // вида «10.0.1.0/2», которую клиент считает валидной и маршрутизирует не
+    // туда. Обрезка по границе элемента + запас на длинный список.
+    public const WG_ALLOWEDIPS_MAX = 4096;
     // Поля, которые перегенерируются авто-ротацией. HeaderProtectionKey включён
     // осознанно: он даёт самый заметный статический отпечаток, но после каждой
     // ротации ВСЕ клиенты обязаны перекачать конфиг — рассинхрон HPK рвёт
@@ -4484,6 +4490,10 @@ NFT;
             $clients = $this->readClients();
         }
         $server = $this->readConfig();
+        if (empty($server['interface'])) {
+            $this->wgConfUnavailable('срок действия не изменён');
+            return $this->menu('client', "{$client}_$page");
+        }
         // Пир — по адресу (peerIndexByClient), а не перебором с прямым чтением
         // 'AllowedIPs': у выключенного пира ключ закомментирован, и старый
         // цикл сыпал «Undefined array key» на каждом таком соседе.
@@ -5071,9 +5081,16 @@ NFT;
         if (empty($clients[$client])) {
             return $this->menu('wg', $page);
         }
+        // Серверный конфиг читаем ДО записи clients.json: при недоступном
+        // контейнере имя менялось локально, в wg0.conf оставалось старое, и
+        // пользователю об этом не сообщалось вовсе.
+        $server = $this->readConfig();
+        if (empty($server['interface'])) {
+            $this->wgConfUnavailable('имя не изменено');
+            return $this->menu('client', "{$client}_$page");
+        }
         $clients[$client]['interface']['## name'] = $name;
         $this->saveClients($clients);
-        $server = $this->readConfig();
         // peerIndexByClient понимает и выключенного пира ('# AllowedIPs'):
         // раньше переименование выключенного клиента меняло только
         // clients.json, а в wg0.conf оставалось старое имя, и оно
@@ -6993,7 +7010,25 @@ NFT;
 
     public function switchAmnezia($page = 0, $reset = false, $reduce = false, $apply = false, $silent = false)
     {
-        $c = $this->getPacConf();
+        // Серверный конфиг читаем ДО любых записей: readConfig() штатно отдаёт
+        // null при недоступном контейнере, а ниже $wg['interface'][$j] = $i
+        // авто-вивифицировал бы null и createConfig(null) дал заглушку из одной
+        // секции [Interface] — без PrivateKey, ListenPort и без единого пира.
+        // Если ssh к моменту записи успевал восстановиться, эта заглушка
+        // уезжала в wg0.conf. Заодно не даём разъехаться pac.json/clients.json
+        // с сервером: до успешного чтения не меняем ничего.
+        $wg = $this->readConfig();
+        if (empty($wg['interface'])) {
+            if (empty($silent)) {
+                $this->send(
+                    $this->input['chat'] ?? '',
+                    'wireguard: конфиг недоступен (контейнер не отвечает), amnezia не переключена',
+                    $this->input['message_id'] ?? null,
+                );
+            }
+            return;
+        }
+        $orig = $c = $this->getPacConf();
         switch (true) {
             case !empty($reset):
                 $amnezia = 1;
@@ -7020,7 +7055,22 @@ NFT;
         }
         $this->setPacConf($c);
 
+        // presharedKey() отдаёт '' только когда контейнер не ответил (см. там же).
+        // Писать конфиги с пустым PresharedKey нельзя, а pac.json к этому моменту
+        // уже переключён — откатываем его к исходному снимку, иначе меню показывало
+        // бы amnezia включённой при неизменившихся конфигах.
         $pk = $this->presharedKey();
+        if (!empty($amnezia) && $pk === '') {
+            $this->setPacConf($orig);
+            if (empty($silent)) {
+                $this->send(
+                    $this->input['chat'] ?? '',
+                    'wireguard: не удалось получить presharedkey (контейнер не отвечает), amnezia не переключена',
+                    $this->input['message_id'] ?? null,
+                );
+            }
+            return;
+        }
         $ak = $this->amneziaKeysEffective();
         // Списки чистки — из awgKeyNames(), а не перечислением: иначе каждый
         // новый параметр протокола пришлось бы дописывать в двух местах, и
@@ -7047,7 +7097,6 @@ NFT;
         }
         $this->saveClients($clients);
 
-        $wg = $this->readConfig();
         foreach ($strip as $j) {
             unset($wg['interface'][$j]);
         }
@@ -7057,7 +7106,7 @@ NFT;
             }
         }
 
-        foreach ($wg['peers'] as $k => $v) {
+        foreach ($wg['peers'] ?? [] as $k => $v) {
             if (!empty($amnezia)) {
                 $wg['peers'][$k]['PresharedKey'] = $pk;
             } else {
@@ -10464,10 +10513,26 @@ DNS-over-HTTPS with IP:
     // адресу: он уникален внутри подсети инстанса и присутствует у пира в любом
     // состоянии — 'AllowedIPs' у включённого, '# AllowedIPs' у выключенного
     // (switchClient комментирует все ключи).
-    public function peerIndexByClient(array $conf, array $client): ?int
+    // Единая реакция на недоступный контейнер WG. Читать конфиг перед правкой
+    // обязаны все, кто потом зовёт createConfig(): на null он собирает конфиг из
+    // одной секции [Interface] — без PrivateKey, ListenPort и без единого пира,
+    // и эта заглушка уезжает в wg0.conf, как только ssh восстановился.
+    public function wgConfUnavailable(string $what): void
+    {
+        $this->send(
+            $this->input['chat'] ?? '',
+            "wireguard: конфиг недоступен (контейнер не отвечает), $what",
+            $this->input['message_id'] ?? null,
+        );
+    }
+
+    // $conf допускает null: readConfig() возвращает его при недоступном
+    // контейнере, и строгая сигнатура (array $conf) роняла все четыре вызова
+    // фатальным TypeError вместо штатного «пир не найден».
+    public function peerIndexByClient(?array $conf, array $client): ?int
     {
         $addr = $client['interface']['Address'] ?? null;
-        if (empty($addr)) {
+        if ($conf === null || empty($addr)) {
             return null;
         }
         foreach (($conf['peers'] ?? []) as $k => $v) {
@@ -10484,6 +10549,13 @@ DNS-over-HTTPS with IP:
         $conf    = $this->readConfig();
         $clients = $this->readClients();
         if (empty($clients[$client])) {
+            return $menu ? $this->menu('wg', $page) : null;
+        }
+        // Без конфига удаление прошло бы только локально: запись из clients.json
+        // исчезла, а пир на сервере продолжает пускать трафик, и вернуть его в
+        // меню уже нечем.
+        if (empty($conf['interface'])) {
+            $this->wgConfUnavailable('клиент не удалён');
             return $menu ? $this->menu('wg', $page) : null;
         }
         // Пира ищем по адресу, а не по индексу: если совпадения нет, значит на
@@ -10505,6 +10577,13 @@ DNS-over-HTTPS with IP:
     public function dnsPeer($client, $page)
     {
         $clients = $this->readClients();
+        // Индекс клиента приходит из кнопки, а список мог переиндексироваться
+        // (deleteClient) — без проверки создавалась фантомная запись без
+        // PrivateKey/Address. Такой guard есть у соседей (renameClient, setIps,
+        // changeClientMTU).
+        if (empty($clients[$client])) {
+            return $this->menu('wg', $page);
+        }
         $clients[$client]['interface']['DNS'] = '10.10.0.5';
         $this->saveClients($clients);
         $this->menu('client', "{$client}_$page");
@@ -11291,7 +11370,7 @@ DNS-over-HTTPS with IP:
         if (empty($clients[$k])) {
             return $this->menu('wg', $page);
         }
-        $clients[$k]['peers'][0]['AllowedIPs'] = self::sanitizeConfValue($ips);
+        $clients[$k]['peers'][0]['AllowedIPs'] = self::sanitizeAllowedIps($ips);
         $this->saveClients($clients);
         $this->menu('client', "{$k}_$page");
     }
@@ -24223,7 +24302,12 @@ DNS-over-HTTPS with IP:
         $d    = null;
         $i = 0;
         foreach ($r as $k => $v) {
-            if (preg_match('~\[(.+)\]~', $v, $m)) {
+            // Заголовок секции — ТОЛЬКО целая строка «[Interface]»/«[Peer]» (и
+            // «# [Peer]» у выключенного пира, см. createConfig()). Без якорей
+            // регулярка ловила скобки в любом месте строки, поэтому клиент с
+            // именем вида «Home [PC]» расщеплял «## name = …» на новую пустую
+            // секцию: конфиг терял пира, а awg-quick падал на setconf.
+            if (preg_match('~^\s*#?\s*\[(.+)\]\s*$~', $v, $m)) {
                 $i++;
                 if ($m[1] == 'Interface') {
                     $data[$i]['type'] = 'interface';
@@ -24232,6 +24316,11 @@ DNS-over-HTTPS with IP:
                 }
             } else {
                 $t = explode('=', $v, 2);
+                // Строка без «=» ключом быть не может: раньше такую съедала
+                // ветка выше, теперь она дошла бы сюда и дала «Undefined offset».
+                if (!isset($t[1])) {
+                    continue;
+                }
                 $data[$i][trim($t[0])] = trim($t[1]);
             }
         }
@@ -24318,10 +24407,27 @@ DNS-over-HTTPS with IP:
     // СЕРВЕРНЫЙ конфиг произвольные директивы (вплоть до лишнего [Peer]).
     // base64 в restartWG() спасал только от кавычек в shell-команде, не от
     // структуры самого конфига. Схлопываем переводы строк и режем длину.
+    // Квадратные скобки вырезаем наравне с переводами строк: имя пира уезжает в
+    // серверный wg0.conf строкой «## name = <имя>», а «[…]» в нём читается как
+    // заголовок секции (см. readConfig()) — пир расщеплялся надвое и туннель
+    // ложился у всех клиентов инстанса.
     public static function sanitizeConfValue($v, int $max = 256): string
     {
-        $v = preg_replace('~[\r\n]+~', ' ', (string) $v);
+        $v = preg_replace('~[\r\n\[\]]+~', ' ', (string) $v);
         return mb_substr(trim($v), 0, $max);
+    }
+
+    // AllowedIPs — это СПИСОК подсетей через запятую, а не одно значение:
+    // режем по границе элемента, иначе обрезка приходится на середину CIDR и
+    // клиент получает валидную с виду, но неверную маску (см. WG_ALLOWEDIPS_MAX).
+    public static function sanitizeAllowedIps($v): string
+    {
+        $v = self::sanitizeConfValue($v, self::WG_ALLOWEDIPS_MAX);
+        if (mb_strlen($v) < self::WG_ALLOWEDIPS_MAX) {
+            return $v;
+        }
+        $p = mb_strrpos($v, ',');
+        return $p === false ? '' : trim(mb_substr($v, 0, $p));
     }
 
     public function createConfig($data)
@@ -24365,11 +24471,21 @@ DNS-over-HTTPS with IP:
         return implode(PHP_EOL, $conf);
     }
 
+    // Пустая строка — «ключ получить не удалось»: при недоступном контейнере
+    // ssh() отдаёт "", и раньше это НЕПУСТОЕ значение сохранялось в pac.json
+    // навсегда, а `PresharedKey = ` (пусто) уезжало и в серверный, и во все
+    // клиентские конфиги. Мусор от чужого stderr отсекаем по форме ключа:
+    // genpsk печатает ровно 44 символа base64. Вызывающий обязан проверить
+    // результат и не писать конфиги на пустом ключе.
     public function presharedKey()
     {
         $c = $this->getPacConf();
         if (empty($c[$this->getInstanceWG(1) . 'presharedkey'])) {
-            $c[$this->getInstanceWG(1) . 'presharedkey'] = trim($this->ssh("{$this->getWGType()} genpsk", $this->getInstanceWG()));
+            $psk = trim($this->ssh("{$this->getWGType()} genpsk", $this->getInstanceWG()));
+            if (!preg_match('~^[A-Za-z0-9+/]{43}=$~', $psk)) {
+                return '';
+            }
+            $c[$this->getInstanceWG(1) . 'presharedkey'] = $psk;
             $this->setPacConf($c);
         }
         return $c[$this->getInstanceWG(1) . 'presharedkey'];
@@ -24741,12 +24857,21 @@ DNS-over-HTTPS with IP:
         // что на свежей установке (pac.json = {}) давало «Undefined array key».
         $amnezia = $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'] ?? false;
 
+        // Тот же класс, что и ключи выше: presharedKey() отдаёт '' при
+        // недоступном контейнере, и пир с «PresharedKey = » (пусто) не поднялся
+        // бы ни на сервере, ни у клиента.
+        $psk = $amnezia ? $this->presharedKey() : '';
+        if ($amnezia && $psk === '') {
+            $this->send($this->input['chat'] ?? '', 'wireguard: не удалось получить presharedkey (контейнер недоступен), пир не создан', $this->input['message_id'] ?? null);
+            return;
+        }
+
         $conf['peers'][] = array_merge([
                 '## name'    => $name,
                 'PublicKey'  => $public_peer_key,
                 'AllowedIPs' => "$client_ip/32",
             ],
-            $amnezia ? ['PresharedKey' => $this->presharedKey()] : []
+            $amnezia ? ['PresharedKey' => $psk] : []
         );
         $client_conf = [
             'interface' => array_merge(
@@ -24761,12 +24886,16 @@ DNS-over-HTTPS with IP:
                     array_merge(
                         [
                             'PublicKey'           => $public_server_key,
-                            'AllowedIPs'          => $ips_user ?: "0.0.0.0/0",
+                            // Сюда приходит сырой ввод из Telegram (addips →
+                            // reply → createPeer, а через addSubnets — весь
+                            // список подсетей): перевод строки вставлял в
+                            // клиентский .conf произвольные директивы.
+                            'AllowedIPs'          => self::sanitizeAllowedIps($ips_user ?: "0.0.0.0/0"),
                             // AWG 3.0 допускает диапазон («20-30»); awgKeepalive()
                             // отдаёт фиксированные 20, если 3.0 недоступен.
                             'PersistentKeepalive' => $amnezia ? $this->awgKeepalive() : 20,
                         ],
-                        $amnezia ? ['PresharedKey' => $this->presharedKey()] : []
+                        $amnezia ? ['PresharedKey' => $psk] : []
                     ),
                 ],
         ];
