@@ -910,17 +910,17 @@ class Bot
             case preg_match('~^/setdnsttPassword (\w+)$~', $this->input['callback'], $m):
                 $this->setdnsttPassword($m[1]);
                 break;
-            case preg_match('~^/getLog (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-                $this->getLog(...explode('_', $m['arg']));
+            case preg_match('~^/getLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->getLog($m['arg']);
                 break;
-            case preg_match('~^/clearLog (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-                $this->clearLog(...explode('_', $m['arg']));
+            case preg_match('~^/clearLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->clearLog($m['arg']);
                 break;
             case preg_match('~^/cleanLog$~', $this->input['callback'], $m):
                 $this->cleanLog();
                 break;
-            case preg_match('~^/delLog (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-                $this->delLog(...explode('_', $m['arg']));
+            case preg_match('~^/delLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->delLog($m['arg']);
                 break;
             case preg_match('~^/debug$~', $this->input['message'], $m):
                 $this->debug();
@@ -2961,6 +2961,13 @@ class Bot
     {
         $user = $pac['naive']['user'] ?? null;
         $pass = $pac['naive']['pass'] ?? null;
+        // Домен обязателен наравне с кредами: клиент naive берёт SNI из хоста
+        // ссылки и проверяет по нему сертификат. Без домена linkNaive() собирал
+        // «https://user:pass@<hash>.» — ссылку, которая не работает нигде, а
+        // проверка кредов её пропускала.
+        if (empty($pac['domain'])) {
+            return false;
+        }
         return self::naiveCredOk($user) && self::naiveCredOk($pass)
             && !($user === 'CHANGEME' && $pass === 'CHANGEME');
     }
@@ -3742,7 +3749,7 @@ NFT;
             // коннектится к ss:8388. Внешний порт идёт только в ss://-ссылку
             // (buildSSLink/menuSS), а не в конфиг демонов — иначе ssserver
             // забиндит не тот порт и plain SS станет недоступен снаружи.
-            $ssport           = (int) (getenv('SSPORT') ?: 8388);
+            $ssport           = self::SS_INTERNAL_PORT;
             $l['server']      = 'ss';
             $l['server_port'] = $ssport;
             $c['server_port'] = $ssport;
@@ -3800,7 +3807,7 @@ NFT;
             $this->setStlsConfig($c);
             $this->ssh(self::PKILL_STLS, 'ss');
             $port = (int) (getenv('STLSPORT') ?: 3443);
-            $ssport = (int) (getenv('SSPORT') ?: 8388);
+            $ssport = self::SS_INTERNAL_PORT;
             $cert = $this->ssh('[ -s /certs/cert_public ] && [ -s /certs/cert_private ] && echo cert || echo self', 'ss');
             $cert = trim($cert) === 'cert' ? '/certs/cert_public:/certs/cert_private' : '/certs/self_public:/certs/self_private';
             [$cp, $kp] = explode(':', $cert);
@@ -4078,7 +4085,7 @@ NFT;
         $c = $this->ensureCloakIdentity();
         $domain = $this->getPacConf()['domain'] ?: $this->ip;
         $port   = (int) (getenv('CKPORT') ?: 7443);
-        $ssport = (int) (getenv('SSPORT') ?: 8388);
+        $ssport = self::SS_INTERNAL_PORT;
 
         if (!empty($c['Enabled'])) {
             $c['Enabled'] = 0;
@@ -4153,7 +4160,7 @@ NFT;
         $this->ssh('pkill ssserver', 'ss');
         $l = $this->getSSLocalConfig();
         unset($c['plugin'], $c['plugin_opts'], $l['plugin'], $l['plugin_opts']);
-        $ssport = (int) (getenv('SSPORT') ?: 8388);
+        $ssport = self::SS_INTERNAL_PORT;
         $l['server']      = 'ss';
         $l['server_port'] = $ssport;
         $c['server_port'] = $ssport;
@@ -4278,7 +4285,7 @@ NFT;
         if ($wasOn) {
             $domain = $this->getPacConf()['domain'] ?: $this->ip;
             $port   = (int) (getenv('CKPORT') ?: 7443);
-            $ssport = (int) (getenv('SSPORT') ?: 8388);
+            $ssport = self::SS_INTERNAL_PORT;
 
             $c['Enabled']    = 1;
             $c['BindAddr']   = [":$port"];
@@ -11541,10 +11548,13 @@ DNS-over-HTTPS with IP:
         $text = array_map(fn ($e) => trim($e), $text);
         if (!empty($text)) {
             foreach ($text as $k => $v) {
-                if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}~', $v)) {
+                // Якорь конца строки — как в ocservRouteConf(): без него
+                // «10.0.0.0/24 мусор» проходил целиком, и ip2long ниже отдавал
+                // false, то есть считал диапазон от нулевого адреса.
+                if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$~', $v)) {
                     $include[] = $v;
                 }
-                if (preg_match('~^-(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})~', $v, $m)) {
+                if (preg_match('~^-(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})$~', $v, $m)) {
                     $exclude[] = $m[1];
                 }
             }
@@ -14179,6 +14189,15 @@ DNS-over-HTTPS with IP:
     // ports[getInstanceWG()]['port']), и владельцы пиров ПЕРВОГО инстанса
     // получали конфиг, указывающий на НУЛЕВОЙ. 51821 — как в
     // docker-compose.override.yml.
+    // ВНУТРЕННИЙ порт ssserver. Он фиксирован: start_ss.sh переписывает
+    // server_port в конфиге на 8388 при каждом старте, docker маппит на него
+    // внешний порт, а sslocal/cloak/simple-tls коннектятся именно сюда.
+    // Раньше все эти места читали getenv('SSPORT') — то есть заданный кем-то
+    // SSPORT (например, внешний порт из override.env) разом ломал и bind
+    // ssserver'а, и апстримы cloak/simple-tls. Внешний порт живёт отдельно и
+    // идёт только в ss://-ссылку (buildSSLink/menuSS).
+    public const SS_INTERNAL_PORT = 8388;
+
     public const PORT_FALLBACK = [
         'wg1' => '51821',
     ];
@@ -17754,14 +17773,27 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Сколько строк лога на адрес показываем. Совпадения копились без предела
+    // и уходили пачками по 10 в отдельных сообщениях: активный адрес давал
+    // тысячи сообщений подряд, то есть флуд-бан бота Telegram'ом и минуты
+    // ожидания. Показываем последние — они и интересны.
+    public const SEARCH_IP_MAX_LINES = 200;
+
     public function searchIp($ip)
     {
+        $res = [];
         foreach ($this->logs as $v) {
-            if ($r = fopen("/logs/$v", 'r')) {
+            if ($r = @fopen("/logs/$v", 'r')) {
                 while (feof($r) === false) {
                     $l = fgets($r);
-                    if (preg_match('~' . preg_quote($ip) . '~', $l)) {
+                    // Делимитер в preg_quote обязателен: «~» во вводе иначе
+                    // закрывает шаблон, и preg_match падает с warning'ом на
+                    // КАЖДОЙ строке всех логов.
+                    if (preg_match('~' . preg_quote((string) $ip, '~') . '~', (string) $l)) {
                         $res[$v][] = $l;
+                        if (count($res[$v]) > self::SEARCH_IP_MAX_LINES) {
+                            array_shift($res[$v]);
+                        }
                     }
                 }
                 fclose($r);
@@ -17769,7 +17801,7 @@ DNS-over-HTTPS with IP:
         }
         if (!empty($res)) {
             foreach ($res as $k => $v) {
-                $head= "$k:\n";
+                $head = "$k:\n";
                 $t = array_chunk($v, 10);
                 foreach ($t as $j) {
                     $text = "$head<pre>";
@@ -18361,7 +18393,11 @@ DNS-over-HTTPS with IP:
             if (empty($r['address'])) {
                 continue;
             }
-            $port = (int) ($r['portmap']['443'] ?? 443);
+            // Порт берём тем же резолвером, что и ссылки (явный <ch>port >
+            // portmap > порт origin): хардкод «portmap['443'] иначе 443» врал,
+            // как только у relay задан явный порт, — проба стучалась не туда, и
+            // ВСЕ relay показывались как «⛔ down».
+            $port = (int) self::relayPort($r, 443);
             $health[$name] = $this->tcpProbe($r['address'], $port);
         }
         $this->writeRelayHealth($health);
@@ -24703,23 +24739,47 @@ DNS-over-HTTPS with IP:
         $this->menu('update');
     }
 
+    /**
+     * Файлы логов в /logs: только обычные файлы, без точечных, без каталогов и
+     * без служебных кэшей меню.
+     *
+     * Каталог там ровно один — geodata (скачанные .dat), и он показывался в
+     * меню логов наравне с файлами: «очистить» звало file_put_contents на
+     * каталог, «удалить» — unlink. Кэши menu_status/menu_versions логами не
+     * являются вовсе.
+     */
+    public function logFiles(): array
+    {
+        $skip = ['menu_status.json', 'menu_versions.json'];
+        $out  = [];
+        foreach (scandir('/logs/') ?: [] as $v) {
+            if (str_starts_with($v, '.') || in_array($v, $skip, true) || !is_file("/logs/$v")) {
+                continue;
+            }
+            $out[] = $v;
+        }
+        sort($out);
+        return $out;
+    }
+
     public function logs()
     {
         $p = $this->getPacConf();
-        foreach (scandir('/logs/') as $k => $v) {
-            if (!preg_match('~^\.~', $v)) {
-                $size   = filesize("/logs/$v");
-                $data[] = [
-                    [
-                        'text'          => "$size $v",
-                        'callback_data' => "/getLog $k",
-                    ],
-                    [
-                        'text'          => $this->i18n('clean'),
-                        'callback_data' => "/clearLog $k",
-                    ],
-                ];
-            }
+        $data = [];
+        foreach ($this->logFiles() as $v) {
+            $size   = filesize("/logs/$v");
+            // Кнопка несёт ИМЯ файла, а не позицию в scandir: позиции ехали от
+            // появления нового файла, и «очистить» попадало в соседний лог.
+            $data[] = [
+                [
+                    'text'          => "$size $v",
+                    'callback_data' => "/getLog $v",
+                ],
+                [
+                    'text'          => $this->i18n('clean'),
+                    'callback_data' => "/clearLog $v",
+                ],
+            ];
         }
         $data[] = [
             [
@@ -24755,45 +24815,48 @@ DNS-over-HTTPS with IP:
         );
     }
 
-    public function getLog($i)
+    // Имя приходит из кнопки, а уходит в путь: принимаем только то, что
+    // действительно есть в списке логов (заодно отсекает «..» и любой обход).
+    protected function logFileOr404(string $name): ?string
     {
-        foreach (scandir('/logs/') as $k => $v) {
-            if (!preg_match('~^\.~', $v)) {
-                $logs[$k] = $v;
-            }
+        return in_array($name, $this->logFiles(), true) ? "/logs/$name" : null;
+    }
+
+    public function getLog($name)
+    {
+        $f = $this->logFileOr404((string) $name);
+        if ($f === null) {
+            return $this->logs();
         }
         $this->sendFile(
             $this->input['chat'],
-            curl_file_create("/logs/{$logs[$i]}"),
+            curl_file_create($f),
         );
     }
 
-    public function clearLog($i)
+    public function clearLog($name)
     {
-        foreach (scandir('/logs/') as $k => $v) {
-            if ($i == $k) {
-                file_put_contents("/logs/$v", '');
-                break;
-            }
+        if (($f = $this->logFileOr404((string) $name)) !== null) {
+            file_put_contents($f, '');
         }
         $this->logs();
     }
 
     public function cleanLog()
     {
-        foreach (scandir('/logs/') as $k => $v) {
+        // По списку logFiles(), а не по сырому scandir: раньше сюда попадали и
+        // «.», и «..», и каталог geodata — file_put_contents на них сыпал
+        // warning'ами при каждой автоочистке по расписанию.
+        foreach ($this->logFiles() as $v) {
             file_put_contents("/logs/$v", '');
         }
         $this->logs();
     }
 
-    public function delLog($i)
+    public function delLog($name)
     {
-        foreach (scandir('/logs/') as $k => $v) {
-            if ($i == $k) {
-                unlink("/logs/$v");
-                break;
-            }
+        if (($f = $this->logFileOr404((string) $name)) !== null) {
+            unlink($f);
         }
         $this->logs();
     }

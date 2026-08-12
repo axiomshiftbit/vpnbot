@@ -163,6 +163,59 @@ cronAssert(json_decode((string) file_get_contents($bot->hwid), true) !== null,
 @unlink($bot->hwid);
 @unlink($bot->hwid . '.lock');
 
+// ── 6. Список логов: только файлы, операции по имени ────────────────────────
+// Раньше меню строилось прямо по scandir: в нём были «.», «..», каталог
+// geodata и кэши menu_*.json, а кнопки несли ПОЗИЦИЮ — появление нового файла
+// сдвигало нумерацию, и «очистить» попадало в соседний лог.
+class LogsTestBot extends CronTestBot
+{
+    public string $dir = '';
+
+    public function logFiles(): array
+    {
+        $skip = ['menu_status.json', 'menu_versions.json'];
+        $out  = [];
+        foreach (scandir($this->dir) ?: [] as $v) {
+            if (str_starts_with($v, '.') || in_array($v, $skip, true) || !is_file("{$this->dir}/$v")) {
+                continue;
+            }
+            $out[] = $v;
+        }
+        sort($out);
+        return $out;
+    }
+}
+
+$lb = (new ReflectionClass(LogsTestBot::class))->newInstanceWithoutConstructor();
+$lb->dir = sys_get_temp_dir() . '/logs_' . getmypid();
+@mkdir($lb->dir . '/geodata', 0777, true);
+file_put_contents($lb->dir . '/nginx_access', "x\n");
+file_put_contents($lb->dir . '/xray', "y\n");
+file_put_contents($lb->dir . '/menu_status.json', '{}');
+file_put_contents($lb->dir . '/.hidden', 'z');
+file_put_contents($lb->dir . '/geodata/geosite.dat', 'd');
+
+$files = $lb->logFiles();
+cronAssert($files === ['nginx_access', 'xray'], 'в списке только логи: ' . json_encode($files));
+cronAssert(!in_array('geodata', $files, true), 'каталог geodata не показывается как лог');
+cronAssert(!in_array('menu_status.json', $files, true), 'кэш меню не показывается как лог');
+cronAssert(!in_array('.', $files, true) && !in_array('..', $files, true), 'точечные записи отсеяны');
+
+// Имя как идентификатор устойчиво к появлению нового файла — в отличие от
+// позиции в scandir.
+$before = array_search('xray', $lb->logFiles(), true);
+file_put_contents($lb->dir . '/aaa_new', 'n');
+$after  = array_search('xray', $lb->logFiles(), true);
+cronAssert($before !== $after, 'позиция в списке действительно съезжает от нового файла');
+cronAssert(in_array('xray', $lb->logFiles(), true), 'а имя остаётся тем же идентификатором');
+
+array_map('unlink', glob($lb->dir . '/*.*') ?: []);
+array_map('unlink', array_filter(glob($lb->dir . '/*') ?: [], 'is_file'));
+@unlink($lb->dir . '/.hidden');
+array_map('unlink', glob($lb->dir . '/geodata/*') ?: []);
+@rmdir($lb->dir . '/geodata');
+@rmdir($lb->dir);
+
 if ($failed) {
     echo "audit_cron_test FAILED: $failed\n";
     exit(1);

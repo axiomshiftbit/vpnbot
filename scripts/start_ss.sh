@@ -57,7 +57,10 @@ if [ -f /config/stlsserver.json ] && [ "$(jq -r '.Enabled // 0' /config/stlsserv
         STLS_CERT=/certs/self_public
         STLS_KEY=/certs/self_private
     fi
-    nohup setsid simple-tls -s -b ":${STLSPORT:-3443}" -d "127.0.0.1:${SSPORT:-8388}" \
+    # 8388 жёстко: строка 4 этого же скрипта переписывает server_port в конфиге
+    # именно на него, поэтому заданный SSPORT (скажем, внешний порт из
+    # override.env) увёл бы апстрим simple-tls мимо живого ssserver.
+    nohup setsid simple-tls -s -b ":${STLSPORT:-3443}" -d "127.0.0.1:8388" \
         -cert "$STLS_CERT" -key "$STLS_KEY" \
         </dev/null >>/logs/simple-tls.log 2>&1 &
 fi
