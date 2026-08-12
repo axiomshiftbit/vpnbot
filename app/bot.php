@@ -108,6 +108,10 @@ class Bot
     public $clients;
     public $clients1;
     public $pac;
+    // Значение по умолчанию задано прямо здесь, а не в конструкторе: сюда
+    // ходят write/readXrayJson(), которые проверяются на инстансе из
+    // newInstanceWithoutConstructor() (см. tests/xray_conf_inode_test.php).
+    public $xrayConf = '/config/xray.json';
     public $i18n;
     public $language;
     public $selfupdate;
@@ -2293,23 +2297,55 @@ class Bot
         $this->writeXrayJson($json);
     }
 
-    // Атомарная запись xray.json — тем же способом, что setPacConf() пишет
-    // pac.json. Файл читается публичными эндпоинтами подписки (sub(),
-    // subscription()) из нескольких воркеров без лока: при обычном
-    // file_put_contents читатель ловил файл на середине записи, json_decode()
-    // отдавал null, и findClientBySid(array $xr, …) падал с TypeError — 500
-    // вместо конфига. rename() атомарен, поэтому виден либо старый, либо новый
-    // ЦЕЛЫЙ файл.
+    // Запись xray.json ТОЛЬКО поверх существующего inode. Файл читается
+    // публичными эндпоинтами подписки (sub(), subscription()) из нескольких
+    // воркеров: при голом file_put_contents читатель ловил файл на середине
+    // записи, json_decode() отдавал null, и findClientBySid(array $xr, …)
+    // падал с TypeError — 500 вместо конфига. Поэтому пишем под LOCK_EX, а
+    // getXray() читает под LOCK_SH: читатель ждёт конца записи и видит файл
+    // целиком.
+    //
+    // Приём «tmp + rename», которым пишутся pac.json и clients.json, здесь
+    // применять НЕЛЬЗЯ, хотя он атомарен и без локов: config/xray.json
+    // прокинут в контейнер xray ОТДЕЛЬНЫМ файловым bind-mount'ом
+    // (config/xray.json → /xray.json, см. docker-compose.yml). Такой mount
+    // держит inode, а не путь: rename() подменяет запись в каталоге на НОВЫЙ
+    // inode, и контейнер до самого пересоздания продолжает видеть старый файл.
+    // Итог — pkill+`xray run -config /xray.json` в restartXray() поднимает
+    // ядро на конфиге, замороженном в момент старта контейнера: клиентов в нём
+    // нет, транспорт не тот, reality-заглушка не отдаётся. Правится только
+    // перезагрузкой/пересозданием контейнеров, а бот при этом рапортует об
+    // успехе. То же ограничение у всех остальных файлов из config/, прокинутых
+    // по одному (nginx.conf, upstream.conf, wg0.conf, sslocal.json, deny, …) —
+    // они пишутся in-place и должны так и остаться.
     public function writeXrayJson(string $json): bool
     {
-        $tmp = '/config/xray.json.' . getmypid() . '.tmp';
-        if (file_put_contents($tmp, $json, LOCK_EX) === false) {
-            @unlink($tmp);
-            error_log('writeXrayJson: xray.json not written');
+        // 'c' — открыть/создать, НЕ обрезая: усечение делаем сами, уже под
+        // локом, иначе читатель успевал увидеть пустой файл.
+        $h = @fopen($this->xrayConf, 'c');
+        if (false === $h) {
+            error_log('writeXrayJson: xray.json not written — cannot open');
 
             return false;
         }
-        return rename($tmp, '/config/xray.json');
+        if (!flock($h, LOCK_EX)) {
+            fclose($h);
+            error_log('writeXrayJson: xray.json not written — cannot lock');
+
+            return false;
+        }
+        $n  = ftruncate($h, 0) && rewind($h) ? fwrite($h, $json) : false;
+        $ok = $n === strlen($json) && fflush($h);
+        flock($h, LOCK_UN);
+        fclose($h);
+        if (!$ok) {
+            // In-place запись, в отличие от rename(), не откатывается: на
+            // переполненном диске на месте конфига остаётся обрезанный файл.
+            // Кричим в лог — иначе следующий старт ядра молча потеряет всех.
+            error_log('writeXrayJson: xray.json TRUNCATED — write failed');
+        }
+
+        return $ok;
     }
 
     // Xray >= v26.4.15 (PR #5947, «Direct/Freedom outbound: default safe policy»)
@@ -23659,8 +23695,29 @@ DNS-over-HTTPS with IP:
     // refreshExtSubCache(), sub(), subscription().
     public function getXray()
     {
-        $c = json_decode((string) @file_get_contents('/config/xray.json'), true);
+        $c = json_decode($this->readXrayJson(), true);
         return is_array($c) ? $c : null;
+    }
+
+    // Читает xray.json под LOCK_SH — парой к LOCK_EX из writeXrayJson().
+    // Без лока читатель ловил файл между ftruncate() и fwrite(): в /config/
+    // лежат десятки килобайт клиентов, окно реальное, а json_decode('') = null.
+    public function readXrayJson(): string
+    {
+        $h = @fopen($this->xrayConf, 'r');
+        if (false === $h) {
+            return '';
+        }
+        // Лок не взялся (например, файл на ФС без flock) — читаем как раньше:
+        // риск порванного чтения лучше гарантированно пустого конфига.
+        $locked = flock($h, LOCK_SH);
+        $data   = (string) stream_get_contents($h);
+        if ($locked) {
+            flock($h, LOCK_UN);
+        }
+        fclose($h);
+
+        return $data;
     }
 
     /** Валидный хостнейм — единственное, что можно пускать в nginx-конфиг. */
