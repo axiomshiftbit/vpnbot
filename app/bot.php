@@ -3196,8 +3196,10 @@ class Bot
             return $this->menu('oc');
         }
         $this->setPacConf($pac);
-        $this->chocdomain($pac['domain']);
-        $this->setUpstreamDomainOcserv($pac['domain']);
+        // ?? '' — поддомен можно задать до основного домена: тогда обе функции
+        // получают пустую строку (их штатный «сброс»), а не warning.
+        $this->chocdomain($pac['domain'] ?? '');
+        $this->setUpstreamDomainOcserv($pac['domain'] ?? '');
         $this->menu('oc');
     }
 
@@ -3214,7 +3216,7 @@ class Bot
         }
         $this->setPacConf($pac);
         $this->restartNaive();
-        $this->setUpstreamDomainNaive($pac['domain']);
+        $this->setUpstreamDomainNaive($pac['domain'] ?? '');
         $this->menu('naive');
     }
 
@@ -22711,10 +22713,12 @@ DNS-over-HTTPS with IP:
             '~warp_public_key~'  => $warp['public-key'] ?? '',
             '~dns~'          => "https://$domain/dns-query$hash/$uid",
             '~dnspath~'      => "/dns-query$hash/$uid",
-            '~uid~'          => ($pac['transport'] == 'trojan-grpc' ? ($client['password'] ?? $uid) : $uid),
+            '~uid~'          => (($pac['transport'] ?? '') == 'trojan-grpc' ? ($client['password'] ?? $uid) : $uid),
             '~domain~'       => $domain,
-            '~directdomain~' => $pac['domain'],
-            '~cdndomain~'    => $pac['linkdomain'],
+            // ?? '' — до задания домена (и без cdn) шаблон подставлял пустоту,
+            // но сначала сыпал warning'ами на каждой выдаче подписки.
+            '~directdomain~' => $pac['domain'] ?? '',
+            '~cdndomain~'    => $pac['linkdomain'] ?? '',
             // ?? '' — Reality-поля есть только у Reality-транспорта, а
             // changeTransport() заменяет streamSettings целиком: на ws/xhttp
             // каждая выдача подписки давала здесь два warning'а.

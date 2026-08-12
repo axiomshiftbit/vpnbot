@@ -92,8 +92,9 @@ foreach ([
 }
 
 // --- 5: ~uid~ для trojan разворачивается в password, не в uuid ---------------
+// transport читается через ?? '' — до выбора транспорта ключа в pac.json нет.
 tgAssert((bool) preg_match(
-    "#'~uid~'\s*=>\s*\(\\\$pac\['transport'\] == 'trojan-grpc' \? \(\\\$client\['password'\] \?\? \\\$uid\) : \\\$uid\)#",
+    "#'~uid~'\s*=>\s*\(\(?\\\$pac\['transport'\](?:\s*\?\?\s*'')?\)?\s*==\s*'trojan-grpc' \? \(\\\$client\['password'\] \?\? \\\$uid\) : \\\$uid\)#",
     $src,
 ), 'подстановка ~uid~ в json-конфигах должна давать password клиента');
 // Та же учётка в ссылке, с тем же запасным значением: клиент, заведённый мимо
