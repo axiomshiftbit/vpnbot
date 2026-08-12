@@ -21245,6 +21245,26 @@ DNS-over-HTTPS with IP:
         return $c['domain'] ?: $this->ip;
     }
 
+    // Хост, из которого строятся все ссылки подписки (страница sub(), URL
+    // rule-provider'ов, DoH-эндпоинт в ~dns~). ?cdn= раньше подставлялся как
+    // есть: адрес уезжал и в HTML-атрибут href (кавычка ломала страницу), и в
+    // конфиг клиента — тот начинал тянуть rule-set'ы и DNS с чужого хоста.
+    // Пускаем только валидный хостнейм (та же проверка, что для nginx), иначе
+    // ведём себя так, будто параметра не было.
+    public function subDomain(array $pac): string
+    {
+        $cdn = (string) ($_GET['cdn'] ?? '');
+        if ($cdn !== '' && $this->isHostname($cdn)) {
+            return $cdn;
+        }
+        // SERVER_NAME приходит из Host запроса — проверяем той же меркой.
+        $host = (string) ($_SERVER['SERVER_NAME'] ?? '');
+        if ($host !== '' && $this->isHostname($host)) {
+            return $host;
+        }
+        return $this->getDomain(($pac['transport'] ?? '') != 'Reality');
+    }
+
     public function sub()
     {
         // No token backfill here: this is a public GET endpoint, so we avoid
@@ -21258,7 +21278,7 @@ DNS-over-HTTPS with IP:
         }
         $pac    = $this->getPacConf();
         $st     = $this->getXrayStats();
-        $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
+        $domain = $this->subDomain($pac);
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $this->subRateLimit($_GET['id'] ?? '');
@@ -21268,6 +21288,9 @@ DNS-over-HTTPS with IP:
         // Missing/disabled id: clean 404 instead of rendering the page with
         // undefined fields (which would warn and break the body).
         if ($client === null || !empty($client['off'])) {
+            // Ведро промахов — см. subscription(): ключ основного ведра
+            // содержит sid, поэтому перебор им не ограничивался.
+            $this->subRateLimit('', 'miss');
             $this->subNotFound();
         }
         if (!$this->processHwidRequest($client)) {
@@ -21494,6 +21517,57 @@ DNS-over-HTTPS with IP:
         return ['v', 'st', 'si', 'h', 'k', 'w', 'c', 'rh'];
     }
 
+    // Шаблон подписки для клиента: персональный (client.<type>template) →
+    // дефолтный из pac.json → origin (/config/<type>.json). Вынесено из
+    // subscription(): тот же шаблон нужен ЗАДОЛГО до сборки конфига — по нему
+    // проверяется имя запрошенного rule-set (ruleSetNames), а решение об этом
+    // принимается до HWID-проверки и до выбора ведра лимитера.
+    public function subTemplate(string $template, string $type, array $pac)
+    {
+        $default = base64_decode((string) ($pac["default{$type}template"] ?? ''));
+        switch (true) {
+            case !empty($template) && $template == 'origin':
+            case empty($template) && empty($pac["default{$type}template"]):
+            case empty($template) && empty($pac["{$type}templates"][$default]):
+            case !empty($template) && empty($pac["{$type}templates"][$template]):
+                return json_decode((string) @file_get_contents("/config/{$type}.json"), true);
+            case !empty($template):
+                return $pac["{$type}templates"][$template];
+            default:
+                return $pac["{$type}templates"][$default];
+        }
+    }
+
+    // Имена rule-set'ов, которые шаблон ДЕЙСТВИТЕЛЬНО объявляет: только они
+    // считаются легальным значением 'r' в токене подписки. Ровно те же места
+    // разбирают createRuleSet() (sing-box: route.rules[].createruleset[].name)
+    // и clashRules() (mihomo: rules[] с type=RULE-SET и списком).
+    public function ruleSetNames($tpl, string $type): array
+    {
+        $names = [];
+        if (!is_array($tpl)) {
+            return $names;
+        }
+        if ($type === 'sing') {
+            foreach (($tpl['route']['rules'] ?? []) as $r) {
+                foreach ((is_array($r) ? ($r['createruleset'] ?? []) : []) as $rs) {
+                    if (!empty($rs['name'])) {
+                        $names[] = (string) $rs['name'];
+                    }
+                }
+            }
+        } elseif ($type === 'clash') {
+            foreach (($tpl['rules'] ?? []) as $r) {
+                if (is_array($r) && ($r['type'] ?? '') === 'RULE-SET'
+                    && array_key_exists('list', $r) && !empty($r['name'])
+                ) {
+                    $names[] = (string) $r['name'];
+                }
+            }
+        }
+        return $names;
+    }
+
     public function subscription($return = false)
     {
         switch ($_GET['t'] ?? '') {
@@ -21514,14 +21588,8 @@ DNS-over-HTTPS with IP:
                 }
                 $this->subNotFound('Unknown subscription format.');
         }
-        // Периодическая выборка rule-set'а ядром: mihomo тянет rule-providers
-        // (clashRules(), t=cl), sing-box — SRS (createRuleSet(), t=si). Такие URL
-        // строятся ТОЛЬКО base64-токеном в пути, поэтому наличие 'r' в токене —
-        // надёжный признак, не пересекающийся с именами deep-link'ов импорта.
-        $ruleSetReq = in_array($type, ['clash', 'sing'], true)
-            && (string) ($this->subToken['r'] ?? '') !== '';
         $pac    = $this->getPacConf();
-        $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
+        $domain = $this->subDomain($pac);
         $xr     = $this->getXray();
         // Как в sub(): нечитаемый конфиг — это 404/'', а не TypeError в
         // findClientBySid(array $xr, …) и 500 у клиента.
@@ -21536,6 +21604,39 @@ DNS-over-HTTPS with IP:
 
         // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $sid    = $_GET['s'] ?? '';
+        $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
+        $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
+        if ($client === null || !empty($client['off'])) {
+            if (!empty($return)) {
+                return '';
+            }
+            // Перебор sid тормозим отдельным ведром по одному лишь IP: ключ
+            // основного ведра содержит sid, поэтому каждый новый sid заводил
+            // свой счётчик со значением 1 и до лимита не доходил никогда.
+            $this->subRateLimit('', 'miss');
+            $this->subNotFound();
+        }
+        $template = base64_decode($client["{$type}template"] ?? '');
+        $uid      = $client['id'];               // credential (embedded in config)
+        $email    = $client['email'];
+        $stok     = $this->sidOf($client);       // subscription locator only
+
+        // Периодическая выборка rule-set'а ядром: mihomo тянет rule-providers
+        // (clashRules(), t=cl), sing-box — SRS (createRuleSet(), t=si). Признак —
+        // 'r' в base64-токене пути, но САМ ПО СЕБЕ он ничего не доказывает: токен
+        // целиком составляет клиент (см. index.php), и любой владелец рабочей
+        // ссылки мог дописать в него 'r' => 'zzz', чтобы пропустить проверку
+        // HWID и получить ведро лимитера 'rs' (240 запросов вместо 30) — а раз
+        // имя ни с чем не совпало, дальше отдавался обычный конфиг с
+        // credential'ами. Поэтому имя обязано совпасть с реальным rule-set'ом
+        // шаблона этого клиента — тем же, по которому позже createRuleSet()/
+        // clashRules() решают, что отдать.
+        $tpl        = $this->subTemplate($template, $type, $pac);
+        $rName      = (string) ($this->subToken['r'] ?? '');
+        $ruleSetReq = $rName !== ''
+            && in_array($type, ['clash', 'sing'], true)
+            && in_array($rName, $this->ruleSetNames($tpl, $type), true);
+
         // Лимитируем только реальные HTTP-запросы: внутренние вызовы
         // (subscription(true) из кода бота) не должны крутить счётчик.
         // Обновления rule-set'ов идут в отдельном ведре: несколько списков с
@@ -21544,18 +21645,6 @@ DNS-over-HTTPS with IP:
         if (empty($return)) {
             $this->subRateLimit($sid, $ruleSetReq ? 'rs' : '');
         }
-        $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
-        $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
-        if ($client === null || !empty($client['off'])) {
-            if (!empty($return)) {
-                return '';
-            }
-            $this->subNotFound();
-        }
-        $template = base64_decode($client["{$type}template"] ?? '');
-        $uid      = $client['id'];               // credential (embedded in config)
-        $email    = $client['email'];
-        $stok     = $this->sidOf($client);       // subscription locator only
 
         // HWID неприменим к выборке rule-set'а: это запрос ядра за списком правил,
         // а не устройство пользователя, и заголовок X-HWID оно не шлёт — иначе
@@ -21631,21 +21720,7 @@ DNS-over-HTTPS with IP:
                     exit;
             }
         }
-        switch (true) {
-            case !empty($template) && $template == 'origin':
-            case empty($template) && empty($pac["default{$type}template"]):
-            case empty($template) && empty($pac["{$type}templates"][base64_decode($pac["default{$type}template"])]):
-            case !empty($template) && empty($pac["{$type}templates"][$template]):
-                $c = json_decode(file_get_contents("/config/{$type}.json"), true);
-                break;
-            case !empty($template):
-                $c = $pac["{$type}templates"][$template];
-                break;
-
-            default:
-                $c = $pac["{$type}templates"][base64_decode($pac["default{$type}template"])];
-                break;
-        }
+        $c = $tpl;
 
         $outbound = $pac['outbound'] ?: 'proxy';
         // Prefix the outbound/proxy name with server-country flag(s) so the client
@@ -22267,12 +22342,27 @@ DNS-over-HTTPS with IP:
     // бы пустыми — трафик уходил бы в direct мимо block/warp. Запас x4 покрывает
     // переподключения ядра и добавленные списки. Настройка: pac.sub_rate_max_rs
     // (0 = выкл; sub_rate_max=0 это ведро НЕ выключает — ключи независимы).
+    // Потолок числа окон в /logs/sub_ratelimit.json (см. подрезку ниже).
+    public const SUB_RATE_MAX_ENTRIES = 5000;
+
+    // Отдельным методом, чтобы тест мог подсунуть свой путь: писать в /logs из
+    // тестов нельзя, а считать счётчики без файла бессмысленно.
+    public function subRateFile(): string
+    {
+        return '/logs/sub_ratelimit.json';
+    }
+
     public function subRateLimit($sid, $scope = '')
     {
         $pac    = $this->getPacConf();
-        $max    = $scope === 'rs'
-            ? (int) ($pac['sub_rate_max_rs'] ?? 240)
-            : (int) ($pac['sub_rate_max'] ?? 30);
+        $max    = match ($scope) {
+            'rs'    => (int) ($pac['sub_rate_max_rs'] ?? 240),
+            // Ведро промахов: столько НЕудачных резолвов sid с одного адреса
+            // за окно. Легитимный клиент промахивается разве что по устаревшей
+            // ссылке — единицы запросов, перебор упирается сразу.
+            'miss'  => (int) ($pac['sub_rate_max_miss'] ?? 20),
+            default => (int) ($pac['sub_rate_max'] ?? 30),
+        };
         $window = (int) ($pac['sub_rate_window'] ?? 300);
         if ($max <= 0 || $window <= 0) {
             return;
@@ -22281,8 +22371,13 @@ DNS-over-HTTPS with IP:
         // Спуфабельность XFF здесь не критична: ключ содержит и sid, так что
         // лимит на конкретную подписку обойти сменой заголовка нельзя.
         $ip  = trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]) ?: (string) ($_SERVER['REMOTE_ADDR'] ?? '');
-        $key = substr(hash('sha256', "$sid|$ip|$scope"), 0, 16);
-        $f   = '/logs/sub_ratelimit.json';
+        // В ведре промахов sid НЕ участвует: с ним каждый перебираемый sid
+        // заводил собственный счётчик со значением 1 (лимит не срабатывал
+        // никогда) и оставлял запись в файле на всё окно — файл целиком
+        // читается и переписывается под LOCK_EX на КАЖДЫЙ запрос подписки,
+        // так что поток случайных sid ещё и сериализовал легитимные выдачи.
+        $key = substr(hash('sha256', ($scope === 'miss' ? '' : $sid) . "|$ip|$scope"), 0, 16);
+        $f   = $this->subRateFile();
         $h   = @fopen($f, 'c+');
         if ($h === false) {
             return; // лимитер вспомогательный: не роняем выдачу подписки
@@ -22298,6 +22393,14 @@ DNS-over-HTTPS with IP:
             }
             $data[$key] = [($data[$key][0] ?? 0) + 1, $data[$key][1] ?? $now];
             $over = $data[$key][0] > $max;
+            // Потолок на размер файла: он читается и переписывается целиком на
+            // каждый запрос подписки, поэтому распределённый перебор (по одной
+            // записи с адреса) не должен разгонять его до мегабайтов. Режем
+            // самые старые окна, своё — оставляем.
+            if (count($data) > self::SUB_RATE_MAX_ENTRIES) {
+                uasort($data, fn($a, $b) => ($b[1] ?? 0) <=> ($a[1] ?? 0));
+                $data = array_slice($data, 0, self::SUB_RATE_MAX_ENTRIES, true) + [$key => $data[$key]];
+            }
             ftruncate($h, 0);
             rewind($h);
             fwrite($h, json_encode($data));
