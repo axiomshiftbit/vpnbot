@@ -191,13 +191,27 @@ class Bot
     public function input($data = false)
     {
         $this->admin     = false;
+        // Пер-запросный инстанс WG обязан сбрасываться вместе с $this->admin:
+        // в polling один объект Bot живёт на ВСЕ апдейты, а action() выставляет
+        // $this->wg, только когда сообщение нашлось в карте wg_msg. Кнопка меню
+        // wg1 «залипала», и следующая команда без инстанса (например /delete 3
+        // на сообщении, которого в карте нет) сносила пира ЧУЖОГО инстанса
+        // вместо фолбэка в нулевой.
+        $this->wg        = null;
+        // Флаг «на callback уже ответили»: см. answer()/callbackCheck().
+        $this->callback  = false;
         $this->input_raw = $input = $data ?: json_decode(file_get_contents('php://input'), true);
         $this->input     = [
             'message'           => $input['callback_query']['message']['text'] ?? $input['message']['text'] ?? $input['channel_post']['text'] ?? '',
-            'message_id'        => $input['callback_query']['message']['message_id'] ?? $input['message']['message_id'] ?? $input['channel_post']['message_id'],
-            'chat'              => $input['message']['chat']['id'] ?? $input['callback_query']['message']['chat']['id'] ?? $input['channel_post']['chat']['id'] ?? $input['my_chat_member']['chat']['id'],
-            'from'              => $input['message']['from']['id'] ?? $input['inline_query']['from']['id'] ?? $input['callback_query']['from']['id'] ?? $input['channel_post']['chat']['id'] ?? $input['my_chat_member']['from']['id'],
-            'username'          => $input['message']['from']['username'] ?? $input['inline_query']['from']['username'] ?? $input['callback_query']['from']['username'],
+            // ?? null в конце каждой цепочки: у неучтённых типов апдейтов
+            // (edited_message, chat_member, poll_answer, message_reaction) не
+            // совпадает ни одна ветка, и последний операнд вычислялся без
+            // защиты — warning на каждый такой апдейт. Значение null дальше
+            // отсекает auth(), см. там же.
+            'message_id'        => $input['callback_query']['message']['message_id'] ?? $input['message']['message_id'] ?? $input['channel_post']['message_id'] ?? null,
+            'chat'              => $input['message']['chat']['id'] ?? $input['callback_query']['message']['chat']['id'] ?? $input['channel_post']['chat']['id'] ?? $input['my_chat_member']['chat']['id'] ?? null,
+            'from'              => $input['message']['from']['id'] ?? $input['inline_query']['from']['id'] ?? $input['callback_query']['from']['id'] ?? $input['channel_post']['chat']['id'] ?? $input['my_chat_member']['from']['id'] ?? null,
+            'username'          => $input['message']['from']['username'] ?? $input['inline_query']['from']['username'] ?? $input['callback_query']['from']['username'] ?? null,
             'query'             => $input['inline_query']['query'] ?? '',
             'inlid'             => $input['inline_query']['id'] ?? '',
             'group'             => !empty($input['message']['chat']['type']) && 'group' == $input['message']['chat']['type'],
@@ -333,6 +347,15 @@ class Bot
         $file = __DIR__ . '/config.php';
         require $file;
         if (empty($c['admin'])) {
+            // Первым апдейтом может прийти что угодно, включая тип, у которого
+            // 'from' не извлекается вовсе. Раньше в config.php записывалось
+            // array(0 => NULL), после чего empty([null]) уже ложно, а
+            // in_array($realUserId, [null]) ложно для всех — бот навсегда
+            // оставался «занятым», без единого админа, и чинился только
+            // правкой config.php руками.
+            if (empty($this->input['from'])) {
+                return;
+            }
             $c['admin'] = [$this->input['from']];
             file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
         } elseif (!is_array($c['admin'])) {
@@ -7744,14 +7767,19 @@ NFT;
             $this->delete($this->input['chat'], $this->input['reply']);
             $this->delete($this->input['chat'], $this->input['message_id']);
             $callback = $_SESSION['reply'][$this->input['reply']]['callback'];
-            $this->input['message_id'] = $this->input['callback_id'] = $_SESSION['reply'][$this->input['reply']]['start_message'];
+            // Только message_id: раньше сюда же присваивался callback_id, но
+            // ответ на force_reply — это ОБЫЧНОЕ сообщение, никакого
+            // callback_query у него нет. В качестве query id уходил message_id,
+            // и answer() ниже (а следом и callbackCheck) гарантированно
+            // получали «400 query ID is invalid» на каждый ответ на промпт
+            // (rename, DNS, MTU…). Сам answer() тоже убран — отвечать не на что.
+            $this->input['message_id'] = $_SESSION['reply'][$this->input['reply']]['start_message'];
             // message_id уже указывает на сообщение меню — ответ на промпт
             // (DNS, MTU, имя пира…) применяется к инстансу этого меню.
             if (($mi = $this->getWgMsg()) !== null) {
                 $this->wg = (int) $mi;
             }
             $this->{$callback}($this->input['message'], ...$_SESSION['reply'][$this->input['reply']]['args']);
-            $this->answer($_SESSION['reply'][$this->input['reply']]['start_message']);
             // Сессия к этому моменту закрыта (см. input()) — unset через хелпер,
             // иначе изменение не сохранится и prompt останется висеть.
             $this->unstashReply($this->input['reply']);
@@ -12022,6 +12050,10 @@ DNS-over-HTTPS with IP:
         $ip     = $this->getDomain();
         $hash   = $this->getHashBot();
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
+        // Параметры отделяются «?», а не «&»: без вопросительного знака строка
+        // запроса не начинается вовсе, $_GET пуст, и index.php отдавал $type =
+        // 'pac' — то есть кнопки «PAC ShadowSocks(Android)», «Reverse PAC» и
+        // «Reverse PAC SS(Android)» выдавали не тот список, что обещали.
         $text   = <<<text
                 Menu -> pac
                 text;
@@ -12036,7 +12068,7 @@ DNS-over-HTTPS with IP:
                     text;
             $urls[0][] = [
                 'text'    => "PAC",
-                'web_app' => ['url'  => "https://$ip/pac$hash&a=127.0.0.1&p=1080"],
+                'web_app' => ['url'  => "https://$ip/pac$hash?a=127.0.0.1&p=1080"],
             ];
         }
         if ($mpac) {
@@ -12046,11 +12078,11 @@ DNS-over-HTTPS with IP:
 
 
                     <b>Shadowsocks-android PAC ({$mpac['time']} / {$mpac['sz']}):</b>
-                    <code>$scheme://$ip/pac$hash&t=mpac</code>
+                    <code>$scheme://$ip/pac$hash?t=mpac</code>
                     text;
             $urls[0][] = [
                 'text'    => "PAC ShadowSocks(Android)",
-                'web_app' => ['url'  => "https://$ip/pac$hash&t=mpac"],
+                'web_app' => ['url'  => "https://$ip/pac$hash?t=mpac"],
             ];
         }
         if ($rpac) {
@@ -12060,15 +12092,15 @@ DNS-over-HTTPS with IP:
 
 
                     <b>Reverse PAC ({$rpac['time']} / {$rpac['sz']}):</b>
-                    <code>$scheme://$ip/pac$hash&t=rpac&a=127.0.0.1&p=1080</code>
+                    <code>$scheme://$ip/pac$hash?t=rpac&a=127.0.0.1&p=1080</code>
                     text;
             $urls[0][] = [
                 'text' => "Reverse PAC",
-                'url'  => "$scheme://$ip/pac$hash&t=rpac",
+                'url'  => "$scheme://$ip/pac$hash?t=rpac",
             ];
             $urls[1][] = [
                 'text' => "Reverse PAC Wireguard proxy",
-                'url'  => "$scheme://$ip/pac$hash&t=rpac&a=10.10.0.3",
+                'url'  => "$scheme://$ip/pac$hash?t=rpac&a=10.10.0.3",
             ];
         }
         if ($rmpac) {
@@ -12078,11 +12110,11 @@ DNS-over-HTTPS with IP:
 
 
                     <b>Reverse shadowsocks-android PAC ({$rmpac['time']} / {$rmpac['sz']}):</b>
-                    <code>$scheme://$ip/pac$hash&t=rmpac</code>
+                    <code>$scheme://$ip/pac$hash?t=rmpac</code>
                     text;
             $urls[2][] = [
                 'text' => "Reverse PAC SS(Android)",
-                'url'  => "$scheme://$ip/pac$hash&t=rmpac",
+                'url'  => "$scheme://$ip/pac$hash?t=rmpac",
             ];
         }
         if ($urls) {
@@ -25634,10 +25666,11 @@ DNS-over-HTTPS with IP:
                     'disable_notification'     => $disable_notification,
                     'reply_to_message_id'      => 0 == $k && $to > 0 ? $to : false,
                 ];
-                if ($k == array_key_last($tails)) {
-                    if ($extra) {
-                        $data['reply_markup'] = json_encode($extra);
-                    }
+                // !empty, а не if($extra): переменная объявляется только при
+                // наличии кнопок/force_reply, и любая длинная отправка без них
+                // сыпала «Undefined variable $extra».
+                if ($k == array_key_last($tails) && !empty($extra)) {
+                    $data['reply_markup'] = json_encode($extra);
                 }
                 $r = $this->request('sendMessage', $data);
             }
@@ -25700,28 +25733,45 @@ DNS-over-HTTPS with IP:
 
     public function splitText($text, $size = 4096)
     {
-        $tails = preg_split('~\n~', $text);
-        if (!empty($tails)) {
-            foreach ($tails as $v) {
-                $lines[] = [
-                    'length' => mb_strlen($v, 'utf-8'),
-                    'text'   => $v,
-                ];
-            }
-            $i = 0;
-            foreach ($lines as $v) {
-                $i += $v['length'];
-                $k = ceil($i / $size);
-                $output[$k] = ($output[$k] ?? '') . $v['text'] . "\n";
-            }
-            // Куски уходят в sendMessage с parse_mode HTML: раньше делили строго
-            // по \n, ничего не зная о тегах, и <pre> оставался в первом куске, а
-            // </pre> — в последнем. Telegram отвергал ОБА, из-за чего
-            // telemtDiagnostics/telemtShowBeobachten молча не работали.
-            return $this->balanceHtmlChunks(array_values($output));
-        } else {
+        $text = (string) $text;
+        if ($text === '') {
             return [$text];
         }
+        $lines = [];
+        foreach (preg_split('~\n~', $text) as $v) {
+            // Одна длинная строка БЕЗ переводов (дамп конфига, base64-ссылка,
+            // строка лога) не резалась вовсе: границы кусков считались только
+            // по \n, поэтому в Telegram уезжал кусок длиннее лимита и отвергался
+            // с «message is too long» — пользователь не видел ничего.
+            if (mb_strlen($v, 'utf-8') <= $size) {
+                $lines[] = $v;
+                continue;
+            }
+            foreach (mb_str_split($v, $size, 'utf-8') as $part) {
+                $lines[] = $part;
+            }
+        }
+        $chunks = [];
+        $cur    = '';
+        foreach ($lines as $v) {
+            // Длину считаем ВМЕСТЕ с добавляемым "\n": прежний счётчик его не
+            // учитывал, и на длинных списках кусок вылезал за лимит на число
+            // строк в нём.
+            $piece = $v . "\n";
+            if ($cur !== '' && mb_strlen($cur, 'utf-8') + mb_strlen($piece, 'utf-8') > $size) {
+                $chunks[] = $cur;
+                $cur      = '';
+            }
+            $cur .= $piece;
+        }
+        if ($cur !== '') {
+            $chunks[] = $cur;
+        }
+        // Куски уходят в sendMessage с parse_mode HTML: раньше делили строго
+        // по \n, ничего не зная о тегах, и <pre> оставался в первом куске, а
+        // </pre> — в последнем. Telegram отвергал ОБА, из-за чего
+        // telemtDiagnostics/telemtShowBeobachten молча не работали.
+        return $this->balanceHtmlChunks($chunks);
     }
 
     public function sendDraft($chat, $draft_id, $text = '', $mode = 'HTML')
@@ -25769,6 +25819,7 @@ DNS-over-HTTPS with IP:
 
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')
     {
+        $text = (string) $text;
         if ($button) {
             $extra = ['inline_keyboard' => $button];
         }
@@ -25777,6 +25828,18 @@ DNS-over-HTTPS with IP:
                 'force_reply'             => true,
                 'input_field_placeholder' => $reply
             ];
+        }
+        // editMessageText, в отличие от send(), не резал текст вовсе: меню
+        // длиннее лимита Telegram молча не обновлялось, и снаружи это выглядело
+        // как «кнопка не работает». Редактируем первым куском, остальное
+        // дописываем отдельными сообщениями — кнопки остаются на исходном.
+        $length = 3096;
+        if (mb_strlen($text, 'utf-8') > $length) {
+            $tails = $this->splitText($text, $length);
+            $text  = array_shift($tails);
+            foreach ($tails as $v) {
+                $this->send($chat, $v, null, false, false, $mode);
+            }
         }
         $data = [
             'chat_id'                  => $chat,
@@ -25791,8 +25854,15 @@ DNS-over-HTTPS with IP:
         return $this->request('editMessageText', $data);
     }
 
+    // Отмечаем, что на callback уже ответили: callbackCheck() в конце input()
+    // шлёт свой пустой answer только если этого не сделал обработчик. Флаг
+    // нигде не выставлялся, поэтому обработчики со своим toast'ом
+    // (refreshOvpn) получали второй answerCallbackQuery на тот же id — Telegram
+    // отвечал ok:false, запись уходила в /logs/requests_error, а всплывающая
+    // подсказка пользователю не показывалась.
     public function answer($callback_id, $textNotify = false, $notify = false)
     {
+        $this->callback = true;
         return $this->request('answerCallbackQuery', [
             'callback_query_id' => $callback_id,
             'show_alert'        => $notify,

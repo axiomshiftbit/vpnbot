@@ -24,7 +24,16 @@ switch (true) {
         break;
 
     // save template
+    // $type уходит в путь /config/<type>.json (saveTemplate при name=origin) и
+    // в ключ конфига — та же проверка, что на load ниже. Гейт $webapp тут уже
+    // стоит, так что это защита от собственной опечатки, а не от чужака, но
+    // цена ошибки — затёртый pac.json мимо setPacConf.
     case preg_match('~^' . preg_quote("/webapp$hash/save") . '~', $_SERVER['REQUEST_URI']) && $webapp && !empty($_POST['json']):
+        header('Content-Type: application/json');
+        if (!preg_match('~^\w+$~', (string) ($_POST['type'] ?? ''))) {
+            echo json_encode(['status' => false, 'message' => 'bad type']);
+            break;
+        }
         echo json_encode($bot->saveTemplate($_POST['name'], $_POST['type'], $_POST['json']));
         break;
 
