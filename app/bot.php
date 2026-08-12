@@ -6705,6 +6705,14 @@ NFT;
         throw new InvalidArgumentException("quicVarint: $v exceeds 4-byte form");
     }
 
+    // Один transport parameter: id, длина значения и само значение (RFC 9000
+    // §18). Длину берём из строки, а не проставляем руками, — ровно на этом
+    // расходились объявленный 1 байт и двухбайтовый varint значения 100.
+    public static function quicTp(int $id, string $value): string
+    {
+        return self::quicVarint($id) . self::quicVarint(strlen($value)) . $value;
+    }
+
     // Структурно корректный клиентский Initial-пакет БЕЗ шифрования.
     //
     // Прежние два пресета QUIC («<b 0xc700000001><r 8>…») клали случайный байт
@@ -6814,10 +6822,15 @@ NFT;
         $ext .= self::tlsExt(0x0033, pack('n', strlen($ks)) . $ks);
         $ext .= self::tlsExt(0x002b, "\x02\x03\x04");                   // supported_versions: TLS 1.3
         // quic_transport_parameters (RFC 9001 §8.2): id/len/value, всё varint.
-        $tp   = self::quicVarint(0x01) . self::quicVarint(4) . self::quicVarint(30000)   // max_idle_timeout
-              . self::quicVarint(0x04) . self::quicVarint(4) . self::quicVarint(1048576) // initial_max_data
-              . self::quicVarint(0x08) . self::quicVarint(1) . self::quicVarint(100)     // initial_max_streams_bidi
-              . self::quicVarint(0x0f) . self::quicVarint(strlen($scid)) . $scid;        // initial_source_connection_id
+        // Длину считает quicTp() — вручную она разъезжалась со значением: у
+        // initial_max_streams_bidi было объявлено 1 байт, а quicVarint(100)
+        // занимает 2 (100 > 63). Парсер сервера уезжал на этом же байте,
+        // initial_source_connection_id (0x0f) в пакете не находился, и по
+        // RFC 9000 §7.3 соединение обязано закрыться с TRANSPORT_PARAMETER_ERROR.
+        $tp   = self::quicTp(0x01, self::quicVarint(30000))    // max_idle_timeout
+              . self::quicTp(0x04, self::quicVarint(1048576))  // initial_max_data
+              . self::quicTp(0x08, self::quicVarint(100))      // initial_max_streams_bidi
+              . self::quicTp(0x0f, $scid);                     // initial_source_connection_id
         $ext .= self::tlsExt(0x0039, $tp);
 
         $body = "\x03\x03" . random_bytes(32)                  // legacy_version + random

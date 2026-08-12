@@ -151,6 +151,60 @@ if ($pt !== false) {
     t(ord($ch[38]) === 0, 'cpsQUICInitial: legacy_session_id пуст (RFC 9001 §8.4)');
     t(str_contains($ch, 'www.cloudflare.com'), 'cpsQUICInitial: SNI на месте');
     t(str_contains($ch, "\x02h3"), 'cpsQUICInitial: ALPN h3 на месте');
+
+    // quic_transport_parameters (0x0039) разбираем полем за полем — ровно так
+    // же это делает сервер. Раньше у initial_max_streams_bidi была объявлена
+    // длина 1 байт при двухбайтовом значении (100 > 63): парсер уезжал на
+    // этом месте, initial_source_connection_id (0x0f) не находился, и по
+    // RFC 9000 §7.3 соединение обязано закрываться с TRANSPORT_PARAMETER_ERROR.
+    // Само расшифровывание пакета этого не ловило.
+    $extOff = 4 + 2 + 32 + 1 + ord($ch[38]);          // до cipher_suites
+    $extOff += 2 + unpack('n', substr($ch, $extOff, 2))[1]; // cipher_suites
+    $extOff += 1 + ord($ch[$extOff]);                  // legacy_compression_methods
+    $extLen = unpack('n', substr($ch, $extOff, 2))[1];
+    $exts   = substr($ch, $extOff + 2, $extLen);
+    $tp     = null;
+    for ($i = 0; $i + 4 <= strlen($exts);) {
+        $type = unpack('n', substr($exts, $i, 2))[1];
+        $len  = unpack('n', substr($exts, $i + 2, 2))[1];
+        if ($type === 0x0039) {
+            $tp = substr($exts, $i + 4, $len);
+            break;
+        }
+        $i += 4 + $len;
+    }
+    t($tp !== null, 'cpsQUICInitial: расширение quic_transport_parameters найдено');
+    if ($tp !== null) {
+        // Разбор varint по RFC 9000 §16: два старших бита задают длину поля.
+        $rd = function (string $s, int &$i) {
+            $b   = ord($s[$i]);
+            $n   = 1 << ($b >> 6);
+            $v   = $b & 0x3f;
+            for ($j = 1; $j < $n; $j++) {
+                $v = ($v << 8) | ord($s[$i + $j]);
+            }
+            $i += $n;
+            return $v;
+        };
+        $seen = [];
+        $i    = 0;
+        while ($i < strlen($tp)) {
+            $id  = $rd($tp, $i);
+            $len = $rd($tp, $i);
+            t($i + $len <= strlen($tp), sprintf('TP 0x%02x: длина не выходит за расширение', $id));
+            $seen[$id] = substr($tp, $i, $len);
+            $i += $len;
+        }
+        t($i === strlen($tp), 'cpsQUICInitial: transport parameters разобраны без остатка');
+        foreach ([0x01, 0x04, 0x08, 0x0f] as $id) {
+            t(isset($seen[$id]), sprintf('cpsQUICInitial: transport parameter 0x%02x на месте', $id));
+        }
+        // Тот самый параметр: значение 100 обязано занимать 2 байта varint.
+        t(($seen[0x08] ?? '') === Bot::quicVarint(100),
+            'cpsQUICInitial: initial_max_streams_bidi объявлен со своей реальной длиной');
+        t(($seen[0x0f] ?? '') === substr($p, 6 + $dcidLen + 1, $scidLen),
+            'cpsQUICInitial: initial_source_connection_id совпадает с SCID пакета');
+    }
     t(trim(substr($pt, 4 + $chLen), "\x00") === '', 'cpsQUICInitial: хвост — только PADDING-фреймы (0x00)');
 }
 // Разные вызовы обязаны давать разные пакеты (DCID и key_share случайны),
