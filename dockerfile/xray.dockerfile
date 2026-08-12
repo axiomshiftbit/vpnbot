@@ -31,6 +31,9 @@ ARG XRAY_FORK_VERSION=""
 
 # .dat из архива не берём: geoip/geosite ядро получает из /logs/geodata
 # (XRAY_LOCATION_ASSET), а свой geoip.dat в реестре конфликтовал со встроенным.
+# Скачивание с ретраями: релизы тянутся с github, и «Resource temporarily
+# unavailable» на одном из двух архивов роняло всю сборку образа (так упал
+# прогон dev на 9684fb4). Четыре попытки с нарастающей паузой.
 # Дефолтный симлинк — на апстрим: контейнер без маркера (или с маркером на форк,
 # но со старым образом без второго бинаря) обязан вести себя ровно как раньше.
 RUN fetch_xray() { \
@@ -45,9 +48,14 @@ RUN fetch_xray() { \
         if [ -z "$dl_url" ] || [ "$dl_url" = null ]; then \
           echo "no Xray-linux-64.zip for $repo $ver" >&2; return 1; \
         fi; \
-        rm -rf /tmp/xr && mkdir -p /tmp/xr \
-          && wget -O /tmp/xr/Xray-linux-64.zip "$dl_url" \
-          && unzip -o /tmp/xr/Xray-linux-64.zip -d /tmp/xr \
+        rm -rf /tmp/xr && mkdir -p /tmp/xr; \
+        n=0; \
+        until wget -O /tmp/xr/Xray-linux-64.zip "$dl_url"; do \
+          n=$((n+1)); \
+          [ "$n" -ge 4 ] && { echo "download failed after $n tries: $dl_url" >&2; return 1; }; \
+          echo "retry $n: $dl_url" >&2; sleep $((n*5)); \
+        done; \
+        unzip -o /tmp/xr/Xray-linux-64.zip -d /tmp/xr \
           && mv /tmp/xr/xray "$dest" \
           && chmod +x "$dest" \
           && rm -rf /tmp/xr; \
