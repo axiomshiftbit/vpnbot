@@ -15,7 +15,14 @@ class ClashTemplateValidator
         '~package~', '~subnet~', '~fingerprint~', '~ss~', '~t~', '~url~',
         '~warp_ip~', '~warp_mtu~', '~warp_port~', '~warp_private_key~',
         '~warp_public_key~', '~warp_server~',
+        // Мультиплекс: на месте значения ключа (multiplex/smux). Бот подставляет
+        // блок или удаляет ключ целиком, если ядро апстримное либо smux выключен.
+        // Форма с протоколом — '~smux:h2mux~', проверяется отдельно ниже.
+        '~smux~',
     ];
+
+    // Протоколы, которые принимает форк-сервер: yamux он отвергает на старте.
+    private const SMUX_PROTOCOLS = ['smux', 'h2mux'];
 
     // Встроенные цели clash, на которые группам можно ссылаться без объявления.
     private const BUILTIN_TARGETS = ['DIRECT', 'REJECT', 'REJECT-DROP', 'GLOBAL', 'PASS', 'COMPATIBLE'];
@@ -153,9 +160,19 @@ class ClashTemplateValidator
         if (!is_string($value)) {
             return;
         }
-        if (preg_match_all('/~[a-z_]+~/i', $value, $m)) {
+        // Форма с протоколом (~smux:h2mux~) раньше не попадала под шаблон вовсе
+        // и опечатка в протоколе уезжала клиенту молча — двоеточие в наборе.
+        if (preg_match_all('/~[a-z_]+(?::[a-z0-9_]+)?~/i', $value, $m)) {
             foreach ($m[0] as $ph) {
-                if (!in_array(strtolower($ph), self::KNOWN_PLACEHOLDERS, true)) {
+                $low = strtolower($ph);
+                if (preg_match('/^~smux:([a-z0-9_]+)~$/', $low, $pm)) {
+                    if (!in_array($pm[1], self::SMUX_PROTOCOLS, true)) {
+                        $warnings[] = ($path === '' ? '' : "$path: ")
+                            . "unsupported smux protocol {$pm[1]} (only " . implode('/', self::SMUX_PROTOCOLS) . ')';
+                    }
+                    continue;
+                }
+                if (!in_array($low, self::KNOWN_PLACEHOLDERS, true)) {
                     $warnings[] = ($path === '' ? '' : "$path: ") . "unknown placeholder $ph";
                 }
             }

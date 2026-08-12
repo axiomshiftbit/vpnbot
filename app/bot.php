@@ -22652,18 +22652,18 @@ DNS-over-HTTPS with IP:
     // Опечатка в имени ключа не роняет конфиг громко — она молча теряет
     // настройку, поэтому имена сверены с исходниками клиентов и закреплены
     // тестом tests/smux_test.php.
-    public function applyClientSmux(array &$c, $index, array $pac, string $t): void
+    // Готовый блок в диалекте запрошенного формата. $proto — переопределение
+    // протокола из плейсхолдера шаблона (~smux:h2mux~); пусто = глобальный.
+    public function smuxBlock(array $pac, string $t, string $proto = ''): array
     {
-        if (!$this->smuxActive($pac)) {
-            return;
-        }
         $s = $this->smuxSettings($pac);
         // Инвариант форка: maxStreams > 0 конфликтует с ненулевыми
         // maxConnections/minStreams — Build() на таком конфиге не поднимет ядро.
         $maxStreams = max(0, (int) $s['max_streams']);
         $maxConn    = $maxStreams > 0 ? 0 : max(0, (int) $s['max_connections']);
         $minStreams = $maxStreams > 0 ? 0 : max(0, (int) $s['min_streams']);
-        $proto      = in_array($s['protocol'], ['smux', 'h2mux'], true) ? $s['protocol'] : 'smux';
+        $proto      = $proto !== '' ? $proto : (string) $s['protocol'];
+        $proto      = in_array($proto, ['smux', 'h2mux'], true) ? $proto : 'smux';
         $padding    = !empty($s['padding']);
         $onlyTcp    = !empty($s['only_tcp']);
         $brutal     = !empty($s['brutal']['enabled']);
@@ -22672,10 +22672,7 @@ DNS-over-HTTPS with IP:
 
         switch ($t) {
             case 's':
-                if (!isset($c['outbounds'][$index])) {
-                    return;
-                }
-                $smux = [
+                $b = [
                     'enabled'        => true,
                     'protocol'       => $proto,
                     'maxConnections' => $maxConn,
@@ -22685,18 +22682,12 @@ DNS-over-HTTPS with IP:
                     'onlyTcp'        => $onlyTcp,
                 ];
                 if ($brutal) {
-                    $smux['brutal-opts'] = ['enabled' => true, 'up' => $up, 'down' => $down];
+                    $b['brutal-opts'] = ['enabled' => true, 'up' => $up, 'down' => $down];
                 }
-                // mux (mux.cool) и smux на одном outbound'е Build() запрещает
-                // явно — снимаем чужой блок, если шаблон его нёс.
-                unset($c['outbounds'][$index]['mux']);
-                $c['outbounds'][$index]['smux'] = $smux;
-                break;
+
+                return $b;
             case 'si':
-                if (!isset($c['outbounds'][$index])) {
-                    return;
-                }
-                $mp = [
+                $b = [
                     'enabled'         => true,
                     'protocol'        => $proto,
                     'max_connections' => $maxConn,
@@ -22705,15 +22696,12 @@ DNS-over-HTTPS with IP:
                     'padding'         => $padding,
                 ];
                 if ($brutal) {
-                    $mp['brutal'] = ['enabled' => true, 'up' => $up, 'down' => $down];
+                    $b['brutal'] = ['enabled' => true, 'up' => $up, 'down' => $down];
                 }
-                $c['outbounds'][$index]['multiplex'] = $mp;
-                break;
+
+                return $b;
             case 'cl':
-                if (!isset($c['proxies'][$index])) {
-                    return;
-                }
-                $sm = [
+                $b = [
                     'enabled'         => true,
                     'protocol'        => $proto,
                     'max-connections' => $maxConn,
@@ -22724,9 +22712,95 @@ DNS-over-HTTPS with IP:
                     'statistic'       => false,
                 ];
                 if ($brutal) {
-                    $sm['brutal-opts'] = ['enabled' => true, 'up' => $up, 'down' => $down];
+                    $b['brutal-opts'] = ['enabled' => true, 'up' => $up, 'down' => $down];
                 }
-                $c['proxies'][$index]['smux'] = $sm;
+
+                return $b;
+        }
+
+        return [];
+    }
+
+    // Плейсхолдер шаблона: строка "~smux~" (или "~smux:h2mux~") на месте
+    // значения любого ключа. Даёт ПОШАБЛОННЫЙ и поузловой контроль там, где
+    // глобального переключателя мало: включить мультиплекс только на одном
+    // узле из нескольких или задать этому шаблону свой протокол.
+    //
+    // Ключ с плейсхолдером УДАЛЯЕТСЯ, когда smux неактивен, — статический блок
+    // в шаблоне при апстримном ядре означал бы, что клиент шлёт несущий коннект
+    // серверу, который его не распознаёт, то есть перестаёт ходить совсем.
+    public const SMUX_PLACEHOLDER = '#^~smux(?::(smux|h2mux))?~$#';
+
+    public function applySmuxPlaceholders(array &$c, array $pac, string $t, bool $active): int
+    {
+        $n = 0;
+        $this->walkSmuxPlaceholders($c, $pac, $t, $active, $n);
+
+        return $n;
+    }
+
+    private function walkSmuxPlaceholders(array &$node, array $pac, string $t, bool $active, int &$n): void
+    {
+        $hits = [];
+        foreach ($node as $k => $v) {
+            if (is_array($v)) {
+                $this->walkSmuxPlaceholders($node[$k], $pac, $t, $active, $n);
+            } elseif (is_string($v) && preg_match(self::SMUX_PLACEHOLDER, $v, $m)) {
+                $hits[$k] = $m[1] ?? '';
+            }
+        }
+        // Правим ПОСЛЕ обхода: unset прямо в foreach по тому же массиву — способ
+        // потерять соседние ключи.
+        foreach ($hits as $k => $proto) {
+            $n++;
+            // Пустой блок — формат не наш (диалекта для него нет). Оставить
+            // строку-маркер нельзя: она уедет клиенту как есть.
+            $block = $active ? $this->smuxBlock($pac, $t, $proto) : [];
+            if (!$block) {
+                unset($node[$k]);
+                continue;
+            }
+            $node[$k] = $block;
+            // mux (mux.cool) и smux на одном outbound'е Build() запрещает явно.
+            if ($t === 's') {
+                unset($node['mux']);
+            }
+        }
+    }
+
+    public function applyClientSmux(array &$c, $index, array $pac, string $t): void
+    {
+        $active = $this->smuxActive($pac);
+        // Шаблон с плейсхолдером управляет мультиплексом сам — автоматическая
+        // вставка в главный узел тогда не нужна (и вредна: продублировала бы
+        // блок там, где его сознательно не просили).
+        if ($this->applySmuxPlaceholders($c, $pac, $t, $active) > 0) {
+            return;
+        }
+        if (!$active) {
+            return;
+        }
+        switch ($t) {
+            case 's':
+                if (!isset($c['outbounds'][$index])) {
+                    return;
+                }
+                // mux (mux.cool) и smux на одном outbound'е Build() запрещает
+                // явно — снимаем чужой блок, если шаблон его нёс.
+                unset($c['outbounds'][$index]['mux']);
+                $c['outbounds'][$index]['smux'] = $this->smuxBlock($pac, $t);
+                break;
+            case 'si':
+                if (!isset($c['outbounds'][$index])) {
+                    return;
+                }
+                $c['outbounds'][$index]['multiplex'] = $this->smuxBlock($pac, $t);
+                break;
+            case 'cl':
+                if (!isset($c['proxies'][$index])) {
+                    return;
+                }
+                $c['proxies'][$index]['smux'] = $this->smuxBlock($pac, $t);
                 break;
         }
     }

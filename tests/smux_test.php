@@ -237,6 +237,65 @@ $c = [];
 $bot->ensureSmuxInbound($c, $pacBrutal);
 smAssert($c === [], 'конфиг без inbounds остаётся нетронутым');
 
+// --- плейсхолдер ~smux~ в шаблоне --------------------------------------------
+// Пошаблонный контроль: где стоит маркер — туда блок, где не стоит — ничего.
+// При неактивном smux ключ обязан ИСЧЕЗНУТЬ: статический блок при апстримном
+// ядре означает клиента, который шлёт несущий коннект в никуда.
+$pacFork = smPac('fork');
+
+$tpl = ['outbounds' => [
+    ['tag' => 'proxy', 'type' => 'vless', 'multiplex' => '~smux~'],
+    ['tag' => 'second', 'type' => 'vless'],
+]];
+$c = $tpl;
+$bot->applyClientSmux($c, 0, $pacFork, 'si');
+smAssert(is_array($c['outbounds'][0]['multiplex'] ?? null), 'плейсхолдер заменён блоком');
+smAssert(!isset($c['outbounds'][1]['multiplex']), 'узел без маркера не трогается');
+
+$c = $tpl;
+$bot->applyClientSmux($c, 0, $pacOrigin, 'si');
+smAssert(!array_key_exists('multiplex', $c['outbounds'][0]),
+    'при апстримном ядре ключ с маркером удаляется целиком');
+
+// Протокол на шаблон: ~smux:h2mux~ перебивает глобальный smux.
+$c = ['outbounds' => [['tag' => 'proxy', 'multiplex' => '~smux:h2mux~']]];
+$bot->applyClientSmux($c, 0, $pacFork, 'si');
+smAssert(($c['outbounds'][0]['multiplex']['protocol'] ?? '') === 'h2mux',
+    'протокол из маркера перебивает глобальный');
+
+// Несуществующий протокол в маркере не совпадает с шаблоном вовсе — строка
+// осталась бы как есть, поэтому такой маркер обязан ловиться валидатором.
+require_once __DIR__ . '/../app/ClashTemplateValidator.php';
+$ref = new ReflectionMethod(ClashTemplateValidator::class, 'scanUnknownPlaceholders');
+$ref->setAccessible(true);
+$w = [];
+$ref->invokeArgs(null, [['a' => '~smux~', 'b' => '~smux:h2mux~', 'c' => '~smux:yamux~', 'd' => '~nosuch~'], '', &$w]);
+smAssert(count($w) === 2, 'валидатор ругается ровно на yamux и на неизвестный маркер: ' . json_encode($w, JSON_UNESCAPED_UNICODE));
+smAssert(str_contains(implode(' ', $w), 'yamux'), 'yamux помечен как неподдерживаемый протокол');
+
+// Маркер в mihomo-шаблоне — свой диалект.
+$c = ['proxies' => [['name' => 'proxy', 'smux' => '~smux~']]];
+$bot->applyClientSmux($c, 0, $pacFork, 'cl');
+smAssert(($c['proxies'][0]['smux']['max-connections'] ?? null) === 3,
+    'mihomo: маркер разворачивается в kebab-диалект');
+
+// Маркер снимает mux.cool на том же узле (xray-формат).
+$c = ['outbounds' => [['tag' => 'proxy', 'mux' => ['enabled' => true], 'smux' => '~smux~']]];
+$bot->applyClientSmux($c, 0, $pacFork, 's');
+smAssert(!array_key_exists('mux', $c['outbounds'][0]), 'маркер снимает mux.cool с узла');
+
+// Шаблон БЕЗ маркера продолжает получать блок автоматически — старое поведение
+// не должно сломаться от появления новой возможности.
+$c = ['outbounds' => [['tag' => 'proxy']]];
+$bot->applyClientSmux($c, 0, $pacFork, 'si');
+smAssert(isset($c['outbounds'][0]['multiplex']), 'шаблон без маркера: автовставка как раньше');
+
+// Маркер есть, но не на главном узле — автовставка НЕ добавляет второй блок.
+$c = ['outbounds' => [['tag' => 'proxy'], ['tag' => 'other', 'multiplex' => '~smux~']]];
+$bot->applyClientSmux($c, 0, $pacFork, 'si');
+smAssert(!isset($c['outbounds'][0]['multiplex']) && isset($c['outbounds'][1]['multiplex']),
+    'шаблон с маркером управляет мультиплексом сам');
+
 // --- проба контейнера: «xr молчит» ≠ «форка нет» -----------------------------
 // Разница принципиальна: во втором случае авторемонт сносит настройку ядра и
 // гасит smux, и если спутать её с недоступным на минуту контейнером — рабочая
