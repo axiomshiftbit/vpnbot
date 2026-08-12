@@ -4592,7 +4592,16 @@ NFT;
                 }
                 break;
             default:
-                $date = date('Y-m-d H:i:s', strtotime($time));
+                // strtotime() на нераспознанном вводе отдаёт false, а date()
+                // печатала из него 1970-01-01 — то есть срок в прошлом, и
+                // shutdownClient вырубал пира в ближайшие 10 секунд. Такая
+                // проверка есть в setTimerXr, сюда она не доехала.
+                $ts = strtotime((string) $time);
+                if ($ts === false) {
+                    $this->send($this->input['chat'] ?? '', 'wrong format', $this->input['message_id'] ?? null);
+                    return $this->menu('client', "{$client}_$page");
+                }
+                $date = date('Y-m-d H:i:s', $ts);
                 $clients[$client]['interface']['## time'] = $date;
                 if ($i !== null) {
                     $server['peers'][$i]['## time'] = $date;
@@ -4826,27 +4835,42 @@ NFT;
         }
     }
 
+    /**
+     * Момент последнего планового запуска расписания «$start / $period».
+     *
+     * Периоды в неделях/днях/часах — фиксированное число секунд, их считаем
+     * делением. А вот «1 month»/«1 year» фиксированной длины НЕ имеют:
+     * strtotime('1 month', 0) даёт ровно 31 день, поэтому расписание съезжало
+     * с календаря (01.01, 01.02, 04.03, 01.04, 02.05, …). Такие шагаем
+     * календарём — шагов не больше числа периодов с момента старта.
+     *
+     * @return int 0, если расписание ещё не наступило или период не разобран.
+     */
+    public static function lastScheduled(int $start, string $period, int $now): int
+    {
+        $step = strtotime($period, 0);
+        if ($start <= 0 || $step === false || $step <= 0 || $now < $start) {
+            return 0;
+        }
+        if (preg_match('~month|year~i', $period)) {
+            $t = $start;
+            while (($next = strtotime($period, $t)) !== false && $next > $t && $next <= $now) {
+                $t = $next;
+            }
+            return $t;
+        }
+        return $start + (int) floor(($now - $start) / $step) * $step;
+    }
+
     public function checkBackup()
     {
         $c = $this->getPacConf();
         if (!empty($c['backup'])) {
             $now = time();
-            [$start, $period] = explode('/', $c['backup']);
-            $start  = strtotime(trim($start));
-            $period = strtotime(trim($period), 0);
+            [$start, $period] = array_pad(explode('/', $c['backup']), 2, '');
+            $lastScheduledBackup = self::lastScheduled((int) strtotime(trim($start)), trim($period), $now);
 
-            if (
-                !empty($start)
-                && !empty($period)
-                && $now >= $start
-            ) {
-                // Вычисляем, сколько полных периодов прошло с момента start
-                $elapsed = $now - $start;
-                $periodsElapsed = floor($elapsed / $period);
-
-                // Время последнего планового бэкапа
-                $lastScheduledBackup = $start + ($periodsElapsed * $period);
-
+            if ($lastScheduledBackup > 0) {
                 // Проверяем, делали ли уже бэкап в этом периоде
                 $lastBackupTime = $c['last_backup_time'] ?? 0;
 
@@ -4864,33 +4888,37 @@ NFT;
     {
         $pac = $this->getPacConf();
         if (!empty($pac['reset_monthly'])) {
-            $now    = time();
-            $start  = strtotime('first day of previous month midnight');
-            $period = strtotime('1 month', 0);
+            $now  = time();
+            $last = (int) ($pac['last_reset_xray_time'] ?? 0);
+            // Первое включение тумблера: только ставим метку. Раньше её никто
+            // не инициализировал (switchMonthlyStats пишет лишь reset_monthly),
+            // и на ближайшем тике 0 оказывался меньше начала периода — ВСЯ
+            // статистика стиралась сразу, снимались все баны по трафику, а
+            // админам уходило «vless: reset stats».
+            if ($last <= 0) {
+                $pac['last_reset_xray_time'] = $now;
+                $this->setPacConf($pac);
+                return;
+            }
+            // Сброс — раз в КАЛЕНДАРНЫЙ месяц, первого числа. Прежняя
+            // арифметика брала «1 month» от эпохи (ровно 31 день) и заново
+            // считала точку отсчёта на каждом вызове, из-за чего «ежемесячный»
+            // сброс съезжал: 01.01, 01.02, 04.03, 01.04, 02.05…
+            $lastScheduledReset = strtotime('first day of this month midnight');
 
-            if (
-                !empty($start)
-                && !empty($period)
-                && $now >= $start
-            ) {
-                // Вычисляем, сколько полных периодов прошло с момента start
-                $elapsed = $now - $start;
-                $periodsElapsed = floor($elapsed / $period);
-
-                // Время последнего планового сброса статистики
-                $lastScheduledReset = $start + ($periodsElapsed * $period);
-
-                // Проверяем, делали ли уже сброс в этом периоде
-                $lastResetTime = $pac['last_reset_xray_time'] ?? 0;
-
+            if ($lastScheduledReset !== false) {
                 // Если последний сброс был сделан до начала текущего периода - делаем сброс
-                if ($lastResetTime < $lastScheduledReset) {
+                if ($last < $lastScheduledReset) {
                     $pac['last_reset_xray_time'] = $now;
                     $this->setPacConf($pac);
                     $this->resetXrStats(1);
-                    require __DIR__ . '/config.php';
-                    foreach ($c['admin'] as $admin) {
-                        $this->send($admin, "vless: reset stats");
+                    // Уведомление — не повод падать: config.php читается здесь
+                    // из ФС, а сброс уже выполнен и записан.
+                    if (is_file(__DIR__ . '/config.php')) {
+                        require __DIR__ . '/config.php';
+                        foreach (($c['admin'] ?? []) as $admin) {
+                            $this->send($admin, "vless: reset stats");
+                        }
                     }
                 }
             }
@@ -4902,22 +4930,10 @@ NFT;
         $c = $this->getPacConf();
         if (!empty($c['autocleanlogs'])) {
             $now = time();
-            [$start, $period] = explode('/', $c['autocleanlogs']);
-            $start  = strtotime(trim($start));
-            $period = strtotime(trim($period), 0);
+            [$start, $period] = array_pad(explode('/', $c['autocleanlogs']), 2, '');
+            $lastScheduledClean = self::lastScheduled((int) strtotime(trim($start)), trim($period), $now);
 
-            if (
-                !empty($start)
-                && !empty($period)
-                && $now >= $start
-            ) {
-                // Вычисляем, сколько полных периодов прошло с момента start
-                $elapsed = $now - $start;
-                $periodsElapsed = floor($elapsed / $period);
-
-                // Время последней плановой очистки логов
-                $lastScheduledClean = $start + ($periodsElapsed * $period);
-
+            if ($lastScheduledClean > 0) {
                 // Проверяем, делали ли уже очистку в этом периоде
                 $lastCleanTime = $c['last_clean_logs_time'] ?? 0;
 
@@ -9038,7 +9054,16 @@ NFT;
     {
         $file = __DIR__ . '/config.php';
         require $file;
-        unset($c['admin'][array_search($id, $c['admin'])]);
+        // Тот же класс, что в allowIp, но цена выше: при промахе
+        // array_search удалялся admin[0] — ГЛАВНЫЙ администратор, получатель
+        // pinBackup, checkVersion и всех уведомлений. Достижимо кнопкой из
+        // устаревшего меню и двойным кликом.
+        $i = array_search($id, (array) ($c['admin'] ?? []), false);
+        if ($i === false) {
+            return $this->menu('config');
+        }
+        unset($c['admin'][$i]);
+        $c['admin'] = array_values($c['admin']);
         file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
         $this->menu('config');
     }
@@ -14664,7 +14689,13 @@ DNS-over-HTTPS with IP:
     public function switchMonthlyStats()
     {
         $c = $this->getPacConf();
-        $c['reset_monthly'] = $c['reset_monthly'] ? 0 : 1;
+        $c['reset_monthly'] = !empty($c['reset_monthly']) ? 0 : 1;
+        // Отметку ставим сразу при включении: расписание считает «сброс уже
+        // был в этом месяце», и первый же тик крона не стирает накопленное.
+        // checkResetXrayStats() перестраховывается тем же условием.
+        if ($c['reset_monthly'] && empty($c['last_reset_xray_time'])) {
+            $c['last_reset_xray_time'] = time();
+        }
         $this->setPacConf($c);
         $this->xray();
     }
@@ -15830,9 +15861,58 @@ DNS-over-HTTPS with IP:
         return is_array($data) ? $data : [];
     }
 
+    // Атомарная запись — как setOnlineState()/setPacConf(). Файл читается на
+    // публичном endpoint'е (processHwidRequest) из нескольких воркеров, а
+    // писался обычным file_put_contents: читатель ловил его на середине записи,
+    // getHwidStorage() отдавал [] — и привязки устройств «исчезали» у всех
+    // разом, освобождая лимит. json_encode проверяем по той же причине, что и
+    // везде: false превратился бы в пустой файл с рапортом об успехе.
     public function setHwidStorage(array $storage)
     {
-        file_put_contents($this->hwid, json_encode($storage, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $json = json_encode($storage, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            error_log('setHwidStorage: not written — ' . json_last_error_msg());
+
+            return false;
+        }
+        $tmp = $this->hwid . '.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+
+            return false;
+        }
+        return rename($tmp, $this->hwid);
+    }
+
+    /**
+     * Read-modify-write хранилища HWID под межпроцессным локом.
+     *
+     * Проверка лимита и запись устройства раньше шли двумя независимыми
+     * операциями над целым файлом: два устройства, пришедшие одновременно,
+     * оба видели «мест хватает» и оба записывались (обход лимита), а запись
+     * того, кто закончил первым, терялась. Лок держим на отдельном .lock —
+     * сам файл подменяется через rename(), и лок на его inode после подмены
+     * защищал бы уже несуществующий файл.
+     *
+     * @param callable $fn fn(array &$storage): mixed — возвращаемое значение отдаётся наружу
+     */
+    public function hwidUpdate(callable $fn)
+    {
+        $lock = @fopen($this->hwid . '.lock', 'c');
+        if ($lock !== false) {
+            flock($lock, LOCK_EX);
+        }
+        try {
+            $storage = $this->getHwidStorage();
+            $result  = $fn($storage);
+            $this->setHwidStorage($storage);
+            return $result;
+        } finally {
+            if ($lock !== false) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
     }
 
     public function getHwidDevicesByUser($uid)
@@ -15841,32 +15921,33 @@ DNS-over-HTTPS with IP:
         return $storage[$uid] ?? [];
     }
 
+    // Все мутации идут через hwidUpdate(): иначе правка из меню (удаление
+    // устройства админом) затирала бы регистрацию, только что записанную
+    // публичным endpoint'ом, и наоборот.
     public function setHwidDevice($uid, $hwid, array $info)
     {
-        $storage = $this->getHwidStorage();
-        $storage[$uid][$hwid] = $info;
-        $this->setHwidStorage($storage);
+        $this->hwidUpdate(function (array &$storage) use ($uid, $hwid, $info) {
+            $storage[$uid][$hwid] = $info;
+        });
     }
 
     public function deleteHwidDevice($uid, $hwid)
     {
-        $storage = $this->getHwidStorage();
-        if (isset($storage[$uid][$hwid])) {
-            unset($storage[$uid][$hwid]);
-            if (empty($storage[$uid])) {
-                unset($storage[$uid]);
+        $this->hwidUpdate(function (array &$storage) use ($uid, $hwid) {
+            if (isset($storage[$uid][$hwid])) {
+                unset($storage[$uid][$hwid]);
+                if (empty($storage[$uid])) {
+                    unset($storage[$uid]);
+                }
             }
-            $this->setHwidStorage($storage);
-        }
+        });
     }
 
     public function deleteHwidUser($uid)
     {
-        $storage = $this->getHwidStorage();
-        if (isset($storage[$uid])) {
+        $this->hwidUpdate(function (array &$storage) use ($uid) {
             unset($storage[$uid]);
-            $this->setHwidStorage($storage);
-        }
+        });
     }
 
     protected function getHwidTokenScope($index)
@@ -15963,23 +16044,33 @@ DNS-over-HTTPS with IP:
             return false;
         }
 
-        $isNew = !isset($devices[$hwid]);
+        $info = [
+            'time'         => time(),
+            'user_agent'   => $_SERVER['HTTP_USER_AGENT'] ?? '',
+            'device_os'    => $_SERVER['HTTP_X_DEVICE_OS'] ?? '',
+            'os_version'   => $_SERVER['HTTP_X_VER_OS'] ?? '',
+            'device_model' => $_SERVER['HTTP_X_DEVICE_MODEL'] ?? '',
+        ];
+        // Проверка лимита и запись — одной операцией под локом. Раздельно они
+        // давали гонку: два новых устройства, пришедшие одновременно на разные
+        // воркеры, оба видели свободное место и оба записывались.
+        $uid     = $client['id'];
+        $allowed = $this->hwidUpdate(function (array &$storage) use ($uid, $hwid, $limit, $info) {
+            $devices = $storage[$uid] ?? [];
+            if (!isset($devices[$hwid]) && count($devices) >= $limit) {
+                return false;
+            }
+            $storage[$uid][$hwid] = $info;
+            return true;
+        });
 
-        if ($isNew && count($devices) >= $limit) {
+        if (!$allowed) {
             $message = 'HWID device limit exceeded';
             header('announce: base64:' . base64_encode($message));
             header('X-HWID-Status: ' . $message);
             header('HTTP/1.1 429 Too Many Requests', true, 429);
             return false;
         }
-
-        $this->setHwidDevice($client['id'], $hwid, [
-            'time'         => time(),
-            'user_agent'   => $_SERVER['HTTP_USER_AGENT'] ?? '',
-            'device_os'    => $_SERVER['HTTP_X_DEVICE_OS'] ?? '',
-            'os_version'   => $_SERVER['HTTP_X_VER_OS'] ?? '',
-            'device_model' => $_SERVER['HTTP_X_DEVICE_MODEL'] ?? '',
-        ]);
 
         return true;
     }
@@ -16101,39 +16192,57 @@ DNS-over-HTTPS with IP:
 
     public function suspicious($regexp, $file, $ranges, $title, $reverse = false)
     {
+        // Одиночные адреса (а их в $ranges подавляющее большинство: analysisIp
+        // складывает туда каждый IP из трёх логов) проверяем хеш-поиском, и
+        // только настоящие подсети — перебором с ipInRange(). Плюс запоминаем
+        // вердикт по адресу: в логе один и тот же IP встречается сотнями строк.
+        // Прежний код гонял ipInRange() по ВСЕМУ списку на каждую строку —
+        // 200 тыс. строк на 3 тыс. адресов давали ~6·10⁸ сравнений за прогон.
+        $exact = [];
+        $cidrs = [];
+        foreach ((is_array($ranges) ? $ranges : [$ranges]) as $range) {
+            if (preg_match('~^(\d{1,3}(?:\.\d{1,3}){3})(?:/32)?$~', (string) $range, $rm)) {
+                $exact[$rm[1]] = true;
+            } else {
+                $cidrs[] = $range;
+            }
+        }
+        $inRange = function (string $ip) use ($exact, $cidrs) {
+            static $memo = [];
+            if (isset($memo[$ip])) {
+                return $memo[$ip];
+            }
+            $hit = isset($exact[$ip]);
+            if (!$hit) {
+                foreach ($cidrs as $range) {
+                    if ($this->ipInRange($ip, $range)) {
+                        $hit = true;
+                        break;
+                    }
+                }
+            }
+            return $memo[$ip] = $hit;
+        };
+        $ret = [];
         if ($r = fopen($file, 'r')) {
             while (feof($r) === false) {
                 $l = fgets($r);
                 if (preg_match('~(\d+\.\d+\.\d+\.\d+)~', $l, $m)) {
                     if ($reverse xor preg_match($regexp, $l)) {
-                        if (is_array($ranges)) {
-                            $flag = true;
-                            foreach ($ranges as $range) {
-                                if ($this->ipInRange($m[1], $range)) {
-                                    $flag = false;
-                                    break;
-                                }
-                            }
-                            if ($flag) {
-                                $ret[$m[1]][] = [
-                                    'title' => $title,
-                                    'log'   => $l,
-                                ];
-                            }
-                        } else {
-                            if ($this->ipInRange($m[1], $ranges)) {
-                                $ret[$m[1]][] = [
-                                    'title' => $title,
-                                    'log'   => $l,
-                                ];
-                            }
+                        // Массив в $ranges — это СПИСОК ИСКЛЮЧЕНИЙ (подозрителен
+                        // тот, кого в нём нет), скаляр — наоборот, фильтр «свой».
+                        if (is_array($ranges) xor $inRange($m[1])) {
+                            $ret[$m[1]][] = [
+                                'title' => $title,
+                                'log'   => $l,
+                            ];
                         }
                     }
                 }
             }
             fclose($r);
         }
-        return $ret ?: [];
+        return $ret;
     }
 
     // Host CPU usage in percent, sampled over a short interval. /proc/stat is the
@@ -17358,47 +17467,32 @@ DNS-over-HTTPS with IP:
     public function analysisIp(int $page = 0, $return = false)
     {
         $pac = $this->getPacConf();
-        $xr  = [];
+        // Набор строим по КЛЮЧАМ: прежний in_array() по растущему списку давал
+        // квадрат уже на этапе сборки — три лога по сотне тысяч строк каждый
+        // против нескольких тысяч уже накопленных адресов.
+        $set = [];
         foreach (array_merge($pac['white'] ?: [], $pac['deny'] ?: [], ['10.10.0.0/23']) as $v) {
             if (preg_match('~^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:(/\d{1,2}))?$~', $v, $m)) {
-                if (!in_array($m[1] . ($m[2] ?: '/32'), $xr)) {
-                    $xr[] = $m[1] . ($m[2] ?: '/32');
-                }
+                $set[$m[1] . ($m[2] ?: '/32')] = true;
             }
         }
-        if ($r = fopen('/logs/nginx_tlgrm_access', 'r')) {
+        // Свои: кто ходил в панель, в DoH и подключался к xray. Формат строки
+        // у логов разный, поэтому и регулярки разные.
+        $collect = function (string $file, string $re) use (&$set) {
+            if (!($r = @fopen($file, 'r'))) {
+                return;
+            }
             while (feof($r) === false) {
-                $l = fgets($r);
-                if (preg_match('~(\d+\.\d+\.\d+\.\d+)~', $l, $m)) {
-                    if (!in_array("{$m[1]}/32", $xr)) {
-                        $xr[] = "{$m[1]}/32";
-                    }
+                if (preg_match($re, (string) fgets($r), $m)) {
+                    $set["{$m[1]}/32"] = true;
                 }
             }
             fclose($r);
-        }
-        if ($r = fopen('/logs/nginx_doh_access', 'r')) {
-            while (feof($r) === false) {
-                $l = fgets($r);
-                if (preg_match('~(\d+\.\d+\.\d+\.\d+)~', $l, $m)) {
-                    if (!in_array("{$m[1]}/32", $xr)) {
-                        $xr[] = "{$m[1]}/32";
-                    }
-                }
-            }
-            fclose($r);
-        }
-        if ($r = fopen('/logs/xray', 'r')) {
-            while (feof($r) === false) {
-                $l = fgets($r);
-                if (preg_match('~(\d+\.\d+\.\d+\.\d+)(?=.+accepted)~', $l, $m)) {
-                    if (!in_array("{$m[1]}/32", $xr)) {
-                        $xr[] = "{$m[1]}/32";
-                    }
-                }
-            }
-            fclose($r);
-        }
+        };
+        $collect('/logs/nginx_tlgrm_access', '~(\d+\.\d+\.\d+\.\d+)~');
+        $collect('/logs/nginx_doh_access', '~(\d+\.\d+\.\d+\.\d+)~');
+        $collect('/logs/xray', '~(\d+\.\d+\.\d+\.\d+)(?=.+accepted)~');
+        $xr = array_keys($set);
 
         $t = [
             $this->suspicious($this->reg, '/logs/nginx_default_access', $xr, 'possibly a scanner', true),
@@ -17767,7 +17861,15 @@ DNS-over-HTTPS with IP:
     public function allowIp($ip, $page, $white = 0)
     {
         $pac = $this->getPacConf();
-        unset($pac[$white ? 'white' : 'deny'][array_search($ip, $pac[$white ? 'white' : 'deny'])]);
+        $key = $white ? 'white' : 'deny';
+        // array_search при промахе возвращает false, а unset($arr[false]) — это
+        // unset($arr[0]): вместо ненайденного адреса удалялась ПЕРВАЯ запись
+        // списка. Промах реален — кнопка из устаревшего меню, двойной клик.
+        $i = array_search($ip, $pac[$key] ?? [], false);
+        if ($i === false) {
+            return $this->denyList($page, $white);
+        }
+        unset($pac[$key][$i]);
         $this->setPacConf($pac);
         $this->syncDeny();
         $this->denyList($page, $white);
@@ -17788,7 +17890,11 @@ DNS-over-HTTPS with IP:
     public function syncDeny()
     {
         $pac = $this->getPacConf();
-        if ($r = fopen('/logs/nginx_tlgrm_access', 'r')) {
+        // Инициализация и @: лог может отсутствовать (свежая установка,
+        // очищенные логи) — тогда переменная оставалась необъявленной, и её
+        // чтение ниже сыпало warning'ами на каждый ban/unban.
+        $xr = [];
+        if ($r = @fopen('/logs/nginx_tlgrm_access', 'r')) {
             while (feof($r) === false) {
                 $l = fgets($r);
                 if (preg_match('~(\d+\.\d+\.\d+\.\d+)~', $l, $m)) {
@@ -17814,7 +17920,7 @@ DNS-over-HTTPS with IP:
             $pac['deny'] = array_unique($pac['deny']);
             sort($pac['deny']);
             foreach ($pac['deny'] as $k => $v) {
-                if (!in_array($v, $pac['white'] ?: []) && !in_array($v, array_keys($xr ?: []))) {
+                if (!in_array($v, $pac['white'] ?? []) && !isset($xr[$v])) {
                     $text .= "deny $v;\n";
                 } else {
                     unset($pac['deny'][$k]);
