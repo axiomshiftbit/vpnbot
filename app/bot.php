@@ -8055,7 +8055,7 @@ NFT;
                     $this->send($this->input['chat'], 'ERROR: invalid domain');
                     break;
                 }
-                $out[] = 'Install certificate:';
+                $out   = ['Install certificate:'];
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 // adguardkey — сырой ответ пользователя (setAdKey) и подставляется
                 // в shell-строку certbot без кавычек. Валидируем как метку хоста:
@@ -8064,7 +8064,7 @@ NFT;
                     $this->send($this->input['chat'], 'ERROR: invalid adguard subdomain');
                     break;
                 }
-                $adguardClient = $conf['adguardkey'] ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
+                $adguardClient = !empty($conf['adguardkey']) ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
                 $oc = $this->getHashSubdomain('oc');
                 $np = $this->getHashSubdomain('np');
                 // Алиасы — дополнительные SAN того же серта (формат каждого
@@ -9097,7 +9097,17 @@ NFT;
 
     public function setPage($text) {
         $c = $this->getPacConf();
-        $c['limitpage'] = (int) $text;
+        // Границы обязательны: значение уходит в $this->limit, а тот делит и
+        // режет списки. Отрицательное (фолбэк `?: 5` отсекал только ноль)
+        // давало отрицательное число страниц и array_slice с отрицательной
+        // длиной — списки в меню оказывались пустыми. Верхний предел — чтобы
+        // страница не выходила за лимит сообщения Telegram.
+        $n = (int) $text;
+        if ($n < 1 || $n > 50) {
+            $this->send($this->input['chat'] ?? '', 'размер страницы: число от 1 до 50', $this->input['message_id'] ?? null);
+            return $this->menu('config');
+        }
+        $c['limitpage'] = $n;
         $this->setPacConf($c);
         $this->menu('config');
     }
@@ -12105,30 +12115,55 @@ DNS-over-HTTPS with IP:
         return $r;
     }
 
-    public function addCommunityFilter()
+    /**
+     * Импорт внешнего списка доменов в includelist.
+     *
+     * Записи проходят тот же путь, что ручной ввод (addInclude) и импорт файла
+     * (importListFile): нормализация (punycode, нижний регистр), отсев мусора
+     * и схлопывание семантических дублей. Раньше строки из сети клались в
+     * список СЫРЫМИ — в нём оседали пустые записи, комментарии и дубли вида
+     * «vk.com» + «domain:vk.com», которые ядра потом молча выбрасывали.
+     */
+    public function addExternalFilter(string $url): void
     {
-        $pac = $this->getPacConf();
-        $l   = array_filter(array_map(fn($e) => trim($e), explode("\n", file_get_contents('https://community.antifilter.download/list/domains.lst'))));
-        if (!empty($l)) {
-            foreach ($l as $k => $v) {
-                $pac['includelist'][$v] = true;
-            }
+        // file_get_contents отдаёт false при недоступном источнике: без
+        // проверки explode(false) давал одну пустую запись, а сам список
+        // молча оставался прежним — пользователю при этом рисовали успех.
+        $body = @file_get_contents($url);
+        if ($body === false) {
+            $this->send($this->input['chat'] ?? '', 'не удалось скачать список: ' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8'), $this->input['message_id'] ?? null);
+            return;
         }
+        $pac   = $this->getPacConf();
+        $added = 0;
+        foreach (preg_split('~\r\n|\r|\n~', $body) as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+            $key = $this->normalizeRouteEntry($line);
+            if (!$this->routeEntryUsable($this->classifyRouteEntry($key))) {
+                continue;
+            }
+            if (!array_key_exists($key, $pac['includelist'] ?? [])) {
+                $added++;
+            }
+            $pac['includelist'][$key] = true;
+        }
+        ['list' => $pac['includelist']] = $this->dedupeRouteList($pac['includelist'] ?? []);
+        ksort($pac['includelist']);
         $this->setPacConf($pac);
         $this->pacUpdate();
     }
 
+    public function addCommunityFilter()
+    {
+        $this->addExternalFilter('https://community.antifilter.download/list/domains.lst');
+    }
+
     public function addLegizFilter()
     {
-        $pac = $this->getPacConf();
-        $l   = array_filter(array_map(fn($e) => trim($e), explode("\n", file_get_contents('https://github.com/legiz-ru/sb-rule-sets/raw/main/ru-bundle.lst'))));
-        if (!empty($l)) {
-            foreach ($l as $k => $v) {
-                $pac['includelist'][$v] = true;
-            }
-        }
-        $this->setPacConf($pac);
-        $this->pacUpdate();
+        $this->addExternalFilter('https://github.com/legiz-ru/sb-rule-sets/raw/main/ru-bundle.lst');
     }
 
     public function pacMenu($page = 0)
@@ -12422,7 +12457,10 @@ DNS-over-HTTPS with IP:
 
     public function exportList($type)
     {
-        $domains = $this->getPacConf()[$type];
+        // ?? [] и инициализация: списка может не быть в pac.json вовсе
+        // (кнопка экспорта рисуется всегда), и обе строки давали warning.
+        $domains = $this->getPacConf()[$type] ?? [];
+        $text    = '';
         if (!empty($domains)) {
             foreach ($domains as $k => $v) {
                 $text .= "$k;$v\n";
@@ -12817,7 +12855,9 @@ DNS-over-HTTPS with IP:
     {
         $conf = $this->getPacConf();
         $i = 0;
-        foreach ($conf[$type] as $k => $v) {
+        // ?? [] — кнопка могла прийти из сообщения, отрисованного до полной
+        // очистки списка (deleteYes).
+        foreach (($conf[$type] ?? []) as $k => $v) {
             if ($key == $i) {
                 switch ($action) {
                     case 'change':
@@ -20083,7 +20123,9 @@ DNS-over-HTTPS with IP:
             <code>~fingerprint~</code>
             <code>~ip~</code>
             TEXT;
-        $templates = $pac["{$type}templates"];
+        // ?? [] — до первого сохранённого шаблона ключа нет; ниже по нему идёт
+        // foreach.
+        $templates = $pac["{$type}templates"] ?? [];
 
         $data[] = [
             [
@@ -20704,8 +20746,11 @@ DNS-over-HTTPS with IP:
         // 8с: с прежним `-m 1` и локальным резолвом живой WARP регулярно
         // показывался как off на медленном первом соединении.
         $st = $this->ssh('curl -m 8 -s -x socks5h://wp:1080 https://www.cloudflare.com/cdn-cgi/trace', 'xr');
+        // ?? '' — штатная ветка «WARP выключен»: curl не достучался, совпадения
+        // нет, и $m пуст. Раньше на каждом рендере меню warp это давало
+        // «Undefined array key 1».
         preg_match('~warp=(\w+)~', $st, $m);
-        return trim($m[1]) ?: 'off';
+        return trim($m[1] ?? '') ?: 'off';
     }
 
     public function analyzeXray()
@@ -20912,10 +20957,16 @@ DNS-over-HTTPS with IP:
 
     public function templateUser($type, $i)
     {
-        $c         = $this->getXray();
-        $pac       = $this->getPacConf();
-        $text[]    = "Menu -> " . $this->i18n('xray') . " -> {$c['inbounds'][0]['settings']['clients'][$i]['email']}\n";
-        $templates = $pac["{$type}templates"];
+        $c   = $this->getXray();
+        $pac = $this->getPacConf();
+        // Клиент мог быть удалён кнопкой из другого сообщения — тогда меню
+        // строилось из undefined index и рисовало пустой заголовок.
+        $client = $c['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if ($client === null) {
+            return $this->xray();
+        }
+        $text[]    = "Menu -> " . $this->i18n('xray') . " -> {$client['email']}\n";
+        $templates = $pac["{$type}templates"] ?? [];
         $data[]    = [
             [
                 'text'          => 'default',
