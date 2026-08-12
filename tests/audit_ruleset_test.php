@@ -59,10 +59,12 @@ class RuleSetTestBot extends Bot
 
     // Сеть в тестах не трогаем: фиксируем сам факт запроса.
     public array $fetched = [];
+    public array $fetchedUrls = [];
 
     public function datDownload(string $name, string $url, ?bool &$changed = null): string
     {
-        $this->fetched[] = $name;
+        $this->fetched[]           = $name;
+        $this->fetchedUrls[$name]  = $url;
         file_put_contents($this->datPath($name), 'dat');
         $changed = true;
         return '';
@@ -113,6 +115,22 @@ unlink($bot->datPath('geosite.dat'));
 $bot->pacFake = ['datlist' => [], 'blocklist' => ['geosite:ads' => true]];
 $bot->datSync();
 rsAssert($bot->fetched === ['geosite.dat'], 'подтянули только недостающий файл: ' . json_encode($bot->fetched));
+
+// Реестр уже объявляет geoip.dat своим источником (частый случай: у админа
+// свой, более полный файл). Встроенную ссылку в этом случае не добавляем —
+// иначе datSync сообщал бы «имя занято другим источником» на каждом проходе.
+$bot->fetched = [];
+unlink($bot->datPath('geoip.dat'));
+$bot->pacFake = [
+    'datlist'   => ['geoip.dat:https://example.com/mygeoip.dat' => true],
+    'blocklist' => ['geoip:cn' => true],
+];
+$errors = $bot->datSync();
+rsAssert(!isset($errors['geoip.dat']),
+    'коллизии с пользовательским geoip.dat нет: ' . json_encode($errors, JSON_UNESCAPED_UNICODE));
+rsAssert(($bot->fetchedUrls['geoip.dat'] ?? '') === 'https://example.com/mygeoip.dat',
+    'качаем по ссылке ИЗ РЕЕСТРА, а не по встроенной: ' . json_encode($bot->fetchedUrls));
+rsAssert(is_file($bot->datPath('geoip.dat')), 'файл на месте, guard маршрутов пройдёт');
 
 // ── 3. cleanEmptyKeys не превращает список в объект ─────────────────────────
 $clean = $bot->cleanEmptyKeys([
