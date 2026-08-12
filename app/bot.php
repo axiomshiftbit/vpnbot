@@ -2861,6 +2861,15 @@ class Bot
         if ($syncCamouflage) {
             $conf = $this->applyOcCamouflage($conf, $this->ocCamouflageSecretForConf($conf, true));
         }
+        // Тот же класс, что в restartNaive(): сюда приезжает результат
+        // preg_replace* от пятерых вызывающих, а движок при ошибке отдаёт null —
+        // file_put_contents записал бы пустой ocserv.conf, и сервис не поднялся
+        // бы уже никогда, без единого сообщения.
+        if (!is_string($conf) || trim($conf) === '') {
+            error_log('restartOcserv: ocserv.conf not written — empty config');
+
+            return false;
+        }
         file_put_contents('/config/ocserv.conf', $conf);
         $this->ssh('pkill ocserv', 'oc');
         $pac = $this->getPacConf();
@@ -2871,6 +2880,7 @@ class Bot
             $this->ssh('mkdir -p /logs; touch /logs/ocserv.log', 'oc');
             $this->ssh('ocserv -f -c /etc/ocserv/ocserv.conf', 'oc', false, '/logs/ocserv.log');
         }
+        return true;
     }
 
     // Логин/пароль naive уезжают в Caddyfile строкой «basic_auth <user> <pass>»,
@@ -3087,12 +3097,30 @@ class Bot
         return 'hysteria2://' . rawurlencode($pass) . "@$host:$portSpec/$query$name";
     }
 
+    // $dns уходит директивой в ocserv.conf, а приходит сырым текстом сообщения:
+    // многострочный ввод превращал каждую строку после первой в самостоятельную
+    // директиву конфига. Принимаем только адрес (IPv4/IPv6) — ровно то, что
+    // ocserv в этом поле и ждёт; ср. chHySNI/chStlsSNI, где проверка уже есть.
     public function chocdns($dns)
     {
+        $dns = trim((string) $dns);
+        if (filter_var($dns, FILTER_VALIDATE_IP) === false) {
+            $this->send($this->input['chat'], "$dns - wrong dns address", $this->input['message_id']);
+            return $this->menu('oc');
+        }
         $c = file_get_contents('/config/ocserv.conf');
         $t = preg_replace_callback('~^dns[^\n]+~sm', fn() => "dns = $dns", $c);
         $this->restartOcserv($t);
         $this->menu('oc');
+    }
+
+    // Поддомен — ОДНА метка имени: она склеивается с основным доменом
+    // («<sub>.<domain>») и уезжает в upstream.conf и ocserv.conf. Точку тоже не
+    // пускаем: своей зоны у метки быть не может, а сертификат выписан на
+    // *.<domain>, то есть только на один уровень.
+    public static function isSubdomainLabel($v): bool
+    {
+        return (bool) preg_match('~^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$~', (string) $v);
     }
 
     public function chOcSubdomain($domain)
@@ -3100,8 +3128,13 @@ class Bot
         $pac = $this->getPacConf();
         if ($domain == -1) {
             unset($pac["oc_domain"]);
-        } else {
+        } elseif (self::isSubdomainLabel($domain)) {
             $pac["oc_domain"] = $domain;
+        } else {
+            // Без проверки строка вида «x;}\nserver { listen 443; }» уезжала в
+            // /config/upstream.conf и в default-domain ocserv.conf.
+            $this->send($this->input['chat'], "$domain - wrong subdomain format", $this->input['message_id']);
+            return $this->menu('oc');
         }
         $this->setPacConf($pac);
         $this->chocdomain($pac['domain']);
@@ -3114,8 +3147,11 @@ class Bot
         $pac = $this->getPacConf();
         if ($domain == -1) {
             unset($pac['np_domain']);
-        } else {
+        } elseif (self::isSubdomainLabel($domain)) {
             $pac['np_domain'] = $domain;
+        } else {
+            $this->send($this->input['chat'], "$domain - wrong subdomain format", $this->input['message_id']);
+            return $this->menu('naive');
         }
         $this->setPacConf($pac);
         $this->restartNaive();
@@ -7727,16 +7763,30 @@ NFT;
         $this->addDomain(str_replace('.', '-', $this->ip) . '.nip.io');
     }
 
+    // Регулярка домена — общая с addDomainAlias(): значение уходит в exec
+    // (certbot) и в server_name nginx.
+    public const DOMAIN_RE = '~^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$~i';
+
     public function addDomain($domain, $nomenu = false)
     {
-        $domain = trim($domain);
+        $domain = trim((string) $domain);
         if (!empty($domain)) {
+            // idnAscii() (в отличие от голого idn_to_ascii) не падает на пустой
+            // строке и отдаёт false, если intl недоступен. Раньше проверки не
+            // было вовсе: невалидное имя давало в pac.json «"domain": false», а
+            // потом уезжало в server_name через cloakNginx().
+            $ascii = $this->idnAscii($domain);
+            $ascii = $ascii === false ? $domain : $ascii;
+            if (!preg_match(self::DOMAIN_RE, $ascii)) {
+                $this->send($this->input['chat'] ?? '', "$domain - wrong domain format", $this->input['message_id'] ?? null);
+                return empty($nomenu) ? $this->menu('config') : null;
+            }
             $conf = $this->getPacConf();
-            $conf['domain'] = idn_to_ascii($domain);
+            $conf['domain'] = $ascii;
             $this->setPacConf($conf);
-            $this->chocdomain($domain);
-            $this->setUpstreamDomainOcserv($domain);
-            $this->setUpstreamDomainNaive($domain);
+            $this->chocdomain($ascii);
+            $this->setUpstreamDomainOcserv($ascii);
+            $this->setUpstreamDomainNaive($ascii);
             $this->cloakNginx();
         }
         if (empty($nomenu)) {
@@ -7772,7 +7822,7 @@ NFT;
         $conf   = $this->getPacConf();
         // Домен уходит в exec (certbot) и в nginx.conf — принимаем только
         // безопасный синтаксис hostname, никаких shell-метасимволов.
-        if (!preg_match('~^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$~i', $domain)) {
+        if (!preg_match(self::DOMAIN_RE, $domain)) {
             $this->send($this->input['chat'], "$domain - wrong domain format", $this->input['message_id']);
             $this->menu('config');
             return;
@@ -11301,25 +11351,44 @@ DNS-over-HTTPS with IP:
         $this->subnet($wgpage, $page, $openconnect);
     }
 
+    /**
+     * Пересобирает директивы route в ocserv.conf по списку подсетей.
+     *
+     * Чистая функция — конфиг и подсети снаружи: раньше сборка сидела внутри
+     * ocservRoute() вместе с чтением файла, и покрыть её тестом было нельзя, а
+     * ошибка была ровно в ней. Каждый маршрут обязан идти СВОЕЙ строкой:
+     * прежний `$t .= "route = $v";` без перевода строки склеивал их
+     * («route = 10.0.0.0/24route = 192.168.0.0/16»), и ocserv не стартовал. С
+     * одной подсетью это было незаметно, поэтому дефект дожил до аудита.
+     */
+    public static function ocservRouteConf(string $conf, array $subnets): string
+    {
+        // Вместе со строкой убираем и её перевод строки, иначе на месте
+        // маршрутов копятся пустые строки.
+        $t      = preg_replace('~^route[^\n]*\n?~m', '', $conf);
+        $routes = [];
+        foreach ($subnets as $v) {
+            $v = trim((string) $v);
+            // Якорь в конце обязателен: без него в конфиг уезжала вся строка
+            // целиком, включая хвост вида «10.0.0.0/24 foo». Октеты и длину
+            // префикса проверяем по значению, а не по числу цифр.
+            if (!preg_match('~^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$~', $v, $m)
+                || filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false
+                || (int) $m[2] > 32
+            ) {
+                continue;
+            }
+            $routes[] = $v;
+        }
+        return rtrim((string) $t, "\n") . "\n"
+            . implode("\n", array_map(fn($r) => "route = $r", $routes ?: ['default'])) . "\n";
+    }
+
     public function ocservRoute()
     {
         $p = $this->getPacConf();
         $c = file_get_contents('/config/ocserv.conf');
-        $t = preg_replace('~^route[^\n]+~sm', '', $c);
-        if (!empty($p['subnets'])) {
-            foreach ($p['subnets'] as $v) {
-                if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}~', $v)) {
-                    $t .= "route = $v";
-                    $flag = true;
-                }
-            }
-            if (empty($flag)) {
-                $t .= 'route = default';
-            }
-        } else {
-            $t .= 'route = default';
-        }
-        $this->restartOcserv($t);
+        $this->restartOcserv(self::ocservRouteConf($c, (array) ($p['subnets'] ?? [])));
     }
 
     public function calc()
@@ -23177,6 +23246,30 @@ DNS-over-HTTPS with IP:
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
 
+    /**
+     * Заменяет тело парного маркерного блока в /config/upstream.conf
+     * («#naive … #naive», «#ocserv … #ocserv»).
+     *
+     * Два требования, каждое из которых уже стоило поломки:
+     *  - НЕЖАДНЫЙ .+?: маркер парный, и любое ТРЕТЬЕ его упоминание ниже по
+     *    файлу (достаточно слова в комментарии) при жадном матче расширяет
+     *    замену до него и сносит всё между — включая соседние server-блоки;
+     *  - preg_replace_CALLBACK: тело подставляется литералом, а в replacement
+     *    у preg_replace «$1»/«\1» — обратные ссылки, и поддомен с доменом
+     *    приходят из пользовательского ввода.
+     * Для #naive это уже было исправлено, для #ocserv — нет, хотя комментарий
+     * рядом описывал правку как общую.
+     */
+    public static function upstreamReplace(string $nginx, string $marker, string $body): string
+    {
+        $m = preg_quote($marker, '~');
+        return (string) preg_replace_callback(
+            "~$m.+?$m~s",
+            fn() => "$marker\n$body\n$marker",
+            $nginx,
+        );
+    }
+
     public function setUpstreamDomainOcserv($domain)
     {
         // Пустая строка — штатный «сброс» (см. вызов при удалении домена),
@@ -23186,8 +23279,10 @@ DNS-over-HTTPS with IP:
         }
         $sub   = $this->getHashSubdomain('oc');
         $nginx = file_get_contents('/config/upstream.conf');
-        $t     = preg_replace('~#ocserv.+#ocserv~s', $domain ? "#ocserv\n" . ($sub ? '' : '#' ) . "$sub.$domain ocserv;\n#ocserv" : "#ocserv\n#$sub.\$domain ocserv;\n#ocserv", $nginx);
-        file_put_contents('/config/upstream.conf', $t);
+        $body  = ($domain && $sub) ? "$sub.$domain ocserv;" : "#$sub.\$domain ocserv;";
+        // Ровно те же две правки, что были сделаны для #naive, — сюда они тогда
+        // не доехали (см. upstreamReplace).
+        file_put_contents('/config/upstream.conf', self::upstreamReplace($nginx, '#ocserv', $body));
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
 
@@ -23236,14 +23331,7 @@ DNS-over-HTTPS with IP:
         $body  = $hosts
             ? implode("\n", array_map(fn($h) => "$h naive;", $hosts))
             : "#$sub.\$domain naive;";
-        // Нежадный .+? вместо .+ — маркер парный, и любое ТРЕТЬЕ его упоминание
-        // ниже по файлу (достаточно слова в комментарии) при жадном матче
-        // расширило бы замену до него и снесло всё между — включая соседние
-        // server-блоки. Поведение при штатных двух маркерах не меняется.
-        // preg_replace_callback, а не preg_replace: хосты идут в замену как
-        // литералы (в replacement «$…»/«\…» — обратные ссылки).
-        $t = preg_replace_callback('~#naive.+?#naive~s', fn() => "#naive\n$body\n#naive", $nginx);
-        file_put_contents('/config/upstream.conf', $t);
+        file_put_contents('/config/upstream.conf', self::upstreamReplace($nginx, '#naive', $body));
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
 
@@ -23313,11 +23401,16 @@ DNS-over-HTTPS with IP:
         return $this->ssh('nginx -s reload', 'ng');
     }
 
+    // Возвращаемое значение подставляется в «<sub>.<domain>» и уезжает в
+    // upstream.conf (nginx) и в default-domain ocserv.conf. Сохранённое ранее
+    // значение проверяем на выдаче тоже: в pac.json мог остаться мусор от
+    // старых версий, а сломанный upstream.conf валит весь внешний 443 при
+    // ближайшем рестарте контейнера (живой nginx reload просто отвергнет).
     public function getHashSubdomain($subdomain)
     {
         $p = $this->getPacConf();
         if (isset($p["{$subdomain}_domain"])) {
-            return $p["{$subdomain}_domain"];
+            return self::isSubdomainLabel($p["{$subdomain}_domain"]) ? $p["{$subdomain}_domain"] : '';
         }
         $p["{$subdomain}_domain"] = substr(hash('sha256', "$subdomain{$this->key}"), 0, 8);
         $this->setPacConf($p);
