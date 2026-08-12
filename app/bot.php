@@ -10437,7 +10437,22 @@ DNS-over-HTTPS with IP:
         // появилась запись geosite:/geoip:.
         $keep   = array_fill_keys(array_values(self::CORE_DAT), true);
         $source = [];
+        // Имена, которые реестр уже объявил сам: свой источник geoip.dat —
+        // обычное дело (у него бывает и полнее, и свежее данных апстрима).
+        $declared = [];
+        foreach ($enabled as $key) {
+            if (preg_match('~^([\w.\-]+\.dat):~i', (string) $key, $dm)) {
+                $declared[basename($dm[1])] = true;
+            }
+        }
         foreach ($this->coreDatNeeded($conf) as $file) {
+            // Встроенную ссылку добавляем, ТОЛЬКО если файла с таким именем в
+            // реестре нет: иначе ниже сработает проверка «имя занято другим
+            // источником», и админ получал бы эту ошибку на каждом проходе
+            // datSync — при том что файл на месте и правило работает.
+            if (isset($declared[$file])) {
+                continue;
+            }
             $enabled[] = "$file:" . self::CORE_DAT_URL[$file];
         }
         foreach ($enabled as $key) {
@@ -24754,7 +24769,10 @@ DNS-over-HTTPS with IP:
      */
     public function logFiles(): array
     {
-        $skip = ['menu_status.json', 'menu_versions.json'];
+        // Служебные файлы, которые лежат в /logs, но логами не являются: кэши
+        // меню и счётчики лимитера подписок. Показывать их как логи (и давать
+        // кнопку «очистить») незачем.
+        $skip = ['menu_status.json', 'menu_versions.json', 'sub_ratelimit.json'];
         $out  = [];
         foreach (scandir('/logs/') ?: [] as $v) {
             if (str_starts_with($v, '.') || in_array($v, $skip, true) || !is_file("/logs/$v")) {
