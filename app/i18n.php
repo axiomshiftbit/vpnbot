@@ -1138,13 +1138,16 @@ $i = [
         'en' => 'ports',
         'ru' => 'порты',
     ],
+    // Оставлены по-английски осознанно: так эти кнопки выглядели до аудита
+    // 2026-08-12 (ключа в словаре не было, i18n() отдавала сам ключ), и
+    // пользователи бота их узнают именно в таком виде.
     'routes'  => [
         'en' => 'routes',
-        'ru' => 'маршруты',
+        'ru' => 'routes',
     ],
     'rulesset'  => [
-        'en' => 'rule-sets',
-        'ru' => 'наборы правил',
+        'en' => 'rulesset',
+        'ru' => 'rulesset',
     ],
     'tun lists'  => [
         'en' => 'tun lists',
@@ -1160,7 +1163,7 @@ $i = [
     ],
     'block'  => [
         'en' => 'block',
-        'ru' => 'блокировать',
+        'ru' => 'block',
     ],
     'blocklist'  => [
         'en' => 'block list',
@@ -1308,15 +1311,15 @@ $i = [
     ],
     'sing-box templates'  => [
         'en' => 'sing-box templates',
-        'ru' => 'шаблоны sing-box',
+        'ru' => 'sing-box templates',
     ],
     'mihomo templates'  => [
         'en' => 'mihomo templates',
-        'ru' => 'шаблоны mihomo',
+        'ru' => 'mihomo templates',
     ],
     'v2ray templates'  => [
         'en' => 'v2ray templates',
-        'ru' => 'шаблоны v2ray',
+        'ru' => 'v2ray templates',
     ],
     // С хвостовым пробелом: ключ подставляется перед значением в одну строку.
     'main outbound name: '  => [
