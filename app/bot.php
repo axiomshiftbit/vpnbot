@@ -9340,10 +9340,15 @@ DNS-over-HTTPS with IP:
                 }
                 break;
             case 'blocklist':
+                // Записи geosite:/geoip: требуют встроенных .dat, которых в
+                // образе xray нет: подтягиваем их здесь же, иначе правило молча
+                // не попало бы в конфиг ядра (см. listToXrayRules).
+                $this->datSync();
                 $this->xrayUpdateRules();
                 $this->xtlsblock($page);
                 break;
             case 'warplist':
+                $this->datSync();
                 $this->xrayUpdateRules();
                 $this->xtlswarp($page);
                 break;
@@ -9562,6 +9567,18 @@ DNS-over-HTTPS with IP:
             if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
                 continue;
             }
+            // geosite:/geoip: — те же asset-файлы, только с фиксированными
+            // именами: образ xray их не содержит (xray.dockerfile их удаляет), а
+            // XRAY_LOCATION_ASSET указывает на /logs/geodata с одними лишь
+            // скачанными datlist-файлами. Без этой проверки запись
+            // «geosite:category-ads-all» уезжала в конфиг, ядро падало на
+            // «failed to load geosite», а запись оставалась в pac.json — каждый
+            // рестарт писал тот же конфиг, самовосстановления не было.
+            if (in_array($c['kind'], ['geosite', 'geoip'], true)
+                && !$this->datFileReady(self::CORE_DAT[$c['kind']])
+            ) {
+                continue;
+            }
             if ($c['kind'] == 'ip') {
                 $ip[] = $this->ipCanon($c['value']);
             } elseif ($c['kind'] == 'extip') {
@@ -9699,9 +9716,11 @@ DNS-over-HTTPS with IP:
      * (routeEntryCanonKey). Остальные списки хранят не хосты, а URL правил и
      * имена процессов/пакетов — доменный канон к ним неприменим.
      */
+    public const ROUTE_ENTRY_LISTS = ['blocklist', 'warplist', 'includelist', 'subnetlist'];
+
     public function isRouteEntryList(string $type): bool
     {
-        return in_array($type, ['blocklist', 'warplist', 'includelist', 'subnetlist'], true);
+        return in_array($type, self::ROUTE_ENTRY_LISTS, true);
     }
 
     /**
@@ -9896,16 +9915,27 @@ DNS-over-HTTPS with IP:
     {
         $c  = $this->getPacConf();
         $xr = $this->getXray();
-        $xr['outbounds'] = [
-            [
+        // Конфиг нечитаем — правила не трогаем: собранный «с нуля» xr уехал бы
+        // в restartXray() без inbounds, то есть без единого клиента.
+        if (!is_array($xr)) {
+            error_log('xrayUpdateRules: xray.json unreadable, rules left as is');
+            return;
+        }
+        // Свои три аутбаунда обновляем НА МЕСТЕ, чужие оставляем: раньше
+        // outbounds перезаписывались целиком на каждое изменение block/warp-
+        // списка, и добавленный админом через webapp аутбаунд молча исчезал —
+        // а правила с его тегом оставались висячими (xray их просто игнорирует,
+        // трафик уходил в первый аутбаунд).
+        $own = [
+            'direct' => [
                 "protocol" => "freedom",
                 "tag"      => "direct",
             ],
-            [
+            'block' => [
                 "protocol" => "blackhole",
                 "tag"      => "block",
             ],
-            [
+            'warp' => [
                 "protocol" => "socks",
                 "tag"      => "warp",
                 "settings" => [
@@ -9918,6 +9948,19 @@ DNS-over-HTTPS with IP:
                 ],
             ],
         ];
+        $outbounds = [];
+        foreach (($xr['outbounds'] ?? []) as $ob) {
+            $tag = (string) ($ob['tag'] ?? '');
+            if (isset($own[$tag])) {
+                $outbounds[] = $own[$tag];
+                unset($own[$tag]);
+                continue;
+            }
+            $outbounds[] = $ob;
+        }
+        // Порядок важен: первый аутбаунд в xray — дефолтный маршрут, поэтому
+        // недостающие свои дописываем в конец, а не в начало.
+        $xr['outbounds'] = array_merge($outbounds, array_values($own));
         $rules = [];
         // block/warp: раскладываем каждый список на xray domain/ip с учётом
         // префиксов маршрутизации (regexp:/keyword:/full:/domain:).
@@ -9952,6 +9995,21 @@ DNS-over-HTTPS with IP:
     // Asset-путь ядру задаётся автоматически при старте xray (restartXray +
     // start_xray.sh: XRAY_LOCATION_ASSET=/logs/geodata) — ручных шагов не нужно.
 
+    // Встроенные категории ядра (geosite:/geoip:) живут в файлах с фиксированными
+    // именами. Образ xray их не содержит — xray.dockerfile удаляет geoip.dat и
+    // geosite.dat, а XRAY_LOCATION_ASSET указан на общий /logs/geodata, — поэтому
+    // бот качает их сам, как обычные записи реестра datlist, но по фиксированным
+    // ссылкам и не показывая их в списке: пользователь про них не знает, он
+    // просто пишет «geosite:category-ads-all».
+    public const CORE_DAT = [
+        'geosite' => 'geosite.dat',
+        'geoip'   => 'geoip.dat',
+    ];
+    public const CORE_DAT_URL = [
+        'geosite.dat' => 'https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat',
+        'geoip.dat'   => 'https://github.com/v2fly/geoip/releases/latest/download/geoip.dat',
+    ];
+
     public function datDir(): string
     {
         return '/logs/geodata';
@@ -9960,6 +10018,23 @@ DNS-over-HTTPS with IP:
     public function datPath(string $name): string
     {
         return $this->datDir() . '/' . basename($name);
+    }
+
+    // Какие из встроенных .dat нужны прямо сейчас: файл требуется, только если
+    // хотя бы одна включённая запись списков маршрутизации написана как
+    // geosite:/geoip:. Пока таких записей нет, ничего не качаем.
+    public function coreDatNeeded(array $conf): array
+    {
+        $need = [];
+        foreach (self::ROUTE_ENTRY_LISTS as $list) {
+            foreach (array_keys(array_filter($conf[$list] ?? [])) as $e) {
+                $kind = $this->classifyRouteEntry((string) $e)['kind'];
+                if (isset(self::CORE_DAT[$kind])) {
+                    $need[self::CORE_DAT[$kind]] = true;
+                }
+            }
+        }
+        return array_keys($need);
     }
 
     // Готов ли .dat для ext-значения "file.dat:tag" (файл уже скачан на сервере).
@@ -10170,8 +10245,16 @@ DNS-over-HTTPS with IP:
             @mkdir($dir, 0755, true);
         }
         $errors = [];
-        $keep   = [];
+        // Встроенные geosite.dat/geoip.dat не значатся в реестре datlist, но
+        // сборщик осиротевших файлов ниже сносил бы их вместе с чужими — в том
+        // числе положенные админом руками (это и происходило на первом же
+        // toggle/datrefresh). Держим их всегда, а качаем только когда в списках
+        // появилась запись geosite:/geoip:.
+        $keep   = array_fill_keys(array_values(self::CORE_DAT), true);
         $source = [];
+        foreach ($this->coreDatNeeded($conf) as $file) {
+            $enabled[] = "$file:" . self::CORE_DAT_URL[$file];
+        }
         foreach ($enabled as $key) {
             if (!preg_match('~^([\w.\-]+\.dat):(https://.+)$~i', $key, $m)) {
                 continue;
@@ -11988,7 +12071,9 @@ DNS-over-HTTPS with IP:
                 $this->xtlsrulesset();
                 break;
             case 'datlist':
-                $this->datSync();       // реестр пуст → удалит все .dat файлы
+                // Реестр пуст → удалит все .dat файлы, кроме встроенных
+                // geosite/geoip: они не в реестре и нужны записям geosite:/geoip:.
+                $this->datSync();
                 $this->xrayUpdateRules();
                 $this->xtlsdat();
                 break;
@@ -22483,13 +22568,55 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    /**
+     * Разбирает ключ реестра rulessetlist: «outbound[:behavior]:interval:URL».
+     *
+     * Раньше его разбирали в двух местах по-разному — addClashRuleSet делал
+     * explode(':', $k, 4), addRuleSet — explode(':', $k, 3), — хотя промпт
+     * (include('rulessetlist')) обещает одну форму, а валидация addInclude
+     * пропускает обе. В итоге «proxy:86400:https://x/y.mrs» давал mihomo
+     * url="//x/y.mrs" с interval=0, а «proxy:domain:86400:https://x/y.srs»
+     * давал sing-box url="86400:https://x/y.srs" — то есть форма без behavior
+     * ломалась у одного потребителя, форма с behavior у другого.
+     *
+     * Разбираем С КОНЦА: URL начинается с http(s)://, перед ним интервал
+     * (число или длительность вида 1d — трактовку оставляем потребителю), всё,
+     * что осталось слева, — outbound и необязательный behavior. Это
+     * единственный способ не спутать двоеточие схемы с разделителем полей.
+     *
+     * @return array{outbound:string,behavior:string,interval:string,url:string}|null
+     */
+    public static function parseRuleSetKey(string $k): ?array
+    {
+        if (!preg_match('~^(.*?):([\w.]+):(https?://.+)$~s', trim($k), $m)) {
+            return null;
+        }
+        $head  = explode(':', $m[1]);
+        $out   = trim((string) array_shift($head));
+        $behav = trim((string) array_shift($head));
+        if ($out === '' || $head) { // лишние поля слева — ключ не наш
+            return null;
+        }
+        return [
+            'outbound' => $out,
+            // Дефолт behavior — как у большинства списков mihomo; для sing-box
+            // поле не используется вовсе.
+            'behavior' => $behav !== '' ? $behav : 'classical',
+            'interval' => $m[2],
+            'url'      => $m[3],
+        ];
+    }
+
     public function addClashRuleSet($c)
     {
         $p = $this->getPacConf();
         if (!empty($p['rulessetlist']) && $c['add-rule-providers']) {
             foreach ($p['rulessetlist'] as $k => $v) {
                 if (!empty($v)) {
-                    [$type, $behavior, $time, $url] = explode(':', $k, 4);
+                    if (($e = self::parseRuleSetKey((string) $k)) === null) {
+                        continue;
+                    }
+                    [$type, $behavior, $time, $url] = [$e['outbound'], $e['behavior'], $e['interval'], $e['url']];
                     if (preg_match('~\.(mrs|yaml|yml)$~', $url, $m)) {
                         $c['rule-providers'][$url] = [
                             'type'     => 'http',
@@ -22780,9 +22907,13 @@ DNS-over-HTTPS with IP:
             if (!empty($p['rulessetlist'])) {
                 foreach ($p['rulessetlist'] as $k => $v) {
                     if (!empty($v)) {
-                        // Ключ rulessetlist для sing-box (.srs): type:time:url — без behavior
-                        // (behavior есть только у Clash/mihomo .mrs/.yaml в addClashRuleSet).
-                        [$type, $time, $url] = explode(':', $k, 3);
+                        // Разбор общий с addClashRuleSet: обе формы ключа
+                        // (с behavior и без) читаются одинаково — behavior здесь
+                        // просто не нужен, он есть только у mihomo.
+                        if (($e = self::parseRuleSetKey((string) $k)) === null) {
+                            continue;
+                        }
+                        [$type, $time, $url] = [$e['outbound'], $e['interval'], $e['url']];
                         if (isset($t[$type]) && preg_match('~\.srs$~', $url) && !empty($route['rules'][$t[$type]])) {
                             $route['rule_set'][] = [
                                 "tag"             => $k,
@@ -22790,7 +22921,7 @@ DNS-over-HTTPS with IP:
                                 "format"          => "binary",
                                 "url"             => $url,
                                 "download_detour" => "direct",
-                                "update_interval" => $time
+                                "update_interval" => $time,
                             ];
                             $route['rules'][$t[$type]]['rule_set'][] = $k;
                         }
@@ -22839,6 +22970,11 @@ DNS-over-HTTPS with IP:
 
     public function cleanEmptyKeys(array $arr)
     {
+        // Был ли массив СПИСКОМ до чистки: unset() внутри списка оставляет дыру
+        // в нумерации, и json_encode отдаёт объект вместо массива —
+        // {"rules":{"1":{…}}} вместо [ … ]. Такой rule-set `sing-box rule-set
+        // compile` не принимает вовсе (достижимо при пустом "~pac~").
+        $isList = array_is_list($arr);
         foreach ($arr as $k => $v) {
             if (empty($v)) {
                 unset($arr[$k]);
@@ -22849,7 +22985,7 @@ DNS-over-HTTPS with IP:
                 }
             }
         }
-        return $arr;
+        return $isList ? array_values($arr) : $arr;
     }
 
     /**
@@ -22907,9 +23043,22 @@ DNS-over-HTTPS with IP:
     public function createSrs(string $name, array $rules)
     {
         $rules = $this->cleanEmptyKeys($rules);
+        // $name — имя rule-set'а ИЗ ШАБЛОНА маршрутов (createruleset[].name), то
+        // есть данные, а не константа: шаблон приходит из webapp-редактора и из
+        // импорта чужих настроек. Раньше оно шло без экранирования и в заголовок
+        // (перевод строки = инъекция заголовков), и в имя файла, которое
+        // подставлялось в exec() — то есть импорт чужого шаблона означал
+        // исполнение произвольных команд в контейнере. Имя ограничиваем словом,
+        // путь строим сами и в команду отдаём через escapeshellarg().
+        if (!preg_match('~^[\w.\-]{1,64}$~', $name)) {
+            http_response_code(400);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'Invalid rule-set name';
+            exit;
+        }
         header("Content-Disposition: attachment; filename=$name.srs");
         header('Content-Type: application/binary');
-        $f = "/tmp/$name" . time() . rand(1, 100);
+        $f = '/tmp/' . $name . '.' . getmypid() . '.' . bin2hex(random_bytes(6));
         foreach ($rules as $k => $v) {
             if (array_key_exists('domain_suffix', $v)) {
                 unset($rules[$k]['domain_suffix']);
@@ -22932,9 +23081,20 @@ DNS-over-HTTPS with IP:
         }
         file_put_contents($f, json_encode([
             'version' => 1,
-            'rules'   => $rules ?: [],
+            'rules'   => array_values($rules),
         ]));
-        exec("sing-box rule-set compile $f");
+        exec('sing-box rule-set compile ' . escapeshellarg($f) . ' 2>&1', $out, $code);
+        // Раньше результат компиляции не проверялся: при любом сбое клиент
+        // получал HTTP 200 с пустым телом (и два warning'а от unlink()) —
+        // ядро молча оставалось без правил вместо явной ошибки.
+        if ($code !== 0 || !is_file("$f.srs")) {
+            error_log("createSrs: compile failed for $name — " . implode(' ', (array) $out));
+            @unlink($f);
+            http_response_code(500);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'Rule-set compile failed';
+            exit;
+        }
         echo file_get_contents("$f.srs");
         unlink($f);
         unlink("$f.srs");
