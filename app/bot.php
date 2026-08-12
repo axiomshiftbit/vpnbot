@@ -5577,12 +5577,18 @@ NFT;
 
     public function downloadPeer($client)
     {
-        $cl     = $client;
-        $client = $this->readClients()[$client];
+        $cl      = $client;
+        $clients = $this->readClients();
+        // Индекс приходит из кнопки, а список мог переиндексироваться
+        // (deleteClient) — тот же guard, что у соседей по меню клиента.
+        if (empty($clients[$client])) {
+            return $this->menu('wg', 0);
+        }
+        $client = $clients[$client];
         $name   = $this->getName($client['interface']);
         $code   = $this->createConfig($client);
         $this->upload(preg_replace(['~\s+~', '~\(|\)~'], ['_', ''], $name) . ".conf", $code);
-        if ($this->getPacConf()['blinkmenu']) {
+        if (!empty($this->getPacConf()['blinkmenu'])) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->menu('client', "{$cl}_0");
@@ -5981,6 +5987,12 @@ NFT;
             // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
             if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
                 $c[$prefix . 'amnezia_last_rotation'] = time();
+            }
+            // Диапазонный PersistentKeepalive — фича 3.0: на 2.0-шаблоне он не
+            // разберётся, а раньше оставался от прежнего набора и уезжал в
+            // клиентские конфиги. Так же поступают setAmneziaProto и resetAwg3.
+            if (!$is3) {
+                unset($c[$prefix . 'amnezia_keepalive']);
             }
             $this->setPacConf($c);
         };
@@ -7333,6 +7345,10 @@ NFT;
             $prefix . 'amnezia_tpl',
             $prefix . 'amnezia_keepalive',
             $prefix . 'amnezia',
+            // Отметку ротации тоже: её ставит $mutate (см. rotateAmneziaKeys), и
+            // без отката неудачный setconf оставлял ключи прежними, а таймер —
+            // сдвинутым, то есть следующая попытка откладывалась на весь период.
+            $prefix . 'amnezia_last_rotation',
         ];
         $before = [];
         $c = $this->getPacConf();
@@ -7540,7 +7556,10 @@ NFT;
     public function switchTorrent($page = 0, $restart = false)
     {
         $c = $this->getPacConf();
-        $c[$this->getInstanceWG(1) . 'blocktorrent'] = $c[$this->getInstanceWG(1) . 'blocktorrent'] ? 0 : 1;
+        // !empty — на свежей установке (pac.json = {}) ключа ещё нет, и первое
+        // же нажатие тумблера сыпало «Undefined array key»; в iptablesWG()
+        // фолбэк для этих же ключей давно есть.
+        $c[$this->getInstanceWG(1) . 'blocktorrent'] = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']) ? 0 : 1;
         $this->setPacConf($c);
         $this->iptablesWG();
         $this->answer($this->input['callback_id'], 'доступ к торрентам ' . ($c[$this->getInstanceWG(1) . 'blocktorrent'] ? 'заблокирован' : 'разблокирован'), true);
@@ -7663,7 +7682,7 @@ NFT;
     public function switchExchange($page)
     {
         $c = $this->getPacConf();
-        $c[$this->getInstanceWG(1) . 'exchange'] = $c[$this->getInstanceWG(1) . 'exchange'] ? 0 : 1;
+        $c[$this->getInstanceWG(1) . 'exchange'] = !empty($c[$this->getInstanceWG(1) . 'exchange']) ? 0 : 1;
         $this->setPacConf($c);
         $this->iptablesWG();
         $this->answer($this->input['callback_id'], 'обмен между пользователями ' . ($c[$this->getInstanceWG(1) . 'exchange'] ? 'заблокирован' : 'разблокирован'), true);
@@ -7673,7 +7692,7 @@ NFT;
     public function blinkmenuswitch()
     {
         $c = $this->getPacConf();
-        $c['blinkmenu'] = $c['blinkmenu'] ? 0 : 1;
+        $c['blinkmenu'] = !empty($c['blinkmenu']) ? 0 : 1;
         $this->setPacConf($c);
         $this->menu('config');
     }
@@ -11214,13 +11233,15 @@ DNS-over-HTTPS with IP:
                 if (!empty($v['# PublicKey'])) {
                     $conf['peers'][$k]['online'] = 'off';
                 } else {
-                    $conf['peers'][$k]['status'] = $status ? $this->getStatusPeer($v['PublicKey'], $status['peers']) : 'error';
-                    $conf['peers'][$k]['online'] = preg_match('~^(\d+ seconds|[12] minute)~', $conf['peers'][$k]['status']['latest handshake']) ? 'online' : '';
+                    // ?? [] — у интерфейса без единого пира ключа 'peers' в
+                    // статусе нет вовсе.
+                    $conf['peers'][$k]['status'] = $status ? $this->getStatusPeer($v['PublicKey'], $status['peers'] ?? []) : 'error';
+                    $conf['peers'][$k]['online'] = preg_match('~^(\d+ seconds|[12] minute)~', (string) ($conf['peers'][$k]['status']['latest handshake'] ?? '')) ? 'online' : '';
                 }
             }
             foreach ($conf['peers'] as $k => $v) {
                 if (empty($v['# PublicKey'])) {
-                    preg_match_all('~([0-9.]+\.?)\s(\w+)~', $v['status']['transfer'], $m);
+                    preg_match_all('~([0-9.]+\.?)\s(\w+)~', (string) ($v['status']['transfer'] ?? ''), $m);
                     $tr = $m[0] ? ceil($m[1][1]) . '↓' . substr($m[2][1], 0, 1) . '/' . ceil($m[1][0]) . '↑' . substr($m[2][0], 0, 1) : '';
                 } else {
                     $tr = '';
@@ -11605,6 +11626,9 @@ DNS-over-HTTPS with IP:
     public function changeAllowedIps($k, $page = 0)
     {
         $clients = $this->readClients();
+        if (empty($clients[$k])) {
+            return $this->menu('wg', $page);
+        }
         // parse_mode HTML: сырое имя клиента ломает разметку (см. getClient).
         $name    = htmlspecialchars($this->getName($clients[$k]['interface']));
         $text    = "Menu -> Wireguard -> $name -> Change AllowedIPs\n\n";
@@ -12020,6 +12044,9 @@ DNS-over-HTTPS with IP:
     {
         $count   = $this->limit;
         $clients = $this->readClients();
+        // Инициализация: без клиентов (или при $page вне диапазона) функция
+        // возвращала необъявленную переменную — «Undefined variable $data».
+        $data    = [];
         if (!empty($clients)) {
             $all     = (int) ceil(count($clients) / $count);
             $page    = min($page, $all - 1);
@@ -12028,7 +12055,7 @@ DNS-over-HTTPS with IP:
             $c = $this->getXray();
             foreach ($clients as $k => $v) {
                 $vless = false;
-                foreach ($c['inbounds'][0]['settings']['clients'] as $vl) {
+                foreach (($c['inbounds'][0]['settings']['clients'] ?? []) as $vl) {
                     if (!empty($vl['awg']) && $vl['awg'] == $v['interface']['PrivateKey']) {
                         $vless = $vl['email'];
                         break;
@@ -25029,13 +25056,19 @@ DNS-over-HTTPS with IP:
         $this->menu('config');
     }
 
-    public function getStatusPeer(string $publickey, array $peers)
+    // Пустой массив, а не null: пира может не быть в выводе `wg show` (интерфейс
+    // подняли только что, пир добавлен мимо бота), и вызывающий читает поля
+    // результата сразу — «latest handshake», «transfer». На null это давало
+    // «Trying to access array offset on null» и TypeError, то есть wg-меню
+    // просто не открывалось.
+    public function getStatusPeer(string $publickey, array $peers): array
     {
         foreach ($peers as $k => $v) {
-            if ($v['peer'] == $publickey) {
+            if (($v['peer'] ?? null) == $publickey) {
                 return $v;
             }
         }
+        return [];
     }
 
     public function getInstanceWG($k = false)
@@ -25139,7 +25172,11 @@ DNS-over-HTTPS with IP:
                 $name = $v;
             }
         }
-        $name = $name ?: $a['AllowedIPs'] ?: $a['Address'];
+        // ?? — у клиентской записи есть Address, у серверного пира AllowedIPs,
+        // и ни того ни другого не бывает у выключенного пира (ключи
+        // закомментированы): раньше на нём шло два «Undefined array key».
+        $name = $name ?: ($a['AllowedIPs'] ?? '') ?: ($a['Address'] ?? '')
+            ?: ($a['# AllowedIPs'] ?? '') ?: '';
         return $name;
     }
 

@@ -186,6 +186,27 @@ wgConfAssert($bot->restarted === false, 'без presharedkey конфиг не �
 wgConfAssert(($bot->pacFake['amnezia'] ?? null) === 0, 'pac.json откачен к исходному состоянию');
 wgConfAssert(count($bot->sent) === 1, 'сообщение о недоступном presharedkey');
 
+// ── 7. Мелочи раздела WireGuard (аудит 2026-08-12) ──────────────────────────
+// getName(): у выключенного пира ключи закомментированы, у клиентской записи
+// нет AllowedIPs — раньше это давало по два «Undefined array key» на строку
+// меню.
+wgConfAssert(Bot::sanitizeConfValue('x') === 'x', 'sanitizeConfValue проходной случай');
+$bot = (new ReflectionClass(WgConfTestBot::class))->newInstanceWithoutConstructor();
+wgConfAssert($bot->getName(['## name' => 'Home']) === 'Home', 'имя берётся из ## name');
+wgConfAssert($bot->getName(['AllowedIPs' => '10.8.0.2/32']) === '10.8.0.2/32', 'фолбэк на AllowedIPs');
+wgConfAssert($bot->getName(['Address' => '10.8.0.3/32']) === '10.8.0.3/32', 'фолбэк на Address');
+wgConfAssert($bot->getName(['# AllowedIPs' => '10.8.0.4/32']) === '10.8.0.4/32', 'выключенный пир');
+wgConfAssert($bot->getName([]) === '', 'пустая запись не роняет меню');
+
+// getStatusPeer(): промах отдаёт массив, а не null — вызывающий читает поля
+// результата сразу.
+wgConfAssert($bot->getStatusPeer('nope', []) === [], 'пустой статус при промахе');
+wgConfAssert($bot->getStatusPeer('nope', [['peer' => 'other']]) === [], 'промах по чужому пиру');
+$peer = ['peer' => 'KEY', 'latest handshake' => '5 seconds ago'];
+wgConfAssert($bot->getStatusPeer('KEY', [$peer]) === $peer, 'найденный пир возвращается целиком');
+wgConfAssert(($bot->getStatusPeer('nope', [])['latest handshake'] ?? '') === '',
+    'чтение поля у промаха не падает');
+
 if ($failed) {
     echo "audit_wg_conf_test FAILED: $failed\n";
     exit(1);
