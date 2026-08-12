@@ -13004,9 +13004,12 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    // ?? перед ?:, а не голое чтение: ключа может не быть (и до аудита
+    // 2026-08-12 не было у 62 надписей), а тогда каждая такая кнопка добавляла
+    // «Undefined array key» в лог. Фолбэк прежний — сам ключ.
     public function i18n(string $menu): string
     {
-        return $this->i18n[$menu][$this->language] ?: $menu;
+        return ($this->i18n[$menu][$this->language] ?? '') ?: $menu;
     }
 
     // Пере-пиниваем глобальный выбранный инстанс (wg_instance в pac.json) на
@@ -17660,7 +17663,10 @@ DNS-over-HTTPS with IP:
             ];
             $data[] = [
                 [
-                    'text'          => $this->i18n("clean logs $search"),
+                    // Ключ собирался с подставленным адресом («clean logs 1.2.3.4»)
+                    // и не мог совпасть ни с чем никогда. Переводим надпись, а
+                    // адрес дописываем рядом.
+                    'text'          => $this->i18n('clean') . " $search",
                     'callback_data' => "/cleanLogs $search",
                 ],
             ];
