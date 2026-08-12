@@ -390,6 +390,7 @@ services:
             args:
                 image: ${IMAGE:-alpine:3.23}
                 XRAY_VERSION: ${XRAY_VERSION:-}
+                XRAY_FORK_VERSION: ${XRAY_FORK_VERSION:-}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh:/ssh

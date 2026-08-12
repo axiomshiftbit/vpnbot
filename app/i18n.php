@@ -73,6 +73,42 @@ $i = [
         'en' => 'Anti-DPI tweaks. All default OFF — enable one at a time and turn it back off if it breaks connectivity. Fragment/noise affect only the xray (v2rayNG) config.',
         'ru' => 'Настройки против DPI. Всё по умолчанию ВЫКЛ — включай по одной и выключай, если ломается связь. Fragment/noise влияют только на xray (v2rayNG) конфиг.',
     ],
+    'xray core'            => [
+        'en' => 'core',
+        'ru' => 'ядро',
+    ],
+    'smux hint'            => [
+        'en' => 'SMUX multiplexes every stream into ONE carrier connection: no TLS handshake per request, one long session instead of hundreds of short ones, less load on the server. Needs the fork core (Jolymmiles/Xray-core) — upstream XTLS only knows its own mux.cool. A broken carrier drops every stream inside it, so keep it off if the link is unstable.',
+        'ru' => 'SMUX сводит все потоки в ОДНО несущее соединение: не платим хендшейком за каждый запрос, вместо сотен коротких сессий одна долгая, серверу дешевле. Нужно форк-ядро (Jolymmiles/Xray-core) — апстримный XTLS знает только свой mux.cool. Обрыв несущего коннекта роняет все потоки внутри, так что на нестабильном канале лучше выключить.',
+    ],
+    'smux fork missing'    => [
+        'en' => 'The fork core is not in this image. Update the xr image (or rebuild it) and try again.',
+        'ru' => 'Форк-ядра нет в этом образе. Обновите образ xr (или пересоберите его) и повторите.',
+    ],
+    'smux xr unreachable'  => [
+        'en' => 'The xr container did not answer — the core state is unknown. Nothing was changed; check that xray is up and try again.',
+        'ru' => 'Контейнер xr не ответил — состояние ядра неизвестно. Ничего не меняли; проверьте, что xray поднят, и повторите.',
+    ],
+    'smux core mismatch'   => [
+        'en' => '⚠️ The core actually running is %s — it does not match the setting. Toggle the core again so the subscriptions and the server agree.',
+        'ru' => '⚠️ Реально запущено ядро %s — оно не совпадает с настройкой. Переключите ядро ещё раз, чтобы подписки и сервер сошлись.',
+    ],
+    'smux link warn'       => [
+        'en' => 'SMUX travels in the json/yaml subscriptions only (v2ray, sing-box, mihomo). A plain vless:// link cannot carry it — import by subscription.',
+        'ru' => 'SMUX уезжает только в json/yaml-подписках (v2ray, sing-box, mihomo). Ссылка vless:// его не несёт — импортируйте подпиской.',
+    ],
+    'smux xhttp warn'      => [
+        'en' => '⚠️ The xhttp transport already multiplexes on its own (xmux). Stacking SMUX on top adds a second layer with no gain — extra latency and head-of-line blocking.',
+        'ru' => '⚠️ Транспорт xhttp уже мультиплексирует сам (xmux). SMUX поверх — второй слой без выигрыша: лишняя задержка и head-of-line blocking.',
+    ],
+    'smux brutal hint'     => [
+        'en' => 'Brutal sends at exactly the configured rate, ignoring loss. Set both ceilings BELOW the real link speed.',
+        'ru' => 'Brutal льёт ровно с заданной скоростью, игнорируя потери. Ставьте обе полки НИЖЕ реальной скорости канала.',
+    ],
+    'smux brutal warn'     => [
+        'en' => 'TCP Brutal needs the `brutal` congestion module on the HOST kernel — it is missing, so the option is unavailable. Enabling it without the module tears down the carrier connection.',
+        'ru' => 'TCP Brutal требует модуль конгестии `brutal` в ядре ХОСТА — его нет, поэтому опция недоступна. Включение без модуля рвёт несущее соединение.',
+    ],
     'fragment'             => [
         'en' => 'TLS fragment',
         'ru' => 'TLS-фрагментация',

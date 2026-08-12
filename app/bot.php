@@ -125,6 +125,9 @@ class Bot
     public $time_xray_stats;
     public $time_extsub;
     public $time_relayhealth;
+    public $time_xraycore;
+    // Кеш пробы контейнера xr на время запроса — см. xrayCoreProbe().
+    private ?array $xrProbe = null;
     public $time_geowarm;
     public $time_wgtrack;
     public $subtokens_done;
@@ -529,6 +532,18 @@ class Bot
                 break;
             case preg_match('~^/dpiMenu$~', $this->input['callback'], $m):
                 $this->dpiMenu();
+                break;
+            case preg_match('~^/smuxMenu$~', $this->input['callback'], $m):
+                $this->smuxMenu();
+                break;
+            case preg_match('~^/switchXrayCore$~', $this->input['callback'], $m):
+                $this->switchXrayCore();
+                break;
+            case preg_match('~^/smuxToggle (\w+)$~', $this->input['callback'], $m):
+                $this->smuxToggle($m[1]);
+                break;
+            case preg_match('~^/smuxSet (\w+)$~', $this->input['callback'], $m):
+                $this->smuxSet($m[1]);
                 break;
             case preg_match('~^/dpiToggle (\w+)$~', $this->input['callback'], $m):
                 $this->dpiToggle($m[1]);
@@ -2091,6 +2106,7 @@ class Bot
         $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
         $this->ensureWgGuard($c);
+        $this->ensureSmuxInbound($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
             'services' => ['StatsService'],
@@ -4715,6 +4731,7 @@ NFT;
             'checkDatUpdates',
             'backfillSubTokens',
             'checkRelayHealth',
+            'checkXrayCore',
             'warmGeoCache',
             'refreshMenuStatusCache',
             'refreshMenuVersionsCache',
@@ -15970,6 +15987,278 @@ DNS-over-HTTPS with IP:
         $this->dpiMenu();
     }
 
+    // ---- SMUX submenu -------------------------------------------------------
+    // Мультиплексирование поверх форк-ядра. Живёт отдельным подменю, потому что
+    // это связка «ядро + настройки клиента»: половина полей бессмысленна на
+    // апстримном ядре, и меню обязано показывать это явно, а не отдавать
+    // клиентам конфиг, который сервер не поймёт.
+    public function smuxMenu()
+    {
+        $p    = $this->getPacConf();
+        // Ядро — первым делом: без форка остальные кнопки ничего не дают, а
+        // настройка «форк» при отсутствующем бинаре означает, что подписки со
+        // smux уезжают на апстримное ядро. Чиним молча и сразу.
+        $probe = $this->xrayCoreProbe();
+        $fork  = $probe['fork'];
+        if ($probe['ok'] && !$fork && $this->repairXrayCore($p)) {
+            $p = $this->getPacConf();
+        }
+        $s    = $this->smuxSettings($p);
+        $core = $this->xrayCore($p);
+        $on   = fn($v) => $this->i18n(!empty($v) ? 'on' : 'off');
+
+        $text[] = "Menu -> " . $this->i18n('xray') . ' -> SMUX';
+        $text[] = $this->i18n('smux hint');
+
+        $data = [];
+        if (!$probe['ok']) {
+            // Контейнер молчит — состояние неизвестно. Не пишем «форка нет»:
+            // это разные диагнозы и разные действия.
+            $text[] = $this->i18n('smux xr unreachable');
+        } elseif (!$fork) {
+            $text[] = $this->i18n('smux fork missing');
+        } else {
+            $active = $this->activeXrayCore();
+            $text[] = 'core: ' . ($core === 'fork' ? 'fork (smux)' : 'XTLS');
+            if ($active !== $core) {
+                // Симлинк и настройка разъехались (откат образа, ручной запуск
+                // бинаря). Молчать нельзя: подписки идут по настройке, а трафик
+                // обслуживает то, что реально запущено.
+                $text[] = str_replace(
+                    '%s',
+                    $active === 'fork' ? 'fork (smux)' : 'XTLS',
+                    $this->i18n('smux core mismatch')
+                );
+            }
+            $data[] = [[
+                'text'          => $this->i18n('xray core') . ': '
+                    . ($core === 'fork' ? 'fork (smux)' : 'XTLS'),
+                'callback_data' => '/switchXrayCore',
+            ]];
+        }
+
+        if ($fork && $core === 'fork') {
+            $data[] = [[
+                'text'          => 'SMUX: ' . $on($s['enabled']),
+                'callback_data' => '/smuxToggle enabled',
+            ]];
+        }
+        if ($fork && $core === 'fork' && !empty($s['enabled'])) {
+            $text[] = $this->i18n('smux link warn');
+            // xhttp уже мультиплексирует на уровне транспорта (xmux в
+            // xhttpClientExtra()), поэтому смысла в двойном мультиплексе нет,
+            // а лишний слой добавляет задержку и head-of-line blocking.
+            if (($p['transport'] ?? '') === 'xhttp') {
+                $text[] = $this->i18n('smux xhttp warn');
+            }
+            $data[] = [[
+                'text'          => 'protocol: ' . $s['protocol'],
+                'callback_data' => '/smuxToggle protocol',
+            ]];
+            // max-streams и пара max-connections/min-streams взаимно исключают
+            // друг друга (SMuxConfig.Build()), поэтому показываем ровно ту
+            // группу, которая сейчас в силе.
+            if ((int) $s['max_streams'] > 0) {
+                $data[] = [[
+                    'text'          => 'max-streams: ' . (int) $s['max_streams'],
+                    'callback_data' => '/smuxSet max_streams',
+                ]];
+            } else {
+                $data[] = [
+                    ['text' => 'max-connections: ' . (int) $s['max_connections'], 'callback_data' => '/smuxSet max_connections'],
+                    ['text' => 'min-streams: ' . (int) $s['min_streams'],         'callback_data' => '/smuxSet min_streams'],
+                    ['text' => 'max-streams: 0',                                  'callback_data' => '/smuxSet max_streams'],
+                ];
+            }
+            $data[] = [
+                ['text' => 'padding: ' . $on($s['padding']),   'callback_data' => '/smuxToggle padding'],
+                ['text' => 'only-tcp: ' . $on($s['only_tcp']), 'callback_data' => '/smuxToggle only_tcp'],
+            ];
+            if ($this->brutalAvailable()) {
+                $data[] = [[
+                    'text'          => 'Brutal: ' . $on($s['brutal']['enabled']),
+                    'callback_data' => '/smuxToggle brutal',
+                ]];
+                if (!empty($s['brutal']['enabled'])) {
+                    $text[] = $this->i18n('smux brutal hint');
+                    $data[] = [
+                        ['text' => 'up: ' . self::smuxRate($s['brutal']['up']),     'callback_data' => '/smuxSet brutal_up'],
+                        ['text' => 'down: ' . self::smuxRate($s['brutal']['down']), 'callback_data' => '/smuxSet brutal_down'],
+                    ];
+                }
+            } else {
+                $text[] = $this->i18n('smux brutal warn');
+            }
+        }
+
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/xray',
+        ]];
+
+        $this->update(
+            $this->input['chat'],
+            $this->input['message_id'],
+            implode("\n", $text),
+            $data,
+        );
+    }
+
+    // Переключение ядра. Настройки smux приводятся в консистентное состояние
+    // внутри applyXrayCore() — одно нажатие даёт рабочую конфигурацию.
+    public function switchXrayCore()
+    {
+        $core = $this->xrayCore() === 'fork' ? 'origin' : 'fork';
+        $r    = $this->applyXrayCore($core);
+        if (empty($r['ok'])) {
+            $this->answer(
+                $this->input['callback_id'],
+                $this->i18n(in_array('xr unreachable', $r['note'], true)
+                    ? 'smux xr unreachable'
+                    : 'smux fork missing'),
+                true
+            );
+
+            return $this->smuxMenu();
+        }
+        $this->answer(
+            $this->input['callback_id'],
+            ($core === 'fork' ? 'fork (smux)' : 'XTLS') . ' — ' . implode(', ', $r['note'])
+        );
+        $this->smuxMenu();
+    }
+
+    public function smuxToggle($what)
+    {
+        $p = $this->getPacConf();
+        $s = $this->smuxSettings($p);
+        switch ($what) {
+            case 'enabled':
+                $s['enabled'] = empty($s['enabled']) ? 1 : 0;
+                break;
+            case 'padding':
+            case 'only_tcp':
+                $s[$what] = empty($s[$what]) ? 1 : 0;
+                break;
+            case 'protocol':
+                // Только smux и h2mux: yamux, который знает sing-box, форк-сервер
+                // отвергает (SMuxConfig.Build → "unsupported SMUX protocol").
+                $s['protocol'] = $s['protocol'] === 'smux' ? 'h2mux' : 'smux';
+                break;
+            case 'brutal':
+                if (empty($s['brutal']['enabled']) && !$this->brutalAvailable()) {
+                    $this->answer($this->input['callback_id'], $this->i18n('smux brutal warn'), true);
+
+                    return $this->smuxMenu();
+                }
+                $s['brutal']['enabled'] = empty($s['brutal']['enabled']) ? 1 : 0;
+                break;
+            default:
+                return $this->smuxMenu();
+        }
+        $s['configured'] = 1;
+        $p['smux']       = $s;
+        $this->setPacConf($p);
+        $this->syncSmuxLive($p);
+        $this->smuxMenu();
+    }
+
+    public function smuxSet($field)
+    {
+        $prompt = "@{$this->input['username']} " . $this->i18n('enter value');
+        if ($hint = $this->smuxFieldHint($field)) {
+            $prompt .= "\n\n" . $hint;
+        }
+        $r = $this->send(
+            $this->input['chat'],
+            $prompt,
+            $this->input['message_id'],
+            reply: $this->i18n('enter value'),
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'saveSmux',
+            'args'           => [$field],
+        ]);
+    }
+
+    public function saveSmux($val, $field)
+    {
+        $val = trim((string) $val);
+        $p   = $this->getPacConf();
+        $s   = $this->smuxSettings($p);
+        switch ($field) {
+            // Отрицательные значения Build() отвергает, поэтому режем по нулю.
+            case 'max_connections':
+            case 'min_streams':
+                $s[$field] = max(0, (int) $val);
+                // Ненулевые max-connections/min-streams несовместимы с
+                // max-streams — гасим второй, иначе ядро не поднимется.
+                if ($s[$field] > 0) {
+                    $s['max_streams'] = 0;
+                }
+                break;
+            case 'max_streams':
+                $s['max_streams'] = max(0, (int) $val);
+                if ($s['max_streams'] > 0) {
+                    $s['max_connections'] = 0;
+                    $s['min_streams']     = 0;
+                }
+                break;
+            case 'brutal_up':
+            case 'brutal_down':
+                $s['brutal'][substr($field, 7)] = self::smuxRate($val);
+                break;
+            default:
+                return $this->smuxMenu();
+        }
+        $s['configured'] = 1;
+        $p['smux']       = $s;
+        $this->setPacConf($p);
+        $this->syncSmuxLive($p);
+        $this->smuxMenu();
+    }
+
+    public function smuxFieldHint(string $field): string
+    {
+        $ru = $this->language === 'ru';
+
+        return match ($field) {
+            'max_connections' => $ru
+                ? 'Сколько несущих соединений держать в пуле. Рекомендуется <code>3</code>; <code>0</code> — без ограничения.'
+                : 'How many carrier connections to keep in the pool. Recommended <code>3</code>; <code>0</code> means unlimited.',
+            'min_streams' => $ru
+                ? 'Сколько потоков должно висеть на соединении, прежде чем открывать новое. Рекомендуется <code>4</code>.'
+                : 'How many streams must sit on a carrier before opening a new one. Recommended <code>4</code>.',
+            'max_streams' => $ru
+                ? 'Потолок потоков на одно соединение. <code>0</code> — без потолка (тогда работают max-connections и min-streams). '
+                    . 'Любое значение больше нуля ОБНУЛИТ их: ядро не принимает обе схемы сразу.'
+                : 'Cap of streams per carrier. <code>0</code> means no cap (max-connections/min-streams apply instead). '
+                    . 'Any positive value RESETS them: the core rejects both schemes at once.',
+            'brutal_up', 'brutal_down' => $ru
+                ? "Полка скорости: <code>100 Mbps</code>, <code>1 Gbps</code>, <code>50 Mbps</code> (голое число = Mbps).\n"
+                    . '⚠️ Brutal льёт ровно с этой скоростью, игнорируя потери. Ставка ВЫШЕ реального канала = сплошные потери — ставьте с запасом ВНИЗ.'
+                : "Bandwidth ceiling: <code>100 Mbps</code>, <code>1 Gbps</code>, <code>50 Mbps</code> (a bare number means Mbps).\n"
+                    . '⚠️ Brutal sends at exactly this rate ignoring loss. A ceiling ABOVE the real link = constant loss — err on the low side.',
+            default => '',
+        };
+    }
+
+    // Правки smux трогают xray.json только через brutal-opts (для самого smux
+    // серверу настройка не нужна). Рестартуем ядро лишь когда блок реально
+    // изменился — иначе каждое нажатие рвало бы всем клиентам соединения.
+    public function syncSmuxLive(array $p): void
+    {
+        $c   = $this->getXray();
+        $was = $c['inbounds'][0]['smux'] ?? null;
+        $this->ensureSmuxInbound($c, $p);
+        $now = $c['inbounds'][0]['smux'] ?? null;
+        if ($was !== $now) {
+            $this->restartXray($c);
+        }
+    }
+
     public function switchIpLimit($limit)
     {
         $limit = explode(':', $limit);
@@ -20327,11 +20616,197 @@ DNS-over-HTTPS with IP:
     // Не требует запущенного процесса, поэтому работает даже когда xray off.
     public function getXrayVersion()
     {
-        $out = $this->ssh('xray version 2>&1 | head -n1', 'xr');
+        // Строку берём из общей пробы контейнера (xrayCoreProbe): меню читает и
+        // версию, и состояние ядра — незачем ходить по ssh дважды.
+        $out = $this->xrayCoreProbe()['version'];
         if (preg_match('~Xray\s+v?(\S+)~i', (string) $out, $m)) {
             return $m[1];
         }
         return '';
+    }
+
+    // ---- Выбор ядра Xray ----------------------------------------------------
+    // В образе xr лежат ДВА бинаря: апстримный XTLS (/usr/bin/xray) и форк
+    // Jolymmiles (/usr/bin/xray-smux) с поддержкой sing-mux и TCP Brutal.
+    // Активное ядро — симлинк /usr/local/bin/xray (в PATH alpine он раньше
+    // /usr/bin), желаемое — маркер /logs/xray_core, который переживает
+    // пересоздание контейнера и читается start_xray.sh при каждом старте.
+
+    public const XRAY_CORE_MARKER = '/logs/xray_core';
+    public const XRAY_BIN_ORIGIN  = '/usr/bin/xray';
+    public const XRAY_BIN_FORK    = '/usr/bin/xray-smux';
+
+    // Ядро, ВЫБРАННОЕ в настройках. Источник истины для генерации конфигов:
+    // smux нельзя класть клиентам, пока сервер не на форке.
+    public function xrayCore(?array $p = null): string
+    {
+        $p = $p ?? $this->getPacConf();
+
+        return ($p['xray_core'] ?? '') === 'fork' ? 'fork' : 'origin';
+    }
+
+    // Состояние контейнера xr одним ssh-заходом: есть ли форк-бинарь, куда
+    // смотрит симлинк, какие алгоритмы конгестии знает ядро хоста. Меню
+    // спрашивает всё это по нескольку раз за отрисовку, а каждый ssh — коннект
+    // и авторизация; мемоизация на время запроса убирает лишние.
+    public function xrayCoreProbe(bool $fresh = false): array
+    {
+        if (!$fresh && $this->xrProbe !== null) {
+            return $this->xrProbe;
+        }
+        // Версия — ПОСЛЕДНИМ полем: её строка приходит от ядра и теоретически
+        // может содержать разделитель, а испортить она тогда сможет только себя.
+        $out = (string) $this->ssh(
+            'printf "%s|%s|%s|%s" '
+                . '"$(test -x ' . self::XRAY_BIN_FORK . ' && echo 1)" '
+                . '"$(readlink -f /usr/local/bin/xray)" '
+                . '"$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)" '
+                . '"$(xray version 2>&1 | head -n1)"',
+            'xr'
+        );
+        // ok=false — контейнер не ответил. Отличать это от «форка нет» ОБЯЗАТЕЛЬНО:
+        // лежащий на минуту xr иначе выглядел бы как откат образа, и авторемонт
+        // снёс бы рабочую настройку ядра вместе со smux.
+        $ok = !$this->sshFailed;
+        $p  = explode('|', trim($out));
+
+        return $this->xrProbe = [
+            'ok'      => $ok,
+            'fork'    => $ok && trim($p[0] ?? '') === '1',
+            'active'  => $ok && trim($p[1] ?? '') === self::XRAY_BIN_FORK ? 'fork' : 'origin',
+            'brutal'  => $ok && in_array('brutal', preg_split('~\s+~', trim($p[2] ?? '')) ?: [], true),
+            'version' => $ok ? trim(implode('|', array_slice($p, 3))) : '',
+        ];
+    }
+
+    // Есть ли форк в образе вообще. Старый образ (до этой правки) второго
+    // бинаря не содержит — тогда кнопку переключения показывать нельзя.
+    public function forkAvailable(): bool
+    {
+        return $this->xrayCoreProbe()['fork'];
+    }
+
+    // Ядро, которое РЕАЛЬНО запустится сейчас (куда смотрит симлинк). Отдельно
+    // от xrayCore(): расхождение настройки и симлинка — это тихая поломка всех
+    // клиентов, поэтому в меню показываем факт, а не намерение.
+    public function activeXrayCore(): string
+    {
+        return $this->xrayCoreProbe()['active'];
+    }
+
+    // Доступен ли ядру хоста алгоритм конгестии brutal. Контейнер делит ядро с
+    // хостом, поэтому проверка изнутри xr достоверна. Без модуля включённый
+    // Brutal рвёт НЕСУЩЕЕ соединение при обмене скоростями, то есть кладёт
+    // клиента целиком — кнопку в меню в этом случае не показываем.
+    public function brutalAvailable(): bool
+    {
+        return $this->xrayCoreProbe()['brutal'];
+    }
+
+    // Самолечение расхождения «в настройках форк, а форка в образе нет».
+    // Такое даёт откат образа xr на версию без /usr/bin/xray-smux: start_xray.sh
+    // молча поднимет апстрим, а подписки продолжат уезжать со smux — и клиенты
+    // перестанут ходить ВСЕ разом, без единой ошибки в логе. Поэтому чиним сами:
+    // гасим smux и возвращаем настройку на апстрим.
+    //
+    // Проба стоит ssh, поэтому ходим только когда есть что терять (выбран форк)
+    // и не чаще раза в 5 минут — cron крутится каждые 10 секунд.
+    public function checkXrayCore(): void
+    {
+        if (!empty($this->time_xraycore) && time() - $this->time_xraycore < 300) {
+            return;
+        }
+        $p = $this->getPacConf();
+        if (!is_array($p) || $this->xrayCore($p) !== 'fork') {
+            return;
+        }
+        $this->time_xraycore = time();
+        $probe = $this->xrayCoreProbe(true);
+        // Контейнер не ответил — это не повод чинить: рестарт xr или временная
+        // недоступность ssh не должны сносить настройку.
+        if (!$probe['ok'] || $probe['fork']) {
+            return;
+        }
+        $this->repairXrayCore($p);
+    }
+
+    // Откат настройки на апстрим + гашение smux. Возвращает true, если чинить
+    // действительно пришлось.
+    public function repairXrayCore(?array $p = null): bool
+    {
+        $p = $p ?? $this->getPacConf();
+        if (!is_array($p) || $this->xrayCore($p) !== 'fork') {
+            return false;
+        }
+        $p['xray_core']                 = 'origin';
+        $p['smux']['enabled']           = 0;
+        $p['smux']['brutal']['enabled'] = 0;
+        $this->setPacConf($p);
+        @file_put_contents(self::XRAY_CORE_MARKER, "origin\n");
+        error_log('repairXrayCore: fork binary gone from the xr image — smux disabled, core reset to upstream');
+        $this->restartXray($this->getXray());
+
+        return true;
+    }
+
+    // Переключение ядра: маркер + симлинк + рестарт. Заодно приводит настройки
+    // smux в состояние, консистентное с ядром (см. smuxDefaults()), — одна
+    // кнопка должна давать рабочую конфигурацию, а не полуфабрикат.
+    public function applyXrayCore(string $core): array
+    {
+        $core = $core === 'fork' ? 'fork' : 'origin';
+        $p    = $this->getPacConf();
+        $note = [];
+
+        $probe = $this->xrayCoreProbe(true);
+        // На апстрим откатываемся всегда — даже если контейнер молчит: это
+        // безопасное направление. На форк — только когда бинарь реально виден.
+        if ($core === 'fork' && !$probe['fork']) {
+            return ['ok' => false, 'note' => [$probe['ok'] ? 'fork missing' : 'xr unreachable']];
+        }
+
+        $p['xray_core'] = $core;
+        if ($core === 'fork') {
+            // Первое включение (настройки ещё не трогали руками) — засеваем
+            // дефолтами и сразу включаем: ради этого ядро и меняют.
+            $fresh    = empty($p['smux']['configured']);
+            $p['smux'] = $this->smuxSettings($p);
+            $p['smux']['enabled'] = 1;
+            $note[] = 'smux on';
+            if ($this->brutalAvailable()) {
+                if ($fresh) {
+                    $p['smux']['brutal']['enabled'] = 1;
+                    $note[] = 'brutal on';
+                }
+            } else {
+                // Модуля нет — Brutal обязан быть выключен, иначе ensureSmuxInbound
+                // пропишет в xray.json блок, на котором ядро порвёт клиентов.
+                $p['smux']['brutal']['enabled'] = 0;
+            }
+        } else {
+            $p['smux']['enabled']           = 0;
+            $p['smux']['brutal']['enabled'] = 0;
+            $note[] = 'smux off';
+        }
+        $this->setPacConf($p);
+
+        // Маркер пишем из php напрямую: /logs — общий том с контейнером xr.
+        // Симлинк живёт в слое контейнера и пропадёт при пересоздании, маркер —
+        // нет; если записать его не вышло, ядро вернётся к апстриму на первом
+        // же `up --force-recreate`, и об этом надо сказать, а не молчать.
+        $bin = $core === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN;
+        if (false === @file_put_contents(self::XRAY_CORE_MARKER, $core . "\n")) {
+            error_log('applyXrayCore: ' . self::XRAY_CORE_MARKER . ' not written');
+            $note[] = 'marker failed';
+        }
+        $this->ssh('mkdir -p /usr/local/bin; ln -sf ' . $bin . ' /usr/local/bin/xray', 'xr');
+        // Рестарт уже уходит в НОВОЕ ядро: pkill + `xray run` идут через симлинк.
+        $this->restartXray($this->getXray());
+        // Пробу инвалидируем: следующая отрисовка меню должна показать новое
+        // ядро, а не закешированное до переключения.
+        $this->xrayCoreProbe(true);
+
+        return ['ok' => true, 'note' => $note];
     }
 
     public function xray($page = 0)
@@ -20344,6 +20819,12 @@ DNS-over-HTTPS with IP:
         }
         $xrayVersion = $this->getXrayVersion();
         $text[] = 'xray version: ' . ($xrayVersion !== '' ? "<code>$xrayVersion</code>" : '?');
+        // Ядро показываем ФАКТИЧЕСКОЕ (куда смотрит симлинк), а не выбранное:
+        // расхождение с настройкой означает, что подписки со smux уедут на
+        // апстримное ядро и клиенты молча перестанут ходить.
+        $probe  = $this->xrayCoreProbe();
+        $text[] = 'core: ' . (!$probe['ok'] ? '?' : ($probe['active'] === 'fork' ? 'fork (smux)' : 'XTLS'))
+            . ($this->smuxActive($p) ? ' · SMUX ' . $this->i18n('on') : '');
         $text[] = 'transport: ' . ($p['transport'] ?: 'Websocket');
         // XHTTP в апстримном sing-box отсутствует (он есть только в xray и
         // mihomo), поэтому подписка t=si/hiddify/karing с этим транспортом
@@ -20433,6 +20914,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('dpi masking'),
                 'callback_data' => "/dpiMenu",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => 'SMUX: ' . $this->i18n($this->smuxActive($p) ? 'on' : 'off'),
+                'callback_data' => '/smuxMenu',
             ],
         ];
 
@@ -22036,6 +22523,214 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    // ---- SMUX (sing-mux форк-ядра Jolymmiles/Xray-core) ---------------------
+    // Мультиплексирование всех потоков клиента в ОДНО несущее TLS-соединение:
+    // новый запрос не платит за хендшейк, DPI видит одну долгую сессию вместо
+    // сотен коротких, серверу дешевле. Работает только на форк-ядре — апстрим
+    // знает лишь свой mux.cool и несущий коннект не распознает, поэтому блок
+    // уезжает клиентам ТОЛЬКО при xrayCore() === 'fork'.
+    //
+    // Значения дефолтов — из документации mihomo/sing-box: max-connections 3
+    // (в примерах встречается 4, но комментарии рекомендуют 3), min-streams 4,
+    // max-streams 0 (без лимита), padding включён.
+    public static function smuxDefaults(): array
+    {
+        return [
+            'enabled'         => 0,
+            // Флаг «настройки трогали руками»: переключение ядра не должно
+            // затирать пользовательские значения дефолтами.
+            'configured'      => 0,
+            // Форк-сервер принимает ТОЛЬКО smux и h2mux (см. SMuxConfig.Build()).
+            // yamux, который есть у sing-box, он отвергает — в меню его нет.
+            'protocol'        => 'smux',
+            'max_connections' => 3,
+            'min_streams'     => 4,
+            'max_streams'     => 0,
+            'padding'         => 1,
+            // only-tcp понимает только mihomo; в sing-box такого поля нет.
+            'only_tcp'        => 0,
+            'brutal'          => [
+                'enabled' => 0,
+                // Занижено сознательно: Brutal игнорирует сигналы перегрузки и
+                // льёт ровно с заданной скоростью, поэтому ставка выше реального
+                // канала = сплошные потери. Подгонять под свой канал руками.
+                'up'      => '100 Mbps',
+                'down'    => '100 Mbps',
+            ],
+        ];
+    }
+
+    // Настройки smux с подставленными дефолтами (вложенный brutal тоже).
+    public function smuxSettings(?array $p = null): array
+    {
+        $p = $p ?? $this->getPacConf();
+        $s = is_array($p['smux'] ?? null) ? $p['smux'] : [];
+        $d = self::smuxDefaults();
+        $s['brutal'] = (is_array($s['brutal'] ?? null) ? $s['brutal'] : []) + $d['brutal'];
+        unset($d['brutal']);
+
+        return $s + $d;
+    }
+
+    // Минимум, ниже которого форк отвергает ставку Brutal (smuxBrutalMinBPS).
+    public const SMUX_BRUTAL_MIN_BPS = 65536;
+
+    // Ставка Brutal в байтах в секунду или null, если строка не по грамматике
+    // parseSMuxRate: число и опциональная единица [K|M|G|T](b|B)ps, голое
+    // число = Mbps, «b» — биты (делим на 8), «B» — байты.
+    public static function smuxRateBytes($v): ?int
+    {
+        if (!preg_match('~^(\d+)\s?(([KMGT])?([bB])ps)?$~', trim((string) $v), $m)) {
+            return null;
+        }
+        $rate = (int) $m[1];
+        if (($m[2] ?? '') === '') {
+            return intdiv($rate * 1000000, 8);
+        }
+        $mult = match ($m[3] ?? '') {
+            'K' => 1000,
+            'M' => 1000000,
+            'G' => 1000000000,
+            'T' => 1000000000000,
+            default => 1,
+        };
+
+        return $m[4] === 'b' ? intdiv($rate * $mult, 8) : $rate * $mult;
+    }
+
+    // Полки Brutal, приведённые к грамматике форка. Мусор и слишком низкие
+    // ставки заменяем дефолтом, а не пропускаем: при включённом Brutal ядро
+    // отвергает такой конфиг на СТАРТЕ — то есть xray просто не поднимется.
+    public static function smuxRate($v): string
+    {
+        $v     = trim((string) $v);
+        $bytes = self::smuxRateBytes($v);
+        if ($bytes !== null && $bytes >= self::SMUX_BRUTAL_MIN_BPS) {
+            return $v;
+        }
+
+        return '100 Mbps';
+    }
+
+    // Уезжает ли smux клиентам прямо сейчас: включён И ядро форковое.
+    public function smuxActive(?array $p = null): bool
+    {
+        $p = $p ?? $this->getPacConf();
+
+        return $this->xrayCore($p) === 'fork' && !empty($this->smuxSettings($p)['enabled']);
+    }
+
+    // Серверная часть: для самого smux в xray.json НИЧЕГО не нужно — форк ловит
+    // несущее назначение sp.mux.sing-box.arpa:444 до роутинга, на любом inbound'е
+    // (common/mux/server.go, singmux.IsDestination). Настраивается только Brutal,
+    // и только на клиентском inbound'е (нулевом): api/wg-in — служебные.
+    public function ensureSmuxInbound(array &$c, ?array $p = null): void
+    {
+        $p = $p ?? $this->getPacConf();
+        $s = $this->smuxSettings($p);
+        if (!isset($c['inbounds'][0]) || !is_array($c['inbounds'][0])) {
+            return;
+        }
+        if (!$this->smuxActive($p) || empty($s['brutal']['enabled'])) {
+            unset($c['inbounds'][0]['smux']);
+
+            return;
+        }
+        $c['inbounds'][0]['smux'] = [
+            'brutal-opts' => [
+                'enabled' => true,
+                'up'      => self::smuxRate($s['brutal']['up']),
+                'down'    => self::smuxRate($s['brutal']['down']),
+            ],
+        ];
+    }
+
+    // Клиентская часть подписки. Один источник значений на три диалекта:
+    //   xray-форк  — camelCase   (infra/conf/xray.go, SMuxConfig)
+    //   sing-box   — snake_case  (option.OutboundMultiplexOptions, ключ multiplex)
+    //   mihomo     — kebab-case  (adapter/outbound/singmux.go, ключ smux)
+    // Опечатка в имени ключа не роняет конфиг громко — она молча теряет
+    // настройку, поэтому имена сверены с исходниками клиентов и закреплены
+    // тестом tests/smux_test.php.
+    public function applyClientSmux(array &$c, $index, array $pac, string $t): void
+    {
+        if (!$this->smuxActive($pac)) {
+            return;
+        }
+        $s = $this->smuxSettings($pac);
+        // Инвариант форка: maxStreams > 0 конфликтует с ненулевыми
+        // maxConnections/minStreams — Build() на таком конфиге не поднимет ядро.
+        $maxStreams = max(0, (int) $s['max_streams']);
+        $maxConn    = $maxStreams > 0 ? 0 : max(0, (int) $s['max_connections']);
+        $minStreams = $maxStreams > 0 ? 0 : max(0, (int) $s['min_streams']);
+        $proto      = in_array($s['protocol'], ['smux', 'h2mux'], true) ? $s['protocol'] : 'smux';
+        $padding    = !empty($s['padding']);
+        $onlyTcp    = !empty($s['only_tcp']);
+        $brutal     = !empty($s['brutal']['enabled']);
+        $up         = self::smuxRate($s['brutal']['up']);
+        $down       = self::smuxRate($s['brutal']['down']);
+
+        switch ($t) {
+            case 's':
+                if (!isset($c['outbounds'][$index])) {
+                    return;
+                }
+                $smux = [
+                    'enabled'        => true,
+                    'protocol'       => $proto,
+                    'maxConnections' => $maxConn,
+                    'minStreams'     => $minStreams,
+                    'maxStreams'     => $maxStreams,
+                    'padding'        => $padding,
+                    'onlyTcp'        => $onlyTcp,
+                ];
+                if ($brutal) {
+                    $smux['brutal-opts'] = ['enabled' => true, 'up' => $up, 'down' => $down];
+                }
+                // mux (mux.cool) и smux на одном outbound'е Build() запрещает
+                // явно — снимаем чужой блок, если шаблон его нёс.
+                unset($c['outbounds'][$index]['mux']);
+                $c['outbounds'][$index]['smux'] = $smux;
+                break;
+            case 'si':
+                if (!isset($c['outbounds'][$index])) {
+                    return;
+                }
+                $mp = [
+                    'enabled'         => true,
+                    'protocol'        => $proto,
+                    'max_connections' => $maxConn,
+                    'min_streams'     => $minStreams,
+                    'max_streams'     => $maxStreams,
+                    'padding'         => $padding,
+                ];
+                if ($brutal) {
+                    $mp['brutal'] = ['enabled' => true, 'up' => $up, 'down' => $down];
+                }
+                $c['outbounds'][$index]['multiplex'] = $mp;
+                break;
+            case 'cl':
+                if (!isset($c['proxies'][$index])) {
+                    return;
+                }
+                $sm = [
+                    'enabled'         => true,
+                    'protocol'        => $proto,
+                    'max-connections' => $maxConn,
+                    'min-streams'     => $minStreams,
+                    'max-streams'     => $maxStreams,
+                    'only-tcp'        => $onlyTcp,
+                    'padding'         => $padding,
+                    'statistic'       => false,
+                ];
+                if ($brutal) {
+                    $sm['brutal-opts'] = ['enabled' => true, 'up' => $up, 'down' => $down];
+                }
+                $c['proxies'][$index]['smux'] = $sm;
+                break;
+        }
+    }
+
     // Item 1: inject a freedom outbound carrying TLS fragment and/or UDP noise and
     // route the main proxy outbound through it via sockopt.dialerProxy (xray only).
     // No-op unless at least one is enabled, so default configs are unchanged.
@@ -22735,6 +23430,10 @@ DNS-over-HTTPS with IP:
                 }
                 break;
         }
+        // SMUX кладём ПОСЛЕ веток транспорта: Reality и trojan-grpc пересобирают
+        // outbound/proxy целиком, и блок, положенный раньше, они бы стёрли.
+        // Внутри — ранний выход, если ядро не форковое или smux выключен.
+        $this->applyClientSmux($c, $index, $pac, (string) ($_GET['t'] ?? ''));
         // WARP-теги шаблона. У каждого клиента СВОЙ wgcf-аккаунт: общий
         // серверный ключ означал бы, что сессии клиентов и самого сервера
         // выбивают друг друга (в WireGuard у пира ровно один endpoint, и
