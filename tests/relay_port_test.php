@@ -197,10 +197,14 @@ if ($tpl !== false) {
 // ── 8. Гард ссылки naive ────────────────────────────────────────────────────
 // Пока креды не заданы (или это плейсхолдер из Caddyfile), caddy не поднят
 // гардом start_np.sh — ссылку показывать нельзя ни в меню, ни на экране relay.
-rpAssert(Bot::naiveReady(['naive' => ['user' => 'u', 'pass' => 'p']]) === true, 'обычные креды');
-rpAssert(Bot::naiveReady([]) === false, 'нет секции naive — ссылки нет');
-rpAssert(Bot::naiveReady(['naive' => ['user' => 'u', 'pass' => '']]) === false, 'пустой пароль');
-rpAssert(Bot::naiveReady(['naive' => ['user' => 'a b', 'pass' => 'p']]) === false,
+// Домен обязателен наравне с кредами: клиент naive берёт SNI из хоста ссылки
+// и по нему проверяет сертификат, а без домена собиралась «https://u:p@<hash>.».
+$np = fn(array $extra) => ['domain' => 'example.com'] + $extra;
+rpAssert(Bot::naiveReady($np(['naive' => ['user' => 'u', 'pass' => 'p']])) === true, 'обычные креды');
+rpAssert(Bot::naiveReady(['naive' => ['user' => 'u', 'pass' => 'p']]) === false, 'без домена ссылки нет');
+rpAssert(Bot::naiveReady($np([])) === false, 'нет секции naive — ссылки нет');
+rpAssert(Bot::naiveReady($np(['naive' => ['user' => 'u', 'pass' => '']])) === false, 'пустой пароль');
+rpAssert(Bot::naiveReady($np(['naive' => ['user' => 'a b', 'pass' => 'p']])) === false,
     'логин с пробелом развалил бы Caddyfile');
 rpAssert(Bot::naiveReady(['naive' => ['user' => 'CHANGEME', 'pass' => 'CHANGEME']]) === false,
     'плейсхолдер синтаксически валиден, но caddy с ним не поднимается');

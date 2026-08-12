@@ -9,7 +9,19 @@ function routeTestAssert(bool $condition, string $message): void
     }
 }
 
-$bot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+// Встроенные geosite.dat/geoip.dat в тестовом окружении не лежат, а
+// listToXrayRules() с недавних пор не пишет geosite:/geoip: в конфиг, пока
+// файла нет (иначе ядро падает на «failed to load geosite»). Здесь проверяется
+// раскладка по полям, поэтому считаем asset'ы готовыми.
+class RouteEntryTestBot extends Bot
+{
+    public function datFileReady(string $value): bool
+    {
+        return true;
+    }
+}
+
+$bot = (new ReflectionClass(RouteEntryTestBot::class))->newInstanceWithoutConstructor();
 
 // ── Классификация: валидные формы не должны деградировать ────────────────────
 $expectKind = [

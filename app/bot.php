@@ -49,6 +49,12 @@ class Bot
     // а не в момент настройки. См. validateMTU().
     public const MTU_MIN = 576;
     public const MTU_MAX = 65535;
+    // Предел для AllowedIPs: это СПИСОК подсетей (кнопка «listSubnet» склеивает
+    // весь список маршрутов через запятую), и дефолтные 256 символов
+    // sanitizeConfValue() резали его посреди CIDR — в конфиг уезжала запись
+    // вида «10.0.1.0/2», которую клиент считает валидной и маршрутизирует не
+    // туда. Обрезка по границе элемента + запас на длинный список.
+    public const WG_ALLOWEDIPS_MAX = 4096;
     // Поля, которые перегенерируются авто-ротацией. HeaderProtectionKey включён
     // осознанно: он даёт самый заметный статический отпечаток, но после каждой
     // ротации ВСЕ клиенты обязаны перекачать конфиг — рассинхрон HPK рвёт
@@ -185,13 +191,27 @@ class Bot
     public function input($data = false)
     {
         $this->admin     = false;
+        // Пер-запросный инстанс WG обязан сбрасываться вместе с $this->admin:
+        // в polling один объект Bot живёт на ВСЕ апдейты, а action() выставляет
+        // $this->wg, только когда сообщение нашлось в карте wg_msg. Кнопка меню
+        // wg1 «залипала», и следующая команда без инстанса (например /delete 3
+        // на сообщении, которого в карте нет) сносила пира ЧУЖОГО инстанса
+        // вместо фолбэка в нулевой.
+        $this->wg        = null;
+        // Флаг «на callback уже ответили»: см. answer()/callbackCheck().
+        $this->callback  = false;
         $this->input_raw = $input = $data ?: json_decode(file_get_contents('php://input'), true);
         $this->input     = [
             'message'           => $input['callback_query']['message']['text'] ?? $input['message']['text'] ?? $input['channel_post']['text'] ?? '',
-            'message_id'        => $input['callback_query']['message']['message_id'] ?? $input['message']['message_id'] ?? $input['channel_post']['message_id'],
-            'chat'              => $input['message']['chat']['id'] ?? $input['callback_query']['message']['chat']['id'] ?? $input['channel_post']['chat']['id'] ?? $input['my_chat_member']['chat']['id'],
-            'from'              => $input['message']['from']['id'] ?? $input['inline_query']['from']['id'] ?? $input['callback_query']['from']['id'] ?? $input['channel_post']['chat']['id'] ?? $input['my_chat_member']['from']['id'],
-            'username'          => $input['message']['from']['username'] ?? $input['inline_query']['from']['username'] ?? $input['callback_query']['from']['username'],
+            // ?? null в конце каждой цепочки: у неучтённых типов апдейтов
+            // (edited_message, chat_member, poll_answer, message_reaction) не
+            // совпадает ни одна ветка, и последний операнд вычислялся без
+            // защиты — warning на каждый такой апдейт. Значение null дальше
+            // отсекает auth(), см. там же.
+            'message_id'        => $input['callback_query']['message']['message_id'] ?? $input['message']['message_id'] ?? $input['channel_post']['message_id'] ?? null,
+            'chat'              => $input['message']['chat']['id'] ?? $input['callback_query']['message']['chat']['id'] ?? $input['channel_post']['chat']['id'] ?? $input['my_chat_member']['chat']['id'] ?? null,
+            'from'              => $input['message']['from']['id'] ?? $input['inline_query']['from']['id'] ?? $input['callback_query']['from']['id'] ?? $input['channel_post']['chat']['id'] ?? $input['my_chat_member']['from']['id'] ?? null,
+            'username'          => $input['message']['from']['username'] ?? $input['inline_query']['from']['username'] ?? $input['callback_query']['from']['username'] ?? null,
             'query'             => $input['inline_query']['query'] ?? '',
             'inlid'             => $input['inline_query']['id'] ?? '',
             'group'             => !empty($input['message']['chat']['type']) && 'group' == $input['message']['chat']['type'],
@@ -311,15 +331,35 @@ class Bot
      * диске с открытыми правами. Поэтому сначала создаём пустой файл и
      * сужаем права, и только потом пишем содержимое.
      */
-    public function writePrivateKey(string $path, string $data): void
+    public function writePrivateKey(string $path, string $data): bool
     {
-        if (!file_exists($path)) {
-            @touch($path);
+        // Пишем во временный файл и подменяем rename'ом: права сужаются, пока
+        // файл ещё ПУСТ, а секрет попадает сразу в файл с 0600 — окна на 0644
+        // не остаётся вовсе (прежний вариант с touch+chmod сужал его, но не
+        // закрывал, вопреки докблоку). rename сохраняет права временного файла
+        // и атомарен для читателей.
+        $tmp = $path . '.' . getmypid() . '.tmp';
+        $h   = @fopen($tmp, 'w');
+        if ($h === false) {
+            error_log("writePrivateKey: cannot create $tmp");
+
+            return false;
         }
-        @chmod($path, 0600);
-        file_put_contents($path, $data);
+        @chmod($tmp, 0600);
+        $ok = fwrite($h, $data) !== false;
+        fclose($h);
+        // Результат записи раньше не проверялся: при переполненном диске в
+        // ./certs оставался обрезанный ключ, а nginx падал на рестарте.
+        if (!$ok || !rename($tmp, $path)) {
+            @unlink($tmp);
+            error_log("writePrivateKey: $path not written");
+
+            return false;
+        }
         // Существовавший ранее файл мог быть создан старой версией с 0644.
         @chmod($path, 0600);
+
+        return true;
     }
 
     public function auth()
@@ -327,6 +367,15 @@ class Bot
         $file = __DIR__ . '/config.php';
         require $file;
         if (empty($c['admin'])) {
+            // Первым апдейтом может прийти что угодно, включая тип, у которого
+            // 'from' не извлекается вовсе. Раньше в config.php записывалось
+            // array(0 => NULL), после чего empty([null]) уже ложно, а
+            // in_array($realUserId, [null]) ложно для всех — бот навсегда
+            // оставался «занятым», без единого админа, и чинился только
+            // правкой config.php руками.
+            if (empty($this->input['from'])) {
+                return;
+            }
             $c['admin'] = [$this->input['from']];
             file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
         } elseif (!is_array($c['admin'])) {
@@ -341,7 +390,11 @@ class Bot
     public function callbackCheck()
     {
         if (empty($this->callback) && !empty($this->input['callback_id'])) {
-            $this->answer($this->input['callback_id'], $GLOBALS['debug'] ? $this->input['callback'] : false);
+            // !empty вместо прямого чтения: $GLOBALS['debug'] объявляется только
+            // в debug-режиме (см. index.php), и в обычном каждое нажатие кнопки
+            // давало «Undefined array key debug». Тот же глобал в ssh() читается
+            // именно так.
+            $this->answer($this->input['callback_id'], !empty($GLOBALS['debug']) ? $this->input['callback'] : false);
         }
     }
 
@@ -564,7 +617,7 @@ class Bot
                 $this->searchLogs($m[1]);
                 break;
             case preg_match('~^/searchLogs (.+?)(?:\s(.+?))?(?:\s(.+?))?(?:\s(.+?))?$~', $this->input['callback'], $m):
-                $this->searchLogs($m[1], $m[2], $m[3], $m[4]);
+                $this->searchLogs($m[1], $m[2] ?? false, $m[3] ?? 0, $m[4] ?? 0);
                 break;
             case preg_match('~^/switchSilence$~', $this->input['callback'], $m):
                 $this->switchSilence();
@@ -591,7 +644,7 @@ class Bot
                 $this->ports();
                 break;
             case preg_match('~^/analysisIp(?:\s(\d+))?$~', $this->input['callback'], $m):
-                $this->analysisIp($m[1] ?: 0);
+                $this->analysisIp(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/ipMenu$~', $this->input['callback'], $m):
                 $this->ipMenu();
@@ -627,16 +680,16 @@ class Bot
                 $this->wgClientLogClear((int) $m[1], (int) $m[2], (int) ($m[3] ?? 0));
                 break;
             case preg_match('~^/cleanDeny(?:\s(\d))?$~', $this->input['callback'], $m):
-                $this->cleanDeny($m[1]);
+                $this->cleanDeny($m[1] ?? false);
                 break;
             case preg_match('~^/denyList (.+?)(?:\s(\d))?$~', $this->input['callback'], $m):
-                $this->denyList($m[1], $m[2] ?: 0);
+                $this->denyList($m[1], ($m[2] ?? '') ?: 0);
                 break;
             case preg_match('~^/cleanLogs (.+?)(?:\s(1))?$~', $this->input['callback'], $m):
-                $this->cleanLogs($m[1], $m[2]);
+                $this->cleanLogs($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/allowIp (.+?) (\d+)(?:\s(\d+))?$~', $this->input['callback'], $m):
-                $this->allowIp($m[1], $m[2], $m[3]);
+                $this->allowIp($m[1], $m[2], $m[3] ?? 0);
                 break;
             case preg_match('~^/searchIp (.+)$~', $this->input['callback'], $m):
                 $this->searchIp($m[1]);
@@ -645,13 +698,13 @@ class Bot
                 $this->searchSuspiciousIp($m[1]);
                 break;
             case preg_match('~^/denyIp (.+?)(?:\s(.+?)\s(\d+?)\s(\d))?$~', $this->input['callback'], $m):
-                $this->denyIp($m[1], $m[2], $m[3], $m[4]);
+                $this->denyIp($m[1], $m[2] ?? false, $m[3] ?? 0, $m[4] ?? 0);
                 break;
             case preg_match('~^/whiteIp (.+?)(?:\s(.+?)\s(\d+?)\s(\d))?$~', $this->input['callback'], $m):
-                $this->whiteIp($m[1], $m[2], $m[3], $m[4]);
+                $this->whiteIp($m[1], $m[2] ?? false, $m[3] ?? 0, $m[4] ?? 0);
                 break;
             case preg_match('~^/adgFillAllowedClients(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->adgFillAllowedClients($m[1] ?: false);
+                $this->adgFillAllowedClients(($m[1] ?? '') ?: false);
                 break;
             case preg_match('~^/appOutbound$~', $this->input['callback'], $m):
                 $this->appOutbound();
@@ -857,17 +910,17 @@ class Bot
             case preg_match('~^/setdnsttPassword (\w+)$~', $this->input['callback'], $m):
                 $this->setdnsttPassword($m[1]);
                 break;
-            case preg_match('~^/getLog (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-                $this->getLog(...explode('_', $m['arg']));
+            case preg_match('~^/getLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->getLog($m['arg']);
                 break;
-            case preg_match('~^/clearLog (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-                $this->clearLog(...explode('_', $m['arg']));
+            case preg_match('~^/clearLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->clearLog($m['arg']);
                 break;
             case preg_match('~^/cleanLog$~', $this->input['callback'], $m):
                 $this->cleanLog();
                 break;
-            case preg_match('~^/delLog (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-                $this->delLog(...explode('_', $m['arg']));
+            case preg_match('~^/delLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->delLog($m['arg']);
                 break;
             case preg_match('~^/debug$~', $this->input['message'], $m):
                 $this->debug();
@@ -1466,7 +1519,7 @@ class Bot
                 $this->qrSS();
                 break;
             case preg_match('~^/qrXray (\d+)(?:_(\d+))?$~', $this->input['callback'], $m):
-                $this->qrXray($m[1], $m[2] ?: false);
+                $this->qrXray($m[1], ($m[2] ?? '') ?: false);
                 break;
             case preg_match('~^/delupstream (\d+)$~', $this->input['callback'], $m):
                 $this->delupstream($m[1]);
@@ -1487,7 +1540,7 @@ class Bot
                 $this->addNipdomain();
                 break;
             case preg_match('~^/(?P<action>change|delete)(?P<typelist>\w+) (?P<arg>\d+)(?: (?P<page>\d+))?$~', $this->input['callback'], $m):
-                $this->listPacChange($m['typelist'], $m['action'], $m['arg'], $m['page'] ?: 0);
+                $this->listPacChange($m['typelist'], $m['action'], $m['arg'], ($m['page'] ?? '') ?: 0);
                 break;
             case preg_match('~^/paczapret$~', $this->input['callback'], $m):
                 $this->pacZapret();
@@ -1511,19 +1564,19 @@ class Bot
                 $this->warpPlus();
                 break;
             case preg_match('~^/xray(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xray($m[1] ?: 0);
+                $this->xray(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsblock(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsblock($m[1] ?: 0);
+                $this->xtlsblock(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/routes(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->routes($m[1] ?: 0);
+                $this->routes(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/tun$~', $this->input['callback'], $m):
                 $this->tun();
                 break;
             case preg_match('~^/tunpackage(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->tunpackage($m[1] ?: 0);
+                $this->tunpackage(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/tunpackagemode$~', $this->input['callback'], $m):
                 $this->tunpackagemode();
@@ -1532,28 +1585,28 @@ class Bot
                 $this->tunprocessmode();
                 break;
             case preg_match('~^/tunprocess(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->tunprocess($m[1] ?: 0);
+                $this->tunprocess(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlswarp(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlswarp($m[1] ?: 0);
+                $this->xtlswarp(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsproxy(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsproxy($m[1] ?: 0);
+                $this->xtlsproxy(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsapp(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsapp($m[1] ?: 0);
+                $this->xtlsapp(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsprocess(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsprocess($m[1] ?: 0);
+                $this->xtlsprocess(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlssubnet(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlssubnet($m[1] ?: 0);
+                $this->xtlssubnet(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsrulesset(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsrulesset($m[1] ?: 0);
+                $this->xtlsrulesset(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/xtlsdat(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->xtlsdat($m[1] ?: 0);
+                $this->xtlsdat(($m[1] ?? '') ?: 0);
                 break;
             case preg_match('~^/datrefresh$~', $this->input['callback'], $m):
                 $this->datRefresh();
@@ -1565,19 +1618,19 @@ class Bot
                 $this->datScheduleSet((int) $m[1]);
                 break;
             case preg_match('~^/templateCopy (\w+)(?: (.+))?$~', $this->input['callback'], $m):
-                $this->templateCopy($m[1], $m[2]);
+                $this->templateCopy($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/delTemplate (\w+)(?: (.+))?$~', $this->input['callback'], $m):
-                $this->delTemplate($m[1], $m[2]);
+                $this->delTemplate($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/downloadOrigin (\w+)$~', $this->input['callback'], $m):
                 $this->downloadOrigin($m[1]);
                 break;
             case preg_match('~^/downloadTemplate (\w+)(?: (.+))?$~', $this->input['callback'], $m):
-                $this->downloadTemplate($m[1], $m[2]);
+                $this->downloadTemplate($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/defaultTemplate (\w+)(?: (.+))?$~', $this->input['callback'], $m):
-                $this->defaultTemplate($m[1], $m[2]);
+                $this->defaultTemplate($m[1], $m[2] ?? false);
                 break;
             case preg_match('~^/templates (\w+)$~', $this->input['callback'], $m):
                 $this->templates($m[1]);
@@ -2065,14 +2118,14 @@ class Bot
         }
         if (empty($norestart)) {
             $this->collectSession();
-            file_put_contents('/config/xray.json', $json);
+            $this->writeXrayJson($json);
             $this->ssh('pkill xray', 'xr');
             // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
             // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
             // старта — не требует правки override.env и совпадает с datDir().
             $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json > /dev/null 2>&1 &', 'xr');
         } else {
-            file_put_contents('/config/xray.json', $json);
+            $this->writeXrayJson($json);
         }
     }
 
@@ -2237,7 +2290,26 @@ class Bot
 
             return;
         }
-        file_put_contents('/config/xray.json', $json);
+        $this->writeXrayJson($json);
+    }
+
+    // Атомарная запись xray.json — тем же способом, что setPacConf() пишет
+    // pac.json. Файл читается публичными эндпоинтами подписки (sub(),
+    // subscription()) из нескольких воркеров без лока: при обычном
+    // file_put_contents читатель ловил файл на середине записи, json_decode()
+    // отдавал null, и findClientBySid(array $xr, …) падал с TypeError — 500
+    // вместо конфига. rename() атомарен, поэтому виден либо старый, либо новый
+    // ЦЕЛЫЙ файл.
+    public function writeXrayJson(string $json): bool
+    {
+        $tmp = '/config/xray.json.' . getmypid() . '.tmp';
+        if (file_put_contents($tmp, $json, LOCK_EX) === false) {
+            @unlink($tmp);
+            error_log('writeXrayJson: xray.json not written');
+
+            return false;
+        }
+        return rename($tmp, '/config/xray.json');
     }
 
     // Xray >= v26.4.15 (PR #5947, «Direct/Freedom outbound: default safe policy»)
@@ -2308,11 +2380,15 @@ class Bot
         unset($ob);
     }
 
-    public function collectSession() {
-        $p = $this->getXrayStats();
+    // Свернуть session в global — общий и по каждому клиенту. Вынесено из
+    // collectSession() чистой функцией: то же самое нужно сделать, когда ядро
+    // перезапустилось МИМО нас (см. xrayStatsUser), и читать/писать файл там
+    // второй раз незачем.
+    public static function foldSession(array $p): array
+    {
         $p['global'] = [
-            'download' => $p['global']['download'] + $p['session']['download'],
-            'upload'   => $p['global']['upload'] + $p['session']['upload'],
+            'download' => ($p['global']['download'] ?? 0) + ($p['session']['download'] ?? 0),
+            'upload'   => ($p['global']['upload'] ?? 0) + ($p['session']['upload'] ?? 0),
         ];
         $p['session'] = [
             'download' => 0,
@@ -2323,13 +2399,17 @@ class Bot
         // учёт), но и оставлять её означало бы показывать в меню до минуты
         // цифры, которых в ядре уже нет.
         unset($p['inbounds']);
-        foreach ($p['users'] as $k => $v) {
-            $p['users'][$k]['global']['download']  += $v['session']['download'];
-            $p['users'][$k]['session']['download']  = 0;
-            $p['users'][$k]['global']['upload']    += $v['session']['upload'];
-            $p['users'][$k]['session']['upload']    = 0;
+        foreach (($p['users'] ?? []) as $k => $v) {
+            $p['users'][$k]['global']['download'] = ($v['global']['download'] ?? 0) + ($v['session']['download'] ?? 0);
+            $p['users'][$k]['global']['upload']   = ($v['global']['upload'] ?? 0) + ($v['session']['upload'] ?? 0);
+            $p['users'][$k]['session']['download'] = 0;
+            $p['users'][$k]['session']['upload']   = 0;
         }
-        $this->setXrayStats($p);
+        return $p;
+    }
+
+    public function collectSession() {
+        $this->setXrayStats(self::foldSession($this->getXrayStats()));
     }
 
     public function setLang($lang)
@@ -2360,7 +2440,12 @@ class Bot
     {
         if (file_exists(__DIR__ . '/zapretlists/mpac')) {
             $domains = explode("\n", file_get_contents(__DIR__ . '/zapretlists/mpac'));
-            foreach ($domains as $k => $v) {
+            // Проверка отвечала «match» ВСЕГДА: файл заканчивается переводом
+            // строки, поэтому последним элементом идёт '', а preg_match('~~',…)
+            // истинно для любой строки. Пустые строки отбрасываем, а $flag
+            // инициализируем — иначе warning на каждом «not match».
+            $flag = 0;
+            foreach (array_filter($domains, fn($e) => trim($e) !== '') as $k => $v) {
                 if (preg_match("~$v~", $url)) {
                     $flag = 1;
                     break;
@@ -2828,6 +2913,15 @@ class Bot
         if ($syncCamouflage) {
             $conf = $this->applyOcCamouflage($conf, $this->ocCamouflageSecretForConf($conf, true));
         }
+        // Тот же класс, что в restartNaive(): сюда приезжает результат
+        // preg_replace* от пятерых вызывающих, а движок при ошибке отдаёт null —
+        // file_put_contents записал бы пустой ocserv.conf, и сервис не поднялся
+        // бы уже никогда, без единого сообщения.
+        if (!is_string($conf) || trim($conf) === '') {
+            error_log('restartOcserv: ocserv.conf not written — empty config');
+
+            return false;
+        }
         file_put_contents('/config/ocserv.conf', $conf);
         $this->ssh('pkill ocserv', 'oc');
         $pac = $this->getPacConf();
@@ -2838,6 +2932,7 @@ class Bot
             $this->ssh('mkdir -p /logs; touch /logs/ocserv.log', 'oc');
             $this->ssh('ocserv -f -c /etc/ocserv/ocserv.conf', 'oc', false, '/logs/ocserv.log');
         }
+        return true;
     }
 
     // Логин/пароль naive уезжают в Caddyfile строкой «basic_auth <user> <pass>»,
@@ -2866,6 +2961,13 @@ class Bot
     {
         $user = $pac['naive']['user'] ?? null;
         $pass = $pac['naive']['pass'] ?? null;
+        // Домен обязателен наравне с кредами: клиент naive берёт SNI из хоста
+        // ссылки и проверяет по нему сертификат. Без домена linkNaive() собирал
+        // «https://user:pass@<hash>.» — ссылку, которая не работает нигде, а
+        // проверка кредов её пропускала.
+        if (empty($pac['domain'])) {
+            return false;
+        }
         return self::naiveCredOk($user) && self::naiveCredOk($pass)
             && !($user === 'CHANGEME' && $pass === 'CHANGEME');
     }
@@ -3054,12 +3156,30 @@ class Bot
         return 'hysteria2://' . rawurlencode($pass) . "@$host:$portSpec/$query$name";
     }
 
+    // $dns уходит директивой в ocserv.conf, а приходит сырым текстом сообщения:
+    // многострочный ввод превращал каждую строку после первой в самостоятельную
+    // директиву конфига. Принимаем только адрес (IPv4/IPv6) — ровно то, что
+    // ocserv в этом поле и ждёт; ср. chHySNI/chStlsSNI, где проверка уже есть.
     public function chocdns($dns)
     {
+        $dns = trim((string) $dns);
+        if (filter_var($dns, FILTER_VALIDATE_IP) === false) {
+            $this->send($this->input['chat'], "$dns - wrong dns address", $this->input['message_id']);
+            return $this->menu('oc');
+        }
         $c = file_get_contents('/config/ocserv.conf');
         $t = preg_replace_callback('~^dns[^\n]+~sm', fn() => "dns = $dns", $c);
         $this->restartOcserv($t);
         $this->menu('oc');
+    }
+
+    // Поддомен — ОДНА метка имени: она склеивается с основным доменом
+    // («<sub>.<domain>») и уезжает в upstream.conf и ocserv.conf. Точку тоже не
+    // пускаем: своей зоны у метки быть не может, а сертификат выписан на
+    // *.<domain>, то есть только на один уровень.
+    public static function isSubdomainLabel($v): bool
+    {
+        return (bool) preg_match('~^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$~', (string) $v);
     }
 
     public function chOcSubdomain($domain)
@@ -3067,12 +3187,19 @@ class Bot
         $pac = $this->getPacConf();
         if ($domain == -1) {
             unset($pac["oc_domain"]);
-        } else {
+        } elseif (self::isSubdomainLabel($domain)) {
             $pac["oc_domain"] = $domain;
+        } else {
+            // Без проверки строка вида «x;}\nserver { listen 443; }» уезжала в
+            // /config/upstream.conf и в default-domain ocserv.conf.
+            $this->send($this->input['chat'], "$domain - wrong subdomain format", $this->input['message_id']);
+            return $this->menu('oc');
         }
         $this->setPacConf($pac);
-        $this->chocdomain($pac['domain']);
-        $this->setUpstreamDomainOcserv($pac['domain']);
+        // ?? '' — поддомен можно задать до основного домена: тогда обе функции
+        // получают пустую строку (их штатный «сброс»), а не warning.
+        $this->chocdomain($pac['domain'] ?? '');
+        $this->setUpstreamDomainOcserv($pac['domain'] ?? '');
         $this->menu('oc');
     }
 
@@ -3081,12 +3208,15 @@ class Bot
         $pac = $this->getPacConf();
         if ($domain == -1) {
             unset($pac['np_domain']);
-        } else {
+        } elseif (self::isSubdomainLabel($domain)) {
             $pac['np_domain'] = $domain;
+        } else {
+            $this->send($this->input['chat'], "$domain - wrong subdomain format", $this->input['message_id']);
+            return $this->menu('naive');
         }
         $this->setPacConf($pac);
         $this->restartNaive();
-        $this->setUpstreamDomainNaive($pac['domain']);
+        $this->setUpstreamDomainNaive($pac['domain'] ?? '');
         $this->menu('naive');
     }
 
@@ -3621,7 +3751,7 @@ NFT;
             // коннектится к ss:8388. Внешний порт идёт только в ss://-ссылку
             // (buildSSLink/menuSS), а не в конфиг демонов — иначе ssserver
             // забиндит не тот порт и plain SS станет недоступен снаружи.
-            $ssport           = (int) (getenv('SSPORT') ?: 8388);
+            $ssport           = self::SS_INTERNAL_PORT;
             $l['server']      = 'ss';
             $l['server_port'] = $ssport;
             $c['server_port'] = $ssport;
@@ -3679,7 +3809,7 @@ NFT;
             $this->setStlsConfig($c);
             $this->ssh(self::PKILL_STLS, 'ss');
             $port = (int) (getenv('STLSPORT') ?: 3443);
-            $ssport = (int) (getenv('SSPORT') ?: 8388);
+            $ssport = self::SS_INTERNAL_PORT;
             $cert = $this->ssh('[ -s /certs/cert_public ] && [ -s /certs/cert_private ] && echo cert || echo self', 'ss');
             $cert = trim($cert) === 'cert' ? '/certs/cert_public:/certs/cert_private' : '/certs/self_public:/certs/self_private';
             [$cp, $kp] = explode(':', $cert);
@@ -3957,7 +4087,7 @@ NFT;
         $c = $this->ensureCloakIdentity();
         $domain = $this->getPacConf()['domain'] ?: $this->ip;
         $port   = (int) (getenv('CKPORT') ?: 7443);
-        $ssport = (int) (getenv('SSPORT') ?: 8388);
+        $ssport = self::SS_INTERNAL_PORT;
 
         if (!empty($c['Enabled'])) {
             $c['Enabled'] = 0;
@@ -4032,7 +4162,7 @@ NFT;
         $this->ssh('pkill ssserver', 'ss');
         $l = $this->getSSLocalConfig();
         unset($c['plugin'], $c['plugin_opts'], $l['plugin'], $l['plugin_opts']);
-        $ssport = (int) (getenv('SSPORT') ?: 8388);
+        $ssport = self::SS_INTERNAL_PORT;
         $l['server']      = 'ss';
         $l['server_port'] = $ssport;
         $c['server_port'] = $ssport;
@@ -4157,7 +4287,7 @@ NFT;
         if ($wasOn) {
             $domain = $this->getPacConf()['domain'] ?: $this->ip;
             $port   = (int) (getenv('CKPORT') ?: 7443);
-            $ssport = (int) (getenv('SSPORT') ?: 8388);
+            $ssport = self::SS_INTERNAL_PORT;
 
             $c['Enabled']    = 1;
             $c['BindAddr']   = [":$port"];
@@ -4484,6 +4614,10 @@ NFT;
             $clients = $this->readClients();
         }
         $server = $this->readConfig();
+        if (empty($server['interface'])) {
+            $this->wgConfUnavailable('срок действия не изменён');
+            return $this->menu('client', "{$client}_$page");
+        }
         // Пир — по адресу (peerIndexByClient), а не перебором с прямым чтением
         // 'AllowedIPs': у выключенного пира ключ закомментирован, и старый
         // цикл сыпал «Undefined array key» на каждом таком соседе.
@@ -4496,7 +4630,16 @@ NFT;
                 }
                 break;
             default:
-                $date = date('Y-m-d H:i:s', strtotime($time));
+                // strtotime() на нераспознанном вводе отдаёт false, а date()
+                // печатала из него 1970-01-01 — то есть срок в прошлом, и
+                // shutdownClient вырубал пира в ближайшие 10 секунд. Такая
+                // проверка есть в setTimerXr, сюда она не доехала.
+                $ts = strtotime((string) $time);
+                if ($ts === false) {
+                    $this->send($this->input['chat'] ?? '', 'wrong format', $this->input['message_id'] ?? null);
+                    return $this->menu('client', "{$client}_$page");
+                }
+                $date = date('Y-m-d H:i:s', $ts);
                 $clients[$client]['interface']['## time'] = $date;
                 if ($i !== null) {
                     $server['peers'][$i]['## time'] = $date;
@@ -4612,15 +4755,34 @@ NFT;
                     return;
                 }
                 $x = $this->getXray();
+                // Конфиг нечитаем — снимок отложим до следующего тика: без
+                // списка клиентов users[] пришлось бы затирать пустым.
+                if (!is_array($x)) {
+                    return;
+                }
                 $p = $this->getXrayStats();
                 // Тег пользовательского inbound берём из конфига: он не обязан
                 // быть 'vless_tls' (restore бэкапа, правка xray.json из webapp),
                 // а захардкоженное имя давало тихий ноль без единого сообщения.
                 $tag = (string) ($x['inbounds'][0]['tag'] ?? 'vless_tls');
-                $p['session'] = [
+                $session = [
                     'download' => $counters["inbound>>>$tag>>>traffic>>>downlink"] ?? 0,
                     'upload'   => $counters["inbound>>>$tag>>>traffic>>>uplink"] ?? 0,
                 ];
+                // session — АБСОЛЮТНЫЙ снимок счётчиков ядра, а они монотонно
+                // растут и обнуляются только его рестартом. Свой рестарт
+                // (restartXray) сворачивает session в global сам, а внешний
+                // (docker restart xr, OOM, ребут хоста, start_xray.sh) до сих
+                // пор просто терял накопленное: следующий тик записывал сюда
+                // нули, и квоты начинали считать заново. Просевший счётчик —
+                // это и есть признак чужого рестарта: сворачиваем прошлую
+                // сессию (общую и по каждому клиенту) до применения снимка.
+                if ($session['download'] < ($p['session']['download'] ?? 0)
+                    || $session['upload'] < ($p['session']['upload'] ?? 0)
+                ) {
+                    $p = self::foldSession($p);
+                }
+                $p['session'] = $session;
                 // Разбивка по inbound'ам, кроме служебного api. Нужна ради
                 // 'wg-in' (socks :10808, через него наружу ходят WG/AWG-клиенты):
                 // его трафик не попадает ни в session, ни в пользовательские
@@ -4639,7 +4801,7 @@ NFT;
                         'upload'   => $counters["inbound>>>$t>>>traffic>>>uplink"] ?? 0,
                     ];
                 }
-                if (!empty($users = $x['inbounds'][0]['settings']['clients'])) {
+                if (!empty($users = $x['inbounds'][0]['settings']['clients'] ?? [])) {
                     $tmp = [];
                     foreach ($users as $k => $v) {
                         $email = (string) ($v['email'] ?? '');
@@ -4711,27 +4873,42 @@ NFT;
         }
     }
 
+    /**
+     * Момент последнего планового запуска расписания «$start / $period».
+     *
+     * Периоды в неделях/днях/часах — фиксированное число секунд, их считаем
+     * делением. А вот «1 month»/«1 year» фиксированной длины НЕ имеют:
+     * strtotime('1 month', 0) даёт ровно 31 день, поэтому расписание съезжало
+     * с календаря (01.01, 01.02, 04.03, 01.04, 02.05, …). Такие шагаем
+     * календарём — шагов не больше числа периодов с момента старта.
+     *
+     * @return int 0, если расписание ещё не наступило или период не разобран.
+     */
+    public static function lastScheduled(int $start, string $period, int $now): int
+    {
+        $step = strtotime($period, 0);
+        if ($start <= 0 || $step === false || $step <= 0 || $now < $start) {
+            return 0;
+        }
+        if (preg_match('~month|year~i', $period)) {
+            $t = $start;
+            while (($next = strtotime($period, $t)) !== false && $next > $t && $next <= $now) {
+                $t = $next;
+            }
+            return $t;
+        }
+        return $start + (int) floor(($now - $start) / $step) * $step;
+    }
+
     public function checkBackup()
     {
         $c = $this->getPacConf();
         if (!empty($c['backup'])) {
             $now = time();
-            [$start, $period] = explode('/', $c['backup']);
-            $start  = strtotime(trim($start));
-            $period = strtotime(trim($period), 0);
+            [$start, $period] = array_pad(explode('/', $c['backup']), 2, '');
+            $lastScheduledBackup = self::lastScheduled((int) strtotime(trim($start)), trim($period), $now);
 
-            if (
-                !empty($start)
-                && !empty($period)
-                && $now >= $start
-            ) {
-                // Вычисляем, сколько полных периодов прошло с момента start
-                $elapsed = $now - $start;
-                $periodsElapsed = floor($elapsed / $period);
-
-                // Время последнего планового бэкапа
-                $lastScheduledBackup = $start + ($periodsElapsed * $period);
-
+            if ($lastScheduledBackup > 0) {
                 // Проверяем, делали ли уже бэкап в этом периоде
                 $lastBackupTime = $c['last_backup_time'] ?? 0;
 
@@ -4749,33 +4926,37 @@ NFT;
     {
         $pac = $this->getPacConf();
         if (!empty($pac['reset_monthly'])) {
-            $now    = time();
-            $start  = strtotime('first day of previous month midnight');
-            $period = strtotime('1 month', 0);
+            $now  = time();
+            $last = (int) ($pac['last_reset_xray_time'] ?? 0);
+            // Первое включение тумблера: только ставим метку. Раньше её никто
+            // не инициализировал (switchMonthlyStats пишет лишь reset_monthly),
+            // и на ближайшем тике 0 оказывался меньше начала периода — ВСЯ
+            // статистика стиралась сразу, снимались все баны по трафику, а
+            // админам уходило «vless: reset stats».
+            if ($last <= 0) {
+                $pac['last_reset_xray_time'] = $now;
+                $this->setPacConf($pac);
+                return;
+            }
+            // Сброс — раз в КАЛЕНДАРНЫЙ месяц, первого числа. Прежняя
+            // арифметика брала «1 month» от эпохи (ровно 31 день) и заново
+            // считала точку отсчёта на каждом вызове, из-за чего «ежемесячный»
+            // сброс съезжал: 01.01, 01.02, 04.03, 01.04, 02.05…
+            $lastScheduledReset = strtotime('first day of this month midnight');
 
-            if (
-                !empty($start)
-                && !empty($period)
-                && $now >= $start
-            ) {
-                // Вычисляем, сколько полных периодов прошло с момента start
-                $elapsed = $now - $start;
-                $periodsElapsed = floor($elapsed / $period);
-
-                // Время последнего планового сброса статистики
-                $lastScheduledReset = $start + ($periodsElapsed * $period);
-
-                // Проверяем, делали ли уже сброс в этом периоде
-                $lastResetTime = $pac['last_reset_xray_time'] ?? 0;
-
+            if ($lastScheduledReset !== false) {
                 // Если последний сброс был сделан до начала текущего периода - делаем сброс
-                if ($lastResetTime < $lastScheduledReset) {
+                if ($last < $lastScheduledReset) {
                     $pac['last_reset_xray_time'] = $now;
                     $this->setPacConf($pac);
                     $this->resetXrStats(1);
-                    require __DIR__ . '/config.php';
-                    foreach ($c['admin'] as $admin) {
-                        $this->send($admin, "vless: reset stats");
+                    // Уведомление — не повод падать: config.php читается здесь
+                    // из ФС, а сброс уже выполнен и записан.
+                    if (is_file(__DIR__ . '/config.php')) {
+                        require __DIR__ . '/config.php';
+                        foreach (($c['admin'] ?? []) as $admin) {
+                            $this->send($admin, "vless: reset stats");
+                        }
                     }
                 }
             }
@@ -4787,22 +4968,10 @@ NFT;
         $c = $this->getPacConf();
         if (!empty($c['autocleanlogs'])) {
             $now = time();
-            [$start, $period] = explode('/', $c['autocleanlogs']);
-            $start  = strtotime(trim($start));
-            $period = strtotime(trim($period), 0);
+            [$start, $period] = array_pad(explode('/', $c['autocleanlogs']), 2, '');
+            $lastScheduledClean = self::lastScheduled((int) strtotime(trim($start)), trim($period), $now);
 
-            if (
-                !empty($start)
-                && !empty($period)
-                && $now >= $start
-            ) {
-                // Вычисляем, сколько полных периодов прошло с момента start
-                $elapsed = $now - $start;
-                $periodsElapsed = floor($elapsed / $period);
-
-                // Время последней плановой очистки логов
-                $lastScheduledClean = $start + ($periodsElapsed * $period);
-
+            if ($lastScheduledClean > 0) {
                 // Проверяем, делали ли уже очистку в этом периоде
                 $lastCleanTime = $c['last_clean_logs_time'] ?? 0;
 
@@ -4983,7 +5152,12 @@ NFT;
         try {
             $c = $this->getXray();
             foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
-                if (!empty($v['time']) && ($v['time'] < time())) {
+                // switchXr() — ТУМБЛЕР: на уже выключенном клиенте он
+                // восстанавливает id из 'off' и снимает traffic_off. Без
+                // проверки 'off' клиент, отключённый по исчерпанной квоте
+                // (checkTrafficLimits ставит 'off', 'time' не трогает), после
+                // наступления даты снова включался — со старой ссылкой.
+                if (!empty($v['time']) && ($v['time'] < time()) && empty($v['off'])) {
                     $this->switchXr($k, 1);
                 }
             }
@@ -4998,6 +5172,22 @@ NFT;
         $u = $st['users'][$k] ?? [];
         return ($u['global']['download'] ?? 0) + ($u['session']['download'] ?? 0)
              + ($u['global']['upload'] ?? 0) + ($u['session']['upload'] ?? 0);
+    }
+
+    // UUID v4 для vless-клиента. Раньше значение брали у ядра (`xray uuid`), и
+    // при недоступном контейнере ssh() отдавал пустую строку: пустой id уезжал
+    // в clients[] и сохранялся: ядро с таким конфигом не поднимается вовсе —
+    // падал весь VLESS, причём в самых неудачных местах (отключение по квоте,
+    // switchXr, добавление пользователя). Внешняя зависимость здесь не нужна:
+    // `xray uuid` печатает обычный случайный UUID.
+    public static function xrayUuid(): string
+    {
+        $b    = random_bytes(16);
+        $b[6] = chr((ord($b[6]) & 0x0f) | 0x40); // версия 4
+        $b[8] = chr((ord($b[8]) & 0x3f) | 0x80); // вариант RFC 4122
+        $h    = bin2hex($b);
+        return substr($h, 0, 8) . '-' . substr($h, 8, 4) . '-' . substr($h, 12, 4)
+            . '-' . substr($h, 16, 4) . '-' . substr($h, 20, 12);
     }
 
     // Cron enforcement of per-client traffic quotas ($client['traffic'] = byte
@@ -5017,10 +5207,10 @@ NFT;
                 }
                 if ($this->xrUserTraffic($st, $k) >= $limit) {
                     $x['inbounds'][0]['settings']['clients'][$k]['off'] = $v['id'];
-                    $x['inbounds'][0]['settings']['clients'][$k]['id']  = trim($this->ssh('xray uuid', 'xr'));
+                    $x['inbounds'][0]['settings']['clients'][$k]['id']  = self::xrayUuid();
                     if (isset($v['password'])) {
                         $x['inbounds'][0]['settings']['clients'][$k]['off_pwd']  = $v['password'];
-                        $x['inbounds'][0]['settings']['clients'][$k]['password'] = trim($this->ssh('xray uuid', 'xr'));
+                        $x['inbounds'][0]['settings']['clients'][$k]['password'] = self::xrayUuid();
                     }
                     $x['inbounds'][0]['settings']['clients'][$k]['traffic_off'] = 1;
                     $disabled[] = $v['email'];
@@ -5071,9 +5261,16 @@ NFT;
         if (empty($clients[$client])) {
             return $this->menu('wg', $page);
         }
+        // Серверный конфиг читаем ДО записи clients.json: при недоступном
+        // контейнере имя менялось локально, в wg0.conf оставалось старое, и
+        // пользователю об этом не сообщалось вовсе.
+        $server = $this->readConfig();
+        if (empty($server['interface'])) {
+            $this->wgConfUnavailable('имя не изменено');
+            return $this->menu('client', "{$client}_$page");
+        }
         $clients[$client]['interface']['## name'] = $name;
         $this->saveClients($clients);
-        $server = $this->readConfig();
         // peerIndexByClient понимает и выключенного пира ('# AllowedIPs'):
         // раньше переименование выключенного клиента меняло только
         // clients.json, а в wg0.conf оставалось старое имя, и оно
@@ -5389,12 +5586,18 @@ NFT;
 
     public function downloadPeer($client)
     {
-        $cl     = $client;
-        $client = $this->readClients()[$client];
+        $cl      = $client;
+        $clients = $this->readClients();
+        // Индекс приходит из кнопки, а список мог переиндексироваться
+        // (deleteClient) — тот же guard, что у соседей по меню клиента.
+        if (empty($clients[$client])) {
+            return $this->menu('wg', 0);
+        }
+        $client = $clients[$client];
         $name   = $this->getName($client['interface']);
         $code   = $this->createConfig($client);
         $this->upload(preg_replace(['~\s+~', '~\(|\)~'], ['_', ''], $name) . ".conf", $code);
-        if ($this->getPacConf()['blinkmenu']) {
+        if (!empty($this->getPacConf()['blinkmenu'])) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->menu('client', "{$cl}_0");
@@ -5793,6 +5996,12 @@ NFT;
             // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
             if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
                 $c[$prefix . 'amnezia_last_rotation'] = time();
+            }
+            // Диапазонный PersistentKeepalive — фича 3.0: на 2.0-шаблоне он не
+            // разберётся, а раньше оставался от прежнего набора и уезжал в
+            // клиентские конфиги. Так же поступают setAmneziaProto и resetAwg3.
+            if (!$is3) {
+                unset($c[$prefix . 'amnezia_keepalive']);
             }
             $this->setPacConf($c);
         };
@@ -6541,6 +6750,14 @@ NFT;
         throw new InvalidArgumentException("quicVarint: $v exceeds 4-byte form");
     }
 
+    // Один transport parameter: id, длина значения и само значение (RFC 9000
+    // §18). Длину берём из строки, а не проставляем руками, — ровно на этом
+    // расходились объявленный 1 байт и двухбайтовый varint значения 100.
+    public static function quicTp(int $id, string $value): string
+    {
+        return self::quicVarint($id) . self::quicVarint(strlen($value)) . $value;
+    }
+
     // Структурно корректный клиентский Initial-пакет БЕЗ шифрования.
     //
     // Прежние два пресета QUIC («<b 0xc700000001><r 8>…») клали случайный байт
@@ -6650,10 +6867,15 @@ NFT;
         $ext .= self::tlsExt(0x0033, pack('n', strlen($ks)) . $ks);
         $ext .= self::tlsExt(0x002b, "\x02\x03\x04");                   // supported_versions: TLS 1.3
         // quic_transport_parameters (RFC 9001 §8.2): id/len/value, всё varint.
-        $tp   = self::quicVarint(0x01) . self::quicVarint(4) . self::quicVarint(30000)   // max_idle_timeout
-              . self::quicVarint(0x04) . self::quicVarint(4) . self::quicVarint(1048576) // initial_max_data
-              . self::quicVarint(0x08) . self::quicVarint(1) . self::quicVarint(100)     // initial_max_streams_bidi
-              . self::quicVarint(0x0f) . self::quicVarint(strlen($scid)) . $scid;        // initial_source_connection_id
+        // Длину считает quicTp() — вручную она разъезжалась со значением: у
+        // initial_max_streams_bidi было объявлено 1 байт, а quicVarint(100)
+        // занимает 2 (100 > 63). Парсер сервера уезжал на этом же байте,
+        // initial_source_connection_id (0x0f) в пакете не находился, и по
+        // RFC 9000 §7.3 соединение обязано закрыться с TRANSPORT_PARAMETER_ERROR.
+        $tp   = self::quicTp(0x01, self::quicVarint(30000))    // max_idle_timeout
+              . self::quicTp(0x04, self::quicVarint(1048576))  // initial_max_data
+              . self::quicTp(0x08, self::quicVarint(100))      // initial_max_streams_bidi
+              . self::quicTp(0x0f, $scid);                     // initial_source_connection_id
         $ext .= self::tlsExt(0x0039, $tp);
 
         $body = "\x03\x03" . random_bytes(32)                  // legacy_version + random
@@ -6993,7 +7215,25 @@ NFT;
 
     public function switchAmnezia($page = 0, $reset = false, $reduce = false, $apply = false, $silent = false)
     {
-        $c = $this->getPacConf();
+        // Серверный конфиг читаем ДО любых записей: readConfig() штатно отдаёт
+        // null при недоступном контейнере, а ниже $wg['interface'][$j] = $i
+        // авто-вивифицировал бы null и createConfig(null) дал заглушку из одной
+        // секции [Interface] — без PrivateKey, ListenPort и без единого пира.
+        // Если ssh к моменту записи успевал восстановиться, эта заглушка
+        // уезжала в wg0.conf. Заодно не даём разъехаться pac.json/clients.json
+        // с сервером: до успешного чтения не меняем ничего.
+        $wg = $this->readConfig();
+        if (empty($wg['interface'])) {
+            if (empty($silent)) {
+                $this->send(
+                    $this->input['chat'] ?? '',
+                    'wireguard: конфиг недоступен (контейнер не отвечает), amnezia не переключена',
+                    $this->input['message_id'] ?? null,
+                );
+            }
+            return;
+        }
+        $orig = $c = $this->getPacConf();
         switch (true) {
             case !empty($reset):
                 $amnezia = 1;
@@ -7020,7 +7260,22 @@ NFT;
         }
         $this->setPacConf($c);
 
+        // presharedKey() отдаёт '' только когда контейнер не ответил (см. там же).
+        // Писать конфиги с пустым PresharedKey нельзя, а pac.json к этому моменту
+        // уже переключён — откатываем его к исходному снимку, иначе меню показывало
+        // бы amnezia включённой при неизменившихся конфигах.
         $pk = $this->presharedKey();
+        if (!empty($amnezia) && $pk === '') {
+            $this->setPacConf($orig);
+            if (empty($silent)) {
+                $this->send(
+                    $this->input['chat'] ?? '',
+                    'wireguard: не удалось получить presharedkey (контейнер не отвечает), amnezia не переключена',
+                    $this->input['message_id'] ?? null,
+                );
+            }
+            return;
+        }
         $ak = $this->amneziaKeysEffective();
         // Списки чистки — из awgKeyNames(), а не перечислением: иначе каждый
         // новый параметр протокола пришлось бы дописывать в двух местах, и
@@ -7047,7 +7302,6 @@ NFT;
         }
         $this->saveClients($clients);
 
-        $wg = $this->readConfig();
         foreach ($strip as $j) {
             unset($wg['interface'][$j]);
         }
@@ -7057,7 +7311,7 @@ NFT;
             }
         }
 
-        foreach ($wg['peers'] as $k => $v) {
+        foreach ($wg['peers'] ?? [] as $k => $v) {
             if (!empty($amnezia)) {
                 $wg['peers'][$k]['PresharedKey'] = $pk;
             } else {
@@ -7100,6 +7354,10 @@ NFT;
             $prefix . 'amnezia_tpl',
             $prefix . 'amnezia_keepalive',
             $prefix . 'amnezia',
+            // Отметку ротации тоже: её ставит $mutate (см. rotateAmneziaKeys), и
+            // без отката неудачный setconf оставлял ключи прежними, а таймер —
+            // сдвинутым, то есть следующая попытка откладывалась на весь период.
+            $prefix . 'amnezia_last_rotation',
         ];
         $before = [];
         $c = $this->getPacConf();
@@ -7307,7 +7565,10 @@ NFT;
     public function switchTorrent($page = 0, $restart = false)
     {
         $c = $this->getPacConf();
-        $c[$this->getInstanceWG(1) . 'blocktorrent'] = $c[$this->getInstanceWG(1) . 'blocktorrent'] ? 0 : 1;
+        // !empty — на свежей установке (pac.json = {}) ключа ещё нет, и первое
+        // же нажатие тумблера сыпало «Undefined array key»; в iptablesWG()
+        // фолбэк для этих же ключей давно есть.
+        $c[$this->getInstanceWG(1) . 'blocktorrent'] = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']) ? 0 : 1;
         $this->setPacConf($c);
         $this->iptablesWG();
         $this->answer($this->input['callback_id'], 'доступ к торрентам ' . ($c[$this->getInstanceWG(1) . 'blocktorrent'] ? 'заблокирован' : 'разблокирован'), true);
@@ -7430,7 +7691,7 @@ NFT;
     public function switchExchange($page)
     {
         $c = $this->getPacConf();
-        $c[$this->getInstanceWG(1) . 'exchange'] = $c[$this->getInstanceWG(1) . 'exchange'] ? 0 : 1;
+        $c[$this->getInstanceWG(1) . 'exchange'] = !empty($c[$this->getInstanceWG(1) . 'exchange']) ? 0 : 1;
         $this->setPacConf($c);
         $this->iptablesWG();
         $this->answer($this->input['callback_id'], 'обмен между пользователями ' . ($c[$this->getInstanceWG(1) . 'exchange'] ? 'заблокирован' : 'разблокирован'), true);
@@ -7440,7 +7701,7 @@ NFT;
     public function blinkmenuswitch()
     {
         $c = $this->getPacConf();
-        $c['blinkmenu'] = $c['blinkmenu'] ? 0 : 1;
+        $c['blinkmenu'] = !empty($c['blinkmenu']) ? 0 : 1;
         $this->setPacConf($c);
         $this->menu('config');
     }
@@ -7592,14 +7853,19 @@ NFT;
             $this->delete($this->input['chat'], $this->input['reply']);
             $this->delete($this->input['chat'], $this->input['message_id']);
             $callback = $_SESSION['reply'][$this->input['reply']]['callback'];
-            $this->input['message_id'] = $this->input['callback_id'] = $_SESSION['reply'][$this->input['reply']]['start_message'];
+            // Только message_id: раньше сюда же присваивался callback_id, но
+            // ответ на force_reply — это ОБЫЧНОЕ сообщение, никакого
+            // callback_query у него нет. В качестве query id уходил message_id,
+            // и answer() ниже (а следом и callbackCheck) гарантированно
+            // получали «400 query ID is invalid» на каждый ответ на промпт
+            // (rename, DNS, MTU…). Сам answer() тоже убран — отвечать не на что.
+            $this->input['message_id'] = $_SESSION['reply'][$this->input['reply']]['start_message'];
             // message_id уже указывает на сообщение меню — ответ на промпт
             // (DNS, MTU, имя пира…) применяется к инстансу этого меню.
             if (($mi = $this->getWgMsg()) !== null) {
                 $this->wg = (int) $mi;
             }
             $this->{$callback}($this->input['message'], ...$_SESSION['reply'][$this->input['reply']]['args']);
-            $this->answer($_SESSION['reply'][$this->input['reply']]['start_message']);
             // Сессия к этому моменту закрыта (см. input()) — unset через хелпер,
             // иначе изменение не сохранится и prompt останется висеть.
             $this->unstashReply($this->input['reply']);
@@ -7611,16 +7877,30 @@ NFT;
         $this->addDomain(str_replace('.', '-', $this->ip) . '.nip.io');
     }
 
+    // Регулярка домена — общая с addDomainAlias(): значение уходит в exec
+    // (certbot) и в server_name nginx.
+    public const DOMAIN_RE = '~^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$~i';
+
     public function addDomain($domain, $nomenu = false)
     {
-        $domain = trim($domain);
+        $domain = trim((string) $domain);
         if (!empty($domain)) {
+            // idnAscii() (в отличие от голого idn_to_ascii) не падает на пустой
+            // строке и отдаёт false, если intl недоступен. Раньше проверки не
+            // было вовсе: невалидное имя давало в pac.json «"domain": false», а
+            // потом уезжало в server_name через cloakNginx().
+            $ascii = $this->idnAscii($domain);
+            $ascii = $ascii === false ? $domain : $ascii;
+            if (!preg_match(self::DOMAIN_RE, $ascii)) {
+                $this->send($this->input['chat'] ?? '', "$domain - wrong domain format", $this->input['message_id'] ?? null);
+                return empty($nomenu) ? $this->menu('config') : null;
+            }
             $conf = $this->getPacConf();
-            $conf['domain'] = idn_to_ascii($domain);
+            $conf['domain'] = $ascii;
             $this->setPacConf($conf);
-            $this->chocdomain($domain);
-            $this->setUpstreamDomainOcserv($domain);
-            $this->setUpstreamDomainNaive($domain);
+            $this->chocdomain($ascii);
+            $this->setUpstreamDomainOcserv($ascii);
+            $this->setUpstreamDomainNaive($ascii);
             $this->cloakNginx();
         }
         if (empty($nomenu)) {
@@ -7656,7 +7936,7 @@ NFT;
         $conf   = $this->getPacConf();
         // Домен уходит в exec (certbot) и в nginx.conf — принимаем только
         // безопасный синтаксис hostname, никаких shell-метасимволов.
-        if (!preg_match('~^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$~i', $domain)) {
+        if (!preg_match(self::DOMAIN_RE, $domain)) {
             $this->send($this->input['chat'], "$domain - wrong domain format", $this->input['message_id']);
             $this->menu('config');
             return;
@@ -7784,7 +8064,7 @@ NFT;
                     $this->send($this->input['chat'], 'ERROR: invalid domain');
                     break;
                 }
-                $out[] = 'Install certificate:';
+                $out   = ['Install certificate:'];
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 // adguardkey — сырой ответ пользователя (setAdKey) и подставляется
                 // в shell-строку certbot без кавычек. Валидируем как метку хоста:
@@ -7793,7 +8073,7 @@ NFT;
                     $this->send($this->input['chat'], 'ERROR: invalid adguard subdomain');
                     break;
                 }
-                $adguardClient = $conf['adguardkey'] ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
+                $adguardClient = !empty($conf['adguardkey']) ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
                 $oc = $this->getHashSubdomain('oc');
                 $np = $this->getHashSubdomain('np');
                 // Алиасы — дополнительные SAN того же серта (формат каждого
@@ -8826,7 +9106,17 @@ NFT;
 
     public function setPage($text) {
         $c = $this->getPacConf();
-        $c['limitpage'] = (int) $text;
+        // Границы обязательны: значение уходит в $this->limit, а тот делит и
+        // режет списки. Отрицательное (фолбэк `?: 5` отсекал только ноль)
+        // давало отрицательное число страниц и array_slice с отрицательной
+        // длиной — списки в меню оказывались пустыми. Верхний предел — чтобы
+        // страница не выходила за лимит сообщения Telegram.
+        $n = (int) $text;
+        if ($n < 1 || $n > 50) {
+            $this->send($this->input['chat'] ?? '', 'размер страницы: число от 1 до 50', $this->input['message_id'] ?? null);
+            return $this->menu('config');
+        }
+        $c['limitpage'] = $n;
         $this->setPacConf($c);
         $this->menu('config');
     }
@@ -8844,7 +9134,16 @@ NFT;
     {
         $file = __DIR__ . '/config.php';
         require $file;
-        unset($c['admin'][array_search($id, $c['admin'])]);
+        // Тот же класс, что в allowIp, но цена выше: при промахе
+        // array_search удалялся admin[0] — ГЛАВНЫЙ администратор, получатель
+        // pinBackup, checkVersion и всех уведомлений. Достижимо кнопкой из
+        // устаревшего меню и двойным кликом.
+        $i = array_search($id, (array) ($c['admin'] ?? []), false);
+        if ($i === false) {
+            return $this->menu('config');
+        }
+        unset($c['admin'][$i]);
+        $c['admin'] = array_values($c['admin']);
         file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
         $this->menu('config');
     }
@@ -9218,16 +9517,23 @@ DNS-over-HTTPS with IP:
     {
         switch ($type) {
             case 'includelist':
-                $this->pacUpdate($_SESSION['proxylistentry']);
+                // ?? — ключа нет, пока пользователь не тронул proxy-список;
+                // строкой ниже он и так читается через !empty().
+                $this->pacUpdate($_SESSION['proxylistentry'] ?? null);
                 if (!empty($_SESSION['proxylistentry'])) {
                     $this->xtlsproxy($page);
                 }
                 break;
             case 'blocklist':
+                // Записи geosite:/geoip: требуют встроенных .dat, которых в
+                // образе xray нет: подтягиваем их здесь же, иначе правило молча
+                // не попало бы в конфиг ядра (см. listToXrayRules).
+                $this->datSync();
                 $this->xrayUpdateRules();
                 $this->xtlsblock($page);
                 break;
             case 'warplist':
+                $this->datSync();
                 $this->xrayUpdateRules();
                 $this->xtlswarp($page);
                 break;
@@ -9446,6 +9752,18 @@ DNS-over-HTTPS with IP:
             if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
                 continue;
             }
+            // geosite:/geoip: — те же asset-файлы, только с фиксированными
+            // именами: образ xray их не содержит (xray.dockerfile их удаляет), а
+            // XRAY_LOCATION_ASSET указывает на /logs/geodata с одними лишь
+            // скачанными datlist-файлами. Без этой проверки запись
+            // «geosite:category-ads-all» уезжала в конфиг, ядро падало на
+            // «failed to load geosite», а запись оставалась в pac.json — каждый
+            // рестарт писал тот же конфиг, самовосстановления не было.
+            if (in_array($c['kind'], ['geosite', 'geoip'], true)
+                && !$this->datFileReady(self::CORE_DAT[$c['kind']])
+            ) {
+                continue;
+            }
             if ($c['kind'] == 'ip') {
                 $ip[] = $this->ipCanon($c['value']);
             } elseif ($c['kind'] == 'extip') {
@@ -9583,9 +9901,11 @@ DNS-over-HTTPS with IP:
      * (routeEntryCanonKey). Остальные списки хранят не хосты, а URL правил и
      * имена процессов/пакетов — доменный канон к ним неприменим.
      */
+    public const ROUTE_ENTRY_LISTS = ['blocklist', 'warplist', 'includelist', 'subnetlist'];
+
     public function isRouteEntryList(string $type): bool
     {
-        return in_array($type, ['blocklist', 'warplist', 'includelist', 'subnetlist'], true);
+        return in_array($type, self::ROUTE_ENTRY_LISTS, true);
     }
 
     /**
@@ -9780,16 +10100,27 @@ DNS-over-HTTPS with IP:
     {
         $c  = $this->getPacConf();
         $xr = $this->getXray();
-        $xr['outbounds'] = [
-            [
+        // Конфиг нечитаем — правила не трогаем: собранный «с нуля» xr уехал бы
+        // в restartXray() без inbounds, то есть без единого клиента.
+        if (!is_array($xr)) {
+            error_log('xrayUpdateRules: xray.json unreadable, rules left as is');
+            return;
+        }
+        // Свои три аутбаунда обновляем НА МЕСТЕ, чужие оставляем: раньше
+        // outbounds перезаписывались целиком на каждое изменение block/warp-
+        // списка, и добавленный админом через webapp аутбаунд молча исчезал —
+        // а правила с его тегом оставались висячими (xray их просто игнорирует,
+        // трафик уходил в первый аутбаунд).
+        $own = [
+            'direct' => [
                 "protocol" => "freedom",
                 "tag"      => "direct",
             ],
-            [
+            'block' => [
                 "protocol" => "blackhole",
                 "tag"      => "block",
             ],
-            [
+            'warp' => [
                 "protocol" => "socks",
                 "tag"      => "warp",
                 "settings" => [
@@ -9802,6 +10133,19 @@ DNS-over-HTTPS with IP:
                 ],
             ],
         ];
+        $outbounds = [];
+        foreach (($xr['outbounds'] ?? []) as $ob) {
+            $tag = (string) ($ob['tag'] ?? '');
+            if (isset($own[$tag])) {
+                $outbounds[] = $own[$tag];
+                unset($own[$tag]);
+                continue;
+            }
+            $outbounds[] = $ob;
+        }
+        // Порядок важен: первый аутбаунд в xray — дефолтный маршрут, поэтому
+        // недостающие свои дописываем в конец, а не в начало.
+        $xr['outbounds'] = array_merge($outbounds, array_values($own));
         $rules = [];
         // block/warp: раскладываем каждый список на xray domain/ip с учётом
         // префиксов маршрутизации (regexp:/keyword:/full:/domain:).
@@ -9836,6 +10180,21 @@ DNS-over-HTTPS with IP:
     // Asset-путь ядру задаётся автоматически при старте xray (restartXray +
     // start_xray.sh: XRAY_LOCATION_ASSET=/logs/geodata) — ручных шагов не нужно.
 
+    // Встроенные категории ядра (geosite:/geoip:) живут в файлах с фиксированными
+    // именами. Образ xray их не содержит — xray.dockerfile удаляет geoip.dat и
+    // geosite.dat, а XRAY_LOCATION_ASSET указан на общий /logs/geodata, — поэтому
+    // бот качает их сам, как обычные записи реестра datlist, но по фиксированным
+    // ссылкам и не показывая их в списке: пользователь про них не знает, он
+    // просто пишет «geosite:category-ads-all».
+    public const CORE_DAT = [
+        'geosite' => 'geosite.dat',
+        'geoip'   => 'geoip.dat',
+    ];
+    public const CORE_DAT_URL = [
+        'geosite.dat' => 'https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat',
+        'geoip.dat'   => 'https://github.com/v2fly/geoip/releases/latest/download/geoip.dat',
+    ];
+
     public function datDir(): string
     {
         return '/logs/geodata';
@@ -9844,6 +10203,23 @@ DNS-over-HTTPS with IP:
     public function datPath(string $name): string
     {
         return $this->datDir() . '/' . basename($name);
+    }
+
+    // Какие из встроенных .dat нужны прямо сейчас: файл требуется, только если
+    // хотя бы одна включённая запись списков маршрутизации написана как
+    // geosite:/geoip:. Пока таких записей нет, ничего не качаем.
+    public function coreDatNeeded(array $conf): array
+    {
+        $need = [];
+        foreach (self::ROUTE_ENTRY_LISTS as $list) {
+            foreach (array_keys(array_filter($conf[$list] ?? [])) as $e) {
+                $kind = $this->classifyRouteEntry((string) $e)['kind'];
+                if (isset(self::CORE_DAT[$kind])) {
+                    $need[self::CORE_DAT[$kind]] = true;
+                }
+            }
+        }
+        return array_keys($need);
     }
 
     // Готов ли .dat для ext-значения "file.dat:tag" (файл уже скачан на сервере).
@@ -10054,8 +10430,16 @@ DNS-over-HTTPS with IP:
             @mkdir($dir, 0755, true);
         }
         $errors = [];
-        $keep   = [];
+        // Встроенные geosite.dat/geoip.dat не значатся в реестре datlist, но
+        // сборщик осиротевших файлов ниже сносил бы их вместе с чужими — в том
+        // числе положенные админом руками (это и происходило на первом же
+        // toggle/datrefresh). Держим их всегда, а качаем только когда в списках
+        // появилась запись geosite:/geoip:.
+        $keep   = array_fill_keys(array_values(self::CORE_DAT), true);
         $source = [];
+        foreach ($this->coreDatNeeded($conf) as $file) {
+            $enabled[] = "$file:" . self::CORE_DAT_URL[$file];
+        }
         foreach ($enabled as $key) {
             if (!preg_match('~^([\w.\-]+\.dat):(https://.+)$~i', $key, $m)) {
                 continue;
@@ -10464,10 +10848,26 @@ DNS-over-HTTPS with IP:
     // адресу: он уникален внутри подсети инстанса и присутствует у пира в любом
     // состоянии — 'AllowedIPs' у включённого, '# AllowedIPs' у выключенного
     // (switchClient комментирует все ключи).
-    public function peerIndexByClient(array $conf, array $client): ?int
+    // Единая реакция на недоступный контейнер WG. Читать конфиг перед правкой
+    // обязаны все, кто потом зовёт createConfig(): на null он собирает конфиг из
+    // одной секции [Interface] — без PrivateKey, ListenPort и без единого пира,
+    // и эта заглушка уезжает в wg0.conf, как только ssh восстановился.
+    public function wgConfUnavailable(string $what): void
+    {
+        $this->send(
+            $this->input['chat'] ?? '',
+            "wireguard: конфиг недоступен (контейнер не отвечает), $what",
+            $this->input['message_id'] ?? null,
+        );
+    }
+
+    // $conf допускает null: readConfig() возвращает его при недоступном
+    // контейнере, и строгая сигнатура (array $conf) роняла все четыре вызова
+    // фатальным TypeError вместо штатного «пир не найден».
+    public function peerIndexByClient(?array $conf, array $client): ?int
     {
         $addr = $client['interface']['Address'] ?? null;
-        if (empty($addr)) {
+        if ($conf === null || empty($addr)) {
             return null;
         }
         foreach (($conf['peers'] ?? []) as $k => $v) {
@@ -10484,6 +10884,13 @@ DNS-over-HTTPS with IP:
         $conf    = $this->readConfig();
         $clients = $this->readClients();
         if (empty($clients[$client])) {
+            return $menu ? $this->menu('wg', $page) : null;
+        }
+        // Без конфига удаление прошло бы только локально: запись из clients.json
+        // исчезла, а пир на сервере продолжает пускать трафик, и вернуть его в
+        // меню уже нечем.
+        if (empty($conf['interface'])) {
+            $this->wgConfUnavailable('клиент не удалён');
             return $menu ? $this->menu('wg', $page) : null;
         }
         // Пира ищем по адресу, а не по индексу: если совпадения нет, значит на
@@ -10505,6 +10912,13 @@ DNS-over-HTTPS with IP:
     public function dnsPeer($client, $page)
     {
         $clients = $this->readClients();
+        // Индекс клиента приходит из кнопки, а список мог переиндексироваться
+        // (deleteClient) — без проверки создавалась фантомная запись без
+        // PrivateKey/Address. Такой guard есть у соседей (renameClient, setIps,
+        // changeClientMTU).
+        if (empty($clients[$client])) {
+            return $this->menu('wg', $page);
+        }
         $clients[$client]['interface']['DNS'] = '10.10.0.5';
         $this->saveClients($clients);
         $this->menu('client', "{$client}_$page");
@@ -10838,13 +11252,15 @@ DNS-over-HTTPS with IP:
                 if (!empty($v['# PublicKey'])) {
                     $conf['peers'][$k]['online'] = 'off';
                 } else {
-                    $conf['peers'][$k]['status'] = $status ? $this->getStatusPeer($v['PublicKey'], $status['peers']) : 'error';
-                    $conf['peers'][$k]['online'] = preg_match('~^(\d+ seconds|[12] minute)~', $conf['peers'][$k]['status']['latest handshake']) ? 'online' : '';
+                    // ?? [] — у интерфейса без единого пира ключа 'peers' в
+                    // статусе нет вовсе.
+                    $conf['peers'][$k]['status'] = $status ? $this->getStatusPeer($v['PublicKey'], $status['peers'] ?? []) : 'error';
+                    $conf['peers'][$k]['online'] = preg_match('~^(\d+ seconds|[12] minute)~', (string) ($conf['peers'][$k]['status']['latest handshake'] ?? '')) ? 'online' : '';
                 }
             }
             foreach ($conf['peers'] as $k => $v) {
                 if (empty($v['# PublicKey'])) {
-                    preg_match_all('~([0-9.]+\.?)\s(\w+)~', $v['status']['transfer'], $m);
+                    preg_match_all('~([0-9.]+\.?)\s(\w+)~', (string) ($v['status']['transfer'] ?? ''), $m);
                     $tr = $m[0] ? ceil($m[1][1]) . '↓' . substr($m[2][1], 0, 1) . '/' . ceil($m[1][0]) . '↑' . substr($m[2][0], 0, 1) : '';
                 } else {
                     $tr = '';
@@ -11072,25 +11488,44 @@ DNS-over-HTTPS with IP:
         $this->subnet($wgpage, $page, $openconnect);
     }
 
+    /**
+     * Пересобирает директивы route в ocserv.conf по списку подсетей.
+     *
+     * Чистая функция — конфиг и подсети снаружи: раньше сборка сидела внутри
+     * ocservRoute() вместе с чтением файла, и покрыть её тестом было нельзя, а
+     * ошибка была ровно в ней. Каждый маршрут обязан идти СВОЕЙ строкой:
+     * прежний `$t .= "route = $v";` без перевода строки склеивал их
+     * («route = 10.0.0.0/24route = 192.168.0.0/16»), и ocserv не стартовал. С
+     * одной подсетью это было незаметно, поэтому дефект дожил до аудита.
+     */
+    public static function ocservRouteConf(string $conf, array $subnets): string
+    {
+        // Вместе со строкой убираем и её перевод строки, иначе на месте
+        // маршрутов копятся пустые строки.
+        $t      = preg_replace('~^route[^\n]*\n?~m', '', $conf);
+        $routes = [];
+        foreach ($subnets as $v) {
+            $v = trim((string) $v);
+            // Якорь в конце обязателен: без него в конфиг уезжала вся строка
+            // целиком, включая хвост вида «10.0.0.0/24 foo». Октеты и длину
+            // префикса проверяем по значению, а не по числу цифр.
+            if (!preg_match('~^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$~', $v, $m)
+                || filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false
+                || (int) $m[2] > 32
+            ) {
+                continue;
+            }
+            $routes[] = $v;
+        }
+        return rtrim((string) $t, "\n") . "\n"
+            . implode("\n", array_map(fn($r) => "route = $r", $routes ?: ['default'])) . "\n";
+    }
+
     public function ocservRoute()
     {
         $p = $this->getPacConf();
         $c = file_get_contents('/config/ocserv.conf');
-        $t = preg_replace('~^route[^\n]+~sm', '', $c);
-        if (!empty($p['subnets'])) {
-            foreach ($p['subnets'] as $v) {
-                if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}~', $v)) {
-                    $t .= "route = $v";
-                    $flag = true;
-                }
-            }
-            if (empty($flag)) {
-                $t .= 'route = default';
-            }
-        } else {
-            $t .= 'route = default';
-        }
-        $this->restartOcserv($t);
+        $this->restartOcserv(self::ocservRouteConf($c, (array) ($p['subnets'] ?? [])));
     }
 
     public function calc()
@@ -11115,10 +11550,13 @@ DNS-over-HTTPS with IP:
         $text = array_map(fn ($e) => trim($e), $text);
         if (!empty($text)) {
             foreach ($text as $k => $v) {
-                if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}~', $v)) {
+                // Якорь конца строки — как в ocservRouteConf(): без него
+                // «10.0.0.0/24 мусор» проходил целиком, и ip2long ниже отдавал
+                // false, то есть считал диапазон от нулевого адреса.
+                if (preg_match('~^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$~', $v)) {
                     $include[] = $v;
                 }
-                if (preg_match('~^-(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})~', $v, $m)) {
+                if (preg_match('~^-(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})$~', $v, $m)) {
                     $exclude[] = $m[1];
                 }
             }
@@ -11210,6 +11648,9 @@ DNS-over-HTTPS with IP:
     public function changeAllowedIps($k, $page = 0)
     {
         $clients = $this->readClients();
+        if (empty($clients[$k])) {
+            return $this->menu('wg', $page);
+        }
         // parse_mode HTML: сырое имя клиента ломает разметку (см. getClient).
         $name    = htmlspecialchars($this->getName($clients[$k]['interface']));
         $text    = "Menu -> Wireguard -> $name -> Change AllowedIPs\n\n";
@@ -11291,7 +11732,7 @@ DNS-over-HTTPS with IP:
         if (empty($clients[$k])) {
             return $this->menu('wg', $page);
         }
-        $clients[$k]['peers'][0]['AllowedIPs'] = self::sanitizeConfValue($ips);
+        $clients[$k]['peers'][0]['AllowedIPs'] = self::sanitizeAllowedIps($ips);
         $this->saveClients($clients);
         $this->menu('client', "{$k}_$page");
     }
@@ -11625,6 +12066,9 @@ DNS-over-HTTPS with IP:
     {
         $count   = $this->limit;
         $clients = $this->readClients();
+        // Инициализация: без клиентов (или при $page вне диапазона) функция
+        // возвращала необъявленную переменную — «Undefined variable $data».
+        $data    = [];
         if (!empty($clients)) {
             $all     = (int) ceil(count($clients) / $count);
             $page    = min($page, $all - 1);
@@ -11633,7 +12077,7 @@ DNS-over-HTTPS with IP:
             $c = $this->getXray();
             foreach ($clients as $k => $v) {
                 $vless = false;
-                foreach ($c['inbounds'][0]['settings']['clients'] as $vl) {
+                foreach (($c['inbounds'][0]['settings']['clients'] ?? []) as $vl) {
                     if (!empty($vl['awg']) && $vl['awg'] == $v['interface']['PrivateKey']) {
                         $vless = $vl['email'];
                         break;
@@ -11683,30 +12127,55 @@ DNS-over-HTTPS with IP:
         return $r;
     }
 
-    public function addCommunityFilter()
+    /**
+     * Импорт внешнего списка доменов в includelist.
+     *
+     * Записи проходят тот же путь, что ручной ввод (addInclude) и импорт файла
+     * (importListFile): нормализация (punycode, нижний регистр), отсев мусора
+     * и схлопывание семантических дублей. Раньше строки из сети клались в
+     * список СЫРЫМИ — в нём оседали пустые записи, комментарии и дубли вида
+     * «vk.com» + «domain:vk.com», которые ядра потом молча выбрасывали.
+     */
+    public function addExternalFilter(string $url): void
     {
-        $pac = $this->getPacConf();
-        $l   = array_filter(array_map(fn($e) => trim($e), explode("\n", file_get_contents('https://community.antifilter.download/list/domains.lst'))));
-        if (!empty($l)) {
-            foreach ($l as $k => $v) {
-                $pac['includelist'][$v] = true;
-            }
+        // file_get_contents отдаёт false при недоступном источнике: без
+        // проверки explode(false) давал одну пустую запись, а сам список
+        // молча оставался прежним — пользователю при этом рисовали успех.
+        $body = @file_get_contents($url);
+        if ($body === false) {
+            $this->send($this->input['chat'] ?? '', 'не удалось скачать список: ' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8'), $this->input['message_id'] ?? null);
+            return;
         }
+        $pac   = $this->getPacConf();
+        $added = 0;
+        foreach (preg_split('~\r\n|\r|\n~', $body) as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+            $key = $this->normalizeRouteEntry($line);
+            if (!$this->routeEntryUsable($this->classifyRouteEntry($key))) {
+                continue;
+            }
+            if (!array_key_exists($key, $pac['includelist'] ?? [])) {
+                $added++;
+            }
+            $pac['includelist'][$key] = true;
+        }
+        ['list' => $pac['includelist']] = $this->dedupeRouteList($pac['includelist'] ?? []);
+        ksort($pac['includelist']);
         $this->setPacConf($pac);
         $this->pacUpdate();
     }
 
+    public function addCommunityFilter()
+    {
+        $this->addExternalFilter('https://community.antifilter.download/list/domains.lst');
+    }
+
     public function addLegizFilter()
     {
-        $pac = $this->getPacConf();
-        $l   = array_filter(array_map(fn($e) => trim($e), explode("\n", file_get_contents('https://github.com/legiz-ru/sb-rule-sets/raw/main/ru-bundle.lst'))));
-        if (!empty($l)) {
-            foreach ($l as $k => $v) {
-                $pac['includelist'][$v] = true;
-            }
-        }
-        $this->setPacConf($pac);
-        $this->pacUpdate();
+        $this->addExternalFilter('https://github.com/legiz-ru/sb-rule-sets/raw/main/ru-bundle.lst');
     }
 
     public function pacMenu($page = 0)
@@ -11724,6 +12193,10 @@ DNS-over-HTTPS with IP:
         $ip     = $this->getDomain();
         $hash   = $this->getHashBot();
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
+        // Параметры отделяются «?», а не «&»: без вопросительного знака строка
+        // запроса не начинается вовсе, $_GET пуст, и index.php отдавал $type =
+        // 'pac' — то есть кнопки «PAC ShadowSocks(Android)», «Reverse PAC» и
+        // «Reverse PAC SS(Android)» выдавали не тот список, что обещали.
         $text   = <<<text
                 Menu -> pac
                 text;
@@ -11738,7 +12211,7 @@ DNS-over-HTTPS with IP:
                     text;
             $urls[0][] = [
                 'text'    => "PAC",
-                'web_app' => ['url'  => "https://$ip/pac$hash&a=127.0.0.1&p=1080"],
+                'web_app' => ['url'  => "https://$ip/pac$hash?a=127.0.0.1&p=1080"],
             ];
         }
         if ($mpac) {
@@ -11748,11 +12221,11 @@ DNS-over-HTTPS with IP:
 
 
                     <b>Shadowsocks-android PAC ({$mpac['time']} / {$mpac['sz']}):</b>
-                    <code>$scheme://$ip/pac$hash&t=mpac</code>
+                    <code>$scheme://$ip/pac$hash?t=mpac</code>
                     text;
             $urls[0][] = [
                 'text'    => "PAC ShadowSocks(Android)",
-                'web_app' => ['url'  => "https://$ip/pac$hash&t=mpac"],
+                'web_app' => ['url'  => "https://$ip/pac$hash?t=mpac"],
             ];
         }
         if ($rpac) {
@@ -11762,15 +12235,15 @@ DNS-over-HTTPS with IP:
 
 
                     <b>Reverse PAC ({$rpac['time']} / {$rpac['sz']}):</b>
-                    <code>$scheme://$ip/pac$hash&t=rpac&a=127.0.0.1&p=1080</code>
+                    <code>$scheme://$ip/pac$hash?t=rpac&a=127.0.0.1&p=1080</code>
                     text;
             $urls[0][] = [
                 'text' => "Reverse PAC",
-                'url'  => "$scheme://$ip/pac$hash&t=rpac",
+                'url'  => "$scheme://$ip/pac$hash?t=rpac",
             ];
             $urls[1][] = [
                 'text' => "Reverse PAC Wireguard proxy",
-                'url'  => "$scheme://$ip/pac$hash&t=rpac&a=10.10.0.3",
+                'url'  => "$scheme://$ip/pac$hash?t=rpac&a=10.10.0.3",
             ];
         }
         if ($rmpac) {
@@ -11780,11 +12253,11 @@ DNS-over-HTTPS with IP:
 
 
                     <b>Reverse shadowsocks-android PAC ({$rmpac['time']} / {$rmpac['sz']}):</b>
-                    <code>$scheme://$ip/pac$hash&t=rmpac</code>
+                    <code>$scheme://$ip/pac$hash?t=rmpac</code>
                     text;
             $urls[2][] = [
                 'text' => "Reverse PAC SS(Android)",
-                'url'  => "$scheme://$ip/pac$hash&t=rmpac",
+                'url'  => "$scheme://$ip/pac$hash?t=rmpac",
             ];
         }
         if ($urls) {
@@ -11842,9 +12315,23 @@ DNS-over-HTTPS with IP:
                 $this->xtlsrulesset();
                 break;
             case 'datlist':
-                $this->datSync();       // реестр пуст → удалит все .dat файлы
+                // Реестр пуст → удалит все .dat файлы, кроме встроенных
+                // geosite/geoip: они не в реестре и нужны записям geosite:/geoip:.
+                $this->datSync();
                 $this->xrayUpdateRules();
                 $this->xtlsdat();
+                break;
+            // Кнопка «delete all» рисуется для КАЖДОГО списка (listPac), а
+            // веток здесь было меньше: список стирался, но ни одного update()
+            // не следовало — меню «зависало» на экране подтверждения.
+            case 'subnetlist':
+                $this->xtlssubnet();
+                break;
+            case 'tunpackage':
+                $this->tunpackage();
+                break;
+            case 'tunprocess':
+                $this->tunprocess();
                 break;
         }
     }
@@ -11875,6 +12362,17 @@ DNS-over-HTTPS with IP:
                 break;
             case 'datlist':
                 $dir = 'dat';
+                break;
+            // Для tun-списков ветки не было вовсе, и заголовок собирался из
+            // неопределённой переменной.
+            case 'tunpackage':
+                $dir = 'TUN PACKAGE';
+                break;
+            case 'tunprocess':
+                $dir = 'TUN PROCESS';
+                break;
+            default:
+                $dir = $type;
                 break;
         }
         $text   = <<<text
@@ -11951,6 +12449,15 @@ DNS-over-HTTPS with IP:
                     ],
                 ];
                 break;
+            case 'tunpackage':
+            case 'tunprocess':
+                $data[] = [
+                    [
+                        'text'          => $this->i18n('back'),
+                        'callback_data' => "/$type",
+                    ],
+                ];
+                break;
         }
         $this->update(
             $this->input['chat'],
@@ -11962,7 +12469,10 @@ DNS-over-HTTPS with IP:
 
     public function exportList($type)
     {
-        $domains = $this->getPacConf()[$type];
+        // ?? [] и инициализация: списка может не быть в pac.json вовсе
+        // (кнопка экспорта рисуется всегда), и обе строки давали warning.
+        $domains = $this->getPacConf()[$type] ?? [];
+        $text    = '';
         if (!empty($domains)) {
             foreach ($domains as $k => $v) {
                 $text .= "$k;$v\n";
@@ -12357,7 +12867,9 @@ DNS-over-HTTPS with IP:
     {
         $conf = $this->getPacConf();
         $i = 0;
-        foreach ($conf[$type] as $k => $v) {
+        // ?? [] — кнопка могла прийти из сообщения, отрисованного до полной
+        // очистки списка (deleteYes).
+        foreach (($conf[$type] ?? []) as $k => $v) {
             if ($key == $i) {
                 switch ($action) {
                     case 'change':
@@ -12571,9 +13083,12 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    // ?? перед ?:, а не голое чтение: ключа может не быть (и до аудита
+    // 2026-08-12 не было у 62 надписей), а тогда каждая такая кнопка добавляла
+    // «Undefined array key» в лог. Фолбэк прежний — сам ключ.
     public function i18n(string $menu): string
     {
-        return $this->i18n[$menu][$this->language] ?: $menu;
+        return ($this->i18n[$menu][$this->language] ?? '') ?: $menu;
     }
 
     // Пере-пиниваем глобальный выбранный инстанс (wg_instance в pac.json) на
@@ -13676,6 +14191,15 @@ DNS-over-HTTPS with IP:
     // ports[getInstanceWG()]['port']), и владельцы пиров ПЕРВОГО инстанса
     // получали конфиг, указывающий на НУЛЕВОЙ. 51821 — как в
     // docker-compose.override.yml.
+    // ВНУТРЕННИЙ порт ssserver. Он фиксирован: start_ss.sh переписывает
+    // server_port в конфиге на 8388 при каждом старте, docker маппит на него
+    // внешний порт, а sslocal/cloak/simple-tls коннектятся именно сюда.
+    // Раньше все эти места читали getenv('SSPORT') — то есть заданный кем-то
+    // SSPORT (например, внешний порт из override.env) разом ломал и bind
+    // ssserver'а, и апстримы cloak/simple-tls. Внешний порт живёт отдельно и
+    // идёт только в ss://-ссылку (buildSSLink/menuSS).
+    public const SS_INTERNAL_PORT = 8388;
+
     public const PORT_FALLBACK = [
         'wg1' => '51821',
     ];
@@ -14332,7 +14856,13 @@ DNS-over-HTTPS with IP:
     public function switchMonthlyStats()
     {
         $c = $this->getPacConf();
-        $c['reset_monthly'] = $c['reset_monthly'] ? 0 : 1;
+        $c['reset_monthly'] = !empty($c['reset_monthly']) ? 0 : 1;
+        // Отметку ставим сразу при включении: расписание считает «сброс уже
+        // был в этом месяце», и первый же тик крона не стирает накопленное.
+        // checkResetXrayStats() перестраховывается тем же условием.
+        if ($c['reset_monthly'] && empty($c['last_reset_xray_time'])) {
+            $c['last_reset_xray_time'] = time();
+        }
         $this->setPacConf($c);
         $this->xray();
     }
@@ -15498,9 +16028,58 @@ DNS-over-HTTPS with IP:
         return is_array($data) ? $data : [];
     }
 
+    // Атомарная запись — как setOnlineState()/setPacConf(). Файл читается на
+    // публичном endpoint'е (processHwidRequest) из нескольких воркеров, а
+    // писался обычным file_put_contents: читатель ловил его на середине записи,
+    // getHwidStorage() отдавал [] — и привязки устройств «исчезали» у всех
+    // разом, освобождая лимит. json_encode проверяем по той же причине, что и
+    // везде: false превратился бы в пустой файл с рапортом об успехе.
     public function setHwidStorage(array $storage)
     {
-        file_put_contents($this->hwid, json_encode($storage, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $json = json_encode($storage, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            error_log('setHwidStorage: not written — ' . json_last_error_msg());
+
+            return false;
+        }
+        $tmp = $this->hwid . '.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+
+            return false;
+        }
+        return rename($tmp, $this->hwid);
+    }
+
+    /**
+     * Read-modify-write хранилища HWID под межпроцессным локом.
+     *
+     * Проверка лимита и запись устройства раньше шли двумя независимыми
+     * операциями над целым файлом: два устройства, пришедшие одновременно,
+     * оба видели «мест хватает» и оба записывались (обход лимита), а запись
+     * того, кто закончил первым, терялась. Лок держим на отдельном .lock —
+     * сам файл подменяется через rename(), и лок на его inode после подмены
+     * защищал бы уже несуществующий файл.
+     *
+     * @param callable $fn fn(array &$storage): mixed — возвращаемое значение отдаётся наружу
+     */
+    public function hwidUpdate(callable $fn)
+    {
+        $lock = @fopen($this->hwid . '.lock', 'c');
+        if ($lock !== false) {
+            flock($lock, LOCK_EX);
+        }
+        try {
+            $storage = $this->getHwidStorage();
+            $result  = $fn($storage);
+            $this->setHwidStorage($storage);
+            return $result;
+        } finally {
+            if ($lock !== false) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
     }
 
     public function getHwidDevicesByUser($uid)
@@ -15509,32 +16088,33 @@ DNS-over-HTTPS with IP:
         return $storage[$uid] ?? [];
     }
 
+    // Все мутации идут через hwidUpdate(): иначе правка из меню (удаление
+    // устройства админом) затирала бы регистрацию, только что записанную
+    // публичным endpoint'ом, и наоборот.
     public function setHwidDevice($uid, $hwid, array $info)
     {
-        $storage = $this->getHwidStorage();
-        $storage[$uid][$hwid] = $info;
-        $this->setHwidStorage($storage);
+        $this->hwidUpdate(function (array &$storage) use ($uid, $hwid, $info) {
+            $storage[$uid][$hwid] = $info;
+        });
     }
 
     public function deleteHwidDevice($uid, $hwid)
     {
-        $storage = $this->getHwidStorage();
-        if (isset($storage[$uid][$hwid])) {
-            unset($storage[$uid][$hwid]);
-            if (empty($storage[$uid])) {
-                unset($storage[$uid]);
+        $this->hwidUpdate(function (array &$storage) use ($uid, $hwid) {
+            if (isset($storage[$uid][$hwid])) {
+                unset($storage[$uid][$hwid]);
+                if (empty($storage[$uid])) {
+                    unset($storage[$uid]);
+                }
             }
-            $this->setHwidStorage($storage);
-        }
+        });
     }
 
     public function deleteHwidUser($uid)
     {
-        $storage = $this->getHwidStorage();
-        if (isset($storage[$uid])) {
+        $this->hwidUpdate(function (array &$storage) use ($uid) {
             unset($storage[$uid]);
-            $this->setHwidStorage($storage);
-        }
+        });
     }
 
     protected function getHwidTokenScope($index)
@@ -15631,23 +16211,33 @@ DNS-over-HTTPS with IP:
             return false;
         }
 
-        $isNew = !isset($devices[$hwid]);
+        $info = [
+            'time'         => time(),
+            'user_agent'   => $_SERVER['HTTP_USER_AGENT'] ?? '',
+            'device_os'    => $_SERVER['HTTP_X_DEVICE_OS'] ?? '',
+            'os_version'   => $_SERVER['HTTP_X_VER_OS'] ?? '',
+            'device_model' => $_SERVER['HTTP_X_DEVICE_MODEL'] ?? '',
+        ];
+        // Проверка лимита и запись — одной операцией под локом. Раздельно они
+        // давали гонку: два новых устройства, пришедшие одновременно на разные
+        // воркеры, оба видели свободное место и оба записывались.
+        $uid     = $client['id'];
+        $allowed = $this->hwidUpdate(function (array &$storage) use ($uid, $hwid, $limit, $info) {
+            $devices = $storage[$uid] ?? [];
+            if (!isset($devices[$hwid]) && count($devices) >= $limit) {
+                return false;
+            }
+            $storage[$uid][$hwid] = $info;
+            return true;
+        });
 
-        if ($isNew && count($devices) >= $limit) {
+        if (!$allowed) {
             $message = 'HWID device limit exceeded';
             header('announce: base64:' . base64_encode($message));
             header('X-HWID-Status: ' . $message);
             header('HTTP/1.1 429 Too Many Requests', true, 429);
             return false;
         }
-
-        $this->setHwidDevice($client['id'], $hwid, [
-            'time'         => time(),
-            'user_agent'   => $_SERVER['HTTP_USER_AGENT'] ?? '',
-            'device_os'    => $_SERVER['HTTP_X_DEVICE_OS'] ?? '',
-            'os_version'   => $_SERVER['HTTP_X_VER_OS'] ?? '',
-            'device_model' => $_SERVER['HTTP_X_DEVICE_MODEL'] ?? '',
-        ]);
 
         return true;
     }
@@ -15769,39 +16359,57 @@ DNS-over-HTTPS with IP:
 
     public function suspicious($regexp, $file, $ranges, $title, $reverse = false)
     {
+        // Одиночные адреса (а их в $ranges подавляющее большинство: analysisIp
+        // складывает туда каждый IP из трёх логов) проверяем хеш-поиском, и
+        // только настоящие подсети — перебором с ipInRange(). Плюс запоминаем
+        // вердикт по адресу: в логе один и тот же IP встречается сотнями строк.
+        // Прежний код гонял ipInRange() по ВСЕМУ списку на каждую строку —
+        // 200 тыс. строк на 3 тыс. адресов давали ~6·10⁸ сравнений за прогон.
+        $exact = [];
+        $cidrs = [];
+        foreach ((is_array($ranges) ? $ranges : [$ranges]) as $range) {
+            if (preg_match('~^(\d{1,3}(?:\.\d{1,3}){3})(?:/32)?$~', (string) $range, $rm)) {
+                $exact[$rm[1]] = true;
+            } else {
+                $cidrs[] = $range;
+            }
+        }
+        $inRange = function (string $ip) use ($exact, $cidrs) {
+            static $memo = [];
+            if (isset($memo[$ip])) {
+                return $memo[$ip];
+            }
+            $hit = isset($exact[$ip]);
+            if (!$hit) {
+                foreach ($cidrs as $range) {
+                    if ($this->ipInRange($ip, $range)) {
+                        $hit = true;
+                        break;
+                    }
+                }
+            }
+            return $memo[$ip] = $hit;
+        };
+        $ret = [];
         if ($r = fopen($file, 'r')) {
             while (feof($r) === false) {
                 $l = fgets($r);
                 if (preg_match('~(\d+\.\d+\.\d+\.\d+)~', $l, $m)) {
                     if ($reverse xor preg_match($regexp, $l)) {
-                        if (is_array($ranges)) {
-                            $flag = true;
-                            foreach ($ranges as $range) {
-                                if ($this->ipInRange($m[1], $range)) {
-                                    $flag = false;
-                                    break;
-                                }
-                            }
-                            if ($flag) {
-                                $ret[$m[1]][] = [
-                                    'title' => $title,
-                                    'log'   => $l,
-                                ];
-                            }
-                        } else {
-                            if ($this->ipInRange($m[1], $ranges)) {
-                                $ret[$m[1]][] = [
-                                    'title' => $title,
-                                    'log'   => $l,
-                                ];
-                            }
+                        // Массив в $ranges — это СПИСОК ИСКЛЮЧЕНИЙ (подозрителен
+                        // тот, кого в нём нет), скаляр — наоборот, фильтр «свой».
+                        if (is_array($ranges) xor $inRange($m[1])) {
+                            $ret[$m[1]][] = [
+                                'title' => $title,
+                                'log'   => $l,
+                            ];
                         }
                     }
                 }
             }
             fclose($r);
         }
-        return $ret ?: [];
+        return $ret;
     }
 
     // Host CPU usage in percent, sampled over a short interval. /proc/stat is the
@@ -17026,47 +17634,32 @@ DNS-over-HTTPS with IP:
     public function analysisIp(int $page = 0, $return = false)
     {
         $pac = $this->getPacConf();
-        $xr  = [];
+        // Набор строим по КЛЮЧАМ: прежний in_array() по растущему списку давал
+        // квадрат уже на этапе сборки — три лога по сотне тысяч строк каждый
+        // против нескольких тысяч уже накопленных адресов.
+        $set = [];
         foreach (array_merge($pac['white'] ?: [], $pac['deny'] ?: [], ['10.10.0.0/23']) as $v) {
             if (preg_match('~^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:(/\d{1,2}))?$~', $v, $m)) {
-                if (!in_array($m[1] . ($m[2] ?: '/32'), $xr)) {
-                    $xr[] = $m[1] . ($m[2] ?: '/32');
-                }
+                $set[$m[1] . ($m[2] ?: '/32')] = true;
             }
         }
-        if ($r = fopen('/logs/nginx_tlgrm_access', 'r')) {
+        // Свои: кто ходил в панель, в DoH и подключался к xray. Формат строки
+        // у логов разный, поэтому и регулярки разные.
+        $collect = function (string $file, string $re) use (&$set) {
+            if (!($r = @fopen($file, 'r'))) {
+                return;
+            }
             while (feof($r) === false) {
-                $l = fgets($r);
-                if (preg_match('~(\d+\.\d+\.\d+\.\d+)~', $l, $m)) {
-                    if (!in_array("{$m[1]}/32", $xr)) {
-                        $xr[] = "{$m[1]}/32";
-                    }
+                if (preg_match($re, (string) fgets($r), $m)) {
+                    $set["{$m[1]}/32"] = true;
                 }
             }
             fclose($r);
-        }
-        if ($r = fopen('/logs/nginx_doh_access', 'r')) {
-            while (feof($r) === false) {
-                $l = fgets($r);
-                if (preg_match('~(\d+\.\d+\.\d+\.\d+)~', $l, $m)) {
-                    if (!in_array("{$m[1]}/32", $xr)) {
-                        $xr[] = "{$m[1]}/32";
-                    }
-                }
-            }
-            fclose($r);
-        }
-        if ($r = fopen('/logs/xray', 'r')) {
-            while (feof($r) === false) {
-                $l = fgets($r);
-                if (preg_match('~(\d+\.\d+\.\d+\.\d+)(?=.+accepted)~', $l, $m)) {
-                    if (!in_array("{$m[1]}/32", $xr)) {
-                        $xr[] = "{$m[1]}/32";
-                    }
-                }
-            }
-            fclose($r);
-        }
+        };
+        $collect('/logs/nginx_tlgrm_access', '~(\d+\.\d+\.\d+\.\d+)~');
+        $collect('/logs/nginx_doh_access', '~(\d+\.\d+\.\d+\.\d+)~');
+        $collect('/logs/xray', '~(\d+\.\d+\.\d+\.\d+)(?=.+accepted)~');
+        $xr = array_keys($set);
 
         $t = [
             $this->suspicious($this->reg, '/logs/nginx_default_access', $xr, 'possibly a scanner', true),
@@ -17158,7 +17751,10 @@ DNS-over-HTTPS with IP:
             ];
             $data[] = [
                 [
-                    'text'          => $this->i18n("clean logs $search"),
+                    // Ключ собирался с подставленным адресом («clean logs 1.2.3.4»)
+                    // и не мог совпасть ни с чем никогда. Переводим надпись, а
+                    // адрес дописываем рядом.
+                    'text'          => $this->i18n('clean') . " $search",
                     'callback_data' => "/cleanLogs $search",
                 ],
             ];
@@ -17179,14 +17775,27 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Сколько строк лога на адрес показываем. Совпадения копились без предела
+    // и уходили пачками по 10 в отдельных сообщениях: активный адрес давал
+    // тысячи сообщений подряд, то есть флуд-бан бота Telegram'ом и минуты
+    // ожидания. Показываем последние — они и интересны.
+    public const SEARCH_IP_MAX_LINES = 200;
+
     public function searchIp($ip)
     {
+        $res = [];
         foreach ($this->logs as $v) {
-            if ($r = fopen("/logs/$v", 'r')) {
+            if ($r = @fopen("/logs/$v", 'r')) {
                 while (feof($r) === false) {
                     $l = fgets($r);
-                    if (preg_match('~' . preg_quote($ip) . '~', $l)) {
+                    // Делимитер в preg_quote обязателен: «~» во вводе иначе
+                    // закрывает шаблон, и preg_match падает с warning'ом на
+                    // КАЖДОЙ строке всех логов.
+                    if (preg_match('~' . preg_quote((string) $ip, '~') . '~', (string) $l)) {
                         $res[$v][] = $l;
+                        if (count($res[$v]) > self::SEARCH_IP_MAX_LINES) {
+                            array_shift($res[$v]);
+                        }
                     }
                 }
                 fclose($r);
@@ -17194,7 +17803,7 @@ DNS-over-HTTPS with IP:
         }
         if (!empty($res)) {
             foreach ($res as $k => $v) {
-                $head= "$k:\n";
+                $head = "$k:\n";
                 $t = array_chunk($v, 10);
                 foreach ($t as $j) {
                     $text = "$head<pre>";
@@ -17435,7 +18044,15 @@ DNS-over-HTTPS with IP:
     public function allowIp($ip, $page, $white = 0)
     {
         $pac = $this->getPacConf();
-        unset($pac[$white ? 'white' : 'deny'][array_search($ip, $pac[$white ? 'white' : 'deny'])]);
+        $key = $white ? 'white' : 'deny';
+        // array_search при промахе возвращает false, а unset($arr[false]) — это
+        // unset($arr[0]): вместо ненайденного адреса удалялась ПЕРВАЯ запись
+        // списка. Промах реален — кнопка из устаревшего меню, двойной клик.
+        $i = array_search($ip, $pac[$key] ?? [], false);
+        if ($i === false) {
+            return $this->denyList($page, $white);
+        }
+        unset($pac[$key][$i]);
         $this->setPacConf($pac);
         $this->syncDeny();
         $this->denyList($page, $white);
@@ -17456,7 +18073,11 @@ DNS-over-HTTPS with IP:
     public function syncDeny()
     {
         $pac = $this->getPacConf();
-        if ($r = fopen('/logs/nginx_tlgrm_access', 'r')) {
+        // Инициализация и @: лог может отсутствовать (свежая установка,
+        // очищенные логи) — тогда переменная оставалась необъявленной, и её
+        // чтение ниже сыпало warning'ами на каждый ban/unban.
+        $xr = [];
+        if ($r = @fopen('/logs/nginx_tlgrm_access', 'r')) {
             while (feof($r) === false) {
                 $l = fgets($r);
                 if (preg_match('~(\d+\.\d+\.\d+\.\d+)~', $l, $m)) {
@@ -17482,7 +18103,7 @@ DNS-over-HTTPS with IP:
             $pac['deny'] = array_unique($pac['deny']);
             sort($pac['deny']);
             foreach ($pac['deny'] as $k => $v) {
-                if (!in_array($v, $pac['white'] ?: []) && !in_array($v, array_keys($xr ?: []))) {
+                if (!in_array($v, $pac['white'] ?? []) && !isset($xr[$v])) {
                     $text .= "deny $v;\n";
                 } else {
                     unset($pac['deny'][$k]);
@@ -17505,7 +18126,11 @@ DNS-over-HTTPS with IP:
         // Share-link #remark shown as the node name in the client, prefixed with
         // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
         // this with the relay's country for relay subscriptions.
-        $remark = $this->flagName($c['inbounds'][0]['settings']['clients'][$i]['email'], $this->ip);
+        // rawurlencode, как в applyExtRemark(): #fragment ссылки — часть URI, а
+        // email клиента произволен. Символ «#» в нём обрывал имя узла у клиента
+        // и ломал подмену имени в relaySwapLink (та режет по ~#[^#]*$~), пробел
+        // и кириллица уезжали в ссылку сырыми.
+        $remark = rawurlencode($this->flagName($c['inbounds'][0]['settings']['clients'][$i]['email'], $this->ip));
         $stok   = $this->sidOf($c['inbounds'][0]['settings']['clients'][$i]); // sub locator
         $si     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
@@ -17614,8 +18239,34 @@ DNS-over-HTTPS with IP:
     // a "custom config", i.e. raw JSON dumped into one field). When 'relay' is
     // set, the link's endpoint host:port is swapped to the relay (SNI/host stay
     // real, exactly like the JSON formats).
+    /**
+     * Приводит параметры подписочного запроса к скалярам.
+     *
+     * Любой из них может приехать массивом: и из query-string (?s[]=1), и из
+     * base64-токена в пути (index.php сливает его в $_GET). Дальше значение
+     * уходит в findClientBySid(string $sid) и в $pac['relays'][$_GET['relay']],
+     * то есть TypeError и HTTP 500 вместо честного 404 — заодно бесплатная
+     * пробоотборка «жив ли сервер» для любого прохожего.
+     */
+    public function normalizeSubGet(): void
+    {
+        foreach ($_GET as $k => $v) {
+            if (!is_scalar($v)) {
+                unset($_GET[$k]);
+            }
+        }
+        // subToken разбирается отдельно от $_GET (см. subscription): вложенный
+        // массив в нём — тот же случай.
+        foreach ((array) $this->subToken as $k => $v) {
+            if (!is_scalar($v)) {
+                unset($this->subToken[$k]);
+            }
+        }
+    }
+
     public function subVless()
     {
+        $this->normalizeSubGet();
         $xr  = $this->getXray();
         $pac = $this->getPacConf();
         $this->subRateLimit($_GET['s'] ?? '');
@@ -17683,7 +18334,7 @@ DNS-over-HTTPS with IP:
         if (!empty($relay['address'])) {
             $out = preg_replace_callback(
                 '~#[^#]*$~',
-                fn() => '#' . $this->flagName($email, [$relay['address'], $this->ip]),
+                fn() => '#' . rawurlencode($this->flagName($email, [$relay['address'], $this->ip])),
                 $out,
                 1,
             );
@@ -17744,7 +18395,11 @@ DNS-over-HTTPS with IP:
             if (empty($r['address'])) {
                 continue;
             }
-            $port = (int) ($r['portmap']['443'] ?? 443);
+            // Порт берём тем же резолвером, что и ссылки (явный <ch>port >
+            // portmap > порт origin): хардкод «portmap['443'] иначе 443» врал,
+            // как только у relay задан явный порт, — проба стучалась не туда, и
+            // ВСЕ relay показывались как «⛔ down».
+            $port = (int) self::relayPort($r, 443);
             $health[$name] = $this->tcpProbe($r['address'], $port);
         }
         $this->writeRelayHealth($health);
@@ -17852,7 +18507,16 @@ DNS-over-HTTPS with IP:
             return $link;
         }
         $j['ps'] = $remark;
-        return 'vmess://' . base64_encode(json_encode($j, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        // json_encode отдаёт false на невалидном UTF-8 (а $j приходит из ЧУЖОЙ
+        // подписки), и base64_encode(false) — это пустая строка: клиент получал
+        // «vmess://» без содержимого. Оставляем исходную ссылку как есть.
+        $json = json_encode($j, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            error_log('applyVmessExtRemark: ' . json_last_error_msg());
+
+            return $link;
+        }
+        return 'vmess://' . base64_encode($json);
     }
 
     // ── Subscription addressing (subtoken, decoupled from the credential) ────
@@ -18187,11 +18851,34 @@ DNS-over-HTTPS with IP:
             return [];
         }
         foreach ($ips as $ip) {
-            if (!filter_var($ip, FILTER_VALIDATE_IP, $flags)) {
+            if (!filter_var($ip, FILTER_VALIDATE_IP, $flags) || self::isCarrierRange($ip)) {
                 return [];
             }
         }
         return array_values(array_unique($ips));
+    }
+
+    /**
+     * Диапазоны, которые FILTER_FLAG_NO_PRIV_RANGE|NO_RES_RANGE не покрывает,
+     * а до внутренней сети через них дотянуться можно:
+     *  - 100.64.0.0/10 — CGNAT (RFC 6598): в него смотрят роутеры провайдера и
+     *    внутренние адреса многих хостингов;
+     *  - 64:ff9b::/96 и 64:ff9b:1::/48 — NAT64 (RFC 6052, RFC 8215): любой
+     *    IPv4-адрес, включая 127.0.0.1, представим таким IPv6.
+     * Классические обходы (2130706433, 127.1, 0177.0.0.1) фильтр отбивает сам —
+     * он проверяет уже разрешённый адрес, а не строку из URL.
+     */
+    public static function isCarrierRange(string $ip): bool
+    {
+        $bin = @inet_pton($ip);
+        if ($bin === false) {
+            return false;
+        }
+        if (strlen($bin) === 4) {
+            return (ip2long($ip) & ~((1 << 22) - 1)) === ip2long('100.64.0.0');
+        }
+        return str_starts_with($bin, "\x00\x64\xff\x9b\x00\x00\x00\x00\x00\x00\x00\x00")  // 64:ff9b::/96
+            || str_starts_with($bin, "\x00\x64\xff\x9b\x00\x01");                          // 64:ff9b:1::/48
     }
 
     // Decode a subscription body: the common base64 newline list, or plain text.
@@ -18899,6 +19586,15 @@ DNS-over-HTTPS with IP:
                 $this->deleteWarpClient($r['inbounds'][0]['settings']['clients'][$k]['email'] ?? '');
                 unset($r['inbounds'][0]['settings']['clients'][$k]);
                 unset($st['users'][$k]);
+                // Статистика привязана к клиенту ПОЗИЦИЕЙ в списке (см. сборку
+                // $p['users'] в checkTrafficLimits и чтение в userXr/sub), а
+                // restartXray() делает clients = array_values(). Без такой же
+                // переиндексации здесь ключи расходились: накопленный трафик
+                // всех, кто ниже удалённого, доставался соседу сверху, а
+                // последний клиент терял свой global — квоты считались с нуля.
+                if (!empty($st['users'])) {
+                    $st['users'] = array_values($st['users']);
+                }
                 $this->setXrayStats($st);
                 $this->restartXray($r);
                 $this->adguardXrayClients();
@@ -18946,13 +19642,20 @@ DNS-over-HTTPS with IP:
         $p     = $this->getPacConf();
         $users = array_map(fn ($e) => trim($e), explode(',', $users));
         $users = array_map(fn ($e) => explode(':', $e), $users);
+        // Инициализация: без клиентов в конфиге (свежая установка) цикл ниже не
+        // выполнялся ни разу, и обе переменные оставались необъявленными.
+        $uuids  = [];
+        $emails = [];
         foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
             $uuids[]  = $v['id'];
             $emails[] = $v['email'];
         }
         foreach ($users as $user) {
-            $uuid = $user[1] ?: trim($this->ssh('xray uuid', 'xr'));
-            if (in_array($uuid, $uuids ?: []) || in_array($user[0], $emails ?: [])) {
+            // Формат ввода — «email» или «email:uuid»: без второй части ключа
+            // $user[1] попросту нет, и на каждом обычном добавлении шло
+            // «Undefined array key 1».
+            $uuid = ($user[1] ?? '') ?: self::xrayUuid();
+            if (in_array($uuid, $uuids) || in_array($user[0], $emails)) {
                 $this->send($this->input['chat'], "user {$user[0]} already exists");
                 return $this->xray();
             }
@@ -18965,6 +19668,11 @@ DNS-over-HTTPS with IP:
                 'trojan-grpc' => ['id' => $uuid, 'password' => bin2hex(random_bytes(16)), 'email' => $user[0], 'subtoken' => $stok],
                 default       => ['id' => $uuid, 'email' => $user[0], 'subtoken' => $stok],
             };
+            // Пополняем списки в цикле: иначе дубликаты ВНУТРИ одной пачки
+            // («a@x,a@x») проходили проверку и заводили двух клиентов с одним
+            // email — статистика xray считается как раз по email.
+            $uuids[]  = $uuid;
+            $emails[] = $user[0];
         }
         $this->restartXray($c);
         $this->adguardXrayClients();
@@ -19004,10 +19712,10 @@ DNS-over-HTTPS with IP:
         }
         if (empty($c['inbounds'][0]['settings']['clients'][$i]['off'])) {
             $c['inbounds'][0]['settings']['clients'][$i]['off'] = $c['inbounds'][0]['settings']['clients'][$i]['id'];
-            $c['inbounds'][0]['settings']['clients'][$i]['id']  = trim($this->ssh('xray uuid', 'xr'));
+            $c['inbounds'][0]['settings']['clients'][$i]['id']  = self::xrayUuid();
             if (isset($c['inbounds'][0]['settings']['clients'][$i]['password'])) {
                 $c['inbounds'][0]['settings']['clients'][$i]['off_pwd']  = $c['inbounds'][0]['settings']['clients'][$i]['password'];
-                $c['inbounds'][0]['settings']['clients'][$i]['password'] = trim($this->ssh('xray uuid', 'xr'));
+                $c['inbounds'][0]['settings']['clients'][$i]['password'] = self::xrayUuid();
             }
         } else {
             $c['inbounds'][0]['settings']['clients'][$i]['id'] = $c['inbounds'][0]['settings']['clients'][$i]['off'];
@@ -19453,7 +20161,9 @@ DNS-over-HTTPS with IP:
             <code>~fingerprint~</code>
             <code>~ip~</code>
             TEXT;
-        $templates = $pac["{$type}templates"];
+        // ?? [] — до первого сохранённого шаблона ключа нет; ниже по нему идёт
+        // foreach.
+        $templates = $pac["{$type}templates"] ?? [];
 
         $data[] = [
             [
@@ -19593,8 +20303,10 @@ DNS-over-HTTPS with IP:
         }
         $text[] = 'fingerprint: ' . $this->fingerprint();
         $st = $this->getXrayStats();
-        $td = $this->getBytes($st['global']['download'] + $st['session']['download']);
-        $tu = $this->getBytes($st['global']['upload'] + $st['session']['upload']);
+        // ?? 0 — на свежей установке (или сразу после resetXrStats) файла
+        // статистики нет вовсе, и меню xray открывалось с warning'ами.
+        $td = $this->getBytes(($st['global']['download'] ?? 0) + ($st['session']['download'] ?? 0));
+        $tu = $this->getBytes(($st['global']['upload'] ?? 0) + ($st['session']['upload'] ?? 0));
         $text[] = "↓$td  ↑$tu";
         // Строка выше — global+session ПОЛЬЗОВАТЕЛЬСКОГО inbound'а. Ниже —
         // только текущая сессия (счётчики xray обнуляются его рестартом) и
@@ -19783,8 +20495,10 @@ DNS-over-HTTPS with IP:
         $page    = $page == -2 ? $all - 1 : $page;
         $clients = $page != -1 ? array_slice($clients, $page * $this->limit, $this->limit, true) : $clients;
         foreach ($clients as $k => $v) {
-            $download = $this->getBytes($st['users'][$k]['global']['download'] + $st['users'][$k]['session']['download']);
-            $upload   = $this->getBytes($st['users'][$k]['global']['upload'] + $st['users'][$k]['session']['upload']);
+            // Тот же ?? 0, что в userXr() и sub(): у только что добавленного
+            // клиента записи в статистике ещё нет.
+            $download = $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
+            $upload   = $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
             $time     = !empty($v['time']) ? $this->getTime($v['time']) : '';
             $data[]   = [
                 [
@@ -20070,8 +20784,11 @@ DNS-over-HTTPS with IP:
         // 8с: с прежним `-m 1` и локальным резолвом живой WARP регулярно
         // показывался как off на медленном первом соединении.
         $st = $this->ssh('curl -m 8 -s -x socks5h://wp:1080 https://www.cloudflare.com/cdn-cgi/trace', 'xr');
+        // ?? '' — штатная ветка «WARP выключен»: curl не достучался, совпадения
+        // нет, и $m пуст. Раньше на каждом рендере меню warp это давало
+        // «Undefined array key 1».
         preg_match('~warp=(\w+)~', $st, $m);
-        return trim($m[1]) ?: 'off';
+        return trim($m[1] ?? '') ?: 'off';
     }
 
     public function analyzeXray()
@@ -20278,10 +20995,16 @@ DNS-over-HTTPS with IP:
 
     public function templateUser($type, $i)
     {
-        $c         = $this->getXray();
-        $pac       = $this->getPacConf();
-        $text[]    = "Menu -> " . $this->i18n('xray') . " -> {$c['inbounds'][0]['settings']['clients'][$i]['email']}\n";
-        $templates = $pac["{$type}templates"];
+        $c   = $this->getXray();
+        $pac = $this->getPacConf();
+        // Клиент мог быть удалён кнопкой из другого сообщения — тогда меню
+        // строилось из undefined index и рисовало пустой заголовок.
+        $client = $c['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if ($client === null) {
+            return $this->xray();
+        }
+        $text[]    = "Menu -> " . $this->i18n('xray') . " -> {$client['email']}\n";
+        $templates = $pac["{$type}templates"] ?? [];
         $data[]    = [
             [
                 'text'          => 'default',
@@ -20792,7 +21515,10 @@ DNS-over-HTTPS with IP:
         $hash   = $this->getHashBot();
         $email  = $c['email'];
         $stok   = $this->sidOf($c); // subscription locator (not the credential)
-        $rl     = '&relay=' . $name;
+        // Имя relay задаёт админ, а отсюда оно уходит в query-string ссылки:
+        // пробел или & в имени резали параметр (и всё, что за ним) — клиент
+        // импортировал подписку origin вместо relay.
+        $rl     = '&relay=' . rawurlencode($name);
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> (" . ($relay['address'] ?: $relay['awg_address']) . ")\n";
 
@@ -21090,15 +21816,41 @@ DNS-over-HTTPS with IP:
         return $c['domain'] ?: $this->ip;
     }
 
+    // Хост, из которого строятся все ссылки подписки (страница sub(), URL
+    // rule-provider'ов, DoH-эндпоинт в ~dns~). ?cdn= раньше подставлялся как
+    // есть: адрес уезжал и в HTML-атрибут href (кавычка ломала страницу), и в
+    // конфиг клиента — тот начинал тянуть rule-set'ы и DNS с чужого хоста.
+    // Пускаем только валидный хостнейм (та же проверка, что для nginx), иначе
+    // ведём себя так, будто параметра не было.
+    public function subDomain(array $pac): string
+    {
+        $cdn = (string) ($_GET['cdn'] ?? '');
+        if ($cdn !== '' && $this->isHostname($cdn)) {
+            return $cdn;
+        }
+        // SERVER_NAME приходит из Host запроса — проверяем той же меркой.
+        $host = (string) ($_SERVER['SERVER_NAME'] ?? '');
+        if ($host !== '' && $this->isHostname($host)) {
+            return $host;
+        }
+        return $this->getDomain(($pac['transport'] ?? '') != 'Reality');
+    }
+
     public function sub()
     {
+        $this->normalizeSubGet();
         // No token backfill here: this is a public GET endpoint, so we avoid
         // writing xray.json on the hot path (concurrent requests). sidOf() falls
         // back to the uuid when a subtoken is absent; cron/userXr backfill tokens.
         $xr     = $this->getXray();
+        // Конфиг нечитаем (файла нет, битый JSON) — findClientBySid(array $xr, …)
+        // упал бы с TypeError, то есть 500 вместо честного ответа.
+        if (!is_array($xr)) {
+            $this->subNotFound('Subscription temporarily unavailable.');
+        }
         $pac    = $this->getPacConf();
         $st     = $this->getXrayStats();
-        $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
+        $domain = $this->subDomain($pac);
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $this->subRateLimit($_GET['id'] ?? '');
@@ -21108,6 +21860,9 @@ DNS-over-HTTPS with IP:
         // Missing/disabled id: clean 404 instead of rendering the page with
         // undefined fields (which would warn and break the body).
         if ($client === null || !empty($client['off'])) {
+            // Ведро промахов — см. subscription(): ключ основного ведра
+            // содержит sid, поэтому перебор им не ограничивался.
+            $this->subRateLimit('', 'miss');
             $this->subNotFound();
         }
         if (!$this->processHwidRequest($client)) {
@@ -21334,8 +22089,60 @@ DNS-over-HTTPS with IP:
         return ['v', 'st', 'si', 'h', 'k', 'w', 'c', 'rh'];
     }
 
+    // Шаблон подписки для клиента: персональный (client.<type>template) →
+    // дефолтный из pac.json → origin (/config/<type>.json). Вынесено из
+    // subscription(): тот же шаблон нужен ЗАДОЛГО до сборки конфига — по нему
+    // проверяется имя запрошенного rule-set (ruleSetNames), а решение об этом
+    // принимается до HWID-проверки и до выбора ведра лимитера.
+    public function subTemplate(string $template, string $type, array $pac)
+    {
+        $default = base64_decode((string) ($pac["default{$type}template"] ?? ''));
+        switch (true) {
+            case !empty($template) && $template == 'origin':
+            case empty($template) && empty($pac["default{$type}template"]):
+            case empty($template) && empty($pac["{$type}templates"][$default]):
+            case !empty($template) && empty($pac["{$type}templates"][$template]):
+                return json_decode((string) @file_get_contents("/config/{$type}.json"), true);
+            case !empty($template):
+                return $pac["{$type}templates"][$template];
+            default:
+                return $pac["{$type}templates"][$default];
+        }
+    }
+
+    // Имена rule-set'ов, которые шаблон ДЕЙСТВИТЕЛЬНО объявляет: только они
+    // считаются легальным значением 'r' в токене подписки. Ровно те же места
+    // разбирают createRuleSet() (sing-box: route.rules[].createruleset[].name)
+    // и clashRules() (mihomo: rules[] с type=RULE-SET и списком).
+    public function ruleSetNames($tpl, string $type): array
+    {
+        $names = [];
+        if (!is_array($tpl)) {
+            return $names;
+        }
+        if ($type === 'sing') {
+            foreach (($tpl['route']['rules'] ?? []) as $r) {
+                foreach ((is_array($r) ? ($r['createruleset'] ?? []) : []) as $rs) {
+                    if (!empty($rs['name'])) {
+                        $names[] = (string) $rs['name'];
+                    }
+                }
+            }
+        } elseif ($type === 'clash') {
+            foreach (($tpl['rules'] ?? []) as $r) {
+                if (is_array($r) && ($r['type'] ?? '') === 'RULE-SET'
+                    && array_key_exists('list', $r) && !empty($r['name'])
+                ) {
+                    $names[] = (string) $r['name'];
+                }
+            }
+        }
+        return $names;
+    }
+
     public function subscription($return = false)
     {
+        $this->normalizeSubGet();
         switch ($_GET['t'] ?? '') {
             case 's':
                 $type = 'v2ray';
@@ -21354,20 +22161,55 @@ DNS-over-HTTPS with IP:
                 }
                 $this->subNotFound('Unknown subscription format.');
         }
-        // Периодическая выборка rule-set'а ядром: mihomo тянет rule-providers
-        // (clashRules(), t=cl), sing-box — SRS (createRuleSet(), t=si). Такие URL
-        // строятся ТОЛЬКО base64-токеном в пути, поэтому наличие 'r' в токене —
-        // надёжный признак, не пересекающийся с именами deep-link'ов импорта.
-        $ruleSetReq = in_array($type, ['clash', 'sing'], true)
-            && (string) ($this->subToken['r'] ?? '') !== '';
         $pac    = $this->getPacConf();
-        $domain = ($_GET['cdn'] ?? '') ?: (($_SERVER['SERVER_NAME'] ?? '') ?: $this->getDomain($pac['transport'] != 'Reality'));
+        $domain = $this->subDomain($pac);
         $xr     = $this->getXray();
+        // Как в sub(): нечитаемый конфиг — это 404/'', а не TypeError в
+        // findClientBySid(array $xr, …) и 500 у клиента.
+        if (!is_array($xr)) {
+            if (!empty($return)) {
+                return '';
+            }
+            $this->subNotFound('Subscription temporarily unavailable.');
+        }
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
 
         // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $sid    = $_GET['s'] ?? '';
+        $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
+        $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
+        if ($client === null || !empty($client['off'])) {
+            if (!empty($return)) {
+                return '';
+            }
+            // Перебор sid тормозим отдельным ведром по одному лишь IP: ключ
+            // основного ведра содержит sid, поэтому каждый новый sid заводил
+            // свой счётчик со значением 1 и до лимита не доходил никогда.
+            $this->subRateLimit('', 'miss');
+            $this->subNotFound();
+        }
+        $template = base64_decode($client["{$type}template"] ?? '');
+        $uid      = $client['id'];               // credential (embedded in config)
+        $email    = $client['email'];
+        $stok     = $this->sidOf($client);       // subscription locator only
+
+        // Периодическая выборка rule-set'а ядром: mihomo тянет rule-providers
+        // (clashRules(), t=cl), sing-box — SRS (createRuleSet(), t=si). Признак —
+        // 'r' в base64-токене пути, но САМ ПО СЕБЕ он ничего не доказывает: токен
+        // целиком составляет клиент (см. index.php), и любой владелец рабочей
+        // ссылки мог дописать в него 'r' => 'zzz', чтобы пропустить проверку
+        // HWID и получить ведро лимитера 'rs' (240 запросов вместо 30) — а раз
+        // имя ни с чем не совпало, дальше отдавался обычный конфиг с
+        // credential'ами. Поэтому имя обязано совпасть с реальным rule-set'ом
+        // шаблона этого клиента — тем же, по которому позже createRuleSet()/
+        // clashRules() решают, что отдать.
+        $tpl        = $this->subTemplate($template, $type, $pac);
+        $rName      = (string) ($this->subToken['r'] ?? '');
+        $ruleSetReq = $rName !== ''
+            && in_array($type, ['clash', 'sing'], true)
+            && in_array($rName, $this->ruleSetNames($tpl, $type), true);
+
         // Лимитируем только реальные HTTP-запросы: внутренние вызовы
         // (subscription(true) из кода бота) не должны крутить счётчик.
         // Обновления rule-set'ов идут в отдельном ведре: несколько списков с
@@ -21376,18 +22218,6 @@ DNS-over-HTTPS with IP:
         if (empty($return)) {
             $this->subRateLimit($sid, $ruleSetReq ? 'rs' : '');
         }
-        $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
-        $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
-        if ($client === null || !empty($client['off'])) {
-            if (!empty($return)) {
-                return '';
-            }
-            $this->subNotFound();
-        }
-        $template = base64_decode($client["{$type}template"] ?? '');
-        $uid      = $client['id'];               // credential (embedded in config)
-        $email    = $client['email'];
-        $stok     = $this->sidOf($client);       // subscription locator only
 
         // HWID неприменим к выборке rule-set'а: это запрос ядра за списком правил,
         // а не устройство пользователя, и заголовок X-HWID оно не шлёт — иначе
@@ -21463,21 +22293,7 @@ DNS-over-HTTPS with IP:
                     exit;
             }
         }
-        switch (true) {
-            case !empty($template) && $template == 'origin':
-            case empty($template) && empty($pac["default{$type}template"]):
-            case empty($template) && empty($pac["{$type}templates"][base64_decode($pac["default{$type}template"])]):
-            case !empty($template) && empty($pac["{$type}templates"][$template]):
-                $c = json_decode(file_get_contents("/config/{$type}.json"), true);
-                break;
-            case !empty($template):
-                $c = $pac["{$type}templates"][$template];
-                break;
-
-            default:
-                $c = $pac["{$type}templates"][base64_decode($pac["default{$type}template"])];
-                break;
-        }
+        $c = $tpl;
 
         $outbound = $pac['outbound'] ?: 'proxy';
         // Prefix the outbound/proxy name with server-country flag(s) so the client
@@ -21897,14 +22713,19 @@ DNS-over-HTTPS with IP:
             '~warp_public_key~'  => $warp['public-key'] ?? '',
             '~dns~'          => "https://$domain/dns-query$hash/$uid",
             '~dnspath~'      => "/dns-query$hash/$uid",
-            '~uid~'          => ($pac['transport'] == 'trojan-grpc' ? ($client['password'] ?? $uid) : $uid),
+            '~uid~'          => (($pac['transport'] ?? '') == 'trojan-grpc' ? ($client['password'] ?? $uid) : $uid),
             '~domain~'       => $domain,
-            '~directdomain~' => $pac['domain'],
-            '~cdndomain~'    => $pac['linkdomain'],
-            '~short_id~'     => $xr['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0],
+            // ?? '' — до задания домена (и без cdn) шаблон подставлял пустоту,
+            // но сначала сыпал warning'ами на каждой выдаче подписки.
+            '~directdomain~' => $pac['domain'] ?? '',
+            '~cdndomain~'    => $pac['linkdomain'] ?? '',
+            // ?? '' — Reality-поля есть только у Reality-транспорта, а
+            // changeTransport() заменяет streamSettings целиком: на ws/xhttp
+            // каждая выдача подписки давала здесь два warning'а.
+            '~short_id~'     => $xr['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0] ?? '',
             '~email~'        => $email,
             '~public_key~'   => $pac['xray'],
-            '~server_name~'  => $xr['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0],
+            '~server_name~'  => $xr['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] ?? '',
             '~fingerprint~'  => $fingerprint,
             '~ip~'           => $this->ip,
             '~outbound~'     => $outbound,
@@ -22099,12 +22920,27 @@ DNS-over-HTTPS with IP:
     // бы пустыми — трафик уходил бы в direct мимо block/warp. Запас x4 покрывает
     // переподключения ядра и добавленные списки. Настройка: pac.sub_rate_max_rs
     // (0 = выкл; sub_rate_max=0 это ведро НЕ выключает — ключи независимы).
+    // Потолок числа окон в /logs/sub_ratelimit.json (см. подрезку ниже).
+    public const SUB_RATE_MAX_ENTRIES = 5000;
+
+    // Отдельным методом, чтобы тест мог подсунуть свой путь: писать в /logs из
+    // тестов нельзя, а считать счётчики без файла бессмысленно.
+    public function subRateFile(): string
+    {
+        return '/logs/sub_ratelimit.json';
+    }
+
     public function subRateLimit($sid, $scope = '')
     {
         $pac    = $this->getPacConf();
-        $max    = $scope === 'rs'
-            ? (int) ($pac['sub_rate_max_rs'] ?? 240)
-            : (int) ($pac['sub_rate_max'] ?? 30);
+        $max    = match ($scope) {
+            'rs'    => (int) ($pac['sub_rate_max_rs'] ?? 240),
+            // Ведро промахов: столько НЕудачных резолвов sid с одного адреса
+            // за окно. Легитимный клиент промахивается разве что по устаревшей
+            // ссылке — единицы запросов, перебор упирается сразу.
+            'miss'  => (int) ($pac['sub_rate_max_miss'] ?? 20),
+            default => (int) ($pac['sub_rate_max'] ?? 30),
+        };
         $window = (int) ($pac['sub_rate_window'] ?? 300);
         if ($max <= 0 || $window <= 0) {
             return;
@@ -22113,8 +22949,13 @@ DNS-over-HTTPS with IP:
         // Спуфабельность XFF здесь не критична: ключ содержит и sid, так что
         // лимит на конкретную подписку обойти сменой заголовка нельзя.
         $ip  = trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]) ?: (string) ($_SERVER['REMOTE_ADDR'] ?? '');
-        $key = substr(hash('sha256', "$sid|$ip|$scope"), 0, 16);
-        $f   = '/logs/sub_ratelimit.json';
+        // В ведре промахов sid НЕ участвует: с ним каждый перебираемый sid
+        // заводил собственный счётчик со значением 1 (лимит не срабатывал
+        // никогда) и оставлял запись в файле на всё окно — файл целиком
+        // читается и переписывается под LOCK_EX на КАЖДЫЙ запрос подписки,
+        // так что поток случайных sid ещё и сериализовал легитимные выдачи.
+        $key = substr(hash('sha256', ($scope === 'miss' ? '' : $sid) . "|$ip|$scope"), 0, 16);
+        $f   = $this->subRateFile();
         $h   = @fopen($f, 'c+');
         if ($h === false) {
             return; // лимитер вспомогательный: не роняем выдачу подписки
@@ -22130,6 +22971,14 @@ DNS-over-HTTPS with IP:
             }
             $data[$key] = [($data[$key][0] ?? 0) + 1, $data[$key][1] ?? $now];
             $over = $data[$key][0] > $max;
+            // Потолок на размер файла: он читается и переписывается целиком на
+            // каждый запрос подписки, поэтому распределённый перебор (по одной
+            // записи с адреса) не должен разгонять его до мегабайтов. Режем
+            // самые старые окна, своё — оставляем.
+            if (count($data) > self::SUB_RATE_MAX_ENTRIES) {
+                uasort($data, fn($a, $b) => ($b[1] ?? 0) <=> ($a[1] ?? 0));
+                $data = array_slice($data, 0, self::SUB_RATE_MAX_ENTRIES, true) + [$key => $data[$key]];
+            }
             ftruncate($h, 0);
             rewind($h);
             fwrite($h, json_encode($data));
@@ -22212,13 +23061,55 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    /**
+     * Разбирает ключ реестра rulessetlist: «outbound[:behavior]:interval:URL».
+     *
+     * Раньше его разбирали в двух местах по-разному — addClashRuleSet делал
+     * explode(':', $k, 4), addRuleSet — explode(':', $k, 3), — хотя промпт
+     * (include('rulessetlist')) обещает одну форму, а валидация addInclude
+     * пропускает обе. В итоге «proxy:86400:https://x/y.mrs» давал mihomo
+     * url="//x/y.mrs" с interval=0, а «proxy:domain:86400:https://x/y.srs»
+     * давал sing-box url="86400:https://x/y.srs" — то есть форма без behavior
+     * ломалась у одного потребителя, форма с behavior у другого.
+     *
+     * Разбираем С КОНЦА: URL начинается с http(s)://, перед ним интервал
+     * (число или длительность вида 1d — трактовку оставляем потребителю), всё,
+     * что осталось слева, — outbound и необязательный behavior. Это
+     * единственный способ не спутать двоеточие схемы с разделителем полей.
+     *
+     * @return array{outbound:string,behavior:string,interval:string,url:string}|null
+     */
+    public static function parseRuleSetKey(string $k): ?array
+    {
+        if (!preg_match('~^(.*?):([\w.]+):(https?://.+)$~s', trim($k), $m)) {
+            return null;
+        }
+        $head  = explode(':', $m[1]);
+        $out   = trim((string) array_shift($head));
+        $behav = trim((string) array_shift($head));
+        if ($out === '' || $head) { // лишние поля слева — ключ не наш
+            return null;
+        }
+        return [
+            'outbound' => $out,
+            // Дефолт behavior — как у большинства списков mihomo; для sing-box
+            // поле не используется вовсе.
+            'behavior' => $behav !== '' ? $behav : 'classical',
+            'interval' => $m[2],
+            'url'      => $m[3],
+        ];
+    }
+
     public function addClashRuleSet($c)
     {
         $p = $this->getPacConf();
         if (!empty($p['rulessetlist']) && $c['add-rule-providers']) {
             foreach ($p['rulessetlist'] as $k => $v) {
                 if (!empty($v)) {
-                    [$type, $behavior, $time, $url] = explode(':', $k, 4);
+                    if (($e = self::parseRuleSetKey((string) $k)) === null) {
+                        continue;
+                    }
+                    [$type, $behavior, $time, $url] = [$e['outbound'], $e['behavior'], $e['interval'], $e['url']];
                     if (preg_match('~\.(mrs|yaml|yml)$~', $url, $m)) {
                         $c['rule-providers'][$url] = [
                             'type'     => 'http',
@@ -22509,9 +23400,13 @@ DNS-over-HTTPS with IP:
             if (!empty($p['rulessetlist'])) {
                 foreach ($p['rulessetlist'] as $k => $v) {
                     if (!empty($v)) {
-                        // Ключ rulessetlist для sing-box (.srs): type:time:url — без behavior
-                        // (behavior есть только у Clash/mihomo .mrs/.yaml в addClashRuleSet).
-                        [$type, $time, $url] = explode(':', $k, 3);
+                        // Разбор общий с addClashRuleSet: обе формы ключа
+                        // (с behavior и без) читаются одинаково — behavior здесь
+                        // просто не нужен, он есть только у mihomo.
+                        if (($e = self::parseRuleSetKey((string) $k)) === null) {
+                            continue;
+                        }
+                        [$type, $time, $url] = [$e['outbound'], $e['interval'], $e['url']];
                         if (isset($t[$type]) && preg_match('~\.srs$~', $url) && !empty($route['rules'][$t[$type]])) {
                             $route['rule_set'][] = [
                                 "tag"             => $k,
@@ -22519,7 +23414,7 @@ DNS-over-HTTPS with IP:
                                 "format"          => "binary",
                                 "url"             => $url,
                                 "download_detour" => "direct",
-                                "update_interval" => $time
+                                "update_interval" => $time,
                             ];
                             $route['rules'][$t[$type]]['rule_set'][] = $k;
                         }
@@ -22568,6 +23463,11 @@ DNS-over-HTTPS with IP:
 
     public function cleanEmptyKeys(array $arr)
     {
+        // Был ли массив СПИСКОМ до чистки: unset() внутри списка оставляет дыру
+        // в нумерации, и json_encode отдаёт объект вместо массива —
+        // {"rules":{"1":{…}}} вместо [ … ]. Такой rule-set `sing-box rule-set
+        // compile` не принимает вовсе (достижимо при пустом "~pac~").
+        $isList = array_is_list($arr);
         foreach ($arr as $k => $v) {
             if (empty($v)) {
                 unset($arr[$k]);
@@ -22578,7 +23478,7 @@ DNS-over-HTTPS with IP:
                 }
             }
         }
-        return $arr;
+        return $isList ? array_values($arr) : $arr;
     }
 
     /**
@@ -22636,9 +23536,22 @@ DNS-over-HTTPS with IP:
     public function createSrs(string $name, array $rules)
     {
         $rules = $this->cleanEmptyKeys($rules);
+        // $name — имя rule-set'а ИЗ ШАБЛОНА маршрутов (createruleset[].name), то
+        // есть данные, а не константа: шаблон приходит из webapp-редактора и из
+        // импорта чужих настроек. Раньше оно шло без экранирования и в заголовок
+        // (перевод строки = инъекция заголовков), и в имя файла, которое
+        // подставлялось в exec() — то есть импорт чужого шаблона означал
+        // исполнение произвольных команд в контейнере. Имя ограничиваем словом,
+        // путь строим сами и в команду отдаём через escapeshellarg().
+        if (!preg_match('~^[\w.\-]{1,64}$~', $name)) {
+            http_response_code(400);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'Invalid rule-set name';
+            exit;
+        }
         header("Content-Disposition: attachment; filename=$name.srs");
         header('Content-Type: application/binary');
-        $f = "/tmp/$name" . time() . rand(1, 100);
+        $f = '/tmp/' . $name . '.' . getmypid() . '.' . bin2hex(random_bytes(6));
         foreach ($rules as $k => $v) {
             if (array_key_exists('domain_suffix', $v)) {
                 unset($rules[$k]['domain_suffix']);
@@ -22661,9 +23574,20 @@ DNS-over-HTTPS with IP:
         }
         file_put_contents($f, json_encode([
             'version' => 1,
-            'rules'   => $rules ?: [],
+            'rules'   => array_values($rules),
         ]));
-        exec("sing-box rule-set compile $f");
+        exec('sing-box rule-set compile ' . escapeshellarg($f) . ' 2>&1', $out, $code);
+        // Раньше результат компиляции не проверялся: при любом сбое клиент
+        // получал HTTP 200 с пустым телом (и два warning'а от unlink()) —
+        // ядро молча оставалось без правил вместо явной ошибки.
+        if ($code !== 0 || !is_file("$f.srs")) {
+            error_log("createSrs: compile failed for $name — " . implode(' ', (array) $out));
+            @unlink($f);
+            http_response_code(500);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'Rule-set compile failed';
+            exit;
+        }
         echo file_get_contents("$f.srs");
         unlink($f);
         unlink("$f.srs");
@@ -22712,9 +23636,16 @@ DNS-over-HTTPS with IP:
         return $route;
     }
 
+    // null — «конфиг прочитать не удалось» (файла нет, битый JSON, скаляр).
+    // Раньше отдавалось всё, что вернул json_decode: строка или число из
+    // повреждённого файла доезжали до `$xr['inbounds'][0]` и давали не
+    // диагностируемый набор warning'ов вместо явного отказа. Вызывающие,
+    // которым null неприемлем, проверяют его — см. backfillSubTokens(),
+    // refreshExtSubCache(), sub(), subscription().
     public function getXray()
     {
-        return json_decode(file_get_contents('/config/xray.json'), true);
+        $c = json_decode((string) @file_get_contents('/config/xray.json'), true);
+        return is_array($c) ? $c : null;
     }
 
     /** Валидный хостнейм — единственное, что можно пускать в nginx-конфиг. */
@@ -22739,6 +23670,30 @@ DNS-over-HTTPS with IP:
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
 
+    /**
+     * Заменяет тело парного маркерного блока в /config/upstream.conf
+     * («#naive … #naive», «#ocserv … #ocserv»).
+     *
+     * Два требования, каждое из которых уже стоило поломки:
+     *  - НЕЖАДНЫЙ .+?: маркер парный, и любое ТРЕТЬЕ его упоминание ниже по
+     *    файлу (достаточно слова в комментарии) при жадном матче расширяет
+     *    замену до него и сносит всё между — включая соседние server-блоки;
+     *  - preg_replace_CALLBACK: тело подставляется литералом, а в replacement
+     *    у preg_replace «$1»/«\1» — обратные ссылки, и поддомен с доменом
+     *    приходят из пользовательского ввода.
+     * Для #naive это уже было исправлено, для #ocserv — нет, хотя комментарий
+     * рядом описывал правку как общую.
+     */
+    public static function upstreamReplace(string $nginx, string $marker, string $body): string
+    {
+        $m = preg_quote($marker, '~');
+        return (string) preg_replace_callback(
+            "~$m.+?$m~s",
+            fn() => "$marker\n$body\n$marker",
+            $nginx,
+        );
+    }
+
     public function setUpstreamDomainOcserv($domain)
     {
         // Пустая строка — штатный «сброс» (см. вызов при удалении домена),
@@ -22748,8 +23703,10 @@ DNS-over-HTTPS with IP:
         }
         $sub   = $this->getHashSubdomain('oc');
         $nginx = file_get_contents('/config/upstream.conf');
-        $t     = preg_replace('~#ocserv.+#ocserv~s', $domain ? "#ocserv\n" . ($sub ? '' : '#' ) . "$sub.$domain ocserv;\n#ocserv" : "#ocserv\n#$sub.\$domain ocserv;\n#ocserv", $nginx);
-        file_put_contents('/config/upstream.conf', $t);
+        $body  = ($domain && $sub) ? "$sub.$domain ocserv;" : "#$sub.\$domain ocserv;";
+        // Ровно те же две правки, что были сделаны для #naive, — сюда они тогда
+        // не доехали (см. upstreamReplace).
+        file_put_contents('/config/upstream.conf', self::upstreamReplace($nginx, '#ocserv', $body));
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
 
@@ -22798,14 +23755,7 @@ DNS-over-HTTPS with IP:
         $body  = $hosts
             ? implode("\n", array_map(fn($h) => "$h naive;", $hosts))
             : "#$sub.\$domain naive;";
-        // Нежадный .+? вместо .+ — маркер парный, и любое ТРЕТЬЕ его упоминание
-        // ниже по файлу (достаточно слова в комментарии) при жадном матче
-        // расширило бы замену до него и снесло всё между — включая соседние
-        // server-блоки. Поведение при штатных двух маркерах не меняется.
-        // preg_replace_callback, а не preg_replace: хосты идут в замену как
-        // литералы (в replacement «$…»/«\…» — обратные ссылки).
-        $t = preg_replace_callback('~#naive.+?#naive~s', fn() => "#naive\n$body\n#naive", $nginx);
-        file_put_contents('/config/upstream.conf', $t);
+        file_put_contents('/config/upstream.conf', self::upstreamReplace($nginx, '#naive', $body));
         $this->ssh("nginx -s reload 2>&1", 'up');
     }
 
@@ -22875,11 +23825,16 @@ DNS-over-HTTPS with IP:
         return $this->ssh('nginx -s reload', 'ng');
     }
 
+    // Возвращаемое значение подставляется в «<sub>.<domain>» и уезжает в
+    // upstream.conf (nginx) и в default-domain ocserv.conf. Сохранённое ранее
+    // значение проверяем на выдаче тоже: в pac.json мог остаться мусор от
+    // старых версий, а сломанный upstream.conf валит весь внешний 443 при
+    // ближайшем рестарте контейнера (живой nginx reload просто отвергнет).
     public function getHashSubdomain($subdomain)
     {
         $p = $this->getPacConf();
         if (isset($p["{$subdomain}_domain"])) {
-            return $p["{$subdomain}_domain"];
+            return self::isSubdomainLabel($p["{$subdomain}_domain"]) ? $p["{$subdomain}_domain"] : '';
         }
         $p["{$subdomain}_domain"] = substr(hash('sha256', "$subdomain{$this->key}"), 0, 8);
         $this->setPacConf($p);
@@ -23788,23 +24743,47 @@ DNS-over-HTTPS with IP:
         $this->menu('update');
     }
 
+    /**
+     * Файлы логов в /logs: только обычные файлы, без точечных, без каталогов и
+     * без служебных кэшей меню.
+     *
+     * Каталог там ровно один — geodata (скачанные .dat), и он показывался в
+     * меню логов наравне с файлами: «очистить» звало file_put_contents на
+     * каталог, «удалить» — unlink. Кэши menu_status/menu_versions логами не
+     * являются вовсе.
+     */
+    public function logFiles(): array
+    {
+        $skip = ['menu_status.json', 'menu_versions.json'];
+        $out  = [];
+        foreach (scandir('/logs/') ?: [] as $v) {
+            if (str_starts_with($v, '.') || in_array($v, $skip, true) || !is_file("/logs/$v")) {
+                continue;
+            }
+            $out[] = $v;
+        }
+        sort($out);
+        return $out;
+    }
+
     public function logs()
     {
         $p = $this->getPacConf();
-        foreach (scandir('/logs/') as $k => $v) {
-            if (!preg_match('~^\.~', $v)) {
-                $size   = filesize("/logs/$v");
-                $data[] = [
-                    [
-                        'text'          => "$size $v",
-                        'callback_data' => "/getLog $k",
-                    ],
-                    [
-                        'text'          => $this->i18n('clean'),
-                        'callback_data' => "/clearLog $k",
-                    ],
-                ];
-            }
+        $data = [];
+        foreach ($this->logFiles() as $v) {
+            $size   = filesize("/logs/$v");
+            // Кнопка несёт ИМЯ файла, а не позицию в scandir: позиции ехали от
+            // появления нового файла, и «очистить» попадало в соседний лог.
+            $data[] = [
+                [
+                    'text'          => "$size $v",
+                    'callback_data' => "/getLog $v",
+                ],
+                [
+                    'text'          => $this->i18n('clean'),
+                    'callback_data' => "/clearLog $v",
+                ],
+            ];
         }
         $data[] = [
             [
@@ -23840,45 +24819,48 @@ DNS-over-HTTPS with IP:
         );
     }
 
-    public function getLog($i)
+    // Имя приходит из кнопки, а уходит в путь: принимаем только то, что
+    // действительно есть в списке логов (заодно отсекает «..» и любой обход).
+    protected function logFileOr404(string $name): ?string
     {
-        foreach (scandir('/logs/') as $k => $v) {
-            if (!preg_match('~^\.~', $v)) {
-                $logs[$k] = $v;
-            }
+        return in_array($name, $this->logFiles(), true) ? "/logs/$name" : null;
+    }
+
+    public function getLog($name)
+    {
+        $f = $this->logFileOr404((string) $name);
+        if ($f === null) {
+            return $this->logs();
         }
         $this->sendFile(
             $this->input['chat'],
-            curl_file_create("/logs/{$logs[$i]}"),
+            curl_file_create($f),
         );
     }
 
-    public function clearLog($i)
+    public function clearLog($name)
     {
-        foreach (scandir('/logs/') as $k => $v) {
-            if ($i == $k) {
-                file_put_contents("/logs/$v", '');
-                break;
-            }
+        if (($f = $this->logFileOr404((string) $name)) !== null) {
+            file_put_contents($f, '');
         }
         $this->logs();
     }
 
     public function cleanLog()
     {
-        foreach (scandir('/logs/') as $k => $v) {
+        // По списку logFiles(), а не по сырому scandir: раньше сюда попадали и
+        // «.», и «..», и каталог geodata — file_put_contents на них сыпал
+        // warning'ами при каждой автоочистке по расписанию.
+        foreach ($this->logFiles() as $v) {
             file_put_contents("/logs/$v", '');
         }
         $this->logs();
     }
 
-    public function delLog($i)
+    public function delLog($name)
     {
-        foreach (scandir('/logs/') as $k => $v) {
-            if ($i == $k) {
-                unlink("/logs/$v");
-                break;
-            }
+        if (($f = $this->logFileOr404((string) $name)) !== null) {
+            unlink($f);
         }
         $this->logs();
     }
@@ -24192,13 +25174,19 @@ DNS-over-HTTPS with IP:
         $this->menu('config');
     }
 
-    public function getStatusPeer(string $publickey, array $peers)
+    // Пустой массив, а не null: пира может не быть в выводе `wg show` (интерфейс
+    // подняли только что, пир добавлен мимо бота), и вызывающий читает поля
+    // результата сразу — «latest handshake», «transfer». На null это давало
+    // «Trying to access array offset on null» и TypeError, то есть wg-меню
+    // просто не открывалось.
+    public function getStatusPeer(string $publickey, array $peers): array
     {
         foreach ($peers as $k => $v) {
-            if ($v['peer'] == $publickey) {
+            if (($v['peer'] ?? null) == $publickey) {
                 return $v;
             }
         }
+        return [];
     }
 
     public function getInstanceWG($k = false)
@@ -24223,7 +25211,12 @@ DNS-over-HTTPS with IP:
         $d    = null;
         $i = 0;
         foreach ($r as $k => $v) {
-            if (preg_match('~\[(.+)\]~', $v, $m)) {
+            // Заголовок секции — ТОЛЬКО целая строка «[Interface]»/«[Peer]» (и
+            // «# [Peer]» у выключенного пира, см. createConfig()). Без якорей
+            // регулярка ловила скобки в любом месте строки, поэтому клиент с
+            // именем вида «Home [PC]» расщеплял «## name = …» на новую пустую
+            // секцию: конфиг терял пира, а awg-quick падал на setconf.
+            if (preg_match('~^\s*#?\s*\[(.+)\]\s*$~', $v, $m)) {
                 $i++;
                 if ($m[1] == 'Interface') {
                     $data[$i]['type'] = 'interface';
@@ -24232,6 +25225,11 @@ DNS-over-HTTPS with IP:
                 }
             } else {
                 $t = explode('=', $v, 2);
+                // Строка без «=» ключом быть не может: раньше такую съедала
+                // ветка выше, теперь она дошла бы сюда и дала «Undefined offset».
+                if (!isset($t[1])) {
+                    continue;
+                }
                 $data[$i][trim($t[0])] = trim($t[1]);
             }
         }
@@ -24292,7 +25290,11 @@ DNS-over-HTTPS with IP:
                 $name = $v;
             }
         }
-        $name = $name ?: $a['AllowedIPs'] ?: $a['Address'];
+        // ?? — у клиентской записи есть Address, у серверного пира AllowedIPs,
+        // и ни того ни другого не бывает у выключенного пира (ключи
+        // закомментированы): раньше на нём шло два «Undefined array key».
+        $name = $name ?: ($a['AllowedIPs'] ?? '') ?: ($a['Address'] ?? '')
+            ?: ($a['# AllowedIPs'] ?? '') ?: '';
         return $name;
     }
 
@@ -24318,10 +25320,27 @@ DNS-over-HTTPS with IP:
     // СЕРВЕРНЫЙ конфиг произвольные директивы (вплоть до лишнего [Peer]).
     // base64 в restartWG() спасал только от кавычек в shell-команде, не от
     // структуры самого конфига. Схлопываем переводы строк и режем длину.
+    // Квадратные скобки вырезаем наравне с переводами строк: имя пира уезжает в
+    // серверный wg0.conf строкой «## name = <имя>», а «[…]» в нём читается как
+    // заголовок секции (см. readConfig()) — пир расщеплялся надвое и туннель
+    // ложился у всех клиентов инстанса.
     public static function sanitizeConfValue($v, int $max = 256): string
     {
-        $v = preg_replace('~[\r\n]+~', ' ', (string) $v);
+        $v = preg_replace('~[\r\n\[\]]+~', ' ', (string) $v);
         return mb_substr(trim($v), 0, $max);
+    }
+
+    // AllowedIPs — это СПИСОК подсетей через запятую, а не одно значение:
+    // режем по границе элемента, иначе обрезка приходится на середину CIDR и
+    // клиент получает валидную с виду, но неверную маску (см. WG_ALLOWEDIPS_MAX).
+    public static function sanitizeAllowedIps($v): string
+    {
+        $v = self::sanitizeConfValue($v, self::WG_ALLOWEDIPS_MAX);
+        if (mb_strlen($v) < self::WG_ALLOWEDIPS_MAX) {
+            return $v;
+        }
+        $p = mb_strrpos($v, ',');
+        return $p === false ? '' : trim(mb_substr($v, 0, $p));
     }
 
     public function createConfig($data)
@@ -24365,11 +25384,21 @@ DNS-over-HTTPS with IP:
         return implode(PHP_EOL, $conf);
     }
 
+    // Пустая строка — «ключ получить не удалось»: при недоступном контейнере
+    // ssh() отдаёт "", и раньше это НЕПУСТОЕ значение сохранялось в pac.json
+    // навсегда, а `PresharedKey = ` (пусто) уезжало и в серверный, и во все
+    // клиентские конфиги. Мусор от чужого stderr отсекаем по форме ключа:
+    // genpsk печатает ровно 44 символа base64. Вызывающий обязан проверить
+    // результат и не писать конфиги на пустом ключе.
     public function presharedKey()
     {
         $c = $this->getPacConf();
         if (empty($c[$this->getInstanceWG(1) . 'presharedkey'])) {
-            $c[$this->getInstanceWG(1) . 'presharedkey'] = trim($this->ssh("{$this->getWGType()} genpsk", $this->getInstanceWG()));
+            $psk = trim($this->ssh("{$this->getWGType()} genpsk", $this->getInstanceWG()));
+            if (!preg_match('~^[A-Za-z0-9+/]{43}=$~', $psk)) {
+                return '';
+            }
+            $c[$this->getInstanceWG(1) . 'presharedkey'] = $psk;
             $this->setPacConf($c);
         }
         return $c[$this->getInstanceWG(1) . 'presharedkey'];
@@ -24741,12 +25770,21 @@ DNS-over-HTTPS with IP:
         // что на свежей установке (pac.json = {}) давало «Undefined array key».
         $amnezia = $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'] ?? false;
 
+        // Тот же класс, что и ключи выше: presharedKey() отдаёт '' при
+        // недоступном контейнере, и пир с «PresharedKey = » (пусто) не поднялся
+        // бы ни на сервере, ни у клиента.
+        $psk = $amnezia ? $this->presharedKey() : '';
+        if ($amnezia && $psk === '') {
+            $this->send($this->input['chat'] ?? '', 'wireguard: не удалось получить presharedkey (контейнер недоступен), пир не создан', $this->input['message_id'] ?? null);
+            return;
+        }
+
         $conf['peers'][] = array_merge([
                 '## name'    => $name,
                 'PublicKey'  => $public_peer_key,
                 'AllowedIPs' => "$client_ip/32",
             ],
-            $amnezia ? ['PresharedKey' => $this->presharedKey()] : []
+            $amnezia ? ['PresharedKey' => $psk] : []
         );
         $client_conf = [
             'interface' => array_merge(
@@ -24761,12 +25799,16 @@ DNS-over-HTTPS with IP:
                     array_merge(
                         [
                             'PublicKey'           => $public_server_key,
-                            'AllowedIPs'          => $ips_user ?: "0.0.0.0/0",
+                            // Сюда приходит сырой ввод из Telegram (addips →
+                            // reply → createPeer, а через addSubnets — весь
+                            // список подсетей): перевод строки вставлял в
+                            // клиентский .conf произвольные директивы.
+                            'AllowedIPs'          => self::sanitizeAllowedIps($ips_user ?: "0.0.0.0/0"),
                             // AWG 3.0 допускает диапазон («20-30»); awgKeepalive()
                             // отдаёт фиксированные 20, если 3.0 недоступен.
                             'PersistentKeepalive' => $amnezia ? $this->awgKeepalive() : 20,
                         ],
-                        $amnezia ? ['PresharedKey' => $this->presharedKey()] : []
+                        $amnezia ? ['PresharedKey' => $psk] : []
                     ),
                 ],
         ];
@@ -25053,10 +26095,11 @@ DNS-over-HTTPS with IP:
                     'disable_notification'     => $disable_notification,
                     'reply_to_message_id'      => 0 == $k && $to > 0 ? $to : false,
                 ];
-                if ($k == array_key_last($tails)) {
-                    if ($extra) {
-                        $data['reply_markup'] = json_encode($extra);
-                    }
+                // !empty, а не if($extra): переменная объявляется только при
+                // наличии кнопок/force_reply, и любая длинная отправка без них
+                // сыпала «Undefined variable $extra».
+                if ($k == array_key_last($tails) && !empty($extra)) {
+                    $data['reply_markup'] = json_encode($extra);
                 }
                 $r = $this->request('sendMessage', $data);
             }
@@ -25119,28 +26162,45 @@ DNS-over-HTTPS with IP:
 
     public function splitText($text, $size = 4096)
     {
-        $tails = preg_split('~\n~', $text);
-        if (!empty($tails)) {
-            foreach ($tails as $v) {
-                $lines[] = [
-                    'length' => mb_strlen($v, 'utf-8'),
-                    'text'   => $v,
-                ];
-            }
-            $i = 0;
-            foreach ($lines as $v) {
-                $i += $v['length'];
-                $k = ceil($i / $size);
-                $output[$k] = ($output[$k] ?? '') . $v['text'] . "\n";
-            }
-            // Куски уходят в sendMessage с parse_mode HTML: раньше делили строго
-            // по \n, ничего не зная о тегах, и <pre> оставался в первом куске, а
-            // </pre> — в последнем. Telegram отвергал ОБА, из-за чего
-            // telemtDiagnostics/telemtShowBeobachten молча не работали.
-            return $this->balanceHtmlChunks(array_values($output));
-        } else {
+        $text = (string) $text;
+        if ($text === '') {
             return [$text];
         }
+        $lines = [];
+        foreach (preg_split('~\n~', $text) as $v) {
+            // Одна длинная строка БЕЗ переводов (дамп конфига, base64-ссылка,
+            // строка лога) не резалась вовсе: границы кусков считались только
+            // по \n, поэтому в Telegram уезжал кусок длиннее лимита и отвергался
+            // с «message is too long» — пользователь не видел ничего.
+            if (mb_strlen($v, 'utf-8') <= $size) {
+                $lines[] = $v;
+                continue;
+            }
+            foreach (mb_str_split($v, $size, 'utf-8') as $part) {
+                $lines[] = $part;
+            }
+        }
+        $chunks = [];
+        $cur    = '';
+        foreach ($lines as $v) {
+            // Длину считаем ВМЕСТЕ с добавляемым "\n": прежний счётчик его не
+            // учитывал, и на длинных списках кусок вылезал за лимит на число
+            // строк в нём.
+            $piece = $v . "\n";
+            if ($cur !== '' && mb_strlen($cur, 'utf-8') + mb_strlen($piece, 'utf-8') > $size) {
+                $chunks[] = $cur;
+                $cur      = '';
+            }
+            $cur .= $piece;
+        }
+        if ($cur !== '') {
+            $chunks[] = $cur;
+        }
+        // Куски уходят в sendMessage с parse_mode HTML: раньше делили строго
+        // по \n, ничего не зная о тегах, и <pre> оставался в первом куске, а
+        // </pre> — в последнем. Telegram отвергал ОБА, из-за чего
+        // telemtDiagnostics/telemtShowBeobachten молча не работали.
+        return $this->balanceHtmlChunks($chunks);
     }
 
     public function sendDraft($chat, $draft_id, $text = '', $mode = 'HTML')
@@ -25188,6 +26248,7 @@ DNS-over-HTTPS with IP:
 
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')
     {
+        $text = (string) $text;
         if ($button) {
             $extra = ['inline_keyboard' => $button];
         }
@@ -25196,6 +26257,18 @@ DNS-over-HTTPS with IP:
                 'force_reply'             => true,
                 'input_field_placeholder' => $reply
             ];
+        }
+        // editMessageText, в отличие от send(), не резал текст вовсе: меню
+        // длиннее лимита Telegram молча не обновлялось, и снаружи это выглядело
+        // как «кнопка не работает». Редактируем первым куском, остальное
+        // дописываем отдельными сообщениями — кнопки остаются на исходном.
+        $length = 3096;
+        if (mb_strlen($text, 'utf-8') > $length) {
+            $tails = $this->splitText($text, $length);
+            $text  = array_shift($tails);
+            foreach ($tails as $v) {
+                $this->send($chat, $v, null, false, false, $mode);
+            }
         }
         $data = [
             'chat_id'                  => $chat,
@@ -25210,8 +26283,15 @@ DNS-over-HTTPS with IP:
         return $this->request('editMessageText', $data);
     }
 
+    // Отмечаем, что на callback уже ответили: callbackCheck() в конце input()
+    // шлёт свой пустой answer только если этого не сделал обработчик. Флаг
+    // нигде не выставлялся, поэтому обработчики со своим toast'ом
+    // (refreshOvpn) получали второй answerCallbackQuery на тот же id — Telegram
+    // отвечал ok:false, запись уходила в /logs/requests_error, а всплывающая
+    // подсказка пользователю не показывалась.
     public function answer($callback_id, $textNotify = false, $notify = false)
     {
+        $this->callback = true;
         return $this->request('answerCallbackQuery', [
             'callback_query_id' => $callback_id,
             'show_alert'        => $notify,

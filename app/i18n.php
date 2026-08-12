@@ -1065,6 +1065,264 @@ $i = [
         'en' => 'address of the nginx proxy, not the client: OpenVPN has no PROXY protocol',
         'ru' => 'это адрес nginx-прокси, а не клиента: OpenVPN не понимает PROXY protocol',
     ],
+
+    // ── Ключи, которых не хватало (аудит 2026-08-12) ────────────────────────
+    // i18n() отдавала сам ключ, то есть в русском интерфейсе оставался
+    // английский текст — и это ещё в лучшем случае: чтение шло без ??, так что
+    // каждая такая кнопка добавляла warning в лог.
+    //
+    // Названия протоколов, ядер и технических полей одинаковы в обоих языках
+    // (как у 'warp'/'amnezia' выше): переводить их значило бы расходиться с
+    // документацией и с интерфейсом самих клиентов.
+    'vless'  => [
+        'en' => 'vless',
+        'ru' => 'vless',
+    ],
+    'hysteria'  => [
+        'en' => 'hysteria',
+        'ru' => 'hysteria',
+    ],
+    'Hysteria'  => [
+        'en' => 'Hysteria',
+        'ru' => 'Hysteria',
+    ],
+    'dnstt'  => [
+        'en' => 'dnstt',
+        'ru' => 'dnstt',
+    ],
+    'DNSTT'  => [
+        'en' => 'DNSTT',
+        'ru' => 'DNSTT',
+    ],
+    'singbox'  => [
+        'en' => 'sing-box',
+        'ru' => 'sing-box',
+    ],
+    'mihomo'  => [
+        'en' => 'mihomo',
+        'ru' => 'mihomo',
+    ],
+    'v2ray'  => [
+        'en' => 'v2ray',
+        'ru' => 'v2ray',
+    ],
+    'RLTY'  => [
+        'en' => 'RLTY',
+        'ru' => 'RLTY',
+    ],
+    'WS'  => [
+        'en' => 'WS',
+        'ru' => 'WS',
+    ],
+    'XHTTP'  => [
+        'en' => 'XHTTP',
+        'ru' => 'XHTTP',
+    ],
+    'MTU'  => [
+        'en' => 'MTU',
+        'ru' => 'MTU',
+    ],
+    'nip.io'  => [
+        'en' => 'nip.io',
+        'ru' => 'nip.io',
+    ],
+    'cdn'  => [
+        'en' => 'CDN domain',
+        'ru' => 'домен CDN',
+    ],
+    'endpoint'  => [
+        'en' => 'endpoint',
+        'ru' => 'адрес подключения',
+    ],
+    'Ports'  => [
+        'en' => 'ports',
+        'ru' => 'порты',
+    ],
+    'routes'  => [
+        'en' => 'routes',
+        'ru' => 'маршруты',
+    ],
+    'rulesset'  => [
+        'en' => 'rule-sets',
+        'ru' => 'наборы правил',
+    ],
+    'tun lists'  => [
+        'en' => 'tun lists',
+        'ru' => 'списки tun',
+    ],
+    'process'  => [
+        'en' => 'process',
+        'ru' => 'процессы',
+    ],
+    'package'  => [
+        'en' => 'package',
+        'ru' => 'приложения',
+    ],
+    'block'  => [
+        'en' => 'block',
+        'ru' => 'блокировать',
+    ],
+    'blocklist'  => [
+        'en' => 'block list',
+        'ru' => 'список блокировки',
+    ],
+    'ignore'  => [
+        'en' => 'ignore',
+        'ru' => 'игнорировать',
+    ],
+    'ignorelist'  => [
+        'en' => 'ignore list',
+        'ru' => 'список игнорирования',
+    ],
+    'IP ban'  => [
+        'en' => 'IP ban',
+        'ru' => 'бан по IP',
+    ],
+    'ip limit'  => [
+        'en' => 'IP limit',
+        'ru' => 'лимит IP',
+    ],
+    'analyze'  => [
+        'en' => 'analyze',
+        'ru' => 'анализ',
+    ],
+    'autoscan'  => [
+        'en' => 'autoscan',
+        'ru' => 'автопроверка',
+    ],
+    'autoblock'  => [
+        'en' => 'autoblock',
+        'ru' => 'автоблокировка',
+    ],
+    'autoclean'  => [
+        'en' => 'autoclean',
+        'ru' => 'автоочистка',
+    ],
+    'autoupdate'  => [
+        'en' => 'autoupdate',
+        'ru' => 'автообновление',
+    ],
+    'notify'  => [
+        'en' => 'notifications',
+        'ru' => 'уведомления',
+    ],
+    'clean'  => [
+        'en' => 'clean',
+        'ru' => 'очистить',
+    ],
+    'clean all'  => [
+        'en' => 'clean all',
+        'ru' => 'очистить всё',
+    ],
+    'delete all'  => [
+        'en' => 'delete all',
+        'ru' => 'удалить всё',
+    ],
+    'all logs'  => [
+        'en' => 'all logs',
+        'ru' => 'все логи',
+    ],
+    'suspicious log'  => [
+        'en' => 'suspicious log',
+        'ru' => 'подозрительное',
+    ],
+    'telegram IPs'  => [
+        'en' => 'telegram IPs',
+        'ru' => 'адреса telegram',
+    ],
+    'gcore IPs'  => [
+        'en' => 'gcore IPs',
+        'ru' => 'адреса gcore',
+    ],
+    'cloudflare IPs'  => [
+        'en' => 'cloudflare IPs',
+        'ru' => 'адреса cloudflare',
+    ],
+    'reset stats'  => [
+        'en' => 'reset stats',
+        'ru' => 'сбросить статистику',
+    ],
+    'reset monthly'  => [
+        'en' => 'monthly reset',
+        'ru' => 'ежемесячный сброс',
+    ],
+    'changelog'  => [
+        'en' => 'changelog',
+        'ru' => 'список изменений',
+    ],
+    'branches'  => [
+        'en' => 'branches',
+        'ru' => 'ветки',
+    ],
+    'yes'  => [
+        'en' => 'yes',
+        'ru' => 'да',
+    ],
+    'set key'  => [
+        'en' => 'set key',
+        'ru' => 'задать ключ',
+    ],
+    'set password'  => [
+        'en' => 'set password',
+        'ru' => 'задать пароль',
+    ],
+    'set subdomain'  => [
+        'en' => 'set subdomain',
+        'ru' => 'задать поддомен',
+    ],
+    'change subdomain'  => [
+        'en' => 'change subdomain',
+        'ru' => 'сменить поддомен',
+    ],
+    'download pubkey'  => [
+        'en' => 'download pubkey',
+        'ru' => 'скачать публичный ключ',
+    ],
+    'link awg'  => [
+        'en' => 'AmneziaWG link',
+        'ru' => 'ссылка AmneziaWG',
+    ],
+    'qr short'  => [
+        'en' => 'QR (short link)',
+        'ru' => 'QR (короткая ссылка)',
+    ],
+    'qr singbox'  => [
+        'en' => 'QR sing-box',
+        'ru' => 'QR sing-box',
+    ],
+    'qr v2ray'  => [
+        'en' => 'QR v2ray',
+        'ru' => 'QR v2ray',
+    ],
+    'singbox ⬇️'  => [
+        'en' => 'sing-box ⬇️',
+        'ru' => 'sing-box ⬇️',
+    ],
+    'mihomo ⬇️'  => [
+        'en' => 'mihomo ⬇️',
+        'ru' => 'mihomo ⬇️',
+    ],
+    'v2ray ⬇️'  => [
+        'en' => 'v2ray ⬇️',
+        'ru' => 'v2ray ⬇️',
+    ],
+    'sing-box templates'  => [
+        'en' => 'sing-box templates',
+        'ru' => 'шаблоны sing-box',
+    ],
+    'mihomo templates'  => [
+        'en' => 'mihomo templates',
+        'ru' => 'шаблоны mihomo',
+    ],
+    'v2ray templates'  => [
+        'en' => 'v2ray templates',
+        'ru' => 'шаблоны v2ray',
+    ],
+    // С хвостовым пробелом: ключ подставляется перед значением в одну строку.
+    'main outbound name: '  => [
+        'en' => 'main outbound name: ',
+        'ru' => 'имя основного аутбаунда: ',
+    ],
 ];
 
 if (file_exists(__DIR__ . '/i18n.override.php')) {

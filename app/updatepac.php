@@ -85,6 +85,50 @@ function update($text)
     $bot->update($bot->input['chat'], $bot->input['message_id'], $text);
 }
 
+/**
+ * Разбирает запись pac-списка с учётом префиксов маршрутизации.
+ *
+ * Записи includelist пишутся в тех же формах, что и для ядер:
+ * «vk.com», «domain:vk.com», «full:vk.com», «keyword:reddit»,
+ * «regexp:.*\.ru$», «1.2.3.4/24», «ext:dlc.dat:tag», «geosite:cn».
+ * Генератор PAC брал ключ СЫРЫМ: в mpac уезжал preg_quote("domain:vk.com"),
+ * а в pac — $t["com"][9][] = "domain:vk", то есть любая запись с префиксом
+ * молча не работала ни в одном из двух форматов.
+ *
+ * @return array{host: ?string, pattern: ?string} host — для доменного дерева
+ *         pac (только то, что представимо суффиксом), pattern — регулярка для
+ *         списка shadowsocks-android (mpac). null означает «не представимо».
+ */
+function pacEntry($bot, string $e): array
+{
+    $c = $bot->classifyRouteEntry($e);
+    if (!$bot->routeEntryUsable($c)) {
+        return ['host' => null, 'pattern' => null];
+    }
+    $v = (string) $c['value'];
+    switch ($c['kind']) {
+        case 'suffix':
+        case 'domain':
+        case 'full':
+            // full: формально означает точное совпадение, а дерево pac умеет
+            // только суффикс — берём как суффикс (шире, но работает), в mpac
+            // же уходит обычной подстрокой, как и раньше.
+            return ['host' => $bot->hostCanon($v), 'pattern' => preg_quote($bot->hostCanon($v), '~')];
+        case 'keyword':
+            // Дерево pac строится по TLD и длине метки — подстроке там места
+            // нет. В mpac запись естественна: файл и так список регулярок.
+            return ['host' => null, 'pattern' => preg_quote($v, '~')];
+        case 'regexp':
+            return ['host' => null, 'pattern' => $v];
+        case 'ip':
+            // Литерал адреса в URL. Маску отбрасываем: подсеть в PAC этого
+            // формата не выразить.
+            return ['host' => null, 'pattern' => preg_quote(explode('/', $v)[0], '~')];
+        default: // ext, extip, geosite, geoip — это ссылки на .dat ядра
+            return ['host' => null, 'pattern' => null];
+    }
+}
+
 function start()
 {
     global $bot, $source, $res, $load, $text;
@@ -130,12 +174,20 @@ function start()
             if ($exclude && preg_match(excludePattern($exclude), $v)) {
                 continue;
             }
-            fwrite($f, preg_quote($v) . "\n");
+            // Префиксы маршрутизации (domain:/full:/keyword:/regexp:/IP)
+            // разбираем, а не пишем сырыми — см. pacEntry().
+            ['host' => $host, 'pattern' => $pattern] = pacEntry($bot, $v);
+            if ($pattern !== null) {
+                fwrite($f, $pattern . "\n");
+            }
+            if ($host === null) {
+                continue;
+            }
 
             // Без точки в имени совпадения нет: $m остаётся пустым, и в PAC
             // уезжал мусор вида {"":[[null]]}, а strlen(null) в PHP 9 станет
             // TypeError. Такую строку просто пропускаем.
-            if (!preg_match('~(.+)\.([^.]+)$~', $v, $m)) {
+            if (!preg_match('~(.+)\.([^.]+)$~', $host, $m)) {
                 continue;
             }
             $t[$m[2]][strlen($m[1])][] = $m[1];
@@ -177,7 +229,13 @@ function start()
         // поэтому $t перестраиваем здесь, иначе в json ушёл бы $t от прямого PAC.
         $t = [];
         foreach ($domains as $v) {
-            preg_match('~(.+)\.([^.]+)$~', $v, $m);
+            // Тот же разбор префиксов и тот же guard, что на прямой ветке:
+            // здесь проверки результата не было вовсе, и домен без точки давал
+            // «Undefined array key», strlen(null) и мусор в rpac.
+            ['host' => $host] = pacEntry($bot, $v);
+            if ($host === null || !preg_match('~(.+)\.([^.]+)$~', $host, $m)) {
+                continue;
+            }
             $t[$m[2]][strlen($m[1])][] = $m[1];
         }
 
