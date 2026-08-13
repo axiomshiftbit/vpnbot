@@ -128,6 +128,11 @@ class Bot
     public $time_xraycore;
     // Кеш пробы контейнера xr на время запроса — см. xrayCoreProbe().
     private ?array $xrProbe = null;
+    // Сколько раз подряд restoreXrayLink() возвращал симлинк на форк, а тот
+    // всё равно оказывался апстримным. Живёт в памяти cron-процесса (он же
+    // бесконечный цикл), большего и не нужно: после рестарта контейнера
+    // починку логично начать с чистого листа.
+    public $xrLinkFix = 0;
     public $time_geowarm;
     public $time_wgtrack;
     public $subtokens_done;
@@ -16018,7 +16023,10 @@ DNS-over-HTTPS with IP:
         } elseif (!$fork) {
             $text[] = $this->i18n('smux fork missing');
         } else {
-            $active = $this->activeXrayCore();
+            // Показываем ХУДШЕЕ из двух: симлинк уже может смотреть на форк, а
+            // клиентов всё ещё обслуживать апстримный процесс (`ln -sf` без
+            // рестарта). Трафик идёт через процесс, значит он и есть факт.
+            $active = $probe['running'] === 'origin' ? 'origin' : $this->activeXrayCore();
             $text[] = 'core: ' . ($core === 'fork' ? 'fork (smux)' : 'XTLS');
             if ($active !== $core) {
                 // Симлинк и настройка разъехались (откат образа, ручной запуск
@@ -20656,11 +20664,22 @@ DNS-over-HTTPS with IP:
         }
         // Версия — ПОСЛЕДНИМ полем: её строка приходит от ядра и теоретически
         // может содержать разделитель, а испортить она тогда сможет только себя.
+        //
+        // Запущенный бинарь читаем через /proc: симлинк говорит, что стартует в
+        // СЛЕДУЮЩИЙ раз, а клиентов обслуживает процесс, поднятый когда-то
+        // раньше — после `ln -sf` без рестарта это разные ядра. Шаблон pgrep
+        // намеренно записан как "[x]ray run": иначе он найдёт и сам шелл,
+        // выполняющий эту команду, — в его argv строка "xray run" тоже есть.
+        // Пустой pid обязательно отсекать до readlink: `/proc//exe` тот
+        // схлопывает в существующий путь /proc/exe и печатает ЕГО, то есть
+        // незапущенное ядро выглядело бы как чужой бинарь — расхождение на
+        // ровном месте, а за ним рестарт по кругу каждые пять минут.
         $out = (string) $this->ssh(
-            'printf "%s|%s|%s|%s" '
+            'printf "%s|%s|%s|%s|%s" '
                 . '"$(test -x ' . self::XRAY_BIN_FORK . ' && echo 1)" '
                 . '"$(readlink -f /usr/local/bin/xray)" '
                 . '"$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)" '
+                . '"$(p=$(pgrep -f "[x]ray run" | head -n1); test -n "$p" && readlink -f /proc/$p/exe 2>/dev/null)" '
                 . '"$(xray version 2>&1 | head -n1)"',
             'xr'
         );
@@ -20669,13 +20688,19 @@ DNS-over-HTTPS with IP:
         // снёс бы рабочую настройку ядра вместе со smux.
         $ok = !$this->sshFailed;
         $p  = explode('|', trim($out));
+        // Пустая строка у running — это «ядро не запущено» (start_xray.sh не
+        // поднимает xray без клиентов), и она НЕ должна читаться как «работает
+        // апстрим»: иначе свежая установка выглядела бы как расхождение и
+        // авторемонт гонял бы рестарт по кругу.
+        $run = $ok ? trim($p[3] ?? '') : '';
 
         return $this->xrProbe = [
             'ok'      => $ok,
             'fork'    => $ok && trim($p[0] ?? '') === '1',
             'active'  => $ok && trim($p[1] ?? '') === self::XRAY_BIN_FORK ? 'fork' : 'origin',
             'brutal'  => $ok && in_array('brutal', preg_split('~\s+~', trim($p[2] ?? '')) ?: [], true),
-            'version' => $ok ? trim(implode('|', array_slice($p, 3))) : '',
+            'running' => $run === '' ? '' : ($run === self::XRAY_BIN_FORK ? 'fork' : 'origin'),
+            'version' => $ok ? trim(implode('|', array_slice($p, 4))) : '',
         ];
     }
 
@@ -20703,14 +20728,25 @@ DNS-over-HTTPS with IP:
         return $this->xrayCoreProbe()['brutal'];
     }
 
-    // Самолечение расхождения «в настройках форк, а форка в образе нет».
-    // Такое даёт откат образа xr на версию без /usr/bin/xray-smux: start_xray.sh
-    // молча поднимет апстрим, а подписки продолжат уезжать со smux — и клиенты
-    // перестанут ходить ВСЕ разом, без единой ошибки в логе. Поэтому чиним сами:
-    // гасим smux и возвращаем настройку на апстрим.
+    // Самолечение двух расхождений «настройка говорит форк, а работает не он»:
+    //
+    //   1. форка нет в образе вообще (откат образа xr на версию без
+    //      /usr/bin/xray-smux) — чинить нечем, гасим smux и возвращаем
+    //      настройку на апстрим;
+    //   2. форк есть, но обслуживает апстрим — симлинк пересоздан контейнером
+    //      по устаревшему маркеру, поправлен руками мимо меню или откачен
+    //      вместе с образом; здесь чиним по-настоящему: возвращаем симлинк.
+    //
+    // Оба случая снаружи выглядят одинаково — полная тишина: подписки уехали со
+    // smux, а апстримное ядро несущего назначения sp.mux.sing-box.arpa:444 не
+    // знает и рвёт КАЖДОЕ соединение, не написав ни строки в лог.
     //
     // Проба стоит ssh, поэтому ходим только когда есть что терять (выбран форк)
-    // и не чаще раза в 5 минут — cron крутится каждые 10 секунд.
+    // и не чаще раза в 5 минут — cron крутится каждые 10 секунд. Обратное
+    // расхождение (выбран апстрим, а симлинк на форке) не трогаем: форк
+    // обслуживает и клиентов без мультиплекса, трафику ничего не грозит, а
+    // ssh-проба ради него шла бы на КАЖДОЙ установке, включая те, где форк
+    // никогда не включали.
     public function checkXrayCore(): void
     {
         if (!empty($this->time_xraycore) && time() - $this->time_xraycore < 300) {
@@ -20724,15 +20760,78 @@ DNS-over-HTTPS with IP:
         $probe = $this->xrayCoreProbe(true);
         // Контейнер не ответил — это не повод чинить: рестарт xr или временная
         // недоступность ssh не должны сносить настройку.
-        if (!$probe['ok'] || $probe['fork']) {
+        if (!$probe['ok']) {
             return;
         }
-        $this->repairXrayCore($p);
+        if (!$probe['fork']) {
+            $this->repairXrayCore($p);
+
+            return;
+        }
+        // Симлинк на форке, и обслуживает его же (либо ядро ещё не поднято —
+        // это не расхождение). Всё сходится: счётчик попыток можно обнулить.
+        if ($probe['active'] === 'fork' && $probe['running'] !== 'origin') {
+            $this->xrLinkFix = 0;
+
+            return;
+        }
+        $this->restoreXrayLink();
+    }
+
+    // Маркер желаемого ядра. Отдельным методом, потому что писать его нужно из
+    // трёх мест (переключение, откат, починка) и всем трём одинаково важно не
+    // потерять запись молча: /logs — общий том с контейнером xr, и если она не
+    // прошла, следующее пересоздание контейнера уведёт ядро мимо настройки.
+    public function writeCoreMarker(string $core): bool
+    {
+        if (false === @file_put_contents(self::XRAY_CORE_MARKER, $core . "\n")) {
+            error_log('writeCoreMarker: ' . self::XRAY_CORE_MARKER . ' not written');
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // Возврат симлинка на форк — единственное направление, в котором чинить
+    // есть смысл (см. checkXrayCore, откуда сюда и приходят). Маркер
+    // переписываем заодно: если разъехался именно он, одна лишь ссылка не
+    // переживёт следующее пересоздание контейнера — start_xray.sh читает
+    // маркер, и починка стала бы вечной. false — починить не вышло.
+    public function restoreXrayLink(): bool
+    {
+        // Три безуспешные попытки подряд — перестаём дёргать ядро каждые пять
+        // минут: рестарт рвёт живые сессии, а причина явно не в симлинке
+        // (слой контейнера только для чтения, xray поднят мимо start_xray.sh).
+        // Уходим на апстрим штатным путём: клиенты поедут, как только
+        // перечитают подписку, — это лучше гарантированной тишины у всех.
+        if (++$this->xrLinkFix > 3) {
+            $this->xrLinkFix = 0;
+            $this->repairXrayCore(null, 'fork core kept losing to the upstream one');
+
+            return false;
+        }
+        $this->ssh('mkdir -p /usr/local/bin; ln -sf ' . self::XRAY_BIN_FORK . ' /usr/local/bin/xray', 'xr');
+        // Контейнер отвалился между пробой и починкой — рестартовать вслепую
+        // нечего: следующий заход через пять минут начнёт с новой пробы.
+        if ($this->sshFailed) {
+            return false;
+        }
+        $this->writeCoreMarker('fork');
+        error_log('restoreXrayLink: xray core symlink returned to the fork (attempt ' . $this->xrLinkFix . ')');
+        // Рестарт уже уходит в форк: pkill + `xray run` идут через симлинк.
+        $this->restartXray($this->getXray());
+        // Кеш пробы устарел, но перечитывать его здесь нечем: xray только что
+        // стартовал, и /proc отдаст либо ещё старый pid, либо ничего. Просто
+        // сбрасываем — следующий checkXrayCore() спросит заново.
+        $this->xrProbe = null;
+
+        return true;
     }
 
     // Откат настройки на апстрим + гашение smux. Возвращает true, если чинить
     // действительно пришлось.
-    public function repairXrayCore(?array $p = null): bool
+    public function repairXrayCore(?array $p = null, string $why = 'fork binary gone from the xr image'): bool
     {
         $p = $p ?? $this->getPacConf();
         if (!is_array($p) || $this->xrayCore($p) !== 'fork') {
@@ -20742,8 +20841,8 @@ DNS-over-HTTPS with IP:
         $p['smux']['enabled']           = 0;
         $p['smux']['brutal']['enabled'] = 0;
         $this->setPacConf($p);
-        @file_put_contents(self::XRAY_CORE_MARKER, "origin\n");
-        error_log('repairXrayCore: fork binary gone from the xr image — smux disabled, core reset to upstream');
+        $this->writeCoreMarker('origin');
+        error_log('repairXrayCore: ' . $why . ' — smux disabled, core reset to upstream');
         $this->restartXray($this->getXray());
 
         return true;
@@ -20795,13 +20894,15 @@ DNS-over-HTTPS with IP:
         // нет; если записать его не вышло, ядро вернётся к апстриму на первом
         // же `up --force-recreate`, и об этом надо сказать, а не молчать.
         $bin = $core === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN;
-        if (false === @file_put_contents(self::XRAY_CORE_MARKER, $core . "\n")) {
-            error_log('applyXrayCore: ' . self::XRAY_CORE_MARKER . ' not written');
+        if (!$this->writeCoreMarker($core)) {
             $note[] = 'marker failed';
         }
         $this->ssh('mkdir -p /usr/local/bin; ln -sf ' . $bin . ' /usr/local/bin/xray', 'xr');
         // Рестарт уже уходит в НОВОЕ ядро: pkill + `xray run` идут через симлинк.
         $this->restartXray($this->getXray());
+        // Ручное переключение обнуляет историю автопочинки: администратор только
+        // что задал состояние явно, и прошлые неудачи к нему отношения не имеют.
+        $this->xrLinkFix = 0;
         // Пробу инвалидируем: следующая отрисовка меню должна показать новое
         // ядро, а не закешированное до переключения.
         $this->xrayCoreProbe(true);
@@ -20823,7 +20924,10 @@ DNS-over-HTTPS with IP:
         // расхождение с настройкой означает, что подписки со smux уедут на
         // апстримное ядро и клиенты молча перестанут ходить.
         $probe  = $this->xrayCoreProbe();
-        $text[] = 'core: ' . (!$probe['ok'] ? '?' : ($probe['active'] === 'fork' ? 'fork (smux)' : 'XTLS'))
+        // Работающий процесс главнее симлинка: между `ln -sf` и рестартом они
+        // расходятся, а обслуживает клиентов процесс.
+        $realCore = $probe['running'] !== '' ? $probe['running'] : $probe['active'];
+        $text[] = 'core: ' . (!$probe['ok'] ? '?' : ($realCore === 'fork' ? 'fork (smux)' : 'XTLS'))
             . ($this->smuxActive($p) ? ' · SMUX ' . $this->i18n('on') : '');
         $text[] = 'transport: ' . ($p['transport'] ?: 'Websocket');
         // XHTTP в апстримном sing-box отсутствует (он есть только в xray и

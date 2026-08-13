@@ -303,10 +303,12 @@ smAssert(!isset($c['outbounds'][0]['multiplex']) && isset($c['outbounds'][1]['mu
 class SmuxProbeBot extends Bot
 {
     public string $out    = '';
+    public string $cmd    = '';
     public bool   $failed = false;
 
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
+        $this->cmd       = $cmd;
         $this->sshFailed = $this->failed;
 
         return $this->out;
@@ -315,20 +317,43 @@ class SmuxProbeBot extends Bot
 
 $probeBot = (new ReflectionClass(SmuxProbeBot::class))->newInstanceWithoutConstructor();
 
-$probeBot->out    = '1|/usr/bin/xray-smux|reno cubic brutal|Xray 26.8.15 (Xray, Penetrates Everything.(jesus))';
+$probeBot->out    = '1|/usr/bin/xray-smux|reno cubic brutal|/usr/bin/xray-smux|Xray 26.8.15 (Xray, Penetrates Everything.(jesus))';
 $probeBot->failed = false;
 $pr = $probeBot->xrayCoreProbe(true);
-smAssert($pr['ok'] && $pr['fork'] && $pr['active'] === 'fork' && $pr['brutal'],
-    'форк на месте, симлинк на него, brutal доступен');
+smAssert($pr['ok'] && $pr['fork'] && $pr['active'] === 'fork' && $pr['brutal'] && $pr['running'] === 'fork',
+    'форк на месте, симлинк на него, он же и работает, brutal доступен');
 smAssert($probeBot->getXrayVersion() === '26.8.15', 'версия достаётся из той же пробы');
 
-$probeBot->out = '|/usr/bin/xray|reno cubic|Xray 26.7.28 (Xray, Penetrates Everything.)';
+$probeBot->out = '|/usr/bin/xray|reno cubic|/usr/bin/xray|Xray 26.7.28 (Xray, Penetrates Everything.)';
 $pr = $probeBot->xrayCoreProbe(true);
-smAssert($pr['ok'] && !$pr['fork'] && $pr['active'] === 'origin' && !$pr['brutal'],
+smAssert($pr['ok'] && !$pr['fork'] && $pr['active'] === 'origin' && !$pr['brutal'] && $pr['running'] === 'origin',
     'апстримный образ: форка нет, brutal нет');
 
+// Симлинк уже поправлен, а обслуживает всё ещё старый процесс: `ln -sf` без
+// рестарта. Поля обязаны разойтись — на этом различии стоит вся починка.
+$probeBot->out = '1|/usr/bin/xray-smux|brutal|/usr/bin/xray|Xray 26.7.28 (Xray, Penetrates Everything.)';
+$pr = $probeBot->xrayCoreProbe(true);
+smAssert($pr['active'] === 'fork' && $pr['running'] === 'origin',
+    'симлинк и запущенный процесс читаются раздельно');
+
+// Пустой pid обязан отсекаться в самой команде: `readlink -f /proc//exe` не
+// возвращает пустоту, а печатает существующий /proc/exe — и незапущенное ядро
+// поехало бы в running как чужой бинарь.
+smAssert(str_contains($probeBot->cmd, 'test -n "$p" && readlink -f /proc/$p/exe'),
+    'проба не зовёт readlink с пустым pid');
+// Шаблон pgrep записан так, чтобы не найти шелл, который эту же команду и
+// выполняет: в его argv лежит "[x]ray run", а ищется "xray run".
+smAssert(str_contains($probeBot->cmd, '[x]ray run'), 'шаблон pgrep не матчит сам себя');
+
+// Ядро не поднято (нет клиентов — start_xray.sh не запускает xray). Это НЕ
+// «работает апстрим»: иначе свежая установка выглядела бы как расхождение.
+$probeBot->out = '1|/usr/bin/xray-smux|brutal||Xray 26.8.15 (Xray, Penetrates Everything.(jesus))';
+$pr = $probeBot->xrayCoreProbe(true);
+smAssert($pr['active'] === 'fork' && $pr['running'] === '',
+    'xray не запущен — running пустой, а не origin');
+
 // Разделитель в строке версии портит только саму версию, но не поля до неё.
-$probeBot->out = '1|/usr/bin/xray-smux|brutal|Xray 26.8.15 (a|b)';
+$probeBot->out = '1|/usr/bin/xray-smux|brutal|/usr/bin/xray-smux|Xray 26.8.15 (a|b)';
 $pr = $probeBot->xrayCoreProbe(true);
 smAssert($pr['fork'] && $pr['active'] === 'fork' && $pr['version'] === 'Xray 26.8.15 (a|b)',
     'версия идёт последней и склеивается обратно целиком');
@@ -336,15 +361,161 @@ smAssert($pr['fork'] && $pr['active'] === 'fork' && $pr['version'] === 'Xray 26.
 $probeBot->out    = '';
 $probeBot->failed = true;
 $pr = $probeBot->xrayCoreProbe(true);
-smAssert(!$pr['ok'] && !$pr['fork'], 'контейнер не ответил — ok=false, а не «форка нет»');
+smAssert(!$pr['ok'] && !$pr['fork'] && $pr['running'] === '',
+    'контейнер не ответил — ok=false, а не «форка нет»');
 
 // Кеш пробы: повторный вызов без $fresh не ходит в ssh заново.
-$probeBot->out    = '1|/usr/bin/xray-smux|brutal';
+$probeBot->out    = '1|/usr/bin/xray-smux|brutal|/usr/bin/xray-smux';
 $probeBot->failed = false;
 $probeBot->xrayCoreProbe(true);
 $probeBot->out = 'мусор';
 smAssert($probeBot->xrayCoreProbe()['fork'], 'проба кешируется на время запроса');
 smAssert(!$probeBot->xrayCoreProbe(true)['fork'], '$fresh=true перечитывает состояние');
+
+// --- автопочинка симлинка ----------------------------------------------------
+// Расхождение «форк в образе есть, а работает апстрим» чинится возвратом
+// симлинка, а не откатом настройки: smux уже уехал клиентам, и гасить его —
+// значит ждать, пока каждый перечитает подписку. Но чинить бесконечно тоже
+// нельзя: рестарт рвёт живые сессии.
+class SmuxFixBot extends Bot
+{
+    public array  $probe   = [];
+    public array  $cmds    = [];
+    public array  $restart = [];
+    public string $marker  = '';
+    public array  $pacConf = [];
+    public bool   $sshFail = false;
+
+    public function xrayCoreProbe(bool $fresh = false): array
+    {
+        return $this->probe;
+    }
+
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
+    {
+        $this->cmds[]    = $cmd;
+        $this->sshFailed = $this->sshFail;
+
+        return '';
+    }
+
+    public function getPacConf()
+    {
+        return $this->pacConf;
+    }
+
+    public function setPacConf(array $conf)
+    {
+        $this->pacConf = $conf;
+
+        return true;
+    }
+
+    public function getXray()
+    {
+        return [];
+    }
+
+    public function restartXray($c, $norestart = false)
+    {
+        $this->restart[] = $norestart;
+    }
+
+    // Маркер живёт в /logs — в тесте туда писать некуда, но ЧТО именно ушло бы
+    // в файл, проверить надо: разъехавшийся маркер и есть причина, по которой
+    // симлинк возвращается к апстриму на каждом пересоздании контейнера.
+    public function writeCoreMarker(string $core): bool
+    {
+        $this->marker = $core;
+
+        return true;
+    }
+}
+
+function smFixBot(array $probe): SmuxFixBot
+{
+    $b = (new ReflectionClass(SmuxFixBot::class))->newInstanceWithoutConstructor();
+    $b->probe     = $probe + ['ok' => true, 'fork' => true, 'active' => 'fork', 'running' => 'fork', 'brutal' => false, 'version' => ''];
+    $b->cmds      = [];
+    $b->restart   = [];
+    $b->marker    = '';
+    $b->pacConf   = smPac('fork');
+    $b->sshFail   = false;
+    $b->xrLinkFix = 0;
+
+    return $b;
+}
+
+// Симлинк уехал на апстрим — возвращаем его и рестартуем ядро.
+$b = smFixBot(['active' => 'origin', 'running' => 'origin']);
+$b->checkXrayCore();
+smAssert(count($b->cmds) === 1 && str_contains($b->cmds[0], 'ln -sf /usr/bin/xray-smux /usr/local/bin/xray'),
+    'расхождение симлинка: ссылка возвращается на форк');
+smAssert($b->marker === 'fork', 'маркер переписывается вместе с симлинком');
+smAssert(count($b->restart) === 1, 'после возврата симлинка ядро перезапускается');
+smAssert($b->xrayCore($b->pacConf) === 'fork' && !empty($b->pacConf['smux']['enabled']),
+    'настройка и smux при этом НЕ трогаются — чинить есть чем');
+
+// Симлинк на месте, но обслуживает старый процесс — тоже расхождение.
+$b = smFixBot(['active' => 'fork', 'running' => 'origin']);
+$b->checkXrayCore();
+smAssert(count($b->restart) === 1, 'старый процесс на апстриме: ядро перезапускается');
+
+// Всё сходится — не трогаем ничего.
+$b = smFixBot([]);
+$b->checkXrayCore();
+smAssert($b->cmds === [] && $b->restart === [], 'консистентное состояние: починка не запускается');
+
+// Ядро ещё не поднято — это не повод рестартовать пустоту.
+$b = smFixBot(['running' => '']);
+$b->checkXrayCore();
+smAssert($b->cmds === [] && $b->restart === [], 'xray не запущен — расхождением не считаем');
+
+// Контейнер молчит — состояние неизвестно, чинить нельзя.
+$b = smFixBot(['ok' => false, 'active' => 'origin', 'running' => 'origin']);
+$b->checkXrayCore();
+smAssert($b->cmds === [] && $b->restart === [] && $b->xrayCore($b->pacConf) === 'fork',
+    'xr недоступен — ни починки, ни отката настройки');
+
+// Форка нет в образе — чинить нечем, откатываем настройку и гасим smux.
+$b = smFixBot(['fork' => false, 'active' => 'origin', 'running' => 'origin']);
+$b->checkXrayCore();
+smAssert($b->xrayCore($b->pacConf) === 'origin' && empty($b->pacConf['smux']['enabled']) && $b->marker === 'origin',
+    'форка нет в образе — откат на апстрим и smux off');
+
+// ssh отвалился между пробой и починкой — рестартовать вслепую нечего.
+$b = smFixBot(['active' => 'origin', 'running' => 'origin']);
+$b->sshFail = true;
+$b->checkXrayCore();
+smAssert(count($b->cmds) === 1 && $b->restart === [] && $b->marker === '',
+    'ssh упал — ни рестарта, ни записи маркера');
+
+// Починка не приживается: после трёх попыток уходим на апстрим штатным путём,
+// иначе рестарт ядра встал бы на вечный пятиминутный круг.
+$b = smFixBot(['active' => 'origin', 'running' => 'origin']);
+for ($i = 0; $i < 4; $i++) {
+    $b->time_xraycore = 0;
+    $b->checkXrayCore();
+}
+smAssert(count($b->restart) === 4, 'четвёртая попытка не чинит симлинк заново');
+smAssert($b->xrayCore($b->pacConf) === 'origin' && empty($b->pacConf['smux']['enabled']),
+    'после трёх безуспешных попыток — откат на апстрим и smux off');
+
+// Успешная починка обнуляет счётчик: следующая поломка снова получит три
+// попытки, а не остаток от прошлой.
+$b = smFixBot(['active' => 'origin', 'running' => 'origin']);
+$b->time_xraycore = 0;
+$b->checkXrayCore();
+$b->probe = ['ok' => true, 'fork' => true, 'active' => 'fork', 'running' => 'fork', 'brutal' => false, 'version' => ''];
+$b->time_xraycore = 0;
+$b->checkXrayCore();
+smAssert($b->xrLinkFix === 0, 'консистентное состояние обнуляет счётчик попыток');
+
+// Троттлинг: без него cron дёргал бы ssh каждые 10 секунд.
+$b = smFixBot(['active' => 'origin', 'running' => 'origin']);
+$b->time_xraycore = time();
+$b->checkXrayCore();
+smAssert($b->cmds === [], 'проверка не чаще раза в 5 минут');
 
 if ($failed) {
     echo "smux_test FAILED: $failed\n";
