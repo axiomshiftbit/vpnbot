@@ -112,6 +112,10 @@ class Bot
     // ходят write/readXrayJson(), которые проверяются на инстансе из
     // newInstanceWithoutConstructor() (см. tests/xray_conf_inode_test.php).
     public $xrayConf = '/config/xray.json';
+    // Файл паролей фейк-страницы (auth_basic на корне домена). Путь свойством,
+    // а не константой, по той же причине, что и $xrayConf: тест подменяет его
+    // на временный, в файловую систему контейнера не ходя.
+    public $htpasswd = '/app/webapp/.htpasswd';
     public $i18n;
     public $language;
     public $selfupdate;
@@ -4726,6 +4730,7 @@ NFT;
             'checkLogs',
             'checkResetXrayStats',
             'checkCert',
+            'ensureHtpasswd',
             'autoAnalyzeLogs',
             'xrayStatsUser',
             'checkTrafficLimits',
@@ -5120,6 +5125,48 @@ NFT;
             }
         } catch (Exception $e) {
         }
+    }
+
+    // Корень домена закрыт `auth_basic` и работает приманкой для активного
+    // пробинга: без учётных данных nginx отдаёт 401 — ровно как любой сайт с
+    // закрытой зоной. Но когда файла паролей НЕТ, на присланную пару
+    // логин/пароль тот же nginx отвечает 403 и пишет в лог
+    // `open() "…/.htpasswd" failed`, тогда как настоящий сайт отвечает 401
+    // повторно. То есть отсутствие файла само выдаёт сервер любому, кто
+    // подставит произвольные креденшелы, — а именно от этого страница и стоит.
+    //
+    // В образе файла нет и создать его некому: `nginx.conf` только ссылается на
+    // путь. Поэтому заводим сами — на новой установке, после `make reset` и
+    // вообще всякий раз, когда файл пропал.
+    //
+    // Пароль случайный и НИГДЕ не сохраняется: страница не должна пускать
+    // внутрь, ей достаточно правдоподобно отказывать. Кому нужна веб-панель —
+    // тот кладёт свой файл, и этот метод его не тронет.
+    public function ensureHtpasswd(): bool
+    {
+        // Пустой файл считаем отсутствующим: nginx на нём отвечает 401, но
+        // осмысленным он от этого не становится, а появиться мог только от
+        // оборванной записи.
+        if (is_file($this->htpasswd) && filesize($this->htpasswd) > 0) {
+            return false;
+        }
+        $pw   = rtrim(strtr(base64_encode(random_bytes(48)), '+/', '-_'), '=');
+        $hash = password_hash($pw, PASSWORD_BCRYPT);
+        // bcrypt, а не apr1: PHP умеет его из коробки, а nginx на alpine
+        // принимает (проверено на живом сервере — верный пароль проходит
+        // авторизацию, неверный получает 401).
+        if (!is_string($hash) || false === @file_put_contents($this->htpasswd, 'admin:' . $hash . "\n")) {
+            error_log('ensureHtpasswd: ' . $this->htpasswd . ' not written');
+
+            return false;
+        }
+        // Файл создаётся от root, а читает его воркер nginx (uid nginx). Без
+        // прав на чтение всем nginx вернётся ровно к тому 403, от которого мы
+        // уходим, — только теперь молча и с файлом на месте.
+        @chmod($this->htpasswd, 0644);
+        error_log('ensureHtpasswd: fake-page password file created');
+
+        return true;
     }
 
     public function checkCert()
