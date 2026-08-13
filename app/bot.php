@@ -2124,7 +2124,13 @@ class Bot
         $l = new stdClass();
         $l->{'0'} = [
             "statsUserUplink"   => true,
-            "statsUserDownlink" => true
+            "statsUserDownlink" => true,
+            // Без этого флага ядро не ведёт карту «email -> живые IP»
+            // (app/dispatcher/default.go: trackOnlineIP зовётся только при
+            // p.Stats.UserOnline), и `xray api statsonlineiplist` отдаёт пусто.
+            // Её читает xrayOnlineIps() — источник онлайна, не зависящий от
+            // access-лога. Старые ядра неизвестное поле политики игнорируют.
+            "statsUserOnline"   => true
         ];
         $c['policy']['levels'] = $l;
         $c['policy']['system'] = [
@@ -4801,6 +4807,68 @@ NFT;
             }
             // protojson опускает поле value, когда счётчик равен нулю.
             $map[(string) $s['name']] = (int) ($s['value'] ?? 0);
+        }
+        return $map;
+    }
+
+    // Онлайн-IP от самого ядра: `xray api statsonlineiplist -all` (StatsService,
+    // GetUsersStats). Ядро держит карту «email -> живые IP» и вычёркивает IP,
+    // как только контекст соединения закрылся (app/dispatcher/default.go,
+    // trackOnlineIP), — то есть это СОСТОЯНИЕ, а не история.
+    //
+    // Зачем в дополнение к разбору /logs/xray (trackOnline): лог фиксирует
+    // МОМЕНТ подключения, а онлайном клиент считается 60 секунд после него. При
+    // включённом SMUX все потоки идут в одном несущем коннекте — новых строк в
+    // логе после первой почти нет, и полностью подключённый клиент через минуту
+    // «уходил в офлайн». Ядро же видит живое соединение всё время, пока оно
+    // живо. Плюс независимость от уровня логирования: с loglevel=none лог не
+    // пишется вовсе, а карта ядра остаётся.
+    //
+    // Требует "statsUserOnline" в policy.levels (см. saveXray) — без него
+    // команда штатно отдаёт пустой ответ.
+    //
+    // Возвращает карту «email => [ip => last_seen]». null — прочитать НЕ
+    // удалось (контейнер лежит, api выключен, ядро без этой команды); пустой
+    // массив — ядро ответило, живых соединений нет.
+    public function xrayOnlineIps(): ?array
+    {
+        $raw = $this->ssh('xray api statsonlineiplist --server=127.0.0.1:8080 -all 2>&1', 'xr');
+        if ($this->sshFailed) {
+            // ssh() уже записал причину — второй раз не дублируем.
+            return null;
+        }
+        $raw = trim((string) $raw);
+        if ($raw === '') {
+            error_log('xrayOnlineIps: empty output from statsonlineiplist');
+            return null;
+        }
+        $j = json_decode($raw, true);
+        if (!is_array($j)) {
+            // Тот же приём, что в xrayStatCounters: в ответе лежат email'ы
+            // клиентов, поэтому в лог уходит только заведомо не-JSON — текст
+            // ошибки самого xray (нет команды, api не поднят).
+            if ($raw[0] === '{' || $raw[0] === '[') {
+                error_log('xrayOnlineIps: malformed JSON from statsonlineiplist (' . strlen($raw) . ' bytes)');
+            } else {
+                error_log('xrayOnlineIps: ' . substr((string) strtok($raw, "\n"), 0, 200));
+            }
+            return null;
+        }
+        $map = [];
+        foreach (($j['users'] ?? []) as $u) {
+            if (!is_array($u) || empty($u['email'])) {
+                continue;
+            }
+            $ips = [];
+            foreach (($u['ips'] ?? []) as $e) {
+                if (!is_array($e) || empty($e['ip'])) {
+                    continue;
+                }
+                // protojson отдаёт int64 строкой и опускает нулевые поля;
+                // snake_case на случай ядра с EmitDefaults/иным маршалером.
+                $ips[(string) $e['ip']] = (int) ($e['lastSeen'] ?? $e['last_seen'] ?? 0);
+            }
+            $map[(string) $u['email']] = $ips;
         }
         return $map;
     }
@@ -17005,21 +17073,25 @@ DNS-over-HTTPS with IP:
     public function trackOnline(): array
     {
         $path = '/logs/xray';
-        if (!is_file($path)) {
-            return [];
-        }
-        $state = $this->getOnlineState();
-        $seen  = $state['seen'] ?? [];
-        clearstatcache(true, $path);
-        $size   = filesize($path);
+        // Раньше отсутствие лога означало ранний выход. Теперь нет: карта живых
+        // соединений ядра (ниже) от лога не зависит и остаётся единственным
+        // источником онлайна при loglevel=none, когда файла нет вовсе.
+        $log    = is_file($path);
+        $state  = $this->getOnlineState();
+        $seen   = $state['seen'] ?? [];
+        $size   = 0;
         $offset = $state['offset'] ?? null;
-        // first run or a rotated/truncated log: start at EOF so we don't import old
-        // history as "online" (a connection from an hour ago must not count as live).
-        if ($offset === null || $offset > $size) {
-            $offset = $size;
+        if ($log) {
+            clearstatcache(true, $path);
+            $size = filesize($path);
+            // first run or a rotated/truncated log: start at EOF so we don't import old
+            // history as "online" (a connection from an hour ago must not count as live).
+            if ($offset === null || $offset > $size) {
+                $offset = $size;
+            }
         }
         $events = [];
-        if ($size > $offset && ($r = fopen($path, 'r'))) {
+        if ($log && $size > $offset && ($r = fopen($path, 'r'))) {
             fseek($r, $offset);
             $now = time();
             while (($l = fgets($r)) !== false) {
@@ -17043,6 +17115,36 @@ DNS-over-HTTPS with IP:
         if (!empty($events)) {
             $this->recordConnLog($events);
         }
+        // Второй источник — карта живых соединений самого ядра (xrayOnlineIps).
+        // Лог даёт МОМЕНТ подключения, ядро — факт, что соединение живо прямо
+        // сейчас: при включённом SMUX новых строк в логе после первой почти
+        // нет, и подключённый клиент через минуту пропадал из онлайна.
+        // Штампуем текущим временем (как и разбор лога), потому что наличие IP
+        // в карте и означает «живо сейчас».
+        //
+        // Троттлинг обязателен: trackOnline зовётся на каждый рендер меню и
+        // каждый тик крона, а поход в ядро — это ssh-сессия. api_next держит
+        // 20 секунд между удачными опросами и 5 минут после отказа, чтобы
+        // лежащий контейнер xr не стоял в каждом рендере по таймауту ssh.
+        $now = time();
+        if (($state['api_next'] ?? 0) <= $now) {
+            $live = $this->xrayOnlineIps();
+            $apiNext = $now + ($live === null ? 300 : 20);
+            foreach (($live ?? []) as $email => $ips) {
+                if (empty($ips)) {
+                    continue;
+                }
+                $seen[$email]['ts'] = $now;
+                // last_seen из ответа не берём намеренно: это часы ядра, а всё
+                // остальное в $seen проштамповано локальными. Само наличие IP в
+                // карте уже значит «соединение живо сейчас».
+                foreach (array_keys($ips) as $ip) {
+                    $seen[$email]['ips'][$ip] = $now;
+                }
+            }
+        } else {
+            $apiNext = (int) $state['api_next'];
+        }
         // prune entries/IPs not seen in the last 10 min to keep the file small
         $cutoff = time() - 600;
         foreach ($seen as $email => $info) {
@@ -17055,7 +17157,7 @@ DNS-over-HTTPS with IP:
                 unset($seen[$email]);
             }
         }
-        $this->setOnlineState(['offset' => $offset, 'seen' => $seen]);
+        $this->setOnlineState(['offset' => $offset, 'seen' => $seen, 'api_next' => $apiNext]);
         return $seen;
     }
 
@@ -20555,7 +20657,14 @@ DNS-over-HTTPS with IP:
             <code>~server_name~</code>
             <code>~fingerprint~</code>
             <code>~ip~</code>
+            <code>~smux~</code>
+            <code>~smux:h2mux~</code>
             TEXT;
+        // Ключ мультиплекса в каждом диалекте свой (см. smuxBlock()): sing-box
+        // ждёт multiplex, xray-форк и mihomo — smux. Печатаем имя ТОГО формата,
+        // чьё меню открыто, иначе подсказка отправляет класть плейсхолдер под
+        // ключ, который клиент этого формата просто проигнорирует.
+        $text[] = str_replace('%s', $type === 'sing' ? 'multiplex' : 'smux', $this->i18n('smux tpl hint'));
         // ?? [] — до первого сохранённого шаблона ключа нет; ниже по нему идёт
         // foreach.
         $templates = $pac["{$type}templates"] ?? [];
@@ -25182,10 +25291,38 @@ DNS-over-HTTPS with IP:
             ],
         ];
         exec("git -C / branch -vv", $mm);
+        // Ветка и канал образов показываются вместе: они обязаны быть парными
+        // (dockerfile и рассчитывающий на него PHP лежат в одном коммите), а
+        // разъезд виден только так — сам по себе неверный VPNBOT_TAG ничем не
+        // проявляется, кроме странных ошибок в рантайме.
+        // «→» читается как «станет после нажатия update»: ветку переключит
+        // update.sh по /update/branch, тег — scripts/sync_image_tag.sh по этой
+        // же ветке.
+        $tag  = trim((string) getenv('VPNBOT_TAG')) ?: 'latest';
+        $want = self::branchTag($track ?: $b);
+        $head = 'branch: <code>' . htmlspecialchars($b) . '</code> → <code>'
+            . htmlspecialchars($track ?: $b) . '</code>' . "\n"
+            // Пин на сборку (sha-<commit>) синхронизатор не трогает, поэтому и
+            // стрелку «станет» рисовать нельзя — она бы обещала смену канала,
+            // которой не будет.
+            . 'images: <code>' . htmlspecialchars($tag) . '</code>'
+            . (str_starts_with($tag, 'sha-')
+                ? ' 📌'
+                : ' → <code>' . $want . '</code>' . ($tag === $want ? '' : ' ⚠'))
+            . "\n";
         return [
-            'text' => '<pre><code class="language-shell">' . htmlentities(implode("\n", $mm)) . '</code></pre>',
+            'text' => $head . '<pre><code class="language-shell">' . htmlentities(implode("\n", $mm)) . '</code></pre>',
             'data' => $data,
         ];
+    }
+
+    // Канал образов, парный ветке кода. Соответствие задаёт CI
+    // (.github/workflows/images.yml): сборка с master публикует тег latest,
+    // сборка с любой другой ветки — dev. Здесь тот же выбор, чтобы бот показывал
+    // и sync_image_tag.sh ставил ровно то, что реально лежит в registry.
+    public static function branchTag(string $branch): string
+    {
+        return trim($branch) === 'master' ? 'latest' : 'dev';
     }
 
     public function applyupdatebot()

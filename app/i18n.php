@@ -109,6 +109,10 @@ $i = [
         'en' => 'TCP Brutal needs the `brutal` congestion module on the HOST kernel — it is missing, so the option is unavailable. Enabling it without the module tears down the carrier connection.',
         'ru' => 'TCP Brutal требует модуль конгестии `brutal` в ядре ХОСТА — его нет, поэтому опция недоступна. Включение без модуля рвёт несущее соединение.',
     ],
+    'smux tpl hint'        => [
+        'en' => 'SMUX: put <code>"%s": "~smux~"</code> into the node you want multiplexed — the block is filled in from the SMUX menu. <code>~smux:h2mux~</code> overrides the protocol for this template only. If the core is not the fork or SMUX is off, the key is dropped from the subscription.',
+        'ru' => 'SMUX: впишите <code>"%s": "~smux~"</code> в нужный узел — блок подставится по настройкам меню SMUX. <code>~smux:h2mux~</code> задаёт протокол только этому шаблону. Если ядро не форк или SMUX выключен, ключ из подписки удаляется.',
+    ],
     'fragment'             => [
         'en' => 'TLS fragment',
         'ru' => 'TLS-фрагментация',

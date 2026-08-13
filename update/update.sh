@@ -81,6 +81,30 @@ do
             fi
         fi
 
+        # Канал образов приводим к ветке ПОСЛЕ checkout и ДО `make start` (тот
+        # первым делом делает pull образов). Снаружи if'а по $cmd намеренно:
+        # рестарт (cmd=2) обязан чинить пару так же, как обновление, иначе
+        # разъехавшийся VPNBOT_TAG живёт до следующего git-обновления.
+        #
+        # Исполняем КОПИЮ в update/ (каталог вне git: .gitignore update/*), а
+        # свежую кладём туда же, если она есть в только что выкаченном дереве.
+        # Порядок именно такой из-за переезда НА ветку, где скрипта ещё нет:
+        # scripts/ читается уже после checkout, и без пережившей checkout копии
+        # канал образов остался бы от прежней ветки. Сам update.sh переживает
+        # подмену только потому, что git checkout заводит новый inode, а bash
+        # держит открытым старый.
+        if [[ -f "$pwd/scripts/sync_image_tag.sh" ]]
+        then
+            cp -f "$pwd/scripts/sync_image_tag.sh" "$pwd/update/sync_image_tag.sh"
+        fi
+        # Скрипт молчит, когда менять нечего; строку об изменении дописываем в
+        # отчёт, который бот отправит после старта.
+        if [[ -f "$pwd/update/sync_image_tag.sh" ]]
+        then
+            tg_draft "syncing image channel"
+            bash "$pwd/update/sync_image_tag.sh" "$pwd" >> "$pwd/update/message"
+        fi
+
         tg_draft "launching the bot"
         make start
 
