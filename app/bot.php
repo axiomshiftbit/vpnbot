@@ -25291,10 +25291,38 @@ DNS-over-HTTPS with IP:
             ],
         ];
         exec("git -C / branch -vv", $mm);
+        // Ветка и канал образов показываются вместе: они обязаны быть парными
+        // (dockerfile и рассчитывающий на него PHP лежат в одном коммите), а
+        // разъезд виден только так — сам по себе неверный VPNBOT_TAG ничем не
+        // проявляется, кроме странных ошибок в рантайме.
+        // «→» читается как «станет после нажатия update»: ветку переключит
+        // update.sh по /update/branch, тег — scripts/sync_image_tag.sh по этой
+        // же ветке.
+        $tag  = trim((string) getenv('VPNBOT_TAG')) ?: 'latest';
+        $want = self::branchTag($track ?: $b);
+        $head = 'branch: <code>' . htmlspecialchars($b) . '</code> → <code>'
+            . htmlspecialchars($track ?: $b) . '</code>' . "\n"
+            // Пин на сборку (sha-<commit>) синхронизатор не трогает, поэтому и
+            // стрелку «станет» рисовать нельзя — она бы обещала смену канала,
+            // которой не будет.
+            . 'images: <code>' . htmlspecialchars($tag) . '</code>'
+            . (str_starts_with($tag, 'sha-')
+                ? ' 📌'
+                : ' → <code>' . $want . '</code>' . ($tag === $want ? '' : ' ⚠'))
+            . "\n";
         return [
-            'text' => '<pre><code class="language-shell">' . htmlentities(implode("\n", $mm)) . '</code></pre>',
+            'text' => $head . '<pre><code class="language-shell">' . htmlentities(implode("\n", $mm)) . '</code></pre>',
             'data' => $data,
         ];
+    }
+
+    // Канал образов, парный ветке кода. Соответствие задаёт CI
+    // (.github/workflows/images.yml): сборка с master публикует тег latest,
+    // сборка с любой другой ветки — dev. Здесь тот же выбор, чтобы бот показывал
+    // и sync_image_tag.sh ставил ровно то, что реально лежит в registry.
+    public static function branchTag(string $branch): string
+    {
+        return trim($branch) === 'master' ? 'latest' : 'dev';
     }
 
     public function applyupdatebot()
