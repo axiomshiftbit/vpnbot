@@ -20555,7 +20555,14 @@ DNS-over-HTTPS with IP:
             <code>~server_name~</code>
             <code>~fingerprint~</code>
             <code>~ip~</code>
+            <code>~smux~</code>
+            <code>~smux:h2mux~</code>
             TEXT;
+        // Ключ мультиплекса в каждом диалекте свой (см. smuxBlock()): sing-box
+        // ждёт multiplex, xray-форк и mihomo — smux. Печатаем имя ТОГО формата,
+        // чьё меню открыто, иначе подсказка отправляет класть плейсхолдер под
+        // ключ, который клиент этого формата просто проигнорирует.
+        $text[] = str_replace('%s', $type === 'sing' ? 'multiplex' : 'smux', $this->i18n('smux tpl hint'));
         // ?? [] — до первого сохранённого шаблона ключа нет; ниже по нему идёт
         // foreach.
         $templates = $pac["{$type}templates"] ?? [];
