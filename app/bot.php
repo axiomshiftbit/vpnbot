@@ -1524,6 +1524,10 @@ class Bot
             case preg_match('~^/rotateAmnezia (-?\d+)$~', $this->input['callback'], $m):
                 $this->rotateAmneziaJunk(false, $m[1]);
                 break;
+            case preg_match('~^/rotateAllPeerKeys ([01]) (-?\d+)( confirm)?$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->rotateAllPeerKeys($m[2], !empty($m[3]));
+                break;
             case preg_match('~^/setAmneziaRotation ([01]) (-?\d+)$~', $this->input['callback'], $m):
                 $this->selectWG($m[1]);
                 $this->setAmneziaRotation($m[2]);
@@ -7755,6 +7759,171 @@ NFT;
         }
     }
 
+    // ── Массовая ротация ключей клиентов (WG/AWG) ─────────────────────────────
+    //
+    // Сервер сам себе ничего не меняет: ротируются только клиентские
+    // PrivateKey/PublicKey (+ общий на инстанс PresharedKey у amnezia). Ключ
+    // самого сервера ([Interface] PrivateKey в живом wg0.conf, ставится один
+    // раз start_wg.sh при первом старте контейнера) не трогается никогда —
+    // его ротация разом сломала бы ВСЕ уже выданные конфиги (в каждом зашит
+    // текущий публичный ключ сервера), а не только клиентские.
+    //
+    // Сопоставление clients[] ↔ серверных peers[] — по адресу
+    // (peerIndexByClient), а не по общему индексу, как делает switchAmnezia():
+    // там цена ошибки ниже (не тот клиент не получит PSK/junk), здесь —
+    // выше (не тот клиент получил бы чужой публичный ключ на сервере, тихая
+    // и трудно диагностируемая поломка). Клиент без пира на сервере
+    // пропускается целиком — новый локальный ключ ему тоже не пишем: иначе
+    // он указывал бы на пира, которого на сервере нет вовсе, что хуже, чем
+    // оставить как было.
+
+    // Чистая функция, без ssh/сети — юнит-тестируется напрямую. $keyPairs —
+    // список ['priv', 'pub'] в порядке $clients; $psk — новый общий
+    // presharedkey инстанса (amnezia) либо null (обычный WG — поле
+    // PresharedKey нигде не создаётся и не трогается).
+    public function applyRotatedPeerKeys(array $clients, ?array $conf, array $keyPairs, ?string $psk): array
+    {
+        $rotated = 0;
+        $skipped = 0;
+        $oldToNew = [];
+        foreach ($clients as $k => $client) {
+            $pair = array_shift($keyPairs);
+            if ($pair === null) {
+                $skipped++;
+                continue;
+            }
+            [$priv, $pub] = $pair;
+            $i = $this->peerIndexByClient($conf, $client);
+            if ($i === null) {
+                $skipped++;
+                continue;
+            }
+            $old = (string) ($client['interface']['PrivateKey'] ?? '');
+            $clients[$k]['interface']['PrivateKey'] = $priv;
+            if ($old !== '') {
+                $oldToNew[$old] = $priv;
+            }
+            // Выключенный пир хранит поля с префиксом "# " (switchClient()) —
+            // пишем под тем же префиксом, что уже есть, никогда не заводя
+            // одновременно и PublicKey, и # PublicKey (иначе createConfig()
+            // теряет заголовок секции — она решает [Peer]/# [Peer] по
+            // наличию именно # PublicKey). disabled — по PublicKey, единому
+            // источнику правды: у PresharedKey поля может не быть вовсе
+            // (амнезию включили позже, пир создан ещё как plain WG), и
+            // проверка "уже есть # PresharedKey" в этом случае завела бы
+            // несогласованную смесь # PublicKey + голый PresharedKey.
+            $disabled = array_key_exists('# PublicKey', $conf['peers'][$i]);
+            $conf['peers'][$i][$disabled ? '# PublicKey' : 'PublicKey'] = $pub;
+            if ($psk !== null) {
+                $clients[$k]['peers'][0]['PresharedKey'] = $psk;
+                $conf['peers'][$i][$disabled ? '# PresharedKey' : 'PresharedKey'] = $psk;
+            }
+            $rotated++;
+        }
+
+        return ['clients' => $clients, 'conf' => $conf, 'rotated' => $rotated, 'skipped' => $skipped, 'oldToNew' => $oldToNew];
+    }
+
+    // Чистая функция: WG-клиент привязывается к VLESS-клиенту по значению
+    // (setVlessLink()/unsetVlessLink() кладут сырой PrivateKey WG-клиента в
+    // xray.json.inbounds[0].settings.clients[$i]['awg']) — после ротации это
+    // значение протухает молча (тумблер "vless: on/off" покажет "off", хотя
+    // связь технически осталась, а комбо-подписка AWG+VLESS тихо потеряет
+    // AWG-часть). Переписываем совпавшие awg-поля на новый ключ тем же
+    // сравнением, что уже использует setVlessLink().
+    public function remapVlessAwgLinks(array $xr, array $oldToNew): array
+    {
+        if (!$oldToNew || empty($xr['inbounds'][0]['settings']['clients'])) {
+            return $xr;
+        }
+        foreach ($xr['inbounds'][0]['settings']['clients'] as $i => $c) {
+            if (!empty($c['awg']) && isset($oldToNew[$c['awg']])) {
+                $xr['inbounds'][0]['settings']['clients'][$i]['awg'] = $oldToNew[$c['awg']];
+            }
+        }
+
+        return $xr;
+    }
+
+    public function rotateAllPeerKeys($page, $confirm = false)
+    {
+        if (!$confirm) {
+            $text = 'Menu -> ' . $this->i18n('wg_title') . "\n⚠ " . $this->i18n('confirm rotate peer keys');
+            $inst = $this->wgNum();
+            $data = [
+                [['text' => '❌ ' . $this->i18n('rotate all peer keys'), 'callback_data' => "/rotateAllPeerKeys $inst $page confirm"]],
+                [['text' => $this->i18n('cancel'), 'callback_data' => "/menu wg $page"]],
+            ];
+
+            return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+        }
+
+        $clients = $this->readClients();
+        if (!$clients) {
+            return $this->menu('wg', $page);
+        }
+        $conf = $this->readConfig();
+        if (empty($conf['interface']['Address'])) {
+            $this->wgConfUnavailable('ключи клиентов не изменены');
+
+            return;
+        }
+
+        $amnezia = $this->getPacConf()[$this->getInstanceWG(1) . 'amnezia'] ?? false;
+        $psk     = null;
+        if ($amnezia) {
+            // unset кэша заставляет presharedKey() сгенерировать новый — тот
+            // же приём, что switchAmnezia($reset=true).
+            $p = $this->getPacConf();
+            unset($p[$this->getInstanceWG(1) . 'presharedkey']);
+            $this->setPacConf($p);
+            $psk = $this->presharedKey();
+            if ($psk === '') {
+                $this->wgConfUnavailable('не удалось получить presharedkey (контейнер недоступен), ключи не изменены');
+
+                return;
+            }
+        }
+
+        // Один ssh()-вызов на весь батч (цикл — на стороне контейнера), а не
+        // 2-3 вызова НА КЛИЕНТА: ssh() каждый раз поднимает новое соединение
+        // с нуля, и на сотнях клиентов наивный цикл упёрся бы в таймаут.
+        $n      = count($clients);
+        $wgType = $this->getWGType();
+        $genCmd = "i=0; while [ \$i -lt $n ]; do PRIV=\$($wgType genkey); "
+                . "PUB=\$(echo \"\$PRIV\" | $wgType pubkey); echo \"\$PRIV \$PUB\"; i=\$((i+1)); done";
+        $out    = trim($this->ssh($genCmd, $this->getInstanceWG()));
+        $lines  = $out !== '' ? preg_split('~\R~', $out, -1, PREG_SPLIT_NO_EMPTY) : [];
+        $pairs  = [];
+        foreach ($lines as $line) {
+            [$priv, $pub] = array_pad(explode(' ', trim($line), 2), 2, '');
+            if (preg_match('~^[A-Za-z0-9+/]{43}=$~', $priv) && preg_match('~^[A-Za-z0-9+/]{43}=$~', $pub)) {
+                $pairs[] = [$priv, $pub];
+            }
+        }
+        if ($this->sshFailed || count($pairs) !== $n) {
+            $this->wgConfUnavailable('не удалось сгенерировать ключи для всех клиентов (контейнер недоступен), ничего не изменено');
+
+            return;
+        }
+
+        $r = $this->applyRotatedPeerKeys($clients, $conf, $pairs, $psk);
+
+        if ($r['oldToNew']) {
+            $xr = $this->remapVlessAwgLinks($this->getXray(), $r['oldToNew']);
+            $this->restartXray($xr, 1);
+        }
+
+        $this->saveClients($r['clients']);
+        $this->restartWG($this->createConfig($r['conf']));
+
+        $this->answer(
+            $this->input['callback_id'] ?? '',
+            "🔄 rotated {$r['rotated']}/" . count($clients) . ($r['skipped'] ? ", skipped {$r['skipped']}" : '')
+        );
+        $this->menu('wg', $page);
+    }
+
     // Поднялся ли интерфейс. `awg show wg0` печатает «interface: wg0» только для
     // существующего устройства; при отвергнутом конфиге awg-quick падает на
     // setconf и устройства нет вовсе.
@@ -11680,6 +11849,15 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/switchAmnezia $inst $page",
             ],
         ]);
+        // Вне блока if (!empty($am)): кнопка обязана быть видна и на обычном
+        // WG-инстансе тоже (там ротируются только private/public, без
+        // presharedkey — его у plain WG нет вовсе).
+        $data[] = [
+            [
+                'text'          => '🔄 ' . $this->i18n('rotate all peer keys') . ($am ? ' (+psk)' : ''),
+                'callback_data' => "/rotateAllPeerKeys $inst $page",
+            ],
+        ];
         if ($clients) {
             $data = array_merge($data, $clients);
         }
