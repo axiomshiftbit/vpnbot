@@ -1008,6 +1008,12 @@ class Bot
             case preg_match('~^/ssGenPswd$~', $this->input['callback'], $m):
                 $this->sspwdch(bin2hex(random_bytes(16)));
                 break;
+            case preg_match('~^/panelPswd$~', $this->input['callback'], $m):
+                $this->panelPswdPrompt();
+                break;
+            case preg_match('~^/panelGenPswd$~', $this->input['callback'], $m):
+                $this->panelPswdGen();
+                break;
             case preg_match('~^/changeCamouflage$~', $this->input['callback'], $m):
                 $this->changeCamouflage();
                 break;
@@ -2566,6 +2572,65 @@ class Bot
             'callback'       => 'sspwdch',
             'args'           => [],
         ]);
+    }
+
+    // Пароль веб-панели (app/panel/Panel.php, порт 8090, НЕ AdGuard-панель и
+    // не decoy-страница .htpasswd). Тот же формат хранения, что
+    // Panel::setPassword(): panelpswd = password_hash(..., PASSWORD_DEFAULT)
+    // в pac.json — совместимость с Panel::login() гарантирована побайтовым
+    // повтором вызова. Смена пароля сама обнуляет все сессии панели: HMAC
+    // подписи куки завязаны на текущий хеш пароля (Panel::sign()).
+    public function setPanelPassword(string $plain): void
+    {
+        $c              = $this->getPacConf();
+        $c['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
+        $this->setPacConf($c);
+        // Как Panel::setPassword(): протухший initial_password.txt с уже
+        // недействительным паролем не должен пережить смену.
+        $dir = getenv('PANEL_DIR') ?: '/config/panel';
+        @unlink($dir . '/initial_password.txt');
+    }
+
+    public function panelPswdPrompt()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter new web panel password (min 8 chars)",
+            $this->input['message_id'],
+            reply: 'enter panel password',
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'panelPswdSet',
+            'args'           => [],
+        ]);
+    }
+
+    // Без answer()-попапа: это ответ на force_reply, а не клик — валидного
+    // callback_id здесь нет (тот же принцип, что у sspwdch()).
+    public function panelPswdSet($pass, $nomenu = false)
+    {
+        $pass = trim((string) $pass);
+        if (strlen($pass) < 8) {
+            $this->send($this->input['chat'], 'пароль короче 8 символов — отклонён, попробуйте снова', $this->input['message_id']);
+        } else {
+            $this->setPanelPassword($pass);
+        }
+        if (empty($nomenu)) {
+            $this->menu('config');
+        }
+    }
+
+    // Alert-попап, а не сообщение в чат: как showHeaderProtectionKey() —
+    // секрет не должен оседать в истории переписки. Здесь есть настоящий
+    // callback_id (прямой клик по кнопке), в отличие от panelPswdSet().
+    public function panelPswdGen()
+    {
+        $pass = bin2hex(random_bytes(16));
+        $this->setPanelPassword($pass);
+        $this->answer($this->input['callback_id'] ?? null, "новый пароль веб-панели:\n$pass", true);
+        $this->menu('config');
     }
 
     public function ssPswdCheck()
@@ -25741,6 +25806,16 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
+                'text'          => $this->i18n('change password') . ' (панель)',
+                'callback_data' => "/panelPswd",
+            ],
+            [
+                'text'          => $this->i18n('generate password') . ' (панель)',
+                'callback_data' => "/panelGenPswd",
+            ],
+        ];
+        $data[] = [
+            [
                 'text'          => "{$this->i18n('add')} {$this->i18n('admin')}",
                 'callback_data' => "/addadmin",
             ],
@@ -25762,6 +25837,8 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/menu",
             ],
         ];
+        $text[] = '';
+        $text[] = 'Пароль веб-панели (app/panel, порт 8090) — эти же действия остаются доступны через `panel.php passwd` на сервере, если бот недоступен.';
         return [
             'text' => implode("\n", $text),
             'data' => $data,
