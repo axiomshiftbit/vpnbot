@@ -71,9 +71,8 @@ footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);pa
 #login .err,#login .note{color:#e06a6a;font-size:12px;margin-top:8px;min-height:16px;white-space:pre-wrap}
 #login .note{color:var(--dim)}
 #who{color:var(--dim);font-size:12px}
-#upcap{display:none;flex:1 1 100%;background:var(--bg);color:var(--text);border:1px solid var(--line);
+#upcap{display:block;flex:1 1 100%;background:var(--bg);color:var(--text);border:1px solid var(--line);
   border-radius:8px;padding:7px 9px;font:12px inherit;margin-top:6px}
-#upcap.on{display:block}
 </style>
 </head>
 <body>
@@ -95,7 +94,7 @@ footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);pa
     <textarea id="text" rows="1" placeholder="сообщение или команда"></textarea>
     <label title="отправить файл">📎<input id="file" type="file" hidden></label>
     <button id="send">➤</button>
-    <input id="upcap" type="text">
+    <input id="upcap" type="text" placeholder="подпись к файлу (необязательно)">
   </div>
 </footer>
 
@@ -240,13 +239,12 @@ function refreshReply(){
   $("replybar").className = to ? "on" : "";
   $("replybar").textContent = to ? "↩ ответ на запрос: " + (hint || "введите значение") : "";
   $("text").placeholder = hint || "сообщение или команда";
-  // Подпись к файлу реально нужна только когда бот ждёт шаблон (см.
-  // Bot::templateAdd(), bot.php:20710) — импорт бэкапа/списков её игнорирует.
-  // Остальным file-flow'ам поле не показываем, чтобы не переспрашивать зря.
-  const needsCaption = to && /template/i.test(hint);
-  $("upcap").className = needsCaption ? "on" : "";
-  $("upcap").placeholder = hint;
-  if (!needsCaption) $("upcap").value = "";
+  // В Telegram подпись к файлу можно добавить при отправке ЛЮБОГО документа,
+  // а не только когда бот явно её просит (templateAdd — единственный
+  // обработчик, которому она обязательна, но заранее не угадать, что ждёт
+  // именно её). Поле поэтому всегда доступно и всегда необязательно — как и
+  // раньше при исходном prompt() на каждой загрузке.
+  $("upcap").placeholder = hint || "подпись к файлу (необязательно)";
 }
 
 function dismiss(id){
@@ -314,8 +312,8 @@ function upload(f){
   const fd = new FormData();
   fd.append("file", f);
   fd.append("reply_to", replyTo);
-  fd.append("caption", $("upcap").className.includes("on") ? $("upcap").value : "");
-  $("upcap").value = ""; $("upcap").className = "";
+  fd.append("caption", $("upcap").value);
+  $("upcap").value = "";
   return new Promise(resolve => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", PREFIX + "/upload");

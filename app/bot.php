@@ -5625,6 +5625,24 @@ NFT;
         return false;
     }
 
+    /**
+     * Бэкап, снятый до появления пароля веб-панели (или собранный вручную для
+     * теста), не содержит panelpswd — importFile() ниже заменяет pac.json
+     * ЦЕЛИКОМ, и такой restore молча стирал бы текущий пароль панели.
+     * Panel::authed() требует непустой хеш на самом первом шаге, поэтому
+     * пропажа поля разом обнуляла бы ВСЕ открытые сессии панели, а следующий
+     * логин с верным паролем отвечал бы «неверный пароль» — пароля-то больше
+     * нет. Текущий хеш переживает restore, если сам бэкап не принёс свой.
+     */
+    public function preservePanelPswd(array $incoming, array $current): array
+    {
+        if (empty($incoming['panelpswd']) && !empty($current['panelpswd'])) {
+            $incoming['panelpswd'] = $current['panelpswd'];
+        }
+
+        return $incoming;
+    }
+
     public function import()
     {
         $r = $this->send(
@@ -5673,6 +5691,7 @@ NFT;
                 if ((int) ($this->getPacConf()['wg1_amnezia'] ?? 0) != (int) ($json['pac']['wg1_amnezia'] ?? 0)) {
                     $switch_wg1amnezia = 1;
                 }
+                $json['pac'] = $this->preservePanelPswd($json['pac'], $this->getPacConf());
                 $this->setPacConf($json['pac']);
                 $out[] = 'update naiveproxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));

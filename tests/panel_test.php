@@ -420,4 +420,23 @@ panelAssert(false === ($loginOut2['ok'] ?? null) && 'unknown admin' === ($loginO
 $_POST = [];
 $clear->invoke($multi);
 
+// ── restore бэкапа не должен стирать пароль панели ───────────────────────────
+// Живой баг с рабочего сервера: восстановление бэкапа без panelpswd (снят до появления
+// пароля панели / собран вручную для теста) заменяло pac.json целиком, и
+// панель разом теряла пароль — Panel::authed() требует непустой хеш на
+// первом же шаге, поэтому «неверный пароль» получал и верный ввод.
+$restoreBot = new PanelTestBot();
+$restoreBot->setPacConf(['panelpswd' => 'CURRENT_HASH', 'domain' => 'x.test']);
+$restored = $restoreBot->preservePanelPswd(['domain' => 'y.test'], $restoreBot->getPacConf());
+panelAssert('CURRENT_HASH' === ($restored['panelpswd'] ?? null), 'бэкап без panelpswd не стирает текущий пароль панели');
+panelAssert('y.test' === ($restored['domain'] ?? null), 'остальные поля бэкапа применяются как есть');
+
+$restored2 = $restoreBot->preservePanelPswd(['panelpswd' => 'FROM_BACKUP', 'domain' => 'z.test'], $restoreBot->getPacConf());
+panelAssert('FROM_BACKUP' === ($restored2['panelpswd'] ?? null), 'если бэкап несёт свой пароль панели — используется он, а не текущий');
+
+$noCurrent = new PanelTestBot();
+$noCurrent->setPacConf(['domain' => 'x.test']); // на панели пароль ещё не задавали
+$restored3 = $noCurrent->preservePanelPswd(['domain' => 'y.test'], $noCurrent->getPacConf());
+panelAssert(empty($restored3['panelpswd']), 'нет текущего пароля — restore не выдумывает его из ничего');
+
 echo "panel_test: OK\n";

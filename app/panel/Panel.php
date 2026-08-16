@@ -620,7 +620,11 @@ class Panel
             '{{PREFIX}}' => htmlspecialchars($this->prefix, ENT_QUOTES),
             '{{AUTH}}'   => $authed ? '1' : '0',
             '{{NOTE}}'   => htmlspecialchars($this->bootNote(), ENT_QUOTES),
-            '{{ADMINS}}' => htmlspecialchars(json_encode($admins), ENT_QUOTES),
+            // HEX_TAG/HEX_AMP на случай, если id когда-нибудь перестанут быть
+            // строго числовыми (сейчас гарантируют это CLI и auto-bootstrap в
+            // Bot::auth()) — иначе "</script>" в значении вырвался бы из
+            // JS-строки, а htmlspecialchars() сам по себе "/" не трогает.
+            '{{ADMINS}}' => htmlspecialchars(json_encode($admins, JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES),
         ]);
     }
 
