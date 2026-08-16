@@ -252,4 +252,21 @@ auditAssert((fileperms($tmp) & 0777) === 0600, 'перезапись должн�
 auditAssert(file_get_contents($tmp) === 'new', 'перезапись должна заменять содержимое');
 unlink($tmp);
 
+// ── setPacConf(): отказ кодировщика не должен обнулять pac.json ──────────────
+// json_encode() возвращает FALSE на невалидном UTF-8 (имя клиента из импорта,
+// байты из ssh-вывода), а file_put_contents($f, false) пишет ПУСТУЮ строку и
+// рапортует об успехе — rename() подменял бы конфиг нулевым файлом, то есть
+// уносил клиентов, ключи reality и все шаблоны разом.
+$pacFile   = sys_get_temp_dir() . '/audit_pac_' . bin2hex(random_bytes(6)) . '.json';
+$bot->pac  = $pacFile;
+$good      = ['clients' => ['ok'], 'privateKey' => 'secret'];
+auditAssert(false !== $bot->setPacConf($good), 'валидный конфиг записывается');
+auditAssert($bot->getPacConf() === $good, 'записанный конфиг читается обратно');
+auditAssert(false === $bot->setPacConf(['name' => "\xB1\x31"]), 'битый UTF-8 не записывается');
+clearstatcache();
+auditAssert($bot->getPacConf() === $good, 'после отказа pac.json остаётся прежним, а не пустым');
+foreach (glob($pacFile . '*') ?: [] as $f) {
+    @unlink($f);
+}
+
 echo "audit_fixes_test OK\n";

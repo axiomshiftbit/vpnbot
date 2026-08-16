@@ -123,6 +123,10 @@ services:
                 image: ${IMAGE:-alpine:3.23}
         ports:
             - 127.0.0.1:8081:8080
+            # Веб-панель управления (app/panel): отдельный слушатель unit,
+            # доступный только на loopback хоста. Снаружи её нет — ходить
+            # через `ssh -L 8090:127.0.0.1:8090 <сервер>`.
+            - 127.0.0.1:8090:8090
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/php.ini:/etc/php84/php.ini

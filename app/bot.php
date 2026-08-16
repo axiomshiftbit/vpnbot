@@ -153,6 +153,10 @@ class Bot
     // а не из query-string. Различие существенно: rule-set URL'ы строятся только
     // токеном, а deep-link'и импорта — только query-string (см. subscription()).
     public $subToken = [];
+    // Подменяемый транспорт Bot API (см. request()). null — обычный curl к
+    // api.telegram.org; объект с методом call($method, $data, $json_header) —
+    // локальная панель.
+    public $transport;
     public $admin;
     public $ports;
     public $warpprofile;
@@ -1003,6 +1007,12 @@ class Bot
                 break;
             case preg_match('~^/ssGenPswd$~', $this->input['callback'], $m):
                 $this->sspwdch(bin2hex(random_bytes(16)));
+                break;
+            case preg_match('~^/panelPswd$~', $this->input['callback'], $m):
+                $this->panelPswdPrompt();
+                break;
+            case preg_match('~^/panelGenPswd$~', $this->input['callback'], $m):
+                $this->panelPswdGen();
                 break;
             case preg_match('~^/changeCamouflage$~', $this->input['callback'], $m):
                 $this->changeCamouflage();
@@ -2562,6 +2572,65 @@ class Bot
             'callback'       => 'sspwdch',
             'args'           => [],
         ]);
+    }
+
+    // Пароль веб-панели (app/panel/Panel.php, порт 8090, НЕ AdGuard-панель и
+    // не decoy-страница .htpasswd). Тот же формат хранения, что
+    // Panel::setPassword(): panelpswd = password_hash(..., PASSWORD_DEFAULT)
+    // в pac.json — совместимость с Panel::login() гарантирована побайтовым
+    // повтором вызова. Смена пароля сама обнуляет все сессии панели: HMAC
+    // подписи куки завязаны на текущий хеш пароля (Panel::sign()).
+    public function setPanelPassword(string $plain): void
+    {
+        $c              = $this->getPacConf();
+        $c['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
+        $this->setPacConf($c);
+        // Как Panel::setPassword(): протухший initial_password.txt с уже
+        // недействительным паролем не должен пережить смену.
+        $dir = getenv('PANEL_DIR') ?: '/config/panel';
+        @unlink($dir . '/initial_password.txt');
+    }
+
+    public function panelPswdPrompt()
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} enter new web panel password (min 8 chars)",
+            $this->input['message_id'],
+            reply: 'enter panel password',
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'panelPswdSet',
+            'args'           => [],
+        ]);
+    }
+
+    // Без answer()-попапа: это ответ на force_reply, а не клик — валидного
+    // callback_id здесь нет (тот же принцип, что у sspwdch()).
+    public function panelPswdSet($pass, $nomenu = false)
+    {
+        $pass = trim((string) $pass);
+        if (strlen($pass) < 8) {
+            $this->send($this->input['chat'], 'пароль короче 8 символов — отклонён, попробуйте снова', $this->input['message_id']);
+        } else {
+            $this->setPanelPassword($pass);
+        }
+        if (empty($nomenu)) {
+            $this->menu('config');
+        }
+    }
+
+    // Alert-попап, а не сообщение в чат: как showHeaderProtectionKey() —
+    // секрет не должен оседать в истории переписки. Здесь есть настоящий
+    // callback_id (прямой клик по кнопке), в отличие от panelPswdSet().
+    public function panelPswdGen()
+    {
+        $pass = bin2hex(random_bytes(16));
+        $this->setPanelPassword($pass);
+        $this->answer($this->input['callback_id'] ?? null, "новый пароль веб-панели:\n$pass", true);
+        $this->menu('config');
     }
 
     public function ssPswdCheck()
@@ -17098,12 +17167,7 @@ DNS-over-HTTPS with IP:
         // atomic write: cron and the webhook (separate containers, shared volume) both
         // touch this file, so write to a unique temp and rename to avoid torn reads.
         // uniqid() guards against the two containers sharing a PID number.
-        $tmp = '/config/online.json.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, json_encode($s)) !== false) {
-            rename($tmp, '/config/online.json');
-        } else {
-            @unlink($tmp);
-        }
+        $this->atomicJson('/config/online.json', (array) $s);
     }
 
     // Persistent per-client vless connection history: email -> IPs -> destinations,
@@ -17155,12 +17219,28 @@ DNS-over-HTTPS with IP:
             $log = array_slice($log, 0, 200, true);
         }
         // atomic write (cron + webhook share the volume), same pattern as online.json
-        $tmp = '/config/connlog.json.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, json_encode($log)) !== false) {
-            rename($tmp, '/config/connlog.json');
-        } else {
-            @unlink($tmp);
+        $this->atomicJson('/config/connlog.json', $log);
+    }
+
+    // Atomic JSON write shared by the online/connlog/geo caches: encode first, and
+    // bail out when the encoder fails. json_encode() returns FALSE on invalid UTF-8
+    // — and the destination hosts here come straight out of the xray access log and
+    // conntrack, i.e. raw bytes we do not control — while file_put_contents($f,
+    // false) writes an EMPTY file and reports success, so the rename() below used to
+    // replace a whole history with 0 bytes and lose it silently.
+    private function atomicJson(string $path, array $data): bool
+    {
+        $json = json_encode($data);
+        if (false === $json) {
+            error_log('atomicJson: ' . basename($path) . ' not written — ' . json_last_error_msg());
+            return false;
         }
+        $tmp = $path . '.' . getmypid() . '.' . uniqid();
+        if (file_put_contents($tmp, $json) === false) {
+            @unlink($tmp);
+            return false;
+        }
+        return rename($tmp, $path);
     }
 
     // Merge newly-parsed access-log events into the persistent connection history.
@@ -17368,12 +17448,7 @@ DNS-over-HTTPS with IP:
             $cache = array_slice($cache, 0, 500, true);
         }
         // atomic write (cron + webhook share the volume), same pattern as online.json
-        $tmp = '/config/geoip.json.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, json_encode($cache)) !== false) {
-            rename($tmp, '/config/geoip.json');
-        } else {
-            @unlink($tmp);
-        }
+        $this->atomicJson('/config/geoip.json', $cache);
     }
 
     // Look up an IP's country/ISP, serving from $cache when fresh and filling misses
@@ -17734,11 +17809,22 @@ DNS-over-HTTPS with IP:
             // domain: forward-resolve to an IP (memoised under a "host:" key)
             $hkey  = 'host:' . strtolower($host);
             $fresh = isset($geo[$hkey]['ip']) && ($geo[$hkey]['ts'] ?? 0) > $now - 604800;
-            if (!$fresh && $budget > 0) {
+            $ip    = '';
+            if ($fresh) {
+                $ip = $this->resolveHost($host, $geo, false);
+            } elseif ($budget > 0) {
                 $budget--;
-                $fresh = true;
+                $ip = $this->resolveHost($host, $geo, false);
+                // resolveHost() ничего не пишет в кэш, когда имя не резолвится,
+                // — а гасшие домены в логе остаются навсегда. Без отрицательной
+                // записи каждая перерисовка карточки снова тратит бюджет и
+                // блокируется на gethostbyname() (до 5 с на имя, 50 имён на
+                // карточку). Помним отказ ~час: ts кладём так, чтобы обычная
+                // семидневная проверка свежести истекла через 3600 с.
+                if ('' === $ip) {
+                    $geo[$hkey] = ['ip' => '', 'ts' => $now - 604800 + 3600];
+                }
             }
-            $ip = $fresh ? $this->resolveHost($host, $geo, false) : '';
         }
 
         if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP)) {
@@ -17975,12 +18061,7 @@ DNS-over-HTTPS with IP:
                 unset($log[$inst]);
             }
         }
-        $tmp = '/config/wgconnlog.json.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, json_encode($log)) !== false) {
-            rename($tmp, '/config/wgconnlog.json');
-        } else {
-            @unlink($tmp);
-        }
+        $this->atomicJson('/config/wgconnlog.json', $log);
     }
 
     // Merge observations into the wg history. 'count' tracks reconnect sessions: it
@@ -20713,6 +20794,27 @@ DNS-over-HTTPS with IP:
 
     public function saveTemplate($name, $type, $json)
     {
+        // $type подставляется в путь "/config/$type.json" (ветка 'origin') и в
+        // ключ pac.json. Приходит он из POST — и в /webapp$hash/save, и в
+        // панельном /tsave, — а проверялся только на входе load'а: type вида
+        // "../app/x" писал бы json мимо /config. Ограничиваем словом, как это
+        // уже сделано для ?ty= в index.php.
+        if (!is_string($type) || !preg_match('~^\w+$~', $type)) {
+            return [
+                'status'  => false,
+                'message' => 'wrong type',
+            ];
+        }
+        // $name и $json приходят из POST как есть. Массив («name[]=x», «json[]=x»)
+        // проходил empty()/preg_match и падал уже внутри: json_decode(array) —
+        // TypeError, $pac[...][$name] с массивом-ключом — «illegal offset type».
+        // То есть 500 вместо ответа, а в редакторе — немой «error».
+        if (!is_string($name) || '' === $name || !is_string($json)) {
+            return [
+                'status'  => false,
+                'message' => 'wrong format',
+            ];
+        }
         $decoded = json_decode($json, true);
         // json_decode возвращает null (не false) на битом JSON; шаблон обязан
         // быть объектом — скаляр/строка тоже «wrong format».
@@ -20730,6 +20832,16 @@ DNS-over-HTTPS with IP:
             ];
         }
         $pac = $this->getPacConf();
+        // getPacConf() отдаёт null, если pac.json недоступен или битый. Дальше
+        // $pac["{$type}templates"][$name] = … создало бы массив из ОДНОГО ключа
+        // и setPacConf() записал бы его поверх конфига: клиенты, ключи reality,
+        // остальные шаблоны — всё пропало бы ради сохранения одного шаблона.
+        if (!is_array($pac)) {
+            return [
+                'status'  => false,
+                'message' => 'pac.json unavailable',
+            ];
+        }
         switch ($name) {
             case 'origin':
                 file_put_contents("/config/$type.json", json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
@@ -20749,6 +20861,13 @@ DNS-over-HTTPS with IP:
     public function delTemplate($type, $name)
     {
         $pac = $this->getPacConf();
+        // Как и в saveTemplate(): null вместо конфига — не повод записать поверх
+        // pac.json массив из одних шаблонов.
+        if (!is_array($pac)) {
+            $this->templates($type);
+
+            return;
+        }
         unset($pac["{$type}templates"][base64_decode($name)]);
         $this->setPacConf($pac);
         $this->templates($type);
@@ -20756,7 +20875,12 @@ DNS-over-HTTPS with IP:
 
     public function copyTemplate($name, $type)
     {
-        $pac  = $this->getPacConf();
+        $pac = $this->getPacConf();
+        if (!is_array($pac)) {
+            $this->templates($type);
+
+            return;
+        }
         $pac["{$type}templates"][$name] = json_decode(file_get_contents("/config/$type.json"), true);
         $this->setPacConf($pac);
         $this->templates($type);
@@ -25682,6 +25806,16 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
+                'text'          => $this->i18n('change password') . ' (панель)',
+                'callback_data' => "/panelPswd",
+            ],
+            [
+                'text'          => $this->i18n('generate password') . ' (панель)',
+                'callback_data' => "/panelGenPswd",
+            ],
+        ];
+        $data[] = [
+            [
                 'text'          => "{$this->i18n('add')} {$this->i18n('admin')}",
                 'callback_data' => "/addadmin",
             ],
@@ -25703,6 +25837,8 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/menu",
             ],
         ];
+        $text[] = '';
+        $text[] = 'Пароль веб-панели (app/panel, порт 8090) — эти же действия остаются доступны через `panel.php passwd` на сервере, если бот недоступен.';
         return [
             'text' => implode("\n", $text),
             'data' => $data,
@@ -27280,6 +27416,12 @@ DNS-over-HTTPS with IP:
 
     public function request($method, $data, $json_header = 0)
     {
+        // Панель (app/panel/) подменяет транспорт: те же методы обслуживаются
+        // локальным хранилищем, наружу ничего не уходит. В обычном режиме
+        // $transport пуст и всё работает как раньше.
+        if ($this->transport) {
+            return $this->transport->call($method, $data, $json_header);
+        }
         $ch = curl_init();
         curl_setopt_array($ch, [
             CURLOPT_URL            => $this->api . $method,
@@ -27296,6 +27438,13 @@ DNS-over-HTTPS with IP:
             ] : [],
             CURLOPT_POSTFIELDS     => $data,
         ]);
+        // Исходящие к Telegram могут быть зарезаны у хостера/провайдера. Схема
+        // берётся из самого значения (http://, socks5h://…), поэтому отдельного
+        // CURLOPT_PROXYTYPE не нужно. socks5h:// заодно уводит в прокси и DNS —
+        // при блокировке по имени резолв на сервере тоже врёт.
+        if ($proxy = getenv('TELEGRAM_PROXY')) {
+            curl_setopt($ch, CURLOPT_PROXY, $proxy);
+        }
         $res  = curl_exec($ch);
         $cerr = $res === false ? curl_error($ch) : '';
         $r    = json_decode((string) $res, true);
@@ -27330,6 +27479,20 @@ DNS-over-HTTPS with IP:
             if (!empty($r['description'])) {
                 error_log('getUpdates error: ' . $r['description']);
                 sleep(3);
+                continue;
+            }
+            // Сеть до Telegram недоступна: curl вернул false, декодировать
+            // нечего, описания ошибки нет. Без этой ветки цикл уходил в
+            // sleep(1) и молотил getUpdates раз в секунду всё время блокировки.
+            if (!is_array($r)) {
+                error_log('getUpdates: no response from ' . parse_url($this->api, PHP_URL_HOST));
+                // /start взводим и здесь: check_file.sh проверяет наличие этого
+                // файла, а на нём висит healthcheck php, от которого зависит
+                // старт nginx/warp/wg. Без этой строки недоступность Telegram
+                // (ровно тот случай, ради которого сделана панель) не давала бы
+                // подняться всему стеку.
+                file_put_contents('/start', 1);
+                sleep(5);
                 continue;
             }
             file_put_contents('/start', 1);

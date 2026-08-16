@@ -21,6 +21,8 @@
 # эфемерная карта «сообщение → wg-инстанс» (см. wgMsgFile в bot.php)
 /config/wg_msg.json
 /config/hwid.json
+# лента веб-панели, загруженные/отданные файлы и хеш пароля-заглушки
+/config/panel/
 /config/openvpn/*
 !/config/openvpn/.gitkeep
 # рантайм ipsec: PSK, приватные ключи CA/сервера, chap-secrets, юзеры —
