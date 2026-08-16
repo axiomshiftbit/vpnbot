@@ -5869,9 +5869,19 @@ NFT;
 
     public function dw($u, $t)
     {
-        $pac                    = $this->getPacConf();
-        $c                      = $this->getXray()['inbounds'][0]['settings']['clients'][$u];
-        $_GET['s']              = $c['id'];
+        $pac = $this->getPacConf();
+        $c   = $this->getXray()['inbounds'][0]['settings']['clients'][$u] ?? null;
+        if ($c === null) {
+            // Stale callback (client deleted/re-indexed): fall back to the list
+            // instead of running on null fields, as userXr() already does.
+            $this->xray();
+
+            return;
+        }
+        // subtoken (sidOf), не id: с pac.subtoken_strict=1 findClientBySid()
+        // подбором по credential'у не резолвит вообще ничего — subscription()
+        // молча отдаёт '', и кнопка "⬇️" присылала пустой файл вместо конфига.
+        $_GET['s']              = $this->sidOf($c);
         $_GET['t']              = $t;
         $_SERVER['SERVER_NAME'] = $this->getDomain($pac['transport'] != 'Reality');
         $conf                   = $this->subscription(1);
