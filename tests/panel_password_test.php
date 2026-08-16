@@ -125,4 +125,32 @@ panelPswdAssert(
     'panelPswdSet: применённый пароль должен проходить password_verify()'
 );
 
+// panelPswdSet() с nomenu=true не зовёт menu('config') (там require
+// app/config.php, которого нет в тестовом окружении) — но send() с паролем
+// всё равно должен уйти в транспорт. Проверяем последнее сообщение в ленте.
+$last = array_key_last($store->read()['messages']);
+$sent = $store->read()['messages'][$last]['text'];
+panelPswdAssert(str_contains($sent, '<code>valid password 123</code>'), 'panelPswdSet: пароль должен прийти в чат в <code> для копирования');
+panelPswdAssert(str_contains($sent, 'panel.php passwd'), 'panelPswdSet: подсказка CLI-команды должна быть в сообщении');
+
+// ── sendPanelPasswordCopy(): HTML-спецсимволы в ручном пароле экранируются ──
+// (panelPswdSet($nomenu=true) не годится для проверки этого напрямую, т.к.
+// короткий путь < 8 символов не пропустит "<script>&\"", а длинный — уже
+// проверен выше на обычном пароле; вызываем приватный метод напрямую, как
+// panel_test.php делает для Panel::sign()/rateHit().)
+$copy = new ReflectionMethod(Bot::class, 'sendPanelPasswordCopy');
+$copy->setAccessible(true);
+$xssPass = '<script>alert(1)</script>&"\'';
+$copy->invoke($bot2, $xssPass);
+$last2 = array_key_last($store->read()['messages']);
+$sent2 = $store->read()['messages'][$last2]['text'];
+panelPswdAssert(
+    !str_contains($sent2, '<script>'),
+    'sendPanelPasswordCopy: сырой <script> не должен попадать в HTML-сообщение'
+);
+panelPswdAssert(
+    str_contains($sent2, htmlspecialchars($xssPass, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')),
+    'sendPanelPasswordCopy: пароль должен быть экранирован через htmlspecialchars(), но виден в сообщении'
+);
+
 echo "panel_password_test OK\n";
