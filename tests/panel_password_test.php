@@ -102,7 +102,9 @@ panelPswdAssert(!is_file($stale), 'setPanelPassword: initial_password.txt дол
 for ($i = 0; $i < 20; $i++) {
     $gen = bin2hex(random_bytes(16));
     panelPswdAssert(32 === strlen($gen), "сгенерированный пароль должен быть 32 символа, получено " . strlen($gen));
-    panelPswdAssert(ctype_xdigit($gen), 'сгенерированный пароль должен быть hex-строкой');
+    // preg_match, не ctype_xdigit(): расширение ctype не гарантировано в
+    // проде (в контейнере php-контейнере его нет — проверено на рабочем сервере).
+    panelPswdAssert(1 === preg_match('~^[0-9a-f]{32}$~', $gen), 'сгенерированный пароль должен быть hex-строкой');
 }
 
 // ── panelPswdSet(): короткий пароль отклоняется, pac.json не меняется ───────
