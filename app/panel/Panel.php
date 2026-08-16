@@ -807,11 +807,16 @@ class Panel
         <link href="{$this->prefix}/a/jsoneditor.min.css" rel="stylesheet" type="text/css">
         <script src="{$this->prefix}/a/jsoneditor.min.js"></script>
         <style>
-          html,body{margin:0;height:100%;font:14px sans-serif}
-          #bar{height:44px;display:flex;align-items:center;gap:10px;padding:0 12px;background:#17212b;color:#e9edf1}
-          #bar button{background:#3b82c4;color:#fff;border:0;border-radius:6px;padding:7px 14px;cursor:pointer}
+          html,body{margin:0;height:100%;font:14px -apple-system,Segoe UI,Roboto,Ubuntu,sans-serif}
+          #bar{height:48px;display:flex;align-items:center;gap:8px;padding:0 14px;background:#17212b;color:#e9edf1;box-shadow:0 2px 10px rgba(0,0,0,.22)}
+          #bar b{font-weight:600}
+          #bar #st{color:#7f91a4;font-size:13px}
+          #bar button{background:#3b82c4;color:#fff;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;font:inherit;transition:filter .15s,transform .05s}
+          #bar button:hover{filter:brightness(1.08)}
+          #bar button:active{transform:scale(.96)}
           #bar button.sec{background:#2a3f52}
-          #jsoneditor{height:calc(100% - 44px)}
+          #bar button.sec:hover{background:#33506b}
+          #jsoneditor{height:calc(100% - 48px)}
         </style>
         </head>
         <body>

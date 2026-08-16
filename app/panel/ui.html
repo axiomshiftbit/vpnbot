@@ -8,26 +8,41 @@
 :root{
   --bg:#0e1621; --panel:#17212b; --bubble:#182533; --own:#2b5278; --text:#e9edf1;
   --dim:#7f91a4; --line:#22303c; --accent:#3b82c4; --btn:#20303f; --btnh:#2a445c;
+  --danger:#f0555f; --danger-bg:rgba(240,85,95,.16); --shadow:0 2px 10px rgba(0,0,0,.22);
 }
 @media (prefers-color-scheme: light){
   :root{ --bg:#eef1f5; --panel:#fff; --bubble:#fff; --own:#d7ecff; --text:#12212f;
-         --dim:#66788a; --line:#dde3ea; --accent:#2f6fa8; --btn:#f0f3f7; --btnh:#e2e8f0; }
+         --dim:#66788a; --line:#dde3ea; --accent:#2f6fa8; --btn:#f0f3f7; --btnh:#e2e8f0;
+         --danger:#d5333d; --danger-bg:rgba(213,51,61,.10); --shadow:0 2px 10px rgba(20,30,45,.08); }
 }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,Segoe UI,Roboto,Ubuntu,sans-serif;display:flex;flex-direction:column}
-header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}
-header b{font-weight:600}
+button,select,input,textarea{font-family:inherit}
+button{transition:background .15s,filter .15s,transform .05s}
+button:active{transform:scale(.97)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+header{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;box-shadow:var(--shadow)}
+header b{font-weight:600;letter-spacing:.2px}
 header .sp{flex:1}
-header button{background:var(--btn);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:13px}
+header button{background:var(--btn);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:6px 11px;cursor:pointer;font-size:13px}
 header button:hover{background:var(--btnh)}
-#feed{flex:1 1 auto;overflow-y:auto;padding:14px 12px 4px;display:flex;flex-direction:column;gap:10px}
-.msg{position:relative;max-width:min(820px,95%);align-self:flex-start;background:var(--bubble);border:1px solid var(--line);border-radius:12px;padding:9px 12px;word-wrap:break-word;overflow-wrap:anywhere}
-.msg.own{align-self:flex-end;background:var(--own);border-color:transparent}
-.msg .del{position:absolute;top:2px;right:4px;width:18px;height:18px;line-height:16px;text-align:center;
-  border-radius:50%;background:var(--btn);border:1px solid var(--line);color:var(--dim);cursor:pointer;
-  font-size:12px;opacity:.35;transition:opacity .15s}
-.msg:hover .del,.msg .del:active{opacity:1}
+#out:hover{background:var(--danger-bg);border-color:var(--danger);color:var(--danger)}
+#dot{transition:color .3s}
+#feed{flex:1 1 auto;overflow-y:auto;padding:16px 14px 6px;display:flex;flex-direction:column;gap:11px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+#feed::-webkit-scrollbar{width:9px}
+#feed::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px;border:2px solid var(--bg)}
+.msg{position:relative;max-width:min(820px,95%);align-self:flex-start;background:var(--bubble);
+  border:1px solid var(--line);border-radius:14px 14px 14px 4px;padding:9px 30px 9px 13px;
+  word-wrap:break-word;overflow-wrap:anywhere;box-shadow:var(--shadow);animation:msgin .12s ease-out}
+.msg.own{align-self:flex-end;background:var(--own);border-color:transparent;border-radius:14px 14px 4px 14px;padding:9px 30px 9px 13px}
+@keyframes msgin{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
+.msg .del{position:absolute;top:6px;right:6px;width:19px;height:19px;line-height:17px;text-align:center;
+  border-radius:50%;background:var(--danger-bg);border:1px solid transparent;color:var(--danger);cursor:pointer;
+  font-size:13px;font-weight:600;opacity:.55;transition:opacity .15s,background .15s,border-color .15s,transform .1s}
+.msg:hover .del{opacity:1}
+.msg .del:hover{background:var(--danger);border-color:var(--danger);color:#fff}
+.msg .del:active{transform:scale(.88)}
 .msg .body{white-space:normal}
 .msg .body pre{white-space:pre-wrap;background:rgba(127,145,164,.14);padding:8px;border-radius:6px;margin:6px 0;overflow-x:auto}
 /* pre-wrap, а не normal: бот выравнивает колонки пробелами (alignColumns) и
@@ -44,35 +59,43 @@ header button:hover{background:var(--btnh)}
 .msg .time{color:var(--dim);font-size:11px;margin-top:4px}
 .kb{display:flex;flex-direction:column;gap:5px;margin-top:8px}
 .kb .row{display:flex;gap:5px;flex-wrap:wrap}
-.kb button,.kb a{flex:1 1 120px;background:var(--btn);border:1px solid var(--line);color:var(--text);border-radius:8px;
-  padding:8px 10px;cursor:pointer;font-size:13px;text-align:center;text-decoration:none;min-width:0;word-break:break-word}
+.kb button,.kb a{flex:1 1 120px;background:var(--btn);border:1px solid var(--line);color:var(--text);border-radius:9px;
+  padding:8px 10px;cursor:pointer;font-size:13px;text-align:center;text-decoration:none;min-width:0;word-break:break-word;transition:background .15s,transform .05s}
 .kb button:hover,.kb a:hover{background:var(--btnh)}
-.kb button:disabled{opacity:.5;cursor:default}
-.att img{max-width:100%;border-radius:8px;margin-top:6px;display:block}
+.kb button:active,.kb a:active{transform:scale(.97)}
+.kb button:disabled{opacity:.5;cursor:default;transform:none}
+.att img{max-width:100%;border-radius:10px;margin-top:6px;display:block}
 .att a{display:inline-block;margin-top:6px;color:var(--accent)}
-footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);padding:8px 12px}
-#replybar{display:none;font-size:12px;color:var(--dim);padding-bottom:6px}
+footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);padding:9px 14px;box-shadow:0 -2px 10px rgba(0,0,0,.06)}
+#replybar{display:none;font-size:12px;color:var(--accent);padding-bottom:6px}
 #replybar.on{display:block}
 .inputrow{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
 #text{flex:1;resize:none;min-height:38px;max-height:160px;background:var(--bg);color:var(--text);
-  border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit}
-.inputrow button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 14px;cursor:pointer}
-.inputrow label{background:var(--btn);border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}
-#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:84px;background:#000c;color:#fff;
-  padding:10px 16px;border-radius:8px;max-width:80%;display:none;z-index:5;white-space:pre-wrap}
-#busy{position:fixed;top:0;left:0;height:2px;width:0;background:var(--accent);transition:width .2s;z-index:6}
+  border:1px solid var(--line);border-radius:10px;padding:9px 11px;font:inherit;transition:border-color .15s}
+#text:focus-visible{border-color:var(--accent)}
+.inputrow button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:9px 15px;cursor:pointer}
+.inputrow button:hover{filter:brightness(1.08)}
+.inputrow label{background:var(--btn);border:1px solid var(--line);border-radius:10px;padding:9px 12px;cursor:pointer;transition:background .15s}
+.inputrow label:hover{background:var(--btnh)}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:84px;background:#111a24ee;color:#fff;
+  padding:10px 16px;border-radius:10px;max-width:80%;display:none;z-index:5;white-space:pre-wrap;box-shadow:0 4px 18px rgba(0,0,0,.3)}
+#busy{position:fixed;top:0;left:0;height:2px;width:0;background:linear-gradient(90deg,var(--accent),#6fb3ea);transition:width .2s;z-index:6;box-shadow:0 0 6px var(--accent)}
 #login{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;z-index:10}
-#login.on{display:flex}
-#login form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;width:320px;max-width:92%}
-#login h1{font-size:16px;margin:0 0 12px}
-#login input,#login select{width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
+#login.on{display:flex;animation:msgin .18s ease-out}
+#login form{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px;width:320px;max-width:92%;box-shadow:0 8px 32px rgba(0,0,0,.28)}
+@media (prefers-color-scheme: light){ #login form{box-shadow:0 8px 32px rgba(20,30,45,.14)} }
+#login h1{font-size:17px;margin:0 0 14px;font-weight:600}
+#login input,#login select{width:100%;padding:10px 11px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit;transition:border-color .15s}
+#login input:focus-visible,#login select:focus-visible{border-color:var(--accent)}
 #login select{margin-bottom:10px}
-#login button{width:100%;margin-top:10px;background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px;cursor:pointer}
-#login .err,#login .note{color:#e06a6a;font-size:12px;margin-top:8px;min-height:16px;white-space:pre-wrap}
+#login button{width:100%;margin-top:12px;background:var(--accent);color:#fff;border:0;border-radius:9px;padding:10px;cursor:pointer;font-weight:600}
+#login button:hover{filter:brightness(1.08)}
+#login .err,#login .note{color:var(--danger);font-size:12px;margin-top:8px;min-height:16px;white-space:pre-wrap}
 #login .note{color:var(--dim)}
 #who{color:var(--dim);font-size:12px}
 #upcap{display:block;flex:1 1 100%;background:var(--bg);color:var(--text);border:1px solid var(--line);
-  border-radius:8px;padding:7px 9px;font:12px inherit;margin-top:6px}
+  border-radius:9px;padding:7px 10px;font:12px inherit;margin-top:6px;transition:border-color .15s}
+#upcap:focus-visible{border-color:var(--accent)}
 </style>
 </head>
 <body>
