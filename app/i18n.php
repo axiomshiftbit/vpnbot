@@ -1045,6 +1045,14 @@ $i = [
         'en' => 'delete user permanently?',
         'ru' => 'удалить пользователя безвозвратно?',
     ],
+    'rotate all peer keys'  => [
+        'en' => 'rotate all peer keys',
+        'ru' => 'ротировать все ключи клиентов',
+    ],
+    'confirm rotate peer keys'  => [
+        'en' => 'Regenerate EVERY client\'s private/public key at once (and the shared presharedkey, if AmneziaWG). Every currently saved config/QR stops working immediately and SILENTLY — no error, the connection just drops. There is no way to auto-notify or re-push new configs to users; you must redistribute them by hand afterward.',
+        'ru' => 'Разово перевыпустить приватный/публичный ключ КАЖДОГО клиента (и общий presharedkey, если это AmneziaWG). Все уже сохранённые у пользователей конфиги/QR перестанут работать сразу и МОЛЧА — без ошибки, соединение просто пропадёт. Автоматически уведомить или переслать новые конфиги пользователям бот не может — только вручную.',
+    ],
     'no native l2tp'  => [
         'en' => 'no native L2TP client, use IKEv2 instead',
         'ru' => 'нет нативного L2TP-клиента, используйте IKEv2',
