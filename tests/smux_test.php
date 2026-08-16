@@ -317,12 +317,12 @@ class SmuxProbeBot extends Bot
 
 $probeBot = (new ReflectionClass(SmuxProbeBot::class))->newInstanceWithoutConstructor();
 
-$probeBot->out    = '1|/usr/bin/xray-smux|reno cubic brutal|/usr/bin/xray-smux|Xray 26.8.18 (Xray, Penetrates Everything.(jesus))';
+$probeBot->out    = '1|/usr/bin/xray-smux|reno cubic brutal|/usr/bin/xray-smux|Xray 26.8.20 (Xray, Penetrates Everything.(jesus))';
 $probeBot->failed = false;
 $pr = $probeBot->xrayCoreProbe(true);
 smAssert($pr['ok'] && $pr['fork'] && $pr['active'] === 'fork' && $pr['brutal'] && $pr['running'] === 'fork',
     'форк на месте, симлинк на него, он же и работает, brutal доступен');
-smAssert($probeBot->getXrayVersion() === '26.8.18', 'версия достаётся из той же пробы');
+smAssert($probeBot->getXrayVersion() === '26.8.20', 'версия достаётся из той же пробы');
 
 $probeBot->out = '|/usr/bin/xray|reno cubic|/usr/bin/xray|Xray 26.7.28 (Xray, Penetrates Everything.)';
 $pr = $probeBot->xrayCoreProbe(true);
@@ -347,15 +347,15 @@ smAssert(str_contains($probeBot->cmd, '[x]ray run'), 'шаблон pgrep не м
 
 // Ядро не поднято (нет клиентов — start_xray.sh не запускает xray). Это НЕ
 // «работает апстрим»: иначе свежая установка выглядела бы как расхождение.
-$probeBot->out = '1|/usr/bin/xray-smux|brutal||Xray 26.8.18 (Xray, Penetrates Everything.(jesus))';
+$probeBot->out = '1|/usr/bin/xray-smux|brutal||Xray 26.8.20 (Xray, Penetrates Everything.(jesus))';
 $pr = $probeBot->xrayCoreProbe(true);
 smAssert($pr['active'] === 'fork' && $pr['running'] === '',
     'xray не запущен — running пустой, а не origin');
 
 // Разделитель в строке версии портит только саму версию, но не поля до неё.
-$probeBot->out = '1|/usr/bin/xray-smux|brutal|/usr/bin/xray-smux|Xray 26.8.18 (a|b)';
+$probeBot->out = '1|/usr/bin/xray-smux|brutal|/usr/bin/xray-smux|Xray 26.8.20 (a|b)';
 $pr = $probeBot->xrayCoreProbe(true);
-smAssert($pr['fork'] && $pr['active'] === 'fork' && $pr['version'] === 'Xray 26.8.18 (a|b)',
+smAssert($pr['fork'] && $pr['active'] === 'fork' && $pr['version'] === 'Xray 26.8.20 (a|b)',
     'версия идёт последней и склеивается обратно целиком');
 
 $probeBot->out    = '';

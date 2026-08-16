@@ -113,6 +113,18 @@ $i = [
         'en' => 'SMUX: put <code>"%s": "~smux~"</code> into the node you want multiplexed — the block is filled in from the SMUX menu. <code>~smux:h2mux~</code> overrides the protocol for this template only. If the core is not the fork or SMUX is off, the key is dropped from the subscription.',
         'ru' => 'SMUX: впишите <code>"%s": "~smux~"</code> в нужный узел — блок подставится по настройкам меню SMUX. <code>~smux:h2mux~</code> задаёт протокол только этому шаблону. Если ядро не форк или SMUX выключен, ключ из подписки удаляется.',
     ],
+    'finalmask hint'       => [
+        'en' => 'Server-side masking (Xray-core finalmask, works on BOTH cores — upstream and fork). This is NOT the fragment/noise above: those shape what the CLIENT sends toward the server; this shapes what the SERVER writes back (accept path/replies). Independent toggle, safe to combine with the client-side one.',
+        'ru' => 'Серверная маскировка (finalmask самого Xray-core, работает на ОБОИХ ядрах — апстримном и форке). Это НЕ тот fragment/noise, что выше: те режут то, что КЛИЕНТ шлёт серверу; этот — то, что СЕРВЕР пишет обратно (accept-путь/ответы). Независимый тумблер, можно сочетать с клиентским.',
+    ],
+    'finalmask fragment hint' => [
+        'en' => 'Splits the server\'s own TCP writes into pieces. Same packets/length/delay/maxSplit idea as client-side fragment, applied on the accept path instead.',
+        'ru' => 'Режет на куски то, что сервер сам пишет в TCP. Те же packets/length/delay/maxSplit, что у клиентского fragment, только на accept-пути.',
+    ],
+    'finalmask noise hint' => [
+        'en' => 'Injects decoy UDP packets from the server before real replies. "reset" sets how often (seconds) the decoy burst may repeat to the same address.',
+        'ru' => 'Досылает от сервера поддельные UDP-пакеты перед настоящими ответами. "reset" — через сколько секунд пачку можно повторить на тот же адрес.',
+    ],
     'fragment'             => [
         'en' => 'TLS fragment',
         'ru' => 'TLS-фрагментация',

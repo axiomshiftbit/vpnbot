@@ -597,6 +597,33 @@ class Bot
             case preg_match('~^/dpiGenSpiderX$~', $this->input['callback'], $m):
                 $this->dpiGenSpiderX();
                 break;
+            case preg_match('~^/finalmaskMenu$~', $this->input['callback'], $m):
+                $this->finalmaskMenu();
+                break;
+            case preg_match('~^/finalmaskToggle (\w+)$~', $this->input['callback'], $m):
+                $this->finalmaskToggle($m[1]);
+                break;
+            case preg_match('~^/finalmaskSet (\w+)$~', $this->input['callback'], $m):
+                $this->finalmaskSet($m[1]);
+                break;
+            case preg_match('~^/finalmaskFragPresets$~', $this->input['callback'], $m):
+                $this->finalmaskFragPresetsMenu();
+                break;
+            case preg_match('~^/finalmaskFragPreset (\w+)$~', $this->input['callback'], $m):
+                $this->finalmaskFragPreset($m[1]);
+                break;
+            case preg_match('~^/finalmaskNoisePresets$~', $this->input['callback'], $m):
+                $this->finalmaskNoisePresetsMenu();
+                break;
+            case preg_match('~^/finalmaskNoisePreset (\w+)$~', $this->input['callback'], $m):
+                $this->finalmaskNoisePreset($m[1]);
+                break;
+            case preg_match('~^/finalmaskNoiseAdd$~', $this->input['callback'], $m):
+                $this->finalmaskNoiseAdd();
+                break;
+            case preg_match('~^/finalmaskNoiseDel (\d+)$~', $this->input['callback'], $m):
+                $this->finalmaskNoiseDel((int) $m[1]);
+                break;
             case preg_match('~^/dpiGenMldsa$~', $this->input['callback'], $m):
                 $this->dpiGenMldsa();
                 break;
@@ -2143,6 +2170,7 @@ class Bot
         $this->ensureFreedomCompat($c);
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
+        $this->ensureFinalmaskInbound($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
             'services' => ['StatsService'],
@@ -15530,6 +15558,8 @@ DNS-over-HTTPS with IP:
                 ['text' => $this->i18n('default'),                       'callback_data' => '/dpiDefault r_spiderX'],
             ];
         }
+        $fm = $this->finalmaskSettings($p);
+        $data[] = [['text' => 'finalmask (server): ' . $on($fm['enabled']), 'callback_data' => '/finalmaskMenu']];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
 
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -23228,6 +23258,464 @@ DNS-over-HTTPS with IP:
                 'down'    => self::smuxRate($s['brutal']['down']),
             ],
         ];
+    }
+
+    // ---- finalmask: server-side fragment/noise (streamSettings.finalmask) --
+    // В отличие от SMUX это фича самого апстрима XTLS/Xray-core (не эксклюзив
+    // форка Jolymmiles/Xray-core — форк её просто наследует, идя впереди
+    // апстрима), поэтому работает на ОБОИХ ядрах бота одинаково — гейта по
+    // xrayCore() тут нет и не нужно.
+    //
+    // И в отличие от $p['dpi']['fragment']/['noise'] (applyDpiFragment(),
+    // клиентский freedom-outbound, направление клиент→сервер, только t=s),
+    // это СЕРВЕРНЫЙ inbound — маскирует то, что сервер пишет обратно клиенту
+    // (accept-путь), работает независимо от транспорта/диалекта подписки и
+    // ничего в dpiMenu()/applyDpiFragment() не трогает и не дублирует.
+    //
+    // fragment/noise — единственные две маски finalmask, которые не требуют
+    // xray-core с finalmask на ДРУГОЙ стороне: у обеих в исходнике
+    // переопределён только Write()/WriteTo(), Read()/ReadFrom() не тронут —
+    // обычная перелицовка байт на проводе, любой TCP/UDP-стек собирает как
+    // обычно. Остальные маски форка (header-custom/sudoku/xmc/mkcp-legacy/
+    // xdns/xicmp/realm) сюда не входят — см. AUDIT-2026-08-1x-finalmask.md.
+    public static function finalmaskDefaults(): array
+    {
+        return [
+            'enabled'  => 0,
+            'fragment' => [
+                'enabled'  => 0,
+                'packets'  => 'tlshello',
+                'length'   => '100-200',
+                // Поле называется "delay" в finalmask (а не "interval", как в
+                // старом dpi.fragment/freedom.Fragment) — имя из
+                // infra/conf/transport_finalmask.go, FragmentMask.
+                'delay'    => '10-20',
+                'maxSplit' => '',
+            ],
+            'noise' => [
+                'enabled' => 0,
+                'reset'   => '5-10',
+                'list'    => [],
+            ],
+        ];
+    }
+
+    // Настройки finalmask с подставленными дефолтами (вложенные fragment/noise тоже).
+    public function finalmaskSettings(?array $p = null): array
+    {
+        $p = $p ?? $this->getPacConf();
+        $s = is_array($p['finalmask'] ?? null) ? $p['finalmask'] : [];
+        $d = self::finalmaskDefaults();
+        $s['fragment'] = (is_array($s['fragment'] ?? null) ? $s['fragment'] : []) + $d['fragment'];
+        $s['noise']    = (is_array($s['noise'] ?? null) ? $s['noise'] : []) + $d['noise'];
+        unset($d['fragment'], $d['noise']);
+
+        return $s + $d;
+    }
+
+    // UDP-noise как список пакетов — тот же формат, что dpiNoiseList(), но
+    // собственное хранилище: finalmask и dpi.noise — независимые тумблеры.
+    public function finalmaskNoiseList(array $pac): array
+    {
+        $n = $pac['finalmask']['noise'] ?? [];
+
+        return isset($n['list']) && is_array($n['list']) ? array_values($n['list']) : [];
+    }
+
+    // JSON-форма tcp[].settings для type=fragment (infra/conf/transport_finalmask.go,
+    // FragmentMask). Клэмпы — потому что ядро отвергает плохие значения на
+    // СТАРТЕ (xray просто не поднимется), а не отвечает ошибкой на этот конфиг.
+    public function finalmaskFragmentSettings(array $f): array
+    {
+        $packets = ($f['packets'] ?? '') ?: 'tlshello';
+        // Числовой диапазон обязан начинаться с >=1 — "0-3" ядро отвергает при
+        // старте (PacketsFrom can't be 0).
+        if (preg_match('~^0-(\d+)$~', $packets, $m)) {
+            $packets = '1-' . $m[1];
+        } elseif ($packets === '0') {
+            $packets = 'tlshello';
+        }
+        $settings = [
+            'packets' => $packets,
+            'length'  => ($f['length'] ?? '') ?: '100-200',
+            'delay'   => ($f['delay']  ?? '') ?: '10-20',
+        ];
+        // maxSplit пишем ТОЛЬКО когда задан: пустое поле = дефолт ядра (без
+        // лимита), как и в applyDpiFragment().
+        if (($f['maxSplit'] ?? '') !== '') {
+            $settings['maxSplit'] = $f['maxSplit'];
+        }
+
+        return $settings;
+    }
+
+    // JSON-форма udp[].settings для type=noise (NoiseMask/NoiseItem). Каждый
+    // item несёт РОВНО одно из rand+randRange («случайная длина») либо
+    // type+packet («фиксированный пакет») — структурно, по типу элемента, а
+    // не проверкой постфактум: ядро отвергает item, в котором есть и packet,
+    // и rand>0, одновременно.
+    public function finalmaskNoiseSettings(array $n, array $list): array
+    {
+        $items = [];
+        foreach ($list as $it) {
+            $type   = ($it['type']   ?? '') ?: 'rand';
+            $packet = (string) ($it['packet'] ?? '');
+            $delay  = ($it['delay']  ?? '') ?: '10-16';
+            if ($type === 'rand') {
+                $items[] = [
+                    'rand'      => $packet !== '' ? $packet : '10-20',
+                    // randRange — диапазон байт-значений заполнения, обязан
+                    // укладываться в 0..255 (ядро проверяет на старте).
+                    'randRange' => '0-255',
+                    'delay'     => $delay,
+                ];
+                continue;
+            }
+            // str/hex/base64 без пакета ядро не примет — как и в
+            // applyDpiFragment(), пропускаем пустые, а не шлём мусор.
+            if ($packet === '') {
+                continue;
+            }
+            $items[] = [
+                'type'   => $type,
+                'packet' => $packet,
+                'delay'  => $delay,
+            ];
+        }
+        if (!$items) {
+            $items[] = ['rand' => '10-20', 'randRange' => '0-255', 'delay' => '10-16'];
+        }
+
+        return [
+            'reset' => ($n['reset'] ?? '') ?: '5-10',
+            'noise' => $items,
+        ];
+    }
+
+    // Серверный inbound: единственное место, куда finalmask вообще пишется —
+    // безусловная перезапись целиком (не array_merge, как у sockopt: ключ
+    // finalmask целиком принадлежит этой фиче, ручных правок сюда не бывает).
+    // Выключено или собирать нечего — ключ убираем целиком (self-healing, тот
+    // же приём, что у ensureSmuxInbound()).
+    public function ensureFinalmaskInbound(array &$c, ?array $p = null): void
+    {
+        if (!isset($c['inbounds'][0]) || !is_array($c['inbounds'][0])) {
+            return;
+        }
+        $p  = $p ?? $this->getPacConf();
+        $s  = $this->finalmaskSettings($p);
+        $fm = [];
+        if (!empty($s['enabled']) && !empty($s['fragment']['enabled'])) {
+            $fm['tcp'] = [['type' => 'fragment', 'settings' => $this->finalmaskFragmentSettings($s['fragment'])]];
+        }
+        if (!empty($s['enabled']) && !empty($s['noise']['enabled'])) {
+            $fm['udp'] = [['type' => 'noise', 'settings' => $this->finalmaskNoiseSettings($s['noise'], $this->finalmaskNoiseList($p))]];
+        }
+        if (!$fm) {
+            unset($c['inbounds'][0]['streamSettings']['finalmask']);
+
+            return;
+        }
+        $c['inbounds'][0]['streamSettings']['finalmask'] = $fm;
+    }
+
+    // Рестартуем ядро только когда собранный блок реально изменился — иначе
+    // каждое нажатие в меню рвало бы все живые соединения (тот же приём, что
+    // syncSmuxLive()).
+    public function syncFinalmaskLive(array $p): void
+    {
+        $c   = $this->getXray();
+        $was = $c['inbounds'][0]['streamSettings']['finalmask'] ?? null;
+        $this->ensureFinalmaskInbound($c, $p);
+        $now = $c['inbounds'][0]['streamSettings']['finalmask'] ?? null;
+        if ($was !== $now) {
+            $this->restartXray($c);
+        }
+    }
+
+    // ---- finalmask submenu ---------------------------------------------------
+    public function finalmaskMenu()
+    {
+        $p  = $this->getPacConf();
+        $s  = $this->finalmaskSettings($p);
+        $on = fn ($v) => $this->i18n(!empty($v) ? 'on' : 'off');
+
+        $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> finalmask';
+        $text[] = $this->i18n('finalmask hint');
+
+        $data = [];
+        $data[] = [['text' => 'finalmask: ' . $on($s['enabled']), 'callback_data' => '/finalmaskToggle enabled']];
+        if (!empty($s['enabled'])) {
+            $data[] = [[
+                'text'          => $this->i18n('fragment') . ': ' . $on($s['fragment']['enabled']),
+                'callback_data' => '/finalmaskToggle fragment',
+            ]];
+            if (!empty($s['fragment']['enabled'])) {
+                $text[] = $this->i18n('finalmask fragment hint');
+                $data[] = [
+                    ['text' => 'packets: ' . $s['fragment']['packets'], 'callback_data' => '/finalmaskSet fragment_packets'],
+                    ['text' => 'length: '  . $s['fragment']['length'],  'callback_data' => '/finalmaskSet fragment_length'],
+                    ['text' => 'delay: '   . $s['fragment']['delay'],   'callback_data' => '/finalmaskSet fragment_delay'],
+                ];
+                $data[] = [
+                    ['text' => 'maxSplit: ' . (($s['fragment']['maxSplit'] ?? '') ?: '—'), 'callback_data' => '/finalmaskSet fragment_maxSplit'],
+                ];
+                $data[] = [['text' => '📋 ' . $this->i18n('presets'), 'callback_data' => '/finalmaskFragPresets']];
+            }
+            $data[] = [[
+                'text'          => $this->i18n('noise') . ': ' . $on($s['noise']['enabled']),
+                'callback_data' => '/finalmaskToggle noise',
+            ]];
+            if (!empty($s['noise']['enabled'])) {
+                $text[] = $this->i18n('finalmask noise hint');
+                $text[] = $this->noiseExamplesHint();
+                $data[] = [['text' => 'reset: ' . $s['noise']['reset'], 'callback_data' => '/finalmaskSet noise_reset']];
+                foreach ($this->finalmaskNoiseList($p) as $i => $ne) {
+                    $data[] = [
+                        ['text' => 'type: '   . (($ne['type']   ?? '') ?: 'rand'),      'callback_data' => "/finalmaskSet noise{$i}_type"],
+                        ['text' => 'packet: ' . (($ne['packet'] ?? '') ?: '10-20'),     'callback_data' => "/finalmaskSet noise{$i}_packet"],
+                        ['text' => 'delay: '  . (($ne['delay']  ?? '') ?: '10-16'),     'callback_data' => "/finalmaskSet noise{$i}_delay"],
+                        ['text' => '🗑',                                                'callback_data' => "/finalmaskNoiseDel {$i}"],
+                    ];
+                }
+                $data[] = [
+                    ['text' => '➕ noise packet',              'callback_data' => '/finalmaskNoiseAdd'],
+                    ['text' => '📋 ' . $this->i18n('presets'), 'callback_data' => '/finalmaskNoisePresets'],
+                ];
+            }
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/dpiMenu']];
+
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function finalmaskToggle($what)
+    {
+        $p = $this->getPacConf();
+        $s = $this->finalmaskSettings($p);
+        switch ($what) {
+            case 'enabled':
+                $s['enabled'] = empty($s['enabled']) ? 1 : 0;
+                break;
+            case 'fragment':
+                $s['fragment']['enabled'] = empty($s['fragment']['enabled']) ? 1 : 0;
+                break;
+            case 'noise':
+                $s['noise']['enabled'] = empty($s['noise']['enabled']) ? 1 : 0;
+                // При включении с пустым списком засеваем один дефолтный
+                // пакет — как dpiToggle('noise'), чтобы в меню сразу была
+                // видна редактируемая строка.
+                if (!empty($s['noise']['enabled']) && !$this->finalmaskNoiseList($p)) {
+                    $s['noise']['list'] = [['type' => 'rand', 'packet' => '10-20', 'delay' => '10-16']];
+                }
+                break;
+            default:
+                return $this->finalmaskMenu();
+        }
+        $p['finalmask'] = $s;
+        $this->setPacConf($p);
+        $this->syncFinalmaskLive($p);
+        $this->finalmaskMenu();
+    }
+
+    public function finalmaskSet($field)
+    {
+        $prompt = "@{$this->input['username']} " . $this->i18n('enter value');
+        if ($hint = $this->finalmaskFieldHint($field)) {
+            $prompt .= "\n\n" . $hint;
+        }
+        $r = $this->send(
+            $this->input['chat'],
+            $prompt,
+            $this->input['message_id'],
+            reply: $this->i18n('enter value'),
+        );
+        $this->stashReply($r, [
+            'start_message'  => $this->input['message_id'],
+            'start_callback' => $this->input['callback_id'],
+            'callback'       => 'saveFinalmask',
+            'args'           => [$field],
+        ]);
+    }
+
+    public function saveFinalmask($val, $field)
+    {
+        $val = trim((string) $val);
+        $p   = $this->getPacConf();
+        $s   = $this->finalmaskSettings($p);
+        // Индексированный noise-пакет (noise{i}_type|packet|delay) — та же
+        // развязка, что saveDpi() делает для dpi.noise.
+        if (preg_match('~^noise(\d+)_(type|packet|delay)$~', $field, $nm)) {
+            $list = $this->finalmaskNoiseList($p);
+            $idx  = (int) $nm[1];
+            if (isset($list[$idx])) {
+                $list[$idx][$nm[2]] = $this->isDefaultValue($val) ? '' : $val;
+                $s['noise']['list'] = array_values($list);
+                $p['finalmask']     = $s;
+                $this->setPacConf($p);
+                $this->syncFinalmaskLive($p);
+            }
+
+            return $this->finalmaskMenu();
+        }
+        switch ($field) {
+            case 'fragment_packets':  $s['fragment']['packets']  = $this->isDefaultValue($val) ? 'tlshello' : $val; break;
+            case 'fragment_length':   $s['fragment']['length']   = $this->isDefaultValue($val) ? '' : $val; break;
+            case 'fragment_delay':    $s['fragment']['delay']    = $this->isDefaultValue($val) ? '' : $val; break;
+            case 'fragment_maxSplit': $s['fragment']['maxSplit'] = $this->isDefaultValue($val) ? '' : $val; break;
+            case 'noise_reset':       $s['noise']['reset']       = $this->isDefaultValue($val) ? '' : $val; break;
+            default: return $this->finalmaskMenu();
+        }
+        $p['finalmask'] = $s;
+        $this->setPacConf($p);
+        $this->syncFinalmaskLive($p);
+        $this->finalmaskMenu();
+    }
+
+    public function finalmaskFieldHint(string $field): string
+    {
+        $field = preg_replace('~^noise\d+_(type|packet|delay)$~', 'noise_$1', $field);
+        $ru = $this->language === 'ru';
+
+        return match ($field) {
+            'fragment_packets' => $ru
+                ? 'Что резать: <code>tlshello</code> — только TLS ClientHello, либо диапазон записей вроде <code>1-3</code> (не может начинаться с 0).'
+                : "What to slice: <code>tlshello</code> — only the TLS ClientHello, or a write-index range like <code>1-3</code> (can't start at 0).",
+            'fragment_length' => $ru
+                ? 'Длина куска в байтах, например <code>100-200</code>.'
+                : 'Segment length in bytes, e.g. <code>100-200</code>.',
+            'fragment_delay' => $ru
+                ? 'Пауза между кусками в мс, например <code>10-20</code>.'
+                : 'Delay between segments in ms, e.g. <code>10-20</code>.',
+            'fragment_maxSplit' => $ru
+                ? 'Потолок числа кусков. Пусто — без ограничения (дефолт ядра).'
+                : 'Cap on the number of segments. Empty = no cap (core default).',
+            'noise_reset' => $ru
+                ? 'Через сколько секунд можно повторить пачку шумовых пакетов на тот же адрес, например <code>5-10</code>.'
+                : 'Seconds before the noise burst can repeat to the same address, e.g. <code>5-10</code>.',
+            'noise_type', 'noise_packet', 'noise_delay' => $this->noiseExamplesHint(),
+            default => '',
+        };
+    }
+
+    public function finalmaskFragPresetsMenu(): void
+    {
+        $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> finalmask -> ' . $this->i18n('presets');
+        $text[] = $this->fragmentPresetsHint();
+
+        $data = [];
+        $row  = [];
+        foreach ($this->fragmentPresets() as $key => $ps) {
+            $row[] = ['text' => $ps['label'], 'callback_data' => "/finalmaskFragPreset $key"];
+            if (count($row) === 2) {
+                $data[] = $row;
+                $row    = [];
+            }
+        }
+        if ($row) {
+            $data[] = $row;
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/finalmaskMenu']];
+
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    // Применяет пресет TLS-фрагментации к finalmask (не к dpi.fragment) — те
+    // же наборы значений, что и обычные пресеты, но поле interval → delay,
+    // как того требует форма finalmask (FragmentMask.Delay).
+    public function finalmaskFragPreset($key): void
+    {
+        $presets = $this->fragmentPresets();
+        if (!isset($presets[$key])) {
+            $this->answer($this->input['callback_id'], 'unknown preset', true);
+
+            return;
+        }
+        $ps = $presets[$key];
+        $p  = $this->getPacConf();
+        $s  = $this->finalmaskSettings($p);
+        $s['enabled']              = 1;
+        $s['fragment']['enabled']  = 1;
+        $s['fragment']['packets']  = $ps['packets'];
+        $s['fragment']['length']   = $ps['length'];
+        $s['fragment']['delay']    = $ps['interval'];
+        $s['fragment']['maxSplit'] = $ps['maxSplit'];
+        $p['finalmask'] = $s;
+        $this->setPacConf($p);
+        $this->syncFinalmaskLive($p);
+        $this->answer($this->input['callback_id'], $ps['label']);
+        $this->finalmaskMenu();
+    }
+
+    public function finalmaskNoisePresetsMenu(): void
+    {
+        $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> finalmask -> ' . $this->i18n('noise') . ' ' . $this->i18n('presets');
+        $text[] = $this->noisePresetsHint();
+
+        $data = [];
+        $row  = [];
+        foreach ($this->noisePresets() as $key => $ps) {
+            $row[] = ['text' => $ps['label'], 'callback_data' => "/finalmaskNoisePreset $key"];
+            if (count($row) === 2) {
+                $data[] = $row;
+                $row    = [];
+            }
+        }
+        if ($row) {
+            $data[] = $row;
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/finalmaskMenu']];
+
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function finalmaskNoisePreset($key): void
+    {
+        $presets = $this->noisePresets();
+        if (!isset($presets[$key])) {
+            $this->answer($this->input['callback_id'], 'unknown preset', true);
+
+            return;
+        }
+        $ps = $presets[$key];
+        $p  = $this->getPacConf();
+        $s  = $this->finalmaskSettings($p);
+        $s['enabled']          = 1;
+        $s['noise']['enabled'] = 1;
+        $s['noise']['list']    = $ps['list'];
+        $p['finalmask'] = $s;
+        $this->setPacConf($p);
+        $this->syncFinalmaskLive($p);
+        $this->answer($this->input['callback_id'], $ps['label']);
+        $this->finalmaskMenu();
+    }
+
+    public function finalmaskNoiseAdd()
+    {
+        $p    = $this->getPacConf();
+        $s    = $this->finalmaskSettings($p);
+        $list = $this->finalmaskNoiseList($p);
+        $list[] = ['type' => 'rand', 'packet' => '50-150', 'delay' => '10-16'];
+        $s['noise']['list'] = array_values($list);
+        $p['finalmask']     = $s;
+        $this->setPacConf($p);
+        $this->syncFinalmaskLive($p);
+        $this->finalmaskMenu();
+    }
+
+    public function finalmaskNoiseDel($i)
+    {
+        $p    = $this->getPacConf();
+        $s    = $this->finalmaskSettings($p);
+        $list = $this->finalmaskNoiseList($p);
+        if (isset($list[$i])) {
+            array_splice($list, $i, 1);
+        }
+        $s['noise']['list'] = array_values($list);
+        $p['finalmask']     = $s;
+        $this->setPacConf($p);
+        $this->syncFinalmaskLive($p);
+        $this->finalmaskMenu();
     }
 
     // Клиентская часть подписки. Один источник значений на три диалекта:
