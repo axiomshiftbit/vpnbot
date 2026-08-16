@@ -343,4 +343,100 @@ $after = $store->read();
 panelAssert(isset($after['messages'][$keep]), 'сообщение с битыми байтами не уносит ленту с собой');
 panelAssert(count($after['messages']) === 2, 'битый текст сохраняется с подстановкой, а не теряется');
 
+// ── мультиадминство: подпись/аутентификация несёт выбранного админа ─────────
+$multi = new Panel($bot, ['key' => 'test-token:AAH', 'admin' => [111, 222]], $store);
+$sign2 = new ReflectionMethod(Panel::class, 'sign');
+$sign2->setAccessible(true);
+
+$exp2 = time() + 3600;
+$_COOKIE['panel'] = $exp2 . '.222.' . $sign2->invoke($multi, $exp2, 222);
+panelAssert($multi->authed(), 'валидная кука с явным admin=222 пускает');
+
+$chatId2 = new ReflectionMethod(Panel::class, 'chatId');
+$chatId2->setAccessible(true);
+panelAssert(222 === $chatId2->invoke($multi), 'chatId() отражает выбранного при логине админа');
+
+$_COOKIE['panel'] = $exp2 . '.999.' . $sign2->invoke($multi, $exp2, 999);
+panelAssert(!$multi->authed(), 'id вне $c[admin] не пускает, даже с верной по форме подписью');
+
+// Подмена id в куке без пересчёта HMAC не должна давать доступ от чужого имени.
+$validCookie      = $exp2 . '.111.' . $sign2->invoke($multi, $exp2, 111);
+[$e2, , $sig2]     = explode('.', $validCookie, 3);
+$_COOKIE['panel'] = "$e2.222.$sig2";
+panelAssert(!$multi->authed(), 'подмена admin в куке без пересчёта подписи отклоняется');
+
+// Старый двухчастный формат (единственный админ) на мультиадминной панели
+// по-прежнему аутентифицирует, но всегда как admins[0] — иначе апгрейд с
+// одного админа на двух молча выкинул бы всех, у кого кука ещё старого вида.
+$_COOKIE['panel'] = $exp2 . '.' . $sign2->invoke($multi, $exp2);
+panelAssert($multi->authed(), 'легаси-кука (2 части) валидна и на мультиадминной панели');
+panelAssert(111 === $chatId2->invoke($multi), 'легаси-кука всегда резолвится в admins[0]');
+unset($_COOKIE['panel']);
+
+// ── диагностика панели ───────────────────────────────────────────────────────
+$_COOKIE['panel'] = $exp2 . '.222.' . $sign2->invoke($multi, $exp2, 222);
+panelAssert($multi->authed(), 'кука для diag()-проверки валидна');
+$diag = new ReflectionMethod(Panel::class, 'diag');
+$diag->setAccessible(true);
+ob_start();
+$diag->invoke($multi);
+$diagOut = json_decode((string) ob_get_clean(), true);
+panelAssert(true === ($diagOut['ok'] ?? null), 'diag() отвечает ok');
+panelAssert(222 === ($diagOut['admin'] ?? null), 'diag() отражает выбранного админа');
+panelAssert(2 === ($diagOut['admin_count'] ?? null), 'diag() считает всех настроенных админов');
+panelAssert(($diagOut['ttl'] ?? 0) > 0 && $diagOut['ttl'] <= 3600, 'diag() отдаёт остаток TTL сессии');
+unset($_COOKIE['panel']);
+
+// ── удаление одного сообщения из ленты (dismiss) ─────────────────────────────
+$dismissId = $store->put(['text' => 'уберите меня']);
+panelAssert(!($store->read()['messages'][$dismissId]['deleted'] ?? false), 'сообщение перед dismiss() ещё живое');
+$_POST      = ['message_id' => $dismissId];
+$dismiss    = new ReflectionMethod(Panel::class, 'dismiss');
+$dismiss->setAccessible(true);
+ob_start();
+$dismiss->invoke($panel);
+$dismissOut = json_decode((string) ob_get_clean(), true);
+$_POST      = [];
+panelAssert(true === ($dismissOut['ok'] ?? null), 'dismiss() отвечает ok');
+panelAssert(!empty($store->read()['messages'][$dismissId]['deleted']), 'dismiss() помечает сообщение удалённым, как и Store::delete()');
+
+// ── login() на мультиадминной панели требует известный admin в POST ─────────
+$clear->invoke($multi); // счётчик попыток общий с $panel — сбрасываем перед проверкой
+$login = new ReflectionMethod(Panel::class, 'login');
+$login->setAccessible(true);
+
+$_POST = ['password' => 'another one', 'admin' => 222];
+ob_start();
+$login->invoke($multi);
+$loginOut = json_decode((string) ob_get_clean(), true);
+panelAssert(true === ($loginOut['ok'] ?? null) && 222 === ($loginOut['admin'] ?? null), 'login() с известным admin пускает и возвращает его id');
+
+$clear->invoke($multi);
+$_POST = ['password' => 'another one', 'admin' => 555];
+ob_start();
+$login->invoke($multi);
+$loginOut2 = json_decode((string) ob_get_clean(), true);
+panelAssert(false === ($loginOut2['ok'] ?? null) && 'unknown admin' === ($loginOut2['error'] ?? null), 'login() с чужим admin отклоняется, не выдавая куку');
+$_POST = [];
+$clear->invoke($multi);
+
+// ── restore бэкапа не должен стирать пароль панели ───────────────────────────
+// Живой баг с рабочего сервера: восстановление бэкапа без panelpswd (снят до появления
+// пароля панели / собран вручную для теста) заменяло pac.json целиком, и
+// панель разом теряла пароль — Panel::authed() требует непустой хеш на
+// первом же шаге, поэтому «неверный пароль» получал и верный ввод.
+$restoreBot = new PanelTestBot();
+$restoreBot->setPacConf(['panelpswd' => 'CURRENT_HASH', 'domain' => 'x.test']);
+$restored = $restoreBot->preservePanelPswd(['domain' => 'y.test'], $restoreBot->getPacConf());
+panelAssert('CURRENT_HASH' === ($restored['panelpswd'] ?? null), 'бэкап без panelpswd не стирает текущий пароль панели');
+panelAssert('y.test' === ($restored['domain'] ?? null), 'остальные поля бэкапа применяются как есть');
+
+$restored2 = $restoreBot->preservePanelPswd(['panelpswd' => 'FROM_BACKUP', 'domain' => 'z.test'], $restoreBot->getPacConf());
+panelAssert('FROM_BACKUP' === ($restored2['panelpswd'] ?? null), 'если бэкап несёт свой пароль панели — используется он, а не текущий');
+
+$noCurrent = new PanelTestBot();
+$noCurrent->setPacConf(['domain' => 'x.test']); // на панели пароль ещё не задавали
+$restored3 = $noCurrent->preservePanelPswd(['domain' => 'y.test'], $noCurrent->getPacConf());
+panelAssert(empty($restored3['panelpswd']), 'нет текущего пароля — restore не выдумывает его из ничего');
+
 echo "panel_test: OK\n";

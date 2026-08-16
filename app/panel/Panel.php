@@ -22,7 +22,7 @@ class Panel
     private const MAX_UPLOAD = 20971520; // 20 MiB
 
     /** Действия, меняющие состояние: только POST (см. route()). */
-    private const MUTATING = ['login', 'logout', 'click', 'text', 'upload', 'reset', 'tload', 'tsave'];
+    private const MUTATING = ['login', 'logout', 'click', 'text', 'upload', 'reset', 'tload', 'tsave', 'dismiss'];
 
     private $bot;
     private $key;
@@ -30,6 +30,8 @@ class Panel
     private $store;
     private $transport;
     private $prefix;
+    /** Чьей личностью действует текущая сессия — заполняет authed(), см. §1 плана мультиадминства. */
+    private $actingAdmin;
 
     public function __construct(Bot $bot, array $c, $store = null)
     {
@@ -355,6 +357,12 @@ class Panel
             case 'state':
                 return $this->state();
 
+            case 'diag':
+                return $this->diag();
+
+            case 'dismiss':
+                return $this->dismiss();
+
             case 'click':
                 return $this->click();
 
@@ -452,16 +460,31 @@ class Panel
 
             return $this->json(['ok' => false, 'error' => 'wrong password'], 403);
         }
+        // Пароль общий на всю панель, а вот действовать после входа можно от
+        // имени любого из настроенных админов (мультиадминство): при одном
+        // админе выбора нет и cookie остаётся в прежнем двухчастном виде —
+        // ни формат, ни путь к ленте не меняются для однo-админских установок.
+        $admin = $this->admins[0] ?? 0;
+        if (count($this->admins) > 1) {
+            $chosen = (int) ($_POST['admin'] ?? 0);
+            if (!in_array($chosen, $this->admins, true)) {
+                return $this->json(['ok' => false, 'error' => 'unknown admin'], 400);
+            }
+            $admin = $chosen;
+        }
         $this->rateClear();
-        $exp = time() + self::TTL;
-        setcookie(self::COOKIE, $exp . '.' . $this->sign($exp), [
+        $exp   = time() + self::TTL;
+        $value = count($this->admins) > 1
+            ? $exp . '.' . $admin . '.' . $this->sign($exp, $admin)
+            : $exp . '.' . $this->sign($exp);
+        setcookie(self::COOKIE, $value, [
             'expires'  => $exp,
             'path'     => $this->prefix . '/',
             'httponly' => true,
             'samesite' => 'Strict',
         ]);
 
-        return $this->json(['ok' => true]);
+        return $this->json(['ok' => true, 'admin' => $admin]);
     }
 
     private function logout()
@@ -479,10 +502,17 @@ class Panel
     /**
      * Подпись куки завязана и на токен бота, и на текущий хеш пароля: смена
      * пароля разом обнуляет все выданные сессии.
+     *
+     * $admin входит в подпись начиная с мультиадминства — иначе один
+     * авторизованный админ мог бы переписать себе cookie на чужой id и
+     * действовать от чужого имени без пароля. По умолчанию — admins[0], чтобы
+     * старый однопараметрический вызов (в т.ч. в тестах) остался рабочим.
      */
-    private function sign($exp)
+    private function sign($exp, $admin = null)
     {
-        return hash_hmac('sha256', "panel|$exp|" . $this->passwordHash(), $this->key);
+        $admin ??= $this->admins[0] ?? 0;
+
+        return hash_hmac('sha256', "panel|$exp|$admin|" . $this->passwordHash(), $this->key);
     }
 
     public function authed()
@@ -497,14 +527,33 @@ class Panel
             return false;
         }
         $v = (string) ($_COOKIE[self::COOKIE] ?? '');
-        if (!preg_match('~^(\d+)\.([0-9a-f]{64})$~', $v, $m)) {
-            return false;
+        // Трёхчастная кука — мультиадминство (exp.adminId.hmac). Двухчастная —
+        // прежний формат для установок с одним админом: он не менялся, чтобы
+        // не рвать уже выданные сессии там, где выбирать всё равно не из чего.
+        if (preg_match('~^(\d+)\.(-?\d+)\.([0-9a-f]{64})$~', $v, $m)) {
+            $exp   = (int) $m[1];
+            $admin = (int) $m[2];
+            if ($exp < time() || !in_array($admin, $this->admins, true)) {
+                return false;
+            }
+            if (!hash_equals($this->sign($exp, $admin), $m[3])) {
+                return false;
+            }
+            $this->actingAdmin = $admin;
+
+            return true;
         }
-        if ((int) $m[1] < time()) {
-            return false;
+        if (preg_match('~^(\d+)\.([0-9a-f]{64})$~', $v, $m)) {
+            $exp = (int) $m[1];
+            if ($exp < time() || !hash_equals($this->sign($exp), $m[2])) {
+                return false;
+            }
+            $this->actingAdmin = $this->admins[0] ?? 0;
+
+            return true;
         }
 
-        return hash_equals($this->sign((int) $m[1]), $m[2]);
+        return false;
     }
 
     private function rateFile()
@@ -563,10 +612,19 @@ class Panel
         header('Cache-Control: no-store');
         self::csp();
         $html = (string) file_get_contents(__DIR__ . '/ui.html');
+        // Список id — не секрет: те же id уже видны любому админу в
+        // configMenu() бота. Отдаём его только когда есть из чего выбирать —
+        // однo-админские установки страницу логина не меняют вовсе.
+        $admins = count($this->admins) > 1 ? $this->admins : [];
         echo strtr($html, [
             '{{PREFIX}}' => htmlspecialchars($this->prefix, ENT_QUOTES),
             '{{AUTH}}'   => $authed ? '1' : '0',
             '{{NOTE}}'   => htmlspecialchars($this->bootNote(), ENT_QUOTES),
+            // HEX_TAG/HEX_AMP на случай, если id когда-нибудь перестанут быть
+            // строго числовыми (сейчас гарантируют это CLI и auto-bootstrap в
+            // Bot::auth()) — иначе "</script>" в значении вырвался бы из
+            // JS-строки, а htmlspecialchars() сам по себе "/" не трогает.
+            '{{ADMINS}}' => htmlspecialchars(json_encode($admins, JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES),
         ]);
     }
 
@@ -615,6 +673,49 @@ class Panel
         unset($m);
 
         return $this->json(['ok' => true] + $s);
+    }
+
+    /**
+     * Диагностика самой панели (не бота и не VPN-сервисов — тому есть обычное
+     * меню, тут дублировать нечего). ttl — единственное, что браузер не может
+     * узнать сам: кука httponly и JS её не читает.
+     */
+    private function diag()
+    {
+        $exp = 0;
+        if (preg_match('~^(\d+)\.~', (string) ($_COOKIE[self::COOKIE] ?? ''), $m)) {
+            $exp = (int) $m[1];
+        }
+        $state = $this->store->read();
+
+        return $this->json([
+            'ok'           => true,
+            'admin'        => $this->chatId(),
+            'admin_count'  => count($this->admins),
+            'ttl'          => max(0, $exp - time()),
+            'messages'     => count($state['messages']),
+            'rev'          => $state['rev'],
+            'store_bytes'  => @filesize($this->store->dir() . '/state.json') ?: 0,
+            'disk_free'    => @disk_free_space($this->store->dir()),
+            'upload_limit' => $this->uploadLimit(),
+        ]);
+    }
+
+    /**
+     * Убрать один пузырь из ленты, не трогая остальные («очистить» сносит всё
+     * разом, чего не всегда хочется). Тот же Store::delete(), которым бот сам
+     * помечает свои сообщения удалёнными (см. PanelTransport::deleteMessage) —
+     * значит вложение освобождается и правка видна во всех открытых вкладках.
+     */
+    private function dismiss()
+    {
+        $mid = (int) ($_POST['message_id'] ?? 0);
+        if (!$mid) {
+            return $this->json(['ok' => false, 'error' => 'bad request'], 400);
+        }
+        $this->store->delete($mid);
+
+        return $this->json(['ok' => true]);
     }
 
     /**
@@ -706,33 +807,65 @@ class Panel
         <link href="{$this->prefix}/a/jsoneditor.min.css" rel="stylesheet" type="text/css">
         <script src="{$this->prefix}/a/jsoneditor.min.js"></script>
         <style>
-          html,body{margin:0;height:100%;font:14px sans-serif}
-          #bar{height:44px;display:flex;align-items:center;gap:10px;padding:0 12px;background:#17212b;color:#e9edf1}
-          #bar button{background:#3b82c4;color:#fff;border:0;border-radius:6px;padding:7px 14px;cursor:pointer}
-          #jsoneditor{height:calc(100% - 44px)}
+          html,body{margin:0;height:100%;font:14px -apple-system,Segoe UI,Roboto,Ubuntu,sans-serif}
+          #bar{height:48px;display:flex;align-items:center;gap:8px;padding:0 14px;background:#17212b;color:#e9edf1;box-shadow:0 2px 10px rgba(0,0,0,.22)}
+          #bar b{font-weight:600}
+          #bar #st{color:#7f91a4;font-size:13px}
+          #bar button{background:#3b82c4;color:#fff;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;font:inherit;transition:filter .15s,transform .05s}
+          #bar button:hover{filter:brightness(1.08)}
+          #bar button:active{transform:scale(.96)}
+          #bar button.sec{background:#2a3f52}
+          #bar button.sec:hover{background:#33506b}
+          #jsoneditor{height:calc(100% - 48px)}
         </style>
         </head>
         <body>
         <div id="bar"><b>$eTy</b> / $eName<span style="flex:1"></span>
-          <span id="st"></span><button id="save">Сохранить</button></div>
+          <span id="st"></span>
+          <button id="import" class="sec">Загрузить с диска</button>
+          <input id="importfile" type="file" accept="application/json" hidden>
+          <button id="download" class="sec">Скачать</button>
+          <button id="save">Сохранить</button></div>
         <div id="jsoneditor"></div>
         <script>
         const P = $jPrefix, TY = $jTy, TE = $jTe, NAME = $jName;
-        const editor = new JSONEditor(document.getElementById("jsoneditor"), {});
+        let dirty = false;
+        const editor = new JSONEditor(document.getElementById("jsoneditor"), {
+          onChange: () => { dirty = true; }
+        });
         const st = document.getElementById("st");
         const post = (u, o) => fetch(P + u, {method:"POST", headers:{"X-Panel":"1"}, body:o});
         const fd = o => { const f = new FormData(); for (const k in o) f.append(k, o[k]); return f; };
         editor.set({});
         post("/tload", fd({ty:TY, te:TE})).then(r => r.json()).then(r => {
           if (r && r.status) editor.set(r.json); else st.textContent = "ошибка загрузки";
+          dirty = false;
         }).catch(() => st.textContent = "ошибка загрузки");
         document.getElementById("save").onclick = () => {
           st.textContent = "сохраняю…";
           post("/tsave", fd({name:NAME, type:TY, json:editor.getText()}))
             .then(r => r.json())
-            .then(r => { st.textContent = r.status ? "сохранено" : (r.message || "ошибка"); })
+            .then(r => { st.textContent = r.status ? "сохранено" : (r.message || "ошибка"); if (r.status) dirty = false; })
             .catch(() => st.textContent = "ошибка");
         };
+        document.getElementById("download").onclick = () => {
+          const blob = new Blob([editor.getText()], {type: "application/json"});
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = TY + "_" + NAME + ".json";
+          a.click();
+          URL.revokeObjectURL(a.href);
+        };
+        document.getElementById("import").onclick = () => document.getElementById("importfile").click();
+        document.getElementById("importfile").onchange = function(){
+          const f = this.files[0]; this.value = "";
+          if (!f) return;
+          f.text().then(t => {
+            try { editor.set(JSON.parse(t)); dirty = true; st.textContent = "загружено из файла — не забудьте сохранить"; }
+            catch (e) { st.textContent = "неверный JSON"; }
+          });
+        };
+        window.onbeforeunload = () => dirty ? "" : undefined;
         </script>
         </body>
         </html>
@@ -997,7 +1130,7 @@ class Panel
 
     private function chatId()
     {
-        return $this->admins[0] ?? 0;
+        return $this->actingAdmin ?? $this->admins[0] ?? 0;
     }
 
     /**
