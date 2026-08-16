@@ -52,7 +52,7 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "amneziawg-go и amneziawg-tools обязаны идти одной версией — иначе awg-tools не понимает формат ядра.",
+      "description": "amneziawg-go и amneziawg-tools обновляются одним PR, чтобы не разъезжались молча: awg-tools парсит [Interface]-поля, а awg-go должен понимать те же UAPI-атрибуты. Теги-даты при этом не обязаны совпадать буквально (у 3.1 они разъехались) — groupName только бандлит PR, не требует идентичной строки версии.",
       "matchDepNames": [
         "amnezia-vpn/amneziawg-go",
         "amnezia-vpn/amneziawg-tools"
