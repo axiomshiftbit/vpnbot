@@ -2607,6 +2607,24 @@ class Bot
         ]);
     }
 
+    // Сообщением в чат (<code>, тап — скопировать), а не alert-попапом: по
+    // прямой просьбе — из alert текст не скопировать. Секрет из-за этого
+    // оседает в истории чата, в отличие от showHeaderProtectionKey() —
+    // осознанный компромисс в пользу удобства копирования, не забытая мера
+    // предосторожности. htmlspecialchars() обязателен: при ручном вводе
+    // пароль может содержать <, >, & — без экранирования это либо ломает
+    // HTML-разметку сообщения, либо портит сам пароль в отображении.
+    private function sendPanelPasswordCopy(string $pass): void
+    {
+        $safe = htmlspecialchars($pass, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $this->send(
+            $this->input['chat'],
+            "✅ Пароль веб-панели:\n<code>$safe</code>\n\n"
+                . "Сменить пароль: <code>docker compose exec php php panel.php passwd</code>",
+            $this->input['message_id'],
+        );
+    }
+
     // Без answer()-попапа: это ответ на force_reply, а не клик — валидного
     // callback_id здесь нет (тот же принцип, что у sspwdch()).
     public function panelPswdSet($pass, $nomenu = false)
@@ -2616,20 +2634,18 @@ class Bot
             $this->send($this->input['chat'], 'пароль короче 8 символов — отклонён, попробуйте снова', $this->input['message_id']);
         } else {
             $this->setPanelPassword($pass);
+            $this->sendPanelPasswordCopy($pass);
         }
         if (empty($nomenu)) {
             $this->menu('config');
         }
     }
 
-    // Alert-попап, а не сообщение в чат: как showHeaderProtectionKey() —
-    // секрет не должен оседать в истории переписки. Здесь есть настоящий
-    // callback_id (прямой клик по кнопке), в отличие от panelPswdSet().
     public function panelPswdGen()
     {
         $pass = bin2hex(random_bytes(16));
         $this->setPanelPassword($pass);
-        $this->answer($this->input['callback_id'] ?? null, "новый пароль веб-панели:\n$pass", true);
+        $this->sendPanelPasswordCopy($pass);
         $this->menu('config');
     }
 
@@ -25640,6 +25656,11 @@ DNS-over-HTTPS with IP:
         $conf = $this->getPacConf();
         $oc   = $this->getHashSubdomain('oc');
         $np   = $this->getHashSubdomain('np');
+        // Панель не зависит от домена (доступ только по 127.0.0.1 + ssh -L),
+        // поэтому строка вне блока $conf['domain'] — показываем всегда.
+        // Меняется только хеш-часть /panel<hash>/, IP и порт фиксированы.
+        $panelPort = (int) (getenv('PANEL_PORT') ?: 8090);
+        $text[]    = "панель: <code>http://127.0.0.1:$panelPort/panel{$this->getHashBot()}/</code>";
         if (!empty($conf['domain'])) {
             $ssl_expiry = $this->expireCert();
             $certs      = $this->domainsCert() ?: [];
