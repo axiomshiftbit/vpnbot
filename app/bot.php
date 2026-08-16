@@ -22,6 +22,12 @@ class Bot
         'HeaderProtectionKey', 'ContentPaddingAddition', 'RekeyAfterTime',
         'RekeyTimeout', 'RejectAfterTime', 'KeepaliveTimeout', 'MaxHandshakeAttempts',
     ];
+    // AWG 3.1 (amneziawg-tools >= 3.1.20260812). Отдельный массив, а не довесок к
+    // AWG_KEYS_3: срез идёт по своему порогу версии (awgSupports31()) — старые tools
+    // 3.0.x отвергают ВЕСЬ wg0.conf на незнакомой строке («Line unrecognized»), значит
+    // поля 3.1 обязаны чиститься независимо от полей 3.0. Оба — простые on/off,
+    // opt-in, в generateAmneziaKeys() не генерируются (см. AWG3_FIELDS/тумблеры ниже).
+    public const AWG_KEYS_31 = ['RandomTrailers', 'DisableCookies'];
     // device/noise-types.go: HeaderCipherNonceSize. amneziawg-go отвергает
     // конфиг с непустым HeaderProtectionKey, если хоть один из S1..S4 меньше:
     // «S%d must be more then 12 to use headerProtection» (device/uapi.go).
@@ -59,6 +65,9 @@ class Bot
     // осознанно: он даёт самый заметный статический отпечаток, но после каждой
     // ротации ВСЕ клиенты обязаны перекачать конфиг — рассинхрон HPK рвёт
     // handshake молча, без диагностики (см. текст в setAmneziaRotation).
+    // AWG_KEYS_31 (RandomTrailers/DisableCookies) намеренно НЕ входит сюда: это плоские
+    // on/off без случайного значения — «ротировать» булев тумблер значило бы дёргать его
+    // туда-сюда по таймеру, что просто рвёт туннель без всякой пользы для обфускации.
     public const AWG_ROTATE_KEYS = [
         'I1', 'I2', 'I3', 'I4', 'I5', 'S3', 'S4',
         'HeaderProtectionKey', 'ContentPaddingAddition', 'RekeyAfterTime',
@@ -1510,6 +1519,14 @@ class Bot
             case preg_match('~^/awg3reset ([01]) (-?\d+)$~', $this->input['callback'], $m):
                 $this->selectWG($m[1]);
                 $this->resetAwg3($m[2]);
+                break;
+            case preg_match('~^/awg3rt ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->toggleRandomTrailers($m[2]);
+                break;
+            case preg_match('~^/awg3dc ([01]) (-?\d+)$~', $this->input['callback'], $m):
+                $this->selectWG($m[1]);
+                $this->toggleDisableCookies($m[2]);
                 break;
             case preg_match('~^/awgVerRefresh ([01]) (-?\d+)$~', $this->input['callback'], $m):
                 $this->selectWG($m[1]);
@@ -5834,8 +5851,10 @@ NFT;
                 return self::AWG_KEYS_2;
             case 3:
                 return self::AWG_KEYS_3;
+            case 4:
+                return self::AWG_KEYS_31;
             default:
-                return array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2, self::AWG_KEYS_3);
+                return array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2, self::AWG_KEYS_3, self::AWG_KEYS_31);
         }
     }
 
@@ -5946,14 +5965,20 @@ NFT;
     //
     // $supports3: true — 3.0 есть, false — заведомо нет, null — неизвестно.
     // При null НЕ режем: моргнувший ssh не повод выкинуть рабочий блок из
-    // конфигов всех клиентов.
-    public static function amneziaKeysUsable($keys, ?bool $supports3): array
+    // конфигов всех клиентов. $supports31 — тот же принцип, но для полей AWG_KEYS_31
+    // (независимый порог версии, см. комментарий у AWG_KEYS_31).
+    public static function amneziaKeysUsable($keys, ?bool $supports3, ?bool $supports31 = null): array
     {
         if (!is_array($keys)) {
             return [];
         }
         if ($supports3 === false) {
             foreach (self::AWG_KEYS_3 as $j) {
+                unset($keys[$j]);
+            }
+        }
+        if ($supports31 === false) {
+            foreach (self::AWG_KEYS_31 as $j) {
                 unset($keys[$j]);
             }
         }
@@ -6047,6 +6072,14 @@ NFT;
         'KeepaliveTimeout'       => 'keepalive-timeout',
         'MaxHandshakeAttempts'   => 'max-handshake-attempts',
     ];
+    // AWG 3.1 (mihomo >= v1.19.30, "feat: support AmneziaWG v3.1"). В отличие от полей
+    // 3.0 выше — настоящий Go bool (proxy:"random-trailers,omitempty"), не строка/число,
+    // поэтому сериализуются отдельной веткой в amneziaKeysForMihomo() (PHP bool, ключ
+    // эмитится только при 'on' — аналог omitempty), а не общим циклом с (string)-кастом.
+    public const MIHOMO_AWG31_KEYS = [
+        'RandomTrailers' => 'random-trailers',
+        'DisableCookies' => 'disable-cookies',
+    ];
 
     // Whitelist для mihomo (amnezia-wg-option): отдаём только те поля, которые
     // mihomo действительно знает. Именно whitelist, а не blacklist — иначе
@@ -6078,6 +6111,11 @@ NFT;
         foreach (self::MIHOMO_AWG3_KEYS as $k => $mk) {
             if (isset($keys[$k]) && $keys[$k] !== '') {
                 $out[$mk] = (string) $keys[$k];
+            }
+        }
+        foreach (self::MIHOMO_AWG31_KEYS as $k => $mk) {
+            if (($keys[$k] ?? '') === 'on') {
+                $out[$mk] = true;
             }
         }
         return $out;
@@ -6241,6 +6279,14 @@ NFT;
             . ', нужна ≥ 3.0 — пересоберите wg-контейнер';
     }
 
+    public function awg31UnsupportedText(): string
+    {
+        $v = $this->awgToolsVersion();
+        return 'AWG 3.1 недоступен: в контейнере amneziawg-tools '
+            . ($v === null ? '(версия неизвестна, контейнер не отвечает)' : $v)
+            . ', нужна ≥ 3.1 — пересоберите wg-контейнер';
+    }
+
     public function amneziaProtoMenu($page = 0)
     {
         $prefix = $this->getInstanceWG(1);
@@ -6365,23 +6411,30 @@ NFT;
         $c      = $this->getPacConf();
         $keys   = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
         $sup3   = $this->awgSupports3();
+        $sup31  = $this->awgSupports31();
         $inst   = $this->wgNum();
         $hpk    = (string) ($keys['HeaderProtectionKey'] ?? '');
+        $rt     = (string) ($keys['RandomTrailers'] ?? 'off');
+        $dc     = (string) ($keys['DisableCookies'] ?? 'off');
 
         $text = [
             'Menu -> Wireguard -> AWG 3.0',
             '',
             'amneziawg-tools: <code>' . htmlspecialchars((string) ($this->awgToolsVersion() ?? '—'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
                 . ($sup3 === true ? ' ✅' : ($sup3 === false ? ' ⛔ нужна ≥ 3.0' : ' ⚠️ контейнер не отвечает')),
+            'AWG 3.1 (RandomTrailers/DisableCookies): '
+                . ($sup31 === true ? '✅' : ($sup31 === false ? '⛔ нужна ≥ 3.1' : '⚠️ контейнер не отвечает')),
             '',
         ];
-        $report = self::amneziaKeysReport($keys, true, self::AWG_KEYS_3);
+        $report = self::amneziaKeysReport($keys, true, array_merge(self::AWG_KEYS_3, self::AWG_KEYS_31));
         $text[] = '<code>' . ($report !== '' ? $report : '3.0-поля не заданы') . '</code>';
         $text[] = 'PersistentKeepalive: <code>' . htmlspecialchars((string) $this->awgKeepalive(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
         $text[] = '';
         $text[] = 'Все поля, кроме HeaderProtectionKey, задаются числом или диапазоном <code>LO-HI</code>; <code>0</code> — вернуть значение по умолчанию.';
         $text[] = '';
         $text[] = '⚠️ Любое изменение здесь ломает уже розданные конфиги: клиентам нужно перекачать их заново. Header protection дополнительно требует S1–S4 ≥ ' . self::AWG_HPK_MIN_S . '.';
+        $text[] = '';
+        $text[] = '<b>RandomTrailers</b> — довешивает случайный хвост к каждому пакету (доп. слой обфускации, требует такого же значения у клиента). <b>DisableCookies</b> — сервер перестаёт отвечать cookie-reply на хендшейки: снимает штатную anti-DoS защиту WireGuard от флуда поддельными initiation-пакетами в обмен на то, что зонд не подтвердит по cookie-reply, что порт — это WG/AWG.';
         $text[] = '';
         $text[] = '<b>mihomo awg3</b> — отдавать ли блок 3.0 в подписке mihomo (<code>amnezia-wg-option</code> + <code>version: 3</code>). Нужны свежие сборки mihomo/Clash.Meta; старые эти поля просто игнорируют, и awg-прокси к 3.0-серверу у них работать не будет в любом случае.';
 
@@ -6399,6 +6452,10 @@ NFT;
                 ['text' => 'show HPK',  'callback_data' => "/awg3hpkShow $inst $page"],
             ];
         }
+        $data[] = [
+            ['text' => 'RandomTrailers: ' . $rt, 'callback_data' => "/awg3rt $inst $page"],
+            ['text' => 'DisableCookies: ' . $dc,  'callback_data' => "/awg3dc $inst $page"],
+        ];
         $row = [];
         foreach (self::AWG3_FIELDS as $tok => [$key, , , ]) {
             $cur = $key === 'PersistentKeepalive'
@@ -6516,7 +6573,7 @@ NFT;
         $prefix = $this->getInstanceWG(1);
         $this->awgApplyGuarded($page, function () use ($prefix) {
             $c = $this->getPacConf();
-            foreach (self::AWG_KEYS_3 as $k) {
+            foreach (array_merge(self::AWG_KEYS_3, self::AWG_KEYS_31) as $k) {
                 unset($c[$prefix . 'amnezia_keys'][$k]);
             }
             unset($c[$prefix . 'amnezia_keepalive']);
@@ -6527,6 +6584,61 @@ NFT;
             if (substr($tpl, -2) === '_3') {
                 $c[$prefix . 'amnezia_tpl'] = self::awgTemplateForVer($tpl, 2);
             }
+            $this->setPacConf($c);
+        });
+    }
+
+    // RandomTrailers/DisableCookies (AWG 3.1) — простые on/off без предусловий вида S1-S4
+    // (в отличие от HeaderProtectionKey они не завязаны на паддинги). Доступны только на
+    // шаблоне 3.0 (живут в том же amnezia_keys, что и остальные AWG_KEYS_3/31-поля) и при
+    // подтверждённой поддержке tools >= 3.1 — при включении. Выключить (заведомо безопасная
+    // операция) можно всегда, чтобы застрявший на 'on' тумблер не блокировался версией.
+    public function toggleRandomTrailers($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        $keys   = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+        $cur    = (string) ($keys['RandomTrailers'] ?? 'off');
+
+        if ($cur !== 'on' && $this->awgSupports31() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg31UnsupportedText(), true);
+            return $this->menu('wg', $page);
+        }
+        if ($cur !== 'on' && self::amneziaProtoVer($keys) !== 3) {
+            $this->answer($this->input['callback_id'] ?? null, 'сначала переключитесь на шаблон 3.0', true);
+            return $this->menu('wg', $page);
+        }
+
+        $this->awgApplyGuarded($page, function () use ($prefix, $cur) {
+            $c    = $this->getPacConf();
+            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+            $keys['RandomTrailers'] = $cur === 'on' ? 'off' : 'on';
+            $c[$prefix . 'amnezia_keys'] = $keys;
+            $this->setPacConf($c);
+        });
+    }
+
+    public function toggleDisableCookies($page = 0)
+    {
+        $prefix = $this->getInstanceWG(1);
+        $c      = $this->getPacConf();
+        $keys   = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+        $cur    = (string) ($keys['DisableCookies'] ?? 'off');
+
+        if ($cur !== 'on' && $this->awgSupports31() !== true) {
+            $this->answer($this->input['callback_id'] ?? null, $this->awg31UnsupportedText(), true);
+            return $this->menu('wg', $page);
+        }
+        if ($cur !== 'on' && self::amneziaProtoVer($keys) !== 3) {
+            $this->answer($this->input['callback_id'] ?? null, 'сначала переключитесь на шаблон 3.0', true);
+            return $this->menu('wg', $page);
+        }
+
+        $this->awgApplyGuarded($page, function () use ($prefix, $cur) {
+            $c    = $this->getPacConf();
+            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+            $keys['DisableCookies'] = $cur === 'on' ? 'off' : 'on';
+            $c[$prefix . 'amnezia_keys'] = $keys;
             $this->setPacConf($c);
         });
     }
@@ -7415,10 +7527,14 @@ NFT;
                 unset($c[$this->getInstanceWG(1) . 'amnezia_keepalive']);
                 break;
             case !empty($reduce):
-                // Понижение до 1.x: снимаем и 2.0-, и 3.0-поля. Оставить
+                // Понижение до 1.x: снимаем 2.0-, 3.0- и 3.1-поля. Оставить
                 // HeaderProtectionKey без S3/S4 нельзя — конфиг был бы отвергнут.
+                // AWG_KEYS_31 сюда же: тумблеры RandomTrailers/DisableCookies
+                // включаются только при amneziaProtoVer() === 3 (см. toggleRandomTrailers/
+                // toggleDisableCookies) — оставшись висеть на «1.x»-наборе, они бы
+                // нарушили этот инвариант и продолжали молча уезжать в wg0.conf.
                 $amnezia = 1;
-                foreach (array_merge(self::AWG_KEYS_2, self::AWG_KEYS_3) as $j) {
+                foreach (array_merge(self::AWG_KEYS_2, self::AWG_KEYS_3, self::AWG_KEYS_31) as $j) {
                     unset($c[$this->getInstanceWG(1) . 'amnezia_keys'][$j]);
                 }
                 break;
@@ -11225,6 +11341,18 @@ DNS-over-HTTPS with IP:
         return version_compare(ltrim($v, 'vV'), '3.0', '>=');
     }
 
+    // AWG 3.1 (RandomTrailers/DisableCookies). Тот же источник правды, что у
+    // awgSupports3() — версия amneziawg-tools, не amneziawg-go (см. комментарий
+    // у awgToolsVersion()).
+    public function awgSupports31(): ?bool
+    {
+        $v = $this->awgToolsVersion();
+        if ($v === null) {
+            return null;
+        }
+        return version_compare(ltrim($v, 'vV'), '3.1', '>=');
+    }
+
     // Версии из warp-контейнера (wp = образ wireguard + wgcf, warp-cli в образе
     // нет). Свежие wgcf (2.2.31+) не знают ни `--version`, ни `version`, поэтому
     // сначала читаем /etc/wgcf_version, записанный при сборке образа
@@ -11287,7 +11415,7 @@ DNS-over-HTTPS with IP:
             // HeaderProtectionKey всегда маскируется отпечатком.
             $base    = array_merge(self::AWG_KEYS_1, self::AWG_KEYS_2);
             $text[]  = '<code>' . self::amneziaKeysReport($ak, true, $base) . "</code>\n";
-            $awg3    = self::amneziaKeysReport($ak, true, self::AWG_KEYS_3);
+            $awg3    = self::amneziaKeysReport($ak, true, array_merge(self::AWG_KEYS_3, self::AWG_KEYS_31));
             if ($awg3 !== '') {
                 $text[] = '<code>' . str_replace("\n", ' · ', $awg3) . "</code>\n";
                 // Поля видны в меню, но в конфиг не попали — без этой пометки
@@ -12059,7 +12187,8 @@ DNS-over-HTTPS with IP:
             "amnezia-wg-option" => self::amneziaKeysForMihomo(
                 self::amneziaKeysUsable(
                     $c["{$container}amnezia_keys"] ?? '',
-                    $this->awgSupports3Cached($container)
+                    $this->awgSupports3Cached($container),
+                    $this->awgSupports31Cached($container)
                 ),
                 !empty($c['mihomo_awg3'])
             ),
@@ -24155,7 +24284,8 @@ DNS-over-HTTPS with IP:
             "amnezia-wg-option" => self::amneziaKeysForMihomo(
                 self::amneziaKeysUsable(
                     $c["{$container}amnezia_keys"] ?? '',
-                    $this->awgSupports3Cached($container)
+                    $this->awgSupports3Cached($container),
+                    $this->awgSupports31Cached($container)
                 ),
                 !empty($c['mihomo_awg3'])
             ),
@@ -26601,7 +26731,7 @@ DNS-over-HTTPS with IP:
     // повод выкинуть рабочую конфигурацию из конфигов всех клиентов.
     public function amneziaKeysEffective(): array
     {
-        return self::amneziaKeysUsable($this->amneziaKeys(), $this->awgSupports3());
+        return self::amneziaKeysUsable($this->amneziaKeys(), $this->awgSupports3(), $this->awgSupports31());
     }
 
     // То же решение, что awgSupports3(), но БЕЗ ssh: только кеш в pac.json,
@@ -26612,6 +26742,13 @@ DNS-over-HTTPS with IP:
     {
         $v = $this->getPacConf()[$prefix . 'awg_tools_ver']['v'] ?? null;
         return $v === null ? null : version_compare(ltrim((string) $v, 'vV'), '3.0', '>=');
+    }
+
+    // AWG 3.1 (RandomTrailers/DisableCookies) — тот же кеш awg_tools_ver, порог 3.1.
+    public function awgSupports31Cached(string $prefix = ''): ?bool
+    {
+        $v = $this->getPacConf()[$prefix . 'awg_tools_ver']['v'] ?? null;
+        return $v === null ? null : version_compare(ltrim((string) $v, 'vV'), '3.1', '>=');
     }
 
     // Ключ header protection. Формат на проводе тот же, что у ключей wireguard
