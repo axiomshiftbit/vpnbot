@@ -55,7 +55,16 @@ switch (true) {
         break;
 
     // save template
+    // $type уходит в путь /config/<type>.json (saveTemplate при name=origin) и
+    // в ключ конфига — та же проверка, что на load ниже. Гейт $webapp тут уже
+    // стоит, так что это защита от собственной опечатки, а не от чужака, но
+    // цена ошибки — затёртый pac.json мимо setPacConf.
     case preg_match('~^' . preg_quote("/webapp$hash/save") . '~', $_SERVER['REQUEST_URI']) && $webapp && !empty($_POST['json']):
+        header('Content-Type: application/json');
+        if (!preg_match('~^\w+$~', (string) ($_POST['type'] ?? ''))) {
+            echo json_encode(['status' => false, 'message' => 'bad type']);
+            break;
+        }
         echo json_encode($bot->saveTemplate($_POST['name'], $_POST['type'], $_POST['json']));
         break;
 
@@ -107,7 +116,12 @@ switch (true) {
         // нужны; запрет их инстанцирования закрывает PHP object injection.
         // is_array: подделанный токен может нести скаляр («s:3:"abc";»), а
         // array_merge со скаляром — фатальный TypeError в PHP 8 вместо 404.
-        if (is_array($t = @unserialize((string) base64_decode(explode('/', $_SERVER['REQUEST_URI'])[2]), ['allowed_classes' => false])) && $t) { // fix sing-box import
+        // ?? '' — третьего сегмента пути может не быть вовсе: так открывают
+        // редактор шаблонов (/pac<hash>?t=te), changelog и обычный pac, и на
+        // каждом таком запросе шло «Undefined array key 2» плюс
+        // base64_decode(null) (deprecated в PHP 8.1).
+        $seg = explode('/', $_SERVER['REQUEST_URI'])[2] ?? '';
+        if (is_array($t = @unserialize((string) base64_decode($seg), ['allowed_classes' => false])) && $t) { // fix sing-box import
             // Запоминаем состав токена до слияния: subscription() отличает по нему
             // выборку rule-set'а ядром (параметры из токена) от deep-link'а
             // импорта (те же имена параметров, но из query-string).

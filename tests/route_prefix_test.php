@@ -26,7 +26,10 @@ class RoutePrefixTestBot extends Bot
 }
 
 $bot = (new ReflectionClass(RoutePrefixTestBot::class))->newInstanceWithoutConstructor();
-$bot->ready = ['dlc.dat' => true, 'zkeenip.dat' => true];
+// geosite.dat/geoip.dat — встроенные категории ядра: с недавних пор
+// listToXrayRules() тоже требует их наличия на диске (образ xray их не несёт),
+// поэтому в наборе «готовых» они обязаны быть.
+$bot->ready = ['dlc.dat' => true, 'zkeenip.dat' => true, 'geosite.dat' => true, 'geoip.dat' => true];
 
 // ── classifyRouteEntry ──────────────────────────────────────────────────────
 $cases = [

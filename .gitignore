@@ -44,6 +44,8 @@ override.php
 docker-compose.override.yml
 backup.json
 app/webapp/override/
+# Пароль фейк-страницы (auth_basic корня): хеш инсталляции, не код.
+app/webapp/.htpasswd
 .rest
 
 subscription.php

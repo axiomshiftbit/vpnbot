@@ -50,8 +50,8 @@ $i = [
         'ru' => 'добавить relay',
     ],
     'hysteria relay hint'  => [
-        'en' => 'The link swaps only address+port to the relay (Hysteria address and port map from the relay card in the xray menu); password/SNI/obfs stay from origin. The relay must DNAT the hysteria UDP port (and the hopping range, if set) to origin.',
-        'ru' => 'Ссылка подменяет только адрес+порт на relay (адрес и маппинг Hysteria — из карточки relay в xray-меню); пароль/SNI/obfs остаются от origin. Relay должен DNAT-ить UDP-порт hysteria (и диапазон hopping, если задан) на origin.',
+        'en' => 'The link swaps only address+port to the relay (Hysteria address, port and port map from the relay card in the xray menu); password/SNI/obfs stay from origin. The relay must DNAT the hysteria UDP port (and the hopping range, if set) to origin. An explicit relay port overrides the port map and collapses the hopping range in the link to that single port.',
+        'ru' => 'Ссылка подменяет только адрес+порт на relay (адрес, порт и маппинг Hysteria — из карточки relay в xray-меню); пароль/SNI/obfs остаются от origin. Relay должен DNAT-ить UDP-порт hysteria (и диапазон hopping, если задан) на origin. Явный порт relay перебивает маппинг и схлопывает диапазон hopping в ссылке в этот единственный порт.',
     ],
     'hysteria relay no link' => [
         'en' => 'no link: set the hysteria password and open the port (or enable port hopping)',
@@ -72,6 +72,46 @@ $i = [
     'dpi hint'             => [
         'en' => 'Anti-DPI tweaks. All default OFF — enable one at a time and turn it back off if it breaks connectivity. Fragment/noise affect only the xray (v2rayNG) config.',
         'ru' => 'Настройки против DPI. Всё по умолчанию ВЫКЛ — включай по одной и выключай, если ломается связь. Fragment/noise влияют только на xray (v2rayNG) конфиг.',
+    ],
+    'xray core'            => [
+        'en' => 'core',
+        'ru' => 'ядро',
+    ],
+    'smux hint'            => [
+        'en' => 'SMUX multiplexes every stream into ONE carrier connection: no TLS handshake per request, one long session instead of hundreds of short ones, less load on the server. Needs the fork core (Jolymmiles/Xray-core) — upstream XTLS only knows its own mux.cool. A broken carrier drops every stream inside it, so keep it off if the link is unstable.',
+        'ru' => 'SMUX сводит все потоки в ОДНО несущее соединение: не платим хендшейком за каждый запрос, вместо сотен коротких сессий одна долгая, серверу дешевле. Нужно форк-ядро (Jolymmiles/Xray-core) — апстримный XTLS знает только свой mux.cool. Обрыв несущего коннекта роняет все потоки внутри, так что на нестабильном канале лучше выключить.',
+    ],
+    'smux fork missing'    => [
+        'en' => 'The fork core is not in this image. Update the xr image (or rebuild it) and try again.',
+        'ru' => 'Форк-ядра нет в этом образе. Обновите образ xr (или пересоберите его) и повторите.',
+    ],
+    'smux xr unreachable'  => [
+        'en' => 'The xr container did not answer — the core state is unknown. Nothing was changed; check that xray is up and try again.',
+        'ru' => 'Контейнер xr не ответил — состояние ядра неизвестно. Ничего не меняли; проверьте, что xray поднят, и повторите.',
+    ],
+    'smux core mismatch'   => [
+        'en' => '⚠️ The core actually running is %s — it does not match the setting. Toggle the core again so the subscriptions and the server agree.',
+        'ru' => '⚠️ Реально запущено ядро %s — оно не совпадает с настройкой. Переключите ядро ещё раз, чтобы подписки и сервер сошлись.',
+    ],
+    'smux link warn'       => [
+        'en' => 'SMUX travels in the json/yaml subscriptions only (v2ray, sing-box, mihomo). A plain vless:// link cannot carry it — import by subscription.',
+        'ru' => 'SMUX уезжает только в json/yaml-подписках (v2ray, sing-box, mihomo). Ссылка vless:// его не несёт — импортируйте подпиской.',
+    ],
+    'smux xhttp warn'      => [
+        'en' => '⚠️ The xhttp transport already multiplexes on its own (xmux). Stacking SMUX on top adds a second layer with no gain — extra latency and head-of-line blocking.',
+        'ru' => '⚠️ Транспорт xhttp уже мультиплексирует сам (xmux). SMUX поверх — второй слой без выигрыша: лишняя задержка и head-of-line blocking.',
+    ],
+    'smux brutal hint'     => [
+        'en' => 'Brutal sends at exactly the configured rate, ignoring loss. Set both ceilings BELOW the real link speed.',
+        'ru' => 'Brutal льёт ровно с заданной скоростью, игнорируя потери. Ставьте обе полки НИЖЕ реальной скорости канала.',
+    ],
+    'smux brutal warn'     => [
+        'en' => 'TCP Brutal needs the `brutal` congestion module on the HOST kernel — it is missing, so the option is unavailable. Enabling it without the module tears down the carrier connection.',
+        'ru' => 'TCP Brutal требует модуль конгестии `brutal` в ядре ХОСТА — его нет, поэтому опция недоступна. Включение без модуля рвёт несущее соединение.',
+    ],
+    'smux tpl hint'        => [
+        'en' => 'SMUX: put <code>"%s": "~smux~"</code> into the node you want multiplexed — the block is filled in from the SMUX menu. <code>~smux:h2mux~</code> overrides the protocol for this template only. If the core is not the fork or SMUX is off, the key is dropped from the subscription.',
+        'ru' => 'SMUX: впишите <code>"%s": "~smux~"</code> в нужный узел — блок подставится по настройкам меню SMUX. <code>~smux:h2mux~</code> задаёт протокол только этому шаблону. Если ядро не форк или SMUX выключен, ключ из подписки удаляется.',
     ],
     'fragment'             => [
         'en' => 'TLS fragment',
@@ -185,6 +225,14 @@ $i = [
         'en' => 'port map (src:dst)',
         'ru' => 'маппинг портов (src:dst)',
     ],
+    'relay port'           => [
+        'en' => 'relay port',
+        'ru' => 'порт relay',
+    ],
+    'enter relay port'     => [
+        'en' => 'enter relay port 1-65535 (overrides the port map), 0 to clear',
+        'ru' => 'введите порт relay 1-65535 (перебивает маппинг портов), 0 — очистить',
+    ],
     'enter relay name'     => [
         'en' => 'enter relay name (letters, digits, - . _)',
         'ru' => 'введите имя relay (буквы, цифры, - . _)',
@@ -236,6 +284,42 @@ $i = [
     'enter relay hy port map' => [
         'en' => 'enter Hysteria port map src:dst,src:dst (e.g. 36712:443), 0 to clear',
         'ru' => 'введите маппинг портов Hysteria src:dst,src:dst (напр. 36712:443), 0 — очистить',
+    ],
+    'relay hy port'        => [
+        'en' => 'Hysteria relay port',
+        'ru' => 'порт relay для Hysteria',
+    ],
+    'enter relay hy port'  => [
+        'en' => 'enter the single Hysteria relay UDP port 1-65535 (overrides the port map and the hopping range in the link), 0 to clear',
+        'ru' => 'введите единственный UDP-порт relay для Hysteria 1-65535 (перебивает маппинг портов и диапазон hopping в ссылке), 0 — очистить',
+    ],
+    'relay np address'     => [
+        'en' => 'NaiveProxy relay address',
+        'ru' => 'адрес relay для NaiveProxy',
+    ],
+    'enter relay np address' => [
+        'en' => 'enter NaiveProxy relay address — a domain covered by the origin certificate, 0 to clear',
+        'ru' => 'введите адрес relay для NaiveProxy — домен, входящий в сертификат origin, 0 — очистить',
+    ],
+    'relay np port'        => [
+        'en' => 'NaiveProxy relay port',
+        'ru' => 'порт relay для NaiveProxy',
+    ],
+    'enter relay np port'  => [
+        'en' => 'enter NaiveProxy relay port 1-65535 (empty = 443), 0 to clear',
+        'ru' => 'введите порт relay для NaiveProxy 1-65535 (пусто = 443), 0 — очистить',
+    ],
+    'naive relay hint'     => [
+        'en' => 'The link swaps only address+port to the relay; login/password stay from origin and TLS terminates on origin via DNAT. IMPORTANT: the naive client takes the SNI from the link host and validates the certificate against it, so the relay address must be a DOMAIN present in the origin certificate (add it as a domain alias and renew SSL) with an A record pointing at the relay. A bare IP will fail certificate validation. The SNI route on the origin (upstream nginx) is added by the bot itself when the address is set — that host then goes wholly to naive, so cloak/DoH on it stop working.',
+        'ru' => 'Ссылка подменяет только адрес+порт на relay; логин/пароль остаются от origin, TLS терминируется на origin через DNAT. ВАЖНО: клиент naive берёт SNI из хоста ссылки и по нему проверяет сертификат, поэтому адрес relay должен быть ДОМЕНОМ, входящим в сертификат origin (добавьте его алиасом домена и обновите SSL), с A-записью на relay. С голым IP проверка сертификата упадёт. SNI-маршрут на origin (upstream nginx) бот добавляет сам при задании адреса — этот хост целиком уходит в naive, поэтому cloak/DoH на нём работать перестанут.',
+    ],
+    'naive relay sni skipped' => [
+        'en' => 'the address is saved, but no SNI route was added on the origin: only a domain other than the main one works (clients send no SNI for a bare IP) — the link through this relay will land on the cloak site instead of the proxy',
+        'ru' => 'адрес сохранён, но SNI-маршрут на origin не добавлен: годится только домен, отличный от основного (по голому IP клиент SNI не шлёт) — ссылка через этот relay попадёт на cloak-сайт вместо прокси',
+    ],
+    'naive no link'        => [
+        'en' => 'no link: set the NaiveProxy login and password first',
+        'ru' => 'ссылки нет: сначала задайте логин и пароль NaiveProxy',
     ],
     'import'               => [
         'en' => 'restore',
@@ -1020,6 +1104,267 @@ $i = [
     'ip via nginx'  => [
         'en' => 'address of the nginx proxy, not the client: OpenVPN has no PROXY protocol',
         'ru' => 'это адрес nginx-прокси, а не клиента: OpenVPN не понимает PROXY protocol',
+    ],
+
+    // ── Ключи, которых не хватало (аудит 2026-08-12) ────────────────────────
+    // i18n() отдавала сам ключ, то есть в русском интерфейсе оставался
+    // английский текст — и это ещё в лучшем случае: чтение шло без ??, так что
+    // каждая такая кнопка добавляла warning в лог.
+    //
+    // Названия протоколов, ядер и технических полей одинаковы в обоих языках
+    // (как у 'warp'/'amnezia' выше): переводить их значило бы расходиться с
+    // документацией и с интерфейсом самих клиентов.
+    'vless'  => [
+        'en' => 'vless',
+        'ru' => 'vless',
+    ],
+    'hysteria'  => [
+        'en' => 'hysteria',
+        'ru' => 'hysteria',
+    ],
+    'Hysteria'  => [
+        'en' => 'Hysteria',
+        'ru' => 'Hysteria',
+    ],
+    'dnstt'  => [
+        'en' => 'dnstt',
+        'ru' => 'dnstt',
+    ],
+    'DNSTT'  => [
+        'en' => 'DNSTT',
+        'ru' => 'DNSTT',
+    ],
+    'singbox'  => [
+        'en' => 'sing-box',
+        'ru' => 'sing-box',
+    ],
+    'mihomo'  => [
+        'en' => 'mihomo',
+        'ru' => 'mihomo',
+    ],
+    'v2ray'  => [
+        'en' => 'v2ray',
+        'ru' => 'v2ray',
+    ],
+    'RLTY'  => [
+        'en' => 'RLTY',
+        'ru' => 'RLTY',
+    ],
+    'WS'  => [
+        'en' => 'WS',
+        'ru' => 'WS',
+    ],
+    'XHTTP'  => [
+        'en' => 'XHTTP',
+        'ru' => 'XHTTP',
+    ],
+    'MTU'  => [
+        'en' => 'MTU',
+        'ru' => 'MTU',
+    ],
+    'nip.io'  => [
+        'en' => 'nip.io',
+        'ru' => 'nip.io',
+    ],
+    'cdn'  => [
+        'en' => 'CDN domain',
+        'ru' => 'домен CDN',
+    ],
+    'endpoint'  => [
+        'en' => 'endpoint',
+        'ru' => 'адрес подключения',
+    ],
+    'Ports'  => [
+        'en' => 'ports',
+        'ru' => 'порты',
+    ],
+    // Оставлены по-английски осознанно: так эти кнопки выглядели до аудита
+    // 2026-08-12 (ключа в словаре не было, i18n() отдавала сам ключ), и
+    // пользователи бота их узнают именно в таком виде.
+    'routes'  => [
+        'en' => 'routes',
+        'ru' => 'routes',
+    ],
+    'rulesset'  => [
+        'en' => 'rulesset',
+        'ru' => 'rulesset',
+    ],
+    'tun lists'  => [
+        'en' => 'tun lists',
+        'ru' => 'списки tun',
+    ],
+    'process'  => [
+        'en' => 'process',
+        'ru' => 'процессы',
+    ],
+    'package'  => [
+        'en' => 'package',
+        'ru' => 'приложения',
+    ],
+    'block'  => [
+        'en' => 'block',
+        'ru' => 'block',
+    ],
+    'blocklist'  => [
+        'en' => 'block list',
+        'ru' => 'список блокировки',
+    ],
+    'ignore'  => [
+        'en' => 'ignore',
+        'ru' => 'игнорировать',
+    ],
+    'ignorelist'  => [
+        'en' => 'ignore list',
+        'ru' => 'список игнорирования',
+    ],
+    'IP ban'  => [
+        'en' => 'IP ban',
+        'ru' => 'бан по IP',
+    ],
+    'ip limit'  => [
+        'en' => 'IP limit',
+        'ru' => 'лимит IP',
+    ],
+    'analyze'  => [
+        'en' => 'analyze',
+        'ru' => 'анализ',
+    ],
+    'autoscan'  => [
+        'en' => 'autoscan',
+        'ru' => 'автопроверка',
+    ],
+    'autoblock'  => [
+        'en' => 'autoblock',
+        'ru' => 'автоблокировка',
+    ],
+    'autoclean'  => [
+        'en' => 'autoclean',
+        'ru' => 'автоочистка',
+    ],
+    'autoupdate'  => [
+        'en' => 'autoupdate',
+        'ru' => 'автообновление',
+    ],
+    'notify'  => [
+        'en' => 'notifications',
+        'ru' => 'уведомления',
+    ],
+    'clean'  => [
+        'en' => 'clean',
+        'ru' => 'очистить',
+    ],
+    'clean all'  => [
+        'en' => 'clean all',
+        'ru' => 'очистить всё',
+    ],
+    'delete all'  => [
+        'en' => 'delete all',
+        'ru' => 'удалить всё',
+    ],
+    'all logs'  => [
+        'en' => 'all logs',
+        'ru' => 'все логи',
+    ],
+    'suspicious log'  => [
+        'en' => 'suspicious log',
+        'ru' => 'подозрительное',
+    ],
+    'telegram IPs'  => [
+        'en' => 'telegram IPs',
+        'ru' => 'адреса telegram',
+    ],
+    'gcore IPs'  => [
+        'en' => 'gcore IPs',
+        'ru' => 'адреса gcore',
+    ],
+    'cloudflare IPs'  => [
+        'en' => 'cloudflare IPs',
+        'ru' => 'адреса cloudflare',
+    ],
+    'reset stats'  => [
+        'en' => 'reset stats',
+        'ru' => 'сбросить статистику',
+    ],
+    'reset monthly'  => [
+        'en' => 'monthly reset',
+        'ru' => 'ежемесячный сброс',
+    ],
+    'changelog'  => [
+        'en' => 'changelog',
+        'ru' => 'список изменений',
+    ],
+    'branches'  => [
+        'en' => 'branches',
+        'ru' => 'ветки',
+    ],
+    'yes'  => [
+        'en' => 'yes',
+        'ru' => 'да',
+    ],
+    'set key'  => [
+        'en' => 'set key',
+        'ru' => 'задать ключ',
+    ],
+    'set password'  => [
+        'en' => 'set password',
+        'ru' => 'задать пароль',
+    ],
+    'set subdomain'  => [
+        'en' => 'set subdomain',
+        'ru' => 'задать поддомен',
+    ],
+    'change subdomain'  => [
+        'en' => 'change subdomain',
+        'ru' => 'сменить поддомен',
+    ],
+    'download pubkey'  => [
+        'en' => 'download pubkey',
+        'ru' => 'скачать публичный ключ',
+    ],
+    'link awg'  => [
+        'en' => 'AmneziaWG link',
+        'ru' => 'ссылка AmneziaWG',
+    ],
+    'qr short'  => [
+        'en' => 'QR (short link)',
+        'ru' => 'QR (короткая ссылка)',
+    ],
+    'qr singbox'  => [
+        'en' => 'QR sing-box',
+        'ru' => 'QR sing-box',
+    ],
+    'qr v2ray'  => [
+        'en' => 'QR v2ray',
+        'ru' => 'QR v2ray',
+    ],
+    'singbox ⬇️'  => [
+        'en' => 'sing-box ⬇️',
+        'ru' => 'sing-box ⬇️',
+    ],
+    'mihomo ⬇️'  => [
+        'en' => 'mihomo ⬇️',
+        'ru' => 'mihomo ⬇️',
+    ],
+    'v2ray ⬇️'  => [
+        'en' => 'v2ray ⬇️',
+        'ru' => 'v2ray ⬇️',
+    ],
+    'sing-box templates'  => [
+        'en' => 'sing-box templates',
+        'ru' => 'sing-box templates',
+    ],
+    'mihomo templates'  => [
+        'en' => 'mihomo templates',
+        'ru' => 'mihomo templates',
+    ],
+    'v2ray templates'  => [
+        'en' => 'v2ray templates',
+        'ru' => 'v2ray templates',
+    ],
+    // С хвостовым пробелом: ключ подставляется перед значением в одну строку.
+    'main outbound name: '  => [
+        'en' => 'main outbound name: ',
+        'ru' => 'имя основного аутбаунда: ',
     ],
 ];
 
