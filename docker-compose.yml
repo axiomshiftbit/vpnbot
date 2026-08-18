@@ -151,7 +151,8 @@ services:
             - ./.git:/.git
             - ./singbox_windows:/singbox
             - ./docker-compose.override.yml:/docker/compose
-            - /var/run/docker.sock:/var/run/docker.sock:ro
+            # docker.sock убран: Docker API теперь только через сервис
+            # dockerproxy (см. его комментарий и config/dockerproxy.conf).
             - warp:/etc/warp
         environment:
             IP: ${IP}
@@ -197,7 +198,6 @@ services:
             - ./.git:/.git
             - ./scripts/start_service.sh:/start_service.sh
             - ./docker-compose.override.yml:/docker/compose
-            - /var/run/docker.sock:/var/run/docker.sock:ro
         environment:
             IP: ${IP}
             VER: ${VER}
@@ -232,6 +232,34 @@ services:
             - hy
             - tt
             - ovpn
+    # Брокер Docker API. Сокет держит ОН, а php и service ходят к нему по HTTP
+    # с allowlist'ом по методу и пути (config/dockerproxy.conf) — раньше сокет
+    # был примонтирован прямо в php и service, и суффикс ":ro" не ограничивал
+    # ни одной операции API: оттуда делался POST /containers/create, то есть
+    # root на хосте. Отдельной сборки нет намеренно: нужен только nginx, а
+    # образ ng уже собирается, и матрица сервисов в CI перечислена руками.
+    dockerproxy:
+        image: ghcr.io/axiomshiftbit/vpnbot-ng:${VPNBOT_TAG:-latest}
+        volumes:
+            - ./config/dockerproxy.conf:/etc/nginx/dockerproxy.conf:ro
+            - ./logs/:/logs/
+            # Без ":ro" сознательно: на операции Docker API он всё равно не
+            # влияет, а надпись создавала ложное ощущение ограничения.
+            # Ограничивает здесь nginx выше по стеку.
+            - /var/run/docker.sock:/var/run/docker.sock
+        hostname: dockerproxy
+        container_name: dockerproxy-${VER}
+        env_file:
+            - path: ./.env
+              required: true # default
+            - path: ./override.env
+              required: false
+        stop_grace_period: 1s
+        command: ["nginx", "-c", "/etc/nginx/dockerproxy.conf", "-g", "daemon off;"]
+        networks:
+            default:
+                ipv4_address: 10.10.0.8
+        logging: *default-logging
     wg:
         image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-latest}
         build:

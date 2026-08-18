@@ -20015,19 +20015,51 @@ DNS-over-HTTPS with IP:
         });
     }
 
+    // Брокер Docker API (сервис dockerproxy, config/dockerproxy.conf).
+    // Раньше docker.sock монтировался прямо в php и service, а ":ro" не
+    // ограничивал ни одной операции API — этот же метод успешно делал через
+    // него DELETE и POST, значит проходил бы и POST /containers/create с
+    // Binds:["/:/host"], то есть root на хосте. Теперь сокет держит отдельный
+    // контейнер, а сюда открыт allowlist ровно под cleanDocker().
+    public const DOCKER_PROXY = 'http://dockerproxy:2375';
+
     public function dockerApi($url, $method = 'GET', $data = [])
     {
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_CUSTOMREQUEST    => $method,
-            CURLOPT_POSTFIELDS       => !empty($data) ? json_encode($data) : null,
-            CURLOPT_URL              => "http://localhost$url",
-            CURLOPT_RETURNTRANSFER   => true,
-            CURLOPT_UNIX_SOCKET_PATH => '/var/run/docker.sock'
-        ]);
-        $r = json_decode(curl_exec($ch), true);
-        curl_close($ch);
-        return $r;
+        $call = static function (array $extra) use ($url, $method, $data) {
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_CUSTOMREQUEST  => $method,
+                CURLOPT_POSTFIELDS     => !empty($data) ? json_encode($data) : null,
+                CURLOPT_RETURNTRANSFER => true,
+                // Раньше таймаута не было вовсе: недоступный сокет подвешивал
+                // обработчик кнопки до таймаута самого php.
+                CURLOPT_TIMEOUT        => 120,
+            ] + $extra);
+            $r   = curl_exec($ch);
+            $err = curl_errno($ch);
+            curl_close($ch);
+            return [$r, $err];
+        };
+
+        [$r, $err] = $call([CURLOPT_URL => self::DOCKER_PROXY . $url]);
+
+        // Переходный период. Код в app/ обновляется бинд-маунтом независимо от
+        // docker-compose.yml: на хосте, где контейнеры ещё не пересозданы,
+        // сервиса dockerproxy нет, зато старый сокет на месте. Без фолбэка
+        // очистка образов молча перестала бы работать до следующего make r.
+        // Как только сокет из php уйдёт (пересоздание контейнеров), ветка
+        // становится мёртвой сама собой.
+        if ($err !== 0 && file_exists('/var/run/docker.sock')) {
+            [$r, $err] = $call([
+                CURLOPT_URL              => "http://localhost$url",
+                CURLOPT_UNIX_SOCKET_PATH => '/var/run/docker.sock',
+            ]);
+        }
+        if ($err !== 0) {
+            error_log("dockerApi($method $url): curl error $err");
+            return null;
+        }
+        return json_decode((string) $r, true);
     }
 
     // Образ этой инсталляции vpnbot — независимо от реестра и владельца.
