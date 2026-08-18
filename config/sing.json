@@ -35,27 +35,20 @@
     "dns": {
         "servers": [
             {
+                "type": "https",
                 "tag": "dns_direct",
-                "address": "~dns~",
-                "address_resolver": "dns-remote",
-                "strategy": "prefer_ipv4",
-                "detour": "direct"
+                "server": "~domain~",
+                "path": "~dnspath~",
+                "domain_resolver": "dns-remote"
             },
             {
+                "type": "tcp",
                 "tag": "dns-remote",
-                "address": "tcp:\/\/8.8.8.8",
-                "address_strategy": "prefer_ipv4",
-                "strategy": "prefer_ipv4",
+                "server": "8.8.8.8",
                 "detour": "direct"
             }
         ],
-        "rules": [
-            {
-                "outbound": "any",
-                "server": "dns-direct",
-                "disable_cache": false
-            }
-        ],
+        "final": "dns_direct",
         "strategy": "ipv4_only",
         "independent_cache": true
     },
