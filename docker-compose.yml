@@ -782,6 +782,7 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/openvpn:/etc/openvpn
             - ./scripts/start_ovpn.sh:/start_ovpn.sh
+            - ./scripts/revoke_ovpn_client.sh:/revoke_ovpn_client.sh:ro
             # Миграции server.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ovpn_migrate.sh:/ovpn_migrate.sh

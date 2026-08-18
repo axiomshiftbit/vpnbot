@@ -260,14 +260,71 @@ foreach (['exportOvpnPki', 'importOvpnPki'] as $fn) {
     $body = substr($botSrc, strpos($botSrc, "public function $fn("), 1500);
     ttAssert(strpos($body, 'withOvpnPkiLock(') !== false, "$fn выполняется под общим PKI-lock");
 }
+$restoreRoot = $dir . '/openvpn-restore';
+$restoreBot  = new class ($restoreRoot) extends Bot {
+    private string $root;
+    public function __construct(string $root)
+    {
+        $this->root = $root;
+    }
+    public function ovpnPaths()
+    {
+        return ['pki' => $this->root . '/pki'];
+    }
+};
+@mkdir($restoreRoot . '/pki/revoked/certs_by_serial', 0755, true);
+@mkdir($restoreRoot . '/pki/issued', 0755, true);
+file_put_contents($restoreRoot . '/pki/revoked/certs_by_serial/stale.crt', 'must disappear');
+file_put_contents($restoreRoot . '/openvpn-status.log', 'runtime must survive');
+$restoreFiles = [
+    'pki/ca.crt'                 => 'ca',
+    'pki/issued/server.crt'      => 'server cert',
+    'pki/issued/alice.crt'       => 'client cert',
+    'pki/private/server.key'     => 'server key',
+    'pki/private/alice.key'      => 'client key',
+    'pki/crl.pem'                => 'crl',
+    'pki/index.txt'              => "V\texpiry\t\tserial\tunknown\t/CN=alice\n",
+    'pki/serial'                 => 'next serial',
+    'pki/ta.key'                 => 'ta',
+    'server.conf'                => 'server config',
+    'connect.sh'                 => '#!/bin/sh',
+];
+$restoreSnapshot = array_map('base64_encode', $restoreFiles);
+ttAssert($restoreBot->importOvpnPki($restoreSnapshot, true) === true,
+    'точное восстановление принимает полный OpenVPN snapshot');
+ttAssert(!file_exists($restoreRoot . '/pki/revoked/certs_by_serial/stale.crt'),
+    'точное восстановление удаляет revoked-файл, которого нет в бэкапе');
+ttAssert(file_get_contents($restoreRoot . '/pki/issued/alice.crt') === 'client cert'
+    && file_get_contents($restoreRoot . '/pki/private/alice.key') === 'client key',
+    'сертификат и приватный ключ клиента восстанавливаются без искажения');
+ttAssert(file_get_contents($restoreRoot . '/openvpn-status.log') === 'runtime must survive',
+    'точное восстановление сохраняет исключённый runtime status-файл');
+ttAssert((fileperms($restoreRoot . '/pki/crl.pem') & 0777) === 0644
+    && (fileperms($restoreRoot . '/pki/private/alice.key') & 0777) === 0600
+    && (fileperms($restoreRoot . '/connect.sh') & 0777) === 0755,
+    'restore сохраняет безопасные режимы CRL, приватного ключа и hook-скрипта');
+$beforeInvalidRestore = file_get_contents($restoreRoot . '/pki/ca.crt');
+ttAssert($restoreBot->importOvpnPki(['pki/ca.crt' => base64_encode('bad partial')], true) === false,
+    'неполный OpenVPN snapshot отвергается до изменения PKI');
+ttAssert(file_get_contents($restoreRoot . '/pki/ca.crt') === $beforeInvalidRestore,
+    'ошибочный snapshot не изменяет существующий PKI');
+
 $addBody = substr($botSrc, strpos($botSrc, 'public function addovus('), 5000);
 $delBody = substr($botSrc, strpos($botSrc, 'public function delOvpnUser('), 6000);
 ttAssert(strpos($addBody, 'withOvpnPkiLock(') !== false, 'выдача OpenVPN-сертификата выполняется под PKI-lock');
 ttAssert(strpos($delBody, 'withOvpnPkiLock(') !== false, 'отзыв OpenVPN-сертификата выполняется под PKI-lock');
-ttAssert(strpos($delBody, '__VPNBOT_REVOKED__') !== false && strpos($delBody, 'Serial Number: \$serial') !== false,
+ttAssert(strpos($delBody, '__VPNBOT_REVOKED__') !== false && strpos($delBody, '/revoke_ovpn_client.sh') !== false,
+    'бот принимает успех только от проверяющего CRL revoke-скрипта');
+$revokeScript = file_get_contents(__DIR__ . '/../scripts/revoke_ovpn_client.sh');
+ttAssert(strpos($revokeScript, 'reconstructed missing index entry') !== false,
+    'revoke чинит отсутствующую index-запись из проверенного сертификата');
+ttAssert(strpos($revokeScript, 'cmp -s') !== false && strpos($revokeScript, 'conflicting revoked artifact') !== false,
+    'revoke удаляет только идентичные stale revoked-артефакты');
+ttAssert(strpos($revokeScript, 'Serial Number: $revoke_serial') !== false,
     'успех revoke подтверждается наличием serial в новом CRL');
-ttAssert(strpos($delBody, '>>/logs/openvpn.log 2>&1') !== false,
-    'ошибка revoke действительно попадает в журнал из сообщения бота');
+ttAssert(strpos(file_get_contents(__DIR__ . '/../docker-compose.yml'),
+    './scripts/revoke_ovpn_client.sh:/revoke_ovpn_client.sh:ro') !== false,
+    'revoke-скрипт смонтирован в OpenVPN-контейнер read-only');
 ttAssert(strpos($startOvpn, 'exec 8>/logs/.lock.ovpn-pki') !== false,
     'start_ovpn.sh использует тот же lock-файл, что php');
 ttAssert(strpos($startOvpn, 'flock 8') < strpos($startOvpn, 'gen-crl'),

@@ -6011,8 +6011,12 @@ NFT;
             if (!empty($json['ovpn']) && is_array($json['ovpn'])) {
                 $out[] = 'update openvpn';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->importOvpnPki($json['ovpn']);
-                $this->restartOvpn();
+                if ($this->importOvpnPki($json['ovpn'])) {
+                    $this->restartOvpn();
+                } else {
+                    $out[] = '❌ openvpn backup is incomplete or invalid';
+                    $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                }
             }
             // ipsec (PSK + CA/server cert + chap-secrets + ikev2-юзеры)
             if (!empty($json['ipsec']) && is_array($json['ipsec'])) {
@@ -29832,7 +29836,7 @@ DNS-over-HTTPS with IP:
         if (!$locked) {
             return $this->withOvpnPkiLock(fn() => $this->exportOvpnPki(true));
         }
-        $root = '/config/openvpn';
+        $root = dirname($this->ovpnPaths()['pki']);
         if (!is_dir($root)) {
             return null;
         }
@@ -29859,18 +29863,81 @@ DNS-over-HTTPS with IP:
         if (!$locked) {
             return $this->withOvpnPkiLock(fn() => $this->importOvpnPki($files, true));
         }
-        $root = '/config/openvpn';
+        $root = dirname($this->ovpnPaths()['pki']);
         @mkdir($root, 0755, true);
+        $decoded = [];
         foreach ($files as $rel => $b64) {
             // Защита от path traversal: запрещаем .. и абсолютные пути,
             // нормализуем разделители.
             $rel = str_replace('\\', '/', $rel);
             if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false) {
-                continue;
+                return false;
             }
+            $data = base64_decode((string) $b64, true);
+            if ($data === false) {
+                return false;
+            }
+            $decoded[$rel] = $data;
+        }
+        // Не начинаем точное восстановление из обрезанного/чужого снимка:
+        // иначе удаление лишних файлов могло бы уничтожить рабочий PKI.
+        foreach ([
+            'pki/ca.crt',
+            'pki/issued/server.crt',
+            'pki/private/server.key',
+            'pki/crl.pem',
+            'pki/index.txt',
+            'pki/serial',
+            'pki/ta.key',
+            'server.conf',
+        ] as $required) {
+            if (!array_key_exists($required, $decoded)) {
+                return false;
+            }
+        }
+        // Сначала атомарно раскладываем все файлы снимка. Только когда каждый
+        // из них записан, удаляем файлы, которых в бэкапе нет. Старый overlay
+        // оставлял revoked/* после восстановления более раннего active-cert и
+        // EasyRSA затем падал с "a conflicting file exists".
+        foreach ($decoded as $rel => $data) {
             $path = "$root/$rel";
             @mkdir(dirname($path), 0755, true);
-            file_put_contents($path, base64_decode($b64));
+            $tmp = tempnam(dirname($path), '.restore-');
+            if ($tmp === false || file_put_contents($tmp, $data) === false || !rename($tmp, $path)) {
+                if ($tmp !== false) {
+                    @unlink($tmp);
+                }
+                return false;
+            }
+            // tempnam создаёт 0600. Публичные сертификаты/CRL должны остаться
+            // читаемыми OpenVPN после drop-privileges, hook — исполняемым, а
+            // приватники и готовые клиентские профили — закрытыми.
+            $mode = ($rel === 'connect.sh')
+                ? 0755
+                : ((str_starts_with($rel, 'pki/private/')
+                    || $rel === 'pki/ta.key'
+                    || str_starts_with($rel, 'clients/')) ? 0600 : 0644);
+            if (!chmod($path, $mode)) {
+                return false;
+            }
+        }
+        $keep = array_fill_keys(array_keys($decoded), true);
+        $rii  = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($rii as $f) {
+            if (!$f->isFile() && !$f->isLink()) {
+                continue;
+            }
+            $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
+            // status пишет живой daemon; он намеренно не входит в snapshot.
+            if ($f->getFilename() === 'openvpn-status.log' || isset($keep[$rel])) {
+                continue;
+            }
+            if (!@unlink($f->getPathname())) {
+                return false;
+            }
         }
         // OpenVPN отказывается стартовать с приватниками доступными группе/всем.
         foreach (glob("$root/pki/private/*.key") ?: [] as $k) {
@@ -29879,6 +29946,7 @@ DNS-over-HTTPS with IP:
         if (file_exists("$root/pki/ta.key")) {
             chmod("$root/pki/ta.key", 0600);
         }
+        return true;
     }
 
     public function getOvpnPort()
@@ -30227,16 +30295,11 @@ DNS-over-HTTPS with IP:
                 return 'absent';
             }
             $u = escapeshellarg($user);
-            // Весь вывод действительно попадает в предлагаемый пользователю
-            // openvpn.log. Маркер успеха печатается только если gen-crl прошёл
-            // и serial отозванного сертификата присутствует в НОВОМ CRL.
+            // Скрипт умеет безопасно дочинить legacy/overlay-состояние, где
+            // issued-cert активен, записи index.txt нет, а идентичные файлы уже
+            // остались в revoked/. Успех он печатает только после проверки CRL.
             $out = $this->ssh(
-                "serial=\$(openssl x509 -in /etc/openvpn/pki/issued/$u.crt -noout -serial 2>>/logs/openvpn.log | cut -d= -f2); " .
-                "if [ -n \"\$serial\" ] && " .
-                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u >>/logs/openvpn.log 2>&1 && " .
-                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 /usr/share/easy-rsa/easyrsa gen-crl >>/logs/openvpn.log 2>&1 && " .
-                "openssl crl -in /etc/openvpn/pki/crl.pem -noout -text 2>>/logs/openvpn.log | grep -Fqi \"Serial Number: \$serial\"; " .
-                "then echo __VPNBOT_REVOKED__; else echo __VPNBOT_REVOKE_FAILED__; fi",
+                "VPNBOT_OVPN_LOCK_HELD=1 sh /revoke_ovpn_client.sh $u",
                 'ovpn'
             );
             return str_contains((string) $out, '__VPNBOT_REVOKED__') && !file_exists($cert)
