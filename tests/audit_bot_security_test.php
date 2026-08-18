@@ -94,6 +94,66 @@ secAssert(strpos($syncDeny, 'nginx -t') !== false
 secAssert((bool) preg_match("~in_array\(\\\$type, \['white', 'deny'\]\)\) \{\s*\n(\s*//[^\n]*\n)*\s*if \(!self::ipOrCidr\(\\\$v\)\)~", $src),
     'addInclude() не кладёт в white/deny ничего, кроме адреса или подсети');
 
+// ── 4. СРЕДНИЕ того же отчёта ───────────────────────────────────────────────
+
+// importFile(): первым аргументом из reply() приходит ТЕКСТ пользователя, то
+// есть на промпт «send the export file:» можно было ответить строкой и
+// получить file_get_contents() по произвольному пути или URL (allow_url_fopen
+// включён) — чтение файла и SSRF во внутреннюю сеть от root.
+$import = substr($src, strpos($src, 'public function importFile('), 1400);
+secAssert(str_contains($import, '$file !== $this->update'),
+    'importFile() принимает локальный путь только от selfUpdate()');
+secAssert(strpos($import, '$file !== $this->update') < strpos($import, 'file_get_contents($file)'),
+    'проверка стоит до чтения файла');
+
+// config(): серверный wg0.conf уходил в чат вместе с PrivateKey сервера и
+// PresharedKey каждого пира, да ещё и без экранирования — имя пира «Home <PC>»
+// ломало разметку, и экран не открывался больше никогда.
+secAssert((bool) preg_match('~PrivateKey\|PresharedKey~', $src),
+    'ключи в серверном конфиге маскируются перед отправкой в чат');
+secAssert((bool) preg_match('~"Server config:.*?htmlspecialchars\(\$conf~s', $src),
+    'серверный конфиг экранируется для parse_mode=HTML');
+
+// Экранирование и валидация relay/dnstt.
+secAssert(Bot::esc('a<b & "c"') === 'a&lt;b &amp; &quot;c&quot;', 'esc() экранирует HTML');
+$bot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+foreach (['example.com', 'relay-1.example.org', '203.0.113.7', '2001:db8::1'] as $v) {
+    secAssert($bot->isHostOrIp($v), "адрес relay должен приниматься: $v");
+}
+foreach (['a<b', 'host name', '', 'http://example.com', str_repeat('a', 300)] as $v) {
+    secAssert(!$bot->isHostOrIp($v), 'адрес relay должен отклоняться: ' . var_export($v, true));
+}
+secAssert(substr_count($src, 'self::esc(') >= 12,
+    'значения из ввода экранируются во всех точках рендера relay/telemt/dnstt');
+foreach (['setRelayAddress', 'setRelayAwgAddress', 'setRelayHyAddress', 'setRelayNpAddress', 'telemtRelaySetAddress'] as $fn) {
+    // Окно в БАЙТАХ, а комментарии кириллицей — по два байта на символ.
+    $body = substr($src, strpos($src, "public function $fn("), 2000);
+    secAssert(str_contains($body, 'isHostOrIp'), "$fn() валидирует адрес");
+}
+
+// setFakeDomain(): битый домен уезжал в xray.json и pac.json, ядро
+// перезапускалось, а setUpstreamDomain() молча делал return — reality лежал,
+// бот рапортовал об успехе.
+$fake = substr($src, strpos($src, 'public function setFakeDomain('), 1200);
+secAssert(str_contains($fake, 'isHostname($domain)'), 'setFakeDomain() проверяет домен');
+secAssert(strpos($fake, 'isHostname($domain)') < strpos($fake, 'getXray()'),
+    'проверка домена стоит до записи конфигов');
+
+// HWID-заголовки публичного эндпоинта: ключ массива в общем hwid.json, который
+// переписывается целиком под LOCK_EX на каждую выдачу подписки.
+secAssert((bool) preg_match("~HTTP_X_HWID.*?\), 0, 128\)~s", $src),
+    'X-HWID нормализуется и режется по длине');
+secAssert((bool) preg_match('~\[\[:cntrl:\]\]~', $src),
+    'управляющие символы вырезаются из остальных HWID-заголовков');
+
+// Примитив блокировки RMW.
+secAssert(method_exists('Bot', 'withLock') && method_exists('Bot', 'pacConfUpdate')
+    && method_exists('Bot', 'xrayConfUpdate'),
+    'примитив транзакций над конфигами введён');
+secAssert($bot->withLock('selftest', fn() => 'ok') === 'ok', 'withLock() возвращает результат замыкания');
+secAssert(str_contains(substr($src, strpos($src, 'public function hwidUpdate('), 600), 'withLock('),
+    'hwidUpdate() переведён на общий примитив, а не дублирует лок');
+
 if ($failed) {
     echo "audit_bot_security_test FAILED ($failed)\n";
     exit(1);

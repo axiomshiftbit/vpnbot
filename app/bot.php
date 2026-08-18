@@ -3766,7 +3766,7 @@ NFT;
             foreach ($relay['hy_portmap'] as $src => $dst) {
                 $pm[] = "$src:$dst";
             }
-            $text[] = $this->i18n('relay hy port map') . ': <code>' . implode(', ', $pm) . '</code>';
+            $text[] = $this->i18n('relay hy port map') . ': <code>' . self::esc(implode(', ', $pm)) . '</code>';
         }
         $text[] = $this->i18n('hysteria relay hint');
         $text[] = $link !== ''
@@ -5741,6 +5741,19 @@ NFT;
 
     public function importFile($file = false)
     {
+        // $file приезжает ПЕРВЫМ аргументом из reply(), а туда всегда идёт
+        // текст сообщения пользователя. То есть на промпт «send the export
+        // file:» можно было ответить не документом, а строкой — и получить
+        // file_get_contents() по произвольному пути или URL (allow_url_fopen в
+        // php-контейнере включён, им же ходят upstream() и importIps()).
+        // Запрос уходил изнутри docker-сети от root, а валидный JSON оттуда
+        // становился конфигом бота. Локальный путь нужен ровно одному
+        // вызывающему — selfUpdate() с константой $this->update.
+        if (!empty($file) && $file !== $this->update) {
+            $file = false;
+            $this->answer($this->input['callback_id'] ?? null, 'error', true);
+            return;
+        }
         if (!empty($file)) {
             $json = json_decode(file_get_contents($file), true);
         } else {
@@ -9187,8 +9200,14 @@ NFT;
             return;
         }
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay') . " -> <b>$name</b>";
-        $text[] = $this->i18n('relay address') . ': <code>' . ($r['address'] ?: '—') . '</code>';
+        // Всё, что ниже приходит из ввода (имя relay, адреса, карты портов,
+        // текст ошибки сети с именем хоста внутри), уходит в parse_mode=HTML.
+        // Без экранирования один «<» в адресе ронял editMessageText в 400, и
+        // экран relay умирал навсегда: значение уже в pac.json, а поменять его
+        // можно только отсюда же.
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay')
+            . ' -> <b>' . self::esc($name) . '</b>';
+        $text[] = $this->i18n('relay address') . ': <code>' . self::esc($r['address'] ?: '—') . '</code>';
         if (!empty($r['address']) && ($hl = $this->relayHealthLabel($name, true)) !== '') {
             $text[] = $this->i18n('relay health') . ": $hl";
         }
@@ -9197,38 +9216,38 @@ NFT;
             foreach ($r['portmap'] as $src => $dst) {
                 $pm[] = "$src:$dst";
             }
-            $text[] = $this->i18n('relay port map') . ': <code>' . implode(', ', $pm) . '</code>';
+            $text[] = $this->i18n('relay port map') . ': <code>' . self::esc(implode(', ', $pm)) . '</code>';
         } else {
             $text[] = $this->i18n('relay port map') . ': —';
         }
         // Отдельный relay для wireguard/awg-прокси внутри mihomo-конфига.
-        $text[] = $this->i18n('relay awg address') . ': <code>' . ($r['awg_address'] ?? '' ?: '—') . '</code>';
+        $text[] = $this->i18n('relay awg address') . ': <code>' . self::esc($r['awg_address'] ?? '' ?: '—') . '</code>';
         if (!empty($r['awg_portmap'])) {
             $pm = [];
             foreach ($r['awg_portmap'] as $src => $dst) {
                 $pm[] = "$src:$dst";
             }
-            $text[] = $this->i18n('relay awg port map') . ': <code>' . implode(', ', $pm) . '</code>';
+            $text[] = $this->i18n('relay awg port map') . ': <code>' . self::esc(implode(', ', $pm)) . '</code>';
         } else {
             $text[] = $this->i18n('relay awg port map') . ': —';
         }
         // Отдельный relay-канал для Hysteria (hy2://-ссылки в меню Hysteria):
         // hy_address включает relay в выбор, hy_port/hy_portmap мапят его порты.
-        $text[] = $this->i18n('relay hy address') . ': <code>' . ($r['hy_address'] ?? '' ?: '—') . '</code>';
-        $text[] = $this->i18n('relay hy port') . ': <code>' . (($r['hy_port'] ?? '') ?: '—') . '</code>';
+        $text[] = $this->i18n('relay hy address') . ': <code>' . self::esc($r['hy_address'] ?? '' ?: '—') . '</code>';
+        $text[] = $this->i18n('relay hy port') . ': <code>' . self::esc(($r['hy_port'] ?? '') ?: '—') . '</code>';
         if (!empty($r['hy_portmap'])) {
             $pm = [];
             foreach ($r['hy_portmap'] as $src => $dst) {
                 $pm[] = "$src:$dst";
             }
-            $text[] = $this->i18n('relay hy port map') . ': <code>' . implode(', ', $pm) . '</code>';
+            $text[] = $this->i18n('relay hy port map') . ': <code>' . self::esc(implode(', ', $pm)) . '</code>';
         } else {
             $text[] = $this->i18n('relay hy port map') . ': —';
         }
         // Отдельный relay-канал для NaiveProxy: порт один (TLS), карта портов
         // не нужна — только адрес и опциональный порт.
-        $text[] = $this->i18n('relay np address') . ': <code>' . ($r['np_address'] ?? '' ?: '—') . '</code>';
-        $text[] = $this->i18n('relay np port') . ': <code>' . (($r['np_port'] ?? '') ?: '—') . '</code>';
+        $text[] = $this->i18n('relay np address') . ': <code>' . self::esc($r['np_address'] ?? '' ?: '—') . '</code>';
+        $text[] = $this->i18n('relay np port') . ': <code>' . self::esc(($r['np_port'] ?? '') ?: '—') . '</code>';
 
         // По две кнопки в строке: каналов уже четыре, в столбик карточка не
         // помещается на экран.
@@ -9323,6 +9342,14 @@ NFT;
         }
         // 0/пусто — очистка: relay выпадает из vless-подписок/списков (ключ
         // остаётся с '', как при создании), но awg/hy-каналы не трогаем.
+        // Адрес уходит в клиентские ссылки и в tcpProbe() — мусору там не
+        // место. Раньше trim($text) клался как есть, и «a<b» ломал разметку
+        // карточки relay: Telegram отвечал 400, а починить значение можно было
+        // только с этого же, уже не открывающегося экрана.
+        if (!$this->relayClearInput($text) && !$this->isHostOrIp($text)) {
+            $this->relayEdit($name);
+            return;
+        }
         $c['relays'][$name]['address'] = $this->relayClearInput($text) ? '' : trim($text);
         $this->setPacConf($c);
         $this->relayEdit($name);
@@ -9380,6 +9407,10 @@ NFT;
             return;
         }
         $addr = trim($text);
+        if (!$this->relayClearInput($addr) && !$this->isHostOrIp($addr)) {
+            $this->relayEdit($name);
+            return;
+        }
         if ($this->relayClearInput($addr)) {
             unset($c['relays'][$name]['awg_address']);
         } else {
@@ -9448,6 +9479,10 @@ NFT;
             return;
         }
         $addr = trim($text);
+        if (!$this->relayClearInput($addr) && !$this->isHostOrIp($addr)) {
+            $this->relayEdit($name);
+            return;
+        }
         if ($this->relayClearInput($addr)) {
             unset($c['relays'][$name]['hy_address']);
         } else {
@@ -9554,6 +9589,10 @@ NFT;
             return;
         }
         $addr = trim($text);
+        if (!$this->relayClearInput($addr) && !$this->isHostOrIp($addr)) {
+            $this->relayEdit($name);
+            return;
+        }
         if ($this->relayClearInput($addr)) {
             unset($c['relays'][$name]['np_address']);
             $addr = '';
@@ -11543,6 +11582,17 @@ DNS-over-HTTPS with IP:
     public function config()
     {
         $conf = $this->createConfig($this->readConfig());
+        // Приватные ключи в чат не отдаём. createConfig() для серверной записи
+        // печатает весь [Interface] как есть, то есть PrivateKey сервера, а
+        // следом PresharedKey каждого пира — и всё это навсегда оставалось в
+        // истории Telegram. Для «посмотреть серверный конфиг» они не нужны:
+        // порт, адрес и список пиров видны и так, а полная выгрузка есть за
+        // кнопкой backup.
+        $conf = preg_replace(
+            '~^(\s*#?\s*(?:PrivateKey|PresharedKey)\s*=\s*).+$~mi',
+            '$1…',
+            (string) $conf
+        );
         $data = [
             [
                 [
@@ -11554,7 +11604,14 @@ DNS-over-HTTPS with IP:
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
-            "Server config:\n\n<code>$conf</code>",
+            // htmlspecialchars обязателен: parse_mode=HTML, а в конфиг попадают
+            // имена пиров — сырой ввод (sanitizeConfValue режет лишь \r\n[]).
+            // Имя вида «Home <PC>» давало невалидную разметку, Telegram отвечал
+            // 400, и экран «server config» не открывался уже никогда, потому
+            // что имя лежит в clients.json. В карточке клиента (getClient) это
+            // экранирование давно есть.
+            "Server config:\n\n<code>"
+                . htmlspecialchars($conf, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>',
             $data,
         );
     }
@@ -14326,16 +14383,17 @@ DNS-over-HTTPS with IP:
             return;
         }
 
-        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt relays') . " -> <b>$name</b>";
-        $text[] = $this->i18n('relay address') . ': <code>' . ($r['address'] ?: '—') . '</code>';
+        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt relays')
+            . ' -> <b>' . self::esc($name) . '</b>';
+        $text[] = $this->i18n('relay address') . ': <code>' . self::esc($r['address'] ?: '—') . '</code>';
         // Явный порт перебивает карту портов — показываем это прямо в карточке.
-        $text[] = $this->i18n('relay port') . ': <code>' . (($r['port'] ?? '') ?: '—') . '</code>';
+        $text[] = $this->i18n('relay port') . ': <code>' . self::esc(($r['port'] ?? '') ?: '—') . '</code>';
         if (!empty($r['portmap'])) {
             $pm = [];
             foreach ($r['portmap'] as $src => $dst) {
                 $pm[] = "$src:$dst";
             }
-            $text[] = $this->i18n('relay port map') . ': <code>' . implode(', ', $pm) . '</code>';
+            $text[] = $this->i18n('relay port map') . ': <code>' . self::esc(implode(', ', $pm)) . '</code>';
         } else {
             $text[] = $this->i18n('relay port map') . ': —';
         }
@@ -14374,6 +14432,10 @@ DNS-over-HTTPS with IP:
         }
         // 0/пусто — очистка: relay выпадает из селектора telemtUsers
         // (там фильтр по непустому address).
+        if (!$this->relayClearInput($text) && !$this->isHostOrIp($text)) {
+            $this->telemtRelayEdit($name);
+            return;
+        }
         $c['telemt_relays'][$name]['address'] = $this->relayClearInput($text) ? '' : trim($text);
         $this->setPacConf($c);
         $this->telemtRelayEdit($name);
@@ -14896,9 +14958,13 @@ DNS-over-HTTPS with IP:
         $pubkey = file_get_contents('/config/dnstt/server.pub');
         $text[] = "dnstt";
         if (!empty($c['dnsttDomain']) && !empty($c['dnsttPassword'])) {
-            $text[] = "<pre>set the NS record for {$c['dnsttDomain']}: tns.{$c['domain']}\nset A record for tns.{$c['domain']}: {$this->ip}</pre>";
-            $text[] = "account: <code>vpnbot:{$c['dnsttPassword']}</code>";
-            $text[] = "server name: <code>{$c['dnsttDomain']}</code>";
+            // dnsttDomain и dnsttPassword — сырой ввод (сеттеры кладут trim
+            // как есть), а сообщение уходит с parse_mode=HTML.
+            $dnsttDomain = self::esc($c['dnsttDomain']);
+            $text[] = "<pre>set the NS record for $dnsttDomain: tns." . self::esc($c['domain'])
+                . "\nset A record for tns." . self::esc($c['domain']) . ": {$this->ip}</pre>";
+            $text[] = 'account: <code>vpnbot:' . self::esc($c['dnsttPassword']) . '</code>';
+            $text[] = "server name: <code>$dnsttDomain</code>";
             $text[] = "public key: <code>$pubkey</code>";
             $data[] = [
                 [
@@ -17101,23 +17167,76 @@ DNS-over-HTTPS with IP:
      *
      * @param callable $fn fn(array &$storage): mixed — возвращаемое значение отдаётся наружу
      */
-    public function hwidUpdate(callable $fn)
+    // Взаимное исключение на всю транзакцию «прочитал → поменял → записал».
+    //
+    // Каждая отдельная ЗАПИСЬ в проекте сделана аккуратно (tmp+rename для
+    // pac.json и clients.json, flock+in-place для xray.json), но сама
+    // последовательность ничем не защищена, а параллельно живут: несколько
+    // воркеров unit по вебхуку /tlgrm, `php init.php` в режиме polling,
+    // бесконечный цикл cron.php и service.php. Кто запишет вторым — затрёт
+    // чужое изменение целиком, и выглядит это как «клиент пропал сам».
+    //
+    // Лок держим на ОТДЕЛЬНОМ файле в /logs, а не на самом конфиге: xray.json
+    // пишется in-place под своим LOCK_EX, и лок на нём же дал бы взаимную
+    // блокировку с writeXrayJson().
+    //
+    // ВНИМАНИЕ: это примитив для нового кода. Существующие ~190 точек записи
+    // pac.json и ~30 точек xray.json на него ещё НЕ переведены — перевод
+    // требует отдельного прохода с проверкой на живом стенде, потому что
+    // транзакция должна охватывать обе стороны гонки, иначе смысла нет.
+    public function withLock(string $name, callable $fn)
     {
-        $lock = @fopen($this->hwid . '.lock', 'c');
+        $lock = @fopen("/logs/.lock.$name", 'c');
         if ($lock !== false) {
             flock($lock, LOCK_EX);
         }
         try {
-            $storage = $this->getHwidStorage();
-            $result  = $fn($storage);
-            $this->setHwidStorage($storage);
-            return $result;
+            return $fn();
         } finally {
             if ($lock !== false) {
                 flock($lock, LOCK_UN);
                 fclose($lock);
             }
         }
+    }
+
+    // Транзакция над pac.json: $fn получает конфиг по ссылке и меняет его.
+    // Имя НЕ pacUpdate: так уже называется запуск updatepac.php.
+    public function pacConfUpdate(callable $fn)
+    {
+        return $this->withLock('pac', function () use ($fn) {
+            $conf   = $this->getPacConf();
+            $result = $fn($conf);
+            $this->setPacConf($conf);
+
+            return $result;
+        });
+    }
+
+    // То же для xray.json. $norestart прокидывается в restartXray().
+    public function xrayConfUpdate(callable $fn, $norestart = false)
+    {
+        return $this->withLock('xray', function () use ($fn, $norestart) {
+            $conf   = $this->getXray();
+            $result = $fn($conf);
+            $this->restartXray($conf, $norestart);
+
+            return $result;
+        });
+    }
+
+    public function hwidUpdate(callable $fn)
+    {
+        // Лок на самом hwid.json нельзя: setHwidStorage пишет через tmp+rename,
+        // то есть меняет инод, — поэтому отдельный .lock рядом. Исторически
+        // именно здесь появился первый корректный RMW-лок в проекте.
+        return $this->withLock('hwid', function () use ($fn) {
+            $storage = $this->getHwidStorage();
+            $result  = $fn($storage);
+            $this->setHwidStorage($storage);
+
+            return $result;
+        });
     }
 
     public function getHwidDevicesByUser($uid)
@@ -17226,7 +17345,12 @@ DNS-over-HTTPS with IP:
         }
 
         $devices   = $this->getHwidDevicesByUser($client['id']);
-        $hwid      = trim($_SERVER['HTTP_X_HWID'] ?? '');
+        // Нормализуем: это НЕаутентифицированный путь выдачи подписки, а
+        // X-HWID становится ключом массива в hwid.json. nginx пропускает
+        // заголовок размером в килобайты, то есть один запрос раздувал общий
+        // файл, который читается и переписывается ЦЕЛИКОМ под LOCK_EX на
+        // каждую выдачу конфига — то есть замедлял выдачу всем остальным.
+        $hwid      = substr(preg_replace('~[^\w.\-:]~', '', (string) ($_SERVER['HTTP_X_HWID'] ?? '')), 0, 128);
         $isBrowser = $this->isBrowserRequest();
 
         $hwidNotSupported = !$isBrowser && $hwid === '';
@@ -17249,12 +17373,20 @@ DNS-over-HTTPS with IP:
             return false;
         }
 
+        // Те же соображения, что и для X-HWID: значения приходят с публичного
+        // эндпоинта и ложатся в общий файл. Режем управляющие символы (они
+        // ломают вывод карточки устройств) и длину.
+        $cut  = static fn(string $h): string => substr(
+            preg_replace('~[[:cntrl:]]~u', '', (string) ($_SERVER[$h] ?? '')),
+            0,
+            200
+        );
         $info = [
             'time'         => time(),
-            'user_agent'   => $_SERVER['HTTP_USER_AGENT'] ?? '',
-            'device_os'    => $_SERVER['HTTP_X_DEVICE_OS'] ?? '',
-            'os_version'   => $_SERVER['HTTP_X_VER_OS'] ?? '',
-            'device_model' => $_SERVER['HTTP_X_DEVICE_MODEL'] ?? '',
+            'user_agent'   => $cut('HTTP_USER_AGENT'),
+            'device_os'    => $cut('HTTP_X_DEVICE_OS'),
+            'os_version'   => $cut('HTTP_X_VER_OS'),
+            'device_model' => $cut('HTTP_X_DEVICE_MODEL'),
         ];
         // Проверка лимита и запись — одной операцией под локом. Раздельно они
         // давали гонку: два новых устройства, пришедшие одновременно на разные
@@ -25981,6 +26113,26 @@ DNS-over-HTTPS with IP:
         return (bool) preg_match('~^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$~', (string) $d);
     }
 
+    // Хостнейм или IP — то, что допустимо положить в адрес relay: значение
+    // уходит и в клиентские ссылки, и в tcpProbe(), и в разметку меню.
+    public function isHostOrIp($v): bool
+    {
+        $v = trim((string) $v);
+        return $v !== '' && strlen($v) <= 253
+            && ($this->isHostname($v) || filter_var($v, FILTER_VALIDATE_IP) !== false);
+    }
+
+    // Экранирование для parse_mode=HTML. Сообщения бота собираются из значений,
+    // которые пришли из ввода (имена пиров, адреса relay, пароли dnstt, тексты
+    // ошибок сети с именем хоста внутри): один символ «<» делает разметку
+    // невалидной, Telegram отвечает 400, и экран перестаёт открываться —
+    // навсегда, потому что значение уже лежит в pac.json, а починить его можно
+    // только с этого же экрана.
+    public static function esc($v): string
+    {
+        return htmlspecialchars((string) $v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
     public function setUpstreamDomain($domain)
     {
         // $domain правится из Telegram (reality.domain/serverNames) и попадает в
@@ -27388,6 +27540,21 @@ DNS-over-HTTPS with IP:
 
     public function setFakeDomain($domain, $self = false)
     {
+        // $domain — сырой текст ответа на промпт (reply() отдаёт его первым
+        // аргументом). Без проверки состояние расходилось: xray.json и
+        // pac.json['reality'] уже переписаны мусором и ядро перезапущено, а
+        // setUpstreamDomain() ниже на невалидном хостнейме молча делает return,
+        // то есть upstream.conf остаётся на прежнем домене. Снаружи это
+        // выглядит как «reality лёг целиком, а бот отрапортовал об успехе».
+        $domain = trim((string) $domain);
+        if (!$this->isHostname($domain)) {
+            $this->send(
+                $this->input['chat'],
+                self::esc($domain) . ' - wrong domain format',
+                $this->input['message_id']
+            );
+            return $this->xray();
+        }
         $c = $this->getXray();
         $p = $this->getPacConf();
         $c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] = $domain;
