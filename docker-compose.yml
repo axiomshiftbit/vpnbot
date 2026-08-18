@@ -32,7 +32,11 @@ services:
             - ./config/upstream.conf:/etc/nginx/nginx.conf
             - ./config/deny:/etc/nginx/deny
             - ./scripts/start_upstream.sh:/start_upstream.sh
-            - ./ssh:/ssh
+            # Только ПУБЛИЧНЫЙ ключ — как у wg/wg1 ниже. Полный /ssh отдаёт
+            # приватный ключ, а он даёт root-SSH во все контейнеры сборки:
+            # дыра в любом сетевом демоне становилась компрометацией всего.
+            # Приватный ключ нужен только php и service (bot.php: ssh()).
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs/:/logs/
         ports:
@@ -79,8 +83,9 @@ services:
             - ./config/location.conf:/etc/nginx/location.conf
             - ./config/nginx_default.conf:/nginx_default.conf
             - ./scripts/start_ng.sh:/start_ng.sh
-            - ./certs/:/certs/
-            - ./ssh:/ssh
+            # :ro — в /certs пишет только certbot из php-контейнера.
+            - ./certs/:/certs/:ro
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs/:/logs/
             - ./app/webapp:/app
@@ -335,10 +340,15 @@ services:
             - type: volume
               target: /opt/adguardhome/work
               source: adguard
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
+            # /config остаётся на ЗАПИСЬ умышленно: AdGuardHome сам
+            # переписывает свой AdGuardHome.yaml (правки через веб-панель,
+            # миграция схемы при обновлении версии), с :ro он падал бы на
+            # старте. Отдельным файловым mount'ом это не лечится: AGH пишет
+            # через tmp+rename, а файловый bind-mount прибит к иноду.
             - ./config/:/config/
-            - ./certs/:/certs/
+            - ./certs/:/certs/:ro
             - ./logs/:/logs/
             - ./scripts/start_ad.sh:/start_ad.sh
         hostname: adguard
@@ -368,7 +378,7 @@ services:
                 TELEMT_VERSION: ${TELEMT_VERSION:-3.4.25}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/telemt:/telemt
             - ./scripts/start_telemt.sh:/start_telemt.sh
@@ -399,7 +409,7 @@ services:
                 XRAY_FORK_VERSION: ${XRAY_FORK_VERSION:-}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/xray.json:/xray.json
             - ./scripts/start_xray.sh:/start_xray.sh
@@ -431,10 +441,15 @@ services:
                 OCSERV_VERSION: ${OCSERV_VERSION:-1.5.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./config:/etc/ocserv
-            - ./certs:/certs
+            # :ro — это не «конфиг ocserv», а весь каталог состояния сборки:
+            # xray.json, clients*.json, wg0.conf, unit.json, ipsec/ (PSK и ключи
+            # CA), Caddyfile. ocserv читает отсюда ocserv.conf и ocserv.passwd,
+            # а пишет только в /var/run (socket-file, pid-file); passwd ему
+            # готовит бот со стороны php-контейнера.
+            - ./config:/etc/ocserv:ro
+            - ./certs:/certs:ro
             - ./logs:/logs
             - ./scripts/start_oc.sh:/start_oc.sh
         hostname: ocserv
@@ -471,12 +486,12 @@ services:
                 FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.2-naive}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             # :ro — caddy только читает /config/Caddyfile (пишет его бот из
             # php-контейнера), свои данные держит в /root/.local/share/caddy.
             - ./config:/config:ro
-            - ./certs:/certs
+            - ./certs:/certs:ro
             # Нужен для лога caddy (/logs/caddy): его пишет и start_np.sh, и
             # сам caddy блоком `log` из Caddyfile. Без монтирования лог оседал
             # бы в эфемерной ФС контейнера и пропадал при recreate.
@@ -518,7 +533,7 @@ services:
             - /dev/net/tun:/dev/net/tun
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             # :ro — start_wp.sh только читает /config/pac.json.
             - ./config:/config:ro
@@ -563,7 +578,7 @@ services:
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/sslocal.json:/config.json
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./scripts/start_proxy.sh:/start_proxy.sh
         hostname: proxy
@@ -604,7 +619,7 @@ services:
             # рабочий /config.json смонтирован отдельным файлом выше.
             - ./config:/config:ro
             - ./certs:/certs:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./scripts/start_ss.sh:/start_ss.sh
             - ./logs/:/logs/
@@ -639,7 +654,7 @@ services:
                 DNSTT_REF: ${DNSTT_REF:-0c5c52a57d899c05428c116898941761a2ed83c2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./logs:/logs
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/dnstt:/dnstt
@@ -673,7 +688,7 @@ services:
             # Миграции server.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ovpn_migrate.sh:/ovpn_migrate.sh
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs
         hostname: openvpn
@@ -713,7 +728,7 @@ services:
             # Миграции swanctl.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ipsec_migrate.sh:/ipsec_migrate.sh
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs
         hostname: ipsec
@@ -758,7 +773,7 @@ services:
                 TT_REF: ${TT_REF:-master}
         volumes:
             - ./config/.profile:/root/.bashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/trusttunnel:/trusttunnel_endpoint
             - ./certs:/certs:ro
@@ -793,9 +808,9 @@ services:
                 HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.12.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./certs:/certs
+            - ./certs:/certs:ro
             - ./logs:/logs
             # :ro — hysteria только читает /config/hysteria.yaml (пишет его бот).
             - ./config:/config:ro
