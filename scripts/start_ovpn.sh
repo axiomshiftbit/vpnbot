@@ -58,6 +58,15 @@ mkdir -p "$PKI" /etc/openvpn/ccd /etc/openvpn/clients /logs
 : >> /logs/openvpn.log
 : >> /logs/openvpn-connections.log
 
+# Один inode с Bot::withOvpnPkiLock() в php-контейнере (/logs общий bind
+# mount). Без этого selfUpdate мог одновременно с revoke снять/восстановить
+# рваный snapshot: crt возвращался в issued/, а index.txt и CRL — уже нет.
+exec 8>/logs/.lock.ovpn-pki
+if ! flock 8; then
+    echo "FATAL: cannot lock OpenVPN PKI" >&2
+    exit 1
+fi
+
 # Hook для client-connect/disconnect: пишет UP/DOWN-события с CN и реальным
 # IP клиента в отдельный журнал /logs/openvpn-connections.log. Без script-
 # security 2 openvpn игнорирует этот хук. Обязательный `exit 0` — чтобы
@@ -215,6 +224,9 @@ fi
 # набор правок обязан применяться и когда бот восстанавливает server.conf из
 # бэкапа (importOvpnPki), а контейнер при этом не пересоздаётся.
 sh /ovpn_migrate.sh "$SRV"
+
+# EasyRSA/PKI/server.conf больше не меняются; демон может стартовать без лока.
+flock -u 8
 
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true
 

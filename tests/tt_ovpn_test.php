@@ -255,6 +255,26 @@ ttAssert(
     'start_ovpn.sh не пишет deprecated-директиву cipher в TLS-режиме'
 );
 
+// ── 5b. PKI-транзакции: add/delete/backup/restore/start ────────────────────
+foreach (['exportOvpnPki', 'importOvpnPki'] as $fn) {
+    $body = substr($botSrc, strpos($botSrc, "public function $fn("), 1500);
+    ttAssert(strpos($body, 'withOvpnPkiLock(') !== false, "$fn выполняется под общим PKI-lock");
+}
+$addBody = substr($botSrc, strpos($botSrc, 'public function addovus('), 5000);
+$delBody = substr($botSrc, strpos($botSrc, 'public function delOvpnUser('), 6000);
+ttAssert(strpos($addBody, 'withOvpnPkiLock(') !== false, 'выдача OpenVPN-сертификата выполняется под PKI-lock');
+ttAssert(strpos($delBody, 'withOvpnPkiLock(') !== false, 'отзыв OpenVPN-сертификата выполняется под PKI-lock');
+ttAssert(strpos($delBody, '__VPNBOT_REVOKED__') !== false && strpos($delBody, 'Serial Number: \$serial') !== false,
+    'успех revoke подтверждается наличием serial в новом CRL');
+ttAssert(strpos($delBody, '>>/logs/openvpn.log 2>&1') !== false,
+    'ошибка revoke действительно попадает в журнал из сообщения бота');
+ttAssert(strpos($startOvpn, 'exec 8>/logs/.lock.ovpn-pki') !== false,
+    'start_ovpn.sh использует тот же lock-файл, что php');
+ttAssert(strpos($startOvpn, 'flock 8') < strpos($startOvpn, 'gen-crl'),
+    'start_ovpn.sh берёт PKI-lock до gen-crl');
+ttAssert(strpos($startOvpn, 'flock -u 8') > strpos($startOvpn, 'sh /ovpn_migrate.sh'),
+    'start_ovpn.sh отпускает PKI-lock только после всех изменений');
+
 // ── 6. status-version 2: порядок колонок ────────────────────────────────────
 $row  = 'CLIENT_LIST,alice,203.0.113.7:51820,10.8.0.2,,1024,2048,2026-08-02 10:00:00,1785600000,UNDEF,3,4,AES-256-GCM';
 // $escape задаём явно: в PHP 8.4 вызов без него — deprecated, а с 9.0 значение

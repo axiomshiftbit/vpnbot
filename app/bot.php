@@ -29819,8 +29819,19 @@ DNS-over-HTTPS with IP:
     // index.txt, crl.pem, server.conf, ccd/. Каждый файл хранится как base64
     // в общем JSON-бэкапе; при восстановлении ключи получают chmod 600.
     // Runtime-файлы (openvpn-status.log) исключаем — они генерятся демоном.
-    public function exportOvpnPki()
+    public function withOvpnPkiLock(callable $fn)
     {
+        // Тот же /logs смонтирован в php и ovpn. start_ovpn.sh берёт flock на
+        // этом же inode перед init/gen-crl, поэтому snapshot/restore не может
+        // пересечься с EasyRSA и вернуть уже отозванный сертификат в issued/.
+        return $this->withLock('ovpn-pki', $fn);
+    }
+
+    public function exportOvpnPki(bool $locked = false)
+    {
+        if (!$locked) {
+            return $this->withOvpnPkiLock(fn() => $this->exportOvpnPki(true));
+        }
         $root = '/config/openvpn';
         if (!is_dir($root)) {
             return null;
@@ -29843,8 +29854,11 @@ DNS-over-HTTPS with IP:
         return $files ?: null;
     }
 
-    public function importOvpnPki(array $files)
+    public function importOvpnPki(array $files, bool $locked = false)
     {
+        if (!$locked) {
+            return $this->withOvpnPkiLock(fn() => $this->importOvpnPki($files, true));
+        }
         $root = '/config/openvpn';
         @mkdir($root, 0755, true);
         foreach ($files as $rel => $b64) {
@@ -30145,30 +30159,38 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'], 'username too long (max 40 chars)');
             return $this->menu('ovpn');
         }
-        if (in_array($user, $this->getOvpnUsers(), true)) {
+        $issued = $this->withOvpnPkiLock(function () use ($user) {
+            if (in_array($user, $this->getOvpnUsers(), true)) {
+                return 'exists';
+            }
+            // Без ca.crt easyrsa build-client-full молча пишет в stderr и
+            // пользователь ничего не увидит. Блокируем заранее, пока PKI не
+            // доинициализирован.
+            $p = $this->ovpnPaths();
+            if (!file_exists($p['ca']) || !file_exists($p['pki'] . '/private/ca.key')) {
+                return 'pki';
+            }
+            $u = escapeshellarg($user);
+            // Та же болезнь, что у server-cert: если прошлый build-client-full
+            // упал после создания reqs/$user.req, повтор даст "file already
+            // exists". Чистим stale артефакты перед новой попыткой.
+            $this->ssh(
+                "rm -f /etc/openvpn/pki/reqs/$u.req /etc/openvpn/pki/private/$u.key /etc/openvpn/pki/issued/$u.crt && " .
+                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE=3650 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
+                ">>/logs/openvpn.log 2>&1",
+                'ovpn'
+            );
+            return in_array($user, $this->getOvpnUsers(), true) ? 'ok' : 'failed';
+        });
+        if ($issued === 'exists') {
             $this->send($this->input['chat'], "user $user already exists");
             return $this->menu('ovpn');
         }
-        // Без ca.crt easyrsa build-client-full молча пишет в stderr и
-        // пользователь ничего не увидит. Блокируем заранее, пока PKI не
-        // доинициализирован.
-        $p = $this->ovpnPaths();
-        if (!file_exists($p['ca']) || !file_exists($p['pki'] . '/private/ca.key')) {
+        if ($issued === 'pki') {
             $this->send($this->input['chat'], 'PKI not ready — restart ovpn container first');
             return $this->menu('ovpn');
         }
-        $u = escapeshellarg($user);
-        // Та же болезнь, что у server-cert: если прошлый build-client-full
-        // упал после создания reqs/$user.req, повтор даст "file already
-        // exists". Чистим stale артефакты перед новой попыткой (для этого
-        // имени, не для всего PKI).
-        $this->ssh(
-            "rm -f /etc/openvpn/pki/reqs/$u.req /etc/openvpn/pki/private/$u.key /etc/openvpn/pki/issued/$u.crt && " .
-            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE=3650 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
-            ">>/logs/openvpn.log 2>&1",
-            'ovpn'
-        );
-        if (!in_array($user, $this->getOvpnUsers(), true)) {
+        if ($issued !== 'ok') {
             $this->send($this->input['chat'], "failed to issue cert for $user (check /logs/openvpn.log)");
         } else {
             // Сразу отдаём готовый .ovpn — иначе админу пришлось бы лезть
@@ -30196,21 +30218,36 @@ DNS-over-HTTPS with IP:
             ];
             return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
         }
-        $u = escapeshellarg($user);
-        $this->ssh(
-            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u && " .
-            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 /usr/share/easy-rsa/easyrsa gen-crl",
-            'ovpn'
-        );
-        $p = $this->ovpnPaths();
-        // easy-rsa 3.1+ при успешном revoke ПЕРЕМЕЩАЕТ crt в
-        // revoked/certs_by_serial. Если issued/$user.crt остался — revoke
-        // упал (битый index.txt и т.п.). Вручную rm нельзя: cert остался бы
-        // валидным без записи в CRL.
-        if (file_exists($p['issued'] . '/' . $user . '.crt')) {
+        $revoked = $this->withOvpnPkiLock(function () use ($user) {
+            $p    = $this->ovpnPaths();
+            $cert = $p['issued'] . '/' . $user . '.crt';
+            // Повтор старой confirm-кнопки после успешного первого удаления:
+            // операция идемпотентна и не вызывает EasyRSA на отсутствующем CN.
+            if (!file_exists($cert)) {
+                return 'absent';
+            }
+            $u = escapeshellarg($user);
+            // Весь вывод действительно попадает в предлагаемый пользователю
+            // openvpn.log. Маркер успеха печатается только если gen-crl прошёл
+            // и serial отозванного сертификата присутствует в НОВОМ CRL.
+            $out = $this->ssh(
+                "serial=\$(openssl x509 -in /etc/openvpn/pki/issued/$u.crt -noout -serial 2>>/logs/openvpn.log | cut -d= -f2); " .
+                "if [ -n \"\$serial\" ] && " .
+                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u >>/logs/openvpn.log 2>&1 && " .
+                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 /usr/share/easy-rsa/easyrsa gen-crl >>/logs/openvpn.log 2>&1 && " .
+                "openssl crl -in /etc/openvpn/pki/crl.pem -noout -text 2>>/logs/openvpn.log | grep -Fqi \"Serial Number: \$serial\"; " .
+                "then echo __VPNBOT_REVOKED__; else echo __VPNBOT_REVOKE_FAILED__; fi",
+                'ovpn'
+            );
+            return str_contains((string) $out, '__VPNBOT_REVOKED__') && !file_exists($cert)
+                ? 'revoked'
+                : 'failed';
+        });
+        if ($revoked === 'failed') {
             $this->send($this->input['chat'], '❌ ' . $this->i18n('error') . ": easyrsa revoke $user failed (check /logs/openvpn.log)");
             return $this->menu('ovpn');
         }
+        $p = $this->ovpnPaths();
         @unlink($p['ccd'] . '/' . $user);
         // crl.pem is re-read on every TLS handshake → new connections from
         // this CN get rejected. Kick the live session, if any.
