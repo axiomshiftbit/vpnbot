@@ -8337,8 +8337,7 @@ NFT;
         $qr      = preg_replace(['~\s+~', '~\(~', '~\)~'], ['_'], $name);
         // $name — сырое имя пира: «../../config/xray» уводил запись и unlink()
         // за пределы /qr. Оставляем только безопасные для имени файла символы.
-        $qr      = preg_replace('~[^\w.-]~u', '_', (string) $qr);
-        $qr      = trim(str_replace('..', '_', $qr), '.') ?: 'qr';
+        $qr      = self::safeFileName($qr, 'qr');
         $code    = (string) $code;
         $caption = (string) ($title ?: $name);
         // Слишком длинный вход qrencode не кодирует ВООБЩЕ: png не создаётся,
@@ -8439,9 +8438,24 @@ NFT;
         }
     }
 
+    // Имя файла для временной выдачи в чат. Один санитайзер на все пути:
+    // sendQr() чистил имя жёстко, а upload() строил "/logs/$name" простой
+    // конкатенацией, хотя получал ту же строку — имя пира, то есть сырой ввод
+    // (renameClient пропускает его через sanitizeConfValue, а та режет лишь
+    // \r \n [ ]). Пир с именем «../config/nginx» превращал «скачать конфиг» в
+    // file_put_contents('/logs/../config/nginx.conf') + unlink() того же пути:
+    // конфиг фронтового nginx сначала затирался, потом удалялся, и внешний 443
+    // не поднимался при ближайшем рестарте. php-контейнер работает от root,
+    // ./config смонтирован на запись — под удар попадал любой *.conf сборки.
+    public static function safeFileName($name, string $fallback = 'file'): string
+    {
+        $name = preg_replace('~[^\w.-]~u', '_', (string) $name);
+        return trim(str_replace('..', '_', (string) $name), '.') ?: $fallback;
+    }
+
     public function upload($name, $code, $chat = false)
     {
-        $path = "/logs/$name";
+        $path = '/logs/' . self::safeFileName($name);
         file_put_contents($path, $code);
         $r = $this->sendFile(
             $chat ?: $this->input['chat'],
@@ -9764,6 +9778,17 @@ NFT;
         if ($i === false) {
             return $this->menu('config');
         }
+        // Последнего админа удалять нельзя. auth() при пустом admin работает по
+        // схеме trust-on-first-use и назначает админом автора СЛЕДУЮЩЕГО
+        // апдейта — кто бы это ни был. Юзернейм бота публичен, он отвечает на
+        // /start, так что «ничейный» бот захватывается одним сообщением:
+        // это выгрузка xray.json со всеми uuid и subtoken'ами, выпуск
+        // сертификатов, правка маршрутов и nginx-конфигов. Кнопки «delete» в
+        // меню идут подряд и подтверждения не имеют — хватало промаха пальцем.
+        if (count((array) $c['admin']) <= 1) {
+            $this->answer($this->input['callback_id'], 'cannot remove the last admin', true);
+            return $this->menu('config');
+        }
         unset($c['admin'][$i]);
         $c['admin'] = array_values($c['admin']);
         file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
@@ -10064,6 +10089,12 @@ DNS-over-HTTPS with IP:
             }
             foreach ($domains as $v) {
                 if (in_array($type, ['white', 'deny'])) {
+                    // Эти два списка уезжают в директивы allow/deny конфига
+                    // nginx (см. syncDeny) — принимаем только адрес или CIDR.
+                    if (!self::ipOrCidr($v)) {
+                        $dups++;
+                        continue;
+                    }
                     $conf[$type][] = $v;
                     $lastKey       = $v;
                 } elseif (in_array($type, ['rulessetlist', 'packagelist', 'processlist'])) {
@@ -19079,6 +19110,34 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Адрес или подсеть — ровно то, что допустимо подставить в директивы
+    // allow/deny конфига nginx.
+    //
+    // Содержимое /config/deny включается ВНУТРЬ stream{} фронтового nginx
+    // (config/upstream.conf), а denyIp()/whiteIp()/addInclude() значение не
+    // проверяли вовсе: `;`, `{`, `}` и пробелы проходили целиком. Строка вида
+    // «1.2.3.4; } server { listen 8443; proxy_pass 10.10.0.2:443;» давала
+    // валидный stream-фрагмент, reload его принимал, и на фронте появлялся
+    // листенер в обход SNI-маршрутизации. Без злого умысла не лучше: опечатка
+    // делает конфиг невалидным, reload молча проваливается, а при ближайшем
+    // рестарте внешний 443 не поднимается вовсе.
+    public static function ipOrCidr($v): bool
+    {
+        $v = (string) $v;
+        if ($v === '' || strlen($v) > 43) {
+            return false;
+        }
+        [$ip, $mask] = array_pad(explode('/', $v, 2), 2, null);
+        if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return false;
+        }
+        if ($mask === null) {
+            return true;
+        }
+        return ctype_digit($mask)
+            && (int) $mask <= (str_contains($ip, ':') ? 128 : 32);
+    }
+
     public function syncDeny()
     {
         $pac = $this->getPacConf();
@@ -19101,8 +19160,12 @@ DNS-over-HTTPS with IP:
                 $text .= "allow $v;\n";
             }
         }
+        // Фильтруем ОБА списка перед записью, а не только на входе: в
+        // pac.json уже могли осесть старые записи (в том числе из импорта
+        // backup'а, который пишет deny/white как есть). Невалидное просто
+        // выпадает из конфига и из pac.json.
         if (!empty($pac['white'])) {
-            $pac['white'] = array_unique($pac['white']);
+            $pac['white'] = array_values(array_filter(array_unique($pac['white']), [self::class, 'ipOrCidr']));
             sort($pac['white']);
             foreach ($pac['white'] as $v) {
                 $text .= "allow $v;\n";
@@ -19112,16 +19175,27 @@ DNS-over-HTTPS with IP:
             $pac['deny'] = array_unique($pac['deny']);
             sort($pac['deny']);
             foreach ($pac['deny'] as $k => $v) {
+                if (!self::ipOrCidr($v)) {
+                    unset($pac['deny'][$k]);
+                    continue;
+                }
                 if (!in_array($v, $pac['white'] ?? []) && !isset($xr[$v])) {
                     $text .= "deny $v;\n";
                 } else {
                     unset($pac['deny'][$k]);
                 }
             }
+            $pac['deny'] = array_values($pac['deny']);
         }
         $this->setPacConf($pac);
         file_put_contents('/config/deny', $text ?: '');
-        $this->ssh('nginx -s reload', 'up');
+        // nginx -t перед reload: reload с невалидным конфигом молча оставляет
+        // старый, а вот РЕСТАРТ контейнера после этого уже не поднимет 443.
+        // Результат раньше не проверялся вовсе.
+        $out = trim((string) $this->ssh('nginx -t 2>&1 && nginx -s reload 2>&1', 'up'));
+        if (!str_contains($out, 'syntax is ok')) {
+            error_log('syncDeny: nginx -t failed: ' . $out);
+        }
     }
 
     public function linkXray($i, $s = false)
