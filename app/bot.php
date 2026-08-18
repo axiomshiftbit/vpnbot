@@ -10004,7 +10004,13 @@ NFT;
                 'ids'                         => [$this->dohClientId((string) $v['id'])],
                 'tags'                        => [],
                 'upstreams'                   => [],
-                'uid'                         => $this->dohClientId((string) $v['id']),
+                // uid — ВНУТРЕННИЙ идентификатор AdGuard, и он обязан быть
+                // настоящим UUID: на 16-hex значении парсер конфига падает
+                // («invalid UUID length: 16»), AdGuardHome не поднимается
+                // вовсе и DNS всей установки ложится. Проверено на рабочем сервере
+                // 2026-08-18. Сопоставление клиента по DoH-пути идёт ТОЛЬКО
+                // через 'ids' выше — производный id нужен именно там.
+                'uid'                         => (string) $v['id'],
                 'upstreams_cache_size'        => 0,
                 'upstreams_cache_enabled'     => false,
                 'use_global_settings'         => true,
@@ -26702,10 +26708,8 @@ DNS-over-HTTPS with IP:
                     $changed = true;
                 }
             }
-            if (isset($map[(string) ($cl['uid'] ?? '')])) {
-                $c['clients']['persistent'][$i]['uid'] = $map[(string) $cl['uid']];
-                $changed = true;
-            }
+            // uid НЕ трогаем: см. adguardXrayClients() — AdGuard требует там
+            // формат UUID и отказывается читать конфиг целиком, если это не он.
         }
 
         if (!$changed) {

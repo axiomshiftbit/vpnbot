@@ -70,7 +70,14 @@ $mig = substr($src, strpos($src, 'public function migrateDohClientIds('), 4000);
 dohAssert(str_contains($mig, "\$c['clients']['persistent']"),
     'миграция переписывает и persistent-клиентов, а не только allowed_clients');
 dohAssert(str_contains($src, "'ids'                         => [\$this->dohClientId("),
-    'adguardXrayClients() пишет производный id, иначе миграцию тут же откатывало бы обратно');
+    'adguardXrayClients() пишет производный id в ids, иначе миграцию тут же откатывало бы обратно');
+// А вот uid обязан остаться UUID: на 16-hex значении AdGuardHome отказывается
+// читать конфиг («invalid UUID length: 16») и не поднимается вовсе — DNS всей
+// установки ложится. Поймано на рабочем сервере 2026-08-18.
+dohAssert(str_contains($src, "'uid'                         => (string) \$v['id'],"),
+    'uid персонального клиента остаётся UUID, а не производным id');
+dohAssert(!str_contains($mig, "['uid'] = \$map["),
+    'миграция не переписывает uid');
 
 // ── 3. Сторож по nginx-конфигам ─────────────────────────────────────────────
 // Путь DoH — секрет целиком, поэтому логировать его нельзя ни в каком формате.
