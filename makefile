@@ -17,6 +17,18 @@ VER := $(shell git describe --tags --always 2>/dev/null || echo local)
 
 b:
 	docker compose build
+test: # прогон тестов (на ХОСТЕ, не внутри контейнера)
+	@# 42+ файла в tests/ закрывают конкретные регрессии, но их не звал никто:
+	@# ни CI, ни makefile, ни readme. Правка ломала охрану, закрытую полгода
+	@# назад, и об этом никто не узнавал.
+	@php -l app/bot.php > /dev/null
+	@for f in app/*.php app/panel/*.php tests/*.php; do \
+		php -l "$$f" > /dev/null || exit 1; \
+	done
+	@fail=0; for f in tests/*_test.php; do \
+		out=$$(php "$$f" 2>&1) || { echo "$$out"; fail=1; }; \
+	done; \
+	if [ $$fail -eq 0 ]; then echo "tests OK"; else echo "TESTS FAILED"; exit 1; fi
 preup:
 	bash ./update/update.sh &
 pull: # обновление образов из ghcr.io/axiomshiftbit

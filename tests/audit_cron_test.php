@@ -111,6 +111,11 @@ $bot->checkResetXrayStats();
 cronAssert($bot->resetCalls === 1, 'повторный тик в том же месяце не сбрасывает снова');
 
 // ── 3. allowIp/delAdmin при промахе ничего не удаляют ───────────────────────
+// Путь к /config/deny — свойство именно ради этого: allowIp() в конце
+// безусловно пишет файл и дёргает `nginx -s reload`, и на dev-машине это был
+// warning, а ВНУТРИ контейнера тот же прогон перезаписал бы боевой список
+// блокировок и перезагрузил фронтовой nginx.
+$bot->denyConf = sys_get_temp_dir() . '/deny_' . getmypid();
 $bot->pacFake = ['deny' => ['1.1.1.1', '2.2.2.2']];
 $bot->allowIp('9.9.9.9', 0);
 cronAssert($bot->pacFake['deny'] === ['1.1.1.1', '2.2.2.2'],
@@ -215,6 +220,8 @@ array_map('unlink', array_filter(glob($lb->dir . '/*') ?: [], 'is_file'));
 array_map('unlink', glob($lb->dir . '/geodata/*') ?: []);
 @rmdir($lb->dir . '/geodata');
 @rmdir($lb->dir);
+
+@unlink($bot->denyConf);
 
 if ($failed) {
     echo "audit_cron_test FAILED: $failed\n";

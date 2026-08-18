@@ -133,6 +133,11 @@ function start()
 {
     global $bot, $source, $res, $load, $text;
 
+    // $tail присваивается только внутри цикла ПРЯМОГО PAC. Если includelist
+    // пуст, а reverselist нет, выполнение уходит в ветку «Empty domains», и
+    // ниже, в reverse-ветке, чтение $tail давало «Undefined variable».
+    $tail = '';
+
     $conf = $bot->getPacConf();
 
     // Список subzone'ов для исключения из PAC (используется ниже как $exclude).
@@ -149,8 +154,13 @@ function start()
     }
     if (empty($domains)) {
         $text = "Empty domains. Delete pac files";
-        unlink(__DIR__ . '/zapretlists/mpac');
-        unlink(__DIR__ . '/zapretlists/pac');
+        // is_file: на первом запуске файлов ещё нет, и голый unlink() писал по
+        // два warning'а в лог.
+        foreach (['mpac', 'pac'] as $name) {
+            if (is_file($p = __DIR__ . "/zapretlists/$name")) {
+                unlink($p);
+            }
+        }
     } else {
         $domains = array_keys($domains);
 
@@ -213,6 +223,13 @@ function start()
         $text .= "Create minified pac 100%\n";
     }
     // create reverse PAC
+    //
+    // rmpac больше не генерируется: цикл, который его писал, закомментирован
+    // ниже. Снимаем его в ОБЕИХ ветках, а не только когда reverselist пуст —
+    // иначе оставшийся от прежней версии файл продолжал раздаваться как есть.
+    if (is_file($stale = __DIR__ . '/zapretlists/rmpac')) {
+        unlink($stale);
+    }
     unset($domains);
     if (!empty($conf['reverselist'])) {
         $domains = array_filter($conf['reverselist'], fn($x) => $x == true);
@@ -220,8 +237,11 @@ function start()
     if (empty($domains)) {
 
         // $text .= "Empty reverse domains. Delete reverse pac files";
-        unlink(__DIR__ . '/zapretlists/rmpac');
-        unlink(__DIR__ . '/zapretlists/rpac');
+        foreach (['rpac'] as $name) {   // rmpac уже снят выше
+            if (is_file($p = __DIR__ . "/zapretlists/$name")) {
+                unlink($p);
+            }
+        }
     } else {
         $domains = array_keys($domains);
 

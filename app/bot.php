@@ -125,6 +125,14 @@ class Bot
     // а не константой, по той же причине, что и $xrayConf: тест подменяет его
     // на временный, в файловую систему контейнера не ходя.
     public $htpasswd = '/app/webapp/.htpasswd';
+    // Свойством, как xrayConf и htpasswd, — ровно ради тестов: путь был
+    // захардкожен, и прогон tests/audit_cron_test.php внутри контейнера
+    // перезаписывал БОЕВОЙ /config/deny и дёргал `nginx -s reload`.
+    public $denyConf = '/config/deny';
+    // Тоже свойством и тоже ради тестов: online_ips_test делал ОТСУТСТВИЕ
+    // боевого /logs/xray предусловием, то есть внутри контейнера, где файл
+    // есть всегда, «падал» не из-за регрессии.
+    public $xrayLog = '/logs/xray';
     public $i18n;
     public $language;
     public $selfupdate;
@@ -773,18 +781,6 @@ class Bot
                 break;
             case preg_match('~^/adgFillAllowedClients(?: (\d+))?$~', $this->input['callback'], $m):
                 $this->adgFillAllowedClients(($m[1] ?? '') ?: false);
-                break;
-            case preg_match('~^/appOutbound$~', $this->input['callback'], $m):
-                $this->appOutbound();
-                break;
-            case preg_match('~^/domainsOutbound$~', $this->input['callback'], $m):
-                $this->domainsOutbound();
-                break;
-            case preg_match('~^/finalOutbound$~', $this->input['callback'], $m):
-                $this->finalOutbound();
-                break;
-            case preg_match('~^/processOutbound$~', $this->input['callback'], $m):
-                $this->processOutbound();
                 break;
             case preg_match('~^/offWarp$~', $this->input['callback'], $m):
                 $this->offWarp();
@@ -4647,7 +4643,7 @@ NFT;
             "<code>$link</code>\n\n<b>" . htmlspecialchars($u['name'], ENT_QUOTES) . "</b>"
         );
         @unlink($qr_file);
-        if ($this->getPacConf()['blinkmenu']) {
+        if (($this->getPacConf()['blinkmenu'] ?? false)) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->ckUserMenu($hash);
@@ -6037,7 +6033,7 @@ NFT;
         $name   = $this->getName($client['interface']);
         $code   = $this->createConfig($client);
         $this->upload(preg_replace(['~\s+~', '~\(|\)~'], ['_', ''], $name) . ".conf", $code);
-        if (!empty($this->getPacConf()['blinkmenu'])) {
+        if (!empty(($this->getPacConf()['blinkmenu'] ?? false))) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->menu('client', "{$cl}_0");
@@ -8477,7 +8473,7 @@ NFT;
         } else {
             $this->sendQr($name, $this->createConfig($client), "$cap for Wireguard");
         }
-        if ($this->getPacConf()['blinkmenu']) {
+        if (($this->getPacConf()['blinkmenu'] ?? false)) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->menu('client', "{$cl}_0");
@@ -8495,7 +8491,7 @@ NFT;
             "<code>$ss_link</code>"
         );
         unlink($qr_file);
-        if ($this->getPacConf()['blinkmenu']) {
+        if (($this->getPacConf()['blinkmenu'] ?? false)) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->menu('ss');
@@ -8513,7 +8509,7 @@ NFT;
             "<code>$link</code>"
         );
         unlink($qr_file);
-        if ($this->getPacConf()['blinkmenu']) {
+        if (($this->getPacConf()['blinkmenu'] ?? false)) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->xray();
@@ -13450,37 +13446,14 @@ DNS-over-HTTPS with IP:
         );
     }
 
-    public function appOutbound()
-    {
-        $p = $this->getPacConf();
-        $p['app_outbound'] = !$p['app_outbound'];
-        $p = $this->setPacConf($p);
-        $this->xtlsapp();
-    }
-
-    public function domainsOutbound()
-    {
-        $p = $this->getPacConf();
-        $p['domains_outbound'] = !$p['domains_outbound'];
-        $p = $this->setPacConf($p);
-        $this->xtlsproxy();
-    }
-
-    public function finalOutbound()
-    {
-        $p = $this->getPacConf();
-        $p['final_outbound'] = !$p['final_outbound'];
-        $p = $this->setPacConf($p);
-        $this->routes();
-    }
-
-    public function processOutbound()
-    {
-        $p = $this->getPacConf();
-        $p['process_outbound'] = !$p['process_outbound'];
-        $p = $this->setPacConf($p);
-        $this->xtlsprocess();
-    }
+    // appOutbound/domainsOutbound/finalOutbound/processOutbound удалены
+    // (аудит 2026-08-18). Они переключали ключи app_outbound, domains_outbound,
+    // final_outbound и process_outbound, которые во всём проекте встречались
+    // ровно по одному разу — в строке собственного переключения: их не читал
+    // ни генератор конфига xray, ни выдача подписки, ни updatepac.php. Кнопок
+    // на эти роуты тоже не было ни в одном рендере, а первый же вызов ещё и
+    // читал несуществующий ключ. Рабочий представитель семейства —
+    // mainOutbound(), у него кнопка есть.
 
     public function xtlsapp($page = 0)
     {
@@ -13566,7 +13539,10 @@ DNS-over-HTTPS with IP:
     public function listPac($type, $page, $menu, $basename = false)
     {
         $text = [];
-        $domains = $this->getPacConf()[$type];
+        // ?? [] — как в соседнем скопированном блоке: пока в список не
+        // добавлено ни одной записи, ключа в pac.json нет, и открытие меню
+        // писало «Undefined array key» на каждый клик (11 типов списков).
+        $domains = $this->getPacConf()[$type] ?? [];
         $data[] = [
             [
                 'text'          => $this->i18n('add'),
@@ -14881,7 +14857,7 @@ DNS-over-HTTPS with IP:
             '<b>' . htmlspecialchars((string) $name, ENT_QUOTES) . "</b>\n" . htmlspecialchars($link, ENT_QUOTES)
         );
         @unlink($qr_file);
-        if ($this->getPacConf()['blinkmenu']) {
+        if (($this->getPacConf()['blinkmenu'] ?? false)) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->telemt();
@@ -17837,7 +17813,7 @@ DNS-over-HTTPS with IP:
     // stay listed until the window elapses without any new connection.
     public function trackOnline(): array
     {
-        $path = '/logs/xray';
+        $path = $this->xrayLog;
         // Раньше отсутствие лога означало ранний выход. Теперь нет: карта живых
         // соединений ядра (ниже) от лога не зависит и остаётся единственным
         // источником онлайна при loglevel=none, когда файла нет вовсе.
@@ -19091,21 +19067,30 @@ DNS-over-HTTPS with IP:
                 fclose($r);
             }
         }
-        if (!empty($res)) {
-            foreach ($res as $k => $v) {
-                $head = "$k:\n";
-                $t = array_chunk($v, 10);
-                foreach ($t as $j) {
-                    $text = "$head<pre>";
-                    foreach ($j as $i) {
-                        $text .= htmlspecialchars($i, ENT_HTML5, 'UTF-8');
-                    }
-                    $text .= '</pre>';
-                    $this->send($this->input['from'], $text, $this->input['message_id']);
-                }
-            }
-        } else {
+        $this->sendChunkedLogs($res ?? []);
+    }
+
+    // Рассылка сгруппированных логов кусками по 10 строк. Один и тот же
+    // пятнадцатистрочный хвост стоял в двух соседних методах (searchLogs и
+    // searchSuspiciousIp) — расхождение таких копий не заметил бы никто.
+    // Пустой набор — это ответ «empty» на callback, а не молчание.
+    public function sendChunkedLogs(array $groups): void
+    {
+        if (empty($groups)) {
             $this->answer($this->input['callback_id'], 'empty');
+
+            return;
+        }
+        foreach ($groups as $title => $lines) {
+            $head = "$title:\n";
+            foreach (array_chunk((array) $lines, 10) as $chunk) {
+                $text = "$head<pre>";
+                foreach ($chunk as $line) {
+                    $text .= htmlspecialchars((string) $line, ENT_HTML5, 'UTF-8');
+                }
+                $text .= '</pre>';
+                $this->send($this->input['from'], $text, $this->input['message_id']);
+            }
         }
     }
 
@@ -19125,22 +19110,7 @@ DNS-over-HTTPS with IP:
                 }
             }
         }
-        if (!empty($logs)) {
-            foreach ($logs as $k => $v) {
-                $head= "$k:\n";
-                $t = array_chunk($v, 10);
-                foreach ($t as $j) {
-                    $text = "$head<pre>";
-                    foreach ($j as $i) {
-                        $text .= htmlspecialchars($i, ENT_HTML5, 'UTF-8');
-                    }
-                    $text .= '</pre>';
-                    $this->send($this->input['from'], $text, $this->input['message_id']);
-                }
-            }
-        } else {
-            $this->answer($this->input['callback_id'], 'empty');
-        }
+        $this->sendChunkedLogs($logs ?? []);
     }
 
     public function importIps($type)
@@ -19438,7 +19408,7 @@ DNS-over-HTTPS with IP:
             $pac['deny'] = array_values($pac['deny']);
         }
         $this->setPacConf($pac);
-        file_put_contents('/config/deny', $text ?: '');
+        file_put_contents($this->denyConf, $text ?: '');
         // nginx -t перед reload: reload с невалидным конфигом молча оставляет
         // старый, а вот РЕСТАРТ контейнера после этого уже не поднимет 443.
         // Результат раньше не проверялся вовсе.
@@ -21256,16 +21226,17 @@ DNS-over-HTTPS with IP:
     // Updates pac.json (pbk/privateKey/shortId) and xray.json in lock-step so the
     // server private key matches the public key embedded in every client link.
     // Invalidates all existing links — every client must re-import.
-    public function regenRealityXr()
+    // Ротация серверных Reality-ключей: x25519, набор shortId, ML-DSA и
+    // spiderX. Одна копия на regenRealityXr() (только Reality) и regenAllXr()
+    // (полная ротация): 22 строки жили в двух местах один в один, и любое новое
+    // поле Reality пришлось бы добавлять в обе, а расхождение проявилось бы как
+    // «полная ротация выдала не то, что ротация только Reality».
+    // Возвращает false, если генератор ключей не отработал.
+    public function rotateRealityKeys(array &$p, array &$x): bool
     {
-        $x = $this->getXray();
-        $p = $this->getPacConf();
-        if (empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
-            return $this->answer($this->input['callback_id'], 'reality only', true);
-        }
         $k = $this->genRealityKeys();
         if (empty($k['private']) || empty($k['public']) || empty($k['shortId'])) {
-            return $this->answer($this->input['callback_id'], 'keygen failed', true);
+            return false;
         }
         $p['xray']                  = $k['public'];
         $p['reality']['privateKey'] = $k['private'];
@@ -21279,12 +21250,27 @@ DNS-over-HTTPS with IP:
                 $p['reality']['mldsa65Verify'] = $mk['verify'];
             }
         }
-        // Refresh spiderX alongside the keys (only if already in use), so a rotation
-        // gives a fresh crawl path too. Client-side, no live effect.
+        // spiderX обновляем вместе с ключами и только если он уже в ходу: у
+        // ротации должен быть свежий crawl-путь. На клиенте это ни на что не
+        // влияет.
         if (!empty($p['reality']['spiderX'])) {
             $p['reality']['spiderX'] = $this->genSpiderX();
         }
         $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
+
+        return true;
+    }
+
+    public function regenRealityXr()
+    {
+        $x = $this->getXray();
+        $p = $this->getPacConf();
+        if (empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
+            return $this->answer($this->input['callback_id'], 'reality only', true);
+        }
+        if (!$this->rotateRealityKeys($p, $x)) {
+            return $this->answer($this->input['callback_id'], 'keygen failed', true);
+        }
         $this->setPacConf($p);
         $this->restartXray($x);
         $this->xray();
@@ -21314,26 +21300,9 @@ DNS-over-HTTPS with IP:
         $x = $this->getXray();
         $p = $this->getPacConf();
         if (!empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
-            $k = $this->genRealityKeys();
-            if (empty($k['private']) || empty($k['public']) || empty($k['shortId'])) {
+            if (!$this->rotateRealityKeys($p, $x)) {
                 return $this->answer($this->input['callback_id'], 'keygen failed', true);
             }
-            $p['xray']                  = $k['public'];
-            $p['reality']['privateKey'] = $k['private'];
-            $p['reality']['shortId']    = $k['shortId'];
-            $x['inbounds'][0]['streamSettings']['realitySettings']['privateKey'] = $k['private'];
-            $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = $this->realityShortIds($k['shortId']);
-            if (!empty($p['reality']['mldsa'])) {
-                $mk = $this->genMldsaKeys();
-                if (!empty($mk['seed']) && !empty($mk['verify'])) {
-                    $p['reality']['mldsa65Seed']   = $mk['seed'];
-                    $p['reality']['mldsa65Verify'] = $mk['verify'];
-                }
-            }
-            if (!empty($p['reality']['spiderX'])) {
-                $p['reality']['spiderX'] = $this->genSpiderX();
-            }
-            $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
         }
         foreach ($x['inbounds'][0]['settings']['clients'] as $key => $v) {
             if (!empty($v['off'])) {
@@ -27065,6 +27034,16 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/autoupdate",
             ],
         ];
+        // Кнопки на этот роут не было ни в одном рендере: режим существовал в
+        // коде (шесть мест меню его читают и перерисовывают сообщение заново),
+        // а включить его из бота было нечем — как и ключи перевода
+        // blinkmenuon/blinkmenuoff, которые никто не использовал.
+        $data[] = [
+            [
+                'text'          => $this->i18n(!empty($conf['blinkmenu']) ? 'blinkmenuon' : 'blinkmenuoff'),
+                'callback_data' => "/blinkmenuswitch",
+            ],
+        ];
         $data[] = [
             [
                 'text'          => $this->i18n('branches'),
@@ -28092,7 +28071,12 @@ DNS-over-HTTPS with IP:
         if (!empty($data['peers'])) {
             foreach ($data['peers'] as $peer) {
                 $conf[] = '';
-                $conf[] = $peer['# PublicKey'] ? '# [Peer]' : '[Peer]';
+                // array_key_exists, а не чтение: у ВКЛЮЧЁННОГО пира ключа нет
+            // вовсе (он появляется только когда switchClient комментирует
+            // ключи), поэтому каждая перегенерация wg0.conf писала в лог по
+            // строке на каждого включённого пира. Свежий код той же семантики
+            // (applyRotatedPeerKeys) уже написан правильно.
+            $conf[] = !empty($peer['# PublicKey']) ? '# [Peer]' : '[Peer]';
                 if (!empty($peer['Endpoint'])) {
                     $host = $pac[$this->getInstanceWG(1) . 'endpoint'] ? $this->ip : $this->getDomain();
                     $port = $ports[$this->getInstanceWG()]['port'];
