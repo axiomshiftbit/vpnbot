@@ -4893,6 +4893,7 @@ NFT;
             'checkResetXrayStats',
             'checkCert',
             'ensureHtpasswd',
+            'ensureAdguardPassword',
             'autoAnalyzeLogs',
             'xrayStatsUser',
             'checkTrafficLimits',
@@ -5392,6 +5393,28 @@ NFT;
     // Пароль случайный и НИГДЕ не сохраняется: страница не должна пускать
     // внутрь, ей достаточно правдоподобно отказывать. Кому нужна веб-панель —
     // тот кладёт свой файл, и этот метод его не тронет.
+    // Пароль админки AdGuard. В шаблоне config/AdGuardHome.yaml поле password
+    // ПУСТОЕ, а сама админка проксируется наружу по /adguard<hash>/, где
+    // «гейт» — cookie с публичным hash из ссылок подписки. То есть между
+    // первым стартом контейнера и первым прогоном adguardSync() (его дёргает
+    // только смена сертификата/домена или кнопка в меню) админка стояла вообще
+    // без пароля: перенастройка DNS всех пользователей и чтение их query-лога.
+    // Пароль генерирует adguardSync(); зовём его ровно один раз — когда пусто.
+    public function ensureAdguardPassword(): bool
+    {
+        if (!is_file($this->adguard)) {
+            return false;
+        }
+        $c = @yaml_parse_file($this->adguard);
+        if (!is_array($c) || !empty($c['users'][0]['password'])) {
+            return false;
+        }
+        error_log('ensureAdguardPassword: AdGuardHome без пароля — генерируем');
+        $this->adguardSync();
+
+        return true;
+    }
+
     public function ensureHtpasswd(): bool
     {
         // Пустой файл считаем отсутствующим: nginx на нём отвечает 401, но
@@ -23509,13 +23532,28 @@ DNS-over-HTTPS with IP:
     // ведём себя так, будто параметра не было.
     public function subDomain(array $pac): string
     {
-        $cdn = (string) ($_GET['cdn'] ?? '');
-        if ($cdn !== '' && $this->isHostname($cdn)) {
+        // Белый список, а не только синтаксическая проверка (аудит 2026-08-18).
+        // Домен отсюда уезжает в ~domain~/~dns~, в rule-providers mihomo, в
+        // createRuleSet() sing-box и в ссылку самообновления подписки. Пока
+        // достаточно было «валидного хостнейма», обладатель чужого sub-URL мог
+        // переслать жертве тот же URL с &cdn=evil.tld — и её клиент начинал
+        // тянуть правила, DoH и обновление подписки с хоста атакующего, то есть
+        // отдавал ему управление своей маршрутизацией и постоянный канал
+        // деанона. Разрешаем ровно то, что настроено админом.
+        $allowed = array_merge(
+            $this->dnsDomains($pac),                       // domain + domain_aliases
+            [(string) ($pac['linkdomain'] ?? '')],          // cdn-домен из настроек
+            [(string) ($this->ip ?? '')]
+        );
+        $allowed = array_filter(array_map('strtolower', array_map('trim', $allowed)), 'strlen');
+
+        $cdn = strtolower(trim((string) ($_GET['cdn'] ?? '')));
+        if ($cdn !== '' && $this->isHostname($cdn) && in_array($cdn, $allowed, true)) {
             return $cdn;
         }
-        // SERVER_NAME приходит из Host запроса — проверяем той же меркой.
-        $host = (string) ($_SERVER['SERVER_NAME'] ?? '');
-        if ($host !== '' && $this->isHostname($host)) {
+        // SERVER_NAME приходит из Host запроса — та же мерка и тот же список.
+        $host = strtolower(trim((string) ($_SERVER['SERVER_NAME'] ?? '')));
+        if ($host !== '' && $this->isHostname($host) && in_array($host, $allowed, true)) {
             return $host;
         }
         return $this->getDomain(($pac['transport'] ?? '') != 'Reality');

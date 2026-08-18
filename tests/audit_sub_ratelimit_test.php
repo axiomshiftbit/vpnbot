@@ -165,20 +165,40 @@ subRlAssert($bot->subTemplate('origin', 'sing', $bot->pacFake) === null,
 subRlAssert($bot->subTemplate('нет-такого', 'sing', $bot->pacFake) === null,
     'неизвестное имя шаблона откатывается на origin');
 
-// ── 4. subDomain: ?cdn= только валидным хостнеймом ──────────────────────────
-$bot->pacFake = [];
+// ── 4. subDomain: только домены из настроек ─────────────────────────────────
+// Синтаксической проверки мало (аудит 2026-08-18): домен отсюда уезжает в
+// ~domain~/~dns~, в rule-providers mihomo, в createRuleSet() sing-box и в
+// ссылку самообновления подписки. Обладатель чужого sub-URL пересылал жертве
+// тот же URL с &cdn=evil.tld — и её клиент шёл за правилами, DoH и
+// обновлением подписки на хост атакующего.
+$bot->pacFake = [
+    'domain'         => 'sub.example',
+    'domain_aliases' => ['alias.example'],
+    'linkdomain'     => 'cdn.example',
+];
 $_SERVER['SERVER_NAME'] = 'sub.example';
 $_GET['cdn'] = "evil.example'\"><b";
 subRlAssert($bot->subDomain($bot->pacFake) === 'sub.example',
     'мусор в ?cdn= игнорируется: ' . $bot->subDomain($bot->pacFake));
+$_GET['cdn'] = 'evil.example';
+subRlAssert($bot->subDomain($bot->pacFake) === 'sub.example',
+    'ГЛАВНОЕ: синтаксически валидный, но чужой домен в ?cdn= не принимается');
 $_GET['cdn'] = 'cdn.example';
-subRlAssert($bot->subDomain($bot->pacFake) === 'cdn.example', 'валидный cdn принимается');
-$_GET['cdn'] = '1.2.3.4';
-subRlAssert($bot->subDomain($bot->pacFake) === '1.2.3.4', 'голый IP — тоже допустимый хост ссылки');
+subRlAssert($bot->subDomain($bot->pacFake) === 'cdn.example',
+    'настроенный cdn-домен (linkdomain) принимается');
+$_GET['cdn'] = 'ALIAS.example';
+subRlAssert($bot->subDomain($bot->pacFake) === 'alias.example',
+    'алиас домена принимается независимо от регистра');
 unset($_GET['cdn']);
 $_SERVER['SERVER_NAME'] = 'evil"onload=x';
 subRlAssert($bot->subDomain($bot->pacFake) === 'origin.example',
     'мусорный Host тоже отбрасывается');
+$_SERVER['SERVER_NAME'] = 'evil.example';
+subRlAssert($bot->subDomain($bot->pacFake) === 'origin.example',
+    'чужой Host отбрасывается так же, как чужой ?cdn=');
+$_SERVER['SERVER_NAME'] = 'alias.example';
+subRlAssert($bot->subDomain($bot->pacFake) === 'alias.example',
+    'свой Host из списка алиасов принимается');
 unset($_SERVER['SERVER_NAME']);
 subRlAssert($bot->subDomain($bot->pacFake) === 'origin.example', 'фолбэк на домен из конфига');
 

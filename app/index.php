@@ -102,7 +102,19 @@ switch (true) {
 
     // adguard cookie
     case preg_match('~^' . preg_quote("/webapp$hash/check") . '~', $_SERVER['REQUEST_URI']) && $webapp:
-        setcookie('c', $hash, 0, '/');
+        // Флаги обязательны: значение cookie — это публичный hash из ссылок
+        // подписки, и сам по себе он ничего не авторизует (защищает админку
+        // только пароль AdGuard). Но без httponly его читает любой скрипт на
+        // странице, а без samesite он уходит с чужими межсайтовыми запросами.
+        // secure ставим только на HTTPS: на установке без сертификата cookie с
+        // ним просто не сохранится, и вход в админку сломается.
+        setcookie('c', $hash, [
+            'expires'  => 0,
+            'path'     => '/',
+            'httponly' => true,
+            'samesite' => 'Lax',
+            'secure'   => !empty($_SERVER['HTTPS']) || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https',
+        ]);
         echo "/adguard$hash/";
         break;
 
@@ -261,6 +273,23 @@ switch (true) {
                     echo (string) file_get_contents($cache);
                     exit;
                 }
+                // Кэш проверяется ДО работы и пишется ПОСЛЕ, без блокировки:
+                // N параллельных запросов давали N параллельных `git fetch`
+                // (сетевая операция) плюс `git show` — по три форка на запрос,
+                // то есть исчерпание шести воркеров unit и остановку выдачи
+                // подписок вместе с вебхуком бота. Эндпоинт при этом не требует
+                // ни sid, ни subtoken: достаточно знать hash из любой ссылки.
+                //
+                // Ведро лимитера — своё: у changelog нет sid, а общий счётчик
+                // подписок он бы вычерпывал.
+                $bot->subRateLimit('', 'changelog');
+                // Работает ОДИН процесс, остальные отдают что есть. LOCK_NB:
+                // ждать под локом означало бы ровно ту же очередь из воркеров.
+                $h = @fopen($cache . '.lock', 'c');
+                if ($h === false || !flock($h, LOCK_EX | LOCK_NB)) {
+                    echo is_file($cache) ? (string) file_get_contents($cache) : (string) @file_get_contents('/version');
+                    exit;
+                }
                 $b = exec('git -C / rev-parse --abbrev-ref HEAD');
                 exec('git -C / fetch -q 2>/dev/null');
                 $log = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
@@ -268,6 +297,8 @@ switch (true) {
                     $log = @file_get_contents('/version');
                 }
                 @file_put_contents($cache, (string) $log);
+                flock($h, LOCK_UN);
+                fclose($h);
                 echo $log;
                 exit;
 
