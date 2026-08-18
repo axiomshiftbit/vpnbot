@@ -2,14 +2,26 @@
 pwd=$(pwd)
 TELEGRAM_API=$(grep -m1 '^TELEGRAM_API=' "$pwd/.env" 2>/dev/null | cut -d'=' -f2-)
 TELEGRAM_API=${TELEGRAM_API:-api.telegram.org}
-process_name="$pwd/update/update.sh"
-current_pid=$$
-pids=$(pgrep -f "$process_name")
-for pid in $pids; do
-    if [ "$pid" -ne "$current_pid" ]; then
-        kill -9 "$pid"
+# Взаимное исключение через flock, а не через «убить всё похожее».
+# Было: pgrep -f "$pwd/update/update.sh" + kill -9. Это матчило ЛЮБУЮ командную
+# строку с этой подстрокой — `tail -f …/update.sh`, `vim …/update.sh`,
+# `grep … update.sh` — и убивало их. Хуже: kill -9 прилетал работающему
+# экземпляру в любой момент, в том числе посреди `git reset --hard` или
+# `docker compose down`, оставляя дерево и контейнеры в промежуточном
+# состоянии, а update_pid — указывающим на труп.
+#
+# -w 10, а не -n: в конце цикла скрипт перезапускает сам себя
+# (`bash update.sh &` + exit), и ребёнок обязан дождаться, пока родитель
+# отпустит лок. Настоящий второй экземпляр столько не ждёт и просто выходит.
+# Если flock в системе нет (util-linux не установлен), работаем как раньше —
+# лучше без лока, чем не запуститься вовсе.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$pwd/update/.lock"
+    if ! flock -w 10 9; then
+        echo "update.sh: другой экземпляр уже работает, выходим" >&2
+        exit 0
     fi
-done
+fi
 
 : > "$pwd/update/pipe"
 echo "$$" > "$pwd/update/update_pid"

@@ -94,13 +94,66 @@ warp_disabled() {
     [ "$(jq -r '.warpoff // empty' /config/pac.json 2>/dev/null)" = "1" ]
 }
 
+# Kill-switch: microsocks поднимается ТОЛЬКО при живом туннеле.
+#
+# Раньше прокси слушал :1080 независимо от состояния wgcf-profile, а правила
+# iptables ниже ограничивают лишь ВХОД в прокси, не выход из контейнера. Когда
+# туннеля нет, у контейнера остаётся обычный default route через docker-bridge,
+# и весь трафик, отправленный xray в outbound «warp», уходил с ПУБЛИЧНОГО IP
+# сервера. Молча: соединения проходят успешно, просто с другим адресом, в
+# логах ничего. Для того, кто включил маршрут «через WARP» ради смены гео или
+# сокрытия IP сервера, это тихая деанонимизация. Окон было три: bounce сторожа
+# (down → up), неудачный up (код возврата не проверялся при set +e) и
+# warpoff/сбой на старте.
+#
+# Теперь при отсутствии туннеля порт просто закрыт: соединение к прокси
+# отвергается, xray помечает outbound нерабочим — отказ вместо утечки.
+WGCF_IF="$(basename "$WGCF_CONF" .conf)"
+
+tunnel_up() {
+    wg show "$WGCF_IF" >/dev/null 2>&1
+}
+
+# Поднять туннель и дождаться РЕАЛЬНОГО рукопожатия: `wg-quick up` возвращает
+# успех, даже когда endpoint не отвечает.
+warp_up() {
+    wg-quick up "$WGCF_CONF" || return 1
+    i=0
+    while [ "$i" -lt 15 ]; do
+        hs=$(wg show "$WGCF_IF" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -n | tail -1)
+        if [ -n "$hs" ] && [ "$hs" -gt 0 ] 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+MS_PID=""
+socks_running() {
+    [ -n "$MS_PID" ] && kill -0 "$MS_PID" 2>/dev/null
+}
+socks_start() {
+    socks_running && return 0
+    echo "[warp] Starting microsocks on port $SOCKS_PORT..."
+    microsocks -p "$SOCKS_PORT" &
+    MS_PID=$!
+}
+socks_stop() {
+    socks_running || return 0
+    echo "[warp] Stopping microsocks: туннеля нет, выпускать трафик мимо WARP нельзя"
+    kill "$MS_PID" 2>/dev/null
+    MS_PID=""
+}
+
 # best-effort down: чистит хвосты (интерфейс/маршруты) после нештатного рестарта
 wg-quick down "$WGCF_CONF" 2>/dev/null || true
 if warp_disabled; then
     echo "[warp] disabled via warpoff in pac.json — tunnel not started"
 else
     echo "[warp] Starting WireGuard (WARP)..."
-    wg-quick up "$WGCF_CONF"
+    warp_up || echo "[warp] tunnel did NOT come up — SOCKS остаётся закрытым до восстановления"
 fi
 
 # DNS контейнера — через туннель. Пишем напрямую, без resolvconf (он в docker
@@ -128,9 +181,11 @@ for ip in $SOCKS_ALLOW; do
 done
 iptables -A WARP_SOCKS -j DROP
 
-echo "[warp] Starting microsocks on port $SOCKS_PORT..."
-microsocks -p "$SOCKS_PORT" &
-MS_PID=$!
+if tunnel_up; then
+    socks_start
+else
+    echo "[warp] SOCKS не запущен: нет туннеля WARP (см. kill-switch выше)"
+fi
 
 # ---- watchdog ----
 # Раз в 60с — warp_probe.sh (общий с healthcheck'ом): trace Cloudflare через
@@ -146,16 +201,32 @@ FAILS=0
 BOUNCES=0
 while true; do
     sleep 60
-    if ! kill -0 "$MS_PID" 2>/dev/null; then
-        echo "[warp] microsocks died — restarting..."
-        microsocks -p "$SOCKS_PORT" &
-        MS_PID=$!
-    fi
-    # Выключен намеренно — сторожу тут делать нечего.
+    # Выключен намеренно — туннеля быть не должно, а значит и прокси тоже.
     if warp_disabled; then
+        socks_stop
         FAILS=0
         BOUNCES=0
         continue
+    fi
+    # Туннель лежит (не поднялся на старте или сдох): пробу гонять бесполезно,
+    # она идёт ЧЕРЕЗ прокси, а прокси мы держим закрытым. Сначала поднимаем.
+    if ! tunnel_up; then
+        if warp_up; then
+            socks_start
+            FAILS=0
+        else
+            BOUNCES=$((BOUNCES + 1))
+            echo "[warp] tunnel still down (attempt $BOUNCES/3)"
+            if [ "$BOUNCES" -gt 3 ]; then
+                echo "[warp] tunnel did not recover after 3 restarts — exiting for container restart"
+                exit 1
+            fi
+            continue
+        fi
+    fi
+    if ! socks_running; then
+        echo "[warp] microsocks died — restarting..."
+        socks_start
     fi
     if sh /warp_probe.sh; then
         FAILS=0
@@ -171,8 +242,15 @@ while true; do
             exit 1
         fi
         echo "[warp] restarting tunnel (bounce $BOUNCES/3)..."
+        # Прокси гасим НА ВРЕМЯ пере-поднятия: именно в это окно трафик уходил
+        # мимо туннеля с публичного IP сервера.
+        socks_stop
         wg-quick down "$WGCF_CONF" 2>/dev/null
-        wg-quick up "$WGCF_CONF"
+        if warp_up; then
+            socks_start
+        else
+            echo "[warp] bounce failed — SOCKS остаётся закрытым"
+        fi
         FAILS=0
     fi
 done

@@ -62,7 +62,13 @@ PSK=$(cat "$CONF/psk" 2>/dev/null)
 # CA на 10 лет; клиенты получают ca.crt внутри профиля (.mobileconfig/.sswan)
 # от бота. Никакой зависимости от домена/Let's Encrypt.
 command -v pki >/dev/null 2>&1 || log "MISSING pki binary — strongswan package broken?"
-if [ ! -f "$PKI/ca.key" ] || [ ! -f "$PKI/ca.crt" ]; then
+# -s, а не -f: редирект `>` создаёт файл ДО запуска pki, поэтому при любой
+# ошибке генерации (или отсутствии бинаря, см. проверку выше) на диске
+# оставались два файла нулевой длины. С проверкой на существование блок больше
+# никогда не выполнялся, каждый старт бессмысленно выпускал server.crt из
+# пустого CA, и IKEv2 не поднимался вообще — лечилось только ручным rm.
+# С -s пустышки считаются отсутствующими и перегенерируются сами.
+if [ ! -s "$PKI/ca.key" ] || [ ! -s "$PKI/ca.crt" ]; then
     rm -f "$PKI/ca.key" "$PKI/ca.crt" "$PKI/server.key" "$PKI/server.crt"
     log "generate CA"
     pki --gen --type rsa --size 3072 --outform pem > "$PKI/ca.key" 2>>"$LOG" \
@@ -77,14 +83,14 @@ fi
 # При смене IP сервера серт перевыпускается автоматически (CA остаётся —
 # развёрнутые клиентские профили продолжают работать).
 SAN_OK=0
-if [ -f "$PKI/server.crt" ] && [ -f "$PKI/server.key" ] && [ -n "$IP" ]; then
+if [ -s "$PKI/server.crt" ] && [ -s "$PKI/server.key" ] && [ -n "$IP" ]; then
     if openssl x509 -in "$PKI/server.crt" -noout -text 2>/dev/null | grep -q "IP Address:$IP"; then
         if [ -z "$DOMAIN" ] || openssl x509 -in "$PKI/server.crt" -noout -text 2>/dev/null | grep -q "DNS:$DOMAIN"; then
             SAN_OK=1
         fi
     fi
 fi
-if [ "$SAN_OK" != "1" ] && [ -f "$PKI/ca.key" ] && [ -n "$IP" ]; then
+if [ "$SAN_OK" != "1" ] && [ -s "$PKI/ca.key" ] && [ -n "$IP" ]; then
     log "issue server cert (SAN: $IP${DOMAIN:+, $DOMAIN})"
     pki --gen --type rsa --size 3072 --outform pem > "$PKI/server.key" 2>>"$LOG" \
         || log "server key FAILED"

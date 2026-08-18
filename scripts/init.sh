@@ -6,10 +6,27 @@ REPO_URL="https://github.com/axiomshiftbit/vpnbot.git"
 INSTALL_DIR="/root/vpnbot"
 ARCHIVE_NAME="vpnbot.zip"
 
-KEY="${1:?usage: sudo bash init.sh <TG_BOT_KEY> [BRANCH]}"
+# Ключ бота предпочтительно передавать окружением: позиционный аргумент виден
+# в `ps` ВСЕМ процессам хоста на всё время работы скрипта и остаётся в
+# ~/.bash_history root'а. Форма с аргументом сохранена для совместимости с уже
+# опубликованными командами установки, но предупреждает.
 # Стабильный релиз живёт в master, разработка — в dev. Поддерживаются только
 # эти две ветки — и для установки из git, и для установки из архива.
-BRANCH="${2:-master}"
+KEY="${VPNBOT_KEY:-}"
+if [ -n "$KEY" ]; then
+    BRANCH="${1:-master}"
+else
+    KEY="${1:-}"
+    BRANCH="${2:-master}"
+    if [ -n "$KEY" ]; then
+        echo "WARN: ключ бота передан аргументом — он виден в ps и остаётся в history." >&2
+        echo "      Предпочтительно:  VPNBOT_KEY=<key> bash init.sh [BRANCH]" >&2
+    fi
+fi
+if [ -z "$KEY" ]; then
+    echo "usage: sudo VPNBOT_KEY=<TG_BOT_KEY> bash init.sh [BRANCH]" >&2
+    exit 1
+fi
 
 case "$BRANCH" in
     master|dev) ;;
@@ -26,17 +43,35 @@ fi
 
 # Репозиторий приватный: установка из git и последующие обновления (update.sh
 # делает git fetch/pull) требуют GitHub-токена с read-доступом к axiomshiftbit/vpnbot.
-# Токен передаётся через переменную окружения GH_TOKEN (или VPNBOT_TOKEN) и
-# нигде не логируется. При установке из архива токен не нужен.
+# Токен передаётся через переменную окружения GH_TOKEN (или VPNBOT_TOKEN).
+# При установке из архива токен не нужен.
 TOKEN="${GH_TOKEN:-${VPNBOT_TOKEN:-}}"
 
-repo_clone_url() {
+# Токен НЕ вшивается в URL origin. Раньше origin выглядел как
+# https://x-access-token:<pat>@github.com/... — и это значило: PAT в открытом
+# виде навсегда в /root/vpnbot/.git/config (его показывает любой `git remote -v`
+# и любой бэкап каталога), PAT в argv на время clone/fetch/pull (виден в `ps`
+# всем процессам хоста), PAT в сообщениях об ошибках git.
+# Вместо этого — стандартный credential.helper store с файлом 0600 вне репозитория:
+# origin остаётся чистым, а update.sh продолжает тянуть обновления без ввода.
+CRED_FILE="/root/.vpnbot-git-credentials"
+
+setup_git_credentials() {
+    [ -n "$TOKEN" ] || return 0
+    ( umask 077; printf 'https://x-access-token:%s@github.com\n' "$TOKEN" > "$CRED_FILE" )
+    chmod 600 "$CRED_FILE"
+}
+
+git_cred_opt() {
     if [ -n "$TOKEN" ]; then
-        # x-access-token:<pat> — стандартная схема https-аутентификации GitHub.
-        printf 'https://x-access-token:%s@github.com/axiomshiftbit/vpnbot.git' "$TOKEN"
+        printf 'credential.helper=store --file=%s' "$CRED_FILE"
     else
-        printf '%s' "$REPO_URL"
+        printf 'credential.helper='
     fi
+}
+
+repo_clone_url() {
+    printf '%s' "$REPO_URL"
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,10 +175,15 @@ install_from_git() {
         echo "or place $ARCHIVE_NAME next to this script for offline archive install" >&2
         exit 1
     fi
+    setup_git_credentials
     if [ -d "$INSTALL_DIR/.git" ]; then
         echo "repo already exists at $INSTALL_DIR, pulling latest..."
-        # обновляем origin токенизированным URL, чтобы fetch/pull прошли по приватному репо
+        # Чистый origin + credential.helper в конфиге репозитория. set-url здесь
+        # ещё и ЛЕЧИТ установки, где в origin остался вшитый PAT.
         git -C "$INSTALL_DIR" remote set-url origin "$(repo_clone_url)"
+        if [ -n "$TOKEN" ]; then
+            git -C "$INSTALL_DIR" config credential.helper "store --file=$CRED_FILE"
+        fi
         git -C "$INSTALL_DIR" fetch origin "$BRANCH"
         git -C "$INSTALL_DIR" checkout "$BRANCH"
         git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
@@ -152,8 +192,13 @@ install_from_git() {
         echo "place $ARCHIVE_NAME next to this script for archive-mode update, or remove $INSTALL_DIR" >&2
         exit 1
     else
-        # origin сохранит токенизированный URL — update.sh сможет тянуть обновления приватного репо
-        git clone --branch "$BRANCH" "$(repo_clone_url)" "$INSTALL_DIR"
+        # -c ...=store --file=… в argv — это путь, а не секрет; сам токен лежит
+        # в файле 0600. После клона тот же helper прописывается в конфиг репо,
+        # чтобы update.sh тянул обновления приватного репозитория без ввода.
+        git -c "$(git_cred_opt)" clone --branch "$BRANCH" "$(repo_clone_url)" "$INSTALL_DIR"
+        if [ -n "$TOKEN" ]; then
+            git -C "$INSTALL_DIR" config credential.helper "store --file=$CRED_FILE"
+        fi
     fi
 }
 

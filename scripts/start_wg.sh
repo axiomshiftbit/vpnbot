@@ -7,7 +7,9 @@ ssh-keygen -A
 exec /usr/sbin/sshd -D -e "$@" &
 
 INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
-if [ "$(wc -c < /etc/wireguard/wg0.conf)" -eq 0 ]
+# -f обязателен: если хостового config/wg0.conf нет, docker создаёт на его
+# месте КАТАЛОГ, и `wc -c <` падает, а `[ "" -eq 0 ]` — это ошибка ash.
+if [ ! -f /etc/wireguard/wg0.conf ] || [ "$(wc -c < /etc/wireguard/wg0.conf)" -eq 0 ]
 then
     PRIVATEKEY=$(wg genkey | tee /etc/wireguard/privatekey)
     echo "[Interface]" > /etc/wireguard/wg0.conf
@@ -15,9 +17,28 @@ then
     echo "Address = $ADDRESS" >> /etc/wireguard/wg0.conf
     echo "ListenPort = 51820" >> /etc/wireguard/wg0.conf
 else
-    sed "s/ListenPort = [0-9]\+/ListenPort = 51820/" /etc/wireguard/wg0.conf > change_port
-    sed "s|Address = [0-9\.\/ ]\+|Address = $ADDRESS|" change_port > change_address
-    cat change_address > /etc/wireguard/wg0.conf
+    # Одной операцией во временный файл, и только потом — по месту.
+    # Раньше здесь были два файла-полуфабриката (change_port/change_address) в
+    # корне контейнера: WORKDIR в wireguard.dockerfile не задан. Проблем было
+    # две. Первая: `> /etc/wireguard/wg0.conf` усекает ХОСТОВЫЙ config/wg0.conf
+    # (файловый bind-mount) ДО запуска cat, поэтому сбой sed или ENOSPC на /
+    # обнулял файл вместе с приватным ключом сервера и всеми пирами —
+    # восстановить нечем, clients.json серверный ключ не хранит. Вторая:
+    # полуфабрикаты переживают docker restart, и при сбое первого sed в конфиг
+    # молча возвращалась прошлая версия (удалённые клиенты воскресали).
+    # cat > , а не mv: инод прибит bind-mount'ом, rename его подменит и
+    # контейнер навсегда останется на старом файле.
+    tmp=$(mktemp) || exit 1
+    if [ -n "$ADDRESS" ]; then
+        sed -e 's/ListenPort = [0-9]\+/ListenPort = 51820/' \
+            -e "s|Address = [0-9./ ]\+|Address = $ADDRESS|" \
+            /etc/wireguard/wg0.conf > "$tmp"
+    else
+        # Пустой $ADDRESS затёр бы адрес интерфейса — правим только порт.
+        sed -e 's/ListenPort = [0-9]\+/ListenPort = 51820/' /etc/wireguard/wg0.conf > "$tmp"
+    fi
+    [ -s "$tmp" ] && cat "$tmp" > /etc/wireguard/wg0.conf
+    rm -f "$tmp"
 fi
 iptables -t nat -A POSTROUTING --destination 10.10.0.5 -j ACCEPT
 iptables -t nat -A POSTROUTING -o "$INTERFACE" -j MASQUERADE

@@ -1,8 +1,13 @@
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A
 exec /usr/sbin/sshd -D -e "$@" &
-sed "s/\"server_port\": [0-9]\+/\"server_port\": 8388/" /config.json > change_port
-cat change_port > /config.json
+# Через временный файл, а не через полуфабрикат в корне контейнера: /config.json
+# это файловый bind-mount на config/ssserver.json (там пароль SS), и редирект
+# усекал бы хостовый файл ещё до записи. cat > , а не mv — инод держит mount.
+tmp=$(mktemp) || exit 1
+sed 's/"server_port": [0-9]\+/"server_port": 8388/' /config.json > "$tmp"
+[ -s "$tmp" ] && cat "$tmp" > /config.json
+rm -f "$tmp"
 ssserver -v -d -c /config.json
 
 # Cloak (ck-server) рядом с ssserver: терминирует TLS на $CKPORT и

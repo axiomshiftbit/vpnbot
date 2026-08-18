@@ -44,11 +44,36 @@ warpAssert(strpos($startWp, 'iptables -I INPUT -p tcp --dport "$SOCKS_PORT" -j W
 warpAssert(strpos($startWp, 'iptables -C INPUT -p tcp --dport "$SOCKS_PORT" -j WARP_SOCKS') !== false, 'переход не дублируется при рестарте');
 warpAssert(strpos($startWp, 'iptables -F WARP_SOCKS') !== false, 'цепочка очищается перед наполнением — правила не копятся');
 // Фильтр должен подниматься ДО самого microsocks, иначе есть окно, когда
-// прокси уже слушает, а ограничений ещё нет.
+// прокси уже слушает, а ограничений ещё нет. Запуск теперь идёт через
+// socks_start(), поэтому сравниваем с местом ВЫЗОВА, а не определения функции.
 warpAssert(
-    strpos($startWp, 'iptables -A WARP_SOCKS -j DROP') < strpos($startWp, 'microsocks -p "$SOCKS_PORT" &'),
+    strpos($startWp, 'iptables -A WARP_SOCKS -j DROP') < strpos($startWp, 'if tunnel_up; then'),
     'фильтр ставится раньше запуска microsocks'
 );
+
+// ── 1b. Kill-switch: прокси живёт только вместе с туннелем ─────────────────
+// microsocks слушал независимо от состояния wgcf-profile, а правила выше
+// ограничивают только ВХОД в прокси. Без туннеля у контейнера остаётся
+// обычный default route через docker-bridge, и трафик xray из outbound «warp»
+// уходил с публичного IP сервера — молча, без следа в логах.
+warpAssert(strpos($startWp, 'socks_start()') !== false && strpos($startWp, 'socks_stop()') !== false,
+    'запуск и остановка прокси вынесены в функции');
+warpAssert((bool) preg_match('~if tunnel_up; then\s*\n\s*socks_start~', $startWp),
+    'на старте прокси поднимается только при живом туннеле');
+warpAssert(strpos($startWp, 'warp_up || echo') !== false,
+    'код возврата поднятия туннеля на старте проверяется');
+warpAssert((bool) preg_match('~warp_up\(\)[^}]*wg-quick up "\$WGCF_CONF" \|\| return 1~s', $startWp),
+    'warp_up() возвращает ошибку, если wg-quick не отработал');
+warpAssert(strpos($startWp, 'latest-handshakes') !== false && strpos($startWp, 'warp_up()') !== false,
+    'warp_up() ждёт настоящего рукопожатия: wg-quick up успешен и при мёртвом endpoint');
+// Именно окно bounce'а и было главной утечкой.
+warpAssert(
+    strpos($startWp, 'socks_stop') < strpos($startWp, 'wg-quick down "$WGCF_CONF" 2>/dev/null
+        if warp_up; then'),
+    'при пере-поднятии туннеля прокси гасится ДО wg-quick down'
+);
+warpAssert((bool) preg_match('~if warp_disabled; then\s*\n\s*socks_stop~', $startWp),
+    'при warpoff прокси закрыт: отказ вместо выхода мимо туннеля');
 
 // ── 2. Allowlist: резолв, фолбэк, override ─────────────────────────────────
 // Логика `${WARP_SOCKS_ALLOW:-${XRAY_IPS:-10.10.0.9}}` — проверяем её на sh.

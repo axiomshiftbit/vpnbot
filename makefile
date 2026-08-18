@@ -40,7 +40,9 @@ start: pull # запуск контейнеров
 	IP=$(IP) VER=$(VER) docker compose --env-file ./.env --env-file ./override.env up -d --force-recreate
 u: preup start
 d: # остановка контейнеров
-	-kill -9 $(shell cat ./update/update_pid) > /dev/null
+	# Через скрипт: PID из update_pid переиспользуются, и голый kill -9 после
+	# ребута уходил произвольному процессу. См. scripts/stop_update.sh.
+	-sh ./scripts/stop_update.sh ./update/update_pid
 	docker compose down --remove-orphans
 dv: # остановка контейнеров
 	docker compose down -v
