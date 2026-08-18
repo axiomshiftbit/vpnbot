@@ -8,7 +8,8 @@
 // (vless/vmess/trojan). Любой обладатель подписки доходил до control API unit
 // (10.10.0.7:8080, без аутентификации, приложения от root), до веб-панели и до
 // sshd контейнеров. Здесь проверяется, что гейт покрывает ВСЕ inbound'ы
-// конфига, кроме служебного 'api', и что старые узкие копии снимаются.
+// конфига, кроме служебного 'api', но сохраняет единственный намеренный путь
+// внешнего клиента к WARP SOCKS 10.10.0.13:1080. Старые копии снимаются.
 
 require_once __DIR__ . '/../app/bot.php';
 
@@ -43,17 +44,24 @@ $r = $c['routing']['rules'];
 guardAssert(($r[0]['ip'] ?? null) === [Bot::INTERNAL_DNS] && ($r[0]['port'] ?? '') === '53'
     && ($r[0]['outboundTag'] ?? '') === 'direct',
     'первым идёт allow внутреннего DNS');
-guardAssert(($r[1]['ip'] ?? null) === [Bot::DOCKER_NET] && ($r[1]['outboundTag'] ?? '') === 'block',
-    'вторым — блок docker-сети');
-guardAssert(in_array('vless_tls', $r[1]['inboundTag'] ?? [], true),
+guardAssert(($r[1]['ip'] ?? null) === [Bot::WARP_SOCKS_IP]
+    && ($r[1]['port'] ?? '') === Bot::WARP_SOCKS_PORT
+    && ($r[1]['network'] ?? '') === 'tcp'
+    && ($r[1]['outboundTag'] ?? '') === 'direct',
+    'вторым идёт точечный allow клиентского WARP SOCKS');
+guardAssert(($r[1]['inboundTag'] ?? null) === ['vless_tls'],
+    'WARP SOCKS разрешён только внешнему клиентскому inbound');
+guardAssert(($r[2]['ip'] ?? null) === [Bot::DOCKER_NET] && ($r[2]['outboundTag'] ?? '') === 'block',
+    'третьим — блок всей docker-сети');
+guardAssert(in_array('vless_tls', $r[2]['inboundTag'] ?? [], true),
     'ГЛАВНОЕ: клиентский inbound vless_tls закрыт от docker-сети');
-guardAssert(in_array('wg-in', $r[1]['inboundTag'] ?? [], true),
+guardAssert(in_array('wg-in', $r[2]['inboundTag'] ?? [], true),
     'внутренний socks клиентов wg остался закрыт');
-guardAssert(!in_array('api', $r[1]['inboundTag'] ?? [], true),
+guardAssert(!in_array('api', $r[2]['inboundTag'] ?? [], true),
     'служебный api-inbound гейтом не трогается');
-guardAssert(($r[0]['inboundTag'] ?? null) === ($r[1]['inboundTag'] ?? null),
+guardAssert(($r[0]['inboundTag'] ?? null) === ($r[2]['inboundTag'] ?? null),
     'allow и block навешаны на один и тот же набор тегов');
-guardAssert(($r[2]['domain'] ?? null) === ['example.com'],
+guardAssert(($r[3]['domain'] ?? null) === ['example.com'],
     'пользовательское правило сохранено и ушло вниз');
 guardAssert(in_array('block', array_column($c['outbounds'], 'tag'), true),
     'blackhole-outbound добавлен: правило на несуществующий тег молча теряет смысл');
@@ -76,9 +84,10 @@ $legacy = $mk(['vless_tls', 'wg-in'], [
 ]);
 $bot->ensureWgGuard($legacy);
 $guards = array_values(array_filter($legacy['routing']['rules'],
-    static fn($r) => ($r['ip'] ?? null) === [Bot::DOCKER_NET] || ($r['ip'] ?? null) === [Bot::INTERNAL_DNS]));
-guardAssert(count($guards) === 2, 'старая узкая копия снята, а не оставлена дублем');
-guardAssert(in_array('vless_tls', $guards[1]['inboundTag'] ?? [], true),
+    static fn($r) => in_array($r['ip'] ?? null,
+        [[Bot::DOCKER_NET], [Bot::INTERNAL_DNS], [Bot::WARP_SOCKS_IP]], true)));
+guardAssert(count($guards) === 3, 'старая узкая копия снята, а не оставлена дублем');
+guardAssert(in_array('vless_tls', $guards[2]['inboundTag'] ?? [], true),
     'гейт перевыставлен на полный набор тегов');
 
 // ── 4. Гейт восстанавливается после xrayUpdateRules ─────────────────────────
@@ -87,6 +96,8 @@ $c['routing']['rules'] = [['type' => 'field', 'outboundTag' => 'warp', 'ip' => [
 $bot->ensureWgGuard($c);
 guardAssert(($c['routing']['rules'][0]['ip'] ?? null) === [Bot::INTERNAL_DNS],
     'после перезаписи правил гейт снова впереди пользовательских');
+guardAssert(($c['routing']['rules'][1]['ip'] ?? null) === [Bot::WARP_SOCKS_IP],
+    'после перезаписи правил исключение WARP SOCKS восстановлено');
 
 // ── 5. Вырожденные конфиги ──────────────────────────────────────────────────
 $empty = $mk([]);
@@ -115,6 +126,17 @@ $bot->ensureWgGuard($custom);
 guardAssert((bool) array_filter($custom['routing']['rules'],
     static fn($r) => ($r['ip'] ?? null) === [Bot::DOCKER_NET] && ($r['outboundTag'] ?? '') === 'warp'),
     'пользовательское правило про docker-сеть с другим outbound сохранено');
+
+// Внутренние socks-inbound'ы ведут обычный VPN-трафик к серверному outbound
+// warp и не должны получать прямой доступ к microsocks. Исключение существует
+// только ради warpSOCKS5 с detour через внешний VLESS.
+$internal = $mk(['wg-in', 'socks-in']);
+$bot->ensureWgGuard($internal);
+guardAssert(!array_filter($internal['routing']['rules'],
+    static fn($r) => ($r['ip'] ?? null) === [Bot::WARP_SOCKS_IP]),
+    'wg-in/socks-in не получают исключение WARP SOCKS');
+guardAssert(($internal['routing']['rules'][1]['ip'] ?? null) === [Bot::DOCKER_NET],
+    'для внутренних socks сразу после DNS остаётся общий block docker-сети');
 
 if ($failed) {
     echo "audit_docker_guard_test FAILED ($failed)\n";

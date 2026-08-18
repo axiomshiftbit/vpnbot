@@ -2225,6 +2225,12 @@ class Bot
     // Внутренний DNS, который бот сам прописывает клиентам кнопкой
     // «set internal dns» — единственное, что клиенту в этой подсети нужно.
     public const INTERNAL_DNS = '10.10.0.5/32';
+    // Sing-box-шаблоны заводят outbound warpSOCKS5 как 10.10.0.13:1080 с
+    // detour через основной VLESS. Это не произвольный доступ в docker-сеть:
+    // ровно этот адрес закреплён за wp в compose, а сам microsocks дополнительно
+    // принимает соединения только от xr (см. WARP_SOCKS в start_wp.sh).
+    public const WARP_SOCKS_IP   = '10.10.0.13/32';
+    public const WARP_SOCKS_PORT = '1080';
 
     // Внутренние socks-inbound'ы без авторизации, слушающие в docker-сети.
     // 'wg-in' (10808) создаёт restartXray() — в него tun2socks отдаёт трафик
@@ -2265,11 +2271,15 @@ class Bot
     // вычетом GUARD_EXEMPT_TAGS.
     //
     // Режем ровно docker-сеть (остальное приватное пространство уже закрыто
-    // finalRules у freedom) и оставляем одну дырку — внутренний DNS.
-    // Клиентские подсети и маршруты в LAN пользователя не затрагиваются.
-    // Аутбаунд warp не задет: правила routing матчат НАЗНАЧЕНИЕ клиентского
-    // соединения, а до microsocks (10.10.0.13) ядро дозванивается уже после
-    // выбора аутбаунда, мимо routing.rules.
+    // finalRules у freedom) и оставляем две точечные дырки: внутренний DNS и
+    // WARP SOCKS. Вторая нужна только внешним клиентским inbound'ам: sing-box
+    // подключает warpSOCKS5 к 10.10.0.13:1080 с detour через VLESS, поэтому
+    // Xray видит именно клиентское НАЗНАЧЕНИЕ 10.10.0.13:1080. Аудитный гейт
+    // d47438b ошибочно считал этот дозвон внутренней работой outbound и начал
+    // отправлять его в blackhole; sing-box получал EOF на каждом WARP-домене.
+    // wg-in/socks-in исключение не получают: их клиенты используют серверное
+    // правило outboundTag=warp и напрямую к microsocks ходить не должны.
+    // Остальные адреса/порты docker-сети, включая panel/API/sshd, закрыты.
     //
     // Правила ставим В НАЧАЛО: xray берёт первое совпавшее, и пользовательские
     // block/warp-списки (xrayUpdateRules) не должны их обгонять. Матчим по
@@ -2289,6 +2299,7 @@ class Bot
             }
             $tags[] = $t;
         }
+        $warpTags = array_values(array_diff($tags, self::INTERNAL_SOCKS_TAGS));
 
         // Снимаем прежние копии гейта — их inboundTag почти наверняка у́же
         // нынешнего (до аудита 2026-08-18 там были только wg-in/socks-in),
@@ -2303,6 +2314,9 @@ class Bot
             $isGuard = $in !== [] && (
                 ($ip === [self::DOCKER_NET] && $out === 'block')
                 || ($ip === [self::INTERNAL_DNS] && $out === 'direct' && (string) ($r['port'] ?? '') === '53')
+                || ($ip === [self::WARP_SOCKS_IP] && $out === 'direct'
+                    && (string) ($r['port'] ?? '') === self::WARP_SOCKS_PORT
+                    && (string) ($r['network'] ?? '') === 'tcp')
             );
             if (!$isGuard) {
                 $rules[] = $r;
@@ -2327,25 +2341,32 @@ class Bot
             $c['outbounds'][] = ['protocol' => 'blackhole', 'tag' => 'block'];
         }
 
-        // Порядок: allow внутреннего DNS обязан стоять перед блоком подсети —
-        // xray берёт первое совпавшее правило.
-        array_unshift(
-            $rules,
-            [
+        // Порядок: оба точечных allow обязаны стоять перед блоком подсети —
+        // Xray берёт первое совпавшее правило.
+        $guards = [[
                 'type'        => 'field',
                 'inboundTag'  => $tags,
                 'ip'          => [self::INTERNAL_DNS],
                 'port'        => '53',
                 'outboundTag' => 'direct',
-            ],
-            [
+        ]];
+        if ($warpTags !== []) {
+            $guards[] = [
+                'type'        => 'field',
+                'inboundTag'  => $warpTags,
+                'ip'          => [self::WARP_SOCKS_IP],
+                'port'        => self::WARP_SOCKS_PORT,
+                'network'     => 'tcp',
+                'outboundTag' => 'direct',
+            ];
+        }
+        $guards[] = [
                 'type'        => 'field',
                 'inboundTag'  => $tags,
                 'ip'          => [self::DOCKER_NET],
                 'outboundTag' => 'block',
-            ]
-        );
-        $c['routing']['rules'] = $rules;
+        ];
+        $c['routing']['rules'] = array_merge($guards, $rules);
     }
 
     // Дотягивает sockopt.trustedXForwardedFor на клиентский inbound, если его
