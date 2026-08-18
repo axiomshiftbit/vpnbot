@@ -58,9 +58,24 @@ if [ ! -f "$WGCF_TOML" ]; then
     retry wgcf register --accept-tos
     if [ -n "$WARP_LICENSE_KEY" ]; then
         echo "[warp] Applying license key..."
-        # Заменяем license_key в wgcf-account.toml на WARP_LICENSE_KEY
+        # Заменяем license_key в wgcf-account.toml на WARP_LICENSE_KEY.
+        # Через awk с -v, а не через sed-интерполяцию: значение приходит из
+        # pac.json (его вводит пользователь в боте) и попадало прямо в ТЕЛО
+        # sed-выражения — символы /, & и \ ломали выражение или подставляли не
+        # тот текст, причём код возврата не проверялся, и следующий
+        # `wgcf update` тихо уходил со старым ключом. Плюс ключ переставал
+        # светиться в argv (`ps` внутри контейнера).
         if grep -q '^license_key' "$WGCF_TOML"; then
-            sed -i "s/^license_key.*/license_key = \"$WARP_LICENSE_KEY\"/" "$WGCF_TOML"
+            tmp_toml="$WGCF_TOML.tmp.$$"
+            if LK="$WARP_LICENSE_KEY" awk '
+                    /^license_key/ { printf "license_key = \"%s\"\n", ENVIRON["LK"]; next }
+                    { print }
+                ' "$WGCF_TOML" > "$tmp_toml" && [ -s "$tmp_toml" ]; then
+                cat "$tmp_toml" > "$WGCF_TOML"
+            else
+                echo "[warp] WARNING: не удалось подставить license key — оставляем прежний"
+            fi
+            rm -f "$tmp_toml"
         fi
         # Провал update (невалидный/исчерпанный ключ) НЕ фатален: иначе скрипт
         # умирал до generate, рестартился, на втором проходе блок пропускался

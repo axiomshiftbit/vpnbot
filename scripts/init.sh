@@ -119,10 +119,41 @@ else
     echo "WARN: kernel module l2tp_ppp unavailable — L2TP won't work; IKEv2 still fine" >&2
 fi
 
+# Docker ставим из официального apt-репозитория с проверкой ключа, а не
+# `curl https://get.docker.com | sh`. Тот скрипт исполнялся root'ом без сверки
+# подписи или контрольной суммы (-f защищает только от HTTP-ошибок), то есть
+# компрометация домена, MITM с доверенным CA или подмена DNS давали мгновенный
+# root-RCE на каждой новой инсталляции. Установка и так рассчитана на
+# Debian/Ubuntu — выше безусловный apt.
 if ! command -v docker >/dev/null 2>&1; then
-    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-    sh /tmp/get-docker.sh
-    rm -f /tmp/get-docker.sh
+    # Отпечаток официального ключа Docker. Сверяем ЯВНО: без этого «ключ из
+    # интернета» проверяет сам себя и смысла в подписи нет.
+    DOCKER_GPG_FPR='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
+    install -m 0755 -d /etc/apt/keyrings
+    distro_id="$(. /etc/os-release && echo "$ID")"
+    distro_codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")"
+    case "$distro_id" in
+        ubuntu|debian) ;;
+        *)
+            echo "WARN: неизвестный дистрибутив '$distro_id' — ставим docker из репозитория debian" >&2
+            distro_id=debian
+            ;;
+    esac
+    curl -fsSL "https://download.docker.com/linux/$distro_id/gpg" -o /tmp/docker.asc
+    gpg --dearmor < /tmp/docker.asc > /etc/apt/keyrings/docker.gpg
+    got_fpr="$(gpg --show-keys --with-colons --fingerprint /tmp/docker.asc \
+        | awk -F: '/^fpr:/ {print $10; exit}')"
+    rm -f /tmp/docker.asc
+    if [ "$got_fpr" != "$DOCKER_GPG_FPR" ]; then
+        echo "FATAL: отпечаток ключа docker не совпал: $got_fpr" >&2
+        rm -f /etc/apt/keyrings/docker.gpg
+        exit 1
+    fi
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$distro_id $distro_codename stable" \
+        > /etc/apt/sources.list.d/docker.list
+    apt update
+    apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 
 install_from_archive() {

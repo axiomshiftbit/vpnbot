@@ -30,6 +30,23 @@ elif [ "$HOSTNAME" = "wireguard1" ]; then
 else
     [ "$(jq -r '.amnezia // 0' "$PAC" 2>/dev/null)" = "1" ] && WG=awg || WG=wg
 fi
+# $1 и $2 попадают в wg0.conf, а строка PostUp исполняется wg-quick как
+# КОМАНДА ОТ ROOT при каждом подъёме интерфейса — и остаётся в хостовом
+# config/wg0.conf (bind-mount). Адрес вида «10.0.1.1/24; curl …|sh» давал бы
+# закреплённое выполнение произвольного кода. Скрипт заявлен ручным, но лежит
+# смонтированным в обоих wg-контейнерах, то есть доступен всякому, кто получил
+# shell в контейнере с недоверенным клиентским трафиком.
+case "$1" in
+    [0-9]*.[0-9]*.[0-9]*.[0-9]*/[0-9]*) ;;
+    *) echo "usage: reset_wg.sh <Address/CIDR> <ListenPort>" >&2; exit 1 ;;
+esac
+case "$1" in
+    *[!0-9./]*) echo "FATAL: address contains unexpected characters" >&2; exit 1 ;;
+esac
+case "$2" in
+    ''|*[!0-9]*) echo "FATAL: port must be a number" >&2; exit 1 ;;
+esac
+
 PRIVATEKEY=$($WG genkey | tee /etc/wireguard/privatekey)
 echo "[Interface]" > /etc/wireguard/wg0.conf
 echo "PrivateKey = $PRIVATEKEY" >> /etc/wireguard/wg0.conf
@@ -40,7 +57,12 @@ echo "ListenPort = $2" >> /etc/wireguard/wg0.conf
 # туннель «работает», но это утечка. start_wg.sh ставит правило один раз при
 # старте контейнера, а здесь его не было вовсе; -C || -I делает восстановление
 # идемпотентным, поэтому дубли не копятся при каждом wg-quick up.
-echo "PostUp = iptables -t nat -A POSTROUTING --destination 10.10.0.5 -j ACCEPT;iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE;iptables -t nat -C POSTROUTING -s $1 -j RETURN 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s $1 -j RETURN" >> /etc/wireguard/wg0.conf
+# -C перед -A у ВСЕХ трёх правил. RETURN был идемпотентным, а ACCEPT и
+# MASQUERADE добавлялись через голый -A: PostDown снимает по одной копии и
+# только при штатном down, а бот дёргает down/up на каждое добавление и
+# удаление клиента — цепочка nat/POSTROUTING росла линейно, и отличить мусор от
+# рабочих правил становилось нельзя.
+echo "PostUp = iptables -t nat -C POSTROUTING --destination 10.10.0.5 -j ACCEPT 2>/dev/null || iptables -t nat -A POSTROUTING --destination 10.10.0.5 -j ACCEPT;iptables -t nat -C POSTROUTING -o $INTERFACE -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE;iptables -t nat -C POSTROUTING -s $1 -j RETURN 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s $1 -j RETURN" >> /etc/wireguard/wg0.conf
 echo "PostDown = iptables -t nat -D POSTROUTING --destination 10.10.0.5 -j ACCEPT;iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE" >> /etc/wireguard/wg0.conf
 $WG-quick down wg0
 $WG-quick up wg0

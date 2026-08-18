@@ -18,7 +18,14 @@ cat /ssh/key.pub > /root/.ssh/authorized_keys 2>/dev/null || true
 ssh-keygen -A >/dev/null 2>&1 || true
 /usr/sbin/sshd -D -e "$@" &
 
-INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
+INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
+# route (net-tools) может отсутствовать или ещё не видеть default (гонка на
+# старте сети контейнера) — берём дефолтный интерфейс через ip. Пустой
+# INTERFACE означал MASQUERADE, который не встал: туннель поднимается, клиенты
+# подключаются, наружу трафик не ходит — и ни строки в логе, потому что
+# `2>/dev/null || true` гасил и вывод, и код возврата.
+[ -z "$INTERFACE" ] && INTERFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$INTERFACE" ] || echo "WARN: default interface not detected — NAT rules will NOT be applied" >&2
 # Внутренний listen-порт openvpn ФИКСИРОВАН на 1194: и docker-override
 # (host:EXT -> ovpn:1194), и nginx upstream (`server ovpn:1194` в
 # upstream.conf, #ovpn-port stream-блок) целятся именно в 1194. OVPNPORT —

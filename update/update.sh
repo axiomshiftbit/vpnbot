@@ -26,13 +26,20 @@ fi
 : > "$pwd/update/pipe"
 echo "$$" > "$pwd/update/update_pid"
 
+# URL с ключом бота уходит curl'у через stdin-конфиг (-K -), а не аргументом:
+# в argv он был виден любому пользователю хоста через `ps auxww` всё время
+# обновления, а оно длится минуты.
+tg_api() {
+    local method="$1" data="$2"
+    printf 'url = "https://%s/bot%s/%s"\n' "$TELEGRAM_API" "$_key" "$method" \
+        | curl -s -K - -H "Content-Type: application/json" -X POST -d "$data" > /dev/null
+}
+
 tg_draft() {
     local text="$1"
     local escaped="${text//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
-    curl -s -H "Content-Type: application/json" \
-        -X POST "https://$TELEGRAM_API/bot$_key/sendMessageDraft" \
-        -d "{\"chat_id\":$_chat_id,\"draft_id\":1,\"text\":\"$escaped\"}" > /dev/null
+    tg_api sendMessageDraft "{\"chat_id\":$_chat_id,\"draft_id\":1,\"text\":\"$escaped\"}"
 }
 
 while true
@@ -118,14 +125,29 @@ do
         fi
 
         tg_draft "launching the bot"
-        make start
+        # Код возврата важен: раньше «bot started» уходило безусловно, и при
+        # упавшем make start (конфликт имён контейнеров, ENOSPC, битый
+        # compose-файл) пользователь видел бодрый отчёт при лежащем боте, а
+        # единственный след оставался в stdout systemd.
+        start_out=$(make start 2>&1)
+        start_rc=$?
+        echo "$start_out"
 
         : > "$pwd/update/key"
         : > "$pwd/update/curl"
 
-        curl -s -H "Content-Type: application/json" \
-            -X POST "https://$TELEGRAM_API/bot$_key/sendMessage" \
-            -d "{\"chat_id\":$_chat_id,\"text\":\"bot started\"}" > /dev/null
+        if [[ $start_rc -eq 0 ]]
+        then
+            report="bot started"
+        else
+            # Последние строки вывода — там и стоит причина.
+            tail_out=$(printf '%s' "$start_out" | tail -c 900)
+            report="make start FAILED (rc=$start_rc):"$'\n'"$tail_out"
+        fi
+        report="${report//\\/\\\\}"
+        report="${report//\"/\\\"}"
+        report="${report//$'\n'/\\n}"
+        tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"$report\"}"
 
         bash "$pwd/update/update.sh" &
         exit 0

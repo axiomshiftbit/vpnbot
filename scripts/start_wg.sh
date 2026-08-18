@@ -2,11 +2,29 @@
 INTERFACE_VPN="tun0"
 TABLE_ID=100
 
+# Пустой ADDRESS (нет WGADDRESS/WG1ADDRESS в .env, затёрт в override.env) —
+# это не «поднимемся как-нибудь», а тихая УТЕЧКА: `ip rule from ""` и правило
+# RETURN не встают (оба под `|| true`), а MASQUERADE ниже остаётся, и трафик
+# клиентов выходит напрямую с публичного IP сервера мимо tun0/xray. Плюс в
+# wg0.conf уезжает «Address = », wg-quick падает, а контейнер живёт через
+# `tail -f /dev/null` и в меню бота выглядит зелёным. Падаем честно.
+if [ -z "$ADDRESS" ]; then
+    echo "FATAL: ADDRESS is empty (WGADDRESS/WG1ADDRESS not set) — refusing to start" >&2
+    exit 1
+fi
+
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A
 exec /usr/sbin/sshd -D -e "$@" &
 
-INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
+INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
+# route (net-tools) может отсутствовать или ещё не видеть default (гонка на
+# старте сети контейнера) — берём дефолтный интерфейс через ip. Пустой
+# INTERFACE означал MASQUERADE, который не встал: туннель поднимается, клиенты
+# подключаются, наружу трафик не ходит — и ни строки в логе, потому что
+# `2>/dev/null || true` гасил и вывод, и код возврата.
+[ -z "$INTERFACE" ] && INTERFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$INTERFACE" ] || echo "WARN: default interface not detected — NAT rules will NOT be applied" >&2
 # -f обязателен: если хостового config/wg0.conf нет, docker создаёт на его
 # месте КАТАЛОГ, и `wc -c <` падает, а `[ "" -eq 0 ]` — это ошибка ash.
 if [ ! -f /etc/wireguard/wg0.conf ] || [ "$(wc -c < /etc/wireguard/wg0.conf)" -eq 0 ]

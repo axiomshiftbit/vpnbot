@@ -21,12 +21,17 @@
 # отчёт об обновлении). Молчит, когда всё уже согласовано.
 #
 # Использование: sync_image_tag.sh [repo_root]
-set -u
+# -e, а не только -u: ниже собирается временный файл, содержимое которого потом
+# ЗАТИРАЕТ override.env целиком. Провал grep/записи (ENOSPC, права) оставлял бы
+# пустой tmp, и следующая строка сносила настройки машины — порты, TZ, пины.
+set -eu
 
 root="${1:-$(pwd)}"
 env_file="$root/override.env"
 
-branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
+# `|| true`: вне репозитория git отдаёт ненулевой код, и под set -e присваивание
+# уронило бы скрипт — а это штатная ситуация, ниже она обрабатывается.
+branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 # Пусто (не репозиторий, git недоступен) или detached HEAD (`checkout <sha>`):
 # ветки нет — угадывать канал не из чего, молча выходим.
 if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
@@ -41,7 +46,7 @@ fi
 
 cur=""
 if [[ -f "$env_file" ]]; then
-    cur=$(grep -m1 '^VPNBOT_TAG=' "$env_file" | cut -d= -f2-)
+    cur=$(grep -m1 '^VPNBOT_TAG=' "$env_file" | cut -d= -f2- || true)
 fi
 
 if [[ "$cur" == "$want" ]]; then
@@ -56,16 +61,34 @@ if [[ "$cur" == sha-* ]]; then
     exit 0
 fi
 
+# Лок берём ровно перед перезаписью — и только когда точно будем писать:
+# иначе .lock появлялся бы даже там, где скрипту делать нечего.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$env_file.lock"
+    flock -w 10 9 || {
+        echo "sync_image_tag: не дождался лока override.env" >&2
+        exit 0
+    }
+fi
+
 tmp="$env_file.tmp.$$"
 # Все прочие строки сохраняем: в override.env лежат и другие настройки машины
 # (порты, TZ). Пишем через `cat >` в исходный файл, а не mv: у файла может быть
 # уже открытый читатель, а inode менять незачем.
 if [[ -f "$env_file" ]]; then
-    grep -v '^VPNBOT_TAG=' "$env_file" > "$tmp"
+    # grep возвращает 1, когда не осталось ни одной строки, — под set -e это
+    # прервало бы скрипт на пустом (кроме VPNBOT_TAG) override.env.
+    grep -v '^VPNBOT_TAG=' "$env_file" > "$tmp" || true
 else
     : > "$tmp"
 fi
 echo "VPNBOT_TAG=$want" >> "$tmp"
+# [ -s ] обязателен: пустой tmp означал бы затирание override.env целиком.
+if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    echo "sync_image_tag: временный файл пуст — override.env не трогаем" >&2
+    exit 1
+fi
 cat "$tmp" > "$env_file"
 rm -f "$tmp"
 

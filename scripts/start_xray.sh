@@ -18,8 +18,16 @@ if [ "$(cat /logs/xray_core 2>/dev/null)" = fork ] && [ -x /usr/bin/xray-smux ];
 fi
 mkdir -p /usr/local/bin
 ln -sf "$bin" /usr/local/bin/xray
-uuid=$(cat /xray.json | jq -r '.inbounds[0].settings.clients[0].id // empty')
+uuid=$(jq -r '.inbounds[0].settings.clients[0].id // empty' /xray.json 2>/dev/null)
 if [ -n "$uuid" ]; then
-    xray run -config /xray.json > /dev/null 2>&1 &
+    # stderr ядра — в лог, а не в /dev/null: при битом xray.json причина старта
+    # не была видна нигде, а контейнер жил через `tail -f /dev/null` и выглядел
+    # здоровым.
+    xray run -config /xray.json >> /logs/xray_stdout 2>&1 &
+else
+    # Пустой uuid — это не «нечего запускать»: первый inbound без clients
+    # (dokodemo/fallback-раскладка) или ошибка jq на битом конфиге дают ровно
+    # то же значение, и ядро молча не запускалось вовсе.
+    echo "$(date '+%Y-%m-%d %H:%M:%S') start_xray: no client uuid in /xray.json — xray NOT started" >> /logs/xray_stdout
 fi
 tail -f /dev/null
