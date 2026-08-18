@@ -260,11 +260,15 @@ unlink($tmp);
 $pacFile   = sys_get_temp_dir() . '/audit_pac_' . bin2hex(random_bytes(6)) . '.json';
 $bot->pac  = $pacFile;
 $good      = ['clients' => ['ok'], 'privateKey' => 'secret'];
+// Сравниваем по записанным ключам: getPacConf() подмешивает PAC_DEFAULTS
+// (шаблон pac.json — это «{}», и 26 чтений без ?? иначе дают Undefined array
+// key, а implode(',', null) в addSubnets — фатал).
 auditAssert(false !== $bot->setPacConf($good), 'валидный конфиг записывается');
-auditAssert($bot->getPacConf() === $good, 'записанный конфиг читается обратно');
+auditAssert(array_intersect_key($bot->getPacConf(), $good) === $good, 'записанный конфиг читается обратно');
 auditAssert(false === $bot->setPacConf(['name' => "\xB1\x31"]), 'битый UTF-8 не записывается');
 clearstatcache();
-auditAssert($bot->getPacConf() === $good, 'после отказа pac.json остаётся прежним, а не пустым');
+auditAssert(array_intersect_key($bot->getPacConf(), $good) === $good,
+    'после отказа pac.json остаётся прежним, а не пустым');
 foreach (glob($pacFile . '*') ?: [] as $f) {
     @unlink($f);
 }

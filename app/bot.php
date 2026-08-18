@@ -5320,10 +5320,26 @@ NFT;
                 $last       = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
                 if (!empty($last) && $last != $this->last && $last != $current) {
                     $this->last = $last;
-                    $diff       = array_slice(explode("\n", $last), 0, count(explode("\n", $last)) - count(explode("\n", $current)));
+                    // По СОДЕРЖИМОМУ, а не по разнице числа строк. Прежняя
+                    // формула считала «что нового» как
+                    // count($last) - count($current) и предполагала, что записи
+                    // только дописываются сверху. Отсюда два отказа:
+                    //  - удалённая ветка короче локальной (переключились на
+                    //    ветку с более коротким changelog, файл подрезали в
+                    //    веб-редакторе — с этим репозиторием так и работают) →
+                    //    третий аргумент array_slice отрицательный, а это
+                    //    «убрать N с конца», то есть в $diff попадал почти весь
+                    //    удалённый changelog: всем админам уходило «обновление»,
+                    //    а при autoupdate бот откатывал сам себя;
+                    //  - число строк совпало, содержимое разное → разница 0,
+                    //    $diff пуст, и о реальном обновлении никто не узнавал,
+                    //    причём $this->last уже перезаписан.
+                    $diff = array_values(array_diff(
+                        array_filter(array_map('trim', explode("\n", $last)), 'strlen'),
+                        explode("\n", $current)
+                    ));
                     $diff       = array_slice($diff, 0, 10);
                     if (!empty($diff)) {
-                        exec('git -C / fetch');
                         $hash   = $this->getHashBot();
                         $domain = $this->getPacConf()['domain'] ?: $this->ip;
                         foreach ($c['admin'] as $k => $v) {
@@ -5340,14 +5356,24 @@ NFT;
                                 ]
                             ]);
                         }
-                        if ($this->getPacConf()['autoupdate']) {
+                        // Автообновление — только если удалённая ветка
+                        // РЕАЛЬНО впереди. Отличие текста version от локального
+                        // этого не доказывает: он отличается и при откате.
+                        $ahead = (int) trim((string) shell_exec(
+                            'git -C / rev-list --count HEAD..' . escapeshellarg("origin/$b") . ' 2>/dev/null'
+                        ));
+                        if ($ahead > 0 && $this->getPacConf()['autoupdate']) {
                             $this->input['chat'] = $this->input['from'] = $c['admin'][0];
                             $this->applyupdatebot();
                         }
                     }
                 }
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            // Раньше здесь стоял пустой catch (Exception): в PHP 8 TypeError и
+            // прочие Error — это не Exception, то есть падение checkVersion
+            // роняло весь шаг cron молча.
+            error_log('checkVersion: ' . $e->getMessage());
         }
     }
 
@@ -8811,9 +8837,34 @@ NFT;
         ]);
     }
 
+    // Дефолты для ключей, которые читаются БЕЗ ?? / isset / empty. Шаблон
+    // config/pac.json на свежей установке — это ровно «{}», поэтому каждое
+    // такое чтение писало в лог «Undefined array key», а конструктор Bot делал
+    // это дважды на КАЖДЫЙ объект. Одно место было не warning'ом, а фаталом:
+    // addSubnets() зовёт implode(',', $pac['subnets']), а implode(null) в
+    // PHP 8 — TypeError, то есть воркер падал по клику на старой кнопке
+    // «add peer», пережившей удаление подсетей (кнопки Telegram живут вечно).
+    //
+    // Значения подобраны так, чтобы существующие проверки вели себя как
+    // раньше: '' и 0 остаются falsy для `?:`, пустой массив — для if().
+    public const PAC_DEFAULTS = [
+        'adpswd'        => '',
+        'autoupdate'    => 0,
+        'blinkmenu'     => 0,
+        'domain'        => '',
+        'language'      => '',
+        'limitpage'     => 0,
+        'subnets'       => [],
+        'telemt_relays' => [],
+    ];
+
     public function getPacConf()
     {
-        return json_decode(file_get_contents($this->pac), true);
+        // is_array: json_decode отдаёт null и на битом файле, и на пустом —
+        // раньше это уезжало дальше как null и падало уже у вызывающего.
+        $conf = json_decode((string) @file_get_contents($this->pac), true);
+
+        return (is_array($conf) ? $conf : []) + self::PAC_DEFAULTS;
     }
 
     public function setPacConf(array $conf)
@@ -14102,13 +14153,25 @@ DNS-over-HTTPS with IP:
         foreach ($users as $name => $secret) {
             $link = $this->linkTelemt($name, $rl);
             $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
-            $data[] = [
-                ['text' => "🔗 $name", 'url' => $link],
-                ['text' => $this->i18n($state), 'callback_data' => "/telemtToggleUser $name"],
-                ['text' => '📷', 'callback_data' => "/telemtQr $name$rarg"],
-                ['text' => '🔄', 'callback_data' => "/telemtRegen $name"],
-                ['text' => '❌', 'callback_data' => "/telemtDelUser $name"],
-            ];
+            $row = [['text' => "🔗 $name", 'url' => $link]];
+            // Кнопку с callback_data длиннее 64 байт (лимит Telegram) не рисуем
+            // вовсе: на такую кнопку приходит BUTTON_DATA_INVALID, и сообщение
+            // не отрисовывается ЦЕЛИКОМ — меню «telemt users» переставало
+            // открываться, а удалить испорченную запись было уже нечем. Длину
+            // имени теперь ограничивает telemtUserAdd(), но записи, заведённые
+            // до этого, никуда не делись: у них останутся те кнопки, что влезли
+            // (у «/telemtDelUser » запас больше всех, то есть удалить можно).
+            foreach ([
+                [$this->i18n($state), "/telemtToggleUser $name"],
+                ['📷', "/telemtQr $name$rarg"],
+                ['🔄', "/telemtRegen $name"],
+                ['❌', "/telemtDelUser $name"],
+            ] as [$text, $cb]) {
+                if (strlen($cb) <= 64) {
+                    $row[] = ['text' => $text, 'callback_data' => $cb];
+                }
+            }
+            $data[] = $row;
         }
         // Relay selector row: direct + each configured relay. Marks the active
         // one; only shown when at least one telemt relay has an address.
@@ -14734,7 +14797,15 @@ DNS-over-HTTPS with IP:
     public function telemtUserAdd($name)
     {
         $name = preg_replace('~[^A-Za-z0-9_]~', '', trim($name));
-        if ($name === '') {
+        // Длина обязательна, а не только набор символов. Имя целиком уезжает в
+        // callback_data четырёх кнопок на строке пользователя, а лимит Telegram
+        // там 64 байта: «/telemtToggleUser » это 18 байт, а у «/telemtQr » к
+        // имени приписывается ещё и имя relay (до 32 символов). Превышение —
+        // это BUTTON_DATA_INVALID на editMessageText, то есть меню «telemt
+        // users» перестаёт открываться ЦЕЛИКОМ и удалить испорченную запись из
+        // бота уже нечем, только правкой pac.json руками. У имён relay такое
+        // ограничение есть с самого начала (setRelayName), здесь его забыли.
+        if ($name === '' || strlen($name) > 20) {
             $this->telemtUsers();
             return;
         }
