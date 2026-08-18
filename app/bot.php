@@ -19863,9 +19863,24 @@ DNS-over-HTTPS with IP:
     // Производный идентификатор: детерминированный (URL и allowed_clients
     // обязаны совпадать без общего состояния), необратимый и не годится как
     // креденшел VLESS. Ключ HMAC — токен бота: он стабилен и не покидает
-    // сервер. 16 hex-символов укладываются в требования AdGuard к client-id
-    // (буквы/цифры/дефис, до 63 символов).
+    // сервер. Префикс `doh-` существенен: голые 16 hex-символов AdGuardHome
+    // принимает за EUI-64, переписывает как `aa:bb:...` и перестаёт связывать
+    // DoH client-id из URL с именованным persistent-клиентом. В query-log
+    // вместо имени клиента тогда виден только безымянный hex-идентификатор.
+    // `doh-` не уменьшает 64 бита HMAC-энтропии и укладывается в требования
+    // AdGuard к client-id (буквы/цифры/дефис, до 63 символов).
     public function dohClientId(string $uid): string
+    {
+        if ($uid === '') {
+            return '';
+        }
+        return 'doh-' . $this->legacyDohClientId($uid);
+    }
+
+    // Формат, который выдавался между d47438b и этой миграцией. Он уже HMAC,
+    // то есть не раскрывает UUID и может временно остаться в allowed_clients,
+    // пока пользователи не обновили подписку. Для новых URL не используется.
+    public function legacyDohClientId(string $uid): string
     {
         if ($uid === '') {
             return '';
@@ -26679,42 +26694,58 @@ DNS-over-HTTPS with IP:
         ];
     }
 
-    // Разовая миграция аудита 2026-08-18. В dns.allowed_clients AdGuard лежали
-    // САМИ uuid клиентов (они же стояли в DoH-URL), а теперь туда пишется
-    // производный dohClientId(). Без переписывания старых записей AdGuard
-    // отказал бы всем клиентам сразу после обновления: URL уже новый, а
-    // allowlist ещё старый. Идемпотентна и молчалива — зовётся из selfUpdate(),
-    // то есть на каждом старте service-контейнера, и перезапускает AdGuard
-    // только когда реально что-то поменяла.
+    // Миграция DoH client-id. Сначала (аудит 2026-08-18) в allowed_clients
+    // лежали САМИ UUID клиентов; затем первая версия защиты заменила их на
+    // голый 16-hex HMAC, который AdGuard ошибочно трактует как EUI-64. Теперь
+    // обе старые формы переводятся в prefixed dohClientId(). Идемпотентна и
+    // молчалива — cron/selfUpdate вызывают её многократно, но AdGuard она
+    // перезапускает только при фактическом изменении YAML.
     public function migrateDohClientIds(): bool
     {
         if (!is_file($this->adguard)) {
             return false;
         }
-        $c   = yaml_parse_file($this->adguard);
-        $map = [];
+        $c         = yaml_parse_file($this->adguard);
+        $uuidMap   = [];
+        $legacyMap = [];
         foreach (($this->getXray()['inbounds'][0]['settings']['clients'] ?? []) as $v) {
             $id = (string) ($v['id'] ?? '');
             if ($id !== '') {
-                $map[$id] = $this->dohClientId($id);
+                $new                = $this->dohClientId($id);
+                $legacy             = $this->legacyDohClientId($id);
+                $uuidMap[$id]       = $new;
+                $legacyMap[$legacy] = $new;
+                // AdGuard уже мог сохранить голые 16 hex как EUI-64.
+                $legacyMap[implode(':', str_split($legacy, 2))] = $new;
             }
         }
-        if ($map === []) {
+        if ($uuidMap === []) {
             return false;
         }
         $changed = false;
 
-        // 1. Список разрешённых клиентов.
+        // 1. Список разрешённых клиентов. Сырой UUID убираем окончательно —
+        // это credential VLESS. Старый HMAC безопасен, поэтому сохраняем его
+        // рядом с новым ID: уже выданные конфиги продолжают резолвить до
+        // обновления подписки, а новые сразу получают читаемое имя в AdGuard.
         $list = $c['dns']['allowed_clients'] ?? null;
         if (is_array($list)) {
-            foreach ($list as $k => $v) {
-                if (isset($map[(string) $v])) {
-                    $list[$k] = $map[(string) $v];
-                    $changed  = true;
+            $next = [];
+            foreach ($list as $v) {
+                $v = (string) $v;
+                if (isset($uuidMap[$v])) {
+                    $next[] = $uuidMap[$v];
+                } elseif (isset($legacyMap[$v])) {
+                    $next[] = $v;
+                    $next[] = $legacyMap[$v];
+                } else {
+                    $next[] = $v;
                 }
             }
-            if ($changed) {
-                $c['dns']['allowed_clients'] = array_values(array_unique($list));
+            $next = array_values(array_unique($next));
+            if ($next !== array_values($list)) {
+                $c['dns']['allowed_clients'] = $next;
+                $changed = true;
             }
         }
 
@@ -26723,11 +26754,21 @@ DNS-over-HTTPS with IP:
         //    без этой ветки после смены схемы политика молча переставала
         //    применяться — приходящий идентификатор ни с чем не совпадал.
         foreach (($c['clients']['persistent'] ?? []) as $i => $cl) {
-            foreach ((array) ($cl['ids'] ?? []) as $j => $v) {
-                if (isset($map[(string) $v])) {
-                    $c['clients']['persistent'][$i]['ids'][$j] = $map[(string) $v];
-                    $changed = true;
+            $ids = array_map('strval', (array) ($cl['ids'] ?? []));
+            $next = [];
+            foreach ($ids as $v) {
+                if (isset($uuidMap[$v])) {
+                    $next[] = $uuidMap[$v];
+                } elseif (isset($legacyMap[$v])) {
+                    $next[] = $legacyMap[$v];
+                } else {
+                    $next[] = $v;
                 }
+            }
+            $next = array_values(array_unique($next));
+            if ($next !== $ids) {
+                $c['clients']['persistent'][$i]['ids'] = $next;
+                $changed = true;
             }
             // uid НЕ трогаем: см. adguardXrayClients() — AdGuard требует там
             // формат UUID и отказывается читать конфиг целиком, если это не он.
@@ -26752,6 +26793,8 @@ DNS-over-HTTPS with IP:
         if (!empty($delete)) {
             unset($c['dns']['allowed_clients']);
         } else {
+            $previous = array_fill_keys(array_map('strval',
+                (array) ($c['dns']['allowed_clients'] ?? [])), true);
             $c['dns']['allowed_clients'] = [];
             $c['dns']['allowed_clients'][] = '10.10.0.0/24';
             if (!empty($pac['adguardkey'])) {
@@ -26764,9 +26807,21 @@ DNS-over-HTTPS with IP:
                 foreach ($xr['inbounds'][0]['settings']['clients'] as $v) {
                     // Производный id, а не сам uuid: он же стоит в DoH-URL,
                     // который клиент дёргает на каждый запрос. См. dohClientId().
-                    $c['dns']['allowed_clients'][] = $this->dohClientId((string) ($v['id'] ?? ''));
+                    $uid = (string) ($v['id'] ?? '');
+                    $c['dns']['allowed_clients'][] = $this->dohClientId($uid);
+                    // Уже выданный конфиг со старым безопасным HMAC должен
+                    // продолжить работать. На свежей установке лишний alias не
+                    // добавляем: сохраняем его только если он был разрешён до
+                    // ручной пересборки списка.
+                    $legacy = $this->legacyDohClientId($uid);
+                    $legacyMac = implode(':', str_split($legacy, 2));
+                    if (isset($previous[$legacy]) || isset($previous[$legacyMac])) {
+                        $c['dns']['allowed_clients'][] = $legacy;
+                    }
                 }
             }
+            $c['dns']['allowed_clients'] = array_values(array_unique(array_filter(
+                $c['dns']['allowed_clients'], static fn($v) => (string) $v !== '')));
         }
         yaml_emit_file($this->adguard, $c);
         $this->startAd();

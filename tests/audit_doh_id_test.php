@@ -12,6 +12,23 @@
 
 require_once __DIR__ . '/../app/bot.php';
 
+// Хостовый CI проверяет bot.php без ext-yaml, тогда как production-образ PHP
+// расширение содержит. Для чистой проверки миграции достаточно симметричного
+// JSON-backed полифила: функция работает с уже разобранными PHP-массивами.
+if (!function_exists('yaml_parse_file')) {
+    function yaml_parse_file(string $path)
+    {
+        return json_decode((string) file_get_contents($path), true);
+    }
+}
+if (!function_exists('yaml_emit_file')) {
+    function yaml_emit_file(string $path, $data)
+    {
+        return false !== file_put_contents($path,
+            json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+}
+
 $failed = 0;
 
 function dohAssert(bool $cond, string $msg): void
@@ -20,6 +37,30 @@ function dohAssert(bool $cond, string $msg): void
     if (!$cond) {
         $failed++;
         echo "FAIL: $msg\n";
+    }
+}
+
+class DohMigrationBot extends Bot
+{
+    public array $xrayFake = [];
+    public int $adStops = 0;
+    public int $adStarts = 0;
+
+    public function getXray()
+    {
+        return $this->xrayFake;
+    }
+
+    public function stopAd()
+    {
+        $this->adStops++;
+        return '';
+    }
+
+    public function startAd()
+    {
+        $this->adStarts++;
+        return '';
     }
 }
 
@@ -33,8 +74,14 @@ $id  = $bot->dohClientId($uid);
 dohAssert($id !== $uid, 'ГЛАВНОЕ: в DoH-URL уходит не сам uuid клиента');
 dohAssert(strpos($id, $uid) === false && strpos($uid, $id) === false,
     'производный id не содержит uuid и не содержится в нём');
-dohAssert((bool) preg_match('~^[0-9a-f]{16}$~', $id),
-    'client-id AdGuard: только буквы/цифры, длина в пределах 63 — ' . $id);
+dohAssert((bool) preg_match('~^doh-[0-9a-f]{16}$~', $id),
+    'client-id AdGuard: явный префикс + 64 бита HMAC — ' . $id);
+dohAssert(!preg_match('~^[0-9a-f]{12,16}$~i', $id),
+    'client-id не похож на MAC/EUI-64, иначе AdGuard потеряет имя клиента');
+dohAssert((bool) preg_match('~^[0-9a-f]{16}$~', $bot->legacyDohClientId($uid)),
+    'старый HMAC-формат распознаётся для бесшовной миграции');
+dohAssert($id === 'doh-' . $bot->legacyDohClientId($uid),
+    'новый id сохраняет прежний HMAC и лишь выводит его из MAC-формата');
 dohAssert($bot->dohClientId($uid) === $id,
     'детерминирован: URL подписки и allowed_clients считаются раздельно и обязаны совпасть');
 dohAssert($bot->dohClientId('') === '', 'пустой uuid не превращается в «валидный» id');
@@ -71,6 +118,12 @@ dohAssert(str_contains($mig, "\$c['clients']['persistent']"),
     'миграция переписывает и persistent-клиентов, а не только allowed_clients');
 dohAssert(str_contains($src, "'ids'                         => [\$this->dohClientId("),
     'adguardXrayClients() пишет производный id в ids, иначе миграцию тут же откатывало бы обратно');
+dohAssert(str_contains($mig, "\$legacyMap[implode(':', str_split(\$legacy, 2))]"),
+    'миграция узнаёт EUI-64, в который AdGuard переписал старый 16-hex id');
+dohAssert(str_contains($mig, '$next[] = $legacyMap[$v]'),
+    'persistent-клиент переезжает со старого HMAC на prefixed id');
+dohAssert(str_contains($src, 'isset($previous[$legacy])'),
+    'пересборка allowlist не ломает уже выданные конфиги со старым HMAC');
 // А вот uid обязан остаться UUID: на 16-hex значении AdGuardHome отказывается
 // читать конфиг («invalid UUID length: 16») и не поднимается вовсе — DNS всей
 // установки ложится. Поймано на рабочем сервере 2026-08-18.
@@ -79,7 +132,51 @@ dohAssert(str_contains($src, "'uid'                         => (string) \$v['id'
 dohAssert(!str_contains($mig, "['uid'] = \$map["),
     'миграция не переписывает uid');
 
-// ── 3. Сторож по nginx-конфигам ─────────────────────────────────────────────
+// ── 3. Переход с UUID/голого HMAC/EUI-64 без обрыва DNS ────────────────────
+$migration = (new ReflectionClass(DohMigrationBot::class))->newInstanceWithoutConstructor();
+$migration->key = $bot->key;
+$uid2 = '11111111-2222-4333-8444-555555555555';
+$old1 = $migration->legacyDohClientId($uid);
+$old2 = $migration->legacyDohClientId($uid2);
+$new1 = $migration->dohClientId($uid);
+$new2 = $migration->dohClientId($uid2);
+$mac2 = implode(':', str_split($old2, 2));
+$migration->xrayFake = ['inbounds' => [[
+    'settings' => ['clients' => [['id' => $uid], ['id' => $uid2]]],
+]]];
+$migration->adguard = sys_get_temp_dir() . '/doh_migrate_' . bin2hex(random_bytes(4)) . '.yaml';
+yaml_emit_file($migration->adguard, [
+    'dns' => ['allowed_clients' => ['10.10.0.0/24', $uid, $old2]],
+    'clients' => ['persistent' => [
+        ['name' => 'one', 'ids' => [$old1], 'uid' => $uid],
+        ['name' => 'two', 'ids' => [$mac2], 'uid' => $uid2],
+    ]],
+]);
+
+dohAssert($migration->migrateDohClientIds(), 'legacy-конфиг требует миграции');
+$migrated = yaml_parse_file($migration->adguard);
+$allowed = $migrated['dns']['allowed_clients'] ?? [];
+dohAssert(!in_array($uid, $allowed, true) && in_array($new1, $allowed, true),
+    'сырой UUID удалён из allowlist и заменён новым безопасным id');
+dohAssert(in_array($old2, $allowed, true) && in_array($new2, $allowed, true),
+    'старый HMAC остаётся разрешённым рядом с новым до обновления подписки');
+dohAssert(($migrated['clients']['persistent'][0]['ids'] ?? null) === [$new1],
+    'голый 16-hex persistent id получает префикс');
+dohAssert(($migrated['clients']['persistent'][1]['ids'] ?? null) === [$new2],
+    'нормализованный AdGuard EUI-64 получает префикс');
+dohAssert(($migrated['clients']['persistent'][0]['uid'] ?? null) === $uid
+    && ($migrated['clients']['persistent'][1]['uid'] ?? null) === $uid2,
+    'внутренние UUID AdGuard не меняются');
+dohAssert($migration->adStops === 1 && $migration->adStarts === 1,
+    'AdGuard перезапускается ровно один раз после фактической миграции');
+$before = file_get_contents($migration->adguard);
+dohAssert(!$migration->migrateDohClientIds(), 'повторная миграция идемпотентна');
+dohAssert(file_get_contents($migration->adguard) === $before
+    && $migration->adStops === 1 && $migration->adStarts === 1,
+    'cron не переписывает YAML и не перезапускает AdGuard повторно');
+@unlink($migration->adguard);
+
+// ── 4. Сторож по nginx-конфигам ─────────────────────────────────────────────
 // Путь DoH — секрет целиком, поэтому логировать его нельзя ни в каком формате.
 foreach (['nginx.conf', 'nginx_default.conf'] as $f) {
     $conf = (string) file_get_contents(__DIR__ . '/../config/' . $f);
@@ -96,7 +193,7 @@ foreach (['nginx.conf', 'nginx_default.conf'] as $f) {
         "$f: /pac ставит X-Real-IP");
 }
 
-// ── 4. Сторож по unit.json ──────────────────────────────────────────────────
+// ── 5. Сторож по unit.json ──────────────────────────────────────────────────
 // Unit стоит ЗА nginx и логировал те же запросы своим дефолтным форматом с
 // $request_line: туда попадали токен бота, subtoken'ы и tg.initData.
 $unit = json_decode((string) file_get_contents(__DIR__ . '/../config/unit.json'), true);
