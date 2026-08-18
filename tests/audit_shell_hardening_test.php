@@ -140,8 +140,14 @@ foreach (glob(__DIR__ . '/../scripts/*.sh') as $p) {
     shAssert(!str_contains((string) file_get_contents($p), 'exec /usr/sbin/sshd -D -e "$@" &'),
         basename($p) . ': нет `exec cmd &` (это обычный фоновый запуск, а читается наоборот)');
 }
-shAssert(!preg_match('~^tail -f /dev/null~m', $read('scripts/start_ad.sh')),
-    'start_ad.sh: недостижимый tail убран — контейнер держит сам AdGuardHome');
+// Сторож РАЗВЁРНУТ после инцидента на рабочем сервере 2026-08-18: `tail -f /dev/null` здесь
+// обязателен и удалять его нельзя. Жизненным циклом AdGuardHome управляет бот
+// (stopAd = kill -15 по ssh, startAd = запуск заново), а adguardSync() зовётся
+// безусловно при каждом старте service.php. Без tail первый же stopAd убивал
+// единственный процесс переднего плана: контейнер завершался, DNS всей
+// установки ложился, nginx уходил в unhealthy на «host not found in upstream ad».
+shAssert((bool) preg_match('~^tail -f /dev/null~m', $read('scripts/start_ad.sh')),
+    'start_ad.sh: tail держит контейнер живым между stopAd/startAd — удалять нельзя');
 
 // install_as_service.sh и diagnose_bot.sh
 $ias = $read('scripts/install_as_service.sh');
