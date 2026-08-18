@@ -201,8 +201,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Прогон по расписанию НЕ двигает канальный тег. Он пересобирает тот же
+      # коммит с другим содержимым (свежая база golang/debian, новый снимок
+      # edge-репозиториев alpine, свежие релизы с github), и раньше результат
+      # уезжал прямо в :latest/:dev — то есть поведение прода менялось без
+      # коммита, а «откат на предыдущий образ» было нечем сделать. Теперь
+      # такой прогон публикуется как :sha-… и :nightly, а канальный тег
+      # двигает только push или ручной workflow_dispatch.
       - name: Канал публикации
-        run: echo "CHANNEL=${{ github.ref_name == 'master' && 'latest' || 'dev' }}" >> "$GITHUB_ENV"
+        run: |
+          CHANNEL='${{ github.ref_name == 'master' && 'latest' || 'dev' }}'
+          IMG='ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}'
+          echo "CHANNEL=${CHANNEL}" >> "$GITHUB_ENV"
+          {
+            echo 'BAKE_TAGS<<BAKE_TAGS_EOF'
+            echo "*.tags=${IMG}:sha-${{ github.sha }}"
+            if [ '${{ github.event_name }}' = 'schedule' ]; then
+              echo "*.tags=${IMG}:nightly"
+            else
+              echo "*.tags=${IMG}:${CHANNEL}"
+            fi
+            echo 'BAKE_TAGS_EOF'
+          } >> "$GITHUB_ENV"
 
       - uses: docker/bake-action@v7
         with:
@@ -228,8 +248,7 @@ jobs:
           #
           set: |
             *.platform=linux/amd64
-            *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:${{ env.CHANNEL }}
-            *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:sha-${{ github.sha }}
+            ${{ env.BAKE_TAGS }}
             *.cache-from=type=gha,scope=${{ matrix.service }}
             *.cache-to=type=gha,mode=max,scope=${{ matrix.service }}
             *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

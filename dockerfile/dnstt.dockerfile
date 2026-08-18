@@ -6,7 +6,11 @@ ARG image=alpine:3.23
 #
 # 0c5c52a5 = тег v1.20260501.0, на нём же стоит master.
 ARG DNSTT_REF=0c5c52a57d899c05428c116898941761a2ed83c2
-FROM golang:alpine AS go
+# Мажор+минор, а не голый golang:alpine: плавающий тег означает, что
+# еженедельная пересборка того же коммита берёт другой компилятор, и «откатить
+# образ по sha» перестаёт что-либо значить. Digest'ы к базам проставляет
+# renovate (pinDigests в renovate.json).
+FROM golang:1.25-alpine AS go
 ARG DNSTT_REF
 # Приём trusttunnel (git init + fetch --depth 1 <sha>) здесь НЕ работает:
 # bamsoftware отдаёт репозиторий по dumb http, а тот не умеет shallow —
