@@ -117,6 +117,11 @@ class Bot
     public $clients;
     public $clients1;
     public $pac;
+    // Ответ на force_reply должен перерисовать ИСХОДНОЕ сообщение меню, а не
+    // отправить ещё одно. callback_id у обычного сообщения нет и подставлять
+    // сохранённый id клика нельзя (Telegram ответит «query ID is invalid»),
+    // поэтому контекст редактирования держим отдельным краткоживущим флагом.
+    protected bool $replyMenuEdit = false;
     // Значение по умолчанию задано прямо здесь, а не в конструкторе: сюда
     // ходят write/readXrayJson(), которые проверяются на инстансе из
     // newInstanceWithoutConstructor() (см. tests/xray_conf_inode_test.php).
@@ -8626,7 +8631,15 @@ NFT;
             if (($mi = $this->getWgMsg()) !== null) {
                 $this->wg = (int) $mi;
             }
-            $this->{$callback}($this->input['message'], ...$state['args']);
+            // menu() внутри callback должен редактировать start_message.
+            // finally обязателен для long-polling: один Bot обслуживает там
+            // несколько апдейтов подряд, и флаг не должен утечь в следующий.
+            $this->replyMenuEdit = true;
+            try {
+                $this->{$callback}($this->input['message'], ...$state['args']);
+            } finally {
+                $this->replyMenuEdit = false;
+            }
         }
     }
 
@@ -15683,7 +15696,7 @@ DNS-over-HTTPS with IP:
             return [$text, $data];
         }
 
-        if (!empty($this->input['callback_id'])) {
+        if (!empty($this->input['callback_id']) || $this->replyMenuEdit) {
             $this->update(
                 $this->input['chat'],
                 $this->input['message_id'],

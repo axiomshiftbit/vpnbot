@@ -22,6 +22,7 @@ class ReplyDedupeTestBot extends Bot
 {
     public int $calls = 0;
     public array $deleted = [];
+    public bool $wouldEditMenu = false;
 
     public function delete($chat, $message_id)
     {
@@ -31,8 +32,14 @@ class ReplyDedupeTestBot extends Bot
     public function testReplyCallback($message, $suffix)
     {
         $this->calls++;
+        $this->wouldEditMenu = $this->replyMenuEdit;
         replyDedupeAssert($message === 'alice', 'callback получил не текст ответа');
         replyDedupeAssert($suffix === 'ok', 'callback потерял сохранённые args');
+    }
+
+    public function replyMenuEditActive(): bool
+    {
+        return $this->replyMenuEdit;
     }
 }
 
@@ -58,6 +65,8 @@ $bot->reply();
 replyDedupeAssert($bot->calls === 1, 'первый webhook не выполнил callback');
 replyDedupeAssert($bot->input['message_id'] === 900, 'меню не привязано к исходному сообщению');
 replyDedupeAssert(count($bot->deleted) === 2, 'prompt и ответ должны удалиться ровно один раз');
+replyDedupeAssert($bot->wouldEditMenu, 'menu() во время reply отправил бы новое окно вместо редактирования исходного');
+replyDedupeAssert(!$bot->replyMenuEditActive(), 'флаг редактирования меню не сбросился после reply callback');
 
 // Эмулируем повтор того же webhook. В памяти могла остаться старая копия
 // $_SESSION, но takeReply() обязан перечитать файл под lock и увидеть, что
@@ -70,6 +79,10 @@ replyDedupeAssert(count($bot->deleted) === 2, 'повтор webhook снова �
 // Все названные пользовательские сценарии действительно регистрируют ввод
 // имени через тот же stashReply → reply путь, который проверен выше.
 $source = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+replyDedupeAssert(
+    str_contains($source, "if (!empty(\$this->input['callback_id']) || \$this->replyMenuEdit)"),
+    'menu() не учитывает reply-контекст и снова создаст второе окно'
+);
 foreach ([
     'addOcUser'    => 'addocus',
     'addOvpnUser'  => 'addovus',
