@@ -273,7 +273,7 @@ class Bot
             // одного юзера на файловом локе сессии, и долгий хендлер (certbot,
             // рестарты, ssh-пробы) замораживал все следующие нажатия. Чтения
             // $_SESSION дальше работают из памяти; точечные записи идут через
-            // stashReply()/unstashReply() (reopen → write → close).
+            // stashReply()/takeReply() (reopen → write/read → close).
             session_write_close();
             $this->action();
         }
@@ -478,11 +478,23 @@ class Bot
         });
     }
 
-    public function unstashReply($messageId)
+    // Забираем reply-state и удаляем его ОДНОЙ операцией под session-lock.
+    // Долгие обработчики (OpenConnect, OpenVPN, L2TP/IPsec, IKEv2,
+    // TrustTunnel) могут не успеть закончить до повтора webhook Telegram.
+    // Если удалять state после callback, оба воркера успевают прочитать его и
+    // дважды выполняют действие/рисуют меню. Повторный воркер теперь получает
+    // null ещё до начала долгой работы первого.
+    protected function takeReply($messageId): ?array
     {
-        $this->sessionApply(function () use ($messageId) {
-            unset($_SESSION['reply'][$messageId]);
+        $state = null;
+        $this->sessionApply(function () use ($messageId, &$state) {
+            if (isset($_SESSION['reply'][$messageId]) && is_array($_SESSION['reply'][$messageId])) {
+                $state = $_SESSION['reply'][$messageId];
+                unset($_SESSION['reply'][$messageId]);
+            }
         });
+
+        return $state;
     }
 
     public function sd($var, $log = false, $json = false, $raw = false)
@@ -1065,6 +1077,9 @@ class Bot
                 break;
             case preg_match('~^/changeNaivePass$~', $this->input['callback'], $m):
                 $this->changeNaivePass();
+                break;
+            case preg_match('~^/genNaivePass$~', $this->input['callback'], $m):
+                $this->genNaivePass();
                 break;
             case preg_match('~^/npRelay$~', $this->input['callback'], $m):
                 $this->npRelay();
@@ -3511,6 +3526,13 @@ class Bot
         $this->setPacConf($pac);
         $this->restartNaive();
         $this->menu('naive');
+    }
+
+    public function genNaivePass()
+    {
+        // 16 случайных байт в hex — 32 печатных символа, как у SS, Hysteria,
+        // OpenConnect, Xray и пароля панели.
+        $this->chnppass(bin2hex(random_bytes(16)));
     }
 
     public function chhypass($pass)
@@ -8584,26 +8606,27 @@ NFT;
 
     public function reply()
     {
-        if (!empty($_SESSION['reply'][$this->input['reply']])) {
+        // Не используем загруженную в session() копию: параллельный повтор
+        // webhook мог получить ту же копию до того, как первый воркер закончил
+        // callback. takeReply() перечитывает state под локом и сразу удаляет.
+        $state = $this->takeReply($this->input['reply']);
+        if (!empty($state)) {
             $this->delete($this->input['chat'], $this->input['reply']);
             $this->delete($this->input['chat'], $this->input['message_id']);
-            $callback = $_SESSION['reply'][$this->input['reply']]['callback'];
+            $callback = $state['callback'];
             // Только message_id: раньше сюда же присваивался callback_id, но
             // ответ на force_reply — это ОБЫЧНОЕ сообщение, никакого
             // callback_query у него нет. В качестве query id уходил message_id,
             // и answer() ниже (а следом и callbackCheck) гарантированно
             // получали «400 query ID is invalid» на каждый ответ на промпт
             // (rename, DNS, MTU…). Сам answer() тоже убран — отвечать не на что.
-            $this->input['message_id'] = $_SESSION['reply'][$this->input['reply']]['start_message'];
+            $this->input['message_id'] = $state['start_message'];
             // message_id уже указывает на сообщение меню — ответ на промпт
             // (DNS, MTU, имя пира…) применяется к инстансу этого меню.
             if (($mi = $this->getWgMsg()) !== null) {
                 $this->wg = (int) $mi;
             }
-            $this->{$callback}($this->input['message'], ...$_SESSION['reply'][$this->input['reply']]['args']);
-            // Сессия к этому моменту закрыта (см. input()) — unset через хелпер,
-            // иначе изменение не сохранится и prompt останется висеть.
-            $this->unstashReply($this->input['reply']);
+            $this->{$callback}($this->input['message'], ...$state['args']);
         }
     }
 
@@ -20497,6 +20520,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => $this->i18n('change password'),
                 'callback_data' => "/changeNaivePass",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('generate password'),
+                'callback_data' => "/genNaivePass",
             ],
         ];
         // Relay-ссылки поверх общих relay xray: кнопка только когда хотя бы у
