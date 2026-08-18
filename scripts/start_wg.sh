@@ -58,6 +58,20 @@ ip addr add 10.255.0.1/24 dev $INTERFACE_VPN || true
 ip link set up dev $INTERFACE_VPN
 ip rule add from "$ADDRESS" table $TABLE_ID || true
 ip route add default dev $INTERFACE_VPN table $TABLE_ID || true
+# Служебная сеть docker недостижима для клиентской подсети. Штатно весь
+# клиентский трафик уводит в tun0 policy-routing выше, но обе команды идут с
+# `|| true`: если правило/маршрут не встали, трафик остаётся в main-таблице,
+# где 10.10.0.0/16 — подключённая сеть, и клиент дотягивается до sshd любого
+# контейнера, до веб-панели и до control API unit. Хостовый nft это закрывает,
+# но /nft в поставку не входит (.gitignore), так что дублируем здесь.
+# Внутренний DNS (10.10.0.5) обязан остаться доступным — на нём AdGuard.
+# -C перед -I: без него правила копились бы на каждом рестарте контейнера.
+if [ -n "$ADDRESS" ]; then
+    iptables -C FORWARD -s "$ADDRESS" -d 10.10.0.5 -j ACCEPT 2>/dev/null \
+        || iptables -I FORWARD 1 -s "$ADDRESS" -d 10.10.0.5 -j ACCEPT
+    iptables -C FORWARD -s "$ADDRESS" -d 10.10.0.0/16 -j REJECT 2>/dev/null \
+        || iptables -I FORWARD 2 -s "$ADDRESS" -d 10.10.0.0/16 -j REJECT
+fi
 iptables -A FORWARD -i $INTERFACE_VPN -j ACCEPT
 iptables -A FORWARD -o $INTERFACE_VPN -j ACCEPT
 iptables -t nat -I POSTROUTING 1 -s "$ADDRESS" -j RETURN
