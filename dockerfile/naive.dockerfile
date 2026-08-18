@@ -56,6 +56,6 @@ RUN set -eux; \
 
 FROM $image
 COPY --from=go /go/caddy /usr/local/bin/
-RUN apk add openssh \
+RUN apk add --no-cache openssh \
     && mkdir /root/.ssh \
     && caddy version
