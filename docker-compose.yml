@@ -261,6 +261,13 @@ services:
             - hy
             - tt
             - ovpn
+            # ipsec, telemt и wp тоже: service.php при старте ходит в контейнеры
+            # по ssh (dnsttStart, restartHysteria, restartTt, setUpstream*,
+            # xrayUpdateRules), и без порядка старта задача могла отработать
+            # раньше, чем внутри поднимется sshd — молча и без следа.
+            - ipsec
+            - telemt
+            - wp
     # Брокер Docker API. Сокет держит ОН, а php и service ходят к нему по HTTP
     # с allowlist'ом по методу и пути (config/dockerproxy.conf) — раньше сокет
     # был примонтирован прямо в php и service, и суффикс ":ro" не ограничивал
@@ -424,7 +431,10 @@ services:
               required: true # default
             - path: ./override.env
               required: false
-        stop_grace_period: 1s
+        # 10s, а не 1s: AdGuardHome дописывает querylog и stats в volume, а через секунду после
+        # SIGTERM прилетает SIGKILL — и это на КАЖДОМ `make r`,
+        # который делает --force-recreate.
+        stop_grace_period: 10s
         networks:
             default:
                 ipv4_address: 10.10.0.5
@@ -478,7 +488,11 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./config/xray.json:/xray.json
+            # :ro — start_xray.sh только читает конфиг (cat + xray run -config),
+            # пишет его исключительно бот из php-контейнера. Без :ro
+            # компрометация ядра позволяла переписать собственный конфиг, и
+            # правка пережила бы рестарт.
+            - ./config/xray.json:/xray.json:ro
             - ./scripts/start_xray.sh:/start_xray.sh
             - ./logs:/logs
         hostname: xray
@@ -792,7 +806,10 @@ services:
             - NET_ADMIN
         devices:
             - /dev/net/tun:/dev/net/tun
-        stop_grace_period: 1s
+        # 10s, а не 1s: openvpn пишет status-файл и ccd, а через секунду после
+        # SIGTERM прилетает SIGKILL — и это на КАЖДОМ `make r`,
+        # который делает --force-recreate.
+        stop_grace_period: 10s
         command: ["/bin/sh", "/start_ovpn.sh"]
         networks:
             default:
@@ -844,7 +861,10 @@ services:
         # modprobe ppp_generic, и compose тогда не поднимет контейнер вовсе.
         # start_ipsec.sh делает mknod сам (CAP_MKNOD есть по умолчанию).
         # Для L2TP на хосте должен быть загружен модуль l2tp_ppp (см. nft-конфиг).
-        stop_grace_period: 1s
+        # 10s, а не 1s: strongswan сбрасывает состояние SA, а через секунду после
+        # SIGTERM прилетает SIGKILL — и это на КАЖДОМ `make r`,
+        # который делает --force-recreate.
+        stop_grace_period: 10s
         command: ["/bin/sh", "/start_ipsec.sh"]
         networks:
             default:

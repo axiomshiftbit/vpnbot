@@ -53,7 +53,8 @@ secAssert(substr_count($src, 'self::safeFileName(') >= 2,
     'общий санитайзер используется и в upload(), и в sendQr()');
 
 // ── 2. Последний админ ──────────────────────────────────────────────────────
-$delAdmin = substr($src, strpos($src, 'public function delAdmin('), 1800);
+// Окно в БАЙТАХ: комментарии кириллицей — по два байта на символ.
+$delAdmin = substr($src, strpos($src, 'public function delAdmin('), 3200);
 secAssert((bool) preg_match("~count\(\(array\) \\\$c\['admin'\]\) <= 1~", $delAdmin),
     'delAdmin() отказывается удалять последнего админа');
 secAssert(strpos($delAdmin, 'cannot remove the last admin') < strpos($delAdmin, "unset(\$c['admin']"),
@@ -153,6 +154,56 @@ secAssert(method_exists('Bot', 'withLock') && method_exists('Bot', 'pacConfUpdat
 secAssert($bot->withLock('selftest', fn() => 'ok') === 'ok', 'withLock() возвращает результат замыкания');
 secAssert(str_contains(substr($src, strpos($src, 'public function hwidUpdate('), 600), 'withLock('),
     'hwidUpdate() переведён на общий примитив, а не дублирует лок');
+
+// ── 5. НИЗКИЕ отчётов 01 и 02 ───────────────────────────────────────────────
+
+// Полный текст упавшей ssh-команды уходил в чат при debug=1 — а там бывает
+// «echo <PrivateKey> | wg pubkey». В лог писалась только первая строка, к
+// отправке в чат то же рассуждение не применили.
+$sshBlk = substr($src, strpos($src, "\$this->sshFailed = true;"), 1800);
+secAssert(!str_contains($sshBlk, '$e->getMessage(), $this->input[\'message_id\']'),
+    'в чат уходит усечённое сообщение, а не всё исключение целиком');
+secAssert(str_contains($sshBlk, 'self::esc($first)'), 'и оно экранировано');
+
+// Приватный ключ больше не подставляется в командную строку.
+secAssert(!preg_match('~echo \{\$conf\[\x27interface\x27\]\[\x27PrivateKey\x27\]\}~', $src),
+    'ключ WireGuard не идёт в argv контейнера (виден в ps)');
+secAssert(substr_count($src, 'printf \'%s\'') >= 1, 'значение передаётся переменной окружения');
+
+// Админы сравниваются строго и хранятся числами.
+secAssert(str_contains($src, "in_array((int) \$this->input['from'], array_map('intval'"),
+    'auth() сравнивает id админа строго');
+$addAdmin = substr($src, strpos($src, 'public function addAdmin('), 2200);
+secAssert(str_contains($addAdmin, '$id = (int) trim((string) $id);'),
+    'addAdmin() приводит id к int и отвергает мусор');
+
+// Единственный exec() с неэкранированными значениями из апдейта.
+$pacU = substr($src, strpos($src, 'public function pacUpdate('), 1800);
+secAssert(substr_count($pacU, 'escapeshellarg(') >= 4, 'pacUpdate() экранирует все подстановки');
+
+// upstream_dns AdGuard — резолвер всей установки; мусор в нём не давал AdGuard стартовать.
+$ups = substr($src, strpos($src, 'public function upstream('), 2200);
+secAssert(str_contains($ups, 'wrong upstream format'), 'upstream() проверяет формат адреса');
+
+// Ответ стороннего сервиса в сообщении.
+$ipinfo = substr($src, strpos($src, 'ipinfo.io/$search'), 800);
+secAssert(str_contains($ipinfo, 'self::esc('),
+    'ответ ipinfo.io экранируется перед отправкой');
+
+// subVless: 500 вместо 404 на нечитаемом конфиге и перебор без ведра промахов.
+$svl = substr($src, strpos($src, 'public function subVless('), 2600);
+secAssert(str_contains($svl, 'if (!is_array($xr))'), 'subVless проверяет читаемость конфига');
+secAssert(str_contains($svl, "subRateLimit('', 'miss')"), 'промахи subVless идут в ведро перебора');
+
+// Нестрогое сравнение в fallback по uuid.
+secAssert(!preg_match("~\(\\\$v\['id'\] \?\? ''\) == \\\$sid~", $src),
+    'findClientBySid сравнивает id строго');
+
+// Поблажка браузерному UA — только на странице предпросмотра.
+secAssert(str_contains($src, 'bool $htmlPreview = false'),
+    'processHwidRequest различает страницу предпросмотра и выдачу конфига');
+secAssert(str_contains($src, '$isBrowser = $htmlPreview && $this->isBrowserRequest();'),
+    'браузерный UA обходит лимит устройств только на HTML-пути');
 
 if ($failed) {
     echo "audit_bot_security_test FAILED ($failed)\n";

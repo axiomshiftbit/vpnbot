@@ -108,7 +108,7 @@
         }
     ],
     "add-rule-providers": true,
-    "rule-providers": [],
+    "rule-providers": {},
     "rules": [
         {
             "type": "RULE-SET",

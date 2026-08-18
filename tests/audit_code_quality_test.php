@@ -175,6 +175,45 @@ cqAssert(str_contains($up, '$tail = \'\';'),
 cqAssert(!preg_match("~^\s+unlink\(__DIR__~m", $up),
     'unlink() везде под проверкой существования');
 
+// ── НИЗКИЕ того же отчёта ───────────────────────────────────────────────────
+
+// Мёртвые методы: проверено, что нет ни определения, ни вызова.
+foreach (['change_server_ip', 'isSafeExtUrl', 'getAwgVless', 'normalizeAwgForVless', 'setAsVlessTransport'] as $dead) {
+    cqAssert(!str_contains($src, "public function $dead("), "мёртвый метод $dead удалён");
+    cqAssert(!preg_match("~\\\$this->$dead\\(~", $src), "вызовов $dead не осталось");
+}
+cqAssert(!str_contains($src, "public function comment("), 'мёртвый comment() удалён');
+cqAssert(str_contains($src, 'public function uncomment('),
+    'парный uncomment() жив: его зовёт cloakNginx()');
+// Без строк-комментариев: пояснение об удалении само упоминает имя роута.
+$srcCode = implode("\n", array_filter(
+    explode("\n", $src),
+    static fn(string $l): bool => !preg_match('~^\s*//~', $l)
+));
+cqAssert(!str_contains($srcCode, '/setAsVlessTransport'), 'роут удалённого метода снят');
+
+// Мёртвый LZW с багом KwKwK в декодере.
+$up2 = (string) file_get_contents(__DIR__ . '/../app/updatepac.php');
+cqAssert(!str_contains($up2, 'function elzw(') && !str_contains($up2, 'function dlzw('),
+    'нерабочая реализация LZW удалена');
+
+// Часовой пояс.
+$tz = (string) file_get_contents(__DIR__ . '/../app/timezone.php');
+cqAssert(str_contains($tz, "getenv('TZ') ?: 'UTC'"),
+    'timezone.php не остаётся без пояса при запуске вне docker');
+
+// Разбор расписания бэкапа и ротация без клиентов.
+cqAssert(str_contains($src, "array_pad(array_values(array_filter(explode('/', \$conf['backup'] ?? ''))), 2, '')"),
+    'разбор расписания переиндексирует и дополняет массив');
+cqAssert((bool) preg_match("~foreach \\(\\\$x\\['inbounds'\\]\\[0\\]\\['settings'\\]\\['clients'\\] \\?\\? \\[\\] as~", $src),
+    'regenAllXr переживает инбаунд без клиентов');
+
+// Готовые ключи перевода подставлены.
+cqAssert(str_contains($src, "i18n(\$update ? 'have updates' : 'no updates')"),
+    'индикатор обновлений идёт через i18n, а не английской строкой в коде');
+cqAssert(str_contains($src, "\$out[] = \$this->i18n('reset nginx');"),
+    "'reset nginx' переводится");
+
 if ($failed) {
     echo "audit_code_quality_test FAILED ($failed)\n";
     exit(1);

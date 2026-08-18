@@ -1,3 +1,4 @@
+#!/bin/sh
 # Пара ключей пересоздавалась при КАЖДОМ старте php, а authorized_keys в
 # остальных контейнерах обновляется только их собственным start_*.sh. Один
 # `docker restart php` (его же провоцирует healthcheck) — и у php новый
@@ -27,7 +28,7 @@ openssl req -newkey rsa:2048 -sha256 -nodes -x509 -days 365 -keyout /certs/self_
 # controlUnit() в bot.php и так ходит именно в этот сокет — до сих пор он не
 # существовал, и функция всегда отвечала «lost connect to unit».
 CONTROL_SOCK=/var/run/control.unit.sock
-if [[ -f "/ssh/key.pub" && -s "/ssh/key.pub" ]]; then
+if [ -f "/ssh/key.pub" ] && [ -s "/ssh/key.pub" ]; then
     unitd --control "unix:$CONTROL_SOCK" --log /logs/unit_error
     # unitd демонизируется, сокет появляется не мгновенно: без ожидания
     # первый же PUT уходил в никуда и контейнер поднимался без конфигурации.

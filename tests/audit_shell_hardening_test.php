@@ -110,6 +110,53 @@ shAssert(str_contains($in, 'DOCKER_GPG_FPR='), 'отпечаток ключа do
 shAssert(str_contains($in, 'signed-by=/etc/apt/keyrings/docker.gpg'),
     'репозиторий docker подключён с привязкой к ключу');
 
+// ── НИЗКИЕ того же отчёта ───────────────────────────────────────────────────
+
+// Шебанги: скрипты запускаются с явным интерпретатором, но без шебанга их
+// нельзя запустить руками и нельзя понять, под какой оболочкой они писались.
+foreach (glob(__DIR__ . '/../scripts/*.sh') as $p) {
+    $first = strtok((string) file_get_contents($p), "\n");
+    shAssert(str_starts_with((string) $first, '#!'), basename($p) . ': есть шебанг');
+}
+
+// [[ ]] под /bin/sh: работает лишь потому, что busybox собран с ASH_BASH_COMPAT.
+foreach (['scripts/check_file.sh', 'scripts/start_php.sh'] as $p) {
+    shAssert(!str_contains($code($read($p)), '[['),
+        basename($p) . ': POSIX-условия вместо [[ ]] (healthcheck запускается через /bin/sh)');
+}
+
+// Права на ключи.
+shAssert(str_contains($read('scripts/start_ipsec.sh'), 'umask 077'),
+    'start_ipsec.sh: PKI и PSK создаются сразу с узкими правами, а не chmod-ом потом');
+foreach (['scripts/start_wg.sh', 'scripts/reset_wg.sh'] as $p) {
+    shAssert(str_contains($read($p), 'umask 077;'),
+        basename($p) . ': приватный ключ WireGuard не создаётся 0644');
+    shAssert(str_contains($read($p), 'HOSTNAME="${HOSTNAME:-$(hostname)}"'),
+        basename($p) . ': выбор инстанса не держится на переменной, которую заводит docker');
+}
+
+// exec перед фоновым запуском и мёртвый tail.
+foreach (glob(__DIR__ . '/../scripts/*.sh') as $p) {
+    shAssert(!str_contains((string) file_get_contents($p), 'exec /usr/sbin/sshd -D -e "$@" &'),
+        basename($p) . ': нет `exec cmd &` (это обычный фоновый запуск, а читается наоборот)');
+}
+shAssert(!preg_match('~^tail -f /dev/null~m', $read('scripts/start_ad.sh')),
+    'start_ad.sh: недостижимый tail убран — контейнер держит сам AdGuardHome');
+
+// install_as_service.sh и diagnose_bot.sh
+$ias = $read('scripts/install_as_service.sh');
+shAssert(str_contains($ias, 'set -eu'), 'install_as_service.sh падает на ошибке шага');
+shAssert(!str_contains($code($ias), 'sed "s|__VPNBOT_PATH__'),
+    'путь установки не идёт в тело sed-выражения (символ | в пути ломал его)');
+shAssert(str_contains($ias, 'if [ ! -s "$tmp" ]'), 'пустой юнит-файл не попадёт в systemd');
+shAssert(str_contains($read('scripts/diagnose_bot.sh'), 'cd "$ROOT" || exit 1'),
+    'diagnose_bot.sh не диагностирует чужой каталог');
+
+// Полуфабрикаты с секретами в корне контейнера.
+$wgAll = $read('scripts/start_wg.sh');
+shAssert(!str_contains($code($wgAll), '> change_port') && !str_contains($code($wgAll), '> change_address'),
+    'start_wg.sh не оставляет в корне контейнера копии wg0.conf с ключами');
+
 if ($failed) {
     echo "audit_shell_hardening_test FAILED ($failed)\n";
     exit(1);

@@ -1,6 +1,10 @@
+#!/bin/sh
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A
-exec /usr/sbin/sshd -D -e "$@" &
+# Без exec: `exec cmd &` порождает подоболочку, которую exec собой и
+# заменяет, то есть это обычный фоновый запуск, но читается как «заменить
+# текущий процесс» (то же пояснение есть в start_wp.sh).
+/usr/sbin/sshd -D -e "$@" &
 CURRENT_PORT=$(sed -n 's/"server_port": \([0-9]\+\),/\1/p' /config.json | tr -d ' ')
 # Пустой порт (битый или пересозданный /config.json) в `-ne` — ошибка ash, а не
 # «не равно»: сравниваем только когда там действительно число.

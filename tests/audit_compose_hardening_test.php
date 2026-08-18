@@ -94,6 +94,45 @@ chAssert(strpos($ss, 'tar -xf shadowsocks-rust.tar.xz') < strpos($ss, 'apk del')
 chAssert(!preg_match('~apk del[^\n]*\bjq\b~', $ss),
     'jq остаётся: его зовёт start_ss.sh в рантайме');
 
+// ── НИЗКИЕ того же отчёта ───────────────────────────────────────────────────
+$ci = (string) file_get_contents(__DIR__ . '/../.github/workflows/images.yml');
+// Без строк-комментариев: пояснение над permissions цитирует то, что мы убрали.
+$head = implode("\n", array_filter(
+    explode("\n", substr($ci, 0, strpos($ci, 'jobs:'))),
+    static fn(string $l): bool => !preg_match('~^\s*#~', $l)
+));
+chAssert(!str_contains($head, 'packages: write'),
+    'packages: write снят с уровня workflow — джобу plan он не нужен');
+chAssert((bool) preg_match('~build:.*?permissions:\s*\n\s*contents: read\s*\n\s*packages: write~s', $ci),
+    'права на запись пакетов объявлены в джобе build');
+chAssert(str_contains($ci, 'неизвестный сервис'),
+    'ручной ввод services сверяется со списком: значение уходит в имя публикуемого пакета');
+chAssert(str_contains($ci, 'length) > 0'),
+    'prune не трогает версии без тегов: иначе удалялись бы дочерние манифесты живого канального тега');
+
+// stop_grace_period у сервисов с состоянием
+foreach (['ad', 'ipsec', 'ovpn'] as $svc) {
+    $block = substr($compose, strpos($compose, "\n    $svc:\n"), 3000);
+    chAssert(str_contains($block, 'stop_grace_period: 10s'),
+        "$svc получает 10s на завершение: через секунду после SIGTERM прилетает SIGKILL");
+}
+// stateless-сервисам секунда по-прежнему оправдана
+chAssert(substr_count($compose, 'stop_grace_period: 1s') >= 15, 'остальным 1s не тронут');
+
+// depends_on у service
+$svcBlock = substr($compose, strpos($compose, "\n    service:\n"), 4000);
+foreach (['ipsec', 'telemt', 'wp'] as $dep) {
+    chAssert((bool) preg_match("~depends_on:.*?- $dep~s", $svcBlock),
+        "service ждёт $dep: стартовые задачи ходят в контейнеры по ssh");
+}
+
+// xray.json только на чтение
+chAssert(str_contains($compose, './config/xray.json:/xray.json:ro'),
+    'xr получает конфиг на чтение: пишет его только бот из php');
+// ss и proxy переписывают свои конфиги сами — им :ro нельзя
+chAssert(!preg_match('~\./config/ssserver\.json:/config\.json:ro~', $compose),
+    'ssserver.json остаётся на запись: start_ss.sh правит в нём порт');
+
 if ($failed) {
     echo "audit_compose_hardening_test FAILED ($failed)\n";
     exit(1);

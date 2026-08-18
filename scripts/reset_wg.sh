@@ -21,6 +21,10 @@ INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
 # фолбэком для контейнеров со старым docker-compose.yml.
 PAC=/config/pac.json
 [ -f "$PAC" ] || PAC=/pac.json
+# HOSTNAME кладёт в окружение docker, сама busybox ash её не заводит: при
+# ручном запуске через ssh переменная могла не пробрасываться, и скрипт брал
+# ключи нулевого инстанса (amnezia вместо wg1_amnezia), поднимая не тот стек.
+HOSTNAME="${HOSTNAME:-$(hostname)}"
 if awg show wg0 >/dev/null 2>&1; then
     WG=awg
 elif wg show wg0 >/dev/null 2>&1; then
@@ -47,7 +51,7 @@ case "$2" in
     ''|*[!0-9]*) echo "FATAL: port must be a number" >&2; exit 1 ;;
 esac
 
-PRIVATEKEY=$($WG genkey | tee /etc/wireguard/privatekey)
+PRIVATEKEY=$(umask 077; $WG genkey | tee /etc/wireguard/privatekey)
 echo "[Interface]" > /etc/wireguard/wg0.conf
 echo "PrivateKey = $PRIVATEKEY" >> /etc/wireguard/wg0.conf
 echo "Address = $1" >> /etc/wireguard/wg0.conf

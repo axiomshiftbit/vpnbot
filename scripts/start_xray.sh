@@ -1,6 +1,10 @@
+#!/bin/sh
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A
-exec /usr/sbin/sshd -D -e "$@" &
+# Без exec: `exec cmd &` порождает подоболочку, которую exec собой и
+# заменяет, то есть это обычный фоновый запуск, но читается как «заменить
+# текущий процесс» (то же пояснение есть в start_wp.sh).
+/usr/sbin/sshd -D -e "$@" &
 # Каталог с внешними .dat (ext:/extip: из routes → dat) — общий с php через /logs.
 # Задаём asset-путь ядру, иначе ext:geoip.dat:… не резолвится и xray не стартует.
 mkdir -p /logs/geodata

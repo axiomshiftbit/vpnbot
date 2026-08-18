@@ -1,6 +1,10 @@
+#!/bin/sh
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A
-exec /usr/sbin/sshd -D -e "$@" &
+# Без exec: `exec cmd &` порождает подоболочку, которую exec собой и
+# заменяет, то есть это обычный фоновый запуск, но читается как «заменить
+# текущий процесс» (то же пояснение есть в start_wp.sh).
+/usr/sbin/sshd -D -e "$@" &
 # Через временный файл, а не через полуфабрикат в корне контейнера: /config.json
 # это файловый bind-mount на config/ssserver.json (там пароль SS), и редирект
 # усекал бы хостовый файл ещё до записи. cat > , а не mv — инод держит mount.

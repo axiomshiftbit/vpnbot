@@ -34,9 +34,12 @@ on:
   schedule:
     - cron: '0 4 * * 1'
 
+# packages: write НЕ на уровне workflow: джобу plan (git diff + jq) права на
+# запись пакетов не нужны вовсе, а с ними компрометация любого его шага давала
+# заливку произвольного образа в ghcr под именем проекта. Джоб prune свои права
+# и так переобъявляет локально.
 permissions:
   contents: read
-  packages: write
 
 # Отменять на полпути нельзя: половина образов уже была бы опубликована.
 concurrency:
@@ -121,6 +124,15 @@ jobs:
 
           if [ -n "${SERVICES}" ]; then
             SEL=$(echo "${SERVICES}" | tr ',' ' ')
+            # Значение уходит в targets bake и в ИМЯ публикуемого пакета.
+            # Опечатка вроде «xr,ss » давала попытку собрать несуществующий
+            # target и мусорное имя в ghcr — сверяем со списком.
+            for s in ${SEL}; do
+              case " ${ALL} " in
+                *" ${s} "*) ;;
+                *) echo "неизвестный сервис: '${s}' (допустимы: ${ALL})" >&2; exit 1 ;;
+              esac
+            done
           elif [ "${EVENT}" != 'push' ]; then
             SEL="${ALL}"
           elif [ -z "${BEFORE}" ] || [ "${BEFORE}" = '0000000000000000000000000000000000000000' ]; then
@@ -172,6 +184,9 @@ jobs:
   build:
     needs: plan
     if: needs.plan.outputs.count != '0'
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     # tt компилирует два Rust-бинаря с нуля; остальные укладываются в 20 минут.
     timeout-minutes: 120
@@ -322,8 +337,16 @@ jobs:
           # тегов нет вовсе (осиротевший манифест). Версия с latest/dev в
           # список не попадает никогда. `[] | all` — true, поэтому untagged
           # тоже кандидат, и это правильно.
+          # length > 0 обязателен: `[] | all` истинно, поэтому версия БЕЗ тегов
+          # тоже попадала в кандидаты. Сейчас осиротевших манифестов не бывает
+          # (provenance/sbom выключены, платформа одна), но стоит вернуть
+          # attestation или arm64 — и мы удалим дочерние манифесты живого
+          # канального тега, получив `manifest unknown` при pull. Ровно этот
+          # инцидент уже был с тегом :dev. Untagged чистить — отдельным
+          # осознанным прогоном.
           ids=$(jq -r --argjson keep "${KEEP}" '
-            [ .[] | select((.metadata.container.tags // []) | map(startswith("sha-")) | all) ]
+            [ .[] | select(((.metadata.container.tags // []) | length) > 0)
+                  | select((.metadata.container.tags // []) | map(startswith("sha-")) | all) ]
             | sort_by(.created_at) | reverse | .[$keep:] | .[].id
           ' versions.json)
 

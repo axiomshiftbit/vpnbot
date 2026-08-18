@@ -15,7 +15,10 @@ fi
 
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A
-exec /usr/sbin/sshd -D -e "$@" &
+# Без exec: `exec cmd &` порождает подоболочку, которую exec собой и
+# заменяет, то есть это обычный фоновый запуск, но читается как «заменить
+# текущий процесс» (то же пояснение есть в start_wp.sh).
+/usr/sbin/sshd -D -e "$@" &
 
 INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
 # route (net-tools) может отсутствовать или ещё не видеть default (гонка на
@@ -29,7 +32,7 @@ INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
 # месте КАТАЛОГ, и `wc -c <` падает, а `[ "" -eq 0 ]` — это ошибка ash.
 if [ ! -f /etc/wireguard/wg0.conf ] || [ "$(wc -c < /etc/wireguard/wg0.conf)" -eq 0 ]
 then
-    PRIVATEKEY=$(wg genkey | tee /etc/wireguard/privatekey)
+    PRIVATEKEY=$(umask 077; wg genkey | tee /etc/wireguard/privatekey)
     echo "[Interface]" > /etc/wireguard/wg0.conf
     echo "PrivateKey = $PRIVATEKEY" >> /etc/wireguard/wg0.conf
     echo "Address = $ADDRESS" >> /etc/wireguard/wg0.conf
@@ -75,6 +78,10 @@ ln -sf /etc/wireguard/wg0.conf /etc/amnezia/amneziawg/wg0.conf
 # случай контейнера, поднятого со старым docker-compose.yml.
 PAC=/config/pac.json
 [ -f "$PAC" ] || PAC=/pac.json
+# HOSTNAME кладёт в окружение docker, сама busybox ash её не заводит: при
+# ручном запуске через ssh переменная могла не пробрасываться, и скрипт брал
+# ключи нулевого инстанса (amnezia вместо wg1_amnezia), поднимая не тот стек.
+HOSTNAME="${HOSTNAME:-$(hostname)}"
 if [ "$HOSTNAME" = "wireguard1" ]
 then
     PFX=wg1_

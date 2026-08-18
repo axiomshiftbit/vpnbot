@@ -5,7 +5,9 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
+# || exit: без проверки скрипт продолжал бы grep .env и tail logs/* в ЧУЖОМ
+# каталоге и печатал отчёт не о той установке.
+cd "$ROOT" || exit 1
 
 section() {
     echo ""

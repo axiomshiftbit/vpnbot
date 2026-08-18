@@ -1,3 +1,4 @@
+#!/bin/sh
 cat /ssh/key.pub > /root/.ssh/authorized_keys 2>/dev/null || true
 ssh-keygen -A >/dev/null 2>&1 || true
 /usr/sbin/sshd -D -e "$@" &

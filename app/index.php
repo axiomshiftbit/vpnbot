@@ -141,8 +141,16 @@ switch (true) {
             $_GET = array_merge($_GET, $t);
         }
         $type    = $_GET['t'] ?? 'pac';
-        $address = ($_GET['a'] ?? '') ?: '127.0.0.1';
-        $port    = ($_GET['p'] ?? '') ?: '1080';
+        // Значения подставляются в тело PAC-файла, а PAC — это JS, который
+        // браузер исполняет в роли автоконфига прокси. Отражать туда
+        // произвольную строку из query незачем: адрес — хостнейм или IP, порт —
+        // число в допустимом диапазоне, иначе берём дефолт.
+        $address = trim((string) ($_GET['a'] ?? ''));
+        if ($address === '' || (!$bot->isHostname($address) && filter_var($address, FILTER_VALIDATE_IP) === false)) {
+            $address = '127.0.0.1';
+        }
+        $port = (int) ($_GET['p'] ?? 0);
+        $port = ($port >= 1 && $port <= 65535) ? (string) $port : '1080';
         switch ($type) {
             case 's':
             case 'si':
@@ -310,6 +318,9 @@ switch (true) {
                 if (preg_match('~^[\w.-]+$~', (string) $type) && !str_contains((string) $type, '..')
                     && file_exists($file = __DIR__ . "/zapretlists/$type")) {
                     $pac = file_get_contents($file);
+                    // Та же обвязка, что у остальных подписочных ответов:
+                    // nosniff, no-store, noindex. Эта ветка её не проходила.
+                    $bot->subSecurityHeaders();
                     header('Content-Type: text/plain');
                     echo str_replace([
                         '~address~',

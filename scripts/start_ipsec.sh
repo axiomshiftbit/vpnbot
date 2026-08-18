@@ -1,4 +1,9 @@
 #!/bin/sh
+# Файлы PKI и PSK создаются редиректом, то есть с umask-правами (0644), а
+# chmod 600 идёт ПОСЛЕ — для ca.key через всю генерацию 3072-битного ключа и
+# выпуск сертификата. Каталог смонтирован на хост, окно измеряется секундами.
+# Явные chmod +x на хуках ниже от umask не страдают.
+umask 077
 # strongSwan (IKEv1 для L2TP/IPsec + IKEv2 EAP-MSCHAPv2) + xl2tpd entrypoint.
 # - Все персистентные артефакты (PSK, PKI, secrets, chap-secrets, swanctl.conf)
 #   живут на bind mount /config/ipsec — их правит бот из php-контейнера.

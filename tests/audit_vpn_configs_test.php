@@ -103,6 +103,34 @@ vcAssert(in_array($bot->defaultFakeDomain(), Bot::REALITY_FAKE_DOMAINS, true),
 vcAssert(!preg_match("~\\?: 'yandex\\.ru'~", $src),
     'захардкоженный yandex.ru как дефолт убран: узнаваемая подпись у каждой установки');
 
+// ── НИЗКИЕ того же отчёта ───────────────────────────────────────────────────
+$oc = $text('config/ocserv.conf');
+vcAssert((bool) preg_match('~^tls-priorities = "[^"]*-RSA[^"]*"~m', $oc),
+    'ocserv: статический RSA-KX (без forward secrecy) запрещён явно');
+vcAssert((bool) preg_match('~^tls-priorities = "[^"]*\+VERS-TLS1\.3~m', $oc),
+    'ocserv: версии перечислены разрешительным списком');
+
+vcAssert(!preg_match('~^proxy_protocol~m', $text('config/hysteria.yaml')),
+    'hysteria: поля, которого нет в схеме сервера, не осталось');
+
+$mw = $json('templates/mihomo-warp.json');
+vcAssert(is_object((object) $mw['rule-providers']) && $mw['rule-providers'] === [],
+    'mihomo-warp: rule-providers — объект, как в clash.json');
+vcAssert(str_contains($text('templates/mihomo-warp.json'), '"rule-providers": {}'),
+    'в тексте шаблона тоже {}, а не []');
+
+$socat = $text('mirror/start_socat.sh');
+vcAssert(!preg_match('~^\s*eval~m', $socat),
+    'mirror/start_socat.sh: eval над подставленными значениями убран');
+vcAssert(str_contains($socat, 'socat "TCP-LISTEN:$PORT'),
+    'socat зовётся напрямую, значения остаются данными');
+vcAssert(str_contains($socat, 'не похож на IPv4-адрес'),
+    'незаполненный шаблон не запускается молча');
+
+$src2 = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+vcAssert(str_contains($src2, 'только для отладки'),
+    'метод plain у Cloak помечен как отладочный: маскировка с ним теряется');
+
 if ($failed) {
     echo "audit_vpn_configs_test FAILED ($failed)\n";
     exit(1);

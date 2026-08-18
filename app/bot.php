@@ -419,7 +419,9 @@ class Bot
             $c['admin'] = [$c['admin']];
             file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
         }
-        if (in_array($this->input['from'], $c['admin'])) {
+        // Строгое сравнение: addAdmin() кладёт в список СЫРОЙ текст ответа, то
+        // есть там может лежать строка, а не int.
+        if (in_array((int) $this->input['from'], array_map('intval', (array) $c['admin']), true)) {
             $this->admin = true;
         }
     }
@@ -646,9 +648,6 @@ class Bot
                 break;
             case preg_match('~^/importIps (.+)$~', $this->input['callback'], $m):
                 $this->importIps($m[1]);
-                break;
-            case preg_match('~^/setAsVlessTransport (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-                $this->setAsVlessTransport(...explode('_', $m['arg']));
                 break;
             case preg_match('~^/switchBanIp$~', $this->input['callback'], $m):
                 $this->switchBanIp();
@@ -5983,7 +5982,7 @@ NFT;
                 file_put_contents('/config/dnstt/server.pub', $json['dnstt']['public']);
             }
             // nginx
-            $out[] = 'reset nginx';
+            $out[] = $this->i18n('reset nginx');
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
 
             $this->cloakNginx();
@@ -8554,12 +8553,9 @@ NFT;
         $this->createPeer(implode(',', $this->getPacConf()['subnets']), 'list');
     }
 
-    public function change_server_ip($ip)
-    {
-        $conf = $this->readConfig();
-        $conf['interface']['Address'] = $ip;
-        $this->restartWG($this->createConfig($conf));
-    }
+    // change_server_ip() удалён (аудит 2026-08-18): не вызывался ниоткуда —
+    // ни из кода, ни по имени из строки (reply()/cron зовут методы по имени,
+    // поэтому проверялось и это). Смена адреса инстанса идёт через reset_wg.sh.
 
     public function reply()
     {
@@ -8719,18 +8715,8 @@ NFT;
         $this->menu();
     }
 
-    public function comment($text, $tag)
-    {
-        $text = explode("\n", $text);
-        foreach ($text as $k => $v) {
-            if (preg_match("~##$tag~", $v)) {
-                $text[$k] = "#-$tag";
-                continue;
-            }
-            $text[$k] = "#$v";
-        }
-        return implode("\n", $text);
-    }
+    // comment() удалён (аудит 2026-08-18): парный uncomment() жив и
+    // используется в cloakNginx(), а сам comment() не вызывался ниоткуда.
 
     public function uncomment($text, $tag)
     {
@@ -9894,6 +9880,18 @@ NFT;
     {
         $file = __DIR__ . '/config.php';
         require $file;
+        // $id — сырой текст ответа на промпт. Раньше он клался в config.php как
+        // есть, и в списке админов оказывалась строка, из-за чего сравнения
+        // приходилось делать нестрогими. Telegram id — положительное целое.
+        $id = (int) trim((string) $id);
+        if ($id <= 0) {
+            $this->send($this->input['chat'], 'wrong id', $this->input['message_id']);
+
+            return $this->menu('config');
+        }
+        if (in_array($id, array_map('intval', (array) ($c['admin'] ?? [])), true)) {
+            return $this->menu('config');
+        }
         $c['admin'][] = $id;
         file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
         $this->menu('config');
@@ -9907,7 +9905,9 @@ NFT;
         // array_search удалялся admin[0] — ГЛАВНЫЙ администратор, получатель
         // pinBackup, checkVersion и всех уведомлений. Достижимо кнопкой из
         // устаревшего меню и двойным кликом.
-        $i = array_search($id, (array) ($c['admin'] ?? []), false);
+        // Строго и по int — как и auth(): нестрогий поиск по разнотипному
+        // списку легко попадал не в ту запись.
+        $i = array_search((int) $id, array_map('intval', (array) ($c['admin'] ?? [])), true);
         if ($i === false) {
             return $this->menu('config');
         }
@@ -10071,6 +10071,20 @@ DNS-over-HTTPS with IP:
 
     public function upstream($url)
     {
+        // AdGuard — резолвер для ВСЕХ клиентов установки, и с нераспознанным
+        // апстримом он не стартует. Ошибку при этом никто не увидит: startAd()
+        // фоновый. То есть одна опечатка в промпте «enter url» роняла DNS всей
+        // сборки. Принимаем ровно то, что понимает сам AdGuard: схемы
+        // tcp/tls/https/quic/sdns, голый IP и «домен/IP:порт».
+        $url = trim((string) $url);
+        $ok  = (bool) preg_match('~^(tcp|tls|https|quic|sdns|h3)://\S+$~i', $url)
+            || filter_var($url, FILTER_VALIDATE_IP) !== false
+            || (bool) preg_match('~^\[?[a-zA-Z0-9:.\-]+]?(:\d{1,5})?$~', $url);
+        if (!$ok) {
+            $this->send($this->input['chat'], self::esc($url) . ' - wrong upstream format', $this->input['message_id']);
+
+            return $this->menu('adguard');
+        }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
         $out[] = $this->stopAd();
@@ -12642,93 +12656,12 @@ DNS-over-HTTPS with IP:
         return $result;
     }
 
-    // ── НЕИСПОЛЬЗУЕМАЯ ВЕТКА (awg_for_vless) ────────────────────────────
-    // normalizeAwgForVless/setAsVlessTransport/getAwgVless сейчас никем не
-    // вызываются: кнопки «/setAsVlessTransport» нет ни в одном рендере (роут в
-    // action() остался), а getAwgVless() не читает никто — mihomo-подписка
-    // собирает awg-прокси через getAwgClient() по приватному ключу пира.
-    // Код оставлен рабочим и инстанс-корректным на случай возврата кнопки;
-    // если она не нужна — удалять надо все три метода вместе с роутом.
-    //
-    // 'awg_for_vless' хранится как '<префикс инстанса>:<индекс клиента>'
-    // (':N' / 'wg1_:N'). Старые бэкапы могли записать имя сервиса ('wg:N' /
-    // 'wg1:N') — приводим к текущему формату, иначе toggle не снимает
-    // привязку, а getAwgVless берёт clients-файл и ключи не того инстанса.
-    public function normalizeAwgForVless($v)
-    {
-        [$container, $client] = array_pad(explode(':', (string) $v, 2), 2, '');
-        $container = ['wg' => '', 'wg1' => 'wg1_'][$container] ?? $container;
-        return $container . ':' . $client;
-    }
-
-    public function setAsVlessTransport($k, $page)
-    {
-        $c = $this->getPacConf();
-        // Формат ключа единый с хранением и getAwgVless: префикс инстанса
-        // (''/'wg1_'), а не имя контейнера — иначе сравнение никогда не
-        // совпадает и повторное нажатие не снимает привязку.
-        $key = $this->getInstanceWG(1) . ':' . $k;
-        if (!empty($c['awg_for_vless']) && $this->normalizeAwgForVless($c['awg_for_vless']) === $key) {
-            unset($c['awg_for_vless']);
-        } else {
-            $c['awg_for_vless'] = $key;
-        }
-        $this->setPacConf($c);
-        $this->menu('wg', $page);
-    }
-
-    public function getAwgVless()
-    {
-        $c = $this->getPacConf();
-        if (empty($c['awg_for_vless'])) {
-            return false;
-        }
-        $v         = $this->normalizeAwgForVless($c['awg_for_vless']);
-        $container = explode(':', $v)[0];
-        $client    = explode(':', $v)[1];
-        if ($client === '') {
-            return false;
-        }
-
-        // Клиентов читаем через readClients() с временным переопределением
-        // инстанса ($this->wg резолвится раньше глобального wg_instance) —
-        // тот же приём, что в shutdownClient/export/syncPortClients.
-        $prev = $this->wg ?? null;
-        $this->wg = $container === 'wg1_' ? 1 : 0;
-        $clients = $this->readClients();
-        $this->wg = $prev;
-        if (empty($clients[$client])) {
-            return false;
-        }
-        return [
-            // Блок 3.0 уезжает в mihomo только при включённом тумблере
-            // mihomo_awg3: его понимают лишь свежие сборки, а нужные ИМЕНА
-            // полей у mihomo свои (см. MIHOMO_AWG3_KEYS).
-            // Набор прогоняем через amneziaKeysUsable() — тот же срез, что
-            // уходит в wg0.conf: иначе подписка объявила бы клиенту header
-            // protection, которого на сервере нет, и handshake молча не прошёл
-            // бы. Версию tools берём из кеша: ssh на пути подписки нельзя.
-            "amnezia-wg-option" => self::amneziaKeysForMihomo(
-                self::amneziaKeysUsable(
-                    $c["{$container}amnezia_keys"] ?? '',
-                    $this->awgSupports3Cached($container),
-                    $this->awgSupports31Cached($container)
-                ),
-                !empty($c['mihomo_awg3'])
-            ),
-            "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
-            // Диапазон приводится к числу уже на месте сборки прокси
-            // (keepaliveInt): ssh сюда звать нельзя — это путь подписки.
-            "persistent-keepalive" => $c["{$container}amnezia_keepalive"] ?? 20,
-            "server"            => explode(':', $clients[$client]['peers'][0]['Endpoint'])[0],
-            "port"              => explode(':', $clients[$client]['peers'][0]['Endpoint'])[1],
-            "ip"                => explode('/', $clients[$client]['interface']['Address'])[0],
-            "private-key"       => $clients[$client]['interface']['PrivateKey'],
-            "public-key"        => $clients[$client]['peers'][0]['PublicKey'],
-            "mtu"               => $c["{$container}mtu"] ?? $this->mtu,
-        ];
-
-    }
+    // Блок awg_for_vless (normalizeAwgForVless / setAsVlessTransport /
+    // getAwgVless) удалён вместе с роутом «/setAsVlessTransport» (аудит
+    // 2026-08-18). Кнопки на него не было ни в одном рендере, значение
+    // 'awg_for_vless' никто не читал, а mihomo-подписка собирает awg-прокси
+    // через getAwgClient() по приватному ключу пира. Заодно ушёл дубль
+    // тридцати строк сборки mihomo-прокси, который жил тут и в subscription().
 
     public function getClient($client, $page)
     {
@@ -13718,7 +13651,17 @@ DNS-over-HTTPS with IP:
 
     public function pacUpdate($import = '')
     {
-        exec("php updatepac.php start {$this->input['chat']} {$this->input['message_id']} {$this->input['callback_id']} $import > /dev/null &");
+        // Единственный exec() в файле, где значения из апдейта Telegram шли без
+        // escapeshellarg. Эксплуатации нет (вебхук закрыт сверкой ?k= с токеном,
+        // а значения на практике числовые), но соседние точки — sendQr,
+        // cleanLogs, createSrs — экранированы, и эта не должна быть исключением.
+        exec(
+            'php updatepac.php start '
+            . escapeshellarg((string) $this->input['chat']) . ' '
+            . escapeshellarg((string) $this->input['message_id']) . ' '
+            . escapeshellarg((string) $this->input['callback_id']) . ' '
+            . escapeshellarg((string) $import) . ' > /dev/null &'
+        );
     }
 
     public function getSSConfig()
@@ -13808,7 +13751,13 @@ DNS-over-HTTPS with IP:
             $text[] = 'masq: <code>' . htmlspecialchars($ckSrv, ENT_QUOTES) . '</code>';
             $text[] = "UID: <span class='tg-spoiler'>" . htmlspecialchars($ck['UID'] ?? '', ENT_QUOTES) . '</span>';
             $text[] = "pubkey: <span class='tg-spoiler'>" . htmlspecialchars($ck['PublicKey'] ?? '', ENT_QUOTES) . '</span>';
-            $text[] = 'method: <code>' . htmlspecialchars($ck['EncryptionMethod'] ?? 'aes-256-gcm', ENT_QUOTES) . '</code>';
+            $ckMethod = $ck['EncryptionMethod'] ?? 'aes-256-gcm';
+            // 'plain' оставлен доступным, но помечен: конфиденциальность им не
+            // теряется (внутри уже шифрованный shadowsocks), а вот вторая задача
+            // слоя — маскировка — теряется целиком: полезная нагрузка Cloak
+            // перестаёт быть неотличимой от случайной, то есть детектируется.
+            $text[] = 'method: <code>' . htmlspecialchars($ckMethod, ENT_QUOTES) . '</code>'
+                . ($ckMethod === 'plain' ? ' ⚠️ только для отладки: трафик перестаёт быть неотличимым от случайного' : '');
         }
         if ($stlsOn) {
             $text[] = '';
@@ -15361,8 +15310,13 @@ DNS-over-HTTPS with IP:
         if ($type == false) {
             $update = exec('git -C / rev-list --count HEAD..@{u}');
             $branch = exec('git -C / rev-parse --abbrev-ref HEAD');
-            $backup = array_filter(explode('/', $conf['backup'] ?? ''));
-            if (!empty($backup)) {
+            // array_values + array_pad: array_filter СОХРАНЯЕТ ключи, поэтому
+            // «/1 month» давало [1 => …] без нулевого индекса, а строка без
+            // слэша — [0 => …] без первого. И то и другое — Undefined array key
+            // плюс strtotime(null) на КАЖДОМ открытии главного меню. Ровно так
+            // уже сделано в checkBackup().
+            $backup = array_pad(array_values(array_filter(explode('/', $conf['backup'] ?? ''))), 2, '');
+            if (!empty(array_filter($backup))) {
                 if (!empty(strtotime($backup[0])) && !empty(strtotime($backup[1]))) {
                     $backup = "{$backup[0]} start / {$backup[1]} period";
                 } else {
@@ -15385,7 +15339,10 @@ DNS-over-HTTPS with IP:
             $commit = getenv('BUILD_COMMIT') ?: exec('git -C / rev-parse --short HEAD');
             $main[] = 'v' . getenv('VER') . " $branch"
                 . ($commit ? " @$commit" : '')
-                . ($update ? ' (have updates)' : '');
+                // Ключи 'have updates' и 'no updates' в словаре есть с самого
+                // начала (у en они ещё и с индикатором 🟢/⚪), но подставить их
+                // забыли: русскому пользователю показывалась английская строка.
+                . ' ' . $this->i18n($update ? 'have updates' : 'no updates');
 
             // Версии сервисов — сразу под версией самого бота: обе строки про
             // «что здесь стоит», логично держать их вместе. В ДВЕ колонки, а не
@@ -17345,7 +17302,11 @@ DNS-over-HTTPS with IP:
         return $decoded !== false ? $decoded : '';
     }
 
-    public function processHwidRequest(array $client)
+    // $htmlPreview — вызов из sub(), то есть со страницы предпросмотра в
+    // браузере. Только там браузерный User-Agent имеет право обойти лимит
+    // устройств: раньше поблажка действовала на ВСЕХ путях, и `curl -A
+    // 'Mozilla/5.0'` качал конфиг мимо учёта устройств с любого эндпоинта.
+    public function processHwidRequest(array $client, bool $htmlPreview = false)
     {
         $pac = $this->getPacConf();
         // Informational HWID headers (Remnawave/Hiddify convention): let clients
@@ -17374,7 +17335,7 @@ DNS-over-HTTPS with IP:
         // файл, который читается и переписывается ЦЕЛИКОМ под LOCK_EX на
         // каждую выдачу конфига — то есть замедлял выдачу всем остальным.
         $hwid      = substr(preg_replace('~[^\w.\-:]~', '', (string) ($_SERVER['HTTP_X_HWID'] ?? '')), 0, 128);
-        $isBrowser = $this->isBrowserRequest();
+        $isBrowser = $htmlPreview && $this->isBrowserRequest();
 
         $hwidNotSupported = !$isBrowser && $hwid === '';
         $hwidMaxReached   = count($devices) >= $limit;
@@ -18993,8 +18954,11 @@ DNS-over-HTTPS with IP:
     public function searchLogs($search, $fun = false, $page = 0, $white = 0)
     {
         if (preg_match('~^\d+\.\d+\.\d+\.\d+$~', $search)) {
-            $info = file_get_contents("https://ipinfo.io/$search/json", context: stream_context_create(['http' => ['timeout' => 2]]));
-            $text = "$search\n<pre>$info</pre>";
+            $info = @file_get_contents("https://ipinfo.io/$search/json", context: stream_context_create(['http' => ['timeout' => 2]]));
+            // Тело ответа стороннего сервиса — HTML-страница ошибки или капчи
+            // вместо JSON ломала разметку сообщения, и экран «поиск по IP» не
+            // открывался до следующей попытки.
+            $text = "$search\n<pre>" . self::esc($info === false ? 'ipinfo unavailable' : $info) . '</pre>';
             $data[] = [
                 [
                     'text'          => $this->i18n('block'),
@@ -19571,12 +19535,21 @@ DNS-over-HTTPS with IP:
     {
         $this->normalizeSubGet();
         $xr  = $this->getXray();
+        // Тот же guard, что в sub() и subscription(): getXray() отдаёт null на
+        // нечитаемом конфиге, а findClientBySid(array $xr, …) на нём — TypeError,
+        // то есть 500 вместо честного ответа на публично достижимом пути.
+        if (!is_array($xr)) {
+            $this->subNotFound('Subscription temporarily unavailable.');
+        }
         $pac = $this->getPacConf();
         $this->subRateLimit($_GET['s'] ?? '');
         // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $i      = $this->findClientBySid($xr, $_GET['s'] ?? '', !empty($pac['subtoken_strict']));
         $client = $i === null ? null : $xr['inbounds'][0]['settings']['clients'][$i];
         if ($client === null || !empty($client['off'])) {
+            // Ведро промахов — как в sub()/subscription(): без него перебор sid
+            // через t=vl не ограничен ничем.
+            $this->subRateLimit('', 'miss');
             $this->subNotFound();
         }
         if (!$this->processHwidRequest($client)) {
@@ -19878,7 +19851,10 @@ DNS-over-HTTPS with IP:
             return null;
         }
         foreach ($clients as $k => $v) {
-            if (($v['id'] ?? '') == $sid) {
+            // ===, как и в ветке subtoken выше: нестрогое сравнение здесь
+            // превратилось бы в juggling-обход, если id когда-нибудь станут
+            // числовыми.
+            if (($v['id'] ?? '') === $sid) {
                 return $k;
             }
         }
@@ -20127,10 +20103,9 @@ DNS-over-HTTPS with IP:
         return (bool) preg_match('~^(vless|vmess|trojan|ss|ssr|hysteria2?|hy2|tuic|wireguard|anytls|snell|socks)://~i', trim($s));
     }
 
-    public function isSafeExtUrl(string $url): bool
-    {
-        return $this->safeExtUrlIps($url) !== [];
-    }
+    // isSafeExtUrl() удалён (аудит 2026-08-18): тонкая обёртка над рабочим
+    // safeExtUrlIps(), которую никто не звал. Вреда не было, но при
+    // рефакторинге она создавала иллюзию, что SSRF-гейт проходит и через неё.
 
     // CURLOPT_RESOLVE expects one HOST:PORT rule with comma-separated addresses.
     // Repeating HOST:PORT replaces the previous cache entry, while bare IPv6
@@ -21304,7 +21279,11 @@ DNS-over-HTTPS with IP:
                 return $this->answer($this->input['callback_id'], 'keygen failed', true);
             }
         }
-        foreach ($x['inbounds'][0]['settings']['clients'] as $key => $v) {
+        // ?? [] — как в соседнем regenIdXr(): на инбаунде без клиентов (или на
+        // конфиге, где ключ потерялся) это был Undefined array key плюс
+        // «foreach() argument must be of type array», а кнопка при этом
+        // выглядела сработавшей.
+        foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $key => $v) {
             if (!empty($v['off'])) {
                 $x['inbounds'][0]['settings']['clients'][$key]['off'] = $this->guidv4();
             }
@@ -23631,7 +23610,7 @@ DNS-over-HTTPS with IP:
             $this->subRateLimit('', 'miss');
             $this->subNotFound();
         }
-        if (!$this->processHwidRequest($client)) {
+        if (!$this->processHwidRequest($client, true)) {
             exit;
         }
         $email  = $client['email'];
@@ -28468,9 +28447,23 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'] ?? '', 'wireguard: подсеть исчерпана, свободных адресов нет', $this->input['message_id'] ?? null);
             return;
         }
-        $public_server_key = trim($this->ssh("echo {$conf['interface']['PrivateKey']} | {$this->getWGType()} pubkey", $this->getInstanceWG()));
+        // Ключ через переменную окружения, а не в командной строке: в argv он
+        // был виден любому, кто получил исполнение в контейнере wg (`ps`), а
+        // /ssh раздан не только боту. Значение base64, инъекции не было, но
+        // светить секретом незачем. printf '%s', а не echo: у busybox echo свои
+        // трактовки обратных слэшей.
+        $wgType            = $this->getWGType();
+        $public_server_key = trim($this->ssh(
+            'K=' . escapeshellarg((string) $conf['interface']['PrivateKey'])
+                . " printf '%s' \"\$K\" | $wgType pubkey",
+            $this->getInstanceWG()
+        ));
         $private_peer_key  = trim($this->ssh("{$this->getWGType()} genkey", $this->getInstanceWG()));
-        $public_peer_key   = trim($this->ssh("echo $private_peer_key | {$this->getWGType()} pubkey", $this->getInstanceWG()));
+        $public_peer_key   = trim($this->ssh(
+            'K=' . escapeshellarg((string) $private_peer_key)
+                . " printf '%s' \"\$K\" | $wgType pubkey",
+            $this->getInstanceWG()
+        ));
 
         // ssh() отдаёт "" при недоступном контейнере, и раньше пир с пустыми
         // ключами молча уезжал в clients.json (локальная запись-то проходит) —
@@ -28691,9 +28684,13 @@ DNS-over-HTTPS with IP:
             // В лог идёт ТОЛЬКО первая строка сообщения: дальше в нём лежит
             // сам $cmd, а он бывает вида «echo <PrivateKey> | wg pubkey»
             // (createPeer) — писать это в лог нельзя.
-            error_log('ssh(' . $service . ') failed: ' . strtok($e->getMessage(), "\n"));
+            // Ровно та же причина и для чата: при debug=1 любой сбой ssh в
+            // момент создания пира публиковал приватный ключ в Telegram —
+            // навсегда. Раньше усечение применили только к error_log.
+            $first = strtok($e->getMessage(), "\n");
+            error_log('ssh(' . $service . ') failed: ' . $first);
             if (!empty($GLOBALS['debug'])) {
-                $this->send($this->input['chat'], $e->getMessage(), $this->input['message_id']);
+                $this->send($this->input['chat'], self::esc($first), $this->input['message_id']);
             }
         }
         return $data;

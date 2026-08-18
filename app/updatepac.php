@@ -1,66 +1,11 @@
 <?php
 
-function elzw(string $str)
-{
-    global $text, $load;
-    $str = mb_str_split($str);
-    $code = 256;
-    $r    = $phrase = '';
-    $keys = [];
-    $last = count($str) - 1;
-    $size = count($str);
-    $curr = $j = 0;
-    $time = microtime(true);
-    foreach ($str as $k => $v) {
-        $curr ++;
-        $percent = (int) ceil($curr * 100 / $size);
-        $rotate = $curr != $size ? $load[$j % count($load)] : '';
-        $tail = <<<text
-                Minified pac $percent% $rotate
-                text;
-        if (microtime(true) - $time > 0.1) {
-            update($text . $tail);
-            $time = microtime(true);
-            $j++;
-        }
-        switch (true) {
-            case $last == $k:
-                $r .= strlen($phrase) > 1 ? mb_chr($keys[$phrase]) : $v;
-                break;
-            case !empty($keys[$phrase . $str[$k + 1]]):
-                $phrase .= $str[$k + 1];
-                break;
-            default:
-                $r .= strlen($phrase) > 1 ? mb_chr($keys[$phrase]) : $v;
-                $keys[$phrase . $str[$k + 1]] = $code;
-                $code++;
-                $phrase = $str[$k + 1];
-        }
-    }
-    return $r;
-}
-
-function dlzw($text)
-{
-    $text = mb_str_split($text);
-    $code = 256;
-    $r    = $phrase = '';
-    $keys = [];
-    $last = count($text) - 1;
-    foreach ($text as $k => $v) {
-        $cc = mb_ord($v);
-        $r .= $cc < 256 ? $v : $keys[$cc];
-        if ($last == $k) {
-            break;
-        }
-        if (!empty($phrase)) {
-            $keys[$code] = $phrase . ($cc < 256 ? $v : $keys[$cc][0]);
-            $code++;
-        }
-        $phrase = $cc < 256 ? $v : $keys[$cc];
-    }
-    return $r;
-}
+// elzw()/dlzw() удалены (аудит 2026-08-18): ~60 строк LZW, которые не звал
+// никто во всём проекте, и к тому же неверные. В декодере классический для LZW
+// баг KwKwK: $keys[$cc] читался до того, как определялся код $code, поэтому на
+// последовательностях вида «abababab» (их кодировщик выше порождал штатно) он
+// падал на Undefined array key. Плюс $keys[$cc][0] брал первый БАЙТ, а не
+// первый символ, что для строк из mb_str_split() неверно.
 
 function getSize($url)
 {

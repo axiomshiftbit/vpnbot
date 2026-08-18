@@ -1,5 +1,9 @@
 listen: :443
-proxy_protocol: true
+# proxy_protocol убран: такого ключа в схеме сервера Hysteria2 нет вовсе
+# (listen, tls, acme, obfs, quic, bandwidth, auth, resolver, acl, outbounds,
+# trafficStats, masquerade…), а неизвестные ключи парсер молча игнорирует. Если
+# строка стояла ради восстановления реального IP клиента — она не работала, и в
+# trafficStats всё равно виден адрес прокси.
 
 tls:
     cert: /certs/cert_public
