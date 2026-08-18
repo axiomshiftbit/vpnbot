@@ -61,7 +61,16 @@ dohAssert((bool) preg_match('~allowed_clients\'\]\[\] = \$this->dohClientId~', $
 // а allowlist AdGuard без переписывания остался бы со старыми uuid.
 dohAssert((bool) preg_match('~function migrateDohClientIds~', $src), 'миграция allowed_clients на месте');
 dohAssert((bool) preg_match('~\$this->migrateDohClientIds\(\)~', $src),
-    'миграция вызывается (selfUpdate, то есть каждый старт service-контейнера)');
+    'миграция вызывается из selfUpdate');
+dohAssert(str_contains($src, "'migrateDohClientIds',"),
+    'и стоит в шагах cron: selfUpdate мог оборваться раньше своей последней строки');
+// Персональные записи клиентов AdGuard тоже переезжают: по ним раздаётся
+// per-client политика, и адрес из DoH-пути должен с ними совпадать.
+$mig = substr($src, strpos($src, 'public function migrateDohClientIds('), 4000);
+dohAssert(str_contains($mig, "\$c['clients']['persistent']"),
+    'миграция переписывает и persistent-клиентов, а не только allowed_clients');
+dohAssert(str_contains($src, "'ids'                         => [\$this->dohClientId("),
+    'adguardXrayClients() пишет производный id, иначе миграцию тут же откатывало бы обратно');
 
 // ── 3. Сторож по nginx-конфигам ─────────────────────────────────────────────
 // Путь DoH — секрет целиком, поэтому логировать его нельзя ни в каком формате.

@@ -4906,6 +4906,10 @@ NFT;
             'checkCert',
             'ensureHtpasswd',
             'ensureAdguardPassword',
+            // Тоже в cron, а не только в selfUpdate(): миграция обязана
+            // доехать даже если service.php оборвался раньше своей последней
+            // строки. Идемпотентна и на «нечего менять» выходит сразу.
+            'migrateDohClientIds',
             'autoAnalyzeLogs',
             'xrayStatsUser',
             'checkTrafficLimits',
@@ -9991,10 +9995,16 @@ NFT;
                     'ids'      => [],
                 ],
                 'name'                        => $v['email'],
-                'ids'                         => [$v['id']],
+                // Производный id, а не uuid: именно он приходит от клиента
+                // последним сегментом DoH-пути, и по нему AdGuard сопоставляет
+                // per-client политику. Оставь тут uuid — политика и разбивка
+                // query-лога по клиентам просто перестанут работать, потому что
+                // приходящий идентификатор ни с чем не совпадёт (см. dohClientId
+                // и adgFillAllowedClients).
+                'ids'                         => [$this->dohClientId((string) $v['id'])],
                 'tags'                        => [],
                 'upstreams'                   => [],
-                'uid'                         => $v['id'],
+                'uid'                         => $this->dohClientId((string) $v['id']),
                 'upstreams_cache_size'        => 0,
                 'upstreams_cache_enabled'     => false,
                 'use_global_settings'         => true,
@@ -14195,9 +14205,13 @@ DNS-over-HTTPS with IP:
                 ['📷', "/telemtQr $name$rarg"],
                 ['🔄', "/telemtRegen $name"],
                 ['❌', "/telemtDelUser $name"],
-            ] as [$text, $cb]) {
+            ] as [$label, $cb]) {
+                // ИМЕННО $label: переменная $text выше — это массив строк
+                // сообщения, и деструктуризация в неё затирала его строкой,
+                // после чего implode() ниже падал с TypeError и меню «telemt
+                // users» не открывалось вовсе. Поймано на рабочем сервере 2026-08-18.
                 if (strlen($cb) <= 64) {
-                    $row[] = ['text' => $text, 'callback_data' => $cb];
+                    $row[] = ['text' => $label, 'callback_data' => $cb];
                 }
             }
             $data[] = $row;
@@ -26650,11 +26664,7 @@ DNS-over-HTTPS with IP:
         if (!is_file($this->adguard)) {
             return false;
         }
-        $c    = yaml_parse_file($this->adguard);
-        $list = $c['dns']['allowed_clients'] ?? null;
-        if (!is_array($list) || $list === []) {
-            return false;
-        }
+        $c   = yaml_parse_file($this->adguard);
         $map = [];
         foreach (($this->getXray()['inbounds'][0]['settings']['clients'] ?? []) as $v) {
             $id = (string) ($v['id'] ?? '');
@@ -26662,17 +26672,45 @@ DNS-over-HTTPS with IP:
                 $map[$id] = $this->dohClientId($id);
             }
         }
+        if ($map === []) {
+            return false;
+        }
         $changed = false;
-        foreach ($list as $k => $v) {
-            if (isset($map[(string) $v])) {
-                $list[$k] = $map[(string) $v];
-                $changed  = true;
+
+        // 1. Список разрешённых клиентов.
+        $list = $c['dns']['allowed_clients'] ?? null;
+        if (is_array($list)) {
+            foreach ($list as $k => $v) {
+                if (isset($map[(string) $v])) {
+                    $list[$k] = $map[(string) $v];
+                    $changed  = true;
+                }
+            }
+            if ($changed) {
+                $c['dns']['allowed_clients'] = array_values(array_unique($list));
             }
         }
+
+        // 2. Персональные записи клиентов: по ним AdGuard раздаёт per-client
+        //    политику и разбивает query-лог. Их пишет adguardXrayClients(), и
+        //    без этой ветки после смены схемы политика молча переставала
+        //    применяться — приходящий идентификатор ни с чем не совпадал.
+        foreach (($c['clients']['persistent'] ?? []) as $i => $cl) {
+            foreach ((array) ($cl['ids'] ?? []) as $j => $v) {
+                if (isset($map[(string) $v])) {
+                    $c['clients']['persistent'][$i]['ids'][$j] = $map[(string) $v];
+                    $changed = true;
+                }
+            }
+            if (isset($map[(string) ($cl['uid'] ?? '')])) {
+                $c['clients']['persistent'][$i]['uid'] = $map[(string) $cl['uid']];
+                $changed = true;
+            }
+        }
+
         if (!$changed) {
             return false;
         }
-        $c['dns']['allowed_clients'] = array_values(array_unique($list));
         $this->stopAd();
         yaml_emit_file($this->adguard, $c);
         $this->startAd();
