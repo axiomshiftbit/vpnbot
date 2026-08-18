@@ -2430,6 +2430,16 @@ class Bot
     // успехе. То же ограничение у всех остальных файлов из config/, прокинутых
     // по одному (nginx.conf, upstream.conf, wg0.conf, sslocal.json, deny, …) —
     // они пишутся in-place и должны так и остаться.
+    // Конфиг с боевым секретом: приватные ключи, пароли, UUID. В git эти файлы
+    // лежат пустыми шаблонами с режимом 100644, а код записи chmod не делал —
+    // значит на свежей установке боевой файл создавался 0644 и был читаем всем
+    // внутри девяти контейнеров, куда смонтирован ./config. Ключи TLS и
+    // ipsec/ovpn в проекте уже пишутся 0600, приводим остальные к тому же.
+    public function chmodSecret(string $path): void
+    {
+        @chmod($path, 0600);
+    }
+
     public function writeXrayJson(string $json): bool
     {
         // 'c' — открыть/создать, НЕ обрезая: усечение делаем сами, уже под
@@ -2450,6 +2460,9 @@ class Bot
         $ok = $n === strlen($json) && fflush($h);
         flock($h, LOCK_UN);
         fclose($h);
+        // В xray.json лежат realitySettings.privateKey и все UUID клиентов, а
+        // ./config целиком смонтирован в девять контейнеров.
+        $this->chmodSecret($this->xrayConf);
         if (!$ok) {
             // In-place запись, в отличие от rename(), не откатывается: на
             // переполненном диске на месте конфига остаётся обрезанный файл.
@@ -3284,6 +3297,7 @@ class Bot
             $c['masquerade']['proxy']['rewriteHost'] = true;
         }
         yaml_emit_file('/config/hysteria.yaml', $c);
+        $this->chmodSecret('/config/hysteria.yaml');
         if (!empty($pac['hysteria_pass'])) {
             $this->ssh('hysteria server -c /config/hysteria.yaml', 'hy', false, '/logs/hysteria');
         }
@@ -3944,6 +3958,7 @@ NFT;
         $l = $this->getSSLocalConfig();
         $c['password'] = $l['password'] = $pass;
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->chmodSecret('/config/ssserver.json');
         file_put_contents('/config/sslocal.json', json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->ssh('ssserver -v -d -c /config.json', 'ss');
         $this->ssh('sslocal -v -d -c /config.json', 'proxy');
@@ -3992,6 +4007,7 @@ NFT;
             $l['plugin_opts'] = ($ssl ? 'tls;' : '') . "fast-open;path=/v2ray$hash;host=$domain";
         }
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->chmodSecret('/config/ssserver.json');
         file_put_contents('/config/sslocal.json', json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->ssh('ssserver -v -d -c /config.json', 'ss');
         $this->ssh('sslocal -v -d -c /config.json', 'proxy');
@@ -4390,6 +4406,7 @@ NFT;
         $l['server_port'] = $ssport;
         $c['server_port'] = $ssport;
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->chmodSecret('/config/ssserver.json');
         file_put_contents('/config/sslocal.json',  json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->ssh('ssserver -v -d -c /config.json', 'ss');
         $this->ssh('sslocal -v -d -c /config.json', 'proxy');
@@ -5855,6 +5872,7 @@ NFT;
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->ssh('pkill ssserver', 'ss');
                 file_put_contents('/config/ssserver.json', json_encode($json['ss'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                $this->chmodSecret('/config/ssserver.json');
                 $this->ssh('ssserver -v -d -c /config.json', 'ss');
             }
             // sl
@@ -5901,6 +5919,7 @@ NFT;
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if (array_key_exists('ocu', $json)) {
                     file_put_contents('/config/ocserv.passwd', $json['ocu']);
+                    $this->chmodSecret('/config/ocserv.passwd');
                     $this->syncOcUsers();
                 }
                 $this->restartOcserv($json['oc']);
@@ -5910,6 +5929,7 @@ NFT;
                 $out[] = 'update hysteria';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 yaml_emit_file('/config/hysteria.yaml', $json['hy']);
+                $this->chmodSecret('/config/hysteria.yaml');
                 $this->restartHysteria();
             }
             // trusttunnel
@@ -8968,7 +8988,11 @@ NFT;
         // панель доступна снаружи через cloakNginx() по $hash из подписки.
         // Ветка ?: сохраняет уже выданный пароль — существующие установки не
         // ломаются, но старый пароль надо сменить вручную.
-        $pac['adpswd'] = $pac['adpswd'] ?: bin2hex(random_bytes(8));
+        // 16 байт, а не 8: этот пароль — ЕДИНСТВЕННАЯ защита админки AdGuard
+        // (гейт на cookie держится на публичном hash из ссылок подписки, а при
+        // включённом adgbrowser он и вовсе снимается). 64 бита для единственного
+        // барьера мало. Ветка ?: сохраняет уже выданный пароль.
+        $pac['adpswd'] = $pac['adpswd'] ?: bin2hex(random_bytes(16));
         $this->setPacConf($pac);
         $ssl = $this->nginxGetTypeCert();
         $c   = yaml_parse_file($this->adguard);
@@ -19476,7 +19500,7 @@ DNS-over-HTTPS with IP:
                                     . "?security=reality"
                                     . "&sni={$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}"
                                     . "&fp=$fp&pbk={$pac['xray']}"
-                                    . "&sid={$c['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0]}"
+                                    . '&sid=' . $this->clientShortId($c, (string) $c['inbounds'][0]['settings']['clients'][$i]['id'])
                                     . "&type=tcp"
                                     . "&flow=xtls-rprx-vision"
                                     . $rExtra
@@ -21128,6 +21152,56 @@ DNS-over-HTTPS with IP:
     // Generate a fresh Reality keypair (matched private/public) + shortId.
     // Same commands/parsing as the initial setup in changeTransport(); the pair
     // comes from a single `xray x25519` call so private and public always match.
+    // Дефолтные fake-домены Reality. Захардкоженный 'yandex.ru' означал, что у
+    // КАЖДОЙ установки vpnbot до первого «change fake domain» стоит
+    // serverNames=["yandex.ru"] и dest=yandex.ru:443 — «TLS-сессия с
+    // SNI=yandex.ru к хосту, который не Yandex» это дешёвый фильтр и для DPI, и
+    // для сканера. Выбираем случайный из списка крупных сайтов с настоящим
+    // TLS 1.3 и HTTP/2; админ по-прежнему может задать свой.
+    public const REALITY_FAKE_DOMAINS = [
+        'www.microsoft.com',
+        'www.samsung.com',
+        'www.lovelive-anime.jp',
+        'www.tesla.com',
+        'www.icloud.com',
+        'yandex.ru',
+    ];
+
+    public function defaultFakeDomain(): string
+    {
+        $list = self::REALITY_FAKE_DOMAINS;
+
+        return $list[random_int(0, count($list) - 1)];
+    }
+
+    // Набор shortId для инбаунда: основной плюс несколько «шумовых» разной
+    // длины. Xray принимает клиента с ЛЮБЫМ из перечисленных, а клиентам мы
+    // раздаём разные (см. clientShortId), поэтому подписи клиентов одной
+    // установки перестают совпадать и коррелировать их становится сложнее.
+    // Раньше значение было ровно одно на всю установку.
+    public function realityShortIds(string $primary): array
+    {
+        $ids = [$primary];
+        foreach ([4, 6, 8] as $len) {
+            $ids[] = bin2hex(random_bytes($len));
+        }
+
+        return array_values(array_unique(array_filter($ids)));
+    }
+
+    // Какой из shortId отдать конкретному клиенту. Детерминированно и без
+    // привязки к индексу: индексы съезжают при удалении соседа, а uuid нет.
+    public function clientShortId(array $xr, string $uid): string
+    {
+        $ids = $xr['inbounds'][0]['streamSettings']['realitySettings']['shortIds'] ?? [];
+        $ids = array_values(array_filter((array) $ids, 'strlen'));
+        if (empty($ids)) {
+            return '';
+        }
+
+        return $ids[hexdec(substr(md5($uid), 0, 4)) % count($ids)];
+    }
+
     public function genRealityKeys(): array
     {
         $shortId = trim($this->ssh('openssl rand -hex 8', 'xr'));
@@ -21197,7 +21271,7 @@ DNS-over-HTTPS with IP:
         $p['reality']['privateKey'] = $k['private'];
         $p['reality']['shortId']    = $k['shortId'];
         $x['inbounds'][0]['streamSettings']['realitySettings']['privateKey'] = $k['private'];
-        $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = [$k['shortId']];
+        $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = $this->realityShortIds($k['shortId']);
         if (!empty($p['reality']['mldsa'])) {
             $mk = $this->genMldsaKeys();
             if (!empty($mk['seed']) && !empty($mk['verify'])) {
@@ -21248,7 +21322,7 @@ DNS-over-HTTPS with IP:
             $p['reality']['privateKey'] = $k['private'];
             $p['reality']['shortId']    = $k['shortId'];
             $x['inbounds'][0]['streamSettings']['realitySettings']['privateKey'] = $k['private'];
-            $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = [$k['shortId']];
+            $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']   = $this->realityShortIds($k['shortId']);
             if (!empty($p['reality']['mldsa'])) {
                 $mk = $this->genMldsaKeys();
                 if (!empty($mk['seed']) && !empty($mk['verify'])) {
@@ -25189,7 +25263,7 @@ DNS-over-HTTPS with IP:
             // ?? '' — Reality-поля есть только у Reality-транспорта, а
             // changeTransport() заменяет streamSettings целиком: на ws/xhttp
             // каждая выдача подписки давала здесь два warning'а.
-            '~short_id~'     => $xr['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0] ?? '',
+            '~short_id~'     => $this->clientShortId($xr, (string) $uid),
             '~email~'        => $email,
             '~public_key~'   => $pac['xray'],
             '~server_name~'  => $xr['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] ?? '',
@@ -25313,13 +25387,31 @@ DNS-over-HTTPS with IP:
                 if (isset($c['dns']['nameserver'])) {
                     $ns = $c['dns']['nameserver'];
                     $ns = is_array($ns) ? $ns : [$ns];
+                    $own = [];
                     foreach ($this->dnsDomains($pac) as $d) {
-                        $ns[] = "https://$d/dns-query$hash/" . $this->dohClientId($uid);
+                        $own[] = "https://$d/dns-query$hash/" . $this->dohClientId($uid);
                     }
-                    // SORT_REGULAR, а не дефолтный SORT_STRING: шаблон
-                    // пользовательский, и вложенный массив в nameserver дал бы
-                    // «Array to string conversion» на каждой выдаче подписки.
-                    $c['dns']['nameserver'] = array_values(array_unique($ns, SORT_REGULAR));
+                    if (!empty($own)) {
+                        // Свой резолвер ЗАМЕЩАЕТ список, а прежние уезжают в
+                        // fallback. Раньше он просто дописывался в конец, а
+                        // mihomo опрашивает весь nameserver параллельно и берёт
+                        // первый ответ — почти всегда это Cloudflare/Google из
+                        // шаблона, а не свой AdGuard. То есть фильтрация и
+                        // per-client политика де-факто не работали, а
+                        // DNS-профиль пользователей уходил третьей стороне,
+                        // хотя админ считал, что настроил свой DoH.
+                        $fallback = array_merge(
+                            is_array($c['dns']['fallback'] ?? null) ? $c['dns']['fallback'] : [],
+                            array_diff($ns, $own)
+                        );
+                        // SORT_REGULAR, а не дефолтный SORT_STRING: шаблон
+                        // пользовательский, и вложенный массив дал бы «Array to
+                        // string conversion» на каждой выдаче подписки.
+                        $c['dns']['nameserver'] = array_values(array_unique($own, SORT_REGULAR));
+                        if (!empty($fallback)) {
+                            $c['dns']['fallback'] = array_values(array_unique($fallback, SORT_REGULAR));
+                        }
+                    }
                 }
                 break;
         }
@@ -27621,7 +27713,7 @@ DNS-over-HTTPS with IP:
         $x = $this->getXray();
         $h = $this->getHashBot();
 
-        $p['reality']['domain']      = $p['reality']['domain'] ?: 'yandex.ru';
+        $p['reality']['domain']      = $p['reality']['domain'] ?: $this->defaultFakeDomain();
         $p['reality']['destination'] = $p['reality']['destination'] ?: $p['reality']['domain'] . ':443';
         $p['transport'] = $transport;
 
@@ -27710,7 +27802,11 @@ DNS-over-HTTPS with IP:
                         "serverNames"  => [
                             $p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]
                         ],
-                        "shortIds" => [$p['reality']['shortId'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds'][0]],
+                        // Весь набор, а не одно значение: иначе переключение
+                        // транспорта туда-обратно схлопывало shortIds до одного
+                        // и клиенты снова получали одинаковую подпись.
+                        "shortIds" => $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']
+                            ?: $this->realityShortIds((string) $p['reality']['shortId']),
                         "show"     => false,
                         "xver"     => 0
                     ],
@@ -28504,6 +28600,10 @@ DNS-over-HTTPS with IP:
 
             return false;
         }
+        // Права ставим на ВРЕМЕННОМ файле: после rename() он и станет боевым, а
+        // в clients.json лежат приватные ключи пиров и preshared-ключи.
+        $this->chmodSecret($tmp);
+
         return rename($tmp, $f);
     }
 

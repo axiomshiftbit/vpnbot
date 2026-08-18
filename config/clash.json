@@ -47,6 +47,9 @@
         "strict-route": true
     },
     "dns": {
+        "hosts": {
+            "~domain~": "~ip~"
+        },
         "enable": true,
         "prefer-h3": false,
         "ipv6": false,

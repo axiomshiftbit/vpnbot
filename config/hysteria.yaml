@@ -17,13 +17,18 @@ quic:
   disablePathMTUDiscovery: false
 congestion:
   type: bbr
+# Резолвер — внутренний AdGuard (10.10.0.5), как у всех остальных протоколов:
+# ocserv (dns = 10.10.0.5 + tunnel-all-dns), shadowsocks (nameserver), openvpn
+# (push dhcp-option DNS), xray (гейт 10.10.0.5/32:53 в ensureWgGuard). Hysteria
+# была единственной, кто ходил наружу на 1.1.1.1:853: фильтрация и per-client
+# политика AdGuard на hysteria-клиентов не действовали, а Cloudflare получал
+# полный DNS-профиль всех её пользователей, привязанный к IP сервера. Канал
+# внутренний, поэтому tls не нужен.
 resolver:
-  type: tls
-  tls:
-    addr: 1.1.1.1:853
+  type: udp
+  udp:
+    addr: 10.10.0.5:53
     timeout: 10s
-    sni: cloudflare-dns.com
-    insecure: false
 disableUDP: false
 udpIdleTimeout: 60s
 speedTest: false

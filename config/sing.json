@@ -105,6 +105,21 @@
             },
             {
                 "addruleset": true,
+                "createruleset": [
+                    {
+                        "name": "block",
+                        "interval": "60s",
+                        "rules": [
+                            {
+                                "domain_suffix": "~block~"
+                            }
+                        ]
+                    }
+                ],
+                "action": "reject"
+            },
+            {
+                "addruleset": true,
                 "outbound": "direct"
             },
             {
@@ -166,21 +181,6 @@
                     }
                 ],
                 "outbound": "~outbound~"
-            },
-            {
-                "addruleset": true,
-                "createruleset": [
-                    {
-                        "name": "block",
-                        "interval": "60s",
-                        "rules": [
-                            {
-                                "domain_suffix": "~block~"
-                            }
-                        ]
-                    }
-                ],
-                "action": "reject"
             },
             {
                 "addruleset": true,
