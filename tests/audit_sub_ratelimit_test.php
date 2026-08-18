@@ -87,6 +87,37 @@ $data = json_decode((string) file_get_contents($bot->rlFile), true);
 subRlAssert(count($data) === 3, 'ведро подписки осталось пер-подписочным: ' . count($data));
 @unlink($bot->rlFile);
 
+// Аудит 2026-08-18: XFF на /pac nginx не перетирал, и клиент подменял его сам —
+// ключ ведра это hash(sid|ip|scope), так что смена заголовка давала новый
+// счётчик и лимит не срабатывал никогда. Теперь nginx ставит X-Real-IP, и он
+// имеет приоритет над клиентским XFF.
+$bot->rlFile = sys_get_temp_dir() . '/sub_rl_xff_' . getmypid() . '.json';
+$_SERVER['REMOTE_ADDR']          = '10.10.0.4';   // адрес nginx внутри сборки
+$_SERVER['HTTP_X_REAL_IP']       = '198.51.100.9'; // ставит наш nginx
+foreach (['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4'] as $spoof) {
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = $spoof;     // подделка клиента
+    $bot->subRateLimit('sX', 'miss');
+}
+$data = json_decode((string) file_get_contents($bot->rlFile), true);
+subRlAssert(count($data) === 1,
+    'подделка X-Forwarded-For больше не даёт новых счётчиков: ' . count($data));
+subRlAssert(reset($data)[0] === 4, 'все четыре запроса попали в одно ведро');
+@unlink($bot->rlFile);
+
+// Фолбэк для нестандартного фронта без X-Real-IP: берём первый элемент XFF.
+$bot->rlFile = sys_get_temp_dir() . '/sub_rl_fb_' . getmypid() . '.json';
+unset($_SERVER['HTTP_X_REAL_IP']);
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.10, 10.10.0.4';
+$bot->subRateLimit('sY', 'miss');
+$fb = json_decode((string) file_get_contents($bot->rlFile), true);
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.11, 10.10.0.4';
+$bot->subRateLimit('sY', 'miss');
+$fb2 = json_decode((string) file_get_contents($bot->rlFile), true);
+subRlAssert(count($fb) === 1 && count($fb2) === 2,
+    'без X-Real-IP лимитер по-прежнему работает по первому элементу XFF');
+@unlink($bot->rlFile);
+unset($_SERVER['HTTP_X_FORWARDED_FOR'], $_SERVER['HTTP_X_REAL_IP']);
+
 // ── 2. ruleSetNames: только объявленные шаблоном имена ──────────────────────
 $sing = ['route' => ['rules' => [
     ['outbound' => 'block', 'createruleset' => [

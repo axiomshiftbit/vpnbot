@@ -2243,6 +2243,12 @@ class Bot
     // для бокового движения по сети.
     public const INTERNAL_SOCKS_TAGS = ['wg-in', 'socks-in'];
 
+    // Inbound'ы, которым гейт не ставим. 'api' — служебный dokodemo для
+    // `xray api statsquery` (127.0.0.1:8080 внутри xr): он маршрутизируется
+    // отдельным правилом inboundTag:api → outboundTag:api, и лишнее правило в
+    // голове списка тут только мешало бы читать конфиг.
+    public const GUARD_EXEMPT_TAGS = ['api'];
+
     // Клиенты wg/awg входят в xray через socks-inbound 'wg-in' (tun2socks в
     // wg-контейнерах), а `ip rule from $ADDRESS table 100` в start_wg.sh уводит
     // туда ВЕСЬ их трафик — включая назначения внутри docker-сети. Отдельного
@@ -2255,9 +2261,20 @@ class Bot
     // напрямую не доходит — её закрывает nft). Тот же класс, что закрывали для
     // WARP-SOCKS.
     //
+    // ВАЖНО (аудит 2026-08-18): гейт стоял ТОЛЬКО на INTERNAL_SOCKS_TAGS, то
+    // есть закрывал боковое движение клиентам wg/awg и оставлял его открытым
+    // основному клиентскому inbound'у (vless/vmess/trojan, config/xray.json).
+    // Ровно тем же способом любой обладатель подписки доходил до control API
+    // unit (10.10.0.7:8080, без аутентификации, приложения от root), до панели
+    // и до sshd контейнеров. Поэтому теги берём из ВСЕХ inbound'ов конфига за
+    // вычетом GUARD_EXEMPT_TAGS.
+    //
     // Режем ровно docker-сеть (остальное приватное пространство уже закрыто
     // finalRules у freedom) и оставляем одну дырку — внутренний DNS.
     // Клиентские подсети и маршруты в LAN пользователя не затрагиваются.
+    // Аутбаунд warp не задет: правила routing матчат НАЗНАЧЕНИЕ клиентского
+    // соединения, а до microsocks (10.10.0.13) ядро дозванивается уже после
+    // выбора аутбаунда, мимо routing.rules.
     //
     // Правила ставим В НАЧАЛО: xray берёт первое совпавшее, и пользовательские
     // block/warp-списки (xrayUpdateRules) не должны их обгонять. Матчим по
@@ -2267,26 +2284,31 @@ class Bot
     {
         // Теги берём из фактических inbound'ов, а не списком константы: правило
         // на несуществующий тег — мёртвый груз в конфиге, а набор inbound'ов на
-        // разных хостах разный.
+        // разных хостах разный. Безымянные inbound'ы пропускаем: правило без
+        // рабочего inboundTag ядро применит не к тому трафику.
         $tags = [];
         foreach (($c['inbounds'] ?? []) as $i) {
-            $t = $i['tag'] ?? '';
-            if (in_array($t, self::INTERNAL_SOCKS_TAGS, true) && !in_array($t, $tags, true)) {
-                $tags[] = $t;
+            $t = (string) ($i['tag'] ?? '');
+            if ($t === '' || in_array($t, self::GUARD_EXEMPT_TAGS, true) || in_array($t, $tags, true)) {
+                continue;
             }
+            $tags[] = $t;
         }
 
-        // Снимаем прежние копии гейта — их inboundTag мог быть у́же (например
-        // до появления socks-in на хосте), поэтому опознаём по сигнатуре, а не
-        // сравнением с готовым правилом, иначе после смены набора тегов старые
-        // остались бы дублями.
+        // Снимаем прежние копии гейта — их inboundTag почти наверняка у́же
+        // нынешнего (до аудита 2026-08-18 там были только wg-in/socks-in),
+        // поэтому опознаём по сигнатуре самого правила, а не по списку тегов:
+        // иначе старые узкие копии остались бы в конфиге дублями и продолжали
+        // бы совпадать раньше нового гейта.
         $rules = [];
         foreach (($c['routing']['rules'] ?? []) as $r) {
-            $in = (array) ($r['inboundTag'] ?? []);
-            $ip = (array) ($r['ip'] ?? []);
-            $isGuard = $in !== []
-                && empty(array_diff($in, self::INTERNAL_SOCKS_TAGS))
-                && ($ip === [self::DOCKER_NET] || $ip === [self::INTERNAL_DNS]);
+            $in  = (array) ($r['inboundTag'] ?? []);
+            $ip  = (array) ($r['ip'] ?? []);
+            $out = (string) ($r['outboundTag'] ?? '');
+            $isGuard = $in !== [] && (
+                ($ip === [self::DOCKER_NET] && $out === 'block')
+                || ($ip === [self::INTERNAL_DNS] && $out === 'direct' && (string) ($r['port'] ?? '') === '53')
+            );
             if (!$isGuard) {
                 $rules[] = $r;
             }
@@ -19520,6 +19542,29 @@ DNS-over-HTTPS with IP:
         return (string) ($client['subtoken'] ?? $client['id'] ?? '');
     }
 
+    // Идентификатор клиента в DoH-URL (/dns-query<hashbot>/<id>) и в
+    // dns.allowed_clients AdGuard.
+    //
+    // Раньше туда клался сам $client['id'] — то есть УЧЁТНЫЕ ДАННЫЕ VLESS.
+    // Клиент дёргает этот URL на каждый DNS-запрос, а nginx пишет путь в
+    // /logs/nginx_doh_access (секрет лежит в $uri, поэтому формат noargs его не
+    // резал), плюс те же значения оседали в AdGuardHome.yaml и в его query-логе.
+    // /logs смонтирован почти во все контейнеры сборки — прочитавший лог
+    // подключался ко всем аккаунтам (аудит 2026-08-18).
+    //
+    // Производный идентификатор: детерминированный (URL и allowed_clients
+    // обязаны совпадать без общего состояния), необратимый и не годится как
+    // креденшел VLESS. Ключ HMAC — токен бота: он стабилен и не покидает
+    // сервер. 16 hex-символов укладываются в требования AdGuard к client-id
+    // (буквы/цифры/дефис, до 63 символов).
+    public function dohClientId(string $uid): string
+    {
+        if ($uid === '') {
+            return '';
+        }
+        return substr(hash_hmac('sha256', $uid, (string) $this->key), 0, 16);
+    }
+
     // Resolve a sub `s`/`id` value to a client index: subtoken first, then id as
     // a backward-compatible fallback. In $strict mode (pac.subtoken_strict) the
     // uuid fallback is dropped, so previously shared/leaked uuid-addressed sub
@@ -24786,8 +24831,8 @@ DNS-over-HTTPS with IP:
             '~warp_ip~'          => $warp['ip'] ?? '',
             '~warp_private_key~' => $warp['private-key'] ?? '',
             '~warp_public_key~'  => $warp['public-key'] ?? '',
-            '~dns~'          => "https://$domain/dns-query$hash/$uid",
-            '~dnspath~'      => "/dns-query$hash/$uid",
+            '~dns~'          => "https://$domain/dns-query$hash/" . $this->dohClientId($uid),
+            '~dnspath~'      => "/dns-query$hash/" . $this->dohClientId($uid),
             '~uid~'          => (($pac['transport'] ?? '') == 'trojan-grpc' ? ($client['password'] ?? $uid) : $uid),
             '~domain~'       => $domain,
             // ?? '' — до задания домена (и без cdn) шаблон подставлял пустоту,
@@ -24922,7 +24967,7 @@ DNS-over-HTTPS with IP:
                     $ns = $c['dns']['nameserver'];
                     $ns = is_array($ns) ? $ns : [$ns];
                     foreach ($this->dnsDomains($pac) as $d) {
-                        $ns[] = "https://$d/dns-query$hash/$uid";
+                        $ns[] = "https://$d/dns-query$hash/" . $this->dohClientId($uid);
                     }
                     // SORT_REGULAR, а не дефолтный SORT_STRING: шаблон
                     // пользовательский, и вложенный массив в nameserver дал бы
@@ -25020,10 +25065,18 @@ DNS-over-HTTPS with IP:
         if ($max <= 0 || $window <= 0) {
             return;
         }
-        // За nginx REMOTE_ADDR — адрес прокси; XFF ставит наш же nginx.
-        // Спуфабельность XFF здесь не критична: ключ содержит и sid, так что
-        // лимит на конкретную подписку обойти сменой заголовка нельзя.
-        $ip  = trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]) ?: (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+        // За nginx REMOTE_ADDR — адрес прокси, реальный адрес приходит
+        // заголовком. Порядок предпочтения важен (аудит 2026-08-18): X-Real-IP
+        // наш nginx ставит одним значением, а XFF раньше вообще не
+        // перетирался на /pac — клиент присылал свой и обходил лимит, потому
+        // что ключ ведра это hash(sid|ip|scope), а в ведре 'miss' (анти-перебор
+        // sid) sid из ключа исключён намеренно и ip остаётся единственным
+        // переменным компонентом. Теперь заголовок ставит nginx (location /pac
+        // в config/nginx*.conf), а из XFF берём ПЕРВЫЙ элемент только как
+        // фолбэк для нестандартного фронта.
+        $ip  = trim((string) ($_SERVER['HTTP_X_REAL_IP'] ?? ''))
+            ?: trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0])
+            ?: (string) ($_SERVER['REMOTE_ADDR'] ?? '');
         // В ведре промахов sid НЕ участвует: с ним каждый перебираемый sid
         // заводил собственный счётчик со значением 1 (лимит не срабатывал
         // никогда) и оставлял запись в файле на всё окно — файл целиком
@@ -26178,6 +26231,47 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    // Разовая миграция аудита 2026-08-18. В dns.allowed_clients AdGuard лежали
+    // САМИ uuid клиентов (они же стояли в DoH-URL), а теперь туда пишется
+    // производный dohClientId(). Без переписывания старых записей AdGuard
+    // отказал бы всем клиентам сразу после обновления: URL уже новый, а
+    // allowlist ещё старый. Идемпотентна и молчалива — зовётся из selfUpdate(),
+    // то есть на каждом старте service-контейнера, и перезапускает AdGuard
+    // только когда реально что-то поменяла.
+    public function migrateDohClientIds(): bool
+    {
+        if (!is_file($this->adguard)) {
+            return false;
+        }
+        $c    = yaml_parse_file($this->adguard);
+        $list = $c['dns']['allowed_clients'] ?? null;
+        if (!is_array($list) || $list === []) {
+            return false;
+        }
+        $map = [];
+        foreach (($this->getXray()['inbounds'][0]['settings']['clients'] ?? []) as $v) {
+            $id = (string) ($v['id'] ?? '');
+            if ($id !== '') {
+                $map[$id] = $this->dohClientId($id);
+            }
+        }
+        $changed = false;
+        foreach ($list as $k => $v) {
+            if (isset($map[(string) $v])) {
+                $list[$k] = $map[(string) $v];
+                $changed  = true;
+            }
+        }
+        if (!$changed) {
+            return false;
+        }
+        $c['dns']['allowed_clients'] = array_values(array_unique($list));
+        $this->stopAd();
+        yaml_emit_file($this->adguard, $c);
+        $this->startAd();
+        return true;
+    }
+
     public function adgFillAllowedClients($delete = false)
     {
         $pac = $this->getPacConf();
@@ -26198,7 +26292,9 @@ DNS-over-HTTPS with IP:
             $c['dns']['allowed_clients'][] = '10.0.2.0/24'; // openconnect
             if (!empty($xr = $this->getXray())) {
                 foreach ($xr['inbounds'][0]['settings']['clients'] as $v) {
-                    $c['dns']['allowed_clients'][] = $v['id'];
+                    // Производный id, а не сам uuid: он же стоит в DoH-URL,
+                    // который клиент дёргает на каждый запрос. См. dohClientId().
+                    $c['dns']['allowed_clients'][] = $this->dohClientId((string) ($v['id'] ?? ''));
                 }
             }
         }
@@ -27053,6 +27149,13 @@ DNS-over-HTTPS with IP:
         }
         file_put_contents('/update/message', '');
         file_put_contents('/update/reload_message', '');
+        // Миграция DoH-идентификаторов. Некритична и не должна ронять
+        // service.php: ниже по selfUpdate() ничего от неё не зависит.
+        try {
+            $this->migrateDohClientIds();
+        } catch (\Throwable $e) {
+            error_log('selfUpdate migrateDohClientIds: ' . $e->getMessage());
+        }
         $pac = $this->getPacConf();
         unset($pac['restart']);
         $this->setPacConf($pac);
