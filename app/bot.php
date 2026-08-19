@@ -588,6 +588,9 @@ class Bot
             case preg_match('~^/switchXrayCore$~', $this->input['callback'], $m):
                 $this->switchXrayCore();
                 break;
+            case preg_match('~^/switchXrayTorrent$~', $this->input['callback'], $m):
+                $this->switchXrayTorrent();
+                break;
             case preg_match('~^/smuxToggle (\w+)$~', $this->input['callback'], $m):
                 $this->smuxToggle($m[1]);
                 break;
@@ -2184,9 +2187,13 @@ class Bot
                 ]
             ];
         }
-        $this->applySniffingToXray($c, $this->getPacConf());
+        $pac = $this->getPacConf();
+        $this->applySniffingToXray($c, $pac);
         $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
+        // Строго до ensureWgGuard(): тот кладёт свои гейты в голову правил, и
+        // правило торрентов обязано оказаться ПОД ними, а не над.
+        $this->ensureTorrentBlock($c, $pac);
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
         $this->ensureFinalmaskInbound($c);
@@ -2374,18 +2381,7 @@ class Bot
             return;
         }
 
-        // blackhole обязан существовать: правило с несуществующим тегом
-        // молча теряет смысл. Свои outbounds админа не трогаем.
-        $hasBlock = false;
-        foreach (($c['outbounds'] ?? []) as $o) {
-            if (($o['tag'] ?? '') === 'block') {
-                $hasBlock = true;
-                break;
-            }
-        }
-        if (!$hasBlock) {
-            $c['outbounds'][] = ['protocol' => 'blackhole', 'tag' => 'block'];
-        }
+        $this->ensureBlockOutbound($c);
 
         // Порядок: оба точечных allow обязаны стоять перед блоком подсети —
         // Xray берёт первое совпавшее правило.
@@ -2413,6 +2409,119 @@ class Bot
                 'outboundTag' => 'block',
         ];
         $c['routing']['rules'] = array_merge($guards, $rules);
+    }
+
+    // blackhole обязан существовать: правило с несуществующим тегом молча
+    // теряет смысл — xray его игнорирует, и трафик уходит в первый аутбаунд,
+    // то есть НАРУЖУ. Свои outbounds админа не трогаем.
+    public function ensureBlockOutbound(array &$c): void
+    {
+        foreach (($c['outbounds'] ?? []) as $o) {
+            if (($o['tag'] ?? '') === 'block') {
+                return;
+            }
+        }
+        $c['outbounds'][] = ['protocol' => 'blackhole', 'tag' => 'block'];
+    }
+
+    // ── Торренты клиентов xray (routing protocol: bittorrent) ──────────────
+    // У WG/AWG торренты режет block_torrent.sh (ipp2p + сигнатуры на FORWARD
+    // инстанса wg). До трафика xray-клиентов он не достаёт вовсе: тот выходит
+    // из ядра в контейнере xr и через FORWARD инстанса wg не проходит. Здесь
+    // ту же работу делает сам xray — правилом роутинга по protocol, то есть по
+    // результату sniffing'а, а не по сигнатуре в каждом пакете.
+    //
+    // Матчинг есть на ОБОИХ ядрах, но покрытие разное:
+    //   апстрим — только TCP-handshake ('BitTorrent protocol'); его UDP-сниффер
+    //     uTP сравнивает 32-битные монотонные часы с epoch-микросекундами и не
+    //     срабатывает ни разу (починено в форке v26.8.21);
+    //   форк v26.8.21+ — плюс рабочий uTP, DHT/KRPC (BEP 5) и UDP-трекеры
+    //     (BEP 15), а v26.8.23 закрывает ложные срабатывания на DNS-запросах
+    //     (v26.8.22 роняла в блок примерно один DNS-запрос из 13000).
+    // Гейта по xrayCore() поэтому нет: правило безвредно и на апстриме, просто
+    // ловит меньше — про разницу предупреждает меню.
+    //
+    // Обязательное условие — sniffing: content.Protocol ядро заполняет ТОЛЬКО
+    // при sniffing.enabled и metadataOnly=false (app/dispatcher/default.go).
+    // destOverride на матчинг не влияет — он гейтит лишь подмену адреса.
+    public function xrayTorrentBlocked(?array $p = null): bool
+    {
+        $p = $p ?? $this->getPacConf();
+
+        return !empty($p['xray_blocktorrent']);
+    }
+
+    // Сработает ли правило вообще. Без sniffing (или с metadataOnly) оно не
+    // совпадёт никогда, и меню обязано сказать это вслух, а не рисовать
+    // «включено» у фильтра, который молча пропускает всё.
+    //
+    // Смотрим на ФАКТИЧЕСКИЙ блок клиентского inbound'а, а не на дефолты
+    // sniffingSettings(): пока админ не трогал sniffing, ключа 'sniffing' в pac
+    // нет, applySniffingToXray() inbound не трогает вовсе — и на установке, где
+    // блока в xray.json нет, дефолт «enabled=true» соврал бы про готовность.
+    // Настройка из pac важнее конфига: она уедет в него на ближайшем рестарте.
+    public function xrayTorrentReady(?array $p = null, ?array $c = null): bool
+    {
+        $p = $p ?? $this->getPacConf();
+        $c = $c ?? $this->getXray();
+        if (is_array($p['sniffing'] ?? null)) {
+            $s = $this->sniffingConfig($p);
+        } else {
+            $s = [];
+            foreach ((is_array($c) ? ($c['inbounds'] ?? []) : []) as $in) {
+                if (!empty($in['settings']['clients'])) {
+                    $s = is_array($in['sniffing'] ?? null) ? $in['sniffing'] : [];
+                    break;
+                }
+            }
+        }
+
+        return !empty($s['enabled']) && empty($s['metadataOnly']);
+    }
+
+    public function ensureTorrentBlock(array &$c, ?array $p = null): void
+    {
+        $p = $p ?? $this->getPacConf();
+        // Прежние копии снимаем по СИГНАТУРЕ, а не по списку тегов: смена
+        // транспорта переименовывает клиентский inbound, и сверка по тегам
+        // оставила бы старое правило дублем впереди нового.
+        $rules = [];
+        foreach (($c['routing']['rules'] ?? []) as $r) {
+            $isOurs = (string) ($r['outboundTag'] ?? '') === 'block'
+                && (array) ($r['protocol'] ?? []) === ['bittorrent'];
+            if (!$isOurs) {
+                $rules[] = $r;
+            }
+        }
+        $c['routing']['rules'] = $rules;
+        if (empty($p['xray_blocktorrent'])) {
+            return;
+        }
+
+        // Только клиентские inbound'ы (те же, что получают sniffing от
+        // applySniffingToXray). api/wg-in не трогаем: через wg-in ходят
+        // WG/AWG-клиенты, у них свой тумблер торрентов — один выключатель не
+        // должен молча решать за другой.
+        $tags = [];
+        foreach (($c['inbounds'] ?? []) as $in) {
+            if (!empty($in['settings']['clients']) && (string) ($in['tag'] ?? '') !== '') {
+                $tags[] = (string) $in['tag'];
+            }
+        }
+        if ($tags === []) {
+            return;
+        }
+        $this->ensureBlockOutbound($c);
+        // В начало: правило обязано стоять раньше пользовательских маршрутов
+        // (warp/direct по доменам и спискам) — xray берёт первое совпавшее.
+        // Гейты wg (DNS :53 → direct, docker-сеть → block) уезжают ещё выше:
+        // ensureWgGuard() вызывается ПОСЛЕ и делает свой array_merge в голову.
+        array_unshift($c['routing']['rules'], [
+            'type'        => 'field',
+            'inboundTag'  => $tags,
+            'protocol'    => ['bittorrent'],
+            'outboundTag' => 'block',
+        ]);
     }
 
     // Дотягивает sockopt.trustedXForwardedFor на клиентский inbound, если его
@@ -17011,6 +17120,26 @@ DNS-over-HTTPS with IP:
         $this->smuxMenu();
     }
 
+    // Тумблер блокировки торрентов для клиентов xray. Само правило кладёт
+    // ensureTorrentBlock() внутри restartXray() — здесь только состояние и
+    // честный ответ о том, заработает ли оно (см. xrayTorrentReady()).
+    public function switchXrayTorrent()
+    {
+        $p = $this->getPacConf();
+        $p['xray_blocktorrent'] = empty($p['xray_blocktorrent']) ? 1 : 0;
+        $this->setPacConf($p);
+        $this->restartXray($this->getXray());
+
+        $note = $this->i18n($p['xray_blocktorrent'] ? 'torrent xray on' : 'torrent xray off');
+        if (!empty($p['xray_blocktorrent'])) {
+            $note .= "\n\n" . ($this->xrayTorrentReady($p)
+                ? $this->i18n('torrent xray hint')
+                : $this->i18n('torrent needs sniffing'));
+        }
+        $this->answer($this->input['callback_id'], $note, true);
+        $this->xray();
+    }
+
     public function smuxToggle($what)
     {
         $p = $this->getPacConf();
@@ -22313,10 +22442,19 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/dpiMenu",
             ],
         ];
+        $torrentBlocked = $this->xrayTorrentBlocked($p);
         $data[] = [
             [
                 'text'          => 'SMUX: ' . $this->i18n($this->smuxActive($p) ? 'on' : 'off'),
                 'callback_data' => '/smuxMenu',
+            ],
+            [
+                // ⚠️ — тумблер включён, но sniffing выключен (или metadataOnly),
+                // то есть правило не совпадёт никогда и торренты идут насквозь.
+                'text'          => '🚫 ' . $this->i18n('torrent') . ': '
+                    . $this->i18n($torrentBlocked ? 'on' : 'off')
+                    . ($torrentBlocked && !$this->xrayTorrentReady($p, $c) ? ' ⚠️' : ''),
+                'callback_data' => '/switchXrayTorrent',
             ],
         ];
 

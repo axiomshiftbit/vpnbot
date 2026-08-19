@@ -605,6 +605,22 @@ $i = [
         'en' => 'torrents',
         'ru' => 'торренты',
     ],
+    'torrent xray on'  => [
+        'en' => 'torrents blocked for xray clients',
+        'ru' => 'торренты для клиентов xray блокируются',
+    ],
+    'torrent xray off'  => [
+        'en' => 'torrents allowed for xray clients',
+        'ru' => 'торренты для клиентов xray разрешены',
+    ],
+    'torrent xray hint'  => [
+        'en' => 'Caught via sniffing: handshake, uTP, DHT, UDP trackers (all but handshake need the fork core). MSE-encrypted peers and HTTPS trackers stay invisible.',
+        'ru' => 'Ловится через sniffing: handshake, uTP, DHT, UDP-трекеры (всё кроме handshake — только на форк-ядре). MSE-шифрование и HTTPS-трекеры не видны.',
+    ],
+    'torrent needs sniffing'  => [
+        'en' => 'Rule will never match: turn sniffing on (DPI masking) and metadataOnly off — without them the core does not detect the protocol.',
+        'ru' => 'Правило не сработает: включите sniffing (DPI-маскировка) и выключите metadataOnly — без них ядро не определяет протокол.',
+    ],
     'blinkmenuon'  => [
         'en' => 'blinkmenu on',
         'ru' => 'прыгающее меню вкл',
