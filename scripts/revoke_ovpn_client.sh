@@ -84,12 +84,17 @@ revoke_dst_cert="$revoke_pki/revoked/certs_by_serial/$revoke_serial.crt"
 revoke_dst_key="$revoke_pki/revoked/private_by_serial/$revoke_serial.key"
 revoke_dst_req="$revoke_pki/revoked/reqs_by_serial/$revoke_serial.req"
 
+# Конфликт — это когда active-файл и его revoked-копия РАЗНЫЕ: значит копия
+# принадлежит другому сертификату с тем же серийником, и трогать её нельзя.
+# Отсутствие active-файла конфликтом НЕ является: приватный ключ мог быть уже
+# перенесён в revoked/ прошлой (оборванной) попыткой — именно то состояние,
+# ради которого скрипт и писался. Раньше такой клиент не удалялся вообще.
 revoke_require_same()
 {
     revoke_src="$1"
     revoke_dst="$2"
-    if [ -e "$revoke_dst" ]; then
-        [ -e "$revoke_src" ] && cmp -s "$revoke_src" "$revoke_dst" \
+    if [ -e "$revoke_dst" ] && [ -e "$revoke_src" ]; then
+        cmp -s "$revoke_src" "$revoke_dst" \
             || revoke_fail "conflicting revoked artifact: $revoke_dst"
     fi
 }
@@ -106,11 +111,13 @@ if [ "$revoke_status" = 'R' ]; then
     [ ! -e "$revoke_key" ] || [ -e "$revoke_dst_key" ] || cp -p "$revoke_key" "$revoke_dst_key"
     [ ! -e "$revoke_req" ] || [ -e "$revoke_dst_req" ] || cp -p "$revoke_req" "$revoke_dst_req"
 elif [ "$revoke_status" = 'V' ] || [ "$revoke_status" = 'E' ]; then
-    # Удаляем только доказанно идентичные stale-копии. Оригиналы остаются в
-    # active-каталогах, и EasyRSA сейчас же перенесёт их обратно в revoked/.
-    [ ! -e "$revoke_dst_cert" ] || rm -f "$revoke_dst_cert"
-    [ ! -e "$revoke_dst_key" ] || rm -f "$revoke_dst_key"
-    [ ! -e "$revoke_dst_req" ] || rm -f "$revoke_dst_req"
+    # Удаляем только доказанно идентичные stale-копии, у которых есть оригинал
+    # в active-каталоге: EasyRSA сейчас же перенесёт его обратно в revoked/.
+    # Копию БЕЗ оригинала не трогаем — это единственный экземпляр файла, и
+    # снести его значит потерять архив отозванного ключа безвозвратно.
+    [ ! -e "$revoke_dst_cert" ] || [ ! -e "$revoke_cert" ] || rm -f "$revoke_dst_cert"
+    [ ! -e "$revoke_dst_key" ] || [ ! -e "$revoke_key" ] || rm -f "$revoke_dst_key"
+    [ ! -e "$revoke_dst_req" ] || [ ! -e "$revoke_req" ] || rm -f "$revoke_dst_req"
     EASYRSA_PKI="$revoke_pki" EASYRSA_BATCH=1 \
         /usr/share/easy-rsa/easyrsa revoke "$revoke_user" >&3 2>&1 \
         || revoke_fail 'easyrsa revoke failed'

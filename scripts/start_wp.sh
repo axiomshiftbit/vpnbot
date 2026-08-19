@@ -196,6 +196,40 @@ for ip in $SOCKS_ALLOW; do
 done
 iptables -A WARP_SOCKS -j DROP
 
+# Вторая половина того же ограничения — по НАЗНАЧЕНИЮ. Фильтр выше закрывает
+# только вход в прокси, но пускать туда xray обязаны: sing-box-шаблоны заводят
+# outbound warpSOCKS5 на 10.10.0.13:1080 с detour через VLESS, поэтому Xray
+# видит этот адрес как клиентское назначение и гейт в боте (Bot::WARP_SOCKS_IP)
+# держит для него точечное direct-правило. Убрать ту дырку нельзя — у клиента
+# сразу отваливаются все сайты, идущие через WARP.
+#
+# Значит режем не вход, а ВЫХОД: microsocks не умеет ACL по назначению и
+# выполняет CONNECT куда попросят, включая внутренние адреса проекта. Без этого
+# блока любой клиент VPN, дозвонившись до прокси, ходил бы через него в
+# docker-сеть (панель, AdGuard, sshd контейнеров, socks-inbound'ы xray) в обход
+# гейта. Выход в интернет через туннель WARP — назначения публичные — не задет.
+WARP_SOCKS_DENY_OUT="${WARP_SOCKS_DENY_OUT:-10.10.0.0/16}"
+if iptables -N WARP_SOCKS_OUT 2>/dev/null; then :; else iptables -F WARP_SOCKS_OUT; fi
+iptables -C OUTPUT -j WARP_SOCKS_OUT 2>/dev/null \
+    || iptables -I OUTPUT -j WARP_SOCKS_OUT
+# Петля (warp_probe.sh, healthcheck, docker-DNS 127.0.0.11) и ответы на уже
+# установленные сессии — ssh бота в этот контейнер, ответы самого прокси в xray
+# — обязаны проходить. Матчер состояния критичен: без него REJECT ниже оборвал
+# бы и ответные пакеты. Поэтому при отсутствии conntrack/state правило DENY НЕ
+# ставим вовсе (лучше прежнее поведение, чем оборванный ssh и мёртвый WARP).
+iptables -A WARP_SOCKS_OUT -o lo -j ACCEPT
+if iptables -A WARP_SOCKS_OUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null \
+    || iptables -A WARP_SOCKS_OUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; then
+    echo "[warp] Blocking SOCKS egress to: $WARP_SOCKS_DENY_OUT"
+    echo "[warp] (override with WARP_SOCKS_DENY_OUT=\"net1 net2\", empty value disables)"
+    for net in $WARP_SOCKS_DENY_OUT; do
+        iptables -A WARP_SOCKS_OUT -d "$net" -j REJECT --reject-with icmp-port-unreachable \
+            2>/dev/null || iptables -A WARP_SOCKS_OUT -d "$net" -j DROP
+    done
+else
+    echo "[warp] WARN: нет conntrack/state match — egress-ACL прокси НЕ установлен" >&2
+fi
+
 if tunnel_up; then
     socks_start
 else

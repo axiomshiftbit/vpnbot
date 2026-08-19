@@ -2247,10 +2247,32 @@ class Bot
     public const INTERNAL_DNS = '10.10.0.5/32';
     // Sing-box-шаблоны заводят outbound warpSOCKS5 как 10.10.0.13:1080 с
     // detour через основной VLESS. Это не произвольный доступ в docker-сеть:
-    // ровно этот адрес закреплён за wp в compose, а сам microsocks дополнительно
-    // принимает соединения только от xr (см. WARP_SOCKS в start_wp.sh).
+    // ровно этот адрес закреплён за wp в compose, microsocks принимает
+    // соединения только от xr, а ходить через него ВГЛУБЬ сети проекта
+    // запрещает egress-ACL (обе цепочки WARP_SOCKS* в start_wp.sh).
     public const WARP_SOCKS_IP   = '10.10.0.13/32';
     public const WARP_SOCKS_PORT = '1080';
+
+    // Фактический адрес wp из compose: в override его можно переназначить, и
+    // тогда захардкоженная константа молча разъедется с реальностью — правило
+    // в гейте перестанет совпадать, а наружу это выглядит как «WARP отвалился»
+    // без единой строки в логах. Константа остаётся дефолтом на случай, когда
+    // /docker/compose недоступен (тесты, панель).
+    public function warpSocksIp(): string
+    {
+        $f = '/docker/compose';
+        if (is_file($f)) {
+            $nets = yaml_parse_file($f)['services']['wp']['networks'] ?? [];
+            foreach ((array) $nets as $n) {
+                $ip = is_array($n) ? (string) ($n['ipv4_address'] ?? '') : '';
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                    return "$ip/32";
+                }
+            }
+        }
+
+        return self::WARP_SOCKS_IP;
+    }
 
     // Внутренние socks-inbound'ы без авторизации, слушающие в docker-сети.
     // 'wg-in' (10808) создаёт restartXray() — в него tun2socks отдаёт трафик
@@ -2319,7 +2341,8 @@ class Bot
             }
             $tags[] = $t;
         }
-        $warpTags = array_values(array_diff($tags, self::INTERNAL_SOCKS_TAGS));
+        $warpTags   = array_values(array_diff($tags, self::INTERNAL_SOCKS_TAGS));
+        $warpSocksIp = $this->warpSocksIp();
 
         // Снимаем прежние копии гейта — их inboundTag почти наверняка у́же
         // нынешнего (до аудита 2026-08-18 там были только wg-in/socks-in),
@@ -2334,7 +2357,10 @@ class Bot
             $isGuard = $in !== [] && (
                 ($ip === [self::DOCKER_NET] && $out === 'block')
                 || ($ip === [self::INTERNAL_DNS] && $out === 'direct' && (string) ($r['port'] ?? '') === '53')
-                || ($ip === [self::WARP_SOCKS_IP] && $out === 'direct'
+                // Опознаём по порту+network, а не по конкретному адресу: после
+                // смены адресации в override старая копия обязана сняться, а не
+                // остаться дублем впереди новой.
+                || (count($ip) === 1 && $out === 'direct'
                     && (string) ($r['port'] ?? '') === self::WARP_SOCKS_PORT
                     && (string) ($r['network'] ?? '') === 'tcp')
             );
@@ -2374,7 +2400,7 @@ class Bot
             $guards[] = [
                 'type'        => 'field',
                 'inboundTag'  => $warpTags,
-                'ip'          => [self::WARP_SOCKS_IP],
+                'ip'          => [$warpSocksIp],
                 'port'        => self::WARP_SOCKS_PORT,
                 'network'     => 'tcp',
                 'outboundTag' => 'direct',
@@ -6014,7 +6040,15 @@ NFT;
                 if ($this->importOvpnPki($json['ovpn'])) {
                     $this->restartOvpn();
                 } else {
-                    $out[] = '❌ openvpn backup is incomplete or invalid';
+                    // Причина конкретная: «снимок отвергнут, PKI не тронут» и
+                    // «перенос оборвался, PKI смешанный» требуют РАЗНЫХ действий
+                    // от админа, а прежний общий текст их не различал.
+                    $out[] = '❌ openvpn: ' . ($this->ovpnRestoreError ?: 'снимок не восстановлен');
+                    if (str_contains($this->ovpnRestoreError, 'ЧАСТИЧНО')) {
+                        // Демон продолжает работать со смесью старого и нового
+                        // PKI — рестарт заставит его перечитать то, что легло.
+                        $this->restartOvpn();
+                    }
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 }
             }
@@ -8641,6 +8675,20 @@ NFT;
             $this->replyMenuEdit = true;
             try {
                 $this->{$callback}($this->input['message'], ...$state['args']);
+            } catch (Throwable $e) {
+                // takeReply() забирает state ДО вызова (иначе повтор webhook
+                // выполнит действие дважды), а prompt и ответ уже удалены —
+                // повторить нечего. Значит падение обработчика обязано быть
+                // видимым: молча потерянный ввод выглядит как «бот съел
+                // сообщение и ничего не сделал».
+                error_log("reply($callback): " . $e->getMessage());
+                $this->send(
+                    $this->input['chat'],
+                    '❌ ' . $this->i18n('error') . ': ' . htmlspecialchars($e->getMessage(), ENT_QUOTES)
+                        . "\n" . $this->i18n('try again')
+                );
+                $this->replyMenuEdit = false;
+                $this->menu();
             } finally {
                 $this->replyMenuEdit = false;
             }
@@ -15701,12 +15749,22 @@ DNS-over-HTTPS with IP:
         }
 
         if (!empty($this->input['callback_id']) || $this->replyMenuEdit) {
-            $this->update(
+            $r = $this->update(
                 $this->input['chat'],
                 $this->input['message_id'],
                 $text,
                 $data ?: false,
             );
+            // Ответ на промпт, который не изменил текст меню (переименование в
+            // то же имя, повторный ввод того же DNS/MTU), Telegram отклоняет
+            // «message is not modified» — и пользователь не видит НИЧЕГО: его
+            // сообщение удалено, меню осталось прежним. До перехода на
+            // редактирование здесь отправлялось новое сообщение, подтверждение
+            // было всегда. Возвращаем подтверждение явным ответом.
+            if ($this->replyMenuEdit && is_array($r) && empty($r['ok'])
+                && stripos((string) ($r['description'] ?? ''), 'not modified') !== false) {
+                $this->send($this->input['chat'], '✅ ' . $this->i18n('success'));
+            }
             // Сообщение показывает wg-меню (или его подменю) — фиксируем его
             // инстанс в карте; любое другое меню — снимаем запись, чтобы
             // устаревшая привязка не влияла на кнопки нового содержимого.
@@ -17245,11 +17303,27 @@ DNS-over-HTTPS with IP:
     // pac.json и ~30 точек xray.json на него ещё НЕ переведены — перевод
     // требует отдельного прохода с проверкой на живом стенде, потому что
     // транзакция должна охватывать обе стороны гонки, иначе смысла нет.
-    public function withLock(string $name, callable $fn)
+    // $timeout > 0 — ждать лок не дольше указанного числа секунд и вернуть
+    // $busy, если так и не дождались (вместо бесконечного ожидания, при котором
+    // воркер вебхука висит молча). Флок НЕ реентерабелен: второй fopen+flock
+    // того же файла в том же процессе блокируется, поэтому вкладывать withLock
+    // с одним и тем же $name нельзя.
+    public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null)
     {
         $lock = @fopen("/logs/.lock.$name", 'c');
         if ($lock !== false) {
-            flock($lock, LOCK_EX);
+            if ($timeout > 0) {
+                $deadline = microtime(true) + $timeout;
+                while (!flock($lock, LOCK_EX | LOCK_NB)) {
+                    if (microtime(true) >= $deadline) {
+                        fclose($lock);
+                        return $busy;
+                    }
+                    usleep(200000);
+                }
+            } else {
+                flock($lock, LOCK_EX);
+            }
         }
         try {
             return $fn();
@@ -19926,6 +20000,35 @@ DNS-over-HTTPS with IP:
             return '';
         }
         return substr(hash_hmac('sha256', $uid, (string) $this->key), 0, 16);
+    }
+
+    // Сколько живёт старый (безпрефиксный) DoH-идентификатор в allowed_clients.
+    // 30 дней — с запасом на то, чтобы клиенты подтянули новую подписку.
+    public const DOH_LEGACY_TTL = 2592000;
+
+    // Переходный период ещё идёт? Дедлайн выставляется при первой же миграции,
+    // которая реально встретила старый id, и хранится в pac.json. Без срока
+    // legacy-alias оставался бы рабочим пропуском в DNS навсегда, хотя объявлен
+    // временным; со сроком он исчезает сам, без ручной уборки.
+    public function dohLegacyAllowed(): bool
+    {
+        // Без pac.json (тесты, панель на голом инстансе) состояние перехода
+        // неизвестно — тогда совместимость важнее уборки.
+        if (empty($this->pac) || !is_file($this->pac)) {
+            return true;
+        }
+        $until = (int) ($this->getPacConf()['dohlegacy'] ?? 0);
+        if ($until === 0) {
+            $until = time() + self::DOH_LEGACY_TTL;
+            $this->pacConfUpdate(function (&$conf) use ($until) {
+                // Не перетираем уже выставленный другим воркером дедлайн.
+                $conf['dohlegacy'] = (int) ($conf['dohlegacy'] ?? 0) ?: $until;
+            });
+
+            return true;
+        }
+
+        return time() < $until;
     }
 
     // Resolve a sub `s`/`id` value to a client index: subtoken first, then id as
@@ -26751,24 +26854,34 @@ DNS-over-HTTPS with IP:
         if (!is_file($this->adguard)) {
             return false;
         }
-        $c         = yaml_parse_file($this->adguard);
-        $uuidMap   = [];
-        $legacyMap = [];
+        $c            = yaml_parse_file($this->adguard);
+        $uuidMap      = [];
+        $legacyMap    = [];
+        $legacyAlias  = [];
         foreach (($this->getXray()['inbounds'][0]['settings']['clients'] ?? []) as $v) {
             $id = (string) ($v['id'] ?? '');
             if ($id !== '') {
-                $new                = $this->dohClientId($id);
-                $legacy             = $this->legacyDohClientId($id);
-                $uuidMap[$id]       = $new;
-                $legacyMap[$legacy] = $new;
-                // AdGuard уже мог сохранить голые 16 hex как EUI-64.
-                $legacyMap[implode(':', str_split($legacy, 2))] = $new;
+                $new    = $this->dohClientId($id);
+                $legacy = $this->legacyDohClientId($id);
+                // Две формы одного и того же старого идентификатора: сырые
+                // 16 hex, как они уходили в DoH-URL, и EUI-64 — в этот вид
+                // AdGuard переписывает такую строку у себя. Какую из них он
+                // держит в dns.allowed_clients, зависит от версии, поэтому
+                // держим ОБЕ: иначе «плавная» миграция ломает DNS ровно тем
+                // клиентам, ради которых она и делается.
+                $forms  = [$legacy, implode(':', str_split($legacy, 2))];
+                $uuidMap[$id] = $new;
+                foreach ($forms as $f) {
+                    $legacyMap[$f]   = $new;
+                    $legacyAlias[$f] = $forms;
+                }
             }
         }
         if ($uuidMap === []) {
             return false;
         }
-        $changed = false;
+        $changed    = false;
+        $keepLegacy = $this->dohLegacyAllowed();
 
         // 1. Список разрешённых клиентов. Сырой UUID убираем окончательно —
         // это credential VLESS. Старый HMAC безопасен, поэтому сохраняем его
@@ -26782,7 +26895,15 @@ DNS-over-HTTPS with IP:
                 if (isset($uuidMap[$v])) {
                     $next[] = $uuidMap[$v];
                 } elseif (isset($legacyMap[$v])) {
-                    $next[] = $v;
+                    // Переходный период (см. dohLegacyAllowed): старый id
+                    // остаётся рабочим, пока пользователи обновляют подписку,
+                    // а после дедлайна пропадает — вечный второй пропуск в DNS
+                    // не нужен никому.
+                    if ($keepLegacy) {
+                        foreach ($legacyAlias[$v] as $alias) {
+                            $next[] = $alias;
+                        }
+                    }
                     $next[] = $legacyMap[$v];
                 } else {
                     $next[] = $v;
@@ -26841,6 +26962,7 @@ DNS-over-HTTPS with IP:
         } else {
             $previous = array_fill_keys(array_map('strval',
                 (array) ($c['dns']['allowed_clients'] ?? [])), true);
+            $keepLegacy = $this->dohLegacyAllowed();
             $c['dns']['allowed_clients'] = [];
             $c['dns']['allowed_clients'][] = '10.10.0.0/24';
             if (!empty($pac['adguardkey'])) {
@@ -26858,11 +26980,14 @@ DNS-over-HTTPS with IP:
                     // Уже выданный конфиг со старым безопасным HMAC должен
                     // продолжить работать. На свежей установке лишний alias не
                     // добавляем: сохраняем его только если он был разрешён до
-                    // ручной пересборки списка.
-                    $legacy = $this->legacyDohClientId($uid);
+                    // ручной пересборки списка — и только пока идёт переходный
+                    // период (см. dohLegacyAllowed). Кладём обе формы: AdGuard
+                    // мог переписать сырые 16 hex в EUI-64 у себя.
+                    $legacy    = $this->legacyDohClientId($uid);
                     $legacyMac = implode(':', str_split($legacy, 2));
-                    if (isset($previous[$legacy]) || isset($previous[$legacyMac])) {
+                    if ((isset($previous[$legacy]) || isset($previous[$legacyMac])) && $keepLegacy) {
                         $c['dns']['allowed_clients'][] = $legacy;
+                        $c['dns']['allowed_clients'][] = $legacyMac;
                     }
                 }
             }
@@ -29819,16 +29944,52 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    // Файлы, которые ведёт сам демон: в снимок не идут и при точном
+    // восстановлении не удаляются. openvpn-status.log перезаписывается каждые
+    // 5 секунд, ipp.txt (ifconfig-pool-persist) хранит ТЕКУЩИЕ привязки
+    // клиент→IP — вернуть его из бэкапа значит раздать вчерашние адреса.
+    public const OVPN_RUNTIME_FILES = ['openvpn-status.log', 'ipp.txt'];
+
+    // Без этих файлов PKI нерабочий — снимок с пропуском отвергаем целиком.
+    public const OVPN_SNAPSHOT_CORE = [
+        'pki/ca.crt',
+        'pki/issued/server.crt',
+        'pki/private/server.key',
+        'server.conf',
+    ];
+
+    // Эти воссоздаёт start_ovpn.sh (gen-crl на каждом старте, genkey ta.key,
+    // init-pki). Снимок без них принимаем, но и НЕ удаляем существующие копии:
+    // иначе бэкап, снятый с PKI без ca.key (там gen-crl пропускается —
+    // start_ovpn.sh:138), уносил бы рабочий crl.pem.
+    public const OVPN_SNAPSHOT_OPTIONAL = [
+        'pki/crl.pem',
+        'pki/index.txt',
+        'pki/serial',
+        'pki/ta.key',
+    ];
+
+    // Причина последнего отказа importOvpnPki() — текст для чата. Отдельное
+    // поле, а не исключение: восстановление идёт пачкой (wg, xray, ipsec…),
+    // и падение одной секции не должно ронять остальные.
+    public $ovpnRestoreError = '';
+
     // Снэпшот /config/openvpn — PKI (ca/server/issued/private/ta), serial,
     // index.txt, crl.pem, server.conf, ccd/. Каждый файл хранится как base64
     // в общем JSON-бэкапе; при восстановлении ключи получают chmod 600.
-    // Runtime-файлы (openvpn-status.log) исключаем — они генерятся демоном.
-    public function withOvpnPkiLock(callable $fn)
+    // Runtime-файлы (OVPN_RUNTIME_FILES) исключаем — их генерит демон.
+    public function withOvpnPkiLock(callable $fn, int $timeout = 0, $busy = null)
     {
         // Тот же /logs смонтирован в php и ovpn. start_ovpn.sh берёт flock на
         // этом же inode перед init/gen-crl, поэтому snapshot/restore не может
         // пересечься с EasyRSA и вернуть уже отозванный сертификат в issued/.
-        return $this->withLock('ovpn-pki', $fn);
+        //
+        // $timeout > 0 — для интерактивных кнопок: на первом старте контейнер
+        // держит этот лок весь init PKI (build-ca → build-server-full →
+        // gen-crl → genkey), и без таймаута воркер вебхука молча висел бы
+        // минуту с лишним. Бэкап/восстановление зовут без таймаута: там ждать
+        // нормально, а тихо пропустить секцию ovpn — нет.
+        return $this->withLock('ovpn-pki', $fn, $timeout, $busy);
     }
 
     public function exportOvpnPki(bool $locked = false)
@@ -29840,7 +30001,7 @@ DNS-over-HTTPS with IP:
         if (!is_dir($root)) {
             return null;
         }
-        $skipBasenames = ['openvpn-status.log'];
+        $skipBasenames = self::OVPN_RUNTIME_FILES;
         $files         = [];
         $rii = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
@@ -29858,11 +30019,47 @@ DNS-over-HTTPS with IP:
         return $files ?: null;
     }
 
+    // Рекурсивное удаление каталога. Нужно для staging-каталога
+    // importOvpnPki(): при отказе от него не должно оставаться следов.
+    public function rmrf(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        $rii = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($rii as $f) {
+            $f->isDir() && !$f->isLink() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());
+        }
+        @rmdir($dir);
+    }
+
+    // Права файла PKI по его пути внутри снимка: приватники и готовые
+    // клиентские профили закрыты, hook исполняем, публичные сертификаты и CRL
+    // читаемы openvpn'ом после drop-privileges.
+    public function ovpnFileMode(string $rel): int
+    {
+        if ($rel === 'connect.sh') {
+            return 0755;
+        }
+        $secret = str_starts_with($rel, 'pki/private/')
+            // revoked/private_by_serial — те же приватные ключи, просто
+            // отозванных клиентов; 0644 им ни к чему.
+            || str_starts_with($rel, 'pki/revoked/private_by_serial/')
+            || $rel === 'pki/ta.key'
+            || str_starts_with($rel, 'clients/');
+
+        return $secret ? 0600 : 0644;
+    }
+
     public function importOvpnPki(array $files, bool $locked = false)
     {
         if (!$locked) {
             return $this->withOvpnPkiLock(fn() => $this->importOvpnPki($files, true));
         }
+        $this->ovpnRestoreError = '';
         $root = dirname($this->ovpnPaths()['pki']);
         @mkdir($root, 0755, true);
         $decoded = [];
@@ -29871,57 +30068,82 @@ DNS-over-HTTPS with IP:
             // нормализуем разделители.
             $rel = str_replace('\\', '/', $rel);
             if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false) {
+                $this->ovpnRestoreError = 'недопустимое имя файла в снимке';
                 return false;
             }
             $data = base64_decode((string) $b64, true);
             if ($data === false) {
+                $this->ovpnRestoreError = "битый base64: $rel";
                 return false;
             }
             $decoded[$rel] = $data;
         }
         // Не начинаем точное восстановление из обрезанного/чужого снимка:
         // иначе удаление лишних файлов могло бы уничтожить рабочий PKI.
-        foreach ([
-            'pki/ca.crt',
-            'pki/issued/server.crt',
-            'pki/private/server.key',
-            'pki/crl.pem',
-            'pki/index.txt',
-            'pki/serial',
-            'pki/ta.key',
-            'server.conf',
-        ] as $required) {
-            if (!array_key_exists($required, $decoded)) {
-                return false;
-            }
+        // Отвергаем только по ЯДРУ снимка и говорим, чего именно не хватило —
+        // «incomplete or invalid» без деталей не давало ни одной зацепки.
+        $missing = array_values(array_diff(self::OVPN_SNAPSHOT_CORE, array_keys($decoded)));
+        if ($missing !== []) {
+            $this->ovpnRestoreError = 'в снимке нет обязательных файлов: ' . implode(', ', $missing);
+            return false;
         }
-        // Сначала атомарно раскладываем все файлы снимка. Только когда каждый
-        // из них записан, удаляем файлы, которых в бэкапе нет. Старый overlay
-        // оставлял revoked/* после восстановления более раннего active-cert и
-        // EasyRSA затем падал с "a conflicting file exists".
+
+        // Раскладываем снимок в отдельный каталог ВНУТРИ $root (та же ФС, так
+        // что перенос ниже — обычный rename без EXDEV) и только потом,
+        // короткой второй фазой, переставляем файлы на места. Так сбой записи
+        // или chmod'а не оставляет PKI полуразобранным: до фазы переноса не
+        // тронут ни один рабочий файл. tempnam() здесь не годится вовсе — при
+        // недоступном каталоге он молча уходит в /tmp, и rename ломается на
+        // границе файловых систем.
+        $stage = "$root/.restore-" . getmypid() . '-' . bin2hex(random_bytes(4));
+        $fail  = function (string $why) use ($stage) {
+            $this->rmrf($stage);
+            $this->ovpnRestoreError = $why;
+            return false;
+        };
+        if (!@mkdir($stage, 0700, true)) {
+            return $fail('не создать временный каталог восстановления');
+        }
         foreach ($decoded as $rel => $data) {
+            $path = "$stage/$rel";
+            if (!is_dir(dirname($path)) && !@mkdir(dirname($path), 0755, true)) {
+                return $fail("не создать каталог для $rel");
+            }
+            if (file_put_contents($path, $data) === false) {
+                return $fail("не записать $rel");
+            }
+            if (!chmod($path, $this->ovpnFileMode($rel))) {
+                return $fail("не выставить права на $rel");
+            }
+        }
+
+        // Фаза переноса. Всё, что не удалось переставить, оставляет PKI в
+        // смешанном состоянии — об этом надо сказать прямым текстом, а не
+        // прежним «бэкап неполный или повреждён».
+        foreach (array_keys($decoded) as $rel) {
             $path = "$root/$rel";
-            @mkdir(dirname($path), 0755, true);
-            $tmp = tempnam(dirname($path), '.restore-');
-            if ($tmp === false || file_put_contents($tmp, $data) === false || !rename($tmp, $path)) {
-                if ($tmp !== false) {
-                    @unlink($tmp);
-                }
+            if (!is_dir(dirname($path)) && !@mkdir(dirname($path), 0755, true)) {
+                $this->ovpnRestoreError = "PKI восстановлен ЧАСТИЧНО: не создать каталог для $rel";
+                $this->rmrf($stage);
                 return false;
             }
-            // tempnam создаёт 0600. Публичные сертификаты/CRL должны остаться
-            // читаемыми OpenVPN после drop-privileges, hook — исполняемым, а
-            // приватники и готовые клиентские профили — закрытыми.
-            $mode = ($rel === 'connect.sh')
-                ? 0755
-                : ((str_starts_with($rel, 'pki/private/')
-                    || $rel === 'pki/ta.key'
-                    || str_starts_with($rel, 'clients/')) ? 0600 : 0644);
-            if (!chmod($path, $mode)) {
+            if (!@rename("$stage/$rel", $path)) {
+                $this->ovpnRestoreError = "PKI восстановлен ЧАСТИЧНО: не перенести $rel";
+                $this->rmrf($stage);
                 return false;
             }
         }
+        $this->rmrf($stage);
+
+        // Файлы, которых в снимке нет, удаляем — ради этого точное
+        // восстановление и делалось (иначе revoked/* от более нового состояния
+        // конфликтует с вернувшимся active-cert). Кроме двух групп: runtime
+        // демона и «желательных» файлов, которые снимок мог легально не
+        // содержать — их регенерирует start_ovpn.sh, но до рестарта они нужны.
         $keep = array_fill_keys(array_keys($decoded), true);
+        foreach (self::OVPN_SNAPSHOT_OPTIONAL as $opt) {
+            $keep[$opt] = true;
+        }
         $rii  = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
             RecursiveIteratorIterator::CHILD_FIRST
@@ -29931,16 +30153,21 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
-            // status пишет живой daemon; он намеренно не входит в snapshot.
-            if ($f->getFilename() === 'openvpn-status.log' || isset($keep[$rel])) {
+            if (in_array($f->getFilename(), self::OVPN_RUNTIME_FILES, true) || isset($keep[$rel])) {
                 continue;
             }
             if (!@unlink($f->getPathname())) {
+                $this->ovpnRestoreError = "PKI восстановлен, но не удалить лишний файл $rel";
                 return false;
             }
         }
         // OpenVPN отказывается стартовать с приватниками доступными группе/всем.
-        foreach (glob("$root/pki/private/*.key") ?: [] as $k) {
+        // Страховка на случай ключей, которых в снимке не было (сохранённые
+        // выше OVPN_SNAPSHOT_OPTIONAL, остатки прошлых восстановлений).
+        foreach (array_merge(
+            glob("$root/pki/private/*.key") ?: [],
+            glob("$root/pki/revoked/private_by_serial/*.key") ?: []
+        ) as $k) {
             chmod($k, 0600);
         }
         if (file_exists("$root/pki/ta.key")) {
@@ -30227,6 +30454,8 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'], 'username too long (max 40 chars)');
             return $this->menu('ovpn');
         }
+        // Лок с таймаутом: на первом старте контейнер держит его весь init PKI,
+        // и без ограничения кнопка «добавить» просто висела бы молча.
         $issued = $this->withOvpnPkiLock(function () use ($user) {
             if (in_array($user, $this->getOvpnUsers(), true)) {
                 return 'exists';
@@ -30249,7 +30478,12 @@ DNS-over-HTTPS with IP:
                 'ovpn'
             );
             return in_array($user, $this->getOvpnUsers(), true) ? 'ok' : 'failed';
-        });
+        }, 25, 'busy');
+        if ($issued === 'busy') {
+            $this->send($this->input['chat'], '⏳ ' . $this->i18n('OpenVPN')
+                . ': PKI занят (контейнер инициализируется) — повторите через минуту');
+            return $this->menu('ovpn');
+        }
         if ($issued === 'exists') {
             $this->send($this->input['chat'], "user $user already exists");
             return $this->menu('ovpn');
@@ -30298,14 +30532,34 @@ DNS-over-HTTPS with IP:
             // Скрипт умеет безопасно дочинить legacy/overlay-состояние, где
             // issued-cert активен, записи index.txt нет, а идентичные файлы уже
             // остались в revoked/. Успех он печатает только после проверки CRL.
+            //
+            // Он приезжает в контейнер bind-mount'ом (docker-compose.yml), а
+            // app/ обновляется НЕЗАВИСИМО от compose — на хосте, где контейнеры
+            // ещё не пересозданы, файла просто нет, и `sh` ругается в stderr:
+            // маркера в stdout нет, лог пуст, кнопка «удалить» мертва без единой
+            // подсказки. Пока переход не завершён, откатываемся на прежнюю
+            // inline-команду: она слабее (не чинит рассинхрон index.txt/revoked),
+            // но так же подтверждает успех наличием serial в НОВОМ CRL.
             $out = $this->ssh(
-                "VPNBOT_OVPN_LOCK_HELD=1 sh /revoke_ovpn_client.sh $u",
+                "if [ -f /revoke_ovpn_client.sh ]; then VPNBOT_OVPN_LOCK_HELD=1 sh /revoke_ovpn_client.sh $u; else " .
+                "echo __VPNBOT_REVOKE_NOSCRIPT__ >>/logs/openvpn.log; " .
+                "serial=\$(openssl x509 -in /etc/openvpn/pki/issued/$u.crt -noout -serial 2>>/logs/openvpn.log | cut -d= -f2); " .
+                "if [ -n \"\$serial\" ] && " .
+                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u >>/logs/openvpn.log 2>&1 && " .
+                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 /usr/share/easy-rsa/easyrsa gen-crl >>/logs/openvpn.log 2>&1 && " .
+                "openssl crl -in /etc/openvpn/pki/crl.pem -noout -text 2>>/logs/openvpn.log | grep -Fqi \"Serial Number: \$serial\"; " .
+                "then echo __VPNBOT_REVOKED__; else echo __VPNBOT_REVOKE_FAILED__; fi; fi",
                 'ovpn'
             );
             return str_contains((string) $out, '__VPNBOT_REVOKED__') && !file_exists($cert)
                 ? 'revoked'
                 : 'failed';
-        });
+        }, 25, 'busy');
+        if ($revoked === 'busy') {
+            $this->send($this->input['chat'], '⏳ ' . $this->i18n('OpenVPN')
+                . ': PKI занят (контейнер инициализируется) — повторите через минуту');
+            return $this->menu('ovpn');
+        }
         if ($revoked === 'failed') {
             $this->send($this->input['chat'], '❌ ' . $this->i18n('error') . ": easyrsa revoke $user failed (check /logs/openvpn.log)");
             return $this->menu('ovpn');

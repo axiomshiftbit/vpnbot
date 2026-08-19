@@ -101,6 +101,78 @@ foreach ([
     );
 }
 
+// ── Падение обработчика не должно быть немым ───────────────────────────────
+// state забирается ДО вызова callback (иначе повтор webhook выполнит действие
+// дважды), prompt и ответ уже удалены — повторить нечего. Значит исключение
+// обязано превратиться в видимое сообщение, а не в «бот съел сообщение».
+class ReplyFailureTestBot extends Bot
+{
+    public array $sent = [];
+    public int $menus  = 0;
+
+    public function delete($chat, $message_id) {}
+    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
+    {
+        $this->sent[] = (string) $text;
+    }
+    public function menu($type = false, $arg = false, $return = false)
+    {
+        $this->menus++;
+    }
+    public function i18n(string $menu): string
+    {
+        return $menu;
+    }
+    public function boom($message)
+    {
+        throw new RuntimeException('easyrsa упал');
+    }
+    public function isReplyMenuEdit(): bool
+    {
+        return $this->replyMenuEdit;
+    }
+}
+
+$sid2 = 'replyfail' . bin2hex(random_bytes(6));
+$failBot = (new ReflectionClass(ReplyFailureTestBot::class))->newInstanceWithoutConstructor();
+$failBot->input = [
+    'from'       => $sid2,
+    'chat'       => 777,
+    'reply'      => 901,
+    'message_id' => 902,
+    'message'    => 'alice',
+];
+$failBot->stashReply(['result' => ['message_id' => 901]], [
+    'start_message' => 900,
+    'callback'      => 'boom',
+    'args'          => [],
+]);
+$errLog = sys_get_temp_dir() . '/replyfail_' . bin2hex(random_bytes(4)) . '.log';
+$prevErrLog = ini_get('error_log');
+ini_set('error_log', $errLog);          // ожидаемая запись не должна шуметь в выводе теста
+$failBot->reply();
+ini_set('error_log', (string) $prevErrLog);
+replyDedupeAssert(str_contains((string) @file_get_contents($errLog), 'reply(boom)'),
+    'падение обработчика пишется в журнал');
+@unlink($errLog);
+replyDedupeAssert(
+    (bool) array_filter($failBot->sent, fn($t) => str_contains($t, 'easyrsa упал')),
+    'падение обработчика показывается пользователю, а не теряется молча'
+);
+replyDedupeAssert($failBot->menus === 1, 'после ошибки меню перерисовывается, чтобы можно было повторить');
+replyDedupeAssert(!$failBot->isReplyMenuEdit(), 'флаг редактирования меню сброшен после исключения');
+
+// Перерисовка меню тем же текстом («message is not modified») обязана оставить
+// подтверждение: сообщение пользователя уже удалено, иначе он не видит НИЧЕГО.
+$botSource2 = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+replyDedupeAssert(str_contains($botSource2, "stripos((string) (\$r['description'] ?? ''), 'not modified')"),
+    'ответ Telegram «not modified» распознаётся');
+replyDedupeAssert(
+    (bool) preg_match('~replyMenuEdit && is_array\(\$r\) && empty\(\$r\[.ok.\]\)~', $botSource2),
+    'подтверждение шлётся только для пути ответа на промпт'
+);
+
+@unlink(sys_get_temp_dir() . '/sess_' . $sid2);
 @unlink(sys_get_temp_dir() . '/sess_' . $sid);
 
 if ($failed) {

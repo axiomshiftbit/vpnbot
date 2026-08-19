@@ -138,6 +138,33 @@ guardAssert(!array_filter($internal['routing']['rules'],
 guardAssert(($internal['routing']['rules'][1]['ip'] ?? null) === [Bot::DOCKER_NET],
     'для внутренних socks сразу после DNS остаётся общий block docker-сети');
 
+// ── Адрес microsocks берётся из compose ────────────────────────────────────
+// В override адресацию можно переназначить, и тогда захардкоженная константа
+// молча разъезжается с реальностью: правило перестаёт совпадать, а снаружи это
+// выглядит как «WARP отвалился» без единой строки в логах.
+guardAssert($bot->warpSocksIp() === Bot::WARP_SOCKS_IP,
+    'без /docker/compose используется константа-дефолт');
+// Без ext-yaml (хостовый CI) читаем секцию wp текстом: нужен ровно один
+// ipv4_address, и он обязан совпадать с константой.
+$compose = (string) file_get_contents(__DIR__ . '/../docker-compose.yml');
+$wpBlock = preg_split('~^    wp:$~m', $compose);
+$wpBlock = isset($wpBlock[1]) ? preg_split('~^    [a-z0-9_-]+:$~m', $wpBlock[1])[0] : '';
+preg_match('~ipv4_address:\s*([0-9.]+)~', $wpBlock, $mIp);
+guardAssert(($mIp[1] ?? '') . '/32' === Bot::WARP_SOCKS_IP,
+    'константа совпадает с адресом wp в docker-compose.yml: ' . ($mIp[1] ?? '—'));
+
+// Старая копия правила обязана сниматься даже после смены адреса — иначе она
+// осталась бы дублем впереди нового гейта.
+$stale = $mk(['vless-in']);
+$stale['routing']['rules'] = [[
+    'type' => 'field', 'inboundTag' => ['vless-in'], 'ip' => ['10.10.9.13/32'],
+    'port' => Bot::WARP_SOCKS_PORT, 'network' => 'tcp', 'outboundTag' => 'direct',
+]];
+$bot->ensureWgGuard($stale);
+guardAssert(!array_filter($stale['routing']['rules'],
+    static fn($r) => ($r['ip'] ?? null) === ['10.10.9.13/32']),
+    'правило WARP SOCKS со старым адресом снимается при пересборке гейта');
+
 if ($failed) {
     echo "audit_docker_guard_test FAILED ($failed)\n";
     exit(1);

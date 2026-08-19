@@ -360,6 +360,97 @@ foreach (['udp_payload_size = ', 'early_data = '] as $k) {
 }
 ttAssert(preg_match('~^listen_address = "0\.0\.0\.0:8443"~m', $vpn) === 1, 'listen_address совпадает с портом контейнера');
 
+// ── 5c. Фиксы аудита 2026-08-19 ────────────────────────────────────────────
+// Скрипт отзыва приезжает bind-mount'ом, а app/ обновляется независимо от
+// compose: пока контейнер не пересоздан, файла в нём нет. Без фолбэка кнопка
+// «удалить клиента» умирала молча — маркера нет, лог пуст.
+$delBody2 = substr($botSrc, strpos($botSrc, 'public function delOvpnUser('), 8000);
+ttAssert(strpos($delBody2, 'if [ -f /revoke_ovpn_client.sh ]; then') !== false,
+    'бот проверяет наличие revoke-скрипта в контейнере');
+ttAssert(strpos($delBody2, '__VPNBOT_REVOKE_NOSCRIPT__') !== false
+    && strpos($delBody2, 'easyrsa revoke') !== false,
+    'без скрипта отзыв идёт прежней inline-командой, а факт отката виден в журнале');
+ttAssert(strpos($delBody2, "}, 25, 'busy');") !== false,
+    'интерактивный отзыв не ждёт PKI-lock бесконечно');
+$addBody2 = substr($botSrc, strpos($botSrc, 'public function addovus('), 8000);
+ttAssert(strpos($addBody2, "}, 25, 'busy');") !== false,
+    'интерактивная выдача не ждёт PKI-lock бесконечно');
+ttAssert(preg_match('~public function withLock\(string \$name, callable \$fn, int \$timeout = 0~', $botSrc) === 1,
+    'withLock умеет ждать лок ограниченное время');
+
+// Точное восстановление: ядро снимка обязательно, служебные файлы — нет, и
+// отсутствие последних НЕ удаляет уже лежащие копии.
+$restoreRoot2 = $dir . '/openvpn-restore2';
+$restoreBot2  = new class ($restoreRoot2) extends Bot {
+    private string $root;
+    public function __construct(string $root)
+    {
+        $this->root = $root;
+    }
+    public function ovpnPaths()
+    {
+        return ['pki' => $this->root . '/pki'];
+    }
+};
+@mkdir($restoreRoot2 . '/pki/revoked/private_by_serial', 0755, true);
+@mkdir($restoreRoot2 . '/pki/private', 0755, true);
+file_put_contents($restoreRoot2 . '/pki/crl.pem', 'старый crl остаётся');
+file_put_contents($restoreRoot2 . '/pki/ta.key', 'старый ta остаётся');
+file_put_contents($restoreRoot2 . '/ipp.txt', 'alice,10.8.0.5');
+$minimal = array_map('base64_encode', [
+    'pki/ca.crt'             => 'ca',
+    'pki/issued/server.crt'  => 'server cert',
+    'pki/private/server.key' => 'server key',
+    'server.conf'            => 'server config',
+    'pki/revoked/private_by_serial/AB12.key' => 'revoked key',
+]);
+ttAssert($restoreBot2->importOvpnPki($minimal, true) === true,
+    'снимок без crl/ta/serial/index принимается — их регенерирует start_ovpn.sh');
+ttAssert(file_get_contents($restoreRoot2 . '/pki/crl.pem') === 'старый crl остаётся'
+    && file_get_contents($restoreRoot2 . '/pki/ta.key') === 'старый ta остаётся',
+    'служебные файлы, которых нет в снимке, не удаляются');
+ttAssert(file_get_contents($restoreRoot2 . '/ipp.txt') === 'alice,10.8.0.5',
+    'ipp.txt ведёт демон — восстановление его не трогает');
+ttAssert((fileperms($restoreRoot2 . '/pki/revoked/private_by_serial/AB12.key') & 0777) === 0600,
+    'приватный ключ отозванного клиента восстанавливается закрытым');
+ttAssert(glob($restoreRoot2 . '/.restore-*') === [],
+    'временный каталог восстановления не остаётся на диске');
+
+$restoreBot2->importOvpnPki(['pki/ca.crt' => base64_encode('ca')], true);
+ttAssert(str_contains($restoreBot2->ovpnRestoreError, 'pki/issued/server.crt')
+    && str_contains($restoreBot2->ovpnRestoreError, 'server.conf'),
+    'отказ называет конкретные недостающие файлы, а не «incomplete or invalid»');
+ttAssert(file_get_contents($restoreRoot2 . '/pki/ca.crt') === 'ca',
+    'отвергнутый снимок не трогает PKI');
+ttAssert(strpos($botSrc, "str_contains(\$this->ovpnRestoreError, 'ЧАСТИЧНО')") !== false,
+    'прерванный перенос отличается от отвергнутого снимка при восстановлении из бэкапа');
+
+// Экспорт исключает runtime-файлы демона.
+ttAssert(strpos($botSrc, "public const OVPN_RUNTIME_FILES = ['openvpn-status.log', 'ipp.txt']") !== false,
+    'openvpn-status.log и ipp.txt не попадают в снимок');
+
+// revoke_ovpn_client.sh: отсутствие active-файла — не конфликт.
+$revokeSrc = file_get_contents(__DIR__ . '/../scripts/revoke_ovpn_client.sh');
+ttAssert(strpos($revokeSrc, 'if [ -e "$revoke_dst" ] && [ -e "$revoke_src" ]; then') !== false,
+    'копия без оригинала не считается конфликтующим артефактом');
+ttAssert(strpos($revokeSrc, '[ ! -e "$revoke_dst_key" ] || [ ! -e "$revoke_key" ] || rm -f') !== false,
+    'единственный экземпляр revoked-ключа не удаляется');
+
+foreach (glob($restoreRoot2 . '/pki/*/*/*') ?: [] as $f) {
+    @unlink($f);
+}
+foreach (glob($restoreRoot2 . '/pki/*/*') ?: [] as $f) {
+    is_dir($f) ? @rmdir($f) : @unlink($f);
+}
+foreach (glob($restoreRoot2 . '/pki/*') ?: [] as $f) {
+    is_dir($f) ? @rmdir($f) : @unlink($f);
+}
+foreach (glob($restoreRoot2 . '/*') ?: [] as $f) {
+    is_dir($f) ? @rmdir($f) : @unlink($f);
+}
+@rmdir($restoreRoot2 . '/pki');
+@rmdir($restoreRoot2);
+
 foreach (glob($dir . '/config/trusttunnel/*') ?: [] as $f) {
     @unlink($f);
 }

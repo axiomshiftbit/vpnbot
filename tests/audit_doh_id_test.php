@@ -118,7 +118,7 @@ dohAssert(str_contains($mig, "\$c['clients']['persistent']"),
     'миграция переписывает и persistent-клиентов, а не только allowed_clients');
 dohAssert(str_contains($src, "'ids'                         => [\$this->dohClientId("),
     'adguardXrayClients() пишет производный id в ids, иначе миграцию тут же откатывало бы обратно');
-dohAssert(str_contains($mig, "\$legacyMap[implode(':', str_split(\$legacy, 2))]"),
+dohAssert(str_contains($mig, "implode(':', str_split(\$legacy, 2))"),
     'миграция узнаёт EUI-64, в который AdGuard переписал старый 16-hex id');
 dohAssert(str_contains($mig, '$next[] = $legacyMap[$v]'),
     'persistent-клиент переезжает со старого HMAC на prefixed id');
@@ -202,6 +202,47 @@ dohAssert(strpos((string) ($unit['access_log']['format'] ?? ''), '$request_line'
     'unit.json: $request_line (вместе с query-строкой) в лог не пишется');
 dohAssert(strpos((string) ($unit['access_log']['format'] ?? ''), '$uri') !== false,
     'unit.json: путь без аргументов в логе остаётся — иначе разбор логов ослепнет');
+
+// ── 6. Переходный период старого id: обе формы и срок жизни ────────────────
+// Какую из форм AdGuard держит в dns.allowed_clients — сырые 16 hex или
+// EUI-64, в который он их переписывает, — зависит от версии. Держим обе,
+// иначе «плавная» миграция рвёт DNS ровно тем клиентам, ради которых она есть.
+$compat = (new ReflectionClass(DohMigrationBot::class))->newInstanceWithoutConstructor();
+$compat->key      = $bot->key;
+$compat->xrayFake = ['inbounds' => [['settings' => ['clients' => [['id' => $uid2]]]]]];
+$compat->adguard  = sys_get_temp_dir() . '/doh_compat_' . bin2hex(random_bytes(4)) . '.yaml';
+yaml_emit_file($compat->adguard, ['dns' => ['allowed_clients' => [$mac2]]]);
+dohAssert($compat->migrateDohClientIds(), 'EUI-64 в allowlist требует миграции');
+$compatAllowed = yaml_parse_file($compat->adguard)['dns']['allowed_clients'] ?? [];
+dohAssert(in_array($old2, $compatAllowed, true) && in_array($mac2, $compatAllowed, true),
+    'в allowlist остаются обе формы старого id — сырая и EUI-64');
+dohAssert(in_array($new2, $compatAllowed, true), 'новый prefixed id добавлен');
+@unlink($compat->adguard);
+
+// Срок: alias объявлен временным, значит обязан исчезать сам.
+$src2 = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+dohAssert(str_contains($src2, 'public const DOH_LEGACY_TTL'), 'у переходного периода есть срок');
+dohAssert((bool) preg_match('~public function dohLegacyAllowed\(\): bool~', $src2),
+    'срок проверяется отдельным хелпером');
+dohAssert(str_contains($src2, '$keepLegacy = $this->dohLegacyAllowed();'),
+    'миграция спрашивает про срок, а не хранит alias вечно');
+dohAssert((bool) preg_match('~\(isset\(\$previous\[\$legacy\]\) \|\| isset\(\$previous\[\$legacyMac\]\)\) && \$keepLegacy~', $src2),
+    'ручная пересборка allowlist тоже уважает срок');
+
+$expired = (new ReflectionClass(DohMigrationBot::class))->newInstanceWithoutConstructor();
+$expired->key      = $bot->key;
+$expired->xrayFake = ['inbounds' => [['settings' => ['clients' => [['id' => $uid2]]]]]];
+$expired->adguard  = sys_get_temp_dir() . '/doh_expired_' . bin2hex(random_bytes(4)) . '.yaml';
+$expired->pac      = sys_get_temp_dir() . '/doh_pac_' . bin2hex(random_bytes(4)) . '.json';
+file_put_contents($expired->pac, json_encode(['dohlegacy' => time() - 10]));
+yaml_emit_file($expired->adguard, ['dns' => ['allowed_clients' => [$old2]]]);
+dohAssert($expired->migrateDohClientIds(), 'просроченный alias требует изменения конфига');
+$expiredAllowed = yaml_parse_file($expired->adguard)['dns']['allowed_clients'] ?? [];
+dohAssert(!in_array($old2, $expiredAllowed, true) && !in_array($mac2, $expiredAllowed, true),
+    'после дедлайна старый id перестаёт быть пропуском в DNS');
+dohAssert(in_array($new2, $expiredAllowed, true), 'новый id остаётся');
+@unlink($expired->adguard);
+@unlink($expired->pac);
 
 if ($failed) {
     echo "audit_doh_id_test FAILED ($failed)\n";

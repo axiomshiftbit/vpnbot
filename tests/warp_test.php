@@ -301,6 +301,25 @@ warpAssert(strpos($probe, 'sort -n | tail -1') !== false, 'fallback берёт �
 warpAssert(strpos($botSrc, "socks5h://wp:1080") !== false, 'статус в боте тоже читается через socks5h');
 warpAssert(!preg_match('~curl -m 1 -x socks5://wp:1080~', $botSrc), 'у проверки статуса больше не однесекундный таймаут');
 
+// ── 7. Egress-ACL прокси ───────────────────────────────────────────────────
+// Аудит 2026-08-19: вход в microsocks обязан быть открыт для xray (иначе у
+// клиента отваливается ВЕСЬ WARP-маршрут — гейт бота держит для этого точечное
+// правило), поэтому ограничение обязано стоять на ВЫХОДЕ: CONNECT в docker-сеть
+// проекта через прокси запрещён.
+warpAssert(strpos($startWp, 'WARP_SOCKS_OUT') !== false, 'у прокси есть цепочка ограничения исходящих');
+warpAssert(strpos($startWp, '-d "$net" -j REJECT') !== false || strpos($startWp, '-d "$net" -j DROP') !== false,
+    'исходящие в перечисленные сети отвергаются');
+warpAssert(strpos($startWp, 'WARP_SOCKS_DENY_OUT:-10.10.0.0/16') !== false,
+    'по умолчанию закрыта вся docker-сеть проекта');
+$estPos = strpos($startWp, 'ESTABLISHED,RELATED -j ACCEPT');
+$rejPos = strpos($startWp, '-d "$net" -j REJECT');
+warpAssert($estPos !== false && $rejPos !== false && $estPos < $rejPos,
+    'ответы на установленные сессии (ssh бота, ответы прокси) пропускаются РАНЬШЕ запрета');
+warpAssert(strpos($startWp, 'WARP_SOCKS_OUT -o lo -j ACCEPT') !== false,
+    'петля (healthcheck, warp_probe, docker-DNS) не задета');
+warpAssert(preg_match('~if iptables -A WARP_SOCKS_OUT -m conntrack.*\n.*-m state~', $startWp) === 1,
+    'без conntrack/state правило DENY не ставится вовсе — иначе оборвались бы ответные пакеты');
+
 if ($failed) {
     echo "$failed test(s) failed\n";
     exit(1);

@@ -893,6 +893,10 @@ $i = [
         'en' => 'error',
         'ru' => 'ошибка',
     ],
+    'try again'  => [
+        'en' => 'open the menu and try again',
+        'ru' => 'откройте меню и повторите',
+    ],
     'save'  => [
         'en' => 'save',
         'ru' => 'сохранить',
