@@ -1,4 +1,9 @@
 #!/bin/sh
+# Файлы PKI и PSK создаются редиректом, то есть с umask-правами (0644), а
+# chmod 600 идёт ПОСЛЕ — для ca.key через всю генерацию 3072-битного ключа и
+# выпуск сертификата. Каталог смонтирован на хост, окно измеряется секундами.
+# Явные chmod +x на хуках ниже от umask не страдают.
+umask 077
 # strongSwan (IKEv1 для L2TP/IPsec + IKEv2 EAP-MSCHAPv2) + xl2tpd entrypoint.
 # - Все персистентные артефакты (PSK, PKI, secrets, chap-secrets, swanctl.conf)
 #   живут на bind mount /config/ipsec — их правит бот из php-контейнера.
@@ -20,7 +25,14 @@ ssh-keygen -A >/dev/null 2>&1 || true
 CONF=/config/ipsec
 PKI=$CONF/pki
 LOG=/logs/ipsec.log
-INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
+INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
+# route (net-tools) может отсутствовать или ещё не видеть default (гонка на
+# старте сети контейнера) — берём дефолтный интерфейс через ip. Пустой
+# INTERFACE означал MASQUERADE, который не встал: туннель поднимается, клиенты
+# подключаются, наружу трафик не ходит — и ни строки в логе, потому что
+# `2>/dev/null || true` гасил и вывод, и код возврата.
+[ -z "$INTERFACE" ] && INTERFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$INTERFACE" ] || echo "WARN: default interface not detected — NAT rules will NOT be applied" >&2
 
 L2TP_SUBNET="${L2TPSUBNET:-10.9.1.0/24}"
 IKEV2_SUBNET="${IKEV2SUBNET:-10.9.2.0/24}"
@@ -62,7 +74,13 @@ PSK=$(cat "$CONF/psk" 2>/dev/null)
 # CA на 10 лет; клиенты получают ca.crt внутри профиля (.mobileconfig/.sswan)
 # от бота. Никакой зависимости от домена/Let's Encrypt.
 command -v pki >/dev/null 2>&1 || log "MISSING pki binary — strongswan package broken?"
-if [ ! -f "$PKI/ca.key" ] || [ ! -f "$PKI/ca.crt" ]; then
+# -s, а не -f: редирект `>` создаёт файл ДО запуска pki, поэтому при любой
+# ошибке генерации (или отсутствии бинаря, см. проверку выше) на диске
+# оставались два файла нулевой длины. С проверкой на существование блок больше
+# никогда не выполнялся, каждый старт бессмысленно выпускал server.crt из
+# пустого CA, и IKEv2 не поднимался вообще — лечилось только ручным rm.
+# С -s пустышки считаются отсутствующими и перегенерируются сами.
+if [ ! -s "$PKI/ca.key" ] || [ ! -s "$PKI/ca.crt" ]; then
     rm -f "$PKI/ca.key" "$PKI/ca.crt" "$PKI/server.key" "$PKI/server.crt"
     log "generate CA"
     pki --gen --type rsa --size 3072 --outform pem > "$PKI/ca.key" 2>>"$LOG" \
@@ -77,14 +95,14 @@ fi
 # При смене IP сервера серт перевыпускается автоматически (CA остаётся —
 # развёрнутые клиентские профили продолжают работать).
 SAN_OK=0
-if [ -f "$PKI/server.crt" ] && [ -f "$PKI/server.key" ] && [ -n "$IP" ]; then
+if [ -s "$PKI/server.crt" ] && [ -s "$PKI/server.key" ] && [ -n "$IP" ]; then
     if openssl x509 -in "$PKI/server.crt" -noout -text 2>/dev/null | grep -q "IP Address:$IP"; then
         if [ -z "$DOMAIN" ] || openssl x509 -in "$PKI/server.crt" -noout -text 2>/dev/null | grep -q "DNS:$DOMAIN"; then
             SAN_OK=1
         fi
     fi
 fi
-if [ "$SAN_OK" != "1" ] && [ -f "$PKI/ca.key" ] && [ -n "$IP" ]; then
+if [ "$SAN_OK" != "1" ] && [ -s "$PKI/ca.key" ] && [ -n "$IP" ]; then
     log "issue server cert (SAN: $IP${DOMAIN:+, $DOMAIN})"
     pki --gen --type rsa --size 3072 --outform pem > "$PKI/server.key" 2>>"$LOG" \
         || log "server key FAILED"

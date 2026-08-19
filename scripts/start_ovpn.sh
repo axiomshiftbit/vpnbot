@@ -18,7 +18,14 @@ cat /ssh/key.pub > /root/.ssh/authorized_keys 2>/dev/null || true
 ssh-keygen -A >/dev/null 2>&1 || true
 /usr/sbin/sshd -D -e "$@" &
 
-INTERFACE=$(route | grep '^default' | grep -o '[^ ]*$')
+INTERFACE=$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')
+# route (net-tools) может отсутствовать или ещё не видеть default (гонка на
+# старте сети контейнера) — берём дефолтный интерфейс через ip. Пустой
+# INTERFACE означал MASQUERADE, который не встал: туннель поднимается, клиенты
+# подключаются, наружу трафик не ходит — и ни строки в логе, потому что
+# `2>/dev/null || true` гасил и вывод, и код возврата.
+[ -z "$INTERFACE" ] && INTERFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$INTERFACE" ] || echo "WARN: default interface not detected — NAT rules will NOT be applied" >&2
 # Внутренний listen-порт openvpn ФИКСИРОВАН на 1194: и docker-override
 # (host:EXT -> ovpn:1194), и nginx upstream (`server ovpn:1194` в
 # upstream.conf, #ovpn-port stream-блок) целятся именно в 1194. OVPNPORT —
@@ -50,6 +57,15 @@ export EASYRSA_CRL_DAYS=3650
 mkdir -p "$PKI" /etc/openvpn/ccd /etc/openvpn/clients /logs
 : >> /logs/openvpn.log
 : >> /logs/openvpn-connections.log
+
+# Один inode с Bot::withOvpnPkiLock() в php-контейнере (/logs общий bind
+# mount). Без этого selfUpdate мог одновременно с revoke снять/восстановить
+# рваный snapshot: crt возвращался в issued/, а index.txt и CRL — уже нет.
+exec 8>/logs/.lock.ovpn-pki
+if ! flock 8; then
+    echo "FATAL: cannot lock OpenVPN PKI" >&2
+    exit 1
+fi
 
 # Hook для client-connect/disconnect: пишет UP/DOWN-события с CN и реальным
 # IP клиента в отдельный журнал /logs/openvpn-connections.log. Без script-
@@ -208,6 +224,9 @@ fi
 # набор правок обязан применяться и когда бот восстанавливает server.conf из
 # бэкапа (importOvpnPki), а контейнер при этом не пересоздаётся.
 sh /ovpn_migrate.sh "$SRV"
+
+# EasyRSA/PKI/server.conf больше не меняются; демон может стартовать без лока.
+flock -u 8
 
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true
 

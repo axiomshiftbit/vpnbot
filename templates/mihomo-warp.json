@@ -47,6 +47,9 @@
         "strict-route": true
     },
     "dns": {
+        "hosts": {
+            "~domain~": "~ip~"
+        },
         "enable": true,
         "prefer-h3": false,
         "ipv6": false,
@@ -105,7 +108,7 @@
         }
     ],
     "add-rule-providers": true,
-    "rule-providers": [],
+    "rule-providers": {},
     "rules": [
         {
             "type": "RULE-SET",

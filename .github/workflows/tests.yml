@@ -1,0 +1,60 @@
+# Прогон тестов и линтера на каждый push.
+#
+# Зачем отдельный workflow, а не job в images.yml: тот триггерится только на
+# правки dockerfile/**, .env и docker-compose.yml, то есть на изменения PHP не
+# запускается вовсе. А в tests/ полсотни файлов, каждый закрывает конкретную
+# закрытую регрессию (в шапке файла написано, какую), и до сих пор их не звал
+# никто: ни CI, ни makefile, ни readme. Правка ломала охрану, поставленную
+# полгода назад, и узнать об этом было неоткуда.
+#
+# PHP берём предустановленный на раннере, без сторонних setup-action: тестам
+# нужен только CLI. Расширений ssh2, yaml и intl на раннере нет — тесты это
+# учитывают и такие проверки пропускают (ровно так же они ведут себя на
+# dev-машине).
+
+name: tests
+
+on:
+  push:
+    branches: [dev, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Версия PHP
+        run: php -v
+
+      - name: Синтаксис
+        run: |
+          set -euo pipefail
+          for f in app/*.php app/panel/*.php tests/*.php; do
+            php -l "$f" > /dev/null
+          done
+          echo "php -l: чисто"
+
+      - name: Тесты
+        run: |
+          fail=0
+          for f in tests/*_test.php; do
+            if out=$(php "$f" 2>&1); then
+              echo "ok   $(basename "$f")"
+            else
+              fail=1
+              echo "FAIL $(basename "$f")"
+              echo "$out"
+            fi
+          done
+          exit $fail

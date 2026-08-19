@@ -84,6 +84,11 @@ hpAssert(file_get_contents($own) === $before, 'чужой пароль не пе
 $empty = "$dir/empty";
 touch($empty);
 hpAssert(hpBot($empty)->ensureHtpasswd() === true, 'пустой файл пересоздаётся');
+// clearstatcache обязателен: filesize() кеширует stat, а ноль туда положила
+// сама ensureHtpasswd() своей проверкой перед записью. На PHP 8.4 кеш этого
+// пути сбрасывается записью, на 8.3 (раннер CI) — нет, и тест видел прежний
+// ноль. Проверяем размер на диске, а не в кеше.
+clearstatcache(true, $empty);
 hpAssert(filesize($empty) > 0, 'после пересоздания файл не пуст');
 
 // --- 5: недоступный путь не роняет cron --------------------------------------

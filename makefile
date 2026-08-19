@@ -17,6 +17,18 @@ VER := $(shell git describe --tags --always 2>/dev/null || echo local)
 
 b:
 	docker compose build
+test: # прогон тестов (на ХОСТЕ, не внутри контейнера)
+	@# 42+ файла в tests/ закрывают конкретные регрессии, но их не звал никто:
+	@# ни CI, ни makefile, ни readme. Правка ломала охрану, закрытую полгода
+	@# назад, и об этом никто не узнавал.
+	@php -l app/bot.php > /dev/null
+	@for f in app/*.php app/panel/*.php tests/*.php; do \
+		php -l "$$f" > /dev/null || exit 1; \
+	done
+	@fail=0; for f in tests/*_test.php; do \
+		out=$$(php "$$f" 2>&1) || { echo "$$out"; fail=1; }; \
+	done; \
+	if [ $$fail -eq 0 ]; then echo "tests OK"; else echo "TESTS FAILED"; exit 1; fi
 preup:
 	bash ./update/update.sh &
 pull: # обновление образов из ghcr.io/axiomshiftbit
@@ -40,7 +52,9 @@ start: pull # запуск контейнеров
 	IP=$(IP) VER=$(VER) docker compose --env-file ./.env --env-file ./override.env up -d --force-recreate
 u: preup start
 d: # остановка контейнеров
-	-kill -9 $(shell cat ./update/update_pid) > /dev/null
+	# Через скрипт: PID из update_pid переиспользуются, и голый kill -9 после
+	# ребута уходил произвольному процессу. См. scripts/stop_update.sh.
+	-sh ./scripts/stop_update.sh ./update/update_pid
 	docker compose down --remove-orphans
 dv: # остановка контейнеров
 	docker compose down -v

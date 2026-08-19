@@ -1,0 +1,172 @@
+<?php
+
+// Гейт docker-сети (ensureWgGuard) после аудита 2026-08-18.
+//
+// До аудита правило `block 10.10.0.0/16` вешалось только на внутренние
+// socks-inbound'ы (wg-in/socks-in), то есть закрывало боковое движение
+// клиентам wg/awg и оставляло его открытым основному клиентскому inbound'у
+// (vless/vmess/trojan). Любой обладатель подписки доходил до control API unit
+// (10.10.0.7:8080, без аутентификации, приложения от root), до веб-панели и до
+// sshd контейнеров. Здесь проверяется, что гейт покрывает ВСЕ inbound'ы
+// конфига, кроме служебного 'api', но сохраняет единственный намеренный путь
+// внешнего клиента к WARP SOCKS 10.10.0.13:1080. Старые копии снимаются.
+
+require_once __DIR__ . '/../app/bot.php';
+
+$failed = 0;
+
+function guardAssert(bool $cond, string $msg): void
+{
+    global $failed;
+    if (!$cond) {
+        $failed++;
+        echo "FAIL: $msg\n";
+    }
+}
+
+$bot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+
+// Конфиг «как на боевом хосте»: клиентский vless, внутренний socks для wg,
+// служебный api и пользовательское правило маршрутизации.
+$mk = static fn(array $tags, array $rules = []) => [
+    'inbounds'  => array_map(static fn($t) => ['tag' => $t], $tags),
+    'outbounds' => [['protocol' => 'freedom', 'tag' => 'direct']],
+    'routing'   => ['rules' => $rules ?: [
+        ['type' => 'field', 'outboundTag' => 'warp', 'domain' => ['example.com']],
+    ]],
+];
+
+// ── 1. Клиентский inbound покрыт гейтом ─────────────────────────────────────
+$c = $mk(['vless_tls', 'wg-in', 'api']);
+$bot->ensureWgGuard($c);
+$r = $c['routing']['rules'];
+
+guardAssert(($r[0]['ip'] ?? null) === [Bot::INTERNAL_DNS] && ($r[0]['port'] ?? '') === '53'
+    && ($r[0]['outboundTag'] ?? '') === 'direct',
+    'первым идёт allow внутреннего DNS');
+guardAssert(($r[1]['ip'] ?? null) === [Bot::WARP_SOCKS_IP]
+    && ($r[1]['port'] ?? '') === Bot::WARP_SOCKS_PORT
+    && ($r[1]['network'] ?? '') === 'tcp'
+    && ($r[1]['outboundTag'] ?? '') === 'direct',
+    'вторым идёт точечный allow клиентского WARP SOCKS');
+guardAssert(($r[1]['inboundTag'] ?? null) === ['vless_tls'],
+    'WARP SOCKS разрешён только внешнему клиентскому inbound');
+guardAssert(($r[2]['ip'] ?? null) === [Bot::DOCKER_NET] && ($r[2]['outboundTag'] ?? '') === 'block',
+    'третьим — блок всей docker-сети');
+guardAssert(in_array('vless_tls', $r[2]['inboundTag'] ?? [], true),
+    'ГЛАВНОЕ: клиентский inbound vless_tls закрыт от docker-сети');
+guardAssert(in_array('wg-in', $r[2]['inboundTag'] ?? [], true),
+    'внутренний socks клиентов wg остался закрыт');
+guardAssert(!in_array('api', $r[2]['inboundTag'] ?? [], true),
+    'служебный api-inbound гейтом не трогается');
+guardAssert(($r[0]['inboundTag'] ?? null) === ($r[2]['inboundTag'] ?? null),
+    'allow и block навешаны на один и тот же набор тегов');
+guardAssert(($r[3]['domain'] ?? null) === ['example.com'],
+    'пользовательское правило сохранено и ушло вниз');
+guardAssert(in_array('block', array_column($c['outbounds'], 'tag'), true),
+    'blackhole-outbound добавлен: правило на несуществующий тег молча теряет смысл');
+
+// ── 2. Идемпотентность ──────────────────────────────────────────────────────
+$before = count($c['routing']['rules']);
+$bot->ensureWgGuard($c);
+guardAssert(count($c['routing']['rules']) === $before, 'повторный вызов не дублирует правила');
+guardAssert(count(array_filter($c['outbounds'], static fn($o) => ($o['tag'] ?? '') === 'block')) === 1,
+    'повторный вызов не дублирует outbound');
+
+// ── 3. Старая узкая копия гейта снимается ───────────────────────────────────
+// Ровно то, что лежит сейчас на боевых хостах: гейт только на wg-in.
+$legacy = $mk(['vless_tls', 'wg-in'], [
+    ['type' => 'field', 'inboundTag' => ['wg-in'], 'ip' => [Bot::INTERNAL_DNS],
+        'port' => '53', 'outboundTag' => 'direct'],
+    ['type' => 'field', 'inboundTag' => ['wg-in'], 'ip' => [Bot::DOCKER_NET],
+        'outboundTag' => 'block'],
+    ['type' => 'field', 'outboundTag' => 'warp', 'domain' => ['example.com']],
+]);
+$bot->ensureWgGuard($legacy);
+$guards = array_values(array_filter($legacy['routing']['rules'],
+    static fn($r) => in_array($r['ip'] ?? null,
+        [[Bot::DOCKER_NET], [Bot::INTERNAL_DNS], [Bot::WARP_SOCKS_IP]], true)));
+guardAssert(count($guards) === 3, 'старая узкая копия снята, а не оставлена дублем');
+guardAssert(in_array('vless_tls', $guards[2]['inboundTag'] ?? [], true),
+    'гейт перевыставлен на полный набор тегов');
+
+// ── 4. Гейт восстанавливается после xrayUpdateRules ─────────────────────────
+// Тот перезаписывает routing.rules целиком; гейт обязан снова оказаться первым.
+$c['routing']['rules'] = [['type' => 'field', 'outboundTag' => 'warp', 'ip' => ['1.1.1.1']]];
+$bot->ensureWgGuard($c);
+guardAssert(($c['routing']['rules'][0]['ip'] ?? null) === [Bot::INTERNAL_DNS],
+    'после перезаписи правил гейт снова впереди пользовательских');
+guardAssert(($c['routing']['rules'][1]['ip'] ?? null) === [Bot::WARP_SOCKS_IP],
+    'после перезаписи правил исключение WARP SOCKS восстановлено');
+
+// ── 5. Вырожденные конфиги ──────────────────────────────────────────────────
+$empty = $mk([]);
+$bot->ensureWgGuard($empty);
+guardAssert(count($empty['routing']['rules']) === 1,
+    'без inbound\'ов гейт не добавляется (правило на несуществующий тег бесполезно)');
+
+$onlyApi = $mk(['api']);
+$bot->ensureWgGuard($onlyApi);
+guardAssert(count($onlyApi['routing']['rules']) === 1,
+    'конфиг из одного служебного api-inbound гейта не получает');
+
+$noTag = $mk([]);
+$noTag['inbounds'] = [['protocol' => 'vless']]; // inbound без tag
+$bot->ensureWgGuard($noTag);
+guardAssert(count($noTag['routing']['rules']) === 1,
+    'безымянный inbound не порождает правило с пустым inboundTag');
+
+// ── 6. Чужие правила про ту же подсеть не съедаются ─────────────────────────
+// Снятие старых копий опознаёт гейт по полной сигнатуре (ip + outboundTag),
+// поэтому админское правило с другим назначением обязано уцелеть.
+$custom = $mk(['vless_tls'], [
+    ['type' => 'field', 'inboundTag' => ['vless_tls'], 'ip' => [Bot::DOCKER_NET], 'outboundTag' => 'warp'],
+]);
+$bot->ensureWgGuard($custom);
+guardAssert((bool) array_filter($custom['routing']['rules'],
+    static fn($r) => ($r['ip'] ?? null) === [Bot::DOCKER_NET] && ($r['outboundTag'] ?? '') === 'warp'),
+    'пользовательское правило про docker-сеть с другим outbound сохранено');
+
+// Внутренние socks-inbound'ы ведут обычный VPN-трафик к серверному outbound
+// warp и не должны получать прямой доступ к microsocks. Исключение существует
+// только ради warpSOCKS5 с detour через внешний VLESS.
+$internal = $mk(['wg-in', 'socks-in']);
+$bot->ensureWgGuard($internal);
+guardAssert(!array_filter($internal['routing']['rules'],
+    static fn($r) => ($r['ip'] ?? null) === [Bot::WARP_SOCKS_IP]),
+    'wg-in/socks-in не получают исключение WARP SOCKS');
+guardAssert(($internal['routing']['rules'][1]['ip'] ?? null) === [Bot::DOCKER_NET],
+    'для внутренних socks сразу после DNS остаётся общий block docker-сети');
+
+// ── Адрес microsocks берётся из compose ────────────────────────────────────
+// В override адресацию можно переназначить, и тогда захардкоженная константа
+// молча разъезжается с реальностью: правило перестаёт совпадать, а снаружи это
+// выглядит как «WARP отвалился» без единой строки в логах.
+guardAssert($bot->warpSocksIp() === Bot::WARP_SOCKS_IP,
+    'без /docker/compose используется константа-дефолт');
+// Без ext-yaml (хостовый CI) читаем секцию wp текстом: нужен ровно один
+// ipv4_address, и он обязан совпадать с константой.
+$compose = (string) file_get_contents(__DIR__ . '/../docker-compose.yml');
+$wpBlock = preg_split('~^    wp:$~m', $compose);
+$wpBlock = isset($wpBlock[1]) ? preg_split('~^    [a-z0-9_-]+:$~m', $wpBlock[1])[0] : '';
+preg_match('~ipv4_address:\s*([0-9.]+)~', $wpBlock, $mIp);
+guardAssert(($mIp[1] ?? '') . '/32' === Bot::WARP_SOCKS_IP,
+    'константа совпадает с адресом wp в docker-compose.yml: ' . ($mIp[1] ?? '—'));
+
+// Старая копия правила обязана сниматься даже после смены адреса — иначе она
+// осталась бы дублем впереди нового гейта.
+$stale = $mk(['vless-in']);
+$stale['routing']['rules'] = [[
+    'type' => 'field', 'inboundTag' => ['vless-in'], 'ip' => ['10.10.9.13/32'],
+    'port' => Bot::WARP_SOCKS_PORT, 'network' => 'tcp', 'outboundTag' => 'direct',
+]];
+$bot->ensureWgGuard($stale);
+guardAssert(!array_filter($stale['routing']['rules'],
+    static fn($r) => ($r['ip'] ?? null) === ['10.10.9.13/32']),
+    'правило WARP SOCKS со старым адресом снимается при пересборке гейта');
+
+if ($failed) {
+    echo "audit_docker_guard_test FAILED ($failed)\n";
+    exit(1);
+}
+echo "audit_docker_guard_test OK\n";

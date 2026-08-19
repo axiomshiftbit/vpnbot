@@ -1,12 +1,49 @@
-iptables -I FORWARD -p tcp -m ipp2p --bit -j DROP
-iptables -I FORWARD -p udp -m ipp2p --bit -j DROP
-iptables -I FORWARD -m string --algo bm --string "BitTorrent" -j DROP
-iptables -I FORWARD -m string --algo bm --string "BitTorrent protocol" -j DROP
-iptables -I FORWARD -m string --algo bm --string "peer_id=" -j DROP
-iptables -I FORWARD -m string --algo bm --string ".torrent" -j DROP
-iptables -I FORWARD -m string --algo bm --string "announce.php?passkey=" -j DROP
-iptables -I FORWARD -m string --algo bm --string "torrent" -j DROP
-iptables -I FORWARD -m string --algo bm --string "announce" -j DROP
-iptables -I FORWARD -m string --algo bm --string "info_hash" -j DROP
-iptables -I OUTPUT -p tcp -m ipp2p --bit -j DROP
-iptables -I OUTPUT -p udp -m ipp2p --bit -j DROP
+#!/bin/sh
+# Блокировка torrent-трафика на FORWARD/OUTPUT. Зовётся из start_wg.sh при
+# pac.blocktorrent=1 и из бота.
+#
+# Что изменилось после аудита 2026-08-18:
+#  - модуль ipp2p (xtables-addons) живёт на ХОСТЕ, и при обновлении ядра
+#    dkms-сборка может не пройти. Раньше правила просто не вставали, вывод
+#    уходил в никуда, а меню бота показывало «торренты заблокированы»;
+#  - правила `--string "torrent"` и `--string "announce"` дропали ЛЮБОЙ
+#    форвардимый пакет с этой подстрокой: ломался обычный HTTP (ссылка на
+#    torrent-трекер в теле страницы, слово announce в API) и любой plaintext.
+#    Плюс поиск по каждому пакету на FORWARD заметно грузит CPU при высоком
+#    PPS. Оставлены только сигнатуры самого протокола.
+LOG=/logs/block_torrent
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"
+}
+
+# -C перед -I: при повторном запуске (рестарт контейнера, повторное нажатие в
+# боте) правила не копятся.
+add() {
+    chain="$1"
+    shift
+    iptables -C "$chain" "$@" -j DROP 2>/dev/null && return 0
+    if ! iptables -I "$chain" "$@" -j DROP 2>>"$LOG"; then
+        log "FAILED: iptables -I $chain $* -j DROP"
+        return 1
+    fi
+    return 0
+}
+
+fails=0
+
+# Сигнатуры протокола BitTorrent: ipp2p (если модуль есть) плюс точные строки
+# handshake и запросов трекеру.
+add FORWARD -p tcp -m ipp2p --bit || fails=$((fails + 1))
+add FORWARD -p udp -m ipp2p --bit || fails=$((fails + 1))
+add OUTPUT  -p tcp -m ipp2p --bit || fails=$((fails + 1))
+add OUTPUT  -p udp -m ipp2p --bit || fails=$((fails + 1))
+if [ "$fails" -gt 0 ]; then
+    log "ipp2p rules not applied ($fails): модуль xtables-addons на хосте недоступен?"
+fi
+
+add FORWARD -m string --algo bm --string "BitTorrent protocol" || log "string rule failed: BitTorrent protocol"
+add FORWARD -m string --algo bm --string "peer_id=" || log "string rule failed: peer_id="
+add FORWARD -m string --algo bm --string "info_hash" || log "string rule failed: info_hash"
+add FORWARD -m string --algo bm --string ".torrent" || log "string rule failed: .torrent"
+add FORWARD -m string --algo bm --string "announce.php?passkey=" || log "string rule failed: announce.php"

@@ -1,6 +1,10 @@
+#!/bin/sh
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A
-exec /usr/sbin/sshd -D -e "$@" &
+# Без exec: `exec cmd &` порождает подоболочку, которую exec собой и
+# заменяет, то есть это обычный фоновый запуск, но читается как «заменить
+# текущий процесс» (то же пояснение есть в start_wp.sh).
+/usr/sbin/sshd -D -e "$@" &
 # Каталог с внешними .dat (ext:/extip: из routes → dat) — общий с php через /logs.
 # Задаём asset-путь ядру, иначе ext:geoip.dat:… не резолвится и xray не стартует.
 mkdir -p /logs/geodata
@@ -18,8 +22,16 @@ if [ "$(cat /logs/xray_core 2>/dev/null)" = fork ] && [ -x /usr/bin/xray-smux ];
 fi
 mkdir -p /usr/local/bin
 ln -sf "$bin" /usr/local/bin/xray
-uuid=$(cat /xray.json | jq -r '.inbounds[0].settings.clients[0].id // empty')
+uuid=$(jq -r '.inbounds[0].settings.clients[0].id // empty' /xray.json 2>/dev/null)
 if [ -n "$uuid" ]; then
-    xray run -config /xray.json > /dev/null 2>&1 &
+    # stderr ядра — в лог, а не в /dev/null: при битом xray.json причина старта
+    # не была видна нигде, а контейнер жил через `tail -f /dev/null` и выглядел
+    # здоровым.
+    xray run -config /xray.json >> /logs/xray_stdout 2>&1 &
+else
+    # Пустой uuid — это не «нечего запускать»: первый inbound без clients
+    # (dokodemo/fallback-раскладка) или ошибка jq на битом конфиге дают ровно
+    # то же значение, и ядро молча не запускалось вовсе.
+    echo "$(date '+%Y-%m-%d %H:%M:%S') start_xray: no client uuid in /xray.json — xray NOT started" >> /logs/xray_stdout
 fi
 tail -f /dev/null

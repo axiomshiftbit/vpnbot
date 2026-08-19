@@ -32,7 +32,11 @@ services:
             - ./config/upstream.conf:/etc/nginx/nginx.conf
             - ./config/deny:/etc/nginx/deny
             - ./scripts/start_upstream.sh:/start_upstream.sh
-            - ./ssh:/ssh
+            # Только ПУБЛИЧНЫЙ ключ — как у wg/wg1 ниже. Полный /ssh отдаёт
+            # приватный ключ, а он даёт root-SSH во все контейнеры сборки:
+            # дыра в любом сетевом демоне становилась компрометацией всего.
+            # Приватный ключ нужен только php и service (bot.php: ssh()).
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs/:/logs/
         ports:
@@ -60,9 +64,17 @@ services:
               required: false
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_upstream.sh"]
+        restart: unless-stopped
         networks:
             default:
                 ipv4_address: 10.10.0.10
+        # Потолки, а не резервирование: без них один разросшийся контейнер
+        # (xray под нагрузкой, AdGuard с большим querylog, зафоркавшийся демон)
+        # съедал память всего хоста, и OOM-killer выбирал жертву сам — обычно
+        # не виновника. На 1-2 ГБ VPS это укладывало всю сборку. Значения
+        # заведомо щедрые: срабатывают только на аномальном росте.
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     ng:
         image: ghcr.io/axiomshiftbit/vpnbot-ng:${VPNBOT_TAG:-latest}
@@ -79,8 +91,9 @@ services:
             - ./config/location.conf:/etc/nginx/location.conf
             - ./config/nginx_default.conf:/nginx_default.conf
             - ./scripts/start_ng.sh:/start_ng.sh
-            - ./certs/:/certs/
-            - ./ssh:/ssh
+            # :ro — в /certs пишет только certbot из php-контейнера.
+            - ./certs/:/certs/:ro
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs/:/logs/
             - ./app/webapp:/app
@@ -95,11 +108,14 @@ services:
               required: false
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_ng.sh"]
+        restart: unless-stopped
         networks:
             default:
                 ipv4_address: 10.10.0.2
             xray:
                 ipv4_address: 10.10.1.2
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
         depends_on:
             php:
@@ -121,8 +137,13 @@ services:
             dockerfile: dockerfile/php.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
+                DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.11.1}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.12.15}
+                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.12}
         ports:
-            - 127.0.0.1:8081:8080
+            # 127.0.0.1:8081:8080 убран: 8080 в этом контейнере — control API
+            # unit, у которого нет аутентификации. Он переведён на unix-сокет
+            # (start_php.sh), в репозитории на 8081 никто не ходил.
             # Веб-панель управления (app/panel): отдельный слушатель unit,
             # доступный только на loopback хоста. Снаружи её нет — ходить
             # через `ssh -L 8090:127.0.0.1:8090 <сервер>`.
@@ -144,7 +165,8 @@ services:
             - ./.git:/.git
             - ./singbox_windows:/singbox
             - ./docker-compose.override.yml:/docker/compose
-            - /var/run/docker.sock:/var/run/docker.sock:ro
+            # docker.sock убран: Docker API теперь только через сервис
+            # dockerproxy (см. его комментарий и config/dockerproxy.conf).
             - warp:/etc/warp
         environment:
             IP: ${IP}
@@ -156,7 +178,11 @@ services:
               required: false
         hostname: php
         container_name: php-${VER}
-        # restart: unless-stopped
+        # Бот и периодика обязаны подниматься сами: упавший php означал молчание
+        # бота до ручного `make r`, а единственной страховкой был @reboot в cron.
+        # `docker compose down` политику не обходит — остановка руками
+        # по-прежнему останавливает.
+        restart: unless-stopped
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_php.sh"]
         working_dir: /app
@@ -165,6 +191,8 @@ services:
                 ipv4_address: 10.10.0.7
         extra_hosts:
             - "host.docker.internal:host-gateway"
+        mem_limit: 1g
+        pids_limit: 512
         logging: *default-logging
         healthcheck:
             test: ["CMD", "/bin/sh", "/check_file.sh"]
@@ -177,6 +205,9 @@ services:
             dockerfile: dockerfile/php.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
+                DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.11.1}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.12.15}
+                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.12}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/php.ini:/etc/php84/php.ini
@@ -190,7 +221,6 @@ services:
             - ./.git:/.git
             - ./scripts/start_service.sh:/start_service.sh
             - ./docker-compose.override.yml:/docker/compose
-            - /var/run/docker.sock:/var/run/docker.sock:ro
         environment:
             IP: ${IP}
             VER: ${VER}
@@ -201,13 +231,19 @@ services:
               required: false
         hostname: service
         container_name: service-${VER}
-        # restart: unless-stopped
+        # Бот и периодика обязаны подниматься сами: упавший php означал молчание
+        # бота до ручного `make r`, а единственной страховкой был @reboot в cron.
+        # `docker compose down` политику не обходит — остановка руками
+        # по-прежнему останавливает.
+        restart: unless-stopped
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_service.sh"]
         working_dir: /app
         networks:
             default:
                 ipv4_address: 10.10.0.15
+        mem_limit: 1g
+        pids_limit: 512
         logging: *default-logging
         depends_on:
             - up
@@ -225,6 +261,43 @@ services:
             - hy
             - tt
             - ovpn
+            # ipsec, telemt и wp тоже: service.php при старте ходит в контейнеры
+            # по ssh (dnsttStart, restartHysteria, restartTt, setUpstream*,
+            # xrayUpdateRules), и без порядка старта задача могла отработать
+            # раньше, чем внутри поднимется sshd — молча и без следа.
+            - ipsec
+            - telemt
+            - wp
+    # Брокер Docker API. Сокет держит ОН, а php и service ходят к нему по HTTP
+    # с allowlist'ом по методу и пути (config/dockerproxy.conf) — раньше сокет
+    # был примонтирован прямо в php и service, и суффикс ":ro" не ограничивал
+    # ни одной операции API: оттуда делался POST /containers/create, то есть
+    # root на хосте. Отдельной сборки нет намеренно: нужен только nginx, а
+    # образ ng уже собирается, и матрица сервисов в CI перечислена руками.
+    dockerproxy:
+        image: ghcr.io/axiomshiftbit/vpnbot-ng:${VPNBOT_TAG:-latest}
+        volumes:
+            - ./config/dockerproxy.conf:/etc/nginx/dockerproxy.conf:ro
+            - ./logs/:/logs/
+            # Без ":ro" сознательно: на операции Docker API он всё равно не
+            # влияет, а надпись создавала ложное ощущение ограничения.
+            # Ограничивает здесь nginx выше по стеку.
+            - /var/run/docker.sock:/var/run/docker.sock
+        hostname: dockerproxy
+        container_name: dockerproxy-${VER}
+        env_file:
+            - path: ./.env
+              required: true # default
+            - path: ./override.env
+              required: false
+        stop_grace_period: 1s
+        command: ["nginx", "-c", "/etc/nginx/dockerproxy.conf", "-g", "daemon off;"]
+        networks:
+            default:
+                ipv4_address: 10.10.0.8
+        mem_limit: 512m
+        pids_limit: 512
+        logging: *default-logging
     wg:
         image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-latest}
         build:
@@ -274,6 +347,8 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.4
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     wg1:
         image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-latest}
@@ -318,6 +393,8 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.14
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     ad:
         image: ghcr.io/axiomshiftbit/vpnbot-ad:${VPNBOT_TAG:-latest}
@@ -333,10 +410,15 @@ services:
             - type: volume
               target: /opt/adguardhome/work
               source: adguard
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
+            # /config остаётся на ЗАПИСЬ умышленно: AdGuardHome сам
+            # переписывает свой AdGuardHome.yaml (правки через веб-панель,
+            # миграция схемы при обновлении версии), с :ro он падал бы на
+            # старте. Отдельным файловым mount'ом это не лечится: AGH пишет
+            # через tmp+rename, а файловый bind-mount прибит к иноду.
             - ./config/:/config/
-            - ./certs/:/certs/
+            - ./certs/:/certs/:ro
             - ./logs/:/logs/
             - ./scripts/start_ad.sh:/start_ad.sh
         hostname: adguard
@@ -349,13 +431,18 @@ services:
               required: true # default
             - path: ./override.env
               required: false
-        stop_grace_period: 1s
+        # 10s, а не 1s: AdGuardHome дописывает querylog и stats в volume, а через секунду после
+        # SIGTERM прилетает SIGKILL — и это на КАЖДОМ `make r`,
+        # который делает --force-recreate.
+        stop_grace_period: 10s
         networks:
             default:
                 ipv4_address: 10.10.0.5
         cap_add:
             - NET_ADMIN
         entrypoint: ["/bin/sh", "/start_ad.sh"]
+        mem_limit: 1g
+        pids_limit: 512
         logging: *default-logging
     telemt:
         image: ghcr.io/axiomshiftbit/vpnbot-telemt:${VPNBOT_TAG:-latest}
@@ -366,7 +453,7 @@ services:
                 TELEMT_VERSION: ${TELEMT_VERSION:-3.4.25}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/telemt:/telemt
             - ./scripts/start_telemt.sh:/start_telemt.sh
@@ -386,6 +473,8 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.20
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     xr:
         image: ghcr.io/axiomshiftbit/vpnbot-xr:${VPNBOT_TAG:-latest}
@@ -397,9 +486,13 @@ services:
                 XRAY_FORK_VERSION: ${XRAY_FORK_VERSION:-}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./config/xray.json:/xray.json
+            # :ro — start_xray.sh только читает конфиг (cat + xray run -config),
+            # пишет его исключительно бот из php-контейнера. Без :ro
+            # компрометация ядра позволяла переписать собственный конфиг, и
+            # правка пережила бы рестарт.
+            - ./config/xray.json:/xray.json:ro
             - ./scripts/start_xray.sh:/start_xray.sh
             - ./logs:/logs
         hostname: xray
@@ -419,6 +512,8 @@ services:
                 ipv4_address: 10.10.0.9
             xray:
                 ipv4_address: 10.10.1.9
+        mem_limit: 1g
+        pids_limit: 512
         logging: *default-logging
     oc:
         image: ghcr.io/axiomshiftbit/vpnbot-oc:${VPNBOT_TAG:-latest}
@@ -429,10 +524,15 @@ services:
                 OCSERV_VERSION: ${OCSERV_VERSION:-1.5.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./config:/etc/ocserv
-            - ./certs:/certs
+            # :ro — это не «конфиг ocserv», а весь каталог состояния сборки:
+            # xray.json, clients*.json, wg0.conf, unit.json, ipsec/ (PSK и ключи
+            # CA), Caddyfile. ocserv читает отсюда ocserv.conf и ocserv.passwd,
+            # а пишет только в /var/run (socket-file, pid-file); passwd ему
+            # готовит бот со стороны php-контейнера.
+            - ./config:/etc/ocserv:ro
+            - ./certs:/certs:ro
             - ./logs:/logs
             - ./scripts/start_oc.sh:/start_oc.sh
         hostname: ocserv
@@ -454,6 +554,8 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.11
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     np:
         image: ghcr.io/axiomshiftbit/vpnbot-np:${VPNBOT_TAG:-latest}
@@ -469,12 +571,12 @@ services:
                 FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.2-naive}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             # :ro — caddy только читает /config/Caddyfile (пишет его бот из
             # php-контейнера), свои данные держит в /root/.local/share/caddy.
             - ./config:/config:ro
-            - ./certs:/certs
+            - ./certs:/certs:ro
             # Нужен для лога caddy (/logs/caddy): его пишет и start_np.sh, и
             # сам caddy блоком `log` из Caddyfile. Без монтирования лог оседал
             # бы в эфемерной ФС контейнера и пропадал при recreate.
@@ -492,11 +594,15 @@ services:
               required: false
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_np.sh"]
-        cap_add:
-            - NET_ADMIN
+        # cap_add: NET_ADMIN убран (аудит 2026-08-18): start_np.sh не трогает ни
+        # ip, ни iptables, ни tc, а caddy биндит 443 от root. Привилегия
+        # добавлялась ПОВЕРХ дефолтного набора и при компрометации caddy давала
+        # перенастройку сети контейнера.
         networks:
             default:
                 ipv4_address: 10.10.0.12
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     wp:
         image: ghcr.io/axiomshiftbit/vpnbot-wg:${VPNBOT_TAG:-latest}
@@ -516,7 +622,7 @@ services:
             - /dev/net/tun:/dev/net/tun
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             # :ro — start_wp.sh только читает /config/pac.json.
             - ./config:/config:ro
@@ -551,6 +657,8 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.13
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     proxy:
         image: ghcr.io/axiomshiftbit/vpnbot-ss:${VPNBOT_TAG:-latest}
@@ -561,7 +669,7 @@ services:
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/sslocal.json:/config.json
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./scripts/start_proxy.sh:/start_proxy.sh
         hostname: proxy
@@ -581,6 +689,8 @@ services:
               required: false
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_proxy.sh"]
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     ss:
         image: ghcr.io/axiomshiftbit/vpnbot-ss:${VPNBOT_TAG:-latest}
@@ -602,7 +712,7 @@ services:
             # рабочий /config.json смонтирован отдельным файлом выше.
             - ./config:/config:ro
             - ./certs:/certs:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./scripts/start_ss.sh:/start_ss.sh
             - ./logs/:/logs/
@@ -627,6 +737,8 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.6
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     dnstt:
         image: ghcr.io/axiomshiftbit/vpnbot-dnstt:${VPNBOT_TAG:-latest}
@@ -637,7 +749,7 @@ services:
                 DNSTT_REF: ${DNSTT_REF:-0c5c52a57d899c05428c116898941761a2ed83c2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./logs:/logs
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/dnstt:/dnstt
@@ -657,6 +769,8 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.16
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     ovpn:
         image: ghcr.io/axiomshiftbit/vpnbot-ovpn:${VPNBOT_TAG:-latest}
@@ -668,10 +782,11 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/openvpn:/etc/openvpn
             - ./scripts/start_ovpn.sh:/start_ovpn.sh
+            - ./scripts/revoke_ovpn_client.sh:/revoke_ovpn_client.sh:ro
             # Миграции server.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ovpn_migrate.sh:/ovpn_migrate.sh
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs
         hostname: openvpn
@@ -692,11 +807,16 @@ services:
             - NET_ADMIN
         devices:
             - /dev/net/tun:/dev/net/tun
-        stop_grace_period: 1s
+        # 10s, а не 1s: openvpn пишет status-файл и ccd, а через секунду после
+        # SIGTERM прилетает SIGKILL — и это на КАЖДОМ `make r`,
+        # который делает --force-recreate.
+        stop_grace_period: 10s
         command: ["/bin/sh", "/start_ovpn.sh"]
         networks:
             default:
                 ipv4_address: 10.10.0.19
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     ipsec:
         image: ghcr.io/axiomshiftbit/vpnbot-ipsec:${VPNBOT_TAG:-latest}
@@ -711,7 +831,7 @@ services:
             # Миграции swanctl.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ipsec_migrate.sh:/ipsec_migrate.sh
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs
         hostname: ipsec
@@ -742,11 +862,16 @@ services:
         # modprobe ppp_generic, и compose тогда не поднимет контейнер вовсе.
         # start_ipsec.sh делает mknod сам (CAP_MKNOD есть по умолчанию).
         # Для L2TP на хосте должен быть загружен модуль l2tp_ppp (см. nft-конфиг).
-        stop_grace_period: 1s
+        # 10s, а не 1s: strongswan сбрасывает состояние SA, а через секунду после
+        # SIGTERM прилетает SIGKILL — и это на КАЖДОМ `make r`,
+        # который делает --force-recreate.
+        stop_grace_period: 10s
         command: ["/bin/sh", "/start_ipsec.sh"]
         networks:
             default:
                 ipv4_address: 10.10.0.21
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     tt:
         image: ghcr.io/axiomshiftbit/vpnbot-tt:${VPNBOT_TAG:-latest}
@@ -756,7 +881,7 @@ services:
                 TT_REF: ${TT_REF:-master}
         volumes:
             - ./config/.profile:/root/.bashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/trusttunnel:/trusttunnel_endpoint
             - ./certs:/certs:ro
@@ -780,6 +905,8 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.18
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging
     hy:
         image: ghcr.io/axiomshiftbit/vpnbot-hysteria:${VPNBOT_TAG:-latest}
@@ -791,9 +918,9 @@ services:
                 HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.12.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./ssh:/ssh
+            - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
-            - ./certs:/certs
+            - ./certs:/certs:ro
             - ./logs:/logs
             # :ro — hysteria только читает /config/hysteria.yaml (пишет его бот).
             - ./config:/config:ro
@@ -813,4 +940,6 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.17
+        mem_limit: 512m
+        pids_limit: 512
         logging: *default-logging

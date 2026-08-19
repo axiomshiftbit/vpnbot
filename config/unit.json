@@ -33,5 +33,8 @@
 			}
 		}
 	},
-	"access_log": "/logs/unit_access"
+	"access_log": {
+		"path": "/logs/unit_access",
+		"format": "$remote_addr - - [$time_local] \"$method $uri\" $status $body_bytes_sent"
+	}
 }

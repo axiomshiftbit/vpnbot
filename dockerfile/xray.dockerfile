@@ -60,7 +60,7 @@ RUN fetch_xray() { \
           && chmod +x "$dest" \
           && rm -rf /tmp/xr; \
     }; \
-    apk add openssh openssl jq curl \
+    apk add --no-cache openssh openssl jq curl \
     && mkdir /root/.ssh \
     && fetch_xray XTLS/Xray-core       "$XRAY_VERSION"      /usr/bin/xray \
     && fetch_xray Jolymmiles/Xray-core "$XRAY_FORK_VERSION" /usr/bin/xray-smux \

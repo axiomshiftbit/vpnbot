@@ -6,10 +6,27 @@ REPO_URL="https://github.com/axiomshiftbit/vpnbot.git"
 INSTALL_DIR="/root/vpnbot"
 ARCHIVE_NAME="vpnbot.zip"
 
-KEY="${1:?usage: sudo bash init.sh <TG_BOT_KEY> [BRANCH]}"
+# Ключ бота предпочтительно передавать окружением: позиционный аргумент виден
+# в `ps` ВСЕМ процессам хоста на всё время работы скрипта и остаётся в
+# ~/.bash_history root'а. Форма с аргументом сохранена для совместимости с уже
+# опубликованными командами установки, но предупреждает.
 # Стабильный релиз живёт в master, разработка — в dev. Поддерживаются только
 # эти две ветки — и для установки из git, и для установки из архива.
-BRANCH="${2:-master}"
+KEY="${VPNBOT_KEY:-}"
+if [ -n "$KEY" ]; then
+    BRANCH="${1:-master}"
+else
+    KEY="${1:-}"
+    BRANCH="${2:-master}"
+    if [ -n "$KEY" ]; then
+        echo "WARN: ключ бота передан аргументом — он виден в ps и остаётся в history." >&2
+        echo "      Предпочтительно:  VPNBOT_KEY=<key> bash init.sh [BRANCH]" >&2
+    fi
+fi
+if [ -z "$KEY" ]; then
+    echo "usage: sudo VPNBOT_KEY=<TG_BOT_KEY> bash init.sh [BRANCH]" >&2
+    exit 1
+fi
 
 case "$BRANCH" in
     master|dev) ;;
@@ -26,17 +43,35 @@ fi
 
 # Репозиторий приватный: установка из git и последующие обновления (update.sh
 # делает git fetch/pull) требуют GitHub-токена с read-доступом к axiomshiftbit/vpnbot.
-# Токен передаётся через переменную окружения GH_TOKEN (или VPNBOT_TOKEN) и
-# нигде не логируется. При установке из архива токен не нужен.
+# Токен передаётся через переменную окружения GH_TOKEN (или VPNBOT_TOKEN).
+# При установке из архива токен не нужен.
 TOKEN="${GH_TOKEN:-${VPNBOT_TOKEN:-}}"
 
-repo_clone_url() {
+# Токен НЕ вшивается в URL origin. Раньше origin выглядел как
+# https://x-access-token:<pat>@github.com/... — и это значило: PAT в открытом
+# виде навсегда в /root/vpnbot/.git/config (его показывает любой `git remote -v`
+# и любой бэкап каталога), PAT в argv на время clone/fetch/pull (виден в `ps`
+# всем процессам хоста), PAT в сообщениях об ошибках git.
+# Вместо этого — стандартный credential.helper store с файлом 0600 вне репозитория:
+# origin остаётся чистым, а update.sh продолжает тянуть обновления без ввода.
+CRED_FILE="/root/.vpnbot-git-credentials"
+
+setup_git_credentials() {
+    [ -n "$TOKEN" ] || return 0
+    ( umask 077; printf 'https://x-access-token:%s@github.com\n' "$TOKEN" > "$CRED_FILE" )
+    chmod 600 "$CRED_FILE"
+}
+
+git_cred_opt() {
     if [ -n "$TOKEN" ]; then
-        # x-access-token:<pat> — стандартная схема https-аутентификации GitHub.
-        printf 'https://x-access-token:%s@github.com/axiomshiftbit/vpnbot.git' "$TOKEN"
+        printf 'credential.helper=store --file=%s' "$CRED_FILE"
     else
-        printf '%s' "$REPO_URL"
+        printf 'credential.helper='
     fi
+}
+
+repo_clone_url() {
+    printf '%s' "$REPO_URL"
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,10 +119,41 @@ else
     echo "WARN: kernel module l2tp_ppp unavailable — L2TP won't work; IKEv2 still fine" >&2
 fi
 
+# Docker ставим из официального apt-репозитория с проверкой ключа, а не
+# `curl https://get.docker.com | sh`. Тот скрипт исполнялся root'ом без сверки
+# подписи или контрольной суммы (-f защищает только от HTTP-ошибок), то есть
+# компрометация домена, MITM с доверенным CA или подмена DNS давали мгновенный
+# root-RCE на каждой новой инсталляции. Установка и так рассчитана на
+# Debian/Ubuntu — выше безусловный apt.
 if ! command -v docker >/dev/null 2>&1; then
-    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-    sh /tmp/get-docker.sh
-    rm -f /tmp/get-docker.sh
+    # Отпечаток официального ключа Docker. Сверяем ЯВНО: без этого «ключ из
+    # интернета» проверяет сам себя и смысла в подписи нет.
+    DOCKER_GPG_FPR='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
+    install -m 0755 -d /etc/apt/keyrings
+    distro_id="$(. /etc/os-release && echo "$ID")"
+    distro_codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")"
+    case "$distro_id" in
+        ubuntu|debian) ;;
+        *)
+            echo "WARN: неизвестный дистрибутив '$distro_id' — ставим docker из репозитория debian" >&2
+            distro_id=debian
+            ;;
+    esac
+    curl -fsSL "https://download.docker.com/linux/$distro_id/gpg" -o /tmp/docker.asc
+    gpg --dearmor < /tmp/docker.asc > /etc/apt/keyrings/docker.gpg
+    got_fpr="$(gpg --show-keys --with-colons --fingerprint /tmp/docker.asc \
+        | awk -F: '/^fpr:/ {print $10; exit}')"
+    rm -f /tmp/docker.asc
+    if [ "$got_fpr" != "$DOCKER_GPG_FPR" ]; then
+        echo "FATAL: отпечаток ключа docker не совпал: $got_fpr" >&2
+        rm -f /etc/apt/keyrings/docker.gpg
+        exit 1
+    fi
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$distro_id $distro_codename stable" \
+        > /etc/apt/sources.list.d/docker.list
+    apt update
+    apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 
 install_from_archive() {
@@ -140,10 +206,15 @@ install_from_git() {
         echo "or place $ARCHIVE_NAME next to this script for offline archive install" >&2
         exit 1
     fi
+    setup_git_credentials
     if [ -d "$INSTALL_DIR/.git" ]; then
         echo "repo already exists at $INSTALL_DIR, pulling latest..."
-        # обновляем origin токенизированным URL, чтобы fetch/pull прошли по приватному репо
+        # Чистый origin + credential.helper в конфиге репозитория. set-url здесь
+        # ещё и ЛЕЧИТ установки, где в origin остался вшитый PAT.
         git -C "$INSTALL_DIR" remote set-url origin "$(repo_clone_url)"
+        if [ -n "$TOKEN" ]; then
+            git -C "$INSTALL_DIR" config credential.helper "store --file=$CRED_FILE"
+        fi
         git -C "$INSTALL_DIR" fetch origin "$BRANCH"
         git -C "$INSTALL_DIR" checkout "$BRANCH"
         git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
@@ -152,8 +223,13 @@ install_from_git() {
         echo "place $ARCHIVE_NAME next to this script for archive-mode update, or remove $INSTALL_DIR" >&2
         exit 1
     else
-        # origin сохранит токенизированный URL — update.sh сможет тянуть обновления приватного репо
-        git clone --branch "$BRANCH" "$(repo_clone_url)" "$INSTALL_DIR"
+        # -c ...=store --file=… в argv — это путь, а не секрет; сам токен лежит
+        # в файле 0600. После клона тот же helper прописывается в конфиг репо,
+        # чтобы update.sh тянул обновления приватного репозитория без ввода.
+        git -c "$(git_cred_opt)" clone --branch "$BRANCH" "$(repo_clone_url)" "$INSTALL_DIR"
+        if [ -n "$TOKEN" ]; then
+            git -C "$INSTALL_DIR" config credential.helper "store --file=$CRED_FILE"
+        fi
     fi
 }
 

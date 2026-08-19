@@ -108,10 +108,14 @@ onAssert(onBot('{"users":[{"ips":[{"ip":"1.2.3.4"}]}]}')->xrayOnlineIps() === []
 onAssert(onBot($live, true)->xrayOnlineIps() === null, 'отказ ssh — null (прежние показания не трогаем)');
 
 // --- 3: онлайн без access-лога -----------------------------------------------
-// В тестовом окружении /logs/xray не существует — это и есть случай
-// loglevel=none. Раньше trackOnline() на нём выходил сразу и возвращал пусто.
-onAssert(!is_file('/logs/xray'), 'предпосылка теста: access-лога нет');
+// Случай loglevel=none: файла лога нет вовсе. Раньше trackOnline() на нём
+// выходил сразу и возвращал пусто.
+//
+// Путь подменяем, а не проверяем отсутствие боевого: внутри контейнера
+// /logs/xray есть всегда, и тест «падал» там не из-за регрессии в коде.
 $b    = onBot($live);
+$b->xrayLog = sys_get_temp_dir() . '/no_such_xray_log_' . getmypid();
+onAssert(!is_file($b->xrayLog), 'предпосылка теста: access-лога нет');
 $seen = $b->trackOnline();
 onAssert(isset($seen['user1']['ips']['203.0.113.7']), 'клиент онлайн по данным ядра, без строки в логе');
 onAssert(abs(($seen['user1']['ts'] ?? 0) - time()) <= 2,

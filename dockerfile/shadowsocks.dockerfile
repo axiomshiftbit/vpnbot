@@ -16,7 +16,7 @@ ARG SIMPLE_TLS_VERSION=v0.8.0
 # Хелпер: URL ассета релиза по тегу (или latest при пустом теге).
 # grep/cut оставлены как были — jq в этот слой ещё не установлен.
 RUN set -eux; \
-    apk add openssh git xz jq unzip; \
+    apk add --no-cache openssh git xz jq unzip; \
     mkdir /root/.ssh; \
     asset() { \
         repo="$1"; ver="$2"; pat="$3"; \
@@ -43,5 +43,10 @@ RUN set -eux; \
     ssserver --version; \
     v2ray-plugin -version | head -1; \
     ck-server -v; \
-    simple-tls -v
+    simple-tls -v; \
+    # git/xz/unzip нужны только распаковке выше — в рантайме их не зовёт ни
+    # start_ss.sh, ни бот (там из этого списка живёт только jq). Сборочные
+    # утилиты в рантайм-образе — лишняя поверхность у контейнера, который
+    # терминирует недоверенный клиентский трафик.
+    apk del git xz unzip
 ENV ENV="/root/.ashrc"

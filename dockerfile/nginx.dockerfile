@@ -94,7 +94,7 @@ FROM $image
 # nginx-mod-stream) в этом образе ВЕРНЁТ пакетные 1.28.3 поверх — молча, без
 # ошибки сборки. Сейчас ни один слой этого не делает; если понадобится —
 # ставить пакет ДО COPY и не трогать apk после.
-RUN apk add nginx-mod-stream openssh \
+RUN apk add --no-cache nginx-mod-stream openssh \
     && mkdir /root/.ssh \
     && mkdir /var/cache/nginx
 COPY --from=build /out/nginx /usr/sbin/nginx

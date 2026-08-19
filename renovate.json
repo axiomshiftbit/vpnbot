@@ -4,6 +4,7 @@
   "timezone": "Europe/Samara",
   "schedule": ["before 6am on monday"],
   "prConcurrentLimit": 3,
+  "pinDigests": true,
   "labels": ["upstream"],
   "baseBranches": ["dev"],
   "customManagers": [

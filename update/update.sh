@@ -2,25 +2,44 @@
 pwd=$(pwd)
 TELEGRAM_API=$(grep -m1 '^TELEGRAM_API=' "$pwd/.env" 2>/dev/null | cut -d'=' -f2-)
 TELEGRAM_API=${TELEGRAM_API:-api.telegram.org}
-process_name="$pwd/update/update.sh"
-current_pid=$$
-pids=$(pgrep -f "$process_name")
-for pid in $pids; do
-    if [ "$pid" -ne "$current_pid" ]; then
-        kill -9 "$pid"
+# Взаимное исключение через flock, а не через «убить всё похожее».
+# Было: pgrep -f "$pwd/update/update.sh" + kill -9. Это матчило ЛЮБУЮ командную
+# строку с этой подстрокой — `tail -f …/update.sh`, `vim …/update.sh`,
+# `grep … update.sh` — и убивало их. Хуже: kill -9 прилетал работающему
+# экземпляру в любой момент, в том числе посреди `git reset --hard` или
+# `docker compose down`, оставляя дерево и контейнеры в промежуточном
+# состоянии, а update_pid — указывающим на труп.
+#
+# -w 10, а не -n: в конце цикла скрипт перезапускает сам себя
+# (`bash update.sh &` + exit), и ребёнок обязан дождаться, пока родитель
+# отпустит лок. Настоящий второй экземпляр столько не ждёт и просто выходит.
+# Если flock в системе нет (util-linux не установлен), работаем как раньше —
+# лучше без лока, чем не запуститься вовсе.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$pwd/update/.lock"
+    if ! flock -w 10 9; then
+        echo "update.sh: другой экземпляр уже работает, выходим" >&2
+        exit 0
     fi
-done
+fi
 
 : > "$pwd/update/pipe"
 echo "$$" > "$pwd/update/update_pid"
+
+# URL с ключом бота уходит curl'у через stdin-конфиг (-K -), а не аргументом:
+# в argv он был виден любому пользователю хоста через `ps auxww` всё время
+# обновления, а оно длится минуты.
+tg_api() {
+    local method="$1" data="$2"
+    printf 'url = "https://%s/bot%s/%s"\n' "$TELEGRAM_API" "$_key" "$method" \
+        | curl -s -K - -H "Content-Type: application/json" -X POST -d "$data" > /dev/null
+}
 
 tg_draft() {
     local text="$1"
     local escaped="${text//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
-    curl -s -H "Content-Type: application/json" \
-        -X POST "https://$TELEGRAM_API/bot$_key/sendMessageDraft" \
-        -d "{\"chat_id\":$_chat_id,\"draft_id\":1,\"text\":\"$escaped\"}" > /dev/null
+    tg_api sendMessageDraft "{\"chat_id\":$_chat_id,\"draft_id\":1,\"text\":\"$escaped\"}"
 }
 
 while true
@@ -106,14 +125,29 @@ do
         fi
 
         tg_draft "launching the bot"
-        make start
+        # Код возврата важен: раньше «bot started» уходило безусловно, и при
+        # упавшем make start (конфликт имён контейнеров, ENOSPC, битый
+        # compose-файл) пользователь видел бодрый отчёт при лежащем боте, а
+        # единственный след оставался в stdout systemd.
+        start_out=$(make start 2>&1)
+        start_rc=$?
+        echo "$start_out"
 
         : > "$pwd/update/key"
         : > "$pwd/update/curl"
 
-        curl -s -H "Content-Type: application/json" \
-            -X POST "https://$TELEGRAM_API/bot$_key/sendMessage" \
-            -d "{\"chat_id\":$_chat_id,\"text\":\"bot started\"}" > /dev/null
+        if [[ $start_rc -eq 0 ]]
+        then
+            report="bot started"
+        else
+            # Последние строки вывода — там и стоит причина.
+            tail_out=$(printf '%s' "$start_out" | tail -c 900)
+            report="make start FAILED (rc=$start_rc):"$'\n'"$tail_out"
+        fi
+        report="${report//\\/\\\\}"
+        report="${report//\"/\\\"}"
+        report="${report//$'\n'/\\n}"
+        tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"$report\"}"
 
         bash "$pwd/update/update.sh" &
         exit 0

@@ -96,7 +96,35 @@ foreach (['2.11.2', 'v2.11', 'latest', 'naive', 'v2.11.2-naive', '', 'v2.11.2; r
     npAssert(!$tagOk($v), 'невалидный тег отбивается: ' . var_export($v, true));
 }
 
-// ── 4. Гард плейсхолдера в start_np.sh ──────────────────────────────────────
+// ── 4. Генерация пароля ─────────────────────────────────────────────────────
+class NaivePasswordTestBot extends Bot
+{
+    public string $generated = '';
+
+    public function chnppass($pass)
+    {
+        $this->generated = (string) $pass;
+    }
+}
+
+$passwordBot = (new ReflectionClass(NaivePasswordTestBot::class))->newInstanceWithoutConstructor();
+for ($i = 0; $i < 20; $i++) {
+    $passwordBot->genNaivePass();
+    npAssert(strlen($passwordBot->generated) === 32,
+        'сгенерированный пароль NaiveProxy должен содержать 32 символа');
+    npAssert((bool) preg_match('~^[0-9a-f]{32}$~', $passwordBot->generated),
+        'сгенерированный пароль NaiveProxy должен быть hex-строкой');
+    npAssert(Bot::naiveCredOk($passwordBot->generated),
+        'сгенерированный пароль должен проходить валидатор NaiveProxy');
+}
+
+$botSource = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+npAssert(str_contains($botSource, "'callback_data' => \"/genNaivePass\""),
+    'в меню NaiveProxy должна быть кнопка генерации пароля');
+npAssert(str_contains($botSource, "preg_match('~^/genNaivePass$~'"),
+    'callback генерации пароля NaiveProxy должен быть зарегистрирован');
+
+// ── 5. Гард плейсхолдера в start_np.sh ──────────────────────────────────────
 // Тот же шаблон, что в скрипте: caddy не должен стартовать, пока креды не заданы.
 $guardRe = '~^\s*basic_auth\s+(CHANGEME\s+CHANGEME|_\s+__)\s*$~m';
 npAssert((bool) preg_match($guardRe, "\tbasic_auth CHANGEME CHANGEME\n"), 'ловит новый плейсхолдер');

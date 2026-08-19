@@ -29,16 +29,33 @@ stable (master):
 ```shell
 curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
   "https://api.github.com/repos/axiomshiftbit/vpnbot/contents/scripts/init.sh?ref=master" \
-  | GH_TOKEN="$GH_TOKEN" bash -s YOUR_TELEGRAM_BOT_KEY master
+  | GH_TOKEN="$GH_TOKEN" VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash -s master
 ```
 development (dev):
 ```shell
 curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
   "https://api.github.com/repos/axiomshiftbit/vpnbot/contents/scripts/init.sh?ref=dev" \
-  | GH_TOKEN="$GH_TOKEN" bash -s YOUR_TELEGRAM_BOT_KEY dev
+  | GH_TOKEN="$GH_TOKEN" VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash -s dev
 ```
+Ключ бота передаётся переменной `VPNBOT_KEY`, а не аргументом: аргумент виден
+в `ps` всем процессам хоста и остаётся в history. Старая форма
+(`bash init.sh YOUR_TELEGRAM_BOT_KEY master`) ещё работает, но предупреждает.
+
+GitHub-токен в URL репозитория больше не вшивается: `origin` остаётся чистым,
+а токен ложится в `/root/.vpnbot-git-credentials` (0600) и подхватывается
+`credential.helper`. Установка поверх старой инсталляции заодно вычищает PAT
+из `.git/config`.
+
 Установка из архива (offline, токен не нужен) — положите `vpnbot.zip` рядом
-со скриптом и запустите `bash init.sh YOUR_TELEGRAM_BOT_KEY master`.
+со скриптом и запустите `VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash init.sh master`.
+#### Tests:
+```shell
+make test
+```
+Прогон запускается **на хосте**, а не внутри контейнера: тесты подменяют пути
+конфигов через свойства объекта, но соседство с боевыми `/config` и `/logs`
+проверять на них незачем. Те же проверки гоняет CI на каждый push.
+
 #### Restart:
 ```shell
 make r

@@ -3,8 +3,19 @@
 # Параметры (можно менять)
 PORTS=(80 443 853 ~ss~ ~wg1~ ~wg2~)          # Прослушиваемые порты
 TARGET="~ip~"               # Куда перенаправляем трафик
-TCP_CMD="socat TCP-LISTEN:{PORT},fork,reuseaddr TCP:$TARGET:{PORT}"
-UDP_CMD="socat UDP-LISTEN:{PORT},fork,reuseaddr UDP:$TARGET:{PORT}"
+# Без строк-команд и eval: значения ~ip~/~ss~/~wg1~/~wg2~ подставляет бот, и
+# раньше готовая строка уходила в `eval`, то есть любая неожиданность в
+# подставленном значении исполнялась шеллом от root на relay-хосте. Теперь
+# socat зовётся напрямую, а значения остаются данными.
+TARGET_IS_VALID=0
+case "$TARGET" in
+    *[!0-9.]*|'') ;;
+    *.*.*.*) TARGET_IS_VALID=1 ;;
+esac
+if [ "$TARGET_IS_VALID" != 1 ]; then
+    echo "Ошибка: TARGET='$TARGET' не похож на IPv4-адрес — шаблон не заполнен?" >&2
+    exit 1
+fi
 
 # Проверяем, установлен ли socat
 if ! command -v socat &> /dev/null; then
@@ -37,15 +48,16 @@ done
 
 # Запускаем socat для каждого порта (TCP и UDP)
 for PORT in "${PORTS[@]}"; do
-    # TCP
-    CMD_TCP=$(echo "$TCP_CMD" | sed "s/{PORT}/$PORT/g")
-    echo "Запуск (TCP): $CMD_TCP"
-    eval "$CMD_TCP &"  # Запускаем в фоне
-
-    # UDP
-    CMD_UDP=$(echo "$UDP_CMD" | sed "s/{PORT}/$PORT/g")
-    echo "Запуск (UDP): $CMD_UDP"
-    eval "$CMD_UDP &"  # Запускаем в фоне
+    case "$PORT" in
+        ''|*[!0-9]*)
+            echo "Пропуск: '$PORT' не число (шаблон не заполнен?)" >&2
+            continue
+            ;;
+    esac
+    echo "Запуск (TCP): $PORT -> $TARGET:$PORT"
+    socat "TCP-LISTEN:$PORT,fork,reuseaddr" "TCP:$TARGET:$PORT" &
+    echo "Запуск (UDP): $PORT -> $TARGET:$PORT"
+    socat "UDP-LISTEN:$PORT,fork,reuseaddr" "UDP:$TARGET:$PORT" &
 done
 
 echo "socat запущен для портов: ${PORTS[*]} (TCP и UDP)"

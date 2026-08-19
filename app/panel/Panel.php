@@ -482,9 +482,21 @@ class Panel
             'path'     => $this->prefix . '/',
             'httponly' => true,
             'samesite' => 'Strict',
+            // По факту схемы, а не всегда: штатно панель открывают по http на
+            // 127.0.0.1 через `ssh -L`, и безусловный secure просто не дал бы
+            // войти. Но PANEL_HOSTS/PANEL_TRUSTED позволяют вынести её за
+            // https-прокси — там кука обязана быть secure.
+            'secure'   => self::httpsRequest(),
         ]);
 
         return $this->json(['ok' => true, 'admin' => $admin]);
+    }
+
+    private static function httpsRequest(): bool
+    {
+        return !empty($_SERVER['HTTPS'])
+            || 'https' === ($_SERVER['REQUEST_SCHEME'] ?? '')
+            || 'https' === ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '');
     }
 
     private function logout()
@@ -494,6 +506,9 @@ class Panel
             'path'     => $this->prefix . '/',
             'httponly' => true,
             'samesite' => 'Strict',
+            // Флаги при удалении обязаны совпадать с выдачей, иначе браузер
+            // сочтёт это другой кукой и оставит прежнюю.
+            'secure'   => self::httpsRequest(),
         ]);
 
         return $this->json(['ok' => true]);
