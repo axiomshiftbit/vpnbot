@@ -1928,6 +1928,14 @@ class Bot
             $t .= "web_client_ip_source = \"x_forwarded_for\"\n";
             $t .= "web_trusted_proxy_cidrs = [" . $q(self::TELEMT_WEB_TRUSTED_CIDR) . "]\n\n";
         }
+        // Fake-TLS домен указывает на нас самих → маршрутим mask/tls_front мимо
+        // хайрпина, прямо на upstream-nginx (см. telemtMaskIsSelf). Ключ
+        // адресный: переопределяется ровно пара host:port, всё остальное, включая
+        // соединения с DC Telegram, резолвится как прежде.
+        if ($this->telemtMaskIsSelf($conf, $domain)) {
+            $t .= "[network]\n";
+            $t .= "dns_overrides = [" . $q("$domain:443:" . self::TELEMT_MASK_SELF_IP) . "]\n\n";
+        }
         $t .= "[censorship]\n";
         $t .= "tls_domain = " . $q($domain) . "\n";
         $t .= "mask = true\n";
@@ -2056,6 +2064,51 @@ class Bot
     {
         $a = $conf['telemt_unknown_sni'] ?? 'reject_handshake';
         return in_array($a, ['mask', 'reject_handshake', 'drop'], true) ? $a : 'reject_handshake';
+    }
+
+    // Куда telemt ходит за НАСТОЯЩИМ TLS-фронтом (tls_emulation клонирует
+    // ServerHello с сертификатом) и куда уводит mask-fronting: mask_host, а он
+    // по умолчанию равен tls_domain, порт mask_port = 443.
+    //
+    // Если fake-TLS домен указывает на ЭТОТ ЖЕ сервер (обычный выбор: SNI в
+    // ClientHello тогда совпадает с реально существующим сайтом), соединение
+    // уезжает на собственный публичный IP и разворачивается хайрпином. Он не
+    // работает: DNAT на хосте переписывает адресата на upstream-контейнер, но
+    // docker→docker трафик намеренно НЕ SNAT-ится, поэтому SYN-ACK возвращается
+    // с адреса контейнера и сокету telemt не соответствует. Фетч висит до
+    // таймаута («TLS emulation initial fetch failed» в /logs/telemt),
+    // ServerHello подменяется синтетическим сертификатом вместо клона
+    // настоящего, а mask-fronting перестаёт отдавать зондам реальный сайт
+    // (при unknown_sni_action = mask соединение зонда просто виснет).
+    //
+    // dns_overrides снимает это без всякого NAT: telemt соединяется напрямую с
+    // upstream-nginx — ровно тем же путём, каким приходят внешние клиенты
+    // (SNI-preread → ng с proxy_protocol), и получает настоящий сертификат.
+    public const TELEMT_MASK_SELF_IP = '10.10.0.10';
+
+    // Указывает ли fake-TLS домен на этот же сервер: сам домен установки, его
+    // алиас или поддомен любого из них. Сравнение строковое, без резолва:
+    // telemtToml() генерируется на КАЖДЫЙ рестарт telemt, и блокирующий
+    // DNS-запрос в этом пути означал бы подвисшее меню при недоступном
+    // резолвере. Домен, который админ увёл на чужое имя (дефолт
+    // www.google.com), под это не попадает — там внешний фетч и так работает.
+    public function telemtMaskIsSelf(array $conf, string $domain): bool
+    {
+        $domain = strtolower(trim($domain));
+        if ($domain === '') {
+            return false;
+        }
+        $own = array_merge(
+            [(string) ($conf['domain'] ?? '')],
+            is_array($conf['domain_aliases'] ?? null) ? $conf['domain_aliases'] : []
+        );
+        foreach ($own as $name) {
+            $name = strtolower(trim((string) $name));
+            if ($name !== '' && ($domain === $name || str_ends_with($domain, ".$name"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ── telemt WEB (тип прокси «WEB» в Telegram Desktop) ─────────────────────
