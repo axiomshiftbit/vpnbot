@@ -27743,6 +27743,14 @@ DNS-over-HTTPS with IP:
             if (!empty($conf['adguardkey'])) {
                 $text[] = "{$conf['adguardkey']}.{$conf['domain']}" . (in_array("{$conf['adguardkey']}.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
             }
+            // WEB-прокси telemt (тип прокси WEB в Telegram Desktop) живёт на
+            // своём поддомене, и без SAN на ЭТО имя Desktop соединение не
+            // откроет. Поэтому отсутствие сертификата показываем явно, как у
+            // алиасов, а не молчанием, как у naive/openconnect: там имя нужно
+            // только своему клиенту, а здесь — единственная точка входа.
+            if (!empty($conf['telemt_web']) && ($tw = $this->telemtWebHost($conf)) !== '') {
+                $text[] = "telemt web $tw" . (in_array($tw, $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : ' (no ssl — renew SSL)');
+            }
             foreach ($conf['domain_aliases'] ?? [] as $a) {
                 $text[] = "alias $a" . (in_array($a, $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : ' (no ssl — renew SSL)');
                 // У алиаса та же точка входа DoT, что и у главного домена:
