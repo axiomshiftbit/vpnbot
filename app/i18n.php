@@ -729,6 +729,10 @@ $i = [
         'en' => 'the server IP is unknown (env IP is empty): WEB needs a concrete public address',
         'ru' => 'IP сервера неизвестен (переменная IP пуста): WEB нужен конкретный публичный адрес',
     ],
+    'telemt web secret changed'  => [
+        'en' => 'Secret format changed — every WEB link issued before is now invalid. Hand out the new ones (button 🌐).',
+        'ru' => 'Формат секрета изменён — все выданные раньше WEB-ссылки больше не действуют. Раздайте новые (кнопка 🌐).',
+    ],
     'telemt web need version'  => [
         'en' => 'the running telemt is older than 3.5.0 — update the telemt image, an old binary refuses the WEB config and does not start at all',
         'ru' => 'запущенный telemt старше 3.5.0 — обновите образ telemt: старый бинарь не примет WEB-конфиг и не стартует вовсе',

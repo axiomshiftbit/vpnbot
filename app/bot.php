@@ -2033,16 +2033,58 @@ class Bot
             $this->setPacConf($conf);
         }
         @mkdir('/config/telemt/data', 0755, true);
+        $web = $this->telemtWebEnabled($conf);
         // Snapshot decoy-сайта telemt читает один раз при старте — файл должен
         // существовать РАНЬШЕ запуска бинаря, иначе конфиг не загрузится.
-        if ($this->telemtWebEnabled($conf)) {
+        if ($web) {
             $this->telemtWebDecoy();
         }
-        file_put_contents('/config/telemt/telemt.toml', $this->telemtToml($conf));
+        $this->telemtWriteToml($this->telemtToml($conf));
         $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
-        if (!empty($conf['telemt_users'])) {
-            $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
+        if (empty($conf['telemt_users'])) {
+            return;
         }
+        $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
+        // Страховка последнего рубежа. Невалидную секцию [web] telemt не
+        // «игнорирует», а отказывается грузить КОНФИГ ЦЕЛИКОМ — вместе с
+        // обычным MTProto-листенером, то есть падает весь прокси. Предусловия
+        // (telemtWebEnabled) и лимит профилей закрывают известные причины, но
+        // не закроют неизвестные: откат образа telemt на 3.4.x, где ключей
+        // [web] ещё нет, ручную правку pac.json, будущее ужесточение
+        // валидации в самом telemt.
+        // Поэтому: если с WEB процесс не поднялся — выключаем WEB и стартуем
+        // заново без него. Лучше потерять WEB, чем весь telemt, и это видно —
+        // тумблер в меню окажется выключенным.
+        // Ждём до 3 секунд, выходя сразу, как процесс увиден: невалидный конфиг
+        // telemt отвергает ДО всех сетевых проб, то есть падает почти мгновенно,
+        // а вот появление процесса под нагрузкой может чуть запоздать — плоский
+        // sleep 1 дал бы ложный откат.
+        $probe = $web ? $this->ssh(
+            'i=0; while [ $i -lt 3 ]; do sleep 1; pgrep -x telemt && break; i=$((i+1)); done',
+            'telemt'
+        ) : '1';
+        // sshFailed отделяет «процесс не поднялся» от «контейнер недоступен»:
+        // во втором случае выключать WEB не за что, там не работает вообще
+        // ничего, и следующий рестарт всё равно всё переделает.
+        if ($web && !$probe && !$this->sshFailed) {
+            error_log('restartTelemt: telemt не поднялся с секцией [web] — откатываем WEB и стартуем без него');
+            $conf['telemt_web'] = 0;
+            $this->setPacConf($conf);
+            $this->telemtWriteToml($this->telemtToml($conf));
+            $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
+            // Вместе с секцией [web] обязан уйти и блок #-tgweb: иначе nginx
+            // остаётся проксировать на листенер, которого больше нет, и
+            // WEB-хост отвечает 502 вместо decoy. Рекурсии тут нет —
+            // cloakNginx() дёргает restartXray, но не restartTelemt.
+            $this->cloakNginx();
+        }
+    }
+
+    // Вынесено отдельным методом ради тестируемости отката выше: тест
+    // подменяет запись файла и ssh, а логика самолечения остаётся настоящей.
+    public function telemtWriteToml(string $toml): void
+    {
+        file_put_contents('/config/telemt/telemt.toml', $toml);
     }
 
     public function telemtSecret()
@@ -14692,6 +14734,11 @@ DNS-over-HTTPS with IP:
         }
 
         $rarg = $relay !== '' ? " $relay" : '';
+        // WEB-профиль получают не все: их число упирается в лимит telemt (32).
+        // Кнопку 🌐 рисуем ТОЛЬКО тем, кто в профили попал, иначе ссылка
+        // сгенерируется, Telegram Desktop её примет, а telemt не пустит — и по
+        // симптомам это неотличимо от сетевой проблемы.
+        $webUsers = $web ? array_flip($this->telemtWebProfiles($conf)) : [];
         foreach ($users as $name => $secret) {
             $link = $this->linkTelemt($name, $rl);
             $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
@@ -14707,7 +14754,7 @@ DNS-over-HTTPS with IP:
                 [$this->i18n($state), "/telemtToggleUser $name"],
                 ['📷', "/telemtQr $name$rarg"],
             ];
-            if ($web) {
+            if (isset($webUsers[$name])) {
                 // Ссылка WEB-режима: у неё свой хост и всегда порт 443,
                 // поэтому выбранный relay к ней не применяется.
                 $btns[] = ['🌐', "/telemtWebLink $name"];
@@ -14908,6 +14955,11 @@ DNS-over-HTTPS with IP:
         $conf['telemt_web_secret_mode'] = $this->telemtWebSecretModeOf($conf) === 'dd' ? 'plain' : 'dd';
         $this->setPacConf($conf);
         $this->restartTelemt();
+        // Модалка, а не строка в меню: предупреждение важно ровно в момент
+        // переключения, а висеть в тексте постоянно ему незачем.
+        if (!empty($conf['telemt_users'])) {
+            $this->answer($this->input['callback_id'], $this->i18n('telemt web secret changed'), true);
+        }
         $this->telemtWeb(true);
     }
 
@@ -14916,7 +14968,18 @@ DNS-over-HTTPS with IP:
     public function telemtWebLink($name)
     {
         $conf = $this->getPacConf();
-        if (empty($conf['telemt_users'][$name]) || !$this->telemtWebEnabled($conf)) {
+        // Та же проверка, что и у кнопки: пользователь без WEB-профиля получил
+        // бы ссылку, которую telemt не примет. Кнопка Telegram живёт вечно —
+        // после появления новых пользователей и сдвига за лимит нажатие может
+        // прийти и на неё.
+        // Сравнение через array_flip + isset, а не in_array со строгим
+        // сравнением: имя из чисел json_decode отдаёт INT-ключом массива, а из
+        // callback_data оно всегда приходит строкой — строгое сравнение такого
+        // пользователя не нашло бы никогда (та же ловушка описана у relay).
+        $webUsers = array_flip($this->telemtWebProfiles($conf));
+        if (empty($conf['telemt_users'][$name])
+            || !$this->telemtWebEnabled($conf)
+            || !isset($webUsers[$name])) {
             return $this->telemtUsers();
         }
         $link = $this->linkTelemtWeb($name, $conf);
