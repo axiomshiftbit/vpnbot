@@ -6,7 +6,7 @@ telegram bot to manage servers (inside the bot)
 - Wireguard
 - Amnezia
 - AdguardHome
-- TeleMT (MTProto)
+- TeleMT (MTProto, + WEB-прокси для Telegram Desktop)
 - PAC
 - automatic ssl
 
