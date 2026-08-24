@@ -9610,11 +9610,25 @@ NFT;
 
     public function setIpLimit()
     {
+        // Поле ввода принимает «секунды:количество», и без подсказки это
+        // угадать нельзя: раньше сообщение было «enter seconds and count ip»,
+        // из-за чего в него слали то одно число, то «2 ip», то «300 сек».
+        // Поэтому в сообщении — формат, примеры и текущее значение.
+        $p       = $this->getPacConf();
+        $current = !empty($p['ip_limit'])
+            ? $p['ip_limit'] . ':' . max(1, (int) ($p['ip_count'] ?: 1))
+            : $this->i18n('off');
+
+        $text = "@{$this->input['username']} " . $this->i18n('ip limit') . "\n\n"
+            . $this->i18n('ip limit hint') . "\n\n"
+            . $this->i18n('current value') . ": <code>" . htmlspecialchars((string) $current, ENT_QUOTES, 'UTF-8') . "</code>\n\n"
+            . '⚠️ ' . $this->i18n('ip limit notice');
+
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter seconds and count ip",
+            $text,
             $this->input['message_id'],
-            reply: 'enter seconds:count_ip',
+            reply: 'seconds:count, 300:2, 0 = off',
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -17766,14 +17780,22 @@ DNS-over-HTTPS with IP:
 
     public function switchIpLimit($limit)
     {
-        $limit = explode(':', $limit);
+        // Разбираем ввод свободно: «300:2», «300 2», «300,2» и просто «300».
+        // Прежний explode(':') на вводе без разделителя падал в
+        // «Undefined array key 1», а мусорные символы уезжали в (int).
+        $raw     = trim((string) $limit);
+        $parts   = preg_split('~[^0-9]+~', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        // Минус в начале — те же «выключить», что и 0 (иначе «-5» стало бы 5).
+        $seconds = str_starts_with($raw, '-') ? 0 : (int) ($parts[0] ?? 0);
+        $count   = (int) ($parts[1] ?? 0);
+
         $c = $this->getPacConf();
-        if ((int) $limit[0] <= 0) {
+        if ($seconds <= 0) {
             unset($c['ip_limit']);
             unset($c['ip_count']);
         } else {
-            $c['ip_limit'] = (int) $limit[0];
-            $c['ip_count'] = (int) $limit[1] ?: 1;
+            $c['ip_limit'] = $seconds;
+            $c['ip_count'] = max(1, $count);
         }
         $this->setPacConf($c);
         $this->xray();

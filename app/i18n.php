@@ -1313,6 +1313,30 @@ $i = [
         'en' => 'IP limit',
         'ru' => 'лимит IP',
     ],
+    'ip limit hint'  => [
+        'en' => "Format: <code>seconds:count</code> — the observation window in seconds and how many different IPs one client is allowed inside it.\n\n"
+            . "Examples:\n"
+            . "<code>300:2</code> — no more than 2 different IPs per 5 minutes\n"
+            . "<code>3600:1</code> — a single IP per hour (strict)\n"
+            . "<code>600</code> — count omitted = 1 IP per 10 minutes\n"
+            . "<code>0</code> — turn the limit off\n\n"
+            . "Digits only, separator <code>:</code> (a space or a comma also works). Count is 1 by default.",
+        'ru' => "Формат: <code>секунды:количество</code> — окно наблюдения в секундах и сколько разных IP разрешено одному клиенту внутри него.\n\n"
+            . "Примеры:\n"
+            . "<code>300:2</code> — не больше 2 разных IP за 5 минут\n"
+            . "<code>3600:1</code> — один IP в час (строго)\n"
+            . "<code>600</code> — количество не указано = 1 IP за 10 минут\n"
+            . "<code>0</code> — выключить лимит\n\n"
+            . "Только цифры, разделитель <code>:</code> (пробел или запятая тоже подойдут). Количество по умолчанию — 1.",
+    ],
+    'ip limit notice'  => [
+        'en' => 'Applies to xray (vless) clients: on excess the bot sends admins an alert with a button to switch that client off — nothing is blocked automatically.',
+        'ru' => 'Работает для клиентов xray (vless): при превышении бот шлёт админам уведомление с кнопкой отключения клиента — автоматически никто не блокируется.',
+    ],
+    'current value'  => [
+        'en' => 'now',
+        'ru' => 'сейчас',
+    ],
     'analyze'  => [
         'en' => 'analyze',
         'ru' => 'анализ',
