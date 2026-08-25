@@ -697,6 +697,54 @@ $i = [
         'en' => 'Action for a ClientHello whose SNI differs from the Fake-TLS domain. reject_handshake = look like a stock web server (default). mask = transparently front any SNI to the mask host — use to debug a link/domain mismatch ("Unknown TLS SNI"). drop = silently close.',
         'ru' => 'Что делать с ClientHello, чей SNI не совпадает с Fake-TLS доменом. reject_handshake = вести себя как обычный веб-сервер (дефолт). mask = прозрачно фронтить любой SNI на mask-host — полезно при рассинхроне ссылки и домена ("Unknown TLS SNI"). drop = молча закрыть.',
     ],
+    'telemt web'  => [
+        'en' => 'WEB (Telegram Desktop)',
+        'ru' => 'WEB (Telegram Desktop)',
+    ],
+    'telemt web note'  => [
+        'en' => 'WEB carries MTProto inside ordinary HTTPS on its own subdomain (port 443, no port in the link). Import the link in Telegram Desktop: Settings -> Advanced -> Connection type -> proxy type WEB. Mobile clients do not support it — keep using the regular tg://proxy links.',
+        'ru' => 'WEB несёт MTProto внутри обычного HTTPS на своём поддомене (порт 443, в ссылке порта нет). Ссылка импортируется в Telegram Desktop: Настройки -> Продвинутые -> Тип соединения -> тип прокси WEB. Мобильные клиенты режим не поддерживают — им по-прежнему нужны обычные ссылки tg://proxy.',
+    ],
+    'telemt web link'  => [
+        'en' => 'WEB link for Telegram Desktop',
+        'ru' => 'ссылка WEB для Telegram Desktop',
+    ],
+    'telemt web cert hint'  => [
+        'en' => 'the WEB host needs its own SAN in the certificate: run "renew SSL" once after enabling, otherwise Telegram Desktop refuses the connection',
+        'ru' => 'хосту WEB нужен свой SAN в сертификате: после включения один раз выполните "renew SSL", иначе Telegram Desktop не откроет соединение',
+    ],
+    'telemt web blocked'  => [
+        'en' => 'WEB requirements are not met',
+        'ru' => 'условия для WEB не выполнены',
+    ],
+    'telemt web need domain'  => [
+        'en' => 'set a domain first (Settings -> domain): WEB needs a hostname of its own',
+        'ru' => 'сначала задайте домен (настройки -> domain): WEB нужен собственный хостнейм',
+    ],
+    'telemt web need cert'  => [
+        'en' => 'install a certificate first (Settings -> SSL): Telegram Desktop validates it',
+        'ru' => 'сначала установите сертификат (настройки -> SSL): Telegram Desktop его проверяет',
+    ],
+    'telemt web need ip'  => [
+        'en' => 'the server IP is unknown (env IP is empty): WEB needs a concrete public address',
+        'ru' => 'IP сервера неизвестен (переменная IP пуста): WEB нужен конкретный публичный адрес',
+    ],
+    'telemt web secret changed'  => [
+        'en' => 'Secret format changed — every WEB link issued before is now invalid. Hand out the new ones (button 🌐).',
+        'ru' => 'Формат секрета изменён — все выданные раньше WEB-ссылки больше не действуют. Раздайте новые (кнопка 🌐).',
+    ],
+    'telemt web need version'  => [
+        'en' => 'the running telemt is older than 3.5.0 — update the telemt image, an old binary refuses the WEB config and does not start at all',
+        'ru' => 'запущенный telemt старше 3.5.0 — обновите образ telemt: старый бинарь не примет WEB-конфиг и не стартует вовсе',
+    ],
+    'telemt web need users'  => [
+        'en' => 'add at least one user',
+        'ru' => 'заведите хотя бы одного пользователя',
+    ],
+    'telemt web profiles capped'  => [
+        'en' => 'only the first 32 users get a WEB profile — that is the telemt limit, and exceeding it stops the proxy from starting at all',
+        'ru' => 'профиль WEB получают только первые 32 пользователя — это лимит telemt, а его превышение не даёт прокси стартовать вовсе',
+    ],
     'telemt relays'  => [
         'en' => 'relays',
         'ru' => 'релеи',
@@ -1264,6 +1312,30 @@ $i = [
     'ip limit'  => [
         'en' => 'IP limit',
         'ru' => 'лимит IP',
+    ],
+    'ip limit hint'  => [
+        'en' => "Format: <code>seconds:count</code> — the observation window in seconds and how many different IPs one client is allowed inside it.\n\n"
+            . "Examples:\n"
+            . "<code>300:2</code> — no more than 2 different IPs per 5 minutes\n"
+            . "<code>3600:1</code> — a single IP per hour (strict)\n"
+            . "<code>600</code> — count omitted = 1 IP per 10 minutes\n"
+            . "<code>0</code> — turn the limit off\n\n"
+            . "Digits only, separator <code>:</code> (a space or a comma also works). Count is 1 by default.",
+        'ru' => "Формат: <code>секунды:количество</code> — окно наблюдения в секундах и сколько разных IP разрешено одному клиенту внутри него.\n\n"
+            . "Примеры:\n"
+            . "<code>300:2</code> — не больше 2 разных IP за 5 минут\n"
+            . "<code>3600:1</code> — один IP в час (строго)\n"
+            . "<code>600</code> — количество не указано = 1 IP за 10 минут\n"
+            . "<code>0</code> — выключить лимит\n\n"
+            . "Только цифры, разделитель <code>:</code> (пробел или запятая тоже подойдут). Количество по умолчанию — 1.",
+    ],
+    'ip limit notice'  => [
+        'en' => 'Applies to xray (vless) clients: on excess the bot sends admins an alert with a button to switch that client off — nothing is blocked automatically.',
+        'ru' => 'Работает для клиентов xray (vless): при превышении бот шлёт админам уведомление с кнопкой отключения клиента — автоматически никто не блокируется.',
+    ],
+    'current value'  => [
+        'en' => 'now',
+        'ru' => 'сейчас',
     ],
     'analyze'  => [
         'en' => 'analyze',

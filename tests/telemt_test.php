@@ -181,6 +181,39 @@ foreach (['/telemtToggleUser ', '/telemtRegen ', '/telemtDelUser '] as $prefix) 
 tmAssert(strlen('/telemtQr ') + $maxName + 1 + 32 <= 64,
     'кнопка QR с именем relay (до 32 символов) тоже влезает');
 
+// ── 8. mask_host, указывающий на нас самих ─────────────────────────────────
+// Хайрпин на собственный публичный IP не работает: DNAT переписывает адресата
+// на upstream-контейнер, но docker→docker трафик не SNAT-ится, и SYN-ACK
+// приходит не с того адреса. Итог — "TLS emulation initial fetch failed",
+// синтетический сертификат вместо клона настоящего и мёртвый mask-fronting.
+// Лечится dns_overrides: telemt идёт прямо на upstream-nginx.
+$b = $mk('tls');
+$b->ip = '203.0.113.10';
+$b->pacFake['domain'] = 'vpn.example';
+$b->pacFake['domain_aliases'] = ['alt.example'];
+
+tmAssert($b->telemtMaskIsSelf($b->pacFake, 'vpn.example'), 'сам домен установки — это мы');
+tmAssert($b->telemtMaskIsSelf($b->pacFake, 'VPN.EXAMPLE'), 'регистр не важен');
+tmAssert($b->telemtMaskIsSelf($b->pacFake, 'sub.vpn.example'), 'поддомен — тоже мы');
+tmAssert($b->telemtMaskIsSelf($b->pacFake, 'alt.example'), 'алиас домена — тоже мы');
+tmAssert(!$b->telemtMaskIsSelf($b->pacFake, 'www.google.com'), 'чужой домен — не мы');
+tmAssert(!$b->telemtMaskIsSelf($b->pacFake, 'notvpn.example'), 'совпадение суффикса без точки не считается');
+tmAssert(!$b->telemtMaskIsSelf($b->pacFake, ''), 'пустой домен — не мы');
+tmAssert(!$b->telemtMaskIsSelf(['domain' => ''], 'vpn.example'), 'без настроенного домена сравнивать не с чем');
+
+$b->pacFake['telemt_domain'] = 'vpn.example';
+$toml = $b->telemtToml($b->pacFake);
+tmAssert(str_contains($toml, 'dns_overrides = ["vpn.example:443:10.10.0.10"]'),
+    'свой fake-TLS домен уводится на upstream-nginx');
+// Порт в override обязан совпадать с mask_port, иначе telemt резолвит как обычно.
+tmAssert(str_contains($toml, 'mask_port = 443'), 'mask_port тот же, что в dns_overrides');
+// [network] — top-level таблица: после неё ключи [censorship] уехали бы не туда.
+tmAssert(strpos($toml, '[network]') < strpos($toml, '[censorship]'), '[network] стоит до [censorship]');
+
+$b->pacFake['telemt_domain'] = 'www.google.com';
+tmAssert(!str_contains($b->telemtToml($b->pacFake), 'dns_overrides'),
+    'чужой fake-TLS домен резолвится как обычно');
+
 if ($failed) {
     echo "telemt_test FAILED ($failed)\n";
     exit(1);

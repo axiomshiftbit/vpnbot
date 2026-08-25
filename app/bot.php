@@ -876,6 +876,21 @@ class Bot
             case preg_match('~^/telemtSetSni (mask|reject_handshake|drop)$~', $this->input['callback'], $m):
                 $this->telemtSetSni($m[1]);
                 break;
+            case preg_match('~^/telemtWeb$~', $this->input['callback'], $m):
+                $this->telemtWeb(true);
+                break;
+            case preg_match('~^/telemtWebToggle$~', $this->input['callback'], $m):
+                $this->telemtWebToggle();
+                break;
+            case preg_match('~^/telemtWebCarrier$~', $this->input['callback'], $m):
+                $this->telemtWebCarrier();
+                break;
+            case preg_match('~^/telemtWebSecret$~', $this->input['callback'], $m):
+                $this->telemtWebSecret();
+                break;
+            case preg_match('~^/telemtWebLink (\w+)$~', $this->input['callback'], $m):
+                $this->telemtWebLink($m[1]);
+                break;
             case preg_match('~^/telemtRelays$~', $this->input['callback'], $m):
                 $this->telemtRelays();
                 break;
@@ -1831,6 +1846,9 @@ class Bot
         $beobachtenMinutes = $this->telemtInt($conf, 'telemt_beobachten_minutes', 10, 1, 1440);
         $maskHardening = $this->telemtBool($conf, 'telemt_mask_hardening', $this->telemtMaskDefault('telemt_mask_hardening'));
         $maskTiming = $this->telemtBool($conf, 'telemt_mask_timing', $this->telemtMaskDefault('telemt_mask_timing'));
+        // Готовность WEB-режима считаем один раз: она нужна и листенеру, и
+        // секции [web] в самом конце файла.
+        $web = $this->telemtWebEnabled($conf);
         // telemt отказывается стартовать, если aggressive/blur включены без
         // mask_shape_hardening (load.rs: "requires mask_shape_hardening = true").
         // UI-тоггл держит инвариант, но импортированный бэкап или правленый
@@ -1895,6 +1913,29 @@ class Bot
             $t .= "announce_ip = " . $q($announce) . "\n";
         }
         $t .= "\n";
+        // WEB-листенер: отдельный plain-HTTP порт для трафика, который к нам
+        // приводит ng (см. блок #-tgweb в nginx.conf). Пишем его ТОЛЬКО когда
+        // WEB реально настроен: telemt отвергает конфиг, где WEB-листенер есть,
+        // а [[web.vhosts]] пуст, и тогда не поднимется весь прокси целиком.
+        // proxy_protocol/reuse_allow/announce_ip для transport=web запрещены
+        // самим telemt — здесь их нет намеренно.
+        if ($web) {
+            $t .= "[[server.listeners]]\n";
+            $t .= "ip = \"0.0.0.0\"\n";
+            $t .= "port = " . self::TELEMT_WEB_PORT . "\n";
+            $t .= "transport = \"web\"\n";
+            $t .= "proxy_protocol = false\n";
+            $t .= "web_client_ip_source = \"x_forwarded_for\"\n";
+            $t .= "web_trusted_proxy_cidrs = [" . $q(self::TELEMT_WEB_TRUSTED_CIDR) . "]\n\n";
+        }
+        // Fake-TLS домен указывает на нас самих → маршрутим mask/tls_front мимо
+        // хайрпина, прямо на upstream-nginx (см. telemtMaskIsSelf). Ключ
+        // адресный: переопределяется ровно пара host:port, всё остальное, включая
+        // соединения с DC Telegram, резолвится как прежде.
+        if ($this->telemtMaskIsSelf($conf, $domain)) {
+            $t .= "[network]\n";
+            $t .= "dns_overrides = [" . $q("$domain:443:" . self::TELEMT_MASK_SELF_IP) . "]\n\n";
+        }
         $t .= "[censorship]\n";
         $t .= "tls_domain = " . $q($domain) . "\n";
         $t .= "mask = true\n";
@@ -1956,6 +1997,32 @@ class Bot
         $t .= "type = \"direct\"\n";
         $t .= "enabled = true\n";
         $t .= "weight = 10\n";
+        // [web] идёт последним: это top-level таблицы, и любой ключ после них
+        // уехал бы уже не в те секции.
+        if ($web) {
+            $t .= "\n[web]\n";
+            $t .= "enabled = true\n";
+            // https-lanes даёт каждому логическому потоку свои uplink/downlink
+            // и снимает HOL-блокировку на уровне протокола; ему нужен HTTP/2 на
+            // терминаторе, а он у нас есть (http2 on в блоке #-tgweb).
+            $t .= "carrier = " . $q($this->telemtWebCarrierOf($conf)) . "\n\n";
+            $t .= "[[web.vhosts]]\n";
+            $t .= "host = " . $q($this->telemtWebHost($conf)) . "\n";
+            // Конкретный публичный адрес на 443: он участвует во внутреннем
+            // destination-tuple relay, поэтому 0.0.0.0 и любой другой порт
+            // telemt отвергает.
+            $t .= "public_addr = " . $q("{$this->ip}:443") . "\n\n";
+            $t .= "[web.vhosts.decoy]\n";
+            $t .= "mode = \"static_directory\"\n";
+            $t .= "directory = " . $q(self::TELEMT_WEB_DECOY_DIR) . "\n";
+            $t .= "index = \"index.html\"\n";
+            $secretMode = $this->telemtWebSecretModeOf($conf);
+            foreach ($this->telemtWebProfiles($conf) as $name) {
+                $t .= "\n[[web.vhosts.profiles]]\n";
+                $t .= "user = " . $q($name) . "\n";
+                $t .= "secret_mode = " . $q($secretMode) . "\n";
+            }
+        }
         return $t;
     }
 
@@ -1966,11 +2033,58 @@ class Bot
             $this->setPacConf($conf);
         }
         @mkdir('/config/telemt/data', 0755, true);
-        file_put_contents('/config/telemt/telemt.toml', $this->telemtToml($conf));
-        $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
-        if (!empty($conf['telemt_users'])) {
-            $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
+        $web = $this->telemtWebEnabled($conf);
+        // Snapshot decoy-сайта telemt читает один раз при старте — файл должен
+        // существовать РАНЬШЕ запуска бинаря, иначе конфиг не загрузится.
+        if ($web) {
+            $this->telemtWebDecoy();
         }
+        $this->telemtWriteToml($this->telemtToml($conf));
+        $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
+        if (empty($conf['telemt_users'])) {
+            return;
+        }
+        $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
+        // Страховка последнего рубежа. Невалидную секцию [web] telemt не
+        // «игнорирует», а отказывается грузить КОНФИГ ЦЕЛИКОМ — вместе с
+        // обычным MTProto-листенером, то есть падает весь прокси. Предусловия
+        // (telemtWebEnabled) и лимит профилей закрывают известные причины, но
+        // не закроют неизвестные: откат образа telemt на 3.4.x, где ключей
+        // [web] ещё нет, ручную правку pac.json, будущее ужесточение
+        // валидации в самом telemt.
+        // Поэтому: если с WEB процесс не поднялся — выключаем WEB и стартуем
+        // заново без него. Лучше потерять WEB, чем весь telemt, и это видно —
+        // тумблер в меню окажется выключенным.
+        // Ждём до 3 секунд, выходя сразу, как процесс увиден: невалидный конфиг
+        // telemt отвергает ДО всех сетевых проб, то есть падает почти мгновенно,
+        // а вот появление процесса под нагрузкой может чуть запоздать — плоский
+        // sleep 1 дал бы ложный откат.
+        $probe = $web ? $this->ssh(
+            'i=0; while [ $i -lt 3 ]; do sleep 1; pgrep -x telemt && break; i=$((i+1)); done',
+            'telemt'
+        ) : '1';
+        // sshFailed отделяет «процесс не поднялся» от «контейнер недоступен»:
+        // во втором случае выключать WEB не за что, там не работает вообще
+        // ничего, и следующий рестарт всё равно всё переделает.
+        if ($web && !$probe && !$this->sshFailed) {
+            error_log('restartTelemt: telemt не поднялся с секцией [web] — откатываем WEB и стартуем без него');
+            $conf['telemt_web'] = 0;
+            $this->setPacConf($conf);
+            $this->telemtWriteToml($this->telemtToml($conf));
+            $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
+            // Вместе с секцией [web] обязан уйти и блок #-tgweb: иначе nginx
+            // остаётся проксировать на листенер, которого больше нет, и
+            // WEB-хост отвечает 502 вместо decoy. Рекурсии тут нет —
+            // cloakNginx() дёргает restartXray, но не restartTelemt.
+            $this->cloakNginx();
+        }
+    }
+
+    // Вынесено отдельным методом ради тестируемости отката выше: тест
+    // подменяет запись файла и ssh, а логика самолечения остаётся настоящей.
+    public function telemtWriteToml(string $toml): void
+    {
+        file_put_contents('/config/telemt/telemt.toml', $toml);
     }
 
     public function telemtSecret()
@@ -1992,6 +2106,197 @@ class Bot
     {
         $a = $conf['telemt_unknown_sni'] ?? 'reject_handshake';
         return in_array($a, ['mask', 'reject_handshake', 'drop'], true) ? $a : 'reject_handshake';
+    }
+
+    // Куда telemt ходит за НАСТОЯЩИМ TLS-фронтом (tls_emulation клонирует
+    // ServerHello с сертификатом) и куда уводит mask-fronting: mask_host, а он
+    // по умолчанию равен tls_domain, порт mask_port = 443.
+    //
+    // Если fake-TLS домен указывает на ЭТОТ ЖЕ сервер (обычный выбор: SNI в
+    // ClientHello тогда совпадает с реально существующим сайтом), соединение
+    // уезжает на собственный публичный IP и разворачивается хайрпином. Он не
+    // работает: DNAT на хосте переписывает адресата на upstream-контейнер, но
+    // docker→docker трафик намеренно НЕ SNAT-ится, поэтому SYN-ACK возвращается
+    // с адреса контейнера и сокету telemt не соответствует. Фетч висит до
+    // таймаута («TLS emulation initial fetch failed» в /logs/telemt),
+    // ServerHello подменяется синтетическим сертификатом вместо клона
+    // настоящего, а mask-fronting перестаёт отдавать зондам реальный сайт
+    // (при unknown_sni_action = mask соединение зонда просто виснет).
+    //
+    // dns_overrides снимает это без всякого NAT: telemt соединяется напрямую с
+    // upstream-nginx — ровно тем же путём, каким приходят внешние клиенты
+    // (SNI-preread → ng с proxy_protocol), и получает настоящий сертификат.
+    public const TELEMT_MASK_SELF_IP = '10.10.0.10';
+
+    // Указывает ли fake-TLS домен на этот же сервер: сам домен установки, его
+    // алиас или поддомен любого из них. Сравнение строковое, без резолва:
+    // telemtToml() генерируется на КАЖДЫЙ рестарт telemt, и блокирующий
+    // DNS-запрос в этом пути означал бы подвисшее меню при недоступном
+    // резолвере. Домен, который админ увёл на чужое имя (дефолт
+    // www.google.com), под это не попадает — там внешний фетч и так работает.
+    public function telemtMaskIsSelf(array $conf, string $domain): bool
+    {
+        $domain = strtolower(trim($domain));
+        if ($domain === '') {
+            return false;
+        }
+        $own = array_merge(
+            [(string) ($conf['domain'] ?? '')],
+            is_array($conf['domain_aliases'] ?? null) ? $conf['domain_aliases'] : []
+        );
+        foreach ($own as $name) {
+            $name = strtolower(trim((string) $name));
+            if ($name !== '' && ($domain === $name || str_ends_with($domain, ".$name"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ── telemt WEB (тип прокси «WEB» в Telegram Desktop) ─────────────────────
+    // telemt >= 3.5.0 умеет нести MTProto внутри ОБЫЧНОГО HTTPS: клиент ходит
+    // на 443 отдельного FQDN, TLS терминирует наш ng, а telemt слушает plain
+    // HTTP/1.1 на приватном порту в docker-сети. Ссылка — tg://webproxy БЕЗ
+    // порта (Telegram Desktop требует ровно 443), секрет только plain или dd:
+    // ee (Fake-TLS) в WEB-режиме не поддерживается.
+    //
+    // Приватный порт WEB-листенера. Наружу НЕ публикуется (в compose у telemt
+    // нет ports:), единственный, кто в него ходит, — ng, он же и стоит в
+    // web_trusted_proxy_cidrs. Значение продублировано в nginx-шаблоне
+    // (upstream telemt_web) — тест держит их в согласии.
+    public const TELEMT_WEB_PORT = 8080;
+    // Адрес ng в дефолтной сети сборки: тот самый доверенный L7-пир, чьему
+    // X-Forwarded-For telemt верит. Тот же литерал уже зашит в listen-строки
+    // nginx.conf, так что новой хрупкости не появляется.
+    public const TELEMT_WEB_TRUSTED_CIDR = '10.10.0.2/32';
+    // web.limits.max_profiles у telemt = 32, и превышение — не «лишние
+    // профили молча выброшены», а ОТКАЗ ЗАГРУЗКИ конфига: telemt не стартует
+    // вовсе, вместе с обычным MTProto. Режем список здесь, меню сообщает
+    // об урезании.
+    public const TELEMT_WEB_MAX_PROFILES = 32;
+    // Каталог decoy-сайта внутри контейнера telemt (= /config/telemt/decoy у
+    // php: ./config/telemt смонтирован в оба).
+    public const TELEMT_WEB_DECOY_DIR = '/telemt/decoy';
+
+    public function telemtWebCarrierOf(array $conf): string
+    {
+        $c = $conf['telemt_web_carrier'] ?? 'https-lanes';
+        return in_array($c, ['https', 'https-lanes'], true) ? $c : 'https-lanes';
+    }
+
+    public function telemtWebSecretModeOf(array $conf): string
+    {
+        $m = $conf['telemt_web_secret_mode'] ?? 'dd';
+        return in_array($m, ['plain', 'dd'], true) ? $m : 'dd';
+    }
+
+    // Хост WEB-vhost: отдельный поддомен основного домена (как у ocserv и
+    // naive). Отдельный, а не сам домен, — принципиально: в WEB-режиме vhost
+    // уходит в telemt ЦЕЛИКОМ вместе с decoy-политикой, а на основном домене
+    // живут панель, подписки и ws/grpc-локации xray. Если отдать telemt только
+    // carrier-пути, ответы «обычного» и «аутентифицированного» запроса станут
+    // различимы снаружи, то есть ровно то, от чего decoy и защищает.
+    public function telemtWebHost(array $conf): string
+    {
+        $domain = (string) ($conf['domain'] ?? '');
+        if ($domain === '' || !$this->isHostname($domain)) {
+            return '';
+        }
+        $sub = $this->getHashSubdomain('tw');
+        return $sub === '' ? '' : "$sub.$domain";
+    }
+
+    // Пользователи, попадающие в WEB-профили: все заведённые в telemt, но не
+    // больше лимита. Профиль ссылается на запись [access.users], поэтому
+    // выключенные (user_enabled=false) тоже перечисляем — admission их и так
+    // не пустит, зато конфиг не переписывается на каждый тумблер.
+    public function telemtWebProfiles(array $conf): array
+    {
+        $users = is_array($conf['telemt_users'] ?? null) ? array_keys($conf['telemt_users']) : [];
+        return array_slice($users, 0, self::TELEMT_WEB_MAX_PROFILES);
+    }
+
+    // Чего не хватает для WEB-режима (ключи i18n). Пустой массив — всё готово.
+    // Проверки не косметические: telemt ОТКАЗЫВАЕТСЯ грузить конфиг, если
+    // public_addr не конкретный адрес на 443 или список профилей пуст, а без
+    // сертификата на своё имя Telegram Desktop не откроет соединение.
+    public function telemtWebBlockers(array $conf): array
+    {
+        $out = [];
+        if ($this->telemtWebHost($conf) === '') {
+            $out[] = 'telemt web need domain';
+        } elseif (empty($conf['letsencrypt'])) {
+            $out[] = 'telemt web need cert';
+        }
+        if (!filter_var((string) $this->ip, FILTER_VALIDATE_IP)) {
+            $out[] = 'telemt web need ip';
+        }
+        if (!$this->telemtWebProfiles($conf)) {
+            $out[] = 'telemt web need users';
+        }
+        return $out;
+    }
+
+    public function telemtWebEnabled(array $conf): bool
+    {
+        return !empty($conf['telemt_web']) && !$this->telemtWebBlockers($conf);
+    }
+
+    // WEB появился в telemt 3.5.0, и старый бинарь на незнакомых ключах
+    // конфига не «игнорирует лишнее», а не стартует вовсе — вместе с обычным
+    // MTProto. Расхождение реально: код app/ приезжает bind-mount'ом и
+    // обновляется НЕЗАВИСИМО от образа telemt, так что новый бот со старым
+    // образом — штатная промежуточная ситуация. Проверка ходит по ssh, поэтому
+    // живёт только в интерактивном пути (меню и тумблер), а не в telemtToml.
+    public function telemtWebVersionOk(): bool
+    {
+        $v = $this->telemtVersion();
+        if ($v === 'unknown') {
+            return true;
+        }
+        return version_compare(ltrim($v, 'vV'), '3.5.0', '>=');
+    }
+
+    // Секрет ссылки tg://webproxy. Формат задаёт secret_mode ПРОФИЛЯ и он не
+    // связан с [general.modes] обычного MTProto-листенера (telemt разводит их
+    // в mode_enabled_for_proto_with_policy): tls (ee) на TCP-пути и dd в WEB
+    // прекрасно уживаются на одном пользователе.
+    public function linkTelemtWeb($name, $conf = false)
+    {
+        $conf = is_array($conf) ? $conf : $this->getPacConf();
+        $secret = $conf['telemt_users'][$name] ?? '';
+        if ($secret === '') {
+            return '';
+        }
+        $host = $this->telemtWebHost($conf);
+        if ($host === '') {
+            return '';
+        }
+        // Порта в ссылке нет намеренно: Telegram Desktop принимает WEB-прокси
+        // только на 443 и ссылку с портом отвергает.
+        return 'tg://webproxy?' . http_build_query([
+            'server' => $host,
+            'secret' => ($this->telemtWebSecretModeOf($conf) === 'dd' ? 'dd' : '') . $secret,
+        ], '', '&', PHP_QUERY_RFC3986);
+    }
+
+    // Обычный сайт, который telemt отдаёт на неаутентифицированные запросы.
+    // Берём static_directory, а не http_upstream: единственный приватный
+    // HTTP-origin в сборке (ng:80) отвечает 301 на https://$host — на своём же
+    // vhost это петля редиректа, то есть заметнее любого статического 404.
+    // Snapshot читается ОДИН раз при старте telemt, поэтому файл пишем до
+    // запуска бинаря (restartTelemt).
+    public function telemtWebDecoy(): void
+    {
+        @mkdir('/config/telemt/decoy', 0755, true);
+        $file = '/config/telemt/decoy/index.html';
+        if (is_file($file)) {
+            return;
+        }
+        file_put_contents($file, "<!doctype html>\n<html lang=\"en\">\n<head>\n"
+            . "<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            . "<title>It works!</title>\n</head>\n<body>\n<h1>It works!</h1>\n"
+            . "<p>This is the default page for this server.</p>\n</body>\n</html>\n");
     }
 
     // Версия telemt. Сам бинарь команды версии НЕ имеет (CLI рукописный,
@@ -8834,6 +9139,7 @@ NFT;
             $this->setUpstreamDomainOcserv($ascii);
             $this->setUpstreamDomainNaive($ascii);
             $this->cloakNginx();
+            $this->telemtWebSync();
         }
         if (empty($nomenu)) {
             sleep(3);
@@ -8962,6 +9268,7 @@ NFT;
         $this->setPacConf($conf);
         $this->adguardSync();
         $this->cloakNginx();
+        $this->telemtWebSync();
         if (!$notmenu) {
             $this->menu('config');
         }
@@ -8998,6 +9305,13 @@ NFT;
                 $adguardClient = !empty($conf['adguardkey']) ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
                 $oc = $this->getHashSubdomain('oc');
                 $np = $this->getHashSubdomain('np');
+                // WEB-режим telemt живёт на своём поддомене, и Telegram
+                // Desktop не откроет соединение без валидного сертификата
+                // ИМЕННО на это имя. SAN просим только при включённом WEB:
+                // каждое лишнее имя в запросе — лишняя зависимость выпуска
+                // сертификата от DNS-записи, в том числе у тех, кому WEB не
+                // нужен.
+                $tw = empty($conf['telemt_web']) ? '' : $this->getHashSubdomain('tw');
                 // Алиасы — дополнительные SAN того же серта (формат каждого
                 // провалидирован в addDomainAlias, в shell попадает безопасно).
                 $aliases = '';
@@ -9011,7 +9325,7 @@ NFT;
                         $aliases .= ' -d ' . escapeshellarg($conf['adguardkey'] . '.' . $a);
                     }
                 }
-                exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
+                exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . ($tw ? " -d $tw.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
                 if ($code > 0) {
                     $this->send($this->input['chat'], "ERROR\n" . implode("\n", $out));
                     break;
@@ -9034,6 +9348,7 @@ NFT;
             $this->adguardSync();
             $this->cloakNginx();
             $this->restartTt();
+            $this->telemtWebSync();
         } else {
             $this->update($this->input['chat'], $this->input['message_id'], "wrong format key");
         }
@@ -9295,11 +9610,25 @@ NFT;
 
     public function setIpLimit()
     {
+        // Поле ввода принимает «секунды:количество», и без подсказки это
+        // угадать нельзя: раньше сообщение было «enter seconds and count ip»,
+        // из-за чего в него слали то одно число, то «2 ip», то «300 сек».
+        // Поэтому в сообщении — формат, примеры и текущее значение.
+        $p       = $this->getPacConf();
+        $current = !empty($p['ip_limit'])
+            ? $p['ip_limit'] . ':' . max(1, (int) ($p['ip_count'] ?: 1))
+            : $this->i18n('off');
+
+        $text = "@{$this->input['username']} " . $this->i18n('ip limit') . "\n\n"
+            . $this->i18n('ip limit hint') . "\n\n"
+            . $this->i18n('current value') . ": <code>" . htmlspecialchars((string) $current, ENT_QUOTES, 'UTF-8') . "</code>\n\n"
+            . '⚠️ ' . $this->i18n('ip limit notice');
+
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter seconds and count ip",
+            $text,
             $this->input['message_id'],
-            reply: 'enter seconds:count_ip',
+            reply: 'seconds:count, 300:2, 0 = off',
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -14364,6 +14693,7 @@ DNS-over-HTTPS with IP:
         $text[] = "masking: " . $this->telemtState($masking);
         $text[] = "diagnostics: " . $this->telemtState($diagnostics);
         $text[] = "relays: " . (count($relays) ?: $this->i18n('off'));
+        $text[] = "web: " . $this->telemtState($this->telemtWebEnabled($conf));
         $text[] = "users: " . count($users);
         if (!$ports['enable']) {
             $text[] = "\n⚠ " . $this->i18n('telemt set port hint');
@@ -14372,6 +14702,7 @@ DNS-over-HTTPS with IP:
         $data[] = [['text' => $this->i18n('telemt users'), 'callback_data' => "/telemtUsers"]];
         $data[] = [['text' => $this->i18n('telemt mode'), 'callback_data' => "/telemtMode"]];
         $data[] = [['text' => $this->i18n('telemt sni'), 'callback_data' => "/telemtSni"]];
+        $data[] = [['text' => $this->i18n('telemt web'), 'callback_data' => "/telemtWeb"]];
         $data[] = [['text' => $this->i18n('telemt relays'), 'callback_data' => "/telemtRelays"]];
         $data[] = [['text' => $this->i18n('telemt settings'), 'callback_data' => "/telemtSettings"]];
         $data[] = [['text' => $this->i18n('telemt masking'), 'callback_data' => "/telemtMasking"]];
@@ -14390,6 +14721,7 @@ DNS-over-HTTPS with IP:
         $conf = $this->getPacConf();
         $users = is_array($conf['telemt_users'] ?? null) ? $conf['telemt_users'] : [];
         $enabled = is_array($conf['telemt_user_enabled'] ?? null) ? $conf['telemt_user_enabled'] : [];
+        $web = $this->telemtWebEnabled($conf);
         // Only relays with an address are selectable; an unknown/empty name
         // resolves to null → direct links (server = real endpoint).
         $relays = is_array($conf['telemt_relays'] ?? null)
@@ -14402,6 +14734,9 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt users')
             . ($relay !== '' ? " (via <b>" . htmlspecialchars($relay, ENT_QUOTES) . "</b>)" : '') . "\n";
         $text[] = "users: " . count($users);
+        if ($web) {
+            $text[] = "🌐 — " . $this->i18n('telemt web link');
+        }
         if ($users) {
             $text[] = '';
             foreach ($users as $name => $secret) {
@@ -14413,6 +14748,11 @@ DNS-over-HTTPS with IP:
         }
 
         $rarg = $relay !== '' ? " $relay" : '';
+        // WEB-профиль получают не все: их число упирается в лимит telemt (32).
+        // Кнопку 🌐 рисуем ТОЛЬКО тем, кто в профили попал, иначе ссылка
+        // сгенерируется, Telegram Desktop её примет, а telemt не пустит — и по
+        // симптомам это неотличимо от сетевой проблемы.
+        $webUsers = $web ? array_flip($this->telemtWebProfiles($conf)) : [];
         foreach ($users as $name => $secret) {
             $link = $this->linkTelemt($name, $rl);
             $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
@@ -14424,12 +14764,18 @@ DNS-over-HTTPS with IP:
             // имени теперь ограничивает telemtUserAdd(), но записи, заведённые
             // до этого, никуда не делись: у них останутся те кнопки, что влезли
             // (у «/telemtDelUser » запас больше всех, то есть удалить можно).
-            foreach ([
+            $btns = [
                 [$this->i18n($state), "/telemtToggleUser $name"],
                 ['📷', "/telemtQr $name$rarg"],
-                ['🔄', "/telemtRegen $name"],
-                ['❌', "/telemtDelUser $name"],
-            ] as [$label, $cb]) {
+            ];
+            if (isset($webUsers[$name])) {
+                // Ссылка WEB-режима: у неё свой хост и всегда порт 443,
+                // поэтому выбранный relay к ней не применяется.
+                $btns[] = ['🌐', "/telemtWebLink $name"];
+            }
+            $btns[] = ['🔄', "/telemtRegen $name"];
+            $btns[] = ['❌', "/telemtDelUser $name"];
+            foreach ($btns as [$label, $cb]) {
                 // ИМЕННО $label: переменная $text выше — это массив строк
                 // сообщения, и деструктуризация в неё затирала его строкой,
                 // после чего implode() ниже падал с TypeError и меню «telemt
@@ -14531,6 +14877,163 @@ DNS-over-HTTPS with IP:
             $this->restartTelemt();
         }
         $this->telemtSni();
+    }
+
+    // ── Меню WEB-режима ─────────────────────────────────────────────────────
+    // Отдельная ветка, а не тумблер в «settings»: WEB — это второй способ
+    // подключения к тому же telemt (свой vhost, свой формат ссылки, свои
+    // требования к домену и сертификату), и рядом с mode/SNI обычного
+    // MTProto-пути он только путал бы.
+    public function telemtWeb($update = false)
+    {
+        $conf     = $this->getPacConf();
+        $host     = $this->telemtWebHost($conf);
+        $blockers = $this->telemtWebBlockers($conf);
+        $on       = $this->telemtWebEnabled($conf);
+        $users    = is_array($conf['telemt_users'] ?? null) ? $conf['telemt_users'] : [];
+        $profiles = $this->telemtWebProfiles($conf);
+
+        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt web') . "\n";
+        $text[] = "status: " . $this->telemtState($on);
+        $text[] = "host: <code>" . htmlspecialchars($host ?: '-', ENT_QUOTES) . "</code>";
+        $text[] = "carrier: " . $this->telemtWebCarrierOf($conf);
+        $text[] = "secret: " . $this->telemtWebSecretModeOf($conf);
+        $text[] = "profiles: " . count($profiles) . '/' . count($users);
+        if (count($users) > count($profiles)) {
+            $text[] = "\n⚠ " . $this->i18n('telemt web profiles capped');
+        }
+        foreach ($blockers as $b) {
+            $text[] = "\n⚠ " . $this->i18n($b);
+        }
+        if (!$this->telemtWebVersionOk()) {
+            $text[] = "\n⚠ " . $this->i18n('telemt web need version');
+        }
+        if (!$blockers && !empty($conf['telemt_web'])) {
+            $text[] = "\nℹ " . $this->i18n('telemt web cert hint');
+        }
+        $text[] = "\nℹ " . $this->i18n('telemt web note');
+
+        $data[] = [[
+            'text'          => $this->i18n('telemt web') . ': ' . $this->telemtState(!empty($conf['telemt_web'])),
+            'callback_data' => "/telemtWebToggle",
+        ]];
+        $data[] = [[
+            'text'          => 'carrier: ' . $this->telemtWebCarrierOf($conf),
+            'callback_data' => "/telemtWebCarrier",
+        ]];
+        $data[] = [[
+            'text'          => 'secret: ' . $this->telemtWebSecretModeOf($conf),
+            'callback_data' => "/telemtWebSecret",
+        ]];
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
+
+        if ($update) {
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+        } else {
+            $this->send($this->input['chat'], implode("\n", $text), $this->input['message_id'], $data);
+        }
+    }
+
+    // Включение отказывает, пока не выполнены предусловия telemt: без них
+    // конфиг не загрузится и упадёт ВЕСЬ прокси, а не только WEB.
+    public function telemtWebToggle()
+    {
+        $conf = $this->getPacConf();
+        $new  = empty($conf['telemt_web']);
+        if ($new && ($this->telemtWebBlockers($conf) || !$this->telemtWebVersionOk())) {
+            $this->answer($this->input['callback_id'], $this->i18n('telemt web blocked'), true);
+            return $this->telemtWeb(true);
+        }
+        $conf['telemt_web'] = $new ? 1 : 0;
+        $this->setPacConf($conf);
+        $this->restartTelemt();
+        // nginx: блок #-tgweb появляется и исчезает вместе с тумблером.
+        $this->cloakNginx();
+        $this->telemtWeb(true);
+    }
+
+    public function telemtWebCarrier()
+    {
+        $conf = $this->getPacConf();
+        $conf['telemt_web_carrier'] = $this->telemtWebCarrierOf($conf) === 'https' ? 'https-lanes' : 'https';
+        $this->setPacConf($conf);
+        $this->restartTelemt();
+        $this->telemtWeb(true);
+    }
+
+    // Смена формата секрета инвалидирует ВСЕ выданные webproxy-ссылки: тот же
+    // секрет с другим префиксом — другой пользователь для telemt.
+    public function telemtWebSecret()
+    {
+        $conf = $this->getPacConf();
+        $conf['telemt_web_secret_mode'] = $this->telemtWebSecretModeOf($conf) === 'dd' ? 'plain' : 'dd';
+        $this->setPacConf($conf);
+        $this->restartTelemt();
+        // Модалка, а не строка в меню: предупреждение важно ровно в момент
+        // переключения, а висеть в тексте постоянно ему незачем.
+        if (!empty($conf['telemt_users'])) {
+            $this->answer($this->input['callback_id'], $this->i18n('telemt web secret changed'), true);
+        }
+        $this->telemtWeb(true);
+    }
+
+    // Ссылка tg://webproxy + QR. Relay здесь не применим: хост обязан
+    // совпадать с vhost telemt и с именем в сертификате, а порт — быть 443.
+    public function telemtWebLink($name)
+    {
+        $conf = $this->getPacConf();
+        // Та же проверка, что и у кнопки: пользователь без WEB-профиля получил
+        // бы ссылку, которую telemt не примет. Кнопка Telegram живёт вечно —
+        // после появления новых пользователей и сдвига за лимит нажатие может
+        // прийти и на неё.
+        // Сравнение через array_flip + isset, а не in_array со строгим
+        // сравнением: имя из чисел json_decode отдаёт INT-ключом массива, а из
+        // callback_data оно всегда приходит строкой — строгое сравнение такого
+        // пользователя не нашло бы никогда (та же ловушка описана у relay).
+        $webUsers = array_flip($this->telemtWebProfiles($conf));
+        if (empty($conf['telemt_users'][$name])
+            || !$this->telemtWebEnabled($conf)
+            || !isset($webUsers[$name])) {
+            return $this->telemtUsers();
+        }
+        $link = $this->linkTelemtWeb($name, $conf);
+        if ($link === '') {
+            return $this->telemtUsers();
+        }
+        $qr_file = __DIR__ . "/qr/telemt_web.png";
+        exec("qrencode -t png -o $qr_file " . escapeshellarg($link));
+        $this->sendPhoto(
+            $this->input['chat'],
+            curl_file_create($qr_file),
+            '<b>' . htmlspecialchars((string) $name, ENT_QUOTES) . " · WEB</b>\n" . htmlspecialchars($link, ENT_QUOTES)
+        );
+        @unlink($qr_file);
+        if (($this->getPacConf()['blinkmenu'] ?? false)) {
+            $this->delete($this->input['chat'], $this->input['message_id']);
+            $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
+            $this->telemt();
+        }
+    }
+
+    // Домен и сертификат едут в [[web.vhosts]], поэтому после их смены конфиг
+    // telemt обязан быть перегенерирован — иначе прокси остаётся на старом
+    // vhost и молча отдаёт всем decoy.
+    public function telemtWebSync(): void
+    {
+        if (!empty($this->getPacConf()['telemt_web'])) {
+            $this->restartTelemt();
+        }
+    }
+
+    // WEB живёт в ДВУХ конфигах сразу — telemt.toml и nginx, — и включаться
+    // они обязаны вместе. Вызывается там, где меняется не тумблер, а
+    // предусловие (последний пользователь удалён, первый заведён): $was —
+    // состояние ДО правки.
+    public function telemtWebRefresh(bool $was): void
+    {
+        if ($was !== $this->telemtWebEnabled($this->getPacConf())) {
+            $this->cloakNginx();
+        }
     }
 
     // --- Dedicated TeleMT relays (separate from xray $pac['relays']) ----------
@@ -15082,19 +15585,23 @@ DNS-over-HTTPS with IP:
             return;
         }
         $conf = $this->getPacConf();
+        $was  = $this->telemtWebEnabled($conf);
         $conf['telemt_users'][$name] = $this->telemtSecret();
         $this->setPacConf($conf);
         $this->restartTelemt();
+        $this->telemtWebRefresh($was);
         $this->telemtUsers();
     }
 
     public function telemtDelUser($name)
     {
         $conf = $this->getPacConf();
+        $was  = $this->telemtWebEnabled($conf);
         unset($conf['telemt_users'][$name]);
         unset($conf['telemt_user_enabled'][$name]);
         $this->setPacConf($conf);
         $this->restartTelemt();
+        $this->telemtWebRefresh($was);
         $this->telemtUsers();
     }
 
@@ -17273,14 +17780,22 @@ DNS-over-HTTPS with IP:
 
     public function switchIpLimit($limit)
     {
-        $limit = explode(':', $limit);
+        // Разбираем ввод свободно: «300:2», «300 2», «300,2» и просто «300».
+        // Прежний explode(':') на вводе без разделителя падал в
+        // «Undefined array key 1», а мусорные символы уезжали в (int).
+        $raw     = trim((string) $limit);
+        $parts   = preg_split('~[^0-9]+~', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        // Минус в начале — те же «выключить», что и 0 (иначе «-5» стало бы 5).
+        $seconds = str_starts_with($raw, '-') ? 0 : (int) ($parts[0] ?? 0);
+        $count   = (int) ($parts[1] ?? 0);
+
         $c = $this->getPacConf();
-        if ((int) $limit[0] <= 0) {
+        if ($seconds <= 0) {
             unset($c['ip_limit']);
             unset($c['ip_count']);
         } else {
-            $c['ip_limit'] = (int) $limit[0];
-            $c['ip_count'] = (int) $limit[1] ?: 1;
+            $c['ip_limit'] = $seconds;
+            $c['ip_count'] = max(1, $count);
         }
         $this->setPacConf($c);
         $this->xray();
@@ -26691,6 +27206,21 @@ DNS-over-HTTPS with IP:
                 $template = preg_replace('~#-domain.+?#-domain~s', $this->uncomment($v, 'domain'), $template, 1);
             }
         }
+        // WEB-режим telemt: отдельный vhost, целиком уезжающий в telemt (блок
+        // #-tgweb в шаблоне). Условие — telemtWebEnabled(), а не голый тумблер:
+        // nginx не должен проксировать в листенер, которого telemtToml не
+        // создал, иначе на WEB-хосте вместо decoy отвечает 502 — а это
+        // заметный отпечаток ровно там, где мы прикидываемся обычным сайтом.
+        // Проверка включает и домен, и сертификат, поэтому отдельного условия
+        // на них здесь нет.
+        $twHost = $this->telemtWebEnabled($conf) ? $this->telemtWebHost($conf) : '';
+        $template = preg_replace('~server_name tgweb~', 'server_name ' . ($twHost ?: '_'), $template);
+        if ($twHost) {
+            preg_match_all('~#-tgweb.+?#-tgweb~s', $template, $m);
+            foreach ($m[0] as $v) {
+                $template = preg_replace('~#-tgweb.+?#-tgweb~s', $this->uncomment($v, 'tgweb'), $template, 1);
+            }
+        }
         $h = $this->getHashBot();
         $s = empty($conf['adgbrowser']) ? '' : '#';
         $r = <<<CONF
@@ -27297,6 +27827,14 @@ DNS-over-HTTPS with IP:
             $text[] = 'openconnect ' . "$oc.{$conf['domain']}" . (in_array("$oc.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
             if (!empty($conf['adguardkey'])) {
                 $text[] = "{$conf['adguardkey']}.{$conf['domain']}" . (in_array("{$conf['adguardkey']}.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
+            }
+            // WEB-прокси telemt (тип прокси WEB в Telegram Desktop) живёт на
+            // своём поддомене, и без SAN на ЭТО имя Desktop соединение не
+            // откроет. Поэтому отсутствие сертификата показываем явно, как у
+            // алиасов, а не молчанием, как у naive/openconnect: там имя нужно
+            // только своему клиенту, а здесь — единственная точка входа.
+            if (!empty($conf['telemt_web']) && ($tw = $this->telemtWebHost($conf)) !== '') {
+                $text[] = "telemt web $tw" . (in_array($tw, $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : ' (no ssl — renew SSL)');
             }
             foreach ($conf['domain_aliases'] ?? [] as $a) {
                 $text[] = "alias $a" . (in_array($a, $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : ' (no ssl — renew SSL)');
