@@ -62,3 +62,5 @@ nftables.conf
 .codex/
 .claude/
 .agents/
+# отчёты аудита — только локально, не в репозитории
+/AUDIT-*.md
