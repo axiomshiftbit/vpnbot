@@ -101,6 +101,14 @@ $i = [
         'en' => '⚠️ The xhttp transport already multiplexes on its own (xmux). Stacking SMUX on top adds a second layer with no gain — extra latency and head-of-line blocking.',
         'ru' => '⚠️ Транспорт xhttp уже мультиплексирует сам (xmux). SMUX поверх — второй слой без выигрыша: лишняя задержка и head-of-line blocking.',
     ],
+    'smux halfclose hint'  => [
+        'en' => 'Half-close lets an upload finish while the answer keeps coming back: without it an EOF-driven origin waits for the idle timeout and its late reply gets truncated. auto negotiates with the server and silently falls back to the old carrier if it cannot; require refuses that fallback — with an older core on the other side the connection will not come up at all. Needs the fork 26.8.25+ on BOTH ends and travels only in the xray (v2ray json) subscription — sing-box and mihomo have no such key.',
+        'ru' => 'Половинное закрытие даёт дослать загрузку и продолжить читать ответ: без него origin, который ждёт EOF, досиживает до таймаута простоя, а его поздний ответ обрезается. auto договаривается с сервером и молча откатывается на прежний несущий коннект, если тот не умеет; require откат запрещает — со старым ядром на той стороне соединение не поднимется вовсе. Нужен форк 26.8.25+ на ОБОИХ концах, уезжает только в xray-подписке (v2ray json) — у sing-box и mihomo такого ключа нет.',
+    ],
+    'smux halfclose old'   => [
+        'en' => '⚠️ The core on the server is older than 26.8.25 and cannot negotiate half-close: require is unavailable, auto simply stays on the old carrier. Rebuild/update the xr image to use it.',
+        'ru' => '⚠️ Ядро на сервере старее 26.8.25 и договориться о половинном закрытии не может: require недоступен, а auto просто останется на прежнем несущем коннекте. Обновите (пересоберите) образ xr, чтобы им пользоваться.',
+    ],
     'smux brutal hint'     => [
         'en' => 'Brutal sends at exactly the configured rate, ignoring loss. Set both ceilings BELOW the real link speed.',
         'ru' => 'Brutal льёт ровно с заданной скоростью, игнорируя потери. Ставьте обе полки НИЖЕ реальной скорости канала.',
