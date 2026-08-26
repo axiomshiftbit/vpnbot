@@ -558,6 +558,52 @@ $b->time_xraycore = 0;
 $b->checkXrayCore();
 smAssert($b->xrLinkFix === 0, 'консистентное состояние обнуляет счётчик попыток');
 
+// --- гейт half-close по версии ядра ------------------------------------------
+// require запрещает откат на прежний несущий коннект: со старым форком на той
+// стороне соединение не поднимется вовсе. Поэтому крайнее значение доступно
+// только когда сервер точно умеет договариваться (форк 26.8.25+).
+$b = smFixBot(['version' => 'Xray 26.8.24 (Xray, Penetrates Everything.)']);
+smAssert(!$b->smuxHalfCloseReady(), 'форк 26.8.24 договориться не умеет');
+$b = smFixBot(['version' => 'Xray 26.8.25-1457 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'форк 26.8.25-1457 умеет (суффикс — время сборки, не pre-release)');
+$b = smFixBot(['version' => 'Xray 26.8.26-0855 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'форк 26.8.26-0855 умеет');
+// Версия относится к АКТИВНОМУ ядру: пока по симлинку отвечает апстрим (или
+// проба молчит), про форк она не говорит ничего — запрещать нечего.
+$b = smFixBot(['active' => 'origin', 'running' => 'origin', 'version' => 'Xray 26.7.28 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'активен апстрим — версия про форк ничего не говорит');
+$b = smFixBot(['ok' => false, 'version' => '']);
+smAssert($b->smuxHalfCloseReady(), 'xr недоступен — настройку не блокируем');
+$b = smFixBot(['version' => '']);
+smAssert($b->smuxHalfCloseReady(), 'пустой вывод version — тоже «неизвестно»');
+
+// Откат образа на форк старее 26.8.25: require в подписке = тишина у клиента,
+// поэтому периодическая проверка понижает его до auto сама.
+$b = smFixBot(['version' => 'Xray 26.8.24 (Xray, Penetrates Everything.)']);
+$b->pacConf['smux']['half_close'] = 'require';
+$b->checkXrayCore();
+smAssert(($b->pacConf['smux']['half_close'] ?? '') === 'auto',
+    'старое ядро понижает require до auto');
+// auto и off трогать нечего — они на старом ядре работают как раньше.
+foreach (['auto', 'off'] as $keep) {
+    $b = smFixBot(['version' => 'Xray 26.8.24 (Xray, Penetrates Everything.)']);
+    $b->pacConf['smux']['half_close'] = $keep;
+    $b->checkXrayCore();
+    smAssert(($b->pacConf['smux']['half_close'] ?? '') === $keep, "«{$keep}» не трогаем");
+}
+// Ядро умеет — настройку не понижаем.
+$b = smFixBot(['version' => 'Xray 26.8.26-0855 (Xray, Penetrates Everything.)']);
+$b->pacConf['smux']['half_close'] = 'require';
+$b->checkXrayCore();
+smAssert(($b->pacConf['smux']['half_close'] ?? '') === 'require',
+    'ядро 26.8.26 — require остаётся');
+// Молчащий контейнер: состояние неизвестно, понижать вслепую нельзя.
+$b = smFixBot(['ok' => false, 'version' => '']);
+$b->pacConf['smux']['half_close'] = 'require';
+$b->checkXrayCore();
+smAssert(($b->pacConf['smux']['half_close'] ?? '') === 'require',
+    'xr недоступен — настройку не трогаем');
+
 // Троттлинг: без него cron дёргал бы ssh каждые 10 секунд.
 $b = smFixBot(['active' => 'origin', 'running' => 'origin']);
 $b->time_xraycore = time();

@@ -106,8 +106,8 @@ $i = [
         'ru' => 'Половинное закрытие даёт дослать загрузку и продолжить читать ответ: без него origin, который ждёт EOF, досиживает до таймаута простоя, а его поздний ответ обрезается. auto договаривается с сервером и молча откатывается на прежний несущий коннект, если тот не умеет; require откат запрещает — со старым ядром на той стороне соединение не поднимется вовсе. Нужен форк 26.8.25+ на ОБОИХ концах, уезжает только в xray-подписке (v2ray json) — у sing-box и mihomo такого ключа нет.',
     ],
     'smux halfclose old'   => [
-        'en' => '⚠️ The core on the server is older than 26.8.25 and cannot negotiate half-close: require is unavailable, auto simply stays on the old carrier. Rebuild/update the xr image to use it.',
-        'ru' => '⚠️ Ядро на сервере старее 26.8.25 и договориться о половинном закрытии не может: require недоступен, а auto просто останется на прежнем несущем коннекте. Обновите (пересоберите) образ xr, чтобы им пользоваться.',
+        'en' => '⚠️ The core on the server is older than 26.8.25: it cannot negotiate half-close. require is unavailable, auto just stays on the old carrier. Update (rebuild) the xr image to use it.',
+        'ru' => '⚠️ Ядро на сервере старее 26.8.25: договариваться о половинном закрытии оно не умеет. require недоступен, auto останется на прежнем несущем коннекте. Обновите (пересоберите) образ xr.',
     ],
     'smux brutal hint'     => [
         'en' => 'Brutal sends at exactly the configured rate, ignoring loss. Set both ceilings BELOW the real link speed.',
