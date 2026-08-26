@@ -17573,6 +17573,25 @@ DNS-over-HTTPS with IP:
                 ['text' => 'padding: ' . $on($s['padding']),   'callback_data' => '/smuxToggle padding'],
                 ['text' => 'only-tcp: ' . $on($s['only_tcp']), 'callback_data' => '/smuxToggle only_tcp'],
             ];
+            // Половинное закрытие живёт только на smux-пути: h2mux несёт его
+            // нативно в теле запроса и опцию отвергает, поэтому при h2mux
+            // кнопки нет вовсе — не показываем настройку, которой не будет в
+            // конфиге. Критерий тот же, что в smuxBlock(): всё, что не h2mux,
+            // уезжает клиенту как smux (мусор в pac.json — тоже), иначе меню и
+            // подписка разошлись бы на кривом protocol.
+            if ($s['protocol'] !== 'h2mux') {
+                $hc     = self::smuxHalfClose($s['half_close']);
+                $data[] = [[
+                    'text'          => 'half-close: ' . $hc,
+                    'callback_data' => '/smuxToggle half_close',
+                ]];
+                if ($hc !== 'off') {
+                    $text[] = $this->i18n('smux halfclose hint');
+                }
+                if (!$this->smuxHalfCloseReady()) {
+                    $text[] = $this->i18n('smux halfclose old');
+                }
+            }
             if ($this->brutalAvailable()) {
                 $data[] = [[
                     'text'          => 'Brutal: ' . $on($s['brutal']['enabled']),
@@ -17663,6 +17682,19 @@ DNS-over-HTTPS with IP:
                 // Только smux и h2mux: yamux, который знает sing-box, форк-сервер
                 // отвергает (SMuxConfig.Build → "unsupported SMUX protocol").
                 $s['protocol'] = $s['protocol'] === 'smux' ? 'h2mux' : 'smux';
+                break;
+            case 'half_close':
+                // off → auto → require → off. Тумблера мало: у политики три
+                // значения, и крайнее опасно — require ЗАПРЕЩАЕТ откат на
+                // прежний несущий коннект, так что со старым ядром на той
+                // стороне соединение не поднимется вовсе.
+                $cur  = self::smuxHalfClose($s['half_close']);
+                $next = ['off' => 'auto', 'auto' => 'require', 'require' => 'off'][$cur];
+                if ($next === 'require' && !$this->smuxHalfCloseReady()) {
+                    $this->answer($this->input['callback_id'], $this->i18n('smux halfclose old'), true);
+                    $next = 'off';
+                }
+                $s['half_close'] = $next;
                 break;
             case 'brutal':
                 if (empty($s['brutal']['enabled']) && !$this->brutalAvailable()) {
@@ -22709,10 +22741,29 @@ DNS-over-HTTPS with IP:
         // это не расхождение). Всё сходится: счётчик попыток можно обнулить.
         if ($probe['active'] === 'fork' && $probe['running'] !== 'origin') {
             $this->xrLinkFix = 0;
+            $this->healSmuxHalfClose($p);
 
             return;
         }
         $this->restoreXrayLink();
+    }
+
+    // Откат образа xr на форк старее 26.8.25 оставил бы клиентов с require в
+    // подписке без связи: договориться о половинном закрытии такое ядро не
+    // умеет, а require запрещает откат на прежний несущий коннект — ровно та
+    // поломка, которой не видно, пока кто-нибудь не пожалуется. Понижаем до
+    // auto: намерение сохраняется, связь возвращается на следующей же выдаче
+    // подписки, а require вернётся кнопкой, как только образ обновят.
+    public function healSmuxHalfClose(array $p): void
+    {
+        if (self::smuxHalfClose($p['smux']['half_close'] ?? '') !== 'require'
+            || $this->smuxHalfCloseReady()
+        ) {
+            return;
+        }
+        $p['smux']['half_close'] = 'auto';
+        $this->setPacConf($p);
+        error_log('healSmuxHalfClose: xray core older than 26.8.25 — half-close require downgraded to auto');
     }
 
     // Маркер желаемого ядра. Отдельным методом, потому что писать его нужно из
@@ -24614,6 +24665,11 @@ DNS-over-HTTPS with IP:
             'padding'         => 1,
             // only-tcp понимает только mihomo; в sing-box такого поля нет.
             'only_tcp'        => 0,
+            // logicalHalfClose форка (26.8.25+): off — прежнее поведение,
+            // auto — договориться с сервером и молча откатиться, если он не
+            // умеет, require — требовать. Дефолт off: это ровно те байты
+            // несущего коннекта, что и раньше.
+            'half_close'      => 'off',
             'brutal'          => [
                 'enabled' => 0,
                 // Занижено сознательно: Brutal игнорирует сигналы перегрузки и
@@ -24635,6 +24691,36 @@ DNS-over-HTTPS with IP:
         unset($d['brutal']);
 
         return $s + $d;
+    }
+
+    // Политика половинного закрытия потока: off | auto | require. Мусор из
+    // pac.json (правка руками, чужой конфиг) приводим к off — неизвестное
+    // значение SMuxConfig.Build() отвергает на СТАРТЕ, то есть ядро у клиента
+    // просто не поднимется.
+    public static function smuxHalfClose($v): string
+    {
+        $v = strtolower(trim((string) $v));
+
+        return in_array($v, ['off', 'auto', 'require'], true) ? $v : 'off';
+    }
+
+    // Умеет ли ядро на СЕРВЕРЕ договариваться о половинном закрытии: несущий
+    // коннект версии 2 и команда 4 появились в форке 26.8.25.
+    //
+    // Версия в пробе — это вывод `xray version` по симлинку, то есть версия
+    // АКТИВНОГО ядра. Когда активен апстрим (проба молчит, откат образа,
+    // расхождение симлинка и настройки) про версию ФОРКА она не говорит
+    // ничего — тогда не мешаем: «неизвестно» не повод запрещать настройку, а
+    // про недоступный xr и про расхождение ядер меню пишет отдельно.
+    public function smuxHalfCloseReady(): bool
+    {
+        $probe = $this->xrayCoreProbe();
+        if (empty($probe['ok']) || ($probe['active'] ?? '') !== 'fork') {
+            return true;
+        }
+        $v = $this->getXrayVersion();
+
+        return $v === '' || version_compare($v, '26.8.25', '>=');
     }
 
     // Минимум, ниже которого форк отвергает ставку Brutal (smuxBrutalMinBPS).
@@ -25190,6 +25276,7 @@ DNS-over-HTTPS with IP:
         $padding    = !empty($s['padding']);
         $onlyTcp    = !empty($s['only_tcp']);
         $brutal     = !empty($s['brutal']['enabled']);
+        $halfClose  = self::smuxHalfClose($s['half_close']);
         $up         = self::smuxRate($s['brutal']['up']);
         $down       = self::smuxRate($s['brutal']['down']);
 
@@ -25204,6 +25291,13 @@ DNS-over-HTTPS with IP:
                     'padding'        => $padding,
                     'onlyTcp'        => $onlyTcp,
                 ];
+                // Половинное закрытие есть ТОЛЬКО у форка и ТОЛЬКО по smux:
+                // с h2mux Build() отвергает конфиг («logicalHalfClose is only
+                // supported by SMUX»), а у sing-box и mihomo такого ключа нет
+                // вовсе — потому поле живёт лишь в этом диалекте.
+                if ($proto === 'smux' && $halfClose !== 'off') {
+                    $b['logicalHalfClose'] = $halfClose;
+                }
                 if ($brutal) {
                     $b['brutal-opts'] = ['enabled' => true, 'up' => $up, 'down' => $down];
                 }

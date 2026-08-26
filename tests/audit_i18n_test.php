@@ -56,6 +56,26 @@ i18nAssert(
 );
 i18nAssert(count($used) > 250, 'надписи найдены: ' . count($used));
 
+// Тексты, уходящие в answerCallbackQuery, обязаны влезать в лимит Telegram:
+// 200 символов. Длиннее — API отвечает 400, и всплывающее предупреждение не
+// показывается ВООБЩЕ, то есть пользователь молча не узнаёт о причине отказа.
+preg_match_all('~answer\(([^;]{0,400}?)\)\s*;~s', $src, $calls);
+$alerts = [];
+foreach ($calls[1] as $call) {
+    if (preg_match_all('~i18n\(\s*\'([^\']+)\'~', $call, $k)) {
+        foreach ($k[1] as $key) {
+            $alerts[$key] = true;
+        }
+    }
+}
+i18nAssert(count($alerts) > 5, 'ключи-алерты найдены: ' . count($alerts));
+foreach (array_keys($alerts) as $k) {
+    foreach (['en', 'ru'] as $lang) {
+        $len = mb_strlen((string) ($dict[$k][$lang] ?? ''));
+        i18nAssert($len <= 200, "алерт «{$k}» ({$lang}): $len символов — лимит answerCallbackQuery 200");
+    }
+}
+
 // Ключи с интерполяцией допустимы только тогда, когда переменная принимает
 // значения из известного набора и все варианты в словаре есть. Собранный из
 // пользовательского ввода ключ («clean logs 1.2.3.4») не совпадёт никогда.

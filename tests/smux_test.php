@@ -167,6 +167,53 @@ $bot->applyClientSmux($conf, 0, $pacProto, 'si');
 smAssert(($conf['outbounds'][0]['multiplex']['protocol'] ?? '') === 'smux',
     'yamux (его форк-сервер не принимает) заменяется на smux');
 
+// --- 5: logicalHalfClose ------------------------------------------------------
+// Поле форка 26.8.25+: живёт ТОЛЬКО в xray-диалекте и ТОЛЬКО при smux. С h2mux
+// Build() отвергает конфиг («logicalHalfClose is only supported by SMUX»), а
+// неизвестное значение — тоже: обе ошибки видны как «ядро не поднялось».
+smAssert(Bot::smuxDefaults()['half_close'] === 'off',
+    'по умолчанию half-close выключен — байты несущего коннекта прежние');
+foreach (['off', 'auto', 'require'] as $ok) {
+    smAssert(Bot::smuxHalfClose($ok) === $ok, "политика «{$ok}» принимается как есть");
+}
+foreach (['', 'on', '1', 'yes', 'REQUIRE '] as $raw) {
+    $want = trim(strtolower($raw)) === 'require' ? 'require' : 'off';
+    smAssert(Bot::smuxHalfClose($raw) === $want, "значение «{$raw}» нормализуется в {$want}");
+}
+
+$pacHc = smPac('fork', ['protocol' => 'smux', 'half_close' => 'auto']);
+$conf  = ['outbounds' => [['tag' => 'proxy']]];
+$bot->applyClientSmux($conf, 0, $pacHc, 's');
+smAssert(($conf['outbounds'][0]['smux']['logicalHalfClose'] ?? '') === 'auto',
+    'xray-диалект несёт logicalHalfClose');
+foreach (['si' => 'multiplex', 'cl' => 'smux'] as $t => $key) {
+    $conf = $t === 'cl' ? ['proxies' => [['name' => 'proxy']]] : ['outbounds' => [['tag' => 'proxy']]];
+    $bot->applyClientSmux($conf, 0, $pacHc, $t);
+    smAssert(!str_contains(json_encode($conf), 'logicalHalfClose'),
+        "t=$t: у sing-box/mihomo такого ключа нет — не подсовываем");
+}
+
+// h2mux: поле обязано исчезнуть, иначе ядро у клиента не стартует.
+$pacH2 = smPac('fork', ['protocol' => 'h2mux', 'half_close' => 'require']);
+$conf  = ['outbounds' => [['tag' => 'proxy']]];
+$bot->applyClientSmux($conf, 0, $pacH2, 's');
+smAssert(!isset($conf['outbounds'][0]['smux']['logicalHalfClose']),
+    'h2mux + logicalHalfClose Build() отвергает — поля быть не должно');
+
+// Тот же инвариант через плейсхолдер шаблона с пер-шаблонным протоколом.
+$conf = ['outbounds' => [['tag' => 'proxy', 'smux' => '~smux:h2mux~']]];
+$bot->applyClientSmux($conf, 0, smPac('fork', ['half_close' => 'auto']), 's');
+smAssert(($conf['outbounds'][0]['smux']['protocol'] ?? '') === 'h2mux'
+    && !isset($conf['outbounds'][0]['smux']['logicalHalfClose']),
+    '~smux:h2mux~ в шаблоне тоже не получает logicalHalfClose');
+
+// off — ключа нет вовсе: пустая строка/«off» для форка равнозначны, но лишний
+// ключ в подписке — лишний повод для расхождения диалектов.
+$conf = ['outbounds' => [['tag' => 'proxy']]];
+$bot->applyClientSmux($conf, 0, smPac('fork', ['half_close' => 'off']), 's');
+smAssert(!isset($conf['outbounds'][0]['smux']['logicalHalfClose']),
+    'half-close off — ключа в конфиге нет');
+
 // --- 4: грамматика и порог Brutal -------------------------------------------
 foreach (['100 Mbps', '1 Gbps', '50Mbps', '1000', '512 KBps'] as $ok) {
     smAssert(Bot::smuxRate($ok) === $ok, "ставка «{$ok}» принимается как есть");
@@ -510,6 +557,52 @@ $b->probe = ['ok' => true, 'fork' => true, 'active' => 'fork', 'running' => 'for
 $b->time_xraycore = 0;
 $b->checkXrayCore();
 smAssert($b->xrLinkFix === 0, 'консистентное состояние обнуляет счётчик попыток');
+
+// --- гейт half-close по версии ядра ------------------------------------------
+// require запрещает откат на прежний несущий коннект: со старым форком на той
+// стороне соединение не поднимется вовсе. Поэтому крайнее значение доступно
+// только когда сервер точно умеет договариваться (форк 26.8.25+).
+$b = smFixBot(['version' => 'Xray 26.8.24 (Xray, Penetrates Everything.)']);
+smAssert(!$b->smuxHalfCloseReady(), 'форк 26.8.24 договориться не умеет');
+$b = smFixBot(['version' => 'Xray 26.8.25-1457 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'форк 26.8.25-1457 умеет (суффикс — время сборки, не pre-release)');
+$b = smFixBot(['version' => 'Xray 26.8.26-0855 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'форк 26.8.26-0855 умеет');
+// Версия относится к АКТИВНОМУ ядру: пока по симлинку отвечает апстрим (или
+// проба молчит), про форк она не говорит ничего — запрещать нечего.
+$b = smFixBot(['active' => 'origin', 'running' => 'origin', 'version' => 'Xray 26.7.28 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'активен апстрим — версия про форк ничего не говорит');
+$b = smFixBot(['ok' => false, 'version' => '']);
+smAssert($b->smuxHalfCloseReady(), 'xr недоступен — настройку не блокируем');
+$b = smFixBot(['version' => '']);
+smAssert($b->smuxHalfCloseReady(), 'пустой вывод version — тоже «неизвестно»');
+
+// Откат образа на форк старее 26.8.25: require в подписке = тишина у клиента,
+// поэтому периодическая проверка понижает его до auto сама.
+$b = smFixBot(['version' => 'Xray 26.8.24 (Xray, Penetrates Everything.)']);
+$b->pacConf['smux']['half_close'] = 'require';
+$b->checkXrayCore();
+smAssert(($b->pacConf['smux']['half_close'] ?? '') === 'auto',
+    'старое ядро понижает require до auto');
+// auto и off трогать нечего — они на старом ядре работают как раньше.
+foreach (['auto', 'off'] as $keep) {
+    $b = smFixBot(['version' => 'Xray 26.8.24 (Xray, Penetrates Everything.)']);
+    $b->pacConf['smux']['half_close'] = $keep;
+    $b->checkXrayCore();
+    smAssert(($b->pacConf['smux']['half_close'] ?? '') === $keep, "«{$keep}» не трогаем");
+}
+// Ядро умеет — настройку не понижаем.
+$b = smFixBot(['version' => 'Xray 26.8.26-0855 (Xray, Penetrates Everything.)']);
+$b->pacConf['smux']['half_close'] = 'require';
+$b->checkXrayCore();
+smAssert(($b->pacConf['smux']['half_close'] ?? '') === 'require',
+    'ядро 26.8.26 — require остаётся');
+// Молчащий контейнер: состояние неизвестно, понижать вслепую нельзя.
+$b = smFixBot(['ok' => false, 'version' => '']);
+$b->pacConf['smux']['half_close'] = 'require';
+$b->checkXrayCore();
+smAssert(($b->pacConf['smux']['half_close'] ?? '') === 'require',
+    'xr недоступен — настройку не трогаем');
 
 // Троттлинг: без него cron дёргал бы ssh каждые 10 секунд.
 $b = smFixBot(['active' => 'origin', 'running' => 'origin']);
