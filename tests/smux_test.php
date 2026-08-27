@@ -568,6 +568,8 @@ $b = smFixBot(['version' => 'Xray 26.8.25-1457 (Xray, Penetrates Everything.)'])
 smAssert($b->smuxHalfCloseReady(), 'форк 26.8.25-1457 умеет (суффикс — время сборки, не pre-release)');
 $b = smFixBot(['version' => 'Xray 26.8.26-0855 (Xray, Penetrates Everything.)']);
 smAssert($b->smuxHalfCloseReady(), 'форк 26.8.26-0855 умеет');
+$b = smFixBot(['version' => 'Xray 26.8.27-1556 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'форк 26.8.27-1556 (текущий пин) умеет');
 // Версия относится к АКТИВНОМУ ядру: пока по симлинку отвечает апстрим (или
 // проба молчит), про форк она не говорит ничего — запрещать нечего.
 $b = smFixBot(['active' => 'origin', 'running' => 'origin', 'version' => 'Xray 26.7.28 (Xray, Penetrates Everything.)']);
@@ -576,6 +578,19 @@ $b = smFixBot(['ok' => false, 'version' => '']);
 smAssert($b->smuxHalfCloseReady(), 'xr недоступен — настройку не блокируем');
 $b = smFixBot(['version' => '']);
 smAssert($b->smuxHalfCloseReady(), 'пустой вывод version — тоже «неизвестно»');
+
+// Пин форк-ядра в .env не ниже v26.8.25. Гейт выше умеет понижать require до
+// auto САМ, поэтому старое ядро в образе не ломает клиентов — оно тихо отнимает
+// у пользователя крайний режим half-close, и заметить это в меню нельзя ничем.
+// Собранный нами образ обязан ехать с ядром, которое договариваться умеет.
+$env = (string) @file_get_contents(__DIR__ . '/../.env');
+if (preg_match('~^XRAY_FORK_VERSION=v?(\d+)\.(\d+)\.(\d+)~m', $env, $m)) {
+    $ver = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);
+    smAssert($ver >= sprintf('%04d%04d%04d', 26, 8, 25),
+        "XRAY_FORK_VERSION={$m[0]}: договорённость о half-close появилась в v26.8.25");
+} else {
+    smAssert(false, 'XRAY_FORK_VERSION в .env не найден');
+}
 
 // Откат образа на форк старее 26.8.25: require в подписке = тишина у клиента,
 // поэтому периодическая проверка понижает его до auto сама.
