@@ -304,7 +304,7 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260814}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
@@ -356,7 +356,7 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260814}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
@@ -616,7 +616,7 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260814}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
