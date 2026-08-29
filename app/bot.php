@@ -29310,11 +29310,33 @@ DNS-over-HTTPS with IP:
         $conf[] = "[Interface]";
         if (empty($data['interface']['ListenPort'])) {
             if (empty($data['interface']['DNS'])) {
-                $data['interface']['DNS'] = $pac[$this->getInstanceWG(1) . 'dns'] ?: $this->dns;
+                $data['interface']['DNS'] = ($pac[$this->getInstanceWG(1) . 'dns'] ?? '') ?: $this->dns;
             }
             if (empty($data['interface']['MTU'])) {
-                $data['interface']['MTU'] = $pac[$this->getInstanceWG(1) . 'mtu'] ?: $this->mtu;
+                $data['interface']['MTU'] = ($pac[$this->getInstanceWG(1) . 'mtu'] ?? 0) ?: $this->mtu;
             }
+        } else {
+            // Серверная сторона: тот же MTU, что уезжает клиентам. Без этой
+            // строки awg-quick считает его сам как «внешний MTU минус 80»
+            // (set_mtu_up), то есть 1420 — величина для ВАНИЛЬНОГО WireGuard,
+            // где накладные ровно 32 байта. AmneziaWG добавляет сверху junk
+            // S4 и ContentPaddingAddition, и при 1420 внутри пакет на проводе
+            // доходил до 1540 при пути 1500.
+            //
+            // Клиентов это не задевало (им бот выдаёт 1350, и MSS с их стороны
+            // держит TCP), а UDP без PMTUD — большие DNS-ответы EDNS0, часть
+            // игровых протоколов — уходил бы негабаритным и молча гиб. Теперь
+            // сервер вместо этого отвечает ICMP Fragmentation Needed, и
+            // отправитель уменьшает пакет сам.
+            //
+            // Берём НЕ арифметику по S4/pad: она разъехалась бы при ротации
+            // ключей и при правке параметров в меню. Равенство с клиентским
+            // MTU согласовано по построению и следует за настройкой инстанса.
+            //
+            // MTU — директива awg-quick, а не ключ wg(8): quick забирает её из
+            // [Interface] себе (`MTU) MTU="$value"; continue`) и в setconf не
+            // передаёт, поэтому «Line unrecognized» тут не бывает.
+            $data['interface']['MTU'] = ($pac[$this->getInstanceWG(1) . 'mtu'] ?? 0) ?: $this->mtu;
         }
         foreach ($data['interface'] as $k => $v) {
             $conf[] = "$k = $v";

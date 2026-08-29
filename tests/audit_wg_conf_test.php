@@ -207,6 +207,44 @@ wgConfAssert($bot->getStatusPeer('KEY', [$peer]) === $peer, 'найденный 
 wgConfAssert(($bot->getStatusPeer('nope', [])['latest handshake'] ?? '') === '',
     'чтение поля у промаха не падает');
 
+// ── MTU серверного интерфейса ───────────────────────────────────────────────
+// Без строки MTU в [Interface] awg-quick считает его сам как «внешний MTU минус
+// 80» (set_mtu_up), то есть 1420 — величина для ВАНИЛЬНОГО WireGuard с 32
+// байтами накладных. AmneziaWG добавляет сверху junk S4 и
+// ContentPaddingAddition, и при 1420 внутри пакет на проводе доходил до 1540
+// при пути 1500: крупный UDP без PMTUD уходил негабаритным и молча гиб.
+// Держим серверный MTU равным клиентскому — это согласовано по построению и не
+// разъезжается при ротации ключей и правке параметров обфускации.
+$b = (new ReflectionClass(WgConfTestBot::class))->newInstanceWithoutConstructor();
+$b->mtu = 1350;
+$b->dns = '10.0.0.1';
+$b->pacFake = [];
+
+$srvData = ['interface' => ['Address' => '10.0.0.1/24', 'ListenPort' => 51820, 'PrivateKey' => 'aaa='], 'peers' => []];
+$cliData = ['interface' => ['Address' => '10.0.0.2/32', 'PrivateKey' => 'bbb='], 'peers' => []];
+
+$srv = $b->createConfig($srvData);
+$cli = $b->createConfig($cliData);
+wgConfAssert(str_contains($srv, "\nMTU = 1350"), 'серверный [Interface] получает MTU');
+wgConfAssert(str_contains($cli, "\nMTU = 1350"), 'клиентский тоже');
+// Равенство двух сторон — суть правки: несимметричный MTU и создавал дыру.
+preg_match('~^MTU = (\d+)$~m', $srv, $ms);
+preg_match('~^MTU = (\d+)$~m', $cli, $mc);
+wgConfAssert(($ms[1] ?? 'x') === ($mc[1] ?? 'y'), 'MTU сервера и клиента совпадают');
+// Серверу DNS не нужен: wg-quick попытался бы править resolv.conf на сервере.
+wgConfAssert(!str_contains($srv, 'DNS = '), 'в серверный конфиг DNS не уезжает');
+wgConfAssert(str_contains($cli, 'DNS = '), 'а в клиентский — уезжает');
+
+// Инстансная настройка MTU ведёт за собой обе стороны.
+$b->pacFake = ['mtu' => 1280];
+wgConfAssert(str_contains($b->createConfig($srvData), "\nMTU = 1280"), 'сервер следует настройке инстанса');
+wgConfAssert(str_contains($b->createConfig($cliData), "\nMTU = 1280"), 'клиент следует ей же');
+
+// MTU — директива awg-quick, а не ключ wg(8): quick забирает её себе и в
+// setconf не передаёт. Значение обязано быть голым числом, иначе `ip link set
+// mtu` получит мусор.
+wgConfAssert((bool) preg_match('~^MTU = \d+$~m', $srv), 'MTU — голое число без единиц и кавычек');
+
 if ($failed) {
     echo "audit_wg_conf_test FAILED: $failed\n";
     exit(1);
