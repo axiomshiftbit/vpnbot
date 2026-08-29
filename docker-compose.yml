@@ -304,7 +304,7 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260814}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
@@ -356,7 +356,7 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260814}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
@@ -473,7 +473,13 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.20
-        mem_limit: 512m
+        # 768m, а не 512m: в WEB-режиме бот пинит telemt собственный
+        # web.limits.memory_envelope_bytes = 256 MiB (дефолт telemt 3.5.5 — 1.25
+        # GiB, на 2 ГБ VPS это потолок больше самой машины). Лимит cgroup держим
+        # выше этого потолка, чтобы при всплеске срабатывал backpressure telemt,
+        # а не OOM-killer, который убил бы контейнер вместе с обычным MTProto.
+        # Это потолок, а не резервирование: незанятая память остаётся системе.
+        mem_limit: 768m
         pids_limit: 512
         logging: *default-logging
     xr:
@@ -610,7 +616,7 @@ services:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260814}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}

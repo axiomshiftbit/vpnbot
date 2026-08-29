@@ -742,8 +742,8 @@ $i = [
         'ru' => 'Формат секрета изменён — все выданные раньше WEB-ссылки больше не действуют. Раздайте новые (кнопка 🌐).',
     ],
     'telemt web need version'  => [
-        'en' => 'the running telemt is older than 3.5.0 — update the telemt image, an old binary refuses the WEB config and does not start at all',
-        'ru' => 'запущенный telemt старше 3.5.0 — обновите образ telemt: старый бинарь не примет WEB-конфиг и не стартует вовсе',
+        'en' => 'the running telemt is older than 3.5.0 — it ignores the WEB config entirely, so the links would be handed out with nothing serving them. Update the telemt image.',
+        'ru' => 'запущенный telemt старше 3.5.0 — он целиком игнорирует WEB-конфиг, и ссылки окажутся выданы, а обслуживать их некому. Обновите образ telemt.',
     ],
     'telemt web need users'  => [
         'en' => 'add at least one user',
@@ -752,6 +752,30 @@ $i = [
     'telemt web profiles capped'  => [
         'en' => 'only the first 32 users get a WEB profile — that is the telemt limit, and exceeding it stops the proxy from starting at all',
         'ru' => 'профиль WEB получают только первые 32 пользователя — это лимит telemt, а его превышение не даёт прокси стартовать вовсе',
+    ],
+    'telemt web negotiation'  => [
+        'en' => 'carrier negotiation',
+        'ru' => 'подбор carrier',
+    ],
+    'telemt web negotiation off'  => [
+        'en' => 'off',
+        'ru' => 'выкл',
+    ],
+    'telemt web negotiation https'  => [
+        'en' => 'HTTPS only',
+        'ru' => 'только HTTPS',
+    ],
+    'telemt web negotiation full'  => [
+        'en' => 'full (WebSocket)',
+        'ru' => 'полный (WebSocket)',
+    ],
+    'telemt web negotiation note'  => [
+        'en' => 'with negotiation on, Telegram Desktop tries the carriers in order and settles on the first one that works, so a network that blocks one transport no longer breaks WEB. The last carrier is the fallback: it stays https, the only one clients without negotiation metadata (Telegram iOS) support. Needs telemt 3.5.4+.',
+        'ru' => 'при включённом подборе Telegram Desktop перебирает carrier по порядку и остаётся на первом заработавшем — сеть, которая режет один транспорт, больше не ломает WEB. Последний carrier запасной: он остаётся https, единственный поддерживаемый клиентами без метаданных подбора (Telegram iOS). Нужен telemt 3.5.4+.',
+    ],
+    'telemt web negotiation need version'  => [
+        'en' => 'the running telemt is older than 3.5.4 — it silently ignores the carrier list, so the menu would show negotiation that is not actually happening. Update the telemt image.',
+        'ru' => 'запущенный telemt старше 3.5.4 — он молча игнорирует список carrier, и меню показывало бы подбор, которого на деле нет. Обновите образ telemt.',
     ],
     'telemt relays'  => [
         'en' => 'relays',

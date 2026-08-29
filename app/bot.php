@@ -885,6 +885,9 @@ class Bot
             case preg_match('~^/telemtWebCarrier$~', $this->input['callback'], $m):
                 $this->telemtWebCarrier();
                 break;
+            case preg_match('~^/telemtWebNegotiation$~', $this->input['callback'], $m):
+                $this->telemtWebNegotiation();
+                break;
             case preg_match('~^/telemtWebSecret$~', $this->input['callback'], $m):
                 $this->telemtWebSecret();
                 break;
@@ -1901,7 +1904,14 @@ class Bot
         $t .= "[server.api]\n";
         $t .= "enabled = " . $b($beobachten) . "\n";
         $t .= "listen = \"127.0.0.1:9091\"\n";
-        $t .= "whitelist = [\"127.0.0.1/32\", \"::1/128\"]\n\n";
+        $t .= "whitelist = [\"127.0.0.1/32\", \"::1/128\"]\n";
+        // read_only отключает ТОЛЬКО изменяющие маршруты, все GET-эндпоинты
+        // остаются — а бот ходит сюда исключительно GET'ами (telemtApiFetch).
+        // Без него API без аутентификации отдаёт PATCH /v1/config (вместе с
+        // секцией [web]), /v1/users (создание, удаление и ротация секретов) и
+        // POST /v1/runtime/web/* из 3.5.5. Защита и так держится на сетевой
+        // изоляции, но диагностике право на запись не нужно вовсе.
+        $t .= "read_only = true\n\n";
         $t .= "[[server.listeners]]\n";
         $t .= "ip = \"0.0.0.0\"\n";
         // telemt отвергает пустой announce_ip ("invalid IP address syntax") и не
@@ -2002,10 +2012,30 @@ class Bot
         if ($web) {
             $t .= "\n[web]\n";
             $t .= "enabled = true\n";
-            // https-lanes даёт каждому логическому потоку свои uplink/downlink
-            // и снимает HOL-блокировку на уровне протокола; ему нужен HTTP/2 на
-            // терминаторе, а он у нас есть (http2 on в блоке #-tgweb).
-            $t .= "carrier = " . $q($this->telemtWebCarrierOf($conf)) . "\n\n";
+            // lane-carrier'ы (https-lanes, websocket-lanes) дают каждому
+            // логическому потоку свои uplink/downlink и снимают HOL-блокировку
+            // на уровне протокола. https-lanes нужен HTTP/2 на терминаторе, а
+            // websocket-* — проброс Upgrade; и то и другое есть в блоке #-tgweb.
+            $cands = $this->telemtWebCandidates($conf);
+            if ($cands) {
+                // Последний элемент пресета — fallback (web.carrier), остаток —
+                // web.carriers. telemt дописывает fallback в конец списка сам и
+                // ровно один раз, поэтому в carriers его быть не должно.
+                $fallback = array_pop($cands);
+                $t .= "carrier = " . $q($fallback) . "\n";
+                $t .= "carriers = [" . implode(', ', array_map($q, $cands)) . "]\n";
+                // Обучение локально для процесса, живёт в памяти и учитывает
+                // только положительный исход — порядок кандидатов подстраивается
+                // под то, что реально работает у наших клиентов.
+                $t .= "carrier_learning = true\n";
+                // conservative: самая широкая выборка перед выводом и никакого
+                // ранжирования по IP. На горстке пользователей личного сервера
+                // aggressive принимал бы решение по одному наблюдению.
+                $t .= "carrier_negotiation_aggressiveness = \"conservative\"\n\n";
+            } else {
+                $t .= "carrier = " . $q($this->telemtWebCarrierOf($conf)) . "\n\n";
+            }
+            $t .= $this->telemtWebLimitsToml();
             $t .= "[[web.vhosts]]\n";
             $t .= "host = " . $q($this->telemtWebHost($conf)) . "\n";
             // Конкретный публичный адрес на 443: он участвует во внутреннем
@@ -2063,6 +2093,25 @@ class Bot
             'i=0; while [ $i -lt 3 ]; do sleep 1; pgrep -x telemt && break; i=$((i+1)); done',
             'telemt'
         ) : '1';
+        // Промежуточная ступень отката: сначала снимаем ТОЛЬКО негоциацию.
+        // Незнакомый ключ сам по себе конфиг не рушит (telemt его игнорирует,
+        // см. telemtWebNegotiationVersionOk), но НЕВАЛИДНАЯ КОМБИНАЦИЯ значений
+        // — рушит: набор кандидатов проверяется совместно с [web.limits]
+        // (https-lanes требует max_http_handlers >= 4, WebSocket — свой
+        // подбюджет и резерв соединений, обучение — >= 3 записей). Если такая
+        // связка когда-нибудь разъедется, дешевле потерять подбор, чем весь
+        // WEB: без carriers конфиг заведомо проще и валиден.
+        if ($web && !$probe && !$this->sshFailed && $this->telemtWebCandidates($conf)) {
+            error_log('restartTelemt: telemt не поднялся с авто-негоциацией carrier — снимаем её и пробуем снова');
+            $conf['telemt_web_negotiation'] = 'off';
+            $this->setPacConf($conf);
+            $this->telemtWriteToml($this->telemtToml($conf));
+            $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
+            $probe = $this->ssh(
+                'i=0; while [ $i -lt 3 ]; do sleep 1; pgrep -x telemt && break; i=$((i+1)); done',
+                'telemt'
+            );
+        }
         // sshFailed отделяет «процесс не поднялся» от «контейнер недоступен»:
         // во втором случае выключать WEB не за что, там не работает вообще
         // ничего, и следующий рестарт всё равно всё переделает.
@@ -2178,10 +2227,124 @@ class Bot
     // php: ./config/telemt смонтирован в оба).
     public const TELEMT_WEB_DECOY_DIR = '/telemt/decoy';
 
+    // Пресеты авто-негоциации carrier (telemt >= 3.5.4). Значение — ПОЛНЫЙ
+    // упорядоченный список кандидатов ВМЕСТЕ с fallback: telemtToml() отрезает
+    // последний элемент в web.carrier, а остаток кладёт в web.carriers. Так
+    // fallback физически не может продублироваться внутри списка (telemt
+    // отвергает дубликаты) и не зависит от кнопки carrier:, которая остаётся
+    // жить только в режиме off.
+    //
+    // Клиент перебирает кандидатов по накопительным дедлайнам [3,5,8,12]s и
+    // фиксируется на первом заработавшем; после commit смена carrier невозможна
+    // до новой сессии. Кандидатов не больше четырёх — это потолок telemt.
+    //
+    // fallback именно https, а не https-lanes: нативный клиент БЕЗ метаданных
+    // negotiation (сегодня это Telegram iOS) всегда берёт фиксированный
+    // web.carrier, а https-lanes он не поддерживает. Desktop от этого ничего
+    // не теряет — https-lanes остаётся в списке кандидатов перед fallback.
+    public const TELEMT_WEB_NEGOTIATION = [
+        'off'   => [],
+        'https' => ['https-lanes', 'https'],
+        'full'  => ['websocket-lanes', 'websocket', 'https-lanes', 'https'],
+    ];
+
+    // Пин [web.limits] под масштаб личного сервера.
+    //
+    // Зачем вообще пинить: дефолты telemt рассчитаны на публичный узел, и в
+    // 3.5.5 заявленный memory_envelope_bytes вырос 768 MiB → 1280 MiB (прежнее
+    // значение больше НЕ проходит валидацию: сумма резерваций стала 1011 MiB).
+    // На VPS с 2 ГБ это потолок буферов больше самой машины — telemt разрешил
+    // бы себе очереди, на которых cgroup убил бы контейнер целиком, вместе с
+    // обычным MTProto. С этим блоком раньше срабатывает собственный
+    // backpressure telemt, а не OOM-killer.
+    //
+    // Значения ПРОВЕРЕНЫ против совместной валидации telemt (validate_web.rs и
+    // validate_web/{memory,websocket}.rs): сумма резерваций 186.6 MiB при
+    // потолке 256 MiB. Любая правка здесь обязана пройти тест
+    // telemt_web_test.php, который пересчитывает те же формулы: ошибка
+    // означает не «лишний ключ проигнорирован», а отказ загрузки конфига.
+    //
+    // web.limits — process-owned: telemt применяет их только при рестарте
+    // процесса, а restartTelemt() его и делает.
+    public const TELEMT_WEB_LIMITS = [
+        // Потолок принятых соединений и одновременных handler'ов. https-lanes
+        // требует max_http_handlers >= 4, простой https >= 2.
+        'max_http_connections'         => 256,
+        'max_http_handlers'            => 128,
+        // Очереди relay: главный реальный потребитель памяти.
+        'pending_bytes_global'         => 100663296,
+        // Подбюджет WebSocket внутри pending_bytes_global.
+        'websocket_bytes_global'       => 50331648,
+        'max_body_readers'             => 16,
+        'max_body_bytes_global'        => 33554432,
+        // Snapshot decoy — один index.html.
+        'max_static_bytes'             => 8388608,
+        'max_sessions_global'          => 64,
+        'max_streams_per_session'      => 64,
+        // Входит в резервацию lane-state квадратично по сессиям, поэтому 512, а
+        // не дефолтные 4096.
+        'max_tombstones_per_session'   => 512,
+        'max_carrier_learning_entries' => 1024,
+        // Кольцо web.debug мы не включаем, но его резервация считается всегда.
+        'debug_records_capacity'       => 4096,
+        'debug_bytes_global'           => 4194304,
+        'memory_envelope_bytes'        => 268435456,
+    ];
+
     public function telemtWebCarrierOf(array $conf): string
     {
         $c = $conf['telemt_web_carrier'] ?? 'https-lanes';
         return in_array($c, ['https', 'https-lanes'], true) ? $c : 'https-lanes';
+    }
+
+    // Пресет негоциации. Мусор и отсутствие ключа → off, то есть ровно прежнее
+    // поведение: один carrier без перебора.
+    public function telemtWebNegotiationOf(array $conf): string
+    {
+        $n = $conf['telemt_web_negotiation'] ?? 'off';
+        return is_string($n) && isset(self::TELEMT_WEB_NEGOTIATION[$n]) ? $n : 'off';
+    }
+
+    // Упорядоченный список кандидатов включая fallback; [] когда негоциация
+    // выключена.
+    public function telemtWebCandidates(array $conf): array
+    {
+        return self::TELEMT_WEB_NEGOTIATION[$this->telemtWebNegotiationOf($conf)];
+    }
+
+    // Ключи web.carriers/carrier_learning появились в 3.5.4. Порог отдельный от
+    // telemtWebVersionOk() (3.5.0, сам WEB): бинарь 3.5.0-3.5.3 прекрасно несёт
+    // WEB, но про подбор не знает.
+    //
+    // Гейт защищает НЕ от падения. Проверено на 3.4.25 и на живом 3.5.5:
+    // неизвестные ключи telemt всегда лишь логирует («Unknown config key
+    // ignored») и продолжает работать; жёсткой ошибкой они становятся только
+    // при general.config_strict = true, которого бот не ставит намеренно —
+    // иначе любое будущее переименование ключа в telemt роняло бы весь прокси.
+    // Без гейта старый бинарь просто игнорировал бы carriers, а меню при этом
+    // показывало бы включённый подбор, которого нет: клиент молча получал бы
+    // один web.carrier. Гейт закрывает именно это расхождение.
+    //
+    // Как и у соседа — fail-open на unknown и вызов только из интерактивного
+    // пути (проверка ходит по ssh).
+    public function telemtWebNegotiationVersionOk(): bool
+    {
+        $v = $this->telemtVersion();
+        if ($v === 'unknown') {
+            return true;
+        }
+        return version_compare(ltrim($v, 'vV'), '3.5.4', '>=');
+    }
+
+    // Блок [web.limits]. Отдельным методом — чтобы тест мог сверить отрендеренный
+    // toml с константой, а не парсить весь конфиг.
+    public function telemtWebLimitsToml(): string
+    {
+        $t = "[web.limits]\n";
+        foreach (self::TELEMT_WEB_LIMITS as $k => $v) {
+            $t .= "$k = $v\n";
+        }
+        return $t . "\n";
     }
 
     public function telemtWebSecretModeOf(array $conf): string
@@ -2242,9 +2405,12 @@ class Bot
         return !empty($conf['telemt_web']) && !$this->telemtWebBlockers($conf);
     }
 
-    // WEB появился в telemt 3.5.0, и старый бинарь на незнакомых ключах
-    // конфига не «игнорирует лишнее», а не стартует вовсе — вместе с обычным
-    // MTProto. Расхождение реально: код app/ приезжает bind-mount'ом и
+    // WEB появился в telemt 3.5.0. Старый бинарь от секции [web] НЕ падает:
+    // проверено прогоном нашего конфига на 3.4.25 — он игнорирует и [web], и
+    // web-листенер и поднимается обычным MTProto-прокси. Гейт нужен против
+    // молчаливого расхождения: ссылки tg://webproxy выданы, а обслуживать их
+    // некому. (Невалидные ЗНАЧЕНИЯ — другое дело, они конфиг рушат, см.
+    // telemtWebBlockers.) Расхождение реально: код app/ приезжает bind-mount'ом и
     // обновляется НЕЗАВИСИМО от образа telemt, так что новый бот со старым
     // образом — штатная промежуточная ситуация. Проверка ходит по ssh, поэтому
     // живёт только в интерактивном пути (меню и тумблер), а не в telemtToml.
@@ -14896,7 +15062,13 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt web') . "\n";
         $text[] = "status: " . $this->telemtState($on);
         $text[] = "host: <code>" . htmlspecialchars($host ?: '-', ENT_QUOTES) . "</code>";
-        $text[] = "carrier: " . $this->telemtWebCarrierOf($conf);
+        // При включённой негоциации показываем ВСЮ цепочку, а не один carrier:
+        // одиночная строка «carrier: https» вводила бы в заблуждение — https
+        // тут лишь последний запасной вариант.
+        $cands = $this->telemtWebCandidates($conf);
+        $text[] = $cands
+            ? "carrier: " . implode(' → ', $cands)
+            : "carrier: " . $this->telemtWebCarrierOf($conf);
         $text[] = "secret: " . $this->telemtWebSecretModeOf($conf);
         $text[] = "profiles: " . count($profiles) . '/' . count($users);
         if (count($users) > count($profiles)) {
@@ -14907,20 +15079,36 @@ DNS-over-HTTPS with IP:
         }
         if (!$this->telemtWebVersionOk()) {
             $text[] = "\n⚠ " . $this->i18n('telemt web need version');
+        } elseif ($cands && !$this->telemtWebNegotiationVersionOk()) {
+            // Образ мог уехать назад уже ПОСЛЕ включения пресета. Без этой
+            // строки оператор видел бы в меню включённый подбор, которого на
+            // деле нет: restartTelemt() снял его при первом же старте.
+            $text[] = "\n⚠ " . $this->i18n('telemt web negotiation need version');
         }
         if (!$blockers && !empty($conf['telemt_web'])) {
             $text[] = "\nℹ " . $this->i18n('telemt web cert hint');
         }
         $text[] = "\nℹ " . $this->i18n('telemt web note');
+        $text[] = "\nℹ " . $this->i18n('telemt web negotiation note');
 
         $data[] = [[
             'text'          => $this->i18n('telemt web') . ': ' . $this->telemtState(!empty($conf['telemt_web'])),
             'callback_data' => "/telemtWebToggle",
         ]];
         $data[] = [[
-            'text'          => 'carrier: ' . $this->telemtWebCarrierOf($conf),
-            'callback_data' => "/telemtWebCarrier",
+            'text'          => $this->i18n('telemt web negotiation') . ': '
+                . $this->i18n('telemt web negotiation ' . $this->telemtWebNegotiationOf($conf)),
+            'callback_data' => "/telemtWebNegotiation",
         ]];
+        // Кнопка одиночного carrier осмысленна только без негоциации: с ней
+        // fallback задаёт пресет, и два независимых элемента UI противоречили бы
+        // друг другу.
+        if (!$cands) {
+            $data[] = [[
+                'text'          => 'carrier: ' . $this->telemtWebCarrierOf($conf),
+                'callback_data' => "/telemtWebCarrier",
+            ]];
+        }
         $data[] = [[
             'text'          => 'secret: ' . $this->telemtWebSecretModeOf($conf),
             'callback_data' => "/telemtWebSecret",
@@ -14957,6 +15145,36 @@ DNS-over-HTTPS with IP:
         $conf = $this->getPacConf();
         $conf['telemt_web_carrier'] = $this->telemtWebCarrierOf($conf) === 'https' ? 'https-lanes' : 'https';
         $this->setPacConf($conf);
+        $this->restartTelemt();
+        $this->telemtWeb(true);
+    }
+
+    // Циклический выбор пресета негоциации: off → https → full → off.
+    public function telemtWebNegotiation()
+    {
+        $conf  = $this->getPacConf();
+        $modes = array_keys(self::TELEMT_WEB_NEGOTIATION);
+        $i     = array_search($this->telemtWebNegotiationOf($conf), $modes, true);
+        $new   = $modes[($i + 1) % count($modes)];
+        // Гейт по версии ровно как у telemtWebToggle(): старый бинарь ключ
+        // web.carriers молча проигнорирует, и меню показывало бы включённый
+        // подбор, которого на деле нет.
+        if ($new !== 'off' && !$this->telemtWebNegotiationVersionOk()) {
+            $this->answer($this->input['callback_id'], $this->i18n('telemt web negotiation need version'), true);
+            // Из уже включённого пресета выпускаем в off, а не упираемся в
+            // отказ: на откатившемся образе цикл off→https→full иначе не давал
+            // бы вернуться к конфигурации, которую этот бинарь принимает.
+            if ($this->telemtWebNegotiationOf($conf) === 'off') {
+                return $this->telemtWeb(true);
+            }
+            $new = 'off';
+        }
+        $conf['telemt_web_negotiation'] = $new;
+        $this->setPacConf($conf);
+        // cloakNginx() здесь НЕ нужен: блок #-tgweb от пресета не зависит,
+        // проброс Upgrade в нём безусловный, а перегенерацию шаблона на
+        // установке со старым nginx.conf делает service.php при старте стека.
+        // Лишний reload на каждое нажатие только шумел бы.
         $this->restartTelemt();
         $this->telemtWeb(true);
     }

@@ -13,15 +13,29 @@ FROM $image
 # в силе и для 3.1 — она строго новее.
 #
 # AWG_GO_VERSION и AWG_TOOLS_VERSION НЕ обязаны совпадать по тегу-дате: апстрим
-# ведёт их независимыми релизами, и на 3.1 разъехались (go получил два патча
-# после первого тега tools). AWG_GO_VERSION обязателен >= v3.1.20260814: в
-# v3.1.20260812/.813 баг переполнения буфера в HandshakeCookie (длину трейлера
-# перепутали с capacity) даёт панику рантайма amneziawg-go при включённом в боте
-# тумблере RandomTrailers («fix: wrong behavior and runtime panic while
-# RandomTrailers is used»). AWG_TOOLS_VERSION v3.1.20260812 — первый тег с
+# ведёт их независимыми релизами, и на 3.1 разъехались (go ушёл на три патча
+# вперёд от первого тега tools). AWG_TOOLS_VERSION v3.1.20260812 — первый тег с
 # парсингом RandomTrailers/DisableCookies (`feat: add awg 3.1 params`), новее
 # пока не выходило.
-ARG AWG_GO_VERSION=v3.1.20260814
+#
+# У AWG_GO_VERSION два последовательных порога, оба завязаны на тумблеры бота:
+#
+#   >= v3.1.20260814 — в v3.1.20260812/.813 баг переполнения буфера в
+#   HandshakeCookie (длину трейлера перепутали с capacity) даёт панику рантайма
+#   amneziawg-go при включённом тумблере RandomTrailers («fix: wrong behavior
+#   and runtime panic while RandomTrailers is used»).
+#
+#   >= v3.1.20260828 — до него тумблер DisableCookies ломал подключение под
+#   нагрузкой: отправку cookie он глушил, а проверку MAC2 в RoutineHandshake
+#   оставлял включённой (receive.go: `if device.IsUnderLoad()`), то есть клиент
+#   обязан был предъявить cookie, которого ему принципиально не могли выдать, и
+#   handshake не проходил, пока держится нагрузка («fix: disable the whole
+#   underload if DisableCookies is on»). Второй фикс того же тега считает
+#   ContentPaddingAddition от наблюдаемого окна UDP пира, а не от MTU, и
+#   учитывает в размере пакета служебный заголовок («fix: use udp window for
+#   RandomPaddingAddition») — паддинг перестаёт выбиваться за размер, который
+#   этот путь уже доказал.
+ARG AWG_GO_VERSION=v3.1.20260828
 ARG AWG_TOOLS_VERSION=v3.1.20260812
 ARG WGCF_VERSION=v2.2.32
 ARG TUN2SOCKS_VERSION=v2.6.0
