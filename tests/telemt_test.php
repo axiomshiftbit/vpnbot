@@ -214,6 +214,26 @@ $b->pacFake['telemt_domain'] = 'www.google.com';
 tmAssert(!str_contains($b->telemtToml($b->pacFake), 'dns_overrides'),
     'чужой fake-TLS домен резолвится как обычно');
 
+// ── 9. Управляющий API ──────────────────────────────────────────────────────
+// API поднимается ТОЛЬКО вместе с beobachten и только на loopback внутри
+// сетевого namespace контейнера — снаружи и из соседних контейнеров он
+// недостижим. Аутентификации у него нет (auth_header пуст), поэтому право на
+// запись отрезаем: бот ходит сюда исключительно GET'ами (telemtApiFetch), а
+// без read_only тот же сокет отдавал бы PATCH /v1/config, /v1/users с ротацией
+// секретов и POST /v1/runtime/web/* из 3.5.5.
+$b = $mk('tls');
+$b->pacFake['telemt_beobachten'] = 1;
+$toml = $b->telemtToml($b->pacFake);
+tmAssert(str_contains($toml, "[server.api]\nenabled = true"), 'с beobachten API включён');
+tmAssert(str_contains($toml, 'listen = "127.0.0.1:9091"'), 'API слушает только loopback');
+tmAssert(str_contains($toml, 'whitelist = ["127.0.0.1/32", "::1/128"]'), 'whitelist только loopback');
+tmAssert(str_contains($toml, 'read_only = true'), 'изменяющие маршруты API отключены');
+
+$b = $mk('tls');
+$toml = $b->telemtToml($b->pacFake);
+tmAssert(str_contains($toml, "[server.api]\nenabled = false"), 'без beobachten сокет API не открывается');
+tmAssert(str_contains($toml, 'read_only = true'), 'read_only задан и в выключенном состоянии');
+
 if ($failed) {
     echo "telemt_test FAILED ($failed)\n";
     exit(1);

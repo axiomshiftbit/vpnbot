@@ -11,9 +11,16 @@
 //   * WEB-листенер без vhost'ов запрещён (и наоборот);
 //   * public_addr — конкретный адрес и ровно порт 443;
 //   * secret_mode только plain|dd (ee в WEB не поддерживается);
-//   * carrier только https|https-lanes;
+//   * carrier — один из четырёх, а набор кандидатов уникален и не длиннее 4;
+//   * [web.limits] проходят совместную валидацию (память, WebSocket, handler'ы);
 //   * профилей не больше web.limits.max_profiles (32).
-// Плюс согласованность с nginx-шаблоном: порт апстрима и доверенный CIDR.
+// Плюс согласованность с nginx-шаблоном: порт апстрима, доверенный CIDR и
+// проброс Upgrade, без которого WebSocket-carrier'ы недостижимы.
+//
+// NB: НЕИЗВЕСТНЫЕ ключи telemt конфиг НЕ рушат — он их логирует и игнорирует
+// (жёсткая ошибка только при general.config_strict=true, который бот не
+// ставит). Проверено на 3.4.25 и 3.5.5. Рушат именно невалидные ЗНАЧЕНИЯ и их
+// комбинации — их тут и проверяем.
 
 require_once __DIR__ . '/../app/bot.php';
 
@@ -395,12 +402,14 @@ twAssert(strlen('/telemtWebNegotiation') <= 64, 'кнопка негоциаци
 // заперт во включённом пресете, который этот бинарь не грузит.
 class TelemtOldBinaryBot extends TelemtWebTestBot
 {
-    public array $answers  = [];
-    public int   $restarts = 0;
+    public array  $answers      = [];
+    public int    $restarts     = 0;
+    public int    $nginxReloads = 0;
+    public string $ver          = '3.5.3';
 
     public function telemtVersion(): string
     {
-        return '3.5.3';
+        return $this->ver;
     }
 
     public function answer($id, $text = '', $alert = false)
@@ -416,6 +425,7 @@ class TelemtOldBinaryBot extends TelemtWebTestBot
 
     public function cloakNginx()
     {
+        $this->nginxReloads++;
         return true;
     }
 
@@ -445,6 +455,21 @@ $o = $mkOld('full');
 $o->telemtWebNegotiation();
 twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'off', 'из включённого пресета выпускает в off');
 twAssert($o->restarts === 1, 'и применяет это рестартом');
+
+// Переключение пресета НЕ трогает nginx: блок #-tgweb от набора кандидатов не
+// зависит (проброс Upgrade в нём безусловный), а перегенерацию шаблона на
+// установке со старым nginx.conf делает service.php при старте стека. Лишний
+// reload на каждое нажатие — чистый шум.
+$o = $mkOld('off');
+$o->ver = '3.5.5';
+$o->telemtWebNegotiation();
+twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'https', 'цикл off → только HTTPS');
+twAssert($o->restarts === 1 && $o->nginxReloads === 0, 'пресет применяется рестартом telemt, без reload nginx');
+$o->telemtWebNegotiation();
+twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'full', 'цикл только HTTPS → полный');
+$o->telemtWebNegotiation();
+twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'off', 'цикл полный → off замыкается');
+twAssert($o->nginxReloads === 0, 'ни одно переключение не дёргает nginx');
 
 // ── 11. Пин [web.limits]: пересчёт совместной валидации telemt ──────────────
 // Дефолтный memory_envelope_bytes у telemt 3.5.5 — 1.25 GiB, что больше всей
