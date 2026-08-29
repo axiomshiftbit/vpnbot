@@ -473,7 +473,13 @@ services:
         networks:
             default:
                 ipv4_address: 10.10.0.20
-        mem_limit: 512m
+        # 768m, а не 512m: в WEB-режиме бот пинит telemt собственный
+        # web.limits.memory_envelope_bytes = 256 MiB (дефолт telemt 3.5.5 — 1.25
+        # GiB, на 2 ГБ VPS это потолок больше самой машины). Лимит cgroup держим
+        # выше этого потолка, чтобы при всплеске срабатывал backpressure telemt,
+        # а не OOM-killer, который убил бы контейнер вместе с обычным MTProto.
+        # Это потолок, а не резервирование: незанятая память остаётся системе.
+        mem_limit: 768m
         pids_limit: 512
         logging: *default-logging
     xr:

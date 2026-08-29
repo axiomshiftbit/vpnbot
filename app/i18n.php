@@ -753,6 +753,30 @@ $i = [
         'en' => 'only the first 32 users get a WEB profile — that is the telemt limit, and exceeding it stops the proxy from starting at all',
         'ru' => 'профиль WEB получают только первые 32 пользователя — это лимит telemt, а его превышение не даёт прокси стартовать вовсе',
     ],
+    'telemt web negotiation'  => [
+        'en' => 'carrier negotiation',
+        'ru' => 'подбор carrier',
+    ],
+    'telemt web negotiation off'  => [
+        'en' => 'off',
+        'ru' => 'выкл',
+    ],
+    'telemt web negotiation https'  => [
+        'en' => 'HTTPS only',
+        'ru' => 'только HTTPS',
+    ],
+    'telemt web negotiation full'  => [
+        'en' => 'full (WebSocket)',
+        'ru' => 'полный (WebSocket)',
+    ],
+    'telemt web negotiation note'  => [
+        'en' => 'with negotiation on, Telegram Desktop tries the carriers in order and settles on the first one that works, so a network that blocks one transport no longer breaks WEB. The last carrier is the fallback: it stays https, the only one clients without negotiation metadata (Telegram iOS) support. Needs telemt 3.5.4+.',
+        'ru' => 'при включённом подборе Telegram Desktop перебирает carrier по порядку и остаётся на первом заработавшем — сеть, которая режет один транспорт, больше не ломает WEB. Последний carrier запасной: он остаётся https, единственный поддерживаемый клиентами без метаданных подбора (Telegram iOS). Нужен telemt 3.5.4+.',
+    ],
+    'telemt web negotiation need version'  => [
+        'en' => 'the running telemt is older than 3.5.4 — carrier negotiation needs it, an old binary refuses the config and does not start at all',
+        'ru' => 'запущенный telemt старше 3.5.4 — подбор carrier требует его, старый бинарь не примет конфиг и не стартует вовсе',
+    ],
     'telemt relays'  => [
         'en' => 'relays',
         'ru' => 'релеи',
