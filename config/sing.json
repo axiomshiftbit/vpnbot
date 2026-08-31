@@ -7,7 +7,6 @@
         {
             "type": "tun",
             "tag": "tun-in",
-            "domain_strategy": "prefer_ipv4",
             "interface_name": "sing-tun",
             "address": [
                 "172.19.0.1\/30"
@@ -73,16 +72,21 @@
             },
             "uuid": "~uid~",
             "type": "vless",
-            "domain_strategy": "ipv4_only",
+            "domain_resolver": "dns-remote",
             "tag": "~outbound~"
         },
         {
             "type": "direct",
-            "tag": "direct"
+            "tag": "direct",
+            "domain_resolver": "dns-remote"
         }
     ],
     "route": {
         "auto_detect_interface": true,
+        "default_domain_resolver": {
+            "server": "dns-remote",
+            "strategy": "ipv4_only"
+        },
         "override_android_vpn": true,
         "rules": [
             {
