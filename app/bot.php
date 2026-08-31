@@ -26469,17 +26469,6 @@ DNS-over-HTTPS with IP:
                 // dns-шаблоне, но отсутствует в rulessetlist) — иначе клиент
                 // падает с "rule-set not found" и весь конфиг не импортируется.
                 $c = $this->pruneRuleSetRefs($c);
-                // sing-box 1.14 объявил download_detour у remote rule-set legacy
-                // (удалят в 1.16) и ругается на него в логе. Если шаблон описал
-                // http_clients / route.default_http_client — скачивание и так
-                // идёт через них, поле только шумит. Шаблонам без http_clients
-                // оставляем download_detour: ядра до 1.14 о новых полях не
-                // знают и отвергают конфиг целиком.
-                if (!empty($c['http_clients']) || !empty($c['route']['default_http_client'])) {
-                    foreach (($c['route']['rule_set'] ?? []) as $k => $v) {
-                        unset($c['route']['rule_set'][$k]['download_detour']);
-                    }
-                }
                 if (!empty($c['route']['rules'])) {
                     foreach ($c['route']['rules'] as $k => $v) {
                         if (count($v) == 1 && array_key_exists('outbound', $v)) {
@@ -27110,7 +27099,14 @@ DNS-over-HTTPS with IP:
                                 "type"            => "remote",
                                 "format"          => "binary",
                                 "url"             => $url,
-                                "download_detour" => "direct",
+                                // http_client вместо download_detour: последнее
+                                // объявлено legacy в sing-box 1.14 и исчезнет в
+                                // 1.16. Клиент задаём инлайном, а не через
+                                // route.default_http_client, чтобы скачивание
+                                // шло через direct независимо от того, что
+                                // (не) описал шаблон: без явного клиента ядро
+                                // берёт дефолтный аутбаунд, то есть прокси.
+                                "http_client"     => ["detour" => "direct"],
                                 "update_interval" => $time,
                             ];
                             $route['rules'][$t[$type]]['rule_set'][] = $k;
@@ -27313,7 +27309,9 @@ DNS-over-HTTPS with IP:
                         "update_interval" => $r['interval'],
                         "type"            => "remote",
                         "format"          => "binary",
-                        "download_detour" => "direct",
+                        // см. addRuleSet(): download_detour снят в пользу
+                        // http_client (legacy с 1.14, удаляют в 1.16).
+                        "http_client"     => ["detour" => "direct"],
                     ];
                     $route['rules'][$k]['rule_set'][] = $r['name'];
                 }
