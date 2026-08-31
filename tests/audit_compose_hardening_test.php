@@ -68,8 +68,8 @@ foreach (['DNSLOOKUP_VERSION', 'SINGBOX_VERSION', 'MIHOMO_VERSION'] as $var) {
 }
 // Литералов версий в dockerfile остаться не должно — иначе пин в .env фиктивен.
 chAssert(!preg_match('~download/v1\.11\.1/~', $df), 'версия dnslookup не зашита в URL');
-chAssert(!preg_match('~sing-box-1\.12\.15-linux~', $df), 'версия sing-box не зашита в URL');
-chAssert(!preg_match('~mihomo-linux-amd64-v1\.19\.12~', $df), 'версия mihomo не зашита в URL');
+chAssert(!preg_match('~sing-box-1\.14\.0-linux~', $df), 'версия sing-box не зашита в URL');
+chAssert(!preg_match('~mihomo-linux-amd64-v1\.19\.30~', $df), 'версия mihomo не зашита в URL');
 
 // CI: новая переменная не должна пересобирать все 14 образов.
 $ci = (string) file_get_contents(__DIR__ . '/../.github/workflows/images.yml');

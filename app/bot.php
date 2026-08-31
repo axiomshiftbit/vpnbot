@@ -27099,7 +27099,24 @@ DNS-over-HTTPS with IP:
                                 "type"            => "remote",
                                 "format"          => "binary",
                                 "url"             => $url,
-                                "download_detour" => "direct",
+                                // http_client вместо download_detour (legacy с
+                                // 1.14, снимут в 1.16). БЕЗ detour: он бы
+                                // ссылался на аутбаунд "direct", а тот в
+                                // шаблонах сплошь и рядом пустой — например
+                                // {"type":"direct","tag":"direct",
+                                // "tcp_fast_open":false}, где false это нулевое
+                                // значение. Ядро 1.14 такую ссылку отвергает
+                                // ("detour to an empty direct outbound makes no
+                                // sense") и НИ ОДИН rule-set не скачивается.
+                                // Клиент без detour дозванивается сам, минуя
+                                // маршрутизацию, — то же, что давал
+                                // download_detour: "direct".
+                                // connect_timeout здесь не ради таймаута: у
+                                // пустого объекта ядро откатывается на legacy-
+                                // дефолт (дефолтный аутбаунд + предупреждение о
+                                // депрекации), а дефолтным может оказаться и
+                                // прокси. Одно ненулевое поле это выключает.
+                                "http_client"     => ["connect_timeout" => "10s"],
                                 "update_interval" => $time,
                             ];
                             $route['rules'][$t[$type]]['rule_set'][] = $k;
@@ -27302,7 +27319,11 @@ DNS-over-HTTPS with IP:
                         "update_interval" => $r['interval'],
                         "type"            => "remote",
                         "format"          => "binary",
-                        "download_detour" => "direct",
+                        // см. addRuleSet(): download_detour снят в пользу
+                        // http_client (legacy с 1.14, удаляют в 1.16), detour
+                        // не используется — он ломается о пустой аутбаунд
+                        // "direct" в шаблоне.
+                        "http_client"     => ["connect_timeout" => "10s"],
                     ];
                     $route['rules'][$k]['rule_set'][] = $r['name'];
                 }
