@@ -82,7 +82,18 @@ class ClashTemplateValidator
                     continue;
                 }
                 if (empty($group['proxies']) || !is_array($group['proxies'])) {
-                    $warnings[] = "proxy-groups[$gi].proxies is empty";
+                    // Пустой список узлов — норма, если группа наполняется сама:
+                    // include-all (и его частные случаи include-all-proxies /
+                    // include-all-providers) подставляет все прокси, use: тянет
+                    // их из proxy-providers. mihomo такой конфиг принимает
+                    // (проверено на 1.19.30), так что предупреждать не о чем —
+                    // иначе бот пугает на ровном месте при каждом сохранении.
+                    if (empty($group['include-all'])
+                        && empty($group['include-all-proxies'])
+                        && empty($group['include-all-providers'])
+                        && empty($group['use'])) {
+                        $warnings[] = "proxy-groups[$gi].proxies is empty";
+                    }
                     continue;
                 }
                 foreach ($group['proxies'] as $ref) {
