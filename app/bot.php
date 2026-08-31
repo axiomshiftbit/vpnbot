@@ -26819,7 +26819,11 @@ DNS-over-HTTPS with IP:
                             'url'      => $url,
                             'interval' => (int) $time,
                             'behavior' => $behavior,
-                            'format'   => $m[1],
+                            // mihomo знает ровно yaml/text/mrs. На format: yml
+                            // (а расширение .yml в ссылке встречается) он
+                            // отвечает «unsupported format type: yml» и
+                            // отвергает ВЕСЬ конфиг — проверено на 1.19.30.
+                            'format'   => $m[1] === 'yml' ? 'yaml' : $m[1],
                         ];
                         switch ($type) {
                             case 'reject':
