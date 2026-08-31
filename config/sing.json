@@ -49,8 +49,7 @@
             }
         ],
         "final": "dns_direct",
-        "strategy": "ipv4_only",
-        "independent_cache": true
+        "strategy": "ipv4_only"
     },
     "outbounds": [
         {
