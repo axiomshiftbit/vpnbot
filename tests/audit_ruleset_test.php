@@ -176,6 +176,23 @@ rsAssert($tags[0] === 'direct', 'дефолтный маршрут осталс�
 rsAssert(in_array('warp', $tags, true), 'недостающий свой аутбаунд дописан');
 rsAssert(count($tags) === count(array_unique($tags)), 'дублей тегов нет: ' . json_encode($tags));
 
+// ── 6. addClashRuleSet: формат rule-provider'а для mihomo ───────────────────
+// Расширение ссылки уезжает в поле format как есть, а mihomo принимает только
+// yaml/text/mrs: на «yml» он отвергает конфиг целиком («unsupported format
+// type: yml», проверено на 1.19.30), то есть одна запись в rulessetlist ломает
+// подписку сразу всем клиентам mihomo.
+$bot->pacFake = ['rulessetlist' => [
+    'proxy:domain:86400:https://x.example/a.yml'  => 1,
+    'proxy:domain:86400:https://x.example/b.yaml' => 1,
+    'proxy:domain:86400:https://x.example/c.mrs'  => 1,
+    'proxy:86400:https://x.example/d.srs'         => 1,
+]];
+$cl  = $bot->addClashRuleSet(['add-rule-providers' => 1, 'rules' => [['MATCH', 'DIRECT']]]);
+$fmt = array_column($cl['rule-providers'] ?? [], 'format');
+sort($fmt);
+rsAssert($fmt === ['mrs', 'yaml', 'yaml'],
+    'format: yml нормализован в yaml, .srs в провайдеры mihomo не попал: ' . json_encode($fmt));
+
 array_map('unlink', glob($bot->dir . '/*') ?: []);
 @rmdir($bot->dir);
 
