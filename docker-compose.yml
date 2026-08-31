@@ -138,8 +138,8 @@ services:
             args:
                 image: ${IMAGE:-alpine:3.23}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.11.1}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.12.15}
-                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.12}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.0}
+                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.30}
         ports:
             # 127.0.0.1:8081:8080 убран: 8080 в этом контейнере — control API
             # unit, у которого нет аутентификации. Он переведён на unix-сокет
@@ -206,8 +206,8 @@ services:
             args:
                 image: ${IMAGE:-alpine:3.23}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.11.1}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.12.15}
-                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.12}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.0}
+                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.30}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/php.ini:/etc/php84/php.ini

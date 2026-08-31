@@ -5,8 +5,8 @@ FROM $image
 # из docker-compose.yml. Значения по умолчанию — на случай сборки напрямую
 # `docker build`, без compose.
 ARG DNSLOOKUP_VERSION=v1.11.1
-ARG SINGBOX_VERSION=v1.12.15
-ARG MIHOMO_VERSION=v1.19.12
+ARG SINGBOX_VERSION=v1.14.0
+ARG MIHOMO_VERSION=v1.19.30
 
 # libqrencode-tools, а НЕ libqrencode: второй кладёт только libqrencode.so, а
 # sendQr() запускает CLI `qrencode`. С миграции на alpine (c421dc2, где
@@ -45,11 +45,18 @@ RUN apk add --no-cache --update php84 \
     && mv linux-amd64/dnslookup /usr/bin \
     && rm "dnslookup-linux-amd64-${DNSLOOKUP_VERSION}.tar.gz" \
     && rm -rf /linux-amd64 \
-    && wget "https://github.com/SagerNet/sing-box/releases/download/${SINGBOX_VERSION}/sing-box-${SB}-linux-amd64.tar.gz" \
-    && tar -xf "sing-box-${SB}-linux-amd64.tar.gz" \
-    && mv "sing-box-${SB}-linux-amd64/sing-box" /usr/bin \
-    && rm "sing-box-${SB}-linux-amd64.tar.gz" \
-    && rm -rf "/sing-box-${SB}-linux-amd64" \
+    # Ассет -musl, а НЕ голый linux-amd64: с 1.13.0 апстрим разделил сборки, и
+    # безсуффиксный тарбол стал glibc-динамическим (interpreter
+    # /lib64/ld-linux-x86-64.so.2). В alpine такого загрузчика нет, exec падает
+    # с "not found" — createSrs() получал пустой вывод и отдавал клиенту .srs на
+    # 0 байт. Вариант -musl слинкован статически, как безсуффиксный до 1.13.
+    # NB: ассета -musl нет у релизов < 1.13.0, откат пина ниже потребует вернуть
+    # и имя ассета.
+    && wget "https://github.com/SagerNet/sing-box/releases/download/${SINGBOX_VERSION}/sing-box-${SB}-linux-amd64-musl.tar.gz" \
+    && tar -xf "sing-box-${SB}-linux-amd64-musl.tar.gz" \
+    && mv "sing-box-${SB}-linux-amd64-musl/sing-box" /usr/bin \
+    && rm "sing-box-${SB}-linux-amd64-musl.tar.gz" \
+    && rm -rf "/sing-box-${SB}-linux-amd64-musl" \
     && wget "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-${MIHOMO_VERSION}.gz" \
     && gunzip "mihomo-linux-amd64-${MIHOMO_VERSION}.gz" \
     && mv "mihomo-linux-amd64-${MIHOMO_VERSION}" /usr/bin/mihomo \
