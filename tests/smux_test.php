@@ -244,6 +244,14 @@ $conf = ['outbounds' => [['tag' => 'proxy']]];
 $bot->applyClientSmux($conf, 0, $pacBrutal, 'si');
 smAssert(isset($conf['outbounds'][0]['multiplex']['brutal']),
     'sing-box: ключ называется brutal, а не brutal-opts');
+// Мало назвать блок правильно: внутри у sing-box СВОИ имена и типы. На строки
+// «200 Mbps» ядро отвечает `unknown field "up"` и не импортирует конфиг целиком
+// — проверено на 1.14.0. Ставка нормализуется до мегабит: «мусор» → 100 Mbps.
+$sbBrutal = $conf['outbounds'][0]['multiplex']['brutal'];
+smAssert(($sbBrutal['up_mbps'] ?? null) === 200 && ($sbBrutal['down_mbps'] ?? null) === 100,
+    'sing-box: ставки брутала целыми мегабитами в up_mbps/down_mbps');
+smAssert(!isset($sbBrutal['up']) && !isset($sbBrutal['down']),
+    'sing-box: строковых up/down в блоке нет');
 $conf = ['outbounds' => [['tag' => 'proxy']]];
 $bot->applyClientSmux($conf, 0, $pacBrutal, 's');
 smAssert(isset($conf['outbounds'][0]['smux']['brutal-opts']),

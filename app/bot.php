@@ -24981,6 +24981,18 @@ DNS-over-HTTPS with IP:
         return '100 Mbps';
     }
 
+    // sing-box держит ставки брутала ЦЕЛЫМИ МЕГАБИТАМИ в up_mbps/down_mbps, а
+    // не строкой «100 Mbps», как xray-форк и mihomo. Строка ему не просто не
+    // нравится: конфиг отвергается целиком («unknown field "up"») и клиент не
+    // импортирует подписку вовсе. smuxRate() уже нормализовал вход, поэтому
+    // разбор здесь заведомо удаётся.
+    public static function smuxRateMbps($v): int
+    {
+        $bytes = (int) self::smuxRateBytes(self::smuxRate($v));
+
+        return max(1, (int) round($bytes * 8 / 1000000));
+    }
+
     // Уезжает ли smux клиентам прямо сейчас: включён И ядро форковое.
     public function smuxActive(?array $p = null): bool
     {
@@ -25531,7 +25543,12 @@ DNS-over-HTTPS with IP:
                     'padding'         => $padding,
                 ];
                 if ($brutal) {
-                    $b['brutal'] = ['enabled' => true, 'up' => $up, 'down' => $down];
+                    // Именно up_mbps/down_mbps целыми числами — см. smuxRateMbps().
+                    $b['brutal'] = [
+                        'enabled'   => true,
+                        'up_mbps'   => self::smuxRateMbps($up),
+                        'down_mbps' => self::smuxRateMbps($down),
+                    ];
                 }
 
                 return $b;
