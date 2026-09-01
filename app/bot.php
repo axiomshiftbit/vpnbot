@@ -104,7 +104,9 @@ class Bot
     // Тот же случай, плюс тесты DoH подменяют путь присваиванием на временный
     // файл — с дефолтом на свойстве это продолжает работать как раньше.
     public $adguard = '/config/AdGuardHome.yaml';
-    public $update;
+    // Файл, куда pinBackup() кладёт полный экспорт перед обновлением бота.
+    // Дефолт на свойстве — по той же причине, что у $pac/$clients ниже.
+    public $update = '/update/json';
     public $ip;
     public $limit;
     public $key;
@@ -114,7 +116,7 @@ class Bot
     public $logs;
     public $reg;
     public $pool;
-    public $hwid;
+    public $hwid = '/config/hwid.json';
     public $api;
     // Пути клиентских списков wg/awg — дефолтом на свойстве, по той же причине,
     // что у $pac ниже: getClients()/saveClients() зовутся из методов, которые
@@ -208,8 +210,6 @@ class Bot
         $this->dns      = '1.1.1.1, 8.8.8.8';
         $this->mtu      = 1350;
         $this->limit    = $this->getPacConf()['limitpage'] ?: 5;
-        $this->update   = '/update/json';
-        $this->hwid     = '/config/hwid.json';
         $this->logs = [
             'nginx_default_access',
             'nginx_domain_access',

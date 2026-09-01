@@ -286,6 +286,8 @@ foreach ([
     'clients'  => '/config/clients.json',
     'clients1' => '/config/clients1.json',
     'adguard'  => '/config/AdGuardHome.yaml',
+    'update'   => '/update/json',
+    'hwid'     => '/config/hwid.json',
 ] as $prop => $path) {
     auditAssert($bare->$prop === $path, "путь \$$prop известен и без конструктора");
 }
@@ -305,9 +307,15 @@ auditAssert($bare->pac === $pacFile && $bare->adguard === $pacFile . '.yaml',
 
 // Конструктор больше не обязан присваивать эти пути — но обязан оставить их
 // теми же, что и дефолты, иначе боевой инстанс и голый разъедутся.
-$ctor = (string) file_get_contents(__DIR__ . '/../app/bot.php');
-$body = substr($ctor, strpos($ctor, 'public function __construct'), 2000);
-foreach (['pac', 'clients', 'clients1', 'adguard'] as $prop) {
+// Тело конструктора вырезаем ДО следующего объявления метода, а не окном
+// фиксированной длины: конструктор растёт, и присваивание, добавленное после
+// его конца, окно бы не поймало.
+$src   = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+$from  = strpos($src, 'public function __construct');
+$to    = strpos($src, "\n    public function ", $from + 1);
+$body  = substr($src, $from, $to - $from);
+auditAssert(substr_count($body, 'public function ') === 1, 'тело конструктора вырезано целиком');
+foreach (['pac', 'clients', 'clients1', 'adguard', 'update', 'hwid'] as $prop) {
     auditAssert(!preg_match('~\$this->' . $prop . '\s*=~', $body),
         "конструктор не переопределяет \$$prop — дефолт один, на свойстве");
 }
