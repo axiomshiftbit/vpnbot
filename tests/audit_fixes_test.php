@@ -273,4 +273,51 @@ foreach (glob($pacFile . '*') ?: [] as $f) {
     @unlink($f);
 }
 
+// ── Bot без конструктора: getPacConf() не должен падать ─────────────────────
+// Тесты и разовые диагностические скрипты строят Bot через
+// newInstanceWithoutConstructor(). Пока путь к pac.json задавался ТОЛЬКО в
+// конструкторе, первый же getPacConf() (а его зовёт почти каждый метод) падал
+// с «ValueError: Path must not be empty» из file_get_contents — не warning,
+// поэтому @ его не гасила. В логе рабочего сервера это встречалось трижды: `php -r` с
+// xrayCore() и /tmp/gen_mihomo.php с addClashRuleSet().
+$bare = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+foreach ([
+    'pac'      => '/config/pac.json',
+    'clients'  => '/config/clients.json',
+    'clients1' => '/config/clients1.json',
+    'adguard'  => '/config/AdGuardHome.yaml',
+    'update'   => '/update/json',
+    'hwid'     => '/config/hwid.json',
+] as $prop => $path) {
+    auditAssert($bare->$prop === $path, "путь \$$prop известен и без конструктора");
+}
+try {
+    $conf = $bare->getPacConf();
+    auditAssert(is_array($conf), 'getPacConf() на голом инстансе отдаёт массив');
+    auditAssert(array_key_exists('language', $conf), 'и он дополнен PAC_DEFAULTS');
+} catch (Throwable $e) {
+    auditAssert(false, 'getPacConf() на голом инстансе падает: ' . get_class($e) . ': ' . $e->getMessage());
+}
+// Подмена пути тестами обязана продолжать работать — на ней стоят соседние
+// проверки в этом же файле и весь audit_doh_id_test (он подменяет adguard).
+$bare->pac     = $pacFile;
+$bare->adguard = $pacFile . '.yaml';
+auditAssert($bare->pac === $pacFile && $bare->adguard === $pacFile . '.yaml',
+    'пути по-прежнему переопределяются присваиванием');
+
+// Конструктор больше не обязан присваивать эти пути — но обязан оставить их
+// теми же, что и дефолты, иначе боевой инстанс и голый разъедутся.
+// Тело конструктора вырезаем ДО следующего объявления метода, а не окном
+// фиксированной длины: конструктор растёт, и присваивание, добавленное после
+// его конца, окно бы не поймало.
+$src   = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+$from  = strpos($src, 'public function __construct');
+$to    = strpos($src, "\n    public function ", $from + 1);
+$body  = substr($src, $from, $to - $from);
+auditAssert(substr_count($body, 'public function ') === 1, 'тело конструктора вырезано целиком');
+foreach (['pac', 'clients', 'clients1', 'adguard', 'update', 'hwid'] as $prop) {
+    auditAssert(!preg_match('~\$this->' . $prop . '\s*=~', $body),
+        "конструктор не переопределяет \$$prop — дефолт один, на свойстве");
+}
+
 echo "audit_fixes_test OK\n";

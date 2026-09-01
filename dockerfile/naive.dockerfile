@@ -15,10 +15,15 @@ ARG image=alpine:3.23
 # совместимость. CADDY_GO_VERSION держим не ниже требования caddy (go.mod caddy
 # v2.11.2 → go 1.25.0).
 #
+# На 2026-09-01 у caddy вышли v2.11.3 и v2.11.4, но тегов плагина под них нет:
+# последний у klzgrad — по-прежнему v2.11.2-naive. Пара остаётся на v2.11.2;
+# поднимать один только CADDY_VERSION нельзя (сборка упадёт на git ls-remote
+# ниже, и это правильно — непроверенная комбинация ломается в рантайме).
+#
 # Тег здесь — ЧЕЛОВЕЧЕСКИЙ пин: go его как версию модуля не примет, сборка
 # разворачивает его в коммит через git ls-remote (см. ниже).
 ARG CADDY_GO_VERSION=1.25
-ARG XCADDY_VERSION=v0.4.5
+ARG XCADDY_VERSION=v0.4.7
 ARG CADDY_VERSION=v2.11.2
 ARG FORWARDPROXY_VERSION=v2.11.2-naive
 

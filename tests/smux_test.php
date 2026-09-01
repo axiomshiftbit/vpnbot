@@ -576,8 +576,8 @@ $b = smFixBot(['version' => 'Xray 26.8.25-1457 (Xray, Penetrates Everything.)'])
 smAssert($b->smuxHalfCloseReady(), 'форк 26.8.25-1457 умеет (суффикс — время сборки, не pre-release)');
 $b = smFixBot(['version' => 'Xray 26.8.26-0855 (Xray, Penetrates Everything.)']);
 smAssert($b->smuxHalfCloseReady(), 'форк 26.8.26-0855 умеет');
-$b = smFixBot(['version' => 'Xray 26.8.27-1556 (Xray, Penetrates Everything.)']);
-smAssert($b->smuxHalfCloseReady(), 'форк 26.8.27-1556 (текущий пин) умеет');
+$b = smFixBot(['version' => 'Xray 26.8.30-2253 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'форк 26.8.30-2253 (текущий пин) умеет');
 // Версия относится к АКТИВНОМУ ядру: пока по симлинку отвечает апстрим (или
 // проба молчит), про форк она не говорит ничего — запрещать нечего.
 $b = smFixBot(['active' => 'origin', 'running' => 'origin', 'version' => 'Xray 26.7.28 (Xray, Penetrates Everything.)']);

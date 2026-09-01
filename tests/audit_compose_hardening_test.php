@@ -133,6 +133,56 @@ chAssert(str_contains($compose, './config/xray.json:/xray.json:ro'),
 chAssert(!preg_match('~\./config/ssserver\.json:/config\.json:ro~', $compose),
     'ssserver.json остаётся на запись: start_ss.sh правит в нём порт');
 
+// ── 5. Пины не расходятся между .env, фолбэком compose и ARG-дефолтом ──────
+// Одно значение живёт в трёх местах: .env (источник истины — его читают
+// renovate, CI и bake), фолбэк ${VAR:-default} в compose и ARG-дефолт в
+// dockerfile. Разъехавшись, они не ломаются немедленно: CI собирает с args из
+// .env, поэтому подмена всплывает только там, где build-args не передаются
+// вовсе. А такое место есть: сервисы proxy и ss собирают ОДИН образ
+// vpnbot-ss, но proxy не передаёт ни одного из четырёх пинов — локальный
+// `docker compose build` собрал бы его по ARG-дефолту и молча вернул старую
+// версию shadowsocks.
+//
+// К 2026-09-01 так разъехались ADGUARD_VERSION (78 в compose против 79 в
+// .env), TELEMT_VERSION (3.5.2 против 3.5.5) и TT_REF (фолбэк master при пине
+// на коммит — ровно то плавающее поведение, от которого уходили).
+$envRaw = (string) file_get_contents(__DIR__ . '/../.env');
+$env    = [];
+foreach (preg_split('~\r\n|\n~', $envRaw) as $line) {
+    if (preg_match('~^([A-Za-z_][A-Za-z0-9_]*)=(.*)$~', $line, $em)) {
+        $env[$em[1]] = $em[2];
+    }
+}
+chAssert(count($env) > 30, 'переменные .env разобраны: ' . count($env));
+
+// Исключение ровно одно и оно осознанное: у xray ARG намеренно ПУСТОЙ —
+// «пусто» для fetch_xray означает releases/latest, а не «повтори пин»
+// (dockerfile/xray.dockerfile, три допустимых значения аргумента).
+$pinSkip = ['XRAY_VERSION' => true, 'XRAY_FORK_VERSION' => true];
+
+preg_match_all('~\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}~', $compose, $cm, PREG_SET_ORDER);
+$checked = 0;
+foreach ($cm as [, $var, $dflt]) {
+    if (($env[$var] ?? '') === '' || isset($pinSkip[$var])) {
+        continue;
+    }
+    $checked++;
+    chAssert($dflt === $env[$var],
+        "фолбэк compose для $var: «{$dflt}» против «{$env[$var]}» в .env");
+}
+chAssert($checked > 20, "фолбэки compose проверены: $checked");
+
+foreach (glob(__DIR__ . '/../dockerfile/*.dockerfile') as $df) {
+    preg_match_all('~^ARG ([A-Za-z_][A-Za-z0-9_]*)="?([^"\n]*)"?$~m', (string) file_get_contents($df), $am, PREG_SET_ORDER);
+    foreach ($am as [, $var, $dflt]) {
+        if (($env[$var] ?? '') === '' || isset($pinSkip[$var])) {
+            continue;
+        }
+        chAssert($dflt === $env[$var],
+            basename($df) . ": ARG-дефолт $var — «{$dflt}» против «{$env[$var]}» в .env");
+    }
+}
+
 if ($failed) {
     echo "audit_compose_hardening_test FAILED ($failed)\n";
     exit(1);

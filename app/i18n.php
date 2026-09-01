@@ -13,6 +13,18 @@ $i = [
         'en' => 'Amnezia',
         'ru' => 'Amnezia',
     ],
+    'ss via warp'          => [
+        'en' => 'ss via warp',
+        'ru' => 'ss через warp',
+    ],
+    'ss via warp hint'     => [
+        'en' => 'Only TCP of ssserver goes through the WARP SOCKS5: the UDP relay of the core ignores the chain, so QUIC and plain-UDP DNS keep leaving from the server address. If WARP dies, TCP does not fall back to direct — it just stops.',
+        'ru' => 'Через SOCKS5 WARP идёт только TCP ssserver: UDP-релей ядра цепочку не знает, поэтому QUIC и DNS по UDP по-прежнему уходят с адреса сервера. Если WARP отвалится, TCP НЕ откатится на direct — он просто перестанет ходить.',
+    ],
+    'warp is off for ss'   => [
+        'en' => 'WARP is not answering — not switching ss to it: without a working proxy the TCP of every ss client stops.',
+        'ru' => 'WARP не отвечает — не переключаю ss на него: без рабочего прокси TCP у всех клиентов ss встанет.',
+    ],
     'sh_title'             => [
         'en' => 'Shadowsocks',
         'ru' => 'Shadowsocks',

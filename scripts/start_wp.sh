@@ -26,6 +26,19 @@ WARP_LICENSE_KEY=$(cat /config/pac.json | jq -r '.warp // empty')
 XRAY_IPS=$(getent hosts xr 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
 SOCKS_ALLOW="${WARP_SOCKS_ALLOW:-${XRAY_IPS:-10.10.0.9}}"
 
+# Второй легитимный потребитель — контейнер ss, но только когда админ включил
+# тумблер «ss через warp» (меню SS). Состояние живёт там же, где его читает
+# демон: ключ outbound_proxy в ssserver.json — отдельного флага в pac.json нет,
+# чтобы нечему было разъезжаться с конфигом. Резолвим тут же, по той же
+# причине, что и xr: ниже мы перепишем resolv.conf, и docker-DNS исчезнет.
+# Тумблер вставляет это же правило вживую (Bot::warpSocksAllowCmd), здесь оно
+# нужно, чтобы пережить пересоздание wp.
+if [ -n "$(jq -r '.outbound_proxy // empty' /config/ssserver.json 2>/dev/null)" ]; then
+    SS_IPS=$(getent hosts ss 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+    SOCKS_ALLOW="$SOCKS_ALLOW ${SS_IPS:-10.10.0.6}"
+    echo "[warp] ss через warp включён — пускаем ${SS_IPS:-10.10.0.6} в SOCKS"
+fi
+
 mkdir -p "$WGCF_DIR"
 cd "$WGCF_DIR"
 

@@ -101,8 +101,12 @@ class Bot
     // Нужен, потому что ssh() возвращает "" и по возвращаемому значению
     // «команда не выполнилась» неотличимо от «команда не дала вывода».
     public $sshFailed = false;
-    public $adguard;
-    public $update;
+    // Тот же случай, плюс тесты DoH подменяют путь присваиванием на временный
+    // файл — с дефолтом на свойстве это продолжает работать как раньше.
+    public $adguard = '/config/AdGuardHome.yaml';
+    // Файл, куда pinBackup() кладёт полный экспорт перед обновлением бота.
+    // Дефолт на свойстве — по той же причине, что у $pac/$clients ниже.
+    public $update = '/update/json';
     public $ip;
     public $limit;
     public $key;
@@ -112,11 +116,23 @@ class Bot
     public $logs;
     public $reg;
     public $pool;
-    public $hwid;
+    public $hwid = '/config/hwid.json';
     public $api;
-    public $clients;
-    public $clients1;
-    public $pac;
+    // Пути клиентских списков wg/awg — дефолтом на свойстве, по той же причине,
+    // что у $pac ниже: getClients()/saveClients() зовутся из методов, которые
+    // проверяются на инстансе из newInstanceWithoutConstructor(), и с пустым
+    // путём падали бы тем же ValueError из file_get_contents.
+    public $clients  = '/config/clients.json';
+    public $clients1 = '/config/clients1.json';
+    // Значение по умолчанию здесь, а не в конструкторе — по той же причине,
+    // что у $xrayConf ниже. getPacConf() зовёт почти каждый метод класса, и на
+    // инстансе из newInstanceWithoutConstructor() (тесты, разовые
+    // диагностические скрипты) пустой путь ронял его насмерть:
+    // «ValueError: Path must not be empty» из недр file_get_contents. Собака
+    // там не спасает — ValueError это исключение, а не warning. В логе рабочего сервера
+    // такое трижды: `php -r` с xrayCore() (12.08) и /tmp/gen_mihomo.php с
+    // addClashRuleSet() (31.08). Тесты по-прежнему подменяют путь присваиванием.
+    public $pac = '/config/pac.json';
     // Ответ на force_reply должен перерисовать ИСХОДНОЕ сообщение меню, а не
     // отправить ещё одно. callback_id у обычного сообщения нет и подставлять
     // сохранённый id клика нельзя (Telegram ответит «query ID is invalid»),
@@ -188,18 +204,12 @@ class Bot
         $this->key      = $key;
         $this->api      = "https://$api/bot$key/";
         $this->file     = "https://$api/file/bot$key/";
-        $this->clients  = '/config/clients.json';
-        $this->clients1 = '/config/clients1.json';
-        $this->pac      = '/config/pac.json';
         $this->ip       = getenv('IP');
         $this->i18n     = $i18n;
         $this->language = $this->getPacConf()['language'] ?: 'en';
         $this->dns      = '1.1.1.1, 8.8.8.8';
         $this->mtu      = 1350;
         $this->limit    = $this->getPacConf()['limitpage'] ?: 5;
-        $this->adguard  = '/config/AdGuardHome.yaml';
-        $this->update   = '/update/json';
-        $this->hwid     = '/config/hwid.json';
         $this->logs = [
             'nginx_default_access',
             'nginx_domain_access',
@@ -1389,6 +1399,9 @@ class Bot
                 break;
             case preg_match('~^/simpleTls$~', $this->input['callback'], $m):
                 $this->simpleTls();
+                break;
+            case preg_match('~^/ssWarp$~', $this->input['callback'], $m):
+                $this->ssWarp();
                 break;
             case preg_match('~^/stlsPort$~', $this->input['callback'], $m):
                 $this->changeStlsPort();
@@ -5059,6 +5072,112 @@ NFT;
         file_put_contents('/config/sslocal.json',  json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->ssh('ssserver -v -d -c /config.json', 'ss');
         $this->ssh('sslocal -v -d -c /config.json', 'proxy');
+    }
+
+    // ---- SS через WARP (outbound_proxy у ssserver) --------------------------
+    // shadowsocks-rust 1.25.0 (#2106) научился отдавать ИСХОДЯЩИЕ соединения
+    // ssserver'а в socks5/http-прокси: ключ outbound_proxy, значение — URL с
+    // ОБЯЗАТЕЛЬНЫМ портом. Рядом уже живёт microsocks WARP'а, поэтому тумблер
+    // сводится к одной строке в ssserver.json.
+    //
+    // Три вещи, которые видно только на живом ядре (проверены прогоном
+    // релизных бинарей 1.25.0 с нашими конфигами, см. AUDIT-2026-09-01-ss-warp):
+    //   1. цепочку применяет ТОЛЬКО tcp-релей сервера (server/tcprelay.rs);
+    //      udprelay.rs про неё не знает вовсе, то есть UDP клиентов (QUIC, DNS
+    //      по UDP) продолжает уходить НАПРЯМУЮ, с адреса сервера. Это не наш
+    //      выбор, а поведение ядра — и о нём обязано быть написано в меню;
+    //   2. отката на direct нет: пока прокси недоступен, каждый TCP-коннект
+    //      падает с «connect failed». Поэтому включаем только после успешной
+    //      пробы WARP, а не вслепую;
+    //   3. UDP при этом работает как ни в чём не бывало — то есть авария
+    //      выглядит как «TCP не ходит, а видео крутится», её легко не узнать.
+    public const SS_WARP_KEY = 'outbound_proxy';
+
+    // Включён ли тумблер. Источник истины — сам ssserver.json (как plugin у
+    // v2ray и Enabled у cloak/simple-tls): дублировать состояние в pac.json
+    // значит завести второе место, которое может разъехаться с конфигом,
+    // который реально читает демон.
+    public static function ssWarpOn(?array $ss): bool
+    {
+        return !empty($ss[self::SS_WARP_KEY]);
+    }
+
+    // URL цепочки. Порт обязателен: OutboundProxy::from_url() отвергает URL без
+    // него, и ssserver не поднимется вовсе.
+    public function ssWarpUrl(): string
+    {
+        $ip = explode('/', $this->warpSocksIp())[0];
+
+        return 'socks5://' . $ip . ':' . self::WARP_SOCKS_PORT;
+    }
+
+    // Команда для ACL microsocks внутри wp. start_wp.sh ставит это правило на
+    // старте контейнера (условие — тот же ключ в ssserver.json), но тумблер
+    // обязан работать и без пересоздания wp, поэтому то же правило ставим
+    // вживую. -C перед -I делает вставку идемпотентной, -I без позиции кладёт
+    // ACCEPT ПЕРЕД финальным DROP цепочки (иначе правило бесполезно).
+    // Снятие — циклом: одинаковых правил могло накопиться несколько.
+    public static function warpSocksAllowCmd(string $ip, bool $on): string
+    {
+        $rule = "WARP_SOCKS -s $ip -j ACCEPT";
+
+        return $on
+            ? "iptables -C $rule 2>/dev/null || iptables -I $rule"
+            : "while iptables -C $rule 2>/dev/null; do iptables -D $rule; done";
+    }
+
+    // Адрес контейнера ss глазами docker-DNS. Резолвим ЗДЕСЬ, в php: внутри wp
+    // start_wp.sh подменяет /etc/resolv.conf на 1.1.1.1, и имена контейнеров
+    // оттуда уже не резолвятся (ровно поэтому XRAY_IPS там считается до
+    // подмены). Фолбэк — адрес из compose.
+    public function ssContainerIp(): string
+    {
+        $ip = gethostbyname('ss');
+
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? $ip : '10.10.0.6';
+    }
+
+    public function warpSocksAllowSS(bool $on): void
+    {
+        $this->ssh(self::warpSocksAllowCmd($this->ssContainerIp(), $on), 'wp');
+    }
+
+    public function ssWarp()
+    {
+        $c = $this->getSSConfig();
+        // Битый/пропавший ssserver.json: json_decode отдаёт null, и запись ниже
+        // сделала бы из конфига объект С ОДНИМ ключом outbound_proxy — то есть
+        // снесла бы пароль, шифр и режим. Лучше ничего не менять.
+        if (!is_array($c)) {
+            error_log('ssWarp: /config/ssserver.json не читается — тумблер не тронут');
+
+            return $this->menu('ss');
+        }
+        if (self::ssWarpOn($c)) {
+            unset($c[self::SS_WARP_KEY]);
+            $this->warpSocksAllowSS(false);
+        } else {
+            // Проба стоит одного ssh, а цена ошибки — весь TCP через SS: пока
+            // прокси не отвечает, ядро не откатывается на direct (см. коммент
+            // выше), и клиенты остаются без связи молча.
+            if ($this->warpStatus() === 'off') {
+                $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('warp is off for ss'));
+                sleep(3);
+
+                return $this->menu('ss');
+            }
+            // Сначала ACL, потом конфиг: наоборот ssserver успел бы
+            // перезапуститься и получить DROP на первом же коннекте.
+            $this->warpSocksAllowSS(true);
+            $c[self::SS_WARP_KEY] = $this->ssWarpUrl();
+        }
+        file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $this->chmodSecret('/config/ssserver.json');
+        // Только ssserver: sslocal в контейнере proxy ходит в ss:8388, его
+        // исходящие — это уже туннель, цепочка к ним отношения не имеет.
+        $this->ssh('pkill ssserver', 'ss');
+        $this->ssh('ssserver -v -d -c /config.json', 'ss');
+        $this->menu('ss');
     }
 
     public function changeCloakPort()
@@ -14417,6 +14536,8 @@ DNS-over-HTTPS with IP:
         $ckPort   = (int) (getenv('CKPORT') ?: 7443);
         $ckSrv    = $ck['ServerName'] ?? ($ck['RedirAddr'] ?? 'www.bing.com');
 
+        $ssWarpOn = self::ssWarpOn($ss);
+
         $st       = $this->getStlsConfig();
         $stlsOn   = !empty($st['Enabled']);
         $stPort   = (int) (getenv('STLSPORT') ?: 3443);
@@ -14488,6 +14609,12 @@ DNS-over-HTTPS with IP:
             $text[] = 'method: <code>' . htmlspecialchars($ckMethod, ENT_QUOTES) . '</code>'
                 . ($ckMethod === 'plain' ? ' ⚠️ только для отладки: трафик перестаёт быть неотличимым от случайного' : '');
         }
+        if ($ssWarpOn) {
+            $text[] = '';
+            $text[] = '<b>WARP</b>';
+            $text[] = 'egress (TCP): <code>' . htmlspecialchars((string) ($ss[self::SS_WARP_KEY] ?? ''), ENT_QUOTES) . '</code>';
+            $text[] = '<i>' . $this->i18n('ss via warp hint') . '</i>';
+        }
         if ($stlsOn) {
             $text[] = '';
             $text[] = '<b>simple-tls</b>';
@@ -14556,6 +14683,12 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => 'simple-tls: ' . ($stlsOn ? 'ON' : 'OFF'),
                 'callback_data' => "/simpleTls",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('ss via warp') . ': ' . ($ssWarpOn ? 'ON' : 'OFF'),
+                'callback_data' => "/ssWarp",
             ],
         ];
         if ($stlsOn) {
