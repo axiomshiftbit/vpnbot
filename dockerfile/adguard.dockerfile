@@ -3,7 +3,7 @@
 # для остальных сервисов: /config/AdGuardHome.yaml мигрируется вперёд без
 # обратной совместимости, то есть откатиться после такого обновления уже нельзя.
 # Значение приходит из .env через build.args (ADGUARD_VERSION).
-ARG ADGUARD_VERSION=v0.107.78
+ARG ADGUARD_VERSION=v0.107.79
 FROM adguard/adguardhome:${ADGUARD_VERSION}
 RUN apk add --no-cache --update openssh \
     && mkdir /root/.ssh
