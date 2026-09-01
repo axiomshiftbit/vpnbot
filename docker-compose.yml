@@ -572,7 +572,7 @@ services:
                 # CADDY_VERSION и FORWARDPROXY_VERSION меняются ТОЛЬКО парой:
                 # тег плагина = версия caddy + суффикс -naive (см. dockerfile).
                 CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.25}
-                XCADDY_VERSION: ${XCADDY_VERSION:-v0.4.5}
+                XCADDY_VERSION: ${XCADDY_VERSION:-v0.4.7}
                 CADDY_VERSION: ${CADDY_VERSION:-v2.11.2}
                 FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.2-naive}
         volumes:
@@ -707,7 +707,7 @@ services:
                 # Пустое значение любого из четырёх = releases/latest
                 # (прежнее поведение). Значения по умолчанию — то, что стоит
                 # в бою; менять здесь не нужно, правьте .env.
-                SS_RUST_VERSION: ${SS_RUST_VERSION:-v1.24.0}
+                SS_RUST_VERSION: ${SS_RUST_VERSION:-v1.25.0}
                 V2RAY_PLUGIN_VERSION: ${V2RAY_PLUGIN_VERSION:-v5.49.0}
                 CLOAK_VERSION: ${CLOAK_VERSION:-v2.12.0}
                 SIMPLE_TLS_VERSION: ${SIMPLE_TLS_VERSION:-v0.8.0}

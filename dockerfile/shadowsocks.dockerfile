@@ -8,7 +8,7 @@ FROM $image
 #
 # Пустое значение = releases/latest (прежнее поведение), конкретный тег —
 # releases/tags/<tag>. Значения по умолчанию — то, что реально проверено в бою.
-ARG SS_RUST_VERSION=v1.24.0
+ARG SS_RUST_VERSION=v1.25.0
 ARG V2RAY_PLUGIN_VERSION=v5.49.0
 ARG CLOAK_VERSION=v2.12.0
 ARG SIMPLE_TLS_VERSION=v0.8.0
