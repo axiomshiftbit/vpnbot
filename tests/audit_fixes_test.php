@@ -281,7 +281,14 @@ foreach (glob($pacFile . '*') ?: [] as $f) {
 // поэтому @ его не гасила. В логе рабочего сервера это встречалось трижды: `php -r` с
 // xrayCore() и /tmp/gen_mihomo.php с addClashRuleSet().
 $bare = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
-auditAssert($bare->pac === '/config/pac.json', 'путь к pac.json известен и без конструктора');
+foreach ([
+    'pac'      => '/config/pac.json',
+    'clients'  => '/config/clients.json',
+    'clients1' => '/config/clients1.json',
+    'adguard'  => '/config/AdGuardHome.yaml',
+] as $prop => $path) {
+    auditAssert($bare->$prop === $path, "путь \$$prop известен и без конструктора");
+}
 try {
     $conf = $bare->getPacConf();
     auditAssert(is_array($conf), 'getPacConf() на голом инстансе отдаёт массив');
@@ -290,8 +297,19 @@ try {
     auditAssert(false, 'getPacConf() на голом инстансе падает: ' . get_class($e) . ': ' . $e->getMessage());
 }
 // Подмена пути тестами обязана продолжать работать — на ней стоят соседние
-// проверки в этом же файле.
-$bare->pac = $pacFile;
-auditAssert($bare->pac === $pacFile, 'путь по-прежнему переопределяется присваиванием');
+// проверки в этом же файле и весь audit_doh_id_test (он подменяет adguard).
+$bare->pac     = $pacFile;
+$bare->adguard = $pacFile . '.yaml';
+auditAssert($bare->pac === $pacFile && $bare->adguard === $pacFile . '.yaml',
+    'пути по-прежнему переопределяются присваиванием');
+
+// Конструктор больше не обязан присваивать эти пути — но обязан оставить их
+// теми же, что и дефолты, иначе боевой инстанс и голый разъедутся.
+$ctor = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+$body = substr($ctor, strpos($ctor, 'public function __construct'), 2000);
+foreach (['pac', 'clients', 'clients1', 'adguard'] as $prop) {
+    auditAssert(!preg_match('~\$this->' . $prop . '\s*=~', $body),
+        "конструктор не переопределяет \$$prop — дефолт один, на свойстве");
+}
 
 echo "audit_fixes_test OK\n";

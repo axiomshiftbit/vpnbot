@@ -101,7 +101,9 @@ class Bot
     // Нужен, потому что ssh() возвращает "" и по возвращаемому значению
     // «команда не выполнилась» неотличимо от «команда не дала вывода».
     public $sshFailed = false;
-    public $adguard;
+    // Тот же случай, плюс тесты DoH подменяют путь присваиванием на временный
+    // файл — с дефолтом на свойстве это продолжает работать как раньше.
+    public $adguard = '/config/AdGuardHome.yaml';
     public $update;
     public $ip;
     public $limit;
@@ -114,8 +116,12 @@ class Bot
     public $pool;
     public $hwid;
     public $api;
-    public $clients;
-    public $clients1;
+    // Пути клиентских списков wg/awg — дефолтом на свойстве, по той же причине,
+    // что у $pac ниже: getClients()/saveClients() зовутся из методов, которые
+    // проверяются на инстансе из newInstanceWithoutConstructor(), и с пустым
+    // путём падали бы тем же ValueError из file_get_contents.
+    public $clients  = '/config/clients.json';
+    public $clients1 = '/config/clients1.json';
     // Значение по умолчанию здесь, а не в конструкторе — по той же причине,
     // что у $xrayConf ниже. getPacConf() зовёт почти каждый метод класса, и на
     // инстансе из newInstanceWithoutConstructor() (тесты, разовые
@@ -196,15 +202,12 @@ class Bot
         $this->key      = $key;
         $this->api      = "https://$api/bot$key/";
         $this->file     = "https://$api/file/bot$key/";
-        $this->clients  = '/config/clients.json';
-        $this->clients1 = '/config/clients1.json';
         $this->ip       = getenv('IP');
         $this->i18n     = $i18n;
         $this->language = $this->getPacConf()['language'] ?: 'en';
         $this->dns      = '1.1.1.1, 8.8.8.8';
         $this->mtu      = 1350;
         $this->limit    = $this->getPacConf()['limitpage'] ?: 5;
-        $this->adguard  = '/config/AdGuardHome.yaml';
         $this->update   = '/update/json';
         $this->hwid     = '/config/hwid.json';
         $this->logs = [
