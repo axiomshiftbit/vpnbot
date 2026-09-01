@@ -116,7 +116,15 @@ class Bot
     public $api;
     public $clients;
     public $clients1;
-    public $pac;
+    // Значение по умолчанию здесь, а не в конструкторе — по той же причине,
+    // что у $xrayConf ниже. getPacConf() зовёт почти каждый метод класса, и на
+    // инстансе из newInstanceWithoutConstructor() (тесты, разовые
+    // диагностические скрипты) пустой путь ронял его насмерть:
+    // «ValueError: Path must not be empty» из недр file_get_contents. Собака
+    // там не спасает — ValueError это исключение, а не warning. В логе рабочего сервера
+    // такое трижды: `php -r` с xrayCore() (12.08) и /tmp/gen_mihomo.php с
+    // addClashRuleSet() (31.08). Тесты по-прежнему подменяют путь присваиванием.
+    public $pac = '/config/pac.json';
     // Ответ на force_reply должен перерисовать ИСХОДНОЕ сообщение меню, а не
     // отправить ещё одно. callback_id у обычного сообщения нет и подставлять
     // сохранённый id клика нельзя (Telegram ответит «query ID is invalid»),
@@ -190,7 +198,6 @@ class Bot
         $this->file     = "https://$api/file/bot$key/";
         $this->clients  = '/config/clients.json';
         $this->clients1 = '/config/clients1.json';
-        $this->pac      = '/config/pac.json';
         $this->ip       = getenv('IP');
         $this->i18n     = $i18n;
         $this->language = $this->getPacConf()['language'] ?: 'en';

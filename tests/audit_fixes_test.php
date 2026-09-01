@@ -273,4 +273,25 @@ foreach (glob($pacFile . '*') ?: [] as $f) {
     @unlink($f);
 }
 
+// ── Bot без конструктора: getPacConf() не должен падать ─────────────────────
+// Тесты и разовые диагностические скрипты строят Bot через
+// newInstanceWithoutConstructor(). Пока путь к pac.json задавался ТОЛЬКО в
+// конструкторе, первый же getPacConf() (а его зовёт почти каждый метод) падал
+// с «ValueError: Path must not be empty» из file_get_contents — не warning,
+// поэтому @ его не гасила. В логе рабочего сервера это встречалось трижды: `php -r` с
+// xrayCore() и /tmp/gen_mihomo.php с addClashRuleSet().
+$bare = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+auditAssert($bare->pac === '/config/pac.json', 'путь к pac.json известен и без конструктора');
+try {
+    $conf = $bare->getPacConf();
+    auditAssert(is_array($conf), 'getPacConf() на голом инстансе отдаёт массив');
+    auditAssert(array_key_exists('language', $conf), 'и он дополнен PAC_DEFAULTS');
+} catch (Throwable $e) {
+    auditAssert(false, 'getPacConf() на голом инстансе падает: ' . get_class($e) . ': ' . $e->getMessage());
+}
+// Подмена пути тестами обязана продолжать работать — на ней стоят соседние
+// проверки в этом же файле.
+$bare->pac = $pacFile;
+auditAssert($bare->pac === $pacFile, 'путь по-прежнему переопределяется присваиванием');
+
 echo "audit_fixes_test OK\n";
