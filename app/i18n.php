@@ -21,6 +21,10 @@ $i = [
         'en' => 'Only TCP of ssserver goes through the WARP SOCKS5: the UDP relay of the core ignores the chain, so QUIC and plain-UDP DNS keep leaving from the server address. If WARP dies, TCP does not fall back to direct — it just stops.',
         'ru' => 'Через SOCKS5 WARP идёт только TCP ssserver: UDP-релей ядра цепочку не знает, поэтому QUIC и DNS по UDP по-прежнему уходят с адреса сервера. Если WARP отвалится, TCP НЕ откатится на direct — он просто перестанет ходить.',
     ],
+    'ss warp acl failed'   => [
+        'en' => 'The wp container is not answering — the SOCKS access rule was not installed, so ss is not switched to WARP: without the rule the TCP of every ss client would stop silently.',
+        'ru' => 'Контейнер wp не отвечает — правило доступа к SOCKS не встало, поэтому ss на WARP не переключаю: без правила TCP у всех клиентов ss встал бы молча.',
+    ],
     'warp is off for ss'   => [
         'en' => 'WARP is not answering — not switching ss to it: without a working proxy the TCP of every ss client stops.',
         'ru' => 'WARP не отвечает — не переключаю ss на него: без рабочего прокси TCP у всех клиентов ss встанет.',

@@ -111,6 +111,28 @@ swAssert(strpos($body, 'warpSocksAllowSS(true)') < strpos($body, 'file_put_conte
 // Включение только после успешной пробы: отката на direct у ядра нет.
 swAssert(strpos($body, 'warpStatus()') < strpos($body, 'warpSocksAllowSS(true)'),
     'перед включением проверяется живость WARP');
+// ...но и пробы мало: она ходит бот→xr→wp:1080, а iptables — бот→wp:22.
+// Провалившийся ssh обязан отменить включение ДО записи конфига, иначе
+// конфиг с outbound_proxy уедет к ssserver без ACCEPT в WARP_SOCKS.
+$posAllow  = strpos($body, 'warpSocksAllowSS(true)');
+$posFailed = strpos($body, '$this->sshFailed');
+$posWrite  = strpos($body, 'file_put_contents');
+swAssert($posFailed !== false && $posAllow < $posFailed && $posFailed < $posWrite,
+    'после установки ACL проверяется sshFailed — до записи конфига');
+swAssert(str_contains($body, "i18n('ss warp acl failed')"), 'и админ видит, почему тумблер не включился');
+
+// ── 7. Импорт настроек примиряет ACL с приехавшим конфигом ─────────────────
+// Бэкап несёт ssserver.json целиком, вместе с ключом outbound_proxy, а правило
+// в WARP_SOCKS с ним не едет. Без примирения бэкап С ключом на хосте БЕЗ
+// правила молча роняет весь TCP клиентов ss, а бэкап БЕЗ ключа оставляет
+// лишний ACCEPT висеть до пересоздания wp.
+preg_match('~\n\s+// ss\n.*?\n\s+// sl\n~s', $src, $im);
+$imp = $im[0] ?? '';
+swAssert($imp !== '', 'ветка ss в импорте настроек найдена');
+swAssert(str_contains($imp, 'warpSocksAllowSS(self::ssWarpOn('),
+    'импорт выставляет ACL по приехавшему ssserver.json');
+swAssert(strpos($imp, 'warpSocksAllowSS') < strpos($imp, 'ssserver -v -d -c /config.json'),
+    'и делает это ДО старта ssserver — как в самом тумблере');
 
 if ($failed) {
     echo "ss_warp_test: провалено проверок — $failed\n";

@@ -5169,6 +5169,17 @@ NFT;
             // Сначала ACL, потом конфиг: наоборот ssserver успел бы
             // перезапуститься и получить DROP на первом же коннекте.
             $this->warpSocksAllowSS(true);
+            // Проба выше НЕ доказывает, что правило встало: она ходит
+            // бот→xr→wp:1080, а iptables идёт бот→wp:22 — это разные пути, и
+            // sshd в wp может лежать при живых туннеле и microsocks. Тогда
+            // ACCEPT не встанет, а конфиг всё равно запишется — и весь TCP
+            // клиентов ss встанет молча (отката на direct у ядра нет).
+            if ($this->sshFailed) {
+                $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('ss warp acl failed'));
+                sleep(3);
+
+                return $this->menu('ss');
+            }
             $c[self::SS_WARP_KEY] = $this->ssWarpUrl();
         }
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
@@ -6645,6 +6656,14 @@ NFT;
                 $this->ssh('pkill ssserver', 'ss');
                 file_put_contents('/config/ssserver.json', json_encode($json['ss'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
                 $this->chmodSecret('/config/ssserver.json');
+                // Ключ outbound_proxy («ss через warp») приезжает вместе с
+                // бэкапом, а правило в WARP_SOCKS — нет, и единственный
+                // источник истины перестаёт быть единственным. Бэкап С ключом
+                // на хосте БЕЗ правила молча ронял весь TCP клиентов ss (у
+                // ядра нет отката на direct), бэкап БЕЗ ключа оставлял лишний
+                // ACCEPT висеть до пересоздания wp. Ставим ДО старта ssserver
+                // — по той же причине, что и в ssWarp().
+                $this->warpSocksAllowSS(self::ssWarpOn(is_array($json['ss']) ? $json['ss'] : null));
                 $this->ssh('ssserver -v -d -c /config.json', 'ss');
             }
             // sl
