@@ -5111,19 +5111,34 @@ NFT;
         return 'socks5://' . $ip . ':' . self::WARP_SOCKS_PORT;
     }
 
+    // Маркеры фактического состояния ACL в выводе команды ниже. Два разных
+    // слова, а не «on»/«off»: одно не должно быть подстрокой другого, иначе
+    // str_contains() спутает их.
+    public const SS_ACL_PRESENT = 'ss-acl-present';
+    public const SS_ACL_ABSENT  = 'ss-acl-absent';
+
     // Команда для ACL microsocks внутри wp. start_wp.sh ставит это правило на
     // старте контейнера (условие — тот же ключ в ssserver.json), но тумблер
     // обязан работать и без пересоздания wp, поэтому то же правило ставим
     // вживую. -C перед -I делает вставку идемпотентной, -I без позиции кладёт
     // ACCEPT ПЕРЕД финальным DROP цепочки (иначе правило бесполезно).
     // Снятие — циклом: одинаковых правил могло накопиться несколько.
+    //
+    // Хвост с -C — проверка РЕЗУЛЬТАТА: ssh() не смотрит код возврата и не
+    // читает stderr, поэтому отказавший iptables неотличим от успеха. А
+    // отказать он может штатно: sshd в wp поднимается первой строкой
+    // start_wp.sh, а цепочка WARP_SOCKS создаётся в самом конце — между
+    // стартом microsocks (проба warpStatus() уже проходит) и созданием цепочки
+    // и -C, и -I падают с «No chain by that name». Спрашиваем сам iptables.
     public static function warpSocksAllowCmd(string $ip, bool $on): string
     {
         $rule = "WARP_SOCKS -s $ip -j ACCEPT";
-
-        return $on
+        $cmd  = $on
             ? "iptables -C $rule 2>/dev/null || iptables -I $rule"
             : "while iptables -C $rule 2>/dev/null; do iptables -D $rule; done";
+
+        return "$cmd; iptables -C $rule 2>/dev/null && echo " . self::SS_ACL_PRESENT
+            . ' || echo ' . self::SS_ACL_ABSENT;
     }
 
     // Адрес контейнера ss глазами docker-DNS. Резолвим ЗДЕСЬ, в php: внутри wp
@@ -5137,9 +5152,14 @@ NFT;
         return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? $ip : '10.10.0.6';
     }
 
-    public function warpSocksAllowSS(bool $on): void
+    // true — ACL действительно приведён к запрошенному виду: ssh дошёл до wp И
+    // сам iptables подтвердил правило маркером. Всё остальное — false.
+    public function warpSocksAllowSS(bool $on): bool
     {
-        $this->ssh(self::warpSocksAllowCmd($this->ssContainerIp(), $on), 'wp');
+        $out = $this->ssh(self::warpSocksAllowCmd($this->ssContainerIp(), $on), 'wp');
+
+        return !$this->sshFailed
+            && str_contains((string) $out, $on ? self::SS_ACL_PRESENT : self::SS_ACL_ABSENT);
     }
 
     public function ssWarp()
@@ -5168,13 +5188,15 @@ NFT;
             }
             // Сначала ACL, потом конфиг: наоборот ssserver успел бы
             // перезапуститься и получить DROP на первом же коннекте.
-            $this->warpSocksAllowSS(true);
             // Проба выше НЕ доказывает, что правило встало: она ходит
             // бот→xr→wp:1080, а iptables идёт бот→wp:22 — это разные пути, и
-            // sshd в wp может лежать при живых туннеле и microsocks. Тогда
-            // ACCEPT не встанет, а конфиг всё равно запишется — и весь TCP
-            // клиентов ss встанет молча (отката на direct у ядра нет).
-            if ($this->sshFailed) {
+            // sshd в wp может лежать при живых туннеле и microsocks. Мало и
+            // живого ssh: цепочки WARP_SOCKS может ещё не быть, и тогда
+            // iptables отказывает молча. Смотрим подтверждение от самого
+            // iptables и отменяем включение ДО записи конфига — иначе конфиг с
+            // outbound_proxy уедет к ssserver без ACCEPT, и весь TCP клиентов
+            // ss встанет молча (отката на direct у ядра нет).
+            if (!$this->warpSocksAllowSS(true)) {
                 $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('ss warp acl failed'));
                 sleep(3);
 

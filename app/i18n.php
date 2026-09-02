@@ -22,8 +22,8 @@ $i = [
         'ru' => 'Через SOCKS5 WARP идёт только TCP ssserver: UDP-релей ядра цепочку не знает, поэтому QUIC и DNS по UDP по-прежнему уходят с адреса сервера. Если WARP отвалится, TCP НЕ откатится на direct — он просто перестанет ходить.',
     ],
     'ss warp acl failed'   => [
-        'en' => 'The wp container is not answering — the SOCKS access rule was not installed, so ss is not switched to WARP: without the rule the TCP of every ss client would stop silently.',
-        'ru' => 'Контейнер wp не отвечает — правило доступа к SOCKS не встало, поэтому ss на WARP не переключаю: без правила TCP у всех клиентов ss встал бы молча.',
+        'en' => 'The SOCKS access rule was not installed — the wp container is not answering, or its firewall rejected the rule (the chain appears only at the very end of the wp startup). Not switching ss to WARP: without the rule the TCP of every ss client would stop silently. Try again in a minute.',
+        'ru' => 'Правило доступа к SOCKS не встало: контейнер wp не отвечает либо его firewall отказал (цепочка появляется только в самом конце старта wp). ss на WARP не переключаю: без правила TCP у всех клиентов ss встал бы молча. Попробуйте через минуту.',
     ],
     'warp is off for ss'   => [
         'en' => 'WARP is not answering — not switching ss to it: without a working proxy the TCP of every ss client stops.',

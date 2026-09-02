@@ -31,6 +31,7 @@ function swAssert(bool $cond, string $msg): void
 }
 
 $bot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+$src = (string) file_get_contents(__DIR__ . '/../app/bot.php');
 
 // ── 1. URL цепочки ──────────────────────────────────────────────────────────
 $url = $bot->ssWarpUrl();
@@ -59,6 +60,26 @@ swAssert(str_contains($off, 'iptables -D WARP_SOCKS -s 10.10.0.6 -j ACCEPT'), '�
 swAssert(str_contains($off, 'while iptables -C'), 'выключение чистит ВСЕ дубли, а не одно правило');
 // Идемпотентность включения: -C гейтит -I, значит повторный клик не плодит копий.
 swAssert(substr_count($on, 'iptables -I') === 1, 'включение вставляет ровно одно правило');
+// Проверяется РЕЗУЛЬТАТ, а не транспорт: ssh() не смотрит код возврата и не
+// читает stderr, поэтому отказавший iptables (цепочки WARP_SOCKS ещё нет — wp
+// создаёт её последней строкой старта) без маркера выглядел бы как успех.
+foreach (['включение' => $on, 'выключение' => $off] as $what => $cmd) {
+    swAssert(str_contains($cmd, 'echo ' . Bot::SS_ACL_PRESENT) && str_contains($cmd, 'echo ' . Bot::SS_ACL_ABSENT),
+        "$what печатает маркер фактического состояния ACL");
+    swAssert(strrpos($cmd, 'iptables -C') > strpos($cmd, $what === 'включение' ? 'iptables -I' : 'iptables -D'),
+        "$what проверяет правило ПОСЛЕ самой операции");
+}
+// str_contains() по маркеру спутал бы вложенные слова (вроде on/off).
+swAssert(!str_contains(Bot::SS_ACL_ABSENT, Bot::SS_ACL_PRESENT) && !str_contains(Bot::SS_ACL_PRESENT, Bot::SS_ACL_ABSENT),
+    'маркеры не вложены друг в друга');
+
+// Вердикт складывается из живого ssh И подтверждения от самого iptables.
+preg_match('~public function warpSocksAllowSS\(.*?\n    \}~s', $src, $am);
+$allow = $am[0] ?? '';
+swAssert($allow !== '', 'тело warpSocksAllowSS() найдено');
+swAssert(str_contains($allow, 'bool $on): bool'), 'warpSocksAllowSS отвечает результатом, а не void');
+swAssert(str_contains($allow, '$this->sshFailed') && str_contains($allow, 'SS_ACL_PRESENT'),
+    'результат = ssh дошёл И iptables подтвердил');
 
 // ── 3. Состояние читается из ssserver.json ─────────────────────────────────
 swAssert(Bot::ssWarpOn(['outbound_proxy' => 'socks5://10.10.0.13:1080']), 'ключ есть — тумблер ON');
@@ -69,7 +90,6 @@ swAssert(Bot::SS_WARP_KEY === 'outbound_proxy', 'имя ключа = имя из
 
 // Дублирующего флага в pac.json быть не должно: единственный источник истины —
 // ssserver.json. Регрессия ловится по исходнику, а не по поведению.
-$src = (string) file_get_contents(__DIR__ . '/../app/bot.php');
 swAssert(!preg_match("~\\\$p\\['ss_warp'\\]|'ss_warp'~", $src), 'второго состояния в pac.json нет');
 
 // ── 4. Пин ядра не ниже 1.25.0 ─────────────────────────────────────────────
@@ -119,13 +139,12 @@ swAssert(strpos($body, 'warpSocksAllowSS(true)') < strpos($body, 'file_put_conte
 swAssert(strpos($body, 'warpStatus()') < strpos($body, 'warpSocksAllowSS(true)'),
     'перед включением проверяется живость WARP');
 // ...но и пробы мало: она ходит бот→xr→wp:1080, а iptables — бот→wp:22.
-// Провалившийся ssh обязан отменить включение ДО записи конфига, иначе
+// Невставшее правило обязано отменить включение ДО записи конфига, иначе
 // конфиг с outbound_proxy уедет к ssserver без ACCEPT в WARP_SOCKS.
-$posAllow  = strpos($body, 'warpSocksAllowSS(true)');
-$posFailed = strpos($body, '$this->sshFailed');
-$posWrite  = strpos($body, 'file_put_contents');
-swAssert($posFailed !== false && $posAllow < $posFailed && $posFailed < $posWrite,
-    'после установки ACL проверяется sshFailed — до записи конфига');
+swAssert((bool) preg_match('~if \(!\$this->warpSocksAllowSS\(true\)\) \{~', $body),
+    'включение отменяется по результату установки ACL');
+swAssert(strpos($body, 'warpSocksAllowSS(true)') < strpos($body, 'file_put_contents'),
+    'и отменяется ДО записи конфига');
 swAssert(str_contains($body, "i18n('ss warp acl failed')"), 'и админ видит, почему тумблер не включился');
 
 // ── 7. Цепочка из нескольких хопов не ломает рендер меню ───────────────────
