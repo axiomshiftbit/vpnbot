@@ -172,16 +172,25 @@ foreach ($cm as [, $var, $dflt]) {
 }
 chAssert($checked > 20, "фолбэки compose проверены: $checked");
 
+$checkedArg = 0;
 foreach (glob(__DIR__ . '/../dockerfile/*.dockerfile') as $df) {
     preg_match_all('~^ARG ([A-Za-z_][A-Za-z0-9_]*)="?([^"\n]*)"?$~m', (string) file_get_contents($df), $am, PREG_SET_ORDER);
     foreach ($am as [, $var, $dflt]) {
         if (($env[$var] ?? '') === '' || isset($pinSkip[$var])) {
             continue;
         }
+        $checkedArg++;
         chAssert($dflt === $env[$var],
             basename($df) . ": ARG-дефолт $var — «{$dflt}» против «{$env[$var]}» в .env");
     }
 }
+// Тот же счётчик, что и у compose выше, и по той же причине: обе половины
+// молча пропускают всё, чего нет в .env, — переименование ключей или перевод
+// ARG на форму без «=» обнулили бы проверку, не уронив ни одного assert.
+// Пропущено осознанно: TUN2SOCKS_VERSION и RUST_VERSION в .env не заводятся
+// (единственный источник — сам dockerfile, compose их не передаёт), APK_REFRESH
+// это дата-инвалидатор кеша apk, а `ARG image` пишется строчными.
+chAssert($checkedArg > 20, "ARG-дефолты dockerfile'ов проверены: $checkedArg");
 
 if ($failed) {
     echo "audit_compose_hardening_test FAILED ($failed)\n";

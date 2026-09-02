@@ -630,7 +630,8 @@ services:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
-            # :ro — start_wp.sh только читает /config/pac.json.
+            # :ro — start_wp.sh только читает: /config/pac.json (ключ warp) и
+            # /config/ssserver.json (состояние тумблера «ss через warp»).
             - ./config:/config:ro
             - ./scripts/start_wp.sh:/start_wp.sh
             - ./scripts/warp_fixup.sh:/warp_fixup.sh

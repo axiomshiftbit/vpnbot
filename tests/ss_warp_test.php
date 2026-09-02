@@ -34,7 +34,14 @@ $bot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
 
 // ── 1. URL цепочки ──────────────────────────────────────────────────────────
 $url = $bot->ssWarpUrl();
-swAssert($url === 'socks5://10.10.0.13:1080', "URL цепочки: $url");
+// Литерал сверяем только там, где ssWarpUrl() обязан вернуть константу:
+// внутри php-контейнера /docker/compose — это docker-compose.override.yml, и
+// на хосте с переназначенным адресом wp верный URL был бы другим. Форму
+// (схема, явный порт, отсутствие маски) проверяем всегда — она от адреса не
+// зависит, а ломается как раз она.
+if (!is_file('/docker/compose')) {
+    swAssert($url === 'socks5://10.10.0.13:1080', "URL цепочки: $url");
+}
 swAssert((bool) preg_match('~^socks5://[0-9.]+:\d+$~', $url), 'схема socks5 и ЯВНЫЙ порт (без порта ядро не стартует)');
 swAssert(!str_contains($url, '/32'), 'маска из WARP_SOCKS_IP в URL не просачивается');
 // microsocks умеет только CONNECT, поэтому http/https-хопы тут недопустимы:
@@ -121,7 +128,19 @@ swAssert($posFailed !== false && $posAllow < $posFailed && $posFailed < $posWrit
     'после установки ACL проверяется sshFailed — до записи конфига');
 swAssert(str_contains($body, "i18n('ss warp acl failed')"), 'и админ видит, почему тумблер не включился');
 
-// ── 7. Импорт настроек примиряет ACL с приехавшим конфигом ─────────────────
+// ── 7. Цепочка из нескольких хопов не ломает рендер меню ───────────────────
+// Ядро принимает и Chain(Vec<String>) — такой конфиг приезжает импортом или
+// ручной правкой. Голое (string) дало бы «egress (TCP): Array» и «Array to
+// string conversion» в логе на каждом рендере меню SS.
+preg_match('~public function menuSS\(\).*?\n    public function ~s', $src, $mm);
+$menu = $mm[0] ?? '';
+swAssert($menu !== '', 'тело menuSS() найдено');
+swAssert((bool) preg_match('~is_array\(\$chain\)\s*\?\s*implode~', $menu),
+    'форма-цепочка склеивается, а не приводится к строке');
+swAssert(!preg_match('~\(string\)\s*\(\$ss\[self::SS_WARP_KEY\]~', $menu),
+    'голого (string) на значении outbound_proxy в меню нет');
+
+// ── 8. Импорт настроек примиряет ACL с приехавшим конфигом ─────────────────
 // Бэкап несёт ssserver.json целиком, вместе с ключом outbound_proxy, а правило
 // в WARP_SOCKS с ним не едет. Без примирения бэкап С ключом на хосте БЕЗ
 // правила молча роняет весь TCP клиентов ss, а бэкап БЕЗ ключа оставляет

@@ -196,10 +196,13 @@ printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 # работал как открытый SOCKS5 без пароля: и выход наружу через WARP, и доступ
 # к внутренним сервисам проекта (проверено — adguard отвечал через него).
 # Пускаем только петлю (warp_probe.sh + healthcheck) и xray, ради outbound
-# которого прокси и существует. Список переопределяется WARP_SOCKS_ALLOW
+# которого прокси и существует. Список xray переопределяется WARP_SOCKS_ALLOW
 # (адреса через пробел) — на случай нестандартной адресации в override.
+# Адрес ss (блок в начале файла) в это переопределение НЕ входит: он
+# дописывается поверх, когда включён тумблер «ss через warp», иначе тумблер
+# молча ломался бы на каждом хосте с заданным WARP_SOCKS_ALLOW.
 echo "[warp] Restricting SOCKS $SOCKS_PORT to: lo $SOCKS_ALLOW"
-echo "[warp] (override with WARP_SOCKS_ALLOW=\"ip1 ip2\" if xray lives elsewhere)"
+echo "[warp] (WARP_SOCKS_ALLOW=\"ip1 ip2\" overrides the xray part if xray lives elsewhere)"
 if iptables -N WARP_SOCKS 2>/dev/null; then :; else iptables -F WARP_SOCKS; fi
 iptables -C INPUT -p tcp --dport "$SOCKS_PORT" -j WARP_SOCKS 2>/dev/null \
     || iptables -I INPUT -p tcp --dport "$SOCKS_PORT" -j WARP_SOCKS

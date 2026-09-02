@@ -14629,9 +14629,15 @@ DNS-over-HTTPS with IP:
                 . ($ckMethod === 'plain' ? ' ⚠️ только для отладки: трафик перестаёт быть неотличимым от случайного' : '');
         }
         if ($ssWarpOn) {
+            // Ядро принимает и цепочку из нескольких хопов (Chain(Vec<String>)
+            // в SSOutboundProxyConfig), а такой конфиг приезжает импортом или
+            // ручной правкой. Голое приведение к строке дало бы «Array» в меню
+            // и «Array to string conversion» в логе.
+            $chain = $ss[self::SS_WARP_KEY] ?? '';
+            $chain = is_array($chain) ? implode(' → ', $chain) : (string) $chain;
             $text[] = '';
             $text[] = '<b>WARP</b>';
-            $text[] = 'egress (TCP): <code>' . htmlspecialchars((string) ($ss[self::SS_WARP_KEY] ?? ''), ENT_QUOTES) . '</code>';
+            $text[] = 'egress (TCP): <code>' . htmlspecialchars($chain, ENT_QUOTES) . '</code>';
             $text[] = '<i>' . $this->i18n('ss via warp hint') . '</i>';
         }
         if ($stlsOn) {
