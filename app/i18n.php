@@ -21,6 +21,10 @@ $i = [
         'en' => 'Only TCP of ssserver goes through the WARP SOCKS5: the UDP relay of the core ignores the chain, so QUIC and plain-UDP DNS keep leaving from the server address. If WARP dies, TCP does not fall back to direct — it just stops.',
         'ru' => 'Через SOCKS5 WARP идёт только TCP ssserver: UDP-релей ядра цепочку не знает, поэтому QUIC и DNS по UDP по-прежнему уходят с адреса сервера. Если WARP отвалится, TCP НЕ откатится на direct — он просто перестанет ходить.',
     ],
+    'ss warp acl failed'   => [
+        'en' => 'The SOCKS access rule was not installed — the wp container is not answering, or its firewall rejected the rule (the chain appears only at the very end of the wp startup). Not switching ss to WARP: without the rule the TCP of every ss client would stop silently. Try again in a minute.',
+        'ru' => 'Правило доступа к SOCKS не встало: контейнер wp не отвечает либо его firewall отказал (цепочка появляется только в самом конце старта wp). ss на WARP не переключаю: без правила TCP у всех клиентов ss встал бы молча. Попробуйте через минуту.',
+    ],
     'warp is off for ss'   => [
         'en' => 'WARP is not answering — not switching ss to it: without a working proxy the TCP of every ss client stops.',
         'ru' => 'WARP не отвечает — не переключаю ss на него: без рабочего прокси TCP у всех клиентов ss встанет.',
@@ -120,6 +124,10 @@ $i = [
     'smux halfclose old'   => [
         'en' => '⚠️ The core on the server is older than 26.8.25: it cannot negotiate half-close. require is unavailable, auto just stays on the old carrier. Update (rebuild) the xr image to use it.',
         'ru' => '⚠️ Ядро на сервере старее 26.8.25: договариваться о половинном закрытии оно не умеет. require недоступен, auto останется на прежнем несущем коннекте. Обновите (пересоберите) образ xr.',
+    ],
+    'smux frame old'       => [
+        'en' => '⚠️ The core on the server is older than 26.9.3: it does not know h2muxMaxReadFrameSize and silently ignores it. The carrier keeps the 1 MiB default. Update (rebuild) the xr image to use it.',
+        'ru' => '⚠️ Ядро на сервере старее 26.9.3: про h2muxMaxReadFrameSize оно не знает и молча его игнорирует — несущий коннект останется на дефолтном 1 МиБ. Обновите (пересоберите) образ xr.',
     ],
     'smux brutal hint'     => [
         'en' => 'Brutal sends at exactly the configured rate, ignoring loss. Set both ceilings BELOW the real link speed.',

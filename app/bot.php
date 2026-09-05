@@ -5111,19 +5111,34 @@ NFT;
         return 'socks5://' . $ip . ':' . self::WARP_SOCKS_PORT;
     }
 
+    // Маркеры фактического состояния ACL в выводе команды ниже. Два разных
+    // слова, а не «on»/«off»: одно не должно быть подстрокой другого, иначе
+    // str_contains() спутает их.
+    public const SS_ACL_PRESENT = 'ss-acl-present';
+    public const SS_ACL_ABSENT  = 'ss-acl-absent';
+
     // Команда для ACL microsocks внутри wp. start_wp.sh ставит это правило на
     // старте контейнера (условие — тот же ключ в ssserver.json), но тумблер
     // обязан работать и без пересоздания wp, поэтому то же правило ставим
     // вживую. -C перед -I делает вставку идемпотентной, -I без позиции кладёт
     // ACCEPT ПЕРЕД финальным DROP цепочки (иначе правило бесполезно).
     // Снятие — циклом: одинаковых правил могло накопиться несколько.
+    //
+    // Хвост с -C — проверка РЕЗУЛЬТАТА: ssh() не смотрит код возврата и не
+    // читает stderr, поэтому отказавший iptables неотличим от успеха. А
+    // отказать он может штатно: sshd в wp поднимается первой строкой
+    // start_wp.sh, а цепочка WARP_SOCKS создаётся в самом конце — между
+    // стартом microsocks (проба warpStatus() уже проходит) и созданием цепочки
+    // и -C, и -I падают с «No chain by that name». Спрашиваем сам iptables.
     public static function warpSocksAllowCmd(string $ip, bool $on): string
     {
         $rule = "WARP_SOCKS -s $ip -j ACCEPT";
-
-        return $on
+        $cmd  = $on
             ? "iptables -C $rule 2>/dev/null || iptables -I $rule"
             : "while iptables -C $rule 2>/dev/null; do iptables -D $rule; done";
+
+        return "$cmd; iptables -C $rule 2>/dev/null && echo " . self::SS_ACL_PRESENT
+            . ' || echo ' . self::SS_ACL_ABSENT;
     }
 
     // Адрес контейнера ss глазами docker-DNS. Резолвим ЗДЕСЬ, в php: внутри wp
@@ -5137,9 +5152,14 @@ NFT;
         return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? $ip : '10.10.0.6';
     }
 
-    public function warpSocksAllowSS(bool $on): void
+    // true — ACL действительно приведён к запрошенному виду: ssh дошёл до wp И
+    // сам iptables подтвердил правило маркером. Всё остальное — false.
+    public function warpSocksAllowSS(bool $on): bool
     {
-        $this->ssh(self::warpSocksAllowCmd($this->ssContainerIp(), $on), 'wp');
+        $out = $this->ssh(self::warpSocksAllowCmd($this->ssContainerIp(), $on), 'wp');
+
+        return !$this->sshFailed
+            && str_contains((string) $out, $on ? self::SS_ACL_PRESENT : self::SS_ACL_ABSENT);
     }
 
     public function ssWarp()
@@ -5168,7 +5188,20 @@ NFT;
             }
             // Сначала ACL, потом конфиг: наоборот ssserver успел бы
             // перезапуститься и получить DROP на первом же коннекте.
-            $this->warpSocksAllowSS(true);
+            // Проба выше НЕ доказывает, что правило встало: она ходит
+            // бот→xr→wp:1080, а iptables идёт бот→wp:22 — это разные пути, и
+            // sshd в wp может лежать при живых туннеле и microsocks. Мало и
+            // живого ssh: цепочки WARP_SOCKS может ещё не быть, и тогда
+            // iptables отказывает молча. Смотрим подтверждение от самого
+            // iptables и отменяем включение ДО записи конфига — иначе конфиг с
+            // outbound_proxy уедет к ssserver без ACCEPT, и весь TCP клиентов
+            // ss встанет молча (отката на direct у ядра нет).
+            if (!$this->warpSocksAllowSS(true)) {
+                $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('ss warp acl failed'));
+                sleep(3);
+
+                return $this->menu('ss');
+            }
             $c[self::SS_WARP_KEY] = $this->ssWarpUrl();
         }
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
@@ -6645,6 +6678,14 @@ NFT;
                 $this->ssh('pkill ssserver', 'ss');
                 file_put_contents('/config/ssserver.json', json_encode($json['ss'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
                 $this->chmodSecret('/config/ssserver.json');
+                // Ключ outbound_proxy («ss через warp») приезжает вместе с
+                // бэкапом, а правило в WARP_SOCKS — нет, и единственный
+                // источник истины перестаёт быть единственным. Бэкап С ключом
+                // на хосте БЕЗ правила молча ронял весь TCP клиентов ss (у
+                // ядра нет отката на direct), бэкап БЕЗ ключа оставлял лишний
+                // ACCEPT висеть до пересоздания wp. Ставим ДО старта ssserver
+                // — по той же причине, что и в ssWarp().
+                $this->warpSocksAllowSS(self::ssWarpOn(is_array($json['ss']) ? $json['ss'] : null));
                 $this->ssh('ssserver -v -d -c /config.json', 'ss');
             }
             // sl
@@ -14610,9 +14651,15 @@ DNS-over-HTTPS with IP:
                 . ($ckMethod === 'plain' ? ' ⚠️ только для отладки: трафик перестаёт быть неотличимым от случайного' : '');
         }
         if ($ssWarpOn) {
+            // Ядро принимает и цепочку из нескольких хопов (Chain(Vec<String>)
+            // в SSOutboundProxyConfig), а такой конфиг приезжает импортом или
+            // ручной правкой. Голое приведение к строке дало бы «Array» в меню
+            // и «Array to string conversion» в логе.
+            $chain = $ss[self::SS_WARP_KEY] ?? '';
+            $chain = is_array($chain) ? implode(' → ', $chain) : (string) $chain;
             $text[] = '';
             $text[] = '<b>WARP</b>';
-            $text[] = 'egress (TCP): <code>' . htmlspecialchars((string) ($ss[self::SS_WARP_KEY] ?? ''), ENT_QUOTES) . '</code>';
+            $text[] = 'egress (TCP): <code>' . htmlspecialchars($chain, ENT_QUOTES) . '</code>';
             $text[] = '<i>' . $this->i18n('ss via warp hint') . '</i>';
         }
         if ($stlsOn) {
@@ -17943,6 +17990,21 @@ DNS-over-HTTPS with IP:
                     $text[] = $this->i18n('smux halfclose old');
                 }
             }
+            // Размер кадра H2MUX — настройка серверная и на smux-коннекты не
+            // влияет вовсе, поэтому в меню она появляется при h2mux. Уже
+            // выставленное значение показываем и при smux: иначе его нельзя
+            // было бы ни увидеть, ни сбросить, а в xray.json оно осталось бы
+            // (шаблоны с ~smux:h2mux~ его используют).
+            $frame = self::smuxFrameSize($s['h2mux_frame']);
+            if ($s['protocol'] === 'h2mux' || $frame !== 0) {
+                $data[] = [[
+                    'text'          => 'h2mux frame: ' . ($frame ?: $this->i18n('default')),
+                    'callback_data' => '/smuxSet h2mux_frame',
+                ]];
+                if ($frame !== 0 && !$this->smuxFrameReady()) {
+                    $text[] = $this->i18n('smux frame old');
+                }
+            }
             if ($this->brutalAvailable()) {
                 $data[] = [[
                     'text'          => 'Brutal: ' . $on($s['brutal']['enabled']),
@@ -18112,6 +18174,11 @@ DNS-over-HTTPS with IP:
             case 'brutal_down':
                 $s['brutal'][substr($field, 7)] = self::smuxRate($val);
                 break;
+            // Вне диапазона RFC — тот же ноль, что и «сбросить»: значение,
+            // которое форк отвергает, до xray.json доходить не должно.
+            case 'h2mux_frame':
+                $s['h2mux_frame'] = self::smuxFrameSize($val);
+                break;
             default:
                 return $this->smuxMenu();
         }
@@ -18138,6 +18205,15 @@ DNS-over-HTTPS with IP:
                     . 'Любое значение больше нуля ОБНУЛИТ их: ядро не принимает обе схемы сразу.'
                 : 'Cap of streams per carrier. <code>0</code> means no cap (max-connections/min-streams apply instead). '
                     . 'Any positive value RESETS them: the core rejects both schemes at once.',
+            'h2mux_frame' => $ru
+                ? 'SETTINGS_MAX_FRAME_SIZE, который сервер объявляет клиентам H2MUX: под него клиент на Go заводит буфер отдачи на КАЖДЫЙ поток. '
+                    . 'Дефолт — 1 МиБ (<code>1048576</code>), меньше = экономнее по памяти на слабом клиенте, но больше кадров. '
+                    . 'Допустимо <code>' . self::SMUX_H2MUX_FRAME_MIN . '</code>…<code>' . self::SMUX_H2MUX_FRAME_MAX . '</code>, <code>0</code> — вернуть дефолт (что угодно вне диапазона тоже даст 0). '
+                    . 'На несущие коннекты smux не влияет; в подписку не уезжает — только на сервер.'
+                : 'SETTINGS_MAX_FRAME_SIZE the server advertises to H2MUX clients: a Go client sizes its per-stream upload buffer by it. '
+                    . 'The default is 1 MiB (<code>1048576</code>); lower means less memory on a constrained client but more frames. '
+                    . 'Allowed <code>' . self::SMUX_H2MUX_FRAME_MIN . '</code>…<code>' . self::SMUX_H2MUX_FRAME_MAX . '</code>, <code>0</code> restores the default (anything out of range also gives 0). '
+                    . 'Does not affect smux carriers, and never travels in a subscription — server side only.',
             'brutal_up', 'brutal_down' => $ru
                 ? "Полка скорости: <code>100 Mbps</code>, <code>1 Gbps</code>, <code>50 Mbps</code> (голое число = Mbps).\n"
                     . '⚠️ Brutal льёт ровно с этой скоростью, игнорируя потери. Ставка ВЫШЕ реального канала = сплошные потери — ставьте с запасом ВНИЗ.'
@@ -25021,6 +25097,10 @@ DNS-over-HTTPS with IP:
             // умеет, require — требовать. Дефолт off: это ровно те байты
             // несущего коннекта, что и раньше.
             'half_close'      => 'off',
+            // SETTINGS_MAX_FRAME_SIZE, который сервер объявляет несущим
+            // коннектам H2MUX (форк 26.9.3+). 0 — дефолт библиотеки http2
+            // (1 МиБ). Настройка ЧИСТО СЕРВЕРНАЯ: в подписку не уезжает.
+            'h2mux_frame'     => 0,
             'brutal'          => [
                 'enabled' => 0,
                 // Занижено сознательно: Brutal игнорирует сигналы перегрузки и
@@ -25072,6 +25152,42 @@ DNS-over-HTTPS with IP:
         $v = $this->getXrayVersion();
 
         return $v === '' || version_compare($v, '26.8.25', '>=');
+    }
+
+    // Границы SETTINGS_MAX_FRAME_SIZE из RFC 9113 §6.5.2 — ровно те же
+    // H2MuxFrameSizeMin/Max, что проверяет форк (common/singmux/h2mux_server.go).
+    public const SMUX_H2MUX_FRAME_MIN = 16384;
+    public const SMUX_H2MUX_FRAME_MAX = 16777215;
+
+    // Размер кадра H2MUX, приведённый к тому, что форк примет. Мусор и значения
+    // вне диапазона заменяем нулём (дефолт библиотеки), а не пропускаем: такой
+    // конфиг InboundSMuxConfig.Build() отвергает на СТАРТЕ — то есть xray на
+    // сервере просто не поднимется, положив разом всех клиентов.
+    public static function smuxFrameSize($v): int
+    {
+        $v = trim((string) $v);
+        if (!preg_match('~^\d+$~', $v)) {
+            return 0;
+        }
+        $n = (int) $v;
+
+        return $n >= self::SMUX_H2MUX_FRAME_MIN && $n <= self::SMUX_H2MUX_FRAME_MAX ? $n : 0;
+    }
+
+    // Умеет ли ядро на СЕРВЕРЕ читать h2muxMaxReadFrameSize: ключ появился в
+    // форке 26.9.3. Старое ядро его молча игнорирует (encoding/json пропускает
+    // неизвестные поля), поэтому запрещать настройку не за что — но и молчать
+    // нельзя: пользователь выставит размер и не поймёт, почему ничего не
+    // изменилось. Критерий «неизвестно = не мешаем» тот же, что у half-close.
+    public function smuxFrameReady(): bool
+    {
+        $probe = $this->xrayCoreProbe();
+        if (empty($probe['ok']) || ($probe['active'] ?? '') !== 'fork') {
+            return true;
+        }
+        $v = $this->getXrayVersion();
+
+        return $v === '' || version_compare($v, '26.9.3', '>=');
     }
 
     // Минимум, ниже которого форк отвергает ставку Brutal (smuxBrutalMinBPS).
@@ -25145,18 +25261,30 @@ DNS-over-HTTPS with IP:
         if (!isset($c['inbounds'][0]) || !is_array($c['inbounds'][0])) {
             return;
         }
-        if (!$this->smuxActive($p) || empty($s['brutal']['enabled'])) {
+        $active = $this->smuxActive($p);
+        $brutal = $active && !empty($s['brutal']['enabled']);
+        $frame  = $active ? self::smuxFrameSize($s['h2mux_frame']) : 0;
+        if (!$brutal && $frame === 0) {
             unset($c['inbounds'][0]['smux']);
 
             return;
         }
-        $c['inbounds'][0]['smux'] = [
-            'brutal-opts' => [
+        $block = [];
+        if ($brutal) {
+            $block['brutal-opts'] = [
                 'enabled' => true,
                 'up'      => self::smuxRate($s['brutal']['up']),
                 'down'    => self::smuxRate($s['brutal']['down']),
-            ],
-        ];
+            ];
+        }
+        // Размер кадра пишем независимо от protocol в меню: несущий коннект
+        // h2mux может прийти и от шаблона с ~smux:h2mux~, пока глобально стоит
+        // smux. Для smux-коннектов поле мёртвое — сервер читает его только в
+        // serveH2Mux(), — так что лишним оно не бывает.
+        if ($frame !== 0) {
+            $block['h2muxMaxReadFrameSize'] = $frame;
+        }
+        $c['inbounds'][0]['smux'] = $block;
     }
 
     // ---- finalmask: server-side fragment/noise (streamSettings.finalmask) --
