@@ -125,6 +125,10 @@ $i = [
         'en' => '⚠️ The core on the server is older than 26.8.25: it cannot negotiate half-close. require is unavailable, auto just stays on the old carrier. Update (rebuild) the xr image to use it.',
         'ru' => '⚠️ Ядро на сервере старее 26.8.25: договариваться о половинном закрытии оно не умеет. require недоступен, auto останется на прежнем несущем коннекте. Обновите (пересоберите) образ xr.',
     ],
+    'smux frame old'       => [
+        'en' => '⚠️ The core on the server is older than 26.9.3: it does not know h2muxMaxReadFrameSize and silently ignores it. The carrier keeps the 1 MiB default. Update (rebuild) the xr image to use it.',
+        'ru' => '⚠️ Ядро на сервере старее 26.9.3: про h2muxMaxReadFrameSize оно не знает и молча его игнорирует — несущий коннект останется на дефолтном 1 МиБ. Обновите (пересоберите) образ xr.',
+    ],
     'smux brutal hint'     => [
         'en' => 'Brutal sends at exactly the configured rate, ignoring loss. Set both ceilings BELOW the real link speed.',
         'ru' => 'Brutal льёт ровно с заданной скоростью, игнорируя потери. Ставьте обе полки НИЖЕ реальной скорости канала.',

@@ -17990,6 +17990,21 @@ DNS-over-HTTPS with IP:
                     $text[] = $this->i18n('smux halfclose old');
                 }
             }
+            // Размер кадра H2MUX — настройка серверная и на smux-коннекты не
+            // влияет вовсе, поэтому в меню она появляется при h2mux. Уже
+            // выставленное значение показываем и при smux: иначе его нельзя
+            // было бы ни увидеть, ни сбросить, а в xray.json оно осталось бы
+            // (шаблоны с ~smux:h2mux~ его используют).
+            $frame = self::smuxFrameSize($s['h2mux_frame']);
+            if ($s['protocol'] === 'h2mux' || $frame !== 0) {
+                $data[] = [[
+                    'text'          => 'h2mux frame: ' . ($frame ?: $this->i18n('default')),
+                    'callback_data' => '/smuxSet h2mux_frame',
+                ]];
+                if ($frame !== 0 && !$this->smuxFrameReady()) {
+                    $text[] = $this->i18n('smux frame old');
+                }
+            }
             if ($this->brutalAvailable()) {
                 $data[] = [[
                     'text'          => 'Brutal: ' . $on($s['brutal']['enabled']),
@@ -18159,6 +18174,11 @@ DNS-over-HTTPS with IP:
             case 'brutal_down':
                 $s['brutal'][substr($field, 7)] = self::smuxRate($val);
                 break;
+            // Вне диапазона RFC — тот же ноль, что и «сбросить»: значение,
+            // которое форк отвергает, до xray.json доходить не должно.
+            case 'h2mux_frame':
+                $s['h2mux_frame'] = self::smuxFrameSize($val);
+                break;
             default:
                 return $this->smuxMenu();
         }
@@ -18185,6 +18205,15 @@ DNS-over-HTTPS with IP:
                     . 'Любое значение больше нуля ОБНУЛИТ их: ядро не принимает обе схемы сразу.'
                 : 'Cap of streams per carrier. <code>0</code> means no cap (max-connections/min-streams apply instead). '
                     . 'Any positive value RESETS them: the core rejects both schemes at once.',
+            'h2mux_frame' => $ru
+                ? 'SETTINGS_MAX_FRAME_SIZE, который сервер объявляет клиентам H2MUX: под него клиент на Go заводит буфер отдачи на КАЖДЫЙ поток. '
+                    . 'Дефолт — 1 МиБ (<code>1048576</code>), меньше = экономнее по памяти на слабом клиенте, но больше кадров. '
+                    . 'Допустимо <code>' . self::SMUX_H2MUX_FRAME_MIN . '</code>…<code>' . self::SMUX_H2MUX_FRAME_MAX . '</code>, <code>0</code> — вернуть дефолт (что угодно вне диапазона тоже даст 0). '
+                    . 'На несущие коннекты smux не влияет; в подписку не уезжает — только на сервер.'
+                : 'SETTINGS_MAX_FRAME_SIZE the server advertises to H2MUX clients: a Go client sizes its per-stream upload buffer by it. '
+                    . 'The default is 1 MiB (<code>1048576</code>); lower means less memory on a constrained client but more frames. '
+                    . 'Allowed <code>' . self::SMUX_H2MUX_FRAME_MIN . '</code>…<code>' . self::SMUX_H2MUX_FRAME_MAX . '</code>, <code>0</code> restores the default (anything out of range also gives 0). '
+                    . 'Does not affect smux carriers, and never travels in a subscription — server side only.',
             'brutal_up', 'brutal_down' => $ru
                 ? "Полка скорости: <code>100 Mbps</code>, <code>1 Gbps</code>, <code>50 Mbps</code> (голое число = Mbps).\n"
                     . '⚠️ Brutal льёт ровно с этой скоростью, игнорируя потери. Ставка ВЫШЕ реального канала = сплошные потери — ставьте с запасом ВНИЗ.'
@@ -25068,6 +25097,10 @@ DNS-over-HTTPS with IP:
             // умеет, require — требовать. Дефолт off: это ровно те байты
             // несущего коннекта, что и раньше.
             'half_close'      => 'off',
+            // SETTINGS_MAX_FRAME_SIZE, который сервер объявляет несущим
+            // коннектам H2MUX (форк 26.9.3+). 0 — дефолт библиотеки http2
+            // (1 МиБ). Настройка ЧИСТО СЕРВЕРНАЯ: в подписку не уезжает.
+            'h2mux_frame'     => 0,
             'brutal'          => [
                 'enabled' => 0,
                 // Занижено сознательно: Brutal игнорирует сигналы перегрузки и
@@ -25119,6 +25152,42 @@ DNS-over-HTTPS with IP:
         $v = $this->getXrayVersion();
 
         return $v === '' || version_compare($v, '26.8.25', '>=');
+    }
+
+    // Границы SETTINGS_MAX_FRAME_SIZE из RFC 9113 §6.5.2 — ровно те же
+    // H2MuxFrameSizeMin/Max, что проверяет форк (common/singmux/h2mux_server.go).
+    public const SMUX_H2MUX_FRAME_MIN = 16384;
+    public const SMUX_H2MUX_FRAME_MAX = 16777215;
+
+    // Размер кадра H2MUX, приведённый к тому, что форк примет. Мусор и значения
+    // вне диапазона заменяем нулём (дефолт библиотеки), а не пропускаем: такой
+    // конфиг InboundSMuxConfig.Build() отвергает на СТАРТЕ — то есть xray на
+    // сервере просто не поднимется, положив разом всех клиентов.
+    public static function smuxFrameSize($v): int
+    {
+        $v = trim((string) $v);
+        if (!preg_match('~^\d+$~', $v)) {
+            return 0;
+        }
+        $n = (int) $v;
+
+        return $n >= self::SMUX_H2MUX_FRAME_MIN && $n <= self::SMUX_H2MUX_FRAME_MAX ? $n : 0;
+    }
+
+    // Умеет ли ядро на СЕРВЕРЕ читать h2muxMaxReadFrameSize: ключ появился в
+    // форке 26.9.3. Старое ядро его молча игнорирует (encoding/json пропускает
+    // неизвестные поля), поэтому запрещать настройку не за что — но и молчать
+    // нельзя: пользователь выставит размер и не поймёт, почему ничего не
+    // изменилось. Критерий «неизвестно = не мешаем» тот же, что у half-close.
+    public function smuxFrameReady(): bool
+    {
+        $probe = $this->xrayCoreProbe();
+        if (empty($probe['ok']) || ($probe['active'] ?? '') !== 'fork') {
+            return true;
+        }
+        $v = $this->getXrayVersion();
+
+        return $v === '' || version_compare($v, '26.9.3', '>=');
     }
 
     // Минимум, ниже которого форк отвергает ставку Brutal (smuxBrutalMinBPS).
@@ -25192,18 +25261,30 @@ DNS-over-HTTPS with IP:
         if (!isset($c['inbounds'][0]) || !is_array($c['inbounds'][0])) {
             return;
         }
-        if (!$this->smuxActive($p) || empty($s['brutal']['enabled'])) {
+        $active = $this->smuxActive($p);
+        $brutal = $active && !empty($s['brutal']['enabled']);
+        $frame  = $active ? self::smuxFrameSize($s['h2mux_frame']) : 0;
+        if (!$brutal && $frame === 0) {
             unset($c['inbounds'][0]['smux']);
 
             return;
         }
-        $c['inbounds'][0]['smux'] = [
-            'brutal-opts' => [
+        $block = [];
+        if ($brutal) {
+            $block['brutal-opts'] = [
                 'enabled' => true,
                 'up'      => self::smuxRate($s['brutal']['up']),
                 'down'    => self::smuxRate($s['brutal']['down']),
-            ],
-        ];
+            ];
+        }
+        // Размер кадра пишем независимо от protocol в меню: несущий коннект
+        // h2mux может прийти и от шаблона с ~smux:h2mux~, пока глобально стоит
+        // smux. Для smux-коннектов поле мёртвое — сервер читает его только в
+        // serveH2Mux(), — так что лишним оно не бывает.
+        if ($frame !== 0) {
+            $block['h2muxMaxReadFrameSize'] = $frame;
+        }
+        $c['inbounds'][0]['smux'] = $block;
     }
 
     // ---- finalmask: server-side fragment/noise (streamSettings.finalmask) --

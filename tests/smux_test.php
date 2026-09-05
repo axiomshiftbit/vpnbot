@@ -292,6 +292,74 @@ $c = [];
 $bot->ensureSmuxInbound($c, $pacBrutal);
 smAssert($c === [], 'конфиг без inbounds остаётся нетронутым');
 
+// --- h2muxMaxReadFrameSize (форк 26.9.3+) ------------------------------------
+// Границы — RFC 9113 §6.5.2, ровно те же, что проверяет InboundSMuxConfig.Build().
+// Всё, что вне диапазона, форк отвергает НА СТАРТЕ, поэтому нормализация обязана
+// давать ноль (дефолт), а не пропускать значение дальше.
+smAssert(Bot::smuxFrameSize(262144) === 262144, 'значение в диапазоне проходит как есть');
+smAssert(Bot::smuxFrameSize(Bot::SMUX_H2MUX_FRAME_MIN) === Bot::SMUX_H2MUX_FRAME_MIN, 'нижняя граница включительно');
+smAssert(Bot::smuxFrameSize(Bot::SMUX_H2MUX_FRAME_MAX) === Bot::SMUX_H2MUX_FRAME_MAX, 'верхняя граница включительно');
+smAssert(Bot::smuxFrameSize(Bot::SMUX_H2MUX_FRAME_MIN - 1) === 0, 'ниже минимума → 0 (ядро отвергло бы конфиг)');
+smAssert(Bot::smuxFrameSize(Bot::SMUX_H2MUX_FRAME_MAX + 1) === 0, 'выше максимума → 0');
+smAssert(Bot::smuxFrameSize(0) === 0, 'ноль — «дефолт библиотеки»');
+smAssert(Bot::smuxFrameSize('-262144') === 0, 'минус не должен проскочить через (int)');
+smAssert(Bot::smuxFrameSize('262144abc') === 0 && Bot::smuxFrameSize('') === 0
+    && Bot::smuxFrameSize('0x40000') === 0 && Bot::smuxFrameSize(null) === 0,
+    'мусор из pac.json приводится к 0, а не к обрезанному числу');
+smAssert(Bot::smuxFrameSize(' 262144 ') === 262144, 'пробелы по краям не мешают');
+smAssert(Bot::smuxDefaults()['h2mux_frame'] === 0,
+    'по умолчанию поля в xray.json нет — байты несущего коннекта те же, что и раньше');
+
+// Блок в inbound теперь пишется и БЕЗ Brutal: у настроек два независимых повода.
+$c = $mk();
+$bot->ensureSmuxInbound($c, smPac('fork', ['protocol' => 'h2mux', 'h2mux_frame' => 262144]));
+smAssert(($c['inbounds'][0]['smux']['h2muxMaxReadFrameSize'] ?? null) === 262144
+    && !isset($c['inbounds'][0]['smux']['brutal-opts']),
+    'размер кадра пишется сам по себе; brutal-opts не выдумывается (Build() терпит nil)');
+
+// Глобальный protocol=smux не повод выбрасывать поле: несущий h2mux может
+// прийти от шаблона с ~smux:h2mux~, а для smux-коннектов поле просто мёртвое.
+$c = $mk();
+$bot->ensureSmuxInbound($c, smPac('fork', ['h2mux_frame' => 262144]));
+smAssert(($c['inbounds'][0]['smux']['h2muxMaxReadFrameSize'] ?? null) === 262144,
+    'при глобальном smux поле остаётся — его используют шаблоны с ~smux:h2mux~');
+
+// Оба повода сразу — один блок с обоими ключами.
+$pacBoth = $pacBrutal;
+$pacBoth['smux']['h2mux_frame'] = 32768;
+$c = $mk();
+$bot->ensureSmuxInbound($c, $pacBoth);
+smAssert(($c['inbounds'][0]['smux']['h2muxMaxReadFrameSize'] ?? null) === 32768
+    && ($c['inbounds'][0]['smux']['brutal-opts']['enabled'] ?? null) === true,
+    'Brutal и размер кадра уживаются в одном блоке');
+
+// Мусор в pac.json не должен доехать до ядра: конфиг с ним не стартует.
+$c = $mk();
+$bot->ensureSmuxInbound($c, smPac('fork', ['protocol' => 'h2mux', 'h2mux_frame' => 999]));
+smAssert(!isset($c['inbounds'][0]['smux']),
+    'значение вне диапазона нормализуется в 0 и блок не пишется вовсе');
+
+// Апстримное ядро несущих коннектов не знает — поле снимается вместе с блоком.
+$c = $mk();
+$c['inbounds'][0]['smux'] = ['h2muxMaxReadFrameSize' => 262144];
+$bot->ensureSmuxInbound($c, smPac('origin', ['h2mux_frame' => 262144]));
+smAssert(!isset($c['inbounds'][0]['smux']),
+    'переключение на апстрим снимает и h2muxMaxReadFrameSize');
+
+// Сброс в 0 обязан УБРАТЬ поле из конфига, а не оставить прошлое значение.
+$c = $mk();
+$c['inbounds'][0]['smux'] = ['h2muxMaxReadFrameSize' => 262144];
+$bot->ensureSmuxInbound($c, smPac('fork', ['protocol' => 'h2mux', 'h2mux_frame' => 0]));
+smAssert(!isset($c['inbounds'][0]['smux']), 'сброс в 0 снимает блок');
+
+// Настройка ЧИСТО серверная: в подписку она уезжать не должна ни в одном
+// диалекте — ни у sing-box, ни у mihomo, ни у xray такого клиентского ключа нет.
+$conf = ['outbounds' => [['tag' => 'proxy']]];
+$bot->applyClientSmux($conf, 0, smPac('fork', ['protocol' => 'h2mux', 'h2mux_frame' => 262144]), 's');
+$json = json_encode($conf);
+smAssert(!str_contains($json, 'h2muxMaxReadFrameSize') && !str_contains($json, '262144'),
+    'размер кадра в клиентский блок не попадает');
+
 // --- плейсхолдер ~smux~ в шаблоне --------------------------------------------
 // Пошаблонный контроль: где стоит маркер — туда блок, где не стоит — ничего.
 // При неактивном smux ключ обязан ИСЧЕЗНУТЬ: статический блок при апстримном
@@ -576,8 +644,8 @@ $b = smFixBot(['version' => 'Xray 26.8.25-1457 (Xray, Penetrates Everything.)'])
 smAssert($b->smuxHalfCloseReady(), 'форк 26.8.25-1457 умеет (суффикс — время сборки, не pre-release)');
 $b = smFixBot(['version' => 'Xray 26.8.26-0855 (Xray, Penetrates Everything.)']);
 smAssert($b->smuxHalfCloseReady(), 'форк 26.8.26-0855 умеет');
-$b = smFixBot(['version' => 'Xray 26.8.30-2253 (Xray, Penetrates Everything.)']);
-smAssert($b->smuxHalfCloseReady(), 'форк 26.8.30-2253 (текущий пин) умеет');
+$b = smFixBot(['version' => 'Xray 26.9.5-0936 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxHalfCloseReady(), 'форк 26.9.5-0936 (текущий пин) умеет');
 // Версия относится к АКТИВНОМУ ядру: пока по симлинку отвечает апстрим (или
 // проба молчит), про форк она не говорит ничего — запрещать нечего.
 $b = smFixBot(['active' => 'origin', 'running' => 'origin', 'version' => 'Xray 26.7.28 (Xray, Penetrates Everything.)']);
@@ -596,9 +664,28 @@ if (preg_match('~^XRAY_FORK_VERSION=v?(\d+)\.(\d+)\.(\d+)~m', $env, $m)) {
     $ver = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);
     smAssert($ver >= sprintf('%04d%04d%04d', 26, 8, 25),
         "XRAY_FORK_VERSION={$m[0]}: договорённость о half-close появилась в v26.8.25");
+    smAssert($ver >= sprintf('%04d%04d%04d', 26, 9, 3),
+        "XRAY_FORK_VERSION={$m[0]}: h2muxMaxReadFrameSize появился в v26.9.3");
 } else {
     smAssert(false, 'XRAY_FORK_VERSION в .env не найден');
 }
+
+// --- гейт h2muxMaxReadFrameSize по версии ядра -------------------------------
+// Старое ядро ключ молча игнорирует (encoding/json пропускает неизвестные поля),
+// то есть запрещать нечего — но меню обязано об этом сказать, иначе выставленный
+// размер кадра просто не сработает, и понять это будет нечем.
+$b = smFixBot(['version' => 'Xray 26.8.30-2253 (Xray, Penetrates Everything.)']);
+smAssert(!$b->smuxFrameReady(), 'форк 26.8.30-2253 про h2muxMaxReadFrameSize не знает');
+$b = smFixBot(['version' => 'Xray 26.9.3-0814 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxFrameReady(), 'форк 26.9.3-0814 знает (суффикс — время сборки, не pre-release)');
+$b = smFixBot(['version' => 'Xray 26.9.5-0936 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxFrameReady(), 'форк 26.9.5-0936 (текущий пин) знает');
+$b = smFixBot(['active' => 'origin', 'running' => 'origin', 'version' => 'Xray 26.7.28 (Xray, Penetrates Everything.)']);
+smAssert($b->smuxFrameReady(), 'активен апстрим — версия про форк ничего не говорит');
+$b = smFixBot(['ok' => false, 'version' => '']);
+smAssert($b->smuxFrameReady(), 'xr недоступен — настройку не блокируем');
+$b = smFixBot(['version' => '']);
+smAssert($b->smuxFrameReady(), 'пустой вывод version — тоже «неизвестно»');
 
 // Откат образа на форк старее 26.8.25: require в подписке = тишина у клиента,
 // поэтому периодическая проверка понижает его до auto сама.
