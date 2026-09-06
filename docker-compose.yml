@@ -450,7 +450,7 @@ services:
             dockerfile: dockerfile/telemt.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                TELEMT_VERSION: ${TELEMT_VERSION:-3.5.5}
+                TELEMT_VERSION: ${TELEMT_VERSION:-3.5.6}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
