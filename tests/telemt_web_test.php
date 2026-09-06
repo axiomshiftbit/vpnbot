@@ -142,6 +142,13 @@ twAssert(str_contains($toml, 'web_trusted_proxy_cidrs = ["' . Bot::TELEMT_WEB_TR
 twAssert(!str_contains($toml, "transport = \"web\"\nannounce_ip"), 'announce_ip у web-листенера нет');
 
 twAssert(str_contains($toml, "[web]\nenabled = true"), 'секция [web] включена');
+// Политика на исчерпанном max_http_connections (telemt >= 3.5.6). Ключ
+// принадлежит таблице [web], а не [web.limits]: уехав ниже, он попал бы в
+// чужую секцию и был бы молча проигнорирован.
+twAssert(str_contains($toml, "enabled = true\nhttp_connection_capacity_action = \"wait\""),
+    'политика перегрузки задана сразу в [web]');
+twAssert(strpos($toml, 'http_connection_capacity_action') < strpos($toml, '[web.limits]'),
+    'ключ политики стоит до [web.limits]');
 twAssert(str_contains($toml, 'carrier = "https-lanes"'), 'carrier уехал в конфиг');
 twAssert(str_contains($toml, '[[web.vhosts]]'), 'vhost объявлен');
 twAssert(str_contains($toml, 'host = "' . $host . '"'), 'host vhost совпадает с хостом ссылки');
@@ -159,6 +166,7 @@ twAssert(strpos($toml, '[[server.listeners]]') < strpos($toml, '[censorship]'), 
 $off = $mk(['telemt_web' => 0])->telemtToml($mk(['telemt_web' => 0])->pacFake);
 twAssert(!str_contains($off, 'transport = "web"'), 'WEB выключен: листенера нет');
 twAssert(!str_contains($off, '[web]'), 'WEB выключен: секции нет');
+twAssert(!str_contains($off, 'http_connection_capacity_action'), 'WEB выключен: политики перегрузки нет');
 twAssert(substr_count($off, '[[server.listeners]]') === 1, 'WEB выключен: остаётся один листенер');
 
 // Не выполнены предусловия — секции нет, даже если тумблер стоит.
@@ -486,13 +494,14 @@ twAssert(!str_contains($mk(['telemt_web' => 0])->telemtToml(), '[web.limits]'),
     'без WEB лимитов не пишем');
 
 // Дефолты telemt для ключей, которые бот не переопределяет: без них формулы
-// не сойдутся, а их значения — часть контракта версии 3.5.5.
+// не сойдутся, а их значения — часть контракта версии 3.5.6.
 $L = Bot::TELEMT_WEB_LIMITS + [
     'max_header_bytes'                   => 16384,
     'max_body_bytes'                     => 2097152,
     'max_frame_payload_bytes'            => 1048576,
     'carrier_batch_bytes'                => 2097152,
     'max_frames_per_body'                => 4096,
+    'max_http_overload_connections'      => 64,
     'max_lane_open_waits_per_session'    => 16,
     'pending_bytes_per_lane'             => 8388608,
     'pending_items_per_lane'             => 1024,
@@ -604,9 +613,13 @@ $idx  = $L['debug_records_capacity'] * 8;
 $dbg  = $L['debug_bytes_global'] + $idx * 2 + 2 * 4 * 1024 * 1024;
 $lane = ($L['max_streams_per_session'] + $L['max_tombstones_per_session'] + 1)
     * $L['max_sessions_global'] * 512;
+// 3.5.6 добавил в ту же сумму индекс capability (по профилю) и резерв под
+// сокеты, ждущие ёмкости сверх max_http_connections.
 $reserved = $L['pending_bytes_global'] + $L['max_body_bytes_global'] + $L['max_static_bytes']
     + $idx + 2 * 8 * 1024 * 1024 + $dbg + $L['max_carrier_learning_entries'] * 512
-    + $lane + $L['max_http_connections'] * $L['max_header_bytes'];
+    + $L['max_profiles'] * 32
+    + $lane + $L['max_http_connections'] * $L['max_header_bytes']
+    + $L['max_http_overload_connections'] * 4096;
 twAssert($reserved <= $L['memory_envelope_bytes'],
     sprintf('резервации %.1f MiB влезают в envelope %.1f MiB',
         $reserved / 1048576, $L['memory_envelope_bytes'] / 1048576));
@@ -677,6 +690,110 @@ $n->restartTelemt();
 twAssert($n->telemtWebNegotiationOf($n->pacFake) === 'full', 'рабочая негоциация не трогается');
 twAssert(count($n->tomls) === 1, 'конфиг переписан один раз');
 twAssert($n->probes === 1, 'проба одна');
+
+// ── 13. Отчёт диагностики: секция WEB ───────────────────────────────────────
+// /v1/runtime/web/status отдаёт ingress/capacity/lifecycle начиная с telemt
+// 3.5.6 — по ним видно, работает ли политика на исчерпанной ёмкости, которую
+// бот прописывает в конфиг, и восстанавливается ли бридж после смены сети.
+// Набор ключей у счётчиков фиксированный, поэтому нулевые строки не печатаем:
+// иначе один список исходов занял бы половину лимита сообщения.
+class TelemtReportBot extends TelemtWebTestBot
+{
+    public array $apiFake = [];
+    public array $paths   = [];
+    public array $sent    = [];
+
+    public function telemtApiFetch(array $paths): array
+    {
+        $this->paths = $paths;
+        return $this->apiFake + array_fill_keys($paths, null);
+    }
+
+    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
+    {
+        $this->sent[] = $text;
+        return ['result' => ['message_id' => 1]];
+    }
+}
+
+$mkRep = static function (array $api) use ($mk): TelemtReportBot {
+    $r = (new ReflectionClass(TelemtReportBot::class))->newInstanceWithoutConstructor();
+    $r->key = 'test-bot-key';
+    $r->ip  = '203.0.113.10';
+    $r->pacFake = ['telemt_beobachten' => 1] + $mk()->pacFake;
+    $r->apiFake = $api;
+    $r->input = ['chat' => 1, 'message_id' => 2, 'callback_id' => '3'];
+    return $r;
+};
+
+$r = $mkRep(['/v1/runtime/web/status' => [
+    'lifecycle' => 'running',
+    'available' => true,
+    'ingress'   => [
+        'configured_listeners'   => 1,
+        'live_acceptors'         => 1,
+        'accepting_connections'  => true,
+        'tcp_accept_total'       => 42,
+        'tcp_accept_error_total' => 0,
+    ],
+    'capacity'  => [
+        'http_connection_capacity_action' => 'wait',
+        'max_http_overload_connections'   => 64,
+        'http_overload_timeout_ms'        => 250,
+        'saturated_resources'             => ['http_connections'],
+        'rejections'                      => [
+            ['reason' => 'http_connection_capacity', 'total' => 2],
+            ['reason' => 'runtime_closed', 'total' => 0],
+        ],
+        'http_connection_overload_outcomes' => [
+            ['outcome' => 'wait_admitted', 'total' => 7],
+            ['outcome' => 'dropped', 'total' => 0],
+        ],
+    ],
+    'lifecycle_counters' => [
+        'bridge_recovery_secs'   => 15,
+        'bridge_recovery_events' => [
+            ['event' => 'committed', 'total' => 3],
+            ['event' => 'expired_unused', 'total' => 0],
+        ],
+    ],
+]]);
+$r->telemtReport();
+$rep = $r->sent[0] ?? '';
+twAssert(in_array('/v1/runtime/web/status', $r->paths, true), 'отчёт запрашивает статус WEB');
+twAssert(str_contains($rep, '▌ WEB (Telegram Desktop)'), 'секция WEB отрисована');
+twAssert(str_contains($rep, 'runtime: running ✓'), 'состояние рантайма видно');
+twAssert(str_contains($rep, 'ingress: ✓ accepting  acceptors: 1/1'), 'ingress виден');
+twAssert(str_contains($rep, 'accepted: 42 (errors 0)'), 'счётчик accept(2) виден');
+twAssert(str_contains($rep, 'overload: wait, 64 slots @ 250ms — wait_admitted=7'),
+    'политика перегрузки и её исходы видны');
+twAssert(!str_contains($rep, 'dropped=0') && !str_contains($rep, 'expired_unused=0'),
+    'нулевые счётчики не печатаются');
+twAssert(str_contains($rep, 'saturated: http_connections'), 'исчерпанный ресурс назван');
+twAssert(str_contains($rep, 'rejections: http_connection_capacity=2'), 'отказы видны');
+twAssert(str_contains($rep, 'recovery (15s): committed=3'), 'восстановление бриджа видно');
+
+// Образ 3.5.5 отвечает по тому же маршруту, но планов ingress/capacity в
+// ответе ещё нет: печатаем только то, что реально пришло, без строк из «?».
+$r = $mkRep(['/v1/runtime/web/status' => [
+    'lifecycle' => 'running',
+    'available' => true,
+    'listeners' => ['0.0.0.0:8080'],
+]]);
+$r->telemtReport();
+$rep = $r->sent[0] ?? '';
+twAssert(str_contains($rep, 'runtime: running ✓'), 'на старом образе состояние всё равно видно');
+twAssert(!str_contains($rep, 'overload:') && !str_contains($rep, 'ingress:'),
+    'строк из несуществующих планов нет');
+
+// WEB может быть выключен вовсе — тогда маршрут отвечает ошибкой и
+// telemtApiFetch отдаёт null: секции просто нет, соседние блоки не страдают.
+$r = $mkRep([]);
+$r->telemtReport();
+$rep = $r->sent[0] ?? '';
+twAssert($rep !== '', 'отчёт отправлен и без статуса WEB');
+twAssert(!str_contains($rep, '▌ WEB'), 'без данных секции WEB нет');
+twAssert(str_contains($rep, '▌ Users'), 'остальные секции на месте');
 
 if ($failed) {
     echo "telemt_web_test FAILED ($failed)\n";

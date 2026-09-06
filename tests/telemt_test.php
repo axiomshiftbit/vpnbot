@@ -220,7 +220,8 @@ tmAssert(!str_contains($b->telemtToml($b->pacFake), 'dns_overrides'),
 // недостижим. Аутентификации у него нет (auth_header пуст), поэтому право на
 // запись отрезаем: бот ходит сюда исключительно GET'ами (telemtApiFetch), а
 // без read_only тот же сокет отдавал бы PATCH /v1/config, /v1/users с ротацией
-// секретов и POST /v1/runtime/web/* из 3.5.5.
+// секретов и POST /v1/runtime/web/* — с 3.5.6 в их числе lifecycle
+// pause/drain/resume, гасящий приём WEB-трафика.
 $b = $mk('tls');
 $b->pacFake['telemt_beobachten'] = 1;
 $toml = $b->telemtToml($b->pacFake);

@@ -1922,8 +1922,10 @@ class Bot
         // остаются — а бот ходит сюда исключительно GET'ами (telemtApiFetch).
         // Без него API без аутентификации отдаёт PATCH /v1/config (вместе с
         // секцией [web]), /v1/users (создание, удаление и ротация секретов) и
-        // POST /v1/runtime/web/* из 3.5.5. Защита и так держится на сетевой
-        // изоляции, но диагностике право на запись не нужно вовсе.
+        // POST /v1/runtime/web/* — с 3.5.6 среди них lifecycle pause/drain/
+        // resume, то есть выключение приёма WEB-трафика одним запросом. Защита
+        // и так держится на сетевой изоляции, но диагностике право на запись не
+        // нужно вовсе.
         $t .= "read_only = true\n\n";
         $t .= "[[server.listeners]]\n";
         $t .= "ip = \"0.0.0.0\"\n";
@@ -2025,6 +2027,22 @@ class Bot
         if ($web) {
             $t .= "\n[web]\n";
             $t .= "enabled = true\n";
+            // Что делать с уже ПРИНЯТЫМ сокетом, когда max_http_connections
+            // исчерпан (ключ появился в telemt 3.5.6). Дефолт "drop" — молча
+            // закрыть; до клиента это доезжает как 502 от ng (пустой ответ
+            // апстрима). "wait" сначала ждёт освобождения обычной ёмкости не
+            // дольше web.timeouts.http_overload_timeout_ms (дефолт 250 мс) и
+            // только по таймауту отдаёт пустой 503 с Retry-After: 1 — его бридж
+            // считает повторяемым и уходит в свой backoff. Ожидание живёт вне
+            // accept-цикла и ограничено max_http_overload_connections (дефолт
+            // 64, +256 KiB к резервациям envelope), листенер оно не тормозит.
+            // Нам это нужнее, чем публичному узлу: пин max_http_connections =
+            // 256 вчетверо ниже дефолтного, а ng держит к telemt keepalive-пул
+            // на 64 соединения и на всплеске lane-carrier'ов открывает новые.
+            // Образ < 3.5.6 ключ игнорирует (warning в лог) и остаётся на
+            // "drop" — в меню ключ ничего не обещает, поэтому версионного гейта,
+            // в отличие от carriers, здесь нет.
+            $t .= "http_connection_capacity_action = \"wait\"\n";
             // lane-carrier'ы (https-lanes, websocket-lanes) дают каждому
             // логическому потоку свои uplink/downlink и снимают HOL-блокировку
             // на уровне протокола. https-lanes нужен HTTP/2 на терминаторе, а
@@ -2272,10 +2290,13 @@ class Bot
     // backpressure telemt, а не OOM-killer.
     //
     // Значения ПРОВЕРЕНЫ против совместной валидации telemt (validate_web.rs и
-    // validate_web/{memory,websocket}.rs): сумма резерваций 186.6 MiB при
-    // потолке 256 MiB. Любая правка здесь обязана пройти тест
-    // telemt_web_test.php, который пересчитывает те же формулы: ошибка
-    // означает не «лишний ключ проигнорирован», а отказ загрузки конфига.
+    // validate_web/{memory,websocket}.rs): сумма резерваций 186.9 MiB при
+    // потолке 256 MiB. В 3.5.6 в неё добавились ещё две статьи, обе на
+    // дефолтных (не пинуемых нами) ключах: max_http_overload_connections * 4
+    // KiB = 256 KiB и max_profiles * 32 B = 1 KiB. Любая правка здесь обязана
+    // пройти тест telemt_web_test.php, который пересчитывает те же формулы:
+    // ошибка означает не «лишний ключ проигнорирован», а отказ загрузки
+    // конфига.
     //
     // web.limits — process-owned: telemt применяет их только при рестарте
     // процесса, а restartTelemt() его и делает.
@@ -15815,6 +15836,7 @@ DNS-over-HTTPS with IP:
         $api = $this->telemtApiFetch([
             '/v1/health', '/v1/health/ready', '/v1/system/info',
             '/v1/stats/summary', '/v1/stats/users', '/v1/security/posture',
+            '/v1/runtime/web/status',
         ]);
         $h     = $api['/v1/health'] ?? [];
         $ready = $api['/v1/health/ready'] ?? [];
@@ -15822,6 +15844,7 @@ DNS-over-HTTPS with IP:
         $sum   = $api['/v1/stats/summary'] ?? [];
         $users = $api['/v1/stats/users'] ?? null;
         $sec   = $api['/v1/security/posture'] ?? [];
+        $web   = is_array($api['/v1/runtime/web/status'] ?? null) ? $api['/v1/runtime/web/status'] : [];
 
         $uptime = function ($s) {
             $s = (int) $s;
@@ -15870,6 +15893,67 @@ DNS-over-HTTPS with IP:
                         $L[] = "$lbl: " . implode(', ', $cl);
                     }
                 }
+            }
+        }
+
+        // ── WEB-бридж ──
+        // Секция целиком из /v1/runtime/web/status (telemt >= 3.5.6: до неё в
+        // ответе не было ни ingress, ни capacity). Без WEB маршрут отвечает
+        // ошибкой, telemtApiFetch отдаёт null — секции просто нет.
+        //
+        // Счётчики у telemt монотонные и с ФИКСИРОВАННЫМ набором ключей: полный
+        // список исходов и причин отказа — это два десятка строк «=0», которые
+        // съели бы половину лимита сообщения. Печатаем только ненулевые.
+        if ($web) {
+            $ing = is_array($web['ingress'] ?? null) ? $web['ingress'] : [];
+            $cap = is_array($web['capacity'] ?? null) ? $web['capacity'] : [];
+            $lif = is_array($web['lifecycle_counters'] ?? null) ? $web['lifecycle_counters'] : [];
+            $nz  = function ($rows, string $key): string {
+                $out = [];
+                foreach (is_array($rows) ? $rows : [] as $r) {
+                    if (is_array($r) && !empty($r['total'])) {
+                        $out[] = ($r[$key] ?? '?') . '=' . $r['total'];
+                    }
+                }
+                return $out
+                    ? implode(', ', array_slice($out, 0, 8)) . (count($out) > 8 ? ' …' : '')
+                    : '—';
+            };
+            $L[] = "\n▌ WEB (Telegram Desktop)";
+            // Единственная строка, которую отдаёт и старый образ: lifecycle,
+            // available и reason есть в ответе с самого появления WEB.
+            $L[] = "runtime: " . ($web['lifecycle'] ?? '?')
+                . (empty($web['available']) ? ' ✗ ' . ($web['reason'] ?? 'unavailable') : ' ✓');
+            // Ниже — планы наблюдения из 3.5.6. На образе 3.5.5 этих объектов в
+            // ответе нет вовсе, и строки просто не печатаются: показывать «?»
+            // там, где данных не существует, хуже, чем не показывать ничего.
+            if ($ing) {
+                $L[] = "ingress: " . (!empty($ing['accepting_connections'])
+                        ? '✓ accepting' : '✗ ' . ($ing['reason'] ?? 'n/a'))
+                    . "  acceptors: " . ($ing['live_acceptors'] ?? '?')
+                    . "/" . ($ing['configured_listeners'] ?? '?');
+                $L[] = "accepted: " . ($ing['tcp_accept_total'] ?? 0)
+                    . " (errors " . ($ing['tcp_accept_error_total'] ?? 0) . ")";
+            }
+            if ($cap) {
+                // Ровно то, ради чего в конфиге стоит
+                // http_connection_capacity_action: видно и саму политику, и чем
+                // кончались попытки принять сокет сверх max_http_connections
+                // (wait_admitted — дождались ёмкости, wait_timeout_503 — не
+                // дождались и ответили 503).
+                $L[] = "overload: " . ($cap['http_connection_capacity_action'] ?? '?')
+                    . ", " . ($cap['max_http_overload_connections'] ?? '?') . " slots @ "
+                    . ($cap['http_overload_timeout_ms'] ?? '?') . "ms — "
+                    . $nz($cap['http_connection_overload_outcomes'] ?? [], 'outcome');
+                $sat = array_filter((array) ($cap['saturated_resources'] ?? []), 'is_string');
+                $L[] = "saturated: " . ($sat ? implode(', ', array_slice($sat, 0, 6)) : '—');
+                $L[] = "rejections: " . $nz($cap['rejections'] ?? [], 'reason');
+            }
+            if ($lif) {
+                // Восстановление бриджа после смены сети или возврата вкладки из
+                // фона (3.5.6): сессия пересоздаётся без перезапуска клиента.
+                $L[] = "recovery (" . ($lif['bridge_recovery_secs'] ?? '?') . "s): "
+                    . $nz($lif['bridge_recovery_events'] ?? [], 'event');
             }
         }
 
