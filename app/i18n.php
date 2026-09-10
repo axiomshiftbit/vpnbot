@@ -642,8 +642,20 @@ $i = [
         'ru' => 'торренты для клиентов xray разрешены',
     ],
     'torrent xray hint'  => [
-        'en' => 'Caught via sniffing: handshake, uTP, DHT, UDP trackers (all but handshake need the fork core). MSE-encrypted peers and HTTPS trackers stay invisible.',
-        'ru' => 'Ловится через sniffing: handshake, uTP, DHT, UDP-трекеры (всё кроме handshake — только на форк-ядре). MSE-шифрование и HTTPS-трекеры не видны.',
+        'en' => 'Fork core: caught via sniffing — handshake, uTP, DHT, UDP trackers. MSE-encrypted peers and HTTPS trackers stay invisible.',
+        'ru' => 'Форк-ядро: ловится через sniffing — handshake, uTP, DHT, UDP-трекеры. MSE-шифрование и HTTPS-трекеры не видны.',
+    ],
+    'torrent xray hint origin'  => [
+        'en' => 'Upstream core: caught via sniffing — handshake and uTP (since 26.9.8). DHT and UDP trackers need the fork core; MSE-encrypted peers and HTTPS trackers stay invisible on both.',
+        'ru' => 'Апстрим-ядро: ловится через sniffing — handshake и uTP (с 26.9.8). DHT и UDP-трекеры видит только форк-ядро; MSE-шифрование и HTTPS-трекеры не видны ни на одном.',
+    ],
+    'torrent xray hint origin old'  => [
+        'en' => '⚠️ The upstream core on the server is older than 26.9.8: only the TCP handshake is caught, its uTP sniffer never fires. Rebuild the xr image (or switch to the fork core) for uTP.',
+        'ru' => '⚠️ Апстрим-ядро на сервере старее 26.9.8: ловится только TCP-handshake, его uTP-сниффер не срабатывает ни разу. Для uTP пересоберите образ xr (или переключитесь на форк-ядро).',
+    ],
+    'torrent xray hint fork old'  => [
+        'en' => '⚠️ The fork core on the server is older than 26.8.21: only the TCP handshake is caught — uTP, DHT and UDP trackers still go through the upstream sniffer, which never fires. Rebuild the xr image.',
+        'ru' => '⚠️ Форк-ядро на сервере старее 26.8.21: ловится только TCP-handshake — uTP, DHT и UDP-трекеры идут через апстримный сниффер, который не срабатывает ни разу. Пересоберите образ xr.',
     ],
     'torrent needs sniffing'  => [
         'en' => 'Rule will never match: turn sniffing on (DPI masking) and metadataOnly off — without them the core does not detect the protocol.',
