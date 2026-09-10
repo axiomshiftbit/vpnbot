@@ -176,18 +176,30 @@ tbAssert(!$bot->xrayTorrentReady([], ['inbounds' => [
 tbAssert(!$bot->xrayTorrentBlocked([]), 'свежая установка: торренты не режем');
 tbAssert($bot->xrayTorrentBlocked(['xray_blocktorrent' => 1]), 'тумблер читается из pac');
 
-// ── пины ядер: форк не ниже v26.8.21, апстрим не ниже v26.9.8 ───────────────
-// Апстрим важен так же, как форк: до v26.9.8 его uTP-сниффер не срабатывал ни
-// разу, и подсказка меню («ловится handshake и uTP») стала бы враньём для всех,
-// кто сидит на апстримном ядре.
+// ── пины ядер: форк не ниже v26.8.21, апстрим СТРОГО ниже v26.9.8 ──────────
+// У форка порог нижний: до v26.8.21 не было uTP/DHT/UDP-трекеров.
+//
+// У апстрима порог ВЕРХНИЙ, и он важнее полноты сниффера. В v26.9.8 приехал
+// reality@20260908 с коммитом «Reject outdated/strange Client Hello that
+// doesn't have X25519MLKEM768 before optional X25519»: сервер рвёт хендшейк
+// всем, кто не кладёт пост-квантовый key_share, а sing-box вырезает
+// X25519MLKEM768 безусловно (common/tls/reality_client.go) — за ним отваливаются
+// mihomo и XKeen. Отключить проверку конфигом нельзя, отпечаток utls не
+// помогает: несовместимость на уровне бинарей. Рабочий uTP-сниффер (PR #6667)
+// на этой стороне порога недостижим — с ним уезжают живые клиенты, поэтому
+// подсказка меню честно говорит «только handshake» через ветку
+// 'torrent xray hint origin old'. Поднимать пин — только когда sing-box
+// перестанет фильтровать MLKEM768; тот же потолок продублирован в
+// renovate.json и в комментарии .env.
 $env = (string) @file_get_contents(__DIR__ . '/../.env');
 foreach ([
-    ['XRAY_FORK_VERSION', 26, 8, 21, 'uTP/DHT/UDP-трекеры появились в v26.8.21'],
-    ['XRAY_VERSION',      26, 9,  8, 'рабочий uTP-сниффер появился в v26.9.8 (PR #6667)'],
-] as [$key, $maj, $min, $pat, $why]) {
+    ['XRAY_FORK_VERSION', 'min', 26, 8, 21, 'uTP/DHT/UDP-трекеры появились в v26.8.21'],
+    ['XRAY_VERSION',      'max', 26, 9,  8, 'с v26.9.8 REALITY рвёт sing-box/mihomo/XKeen (reality@20260908)'],
+] as [$key, $bound, $maj, $min, $pat, $why]) {
     if (preg_match('~^' . $key . '=v?(\d+)\.(\d+)\.(\d+)~m', $env, $m)) {
-        $ver = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);
-        tbAssert($ver >= sprintf('%04d%04d%04d', $maj, $min, $pat), "{$m[0]}: {$why}");
+        $ver   = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);
+        $limit = sprintf('%04d%04d%04d', $maj, $min, $pat);
+        tbAssert($bound === 'min' ? $ver >= $limit : $ver < $limit, "{$m[0]}: {$why}");
     } else {
         tbAssert(false, "{$key} в .env не найден");
     }
