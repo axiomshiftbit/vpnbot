@@ -176,14 +176,76 @@ tbAssert(!$bot->xrayTorrentReady([], ['inbounds' => [
 tbAssert(!$bot->xrayTorrentBlocked([]), 'свежая установка: торренты не режем');
 tbAssert($bot->xrayTorrentBlocked(['xray_blocktorrent' => 1]), 'тумблер читается из pac');
 
-// ── пин форк-ядра не ниже v26.8.21 ──────────────────────────────────────────
+// ── пины ядер: форк не ниже v26.8.21, апстрим не ниже v26.9.8 ───────────────
+// Апстрим важен так же, как форк: до v26.9.8 его uTP-сниффер не срабатывал ни
+// разу, и подсказка меню («ловится handshake и uTP») стала бы враньём для всех,
+// кто сидит на апстримном ядре.
 $env = (string) @file_get_contents(__DIR__ . '/../.env');
-if (preg_match('~^XRAY_FORK_VERSION=v?(\d+)\.(\d+)\.(\d+)~m', $env, $m)) {
-    $ver = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);
-    tbAssert($ver >= sprintf('%04d%04d%04d', 26, 8, 21),
-        "XRAY_FORK_VERSION={$m[0]}: uTP/DHT/UDP-трекеры появились в v26.8.21");
-} else {
-    tbAssert(false, 'XRAY_FORK_VERSION в .env не найден');
+foreach ([
+    ['XRAY_FORK_VERSION', 26, 8, 21, 'uTP/DHT/UDP-трекеры появились в v26.8.21'],
+    ['XRAY_VERSION',      26, 9,  8, 'рабочий uTP-сниффер появился в v26.9.8 (PR #6667)'],
+] as [$key, $maj, $min, $pat, $why]) {
+    if (preg_match('~^' . $key . '=v?(\d+)\.(\d+)\.(\d+)~m', $env, $m)) {
+        $ver = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);
+        tbAssert($ver >= sprintf('%04d%04d%04d', $maj, $min, $pat), "{$m[0]}: {$why}");
+    } else {
+        tbAssert(false, "{$key} в .env не найден");
+    }
+}
+
+// ── подсказка про покрытие обязана следовать за АКТИВНЫМ ядром ──────────────
+// Ядро в контейнере может быть старее нашего пина (образ xr не пересобирали),
+// и меню не должно обещать uTP там, где его нет.
+class TbProbeBot extends Bot
+{
+    public string $out    = '';
+    public bool   $failed = false;
+
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
+    {
+        $this->sshFailed = $this->failed;
+
+        return $this->out;
+    }
+}
+
+$probeBot = (new ReflectionClass(TbProbeBot::class))->newInstanceWithoutConstructor();
+
+$hintOf = function (string $out, bool $failed, array $pac = []) use ($probeBot): string {
+    $probeBot->out    = $out;
+    $probeBot->failed = $failed;
+    $probeBot->xrayCoreProbe(true);
+
+    return $probeBot->xrayTorrentHintKey($pac);
+};
+
+tbAssert($hintOf('1|/usr/bin/xray-smux|brutal|/usr/bin/xray-smux|Xray 26.9.5-0936 (Xray, Penetrates Everything.)', false)
+    === 'torrent xray hint', 'активен форк — полное покрытие');
+tbAssert($hintOf('1|/usr/bin/xray-smux|brutal|/usr/bin/xray-smux|Xray 26.8.20 (Xray, Penetrates Everything.)', false)
+    === 'torrent xray hint fork old', 'форк старее 26.8.21 — тот же сломанный uTP апстрима');
+tbAssert($hintOf('|/usr/bin/xray|reno cubic|/usr/bin/xray|Xray 26.9.9 (Xray, Penetrates Everything.)', false)
+    === 'torrent xray hint origin', 'апстрим 26.9.9 — handshake и uTP, без DHT/трекеров');
+tbAssert($hintOf('|/usr/bin/xray|reno cubic|/usr/bin/xray|Xray 26.7.28 (Xray, Penetrates Everything.)', false)
+    === 'torrent xray hint origin old', 'апстрим старее 26.9.8 — только handshake');
+// Граница ровно на 26.9.8, а не «после неё».
+tbAssert($hintOf('|/usr/bin/xray|reno cubic|/usr/bin/xray|Xray 26.9.8 (Xray, Penetrates Everything.)', false)
+    === 'torrent xray hint origin', 'сам 26.9.8 уже с рабочим uTP');
+// Контейнер молчит: версии нет — берём ядро, выбранное в настройках, и не
+// пугаем старым ядром на пустом месте.
+tbAssert($hintOf('', true, ['xray_core' => 'fork']) === 'torrent xray hint',
+    'проба не ответила — идём за выбранным ядром (форк)');
+tbAssert($hintOf('', true, []) === 'torrent xray hint origin',
+    'проба не ответила, выбран апстрим — подсказка апстрима, без «старого ядра»');
+
+// Ключи подсказок обязаны существовать в словаре обоих языков.
+require_once __DIR__ . '/../app/i18n.php';
+foreach ([
+    'torrent xray hint',
+    'torrent xray hint origin',
+    'torrent xray hint origin old',
+    'torrent xray hint fork old',
+] as $k) {
+    tbAssert(!empty($i[$k]['en']) && !empty($i[$k]['ru']), "нет перевода для «{$k}»");
 }
 
 if ($failed) {

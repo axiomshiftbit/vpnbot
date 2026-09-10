@@ -2937,14 +2937,17 @@ class Bot
     // результату sniffing'а, а не по сигнатуре в каждом пакете.
     //
     // Матчинг есть на ОБОИХ ядрах, но покрытие разное:
-    //   апстрим — только TCP-handshake ('BitTorrent protocol'); его UDP-сниффер
-    //     uTP сравнивает 32-битные монотонные часы с epoch-микросекундами и не
-    //     срабатывает ни разу (починено в форке v26.8.21);
-    //   форк v26.8.21+ — плюс рабочий uTP, DHT/KRPC (BEP 5) и UDP-трекеры
-    //     (BEP 15), а v26.8.23 закрывает ложные срабатывания на DNS-запросах
+    //   апстрим до v26.9.8 — только TCP-handshake ('BitTorrent protocol'); его
+    //     UDP-сниффер uTP сравнивал 32-битные монотонные часы с
+    //     epoch-микросекундами и не срабатывал ни разу;
+    //   апстрим v26.9.8+ (PR #6667) — плюс рабочий uTP: ST_SYN опознаётся по
+    //     типу+версии, нулевой разнице таймстампов и цепочке расширений,
+    //     которая обязана закончиться ровно на конце пакета;
+    //   форк v26.8.21+ — сверх того DHT/KRPC (BEP 5) и UDP-трекеры (BEP 15),
+    //     а v26.8.23 закрывает ложные срабатывания на DNS-запросах
     //     (v26.8.22 роняла в блок примерно один DNS-запрос из 13000).
     // Гейта по xrayCore() поэтому нет: правило безвредно и на апстриме, просто
-    // ловит меньше — про разницу предупреждает меню.
+    // ловит меньше — про разницу предупреждает меню (xrayTorrentHintKey()).
     //
     // Обязательное условие — sniffing: content.Protocol ядро заполняет ТОЛЬКО
     // при sniffing.enabled и metadataOnly=false (app/dispatcher/default.go).
@@ -2982,6 +2985,32 @@ class Bot
         }
 
         return !empty($s['enabled']) && empty($s['metadataOnly']);
+    }
+
+    // Какой подсказкой отвечать на включённый тумблер: что именно ядро ловит,
+    // зависит от АКТИВНОГО ядра и его версии, а не от нашего пина в .env —
+    // образ xr мог не пересобираться с прошлого обновления, и обещать в меню
+    // uTP на ядре, которое его не видит, нельзя (тот же критерий, что у
+    // smuxHalfCloseReady()/smuxFrameReady()).
+    //
+    //   форк 26.8.21+        — handshake + uTP + DHT/KRPC + UDP-трекеры;
+    //   апстрим 26.9.8+      — handshake + uTP (DHT и трекеры только на форке);
+    //   любое ядро старее    — только handshake: у обоих до этих версий стоял
+    //                          общий сломанный uTP-сниффер апстрима.
+    //
+    // Проба не ответила (контейнер лежит) — версии нет, и врать нечем: берём
+    // ядро, ВЫБРАННОЕ в настройках, и не пугаем старым ядром на ровном месте.
+    public function xrayTorrentHintKey(?array $p = null): string
+    {
+        $probe = $this->xrayCoreProbe();
+        $core  = !empty($probe['ok']) ? (string) ($probe['active'] ?? '') : $this->xrayCore($p);
+        $fork  = $core === 'fork';
+        $v     = $this->getXrayVersion();
+        if ($v !== '' && version_compare($v, $fork ? '26.8.21' : '26.9.8', '<')) {
+            return $fork ? 'torrent xray hint fork old' : 'torrent xray hint origin old';
+        }
+
+        return $fork ? 'torrent xray hint' : 'torrent xray hint origin';
     }
 
     public function ensureTorrentBlock(array &$c, ?array $p = null): void
@@ -3169,12 +3198,20 @@ class Bot
     //      #5947: loopback, CGNAT, link-local/metadata 169.254.169.254, RFC1918,
     //      IPv6 ULA/link-local), чтобы клиент не дотянулся через "direct" до
     //      внутренностей хоста/LAN/облачного metadata.
-    // Публичные адреса не матчат ни одно правило → default Allow. ВАЖНО: при
-    // наличии ip-матчера в finalRules ядро форс-резолвит домен ДО дозвона (как и
-    // штатная safe policy), что требует рабочего системного резолвера в контейнере
-    // xr — у нас он есть. Ядра < v26.4.17 не знают поля "finalRules" и игнорируют
-    // его (нестрогий JSON-загрузчик), а safe policy там либо отсутствует
-    // (<= v26.4.13) — регрессий нет. Конфиги с собственными finalRules не трогаем.
+    // Публичные адреса не матчат ни одно правило → default Allow. ВАЖНО: адрес
+    // назначения-домен ядро для этой проверки РЕЗОЛВИТ до дозвона, что требует
+    // рабочего системного резолвера в контейнере xr — у нас он есть. С v26.9.8
+    // (PR #6058) резолв перестал переписывать адрес дозвона: ядро смотрит
+    // стратегию sockopt.domainStrategy, а без неё спрашивает системный резолвер
+    // отдельно — на наши правила это не влияет, они матчат по IP назначения, а
+    // клиентский warp-socks (10.10.0.13) приходит уже адресом, а не именем.
+    // Ядра < v26.4.17 не знают поля "finalRules" и игнорируют его (нестрогий
+    // JSON-загрузчик), а safe policy там либо отсутствует (<= v26.4.13) —
+    // регрессий нет. Конфиги с собственными finalRules не трогаем.
+    // Единственное, что снимает finalRules целиком, — sockopt.dialerProxy на
+    // самом freedom (с v26.9.9 ядро тогда пишет warning и правила не строит):
+    // на сервере такого freedom нет, dialerProxy живёт только в клиентских
+    // конфигах подписки (applyDpiFragment).
     public function ensureFreedomCompat(array &$c): void
     {
         if (empty($c['outbounds']) || !is_array($c['outbounds'])) {
@@ -18156,7 +18193,7 @@ DNS-over-HTTPS with IP:
         $note = $this->i18n($p['xray_blocktorrent'] ? 'torrent xray on' : 'torrent xray off');
         if (!empty($p['xray_blocktorrent'])) {
             $note .= "\n\n" . ($this->xrayTorrentReady($p)
-                ? $this->i18n('torrent xray hint')
+                ? $this->i18n($this->xrayTorrentHintKey($p))
                 : $this->i18n('torrent needs sniffing'));
         }
         $this->answer($this->input['callback_id'], $note, true);
@@ -22575,10 +22612,14 @@ DNS-over-HTTPS with IP:
     {
         $rs['maxTimeDiff']  = max(0, (int) ($p['reality']['maxTimeDiff'] ?? 0));
         // Since Xray-core v26.7.11 (PR #6181) an empty "minClientVer" no longer means
-        // "no restriction": the server now defaults it to 26.3.27, which rejects the
+        // "no restriction": the server defaulted it to 26.3.27, which rejects the
         // many clients built on older cores. Emit "0.0.0" when the user set nothing so
         // the pre-v26.7.11 "accept any client" behaviour is preserved; a real value
         // typed via the hardening menu is still honoured verbatim.
+        // Upstream v26.9.8 commented that default out again (and the fork never had
+        // it), so on the current pins "0.0.0" and an empty value mean the same thing —
+        // we keep emitting it: the image on a given server may still carry a core from
+        // the v26.7.11..v26.9.5 window, where dropping it would lock those clients out.
         $rs['minClientVer'] = ((string) ($p['reality']['minClientVer'] ?? '')) ?: '0.0.0';
         $rs['maxClientVer'] = (string) ($p['reality']['maxClientVer'] ?? '');
         $rs['xver']         = max(0, (int) ($p['reality']['xver'] ?? 0));
