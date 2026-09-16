@@ -169,6 +169,50 @@ $i = [
         'en' => '⚠️ Your transport (%s) runs over TCP — UDP noise is NOT sent over it and masks nothing. For TCP enable TLS fragmentation instead. Noise only helps a UDP transport.',
         'ru' => '⚠️ Ваш транспорт (%s) работает по TCP — UDP-шум по нему НЕ отправляется и ничего не маскирует. Для TCP включите TLS-фрагментацию. noise полезен только для UDP-транспорта.',
     ],
+    'vless encryption hint' => [
+        'en' => 'VLESS Encryption adds encryption inside TLS/REALITY. Choose X25519 authentication or post-quantum ML-KEM-768; both use a post-quantum ephemeral key exchange. Modes: native, xorpub, random. Defaults from Xray: 600s tickets, 0-RTT resumption, automatic padding. Changing settings or rotating keys requires all clients to refresh their profiles. REALITY keys stay separate.',
+        'ru' => 'VLESS Encryption добавляет шифрование внутри TLS/REALITY. Выберите аутентификацию X25519 или постквантовую ML-KEM-768; обмен временными ключами в обоих случаях постквантовый. Режимы: native, xorpub, random. Параметры Xray: билеты 600 с, возобновление 0-RTT, автоматический padding. После изменения настроек или ротации все клиенты должны обновить профили. Ключи REALITY независимы.',
+    ],
+    'vless encryption singbox' => [
+        'en' => 'VLESS Encryption needs a compatible Xray or mihomo client. Official sing-box 1.14.1 does not support it. Disable Encryption to use sing-box.',
+        'ru' => 'VLESS Encryption требует совместимого Xray или mihomo. Официальный sing-box 1.14.1 его не поддерживает. Для sing-box отключите Encryption.',
+    ],
+    'vless encryption transport' => [
+        'en' => 'Select a VLESS transport (REALITY, WebSocket or XHTTP) first. Encryption does not apply to Trojan.',
+        'ru' => 'Сначала выберите транспорт VLESS: REALITY, WebSocket или XHTTP. К Trojan это шифрование не применяется.',
+    ],
+    'vless encryption rotate' => [
+        'en' => 'Rotate Encryption keys (refresh all clients)',
+        'ru' => 'Сменить ключи Encryption (обновить все клиенты)',
+    ],
+    'vless encryption updated' => [
+        'en' => 'Encryption settings saved. Refresh client profiles.',
+        'ru' => 'Настройки Encryption сохранены. Обновите клиентские профили.',
+    ],
+    'vless encryption unavailable' => [
+        'en' => 'Encryption settings do not match the server or the profile is unavailable. Check the VLESS Encryption menu.',
+        'ru' => 'Параметры Encryption не совпадают с сервером или профиль недоступен. Проверьте меню VLESS Encryption.',
+    ],
+    'vless encryption generate failed' => [
+        'en' => 'Could not generate a valid key pair. Check that the active Xray core supports vlessenc. Settings were not changed.',
+        'ru' => 'Не удалось получить пару ключей. Проверьте поддержку vlessenc активным ядром Xray. Настройки не изменены.',
+    ],
+    'vless encryption check failed' => [
+        'en' => 'Xray rejected the candidate config or is unreachable. Check core compatibility and VLESS fallbacks. Settings were not changed.',
+        'ru' => 'Xray не принял новый конфиг или недоступен. Проверьте совместимость ядра и VLESS fallbacks. Настройки не изменены.',
+    ],
+    'vless encryption save failed' => [
+        'en' => 'Could not save Encryption settings. Check config access and retry.',
+        'ru' => 'Не удалось сохранить настройки Encryption. Проверьте доступ к конфигам и повторите попытку.',
+    ],
+    'reality mlkem clients' => [
+        'en' => 'REALITY profiles for Xray/mihomo use Chrome with X25519MLKEM768 for compatibility with Xray 26.9.9. Other transports use the selected fingerprint.',
+        'ru' => 'Профили REALITY для Xray/mihomo используют Chrome с X25519MLKEM768 для совместимости с Xray 26.9.9. Остальные транспорты используют выбранный fingerprint.',
+    ],
+    'reality singbox mlkem' => [
+        'en' => 'This REALITY core requires X25519MLKEM768; official sing-box 1.14.1 removes it from ClientHello. Use Xray/mihomo, a compatible server core, or WebSocket/TLS or Trojan/gRPC.',
+        'ru' => 'Это ядро REALITY требует X25519MLKEM768; официальный sing-box 1.14.1 удаляет его из ClientHello. Используйте Xray/mihomo, совместимое серверное ядро либо WebSocket/TLS или Trojan/gRPC.',
+    ],
     'xhttp singbox warn'   => [
         'en' => '⚠️ XHTTP is an Xray transport: stock sing-box has no such transport type and will reject the config. Use v2rayNG / v2rayN / mihomo, or a sing-box build with XHTTP support.',
         'ru' => '⚠️ XHTTP — транспорт Xray: в обычном sing-box такого типа нет, конфиг он не примет. Используйте v2rayNG / v2rayN / mihomo либо сборку sing-box с поддержкой XHTTP.',

@@ -8,9 +8,8 @@
 # полгода назад, и узнать об этом было неоткуда.
 #
 # PHP берём предустановленный на раннере, без сторонних setup-action: тестам
-# нужен только CLI. Расширений ssh2, yaml и intl на раннере нет — тесты это
-# учитывают и такие проверки пропускают (ровно так же они ведут себя на
-# dev-машине).
+# нужен CLI и yaml для проверки реальных подписок mihomo. ssh2 и intl
+# необязательны: соответствующие тесты учитывают их отсутствие.
 
 name: tests
 
@@ -36,6 +35,26 @@ jobs:
 
       - name: Версия PHP
         run: php -v
+
+      - name: YAML для проверки подписок
+        run: |
+          php_version=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
+          sudo apt-get update -qq
+          sudo apt-get install -y "php${php_version}-yaml"
+          php -r 'exit(extension_loaded("yaml") ? 0 : 1);'
+
+      - name: Xray для проверки конфигураций
+        run: |
+          set -euo pipefail
+          xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
+          mkdir -p "$xray_test_dir"
+          cd "$xray_test_dir"
+          curl --fail --location --retry 3 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.9/Xray-linux-64.zip
+          echo '1eb9175d0f0a8f8149c9230a7fc5ae66ce332ed20a53155ce61fe62e3f58b7df  Xray-linux-64.zip' | sha256sum --check
+          unzip -q Xray-linux-64.zip xray
+          chmod +x xray
+          sudo install -d -m 1777 /logs
+          echo "VLESS_TEST_XRAY=$xray_test_dir/xray" >> "$GITHUB_ENV"
 
       - name: Синтаксис
         run: |

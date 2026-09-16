@@ -183,9 +183,9 @@ tbAssert($bot->xrayTorrentBlocked(['xray_blocktorrent' => 1]), 'тумблер �
 // reality@20260908 с коммитом «Reject outdated/strange Client Hello that
 // doesn't have X25519MLKEM768 before optional X25519»: сервер рвёт хендшейк
 // всем, кто не кладёт пост-квантовый key_share, а sing-box вырезает
-// X25519MLKEM768 безусловно (common/tls/reality_client.go) — за ним отваливаются
-// mihomo и XKeen. Отключить проверку конфигом нельзя, отпечаток utls не
-// помогает: несовместимость на уровне бинарей. Рабочий uTP-сниффер (PR #6667)
+// X25519MLKEM768 безусловно (common/tls/reality_client.go). Для mihomo бот
+// включает support-x25519mlkem768 и Chrome, но sing-box это не исправляет.
+// Общий пин сохраняет его совместимость. Рабочий uTP-сниффер (PR #6667)
 // на этой стороне порога недостижим — с ним уезжают живые клиенты, поэтому
 // подсказка меню честно говорит «только handshake» через ветку
 // 'torrent xray hint origin old'. Поднимать пин — только когда sing-box
@@ -194,7 +194,7 @@ tbAssert($bot->xrayTorrentBlocked(['xray_blocktorrent' => 1]), 'тумблер �
 $env = (string) @file_get_contents(__DIR__ . '/../.env');
 foreach ([
     ['XRAY_FORK_VERSION', 'min', 26, 8, 21, 'uTP/DHT/UDP-трекеры появились в v26.8.21'],
-    ['XRAY_VERSION',      'max', 26, 9,  8, 'с v26.9.8 REALITY рвёт sing-box/mihomo/XKeen (reality@20260908)'],
+    ['XRAY_VERSION',      'max', 26, 9,  8, 'общий пин сохраняет REALITY для sing-box без X25519MLKEM768'],
 ] as [$key, $bound, $maj, $min, $pat, $why]) {
     if (preg_match('~^' . $key . '=v?(\d+)\.(\d+)\.(\d+)~m', $env, $m)) {
         $ver   = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);

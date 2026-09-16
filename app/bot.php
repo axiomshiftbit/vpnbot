@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/ClashTemplateValidator.php';
+require_once __DIR__ . '/VlessEncryption.php';
 
 class Bot
 {
@@ -398,7 +399,7 @@ class Bot
             return false;
         }
         @chmod($tmp, 0600);
-        $ok = fwrite($h, $data) !== false;
+        $ok = fwrite($h, $data) === strlen($data);
         fclose($h);
         // Результат записи раньше не проверялся: при переполненном диске в
         // ./certs оставался обрезанный ключ, а nginx падал на рестарте.
@@ -588,6 +589,16 @@ class Bot
                 break;
             case preg_match('~^/fingerprintMenu$~', $this->input['callback'], $m):
                 $this->fingerprintMenu();
+                break;
+            case preg_match('~^/vlessEncryption$~', $this->input['callback'], $m):
+                $this->vlessEncryptionMenu();
+                break;
+            case preg_match('~^/vlessEncryptionSet (off|x25519|mlkem768) (native|xorpub|random)$~', $this->input['callback'], $m):
+                $this->setVlessEncryption($m[1], $m[2]);
+                break;
+            case preg_match('~^/vlessEncryptionRotate$~', $this->input['callback'], $m):
+                $ve = $this->getPacConf()['vless_encryption'] ?? [];
+                $this->setVlessEncryption($ve['auth'] ?? 'x25519', $ve['mode'] ?? 'native', true);
                 break;
             case preg_match('~^/dpiMenu$~', $this->input['callback'], $m):
                 $this->dpiMenu();
@@ -2693,6 +2704,10 @@ class Bot
             ];
         }
         $pac = $this->getPacConf();
+        if (!VlessEncryption::applyServer($c, $pac)) {
+            error_log('restartXray: invalid VLESS Encryption settings');
+            return false;
+        }
         $this->applySniffingToXray($c, $pac);
         $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
@@ -2735,19 +2750,22 @@ class Bot
         if (false === $json) {
             error_log('restartXray: xray.json not written — ' . json_last_error_msg());
 
-            return;
+            return false;
         }
         if (empty($norestart)) {
             $this->collectSession();
-            $this->writeXrayJson($json);
+            if (!$this->writeXrayJson($json)) {
+                return false;
+            }
             $this->ssh('pkill xray', 'xr');
             // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
             // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
             // старта — не требует правки override.env и совпадает с datDir().
             $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json > /dev/null 2>&1 &', 'xr');
         } else {
-            $this->writeXrayJson($json);
+            return $this->writeXrayJson($json);
         }
+        return true;
     }
 
     // Подсеть docker-compose сборки: в ней живут adguard (10.10.0.5), панель,
@@ -6904,6 +6922,11 @@ NFT;
         $_GET['t']              = $t;
         $_SERVER['SERVER_NAME'] = $this->getDomain($pac['transport'] != 'Reality');
         $conf                   = $this->subscription(1);
+        if ($conf === '') {
+            $error = $this->subscriptionCompatibilityError($this->getXray(), $pac, $t);
+            $this->answer($this->input['callback_id'], $this->i18n($error ?: 'vless encryption unavailable'), true);
+            return;
+        }
         $this->sendFile($this->input['from'], new CURLStringFile($conf, $c['email'] . ($t == 'cl' ? '_mihomo.yaml' :($t == 'si' ? '_singbox.json' : '_v2ray.json'))));
     }
 
@@ -9844,13 +9867,9 @@ NFT;
 
             return false;
         }
-        $tmp  = $this->pac . '.' . getmypid() . '.tmp';
-        if (file_put_contents($tmp, $data, LOCK_EX) === false) {
-            @unlink($tmp);
-
-            return false;
-        }
-        return rename($tmp, $this->pac);
+        // pac.json содержит ключи REALITY и VLESS Encryption. Временный файл
+        // должен иметь 0600 ДО записи, а rename не должен возвращать 0644.
+        return $this->writePrivateKey($this->pac, $data);
     }
 
     public function domain()
@@ -18165,9 +18184,11 @@ DNS-over-HTTPS with IP:
         if (empty($r['ok'])) {
             $this->answer(
                 $this->input['callback_id'],
-                $this->i18n(in_array('xr unreachable', $r['note'], true)
+                $this->i18n(in_array('vless encryption check failed', $r['note'], true)
+                    ? 'vless encryption check failed'
+                    : (in_array('xr unreachable', $r['note'], true)
                     ? 'smux xr unreachable'
-                    : 'smux fork missing'),
+                    : 'smux fork missing')),
                 true
             );
 
@@ -20765,10 +20786,17 @@ DNS-over-HTTPS with IP:
     {
         $c      = $this->getXray();
         $pac    = $this->getPacConf();
+        if ($this->subscriptionCompatibilityError($c, $pac, $s == 2 ? 'si' : 's') !== '') {
+            return '';
+        }
+        $encryption = VlessEncryption::client($c, $pac);
         $domain = $this->getDomain($pac['transport'] != 'Reality');
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $fp     = $this->fingerprint();
+        if (($pac['transport'] ?? '') === 'Reality') {
+            $fp = 'chrome';
+        }
         // Share-link #remark shown as the node name in the client, prefixed with
         // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
         // this with the relay's country for relay subscriptions.
@@ -20874,6 +20902,9 @@ DNS-over-HTTPS with IP:
                                     . "#{$remark}";
                         break;
                 }
+                if (str_starts_with($link, 'vless://')) {
+                    $link = str_replace('#', '&encryption=' . rawurlencode($encryption) . '#', $link);
+                }
                 return $link;
 
         }
@@ -20936,6 +20967,9 @@ DNS-over-HTTPS with IP:
         }
 
         $native = $this->linkXray($i);
+        if ($native === '') {
+            $this->subNotFound($this->i18n('vless encryption unavailable'));
+        }
         $links  = [$native];
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']])) {
             // Explicit relay requested: serve only that relay's node (unchanged).
@@ -23140,6 +23174,154 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Новый REALITY требует гибридный key_share. Неизвестная версия/сбой SSH
+    // не означают несовместимость и не должны отключать существующие подписки.
+    public function realityRequiresMlkem(): bool
+    {
+        $probe = $this->xrayCoreProbe();
+        if (!$probe['ok'] || ($probe['running'] !== '' && $probe['running'] !== $probe['active'])) {
+            return false;
+        }
+        // Форк может выпускаться с новой датой, сохраняя прежний REALITY.
+        // Проверяем версию зависимости из Go build info самого бинаря.
+        if (preg_match('~^v0\.0\.0-(\d{14})-[0-9a-f]+$~D', $probe['reality'] ?? '', $build)) {
+            return strcmp($build[1], '20260908062103') >= 0;
+        }
+        // Без build info календарная версия неизвестного форка недостаточна.
+        return $probe['active'] === 'origin'
+            && preg_match('~Xray\s+v?(\d+\.\d+\.\d+)~i', $probe['version'], $match)
+            && version_compare($match[1], '26.9.8', '>=');
+    }
+
+    public function subscriptionCompatibilityError(array $xr, array $pac, string $type): string
+    {
+        $encryption = VlessEncryption::client($xr, $pac);
+        if ($encryption === null) {
+            return 'vless encryption unavailable';
+        }
+        if ($type === 'si') {
+            if ($encryption !== 'none') {
+                return 'vless encryption singbox';
+            }
+            if (($pac['transport'] ?? '') === 'Reality' && $this->realityRequiresMlkem()) {
+                return 'reality singbox mlkem';
+            }
+        }
+        return '';
+    }
+
+    public function vlessEncryptionMenu()
+    {
+        $p = $this->getPacConf();
+        $s = is_array($p['vless_encryption'] ?? null) ? $p['vless_encryption'] : [];
+        $text = ['Menu -> ' . $this->i18n('xray') . ' -> VLESS Encryption', $this->i18n('vless encryption hint')];
+        $text[] = $this->i18n('vless encryption singbox');
+        if (($p['transport'] ?? '') === 'trojan-grpc') {
+            $text[] = $this->i18n('vless encryption transport');
+        }
+        $data = [[['text' => $this->i18n('off') . (empty($s['enabled']) ? ' ✓' : ''), 'callback_data' => '/vlessEncryptionSet off native']]];
+        foreach (['x25519' => 'X25519', 'mlkem768' => 'ML-KEM-768'] as $auth => $label) {
+            $row = [];
+            foreach (VlessEncryption::MODES as $mode) {
+                $selected = !empty($s['enabled']) && ($s['auth'] ?? '') === $auth && ($s['mode'] ?? '') === $mode;
+                $row[] = ['text' => "$label / $mode" . ($selected ? ' ✓' : ''), 'callback_data' => "/vlessEncryptionSet $auth $mode"];
+            }
+            $data[] = $row;
+        }
+        if (!empty($s['enabled'])) {
+            $data[] = [['text' => $this->i18n('vless encryption rotate'), 'callback_data' => '/vlessEncryptionRotate']];
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function setVlessEncryption(string $auth, string $mode, bool $rotate = false): void
+    {
+        $error = $this->applyVlessEncryption($auth, $mode, $rotate);
+        $this->answer($this->input['callback_id'], $this->i18n($error ?: 'vless encryption updated'), true);
+        $this->vlessEncryptionMenu();
+    }
+
+    public function applyVlessEncryption(string $auth, string $mode, bool $rotate = false): string
+    {
+        if (!in_array($auth, ['off', 'x25519', 'mlkem768'], true) || !in_array($mode, VlessEncryption::MODES, true)) {
+            return 'vless encryption unavailable';
+        }
+        return $this->withLock('xray', function () use ($auth, $mode, $rotate) {
+            return $this->withLock('pac', function () use ($auth, $mode, $rotate) {
+                $p = $this->getPacConf();
+                $old = $p;
+                $x = $this->getXray();
+                if (!is_array($p) || !is_array($x)) {
+                    return 'vless encryption unavailable';
+                }
+                $s = is_array($p['vless_encryption'] ?? null) ? $p['vless_encryption'] : [];
+                if ($rotate && empty($s['enabled'])) {
+                    return 'vless encryption unavailable';
+                }
+                if ($auth !== 'off') {
+                    if (($x['inbounds'][0]['protocol'] ?? '') !== 'vless') {
+                        return 'vless encryption transport';
+                    }
+                    if ($rotate || ($s['auth'] ?? '') !== $auth || VlessEncryption::pair($s) === null) {
+                        // Вывод содержит приватные ключи: не выводить в UI/лог.
+                        $pairs = VlessEncryption::parseOutput((string) $this->ssh('xray vlessenc', 'xr'));
+                        if ($this->sshFailed || !isset($pairs[$auth])) {
+                            return 'vless encryption generate failed';
+                        }
+                        $s = $pairs[$auth];
+                    }
+                    $s['mode'] = $mode;
+                }
+                $s['enabled'] = $auth !== 'off';
+                $p['vless_encryption'] = $s;
+                if (!VlessEncryption::applyServer($x, $p) || !$this->validateVlessEncryptionConfig($x)) {
+                    return 'vless encryption check failed';
+                }
+                if ($this->setPacConf($p) === false) {
+                    return 'vless encryption save failed';
+                }
+                if ($this->restartXray($x) === false) {
+                    $this->setPacConf($old);
+                    return 'vless encryption save failed';
+                }
+                return '';
+            }, 20, 'vless encryption save failed');
+        }, 20, 'vless encryption save failed');
+    }
+
+    public function validateVlessEncryptionConfig(array $config, string $binary = 'xray'): bool
+    {
+        // /logs общий с xr. tempnam создаёт 0600; ошибки Xray могут содержать
+        // decryption, поэтому наружу выходит только маркер успеха.
+        // getXray() читает JSON как массив: восстановить stats:{} до проверки,
+        // как это делает restartXray() перед записью рабочего конфига.
+        if (isset($config['stats']) && $config['stats'] === []) {
+            $config['stats'] = new stdClass();
+        }
+        if (isset($config['policy']['levels']) && is_array($config['policy']['levels'])) {
+            $config['policy']['levels'] = (object) $config['policy']['levels'];
+        }
+        $json = json_encode($config, JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            return false;
+        }
+        $file = @tempnam('/logs', '.vless-check-');
+        if ($file === false) {
+            return false;
+        }
+        try {
+            if (dirname($file) !== '/logs' || file_put_contents($file, $json) === false) {
+                return false;
+            }
+            $out = $this->ssh('XRAY_LOCATION_ASSET=/logs/geodata timeout 15 ' . escapeshellarg($binary)
+                . ' run -test -format json -config ' . escapeshellarg($file) . ' >/dev/null 2>&1 && printf VLESS_CONFIG_OK', 'xr');
+            return !$this->sshFailed && trim((string) $out) === 'VLESS_CONFIG_OK';
+        } finally {
+            @unlink($file);
+        }
+    }
+
     // Версия Xray-core из контейнера. `xray version` печатает строку вида
     // "Xray 1.8.24 (Xray, Penetrates Everything.) ..." — берём номер версии.
     // Не требует запущенного процесса, поэтому работает даже когда xray off.
@@ -23201,7 +23383,9 @@ DNS-over-HTTPS with IP:
                 . '"$(readlink -f /usr/local/bin/xray)" '
                 . '"$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)" '
                 . '"$(p=$(pgrep -f "[x]ray run" | head -n1); test -n "$p" && readlink -f /proc/$p/exe 2>/dev/null)" '
-                . '"$(xray version 2>&1 | head -n1)"',
+                . '"$(xray version 2>&1 | head -n1; printf "\nREALITY_BUILD="; '
+                . 'LC_ALL=C grep -aoE \'github.com/xtls/reality[[:space:]]+v[0-9A-Za-z.+_-]+\' /usr/local/bin/xray 2>/dev/null '
+                . '| head -n1 | awk \'{print $2}\')"',
             'xr'
         );
         // ok=false — контейнер не ответил. Отличать это от «форка нет» ОБЯЗАТЕЛЬНО:
@@ -23214,6 +23398,12 @@ DNS-over-HTTPS with IP:
         // апстрим»: иначе свежая установка выглядела бы как расхождение и
         // авторемонт гонял бы рестарт по кругу.
         $run = $ok ? trim($p[3] ?? '') : '';
+        $version = $ok ? trim(implode('|', array_slice($p, 4))) : '';
+        $reality = '';
+        if (preg_match('~\nREALITY_BUILD=(\S*)$~D', $version, $build)) {
+            $reality = $build[1];
+            $version = substr($version, 0, -strlen($build[0]));
+        }
 
         return $this->xrProbe = [
             'ok'      => $ok,
@@ -23221,7 +23411,8 @@ DNS-over-HTTPS with IP:
             'active'  => $ok && trim($p[1] ?? '') === self::XRAY_BIN_FORK ? 'fork' : 'origin',
             'brutal'  => $ok && in_array('brutal', preg_split('~\s+~', trim($p[2] ?? '')) ?: [], true),
             'running' => $run === '' ? '' : ($run === self::XRAY_BIN_FORK ? 'fork' : 'origin'),
-            'version' => $ok ? trim(implode('|', array_slice($p, 4))) : '',
+            'version' => $version,
+            'reality' => $reality,
         ];
     }
 
@@ -23404,6 +23595,12 @@ DNS-over-HTTPS with IP:
             return ['ok' => false, 'note' => [$probe['ok'] ? 'fork missing' : 'xr unreachable']];
         }
 
+        $candidate = $this->getXray();
+        if (is_array($candidate) && ($candidate['inbounds'][0]['settings']['decryption'] ?? 'none') !== 'none'
+            && !$this->validateVlessEncryptionConfig($candidate, $core === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN)) {
+            return ['ok' => false, 'note' => ['vless encryption check failed']];
+        }
+
         $p['xray_core'] = $core;
         if ($core === 'fork') {
             // Первое включение (настройки ещё не трогали руками) — засеваем
@@ -23476,6 +23673,15 @@ DNS-over-HTTPS with IP:
         // этом сразу, а не оставляем пользователя с «unknown transport type».
         if (($p['transport'] ?? '') === 'xhttp') {
             $text[] = $this->i18n('xhttp singbox warn');
+        }
+        if (($p['transport'] ?? '') === 'Reality') {
+            $text[] = $this->i18n('reality mlkem clients');
+            if ($this->realityRequiresMlkem()) {
+                $text[] = $this->i18n('reality singbox mlkem');
+            }
+        }
+        if (VlessEncryption::client($c, $p) !== 'none') {
+            $text[] = $this->i18n('vless encryption singbox');
         }
         $text[] = 'fingerprint: ' . $this->fingerprint();
         $st = $this->getXrayStats();
@@ -23561,6 +23767,10 @@ DNS-over-HTTPS with IP:
             ],
         ];
         $torrentBlocked = $this->xrayTorrentBlocked($p);
+        $data[] = [[
+            'text' => 'VLESS Encryption: ' . $this->i18n(VlessEncryption::client($c, $p) === 'none' ? 'off' : 'on'),
+            'callback_data' => '/vlessEncryption',
+        ]];
         $data[] = [
             [
                 'text'          => 'SMUX: ' . $this->i18n($this->smuxActive($p) ? 'on' : 'off'),
@@ -26285,6 +26495,21 @@ DNS-over-HTTPS with IP:
             exit;
         }
 
+        // Формат deep-link определяется клиентом r, а не исходным t.
+        $targetFormat = $ruleSetReq ? $_GET['t'] : match ($_GET['r'] ?? '') {
+            'si', 'k', 'h', 'w' => 'si',
+            'c', 'rh' => 'cl',
+            'st', 'v' => 's',
+            default => $_GET['t'],
+        };
+        if (!$ruleSetReq && ($error = $this->subscriptionCompatibilityError($xr, $pac, $targetFormat)) !== '') {
+            if ($return) {
+                return '';
+            }
+            $this->subNotFound($this->i18n($error));
+        }
+        $encryption = VlessEncryption::client($xr, $pac);
+
         // Deep-link импорта — только если 'r' пришёл не из токена (иначе это
         // выборка rule-set'а) и совпадает с известным кодом клиента. Без первого
         // условия rule-set с именем 'c'/'si'/… перехватывался бы этим свитчом и
@@ -26410,13 +26635,17 @@ DNS-over-HTTPS with IP:
         } elseif ($_GET['t'] === 'cl') {
             $fingerprint = $this->normalizeFingerprint($fingerprint, 'mihomo');
         }
+        // Chrome несёт нужный новому REALITY X25519MLKEM768 key_share.
+        if (($pac['transport'] ?? '') === 'Reality' && $_GET['t'] !== 'si') {
+            $fingerprint = 'chrome';
+        }
 
         switch ($_GET['t']) {
             case 's':
                 $c['outbounds'][$index]['settings']['vnext'][0]['address']  = '~domain~';
                 $c['outbounds'][$index]['settings']['vnext'][0]['users'][0] = [
                     'id'         => '~uid~',
-                    'encryption' => 'none',
+                    'encryption' => $encryption,
                 ];
                 switch ($pac['transport']) {
                     case 'Reality':
@@ -26613,6 +26842,11 @@ DNS-over-HTTPS with IP:
             case 'cl':
                 $c['proxies'][$index]['server'] = '~domain~';
                 $c['proxies'][$index]['uuid']   = '~uid~';
+                $c['proxies'][$index]['client-fingerprint'] = $fingerprint;
+                unset($c['proxies'][$index]['encryption']);
+                if ($encryption !== 'none' && $encryption !== null) {
+                    $c['proxies'][$index]['encryption'] = $encryption;
+                }
                 switch (true) {
                     case $pac['transport'] == 'Reality':
                         unset($c['proxies'][$index]["ws-opts"]);
@@ -26623,6 +26857,7 @@ DNS-over-HTTPS with IP:
                         $c['proxies'][$index]['reality-opts'] = [
                             'public-key' => '~public_key~',
                             'short-id'   => '~short_id~',
+                            'support-x25519mlkem768' => true,
                         ];
                         break;
                     case $pac['transport'] == 'xhttp':
@@ -26631,7 +26866,6 @@ DNS-over-HTTPS with IP:
                         unset($c['proxies'][$index]['reality-opts']);
 
                         $c['proxies'][$index]['network']            = 'xhttp';
-                        $c['proxies'][$index]['client-fingerprint'] = $fingerprint;
                         $c['proxies'][$index]['tls']                = true;
                         $c['proxies'][$index]['alpn']               = ['h2'];
                         $c['proxies'][$index]['servername']         = '~domain~';
@@ -26836,7 +27070,12 @@ DNS-over-HTTPS with IP:
                         // Правила без domain/ip (port/protocol/inboundTag и т.п.)
                         // сохраняем как есть, иначе они молча пропадали.
                         if (!$matched) {
-                            $other[] = $v;
+                            // Пустые PAC-списки оставляют domain:[]/ip:[]:
+                            // без других условий Xray отвергает весь профиль.
+                            $conditions = array_diff_key($v, array_flip(['type', 'outboundTag', 'balancerTag', 'ruleTag']));
+                            if (array_filter($conditions)) {
+                                $other[] = $v;
+                            }
                         }
                     }
                     $c['routing']['rules'] = [];
@@ -27708,8 +27947,9 @@ DNS-over-HTTPS with IP:
     {
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
+        $ruleset = [];
 
-        foreach ($route['rules'] as $k => $v) {
+        foreach ($route['rules'] ?? [] as $k => $v) {
             if (!empty($v['createruleset'])) {
                 foreach ($v['createruleset'] as $r) {
                     if (!empty($_GET['r']) && $r['name'] == $_GET['r']) {
@@ -27743,7 +27983,7 @@ DNS-over-HTTPS with IP:
         if (!empty($route['rules'])) {
             $route['rules']    = array_values($route['rules']);
         }
-        $route['rule_set'] = array_merge($route['rule_set'] ?: [], $ruleset ?: []);
+        $route['rule_set'] = array_merge($route['rule_set'] ?? [], $ruleset);
         if (empty($route['rule_set'])) {
             unset($route['rule_set']);
         }

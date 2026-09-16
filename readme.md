@@ -68,6 +68,59 @@ add `@reboot cd /root/vpnbot && make r` and save
 
 ---
 
+## Xray 26.9.9, REALITY и VLESS Encryption
+
+Новое рукопожатие REALITY и VLESS Encryption — независимые настройки.
+Для REALITY бот выдаёт Xray/mihomo профиль с fingerprint `chrome`, а mihomo
+дополнительно получает `reality-opts.support-x25519mlkem768: true`.
+Остальные транспорты сохраняют выбранный в меню fingerprint.
+[Требование REALITY](https://github.com/XTLS/REALITY/commit/8cdf7bf9c7f09cb9814bf08c3eb877f68b85fba8),
+[настройка mihomo](https://wiki.metacubex.one/en/config/proxies/tls/).
+
+Меню **Xray → VLESS Encryption** включает дополнительное шифрование для
+REALITY, WebSocket или XHTTP. Доступны аутентификация X25519/ML-KEM-768
+и режимы `native`, `xorpub`, `random`, как в 3x-ui. Ключи создаёт активное ядро
+командой `xray vlessenc`; конфиг проверяется до применения. Выключение и
+повторное включение сохраняют ключи; для ротации есть отдельная кнопка.
+После изменения параметров все клиенты должны обновить подписку.
+Серверные ключи не включаются в клиентские профили. При переходе на Trojan
+Encryption не применяется; при возврате к VLESS выбранная пара сохраняется.
+[Документация VLESS Encryption](https://xtls.github.io/en/config/outbounds/vless.html).
+
+Официальный sing-box 1.14.1 не поддерживает VLESS Encryption и новое
+рукопожатие REALITY Xray 26.9.8+. Несовместимая подписка отклоняется с
+объяснением; отключение Encryption не исправляет новое рукопожатие REALITY.
+Для sing-box нужны прежнее серверное ядро либо WebSocket/TLS или Trojan/gRPC
+без VLESS Encryption. XHTTP также отсутствует в официальном sing-box.
+[Формат VLESS sing-box](https://sing-box.sagernet.org/configuration/outbound/vless/),
+[его REALITY-клиент](https://github.com/SagerNet/sing-box/blob/v1.14.1/common/tls/reality_client.go).
+
+Поэтому общий пин остаётся `v26.7.28`. Для явной сборки Xray 26.9.9
+(upstream помечает его как prerelease) задайте `XRAY_VERSION=v26.9.9` в
+локальном `override.env` и пересоберите сервис `xr`. Настройка версии влияет
+на **сборку**, а скачивание готового образа её не меняет. Выбор активного ядра
+в меню должен быть `XTLS`; у форка SMUX своя версия. Обычный `make start`
+скачивает опубликованные образы, поэтому при испытании собственной сборки
+запускайте её без `pull`. Возвращать общий пин на новую версию следует после
+проверки всех используемых клиентов.
+
+Поддержка общая для XTLS и форка Jolymmiles: новое рукопожатие не включается
+переключателем в JSON, его реализует само ядро. Бот проверяет версию REALITY
+из метаданных бинарника, поэтому будущий выпуск форка с прежней зависимостью
+не считается новым REALITY только по дате релиза. Клиентские параметры MLKEM
+выдаются для обоих ядер. Обновление форка задаётся отдельно через
+`XRAY_FORK_VERSION` в `override.env` с пересборкой `xr`; перед переключением
+при включённом Encryption конфиг проверяется выбранным бинарником.
+
+Shadowrocket объявил VLESS Encryption в версии 2.2.79. Это не подтверждает
+работу нового рукопожатия REALITY с любым TLS fingerprint. В журнале бета-версий
+есть импорт `support-x25519mlkem768` (2.2.90), а в 2.2.93 исправляется описание
+совместимости REALITY/отпечатков. Проверка конкретной версии на iOS необходима;
+её нельзя заменить успешным тестом mihomo или Xray.
+[App Store](https://apps.apple.com/us/app/shadowrocket/id932747118),
+[Shadowrocket News: импорт MLKEM](https://t.me/ShadowrocketNews/1575),
+[исправление описания отпечатка](https://t.me/ShadowrocketNews/1634).
+
 ## Веб-панель: управление ботом без Telegram
 
 Если Telegram недоступен (заблокированы исходящие к `api.telegram.org` либо нет
