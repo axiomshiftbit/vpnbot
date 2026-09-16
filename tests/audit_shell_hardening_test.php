@@ -50,6 +50,19 @@ foreach (['scripts/start_wg.sh', 'scripts/start_oc.sh', 'scripts/start_ovpn.sh',
 }
 
 // ── start_wg.sh: пустой ADDRESS ────────────────────────────────────────────
+// На VPS проверены реальные клиенты: DNS работает, а TCP Docker API,
+// панели, AdGuard UI и SSH самого VPN-контейнера отвергаются.
+foreach (['scripts/start_ovpn.sh' => '-i tun+', 'scripts/start_ipsec.sh' => '-s "$CLIENT_SUBNET"', 'scripts/start_oc.sh' => '-i "${VPN_DEVICE}+"'] as $path => $selector) {
+    $body = $read($path);
+    shAssert(str_contains($body, "iptables -A INPUT $selector -j REJECT"), "$path: службы самого контейнера закрыты от VPN");
+    $deny = strpos($body, "$selector -d 10.10.0.0/16 -j REJECT");
+    shAssert($deny !== false, "$path: служебная сеть закрыта от VPN");
+    foreach (['udp', 'tcp'] as $proto) {
+        $dns = strpos($body, "-p $proto --dport 53 -j ACCEPT");
+        shAssert($dns !== false && $dns < $deny, "$path: $proto DNS разрешён до запрета служебной сети");
+    }
+}
+
 $wg = $read('scripts/start_wg.sh');
 shAssert(str_contains($wg, 'FATAL: ADDRESS is empty'),
     'start_wg.sh падает при пустом ADDRESS вместо тихой утечки мимо tun0');

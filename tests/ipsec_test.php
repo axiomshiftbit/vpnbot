@@ -193,6 +193,17 @@ ipsecAssert(strpos($mig, 'managed-server-id') !== false, 'ipsec_migrate.sh пр�
 ipsecAssert(strpos($mig, 'modp1024') !== false, 'ipsec_migrate.sh добавляет modp1024-фолбэк для нативных клиентов');
 $startIpsec = file_get_contents(__DIR__ . '/../scripts/start_ipsec.sh');
 ipsecAssert(strpos($startIpsec, 'sh /ipsec_migrate.sh') !== false, 'start_ipsec.sh зовёт общий скрипт миграций');
+// Регрессии с реального Docker/pppd 2.5.3: каталог 0775 запрещает чтение
+// secrets; ipcp-accept-remote позволял согласовать IP контейнера вместо пула.
+preg_match('~cat > /etc/ppp/options.xl2tpd <<EOF\n(.*?)\nEOF~s', $startIpsec, $pppOptions);
+ipsecAssert(!empty($pppOptions[1]), 'найден шаблон серверных PPP options');
+ipsecAssert(!str_contains($pppOptions[1] ?? '', 'ipcp-accept-'), 'адреса обеих сторон PPP задаёт сервер');
+ipsecAssert(str_contains($startIpsec, 'chmod 0700 "$CONF" "$PKI"'), 'путь до chap-secrets не допускает запись группой');
+ipsecAssert(str_contains($startIpsec, 'chown 0:0 "$CONF/chap-secrets"'), 'владелец chap-secrets пригоден для pppd');
+$ipsecOnly = strpos($startIpsec, '--dport 1701 -m policy --dir in --pol ipsec -j ACCEPT');
+$plainDrop = strpos($startIpsec, '--dport 1701 -j DROP');
+ipsecAssert($ipsecOnly !== false && $plainDrop > $ipsecOnly, 'L2TP принимается только внутри IPsec');
+ipsecAssert(str_contains($startIpsec, '-i ppp+ ! -s "$L2TP_SUBNET" -j DROP'), 'PPP не пересылает source за пределами пула');
 ipsecAssert(
     strpos($botSrc, 'sh /ipsec_migrate.sh') !== false,
     'бот применяет миграции сам — restore бэкапа кладёт swanctl.conf из снимка'
@@ -223,6 +234,19 @@ ipsecAssert(
 file_put_contents($dir . '/conn.log', $line . "\n");
 $seen = $box->ipsecLastSeen('alice');
 ipsecAssert(($seen['dir'] ?? '') === 'UP' && ($seen['ts'] ?? '') === '2026-08-02 19:30:00', 'ipsecLastSeen находит событие IKEv2');
+
+// Повреждённый снимок не должен обнулять уже работающие credentials.
+file_put_contents($dir . '/psk', 'previous-test-psk');
+ipsecAssert($box->importIpsecPki(['psk' => base64_encode('replacement'), 'bad' => '%%%']) === false,
+    'битый base64 отклоняется до первой записи');
+ipsecAssert(file_get_contents($dir . '/psk') === 'previous-test-psk', 'предыдущий PSK сохранён');
+ipsecAssert($box->importIpsecPki(['../outside' => base64_encode('bad')]) === false,
+    'путь за пределами PKI отклоняется целиком');
+ipsecAssert($box->importIpsecPki(['psk' => base64_encode('restored-test-psk')]) === true,
+    'корректный снимок восстанавливается');
+ipsecAssert(file_get_contents($dir . '/psk') === 'restored-test-psk', 'восстановленное значение на диске');
+ipsecAssert((fileperms($dir . '/psk') & 0777) === 0600 && (fileperms($dir) & 0777) === 0700,
+    'восстановленные секреты и каталог закрыты');
 
 foreach (glob($dir . '/*') ?: [] as $f) {
     @unlink($f);

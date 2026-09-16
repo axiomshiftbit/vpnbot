@@ -37,6 +37,8 @@ chAssert(substr_count($compose, 'mem_limit:') === count($services),
     'потолок памяти есть у каждого сервиса: ' . substr_count($compose, 'mem_limit:') . ' из ' . count($services));
 chAssert(substr_count($compose, 'pids_limit: 512') === count($services),
     'потолок процессов есть у каждого сервиса (защита от зафоркавшегося демона)');
+chAssert(substr_count($compose, 'init: true') === count($services),
+    'init собирает осиротевшие процессы после рестартов демонов через SSH');
 // Значения именно щедрые: слишком низкий потолок убивал бы xray под нагрузкой.
 chAssert(!preg_match('~mem_limit: (\d+)m~', $compose, $mm) || (int) $mm[1] >= 256,
     'потолки не занижены');
@@ -56,6 +58,12 @@ foreach (['wg', 'wg1', 'oc', 'ovpn', 'ipsec', 'wp', 'ad'] as $svc) {
     $block = substr($compose, strpos($compose, "\n    $svc:\n"), 3000);
     chAssert(str_contains($block, 'cap_add:'), "$svc сохранил NET_ADMIN (он ему нужен)");
 }
+
+// mknod сам по себе не даёт pppd права открыть устройство: проверено на
+// Docker/cgroup v2, где без правила L2TP завершается с EPERM.
+preg_match('~^    ipsec:\n(.*?)(?=^    [a-z0-9_-]+:|\z)~ms', $compose, $ipsec);
+chAssert((bool) preg_match("~device_cgroup_rules:\\s*\\n\\s*- ['\"]c 108:0 rwm['\"]~", $ipsec[1] ?? ''),
+    'ipsec разрешает открытие PPP (char 108:0), не всех устройств');
 
 // ── 3. Пины версий php-образа ───────────────────────────────────────────────
 $env = (string) file_get_contents(__DIR__ . '/../.env');

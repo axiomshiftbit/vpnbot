@@ -269,6 +269,22 @@ auditAssert(false === $bot->setPacConf(['name' => "\xB1\x31"]), 'битый UTF-
 clearstatcache();
 auditAssert(array_intersect_key($bot->getPacConf(), $good) === $good,
     'после отказа pac.json остаётся прежним, а не пустым');
+// getHashBot() вызывается даже при обычном открытии панели. Повреждённый
+// файл нельзя превращать в defaults: getHashBot тут же запишет их поверх
+// исходного файла вместе с новым hashbot, уничтожив настройки и ключи.
+foreach (['', '{"privateKey":', 'null', '42'] as $broken) {
+    file_put_contents($pacFile, $broken);
+    $rejected = false;
+    try {
+        $bot->getHashBot();
+    } catch (RuntimeException $e) {
+        $rejected = true;
+    }
+    auditAssert($rejected, 'повреждённый PAC останавливает операцию');
+    auditAssert(file_get_contents($pacFile) === $broken, 'повреждённый PAC не перезаписан defaults');
+}
+file_put_contents($pacFile, '{}');
+auditAssert($bot->getPacConf() === Bot::PAC_DEFAULTS, 'пустой объект свежей установки получает defaults');
 foreach (glob($pacFile . '*') ?: [] as $f) {
     @unlink($f);
 }

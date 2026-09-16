@@ -144,6 +144,24 @@ $conf = ['outbounds' => [['tag' => 'proxy']]];
 $bot->applyClientSmux($conf, 0, $pacOff, 'si');
 smAssert(!isset($conf['outbounds'][0]['multiplex']), 'smux off — блока нет');
 
+// На VPS sing-box 1.14.1 + fork Trojan/gRPC не передаёт TCP/UDP с sing-mux;
+// без multiplex те же credentials и gRPC проходят. Фикс касается этого узла.
+foreach (['smux', 'h2mux'] as $protocol) {
+    $pacGrpc = smPac('fork', ['protocol' => $protocol]);
+    foreach ([false, true] as $placeholder) {
+        foreach ([['type' => 'trojan', 'transport' => ['type' => 'grpc']],
+            ['type' => 'vless', 'flow' => 'xtls-rprx-vision', 'tls' => ['reality' => ['enabled' => true]]]] as $node) {
+            if ($placeholder) $node['multiplex'] = '~smux:h2mux~';
+            $profile = ['outbounds' => [$node]];
+            $bot->applyClientSmux($profile, 0, $pacGrpc, 'si');
+            smAssert(!isset($profile['outbounds'][0]['multiplex']), 'Vision и Trojan/gRPC sing-box экспортируются без неработающего multiplex');
+        }
+    }
+    $profile = ['outbounds' => [['type' => 'vless', 'transport' => ['type' => 'ws'], 'multiplex' => '~smux:h2mux~']]];
+    $bot->applyClientSmux($profile, 0, $pacGrpc, 'si');
+    smAssert(($profile['outbounds'][0]['multiplex']['protocol'] ?? '') === 'h2mux', 'VLESS/WS сохраняет выбранный H2MUX');
+}
+
 // --- 1 (продолжение): взаимоисключающие лимиты нормализуются -----------------
 // Даже если в pac.json лежит невалидная пара (правка руками, старый конфиг),
 // наружу обязана уехать валидная: цена — не поднявшееся ядро у клиента.
@@ -380,11 +398,14 @@ $bot->applyClientSmux($c, 0, $pacOrigin, 'si');
 smAssert(!array_key_exists('multiplex', $c['outbounds'][0]),
     'при апстримном ядре ключ с маркером удаляется целиком');
 
-// Протокол на шаблон: ~smux:h2mux~ перебивает глобальный smux.
+// У совместимых транспортов сохраняется выбранный протокол и в шаблонах.
 $c = ['outbounds' => [['tag' => 'proxy', 'multiplex' => '~smux:h2mux~']]];
 $bot->applyClientSmux($c, 0, $pacFork, 'si');
 smAssert(($c['outbounds'][0]['multiplex']['protocol'] ?? '') === 'h2mux',
-    'протокол из маркера перебивает глобальный');
+    'sing-box получает H2MUX для совместимого маркера');
+smAssert($bot->smuxBlock($pacH2, 'si')['protocol'] === 'h2mux', 'sing-box: глобальный H2MUX сохраняется');
+smAssert($bot->smuxBlock($pacH2, 's')['protocol'] === 'h2mux', 'Xray сохраняет H2MUX');
+smAssert($bot->smuxBlock($pacH2, 'cl')['protocol'] === 'h2mux', 'mihomo сохраняет H2MUX');
 
 // Несуществующий протокол в маркере не совпадает с шаблоном вовсе — строка
 // осталась бы как есть, поэтому такой маркер обязан ловиться валидатором.
@@ -508,6 +529,7 @@ class SmuxFixBot extends Bot
     public string $marker  = '';
     public array  $pacConf = [];
     public bool   $sshFail = false;
+    public bool   $restartOk = true;
 
     public function xrayCoreProbe(bool $fresh = false): array
     {
@@ -542,6 +564,7 @@ class SmuxFixBot extends Bot
     public function restartXray($c, $norestart = false)
     {
         $this->restart[] = $norestart;
+        return $this->restartOk;
     }
 
     // Маркер живёт в /logs — в тесте туда писать некуда, но ЧТО именно ушло бы
@@ -719,6 +742,16 @@ $b = smFixBot(['active' => 'origin', 'running' => 'origin']);
 $b->time_xraycore = time();
 $b->checkXrayCore();
 smAssert($b->cmds === [], 'проверка не чаще раза в 5 минут');
+
+// Отказ новой проверки при переключении ядра сохраняет настройки старого.
+$b = smFixBot(['active' => 'origin', 'running' => 'origin']);
+$b->pacConf = ['xray_core' => 'origin', 'smux' => Bot::smuxDefaults()];
+$previous = $b->pacConf;
+$b->restartOk = false;
+$result = $b->applyXrayCore('fork');
+smAssert(!$result['ok'] && $b->pacConf === $previous && $b->marker === 'origin',
+    'при отказе конфигурации переключение ядра откачено');
+smAssert(str_contains(end($b->cmds), Bot::XRAY_BIN_ORIGIN), 'симлинк вернулся на прежнее ядро');
 
 if ($failed) {
     echo "smux_test FAILED: $failed\n";

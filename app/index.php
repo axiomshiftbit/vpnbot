@@ -132,8 +132,12 @@ switch (true) {
         // редактор шаблонов (/pac<hash>?t=te), changelog и обычный pac, и на
         // каждом таком запросе шло «Undefined array key 2» плюс
         // base64_decode(null) (deprecated в PHP 8.1).
-        $seg = explode('/', $_SERVER['REQUEST_URI'])[2] ?? '';
-        if (is_array($t = @unserialize((string) base64_decode($seg), ['allowed_classes' => false])) && $t) { // fix sing-box import
+        $path = (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+        $seg = str_starts_with($path, "/pac$hash/") ? substr($path, strlen("/pac$hash/")) : '';
+        // Read both legacy base64 (including '/' inside relay names) and new
+        // URL-safe tokens. Percent escapes belong to the path, not the payload.
+        $seg = strtr(rawurldecode($seg), '-_', '+/');
+        if (is_array($t = @unserialize((string) base64_decode($seg, true), ['allowed_classes' => false])) && $t) { // fix sing-box import
             // Запоминаем состав токена до слияния: subscription() отличает по нему
             // выборку rule-set'а ядром (параметры из токена) от deep-link'а
             // импорта (те же имена параметров, но из query-string).

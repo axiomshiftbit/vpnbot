@@ -12,6 +12,9 @@ if ($c['debug']) {
 
 $bot = new Bot($c['key'], $i);
 
+// Запоминаем до selfUpdate/генерации паролей: эти операции уже сохраняют
+// настройки, а getPacConf() даже для пустого файла возвращает defaults.
+$initialSetup = $bot->getPacConf() == Bot::PAC_DEFAULTS;
 $bot->selfUpdate();
 $bot->ssPswdCheck();
 $bot->restartTelemt();
@@ -19,7 +22,7 @@ if (!empty($bot->selfupdate)) {
     $bot->offWarp();
 }
 $bot->dontshowcron = 1;
-$bot->sslip();
+$bot->sslip($initialSetup);
 $bot->adguardSync();
 $bot->cloakNginx();
 $bot->syncDeny();

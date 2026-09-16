@@ -74,6 +74,22 @@ warpAssert(
 );
 warpAssert((bool) preg_match('~if warp_disabled; then\s*\n\s*socks_stop~', $startWp),
     'при warpoff прокси закрыт: отказ вместо выхода мимо туннеля');
+// Реальный VPS: после wg-quick down SOCKS отдавал HTTP 200 напрямую до
+// следующего тика watchdog. Ограничение должно сохраняться без процесса
+// сторожа и без интерфейса; одного проверки wg show недостаточно.
+warpAssert(str_contains($startWp, 'for firewall in iptables ip6tables; do')
+    && str_contains($startWp, '--uid-owner "$PROXY_UID" -j WARP_PROXY_OUT'),
+    'оба семейства IP ограничивают исходящий трафик отдельного UID прокси');
+warpAssert(str_contains($startWp, '-A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN')
+    && str_contains($startWp, '-A WARP_PROXY_OUT -j REJECT'),
+    'вне интерфейса WARP трафик прокси запрещён');
+warpAssert(str_contains($startWp, 'su -s /bin/sh -c "exec microsocks -p $SOCKS_PORT" warp-proxy'),
+    'процесс действительно запускается под UID, к которому применён запрет');
+warpAssert(str_contains($startWp, 'wg show "$WGCF_IF" fwmark')
+    && str_contains($startWp, '-p udp -m mark --mark "$tunnel_mark" -j RETURN'),
+    'зашифрованный UDP WireGuard с тем же UID разрешён по fwmark интерфейса');
+warpAssert(substr_count($botSrc, 'pkill -x microsocks 2>/dev/null || true; wg-quick down') >= 2,
+    'ручное и автоматическое выключение останавливают прокси до удаления маршрутов');
 
 // ── 2. Allowlist: резолв, фолбэк, override ─────────────────────────────────
 // Логика `${WARP_SOCKS_ALLOW:-${XRAY_IPS:-10.10.0.9}}` — проверяем её на sh.
@@ -312,7 +328,7 @@ warpAssert(strpos($startWp, '-d "$net" -j REJECT') !== false || strpos($startWp,
 warpAssert(strpos($startWp, 'WARP_SOCKS_DENY_OUT:-10.10.0.0/16') !== false,
     'по умолчанию закрыта вся docker-сеть проекта');
 $estPos = strpos($startWp, 'ESTABLISHED,RELATED -j ACCEPT');
-$rejPos = strpos($startWp, '-d "$net" -j REJECT');
+$rejPos = strpos($startWp, '-A WARP_SOCKS_OUT -d "$net" -j REJECT');
 warpAssert($estPos !== false && $rejPos !== false && $estPos < $rejPos,
     'ответы на установленные сессии (ssh бота, ответы прокси) пропускаются РАНЬШЕ запрета');
 warpAssert(strpos($startWp, 'WARP_SOCKS_OUT -o lo -j ACCEPT') !== false,

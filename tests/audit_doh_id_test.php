@@ -185,6 +185,21 @@ foreach (['nginx.conf', 'nginx_default.conf'] as $f) {
         "$f: DoH больше не пишется дефолтным combined (путь в логе)");
     dohAssert(substr_count($conf, 'access_log /logs/nginx_doh_access nopath;') === 2,
         "$f: формат nopath стоит и в активном, и в закомментированном #-domain блоке");
+    dohAssert(substr_count($conf, 'access_log /logs/nginx_pac_access nopath;') === 2,
+        "$f: токен подписки в пути также исключён из обоих журналов /pac");
+    preg_match('~log_format noargs (.*?);~s', $conf, $logFormat);
+    dohAssert(!str_contains($logFormat[1] ?? '', '$http_referer'),
+        "$f: Referer не раскрывает ссылку подписки или авторизации");
+    foreach (['@php', '/tlgrm', '/webapp', '/pac', '/dns-query'] as $location) {
+        preg_match_all('~location ' . preg_quote($location, '~') . ' \\{([^}]+)\\}~s', $conf, $blocks);
+        foreach ($blocks[1] as $block) {
+            dohAssert(str_contains($block, 'error_log /dev/null;'), "$f $location: error_log не раскрывает URL при отказе upstream");
+            if ($location === '@php') {
+                dohAssert(str_contains($block, 'access_log /logs/nginx_webapp_access noargs;'),
+                    "$f: внутренний переход WebApp в PHP сохраняет защиту query");
+            }
+        }
+    }
     // Заодно XFF на /pac — из той же партии: без него лимит подписок обходится
     // подделкой заголовка (ключ ведра это hash(sid|ip|scope)).
     dohAssert((bool) preg_match('~location /pac \{[^}]*proxy_set_header X-Forwarded-For \$remote_addr;~s', $conf),
@@ -200,8 +215,10 @@ $unit = json_decode((string) file_get_contents(__DIR__ . '/../config/unit.json')
 dohAssert(is_array($unit['access_log'] ?? null), 'unit.json: access_log задан объектом с явным форматом');
 dohAssert(strpos((string) ($unit['access_log']['format'] ?? ''), '$request_line') === false,
     'unit.json: $request_line (вместе с query-строкой) в лог не пишется');
-dohAssert(strpos((string) ($unit['access_log']['format'] ?? ''), '$uri') !== false,
-    'unit.json: путь без аргументов в логе остаётся — иначе разбор логов ослепнет');
+dohAssert(strpos((string) ($unit['access_log']['format'] ?? ''), '$uri') === false,
+    'unit.json: путь с токеном подписки не попадает в журнал backend');
+dohAssert(str_starts_with((string) ($unit['access_log']['format'] ?? ''), '$remote_addr '),
+    'unit.json: адрес клиента остаётся доступен для поиска по журналам');
 
 // ── 6. Переходный период старого id: обе формы и срок жизни ────────────────
 // Какую из форм AdGuard держит в dns.allowed_clients — сырые 16 hex или
@@ -243,6 +260,23 @@ dohAssert(!in_array($old2, $expiredAllowed, true) && !in_array($mac2, $expiredAl
 dohAssert(in_array($new2, $expiredAllowed, true), 'новый id остаётся');
 @unlink($expired->adguard);
 @unlink($expired->pac);
+
+// Пересборка после удаления последнего клиента: пустой список, без warning
+// и без null вместо последовательности YAML.
+$empty = (new ReflectionClass(DohMigrationBot::class))->newInstanceWithoutConstructor();
+$empty->xrayFake = ['inbounds' => [['settings' => ['clients' => []]]]];
+$empty->adguard = sys_get_temp_dir() . '/doh_empty_' . bin2hex(random_bytes(4)) . '.yaml';
+yaml_emit_file($empty->adguard, ['clients' => ['persistent' => [['name' => 'removed']]]]);
+set_error_handler(function ($level, $message) { throw new RuntimeException($message); });
+try {
+    $empty->adguardXrayClients();
+    dohAssert(yaml_parse_file($empty->adguard)['clients']['persistent'] === [],
+        'последний удалённый клиент очищает список AdGuard');
+    dohAssert($empty->adStops === 1 && $empty->adStarts === 1, 'AdGuard перечитывает пустой список');
+} finally {
+    restore_error_handler();
+    @unlink($empty->adguard);
+}
 
 if ($failed) {
     echo "audit_doh_id_test FAILED ($failed)\n";

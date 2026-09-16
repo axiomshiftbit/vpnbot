@@ -109,6 +109,14 @@ $i = [
         'en' => '⚠️ The core actually running is %s — it does not match the setting. Toggle the core again so the subscriptions and the server agree.',
         'ru' => '⚠️ Реально запущено ядро %s — оно не совпадает с настройкой. Переключите ядро ещё раз, чтобы подписки и сервер сошлись.',
     ],
+    'smux sing compatibility' => [
+        'en' => 'sing-box subscriptions use Vision/REALITY and Trojan/gRPC without SMUX/H2MUX: multiplexing these transports with the current fork can interrupt traffic. WebSocket, Xray and mihomo keep their multiplex settings.',
+        'ru' => 'В подписках sing-box Vision/REALITY и Trojan/gRPC работают без SMUX/H2MUX: мультиплексирование этих транспортов с текущим форком может обрывать трафик. Для WebSocket, Xray и mihomo настройки мультиплексирования сохраняются.',
+    ],
+    'update write failed' => [
+        'en' => 'Could not prepare the update/restart files. Check free space and permissions on the update directory.',
+        'ru' => 'Не удалось подготовить файлы обновления/перезапуска. Проверьте свободное место и права на каталог update.',
+    ],
     'smux link warn'       => [
         'en' => 'SMUX travels in the json/yaml subscriptions only (v2ray, sing-box, mihomo). A plain vless:// link cannot carry it — import by subscription.',
         'ru' => 'SMUX уезжает только в json/yaml-подписках (v2ray, sing-box, mihomo). Ссылка vless:// его не несёт — импортируйте подпиской.',
@@ -138,8 +146,8 @@ $i = [
         'ru' => 'TCP Brutal требует модуль конгестии `brutal` в ядре ХОСТА — его нет, поэтому опция недоступна. Включение без модуля рвёт несущее соединение.',
     ],
     'smux tpl hint'        => [
-        'en' => 'SMUX: put <code>"%s": "~smux~"</code> into the node you want multiplexed — the block is filled in from the SMUX menu. <code>~smux:h2mux~</code> overrides the protocol for this template only. If the core is not the fork or SMUX is off, the key is dropped from the subscription.',
-        'ru' => 'SMUX: впишите <code>"%s": "~smux~"</code> в нужный узел — блок подставится по настройкам меню SMUX. <code>~smux:h2mux~</code> задаёт протокол только этому шаблону. Если ядро не форк или SMUX выключен, ключ из подписки удаляется.',
+        'en' => 'SMUX: put <code>"%s": "~smux~"</code> into the node you want multiplexed — the block is filled in from the SMUX menu. <code>~smux:h2mux~</code> overrides the protocol for this template only. If the core is not the fork, SMUX is off, or a sing-box node uses Vision or Trojan/gRPC, the key is dropped from the subscription.',
+        'ru' => 'SMUX: впишите <code>"%s": "~smux~"</code> в нужный узел — блок подставится по настройкам меню SMUX. <code>~smux:h2mux~</code> задаёт протокол только этому шаблону. Если ядро не форк, SMUX выключен либо узел sing-box использует Vision или Trojan/gRPC, ключ из подписки удаляется.',
     ],
     'finalmask hint'       => [
         'en' => 'Server-side masking (Xray-core finalmask, works on BOTH cores — upstream and fork). This is NOT the fragment/noise above: those shape what the CLIENT sends toward the server; this shapes what the SERVER writes back (accept path/replies). Independent toggle, safe to combine with the client-side one.',
@@ -786,8 +794,8 @@ $i = [
         'ru' => 'WEB (Telegram Desktop)',
     ],
     'telemt web note'  => [
-        'en' => 'WEB carries MTProto inside ordinary HTTPS on its own subdomain (port 443, no port in the link). Import the link in Telegram Desktop: Settings -> Advanced -> Connection type -> proxy type WEB. Mobile clients do not support it — keep using the regular tg://proxy links.',
-        'ru' => 'WEB несёт MTProto внутри обычного HTTPS на своём поддомене (порт 443, в ссылке порта нет). Ссылка импортируется в Telegram Desktop: Настройки -> Продвинутые -> Тип соединения -> тип прокси WEB. Мобильные клиенты режим не поддерживают — им по-прежнему нужны обычные ссылки tg://proxy.',
+        'en' => 'WEB carries MTProto inside ordinary HTTPS on its own subdomain (port 443, no port in the link). Import the link in Telegram Desktop: Settings -> Advanced -> Connection type -> proxy type WEB. Compatible Telegram iOS versions use the https carrier; with negotiation enabled, keep https as the final fallback. Clients without WEB support use the regular tg://proxy links.',
+        'ru' => 'WEB несёт MTProto внутри обычного HTTPS на своём поддомене (порт 443, в ссылке порта нет). Ссылка импортируется в Telegram Desktop: Настройки -> Продвинутые -> Тип соединения -> тип прокси WEB. Совместимые версии Telegram iOS используют carrier https; при включённом подборе оставьте https последним запасным вариантом. Клиентам без WEB нужны обычные ссылки tg://proxy.',
     ],
     'telemt web link'  => [
         'en' => 'WEB link for Telegram Desktop',

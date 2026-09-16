@@ -121,6 +121,21 @@ Shadowrocket объявил VLESS Encryption в версии 2.2.79. Это не
 [Shadowrocket News: импорт MLKEM](https://t.me/ShadowrocketNews/1575),
 [исправление описания отпечатка](https://t.me/ShadowrocketNews/1634).
 
+В карточке клиента Xray и его relay доступны ссылки `import://` для
+**Shadowrocket, v2rayNG, sing-box, Streisand, Hiddify, Karing, mihomo и Rabbit Hole**.
+Ссылка открывает установленное приложение и передаёт ему адрес подписки;
+приложение или браузер могут запросить подтверждение добавления. Для mihomo
+ссылку `clash://` обрабатывает установленный графический клиент с поддержкой
+этой схемы. В Hiddify используется команда `hiddify://import/` и подписка
+со списком узлов; маршрутизацию приложение настраивает самостоятельно.
+При включённом HWID переход из браузера доступен, а проверка устройства
+выполняется при загрузке конфигурации приложением. Ограничения совместимости
+протоколов сохраняются независимо от способа импорта.
+[Импорт sing-box](https://sing-box.sagernet.org/clients/general/),
+[Hiddify](https://hiddify.com/app/URL-Scheme/),
+[Karing](https://karing.app/cooperation/scheme),
+[Rabbit Hole](https://rabbit-hole-1.gitbook.io/rabbit-hole-docs/for-devs/deep-linking).
+
 ## Веб-панель: управление ботом без Telegram
 
 Если Telegram недоступен (заблокированы исходящие к `api.telegram.org` либо нет

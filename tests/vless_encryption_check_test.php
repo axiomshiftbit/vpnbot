@@ -42,15 +42,15 @@ $bot = new VlessCheckTestBot();
 $config = ['inbounds' => [['protocol' => 'vless', 'listen' => '127.0.0.1', 'port' => 24443,
     'settings' => ['decryption' => 'none', 'clients' => [['id' => '11111111-2222-4333-8444-555555555555']]]]],
     'outbounds' => [['protocol' => 'freedom']], 'stats' => [], 'policy' => ['levels' => []]];
-if (!$bot->validateVlessEncryptionConfig($config, $binary)) {
+if (!$bot->validateXrayConfig($config, $binary)) {
     throw new RuntimeException('Ядро отклонило корректный конфиг после чтения JSON');
 }
 $config['policy']['levels'] = [0 => ['statsUserUplink' => true]];
-if (!$bot->validateVlessEncryptionConfig($config, $binary)) {
+if (!$bot->validateXrayConfig($config, $binary)) {
     throw new RuntimeException('Числовой уровень политики превратился в JSON-массив');
 }
 $config['inbounds'][0]['streamSettings']['network'] = 'invalid-network';
-if ($bot->validateVlessEncryptionConfig($config, $binary)) {
+if ($bot->validateXrayConfig($config, $binary)) {
     throw new RuntimeException('Невалидный конфиг принят');
 }
 foreach ($bot->temporaryFiles as $file) {

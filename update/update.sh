@@ -1,5 +1,8 @@
 #!/bin/bash
+update_umask=$(umask)
+umask 077
 pwd=$(pwd)
+chmod 600 "$pwd/update/key" "$pwd/update/curl" "$pwd/update/reload_message" 2>/dev/null || true
 TELEGRAM_API=$(grep -m1 '^TELEGRAM_API=' "$pwd/.env" 2>/dev/null | cut -d'=' -f2-)
 TELEGRAM_API=${TELEGRAM_API:-api.telegram.org}
 # Взаимное исключение через flock, а не через «убить всё похожее».
@@ -25,6 +28,9 @@ fi
 
 : > "$pwd/update/pipe"
 echo "$$" > "$pwd/update/update_pid"
+# Git должен создавать читаемые nginx исходники с прежними правами. Приватная
+# маска нужна только служебным файлам; key/curl уже создаются ботом с 0600.
+umask "$update_umask"
 
 # URL с ключом бота уходит curl'у через stdin-конфиг (-K -), а не аргументом:
 # в argv он был виден любому пользователю хоста через `ps auxww` всё время

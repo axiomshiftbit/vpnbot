@@ -43,6 +43,22 @@ vcAssert(str_contains($hy, '10.10.0.5:53'),
 vcAssert(!preg_match('~addr: 1\.1\.1\.1:853~', $hy),
     'внешний резолвер Cloudflare убран: он получал полный DNS-профиль пользователей');
 
+// Реальный клиент Hysteria мог обращаться к Docker API и SSH внутри сборки.
+// DNS разрешается до запрета сети, ручные маршруты — после защитных правил.
+$hyGuard = Bot::hysteriaGuard(['acl' => ['inline' => ['direct(all)']]]);
+$rules = $hyGuard['acl']['inline'];
+vcAssert($rules[0] === 'direct(10.10.0.5, */53)', 'DNS AdGuard разрешён до блокировки Docker-сети');
+foreach (['10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '100.64.0.0/10', '::1/128', 'fc00::/7', 'fe80::/10'] as $net) {
+    $rule = 'reject(' . $net . ')';
+    vcAssert(in_array($rule, $rules, true) && array_search($rule, $rules, true) < array_search('direct(all)', $rules, true),
+        'Hysteria изолирует ' . $net . ' до пользовательского direct');
+    vcAssert(str_contains($hy, '- ' . $rule), 'новая установка тоже изолирует ' . $net);
+}
+vcAssert(Bot::hysteriaGuard($hyGuard) === $hyGuard, 'повторный restart не размножает ACL Hysteria');
+$externalAcl = ['acl' => ['file' => '/config/custom-acl.txt'], 'auth' => ['type' => 'password']];
+vcAssert(Bot::hysteriaGuard($externalAcl) === $externalAcl,
+    'ручной ACL-файл не смешивается с inline: Hysteria отвергает такую конфигурацию');
+
 $ag = $text('config/AdGuardHome.yaml');
 vcAssert(substr_count($ag, 'tls://') >= 2, 'апстримы AdGuard идут по DoT, а не открытым UDP/53');
 vcAssert(!preg_match('~^\s+- 1\.1\.1\.1$~m', $ag), 'голых апстримов не осталось');

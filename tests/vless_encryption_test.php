@@ -47,7 +47,7 @@ class VlessEncryptionTestBot extends Bot
         $this->generations++;
         return $this->generated;
     }
-    public function validateVlessEncryptionConfig(array $config, string $binary = 'xray'): bool { return $this->valid; }
+    public function validateXrayConfig(array $config, string $binary = 'xray'): bool { return $this->valid; }
     public function restartXray($c, $norestart = false)
     {
         if (!$this->restartOk) { return false; }

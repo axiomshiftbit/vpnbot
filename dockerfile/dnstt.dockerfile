@@ -26,6 +26,6 @@ RUN apk add --no-cache git \
     && apk del git
 FROM $image
 COPY --from=go /go/dnstt/dnstt-server/dnstt-server /usr/local/bin/
-RUN apk add --no-cache openssh \
+RUN apk add --no-cache openssh jq iptables procps \
     && mkdir -p /root/.ssh
 ENV ENV="/root/.ashrc"

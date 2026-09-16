@@ -89,7 +89,13 @@ cqAssert($conf['language'] === 'ru' && $conf['limitpage'] === 9 && $conf['subnet
     'заданные значения дефолтами не перетираются');
 
 file_put_contents($tmp, 'не json');
-cqAssert(is_array($bot->getPacConf()), 'битый pac.json не превращается в null у вызывающего');
+$rejected = false;
+try {
+    $bot->getPacConf();
+} catch (RuntimeException $e) {
+    $rejected = true;
+}
+cqAssert($rejected, 'битый pac.json останавливает операцию до перезаписи defaults');
 unlink($tmp);
 cqAssert(is_array($bot->getPacConf()), 'отсутствующий pac.json тоже даёт массив');
 

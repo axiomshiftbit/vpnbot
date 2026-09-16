@@ -138,6 +138,28 @@ warp_disabled() {
 # отвергается, xray помечает outbound нерабочим — отказ вместо утечки.
 WGCF_IF="$(basename "$WGCF_CONF" .conf)"
 
+# Остановка процесса сторожем не закрывает окно после внешнего удаления
+# интерфейса или wg-quick down из бота. Прокси работает под отдельным UID:
+# его исходящие соединения разрешены ядром только через WARP, даже если
+# исчезли policy routes. Ответы уже подключённым SOCKS-клиентам сохраняем.
+id warp-proxy >/dev/null 2>&1 || adduser -D -H -s /sbin/nologin warp-proxy
+PROXY_UID=$(id -u warp-proxy)
+case "$SOCKS_PORT" in ''|*[!0-9]*) echo "Invalid SOCKS_PORT" >&2; exit 1;; esac
+for firewall in iptables ip6tables; do
+    "$firewall" -N WARP_PROXY_OUT 2>/dev/null || "$firewall" -F WARP_PROXY_OUT
+    "$firewall" -A WARP_PROXY_OUT -p tcp --sport "$SOCKS_PORT" -m conntrack --ctstate ESTABLISHED -j RETURN
+    if [ "$firewall" = iptables ]; then
+        private_nets="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4"
+    else
+        private_nets="::/128 ::1/128 ::ffff:0:0/96 fc00::/7 fe80::/10 ff00::/8"
+    fi
+    for net in $private_nets; do
+        "$firewall" -A WARP_PROXY_OUT -d "$net" -j REJECT
+    done
+    "$firewall" -A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN
+    "$firewall" -A WARP_PROXY_OUT -j REJECT
+done
+
 tunnel_up() {
     wg show "$WGCF_IF" >/dev/null 2>&1
 }
@@ -163,9 +185,20 @@ socks_running() {
     [ -n "$MS_PID" ] && kill -0 "$MS_PID" 2>/dev/null
 }
 socks_start() {
+    # WireGuard сохраняет владельца исходного сокета у зашифрованного UDP
+    # пакета. Его выпускаем по fwmark wg-quick; непривилегированный процесс
+    # microsocks сам выставить этот mark не может. Без исключения UID-фильтр
+    # блокировал бы и настоящий туннель, а не только прямой выход.
+    tunnel_mark=$(wg show "$WGCF_IF" fwmark) || return 1
+    case "$tunnel_mark" in ''|off|0|0x0|*[!0-9a-fx]*) return 1;; esac
+    for firewall in iptables ip6tables; do
+        "$firewall" -C WARP_PROXY_OUT -p udp -m mark --mark "$tunnel_mark" -j RETURN 2>/dev/null \
+            || "$firewall" -I WARP_PROXY_OUT 1 -p udp -m mark --mark "$tunnel_mark" -j RETURN \
+            || return 1
+    done
     socks_running && return 0
     echo "[warp] Starting microsocks on port $SOCKS_PORT..."
-    microsocks -p "$SOCKS_PORT" &
+    su -s /bin/sh -c "exec microsocks -p $SOCKS_PORT" warp-proxy &
     MS_PID=$!
 }
 socks_stop() {
@@ -245,6 +278,13 @@ if iptables -A WARP_SOCKS_OUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCE
 else
     echo "[warp] WARN: нет conntrack/state match — egress-ACL прокси НЕ установлен" >&2
 fi
+
+# Строго ПЕРЕД общей WARP_SOCKS_OUT: её ACCEPT для loopback и established
+# нужен служебным процессам, но не должен обходить ограничения microsocks.
+for firewall in iptables ip6tables; do
+    "$firewall" -D OUTPUT -m owner --uid-owner "$PROXY_UID" -j WARP_PROXY_OUT 2>/dev/null || true
+    "$firewall" -I OUTPUT 1 -m owner --uid-owner "$PROXY_UID" -j WARP_PROXY_OUT
+done
 
 if tunnel_up; then
     socks_start
