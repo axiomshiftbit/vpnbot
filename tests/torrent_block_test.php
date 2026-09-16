@@ -176,25 +176,15 @@ tbAssert(!$bot->xrayTorrentReady([], ['inbounds' => [
 tbAssert(!$bot->xrayTorrentBlocked([]), 'свежая установка: торренты не режем');
 tbAssert($bot->xrayTorrentBlocked(['xray_blocktorrent' => 1]), 'тумблер читается из pac');
 
-// ── пины ядер: форк не ниже v26.8.21, апстрим СТРОГО ниже v26.9.8 ──────────
+// ── пины ядер: форк не ниже v26.8.21, апстрим не ниже v26.9.9 ─────────────
 // У форка порог нижний: до v26.8.21 не было uTP/DHT/UDP-трекеров.
-//
-// У апстрима порог ВЕРХНИЙ, и он важнее полноты сниффера. В v26.9.8 приехал
-// reality@20260908 с коммитом «Reject outdated/strange Client Hello that
-// doesn't have X25519MLKEM768 before optional X25519»: сервер рвёт хендшейк
-// всем, кто не кладёт пост-квантовый key_share, а sing-box вырезает
-// X25519MLKEM768 безусловно (common/tls/reality_client.go). Для mihomo бот
-// включает support-x25519mlkem768 и Chrome, но sing-box это не исправляет.
-// Общий пин сохраняет его совместимость. Рабочий uTP-сниффер (PR #6667)
-// на этой стороне порога недостижим — с ним уезжают живые клиенты, поэтому
-// подсказка меню честно говорит «только handshake» через ветку
-// 'torrent xray hint origin old'. Поднимать пин — только когда sing-box
-// перестанет фильтровать MLKEM768; тот же потолок продублирован в
-// renovate.json и в комментарии .env.
+// Апстрим 26.9.9 включает рабочий uTP-сниффер и новый REALITY.
+// Несовместимость sing-box проверяется отдельно при выдаче подписок;
+// она больше не удерживает общий пин на старом ядре.
 $env = (string) @file_get_contents(__DIR__ . '/../.env');
 foreach ([
     ['XRAY_FORK_VERSION', 'min', 26, 8, 21, 'uTP/DHT/UDP-трекеры появились в v26.8.21'],
-    ['XRAY_VERSION',      'max', 26, 9,  8, 'общий пин сохраняет REALITY для sing-box без X25519MLKEM768'],
+    ['XRAY_VERSION',      'min', 26, 9,  9, 'штатное ядро поддерживает новый REALITY и рабочий uTP-сниффер'],
 ] as [$key, $bound, $maj, $min, $pat, $why]) {
     if (preg_match('~^' . $key . '=v?(\d+)\.(\d+)\.(\d+)~m', $env, $m)) {
         $ver   = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);
