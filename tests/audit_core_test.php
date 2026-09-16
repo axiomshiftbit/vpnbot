@@ -98,6 +98,30 @@ foreach ($bot->requests as [$m, $d]) {
     coreAssert(mb_strlen((string) $d['text'], 'utf-8') <= 4096, "$m: текст в пределах лимита");
 }
 
+// HTML-адреса и entities не входят в видимую длину сообщения. Особенно
+// заметно в карточках подписок: восемь import-ссылок раньше разрывали меню.
+$html = str_repeat('<a href="https://example.test/' . str_repeat('a', 400) . '">импорт &amp; профиль</a>\n', 12);
+foreach (['send', 'update'] as $method) {
+    $bot->requests = [];
+    if ($method === 'send') $bot->send(7, $html);
+    else $bot->update(7, 5, $html);
+    coreAssert(count($bot->requests) === 1 && $bot->requests[0][1]['text'] === $html,
+        "$method: HTML с длинными href передаётся целиком");
+    foreach ([4096, 4097] as $chars) {
+        $bot->requests = [];
+        $text = str_repeat('я', $chars);
+        if ($method === 'send') $bot->send(7, $text);
+        else $bot->update(7, 5, $text);
+        coreAssert((count($bot->requests) === 1) === ($chars === 4096), "$method: граница в $chars символов");
+        foreach ($bot->requests as [, $data]) {
+            coreAssert(mb_strlen($data['text'], 'UTF-8') <= 4096, "$method: Unicode не обходит лимит");
+        }
+    }
+}
+coreAssert($bot->messageTextLength('&lt;b&gt;&amp;&#128512;') === 5,
+    'escaped HTML и числовые entities учитываются как текст');
+coreAssert($bot->messageTextLength('<b>x</b>', '') === 8, 'без HTML-режима теги считаются текстом');
+
 // ── 4. answer() отмечает, что на callback уже ответили ──────────────────────
 $bot->callback = false;
 $bot->input    = ['callback_id' => 'q1', 'callback' => '/menu'];

@@ -6264,15 +6264,23 @@ NFT;
         $conf = $this->getPacConf();
         $bot  = preg_replace('~[\W]~iu', '_', $this->request('getMyName', [])['result']['name']);
         $json = $this->export();
+        if (!is_string($json) || !is_array(json_decode($json, true))) {
+            return false;
+        }
         if (!empty($file)) {
-            file_put_contents($file, $json);
+            if (!$this->writePrivateKey($file, $json)) return false;
         }
         if (!empty($conf['pinbackup'])) {
             $this->pinAdmin($conf['pinbackup'], 1);
         }
-        $conf['pinbackup'] = $this->upload("{$bot}_export_" . date('d_m_Y_H_i') . '.json', $json, $c['admin'][0])['result']['message_id'];
+        // Полный экспорт содержит ключи: отправляем из памяти, без временного
+        // файла с обычными правами чтения в /logs.
+        $conf['pinbackup'] = $this->sendFile($c['admin'][0], new CURLStringFile(
+            $json, "{$bot}_export_" . date('d_m_Y_H_i') . '.json', 'application/json'
+        ))['result']['message_id'];
         $this->setPacConf($conf);
         $this->pinAdmin($conf['pinbackup']);
+        return true;
     }
 
     public function checkVersion()
@@ -6748,7 +6756,7 @@ NFT;
         if (!empty($file) && $file !== $this->update) {
             $file = false;
             $this->answer($this->input['callback_id'] ?? null, 'error', true);
-            return;
+            return false;
         }
         if (!empty($file)) {
             $json = json_decode(file_get_contents($file), true);
@@ -6758,13 +6766,17 @@ NFT;
         }
         if (empty($json) || !is_array($json)) {
             $this->answer($this->input['callback_id'], 'error', true);
+            return false;
         } else {
+            $ok = true;
             // certs
             if (!empty($json['ssl'])) {
                 $out[] = 'update certificates';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->writePrivateKey('/certs/cert_private', $json['ssl']['private']);
-                file_put_contents('/certs/cert_public', $json['ssl']['public']);
+                if (!$this->writePrivateKey('/certs/cert_private', $json['ssl']['private'])
+                    || file_put_contents('/certs/cert_public', $json['ssl']['public']) === false) {
+                    return false;
+                }
             }
             // pac
             if (!empty($json['pac'])) {
@@ -6781,7 +6793,7 @@ NFT;
                     $switch_wg1amnezia = 1;
                 }
                 $json['pac'] = $this->preservePanelPswd($json['pac'], $this->getPacConf());
-                $this->setPacConf($json['pac']);
+                if ($this->setPacConf($json['pac']) === false) return false;
                 $out[] = 'update naiveproxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->restartNaive();
@@ -6868,6 +6880,7 @@ NFT;
                     $this->datSync(true);
                 }
                 if (!$this->restartXray($json['xray'])) {
+                    $ok = false;
                     $out[] = '❌ xray: configuration rejected; previous configuration preserved';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 } elseif (!empty($json['pac']['datlist'])) {
@@ -6936,6 +6949,7 @@ NFT;
                 if ($this->importOvpnPki($json['ovpn'])) {
                     $this->restartOvpn();
                 } else {
+                    $ok = false;
                     // Причина конкретная: «снимок отвергнут, PKI не тронут» и
                     // «перенос оборвался, PKI смешанный» требуют РАЗНЫХ действий
                     // от админа, а прежний общий текст их не различал.
@@ -6955,6 +6969,7 @@ NFT;
                 if ($this->importIpsecPki($json['ipsec'])) {
                     $this->restartIpsec();
                 } else {
+                    $ok = false;
                     $out[] = '❌ ipsec: invalid snapshot or write failed';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 }
@@ -6995,6 +7010,7 @@ NFT;
                 sleep(3);
                 $this->menu();
             }
+            return $ok;
         }
     }
 
@@ -7008,6 +7024,16 @@ NFT;
             $this->xray();
 
             return;
+        }
+        if ($t === 'uri') {
+            $link = $this->linkXray($u);
+            if ($link === '') {
+                $this->answer($this->input['callback_id'], $this->i18n('vless encryption unavailable'), true);
+                return;
+            }
+            return $this->sendFile($this->input['from'], new CURLStringFile(
+                $link, self::safeFileName($c['email'], 'client') . '_uri.txt', 'text/plain'
+            ));
         }
         // subtoken (sidOf), не id: с pac.subtoken_strict=1 findClientBySid()
         // подбором по credential'у не резолвит вообще ничего — subscription()
@@ -16586,10 +16612,12 @@ DNS-over-HTTPS with IP:
         $v['tt']     = $this->pickVersion($ask('tt', 'printf "tt:"; trusttunnel_endpoint --version 2>&1 | head -1'), 'tt');
         $v['ovpn']   = $this->pickVersion($ask('ovpn', 'printf "ovpn:"; openvpn --version 2>&1 | head -1'), 'ovpn');
 
-        // Контейнер ipsec несёт два демона: strongSwan (IKEv2) и xl2tpd (L2TP).
+        // strongSwan 6.1 собирается со swanctl, без устаревшего CLI ipsec.
+        // Fallback нужен старым образам. Пустую версию отделяем переводом
+        // строки, иначе версия xl2tpd попадёт под метку ipsec.
         // У xl2tpd НЕ head -1: `xl2tpd -v` печатает первой строкой пустую, и
         // head отдавал бы её вместо версии (проверено на боевом контейнере).
-        $out        = $ask('ipsec', 'printf "ipsec:"; ipsec version 2>&1 | head -1; printf "l2tp:"; xl2tpd -v 2>&1 | grep -i -m1 version');
+        $out        = $ask('ipsec', 'sswan_version=$(swanctl --version 2>/dev/null || ipsec version 2>/dev/null); printf "ipsec:%s\n" "$sswan_version"; printf "l2tp:"; xl2tpd -v 2>&1 | grep -i -m1 version');
         $v['ipsec'] = $this->pickVersion($out, 'ipsec');
         $v['l2tp']  = $this->pickVersion($out, 'l2tp');
 
@@ -18164,7 +18192,7 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> SMUX';
         $text[] = $this->i18n('smux hint');
-        if (in_array($pac['transport'] ?? '', ['Reality', 'trojan-grpc'], true)) {
+        if (in_array($p['transport'] ?? '', ['Reality', 'trojan-grpc'], true)) {
             $text[] = $this->i18n('smux sing compatibility');
         }
 
@@ -18306,13 +18334,15 @@ DNS-over-HTTPS with IP:
         $core = $this->xrayCore() === 'fork' ? 'origin' : 'fork';
         $r    = $this->applyXrayCore($core);
         if (empty($r['ok'])) {
+            $error = match (true) {
+                in_array('vless encryption check failed', $r['note'], true) => 'vless encryption check failed',
+                in_array('xr unreachable', $r['note'], true) => 'smux xr unreachable',
+                in_array('fork missing', $r['note'], true) => 'smux fork missing',
+                default => 'smux apply failed',
+            };
             $this->answer(
                 $this->input['callback_id'],
-                $this->i18n(in_array('vless encryption check failed', $r['note'], true)
-                    ? 'vless encryption check failed'
-                    : (in_array('xr unreachable', $r['note'], true)
-                    ? 'smux xr unreachable'
-                    : 'smux fork missing')),
+                $this->i18n($error),
                 true
             );
 
@@ -18320,7 +18350,8 @@ DNS-over-HTTPS with IP:
         }
         $this->answer(
             $this->input['callback_id'],
-            ($core === 'fork' ? 'fork (smux)' : 'XTLS') . ' — ' . implode(', ', $r['note'])
+            ($core === 'fork' ? 'fork (smux)' : 'XTLS') . ' — ' . implode(', ', $r['note']),
+            true
         );
         $this->smuxMenu();
     }
@@ -18348,6 +18379,11 @@ DNS-over-HTTPS with IP:
     public function smuxToggle($what)
     {
         $p = $this->getPacConf();
+        if ($what === 'enabled' && $this->xrayCore($p) !== 'fork') {
+            $this->answer($this->input['callback_id'], $this->i18n('smux select fork'), true);
+            return $this->smuxMenu();
+        }
+        $old = $p;
         $s = $this->smuxSettings($p);
         switch ($what) {
             case 'enabled':
@@ -18388,8 +18424,18 @@ DNS-over-HTTPS with IP:
         }
         $s['configured'] = 1;
         $p['smux']       = $s;
-        $this->setPacConf($p);
-        $this->syncSmuxLive($p);
+        if ($this->setPacConf($p) === false) {
+            $this->answer($this->input['callback_id'], $this->i18n('smux apply failed'), true);
+            return $this->smuxMenu();
+        }
+        if (!$this->syncSmuxLive($p)) {
+            $this->setPacConf($old);
+            $this->answer($this->input['callback_id'], $this->i18n('smux apply failed'), true);
+            return $this->smuxMenu();
+        }
+        if ($what === 'enabled') {
+            $this->answer($this->input['callback_id'], $this->i18n($s['enabled'] ? 'smux enabled' : 'smux disabled'), true);
+        }
         $this->smuxMenu();
     }
 
@@ -18492,15 +18538,16 @@ DNS-over-HTTPS with IP:
     // Правки smux трогают xray.json только через brutal-opts (для самого smux
     // серверу настройка не нужна). Рестартуем ядро лишь когда блок реально
     // изменился — иначе каждое нажатие рвало бы всем клиентам соединения.
-    public function syncSmuxLive(array $p): void
+    public function syncSmuxLive(array $p): bool
     {
         $c   = $this->getXray();
         $was = $c['inbounds'][0]['smux'] ?? null;
         $this->ensureSmuxInbound($c, $p);
         $now = $c['inbounds'][0]['smux'] ?? null;
         if ($was !== $now) {
-            $this->restartXray($c);
+            return $this->restartXray($c) !== false;
         }
+        return true;
     }
 
     public function switchIpLimit($limit)
@@ -23335,7 +23382,7 @@ DNS-over-HTTPS with IP:
         if (($p['transport'] ?? '') === 'trojan-grpc') {
             $text[] = $this->i18n('vless encryption transport');
         }
-        $data = [[['text' => $this->i18n('off') . (empty($s['enabled']) ? ' ✓' : ''), 'callback_data' => '/vlessEncryptionSet off native']]];
+        $data = [[['text' => $this->i18n(empty($s['enabled']) ? 'off' : 'on'), 'callback_data' => '/vlessEncryptionSet off native']]];
         foreach (['x25519' => 'X25519', 'mlkem768' => 'ML-KEM-768'] as $auth => $label) {
             $row = [];
             foreach (VlessEncryption::MODES as $mode) {
@@ -23741,7 +23788,9 @@ DNS-over-HTTPS with IP:
             $p['smux']['brutal']['enabled'] = 0;
             $note[] = 'smux off';
         }
-        $this->setPacConf($p);
+        if ($this->setPacConf($p) === false) {
+            return ['ok' => false, 'note' => ['settings save failed']];
+        }
 
         // Маркер пишем из php напрямую: /logs — общий том с контейнером xr.
         // Симлинк живёт в слое контейнера и пропадёт при пересоздании, маркер —
@@ -24600,7 +24649,8 @@ DNS-over-HTTPS with IP:
         if (file_exists(__DIR__ . '/subscription.php')) {
             $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         }
-        $text[] = "<pre><code>{$this->linkXray($i)}</code></pre>\n";
+        $linkIndex = count($text);
+        $text[] = '<pre><code>' . self::esc($this->linkXray($i)) . "</code></pre>\n";
 
         array_push($text, ...$this->subscriptionImportLinks("$scheme://{$domain}/pac$hash", $stok, $c['email']));
 
@@ -24791,6 +24841,16 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/xray",
             ],
         ];
+        // ML-DSA REALITY + ML-KEM Encryption могут сделать сам URI длиннее
+        // сообщения Telegram. Выдаём его целиком файлом по отдельной кнопке;
+        // подписки и управление остаются одной карточкой без хвостов в чате.
+        if ($this->messageTextLength(implode("\n", $text)) > 4096) {
+            $text[$linkIndex] = $this->i18n('xray link file hint') . "\n";
+            array_unshift($data, [[
+                'text' => $this->i18n('xray link file'),
+                'callback_data' => "/dw $i uri",
+            ]]);
+        }
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
@@ -28923,7 +28983,10 @@ DNS-over-HTTPS with IP:
 
     public function applyupdatebot()
     {
-        $this->pinBackup($this->update);
+        if (!$this->pinBackup($this->update)) {
+            $this->send($this->input['from'], $this->i18n('update backup failed'));
+            return;
+        }
         $r = $this->sendDraft($this->input['from'], 1, 'update...');
         if (!$this->queueUpdateCommand('1', $r)) {
             $this->send($this->input['from'], $this->i18n('update write failed'));
@@ -29640,16 +29703,17 @@ DNS-over-HTTPS with IP:
         $this->logs();
     }
 
-    public function selfUpdate()
+    public function selfUpdate(): bool
     {
         // Версии сервисов живут в кэше с часовым TTL — после пересборки образов
         // он бы врал до часа. selfUpdate() зовётся из service.php на каждом
         // старте контейнера, то есть ровно тогда, когда версии и могли
         // измениться: снимаем кэш, cron наполнит его заново на первом же цикле.
         @unlink(static::MENU_VERSIONS_FILE);
-        $ip                         = getenv('IP');
-        $rm                         = explode(':', trim(file_get_contents('/update/reload_message')));
-        $m                          = file_get_contents('/update/message');
+        $updateDir                  = dirname($this->update);
+        $restored                   = is_file($updateDir . '/state-restored');
+        $rm                         = explode(':', trim((string) @file_get_contents($updateDir . '/reload_message')));
+        $m                          = (string) @file_get_contents($updateDir . '/message');
         // message_id может прийти пустым (reload_message вида "chat:") — тогда
         // передавать его в send(?int $to) нельзя: '' → TypeError и фатал в
         // service.php до restartTelemt. Приводим к ?int.
@@ -29657,11 +29721,11 @@ DNS-over-HTTPS with IP:
         $this->input['chat']        = $rm[0];
         $this->input['message_id']  = $mid;
         $this->input['callback_id'] = $mid;
-        // Импорт настроек после обновления — НЕкритичный шаг. Любая ошибка здесь
-        // не должна ронять service.php до restartTelemt. И /update/json
-        // снимаем в любом случае, иначе сбой повторяется при каждом старте.
+        // Старый host-worker сбрасывал конфиги и требовал импорт JSON. Новый
+        // возвращает точные runtime-файлы до запуска контейнеров. Оба пути
+        // сохраняют последнюю копию; ошибка не превращается в новую установку.
         if (file_exists($this->update)) {
-            $this->selfupdate = true;
+            $this->selfupdate = !$restored;
             try {
                 if (!empty($m)) {
                     // htmlspecialchars обязателен: с этого момента в
@@ -29671,18 +29735,31 @@ DNS-over-HTTPS with IP:
                     // обновлении молча не доходил бы.
                     $this->send($this->input['chat'], '<pre>' . htmlspecialchars($m) . '</pre>', $mid);
                 }
-                $r = $this->send($this->input['chat'], "import settings");
-                $this->input['message_id']  = $r['result']['message_id'] ?? $mid;
-                $this->input['callback_id'] = $r['result']['message_id'] ?? $mid;
-                $this->importFile($this->update);
+                if (!$restored) {
+                    $snapshot = json_decode((string) file_get_contents($this->update), true);
+                    if (!is_array($snapshot) || !is_array($snapshot['pac'] ?? null)) {
+                        throw new \RuntimeException('invalid update backup');
+                    }
+                    $r = $this->send($this->input['chat'], "import settings");
+                    $this->input['message_id']  = $r['result']['message_id'] ?? $mid;
+                    $this->input['callback_id'] = $r['result']['message_id'] ?? $mid;
+                    if ($this->importFile($this->update) === false) {
+                        throw new \RuntimeException('update backup restore failed');
+                    }
+                }
+                if (!rename($this->update, $this->update . '.last')) {
+                    throw new \RuntimeException('could not retain update backup');
+                }
+                $this->chmodSecret($this->update . '.last');
             } catch (\Throwable $e) {
-                error_log('selfUpdate import skipped: ' . $e->getMessage());
-            } finally {
-                @unlink($this->update);
+                error_log('selfUpdate: restore failed; backup retained');
+                $this->send($this->input['chat'], $this->i18n('update restore failed'));
+                return false;
             }
         }
-        file_put_contents('/update/message', '');
-        file_put_contents('/update/reload_message', '');
+        @unlink($updateDir . '/state-restored');
+        file_put_contents($updateDir . '/message', '');
+        file_put_contents($updateDir . '/reload_message', '');
         // Миграция DoH-идентификаторов. Некритична и не должна ронять
         // service.php: ниже по selfUpdate() ничего от неё не зависит.
         try {
@@ -29692,7 +29769,7 @@ DNS-over-HTTPS with IP:
         }
         $pac = $this->getPacConf();
         unset($pac['restart']);
-        $this->setPacConf($pac);
+        return $this->setPacConf($pac) !== false;
     }
 
     public function backup()
@@ -30950,6 +31027,16 @@ DNS-over-HTTPS with IP:
         $this->request('setMyCommands', json_encode($data), 1);
     }
 
+    // Telegram ограничивает текст после разбора entities: href и HTML-теги
+    // не занимают место на экране и не должны разрывать карточку с подписками.
+    public function messageTextLength(string $text, string $mode = 'HTML'): int
+    {
+        if (strcasecmp($mode, 'HTML') === 0) {
+            $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        }
+        return mb_strlen($text, 'UTF-8');
+    }
+
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
     {
         if (is_null($text)) {
@@ -30966,7 +31053,7 @@ DNS-over-HTTPS with IP:
             ];
         }
         $length = 3096;
-        if (mb_strlen($text, 'utf-8') > $length) {
+        if ($this->messageTextLength($text, $mode) > 4096) {
             $tails = $this->splitText($text, $length);
             foreach ($tails as $k => $v) {
                 $data = [
@@ -31145,7 +31232,7 @@ DNS-over-HTTPS with IP:
         // как «кнопка не работает». Редактируем первым куском, остальное
         // дописываем отдельными сообщениями — кнопки остаются на исходном.
         $length = 3096;
-        if (mb_strlen($text, 'utf-8') > $length) {
+        if ($this->messageTextLength($text, $mode) > 4096) {
             $tails = $this->splitText($text, $length);
             $text  = array_shift($tails);
             foreach ($tails as $v) {

@@ -66,6 +66,46 @@ $v = $bot->naiveVersion();
 verAssert($v['running'] === 'v2.11.2', 'caddy running: ' . json_encode($v));
 verAssert($v['pinned'] === 'v2.11.2', 'caddy pinned: ' . json_encode($v));
 
+// Современная сборка strongSwan содержит swanctl без устаревшего ipsec.
+// Исполняем именно команду пробы с разными наборами CLI.
+class StrongSwanProbeBot extends VersionTestBot
+{
+    public string $binDir;
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
+    {
+        if ($service !== 'ipsec') return '';
+        $p = proc_open(['/bin/sh', '-c', $cmd], [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes, null, ['PATH' => $this->binDir . ':' . getenv('PATH')]);
+        $out = stream_get_contents($pipes[1]);
+        fclose($pipes[1]); fclose($pipes[2]); proc_close($p);
+        return $out;
+    }
+}
+$dir = sys_get_temp_dir() . '/vpnbot-versions-' . bin2hex(random_bytes(6));
+mkdir($dir, 0700);
+try {
+    $probe = (new ReflectionClass(StrongSwanProbeBot::class))->newInstanceWithoutConstructor();
+    $probe->binDir = $dir;
+    foreach (['modern', 'legacy', 'missing'] as $case) {
+        $commands = [
+            'swanctl' => $case === 'modern' ? 'echo "strongSwan swanctl 6.1.0"' : 'exit 127',
+            'ipsec' => $case === 'legacy' ? 'echo "Linux strongSwan U6.0.7/K6.8.0"' : 'exit 127',
+            'xl2tpd' => 'printf "\nxl2tpd version xl2tpd-1.3.19\n" >&2',
+        ];
+        foreach ($commands as $name => $body) {
+            file_put_contents("$dir/$name", "#!/bin/sh\n$body\n");
+            chmod("$dir/$name", 0700);
+        }
+        $versions = $probe->probeServiceVersions();
+        verAssert(($versions['ipsec'] ?? null) === match ($case) { 'modern' => '6.1.0', 'legacy' => '6.0.7', default => null },
+            "$case: strongSwan определяется по доступному CLI");
+        verAssert(($versions['l2tp'] ?? '') === '1.3.19', "$case: версия xl2tpd остаётся отдельной");
+    }
+} finally {
+    foreach (glob("$dir/*") as $file) unlink($file);
+    rmdir($dir);
+}
+
 if ($failed) {
     echo "version_parse_test: провалено проверок — $failed\n";
     exit(1);

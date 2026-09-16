@@ -1,6 +1,14 @@
 <?php
 
 $i = [
+    'update backup failed' => [
+        'ru' => 'Не удалось сохранить резервную копию. Обновление отменено; текущие настройки сохранены.',
+        'en' => 'Could not save the backup. Update cancelled; current settings are preserved.',
+    ],
+    'update restore failed' => [
+        'ru' => 'Восстановление после обновления не завершено. Резервная копия сохранена в /update/json. Автонастройка домена остановлена.',
+        'en' => 'Update recovery did not complete. The backup remains in /update/json. Automatic domain setup has stopped.',
+    ],
     'warp'             => [
         'en' => 'Warp',
         'ru' => 'Warp',
@@ -97,6 +105,22 @@ $i = [
         'en' => 'SMUX multiplexes every stream into ONE carrier connection: no TLS handshake per request, one long session instead of hundreds of short ones, less load on the server. Needs the fork core (Jolymmiles/Xray-core) — upstream XTLS only knows its own mux.cool. A broken carrier drops every stream inside it, so keep it off if the link is unstable.',
         'ru' => 'SMUX сводит все потоки в ОДНО несущее соединение: не платим хендшейком за каждый запрос, вместо сотен коротких сессий одна долгая, серверу дешевле. Нужно форк-ядро (Jolymmiles/Xray-core) — апстримный XTLS знает только свой mux.cool. Обрыв несущего коннекта роняет все потоки внутри, так что на нестабильном канале лучше выключить.',
     ],
+    'smux enabled' => [
+        'en' => 'SMUX enabled. Refresh client profiles.',
+        'ru' => 'SMUX включён. Обновите клиентские профили.',
+    ],
+    'smux disabled' => [
+        'en' => 'SMUX disabled. Refresh client profiles.',
+        'ru' => 'SMUX выключен. Обновите клиентские профили.',
+    ],
+    'smux select fork' => [
+        'en' => 'Select the fork (smux) core first to enable SMUX.',
+        'ru' => 'Для включения SMUX сначала выберите ядро fork (smux).',
+    ],
+    'smux apply failed' => [
+        'en' => 'Could not apply the settings. Check config access and Xray status, then retry.',
+        'ru' => 'Не удалось применить настройки. Проверьте доступ к конфигам и состояние Xray, затем повторите.',
+    ],
     'smux fork missing'    => [
         'en' => 'The fork core is not in this image. Update the xr image (or rebuild it) and try again.',
         'ru' => 'Форк-ядра нет в этом образе. Обновите образ xr (или пересоберите его) и повторите.',
@@ -176,6 +200,14 @@ $i = [
     'noise tcp warn'       => [
         'en' => '⚠️ Your transport (%s) runs over TCP — UDP noise is NOT sent over it and masks nothing. For TCP enable TLS fragmentation instead. Noise only helps a UDP transport.',
         'ru' => '⚠️ Ваш транспорт (%s) работает по TCP — UDP-шум по нему НЕ отправляется и ничего не маскирует. Для TCP включите TLS-фрагментацию. noise полезен только для UDP-транспорта.',
+    ],
+    'xray link file' => [
+        'ru' => 'Ссылка (.txt) ⬇️',
+        'en' => 'Link (.txt) ⬇️',
+    ],
+    'xray link file hint' => [
+        'ru' => 'Полная ссылка доступна по кнопке «Ссылка (.txt) ⬇️». Импорт и подписки — ниже.',
+        'en' => 'The full link is available via “Link (.txt) ⬇️”. Import and subscriptions are below.',
     ],
     'vless encryption hint' => [
         'en' => 'VLESS Encryption adds encryption inside TLS/REALITY. Choose X25519 authentication or post-quantum ML-KEM-768; both use a post-quantum ephemeral key exchange. Modes: native, xorpub, random. Defaults from Xray: 600s tickets, 0-RTT resumption, automatic padding. Changing settings or rotating keys requires all clients to refresh their profiles. REALITY keys stay separate.',

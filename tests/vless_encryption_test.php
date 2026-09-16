@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/../app/bot.php';
+require_once __DIR__ . '/../app/i18n.php';
 
 // Тестовые данные генерируются в памяти; конструктор, SSH и рабочие файлы
 // бота не вызываются. Сетевую совместимость проверяет отдельный стенд ядрами.
@@ -99,6 +100,37 @@ $pairs = VlessEncryption::parseOutput($output);
 veAssert(array_keys($pairs) === ['x25519', 'mlkem768'], 'Обе пары генератора распознаны отдельно');
 veAssert(VlessEncryption::parseOutput(str_replace("\n", "\r\n", $output)) === $pairs, 'CRLF поддерживается');
 veAssert(VlessEncryption::parseOutput('unknown command') === [], 'Ошибка CLI не является ключами');
+
+class VlessMenuTestBot extends VlessEncryptionTestBot
+{
+    public array $buttons = [];
+    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')
+    {
+        $this->buttons = $button;
+    }
+    public function answer($callback_id, $textNotify = false, $notify = false) {}
+}
+$menu = new VlessMenuTestBot();
+$menu->i18n = $i;
+$menu->input = ['chat' => 1, 'message_id' => 1, 'callback_id' => 'test'];
+$menu->generated = $output;
+$menu->vlessEncryptionMenu();
+veAssert(str_contains($menu->buttons[0][0]['text'], '🔴'), 'Отключённое шифрование отмечено красным');
+foreach (['x25519', 'mlkem768'] as $auth) {
+    foreach (VlessEncryption::MODES as $mode) {
+        $menu->setVlessEncryption($auth, $mode);
+        veAssert(str_contains($menu->buttons[0][0]['text'], '🟢'), 'Включённое шифрование отмечено зелёным');
+        $menu->vlessEncryptionMenu();
+        veAssert(str_contains($menu->buttons[0][0]['text'], '🟢'), 'Повторное открытие сохраняет зелёный индикатор');
+        veAssert($menu->buttons[0][0]['callback_data'] === '/vlessEncryptionSet off native', 'Индикатор сохраняет действие отключения');
+        $menu->setVlessEncryption('off', 'native');
+        veAssert(str_contains($menu->buttons[0][0]['text'], '🔴'), 'Отключение возвращает красный индикатор');
+    }
+}
+$menu->restartOk = false;
+$menu->setVlessEncryption('mlkem768', 'native');
+veAssert(str_contains($menu->buttons[0][0]['text'], '🔴'), 'Отказ включения не даёт ложный зелёный индикатор');
+
 class VlessProbeTestBot extends Bot
 {
     public string $reply = '';

@@ -12,10 +12,14 @@ if ($c['debug']) {
 
 $bot = new Bot($c['key'], $i);
 
-// Запоминаем до selfUpdate/генерации паролей: эти операции уже сохраняют
-// настройки, а getPacConf() даже для пустого файла возвращает defaults.
-$initialSetup = $bot->getPacConf() == Bot::PAC_DEFAULTS;
-$bot->selfUpdate();
+// После старого updater конфиги ещё пусты, но ожидается их восстановление.
+// Такой запуск не должен назначать nip.io поверх сохранённого домена.
+$initialSetup = !is_file($bot->update)
+    && !is_file(dirname($bot->update) . '/state-restored')
+    && $bot->getPacConf() == Bot::PAC_DEFAULTS;
+if (!$bot->selfUpdate()) {
+    exit(1);
+}
 $bot->ssPswdCheck();
 $bot->restartTelemt();
 if (!empty($bot->selfupdate)) {
