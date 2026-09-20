@@ -12,14 +12,21 @@ if ($c['debug']) {
 
 $bot = new Bot($c['key'], $i);
 
-$bot->selfUpdate();
+// После старого updater конфиги ещё пусты, но ожидается их восстановление.
+// Такой запуск не должен назначать nip.io поверх сохранённого домена.
+$initialSetup = !is_file($bot->update)
+    && !is_file(dirname($bot->update) . '/state-restored')
+    && $bot->getPacConf() == Bot::PAC_DEFAULTS;
+if (!$bot->selfUpdate()) {
+    exit(1);
+}
 $bot->ssPswdCheck();
 $bot->restartTelemt();
 if (!empty($bot->selfupdate)) {
     $bot->offWarp();
 }
 $bot->dontshowcron = 1;
-$bot->sslip();
+$bot->sslip($initialSetup);
 $bot->adguardSync();
 $bot->cloakNginx();
 $bot->syncDeny();

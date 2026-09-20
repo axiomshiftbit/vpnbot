@@ -87,7 +87,6 @@
             "server": "dns-remote",
             "strategy": "ipv4_only"
         },
-        "override_android_vpn": true,
         "rules": [
             {
                 "action": "sniff"

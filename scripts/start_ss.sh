@@ -9,7 +9,7 @@ ssh-keygen -A
 # это файловый bind-mount на config/ssserver.json (там пароль SS), и редирект
 # усекал бы хостовый файл ещё до записи. cat > , а не mv — инод держит mount.
 tmp=$(mktemp) || exit 1
-sed 's/"server_port": [0-9]\+/"server_port": 8388/' /config.json > "$tmp"
+jq '.server_port = 8388 | if (.acl // "") == "" then .acl = "/config/ss.acl" else . end' /config.json > "$tmp"
 [ -s "$tmp" ] && cat "$tmp" > /config.json
 rm -f "$tmp"
 ssserver -v -d -c /config.json

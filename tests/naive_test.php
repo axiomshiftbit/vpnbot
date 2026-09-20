@@ -136,6 +136,19 @@ npAssert(!preg_match($guardRe, "\tbasic_auth realuser realpass\n"), 'настр�
 $caddyfile = file_get_contents(__DIR__ . '/../config/Caddyfile');
 npAssert((bool) preg_match($guardRe, $caddyfile), 'config/Caddyfile в репозитории содержит плейсхолдер');
 
+// allow all срабатывает ДО встроенного запрета приватных IP forwardproxy.
+// Регрессия доступа настоящего Naive-клиента к веб-интерфейсу AdGuard.
+$oldAcl = "acl {\n\tdeny 169.254.0.0/16\n\tdeny 100.64.0.0/10\n\tallow all\n}";
+$newAcl = Bot::migrateNaiveAcl($oldAcl);
+npAssert(!str_contains($newAcl, 'allow all'), 'старый штатный ACL больше не обходит встроенную изоляцию');
+npAssert(str_contains($newAcl, 'deny 169.254.0.0/16') && str_contains($newAcl, 'deny 100.64.0.0/10'),
+    'дополнительные запреты metadata/CGNAT сохранены');
+npAssert(Bot::migrateNaiveAcl($newAcl) === $newAcl, 'миграция ACL идемпотентна');
+$customAcl = "acl {\nallow 192.168.1.1\ndeny all\n}";
+npAssert(Bot::migrateNaiveAcl($customAcl) === $customAcl, 'ручной ACL администратора сохранён');
+npAssert(!preg_match('~^\s*allow\s+all\s*$~m', $caddyfile),
+    'штатный шаблон не разрешает частные сети до встроенных запретов forwardproxy');
+
 // И обязателен набор директив из официального примера/README forwardproxy.
 // NB: не «$d» в двойных кавычках — '»' (U+00BB) попадает в \x80-\xff, который
 // PHP считает допустимым символом имени переменной, и строка разбирается как

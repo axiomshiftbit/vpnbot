@@ -31,7 +31,7 @@ $selfMatches = function (string $pattern, string $cmdline): bool {
     return (bool) preg_match('~' . $pattern . '~', $cmdline);
 };
 
-foreach (['PKILL_CK' => Bot::PKILL_CK, 'PKILL_STLS' => Bot::PKILL_STLS] as $name => $cmd) {
+foreach (['PKILL_STLS' => Bot::PKILL_STLS] as $name => $cmd) {
     ssAssert(str_contains($cmd, '['), "$name использует bracket-форму шаблона");
     // Вытаскиваем шаблон из «pkill -f '<pattern>'»
     ssAssert((bool) preg_match("~pkill -f '([^']+)'~", $cmd, $m), "$name разбирается");
@@ -55,10 +55,20 @@ ssAssert($selfMatches('ck-server', 'pkill -f ck-server; jq … && ck-server -c /
 $restart = (new ReflectionMethod(Bot::class, 'ckServerRestartCmd'))->invoke(
     (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor()
 );
-ssAssert(str_contains($restart, "[c]k-server"), 'ckServerRestartCmd использует безопасный шаблон');
+ssAssert(str_starts_with($restart, 'pkill -x ck-server; '), 'полная команда рестарта ищет имя процесса, а не свой SSH argv');
+ssAssert($selfMatches('[c]k-server', "pkill -f '[c]k-server'; jq … && ck-server -c /tmp/x"),
+    'bracket-шаблон тоже матчится на полный рестарт — одного теста pkill недостаточно');
 ssAssert(!preg_match('~(?<!\[)\bpkill -f ck-server\b~', $restart), 'в ckServerRestartCmd нет голого pkill -f ck-server');
 ssAssert(str_contains($restart, 'nohup setsid ck-server'), 'ckServerRestartCmd всё ещё запускает ck-server');
 ssAssert(str_contains($restart, '/logs/ck-server.log'), 'вывод ck-server уходит в лог');
+
+$acl = file_get_contents(__DIR__ . '/../config/ss.acl');
+$ssTemplate = json_decode(file_get_contents(__DIR__ . '/../config/ssserver.json'), true);
+ssAssert(($ssTemplate['acl'] ?? '') === '/config/ss.acl', 'ssserver включает запрет служебных сетей');
+ssAssert(str_contains($acl, '[outbound_block_list]'), 'ACL фильтрует назначения, не клиентские IP');
+foreach (['10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '::1/128', 'fc00::/7'] as $net) {
+    ssAssert(str_contains($acl, $net), 'SS закрывает ' . $net);
+}
 
 // ── 2. SIP002: userinfo — base64url без паддинга ────────────────────────────
 $enc = fn(string $s) => rtrim(strtr(base64_encode($s), '+/', '-_'), '=');

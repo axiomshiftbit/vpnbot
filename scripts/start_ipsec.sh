@@ -44,6 +44,11 @@ L2TP_BASE=$(echo "$L2TP_SUBNET" | cut -d/ -f1 | cut -d. -f1-3)
 DNS=10.10.0.5
 
 mkdir -p "$PKI" /logs /var/run/l2tp-sessions /etc/swanctl/x509ca /etc/swanctl/x509 /etc/swanctl/private
+# pppd >= 2.5.3 проверяет владельца и весь путь до chap-secrets. Bind mount
+# из checkout с umask 002 (каталог 0775) иначе делает все пароли недоступными
+# для аутентификации, даже когда сам chap-secrets имеет права 0600.
+chown 0:0 "$CONF" "$PKI"
+chmod 0700 "$CONF" "$PKI"
 : >> "$LOG"
 : >> /logs/l2tp.log
 : >> /logs/ipsec-connections.log
@@ -51,8 +56,8 @@ mkdir -p "$PKI" /logs /var/run/l2tp-sessions /etc/swanctl/x509ca /etc/swanctl/x5
 log() { echo "[start_ipsec $(date +%H:%M:%S)] $*" >> "$LOG"; }
 
 # /dev/ppp нужен pppd; на голом контейнере его нет. CAP_MKNOD есть по
-# умолчанию, поэтому создаём сами вместо device-маппинга в compose (маппинг
-# падал бы, если на хосте ещё не сделан modprobe ppp_generic).
+# умолчанию; открытие устройства разрешает device_cgroup_rules в compose.
+# Создаём сами: device-маппинг требовал бы готовый узел на хосте.
 [ -c /dev/ppp ] || mknod /dev/ppp c 108 0 2>>"$LOG" || log "mknod /dev/ppp FAILED"
 
 # Явная диагностика отсутствия kernel-модуля: xl2tpd молча не сможет
@@ -281,8 +286,6 @@ EOF
 # дефолтными 1500 крупные пакеты фрагментируются, а фрагменты nft хоста
 # дропает. Дополнительно клампим MSS (iptables ниже).
 cat > /etc/ppp/options.xl2tpd <<EOF
-ipcp-accept-local
-ipcp-accept-remote
 ms-dns $DNS
 noccp
 auth
@@ -297,6 +300,8 @@ EOF
 # chap-secrets живёт на bind mount (бот добавляет/блокирует юзеров); pppd
 # перечитывает файл на каждом коннекте — reload не нужен.
 [ -f "$CONF/chap-secrets" ] || { : > "$CONF/chap-secrets"; chmod 600 "$CONF/chap-secrets"; }
+chown 0:0 "$CONF/chap-secrets"
+chmod 0600 "$CONF/chap-secrets"
 rm -f /etc/ppp/chap-secrets
 ln -s "$CONF/chap-secrets" /etc/ppp/chap-secrets
 
@@ -356,6 +361,24 @@ esac
 exit 0
 HOOKEOF
 chmod +x /etc/ipsec-updown.sh
+
+# Адреса PPP задаёт пул xl2tpd: ipcp-accept-* позволяли клиенту согласовать
+# адрес служебного контейнера. Пакеты с посторонним source тоже отбрасываем.
+iptables -A FORWARD -i ppp+ ! -s "$L2TP_SUBNET" -j DROP
+iptables -A INPUT -i ppp+ -j REJECT
+# L2TP принимаем только внутри IPsec, в том числе из соседних контейнеров.
+iptables -A INPUT -p udp --dport 1701 -m policy --dir in --pol ipsec -j ACCEPT
+iptables -A INPUT -p udp --dport 1701 -j DROP
+
+# Клиентам L2TP/IKEv2 нужен только DNS внутри сети сборки. Без этих правил
+# MASQUERADE давал им доступ к SSH, Docker API и панели соседних контейнеров.
+# INPUT отдельно закрывает службы самого IPsec-контейнера (включая SSH).
+for CLIENT_SUBNET in "$L2TP_SUBNET" "$IKEV2_SUBNET"; do
+    iptables -A INPUT -s "$CLIENT_SUBNET" -j REJECT
+    iptables -A FORWARD -s "$CLIENT_SUBNET" -d "$DNS" -p udp --dport 53 -j ACCEPT
+    iptables -A FORWARD -s "$CLIENT_SUBNET" -d "$DNS" -p tcp --dport 53 -j ACCEPT
+    iptables -A FORWARD -s "$CLIENT_SUBNET" -d 10.10.0.0/16 -j REJECT
+done
 
 # ─── NAT + MSS clamp ─────────────────────────────────────────────────────
 iptables -t nat -A POSTROUTING -s "$L2TP_SUBNET"  -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true

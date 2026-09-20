@@ -61,6 +61,32 @@ class OcNginxTestBot extends Bot
 $bot = (new ReflectionClass(OcNginxTestBot::class))->newInstanceWithoutConstructor();
 $bot->input = ['chat' => 1, 'message_id' => 2];
 
+// Каталог /etc/ocserv монтируется :ro: добавление/ротация/удаление должны
+// обновлять passwd со стороны PHP. Формат сверён с ocpasswd.c upstream.
+$passwords = "alice:staff:\$6\$old\nbob:ops:!locked\nalice2:*:other\n";
+$rotated = Bot::ocPasswordFile($passwords, 'alice', '$6$new');
+ocAssert(str_contains($rotated, 'alice:staff:$6$new'), 'ротация сохраняет группу');
+ocAssert(!str_contains($rotated, '$6$old'), 'старый пароль удалён');
+ocAssert(str_contains($rotated, "bob:ops:!locked\n") && str_contains($rotated, "alice2:*:other\n"), 'соседние логины и блокировка не меняются');
+ocAssert(Bot::ocPasswordFile('', 'new', '$6$hash') === "new:*:\$6\$hash\n", 'создание первой учётной записи');
+$deleted = Bot::ocPasswordFile($rotated, 'alice', null);
+ocAssert(!str_contains($deleted, 'alice:') && str_contains($deleted, 'alice2:'), 'удаляется только точный логин');
+ocAssert(Bot::ocPasswordFile("last:*:hash\n", 'last', null) === '', 'последнюю учётную запись можно удалить');
+$ocSource = file_get_contents(__DIR__ . '/../app/bot.php');
+ocAssert(!str_contains($ocSource, 'ocpasswd -c /etc/ocserv/ocserv.passwd'), 'нет записи ocpasswd в read-only mount');
+ocAssert(str_contains($ocSource, "'occtl disconnect user '"), 'удаление завершает существующие подключения');
+
+$legacyUdp = 'server { listen 443 udp; proxy_pass $sni_name; proxy_protocol on; ssl_preread on; }';
+$tcp = 'server { listen 443; proxy_pass $sni_name; proxy_protocol on; ssl_preread on; }';
+$dtls = Bot::ocservDtlsUpstream($tcp . "\n" . $legacyUdp);
+ocAssert(str_contains($dtls, $tcp), 'миграция DTLS сохраняет TCP SNI/PROXY');
+ocAssert(str_contains($dtls, 'proxy_pass ocserv;') && substr_count($dtls, 'proxy_protocol on;') === 1, 'UDP попадает в ocserv без PROXY protocol');
+ocAssert(Bot::ocservDtlsUpstream($dtls) === $dtls, 'миграция DTLS идемпотентна');
+$customUdp = 'server { listen 443 udp; proxy_pass custom_backend; }';
+ocAssert(Bot::ocservDtlsUpstream($customUdp) === $customUdp, 'пользовательский UDP backend сохраняется');
+$upstreamTemplate = file_get_contents(__DIR__ . '/../config/upstream.conf');
+ocAssert((bool)preg_match('~listen\s+443 udp reuseport;\s+proxy_pass\s+ocserv;~', $upstreamTemplate), 'новая установка сразу маршрутизирует DTLS');
+
 // ── 1. ocservRoute: каждая подсеть своей строкой ────────────────────────────
 $base = "auth = plain\nroute = default\ntcp-port = 443\n";
 

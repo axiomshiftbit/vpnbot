@@ -137,7 +137,8 @@ $up = implode("\n", array_filter(
     fn($l) => !str_starts_with(ltrim($l), '#')
 ));
 itAssert(str_contains($up, 'scripts/sync_image_tag.sh'), 'update.sh зовёт синхронизацию канала');
-itAssert(strpos($up, 'update/sync_image_tag.sh"') < strpos($up, 'make start'),
+// Аварийный запуск прежнего дерева при отказе backup не меняет ветку/канал.
+itAssert(strpos($up, 'update/sync_image_tag.sh"') < strpos($up, 'start_out=$(make start'),
     'синхронизация идёт ДО make start, иначе pull образов уйдёт со старым тегом');
 
 // --- 10: копия помощника переживает checkout чужой ветки ----------------------

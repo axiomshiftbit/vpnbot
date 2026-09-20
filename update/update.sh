@@ -1,5 +1,8 @@
 #!/bin/bash
+update_umask=$(umask)
+umask 077
 pwd=$(pwd)
+chmod 600 "$pwd/update/key" "$pwd/update/curl" "$pwd/update/reload_message" 2>/dev/null || true
 TELEGRAM_API=$(grep -m1 '^TELEGRAM_API=' "$pwd/.env" 2>/dev/null | cut -d'=' -f2-)
 TELEGRAM_API=${TELEGRAM_API:-api.telegram.org}
 # Взаимное исключение через flock, а не через «убить всё похожее».
@@ -25,6 +28,9 @@ fi
 
 : > "$pwd/update/pipe"
 echo "$$" > "$pwd/update/update_pid"
+# Git должен создавать читаемые nginx исходники с прежними правами. Приватная
+# маска нужна только служебным файлам; key/curl уже создаются ботом с 0600.
+umask "$update_umask"
 
 # URL с ключом бота уходит curl'у через stdin-конфиг (-K -), а не аргументом:
 # в argv он был виден любому пользователю хоста через `ps auxww` всё время
@@ -54,7 +60,11 @@ do
         _message_id=$(echo "$_curl_data" | grep -o '"message_id":[0-9]*' | head -1 | cut -d: -f2)
 
         tg_draft "stopping the bot"
-        docker compose down --remove-orphans
+        if ! docker compose down --remove-orphans; then
+            tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update cancelled: could not stop services safely.\"}"
+            : > "$pwd/update/pipe"
+            continue
+        fi
 
         if [[ "$cmd" == "1" ]]
         then
@@ -64,24 +74,49 @@ do
             # отчёт уходил вывод одного лишь pull, поэтому смена ветки выглядела
             # как «ничего не обновилось», хотя приезжали десятки коммитов.
             before=$(git rev-parse HEAD 2>/dev/null)
+            # Файлы остановленных сервисов сохраняем вне Git. Helper копируем
+            # до checkout: целевая ветка может ещё не содержать этот скрипт.
+            if ! cp "$pwd/scripts/preserve_update_state.sh" "$pwd/update/preserve_update_state.sh" \
+                || ! bash "$pwd/update/preserve_update_state.sh" save "$pwd"; then
+                if [[ -e "$pwd/update/runtime-state" ]]; then
+                    tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update stopped: an unfinished runtime backup exists in update/runtime-state. Restore it before starting services.\"}"
+                    exit 1
+                fi
+                make start
+                tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update cancelled: runtime backup failed. Current configuration was not reset.\"}"
+                : > "$pwd/update/pipe"
+                continue
+            fi
+            git_ok=1
+            # Сеть проверяем ДО очистки. Подробный stderr Git может содержать
+            # приватный remote URL; в Telegram передаём только итог операции.
+            git fetch -q >/dev/null 2>&1 || git_ok=0
             tg_draft "clearing the directory"
-            git reset --hard && git clean -fd
-            tg_draft "downloading the update"
-            git fetch
-            if [[ -n "$branch" ]]
+            if [[ $git_ok -eq 1 ]]; then
+                git reset --hard >/dev/null 2>&1 && git clean -fd -e /update/ >/dev/null 2>&1 || git_ok=0
+            fi
+            if [[ $git_ok -eq 1 && -n "$branch" ]]
             then
                 tg_draft "changing branch"
-                git checkout -t "origin/$branch" || git checkout "$branch"
+                git checkout -t "origin/$branch" >/dev/null 2>&1 || git checkout "$branch" >/dev/null 2>&1 || git_ok=0
             fi
             tg_draft "applying updates"
-            pull_out=$(git pull 2>&1)
+            if [[ $git_ok -eq 1 ]]; then
+                git pull --ff-only >/dev/null 2>&1 || git_ok=0
+            fi
             after=$(git rev-parse HEAD 2>/dev/null)
 
-            if [[ -z "$before" || -z "$after" || "$before" == "$after" ]]
+            # Не запускаем контейнеры с пустыми шаблонами даже при ошибке Git.
+            if ! bash "$pwd/update/preserve_update_state.sh" restore "$pwd"; then
+                tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update stopped: runtime restore failed. Services remain stopped; backup retained in update/runtime-state.\"}"
+                exit 1
+            fi
+
+            if [[ $git_ok -ne 1 ]]; then
+                echo 'Git update failed. Runtime configuration preserved.' > ./update/message
+            elif [[ -z "$before" || -z "$after" || "$before" == "$after" ]]
             then
-                # Ничего не поменялось — отдаём вывод pull как есть: там либо
-                # «Already up to date.», либо текст ошибки, и терять его нельзя.
-                echo "$pull_out" > ./update/message
+                echo 'Already up to date. Runtime configuration preserved.' > ./update/message
             else
                 applied=$(git log --oneline --no-decorate -30 "$before..$after" 2>/dev/null)
                 total=$(git rev-list --count "$before..$after" 2>/dev/null || echo 0)

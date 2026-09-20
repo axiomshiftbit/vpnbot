@@ -2,7 +2,6 @@
     "tcp-concurrent": true,
     "enable-process": true,
     "find-process-mode": "strict",
-    "global-client-fingerprint": "~fingerprint~",
     "mode": "rule",
     "log-level": "info",
     "ipv6": false,

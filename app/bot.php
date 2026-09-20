@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/ClashTemplateValidator.php';
+require_once __DIR__ . '/VlessEncryption.php';
 
 class Bot
 {
@@ -398,7 +399,7 @@ class Bot
             return false;
         }
         @chmod($tmp, 0600);
-        $ok = fwrite($h, $data) !== false;
+        $ok = fwrite($h, $data) === strlen($data);
         fclose($h);
         // Результат записи раньше не проверялся: при переполненном диске в
         // ./certs оставался обрезанный ключ, а nginx падал на рестарте.
@@ -588,6 +589,16 @@ class Bot
                 break;
             case preg_match('~^/fingerprintMenu$~', $this->input['callback'], $m):
                 $this->fingerprintMenu();
+                break;
+            case preg_match('~^/vlessEncryption$~', $this->input['callback'], $m):
+                $this->vlessEncryptionMenu();
+                break;
+            case preg_match('~^/vlessEncryptionSet (off|x25519|mlkem768) (native|xorpub|random)$~', $this->input['callback'], $m):
+                $this->setVlessEncryption($m[1], $m[2]);
+                break;
+            case preg_match('~^/vlessEncryptionRotate$~', $this->input['callback'], $m):
+                $ve = $this->getPacConf()['vless_encryption'] ?? [];
+                $this->setVlessEncryption($ve['auth'] ?? 'x25519', $ve['mode'] ?? 'native', true);
                 break;
             case preg_match('~^/dpiMenu$~', $this->input['callback'], $m):
                 $this->dpiMenu();
@@ -2693,6 +2704,10 @@ class Bot
             ];
         }
         $pac = $this->getPacConf();
+        if (!VlessEncryption::applyServer($c, $pac)) {
+            error_log('restartXray: invalid VLESS Encryption settings');
+            return false;
+        }
         $this->applySniffingToXray($c, $pac);
         $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
@@ -2735,19 +2750,29 @@ class Bot
         if (false === $json) {
             error_log('restartXray: xray.json not written — ' . json_last_error_msg());
 
-            return;
+            return false;
         }
         if (empty($norestart)) {
+            // Проверяет именно выбранное ядро (включая форк) до замены
+            // рабочего файла и остановки процесса. Корректного JSON мало:
+            // ядро может не знать транспорт, алгоритм или поле конфигурации.
+            if (!$this->validateXrayConfig($c)) {
+                error_log('restartXray: configuration rejected by active core; previous configuration preserved');
+                return false;
+            }
             $this->collectSession();
-            $this->writeXrayJson($json);
+            if (!$this->writeXrayJson($json)) {
+                return false;
+            }
             $this->ssh('pkill xray', 'xr');
             // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
             // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
             // старта — не требует правки override.env и совпадает с datDir().
-            $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json > /dev/null 2>&1 &', 'xr');
+            $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >> /logs/xray_stdout 2>&1 &', 'xr');
         } else {
-            $this->writeXrayJson($json);
+            return $this->writeXrayJson($json);
         }
+        return true;
     }
 
     // Подсеть docker-compose сборки: в ней живут adguard (10.10.0.5), панель,
@@ -3434,6 +3459,8 @@ class Bot
         $c = $this->getSSConfig();
         if (empty($c['password']) || ($c['password'] == 'test')) {
             $this->sspwdch(password_hash(time(), PASSWORD_DEFAULT), 1);
+        } elseif (empty($c['acl'])) {
+            $this->sspwdch($c['password'], 1);
         }
     }
 
@@ -3784,13 +3811,6 @@ class Bot
         return bin2hex(random_bytes(16));
     }
 
-    protected function persistOcUsers(array $users): void
-    {
-        $pac = $this->getPacConf() ?: [];
-        $pac[self::OC_USERS] = $users;
-        $this->setPacConf($pac);
-    }
-
     protected function syncOcUsers(?array $clients = null): array
     {
         $clients = $clients ?? $this->getClientsOc();
@@ -3815,13 +3835,50 @@ class Bot
         return $users;
     }
 
-    protected function setOcUserPassword(string $user, string $pass): void
+    public static function ocPasswordFile(string $contents, string $user, ?string $hash): string
     {
-        $this->ssh("echo " . escapeshellarg($pass) . " | ocpasswd -c /etc/ocserv/ocserv.passwd " . escapeshellarg($user), 'oc');
-        $users = $this->syncOcUsers($this->getClientsOc());
-        $users[$user] = $pass;
-        $this->persistOcUsers($users);
+        $lines = [];
+        $group = '*';
+        foreach (explode("\n", rtrim($contents, "\n")) as $line) {
+            if (str_starts_with($line, $user . ':')) {
+                $group = explode(':', $line, 3)[1];
+            } elseif ($line !== '') {
+                $lines[] = $line;
+            }
+        }
+        if ($hash !== null) $lines[] = "$user:$group:$hash";
+        return $lines ? implode("\n", $lines) . "\n" : '';
+    }
+
+    protected function saveOcPassword(string $user, ?string $pass): bool
+    {
+        // Каталог конфигурации в ocserv намеренно :ro. Его меняет PHP,
+        // атомарно и с 0600; пароль не попадает в командную строку SSH.
+        return $this->withLock('oc-users', function () use ($user, $pass) {
+            return $this->pacConfUpdate(function (&$pac) use ($user, $pass) {
+                $path = '/config/ocserv.passwd';
+                $raw = @file_get_contents($path);
+                if ($raw === false) return false;
+                $hash = $pass === null ? null : crypt($pass, '$6$' . bin2hex(random_bytes(8)) . '$');
+                if ($hash !== null && !str_starts_with($hash, '$6$')) return false;
+                if (!$this->writePrivateKey($path, self::ocPasswordFile($raw, $user, $hash))) return false;
+                $users = is_array($pac[self::OC_USERS] ?? null) ? $pac[self::OC_USERS] : [];
+                if ($pass === null) unset($users[$user]);
+                else $users[$user] = $pass;
+                $pac[self::OC_USERS] = $users;
+                return true;
+            });
+        });
+    }
+
+    protected function setOcUserPassword(string $user, string $pass): bool
+    {
+        if (!$this->saveOcPassword($user, $pass)) {
+            $this->send($this->input['chat'], 'OpenConnect: не удалось сохранить пароль');
+            return false;
+        }
         $this->restartOcserv(file_get_contents('/config/ocserv.conf'));
+        return true;
     }
 
     protected function getOcOnlineUsers(?array $clients = null): array
@@ -3848,6 +3905,11 @@ class Bot
 
     public function syncOcservCamouflage()
     {
+        $upstream = file_get_contents('/config/upstream.conf');
+        $nextUpstream = self::ocservDtlsUpstream($upstream);
+        if ($nextUpstream !== $upstream && file_put_contents('/config/upstream.conf', $nextUpstream) !== false) {
+            $this->ssh('nginx -s reload 2>&1', 'up');
+        }
         $conf   = file_get_contents('/config/ocserv.conf');
         $secret = $this->ocCamouflageSecretForConf($conf, true);
         $next   = $this->applyOcCamouflage($conf, $secret);
@@ -3921,12 +3983,23 @@ class Bot
             && !($user === 'CHANGEME' && $pass === 'CHANGEME');
     }
 
+    public static function migrateNaiveAcl(string $conf): string
+    {
+        // Исправляем только прежний штатный ACL. allow all перед встроенными
+        // правилами forwardproxy открывал приватные адреса на портах 80/443.
+        return preg_replace(
+            '~(acl\s*\{\s*deny\s+169\.254\.0\.0/16\s+deny\s+100\.64\.0\.0/10)\s+allow\s+all(\s*\})~',
+            '$1$2',
+            $conf
+        ) ?? $conf;
+    }
+
     public function restartNaive()
     {
         $pac  = $this->getPacConf();
         $user = (string) ($pac['naive']['user'] ?? '');
         $pass = (string) ($pac['naive']['pass'] ?? '');
-        $c    = file_get_contents('/config/Caddyfile');
+        $c    = self::migrateNaiveAcl(file_get_contents('/config/Caddyfile'));
         // Плейсхолдер — то же значение, что в шаблоне config/Caddyfile: пока
         // креды не заданы, caddy не должен подниматься (тот же гард в
         // start_np.sh), иначе сервис работает с угадываемым паролем.
@@ -3970,11 +4043,27 @@ class Bot
         return true;
     }
 
+    public static function hysteriaGuard(array $conf): array
+    {
+        // Внешний ACL — ручная политика администратора. Не смешиваем file и
+        // inline: Hysteria запрещает одновременно использовать оба формата.
+        if (!empty($conf['acl']['file'])) return $conf;
+        $guard = [
+            'direct(10.10.0.5, */53)',
+            'reject(0.0.0.0/8)', 'reject(10.0.0.0/8)', 'reject(127.0.0.0/8)',
+            'reject(169.254.0.0/16)', 'reject(172.16.0.0/12)', 'reject(192.168.0.0/16)',
+            'reject(100.64.0.0/10)', 'reject(::/128)', 'reject(::1/128)',
+            'reject(fc00::/7)', 'reject(fe80::/10)',
+        ];
+        $conf['acl']['inline'] = array_values(array_unique(array_merge($guard, $conf['acl']['inline'] ?? [])));
+        return $conf;
+    }
+
     public function restartHysteria()
     {
         $pac = $this->getPacConf();
         $this->ssh('pkill hysteria', 'hy');
-        $c   = yaml_parse_file('/config/hysteria.yaml');
+        $c   = self::hysteriaGuard(yaml_parse_file('/config/hysteria.yaml'));
         $c['auth']['password'] = $pac['hysteria_pass'] ?? '';
 
         // Salamander obfs — XOR-обфускация QUIC-пакетов общим секретом, ломает
@@ -4676,6 +4765,7 @@ NFT;
         $this->ssh('pkill ssserver', 'ss');
         $c = $this->getSSConfig();
         $l = $this->getSSLocalConfig();
+        if (empty($c['acl'])) $c['acl'] = '/config/ss.acl';
         $c['password'] = $l['password'] = $pass;
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->chmodSecret('/config/ssserver.json');
@@ -4946,10 +5036,9 @@ NFT;
     // процесса нет, лога нет. Поднимался ck-server только при рестарте
     // контейнера — там его запускает start_ss.sh, где pkill нет.
     //
-    // `[c]k-server` — регулярка, которая матчит литерал «ck-server» у чужих
-    // процессов, но НЕ матчит собственную командную строку (в ней стоят
-    // скобки). Проверено на рабочем сервере: с трюком шелл выживает, без него — Terminated.
-    public const PKILL_CK = "pkill -f '[c]k-server'";
+    // -f всё ещё убивает свой shell, когда далее в той же команде есть
+    // буквальное «ck-server». -x сравнивает имя процесса, а не SSH-команду.
+    public const PKILL_CK = 'pkill -x ck-server';
     public const PKILL_STLS = "pkill -f '[s]imple-tls'";
 
     private function ckServerRestartCmd(): string
@@ -6175,15 +6264,23 @@ NFT;
         $conf = $this->getPacConf();
         $bot  = preg_replace('~[\W]~iu', '_', $this->request('getMyName', [])['result']['name']);
         $json = $this->export();
+        if (!is_string($json) || !is_array(json_decode($json, true))) {
+            return false;
+        }
         if (!empty($file)) {
-            file_put_contents($file, $json);
+            if (!$this->writePrivateKey($file, $json)) return false;
         }
         if (!empty($conf['pinbackup'])) {
             $this->pinAdmin($conf['pinbackup'], 1);
         }
-        $conf['pinbackup'] = $this->upload("{$bot}_export_" . date('d_m_Y_H_i') . '.json', $json, $c['admin'][0])['result']['message_id'];
+        // Полный экспорт содержит ключи: отправляем из памяти, без временного
+        // файла с обычными правами чтения в /logs.
+        $conf['pinbackup'] = $this->sendFile($c['admin'][0], new CURLStringFile(
+            $json, "{$bot}_export_" . date('d_m_Y_H_i') . '.json', 'application/json'
+        ))['result']['message_id'];
         $this->setPacConf($conf);
         $this->pinAdmin($conf['pinbackup']);
+        return true;
     }
 
     public function checkVersion()
@@ -6581,6 +6678,10 @@ NFT;
             'dnstt' => file_exists('/config/dnstt/server.key') ? [
                 'private' => file_get_contents('/config/dnstt/server.key'),
                 'public'  => file_get_contents('/config/dnstt/server.pub'),
+                'ssh_private' => is_file('/config/dnstt/ssh_host_ed25519_key')
+                    ? file_get_contents('/config/dnstt/ssh_host_ed25519_key') : '',
+                'ssh_public' => is_file('/config/dnstt/ssh_host_ed25519_key.pub')
+                    ? file_get_contents('/config/dnstt/ssh_host_ed25519_key.pub') : '',
             ] : false,
             'xray'          => $this->getXray(),
             'hy'            => yaml_parse_file('/config/hysteria.yaml'),
@@ -6655,7 +6756,7 @@ NFT;
         if (!empty($file) && $file !== $this->update) {
             $file = false;
             $this->answer($this->input['callback_id'] ?? null, 'error', true);
-            return;
+            return false;
         }
         if (!empty($file)) {
             $json = json_decode(file_get_contents($file), true);
@@ -6665,13 +6766,17 @@ NFT;
         }
         if (empty($json) || !is_array($json)) {
             $this->answer($this->input['callback_id'], 'error', true);
+            return false;
         } else {
+            $ok = true;
             // certs
             if (!empty($json['ssl'])) {
                 $out[] = 'update certificates';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->writePrivateKey('/certs/cert_private', $json['ssl']['private']);
-                file_put_contents('/certs/cert_public', $json['ssl']['public']);
+                if (!$this->writePrivateKey('/certs/cert_private', $json['ssl']['private'])
+                    || file_put_contents('/certs/cert_public', $json['ssl']['public']) === false) {
+                    return false;
+                }
             }
             // pac
             if (!empty($json['pac'])) {
@@ -6688,7 +6793,7 @@ NFT;
                     $switch_wg1amnezia = 1;
                 }
                 $json['pac'] = $this->preservePanelPswd($json['pac'], $this->getPacConf());
-                $this->setPacConf($json['pac']);
+                if ($this->setPacConf($json['pac']) === false) return false;
                 $out[] = 'update naiveproxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->restartNaive();
@@ -6734,6 +6839,7 @@ NFT;
                 $out[] = 'update shadowsocks server';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->ssh('pkill ssserver', 'ss');
+                if (empty($json['ss']['acl'])) $json['ss']['acl'] = '/config/ss.acl';
                 file_put_contents('/config/ssserver.json', json_encode($json['ss'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
                 $this->chmodSecret('/config/ssserver.json');
                 // Ключ outbound_proxy («ss через warp») приезжает вместе с
@@ -6765,14 +6871,19 @@ NFT;
             if (!empty($json['xray'])) {
                 $out[] = 'update xray';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->restartXray($json['xray']);
                 // Сами .dat в бэкап не входят (перекачиваемые по URL из datlist), а
                 // восстановленный конфиг может ссылаться на ext:. Докачиваем файлы и
-                // пересобираем block/warp-правила с guard'ом — dead URL не уронит xray.
+                // только затем проверяем новый конфиг ядром.
                 if (!empty($json['pac']['datlist'])) {
                     $out[] = 'update dat';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                     $this->datSync(true);
+                }
+                if (!$this->restartXray($json['xray'])) {
+                    $ok = false;
+                    $out[] = '❌ xray: configuration rejected; previous configuration preserved';
+                    $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                } elseif (!empty($json['pac']['datlist'])) {
                     $this->xrayUpdateRules();
                 }
                 $this->adguardXrayClients();
@@ -6838,6 +6949,7 @@ NFT;
                 if ($this->importOvpnPki($json['ovpn'])) {
                     $this->restartOvpn();
                 } else {
+                    $ok = false;
                     // Причина конкретная: «снимок отвергнут, PKI не тронут» и
                     // «перенос оборвался, PKI смешанный» требуют РАЗНЫХ действий
                     // от админа, а прежний общий текст их не различал.
@@ -6854,8 +6966,13 @@ NFT;
             if (!empty($json['ipsec']) && is_array($json['ipsec'])) {
                 $out[] = 'update ipsec';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->importIpsecPki($json['ipsec']);
-                $this->restartIpsec();
+                if ($this->importIpsecPki($json['ipsec'])) {
+                    $this->restartIpsec();
+                } else {
+                    $ok = false;
+                    $out[] = '❌ ipsec: invalid snapshot or write failed';
+                    $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                }
             }
             if (array_key_exists('pac', $json)) {
                 $domain = $json['pac']['domain'] ?? '';
@@ -6866,8 +6983,18 @@ NFT;
             if (!empty($json['dnstt'])) {
                 $out[] = 'update dnstt certificates';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                file_put_contents('/config/dnstt/server.key', $json['dnstt']['private']);
+                if (!is_dir('/config/dnstt')) mkdir('/config/dnstt', 0700, true);
+                $this->writePrivateKey('/config/dnstt/server.key', $json['dnstt']['private']);
                 file_put_contents('/config/dnstt/server.pub', $json['dnstt']['public']);
+                if (!empty($json['dnstt']['ssh_private']) && !empty($json['dnstt']['ssh_public'])) {
+                    $this->writePrivateKey('/config/dnstt/ssh_host_ed25519_key', $json['dnstt']['ssh_private']);
+                    file_put_contents('/config/dnstt/ssh_host_ed25519_key.pub', $json['dnstt']['ssh_public']);
+                }
+            }
+            if (array_key_exists('pac', $json) || !empty($json['dnstt'])) {
+                // Настройки и ключи уже восстановлены. Без reload демон
+                // продолжал принимать старый пароль/ключ до перезапуска.
+                $this->dnsttStart();
             }
             // nginx
             $out[] = $this->i18n('reset nginx');
@@ -6883,6 +7010,7 @@ NFT;
                 sleep(3);
                 $this->menu();
             }
+            return $ok;
         }
     }
 
@@ -6897,6 +7025,16 @@ NFT;
 
             return;
         }
+        if ($t === 'uri') {
+            $link = $this->linkXray($u);
+            if ($link === '') {
+                $this->answer($this->input['callback_id'], $this->i18n('vless encryption unavailable'), true);
+                return;
+            }
+            return $this->sendFile($this->input['from'], new CURLStringFile(
+                $link, self::safeFileName($c['email'], 'client') . '_uri.txt', 'text/plain'
+            ));
+        }
         // subtoken (sidOf), не id: с pac.subtoken_strict=1 findClientBySid()
         // подбором по credential'у не резолвит вообще ничего — subscription()
         // молча отдаёт '', и кнопка "⬇️" присылала пустой файл вместо конфига.
@@ -6904,6 +7042,11 @@ NFT;
         $_GET['t']              = $t;
         $_SERVER['SERVER_NAME'] = $this->getDomain($pac['transport'] != 'Reality');
         $conf                   = $this->subscription(1);
+        if ($conf === '') {
+            $error = $this->subscriptionCompatibilityError($this->getXray(), $pac, $t);
+            $this->answer($this->input['callback_id'], $this->i18n($error ?: 'vless encryption unavailable'), true);
+            return;
+        }
         $this->sendFile($this->input['from'], new CURLStringFile($conf, $c['email'] . ($t == 'cl' ? '_mihomo.yaml' :($t == 'si' ? '_singbox.json' : '_v2ray.json'))));
     }
 
@@ -9610,17 +9753,16 @@ NFT;
         return array_values(array_unique($domains));
     }
 
-    public function sslip()
+    public function sslip(bool $initialSetup = false)
     {
         require __DIR__ . '/config.php';
-        $p  = $this->getPacConf();
         $ip = getenv('IP');
         $r  = $this->send($c['admin'][0], "start $ip");
 
         $this->input['chat']        = $c['admin'][0];
         $this->input['message_id']  = $r['result']['message_id'];
         $this->input['callback_id'] = false;
-        if (empty($p)) {
+        if ($initialSetup) {
             $this->addDomain(str_replace('.', '-', $this->ip) . '.nip.io', 1);
             $this->setSSL('letsencrypt');
         }
@@ -9819,11 +9961,19 @@ NFT;
 
     public function getPacConf()
     {
-        // is_array: json_decode отдаёт null и на битом файле, и на пустом —
-        // раньше это уезжало дальше как null и падало уже у вызывающего.
-        $conf = json_decode((string) @file_get_contents($this->pac), true);
+        $raw = @file_get_contents($this->pac);
+        // Отсутствующий файл допускается до инициализации. Существующий
+        // повреждённый файл нельзя заменять defaults: следующий getHashBot()
+        // записал бы их поверх настроек и ключей даже при открытии панели.
+        if ($raw === false && !file_exists($this->pac)) {
+            return self::PAC_DEFAULTS;
+        }
+        $conf = json_decode((string) $raw, true);
+        if (!is_array($conf)) {
+            throw new RuntimeException('pac.json недоступен или повреждён — операция отменена');
+        }
 
-        return (is_array($conf) ? $conf : []) + self::PAC_DEFAULTS;
+        return $conf + self::PAC_DEFAULTS;
     }
 
     public function setPacConf(array $conf)
@@ -9844,13 +9994,9 @@ NFT;
 
             return false;
         }
-        $tmp  = $this->pac . '.' . getmypid() . '.tmp';
-        if (file_put_contents($tmp, $data, LOCK_EX) === false) {
-            @unlink($tmp);
-
-            return false;
-        }
-        return rename($tmp, $this->pac);
+        // pac.json содержит ключи REALITY и VLESS Encryption. Временный файл
+        // должен иметь 0600 ДО записи, а rename не должен возвращать 0644.
+        return $this->writePrivateKey($this->pac, $data);
     }
 
     public function domain()
@@ -10910,6 +11056,7 @@ NFT;
     {
         $xr = $this->getXray();
         $ad = yaml_parse_file($this->adguard);
+        $tmp = [];
         foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
             $tmp[] = [
                 'safe_search' => [
@@ -15043,6 +15190,10 @@ DNS-over-HTTPS with IP:
 
     public function setdnsttPassword($text)
     {
+        if (strlen($text) > 128 || preg_match('~[\x00\r\n]~', $text)) {
+            $this->send($this->input['chat'], 'dnstt: пароль до 128 символов, без перевода строки');
+            return;
+        }
         $c = $this->getPacConf();
         if ($text) {
             $c['dnsttPassword'] = $text;
@@ -15056,6 +15207,11 @@ DNS-over-HTTPS with IP:
 
     public function setdnsttDomain($text)
     {
+        $text = strtolower(trim($text));
+        if ($text !== '' && !self::dnsttDomainOk($text)) {
+            $this->send($this->input['chat'], 'dnstt: некорректный домен');
+            return;
+        }
         $c = $this->getPacConf();
         if ($text) {
             $c['dnsttDomain'] = $text;
@@ -16169,18 +16325,28 @@ DNS-over-HTTPS with IP:
         $this->telemtSettings();
     }
 
+    public static function dnsttDomainOk(string $domain): bool
+    {
+        return (bool) preg_match('~^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$~iD', $domain);
+    }
+
     public function dnsttStart()
     {
         $c = $this->getPacConf();
-        $this->ssh('pkill dnstt', 'dnstt');
+        $settings = [];
         if (!empty($c['dnsttDomain']) && !empty($c['dnsttPassword'])) {
-            $this->ssh("adduser -D -s /bin/sh vpnbot", 'dnstt');
-            $this->ssh("echo " . escapeshellarg("vpnbot:{$c['dnsttPassword']}") . " | chpasswd", 'dnstt');
-            if (!file_exists('/config/dnstt/server.key')) {
-                $this->ssh("dnstt-server -gen-key -privkey-file /dnstt/server.key -pubkey-file /dnstt/server.pub", 'dnstt');
-            }
-            $this->ssh("dnstt-server -udp :53 -privkey-file /dnstt/server.key " . escapeshellarg($c['dnsttDomain']) . " 127.0.0.1:22", 'dnstt' , false, '/logs/dnstt');
+            if (!self::dnsttDomainOk($c['dnsttDomain'])) return false;
+            $settings = [
+                'domain' => $c['dnsttDomain'],
+                'password_hash' => crypt($c['dnsttPassword'], '$6$' . bin2hex(random_bytes(8)) . '$'),
+            ];
         }
+        // Хэш и домен переживают recreate. Пароль больше не попадает в argv
+        // SSH/chpasswd; общий sshd_config всех контейнеров остаётся строгим.
+        if (!is_dir('/config/dnstt')) mkdir('/config/dnstt', 0700, true);
+        if (!$this->writePrivateKey('/config/dnstt/settings.json', json_encode($settings))) return false;
+        $out = $this->ssh('/bin/sh /start_dnstt.sh --reload', 'dnstt');
+        return !$this->sshFailed && str_contains((string) $out, 'dnstt-ready');
     }
 
     public function dnsttDownload()
@@ -16191,7 +16357,7 @@ DNS-over-HTTPS with IP:
     public function dnstt($update = false)
     {
         $c      = $this->getPacConf();
-        $pubkey = file_get_contents('/config/dnstt/server.pub');
+        $pubkey = is_file('/config/dnstt/server.pub') ? file_get_contents('/config/dnstt/server.pub') : '';
         $text[] = "dnstt";
         if (!empty($c['dnsttDomain']) && !empty($c['dnsttPassword'])) {
             // dnsttDomain и dnsttPassword — сырой ввод (сеттеры кладут trim
@@ -16446,10 +16612,12 @@ DNS-over-HTTPS with IP:
         $v['tt']     = $this->pickVersion($ask('tt', 'printf "tt:"; trusttunnel_endpoint --version 2>&1 | head -1'), 'tt');
         $v['ovpn']   = $this->pickVersion($ask('ovpn', 'printf "ovpn:"; openvpn --version 2>&1 | head -1'), 'ovpn');
 
-        // Контейнер ipsec несёт два демона: strongSwan (IKEv2) и xl2tpd (L2TP).
+        // strongSwan 6.1 собирается со swanctl, без устаревшего CLI ipsec.
+        // Fallback нужен старым образам. Пустую версию отделяем переводом
+        // строки, иначе версия xl2tpd попадёт под метку ipsec.
         // У xl2tpd НЕ head -1: `xl2tpd -v` печатает первой строкой пустую, и
         // head отдавал бы её вместо версии (проверено на боевом контейнере).
-        $out        = $ask('ipsec', 'printf "ipsec:"; ipsec version 2>&1 | head -1; printf "l2tp:"; xl2tpd -v 2>&1 | grep -i -m1 version');
+        $out        = $ask('ipsec', 'sswan_version=$(swanctl --version 2>/dev/null || ipsec version 2>/dev/null); printf "ipsec:%s\n" "$sswan_version"; printf "l2tp:"; xl2tpd -v 2>&1 | grep -i -m1 version');
         $v['ipsec'] = $this->pickVersion($out, 'ipsec');
         $v['l2tp']  = $this->pickVersion($out, 'l2tp');
 
@@ -18024,6 +18192,9 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> SMUX';
         $text[] = $this->i18n('smux hint');
+        if (in_array($p['transport'] ?? '', ['Reality', 'trojan-grpc'], true)) {
+            $text[] = $this->i18n('smux sing compatibility');
+        }
 
         $data = [];
         if (!$probe['ok']) {
@@ -18163,11 +18334,15 @@ DNS-over-HTTPS with IP:
         $core = $this->xrayCore() === 'fork' ? 'origin' : 'fork';
         $r    = $this->applyXrayCore($core);
         if (empty($r['ok'])) {
+            $error = match (true) {
+                in_array('vless encryption check failed', $r['note'], true) => 'vless encryption check failed',
+                in_array('xr unreachable', $r['note'], true) => 'smux xr unreachable',
+                in_array('fork missing', $r['note'], true) => 'smux fork missing',
+                default => 'smux apply failed',
+            };
             $this->answer(
                 $this->input['callback_id'],
-                $this->i18n(in_array('xr unreachable', $r['note'], true)
-                    ? 'smux xr unreachable'
-                    : 'smux fork missing'),
+                $this->i18n($error),
                 true
             );
 
@@ -18175,7 +18350,8 @@ DNS-over-HTTPS with IP:
         }
         $this->answer(
             $this->input['callback_id'],
-            ($core === 'fork' ? 'fork (smux)' : 'XTLS') . ' — ' . implode(', ', $r['note'])
+            ($core === 'fork' ? 'fork (smux)' : 'XTLS') . ' — ' . implode(', ', $r['note']),
+            true
         );
         $this->smuxMenu();
     }
@@ -18203,6 +18379,11 @@ DNS-over-HTTPS with IP:
     public function smuxToggle($what)
     {
         $p = $this->getPacConf();
+        if ($what === 'enabled' && $this->xrayCore($p) !== 'fork') {
+            $this->answer($this->input['callback_id'], $this->i18n('smux select fork'), true);
+            return $this->smuxMenu();
+        }
+        $old = $p;
         $s = $this->smuxSettings($p);
         switch ($what) {
             case 'enabled':
@@ -18243,8 +18424,18 @@ DNS-over-HTTPS with IP:
         }
         $s['configured'] = 1;
         $p['smux']       = $s;
-        $this->setPacConf($p);
-        $this->syncSmuxLive($p);
+        if ($this->setPacConf($p) === false) {
+            $this->answer($this->input['callback_id'], $this->i18n('smux apply failed'), true);
+            return $this->smuxMenu();
+        }
+        if (!$this->syncSmuxLive($p)) {
+            $this->setPacConf($old);
+            $this->answer($this->input['callback_id'], $this->i18n('smux apply failed'), true);
+            return $this->smuxMenu();
+        }
+        if ($what === 'enabled') {
+            $this->answer($this->input['callback_id'], $this->i18n($s['enabled'] ? 'smux enabled' : 'smux disabled'), true);
+        }
         $this->smuxMenu();
     }
 
@@ -18347,15 +18538,16 @@ DNS-over-HTTPS with IP:
     // Правки smux трогают xray.json только через brutal-opts (для самого smux
     // серверу настройка не нужна). Рестартуем ядро лишь когда блок реально
     // изменился — иначе каждое нажатие рвало бы всем клиентам соединения.
-    public function syncSmuxLive(array $p): void
+    public function syncSmuxLive(array $p): bool
     {
         $c   = $this->getXray();
         $was = $c['inbounds'][0]['smux'] ?? null;
         $this->ensureSmuxInbound($c, $p);
         $now = $c['inbounds'][0]['smux'] ?? null;
         if ($was !== $now) {
-            $this->restartXray($c);
+            return $this->restartXray($c) !== false;
         }
+        return true;
     }
 
     public function switchIpLimit($limit)
@@ -20765,10 +20957,17 @@ DNS-over-HTTPS with IP:
     {
         $c      = $this->getXray();
         $pac    = $this->getPacConf();
+        if ($this->subscriptionCompatibilityError($c, $pac, $s == 2 ? 'si' : 's') !== '') {
+            return '';
+        }
+        $encryption = VlessEncryption::client($c, $pac);
         $domain = $this->getDomain($pac['transport'] != 'Reality');
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $fp     = $this->fingerprint();
+        if (($pac['transport'] ?? '') === 'Reality') {
+            $fp = 'chrome';
+        }
         // Share-link #remark shown as the node name in the client, prefixed with
         // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
         // this with the relay's country for relay subscriptions.
@@ -20778,22 +20977,12 @@ DNS-over-HTTPS with IP:
         // и кириллица уезжали в ссылку сырыми.
         $remark = rawurlencode($this->flagName($c['inbounds'][0]['settings']['clients'][$i]['email'], $this->ip));
         $stok   = $this->sidOf($c['inbounds'][0]['settings']['clients'][$i]); // sub locator
-        $si     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
-            'h' => $hash,
-            't' => 'si',
-            's' => $stok,
-        ]));
-        $v2     = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
-            'h' => $hash,
-            't' => 's',
-            's' => $stok,
-        ]));
 
         switch ($s) {
             case 1:
-                return "v2rayng://install-config?url=$v2#{$c['inbounds'][0]['settings']['clients'][$i]['id']}";
             case 2:
-                return "sing-box://import-remote-profile/?url={$si}#{$remark}";
+                return $this->subscriptionImportUrl($s == 2 ? 'si' : 'v', "$scheme://{$domain}/pac$hash",
+                    ['h' => $hash, 's' => $stok], rawurldecode($remark));
 
             default:
                 // Reality client extras (items 2/4): spiderX (spx) and mldsa verify
@@ -20874,6 +21063,9 @@ DNS-over-HTTPS with IP:
                                     . "#{$remark}";
                         break;
                 }
+                if (str_starts_with($link, 'vless://')) {
+                    $link = str_replace('#', '&encryption=' . rawurlencode($encryption) . '#', $link);
+                }
                 return $link;
 
         }
@@ -20936,6 +21128,9 @@ DNS-over-HTTPS with IP:
         }
 
         $native = $this->linkXray($i);
+        if ($native === '') {
+            $this->subNotFound($this->i18n('vless encryption unavailable'));
+        }
         $links  = [$native];
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']])) {
             // Explicit relay requested: serve only that relay's node (unchanged).
@@ -20956,6 +21151,7 @@ DNS-over-HTTPS with IP:
 
         $this->subSecurityHeaders();
         header('Content-Type: text/plain; charset=utf-8');
+        header('Profile-Title: base64:' . base64_encode((string) $client['email']));
         header('Profile-Update-Interval: 12');
         echo base64_encode($body);
     }
@@ -22325,10 +22521,11 @@ DNS-over-HTTPS with IP:
         $clients = $this->getClientsOc();
         foreach ($clients as $k => $v) {
             if ($i == $k) {
-                $this->ssh("ocpasswd -c /etc/ocserv/ocserv.passwd -d " . escapeshellarg($v), 'oc');
-                $users = $this->syncOcUsers($clients);
-                unset($users[$v]);
-                $this->persistOcUsers($users);
+                if (!$this->saveOcPassword($v, null)) {
+                    $this->send($this->input['chat'], 'OpenConnect: не удалось удалить пользователя');
+                    break;
+                }
+                $this->ssh('occtl disconnect user ' . escapeshellarg($v), 'oc');
                 break;
             }
         }
@@ -23140,6 +23337,154 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Новый REALITY требует гибридный key_share. Неизвестная версия/сбой SSH
+    // не означают несовместимость и не должны отключать существующие подписки.
+    public function realityRequiresMlkem(): bool
+    {
+        $probe = $this->xrayCoreProbe();
+        if (!$probe['ok'] || ($probe['running'] !== '' && $probe['running'] !== $probe['active'])) {
+            return false;
+        }
+        // Форк может выпускаться с новой датой, сохраняя прежний REALITY.
+        // Проверяем версию зависимости из Go build info самого бинаря.
+        if (preg_match('~^v0\.0\.0-(\d{14})-[0-9a-f]+$~D', $probe['reality'] ?? '', $build)) {
+            return strcmp($build[1], '20260908062103') >= 0;
+        }
+        // Без build info календарная версия неизвестного форка недостаточна.
+        return $probe['active'] === 'origin'
+            && preg_match('~Xray\s+v?(\d+\.\d+\.\d+)~i', $probe['version'], $match)
+            && version_compare($match[1], '26.9.8', '>=');
+    }
+
+    public function subscriptionCompatibilityError(array $xr, array $pac, string $type): string
+    {
+        $encryption = VlessEncryption::client($xr, $pac);
+        if ($encryption === null) {
+            return 'vless encryption unavailable';
+        }
+        if ($type === 'si') {
+            if ($encryption !== 'none') {
+                return 'vless encryption singbox';
+            }
+            if (($pac['transport'] ?? '') === 'Reality' && $this->realityRequiresMlkem()) {
+                return 'reality singbox mlkem';
+            }
+        }
+        return '';
+    }
+
+    public function vlessEncryptionMenu()
+    {
+        $p = $this->getPacConf();
+        $s = is_array($p['vless_encryption'] ?? null) ? $p['vless_encryption'] : [];
+        $text = ['Menu -> ' . $this->i18n('xray') . ' -> VLESS Encryption', $this->i18n('vless encryption hint')];
+        $text[] = $this->i18n('vless encryption singbox');
+        if (($p['transport'] ?? '') === 'trojan-grpc') {
+            $text[] = $this->i18n('vless encryption transport');
+        }
+        $data = [[['text' => $this->i18n(empty($s['enabled']) ? 'off' : 'on'), 'callback_data' => '/vlessEncryptionSet off native']]];
+        foreach (['x25519' => 'X25519', 'mlkem768' => 'ML-KEM-768'] as $auth => $label) {
+            $row = [];
+            foreach (VlessEncryption::MODES as $mode) {
+                $selected = !empty($s['enabled']) && ($s['auth'] ?? '') === $auth && ($s['mode'] ?? '') === $mode;
+                $row[] = ['text' => "$label / $mode" . ($selected ? ' ✓' : ''), 'callback_data' => "/vlessEncryptionSet $auth $mode"];
+            }
+            $data[] = $row;
+        }
+        if (!empty($s['enabled'])) {
+            $data[] = [['text' => $this->i18n('vless encryption rotate'), 'callback_data' => '/vlessEncryptionRotate']];
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function setVlessEncryption(string $auth, string $mode, bool $rotate = false): void
+    {
+        $error = $this->applyVlessEncryption($auth, $mode, $rotate);
+        $this->answer($this->input['callback_id'], $this->i18n($error ?: 'vless encryption updated'), true);
+        $this->vlessEncryptionMenu();
+    }
+
+    public function applyVlessEncryption(string $auth, string $mode, bool $rotate = false): string
+    {
+        if (!in_array($auth, ['off', 'x25519', 'mlkem768'], true) || !in_array($mode, VlessEncryption::MODES, true)) {
+            return 'vless encryption unavailable';
+        }
+        return $this->withLock('xray', function () use ($auth, $mode, $rotate) {
+            return $this->withLock('pac', function () use ($auth, $mode, $rotate) {
+                $p = $this->getPacConf();
+                $old = $p;
+                $x = $this->getXray();
+                if (!is_array($p) || !is_array($x)) {
+                    return 'vless encryption unavailable';
+                }
+                $s = is_array($p['vless_encryption'] ?? null) ? $p['vless_encryption'] : [];
+                if ($rotate && empty($s['enabled'])) {
+                    return 'vless encryption unavailable';
+                }
+                if ($auth !== 'off') {
+                    if (($x['inbounds'][0]['protocol'] ?? '') !== 'vless') {
+                        return 'vless encryption transport';
+                    }
+                    if ($rotate || ($s['auth'] ?? '') !== $auth || VlessEncryption::pair($s) === null) {
+                        // Вывод содержит приватные ключи: не выводить в UI/лог.
+                        $pairs = VlessEncryption::parseOutput((string) $this->ssh('xray vlessenc', 'xr'));
+                        if ($this->sshFailed || !isset($pairs[$auth])) {
+                            return 'vless encryption generate failed';
+                        }
+                        $s = $pairs[$auth];
+                    }
+                    $s['mode'] = $mode;
+                }
+                $s['enabled'] = $auth !== 'off';
+                $p['vless_encryption'] = $s;
+                if (!VlessEncryption::applyServer($x, $p) || !$this->validateXrayConfig($x)) {
+                    return 'vless encryption check failed';
+                }
+                if ($this->setPacConf($p) === false) {
+                    return 'vless encryption save failed';
+                }
+                if ($this->restartXray($x) === false) {
+                    $this->setPacConf($old);
+                    return 'vless encryption save failed';
+                }
+                return '';
+            }, 20, 'vless encryption save failed');
+        }, 20, 'vless encryption save failed');
+    }
+
+    public function validateXrayConfig(array $config, string $binary = 'xray'): bool
+    {
+        // /logs общий с xr. tempnam создаёт 0600; ошибки Xray могут содержать
+        // decryption, поэтому наружу выходит только маркер успеха.
+        // getXray() читает JSON как массив: восстановить stats:{} до проверки,
+        // как это делает restartXray() перед записью рабочего конфига.
+        if (isset($config['stats']) && $config['stats'] === []) {
+            $config['stats'] = new stdClass();
+        }
+        if (isset($config['policy']['levels']) && is_array($config['policy']['levels'])) {
+            $config['policy']['levels'] = (object) $config['policy']['levels'];
+        }
+        $json = json_encode($config, JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            return false;
+        }
+        $file = @tempnam('/logs', '.xray-check-');
+        if ($file === false) {
+            return false;
+        }
+        try {
+            if (dirname($file) !== '/logs' || file_put_contents($file, $json) === false) {
+                return false;
+            }
+            $out = $this->ssh('XRAY_LOCATION_ASSET=/logs/geodata timeout 15 ' . escapeshellarg($binary)
+                . ' run -test -format json -config ' . escapeshellarg($file) . ' >/dev/null 2>&1 && printf XRAY_CONFIG_OK', 'xr');
+            return !$this->sshFailed && trim((string) $out) === 'XRAY_CONFIG_OK';
+        } finally {
+            @unlink($file);
+        }
+    }
+
     // Версия Xray-core из контейнера. `xray version` печатает строку вида
     // "Xray 1.8.24 (Xray, Penetrates Everything.) ..." — берём номер версии.
     // Не требует запущенного процесса, поэтому работает даже когда xray off.
@@ -23201,7 +23546,9 @@ DNS-over-HTTPS with IP:
                 . '"$(readlink -f /usr/local/bin/xray)" '
                 . '"$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)" '
                 . '"$(p=$(pgrep -f "[x]ray run" | head -n1); test -n "$p" && readlink -f /proc/$p/exe 2>/dev/null)" '
-                . '"$(xray version 2>&1 | head -n1)"',
+                . '"$(xray version 2>&1 | head -n1; printf "\nREALITY_BUILD="; '
+                . 'LC_ALL=C grep -aoE \'github.com/xtls/reality[[:space:]]+v[0-9A-Za-z.+_-]+\' /usr/local/bin/xray 2>/dev/null '
+                . '| head -n1 | awk \'{print $2}\')"',
             'xr'
         );
         // ok=false — контейнер не ответил. Отличать это от «форка нет» ОБЯЗАТЕЛЬНО:
@@ -23214,6 +23561,12 @@ DNS-over-HTTPS with IP:
         // апстрим»: иначе свежая установка выглядела бы как расхождение и
         // авторемонт гонял бы рестарт по кругу.
         $run = $ok ? trim($p[3] ?? '') : '';
+        $version = $ok ? trim(implode('|', array_slice($p, 4))) : '';
+        $reality = '';
+        if (preg_match('~\nREALITY_BUILD=(\S*)$~D', $version, $build)) {
+            $reality = $build[1];
+            $version = substr($version, 0, -strlen($build[0]));
+        }
 
         return $this->xrProbe = [
             'ok'      => $ok,
@@ -23221,7 +23574,8 @@ DNS-over-HTTPS with IP:
             'active'  => $ok && trim($p[1] ?? '') === self::XRAY_BIN_FORK ? 'fork' : 'origin',
             'brutal'  => $ok && in_array('brutal', preg_split('~\s+~', trim($p[2] ?? '')) ?: [], true),
             'running' => $run === '' ? '' : ($run === self::XRAY_BIN_FORK ? 'fork' : 'origin'),
-            'version' => $ok ? trim(implode('|', array_slice($p, 4))) : '',
+            'version' => $version,
+            'reality' => $reality,
         ];
     }
 
@@ -23395,6 +23749,7 @@ DNS-over-HTTPS with IP:
     {
         $core = $core === 'fork' ? 'fork' : 'origin';
         $p    = $this->getPacConf();
+        $previous = $p;
         $note = [];
 
         $probe = $this->xrayCoreProbe(true);
@@ -23402,6 +23757,12 @@ DNS-over-HTTPS with IP:
         // безопасное направление. На форк — только когда бинарь реально виден.
         if ($core === 'fork' && !$probe['fork']) {
             return ['ok' => false, 'note' => [$probe['ok'] ? 'fork missing' : 'xr unreachable']];
+        }
+
+        $candidate = $this->getXray();
+        if (is_array($candidate) && ($candidate['inbounds'][0]['settings']['decryption'] ?? 'none') !== 'none'
+            && !$this->validateXrayConfig($candidate, $core === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN)) {
+            return ['ok' => false, 'note' => ['vless encryption check failed']];
         }
 
         $p['xray_core'] = $core;
@@ -23427,7 +23788,9 @@ DNS-over-HTTPS with IP:
             $p['smux']['brutal']['enabled'] = 0;
             $note[] = 'smux off';
         }
-        $this->setPacConf($p);
+        if ($this->setPacConf($p) === false) {
+            return ['ok' => false, 'note' => ['settings save failed']];
+        }
 
         // Маркер пишем из php напрямую: /logs — общий том с контейнером xr.
         // Симлинк живёт в слое контейнера и пропадёт при пересоздании, маркер —
@@ -23439,7 +23802,17 @@ DNS-over-HTTPS with IP:
         }
         $this->ssh('mkdir -p /usr/local/bin; ln -sf ' . $bin . ' /usr/local/bin/xray', 'xr');
         // Рестарт уже уходит в НОВОЕ ядро: pkill + `xray run` идут через симлинк.
-        $this->restartXray($this->getXray());
+        if ($this->sshFailed || $this->restartXray($this->getXray()) === false) {
+            // Проверка перед restart сохраняет старый процесс; вернём также
+            // его выбор в PAC и симлинке, чтобы подписки соответствовали ему.
+            $oldCore = $this->xrayCore($previous);
+            $this->setPacConf($previous);
+            $this->writeCoreMarker($oldCore);
+            $oldBin = $oldCore === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN;
+            $this->ssh('ln -sf ' . $oldBin . ' /usr/local/bin/xray', 'xr');
+            $this->xrayCoreProbe(true);
+            return ['ok' => false, 'note' => ['xray configuration check failed']];
+        }
         // Ручное переключение обнуляет историю автопочинки: администратор только
         // что задал состояние явно, и прошлые неудачи к нему отношения не имеют.
         $this->xrLinkFix = 0;
@@ -23476,6 +23849,15 @@ DNS-over-HTTPS with IP:
         // этом сразу, а не оставляем пользователя с «unknown transport type».
         if (($p['transport'] ?? '') === 'xhttp') {
             $text[] = $this->i18n('xhttp singbox warn');
+        }
+        if (($p['transport'] ?? '') === 'Reality') {
+            $text[] = $this->i18n('reality mlkem clients');
+            if ($this->realityRequiresMlkem()) {
+                $text[] = $this->i18n('reality singbox mlkem');
+            }
+        }
+        if (VlessEncryption::client($c, $p) !== 'none') {
+            $text[] = $this->i18n('vless encryption singbox');
         }
         $text[] = 'fingerprint: ' . $this->fingerprint();
         $st = $this->getXrayStats();
@@ -23561,6 +23943,10 @@ DNS-over-HTTPS with IP:
             ],
         ];
         $torrentBlocked = $this->xrayTorrentBlocked($p);
+        $data[] = [[
+            'text' => 'VLESS Encryption: ' . $this->i18n(VlessEncryption::client($c, $p) === 'none' ? 'off' : 'on'),
+            'callback_data' => '/vlessEncryption',
+        ]];
         $data[] = [
             [
                 'text'          => 'SMUX: ' . $this->i18n($this->smuxActive($p) ? 'on' : 'off'),
@@ -24091,7 +24477,7 @@ DNS-over-HTTPS with IP:
         if (!empty($this->selfupdate)) {
             // Автообновление: ничего не переключаем, только уважаем флаг.
             if ($off) {
-                $this->ssh('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
+                $this->ssh('pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
             }
             return;
         }
@@ -24109,7 +24495,7 @@ DNS-over-HTTPS with IP:
             }
             unset($p['warpoff']);
         } else {
-            $this->ssh('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
+            $this->ssh('pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
             $p['warpoff'] = 1;
         }
         $this->setPacConf($p);
@@ -24259,19 +24645,14 @@ DNS-over-HTTPS with IP:
         $defaultHwid  = max(1, (int) ($pac['hwid_device_count'] ?: 1));
         $hwidLimit    = $c['hwid_limit'] ? (int) $c['hwid_limit'] : $defaultHwid;
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']}\n";
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . htmlspecialchars($c['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
         if (file_exists(__DIR__ . '/subscription.php')) {
             $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         }
-        $text[] = "<pre><code>{$this->linkXray($i)}</code></pre>\n";
+        $linkIndex = count($text);
+        $text[] = '<pre><code>' . self::esc($this->linkXray($i)) . "</code></pre>\n";
 
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=v&s={$stok}#{$c['email']}'>import://v2rayng</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=si&s={$stok}#{$c['email']}'>import://sing-box</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=s&r=st&s={$stok}#{$c['email']}'>import://streisand</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=h&s={$stok}#{$c['email']}'>import://hiddify</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=si&r=k&s={$stok}#{$c['email']}'>import://karing</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=c&s={$stok}#{$c['email']}'>import://mihomo</a>";
-        $text[] = "<a href='$scheme://{$domain}/pac$hash?t=cl&r=rh&s={$stok}#{$c['email']}'>import://rabbit-hole</a>";
+        array_push($text, ...$this->subscriptionImportLinks("$scheme://{$domain}/pac$hash", $stok, $c['email']));
 
         $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
@@ -24460,6 +24841,16 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/xray",
             ],
         ];
+        // ML-DSA REALITY + ML-KEM Encryption могут сделать сам URI длиннее
+        // сообщения Telegram. Выдаём его целиком файлом по отдельной кнопке;
+        // подписки и управление остаются одной карточкой без хвостов в чате.
+        if ($this->messageTextLength(implode("\n", $text)) > 4096) {
+            $text[$linkIndex] = $this->i18n('xray link file hint') . "\n";
+            array_unshift($data, [[
+                'text' => $this->i18n('xray link file'),
+                'callback_data' => "/dw $i uri",
+            ]]);
+        }
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
@@ -24709,22 +25100,11 @@ DNS-over-HTTPS with IP:
         // Имя relay задаёт админ, а отсюда оно уходит в query-string ссылки:
         // пробел или & в имени резали параметр (и всё, что за ним) — клиент
         // импортировал подписку origin вместо relay.
-        $rl     = '&relay=' . rawurlencode($name);
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . htmlspecialchars($email, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+            . " -> " . $this->i18n('relay subscriptions') . " -> <b>" . htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+            . "</b> (" . htmlspecialchars($relay['address'] ?: $relay['awg_address'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . ")\n";
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$email} -> " . $this->i18n('relay subscriptions') . " -> <b>$name</b> (" . ($relay['address'] ?: $relay['awg_address']) . ")\n";
-
-        // One-tap import deep links (work for every client), relay-flavoured.
-        foreach ([
-            ['s',  'v',  'v2rayng'],
-            ['si', 'si', 'sing-box'],
-            ['s',  'st', 'streisand'],
-            ['si', 'h',  'hiddify'],
-            ['si', 'k',  'karing'],
-            ['cl', 'c',  'mihomo'],
-            ['cl', 'rh', 'rabbit-hole'],
-        ] as [$t, $r, $label]) {
-            $text[] = "<a href='$scheme://{$domain}/pac$hash?t=$t&r=$r&s={$stok}$rl#{$email}'>import://$label</a>";
-        }
+        array_push($text, ...$this->subscriptionImportLinks("$scheme://{$domain}/pac$hash", $stok, $email, $name));
 
         // Raw content URLs for clients where a subscription URL is pasted
         // manually. 'vl' is the base64 vless:// share-link list for v2rayNG &
@@ -25969,6 +26349,15 @@ DNS-over-HTTPS with IP:
     // серверу, который его не распознаёт, то есть перестаёт ходить совсем.
     public const SMUX_PLACEHOLDER = '#^~smux(?::(smux|h2mux))?~$#';
 
+    private function singSmuxCompatible(array $node): bool
+    {
+        // sing-box 1.14.1 + fork 26.9.5: both SMUX and H2MUX truncate
+        // Vision streams; Trojan/gRPC fails completely. VPS A/B tests pass
+        // without multiplex. WebSocket passes with both mux protocols.
+        return ($node['flow'] ?? '') !== 'xtls-rprx-vision'
+            && !(($node['type'] ?? '') === 'trojan' && ($node['transport']['type'] ?? '') === 'grpc');
+    }
+
     public function applySmuxPlaceholders(array &$c, array $pac, string $t, bool $active): int
     {
         $n = 0;
@@ -25994,6 +26383,9 @@ DNS-over-HTTPS with IP:
             // Пустой блок — формат не наш (диалекта для него нет). Оставить
             // строку-маркер нельзя: она уедет клиенту как есть.
             $block = $active ? $this->smuxBlock($pac, $t, $proto) : [];
+            if ($t === 'si' && !$this->singSmuxCompatible($node)) {
+                $block = [];
+            }
             if (!$block) {
                 unset($node[$k]);
                 continue;
@@ -26030,6 +26422,10 @@ DNS-over-HTTPS with IP:
                 break;
             case 'si':
                 if (!isset($c['outbounds'][$index])) {
+                    return;
+                }
+                if (!$this->singSmuxCompatible($c['outbounds'][$index])) {
+                    unset($c['outbounds'][$index]['multiplex']);
                     return;
                 }
                 $c['outbounds'][$index]['multiplex'] = $this->smuxBlock($pac, $t);
@@ -26144,7 +26540,52 @@ DNS-over-HTTPS with IP:
     // остаются рабочими в старых сообщениях чата.
     protected function deepLinkCodes(): array
     {
-        return ['v', 'st', 'si', 'h', 'k', 'w', 'c', 'rh'];
+        return ['v', 'sr', 'st', 'si', 'h', 'k', 'w', 'c', 'rh'];
+    }
+
+    public function subscriptionImportLinks(string $base, string $sid, string $name, string $relay = ''): array
+    {
+        $links = [];
+        foreach (['v' => 'v2rayNG', 'sr' => 'Shadowrocket', 'si' => 'sing-box', 'st' => 'Streisand',
+            'h' => 'Hiddify', 'k' => 'Karing', 'c' => 'mihomo', 'rh' => 'Rabbit Hole'] as $code => $label) {
+            $query = ['t' => 's', 'r' => $code, 's' => $sid];
+            if ($relay !== '') $query['relay'] = $relay;
+            $url = $base . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986) . '#' . rawurlencode($name);
+            $links[] = '<a href="' . htmlspecialchars($url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">import://' . $label . '</a>';
+        }
+        return $links;
+    }
+
+    public function subscriptionImportUrl(string $code, string $base, array $token, string $name): string
+    {
+        $token['t'] = match ($code) {
+            'si', 'k' => 'si',
+            'c', 'rh' => 'cl',
+            // Hiddify converts nodes into its own config; full sing-box exports
+            // may reference DNS resolvers that its converter does not preserve.
+            'sr', 'st', 'h' => 'vl',
+            default => 's', // v2rayNG also accepts remote Xray JSON (routing/SMUX).
+        };
+        // URL-safe base64 avoids '/' splitting the path and '+' being decoded
+        // as a space by clients that apply URLDecoder more than once.
+        $url = $base . '/' . rtrim(strtr(base64_encode(serialize($token)), '+/', '-_'), '=');
+        $encoded = rawurlencode($url);
+        $title = rawurlencode($name);
+        return match ($code) {
+            // Android Uri.fragment decodes once; v2rayNG appends that value to
+            // a java.net.URI, whose fragment is decoded again for the name.
+            'v' => "v2rayng://install-config?url=$encoded#" . rawurlencode($title),
+            'si' => "sing-box://import-remote-profile?url=$encoded#$title",
+            'sr' => 'shadowrocket://add/sub://' . base64_encode($url) . "?remark=$title",
+            'st' => "streisand://import/$encoded#$title",
+            // Hiddify uses an explicit fragment verbatim. Profile-Title supplies
+            // UTF-8 names without showing percent escapes in the app.
+            'h' => "hiddify://import/$url",
+            'k' => "karing://install-config?url=$encoded&name=$title",
+            'c' => "clash://install-config?url=$encoded&overwrite=no&name=$title",
+            'rh' => "rabbithole://add/$url",
+            default => '',
+        };
     }
 
     // Шаблон подписки для клиента: персональный (client.<type>template) →
@@ -26267,6 +26708,8 @@ DNS-over-HTTPS with IP:
         $ruleSetReq = $rName !== ''
             && in_array($type, ['clash', 'sing'], true)
             && in_array($rName, $this->ruleSetNames($tpl, $type), true);
+        $isDeepLink = !$ruleSetReq
+            && in_array((string) ($_GET['r'] ?? ''), $this->deepLinkCodes(), true);
 
         // Лимитируем только реальные HTTP-запросы: внутренние вызовы
         // (subscription(true) из кода бота) не должны крутить счётчик.
@@ -26281,17 +26724,34 @@ DNS-over-HTTPS with IP:
         // а не устройство пользователя, и заголовок X-HWID оно не шлёт — иначе
         // лимитер отдавал бы 429 и правила молча оставались пустыми. Утечки нет:
         // rule-set содержит только домены/адреса правил, без credential'ов.
-        if (!$return && !$ruleSetReq && !$this->processHwidRequest($client)) {
+        // Browser redirects carry only the existing subscription locator, never
+        // VPN credentials. Register/check HWID when the app fetches the content.
+        // The Windows ZIP contains a configuration, so it keeps the HWID gate.
+        $appRedirect = $isDeepLink && ($_GET['r'] ?? '') !== 'w';
+        if (!$return && !$ruleSetReq && !$appRedirect && !$this->processHwidRequest($client)) {
             exit;
         }
+
+        // Формат deep-link определяется клиентом r, а не исходным t.
+        $targetFormat = $ruleSetReq ? $_GET['t'] : match ($_GET['r'] ?? '') {
+            // Hiddify imports a share list but still uses a sing-box-based core.
+            'si', 'k', 'h', 'w' => 'si',
+            'c', 'rh' => 'cl',
+            'sr', 'st', 'v' => 's',
+            default => $_GET['t'],
+        };
+        if (!$ruleSetReq && ($error = $this->subscriptionCompatibilityError($xr, $pac, $targetFormat)) !== '') {
+            if ($return) {
+                return '';
+            }
+            $this->subNotFound($this->i18n($error));
+        }
+        $encryption = VlessEncryption::client($xr, $pac);
 
         // Deep-link импорта — только если 'r' пришёл не из токена (иначе это
         // выборка rule-set'а) и совпадает с известным кодом клиента. Без первого
         // условия rule-set с именем 'c'/'si'/… перехватывался бы этим свитчом и
         // вместо списка правил уходил редирект в клиент.
-        $isDeepLink = !$ruleSetReq
-            && in_array((string) ($_GET['r'] ?? ''), $this->deepLinkCodes(), true);
-
         if ($isDeepLink) {
             // Relay variant: the import-remote-profile deep links must point at
             // the relay-flavoured content URL (token carries 'relay' => <name>),
@@ -26300,43 +26760,18 @@ DNS-over-HTTPS with IP:
             $relayKey = (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]))
                 ? ['relay' => $_GET['relay']]
                 : [];
+            if ($_GET['r'] !== 'w') {
+                $this->subSecurityHeaders();
+                header('Location: ' . $this->subscriptionImportUrl($_GET['r'], "$scheme://{$domain}/pac$hash",
+                    ['h' => $hash, 's' => $stok] + $relayKey, $email));
+                exit;
+            }
             $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h' => $hash,
                 't' => 'si',
                 's' => $stok,
             ] + $relayKey));
-            $v2 = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
-                'h' => $hash,
-                't' => 's',
-                's' => $stok,
-            ] + $relayKey));
-            $cl = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
-                'h' => $hash,
-                't' => 'cl',
-                's' => $stok,
-            ] + $relayKey));
             switch ($_GET['r']) {
-                case 'si':
-                    header("Location: sing-box://import-remote-profile/?url=$si");
-                    exit;
-                case 'st':
-                    header("Location: streisand://import/$v2");
-                    exit;
-                case 'v':
-                    header("Location: v2rayng://install-config?url=$v2");
-                    exit;
-                case 'k':
-                    header("Location: karing://install-config?url=$si");
-                    exit;
-                case 'h':
-                    header("Location: hiddify://install-config/?url=$si");
-                    exit;
-                case 'c':
-                    header("Location: clash://install-config/?url=$cl&overwrite=no&name=$email");
-                    exit;
-                case 'rh':
-                    header("Location: rabbithole://add/$cl");
-                    exit;
                 case 'w':
                     $link = htmlspecialchars($si, ENT_XML1, 'UTF-8');
                     $n    = "singbox_$uid.zip";
@@ -26410,13 +26845,17 @@ DNS-over-HTTPS with IP:
         } elseif ($_GET['t'] === 'cl') {
             $fingerprint = $this->normalizeFingerprint($fingerprint, 'mihomo');
         }
+        // Chrome несёт нужный новому REALITY X25519MLKEM768 key_share.
+        if (($pac['transport'] ?? '') === 'Reality' && $_GET['t'] !== 'si') {
+            $fingerprint = 'chrome';
+        }
 
         switch ($_GET['t']) {
             case 's':
                 $c['outbounds'][$index]['settings']['vnext'][0]['address']  = '~domain~';
                 $c['outbounds'][$index]['settings']['vnext'][0]['users'][0] = [
                     'id'         => '~uid~',
-                    'encryption' => 'none',
+                    'encryption' => $encryption,
                 ];
                 switch ($pac['transport']) {
                     case 'Reality':
@@ -26613,6 +27052,11 @@ DNS-over-HTTPS with IP:
             case 'cl':
                 $c['proxies'][$index]['server'] = '~domain~';
                 $c['proxies'][$index]['uuid']   = '~uid~';
+                $c['proxies'][$index]['client-fingerprint'] = $fingerprint;
+                unset($c['proxies'][$index]['encryption']);
+                if ($encryption !== 'none' && $encryption !== null) {
+                    $c['proxies'][$index]['encryption'] = $encryption;
+                }
                 switch (true) {
                     case $pac['transport'] == 'Reality':
                         unset($c['proxies'][$index]["ws-opts"]);
@@ -26623,6 +27067,7 @@ DNS-over-HTTPS with IP:
                         $c['proxies'][$index]['reality-opts'] = [
                             'public-key' => '~public_key~',
                             'short-id'   => '~short_id~',
+                            'support-x25519mlkem768' => true,
                         ];
                         break;
                     case $pac['transport'] == 'xhttp':
@@ -26631,7 +27076,6 @@ DNS-over-HTTPS with IP:
                         unset($c['proxies'][$index]['reality-opts']);
 
                         $c['proxies'][$index]['network']            = 'xhttp';
-                        $c['proxies'][$index]['client-fingerprint'] = $fingerprint;
                         $c['proxies'][$index]['tls']                = true;
                         $c['proxies'][$index]['alpn']               = ['h2'];
                         $c['proxies'][$index]['servername']         = '~domain~';
@@ -26836,7 +27280,12 @@ DNS-over-HTTPS with IP:
                         // Правила без domain/ip (port/protocol/inboundTag и т.п.)
                         // сохраняем как есть, иначе они молча пропадали.
                         if (!$matched) {
-                            $other[] = $v;
+                            // Пустые PAC-списки оставляют domain:[]/ip:[]:
+                            // без других условий Xray отвергает весь профиль.
+                            $conditions = array_diff_key($v, array_flip(['type', 'outboundTag', 'balancerTag', 'ruleTag']));
+                            if (array_filter($conditions)) {
+                                $other[] = $v;
+                            }
                         }
                     }
                     $c['routing']['rules'] = [];
@@ -26957,6 +27406,7 @@ DNS-over-HTTPS with IP:
         // The body carries client secrets (UUID/password, reality keys) — keep it
         // out of any cache/index (defense-in-depth).
         $this->subSecurityHeaders();
+        header('Profile-Title: base64:' . base64_encode((string) $email));
         if ($_GET['t'] == 'cl') {
             header('Content-type: text/yaml');
             echo yaml_emit($c);
@@ -27131,13 +27581,15 @@ DNS-over-HTTPS with IP:
             // бы. Версию tools берём из кеша: ssh на пути подписки нельзя.
             "amnezia-wg-option" => self::amneziaKeysForMihomo(
                 self::amneziaKeysUsable(
-                    $c["{$container}amnezia_keys"] ?? '',
+                    !empty($c["{$container}amnezia"]) ? ($c["{$container}amnezia_keys"] ?? []) : [],
                     $this->awgSupports3Cached($container),
                     $this->awgSupports31Cached($container)
                 ),
                 !empty($c['mihomo_awg3'])
             ),
-            "pre-shared-key"    => $c["{$container}presharedkey"] ?? '',
+            // После выключения Amnezia её пресет/PSK остаётся в PAC для
+            // следующего включения. Экспорт берёт ключ действующего peer.
+            "pre-shared-key"    => $cl['peers'][0]['PresharedKey'] ?? '',
             // Диапазон приводится к числу уже на месте сборки прокси
             // (keepaliveInt): ssh сюда звать нельзя — это путь подписки.
             "persistent-keepalive" => $c["{$container}amnezia_keepalive"] ?? 20,
@@ -27708,8 +28160,9 @@ DNS-over-HTTPS with IP:
     {
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
+        $ruleset = [];
 
-        foreach ($route['rules'] as $k => $v) {
+        foreach ($route['rules'] ?? [] as $k => $v) {
             if (!empty($v['createruleset'])) {
                 foreach ($v['createruleset'] as $r) {
                     if (!empty($_GET['r']) && $r['name'] == $_GET['r']) {
@@ -27743,7 +28196,7 @@ DNS-over-HTTPS with IP:
         if (!empty($route['rules'])) {
             $route['rules']    = array_values($route['rules']);
         }
-        $route['rule_set'] = array_merge($route['rule_set'] ?: [], $ruleset ?: []);
+        $route['rule_set'] = array_merge($route['rule_set'] ?? [], $ruleset);
         if (empty($route['rule_set'])) {
             unset($route['rule_set']);
         }
@@ -27849,6 +28302,17 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    public static function ocservDtlsUpstream(string $conf): string
+    {
+        // Мигрируем только прежний штатный блок: произвольные UDP-прокси
+        // администратора не меняем. DTLS не несёт TCP TLS ClientHello/SNI.
+        return preg_replace(
+            '~server\s*\{\s*listen\s+443\s+udp\s*;\s*proxy_pass\s+\$sni_name\s*;\s*proxy_protocol\s+on\s*;\s*ssl_preread\s+on\s*;\s*\}~',
+            "server {\n        listen 443 udp reuseport;\n        proxy_pass ocserv;\n    }",
+            $conf
+        ) ?? $conf;
+    }
+
     public function setUpstreamDomainOcserv($domain)
     {
         // Пустая строка — штатный «сброс» (см. вызов при удалении домена),
@@ -27857,7 +28321,7 @@ DNS-over-HTTPS with IP:
             return;
         }
         $sub   = $this->getHashSubdomain('oc');
-        $nginx = file_get_contents('/config/upstream.conf');
+        $nginx = self::ocservDtlsUpstream(file_get_contents('/config/upstream.conf'));
         $body  = ($domain && $sub) ? "$sub.$domain ocserv;" : "#$sub.\$domain ocserv;";
         // Ровно те же две правки, что были сделаны для #naive, — сюда они тогда
         // не доехали (см. upstreamReplace).
@@ -28519,31 +28983,42 @@ DNS-over-HTTPS with IP:
 
     public function applyupdatebot()
     {
-        $this->pinBackup($this->update);
+        if (!$this->pinBackup($this->update)) {
+            $this->send($this->input['from'], $this->i18n('update backup failed'));
+            return;
+        }
         $r = $this->sendDraft($this->input['from'], 1, 'update...');
-        file_put_contents('/update/reload_message', "{$this->input['from']}:{$r['result']['message_id']}");
-        file_put_contents('/update/key', $this->key);
-        file_put_contents('/update/curl', json_encode([
-            'chat_id'    => $this->input['chat'],
-            'message_id' => $r['result']['message_id'],
-            'text'       => '~t~'
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        file_put_contents('/update/pipe', '1');
+        if (!$this->queueUpdateCommand('1', $r)) {
+            $this->send($this->input['from'], $this->i18n('update write failed'));
+            return;
+        }
         $this->delete($this->input['from'], $this->input['message_id']);
     }
 
     public function restart()
     {
         $r = $this->sendDraft($this->input['from'], 1, 'restart...');
-        file_put_contents('/update/reload_message', "{$this->input['from']}:{$r['result']['message_id']}");
-        file_put_contents('/update/key', $this->key);
-        file_put_contents('/update/curl', json_encode([
-            'chat_id'    => $this->input['chat'],
-            'message_id' => $r['result']['message_id'],
-            'text'       => '~t~'
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        file_put_contents('/update/pipe', '2');
+        if (!$this->queueUpdateCommand('2', $r)) {
+            $this->send($this->input['from'], $this->i18n('update write failed'));
+            return;
+        }
         $this->delete($this->input['from'], $this->input['message_id']);
+    }
+
+    public function queueUpdateCommand(string $command, array $draft): bool
+    {
+        $files = [
+            'reload_message' => "{$this->input['from']}:{$draft['result']['message_id']}",
+            'key' => $this->key,
+            'curl' => json_encode(['chat_id' => $this->input['chat'],
+                'message_id' => $draft['result']['message_id'], 'text' => '~t~'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ];
+        foreach ($files as $name => $content) {
+            // The bot token must never be created with the default 0644 mode.
+            if (!$this->writePrivateKey('/update/' . $name, $content)) return false;
+        }
+        // Publish the command only once all data is safely on disk.
+        return $this->writePrivateKey('/update/pipe', $command);
     }
 
     public function configMenu()
@@ -29228,16 +29703,17 @@ DNS-over-HTTPS with IP:
         $this->logs();
     }
 
-    public function selfUpdate()
+    public function selfUpdate(): bool
     {
         // Версии сервисов живут в кэше с часовым TTL — после пересборки образов
         // он бы врал до часа. selfUpdate() зовётся из service.php на каждом
         // старте контейнера, то есть ровно тогда, когда версии и могли
         // измениться: снимаем кэш, cron наполнит его заново на первом же цикле.
         @unlink(static::MENU_VERSIONS_FILE);
-        $ip                         = getenv('IP');
-        $rm                         = explode(':', trim(file_get_contents('/update/reload_message')));
-        $m                          = file_get_contents('/update/message');
+        $updateDir                  = dirname($this->update);
+        $restored                   = is_file($updateDir . '/state-restored');
+        $rm                         = explode(':', trim((string) @file_get_contents($updateDir . '/reload_message')));
+        $m                          = (string) @file_get_contents($updateDir . '/message');
         // message_id может прийти пустым (reload_message вида "chat:") — тогда
         // передавать его в send(?int $to) нельзя: '' → TypeError и фатал в
         // service.php до restartTelemt. Приводим к ?int.
@@ -29245,11 +29721,11 @@ DNS-over-HTTPS with IP:
         $this->input['chat']        = $rm[0];
         $this->input['message_id']  = $mid;
         $this->input['callback_id'] = $mid;
-        // Импорт настроек после обновления — НЕкритичный шаг. Любая ошибка здесь
-        // не должна ронять service.php до restartTelemt. И /update/json
-        // снимаем в любом случае, иначе сбой повторяется при каждом старте.
+        // Старый host-worker сбрасывал конфиги и требовал импорт JSON. Новый
+        // возвращает точные runtime-файлы до запуска контейнеров. Оба пути
+        // сохраняют последнюю копию; ошибка не превращается в новую установку.
         if (file_exists($this->update)) {
-            $this->selfupdate = true;
+            $this->selfupdate = !$restored;
             try {
                 if (!empty($m)) {
                     // htmlspecialchars обязателен: с этого момента в
@@ -29259,18 +29735,31 @@ DNS-over-HTTPS with IP:
                     // обновлении молча не доходил бы.
                     $this->send($this->input['chat'], '<pre>' . htmlspecialchars($m) . '</pre>', $mid);
                 }
-                $r = $this->send($this->input['chat'], "import settings");
-                $this->input['message_id']  = $r['result']['message_id'] ?? $mid;
-                $this->input['callback_id'] = $r['result']['message_id'] ?? $mid;
-                $this->importFile($this->update);
+                if (!$restored) {
+                    $snapshot = json_decode((string) file_get_contents($this->update), true);
+                    if (!is_array($snapshot) || !is_array($snapshot['pac'] ?? null)) {
+                        throw new \RuntimeException('invalid update backup');
+                    }
+                    $r = $this->send($this->input['chat'], "import settings");
+                    $this->input['message_id']  = $r['result']['message_id'] ?? $mid;
+                    $this->input['callback_id'] = $r['result']['message_id'] ?? $mid;
+                    if ($this->importFile($this->update) === false) {
+                        throw new \RuntimeException('update backup restore failed');
+                    }
+                }
+                if (!rename($this->update, $this->update . '.last')) {
+                    throw new \RuntimeException('could not retain update backup');
+                }
+                $this->chmodSecret($this->update . '.last');
             } catch (\Throwable $e) {
-                error_log('selfUpdate import skipped: ' . $e->getMessage());
-            } finally {
-                @unlink($this->update);
+                error_log('selfUpdate: restore failed; backup retained');
+                $this->send($this->input['chat'], $this->i18n('update restore failed'));
+                return false;
             }
         }
-        file_put_contents('/update/message', '');
-        file_put_contents('/update/reload_message', '');
+        @unlink($updateDir . '/state-restored');
+        file_put_contents($updateDir . '/message', '');
+        file_put_contents($updateDir . '/reload_message', '');
         // Миграция DoH-идентификаторов. Некритична и не должна ронять
         // service.php: ниже по selfUpdate() ничего от неё не зависит.
         try {
@@ -29280,7 +29769,7 @@ DNS-over-HTTPS with IP:
         }
         $pac = $this->getPacConf();
         unset($pac['restart']);
-        $this->setPacConf($pac);
+        return $this->setPacConf($pac) !== false;
     }
 
     public function backup()
@@ -30174,23 +30663,17 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'] ?? '', 'wireguard: подсеть исчерпана, свободных адресов нет', $this->input['message_id'] ?? null);
             return;
         }
-        // Ключ через переменную окружения, а не в командной строке: в argv он
-        // был виден любому, кто получил исполнение в контейнере wg (`ps`), а
-        // /ssh раздан не только боту. Значение base64, инъекции не было, но
-        // светить секретом незачем. printf '%s', а не echo: у busybox echo свои
-        // трактовки обратных слэшей.
-        $wgType            = $this->getWGType();
-        $public_server_key = trim($this->ssh(
-            'K=' . escapeshellarg((string) $conf['interface']['PrivateKey'])
-                . " printf '%s' \"\$K\" | $wgType pubkey",
-            $this->getInstanceWG()
-        ));
-        $private_peer_key  = trim($this->ssh("{$this->getWGType()} genkey", $this->getInstanceWG()));
-        $public_peer_key   = trim($this->ssh(
-            'K=' . escapeshellarg((string) $private_peer_key)
-                . " printf '%s' \"\$K\" | $wgType pubkey",
-            $this->getInstanceWG()
-        ));
+        // Ключи остаются внутри shell контейнера: не подставляем секреты в
+        // argv SSH-команды. Присваивание — отдельная команда, иначе форма
+        // K=value printf '%s' "$K" раскрывает старое (обычно пустое) K.
+        $wgType = $this->getWGType();
+        $keysCmd = "SERVER_PUB=\$(awk '/^PrivateKey[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, \"\"); print; exit }' /etc/wireguard/wg0.conf | $wgType pubkey)"
+            . " && PEER_PRIV=\$($wgType genkey)"
+            . " && PEER_PUB=\$(printf '%s' \"\$PEER_PRIV\" | $wgType pubkey)"
+            . " && printf '%s\\n' \"\$SERVER_PUB\" \"\$PEER_PRIV\" \"\$PEER_PUB\"";
+        [$public_server_key, $private_peer_key, $public_peer_key] = array_pad(
+            explode("\n", trim($this->ssh($keysCmd, $this->getInstanceWG()))), 3, ''
+        );
 
         // ssh() отдаёт "" при недоступном контейнере, и раньше пир с пустыми
         // ключами молча уезжал в clients.json (локальная запись-то проходит) —
@@ -30455,7 +30938,8 @@ DNS-over-HTTPS with IP:
             curl_setopt($ch, CURLOPT_PROXY, $proxy);
         }
         $res  = curl_exec($ch);
-        $cerr = $res === false ? curl_error($ch) : '';
+        $curlCode = curl_errno($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $r    = json_decode((string) $res, true);
         // $res — строка (или false): старая проверка $res['description']
         // не срабатывала никогда. Ошибку определяем по декодированному
@@ -30464,14 +30948,17 @@ DNS-over-HTTPS with IP:
         // им лог не засоряем.
         if ((!is_array($r) || empty($r['ok']))
             && !str_contains((string) ($r['description'] ?? ''), 'message is not modified')) {
-            file_put_contents('/logs/requests_error', var_export([
-                'r' => [
-                    'method' => $method,
-                    'data'   => $data,
-                ],
-                'a' => is_array($r) ? $r : $res,
-                'curl' => $cerr,
-            ], true) . "\n", FILE_APPEND);
+            // Сообщения и CURLStringFile содержат пароли и полный backup.
+            // Не сохраняем payload, ответ API и URL даже при ошибке: зеркало
+            // может вернуть присланные секреты в description или HTML.
+            file_put_contents('/logs/requests_error', json_encode([
+                'time' => gmdate('c'),
+                'method' => preg_match('~^[a-zA-Z]{1,64}$~D', (string) $method) ? $method : 'invalid',
+                'http_code' => $httpCode,
+                'api_error_code' => (int) ($r['error_code'] ?? 0),
+                'curl_code' => $curlCode,
+            ]) . "\n", FILE_APPEND | LOCK_EX);
+            $this->chmodSecret('/logs/requests_error');
         }
         return $r;
     }
@@ -30540,6 +31027,16 @@ DNS-over-HTTPS with IP:
         $this->request('setMyCommands', json_encode($data), 1);
     }
 
+    // Telegram ограничивает текст после разбора entities: href и HTML-теги
+    // не занимают место на экране и не должны разрывать карточку с подписками.
+    public function messageTextLength(string $text, string $mode = 'HTML'): int
+    {
+        if (strcasecmp($mode, 'HTML') === 0) {
+            $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        }
+        return mb_strlen($text, 'UTF-8');
+    }
+
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
     {
         if (is_null($text)) {
@@ -30556,7 +31053,7 @@ DNS-over-HTTPS with IP:
             ];
         }
         $length = 3096;
-        if (mb_strlen($text, 'utf-8') > $length) {
+        if ($this->messageTextLength($text, $mode) > 4096) {
             $tails = $this->splitText($text, $length);
             foreach ($tails as $k => $v) {
                 $data = [
@@ -30735,7 +31232,7 @@ DNS-over-HTTPS with IP:
         // как «кнопка не работает». Редактируем первым куском, остальное
         // дописываем отдельными сообщениями — кнопки остаются на исходном.
         $length = 3096;
-        if (mb_strlen($text, 'utf-8') > $length) {
+        if ($this->messageTextLength($text, $mode) > 4096) {
             $tails = $this->splitText($text, $length);
             $text  = array_shift($tails);
             foreach ($tails as $v) {
@@ -32760,26 +33257,27 @@ DNS-over-HTTPS with IP:
 
     public function importIpsecPki(array $files)
     {
-        $root = '/config/ipsec';
-        @mkdir($root, 0755, true);
+        $root = $this->ipsecPaths()['conf'];
+        $decoded = [];
         foreach ($files as $rel => $b64) {
             // Защита от path traversal — как в importOvpnPki.
             $rel = str_replace('\\', '/', $rel);
-            if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false) {
-                continue;
+            if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false || str_contains($rel, "\0")) {
+                return false;
             }
+            if (!is_string($b64) || ($data = base64_decode($b64, true)) === false) return false;
+            $decoded[$rel] = $data;
+        }
+        // Проверяем весь снимок до первой записи: битый base64 прежде
+        // превращал рабочий PSK/ключ в пустой файл и ронял обе службы.
+        if (!is_dir($root) && !@mkdir($root, 0700, true)) return false;
+        if (!@chmod($root, 0700)) return false;
+        foreach ($decoded as $rel => $data) {
             $path = "$root/$rel";
-            @mkdir(dirname($path), 0755, true);
-            file_put_contents($path, base64_decode($b64));
+            if (!is_dir(dirname($path)) && !@mkdir(dirname($path), 0700, true)) return false;
+            if (!$this->writePrivateKey($path, $data)) return false;
         }
-        foreach (['psk', 'chap-secrets', 'secrets.conf'] as $f) {
-            if (file_exists("$root/$f")) {
-                chmod("$root/$f", 0600);
-            }
-        }
-        foreach (glob("$root/pki/*.key") ?: [] as $k) {
-            chmod($k, 0600);
-        }
+        return true;
     }
 
     // swanctl.conf лежит в бэкапе, и importIpsecPki() кладёт снимок обратно —

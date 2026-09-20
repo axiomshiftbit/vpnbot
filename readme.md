@@ -68,6 +68,75 @@ add `@reboot cd /root/vpnbot && make r` and save
 
 ---
 
+## Xray, REALITY и VLESS Encryption
+
+Новое рукопожатие REALITY и VLESS Encryption — независимые настройки.
+Для REALITY бот выдаёт Xray/mihomo профиль с fingerprint `chrome`, а mihomo
+дополнительно получает `reality-opts.support-x25519mlkem768: true`.
+Остальные транспорты сохраняют выбранный в меню fingerprint.
+[Требование REALITY](https://github.com/XTLS/REALITY/commit/8cdf7bf9c7f09cb9814bf08c3eb877f68b85fba8),
+[настройка mihomo](https://wiki.metacubex.one/en/config/proxies/tls/).
+
+Меню **Xray → VLESS Encryption** включает дополнительное шифрование для
+REALITY, WebSocket или XHTTP. Доступны аутентификация X25519/ML-KEM-768
+и режимы `native`, `xorpub`, `random`, как в 3x-ui. Ключи создаёт активное ядро
+командой `xray vlessenc`; конфиг проверяется до применения. Выключение и
+повторное включение сохраняют ключи; для ротации есть отдельная кнопка.
+После изменения параметров все клиенты должны обновить подписку.
+Серверные ключи не включаются в клиентские профили. При переходе на Trojan
+Encryption не применяется; при возврате к VLESS выбранная пара сохраняется.
+[Документация VLESS Encryption](https://xtls.github.io/en/config/outbounds/vless.html).
+
+Официальный sing-box 1.14.1 не поддерживает VLESS Encryption и новое
+рукопожатие REALITY Xray 26.9.8+. Несовместимая подписка отклоняется с
+объяснением; отключение Encryption не исправляет новое рукопожатие REALITY.
+Для sing-box нужны прежнее серверное ядро либо WebSocket/TLS или Trojan/gRPC
+без VLESS Encryption. XHTTP также отсутствует в официальном sing-box.
+[Формат VLESS sing-box](https://sing-box.sagernet.org/configuration/outbound/vless/),
+[его REALITY-клиент](https://github.com/SagerNet/sing-box/blob/v1.14.1/common/tls/reality_client.go).
+
+В ветке `master` штатное ядро закреплено на `v26.7.28` с прежним REALITY
+для sing-box. В `dev` используется `v26.9.9`
+([upstream помечает выпуск как prerelease](https://github.com/XTLS/Xray-core/releases/tag/v26.9.9)).
+Обновите опубликованный образ `xr`; выбор активного ядра в меню должен быть
+`XTLS`. У форка SMUX своя версия. Локальный `XRAY_VERSION` в `override.env`
+влияет на **сборку**, а скачивание готового образа её не меняет. Для другой
+версии задайте нужный `XRAY_VERSION` в `override.env` и пересоберите `xr`.
+Обычный `make start` скачивает опубликованные
+образы, поэтому собственную сборку запускайте без `pull`.
+
+Поддержка общая для XTLS и форка Jolymmiles: новое рукопожатие не включается
+переключателем в JSON, его реализует само ядро. Бот проверяет версию REALITY
+из метаданных бинарника, поэтому будущий выпуск форка с прежней зависимостью
+не считается новым REALITY только по дате релиза. Клиентские параметры MLKEM
+выдаются для обоих ядер. Обновление форка задаётся отдельно через
+`XRAY_FORK_VERSION` в `override.env` с пересборкой `xr`; перед переключением
+при включённом Encryption конфиг проверяется выбранным бинарником.
+
+Shadowrocket объявил VLESS Encryption в версии 2.2.79. Это не подтверждает
+работу нового рукопожатия REALITY с любым TLS fingerprint. В журнале бета-версий
+есть импорт `support-x25519mlkem768` (2.2.90), а в 2.2.93 исправляется описание
+совместимости REALITY/отпечатков. Проверка конкретной версии на iOS необходима;
+её нельзя заменить успешным тестом mihomo или Xray.
+[App Store](https://apps.apple.com/us/app/shadowrocket/id932747118),
+[Shadowrocket News: импорт MLKEM](https://t.me/ShadowrocketNews/1575),
+[исправление описания отпечатка](https://t.me/ShadowrocketNews/1634).
+
+В карточке клиента Xray и его relay доступны ссылки `import://` для
+**Shadowrocket, v2rayNG, sing-box, Streisand, Hiddify, Karing, mihomo и Rabbit Hole**.
+Ссылка открывает установленное приложение и передаёт ему адрес подписки;
+приложение или браузер могут запросить подтверждение добавления. Для mihomo
+ссылку `clash://` обрабатывает установленный графический клиент с поддержкой
+этой схемы. В Hiddify используется команда `hiddify://import/` и подписка
+со списком узлов; маршрутизацию приложение настраивает самостоятельно.
+При включённом HWID переход из браузера доступен, а проверка устройства
+выполняется при загрузке конфигурации приложением. Ограничения совместимости
+протоколов сохраняются независимо от способа импорта.
+[Импорт sing-box](https://sing-box.sagernet.org/clients/general/),
+[Hiddify](https://hiddify.com/app/URL-Scheme/),
+[Karing](https://karing.app/cooperation/scheme),
+[Rabbit Hole](https://rabbit-hole-1.gitbook.io/rabbit-hole-docs/for-devs/deep-linking).
+
 ## Веб-панель: управление ботом без Telegram
 
 Если Telegram недоступен (заблокированы исходящие к `api.telegram.org` либо нет

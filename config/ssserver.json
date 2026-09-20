@@ -9,5 +9,6 @@
     "reuse_port": true,
     "workers": 1,
     "nameserver": "10.10.0.5",
+    "acl": "/config/ss.acl",
     "mode": "tcp_and_udp"
 }

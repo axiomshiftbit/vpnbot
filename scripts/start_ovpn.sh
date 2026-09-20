@@ -228,6 +228,11 @@ sh /ovpn_migrate.sh "$SRV"
 # EasyRSA/PKI/server.conf больше не меняются; демон может стартовать без лока.
 flock -u 8
 
+# VPN-клиентам разрешён только DNS внутри служебной сети сборки.
+iptables -A INPUT -i tun+ -j REJECT
+iptables -A FORWARD -i tun+ -d 10.10.0.5 -p udp --dport 53 -j ACCEPT
+iptables -A FORWARD -i tun+ -d 10.10.0.5 -p tcp --dport 53 -j ACCEPT
+iptables -A FORWARD -i tun+ -d 10.10.0.0/16 -j REJECT
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true
 
 mkdir -p /dev/net

@@ -5,6 +5,6 @@ ssh-keygen -A
 # заменяет, то есть это обычный фоновый запуск, но читается как «заменить
 # текущий процесс» (то же пояснение есть в start_wp.sh).
 /usr/sbin/sshd -D -e "$@" &
-php service.php
+php service.php || exit $?
 php iplimit.php &
 php cron.php
