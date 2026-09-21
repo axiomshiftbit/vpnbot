@@ -66,6 +66,7 @@ jobs:
 
       - name: Тесты
         run: |
+          python3 -m unittest discover -s tests -p '*_test.py' || exit 1
           fail=0
           for f in tests/*_test.php; do
             if out=$(php "$f" 2>&1); then

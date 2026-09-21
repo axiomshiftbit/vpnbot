@@ -2,9 +2,11 @@
 
 require_once __DIR__ . '/ClashTemplateValidator.php';
 require_once __DIR__ . '/VlessEncryption.php';
+require_once __DIR__ . '/BotProtocols.php';
 
 class Bot
 {
+    use BotProtocols;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -549,6 +551,15 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
+            case preg_match('~^/protocolModules(?: (oc|ovpn|ipsec|ikev2|l2tp))?$~D', $this->input['callback'], $m):
+                if ($this->admin) {
+                    if (isset($m[1])) $this->protocolModulesToggle($m[1]);
+                    else $this->protocolModulesMenu();
+                }
+                break;
+            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
+                $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
+                break;
             // смена айпи сервера
             // wg-меню с явным инстансом: сначала пере-пиним wg_instance, дальше
             // обычный рендер. Роут без инстанса ниже оставлен для старых
@@ -3905,11 +3916,8 @@ class Bot
 
     public function syncOcservCamouflage()
     {
-        $upstream = file_get_contents('/config/upstream.conf');
-        $nextUpstream = self::ocservDtlsUpstream($upstream);
-        if ($nextUpstream !== $upstream && file_put_contents('/config/upstream.conf', $nextUpstream) !== false) {
-            $this->ssh('nginx -s reload 2>&1', 'up');
-        }
+        $this->editUpstream(fn($upstream) => self::ocservDtlsUpstream($upstream));
+        if (!$this->protocolModuleEnabled('oc')) return;
         $conf   = file_get_contents('/config/ocserv.conf');
         $secret = $this->ocCamouflageSecretForConf($conf, true);
         $next   = $this->applyOcCamouflage($conf, $secret);
@@ -5863,6 +5871,7 @@ NFT;
             // доехать даже если service.php оборвался раньше своей последней
             // строки. Идемпотентна и на «нечего менять» выходит сразу.
             'migrateDohClientIds',
+            'reconcileManagedUpstreams',
             'autoAnalyzeLogs',
             'xrayStatsUser',
             'checkTrafficLimits',
@@ -6695,6 +6704,7 @@ NFT;
             'ovpn'          => $this->exportOvpnPki(),
             'ipsec'         => $this->exportIpsecPki(),
             'xraystats'     => $this->getXrayStats(),
+            'managed_protocols' => $this->exportManagedProtocols(),
         ];
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
@@ -6769,6 +6779,10 @@ NFT;
             return false;
         } else {
             $ok = true;
+            if (array_key_exists('managed_protocols', $json)) {
+                try { $this->importManagedProtocols($json['managed_protocols']); }
+                catch (Throwable $e) { return false; }
+            }
             // certs
             if (!empty($json['ssl'])) {
                 $out[] = 'update certificates';
@@ -9851,6 +9865,7 @@ NFT;
                         $aliases .= ' -d ' . escapeshellarg($conf['adguardkey'] . '.' . $a);
                     }
                 }
+                foreach ($this->managedCertificateNames() as $name) $aliases .= ' -d ' . escapeshellarg($name);
                 exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . ($tw ? " -d $tw.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
                 if ($code > 0) {
                     $this->send($this->input['chat'], "ERROR\n" . implode("\n", $out));
@@ -16736,6 +16751,10 @@ DNS-over-HTTPS with IP:
 
     public function menu($type = false, $arg = false, $return = false)
     {
+        if (is_string($type) && !$this->protocolModuleEnabled($type)) {
+            $this->protocolModulesMenu();
+            return;
+        }
         $conf   = $this->getPacConf();
         $domain = $conf['domain'] ?: $this->ip;
         $hash   = $this->getHashBot();
@@ -16790,7 +16809,7 @@ DNS-over-HTTPS with IP:
             $ver   = $this->menuVersions();
             $cells = [];
             foreach (self::MENU_VERSION_LABELS as $k => $label) {
-                if (!empty($ver[$k])) {
+                if ($this->protocolModuleEnabled($k) && !empty($ver[$k])) {
                     $cells[] = $label . ' ' . htmlspecialchars((string) $ver[$k], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
                 }
             }
@@ -16827,7 +16846,7 @@ DNS-over-HTTPS with IP:
                     if (!empty($np)) {
                         $main[] = 'naive ' . "$np.{$conf['domain']}" . (in_array("$np.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
                     }
-                    if (!empty($oc)) {
+                    if ($this->protocolModuleEnabled('oc') && !empty($oc)) {
                         $main[] = 'openconnect ' . "$oc.{$conf['domain']}" . (in_array("$oc.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
                     }
                     if (!empty($conf['adguardkey'])) {
@@ -16855,7 +16874,7 @@ DNS-over-HTTPS with IP:
             $ipsecPorts = $this->ipsecPorts();
 
             $main[] = '<code>';
-            $main[] = $this->alignColumns([
+            $main[] = $this->alignColumns($this->optionalProtocolColumns([
                 [
                     $this->i18n($st['wg'] ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['amnezia']) ? 'amnezia' : 'wg_title'),
                     $this->i18n($st['wg1'] ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['wg1_amnezia']) ? 'amnezia' : 'wg_title'),
@@ -16890,7 +16909,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n($ports['telemt']['enable'] ? 'on' : 'off') . ($ports['telemt']['enable'] ? ' ' . $ports['telemt']['port'] : ' port unavailable'),
                     '',
                 ],
-            ]);
+            ]));
             $main[] = '';
             $main[] = $this->alignColumns([
                 [
@@ -21152,7 +21171,7 @@ DNS-over-HTTPS with IP:
         $this->subSecurityHeaders();
         header('Content-Type: text/plain; charset=utf-8');
         header('Profile-Title: base64:' . base64_encode((string) $client['email']));
-        header('Profile-Update-Interval: 12');
+        $this->xraySubscriptionMetadata($client, $i);
         echo base64_encode($body);
     }
 
@@ -26540,14 +26559,14 @@ DNS-over-HTTPS with IP:
     // остаются рабочими в старых сообщениях чата.
     protected function deepLinkCodes(): array
     {
-        return ['v', 'sr', 'st', 'si', 'h', 'k', 'w', 'c', 'rh'];
+        return ['v', 'sr', 'st', 'si', 'h', 'k', 'w', 'c', 'rh', 'incy'];
     }
 
     public function subscriptionImportLinks(string $base, string $sid, string $name, string $relay = ''): array
     {
         $links = [];
         foreach (['v' => 'v2rayNG', 'sr' => 'Shadowrocket', 'si' => 'sing-box', 'st' => 'Streisand',
-            'h' => 'Hiddify', 'k' => 'Karing', 'c' => 'mihomo', 'rh' => 'Rabbit Hole'] as $code => $label) {
+            'h' => 'Hiddify', 'k' => 'Karing', 'c' => 'mihomo', 'rh' => 'Rabbit Hole', 'incy' => 'INCY'] as $code => $label) {
             $query = ['t' => 's', 'r' => $code, 's' => $sid];
             if ($relay !== '') $query['relay'] = $relay;
             $url = $base . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986) . '#' . rawurlencode($name);
@@ -26584,6 +26603,7 @@ DNS-over-HTTPS with IP:
             'k' => "karing://install-config?url=$encoded&name=$title",
             'c' => "clash://install-config?url=$encoded&overwrite=no&name=$title",
             'rh' => "rabbithole://add/$url",
+            'incy' => "incy://import/$url",
             default => '',
         };
     }
@@ -26690,6 +26710,7 @@ DNS-over-HTTPS with IP:
         }
         $template = base64_decode($client["{$type}template"] ?? '');
         $uid      = $client['id'];               // credential (embedded in config)
+        $clientIndex = $k;
         $email    = $client['email'];
         $stok     = $this->sidOf($client);       // subscription locator only
 
@@ -27407,6 +27428,7 @@ DNS-over-HTTPS with IP:
         // out of any cache/index (defense-in-depth).
         $this->subSecurityHeaders();
         header('Profile-Title: base64:' . base64_encode((string) $email));
+        $this->xraySubscriptionMetadata($client, $clientIndex);
         if ($_GET['t'] == 'cl') {
             header('Content-type: text/yaml');
             echo yaml_emit($c);
@@ -28272,10 +28294,7 @@ DNS-over-HTTPS with IP:
         if (!$this->isHostname($domain)) {
             return;
         }
-        $nginx = file_get_contents('/config/upstream.conf');
-        $t = preg_replace('~#domain.+#domain~s', "#domain\n$domain reality;\n#domain", $nginx);
-        file_put_contents('/config/upstream.conf', $t);
-        $this->ssh("nginx -s reload 2>&1", 'up');
+        $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#domain', "$domain reality;"));
     }
 
     /**
@@ -28321,12 +28340,10 @@ DNS-over-HTTPS with IP:
             return;
         }
         $sub   = $this->getHashSubdomain('oc');
-        $nginx = self::ocservDtlsUpstream(file_get_contents('/config/upstream.conf'));
         $body  = ($domain && $sub) ? "$sub.$domain ocserv;" : "#$sub.\$domain ocserv;";
         // Ровно те же две правки, что были сделаны для #naive, — сюда они тогда
         // не доехали (см. upstreamReplace).
-        file_put_contents('/config/upstream.conf', self::upstreamReplace($nginx, '#ocserv', $body));
-        $this->ssh("nginx -s reload 2>&1", 'up');
+        $this->editUpstream(fn($nginx) => self::upstreamReplace(self::ocservDtlsUpstream($nginx), '#ocserv', $body));
     }
 
     // Хосты, которые upstream-nginx по SNI отдаёт контейнеру naive: основной
@@ -28366,7 +28383,6 @@ DNS-over-HTTPS with IP:
             return;
         }
         $sub   = $this->getHashSubdomain('np');
-        $nginx = file_get_contents('/config/upstream.conf');
         // Строк может быть несколько: основной поддомен + адреса relay для
         // naive (naiveSniHosts). Пусто — закомментированный плейсхолдер, как до
         // задания домена.
@@ -28374,8 +28390,7 @@ DNS-over-HTTPS with IP:
         $body  = $hosts
             ? implode("\n", array_map(fn($h) => "$h naive;", $hosts))
             : "#$sub.\$domain naive;";
-        file_put_contents('/config/upstream.conf', self::upstreamReplace($nginx, '#naive', $body));
-        $this->ssh("nginx -s reload 2>&1", 'up');
+        $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#naive', $body));
     }
 
     public function getHashBot($notset = false)
@@ -29066,6 +29081,7 @@ DNS-over-HTTPS with IP:
         }
 
         $data = [
+            [['text' => 'Протоколы и контейнеры', 'callback_data' => '/protocolModules']],
             [
                 [
                     'text'          => $conf['domain'] ? "{$this->i18n('delete')} {$conf['domain']}" : $this->i18n('install domain'),
@@ -29492,18 +29508,12 @@ DNS-over-HTTPS with IP:
         if (!file_exists($f)) {
             return;
         }
-        $nginx = file_get_contents($f);
         $block = "#tt-port\n    server {\n        listen      $port reuseport;\n        proxy_pass  trusttunnel;\n    }\n    server {\n        listen      $port udp reuseport;\n        proxy_pass  trusttunnel;\n    }\n    #tt-port";
         // Маркер должен быть на собственной строке (с необязательным
         // отступом), чтобы не совпасть с упоминанием "#tt-port" внутри
         // комментариев выше по файлу.
         $re = '~^[ \t]*#tt-port[ \t]*\R.+?^[ \t]*#tt-port[ \t]*$~sm';
-        if (!preg_match($re, $nginx)) {
-            return; // markers were stripped by manual edit; bail out
-        }
-        $nginx = preg_replace($re, $block, $nginx);
-        file_put_contents($f, $nginx);
-        $this->ssh('nginx -s reload 2>&1', 'up');
+        $this->editUpstream(fn($nginx) => preg_replace($re, $block, $nginx));
     }
 
     public function setUpstreamPortOvpn($port, $proto = null)
@@ -29514,18 +29524,12 @@ DNS-over-HTTPS with IP:
         if (!file_exists($f)) {
             return;
         }
-        $nginx  = file_get_contents($f);
         $listen = str_starts_with($proto, 'tcp')
             ? "listen      $port reuseport;"
             : "listen      $port udp reuseport;";
         $block = "#ovpn-port\n    server {\n        $listen\n        proxy_pass  openvpn;\n    }\n    #ovpn-port";
         $re = '~^[ \t]*#ovpn-port[ \t]*\R.+?^[ \t]*#ovpn-port[ \t]*$~sm';
-        if (!preg_match($re, $nginx)) {
-            return;
-        }
-        $nginx = preg_replace($re, $block, $nginx);
-        file_put_contents($f, $nginx);
-        $this->ssh('nginx -s reload 2>&1', 'up');
+        $this->editUpstream(fn($nginx) => preg_replace($re, $block, $nginx));
     }
 
     public function setEnvVar($key, $value)
@@ -30841,6 +30845,7 @@ DNS-over-HTTPS with IP:
     {
         $data = "";
         $this->sshFailed = false;
+        if (!$this->protocolModuleEnabled($service)) return '';
         try {
             // ssh2_connect не принимает таймаут и по умолчанию ждёт TCP-коннект
             // минутами (лежащий контейнер = зависший вебхук-воркер). 5с хватает
@@ -31039,6 +31044,7 @@ DNS-over-HTTPS with IP:
 
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
     {
+        $button = $this->filterProtocolButtons($button);
         if (is_null($text)) {
             $text = '';
         }
@@ -31217,6 +31223,7 @@ DNS-over-HTTPS with IP:
 
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')
     {
+        $button = $this->filterProtocolButtons($button);
         $text = (string) $text;
         if ($button) {
             $extra = ['inline_keyboard' => $button];

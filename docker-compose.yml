@@ -5,6 +5,7 @@ x-logging:
           max-size: "200k"
           max-file: "10"
 
+
 networks:
     default:
         ipam:
@@ -53,12 +54,14 @@ services:
                 condition: service_started
             oc:
                 condition: service_started
+                required: false
             np:
                 condition: service_started
             tt:
                 condition: service_started
             ovpn:
                 condition: service_started
+                required: false
         env_file:
             - path: ./.env
               required: true # default
@@ -252,28 +255,45 @@ services:
         init: true
         logging: *default-logging
         depends_on:
-            - up
-            - ng
-            - php
-            - wg
-            - wg1
-            - ad
-            - xr
-            - oc
-            - np
-            - proxy
-            - ss
-            - dnstt
-            - hy
-            - tt
-            - ovpn
-            # ipsec, telemt и wp тоже: service.php при старте ходит в контейнеры
-            # по ssh (dnsttStart, restartHysteria, restartTt, setUpstream*,
-            # xrayUpdateRules), и без порядка старта задача могла отработать
-            # раньше, чем внутри поднимется sshd — молча и без следа.
-            - ipsec
-            - telemt
-            - wp
+            up:
+                condition: service_started
+            ng:
+                condition: service_started
+            php:
+                condition: service_started
+            wg:
+                condition: service_started
+            wg1:
+                condition: service_started
+            ad:
+                condition: service_started
+            xr:
+                condition: service_started
+            oc:
+                condition: service_started
+                required: false
+            np:
+                condition: service_started
+            proxy:
+                condition: service_started
+            ss:
+                condition: service_started
+            dnstt:
+                condition: service_started
+            hy:
+                condition: service_started
+            tt:
+                condition: service_started
+            ovpn:
+                condition: service_started
+                required: false
+            ipsec:
+                condition: service_started
+                required: false
+            telemt:
+                condition: service_started
+            wp:
+                condition: service_started
     # Брокер Docker API. Сокет держит ОН, а php и service ходят к нему по HTTP
     # с allowlist'ом по методу и пути (config/dockerproxy.conf) — раньше сокет
     # был примонтирован прямо в php и service, и суффикс ":ro" не ограничивал
@@ -534,6 +554,7 @@ services:
         init: true
         logging: *default-logging
     oc:
+        profiles: ["oc"]
         image: ghcr.io/axiomshiftbit/vpnbot-oc:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/ocserv.dockerfile
@@ -801,6 +822,7 @@ services:
         init: true
         logging: *default-logging
     ovpn:
+        profiles: ["ovpn"]
         image: ghcr.io/axiomshiftbit/vpnbot-ovpn:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/openvpn.dockerfile
@@ -848,6 +870,7 @@ services:
         init: true
         logging: *default-logging
     ipsec:
+        profiles: ["ipsec"]
         image: ghcr.io/axiomshiftbit/vpnbot-ipsec:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/ipsec.dockerfile
@@ -860,6 +883,7 @@ services:
             # Миграции swanctl.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ipsec_migrate.sh:/ipsec_migrate.sh
+            - ./scripts/protocol_modules.py:/protocol_modules.py:ro
             - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs
@@ -881,6 +905,8 @@ services:
             IP: ${IP}
             L2TPSUBNET: ${L2TPSUBNET:-10.9.1.0/24}
             IKEV2SUBNET: ${IKEV2SUBNET:-10.9.2.0/24}
+            IPSEC_IKEV2_ENABLED: ${IPSEC_IKEV2_ENABLED:-1}
+            IPSEC_L2TP_ENABLED: ${IPSEC_L2TP_ENABLED:-1}
         cap_add:
             - NET_ADMIN
         # charon ставит XFRM-политики в netns контейнера; форвардинг пакетов
@@ -977,4 +1003,128 @@ services:
         mem_limit: 512m
         pids_limit: 512
         init: true
+        logging: *default-logging
+
+    anytls:
+        profiles: ["anytls"]
+        image: ghcr.io/axiomshiftbit/vpnbot-protocol:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: protocol.dockerfile
+        environment:
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/anytls:/config:ro
+            - ./config/protocols/anytls/runtime:/state
+            - ./update/protocol-certs/anytls:/certs:ro
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+        hostname: anytls
+        container_name: anytls-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.22
+        mem_limit: 256m
+        pids_limit: 128
+        logging: *default-logging
+
+    mieru:
+        profiles: ["mieru"]
+        image: ghcr.io/axiomshiftbit/vpnbot-mieru:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: mieru.dockerfile
+        environment:
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/mieru:/config:ro
+            - ./config/protocols/mieru/runtime:/state
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+            - ./scripts/mieru_service.py:/mieru_service.py:ro
+        tmpfs:
+            - /var/lib/mita:mode=0700,size=32m
+        ports:
+            - ${MIERU_PORT:-24445}:24445/tcp
+            - ${MIERU_PORT:-24445}:24445/udp
+        hostname: mieru
+        container_name: mieru-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        cap_add: [CHOWN, FOWNER]
+        group_add: [mita]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.23
+        mem_limit: 256m
+        pids_limit: 128
+        logging: *default-logging
+
+    tuic:
+        profiles: ["tuic"]
+        image: ghcr.io/axiomshiftbit/vpnbot-protocol:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: protocol.dockerfile
+        environment:
+            PROTOCOL_KIND: tuic
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/tuic:/config:ro
+            - ./config/protocols/tuic/runtime:/state
+            - ./update/protocol-certs/tuic:/certs:ro
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+        ports:
+            - ${TUIC_PORT:-9443}:9443/udp
+        hostname: tuic
+        container_name: tuic-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.24
+        mem_limit: 256m
+        pids_limit: 128
+        logging: *default-logging
+
+    shadowtls:
+        profiles: ["shadowtls"]
+        image: ghcr.io/axiomshiftbit/vpnbot-protocol:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: protocol.dockerfile
+        environment:
+            PROTOCOL_KIND: shadowtls
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/shadowtls:/config:ro
+            - ./config/protocols/shadowtls/runtime:/state
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+        ports:
+            - ${SHADOWTLS_PORT:-24447}:24447/tcp
+        hostname: shadowtls
+        container_name: shadowtls-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.25
+        mem_limit: 256m
+        pids_limit: 128
         logging: *default-logging

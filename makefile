@@ -16,8 +16,9 @@ IP := $(or $(IP),$(shell hostname -I | awk '{print $$1}'))
 VER := $(shell git describe --tags --always 2>/dev/null || echo local)
 
 b:
-	docker compose build
+	python3 scripts/protocol_modules.py compose build
 test: # прогон тестов (на ХОСТЕ, не внутри контейнера)
+	@python3 -m unittest discover -s tests -p '*_test.py'
 	@# 42+ файла в tests/ закрывают конкретные регрессии, но их не звал никто:
 	@# ни CI, ни makefile, ни readme. Правка ломала охрану, закрытую полгода
 	@# назад, и об этом никто не узнавал.
@@ -40,7 +41,7 @@ pull: # обновление образов из ghcr.io/axiomshiftbit
 	# а чего нет вовсе, соберётся из dockerfile (секции build: сохранены).
 	# --ignore-buildable здесь НЕ годится: build: есть у всех сервисов, и она
 	# пропустила бы вообще всё.
-	-docker compose --env-file ./.env --env-file ./override.env pull --ignore-pull-failures
+	-python3 scripts/protocol_modules.py compose pull --ignore-pull-failures
 start: pull # запуск контейнеров
 	touch ./override.env ./docker-compose.override.yml ./config/location.conf ./config/override.conf
 	# L2TP/IPsec (сервис ipsec) требует модуль ядра l2tp_ppp на ХОСТЕ — контейнер
@@ -49,15 +50,15 @@ start: pull # запуск контейнеров
 	# запускается. Префикс `-` обязателен: без модуля в ядре make не должен ронять
 	# запуск контейнеров (L2TP отвалится, IKEv2 и остальное работают).
 	-modprobe l2tp_ppp 2>/dev/null && echo l2tp_ppp > /etc/modules-load.d/vpnbot-l2tp.conf || echo "WARN: l2tp_ppp unavailable — L2TP off, IKEv2 ok"
-	IP=$(IP) VER=$(VER) docker compose --env-file ./.env --env-file ./override.env up -d --force-recreate
+	IP=$(IP) VER=$(VER) python3 scripts/protocol_modules.py compose up -d --force-recreate
 u: preup start
 d: # остановка контейнеров
 	# Через скрипт: PID из update_pid переиспользуются, и голый kill -9 после
 	# ребута уходил произвольному процессу. См. scripts/stop_update.sh.
 	-sh ./scripts/stop_update.sh ./update/update_pid
-	docker compose down --remove-orphans
+	docker compose --profile '*' down --remove-orphans
 dv: # остановка контейнеров
-	docker compose down -v
+	docker compose --profile '*' down -v
 r: d u
 ps: # список контейнеров
 	docker compose ps

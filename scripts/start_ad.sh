@@ -1,6 +1,6 @@
 #!/bin/sh
 for i in 1 2 3 4 5 10; do
-    getent hosts wg wg1 oc >/dev/null 2>&1 && break
+    getent hosts wg wg1 >/dev/null 2>&1 && break
     sleep 1
 done
 WG_IP=$(getent hosts wg  | awk '{print $1}')

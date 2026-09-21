@@ -98,6 +98,7 @@ apt install -y \
     gnupg \
     lsb-release \
     make \
+    python3 \
     git \
     unzip \
     rsync \

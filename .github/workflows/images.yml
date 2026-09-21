@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: 'Сервисы через запятую (ng,php,wg,...). Пусто — все 14.'
+        description: 'Сервисы через запятую (ng,php,wg,...). Пусто — все 16.'
         required: false
         default: ''
   # Базовые образы запиннены не все (golang:alpine, python:3.13-slim,
@@ -64,7 +64,7 @@ jobs:
           SERVICES: ${{ inputs.services }}
         run: |
           set -euo pipefail
-          ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy"
+          ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy anytls mieru"
 
           # Какие образы задевает правка .env. Раньше любая строка (хоть смена
           # таймзоны) пересобирала все 14, а это десятки минут CI из-за tt.
@@ -119,6 +119,8 @@ jobs:
               ipsec.dockerfile)       echo ipsec ;;
               trusttunnel.dockerfile) echo tt ;;
               hysteria.dockerfile)    echo hy ;;
+              protocol.dockerfile) echo anytls ;;
+              mieru.dockerfile) echo mieru ;;
             esac
           }
 
@@ -147,7 +149,11 @@ jobs:
             else
               SEL=""
               for f in $(echo "${CHANGED}" | grep '^dockerfile/' || true); do
-                s=$(df2svc "$(basename "$f")")
+                case "$f" in
+                  dockerfile/protocol-stats/*|dockerfile/protocol-policy/*) s=anytls ;;
+                  dockerfile/mieru-control/*|dockerfile/mieru-policy/*) s=mieru ;;
+                  *) s=$(df2svc "$(basename "$f")") ;;
+                esac
                 [ -n "$s" ] && SEL="${SEL} ${s}"
               done
               if echo "${CHANGED}" | grep -qE '^\.env$'; then
@@ -164,7 +170,8 @@ jobs:
           MATRIX='[]'
           for s in ${SEL}; do
             case "$s" in
-              hy) img=hysteria ;;   # единственное расхождение имени сервиса и образа
+              anytls) img=protocol ;;
+              hy) img=hysteria ;;
               *)  img="$s" ;;
             esac
             MATRIX=$(echo "${MATRIX}" | jq -c --arg s "$s" --arg i "$img" '. + [{service:$s, image:$i}]')
@@ -271,6 +278,30 @@ jobs:
             *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             *.labels.org.opencontainers.image.revision=${{ github.sha }}
 
+      # Готовые образы для проверки на стенде без отдельного PAT с read:packages.
+      # В архив входит только образ из registry; файлы раннера и runtime не входят.
+      - name: Сохранить изменённые образы для проверки dev
+        if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec"]'), matrix.service)
+        run: |
+          set -euo pipefail
+          image='ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:sha-${{ github.sha }}'
+          docker pull "$image"
+          revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")
+          test "$revision" = "$GITHUB_SHA"
+          docker image inspect --format 'Runtime image {{.Id}} {{join .RepoDigests ","}}' "$image"
+          docker save "$image" | gzip -1 > "$RUNNER_TEMP/vpnbot-${{ matrix.image }}.tar.gz"
+
+      - name: Образ для тестового стенда
+        if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec"]'), matrix.service)
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: vpnbot-image-${{ matrix.image }}
+          path: ${{ runner.temp }}/vpnbot-${{ matrix.image }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 1
+
   # Старые версии образов копятся навсегда: registry их не вытесняет, а каждый
   # прогон кладёт новый sha-тег. За месяц ежедневных сборок это десятки гигабайт
   # у аккаунта, и найти нужную версию в списке становится нельзя.
@@ -287,7 +318,7 @@ jobs:
   # VPNBOT_TAG=dev — то есть свежая установка падала на «manifest unknown»
   # для 13 образов. Спасало только override.env с latest на боевых хостах.
   #
-  # Чистим все 14 пакетов, а не только собранные в этом прогоне: сборка обычно
+  # Чистим все пакеты, а не только собранные в этом прогоне: сборка обычно
   # частичная (plan сужает матрицу), и пакеты, которые давно не пересобирались,
   # иначе копили бы хвост вечно. Лишнего не удалит — если версий три или меньше,
   # шаг ничего не делает.
@@ -314,6 +345,8 @@ jobs:
           - ipsec
           - tt
           - hysteria
+          - protocol
+          - mieru
     steps:
       # Своим шагом, а не actions/delete-package-versions: у того удержание
       # считается по всем версиям подряд и канальный тег защитить нечем

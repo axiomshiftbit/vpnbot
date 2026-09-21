@@ -46,9 +46,9 @@ $bot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
 $name = "🇷🇺 Тест & # + ' \" <имя>\r\n";
 $relay = "Москва / 🇷🇺 & # + '";
 $base = 'https://example.test/pactesthash';
-$formats = ['v' => 's', 'sr' => 'vl', 'si' => 'si', 'st' => 'vl', 'h' => 'vl', 'k' => 'si', 'c' => 'cl', 'rh' => 'cl'];
+$formats = ['v' => 's', 'sr' => 'vl', 'si' => 'si', 'st' => 'vl', 'h' => 'vl', 'k' => 'si', 'c' => 'cl', 'rh' => 'cl', 'incy' => 's'];
 $schemes = ['v' => 'v2rayng', 'sr' => 'shadowrocket', 'si' => 'sing-box', 'st' => 'streisand',
-    'h' => 'hiddify', 'k' => 'karing', 'c' => 'clash', 'rh' => 'rabbithole'];
+    'h' => 'hiddify', 'k' => 'karing', 'c' => 'clash', 'rh' => 'rabbithole', 'incy' => 'incy'];
 foreach (['', $relay] as $via) {
     $token = ['h' => 'testhash', 's' => 'subscription-token'];
     if ($via !== '') $token['relay'] = $via;
@@ -66,6 +66,8 @@ foreach (['', $relay] as $via) {
             $url = rawurldecode(explode('#', substr($link, strlen('streisand://import/')))[0]);
         } elseif ($code === 'h') {
             $url = explode('#', substr($link, strlen('hiddify://import/')))[0];
+        } elseif ($code === 'incy') {
+            $url = substr($link, strlen('incy://import/'));
         } else {
             $url = substr($link, strlen('rabbithole://add/'));
         }
@@ -89,7 +91,7 @@ foreach (['', $relay] as $via) {
         }
     }
     $links = $bot->subscriptionImportLinks($base, 'subscription-token', $name, $via);
-    importAssert(count($links) === 8, 'all eight clients are offered');
+    importAssert(count($links) === count($formats), 'all supported clients are offered');
     foreach ($links as $link) {
         preg_match('/href="([^"]+)"/', $link, $match);
         $url = html_entity_decode($match[1] ?? '', ENT_QUOTES, 'UTF-8');

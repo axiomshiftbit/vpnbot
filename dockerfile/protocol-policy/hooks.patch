@@ -1,0 +1,21 @@
+--- a/route/route.go
++++ b/route/route.go
+@@ -299,6 +299,7 @@
+ 		metadata.RouteRule = selectedRule.String()
+ 	}
+ 	metadata.RouteOutbound = selectedOutbound.Tag()
++	conn = r.restrictPackets(ctx, conn, metadata)
+ 	for _, tracker := range r.trackers {
+ 		conn = tracker.RoutedPacketConnection(ctx, conn, metadata, selectedRule, selectedOutbound)
+ 	}
+--- a/protocol/tuic/inbound.go
++++ b/protocol/tuic/inbound.go
+@@ -66,7 +66,7 @@
+ 	}
+ 	service, err := tuic.NewService[int](tuic.ServiceOptions{
+ 		Context:   ctx,
+-		Logger:    logger,
++		Logger:    vpnBotTUICLogger{logger},
+ 		TLSConfig: tlsConfig,
+ 		QUICOptions: qtls.QUICOptions{
+ 			IdleTimeout:             options.IdleTimeout.Build(),
