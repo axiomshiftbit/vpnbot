@@ -418,7 +418,7 @@ trait BotProtocols
         } else {
             $text[] = self::esc($s['settings']['host'] . ':' . $s['settings']['port'] . ($protocol === 'mieru' ? ' · ' . $s['settings']['transport'] : ' · SNI ' . $s['settings']['sni']));
             if (!empty($s['settings']['self_hosted'])) $text[] = 'Прикрытие собственным сайтом: https://' . self::esc($protocol === 'anytls' ? $s['settings']['cover_host'] : $s['settings']['sni']) . '. Домен берётся из настроек этого сервера.';
-            if ($protocol === 'anytls' && !empty($s['settings']['self_hosted'])) $text[] = 'Поддомен создаётся автоматически. Он должен указывать на этот сервер через DNS (A/AAAA/CNAME или wildcard) и входить в сертификат TLS.';
+            if ($protocol === 'anytls' && !empty($s['settings']['self_hosted'])) $text[] = 'Имя поддомена формируется автоматически. Запись DNS (A/AAAA/CNAME или wildcard) должна указывать на этот сервер, а сертификат TLS — включать это имя.';
             $text[] = $protocol === 'mieru' ? 'Mieru использует отдельный порт без TLS. Транспорт TCP/UDP относится к соединению с сервером; оба передают TCP и UDP приложений.'
                 : ($protocol === 'shadowtls' ? 'SNI — домен сайта прикрытия с действительным TLS 1.3. Сертификат этого сайта на VPS не устанавливается. Внутренний SS2022 закрыт от внешних подключений.'
                 : 'Для TLS требуется действительный сертификат на указанное имя. После добавления имени обновите SSL в настройках.');
@@ -435,7 +435,7 @@ trait BotProtocols
             $buttons[] = [['text' => $protocol === 'mieru' ? 'Адрес / порт / транспорт' : 'Адрес / SNI / порт', 'callback_data' => "/protocol $protocol settings"]];
             if (in_array($protocol, ['anytls', 'shadowtls', 'tuic'], true)) $buttons[] = [['text' => $protocol === 'tuic' ? 'Использовать домен сервера' : 'Прикрытие своим сайтом · авто', 'callback_data' => "/protocol $protocol auto"]];
             $buttons[] = [['text' => 'Выход: ' . $s['settings']['egress'], 'callback_data' => "/protocol $protocol egress"]];
-            $buttons[] = [['text' => 'Добавить доступ', 'callback_data' => "/protocol $protocol add"]];
+            $buttons[] = [['text' => 'Добавить пользователя', 'callback_data' => "/protocol $protocol add"]];
             $last = max(0, (int) ceil(count($s['users']) / 20) - 1); $page = min(max(0, $page), $last);
             foreach (array_slice($s['users'], $page * 20, 20, true) as $uid => $user) $buttons[] = [['text' => mb_substr($user['name'], 0, 45), 'callback_data' => "/protocol $protocol user $uid"]];
             $navigation = [];
