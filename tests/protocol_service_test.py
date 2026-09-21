@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -15,6 +16,42 @@ service = module('protocol_service')
 modules = module('protocol_modules')
 
 class ProtocolTests(unittest.TestCase):
+    def test_optional_ss_migration_preserves_custom_nginx_routes(self):
+        before = 'location /custom {\n  proxy_pass http://ss:8388/;\n}\nlocation /manual { proxy_pass http://other:8388/; }\n# proxy_pass http://ss:8388/;'
+        after = modules.migrate_nginx(before)
+        self.assertIn('proxy_pass http://10.10.0.6:8388/;', after)
+        self.assertIn('proxy_pass http://other:8388/;', after)
+        self.assertIn('# proxy_pass http://ss:8388/;', after)
+        self.assertEqual(after, modules.migrate_nginx(after))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root/'config').mkdir(); (root/'update').mkdir()
+            path = root/'config/nginx.conf'; path.write_text(before); inode = path.stat().st_ino
+            with patch.object(modules, 'validate_upstream', side_effect=RuntimeError('invalid')):
+                with self.assertRaises(RuntimeError): modules.prepare_upstream(root, 'nginx.conf')
+            self.assertEqual(before, path.read_text())
+            with patch.object(modules, 'validate_upstream'):
+                modules.prepare_upstream(root, 'nginx.conf')
+            self.assertEqual(after, path.read_text())
+            self.assertEqual(inode, path.stat().st_ino)
+            self.assertEqual(before, (root/'update/nginx.before-protocols.conf').read_text())
+
+    def test_hysteria_container_starts_saved_configuration(self):
+        for configured in (True, False):
+            with self.subTest(configured=configured), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); (root/'authorized').write_text(''); (root/'public').write_text('fixture')
+                if configured: (root/'hysteria.yaml').write_text('auth: {type: password, password: fixture}')
+                script = (ROOT/'scripts/start_hysteria.sh').read_text()
+                for old, new in [('/root/.ssh/authorized_keys', root/'authorized'), ('/ssh/key.pub', root/'public'),
+                                 ('/config/hysteria.yaml', root/'hysteria.yaml'), ('/logs/hysteria', root/'log'), ('/usr/sbin/sshd', root/'sshd')]:
+                    script = script.replace(old, str(new))
+                for name, body in {'sshd':'exit 0', 'ssh-keygen':'exit 0',
+                                   'tail':'sleep 0.2', 'hysteria':'printf "%s\\n" "$@" > "' + str(root/'started') + '"'}.items():
+                    path = root/name; path.write_text('#!/bin/sh\n'+body+'\n'); path.chmod(0o700)
+                subprocess.run(['sh'], input=script, text=True, capture_output=True, check=True, timeout=5,
+                               env=os.environ | {'PATH':str(root)+':'+os.environ['PATH']})
+                self.assertEqual(configured, (root/'started').exists())
+                if configured: self.assertEqual(['server', '-c', str(root/'hysteria.yaml')], (root/'started').read_text().splitlines())
+
     def test_anytls_cover_keeps_website_after_last_access_is_revoked(self):
         for cover, enabled, expected in [(True, True, 'cover_only'), (False, True, 'idle'), (True, False, 'disabled')]:
             with self.subTest(cover=cover, enabled=enabled), tempfile.TemporaryDirectory() as directory:
@@ -53,7 +90,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError): modules.filter_ipsec('connections { ikev2 {', False, True)
 
     def test_profiles_exclude_disabled_containers(self):
-        settings = modules.DEFAULTS | {'oc': False, 'ovpn': False, 'tt': False, 'l2tp': False, 'ikev2': False}
+        settings = modules.DEFAULTS | {'oc': False, 'ovpn': False, 'tt': False, 'hy': False, 'ss': False, 'dnstt': False, 'l2tp': False, 'ikev2': False}
         with patch.dict('os.environ', {'VER': 'test'}):
             self.assertEqual('', modules.environment(settings)['COMPOSE_PROFILES'])
             settings['ikev2'] = True
@@ -93,7 +130,7 @@ class ProtocolTests(unittest.TestCase):
             with patch.object(modules, 'validate_upstream', side_effect=ValueError('invalid')):
                 with self.assertRaises(ValueError): modules.prepare_upstream(root)
             self.assertEqual(old, path.read_text())
-            def concurrent_edit(_root, _candidate):
+            def concurrent_edit(_root, _candidate, _service='up'):
                 if 'custom' not in path.read_text(): path.write_text(old.replace('default other;', 'default other; custom.test other;'))
             with patch.object(modules, 'validate_upstream', side_effect=concurrent_edit) as validate:
                 modules.prepare_upstream(root)

@@ -10,8 +10,8 @@ import subprocess
 import sys
 import uuid
 
-DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False}
-SERVICES = ("oc", "ovpn", "tt", "ipsec", "anytls", "mieru", "tuic", "shadowtls")
+DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False}
+SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "ipsec", "anytls", "mieru", "tuic", "shadowtls")
 SYSTEMD_UNIT = Path('/etc/systemd/system/vpnbot.service')
 
 
@@ -87,23 +87,30 @@ def migrate_upstream(text):
     return text
 
 
-def prepare_upstream(root):
-    path = root / 'config/upstream.conf'
+def migrate_nginx(text):
+    # The fixed Compose address keeps NGINX bootable when optional SS is absent.
+    # Preserve custom backends and the trailing URI used by the v2ray plugin.
+    return re.sub(r'(?m)^(\s*proxy_pass\s+)http://ss:8388/;', r'\g<1>http://10.10.0.6:8388/;', text)
+
+
+def prepare_upstream(root, filename='upstream.conf'):
+    path = root / 'config' / filename
     if not path.exists(): return
+    service = 'up' if filename == 'upstream.conf' else 'ng'
     # Preserve the inode: existing installations bind-mount this individual file.
-    with open(root / 'config/upstream.lock', 'a') as lock:
+    with open(path.with_suffix('.lock'), 'a') as lock:
         for _ in range(4):
             fcntl.flock(lock, fcntl.LOCK_EX)
             before = path.read_text()
             fcntl.flock(lock, fcntl.LOCK_UN)
-            after = migrate_upstream(before)
+            after = migrate_upstream(before) if service == 'up' else migrate_nginx(before)
             if before == after: return
-            validate_upstream(root, after)
+            validate_upstream(root, after, service)
             fcntl.flock(lock, fcntl.LOCK_EX)
             if path.read_text() != before:
                 fcntl.flock(lock, fcntl.LOCK_UN)
                 continue
-            backup = root / 'update/upstream.before-protocols.conf'
+            backup = root / 'update' / (path.stem + '.before-protocols.conf')
             if not backup.exists():
                 with open(backup, 'x') as stream:
                     stream.write(before); stream.flush(); os.fsync(stream.fileno())
@@ -118,26 +125,33 @@ def prepare_upstream(root):
         raise RuntimeError('upstream changed during migration')
 
 
-def validate_upstream(root, candidate):
+def validate_upstream(root, candidate, service='up'):
     # No live service, public port, or SSH is needed during a cold update.
     # Use the exact selected NGINX image and its bind mounts. Static upstream
     # names get dummy addresses solely for syntax validation, without traffic.
     current = settings(root)
     result = compose(current, ['config', '--format', 'json'], capture=True)
     result.check_returncode()
-    upstream = json.loads(result.stdout)['services']['up']
+    upstream = json.loads(result.stdout)['services'][service]
     image = upstream['image']
     exists = subprocess.run(['docker', 'image', 'inspect', image], capture_output=True)
     if exists.returncode:
-        compose(current, ['build', 'up'], capture=True).check_returncode()
+        compose(current, ['build', service], capture=True).check_returncode()
     command = ['docker', 'run', '--rm', '-i', '--network', 'none', '--log-driver', 'none',
                '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--entrypoint', '/bin/sh']
+    if service == 'ng':
+        # nginx -t also checks cache ownership and binds configured addresses.
+        # This sysctl affects only the network-isolated validation container.
+        command += ['--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'NET_BIND_SERVICE',
+                    '--sysctl', 'net.ipv4.ip_nonlocal_bind=1']
     for volume in upstream.get('volumes', []):
         if volume['type'] != 'bind': raise ValueError('unsupported upstream validation mount')
         command += ['--volume', volume['source'] + ':' + volume['target'] + (':ro' if volume.get('read_only') else '')]
-    for host in sorted(set(re.findall(r'\bserver\s+([a-zA-Z][a-zA-Z0-9.-]*):[0-9]+\b', candidate))):
+    for host in sorted(set(re.findall(r'\b(?:server\s+|(?:proxy|grpc)_pass\s+\w+://)([a-zA-Z][a-zA-Z0-9.-]*)(?=[:/;\s])', candidate))):
         command += ['--add-host', host + ':127.0.0.1']
-    command += [image, '-c', 'umask 077; cat > /tmp/protocol-migration.conf && nginx -t -c /tmp/protocol-migration.conf']
+    # Relative includes must resolve beside the installed nginx.conf.
+    temporary = '/etc/nginx/protocol-migration.conf' if service == 'ng' else '/tmp/protocol-migration.conf'
+    command += [image, '-c', f'umask 077; cat > {temporary} && nginx -t -c {temporary}']
     subprocess.run(command, input=candidate.encode(), capture_output=True, check=True, timeout=30)
 
 
@@ -243,6 +257,9 @@ def apply(root):
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         current = settings(root)
+        if not current['ss']:
+            for filename in ('nginx.conf', 'nginx_default.conf'):
+                prepare_upstream(root, filename)
         certificate_errors = {}
         for service in ('anytls', 'tuic'):
             try: sync_certificates(root, current | {other: False for other in ('anytls', 'tuic') if other != service})
@@ -368,6 +385,8 @@ def main():
             migrate_systemd_stop(root)
             sync_certificates(root, settings(root))
             prepare_upstream(root)
+            for filename in ('nginx.conf', 'nginx_default.conf'):
+                prepare_upstream(root, filename)
         return compose(settings(root), sys.argv[2:]).returncode
     raise ValueError("unknown operation")
 

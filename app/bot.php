@@ -551,7 +551,7 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
-            case preg_match('~^/protocolModules(?: (oc|ovpn|tt|ipsec|ikev2|l2tp))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocolModules(?: ([a-z0-9]+))?$~D', $this->input['callback'], $m):
                 if ($this->admin) {
                     if (isset($m[1])) $this->protocolModulesToggle($m[1]);
                     else $this->protocolModulesMenu();
@@ -16373,6 +16373,7 @@ DNS-over-HTTPS with IP:
 
     public function dnstt($update = false)
     {
+        if (!$this->protocolModuleEnabled('dnstt')) { $this->protocolModulesMenu(); return; }
         $c      = $this->getPacConf();
         $pubkey = is_file('/config/dnstt/server.pub') ? file_get_contents('/config/dnstt/server.pub') : '';
         $text[] = "dnstt";
@@ -16852,6 +16853,7 @@ DNS-over-HTTPS with IP:
                     if ($this->protocolModuleEnabled('oc') && !empty($oc)) {
                         $main[] = 'openconnect ' . "$oc.{$conf['domain']}" . (in_array("$oc.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
                     }
+                    array_push($main, ...$this->managedProtocolDomainLines());
                     if (!empty($conf['adguardkey'])) {
                         $main[] = "{$conf['adguardkey']}.{$conf['domain']}" . (in_array("{$conf['adguardkey']}.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
                     }
@@ -16920,10 +16922,12 @@ DNS-over-HTTPS with IP:
                     $state = $store->read();
                     if (!$state['enabled']) continue;
                     $runtime = $store->status();
+                    $portApplied = $this->protocolPortApplied($protocol, $state);
                     $ready = !$runtime['stale'] && !empty($runtime['running']) && empty($runtime['error'])
                         && ($runtime['revision'] ?? null) === $state['revision']
-                        && $this->protocolPortApplied($protocol, $state);
-                    $main[] = $this->i18n($ready ? 'on' : 'off') . ' ' . $label . '  ' . $state['settings']['port'];
+                        && $portApplied;
+                    $main[] = $this->i18n($ready ? 'on' : 'off') . ' ' . $label . '  '
+                        . $this->i18n($portApplied ? 'on' : 'off') . ' ' . $state['settings']['port'];
                 } catch (RuntimeException | InvalidArgumentException $e) {
                     $main[] = $this->i18n('off') . ' ' . $label . ' — ошибка состояния';
                 }
@@ -17071,6 +17075,10 @@ DNS-over-HTTPS with IP:
 
         $text = $menu[$type ?: 'main' ]['text'];
         $data = $menu[$type ?: 'main' ]['data'];
+
+        if (empty($type)) {
+            $data = array_chunk(array_merge(...$this->filterProtocolButtons($data)), 2);
+        }
 
         if (empty($type) && $update) {
             $b = exec('git -C / rev-parse --abbrev-ref HEAD');
@@ -29075,6 +29083,7 @@ DNS-over-HTTPS with IP:
             $text[] = $conf['domain'] . (in_array($conf['domain'], $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
             $text[] = 'naive ' . "$np.{$conf['domain']}" . (in_array("$np.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
             $text[] = 'openconnect ' . "$oc.{$conf['domain']}" . (in_array("$oc.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
+            array_push($text, ...$this->managedProtocolDomainLines());
             if (!empty($conf['adguardkey'])) {
                 $text[] = "{$conf['adguardkey']}.{$conf['domain']}" . (in_array("{$conf['adguardkey']}.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
             }

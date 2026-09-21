@@ -7,10 +7,10 @@ final class ManagedProtocol
 
     public function formats(): array
     {
-        if (in_array($this->protocol, ['tuic', 'shadowtls'], true)) return ['singbox' => 'sing-box', 'mihomo' => 'mihomo'];
+        if (in_array($this->protocol, ['tuic', 'shadowtls'], true)) return ['singbox' => 'sing-box', 'mihomo' => 'Mihomo YAML'];
         return $this->protocol === 'mieru'
-            ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => 'mihomo']
-            : ['singbox' => 'sing-box', 'mihomo' => 'mihomo', 'uri' => 'Ссылка TXT'];
+            ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => 'Mihomo YAML']
+            : ['singbox' => 'sing-box', 'mihomo' => 'Mihomo YAML', 'uri' => 'Ссылка TXT'];
     }
 
     public function __construct(public readonly string $protocol, public readonly string $root = '/config/protocols')
@@ -379,6 +379,21 @@ final class ManagedProtocol
             if (!$c['udp_over_tcp']) array_unshift($config['route']['rules'], ['network' => 'udp', 'action' => 'reject']);
         }
         return $config;
+    }
+
+    public function profileDocument(string $id, string $format, ?array $state = null): array
+    {
+        $profile = $this->profile($id, $format, $state);
+        if ($format === 'mihomo') {
+            $body = yaml_emit($profile, YAML_UTF8_ENCODING);
+            if ($body === false) throw new RuntimeException('Не удалось сформировать YAML');
+            return ['body' => $body, 'extension' => 'yaml', 'mime' => 'application/yaml'];
+        }
+        return [
+            'body' => is_array($profile) ? json_encode($profile, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) : $profile,
+            'extension' => is_array($profile) ? 'json' : 'txt',
+            'mime' => is_array($profile) ? 'application/json' : 'text/plain',
+        ];
     }
 
     public function profile(string $id, string $format, ?array $state = null): array|string

@@ -132,6 +132,7 @@ services:
                 condition: service_started
             ss:
                 condition: service_started
+                required: false
             xr:
                 condition: service_started
         healthcheck:
@@ -279,10 +280,13 @@ services:
                 condition: service_started
             ss:
                 condition: service_started
+                required: false
             dnstt:
                 condition: service_started
+                required: false
             hy:
                 condition: service_started
+                required: false
             tt:
                 condition: service_started
                 required: false
@@ -739,6 +743,7 @@ services:
         init: true
         logging: *default-logging
     ss:
+        profiles: ["ss"]
         image: ghcr.io/axiomshiftbit/vpnbot-ss:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
@@ -788,6 +793,7 @@ services:
         init: true
         logging: *default-logging
     dnstt:
+        profiles: ["dnstt"]
         image: ghcr.io/axiomshiftbit/vpnbot-dnstt:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/dnstt.dockerfile
@@ -972,6 +978,7 @@ services:
         init: true
         logging: *default-logging
     hy:
+        profiles: ["hy"]
         image: ghcr.io/axiomshiftbit/vpnbot-hysteria:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/hysteria.dockerfile

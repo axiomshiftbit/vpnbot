@@ -113,9 +113,31 @@ try {
             [$method, $data] = end($bot->transport->calls);
             uiCheck($method === 'sendDocument' && $data['document'] instanceof CURLStringFile, "$key: экспорт создаёт вложение");
             uiCheck(str_contains($data['document']->postname, "$key-$format"), "$key: расширение экспорта");
+            if ($format === 'mihomo') {
+                uiCheck($data['document']->postname === "$key-mihomo.yaml" && $data['document']->mime === 'application/yaml', "$key: YAML-файл и MIME");
+                uiCheck(yaml_parse($data['document']->data) === $store->profile($id, 'mihomo'), "$key: YAML сохраняет типы, секреты и все параметры профиля");
+            }
         }
+        $yamlCallback = "/protocol $key yaml $id";
+        uiCheck(in_array($yamlCallback, uiCallbacks($buttons), true), "$key: кнопка копирования YAML");
+        $bot->input['callback'] = $yamlCallback; $bot->action(); $bot->input['callback'] = false;
+        [$yamlText, $yamlButtons] = uiLast($bot);
+        uiCheck(preg_match('~<pre><code class="language-yaml">(.*?)</code></pre>~s', $yamlText, $match) === 1, "$key: callback выдаёт копируемый YAML");
+        $snippet = html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $expected = $store->profile($id, 'mihomo')['proxies']; $expected[0]['name'] = "$key-$id";
+        uiCheck(yaml_parse("proxies:\n" . $snippet)['proxies'] === $expected, "$key: блок вставляется в proxies без потери обоих слоёв и параметров");
+        uiCheck(!str_contains($snippet, '---') && !str_contains($snippet, 'mixed-port:'), "$key: блок не заменяет настройки роутера");
+        $screens[$key . '-yaml'] = ['text' => $yamlText, 'buttons' => $yamlButtons];
+        $deniedYaml = function () use ($bot, $key, $id, $store): void {
+            $bot->input['callback'] = "/protocol $key yaml $id"; $bot->action(); $bot->input['callback'] = false;
+            [$text] = uiLast($bot);
+            uiCheck(str_contains($text, 'Доступ отключён, истёк или исчерпан') && !str_contains($text, '<pre>'), "$key: устаревшая кнопка YAML не раскрывает закрытый доступ");
+            try { $store->profileDocument($id, 'mihomo'); throw new LogicException('Закрытый доступ экспортирован'); }
+            catch (RuntimeException $e) { uiCheck($e->getMessage() === 'Доступ отключён, истёк или исчерпан', "$key: YAML-файл закрытого доступа недоступен"); }
+        };
         $bot->protocolCommand($key, 'user-toggle', $id); [$text, $buttons] = uiLast($bot);
         uiCheck(str_contains($text, '🔴') && !str_contains(implode(' ', uiCallbacks($buttons)), ' export '), "$key: отключённый доступ без экспорта");
+        $deniedYaml();
         $bot->protocolCommand($key, 'user-toggle', $id);
         $bot->protocolReply('0.5', $key, 'quota', $id); [$text] = uiLast($bot);
         uiCheck(str_contains($text, '0.500 ГиБ'), "$key: дробный лимит отображается");
@@ -124,6 +146,7 @@ try {
         uiCheck(str_contains($text, 'Не удалось сохранить') && $store->read() === $before, "$key: ошибка ввода без изменения доступа");
         $bot->protocolReply('2020-01-01 12:00', $key, 'expires', $id); [$text, $buttons] = uiLast($bot);
         uiCheck(str_contains($text, '2020-01-01 12:00') && !str_contains(implode(' ', uiCallbacks($buttons)), ' export '), "$key: просроченный доступ без экспорта");
+        $deniedYaml();
         $bot->protocolReply('0', $key, 'expires', $id);
         $bot->protocolReply('Новое имя', $key, 'name', $id); [$text] = uiLast($bot);
         uiCheck(str_contains($text, 'Новое имя'), "$key: переименование");
@@ -153,6 +176,7 @@ try {
         $count = count($store->read()['users']);
         $bot->protocolCommand($key, 'toggle');
         uiCheck(!$modules->enabled($key) && count($store->read()['users']) === $count, "$key: отключение сохраняет доступы");
+        $deniedYaml();
         $bot->protocolCommand($key, 'delete', $id);
         uiCheck(!isset($store->read()['users'][$id]), "$key: удаление возвращает в список");
     }

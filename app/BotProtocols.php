@@ -89,6 +89,32 @@ trait BotProtocols
         return array_values(array_unique($names));
     }
 
+    public function managedProtocolDomainLines(): array
+    {
+        $lines = [];
+        foreach (['anytls' => 'AnyTLS', 'shadowtls' => 'ShadowTLS'] as $protocol => $label) {
+            try {
+                $settings = $this->protocolStore($protocol)->read()['settings'];
+            } catch (RuntimeException | InvalidArgumentException $e) {
+                $lines[] = "$label: ошибка состояния";
+                continue;
+            }
+            if ($settings['host'] === '') {
+                $lines[] = "$label: не настроен";
+                continue;
+            }
+            $lines[] = "$label: <code>" . self::esc($settings['host']) . '</code>';
+            if ($protocol === 'anytls' && $settings['sni'] !== '' && $settings['sni'] !== $settings['host']) {
+                $lines[] = "$label SNI: <code>" . self::esc($settings['sni']) . '</code>';
+            }
+            $cover = $protocol === 'anytls' ? $settings['cover_host'] : $settings['sni'];
+            if ($cover !== '') {
+                $lines[] = "$label сайт прикрытия" . ($protocol === 'shadowtls' ? ' (SNI)' : '') . ': <code>' . self::esc($cover) . '</code>';
+            }
+        }
+        return $lines;
+    }
+
     public function exportManagedProtocols(): array
     {
         $out = ['modules' => (new ProtocolModules($this->protocolModulesFile))->read(), 'protocols' => [], 'certificates' => []];
@@ -189,7 +215,8 @@ trait BotProtocols
         if (!is_array($rows)) return $rows;
         return array_values(array_filter(array_map(function ($row) {
             return array_values(array_filter($row, function ($button) {
-                if (preg_match('~^/menu (oc|ovpn|tt|l2tp|ikev2)$~', $button['callback_data'] ?? '', $m)) {
+                if (($button['callback_data'] ?? '') === '/dnstt') return $this->protocolModuleEnabled('dnstt');
+                if (preg_match('~^/menu ([a-z0-9]+)$~', $button['callback_data'] ?? '', $m)) {
                     return $this->protocolModuleEnabled($m[1]);
                 }
                 return true;
@@ -212,6 +239,7 @@ trait BotProtocols
         $modules = new ProtocolModules($this->protocolModulesFile);
         $settings = $modules->read();
         $text = ["Настройки → Протоколы", 'Отключённые контейнеры не запускаются и не загружаются. Доступы и настройки сохраняются.',
+            'Выключатель Shadowsocks отключает также Cloak и simple-tls в его контейнере.',
             'IKEv2 и L2TP используют один контейнер IPsec. Он нужен, пока включён хотя бы один из них.'];
         $path = dirname($this->protocolModulesFile) . '/protocol-services.status.json';
         $status = is_file($path) ? ManagedProtocol::readJson($path) : [];
@@ -286,10 +314,24 @@ trait BotProtocols
                 $store->user($id, [], $action);
                 if ($action === 'delete') $id = '';
             } elseif ($action === 'export') {
-                $profile = $store->profile($id, $format);
-                $body = is_array($profile) ? json_encode($profile, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) : $profile;
-                $this->sendFile($this->input['chat'], new CURLStringFile($body,
-                    "$protocol-$format." . (is_array($profile) ? 'json' : 'txt'), is_array($profile) ? 'application/json' : 'text/plain'));
+                $document = $store->profileDocument($id, $format);
+                $this->sendFile($this->input['chat'], new CURLStringFile($document['body'],
+                    "$protocol-$format." . $document['extension'], $document['mime']));
+                return;
+            } elseif ($action === 'yaml') {
+                $proxies = $store->profile($id, 'mihomo')['proxies'];
+                $proxies[0]['name'] = $protocol . '-' . $id;
+                $yaml = yaml_emit($proxies, YAML_UTF8_ENCODING);
+                if ($yaml === false) throw new RuntimeException('Не удалось сформировать YAML');
+                $yaml = preg_replace('~\A---\r?\n|\r?\n\.\.\.(?:\r?\n)?\z~', '', $yaml);
+                $yaml = preg_replace('~^~m', '  ', rtrim($yaml)) . "\n";
+                $text = 'Вставьте этот элемент в существующий раздел <code>proxies:</code> конфигурации Mihomo в XKeen UI. '
+                    . 'Добавьте имя <code>' . self::esc($proxies[0]['name']) . '</code> в нужную группу <code>proxy-groups</code>. '
+                    . 'Порты, DNS и правила маршрутизации роутера сохраняются.'
+                    . "\n\n<pre><code class=\"language-yaml\">" . self::esc($yaml) . '</code></pre>';
+                $this->send($this->input['chat'], $text, $this->input['message_id'], [[
+                    ['text' => $this->i18n('back'), 'callback_data' => "/protocol $protocol user $id"],
+                ]]);
                 return;
             } elseif ($action === 'qr') {
                 $this->sendQr($protocol . '-' . $id, $store->profile($id, 'uri'));
@@ -399,6 +441,7 @@ trait BotProtocols
                 foreach ($store->formats() as $format => $label) {
                     $buttons[] = [['text' => $label, 'callback_data' => "/protocol $protocol export $id $format"]];
                 }
+                $buttons[] = [['text' => 'Прокси YAML · скопировать', 'callback_data' => "/protocol $protocol yaml $id"]];
                 $domain = $this->getDomain();
                 if ($domain) {
                     $base = 'https://' . $domain . '/pac' . $this->getHashBot() . '/protocol/' . $protocol . '/' . $u['token'];
@@ -539,7 +582,7 @@ trait BotProtocols
                 || !$this->protocolPortApplied($protocol, $s)) {
                 throw new RuntimeException('Состояние ещё не применено');
             }
-            $profile = $store->profile($id, $format, $s);
+            $document = $store->profileDocument($id, $format, $s);
             $u = $s['users'][$id]; $usage = $store->usage();
             header('Profile-Title: base64:' . base64_encode($u['name']));
             header('Profile-Update-Interval: 12');
@@ -551,8 +594,8 @@ trait BotProtocols
             if ($u['quota'] !== null) $info[] = 'total=' . $u['quota'];
             if ($u['expires'] !== null) $info[] = 'expire=' . $u['expires'];
             if ($info) header('Subscription-Userinfo: ' . implode('; ', $info));
-            header('Content-Type: ' . (is_array($profile) ? 'application/json' : 'text/plain') . '; charset=utf-8');
-            echo is_array($profile) ? json_encode($profile, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) : $profile;
+            header('Content-Type: ' . $document['mime'] . '; charset=utf-8');
+            echo $document['body'];
         } catch (Throwable $e) {
             http_response_code(503);
             header('Retry-After: 15');
