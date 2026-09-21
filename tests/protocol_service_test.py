@@ -15,6 +15,33 @@ service = module('protocol_service')
 modules = module('protocol_modules')
 
 class ProtocolTests(unittest.TestCase):
+    def test_anytls_cover_keeps_website_after_last_access_is_revoked(self):
+        for cover, enabled, expected in [(True, True, 'cover_only'), (False, True, 'idle'), (True, False, 'disabled')]:
+            with self.subTest(cover=cover, enabled=enabled), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); desired = root / 'desired.json'; generation = root / 'generation-test'
+                generation.mkdir()
+                inbound = {'type': 'anytls', 'users': []}
+                if cover: inbound['fallback_server_name'] = 'website.example.test'
+                desired.write_text(json.dumps({'schema': 1, 'protocol': 'anytls', 'revision': 1,
+                    'enabled': enabled, 'users': {}, 'config': {'inbounds': [inbound], 'experimental': {'v2ray_api': {}}}}))
+                with patch.dict('os.environ', {'PROTOCOL_DESIRED': str(desired)}):
+                    supervisor = service.Supervisor(root / 'runtime')
+                    with patch.object(supervisor, 'candidate', return_value=(generation, 'test')) as candidate, patch.object(supervisor, 'start') as start:
+                        supervisor.tick()
+                        self.assertEqual(cover and enabled, start.called)
+                        self.assertEqual(cover and enabled, candidate.called)
+                    self.assertEqual(expected, json.loads((root / 'runtime/status.json').read_text())['phase'])
+
+    def test_trusttunnel_has_optional_dns_when_disabled(self):
+        old = 'stream { upstream trusttunnel { server tt:8443; } map $ssl_preread_server_name $sni_name { default other; } }'
+        new = modules.migrate_upstream(old)
+        self.assertIn('server tt:8443 resolve;', new)
+        self.assertIn('zone trusttunnel 64k;', new)
+        self.assertEqual(new, modules.migrate_upstream(new))
+        with patch.object(modules, 'bindings', return_value={}):
+            self.assertIn('tt', modules.environment(modules.DEFAULTS)['COMPOSE_PROFILES'].split(','))
+            self.assertNotIn('tt', modules.environment(modules.DEFAULTS | {'tt': False})['COMPOSE_PROFILES'].split(','))
+
     def test_ipsec_filter_preserves_secrets_and_other_connections(self):
         text = 'connections { ikev2 { local { auth = pubkey } } l2tp { version = 1 } custom { key = "{text}" } }\nsecrets { eap-user { secret = "synthetic } secret" } }'
         only_ike = modules.filter_ipsec(text, True, False)
@@ -26,7 +53,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError): modules.filter_ipsec('connections { ikev2 {', False, True)
 
     def test_profiles_exclude_disabled_containers(self):
-        settings = modules.DEFAULTS | {'oc': False, 'ovpn': False, 'l2tp': False, 'ikev2': False}
+        settings = modules.DEFAULTS | {'oc': False, 'ovpn': False, 'tt': False, 'l2tp': False, 'ikev2': False}
         with patch.dict('os.environ', {'VER': 'test'}):
             self.assertEqual('', modules.environment(settings)['COMPOSE_PROFILES'])
             settings['ikev2'] = True

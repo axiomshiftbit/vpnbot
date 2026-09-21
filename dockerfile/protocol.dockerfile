@@ -11,10 +11,11 @@ COPY protocol-stats/main.go ./cmd/protocol-stats/main.go
 COPY protocol-policy/ /policy/
 RUN patch -p1 --fuzz=0 < /policy/hooks.patch \
     && cp /policy/*.go route/ \
-    && cp /policy/tuic/*.go protocol/tuic/
+    && cp /policy/tuic/*.go protocol/tuic/ \
+    && cp /policy/anytls/*.go protocol/anytls/
 RUN go get google.golang.org/grpc@v1.83.2 golang.org/x/crypto@v0.56.0 \
       github.com/go-chi/chi/v5@v5.3.0 golang.org/x/mod@v0.40.0
-RUN go test -tags with_quic,with_utls,with_v2ray_api ./route ./protocol/tuic -run TestVPNBot -count=1
+RUN go test -tags with_quic,with_utls,with_v2ray_api ./route ./protocol/tuic ./protocol/anytls -run TestVPNBot -count=1
 RUN CGO_ENABLED=0 go build -trimpath -tags with_quic,with_utls,with_v2ray_api \
       -ldflags "-s -w -X github.com/sagernet/sing-box/constant.Version=${PROTOCOL_SINGBOX_VERSION}" -o /sing-box ./cmd/sing-box \
     && CGO_ENABLED=0 go build -trimpath -tags with_v2ray_api -ldflags '-s -w' -o /protocol-stats ./cmd/protocol-stats

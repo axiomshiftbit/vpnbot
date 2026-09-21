@@ -8,6 +8,7 @@ trait BotProtocols
     public string $protocolRoot = '/config/protocols';
     public string $protocolModulesFile = '/config/protocol-services.json';
     public string $upstreamFile = '/config/upstream.conf';
+    public string $protocolNginxFile = '/config/nginx.conf';
     public string $protocolCertRoot = '/certs';
 
     public function protocolStore(string $protocol): ManagedProtocol
@@ -18,6 +19,49 @@ trait BotProtocols
     public function protocolModuleEnabled(string $module): bool
     {
         return (new ProtocolModules($this->protocolModulesFile))->enabled($module);
+    }
+
+    public function configureProtocolSelfHost(string $protocol): void
+    {
+        if (!in_array($protocol, ['anytls', 'shadowtls', 'tuic'], true)) throw new InvalidArgumentException('Для этого протокола задайте адрес и порт');
+        $domain = strtolower((string) ($this->getPacConf()['domain'] ?? ''));
+        if (!ManagedProtocol::hostname($domain) || filter_var($domain, FILTER_VALIDATE_IP)) throw new RuntimeException('Сначала задайте основной домен сервера');
+        $store = $this->protocolStore($protocol);
+        $settings = ['host' => $domain, 'sni' => $domain,
+            'blocked_ips' => filter_var($this->ip, FILTER_VALIDATE_IP) ? [$this->ip] : []];
+        if ($protocol !== 'shadowtls') {
+            $label = $this->getHashSubdomain($protocol === 'tuic' ? 'tc' : 'at');
+            if ($label === '') throw new RuntimeException('Неверный поддомен протокола');
+            $settings['host'] = $settings['sni'] = $label . '.' . $domain;
+        }
+        if ($protocol !== 'tuic') $settings['self_hosted'] = true;
+        if ($protocol === 'anytls') $settings += ['cover_host' => $domain, 'port' => 443];
+        $current = $store->read()['settings'];
+        foreach ($settings as $key => $value) if (($current[$key] ?? null) !== $value) {
+            $store->configure($settings);
+            break;
+        }
+    }
+
+    public function syncManagedSelfHosts(): void
+    {
+        foreach (['anytls', 'shadowtls'] as $protocol) {
+            $store = $this->protocolStore($protocol);
+            if (is_file($store->directory() . '/desired.json') && !empty($store->read()['settings']['self_hosted'])) {
+                $this->configureProtocolSelfHost($protocol);
+            }
+        }
+    }
+
+    public function prepareProtocolSelfHost(): void
+    {
+        $ok = $this->editProtocolProxyConfig($this->protocolNginxFile, 'ng', static function (string $text): string {
+            return preg_replace_callback('~^([ \t]*)listen 10\\.10\\.0\\.2:443 ssl proxy_protocol([^;\r\n]*);([ \t]*\r?\n)(?![ \t]*listen 10\\.10\\.0\\.2:10443 ssl)~m',
+                static fn($m) => $m[0] . $m[1] . 'listen 10.10.0.2:10443 ssl' . (str_contains($m[2], 'default_server') ? ' default_server' : '') . ";\n", $text);
+        });
+        if (!$ok || !str_contains((string) @file_get_contents($this->protocolNginxFile), 'listen 10.10.0.2:10443 ssl')) {
+            throw new RuntimeException('Не удалось подготовить внутренний TLS-маршрут к своему сайту');
+        }
     }
 
     private function protocolPortApplied(string $protocol, array $state): bool
@@ -127,6 +171,12 @@ trait BotProtocols
             }
         }
         if (array_diff_key($certificates, $allowed)) throw new InvalidArgumentException('Посторонний TLS-файл в резервной копии');
+        foreach (['anytls', 'shadowtls'] as $protocol) {
+            if (!empty($data['protocols'][$protocol]['state']['settings']['self_hosted'])) {
+                $this->prepareProtocolSelfHost();
+                break;
+            }
+        }
         foreach ($material as $path => $body) if (!$this->writePrivateKey($this->managedCertificatePath($path, true), $body)) throw new RuntimeException('Не удалось восстановить TLS-файл');
         foreach ($data['protocols'] as $protocol => $snapshot) $this->protocolStore($protocol)->restore($snapshot);
         $modules = new ProtocolModules($this->protocolModulesFile);
@@ -139,7 +189,7 @@ trait BotProtocols
         if (!is_array($rows)) return $rows;
         return array_values(array_filter(array_map(function ($row) {
             return array_values(array_filter($row, function ($button) {
-                if (preg_match('~^/menu (oc|ovpn|l2tp|ikev2)$~', $button['callback_data'] ?? '', $m)) {
+                if (preg_match('~^/menu (oc|ovpn|tt|l2tp|ikev2)$~', $button['callback_data'] ?? '', $m)) {
                     return $this->protocolModuleEnabled($m[1]);
                 }
                 return true;
@@ -200,6 +250,8 @@ trait BotProtocols
         if (!$this->admin) return;
         try {
             $store = $this->protocolStore($protocol);
+            if (in_array($protocol, ['anytls', 'shadowtls'], true) && !is_file($store->directory() . '/desired.json')
+                && ($this->getPacConf()['domain'] ?? '') !== '') $this->configureProtocolSelfHost($protocol);
             $state = $store->read();
             if ($action === 'page') { $this->protocolMenu($protocol, '', (int) $id); return; }
             if (in_array($action, ['add', 'name', 'expires', 'quota', 'rolling', 'settings'], true)) {
@@ -212,23 +264,20 @@ trait BotProtocols
                         : ($protocol === 'shadowtls' ? 'Адрес VPN, домен сайта прикрытия с TLS 1.3 и отдельный порт через пробел (например vpn.example.com www.microsoft.com 24447):'
                         : 'Адрес сервера, SNI и порт через пробел (например vpn.example.com vpn.example.com 443):'),
                 };
-                $r = $this->send($this->input['chat'], $prompt, $this->input['message_id'], reply: $prompt);
+                $r = $this->send($this->input['chat'], $prompt, $this->input['message_id'], reply: 'Введите значение');
                 $this->stashReply($r, ['start_message' => $this->input['message_id'],
                     'callback' => 'protocolReply', 'args' => [$protocol, $action, $id]]);
                 return;
             }
             if ($action === 'toggle') {
                 $on = !$state['enabled'];
+                if ($on && !empty($state['settings']['self_hosted'])) $this->prepareProtocolSelfHost();
                 $store->configure([], $on);
                 (new ProtocolModules($this->protocolModulesFile))->set($protocol, $on);
                 $this->syncManagedUpstreams();
             } elseif ($action === 'auto') {
-                if (in_array($protocol, ['mieru', 'shadowtls'], true)) throw new InvalidArgumentException('Задайте отдельный порт и параметры протокола');
-                $domain = (string) ($this->getPacConf()['domain'] ?? '');
-                if (!ManagedProtocol::hostname($domain)) throw new RuntimeException('Сначала задайте домен сервера');
-                $sni = $this->getHashSubdomain($protocol === 'tuic' ? 'tc' : 'at') . '.' . $domain;
-                $store->configure(['host' => $sni, 'sni' => $sni, 'port' => $protocol === 'tuic' ? $state['settings']['port'] : 443,
-                    'blocked_ips' => filter_var($this->ip, FILTER_VALIDATE_IP) ? [$this->ip] : []]);
+                if (in_array($protocol, ['anytls', 'shadowtls'], true)) $this->prepareProtocolSelfHost();
+                $this->configureProtocolSelfHost($protocol);
                 $this->syncManagedUpstreams();
             } elseif ($action === 'user-toggle') {
                 if (!isset($state['users'][$id])) throw new RuntimeException('Доступ не найден');
@@ -298,6 +347,8 @@ trait BotProtocols
                     if (count($parts) !== 3 || !preg_match('/\A[0-9]+\z/D', $parts[2])) throw new InvalidArgumentException('Нужны адрес, SNI и порт');
                     $settings = ['host' => $parts[0], 'sni' => $parts[1], 'port' => (int) $parts[2]];
                 }
+                if (in_array($protocol, ['anytls', 'shadowtls'], true)) $settings['self_hosted'] = false;
+                if ($protocol === 'anytls') $settings['cover_host'] = '';
                 $store->configure($settings + ['blocked_ips' => filter_var($this->ip, FILTER_VALIDATE_IP) ? [$this->ip] : []]);
                 $this->syncManagedUpstreams();
             } else throw new InvalidArgumentException('Неизвестное поле');
@@ -313,6 +364,8 @@ trait BotProtocols
         $s = $store->read(); $status = $store->status(); $usage = $store->usage();
         $title = ManagedProtocol::NAMES[$protocol];
         $phase = !$status['stale'] && !empty($status['running']) ? 'работает' : 'остановлен';
+        if ($s['enabled'] && !$status['stale'] && ($status['phase'] ?? '') === 'idle') $phase = 'ожидает активного доступа';
+        if ($s['enabled'] && !$status['stale'] && ($status['phase'] ?? '') === 'cover_only') $phase = 'сайт прикрытия работает; нет активных доступов';
         if ($status['stale'] && $s['enabled']) $phase = 'нет свежего статуса';
         if (($status['revision'] ?? null) !== $s['revision']) $phase .= '; ожидается применение';
         if ($s['enabled'] && !$this->protocolPortApplied($protocol, $s)) $phase .= '; внешний маршрут ещё не применён';
@@ -364,6 +417,8 @@ trait BotProtocols
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "/protocol $protocol"]];
         } else {
             $text[] = self::esc($s['settings']['host'] . ':' . $s['settings']['port'] . ($protocol === 'mieru' ? ' · ' . $s['settings']['transport'] : ' · SNI ' . $s['settings']['sni']));
+            if (!empty($s['settings']['self_hosted'])) $text[] = 'Прикрытие собственным сайтом: https://' . self::esc($protocol === 'anytls' ? $s['settings']['cover_host'] : $s['settings']['sni']) . '. Домен берётся из настроек этого сервера.';
+            if ($protocol === 'anytls' && !empty($s['settings']['self_hosted'])) $text[] = 'Поддомен создаётся автоматически. Он должен указывать на этот сервер через DNS (A/AAAA/CNAME или wildcard) и входить в сертификат TLS.';
             $text[] = $protocol === 'mieru' ? 'Mieru использует отдельный порт без TLS. Транспорт TCP/UDP относится к соединению с сервером; оба передают TCP и UDP приложений.'
                 : ($protocol === 'shadowtls' ? 'SNI — домен сайта прикрытия с действительным TLS 1.3. Сертификат этого сайта на VPS не устанавливается. Внутренний SS2022 закрыт от внешних подключений.'
                 : 'Для TLS требуется действительный сертификат на указанное имя. После добавления имени обновите SSL в настройках.');
@@ -378,7 +433,7 @@ trait BotProtocols
             }
             $buttons[] = [['text' => $s['enabled'] ? 'Отключить сервис' : 'Включить сервис', 'callback_data' => "/protocol $protocol toggle"]];
             $buttons[] = [['text' => $protocol === 'mieru' ? 'Адрес / порт / транспорт' : 'Адрес / SNI / порт', 'callback_data' => "/protocol $protocol settings"]];
-            if (in_array($protocol, ['anytls', 'tuic'], true)) $buttons[] = [['text' => 'Использовать домен сервера', 'callback_data' => "/protocol $protocol auto"]];
+            if (in_array($protocol, ['anytls', 'shadowtls', 'tuic'], true)) $buttons[] = [['text' => $protocol === 'tuic' ? 'Использовать домен сервера' : 'Прикрытие своим сайтом · авто', 'callback_data' => "/protocol $protocol auto"]];
             $buttons[] = [['text' => 'Выход: ' . $s['settings']['egress'], 'callback_data' => "/protocol $protocol egress"]];
             $buttons[] = [['text' => 'Добавить доступ', 'callback_data' => "/protocol $protocol add"]];
             $last = max(0, (int) ceil(count($s['users']) / 20) - 1); $page = min(max(0, $page), $last);
@@ -424,9 +479,13 @@ trait BotProtocols
     /** Validate outside the stable lock; compare before replacing a concurrent edit. */
     public function editUpstream(callable $edit): bool
     {
-        $path = $this->upstreamFile;
+        return $this->editProtocolProxyConfig($this->upstreamFile, 'up', $edit);
+    }
+
+    private function editProtocolProxyConfig(string $path, string $service, callable $edit): bool
+    {
         if (!is_file($path)) return false;
-        $lock = @fopen(dirname($path) . '/upstream.lock', 'c');
+        $lock = @fopen(dirname($path) . '/' . pathinfo($path, PATHINFO_FILENAME) . '.lock', 'c');
         if (!$lock) return false;
         $write = static function (string $body) use ($path): bool {
             $file = @fopen($path, 'c+');
@@ -442,21 +501,21 @@ trait BotProtocols
                 flock($lock, LOCK_UN);
                 $after = $edit($before);
                 if ($before === $after) return true;
-                $temporary = '/tmp/upstream-' . bin2hex(random_bytes(8)) . '.conf';
+                $temporary = ($service === 'ng' ? '/etc/nginx/protocol-validation-' : '/tmp/upstream-') . bin2hex(random_bytes(8)) . '.conf';
                 $cmd = 'umask 077; printf %s ' . escapeshellarg(base64_encode($after)) . ' | base64 -d > ' . $temporary
                     . '; nginx -t -c ' . $temporary . ' >/dev/null 2>&1 && printf VPNBOT_VALID; rm -f ' . $temporary;
-                if (!str_contains($this->ssh($cmd, 'up'), 'VPNBOT_VALID')) return false;
+                if (!str_contains($this->ssh($cmd, $service), 'VPNBOT_VALID')) return false;
                 if (!flock($lock, LOCK_EX)) return false;
                 if (file_get_contents($path) !== $before) { flock($lock, LOCK_UN); continue; }
                 $ok = $write($after);
                 if (!$ok) $write($before);
                 flock($lock, LOCK_UN);
                 if (!$ok) return false;
-                if (str_contains($this->ssh('nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1 && printf VPNBOT_APPLIED', 'up'), 'VPNBOT_APPLIED')) return true;
+                if (str_contains($this->ssh('nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1 && printf VPNBOT_APPLIED', $service), 'VPNBOT_APPLIED')) return true;
                 if (!flock($lock, LOCK_EX)) return false;
                 if (file_get_contents($path) === $after) $write($before);
                 flock($lock, LOCK_UN);
-                $this->ssh('nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1', 'up');
+                $this->ssh('nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1', $service);
                 return false;
             }
             return false;

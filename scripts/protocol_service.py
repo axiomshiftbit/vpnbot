@@ -303,7 +303,8 @@ class Supervisor:
                     raise RuntimeError("quota_stats_unavailable")
         config, users = self.prepare(state)
         self.last_valid_state = state
-        if not state["enabled"] or not users:
+        cover_only = self.protocol == "anytls" and bool(config["inbounds"][0].get("fallback_server_name"))
+        if not state["enabled"] or (not users and not cover_only):
             self.stop()
             self.applied_revision = state["revision"]
             self.fingerprint = ""
@@ -343,7 +344,7 @@ class Supervisor:
                     shutil.rmtree(previous)
         self.applied_revision = state["revision"]
         self.error = ""
-        self.write_status(state, "running")
+        self.write_status(state, "cover_only" if not users else "running")
 
     def write_status(self, state, phase):
         atomic_json(self.root / "status.json", {"time": int(time.time()), "phase": phase,

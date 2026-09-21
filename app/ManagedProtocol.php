@@ -27,6 +27,8 @@ final class ManagedProtocol
                 'dns' => '1.1.1.1', 'egress' => 'direct', 'blocked_ips' => [],
                 'certificate' => '/certs/cert_public', 'private_key' => '/certs/cert_private'],
             'users' => []];
+        if (in_array($this->protocol, ['anytls', 'shadowtls'], true)) $state['settings']['self_hosted'] = false;
+        if ($this->protocol === 'anytls') $state['settings']['cover_host'] = '';
         if ($this->protocol === 'mieru') {
             $state['settings']['port'] = $state['settings']['listen_port'] = 24445;
             $state['settings']['transport'] = 'TCP';
@@ -61,6 +63,12 @@ final class ManagedProtocol
         if (!file_exists($path)) return $this->defaults();
         $state = self::readJson($path);
         $this->validate($state);
+        // Old saved states remain manual until the administrator selects auto setup.
+        foreach (['self_hosted', 'cover_host'] as $key) {
+            if (array_key_exists($key, $this->defaults()['settings']) && !array_key_exists($key, $state['settings'])) {
+                $state['settings'][$key] = $this->defaults()['settings'][$key];
+            }
+        }
         return $state;
     }
 
@@ -135,6 +143,14 @@ final class ManagedProtocol
             throw new InvalidArgumentException('Неверная структура состояния');
         }
         $c = $s['settings'];
+        if (array_key_exists('self_hosted', $c) && !is_bool($c['self_hosted'])) throw new InvalidArgumentException('Неверный режим собственного сайта');
+        if (array_key_exists('cover_host', $c) && !is_string($c['cover_host'])) throw new InvalidArgumentException('Неверный адрес сайта прикрытия');
+        if ($this->protocol === 'anytls' && ($c['cover_host'] ?? '') !== '') {
+            if (!self::hostname($c['cover_host']) || filter_var($c['cover_host'], FILTER_VALIDATE_IP)
+                || strcasecmp($c['cover_host'], $c['sni'] ?? '') === 0) {
+                throw new InvalidArgumentException('Сайт прикрытия AnyTLS должен иметь отдельное доменное имя');
+            }
+        }
         foreach (['port', 'listen_port'] as $key) {
             if (!is_int($c[$key] ?? null) || $c[$key] < 1 || $c[$key] > 65535) throw new InvalidArgumentException('Порт: 1–65535');
         }
@@ -342,6 +358,11 @@ final class ManagedProtocol
             'route' => ['rules' => $rules, 'final' => $c['egress'], 'default_domain_resolver' => 'dns'],
             'experimental' => ['v2ray_api' => ['listen' => '127.0.0.1:10085',
                 'stats' => ['enabled' => true, 'users' => array_keys($s['users'])]]]];
+        if ($this->protocol === 'anytls' && ($c['cover_host'] ?? '') !== '') {
+            $config['inbounds'][0]['fallback_server_name'] = $c['cover_host'];
+            if (!empty($c['self_hosted'])) $config['inbounds'][0]['fallback_address'] = '10.10.0.2:10443';
+            $config['inbounds'][0]['tls']['alpn'] = ['http/1.1'];
+        }
         if ($this->protocol === 'tuic') {
             $config['inbounds'][0] += ['congestion_control' => $c['congestion'], 'zero_rtt_handshake' => false, 'auth_timeout' => '3s', 'heartbeat' => '10s'];
             $config['inbounds'][0]['tls'] += ['alpn' => ['h3'], 'min_version' => '1.3'];
@@ -350,7 +371,8 @@ final class ManagedProtocol
             $config['inbounds'] = [
                 ['type' => 'shadowtls', 'tag' => 'shadowtls', 'listen' => '0.0.0.0', 'listen_port' => 24447,
                     'version' => 3, 'strict_mode' => true, 'wildcard_sni' => 'off', 'users' => $users,
-                    'handshake' => ['server' => $c['sni'], 'server_port' => $c['handshake_port'], 'domain_resolver' => 'dns'], 'detour' => 'inner-ss'],
+                    'handshake' => ['server' => !empty($c['self_hosted']) ? '10.10.0.2' : $c['sni'],
+                        'server_port' => !empty($c['self_hosted']) ? 10443 : $c['handshake_port'], 'domain_resolver' => 'dns'], 'detour' => 'inner-ss'],
                 ['type' => 'shadowsocks', 'tag' => 'inner-ss', 'listen' => '127.0.0.1', 'listen_port' => 10086, 'network' => 'tcp',
                     'method' => '2022-blake3-aes-128-gcm', 'password' => $c['ss_server_key'],
                     'users' => array_map(fn($u) => ['name' => $u['name'], 'password' => $s['users'][$u['name']]['ss_key']], $users)]];

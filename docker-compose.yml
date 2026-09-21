@@ -59,6 +59,7 @@ services:
                 condition: service_started
             tt:
                 condition: service_started
+                required: false
             ovpn:
                 condition: service_started
                 required: false
@@ -284,6 +285,7 @@ services:
                 condition: service_started
             tt:
                 condition: service_started
+                required: false
             ovpn:
                 condition: service_started
                 required: false
@@ -933,6 +935,7 @@ services:
         init: true
         logging: *default-logging
     tt:
+        profiles: ["tt"]
         image: ghcr.io/axiomshiftbit/vpnbot-tt:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/trusttunnel.dockerfile

@@ -9677,6 +9677,8 @@ NFT;
             $conf['domain'] = $ascii;
             $this->setPacConf($conf);
             $this->chocdomain($ascii);
+            $this->syncManagedSelfHosts();
+            $this->reconcileManagedUpstreams();
             $this->setUpstreamDomainOcserv($ascii);
             $this->setUpstreamDomainNaive($ascii);
             $this->cloakNginx();
@@ -16758,6 +16760,7 @@ DNS-over-HTTPS with IP:
         $conf   = $this->getPacConf();
         $domain = $conf['domain'] ?: $this->ip;
         $hash   = $this->getHashBot();
+        $managedProtocolButtons = [];
         if ($type == false) {
             $update = exec('git -C / rev-list --count HEAD..@{u}');
             $branch = exec('git -C / rev-parse --abbrev-ref HEAD');
@@ -16910,6 +16913,22 @@ DNS-over-HTTPS with IP:
                     '',
                 ],
             ]));
+            foreach (ManagedProtocol::NAMES as $protocol => $label) {
+                if (!$this->protocolModuleEnabled($protocol)) continue;
+                try {
+                    $store = $this->protocolStore($protocol);
+                    $state = $store->read();
+                    if (!$state['enabled']) continue;
+                    $runtime = $store->status();
+                    $ready = !$runtime['stale'] && !empty($runtime['running']) && empty($runtime['error'])
+                        && ($runtime['revision'] ?? null) === $state['revision']
+                        && $this->protocolPortApplied($protocol, $state);
+                    $main[] = $this->i18n($ready ? 'on' : 'off') . ' ' . $label . '  ' . $state['settings']['port'];
+                } catch (RuntimeException | InvalidArgumentException $e) {
+                    $main[] = $this->i18n('off') . ' ' . $label . ' — ошибка состояния';
+                }
+                $managedProtocolButtons[] = ['text' => $label, 'callback_data' => "/protocol $protocol"];
+            }
             $main[] = '';
             $main[] = $this->alignColumns([
                 [
@@ -16994,6 +17013,7 @@ DNS-over-HTTPS with IP:
                             ],
                         ],
                     ],
+                    array_chunk($managedProtocolButtons, 2),
                     [
                         [
                             [

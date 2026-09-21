@@ -8,9 +8,12 @@ function mpRemove(string $path): void {
 }
 class ManagedTestBot extends Bot {
     public array $commands = [];
+    public array $conf = [];
     public bool $valid = true;
     public bool $applied = true;
     public function __construct() {}
+    public function getPacConf() { return $this->conf + self::PAC_DEFAULTS; }
+    public function getHashSubdomain($subdomain) { return substr(hash('sha256', $subdomain), 0, 8); }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
         $lock = fopen(dirname($this->upstreamFile) . '/upstream.lock', 'c');
         mpCheck(flock($lock, LOCK_EX | LOCK_NB), 'Сетевой вызов не удерживает блокировку');
@@ -153,5 +156,54 @@ try {
     $badBackup = $backup; $badBackup['certificates']['/certs/custom/key.pem'] = base64_encode('broken key');
     try { $bot->importManagedProtocols($badBackup); throw new LogicException('invalid pair'); } catch (InvalidArgumentException $e) {}
     mpCheck(file_get_contents("$root/certs/custom/key.pem") === $keyPem && $tls->read() === $beforeRestore, 'Неверная TLS-пара не портит рабочие файлы и доступы');
+    $bot->protocolRoot = "$root/self-host";
+    $bot->conf = ['domain' => 'first.example.test'];
+    $bot->configureProtocolSelfHost('anytls'); $bot->configureProtocolSelfHost('shadowtls');
+    $at = $bot->protocolStore('anytls'); $st = $bot->protocolStore('shadowtls');
+    $initial = $at->read();
+    mpCheck($initial['settings']['sni'] === $bot->getHashSubdomain('at') . '.first.example.test'
+        && $initial['settings']['cover_host'] === 'first.example.test', 'AnyTLS: собственный сайт и автоматический отдельный поддомен');
+    mpCheck($initial['config']['inbounds'][0]['fallback_server_name'] === 'first.example.test'
+        && $initial['config']['inbounds'][0]['tls']['alpn'] === ['http/1.1'], 'AnyTLS: HTTP-сайт после штатного fallback');
+    mpCheck($initial['config']['inbounds'][0]['fallback_address'] === '10.10.0.2:10443', 'AnyTLS: собственный сайт доступен без публичного hairpin');
+    mpCheck($st->read()['settings']['sni'] === 'first.example.test'
+        && $st->read()['settings']['port'] === 24447, 'ShadowTLS: свой сайт и отдельный порт');
+    mpCheck($st->read()['config']['inbounds'][0]['handshake']['server'] === '10.10.0.2'
+        && $st->read()['config']['inbounds'][0]['handshake']['server_port'] === 10443, 'ShadowTLS: внутренний TLS-маршрут к своему сайту');
+    $bot->configureProtocolSelfHost('anytls');
+    mpCheck($at->read()['revision'] === $initial['revision'], 'Повторный выбор авто не перезапускает неизменённое ядро');
+    $bot->conf['domain'] = 'second.example.test'; $bot->syncManagedSelfHosts();
+    mpCheck($at->read()['settings']['cover_host'] === 'second.example.test'
+        && $st->read()['settings']['sni'] === 'second.example.test', 'Другой сервер получает свой домен');
+    $st->configure(['self_hosted' => false, 'sni' => 'manual.example.test']);
+    $bot->conf['domain'] = 'third.example.test'; $bot->syncManagedSelfHosts();
+    mpCheck($st->read()['settings']['sni'] === 'manual.example.test', 'Ручное прикрытие не заменяется автоматически');
+    foreach (['https://example.test', '127.0.0.1', $at->read()['settings']['sni'], "example.test\nHost: evil", null] as $host) {
+        try { $at->configure(['cover_host' => $host]); throw new LogicException('invalid cover accepted'); } catch (InvalidArgumentException $e) {}
+    }
+    $modules->set('tt', false);
+    mpCheck(!$modules->enabled('tt') && $bot->filterProtocolButtons([[['text' => 'TT', 'callback_data' => '/menu tt']]]) === [], 'TrustTunnel отключается и исчезает из меню');
+    $modules->set('tt', true);
+    mpCheck($modules->enabled('tt'), 'TrustTunnel включается обратно');
+    $bot->protocolNginxFile = "$root/nginx.conf";
+    $originalNginx = "http {\n server {\n  listen 10.10.0.2:443 ssl proxy_protocol default_server;\n }\n server {\n  listen 10.10.0.2:443 ssl proxy_protocol;\n }\n}\n";
+    file_put_contents($bot->protocolNginxFile, $originalNginx);
+    $bot->applied = true;
+    $bot->prepareProtocolSelfHost(); $preparedNginx = file_get_contents($bot->protocolNginxFile);
+    mpCheck(substr_count($preparedNginx, 'listen 10.10.0.2:10443 ssl') === 2, 'Внутренний TLS сохраняет оба виртуальных хоста');
+    $bot->prepareProtocolSelfHost();
+    mpCheck(file_get_contents($bot->protocolNginxFile) === $preparedNginx, 'Подготовка внутреннего маршрута идемпотентна');
+    file_put_contents($bot->protocolNginxFile, $originalNginx); $bot->applied = false;
+    try { $bot->prepareProtocolSelfHost(); throw new LogicException('reload failure accepted'); } catch (RuntimeException $e) {}
+    mpCheck(file_get_contents($bot->protocolNginxFile) === $originalNginx, 'Ошибка reload сохраняет прежний сайт');
+    $selfHostBackup = $bot->exportManagedProtocols();
+    $at->configure(['self_hosted' => false, 'cover_host' => '']);
+    $beforeRestore = $at->read();
+    try { $bot->importManagedProtocols($selfHostBackup); throw new LogicException('restore without website'); } catch (RuntimeException $e) {}
+    mpCheck($at->read() === $beforeRestore, 'Нельзя восстановить авто-прикрытие без рабочего внутреннего маршрута');
+    $bot->applied = true;
+    $bot->importManagedProtocols($selfHostBackup);
+    mpCheck($at->read()['settings']['self_hosted'] && file_get_contents($bot->protocolNginxFile) === $preparedNginx,
+        'Восстановление авто-прикрытия подготавливает внутренний TLS-маршрут');
     echo "managed_protocol_test OK\n";
 } finally { mpRemove($root); }

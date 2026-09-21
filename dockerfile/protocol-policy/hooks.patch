@@ -19,3 +19,40 @@
  		TLSConfig: tlsConfig,
  		QUICOptions: qtls.QUICOptions{
  			IdleTimeout:             options.IdleTimeout.Build(),
+--- a/option/anytls.go
++++ b/option/anytls.go
+@@ -8,2 +8,4 @@
+-	Users         []AnyTLSUser               `json:"users,omitempty"`
+-	PaddingScheme badoption.Listable[string] `json:"padding_scheme,omitempty"`
++	Users              []AnyTLSUser               `json:"users,omitempty"`
++	PaddingScheme      badoption.Listable[string] `json:"padding_scheme,omitempty"`
++	FallbackServerName string                     `json:"fallback_server_name,omitempty"`
++	FallbackAddress    string                     `json:"fallback_address,omitempty"`
+--- a/protocol/anytls/inbound.go
++++ b/protocol/anytls/inbound.go
+@@ -5,0 +6,2 @@
++	"regexp"
++	"strconv"
+@@ -59,0 +62,14 @@
++	var fallback N.TCPConnectionHandlerEx
++	if options.FallbackServerName != "" {
++		if !regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$`).MatchString(options.FallbackServerName) || net.ParseIP(options.FallbackServerName) != nil || len(options.FallbackServerName) > 253 {
++			return nil, E.New("invalid fallback server name")
++		}
++		if options.FallbackAddress != "" {
++			host, port, err := net.SplitHostPort(options.FallbackAddress)
++			number, numberErr := strconv.Atoi(port)
++			if err != nil || host == "" || numberErr != nil || number < 1 || number > 65535 {
++				return nil, E.New("invalid fallback address")
++			}
++		}
++		fallback = newVPNBotFallback(options.FallbackServerName, options.FallbackAddress)
++	}
+@@ -64,3 +80,4 @@
+-		PaddingScheme: paddingScheme,
+-		Handler:       (*inboundHandler)(inbound),
+-		Logger:        logger,
++		PaddingScheme:   paddingScheme,
++		Handler:         (*inboundHandler)(inbound),
++		FallbackHandler: fallback,
++		Logger:          logger,

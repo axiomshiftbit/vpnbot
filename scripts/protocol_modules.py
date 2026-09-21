@@ -10,8 +10,8 @@ import subprocess
 import sys
 import uuid
 
-DEFAULTS = {"oc": True, "ovpn": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False}
-SERVICES = ("oc", "ovpn", "ipsec", "anytls", "mieru", "tuic", "shadowtls")
+DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False}
+SERVICES = ("oc", "ovpn", "tt", "ipsec", "anytls", "mieru", "tuic", "shadowtls")
 SYSTEMD_UNIT = Path('/etc/systemd/system/vpnbot.service')
 
 
@@ -62,7 +62,7 @@ def migrate_upstream(text):
     """Add optional DNS resolution and the TLS bridge to existing installations."""
     if not re.search(r'\bresolver\s', text):
         text = text.replace('stream {', 'stream {\n    resolver 127.0.0.11 valid=10s ipv6=off;', 1)
-    for name, host, port in (("ocserv", "oc", 443), ("openvpn", "ovpn", 1194)):
+    for name, host, port in (("ocserv", "oc", 443), ("openvpn", "ovpn", 1194), ("trusttunnel", "tt", 8443)):
         pattern = r'upstream\s+' + name + r'\s*\{\s*server\s+' + host + ':' + str(port) + r'\s*;\s*\}'
         text = re.sub(pattern, f'upstream {name} {{\n        zone {name} 64k;\n        server {host}:{port} resolve;\n    }}', text)
     if 'upstream anytls_bridge' not in text:

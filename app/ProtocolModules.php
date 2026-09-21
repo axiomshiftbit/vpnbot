@@ -5,9 +5,9 @@ require_once __DIR__ . '/ManagedProtocol.php';
 /** Optional containers are independent from their saved VPN credentials. */
 final class ProtocolModules
 {
-    public const DEFAULTS = ['oc' => true, 'ovpn' => true, 'ipsec' => true,
+    public const DEFAULTS = ['oc' => true, 'ovpn' => true, 'tt' => true, 'ipsec' => true,
         'ikev2' => true, 'l2tp' => true, 'anytls' => false, 'mieru' => false, 'tuic' => false, 'shadowtls' => false];
-    public const LABELS = ['oc' => 'OpenConnect', 'ovpn' => 'OpenVPN', 'ipsec' => 'IPsec',
+    public const LABELS = ['oc' => 'OpenConnect', 'ovpn' => 'OpenVPN', 'tt' => 'TrustTunnel', 'ipsec' => 'IPsec',
         'ikev2' => 'IKEv2', 'l2tp' => 'L2TP/IPsec', 'anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS'];
 
     public function __construct(public readonly string $path = '/config/protocol-services.json') {}
