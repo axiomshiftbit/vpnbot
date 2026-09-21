@@ -551,7 +551,7 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
-            case preg_match('~^/protocolModules(?: (oc|ovpn|ipsec|ikev2|l2tp))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocolModules(?: (oc|ovpn|tt|ipsec|ikev2|l2tp))?$~D', $this->input['callback'], $m):
                 if ($this->admin) {
                     if (isset($m[1])) $this->protocolModulesToggle($m[1]);
                     else $this->protocolModulesMenu();

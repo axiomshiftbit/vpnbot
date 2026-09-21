@@ -24,6 +24,7 @@ class ProtocolInterfaceBot extends Bot {
     }
     public function getDomain($cdn = false) { return 'vpn.example.test'; }
     public function getHashBot($notset = false) { return 'fixture'; }
+    public function getWgMsg() { return null; }
     public function getPacConf() { return self::PAC_DEFAULTS; }
     public function stashReply($r, array $state) { $_SESSION['reply'][$r['result']['message_id']] = $state; }
 }
@@ -54,6 +55,32 @@ try {
     $modules = new ProtocolModules($bot->protocolModulesFile);
     $bot->protocolModulesMenu(); [$text, $buttons] = uiLast($bot);
     foreach (ManagedProtocol::NAMES as $key => $label) uiCheck(in_array("/protocol $key", uiCallbacks($buttons), true), "$key: настройка доступна до включения");
+    // Нажимаем реальные callback из меню через общий диспетчер. Прямой вызов
+    // protocolModulesToggle не обнаруживал отсутствующий маршрут TrustTunnel.
+    $callbacks = uiCallbacks($buttons);
+    $bot->input += ['message' => '', 'reply' => false];
+    foreach (ProtocolModules::LABELS as $key => $label) {
+        if (isset(ManagedProtocol::NAMES[$key])) continue;
+        uiCheck(in_array("/protocolModules $key", $callbacks, true), "$label: кнопка выключателя присутствует");
+        $before = $modules->read();
+        $bot->input['callback'] = "/protocolModules $key";
+        $bot->action();
+        uiCheck($modules->read() === array_replace($before, [$key => false]), "$label: callback выключает только выбранный модуль");
+        [, $changedButtons] = uiLast($bot);
+        uiCheck(in_array('🔴 ' . $label, array_column(array_merge(...$changedButtons), 'text'), true), "$label: кнопка показывает отключение");
+        $bot->action();
+        uiCheck($modules->read() === $before, "$label: повторное нажатие включает модуль");
+        $bot->admin = false; $calls = count($bot->transport->calls);
+        $bot->action();
+        uiCheck($modules->read() === $before && count($bot->transport->calls) === $calls, "$label: чужое нажатие ничего не меняет");
+        $bot->admin = true;
+    }
+    foreach (['/protocolModules unknown', '/protocolModules tt extra', "/protocolModules tt\n", '/protocolModules tt;id'] as $callback) {
+        $before = $modules->read(); $calls = count($bot->transport->calls);
+        $bot->input['callback'] = $callback; $bot->action();
+        uiCheck($modules->read() === $before && count($bot->transport->calls) === $calls, 'Неверный callback не меняет модули');
+    }
+    $bot->input['callback'] = false;
     foreach (ManagedProtocol::NAMES as $key => $label) {
         $store = $bot->protocolStore($key);
         $bot->protocolCommand($key); [$text, $buttons] = uiLast($bot);
