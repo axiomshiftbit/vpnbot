@@ -288,7 +288,7 @@ jobs:
           docker pull "$image"
           revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")
           test "$revision" = "$GITHUB_SHA"
-          docker image inspect --format 'Runtime image {{.Id}} {{join .RepoDigests ","}}' "$image"
+          docker image inspect --format 'Runtime image {{.Id}} {{range .RepoDigests}}{{.}} {{end}}' "$image"
           docker save "$image" | gzip -1 > "$RUNNER_TEMP/vpnbot-${{ matrix.image }}.tar.gz"
 
       - name: Образ для тестового стенда
