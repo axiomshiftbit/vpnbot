@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/managed_protocol_fixture.php';
 require_once __DIR__ . '/../app/bot.php';
 
 function mpCheck(bool $ok, string $name): void { if (!$ok) throw new RuntimeException($name); }
@@ -27,7 +28,7 @@ try {
     $m = new ManagedProtocol('anytls', $root);
     mpCheck(!$m->read()['enabled'], 'Новая установка не активирует протокол');
     $m->configure(['host' => 'vpn.example', 'sni' => 'vpn.example'], true);
-    $a = $m->add('Одинаковое имя'); $b = $m->add('Одинаковое имя'); $s = $m->read();
+    $a = managedProtocolFixtureUser($m, 'Одинаковое имя'); $b = managedProtocolFixtureUser($m, 'Одинаковое имя'); $s = $m->read();
     mpCheck($a !== $b && $s['users'][$a]['password'] !== $s['users'][$b]['password'] && $s['users'][$a]['token'] !== $s['users'][$b]['token'], 'Независимая идентичность');
     $before = $s['users'][$a]; $m->user($a, ['name' => 'Новое имя']);
     mpCheck($m->read()['users'][$a]['password'] === $before['password'], 'Имя не меняет авторизацию');
@@ -55,7 +56,7 @@ try {
         $children = [];
         for ($i = 0; $i < 12; $i++) {
             $pid = pcntl_fork();
-            if ($pid === 0) { $m->add('Параллельный ' . $i); exit(0); }
+            if ($pid === 0) { managedProtocolFixtureUser($m, 'Параллельный ' . $i); exit(0); }
             $children[] = $pid;
         }
         foreach ($children as $pid) { pcntl_waitpid($pid, $status); mpCheck(pcntl_wexitstatus($status) === 0, 'Параллельная запись завершилась'); }
@@ -83,11 +84,11 @@ try {
     mpCheck(!$bot->editUpstream(fn() => 'failed') && file_get_contents($bot->upstreamFile) === 'new', 'Ошибка reload восстанавливает файл');
     mpCheck((fileperms($m->directory() . '/desired.json') & 0777) === 0600, 'Секреты с правами 0600');
     file_put_contents($m->directory() . '/desired.json', '{broken');
-    try { $m->add('Не затирать повреждение'); throw new LogicException('corrupt accepted'); } catch (RuntimeException $e) {}
+    try { managedProtocolFixtureUser($m, 'Не затирать повреждение'); throw new LogicException('corrupt accepted'); } catch (RuntimeException $e) {}
     mpCheck(file_get_contents($m->directory() . '/desired.json') === '{broken', 'Повреждение не заменяется пустым состоянием');
     $mieru = new ManagedProtocol('mieru', $root);
     $mieru->configure(['host' => 'vpn.example.com'], true);
-    $mid = $mieru->add('Mieru < & имя');
+    $mid = managedProtocolFixtureUser($mieru, 'Mieru < & имя');
     $native = $mieru->profile($mid, 'native');
     mpCheck($native['profiles'][0]['user']['name'] === $mid && !isset($native['profiles'][0]['tls']), 'Mieru: независимая авторизация без TLS');
     mpCheck(str_starts_with($mieru->profile($mid, 'uri'), 'mierus://') && str_starts_with($mieru->profile($mid, 'native-uri'), 'mieru://'), 'Две официальные схемы Mieru');
@@ -103,7 +104,7 @@ try {
     mpCheck($mieru->read()['settings']['port'] === 24445, 'Отказ сохраняет действующий порт');
     $tuic = new ManagedProtocol('tuic', $root);
     $tuic->configure(['host' => 'tuic.example.com', 'sni' => 'tuic.example.com'], true);
-    $tid = $tuic->add('TUIC отдельно'); $tu = $tuic->read()['users'][$tid];
+    $tid = managedProtocolFixtureUser($tuic, 'TUIC отдельно'); $tu = $tuic->read()['users'][$tid];
     $tp = $tuic->profile($tid, 'mihomo')['proxies'][0];
     mpCheck($tp['uuid'] === $tu['uuid'] && !isset($tp['token']) && !$tp['reduce-rtt'] && !$tp['skip-cert-verify'], 'TUIC v5, UUID, TLS и 0-RTT');
     $tuic->user($tid, [], 'rotate');
@@ -114,7 +115,7 @@ try {
     mpCheck($tuic->read()['config']['inbounds'][0]['type'] === 'tuic' && $m->protocol === 'anytls', 'Входы протоколов независимы');
     $shadow = new ManagedProtocol('shadowtls', $root);
     $shadow->configure(['host' => 'vpn.example.com', 'sni' => 'cover.example.com'], true);
-    $sid = $shadow->add('Два слоя'); $su = $shadow->read()['users'][$sid];
+    $sid = managedProtocolFixtureUser($shadow, 'Два слоя'); $su = $shadow->read()['users'][$sid];
     $sp = $shadow->profile($sid, 'singbox'); $sc = $shadow->read()['config'];
     mpCheck($sp['outbounds'][0]['detour'] === 'shadowtls' && $sp['outbounds'][1]['version'] === 3, 'Связка SS2022 → ShadowTLS v3');
     mpCheck($sc['inbounds'][0]['strict_mode'] && $sc['inbounds'][0]['wildcard_sni'] === 'off'
@@ -134,7 +135,7 @@ try {
     $tls = $bot->protocolStore('anytls');
     $tls->configure(['host' => 'vpn.example', 'sni' => 'vpn.example', 'certificate' => '/certs/custom/cert.pem', 'private_key' => '/certs/custom/key.pem'], true);
     $tls->configureOptions('client', ['fingerprint' => 'chrome', 'idle_session_timeout' => '30s']);
-    $tlsId = $tls->add('TLS backup');
+    $tlsId = managedProtocolFixtureUser($tls, 'TLS backup');
     mkdir("$root/certs/custom", 0700);
     $key = openssl_pkey_new(['private_key_bits' => 2048]);
     $csr = openssl_csr_new(['commonName' => 'vpn.example'], $key);

@@ -129,7 +129,7 @@ try {
 
     $modules->set('mieru', false);
     [$text, $buttons] = $bot->menu(false, false, true);
-    protocolMenuAssert(!str_contains(json_encode($buttons), '/!protocol mieru') && !str_contains($text, 'Mieru'), 'Отключённый модуль скрыт');
+    protocolMenuAssert(!str_contains(json_encode($buttons), '/!protocol mieru') && str_contains($text, 'Mieru выкл.'), 'Отключённый модуль скрыт в навигации и отмечен в versions');
     $modules->set('mieru', true);
     $stores['mieru']->configure([], false);
     [$text, $buttons] = $bot->menu(false, false, true);

@@ -2,17 +2,17 @@
 
 require_once __DIR__ . '/ProtocolOptions.php';
 
-/** Independent state for one protocol. No IDs or credentials are shared with Xray. */
+/** Protocol-specific credentials, linked to Xray users or retained for legacy access. */
 final class ManagedProtocol
 {
     public const NAMES = ['anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS'];
 
     public function formats(?array $state = null): array
     {
-        if (in_array($this->protocol, ['tuic', 'shadowtls'], true)) return ['singbox' => 'sing-box', 'mihomo' => 'Mihomo YAML'];
         $formats = $this->protocol === 'mieru'
-            ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => 'Mihomo YAML']
-            : ['singbox' => 'sing-box', 'mihomo' => 'Mihomo YAML', 'uri' => 'Ссылка TXT'];
+            ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => 'Полный профиль Mihomo · YAML']
+            : ['singbox' => 'sing-box JSON · прокси', 'mihomo' => 'Полный профиль Mihomo · YAML']
+                + ($this->protocol === 'anytls' ? ['uri' => 'Ссылка TXT'] : []);
         $options = ($state ?? $this->read())['settings']['options'] ?? [];
         if ($this->protocol === 'anytls' && (!empty($options['client']) || !empty($options['singbox']) || !empty($options['mihomo']))) unset($formats['uri']);
         if ($this->protocol === 'mieru' && array_diff_key($options['native'] ?? [], ['mtu' => true])) unset($formats['uri']);
@@ -122,7 +122,7 @@ final class ManagedProtocol
             if ($this->protocol === 'shadowtls' && $state['settings']['ss_server_key'] === '') {
                 $state['settings']['ss_server_key'] = base64_encode(random_bytes(16));
             }
-            $edit($state);
+            if ($edit($state) === false) return $state;
             $state['revision']++;
             $this->validate($state);
             $state['config'] = $this->serverConfig($state);
@@ -199,6 +199,10 @@ final class ManagedProtocol
                 || !preg_match('/\A[a-f0-9]{64}\z/D', $u['token'] ?? '')
                 || !preg_match('/\A[A-Za-z0-9_-]{43}\z/D', $u['password'] ?? '')
                 || !preg_match('/\A[a-f0-9]{16}\z/D', $u['reset'] ?? '')) throw new InvalidArgumentException('Неверные данные доступа');
+            if (isset($u['xray_source']) && (!is_string($u['xray_source']) || !preg_match('/\A[a-f0-9]{32}\z/D', $u['xray_source'])
+                || !is_string($u['xray_credential'] ?? null) || !preg_match('/\A[a-f0-9]{64}\z/D', $u['xray_credential']))) {
+                throw new InvalidArgumentException('Неверная связь с пользователем VLESS');
+            }
             foreach (['expires', 'quota'] as $key) {
                 if (!array_key_exists($key, $u) || ($u[$key] !== null && (!is_int($u[$key]) || $u[$key] <= 0))) {
                     throw new InvalidArgumentException('Срок и лимит должны быть положительными или отсутствовать');
@@ -258,18 +262,45 @@ final class ManagedProtocol
         });
     }
 
-    public function add(string $name): string
+    public static function xraySource(array $client): string
     {
-        // Purely decimal array keys are silently converted to integers by PHP.
-        do { $id = bin2hex(random_bytes(8)); } while (preg_match('/\A[0-9]+\z/D', $id));
-        $this->change(function (&$s) use ($name, $id) {
-            $s['users'][$id] = ['name' => trim($name), 'password' => self::secret(),
-                'token' => bin2hex(random_bytes(32)), 'enabled' => true, 'expires' => null,
-                'quota' => null, 'reset' => bin2hex(random_bytes(8))];
-            if ($this->protocol === 'tuic') $s['users'][$id]['uuid'] = self::uuid();
-            if ($this->protocol === 'shadowtls') $s['users'][$id]['ss_key'] = base64_encode(random_bytes(16));
+        if (is_string($client['protocol_source'] ?? null) && preg_match('/\A[a-f0-9]{32}\z/D', $client['protocol_source'])) return $client['protocol_source'];
+        return substr(hash('sha256', 'xray:' . (!empty($client['subtoken']) ? $client['subtoken'] : (!empty($client['off']) ? $client['off'] : ($client['id'] ?? '')))), 0, 32);
+    }
+
+    public static function xrayCredential(array $client): string
+    {
+        return hash('sha256', (!empty($client['off']) ? $client['off'] : $client['id']) . ':'
+            . (!empty($client['off_pwd']) ? $client['off_pwd'] : ($client['password'] ?? '')));
+    }
+
+    /** One independent credential per protocol, linked by a stable subscription identity. */
+    public function syncXrayUsers(array $clients): void
+    {
+        $this->change(function (&$state) use ($clients) {
+            $before = $state['users']; $found = [];
+            foreach ($state['users'] as $id => $user) {
+                if (!isset($user['xray_source'])) continue;
+                $source = $user['xray_source'];
+                if (!isset($clients[$source]) || isset($found[$source])) unset($state['users'][$id]);
+                else $found[$source] = $id;
+            }
+            foreach ($clients as $source => $fields) {
+                $id = $found[$source] ?? null;
+                if ($id === null) {
+                    do { $id = 'a' . bin2hex(random_bytes(8)); $id = substr($id, 0, 16); } while (isset($state['users'][$id]));
+                    $state['users'][$id] = ['token' => bin2hex(random_bytes(32)), 'reset' => bin2hex(random_bytes(8)), 'xray_source' => $source];
+                }
+                if (($state['users'][$id]['xray_credential'] ?? '') !== $fields['xray_credential']) {
+                    $state['users'][$id]['password'] = self::secret();
+                    $state['users'][$id]['token'] = bin2hex(random_bytes(32));
+                    if ($this->protocol === 'tuic') $state['users'][$id]['uuid'] = self::uuid();
+                    if ($this->protocol === 'shadowtls') $state['users'][$id]['ss_key'] = base64_encode(random_bytes(16));
+                }
+                $state['users'][$id] = array_replace($state['users'][$id], $fields);
+            }
+            return $before !== $state['users'];
         });
-        return $id;
     }
 
     public static function secret(): string { return rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '='); }
@@ -404,6 +435,11 @@ final class ManagedProtocol
             $config['inbounds'][0]['fallback_server_name'] = $c['cover_host'];
             if (!empty($c['self_hosted'])) $config['inbounds'][0]['fallback_address'] = '10.10.0.2:10443';
             $config['inbounds'][0]['tls']['alpn'] = ['http/1.1'];
+        }
+        if ($this->protocol === 'anytls' && ($c['options']['client']['udp'] ?? true) === false) {
+            // A shared selector must not reject UDP for other protocols. Enforce
+            // the AnyTLS restriction here, including previously downloaded profiles.
+            array_unshift($config['route']['rules'], ['network' => 'udp', 'action' => 'reject']);
         }
         if ($this->protocol === 'tuic') {
             $config['inbounds'][0] += ['congestion_control' => $c['congestion'], 'zero_rtt_handshake' => false, 'auth_timeout' => '3s', 'heartbeat' => '10s'];

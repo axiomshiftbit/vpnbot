@@ -3,24 +3,92 @@
 require_once __DIR__ . '/ManagedProtocol.php';
 require_once __DIR__ . '/ProtocolModules.php';
 require_once __DIR__ . '/BotProtocolOptions.php';
+require_once __DIR__ . '/BotProtocolSubscriptions.php';
 
 trait BotProtocols
 {
     use BotProtocolOptions;
+    use BotProtocolSubscriptions;
     public string $protocolRoot = '/config/protocols';
     public string $protocolModulesFile = '/config/protocol-services.json';
     public string $upstreamFile = '/config/upstream.conf';
     public string $protocolNginxFile = '/config/nginx.conf';
     public string $protocolCertRoot = '/certs';
     public bool $protocolReturnMain = false;
+    public bool $protocolFingerprintShortcut = false;
+    public array $protocolRelayOrigin = [];
+    public bool $protocolOutput = false;
+
+    public function protocolNavigationStart(): void
+    {
+        $this->protocolFingerprintShortcut = false;
+        $this->protocolRelayOrigin = [];
+        $this->protocolOutput = false;
+        if (!$this->admin) return;
+        $key = $this->input['chat'] . ':' . $this->input['message_id'];
+        $outputs = $_SESSION['protocol_output'][$key] ?? [];
+        if ($outputs) {
+            $this->sessionApply(function () use ($key) { unset($_SESSION['protocol_output'][$key]); });
+            foreach ($outputs as $id) $this->delete($this->input['chat'], $id);
+        }
+        if (!empty($_SESSION['protocol_relay'][$key])) {
+            if (preg_match('~^/(relay(?:Menu|Add|Edit|Del)|switchRelayAggregate|setRelay\w+|prset)(?: |$)~', (string) $this->input['callback'])) {
+                $this->protocolRelayOrigin = $_SESSION['protocol_relay'][$key];
+            } else {
+                $this->sessionApply(function () use ($key) { unset($_SESSION['protocol_relay'][$key]); });
+            }
+        }
+    }
+
+    // Only explicitly requested protocol files/QRs are temporary. Never sweep chat history.
+    public function rememberProtocolOutput($result)
+    {
+        if ($this->protocolOutput && !empty($result['result']['message_id'])) {
+            $key = $this->input['chat'] . ':' . $this->input['message_id'];
+            $this->sessionApply(function () use ($key, $result) {
+                $_SESSION['protocol_output'][$key][] = (int) $result['result']['message_id'];
+                $_SESSION['protocol_output'] = array_slice($_SESSION['protocol_output'], -50, null, true);
+            });
+        }
+        return $result;
+    }
+
+    public function protocolError(string $message, string $back, string $retry = ''): void
+    {
+        $buttons = [];
+        if ($retry !== '') $buttons[] = [['text' => 'Повторить ввод', 'callback_data' => $retry]];
+        $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => $back]];
+        $this->update($this->input['chat'], $this->input['message_id'], '❌ ' . self::esc($message), $buttons);
+    }
+
+    public function protocolManageRelays(string $protocol, string $id = ''): void
+    {
+        if (!$this->admin) return;
+        $key = $this->input['chat'] . ':' . $this->input['message_id'];
+        $this->protocolRelayOrigin = ['back' => ($this->protocolReturnMain ? '/!' : '/') . ($id === '' ? "protocol $protocol" : "pr $protocol $id page"),
+            'label' => ManagedProtocol::NAMES[$protocol]];
+        $this->sessionApply(function () use ($key) {
+            $_SESSION['protocol_relay'][$key] = $this->protocolRelayOrigin;
+            $_SESSION['protocol_relay'] = array_slice($_SESSION['protocol_relay'], -50, null, true);
+        });
+        $this->relayMenu();
+    }
 
     public function protocolNavigationButtons($buttons)
     {
-        if (!$this->protocolReturnMain || !is_array($buttons)) return $buttons;
+        if (!is_array($buttons)) return $buttons;
         foreach ($buttons as &$row) foreach ($row as &$button) {
             $callback = $button['callback_data'] ?? '';
-            if ($callback === '/protocolModules') $button['callback_data'] = '/menu';
-            elseif (preg_match('~^/(protocol|pr|prset|po|ps) ~', $callback)) $button['callback_data'] = '/!' . substr($callback, 1);
+            if ($this->protocolRelayOrigin && $callback === '/xray') $callback = $this->protocolRelayOrigin['back'];
+            if ($this->protocolFingerprintShortcut) {
+                if (preg_match('~^/po (anytls|shadowtls) (show|reset|pick) client\.fingerprint(.*)$~D', $callback, $m)) $callback = "/pf {$m[1]} {$m[2]}{$m[3]}";
+                elseif (preg_match('~^/po (anytls|shadowtls) show client$~D', $callback, $m)) $callback = "/protocol {$m[1]}";
+            }
+            if ($this->protocolReturnMain) {
+                if ($callback === '/protocolModules') $callback = '/menu';
+                elseif (preg_match('~^/(protocol|pr|prset|prmanage|po|ps|pf) ~', $callback)) $callback = '/!' . substr($callback, 1);
+            }
+            if (isset($button['callback_data'])) $button['callback_data'] = $callback;
         }
         return $buttons;
     }
@@ -30,9 +98,57 @@ trait BotProtocols
         return new ManagedProtocol($protocol, $this->protocolRoot);
     }
 
+    public function protocolPortPrompt(string $protocol): void
+    {
+        if (!$this->admin) return;
+        $settings = $this->protocolStore($protocol)->read()['settings'];
+        $text = ManagedProtocol::NAMES[$protocol] . ' · внешний порт: ' . $settings['port'] . ".\n";
+        if ($protocol === 'anytls') {
+            $text .= 'AnyTLS принимает подключения на общем 443/TCP через отдельное имя SNI. Внутренний порт — 8443. Отдельная смена порта здесь недоступна: общий вход используется и другими сервисами.';
+        } else {
+            $transport = $protocol === 'tuic' ? 'UDP' : ($protocol === 'mieru' ? 'TCP/UDP' : 'TCP');
+            $text .= "Меняется внешний порт $transport в Docker и в выдаваемых профилях. Адрес, SNI и внутренний порт сохраняются. Применение может кратко прервать соединения этого протокола.\n"
+                . 'Откройте новый порт в своём внешнем firewall/NAT, затем обновите клиентскую подписку. Переадресация на отдельном relay меняется вручную. 0 не отключает сервис; выключатель находится в настройках протокола.';
+        }
+        $this->update($this->input['chat'], $this->input['message_id'], self::esc($text), [[['text' => $this->i18n('back'), 'callback_data' => '/ports']]]);
+        if ($protocol === 'anytls') return;
+        $r = $this->send($this->input['chat'], 'Новый внешний порт: целое число 1024–65535. Для отмены нажмите «Назад».',
+            $this->input['message_id'], reply: '1024–65535');
+        $this->stashReply($r, ['start_message' => $this->input['message_id'], 'callback' => 'protocolPortReply', 'args' => [$protocol]]);
+    }
+
+    public function protocolPortReply($input, string $protocol): void
+    {
+        if (!$this->admin) return;
+        try {
+            $input = trim((string) $input);
+            if (!in_array($protocol, ['mieru', 'tuic', 'shadowtls'], true)
+                || !preg_match('/\A[0-9]{4,5}\z/D', $input) || (int) $input < 1024 || (int) $input > 65535) {
+                throw new InvalidArgumentException('Внешний порт должен быть целым числом 1024–65535.');
+            }
+            $this->protocolStore($protocol)->configure(['port' => (int) $input]);
+            $this->ports();
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $this->protocolError($e->getMessage(), '/ports', "/protocolPort $protocol");
+        }
+    }
+
     public function protocolModuleEnabled(string $module): bool
     {
         return (new ProtocolModules($this->protocolModulesFile))->enabled($module);
+    }
+
+    public function managedProtocolVersionCells(): array
+    {
+        $cells = [];
+        foreach (['anytls' => 'AnyTLS/sb', 'mieru' => 'Mieru', 'tuic' => 'TUIC5/sb', 'shadowtls' => 'ShadowTLS3/sb'] as $protocol => $label) {
+            if (!$this->protocolModuleEnabled($protocol)) { $cells[] = "$label выкл."; continue; }
+            $status = $this->protocolStore($protocol)->status();
+            $version = $status['core_version'] ?? '';
+            $known = !$status['stale'] && is_string($version) && preg_match('/\A[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?\z/D', $version);
+            $cells[] = $label . ' ' . ($known ? self::esc($version) : 'нет данных');
+        }
+        return $cells;
     }
 
     public function configureProtocolSelfHost(string $protocol): void
@@ -213,15 +329,16 @@ trait BotProtocols
     public function xraySubscriptionMetadata(array $client, int $index): void
     {
         header('Profile-Update-Interval: 12');
-        $info = [];
+        $info = []; $managed = $this->xrayProtocolUsage($client);
         if (is_file('/config/xray.stats')) {
             $stats = $this->getXrayStats()['users'][$index] ?? null;
             if (is_array($stats) && isset($stats['session']['upload'], $stats['session']['download'])) {
                 foreach (['upload', 'download'] as $direction) {
-                    $info[] = $direction . '=' . max(0, (int) $stats['session'][$direction] + (int) ($stats['global'][$direction] ?? 0));
+                    $managed[$direction] += max(0, (int) $stats['session'][$direction] + (int) ($stats['global'][$direction] ?? 0));
                 }
             }
         }
+        if (array_sum($managed)) foreach ($managed as $direction => $bytes) $info[] = "$direction=$bytes";
         if ((int) ($client['traffic'] ?? 0) > 0) $info[] = 'total=' . (int) $client['traffic'];
         if ((int) ($client['time'] ?? 0) > 0) $info[] = 'expire=' . (int) $client['time'];
         if ($info) header('Subscription-Userinfo: ' . implode('; ', $info));
@@ -322,7 +439,7 @@ trait BotProtocols
             $modules->set($module, !$settings[$module]);
             $this->protocolModulesMenu();
         } catch (Throwable $e) {
-            $this->send($this->input['chat'], 'Не удалось сохранить настройки протоколов.');
+            $this->protocolError('Не удалось сохранить настройки протоколов.', '/protocolModules');
         }
     }
 
@@ -370,7 +487,7 @@ trait BotProtocols
             if ($this->setPacConf($conf) === false) throw new RuntimeException('Не удалось сохранить relay');
             $this->relayEdit($name);
         } catch (InvalidArgumentException | RuntimeException $e) {
-            $this->send($this->input['chat'], self::esc($e->getMessage()));
+            $this->protocolError($e->getMessage(), "/relayEdit $name", "/prset $protocol $name");
         }
     }
 
@@ -402,7 +519,7 @@ trait BotProtocols
                 if ($page > 0) $nav[] = ['text' => '←', 'callback_data' => "$prefix page " . ($page - 1)];
                 if (count($relays) > ($page + 1) * 20) $nav[] = ['text' => '→', 'callback_data' => "$prefix page " . ($page + 1)];
                 if ($nav) $buttons[] = $nav;
-                $buttons[] = [['text' => 'Настроить relay', 'callback_data' => '/relayMenu']];
+                $buttons[] = [['text' => 'Настроить relay', 'callback_data' => "/prmanage $protocol $id"]];
                 $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "/protocol $protocol user $id"]];
             } else {
                 // Stable short keys keep Telegram callbacks below 64 bytes, even
@@ -428,7 +545,7 @@ trait BotProtocols
                 }
                 foreach ($store->formats() as $f => $label) $buttons[] = [['text' => $label . ' · relay', 'callback_data' => "$prefix $key $f"]];
                 $buttons[] = [['text' => '🔗 Подписки · relay', 'callback_data' => "/ps $protocol $id $key"]];
-                $buttons[] = [['text' => 'Прокси YAML · скопировать', 'callback_data' => "$prefix $key yaml"]];
+                $buttons[] = [['text' => 'Запись прокси · скопировать', 'callback_data' => "$prefix $key yaml"]];
                 if ($domain = $this->getDomain()) {
                     $base = 'https://' . $domain . '/pac' . $this->getHashBot() . '/protocol/' . $protocol . '/' . $state['users'][$id]['token'];
                     foreach ($store->formats() as $f => $label) if (!str_contains($f, 'uri')) {
@@ -437,9 +554,9 @@ trait BotProtocols
                 }
                 $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "$prefix page"]];
             }
-            $this->send($this->input['chat'], implode("\n", $text), $this->input['message_id'], $buttons);
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $buttons);
         } catch (InvalidArgumentException | RuntimeException $e) {
-            $this->send($this->input['chat'], self::esc($e->getMessage()));
+            $this->protocolError($e->getMessage(), "/protocol $protocol user $id");
         }
     }
 
@@ -451,13 +568,17 @@ trait BotProtocols
             if (in_array($protocol, ['anytls', 'shadowtls'], true) && !is_file($store->directory() . '/desired.json')
                 && ($this->getPacConf()['domain'] ?? '') !== '') $this->configureProtocolSelfHost($protocol);
             $state = $store->read();
+            if ($action === 'add') { $this->xray(); return; }
+            if ($id !== '' && isset($state['users'][$id]['xray_source'])) {
+                $this->xrayProtocolsMenu($state['users'][$id]['xray_source']); return;
+            }
             $endpoint = $relayName === '' ? null : $this->protocolRelayEndpoint($protocol, $relayName);
             $relayKey = $relayName === '' ? '' : substr(hash('sha256', $relayName), 0, 16);
             if ($action === 'relays') { $this->protocolRelay($protocol, $id); return; }
             if ($action === 'page') { $this->protocolMenu($protocol, '', (int) $id); return; }
-            if (in_array($action, ['add', 'name', 'expires', 'quota', 'rolling', 'settings'], true)) {
+            if (in_array($action, ['name', 'expires', 'quota', 'rolling', 'settings'], true)) {
                 $prompt = match ($action) {
-                    'add', 'name' => 'Название доступа (до 100 символов):',
+                    'name' => 'Название доступа (до 100 символов):',
                     'expires' => 'Срок: дата и время UTC в формате 2026-10-01 12:00, либо 0 без срока:',
                     'quota' => 'Лимит в ГиБ (например 10 или 0.5), либо 0 без лимита:',
                     'rolling' => 'Квота Mieru: число дней и МиБ через пробел, например 30 10240. Либо 0 без периодической квоты:',
@@ -476,6 +597,7 @@ trait BotProtocols
                 $store->configure([], $on);
                 (new ProtocolModules($this->protocolModulesFile))->set($protocol, $on);
                 $this->syncManagedUpstreams();
+                $this->syncXrayProtocolUsers();
             } elseif ($action === 'auto') {
                 if (in_array($protocol, ['anytls', 'shadowtls'], true)) $this->prepareProtocolSelfHost();
                 $this->configureProtocolSelfHost($protocol);
@@ -488,8 +610,11 @@ trait BotProtocols
                 if ($action === 'delete') $id = '';
             } elseif ($action === 'export') {
                 $document = $store->profileDocument($id, $format, endpoint: $endpoint);
-                $this->sendFile($this->input['chat'], new CURLStringFile($document['body'],
-                    "$protocol-$format" . ($relayKey === '' ? '' : '-relay-' . $relayKey) . '.' . $document['extension'], $document['mime']));
+                $this->protocolOutput = true;
+                try {
+                    $this->sendFile($this->input['chat'], new CURLStringFile($document['body'],
+                        "$protocol-$format" . ($relayKey === '' ? '' : '-relay-' . $relayKey) . '.' . $document['extension'], $document['mime']));
+                } finally { $this->protocolOutput = false; }
                 return;
             } elseif ($action === 'yaml') {
                 $proxies = $store->profile($id, 'mihomo', endpoint: $endpoint)['proxies'];
@@ -502,12 +627,20 @@ trait BotProtocols
                     . 'Добавьте имя <code>' . self::esc($proxies[0]['name']) . '</code> в нужную группу <code>proxy-groups</code>. '
                     . 'Порты, DNS и правила маршрутизации роутера сохраняются.'
                     . "\n\n<pre><code class=\"language-yaml\">" . self::esc($yaml) . '</code></pre>';
-                $this->send($this->input['chat'], $text, $this->input['message_id'], [[
+                if ($this->messageTextLength($text) > 4096) {
+                    $this->protocolOutput = true;
+                    try { $this->sendFile($this->input['chat'], new CURLStringFile($yaml, "$protocol-proxy.yaml", 'application/yaml')); }
+                    finally { $this->protocolOutput = false; }
+                    $text = 'Запись прокси слишком длинная для сообщения и отправлена файлом. Вставьте её в раздел <code>proxies:</code> и добавьте имя прокси в нужную группу. Сохраните файл до следующего нажатия.';
+                }
+                $this->update($this->input['chat'], $this->input['message_id'], $text, [[
                     ['text' => $this->i18n('back'), 'callback_data' => $relayKey === '' ? "/protocol $protocol user $id" : "/pr $protocol $id $relayKey"],
                 ]]);
                 return;
             } elseif ($action === 'qr') {
-                $this->sendQr($protocol . '-' . $id . ($relayKey === '' ? '' : '-relay-' . $relayKey), $store->profile($id, 'uri', endpoint: $endpoint));
+                $this->protocolOutput = true;
+                try { $this->sendQr($protocol . '-' . $id . ($relayKey === '' ? '' : '-relay-' . $relayKey), $store->profile($id, 'uri', endpoint: $endpoint)); }
+                finally { $this->protocolOutput = false; }
                 return;
             } elseif ($action === 'egress') {
                 $on = $state['settings']['egress'] === 'direct';
@@ -535,8 +668,8 @@ trait BotProtocols
             $this->protocolMenu($protocol, $id);
         } catch (Throwable $e) {
             // Messages from storage validators are bounded and never contain credentials.
-            $this->send($this->input['chat'], self::esc($e instanceof InvalidArgumentException || $e instanceof RuntimeException
-                ? $e->getMessage() : 'Не удалось выполнить действие протокола'));
+            $this->protocolError($e instanceof InvalidArgumentException || $e instanceof RuntimeException
+                ? $e->getMessage() : 'Не удалось выполнить действие протокола', "/protocol $protocol");
         }
     }
 
@@ -546,8 +679,11 @@ trait BotProtocols
         try {
             $store = $this->protocolStore($protocol);
             $input = trim((string) $input);
-            if ($action === 'add') $id = $store->add($input);
-            elseif ($action === 'name') $store->user($id, ['name' => $input]);
+            if ($action === 'add') { $this->xray(); return; }
+            if (isset($store->read()['users'][$id]['xray_source'])) {
+                $this->xrayProtocolsMenu($store->read()['users'][$id]['xray_source']); return;
+            }
+            if ($action === 'name') $store->user($id, ['name' => $input]);
             elseif ($action === 'quota') {
                 if (!preg_match('/\A\d+(?:\.\d{1,3})?\z/D', $input) || (float) $input > 1000000) throw new InvalidArgumentException('Неверный лимит');
                 $store->user($id, ['quota' => (float) $input == 0 ? null : (int) round((float) $input * 1073741824)]);
@@ -574,7 +710,8 @@ trait BotProtocols
             } else throw new InvalidArgumentException('Неизвестное поле');
             $this->protocolMenu($protocol, $id);
         } catch (Throwable $e) {
-            $this->send($this->input['chat'], 'Не удалось сохранить: ' . self::esc($e instanceof InvalidArgumentException ? $e->getMessage() : 'проверьте состояние и права записи'));
+            $this->protocolError('Не удалось сохранить: ' . ($e instanceof InvalidArgumentException ? $e->getMessage() : 'проверьте состояние и права записи'),
+                $id === '' ? "/protocol $protocol" : "/protocol $protocol user $id", rtrim("/protocol $protocol $action $id"));
         }
     }
 
@@ -610,6 +747,8 @@ trait BotProtocols
                 $buttons[] = [['text' => 'Квота за период', 'callback_data' => "/protocol $protocol rolling $id"]];
             }
             $text[] = 'Срок проверяется каждую секунду, расход — каждые 5 секунд. Отзыв завершает все соединения этого протокола.';
+            $text[] = 'Полный профиль — готовый конфиг клиента. «Запись прокси» — блок для раздела proxies существующего Mihomo/XKeen; порты, DNS и правила остаются вашими.';
+            $text[] = 'Файлы и QR временные: сохраните их до следующего нажатия в этом меню.';
             if ($s['enabled'] && $store->allowed($u, $id, $usage)) {
                 if (isset($store->formats()['uri'])) {
                     $uri = $store->profile($id, 'uri');
@@ -619,7 +758,7 @@ trait BotProtocols
                 foreach ($store->formats() as $format => $label) {
                     $buttons[] = [['text' => $label, 'callback_data' => "/protocol $protocol export $id $format"]];
                 }
-                $buttons[] = [['text' => 'Прокси YAML · скопировать', 'callback_data' => "/protocol $protocol yaml $id"]];
+                $buttons[] = [['text' => 'Запись прокси · скопировать', 'callback_data' => "/protocol $protocol yaml $id"]];
                 $buttons[] = [['text' => '🔗 Relay', 'callback_data' => "/protocol $protocol relays $id"]];
                 $buttons[] = [['text' => '🔗 Подписки', 'callback_data' => "/ps $protocol $id"]];
                 $domain = $this->getDomain();
@@ -662,11 +801,15 @@ trait BotProtocols
             $buttons[] = [['text' => 'Дополнительные настройки', 'callback_data' => "/po $protocol"]];
             if (in_array($protocol, ['anytls', 'shadowtls'], true)) {
                 $buttons[] = [['text' => 'TLS fingerprint: ' . ($s['settings']['options']['client']['fingerprint'] ?? 'default'),
-                    'callback_data' => "/po $protocol show client.fingerprint"]];
+                    'callback_data' => "/pf $protocol"]];
             }
-            $buttons[] = [['text' => 'Добавить пользователя', 'callback_data' => "/protocol $protocol add"]];
-            $last = max(0, (int) ceil(count($s['users']) / 20) - 1); $page = min(max(0, $page), $last);
-            foreach (array_slice($s['users'], $page * 20, 20, true) as $uid => $user) $buttons[] = [['text' => mb_substr($user['name'], 0, 45), 'callback_data' => "/protocol $protocol user $uid"]];
+            $text[] = 'Пользователи VLESS автоматически получают это подключение в своей полной подписке Mihomo / sing-box. Срок, отключение и лимит общие; параметры протокола задаются здесь. Mieru поддерживается только в Mihomo.';
+            $buttons[] = [['text' => 'Пользователи и готовые подписки', 'callback_data' => '/xray']];
+            $buttons[] = [['text' => 'Relay для подписок', 'callback_data' => "/prmanage $protocol"]];
+            $legacy = array_filter($s['users'], static fn($u) => !isset($u['xray_source']));
+            if ($legacy) $text[] = 'Ниже — ранее созданные отдельные доступы. Их настройки и старые ссылки сохранены для действующих клиентов.';
+            $last = max(0, (int) ceil(count($legacy) / 20) - 1); $page = min(max(0, $page), $last);
+            foreach (array_slice($legacy, $page * 20, 20, true) as $uid => $user) $buttons[] = [['text' => mb_substr($user['name'], 0, 45), 'callback_data' => "/protocol $protocol user $uid"]];
             $navigation = [];
             if ($page > 0) $navigation[] = ['text' => '←', 'callback_data' => "/protocol $protocol page " . ($page - 1)];
             if ($page < $last) $navigation[] = ['text' => '→', 'callback_data' => "/protocol $protocol page " . ($page + 1)];
@@ -776,26 +919,27 @@ trait BotProtocols
             if ($action === 'provider') {
                 $provider = [
                     'proxy-providers' => [$name => ['type' => 'http', 'url' => $base . '/mihomo' . $query,
-                        'path' => './proxy_providers/' . $name . '.yaml', 'interval' => 3600, 'size-limit' => 1048576]],
+                        'path' => './proxy_providers/' . $name . '.yaml', 'interval' => 3600, 'proxy' => 'DIRECT', 'size-limit' => 1048576]],
                     'proxy-groups' => [['name' => $name . '-group', 'type' => 'select', 'use' => [$name]]],
                 ];
                 $yaml = preg_replace('/\A---\s*\n|\n\.\.\.\s*\z/', '', yaml_emit($provider, YAML_UTF8_ENCODING));
-                $text[] = 'Добавьте эти записи в соответствующие разделы YAML Mihomo / XKeen UI. Если раздел уже существует, объедините записи. В правилах выберите созданную группу. Provider обновляется раз в час; адрес подписки — адрес бота, а relay находится внутри получаемого профиля.';
+                $text[] = 'Добавьте эти записи в разделы YAML Mihomo / XKeen UI. Если раздел уже существует, объедините записи. В правилах выберите созданную группу. Provider загружает только список прокси в YAML раз в час; порты, DNS и правила вашего клиента сохраняются.';
                 $text[] = '<pre><code class="language-yaml">' . self::esc($yaml) . '</code></pre>';
             } else {
                 foreach ($store->formats($state) as $format => $label) if (!str_contains($format, 'uri')) {
                     $text[] = self::esc($label) . ":\n<code>" . self::esc($base . '/' . $format . $query) . '</code>';
                 }
-                $text[] = 'Mihomo: импорт URL как удалённого профиля либо HTTP provider в существующий YAML. sing-box: Remote profile в приложении с поддержкой удалённых профилей; интервал обновления задаётся там.';
+                $text[] = 'Это ссылки ранее созданного отдельного доступа. Новые пользователи получают общую подписку в меню VLESS: она сохраняет DNS и маршрутизацию их шаблона. Блок provider ниже подключает прокси к существующему Mihomo / XKeen.';
+                if ($protocol !== 'mieru') $text[] = 'sing-box JSON этого отдельного доступа — локальный SOCKS/HTTP на 127.0.0.1:1080. Общая подписка пользователя VLESS использует полный выбранный шаблон, включая TUN и DNS.';
                 if ($protocol === 'mieru') $text[] = 'Нативный Mieru: скачайте JSON и примените через mieru apply config. Его CLI не обновляет HTTP-подписки автоматически. Для автообновления используйте Mihomo.';
                 $text[] = 'Ссылка содержит личный токен доступа. Изменения параметров появляются при следующем обновлении. «Сменить секрет» отзывает старую ссылку и пароль; отключение пользователя, срок и квота закрывают выдачу и VPN-доступ.';
             }
             $back = $relay === '' ? "/protocol $protocol user $id" : "/pr $protocol $id $relayKey";
-            $buttons = $action === '' ? [[['text' => 'Provider YAML · XKeen', 'callback_data' => "/ps $protocol $id $relayKey provider"]]] : [];
+            $buttons = $action === '' ? [[['text' => 'Подключить provider YAML', 'callback_data' => "/ps $protocol $id $relayKey provider"]]] : [];
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => $action === '' ? $back : "/ps $protocol $id $relayKey"]];
-            $this->send($this->input['chat'], implode("\n\n", $text), $this->input['message_id'], $buttons);
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
         } catch (InvalidArgumentException | RuntimeException $e) {
-            $this->send($this->input['chat'], self::esc($e->getMessage()));
+            $this->protocolError($e->getMessage(), "/protocol $protocol user $id");
         }
     }
 
@@ -806,7 +950,7 @@ trait BotProtocols
             $store = $this->protocolStore($protocol); $s = $store->read(); $id = null;
             if (!isset($store->formats($s)[$format])) { $this->subRateLimit('', 'miss'); http_response_code(404); return; }
             foreach ($s['users'] as $uid => $u) if (hash_equals($u['token'], $token)) { $id = $uid; break; }
-            if ($id === null || !$this->protocolModuleEnabled($protocol) || !$s['enabled'] || !$store->allowed($s['users'][$id], $id)) {
+            if ($id === null || isset($s['users'][$id]['xray_source']) || !$this->protocolModuleEnabled($protocol) || !$s['enabled'] || !$store->allowed($s['users'][$id], $id)) {
                 $this->subRateLimit('', 'miss'); http_response_code(404); return;
             }
             $this->subRateLimit($protocol . ':' . $id);

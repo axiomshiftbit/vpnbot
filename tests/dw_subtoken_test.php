@@ -72,13 +72,16 @@ class DwTestBot extends Bot
 }
 
 $bot = (new ReflectionClass(DwTestBot::class))->newInstanceWithoutConstructor();
-$bot->input = ['from' => 111];
+$bot->input = ['from' => 111, 'chat' => 111, 'message_id' => 1];
 $bot->dw(0, 's');
 
 dwAssert('SUBTOKEN-HEX' === $bot->capturedS, 'dw() подставляет в ?s= subtoken (sidOf), а не сырой id');
 dwAssert('CREDENTIAL-UUID' !== $bot->capturedS, 'сырой credential в ?s= больше не попадает');
 dwAssert('{"ok":true}' === $bot->capturedContent, 'непустой конфиг реально доезжает до sendFile() при strict-режиме');
 dwAssert('a@x_v2ray.json' === $bot->capturedFilename, 'имя файла как раньше — email + суффикс формата');
+$bot->dw(0, 'clj');
+dwAssert('a@x_mihomo.json' === $bot->capturedFilename, 'Общий Mihomo JSON выгружается с расширением JSON');
+dwAssert(!$bot->protocolOutput, 'После выгрузки снимается флаг временного файла');
 
 // ── стэйл-колбэк: индекс клиента мог устареть (удаление/переиндексация) ─────
 class DwStaleTestBot extends DwTestBot

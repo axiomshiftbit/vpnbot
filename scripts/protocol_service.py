@@ -64,6 +64,8 @@ class Supervisor:
         self.last_write = 0
         self.binary_identity = None
         self.binary_hash = b""
+        self.version_identity = None
+        self.core_version = ""
         self.stopping = False
         self.last_valid_state = None
         path = self.root / "usage.json"
@@ -346,11 +348,26 @@ class Supervisor:
         self.error = ""
         self.write_status(state, "cover_only" if not users else "running")
 
+    def binary_version(self):
+        try:
+            info = Path(self.binary).stat()
+            identity = (info.st_ino, info.st_mtime_ns, info.st_size)
+            if identity != self.version_identity:
+                self.version_identity = identity
+                self.core_version = ""
+                result = subprocess.run([self.binary, "version"], capture_output=True, text=True, timeout=3, check=True)
+                match = re.search(r"(?<![\w.])v?(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?)(?![\w.])", result.stdout[:512])
+                if match: self.core_version = match.group(1)
+        except (OSError, UnicodeError, subprocess.SubprocessError):
+            self.core_version = ""
+        return self.core_version
+
     def write_status(self, state, phase):
         atomic_json(self.root / "status.json", {"time": int(time.time()), "phase": phase,
                     "running": self.alive(), "pid": self.process.pid if self.alive() else None,
                     "revision": self.applied_revision, "desired_revision": state.get("revision") if state else None,
-                    "stats_time": self.stats_time, "active": self.active, "error": self.error})
+                    "stats_time": self.stats_time, "active": self.active, "error": self.error,
+                    "core_version": self.binary_version()})
 
     def run(self):
         lock = open(self.root / "service.lock", "a")

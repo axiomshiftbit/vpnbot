@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/managed_protocol_fixture.php';
 require_once __DIR__ . '/../app/bot.php';
 require_once __DIR__ . '/../app/i18n.php';
 
@@ -29,6 +30,7 @@ class ManagedRelayBot extends Bot {
     public function getDomain($cdn = false) { return 'origin.example.test'; }
     public function getHashBot($notset = false) { return 'fixture'; }
     public function getWgMsg() { return null; }
+    protected function sessionApply(callable $fn) { $fn(); }
     public function readRelayHealth(): array { return []; }
     public function stashReply($r, array $state) { $this->prompts[] = $state; }
     public function sendQr($name, $code, $title = false) { $this->qr[] = $code; }
@@ -67,7 +69,7 @@ try {
     foreach (ManagedProtocol::NAMES as $protocol => $label) {
         $store = $bot->protocolStore($protocol);
         $store->configure(['host' => 'origin.example.test', 'sni' => $protocol . '.example.test'], true);
-        $id = $store->add('Пользователь < &'); $modules->set($protocol, true);
+        $id = managedProtocolFixtureUser($store, 'Пользователь < &'); $modules->set($protocol, true);
         $before = $store->read();
         relayClick($bot, "/prset $protocol $name");
         $prompt = end($bot->prompts);
@@ -86,7 +88,7 @@ try {
                     $direct = $store->profile($id, $format); $result['proxies'][0]['server'] = $direct['proxies'][0]['server'];
                     $result['proxies'][0]['port'] = $direct['proxies'][0]['port'];
                     relayCheck($result === $direct, "$protocol: SNI, TLS, ключи и правила YAML сохранены");
-                } elseif ($format === 'singbox') {
+                } elseif (str_starts_with($format, 'singbox')) {
                     foreach ($result['outbounds'] as $out) relayCheck($out['server'] === $host && $out['server_port'] === 10443, "$protocol: endpoint sing-box, включая detour");
                     $direct = $store->profile($id, $format);
                     foreach ($result['outbounds'] as $n => &$out) { $out['server'] = $direct['outbounds'][$n]['server']; $out['server_port'] = $direct['outbounds'][$n]['server_port']; } unset($out);

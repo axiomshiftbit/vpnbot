@@ -16,6 +16,20 @@ service = module('protocol_service')
 modules = module('protocol_modules')
 
 class ProtocolTests(unittest.TestCase):
+    def test_status_reports_actual_binary_version_and_refreshes_after_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); binary = root / 'core'
+            binary.write_text('#!/bin/sh\necho "sing-box version 1.14.1"\n'); binary.chmod(0o700)
+            supervisor = service.Supervisor(root / 'runtime', str(binary))
+            supervisor.write_status(None, 'idle')
+            self.assertEqual('1.14.1', json.loads((root/'runtime/status.json').read_text())['core_version'])
+            binary.write_text('#!/bin/sh\necho "3.37.0"\n')
+            supervisor.write_status(None, 'idle')
+            self.assertEqual('3.37.0', json.loads((root/'runtime/status.json').read_text())['core_version'])
+            binary.write_text('#!/bin/sh\nexit 1\n')
+            supervisor.write_status(None, 'idle')
+            self.assertEqual('', json.loads((root/'runtime/status.json').read_text())['core_version'])
+
     def test_optional_ss_migration_preserves_custom_nginx_routes(self):
         before = 'location /custom {\n  proxy_pass http://ss:8388/;\n}\nlocation /manual { proxy_pass http://other:8388/; }\n# proxy_pass http://ss:8388/;'
         after = modules.migrate_nginx(before)

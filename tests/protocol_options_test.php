@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/managed_protocol_fixture.php';
 require_once __DIR__ . '/../app/bot.php';
 require_once __DIR__ . '/../app/i18n.php';
 
@@ -27,6 +28,7 @@ class OptionsBot extends Bot {
     public function getDomain($cdn = false) { return 'vpn.example.test'; }
     public function getHashBot($notset = false) { return 'fixture'; }
     public function getWgMsg() { return null; }
+    protected function sessionApply(callable $fn) { $fn(); }
     public function stashReply($r, array $state) { $this->prompts[] = $state; }
 }
 class NavigationBot extends OptionsBot {
@@ -43,6 +45,9 @@ function optClick(OptionsBot $bot, string $callback): array {
     $before = count($bot->transport->calls);
     $bot->input['callback'] = $callback; $bot->action(); $bot->input['callback'] = false;
     optCheck(count($bot->transport->calls) > $before, "Диспетчер ответил: $callback");
+    if (preg_match('~^/!?po \w+(?: (show|pick|reset)(?: |$)|$)~', $callback)) {
+        foreach (array_slice($bot->transport->calls, $before) as [$method]) optCheck($method !== 'sendMessage', 'Навигация параметров не создаёт сообщений');
+    }
     [, $data] = end($bot->transport->calls);
     $buttons = json_decode($data['reply_markup'] ?? '{}', true)['inline_keyboard'] ?? [];
     optCheck($bot->messageTextLength($data['text'] ?? '') <= 4096, "Длина сообщения: $callback");
@@ -132,7 +137,7 @@ try {
     $modules = new ProtocolModules($bot->protocolModulesFile);
     foreach (ManagedProtocol::NAMES as $protocol => $_) {
         $store = $bot->protocolStore($protocol); $store->configure(['host' => 'vpn.example.test', 'sni' => 'vpn.example.test'], true);
-        $id = $store->add('Fixture < &'); $modules->set($protocol, true);
+        $id = managedProtocolFixtureUser($store, 'Fixture < &'); $modules->set($protocol, true);
         $baseline = $store->read()['config'];
         $conflicts = match ($protocol) {
             'anytls' => [

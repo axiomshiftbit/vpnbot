@@ -11,7 +11,9 @@ trait BotProtocolOptions
             $rule = ProtocolOptions::definition($protocol, $path);
             if ($action === 'export') {
                 $document = json_encode((object) $store->read()['settings']['options'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-                $this->sendFile($this->input['chat'], new CURLStringFile($document, "$protocol-options.json", 'application/json'));
+                $this->protocolOutput = true;
+                try { $this->sendFile($this->input['chat'], new CURLStringFile($document, "$protocol-options.json", 'application/json')); }
+                finally { $this->protocolOutput = false; }
                 return;
             }
             if ($action === 'reset') $store->configureOption($path, null);
@@ -21,7 +23,7 @@ trait BotProtocolOptions
                 $store->configureOption($path, $values[(int) $choice]);
             } elseif ($action === 'edit') {
                 if ($rule[0] === 'object') throw new InvalidArgumentException('Выберите параметр внутри группы');
-                $prompt = self::esc(ManagedProtocol::NAMES[$protocol] . ' · ' . $path . "\n" . ProtocolOptions::describe($rule));
+                $prompt = self::esc(ManagedProtocol::NAMES[$protocol] . ' · ' . $path . "\n" . ProtocolOptions::hint($protocol, $path) . "\n" . ProtocolOptions::describe($rule));
                 $r = $this->send($this->input['chat'], $prompt, $this->input['message_id'], reply: 'Значение параметра');
                 $this->stashReply($r, ['start_message' => $this->input['message_id'], 'callback' => 'protocolOptionReply', 'args' => [$protocol, $path]]);
                 return;
@@ -33,8 +35,8 @@ trait BotProtocolOptions
             if ($path !== '') $text[] = '<code>' . self::esc($path) . '</code>';
             if ($rule[0] === 'object') {
                 $text[] = $path === ''
-                    ? 'Общие параметры переносятся во все совместимые форматы. Разделы sing-box, Mihomo и нативного Mieru действуют только на указанный клиент. Адрес, SNI, ключи, доступ и маршруты управляются отдельно.'
-                    : ProtocolOptions::hint($protocol, $path);
+                    ? 'Общие параметры переносятся во все совместимые форматы. Разделы sing-box, Mihomo и нативного Mieru действуют только на указанный клиент. После изменения обновите подписку или импортируйте профиль заново. Файл настроек временный: сохраните его до следующего нажатия.'
+                    : self::esc(ProtocolOptions::hint($protocol, $path));
                 $fields = [];
                 foreach ($rule[1] as $field => $child) {
                     $childPath = $path === '' ? $field : $path . '.' . $field;
@@ -63,9 +65,9 @@ trait BotProtocolOptions
             $buttons[] = [['text' => $path === '' ? 'Сбросить дополнительные настройки' : 'Сбросить', 'callback_data' => ProtocolOptions::callback($protocol, 'reset', $path)]];
             $parent = str_contains($path, '.') ? substr($path, 0, strrpos($path, '.')) : '';
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => $path === '' ? "/protocol $protocol" : ProtocolOptions::callback($protocol, 'show', $parent)]];
-            $this->send($this->input['chat'], implode("\n", $text), $this->input['message_id'], $buttons);
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $buttons);
         } catch (InvalidArgumentException | RuntimeException $e) {
-            $this->send($this->input['chat'], self::esc($e->getMessage()));
+            $this->protocolError($e->getMessage(), "/po $protocol");
         }
     }
 
@@ -83,9 +85,10 @@ trait BotProtocolOptions
             $this->protocolStore($protocol)->configureOption($path, $value);
             $this->protocolOptions($protocol, path: $path);
         } catch (JsonException $e) {
-            $this->send($this->input['chat'], 'Неверный JSON. Для списка нужны квадратные скобки, строки заключаются в двойные кавычки.');
+            $this->protocolError('Неверный JSON. Для списка нужны квадратные скобки, строки заключаются в двойные кавычки.',
+                ProtocolOptions::callback($protocol, 'show', $path), ProtocolOptions::callback($protocol, 'edit', $path));
         } catch (InvalidArgumentException | RuntimeException $e) {
-            $this->send($this->input['chat'], self::esc($e->getMessage()));
+            $this->protocolError($e->getMessage(), "/po $protocol", ProtocolOptions::callback($protocol, 'edit', $path));
         }
     }
 }

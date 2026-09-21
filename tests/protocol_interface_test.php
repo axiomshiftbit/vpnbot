@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/managed_protocol_fixture.php';
 require_once __DIR__ . '/../app/bot.php';
 require_once __DIR__ . '/../app/i18n.php';
 require_once __DIR__ . '/../app/panel/Panel.php';
@@ -22,9 +23,12 @@ class ProtocolInterfaceBot extends Bot {
         $this->ip = '192.0.2.1'; $this->transport = new ProtocolInterfaceTransport();
         $this->input = ['chat' => 1, 'message_id' => 1];
     }
+    public function getXray() { return ['inbounds' => [['settings' => ['clients' => []]]]]; }
+    public function xray($page = 0) { $this->update(1, 1, 'Пользователи VLESS'); }
     public function getDomain($cdn = false) { return 'vpn.example.test'; }
     public function getHashBot($notset = false) { return 'fixture'; }
     public function getWgMsg() { return null; }
+    protected function sessionApply(callable $fn) { $fn(); }
     public function getPacConf() { return self::PAC_DEFAULTS; }
     public function stashReply($r, array $state) { $_SESSION['reply'][$r['result']['message_id']] = $state; }
 }
@@ -111,9 +115,9 @@ try {
         }
         if ($key === 'mieru') { $bot->protocolCommand($key, 'rolling'); uiLast($bot); }
         $bot->protocolCommand($key, 'add'); [, , $prompt] = uiLast($bot);
-        uiCheck(str_contains($prompt['text'], 'Название доступа'), "$key: подсказка создания");
-        $bot->protocolReply('Тест < & 🇷🇺', $key, 'add');
-        $id = array_key_first($store->read()['users']);
+        uiCheck(str_contains($prompt['text'], 'Пользователи VLESS'), "$key: создание переведено в общий список");
+        $id = managedProtocolFixtureUser($store, 'Тест < & 🇷🇺');
+        $bot->protocolMenu($key, $id);
         [$text, $buttons] = uiLast($bot);
         uiCheck(str_contains($text, 'Тест &lt; &amp; 🇷🇺'), "$key: HTML имени экранирован");
         foreach ($store->formats() as $format => $_) {
@@ -168,7 +172,7 @@ try {
         }
         $bot->protocolCommand($key, 'user', $id); [$text, $buttons] = uiLast($bot);
         $screens[$key . '-user'] = ['text' => $text, 'buttons' => $buttons];
-        for ($n = 0; $n < 21; $n++) $store->add(str_repeat('Имя ', 24) . $n);
+        for ($n = 0; $n < 21; $n++) managedProtocolFixtureUser($store, str_repeat('Имя ', 24) . $n);
         $bot->protocolCommand($key, 'page', '0'); [, $buttons] = uiLast($bot);
         uiCheck(in_array("/protocol $key page 1", uiCallbacks($buttons), true), "$key: следующая страница");
         $bot->protocolCommand($key, 'page', '999'); [$text, $buttons] = uiLast($bot);

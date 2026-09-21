@@ -169,6 +169,7 @@ switch (true) {
             case 's':
             case 'si':
             case 'cl':
+            case 'clj':
                 $bot->subscription();
                 exit;
 

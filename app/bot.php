@@ -495,6 +495,7 @@ class Bot
         if ($this->protocolReturnMain && in_array($state['callback'] ?? '', ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true)) {
             $state['protocol_main'] = true;
         }
+        if ($this->protocolRelayOrigin) $state['protocol_relay'] = $this->protocolRelayOrigin;
         $this->sessionApply(function () use ($r, $state) {
             $_SESSION['reply'][$r['result']['message_id']] = $state;
         });
@@ -538,10 +539,11 @@ class Bot
     {
         // Carry the entry point in each callback, including old messages and concurrent chats.
         $this->protocolReturnMain = false;
-        if (!empty($this->input['callback']) && preg_match('~^/!(protocol|pr|prset|po|ps) ~', $this->input['callback'])) {
+        if (!empty($this->input['callback']) && preg_match('~^/!(protocol|pr|prset|prmanage|po|ps|pf) ~', $this->input['callback'])) {
             $this->protocolReturnMain = true;
             $this->input['callback'] = '/' . substr($this->input['callback'], 2);
         }
+        $this->protocolNavigationStart();
         // Инстанс нажатого сообщения (карта wg_msg.json) — пер-запросный
         // $this->wg: кнопки без инстанса в callback_data (delete, client,
         // torrent…) действуют на инстанс СВОЕГО меню, а не на глобальный
@@ -561,11 +563,24 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
+            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls)$~D', $this->input['callback'], $m):
+                $this->protocolPortPrompt($m[1]);
+                break;
+            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
+                $this->protocolManageRelays($m[1], $m[2] ?? '');
+                break;
+            case preg_match('~^/pf (anytls|shadowtls)(?: (show|reset|pick))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+                $this->protocolFingerprintShortcut = true;
+                $this->protocolOptions($m[1], $m[2] ?? 'show', 'client.fingerprint', $m[3] ?? '');
+                break;
             case preg_match('~^/protocolModules(?: ([a-z0-9]+))?$~D', $this->input['callback'], $m):
                 if ($this->admin) {
                     if (isset($m[1])) $this->protocolModulesToggle($m[1]);
                     else $this->protocolModulesMenu();
                 }
+                break;
+            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls))?$~D', $this->input['callback'], $m):
+                $this->xrayProtocolsMenu($m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
                 $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
@@ -3234,6 +3249,10 @@ class Bot
             // переполненном диске на месте конфига остаётся обрезанный файл.
             // Кричим в лог — иначе следующий старт ядра молча потеряет всех.
             error_log('writeXrayJson: xray.json TRUNCATED — write failed');
+        }
+        if ($ok) {
+            try { $this->syncXrayProtocolUsers(); }
+            catch (Throwable $e) { error_log('syncXrayProtocolUsers: failed; background retry pending'); }
         }
 
         return $ok;
@@ -5918,6 +5937,7 @@ NFT;
             'autoAnalyzeLogs',
             'xrayStatsUser',
             'checkTrafficLimits',
+            'syncXrayProtocolUsers',
             'trackOnline',
             'trackWgOnline',
             'rotateAmneziaCron',
@@ -6612,7 +6632,7 @@ NFT;
                 if ($limit <= 0 || !empty($v['off'])) {
                     continue;
                 }
-                if ($this->xrUserTraffic($st, $k) >= $limit) {
+                if ($this->xrUserTraffic($st, $k) + array_sum($this->xrayProtocolUsage($v)) >= $limit) {
                     $x['inbounds'][0]['settings']['clients'][$k]['off'] = $v['id'];
                     $x['inbounds'][0]['settings']['clients'][$k]['id']  = self::xrayUuid();
                     if (isset($v['password'])) {
@@ -7088,9 +7108,12 @@ NFT;
                 $this->answer($this->input['callback_id'], $this->i18n('vless encryption unavailable'), true);
                 return;
             }
-            return $this->sendFile($this->input['from'], new CURLStringFile(
-                $link, self::safeFileName($c['email'], 'client') . '_uri.txt', 'text/plain'
-            ));
+            $this->protocolOutput = true;
+            try {
+                return $this->sendFile($this->input['chat'], new CURLStringFile(
+                    $link, self::safeFileName($c['email'], 'client') . '_uri.txt', 'text/plain'
+                ));
+            } finally { $this->protocolOutput = false; }
         }
         // subtoken (sidOf), не id: с pac.subtoken_strict=1 findClientBySid()
         // подбором по credential'у не резолвит вообще ничего — subscription()
@@ -7104,7 +7127,10 @@ NFT;
             $this->answer($this->input['callback_id'], $this->i18n($error ?: 'vless encryption unavailable'), true);
             return;
         }
-        $this->sendFile($this->input['from'], new CURLStringFile($conf, $c['email'] . ($t == 'cl' ? '_mihomo.yaml' :($t == 'si' ? '_singbox.json' : '_v2ray.json'))));
+        $this->protocolOutput = true;
+        try {
+            $this->sendFile($this->input['chat'], new CURLStringFile($conf, $c['email'] . ($t == 'cl' ? '_mihomo.yaml' : ($t == 'clj' ? '_mihomo.json' : ($t == 'si' ? '_singbox.json' : '_v2ray.json')))));
+        } finally { $this->protocolOutput = false; }
     }
 
     public function downloadPeer($client)
@@ -9657,6 +9683,7 @@ NFT;
             $callback = $state['callback'];
             $this->protocolReturnMain = !empty($state['protocol_main'])
                 && in_array($callback, ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true);
+            $this->protocolRelayOrigin = $state['protocol_relay'] ?? [];
             // Только message_id: раньше сюда же присваивался callback_id, но
             // ответ на force_reply — это ОБЫЧНОЕ сообщение, никакого
             // callback_query у него нет. В качестве query id уходил message_id,
@@ -9692,6 +9719,7 @@ NFT;
             } finally {
                 $this->replyMenuEdit = false;
                 $this->protocolReturnMain = false;
+                $this->protocolRelayOrigin = [];
             }
         }
     }
@@ -10283,7 +10311,7 @@ NFT;
         $p      = $this->getPacConf();
         $relays = $p['relays'] ?? [];
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay');
+        $text[] = "Menu -> " . ($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay');
         $text[] = $this->i18n('relay hint');
 
         $data   = [];
@@ -10378,7 +10406,7 @@ NFT;
         // Без экранирования один «<» в адресе ронял editMessageText в 400, и
         // экран relay умирал навсегда: значение уже в pac.json, а поменять его
         // можно только отсюда же.
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay')
+        $text[] = "Menu -> " . ($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay')
             . ' -> <b>' . self::esc($name) . '</b>';
         $text[] = $this->i18n('relay address') . ': <code>' . self::esc($r['address'] ?: '—') . '</code>';
         if (!empty($r['address']) && ($hl = $this->relayHealthLabel($name, true)) !== '') {
@@ -16872,6 +16900,7 @@ DNS-over-HTTPS with IP:
                     $cells[] = $label . ' ' . htmlspecialchars((string) $ver[$k], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
                 }
             }
+            $cells = array_merge($cells, $this->managedProtocolVersionCells());
             if (!empty($cells)) {
                 // Раскладка по столбцам, а не по строкам: alignColumns()
                 // выравнивает КАЖДЫЙ столбец по своей ширине, поэтому левый
@@ -16883,6 +16912,7 @@ DNS-over-HTTPS with IP:
                 $right = array_pad(array_slice($cells, $half), count($left), '');
                 $main[] = '<blockquote><code>';
                 $main[] = 'versions';
+                $main[] = 'sb = sing-box';
                 // rtrim: alignColumns() добивает пробелами и ПОСЛЕДНИЙ столбец,
                 // то есть каждая строка тащит хвост из невидимых пробелов. На
                 // семнадцати строках это под сотню символов из лимита в 4096,
@@ -21591,6 +21621,7 @@ DNS-over-HTTPS with IP:
         $changed = false;
         foreach ($xr['inbounds'][0]['settings']['clients'] ?? [] as $k => $v) {
             if (empty($v['subtoken'])) {
+                $xr['inbounds'][0]['settings']['clients'][$k]['protocol_source'] = ManagedProtocol::xraySource($v);
                 $xr['inbounds'][0]['settings']['clients'][$k]['subtoken'] = bin2hex(random_bytes(16));
                 $changed = true;
             }
@@ -21642,6 +21673,7 @@ DNS-over-HTTPS with IP:
         $c    = $this->getXray();
         $done = false;
         if (isset($c['inbounds'][0]['settings']['clients'][$i])) {
+            $c['inbounds'][0]['settings']['clients'][$i]['protocol_source'] = ManagedProtocol::xraySource($c['inbounds'][0]['settings']['clients'][$i]);
             $c['inbounds'][0]['settings']['clients'][$i]['subtoken'] = bin2hex(random_bytes(16));
             $this->saveXray($c);
             $done = true;
@@ -21675,6 +21707,7 @@ DNS-over-HTTPS with IP:
             return;
         }
         foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
+            $c['inbounds'][0]['settings']['clients'][$k]['protocol_source'] = ManagedProtocol::xraySource($v);
             $c['inbounds'][0]['settings']['clients'][$k]['subtoken'] = bin2hex(random_bytes(16));
         }
         $this->saveXray($c);
@@ -22994,6 +23027,7 @@ DNS-over-HTTPS with IP:
         if (!isset($x['inbounds'][0]['settings']['clients'][$i])) {
             return $this->xray();
         }
+        $x['inbounds'][0]['settings']['clients'][$i]['protocol_source'] = ManagedProtocol::xraySource($x['inbounds'][0]['settings']['clients'][$i]);
         if (!empty($x['inbounds'][0]['settings']['clients'][$i]['off'])) {
             $x['inbounds'][0]['settings']['clients'][$i]['off'] = $this->guidv4();
         }
@@ -23018,6 +23052,7 @@ DNS-over-HTTPS with IP:
         // «foreach() argument must be of type array», а кнопка при этом
         // выглядела сработавшей.
         foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $key => $v) {
+            $x['inbounds'][0]['settings']['clients'][$key]['protocol_source'] = ManagedProtocol::xraySource($v);
             if (!empty($v['off'])) {
                 $x['inbounds'][0]['settings']['clients'][$key]['off'] = $this->guidv4();
             }
@@ -23039,7 +23074,7 @@ DNS-over-HTTPS with IP:
 
     public function getXrayStats()
     {
-        return json_decode(file_get_contents('/config/xray.stats'), true) ?: [];
+        return json_decode((string) @file_get_contents('/config/xray.stats'), true) ?: [];
     }
 
     public function setXrayStats($x)
@@ -23049,6 +23084,8 @@ DNS-over-HTTPS with IP:
 
     public function resetXrUser($i)
     {
+        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if ($client !== null) $this->resetXrayProtocolUsage($client);
         $c = $this->getXrayStats();
         unset($c['users'][$i]);
         // Persist the zeroed usage before restartXray (its collectSession()
@@ -23061,9 +23098,11 @@ DNS-over-HTTPS with IP:
 
     public function resetXrStats($nomenu = false)
     {
+        $this->resetXrayProtocolUsage();
         // Zeroing usage starts a new quota period, so lift any traffic-quota bans.
         $this->restartXray($this->reenableTrafficClients($this->getXray()));
         $this->setXrayStats([]);
+        $this->syncXrayProtocolUsers();
         if (empty($nomenu)) {
             $this->xray();
         }
@@ -24738,7 +24777,9 @@ DNS-over-HTTPS with IP:
         // Backfill the subscription token for clients created before this feature,
         // so their sub links are addressed by the token (not the credential).
         if (empty($c['subtoken'])) {
+            $c['protocol_source'] = ManagedProtocol::xraySource($c);
             $c['subtoken'] = bin2hex(random_bytes(16));
+            $xray['inbounds'][0]['settings']['clients'][$i]['protocol_source'] = $c['protocol_source'];
             $xray['inbounds'][0]['settings']['clients'][$i]['subtoken'] = $c['subtoken'];
             $this->saveXray($xray);
         }
@@ -24787,12 +24828,14 @@ DNS-over-HTTPS with IP:
         $text[] = "v2rayNG (base64): <pre><code>$vl</code></pre>";
 
         $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$stok}'>windows service</a>";
+        $text[]   = 'Файлы из кнопок загрузки временные: сохраните их до следующего нажатия в этом меню.';
         $st       = $this->getXrayStats();
-        $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0));
-        $upload   = $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0));
+        $protocolUsage = $this->xrayProtocolUsage($c);
+        $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0) + $protocolUsage['download']);
+        $upload   = $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0) + $protocolUsage['upload']);
         $limit    = (int) ($c['traffic'] ?? 0);
         if ($limit > 0) {
-            $used = $this->getBytes($this->xrUserTraffic($st, $i));
+            $used = $this->getBytes($this->xrUserTraffic($st, $i) + array_sum($this->xrayProtocolUsage($c)));
             $text[] = $this->i18n('traffic limit') . ": $used / " . $this->getBytes($limit)
                 . (!empty($c['traffic_off']) ? ' ⛔' : '');
         }
@@ -24831,6 +24874,11 @@ DNS-over-HTTPS with IP:
             ];
         }
         $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
+        $data[] = [['text' => 'Протоколы в готовой подписке', 'callback_data' => '/xp ' . ManagedProtocol::xraySource($c)]];
+        $data[] = [
+            ['text' => 'Mihomo JSON · подписка', 'web_app' => ['url' => "https://{$domain}/pac$hash?t=clj&s={$stok}"]],
+            ['text' => 'Mihomo JSON · файл', 'callback_data' => "/dw $i clj"],
+        ];
         $data[] = [[
             'text'          => '🧩 ' . $this->i18n('external links') . ($extOn ? " ($extOn)" : ''),
             'callback_data' => "/extUser $i",
@@ -25220,7 +25268,8 @@ DNS-over-HTTPS with IP:
             'vl' => 'v2rayNG (base64)',
             's'  => 'xray (json)',
             'si' => 'sing-box',
-            'cl' => 'mihomo',
+            'cl' => 'Mihomo YAML',
+            'clj' => 'Mihomo JSON',
         ] as $t => $label) {
             $url = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h'     => $hash,
@@ -26746,7 +26795,10 @@ DNS-over-HTTPS with IP:
 
     public function subscription($return = false)
     {
+        $relayRequested = array_key_exists('relay', $_GET);
         $this->normalizeSubGet();
+        $mihomoJson = ($_GET['t'] ?? '') === 'clj';
+        if ($mihomoJson) $_GET['t'] = 'cl';
         switch ($_GET['t'] ?? '') {
             case 's':
                 $type = 'v2ray';
@@ -26766,6 +26818,10 @@ DNS-over-HTTPS with IP:
                 $this->subNotFound('Unknown subscription format.');
         }
         $pac    = $this->getPacConf();
+        if ($relayRequested && (empty($_GET['relay']) || !isset($pac['relays'][$_GET['relay']]))) {
+            if ($return) return '';
+            $this->subNotFound('Relay not found.');
+        }
         $domain = $this->subDomain($pac);
         $xr     = $this->getXray();
         // Как в sub(): нечитаемый конфиг — это 404/'', а не TypeError в
@@ -26783,7 +26839,10 @@ DNS-over-HTTPS with IP:
         $sid    = $_GET['s'] ?? '';
         $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
-        if ($client === null || !empty($client['off'])) {
+        if ($client === null || !empty($client['off'])
+            || ((int) ($client['time'] ?? 0) > 0 && $client['time'] <= time())
+            || ((int) ($client['traffic'] ?? 0) > 0 && $this->xrUserTraffic($this->getXrayStats(), $k)
+                + array_sum($this->xrayProtocolUsage($client)) >= (int) $client['traffic'])) {
             if (!empty($return)) {
                 return '';
             }
@@ -26846,11 +26905,22 @@ DNS-over-HTTPS with IP:
             'sr', 'st', 'v' => 's',
             default => $_GET['t'],
         };
-        if (!$ruleSetReq && ($error = $this->subscriptionCompatibilityError($xr, $pac, $targetFormat)) !== '') {
+        $compatibilityError = $ruleSetReq ? '' : $this->subscriptionCompatibilityError($xr, $pac, $targetFormat);
+        $replacement = false;
+        if (!$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
+            && (!$isDeepLink || in_array($_GET['r'], ['si', 'k', 'w'], true))) {
+            $candidate = $tpl;
+            foreach ($candidate['outbounds'] ?? [] as $n => $node) if (($node['tag'] ?? '') === '~outbound~' || ($node['tag'] ?? '') === ($pac['outbound'] ?: 'proxy')) {
+                $replacement = $this->appendXrayProtocols($candidate, $client, 'si', $n,
+                    !empty($_GET['relay']) ? ($pac['relays'][$_GET['relay']] ?? []) : null, false);
+                break;
+            }
+        }
+        if ($compatibilityError !== '' && !$replacement) {
             if ($return) {
                 return '';
             }
-            $this->subNotFound($this->i18n($error));
+            $this->subNotFound($this->i18n($compatibilityError));
         }
         $encryption = VlessEncryption::client($xr, $pac);
 
@@ -27502,11 +27572,14 @@ DNS-over-HTTPS with IP:
                 $this->applyAwgRelay($c, $pac['relays'][$_GET['relay']]);
             }
         }
+        if (!$ruleSetReq) $this->appendXrayProtocols($c, $client, (string) $_GET['t'], (int) $index, $relayCfg, !$replacement);
         if (!empty($return)) {
-            if ($_GET['t'] == 'cl') {
+            if ($_GET['t'] == 'cl' && !$mihomoJson) {
                 return yaml_emit($c);
             }
-            return json_encode($c);
+            // Mihomo also reads JSON through its YAML parser: escaped slashes
+            // and JSON surrogate pairs are not portable YAML scalars.
+            return json_encode($c, $mihomoJson ? JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE : 0);
         }
 
         // The body carries client secrets (UUID/password, reality keys) — keep it
@@ -27514,14 +27587,14 @@ DNS-over-HTTPS with IP:
         $this->subSecurityHeaders();
         header('Profile-Title: base64:' . base64_encode((string) $email));
         $this->xraySubscriptionMetadata($client, $clientIndex);
-        if ($_GET['t'] == 'cl') {
+        if ($_GET['t'] == 'cl' && !$mihomoJson) {
             header('Content-type: text/yaml');
             echo yaml_emit($c);
             return;
         }
 
         header('Content-type: application/json');
-        echo json_encode($c);
+        echo json_encode($c, $mihomoJson ? JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE : 0);
     }
 
     // Response headers for any subscription body (contains client secrets): no
@@ -29419,6 +29492,16 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/changePort ovpn",
             ]],
         ];
+        foreach (ManagedProtocol::NAMES as $protocol => $name) {
+            $state = $this->protocolStore($protocol)->read();
+            $enabled = $this->protocolModuleEnabled($protocol) && $state['enabled'];
+            $transport = $protocol === 'tuic' ? 'UDP' : ($protocol === 'mieru' ? 'TCP/UDP' : 'TCP');
+            $pending = $enabled && !$this->protocolPortApplied($protocol, $state);
+            $data[] = [['text' => ($enabled ? ($pending ? '🟡 ' : '🟢 ') : '🔴 ') . $name . ' · ' . $state['settings']['port'] . '/' . $transport,
+                'callback_data' => "/protocolPort $protocol"]];
+            if ($pending) $text[] = "$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.";
+        }
+        $text[] = 'Mieru, TUIC и ShadowTLS: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
         if (!empty($pac['restart'])) {
             $data[] = [
                 [
@@ -31183,7 +31266,7 @@ DNS-over-HTTPS with IP:
             }
             $r = $this->request('sendMessage', $data);
         }
-        return $r;
+        return $this->rememberProtocolOutput($r);
     }
 
     /**
@@ -31292,24 +31375,24 @@ DNS-over-HTTPS with IP:
 
     public function sendPhoto($chat, $id_url_cFile, $caption = false, $to = false)
     {
-        return $this->request('sendPhoto', [
+        return $this->rememberProtocolOutput($this->request('sendPhoto', [
             'chat_id'             => $chat,
             'photo'               => $id_url_cFile,
             'caption'             => $caption,
             'reply_to_message_id' => $to,
             'parse_mode'          => 'html',
-        ]);
+        ]));
     }
 
     public function sendFile($chat, $id_url_cFile, $caption = false, $to = false)
     {
-        return $this->request('sendDocument', [
+        return $this->rememberProtocolOutput($this->request('sendDocument', [
             'chat_id'             => $chat,
             'document'            => $id_url_cFile,
             'caption'             => $caption,
             'reply_to_message_id' => $to,
             'parse_mode'          => 'html',
-        ]);
+        ]));
     }
 
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')

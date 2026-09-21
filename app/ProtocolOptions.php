@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . "/ProtocolOptionHelp.php";
+
 /** Optional tuning for the pinned sing-box / Mieru servers and supported clients. */
 final class ProtocolOptions
 {
@@ -169,16 +171,7 @@ final class ProtocolOptions
 
     public static function hint(string $protocol, string $path): string
     {
-        if (str_contains($path, 'fingerprint')) return 'Отпечаток ClientHello задаётся на клиенте. default сохраняет выбор клиента. Chrome не гарантирует неразличимость с браузером.';
-        if (str_contains($path, 'zero_rtt') || str_contains($path, 'handshakeMode')) return '0-RTT уменьшает ожидание, но не маскирует трафик. Для TUIC по умолчанию выключен из-за риска повторного воспроизведения запросов.';
-        if (str_contains($path, 'trafficPattern')) return 'Рисунок отправляемого трафика. Параметры клиента и сервера независимы. Low entropy увеличивает размер тела примерно в 1.15–2 раза; фрагментация добавляет задержку.';
-        if (str_contains($path, 'spoof')) return 'Только клиент sing-box: требуются повышенные сетевые права на клиентском устройстве. На Linux — CAP_NET_RAW и CAP_NET_ADMIN. К серверному контейнеру эти права не добавляются.';
-        if (str_contains($path, 'fragment')) return 'TLS-фрагментация применяется на клиенте sing-box к TCP. Сначала испытайте record_fragment; fragment может заметно замедлить соединение.';
-        if (str_contains($path, 'certificate_public_key')) return 'Пин дополнительно проверяет публичный ключ. Если при обновлении сертификата ключ изменится, потребуется обновить профиль клиента.';
-        if ($path === 'native' || str_starts_with($path, 'native.')) return 'Только нативный Mieru. Mihomo не поддерживает произвольный MTU Mieru и локальные параметры его отдельного приложения.';
-        if ($path === 'multiplex' || str_starts_with($path, 'multiplex.')) return 'Применяется к внутреннему SS и обоим клиентам. При включении используется smux, если протокол не выбран явно. Для h2mux нужен клиент с исправлением GO-2026-4918; официальный Mihomo 1.19.31 содержит старый x/net. Padding добавляет служебные байты. После изменения обновите клиентские профили.';
-        if (str_contains($path, 'tcp_fast_open') || str_contains($path, 'tcp_multi_path') || str_ends_with($path, '.tfo') || str_ends_with($path, '.mptcp')) return 'Работа зависит от поддержки операционной системы и сети. Это настройка соединения, а не маскировки.';
-        return 'Пустое значение означает штатное поведение ядра. Сброс удаляет только выбранную настройку. После изменения обновите профиль клиента.';
+        return ProtocolOptionHelp::text($protocol, $path);
     }
 
     public static function validate(string $protocol, array $options, array $settings): void
