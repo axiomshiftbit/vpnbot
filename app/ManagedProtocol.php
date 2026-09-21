@@ -1,16 +1,22 @@
 <?php
 
+require_once __DIR__ . '/ProtocolOptions.php';
+
 /** Independent state for one protocol. No IDs or credentials are shared with Xray. */
 final class ManagedProtocol
 {
     public const NAMES = ['anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS'];
 
-    public function formats(): array
+    public function formats(?array $state = null): array
     {
         if (in_array($this->protocol, ['tuic', 'shadowtls'], true)) return ['singbox' => 'sing-box', 'mihomo' => 'Mihomo YAML'];
-        return $this->protocol === 'mieru'
+        $formats = $this->protocol === 'mieru'
             ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => 'Mihomo YAML']
             : ['singbox' => 'sing-box', 'mihomo' => 'Mihomo YAML', 'uri' => 'Ссылка TXT'];
+        $options = ($state ?? $this->read())['settings']['options'] ?? [];
+        if ($this->protocol === 'anytls' && (!empty($options['client']) || !empty($options['singbox']) || !empty($options['mihomo']))) unset($formats['uri']);
+        if ($this->protocol === 'mieru' && array_diff_key($options['native'] ?? [], ['mtu' => true])) unset($formats['uri']);
+        return $formats;
     }
 
     public function __construct(public readonly string $protocol, public readonly string $root = '/config/protocols')
@@ -24,7 +30,7 @@ final class ManagedProtocol
     {
         $state = ['schema' => 1, 'protocol' => $this->protocol, 'revision' => 0, 'enabled' => false,
             'settings' => ['host' => '', 'sni' => '', 'port' => 443, 'listen_port' => 8443,
-                'dns' => '1.1.1.1', 'egress' => 'direct', 'blocked_ips' => [],
+                'dns' => '1.1.1.1', 'egress' => 'direct', 'blocked_ips' => [], 'options' => [],
                 'certificate' => '/certs/cert_public', 'private_key' => '/certs/cert_private'],
             'users' => []];
         if (in_array($this->protocol, ['anytls', 'shadowtls'], true)) $state['settings']['self_hosted'] = false;
@@ -64,7 +70,7 @@ final class ManagedProtocol
         $state = self::readJson($path);
         $this->validate($state);
         // Old saved states remain manual until the administrator selects auto setup.
-        foreach (['self_hosted', 'cover_host'] as $key) {
+        foreach (['self_hosted', 'cover_host', 'options'] as $key) {
             if (array_key_exists($key, $this->defaults()['settings']) && !array_key_exists($key, $state['settings'])) {
                 $state['settings'][$key] = $this->defaults()['settings'][$key];
             }
@@ -143,6 +149,8 @@ final class ManagedProtocol
             throw new InvalidArgumentException('Неверная структура состояния');
         }
         $c = $s['settings'];
+        if (array_key_exists('options', $c) && !is_array($c['options'])) throw new InvalidArgumentException('Неверные дополнительные настройки');
+        ProtocolOptions::validate($this->protocol, $c['options'] ?? [], $c);
         if (array_key_exists('self_hosted', $c) && !is_bool($c['self_hosted'])) throw new InvalidArgumentException('Неверный режим собственного сайта');
         if (array_key_exists('cover_host', $c) && !is_string($c['cover_host'])) throw new InvalidArgumentException('Неверный адрес сайта прикрытия');
         if ($this->protocol === 'anytls' && ($c['cover_host'] ?? '') !== '') {
@@ -213,6 +221,40 @@ final class ManagedProtocol
             if (array_diff_key($settings, $s['settings'])) throw new InvalidArgumentException('Неизвестная настройка');
             $s['settings'] = array_replace($s['settings'], $settings);
             if ($enabled !== null) $s['enabled'] = $enabled;
+        });
+    }
+
+    public function configureOptions(string $group, array $options): array
+    {
+        if (!isset(ProtocolOptions::groups($this->protocol)[$group])) throw new InvalidArgumentException('Неизвестная группа настроек');
+        return $this->change(static function (&$state) use ($group, $options) {
+            if ($options === []) unset($state['settings']['options'][$group]);
+            else $state['settings']['options'][$group] = $options;
+        });
+    }
+
+    public function configureOption(string $path, mixed $value): array
+    {
+        ProtocolOptions::definition($this->protocol, $path);
+        return $this->change(static function (&$state) use ($path, $value) {
+            if ($path === '') {
+                if ($value !== null) throw new InvalidArgumentException('Выберите параметр');
+                $state['settings']['options'] = [];
+                return;
+            }
+            $parts = explode('.', $path); $key = array_pop($parts);
+            $target = &$state['settings']['options'];
+            foreach ($parts as $part) { $target[$part] ??= []; $target = &$target[$part]; }
+            if ($value === null) unset($target[$key]); else $target[$key] = $value;
+            unset($target);
+            // Remove only empty ancestors of the deleted field, never deliberate empty lists.
+            if ($value === null) for ($n = count($parts); $n > 0; $n--) {
+                $parent = &$state['settings']['options'];
+                foreach (array_slice($parts, 0, $n - 1) as $part) $parent = &$parent[$part];
+                $key = $parts[$n - 1];
+                if (($parent[$key] ?? null) === []) unset($parent[$key]);
+                unset($parent);
+            }
         });
     }
 
@@ -336,10 +378,10 @@ final class ManagedProtocol
             $rules = [];
             if ($c['blocked_ips']) $rules[] = ['ipRanges' => array_map(fn($ip) => $ip . (str_contains($ip, ':') ? '/128' : '/32'), $c['blocked_ips']), 'action' => 'REJECT'];
             if ($c['egress'] === 'warp') $rules[] = ['ipRanges' => ['*'], 'domainNames' => ['*'], 'action' => 'PROXY', 'proxyNames' => ['warp']];
-            return ['listenIPAddress' => '0.0.0.0', 'portBindings' => [['port' => $c['listen_port'], 'protocol' => $c['transport']]],
+            return ProtocolOptions::server($this->protocol, ['listenIPAddress' => '0.0.0.0', 'portBindings' => [['port' => $c['listen_port'], 'protocol' => $c['transport']]],
                 'users' => $users, 'loggingLevel' => 'WARN', 'advancedSettings' => ['metricsLoggingInterval' => '5s'],
                 'dns' => ['dualStack' => 'PREFER_IPv4'], 'egress' => ['rules' => $rules,
-                    'proxies' => [['name' => 'warp', 'protocol' => 'SOCKS5_PROXY_PROTOCOL', 'host' => '10.10.0.13', 'port' => 1080]]]];
+                    'proxies' => [['name' => 'warp', 'protocol' => 'SOCKS5_PROXY_PROTOCOL', 'host' => '10.10.0.13', 'port' => 1080]]]], $c);
         }
         $users = [];
         foreach ($s['users'] as $id => $u) if ($u['enabled']) $users[] = ['name' => $id, 'password' => $u['password']]
@@ -378,12 +420,12 @@ final class ManagedProtocol
                     'users' => array_map(fn($u) => ['name' => $u['name'], 'password' => $s['users'][$u['name']]['ss_key']], $users)]];
             if (!$c['udp_over_tcp']) array_unshift($config['route']['rules'], ['network' => 'udp', 'action' => 'reject']);
         }
-        return $config;
+        return ProtocolOptions::server($this->protocol, $config, $c);
     }
 
-    public function profileDocument(string $id, string $format, ?array $state = null): array
+    public function profileDocument(string $id, string $format, ?array $state = null, ?array $endpoint = null): array
     {
-        $profile = $this->profile($id, $format, $state);
+        $profile = $this->profile($id, $format, $state, $endpoint);
         if ($format === 'mihomo') {
             $body = yaml_emit($profile, YAML_UTF8_ENCODING);
             if ($body === false) throw new RuntimeException('Не удалось сформировать YAML');
@@ -396,13 +438,27 @@ final class ManagedProtocol
         ];
     }
 
-    public function profile(string $id, string $format, ?array $state = null): array|string
+    public function profile(string $id, string $format, ?array $state = null, ?array $endpoint = null): array|string
+    {
+        $state ??= $this->read();
+        if (!isset($this->formats($state)[$format])) throw new InvalidArgumentException('Используйте полный профиль: этот формат не переносит выбранные настройки');
+        $profile = $this->baseProfile($id, $format, $state, $endpoint);
+        return is_array($profile) ? ProtocolOptions::profile($this->protocol, $format, $profile, $state['settings']) : $profile;
+    }
+
+    private function baseProfile(string $id, string $format, ?array $state = null, ?array $endpoint = null): array|string
     {
         $s = $state ?? $this->read();
         if (!isset($s['users'][$id]) || !$s['enabled'] || !$this->allowed($s['users'][$id], $id)) {
             throw new RuntimeException('Доступ отключён, истёк или исчерпан');
         }
         $u = $s['users'][$id]; $c = $s['settings'];
+        if ($endpoint !== null) {
+            self::validateClientEndpoint($endpoint);
+            // Relay changes the connection endpoint only. TLS identity, secrets,
+            // transport and the persisted origin configuration remain intact.
+            $c['host'] = $endpoint['host']; $c['port'] = $endpoint['port'];
+        }
         if ($this->protocol === 'mieru') return $this->mieruProfile($id, $u, $c, $format);
         if ($this->protocol === 'tuic') return $this->tuicProfile($u, $c, $format);
         if ($this->protocol === 'shadowtls') return $this->shadowtlsProfile($u, $c, $format);
@@ -423,6 +479,16 @@ final class ManagedProtocol
                 'port' => $c['port'], 'password' => $u['password'], 'sni' => $c['sni'],
                 'udp' => true, 'skip-cert-verify' => false]], 'rules' => ['MATCH,VPN', 'MATCH,REJECT']];
         throw new InvalidArgumentException('Клиент не поддерживается для этого протокола');
+    }
+
+    public static function validateClientEndpoint(array $endpoint): void
+    {
+        if (array_diff_key($endpoint, ['host' => true, 'port' => true])
+            || !is_string($endpoint['host'] ?? null)
+            || (!self::hostname($endpoint['host']) && !filter_var($endpoint['host'], FILTER_VALIDATE_IP))
+            || !is_int($endpoint['port'] ?? null) || $endpoint['port'] < 1 || $endpoint['port'] > 65535) {
+            throw new InvalidArgumentException('Нужны адрес relay (домен или IP) и порт 1–65535');
+        }
     }
 
     private function shadowtlsProfile(array $u, array $c, string $format): array
@@ -468,17 +534,29 @@ final class ManagedProtocol
 
     private function mieruProfile(string $id, array $u, array $c, string $format): array|string
     {
+        $client = $c['options']['client'] ?? []; $native = $c['options']['native'] ?? [];
+        $mtu = $native['mtu'] ?? 1400; $multiplexing = $client['multiplexing'] ?? 'MULTIPLEXING_LOW';
+        $handshake = $client['handshakeMode'] ?? 'HANDSHAKE_STANDARD';
         $endpoint = [(filter_var($c['host'], FILTER_VALIDATE_IP) ? 'ipAddress' : 'domainName') => $c['host'],
             'portBindings' => [['port' => $c['port'], 'protocol' => $c['transport']]]];
         $profile = ['profileName' => $u['name'], 'user' => ['name' => $id, 'password' => $u['password']],
-            'servers' => [$endpoint], 'mtu' => 1400, 'multiplexing' => ['level' => 'MULTIPLEXING_LOW'], 'handshakeMode' => 'HANDSHAKE_STANDARD'];
-        if ($format === 'native') return ['profiles' => [$profile], 'activeProfile' => $u['name'], 'socks5Port' => 1080,
-            'rpcPort' => 1081, 'loggingLevel' => 'WARN', 'socks5ListenLAN' => false, 'advancedSettings' => ['noCheckUpdate' => true]];
+            'servers' => [$endpoint], 'mtu' => $mtu, 'multiplexing' => ['level' => $multiplexing], 'handshakeMode' => $handshake];
+        $pattern = $client['trafficPattern'] ?? [];
+        if ($pattern) $profile['trafficPattern'] = $pattern;
+        if ($format === 'native') {
+            $config = ['profiles' => [$profile], 'activeProfile' => $u['name'], 'socks5Port' => $native['socks5Port'] ?? 1080,
+                'rpcPort' => $native['rpcPort'] ?? 1081, 'loggingLevel' => $native['loggingLevel'] ?? 'WARN',
+                'socks5ListenLAN' => false, 'advancedSettings' => ['noCheckUpdate' => true]];
+            if (isset($native['metricsLoggingInterval'])) $config['advancedSettings']['metricsLoggingInterval'] = $native['metricsLoggingInterval'];
+            if (isset($native['httpProxyPort'])) { $config['httpProxyPort'] = $native['httpProxyPort']; $config['httpProxyListenLAN'] = false; }
+            return $config;
+        }
         if ($format === 'uri') {
             $host = str_contains($c['host'], ':') ? '[' . $c['host'] . ']' : $c['host'];
             return 'mierus://' . rawurlencode($id) . ':' . rawurlencode($u['password']) . '@' . $host . '?' . http_build_query([
-                'profile' => $u['name'], 'port' => $c['port'], 'protocol' => $c['transport'], 'mtu' => 1400,
-                'multiplexing' => 'MULTIPLEXING_LOW', 'handshake-mode' => 'HANDSHAKE_STANDARD'], '', '&', PHP_QUERY_RFC3986);
+                'profile' => $u['name'], 'port' => $c['port'], 'protocol' => $c['transport'], 'mtu' => $mtu,
+                'multiplexing' => $multiplexing, 'handshake-mode' => $handshake]
+                + ($pattern ? ['traffic-pattern' => base64_encode(ProtocolOptions::trafficPatternBytes($pattern))] : []), '', '&', PHP_QUERY_RFC3986);
         }
         if ($format === 'native-uri') {
             // Pinned Mieru v3 clientcfg.proto/base.proto; round-trip tested with its official decoder.
@@ -486,9 +564,15 @@ final class ManagedProtocol
             $server = self::protoField(isset($endpoint['ipAddress']) ? 1 : 2, $c['host']) . self::protoField(3, $binding);
             $user = self::protoField(1, $id) . self::protoField(2, $u['password']);
             $p = self::protoField(1, $u['name']) . self::protoField(2, $user) . self::protoField(3, $server)
-                . self::protoField(4, 1400) . self::protoField(5, self::protoField(1, 2)) . self::protoField(6, 1);
+                . self::protoField(4, $mtu) . self::protoField(5, self::protoField(1, array_search($multiplexing, ProtocolOptions::MULTIPLEXING, true) + 1))
+                . self::protoField(6, array_search($handshake, ProtocolOptions::HANDSHAKES, true) + 1)
+                . ($pattern ? self::protoField(7, ProtocolOptions::trafficPatternBytes($pattern)) : '');
+            $advanced = self::protoField(1, 1)
+                . (isset($native['metricsLoggingInterval']) ? self::protoField(2, $native['metricsLoggingInterval']) : '');
             return 'mieru://' . base64_encode(self::protoField(1, $p) . self::protoField(2, $u['name'])
-                . self::protoField(3, 1081) . self::protoField(4, 1080) . self::protoField(5, self::protoField(1, 1)) . self::protoField(6, 3));
+                . self::protoField(3, $native['rpcPort'] ?? 1081) . self::protoField(4, $native['socks5Port'] ?? 1080) . self::protoField(5, $advanced)
+                . self::protoField(6, array_search($native['loggingLevel'] ?? 'WARN', ['FATAL', 'ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'], true) + 1)
+                . (isset($native['httpProxyPort']) ? self::protoField(8, $native['httpProxyPort']) : ''));
         }
         if ($format === 'mihomo') return ['mixed-port' => 1080, 'allow-lan' => false, 'log-level' => 'warning', 'mode' => 'rule',
             'proxies' => [['name' => 'VPN', 'type' => 'mieru', 'server' => $c['host'], 'port' => $c['port'],

@@ -3,6 +3,7 @@
 require_once __DIR__ . '/ClashTemplateValidator.php';
 require_once __DIR__ . '/VlessEncryption.php';
 require_once __DIR__ . '/BotProtocols.php';
+require_once __DIR__ . '/PanelPasswordVault.php';
 
 class Bot
 {
@@ -491,6 +492,9 @@ class Bot
         if (empty($r['result']['message_id'])) {
             return;
         }
+        if ($this->protocolReturnMain && in_array($state['callback'] ?? '', ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true)) {
+            $state['protocol_main'] = true;
+        }
         $this->sessionApply(function () use ($r, $state) {
             $_SESSION['reply'][$r['result']['message_id']] = $state;
         });
@@ -532,6 +536,12 @@ class Bot
 
     public function action()
     {
+        // Carry the entry point in each callback, including old messages and concurrent chats.
+        $this->protocolReturnMain = false;
+        if (!empty($this->input['callback']) && preg_match('~^/!(protocol|pr|prset|po|ps) ~', $this->input['callback'])) {
+            $this->protocolReturnMain = true;
+            $this->input['callback'] = '/' . substr($this->input['callback'], 2);
+        }
         // Инстанс нажатого сообщения (карта wg_msg.json) — пер-запросный
         // $this->wg: кнопки без инстанса в callback_data (delete, client,
         // torrent…) действуют на инстанс СВОЕГО меню, а не на глобальный
@@ -559,6 +569,18 @@ class Bot
                 break;
             case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
                 $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
+                break;
+            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
+                $this->protocolRelay($m[1], $m[2], $m[3], $m[4] ?? '');
+                break;
+            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
+                $this->protocolRelayPrompt($m[1], $m[2]);
+                break;
+            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
+                $this->protocolSubscriptions($m[1], $m[2], $m[3] ?? 'direct', $m[4] ?? '');
+                break;
+            case preg_match('~^/po (anytls|mieru|tuic|shadowtls)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+                $this->protocolOptions($m[1], $m[2] ?? 'show', $m[3] ?? '', $m[4] ?? '');
                 break;
             // смена айпи сервера
             // wg-меню с явным инстансом: сначала пере-пиним wg_instance, дальше
@@ -1102,6 +1124,9 @@ class Bot
                 break;
             case preg_match('~^/panelPswd$~', $this->input['callback'], $m):
                 $this->panelPswdPrompt();
+                break;
+            case preg_match('~^/panelShowPswd$~D', $this->input['callback'], $m):
+                if ($this->admin) $this->panelPswdShow();
                 break;
             case preg_match('~^/panelGenPswd$~', $this->input['callback'], $m):
                 $this->panelPswdGen();
@@ -3398,17 +3423,33 @@ class Bot
     // подписи куки завязаны на текущий хеш пароля (Panel::sign()).
     public function setPanelPassword(string $plain): void
     {
+        if (strlen($plain) < 8 || strlen($plain) > 72) throw new InvalidArgumentException('Пароль панели: от 8 до 72 байт');
         $c              = $this->getPacConf();
+        if (!is_array($c)) throw new RuntimeException('Настройки недоступны — пароль не изменён');
         $c['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
-        $this->setPacConf($c);
+        $dir = getenv('PANEL_DIR') ?: '/config/panel';
+        if (!PanelPasswordVault::remember($dir, $plain, $c['panelpswd'])) throw new RuntimeException('Не удалось сохранить защищённую копию — пароль не изменён');
+        if ($this->setPacConf($c) === false) throw new RuntimeException('Не удалось записать настройки — пароль не изменён');
         // Как Panel::setPassword(): протухший initial_password.txt с уже
         // недействительным паролем не должен пережить смену.
-        $dir = getenv('PANEL_DIR') ?: '/config/panel';
         @unlink($dir . '/initial_password.txt');
+    }
+
+    public function panelPswdShow(): void
+    {
+        if (!$this->admin) return;
+        $hash = (string) ($this->getPacConf()['panelpswd'] ?? '');
+        $pass = PanelPasswordVault::reveal(getenv('PANEL_DIR') ?: '/config/panel', $hash);
+        $text = $pass === null
+            ? 'Для текущего пароля сохранён только хеш. Войдите в веб-панель с действующим паролем или задайте новый — после этого здесь будет доступен просмотр.'
+            : "Пароль веб-панели:\n<span class=\"tg-spoiler\">" . self::esc($pass) . '</span>';
+        $this->send($this->input['chat'], $text, $this->input['message_id'],
+            [[['text' => $this->i18n('back'), 'callback_data' => '/menu config']]]);
     }
 
     public function panelPswdPrompt()
     {
+        if (!$this->admin) return;
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} enter new web panel password (min 8 chars)",
@@ -3435,7 +3476,7 @@ class Bot
         $safe = htmlspecialchars($pass, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $this->send(
             $this->input['chat'],
-            "✅ Пароль веб-панели:\n<code>$safe</code>\n\n"
+            "✅ Пароль веб-панели:\n<span class=\"tg-spoiler\"><code>$safe</code></span>\n\n"
                 . "Сменить пароль: <code>docker compose exec php php panel.php passwd</code>",
             $this->input['message_id'],
         );
@@ -3445,9 +3486,10 @@ class Bot
     // callback_id здесь нет (тот же принцип, что у sspwdch()).
     public function panelPswdSet($pass, $nomenu = false)
     {
+        if (!$this->admin) return;
         $pass = trim((string) $pass);
-        if (strlen($pass) < 8) {
-            $this->send($this->input['chat'], 'пароль короче 8 символов — отклонён, попробуйте снова', $this->input['message_id']);
+        if (strlen($pass) < 8 || strlen($pass) > 72) {
+            $this->send($this->input['chat'], 'Пароль должен содержать от 8 до 72 байт — попробуйте снова', $this->input['message_id']);
         } else {
             $this->setPanelPassword($pass);
             $this->sendPanelPasswordCopy($pass);
@@ -3459,6 +3501,7 @@ class Bot
 
     public function panelPswdGen()
     {
+        if (!$this->admin) return;
         $pass = bin2hex(random_bytes(16));
         $this->setPanelPassword($pass);
         $this->sendPanelPasswordCopy($pass);
@@ -9612,6 +9655,8 @@ NFT;
             $this->delete($this->input['chat'], $this->input['reply']);
             $this->delete($this->input['chat'], $this->input['message_id']);
             $callback = $state['callback'];
+            $this->protocolReturnMain = !empty($state['protocol_main'])
+                && in_array($callback, ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true);
             // Только message_id: раньше сюда же присваивался callback_id, но
             // ответ на force_reply — это ОБЫЧНОЕ сообщение, никакого
             // callback_query у него нет. В качестве query id уходил message_id,
@@ -9646,6 +9691,7 @@ NFT;
                 $this->menu();
             } finally {
                 $this->replyMenuEdit = false;
+                $this->protocolReturnMain = false;
             }
         }
     }
@@ -10375,6 +10421,10 @@ NFT;
         // не нужна — только адрес и опциональный порт.
         $text[] = $this->i18n('relay np address') . ': <code>' . self::esc($r['np_address'] ?? '' ?: '—') . '</code>';
         $text[] = $this->i18n('relay np port') . ': <code>' . self::esc(($r['np_port'] ?? '') ?: '—') . '</code>';
+        foreach (ManagedProtocol::NAMES as $protocol => $label) {
+            $address = $r[$protocol . '_address'] ?? '';
+            $text[] = self::esc($label) . ': <code>' . self::esc($address === '' ? '—' : $address . ' · ' . ($r[$protocol . '_port'] ?? '')) . '</code>';
+        }
 
         // По две кнопки в строке: каналов уже четыре, в столбик карточка не
         // помещается на экран.
@@ -10424,6 +10474,11 @@ NFT;
                 'callback_data' => "/setRelayNpPort $name",
             ],
         ];
+        $protocolRelays = [];
+        foreach (ManagedProtocol::NAMES as $protocol => $label) {
+            $protocolRelays[] = ['text' => $label . ' · relay', 'callback_data' => "/prset $protocol $name"];
+        }
+        foreach (array_chunk($protocolRelays, 2) as $row) $data[] = $row;
         $data[] = [
             [
                 'text'          => $this->i18n('relay delete'),
@@ -16932,7 +16987,7 @@ DNS-over-HTTPS with IP:
                     $protocolColumns[0][] = $this->i18n('off') . ' ' . $label;
                     $protocolColumns[1][] = '— ошибка состояния';
                 }
-                $managedProtocolButtons[] = ['text' => $label, 'callback_data' => "/protocol $protocol"];
+                $managedProtocolButtons[] = ['text' => $label, 'callback_data' => "/!protocol $protocol"];
             }
             $main[] = implode("\n", array_map('rtrim', explode("\n", $this->alignColumns($protocolColumns))));
             $main[] = '';
@@ -29270,6 +29325,10 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/panelGenPswd",
             ],
         ];
+        $data[] = [[
+            'text' => 'Посмотреть пароль панели',
+            'callback_data' => '/panelShowPswd',
+        ]];
         $data[] = [
             [
                 'text'          => "{$this->i18n('add')} {$this->i18n('admin')}",
@@ -31075,6 +31134,7 @@ DNS-over-HTTPS with IP:
 
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
     {
+        $button = $this->protocolNavigationButtons($button);
         $button = $this->filterProtocolButtons($button);
         if (is_null($text)) {
             $text = '';
@@ -31254,6 +31314,7 @@ DNS-over-HTTPS with IP:
 
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')
     {
+        $button = $this->protocolNavigationButtons($button);
         $button = $this->filterProtocolButtons($button);
         $text = (string) $text;
         if ($button) {

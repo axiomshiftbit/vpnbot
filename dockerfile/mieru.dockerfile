@@ -1,11 +1,13 @@
 ARG PROTOCOL_GO_VERSION=1.27.1
+ARG MIERU_VERSION=v3.37.0
+ARG MIERU_SOURCE_SHA256=7b57f1f8c8ad5f402cdc2603a686d46c218810f7bf9c501142df78f9bed5b413
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS build
-ARG MIERU_VERSION=3.37.0
-ARG MIERU_SHA256=7b57f1f8c8ad5f402cdc2603a686d46c218810f7bf9c501142df78f9bed5b413
+ARG MIERU_VERSION
+ARG MIERU_SOURCE_SHA256
 RUN apk add --no-cache ca-certificates curl tar patch
 WORKDIR /build
-RUN curl -fL --retry 3 "https://codeload.github.com/enfein/mieru/tar.gz/refs/tags/v${MIERU_VERSION}" -o source.tar.gz \
-    && echo "${MIERU_SHA256}  source.tar.gz" | sha256sum -c - \
+RUN curl -fL --retry 3 "https://codeload.github.com/enfein/mieru/tar.gz/refs/tags/v${MIERU_VERSION#v}" -o source.tar.gz \
+    && echo "${MIERU_SOURCE_SHA256}  source.tar.gz" | sha256sum -c - \
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY mieru-control/main.go ./cmd/vpnbot-control/main.go
 COPY mieru-policy/ /policy/
@@ -18,6 +20,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /mita ./cmd/mita \
     && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /mieru-control ./cmd/vpnbot-control
 
 FROM alpine:3.23
+ARG MIERU_VERSION
+ARG MIERU_SOURCE_SHA256
+LABEL io.vpnbot.mieru.version=$MIERU_VERSION io.vpnbot.mieru.source-sha256=$MIERU_SOURCE_SHA256
 RUN apk add --no-cache ca-certificates python3 \
     && addgroup -S mita && adduser -S -G mita mita
 COPY --from=build /mita /mieru-control /usr/local/bin/

@@ -63,7 +63,7 @@ try {
     file_put_contents($bot->upstreamFile, "anytls.example.test anytls_bridge;\n");
     ManagedProtocol::writeJson("$root/protocol-services.status.json", ['bindings' => $bindings]);
     [$text, $buttons] = $bot->menu(false, false, true);
-    protocolMenuAssert(!str_contains(json_encode($buttons), '/protocol '), 'Сохранение адреса не включает протокол и его кнопку');
+    protocolMenuAssert(!str_contains(json_encode($buttons), '/!protocol '), 'Сохранение адреса не включает протокол и его кнопку');
 
     foreach ($stores as $key => $store) {
         $store->configure([], true);
@@ -75,7 +75,7 @@ try {
     [$text, $buttons] = $bot->menu(false, false, true);
     $callbacks = array_column(array_merge(...$buttons), 'callback_data');
     foreach (ManagedProtocol::NAMES as $key => $label) {
-        protocolMenuAssert(count(array_keys($callbacks, "/protocol $key", true)) === 1, "$label: одна кнопка в главном меню");
+        protocolMenuAssert(count(array_keys($callbacks, "/!protocol $key", true)) === 1, "$label: одна кнопка в главном меню");
         protocolMenuAssert(str_contains($text, 'on ' . $label), "$label: свежий применённый статус отображается");
         protocolMenuAssert(preg_match('/^on ' . preg_quote($label, '/') . ' +on ' . $bindings[$key] . '$/m', $text) === 1, "$label: отдельный индикатор применённого порта");
     }
@@ -99,7 +99,7 @@ try {
         }
         protocolMenuAssert(in_array('/dnstt', $actual, true) === $modules->enabled('dnstt'), 'DNSTT: выключенная служба скрыта');
         foreach (ManagedProtocol::NAMES as $key => $label) {
-            protocolMenuAssert(in_array("/protocol $key", $actual, true) === $modules->enabled($key), "$key: новые службы учитывают выключатель");
+            protocolMenuAssert(in_array("/!protocol $key", $actual, true) === $modules->enabled($key), "$key: новые службы учитывают выключатель");
         }
     }
     $modules->setMany($enabledModules);
@@ -129,17 +129,17 @@ try {
 
     $modules->set('mieru', false);
     [$text, $buttons] = $bot->menu(false, false, true);
-    protocolMenuAssert(!str_contains(json_encode($buttons), '/protocol mieru') && !str_contains($text, 'Mieru'), 'Отключённый модуль скрыт');
+    protocolMenuAssert(!str_contains(json_encode($buttons), '/!protocol mieru') && !str_contains($text, 'Mieru'), 'Отключённый модуль скрыт');
     $modules->set('mieru', true);
     $stores['mieru']->configure([], false);
     [$text, $buttons] = $bot->menu(false, false, true);
-    protocolMenuAssert(!str_contains(json_encode($buttons), '/protocol mieru'), 'Выключенное состояние не выдаётся за активный сервис');
+    protocolMenuAssert(!str_contains(json_encode($buttons), '/!protocol mieru'), 'Выключенное состояние не выдаётся за активный сервис');
 
     $path = $stores['tuic']->directory() . '/runtime/status.json';
     $status = ManagedProtocol::readJson($path); $status['time'] = time() - 60;
     ManagedProtocol::writeJson($path, $status);
     [$text, $buttons] = $bot->menu(false, false, true);
-    protocolMenuAssert(str_contains($text, 'off TUIC v5') && str_contains(json_encode($buttons), '/protocol tuic'), 'Устаревший статус не зелёный; карточка доступна');
+    protocolMenuAssert(str_contains($text, 'off TUIC v5') && str_contains(json_encode($buttons), '/!protocol tuic'), 'Устаревший статус не зелёный; карточка доступна');
     $status['time'] = time(); $status['revision']--;
     ManagedProtocol::writeJson($path, $status);
     [$text] = $bot->menu(false, false, true);
@@ -151,10 +151,10 @@ try {
     [$text, $buttons] = $bot->menu(false, false, true);
     protocolMenuAssert(str_contains($text, 'ShadowTLS v3 + SS') && str_contains($text, 'ошибка состояния'), 'Ошибка нового состояния видна без поломки главного меню');
     protocolMenuCheckPortAlignment($text);
-    protocolMenuAssert(str_contains(json_encode($buttons), '/protocol shadowtls'), 'Карточка неисправного протокола доступна');
+    protocolMenuAssert(str_contains(json_encode($buttons), '/!protocol shadowtls'), 'Карточка неисправного протокола доступна');
     ManagedProtocol::writeJson($stores['shadowtls']->directory() . '/desired.json', ['schema' => 0]);
     [$text, $buttons] = $bot->menu(false, false, true);
-    protocolMenuAssert(str_contains($text, 'ошибка состояния') && str_contains(json_encode($buttons), '/protocol shadowtls'), 'Повреждённая структура состояния не ломает главное меню');
+    protocolMenuAssert(str_contains($text, 'ошибка состояния') && str_contains(json_encode($buttons), '/!protocol shadowtls'), 'Повреждённая структура состояния не ломает главное меню');
     echo "managed_protocol_menu_test: OK\n";
 } finally {
     putenv("PATH=$oldPath");

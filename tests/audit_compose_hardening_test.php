@@ -83,8 +83,8 @@ chAssert(!preg_match('~mihomo-linux-amd64-v1\.19\.30~', $df), 'версия miho
 
 // CI: новая переменная не должна пересобирать все 14 образов.
 $ci = (string) file_get_contents(__DIR__ . '/../.github/workflows/images.yml');
-chAssert(str_contains($ci, 'DNSLOOKUP_VERSION|SINGBOX_VERSION|MIHOMO_VERSION'),
-    'images.yml знает новые пины и собирает по ним только php');
+chAssert(str_contains($ci, 'DNSLOOKUP_VERSION|SINGBOX_SHA256|MIHOMO_VERSION|MIHOMO_SHA256'),
+    'images.yml знает пины утилит PHP');
 
 // ── 4. Образы ───────────────────────────────────────────────────────────────
 foreach (glob(__DIR__ . '/../dockerfile/*.dockerfile') as $file) {

@@ -403,7 +403,12 @@ $("clear").onclick = () => {
 $("out").onclick = () => api("logout", form({})).then(showLogin);
 
 document.addEventListener("click", e => {
-  if (e.target.classList.contains("tg-spoiler")) e.target.classList.toggle("show");
+  const spoiler = e.target.closest(".tg-spoiler");
+  if (spoiler && !spoiler.classList.contains("show")){
+    spoiler.classList.add("show");
+    return;
+  }
+  if (spoiler && e.target.tagName !== "CODE") spoiler.classList.remove("show");
   if (e.target.tagName === "CODE" && navigator.clipboard){
     navigator.clipboard.writeText(e.target.textContent).then(() => toast("скопировано"));
   }

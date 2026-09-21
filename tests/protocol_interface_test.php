@@ -92,6 +92,15 @@ try {
         uiCheck(!$store->read()['enabled'], "$key: сохранение параметров не активирует контейнер");
         $bot->protocolCommand($key, 'toggle');
         uiCheck($store->read()['enabled'] && $modules->enabled($key), "$key: включение синхронизирует модуль");
+        $bot->protocolModulesMenu(); [, $moduleButtons] = uiLast($bot);
+        $flat = array_merge(...$moduleButtons);
+        $index = array_search("/protocol $key", array_column($flat, 'callback_data'), true);
+        uiCheck($index !== false && $flat[$index]['text'] === '🟢 ' . $label, "$key: зелёный кружок в настройках протоколов");
+        $modules->set($key, false); $bot->protocolModulesMenu(); [, $moduleButtons] = uiLast($bot);
+        $flat = array_merge(...$moduleButtons);
+        $index = array_search("/protocol $key", array_column($flat, 'callback_data'), true);
+        uiCheck($index !== false && $flat[$index]['text'] === '🔴 ' . $label, "$key: красный кружок в настройках протоколов");
+        $modules->set($key, true);
         ManagedProtocol::writeJson($store->directory() . '/runtime/status.json', [
             'running' => false, 'phase' => 'idle', 'time' => time(), 'revision' => $store->read()['revision'],
         ]);

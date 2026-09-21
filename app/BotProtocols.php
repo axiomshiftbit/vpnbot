@@ -2,14 +2,28 @@
 
 require_once __DIR__ . '/ManagedProtocol.php';
 require_once __DIR__ . '/ProtocolModules.php';
+require_once __DIR__ . '/BotProtocolOptions.php';
 
 trait BotProtocols
 {
+    use BotProtocolOptions;
     public string $protocolRoot = '/config/protocols';
     public string $protocolModulesFile = '/config/protocol-services.json';
     public string $upstreamFile = '/config/upstream.conf';
     public string $protocolNginxFile = '/config/nginx.conf';
     public string $protocolCertRoot = '/certs';
+    public bool $protocolReturnMain = false;
+
+    public function protocolNavigationButtons($buttons)
+    {
+        if (!$this->protocolReturnMain || !is_array($buttons)) return $buttons;
+        foreach ($buttons as &$row) foreach ($row as &$button) {
+            $callback = $button['callback_data'] ?? '';
+            if ($callback === '/protocolModules') $button['callback_data'] = '/menu';
+            elseif (preg_match('~^/(protocol|pr|prset|po|ps) ~', $callback)) $button['callback_data'] = '/!' . substr($callback, 1);
+        }
+        return $buttons;
+    }
 
     public function protocolStore(string $protocol): ManagedProtocol
     {
@@ -292,7 +306,7 @@ trait BotProtocols
             $buttons[] = [['text' => ($settings[$key] ? '🟢 ' : '🔴 ') . $label, 'callback_data' => "/protocolModules $key"]];
         }
         foreach (ManagedProtocol::NAMES as $key => $label) {
-            $buttons[] = [['text' => $label, 'callback_data' => "/protocol $key"]];
+            $buttons[] = [['text' => ($settings[$key] ? '🟢 ' : '🔴 ') . $label, 'callback_data' => "/protocol $key"]];
         }
         $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => '/menu config']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
@@ -312,7 +326,124 @@ trait BotProtocols
         }
     }
 
-    public function protocolCommand(string $protocol, string $action = '', string $id = '', string $format = ''): void
+    public function protocolRelayEndpoint(string $protocol, string $name): array
+    {
+        if (!isset(ManagedProtocol::NAMES[$protocol]) || !preg_match('~\A[\w.\-]{1,32}\z~D', $name)) {
+            throw new InvalidArgumentException('Неверный relay');
+        }
+        $relay = $this->getPacConf()['relays'][$name] ?? null;
+        if (!is_array($relay)) throw new InvalidArgumentException('Relay не найден');
+        $port = $relay[$protocol . '_port'] ?? null;
+        if (!is_string($port) && !is_int($port)) throw new InvalidArgumentException('Порт relay не задан');
+        $endpoint = ['host' => $relay[$protocol . '_address'] ?? '', 'port' => (int) self::relayPortInput($port)];
+        ManagedProtocol::validateClientEndpoint($endpoint);
+        return $endpoint;
+    }
+
+    public function protocolRelayPrompt(string $protocol, string $name): void
+    {
+        if (!$this->admin || !isset(ManagedProtocol::NAMES[$protocol], $this->getPacConf()['relays'][$name])) return;
+        $r = $this->send($this->input['chat'], self::esc(ManagedProtocol::NAMES[$protocol])
+            . ': адрес relay и внешний порт через пробел, например relay.example.com 443. '
+            . '0 — отключить этот протокол на relay. Переадресация на relay настраивается отдельно.',
+            $this->input['message_id'], reply: 'Адрес relay и порт');
+        $this->stashReply($r, ['start_message' => $this->input['message_id'],
+            'callback' => 'protocolRelayReply', 'args' => [$protocol, $name]]);
+    }
+
+    public function protocolRelayReply($input, string $protocol, string $name): void
+    {
+        if (!$this->admin) return;
+        try {
+            $conf = $this->getPacConf();
+            if (!isset(ManagedProtocol::NAMES[$protocol], $conf['relays'][$name])) throw new InvalidArgumentException('Relay не найден');
+            $input = trim((string) $input);
+            if ($input === '0') {
+                unset($conf['relays'][$name][$protocol . '_address'], $conf['relays'][$name][$protocol . '_port']);
+            } else {
+                $parts = preg_split('/\s+/', $input);
+                $endpoint = ['host' => $parts[0], 'port' => count($parts) === 2 ? (int) self::relayPortInput($parts[1]) : 0];
+                ManagedProtocol::validateClientEndpoint($endpoint);
+                $conf['relays'][$name][$protocol . '_address'] = $endpoint['host'];
+                $conf['relays'][$name][$protocol . '_port'] = $endpoint['port'];
+            }
+            if ($this->setPacConf($conf) === false) throw new RuntimeException('Не удалось сохранить relay');
+            $this->relayEdit($name);
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $this->send($this->input['chat'], self::esc($e->getMessage()));
+        }
+    }
+
+    public function protocolRelay(string $protocol, string $id, string $key = 'page', string $format = ''): void
+    {
+        if (!$this->admin) return;
+        try {
+            $store = $this->protocolStore($protocol);
+            if (!$this->protocolModuleEnabled($protocol)) throw new RuntimeException('Протокол отключён');
+            $store->profile($id, 'mihomo'); // Includes current expiry/quota/revocation checks.
+            $relays = [];
+            foreach ($this->getPacConf()['relays'] ?? [] as $name => $_) {
+                try { $endpoint = $this->protocolRelayEndpoint($protocol, (string) $name); }
+                catch (InvalidArgumentException $e) { continue; }
+                $relays[(string) $name] = $endpoint;
+            }
+            $text = [self::esc(ManagedProtocol::NAMES[$protocol]) . ' · relay'];
+            $buttons = [];
+            $prefix = "/pr $protocol $id";
+            if ($key === 'page') {
+                if ($format !== '' && !preg_match('/\A[0-9]{1,6}\z/D', $format)) throw new InvalidArgumentException('Неверная страница');
+                $page = min((int) $format, max(0, (int) ceil(count($relays) / 20) - 1));
+                $text[] = 'Выберите relay. Адрес и порт каждого протокола задаются в его карточке.';
+                foreach (array_slice($relays, $page * 20, 20, true) as $name => $endpoint) {
+                    $buttons[] = [['text' => $name . ' · ' . $endpoint['host'] . ':' . $endpoint['port'],
+                        'callback_data' => $prefix . ' ' . substr(hash('sha256', (string) $name), 0, 16)]];
+                }
+                $nav = [];
+                if ($page > 0) $nav[] = ['text' => '←', 'callback_data' => "$prefix page " . ($page - 1)];
+                if (count($relays) > ($page + 1) * 20) $nav[] = ['text' => '→', 'callback_data' => "$prefix page " . ($page + 1)];
+                if ($nav) $buttons[] = $nav;
+                $buttons[] = [['text' => 'Настроить relay', 'callback_data' => '/relayMenu']];
+                $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "/protocol $protocol user $id"]];
+            } else {
+                // Stable short keys keep Telegram callbacks below 64 bytes, even
+                // for 32-character relay names. Never resolve a stale list index.
+                $names = array_keys(array_filter($relays, static fn($name) => substr(hash('sha256', (string) $name), 0, 16) === $key, ARRAY_FILTER_USE_KEY));
+                if (count($names) !== 1) throw new InvalidArgumentException('Relay удалён или отключён для этого протокола');
+                $name = (string) $names[0]; $endpoint = $relays[$name];
+                if ($format !== '') {
+                    if (!isset($store->formats()[$format]) && !in_array($format, ['yaml', 'qr'], true)) throw new InvalidArgumentException('Неверный формат');
+                    $this->protocolCommand($protocol, in_array($format, ['yaml', 'qr'], true) ? $format : 'export', $id, $format, $name);
+                    return;
+                }
+                $state = $store->read(); $settings = $state['settings'];
+                $transport = $protocol === 'tuic' ? 'UDP' : ($protocol === 'mieru' ? $settings['transport'] : 'TCP');
+                $text[] = self::esc($name) . ': <code>' . self::esc($endpoint['host']) . '</code> · ' . $endpoint['port'] . ' ' . $transport;
+                $text[] = 'Переадресация на <code>' . self::esc($settings['host']) . '</code> · ' . $settings['port'] . ' ' . $transport . '.';
+                if ($protocol !== 'mieru') $text[] = 'SNI: <code>' . self::esc($settings['sni']) . '</code>. Проверка сертификата включена.';
+                $text[] = ($protocol === 'mieru' ? 'Relay передаёт зашифрованный поток Mieru.' : 'Relay передаёт зашифрованный поток без завершения TLS.')
+                    . ' После изменения адреса или порта обновите подписку либо импортируйте профиль заново.';
+                if (isset($store->formats()['uri'])) {
+                    $text[] = '<code>' . self::esc($store->profile($id, 'uri', $state, $endpoint)) . '</code>';
+                    $buttons[] = [['text' => 'QR · relay', 'callback_data' => "$prefix $key qr"]];
+                }
+                foreach ($store->formats() as $f => $label) $buttons[] = [['text' => $label . ' · relay', 'callback_data' => "$prefix $key $f"]];
+                $buttons[] = [['text' => '🔗 Подписки · relay', 'callback_data' => "/ps $protocol $id $key"]];
+                $buttons[] = [['text' => 'Прокси YAML · скопировать', 'callback_data' => "$prefix $key yaml"]];
+                if ($domain = $this->getDomain()) {
+                    $base = 'https://' . $domain . '/pac' . $this->getHashBot() . '/protocol/' . $protocol . '/' . $state['users'][$id]['token'];
+                    foreach ($store->formats() as $f => $label) if (!str_contains($f, 'uri')) {
+                        $text[] = '<a href="' . self::esc($base . '/' . $f . '?relay=' . rawurlencode($name)) . '">Подписка ' . self::esc($label) . ' · relay</a>';
+                    }
+                }
+                $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "$prefix page"]];
+            }
+            $this->send($this->input['chat'], implode("\n", $text), $this->input['message_id'], $buttons);
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $this->send($this->input['chat'], self::esc($e->getMessage()));
+        }
+    }
+
+    public function protocolCommand(string $protocol, string $action = '', string $id = '', string $format = '', string $relayName = ''): void
     {
         if (!$this->admin) return;
         try {
@@ -320,6 +451,9 @@ trait BotProtocols
             if (in_array($protocol, ['anytls', 'shadowtls'], true) && !is_file($store->directory() . '/desired.json')
                 && ($this->getPacConf()['domain'] ?? '') !== '') $this->configureProtocolSelfHost($protocol);
             $state = $store->read();
+            $endpoint = $relayName === '' ? null : $this->protocolRelayEndpoint($protocol, $relayName);
+            $relayKey = $relayName === '' ? '' : substr(hash('sha256', $relayName), 0, 16);
+            if ($action === 'relays') { $this->protocolRelay($protocol, $id); return; }
             if ($action === 'page') { $this->protocolMenu($protocol, '', (int) $id); return; }
             if (in_array($action, ['add', 'name', 'expires', 'quota', 'rolling', 'settings'], true)) {
                 $prompt = match ($action) {
@@ -353,13 +487,13 @@ trait BotProtocols
                 $store->user($id, [], $action);
                 if ($action === 'delete') $id = '';
             } elseif ($action === 'export') {
-                $document = $store->profileDocument($id, $format);
+                $document = $store->profileDocument($id, $format, endpoint: $endpoint);
                 $this->sendFile($this->input['chat'], new CURLStringFile($document['body'],
-                    "$protocol-$format." . $document['extension'], $document['mime']));
+                    "$protocol-$format" . ($relayKey === '' ? '' : '-relay-' . $relayKey) . '.' . $document['extension'], $document['mime']));
                 return;
             } elseif ($action === 'yaml') {
-                $proxies = $store->profile($id, 'mihomo')['proxies'];
-                $proxies[0]['name'] = $protocol . '-' . $id;
+                $proxies = $store->profile($id, 'mihomo', endpoint: $endpoint)['proxies'];
+                $proxies[0]['name'] = $protocol . '-' . $id . ($relayKey === '' ? '' : '-relay-' . $relayKey);
                 $yaml = yaml_emit($proxies, YAML_UTF8_ENCODING);
                 if ($yaml === false) throw new RuntimeException('Не удалось сформировать YAML');
                 $yaml = preg_replace('~\A---\r?\n|\r?\n\.\.\.(?:\r?\n)?\z~', '', $yaml);
@@ -369,11 +503,11 @@ trait BotProtocols
                     . 'Порты, DNS и правила маршрутизации роутера сохраняются.'
                     . "\n\n<pre><code class=\"language-yaml\">" . self::esc($yaml) . '</code></pre>';
                 $this->send($this->input['chat'], $text, $this->input['message_id'], [[
-                    ['text' => $this->i18n('back'), 'callback_data' => "/protocol $protocol user $id"],
+                    ['text' => $this->i18n('back'), 'callback_data' => $relayKey === '' ? "/protocol $protocol user $id" : "/pr $protocol $id $relayKey"],
                 ]]);
                 return;
             } elseif ($action === 'qr') {
-                $this->sendQr($protocol . '-' . $id, $store->profile($id, 'uri'));
+                $this->sendQr($protocol . '-' . $id . ($relayKey === '' ? '' : '-relay-' . $relayKey), $store->profile($id, 'uri', endpoint: $endpoint));
                 return;
             } elseif ($action === 'egress') {
                 $on = $state['settings']['egress'] === 'direct';
@@ -384,7 +518,12 @@ trait BotProtocols
                 $store->configure(['egress' => $on ? 'warp' : 'direct']);
                 if (!$on) $this->ssh(self::warpSocksAllowCmd($source, false), 'wp');
             } elseif ($action === 'udp-mode' && $protocol === 'tuic') {
-                $store->configure(['udp_mode' => $state['settings']['udp_mode'] === 'native' ? 'quic' : 'native']);
+                $options = $state['settings']['options'];
+                if (!empty($options['client']['udp_over_stream'])) {
+                    $options['client']['udp_over_stream'] = false;
+                    $mode = 'native';
+                } else $mode = $state['settings']['udp_mode'] === 'native' ? 'quic' : 'native';
+                $store->configure(['udp_mode' => $mode, 'options' => $options]);
             } elseif ($action === 'udp-mode' && $protocol === 'shadowtls') {
                 $store->configure(['udp_over_tcp' => !$state['settings']['udp_over_tcp']]);
             } elseif ($action === 'congestion' && $protocol === 'tuic') {
@@ -481,11 +620,13 @@ trait BotProtocols
                     $buttons[] = [['text' => $label, 'callback_data' => "/protocol $protocol export $id $format"]];
                 }
                 $buttons[] = [['text' => 'Прокси YAML · скопировать', 'callback_data' => "/protocol $protocol yaml $id"]];
+                $buttons[] = [['text' => '🔗 Relay', 'callback_data' => "/protocol $protocol relays $id"]];
+                $buttons[] = [['text' => '🔗 Подписки', 'callback_data' => "/ps $protocol $id"]];
                 $domain = $this->getDomain();
                 if ($domain) {
                     $base = 'https://' . $domain . '/pac' . $this->getHashBot() . '/protocol/' . $protocol . '/' . $u['token'];
                     foreach ($store->formats() as $format => $label) if (!str_contains($format, 'uri')) {
-                        $text[] = '<a href="' . self::esc($base . '/' . $format) . '">Подписка ' . self::esc($label) . '</a>';
+                        $text[] = '<a href="' . self::esc($base . '/' . $format) . '">' . ($format === 'native' ? 'Загрузить ' : 'Подписка ') . self::esc($label) . '</a>';
                     }
                 }
             }
@@ -505,8 +646,9 @@ trait BotProtocols
                 : ($protocol === 'shadowtls' ? 'SNI — домен сайта прикрытия с действительным TLS 1.3. Сертификат этого сайта на VPS не устанавливается. Внутренний SS2022 закрыт от внешних подключений.'
                 : 'Для TLS требуется действительный сертификат на указанное имя. После добавления имени обновите SSL в настройках.');
             if ($protocol === 'tuic') {
-                $text[] = 'TUIC v5 требует доступного UDP-порта. Блокировка UDP прерывает и TCP, и UDP приложений. Проверка TLS включена, 0-RTT выключен.';
-                $buttons[] = [['text' => 'UDP: ' . $s['settings']['udp_mode'], 'callback_data' => "/protocol $protocol udp-mode"]];
+                $text[] = 'TUIC v5 требует доступного UDP-порта. Блокировка UDP прерывает и TCP, и UDP приложений. Проверка TLS включена. 0-RTT: '
+                    . (!empty($s['settings']['options']['client']['zero_rtt_handshake']) ? 'включён.' : 'выключен.');
+                $buttons[] = [['text' => 'UDP: ' . (!empty($s['settings']['options']['client']['udp_over_stream']) ? 'over-stream' : $s['settings']['udp_mode']), 'callback_data' => "/protocol $protocol udp-mode"]];
                 $buttons[] = [['text' => 'Congestion: ' . $s['settings']['congestion'], 'callback_data' => "/protocol $protocol congestion"]];
             }
             if ($protocol === 'shadowtls') {
@@ -517,6 +659,11 @@ trait BotProtocols
             $buttons[] = [['text' => $protocol === 'mieru' ? 'Адрес / порт / транспорт' : 'Адрес / SNI / порт', 'callback_data' => "/protocol $protocol settings"]];
             if (in_array($protocol, ['anytls', 'shadowtls', 'tuic'], true)) $buttons[] = [['text' => $protocol === 'tuic' ? 'Использовать домен сервера' : 'Прикрытие своим сайтом · авто', 'callback_data' => "/protocol $protocol auto"]];
             $buttons[] = [['text' => 'Выход: ' . $s['settings']['egress'], 'callback_data' => "/protocol $protocol egress"]];
+            $buttons[] = [['text' => 'Дополнительные настройки', 'callback_data' => "/po $protocol"]];
+            if (in_array($protocol, ['anytls', 'shadowtls'], true)) {
+                $buttons[] = [['text' => 'TLS fingerprint: ' . ($s['settings']['options']['client']['fingerprint'] ?? 'default'),
+                    'callback_data' => "/po $protocol show client.fingerprint"]];
+            }
             $buttons[] = [['text' => 'Добавить пользователя', 'callback_data' => "/protocol $protocol add"]];
             $last = max(0, (int) ceil(count($s['users']) / 20) - 1); $page = min(max(0, $page), $last);
             foreach (array_slice($s['users'], $page * 20, 20, true) as $uid => $user) $buttons[] = [['text' => mb_substr($user['name'], 0, 45), 'callback_data' => "/protocol $protocol user $uid"]];
@@ -604,24 +751,81 @@ trait BotProtocols
         } finally { flock($lock, LOCK_UN); fclose($lock); }
     }
 
+    public function protocolSubscriptions(string $protocol, string $id, string $relayKey = 'direct', string $action = ''): void
+    {
+        if (!$this->admin) return;
+        try {
+            $store = $this->protocolStore($protocol); $state = $store->read();
+            if (!$this->protocolModuleEnabled($protocol)) throw new RuntimeException('Сервис выключен');
+            $store->profile($id, 'mihomo', $state); // Same access checks as every export.
+            $domain = $this->getDomain();
+            if (!$domain) throw new RuntimeException('Сначала настройте домен и SSL');
+            $relay = '';
+            if ($relayKey !== 'direct') {
+                $matches = [];
+                foreach (array_keys($this->getPacConf()['relays'] ?? []) as $name) {
+                    if (substr(hash('sha256', (string) $name), 0, 16) === $relayKey) $matches[] = (string) $name;
+                }
+                if (count($matches) !== 1) throw new InvalidArgumentException('Relay не найден');
+                $relay = $matches[0]; $this->protocolRelayEndpoint($protocol, $relay);
+            }
+            $base = 'https://' . $domain . '/pac' . $this->getHashBot() . '/protocol/' . $protocol . '/' . $state['users'][$id]['token'];
+            $query = $relay === '' ? '' : '?relay=' . rawurlencode($relay);
+            $name = $protocol . '-' . $id . ($relay === '' ? '' : '-' . $relayKey);
+            $text = [self::esc(ManagedProtocol::NAMES[$protocol] . ' · подписки' . ($relay === '' ? '' : ' · relay ' . $relay))];
+            if ($action === 'provider') {
+                $provider = [
+                    'proxy-providers' => [$name => ['type' => 'http', 'url' => $base . '/mihomo' . $query,
+                        'path' => './proxy_providers/' . $name . '.yaml', 'interval' => 3600, 'size-limit' => 1048576]],
+                    'proxy-groups' => [['name' => $name . '-group', 'type' => 'select', 'use' => [$name]]],
+                ];
+                $yaml = preg_replace('/\A---\s*\n|\n\.\.\.\s*\z/', '', yaml_emit($provider, YAML_UTF8_ENCODING));
+                $text[] = 'Добавьте эти записи в соответствующие разделы YAML Mihomo / XKeen UI. Если раздел уже существует, объедините записи. В правилах выберите созданную группу. Provider обновляется раз в час; адрес подписки — адрес бота, а relay находится внутри получаемого профиля.';
+                $text[] = '<pre><code class="language-yaml">' . self::esc($yaml) . '</code></pre>';
+            } else {
+                foreach ($store->formats($state) as $format => $label) if (!str_contains($format, 'uri')) {
+                    $text[] = self::esc($label) . ":\n<code>" . self::esc($base . '/' . $format . $query) . '</code>';
+                }
+                $text[] = 'Mihomo: импорт URL как удалённого профиля либо HTTP provider в существующий YAML. sing-box: Remote profile в приложении с поддержкой удалённых профилей; интервал обновления задаётся там.';
+                if ($protocol === 'mieru') $text[] = 'Нативный Mieru: скачайте JSON и примените через mieru apply config. Его CLI не обновляет HTTP-подписки автоматически. Для автообновления используйте Mihomo.';
+                $text[] = 'Ссылка содержит личный токен доступа. Изменения параметров появляются при следующем обновлении. «Сменить секрет» отзывает старую ссылку и пароль; отключение пользователя, срок и квота закрывают выдачу и VPN-доступ.';
+            }
+            $back = $relay === '' ? "/protocol $protocol user $id" : "/pr $protocol $id $relayKey";
+            $buttons = $action === '' ? [[['text' => 'Provider YAML · XKeen', 'callback_data' => "/ps $protocol $id $relayKey provider"]]] : [];
+            $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => $action === '' ? $back : "/ps $protocol $id $relayKey"]];
+            $this->send($this->input['chat'], implode("\n\n", $text), $this->input['message_id'], $buttons);
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $this->send($this->input['chat'], self::esc($e->getMessage()));
+        }
+    }
+
     public function protocolMachine(string $protocol, string $token, string $format): void
     {
         $this->subSecurityHeaders();
         try {
             $store = $this->protocolStore($protocol); $s = $store->read(); $id = null;
-            if (!isset($store->formats()[$format])) { $this->subRateLimit('', 'miss'); http_response_code(404); return; }
+            if (!isset($store->formats($s)[$format])) { $this->subRateLimit('', 'miss'); http_response_code(404); return; }
             foreach ($s['users'] as $uid => $u) if (hash_equals($u['token'], $token)) { $id = $uid; break; }
             if ($id === null || !$this->protocolModuleEnabled($protocol) || !$s['enabled'] || !$store->allowed($s['users'][$id], $id)) {
                 $this->subRateLimit('', 'miss'); http_response_code(404); return;
             }
             $this->subRateLimit($protocol . ':' . $id);
+            $endpoint = null;
+            if (array_key_exists('relay', $_GET)) {
+                try {
+                    if (!is_string($_GET['relay'])) throw new InvalidArgumentException('Неверный relay');
+                    $endpoint = $this->protocolRelayEndpoint($protocol, $_GET['relay']);
+                } catch (InvalidArgumentException $e) {
+                    http_response_code(404); return;
+                }
+            }
             if (!$this->processHwidRequest(['id' => $protocol . ':' . $id, 'hwid_limit' => 0])) return;
             $status = $store->status();
             if ($status['stale'] || empty($status['running']) || ($status['revision'] ?? null) !== $s['revision']
                 || !$this->protocolPortApplied($protocol, $s)) {
                 throw new RuntimeException('Состояние ещё не применено');
             }
-            $document = $store->profileDocument($id, $format, $s);
+            $document = $store->profileDocument($id, $format, $s, $endpoint);
             $u = $s['users'][$id]; $usage = $store->usage();
             header('Profile-Title: base64:' . base64_encode($u['name']));
             header('Profile-Update-Interval: 12');

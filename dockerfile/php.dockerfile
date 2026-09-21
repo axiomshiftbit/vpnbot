@@ -5,8 +5,11 @@ FROM $image
 # из docker-compose.yml. Значения по умолчанию — на случай сборки напрямую
 # `docker build`, без compose.
 ARG DNSLOOKUP_VERSION=v1.11.1
-ARG SINGBOX_VERSION=v1.14.0
-ARG MIHOMO_VERSION=v1.19.30
+ARG SINGBOX_VERSION=v1.14.1
+ARG MIHOMO_VERSION=v1.19.31
+ARG SINGBOX_SHA256=b907365b154e4a7e3e40be15c2cd83433c0fa65c7dc736bdb1b5face2afe4501
+ARG MIHOMO_SHA256=d5e74bbddbdfff49a1aef7775bf5911da59f0d7196ed509a0ac914b3653dd5f1
+LABEL io.vpnbot.sing-box.version=$SINGBOX_VERSION io.vpnbot.mihomo.version=$MIHOMO_VERSION
 
 # libqrencode-tools, а НЕ libqrencode: второй кладёт только libqrencode.so, а
 # sendQr() запускает CLI `qrencode`. С миграции на alpine (c421dc2, где
@@ -53,11 +56,13 @@ RUN apk add --no-cache --update php84 \
     # NB: ассета -musl нет у релизов < 1.13.0, откат пина ниже потребует вернуть
     # и имя ассета.
     && wget "https://github.com/SagerNet/sing-box/releases/download/${SINGBOX_VERSION}/sing-box-${SB}-linux-amd64-musl.tar.gz" \
+    && echo "${SINGBOX_SHA256}  sing-box-${SB}-linux-amd64-musl.tar.gz" | sha256sum -c - \
     && tar -xf "sing-box-${SB}-linux-amd64-musl.tar.gz" \
     && mv "sing-box-${SB}-linux-amd64-musl/sing-box" /usr/bin \
     && rm "sing-box-${SB}-linux-amd64-musl.tar.gz" \
     && rm -rf "/sing-box-${SB}-linux-amd64-musl" \
     && wget "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-${MIHOMO_VERSION}.gz" \
+    && echo "${MIHOMO_SHA256}  mihomo-linux-amd64-${MIHOMO_VERSION}.gz" | sha256sum -c - \
     && gunzip "mihomo-linux-amd64-${MIHOMO_VERSION}.gz" \
     && mv "mihomo-linux-amd64-${MIHOMO_VERSION}" /usr/bin/mihomo \
     && chmod +x /usr/bin/mihomo

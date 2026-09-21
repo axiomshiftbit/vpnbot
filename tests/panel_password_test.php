@@ -43,6 +43,7 @@ class PanelPswdTestBot extends Bot
 
     public function __construct()
     {
+        $this->admin = true;
     }
 
     public function getHashBot($notset = false)

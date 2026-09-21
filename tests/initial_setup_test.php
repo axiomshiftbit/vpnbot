@@ -4,7 +4,7 @@
 // позволяет проверить первый запуск, не создавая/меняя конфиг установки.
 $dir = sys_get_temp_dir() . '/vpnbot-bootstrap-' . bin2hex(random_bytes(6));
 mkdir($dir, 0700);
-foreach (['bot.php', 'ClashTemplateValidator.php', 'VlessEncryption.php', 'BotProtocols.php', 'ProtocolModules.php', 'ManagedProtocol.php'] as $file) {
+foreach (['bot.php', 'ClashTemplateValidator.php', 'VlessEncryption.php', 'BotProtocols.php', 'BotProtocolOptions.php', 'ProtocolModules.php', 'ManagedProtocol.php', 'ProtocolOptions.php', 'PanelPasswordVault.php'] as $file) {
     copy(__DIR__ . '/../app/' . $file, "$dir/$file");
 }
 file_put_contents("$dir/config.php", '<?php $c = ["admin" => [1]];');

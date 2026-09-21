@@ -71,14 +71,18 @@ jobs:
           # Неизвестная переменная — повод собрать всё: пропустить нужную
           # пересборку хуже, чем сделать лишнюю.
           env_targets() {
-            git show "${BEFORE}:.env" 2>/dev/null | grep -E '^[A-Za-z_]+=' | sort > /tmp/env.old || true
-            git show "${GITHUB_SHA}:.env"          | grep -E '^[A-Za-z_]+=' | sort > /tmp/env.new
+            git show "${BEFORE}:.env" 2>/dev/null | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sort > /tmp/env.old || true
+            git show "${GITHUB_SHA}:.env"          | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sort > /tmp/env.new
             out=""
-            for v in $(diff /tmp/env.old /tmp/env.new | sed -nE 's/^[<>] ([A-Za-z_]+)=.*/\1/p' | sort -u); do
+            for v in $(diff /tmp/env.old /tmp/env.new | sed -nE 's/^[<>] ([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' | sort -u); do
               case "$v" in
                 NGINX_VERSION)                     out="$out ng" ;;
-                DNSLOOKUP_VERSION|SINGBOX_VERSION|MIHOMO_VERSION)
+                DNSLOOKUP_VERSION|SINGBOX_SHA256|MIHOMO_VERSION|MIHOMO_SHA256)
                                                    out="$out php" ;;
+                SINGBOX_VERSION)                   out="$out php anytls" ;;
+                SINGBOX_SOURCE_SHA256)              out="$out anytls" ;;
+                MIERU_VERSION|MIERU_SOURCE_SHA256)   out="$out mieru" ;;
+                PROTOCOL_GO_VERSION)               out="$out anytls mieru" ;;
                 XRAY_VERSION|XRAY_FORK_VERSION)    out="$out xr" ;;
                 OCSERV_VERSION)                    out="$out oc" ;;
                 ADGUARD_VERSION)                   out="$out ad" ;;

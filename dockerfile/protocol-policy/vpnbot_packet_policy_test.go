@@ -98,8 +98,13 @@ func (s *packetSequence) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
 	return M.ParseSocksaddr(packet), nil
 }
 
-// The wrapper must not expose transport unwrapping to optimized packet copying.
-func (s *packetSequence) Upstream() any { panic("policy bypassed through Upstream") }
+// Metadata traversal is allowed; actual packet copying must not reach this reader.
+type bypassReader struct{}
+
+func (b *bypassReader) ReadPacket(*buf.Buffer) (M.Socksaddr, error) {
+	panic("policy bypassed through Upstream")
+}
+func (s *packetSequence) Upstream() any { return &bypassReader{} }
 
 type packetCollector struct {
 	destinations []string
@@ -119,7 +124,7 @@ func TestVPNBotChangingUDPDestination(t *testing.T) {
 	// Use explicit IPv6 host parsing instead of an ambiguous unbracketed literal.
 	source.packets[3] = "[::ffff:127.0.0.1]:9999"
 	guarded := r.restrictPackets(context.Background(), source, adapter.InboundContext{})
-	if _, ok := guarded.(interface{ Upstream() any }); ok {
+	if _, ok := any(guarded).(interface{ Upstream() any }); ok {
 		t.Fatal("guard exposes unwrapping")
 	}
 	collector := &packetCollector{}
@@ -134,5 +139,42 @@ func TestVPNBotChangingUDPDestination(t *testing.T) {
 		if collector.payloads[i] != d {
 			t.Fatal("dropped bytes leaked into next packet")
 		}
+	}
+}
+
+type framedPacketConn struct {
+	N.PacketConn
+	payloads []string
+}
+
+func (c *framedPacketConn) FrontHeadroom() int { return 32 }
+func (c *framedPacketConn) RearHeadroom() int  { return 16 }
+func (c *framedPacketConn) WriterMTU() int     { return 32768 }
+func (c *framedPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	c.payloads = append(c.payloads, string(buffer.Bytes()))
+	buffer.ExtendHeader(32)
+	buffer.Extend(16)
+	buffer.Release()
+	return nil
+}
+
+func TestVPNBotFramedPacketReplies(t *testing.T) {
+	// The real bufio copier must reserve room for both transport headers and
+	// trailers when writing replies through the security wrapper.
+	destination := &framedPacketConn{}
+	guarded := &restrictedPacketConn{PacketConn: destination}
+	source := &packetSequence{packets: []string{"11.77.0.2:9999", "11.77.0.3:9999"}}
+	_, err := bufio.CopyPacket(guarded, source)
+	if err != nil && err != io.EOF {
+		t.Fatal(err)
+	}
+	if len(destination.payloads) != 2 || destination.payloads[0] != source.packets[0] {
+		t.Fatal("packet payload changed")
+	}
+	if N.CalculateMTU(nil, guarded) != 32768 {
+		t.Fatal("transport MTU lost")
+	}
+	if _, ok := any(guarded).(interface{ Upstream() any }); ok {
+		t.Fatal("guard exposes unwrapping")
 	}
 }

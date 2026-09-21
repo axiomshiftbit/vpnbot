@@ -21,6 +21,29 @@ type restrictedPacketConn struct {
 	check func(M.Socksaddr) (M.Socksaddr, error)
 }
 
+// Expose buffer requirements without exposing the underlying reader/writer.
+// Otherwise the reply path allocates zero headroom and sing-mux/UoT can panic
+// when prepending a packet header. Unwrapping would bypass destination checks.
+func (c *restrictedPacketConn) FrontHeadroom() int {
+	return N.CalculateFrontHeadroom(c.PacketConn)
+}
+
+func (c *restrictedPacketConn) RearHeadroom() int {
+	return N.CalculateRearHeadroom(c.PacketConn)
+}
+
+func (c *restrictedPacketConn) ReaderOverhead() int {
+	return N.CalculateReaderOverhead(c.PacketConn)
+}
+
+func (c *restrictedPacketConn) ReaderMTU() int {
+	return N.CalculateMTU(c.PacketConn, nil)
+}
+
+func (c *restrictedPacketConn) WriterMTU() int {
+	return N.CalculateMTU(nil, c.PacketConn)
+}
+
 func (c *restrictedPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
 	for {
 		destination, err := c.PacketConn.ReadPacket(buffer)

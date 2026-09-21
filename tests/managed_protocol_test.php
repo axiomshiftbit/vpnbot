@@ -133,6 +133,7 @@ try {
     $bot->upstreamFile = "$root/unused-upstream.conf";
     $tls = $bot->protocolStore('anytls');
     $tls->configure(['host' => 'vpn.example', 'sni' => 'vpn.example', 'certificate' => '/certs/custom/cert.pem', 'private_key' => '/certs/custom/key.pem'], true);
+    $tls->configureOptions('client', ['fingerprint' => 'chrome', 'idle_session_timeout' => '30s']);
     $tlsId = $tls->add('TLS backup');
     mkdir("$root/certs/custom", 0700);
     $key = openssl_pkey_new(['private_key_bits' => 2048]);
@@ -147,8 +148,10 @@ try {
     try { $bot->exportManagedProtocols(); } catch (RuntimeException $e) { $incompleteRejected = true; }
     mpCheck($incompleteRejected, 'Неполная TLS-пара не выдаётся как пригодная резервная копия');
     unlink("$root/certs/custom/key.pem"); rmdir("$root/certs/custom");
+    $tls->configureOption('', null);
     $bot->importManagedProtocols($backup);
     mpCheck(file_get_contents("$root/certs/custom/key.pem") === $keyPem && (fileperms("$root/certs/custom/key.pem") & 0777) === 0600, 'Восстановление TLS-пары на пустой каталог с закрытыми правами');
+    mpCheck($tls->read()['settings']['options']['client'] === ['fingerprint' => 'chrome', 'idle_session_timeout' => '30s'], 'Штатный backup/restore сохраняет дополнительные параметры клиентов');
     $badBackup = $backup; $badBackup['certificates']['/certs/unrelated.key'] = base64_encode('not allowed');
     $beforeRestore = $tls->read();
     try { $bot->importManagedProtocols($badBackup); throw new LogicException('foreign certificate'); } catch (InvalidArgumentException $e) {}
