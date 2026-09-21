@@ -6,6 +6,18 @@ function protocolMenuAssert(bool $ok, string $message): void
     if (!$ok) throw new RuntimeException($message);
 }
 
+function protocolMenuCheckPortAlignment(string $text): void
+{
+    preg_match_all('/^(?:on|off) .*? {2,}((?:on|off) (?:[0-9]+(?:,[0-9]+)?|port unavailable)|— ошибка состояния) *$/mu', $text, $rows, PREG_OFFSET_CAPTURE);
+    protocolMenuAssert(count($rows[0]) > 1, 'В статусе есть несколько строк с портами');
+    $columns = [];
+    foreach ($rows[0] as $index => [$line, $offset]) {
+        $columns[] = mb_strlen(substr($text, $offset, $rows[1][$index][1] - $offset), 'UTF-8');
+        protocolMenuAssert($line === rtrim($line), 'После порта нет лишних пробелов');
+    }
+    protocolMenuAssert(count(array_unique($columns)) === 1, 'Индикаторы портов всех служб находятся в одном столбце');
+}
+
 class ProtocolMenuBot extends Bot
 {
     public array $conf = [];
@@ -65,14 +77,16 @@ try {
     foreach (ManagedProtocol::NAMES as $key => $label) {
         protocolMenuAssert(count(array_keys($callbacks, "/protocol $key", true)) === 1, "$label: одна кнопка в главном меню");
         protocolMenuAssert(str_contains($text, 'on ' . $label), "$label: свежий применённый статус отображается");
-        protocolMenuAssert(str_contains($text, 'on ' . $label . '  on ' . $bindings[$key]), "$label: отдельный индикатор применённого порта");
+        protocolMenuAssert(preg_match('/^on ' . preg_quote($label, '/') . ' +on ' . $bindings[$key] . '$/m', $text) === 1, "$label: отдельный индикатор применённого порта");
     }
+    protocolMenuCheckPortAlignment($text);
     protocolMenuAssert(in_array('/xray', $callbacks, true) && in_array('/menu oc', $callbacks, true), 'Прежние кнопки сохранены');
 
     $enabledModules = $modules->read();
     foreach ([['oc'], ['oc', 'tt'], ['hy'], ['ss', 'dnstt'], ['ovpn', 'ipsec', 'anytls'], ['oc', 'ovpn', 'tt', 'ipsec', 'hy', 'ss', 'dnstt', 'anytls', 'mieru', 'tuic', 'shadowtls']] as $disabled) {
         $modules->setMany(array_replace($enabledModules, array_fill_keys($disabled, false)));
-        [, $rows] = $bot->menu(false, false, true);
+        [$text, $rows] = $bot->menu(false, false, true);
+        protocolMenuCheckPortAlignment($text);
         $actual = array_column(array_merge(...$rows), 'callback_data');
         foreach ($rows as $index => $row) {
             protocolMenuAssert(count($row) === 2 || ($index === array_key_last($rows) && count($row) === 1), 'После выключения модулей одиночная кнопка только в последней строке');
@@ -94,7 +108,8 @@ try {
         $pending = $bindings; $pending[$key]++;
         ManagedProtocol::writeJson("$root/protocol-services.status.json", ['bindings' => $pending]);
         [$text] = $bot->menu(false, false, true);
-        protocolMenuAssert(str_contains($text, 'off ' . ManagedProtocol::NAMES[$key] . '  off ' . $bindings[$key]), "$key: неприменённый порт красный");
+        protocolMenuAssert(preg_match('/^off ' . preg_quote(ManagedProtocol::NAMES[$key], '/') . ' +off ' . $bindings[$key] . '$/m', $text) === 1, "$key: неприменённый порт красный");
+        protocolMenuCheckPortAlignment($text);
     }
     ManagedProtocol::writeJson("$root/protocol-services.status.json", ['bindings' => $bindings]);
 
@@ -133,6 +148,7 @@ try {
     file_put_contents($stores['shadowtls']->directory() . '/desired.json', '{broken');
     [$text, $buttons] = $bot->menu(false, false, true);
     protocolMenuAssert(str_contains($text, 'ShadowTLS v3 + SS') && str_contains($text, 'ошибка состояния'), 'Ошибка нового состояния видна без поломки главного меню');
+    protocolMenuCheckPortAlignment($text);
     protocolMenuAssert(str_contains(json_encode($buttons), '/protocol shadowtls'), 'Карточка неисправного протокола доступна');
     ManagedProtocol::writeJson($stores['shadowtls']->directory() . '/desired.json', ['schema' => 0]);
     [$text, $buttons] = $bot->menu(false, false, true);

@@ -16879,7 +16879,7 @@ DNS-over-HTTPS with IP:
             $ipsecPorts = $this->ipsecPorts();
 
             $main[] = '<code>';
-            $main[] = $this->alignColumns($this->optionalProtocolColumns([
+            $protocolColumns = $this->optionalProtocolColumns([
                 [
                     $this->i18n($st['wg'] ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['amnezia']) ? 'amnezia' : 'wg_title'),
                     $this->i18n($st['wg1'] ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['wg1_amnezia']) ? 'amnezia' : 'wg_title'),
@@ -16914,7 +16914,7 @@ DNS-over-HTTPS with IP:
                     $this->i18n($ports['telemt']['enable'] ? 'on' : 'off') . ($ports['telemt']['enable'] ? ' ' . $ports['telemt']['port'] : ' port unavailable'),
                     '',
                 ],
-            ]));
+            ]);
             foreach (ManagedProtocol::NAMES as $protocol => $label) {
                 if (!$this->protocolModuleEnabled($protocol)) continue;
                 try {
@@ -16926,13 +16926,15 @@ DNS-over-HTTPS with IP:
                     $ready = !$runtime['stale'] && !empty($runtime['running']) && empty($runtime['error'])
                         && ($runtime['revision'] ?? null) === $state['revision']
                         && $portApplied;
-                    $main[] = $this->i18n($ready ? 'on' : 'off') . ' ' . $label . '  '
-                        . $this->i18n($portApplied ? 'on' : 'off') . ' ' . $state['settings']['port'];
+                    $protocolColumns[0][] = $this->i18n($ready ? 'on' : 'off') . ' ' . $label;
+                    $protocolColumns[1][] = $this->i18n($portApplied ? 'on' : 'off') . ' ' . $state['settings']['port'];
                 } catch (RuntimeException | InvalidArgumentException $e) {
-                    $main[] = $this->i18n('off') . ' ' . $label . ' — ошибка состояния';
+                    $protocolColumns[0][] = $this->i18n('off') . ' ' . $label;
+                    $protocolColumns[1][] = '— ошибка состояния';
                 }
                 $managedProtocolButtons[] = ['text' => $label, 'callback_data' => "/protocol $protocol"];
             }
+            $main[] = implode("\n", array_map('rtrim', explode("\n", $this->alignColumns($protocolColumns))));
             $main[] = '';
             $main[] = $this->alignColumns([
                 [
