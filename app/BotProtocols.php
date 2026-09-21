@@ -92,7 +92,7 @@ trait BotProtocols
     public function managedProtocolDomainLines(): array
     {
         $lines = [];
-        foreach (['anytls' => 'AnyTLS', 'shadowtls' => 'ShadowTLS'] as $protocol => $label) {
+        foreach (['anytls' => 'AnyTLS', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS'] as $protocol => $label) {
             try {
                 $settings = $this->protocolStore($protocol)->read()['settings'];
             } catch (RuntimeException | InvalidArgumentException $e) {
@@ -103,16 +103,55 @@ trait BotProtocols
                 $lines[] = "$label: не настроен";
                 continue;
             }
-            $lines[] = "$label: <code>" . self::esc($settings['host']) . '</code>';
-            if ($protocol === 'anytls' && $settings['sni'] !== '' && $settings['sni'] !== $settings['host']) {
-                $lines[] = "$label SNI: <code>" . self::esc($settings['sni']) . '</code>';
+            $ownSite = !empty($settings['self_hosted']);
+            $certificate = $protocol === 'shadowtls' ? ($ownSite ? '/certs/cert_public' : '') : $settings['certificate'];
+            $identity = $settings['sni'] !== '' ? $settings['sni'] : $settings['host'];
+            $expiry = $certificate !== '' ? $this->managedCertificateDomainSuffix($certificate, $identity) : '';
+            $sameName = strcasecmp($identity, $settings['host']) === 0;
+            $lines[] = "$label: <code>" . self::esc($settings['host']) . '</code>' . ($sameName ? $expiry : '');
+            if ($protocol !== 'shadowtls' && !$sameName) {
+                $lines[] = "$label SNI: <code>" . self::esc($settings['sni']) . '</code>' . $expiry;
             }
-            $cover = $protocol === 'anytls' ? $settings['cover_host'] : $settings['sni'];
+            $cover = $protocol === 'anytls' ? $settings['cover_host'] : ($protocol === 'shadowtls' ? $settings['sni'] : '');
             if ($cover !== '') {
-                $lines[] = "$label сайт прикрытия" . ($protocol === 'shadowtls' ? ' (SNI)' : '') . ': <code>' . self::esc($cover) . '</code>';
+                $lines[] = "$label сайт прикрытия" . ($protocol === 'shadowtls' ? ' (SNI)' : '') . ': <code>' . self::esc($cover) . '</code>'
+                    . ($ownSite ? $this->managedCertificateDomainSuffix('/certs/cert_public', $cover) : '');
             }
         }
         return $lines;
+    }
+
+    private function managedCertificateDomainSuffix(string $certificate, string $hostname): string
+    {
+        $missing = ' (ssl: нет сертификата для домена)';
+        try {
+            $file = $this->managedCertificatePath($certificate);
+        } catch (RuntimeException | InvalidArgumentException $e) {
+            return $missing;
+        }
+        if (!is_file($file)) return $missing;
+        $pem = @file_get_contents($file, false, null, 0, 1024 * 1024 + 1);
+        if ($pem === false || strlen($pem) > 1024 * 1024
+            || !preg_match('~-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----~', $pem, $match)) return $missing;
+        // Pass PEM bytes only: OpenSSL also accepts file:// references. Read afresh
+        // on each render so a long-lived Telegram poller sees renewed certificates.
+        $info = @openssl_x509_parse($match[0]);
+        if (empty($info['validTo_time_t'])) return $missing;
+        $hostname = strtolower($hostname);
+        $ip = @inet_pton($hostname);
+        foreach (explode(',', $info['extensions']['subjectAltName'] ?? '') as $entry) {
+            $entry = trim($entry);
+            $covered = false;
+            if ($ip !== false && str_starts_with($entry, 'IP Address:')) {
+                $covered = @inet_pton(substr($entry, 11)) === $ip;
+            } elseif ($ip === false && str_starts_with($entry, 'DNS:')) {
+                $name = strtolower(substr($entry, 4));
+                $covered = $name === $hostname || (str_starts_with($name, '*.')
+                    && preg_match('~\A[^.]+\.' . preg_quote(substr($name, 2), '~') . '\z~D', $hostname) === 1);
+            }
+            if ($covered) return ' (ssl: ' . date('Y-m-d H:i:s', (int) $info['validTo_time_t']) . ')';
+        }
+        return $missing;
     }
 
     public function exportManagedProtocols(): array

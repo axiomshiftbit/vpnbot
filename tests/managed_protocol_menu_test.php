@@ -118,6 +118,8 @@ try {
     $stores['shadowtls']->configure(['host' => 'vpn.site.example.test', 'sni' => 'external.example.test']);
     [$text] = $bot->menu(false, false, true);
     protocolMenuAssert(str_contains($text, 'Domains:') && str_contains($text, 'AnyTLS: <code>at.site.example.test</code>'), 'Domains показывает полный поддомен AnyTLS');
+    protocolMenuAssert(str_contains($text, 'TUIC v5: <code>vpn.example.test</code>')
+        && str_contains($text, 'TUIC v5 SNI: <code>tuic.example.test</code>'), 'Domains показывает адрес подключения и SNI TUIC');
     protocolMenuAssert(str_contains($text, 'AnyTLS сайт прикрытия: <code>site.example.test</code>'), 'Domains отличает сайт AnyTLS от адреса подключения');
     protocolMenuAssert(str_contains($text, 'ShadowTLS: <code>vpn.site.example.test</code>')
         && str_contains($text, 'ShadowTLS сайт прикрытия (SNI): <code>external.example.test</code>'), 'Domains показывает адрес и фактический сайт ShadowTLS');
