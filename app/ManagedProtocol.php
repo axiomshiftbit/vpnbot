@@ -393,6 +393,7 @@ final class ManagedProtocol
     {
         $usage ??= $this->usage();
         $bytes = $usage['users'][$id] ?? [];
+        if (($bytes['reset'] ?? '') !== $u['reset']) $bytes = [];
         return $u['enabled'] && ($u['expires'] === null || $u['expires'] > time())
             && ($u['quota'] === null || ($bytes['upload'] ?? 0) + ($bytes['download'] ?? 0) < $u['quota']);
     }

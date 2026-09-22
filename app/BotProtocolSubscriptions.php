@@ -21,6 +21,24 @@ trait BotProtocolSubscriptions
 
     public function syncXrayProtocolUsers(): void
     {
+        if (!is_dir($this->protocolRoot)) return;
+        // Serialize the snapshot AND its application across cron and UI workers.
+        // Per-protocol write locks alone let an older snapshot undo a revocation.
+        $old = umask(0077);
+        $lock = @fopen($this->protocolRoot . '/xray-sync.lock', 'c');
+        umask($old);
+        if (!$lock) throw new RuntimeException('Не удалось открыть блокировку синхронизации протоколов');
+        try {
+            if (!flock($lock, LOCK_EX)) throw new RuntimeException('Не удалось заблокировать синхронизацию протоколов');
+            $this->syncXrayProtocolUsersLocked();
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    private function syncXrayProtocolUsersLocked(): void
+    {
         $stores = []; $states = []; $usage = []; $totals = [];
         foreach (array_keys(ManagedProtocol::NAMES) as $protocol) {
             $store = $this->protocolStore($protocol);
@@ -133,6 +151,22 @@ trait BotProtocolSubscriptions
         $key = $type === 'cl' ? 'proxies' : 'outbounds'; $tag = $type === 'cl' ? 'name' : 'tag';
         $primary = $config[$key][$index] ?? null;
         if (!is_array($primary) || !is_string($primary[$tag] ?? null)) return false;
+        $chainedGroups = [];
+        if ($type === 'si') {
+            $dependencies = array_values(array_filter(array_column(array_merge($config['outbounds'], $config['endpoints'] ?? []), 'detour')));
+            $visited = [];
+            while ($dependencies) {
+                $dependency = array_pop($dependencies);
+                if (isset($visited[$dependency])) continue;
+                $visited[$dependency] = true;
+                foreach ($config['outbounds'] as $i => $node) {
+                    if ($node['tag'] !== $dependency || !in_array($node['type'], ['selector', 'urltest'], true)) continue;
+                    $chainedGroups[] = $i;
+                    array_push($dependencies, ...($node['outbounds'] ?? []));
+                }
+            }
+            if (!$keepPrimary && isset($visited[$primary[$tag]])) return false;
+        }
         // A chain through the original transport cannot be replaced safely:
         // new servers may intentionally deny the chain's private destination.
         if (!$keepPrimary) foreach ($config[$key] as $node) {
@@ -187,6 +221,17 @@ trait BotProtocolSubscriptions
         $detour = $type === 'cl' ? 'dialer-proxy' : 'detour';
         foreach ($config[$key] as &$node) if (($node[$detour] ?? null) === $name) $node[$detour] = $original;
         unset($node);
+        if ($type === 'si') {
+            foreach ($config['endpoints'] ?? [] as $i => $endpoint) {
+                if (($endpoint['detour'] ?? null) === $name) $config['endpoints'][$i]['detour'] = $original;
+            }
+            foreach ($chainedGroups as $i) {
+                foreach ($config['outbounds'][$i]['outbounds'] ?? [] as $j => $member) {
+                    if ($member === $name) $config['outbounds'][$i]['outbounds'][$j] = $original;
+                }
+                if (($config['outbounds'][$i]['default'] ?? null) === $name) $config['outbounds'][$i]['default'] = $original;
+            }
+        }
         if ($type === 'cl') {
             $dependencies = array_values(array_filter(array_column($config[$key], 'dialer-proxy')));
             foreach ($config['proxy-groups'] ?? [] as $group) if (($group['type'] ?? '') === 'relay') $dependencies[] = $group['name'];

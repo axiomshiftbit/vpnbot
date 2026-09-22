@@ -99,6 +99,24 @@ try {
     $group = $chainClash['proxy-groups'][1];
     sharedCheck($group['proxies'] === ['proxy · VLESS'] && preg_match('~' . $group['exclude-filter'] . '~', 'AnyTLS') === 1, 'WARP dialer не подхватывает новые протоколы через include-all');
     sharedCheck(preg_match('~' . $group['exclude-filter'] . '~', 'proxy · VLESS') === 0, 'WARP сохраняет доступный VLESS');
+    foreach (['endpoint', 'selector', 'urltest'] as $chainType) {
+        $chain = $plain['si'];
+        $chain['endpoints'] = [['type' => 'wireguard', 'tag' => 'wg', 'detour' => $chainType === 'endpoint' ? 'proxy' : 'wg-dialer']];
+        if ($chainType !== 'endpoint') {
+            $chain['outbounds'][] = ['type' => $chainType, 'tag' => 'wg-dialer', 'outbounds' => ['proxy']]
+                + ($chainType === 'selector' ? ['default' => 'proxy'] : []);
+        }
+        $before = $chain;
+        sharedCheck(!$bot->appendXrayProtocols($chain, $client, 'si', 0, null, false) && $chain === $before,
+            'Цепочка endpoint/' . $chainType . ' требует совместимого основного транспорта');
+        sharedCheck($bot->appendXrayProtocols($chain, $client, 'si', 0), 'Совместимая цепочка endpoint/' . $chainType . ' сохраняется');
+        if ($chainType === 'endpoint') sharedCheck($chain['endpoints'][0]['detour'] === 'proxy · VLESS', 'WireGuard endpoint закреплён за прежним транспортом');
+        else {
+            $dialer = array_values(array_filter($chain['outbounds'], fn($n) => $n['tag'] === 'wg-dialer'))[0];
+            sharedCheck($dialer['outbounds'] === ['proxy · VLESS'], 'Группа цепочки сохраняет основной транспорт');
+            if ($chainType === 'selector') sharedCheck($dialer['default'] === 'proxy · VLESS', 'Default группы цепочки следует за переименованием');
+        }
+    }
     $pending = $bot->protocolStore('tuic'); $oldPort = $pending->read()['settings']['port']; $pending->configure(['port'=>25443]);
     sharedCheck(!in_array('tuic', array_column(sharedProfile($bot, 'cl')['proxies'], 'type'), true), 'Не применённый внешний порт не попадает в общую подписку');
     $pending->configure(['port'=>$oldPort]);

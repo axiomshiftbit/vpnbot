@@ -48,6 +48,8 @@ try {
     mpCheck(!$m->allowed($m->read()['users'][$a], $a), 'Квота на границе закрывает выдачу');
     $snapshot = $m->snapshot();
     mpCheck(!isset($snapshot['usage']['users'][$a]['last']), 'Снимок не переносит базу счётчиков другого процесса');
+    $m->user($a, [], 'reset');
+    mpCheck($m->allowed($m->read()['users'][$a], $a), 'Сброс квоты сразу разрешает экспорт, пока supervisor хранит старые счётчики');
     $m->user($a, [], 'delete'); $m->restore($snapshot);
     mpCheck(isset($m->read()['users'][$a], $m->read()['restore_usage']['id']), 'Восстановление сохраняет ID и заказывает восстановление расхода');
     $m->user($b, ['expires' => time() - 1]);
