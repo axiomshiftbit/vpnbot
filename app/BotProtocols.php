@@ -4,11 +4,13 @@ require_once __DIR__ . '/ManagedProtocol.php';
 require_once __DIR__ . '/ProtocolModules.php';
 require_once __DIR__ . '/BotProtocolOptions.php';
 require_once __DIR__ . '/BotProtocolSubscriptions.php';
+require_once __DIR__ . '/BotConnectionExports.php';
 
 trait BotProtocols
 {
     use BotProtocolOptions;
     use BotProtocolSubscriptions;
+    use BotConnectionExports;
     public string $protocolRoot = '/config/protocols';
     public string $protocolModulesFile = '/config/protocol-services.json';
     public string $upstreamFile = '/config/upstream.conf';

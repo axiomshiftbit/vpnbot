@@ -482,6 +482,14 @@ final class ManagedProtocol
         return is_array($profile) ? ProtocolOptions::profile($this->protocol, $format, $profile, $state['settings']) : $profile;
     }
 
+    // Share URIs carry the protocol's basic connection fields. Client-specific
+    // tuning is exported separately as JSON/YAML, without inventing URI fields.
+    public function connectionUri(string $id, ?array $state = null): string
+    {
+        if ($this->protocol === 'shadowtls') throw new InvalidArgumentException('Для связки ShadowTLS + Shadowsocks используйте JSON/YAML: совместимая ссылка импорта не поддерживается.');
+        return $this->baseProfile($id, 'uri', $state);
+    }
+
     private function baseProfile(string $id, string $format, ?array $state = null, ?array $endpoint = null): array|string
     {
         $s = $state ?? $this->read();
@@ -550,8 +558,15 @@ final class ManagedProtocol
         throw new InvalidArgumentException('Для связки ShadowTLS + SS используйте полный профиль');
     }
 
-    private function tuicProfile(array $u, array $c, string $format): array
+    private function tuicProfile(array $u, array $c, string $format): array|string
     {
+        if ($format === 'uri') {
+            $host = str_contains($c['host'], ':') ? '[' . $c['host'] . ']' : $c['host'];
+            return 'tuic://' . rawurlencode($u['uuid']) . ':' . rawurlencode($u['password']) . '@' . $host . ':' . $c['port'] . '?' . http_build_query([
+                'sni' => $c['sni'], 'alpn' => implode(',', $c['options']['client']['alpn'] ?? ['h3']),
+                'congestion_control' => $c['congestion'], 'udp_relay_mode' => $c['udp_mode'], 'allow_insecure' => 0,
+            ], '', '&', PHP_QUERY_RFC3986) . '#' . rawurlencode($u['name']);
+        }
         if ($format === 'singbox') return ['log' => ['level' => 'warn'],
             'dns' => ['servers' => [['type' => 'local', 'tag' => 'bootstrap']]],
             'inbounds' => [['type' => 'mixed', 'tag' => 'local', 'listen' => '127.0.0.1', 'listen_port' => 1080]],

@@ -211,6 +211,19 @@ $h = Panel::renderText('<b>ok</b> <script>alert(1)</script> <code>x</code>');
 panelAssert(str_contains($h, '<b>ok</b>') && str_contains($h, '<code>x</code>'), 'белый список тегов сохраняется');
 panelAssert(!str_contains($h, '<script>'), 'скрипт из текста экранирован');
 
+$uri = 'tuic://fixture@example.test:443?sni=example.test&alpn=h3&congestion_control=cubic#name';
+$h = Panel::renderText('<pre>' . htmlspecialchars($uri, ENT_QUOTES, 'UTF-8') . '</pre>');
+panelAssert(html_entity_decode(strip_tags($h), ENT_QUOTES, 'UTF-8') === $uri, 'Копируемая URI не содержит лишних amp;');
+foreach (['<b>текст</b>', '<a href="https://untrusted.test/">ссылка</a>', '<script>alert(1)</script>', 'пароль &amp; <&> "'] as $literal) {
+    $escaped = htmlspecialchars($literal, ENT_QUOTES, 'UTF-8');
+    $h = Panel::renderText('<code>' . $escaped . '</code>');
+    panelAssert($h === '<code>' . $escaped . '</code>', 'Экранированные пользовательские теги и символы остаются текстом');
+}
+$h = Panel::renderText('<a href="https://ok.test/?a=1&amp;b=2">клик</a>');
+panelAssert(str_contains($h, 'href="https://ok.test/?a=1&amp;b=2"'), 'HTML-ссылка сохраняет параметры запроса');
+$h = Panel::renderText('&#x3c;img src=x onerror=alert(1)&#x3e;');
+panelAssert(!str_contains($h, '<img') && str_contains($h, '&#x3c;'), 'Числовая сущность не превращается в HTML-тег');
+
 $h = Panel::renderText('<a href="javascript:alert(1)">клик</a>');
 panelAssert(!str_contains($h, 'javascript:'), 'javascript-ссылка выброшена');
 

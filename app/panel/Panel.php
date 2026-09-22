@@ -949,6 +949,11 @@ class Panel
         }, $e);
         $e = str_replace('&lt;/a&gt;', '</a>', $e);
 
+        // Telegram HTML already escapes values (URI query separators, passwords,
+        // user names). Remove only the extra entity layer, AFTER restoring tags:
+        // escaped user markup must remain text, never become an allowed tag.
+        $e = preg_replace('~&amp;((?:amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-f]+);)~i', '&$1', $e);
+
         // Переносы превращаем в <br> ВЕЗДЕ, КРОМЕ <pre> и <code>: там перенос
         // отображается сам (white-space: pre-wrap), и <br> внутри давал бы
         // двойные пустые строки во всех диагностиках и логах.

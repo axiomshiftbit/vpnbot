@@ -582,6 +582,9 @@ class Bot
             case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls))?$~D', $this->input['callback'], $m):
                 $this->xrayProtocolsMenu($m[1], $m[2] ?? '');
                 break;
+            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls))?(?: (cl|clj|si|s|uri|sr|ios))?$~D', $this->input['callback'], $m):
+                $this->connectionExports($m[1], $m[2] ?? '', $m[3] ?? '');
+                break;
             case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
                 $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
                 break;
@@ -24875,6 +24878,7 @@ DNS-over-HTTPS with IP:
         }
         $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
         $data[] = [['text' => 'Протоколы в готовой подписке', 'callback_data' => '/xp ' . ManagedProtocol::xraySource($c)]];
+        $data[] = [['text' => 'Отдельные подключения · ссылки и файлы', 'callback_data' => '/xc ' . ManagedProtocol::xraySource($c)]];
         $data[] = [
             ['text' => 'Mihomo JSON · подписка', 'web_app' => ['url' => "https://{$domain}/pac$hash?t=clj&s={$stok}"]],
             ['text' => 'Mihomo JSON · файл', 'callback_data' => "/dw $i clj"],
@@ -26795,6 +26799,8 @@ DNS-over-HTTPS with IP:
 
     public function subscription($return = false)
     {
+        // Internal admin export only; no HTTP parameter enables this mode.
+        $connectionOnly = $return === 'connection';
         $relayRequested = array_key_exists('relay', $_GET);
         $this->normalizeSubGet();
         $mihomoJson = ($_GET['t'] ?? '') === 'clj';
@@ -26907,7 +26913,7 @@ DNS-over-HTTPS with IP:
         };
         $compatibilityError = $ruleSetReq ? '' : $this->subscriptionCompatibilityError($xr, $pac, $targetFormat);
         $replacement = false;
-        if (!$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
+        if (!$connectionOnly && !$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
             && (!$isDeepLink || in_array($_GET['r'], ['si', 'k', 'w'], true))) {
             $candidate = $tpl;
             foreach ($candidate['outbounds'] ?? [] as $n => $node) if (($node['tag'] ?? '') === '~outbound~' || ($node['tag'] ?? '') === ($pac['outbound'] ?: 'proxy')) {
@@ -27366,6 +27372,9 @@ DNS-over-HTTPS with IP:
         // outbound/proxy целиком, и блок, положенный раньше, они бы стёрли.
         // Внутри — ранний выход, если ядро не форковое или smux выключен.
         $this->applyClientSmux($c, $index, $pac, (string) ($_GET['t'] ?? ''));
+        if ($connectionOnly) {
+            $c = self::connectionNodes($c, (string) $_GET['t'], (int) $index);
+        }
         // WARP-теги шаблона. У каждого клиента СВОЙ wgcf-аккаунт: общий
         // серверный ключ означал бы, что сессии клиентов и самого сервера
         // выбивают друг друга (в WireGuard у пира ровно один endpoint, и
@@ -27412,6 +27421,11 @@ DNS-over-HTTPS with IP:
             '~ip~'           => $this->ip,
             '~outbound~'     => $outbound,
         ]), true);
+
+        if ($connectionOnly) {
+            return json_encode($c,
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        }
 
         switch ($_GET['t']) {
             case 's':
