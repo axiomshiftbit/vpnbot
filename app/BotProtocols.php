@@ -422,7 +422,9 @@ trait BotProtocols
         $buttons = [];
         foreach (ProtocolModules::LABELS as $key => $label) {
             if (isset(ManagedProtocol::NAMES[$key])) continue;
-            $buttons[] = [['text' => ($settings[$key] ? '🟢 ' : '🔴 ') . $label, 'callback_data' => "/protocolModules $key"]];
+            $blocked = $settings[$key] && !$modules->enabled($key);
+            $hint = $blocked ? ($key === 'ipsec' ? ' · IKEv2 и L2TP выключены' : ' · IPsec выключен') : '';
+            $buttons[] = [['text' => ($blocked ? '🟡 ' : ($settings[$key] ? '🟢 ' : '🔴 ')) . $label . $hint, 'callback_data' => "/protocolModules $key"]];
         }
         foreach (ManagedProtocol::NAMES as $key => $label) {
             $buttons[] = [['text' => ($settings[$key] ? '🟢 ' : '🔴 ') . $label, 'callback_data' => "/protocol $key"]];
@@ -436,9 +438,8 @@ trait BotProtocols
         if (!$this->admin) return;
         try {
             $modules = new ProtocolModules($this->protocolModulesFile);
-            $settings = $modules->read();
-            if (!isset($settings[$module]) || isset(ManagedProtocol::NAMES[$module])) return;
-            $modules->set($module, !$settings[$module]);
+            if (!isset(ProtocolModules::DEFAULTS[$module]) || isset(ManagedProtocol::NAMES[$module])) return;
+            $modules->toggle($module);
             $this->protocolModulesMenu();
         } catch (Throwable $e) {
             $this->protocolError('Не удалось сохранить настройки протоколов.', '/protocolModules');
@@ -594,12 +595,20 @@ trait BotProtocols
                 return;
             }
             if ($action === 'toggle') {
-                $on = !$state['enabled'];
-                if ($on && !empty($state['settings']['self_hosted'])) $this->prepareProtocolSelfHost();
-                $store->configure([], $on);
-                (new ProtocolModules($this->protocolModulesFile))->set($protocol, $on);
-                $this->syncManagedUpstreams();
-                $this->syncXrayProtocolUsers();
+                $this->withLock('protocol-toggle', function () use ($store, $protocol) {
+                    $state = $store->read();
+                    $on = !$state['enabled'];
+                    if ($on && !empty($state['settings']['self_hosted'])) $this->prepareProtocolSelfHost();
+                    $store->configure([], $on);
+                    try {
+                        (new ProtocolModules($this->protocolModulesFile))->set($protocol, $on);
+                    } catch (Throwable $e) {
+                        $store->configure([], $state['enabled']);
+                        throw $e;
+                    }
+                    $this->syncManagedUpstreams();
+                    $this->syncXrayProtocolUsers();
+                });
             } elseif ($action === 'auto') {
                 if (in_array($protocol, ['anytls', 'shadowtls'], true)) $this->prepareProtocolSelfHost();
                 $this->configureProtocolSelfHost($protocol);

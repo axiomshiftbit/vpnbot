@@ -38,14 +38,24 @@ final class ProtocolModules
     {
         if (array_diff_key($values, self::DEFAULTS)) throw new InvalidArgumentException('Неизвестный модуль');
         foreach ($values as $value) if (!is_bool($value)) throw new InvalidArgumentException('Неверное состояние модуля');
+        $this->update(static fn($settings) => array_replace($settings, $values));
+    }
+
+    public function toggle(string $key): void
+    {
+        if (!isset(self::DEFAULTS[$key])) throw new InvalidArgumentException('Неизвестный модуль');
+        $this->update(static fn($settings) => array_replace($settings, [$key => !$settings[$key]]));
+    }
+
+    private function update(callable $change): void
+    {
         $old = umask(0077);
         $lock = @fopen($this->path . '.lock', 'c');
         umask($old);
         if (!$lock) throw new RuntimeException('Не удалось открыть блокировку модулей');
         try {
             if (!flock($lock, LOCK_EX)) throw new RuntimeException('Модули заняты');
-            $settings = $this->read();
-            $settings = array_replace($settings, $values);
+            $settings = $change($this->read());
             ManagedProtocol::writeJson($this->path, $settings);
         } finally {
             flock($lock, LOCK_UN);
