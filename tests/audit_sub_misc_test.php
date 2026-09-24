@@ -88,6 +88,10 @@ subMiscAssert($bot->safeExtUrlIps('https://127.0.0.1/list') === [], 'loopback о
 subMiscAssert($bot->safeExtUrlIps('http://example.com/list') === [], 'только https');
 subMiscAssert($bot->safeExtUrlIps('https://100.64.0.1/list') === [], 'CGNAT отбит');
 subMiscAssert($bot->safeExtUrlIps('https://192.168.1.1/list') === [], 'приватный адрес отбит');
+subMiscAssert($bot->safeExtUrlIps('https://[2606:4700:4700::1111]/list') === ['2606:4700:4700::1111'], 'Публичный IPv6 URL разрешён без DNS');
+foreach (['::1', 'fc00::1', 'fe80::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:100.64.0.1', '64:ff9b::7f00:1'] as $ip) {
+    subMiscAssert($bot->safeExtUrlIps("https://[$ip]/list") === [], 'Локальный или транслируемый IPv6 отбит');
+}
 
 if ($failed) {
     echo "audit_sub_misc_test FAILED: $failed\n";

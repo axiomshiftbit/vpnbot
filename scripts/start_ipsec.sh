@@ -307,27 +307,33 @@ ln -s "$CONF/chap-secrets" /etc/ppp/chap-secrets
 
 # ─── ppp ip-up/ip-down: журнал подключений + карта живых сессий ──────────
 # pppd вызывает их автоматически (env: PEERNAME, IPREMOTE, BYTES_*;
-# $PPID = pid pppd — по нему бот кикает юзера).
+# PPPD_PID сохраняет pid pppd даже после завершения родителя ip-down).
 cat > /etc/ppp/ip-up <<'HOOKEOF'
 #!/bin/sh
 LOG=/logs/ipsec-connections.log
 SESS=/var/run/l2tp-sessions
+PID=${PPPD_PID:-$PPID}
 TS=$(date '+%Y-%m-%d %H:%M:%S')
 mkdir -p "$SESS"
 printf '%s UP   %-20s l2tp %s if=%s\n' \
     "$TS" "${PEERNAME:-unknown}" "${IPREMOTE:-$5}" "$1" >> "$LOG"
-printf '%s %s\n' "${IPREMOTE:-$5}" "$PPID" > "$SESS/${PEERNAME:-unknown}"
+umask 077
+printf '%s %s %s\n' "${IPREMOTE:-$5}" "$PID" "${PEERNAME:-unknown}" > "$SESS/${PEERNAME:-unknown}.$PID"
 exit 0
 HOOKEOF
 cat > /etc/ppp/ip-down <<'HOOKEOF'
 #!/bin/sh
 LOG=/logs/ipsec-connections.log
 SESS=/var/run/l2tp-sessions
+PID=${PPPD_PID:-$PPID}
 TS=$(date '+%Y-%m-%d %H:%M:%S')
 printf '%s DOWN %-20s l2tp %s rx=%s tx=%s\n' \
     "$TS" "${PEERNAME:-unknown}" "${IPREMOTE:-$5}" \
     "${BYTES_RCVD:-0}" "${BYTES_SENT:-0}" >> "$LOG"
-rm -f "$SESS/${PEERNAME:-unknown}"
+rm -f "$SESS/${PEERNAME:-unknown}.$PID"
+# Compatibility with sessions established before these hooks were upgraded.
+OLD="$SESS/${PEERNAME:-unknown}"
+if [ -f "$OLD" ] && [ "$(awk '{print $2}' "$OLD")" = "$PID" ]; then rm -f "$OLD"; fi
 exit 0
 HOOKEOF
 chmod +x /etc/ppp/ip-up /etc/ppp/ip-down

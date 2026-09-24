@@ -19,6 +19,7 @@ on:
     branches: [dev, master]
     paths:
       - 'dockerfile/**'
+      - 'scripts/hysteria_service.py'
       - '.env'
       - 'docker-compose.yml'
       - '.github/workflows/images.yml'
@@ -162,6 +163,9 @@ jobs:
               done
               if echo "${CHANGED}" | grep -qE '^\.env$'; then
                 SEL="${SEL} $(env_targets)"
+              fi
+              if echo "${CHANGED}" | grep -qE '^scripts/hysteria_service\.py$'; then
+                SEL="${SEL} hy"
               fi
             fi
           fi

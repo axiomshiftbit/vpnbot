@@ -31,6 +31,10 @@ try {
     $a = managedProtocolFixtureUser($m, 'Одинаковое имя'); $b = managedProtocolFixtureUser($m, 'Одинаковое имя'); $s = $m->read();
     mpCheck($a !== $b && $s['users'][$a]['password'] !== $s['users'][$b]['password'] && $s['users'][$a]['token'] !== $s['users'][$b]['token'], 'Независимая идентичность');
     $before = $s['users'][$a]; $m->user($a, ['name' => 'Новое имя']);
+    $numericId = $s;
+    $numericId['users'] = ['1234567890123456' => $before];
+    $m->validate($numericId);
+    mpCheck(is_int(array_key_first($numericId['users'])), 'PHP приводит цифровой ID к int; это допустимый случайный hex ID');
     mpCheck($m->read()['users'][$a]['password'] === $before['password'], 'Имя не меняет авторизацию');
     $bytes = file_get_contents($m->directory() . '/desired.json');
     foreach ([['port' => 0], ['port' => 8443], ['listen_port' => 8444], ['sni' => '127.0.0.1'], ['listen_port' => 65536], ['host' => "bad\nname"], ['private_key' => '/certs/../key']] as $settings) {

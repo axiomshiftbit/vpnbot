@@ -193,7 +193,7 @@ final class ManagedProtocol
             throw new InvalidArgumentException('Неверные параметры ShadowTLS: отдельный порт, домен TLS 1.3 и ключ SS2022');
         }
         foreach ($s['users'] as $id => $u) {
-            if (!is_string($id) || !preg_match('/\A[a-f0-9]{16}\z/D', $id) || !is_array($u)
+            if (!preg_match('/\A[a-f0-9]{16}\z/D', (string) $id) || !is_array($u)
                 || !is_string($u['name'] ?? null) || trim($u['name']) === '' || mb_strlen($u['name']) > 100
                 || preg_match('/[\x00-\x1f\x7f]/', $u['name']) || !is_bool($u['enabled'] ?? null)
                 || !preg_match('/\A[a-f0-9]{64}\z/D', $u['token'] ?? '')

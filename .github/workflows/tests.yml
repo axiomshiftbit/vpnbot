@@ -40,7 +40,7 @@ jobs:
         run: |
           php_version=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
           sudo apt-get update -qq
-          sudo apt-get install -y "php${php_version}-yaml"
+          sudo apt-get install -y "php${php_version}-yaml" python3-yaml
           php -r 'exit(extension_loaded("yaml") ? 0 : 1);'
 
       - name: Xray для проверки конфигураций

@@ -989,7 +989,7 @@ services:
             args:
                 # :-default обязателен: пустая подстановка перекрыла бы дефолт
                 # ARG, и FROM с пустым тегом уронил бы сборку.
-                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.12.2}
+                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.12.3}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
@@ -998,6 +998,7 @@ services:
             - ./logs:/logs
             # :ro — hysteria только читает /config/hysteria.yaml (пишет его бот).
             - ./config:/config:ro
+            - ./config/hysteria/runtime:/var/lib/hysteria
             - ./scripts/start_hysteria.sh:/start_hysteria.sh
         hostname: hysteria
         container_name: hysteria-${VER}
@@ -1009,7 +1010,7 @@ services:
               required: true # default
             - path: ./override.env
               required: false
-        stop_grace_period: 1s
+        stop_grace_period: 10s
         command: ["/bin/sh", "/start_hysteria.sh"]
         networks:
             default:

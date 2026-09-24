@@ -21,6 +21,15 @@ require_once __DIR__ . '/../app/bot.php';
 
 $failed = 0;
 
+$relayBot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+foreach (['origin.example:443', '[2001:db8::10]:443'] as $origin) {
+    foreach (['vless', 'trojan'] as $protocol) {
+        $tail = '?security=tls&sni=origin.example#name';
+        rpAssert($relayBot->relayVlessLink("$protocol://credential@$origin$tail", ['address'=>'2001:db8::20', 'portmap'=>['443'=>'8443']])
+            === "$protocol://credential@[2001:db8::20]:8443$tail", 'IPv6 relay сохраняет TLS/transport и заменяет authority');
+    }
+}
+
 function rpAssert(bool $cond, string $msg): void
 {
     global $failed;
