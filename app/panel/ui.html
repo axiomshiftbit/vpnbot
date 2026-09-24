@@ -22,7 +22,7 @@ button,select,input,textarea{font-family:inherit}
 button{transition:background .15s,filter .15s,transform .05s}
 button:active{transform:scale(.97)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-header{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;box-shadow:var(--shadow)}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:9px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;box-shadow:var(--shadow)}
 header b{font-weight:600;letter-spacing:.2px}
 header .sp{flex:1}
 header button{background:var(--btn);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:6px 11px;cursor:pointer;font-size:13px}
@@ -403,7 +403,12 @@ $("clear").onclick = () => {
 $("out").onclick = () => api("logout", form({})).then(showLogin);
 
 document.addEventListener("click", e => {
-  if (e.target.classList.contains("tg-spoiler")) e.target.classList.toggle("show");
+  const spoiler = e.target.closest(".tg-spoiler");
+  if (spoiler && !spoiler.classList.contains("show")){
+    spoiler.classList.add("show");
+    return;
+  }
+  if (spoiler && e.target.tagName !== "CODE") spoiler.classList.remove("show");
   if (e.target.tagName === "CODE" && navigator.clipboard){
     navigator.clipboard.writeText(e.target.textContent).then(() => toast("скопировано"));
   }

@@ -5,6 +5,7 @@ x-logging:
           max-size: "200k"
           max-file: "10"
 
+
 networks:
     default:
         ipam:
@@ -53,12 +54,15 @@ services:
                 condition: service_started
             oc:
                 condition: service_started
+                required: false
             np:
                 condition: service_started
             tt:
                 condition: service_started
+                required: false
             ovpn:
                 condition: service_started
+                required: false
         env_file:
             - path: ./.env
               required: true # default
@@ -128,6 +132,7 @@ services:
                 condition: service_started
             ss:
                 condition: service_started
+                required: false
             xr:
                 condition: service_started
         healthcheck:
@@ -142,8 +147,10 @@ services:
             args:
                 image: ${IMAGE:-alpine:3.23}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.11.1}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.0}
-                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.30}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.1}
+                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.31}
+                SINGBOX_SHA256: ${SINGBOX_SHA256:-b907365b154e4a7e3e40be15c2cd83433c0fa65c7dc736bdb1b5face2afe4501}
+                MIHOMO_SHA256: ${MIHOMO_SHA256:-d5e74bbddbdfff49a1aef7775bf5911da59f0d7196ed509a0ac914b3653dd5f1}
         ports:
             # 127.0.0.1:8081:8080 убран: 8080 в этом контейнере — control API
             # unit, у которого нет аутентификации. Он переведён на unix-сокет
@@ -211,8 +218,10 @@ services:
             args:
                 image: ${IMAGE:-alpine:3.23}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.11.1}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.0}
-                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.30}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.1}
+                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.31}
+                SINGBOX_SHA256: ${SINGBOX_SHA256:-b907365b154e4a7e3e40be15c2cd83433c0fa65c7dc736bdb1b5face2afe4501}
+                MIHOMO_SHA256: ${MIHOMO_SHA256:-d5e74bbddbdfff49a1aef7775bf5911da59f0d7196ed509a0ac914b3653dd5f1}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/php.ini:/etc/php84/php.ini
@@ -252,28 +261,49 @@ services:
         init: true
         logging: *default-logging
         depends_on:
-            - up
-            - ng
-            - php
-            - wg
-            - wg1
-            - ad
-            - xr
-            - oc
-            - np
-            - proxy
-            - ss
-            - dnstt
-            - hy
-            - tt
-            - ovpn
-            # ipsec, telemt и wp тоже: service.php при старте ходит в контейнеры
-            # по ssh (dnsttStart, restartHysteria, restartTt, setUpstream*,
-            # xrayUpdateRules), и без порядка старта задача могла отработать
-            # раньше, чем внутри поднимется sshd — молча и без следа.
-            - ipsec
-            - telemt
-            - wp
+            up:
+                condition: service_started
+            ng:
+                condition: service_started
+            php:
+                condition: service_started
+            wg:
+                condition: service_started
+            wg1:
+                condition: service_started
+            ad:
+                condition: service_started
+            xr:
+                condition: service_started
+            oc:
+                condition: service_started
+                required: false
+            np:
+                condition: service_started
+            proxy:
+                condition: service_started
+            ss:
+                condition: service_started
+                required: false
+            dnstt:
+                condition: service_started
+                required: false
+            hy:
+                condition: service_started
+                required: false
+            tt:
+                condition: service_started
+                required: false
+            ovpn:
+                condition: service_started
+                required: false
+            ipsec:
+                condition: service_started
+                required: false
+            telemt:
+                condition: service_started
+            wp:
+                condition: service_started
     # Брокер Docker API. Сокет держит ОН, а php и service ходят к нему по HTTP
     # с allowlist'ом по методу и пути (config/dockerproxy.conf) — раньше сокет
     # был примонтирован прямо в php и service, и суффикс ":ro" не ограничивал
@@ -534,6 +564,7 @@ services:
         init: true
         logging: *default-logging
     oc:
+        profiles: ["oc"]
         image: ghcr.io/axiomshiftbit/vpnbot-oc:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/ocserv.dockerfile
@@ -716,6 +747,7 @@ services:
         init: true
         logging: *default-logging
     ss:
+        profiles: ["ss"]
         image: ghcr.io/axiomshiftbit/vpnbot-ss:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
@@ -765,6 +797,7 @@ services:
         init: true
         logging: *default-logging
     dnstt:
+        profiles: ["dnstt"]
         image: ghcr.io/axiomshiftbit/vpnbot-dnstt:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/dnstt.dockerfile
@@ -801,6 +834,7 @@ services:
         init: true
         logging: *default-logging
     ovpn:
+        profiles: ["ovpn"]
         image: ghcr.io/axiomshiftbit/vpnbot-ovpn:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/openvpn.dockerfile
@@ -848,6 +882,7 @@ services:
         init: true
         logging: *default-logging
     ipsec:
+        profiles: ["ipsec"]
         image: ghcr.io/axiomshiftbit/vpnbot-ipsec:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/ipsec.dockerfile
@@ -860,6 +895,7 @@ services:
             # Миграции swanctl.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ipsec_migrate.sh:/ipsec_migrate.sh
+            - ./scripts/protocol_modules.py:/protocol_modules.py:ro
             - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs:/logs
@@ -881,6 +917,8 @@ services:
             IP: ${IP}
             L2TPSUBNET: ${L2TPSUBNET:-10.9.1.0/24}
             IKEV2SUBNET: ${IKEV2SUBNET:-10.9.2.0/24}
+            IPSEC_IKEV2_ENABLED: ${IPSEC_IKEV2_ENABLED:-1}
+            IPSEC_L2TP_ENABLED: ${IPSEC_L2TP_ENABLED:-1}
         cap_add:
             - NET_ADMIN
         # charon ставит XFRM-политики в netns контейнера; форвардинг пакетов
@@ -907,6 +945,7 @@ services:
         init: true
         logging: *default-logging
     tt:
+        profiles: ["tt"]
         image: ghcr.io/axiomshiftbit/vpnbot-tt:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/trusttunnel.dockerfile
@@ -943,13 +982,14 @@ services:
         init: true
         logging: *default-logging
     hy:
+        profiles: ["hy"]
         image: ghcr.io/axiomshiftbit/vpnbot-hysteria:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/hysteria.dockerfile
             args:
                 # :-default обязателен: пустая подстановка перекрыла бы дефолт
                 # ARG, и FROM с пустым тегом уронил бы сборку.
-                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.12.2}
+                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.12.3}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
@@ -958,6 +998,7 @@ services:
             - ./logs:/logs
             # :ro — hysteria только читает /config/hysteria.yaml (пишет его бот).
             - ./config:/config:ro
+            - ./config/hysteria/runtime:/var/lib/hysteria
             - ./scripts/start_hysteria.sh:/start_hysteria.sh
         hostname: hysteria
         container_name: hysteria-${VER}
@@ -969,7 +1010,7 @@ services:
               required: true # default
             - path: ./override.env
               required: false
-        stop_grace_period: 1s
+        stop_grace_period: 10s
         command: ["/bin/sh", "/start_hysteria.sh"]
         networks:
             default:
@@ -977,4 +1018,144 @@ services:
         mem_limit: 512m
         pids_limit: 512
         init: true
+        logging: *default-logging
+
+    anytls:
+        profiles: ["anytls"]
+        image: ghcr.io/axiomshiftbit/vpnbot-protocol:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: protocol.dockerfile
+            args:
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.1}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-1ea41f7d06b0017fe3d3ba7ee30959048aa0ddde31cb0165dab9257edf673321}
+        environment:
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/anytls:/config:ro
+            - ./config/protocols/anytls/runtime:/state
+            - ./update/protocol-certs/anytls:/certs:ro
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+        hostname: anytls
+        container_name: anytls-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.22
+        mem_limit: 256m
+        pids_limit: 128
+        logging: *default-logging
+
+    mieru:
+        profiles: ["mieru"]
+        image: ghcr.io/axiomshiftbit/vpnbot-mieru:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: mieru.dockerfile
+            args:
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
+                MIERU_VERSION: ${MIERU_VERSION:-v3.37.0}
+                MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-7b57f1f8c8ad5f402cdc2603a686d46c218810f7bf9c501142df78f9bed5b413}
+        environment:
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/mieru:/config:ro
+            - ./config/protocols/mieru/runtime:/state
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+            - ./scripts/mieru_service.py:/mieru_service.py:ro
+        tmpfs:
+            - /var/lib/mita:mode=0700,size=32m
+        ports:
+            - ${MIERU_PORT:-24445}:24445/tcp
+            - ${MIERU_PORT:-24445}:24445/udp
+        hostname: mieru
+        container_name: mieru-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        cap_add: [CHOWN, FOWNER]
+        group_add: [mita]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.23
+        mem_limit: 256m
+        pids_limit: 128
+        logging: *default-logging
+
+    tuic:
+        profiles: ["tuic"]
+        image: ghcr.io/axiomshiftbit/vpnbot-protocol:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: protocol.dockerfile
+            args:
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.1}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-1ea41f7d06b0017fe3d3ba7ee30959048aa0ddde31cb0165dab9257edf673321}
+        environment:
+            PROTOCOL_KIND: tuic
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/tuic:/config:ro
+            - ./config/protocols/tuic/runtime:/state
+            - ./update/protocol-certs/tuic:/certs:ro
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+        ports:
+            - ${TUIC_PORT:-9443}:9443/udp
+        hostname: tuic
+        container_name: tuic-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.24
+        mem_limit: 256m
+        pids_limit: 128
+        logging: *default-logging
+
+    shadowtls:
+        profiles: ["shadowtls"]
+        image: ghcr.io/axiomshiftbit/vpnbot-protocol:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: protocol.dockerfile
+            args:
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.1}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-1ea41f7d06b0017fe3d3ba7ee30959048aa0ddde31cb0165dab9257edf673321}
+        environment:
+            PROTOCOL_KIND: shadowtls
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/shadowtls:/config:ro
+            - ./config/protocols/shadowtls/runtime:/state
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+        ports:
+            - ${SHADOWTLS_PORT:-24447}:24447/tcp
+        hostname: shadowtls
+        container_name: shadowtls-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.25
+        mem_limit: 256m
+        pids_limit: 128
         logging: *default-logging

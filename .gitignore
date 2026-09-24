@@ -23,6 +23,10 @@
 /config/hwid.json
 # лента веб-панели, загруженные/отданные файлы и хеш пароля-заглушки
 /config/panel/
+/config/protocols/
+/config/protocol-services*.json
+/config/protocol-services*.lock
+/config/upstream.lock
 /config/openvpn/*
 !/config/openvpn/.gitkeep
 # рантайм ipsec: PSK, приватные ключи CA/сервера, chap-secrets, юзеры —
@@ -69,3 +73,5 @@ nftables.conf
 # нечего — правило было только в .git/info/exclude, то есть жило в одном
 # клоне и в любом другом ничего не защищало.
 /sing-box/
+
+__pycache__/

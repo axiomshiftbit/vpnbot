@@ -92,7 +92,7 @@ foreach ([['off', false], ['x25519', false], ['mlkem768', false], ['off', true],
     foreach (['xray config:', 'sing-box config:', 'mihomo config:', 'v2rayNG (base64):', 'sing-box windows:'] as $label) {
         cardAssert(str_contains($card['text'], $label), "$label остаётся над клавиатурой в том же сообщении");
     }
-    cardAssert(substr_count($card['text'], 'import://') === 8, 'все ссылки импорта сохранены');
+    cardAssert(substr_count($card['text'], 'import://') === 9, 'все ссылки импорта сохранены, включая INCY');
     $buttons = json_decode($card['reply_markup'], true)['inline_keyboard'];
     cardAssert(end($buttons)[0]['callback_data'] === '/xray', 'кнопка возврата сохранена');
     $plainLink = $bot->linkXray(0);

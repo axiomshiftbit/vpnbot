@@ -2,9 +2,14 @@
 
 require_once __DIR__ . '/ClashTemplateValidator.php';
 require_once __DIR__ . '/VlessEncryption.php';
+require_once __DIR__ . '/BotProtocols.php';
+require_once __DIR__ . '/PanelPasswordVault.php';
+require_once __DIR__ . '/BotHysteria.php';
 
 class Bot
 {
+    use BotProtocols;
+    use BotHysteria;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -489,6 +494,10 @@ class Bot
         if (empty($r['result']['message_id'])) {
             return;
         }
+        if ($this->protocolReturnMain && in_array($state['callback'] ?? '', ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true)) {
+            $state['protocol_main'] = true;
+        }
+        if ($this->protocolRelayOrigin) $state['protocol_relay'] = $this->protocolRelayOrigin;
         $this->sessionApply(function () use ($r, $state) {
             $_SESSION['reply'][$r['result']['message_id']] = $state;
         });
@@ -530,6 +539,13 @@ class Bot
 
     public function action()
     {
+        // Carry the entry point in each callback, including old messages and concurrent chats.
+        $this->protocolReturnMain = false;
+        if (!empty($this->input['callback']) && preg_match('~^/!(protocol|pr|prset|prmanage|po|ps|pf) ~', $this->input['callback'])) {
+            $this->protocolReturnMain = true;
+            $this->input['callback'] = '/' . substr($this->input['callback'], 2);
+        }
+        $this->protocolNavigationStart();
         // Инстанс нажатого сообщения (карта wg_msg.json) — пер-запросный
         // $this->wg: кнопки без инстанса в callback_data (delete, client,
         // torrent…) действуют на инстанс СВОЕГО меню, а не на глобальный
@@ -549,6 +565,49 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
+            case preg_match('~^/hyUsers(?: ([0-9]{1,6}))?$~D', $this->input['callback'], $m):
+                $this->hyUsers((int) ($m[1] ?? 0));
+                break;
+            case preg_match('~^/hyUser (add|legacy-off|legacy-confirm|[a-f0-9]{16})(?: (show|toggle|rotate|reset|delete|delete-confirm|name|expires|quota|file|qr))?$~D', $this->input['callback'], $m):
+                $this->hyUserCommand($m[1], $m[2] ?? 'show');
+                break;
+            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls)$~D', $this->input['callback'], $m):
+                $this->protocolPortPrompt($m[1]);
+                break;
+            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
+                $this->protocolManageRelays($m[1], $m[2] ?? '');
+                break;
+            case preg_match('~^/pf (anytls|shadowtls)(?: (show|reset|pick))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+                $this->protocolFingerprintShortcut = true;
+                $this->protocolOptions($m[1], $m[2] ?? 'show', 'client.fingerprint', $m[3] ?? '');
+                break;
+            case preg_match('~^/protocolModules(?: ([a-z0-9]+))?$~D', $this->input['callback'], $m):
+                if ($this->admin) {
+                    if (isset($m[1])) $this->protocolModulesToggle($m[1]);
+                    else $this->protocolModulesMenu();
+                }
+                break;
+            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls))?$~D', $this->input['callback'], $m):
+                $this->xrayProtocolsMenu($m[1], $m[2] ?? '');
+                break;
+            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls))?(?: (cl|clj|si|s|uri|sr|ios))?$~D', $this->input['callback'], $m):
+                $this->connectionExports($m[1], $m[2] ?? '', $m[3] ?? '');
+                break;
+            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
+                $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
+                break;
+            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
+                $this->protocolRelay($m[1], $m[2], $m[3], $m[4] ?? '');
+                break;
+            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
+                $this->protocolRelayPrompt($m[1], $m[2]);
+                break;
+            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
+                $this->protocolSubscriptions($m[1], $m[2], $m[3] ?? 'direct', $m[4] ?? '');
+                break;
+            case preg_match('~^/po (anytls|mieru|tuic|shadowtls)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+                $this->protocolOptions($m[1], $m[2] ?? 'show', $m[3] ?? '', $m[4] ?? '');
+                break;
             // смена айпи сервера
             // wg-меню с явным инстансом: сначала пере-пиним wg_instance, дальше
             // обычный рендер. Роут без инстанса ниже оставлен для старых
@@ -885,6 +944,13 @@ class Bot
             case preg_match('~^/telemtUsers(?: (?P<r>[\w.\-]+))?$~', $this->input['callback'], $m):
                 $this->telemtUsers($m['r'] ?? '');
                 break;
+            case preg_match('~^/telemtUsersPage (\d+)(?: ([\w.\-]+))?$~', $this->input['callback'], $m):
+                $this->telemtUsers($m[2] ?? '', (int) $m[1]);
+                break;
+            case preg_match('~^/tu ([tdr]) (\w+) (\d+) ([\w.\-]+)$~', $this->input['callback'], $m):
+                $method = ['t' => 'telemtToggleUser', 'd' => 'telemtDelUser', 'r' => 'telemtRegen'][$m[1]];
+                $this->$method($m[2], (int) $m[3], $m[4]);
+                break;
             case preg_match('~^/telemtMode$~', $this->input['callback'], $m):
                 $this->telemtMode();
                 break;
@@ -948,14 +1014,14 @@ class Bot
             case preg_match('~^/telemtAddUser$~', $this->input['callback'], $m):
                 $this->telemtAddUser();
                 break;
-            case preg_match('~^/telemtToggleUser (\w+)$~', $this->input['callback'], $m):
-                $this->telemtToggleUser($m[1]);
+            case preg_match('~^/telemtToggleUser (\w+)(?: (\d+))?$~', $this->input['callback'], $m):
+                $this->telemtToggleUser($m[1], (int) ($m[2] ?? 0));
                 break;
-            case preg_match('~^/telemtDelUser (\w+)$~', $this->input['callback'], $m):
-                $this->telemtDelUser($m[1]);
+            case preg_match('~^/telemtDelUser (\w+)(?: (\d+))?$~', $this->input['callback'], $m):
+                $this->telemtDelUser($m[1], (int) ($m[2] ?? 0));
                 break;
-            case preg_match('~^/telemtRegen (\w+)$~', $this->input['callback'], $m):
-                $this->telemtRegen($m[1]);
+            case preg_match('~^/telemtRegen (\w+)(?: (\d+))?$~', $this->input['callback'], $m):
+                $this->telemtRegen($m[1], (int) ($m[2] ?? 0));
                 break;
             case preg_match('~^/telemtQr (?P<n>\w+)(?: (?P<r>[\w.\-]+))?$~', $this->input['callback'], $m):
                 $this->telemtQr($m['n'], $m['r'] ?? '');
@@ -1091,6 +1157,9 @@ class Bot
                 break;
             case preg_match('~^/panelPswd$~', $this->input['callback'], $m):
                 $this->panelPswdPrompt();
+                break;
+            case preg_match('~^/panelShowPswd$~D', $this->input['callback'], $m):
+                if ($this->admin) $this->panelPswdShow();
                 break;
             case preg_match('~^/panelGenPswd$~', $this->input['callback'], $m):
                 $this->panelPswdGen();
@@ -2083,7 +2152,8 @@ class Bot
             // Конкретный публичный адрес на 443: он участвует во внутреннем
             // destination-tuple relay, поэтому 0.0.0.0 и любой другой порт
             // telemt отвергает.
-            $t .= "public_addr = " . $q("{$this->ip}:443") . "\n\n";
+            $address = str_contains((string) $this->ip, ':') ? "[{$this->ip}]" : $this->ip;
+            $t .= "public_addr = " . $q("$address:443") . "\n\n";
             $t .= "[web.vhosts.decoy]\n";
             $t .= "mode = \"static_directory\"\n";
             $t .= "directory = " . $q(self::TELEMT_WEB_DECOY_DIR) . "\n";
@@ -2100,10 +2170,33 @@ class Bot
 
     public function restartTelemt()
     {
-        [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
-        if ($changed) {
-            $this->setPacConf($conf);
-        }
+        return $this->withLock('telemt', fn() => $this->applyTelemt());
+    }
+
+    // Один порядок блокировок для кнопок и перезапуска: telemt → pac.
+    // Старый перезапуск не должен снова разрешать отключённого пользователя.
+    public function telemtConfUpdate(callable $fn)
+    {
+        return $this->withLock('telemt', fn() => $this->telemtSave($fn));
+    }
+
+    private function telemtSave(callable $fn)
+    {
+        return $this->withLock('pac', function () use ($fn) {
+            $conf = $this->getPacConf();
+            $before = $conf;
+            $result = $fn($conf);
+            if ($conf !== $before && !$this->setPacConf($conf)) throw new RuntimeException('Не удалось сохранить настройки Telemt');
+            return $result;
+        });
+    }
+
+    private function applyTelemt()
+    {
+        $conf = $this->telemtSave(function (&$current) {
+            [$current] = $this->normalizeTelemtUsers($current);
+            return $current;
+        });
         @mkdir('/config/telemt/data', 0755, true);
         $web = $this->telemtWebEnabled($conf);
         // Snapshot decoy-сайта telemt читает один раз при старте — файл должен
@@ -2145,8 +2238,10 @@ class Bot
         // WEB: без carriers конфиг заведомо проще и валиден.
         if ($web && !$probe && !$this->sshFailed && $this->telemtWebCandidates($conf)) {
             error_log('restartTelemt: telemt не поднялся с авто-негоциацией carrier — снимаем её и пробуем снова');
-            $conf['telemt_web_negotiation'] = 'off';
-            $this->setPacConf($conf);
+            $conf = $this->telemtSave(static function (&$current) {
+                $current['telemt_web_negotiation'] = 'off';
+                return $current;
+            });
             $this->telemtWriteToml($this->telemtToml($conf));
             $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
             $probe = $this->ssh(
@@ -2159,8 +2254,10 @@ class Bot
         // ничего, и следующий рестарт всё равно всё переделает.
         if ($web && !$probe && !$this->sshFailed) {
             error_log('restartTelemt: telemt не поднялся с секцией [web] — откатываем WEB и стартуем без него');
-            $conf['telemt_web'] = 0;
-            $this->setPacConf($conf);
+            $conf = $this->telemtSave(static function (&$current) {
+                $current['telemt_web'] = 0;
+                return $current;
+            });
             $this->telemtWriteToml($this->telemtToml($conf));
             $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
             // Вместе с секцией [web] обязан уйти и блок #-tgweb: иначе nginx
@@ -2175,7 +2272,9 @@ class Bot
     // подменяет запись файла и ssh, а логика самолечения остаётся настоящей.
     public function telemtWriteToml(string $toml): void
     {
-        file_put_contents('/config/telemt/telemt.toml', $toml);
+        if (!$this->writePrivateKey('/config/telemt/telemt.toml', $toml)) {
+            throw new RuntimeException('Не удалось записать конфигурацию Telemt; перезапуск отменён');
+        }
     }
 
     public function telemtSecret()
@@ -2436,7 +2535,8 @@ class Bot
         } elseif (empty($conf['letsencrypt'])) {
             $out[] = 'telemt web need cert';
         }
-        if (!filter_var((string) $this->ip, FILTER_VALIDATE_IP)) {
+        if (!filter_var((string) $this->ip, FILTER_VALIDATE_IP)
+            || trim(inet_pton((string) $this->ip), "\0") === '') {
             $out[] = 'telemt web need ip';
         }
         if (!$this->telemtWebProfiles($conf)) {
@@ -2617,7 +2717,10 @@ class Bot
     {
         [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
         if ($changed) {
-            $this->setPacConf($conf);
+            $conf = $this->telemtConfUpdate(function (&$current) {
+                [$current] = $this->normalizeTelemtUsers($current);
+                return $current;
+            });
             $this->restartTelemt();
         }
         $secret = $conf['telemt_users'][$name] ?? '';
@@ -3199,6 +3302,10 @@ class Bot
             // Кричим в лог — иначе следующий старт ядра молча потеряет всех.
             error_log('writeXrayJson: xray.json TRUNCATED — write failed');
         }
+        if ($ok) {
+            try { $this->syncXrayProtocolUsers(); }
+            catch (Throwable $e) { error_log('syncXrayProtocolUsers: failed; background retry pending'); }
+        }
 
         return $ok;
     }
@@ -3387,17 +3494,33 @@ class Bot
     // подписи куки завязаны на текущий хеш пароля (Panel::sign()).
     public function setPanelPassword(string $plain): void
     {
+        if (strlen($plain) < 8 || strlen($plain) > 72) throw new InvalidArgumentException('Пароль панели: от 8 до 72 байт');
         $c              = $this->getPacConf();
+        if (!is_array($c)) throw new RuntimeException('Настройки недоступны — пароль не изменён');
         $c['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
-        $this->setPacConf($c);
+        $dir = getenv('PANEL_DIR') ?: '/config/panel';
+        if (!PanelPasswordVault::remember($dir, $plain, $c['panelpswd'])) throw new RuntimeException('Не удалось сохранить защищённую копию — пароль не изменён');
+        if ($this->setPacConf($c) === false) throw new RuntimeException('Не удалось записать настройки — пароль не изменён');
         // Как Panel::setPassword(): протухший initial_password.txt с уже
         // недействительным паролем не должен пережить смену.
-        $dir = getenv('PANEL_DIR') ?: '/config/panel';
         @unlink($dir . '/initial_password.txt');
+    }
+
+    public function panelPswdShow(): void
+    {
+        if (!$this->admin) return;
+        $hash = (string) ($this->getPacConf()['panelpswd'] ?? '');
+        $pass = PanelPasswordVault::reveal(getenv('PANEL_DIR') ?: '/config/panel', $hash);
+        $text = $pass === null
+            ? 'Для текущего пароля сохранён только хеш. Войдите в веб-панель с действующим паролем или задайте новый — после этого здесь будет доступен просмотр.'
+            : "Пароль веб-панели:\n<span class=\"tg-spoiler\">" . self::esc($pass) . '</span>';
+        $this->send($this->input['chat'], $text, $this->input['message_id'],
+            [[['text' => $this->i18n('back'), 'callback_data' => '/menu config']]]);
     }
 
     public function panelPswdPrompt()
     {
+        if (!$this->admin) return;
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} enter new web panel password (min 8 chars)",
@@ -3424,7 +3547,7 @@ class Bot
         $safe = htmlspecialchars($pass, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $this->send(
             $this->input['chat'],
-            "✅ Пароль веб-панели:\n<code>$safe</code>\n\n"
+            "✅ Пароль веб-панели:\n<span class=\"tg-spoiler\"><code>$safe</code></span>\n\n"
                 . "Сменить пароль: <code>docker compose exec php php panel.php passwd</code>",
             $this->input['message_id'],
         );
@@ -3434,9 +3557,10 @@ class Bot
     // callback_id здесь нет (тот же принцип, что у sspwdch()).
     public function panelPswdSet($pass, $nomenu = false)
     {
+        if (!$this->admin) return;
         $pass = trim((string) $pass);
-        if (strlen($pass) < 8) {
-            $this->send($this->input['chat'], 'пароль короче 8 символов — отклонён, попробуйте снова', $this->input['message_id']);
+        if (strlen($pass) < 8 || strlen($pass) > 72) {
+            $this->send($this->input['chat'], 'Пароль должен содержать от 8 до 72 байт — попробуйте снова', $this->input['message_id']);
         } else {
             $this->setPanelPassword($pass);
             $this->sendPanelPasswordCopy($pass);
@@ -3448,6 +3572,7 @@ class Bot
 
     public function panelPswdGen()
     {
+        if (!$this->admin) return;
         $pass = bin2hex(random_bytes(16));
         $this->setPanelPassword($pass);
         $this->sendPanelPasswordCopy($pass);
@@ -3905,11 +4030,8 @@ class Bot
 
     public function syncOcservCamouflage()
     {
-        $upstream = file_get_contents('/config/upstream.conf');
-        $nextUpstream = self::ocservDtlsUpstream($upstream);
-        if ($nextUpstream !== $upstream && file_put_contents('/config/upstream.conf', $nextUpstream) !== false) {
-            $this->ssh('nginx -s reload 2>&1', 'up');
-        }
+        $this->editUpstream(fn($upstream) => self::ocservDtlsUpstream($upstream));
+        if (!$this->protocolModuleEnabled('oc')) return;
         $conf   = file_get_contents('/config/ocserv.conf');
         $secret = $this->ocCamouflageSecretForConf($conf, true);
         $next   = $this->applyOcCamouflage($conf, $secret);
@@ -4061,9 +4183,18 @@ class Bot
 
     public function restartHysteria()
     {
+        return $this->withLock('hysteria', fn() => $this->restartHysteriaLocked());
+    }
+
+    private function restartHysteriaLocked(): bool
+    {
         $pac = $this->getPacConf();
-        $this->ssh('pkill hysteria', 'hy');
-        $c   = self::hysteriaGuard(yaml_parse_file('/config/hysteria.yaml'));
+        $c = @yaml_parse_file($this->hysteriaConf);
+        if (!is_array($c)) {
+            error_log('Hysteria: configuration could not be read; running core preserved');
+            return false;
+        }
+        $c = self::hysteriaGuard($c);
         $c['auth']['password'] = $pac['hysteria_pass'] ?? '';
 
         // Salamander obfs — XOR-обфускация QUIC-пакетов общим секретом, ломает
@@ -4098,11 +4229,17 @@ class Bot
             $c['masquerade']['proxy']['url']         = "https://$sni";
             $c['masquerade']['proxy']['rewriteHost'] = true;
         }
-        yaml_emit_file('/config/hysteria.yaml', $c);
-        $this->chmodSecret('/config/hysteria.yaml');
+        $yaml = yaml_emit($c);
+        if (!is_string($yaml) || !$this->writePrivateKey($this->hysteriaConf, $yaml)) return false;
+        // New images validate/apply changes and enforce personal restrictions
+        // themselves. Old images keep the shared-password lifecycle.
+        if (trim((string) $this->ssh('test -f /hysteria_service.py && printf managed', 'hy')) === 'managed') return true;
+        if (is_file($this->hysteriaUsersRoot . '/users.json')) return false;
+        $this->ssh('pkill hysteria', 'hy');
         if (!empty($pac['hysteria_pass'])) {
-            $this->ssh('hysteria server -c /config/hysteria.yaml', 'hy', false, '/logs/hysteria');
+            $this->ssh('hysteria server -c ' . escapeshellarg($this->hysteriaConf), 'hy', false, '/logs/hysteria');
         }
+        return true;
     }
 
     // Список реальных decoy-сайтов для masquerade. Указывать на реальный
@@ -4128,12 +4265,12 @@ class Bot
     // TLS/QUIC терминируется на origin через DNAT. Отдельная пара
     // hy_address/hy_portmap — по образцу awg_address/awg_portmap: hysteria-канал
     // (UDP) у relay может жить на другом хосте/портах, чем TCP vless.
-    public function linkHysteria($relay = null)
+    public function linkHysteria($relay = null, ?string $credential = null)
     {
         $pac   = $this->getPacConf();
         $ports = $this->getPorts();
         $port  = $ports['hy']['enable'] ? $ports['hy']['port'] : null;
-        $pass  = $pac['hysteria_pass'] ?? '';
+        $pass  = $credential ?? ($pac['hysteria_pass'] ?? '');
         // Port hopping: клиент бьёт по диапазону портов, а firewall (ручной nft
         // либо docker) реднатит весь диапазон на реальный порт Hysteria. Диапазон
         // в Hysteria 2 кодируется прямо в host:port части ссылки (host:20000-50000,
@@ -4192,6 +4329,7 @@ class Bot
         // имени пустое. Используем хост (домен/IP) как узнаваемую метку; для
         // relay — адрес relay с флагами (relay + origin).
         $name = '#' . rawurlencode($label);
+        if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) $host = '[' . $host . ']';
         return 'hysteria2://' . rawurlencode($pass) . "@$host:$portSpec/$query$name";
     }
 
@@ -4400,7 +4538,7 @@ class Bot
     // показывает passwd/obfs открыто.
     public function hyConfig()
     {
-        $conf = @file_get_contents('/config/hysteria.yaml');
+        $conf = @file_get_contents($this->hysteriaConf);
         if ($conf === false || trim($conf) === '') {
             return $this->send($this->input['chat'], 'hysteria.yaml: ' . $this->i18n('not found'));
         }
@@ -5863,9 +6001,11 @@ NFT;
             // доехать даже если service.php оборвался раньше своей последней
             // строки. Идемпотентна и на «нечего менять» выходит сразу.
             'migrateDohClientIds',
+            'reconcileManagedUpstreams',
             'autoAnalyzeLogs',
             'xrayStatsUser',
             'checkTrafficLimits',
+            'syncXrayProtocolUsers',
             'trackOnline',
             'trackWgOnline',
             'rotateAmneziaCron',
@@ -6560,7 +6700,7 @@ NFT;
                 if ($limit <= 0 || !empty($v['off'])) {
                     continue;
                 }
-                if ($this->xrUserTraffic($st, $k) >= $limit) {
+                if ($this->xrUserTraffic($st, $k) + array_sum($this->xrayProtocolUsage($v)) >= $limit) {
                     $x['inbounds'][0]['settings']['clients'][$k]['off'] = $v['id'];
                     $x['inbounds'][0]['settings']['clients'][$k]['id']  = self::xrayUuid();
                     if (isset($v['password'])) {
@@ -6685,6 +6825,7 @@ NFT;
             ] : false,
             'xray'          => $this->getXray(),
             'hy'            => yaml_parse_file('/config/hysteria.yaml'),
+            'hy_users'      => $this->hysteriaUsersStore()->snapshot(),
             'oc'            => file_get_contents('/config/ocserv.conf'),
             'ocu'           => file_get_contents('/config/ocserv.passwd'),
             'tt'            => file_exists('/config/trusttunnel/credentials.toml') ? file_get_contents('/config/trusttunnel/credentials.toml') : '',
@@ -6695,6 +6836,7 @@ NFT;
             'ovpn'          => $this->exportOvpnPki(),
             'ipsec'         => $this->exportIpsecPki(),
             'xraystats'     => $this->getXrayStats(),
+            'managed_protocols' => $this->exportManagedProtocols(),
         ];
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
@@ -6769,6 +6911,16 @@ NFT;
             return false;
         } else {
             $ok = true;
+            $switch_amnezia = $switch_wg1amnezia = 0;
+            if (array_key_exists('tt', $json) && !is_string($json['tt'])) return false;
+            if (array_key_exists('hy_users', $json)) {
+                try { HysteriaUsers::validateSnapshot($json['hy_users']); }
+                catch (Throwable $e) { return false; }
+            }
+            if (array_key_exists('managed_protocols', $json)) {
+                try { $this->importManagedProtocols($json['managed_protocols']); }
+                catch (Throwable $e) { return false; }
+            }
             // certs
             if (!empty($json['ssl'])) {
                 $out[] = 'update certificates';
@@ -6910,17 +7062,26 @@ NFT;
             if (!empty($json['hy'])) {
                 $out[] = 'update hysteria';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                yaml_emit_file('/config/hysteria.yaml', $json['hy']);
-                $this->chmodSecret('/config/hysteria.yaml');
-                $this->restartHysteria();
+                if (!$this->writePrivateKey($this->hysteriaConf, yaml_emit($json['hy']))) {
+                    throw new RuntimeException('Не удалось восстановить конфигурацию Hysteria');
+                }
+                if (!$this->restartHysteria()) $ok = false;
+            }
+            if (array_key_exists('hy_users', $json)) {
+                $this->hysteriaUsersStore()->restore($json['hy_users']);
             }
             // trusttunnel
-            if (!empty($json['tt'])) {
+            if (array_key_exists('tt', $json)) {
                 $out[] = 'update trusttunnel';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                @mkdir('/config/trusttunnel', 0755, true);
-                file_put_contents('/config/trusttunnel/credentials.toml', $json['tt']);
-                $this->restartTt();
+                $restored = $this->withLock('trusttunnel', function () use ($json) {
+                    $paths = $this->ttPaths();
+                    if (!is_dir($paths['dir']) && !@mkdir($paths['dir'], 0700, true)) return false;
+                    if (!$this->writePrivateKey($paths['cred'], $json['tt'])) return false;
+                    return true;
+                });
+                if ($restored) $this->restartTt();
+                else $ok = false;
             }
             // cloak
             if (!empty($json['cloak'])) {
@@ -7031,9 +7192,12 @@ NFT;
                 $this->answer($this->input['callback_id'], $this->i18n('vless encryption unavailable'), true);
                 return;
             }
-            return $this->sendFile($this->input['from'], new CURLStringFile(
-                $link, self::safeFileName($c['email'], 'client') . '_uri.txt', 'text/plain'
-            ));
+            $this->protocolOutput = true;
+            try {
+                return $this->sendFile($this->input['chat'], new CURLStringFile(
+                    $link, self::safeFileName($c['email'], 'client') . '_uri.txt', 'text/plain'
+                ));
+            } finally { $this->protocolOutput = false; }
         }
         // subtoken (sidOf), не id: с pac.subtoken_strict=1 findClientBySid()
         // подбором по credential'у не резолвит вообще ничего — subscription()
@@ -7047,7 +7211,10 @@ NFT;
             $this->answer($this->input['callback_id'], $this->i18n($error ?: 'vless encryption unavailable'), true);
             return;
         }
-        $this->sendFile($this->input['from'], new CURLStringFile($conf, $c['email'] . ($t == 'cl' ? '_mihomo.yaml' :($t == 'si' ? '_singbox.json' : '_v2ray.json'))));
+        $this->protocolOutput = true;
+        try {
+            $this->sendFile($this->input['chat'], new CURLStringFile($conf, $c['email'] . ($t == 'cl' ? '_mihomo.yaml' : ($t == 'clj' ? '_mihomo.json' : ($t == 'si' ? '_singbox.json' : '_v2ray.json')))));
+        } finally { $this->protocolOutput = false; }
     }
 
     public function downloadPeer($client)
@@ -9598,6 +9765,9 @@ NFT;
             $this->delete($this->input['chat'], $this->input['reply']);
             $this->delete($this->input['chat'], $this->input['message_id']);
             $callback = $state['callback'];
+            $this->protocolReturnMain = !empty($state['protocol_main'])
+                && in_array($callback, ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true);
+            $this->protocolRelayOrigin = $state['protocol_relay'] ?? [];
             // Только message_id: раньше сюда же присваивался callback_id, но
             // ответ на force_reply — это ОБЫЧНОЕ сообщение, никакого
             // callback_query у него нет. В качестве query id уходил message_id,
@@ -9632,6 +9802,8 @@ NFT;
                 $this->menu();
             } finally {
                 $this->replyMenuEdit = false;
+                $this->protocolReturnMain = false;
+                $this->protocolRelayOrigin = [];
             }
         }
     }
@@ -9663,6 +9835,8 @@ NFT;
             $conf['domain'] = $ascii;
             $this->setPacConf($conf);
             $this->chocdomain($ascii);
+            $this->syncManagedSelfHosts();
+            $this->reconcileManagedUpstreams();
             $this->setUpstreamDomainOcserv($ascii);
             $this->setUpstreamDomainNaive($ascii);
             $this->cloakNginx();
@@ -9851,6 +10025,7 @@ NFT;
                         $aliases .= ' -d ' . escapeshellarg($conf['adguardkey'] . '.' . $a);
                     }
                 }
+                foreach ($this->managedCertificateNames() as $name) $aliases .= ' -d ' . escapeshellarg($name);
                 exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . ($tw ? " -d $tw.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
                 if ($code > 0) {
                     $this->send($this->input['chat'], "ERROR\n" . implode("\n", $out));
@@ -10220,7 +10395,7 @@ NFT;
         $p      = $this->getPacConf();
         $relays = $p['relays'] ?? [];
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay');
+        $text[] = "Menu -> " . ($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay');
         $text[] = $this->i18n('relay hint');
 
         $data   = [];
@@ -10315,7 +10490,7 @@ NFT;
         // Без экранирования один «<» в адресе ронял editMessageText в 400, и
         // экран relay умирал навсегда: значение уже в pac.json, а поменять его
         // можно только отсюда же.
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n('relay')
+        $text[] = "Menu -> " . ($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay')
             . ' -> <b>' . self::esc($name) . '</b>';
         $text[] = $this->i18n('relay address') . ': <code>' . self::esc($r['address'] ?: '—') . '</code>';
         if (!empty($r['address']) && ($hl = $this->relayHealthLabel($name, true)) !== '') {
@@ -10358,6 +10533,10 @@ NFT;
         // не нужна — только адрес и опциональный порт.
         $text[] = $this->i18n('relay np address') . ': <code>' . self::esc($r['np_address'] ?? '' ?: '—') . '</code>';
         $text[] = $this->i18n('relay np port') . ': <code>' . self::esc(($r['np_port'] ?? '') ?: '—') . '</code>';
+        foreach (ManagedProtocol::NAMES as $protocol => $label) {
+            $address = $r[$protocol . '_address'] ?? '';
+            $text[] = self::esc($label) . ': <code>' . self::esc($address === '' ? '—' : $address . ' · ' . ($r[$protocol . '_port'] ?? '')) . '</code>';
+        }
 
         // По две кнопки в строке: каналов уже четыре, в столбик карточка не
         // помещается на экран.
@@ -10407,6 +10586,11 @@ NFT;
                 'callback_data' => "/setRelayNpPort $name",
             ],
         ];
+        $protocolRelays = [];
+        foreach (ManagedProtocol::NAMES as $protocol => $label) {
+            $protocolRelays[] = ['text' => $label . ' · relay', 'callback_data' => "/prset $protocol $name"];
+        }
+        foreach (array_chunk($protocolRelays, 2) as $row) $data[] = $row;
         $data[] = [
             [
                 'text'          => $this->i18n('relay delete'),
@@ -15227,7 +15411,10 @@ DNS-over-HTTPS with IP:
     {
         [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
         if ($changed) {
-            $this->setPacConf($conf);
+            $conf = $this->telemtConfUpdate(function (&$current) {
+                [$current] = $this->normalizeTelemtUsers($current);
+                return $current;
+            });
             $this->restartTelemt();
         }
         $ports  = $this->getPorts()['telemt'];
@@ -15276,7 +15463,7 @@ DNS-over-HTTPS with IP:
         }
     }
 
-    public function telemtUsers($relay = '')
+    public function telemtUsers($relay = '', int $page = 0)
     {
         $conf = $this->getPacConf();
         $users = is_array($conf['telemt_users'] ?? null) ? $conf['telemt_users'] : [];
@@ -15297,24 +15484,35 @@ DNS-over-HTTPS with IP:
         if ($web) {
             $text[] = "🌐 — " . $this->i18n('telemt web link');
         }
-        if ($users) {
-            $text[] = '';
-            foreach ($users as $name => $secret) {
-                $safeName = htmlspecialchars((string) $name, ENT_QUOTES);
-                $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
-                $text[] = "👤 <b>$safeName</b> " . $this->i18n($state);
-                $text[] = htmlspecialchars($this->linkTelemt($name, $rl), ENT_QUOTES);
+        // Fake-TLS ссылки удлиняются вместе с доменом. Делим по длине текста,
+        // чтобы даже длинные SNI не делали весь список недоступным в Telegram.
+        $pages = [[]]; $length = 0; $links = [];
+        foreach ($users as $name => $secret) {
+            $safeName = htmlspecialchars((string) $name, ENT_QUOTES);
+            $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
+            $links[$name] = $this->linkTelemt($name, $rl);
+            $line = "👤 <b>$safeName</b> " . $this->i18n($state) . "\n" . htmlspecialchars($links[$name], ENT_QUOTES);
+            $size = $this->messageTextLength($line) + 1;
+            $last = count($pages) - 1;
+            if ($pages[$last] && ($length + $size > 3000 || count($pages[$last]) >= 8)) {
+                $pages[] = []; $last++; $length = 0;
             }
+            $pages[$last][$name] = $line; $length += $size;
         }
+        $page = max(0, min($page, count($pages) - 1));
+        if (count($pages) > 1) $text[] = ($page + 1) . ' / ' . count($pages);
+        array_push($text, '', ...array_values($pages[$page]));
+        $users = array_intersect_key($users, $pages[$page]);
 
         $rarg = $relay !== '' ? " $relay" : '';
+        $pageArg = $page === 0 ? '' : " $page";
         // WEB-профиль получают не все: их число упирается в лимит telemt (32).
         // Кнопку 🌐 рисуем ТОЛЬКО тем, кто в профили попал, иначе ссылка
         // сгенерируется, Telegram Desktop её примет, а telemt не пустит — и по
         // симптомам это неотличимо от сетевой проблемы.
         $webUsers = $web ? array_flip($this->telemtWebProfiles($conf)) : [];
         foreach ($users as $name => $secret) {
-            $link = $this->linkTelemt($name, $rl);
+            $link = $links[$name];
             $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
             $row = [['text' => "🔗 $name", 'url' => $link]];
             // Кнопку с callback_data длиннее 64 байт (лимит Telegram) не рисуем
@@ -15325,7 +15523,7 @@ DNS-over-HTTPS with IP:
             // до этого, никуда не делись: у них останутся те кнопки, что влезли
             // (у «/telemtDelUser » запас больше всех, то есть удалить можно).
             $btns = [
-                [$this->i18n($state), "/telemtToggleUser $name"],
+                [$this->i18n($state), $relay === '' ? "/telemtToggleUser $name$pageArg" : "/tu t $name $page $relay"],
                 ['📷', "/telemtQr $name$rarg"],
             ];
             if (isset($webUsers[$name])) {
@@ -15333,8 +15531,9 @@ DNS-over-HTTPS with IP:
                 // поэтому выбранный relay к ней не применяется.
                 $btns[] = ['🌐', "/telemtWebLink $name"];
             }
-            $btns[] = ['🔄', "/telemtRegen $name"];
-            $btns[] = ['❌', "/telemtDelUser $name"];
+            // Короткая форма сохраняет relay и помещается в 64 байта Telegram.
+            $btns[] = ['🔄', $relay === '' ? "/telemtRegen $name$pageArg" : "/tu r $name $page $relay"];
+            $btns[] = ['❌', $relay === '' ? "/telemtDelUser $name$pageArg" : "/tu d $name $page $relay"];
             foreach ($btns as [$label, $cb]) {
                 // ИМЕННО $label: переменная $text выше — это массив строк
                 // сообщения, и деструктуризация в неё затирала его строкой,
@@ -15348,10 +15547,14 @@ DNS-over-HTTPS with IP:
         }
         // Relay selector row: direct + each configured relay. Marks the active
         // one; only shown when at least one telemt relay has an address.
+        $pager = [];
+        if ($page > 0) $pager[] = ['text' => '◀', 'callback_data' => '/telemtUsersPage ' . ($page - 1) . $rarg];
+        if ($page + 1 < count($pages)) $pager[] = ['text' => '▶', 'callback_data' => '/telemtUsersPage ' . ($page + 1) . $rarg];
+        if ($pager) $data[] = $pager;
         if ($relays) {
             $row = [[
                 'text'          => ($relay === '' ? '✅ ' : '') . $this->i18n('telemt direct'),
-                'callback_data' => "/telemtUsers",
+                'callback_data' => "/telemtUsersPage $page",
             ]];
             foreach ($relays as $rname => $r) {
                 // $rname may be an int key when the relay name is all-digits
@@ -15359,7 +15562,7 @@ DNS-over-HTTPS with IP:
                 $rname = (string) $rname;
                 $row[] = [
                     'text'          => ($relay === $rname ? '✅ ' : '') . $rname,
-                    'callback_data' => "/telemtUsers $rname",
+                    'callback_data' => "/telemtUsersPage $page $rname",
                 ];
             }
             $data[] = $row;
@@ -15393,12 +15596,12 @@ DNS-over-HTTPS with IP:
         if (!in_array($mode, ['classic', 'secure', 'tls'], true)) {
             return $this->telemtMode();
         }
-        $conf = $this->getPacConf();
-        if (($conf['telemt_mode'] ?? 'tls') !== $mode) {
+        $changed = $this->telemtConfUpdate(static function (&$conf) use ($mode) {
+            if (($conf['telemt_mode'] ?? 'tls') === $mode) return false;
             $conf['telemt_mode'] = $mode;
-            $this->setPacConf($conf);
-            $this->restartTelemt();
-        }
+            return true;
+        });
+        if ($changed) $this->restartTelemt();
         $this->telemtMode();
     }
 
@@ -15430,12 +15633,12 @@ DNS-over-HTTPS with IP:
         if (!in_array($action, ['mask', 'reject_handshake', 'drop'], true)) {
             return $this->telemtSni();
         }
-        $conf = $this->getPacConf();
-        if (($conf['telemt_unknown_sni'] ?? 'reject_handshake') !== $action) {
+        $changed = $this->telemtConfUpdate(static function (&$conf) use ($action) {
+            if (($conf['telemt_unknown_sni'] ?? 'reject_handshake') === $action) return false;
             $conf['telemt_unknown_sni'] = $action;
-            $this->setPacConf($conf);
-            $this->restartTelemt();
-        }
+            return true;
+        });
+        if ($changed) $this->restartTelemt();
         $this->telemtSni();
     }
 
@@ -15520,14 +15723,16 @@ DNS-over-HTTPS with IP:
     // конфиг не загрузится и упадёт ВЕСЬ прокси, а не только WEB.
     public function telemtWebToggle()
     {
-        $conf = $this->getPacConf();
-        $new  = empty($conf['telemt_web']);
-        if ($new && ($this->telemtWebBlockers($conf) || !$this->telemtWebVersionOk())) {
+        $changed = $this->telemtConfUpdate(function (&$conf) {
+            $new = empty($conf['telemt_web']);
+            if ($new && ($this->telemtWebBlockers($conf) || !$this->telemtWebVersionOk())) return false;
+            $conf['telemt_web'] = $new ? 1 : 0;
+            return true;
+        });
+        if (!$changed) {
             $this->answer($this->input['callback_id'], $this->i18n('telemt web blocked'), true);
             return $this->telemtWeb(true);
         }
-        $conf['telemt_web'] = $new ? 1 : 0;
-        $this->setPacConf($conf);
         $this->restartTelemt();
         // nginx: блок #-tgweb появляется и исчезает вместе с тумблером.
         $this->cloakNginx();
@@ -15536,9 +15741,9 @@ DNS-over-HTTPS with IP:
 
     public function telemtWebCarrier()
     {
-        $conf = $this->getPacConf();
-        $conf['telemt_web_carrier'] = $this->telemtWebCarrierOf($conf) === 'https' ? 'https-lanes' : 'https';
-        $this->setPacConf($conf);
+        $this->telemtConfUpdate(function (&$conf) {
+            $conf['telemt_web_carrier'] = $this->telemtWebCarrierOf($conf) === 'https' ? 'https-lanes' : 'https';
+        });
         $this->restartTelemt();
         $this->telemtWeb(true);
     }
@@ -15546,30 +15751,23 @@ DNS-over-HTTPS with IP:
     // Циклический выбор пресета негоциации: off → https → full → off.
     public function telemtWebNegotiation()
     {
-        $conf  = $this->getPacConf();
-        $modes = array_keys(self::TELEMT_WEB_NEGOTIATION);
-        $i     = array_search($this->telemtWebNegotiationOf($conf), $modes, true);
-        $new   = $modes[($i + 1) % count($modes)];
-        // Гейт по версии ровно как у telemtWebToggle(): старый бинарь ключ
-        // web.carriers молча проигнорирует, и меню показывало бы включённый
-        // подбор, которого на деле нет.
-        if ($new !== 'off' && !$this->telemtWebNegotiationVersionOk()) {
-            $this->answer($this->input['callback_id'], $this->i18n('telemt web negotiation need version'), true);
-            // Из уже включённого пресета выпускаем в off, а не упираемся в
-            // отказ: на откатившемся образе цикл off→https→full иначе не давал
-            // бы вернуться к конфигурации, которую этот бинарь принимает.
-            if ($this->telemtWebNegotiationOf($conf) === 'off') {
-                return $this->telemtWeb(true);
+        $blocked = false;
+        $changed = $this->telemtConfUpdate(function (&$conf) use (&$blocked) {
+            $modes = array_keys(self::TELEMT_WEB_NEGOTIATION);
+            $current = $this->telemtWebNegotiationOf($conf);
+            $index = array_search($current, $modes, true);
+            $new = $modes[($index + 1) % count($modes)];
+            if ($new !== 'off' && !$this->telemtWebNegotiationVersionOk()) {
+                $blocked = true;
+                // Старый бинарь должен позволять выключить сохранённый подбор.
+                if ($current === 'off') return false;
+                $new = 'off';
             }
-            $new = 'off';
-        }
-        $conf['telemt_web_negotiation'] = $new;
-        $this->setPacConf($conf);
-        // cloakNginx() здесь НЕ нужен: блок #-tgweb от пресета не зависит,
-        // проброс Upgrade в нём безусловный, а перегенерацию шаблона на
-        // установке со старым nginx.conf делает service.php при старте стека.
-        // Лишний reload на каждое нажатие только шумел бы.
-        $this->restartTelemt();
+            $conf['telemt_web_negotiation'] = $new;
+            return true;
+        });
+        if ($blocked) $this->answer($this->input['callback_id'], $this->i18n('telemt web negotiation need version'), true);
+        if ($changed) $this->restartTelemt();
         $this->telemtWeb(true);
     }
 
@@ -15577,9 +15775,10 @@ DNS-over-HTTPS with IP:
     // секрет с другим префиксом — другой пользователь для telemt.
     public function telemtWebSecret()
     {
-        $conf = $this->getPacConf();
-        $conf['telemt_web_secret_mode'] = $this->telemtWebSecretModeOf($conf) === 'dd' ? 'plain' : 'dd';
-        $this->setPacConf($conf);
+        $conf = $this->telemtConfUpdate(function (&$conf) {
+            $conf['telemt_web_secret_mode'] = $this->telemtWebSecretModeOf($conf) === 'dd' ? 'plain' : 'dd';
+            return $conf;
+        });
         $this->restartTelemt();
         // Модалка, а не строка в меню: предупреждение важно ровно в момент
         // переключения, а висеть в тексте постоянно ему незачем.
@@ -15694,8 +15893,9 @@ DNS-over-HTTPS with IP:
             $this->telemtRelays();
             return;
         }
-        $c['telemt_relays'][$name] = ['address' => '', 'port' => '', 'portmap' => []];
-        $this->setPacConf($c);
+        $this->telemtConfUpdate(static function (&$current) use ($name) {
+            $current['telemt_relays'][$name] ??= ['address' => '', 'port' => '', 'portmap' => []];
+        });
         $this->telemtRelayEdit($name);
     }
 
@@ -15761,8 +15961,9 @@ DNS-over-HTTPS with IP:
             $this->telemtRelayEdit($name);
             return;
         }
-        $c['telemt_relays'][$name]['address'] = $this->relayClearInput($text) ? '' : trim($text);
-        $this->setPacConf($c);
+        $this->telemtConfUpdate(function (&$current) use ($name, $text) {
+            if (isset($current['telemt_relays'][$name])) $current['telemt_relays'][$name]['address'] = $this->relayClearInput($text) ? '' : trim($text);
+        });
         $this->telemtRelayEdit($name);
     }
 
@@ -15790,8 +15991,9 @@ DNS-over-HTTPS with IP:
             $this->telemtRelays();
             return;
         }
-        $c['telemt_relays'][$name]['port'] = self::relayPortInput($text);
-        $this->setPacConf($c);
+        $this->telemtConfUpdate(function (&$current) use ($name, $text) {
+            if (isset($current['telemt_relays'][$name])) $current['telemt_relays'][$name]['port'] = self::relayPortInput($text);
+        });
         $this->telemtRelayEdit($name);
     }
 
@@ -15818,19 +16020,18 @@ DNS-over-HTTPS with IP:
             return;
         }
         // 0/пусто — очистка (parseRelayPortMap('0') и так даст []).
-        $c['telemt_relays'][$name]['portmap'] = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
-        $this->setPacConf($c);
+        $this->telemtConfUpdate(function (&$current) use ($name, $text) {
+            if (isset($current['telemt_relays'][$name])) $current['telemt_relays'][$name]['portmap'] = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
+        });
         $this->telemtRelayEdit($name);
     }
 
     public function telemtRelayDel($name)
     {
-        $c = $this->getPacConf();
-        unset($c['telemt_relays'][$name]);
-        if (empty($c['telemt_relays'])) {
-            unset($c['telemt_relays']);
-        }
-        $this->setPacConf($c);
+        $this->telemtConfUpdate(static function (&$current) use ($name) {
+            unset($current['telemt_relays'][$name]);
+            if (empty($current['telemt_relays'])) unset($current['telemt_relays']);
+        });
         $this->telemtRelays();
     }
 
@@ -15927,47 +16128,42 @@ DNS-over-HTTPS with IP:
         if (empty($allowed[$key])) {
             return $this->telemt(true);
         }
-        $conf = $this->getPacConf();
-        $new = $this->telemtBool($conf, $key, $this->telemtMaskDefault($key)) ? 0 : 1;
-        $conf[$key] = $new;
-        if ($new && in_array($key, ['telemt_mask_aggressive', 'telemt_mask_blur'], true)) {
-            $conf['telemt_mask_hardening'] = 1;
-        }
-        if (!$new && $key === 'telemt_mask_hardening') {
-            $conf['telemt_mask_aggressive'] = 0;
-            $conf['telemt_mask_blur'] = 0;
-        }
-        $this->setPacConf($conf);
+        $this->telemtConfUpdate(function (&$conf) use ($key) {
+            $new = $this->telemtBool($conf, $key, $this->telemtMaskDefault($key)) ? 0 : 1;
+            $conf[$key] = $new;
+            if ($new && in_array($key, ['telemt_mask_aggressive', 'telemt_mask_blur'], true)) $conf['telemt_mask_hardening'] = 1;
+            if (!$new && $key === 'telemt_mask_hardening') {
+                $conf['telemt_mask_aggressive'] = 0;
+                $conf['telemt_mask_blur'] = 0;
+            }
+        });
         $this->restartTelemt();
         return $return === 'diagnostics' ? $this->telemtDiagnostics() : $this->telemtMasking();
     }
 
     public function telemtCycleBeobachtenMinutes()
     {
-        $conf = $this->getPacConf();
-        $values = [5, 10, 30, 60, 180, 360, 720, 1440];
-        $current = $this->telemtInt($conf, 'telemt_beobachten_minutes', 10, 1, 1440);
-        $i = array_search($current, $values, true);
-        $conf['telemt_beobachten_minutes'] = $values[$i === false || $i === count($values) - 1 ? 0 : $i + 1];
-        $this->setPacConf($conf);
+        $this->telemtConfUpdate(function (&$conf) {
+            $values = [5, 10, 30, 60, 180, 360, 720, 1440];
+            $current = $this->telemtInt($conf, 'telemt_beobachten_minutes', 10, 1, 1440);
+            $i = array_search($current, $values, true);
+            $conf['telemt_beobachten_minutes'] = $values[$i === false || $i === count($values) - 1 ? 0 : $i + 1];
+        });
         $this->restartTelemt();
         $this->telemtDiagnostics();
     }
 
-    public function telemtToggleUser($name)
+    public function telemtToggleUser($name, int $page = 0, string $relay = '')
     {
-        $conf = $this->getPacConf();
-        if (empty($conf['telemt_users'][$name])) {
-            return $this->telemtUsers();
-        }
-        if (!is_array($conf['telemt_user_enabled'] ?? null)) {
-            $conf['telemt_user_enabled'] = [];
-        }
-        $cur = array_key_exists($name, $conf['telemt_user_enabled']) ? !empty($conf['telemt_user_enabled'][$name]) : true;
-        $conf['telemt_user_enabled'][$name] = $cur ? 0 : 1;
-        $this->setPacConf($conf);
-        $this->restartTelemt();
-        $this->telemtUsers();
+        $changed = $this->telemtConfUpdate(static function (&$conf) use ($name) {
+            if (empty($conf['telemt_users'][$name])) return false;
+            if (!is_array($conf['telemt_user_enabled'] ?? null)) $conf['telemt_user_enabled'] = [];
+            $cur = array_key_exists($name, $conf['telemt_user_enabled']) ? !empty($conf['telemt_user_enabled'][$name]) : true;
+            $conf['telemt_user_enabled'][$name] = $cur ? 0 : 1;
+            return true;
+        });
+        if ($changed) $this->restartTelemt();
+        $this->telemtUsers($relay, $page);
     }
 
     public function telemtShowBeobachten()
@@ -16259,36 +16455,39 @@ DNS-over-HTTPS with IP:
             $this->telemtUsers();
             return;
         }
-        $conf = $this->getPacConf();
-        $was  = $this->telemtWebEnabled($conf);
-        $conf['telemt_users'][$name] = $this->telemtSecret();
-        $this->setPacConf($conf);
-        $this->restartTelemt();
-        $this->telemtWebRefresh($was);
-        $this->telemtUsers();
-    }
-
-    public function telemtDelUser($name)
-    {
-        $conf = $this->getPacConf();
-        $was  = $this->telemtWebEnabled($conf);
-        unset($conf['telemt_users'][$name]);
-        unset($conf['telemt_user_enabled'][$name]);
-        $this->setPacConf($conf);
-        $this->restartTelemt();
-        $this->telemtWebRefresh($was);
-        $this->telemtUsers();
-    }
-
-    public function telemtRegen($name)
-    {
-        $conf = $this->getPacConf();
-        if (isset($conf['telemt_users'][$name])) {
+        $was = $this->telemtWebEnabled($this->getPacConf());
+        $changed = $this->telemtConfUpdate(function (&$conf) use ($name) {
+            if (isset($conf['telemt_users'][$name])) return false;
             $conf['telemt_users'][$name] = $this->telemtSecret();
-            $this->setPacConf($conf);
-            $this->restartTelemt();
-        }
+            unset($conf['telemt_user_enabled'][$name]);
+            return true;
+        });
+        if (!$changed) { $this->telemtUsers(); return; }
+        $this->restartTelemt();
+        $this->telemtWebRefresh($was);
         $this->telemtUsers();
+    }
+
+    public function telemtDelUser($name, int $page = 0, string $relay = '')
+    {
+        $was = $this->telemtWebEnabled($this->getPacConf());
+        $this->telemtConfUpdate(static function (&$conf) use ($name) {
+            unset($conf['telemt_users'][$name], $conf['telemt_user_enabled'][$name]);
+        });
+        $this->restartTelemt();
+        $this->telemtWebRefresh($was);
+        $this->telemtUsers($relay, $page);
+    }
+
+    public function telemtRegen($name, int $page = 0, string $relay = '')
+    {
+        $changed = $this->telemtConfUpdate(function (&$conf) use ($name) {
+            if (!isset($conf['telemt_users'][$name])) return false;
+            $conf['telemt_users'][$name] = $this->telemtSecret();
+            return true;
+        });
+        if ($changed) $this->restartTelemt();
+        $this->telemtUsers($relay, $page);
     }
 
     public function telemtDomain()
@@ -16309,18 +16508,16 @@ DNS-over-HTTPS with IP:
     public function setTelemtDomain($domain)
     {
         $domain = trim($domain);
-        $conf   = $this->getPacConf();
-        if ($domain === '' || $domain === '0') {
-            $conf['telemt_domain'] = 'www.google.com';
-        } elseif (preg_match('~^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$~i', $domain)) {
-            $conf['telemt_domain'] = strtolower($domain);
-        } else {
+        if ($domain !== '' && $domain !== '0' && !self::dnsttDomainOk($domain)) {
             $this->update($this->input['chat'], $this->input['message_id'], 'wrong domain');
             sleep(2);
             $this->telemtSettings();
             return;
         }
-        $this->setPacConf($conf);
+        $this->telemtConfUpdate(static function (&$conf) use ($domain) {
+            if ($domain === '' || $domain === '0') unset($conf['telemt_domain']);
+            else $conf['telemt_domain'] = strtolower($domain);
+        });
         $this->restartTelemt();
         $this->telemtSettings();
     }
@@ -16356,6 +16553,7 @@ DNS-over-HTTPS with IP:
 
     public function dnstt($update = false)
     {
+        if (!$this->protocolModuleEnabled('dnstt')) { $this->protocolModulesMenu(); return; }
         $c      = $this->getPacConf();
         $pubkey = is_file('/config/dnstt/server.pub') ? file_get_contents('/config/dnstt/server.pub') : '';
         $text[] = "dnstt";
@@ -16736,9 +16934,14 @@ DNS-over-HTTPS with IP:
 
     public function menu($type = false, $arg = false, $return = false)
     {
+        if (is_string($type) && !$this->protocolModuleEnabled($type)) {
+            $this->protocolModulesMenu();
+            return;
+        }
         $conf   = $this->getPacConf();
         $domain = $conf['domain'] ?: $this->ip;
         $hash   = $this->getHashBot();
+        $managedProtocolButtons = [];
         if ($type == false) {
             $update = exec('git -C / rev-list --count HEAD..@{u}');
             $branch = exec('git -C / rev-parse --abbrev-ref HEAD');
@@ -16790,10 +16993,11 @@ DNS-over-HTTPS with IP:
             $ver   = $this->menuVersions();
             $cells = [];
             foreach (self::MENU_VERSION_LABELS as $k => $label) {
-                if (!empty($ver[$k])) {
+                if ($this->protocolModuleEnabled($k) && !empty($ver[$k])) {
                     $cells[] = $label . ' ' . htmlspecialchars((string) $ver[$k], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
                 }
             }
+            $cells = array_merge($cells, $this->managedProtocolVersionCells());
             if (!empty($cells)) {
                 // Раскладка по столбцам, а не по строкам: alignColumns()
                 // выравнивает КАЖДЫЙ столбец по своей ширине, поэтому левый
@@ -16805,6 +17009,7 @@ DNS-over-HTTPS with IP:
                 $right = array_pad(array_slice($cells, $half), count($left), '');
                 $main[] = '<blockquote><code>';
                 $main[] = 'versions';
+                $main[] = 'sb = sing-box';
                 // rtrim: alignColumns() добивает пробелами и ПОСЛЕДНИЙ столбец,
                 // то есть каждая строка тащит хвост из невидимых пробелов. На
                 // семнадцати строках это под сотню символов из лимита в 4096,
@@ -16827,9 +17032,10 @@ DNS-over-HTTPS with IP:
                     if (!empty($np)) {
                         $main[] = 'naive ' . "$np.{$conf['domain']}" . (in_array("$np.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
                     }
-                    if (!empty($oc)) {
+                    if ($this->protocolModuleEnabled('oc') && !empty($oc)) {
                         $main[] = 'openconnect ' . "$oc.{$conf['domain']}" . (in_array("$oc.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
                     }
+                    array_push($main, ...$this->managedProtocolDomainLines());
                     if (!empty($conf['adguardkey'])) {
                         $main[] = "{$conf['adguardkey']}.{$conf['domain']}" . (in_array("{$conf['adguardkey']}.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
                     }
@@ -16855,7 +17061,7 @@ DNS-over-HTTPS with IP:
             $ipsecPorts = $this->ipsecPorts();
 
             $main[] = '<code>';
-            $main[] = $this->alignColumns([
+            $protocolColumns = $this->optionalProtocolColumns([
                 [
                     $this->i18n($st['wg'] ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['amnezia']) ? 'amnezia' : 'wg_title'),
                     $this->i18n($st['wg1'] ? 'on' : 'off') . ' ' . $this->i18n(!empty($this->getPacConf()['wg1_amnezia']) ? 'amnezia' : 'wg_title'),
@@ -16891,6 +17097,26 @@ DNS-over-HTTPS with IP:
                     '',
                 ],
             ]);
+            foreach (ManagedProtocol::NAMES as $protocol => $label) {
+                if (!$this->protocolModuleEnabled($protocol)) continue;
+                try {
+                    $store = $this->protocolStore($protocol);
+                    $state = $store->read();
+                    if (!$state['enabled']) continue;
+                    $runtime = $store->status();
+                    $portApplied = $this->protocolPortApplied($protocol, $state);
+                    $ready = !$runtime['stale'] && !empty($runtime['running']) && empty($runtime['error'])
+                        && ($runtime['revision'] ?? null) === $state['revision']
+                        && $portApplied;
+                    $protocolColumns[0][] = $this->i18n($ready ? 'on' : 'off') . ' ' . $label;
+                    $protocolColumns[1][] = $this->i18n($portApplied ? 'on' : 'off') . ' ' . $state['settings']['port'];
+                } catch (RuntimeException | InvalidArgumentException $e) {
+                    $protocolColumns[0][] = $this->i18n('off') . ' ' . $label;
+                    $protocolColumns[1][] = '— ошибка состояния';
+                }
+                $managedProtocolButtons[] = ['text' => $label, 'callback_data' => "/!protocol $protocol"];
+            }
+            $main[] = implode("\n", array_map('rtrim', explode("\n", $this->alignColumns($protocolColumns))));
             $main[] = '';
             $main[] = $this->alignColumns([
                 [
@@ -16975,6 +17201,7 @@ DNS-over-HTTPS with IP:
                             ],
                         ],
                     ],
+                    array_chunk($managedProtocolButtons, 2),
                     [
                         [
                             [
@@ -17032,6 +17259,10 @@ DNS-over-HTTPS with IP:
 
         $text = $menu[$type ?: 'main' ]['text'];
         $data = $menu[$type ?: 'main' ]['data'];
+
+        if (empty($type)) {
+            $data = array_chunk(array_merge(...$this->filterProtocolButtons($data)), 2);
+        }
 
         if (empty($type) && $update) {
             $b = exec('git -C / rev-parse --abbrev-ref HEAD');
@@ -20962,6 +21193,7 @@ DNS-over-HTTPS with IP:
         }
         $encryption = VlessEncryption::client($c, $pac);
         $domain = $this->getDomain($pac['transport'] != 'Reality');
+        $endpoint = filter_var($domain, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? "[$domain]" : $domain;
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $fp     = $this->fingerprint();
@@ -20981,7 +21213,7 @@ DNS-over-HTTPS with IP:
         switch ($s) {
             case 1:
             case 2:
-                return $this->subscriptionImportUrl($s == 2 ? 'si' : 'v', "$scheme://{$domain}/pac$hash",
+                return $this->subscriptionImportUrl($s == 2 ? 'si' : 'v', "$scheme://{$endpoint}/pac$hash",
                     ['h' => $hash, 's' => $stok], rawurldecode($remark));
 
             default:
@@ -20998,7 +21230,7 @@ DNS-over-HTTPS with IP:
                 }
                 switch ($pac['transport']) {
                     case 'Reality':
-                        $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
+                        $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$endpoint:443"
                                     . "?security=reality"
                                     . "&sni={$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}"
                                     . "&fp=$fp&pbk={$pac['xray']}"
@@ -21017,7 +21249,7 @@ DNS-over-HTTPS with IP:
                         // импортировали его ссылкой или файлом. h2+http/1.1 — это
                         // ещё и то, что предлагает настоящий Chrome, т.е. совпадает
                         // с заявленным fp; nginx всё равно выберет h2.
-                        $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
+                        $link = "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$endpoint:443"
                                     . "?security=tls"
                                     . "&type=xhttp"
                                     . "&headerType="
@@ -21041,7 +21273,7 @@ DNS-over-HTTPS with IP:
                         // подстановка ~uid~ в json-конфигах.
                         $trojanPwd = rawurlencode($c['inbounds'][0]['settings']['clients'][$i]['password']
                             ?? $c['inbounds'][0]['settings']['clients'][$i]['id']);
-                        $link = "trojan://$trojanPwd@$domain:443"
+                        $link = "trojan://$trojanPwd@$endpoint:443"
                                     . "?type=grpc"
                                     . "&serviceName=grpc$hash"
                                     . "&mode=gun"
@@ -21053,7 +21285,7 @@ DNS-over-HTTPS with IP:
                         break;
 
                     default:
-                        $link =  "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$domain:443"
+                        $link =  "vless://{$c['inbounds'][0]['settings']['clients'][$i]['id']}@$endpoint:443"
                                     . "?flow="
                                     . "&path=%2Fws$hash"
                                     . "&security=tls"
@@ -21152,7 +21384,7 @@ DNS-over-HTTPS with IP:
         $this->subSecurityHeaders();
         header('Content-Type: text/plain; charset=utf-8');
         header('Profile-Title: base64:' . base64_encode((string) $client['email']));
-        header('Profile-Update-Interval: 12');
+        $this->xraySubscriptionMetadata($client, $i);
         echo base64_encode($body);
     }
 
@@ -21166,10 +21398,12 @@ DNS-over-HTTPS with IP:
         }
         $map = $relay['portmap'] ?? [];
         return preg_replace_callback(
-            '~^(\w+://[^@]*@)([^:/?#]+):(\d+)~',
+            '~^(\w+://[^@]*@)(\[[^\]]+\]|[^:/?#]+):(\d+)~',
             function ($m) use ($relay, $map) {
                 $port = $map[$m[3]] ?? $m[3];
-                return $m[1] . $relay['address'] . ':' . $port;
+                $host = $relay['address'];
+                if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) $host = "[$host]";
+                return $m[1] . $host . ':' . $port;
             },
             $link,
         );
@@ -21487,6 +21721,7 @@ DNS-over-HTTPS with IP:
         $changed = false;
         foreach ($xr['inbounds'][0]['settings']['clients'] ?? [] as $k => $v) {
             if (empty($v['subtoken'])) {
+                $xr['inbounds'][0]['settings']['clients'][$k]['protocol_source'] = ManagedProtocol::xraySource($v);
                 $xr['inbounds'][0]['settings']['clients'][$k]['subtoken'] = bin2hex(random_bytes(16));
                 $changed = true;
             }
@@ -21538,6 +21773,7 @@ DNS-over-HTTPS with IP:
         $c    = $this->getXray();
         $done = false;
         if (isset($c['inbounds'][0]['settings']['clients'][$i])) {
+            $c['inbounds'][0]['settings']['clients'][$i]['protocol_source'] = ManagedProtocol::xraySource($c['inbounds'][0]['settings']['clients'][$i]);
             $c['inbounds'][0]['settings']['clients'][$i]['subtoken'] = bin2hex(random_bytes(16));
             $this->saveXray($c);
             $done = true;
@@ -21571,6 +21807,7 @@ DNS-over-HTTPS with IP:
             return;
         }
         foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
+            $c['inbounds'][0]['settings']['clients'][$k]['protocol_source'] = ManagedProtocol::xraySource($v);
             $c['inbounds'][0]['settings']['clients'][$k]['subtoken'] = bin2hex(random_bytes(16));
         }
         $this->saveXray($c);
@@ -21624,6 +21861,9 @@ DNS-over-HTTPS with IP:
             curl_setopt_array($ch, [
                 CURLOPT_URL            => $url,
                 CURLOPT_RESOLVE        => $resolve,
+                // An environment proxy resolves hosts itself and bypasses the
+                // validated IPs above. These guarded fetches must connect directly.
+                CURLOPT_PROXY          => '',
                 CURLOPT_CONNECTTIMEOUT => 4,
                 CURLOPT_TIMEOUT        => 6,
                 CURLOPT_FOLLOWLOCATION => false,
@@ -21644,11 +21884,15 @@ DNS-over-HTTPS with IP:
             ]);
             curl_exec($ch);
             $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_errno($ch);
             curl_close($ch);
 
             if (strlen($buf) > $max) {
                 return 'response too large';
             }
+            // A server can send HTTP 200 and then truncate/stall the body.
+            // Never replace the last good cache with that partial subscription.
+            if ($error !== 0) return 'connection/timeout error';
             if ($code >= 300 && $code < 400 && $location !== '') {
                 // Only follow absolute https redirects (avoids resolving relative
                 // URLs and keeps the SSRF re-check simple); anything else fails.
@@ -21661,7 +21905,10 @@ DNS-over-HTTPS with IP:
             if ($code < 200 || $code >= 300) {
                 return $code ? "http $code" : 'connection/timeout error';
             }
-            return $this->decodeExtSubBody($buf);
+            $links = $this->decodeExtSubBody($buf);
+            // Providers sometimes serve an HTML maintenance/login page with
+            // HTTP 200. Preserve the last valid list on an unsupported body.
+            return !$links && trim($buf) !== '' ? 'no supported links in response' : $links;
         }
         return 'too many redirects';
     }
@@ -21755,7 +22002,7 @@ DNS-over-HTTPS with IP:
         if (!is_array($p) || empty($p['scheme']) || empty($p['host']) || strtolower($p['scheme']) !== 'https') {
             return [];
         }
-        $host  = $p['host'];
+        $host  = trim($p['host'], '[]');
         $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
         if (filter_var($host, FILTER_VALIDATE_IP)) {
             $ips = [$host];
@@ -21771,6 +22018,13 @@ DNS-over-HTTPS with IP:
             return [];
         }
         foreach ($ips as $ip) {
+            // PHP versions differ in classifying IPv4-mapped IPv6. Validate
+            // the embedded IPv4 too: ::ffff:127.0.0.1 still reaches loopback.
+            $packed = @inet_pton($ip);
+            if ($packed !== false && strlen($packed) === 16
+                && substr($packed, 0, 12) === str_repeat("\0", 10) . "\xff\xff") {
+                $ip = inet_ntop(substr($packed, 12));
+            }
             if (!filter_var($ip, FILTER_VALIDATE_IP, $flags) || self::isCarrierRange($ip)) {
                 return [];
             }
@@ -22177,7 +22431,7 @@ DNS-over-HTTPS with IP:
         $port   = $ports['hy']['enable'] ? $ports['hy']['port'] : null;
         $domain = $this->getDomain();
         $version = $this->hysteriaVersion();
-        $hy     = yaml_parse_file('/config/hysteria.yaml');
+        $hy     = @yaml_parse_file($this->hysteriaConf) ?: [];
         $sni    = parse_url($hy['masquerade']['proxy']['url'] ?? '', PHP_URL_HOST) ?: $domain;
         $pass   = $pac['hysteria_pass'] ?? '';
         $obfsOn = !empty($pac['hysteria_obfs']);
@@ -22192,15 +22446,16 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> Hysteria";
         $text[] = "version hysteria: <code>$version</code>";
         $text[] = "server: " . ($port ? "<code>$domain:$port</code>" : 'port unavailable');
-        $text[] = "passwd: <code>$pass</code>";
+        $text[] = 'Общий пароль: <code>' . self::esc($pass) . '</code>';
         $text[] = "masq (decoy): <code>$sni</code>";
         $text[] = "obfs: " . ($obfsOn ? "salamander <code>$obfs</code>" : $this->i18n('off'));
         $text[] = "cc: <code>$cc</code>";
         $text[] = "insecure: " . $this->i18n($insec ? 'on' : 'off');
         $text[] = "port hopping: " . ($hop !== '' ? "<code>$hop</code>" : $this->i18n('off'));
         if ($link) {
-            $text[] = "\n<code>$link</code>";
+            $text[] = "\n<code>" . self::esc($link) . '</code>';
         }
+        $data[] = [['text' => 'Персональные доступы', 'callback_data' => '/hyUsers']];
         $data[] = [
             [
                 'text'          => $this->i18n('change password'),
@@ -22714,8 +22969,13 @@ DNS-over-HTTPS with IP:
     public function setXrPwd($pwd, $i)
     {
         $c        = $this->getXray();
+        if (!isset($c['inbounds'][0]['settings']['clients'][$i])) {
+            $this->xray();
+            return;
+        }
         $password = trim($pwd) ?: bin2hex(random_bytes(16));
-        $c['inbounds'][0]['settings']['clients'][$i]['password'] = $password;
+        $field = empty($c['inbounds'][0]['settings']['clients'][$i]['off']) ? 'password' : 'off_pwd';
+        $c['inbounds'][0]['settings']['clients'][$i][$field] = $password;
         $this->restartXray($c);
         $this->userXr($i);
     }
@@ -22890,6 +23150,7 @@ DNS-over-HTTPS with IP:
         if (!isset($x['inbounds'][0]['settings']['clients'][$i])) {
             return $this->xray();
         }
+        $x['inbounds'][0]['settings']['clients'][$i]['protocol_source'] = ManagedProtocol::xraySource($x['inbounds'][0]['settings']['clients'][$i]);
         if (!empty($x['inbounds'][0]['settings']['clients'][$i]['off'])) {
             $x['inbounds'][0]['settings']['clients'][$i]['off'] = $this->guidv4();
         }
@@ -22914,6 +23175,7 @@ DNS-over-HTTPS with IP:
         // «foreach() argument must be of type array», а кнопка при этом
         // выглядела сработавшей.
         foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $key => $v) {
+            $x['inbounds'][0]['settings']['clients'][$key]['protocol_source'] = ManagedProtocol::xraySource($v);
             if (!empty($v['off'])) {
                 $x['inbounds'][0]['settings']['clients'][$key]['off'] = $this->guidv4();
             }
@@ -22935,7 +23197,7 @@ DNS-over-HTTPS with IP:
 
     public function getXrayStats()
     {
-        return json_decode(file_get_contents('/config/xray.stats'), true) ?: [];
+        return json_decode((string) @file_get_contents('/config/xray.stats'), true) ?: [];
     }
 
     public function setXrayStats($x)
@@ -22945,6 +23207,8 @@ DNS-over-HTTPS with IP:
 
     public function resetXrUser($i)
     {
+        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if ($client !== null) $this->resetXrayProtocolUsage($client);
         $c = $this->getXrayStats();
         unset($c['users'][$i]);
         // Persist the zeroed usage before restartXray (its collectSession()
@@ -22957,9 +23221,11 @@ DNS-over-HTTPS with IP:
 
     public function resetXrStats($nomenu = false)
     {
+        $this->resetXrayProtocolUsage();
         // Zeroing usage starts a new quota period, so lift any traffic-quota bans.
         $this->restartXray($this->reenableTrafficClients($this->getXray()));
         $this->setXrayStats([]);
+        $this->syncXrayProtocolUsers();
         if (empty($nomenu)) {
             $this->xray();
         }
@@ -24634,7 +24900,9 @@ DNS-over-HTTPS with IP:
         // Backfill the subscription token for clients created before this feature,
         // so their sub links are addressed by the token (not the credential).
         if (empty($c['subtoken'])) {
+            $c['protocol_source'] = ManagedProtocol::xraySource($c);
             $c['subtoken'] = bin2hex(random_bytes(16));
+            $xray['inbounds'][0]['settings']['clients'][$i]['protocol_source'] = $c['protocol_source'];
             $xray['inbounds'][0]['settings']['clients'][$i]['subtoken'] = $c['subtoken'];
             $this->saveXray($xray);
         }
@@ -24683,12 +24951,14 @@ DNS-over-HTTPS with IP:
         $text[] = "v2rayNG (base64): <pre><code>$vl</code></pre>";
 
         $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$stok}'>windows service</a>";
+        $text[]   = 'Файлы из кнопок загрузки временные: сохраните их до следующего нажатия в этом меню.';
         $st       = $this->getXrayStats();
-        $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0));
-        $upload   = $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0));
+        $protocolUsage = $this->xrayProtocolUsage($c);
+        $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0) + $protocolUsage['download']);
+        $upload   = $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0) + $protocolUsage['upload']);
         $limit    = (int) ($c['traffic'] ?? 0);
         if ($limit > 0) {
-            $used = $this->getBytes($this->xrUserTraffic($st, $i));
+            $used = $this->getBytes($this->xrUserTraffic($st, $i) + array_sum($this->xrayProtocolUsage($c)));
             $text[] = $this->i18n('traffic limit') . ": $used / " . $this->getBytes($limit)
                 . (!empty($c['traffic_off']) ? ' ⛔' : '');
         }
@@ -24727,6 +24997,12 @@ DNS-over-HTTPS with IP:
             ];
         }
         $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
+        $data[] = [['text' => 'Протоколы в готовой подписке', 'callback_data' => '/xp ' . ManagedProtocol::xraySource($c)]];
+        $data[] = [['text' => 'Отдельные подключения · ссылки и файлы', 'callback_data' => '/xc ' . ManagedProtocol::xraySource($c)]];
+        $data[] = [
+            ['text' => 'Mihomo JSON · подписка', 'web_app' => ['url' => "https://{$domain}/pac$hash?t=clj&s={$stok}"]],
+            ['text' => 'Mihomo JSON · файл', 'callback_data' => "/dw $i clj"],
+        ];
         $data[] = [[
             'text'          => '🧩 ' . $this->i18n('external links') . ($extOn ? " ($extOn)" : ''),
             'callback_data' => "/extUser $i",
@@ -25116,7 +25392,8 @@ DNS-over-HTTPS with IP:
             'vl' => 'v2rayNG (base64)',
             's'  => 'xray (json)',
             'si' => 'sing-box',
-            'cl' => 'mihomo',
+            'cl' => 'Mihomo YAML',
+            'clj' => 'Mihomo JSON',
         ] as $t => $label) {
             $url = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
                 'h'     => $hash,
@@ -26540,14 +26817,14 @@ DNS-over-HTTPS with IP:
     // остаются рабочими в старых сообщениях чата.
     protected function deepLinkCodes(): array
     {
-        return ['v', 'sr', 'st', 'si', 'h', 'k', 'w', 'c', 'rh'];
+        return ['v', 'sr', 'st', 'si', 'h', 'k', 'w', 'c', 'rh', 'incy'];
     }
 
     public function subscriptionImportLinks(string $base, string $sid, string $name, string $relay = ''): array
     {
         $links = [];
         foreach (['v' => 'v2rayNG', 'sr' => 'Shadowrocket', 'si' => 'sing-box', 'st' => 'Streisand',
-            'h' => 'Hiddify', 'k' => 'Karing', 'c' => 'mihomo', 'rh' => 'Rabbit Hole'] as $code => $label) {
+            'h' => 'Hiddify', 'k' => 'Karing', 'c' => 'mihomo', 'rh' => 'Rabbit Hole', 'incy' => 'INCY'] as $code => $label) {
             $query = ['t' => 's', 'r' => $code, 's' => $sid];
             if ($relay !== '') $query['relay'] = $relay;
             $url = $base . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986) . '#' . rawurlencode($name);
@@ -26584,6 +26861,7 @@ DNS-over-HTTPS with IP:
             'k' => "karing://install-config?url=$encoded&name=$title",
             'c' => "clash://install-config?url=$encoded&overwrite=no&name=$title",
             'rh' => "rabbithole://add/$url",
+            'incy' => "incy://import/$url",
             default => '',
         };
     }
@@ -26641,7 +26919,12 @@ DNS-over-HTTPS with IP:
 
     public function subscription($return = false)
     {
+        // Internal admin export only; no HTTP parameter enables this mode.
+        $connectionOnly = $return === 'connection';
+        $relayRequested = array_key_exists('relay', $_GET);
         $this->normalizeSubGet();
+        $mihomoJson = ($_GET['t'] ?? '') === 'clj';
+        if ($mihomoJson) $_GET['t'] = 'cl';
         switch ($_GET['t'] ?? '') {
             case 's':
                 $type = 'v2ray';
@@ -26661,6 +26944,10 @@ DNS-over-HTTPS with IP:
                 $this->subNotFound('Unknown subscription format.');
         }
         $pac    = $this->getPacConf();
+        if ($relayRequested && (empty($_GET['relay']) || !isset($pac['relays'][$_GET['relay']]))) {
+            if ($return) return '';
+            $this->subNotFound('Relay not found.');
+        }
         $domain = $this->subDomain($pac);
         $xr     = $this->getXray();
         // Как в sub(): нечитаемый конфиг — это 404/'', а не TypeError в
@@ -26678,7 +26965,10 @@ DNS-over-HTTPS with IP:
         $sid    = $_GET['s'] ?? '';
         $k      = $this->findClientBySid($xr, $sid, !empty($pac['subtoken_strict']));
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
-        if ($client === null || !empty($client['off'])) {
+        if ($client === null || !empty($client['off'])
+            || ((int) ($client['time'] ?? 0) > 0 && $client['time'] <= time())
+            || ((int) ($client['traffic'] ?? 0) > 0 && $this->xrUserTraffic($this->getXrayStats(), $k)
+                + array_sum($this->xrayProtocolUsage($client)) >= (int) $client['traffic'])) {
             if (!empty($return)) {
                 return '';
             }
@@ -26690,6 +26980,7 @@ DNS-over-HTTPS with IP:
         }
         $template = base64_decode($client["{$type}template"] ?? '');
         $uid      = $client['id'];               // credential (embedded in config)
+        $clientIndex = $k;
         $email    = $client['email'];
         $stok     = $this->sidOf($client);       // subscription locator only
 
@@ -26740,11 +27031,22 @@ DNS-over-HTTPS with IP:
             'sr', 'st', 'v' => 's',
             default => $_GET['t'],
         };
-        if (!$ruleSetReq && ($error = $this->subscriptionCompatibilityError($xr, $pac, $targetFormat)) !== '') {
+        $compatibilityError = $ruleSetReq ? '' : $this->subscriptionCompatibilityError($xr, $pac, $targetFormat);
+        $replacement = false;
+        if (!$connectionOnly && !$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
+            && (!$isDeepLink || in_array($_GET['r'], ['si', 'k', 'w'], true))) {
+            $candidate = $tpl;
+            foreach ($candidate['outbounds'] ?? [] as $n => $node) if (($node['tag'] ?? '') === '~outbound~' || ($node['tag'] ?? '') === ($pac['outbound'] ?: 'proxy')) {
+                $replacement = $this->appendXrayProtocols($candidate, $client, 'si', $n,
+                    !empty($_GET['relay']) ? ($pac['relays'][$_GET['relay']] ?? []) : null, false);
+                break;
+            }
+        }
+        if ($compatibilityError !== '' && !$replacement) {
             if ($return) {
                 return '';
             }
-            $this->subNotFound($this->i18n($error));
+            $this->subNotFound($this->i18n($compatibilityError));
         }
         $encryption = VlessEncryption::client($xr, $pac);
 
@@ -27190,6 +27492,9 @@ DNS-over-HTTPS with IP:
         // outbound/proxy целиком, и блок, положенный раньше, они бы стёрли.
         // Внутри — ранний выход, если ядро не форковое или smux выключен.
         $this->applyClientSmux($c, $index, $pac, (string) ($_GET['t'] ?? ''));
+        if ($connectionOnly) {
+            $c = self::connectionNodes($c, (string) $_GET['t'], (int) $index);
+        }
         // WARP-теги шаблона. У каждого клиента СВОЙ wgcf-аккаунт: общий
         // серверный ключ означал бы, что сессии клиентов и самого сервера
         // выбивают друг друга (в WireGuard у пира ровно один endpoint, и
@@ -27236,6 +27541,11 @@ DNS-over-HTTPS with IP:
             '~ip~'           => $this->ip,
             '~outbound~'     => $outbound,
         ]), true);
+
+        if ($connectionOnly) {
+            return json_encode($c,
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        }
 
         switch ($_GET['t']) {
             case 's':
@@ -27396,25 +27706,29 @@ DNS-over-HTTPS with IP:
                 $this->applyAwgRelay($c, $pac['relays'][$_GET['relay']]);
             }
         }
+        if (!$ruleSetReq) $this->appendXrayProtocols($c, $client, (string) $_GET['t'], (int) $index, $relayCfg, !$replacement);
         if (!empty($return)) {
-            if ($_GET['t'] == 'cl') {
+            if ($_GET['t'] == 'cl' && !$mihomoJson) {
                 return yaml_emit($c);
             }
-            return json_encode($c);
+            // Mihomo also reads JSON through its YAML parser: escaped slashes
+            // and JSON surrogate pairs are not portable YAML scalars.
+            return json_encode($c, $mihomoJson ? JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE : 0);
         }
 
         // The body carries client secrets (UUID/password, reality keys) — keep it
         // out of any cache/index (defense-in-depth).
         $this->subSecurityHeaders();
         header('Profile-Title: base64:' . base64_encode((string) $email));
-        if ($_GET['t'] == 'cl') {
+        $this->xraySubscriptionMetadata($client, $clientIndex);
+        if ($_GET['t'] == 'cl' && !$mihomoJson) {
             header('Content-type: text/yaml');
             echo yaml_emit($c);
             return;
         }
 
         header('Content-type: application/json');
-        echo json_encode($c);
+        echo json_encode($c, $mihomoJson ? JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE : 0);
     }
 
     // Response headers for any subscription body (contains client secrets): no
@@ -28272,10 +28586,7 @@ DNS-over-HTTPS with IP:
         if (!$this->isHostname($domain)) {
             return;
         }
-        $nginx = file_get_contents('/config/upstream.conf');
-        $t = preg_replace('~#domain.+#domain~s', "#domain\n$domain reality;\n#domain", $nginx);
-        file_put_contents('/config/upstream.conf', $t);
-        $this->ssh("nginx -s reload 2>&1", 'up');
+        $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#domain', "$domain reality;"));
     }
 
     /**
@@ -28321,12 +28632,10 @@ DNS-over-HTTPS with IP:
             return;
         }
         $sub   = $this->getHashSubdomain('oc');
-        $nginx = self::ocservDtlsUpstream(file_get_contents('/config/upstream.conf'));
         $body  = ($domain && $sub) ? "$sub.$domain ocserv;" : "#$sub.\$domain ocserv;";
         // Ровно те же две правки, что были сделаны для #naive, — сюда они тогда
         // не доехали (см. upstreamReplace).
-        file_put_contents('/config/upstream.conf', self::upstreamReplace($nginx, '#ocserv', $body));
-        $this->ssh("nginx -s reload 2>&1", 'up');
+        $this->editUpstream(fn($nginx) => self::upstreamReplace(self::ocservDtlsUpstream($nginx), '#ocserv', $body));
     }
 
     // Хосты, которые upstream-nginx по SNI отдаёт контейнеру naive: основной
@@ -28366,7 +28675,6 @@ DNS-over-HTTPS with IP:
             return;
         }
         $sub   = $this->getHashSubdomain('np');
-        $nginx = file_get_contents('/config/upstream.conf');
         // Строк может быть несколько: основной поддомен + адреса relay для
         // naive (naiveSniHosts). Пусто — закомментированный плейсхолдер, как до
         // задания домена.
@@ -28374,8 +28682,7 @@ DNS-over-HTTPS with IP:
         $body  = $hosts
             ? implode("\n", array_map(fn($h) => "$h naive;", $hosts))
             : "#$sub.\$domain naive;";
-        file_put_contents('/config/upstream.conf', self::upstreamReplace($nginx, '#naive', $body));
-        $this->ssh("nginx -s reload 2>&1", 'up');
+        $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#naive', $body));
     }
 
     public function getHashBot($notset = false)
@@ -29040,6 +29347,7 @@ DNS-over-HTTPS with IP:
             $text[] = $conf['domain'] . (in_array($conf['domain'], $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
             $text[] = 'naive ' . "$np.{$conf['domain']}" . (in_array("$np.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
             $text[] = 'openconnect ' . "$oc.{$conf['domain']}" . (in_array("$oc.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '');
+            array_push($text, ...$this->managedProtocolDomainLines());
             if (!empty($conf['adguardkey'])) {
                 $text[] = "{$conf['adguardkey']}.{$conf['domain']}" . (in_array("{$conf['adguardkey']}.{$conf['domain']}", $certs) ? ' (ssl: ' . date('Y-m-d H:i:s', $ssl_expiry) . ')' : '') . ' adguard DOT';
             }
@@ -29066,6 +29374,7 @@ DNS-over-HTTPS with IP:
         }
 
         $data = [
+            [['text' => 'Протоколы и контейнеры', 'callback_data' => '/protocolModules']],
             [
                 [
                     'text'          => $conf['domain'] ? "{$this->i18n('delete')} {$conf['domain']}" : $this->i18n('install domain'),
@@ -29223,6 +29532,10 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/panelGenPswd",
             ],
         ];
+        $data[] = [[
+            'text' => 'Посмотреть пароль панели',
+            'callback_data' => '/panelShowPswd',
+        ]];
         $data[] = [
             [
                 'text'          => "{$this->i18n('add')} {$this->i18n('admin')}",
@@ -29313,6 +29626,16 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/changePort ovpn",
             ]],
         ];
+        foreach (ManagedProtocol::NAMES as $protocol => $name) {
+            $state = $this->protocolStore($protocol)->read();
+            $enabled = $this->protocolModuleEnabled($protocol) && $state['enabled'];
+            $transport = $protocol === 'tuic' ? 'UDP' : ($protocol === 'mieru' ? 'TCP/UDP' : 'TCP');
+            $pending = $enabled && !$this->protocolPortApplied($protocol, $state);
+            $data[] = [['text' => ($enabled ? ($pending ? '🟡 ' : '🟢 ') : '🔴 ') . $name . ' · ' . $state['settings']['port'] . '/' . $transport,
+                'callback_data' => "/protocolPort $protocol"]];
+            if ($pending) $text[] = "$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.";
+        }
+        $text[] = 'Mieru, TUIC и ShadowTLS: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
         if (!empty($pac['restart'])) {
             $data[] = [
                 [
@@ -29492,18 +29815,12 @@ DNS-over-HTTPS with IP:
         if (!file_exists($f)) {
             return;
         }
-        $nginx = file_get_contents($f);
         $block = "#tt-port\n    server {\n        listen      $port reuseport;\n        proxy_pass  trusttunnel;\n    }\n    server {\n        listen      $port udp reuseport;\n        proxy_pass  trusttunnel;\n    }\n    #tt-port";
         // Маркер должен быть на собственной строке (с необязательным
         // отступом), чтобы не совпасть с упоминанием "#tt-port" внутри
         // комментариев выше по файлу.
         $re = '~^[ \t]*#tt-port[ \t]*\R.+?^[ \t]*#tt-port[ \t]*$~sm';
-        if (!preg_match($re, $nginx)) {
-            return; // markers were stripped by manual edit; bail out
-        }
-        $nginx = preg_replace($re, $block, $nginx);
-        file_put_contents($f, $nginx);
-        $this->ssh('nginx -s reload 2>&1', 'up');
+        $this->editUpstream(fn($nginx) => preg_replace($re, $block, $nginx));
     }
 
     public function setUpstreamPortOvpn($port, $proto = null)
@@ -29514,18 +29831,12 @@ DNS-over-HTTPS with IP:
         if (!file_exists($f)) {
             return;
         }
-        $nginx  = file_get_contents($f);
         $listen = str_starts_with($proto, 'tcp')
             ? "listen      $port reuseport;"
             : "listen      $port udp reuseport;";
         $block = "#ovpn-port\n    server {\n        $listen\n        proxy_pass  openvpn;\n    }\n    #ovpn-port";
         $re = '~^[ \t]*#ovpn-port[ \t]*\R.+?^[ \t]*#ovpn-port[ \t]*$~sm';
-        if (!preg_match($re, $nginx)) {
-            return;
-        }
-        $nginx = preg_replace($re, $block, $nginx);
-        file_put_contents($f, $nginx);
-        $this->ssh('nginx -s reload 2>&1', 'up');
+        $this->editUpstream(fn($nginx) => preg_replace($re, $block, $nginx));
     }
 
     public function setEnvVar($key, $value)
@@ -30841,6 +31152,7 @@ DNS-over-HTTPS with IP:
     {
         $data = "";
         $this->sshFailed = false;
+        if (!$this->protocolModuleEnabled($service)) return '';
         try {
             // ssh2_connect не принимает таймаут и по умолчанию ждёт TCP-коннект
             // минутами (лежащий контейнер = зависший вебхук-воркер). 5с хватает
@@ -31039,6 +31351,8 @@ DNS-over-HTTPS with IP:
 
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
     {
+        $button = $this->protocolNavigationButtons($button);
+        $button = $this->filterProtocolButtons($button);
         if (is_null($text)) {
             $text = '';
         }
@@ -31086,7 +31400,7 @@ DNS-over-HTTPS with IP:
             }
             $r = $this->request('sendMessage', $data);
         }
-        return $r;
+        return $this->rememberProtocolOutput($r);
     }
 
     /**
@@ -31195,28 +31509,30 @@ DNS-over-HTTPS with IP:
 
     public function sendPhoto($chat, $id_url_cFile, $caption = false, $to = false)
     {
-        return $this->request('sendPhoto', [
+        return $this->rememberProtocolOutput($this->request('sendPhoto', [
             'chat_id'             => $chat,
             'photo'               => $id_url_cFile,
             'caption'             => $caption,
             'reply_to_message_id' => $to,
             'parse_mode'          => 'html',
-        ]);
+        ]));
     }
 
     public function sendFile($chat, $id_url_cFile, $caption = false, $to = false)
     {
-        return $this->request('sendDocument', [
+        return $this->rememberProtocolOutput($this->request('sendDocument', [
             'chat_id'             => $chat,
             'document'            => $id_url_cFile,
             'caption'             => $caption,
             'reply_to_message_id' => $to,
             'parse_mode'          => 'html',
-        ]);
+        ]));
     }
 
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')
     {
+        $button = $this->protocolNavigationButtons($button);
+        $button = $this->filterProtocolButtons($button);
         $text = (string) $text;
         if ($button) {
             $extra = ['inline_keyboard' => $button];
@@ -31385,7 +31701,7 @@ DNS-over-HTTPS with IP:
             $out .= "\n[[client]]\nusername = \"" . addcslashes($u, '"\\') . "\"\n"
                  .  "password = \"" . addcslashes($pass, '"\\') . "\"\n";
         }
-        file_put_contents($p['cred'], $out);
+        if (!$this->writePrivateKey($p['cred'], $out)) throw new RuntimeException('Не удалось сохранить реквизиты TrustTunnel');
     }
 
     // hosts.toml переписывается целиком на каждом рестарте: ping_hosts /
@@ -31399,7 +31715,7 @@ DNS-over-HTTPS with IP:
         $out    = "# Generated by bot — do not edit manually.\n"
                 . "[[main_hosts]]\nhostname = \"$domain\"\n"
                 . "cert_chain_path = \"/certs/cert_public\"\nprivate_key_path = \"/certs/cert_private\"\n";
-        file_put_contents($p['hosts'], $out);
+        if (!$this->writePrivateKey($p['hosts'], $out)) throw new RuntimeException('Не удалось сохранить TLS TrustTunnel');
     }
 
     // Всё, из-за чего демон не поднимется. Один список и для гейта в
@@ -31430,12 +31746,15 @@ DNS-over-HTTPS with IP:
 
     public function restartTt()
     {
+        return $this->withLock('trusttunnel', fn() => $this->restartTtLocked());
+    }
+
+    private function restartTtLocked()
+    {
         $p      = $this->ttPaths();
         $domain = $this->ttDomain();
-        $users  = $this->getClientsTt();
 
         $this->writeTtHosts($domain);
-        $this->writeTtCredentials($users);
         if (!file_exists($p['vpn']) || !file_exists($p['rules'])) {
             return false; // templates missing — init.sh ещё не развернул
         }
@@ -31453,6 +31772,17 @@ DNS-over-HTTPS with IP:
             $p['log']
         );
         return true;
+    }
+
+    private function ttUsersUpdate(callable $edit): bool
+    {
+        return $this->withLock('trusttunnel', function () use ($edit) {
+            $users = $this->getClientsTt();
+            if ($edit($users) === false) return false;
+            $this->writeTtCredentials($users);
+            $this->restartTtLocked();
+            return true;
+        });
     }
 
     public function ttRunning()
@@ -31498,14 +31828,14 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'], 'username too long (max 40 chars)');
             return $this->menu('tt');
         }
-        $users = $this->getClientsTt();
-        if (isset($users[$user])) {
+        $added = $this->ttUsersUpdate(static function (&$users) use ($user) {
+            if (isset($users[$user])) return false;
+            $users[$user] = base64_encode(random_bytes(18));
+        });
+        if (!$added) {
             $this->send($this->input['chat'], "user $user already exists");
             return $this->menu('tt');
         }
-        $users[$user] = base64_encode(random_bytes(18));
-        $this->writeTtCredentials($users);
-        $this->restartTt();
         $this->menu('tt');
     }
 
@@ -31527,9 +31857,7 @@ DNS-over-HTTPS with IP:
             ];
             return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
         }
-        unset($users[$user]);
-        $this->writeTtCredentials($users);
-        $this->restartTt();
+        $this->ttUsersUpdate(static function (&$users) use ($user) { unset($users[$user]); });
         $this->menu('tt');
     }
 
@@ -31551,26 +31879,23 @@ DNS-over-HTTPS with IP:
 
     public function chttpass($pass, $user)
     {
-        $users = $this->getClientsTt();
         $pass  = $this->ttSanitize($pass, 128);
-        if (!isset($users[$user]) || $pass === '') {
-            return $this->menu('tt');
-        }
-        $users[$user] = $pass;
-        $this->writeTtCredentials($users);
-        $this->restartTt();
+        $this->ttUsersUpdate(static function (&$users) use ($user, $pass) {
+            if (!isset($users[$user]) || $pass === '') return false;
+            $users[$user] = $pass;
+        });
         $this->menu('tt');
     }
 
     public function genTtPass($user)
     {
-        $users = $this->getClientsTt();
-        if (!isset($users[$user])) {
+        $changed = $this->ttUsersUpdate(static function (&$users) use ($user) {
+            if (!isset($users[$user])) return false;
+            $users[$user] = base64_encode(random_bytes(18));
+        });
+        if (!$changed) {
             return $this->menu('tt');
         }
-        $users[$user] = base64_encode(random_bytes(18));
-        $this->writeTtCredentials($users);
-        $this->restartTt();
         $this->ttClientMenu($user);
     }
 
@@ -33352,17 +33677,24 @@ DNS-over-HTTPS with IP:
     }
 
     // Живые сессии из /var/run/l2tp-sessions (ведут ip-up/ip-down хуки pppd):
-    // имя файла = юзер, внутри "IP PID". PID нужен для kick.
+    // Новые файлы: user.PID, внутри "IP PID user"; старые user / "IP PID"
+    // тоже читаются до завершения соединений, созданных до обновления.
     public function getL2tpOnline()
     {
         $raw = $this->ssh(
-            'for f in /var/run/l2tp-sessions/*; do [ -f "$f" ] && printf \'%s %s\n\' "$(basename "$f")" "$(cat "$f")"; done 2>/dev/null',
+            'for f in /var/run/l2tp-sessions/*; do [ -f "$f" ] || continue; '
+                . 'read ip pid user < "$f"; case "$pid" in ""|*[!0-9]*) continue;; esac; '
+                . '[ "$(cat /proc/$pid/comm 2>/dev/null)" = pppd ] || continue; '
+                . 'printf \'%s %s\n\' "$(basename "$f")" "$(cat "$f")"; done 2>/dev/null',
             'ipsec'
         );
         $out = [];
         foreach (explode("\n", (string) $raw) as $line) {
-            if (preg_match('~^([a-zA-Z0-9_.\-]+) (\S+) (\d+)$~', trim($line), $m)) {
-                $out[$m[1]] = ['ip' => $m[2], 'pid' => (int) $m[3]];
+            if (preg_match('~^([a-zA-Z0-9_.\-]+) (\S+) (\d+)(?: ([a-zA-Z0-9_.\-]+))?$~', trim($line), $m)
+                && filter_var($m[2], FILTER_VALIDATE_IP) && (int) $m[3] > 1) {
+                $user = $m[4] ?? $m[1];
+                $out[$user] ??= ['ip' => $m[2], 'pid' => (int) $m[3], 'pids' => []];
+                if (!in_array((int) $m[3], $out[$user]['pids'], true)) $out[$user]['pids'][] = (int) $m[3];
             }
         }
         return $out;
@@ -33583,11 +33915,10 @@ DNS-over-HTTPS with IP:
     // Убить pppd конкретного юзера по PID из session-файла (пишет ip-up).
     public function kickL2tpSession($user)
     {
-        $u = escapeshellarg($user);
-        $this->ssh(
-            "f=/var/run/l2tp-sessions/$u; [ -f \"\$f\" ] && kill \$(awk '{print \$2}' \"\$f\") 2>/dev/null; true",
-            'ipsec'
-        );
+        foreach ($this->getL2tpOnline()[$user]['pids'] ?? [] as $pid) {
+            $pid = (int) $pid;
+            $this->ssh("[ \"\$(cat /proc/$pid/comm 2>/dev/null)\" = pppd ] && kill $pid 2>/dev/null; true", 'ipsec');
+        }
     }
 
     public function kickL2tp($user)
@@ -33793,21 +34124,30 @@ DNS-over-HTTPS with IP:
     {
         $raw = (string) $this->ssh('swanctl --list-sas 2>/dev/null', 'ipsec');
         $out = [];
-        $cur = null;   // буфер полей IKE_SA, пока имя юзера ещё не известно
-        $key = null;   // имя юзера — после него пишем сразу в $out[$key]
-        foreach (explode("\n", $raw) as $line) {
-            if (preg_match('~^\S+: #(\d+), ESTABLISHED~', $line, $m)) {
-                $cur = ['uid' => (int) $m[1], 'real' => '', 'virtual' => '', 'rx' => 0, 'tx' => 0, 'since' => ''];
+        $cur = null;
+        $key = null;
+        // Sentinel flushes the last SA. A new header always ends the previous
+        // one, including CONNECTING/DELETING and unrelated IKEv1 sessions.
+        foreach (explode("\n", $raw . "\nend: #0, CLOSED, IKEv2,") as $line) {
+            if (preg_match('~^\S+: #(\d+), ([^,]+), (IKEv[12]),~', $line, $m)) {
+                if ($cur !== null && $key !== null) {
+                    if (isset($out[$key])) {
+                        $cur['rx'] += $out[$key]['rx'];
+                        $cur['tx'] += $out[$key]['tx'];
+                        $cur['since'] = max((int) $cur['since'], (int) $out[$key]['since']);
+                    }
+                    $cur['uids'] = array_merge($out[$key]['uids'] ?? [], [$cur['uid']]);
+                    $out[$key] = $cur;
+                }
+                $cur = $m[2] === 'ESTABLISHED' && $m[3] === 'IKEv2'
+                    ? ['uid' => (int) $m[1], 'real' => '', 'virtual' => '', 'rx' => 0, 'tx' => 0, 'since' => ''] : null;
                 $key = null;
                 continue;
             }
-            if ($cur === null && $key === null) {
+            if ($cur === null) {
                 continue;
             }
             if (preg_match("~^\\s*remote '([^']*)' @ ([^\\[\\s]+)\\[\\d+\\](?: EAP: '([^']+)')?(?: XAuth: '[^']+')?(?: \\[([^\\]]+)\\])?~", $line, $m)) {
-                if ($cur === null) {
-                    continue;
-                }
                 $cur['real'] = $m[2];
                 // Виртуальный IP печатается прямо здесь; для нескольких vips
                 // берём первый. Ниже есть фолбэк на TS дочерней SA.
@@ -33816,31 +34156,23 @@ DNS-over-HTTPS with IP:
                 }
                 // EAP-identity, если она есть, иначе IKE-identity.
                 $name = !empty($m[3]) ? $m[3] : $m[1];
-                if ($name !== '') {
-                    $key       = $name;
-                    $out[$key] = $cur;
-                    $cur       = null;
-                }
+                if ($name !== '') $key = $name;
                 continue;
             }
-            $ref = $key !== null ? $key : null;
             if (preg_match('~established (\d+)s ago~', $line, $m)) {
-                if ($ref !== null) { $out[$ref]['since'] = (int) $m[1]; } else { $cur['since'] = (int) $m[1]; }
-                continue;
-            }
-            if ($ref === null) {
+                $cur['since'] = (int) $m[1];
                 continue;
             }
             if (preg_match('~^\s*in\s+\S+,\s*(\d+) bytes~', $line, $m)) {
-                $out[$ref]['rx'] += (int) $m[1];
+                $cur['rx'] += (int) $m[1];
                 continue;
             }
             if (preg_match('~^\s*out\s+\S+,\s*(\d+) bytes~', $line, $m)) {
-                $out[$ref]['tx'] += (int) $m[1];
+                $cur['tx'] += (int) $m[1];
                 continue;
             }
-            if ($out[$ref]['virtual'] === '' && preg_match('~^\s*remote ([0-9.]+)/32\s*$~', $line, $m)) {
-                $out[$ref]['virtual'] = $m[1];
+            if ($cur['virtual'] === '' && preg_match('~^\s*remote ([0-9.]+)/32\s*$~', $line, $m)) {
+                $cur['virtual'] = $m[1];
                 continue;
             }
         }
@@ -34237,8 +34569,8 @@ XML;
     public function kickIkev2Session($user)
     {
         $s = $this->getIkev2Status()[$user] ?? null;
-        if ($s && !empty($s['uid'])) {
-            $uid = (int) $s['uid'];
+        foreach ($s['uids'] ?? [] as $uid) {
+            $uid = (int) $uid;
             $this->ssh("swanctl --terminate --ike-id $uid >/dev/null 2>&1; true", 'ipsec');
         }
     }

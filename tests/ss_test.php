@@ -116,8 +116,9 @@ foreach (['Enabled', 'AdminUID', 'DatabasePath'] as $k) {
 // nginx обязан срезать весь префикс — location должен содержать хеш целиком,
 // а proxy_pass — оканчиваться слэшем.
 $nginx = file_get_contents(__DIR__ . '/../config/nginx.conf');
-ssAssert((bool) preg_match('~location /v2ray[^\s{]*\s*\{[^}]*proxy_pass http://ss:8388/;~s', $nginx),
-    'nginx: /v2ray-локация проксирует на ss:8388 со слэшем (срезает префикс до "/")');
+$nginx = preg_replace('~^\s*#.*$~m', '', $nginx);
+ssAssert((bool) preg_match('~location /v2ray[^\s{]*\s*\{[^}]*proxy_pass http://10\.10\.0\.6:8388/;~s', $nginx),
+    'nginx: /v2ray использует постоянный адрес SS со слэшем и работает без DNS выключенного контейнера');
 
 if ($failed) {
     echo "ss_test FAILED ($failed)\n";

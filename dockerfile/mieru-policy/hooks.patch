@@ -1,0 +1,145 @@
+--- a/pkg/socks5/socks5.go
++++ b/pkg/socks5/socks5.go
+@@ -221,6 +221,12 @@
+ 		return fmt.Errorf("failed to read destination address: %w", err)
+ 	}
+ 
++	if err := s.checkConnectRequest(request); err != nil {
++		RejectByRules.Add(1)
++		model.WriteSocks5Response(proxyConn, constant.Socks5ReplyNotAllowedByRuleSet, zeroBindAddr())
++		return err
++	}
++
+ 	egressInput := egress.Input{
+ 		Protocol: appctlpb.ProxyProtocol_SOCKS5_PROXY_PROTOCOL,
+ 		Data:     request.Raw,
+--- a/pkg/socks5/handler.go
++++ b/pkg/socks5/handler.go
+@@ -22,7 +22,7 @@
+ func (s *Server) handleRequest(ctx context.Context, req *model.Request, proxyConn net.Conn) error {
+ 	// Resolve the address if we have a FQDN.
+ 	dst := &req.DstAddr
+-	if dst.FQDN != "" {
++	if dst.FQDN != "" && len(dst.IP) == 0 {
+ 		ips, err := s.config.Resolver.LookupIP(ctx, "ip", dst.FQDN)
+ 		if err != nil || len(ips) == 0 {
+ 			DNSResolveErrors.Add(1)
+@@ -153,7 +153,7 @@
+ 		return fmt.Errorf("failed to send reply: %w", err)
+ 	}
+ 
+-	return RunUDPAssociateLoop(udpConn, apicommon.NewPacketOverStreamTunnel(proxyConn), s.config.Resolver)
++	return RunUDPAssociateLoop(udpConn, apicommon.NewPacketOverStreamTunnel(proxyConn), s.config.Resolver, s.checkDestination)
+ }
+ 
+ func (s *Server) handleAssociateDatagram(_ context.Context, _ *model.Request, proxyConn net.Conn) error {
+@@ -178,7 +178,7 @@
+ 		return fmt.Errorf("failed to send reply: %w", err)
+ 	}
+ 
+-	return runUDPAssociateDatagramLoop(udpConn, proxyConn, s.config.Resolver)
++	return runUDPAssociateDatagramLoop(udpConn, proxyConn, s.config.Resolver, s.checkDestination)
+ }
+ 
+ // handleForwarding forward the request to the egress proxy.
+@@ -294,7 +294,7 @@
+ 	}
+ 
+ 	clientTunnel := apicommon.NewPacketOverStreamTunnel(proxyConn)
+-	return RunUDPForwardingLoop(udpConn, clientTunnel, downstreamUDPAddr, egressConn)
++	return RunUDPForwardingLoop(udpConn, clientTunnel, downstreamUDPAddr, egressConn, s.checkDestination)
+ }
+ 
+ // proxySocks5AuthReq transfers the socks5 authentication request and response
+--- a/pkg/socks5/udp.go
++++ b/pkg/socks5/udp.go
+@@ -35,7 +35,7 @@
+ 
+ // RunUDPAssociateLoop exchanges socks5 UDP packets between a socks5 proxy client and a mieru proxy server,
+ // the proxy server is connected via the PacketOverStreamTunnel.
+-func RunUDPAssociateLoop(udpConn *net.UDPConn, conn *apicommon.PacketOverStreamTunnel, resolver apicommon.DNSResolver) error {
++func RunUDPAssociateLoop(udpConn *net.UDPConn, conn *apicommon.PacketOverStreamTunnel, resolver apicommon.DNSResolver, policies ...destinationPolicy) error {
+ 	var udpErr atomic.Value
+ 
+ 	// addrMap maps the UDPAddr in string to the bytes in UDP associate header.
+@@ -64,6 +64,9 @@
+ 				UDPAssociateErrors.Add(1)
+ 				return
+ 			}
++			if err := checkPacketDestination(&datagram.Addr, policies); err != nil {
++				continue
++			}
+ 			dstAddr, err := resolveSocks5UDPAddr(context.Background(), resolver, datagram.Addr)
+ 			if err != nil {
+ 				log.Debugf("UDP associate %v ResolveUDPAddr() failed: %v", udpConn.LocalAddr(), err)
+@@ -107,8 +110,7 @@
+ 			if ok {
+ 				header = v.([]byte)
+ 			} else {
+-				header = udpAddrToHeader(addr)
+-				addrMap.Store(addr.String(), header)
++				continue
+ 			}
+ 			_, err = conn.Write(append(append([]byte(nil), header...), buf[:n]...))
+ 			if err != nil {
+@@ -129,7 +131,7 @@
+ 
+ // RunUDPForwardingLoop exchanges socks5 UDP packets between a mieru proxy client and a socks5 proxy server,
+ // the proxy client is connected via the PacketOverStreamTunnel.
+-func RunUDPForwardingLoop(udpConn *net.UDPConn, conn *apicommon.PacketOverStreamTunnel, downstreamAddr *net.UDPAddr, ctrlConn net.Conn) error {
++func RunUDPForwardingLoop(udpConn *net.UDPConn, conn *apicommon.PacketOverStreamTunnel, downstreamAddr *net.UDPAddr, ctrlConn net.Conn, policies ...destinationPolicy) error {
+ 	var udpErr atomic.Value
+ 
+ 	var wg sync.WaitGroup
+@@ -162,7 +164,11 @@
+ 				}
+ 				return
+ 			}
+-			ws, err := udpConn.WriteToUDP(buf[:n], downstreamAddr)
++			packet, err := checkedForwardPacket(buf[:n], policies)
++			if err != nil {
++				continue
++			}
++			ws, err := udpConn.WriteToUDP(packet, downstreamAddr)
+ 			if err != nil {
+ 				log.Debugf("UDP forwarding [%v - %v] WriteToUDP() failed: %v", udpConn.LocalAddr(), downstreamAddr, err)
+ 				UDPAssociateErrors.Add(1)
+@@ -178,7 +184,7 @@
+ 		defer wg.Done()
+ 		buf := make([]byte, 1<<16)
+ 		for {
+-			n, _, err := udpConn.ReadFromUDP(buf)
++			n, from, err := udpConn.ReadFromUDP(buf)
+ 			if err != nil {
+ 				if !stderror.IsEOF(err) && !stderror.IsClosed(err) {
+ 					log.Debugf("UDP forwarding %v ReadFromUDP() failed: %v", udpConn.LocalAddr(), err)
+@@ -187,6 +193,9 @@
+ 					udpErr.Store(err)
+ 				}
+ 				return
++			}
++			if !sameUDPAddr(from, downstreamAddr) {
++				continue
+ 			}
+ 			_, err = conn.Write(buf[:n])
+ 			if err != nil {
+@@ -269,7 +278,7 @@
+ // runUDPAssociateDatagramLoop exchanges RFC 1928 SOCKS5 UDP datagrams between
+ // a SOCKS5 proxy client and UDP destinations until the TCP control connection
+ // is closed.
+-func runUDPAssociateDatagramLoop(udpConn *net.UDPConn, ctrlConn net.Conn, resolver apicommon.DNSResolver) error {
++func runUDPAssociateDatagramLoop(udpConn *net.UDPConn, ctrlConn net.Conn, resolver apicommon.DNSResolver, policies ...destinationPolicy) error {
+ 	if resolver == nil {
+ 		resolver = &net.Resolver{}
+ 	}
+@@ -306,6 +315,10 @@
+ 				UDPAssociateErrors.Add(1)
+ 				continue
+ 			}
++			destination := udpAddrSpec(dstAddr)
++			if err := checkPacketDestination(&destination, policies); err != nil {
++				continue
++			}
+ 			if clientAddr == nil {
+ 				clientAddr = &net.UDPAddr{
+ 					IP:   append(net.IP(nil), addr.IP...),

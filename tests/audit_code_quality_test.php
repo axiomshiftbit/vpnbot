@@ -112,8 +112,9 @@ cqAssert($worst <= 64, "самая длинная кнопка укладыва�
 
 // Якорь — сам рендер строки пользователя (ссылка с эмодзи), а не объявление
 // роута: строка «/telemtToggleUser» встречается в файле и там, и там.
-// Окно в БАЙТАХ; после инцидента на рабочем сервере тут добавился комментарий про $label.
-$render = substr($src, strpos($src, '"🔗 $name"'), 2200);
+// Ограничиваем проверку методом, а не длиной комментариев и строк в байтах.
+$renderStart = strpos($src, 'public function telemtUsers(');
+$render = substr($src, $renderStart, strpos($src, 'public function telemtMode(', $renderStart) - $renderStart);
 cqAssert(str_contains($render, 'strlen($cb) <= 64'),
     'рендер отбрасывает кнопку с слишком длинным callback_data (записи, заведённые до лимита)');
 

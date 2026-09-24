@@ -60,7 +60,7 @@ do
         _message_id=$(echo "$_curl_data" | grep -o '"message_id":[0-9]*' | head -1 | cut -d: -f2)
 
         tg_draft "stopping the bot"
-        if ! docker compose down --remove-orphans; then
+        if ! docker compose --profile '*' down --remove-orphans; then
             tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update cancelled: could not stop services safely.\"}"
             : > "$pwd/update/pipe"
             continue
@@ -186,6 +186,9 @@ do
 
         bash "$pwd/update/update.sh" &
         exit 0
+    fi
+    if [[ -f "$pwd/scripts/protocol_modules.py" && -f "$pwd/config/protocol-services.json" ]]; then
+        python3 "$pwd/scripts/protocol_modules.py" apply >/dev/null 2>&1 || true
     fi
     sleep 1
 done

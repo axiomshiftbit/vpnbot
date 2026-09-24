@@ -400,7 +400,8 @@ class Panel
         }
         $plain            = bin2hex(random_bytes(9));
         $conf['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
-        $this->bot->setPacConf($conf);
+        if (!PanelPasswordVault::remember($this->store->dir(), $plain, $conf['panelpswd'])) throw new RuntimeException('Не удалось сохранить защищённую копию пароля');
+        if ($this->bot->setPacConf($conf) === false) throw new RuntimeException('Не удалось сохранить пароль панели');
         $f = $this->store->dir() . '/initial_password.txt';
         @touch($f);
         @chmod($f, 0600);
@@ -411,9 +412,11 @@ class Panel
 
     public function setPassword($plain)
     {
+        if (strlen((string) $plain) < 8 || strlen((string) $plain) > 72) throw new InvalidArgumentException('Пароль панели: от 8 до 72 байт');
         $conf              = $this->pacConf();
         $conf['panelpswd'] = password_hash((string) $plain, PASSWORD_DEFAULT);
-        $this->bot->setPacConf($conf);
+        if (!PanelPasswordVault::remember($this->store->dir(), (string) $plain, $conf['panelpswd'])) throw new RuntimeException('Не удалось сохранить защищённую копию пароля');
+        if ($this->bot->setPacConf($conf) === false) throw new RuntimeException('Не удалось сохранить пароль панели');
         @unlink($this->store->dir() . '/initial_password.txt');
     }
 
@@ -473,6 +476,7 @@ class Panel
             $admin = $chosen;
         }
         $this->rateClear();
+        PanelPasswordVault::remember($this->store->dir(), $pass, $hash);
         $exp   = time() + self::TTL;
         $value = count($this->admins) > 1
             ? $exp . '.' . $admin . '.' . $this->sign($exp, $admin)
@@ -944,6 +948,11 @@ class Panel
             return '<a href="' . htmlspecialchars($u, ENT_QUOTES) . '" target="_blank" rel="noopener noreferrer">';
         }, $e);
         $e = str_replace('&lt;/a&gt;', '</a>', $e);
+
+        // Telegram HTML already escapes values (URI query separators, passwords,
+        // user names). Remove only the extra entity layer, AFTER restoring tags:
+        // escaped user markup must remain text, never become an allowed tag.
+        $e = preg_replace('~&amp;((?:amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-f]+);)~i', '&$1', $e);
 
         // Переносы превращаем в <br> ВЕЗДЕ, КРОМЕ <pre> и <code>: там перенос
         // отображается сам (white-space: pre-wrap), и <br> внутри давал бы

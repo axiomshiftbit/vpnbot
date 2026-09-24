@@ -35,7 +35,7 @@ chAssert(count($services) >= 19, 'сервисы разобраны: ' . count($
 // ── 1. Лимиты и restart ─────────────────────────────────────────────────────
 chAssert(substr_count($compose, 'mem_limit:') === count($services),
     'потолок памяти есть у каждого сервиса: ' . substr_count($compose, 'mem_limit:') . ' из ' . count($services));
-chAssert(substr_count($compose, 'pids_limit: 512') === count($services),
+chAssert(preg_match_all('~pids_limit: (?:128|512)~', $compose) === count($services),
     'потолок процессов есть у каждого сервиса (защита от зафоркавшегося демона)');
 chAssert(substr_count($compose, 'init: true') === count($services),
     'init собирает осиротевшие процессы после рестартов демонов через SSH');
@@ -43,7 +43,8 @@ chAssert(substr_count($compose, 'init: true') === count($services),
 chAssert(!preg_match('~mem_limit: (\d+)m~', $compose, $mm) || (int) $mm[1] >= 256,
     'потолки не занижены');
 foreach (['php', 'service', 'ng', 'up'] as $svc) {
-    $block = substr($compose, strpos($compose, "\n    $svc:\n"), 3000);
+    preg_match('~^    ' . preg_quote($svc, '~') . ':\n(.*?)(?=^    [a-z0-9_-]+:|\z)~ms', $compose, $match);
+    $block = $match[1] ?? '';
     chAssert(str_contains($block, 'restart: unless-stopped'),
         "$svc поднимается сам после падения");
 }
@@ -55,7 +56,8 @@ $np = substr($compose, strpos($compose, "\n    np:\n"), 2500);
 chAssert(!preg_match('~^\s+cap_add:~m', $np), 'у np нет cap_add: NET_ADMIN ему не нужен');
 // Обоснованные привилегии не тронуты — иначе туннели просто не поднимутся.
 foreach (['wg', 'wg1', 'oc', 'ovpn', 'ipsec', 'wp', 'ad'] as $svc) {
-    $block = substr($compose, strpos($compose, "\n    $svc:\n"), 3000);
+    preg_match('~^    ' . preg_quote($svc, '~') . ':\n(.*?)(?=^    [a-z0-9_-]+:|\z)~ms', $compose, $match);
+    $block = $match[1] ?? '';
     chAssert(str_contains($block, 'cap_add:'), "$svc сохранил NET_ADMIN (он ему нужен)");
 }
 
@@ -81,8 +83,8 @@ chAssert(!preg_match('~mihomo-linux-amd64-v1\.19\.30~', $df), 'версия miho
 
 // CI: новая переменная не должна пересобирать все 14 образов.
 $ci = (string) file_get_contents(__DIR__ . '/../.github/workflows/images.yml');
-chAssert(str_contains($ci, 'DNSLOOKUP_VERSION|SINGBOX_VERSION|MIHOMO_VERSION'),
-    'images.yml знает новые пины и собирает по ним только php');
+chAssert(str_contains($ci, 'DNSLOOKUP_VERSION|SINGBOX_SHA256|MIHOMO_VERSION|MIHOMO_SHA256'),
+    'images.yml знает пины утилит PHP');
 
 // ── 4. Образы ───────────────────────────────────────────────────────────────
 foreach (glob(__DIR__ . '/../dockerfile/*.dockerfile') as $file) {
@@ -120,7 +122,8 @@ chAssert(str_contains($ci, 'length) > 0'),
 
 // stop_grace_period у сервисов с состоянием
 foreach (['ad', 'ipsec', 'ovpn'] as $svc) {
-    $block = substr($compose, strpos($compose, "\n    $svc:\n"), 3000);
+    preg_match('~^    ' . preg_quote($svc, '~') . ':\n(.*?)(?=^    [a-z0-9_-]+:|\z)~ms', $compose, $match);
+    $block = $match[1] ?? '';
     chAssert(str_contains($block, 'stop_grace_period: 10s'),
         "$svc получает 10s на завершение: через секунду после SIGTERM прилетает SIGKILL");
 }
@@ -128,9 +131,10 @@ foreach (['ad', 'ipsec', 'ovpn'] as $svc) {
 chAssert(substr_count($compose, 'stop_grace_period: 1s') >= 15, 'остальным 1s не тронут');
 
 // depends_on у service
-$svcBlock = substr($compose, strpos($compose, "\n    service:\n"), 4000);
+preg_match('~^    service:\n(.*?)(?=^    [a-z0-9_-]+:|\z)~ms', $compose, $serviceMatch);
+$svcBlock = $serviceMatch[1] ?? '';
 foreach (['ipsec', 'telemt', 'wp'] as $dep) {
-    chAssert((bool) preg_match("~depends_on:.*?- $dep~s", $svcBlock),
+    chAssert((bool) preg_match("~depends_on:.*?\\n            $dep:\\n                condition: service_started~s", $svcBlock),
         "service ждёт $dep: стартовые задачи ходят в контейнеры по ssh");
 }
 

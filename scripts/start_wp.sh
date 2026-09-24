@@ -25,6 +25,18 @@ WARP_LICENSE_KEY=$(cat /config/pac.json | jq -r '.warp // empty')
 # идёт через первую, лишний ACCEPT ничего не ослабляет.
 XRAY_IPS=$(getent hosts xr 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
 SOCKS_ALLOW="${WARP_SOCKS_ALLOW:-${XRAY_IPS:-10.10.0.9}}"
+if [ "$(jq -r '.settings.egress // empty' /config/protocols/anytls/desired.json 2>/dev/null)" = warp ]; then
+    SOCKS_ALLOW="$SOCKS_ALLOW 10.10.0.22"
+fi
+if [ "$(jq -r '.settings.egress // empty' /config/protocols/mieru/desired.json 2>/dev/null)" = warp ]; then
+    SOCKS_ALLOW="$SOCKS_ALLOW 10.10.0.23"
+fi
+if [ "$(jq -r '.settings.egress // empty' /config/protocols/tuic/desired.json 2>/dev/null)" = warp ]; then
+    SOCKS_ALLOW="$SOCKS_ALLOW 10.10.0.24"
+fi
+if [ "$(jq -r '.settings.egress // empty' /config/protocols/shadowtls/desired.json 2>/dev/null)" = warp ]; then
+    SOCKS_ALLOW="$SOCKS_ALLOW 10.10.0.25"
+fi
 
 # Второй легитимный потребитель — контейнер ss, но только когда админ включил
 # тумблер «ss через warp» (меню SS). Состояние живёт там же, где его читает

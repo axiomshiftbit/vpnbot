@@ -40,7 +40,7 @@ jobs:
         run: |
           php_version=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
           sudo apt-get update -qq
-          sudo apt-get install -y "php${php_version}-yaml"
+          sudo apt-get install -y "php${php_version}-yaml" python3-yaml
           php -r 'exit(extension_loaded("yaml") ? 0 : 1);'
 
       - name: Xray для проверки конфигураций
@@ -66,6 +66,7 @@ jobs:
 
       - name: Тесты
         run: |
+          python3 -m unittest discover -s tests -p '*_test.py' || exit 1
           fail=0
           for f in tests/*_test.php; do
             if out=$(php "$f" 2>&1); then

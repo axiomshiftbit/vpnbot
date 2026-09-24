@@ -34,4 +34,4 @@ VER=$(git describe --tags --always 2>/dev/null || echo local)
 touch ./override.env ./docker-compose.override.yml
 
 exec env IP="$IP" VER="$VER" \
-    docker compose --env-file ./.env --env-file ./override.env up -d --force-recreate
+    python3 scripts/protocol_modules.py compose up -d --force-recreate

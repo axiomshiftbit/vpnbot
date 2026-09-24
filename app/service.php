@@ -39,4 +39,5 @@ $bot->setUpstreamDomain($c['transport'] != 'Reality' ? 't' : $c['reality']['doma
 $bot->setUpstreamDomainNaive($c['domain']);
 $bot->setUpstreamDomainOcserv($c['domain']);
 $bot->syncOcservCamouflage();
+$bot->syncManagedUpstreams();
 $bot->xrayUpdateRules();

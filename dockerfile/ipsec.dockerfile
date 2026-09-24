@@ -23,6 +23,7 @@ RUN set -eux; \
     apk add --no-cache \
         openssh \
         bash \
+        python3 \
         xl2tpd \
         ppp \
         iptables \

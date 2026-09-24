@@ -9,7 +9,7 @@ WorkingDirectory=__VPNBOT_PATH__
 ExecStartPre=/bin/sh -c "touch ./override.env ./docker-compose.override.yml"
 ExecStart=/bin/sh __VPNBOT_PATH__/scripts/compose_up.sh
 ExecStartPost=/bin/sh -c "bash ./update/update.sh &"
-ExecStop=/bin/sh -c "docker compose down --remove-orphans"
+ExecStop=/bin/sh -c "docker compose --profile '*' down --remove-orphans"
 ExecStopPost=/bin/sh __VPNBOT_PATH__/scripts/stop_update.sh __VPNBOT_PATH__/update/update_pid
 TimeoutStartSec=0
 [Install]
