@@ -822,20 +822,20 @@ $i = [
         'ru' => 'Что делать с ClientHello, чей SNI не совпадает с Fake-TLS доменом. reject_handshake = вести себя как обычный веб-сервер (дефолт). mask = прозрачно фронтить любой SNI на mask-host — полезно при рассинхроне ссылки и домена ("Unknown TLS SNI"). drop = молча закрыть.',
     ],
     'telemt web'  => [
-        'en' => 'WEB (Telegram Desktop)',
-        'ru' => 'WEB (Telegram Desktop)',
+        'en' => 'WEB (Telegram Desktop / Android)',
+        'ru' => 'WEB (Telegram Desktop / Android)',
     ],
     'telemt web note'  => [
-        'en' => 'WEB carries MTProto inside ordinary HTTPS on its own subdomain (port 443, no port in the link). Import the link in Telegram Desktop: Settings -> Advanced -> Connection type -> proxy type WEB. Compatible Telegram iOS versions use the https carrier; with negotiation enabled, keep https as the final fallback. Clients without WEB support use the regular tg://proxy links.',
-        'ru' => 'WEB несёт MTProto внутри обычного HTTPS на своём поддомене (порт 443, в ссылке порта нет). Ссылка импортируется в Telegram Desktop: Настройки -> Продвинутые -> Тип соединения -> тип прокси WEB. Совместимые версии Telegram iOS используют carrier https; при включённом подборе оставьте https последним запасным вариантом. Клиентам без WEB нужны обычные ссылки tg://proxy.',
+        'en' => 'WEB carries MTProto inside ordinary HTTPS on its own subdomain (port 443, no port in the link). Import the link in Telegram Desktop (Settings -> Advanced -> Connection type -> proxy type WEB) or open it in Telegram for Android. Compatible Telegram iOS versions use the https carrier; with negotiation enabled, keep https as the final fallback. Clients without WEB support use the regular tg://proxy links.',
+        'ru' => 'WEB несёт MTProto внутри обычного HTTPS на своём поддомене (порт 443, в ссылке порта нет). Ссылка импортируется в Telegram Desktop (Настройки -> Продвинутые -> Тип соединения -> тип прокси WEB) или открывается в Telegram для Android. Совместимые версии Telegram iOS используют carrier https; при включённом подборе оставьте https последним запасным вариантом. Клиентам без WEB нужны обычные ссылки tg://proxy.',
     ],
     'telemt web link'  => [
-        'en' => 'WEB link for Telegram Desktop',
-        'ru' => 'ссылка WEB для Telegram Desktop',
+        'en' => 'WEB link for Telegram Desktop / Android',
+        'ru' => 'ссылка WEB для Telegram Desktop / Android',
     ],
     'telemt web cert hint'  => [
-        'en' => 'the WEB host needs its own SAN in the certificate: run "renew SSL" once after enabling, otherwise Telegram Desktop refuses the connection',
-        'ru' => 'хосту WEB нужен свой SAN в сертификате: после включения один раз выполните "renew SSL", иначе Telegram Desktop не откроет соединение',
+        'en' => 'the WEB host needs its own SAN in the certificate: run "renew SSL" once after enabling, otherwise Telegram (Desktop, Android) refuses the connection',
+        'ru' => 'хосту WEB нужен свой SAN в сертификате: после включения один раз выполните "renew SSL", иначе Telegram (Desktop, Android) не откроет соединение',
     ],
     'telemt web blocked'  => [
         'en' => 'WEB requirements are not met',
@@ -846,8 +846,8 @@ $i = [
         'ru' => 'сначала задайте домен (настройки -> domain): WEB нужен собственный хостнейм',
     ],
     'telemt web need cert'  => [
-        'en' => 'install a certificate first (Settings -> SSL): Telegram Desktop validates it',
-        'ru' => 'сначала установите сертификат (настройки -> SSL): Telegram Desktop его проверяет',
+        'en' => 'install a certificate first (Settings -> SSL): Telegram validates it',
+        'ru' => 'сначала установите сертификат (настройки -> SSL): Telegram его проверяет',
     ],
     'telemt web need ip'  => [
         'en' => 'the server IP is unknown (env IP is empty): WEB needs a concrete public address',
@@ -886,8 +886,8 @@ $i = [
         'ru' => 'полный (WebSocket)',
     ],
     'telemt web negotiation note'  => [
-        'en' => 'with negotiation on, Telegram Desktop tries the carriers in order and settles on the first one that works, so a network that blocks one transport no longer breaks WEB. The last carrier is the fallback: it stays https, the only one clients without negotiation metadata (Telegram iOS) support. Needs telemt 3.5.4+.',
-        'ru' => 'при включённом подборе Telegram Desktop перебирает carrier по порядку и остаётся на первом заработавшем — сеть, которая режет один транспорт, больше не ломает WEB. Последний carrier запасной: он остаётся https, единственный поддерживаемый клиентами без метаданных подбора (Telegram iOS). Нужен telemt 3.5.4+.',
+        'en' => 'with negotiation on, Telegram Desktop and Android try the carriers in order and settles on the first one that works, so a network that blocks one transport no longer breaks WEB. The last carrier is the fallback: it stays https, the only one clients without negotiation metadata (Telegram iOS) support. Needs telemt 3.5.4+.',
+        'ru' => 'при включённом подборе Telegram Desktop и Android перебирают carrier по порядку и остаётся на первом заработавшем — сеть, которая режет один транспорт, больше не ломает WEB. Последний carrier запасной: он остаётся https, единственный поддерживаемый клиентами без метаданных подбора (Telegram iOS). Нужен telemt 3.5.4+.',
     ],
     'telemt web negotiation need version'  => [
         'en' => 'the running telemt is older than 3.5.4 — it silently ignores the carrier list, so the menu would show negotiation that is not actually happening. Update the telemt image.',
@@ -898,8 +898,8 @@ $i = [
         'ru' => 'путь WEB и диагностика бриджа требуют telemt 3.5.8+: старый бинарь молча их игнорирует, и ссылки с путём вели бы туда, где никто не отвечает. Обновите образ telemt.',
     ],
     'telemt web path note'  => [
-        'en' => 'path: the WEB endpoints move under a secret random prefix, and links carry it. Each enable picks a new prefix and invalidates every WEB link issued before — a quick way to revoke leaked links without touching user secrets. Needs a Telegram Desktop that supports path WEB links.',
-        'ru' => 'path: WEB-эндпоинты уходят под секретный случайный префикс, и ссылки несут его в себе. Каждое включение выбирает новый префикс и гасит все выданные раньше WEB-ссылки — быстрый отзыв утёкших ссылок без смены секретов пользователей. Нужен Telegram Desktop с поддержкой WEB-ссылок с путём.',
+        'en' => 'path: the WEB endpoints move under a secret random prefix, and links carry it. Each enable picks a new prefix and invalidates every WEB link issued before — a quick way to revoke leaked links without touching user secrets. Needs a Telegram client that supports path WEB links: check on your Desktop/Android version before handing links out.',
+        'ru' => 'path: WEB-эндпоинты уходят под секретный случайный префикс, и ссылки несут его в себе. Каждое включение выбирает новый префикс и гасит все выданные раньше WEB-ссылки — быстрый отзыв утёкших ссылок без смены секретов пользователей. Нужен клиент Telegram с поддержкой WEB-ссылок с путём: проверьте на своей версии Desktop/Android, прежде чем раздавать ссылки.',
     ],
     'telemt web path changed'  => [
         'en' => 'WEB path changed — every WEB link issued before is now invalid. Hand out the new ones (button 🌐).',
@@ -910,8 +910,8 @@ $i = [
         'ru' => 'диагностика бриджа',
     ],
     'telemt web diag note'  => [
-        'en' => 'bridge diagnostics: newly issued bridge pages report why Telegram Desktop failed before the handshake (no native boundary, no HELLO, page closed). Counts for the last hour appear in the TeleMT report (Diagnostics, needs beobachten). While it is on, telemt also keeps short request records (method, path, IP, User-Agent — no headers or bodies) in a bounded in-memory ring.',
-        'ru' => 'диагностика бриджа: новые страницы бриджа сообщают, почему Telegram Desktop сорвался до рукопожатия (нет нативной границы, нет HELLO, страница закрыта). Счётчики за последний час — в отчёте TeleMT (диагностика, нужен beobachten). Пока она включена, telemt держит в памяти, в ограниченном кольце, и краткие записи запросов (метод, путь, IP, User-Agent — без заголовков и тел).',
+        'en' => 'bridge diagnostics: newly issued bridge pages report why Telegram (Desktop, Android) failed before the handshake (no native boundary, no HELLO, page closed). Counts for the last hour appear in the TeleMT report (Diagnostics, needs beobachten). While it is on, telemt also keeps short request records (method, path, IP, User-Agent — no headers or bodies) in a bounded in-memory ring.',
+        'ru' => 'диагностика бриджа: новые страницы бриджа сообщают, почему Telegram (Desktop, Android) сорвался до рукопожатия (нет нативной границы, нет HELLO, страница закрыта). Счётчики за последний час — в отчёте TeleMT (диагностика, нужен beobachten). Пока она включена, telemt держит в памяти, в ограниченном кольце, и краткие записи запросов (метод, путь, IP, User-Agent — без заголовков и тел).',
     ],
     'telemt relays'  => [
         'en' => 'relays',

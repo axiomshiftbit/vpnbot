@@ -2370,7 +2370,7 @@ class Bot
         return false;
     }
 
-    // ── telemt WEB (тип прокси «WEB» в Telegram Desktop) ─────────────────────
+    // ── telemt WEB (тип прокси «WEB» в Telegram Desktop и Android) ──────────
     // telemt >= 3.5.0 умеет нести MTProto внутри ОБЫЧНОГО HTTPS: клиент ходит
     // на 443 отдельного FQDN, TLS терминирует наш ng, а telemt слушает plain
     // HTTP/1.1 на приватном порту в docker-сети. Ссылка — tg://webproxy БЕЗ
@@ -16483,7 +16483,7 @@ DNS-over-HTTPS with IP:
                     ? implode(', ', array_slice($out, 0, 8)) . (count($out) > 8 ? ' …' : '')
                     : '—';
             };
-            $L[] = "\n▌ WEB (Telegram Desktop)";
+            $L[] = "\n▌ WEB (Telegram Desktop / Android)";
             // Единственная строка, которую отдаёт и старый образ: lifecycle,
             // available и reason есть в ответе с самого появления WEB.
             $L[] = "runtime: " . ($web['lifecycle'] ?? '?')

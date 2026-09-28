@@ -763,7 +763,7 @@ $r = $mkRep(['/v1/runtime/web/status' => [
 $r->telemtReport();
 $rep = $r->sent[0] ?? '';
 twAssert(in_array('/v1/runtime/web/status', $r->paths, true), 'отчёт запрашивает статус WEB');
-twAssert(str_contains($rep, '▌ WEB (Telegram Desktop)'), 'секция WEB отрисована');
+twAssert(str_contains($rep, '▌ WEB (Telegram Desktop / Android)'), 'секция WEB отрисована');
 twAssert(str_contains($rep, 'runtime: running ✓'), 'состояние рантайма видно');
 twAssert(str_contains($rep, 'ingress: ✓ accepting  acceptors: 1/1'), 'ingress виден');
 twAssert(str_contains($rep, 'accepted: 42 (errors 0)'), 'счётчик accept(2) виден');
