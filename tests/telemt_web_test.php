@@ -614,10 +614,12 @@ $dbg  = $L['debug_bytes_global'] + $idx * 2 + 2 * 4 * 1024 * 1024;
 $lane = ($L['max_streams_per_session'] + $L['max_tombstones_per_session'] + 1)
     * $L['max_sessions_global'] * 512;
 // 3.5.6 добавил в ту же сумму индекс capability (по профилю) и резерв под
-// сокеты, ждущие ёмкости сверх max_http_connections.
+// сокеты, ждущие ёмкости сверх max_http_connections. В 3.5.8 запись индекса
+// выросла 32 → 64 байт: capability профиля хранится и в своём vhost, и в
+// глобальной таблице, которая ловит креденшелы на чужом маршруте.
 $reserved = $L['pending_bytes_global'] + $L['max_body_bytes_global'] + $L['max_static_bytes']
     + $idx + 2 * 8 * 1024 * 1024 + $dbg + $L['max_carrier_learning_entries'] * 512
-    + $L['max_profiles'] * 32
+    + $L['max_profiles'] * 64
     + $lane + $L['max_http_connections'] * $L['max_header_bytes']
     + $L['max_http_overload_connections'] * 4096;
 twAssert($reserved <= $L['memory_envelope_bytes'],
@@ -794,6 +796,188 @@ $rep = $r->sent[0] ?? '';
 twAssert($rep !== '', 'отчёт отправлен и без статуса WEB');
 twAssert(!str_contains($rep, '▌ WEB'), 'без данных секции WEB нет');
 twAssert(str_contains($rep, '▌ Users'), 'остальные секции на месте');
+
+// ── 14. Префикс WEB-эндпоинтов (web.vhosts[].base_path, telemt 3.5.8) ──────
+// Невалидный base_path telemt не игнорирует, а отвергает конфиг целиком, так
+// что нормализация повторяет его валидатор (validate_web/vhosts.rs).
+$b = $mk();
+twAssert($b->telemtWebPathOf([]) === '', 'по умолчанию префикса нет');
+foreach (['a1b2c3', 'telegram/relay', 'dobry-cola/super_app', str_repeat('a', 128)] as $ok) {
+    twAssert($b->telemtWebPathOf(['telemt_web_path' => $ok]) === $ok, "валидный префикс «{$ok}» принят");
+}
+foreach (['/lead', 'trail/', 'dou//ble', '-dash', 'a/_x', 'п', 'sp ace', '%2F', "abc\n",
+          str_repeat('a', 129), ['x'], 123] as $bad) {
+    twAssert($b->telemtWebPathOf(['telemt_web_path' => $bad]) === '',
+        'невалидный префикс ' . json_encode($bad, JSON_UNESCAPED_UNICODE) . ' → выключено');
+}
+
+$toml = $mk()->telemtToml();
+twAssert(!str_contains($toml, 'base_path'), 'без префикса ключа base_path нет (корневые маршруты)');
+$toml = $mk(['telemt_web_path' => 'a1b2c3d4e5f60718'])->telemtToml();
+twAssert(str_contains($toml, 'host = "' . $host . "\"\nbase_path = \"a1b2c3d4e5f60718\"\n"),
+    'base_path — ключ того же [[web.vhosts]], сразу после host');
+twAssert(strpos($toml, 'base_path') < strpos($toml, '[web.vhosts.decoy]'),
+    'base_path до [web.vhosts.decoy], иначе уехал бы в таблицу decoy');
+twAssert(!str_contains($mk(['telemt_web_path' => '/bad/'])->telemtToml(), 'base_path'),
+    'мусорный префикс в конфиг не попадает');
+
+// Ссылка на префикс — векторы из тестов самого telemt 3.5.8
+// (maestro/helpers/runtime.rs: path_web_proxy_links_use_the_tdesktop_marker).
+$vec = '000102030405060708090a0b0c0d0e0f';
+$b = $mk(['telemt_users' => ['bob' => $vec], 'telemt_web_path' => 'dobry-cola/super_app']);
+$link = $b->linkTelemtWeb('bob', $b->pacFake);
+twAssert($link === 'tg://webproxy?server=' . $host . '%2Fdobry-cola%2Fsuper_app&secret=cN0AAQIDBAUGBwgJCgsMDQ4P',
+    "dd-ссылка с путём совпадает с telemt: $link");
+$b->pacFake['telemt_web_secret_mode'] = 'plain';
+$link = $b->linkTelemtWeb('bob', $b->pacFake);
+twAssert($link === 'tg://webproxy?server=' . $host . '%2Fdobry-cola%2Fsuper_app&secret=cAABAgMEBQYHCAkKCwwNDg8',
+    "plain-ссылка с путём совпадает с telemt: $link");
+parse_str((string) parse_url($link, PHP_URL_QUERY), $p);
+twAssert($p['server'] === "$host/dobry-cola/super_app", 'server декодируется в host/path');
+// Без префикса формат прежний — выданные раньше ссылки не меняются.
+$b->pacFake['telemt_web_path'] = '';
+twAssert($b->linkTelemtWeb('bob', $b->pacFake) === "tg://webproxy?server=$host&secret=$vec",
+    'без префикса — прежний hex-формат');
+// Не-hex секрет (правленый pac.json) не должен давать ссылку-мусор.
+$b = $mk(['telemt_users' => ['bob' => 'zz'], 'telemt_web_path' => 'abc']);
+twAssert($b->linkTelemtWeb('bob', $b->pacFake) === '', 'не-hex секрет с путём — пустая ссылка');
+
+// ── 15. Диагностика бриджа ([web.debug] sideband, telemt 3.5.8) ─────────────
+$toml = $mk()->telemtToml();
+twAssert(!str_contains($toml, '[web.debug]'), 'по умолчанию [web.debug] не пишем');
+$toml = $mk(['telemt_web_diag' => 1])->telemtToml();
+twAssert(str_contains($toml, "[web.debug]\nenabled = true\nsideband = true\ncapture_lifecycle = true\n"),
+    'фича требует все три флага сразу');
+foreach (['capture_headers', 'capture_timings', 'capture_frames'] as $k) {
+    twAssert(str_contains($toml, "\n$k = false\n"), "$k выключен: в кольце только lifecycle");
+}
+twAssert(str_contains($toml, "\nbody_capture = \"off\"\n"), 'тела запросов не сохраняются');
+twAssert(strpos($toml, '[web.debug]') > strpos($toml, '[web.limits]')
+    && strpos($toml, '[web.debug]') < strpos($toml, '[[web.vhosts]]'),
+    '[web.debug] между [web.limits] и [[web.vhosts]]');
+twAssert(!str_contains($mk(['telemt_web_diag' => 1, 'telemt_web' => 0])->telemtToml(), '[web.debug]'),
+    'без WEB [web.debug] не пишем');
+
+// Длина callback_data новых кнопок.
+twAssert(strlen('/telemtWebPath') <= 64 && strlen('/telemtWebDiag') <= 64, 'новые кнопки влезают в callback_data');
+
+// ── 16. Кнопки path и диагностики: гейт 3.5.8 и рестарты ────────────────────
+$o = $mkOld('off');
+$o->ver = '3.5.7';
+$o->telemtWebPath();
+twAssert($o->telemtWebPathOf($o->pacFake) === '', '3.5.7: путь не включается');
+twAssert($o->answers === ['telemt web 358 need version'], '3.5.7: модалка про версию');
+twAssert($o->restarts === 0, '3.5.7: без рестарта');
+
+$o = $mkOld('off');
+$o->ver = '3.5.8';
+$o->telemtWebPath();
+$first = $o->telemtWebPathOf($o->pacFake);
+twAssert((bool) preg_match('~^[a-f0-9]{16}$~', $first), "3.5.8: включается случайный префикс: $first");
+twAssert($o->restarts === 1 && $o->nginxReloads === 0, 'путь применяется рестартом telemt, nginx не трогаем');
+twAssert($o->answers === ['telemt web path changed'], 'оператор предупреждён о смене ссылок');
+$o->telemtWebPath();
+twAssert($o->telemtWebPathOf($o->pacFake) === '', 'повторное нажатие выключает путь');
+$o->telemtWebPath();
+twAssert($o->telemtWebPathOf($o->pacFake) !== '' && $o->telemtWebPathOf($o->pacFake) !== $first,
+    'новое включение — новый префикс (ротация)');
+
+// Откатившийся образ: выключить сохранённый путь можно всегда.
+$o = $mkOld('off');
+$o->ver = '3.5.7';
+$o->pacFake['telemt_web_path'] = 'abcdef';
+$o->telemtWebPath();
+twAssert($o->telemtWebPathOf($o->pacFake) === '', 'на старом образе путь выключается');
+
+// WEB выключен — путь сохраняется, но рестарт (обрыв MTProto) не нужен.
+$o = $mkOld('off');
+$o->ver = '3.5.8';
+$o->pacFake['telemt_web'] = 0;
+$o->telemtWebPath();
+twAssert($o->telemtWebPathOf($o->pacFake) !== '' && $o->restarts === 0, 'без WEB путь пишется без рестарта');
+
+$o = $mkOld('off');
+$o->ver = '3.5.7';
+$o->telemtWebDiag();
+twAssert(empty($o->pacFake['telemt_web_diag']) && $o->restarts === 0, '3.5.7: диагностика не включается');
+twAssert($o->answers === ['telemt web 358 need version'], '3.5.7: модалка про версию для диагностики');
+$o->pacFake['telemt_web_diag'] = 1;
+$o->telemtWebDiag();
+twAssert(empty($o->pacFake['telemt_web_diag']) && $o->restarts === 1, 'на старом образе диагностика выключается');
+$o = $mkOld('off');
+$o->ver = '3.5.8';
+$o->telemtWebDiag();
+twAssert(!empty($o->pacFake['telemt_web_diag']) && $o->restarts === 1, '3.5.8: диагностика включается рестартом');
+
+// ── 17. Отчёт: состояние sideband и события бриджа ─────────────────────────
+class TelemtDiagReportBot extends TelemtReportBot
+{
+    public array $events = [];
+    public int   $diagFetches = 0;
+
+    public function telemtBridgeDiagnostics(): array
+    {
+        $this->diagFetches++;
+        return $this->events;
+    }
+}
+$mkDiag = static function (array $policy, array $events = []) use ($mk): TelemtDiagReportBot {
+    $r = (new ReflectionClass(TelemtDiagReportBot::class))->newInstanceWithoutConstructor();
+    $r->key = 'test-bot-key';
+    $r->ip  = '203.0.113.10';
+    $r->pacFake = ['telemt_beobachten' => 1] + $mk()->pacFake;
+    $r->input = ['chat' => 1, 'message_id' => 2, 'callback_id' => '3'];
+    $r->events = $events;
+    $r->apiFake = ['/v1/runtime/web/status' => [
+        'lifecycle' => 'running',
+        'available' => true,
+        'runtime'   => ['debug' => [
+            'policy' => $policy, 'records' => 12, 'records_capacity' => 4096,
+        ]],
+    ]];
+    return $r;
+};
+$r = $mkDiag(['enabled' => true, 'sideband' => true, 'capture_lifecycle' => true],
+    ['hello_timeout' => 1, 'runtime_started' => 5]);
+$r->telemtReport();
+$rep = $r->sent[0] ?? '';
+twAssert(str_contains($rep, 'bridge diag: ✓ sideband, records 12/4096'), 'эффективный sideband виден');
+twAssert(str_contains($rep, 'bridge events (1h): runtime_started=5, hello_timeout=1'),
+    'события бриджа отсортированы по частоте');
+$r = $mkDiag(['enabled' => true, 'sideband' => false, 'capture_lifecycle' => true]);
+$r->telemtReport();
+$rep = $r->sent[0] ?? '';
+twAssert(str_contains($rep, 'bridge diag: ✗ off'), 'без sideband фича выключена, хоть debug и включён');
+twAssert($r->diagFetches === 0, 'без sideband страницу трассы не запрашиваем');
+// Образ до 3.5.8: ключа sideband в политике нет — строки нет вовсе.
+$r = $mkDiag(['enabled' => false, 'capture_lifecycle' => true]);
+$r->telemtReport();
+twAssert(!str_contains($r->sent[0] ?? '', 'bridge diag'), 'на старом образе строки диагностики нет');
+
+// Разбор ячеек /web-status: строка push_record() telemt — kind, route/event,
+// method, status; у lifecycle-записи событие бриджа лежит в status.
+class TelemtDiagSshBot extends TelemtWebTestBot
+{
+    public string $out = '';
+    public string $cmd = '';
+
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
+    {
+        $this->cmd = $cmd;
+        return $this->out;
+    }
+}
+$s = (new ReflectionClass(TelemtDiagSshBot::class))->newInstanceWithoutConstructor();
+$s->out = "bridge_diagnostic</td><td>-</td><td>hello_timeout</td>\n"
+    . "bridge_diagnostic</td><td>-</td><td>runtime_started</td>\n"
+    . "bridge_diagnostic</td><td>-</td><td>hello_timeout</td>\n";
+twAssert($s->telemtBridgeDiagnostics() === ['hello_timeout' => 2, 'runtime_started' => 1], 'ячейки событий посчитаны');
+twAssert(str_contains($s->cmd, '/web-status?window_secs=3600&limit=1000'), 'окно в час, потолок маршрута');
+twAssert(str_contains($s->cmd, "grep -o 'bridge_diagnostic"), 'страница режется ещё в контейнере');
+twAssert(str_contains($s->cmd, '${b:+&before_seq=$b}') && str_contains($s->cmd, '[ $i -lt 5 ]'),
+    'идём по страницам before_seq, но не больше пяти (кольцо 4096 записей)');
+$s->out = '';
+twAssert($s->telemtBridgeDiagnostics() === [], 'пустой ответ — пустой список');
 
 if ($failed) {
     echo "telemt_web_test FAILED ($failed)\n";

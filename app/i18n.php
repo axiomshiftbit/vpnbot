@@ -893,6 +893,26 @@ $i = [
         'en' => 'the running telemt is older than 3.5.4 — it silently ignores the carrier list, so the menu would show negotiation that is not actually happening. Update the telemt image.',
         'ru' => 'запущенный telemt старше 3.5.4 — он молча игнорирует список carrier, и меню показывало бы подбор, которого на деле нет. Обновите образ telemt.',
     ],
+    'telemt web 358 need version'  => [
+        'en' => 'WEB path and bridge diagnostics need telemt 3.5.8+: an older binary silently ignores them, so path links would point where nothing answers. Update the telemt image.',
+        'ru' => 'путь WEB и диагностика бриджа требуют telemt 3.5.8+: старый бинарь молча их игнорирует, и ссылки с путём вели бы туда, где никто не отвечает. Обновите образ telemt.',
+    ],
+    'telemt web path note'  => [
+        'en' => 'path: the WEB endpoints move under a secret random prefix, and links carry it. Each enable picks a new prefix and invalidates every WEB link issued before — a quick way to revoke leaked links without touching user secrets. Needs a Telegram Desktop that supports path WEB links.',
+        'ru' => 'path: WEB-эндпоинты уходят под секретный случайный префикс, и ссылки несут его в себе. Каждое включение выбирает новый префикс и гасит все выданные раньше WEB-ссылки — быстрый отзыв утёкших ссылок без смены секретов пользователей. Нужен Telegram Desktop с поддержкой WEB-ссылок с путём.',
+    ],
+    'telemt web path changed'  => [
+        'en' => 'WEB path changed — every WEB link issued before is now invalid. Hand out the new ones (button 🌐).',
+        'ru' => 'Путь WEB изменён — все выданные раньше WEB-ссылки больше не действуют. Раздайте новые (кнопка 🌐).',
+    ],
+    'telemt web diag'  => [
+        'en' => 'bridge diagnostics',
+        'ru' => 'диагностика бриджа',
+    ],
+    'telemt web diag note'  => [
+        'en' => 'bridge diagnostics: newly issued bridge pages report why Telegram Desktop failed before the handshake (no native boundary, no HELLO, page closed). Counts for the last hour appear in the TeleMT report (Diagnostics, needs beobachten). While it is on, telemt also keeps short request records (method, path, IP, User-Agent — no headers or bodies) in a bounded in-memory ring.',
+        'ru' => 'диагностика бриджа: новые страницы бриджа сообщают, почему Telegram Desktop сорвался до рукопожатия (нет нативной границы, нет HELLO, страница закрыта). Счётчики за последний час — в отчёте TeleMT (диагностика, нужен beobachten). Пока она включена, telemt держит в памяти, в ограниченном кольце, и краткие записи запросов (метод, путь, IP, User-Agent — без заголовков и тел).',
+    ],
     'telemt relays'  => [
         'en' => 'relays',
         'ru' => 'релеи',
