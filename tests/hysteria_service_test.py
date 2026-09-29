@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -18,6 +19,18 @@ class Process:
 
 
 class HysteriaServiceTest(unittest.TestCase):
+    def test_core_from_path_is_validated_and_missing_core_is_reported(self):
+        binary = self.root / 'path-only-hysteria'
+        binary.write_text('#!/bin/sh\necho "server up and running"\nexec /bin/sleep 5\n')
+        binary.chmod(0o700)
+        self.s.binary = Path(binary.name)
+        with patch.dict(os.environ, {'PATH': str(self.root)}):
+            self.s.validate_config({'listen': '127.0.0.1:0'})
+            self.assertGreater(self.s.last_validation, 0)
+            binary.unlink()
+            with self.assertRaisesRegex(RuntimeError, '^core_unavailable$'):
+                self.s.validate_config({'listen': '127.0.0.1:0'})
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

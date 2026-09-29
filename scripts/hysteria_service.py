@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -106,6 +108,8 @@ class Supervisor:
         self.ready = False
         self.stats_time = 0
         self.error = ""
+        self.last_success = 0
+        self.last_validation = 0
         self.stopping = False
         self.api_secret = secrets.token_urlsafe(32)
         self.auth_path = "/" + secrets.token_hex(24)
@@ -233,6 +237,15 @@ class Supervisor:
     def validate_config(self, config):
         # Hysteria has no `check` command. Let the real binary initialize the
         # candidate on an ephemeral loopback socket before touching the live core.
+        if not shutil.which(str(self.binary)): raise RuntimeError("core_unavailable")
+        if not self.alive() or not self.config or config.get("listen") != self.config.get("listen"):
+            host, _, port = config.get("listen", ":443").rpartition(":")
+            host = host.strip("[]") or "0.0.0.0"
+            with socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                try: probe.bind((host, int(port)))
+                except OSError as exc:
+                    import errno
+                    raise RuntimeError("port_in_use" if exc.errno == errno.EADDRINUSE else "port_unavailable") from exc
         candidate = self.native_config(config)
         candidate["listen"] = "127.0.0.1:0"
         candidate["trafficStats"]["listen"] = "127.0.0.1:0"
@@ -246,6 +259,7 @@ class Supervisor:
                 while process.poll() is None and time.monotonic() < deadline:
                     log.seek(0)
                     if b"server up and running" in log.read(65536):
+                        self.last_validation = int(time.time())
                         return
                     time.sleep(0.05)
                 raise ValueError("invalid_config")
@@ -284,6 +298,7 @@ class Supervisor:
 
     def tick(self):
         with self.lock:
+            self.error = ""
             state = read_users(self.users_path)
             restore = state.get("restore_usage")
             if restore and self.usage.get("restored") != restore["id"]:
@@ -307,11 +322,11 @@ class Supervisor:
                 fingerprint = hashlib.sha256(b"".join(material)).hexdigest()
                 if fingerprint != self.fingerprint:
                     self.validate_config(config)
-            except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError, yaml.YAMLError) as exc:
                 # Keep the last valid server configuration, but still enforce
                 # the current credential state while an unrelated edit is invalid.
                 config, fingerprint = self.config, self.fingerprint
-                self.error = "configuration_rejected"
+                self.error = str(exc) if isinstance(exc, RuntimeError) else "configuration_rejected"
             else:
                 self.error = ""
             if config is None:
@@ -332,6 +347,7 @@ class Supervisor:
                     self.error = "configuration_rejected"
                 else:
                     self.fingerprint = fingerprint
+                    self.last_success = int(time.time())
             log = self.root / "core.log"
             if log.exists() and log.stat().st_size > 1024 * 1024:
                 with log.open("r+b") as stream:
@@ -341,6 +357,8 @@ class Supervisor:
                     stream.write(tail)
                     stream.truncate()
             atomic_json(self.root / "status.json", {"schema": 1, "time": int(time.time()), "running": self.alive(),
+                        "stats_time": int(time.time() - (time.monotonic() - self.stats_time)) if self.stats_time else 0,
+                        "last_success": self.last_success, "last_validation": self.last_validation,
                         "revision": state["revision"], "error": self.error, "users": len(state["users"])})
 
     def run(self):
@@ -350,12 +368,14 @@ class Supervisor:
                 started = time.monotonic()
                 try:
                     self.tick()
-                except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as exc:
                     with self.lock:
                         self.stop()
                     # No exception strings: parsers may include credentials.
                     try:
-                        atomic_json(self.root / "status.json", {"schema": 1, "time": int(time.time()), "running": False, "error": "state_or_io_error"})
+                        atomic_json(self.root / "status.json", {"schema": 1, "time": int(time.time()), "running": False,
+                                    "last_success": self.last_success, "last_validation": self.last_validation,
+                                    "error": self.error or (str(exc) if isinstance(exc, RuntimeError) else "state_or_io_error")})
                     except OSError:
                         pass
                 while not self.stopping and time.monotonic() - started < 1:

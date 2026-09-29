@@ -38,6 +38,7 @@ class MieruSupervisor(Supervisor):
         return snapshot["users"]
 
     def candidate(self, config, state):
+        if not os.access(self.binary, os.X_OK): raise RuntimeError("core_unavailable")
         info = Path(self.binary).stat()
         identity = (info.st_ino, info.st_mtime_ns, info.st_size)
         if identity != self.binary_identity:
@@ -46,7 +47,12 @@ class MieruSupervisor(Supervisor):
         encoded = json.dumps(config, sort_keys=True).encode()
         fingerprint = hashlib.sha256(encoded + self.binary_hash).hexdigest()
         if fingerprint == self.fingerprint and self.alive(): return None, fingerprint
-        self.control("check", encoded)
+        self.check_ports(config)
+        try:
+            self.control("check", encoded)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("configuration_rejected") from exc
+        self.last_validation = int(time.time())
         directory = self.root / ("generation-" + uuid.uuid4().hex)
         directory.mkdir(mode=0o700)
         atomic_json(directory / "config.json", config)

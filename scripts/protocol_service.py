@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -60,6 +61,8 @@ class Supervisor:
         self.active = []
         self.stats_time = 0
         self.error = ""
+        self.last_success = 0
+        self.last_validation = 0
         self.last_poll = 0
         self.last_write = 0
         self.binary_identity = None
@@ -229,8 +232,13 @@ class Supervisor:
 
     def candidate(self, config, state):
         # File contents, not just JSON, participate in revision detection.
+        if not os.access(self.binary, os.X_OK):
+            raise RuntimeError("core_unavailable")
         tls = config["inbounds"][0].get("tls")
-        material = (Path(tls["certificate_path"]).read_bytes(), Path(tls["key_path"]).read_bytes()) if tls else ()
+        try:
+            material = (Path(tls["certificate_path"]).read_bytes(), Path(tls["key_path"]).read_bytes()) if tls else ()
+        except OSError as exc:
+            raise RuntimeError("tls_unavailable") from exc
         info = Path(self.binary).stat()
         identity = (info.st_ino, info.st_mtime_ns, info.st_size)
         if identity != self.binary_identity:
@@ -240,6 +248,7 @@ class Supervisor:
                                      + state["settings"]["sni"].encode() + b"".join(material) + self.binary_hash).hexdigest()
         if fingerprint == self.fingerprint and self.alive():
             return None, fingerprint
+        self.check_ports(config)
         directory = self.root / ("generation-" + uuid.uuid4().hex)
         directory.mkdir(mode=0o700)
         try:
@@ -254,18 +263,51 @@ class Supervisor:
                 except ValueError:
                     identity_option = "-verify_hostname"
                 # x509 -checkhost exits 0 even on mismatch; verify checks dates too.
-                subprocess.run(["openssl", "verify", "-trusted", str(certificate), "-partial_chain",
-                                "-purpose", "sslserver", identity_option, hostname, str(certificate)],
-                               capture_output=True, check=True, timeout=5)
+                try:
+                    subprocess.run(["openssl", "verify", "-trusted", str(certificate), "-partial_chain",
+                                    "-purpose", "sslserver", identity_option, hostname, str(certificate)],
+                                   capture_output=True, check=True, timeout=5)
+                except subprocess.CalledProcessError as exc:
+                    category = "tls_invalid"
+                    for marker, code in ((b"certificate has expired", "tls_expired"),
+                                         (b"not yet valid", "tls_not_yet_valid"),
+                                         (b"mismatch", "tls_name_mismatch")):
+                        if marker in (exc.stderr or b""): category = code; break
+                    raise RuntimeError(category) from exc
                 tls["certificate_path"] = str(certificate)
                 tls["key_path"] = str(directory / "private.pem")
             atomic_json(directory / "config.json", config)
-            subprocess.run([self.binary, "check", "-c", str(directory / "config.json")],
-                           capture_output=True, check=True, timeout=10)
+            try:
+                subprocess.run([self.binary, "check", "-c", str(directory / "config.json")],
+                               capture_output=True, check=True, timeout=10)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError("configuration_rejected") from exc
+            self.last_validation = int(time.time())
             return directory, fingerprint
         except Exception:
             shutil.rmtree(directory)
             raise
+
+    def check_ports(self, config):
+        def listeners(value):
+            if self.protocol == "mieru":
+                return {(value.get("listenIPAddress", "0.0.0.0"), p["port"], p["protocol"].lower())
+                        for p in value.get("portBindings", [])}
+            return {(i.get("listen", "0.0.0.0"), i["listen_port"], "udp" if i.get("type") == "tuic" else "tcp")
+                    for i in value.get("inbounds", []) if "listen_port" in i}
+        own = listeners(read_json(self.current / "config.json")) if self.current and self.alive() else set()
+        for host, port, transport in listeners(config) - own:
+            family = socket.AF_INET6 if ":" in host else socket.AF_INET
+            with socket.socket(family, socket.SOCK_DGRAM if transport == "udp" else socket.SOCK_STREAM) as probe:
+                # Native TCP listeners reuse TIME_WAIT sockets after a restart.
+                # A plain bind would falsely classify them as another service.
+                if transport == "tcp":
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    probe.bind((host, port))
+                except OSError as exc:
+                    import errno
+                    raise RuntimeError("port_in_use" if exc.errno == errno.EADDRINUSE else "port_unavailable") from exc
 
     def tick(self):
         # Keep the child's append-only descriptor valid while bounding disk
@@ -341,6 +383,7 @@ class Supervisor:
                 shutil.rmtree(directory)
                 raise
             self.current, self.fingerprint = directory, fingerprint
+            self.last_success = int(time.time())
             for previous in self.root.glob("generation-*"):
                 if previous not in (directory, old_directory):
                     shutil.rmtree(previous)
@@ -367,6 +410,7 @@ class Supervisor:
                     "running": self.alive(), "pid": self.process.pid if self.alive() else None,
                     "revision": self.applied_revision, "desired_revision": state.get("revision") if state else None,
                     "stats_time": self.stats_time, "active": self.active, "error": self.error,
+                    "last_success": self.last_success, "last_validation": self.last_validation,
                     "core_version": self.binary_version()})
 
     def run(self):

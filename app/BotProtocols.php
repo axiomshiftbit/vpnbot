@@ -737,13 +737,17 @@ trait BotProtocols
         if ($status['stale'] && $s['enabled']) $phase = 'нет свежего статуса';
         if (($status['revision'] ?? null) !== $s['revision']) $phase .= '; ожидается применение';
         if ($s['enabled'] && !$this->protocolPortApplied($protocol, $s)) $phase .= '; внешний маршрут ещё не применён';
-        if (!empty($status['error'])) $phase .= '; ошибка конфигурации, запуска или статистики';
+        if (!empty($status['error'])) $phase .= '; ' . self::serviceErrorText((string) $status['error']);
         $text = [self::esc($title) . ' — ' . $phase];
         $buttons = [];
         if ($id !== '') {
             $u = $s['users'][$id] ?? null;
             if (!$u) throw new RuntimeException('Доступ не найден');
             $bytes = $usage['users'][$id] ?? null;
+            $text[] = 'Доступ: ' . AccessPolicy::reason($u, AccessPolicy::bytes($u, $bytes), time());
+            if ($u['quota'] !== null && AccessPolicy::bytes($u, $bytes) !== null) $text[] = 'Осталось: ' . $this->getBytes(max(0, $u['quota'] - AccessPolicy::bytes($u, $bytes)));
+            array_push($text, ...$this->accessPolicySummary($u));
+            $buttons[] = [['text' => 'Календарь и уведомления', 'callback_data' => "/ap $protocol $id"]];
             $text[] = self::esc($u['name']) . ($store->allowed($u, $id, $usage) ? ' 🟢' : ' 🔴');
             $text[] = $bytes ? 'Отправлено: ' . $this->protocolBytes($bytes['upload']) . '; получено: ' . $this->protocolBytes($bytes['download'])
                 : 'Статистика ещё не получена';
@@ -789,6 +793,7 @@ trait BotProtocols
             }
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "/protocol $protocol"]];
         } else {
+            $buttons[] = [['text' => 'Диагностика', 'callback_data' => "/diag $protocol"]];
             $text[] = self::esc($s['settings']['host'] . ':' . $s['settings']['port'] . ($protocol === 'mieru' ? ' · ' . $s['settings']['transport'] : ' · SNI ' . $s['settings']['sni']));
             if (!empty($s['settings']['self_hosted'])) $text[] = 'Прикрытие собственным сайтом: https://' . self::esc($protocol === 'anytls' ? $s['settings']['cover_host'] : $s['settings']['sni']) . '. Домен берётся из настроек этого сервера.';
             if ($protocol === 'anytls' && !empty($s['settings']['self_hosted'])) $text[] = 'Имя поддомена формируется автоматически. Запись DNS (A/AAAA/CNAME или wildcard) должна указывать на этот сервер, а сертификат TLS — включать это имя.';
@@ -809,6 +814,9 @@ trait BotProtocols
             $buttons[] = [['text' => $protocol === 'mieru' ? 'Адрес / порт / транспорт' : 'Адрес / SNI / порт', 'callback_data' => "/protocol $protocol settings"]];
             if (in_array($protocol, ['anytls', 'shadowtls', 'tuic'], true)) $buttons[] = [['text' => $protocol === 'tuic' ? 'Использовать домен сервера' : 'Прикрытие своим сайтом · авто', 'callback_data' => "/protocol $protocol auto"]];
             $buttons[] = [['text' => 'Выход: ' . $s['settings']['egress'], 'callback_data' => "/protocol $protocol egress"]];
+            if ($s['settings']['egress'] === 'warp') {
+                $text[] = 'Выход через WARP передаёт только TCP приложений. UDP отклоняется; при отказе WARP прямой обход не включается.';
+            }
             $buttons[] = [['text' => 'Дополнительные настройки', 'callback_data' => "/po $protocol"]];
             if (in_array($protocol, ['anytls', 'shadowtls'], true)) {
                 $buttons[] = [['text' => 'TLS fingerprint: ' . ($s['settings']['options']['client']['fingerprint'] ?? 'default'),
@@ -819,6 +827,7 @@ trait BotProtocols
             $buttons[] = [['text' => 'Relay для подписок', 'callback_data' => "/prmanage $protocol"]];
             $legacy = array_filter($s['users'], static fn($u) => !isset($u['xray_source']));
             if ($legacy) $text[] = 'Ниже — ранее созданные отдельные доступы. Их настройки и старые ссылки сохранены для действующих клиентов.';
+            if ($legacy) $buttons[] = [['text' => 'Групповые действия · отдельные доступы', 'callback_data' => "/abstart $protocol"]];
             $last = max(0, (int) ceil(count($legacy) / 20) - 1); $page = min(max(0, $page), $last);
             foreach (array_slice($legacy, $page * 20, 20, true) as $uid => $user) $buttons[] = [['text' => mb_substr($user['name'], 0, 45), 'callback_data' => "/protocol $protocol user $uid"]];
             $navigation = [];

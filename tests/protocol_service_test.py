@@ -248,9 +248,53 @@ class ProtocolTests(unittest.TestCase):
             self.assertTrue((generation / 'config.json').exists())
             supervisor.fingerprint = fingerprint
             with patch.object(supervisor, 'alive', return_value=True):
-                with self.assertRaises(subprocess.CalledProcessError):
+                with self.assertRaisesRegex(RuntimeError, 'tls_name_mismatch'):
                     supervisor.candidate(copy.deepcopy(config), {'settings': {'sni': 'wrong.test'}})
             self.assertTrue((generation / 'config.json').exists())
+
+class DiagnosticTests(unittest.TestCase):
+    def test_tcp_time_wait_does_not_block_restart(self):
+        import socket
+        with tempfile.TemporaryDirectory() as directory:
+            with socket.socket() as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(('127.0.0.1', 0)); listener.listen()
+                port = listener.getsockname()[1]
+                with socket.create_connection(('127.0.0.1', port), timeout=2) as peer:
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.shutdown(socket.SHUT_WR)
+                        self.assertEqual(peer.recv(1), b'')
+                        peer.shutdown(socket.SHUT_WR)
+                        self.assertEqual(connection.recv(1), b'')
+            supervisor = service.Supervisor(Path(directory) / 'state', binary='/bin/true')
+            config = {'inbounds': [{'type': 'anytls', 'listen': '127.0.0.1', 'listen_port': port}]}
+            supervisor.check_ports(config)
+
+    def test_busy_port_and_own_port_are_distinguished(self):
+        import socket
+        with tempfile.TemporaryDirectory() as directory, socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', 0)); occupied.listen()
+            config = {'inbounds': [{'type': 'anytls', 'listen': '127.0.0.1', 'listen_port': occupied.getsockname()[1]}]}
+            supervisor = service.Supervisor(Path(directory) / 'state', binary='/bin/true')
+            with self.assertRaisesRegex(RuntimeError, 'port_in_use'):
+                supervisor.check_ports(config)
+            current = Path(directory) / 'current'; current.mkdir()
+            service.atomic_json(current / 'config.json', config); supervisor.current = current
+            with patch.object(supervisor, 'alive', return_value=True):
+                supervisor.check_ports(config)
+            supervisor.last_success = 1234; supervisor.last_validation = 1233
+            supervisor.write_status(None, 'error')
+            result = service.read_json(supervisor.root / 'status.json')
+            self.assertEqual(result['last_success'], 1234)
+            self.assertEqual(result['last_validation'], 1233)
+
+    def test_missing_core_has_safe_category(self):
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor = service.Supervisor(Path(directory) / 'state', binary='/definitely-missing-core')
+            with self.assertRaisesRegex(RuntimeError, '^core_unavailable$'):
+                supervisor.candidate({'inbounds': [{}]}, {'settings': {'sni': 'test'}})
+
 
 class SystemdMigrationTests(unittest.TestCase):
     def setUp(self):

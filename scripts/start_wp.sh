@@ -189,6 +189,9 @@ warp_up() {
         sleep 1
         i=$((i + 1))
     done
+    # Интерфейс создаётся до handshake. Не оставляем его после неудачи:
+    # tunnel_up() иначе принял бы его за готовый туннель на следующем тике.
+    wg-quick down "$WGCF_CONF" 2>/dev/null || true
     return 1
 }
 

@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/ProtocolOptions.php';
+require_once __DIR__ . '/AccessPolicy.php';
 
 /** Protocol-specific credentials, linked to Xray users or retained for legacy access. */
 final class ManagedProtocol
@@ -203,6 +204,7 @@ final class ManagedProtocol
                 || !is_string($u['xray_credential'] ?? null) || !preg_match('/\A[a-f0-9]{64}\z/D', $u['xray_credential']))) {
                 throw new InvalidArgumentException('Неверная связь с пользователем VLESS');
             }
+            AccessPolicy::validate($u);
             foreach (['expires', 'quota'] as $key) {
                 if (!array_key_exists($key, $u) || ($u[$key] !== null && (!is_int($u[$key]) || $u[$key] <= 0))) {
                     throw new InvalidArgumentException('Срок и лимит должны быть положительными или отсутствовать');

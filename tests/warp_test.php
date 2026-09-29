@@ -115,7 +115,7 @@ warpAssert(
 // Ищем именно ВЫЗОВЫ (строковые литералы команд), а не упоминания в
 // комментариях: warp-cli/warp-svc в образе wp отсутствуют.
 warpAssert(
-    !preg_match('~[\'"][^\'"\n]*warp-(cli|svc)~', $botSrc),
+    !preg_match('~[\'"][^\'"\n]*warp-(cli|svc)\b~', $botSrc),
     'в боте не осталось вызовов warp-cli/warp-svc — их нет в образе wp'
 );
 warpAssert(
@@ -192,29 +192,8 @@ warpAssert(($prof['ip'] ?? '') === '172.16.0.2', 'адрес интерфейс�
 warpAssert(($prof['mtu'] ?? 0) === 1280, 'mtu');
 @unlink($tmp);
 
-// ── 5b. Смена ключа не должна терять оплаченный аккаунт ────────────────────
-// wgcf register — сетевой вызов к API Cloudflare, он падает. Раньше перед ним
-// стоял rm -f обоих файлов, и на упавшей регистрации аккаунт с оплаченным
-// WARP+ исчезал безвозвратно (private_key/token взять негде).
-$addWarp = '';
-if (preg_match('~public function addWarpPlus\(.*?\n    \}~s', $botSrc, $m)) {
-    $addWarp = $m[0];
-}
-warpAssert($addWarp !== '', 'addWarpPlus найден');
-warpAssert(strpos($addWarp, 'rm -f /etc/warp/wgcf-profile.conf') === false, 'старый аккаунт больше не удаляется безвозвратно');
-warpAssert(strpos($addWarp, 'mv "$f" ".bak/$f"') !== false, 'старые файлы уходят в .bak до регистрации');
-warpAssert(strpos($addWarp, '$restore = function ()') !== false, 'есть восстановление прежнего аккаунта');
-// КАЖДЫЙ ранний выход после бэкапа обязан восстановить аккаунт, иначе часть
-// веток по-прежнему оставляла бы пользователя без WARP+.
-$afterBackup = substr($addWarp, strpos($addWarp, '$restore = function ()'));
-$earlyExits  = preg_match_all('~\n\s+return;\n~', $afterBackup);
-$restores    = substr_count($afterBackup, '$restore();');
-warpAssert($restores >= $earlyExits - 1, "все ранние выходы восстанавливают аккаунт ($restores restore на $earlyExits return)");
-warpAssert(strpos($addWarp, "rm -rf /etc/warp/.bak") !== false, 'на успешном пути бэкап убирается');
-warpAssert(
-    strpos($afterBackup, '$restore();') < strpos($afterBackup, "rm -rf /etc/warp/.bak"),
-    'очистка .bak идёт последней, после всех точек восстановления'
-);
+// Откат аккаунта, отказы SSH и гонки проверяются выполнением команд
+// в warp_lifecycle_test.php.
 
 // ── 5c. Персональный WARP-аккаунт на каждого клиента ───────────────────────
 // Общий серверный ключ в клиентских конфигах означал бы, что сессии выбивают
