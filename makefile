@@ -50,6 +50,8 @@ start: pull # запуск контейнеров
 	# запускается. Префикс `-` обязателен: без модуля в ядре make не должен ронять
 	# запуск контейнеров (L2TP отвалится, IKEv2 и остальное работают).
 	-modprobe l2tp_ppp 2>/dev/null && echo l2tp_ppp > /etc/modules-load.d/vpnbot-l2tp.conf || echo "WARN: l2tp_ppp unavailable — L2TP off, IKEv2 ok"
+	# WARP wg-quick требует эти модули при восстановлении правил netfilter.
+	-modprobe -a xt_comment xt_mark xt_connmark 2>/dev/null && printf 'xt_comment\nxt_mark\nxt_connmark\n' > /etc/modules-load.d/vpnbot-warp.conf || echo "WARN: netfilter modules unavailable — WARP wg-quick may fail"
 	IP=$(IP) VER=$(VER) python3 scripts/protocol_modules.py compose up -d --force-recreate
 u: preup start
 d: # остановка контейнеров

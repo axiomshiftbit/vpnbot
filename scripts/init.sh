@@ -120,6 +120,14 @@ else
     echo "WARN: kernel module l2tp_ppp unavailable — L2TP won't work; IKEv2 still fine" >&2
 fi
 
+# wg-quick в WARP использует comment, mark и CONNMARK в правилах netfilter.
+# Контейнер не может загрузить модули: без них iptables-restore обрывает up.
+if modprobe -a xt_comment xt_mark xt_connmark 2>/dev/null; then
+    printf 'xt_comment\nxt_mark\nxt_connmark\n' > /etc/modules-load.d/vpnbot-warp.conf
+else
+    echo "WARN: netfilter modules unavailable — WARP wg-quick may fail" >&2
+fi
+
 # Docker ставим из официального apt-репозитория с проверкой ключа, а не
 # `curl https://get.docker.com | sh`. Тот скрипт исполнялся root'ом без сверки
 # подписи или контрольной суммы (-f защищает только от HTTP-ошибок), то есть

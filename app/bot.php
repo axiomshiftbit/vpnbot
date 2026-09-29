@@ -4154,7 +4154,7 @@ class Bot
     public static function naiveCredOk($v): bool
     {
         return is_string($v) && $v !== '' && strlen($v) <= 128
-            && (bool) preg_match('#^[A-Za-z0-9._~!$&\'()*+,;=:@%-]+$#', $v);
+            && (bool) preg_match('#^[A-Za-z0-9._~!$&\'()*+,;=:@%-]+$#D', $v);
     }
 
     // Есть ли смысл показывать ссылку naive: пока креды пустые/негодные,
@@ -4190,6 +4190,11 @@ class Bot
 
     public function restartNaive()
     {
+        return $this->withLock('naive', fn() => $this->applyNaive());
+    }
+
+    private function applyNaive()
+    {
         $pac  = $this->getPacConf();
         $user = (string) ($pac['naive']['user'] ?? '');
         $pass = (string) ($pac['naive']['pass'] ?? '');
@@ -4197,23 +4202,30 @@ class Bot
         // Плейсхолдер — то же значение, что в шаблоне config/Caddyfile: пока
         // креды не заданы, caddy не должен подниматься (тот же гард в
         // start_np.sh), иначе сервис работает с угадываемым паролем.
-        $ok = self::naiveCredOk($user) && self::naiveCredOk($pass);
+        $ok = self::naiveCredOk($user) && self::naiveCredOk($pass)
+            && !($user === 'CHANGEME' && $pass === 'CHANGEME');
         // preg_replace_callback, а не preg_replace: user/pass идут в замену как
         // литералы (иначе `$`/`\` в пароле трактуются как backreference).
         $t = preg_replace_callback(
-            '~^(\t+)?basic_auth[^\n]+~sm',
+            '~^([ \t]*)basic_auth[ \t]+[^\n]+~m',
             fn($m) => ($m[1] ?? '') . 'basic_auth ' . ($ok ? "$user $pass" : 'CHANGEME CHANGEME'),
-            $c
+            $c,
+            -1,
+            $replacements
         );
-        // json_encode-класс: file_put_contents с пустым/битым содержимым угробил
-        // бы конфиг. preg_replace_callback отдаёт null при ошибке движка.
-        if (!is_string($t) || $t === '') {
-            error_log('restartNaive: Caddyfile not written — preg_replace_callback failed');
+        // Не запускать конфиг без аутентификации или с неоднозначными реквизитами.
+        // preg_replace_callback отдаёт null при ошибке движка.
+        if (!is_string($t) || $t === '' || $replacements !== 1) {
+            error_log('restartNaive: Caddyfile not written — expected one basic_auth directive');
 
             return false;
         }
+        // Caddy получает каталог /config: атомарная замена видна контейнеру.
+        // При отказе записи работающий процесс остаётся с прежним конфигом.
+        if (!$this->writePrivateKey('/config/Caddyfile', $t)) {
+            throw new RuntimeException('Не удалось сохранить конфигурацию Naive');
+        }
         $this->ssh('pkill caddy', 'np');
-        file_put_contents('/config/Caddyfile', $t);
         if (!$ok || empty($this->getHashSubdomain('np'))) {
             return false;
         }
@@ -4489,9 +4501,11 @@ class Bot
         if (!self::naiveCredOk($user)) {
             return $this->naiveCredReject();
         }
-        $pac = $this->getPacConf();
-        $pac['naive']['user'] = $user;
-        $this->setPacConf($pac);
+        $this->withLock('pac', function () use ($user) {
+            $pac = $this->getPacConf();
+            $pac['naive']['user'] = $user;
+            if (!$this->setPacConf($pac)) throw new RuntimeException('Не удалось сохранить логин Naive');
+        });
         $this->restartNaive();
         $this->menu('naive');
     }
@@ -4502,9 +4516,11 @@ class Bot
         if (!self::naiveCredOk($pass)) {
             return $this->naiveCredReject();
         }
-        $pac = $this->getPacConf();
-        $pac['naive']['pass'] = $pass;
-        $this->setPacConf($pac);
+        $this->withLock('pac', function () use ($pass) {
+            $pac = $this->getPacConf();
+            $pac['naive']['pass'] = $pass;
+            if (!$this->setPacConf($pac)) throw new RuntimeException('Не удалось сохранить пароль Naive');
+        });
         $this->restartNaive();
         $this->menu('naive');
     }
