@@ -33,6 +33,8 @@ class ProtocolInterfaceBot extends Bot {
     public function getCloakConfig() { return []; }
     public function getStlsConfig() { return []; }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { return ''; }
+    public function telemtWriteServiceState(bool $enabled): void {}
+    public function telemtWriteToml(string $toml): void {}
     protected function sessionApply(callable $fn) { $fn(); }
     public function getPacConf() { return self::PAC_DEFAULTS; }
     public function stashReply($r, array $state) { $_SESSION['reply'][$r['result']['message_id']] = $state; }

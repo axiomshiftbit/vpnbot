@@ -545,6 +545,11 @@ class Bot
 
     public function action()
     {
+        $telemtRoute = (string) (($this->input['callback'] ?? '') ?: ($this->input['message'] ?? ''));
+        if (preg_match('~^(?:/telemt(?:[A-Z]|$)|/tu )~', $telemtRoute) && !$this->protocolModuleEnabled('telemt')) {
+            if ($this->admin) $this->protocolModulesMenu();
+            return;
+        }
         // Carry the entry point in each callback, including old messages and concurrent chats.
         $this->protocolReturnMain = false;
         if (!empty($this->input['callback']) && preg_match('~^/!(protocol|pr|prset|prmanage|po|ps|pf) ~', $this->input['callback'])) {
@@ -2218,6 +2223,38 @@ class Bot
         return $this->withLock('telemt', fn() => $this->applyTelemt());
     }
 
+    public function telemtWriteServiceState(bool $enabled): void
+    {
+        @mkdir('/config/telemt', 0755, true);
+        if (!$this->writePrivateKey('/config/telemt/service-enabled', $enabled ? "1\n" : "0\n")) {
+            throw new RuntimeException('Не удалось сохранить состояние TeleMT');
+        }
+    }
+
+    public function toggleTelemtService(): void
+    {
+        if (!$this->admin) return;
+        $this->withLock('telemt', function () {
+            $modules = new ProtocolModules($this->protocolModulesFile);
+            $enabled = $modules->enabled('telemt');
+            if ($enabled) {
+                // Остановка до смены модуля: ssh() не обращается к выключенным сервисам.
+                $this->telemtWriteServiceState(false);
+                $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
+            }
+            try {
+                $modules->set('telemt', !$enabled);
+                if (!$enabled) $this->applyTelemt();
+            } catch (Throwable $e) {
+                if ($modules->enabled('telemt') !== $enabled) $modules->set('telemt', $enabled);
+                $this->telemtWriteServiceState($enabled);
+                if ($enabled) $this->applyTelemt();
+                throw $e;
+            }
+        });
+        if (!empty($this->getPacConf()['telemt_web'])) $this->cloakNginx();
+    }
+
     // Один порядок блокировок для кнопок и перезапуска: telemt → pac.
     // Старый перезапуск не должен снова разрешать отключённого пользователя.
     public function telemtConfUpdate(callable $fn)
@@ -2238,6 +2275,10 @@ class Bot
 
     private function applyTelemt()
     {
+        if (!$this->protocolModuleEnabled('telemt')) {
+            $this->telemtWriteServiceState(false);
+            return;
+        }
         $conf = $this->telemtSave(function (&$current) {
             [$current] = $this->normalizeTelemtUsers($current);
             return $current;
@@ -2250,6 +2291,7 @@ class Bot
             $this->telemtWebDecoy();
         }
         $this->telemtWriteToml($this->telemtToml($conf));
+        $this->telemtWriteServiceState(true);
         $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
         if (empty($conf['telemt_users'])) {
             return;
@@ -2619,7 +2661,7 @@ class Bot
 
     public function telemtWebEnabled(array $conf): bool
     {
-        return !empty($conf['telemt_web']) && !$this->telemtWebBlockers($conf);
+        return $this->protocolModuleEnabled('telemt') && !empty($conf['telemt_web']) && !$this->telemtWebBlockers($conf);
     }
 
     // WEB появился в telemt 3.5.0. Старый бинарь от секции [web] НЕ падает:
@@ -2646,6 +2688,7 @@ class Bot
     // прекрасно уживаются на одном пользователе.
     public function linkTelemtWeb($name, $conf = false)
     {
+        if (!$this->protocolModuleEnabled('telemt')) return '';
         $conf = is_array($conf) ? $conf : $this->getPacConf();
         $secret = $conf['telemt_users'][$name] ?? '';
         if ($secret === '') {
@@ -2805,6 +2848,7 @@ class Bot
     // stay untouched — same idea as applyRelay keeping SNI real.
     public function linkTelemt($name, $relay = null)
     {
+        if (!$this->protocolModuleEnabled('telemt')) return '';
         [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
         if ($changed) {
             $conf = $this->telemtConfUpdate(function (&$current) {
@@ -15516,6 +15560,7 @@ DNS-over-HTTPS with IP:
 
     public function telemt($update = false)
     {
+        if (!$this->protocolModuleEnabled('telemt')) { $this->protocolModulesMenu(); return; }
         [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
         if ($changed) {
             $conf = $this->telemtConfUpdate(function (&$current) {

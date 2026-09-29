@@ -302,6 +302,7 @@ services:
                 required: false
             telemt:
                 condition: service_started
+                required: false
             wp:
                 condition: service_started
     # Брокер Docker API. Сокет держит ОН, а php и service ходят к нему по HTTP
@@ -485,12 +486,13 @@ services:
         init: true
         logging: *default-logging
     telemt:
+        profiles: [telemt]
         image: ghcr.io/axiomshiftbit/vpnbot-telemt:${VPNBOT_TAG:-latest}
         build:
             dockerfile: dockerfile/telemt.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                TELEMT_VERSION: ${TELEMT_VERSION:-3.5.8}
+                TELEMT_VERSION: ${TELEMT_VERSION:-3.5.9}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro

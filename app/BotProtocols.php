@@ -389,6 +389,7 @@ trait BotProtocols
         return array_values(array_filter(array_map(function ($row) {
             return array_values(array_filter($row, function ($button) {
                 if (($button['callback_data'] ?? '') === '/dnstt') return $this->protocolModuleEnabled('dnstt');
+                if (($button['callback_data'] ?? '') === '/telemt') return $this->protocolModuleEnabled('telemt');
                 if (preg_match('~^/menu ([a-z0-9]+)$~', $button['callback_data'] ?? '', $m)) {
                     return $this->protocolModuleEnabled($m[1]);
                 }
@@ -413,6 +414,7 @@ trait BotProtocols
         $settings = $modules->read();
         $text = ["Настройки → Протоколы", 'Отключённые контейнеры не запускаются и не загружаются. Доступы и настройки сохраняются.',
             'Выключатель Shadowsocks отключает также Cloak и simple-tls в его контейнере.',
+            'Выключатель TeleMT отключает обычный MTProto и WEB. При ручном Docker ядро останавливается, контейнер остановите вручную.',
             'IKEv2 и L2TP используют один контейнер IPsec. Он нужен, пока включён хотя бы один из них.'];
         $path = dirname($this->protocolModulesFile) . '/protocol-services.status.json';
         $status = is_file($path) ? ManagedProtocol::readJson($path) : [];
@@ -440,7 +442,8 @@ trait BotProtocols
         try {
             $modules = new ProtocolModules($this->protocolModulesFile);
             if (!isset(ProtocolModules::DEFAULTS[$module]) || isset(ManagedProtocol::NAMES[$module])) return;
-            $modules->toggle($module);
+            if ($module === 'telemt') $this->toggleTelemtService();
+            else $modules->toggle($module);
             $this->protocolModulesMenu();
         } catch (Throwable $e) {
             $this->protocolError('Не удалось сохранить настройки протоколов.', '/protocolModules');

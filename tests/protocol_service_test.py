@@ -104,13 +104,34 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError): modules.filter_ipsec('connections { ikev2 {', False, True)
 
     def test_profiles_exclude_disabled_containers(self):
-        settings = modules.DEFAULTS | {'oc': False, 'ovpn': False, 'tt': False, 'hy': False, 'ss': False, 'dnstt': False, 'l2tp': False, 'ikev2': False}
+        settings = modules.DEFAULTS | {'oc': False, 'ovpn': False, 'tt': False, 'hy': False, 'ss': False, 'dnstt': False, 'telemt': False, 'l2tp': False, 'ikev2': False}
         with patch.dict('os.environ', {'VER': 'test'}):
             self.assertEqual('', modules.environment(settings)['COMPOSE_PROFILES'])
             settings['ikev2'] = True
             env = modules.environment(settings)
             self.assertEqual('ipsec', env['COMPOSE_PROFILES'])
             self.assertEqual('1', env['IPSEC_IKEV2_ENABLED']); self.assertEqual('0', env['IPSEC_L2TP_ENABLED'])
+
+    def test_telemt_toggle_recreates_only_its_container_and_keeps_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root/'config/telemt').mkdir(parents=True); (root/'update').mkdir()
+            saved = root/'config/telemt/telemt.toml'; saved.write_text('synthetic saved configuration')
+            status = root/'config/protocol-services.status.json'
+            desired = root/'config/protocol-services.json'
+            old = modules.DEFAULTS.copy()
+            status.write_text(json.dumps({'ok': True, 'settings': old, 'bindings': {}}))
+            with patch.object(modules, 'bindings', return_value={}), patch.object(modules, 'sync_certificates'), \
+                 patch.object(modules, 'compose', return_value=subprocess.CompletedProcess([], 0)) as compose:
+                desired.write_text(json.dumps(old | {'telemt': False}))
+                modules.apply(root)
+                self.assertEqual([['stop', '--timeout', '10', 'telemt'], ['rm', '--force', 'telemt']],
+                                 [call.args[1] for call in compose.call_args_list])
+                self.assertEqual(['telemt'], json.loads(status.read_text())['changed'])
+                compose.reset_mock()
+                desired.write_text(json.dumps(old))
+                modules.apply(root)
+                self.assertEqual([['up', '-d', '--no-deps', 'telemt']], [call.args[1] for call in compose.call_args_list])
+                self.assertEqual('synthetic saved configuration', saved.read_text())
 
     def test_upstream_migration_preserves_customization_and_is_repeatable(self):
         old = 'stream {\n upstream ocserv { server oc:443; }\n upstream openvpn { server ovpn:1194; }\n map $ssl_preread_server_name $sni_name { custom.test other; }\n}'

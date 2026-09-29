@@ -10,8 +10,8 @@ import subprocess
 import sys
 import uuid
 
-DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False}
-SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "snolc")
+DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False}
+SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "telemt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "snolc")
 SYSTEMD_UNIT = Path('/etc/systemd/system/vpnbot.service')
 
 

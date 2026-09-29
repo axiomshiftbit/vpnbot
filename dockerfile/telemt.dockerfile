@@ -8,15 +8,16 @@
 # меняет тег base-образа и пересборка тянет нужную версию.
 #
 # Бинарь запускается ботом по ssh: restartTelemt() пишет /telemt/telemt.toml
-# и поднимает `telemt run`.
+# и поднимает `telemt run`. Entrypoint восстанавливает процесс после сбоя,
+# учитывая сохранённый выключатель сервиса и общую с ботом блокировку.
 ARG image=alpine:3.23
-ARG TELEMT_VERSION=3.5.8
+ARG TELEMT_VERSION=3.5.9
 
 FROM ghcr.io/telemt/telemt:${TELEMT_VERSION} AS dl
 
 FROM $image
 # ARG до FROM не виден после него — объявляем повторно для финальной стадии.
-ARG TELEMT_VERSION=3.5.8
+ARG TELEMT_VERSION=3.5.9
 COPY --from=dl /app/telemt /usr/local/bin/telemt
 # У бинаря telemt нет команды версии (неизвестный флаг уходит в Run), поэтому
 # версию впекаем в образ файлом — бот читает её по ssh из контейнера
