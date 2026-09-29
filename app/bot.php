@@ -978,6 +978,12 @@ class Bot
             case preg_match('~^/telemtWebSecret$~', $this->input['callback'], $m):
                 $this->telemtWebSecret();
                 break;
+            case preg_match('~^/telemtWebPath$~', $this->input['callback'], $m):
+                $this->telemtWebPath();
+                break;
+            case preg_match('~^/telemtWebDiag$~', $this->input['callback'], $m):
+                $this->telemtWebDiag();
+                break;
             case preg_match('~^/telemtWebLink (\w+)$~', $this->input['callback'], $m):
                 $this->telemtWebLink($m[1]);
                 break;
@@ -2147,8 +2153,29 @@ class Bot
                 $t .= "carrier = " . $q($this->telemtWebCarrierOf($conf)) . "\n\n";
             }
             $t .= $this->telemtWebLimitsToml();
+            // Отчёты бриджа о событиях ДО рукопожатия (telemt >= 3.5.8). Фича
+            // работает только при enabled + sideband + capture_lifecycle, а
+            // остальная запись трассы нам не нужна: заголовки, тайминги, кадры
+            // и тела выключаем. Краткую запись о каждом запросе (метод, путь,
+            // IP, User-Agent) telemt при enabled ведёт всё равно — она живёт
+            // только в памяти, в кольце на debug_records_capacity записей.
+            // Отчёт читает из него лишь события бриджа (telemtBridgeDiagnostics).
+            if ($this->telemtBool($conf, 'telemt_web_diag')) {
+                $t .= "[web.debug]\n";
+                $t .= "enabled = true\n";
+                $t .= "sideband = true\n";
+                $t .= "capture_lifecycle = true\n";
+                $t .= "capture_headers = false\n";
+                $t .= "capture_timings = false\n";
+                $t .= "capture_frames = false\n";
+                $t .= "body_capture = \"off\"\n\n";
+            }
             $t .= "[[web.vhosts]]\n";
             $t .= "host = " . $q($this->telemtWebHost($conf)) . "\n";
+            $path = $this->telemtWebPathOf($conf);
+            if ($path !== '') {
+                $t .= "base_path = " . $q($path) . "\n";
+            }
             // Конкретный публичный адрес на 443: он участвует во внутреннем
             // destination-tuple relay, поэтому 0.0.0.0 и любой другой порт
             // telemt отвергает.
@@ -2343,7 +2370,7 @@ class Bot
         return false;
     }
 
-    // ── telemt WEB (тип прокси «WEB» в Telegram Desktop) ─────────────────────
+    // ── telemt WEB (тип прокси «WEB» в Telegram Desktop и Android) ──────────
     // telemt >= 3.5.0 умеет нести MTProto внутри ОБЫЧНОГО HTTPS: клиент ходит
     // на 443 отдельного FQDN, TLS терминирует наш ng, а telemt слушает plain
     // HTTP/1.1 на приватном порту в docker-сети. Ссылка — tg://webproxy БЕЗ
@@ -2497,6 +2524,33 @@ class Bot
         return in_array($m, ['plain', 'dd'], true) ? $m : 'dd';
     }
 
+    // Префикс WEB-эндпоинтов (web.vhosts[].base_path, telemt >= 3.5.8). Пусто —
+    // прежние корневые маршруты. Непустой уводит бридж и все приватные
+    // эндпоинты под /<path>/, а capability привязывается к хосту И пути: смена
+    // префикса гасит все выданные ссылки разом, не трогая секреты
+    // пользователей. Правила — ровно валидатор telemt (validate_web/vhosts.rs):
+    // невалидное значение он не игнорирует, а отвергает конфиг целиком, поэтому
+    // мусор из pac.json превращаем в «выключено».
+    public function telemtWebPathOf(array $conf): string
+    {
+        $p = $conf['telemt_web_path'] ?? '';
+        return is_string($p) && strlen($p) <= 128
+            && preg_match('~^[A-Za-z0-9][A-Za-z0-9_-]*(?:/[A-Za-z0-9][A-Za-z0-9_-]*)*$~D', $p) ? $p : '';
+    }
+
+    // Порог для ключей 3.5.8 (base_path, web.debug.sideband). Старый бинарь их
+    // молча игнорирует: с путём это ссылки, которые сервер не узнаёт, с
+    // диагностикой — тумблер без эффекта. Как у соседних гейтов — fail-open на
+    // unknown и вызов только из интерактивного пути (проверка ходит по ssh).
+    public function telemtVersionAtLeast(string $min): bool
+    {
+        $v = $this->telemtVersion();
+        if ($v === 'unknown') {
+            return true;
+        }
+        return version_compare(ltrim($v, 'vV'), $min, '>=');
+    }
+
     // Хост WEB-vhost: отдельный поддомен основного домена (как у ocserv и
     // naive). Отдельный, а не сам домен, — принципиально: в WEB-режиме vhost
     // уходит в telemt ЦЕЛИКОМ вместе с decoy-политикой, а на основном домене
@@ -2583,11 +2637,29 @@ class Bot
         if ($host === '') {
             return '';
         }
+        $dd   = $this->telemtWebSecretModeOf($conf) === 'dd';
+        $path = $this->telemtWebPathOf($conf);
+        if ($path !== '') {
+            // Ссылка на префикс — другой формат Telegram Desktop (тот же, что
+            // печатает сам telemt, maestro/helpers/runtime.rs): server несёт
+            // «host/path», а секрет — base64url без паддинга от маркера 0x70,
+            // байта 0xdd для dd-режима и сырых 16 байт секрета. Hex-строка тут
+            // уже не принимается. preg_match, а не ctype_xdigit: расширения
+            // ctype в php-образе нет, и вызов был бы фаталом.
+            $bin = is_string($secret) && preg_match('~^(?:[0-9a-fA-F]{2})+$~D', $secret) ? hex2bin($secret) : false;
+            if ($bin === false) {
+                return '';
+            }
+            $host  .= "/$path";
+            $secret = rtrim(strtr(base64_encode("\x70" . ($dd ? "\xdd" : '') . $bin), '+/', '-_'), '=');
+        } elseif ($dd) {
+            $secret = "dd$secret";
+        }
         // Порта в ссылке нет намеренно: Telegram Desktop принимает WEB-прокси
         // только на 443 и ссылку с портом отвергает.
         return 'tg://webproxy?' . http_build_query([
             'server' => $host,
-            'secret' => ($this->telemtWebSecretModeOf($conf) === 'dd' ? 'dd' : '') . $secret,
+            'secret' => $secret,
         ], '', '&', PHP_QUERY_RFC3986);
     }
 
@@ -15667,6 +15739,9 @@ DNS-over-HTTPS with IP:
             ? "carrier: " . implode(' → ', $cands)
             : "carrier: " . $this->telemtWebCarrierOf($conf);
         $text[] = "secret: " . $this->telemtWebSecretModeOf($conf);
+        $path   = $this->telemtWebPathOf($conf);
+        $diag   = $this->telemtBool($conf, 'telemt_web_diag');
+        $text[] = "path: " . ($path === '' ? '/' : htmlspecialchars("/$path/", ENT_QUOTES));
         $text[] = "profiles: " . count($profiles) . '/' . count($users);
         if (count($users) > count($profiles)) {
             $text[] = "\n⚠ " . $this->i18n('telemt web profiles capped');
@@ -15682,11 +15757,19 @@ DNS-over-HTTPS with IP:
             // деле нет: restartTelemt() снял его при первом же старте.
             $text[] = "\n⚠ " . $this->i18n('telemt web negotiation need version');
         }
+        // Отдельной строкой, а не в elseif выше: путь и диагностика не зависят
+        // от негоциации. Проверяем версию, только когда хоть одна из фич
+        // включена, — иначе лишний ssh-заход на каждое открытие меню.
+        if (($path !== '' || $diag) && $this->telemtWebVersionOk() && !$this->telemtVersionAtLeast('3.5.8')) {
+            $text[] = "\n⚠ " . $this->i18n('telemt web 358 need version');
+        }
         if (!$blockers && !empty($conf['telemt_web'])) {
             $text[] = "\nℹ " . $this->i18n('telemt web cert hint');
         }
         $text[] = "\nℹ " . $this->i18n('telemt web note');
         $text[] = "\nℹ " . $this->i18n('telemt web negotiation note');
+        $text[] = "\nℹ " . $this->i18n('telemt web path note');
+        $text[] = "\nℹ " . $this->i18n('telemt web diag note');
 
         $data[] = [[
             'text'          => $this->i18n('telemt web') . ': ' . $this->telemtState(!empty($conf['telemt_web'])),
@@ -15709,6 +15792,14 @@ DNS-over-HTTPS with IP:
         $data[] = [[
             'text'          => 'secret: ' . $this->telemtWebSecretModeOf($conf),
             'callback_data' => "/telemtWebSecret",
+        ]];
+        $data[] = [[
+            'text'          => 'path: ' . ($path === '' ? '/' : "/$path/"),
+            'callback_data' => "/telemtWebPath",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('telemt web diag') . ': ' . $this->telemtState($diag),
+            'callback_data' => "/telemtWebDiag",
         ]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
 
@@ -15784,6 +15875,67 @@ DNS-over-HTTPS with IP:
         // переключения, а висеть в тексте постоянно ему незачем.
         if (!empty($conf['telemt_users'])) {
             $this->answer($this->input['callback_id'], $this->i18n('telemt web secret changed'), true);
+        }
+        $this->telemtWeb(true);
+    }
+
+    // Префикс WEB-эндпоинтов: выкл → случайный → выкл. Каждое включение даёт
+    // НОВЫЙ префикс, то есть кнопка заодно служит ротацией: все выданные
+    // WEB-ссылки гаснут разом (capability привязан к пути), секреты
+    // пользователей и обычные tg://proxy остаются прежними. nginx не трогаем:
+    // location / уже проксирует путь как есть, без срезания префикса, — ровно
+    // то, чего требует telemt.
+    public function telemtWebPath()
+    {
+        // Версию спрашиваем до блокировки: ssh под локом держал бы все кнопки
+        // telemt на время сетевого запроса.
+        $ok      = $this->telemtVersionAtLeast('3.5.8');
+        $blocked = false;
+        $conf = $this->telemtConfUpdate(function (&$conf) use ($ok, &$blocked) {
+            if ($this->telemtWebPathOf($conf) !== '') {
+                $conf['telemt_web_path'] = '';
+            } elseif ($ok) {
+                $conf['telemt_web_path'] = bin2hex(random_bytes(8));
+            } else {
+                $blocked = true;
+            }
+            return $conf;
+        });
+        if ($blocked) {
+            $this->answer($this->input['callback_id'], $this->i18n('telemt web 358 need version'), true);
+            return $this->telemtWeb(true);
+        }
+        // Без работающего WEB путь в конфиг не попадает, и рестарт (обрыв
+        // всех MTProto-соединений) был бы впустую.
+        if ($this->telemtWebEnabled($conf)) {
+            $this->restartTelemt();
+            $this->answer($this->input['callback_id'], $this->i18n('telemt web path changed'), true);
+        }
+        $this->telemtWeb(true);
+    }
+
+    // Отчёты бриджа Telegram Desktop о сбоях до рукопожатия (web.debug.sideband).
+    public function telemtWebDiag()
+    {
+        $ok      = $this->telemtVersionAtLeast('3.5.8');
+        $blocked = false;
+        $conf = $this->telemtConfUpdate(function (&$conf) use ($ok, &$blocked) {
+            $new = !$this->telemtBool($conf, 'telemt_web_diag');
+            // Выключить можно всегда — иначе на откатившемся образе оператор
+            // заперт во включённом тумблере.
+            if ($new && !$ok) {
+                $blocked = true;
+                return $conf;
+            }
+            $conf['telemt_web_diag'] = $new ? 1 : 0;
+            return $conf;
+        });
+        if ($blocked) {
+            $this->answer($this->input['callback_id'], $this->i18n('telemt web 358 need version'), true);
+            return $this->telemtWeb(true);
+        }
+        if ($this->telemtWebEnabled($conf)) {
+            $this->restartTelemt();
         }
         $this->telemtWeb(true);
     }
@@ -16215,6 +16367,29 @@ DNS-over-HTTPS with IP:
         return $result;
     }
 
+    // Счётчики событий диагностики бриджа за последний час: имя события => число.
+    // JSON-маршрута для записей трассы у telemt нет, они есть только на
+    // HTML-странице /web-status того же loopback-API. Страницу режем grep'ом
+    // ещё внутри контейнера: по ssh едут лишь ячейки строк bridge_diagnostic
+    // (событие — в колонке status), а не мегабайт разметки с IP клиентов.
+    // window_secs = 3600 — дефолтный потолок web.debug.max_window_secs,
+    // limit = 1000 — потолок самого маршрута. Одной страницы мало: кольцо
+    // делят с событиями бриджа HTTP-записи, а lane-carrier'ы дают их десятки
+    // на сессию. Идём по ссылке «Next page» (before_seq): кольцо пинуется на
+    // debug_records_capacity = 4096 записей, пяти страниц хватает на всё.
+    public function telemtBridgeDiagnostics(): array
+    {
+        $raw = (string) $this->ssh(<<<'SH'
+            b=; i=0; while [ $i -lt 5 ]; do
+            p=$(wget -qO- -T 3 "http://127.0.0.1:9091/web-status?window_secs=3600&limit=1000${b:+&before_seq=$b}" 2>/dev/null)
+            printf '%s\n' "$p" | grep -o 'bridge_diagnostic</td><td>-</td><td>[a-z_]*</td>'
+            b=$(printf '%s\n' "$p" | grep -o 'before_seq=[0-9]*' | tail -n 1 | cut -d= -f2)
+            [ -n "$b" ] || break; i=$((i+1)); done
+            SH, 'telemt');
+        preg_match_all('~bridge_diagnostic</td><td>-</td><td>([a-z_]+)</td>~', $raw, $m);
+        return array_count_values($m[1]);
+    }
+
     public function telemtReport()
     {
         $conf = $this->getPacConf();
@@ -16308,7 +16483,7 @@ DNS-over-HTTPS with IP:
                     ? implode(', ', array_slice($out, 0, 8)) . (count($out) > 8 ? ' …' : '')
                     : '—';
             };
-            $L[] = "\n▌ WEB (Telegram Desktop)";
+            $L[] = "\n▌ WEB (Telegram Desktop / Android)";
             // Единственная строка, которую отдаёт и старый образ: lifecycle,
             // available и reason есть в ответе с самого появления WEB.
             $L[] = "runtime: " . ($web['lifecycle'] ?? '?')
@@ -16343,6 +16518,25 @@ DNS-over-HTTPS with IP:
                 // фона (3.5.6): сессия пересоздаётся без перезапуска клиента.
                 $L[] = "recovery (" . ($lif['bridge_recovery_secs'] ?? '?') . "s): "
                     . $nz($lif['bridge_recovery_events'] ?? [], 'event');
+            }
+            // Диагностика бриджа (3.5.8): эффективное состояние считаем как
+            // сам telemt — все три флага политики сразу. Объект runtime есть
+            // только у живого рантайма, у образа старше 3.5.8 нет sideband.
+            $dbg = is_array($web['runtime']['debug'] ?? null) ? $web['runtime']['debug'] : [];
+            $pol = is_array($dbg['policy'] ?? null) ? $dbg['policy'] : [];
+            if (array_key_exists('sideband', $pol)) {
+                $side = !empty($pol['enabled']) && !empty($pol['sideband']) && !empty($pol['capture_lifecycle']);
+                $L[] = "bridge diag: " . ($side ? '✓ sideband' : '✗ off')
+                    . ", records " . ($dbg['records'] ?? '?') . "/" . ($dbg['records_capacity'] ?? '?');
+                if ($side) {
+                    $ev = $this->telemtBridgeDiagnostics();
+                    arsort($ev);
+                    $out = [];
+                    foreach ($ev as $name => $n) {
+                        $out[] = "$name=$n";
+                    }
+                    $L[] = "bridge events (1h): " . ($out ? implode(', ', $out) : '—');
+                }
             }
         }
 
