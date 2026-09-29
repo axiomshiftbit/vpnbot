@@ -107,7 +107,7 @@ def install_patches(root, bundle, server=False):
         if any(info.file_size > 8 * 1024 * 1024 for info in archive.infolist()):
             raise ValueError("oversized_patch_bundle")
         manifest = json.loads(archive.read("manifest.json"))
-        if manifest["version"] != "0.0.4+vpnbot.1" or set(manifest["sha256"]) != names:
+        if manifest["version"] != "0.0.4+vpnbot.2" or set(manifest["sha256"]) != names:
             raise ValueError("invalid_patch_version")
         files = {name: archive.read(name) for name in names}
     if any(hashlib.sha256(data).hexdigest() != manifest["sha256"][name] for name, data in files.items()):

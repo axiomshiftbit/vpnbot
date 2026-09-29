@@ -1,3 +1,68 @@
+--- a/crates/snolc/src/core_io.rs
++++ b/crates/snolc/src/core_io.rs
+@@ -200,6 +200,8 @@
+                 Poll::Pending => return Poll::Pending,
+             }
+         }
++        // A datagram must not wait for a later flow to flush its final mux frame.
++        std::task::ready!(Pin::new(&mut self.stream).poll_flush(context))?;
+         self.send_frame.clear();
+         self.send_offset = 0;
+         Poll::Ready(Ok(()))
+@@ -598,6 +600,53 @@
+             )
+         };
+         assert_eq!(result, SnolIoResult::progress(0));
++    }
++
++    #[test]
++    fn vpnbot_regression_datagram_waits_for_flush_without_duplicate_frames() {
++        struct BufferedStream {
++            pending: Vec<u8>,
++            delivered: Vec<u8>,
++            flush_ready: bool,
++        }
++        impl AsyncRead for BufferedStream {
++            fn poll_read(self: Pin<&mut Self>, _: &mut Context<'_>, _: &mut [u8]) -> Poll<io::Result<usize>> {
++                Poll::Pending
++            }
++        }
++        impl AsyncWrite for BufferedStream {
++            fn poll_write(mut self: Pin<&mut Self>, _: &mut Context<'_>, input: &[u8]) -> Poll<io::Result<usize>> {
++                self.pending.extend_from_slice(input);
++                Poll::Ready(Ok(input.len()))
++            }
++            fn poll_flush(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++                if !self.flush_ready {
++                    self.flush_ready = true;
++                    return Poll::Pending;
++                }
++                let pending = std::mem::take(&mut self.pending);
++                self.delivered.extend_from_slice(&pending);
++                self.flush_ready = false;
++                Poll::Ready(Ok(()))
++            }
++            fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++                Poll::Ready(Ok(()))
++            }
++        }
++        let mut io = MuxDatagramIo::new(BufferedStream {
++            pending: Vec::new(), delivered: Vec::new(), flush_ready: false,
++        });
++        let mut context = Context::from_waker(Waker::noop());
++        let mut expected = Vec::new();
++        for payload in [vec![7; crate::wire::MAX_UDP_PAYLOAD], vec![9]] {
++            assert!(matches!(io.poll_send_datagram(&mut context, &payload), Poll::Pending));
++            assert_eq!(io.stream.delivered, expected);
++            assert!(matches!(io.poll_send_datagram(&mut context, &payload), Poll::Ready(Ok(()))));
++            expected.extend_from_slice(&(payload.len() as u16).to_be_bytes());
++            expected.extend_from_slice(&payload);
++            assert_eq!(io.stream.delivered, expected);
++            assert!(io.stream.pending.is_empty());
++        }
+     }
+ 
+     #[test]
 --- a/crates/snolc/src/engine.rs
 +++ b/crates/snolc/src/engine.rs
 @@ -431,7 +431,7 @@
@@ -192,7 +257,7 @@
              println!(
                  "snolc {} wire {}",
 -                env!("CARGO_PKG_VERSION"),
-+                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.1"),
++                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.2"),
                  snolc::WIRE_VERSION
              );
              Ok(())
