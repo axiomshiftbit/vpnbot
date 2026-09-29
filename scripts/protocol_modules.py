@@ -10,8 +10,8 @@ import subprocess
 import sys
 import uuid
 
-DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False}
-SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "ipsec", "anytls", "mieru", "tuic", "shadowtls")
+DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False}
+SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "snolc")
 SYSTEMD_UNIT = Path('/etc/systemd/system/vpnbot.service')
 
 
@@ -183,7 +183,7 @@ def environment(s):
 
 def bindings(root):
     ports = {}
-    for service in ("mieru", "tuic", "shadowtls"):
+    for service in ("mieru", "tuic", "shadowtls", "snolc"):
         path = root / "config/protocols" / service / "desired.json"
         if path.exists():
             try: port = json.loads(path.read_text())["settings"]["port"]
@@ -283,7 +283,7 @@ def apply(root):
             if same and service in old and pending not in ('operation_failed', 'operation_failed_rolled_back'):
                 continue
             if enabled(current, service):
-                if service in ('mieru', 'tuic', 'shadowtls'):
+                if service in ('mieru', 'tuic', 'shadowtls', 'snolc'):
                     if service not in ports:
                         failures[service] = 'invalid_protocol_port'
                         continue
@@ -320,6 +320,35 @@ def apply(root):
                               "errors": failures, "failed_service": next(iter(failures), None)})
     finally:
         lock.close()
+
+
+def confirm_snolc_port(root):
+    """Acknowledge a manually applied port using read-only Docker inspection."""
+    (root / 'update').mkdir(exist_ok=True)
+    with open(root / 'update/protocol-services.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        current = settings(root)
+        port = bindings(root).get('snolc')
+        if not current['snolc'] or port is None:
+            raise ValueError('snolc_not_configured')
+        result = compose(current, ['ps', '--status', 'running', '-q', 'snolc'], capture=True)
+        identities = result.stdout.split()
+        if result.returncode or len(identities) != 1:
+            raise RuntimeError('snolc_not_running')
+        inspected = subprocess.run(['docker', 'inspect', '--format',
+                                    '{"running":{{.State.Running}},"ports":{{json .NetworkSettings.Ports}}}',
+                                    identities[0]], capture_output=True, check=True)
+        actual = json.loads(inspected.stdout)
+        published = (actual.get('ports') or {}).get('24448/tcp') or []
+        if not actual.get('running') or not any(item.get('HostPort') == str(port) for item in published):
+            raise RuntimeError('snolc_port_not_published')
+        path = root / 'config/protocol-services.status.json'
+        status = json.loads(path.read_text()) if path.exists() else {}
+        status.setdefault('settings', {})['snolc'] = True
+        status.setdefault('bindings', {})['snolc'] = port
+        status.setdefault('errors', {}).pop('snolc', None)
+        status.update(ok=not status['errors'], failed_service=next(iter(status['errors']), None))
+        write_status(path, status)
 
 
 def write_status(path, value):
@@ -377,6 +406,9 @@ def main():
         Path(sys.argv[3]).write_text(text)
         return 0
     root = Path.cwd()
+    if command == "confirm-port" and sys.argv[2:] == ["snolc"]:
+        confirm_snolc_port(root)
+        return 0
     if command == "apply":
         apply(root)
         return 0

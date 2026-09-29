@@ -52,6 +52,7 @@ trait BotServiceDiagnostics
                 $lines[] = 'TLS: ' . $phase . '; до ' . gmdate('Y-m-d H:i', $end) . ' UTC';
             }
         } elseif ($scope === 'mieru') $lines[] = 'TLS: не используется протоколом Mieru';
+        elseif ($scope === 'snolc') $lines[] = 'SSH + Noise: ключи сервера закреплены в профиле; TLS не используется';
         elseif ($scope === 'shadowtls') $lines[] = 'TLS сайта прикрытия проверяется клиентом; локального сертификата нет';
         if ($scope !== 'hy') {
             $file = dirname($this->protocolModulesFile) . '/protocol-services.status.json';

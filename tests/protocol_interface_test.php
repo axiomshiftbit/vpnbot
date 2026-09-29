@@ -28,6 +28,11 @@ class ProtocolInterfaceBot extends Bot {
     public function getDomain($cdn = false) { return 'vpn.example.test'; }
     public function getHashBot($notset = false) { return 'fixture'; }
     public function getWgMsg() { return null; }
+    public function getPorts() { return array_fill_keys(['wg', 'wg1', 'telemt', 'hy', 'ss', 'oc', 'tt', 'ovpn'], ['enable' => true, 'port' => 24443]); }
+    public function getSSConfig() { return []; }
+    public function getCloakConfig() { return []; }
+    public function getStlsConfig() { return []; }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { return ''; }
     protected function sessionApply(callable $fn) { $fn(); }
     public function getPacConf() { return self::PAC_DEFAULTS; }
     public function stashReply($r, array $state) { $_SESSION['reply'][$r['result']['message_id']] = $state; }
@@ -58,7 +63,7 @@ try {
     $bot->upstreamFile = "$root/no-live-upstream.conf";
     $modules = new ProtocolModules($bot->protocolModulesFile);
     $bot->protocolModulesMenu(); [$text, $buttons] = uiLast($bot);
-    foreach (ManagedProtocol::NAMES as $key => $label) uiCheck(in_array("/protocol $key", uiCallbacks($buttons), true), "$key: настройка доступна до включения");
+    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $key => $label) uiCheck(in_array("/protocol $key", uiCallbacks($buttons), true), "$key: настройка доступна до включения");
     // Нажимаем реальные callback из меню через общий диспетчер. Прямой вызов
     // protocolModulesToggle не обнаруживал отсутствующий маршрут TrustTunnel.
     $callbacks = uiCallbacks($buttons);
@@ -85,7 +90,7 @@ try {
         uiCheck($modules->read() === $before && count($bot->transport->calls) === $calls, 'Неверный callback не меняет модули');
     }
     $bot->input['callback'] = false;
-    foreach (ManagedProtocol::NAMES as $key => $label) {
+    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $key => $label) {
         $store = $bot->protocolStore($key);
         $bot->protocolCommand($key); [$text, $buttons] = uiLast($bot);
         uiCheck(str_contains(json_encode($buttons, JSON_UNESCAPED_UNICODE), 'Включить сервис'), "$key: выключенный сервис");
@@ -193,6 +198,42 @@ try {
         $bot->protocolCommand($key, 'delete', $id);
         uiCheck(!isset($store->read()['users'][$id]), "$key: удаление возвращает в список");
     }
+    $snolc = $bot->protocolStore('snolc');
+    $bot->protocolReply('vpn.example.test 24448', 'snolc', 'settings');
+    uiCheck($snolc->read()['settings']['host'] === 'vpn.example.test', 'snolc: адрес без SNI сохраняется');
+    $seed = $snolc->read()['settings']['server_seed'];
+    $bot->protocolPortReply('24449', 'snolc');
+    uiCheck($snolc->read()['settings']['port'] === 24449 && $snolc->read()['settings']['listen_port'] === 24448,
+        'snolc: Ports меняет только внешний TCP-порт');
+    uiCheck($snolc->read()['settings']['server_seed'] === $seed, 'snolc: Ports сохраняет ключи сервера');
+    $bot->protocolPortReply('22', 'snolc');
+    uiCheck($snolc->read()['settings']['port'] === 24449, 'snolc: Ports отклоняет служебный порт');
+    $bot->protocolPortReply('24448', 'snolc');
+    $bot->input['callback'] = '/protocol snolc toggle'; $bot->action(); $bot->input['callback'] = false;
+    uiCheck($modules->enabled('snolc') && $snolc->read()['enabled'], 'snolc: callback включает контейнерный модуль');
+    $id = managedProtocolFixtureUser($snolc, 'Нативный клиент');
+    $bot->protocolCommand('snolc'); [$text, $buttons] = uiLast($bot);
+    $callbacks = uiCallbacks($buttons);
+    uiCheck(!in_array('/po snolc', $callbacks, true) && !in_array('/protocol snolc egress', $callbacks, true), 'snolc: нет неподдерживаемых настроек');
+    uiCheck(str_contains($text, 'SSH + Noise') && str_contains($text, 'Linux x86_64'), 'snolc: клиент и режим указаны');
+    $bot->protocolCommand('snolc', 'user', $id); [$text, $buttons] = uiLast($bot);
+    uiCheck(in_array("/protocol snolc export $id native", uiCallbacks($buttons), true), 'snolc: нативный архив доступен');
+    uiCheck(!in_array("/protocol snolc yaml $id", uiCallbacks($buttons), true), 'snolc: нет ложного Mihomo YAML');
+    $bot->input['callback'] = "/protocol snolc export $id native"; $bot->action(); $bot->input['callback'] = false;
+    [, , $file, $method] = uiLast($bot);
+    uiCheck($method === 'sendDocument' && $file['document']->mime === 'application/zip' && str_starts_with($file['document']->data, 'PK'), 'snolc: кнопка отправляет полноценный ZIP');
+    $bot->protocolRelay('snolc', $id); [$text] = uiLast($bot);
+    uiCheck(!str_contains($text, '❌'), 'snolc: меню relay проверяет нативный доступ');
+    $bot->protocolSubscriptions('snolc', $id); [$text, $buttons] = uiLast($bot);
+    uiCheck(str_contains($text, '/native') && !str_contains(json_encode($buttons), 'provider'), 'snolc: HTTP-архив без ложного provider');
+    $before = $snolc->read();
+    $bot->protocolCommand('snolc', 'toggle');
+    uiCheck(!$modules->enabled('snolc') && $snolc->read()['users'] === $before['users'], 'snolc: выключение сохраняет всех пользователей');
+    $bot->protocolCommand('snolc', 'toggle');
+    uiCheck($modules->enabled('snolc') && $snolc->read()['settings']['server_seed'] === $before['settings']['server_seed'], 'snolc: включение сохраняет ключи сервера');
+    $bot->admin = false; $before = $snolc->read();
+    $bot->protocolCommand('snolc', 'toggle');
+    uiCheck($snolc->read() === $before, 'snolc: неадминистратор не меняет модуль');
     $bot->admin = false; $count = count($bot->transport->calls);
     $bot->protocolCommand('mieru', 'toggle'); $bot->protocolReply('Чужой', 'mieru', 'add'); $bot->protocolModulesToggle('oc');
     uiCheck(count($bot->transport->calls) === $count, 'Неадминистратор не выполняет действия');

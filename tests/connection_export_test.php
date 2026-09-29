@@ -62,8 +62,12 @@ try {
     foreach (['clash', 'sing', 'v2ray'] as $kind) $bot->templates[$kind] = json_decode(file_get_contents(__DIR__ . '/../config/' . $kind . '.json'), true);
     $modules = new ProtocolModules($bot->protocolModulesFile); $bindings = [];
     foreach (ManagedProtocol::NAMES as $p => $_) {
-        $store = $bot->protocolStore($p); $store->configure(['host' => 'vpn.example.test', 'sni' => $p === 'mieru' ? '' : 'vpn.example.test'], true);
+        $store = $bot->protocolStore($p); $store->configure(['host' => 'vpn.example.test', 'sni' => in_array($p, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test'], true);
         $modules->set($p, true); $bindings[$p] = $store->read()['settings']['port'];
+        if ($p === 'snolc') {
+            if (!is_dir($store->directory() . '/runtime')) mkdir($store->directory() . '/runtime', 0700, true);
+            file_put_contents($store->directory() . '/runtime/client-patches.zip', 'synthetic client bundle');
+        }
     }
     ManagedProtocol::writeJson("$root/protocol-services.status.json", ['bindings' => $bindings]);
     $source = ManagedProtocol::xraySource($client); $prefix = "/xc $source";
@@ -71,13 +75,14 @@ try {
     foreach (['vless' => 'VLESS'] + ManagedProtocol::NAMES as $p => $_) {
         foreach ($bot->connectionFormats($p) as $format => $_) {
             $value = $bot->connectionExport($source, $p, $format); $profiles[$p][$format] = $value;
+            if ($p === 'snolc') { connectionCheck(is_string($value) && str_starts_with($value, 'PK'), 'snolc выдаёт настоящий ZIP'); continue; }
             if (in_array($format, ['uri', 'sr'], true)) continue;
             $key = in_array($format, ['cl', 'clj'], true) ? 'proxies' : 'outbounds';
             connectionCheck(array_keys($value) === [$key], "$p/$format: только подключение");
             connectionCheck(count($value[$key]) === ($p === 'shadowtls' && $format === 'si' ? 2 : 1), "$p/$format: все необходимые звенья");
             connectionCheck(!str_contains(json_encode($value), 'domain_resolver'), 'Нет ссылки на DNS из полного профиля');
         }
-        connectionCheck($profiles[$p]['cl'] === $profiles[$p]['clj'], 'YAML и JSON Mihomo идентичны');
+        if ($p !== 'snolc') connectionCheck($profiles[$p]['cl'] === $profiles[$p]['clj'], 'YAML и JSON Mihomo идентичны');
     }
     $shadow = $profiles['shadowtls']['si']['outbounds'];
     connectionCheck($shadow[0]['detour'] === $shadow[1]['tag'] && str_contains($shadow[0]['password'], ':'), 'Цепочка ShadowTLS и ключи SS2022 сохранены');
@@ -87,7 +92,7 @@ try {
         connectionCheck($uri['scheme'] === $scheme && ($p === 'mieru' ? $query['profile'] : rawurldecode($uri['fragment'])) === $client['email'], "$p: схема и имя URI");
         connectionCheck(!str_contains($profiles[$p]['uri'], $client['subtoken']), 'URI не путает пароль с токеном подписки');
     }
-    foreach (ManagedProtocol::NAMES as $p => $_) {
+    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $p => $_) {
         $text = $profiles[$p]['sr']; $node = $profiles[$p]['cl']['proxies'][0];
         connectionCheck(str_contains($text, $node['password']) && str_contains($text, (string)$node['port']), 'Памятка Shadowrocket содержит действительные параметры');
     }
@@ -146,13 +151,14 @@ try {
                 connectionCheck(count($files) === 1 && count($bot->transport->messages) === 2, 'Остаются меню и ровно один файл');
                 $file = $files[0]['document'];
                 connectionCheck(!str_contains($file->postname, '/') && !str_contains($file->postname, '?'), 'Имя файла безопасно');
-                if (!in_array($format, ['uri', 'sr'], true)) {
+                if ($p === 'snolc') { connectionCheck($file->mime === 'application/zip' && str_starts_with($file->data, 'PK'), 'Нативный ZIP отправлен без изменения байтов'); }
+                elseif (!in_array($format, ['uri', 'sr'], true)) {
                     $parsed = $format === 'cl' ? yaml_parse($file->data) : json_decode($file->data, true, 512, JSON_THROW_ON_ERROR);
                     connectionCheck($parsed === $bot->connectionExport($source, $p, $format), 'Файл действительно содержит выбранный формат');
                 }
             }
         }
-        if ($p !== 'vless') {
+        if (!in_array($p, ['vless', 'snolc'], true)) {
             $screen = connectionClick($bot, "$prefix $p ios");
             connectionCheck(connectionBack($screen) === "$prefix $p" && str_contains($screen['text'], 'Shadowrocket'), 'Shadowrocket: правильный возврат и пояснение');
             connectionClick($bot, connectionBack($screen));

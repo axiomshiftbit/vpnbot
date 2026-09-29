@@ -20,13 +20,17 @@ on:
     paths:
       - 'dockerfile/**'
       - 'scripts/hysteria_service.py'
+      - 'scripts/snolc_service.py'
+      - 'scripts/protocol_service.py'
+      - 'app/snolc/**'
+      - '.dockerignore'
       - '.env'
       - 'docker-compose.yml'
       - '.github/workflows/images.yml'
   workflow_dispatch:
     inputs:
       services:
-        description: 'Сервисы через запятую (ng,php,wg,...). Пусто — все 16.'
+        description: 'Сервисы через запятую (ng,php,wg,...). Пусто — все 17.'
         required: false
         default: ''
   # Базовые образы запиннены не все (golang:alpine, python:3.13-slim,
@@ -65,7 +69,7 @@ jobs:
           SERVICES: ${{ inputs.services }}
         run: |
           set -euo pipefail
-          ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy anytls mieru"
+          ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy anytls mieru snolc"
 
           # Какие образы задевает правка .env. Раньше любая строка (хоть смена
           # таймзоны) пересобирала все 14, а это десятки минут CI из-за tt.
@@ -126,6 +130,8 @@ jobs:
               hysteria.dockerfile)    echo hy ;;
               protocol.dockerfile) echo anytls ;;
               mieru.dockerfile) echo mieru ;;
+              snolc.dockerfile) echo snolc ;;
+              snolc-core.patch|snolc-modules.patch) echo snolc ;;
             esac
           }
 
@@ -166,6 +172,9 @@ jobs:
               fi
               if echo "${CHANGED}" | grep -qE '^scripts/hysteria_service\.py$'; then
                 SEL="${SEL} hy"
+              fi
+              if echo "${CHANGED}" | grep -qE '^(scripts/(snolc_service|protocol_service)\.py|app/snolc/|\.dockerignore$)'; then
+                SEL="${SEL} snolc"
               fi
             fi
           fi
@@ -289,7 +298,7 @@ jobs:
       # Готовые образы для проверки на стенде без отдельного PAT с read:packages.
       # В архив входит только образ из registry; файлы раннера и runtime не входят.
       - name: Сохранить изменённые образы для проверки dev
-        if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec"]'), matrix.service)
+        if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec","snolc"]'), matrix.service)
         run: |
           set -euo pipefail
           image='ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:sha-${{ github.sha }}'
@@ -300,7 +309,7 @@ jobs:
           docker save "$image" | gzip -1 > "$RUNNER_TEMP/vpnbot-${{ matrix.image }}.tar.gz"
 
       - name: Образ для тестового стенда
-        if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec"]'), matrix.service)
+        if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec","snolc"]'), matrix.service)
         uses: actions/upload-artifact@v7.0.1
         with:
           name: vpnbot-image-${{ matrix.image }}
@@ -355,6 +364,7 @@ jobs:
           - hysteria
           - protocol
           - mieru
+          - snolc
     steps:
       # Своим шагом, а не actions/delete-package-versions: у того удержание
       # считается по всем версиям подряд и канальный тег защитить нечем

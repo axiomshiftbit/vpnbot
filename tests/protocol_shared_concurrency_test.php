@@ -48,7 +48,7 @@ try {
         $bot = new ConcurrentSharedBot($dir);
         $modules = new ProtocolModules($bot->protocolModulesFile);
         foreach (array_keys(ManagedProtocol::NAMES) as $protocol) {
-            $bot->protocolStore($protocol)->configure(['host' => 'vpn.example.test', 'sni' => $protocol === 'mieru' ? '' : 'vpn.example.test'], true);
+            $bot->protocolStore($protocol)->configure(['host' => 'vpn.example.test', 'sni' => in_array($protocol, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test'], true);
             $modules->set($protocol, true);
         }
         $client = ['id' => Bot::xrayUuid(), 'subtoken' => bin2hex(random_bytes(16)), 'email' => 'Concurrent fixture'];

@@ -18,6 +18,7 @@ final class ProtocolOptions
 
     public static function groups(string $protocol): array
     {
+        if ($protocol === 'snolc') return [];
         return $protocol === 'mieru'
             ? ['server' => 'Сервер Mieru', 'client' => 'Клиенты Mieru', 'native' => 'Только Mieru JSON / URI', 'mihomo' => 'Только Mihomo']
             : ['server' => 'Сервер', 'client' => 'Общие настройки клиентов', 'singbox' => 'Только sing-box', 'mihomo' => 'Только Mihomo']
@@ -26,6 +27,7 @@ final class ProtocolOptions
 
     public static function schema(string $protocol): array
     {
+        if ($protocol === 'snolc') return [];
         $bool = ['bool']; $int = static fn($min, $max) => ['int', $min, $max];
         $enum = static fn($values) => ['enum', $values];
         $list = static fn($rule, $max = 32) => ['list', $rule, $max];

@@ -1,0 +1,207 @@
+--- a/crates/snolc/src/engine.rs
++++ b/crates/snolc/src/engine.rs
+@@ -431,7 +431,7 @@
+             log_errors,
+             pending_controls: VecDeque::new(),
+             control_server,
+-            idle_wait: false,
++            idle_wait: true,
+         };
+         Ok((engine, handle))
+     }
+@@ -556,8 +556,9 @@
+             self.poll_tunnels(&mut tunnels, &stack);
+             self.drain_module_events();
+             self.drain_log_errors();
+-            if self.idle_wait && tunnels.iter().all(TunnelRuntime::is_idle) {
+-                std::thread::sleep(Duration::from_micros(25));
++            if self.idle_wait {
++                // Modules use nonblocking polling; yield even with idle open flows.
++                std::thread::sleep(Duration::from_micros(100));
+             }
+         }
+ 
+@@ -942,13 +943,6 @@
+ }
+ 
+ impl TunnelRuntime {
+-    fn is_idle(&self) -> bool {
+-        match &self.state {
+-            TunnelState::Established(session) => session.is_idle(self.binding.role),
+-            _ => false,
+-        }
+-    }
+-
+     fn new(binding: TunnelBinding) -> Self {
+         let deadline = match binding.role {
+             Role::Client => Some(Instant::now() + binding.connect_timeout),
+@@ -1152,16 +1146,6 @@
+ }
+ 
+ impl EstablishedSession {
+-    fn is_idle(&self, role: Role) -> bool {
+-        if !self.active.is_empty() {
+-            return false;
+-        }
+-        match role {
+-            Role::Client => self.openings.is_empty() && self.client_pending.is_none(),
+-            Role::Server => self.responding.is_none() && self.pending.is_none(),
+-        }
+-    }
+-
+     fn poll(
+         &mut self,
+         binding: &TunnelBinding,
+@@ -1223,6 +1207,11 @@
+             return Ok(());
+         }
+ 
++        // Do not reserve a seventeenth stream and reset the whole session
++        // while all sixteen available flow slots are still occupied.
++        if self.active.len() >= binding.yamux.max_streams_per_session - 1 {
++            return Ok(());
++        }
+         let mut mux = self.mux.take().ok_or(SessionFlowError::State)?;
+         self.accepting = Some(Box::pin(async move {
+             let result = mux.accept_flow().await;
+@@ -1429,6 +1418,10 @@
+             });
+         }
+ 
++        // Keep established flows alive while the per-session budget is full.
++        if self.active.len() + self.openings.len() >= binding.yamux.max_streams_per_session - 1 {
++            return Ok(());
++        }
+         if self.client_pending.is_none() {
+             for adapter in &binding.adapters {
+                 match modules[*adapter].adapter_accept(context) {
+@@ -1760,20 +1753,25 @@
+     }
+ 
+     fn reap_closed(&mut self, modules: &[LoadedModule]) {
++        // accept/respond futures temporarily own the mux. Retain the closed
++        // handles until it returns, otherwise their stream reservations leak.
++        if self.mux.is_none() {
++            return;
++        }
+         let mut closed = Vec::new();
+         self.active.retain(|flow| {
+             if is_registered(flow.mux_handle) {
+                 true
+             } else {
+-                if let Some(adapter_flow) = flow.adapter_flow {
+-                    closed.push(adapter_flow);
+-                }
++                closed.push(flow.adapter_flow);
+                 false
+             }
+         });
+         if let Some(mux) = &mut self.mux {
+-            for (adapter, flow) in closed {
+-                let _ = modules[adapter].adapter_close_flow(flow);
++            for adapter_flow in closed {
++                if let Some((adapter, flow)) = adapter_flow {
++                    let _ = modules[adapter].adapter_close_flow(flow);
++                }
+                 mux.release_flow();
+             }
+         }
+@@ -2134,3 +2132,24 @@
+         assert_ne!(second, 0);
+     }
+ }
++
++#[cfg(test)]
++mod vpnbot_regressions {
++    use super::*;
++
++    #[test]
++    fn closed_flows_wait_for_mux_before_releasing_their_reservations() {
++        let mut session = EstablishedSession {
++            mux: None,
++            policy_session: 0,
++            accepting: None,
++            responding: None,
++            openings: Vec::new(),
++            pending: None,
++            client_pending: None,
++            active: vec![ActiveServerFlow { adapter_flow: None, mux_handle: u64::MAX }],
++        };
++        session.reap_closed(&[]);
++        assert_eq!(session.active.len(), 1);
++    }
++}
+--- a/crates/snolc/src/stack.rs
++++ b/crates/snolc/src/stack.rs
+@@ -890,6 +890,16 @@
+ 
+     fn close(&mut self) -> io::Result<()> {
+         Ok(())
++    }
++}
++
++// Closing either half must wake the other half with a missing-flow error.
++// Otherwise the retained policy port keeps the UDP lease alive forever.
++impl Drop for UdpDatagramPort {
++    fn drop(&mut self) {
++        if let Some(bridge) = self.bridge.upgrade() {
++            let _ = bridge.borrow_mut().close_udp(self.lease.handle);
++        }
+     }
+ }
+ 
+@@ -2207,6 +2217,16 @@
+     }
+ 
+     #[test]
++    fn vpnbot_regression_udp_peer_drop_releases_policy_flow() {
++        let bridge = shared_bridge();
++        let (adapter, mut policy) = bridge.open_udp(metadata()).unwrap();
++        drop(adapter);
++        let mut context = Context::from_waker(Waker::noop());
++        let mut output = [0; 16];
++        assert!(matches!(policy.poll_recv_datagram(&mut context, &mut output), Poll::Ready(Err(_))));
++    }
++
++    #[test]
+     fn stopped_device_stops_tcp_exchange() {
+         let mut bridge = bridge();
+         let flow = bridge.open_tcp(metadata()).unwrap();
+@@ -2909,7 +2929,7 @@
+         let bridge = shared_bridge();
+         let baseline = bridge.managed_bytes();
+         let (mut adapter, mut policy) = bridge.open_udp(metadata()).unwrap();
+-        let allocated = bridge.managed_bytes();
++        assert!(bridge.managed_bytes() > baseline);
+         let mut context = Context::from_waker(Waker::noop());
+         for payload in [Vec::new(), vec![1], vec![7; crate::wire::MAX_UDP_PAYLOAD]] {
+             assert!(matches!(
+@@ -2932,7 +2952,7 @@
+         }
+         assert_eq!(adapter.metadata().unwrap(), metadata());
+         drop(adapter);
+-        assert_eq!(bridge.managed_bytes(), allocated);
++        assert_eq!(bridge.managed_bytes(), baseline);
+         drop(policy);
+         assert_eq!(bridge.managed_bytes(), baseline);
+     }
+--- a/crates/snolc-cli/src/main.rs
++++ b/crates/snolc-cli/src/main.rs
+@@ -20,7 +20,7 @@
+         [command] if command == "version" || command == "--version" => {
+             println!(
+                 "snolc {} wire {}",
+-                env!("CARGO_PKG_VERSION"),
++                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.1"),
+                 snolc::WIRE_VERSION
+             );
+             Ok(())
+@@ -77,7 +77,7 @@
+                 let result = build_engine(&path);
+                 match result {
+                     Ok((mut engine, handle)) => {
+-                        engine.set_idle_wait(index != 0);
++                        engine.set_idle_wait(true);
+                         let _ = ready_tx.send(Ok(handle.clone()));
+                         if cancelled_worker.load(Ordering::Acquire) {
+                             let _ = handle.shutdown();
