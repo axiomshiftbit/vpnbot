@@ -1,14 +1,17 @@
 <?php
 
 require_once __DIR__ . '/ProtocolOptions.php';
+require_once __DIR__ . '/AccessPolicy.php';
+require_once __DIR__ . '/SnolcProfile.php';
 
 /** Protocol-specific credentials, linked to Xray users or retained for legacy access. */
 final class ManagedProtocol
 {
-    public const NAMES = ['anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS'];
+    public const NAMES = ['anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS', 'snolc' => 'snolc · SSH + Noise'];
 
     public function formats(?array $state = null): array
     {
+        if ($this->protocol === 'snolc') return ['native' => 'Нативный клиент snolc · ZIP'];
         $formats = $this->protocol === 'mieru'
             ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => 'Полный профиль Mihomo · YAML']
             : ['singbox' => 'sing-box JSON · прокси', 'mihomo' => 'Полный профиль Mihomo · YAML']
@@ -49,6 +52,10 @@ final class ManagedProtocol
             $state['settings']['handshake_port'] = 443;
             $state['settings']['ss_server_key'] = '';
             $state['settings']['udp_over_tcp'] = false;
+        }
+        if ($this->protocol === 'snolc') {
+            $state['settings']['port'] = $state['settings']['listen_port'] = 24448;
+            $state['settings']['server_seed'] = '';
         }
         return $state;
     }
@@ -119,6 +126,9 @@ final class ManagedProtocol
         try {
             if (!flock($lock, LOCK_EX)) throw new RuntimeException('Не удалось заблокировать состояние');
             $state = $this->read();
+            if ($this->protocol === 'snolc' && $state['settings']['server_seed'] === '') {
+                $state['settings']['server_seed'] = bin2hex(random_bytes(32));
+            }
             if ($this->protocol === 'shadowtls' && $state['settings']['ss_server_key'] === '') {
                 $state['settings']['ss_server_key'] = base64_encode(random_bytes(16));
             }
@@ -165,7 +175,7 @@ final class ManagedProtocol
         foreach (['host', 'sni'] as $key) {
             if (!is_string($c[$key] ?? null) || ($c[$key] !== '' && !self::hostname($c[$key])
                 && !filter_var($c[$key], FILTER_VALIDATE_IP))) throw new InvalidArgumentException('Неверное имя сервера');
-            if ($s['enabled'] && $c[$key] === '' && ($key === 'host' || $this->protocol !== 'mieru')) throw new InvalidArgumentException('Сначала задайте адрес и SNI для TLS');
+            if ($s['enabled'] && $c[$key] === '' && ($key === 'host' || !in_array($this->protocol, ['mieru', 'snolc'], true))) throw new InvalidArgumentException('Сначала задайте адрес сервера и, для TLS, SNI');
         }
         if (!filter_var($c['dns'] ?? '', FILTER_VALIDATE_IP) || !in_array($c['egress'] ?? '', ['direct', 'warp'], true)) {
             throw new InvalidArgumentException('Неверный DNS или маршрут');
@@ -182,6 +192,11 @@ final class ManagedProtocol
         }
         if ($this->protocol === 'mieru' && (!in_array($c['transport'] ?? '', ['TCP', 'UDP'], true)
             || $c['port'] < 1024 || $c['listen_port'] !== 24445)) throw new InvalidArgumentException('Mieru: внешний порт 1024–65535, внутренний 24445, транспорт TCP или UDP');
+        if ($this->protocol === 'snolc' && ($c['port'] < 1024 || $c['listen_port'] !== 24448 || $c['egress'] !== 'direct'
+            || $c['sni'] !== '' || (($s['enabled'] || ($c['server_seed'] ?? '') !== '')
+                && !preg_match('/\A[a-f0-9]{64}\z/D', $c['server_seed'] ?? '')))) {
+            throw new InvalidArgumentException('snolc: внешний TCP-порт 1024–65535, внутренний 24448; SSH + Noise без SNI, выход direct');
+        }
         if ($this->protocol === 'tuic' && ($c['port'] < 1024 || $c['listen_port'] !== 9443
             || !in_array($c['udp_mode'] ?? '', ['native', 'quic'], true)
             || !in_array($c['congestion'] ?? '', ['cubic', 'new_reno', 'bbr'], true))) throw new InvalidArgumentException('Неверный порт или режим TUIC');
@@ -203,6 +218,7 @@ final class ManagedProtocol
                 || !is_string($u['xray_credential'] ?? null) || !preg_match('/\A[a-f0-9]{64}\z/D', $u['xray_credential']))) {
                 throw new InvalidArgumentException('Неверная связь с пользователем VLESS');
             }
+            AccessPolicy::validate($u);
             foreach (['expires', 'quota'] as $key) {
                 if (!array_key_exists($key, $u) || ($u[$key] !== null && (!is_int($u[$key]) || $u[$key] <= 0))) {
                     throw new InvalidArgumentException('Срок и лимит должны быть положительными или отсутствовать');
@@ -363,6 +379,7 @@ final class ManagedProtocol
         foreach ($snapshot['usage']['users'] ?? [] as $id => $record) {
             if (!preg_match('/\A[a-f0-9]{16}\z/D', (string) $id) || !is_array($record)) throw new InvalidArgumentException('Неверные счётчики');
             foreach (['upload', 'download'] as $key) if (!is_int($record[$key] ?? null) || $record[$key] < 0) throw new InvalidArgumentException('Неверные счётчики');
+            if (isset($record['charged']) && ($this->protocol !== 'snolc' || !is_int($record['charged']) || $record['charged'] < 0)) throw new InvalidArgumentException('Неверный учёт квоты snolc');
             if (!preg_match('/\A[a-f0-9]{16}\z/D', $record['reset'] ?? '')) throw new InvalidArgumentException('Неверный счётчик сброса');
         }
     }
@@ -401,6 +418,7 @@ final class ManagedProtocol
     public function serverConfig(array $s): array
     {
         $c = $s['settings'];
+        if ($this->protocol === 'snolc') return ['listen_port' => 24448, 'transport' => 'ssh', 'protection' => 'noise', 'policy' => 'local'];
         if ($this->protocol === 'mieru') {
             $users = [];
             foreach ($s['users'] as $id => $u) if ($u['enabled']) {
@@ -463,6 +481,7 @@ final class ManagedProtocol
     public function profileDocument(string $id, string $format, ?array $state = null, ?array $endpoint = null): array
     {
         $profile = $this->profile($id, $format, $state, $endpoint);
+        if ($this->protocol === 'snolc') return SnolcProfile::document($profile, $this->directory() . '/runtime/client-patches.zip');
         if ($format === 'mihomo') {
             $body = yaml_emit($profile, YAML_UTF8_ENCODING);
             if ($body === false) throw new RuntimeException('Не удалось сформировать YAML');
@@ -480,13 +499,14 @@ final class ManagedProtocol
         $state ??= $this->read();
         if (!isset($this->formats($state)[$format])) throw new InvalidArgumentException('Используйте полный профиль: этот формат не переносит выбранные настройки');
         $profile = $this->baseProfile($id, $format, $state, $endpoint);
-        return is_array($profile) ? ProtocolOptions::profile($this->protocol, $format, $profile, $state['settings']) : $profile;
+        return is_array($profile) && $this->protocol !== 'snolc' ? ProtocolOptions::profile($this->protocol, $format, $profile, $state['settings']) : $profile;
     }
 
     // Share URIs carry the protocol's basic connection fields. Client-specific
     // tuning is exported separately as JSON/YAML, without inventing URI fields.
     public function connectionUri(string $id, ?array $state = null): string
     {
+        if ($this->protocol === 'snolc') throw new InvalidArgumentException('Для snolc SSH + Noise скачайте нативный архив клиента.');
         if ($this->protocol === 'shadowtls') throw new InvalidArgumentException('Для связки ShadowTLS + Shadowsocks используйте JSON/YAML: совместимая ссылка импорта не поддерживается.');
         return $this->baseProfile($id, 'uri', $state);
     }
@@ -504,6 +524,7 @@ final class ManagedProtocol
             // transport and the persisted origin configuration remain intact.
             $c['host'] = $endpoint['host']; $c['port'] = $endpoint['port'];
         }
+        if ($this->protocol === 'snolc') return SnolcProfile::profile($u, $c);
         if ($this->protocol === 'mieru') return $this->mieruProfile($id, $u, $c, $format);
         if ($this->protocol === 'tuic') return $this->tuicProfile($u, $c, $format);
         if ($this->protocol === 'shadowtls') return $this->shadowtlsProfile($u, $c, $format);

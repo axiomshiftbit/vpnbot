@@ -254,6 +254,7 @@ twAssert($b->linkTelemtWeb('123', $b->pacFake) !== '', 'и ссылка для �
 // прокси без него: лучше потерять WEB, чем telemt.
 class TelemtHealTestBot extends TelemtWebTestBot
 {
+    public function telemtWriteServiceState(bool $enabled): void {}
     public array $sshCalls = [];
     public array $tomls    = [];
     public bool  $alive    = true;   // что отвечает проба pgrep

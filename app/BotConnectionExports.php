@@ -4,6 +4,7 @@ trait BotConnectionExports
 {
     public function connectionFormats(string $protocol): array
     {
+        if ($protocol === 'snolc') return ['native' => 'snolc SSH + Noise · ZIP'];
         $formats = ['cl' => 'Mihomo · YAML', 'clj' => 'Mihomo · JSON'];
         if ($protocol !== 'mieru') $formats['si'] = 'sing-box · JSON';
         if ($protocol === 'vless') {
@@ -87,6 +88,7 @@ trait BotConnectionExports
         if (!$this->protocolPortApplied($protocol, $state)) throw new RuntimeException('Внешний порт ещё не применён. Проверьте Settings → Ports.');
         foreach ($state['users'] as $id => $user) {
             if (($user['xray_source'] ?? '') !== $source || !hash_equals($user['xray_credential'], ManagedProtocol::xrayCredential($client))) continue;
+            if ($protocol === 'snolc') return $store->profileDocument($id, 'native', $state)['body'];
             if ($format === 'uri') return $store->connectionUri($id, $state);
             $profile = $store->profile($id, $type === 'cl' ? 'mihomo' : 'singbox', $state);
             return self::connectionNodes($profile, $type, name: $client['email'] . ' · ' . ManagedProtocol::NAMES[$protocol]);
@@ -154,10 +156,12 @@ trait BotConnectionExports
             if ($format !== '') {
                 $value = $this->connectionExport($source, $protocol, $format);
                 $extension = in_array($format, ['uri', 'sr'], true) ? 'txt' : ($format === 'cl' ? 'yaml' : 'json');
+                if ($protocol === 'snolc') $extension = 'zip';
                 $body = is_string($value) ? $value : ($format === 'cl' ? yaml_emit($value, YAML_UTF8_ENCODING)
                     : json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
                 $filename = self::safeFileName($client['email'], 'client') . "-$protocol-$format.$extension";
                 $mime = $extension === 'yaml' ? 'application/yaml' : ($extension === 'json' ? 'application/json' : 'text/plain');
+                if ($protocol === 'snolc') $mime = 'application/zip';
                 $this->protocolOutput = true;
                 try { $this->sendFile($this->input['chat'], new CURLStringFile($body, $filename, $mime)); }
                 finally { $this->protocolOutput = false; }
@@ -166,6 +170,9 @@ trait BotConnectionExports
             $text = ['Отдельные подключения · ' . self::esc($client['email']),
                 'JSON/YAML содержит только подключение в proxies/outbounds, без DNS, маршрутов, rule-set, TUN и локальных портов. Добавьте эти записи в свою конфигурацию и выберите прокси в её группе или правилах.',
                 'Это файлы для ручного импорта, не подписка. Сохраните файл до следующего нажатия: временные сообщения удаляются.'];
+            if ($protocol === 'snolc') $text = ['snolc SSH + Noise · ' . self::esc($client['email']),
+                'Архив для нативного клиента Linux x86_64 с glibc и Python 3.11+. Внутри профиль, проверенные версии модулей и инструкция запуска. SOCKS5 передаёт TCP и UDP. Сохраните архив до следующего нажатия.',
+                'В Mihomo, sing-box и текущий импорт snolcNG этот архив не добавляется.'];
             $buttons = [];
             if ($protocol === '') {
                 foreach ($labels as $key => $label) $buttons[] = [['text' => $label, 'callback_data' => "$prefix $key"]];
@@ -180,7 +187,7 @@ trait BotConnectionExports
                     $display = '<pre>' . self::esc($link) . '</pre>';
                     $text[] = $this->messageTextLength(implode("\n\n", $text) . "\n\n" . $display) <= 3900
                         ? $display : 'Ссылка слишком длинная для сообщения. Скачайте её целиком кнопкой «Ссылка · TXT».';
-                } else {
+                } elseif ($protocol === 'shadowtls') {
                     $text[] = 'ShadowTLS + Shadowsocks: переносимой короткой ссылки для этой связки нет. JSON sing-box содержит обе связанные записи; скопируйте обе. Для Shadowrocket есть отдельная памятка.';
                 }
                 if ($protocol === 'mieru') $text[] = 'Mieru поддерживается Mihomo и нативным Mieru; обычный sing-box его не поддерживает.';

@@ -39,6 +39,7 @@ final class HysteriaUsers
                 }
             }
             $names[$user['name']] = true;
+            AccessPolicy::validate($user);
         }
         if (isset($state['restore_usage'])) {
             $restore = $state['restore_usage'];
@@ -81,7 +82,7 @@ final class HysteriaUsers
     {
         return $this->locked(function () use ($edit) {
             $state = $this->read();
-            $edit($state);
+            if ($edit($state) === false) return $state;
             $state['revision']++;
             self::validate($state);
             $encoded = $state;

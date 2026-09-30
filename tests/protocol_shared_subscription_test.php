@@ -46,7 +46,7 @@ try {
     $modules = new ProtocolModules($bot->protocolModulesFile); $legacy = [];
     foreach (ManagedProtocol::NAMES as $protocol => $_) {
         $store = $bot->protocolStore($protocol);
-        $store->configure(['host' => 'vpn.example.test', 'sni' => $protocol === 'mieru' ? '' : 'vpn.example.test'], true);
+        $store->configure(['host' => 'vpn.example.test', 'sni' => in_array($protocol, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test'], true);
         $legacy[$protocol] = managedProtocolFixtureUser($store, 'Старый отдельный доступ'); $modules->set($protocol, true);
     }
     $bot->syncXrayProtocolUsers();
@@ -61,7 +61,7 @@ try {
         sharedCheck($user['enabled'] && $user['quota'] === null && $user['expires'] === null, 'Права общего пользователя синхронизированы');
         $bot->syncXrayProtocolUsers(); sharedCheck($store->read()['revision'] === $state['revision'], 'Повторная синхронизация не пишет ревизию и не перезапускает ядро');
     }
-    sharedCheck(count(array_unique($secrets)) === 4 && !in_array($client['id'], $secrets, true), 'У каждого протокола отдельный секрет');
+    sharedCheck(count(array_unique($secrets)) === count(ManagedProtocol::NAMES) && !in_array($client['id'], $secrets, true), 'У каждого протокола отдельный секрет');
     foreach (['clash', 'sing'] as $kind) $bot->templates[$kind] = json_decode(file_get_contents(__DIR__ . '/../config/' . $kind . '.json'), true);
     $plain = [];
     foreach (array_keys(ManagedProtocol::NAMES) as $protocol) $modules->set($protocol, false);
@@ -178,7 +178,7 @@ try {
         ManagedProtocol::writeJson($s->directory() . '/runtime/usage.json', ['users' => [$id => ['upload' => 50, 'download' => 50, 'reset' => $u['reset']]]]);
     }
     $bot->syncXrayProtocolUsers();
-    foreach (array_keys(ManagedProtocol::NAMES) as $p) sharedCheck(sharedUser($bot->protocolStore($p), $client)[1]['quota'] === 500, 'Общий остаток 400, локальный счётчик 100: квота 500');
+    foreach (array_keys(ManagedProtocol::NAMES) as $p) sharedCheck(sharedUser($bot->protocolStore($p), $client)[1]['quota'] === 1000 - 200 - (count(ManagedProtocol::NAMES) - 1) * 100, 'Общая квота учитывает остальные протоколы и сохраняет локальный расход');
     $bot->stats['users'][0]['session']['upload'] = 600; $bot->syncXrayProtocolUsers();
     foreach (array_keys(ManagedProtocol::NAMES) as $p) sharedCheck(!sharedUser($bot->protocolStore($p), $client)[1]['enabled'], 'Исчерпанный общий лимит закрывает каждый протокол');
     $bot->resetXrayProtocolUsage($client); $bot->stats = []; $bot->syncXrayProtocolUsers();

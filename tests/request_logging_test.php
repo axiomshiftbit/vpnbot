@@ -9,7 +9,7 @@ if (!extension_loaded('curl')) {
 $dir = sys_get_temp_dir() . '/vpnbot-log-' . bin2hex(random_bytes(6));
 mkdir($dir, 0700);
 $log = "$dir/requests_error";
-foreach (['ClashTemplateValidator.php', 'VlessEncryption.php', 'BotProtocols.php', 'BotProtocolOptions.php', 'BotProtocolSubscriptions.php', 'BotConnectionExports.php', 'BotHysteria.php', 'HysteriaUsers.php', 'ProtocolModules.php', 'ManagedProtocol.php', 'ProtocolOptions.php', 'ProtocolOptionHelp.php', 'PanelPasswordVault.php'] as $file) {
+foreach (['ClashTemplateValidator.php', 'VlessEncryption.php', 'BotProtocols.php', 'BotProtocolOptions.php', 'BotProtocolSubscriptions.php', 'BotConnectionExports.php', 'BotHysteria.php', 'AccessPolicy.php', 'AccessBatch.php', 'BotAccessPolicies.php', 'BotAccessBatch.php', 'BotServiceDiagnostics.php', 'HysteriaUsers.php', 'ProtocolModules.php', 'ManagedProtocol.php', 'SnolcProfile.php', 'ProtocolOptions.php', 'ProtocolOptionHelp.php', 'PanelPasswordVault.php'] as $file) {
     copy(__DIR__ . '/../app/' . $file, "$dir/$file");
 }
 file_put_contents("$dir/bot.php", str_replace("'/logs/requests_error'", var_export($log, true),

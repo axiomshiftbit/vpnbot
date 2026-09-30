@@ -1,0 +1,184 @@
+--- a/modules/adapter-socks5/src/lib.rs
++++ b/modules/adapter-socks5/src/lib.rs
+@@ -1072,7 +1072,11 @@
+     closed.sort_unstable();
+     closed.dedup();
+     for index in closed.into_iter().rev() {
+-        state.associations.swap_remove(index);
++        let association = state.associations.swap_remove(index);
++        // RFC 1928: the UDP association ends with its TCP control connection.
++        for handle in association.destinations.values() {
++            state.udp_flows.remove(handle);
++        }
+     }
+ }
+
+@@ -1293,3 +1297,32 @@
+         unsafe { descriptor.destroy.unwrap()(instance) };
+     }
+ }
++
++#[cfg(test)]
++mod vpnbot_regressions {
++    use super::*;
++    use std::task::Waker;
++
++    #[test]
++    fn closed_udp_control_releases_all_destination_flows() {
++        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
++        let (control, _) = listener.accept().unwrap();
++        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
++        socket.set_nonblocking(true).unwrap();
++        let destination = Address::Ipv4(Ipv4Addr::LOCALHOST);
++        let flow = UdpClientFlow::new(socket.try_clone().unwrap(), socket.local_addr().unwrap(), destination.clone(), 53, vec![1]).unwrap();
++        let mut state = State {
++            listen: listener.local_addr().unwrap(),
++            options: Options { listen: "127.0.0.1:1080".into(), max_connections: 16, max_udp_associations: 8, max_request_bytes: 1024, reject_fragments: true },
++            clients: vec![], flows: HashMap::new(), next_flow: 2,
++            associations: vec![UdpAssociation { control: ClientConnection::new(control).unwrap(), socket, client: None,
++                destinations: HashMap::from([((destination, 53), 1)]), receive_buffer: vec![0; 1024] }],
++            udp_flows: HashMap::from([(1, flow)]),
++        };
++        client.shutdown(Shutdown::Both).unwrap();
++        poll_udp_associations(&mut state, &mut Context::from_waker(Waker::noop()));
++        assert!(state.associations.is_empty());
++        assert!(state.udp_flows.is_empty());
++    }
++}
+--- a/modules/policy-local/src/lib.rs
++++ b/modules/policy-local/src/lib.rs
+@@ -462,6 +462,14 @@
+ }
+
+ impl<S: DatagramIo, M: DatagramIo> PolicyDatagramFlow<S, M> {
++    fn needs_credit_refill(&self, credit: u64, available: u64, block: u64) -> bool {
++        credit != 0 && [self.upload.pending_bytes(), self.download.pending_bytes()]
++            .into_iter().any(|needed| {
++                let needed = needed as u64;
++                needed > credit && needed <= available && needed <= block
++            })
++    }
++
+     fn new(
+         stack: S,
+         mux: M,
+@@ -494,7 +502,7 @@
+             &mut self.mux,
+             max_stack_to_mux.min(max_total),
+         );
+-        let upload = match upload {
++        let mut upload = match upload {
+             Poll::Ready(Ok(report)) => report,
+             Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+             Poll::Pending => DatagramPumpReport::default(),
+@@ -506,11 +514,16 @@
+             &mut self.stack,
+             max_mux_to_stack.min(remaining),
+         );
+-        let download = match download {
++        let mut download = match download {
+             Poll::Ready(Ok(report)) => report,
+             Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+             Poll::Pending => DatagramPumpReport::default(),
+         };
++        // UDP has no half-close: a closed mux must also release the open socket.
++        if upload.finished || download.finished {
++            upload.finished = true;
++            download.finished = true;
++        }
+         if upload == DatagramPumpReport::default() && download == DatagramPumpReport::default() {
+             Poll::Pending
+         } else {
+@@ -1380,7 +1393,21 @@
+                 }
+             }
+         }
+-        let checkpoint_due = active && now >= traffic.checkpoint_at;
++        // A datagram cannot consume a partial quota block. Waiting for the
++        // periodic checkpoint here stalls large UDP packets (and concurrent
++        // streams can repeatedly consume the new block first). Reuse the
++        // durable refund/debit path as soon as a pending packet needs a refill.
++        // Do not churn storage when the remaining user quota cannot fit it.
++        let credit = traffic.quota.credit_remaining();
++        let available = state.admin.users.get(&user_id).map(|user| match user.spec.quota {
++            ByteLimit::Unlimited => u64::MAX,
++            ByteLimit::Limited { bytes } => bytes.saturating_sub(traffic.quota.durable_charged()).saturating_add(credit),
++        }).unwrap_or(0);
++        let udp_refill = state.datagram_flows.values().any(|flow| {
++            flow.user_id.as_deref() == Some(user_id.as_str())
++                && flow.needs_credit_refill(credit, available, state.options.storage.accounting_block_bytes)
++        });
++        let checkpoint_due = active && (now >= traffic.checkpoint_at || udp_refill);
+         if !active || checkpoint_due {
+             let amount = match traffic.quota.request_refund() {
+                 Ok(amount) => amount,
+@@ -2887,6 +2914,43 @@
+         }
+     }
+
++    #[test]
++    fn vpnbot_large_udp_refills_partial_credit_without_losing_accounting() {
++        let mut quota = QuotaAccount::new(None, 0, 65_536).unwrap();
++        let credit = quota.request_credit().unwrap();
++        quota.commit_credit(credit).unwrap();
++        quota.charge(65_497).unwrap();
++        let mut flow = PolicyDatagramFlow::new(
++            MemoryDatagram { input: [vec![7; 65_497]].into() },
++            MemoryDatagram { input: VecDeque::new() },
++            1, None, None, None,
++        ).unwrap();
++        let mut context = Context::from_waker(Waker::noop());
++        let Poll::Ready(Ok((upload, _))) = flow.poll(&mut context, 39, 39, 39) else {
++            panic!("datagram was not buffered");
++        };
++        assert_eq!(upload.received, 65_497);
++        assert_eq!(upload.sent, 0);
++        assert!(flow.needs_credit_refill(39, u64::MAX, 65_536));
++        // A real quota deficit or an undersized configured block must not
++        // trigger an endless durable refund/debit cycle.
++        assert!(!flow.needs_credit_refill(39, 65_496, 65_536));
++        assert!(!flow.needs_credit_refill(39, u64::MAX, 65_496));
++        let refund = quota.request_refund().unwrap();
++        assert_eq!(refund, 39);
++        quota.commit_refund(refund).unwrap();
++        let credit = quota.request_credit().unwrap();
++        quota.commit_credit(credit).unwrap();
++        assert!(!flow.needs_credit_refill(credit, u64::MAX, 65_536));
++        let Poll::Ready(Ok((upload, _))) = flow.poll(&mut context, credit as usize, credit as usize, credit as usize) else {
++            panic!("refilled datagram did not resume");
++        };
++        assert_eq!(upload.sent, 65_497);
++        quota.charge(upload.sent as u64).unwrap();
++        quota.checkpoint_refund().unwrap();
++        assert_eq!(quota.durable_charged(), 2 * 65_497);
++    }
++
+     fn sniff_policy(rule: &str) -> SniffPolicy {
+         SniffPolicy {
+             entries: vec![toml::from_str(rule).unwrap()],
+@@ -2895,6 +2959,24 @@
+             max_bytes: 16_384,
+             timeout: Duration::from_secs(2),
+         }
++    }
++
++    #[test]
++    fn vpnbot_regression_udp_fin_closes_both_directions() {
++        struct Closed;
++        impl DatagramIo for Closed {
++            fn poll_recv_datagram(&mut self, _: &mut Context<'_>, _: &mut [u8]) -> Poll<io::Result<DatagramRecv>> {
++                Poll::Ready(Ok(DatagramRecv::Closed))
++            }
++            fn poll_send_datagram(&mut self, _: &mut Context<'_>, _: &[u8]) -> Poll<io::Result<()>> {
++                Poll::Ready(Ok(()))
++            }
++            fn close(&mut self) -> io::Result<()> { Ok(()) }
++        }
++        let mut flow = PolicyDatagramFlow::new(MemoryDatagram { input: VecDeque::new() }, Closed, 1, None, None, None).unwrap();
++        let mut context = Context::from_waker(Waker::noop());
++        let Poll::Ready(Ok((upload, download))) = flow.poll(&mut context, 65507, 65507, 131014) else { panic!("closed UDP must complete") };
++        assert!(upload.finished && download.finished);
+     }
+
+     #[test]

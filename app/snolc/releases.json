@@ -1,0 +1,20 @@
+{
+  "snolc": {
+    "sha256": "4f1348df00e6d41efb2660a4ea249b887aa218c894c57069df28babeab438ccc"
+  },
+  "adapter-direct": {
+    "sha256": "f8103608d1c7aa7490d9c6bf4118a48244d70f79e8ae764c807d784e3105b766"
+  },
+  "adapter-socks5": {
+    "sha256": "e27b697a08ed4c4bb435322a8ba4869b3c85d00d85d4f724a2db28ec607b13c3"
+  },
+  "carrier-ssh": {
+    "sha256": "67c0b17813153789ebd39647f7a2bd9c6d23ef7fa95c33a4314e054f957fcbf5"
+  },
+  "protection-noise": {
+    "sha256": "ed9b3bea1bac620efaf7d33b6dd8c9ba83093a5bae9804e66b537144945b6a45"
+  },
+  "policy-local": {
+    "sha256": "a9fa26d8928c06ebfcaeed532c465478dfafa20cc1813caa7adc5e4709a9ee2b"
+  }
+}

@@ -1,10 +1,15 @@
-# Контекст сборки не нужен вовсе: ни один dockerfile не делает COPY/ADD из
-# него — всё содержимое образов приходит из пакетов и COPY --from=<stage>, а
-# код проекта попадает в контейнеры bind-mount'ами из docker-compose.yml.
-#
-# Без этого файла на каждый `docker compose build` демону уезжает ~185 МБ, из
-# них 150 МБ — каталог .git. В CI это ещё и трафик на каждый из 14 образов.
-#
-# Если когда-нибудь появится COPY из контекста — добавить сюда «!путь», иначе
-# сборка не найдёт файл.
+# Only the snolc image uses the repository root as its build context.
+# No runtime data, environment files, Git history or keys are sent to Docker.
 *
+!app/
+!app/snolc/
+!app/snolc/**
+!scripts/
+!scripts/protocol_service.py
+!scripts/snolc_service.py
+!dockerfile/
+!dockerfile/snolc.dockerfile
+!dockerfile/snolc-core.patch
+!dockerfile/snolc-modules.patch
+**/__pycache__/**
+**/*.pyc

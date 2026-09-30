@@ -5,11 +5,17 @@ require_once __DIR__ . '/VlessEncryption.php';
 require_once __DIR__ . '/BotProtocols.php';
 require_once __DIR__ . '/PanelPasswordVault.php';
 require_once __DIR__ . '/BotHysteria.php';
+require_once __DIR__ . '/BotAccessPolicies.php';
+require_once __DIR__ . '/BotServiceDiagnostics.php';
+require_once __DIR__ . '/BotAccessBatch.php';
 
 class Bot
 {
     use BotProtocols;
     use BotHysteria;
+    use BotAccessPolicies;
+    use BotServiceDiagnostics;
+    use BotAccessBatch;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -539,6 +545,11 @@ class Bot
 
     public function action()
     {
+        $telemtRoute = (string) (($this->input['callback'] ?? '') ?: ($this->input['message'] ?? ''));
+        if (preg_match('~^(?:/telemt(?:[A-Z]|$)|/tu )~', $telemtRoute) && !$this->protocolModuleEnabled('telemt')) {
+            if ($this->admin) $this->protocolModulesMenu();
+            return;
+        }
         // Carry the entry point in each callback, including old messages and concurrent chats.
         $this->protocolReturnMain = false;
         if (!empty($this->input['callback']) && preg_match('~^/!(protocol|pr|prset|prmanage|po|ps|pf) ~', $this->input['callback'])) {
@@ -565,16 +576,28 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
+            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
+                $this->accessBatchStart($m[1]);
+                break;
+            case preg_match('~^/ab ([a-f0-9]{12})(?: (show|pick|page|extend|quota|disable|reset|apply|cancel))?(?: ([a-f0-9]{12}|[a-f0-9]{16}|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
+                $this->accessBatch($m[1], $m[2] ?? 'show', $m[3] ?? '');
+                break;
+            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
+                $this->serviceDiagnostics($m[1]);
+                break;
+            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
+                $this->accessPolicyMenu($m[1], $m[2], $m[3] ?? '');
+                break;
             case preg_match('~^/hyUsers(?: ([0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->hyUsers((int) ($m[1] ?? 0));
                 break;
             case preg_match('~^/hyUser (add|legacy-off|legacy-confirm|[a-f0-9]{16})(?: (show|toggle|rotate|reset|delete|delete-confirm|name|expires|quota|file|qr))?$~D', $this->input['callback'], $m):
                 $this->hyUserCommand($m[1], $m[2] ?? 'show');
                 break;
-            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls)$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
                 $this->protocolPortPrompt($m[1]);
                 break;
-            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|snolc)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
                 $this->protocolManageRelays($m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/pf (anytls|shadowtls)(?: (show|reset|pick))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
@@ -587,25 +610,25 @@ class Bot
                     else $this->protocolModulesMenu();
                 }
                 break;
-            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|snolc))?$~D', $this->input['callback'], $m):
                 $this->xrayProtocolsMenu($m[1], $m[2] ?? '');
                 break;
-            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls))?(?: (cl|clj|si|s|uri|sr|ios))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|snolc))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
                 $this->connectionExports($m[1], $m[2] ?? '', $m[3] ?? '');
                 break;
-            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|snolc)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
                 $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
                 break;
-            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->protocolRelay($m[1], $m[2], $m[3], $m[4] ?? '');
                 break;
-            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
+            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|snolc) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
                 $this->protocolRelayPrompt($m[1], $m[2]);
                 break;
-            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
                 $this->protocolSubscriptions($m[1], $m[2], $m[3] ?? 'direct', $m[4] ?? '');
                 break;
-            case preg_match('~^/po (anytls|mieru|tuic|shadowtls)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|snolc)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
                 $this->protocolOptions($m[1], $m[2] ?? 'show', $m[3] ?? '', $m[4] ?? '');
                 break;
             // смена айпи сервера
@@ -2200,6 +2223,38 @@ class Bot
         return $this->withLock('telemt', fn() => $this->applyTelemt());
     }
 
+    public function telemtWriteServiceState(bool $enabled): void
+    {
+        @mkdir('/config/telemt', 0755, true);
+        if (!$this->writePrivateKey('/config/telemt/service-enabled', $enabled ? "1\n" : "0\n")) {
+            throw new RuntimeException('Не удалось сохранить состояние TeleMT');
+        }
+    }
+
+    public function toggleTelemtService(): void
+    {
+        if (!$this->admin) return;
+        $this->withLock('telemt', function () {
+            $modules = new ProtocolModules($this->protocolModulesFile);
+            $enabled = $modules->enabled('telemt');
+            if ($enabled) {
+                // Остановка до смены модуля: ssh() не обращается к выключенным сервисам.
+                $this->telemtWriteServiceState(false);
+                $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
+            }
+            try {
+                $modules->set('telemt', !$enabled);
+                if (!$enabled) $this->applyTelemt();
+            } catch (Throwable $e) {
+                if ($modules->enabled('telemt') !== $enabled) $modules->set('telemt', $enabled);
+                $this->telemtWriteServiceState($enabled);
+                if ($enabled) $this->applyTelemt();
+                throw $e;
+            }
+        });
+        if (!empty($this->getPacConf()['telemt_web'])) $this->cloakNginx();
+    }
+
     // Один порядок блокировок для кнопок и перезапуска: telemt → pac.
     // Старый перезапуск не должен снова разрешать отключённого пользователя.
     public function telemtConfUpdate(callable $fn)
@@ -2220,6 +2275,10 @@ class Bot
 
     private function applyTelemt()
     {
+        if (!$this->protocolModuleEnabled('telemt')) {
+            $this->telemtWriteServiceState(false);
+            return;
+        }
         $conf = $this->telemtSave(function (&$current) {
             [$current] = $this->normalizeTelemtUsers($current);
             return $current;
@@ -2232,6 +2291,7 @@ class Bot
             $this->telemtWebDecoy();
         }
         $this->telemtWriteToml($this->telemtToml($conf));
+        $this->telemtWriteServiceState(true);
         $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
         if (empty($conf['telemt_users'])) {
             return;
@@ -2601,7 +2661,7 @@ class Bot
 
     public function telemtWebEnabled(array $conf): bool
     {
-        return !empty($conf['telemt_web']) && !$this->telemtWebBlockers($conf);
+        return $this->protocolModuleEnabled('telemt') && !empty($conf['telemt_web']) && !$this->telemtWebBlockers($conf);
     }
 
     // WEB появился в telemt 3.5.0. Старый бинарь от секции [web] НЕ падает:
@@ -2628,6 +2688,7 @@ class Bot
     // прекрасно уживаются на одном пользователе.
     public function linkTelemtWeb($name, $conf = false)
     {
+        if (!$this->protocolModuleEnabled('telemt')) return '';
         $conf = is_array($conf) ? $conf : $this->getPacConf();
         $secret = $conf['telemt_users'][$name] ?? '';
         if ($secret === '') {
@@ -2787,6 +2848,7 @@ class Bot
     // stay untouched — same idea as applyRelay keeping SNI real.
     public function linkTelemt($name, $relay = null)
     {
+        if (!$this->protocolModuleEnabled('telemt')) return '';
         [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
         if ($changed) {
             $conf = $this->telemtConfUpdate(function (&$current) {
@@ -4154,7 +4216,7 @@ class Bot
     public static function naiveCredOk($v): bool
     {
         return is_string($v) && $v !== '' && strlen($v) <= 128
-            && (bool) preg_match('#^[A-Za-z0-9._~!$&\'()*+,;=:@%-]+$#', $v);
+            && (bool) preg_match('#^[A-Za-z0-9._~!$&\'()*+,;=:@%-]+$#D', $v);
     }
 
     // Есть ли смысл показывать ссылку naive: пока креды пустые/негодные,
@@ -4190,6 +4252,11 @@ class Bot
 
     public function restartNaive()
     {
+        return $this->withLock('naive', fn() => $this->applyNaive());
+    }
+
+    private function applyNaive()
+    {
         $pac  = $this->getPacConf();
         $user = (string) ($pac['naive']['user'] ?? '');
         $pass = (string) ($pac['naive']['pass'] ?? '');
@@ -4197,23 +4264,30 @@ class Bot
         // Плейсхолдер — то же значение, что в шаблоне config/Caddyfile: пока
         // креды не заданы, caddy не должен подниматься (тот же гард в
         // start_np.sh), иначе сервис работает с угадываемым паролем.
-        $ok = self::naiveCredOk($user) && self::naiveCredOk($pass);
+        $ok = self::naiveCredOk($user) && self::naiveCredOk($pass)
+            && !($user === 'CHANGEME' && $pass === 'CHANGEME');
         // preg_replace_callback, а не preg_replace: user/pass идут в замену как
         // литералы (иначе `$`/`\` в пароле трактуются как backreference).
         $t = preg_replace_callback(
-            '~^(\t+)?basic_auth[^\n]+~sm',
+            '~^([ \t]*)basic_auth[ \t]+[^\n]+~m',
             fn($m) => ($m[1] ?? '') . 'basic_auth ' . ($ok ? "$user $pass" : 'CHANGEME CHANGEME'),
-            $c
+            $c,
+            -1,
+            $replacements
         );
-        // json_encode-класс: file_put_contents с пустым/битым содержимым угробил
-        // бы конфиг. preg_replace_callback отдаёт null при ошибке движка.
-        if (!is_string($t) || $t === '') {
-            error_log('restartNaive: Caddyfile not written — preg_replace_callback failed');
+        // Не запускать конфиг без аутентификации или с неоднозначными реквизитами.
+        // preg_replace_callback отдаёт null при ошибке движка.
+        if (!is_string($t) || $t === '' || $replacements !== 1) {
+            error_log('restartNaive: Caddyfile not written — expected one basic_auth directive');
 
             return false;
         }
+        // Caddy получает каталог /config: атомарная замена видна контейнеру.
+        // При отказе записи работающий процесс остаётся с прежним конфигом.
+        if (!$this->writePrivateKey('/config/Caddyfile', $t)) {
+            throw new RuntimeException('Не удалось сохранить конфигурацию Naive');
+        }
         $this->ssh('pkill caddy', 'np');
-        file_put_contents('/config/Caddyfile', $t);
         if (!$ok || empty($this->getHashSubdomain('np'))) {
             return false;
         }
@@ -4489,9 +4563,11 @@ class Bot
         if (!self::naiveCredOk($user)) {
             return $this->naiveCredReject();
         }
-        $pac = $this->getPacConf();
-        $pac['naive']['user'] = $user;
-        $this->setPacConf($pac);
+        $this->withLock('pac', function () use ($user) {
+            $pac = $this->getPacConf();
+            $pac['naive']['user'] = $user;
+            if (!$this->setPacConf($pac)) throw new RuntimeException('Не удалось сохранить логин Naive');
+        });
         $this->restartNaive();
         $this->menu('naive');
     }
@@ -4502,9 +4578,11 @@ class Bot
         if (!self::naiveCredOk($pass)) {
             return $this->naiveCredReject();
         }
-        $pac = $this->getPacConf();
-        $pac['naive']['pass'] = $pass;
-        $this->setPacConf($pac);
+        $this->withLock('pac', function () use ($pass) {
+            $pac = $this->getPacConf();
+            $pac['naive']['pass'] = $pass;
+            if (!$this->setPacConf($pac)) throw new RuntimeException('Не удалось сохранить пароль Naive');
+        });
         $this->restartNaive();
         $this->menu('naive');
     }
@@ -6078,6 +6156,7 @@ NFT;
             'xrayStatsUser',
             'checkTrafficLimits',
             'syncXrayProtocolUsers',
+            'checkAccessPolicies',
             'trackOnline',
             'trackWgOnline',
             'rotateAmneziaCron',
@@ -15481,6 +15560,7 @@ DNS-over-HTTPS with IP:
 
     public function telemt($update = false)
     {
+        if (!$this->protocolModuleEnabled('telemt')) { $this->protocolModulesMenu(); return; }
         [$conf, $changed] = $this->normalizeTelemtUsers($this->getPacConf());
         if ($changed) {
             $conf = $this->telemtConfUpdate(function (&$current) {
@@ -22650,6 +22730,7 @@ DNS-over-HTTPS with IP:
             $text[] = "\n<code>" . self::esc($link) . '</code>';
         }
         $data[] = [['text' => 'Персональные доступы', 'callback_data' => '/hyUsers']];
+        $data[] = [['text' => 'Диагностика', 'callback_data' => '/diag hy']];
         $data[] = [
             [
                 'text'          => $this->i18n('change password'),
@@ -23795,6 +23876,7 @@ DNS-over-HTTPS with IP:
                 return round($bytes / (1024 ** ($k - 1)), 2) . " {$t[$k - 1]}";
             }
         }
+        return round($bytes / (1024 ** 4), 2) . ' TB';
     }
 
     // Новый REALITY требует гибридный key_share. Неизвестная версия/сбой SSH
@@ -24007,7 +24089,7 @@ DNS-over-HTTPS with IP:
                 . '"$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)" '
                 . '"$(p=$(pgrep -f "[x]ray run" | head -n1); test -n "$p" && readlink -f /proc/$p/exe 2>/dev/null)" '
                 . '"$(xray version 2>&1 | head -n1; printf "\nREALITY_BUILD="; '
-                . 'LC_ALL=C grep -aoE \'github.com/xtls/reality[[:space:]]+v[0-9A-Za-z.+_-]+\' /usr/local/bin/xray 2>/dev/null '
+                . 'LC_ALL=C grep -a -m 1 -oE \'github\\.com/xtls/reality[[:space:]]+v[0-9A-Za-z.+_-]+\' /usr/local/bin/xray 2>/dev/null '
                 . '| head -n1 | awk \'{print $2}\')"',
             'xr'
         );
@@ -24025,7 +24107,7 @@ DNS-over-HTTPS with IP:
         $reality = '';
         if (preg_match('~\nREALITY_BUILD=(\S*)$~D', $version, $build)) {
             $reality = $build[1];
-            $version = substr($version, 0, -strlen($build[0]));
+            $version = rtrim(substr($version, 0, -strlen($build[0])));
         }
 
         return $this->xrProbe = [
@@ -24706,112 +24788,93 @@ DNS-over-HTTPS with IP:
         ]);
     }
 
+    // SSH возвращает только stdout: пустой вывод не доказывает exit 0.
+    private function warpCommand(string $command): bool
+    {
+        $out = $this->ssh('sh -c ' . escapeshellarg($command)
+            . ' >/dev/null 2>&1 && printf VPNBOT_WARP_OK', 'wp');
+        return !$this->sshFailed && trim((string) $out) === 'VPNBOT_WARP_OK';
+    }
+
     public function addWarpPlus($key)
     {
-        $c    = $this->getPacConf();
-        $chat = $this->input['chat'];
-        $log  = '';
-
-        $step = function($label, $cmd, $container) use ($chat, &$log) {
-            $log .= "$label...";
-            $this->sendDraft($chat, 1, $log);
-            $out = trim($this->ssh($cmd, $container));
-            $log .= $out ? "\n$out\n" : " ok\n";
-            $this->sendDraft($chat, 1, $log);
-            return empty($out); // true = success (no output = exit 0)
-        };
-
-        if (!$step('stopping warp', 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp')) {
-            $this->send($chat, $log);
+        $key = trim((string) $key);
+        if ($key !== '' && !preg_match('~^[A-Za-z0-9-]+$~', $key)) {
+            $this->send($this->input['chat'], 'invalid license key format');
             return;
         }
-
-        // Старый аккаунт УБИРАЕМ В СТОРОНУ, а не удаляем: дальше идёт wgcf
-        // register — сетевой вызов к API Cloudflare, который вполне может
-        // упасть. Раньше здесь стоял rm -f, и на упавшей регистрации аккаунт
-        // с ОПЛАЧЕННЫМ WARP+ пропадал безвозвратно: восстановить его без
-        // сохранённого private_key/token невозможно. Теперь любой сбой ниже
-        // возвращает прежнюю пару файлов на место (restore()).
-        if (!$step('backing up old profile', 'cd /etc/warp && rm -rf .bak && mkdir -p .bak && '
-            . 'for f in wgcf-profile.conf wgcf-account.toml; do [ -f "$f" ] && mv "$f" ".bak/$f"; done; true', 'wp')) {
-            $this->send($chat, $log);
-            return;
-        }
-        // Возврат к прежнему аккаунту + подъём туннеля, чтобы неудачная смена
-        // ключа не оставляла warp лежащим.
-        $restore = function () use ($chat, &$log) {
-            $this->ssh('cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
-                . '[ -f ".bak/$f" ] && mv -f ".bak/$f" "$f"; done; rmdir .bak 2>/dev/null; '
-                . 'wg-quick up /etc/warp/wgcf-profile.conf >/dev/null 2>&1; true', 'wp');
-            $log .= "\nprevious account restored\n";
-            $this->send($chat, $log);
-        };
-
-        // Регистрируем новый аккаунт. wgcf >= 2.2.31 печатает таблицу аккаунта
-        // в stdout, а $step трактует ЛЮБОЙ stdout как провал (флоу обрывался
-        // сразу после register, уже удалив старый аккаунт) — stdout глушим,
-        // stderr показываем только при ненулевом коде выхода.
-        if (!$step('[warp] Registering WARP account...', 'cd /etc/warp && err=$(wgcf register --accept-tos 2>&1 >/dev/null) || printf "%s\n" "${err:-register failed}"', 'wp')) {
-            $restore();
-            return;
-        }
-
-        if (!empty($key)) {
-            $key = trim($key);
-            // WARP keys are alphanumeric + dashes only; reject anything else so the
-            // value can't break out of the sed/shell command below (it is interpolated raw).
-            if (!preg_match('~^[A-Za-z0-9-]+$~', $key)) {
-                $log .= "invalid license key format\n";
-                $restore();
+        $this->withLock('warp-control', function () use ($key) {
+            $before = $this->getPacConf();
+            $off = !empty($before['warpoff']);
+            $chat = $this->input['chat'];
+            $log = '';
+            $step = function ($label, $command) use ($chat, &$log) {
+                $log .= "$label...";
+                $this->sendDraft($chat, 1, $log);
+                $ok = $this->warpCommand($command);
+                $log .= $ok ? " ok\n" : " failed\n";
+                $this->sendDraft($chat, 1, $log);
+                return $ok;
+            };
+            // Меняем только свои поля, перечитывая pac под общей блокировкой.
+            $save = function ($disabled, $commit = false) use ($before, $key) {
+                $this->withLock('pac', function () use ($disabled, $commit, $before, $key) {
+                    $p = $this->getPacConf();
+                    if ($disabled) $p['warpoff'] = 1;
+                    elseif (array_key_exists('warpoff', $before)) $p['warpoff'] = $before['warpoff'];
+                    else unset($p['warpoff']);
+                    if ($commit) {
+                        if ($key === '') unset($p['warp']);
+                        else $p['warp'] = $key;
+                    }
+                    if (!$this->setPacConf($p)) throw new RuntimeException('Не удалось сохранить настройки WARP');
+                });
+            };
+            // Не удаляем оставшийся после аварии backup: в нём может быть
+            // единственная копия оплаченного аккаунта. Копируем до остановки.
+            if (!$step('backing up old profile', 'cd /etc/warp && test ! -e .bak && mkdir -m 700 .bak && '
+                . 'for f in wgcf-profile.conf wgcf-account.toml; do if [ -f "$f" ]; then cp -p "$f" ".bak/$f" || exit 1; fi; done')) {
+                $this->send($chat, $log);
                 return;
             }
-            $c['warp'] = $key;
-            // Заменяем ключ в wgcf-account.toml
-            if (!$step('setting license key', "sed -i 's/^license_key.*/license_key = \"$key\"/' /etc/warp/wgcf-account.toml", 'wp')) {
+            $stopped = false;
+            $restore = function () use ($off, $save, $chat, &$log, &$stopped) {
+                $ok = !$stopped || $this->warpCommand('pkill -x microsocks 2>/dev/null || true; '
+                    . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true; '
+                    . 'cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
+                    . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; else rm -f "$f" || exit 1; fi; done');
+                if ($ok && $stopped && !$off) $ok = $this->warpCommand('wg-quick up /etc/warp/wgcf-profile.conf');
+                if ($ok) {
+                    $save($off);
+                    $this->warpCommand('rm -rf /etc/warp/.bak');
+                }
+                $this->warpprofile = null;
+                $log .= $ok ? "previous account restored\n" : "restore failed; backup retained, WARP disabled\n";
+                $this->send($chat, $log);
+            };
+            try {
+                // Watchdog не должен поднимать туннель во время смены аккаунта.
+                $save(true);
+                $stopped = true;
+                if (!$step('stopping warp', 'pkill -x microsocks 2>/dev/null || true; '
+                    . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true')) { $restore(); return; }
+                if (!$step('registering WARP account', 'umask 077; cd /etc/warp && '
+                    . 'rm -f wgcf-profile.conf wgcf-account.toml && wgcf register --accept-tos && chmod 600 wgcf-account.toml')) { $restore(); return; }
+                if ($key !== '') {
+                    if (!$step('applying license key', "cd /etc/warp && sed -i 's/^license_key.*/license_key = \"$key\"/' wgcf-account.toml && wgcf update")) { $restore(); return; }
+                }
+                if (!$step('generating profile', 'umask 077; cd /etc/warp && wgcf generate && '
+                    . 'sh /warp_fixup.sh && chmod 600 wgcf-account.toml wgcf-profile.conf')) { $restore(); return; }
+                if (!$off && !$step('starting warp', 'wg-quick up /etc/warp/wgcf-profile.conf')) { $restore(); return; }
+                $save($off, true);
+            } catch (\Throwable $e) {
                 $restore();
-                return;
+                throw $e;
             }
-            // Обновляем аккаунт с ключом (stdout глушим — как у register)
-            if (!$step('applying license key', 'cd /etc/warp && err=$(wgcf update 2>&1 >/dev/null) || printf "%s\n" "${err:-update failed}"', 'wp')) {
-                $restore();
-                return;
-            }
-        } else {
-            unset($c['warp']);
-        }
-        $this->setPacConf($c);
-
-        if (!$step('generating profile', 'cd /etc/warp && err=$(wgcf generate 2>&1 >/dev/null) || printf "%s\n" "${err:-generate failed}"', 'wp')) {
-            $restore();
-            return;
-        }
-        // Фиксапы профиля — общий с start_wp.sh скрипт (warp_fixup.sh), а не
-        // локальные sed'ы: раньше они разошлись — тут не вырезался DNS (wg-quick
-        // падал на resolvconf с alpine edge), а delete-sed'ы сносили
-        // однострочные Address/AllowedIPs новых wgcf (>= 2.2.31) целиком,
-        // вместе с v4-частью.
-        if (!$step('fixing up profile', 'sh /warp_fixup.sh', 'wp')) {
-            $restore();
-            return;
-        }
-
-        // Без bash-измов: root-шелл в контейнере — busybox ash, ${PIPESTATUS[0]}
-        // там «bad substitution», команда падала, даже не дойдя до wg-quick up.
-        $started = $step('starting warp', 'out=$(wg-quick up /etc/warp/wgcf-profile.conf 2>&1); ec=$?; [ "$ec" -ne 0 ] && printf "%s\n" "$out" | grep -v "skip sysctl"; exit $ec', 'wp');
-
-        if (!$started) {
-            $restore();
-            return;
-        }
-        $this->ssh('rm -rf /etc/warp/.bak', 'wp');
-
-        sleep(1);
-        // sendMessageDraft closes only when sendMessage is called — send a dummy and delete it
-        $r = $this->send($chat, '.');
-        if (!empty($r['result']['message_id'])) {
-            $this->delete($chat, $r['result']['message_id']);
-        }
-
+            $this->warpprofile = null;
+            $this->warpCommand('rm -rf /etc/warp/.bak');
+            $this->send($chat, $log);
+        });
         $this->warp();
     }
 
@@ -24931,35 +24994,34 @@ DNS-over-HTTPS with IP:
     // обратно через три минуты).
     public function offWarp()
     {
-        $p   = $this->getPacConf();
-        $off = !empty($p['warpoff']);
-
-        if (!empty($this->selfupdate)) {
-            // Автообновление: ничего не переключаем, только уважаем флаг.
+        $this->withLock('warp-control', function () {
+            $off = !empty($this->getPacConf()['warpoff']);
+            if (!empty($this->selfupdate)) {
+                if ($off) $this->ssh('pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
+                return;
+            }
+            $save = function ($disabled) {
+                $this->withLock('pac', function () use ($disabled) {
+                    $p = $this->getPacConf();
+                    if ($disabled) $p['warpoff'] = 1;
+                    else unset($p['warpoff']);
+                    if (!$this->setPacConf($p)) throw new RuntimeException('Не удалось сохранить настройки WARP');
+                });
+            };
+            $stop = 'pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
             if ($off) {
-                $this->ssh('pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
+                if (!$this->warpCommand('wg show wgcf-profile >/dev/null 2>&1 || wg-quick up /etc/warp/wgcf-profile.conf')) {
+                    $this->send($this->input['chat'], 'warp up failed');
+                    return;
+                }
+                try { $save(false); }
+                catch (\Throwable $e) { $this->warpCommand($stop); throw $e; }
+            } else {
+                $save(true);
+                if (!$this->warpCommand($stop)) $this->send($this->input['chat'], 'warp stop failed');
             }
-            return;
-        }
-
-        if ($off) {
-            $out = trim((string) $this->ssh(
-                'out=$(wg-quick up /etc/warp/wgcf-profile.conf 2>&1); ec=$?; '
-                    . '[ "$ec" -ne 0 ] && printf "%s\n" "$out" | grep -v "skip sysctl"; exit $ec',
-                'wp'
-            ));
-            if ($out !== '') {
-                $this->send($this->input['chat'], "warp up failed:\n<pre>"
-                    . htmlspecialchars($out, ENT_QUOTES) . '</pre>');
-                return $this->warp();
-            }
-            unset($p['warpoff']);
-        } else {
-            $this->ssh('pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
-            $p['warpoff'] = 1;
-        }
-        $this->setPacConf($p);
-        $this->warp();
+        });
+        if (empty($this->selfupdate)) $this->warp();
     }
 
     public function warp()
@@ -25108,12 +25170,15 @@ DNS-over-HTTPS with IP:
         $hwidLimit    = $c['hwid_limit'] ? (int) $c['hwid_limit'] : $defaultHwid;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . htmlspecialchars($c['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
+        array_push($text, ...$this->subscriptionCardSummary($c, $i));
+        $text[] = '<b>Подключение</b>';
         if (file_exists(__DIR__ . '/subscription.php')) {
             $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         }
         $linkIndex = count($text);
         $text[] = '<pre><code>' . self::esc($this->linkXray($i)) . "</code></pre>\n";
 
+        $text[] = '<b>Импорт в приложения</b>';
         array_push($text, ...$this->subscriptionImportLinks("$scheme://{$domain}/pac$hash", $stok, $c['email']));
 
         $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
@@ -25139,6 +25204,7 @@ DNS-over-HTTPS with IP:
             's' => $stok,
         ]));
 
+        $text[] = '<b>Подписки и файлы</b>';
         $text[] = "\nxray config: <pre><code>$xr</code></pre>";
         $text[] = "sing-box config: <pre><code>$si</code></pre>";
         $text[] = "mihomo config: <pre><code>$cl</code></pre>";
@@ -28303,11 +28369,14 @@ DNS-over-HTTPS with IP:
         if (preg_match('~^\[(.+)\]:(\d+)$~', $endpoint, $em)) {
             $server = $em[1];
             $port   = (int) $em[2];
+            if (!filter_var($server, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) return false;
+        } elseif (preg_match('~^([^\s:]+):(\d+)$~', $endpoint, $em)) {
+            $server = $em[1];
+            $port   = (int) $em[2];
         } else {
-            $pos    = strrpos($endpoint, ':');
-            $server = substr($endpoint, 0, $pos);
-            $port   = (int) substr($endpoint, $pos + 1);
+            return false;
         }
+        if ($port < 1 || $port > 65535) return false;
         return [
             'server'      => $server,
             'port'        => $port,
@@ -28343,53 +28412,40 @@ DNS-over-HTTPS with IP:
         if ($email === '') {
             return false;
         }
-        if (array_key_exists($email, $this->warpclients)) {
-            return $this->warpclients[$email];
-        }
-        $dir  = $this->warpClientDir($email);
-        $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
-        if ($prof !== false) {
-            return $this->warpclients[$email] = $prof;
-        }
-
-        $d   = escapeshellarg($dir);
-        $pac = $this->getPacConf();
-        $key = (string) ($pac['warp'] ?? '');
-        // Ключ уже провалидирован в addWarpPlus, но сюда он приезжает из
-        // pac.json — проверяем повторно, раз значение уходит в shell.
-        $lic = preg_match('~^[A-Za-z0-9-]+$~', $key)
-            ? "sed -i 's/^license_key.*/license_key = \"$key\"/' wgcf-account.toml && "
-                . 'wgcf update --config wgcf-account.toml >/dev/null 2>&1; '
-            : '';
-        // Имя устройства видно в панели 1.1.1.1 — подписываем клиентом.
-        $name = escapeshellarg('vpnbot-' . substr(preg_replace('~[^a-zA-Z0-9_.\-]~', '_', $email), 0, 32));
-        $this->ssh(
-            "mkdir -p $d && cd $d && "
-                . "wgcf register --accept-tos --config wgcf-account.toml --name $name >/dev/null 2>&1 && "
-                . $lic
-                . 'wgcf generate --config wgcf-account.toml --profile wgcf-profile.conf >/dev/null 2>&1 && '
-                . "chmod 600 wgcf-account.toml wgcf-profile.conf && "
-                . "WGCF_CONF=$d/wgcf-profile.conf sh /warp_fixup.sh",
-            'wp'
-        );
-        $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
-        if ($prof === false) {
-            // Не оставляем полуфабрикат: иначе следующий запрос увидит каталог
-            // и решит, что регистрация уже была.
-            $this->ssh("rm -rf $d", 'wp');
-        }
-        return $this->warpclients[$email] = $prof;
+        return $this->withLock('warp-client-' . sha1($email), function () use ($email) {
+            if (array_key_exists($email, $this->warpclients)) return $this->warpclients[$email];
+            $dir = $this->warpClientDir($email);
+            $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
+            if ($prof !== false) return $this->warpclients[$email] = $prof;
+            $d = escapeshellarg($dir);
+            $key = (string) ($this->getPacConf()['warp'] ?? '');
+            $lic = preg_match('~^[A-Za-z0-9-]+$~', $key)
+                ? "sed -i 's/^license_key.*/license_key = \"$key\"/' wgcf-account.toml && "
+                    . 'wgcf update --config wgcf-account.toml >/dev/null 2>&1 && '
+                : '';
+            $name = escapeshellarg('vpnbot-' . substr(preg_replace('~[^a-zA-Z0-9_.\-]~', '_', $email), 0, 32));
+            $this->ssh(
+                "umask 077; mkdir -p $d && cd $d && "
+                    . "{ [ -s wgcf-account.toml ] || wgcf register --accept-tos --config wgcf-account.toml --name $name >/dev/null 2>&1; } && "
+                    . 'chmod 600 wgcf-account.toml && ' . $lic
+                    . 'rm -f wgcf-profile.conf && wgcf generate --config wgcf-account.toml --profile wgcf-profile.conf >/dev/null 2>&1 && '
+                    . "chmod 600 wgcf-profile.conf && WGCF_CONF=$d/wgcf-profile.conf sh /warp_fixup.sh",
+                'wp'
+            );
+            // Сохраняем аккаунт при сетевой ошибке: повтор генерирует профиль
+            // из тех же credentials, не регистрируя ещё одно устройство.
+            return $this->warpclients[$email] = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
+        });
     }
 
-    // Клиента удалили — удаляем и его WARP-аккаунт, иначе каталоги копятся, а
-    // устройства навсегда остаются висеть на аккаунте Cloudflare.
+    // Удаляем локальный профиль. Это не удаление устройства из Cloudflare API.
     public function deleteWarpClient($email)
     {
-        if ((string) $email === '') {
-            return;
-        }
-        unset($this->warpclients[(string) $email]);
-        $this->ssh('rm -rf ' . escapeshellarg($this->warpClientDir($email)), 'wp');
+        if ((string) $email === '') return;
+        $this->withLock('warp-client-' . sha1((string) $email), function () use ($email) {
+            unset($this->warpclients[(string) $email]);
+            $this->ssh('rm -rf ' . escapeshellarg($this->warpClientDir($email)), 'wp');
+        });
     }
 
     public function getWarpProfile()
@@ -29829,7 +29885,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/protocolPort $protocol"]];
             if ($pending) $text[] = "$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.";
         }
-        $text[] = 'Mieru, TUIC и ShadowTLS: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
+        $text[] = 'Mieru, TUIC, ShadowTLS и snolc: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
         if (!empty($pac['restart'])) {
             $data[] = [
                 [

@@ -34,6 +34,8 @@ ARG XRAY_FORK_VERSION=""
 # Скачивание с ретраями: релизы тянутся с github, и «Resource temporarily
 # unavailable» на одном из двух архивов роняло всю сборку образа (так упал
 # прогон dev на 9684fb4). Четыре попытки с нарастающей паузой.
+# GNU grep нужен для быстрой проверки REALITY в Go-бинарнике: BusyBox/musl
+# тратит на тот же regex несколько секунд CPU при каждой пробе из бота.
 # Дефолтный симлинк — на апстрим: контейнер без маркера (или с маркером на форк,
 # но со старым образом без второго бинаря) обязан вести себя ровно как раньше.
 RUN fetch_xray() { \
@@ -60,7 +62,7 @@ RUN fetch_xray() { \
           && chmod +x "$dest" \
           && rm -rf /tmp/xr; \
     }; \
-    apk add --no-cache openssh openssl jq curl \
+    apk add --no-cache openssh openssl jq curl grep \
     && mkdir /root/.ssh \
     && fetch_xray XTLS/Xray-core       "$XRAY_VERSION"      /usr/bin/xray \
     && fetch_xray Jolymmiles/Xray-core "$XRAY_FORK_VERSION" /usr/bin/xray-smux \

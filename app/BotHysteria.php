@@ -37,6 +37,7 @@ trait BotHysteria
                 ['text' => '→', 'callback_data' => '/hyUsers ' . min($pages - 1, $page + 1)],
             ];
             $buttons[] = [['text' => 'Добавить пользователя', 'callback_data' => '/hyUser add']];
+            $buttons[] = [['text' => 'Групповые действия', 'callback_data' => '/abstart hy']];
             if (!empty($this->getPacConf()['hysteria_pass'])) {
                 $buttons[] = [['text' => 'Отключить общий пароль', 'callback_data' => '/hyUser legacy-off']];
             }
@@ -159,14 +160,17 @@ trait BotHysteria
         $row = $usage['users'][$id] ?? null;
         $bytes = $row && $row['reset'] === $user['reset'] ? $row['upload'] + $row['download'] : 0;
         $text = ['Hysteria → ' . self::esc($user['name']),
-            'Доступ: ' . ($user['enabled'] ? 'включён' : 'выключен'),
+            'Доступ: ' . AccessPolicy::reason($user, AccessPolicy::bytes($user, $row), time()),
             'Срок (UTC): ' . ($user['expires'] === null ? 'без ограничения' : gmdate('Y-m-d H:i', $user['expires'])),
             'Расход: ' . number_format($bytes / 1073741824, 3, '.', '') . ' GiB',
             'Квота: ' . ($user['quota'] === null ? 'без ограничения' : number_format($user['quota'] / 1073741824, 6, '.', '') . ' GiB')];
+        if ($user['quota'] !== null && AccessPolicy::bytes($user, $row) !== null) $text[] = 'Осталось: ' . $this->getBytes(max(0, $user['quota'] - $bytes));
+        array_push($text, ...$this->accessPolicySummary($user));
         $link = $this->hyPersonalLink($id);
         if ($link !== '') $text[] = '<code>' . self::esc($link) . '</code>';
         else $text[] = 'Ссылка недоступна: проверьте ограничения и состояние Hysteria.';
         $buttons = [
+            [['text' => 'Календарь и уведомления', 'callback_data' => "/ap hy $id"]],
             [['text' => $user['enabled'] ? 'Выключить' : 'Включить', 'callback_data' => "/hyUser $id toggle"], ['text' => 'Имя', 'callback_data' => "/hyUser $id name"]],
             [['text' => 'Срок', 'callback_data' => "/hyUser $id expires"], ['text' => 'Квота', 'callback_data' => "/hyUser $id quota"]],
             [['text' => 'Сменить реквизиты', 'callback_data' => "/hyUser $id rotate"], ['text' => 'Сбросить расход', 'callback_data' => "/hyUser $id reset"]],

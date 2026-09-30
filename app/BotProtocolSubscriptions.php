@@ -129,7 +129,7 @@ trait BotProtocolSubscriptions
             }
             $text = ['Протоколы в подписке · ' . self::esc($client['email']),
                 'Используются прежние ссылки и выбранные шаблоны Mihomo / sing-box: DNS, Fake IP, правила и rule-set сохраняются. В группе основного подключения можно выбрать VLESS или новый протокол; по умолчанию остаётся прежнее подключение.',
-                'Новые протоколы добавляются после включения сервиса. Mieru доступен только в Mihomo. Связанные пользователи имеют общий срок, выключатель и лимит трафика; секреты у каждого протокола свои.',
+                'Новые протоколы доступны после включения сервиса. Mieru доступен только в Mihomo; snolc выдаётся отдельным ZIP в карточке подключений. Связанные пользователи имеют общий срок, выключатель и лимит трафика; секреты у каждого протокола свои.',
                 'После изменения обновите подписку в клиенте. Учёт общего лимита обновляется службой бота примерно раз в 10 секунд.',
                 'Если VLESS несовместим с обычным sing-box (XHTTP, новый REALITY или VLESS Encryption), в его подписке останутся только совместимые новые протоколы. Шаблон с цепочкой через такой VLESS требует совместимого транспорта VLESS.'];
             $buttons = [];
@@ -182,6 +182,7 @@ trait BotProtocolSubscriptions
         $resolver = $primary['domain_resolver'] ?? $config['route']['default_domain_resolver'] ?? null;
         $bootstrap = null;
         foreach (ManagedProtocol::NAMES as $protocol => $label) {
+            if ($protocol === 'snolc') continue; // Native SSH archive, unsupported by Mihomo/sing-box.
             if (($client['managed_protocols'][$protocol] ?? true) === false || ($type === 'si' && $protocol === 'mieru') || !$this->protocolModuleEnabled($protocol)) continue;
             $store = $this->protocolStore($protocol); $state = $store->read();
             if (!$state['enabled'] || !$this->protocolPortApplied($protocol, $state)) continue;
