@@ -24089,7 +24089,7 @@ DNS-over-HTTPS with IP:
                 . '"$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)" '
                 . '"$(p=$(pgrep -f "[x]ray run" | head -n1); test -n "$p" && readlink -f /proc/$p/exe 2>/dev/null)" '
                 . '"$(xray version 2>&1 | head -n1; printf "\nREALITY_BUILD="; '
-                . 'LC_ALL=C grep -aoE \'github.com/xtls/reality[[:space:]]+v[0-9A-Za-z.+_-]+\' /usr/local/bin/xray 2>/dev/null '
+                . 'LC_ALL=C grep -a -m 1 -oE \'github\\.com/xtls/reality[[:space:]]+v[0-9A-Za-z.+_-]+\' /usr/local/bin/xray 2>/dev/null '
                 . '| head -n1 | awk \'{print $2}\')"',
             'xr'
         );
@@ -24107,7 +24107,7 @@ DNS-over-HTTPS with IP:
         $reality = '';
         if (preg_match('~\nREALITY_BUILD=(\S*)$~D', $version, $build)) {
             $reality = $build[1];
-            $version = substr($version, 0, -strlen($build[0]));
+            $version = rtrim(substr($version, 0, -strlen($build[0])));
         }
 
         return $this->xrProbe = [
