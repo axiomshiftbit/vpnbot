@@ -49,8 +49,8 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 3 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.9/Xray-linux-64.zip
-          echo '1eb9175d0f0a8f8149c9230a7fc5ae66ce332ed20a53155ce61fe62e3f58b7df  Xray-linux-64.zip' | sha256sum --check
+          curl --fail --location --retry 3 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip
+          echo 'f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           sudo install -d -m 1777 /logs

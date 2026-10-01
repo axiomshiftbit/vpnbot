@@ -242,9 +242,17 @@ try {
 
 $bot->routes();
 $check(str_contains(json_encode(end($bot->updates), JSON_UNESCAPED_UNICODE), '/routeshelp 0'), 'Справка доступна из routes');
-foreach ([0, 1, 2, 999] as $page) {
+$help = require __DIR__ . '/../app/routes_help.php';
+$titles = array_keys($help);
+$pageCount = count($help);
+$bot->routesHelp();
+[$indexBody, $indexButtons] = end($bot->updates);
+$check(array_column(array_merge(...$indexButtons), 'callback_data')
+    === [...array_map(fn($n) => "/routeshelp $n", range(1, $pageCount)), '/routes'], 'Оглавление открывает каждую тему и возвращает в routes');
+foreach ([...range(0, $pageCount), -1, 999] as $page) {
     $bot->routesHelp($page); [$body, $buttons] = end($bot->updates);
-    $check(mb_strlen($body) < 1100, 'Страница справки остаётся краткой');
+    $current = max(0, min($page, $pageCount));
+    $check(strlen(mb_convert_encoding($body, 'UTF-16LE', 'UTF-8')) / 2 <= 4096, 'Справка вместе с заголовком укладывается в лимит Telegram');
     preg_match_all('~</?(b|code)>~', $body, $tags);
     $stack = []; $validHtml = true;
     foreach ($tags[0] as $tag) {
@@ -253,6 +261,18 @@ foreach ([0, 1, 2, 999] as $page) {
     }
     $check($validHtml && !$stack && !preg_match('~[<>]~', preg_replace('~</?(b|code)>~', '', $body)), 'HTML справки корректен, примеры не ломают разметку');
     foreach ($buttons as $row) foreach ($row as $button) $check(strlen($button['callback_data']) <= 64, 'Кнопки справки укладываются в лимит Telegram');
+    $callbacks = array_column(array_merge(...$buttons), 'callback_data');
+    $check(end($callbacks) === '/routes', 'Из каждой страницы можно вернуться к спискам');
+    if ($current === 0) {
+        $check($body === $indexBody && $buttons === $indexButtons, 'Нулевая и отрицательная страницы открывают оглавление');
+    } else {
+        $check(str_contains($body, $help[$titles[$current - 1]]), 'Кнопка открывает выбранную тему');
+        $expected = [];
+        if ($current > 1) $expected[] = '/routeshelp ' . ($current - 1);
+        $expected[] = "/routeshelp $current";
+        if ($current < $pageCount) $expected[] = '/routeshelp ' . ($current + 1);
+        $check($callbacks === [...$expected, '/routeshelp 0', '/routes'], 'Стрелки ведут к соседним темам, кнопка всех тем — к оглавлению');
+    }
 }
 
 foreach ($failures as $failure) echo "FAIL: $failure\n";

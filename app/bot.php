@@ -24948,13 +24948,32 @@ DNS-over-HTTPS with IP:
     public function routesHelp(int $page = 0): void
     {
         $pages = require __DIR__ . '/routes_help.php';
-        $page = max(0, min($page, count($pages) - 1));
-        $data = [[
-            ['text' => '←', 'callback_data' => '/routeshelp ' . (($page + count($pages) - 1) % count($pages))],
-            ['text' => ($page + 1) . '/' . count($pages), 'callback_data' => "/routeshelp $page"],
-            ['text' => '→', 'callback_data' => '/routeshelp ' . (($page + 1) % count($pages))],
-        ], [['text' => $this->i18n('back'), 'callback_data' => '/routes']]];
-        $this->update($this->input['chat'], $this->input['message_id'], "Menu → Vless → routes → Справка\n\n" . $pages[$page], $data);
+        $titles = array_keys($pages);
+        $count = count($pages);
+        $page = max(0, min($page, $count));
+        $text = "Menu → Vless → routes → Справка\n\n";
+        $data = [];
+        if ($page === 0) {
+            $text .= "<b>Справка по правилам</b>\n\n"
+                . "Выберите тему. Если настраиваете правила впервые, начните с «С чего начать».\n\n"
+                . "В примерах: ✅ — совпадёт с правилом, ❌ — не совпадёт. "
+                . "Совпадение само по себе не означает блокировку: действие зависит от выбранного списка.\n\n"
+                . "Записи в моноширинном тексте можно копировать. Учебные домены и адреса замените своими.";
+            foreach ($titles as $index => $title) {
+                $data[] = [['text' => ($index + 1) . '. ' . $title, 'callback_data' => '/routeshelp ' . ($index + 1)]];
+            }
+        } else {
+            $title = $titles[$page - 1];
+            $text .= '<b>' . $page . '. ' . self::esc($title) . "</b>\n\n" . $pages[$title];
+            $nav = [];
+            if ($page > 1) $nav[] = ['text' => '←', 'callback_data' => '/routeshelp ' . ($page - 1)];
+            $nav[] = ['text' => "$page/$count", 'callback_data' => "/routeshelp $page"];
+            if ($page < $count) $nav[] = ['text' => '→', 'callback_data' => '/routeshelp ' . ($page + 1)];
+            $data[] = $nav;
+            $data[] = [['text' => '📑 Все темы', 'callback_data' => '/routeshelp 0']];
+        }
+        $data[] = [['text' => $this->i18n('back') . ' → routes', 'callback_data' => '/routes']];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
     }
 
     public function tun()
