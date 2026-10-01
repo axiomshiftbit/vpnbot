@@ -65,7 +65,7 @@ try {
     $bot->upstreamFile = "$root/no-live-upstream.conf";
     $modules = new ProtocolModules($bot->protocolModulesFile);
     $bot->protocolModulesMenu(); [$text, $buttons] = uiLast($bot);
-    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $key => $label) uiCheck(in_array("/protocol $key", uiCallbacks($buttons), true), "$key: настройка доступна до включения");
+    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true, 'masque' => true]) as $key => $label) uiCheck(in_array("/protocol $key", uiCallbacks($buttons), true), "$key: настройка доступна до включения");
     // Нажимаем реальные callback из меню через общий диспетчер. Прямой вызов
     // protocolModulesToggle не обнаруживал отсутствующий маршрут TrustTunnel.
     $callbacks = uiCallbacks($buttons);
@@ -92,7 +92,7 @@ try {
         uiCheck($modules->read() === $before && count($bot->transport->calls) === $calls, 'Неверный callback не меняет модули');
     }
     $bot->input['callback'] = false;
-    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $key => $label) {
+    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true, 'masque' => true]) as $key => $label) {
         $store = $bot->protocolStore($key);
         $bot->protocolCommand($key); [$text, $buttons] = uiLast($bot);
         uiCheck(str_contains(json_encode($buttons, JSON_UNESCAPED_UNICODE), 'Включить сервис'), "$key: выключенный сервис");

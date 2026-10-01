@@ -3,14 +3,16 @@
 require_once __DIR__ . '/ProtocolOptions.php';
 require_once __DIR__ . '/AccessPolicy.php';
 require_once __DIR__ . '/SnolcProfile.php';
+require_once __DIR__ . '/MasqueProfile.php';
 
 /** Protocol-specific credentials, linked to Xray users or retained for legacy access. */
 final class ManagedProtocol
 {
-    public const NAMES = ['anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS', 'snolc' => 'snolc · SSH + Noise'];
+    public const NAMES = ['anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS', 'snolc' => 'snolc · SSH + Noise', 'masque' => 'MASQUE'];
 
     public function formats(?array $state = null): array
     {
+        if ($this->protocol === 'masque') return ['native' => 'Xray 26.9.30+ · MASQUE JSON'];
         if ($this->protocol === 'snolc') return ['native' => 'Нативный клиент snolc · ZIP'];
         $formats = $this->protocol === 'mieru'
             ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => 'Полный профиль Mihomo · YAML']
@@ -42,6 +44,7 @@ final class ManagedProtocol
             $state['settings']['port'] = $state['settings']['listen_port'] = 24445;
             $state['settings']['transport'] = 'TCP';
         }
+        if ($this->protocol === 'masque') $state['settings']['port'] = $state['settings']['listen_port'] = 24449;
         if ($this->protocol === 'tuic') {
             $state['settings']['port'] = $state['settings']['listen_port'] = 9443;
             $state['settings']['udp_mode'] = 'native';
@@ -196,6 +199,9 @@ final class ManagedProtocol
             || $c['sni'] !== '' || (($s['enabled'] || ($c['server_seed'] ?? '') !== '')
                 && !preg_match('/\A[a-f0-9]{64}\z/D', $c['server_seed'] ?? '')))) {
             throw new InvalidArgumentException('snolc: внешний TCP-порт 1024–65535, внутренний 24448; SSH + Noise без SNI, выход direct');
+        }
+        if ($this->protocol === 'masque' && ($c['port'] < 1024 || $c['listen_port'] !== 24449)) {
+            throw new InvalidArgumentException('MASQUE: внешний порт 1024–65535, внутренний 24449 TCP/UDP');
         }
         if ($this->protocol === 'tuic' && ($c['port'] < 1024 || $c['listen_port'] !== 9443
             || !in_array($c['udp_mode'] ?? '', ['native', 'quic'], true)
@@ -418,6 +424,7 @@ final class ManagedProtocol
     public function serverConfig(array $s): array
     {
         $c = $s['settings'];
+        if ($this->protocol === 'masque') return MasqueProfile::server($s);
         if ($this->protocol === 'snolc') return ['listen_port' => 24448, 'transport' => 'ssh', 'protection' => 'noise', 'policy' => 'local'];
         if ($this->protocol === 'mieru') {
             $users = [];
@@ -499,13 +506,14 @@ final class ManagedProtocol
         $state ??= $this->read();
         if (!isset($this->formats($state)[$format])) throw new InvalidArgumentException('Используйте полный профиль: этот формат не переносит выбранные настройки');
         $profile = $this->baseProfile($id, $format, $state, $endpoint);
-        return is_array($profile) && $this->protocol !== 'snolc' ? ProtocolOptions::profile($this->protocol, $format, $profile, $state['settings']) : $profile;
+        return is_array($profile) && !in_array($this->protocol, ['snolc', 'masque'], true) ? ProtocolOptions::profile($this->protocol, $format, $profile, $state['settings']) : $profile;
     }
 
     // Share URIs carry the protocol's basic connection fields. Client-specific
     // tuning is exported separately as JSON/YAML, without inventing URI fields.
     public function connectionUri(string $id, ?array $state = null): string
     {
+        if ($this->protocol === 'masque') throw new InvalidArgumentException('Для MASQUE скачайте JSON Xray 26.9.30 или новее.');
         if ($this->protocol === 'snolc') throw new InvalidArgumentException('Для snolc SSH + Noise скачайте нативный архив клиента.');
         if ($this->protocol === 'shadowtls') throw new InvalidArgumentException('Для связки ShadowTLS + Shadowsocks используйте JSON/YAML: совместимая ссылка импорта не поддерживается.');
         return $this->baseProfile($id, 'uri', $state);
@@ -524,6 +532,7 @@ final class ManagedProtocol
             // transport and the persisted origin configuration remain intact.
             $c['host'] = $endpoint['host']; $c['port'] = $endpoint['port'];
         }
+        if ($this->protocol === 'masque') return MasqueProfile::client($id, $u, $c);
         if ($this->protocol === 'snolc') return SnolcProfile::profile($u, $c);
         if ($this->protocol === 'mieru') return $this->mieruProfile($id, $u, $c, $format);
         if ($this->protocol === 'tuic') return $this->tuicProfile($u, $c, $format);

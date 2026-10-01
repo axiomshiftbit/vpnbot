@@ -176,19 +176,20 @@ tbAssert(!$bot->xrayTorrentReady([], ['inbounds' => [
 tbAssert(!$bot->xrayTorrentBlocked([]), 'свежая установка: торренты не режем');
 tbAssert($bot->xrayTorrentBlocked(['xray_blocktorrent' => 1]), 'тумблер читается из pac');
 
-// ── пины ядер: форк не ниже v26.8.21, апстрим v26.7.28 ────────────────────
+// ── пины ядер: форк не ниже v26.8.21, апстрим не ниже v26.9.9 ─────────────
 // У форка порог нижний: до v26.8.21 не было uTP/DHT/UDP-трекеров.
-// В master сохраняем прежний REALITY для sing-box. Ограниченное покрытие
-// торрентов этим ядром отражается в подсказке меню ниже.
+// Апстрим 26.9.9 включает рабочий uTP-сниффер и новый REALITY.
+// Несовместимость sing-box проверяется отдельно при выдаче подписок;
+// она больше не удерживает общий пин на старом ядре.
 $env = (string) @file_get_contents(__DIR__ . '/../.env');
 foreach ([
     ['XRAY_FORK_VERSION', 'min', 26, 8, 21, 'uTP/DHT/UDP-трекеры появились в v26.8.21'],
-    ['XRAY_VERSION',      'exact', 26, 7, 28, 'штатное ядро в master закреплено на v26.7.28'],
+    ['XRAY_VERSION',      'min', 26, 9,  9, 'штатное ядро поддерживает новый REALITY и рабочий uTP-сниффер'],
 ] as [$key, $bound, $maj, $min, $pat, $why]) {
     if (preg_match('~^' . $key . '=v?(\d+)\.(\d+)\.(\d+)~m', $env, $m)) {
         $ver   = sprintf('%04d%04d%04d', $m[1], $m[2], $m[3]);
         $limit = sprintf('%04d%04d%04d', $maj, $min, $pat);
-        tbAssert($bound === 'min' ? $ver >= $limit : $ver === $limit, "{$m[0]}: {$why}");
+        tbAssert($bound === 'min' ? $ver >= $limit : $ver < $limit, "{$m[0]}: {$why}");
     } else {
         tbAssert(false, "{$key} в .env не найден");
     }

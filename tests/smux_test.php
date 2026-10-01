@@ -541,7 +541,7 @@ class SmuxFixBot extends Bot
         $this->cmds[]    = $cmd;
         $this->sshFailed = $this->sshFail;
 
-        return '';
+        return str_contains($cmd, 'XRAY_LINK_OK') ? 'XRAY_LINK_OK' : '';
     }
 
     public function getPacConf()

@@ -52,7 +52,7 @@ class DatScheduleTestBot extends Bot
         return [];
     }
 
-    public function xrayUpdateRules()
+    public function xrayUpdateRules(?array $previousPac = null)
     {
         $this->restartCount++;
     }

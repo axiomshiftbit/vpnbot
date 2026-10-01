@@ -6,9 +6,9 @@ require_once __DIR__ . '/ManagedProtocol.php';
 final class ProtocolModules
 {
     public const DEFAULTS = ['oc' => true, 'ovpn' => true, 'tt' => true, 'hy' => true, 'ss' => true, 'dnstt' => true, 'telemt' => true, 'ipsec' => true,
-        'ikev2' => true, 'l2tp' => true, 'anytls' => false, 'mieru' => false, 'tuic' => false, 'shadowtls' => false, 'snolc' => false];
+        'ikev2' => true, 'l2tp' => true, 'anytls' => false, 'mieru' => false, 'tuic' => false, 'shadowtls' => false, 'snolc' => false, 'masque' => false];
     public const LABELS = ['oc' => 'OpenConnect', 'ovpn' => 'OpenVPN', 'tt' => 'TrustTunnel', 'hy' => 'Hysteria', 'ss' => 'Shadowsocks', 'dnstt' => 'DNSTT', 'telemt' => 'TeleMT', 'ipsec' => 'IPsec',
-        'ikev2' => 'IKEv2', 'l2tp' => 'L2TP/IPsec', 'anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS', 'snolc' => 'snolc · SSH + Noise'];
+        'ikev2' => 'IKEv2', 'l2tp' => 'L2TP/IPsec', 'anytls' => 'AnyTLS', 'mieru' => 'Mieru', 'tuic' => 'TUIC v5', 'shadowtls' => 'ShadowTLS v3 + SS', 'snolc' => 'snolc · SSH + Noise', 'masque' => 'MASQUE'];
 
     public function __construct(public readonly string $path = '/config/protocol-services.json') {}
 

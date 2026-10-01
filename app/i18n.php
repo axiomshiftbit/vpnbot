@@ -101,6 +101,42 @@ $i = [
         'en' => 'core',
         'ru' => 'ядро',
     ],
+    'xray versions' => [
+        'en' => 'Core / version',
+        'ru' => 'Ядро / версия',
+    ],
+    'xray versions hint' => [
+        'en' => 'Choose an installed version. Switching restarts Xray and interrupts current connections. The config is checked before stopping the core. Refresh client subscriptions afterwards: REALITY compatibility and SMUX depend on the selected core.',
+        'ru' => 'Выберите установленную версию. Переключение перезапускает Xray и прерывает текущие соединения. Конфиг проверяется до остановки ядра. После смены обновите подписки клиентов: совместимость REALITY и SMUX зависит от выбранного ядра.',
+    ],
+    'xray running' => [
+        'en' => 'Running',
+        'ru' => 'Работает',
+    ],
+    'xray version switched' => [
+        'en' => 'Xray core switched. Refresh client subscriptions.',
+        'ru' => 'Ядро Xray переключено. Обновите подписки клиентов.',
+    ],
+    'xray version missing' => [
+        'en' => 'The selected version is missing from the xr image. Update the image or choose an installed version.',
+        'ru' => 'Выбранной версии нет в образе xr. Обновите образ или выберите установленную версию.',
+    ],
+    'xray version incompatible' => [
+        'en' => 'The selected core rejected the config. The previous core is preserved. Check transport and encryption compatibility.',
+        'ru' => 'Выбранное ядро не приняло конфиг. Прежнее ядро сохранено. Проверьте совместимость транспорта и шифрования.',
+    ],
+    'xray start failed' => [
+        'en' => 'The selected core did not start. The previous core and config were restored.',
+        'ru' => 'Выбранное ядро не запустилось. Прежнее ядро и конфигурация восстановлены.',
+    ],
+    'xray rollback failed' => [
+        'en' => 'Switching failed; recovery could not be confirmed. Check Xray status and logs before retrying.',
+        'ru' => 'Переключение не удалось, восстановление не подтверждено. Проверьте состояние и журнал Xray перед повторной попыткой.',
+    ],
+    'xray switch busy' => [
+        'en' => 'Xray settings are being changed. Try again shortly.',
+        'ru' => 'Настройки Xray сейчас изменяются. Повторите немного позже.',
+    ],
     'smux hint'            => [
         'en' => 'SMUX multiplexes every stream into ONE carrier connection: no TLS handshake per request, one long session instead of hundreds of short ones, less load on the server. Needs the fork core (Jolymmiles/Xray-core) — upstream XTLS only knows its own mux.cool. A broken carrier drops every stream inside it, so keep it off if the link is unstable.',
         'ru' => 'SMUX сводит все потоки в ОДНО несущее соединение: не платим хендшейком за каждый запрос, вместо сотен коротких сессий одна долгая, серверу дешевле. Нужно форк-ядро (Jolymmiles/Xray-core) — апстримный XTLS знает только свой mux.cool. Обрыв несущего коннекта роняет все потоки внутри, так что на нестабильном канале лучше выключить.',
@@ -214,8 +250,8 @@ $i = [
         'ru' => 'VLESS Encryption добавляет шифрование внутри TLS/REALITY. Выберите аутентификацию X25519 или постквантовую ML-KEM-768; обмен временными ключами в обоих случаях постквантовый. Режимы: native, xorpub, random. Параметры Xray: билеты 600 с, возобновление 0-RTT, автоматический padding. После изменения настроек или ротации все клиенты должны обновить профили. Ключи REALITY независимы.',
     ],
     'vless encryption singbox' => [
-        'en' => 'VLESS Encryption needs a compatible Xray or mihomo client. Official sing-box 1.14.1 does not support it. Disable Encryption to use sing-box.',
-        'ru' => 'VLESS Encryption требует совместимого Xray или mihomo. Официальный sing-box 1.14.1 его не поддерживает. Для sing-box отключите Encryption.',
+        'en' => 'VLESS Encryption needs a compatible Xray or mihomo client. Official sing-box 1.14.2 does not support it. Disable Encryption to use sing-box.',
+        'ru' => 'VLESS Encryption требует совместимого Xray или mihomo. Официальный sing-box 1.14.2 его не поддерживает. Для sing-box отключите Encryption.',
     ],
     'vless encryption transport' => [
         'en' => 'Select a VLESS transport (REALITY, WebSocket or XHTTP) first. Encryption does not apply to Trojan.',
@@ -250,8 +286,8 @@ $i = [
         'ru' => 'Профили REALITY для Xray/mihomo используют Chrome с X25519MLKEM768 для совместимости с Xray 26.9.9. Остальные транспорты используют выбранный fingerprint.',
     ],
     'reality singbox mlkem' => [
-        'en' => 'This REALITY core requires X25519MLKEM768; official sing-box 1.14.1 removes it from ClientHello. Use Xray/mihomo, a compatible server core, or WebSocket/TLS or Trojan/gRPC.',
-        'ru' => 'Это ядро REALITY требует X25519MLKEM768; официальный sing-box 1.14.1 удаляет его из ClientHello. Используйте Xray/mihomo, совместимое серверное ядро либо WebSocket/TLS или Trojan/gRPC.',
+        'en' => 'This REALITY core requires X25519MLKEM768; official sing-box 1.14.2 removes it from ClientHello. Use Xray/mihomo, a compatible server core, or WebSocket/TLS or Trojan/gRPC.',
+        'ru' => 'Это ядро REALITY требует X25519MLKEM768; официальный sing-box 1.14.2 удаляет его из ClientHello. Используйте Xray/mihomo, совместимое серверное ядро либо WebSocket/TLS или Trojan/gRPC.',
     ],
     'xhttp singbox warn'   => [
         'en' => '⚠️ XHTTP is an Xray transport: stock sing-box has no such transport type and will reject the config. Use v2rayNG / v2rayN / mihomo, or a sing-box build with XHTTP support.',

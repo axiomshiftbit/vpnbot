@@ -47,7 +47,11 @@ class RouteDedupTestBot extends Bot
     public function setPacConf(array $conf)
     {
         $this->saved = $this->pacFake = $conf;
+        return true;
     }
+
+    public function datSync(bool $force = false, ?bool &$changed = null): array { return []; }
+    public function xrayUpdateRules(?array $previousPac = null) { return true; }
 
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
     {
@@ -156,8 +160,8 @@ $bot->input   = ['from' => 1, 'message_id' => 1, 'chat' => 1];
 $bot->limit   = 20;
 $bot->addInclude('vk.com', 'blocklist');
 dedupAssert(
-    $bot->saved['blocklist'] === ['domain:vk.com' => false],
-    'повторное добавление изменило список: ' . json_encode($bot->saved['blocklist']),
+    $bot->pacFake['blocklist'] === ['domain:vk.com' => false],
+    'повторное добавление изменило список: ' . json_encode($bot->pacFake['blocklist']),
 );
 dedupAssert(
     count(array_filter($bot->sent, fn($t) => str_contains($t, 'duplicates skipped'))) === 1,
@@ -182,7 +186,7 @@ dedupAssert($bot->sent === [], 'лишнее сообщение о дублях:
 $bot->pacFake = ['blocklist' => ['1.2.3.4' => true]];
 $bot->sent    = [];
 $bot->addInclude('1.2.3.4/32', 'blocklist');
-dedupAssert(array_keys($bot->saved['blocklist']) === ['1.2.3.4'], 'IP-дубль: ' . json_encode($bot->saved['blocklist']));
+dedupAssert(array_keys($bot->pacFake['blocklist']) === ['1.2.3.4'], 'IP-дубль: ' . json_encode($bot->pacFake['blocklist']));
 
 // ── генераторы конфигов не должны выдавать дубли ────────────────────────────
 $x = $bot->listToXrayRules([

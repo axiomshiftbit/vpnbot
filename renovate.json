@@ -42,9 +42,9 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "В master штатное ядро Xray закреплено на 26.7.28 с прежним REALITY для sing-box. Следующие версии требуют отдельной проверки клиентов. Форк Jolymmiles имеет независимую версию.",
+      "description": "Xray 26.9.30 проверен с новым REALITY и VLESS Encryption. Следующие версии требуют отдельной проверки клиентов. mihomo получает support-x25519mlkem768 и Chrome; несовместимые подписки официального sing-box отклоняются ботом. Форк Jolymmiles имеет независимую версию.",
       "matchDepNames": ["XTLS/Xray-core"],
-      "allowedVersions": "<=26.7.28"
+      "allowedVersions": "<=26.9.30"
     },
     {
       "description": "Alpine нельзя поднимать выше 3.23: начиная с 3.24 из репозиториев вырезан пакет unit (NGINX Unit), которым запускается php-контейнер, — образ php просто перестанет собираться. Снимать потолок только вместе с переездом php на другой сервер приложений.",

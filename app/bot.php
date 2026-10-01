@@ -576,16 +576,16 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
-            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
+            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
                 $this->accessBatchStart($m[1]);
                 break;
             case preg_match('~^/ab ([a-f0-9]{12})(?: (show|pick|page|extend|quota|disable|reset|apply|cancel))?(?: ([a-f0-9]{12}|[a-f0-9]{16}|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->accessBatch($m[1], $m[2] ?? 'show', $m[3] ?? '');
                 break;
-            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
+            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
                 $this->serviceDiagnostics($m[1]);
                 break;
-            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
                 $this->accessPolicyMenu($m[1], $m[2], $m[3] ?? '');
                 break;
             case preg_match('~^/hyUsers(?: ([0-9]{1,6}))?$~D', $this->input['callback'], $m):
@@ -594,10 +594,10 @@ class Bot
             case preg_match('~^/hyUser (add|legacy-off|legacy-confirm|[a-f0-9]{16})(?: (show|toggle|rotate|reset|delete|delete-confirm|name|expires|quota|file|qr))?$~D', $this->input['callback'], $m):
                 $this->hyUserCommand($m[1], $m[2] ?? 'show');
                 break;
-            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
                 $this->protocolPortPrompt($m[1]);
                 break;
-            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|snolc)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
                 $this->protocolManageRelays($m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/pf (anytls|shadowtls)(?: (show|reset|pick))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
@@ -610,25 +610,25 @@ class Bot
                     else $this->protocolModulesMenu();
                 }
                 break;
-            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|snolc))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|snolc|masque))?$~D', $this->input['callback'], $m):
                 $this->xrayProtocolsMenu($m[1], $m[2] ?? '');
                 break;
-            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|snolc))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|snolc|masque))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
                 $this->connectionExports($m[1], $m[2] ?? '', $m[3] ?? '');
                 break;
-            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|snolc)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
                 $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
                 break;
-            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->protocolRelay($m[1], $m[2], $m[3], $m[4] ?? '');
                 break;
-            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|snolc) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
+            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|snolc|masque) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
                 $this->protocolRelayPrompt($m[1], $m[2]);
                 break;
-            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
                 $this->protocolSubscriptions($m[1], $m[2], $m[3] ?? 'direct', $m[4] ?? '');
                 break;
-            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|snolc)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|snolc|masque)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
                 $this->protocolOptions($m[1], $m[2] ?? 'show', $m[3] ?? '', $m[4] ?? '');
                 break;
             // смена айпи сервера
@@ -690,6 +690,12 @@ class Bot
                 break;
             case preg_match('~^/switchXrayCore$~', $this->input['callback'], $m):
                 $this->switchXrayCore();
+                break;
+            case preg_match('~^/xrayCoreMenu$~', $this->input['callback'], $m):
+                $this->xrayCoreMenu();
+                break;
+            case preg_match('~^/selectXrayCore (origin[23]?|fork)$~', $this->input['callback'], $m):
+                $this->selectXrayCore($m[1]);
                 break;
             case preg_match('~^/switchXrayTorrent$~', $this->input['callback'], $m):
                 $this->switchXrayTorrent();
@@ -1783,7 +1789,7 @@ class Bot
             case preg_match('~^/addNipdomain$~', $this->input['callback'], $m):
                 $this->addNipdomain();
                 break;
-            case preg_match('~^/(?P<action>change|delete)(?P<typelist>\w+) (?P<arg>\d+)(?: (?P<page>\d+))?$~', $this->input['callback'], $m):
+            case preg_match('~^/(?P<action>change|delete)(?P<typelist>\w+) (?P<arg>k[0-9a-f]{20}|\d+)(?: (?P<page>\d+))?$~', $this->input['callback'], $m):
                 $this->listPacChange($m['typelist'], $m['action'], $m['arg'], ($m['page'] ?? '') ?: 0);
                 break;
             case preg_match('~^/paczapret$~', $this->input['callback'], $m):
@@ -1815,6 +1821,9 @@ class Bot
                 break;
             case preg_match('~^/routes(?: (\d+))?$~', $this->input['callback'], $m):
                 $this->routes(($m[1] ?? '') ?: 0);
+                break;
+            case preg_match('~^/routeshelp(?: (\d+))?$~', $this->input['callback'], $m):
+                $this->routesHelp((int) ($m[1] ?? 0));
                 break;
             case preg_match('~^/tun$~', $this->input['callback'], $m):
                 $this->tun();
@@ -2953,6 +2962,7 @@ class Bot
         $this->ensureTorrentBlock($c, $pac);
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
+        if (!$this->finalmaskCoreCompatible($pac, $this->xrayCoreSelection($pac))) return false;
         $this->ensureFinalmaskInbound($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
@@ -6025,52 +6035,46 @@ NFT;
     public function importListFile($message, $type)
     {
         $r = $this->request('getFile', ['file_id' => $this->input['file_id']]);
-        $f = file_get_contents($this->file . $r['result']['file_path']);
+        $f = isset($r['result']['file_path']) ? @file_get_contents($this->file . $r['result']['file_path']) : false;
+        if ($f === false || trim($f) === '') {
+            $this->send($this->input['from'], 'Файл пуст или недоступен. Существующий список сохранён.');
+            $this->backXtlsList($type);
+            return;
+        }
         if (!empty($f)) {
             // Инициализация обязательна: без неё файл, в котором не нашлось ни
             // одной валидной строки, оставлял $list неопределённым, и присвоение
             // ниже стирало весь список пользователя.
             $list   = [];
-            $merged = 0;
+            $merged = 0; $invalid = 0;
             foreach (explode("\n", $f) as $v) {
                 if (!empty($s = trim($v))) {
-                    $t = explode(';', $s);
+                    // Последняя колонка — состояние; внутри regexp/URL тоже
+                    // встречается ';'. Старый export писал false пустой строкой.
+                    $t = preg_match('~^(.*);([01]?)$~s', $s, $columns)
+                        ? [$columns[1], $columns[2]] : [$s];
                     // Формат экспорта — «запись;1», но импортируют и простые
                     // списки доменов без второй колонки. Раньше отсутствующий
                     // $t[1] давал false, и весь импорт приезжал выключенным.
                     $on = (bool) ($t[1] ?? 1);
-                    if ($type == 'rulessetlist') {
-                        if (preg_match('~^.+:.+:https?://.+~', $t[0])) {
-                            $list[$t[0]] = $on;
-                        }
-                    } elseif ($type == 'datlist') {
-                        if (preg_match('~^[\w.\-]+\.dat:https://.+~i', $t[0])) {
-                            $list[$t[0]] = $on;
-                        }
-                    } elseif ($this->isRouteEntryList($type)) {
-                        // Тот же путь, что у ручного ввода: punycode и отсев
-                        // мусора. Импорт шёл мимо него, и в списке оседали
-                        // записи, которые ядро потом молча выбрасывало.
-                        // Отсев тем же routeEntryUsable, что и в addInclude:
-                        // пустая строка бывает только у битого IP, а "keyword:"
-                        // и прочие префиксы без значения нормализуются сами в
-                        // себя и осели бы в списке.
-                        $key = $this->normalizeRouteEntry($t[0]);
-                        if ($this->routeEntryUsable($this->classifyRouteEntry($key))) {
-                            $list[$key] = $on;
-                        }
-                    } else {
-                        $list[$t[0]] = $on;
-                    }
+                    $key = $this->isRouteEntryList($type) ? $this->normalizeRouteEntry($t[0]) : trim($t[0]);
+                    if (!$this->routeListEntryValid($type, $key)) { $invalid++; continue; }
+                    if (in_array($type, ['white', 'deny'], true)) {
+                        if ($on) $list[] = $key;
+                    } else $list[$key] = $on;
                 }
             }
             if ($this->isRouteEntryList($type)) {
                 ['list' => $list, 'removed' => $merged] = $this->dedupeRouteList($list);
                 ksort($list);
             }
-            $p = $this->getPacConf();
-            $p[$type] = $list;
-            $this->setPacConf($p);
+            if (!$list) {
+                $this->send($this->input['from'], 'В файле нет корректных правил. Существующий список сохранён.');
+                $this->backXtlsList($type);
+                return;
+            }
+            $this->changeRouteList($type, function (&$current) use ($list) { $current = $list; });
+            if ($invalid) $this->send($this->input['from'], "Неверных записей пропущено: $invalid.");
             if ($merged > 0) {
                 $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
             }
@@ -11561,7 +11565,13 @@ DNS-over-HTTPS with IP:
             case 'rulessetlist':
                 $r = $this->send(
                     $this->input['chat'],
-                    "@{$this->input['username']} outbound[:behavior]:time:URL",
+                    "@{$this->input['username']} <b>outbound[:behavior]:интервал:URL</b>\n"
+                        . "<code>proxy:1d:https://example.org/list.srs</code>\n"
+                        . "Каждый источник — с новой строки. Число — секунды; 1h — час, 1d — сутки.\n"
+                        . "sing-box: .srs/.json. Mihomo: .yaml/.yml/.txt/.mrs. "
+                        . "Для MRS укажите behavior: domain или ipcidr.\n"
+                        . "block/reject — блокировать; direct — напрямую; proxy — VPN.\n"
+                        . "Для Mihomo лучше MRS/YAML: ошибочный TXT может стать пустым списком.",
                     $this->input['message_id'],
                     reply: 'outbound[:behavior]:time:URL',
                 );
@@ -11638,107 +11648,43 @@ DNS-over-HTTPS with IP:
 
     public function addInclude(string $domains, $type)
     {
-        if ($type == 'datlist') {
-            $this->addDat($domains);
-            return;
-        }
-        if ($type == 'rulessetlist' && !preg_match('~^.+:.+:https?://.+~', $domains)) {
-            $this->send($this->input['from'], 'wrong pattern, enter [direct|block|proxy|custom outbound]:time:URL');
-            return;
-        }
-        $domains = $this->splitRouteInput($domains);
-        if (!empty($domains)) {
-            $conf    = $this->getPacConf();
-            $lastKey = null;
-            $dups    = 0;
-            $merged  = 0;
-            // Канон уже накопленных записей: добавляемое сравниваем не с текстом
-            // ключа, а со смыслом — vk.com, domain:vk.com, VK.com и vk.com. это
-            // одна запись, и вторая копия лишь засоряет список и конфиги ядер.
-            $seen = [];
-            if ($this->isRouteEntryList($type)) {
-                foreach (array_keys($conf[$type] ?? []) as $k) {
-                    if (($canon = $this->routeEntryCanonKey((string) $k)) !== '') {
-                        $seen[$canon] = (string) $k;
+        if ($type === 'datlist') { $this->addDat($domains); return; }
+        $entries = $type === 'rulessetlist'
+            ? array_filter(array_map('trim', preg_split('~\r\n|\r|\n~', $domains)))
+            : $this->splitRouteInput($domains);
+        $lastKey = null; $dups = 0; $merged = 0; $invalid = 0;
+        if ($entries) {
+            $this->changeRouteList($type, function (&$list) use ($entries, $type, &$lastKey, &$dups, &$merged, &$invalid) {
+                $seen = [];
+                if ($this->isRouteEntryList($type)) {
+                    foreach (array_keys($list) as $key) {
+                        if (($canon = $this->routeEntryCanonKey((string) $key)) !== '') $seen[$canon] = $key;
                     }
                 }
-            }
-            foreach ($domains as $v) {
-                if (in_array($type, ['white', 'deny'])) {
-                    // Эти два списка уезжают в директивы allow/deny конфига
-                    // nginx (см. syncDeny) — принимаем только адрес или CIDR.
-                    if (!self::ipOrCidr($v)) {
-                        $dups++;
+                foreach ($entries as $entry) {
+                    if (in_array($type, ['white', 'deny'], true)) {
+                        if (self::ipOrCidr($entry)) $list[] = $entry;
+                        else $invalid++;
                         continue;
                     }
-                    $conf[$type][] = $v;
-                    $lastKey       = $v;
-                } elseif (in_array($type, ['rulessetlist', 'packagelist', 'processlist'])) {
-                    $lastKey = trim($v);
-                    // Доменного канона у URL правил и имён процессов нет, но
-                    // буквальный повтор всё равно не должен сбрасывать тумблер
-                    // уже существующей записи.
-                    if (array_key_exists($lastKey, $conf[$type] ?? [])) {
-                        $dups++;
-                        continue;
-                    }
-                    $conf[$type][$lastKey] = true;
-                } else {
-                    // Мусорный ввод не заводим в список: он всё равно отсеется
-                    // на выдаче в конфиги, но останется висеть кнопкой в меню.
-                    //
-                    // Проверять пустоту нормализованной строки НЕДОСТАТОЧНО:
-                    // пустую строку даёт только битый IP, а "keyword:" и прочие
-                    // префиксы без значения нормализуются сами в себя и оседали
-                    // в списке. Спрашиваем тем же routeEntryUsable, которым
-                    // генераторы конфигов решают, годится ли запись.
-                    $key = $this->normalizeRouteEntry($v);
-                    if (!$this->routeEntryUsable($this->classifyRouteEntry($key))) {
-                        continue;
-                    }
-                    $canon = $this->routeEntryCanonKey($key);
-                    if ($canon !== '' && isset($seen[$canon])) {
-                        // Повтор уже имеющейся записи. Её состояние НЕ трогаем:
-                        // раньше повторное добавление молча включало обратно то,
-                        // что пользователь выключил тумблером. Навигацию уводим
-                        // на страницу существующей записи.
-                        $dups++;
-                        $lastKey = $seen[$canon];
-                        continue;
-                    }
-                    // $seen новыми записями НЕ пополняем: дубли внутри одной
-                    // пачки схлопнёт dedupeRouteList ниже — он, в отличие от
-                    // порядка ввода, выберет более явную форму.
-                    $lastKey             = $key;
-                    $conf[$type][$lastKey] = true;
+                    $key = $this->isRouteEntryList($type) ? $this->normalizeRouteEntry($entry) : trim($entry);
+                    if (!$this->routeListEntryValid($type, $key)) { $invalid++; continue; }
+                    $canon = $this->isRouteEntryList($type) ? $this->routeEntryCanonKey($key) : '';
+                    $lastKey = $seen[$canon] ?? $key;
+                    if (($canon !== '' && isset($seen[$canon])) || array_key_exists($key, $list)) { $dups++; continue; }
+                    $list[$key] = true;
                 }
-            }
-            if (in_array($type, ['white', 'deny'])) {
-                // Список без ключей: буквальные повторы копятся молча.
-                $conf[$type] = array_values(array_unique($conf[$type]));
-            } elseif ($this->isRouteEntryList($type)) {
-                // Заодно схлопываем дубли, накопленные до появления канона (и
-                // те, что раньше означали разное: голая запись в xray была
-                // подстрокой, а domain: — суффиксом).
-                //
-                // ?? [] обязателен: на свежей установке pac.json пуст ({}), и
-                // если ВЕСЬ ввод отсеялся как мусор, ни одна ветка выше ключ
-                // $type не создала — dedupeRouteList(null) роняла бота с
-                // TypeError прямо в обработчике сообщения.
-                ['list' => $conf[$type], 'removed' => $merged] = $this->dedupeRouteList($conf[$type] ?? []);
-            }
-            $conf[$type] ??= [];
-            ksort($conf[$type]);
-            $this->setPacConf($conf);
-            $page = (int) floor(array_search($lastKey, array_keys($conf[$type])) / $this->limit);
-            if ($dups > 0) {
-                $this->send($this->input['from'], $this->i18n('duplicates skipped') . ": $dups");
-            }
-            if ($merged > 0) {
-                $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
-            }
+                if (in_array($type, ['white', 'deny'], true)) $list = array_values(array_unique($list));
+                elseif ($this->isRouteEntryList($type)) ['list' => $list, 'removed' => $merged] = $this->dedupeRouteList($list);
+                ksort($list);
+            });
         }
-        $page = $page ?: -2;
+        if ($dups) $this->send($this->input['from'], $this->i18n('duplicates skipped') . ": $dups");
+        if ($merged) $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
+        if ($invalid) $this->send($this->input['from'], "Неверных записей пропущено: $invalid. Формат и примеры — routes → Справка.");
+        $keys = array_keys($this->getPacConf()[$type] ?? []);
+        $index = array_search($lastKey, $keys, true);
+        $page = $index === false ? 0 : (int) floor($index / $this->limit);
         $this->backXtlsList($type, $page);
     }
 
@@ -11754,23 +11700,12 @@ DNS-over-HTTPS with IP:
                 }
                 break;
             case 'blocklist':
-                // Записи geosite:/geoip: требуют встроенных .dat, которых в
-                // образе xray нет: подтягиваем их здесь же, иначе правило молча
-                // не попало бы в конфиг ядра (см. listToXrayRules).
-                $this->datSync();
-                $this->xrayUpdateRules();
                 $this->xtlsblock($page);
                 break;
             case 'warplist':
-                $this->datSync();
-                $this->xrayUpdateRules();
                 $this->xtlswarp($page);
                 break;
             case 'datlist':
-                // toggle/delete/import источника: досинхронизировать файлы
-                // (удалить осиротевшие) и пересобрать серверные ext-правила.
-                $this->datSync();
-                $this->xrayUpdateRules();
                 $this->xtlsdat($page);
                 break;
             case 'processlist':
@@ -11889,8 +11824,7 @@ DNS-over-HTTPS with IP:
      * (clashRules) кладут такую запись в domain_suffix/DOMAIN-SUFFIX, то есть
      * трактуют её как суффикс, — и пользователь, добавивший домен в block,
      * ожидает именно суффикс. Раньше три ядра расходились на одном и том же
-     * списке; теперь голая строка остаётся только за keyword:, для которого у
-     * xray отдельного префикса действительно нет.
+     * списке; для keyword: сохраняем совместимую с прежними ядрами голую строку.
      */
     public function xrayDomainToken(array $c): ?string
     {
@@ -11899,10 +11833,13 @@ DNS-over-HTTPS with IP:
             case 'extip': // ext ip-dat — его место в поле "ip", не "domain"
             case 'geoip': // встроенная geoip-категория — тоже только в "ip"
                 return null;
-            case 'keyword': // у xray нет префикса keyword: — только голая строка
-                return $c['value'];
+            case 'keyword': // голая строка совместима и с прежними Xray
+                return mb_strtolower($c['value']);
             case 'suffix':
-                return 'domain:' . $c['value'];
+            case 'domain':
+                return 'domain:' . $this->hostCanon($c['value']);
+            case 'full':
+                return 'full:' . $this->hostCanon($c['value']);
             case 'ext': // ext домен-dat: xray принимает "ext:file.dat:tag" в domain[]
                 return 'ext:' . $this->extAssetRef($c['value']);
             default: // regexp, full, domain, geosite — xray понимает эти префиксы нативно
@@ -11917,7 +11854,7 @@ DNS-over-HTTPS with IP:
      * pac-списке голая запись означает суффикс домена.
      *
      * Нужно там, где конфиг перечитывается сам из себя (клиентская пересборка
-     * при t=s): без этого keyword-запись, у которой в xray нет префикса, на
+     * при t=s): без этого keyword-запись без явного префикса на
      * втором проходе классифицировалась бы как suffix и уезжала в конфиг уже
      * как "domain:" — молча меняя правило с подстроки на суффикс.
      */
@@ -11954,10 +11891,110 @@ DNS-over-HTTPS with IP:
      */
     public function routeEntryUsable(array $c): bool
     {
+        if (in_array($c['kind'], ['suffix', 'domain', 'full'], true)) {
+            $host = $this->hostCanon($c['value']);
+            return strlen($host) <= 253 && (bool) preg_match('~^[a-z0-9_](?:[a-z0-9_.-]*[a-z0-9_])?$~i', $host)
+                && !str_contains($host, '..');
+        }
         if (in_array($c['kind'], ['ext', 'extip'], true)) {
             return $this->extRefValid($c['value']);
         }
         return trim((string) $c['value']) !== '';
+    }
+
+    public function routeListEntryValid(string $type, string $entry): bool
+    {
+        if ($type === 'subnetlist') return self::ipOrCidr($entry);
+        if (in_array($type, ['white', 'deny'], true)) return self::ipOrCidr($entry);
+        if ($type === 'datlist') return preg_match('~^[\w.\-]+\.dat:(https://[^\s]+)$~i', $entry, $m)
+            && filter_var($m[1], FILTER_VALIDATE_URL) !== false;
+        if ($type === 'rulessetlist') {
+            $parsed = self::parseRuleSetKey($entry);
+            if ($parsed === null) return false;
+            $format = self::ruleSetFormat($parsed['url']);
+            return in_array($format, ['srs', 'json', 'yaml', 'yml', 'txt', 'mrs'], true)
+                && ($format !== 'mrs' || $parsed['behavior'] !== 'classical');
+        }
+        if ($this->isRouteEntryList($type)) return $this->routeEntryUsable($this->classifyRouteEntry($entry));
+        return trim($entry) !== '' && !preg_match('~[\x00-\x1f]~', $entry);
+    }
+
+    public function validateRouteRegexes(array $patterns): bool
+    {
+        if (!$patterns) return true;
+        $file = tempnam(sys_get_temp_dir(), 'route-check-');
+        if ($file === false) return false;
+        try {
+            $config = ['route' => ['rules' => [['domain_regex' => array_values(array_unique($patterns)), 'action' => 'reject']]]];
+            if (file_put_contents($file, json_encode($config)) === false) return false;
+            // rule-set compile лишь упаковывает regexp, не проверяя RE2.
+            // check создаёт маршрутизатор, но не запускает сетевые службы.
+            exec('timeout 10 sing-box check -c ' . escapeshellarg($file) . ' >/dev/null 2>&1', $output, $status);
+            return $status === 0;
+        } finally { @unlink($file); }
+    }
+
+    // Все изменения списка читают актуальное состояние под общим PAC-локом.
+    // Серверные списки дополнительно держат xray-лок в принятом порядке.
+    public function changeRouteList(string $type, callable $edit): bool
+    {
+        if (!in_array($type, ['blocklist', 'warplist', 'includelist', 'subnetlist', 'rulessetlist', 'datlist',
+            'packagelist', 'processlist', 'tunpackage', 'tunprocess', 'white', 'deny'], true)) return false;
+        $server = in_array($type, ['blocklist', 'warplist', 'datlist'], true);
+        $apply = function () use ($type, $edit, $server) {
+            return $this->withLock('pac', function () use ($type, $edit, $server) {
+                $before = $this->getPacConf();
+                $list = $before[$type] ?? [];
+                $edit($list);
+                if ($list === ($before[$type] ?? null)) return true;
+                $patterns = [];
+                if ($this->isRouteEntryList($type)) {
+                    foreach ($list as $entry => $on) {
+                        if (!$on) continue;
+                        $c = $this->classifyRouteEntry((string) $entry);
+                        if ($c['kind'] === 'regexp') $patterns[] = $c['value'];
+                    }
+                }
+                if (!$this->validateRouteRegexes($patterns)) {
+                    $this->send($this->input['from'], 'Правила не сохранены: ошибка проверки регулярного выражения RE2. Проверьте regexp и повторите.');
+                    return false;
+                }
+                $conf = $before; $conf[$type] = $list;
+                if (!$this->setPacConf($conf)) {
+                    $this->send($this->input['from'], 'Не удалось сохранить правила.');
+                    return false;
+                }
+                if ($server) {
+                    // datSync удаляет выключенные assets. Сохраняем их inode,
+                    // чтобы отказ Xray не оставил прежний конфиг без файлов.
+                    $backups = []; $errors = [];
+                    if ($type === 'datlist') foreach (glob($this->datDir() . '/*') ?: [] as $file) {
+                        if (!is_file($file) || preg_match('~\.\d+\.[0-9a-f]+$~', $file)) continue;
+                        $copy = $file . '.' . getmypid() . '.' . uniqid();
+                        if (!@link($file, $copy)) { $errors[] = 'asset backup failed'; break; }
+                        $backups[$file] = $copy;
+                    }
+                    if (!$errors) $errors = $this->datSync();
+                    foreach (array_keys(array_filter($list)) as $entry) {
+                        $c = $this->classifyRouteEntry((string) $entry);
+                        if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])
+                            && empty($before[$type][$entry])) $errors[] = 'missing dat';
+                    }
+                    if ($errors || $this->xrayUpdateRules($before) === false) {
+                        $restored = true;
+                        foreach ($backups as $file => $copy) if (!@rename($copy, $file)) $restored = false;
+                        $restored = $this->setPacConf($before) && $restored;
+                        $this->send($this->input['from'], $restored
+                            ? 'Правила не применены. Проверьте .dat, категории и доступность Xray. Предыдущий список сохранён.'
+                            : 'Xray не принял правила; не удалось полностью восстановить список и .dat. Проверьте доступность файлов.');
+                        return false;
+                    }
+                    foreach ($backups as $copy) @unlink($copy);
+                }
+                return true;
+            });
+        };
+        return $server ? $this->withLock('xray', $apply) : $apply();
     }
 
     /**
@@ -11966,7 +12003,7 @@ DNS-over-HTTPS with IP:
      *
      * @return array{domain:array,ip:array}
      */
-    public function listToXrayRules(array $list): array
+    public function listToXrayRules(array $list, bool $requireAssets = true): array
     {
         $domain = $ip = [];
         foreach (array_keys(array_filter($list)) as $e) {
@@ -11978,7 +12015,7 @@ DNS-over-HTTPS with IP:
             }
             // ext:/extip: ссылаются на внешний .dat — не пишем ссылку в серверный
             // конфиг, пока файл не скачан, иначе xray упадёт на отсутствующем asset.
-            if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
+            if ($requireAssets && in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
                 continue;
             }
             // geosite:/geoip: — те же asset-файлы, только с фиксированными
@@ -11988,7 +12025,7 @@ DNS-over-HTTPS with IP:
             // «geosite:category-ads-all» уезжала в конфиг, ядро падало на
             // «failed to load geosite», а запись оставалась в pac.json — каждый
             // рестарт писал тот же конфиг, самовосстановления не было.
-            if (in_array($c['kind'], ['geosite', 'geoip'], true)
+            if ($requireAssets && in_array($c['kind'], ['geosite', 'geoip'], true)
                 && !$this->datFileReady(self::CORE_DAT[$c['kind']])
             ) {
                 continue;
@@ -12010,6 +12047,46 @@ DNS-over-HTTPS with IP:
             'domain' => array_values(array_unique($domain)),
             'ip'     => array_values(array_unique($ip)),
         ];
+    }
+
+    // PAC-список означает ИЛИ доменов/IP. Готовые правила шаблона имеют
+    // собственный порядок и AND-условия: их нельзя группировать по outbound.
+    public function xrayRouteLists(array $rules, array $pac): array
+    {
+        $lists = ['~pac~' => 'includelist', '~block~' => 'blocklist', '~warp~' => 'warplist', '~subnet~' => 'subnetlist'];
+        $result = [];
+        foreach ($rules as $rule) {
+            $variants = [$rule];
+            foreach (['domain', 'ip'] as $field) {
+                $token = $rule[$field] ?? null;
+                if (!is_string($token) || !isset($lists[$token])) continue;
+                $buckets = ['domain' => [], 'ip' => []];
+                foreach (array_keys(array_filter($pac[$lists[$token]] ?? [])) as $entry) {
+                    $c = $this->classifyRouteEntry((string) $entry);
+                    if (!$this->routeEntryUsable($c) || in_array($c['kind'], ['ext', 'extip'], true)) continue;
+                    if ($c['kind'] === 'ip') $buckets['ip'][] = $this->ipCanon($c['value']);
+                    elseif ($c['kind'] === 'geoip') $buckets['ip'][] = 'geoip:' . $c['value'];
+                    else $buckets['domain'][] = $this->xrayDomainToken($c);
+                }
+                $next = [];
+                foreach ($variants as $variant) {
+                    unset($variant[$field]);
+                    foreach ($buckets as $target => $values) {
+                        // Явное условие второго поля не расширяем: оно задаёт
+                        // пересечение, а не ещё один элемент PAC-списка.
+                        if (!$values || ($target !== $field && isset($variant[$target]))) continue;
+                        $next[] = $variant + [$target => array_values(array_unique($values))];
+                    }
+                }
+                $variants = $next;
+            }
+            foreach ($variants as $variant) {
+                foreach (['domain', 'ip'] as $field) if (isset($variant[$field]) && !$variant[$field]) unset($variant[$field]);
+                $conditions = array_diff_key($variant, array_flip(['type', 'outboundTag', 'balancerTag', 'ruleTag']));
+                if (array_filter($conditions)) $result[] = $variant;
+            }
+        }
+        return $result;
     }
 
     /**
@@ -12115,9 +12192,9 @@ DNS-over-HTTPS with IP:
             // ext:/extip: — ссылка file.dat:tag; xray сам приводит категорию к
             // нижнему регистру при чтении .dat, так что регистр тега не значим.
             case 'ext':
-                return 'x:' . mb_strtolower($v);
             case 'extip':
-                return 'xi:' . mb_strtolower($v);
+                [$file, $tag] = explode(':', $this->extAssetRef($v), 2);
+                return ($c['kind'] === 'ext' ? 'x:' : 'xi:') . $file . ':' . mb_strtolower($tag);
             case 'full':
                 return 'f:' . $this->hostCanon($v);
             default: // domain и голая запись (suffix) — один и тот же суффикс
@@ -12325,7 +12402,7 @@ DNS-over-HTTPS with IP:
         }
     }
 
-    public function xrayUpdateRules()
+    public function xrayUpdateRules(?array $previousPac = null)
     {
         $c  = $this->getPacConf();
         $xr = $this->getXray();
@@ -12333,7 +12410,7 @@ DNS-over-HTTPS with IP:
         // в restartXray() без inbounds, то есть без единого клиента.
         if (!is_array($xr)) {
             error_log('xrayUpdateRules: xray.json unreadable, rules left as is');
-            return;
+            return false;
         }
         // Свои три аутбаунда обновляем НА МЕСТЕ, чужие оставляем: раньше
         // outbounds перезаписывались целиком на каждое изменение block/warp-
@@ -12375,6 +12452,19 @@ DNS-over-HTTPS with IP:
         // Порядок важен: первый аутбаунд в xray — дефолтный маршрут, поэтому
         // недостающие свои дописываем в конец, а не в начало.
         $xr['outbounds'] = array_merge($outbounds, array_values($own));
+        $legacyRules = [];
+        foreach (['block' => 'blocklist', 'warp' => 'warplist'] as $tag => $list) {
+            foreach ($this->listToXrayRules(($previousPac ?? $c)[$list] ?? [], false) as $field => $values) {
+                if ($values) $legacyRules[] = ['type' => 'field', 'outboundTag' => $tag, $field => $values];
+            }
+        }
+        $customRules = array_values(array_filter($xr['routing']['rules'] ?? [], static function ($rule) use ($legacyRules) {
+            if (str_starts_with((string) ($rule['ruleTag'] ?? ''), 'vpnbot:routes:')) return false;
+            // Старые правила без меток узнаём по прежнему PAC-списку.
+            // Чужое простое block/warp-правило тоже должно сохраниться.
+            foreach ($legacyRules as $legacy) if ($rule == $legacy) return false;
+            return true;
+        }));
         $rules = [];
         // block/warp: раскладываем каждый список на xray domain/ip с учётом
         // префиксов маршрутизации (regexp:/keyword:/full:/domain:).
@@ -12387,6 +12477,7 @@ DNS-over-HTTPS with IP:
                 $rules[] = [
                     "type"        => "field",
                     "outboundTag" => $tag,
+                    "ruleTag"     => "vpnbot:routes:$tag:domain",
                     "domain"      => $x['domain'],
                 ];
             }
@@ -12394,12 +12485,13 @@ DNS-over-HTTPS with IP:
                 $rules[] = [
                     "type"        => "field",
                     "outboundTag" => $tag,
+                    "ruleTag"     => "vpnbot:routes:$tag:ip",
                     "ip"          => $x['ip'],
                 ];
             }
         }
-        $xr['routing']['rules'] = $rules ?: [];
-        $this->restartXray($xr);
+        $xr['routing']['rules'] = array_merge($rules, $customRules);
+        return $this->restartXray($xr);
     }
 
     // ── Внешние xray .dat (реестр datlist) ──────────────────────────────────
@@ -12636,6 +12728,10 @@ DNS-over-HTTPS with IP:
             @unlink($tmp);
             return 'write failed';
         }
+        if (!$this->validateDatReplacement($name, basename($tmp))) {
+            @unlink($tmp);
+            return 'Xray отклонил .dat; прежний файл сохранён';
+        }
         if (!rename($tmp, $dest)) {
             @unlink($tmp);
             return 'rename failed';
@@ -12643,6 +12739,30 @@ DNS-over-HTTPS with IP:
         $this->datWriteMeta($name, $newMeta);
         $changed = true;
         return '';
+    }
+
+    // Проверяем уже используемые категории ДО замены asset. Иначе ответ
+    // HTML вместо .dat оставлял процесс живым, но ломал следующий рестарт.
+    public function validateDatReplacement(string $name, string $temporary): bool
+    {
+        $config = $this->getXray();
+        if (!is_array($config)) return true; // ещё нет серверных правил
+        $used = false;
+        foreach ($config['routing']['rules'] ?? [] as $i => $rule) {
+            foreach (['domain', 'ip'] as $field) {
+                foreach ($rule[$field] ?? [] as $j => $token) {
+                    $prefix = $field === 'domain' ? 'geosite:' : 'geoip:';
+                    if ($name === ($field === 'domain' ? 'geosite.dat' : 'geoip.dat') && str_starts_with($token, $prefix)) {
+                        $tag = substr($token, strlen($prefix));
+                    } elseif (str_starts_with($token, "ext:$name:")) {
+                        $tag = substr($token, strlen("ext:$name:"));
+                    } else continue;
+                    $config['routing']['rules'][$i][$field][$j] = "ext:$temporary:$tag";
+                    $used = true;
+                }
+            }
+        }
+        return !$used || $this->validateXrayConfig($config);
     }
 
     // Синхронизирует /logs/geodata с реестром datlist: качает недостающие файлы
@@ -12713,6 +12833,8 @@ DNS-over-HTTPS with IP:
                 $changed = true;
             }
         }
+        // При ошибке список может быть откачен назад: его assets ещё нужны.
+        if ($errors) return $errors;
         foreach (glob($dir . '/*') ?: [] as $f) {
             if (!is_file($f)) {
                 continue;
@@ -12741,41 +12863,44 @@ DNS-over-HTTPS with IP:
 
     public function datRecordUpdate(int $at, bool $success = false): void
     {
-        $conf = $this->getPacConf();
-        if (!is_array($conf)) {
-            return;
-        }
-        $conf['dat_update_last_attempt'] = $at;
-        if (!array_key_exists('dat_update_last_success', $conf)) {
-            $conf['dat_update_last_success'] = 0;
-        }
-        $interval = (int) ($conf['dat_update_interval'] ?? 0);
-        if (isset(self::DAT_UPDATE_INTERVALS[$interval]) && $interval > 0) {
-            $conf['dat_update_next'] = $at + $interval;
-        }
-        if ($success) {
-            $conf['dat_update_last_success'] = $at;
-        }
-        $this->setPacConf($conf);
+        $this->pacConfUpdate(function (&$conf) use ($at, $success) {
+            if (!is_array($conf)) {
+                return;
+            }
+            $conf['dat_update_last_attempt'] = $at;
+            if (!array_key_exists('dat_update_last_success', $conf)) {
+                $conf['dat_update_last_success'] = 0;
+            }
+            $interval = (int) ($conf['dat_update_interval'] ?? 0);
+            if (isset(self::DAT_UPDATE_INTERVALS[$interval]) && $interval > 0) {
+                $conf['dat_update_next'] = $at + $interval;
+            }
+            if ($success) {
+                $conf['dat_update_last_success'] = $at;
+            }
+        });
     }
 
     // Кнопка «обновить»: перекачать все .dat, пересобрать серверные правила, отчёт.
     public function datRefresh()
     {
-        $runAt = time();
-        $this->datRecordUpdate($runAt);
-        $errors = $this->datSync(true); // принудительно перекачать все .dat
-        $this->xrayUpdateRules();
-        if (!$errors) {
-            $this->datRecordUpdate($runAt, true);
-        }
-        if ($errors) {
-            $lines = [];
-            foreach ($errors as $name => $err) {
-                $lines[] = "$name — $err";
+        $this->withLock('xray', function () {
+            $runAt = time();
+            $this->datRecordUpdate($runAt);
+            $changed = false;
+            $errors = $this->datSync(true, $changed);
+            if ($changed && $this->xrayUpdateRules() === false) $errors['xray'] = 'правила не применены';
+            if (!$errors) {
+                $this->datRecordUpdate($runAt, true);
             }
-            $this->send($this->input['from'], "dat: ошибки загрузки:\n" . implode("\n", $lines));
-        }
+            if ($errors) {
+                $lines = [];
+                foreach ($errors as $name => $err) {
+                    $lines[] = self::esc("$name — $err");
+                }
+                $this->send($this->input['from'], "dat: ошибки загрузки:\n" . implode("\n", $lines));
+            }
+        });
         $this->xtlsdat();
     }
 
@@ -12784,34 +12909,36 @@ DNS-over-HTTPS with IP:
     // скачивания каждые 10 секунд. Xray перезапускается только при изменении .dat.
     public function checkDatUpdates(): void
     {
-        $conf     = $this->getPacConf();
-        $interval = (int) ($conf['dat_update_interval'] ?? 0);
-        if (
-            !isset(self::DAT_UPDATE_INTERVALS[$interval])
-            || $interval === 0
-            || empty(array_filter($conf['datlist'] ?? []))
-        ) {
-            return;
-        }
-        $now  = time();
-        $next = (int) ($conf['dat_update_next'] ?? 0);
-        if ($next > $now) {
-            return;
-        }
+        $this->withLock('xray', function () {
+            $conf     = $this->getPacConf();
+            $interval = (int) ($conf['dat_update_interval'] ?? 0);
+            if (
+                !isset(self::DAT_UPDATE_INTERVALS[$interval])
+                || $interval === 0
+                || empty(array_filter($conf['datlist'] ?? []))
+            ) {
+                return;
+            }
+            $now  = time();
+            $next = (int) ($conf['dat_update_next'] ?? 0);
+            if ($next > $now) {
+                return;
+            }
 
-        $this->datRecordUpdate($now);
-        $changed = false;
-        $errors  = $this->datSync(true, $changed);
-        if ($changed) {
-            $this->xrayUpdateRules();
-        }
-        if (!$errors) {
-            $this->datRecordUpdate($now, true);
-            return;
-        }
-        foreach ($errors as $name => $err) {
-            error_log("dat auto-update[$name]: $err");
-        }
+            $this->datRecordUpdate($now);
+            $changed = false;
+            $errors  = $this->datSync(true, $changed);
+            if ($changed) {
+                if ($this->xrayUpdateRules() === false) $errors['xray'] = 'правила не применены';
+            }
+            if (!$errors) {
+                $this->datRecordUpdate($now, true);
+                return;
+            }
+            foreach ($errors as $name => $err) {
+                error_log("dat auto-update[$name]: $err");
+            }
+        });
     }
 
     public function datUpdateIntervalLabel(int $interval): string
@@ -12825,16 +12952,16 @@ DNS-over-HTTPS with IP:
             $this->xtlsdat();
             return;
         }
-        $conf = $this->getPacConf();
-        $conf['dat_update_interval'] = $interval;
-        if ($interval > 0) {
-            // После выбора интервала первая автоматическая проверка будет через
-            // полный период; для немедленной загрузки остаётся кнопка «обновить».
-            $conf['dat_update_next'] = time() + $interval;
-        } else {
-            unset($conf['dat_update_next']);
-        }
-        $this->setPacConf($conf);
+        $this->pacConfUpdate(function (&$conf) use ($interval) {
+            $conf['dat_update_interval'] = $interval;
+            if ($interval > 0) {
+                // После выбора интервала первая автоматическая проверка будет через
+                // полный период; для немедленной загрузки остаётся кнопка «обновить».
+                $conf['dat_update_next'] = time() + $interval;
+            } else {
+                unset($conf['dat_update_next']);
+            }
+        });
         $this->datSchedule();
     }
 
@@ -12933,37 +13060,24 @@ DNS-over-HTTPS with IP:
     // сохранение реестра и пересборка серверных правил.
     public function addDat(string $input)
     {
-        $conf    = $this->getPacConf();
-        $errors  = [];
-        $lastKey = null;
+        $errors = []; $entries = [];
         foreach (preg_split('~\r\n|\r|\n~', $input) as $line) {
             $line = trim($line);
-            if ($line === '') {
+            if ($line === '') continue;
+            if (!$this->routeListEntryValid('datlist', $line)) {
+                $errors[] = 'неверный формат: ' . self::esc($line);
                 continue;
             }
-            if (!preg_match('~^[\w.\-]+\.dat:https://.+~i', $line)) {
-                $errors[] = "неверный формат: $line";
-                continue;
-            }
-            $conf['datlist'][$line] = true;
-            $lastKey = $line;
+            $entries[$line] = true;
         }
-        if ($lastKey !== null) {
-            ksort($conf['datlist']);
-            $this->setPacConf($conf);
-        }
-        $dlerr = $this->datSync();
-        $this->xrayUpdateRules();
-        if ($errors || $dlerr) {
-            $lines = $errors;
-            foreach ($dlerr as $name => $err) {
-                $lines[] = "$name — $err";
-            }
-            $this->send($this->input['from'], "dat:\n" . implode("\n", $lines));
-        }
-        $page = $lastKey !== null
-            ? (int) floor(array_search($lastKey, array_keys($conf['datlist'])) / $this->limit)
-            : 0;
+        if ($entries) $this->changeRouteList('datlist', static function (&$list) use ($entries) {
+            $list += $entries; // повторное добавление не включает выключенный источник
+            ksort($list);
+        });
+        if ($errors) $this->send($this->input['from'], "dat:\n" . implode("\n", $errors));
+        $keys = array_keys($this->getPacConf()['datlist'] ?? []);
+        $index = array_search(array_key_last($entries), $keys, true);
+        $page = $index === false ? 0 : (int) floor($index / $this->limit);
         $this->xtlsdat($page);
     }
 
@@ -14495,48 +14609,8 @@ DNS-over-HTTPS with IP:
 
     public function deleteYes($type)
     {
-        $c = $this->getPacConf();
-        unset($c[$type]);
-        $this->setPacConf($c);
-        switch ($type) {
-            case 'includelist':
-                $this->pacUpdate();
-                break;
-            case 'blocklist':
-                $this->xtlsblock();
-                break;
-            case 'warplist':
-                $this->xtlswarp();
-                break;
-            case 'packagelist':
-                $this->xtlsapp();
-                break;
-            case 'processlist':
-                $this->xtlsprocess();
-                break;
-            case 'rulessetlist':
-                $this->xtlsrulesset();
-                break;
-            case 'datlist':
-                // Реестр пуст → удалит все .dat файлы, кроме встроенных
-                // geosite/geoip: они не в реестре и нужны записям geosite:/geoip:.
-                $this->datSync();
-                $this->xrayUpdateRules();
-                $this->xtlsdat();
-                break;
-            // Кнопка «delete all» рисуется для КАЖДОГО списка (listPac), а
-            // веток здесь было меньше: список стирался, но ни одного update()
-            // не следовало — меню «зависало» на экране подтверждения.
-            case 'subnetlist':
-                $this->xtlssubnet();
-                break;
-            case 'tunpackage':
-                $this->tunpackage();
-                break;
-            case 'tunprocess':
-                $this->tunprocess();
-                break;
-        }
+        $this->changeRouteList($type, function (&$list) { $list = []; });
+        $this->backXtlsList($type);
     }
 
     public function deleteAll($type)
@@ -14972,11 +15046,11 @@ DNS-over-HTTPS with IP:
                 $data[] = [
                     [
                         'text'          => $this->i18n($v ? 'on' : 'off') . ' ' . ($basename ? basename($k) . ' ' : '') . (in_array($type, ['rulessetlist', 'datlist', 'packagelist', 'processlist', 'subnetlist']) ? $k : $this->routeEntryLabel($k)),
-                        'callback_data' => "/change$type " . ($i + $page * $this->limit) . " $page",
+                        'callback_data' => "/change$type k" . substr(hash('sha256', (string) $k), 0, 20) . " $page",
                     ],
                     [
                         'text'          => 'delete',
-                        'callback_data' => "/delete$type " . ($i + $page * $this->limit) . " $page",
+                        'callback_data' => "/delete$type k" . substr(hash('sha256', (string) $k), 0, 20) . " $page",
                     ],
                 ];
                 $i++;
@@ -15032,41 +15106,27 @@ DNS-over-HTTPS with IP:
      */
     public function dedupeList($type, $page = 0)
     {
-        if (!$this->isRouteEntryList($type)) {
-            return;
-        }
-        $conf = $this->getPacConf();
-        ['list' => $list, 'removed' => $removed] = $this->dedupeRouteList($conf[$type] ?? []);
-        if ($removed > 0) {
+        if (!$this->isRouteEntryList($type)) return;
+        $removed = 0;
+        $this->changeRouteList($type, function (&$list) use (&$removed) {
+            ['list' => $list, 'removed' => $removed] = $this->dedupeRouteList($list);
             ksort($list);
-            $conf[$type] = $list;
-            $this->setPacConf($conf);
-        }
+        });
         $this->answer($this->input['callback_id'], $this->i18n('duplicates merged') . ": $removed");
         $this->backXtlsList($type, $page);
     }
 
     public function listPacChange($type, $action, $key, $page = 0)
     {
-        $conf = $this->getPacConf();
-        $i = 0;
-        // ?? [] — кнопка могла прийти из сообщения, отрисованного до полной
-        // очистки списка (deleteYes).
-        foreach (($conf[$type] ?? []) as $k => $v) {
-            if ($key == $i) {
-                switch ($action) {
-                    case 'change':
-                        $conf[$type][$k] = !$v;
-                        break;
-                    case 'delete':
-                        unset($conf[$type][$k]);
-                        break;
-                }
+        $this->changeRouteList($type, function (&$list) use ($action, $key) {
+            foreach ($list as $entry => $on) {
+                // Индексы из старых сообщений небезопасны после сортировки.
+                if ($key !== 'k' . substr(hash('sha256', (string) $entry), 0, 20)) continue;
+                if ($action === 'change') $list[$entry] = !$on;
+                elseif ($action === 'delete') unset($list[$entry]);
                 break;
             }
-            $i++;
-        }
-        $this->setPacConf($conf);
+        });
         $this->backXtlsList($type, $page);
     }
 
@@ -18688,7 +18748,9 @@ DNS-over-HTTPS with IP:
         // smux уезжают на апстримное ядро. Чиним молча и сразу.
         $probe = $this->xrayCoreProbe();
         $fork  = $probe['fork'];
-        if ($probe['ok'] && !$fork && $this->repairXrayCore($p)) {
+        if ($probe['ok'] && !$fork) {
+            $this->withLock('xray', fn() => $this->withLock('pac',
+                fn() => $this->repairXrayCore(), 20, false), 20, false);
             $p = $this->getPacConf();
         }
         $s    = $this->smuxSettings($p);
@@ -18727,7 +18789,7 @@ DNS-over-HTTPS with IP:
             $data[] = [[
                 'text'          => $this->i18n('xray core') . ': '
                     . ($core === 'fork' ? 'fork (smux)' : 'XTLS'),
-                'callback_data' => '/switchXrayCore',
+                'callback_data' => '/xrayCoreMenu',
             ]];
         }
 
@@ -18840,6 +18902,7 @@ DNS-over-HTTPS with IP:
         $r    = $this->applyXrayCore($core);
         if (empty($r['ok'])) {
             $error = match (true) {
+                in_array('rollback failed', $r['note'], true) => 'xray rollback failed',
                 in_array('vless encryption check failed', $r['note'], true) => 'vless encryption check failed',
                 in_array('xr unreachable', $r['note'], true) => 'smux xr unreachable',
                 in_array('fork missing', $r['note'], true) => 'smux fork missing',
@@ -24042,8 +24105,7 @@ DNS-over-HTTPS with IP:
     }
 
     // ---- Выбор ядра Xray ----------------------------------------------------
-    // В образе xr лежат ДВА бинаря: апстримный XTLS (/usr/bin/xray) и форк
-    // Jolymmiles (/usr/bin/xray-smux) с поддержкой sing-mux и TCP Brutal.
+    // В образе xr лежат до трёх версий XTLS и форк Jolymmiles со sing-mux.
     // Активное ядро — симлинк /usr/local/bin/xray (в PATH alpine он раньше
     // /usr/bin), желаемое — маркер /logs/xray_core, который переживает
     // пересоздание контейнера и читается start_xray.sh при каждом старте.
@@ -24051,6 +24113,100 @@ DNS-over-HTTPS with IP:
     public const XRAY_CORE_MARKER = '/logs/xray_core';
     public const XRAY_BIN_ORIGIN  = '/usr/bin/xray';
     public const XRAY_BIN_FORK    = '/usr/bin/xray-smux';
+    public const XRAY_BINARIES = [
+        'origin' => self::XRAY_BIN_ORIGIN,
+        'origin2' => '/usr/bin/xray-2',
+        'origin3' => '/usr/bin/xray-3',
+        'fork' => self::XRAY_BIN_FORK,
+    ];
+
+    public function xrayCoreMenu(): void
+    {
+        $versions = $this->xrayCoreInventory();
+        $probe = $this->xrayCoreProbe(true);
+        $selected = $this->xrayCoreSelection();
+        $running = $probe['running_selection'] ?? '';
+        $label = static fn($core) => ($core === 'fork' ? 'fork (SMUX)' : 'XTLS')
+            . ' ' . ($versions[$core] ?? '?');
+        $text = ['Menu → Xray → ' . $this->i18n('xray versions'), $this->i18n('xray versions hint')];
+        if (!$probe['ok']) {
+            $text[] = $this->i18n('smux xr unreachable');
+        } else {
+            $text[] = $this->i18n('xray running') . ': ' . ($running !== '' ? $label($running) : '—');
+            if (!isset($versions[$selected])) {
+                $text[] = $this->i18n('xray version missing');
+            } elseif ($running !== '' && $running !== $selected) {
+                $text[] = str_replace('%s', $label($running), $this->i18n('smux core mismatch'));
+            }
+        }
+        $data = [];
+        foreach ($versions as $core => $version) {
+            $data[] = [[
+                'text' => ($selected === $core ? '✓ ' : '') . $label($core),
+                'callback_data' => '/selectXrayCore ' . $core,
+            ]];
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function selectXrayCore(string $core): void
+    {
+        $r = $this->applyXrayCore($core);
+        $message = !empty($r['ok']) ? 'xray version switched' : match (true) {
+            in_array('rollback failed', $r['note'], true) => 'xray rollback failed',
+            in_array('core start failed', $r['note'], true) => 'xray start failed',
+            in_array('core missing', $r['note'], true), in_array('fork missing', $r['note'], true) => 'xray version missing',
+            in_array('xr unreachable', $r['note'], true) => 'smux xr unreachable',
+            in_array('core switch busy', $r['note'], true) => 'xray switch busy',
+            in_array('xray configuration check failed', $r['note'], true),
+            in_array('vless encryption check failed', $r['note'], true) => 'xray version incompatible',
+            default => 'smux apply failed',
+        };
+        $this->answer($this->input['callback_id'], $this->i18n($message), true);
+        $this->xrayCoreMenu();
+    }
+
+    public function xrayCoreSelection(?array $p = null): string
+    {
+        $core = ($p ?? $this->getPacConf())['xray_core'] ?? 'origin';
+        return is_string($core) && isset(self::XRAY_BINARIES[$core]) ? $core : 'origin';
+    }
+
+    // Версии читаем из образа: .env задаёт сборку, а не состав уже скачанного xr.
+    public function xrayCoreInventory(): array
+    {
+        $commands = [];
+        foreach (self::XRAY_BINARIES as $core => $bin) {
+            $commands[] = 'if test -x ' . $bin . '; then printf "' . $core . '|"; '
+                . $bin . ' version 2>/dev/null | head -n1; fi';
+        }
+        $out = (string) $this->ssh(implode('; ', $commands), 'xr');
+        if ($this->sshFailed) return [];
+        $versions = [];
+        foreach (explode("\n", $out) as $line) {
+            if (preg_match('~^(origin[23]?|fork)\|Xray\s+v?([0-9][\w.+-]*)\s~', $line, $m)) {
+                $versions[$m[1]] = $m[2];
+            }
+        }
+        return $versions;
+    }
+
+    // Проверяем именно запущенный бинарник, а не симлинк или успешный SSH.
+    // Две последовательные проверки процесса и API отсекают немедленное
+    // падение и процесс, который ещё не открыл слушатели.
+    public function xrayCoreStarted(string $core): bool
+    {
+        if (!isset(self::XRAY_BINARIES[$core])) return false;
+        $out = $this->ssh('n=0; good=0; while [ "$n" -lt 15 ]; do '
+            . 'p=$(pgrep -f "[x]ray run" | head -n1); '
+            . 'if [ -n "$p" ] && [ "$(readlink -f /proc/$p/exe 2>/dev/null)" = '
+            . escapeshellarg(self::XRAY_BINARIES[$core]) . ' ] '
+            . '&& timeout 1 xray api statsquery --server=127.0.0.1:8080 >/dev/null 2>&1; then good=$((good+1)); '
+            . 'else good=0; fi; [ "$good" -ge 2 ] && { printf XRAY_STARTED; break; }; '
+            . 'n=$((n+1)); sleep 0.2; done', 'xr');
+        return !$this->sshFailed && trim((string) $out) === 'XRAY_STARTED';
+    }
 
     // Ядро, ВЫБРАННОЕ в настройках. Источник истины для генерации конфигов:
     // smux нельзя класть клиентам, пока сервер не на форке.
@@ -24116,6 +24272,8 @@ DNS-over-HTTPS with IP:
             'active'  => $ok && trim($p[1] ?? '') === self::XRAY_BIN_FORK ? 'fork' : 'origin',
             'brutal'  => $ok && in_array('brutal', preg_split('~\s+~', trim($p[2] ?? '')) ?: [], true),
             'running' => $run === '' ? '' : ($run === self::XRAY_BIN_FORK ? 'fork' : 'origin'),
+            'selection' => $ok ? (array_search(trim($p[1] ?? ''), self::XRAY_BINARIES, true) ?: '') : '',
+            'running_selection' => array_search($run, self::XRAY_BINARIES, true) ?: '',
             'version' => $version,
             'reality' => $reality,
         ];
@@ -24169,6 +24327,14 @@ DNS-over-HTTPS with IP:
         if (!empty($this->time_xraycore) && time() - $this->time_xraycore < 300) {
             return;
         }
+        if ($this->xrayCore() !== 'fork') return;
+        // Cron не должен чинить промежуточное состояние ручного переключения.
+        $this->withLock('xray', fn() => $this->withLock('pac',
+            fn() => $this->checkXrayCoreLocked(), 1), 1);
+    }
+
+    private function checkXrayCoreLocked(): void
+    {
         $p = $this->getPacConf();
         if (!is_array($p) || $this->xrayCore($p) !== 'fork') {
             return;
@@ -24220,13 +24386,16 @@ DNS-over-HTTPS with IP:
     // прошла, следующее пересоздание контейнера уведёт ядро мимо настройки.
     public function writeCoreMarker(string $core): bool
     {
-        if (false === @file_put_contents(self::XRAY_CORE_MARKER, $core . "\n")) {
-            error_log('writeCoreMarker: ' . self::XRAY_CORE_MARKER . ' not written');
-
-            return false;
+        if (!isset(self::XRAY_BINARIES[$core])) return false;
+        $tmp = @tempnam(dirname(self::XRAY_CORE_MARKER), '.xray-core-');
+        if ($tmp === false) return false;
+        try {
+            return dirname($tmp) === dirname(self::XRAY_CORE_MARKER)
+                && file_put_contents($tmp, $core . "\n") === strlen($core) + 1
+                && @rename($tmp, self::XRAY_CORE_MARKER);
+        } finally {
+            if (is_file($tmp)) @unlink($tmp);
         }
-
-        return true;
     }
 
     // Возврат симлинка на форк — единственное направление, в котором чинить
@@ -24289,21 +24458,42 @@ DNS-over-HTTPS with IP:
     // кнопка должна давать рабочую конфигурацию, а не полуфабрикат.
     public function applyXrayCore(string $core): array
     {
-        $core = $core === 'fork' ? 'fork' : 'origin';
+        if (!isset(self::XRAY_BINARIES[$core])) {
+            return ['ok' => false, 'note' => ['core missing']];
+        }
+        $busy = ['ok' => false, 'note' => ['core switch busy']];
+        // Тот же порядок, что у applyVlessEncryption: xray, затем pac.
+        return $this->withLock('xray', fn() => $this->withLock('pac',
+            fn() => $this->applyXrayCoreLocked($core), 20, $busy), 20, $busy);
+    }
+
+    private function applyXrayCoreLocked(string $core): array
+    {
         $p    = $this->getPacConf();
         $previous = $p;
         $note = [];
 
         $probe = $this->xrayCoreProbe(true);
-        // На апстрим откатываемся всегда — даже если контейнер молчит: это
-        // безопасное направление. На форк — только когда бинарь реально виден.
+        if (!$probe['ok']) {
+            return ['ok' => false, 'note' => ['xr unreachable']];
+        }
         if ($core === 'fork' && !$probe['fork']) {
-            return ['ok' => false, 'note' => [$probe['ok'] ? 'fork missing' : 'xr unreachable']];
+            return ['ok' => false, 'note' => ['fork missing']];
+        }
+        if (in_array($core, ['origin2', 'origin3'], true) && !isset($this->xrayCoreInventory()[$core])) {
+            return ['ok' => false, 'note' => [$this->sshFailed ? 'xr unreachable' : 'core missing']];
         }
 
         $candidate = $this->getXray();
-        if (is_array($candidate) && ($candidate['inbounds'][0]['settings']['decryption'] ?? 'none') !== 'none'
-            && !$this->validateXrayConfig($candidate, $core === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN)) {
+        if (!is_array($candidate)) {
+            return ['ok' => false, 'note' => ['xray configuration check failed']];
+        }
+        if (!$this->finalmaskCoreCompatible($p, $core)) {
+            return ['ok' => false, 'note' => ['xray configuration check failed']];
+        }
+        $previousJson = $this->readXrayJson();
+        if (($candidate['inbounds'][0]['settings']['decryption'] ?? 'none') !== 'none'
+            && !$this->validateXrayConfig($candidate, self::XRAY_BINARIES[$core])) {
             return ['ok' => false, 'note' => ['vless encryption check failed']];
         }
 
@@ -24335,25 +24525,45 @@ DNS-over-HTTPS with IP:
         }
 
         // Маркер пишем из php напрямую: /logs — общий том с контейнером xr.
-        // Симлинк живёт в слое контейнера и пропадёт при пересоздании, маркер —
-        // нет; если записать его не вышло, ядро вернётся к апстриму на первом
-        // же `up --force-recreate`, и об этом надо сказать, а не молчать.
-        $bin = $core === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN;
+        // Без сохранённого маркера следующее пересоздание выберет другое ядро.
+        $bin = self::XRAY_BINARIES[$core];
         if (!$this->writeCoreMarker($core)) {
-            $note[] = 'marker failed';
+            $restored = $this->setPacConf($previous) !== false;
+            return ['ok' => false, 'note' => [$restored ? 'marker failed' : 'rollback failed']];
         }
-        $this->ssh('mkdir -p /usr/local/bin; ln -sf ' . $bin . ' /usr/local/bin/xray', 'xr');
+        $linked = $this->ssh('mkdir -p /usr/local/bin && ln -sf ' . $bin
+            . ' /usr/local/bin/xray && printf XRAY_LINK_OK', 'xr');
+        $linkOk = !$this->sshFailed && trim((string) $linked) === 'XRAY_LINK_OK';
+        $this->xrProbe = null;
         // Рестарт уже уходит в НОВОЕ ядро: pkill + `xray run` идут через симлинк.
-        if ($this->sshFailed || $this->restartXray($this->getXray()) === false) {
+        $restarted = $linkOk && $this->restartXray($candidate) !== false;
+        if (!$restarted || !$this->xrayCoreStarted($core)) {
             // Проверка перед restart сохраняет старый процесс; вернём также
             // его выбор в PAC и симлинке, чтобы подписки соответствовали ему.
-            $oldCore = $this->xrayCore($previous);
-            $this->setPacConf($previous);
-            $this->writeCoreMarker($oldCore);
-            $oldBin = $oldCore === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN;
-            $this->ssh('ln -sf ' . $oldBin . ' /usr/local/bin/xray', 'xr');
+            $oldCore = $this->xrayCoreSelection($previous);
+            $saved = $this->setPacConf($previous) !== false;
+            $marked = $this->writeCoreMarker($oldCore);
+            $oldBin = self::XRAY_BINARIES[$oldCore];
+            $linked = $this->ssh('ln -sf ' . $oldBin . ' /usr/local/bin/xray && printf XRAY_LINK_OK', 'xr');
+            $restored = $saved && $marked && !$this->sshFailed && trim((string) $linked) === 'XRAY_LINK_OK';
+            $this->xrProbe = null;
+            // writeXrayJson пишет в тот же inode (он примонтирован в xr).
+            // Ошибка записи могла обрезать файл ещё до остановки процесса.
+            if ($previousJson !== '' && $this->readXrayJson() !== $previousJson) {
+                $written = $this->writeXrayJson($previousJson);
+                $restored = $restored && $written;
+            }
+            // При отказе парсера прежний процесс ещё жив. После неудачного
+            // старта нужно восстановить также рабочий конфиг и процесс.
+            if ($restarted) {
+                $restored = $restored && $this->restartXray($candidate) !== false
+                    && $this->xrayCoreStarted($oldCore);
+            }
             $this->xrayCoreProbe(true);
-            return ['ok' => false, 'note' => ['xray configuration check failed']];
+            return ['ok' => false, 'note' => [
+                $restarted ? 'core start failed' : ($linkOk ? 'xray configuration check failed' : 'core link failed'),
+                $restored ? 'previous core restored' : 'rollback failed',
+            ]];
         }
         // Ручное переключение обнуляет историю автопочинки: администратор только
         // что задал состояние явно, и прошлые неудачи к нему отношения не имеют.
@@ -24485,6 +24695,10 @@ DNS-over-HTTPS with IP:
             ],
         ];
         $torrentBlocked = $this->xrayTorrentBlocked($p);
+        $data[] = [[
+            'text' => $this->i18n('xray versions'),
+            'callback_data' => '/xrayCoreMenu',
+        ]];
         $data[] = [[
             'text' => 'VLESS Encryption: ' . $this->i18n(VlessEncryption::client($c, $p) === 'none' ? 'off' : 'on'),
             'callback_data' => '/vlessEncryption',
@@ -24683,6 +24897,7 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> routes';
 
         $data = [
+            [['text' => '📖 Справка по правилам', 'callback_data' => '/routeshelp 0']],
             [[
                 'text'          => $this->i18n('block'),
                 'callback_data' => "/xtlsblock",
@@ -24728,6 +24943,37 @@ DNS-over-HTTPS with IP:
             implode("\n", $text ?: ['...']),
             $data ?: false,
         );
+    }
+
+    public function routesHelp(int $page = 0): void
+    {
+        $pages = require __DIR__ . '/routes_help.php';
+        $titles = array_keys($pages);
+        $count = count($pages);
+        $page = max(0, min($page, $count));
+        $text = "Menu → Vless → routes → Справка\n\n";
+        $data = [];
+        if ($page === 0) {
+            $text .= "<b>Справка по правилам</b>\n\n"
+                . "Выберите тему. Если настраиваете правила впервые, начните с «С чего начать».\n\n"
+                . "В примерах: ✅ — совпадёт с правилом, ❌ — не совпадёт. "
+                . "Совпадение само по себе не означает блокировку: действие зависит от выбранного списка.\n\n"
+                . "Записи в моноширинном тексте можно копировать. Учебные домены и адреса замените своими.";
+            foreach ($titles as $index => $title) {
+                $data[] = [['text' => ($index + 1) . '. ' . $title, 'callback_data' => '/routeshelp ' . ($index + 1)]];
+            }
+        } else {
+            $title = $titles[$page - 1];
+            $text .= '<b>' . $page . '. ' . self::esc($title) . "</b>\n\n" . $pages[$title];
+            $nav = [];
+            if ($page > 1) $nav[] = ['text' => '←', 'callback_data' => '/routeshelp ' . ($page - 1)];
+            $nav[] = ['text' => "$page/$count", 'callback_data' => "/routeshelp $page"];
+            if ($page < $count) $nav[] = ['text' => '→', 'callback_data' => '/routeshelp ' . ($page + 1)];
+            $data[] = $nav;
+            $data[] = [['text' => '📑 Все темы', 'callback_data' => '/routeshelp 0']];
+        }
+        $data[] = [['text' => $this->i18n('back') . ' → routes', 'callback_data' => '/routes']];
+        $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
     }
 
     public function tun()
@@ -26425,40 +26671,58 @@ DNS-over-HTTPS with IP:
     // и rand>0, одновременно.
     public function finalmaskNoiseSettings(array $n, array $list): array
     {
-        $items = [];
-        foreach ($list as $it) {
-            $type   = ($it['type']   ?? '') ?: 'rand';
-            $packet = (string) ($it['packet'] ?? '');
-            $delay  = ($it['delay']  ?? '') ?: '10-16';
-            if ($type === 'rand') {
-                $items[] = [
-                    'rand'      => $packet !== '' ? $packet : '10-20',
-                    // randRange — диапазон байт-значений заполнения, обязан
-                    // укладываться в 0..255 (ядро проверяет на старте).
-                    'randRange' => '0-255',
-                    'delay'     => $delay,
-                ];
-                continue;
-            }
-            // str/hex/base64 без пакета ядро не примет — как и в
-            // applyDpiFragment(), пропускаем пустые, а не шлём мусор.
-            if ($packet === '') {
-                continue;
-            }
-            $items[] = [
-                'type'   => $type,
-                'packet' => $packet,
-                'delay'  => $delay,
-            ];
-        }
-        if (!$items) {
-            $items[] = ['rand' => '10-20', 'randRange' => '0-255', 'delay' => '10-16'];
-        }
+        return XrayNoise::settings($n, $list);
+    }
 
-        return [
-            'reset' => ($n['reset'] ?? '') ?: '5-10',
-            'noise' => $items,
-        ];
+    public function finalmaskUsesExpressions(array $p): bool
+    {
+        $s = $this->finalmaskSettings($p);
+        return !empty($s['enabled']) && !empty($s['noise']['enabled'])
+            && in_array('exp', array_column($this->finalmaskNoiseList($p), 'type'), true);
+    }
+
+    public function finalmaskCoreCompatible(array $p, string $core): bool
+    {
+        if (!$this->finalmaskUsesExpressions($p)) return true;
+        $version = $this->xrayCoreInventory()[$core] ?? '';
+        return $version !== '' && version_compare($version, '26.9.30', '>=');
+    }
+
+    public function applyFinalmaskSettings(array $settings): bool
+    {
+        if (!$this->admin) return false;
+        try {
+            return $this->withLock('xray', fn() => $this->withLock('pac', function () use ($settings) {
+                $before = $this->getPacConf(); $p = $before; $p['finalmask'] = $settings;
+                // Validate even disabled masks before saving values that will later be enabled.
+                $this->finalmaskNoiseSettings($settings['noise'], $settings['noise']['list']);
+                if (!$this->finalmaskCoreCompatible($p, $this->xrayCoreSelection($p))) {
+                    throw new InvalidArgumentException('UDP noise exp требует Xray 26.9.30 или новее. Выберите совместимое ядро либо выключите noise.');
+                }
+                $old = $this->getXray(); $candidate = $old;
+                $this->ensureFinalmaskInbound($candidate, $p);
+                if ($this->setPacConf($p) === false) throw new RuntimeException('Не удалось сохранить finalmask');
+                if (($old['inbounds'][0]['streamSettings']['finalmask'] ?? null)
+                    === ($candidate['inbounds'][0]['streamSettings']['finalmask'] ?? null)) return true;
+                try {
+                    if ($this->restartXray($candidate) && $this->xrayCoreStarted($this->xrayCoreSelection($p))) return true;
+                } catch (Throwable $e) {
+                    // A failed launch can throw after saving PAC; it needs the same rollback.
+                }
+                $saved = $this->setPacConf($before) !== false;
+                try {
+                    $restored = $this->restartXray($old) && $this->xrayCoreStarted($this->xrayCoreSelection($before));
+                } catch (Throwable $e) {
+                    $restored = false;
+                }
+                throw new RuntimeException($saved && $restored
+                    ? 'finalmask не применён; прежние настройки восстановлены.'
+                    : 'finalmask не применён; восстановление не подтверждено. Проверьте состояние Xray.');
+            }, 20, false), 20, false);
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $this->answer($this->input['callback_id'] ?? '', $e->getMessage(), true);
+            return false;
+        }
     }
 
     // Серверный inbound: единственное место, куда finalmask вообще пишется —
@@ -26486,20 +26750,6 @@ DNS-over-HTTPS with IP:
             return;
         }
         $c['inbounds'][0]['streamSettings']['finalmask'] = $fm;
-    }
-
-    // Рестартуем ядро только когда собранный блок реально изменился — иначе
-    // каждое нажатие в меню рвало бы все живые соединения (тот же приём, что
-    // syncSmuxLive()).
-    public function syncFinalmaskLive(array $p): void
-    {
-        $c   = $this->getXray();
-        $was = $c['inbounds'][0]['streamSettings']['finalmask'] ?? null;
-        $this->ensureFinalmaskInbound($c, $p);
-        $now = $c['inbounds'][0]['streamSettings']['finalmask'] ?? null;
-        if ($was !== $now) {
-            $this->restartXray($c);
-        }
     }
 
     // ---- finalmask submenu ---------------------------------------------------
@@ -26537,7 +26787,7 @@ DNS-over-HTTPS with IP:
             ]];
             if (!empty($s['noise']['enabled'])) {
                 $text[] = $this->i18n('finalmask noise hint');
-                $text[] = $this->noiseExamplesHint();
+                $text[] = $this->finalmaskNoiseHint();
                 $data[] = [['text' => 'reset: ' . $s['noise']['reset'], 'callback_data' => '/finalmaskSet noise_reset']];
                 foreach ($this->finalmaskNoiseList($p) as $i => $ne) {
                     $data[] = [
@@ -26582,8 +26832,7 @@ DNS-over-HTTPS with IP:
                 return $this->finalmaskMenu();
         }
         $p['finalmask'] = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->finalmaskMenu();
     }
 
@@ -26618,11 +26867,16 @@ DNS-over-HTTPS with IP:
             $list = $this->finalmaskNoiseList($p);
             $idx  = (int) $nm[1];
             if (isset($list[$idx])) {
-                $list[$idx][$nm[2]] = $this->isDefaultValue($val) ? '' : $val;
+                $list[$idx][$nm[2]] = $nm[2] === 'delay' && $val === '0' ? '0' : ($this->isDefaultValue($val) ? '' : $val);
+                if ($nm[2] === 'type') {
+                    $list[$idx]['packet'] = match ($val) {
+                        'exp' => XrayNoise::dynamicPackets()[0]['packet'], 'hex' => 'deadbeef',
+                        'base64' => 'SGVsbG8=', 'str' => 'hello', default => '50-150',
+                    };
+                }
                 $s['noise']['list'] = array_values($list);
                 $p['finalmask']     = $s;
-                $this->setPacConf($p);
-                $this->syncFinalmaskLive($p);
+                if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
             }
 
             return $this->finalmaskMenu();
@@ -26636,8 +26890,7 @@ DNS-over-HTTPS with IP:
             default: return $this->finalmaskMenu();
         }
         $p['finalmask'] = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->finalmaskMenu();
     }
 
@@ -26660,9 +26913,9 @@ DNS-over-HTTPS with IP:
                 ? 'Потолок числа кусков. Пусто — без ограничения (дефолт ядра).'
                 : 'Cap on the number of segments. Empty = no cap (core default).',
             'noise_reset' => $ru
-                ? 'Через сколько секунд можно повторить пачку шумовых пакетов на тот же адрес, например <code>5-10</code>.'
-                : 'Seconds before the noise burst can repeat to the same address, e.g. <code>5-10</code>.',
-            'noise_type', 'noise_packet', 'noise_delay' => $this->noiseExamplesHint(),
+                ? 'Время без исходящих UDP-пакетов к адресу, после которого следующая отправка повторяет шум: 1–86400 секунд, например <code>5-10</code>. При непрерывном трафике это не периодический таймер.'
+                : 'Idle seconds with no outgoing UDP packets to an address before the next send repeats the burst: 1–86400, e.g. <code>5-10</code>. Continuous traffic resets this timer.',
+            'noise_type', 'noise_packet', 'noise_delay' => $this->finalmaskNoiseHint(),
             default => '',
         };
     }
@@ -26710,20 +26963,34 @@ DNS-over-HTTPS with IP:
         $s['fragment']['delay']    = $ps['interval'];
         $s['fragment']['maxSplit'] = $ps['maxSplit'];
         $p['finalmask'] = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->answer($this->input['callback_id'], $ps['label']);
         $this->finalmaskMenu();
+    }
+
+    public function finalmaskNoiseHint(): string
+    {
+        return $this->noiseExamplesHint() . "\n\n" . ($this->language === 'ru'
+            ? 'exp (Xray 26.9.30+): &lt;b hex&gt; — байты, &lt;r N-M&gt; — случайные байты, &lt;rc N-M&gt; — буквы, &lt;rd N-M&gt; — цифры, &lt;t&gt; — время, &lt;c&gt; — счётчик, &lt;n&gt; — nonce. Пример: <code>&lt;b 0d0a&gt;&lt;t&gt;&lt;c&gt;&lt;n&gt;&lt;rc 20-40&gt;</code>. Каждый пакет создаётся заново. До 8 пакетов по 1400 байт; задержка 0–1000 мс, reset 1–86400 с. Действует только на UDP-транспорт; MASQUE настраивается отдельно.'
+            : 'exp (Xray 26.9.30+): &lt;b hex&gt; bytes, &lt;r N-M&gt; random bytes, &lt;rc N-M&gt; letters, &lt;rd N-M&gt; digits, &lt;t&gt; timestamp, &lt;c&gt; counter, &lt;n&gt; nonce. Packets are regenerated on every send. Up to 8 packets of 1400 bytes; delay 0–1000 ms, reset 1–86400 s. UDP transports only; configure MASQUE separately.');
+    }
+
+    public function finalmaskNoisePresets(): array
+    {
+        return $this->noisePresets() + ['dynamic' => [
+            'label' => $this->language === 'ru' ? 'Динамический exp · 26.9.30+' : 'Dynamic exp · 26.9.30+',
+            'list' => XrayNoise::dynamicPackets(),
+        ]];
     }
 
     public function finalmaskNoisePresetsMenu(): void
     {
         $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> finalmask -> ' . $this->i18n('noise') . ' ' . $this->i18n('presets');
-        $text[] = $this->noisePresetsHint();
+        $text[] = $this->finalmaskNoiseHint();
 
         $data = [];
         $row  = [];
-        foreach ($this->noisePresets() as $key => $ps) {
+        foreach ($this->finalmaskNoisePresets() as $key => $ps) {
             $row[] = ['text' => $ps['label'], 'callback_data' => "/finalmaskNoisePreset $key"];
             if (count($row) === 2) {
                 $data[] = $row;
@@ -26740,7 +27007,7 @@ DNS-over-HTTPS with IP:
 
     public function finalmaskNoisePreset($key): void
     {
-        $presets = $this->noisePresets();
+        $presets = $this->finalmaskNoisePresets();
         if (!isset($presets[$key])) {
             $this->answer($this->input['callback_id'], 'unknown preset', true);
 
@@ -26753,8 +27020,7 @@ DNS-over-HTTPS with IP:
         $s['noise']['enabled'] = 1;
         $s['noise']['list']    = $ps['list'];
         $p['finalmask'] = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->answer($this->input['callback_id'], $ps['label']);
         $this->finalmaskMenu();
     }
@@ -26767,8 +27033,7 @@ DNS-over-HTTPS with IP:
         $list[] = ['type' => 'rand', 'packet' => '50-150', 'delay' => '10-16'];
         $s['noise']['list'] = array_values($list);
         $p['finalmask']     = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->finalmaskMenu();
     }
 
@@ -26782,8 +27047,7 @@ DNS-over-HTTPS with IP:
         }
         $s['noise']['list'] = array_values($list);
         $p['finalmask']     = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->finalmaskMenu();
     }
 
@@ -27769,6 +28033,10 @@ DNS-over-HTTPS with IP:
         $warp = str_contains($json, '~warp_private_key~')
             ? ($this->warpClientProfile($client['email'] ?? '') ?: [])
             : [];
+        if ($_GET['t'] === 's' && isset($c['routing']['rules'])) {
+            $c['routing']['rules'] = $this->xrayRouteLists($c['routing']['rules'], $pac);
+            $json = json_encode($c);
+        }
         $c = json_decode($this->replaceTags($json, [
             '"~pac~"'        => json_encode(array_keys(array_filter($pac['includelist'] ?: []))),
             '"~block~"'      => json_encode(array_keys(array_filter($pac['blocklist'] ?: []))),
@@ -27809,79 +28077,6 @@ DNS-over-HTTPS with IP:
 
         switch ($_GET['t']) {
             case 's':
-                if (!empty($c['routing']['rules'])) {
-                    $ips = $domains = $other = [];
-                    // Раскладывает запись в ip[]/domain[] по её типу, а не по тому,
-                    // из какого поля она пришла: шаблон может держать geoip: в ip[],
-                    // а домен — по ошибке там же. geosite:/geoip: НЕ вырезаем —
-                    // клиент тоже xray, штатная geodata у него есть.
-                    $sort = function ($j, $tag) use (&$ips, &$domains) {
-                        // Вход — токены уже собранного xray-конфига, а не записи
-                        // pac-списка: голая строка здесь значит keyword, не суффикс.
-                        $cl = $this->classifyXrayToken($j);
-                        // ext:/extip: — серверные .dat, на клиенте файла нет.
-                        // Пустые/битые записи не отдаём клиенту по той же причине,
-                        // что и серверу: пустой токен в domain[] матчит всё.
-                        if (in_array($cl['kind'], ['ext', 'extip'], true) || !$this->routeEntryUsable($cl)) {
-                            return;
-                        }
-                        if ($cl['kind'] == 'ip') {
-                            $ips[$tag][] = $cl['value'];
-                        } elseif ($cl['kind'] == 'geoip') {
-                            $ips[$tag][] = "geoip:{$cl['value']}";
-                        } else {
-                            $domains[$tag][] = $this->xrayDomainToken($cl);
-                        }
-                    };
-                    foreach ($c['routing']['rules'] as $k => $v) {
-                        $matched = false;
-                        if (array_key_exists('domain', $v) && !empty($v['domain'])) {
-                            foreach ($v['domain'] as $j) {
-                                $sort($j, $v['outboundTag']);
-                            }
-                            $matched = true;
-                        }
-                        if (array_key_exists('ip', $v) && !empty($v['ip'])) {
-                            foreach ($v['ip'] as $j) {
-                                $sort($j, $v['outboundTag']);
-                            }
-                            $matched = true;
-                        }
-                        // Правила без domain/ip (port/protocol/inboundTag и т.п.)
-                        // сохраняем как есть, иначе они молча пропадали.
-                        if (!$matched) {
-                            // Пустые PAC-списки оставляют domain:[]/ip:[]:
-                            // без других условий Xray отвергает весь профиль.
-                            $conditions = array_diff_key($v, array_flip(['type', 'outboundTag', 'balancerTag', 'ruleTag']));
-                            if (array_filter($conditions)) {
-                                $other[] = $v;
-                            }
-                        }
-                    }
-                    $c['routing']['rules'] = [];
-
-                    if (!empty($domains)) {
-                        foreach ($domains as $k => $v) {
-                            $c['routing']['rules'][] = [
-                                "type"        => "field",
-                                "outboundTag" => $k,
-                                "domain"      => $v
-                            ];
-                        }
-                    }
-                    if (!empty($ips)) {
-                        foreach ($ips as $k => $v) {
-                            $c['routing']['rules'][] = [
-                                "type"        => "field",
-                                "outboundTag" => $k,
-                                "ip"          => $v
-                            ];
-                        }
-                    }
-                    foreach ($other as $v) {
-                        $c['routing']['rules'][] = $v;
-                    }
-                }
                 break;
             case 'si':
                 $c['route'] = $this->addRuleSet($c['route']);
@@ -28196,13 +28391,16 @@ DNS-over-HTTPS with IP:
      */
     public static function parseRuleSetKey(string $k): ?array
     {
-        if (!preg_match('~^(.*?):([\w.]+):(https?://.+)$~s', trim($k), $m)) {
+        if (!preg_match('~^(.*?):([\w.]+):(https?://[^\s]+)$~', trim($k), $m)) {
             return null;
         }
         $head  = explode(':', $m[1]);
         $out   = trim((string) array_shift($head));
         $behav = trim((string) array_shift($head));
-        if ($out === '' || $head) { // лишние поля слева — ключ не наш
+        if ($out === '' || $head || str_contains($out, ',')
+            || self::ruleSetInterval($m[2]) === null
+            || !filter_var($m[3], FILTER_VALIDATE_URL)
+            || ($behav !== '' && !in_array($behav, ['classical', 'domain', 'ipcidr'], true))) {
             return null;
         }
         return [
@@ -28215,39 +28413,83 @@ DNS-over-HTTPS with IP:
         ];
     }
 
+    // В меню число означает секунды. sing-box требует duration с единицей,
+    // Mihomo — целое число секунд; приведение (int)'1d' давало одну секунду.
+    public static function ruleSetInterval(string $value): ?int
+    {
+        if (ctype_digit($value)) $value .= 's';
+        if (!preg_match('~^(?:\d+(?:\.\d+)?[smhdw])+$~', $value)) return null;
+        preg_match_all('~(\d+(?:\.\d+)?)([smhdw])~', $value, $parts, PREG_SET_ORDER);
+        $seconds = 0;
+        foreach ($parts as $part) $seconds += (float) $part[1] * ['s' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400, 'w' => 604800][$part[2]];
+        return is_finite((float) $seconds) && $seconds >= 1 && $seconds < PHP_INT_MAX ? (int) ceil($seconds) : null;
+    }
+
+    public static function ruleSetFormat(string $url): string
+    {
+        return strtolower(pathinfo((string) parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION));
+    }
+
     public function addClashRuleSet($c)
     {
         $p = $this->getPacConf();
-        if (!empty($p['rulessetlist']) && $c['add-rule-providers']) {
+        if (!empty($p['rulessetlist']) && !empty($c['add-rule-providers'])) {
             foreach ($p['rulessetlist'] as $k => $v) {
                 if (!empty($v)) {
                     if (($e = self::parseRuleSetKey((string) $k)) === null) {
                         continue;
                     }
                     [$type, $behavior, $time, $url] = [$e['outbound'], $e['behavior'], $e['interval'], $e['url']];
-                    if (preg_match('~\.(mrs|yaml|yml)$~', $url, $m)) {
-                        $c['rule-providers'][$url] = [
+                    $format = self::ruleSetFormat($url);
+                    if (in_array($format, ['mrs', 'yaml', 'yml', 'txt'], true)
+                        && ($format !== 'mrs' || $behavior !== 'classical')) {
+                        $target = match (strtolower($type)) {
+                            'block', 'reject' => 'REJECT',
+                            'direct' => 'DIRECT',
+                            'proxy' => 'PROXY',
+                            default => $type,
+                        };
+                        $targets = array_merge(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'COMPATIBLE'],
+                            array_column($c['proxies'] ?? [], 'name'), array_column($c['proxy-groups'] ?? [], 'name'));
+                        if (!in_array($target, $targets, true)) continue;
+                        $name = 'rs-' . substr(hash('sha256', (string) $k), 0, 16);
+                        $c['rule-providers'][$name] = [
                             'type'     => 'http',
                             'url'      => $url,
-                            'interval' => (int) $time,
+                            'proxy'    => 'DIRECT',
+                            'interval' => self::ruleSetInterval($time),
                             'behavior' => $behavior,
                             // mihomo знает ровно yaml/text/mrs. На format: yml
                             // (а расширение .yml в ссылке встречается) он
                             // отвечает «unsupported format type: yml» и
                             // отвергает ВЕСЬ конфиг — проверено на 1.19.30.
-                            'format'   => $m[1] === 'yml' ? 'yaml' : $m[1],
+                            'format'   => match ($format) { 'yml' => 'yaml', 'txt' => 'text', default => $format },
                         ];
-                        switch ($type) {
-                            case 'reject':
+                        switch ($target) {
                             case 'REJECT':
                                 array_unshift($c['rules'], [
-                                    'RULE-SET', $url, strtoupper($type)
+                                    'RULE-SET', $name, $target
                                 ]);
                                 break;
 
+                            case 'DIRECT':
+                                // Как в sing-box: прямые исключения после
+                                // блокировки, перед списками VPN.
+                                $position = 0;
+                                foreach ($c['rules'] as $rule) {
+                                    if (!in_array($rule['action'] ?? $rule[2] ?? '', ['REJECT', 'REJECT-DROP'], true)) break;
+                                    $position++;
+                                }
+                                array_splice($c['rules'], $position, 0, [['RULE-SET', $name, $target]]);
+                                break;
+
                             default:
-                                array_splice($c['rules'], count($c['rules']) - 1, 0, [[
-                                    'RULE-SET', $url, strtoupper($type)
+                                $position = count($c['rules']);
+                                foreach ($c['rules'] as $i => $rule) {
+                                    if (($rule['type'] ?? $rule[0] ?? '') === 'MATCH') { $position = $i; break; }
+                                }
+                                array_splice($c['rules'], $position, 0, [[
+                                    'RULE-SET', $name, $target
                                 ]]);
                                 break;
                         }
@@ -28321,6 +28563,9 @@ DNS-over-HTTPS with IP:
                             'r' => $v['name'],
                         ])),
                         'interval' => $v['interval'],
+                        // Загрузка правил не должна зависеть от правил,
+                        // которые ещё не загружены, и выбранного VPN-узла.
+                        'proxy'    => 'DIRECT',
                         'behavior' => $v['behavior'],
                         'format'   => 'yaml',
                     ];
@@ -28516,11 +28761,15 @@ DNS-over-HTTPS with IP:
                             continue;
                         }
                         [$type, $time, $url] = [$e['outbound'], $e['interval'], $e['url']];
-                        if (isset($t[$type]) && preg_match('~\.srs$~', $url) && !empty($route['rules'][$t[$type]])) {
+                        if (in_array(strtolower($type), ['block', 'reject', 'proxy', 'direct'], true)) {
+                            $type = strtolower($type) === 'reject' ? 'block' : strtolower($type);
+                        }
+                        $format = self::ruleSetFormat($url);
+                        if (isset($t[$type]) && in_array($format, ['srs', 'json'], true) && !empty($route['rules'][$t[$type]])) {
                             $route['rule_set'][] = [
                                 "tag"             => $k,
                                 "type"            => "remote",
-                                "format"          => "binary",
+                                "format"          => $format === 'json' ? 'source' : 'binary',
                                 "url"             => $url,
                                 // http_client вместо download_detour (legacy с
                                 // 1.14, снимут в 1.16). БЕЗ detour: он бы
@@ -28540,7 +28789,7 @@ DNS-over-HTTPS with IP:
                                 // депрекации), а дефолтным может оказаться и
                                 // прокси. Одно ненулевое поле это выключает.
                                 "http_client"     => ["connect_timeout" => "10s"],
-                                "update_interval" => $time,
+                                "update_interval" => self::ruleSetInterval($time) . 's',
                             ];
                             $route['rules'][$t[$type]]['rule_set'][] = $k;
                         }
@@ -28659,9 +28908,35 @@ DNS-over-HTTPS with IP:
         return array_map(fn($v) => array_values(array_unique($v)), $buckets);
     }
 
+    public function normalizeSrsRules(array $rules): array
+    {
+        $result = [];
+        foreach ($rules as $rule) {
+            if (array_key_exists('domain_suffix', $rule)) {
+                $buckets = array_filter($this->srsBuckets((array) $rule['domain_suffix']));
+                if (!$buckets) continue;
+                unset($rule['domain_suffix']);
+                foreach ($buckets as $field => $values) {
+                    $rule[$field] = array_values(array_unique(array_merge((array) ($rule[$field] ?? []), $values)));
+                }
+            }
+            if (array_key_exists('ip_cidr', $rule)) {
+                $values = array_filter((array) $rule['ip_cidr'], [self::class, 'ipOrCidr']);
+                if (!$values) continue;
+                $rule['ip_cidr'] = array_values(array_unique(array_map(fn($ip) => $this->ipWithCidr($ip), $values)));
+            }
+            foreach (['process_name', 'package_name'] as $field) {
+                if (array_key_exists($field, $rule) && !$rule[$field]) continue 2;
+            }
+            $rule = $this->cleanEmptyKeys($rule);
+            if ($rule) $result[] = $rule;
+        }
+        return $result;
+    }
+
     public function createSrs(string $name, array $rules)
     {
-        $rules = $this->cleanEmptyKeys($rules);
+        $rules = $this->normalizeSrsRules($rules);
         // $name — имя rule-set'а ИЗ ШАБЛОНА маршрутов (createruleset[].name), то
         // есть данные, а не константа: шаблон приходит из webapp-редактора и из
         // импорта чужих настроек. Раньше оно шло без экранирования и в заголовок
@@ -28678,26 +28953,6 @@ DNS-over-HTTPS with IP:
         header("Content-Disposition: attachment; filename=$name.srs");
         header('Content-Type: application/binary');
         $f = '/tmp/' . $name . '.' . getmypid() . '.' . bin2hex(random_bytes(6));
-        foreach ($rules as $k => $v) {
-            if (array_key_exists('domain_suffix', $v)) {
-                unset($rules[$k]['domain_suffix']);
-                foreach ($this->srsBuckets($v['domain_suffix']) as $field => $vals) {
-                    if (!empty($vals)) {
-                        $rules[$k][$field] = $vals;
-                    }
-                }
-            }
-            // Нормализуем ip_cidr: ~subnet~ шаблон кладёт записи напрямую в это
-            // поле (минуя domain_suffix-бакетизацию выше). sing-box принимает и
-            // голый IP (неявно /32 или /128), но приводим к явной маске ради
-            // паритета с xray/mihomo. Идемпотентно: запись с /prefix не трогаем.
-            if (!empty($rules[$k]['ip_cidr'])) {
-                $rules[$k]['ip_cidr'] = array_values(array_unique(array_map(
-                    fn($ip) => $this->ipWithCidr($ip),
-                    $rules[$k]['ip_cidr'],
-                )));
-            }
-        }
         file_put_contents($f, json_encode([
             'version' => 1,
             'rules'   => array_values($rules),
@@ -29879,13 +30134,13 @@ DNS-over-HTTPS with IP:
         foreach (ManagedProtocol::NAMES as $protocol => $name) {
             $state = $this->protocolStore($protocol)->read();
             $enabled = $this->protocolModuleEnabled($protocol) && $state['enabled'];
-            $transport = $protocol === 'tuic' ? 'UDP' : ($protocol === 'mieru' ? 'TCP/UDP' : 'TCP');
+            $transport = $protocol === 'tuic' ? 'UDP' : (in_array($protocol, ['mieru', 'masque'], true) ? 'TCP/UDP' : 'TCP');
             $pending = $enabled && !$this->protocolPortApplied($protocol, $state);
             $data[] = [['text' => ($enabled ? ($pending ? '🟡 ' : '🟢 ') : '🔴 ') . $name . ' · ' . $state['settings']['port'] . '/' . $transport,
                 'callback_data' => "/protocolPort $protocol"]];
             if ($pending) $text[] = "$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.";
         }
-        $text[] = 'Mieru, TUIC, ShadowTLS и snolc: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
+        $text[] = 'Mieru, TUIC, ShadowTLS, snolc и MASQUE: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
         if (!empty($pac['restart'])) {
             $data[] = [
                 [

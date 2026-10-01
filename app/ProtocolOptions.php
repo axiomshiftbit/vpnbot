@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/XrayNoise.php';
+
 require_once __DIR__ . "/ProtocolOptionHelp.php";
 
 /** Optional tuning for the pinned sing-box / Mieru servers and supported clients. */
@@ -18,6 +20,7 @@ final class ProtocolOptions
 
     public static function groups(string $protocol): array
     {
+        if ($protocol === 'masque') return ['client' => 'Клиент Xray', 'noise' => 'UDP-маскировка · finalmask'];
         if ($protocol === 'snolc') return [];
         return $protocol === 'mieru'
             ? ['server' => 'Сервер Mieru', 'client' => 'Клиенты Mieru', 'native' => 'Только Mieru JSON / URI', 'mihomo' => 'Только Mihomo']
@@ -28,6 +31,12 @@ final class ProtocolOptions
     public static function schema(string $protocol): array
     {
         if ($protocol === 'snolc') return [];
+        if ($protocol === 'masque') return [
+            'client' => ['http' => ['enum', ['h3', 'h2']]],
+            'noise' => ['enabled' => ['bool'], 'reset' => ['text', 1, 16],
+                'packets' => ['list', ['object', ['type' => ['enum', ['rand', 'str', 'hex', 'base64', 'exp']],
+                    'packet' => ['text', 1, 4096], 'delay' => ['text', 1, 16]]], 8]],
+        ];
         $bool = ['bool']; $int = static fn($min, $max) => ['int', $min, $max];
         $enum = static fn($values) => ['enum', $values];
         $list = static fn($rule, $max = 32) => ['list', $rule, $max];
@@ -180,6 +189,11 @@ final class ProtocolOptions
     {
         $schema = self::schema($protocol);
         self::value($options, ['object', array_map(static fn($fields) => ['object', $fields], $schema)], 'options');
+        if ($protocol === 'masque') {
+            $noise = $options['noise'] ?? [];
+            XrayNoise::settings($noise + ['reset' => '60-120'], $noise['packets'] ?? XrayNoise::dynamicPackets());
+            return;
+        }
         $server = $options['server'] ?? []; $client = $options['client'] ?? []; $singbox = $options['singbox'] ?? [];
         if ($protocol === 'tuic') foreach ([$server['tls'] ?? [], $client, $singbox['tls'] ?? []] as $tls) {
             if (isset($tls['alpn']) && $tls['alpn'] === []) throw new InvalidArgumentException('TUIC требует непустой ALPN');

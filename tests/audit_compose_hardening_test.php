@@ -170,7 +170,7 @@ chAssert(count($env) > 30, 'переменные .env разобраны: ' . co
 // Исключение ровно одно и оно осознанное: у xray ARG намеренно ПУСТОЙ —
 // «пусто» для fetch_xray означает releases/latest, а не «повтори пин»
 // (dockerfile/xray.dockerfile, три допустимых значения аргумента).
-$pinSkip = ['XRAY_VERSION' => true, 'XRAY_FORK_VERSION' => true];
+$pinSkip = ['XRAY_VERSION' => true, 'XRAY_VERSION_2' => true, 'XRAY_VERSION_3' => true, 'XRAY_FORK_VERSION' => true];
 
 preg_match_all('~\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}~', $compose, $cm, PREG_SET_ORDER);
 $checked = 0;

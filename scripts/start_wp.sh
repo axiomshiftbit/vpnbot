@@ -38,6 +38,10 @@ if [ "$(jq -r '.settings.egress // empty' /config/protocols/shadowtls/desired.js
     SOCKS_ALLOW="$SOCKS_ALLOW 10.10.0.25"
 fi
 
+if [ "$(jq -r '.settings.egress // empty' /config/protocols/masque/desired.json 2>/dev/null)" = warp ]; then
+    SOCKS_ALLOW="$SOCKS_ALLOW 10.10.0.27"
+fi
+
 # Второй легитимный потребитель — контейнер ss, но только когда админ включил
 # тумблер «ss через warp» (меню SS). Состояние живёт там же, где его читает
 # демон: ключ outbound_proxy в ssserver.json — отдельного флага в pac.json нет,

@@ -186,6 +186,20 @@ class Supervisor:
         if self.protocol == "shadowtls" and (config["inbounds"][1]["type"] != "shadowsocks"
                 or config["inbounds"][1]["listen"] != "127.0.0.1" or config["inbounds"][1]["network"] != "tcp"):
             raise ValueError("invalid_internal_listener")
+        active = self.active_users(state)
+        if self.protocol == "mieru":
+            config["users"] = [{"name": uid, "password": u["password"], "allowPrivateIP": False, "allowLoopbackIP": False,
+                                "quotas": [u["rolling_quota"]] if u.get("rolling_quota") else []} for uid, u in active.items()]
+        else:
+            config["inbounds"][0]["users"] = [{"name": uid, "password": u["password"]} for uid, u in active.items()]
+            if self.protocol == "tuic":
+                for user in config["inbounds"][0]["users"]: user["uuid"] = active[user["name"]]["uuid"]
+            if self.protocol == "shadowtls":
+                config["inbounds"][1]["users"] = [{"name": uid, "password": u["ss_key"]} for uid, u in active.items()]
+            config["experimental"]["v2ray_api"]["stats"] = {"enabled": True, "users": list(active)}
+        return config, active
+
+    def active_users(self, state):
         now = time.time()
         active = {}
         for uid, user in state["users"].items():
@@ -209,17 +223,7 @@ class Supervisor:
             expired = user["expires"] is not None and user["expires"] <= now
             if user["enabled"] and not exhausted and not expired:
                 active[uid] = user
-        if self.protocol == "mieru":
-            config["users"] = [{"name": uid, "password": u["password"], "allowPrivateIP": False, "allowLoopbackIP": False,
-                                "quotas": [u["rolling_quota"]] if u.get("rolling_quota") else []} for uid, u in active.items()]
-        else:
-            config["inbounds"][0]["users"] = [{"name": uid, "password": u["password"]} for uid, u in active.items()]
-            if self.protocol == "tuic":
-                for user in config["inbounds"][0]["users"]: user["uuid"] = active[user["name"]]["uuid"]
-            if self.protocol == "shadowtls":
-                config["inbounds"][1]["users"] = [{"name": uid, "password": u["ss_key"]} for uid, u in active.items()]
-            config["experimental"]["v2ray_api"]["stats"] = {"enabled": True, "users": list(active)}
-        return config, active
+        return active
 
     def authentication(self, config):
         if self.protocol == "shadowtls":
