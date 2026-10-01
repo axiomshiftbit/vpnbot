@@ -499,6 +499,7 @@ services:
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/telemt:/telemt
             - ./scripts/start_telemt.sh:/start_telemt.sh
+            - ./scripts/telemt_state.py:/telemt_state.py:ro
             - ./logs:/logs
         hostname: telemt
         container_name: telemt-${VER}
@@ -510,7 +511,7 @@ services:
               required: true # default
             - path: ./override.env
               required: false
-        stop_grace_period: 1s
+        stop_grace_period: 45s
         command: ["/bin/sh", "/start_telemt.sh"]
         networks:
             default:

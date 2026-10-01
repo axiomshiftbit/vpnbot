@@ -106,14 +106,45 @@ try {
         if ($protocol === 'masque') {
             $screen = chatClick($bot, '/protocolModules');
             $callbacks = array_column(chatButtons($screen), 'callback_data');
-            chatCheck(in_array('/protocolModules masque', $callbacks, true) && in_array('/protocol masque', $callbacks, true),
-                'MASQUE: общий список содержит отдельные выключатель и настройки');
+            chatCheck(!in_array('/protocolModules masque', $callbacks, true) && count(array_keys($callbacks, '/protocol masque', true)) === 1,
+                'MASQUE: единая кнопка открывает настройки как у остальных управляемых протоколов');
+            $rows = json_decode($screen['reply_markup'], true)['inline_keyboard'];
+            $row = array_values(array_filter($rows, static fn($row) => in_array('/protocol masque', array_column($row, 'callback_data'), true)))[0];
+            chatCheck(count($row) === 1 && str_contains($row[0]['text'], 'MASQUE'), 'MASQUE: название протокола занимает всю строку');
+            foreach ([true, false, true] as $enabled) {
+                $before = $store->snapshot();
+                $settingsBefore = file_get_contents($bot->protocolModulesFile);
+                $screen = chatClick($bot, '/protocol masque');
+                chatCheck($store->snapshot() === $before && file_get_contents($bot->protocolModulesFile) === $settingsBefore,
+                    'MASQUE: открытие настроек не переключает сервис и не меняет доступы');
+                chatCheck(in_array('/protocol masque toggle', array_column(chatButtons($screen), 'callback_data'), true),
+                    'MASQUE: выключатель доступен внутри настроек');
+                chatCheck(chatBack($screen) === '/protocolModules', 'MASQUE: возврат из настроек ведёт в общий список');
+                if ($enabled) {
+                    $screen = chatClick($bot, '/protocol masque toggle');
+                    chatCheck(!$store->read()['enabled'] && !(new ProtocolModules($bot->protocolModulesFile))->enabled('masque'),
+                        'MASQUE: выключатель в настройках отключает оба состояния');
+                } else {
+                    $screen = chatClick($bot, '/protocol masque toggle');
+                    chatCheck($store->read()['enabled'] && (new ProtocolModules($bot->protocolModulesFile))->enabled('masque'),
+                        'MASQUE: выключатель в настройках включает оба состояния');
+                }
+                chatCheck($store->read()['users'] === $before['state']['users'] && $store->read()['settings'] === $before['state']['settings'],
+                    'MASQUE: выключатель сохраняет пользователей и настройки');
+                chatCheck(chatBack($screen) === '/protocolModules' && count($bot->transport->messages) === 1,
+                    'MASQUE: переключение сохраняет карточку без новых сообщений');
+                $screen = chatClick($bot, chatBack($screen));
+                $buttons = array_column(chatButtons($screen), 'text', 'callback_data');
+                chatCheck(str_starts_with($buttons['/protocol masque'], $enabled ? '🔴' : '🟢'), 'MASQUE: цвет в общем списке отражает состояние');
+            }
+            chatClick($bot, '/protocol masque toggle');
+            // Старое сообщение в чате может содержать прежнюю кнопку выключателя.
             foreach ([false, true] as $enabled) {
                 $screen = chatClick($bot, '/protocolModules masque');
                 chatCheck($store->read()['enabled'] === $enabled && (new ProtocolModules($bot->protocolModulesFile))->enabled('masque') === $enabled,
                     'MASQUE: реальный callback переключает оба состояния');
                 $buttons = array_column(chatButtons($screen), 'text', 'callback_data');
-                chatCheck(str_starts_with($buttons['/protocolModules masque'], $enabled ? '🟢' : '🔴'), 'MASQUE: цвет отражает новое состояние');
+                chatCheck(str_starts_with($buttons['/protocol masque'], $enabled ? '🟢' : '🔴'), 'MASQUE: цвет отражает новое состояние');
                 chatCheck(chatBack($screen) === '/menu config' && count($bot->transport->messages) === 1,
                     'MASQUE: переключение остаётся в общем списке без новых сообщений');
                 $detail = chatClick($bot, '/protocol masque');

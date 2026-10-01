@@ -88,7 +88,7 @@ trait BotProtocols
             }
             if ($this->protocolReturnMain) {
                 if ($callback === '/protocolModules') $callback = '/menu';
-                elseif (preg_match('~^/(protocol|pr|prset|prmanage|po|ps|pf) ~', $callback)) $callback = '/!' . substr($callback, 1);
+                elseif (preg_match('~^/(protocol|pr|prset|prmanage|po|ps|pf|menuhelp) ~', $callback)) $callback = '/!' . substr($callback, 1);
             }
             if (isset($button['callback_data'])) $button['callback_data'] = $callback;
         }
@@ -430,10 +430,7 @@ trait BotProtocols
             $buttons[] = [['text' => ($blocked ? '🟡 ' : ($settings[$key] ? '🟢 ' : '🔴 ')) . $label . $hint, 'callback_data' => "/protocolModules $key"]];
         }
         foreach (ManagedProtocol::NAMES as $key => $label) {
-            $row = [['text' => ($settings[$key] ? '🟢 ' : '🔴 ') . $label,
-                'callback_data' => $key === 'masque' ? "/protocolModules $key" : "/protocol $key"]];
-            if ($key === 'masque') $row[] = ['text' => 'Настройки', 'callback_data' => "/protocol $key"];
-            $buttons[] = $row;
+            $buttons[] = [['text' => ($settings[$key] ? '🟢 ' : '🔴 ') . $label, 'callback_data' => "/protocol $key"]];
         }
         $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => '/menu config']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
@@ -778,8 +775,7 @@ trait BotProtocols
                 $text[] = 'Сброс общего расхода не сбрасывает историю периодической квоты.';
                 $buttons[] = [['text' => 'Квота за период', 'callback_data' => "/protocol $protocol rolling $id"]];
             }
-            $text[] = 'Срок проверяется каждую секунду, расход — каждые 5 секунд. Отзыв завершает все соединения этого протокола.';
-            $text[] = $protocol === 'masque' ? 'Скачайте JSON и запустите Xray 26.9.30+: xray run -config profile.json. Локальный SOCKS5: 127.0.0.1:1080. После изменения настроек скачайте профиль заново.' : ($protocol === 'snolc' ? 'Архив содержит профиль, установщик нативного клиента Linux x86_64 и инструкцию. SSH и Noise проверяют ключи сервера; личный ключ управляет вашим доступом.' : 'Полный профиль — готовый конфиг клиента. «Запись прокси» — блок для раздела proxies существующего Mihomo/XKeen; порты, DNS и правила остаются вашими.');
+            $text[] = 'Отзыв доступа завершает соединения этого протокола. После изменения параметров обновите профиль.';
             $text[] = 'Файлы и QR временные: сохраните их до следующего нажатия в этом меню.';
             if ($s['enabled'] && $store->allowed($u, $id, $usage)) {
                 if (isset($store->formats()['uri'])) {
@@ -808,16 +804,17 @@ trait BotProtocols
             if ($protocol === 'shadowtls') foreach (['rotate-outer' => 'Сменить пароль ShadowTLS', 'rotate-inner' => 'Сменить личный ключ SS'] as $action => $label) {
                 $buttons[] = [['text' => $label, 'callback_data' => "/protocol $protocol $action $id"]];
             }
+            $buttons[] = $this->menuHelpButton('p_' . $protocol, $id);
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "/protocol $protocol"]];
         } else {
             $buttons[] = [['text' => 'Диагностика', 'callback_data' => "/diag $protocol"]];
             $text[] = self::esc($s['settings']['host'] . ':' . $s['settings']['port'] . ($protocol === 'snolc' ? ' · TCP' : ($protocol === 'mieru' ? ' · ' . $s['settings']['transport'] : ' · SNI ' . $s['settings']['sni'])));
             if (!empty($s['settings']['self_hosted'])) $text[] = 'Прикрытие собственным сайтом: https://' . self::esc($protocol === 'anytls' ? $s['settings']['cover_host'] : $s['settings']['sni']) . '. Домен берётся из настроек этого сервера.';
             if ($protocol === 'anytls' && !empty($s['settings']['self_hosted'])) $text[] = 'Имя поддомена формируется автоматически. Запись DNS (A/AAAA/CNAME или wildcard) должна указывать на этот сервер, а сертификат TLS — включать это имя.';
-            $text[] = $protocol === 'snolc' ? 'Экспериментальный snolc: SSH + Noise на отдельном TCP-порту. UDP приложений также передаётся внутри SSH. TLS-сертификат и SNI не требуются. Нативный клиент: Linux x86_64; архив содержит инструкцию. Импорт SSH-режима в snolcNG пока не поддерживается.' : ($protocol === 'mieru' ? 'Mieru использует отдельный порт без TLS. Транспорт TCP/UDP относится к соединению с сервером; оба передают TCP и UDP приложений.'
-                : ($protocol === 'shadowtls' ? 'SNI — домен сайта прикрытия с действительным TLS 1.3. Сертификат этого сайта на VPS не устанавливается. Внутренний SS2022 закрыт от внешних подключений.'
+            $text[] = $protocol === 'snolc' ? 'Экспериментальный SSH + Noise; клиент Linux x86_64. Инструкция — в справке и архиве.' : ($protocol === 'mieru' ? 'Без TLS; транспорт TCP/UDP. Клиент: Mihomo или нативный Mieru.'
+                : ($protocol === 'shadowtls' ? 'Прикрытие: сайт с TLS 1.3 на указанном SNI.'
                 : 'Для TLS требуется действительный сертификат на указанное имя. После добавления имени обновите SSL в настройках.'));
-            if ($protocol === 'masque') $text[] = 'MASQUE CONNECT-IP: HTTP/3 по UDP и HTTP/2 по TCP на одном отдельном порту. Клиент — Xray 26.9.30+. Требуется действительный сертификат SNI. Клиенты изолированы; доступ к внутренним адресам запрещён. Изменение сервера перезапускает его соединения. Квота проверяется по счётчикам каждые 5 секунд.';
+            if ($protocol === 'masque') $text[] = 'HTTP/3 (UDP) и HTTP/2 (TCP). Клиент: Xray 26.9.30+.';
             if ($protocol === 'tuic') {
                 $text[] = 'TUIC v5 требует доступного UDP-порта. Блокировка UDP прерывает и TCP, и UDP приложений. Проверка TLS включена. 0-RTT: '
                     . (!empty($s['settings']['options']['client']['zero_rtt_handshake']) ? 'включён.' : 'выключен.');
@@ -840,7 +837,8 @@ trait BotProtocols
                 $buttons[] = [['text' => 'TLS fingerprint: ' . ($s['settings']['options']['client']['fingerprint'] ?? 'default'),
                     'callback_data' => "/pf $protocol"]];
             }
-            $text[] = $protocol === 'masque' ? 'Доступ связан с пользователем VLESS: общий срок, выключатель и лимит. Профиль MASQUE: карточка пользователя → Отдельные подключения → MASQUE. В общие подписки старых клиентов он не добавляется.' : ($protocol === 'snolc' ? 'Доступ связан с пользователем VLESS: общий срок, выключатель и лимит. Архив snolc доступен в карточке пользователя → Отдельные подключения. В Mihomo и sing-box этот протокол не добавляется.' : 'Пользователи VLESS автоматически получают это подключение в своей полной подписке Mihomo / sing-box. Срок, отключение и лимит общие; параметры протокола задаются здесь. Mieru поддерживается только в Mihomo.');
+            $text[] = 'Доступы и лимиты связаны с VLESS. Профили: карточка пользователя → Отдельные подключения.';
+            $text[] = 'Изменение настроек сервера перезапускает его соединения.';
             $buttons[] = [['text' => 'Пользователи и готовые подписки', 'callback_data' => '/xray']];
             $buttons[] = [['text' => 'Relay для подписок', 'callback_data' => "/prmanage $protocol"]];
             $legacy = array_filter($s['users'], static fn($u) => !isset($u['xray_source']));
@@ -852,6 +850,7 @@ trait BotProtocols
             if ($page > 0) $navigation[] = ['text' => '←', 'callback_data' => "/protocol $protocol page " . ($page - 1)];
             if ($page < $last) $navigation[] = ['text' => '→', 'callback_data' => "/protocol $protocol page " . ($page + 1)];
             if ($navigation) $buttons[] = $navigation;
+            $buttons[] = $this->menuHelpButton('p_' . $protocol, $page > 0 ? 'page_' . $page : '');
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => '/protocolModules']];
         }
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
@@ -968,13 +967,11 @@ trait BotProtocols
                 foreach ($store->formats($state) as $format => $label) if (!str_contains($format, 'uri')) {
                     $text[] = self::esc($label) . ":\n<code>" . self::esc($base . '/' . $format . $query) . '</code>';
                 }
-                $text[] = $protocol === 'masque' ? 'Ссылка загружает актуальный JSON для Xray 26.9.30+. Запуск: xray run -config profile.json. Локальный SOCKS5: 127.0.0.1:1080. После изменения настроек скачайте профиль заново; CLI не обновляет его автоматически.' : ($protocol === 'snolc' ? 'Ссылка загружает актуальный архив нативного клиента. Автоматического обновления подписки в CLI нет; после изменения параметров скачайте архив заново.' : 'Это ссылки ранее созданного отдельного доступа. Новые пользователи получают общую подписку в меню VLESS: она сохраняет DNS и маршрутизацию их шаблона. Блок provider ниже подключает прокси к существующему Mihomo / XKeen.');
-                if (!in_array($protocol, ['mieru', 'snolc', 'masque'], true)) $text[] = 'sing-box JSON этого отдельного доступа — локальный SOCKS/HTTP на 127.0.0.1:1080. Общая подписка пользователя VLESS использует полный выбранный шаблон, включая TUN и DNS.';
-                if ($protocol === 'mieru') $text[] = 'Нативный Mieru: скачайте JSON и примените через mieru apply config. Его CLI не обновляет HTTP-подписки автоматически. Для автообновления используйте Mihomo.';
-                $text[] = 'Ссылка содержит личный токен доступа. Изменения параметров появляются при следующем обновлении. «Сменить секрет» отзывает старую ссылку и пароль; отключение пользователя, срок и квота закрывают выдачу и VPN-доступ.';
+                $text[] = 'Личные ссылки: не публикуйте их. После изменения параметров обновите подписку или скачайте профиль заново. Инструкция — в справке.';
             }
             $back = $relay === '' ? "/protocol $protocol user $id" : "/pr $protocol $id $relayKey";
             $buttons = $action === '' && !in_array($protocol, ['snolc', 'masque'], true) ? [[['text' => 'Подключить provider YAML', 'callback_data' => "/ps $protocol $id $relayKey provider"]]] : [];
+            if ($action === '') $buttons[] = $this->menuHelpButton('ps_' . $protocol, $id . '.' . $relayKey);
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => $action === '' ? $back : "/ps $protocol $id $relayKey"]];
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
         } catch (InvalidArgumentException | RuntimeException $e) {

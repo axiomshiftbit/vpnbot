@@ -8,6 +8,8 @@ require_once __DIR__ . '/BotHysteria.php';
 require_once __DIR__ . '/BotAccessPolicies.php';
 require_once __DIR__ . '/BotServiceDiagnostics.php';
 require_once __DIR__ . '/BotAccessBatch.php';
+require_once __DIR__ . '/BotMenuHelp.php';
+require_once __DIR__ . '/BotTelemtLimits.php';
 
 class Bot
 {
@@ -16,6 +18,8 @@ class Bot
     use BotAccessPolicies;
     use BotServiceDiagnostics;
     use BotAccessBatch;
+    use BotMenuHelp;
+    use BotTelemtLimits;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -546,13 +550,13 @@ class Bot
     public function action()
     {
         $telemtRoute = (string) (($this->input['callback'] ?? '') ?: ($this->input['message'] ?? ''));
-        if (preg_match('~^(?:/telemt(?:[A-Z]|$)|/tu )~', $telemtRoute) && !$this->protocolModuleEnabled('telemt')) {
+        if (preg_match('~^(?:/telemt(?:[A-Z]|$)|/tuc? )~', $telemtRoute) && !$this->protocolModuleEnabled('telemt')) {
             if ($this->admin) $this->protocolModulesMenu();
             return;
         }
         // Carry the entry point in each callback, including old messages and concurrent chats.
         $this->protocolReturnMain = false;
-        if (!empty($this->input['callback']) && preg_match('~^/!(protocol|pr|prset|prmanage|po|ps|pf) ~', $this->input['callback'])) {
+        if (!empty($this->input['callback']) && preg_match('~^/!(protocol|pr|prset|prmanage|po|ps|pf|menuhelp) ~', $this->input['callback'])) {
             $this->protocolReturnMain = true;
             $this->input['callback'] = '/' . substr($this->input['callback'], 2);
         }
@@ -976,6 +980,9 @@ class Bot
             case preg_match('~^/telemtUsersPage (\d+)(?: ([\w.\-]+))?$~', $this->input['callback'], $m):
                 $this->telemtUsers($m[2] ?? '', (int) $m[1]);
                 break;
+            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|reset|qreset-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
+                $this->telemtUserAction($m[1], (int) $m[2], $m[3], $m[4] ?? '');
+                break;
             case preg_match('~^/tu ([tdr]) (\w+) (\d+) ([\w.\-]+)$~', $this->input['callback'], $m):
                 $method = ['t' => 'telemtToggleUser', 'd' => 'telemtDelUser', 'r' => 'telemtRegen'][$m[1]];
                 $this->$method($m[2], (int) $m[3], $m[4]);
@@ -999,16 +1006,18 @@ class Bot
                 $this->telemtWebToggle();
                 break;
             case preg_match('~^/telemtWebCarrier$~', $this->input['callback'], $m):
-                $this->telemtWebCarrier();
-                break;
             case preg_match('~^/telemtWebNegotiation$~', $this->input['callback'], $m):
-                $this->telemtWebNegotiation();
+            case preg_match('~^/telemtWebMode(?: (https|https-lanes|auto-https|auto-full))?$~', $this->input['callback'], $m):
+                $this->telemtWebMode($m[1] ?? '');
+                break;
+            case preg_match('~^/menuhelp ([a-z0-9_-]+) (\d+)(?: ([\w.-]+))?$~', $this->input['callback'], $m):
+                $this->menuHelp($m[1], (int) $m[2], $m[3] ?? '');
                 break;
             case preg_match('~^/telemtWebSecret$~', $this->input['callback'], $m):
                 $this->telemtWebSecret();
                 break;
-            case preg_match('~^/telemtWebPath$~', $this->input['callback'], $m):
-                $this->telemtWebPath();
+            case preg_match('~^/telemtWebPath(?: (generate|reset))?$~', $this->input['callback'], $m):
+                $this->telemtWebPath($m[1] ?? '');
                 break;
             case preg_match('~^/telemtWebDiag$~', $this->input['callback'], $m):
                 $this->telemtWebDiag();
@@ -1976,6 +1985,7 @@ class Bot
         $domain = $conf['telemt_domain'] ?? 'www.google.com';
         $users  = $conf['telemt_users'] ?? [];
         $userEnabled = is_array($conf['telemt_user_enabled'] ?? null) ? $conf['telemt_user_enabled'] : [];
+        $limits = $this->telemtLimitsOf($conf);
         $beobachten = $this->telemtBool($conf, 'telemt_beobachten', false);
         $beobachtenMinutes = $this->telemtInt($conf, 'telemt_beobachten_minutes', 10, 1, 1440);
         $maskHardening = $this->telemtBool($conf, 'telemt_mask_hardening', $this->telemtMaskDefault('telemt_mask_hardening'));
@@ -2026,14 +2036,14 @@ class Bot
         $t .= "listen_addr_ipv4 = \"0.0.0.0\"\n\n";
         // Управляющий HTTP-API нужен боту для расширенной диагностики
         // (/v1/* эндпоинты: health, stats, security posture). Включаем его
-        // ТОЛЬКО когда включён beobachten, и строго на loopback внутри
+        // при beobachten или пользовательских лимитах, строго на loopback внутри
         // контейнера (listen 127.0.0.1 + whitelist). Наружу 9091 НЕ
         // публикуется (нет ports: в compose), дополнительно режется nft на
         // хосте; бот ходит к API по ssh изнутри контейнера. auth_header пуст —
         // loopback-изоляции network namespace достаточно (как в upstream
-        // prod-образе). Когда диагностика выключена — сокет не открывается.
+        // prod-образе). Для квот API снимает контрольные записи расхода.
         $t .= "[server.api]\n";
-        $t .= "enabled = " . $b($beobachten) . "\n";
+        $t .= "enabled = " . $b($beobachten || (bool) $limits) . "\n";
         $t .= "listen = \"127.0.0.1:9091\"\n";
         $t .= "whitelist = [\"127.0.0.1/32\", \"::1/128\"]\n";
         // read_only отключает ТОЛЬКО изменяющие маршруты, все GET-эндпоинты
@@ -2119,6 +2129,8 @@ class Bot
         $t .= "mask_timing_normalization_floor_ms = 180\n";
         $t .= "mask_timing_normalization_ceiling_ms = 320\n\n";
         $t .= "[access]\n";
+        $t .= "user_max_unique_ips_global_each = 0\n";
+        $t .= "user_max_unique_ips_mode = \"active_window\"\n";
         $t .= "replay_check_len = 65536\n";
         $t .= "ignore_time_skew = false\n\n";
         $disabledUsers = array_filter(
@@ -2135,6 +2147,12 @@ class Bot
         $t .= "[access.users]\n";
         foreach ($users as $name => $secret) {
             $t .= $q($name) . " = " . $q($secret) . "\n";
+        }
+        foreach (['quota' => 'user_data_quota', 'ips' => 'user_max_unique_ips'] as $field => $table) {
+            $values = [];
+            foreach ($limits as $name => $row) if (!empty($row[$field])) $values[] = $q($name) . ' = ' . $row[$field];
+            // В ядре quota=0 запрещает трафик; безлимит означает отсутствие ключа.
+            if ($values) $t .= "\n[access.$table]\n" . implode("\n", $values) . "\n";
         }
         $t .= "\n[[upstreams]]\n";
         $t .= "type = \"direct\"\n";
@@ -2249,7 +2267,8 @@ class Bot
             if ($enabled) {
                 // Остановка до смены модуля: ssh() не обращается к выключенным сервисам.
                 $this->telemtWriteServiceState(false);
-                $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
+                try { $this->telemtStop(); }
+                catch (Throwable $error) { $this->telemtWriteServiceState(true); throw $error; }
             }
             try {
                 $modules->set('telemt', !$enabled);
@@ -2282,7 +2301,7 @@ class Bot
         });
     }
 
-    private function applyTelemt()
+    private function applyTelemt(?string $resetQuota = null)
     {
         if (!$this->protocolModuleEnabled('telemt')) {
             $this->telemtWriteServiceState(false);
@@ -2294,14 +2313,19 @@ class Bot
         });
         @mkdir('/config/telemt/data', 0755, true);
         $web = $this->telemtWebEnabled($conf);
+        $limits = $this->telemtLimitsOf($conf);
+        if ($limits) $this->telemtStateRun('version');
         // Snapshot decoy-сайта telemt читает один раз при старте — файл должен
         // существовать РАНЬШЕ запуска бинаря, иначе конфиг не загрузится.
         if ($web) {
             $this->telemtWebDecoy();
         }
         $this->telemtWriteToml($this->telemtToml($conf));
+        $this->telemtWriteServiceState(false);
+        $this->telemtStop();
+        if ($resetQuota !== null) $this->telemtStateRun('reset', $resetQuota);
+        $this->telemtStateRun('prepare', required: (bool) $limits);
         $this->telemtWriteServiceState(true);
-        $this->ssh('pkill -9 -x telemt; while pgrep -x telemt >/dev/null; do sleep 0.2; done', 'telemt');
         if (empty($conf['telemt_users'])) {
             return;
         }
@@ -2361,6 +2385,14 @@ class Bot
             // WEB-хост отвечает 502 вместо decoy. Рекурсии тут нет —
             // cloakNginx() дёргает restartXray, но не restartTelemt.
             $this->cloakNginx();
+        }
+        if ($limits) {
+            try { $this->telemtStateRun('ready'); }
+            catch (Throwable $error) {
+                $this->telemtWriteServiceState(false);
+                $this->telemtStop();
+                throw $error;
+            }
         }
     }
 
@@ -6960,11 +6992,12 @@ NFT;
         // запроса (финальный menu(), getInstanceWG-рендеры) — как в import()
         // и shutdownClient/syncPortClients.
         unset($this->wg);
+        $telemtBackup = $this->telemtBackupSnapshot();
         $conf = [
             'wg'  => $wg,
             'wg1' => $wg1,
             'ad'  => yaml_parse_file($this->adguard),
-            'pac' => $this->getPacConf(),
+            'pac' => $telemtBackup['pac'],
             'hwid' => file_exists($this->hwid) ? (json_decode(file_get_contents($this->hwid), true) ?: []) : [],
             'ssl' => file_exists('/certs/cert_private') && preg_match('~BEGIN PRIVATE KEY~', file_get_contents('/certs/cert_private')) ? [
                 'private' => file_get_contents('/certs/cert_private'),
@@ -6992,6 +7025,7 @@ NFT;
             'ipsec'         => $this->exportIpsecPki(),
             'xraystats'     => $this->getXrayStats(),
             'managed_protocols' => $this->exportManagedProtocols(),
+            'telemt_quota' => $telemtBackup['telemt_quota'],
         ];
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
@@ -7067,6 +7101,11 @@ NFT;
         } else {
             $ok = true;
             $switch_amnezia = $switch_wg1amnezia = 0;
+            try {
+                $telemtLimits = $this->telemtLimitsOf($json['pac'] ?? []);
+                if (array_key_exists('telemt_quota', $json)) $this->telemtValidateQuotaState($json['telemt_quota'], $json['pac'] ?? []);
+                elseif (array_filter($telemtLimits, static fn($row) => !empty($row['quota']))) return false;
+            } catch (Throwable $error) { return false; }
             if (array_key_exists('tt', $json) && !is_string($json['tt'])) return false;
             if (array_key_exists('hy_users', $json)) {
                 try { HysteriaUsers::validateSnapshot($json['hy_users']); }
@@ -7100,16 +7139,13 @@ NFT;
                     $switch_wg1amnezia = 1;
                 }
                 $json['pac'] = $this->preservePanelPswd($json['pac'], $this->getPacConf());
-                if ($this->setPacConf($json['pac']) === false) return false;
+                if ($this->backupHasTelemt($json['pac'])) {
+                    $this->telemtQuotaRestore($json['telemt_quota'] ?? null, $json['pac']);
+                } elseif ($this->setPacConf($json['pac']) === false) return false;
                 $out[] = 'update naiveproxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->restartNaive();
                 $this->pacUpdate('1');
-                if ($this->backupHasTelemt($json['pac'])) {
-                    $out[] = 'update telemt';
-                    $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                    $this->restartTelemt();
-                }
             }
             // wg
             if (!empty($json['wg'])) {
@@ -8028,13 +8064,8 @@ NFT;
         $text[] = '<code>' . ($report !== '' ? $report : '3.0-поля не заданы') . '</code>';
         $text[] = 'PersistentKeepalive: <code>' . htmlspecialchars((string) $this->awgKeepalive(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
         $text[] = '';
-        $text[] = 'Все поля, кроме HeaderProtectionKey, задаются числом или диапазоном <code>LO-HI</code>; <code>0</code> — вернуть значение по умолчанию.';
-        $text[] = '';
         $text[] = '⚠️ Любое изменение здесь ломает уже розданные конфиги: клиентам нужно перекачать их заново. Header protection дополнительно требует S1–S4 ≥ ' . self::AWG_HPK_MIN_S . '.';
-        $text[] = '';
-        $text[] = '<b>RandomTrailers</b> — довешивает случайный хвост к каждому пакету (доп. слой обфускации, требует такого же значения у клиента). <b>DisableCookies</b> — сервер перестаёт отвечать cookie-reply на хендшейки: снимает штатную anti-DoS защиту WireGuard от флуда поддельными initiation-пакетами в обмен на то, что зонд не подтвердит по cookie-reply, что порт — это WG/AWG.';
-        $text[] = '';
-        $text[] = '<b>mihomo awg3</b> — отдавать ли блок 3.0 в подписке mihomo (<code>amnezia-wg-option</code> + <code>version: 3</code>). Нужны свежие сборки mihomo/Clash.Meta; старые эти поля просто игнорируют, и awg-прокси к 3.0-серверу у них работать не будет в любом случае.';
+        if ($dc === 'on') $text[] = '⚠️ DisableCookies отключает штатную защиту WireGuard от флуда подключений.';
 
         $data = [
             [
@@ -8081,6 +8112,7 @@ NFT;
             ['text' => 'reset 3.0',     'callback_data' => "/awg3reset $inst $page"],
             ['text' => 'recheck tools', 'callback_data' => "/awgVerRefresh $inst $page"],
         ];
+        $data[] = $this->menuHelpButton('awg', $inst . '_' . $page);
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => "/menu wg $inst $page",
@@ -15679,109 +15711,118 @@ DNS-over-HTTPS with IP:
     {
         $conf = $this->getPacConf();
         $users = is_array($conf['telemt_users'] ?? null) ? $conf['telemt_users'] : [];
-        $enabled = is_array($conf['telemt_user_enabled'] ?? null) ? $conf['telemt_user_enabled'] : [];
-        $web = $this->telemtWebEnabled($conf);
-        // Only relays with an address are selectable; an unknown/empty name
-        // resolves to null → direct links (server = real endpoint).
-        $relays = is_array($conf['telemt_relays'] ?? null)
-            ? array_filter($conf['telemt_relays'], fn($r) => !empty($r['address'])) : [];
-        $rl = $relay !== '' ? ($relays[$relay] ?? null) : null;
-        if ($rl === null) {
-            $relay = '';
+        $relays = array_filter($conf['telemt_relays'] ?? [], fn($r) => !empty($r['address']));
+        if (!isset($relays[$relay])) $relay = '';
+        $pages = max(1, (int) ceil(count($users) / 8));
+        $page = max(0, min($page, $pages - 1));
+        $text = ['Menu → TeleMT → ' . $this->i18n('telemt users'),
+            'users: ' . count($users) . ' · ' . ($page + 1) . ' / ' . $pages,
+            'MTProxy: ' . ($relay === '' ? $this->i18n('telemt direct') : self::esc($relay)),
+            $this->i18n('telemt users cards')];
+        $data = [];
+        foreach (array_slice($users, $page * 8, 8, true) as $name => $secret) {
+            $enabled = !array_key_exists($name, $conf['telemt_user_enabled'] ?? []) || !empty($conf['telemt_user_enabled'][$name]);
+            $data[] = [['text' => ($enabled ? '🟢 ' : '🔴 ') . mb_strimwidth((string) $name, 0, 60, '…'),
+                'callback_data' => $this->telemtUserCallback((string) $name, $page, $relay)]];
         }
-
-        $text[] = "Menu -> TeleMT -> " . $this->i18n('telemt users')
-            . ($relay !== '' ? " (via <b>" . htmlspecialchars($relay, ENT_QUOTES) . "</b>)" : '') . "\n";
-        $text[] = "users: " . count($users);
-        if ($web) {
-            $text[] = "🌐 — " . $this->i18n('telemt web link');
-        }
-        // Fake-TLS ссылки удлиняются вместе с доменом. Делим по длине текста,
-        // чтобы даже длинные SNI не делали весь список недоступным в Telegram.
-        $pages = [[]]; $length = 0; $links = [];
-        foreach ($users as $name => $secret) {
-            $safeName = htmlspecialchars((string) $name, ENT_QUOTES);
-            $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
-            $links[$name] = $this->linkTelemt($name, $rl);
-            $line = "👤 <b>$safeName</b> " . $this->i18n($state) . "\n" . htmlspecialchars($links[$name], ENT_QUOTES);
-            $size = $this->messageTextLength($line) + 1;
-            $last = count($pages) - 1;
-            if ($pages[$last] && ($length + $size > 3000 || count($pages[$last]) >= 8)) {
-                $pages[] = []; $last++; $length = 0;
-            }
-            $pages[$last][$name] = $line; $length += $size;
-        }
-        $page = max(0, min($page, count($pages) - 1));
-        if (count($pages) > 1) $text[] = ($page + 1) . ' / ' . count($pages);
-        array_push($text, '', ...array_values($pages[$page]));
-        $users = array_intersect_key($users, $pages[$page]);
-
-        $rarg = $relay !== '' ? " $relay" : '';
-        $pageArg = $page === 0 ? '' : " $page";
-        // WEB-профиль получают не все: их число упирается в лимит telemt (32).
-        // Кнопку 🌐 рисуем ТОЛЬКО тем, кто в профили попал, иначе ссылка
-        // сгенерируется, Telegram Desktop её примет, а telemt не пустит — и по
-        // симптомам это неотличимо от сетевой проблемы.
-        $webUsers = $web ? array_flip($this->telemtWebProfiles($conf)) : [];
-        foreach ($users as $name => $secret) {
-            $link = $links[$name];
-            $state = array_key_exists($name, $enabled) && empty($enabled[$name]) ? 'off' : 'on';
-            $row = [['text' => "🔗 $name", 'url' => $link]];
-            // Кнопку с callback_data длиннее 64 байт (лимит Telegram) не рисуем
-            // вовсе: на такую кнопку приходит BUTTON_DATA_INVALID, и сообщение
-            // не отрисовывается ЦЕЛИКОМ — меню «telemt users» переставало
-            // открываться, а удалить испорченную запись было уже нечем. Длину
-            // имени теперь ограничивает telemtUserAdd(), но записи, заведённые
-            // до этого, никуда не делись: у них останутся те кнопки, что влезли
-            // (у «/telemtDelUser » запас больше всех, то есть удалить можно).
-            $btns = [
-                [$this->i18n($state), $relay === '' ? "/telemtToggleUser $name$pageArg" : "/tu t $name $page $relay"],
-                ['📷', "/telemtQr $name$rarg"],
-            ];
-            if (isset($webUsers[$name])) {
-                // Ссылка WEB-режима: у неё свой хост и всегда порт 443,
-                // поэтому выбранный relay к ней не применяется.
-                $btns[] = ['🌐', "/telemtWebLink $name"];
-            }
-            // Короткая форма сохраняет relay и помещается в 64 байта Telegram.
-            $btns[] = ['🔄', $relay === '' ? "/telemtRegen $name$pageArg" : "/tu r $name $page $relay"];
-            $btns[] = ['❌', $relay === '' ? "/telemtDelUser $name$pageArg" : "/tu d $name $page $relay"];
-            foreach ($btns as [$label, $cb]) {
-                // ИМЕННО $label: переменная $text выше — это массив строк
-                // сообщения, и деструктуризация в неё затирала его строкой,
-                // после чего implode() ниже падал с TypeError и меню «telemt
-                // users» не открывалось вовсе. Поймано на рабочем сервере 2026-08-18.
-                if (strlen($cb) <= 64) {
-                    $row[] = ['text' => $label, 'callback_data' => $cb];
-                }
-            }
-            $data[] = $row;
-        }
-        // Relay selector row: direct + each configured relay. Marks the active
-        // one; only shown when at least one telemt relay has an address.
+        $rarg = $relay === '' ? '' : ' ' . $relay;
         $pager = [];
         if ($page > 0) $pager[] = ['text' => '◀', 'callback_data' => '/telemtUsersPage ' . ($page - 1) . $rarg];
-        if ($page + 1 < count($pages)) $pager[] = ['text' => '▶', 'callback_data' => '/telemtUsersPage ' . ($page + 1) . $rarg];
+        if ($page + 1 < $pages) $pager[] = ['text' => '▶', 'callback_data' => '/telemtUsersPage ' . ($page + 1) . $rarg];
         if ($pager) $data[] = $pager;
         if ($relays) {
-            $row = [[
-                'text'          => ($relay === '' ? '✅ ' : '') . $this->i18n('telemt direct'),
-                'callback_data' => "/telemtUsersPage $page",
-            ]];
-            foreach ($relays as $rname => $r) {
-                // $rname may be an int key when the relay name is all-digits
-                // (JSON-decoded array key), so compare as strings.
-                $rname = (string) $rname;
-                $row[] = [
-                    'text'          => ($relay === $rname ? '✅ ' : '') . $rname,
-                    'callback_data' => "/telemtUsersPage $page $rname",
-                ];
+            $choices = [['text' => ($relay === '' ? '✅ ' : '') . $this->i18n('telemt direct'), 'callback_data' => "/telemtUsersPage $page"]];
+            foreach ($relays as $name => $r) {
+                $callback = "/telemtUsersPage $page $name";
+                if (strlen($callback) <= 64) $choices[] = ['text' => ($relay === (string) $name ? '✅ ' : '') . mb_strimwidth((string) $name, 0, 28, '…'), 'callback_data' => $callback];
             }
-            $data[] = $row;
+            array_push($data, ...array_chunk($choices, 2));
         }
-        $data[] = [['text' => $this->i18n('telemt add user'), 'callback_data' => "/telemtAddUser"]];
-        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
-        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+        $data[] = [['text' => $this->i18n('telemt add user'), 'callback_data' => '/telemtAddUser']];
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemt']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
+    }
+
+    // Ключи зависят от имён, а не от позиции в списке: старая кнопка после
+    // удаления соседа не должна управлять другим пользователем. Сокращённые
+    // ключи оставляют место для страницы и relay в 64 байтах callback_data.
+    public function telemtUserCallback(string $name, int $page = 0, string $relay = '', string $action = ''): string
+    {
+        return '/tuc ' . substr(hash('sha256', $name), 0, 12) . ' ' . max(0, $page) . ' '
+            . ($relay === '' ? 'direct' : substr(hash('sha256', $relay), 0, 12)) . ($action === '' ? '' : ' ' . $action);
+    }
+
+    public function telemtUserAction(string $key, int $page, string $relayKey, string $action = ''): void
+    {
+        $conf = $this->getPacConf();
+        $names = array_values(array_filter(array_keys($conf['telemt_users'] ?? []), fn($name) => substr(hash('sha256', (string) $name), 0, 12) === $key));
+        $relays = array_values(array_filter(array_keys($conf['telemt_relays'] ?? []), fn($name) => substr(hash('sha256', (string) $name), 0, 12) === $relayKey));
+        $relay = count($relays) === 1 ? (string) $relays[0] : '';
+        if (count($names) !== 1) { $this->telemtUsers($relay, $page); return; }
+        $name = (string) $names[0];
+        if (preg_match('~^qreset-([a-f0-9]{8})$~D', $action, $match)) {
+            $this->telemtResetQuota($name, $page, $relay, $match[1]); return;
+        }
+        switch ($action) {
+            case 'limits': $this->telemtUserLimits($name, $page, $relay); return;
+            case 'quota': $this->telemtLimitPrompt($name, $page, $relay, 'quota'); return;
+            case 'ips': $this->telemtLimitPrompt($name, $page, $relay, 'ips'); return;
+            case 'reset': $this->telemtResetQuota($name, $page, $relay); return;
+            case 'toggle': $this->telemtToggleUser($name, $page, $relay, true); return;
+            case 'regen-confirm': $this->telemtRegen($name, $page, $relay, true); return;
+            case 'delete-confirm': $this->telemtDelUser($name, $page, $relay); return;
+            case 'qr': $this->telemtQr($name, $relay, true); return;
+            case 'web': $this->telemtWebLink($name, true); return;
+            case 'regen':
+            case 'delete':
+                $text = '<b>' . self::esc($name) . "</b>\n\n" . $this->i18n('telemt user confirm ' . $action);
+                $data = [
+                    [['text' => $this->i18n('telemt user ' . $action), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, $action . '-confirm')]],
+                    [['text' => $this->i18n('back'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay)]],
+                ];
+                $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
+                return;
+        }
+        $this->telemtUserCard($name, $relay, $page);
+    }
+
+    public function telemtUserCard(string $name, string $relay = '', int $page = 0): void
+    {
+        $conf = $this->getPacConf();
+        if (!isset($conf['telemt_users'][$name])) { $this->telemtUsers($relay, $page); return; }
+        $rl = $this->telemtRelay($relay);
+        if (!$rl) $relay = '';
+        $enabled = !array_key_exists($name, $conf['telemt_user_enabled'] ?? []) || !empty($conf['telemt_user_enabled'][$name]);
+        $native = $this->linkTelemt($name, $rl);
+        $text = ['Menu → TeleMT → ' . $this->i18n('telemt users'), '<b>' . self::esc(mb_strimwidth($name, 0, 256, '…')) . '</b> · ' . $this->telemtState($enabled)];
+        if (!$enabled) $text[] = $this->i18n('telemt user disabled');
+        $text[] = $this->i18n('telemt user restart note');
+        $text[] = '<b>MTProxy</b> · ' . ($relay === '' ? $this->i18n('telemt direct') : self::esc($relay)) . "\n<code>" . self::esc($native) . '</code>';
+        $data = [[['text' => '🔗 MTProxy', 'url' => $native]]];
+        $qr = [['text' => 'QR · MTProxy', 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'qr')]];
+        if ($this->telemtWebEnabled($conf) && isset(array_flip($this->telemtWebProfiles($conf))[$name]) && $this->telemtWebVersionOk()) {
+            $web = $this->linkTelemtWeb($name, $conf);
+            $text[] = "<b>WEB</b>\n<code>" . self::esc($web) . '</code>';
+            if ($relay !== '') $text[] = $this->i18n('telemt web direct only');
+            $data[] = [['text' => '🌐 WEB', 'url' => $web]];
+            $qr[] = ['text' => 'QR · WEB', 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'web')];
+        } else {
+            $reason = match (true) {
+                empty($conf['telemt_web']) => $this->i18n('off'),
+                (bool) $this->telemtWebBlockers($conf) => implode('; ', array_map(fn($key) => $this->i18n($key), $this->telemtWebBlockers($conf))),
+                !$this->telemtWebVersionOk() => $this->i18n('telemt web need version'),
+                default => $this->i18n('telemt web profiles capped'),
+            };
+            $text[] = '<b>WEB</b>: ' . $reason;
+            $data[] = [['text' => $this->i18n('telemt web'), 'callback_data' => '/telemtWeb']];
+        }
+        $data[] = $qr;
+        $data[] = [['text' => $this->i18n('telemt limits'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'limits')]];
+        $data[] = [['text' => $this->i18n($enabled ? 'telemt user disable' : 'telemt user enable'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'toggle')]];
+        $data[] = [['text' => $this->i18n('telemt user regen'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'regen')]];
+        $data[] = [['text' => $this->i18n('telemt user delete'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'delete')]];
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemtUsersPage ' . max(0, $page) . ($relay === '' ? '' : ' ' . $relay)]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
     }
 
     public function telemtMode()
@@ -15906,41 +15947,32 @@ DNS-over-HTTPS with IP:
         if (!$blockers && !empty($conf['telemt_web'])) {
             $text[] = "\nℹ " . $this->i18n('telemt web cert hint');
         }
-        $text[] = "\nℹ " . $this->i18n('telemt web note');
-        $text[] = "\nℹ " . $this->i18n('telemt web negotiation note');
-        $text[] = "\nℹ " . $this->i18n('telemt web path note');
-        $text[] = "\nℹ " . $this->i18n('telemt web diag note');
+        if (!$cands && $this->telemtWebCarrierOf($conf) === 'https-lanes') {
+            $text[] = "\n⚠ " . $this->i18n('telemt web lanes ios');
+        }
 
         $data[] = [[
             'text'          => $this->i18n('telemt web') . ': ' . $this->telemtState(!empty($conf['telemt_web'])),
             'callback_data' => "/telemtWebToggle",
         ]];
         $data[] = [[
-            'text'          => $this->i18n('telemt web negotiation') . ': '
-                . $this->i18n('telemt web negotiation ' . $this->telemtWebNegotiationOf($conf)),
-            'callback_data' => "/telemtWebNegotiation",
+            'text'          => $this->i18n('telemt web transport') . ': '
+                . $this->i18n('telemt web mode ' . $this->telemtWebModeOf($conf)),
+            'callback_data' => "/telemtWebMode",
         ]];
-        // Кнопка одиночного carrier осмысленна только без негоциации: с ней
-        // fallback задаёт пресет, и два независимых элемента UI противоречили бы
-        // друг другу.
-        if (!$cands) {
-            $data[] = [[
-                'text'          => 'carrier: ' . $this->telemtWebCarrierOf($conf),
-                'callback_data' => "/telemtWebCarrier",
-            ]];
-        }
         $data[] = [[
             'text'          => 'secret: ' . $this->telemtWebSecretModeOf($conf),
             'callback_data' => "/telemtWebSecret",
         ]];
         $data[] = [[
-            'text'          => 'path: ' . ($path === '' ? '/' : "/$path/"),
+            'text'          => $this->i18n('telemt web path') . ': ' . ($path === '' ? '/' : "/$path/"),
             'callback_data' => "/telemtWebPath",
         ]];
         $data[] = [[
             'text'          => $this->i18n('telemt web diag') . ': ' . $this->telemtState($diag),
             'callback_data' => "/telemtWebDiag",
         ]];
+        $data[] = $this->menuHelpButton('telemt');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
 
         if ($update) {
@@ -15970,36 +16002,44 @@ DNS-over-HTTPS with IP:
         $this->telemtWeb(true);
     }
 
-    public function telemtWebCarrier()
+    public function telemtWebModeOf(array $conf): string
     {
-        $this->telemtConfUpdate(function (&$conf) {
-            $conf['telemt_web_carrier'] = $this->telemtWebCarrierOf($conf) === 'https' ? 'https-lanes' : 'https';
-        });
-        $this->restartTelemt();
-        $this->telemtWeb(true);
+        $preset = $this->telemtWebNegotiationOf($conf);
+        return $preset === 'off' ? $this->telemtWebCarrierOf($conf) : 'auto-' . $preset;
     }
 
-    // Циклический выбор пресета негоциации: off → https → full → off.
-    public function telemtWebNegotiation()
+    // Явный выбор исключает скрытое значение одиночного carrier при выходе из
+    // подбора. Повторное нажатие выбранного режима не рвёт действующие сессии.
+    public function telemtWebMode(string $mode = ''): void
     {
-        $blocked = false;
-        $changed = $this->telemtConfUpdate(function (&$conf) use (&$blocked) {
-            $modes = array_keys(self::TELEMT_WEB_NEGOTIATION);
-            $current = $this->telemtWebNegotiationOf($conf);
-            $index = array_search($current, $modes, true);
-            $new = $modes[($index + 1) % count($modes)];
-            if ($new !== 'off' && !$this->telemtWebNegotiationVersionOk()) {
-                $blocked = true;
-                // Старый бинарь должен позволять выключить сохранённый подбор.
-                if ($current === 'off') return false;
-                $new = 'off';
-            }
-            $conf['telemt_web_negotiation'] = $new;
-            return true;
-        });
-        if ($blocked) $this->answer($this->input['callback_id'], $this->i18n('telemt web negotiation need version'), true);
-        if ($changed) $this->restartTelemt();
-        $this->telemtWeb(true);
+        $modes = ['auto-https', 'auto-full', 'https', 'https-lanes'];
+        $negotiationOk = $this->telemtWebNegotiationVersionOk();
+        if ($mode !== '' && in_array($mode, $modes, true)) {
+            $changed = $this->telemtConfUpdate(function (&$conf) use ($mode, $negotiationOk) {
+                if ($mode === $this->telemtWebModeOf($conf)) return false;
+                if (str_starts_with($mode, 'auto-') && !$negotiationOk) {
+                    $this->answer($this->input['callback_id'], $this->i18n('telemt web negotiation need version'), true);
+                    return false;
+                }
+                $conf['telemt_web_negotiation'] = str_starts_with($mode, 'auto-') ? substr($mode, 5) : 'off';
+                if (!str_starts_with($mode, 'auto-')) $conf['telemt_web_carrier'] = $mode;
+                return true;
+            });
+            if ($changed && $this->telemtWebEnabled($this->getPacConf())) $this->restartTelemt();
+        }
+        $conf = $this->getPacConf();
+        $selected = $this->telemtWebModeOf($conf);
+        $text = ['Menu → TeleMT → WEB → ' . $this->i18n('telemt web transport'),
+            $this->i18n('telemt web select mode')];
+        if (!$negotiationOk) $text[] = '⚠ ' . $this->i18n('telemt web negotiation need version');
+        $data = [];
+        foreach ($modes as $choice) {
+            $data[] = [['text' => ($choice === $selected ? '✅ ' : '') . $this->i18n('telemt web mode ' . $choice),
+                'callback_data' => '/telemtWebMode ' . $choice]];
+        }
+        $data[] = $this->menuHelpButton('telemt_carrier');
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemtWeb']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
     }
 
     // Смена формата секрета инвалидирует ВСЕ выданные webproxy-ссылки: тот же
@@ -16019,39 +16059,43 @@ DNS-over-HTTPS with IP:
         $this->telemtWeb(true);
     }
 
-    // Префикс WEB-эндпоинтов: выкл → случайный → выкл. Каждое включение даёт
-    // НОВЫЙ префикс, то есть кнопка заодно служит ротацией: все выданные
-    // WEB-ссылки гаснут разом (capability привязан к пути), секреты
-    // пользователей и обычные tg://proxy остаются прежними. nginx не трогаем:
-    // location / уже проксирует путь как есть, без срезания префикса, — ровно
-    // то, чего требует telemt.
-    public function telemtWebPath()
+    // Новый случайный префикс и возврат к корню — отдельные явные действия.
+    // location / в nginx уже проксирует оба варианта без изменения пути.
+    public function telemtWebPath(string $action = '')
     {
-        // Версию спрашиваем до блокировки: ssh под локом держал бы все кнопки
-        // telemt на время сетевого запроса.
         $ok      = $this->telemtVersionAtLeast('3.5.8');
         $blocked = false;
-        $conf = $this->telemtConfUpdate(function (&$conf) use ($ok, &$blocked) {
-            if ($this->telemtWebPathOf($conf) !== '') {
-                $conf['telemt_web_path'] = '';
-            } elseif ($ok) {
-                $conf['telemt_web_path'] = bin2hex(random_bytes(8));
-            } else {
-                $blocked = true;
-            }
-            return $conf;
-        });
+        $changed = false;
+        if (in_array($action, ['generate', 'reset'], true)) {
+            $changed = $this->telemtConfUpdate(function (&$conf) use ($action, $ok, &$blocked) {
+                if ($action === 'generate' && !$ok) {
+                    $blocked = true;
+                    return false;
+                }
+                if ($action === 'reset' && $this->telemtWebPathOf($conf) === '') return false;
+                $conf['telemt_web_path'] = $action === 'generate' ? bin2hex(random_bytes(8)) : '';
+                return true;
+            });
+        }
         if ($blocked) {
             $this->answer($this->input['callback_id'], $this->i18n('telemt web 358 need version'), true);
-            return $this->telemtWeb(true);
         }
-        // Без работающего WEB путь в конфиг не попадает, и рестарт (обрыв
-        // всех MTProto-соединений) был бы впустую.
-        if ($this->telemtWebEnabled($conf)) {
-            $this->restartTelemt();
+        if ($changed) {
+            if ($this->telemtWebEnabled($this->getPacConf())) $this->restartTelemt();
             $this->answer($this->input['callback_id'], $this->i18n('telemt web path changed'), true);
         }
-        $this->telemtWeb(true);
+        $path = $this->telemtWebPathOf($this->getPacConf());
+        $text = ['Menu → TeleMT → WEB → ' . $this->i18n('telemt web path'),
+            'path: <code>' . self::esc($path === '' ? '/' : "/$path/") . '</code>',
+            $this->i18n('telemt web path setup')];
+        if (!$ok) $text[] = '⚠ ' . $this->i18n('telemt web 358 need version');
+        $data = [
+            [['text' => $this->i18n('telemt web path generate'), 'callback_data' => '/telemtWebPath generate']],
+            [['text' => ($path === '' ? '✅ ' : '') . $this->i18n('telemt web path reset'), 'callback_data' => '/telemtWebPath reset']],
+            $this->menuHelpButton('telemt_path'),
+            [['text' => $this->i18n('back'), 'callback_data' => '/telemtWeb']],
+        ];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
     }
 
     // Отчёты бриджа Telegram Desktop о сбоях до рукопожатия (web.debug.sideband).
@@ -16082,7 +16126,7 @@ DNS-over-HTTPS with IP:
 
     // Ссылка tg://webproxy + QR. Relay здесь не применим: хост обязан
     // совпадать с vhost telemt и с именем в сертификате, а порт — быть 443.
-    public function telemtWebLink($name)
+    public function telemtWebLink($name, bool $keepMenu = false)
     {
         $conf = $this->getPacConf();
         // Та же проверка, что и у кнопки: пользователь без WEB-профиля получил
@@ -16103,15 +16147,8 @@ DNS-over-HTTPS with IP:
         if ($link === '') {
             return $this->telemtUsers();
         }
-        $qr_file = __DIR__ . "/qr/telemt_web.png";
-        exec("qrencode -t png -o $qr_file " . escapeshellarg($link));
-        $this->sendPhoto(
-            $this->input['chat'],
-            curl_file_create($qr_file),
-            '<b>' . htmlspecialchars((string) $name, ENT_QUOTES) . " · WEB</b>\n" . htmlspecialchars($link, ENT_QUOTES)
-        );
-        @unlink($qr_file);
-        if (($this->getPacConf()['blinkmenu'] ?? false)) {
+        if (!$this->telemtSendQr((string) $name, $link, 'WEB')) return;
+        if (!$keepMenu && ($this->getPacConf()['blinkmenu'] ?? false)) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->telemt();
@@ -16365,8 +16402,7 @@ DNS-over-HTTPS with IP:
         // Эти 4 опции усиливают только anti-probe cover-path и не влияют на
         // трафик реальных клиентов. TLS-эмуляция клиентского хендшейка включена;
         // session tickets по дефолту telemt = 0 и переопределяются отдельно.
-        $text[] = "\nℹ " . $this->i18n('telemt masking note');
-        $text[] = $this->i18n('telemt realism');
+        $data[] = $this->menuHelpButton('telemt_mask');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
@@ -16445,7 +16481,7 @@ DNS-over-HTTPS with IP:
         $this->telemtDiagnostics();
     }
 
-    public function telemtToggleUser($name, int $page = 0, string $relay = '')
+    public function telemtToggleUser($name, int $page = 0, string $relay = '', bool $card = false)
     {
         $changed = $this->telemtConfUpdate(static function (&$conf) use ($name) {
             if (empty($conf['telemt_users'][$name])) return false;
@@ -16455,7 +16491,8 @@ DNS-over-HTTPS with IP:
             return true;
         });
         if ($changed) $this->restartTelemt();
-        $this->telemtUsers($relay, $page);
+        if ($card) $this->telemtUserCard((string) $name, $relay, $page);
+        else $this->telemtUsers($relay, $page);
     }
 
     public function telemtShowBeobachten()
@@ -16736,7 +16773,7 @@ DNS-over-HTTPS with IP:
         $this->send($this->input['chat'], "<pre>" . htmlspecialchars($msg, ENT_QUOTES) . "</pre>", $this->input['message_id']);
     }
 
-    public function telemtQr($name, $relay = '')
+    public function telemtQr($name, $relay = '', bool $keepMenu = false)
     {
         $conf = $this->getPacConf();
         if (empty($conf['telemt_users'][$name])) {
@@ -16744,18 +16781,35 @@ DNS-over-HTTPS with IP:
             return;
         }
         $link    = $this->linkTelemt($name, $relay !== '' ? $this->telemtRelay($relay) : null);
-        $qr_file = __DIR__ . "/qr/telemt.png";
-        exec("qrencode -t png -o $qr_file " . escapeshellarg($link));
-        $this->sendPhoto(
-            $this->input['chat'],
-            curl_file_create($qr_file),
-            '<b>' . htmlspecialchars((string) $name, ENT_QUOTES) . "</b>\n" . htmlspecialchars($link, ENT_QUOTES)
-        );
-        @unlink($qr_file);
-        if (($this->getPacConf()['blinkmenu'] ?? false)) {
+        if (!$this->telemtSendQr((string) $name, $link, 'MTProxy')) return;
+        if (!$keepMenu && ($this->getPacConf()['blinkmenu'] ?? false)) {
             $this->delete($this->input['chat'], $this->input['message_id']);
             $this->input['message_id'] = $this->send($this->input['chat'], '.')['result']['message_id'];
             $this->telemt();
+        }
+    }
+
+    private function telemtSendQr(string $name, string $link, string $kind): bool
+    {
+        // Разные запросы не должны перезаписывать общий telemt.png с чужой
+        // ссылкой. Временный файл приватный и удаляется также при ошибке API.
+        $file = tempnam(sys_get_temp_dir(), 'telemt-qr-');
+        if ($file === false) {
+            $this->answer($this->input['callback_id'], $this->i18n('telemt qr failed'), true);
+            return false;
+        }
+        try {
+            exec('qrencode -t png -o ' . escapeshellarg($file) . ' ' . escapeshellarg($link), $out, $rc);
+            clearstatcache(true, $file);
+            if ($rc !== 0 || filesize($file) === 0) {
+                $this->answer($this->input['callback_id'], $this->i18n('telemt qr failed'), true);
+                return false;
+            }
+            $this->sendPhoto($this->input['chat'], curl_file_create($file),
+                '<b>' . self::esc(mb_strimwidth($name, 0, 64, '…')) . ' · ' . $kind . "</b>\n" . self::esc($link));
+            return true;
+        } finally {
+            @unlink($file);
         }
     }
 
@@ -16777,14 +16831,9 @@ DNS-over-HTTPS with IP:
     public function telemtUserAdd($name)
     {
         $name = preg_replace('~[^A-Za-z0-9_]~', '', trim($name));
-        // Длина обязательна, а не только набор символов. Имя целиком уезжает в
-        // callback_data четырёх кнопок на строке пользователя, а лимит Telegram
-        // там 64 байта: «/telemtToggleUser » это 18 байт, а у «/telemtQr » к
-        // имени приписывается ещё и имя relay (до 32 символов). Превышение —
-        // это BUTTON_DATA_INVALID на editMessageText, то есть меню «telemt
-        // users» перестаёт открываться ЦЕЛИКОМ и удалить испорченную запись из
-        // бота уже нечем, только правкой pac.json руками. У имён relay такое
-        // ограничение есть с самого начала (setRelayName), здесь его забыли.
+        // Сохраняем предел 20 символов для совместимости старых callback-
+        // кнопок, в которых передавались полные имена пользователя и relay.
+        // Новые карточки используют короткие ключи и для старых длинных имён.
         if ($name === '' || strlen($name) > 20) {
             $this->telemtUsers();
             return;
@@ -16793,7 +16842,7 @@ DNS-over-HTTPS with IP:
         $changed = $this->telemtConfUpdate(function (&$conf) use ($name) {
             if (isset($conf['telemt_users'][$name])) return false;
             $conf['telemt_users'][$name] = $this->telemtSecret();
-            unset($conf['telemt_user_enabled'][$name]);
+            unset($conf['telemt_user_enabled'][$name], $conf['telemt_user_limits'][$name]);
             return true;
         });
         if (!$changed) { $this->telemtUsers(); return; }
@@ -16806,14 +16855,14 @@ DNS-over-HTTPS with IP:
     {
         $was = $this->telemtWebEnabled($this->getPacConf());
         $this->telemtConfUpdate(static function (&$conf) use ($name) {
-            unset($conf['telemt_users'][$name], $conf['telemt_user_enabled'][$name]);
+            unset($conf['telemt_users'][$name], $conf['telemt_user_enabled'][$name], $conf['telemt_user_limits'][$name]);
         });
         $this->restartTelemt();
         $this->telemtWebRefresh($was);
         $this->telemtUsers($relay, $page);
     }
 
-    public function telemtRegen($name, int $page = 0, string $relay = '')
+    public function telemtRegen($name, int $page = 0, string $relay = '', bool $card = false)
     {
         $changed = $this->telemtConfUpdate(function (&$conf) use ($name) {
             if (!isset($conf['telemt_users'][$name])) return false;
@@ -16821,7 +16870,8 @@ DNS-over-HTTPS with IP:
             return true;
         });
         if ($changed) $this->restartTelemt();
-        $this->telemtUsers($relay, $page);
+        if ($card) $this->telemtUserCard((string) $name, $relay, $page);
+        else $this->telemtUsers($relay, $page);
     }
 
     public function telemtDomain()
@@ -17821,12 +17871,10 @@ DNS-over-HTTPS with IP:
         $mldsaReady = $this->mldsaReady($p);
 
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking');
-        $text[] = $this->i18n('dpi hint');
 
         $data = [];
         $data[] = [['text' => $this->i18n('fragment') . ': ' . $on($f['enabled'] ?? 0), 'callback_data' => '/dpiToggle fragment']];
         if (!empty($f['enabled'])) {
-            $text[] = $this->dpiFieldHint('fragment');
             $data[] = [
                 ['text' => 'packets: ' . (($f['packets'] ?? '') ?: '1-3'),    'callback_data' => '/dpiSet fragment_packets'],
                 ['text' => 'length: ' . (($f['length'] ?? '') ?: '100-200'),  'callback_data' => '/dpiSet fragment_length'],
@@ -17851,10 +17899,6 @@ DNS-over-HTTPS with IP:
             if ($tr !== '') {
                 $text[] = str_replace('%s', htmlspecialchars($tr, ENT_QUOTES), $this->i18n('noise tcp warn'));
             }
-            $text[] = $this->dpiFieldHint('noise');
-            // Готовые примеры значений — прямо в тексте меню, а не только во
-            // всплывающей подсказке по тапу (её легко пропустить).
-            $text[] = $this->noiseExamplesHint();
             // noises — массив: несколько пакетов с разными типами/задержками
             // эффективнее против анализа трафика, чем один фиксированный.
             $noises = $this->dpiNoiseList($p);
@@ -17915,6 +17959,7 @@ DNS-over-HTTPS with IP:
         }
         $fm = $this->finalmaskSettings($p);
         $data[] = [['text' => 'finalmask (server): ' . $on($fm['enabled']), 'callback_data' => '/finalmaskMenu']];
+        $data[] = $this->menuHelpButton('dpi');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
 
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -17988,7 +18033,7 @@ DNS-over-HTTPS with IP:
     public function dpiFragPresetsMenu(): void
     {
         $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> ' . $this->i18n('presets');
-        $text[] = $this->fragmentPresetsHint();
+        $text[] = $this->i18n('preset tap applies');
 
         $data = [];
         $row = [];
@@ -18002,6 +18047,7 @@ DNS-over-HTTPS with IP:
         if ($row) {
             $data[] = $row;
         }
+        $data[] = $this->menuHelpButton('dpi_frag');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/dpiMenu']];
 
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -18112,7 +18158,7 @@ DNS-over-HTTPS with IP:
     public function dpiNoisePresetsMenu(): void
     {
         $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> ' . $this->i18n('noise') . ' ' . $this->i18n('presets');
-        $text[] = $this->noisePresetsHint();
+        $text[] = $this->i18n('preset tap applies');
 
         $data = [];
         $row = [];
@@ -18126,6 +18172,7 @@ DNS-over-HTTPS with IP:
         if ($row) {
             $data[] = $row;
         }
+        $data[] = $this->menuHelpButton('dpi_noise');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/dpiMenu']];
 
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -18758,7 +18805,6 @@ DNS-over-HTTPS with IP:
         $on   = fn($v) => $this->i18n(!empty($v) ? 'on' : 'off');
 
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> SMUX';
-        $text[] = $this->i18n('smux hint');
         if (in_array($p['transport'] ?? '', ['Reality', 'trojan-grpc'], true)) {
             $text[] = $this->i18n('smux sing compatibility');
         }
@@ -18842,9 +18888,6 @@ DNS-over-HTTPS with IP:
                     'text'          => 'half-close: ' . $hc,
                     'callback_data' => '/smuxToggle half_close',
                 ]];
-                if ($hc !== 'off') {
-                    $text[] = $this->i18n('smux halfclose hint');
-                }
                 if (!$this->smuxHalfCloseReady()) {
                     $text[] = $this->i18n('smux halfclose old');
                 }
@@ -18881,6 +18924,7 @@ DNS-over-HTTPS with IP:
             }
         }
 
+        $data[] = $this->menuHelpButton('smux');
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/xray',
@@ -22692,7 +22736,7 @@ DNS-over-HTTPS with IP:
             return $this->menu('naive');
         }
         $text[] = "Menu -> NaiveProxy -> " . $this->i18n('relay');
-        $text[] = $this->i18n('naive relay hint');
+        $text[] = $this->i18n('naive relay short');
 
         $data   = [];
         $health = $this->readRelayHealth(); // read once for the whole list
@@ -22708,6 +22752,7 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
+        $data[] = $this->menuHelpButton('naive_relay');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -22742,11 +22787,12 @@ DNS-over-HTTPS with IP:
         if (($np = self::relayPortInput($relay['np_port'] ?? '')) !== '') {
             $text[] = $this->i18n('relay np port') . ": <code>$np</code>";
         }
-        $text[] = $this->i18n('naive relay hint');
+        $text[] = $this->i18n('naive relay short');
         $text[] = $link !== ''
             ? "\n<code>" . htmlspecialchars($link, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
             : "\n" . $this->i18n('naive no link');
 
+        $data[] = $this->menuHelpButton('naive_relay', (string) $name);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -23982,7 +24028,7 @@ DNS-over-HTTPS with IP:
     {
         $p = $this->getPacConf();
         $s = is_array($p['vless_encryption'] ?? null) ? $p['vless_encryption'] : [];
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> VLESS Encryption', $this->i18n('vless encryption hint')];
+        $text = ['Menu -> ' . $this->i18n('xray') . ' -> VLESS Encryption', $this->i18n('vless encryption refresh')];
         $text[] = $this->i18n('vless encryption singbox');
         if (($p['transport'] ?? '') === 'trojan-grpc') {
             $text[] = $this->i18n('vless encryption transport');
@@ -23999,6 +24045,7 @@ DNS-over-HTTPS with IP:
         if (!empty($s['enabled'])) {
             $data[] = [['text' => $this->i18n('vless encryption rotate'), 'callback_data' => '/vlessEncryptionRotate']];
         }
+        $data[] = $this->menuHelpButton('encryption');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
@@ -26760,7 +26807,6 @@ DNS-over-HTTPS with IP:
         $on = fn ($v) => $this->i18n(!empty($v) ? 'on' : 'off');
 
         $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> finalmask';
-        $text[] = $this->i18n('finalmask hint');
 
         $data = [];
         $data[] = [['text' => 'finalmask: ' . $on($s['enabled']), 'callback_data' => '/finalmaskToggle enabled']];
@@ -26770,7 +26816,6 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/finalmaskToggle fragment',
             ]];
             if (!empty($s['fragment']['enabled'])) {
-                $text[] = $this->i18n('finalmask fragment hint');
                 $data[] = [
                     ['text' => 'packets: ' . $s['fragment']['packets'], 'callback_data' => '/finalmaskSet fragment_packets'],
                     ['text' => 'length: '  . $s['fragment']['length'],  'callback_data' => '/finalmaskSet fragment_length'],
@@ -26786,8 +26831,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/finalmaskToggle noise',
             ]];
             if (!empty($s['noise']['enabled'])) {
-                $text[] = $this->i18n('finalmask noise hint');
-                $text[] = $this->finalmaskNoiseHint();
+                $text[] = $this->i18n('finalmask udp only');
                 $data[] = [['text' => 'reset: ' . $s['noise']['reset'], 'callback_data' => '/finalmaskSet noise_reset']];
                 foreach ($this->finalmaskNoiseList($p) as $i => $ne) {
                     $data[] = [
@@ -26803,6 +26847,7 @@ DNS-over-HTTPS with IP:
                 ];
             }
         }
+        $data[] = $this->menuHelpButton('finalmask');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/dpiMenu']];
 
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -26923,7 +26968,7 @@ DNS-over-HTTPS with IP:
     public function finalmaskFragPresetsMenu(): void
     {
         $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> finalmask -> ' . $this->i18n('presets');
-        $text[] = $this->fragmentPresetsHint();
+        $text[] = $this->i18n('preset tap applies');
 
         $data = [];
         $row  = [];
@@ -26937,6 +26982,7 @@ DNS-over-HTTPS with IP:
         if ($row) {
             $data[] = $row;
         }
+        $data[] = $this->menuHelpButton('finalmask_frag');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/finalmaskMenu']];
 
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -26986,7 +27032,8 @@ DNS-over-HTTPS with IP:
     public function finalmaskNoisePresetsMenu(): void
     {
         $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> finalmask -> ' . $this->i18n('noise') . ' ' . $this->i18n('presets');
-        $text[] = $this->finalmaskNoiseHint();
+        $text[] = $this->i18n('preset tap applies');
+        $text[] = $this->i18n('finalmask udp only');
 
         $data = [];
         $row  = [];
@@ -27000,6 +27047,7 @@ DNS-over-HTTPS with IP:
         if ($row) {
             $data[] = $row;
         }
+        $data[] = $this->menuHelpButton('finalmask_noise');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/finalmaskMenu']];
 
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);

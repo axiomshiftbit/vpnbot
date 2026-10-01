@@ -56,7 +56,7 @@ class ProtocolModulesTests(unittest.TestCase):
                 with patch.object(modules, 'compose', return_value=subprocess.CompletedProcess([], 0)) as compose:
                     self.desired.write_text(json.dumps(enabled | {service: False}))
                     modules.apply(self.root)
-                    self.assertEqual([['stop', '--timeout', '10', service], ['rm', '--force', service]],
+                    self.assertEqual([['stop', '--timeout', '45' if service == 'telemt' else '10', service], ['rm', '--force', service]],
                                      [call.args[1] for call in compose.call_args_list])
                     self.assertFalse(json.loads(self.status.read_text())['settings'][service])
                     compose.reset_mock(); modules.apply(self.root)

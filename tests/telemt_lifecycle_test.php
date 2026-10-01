@@ -34,7 +34,7 @@ class TelemtLifecycleBot extends Bot {
     public function telemtUsers($relay = '', int $page = 0) {}
     public function telemtWebRefresh(bool $was): void {}
     public function cloakNginx() {}
-    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { return ''; }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { return str_contains($cmd, 'telemt_state.py') ? 'TELEMT_STATE_OK' : ''; }
 }
 
 class TelemtWriteGuardBot extends TelemtLifecycleBot {
@@ -49,7 +49,7 @@ class TelemtWriteGuardBot extends TelemtLifecycleBot {
         if ($this->failSettings) return false;
         return file_put_contents($this->pac, json_encode($conf)) !== false;
     }
-    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->sshCalls++; return ''; }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->sshCalls++; return parent::ssh($cmd, $service, $wait, $log); }
 }
 
 $root = sys_get_temp_dir() . '/vpnbot-telemt-lifecycle-' . bin2hex(random_bytes(6)); mkdir($root, 0700);

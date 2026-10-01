@@ -211,6 +211,7 @@ foreach (explode("\n", $open) as $line) {
 }
 twAssert(str_contains($open, 'proxy_read_timeout 95s;'), 'таймаут больше http_idle_secs (75s)');
 twAssert(str_contains($open, 'access_log off;'), 'access_log выключен: в query едут креденшелы');
+twAssert(str_contains($open, 'error_log /dev/null;'), 'ошибки 502 тоже не записывают URI с bridge-секретом');
 twAssert(substr_count($open, '{') === substr_count($open, '}'), 'скобки блока сбалансированы');
 
 // WebSocket-carrier'ы (websocket, websocket-lanes) делают GET /api/v1/ws через
@@ -263,6 +264,7 @@ class TelemtHealTestBot extends TelemtWebTestBot
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $this->sshCalls[] = $cmd;
+        if (str_contains($cmd, 'telemt_state.py')) return 'TELEMT_STATE_OK';
         if (str_contains($cmd, 'while [ $i -lt 3 ]')) {
             $this->probes++;
             return $this->alive ? '250' : '';
@@ -341,7 +343,8 @@ $d = (new ReflectionClass(TelemtDeadContainerBot::class))->newInstanceWithoutCon
 $d->key = 'test-bot-key';
 $d->ip  = '203.0.113.10';
 $d->pacFake = $mk()->pacFake;
-$d->restartTelemt();
+try { $d->restartTelemt(); twAssert(false, 'Недоступный контейнер должен сообщить ошибку'); }
+catch (RuntimeException $e) {}
 twAssert(!empty($d->pacFake['telemt_web']), 'при недоступном контейнере WEB не выключаем');
 twAssert($d->nginxReloads === 0, 'и nginx не трогаем');
 
@@ -441,6 +444,8 @@ class TelemtOldBinaryBot extends TelemtWebTestBot
     public function telemtWeb($update = false)
     {
     }
+
+    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') {}
 }
 $mkOld = static function (string $mode) use ($mk): TelemtOldBinaryBot {
     $o = (new ReflectionClass(TelemtOldBinaryBot::class))->newInstanceWithoutConstructor();
@@ -454,14 +459,14 @@ $o = (new ReflectionClass(TelemtOldBinaryBot::class))->newInstanceWithoutConstru
 twAssert(!$o->telemtWebNegotiationVersionOk(), '3.5.3 не проходит гейт негоциации');
 
 $o = $mkOld('off');
-$o->telemtWebNegotiation();
+$o->telemtWebMode('auto-https');
 twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'off', 'со старым бинарём негоциация не включается');
 // i18n в тесте не загружен, поэтому i18n() отдаёт сам ключ — его и сверяем.
 twAssert($o->answers === ['telemt web negotiation need version'], 'оператор получает модалку про версию');
 twAssert($o->restarts === 0, 'и рестарта ради отказа не делаем');
 
 $o = $mkOld('full');
-$o->telemtWebNegotiation();
+$o->telemtWebMode('https');
 twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'off', 'из включённого пресета выпускает в off');
 twAssert($o->restarts === 1, 'и применяет это рестартом');
 
@@ -471,13 +476,13 @@ twAssert($o->restarts === 1, 'и применяет это рестартом');
 // reload на каждое нажатие — чистый шум.
 $o = $mkOld('off');
 $o->ver = '3.5.5';
-$o->telemtWebNegotiation();
-twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'https', 'цикл off → только HTTPS');
+$o->telemtWebMode('auto-https');
+twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'https', 'явный выбор только HTTPS');
 twAssert($o->restarts === 1 && $o->nginxReloads === 0, 'пресет применяется рестартом telemt, без reload nginx');
-$o->telemtWebNegotiation();
-twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'full', 'цикл только HTTPS → полный');
-$o->telemtWebNegotiation();
-twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'off', 'цикл полный → off замыкается');
+$o->telemtWebMode('auto-full');
+twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'full', 'явный выбор полного подбора');
+$o->telemtWebMode('https-lanes');
+twAssert($o->telemtWebNegotiationOf($o->pacFake) === 'off', 'явный выход из подбора');
 twAssert($o->nginxReloads === 0, 'ни одно переключение не дёргает nginx');
 
 // ── 11. Пин [web.limits]: пересчёт совместной валидации telemt ──────────────
@@ -649,6 +654,7 @@ class TelemtNegotiationHealBot extends TelemtHealTestBot
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $this->sshCalls[] = $cmd;
+        if (str_contains($cmd, 'telemt_state.py')) return 'TELEMT_STATE_OK';
         if (str_contains($cmd, 'while [ $i -lt 3 ]')) {
             $this->probes++;
             return array_shift($this->probeResults) ?? '';
@@ -865,21 +871,21 @@ twAssert(strlen('/telemtWebPath') <= 64 && strlen('/telemtWebDiag') <= 64, 'но
 // ── 16. Кнопки path и диагностики: гейт 3.5.8 и рестарты ────────────────────
 $o = $mkOld('off');
 $o->ver = '3.5.7';
-$o->telemtWebPath();
+$o->telemtWebPath('generate');
 twAssert($o->telemtWebPathOf($o->pacFake) === '', '3.5.7: путь не включается');
 twAssert($o->answers === ['telemt web 358 need version'], '3.5.7: модалка про версию');
 twAssert($o->restarts === 0, '3.5.7: без рестарта');
 
 $o = $mkOld('off');
 $o->ver = '3.5.8';
-$o->telemtWebPath();
+$o->telemtWebPath('generate');
 $first = $o->telemtWebPathOf($o->pacFake);
 twAssert((bool) preg_match('~^[a-f0-9]{16}$~', $first), "3.5.8: включается случайный префикс: $first");
 twAssert($o->restarts === 1 && $o->nginxReloads === 0, 'путь применяется рестартом telemt, nginx не трогаем');
 twAssert($o->answers === ['telemt web path changed'], 'оператор предупреждён о смене ссылок');
-$o->telemtWebPath();
-twAssert($o->telemtWebPathOf($o->pacFake) === '', 'повторное нажатие выключает путь');
-$o->telemtWebPath();
+$o->telemtWebPath('reset');
+twAssert($o->telemtWebPathOf($o->pacFake) === '', 'явный сброс убирает путь');
+$o->telemtWebPath('generate');
 twAssert($o->telemtWebPathOf($o->pacFake) !== '' && $o->telemtWebPathOf($o->pacFake) !== $first,
     'новое включение — новый префикс (ротация)');
 
@@ -887,14 +893,14 @@ twAssert($o->telemtWebPathOf($o->pacFake) !== '' && $o->telemtWebPathOf($o->pacF
 $o = $mkOld('off');
 $o->ver = '3.5.7';
 $o->pacFake['telemt_web_path'] = 'abcdef';
-$o->telemtWebPath();
+$o->telemtWebPath('reset');
 twAssert($o->telemtWebPathOf($o->pacFake) === '', 'на старом образе путь выключается');
 
 // WEB выключен — путь сохраняется, но рестарт (обрыв MTProto) не нужен.
 $o = $mkOld('off');
 $o->ver = '3.5.8';
 $o->pacFake['telemt_web'] = 0;
-$o->telemtWebPath();
+$o->telemtWebPath('generate');
 twAssert($o->telemtWebPathOf($o->pacFake) !== '' && $o->restarts === 0, 'без WEB путь пишется без рестарта');
 
 $o = $mkOld('off');
