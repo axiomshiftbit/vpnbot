@@ -31,16 +31,16 @@ function pwAssert(bool $cond, string $msg): void
 // ── 1. Точечные файлы ───────────────────────────────────────────────────────
 foreach (['nginx.conf', 'nginx_default.conf'] as $name) {
     $conf = (string) file_get_contents(__DIR__ . '/../config/' . $name);
-    pwAssert(substr_count($conf, 'location ~ /\.') === 2,
-        "$name: правило на dotfiles есть и в активном, и в закомментированном #-domain блоке");
+    pwAssert(substr_count($conf, 'location ~ /\.') === 3,
+        "$name: dotfiles закрыты на IP, основном домене и TeleMT");
     pwAssert(str_contains($conf, "location ~ /\\. {\n            deny all;"),
         "$name: dotfiles закрыты deny all");
-    // ACME-челлендж живёт в server'е :80 отдельной regex-локацией и обязан
-    // остаться рабочим — иначе certbot не выпустит сертификат.
-    pwAssert(str_contains($conf, 'location ~\.well-known'),
-        "$name: локация .well-known на месте");
-    pwAssert(strpos($conf, 'location ~\.well-known') < strpos($conf, 'location ~ /\.'),
-        "$name: .well-known объявлена раньше запрета — regex-локации проверяются по порядку");
+    // Только ACME-подкаталог публичен на :80; произвольное вхождение
+    // .well-known в имени файла не должно открывать остальной /certs.
+    pwAssert(str_contains($conf, 'location ^~ /.well-known/acme-challenge/'),
+        "$name: ACME-челлендж остаётся доступным certbot");
+    pwAssert(!str_contains($conf, 'location ~\.well-known'),
+        "$name: широкого совпадения .well-known больше нет");
     // Файл паролей по-прежнему лежит там, где его ждёт nginx.
     pwAssert(str_contains($conf, 'auth_basic_user_file /app/.htpasswd;'),
         "$name: путь к .htpasswd не тронут");

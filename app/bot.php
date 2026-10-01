@@ -162,6 +162,7 @@ class Bot
     // а не константой, по той же причине, что и $xrayConf: тест подменяет его
     // на временный, в файловую систему контейнера не ходя.
     public $htpasswd = '/app/webapp/.htpasswd';
+    public $telemtDecoyDir = '/config/telemt/decoy';
     // Свойством, как xrayConf и htpasswd, — ровно ради тестов: путь был
     // захардкожен, и прогон tests/audit_cron_test.php внутри контейнера
     // перезаписывал БОЕВОЙ /config/deny и дёргал `nginx -s reload`.
@@ -2773,15 +2774,45 @@ class Bot
     // запуска бинаря (restartTelemt).
     public function telemtWebDecoy(): void
     {
-        @mkdir('/config/telemt/decoy', 0755, true);
-        $file = '/config/telemt/decoy/index.html';
-        if (is_file($file)) {
+        $dir = $this->telemtDecoyDir;
+        if (is_link($dir) || (!is_dir($dir) && !@mkdir($dir, 0755, true))) {
+            throw new RuntimeException('Не удалось создать каталог страницы TeleMT');
+        }
+        $file = "$dir/index.html";
+        $css = "$dir/loading.css";
+        if (is_link($file) || is_link($css)) {
+            throw new RuntimeException('Файлы страницы TeleMT не должны быть символическими ссылками');
+        }
+        $template = __DIR__ . '/telemt-decoy';
+        // Обновляем только прежнюю штатную «It works!» или наш текущий HTML.
+        // Страницу и CSS, изменённые администратором, сохраняем.
+        $existing = is_file($file) ? hash_file('sha256', $file) : null;
+        $current = hash_file('sha256', "$template/index.html");
+        if ($existing !== null && !in_array($existing, [
+            '4a46bda8c97f74bb2deb2791008c6ffde525da0b73b181f9c5557e21d973ee2a',
+            $current,
+        ], true)) {
             return;
         }
-        file_put_contents($file, "<!doctype html>\n<html lang=\"en\">\n<head>\n"
-            . "<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            . "<title>It works!</title>\n</head>\n<body>\n<h1>It works!</h1>\n"
-            . "<p>This is the default page for this server.</p>\n</body>\n</html>\n");
+        // Сначала CSS, затем HTML: ошибка записи не публикует неполную страницу.
+        foreach (['loading.css', 'index.html'] as $name) {
+            $target = "$dir/$name";
+            if (($name === 'loading.css' && is_file($target))
+                || ($name === 'index.html' && $existing === $current)) {
+                continue;
+            }
+            $body = file_get_contents("$template/$name");
+            $tmp = tempnam($dir, '.decoy-');
+            try {
+                if ($body === false || $tmp === false
+                    || file_put_contents($tmp, $body) !== strlen($body)
+                    || !chmod($tmp, 0644) || !rename($tmp, $target)) {
+                    throw new RuntimeException('Не удалось сохранить страницу TeleMT');
+                }
+            } finally {
+                if ($tmp !== false && is_file($tmp)) @unlink($tmp);
+            }
+        }
     }
 
     // Версия telemt. Сам бинарь команды версии НЕ имеет (CLI рукописный,

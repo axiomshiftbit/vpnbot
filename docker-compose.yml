@@ -103,7 +103,8 @@ services:
             - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs/:/logs/
-            - ./app/webapp:/app
+            # Страницы обновляет php; nginx достаточно доступа на чтение.
+            - ./app/webapp:/app:ro
         ports:
             - 80:80
         hostname: nginx
