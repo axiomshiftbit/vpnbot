@@ -165,6 +165,10 @@ $i = [
         'ru' => '❌ Восстановление выполнено не полностью. Проверьте ошибки выше. Файл бэкапа сохранён в чате.',
         'en' => '❌ Restore incomplete. Check the errors above. The backup file remains in the chat.',
     ],
+    'backup protocol failed' => [
+        'ru' => 'Не удалось применить настройки или запустить сервис.',
+        'en' => 'Could not apply the settings or start the service.',
+    ],
     'backup stage file' => [
         'ru' => 'Не удалось загрузить или прочитать JSON-файл бэкапа.',
         'en' => 'Could not download or read the backup JSON file.',

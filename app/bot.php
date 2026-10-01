@@ -4451,6 +4451,9 @@ class Bot
         }
         $yaml = yaml_emit($c);
         if (!is_string($yaml) || !$this->writePrivateKey($this->hysteriaConf, $yaml)) return false;
+        // Выключенный контейнер сохраняет настройки и пользователей, но не
+        // обязан отвечать на проверку supervisor во время восстановления.
+        if (!$this->protocolModuleEnabled('hy')) return true;
         // New images validate/apply changes and enforce personal restrictions
         // themselves. Old images keep the shared-password lifecycle.
         if (trim((string) $this->ssh('test -f /hysteria_service.py && printf managed', 'hy')) === 'managed') return true;
@@ -7230,14 +7233,14 @@ NFT;
         }
     }
 
-    private function restoreBackupExtraServices(array $files): bool
+    private function restoreBackupExtraServices(array $files): array
     {
-        $ok = true;
+        $failed = [];
         if (isset($files['warp/wgcf-profile.conf']) && $this->protocolModuleEnabled('wp')) {
-            $ok = $this->withLock('warp-control', function () {
+            if (!$this->withLock('warp-control', function () {
                 if (!$this->warpCommand('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true')) return false;
                 return !empty($this->getPacConf()['warpoff']) || $this->warpCommand('wg-quick up /etc/warp/wgcf-profile.conf');
-            });
+            })) $failed[] = 'WARP';
         }
         if (isset($files['stlsserver.json']) && $this->protocolModuleEnabled('ss')) {
             $this->ssh(self::PKILL_STLS, 'ss');
@@ -7247,10 +7250,10 @@ NFT;
                     . 'nohup setsid simple-tls -s -b :' . $port . ' -d 127.0.0.1:' . self::SS_INTERNAL_PORT
                     . ' -cert "${c}_public" -key "${c}_private" </dev/null >>/logs/simple-tls.log 2>&1 & '
                     . 'sleep 1; pgrep -f "[s]imple-tls -s" >/dev/null && printf STLS_OK';
-                if (trim($this->ssh($cmd, 'ss')) !== 'STLS_OK') $ok = false;
+                if (trim($this->ssh($cmd, 'ss')) !== 'STLS_OK') $failed[] = 'simple-tls';
             }
         }
-        return $ok;
+        return $failed;
     }
 
     public function restoreBackupXray(array $config): bool
@@ -7401,6 +7404,12 @@ NFT;
                 }
             }
             $ok = true;
+            $out = [];
+            $failed = function (string $protocol) use (&$ok, &$out): void {
+                $ok = false;
+                $out[] = '❌ ' . $protocol . ': ' . $this->i18n('backup protocol failed');
+                error_log('importFile: apply failed: ' . $protocol);
+            };
             $switch_amnezia = $switch_wg1amnezia = 0;
             if (array_key_exists('extra_files', $json)) $this->validateBackupExtraFiles($json['extra_files']);
             if (!empty($json['ssl']) && (!is_string($json['ssl']['public'] ?? null)
@@ -7464,14 +7473,14 @@ NFT;
                 $out[] = 'update wireguard';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->wg = 0;
-                if (!$this->restoreBackupWireGuard($json['wg'], $switch_amnezia)) $ok = false;
+                if (!$this->restoreBackupWireGuard($json['wg'], $switch_amnezia)) $failed('WireGuard');
             }
             // wg1
             if (!empty($json['wg1']['server'])) {
                 $out[] = 'update wireguard 1';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->wg = 1;
-                if (!$this->restoreBackupWireGuard($json['wg1'], $switch_wg1amnezia)) $ok = false;
+                if (!$this->restoreBackupWireGuard($json['wg1'], $switch_wg1amnezia)) $failed('WireGuard 1');
             }
             // выбранный для restore инстанс не должен протекать в остаток
             // запроса (финальный menu(), getInstanceWG-рендеры) — как в
@@ -7555,7 +7564,7 @@ NFT;
                     $this->chmodSecret('/config/ocserv.passwd');
                     $this->syncOcUsers();
                 }
-                if ($this->restartOcserv($json['oc']) === false) $ok = false;
+                if ($this->restartOcserv($json['oc']) === false) $failed('OpenConnect');
             }
             // hysteria
             if (!empty($json['hy'])) {
@@ -7564,7 +7573,7 @@ NFT;
                 if (!$this->writePrivateKey($this->hysteriaConf, yaml_emit($json['hy']))) {
                     throw new RuntimeException('Не удалось восстановить конфигурацию Hysteria');
                 }
-                if (!$this->restartHysteria()) $ok = false;
+                if (!$this->restartHysteria()) $failed('Hysteria');
             }
             if (array_key_exists('hy_users', $json)) {
                 $this->hysteriaUsersStore()->restore($json['hy_users']);
@@ -7579,8 +7588,7 @@ NFT;
                     if (!$this->writePrivateKey($paths['cred'], $json['tt'])) return false;
                     return true;
                 });
-                if ($restored) { if ($this->restartTt() === false) $ok = false; }
-                else $ok = false;
+                if (!$restored || $this->restartTt() === false) $failed('TrustTunnel');
             }
             // cloak
             if (!empty($json['cloak'])) {
@@ -7656,7 +7664,9 @@ NFT;
                 // продолжал принимать старый пароль/ключ до перезапуска.
                 $this->dnsttStart();
             }
-            if (isset($json['extra_files']) && !$this->restoreBackupExtraServices($json['extra_files'])) $ok = false;
+            if (isset($json['extra_files'])) {
+                foreach ($this->restoreBackupExtraServices($json['extra_files']) as $protocol) $failed($protocol);
+            }
             // nginx
             $out[] = $this->i18n('reset nginx');
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -32625,17 +32635,28 @@ DNS-over-HTTPS with IP:
 
     private function restartTtLocked()
     {
+        if (!$this->protocolModuleEnabled('tt')) return true;
         $p      = $this->ttPaths();
         $domain = $this->ttDomain();
-
-        $this->writeTtHosts($domain);
-        if (!file_exists($p['vpn']) || !file_exists($p['rules'])) {
-            return false; // templates missing — init.sh ещё не развернул
+        $hasClients = !empty($this->getClientsTt());
+        if ($hasClients) {
+            $this->writeTtHosts($domain);
+            if (!file_exists($p['vpn']) || !file_exists($p['rules'])) {
+                return false; // templates missing — init.sh ещё не развернул
+            }
         }
 
         // Linux truncates /proc/<pid>/comm to 15 chars, so the binary name
         // "trusttunnel_endpoint" only matches via -f (full cmdline).
-        $this->ssh('pkill -9 -f trusttunnel_endpoint; while pgrep -f trusttunnel_endpoint >/dev/null; do sleep 0.2; done', 'tt');
+        // [t] исключает саму SSH-оболочку из совпадения с её командной строкой.
+        $stopped = $this->ssh('pkill -9 -f "[t]rusttunnel_endpoint" 2>/dev/null || true; '
+            . 'for n in 1 2 3 4 5; do '
+            . 'if ! pgrep -f "[t]rusttunnel_endpoint" >/dev/null; then printf VPNBOT_TT_STOPPED; exit 0; fi; '
+            . 'sleep 0.2; done; exit 1', 'tt');
+        if (trim($stopped) !== 'VPNBOT_TT_STOPPED') return false;
+        // Пустой снимок должен отозвать более новые доступы и остановить ядро.
+        // Отсутствие клиентов в таком случае — успешный итог восстановления.
+        if (!$hasClients) return true;
         if (!empty($this->ttBlockers())) {
             return false;
         }
@@ -32645,7 +32666,7 @@ DNS-over-HTTPS with IP:
             false,
             $p['log']
         );
-        return true;
+        return !$this->sshFailed;
     }
 
     private function ttUsersUpdate(callable $edit): bool

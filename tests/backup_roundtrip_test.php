@@ -35,8 +35,6 @@ class RoundTripBot extends Bot {
  public function setUpstreamDomainOcserv($domain){}
  public function setUpstreamDomainNaive($domain){}
  public function restartOcserv($conf,bool $syncCamouflage=true){return file_put_contents("$this->dir/config/ocserv.conf",$conf)!==false;}
- public function restartHysteria(){return true;}
- public function restartTt(){return true;}
  public function dnsttStart(){}
  public function telemtQuotaPath():string{return "$this->dir/config/telemt/data/telemt.limit.json";}
  public function telemtQuotaRestore(?array $state,array $conf):void{$this->telemtQuotaWrite($state);$this->setPacConf($conf);}

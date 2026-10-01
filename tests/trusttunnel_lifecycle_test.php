@@ -14,7 +14,7 @@ class TtLifecycleBot extends Bot {
         try { return $fn(); } finally { flock($lock, LOCK_UN); fclose($lock); }
     }
     public function writePrivateKey(string $path, string $data): bool { return !$this->failWrite && parent::writePrivateKey($path, $data); }
-    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->sshCalls++; return ''; }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->sshCalls++; return str_contains($cmd, 'VPNBOT_TT_STOPPED') ? 'VPNBOT_TT_STOPPED' : ''; }
     public function menu($type = false, $arg = false, $return = false) {}
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { return []; }
 }
@@ -25,7 +25,7 @@ try {
     $bot->writeTtCredentials(['alice'=>'original']); clearstatcache();
     $check((fileperms("$root/credentials.toml") & 0777) === 0600, 'Реквизиты доступны только владельцу');
     $original=file_get_contents("$root/credentials.toml") . "# preserved administrator comment\n";
-    file_put_contents("$root/credentials.toml",$original); $bot->restartTt();
+    file_put_contents("$root/credentials.toml",$original); $check($bot->restartTt() === true, 'Штатный restart подтверждён');
     $check(file_get_contents("$root/credentials.toml") === $original, 'Restart не переписывает и не восстанавливает устаревшие реквизиты');
     $bot->failWrite=true; $bot->sshCalls=0;
     try {$bot->chttpass('changed','alice');} catch (RuntimeException $e) {}
