@@ -5,10 +5,10 @@ FROM $image
 # из docker-compose.yml. Значения по умолчанию — на случай сборки напрямую
 # `docker build`, без compose.
 ARG DNSLOOKUP_VERSION=v1.11.1
-ARG SINGBOX_VERSION=v1.14.1
-ARG MIHOMO_VERSION=v1.19.31
-ARG SINGBOX_SHA256=b907365b154e4a7e3e40be15c2cd83433c0fa65c7dc736bdb1b5face2afe4501
-ARG MIHOMO_SHA256=d5e74bbddbdfff49a1aef7775bf5911da59f0d7196ed509a0ac914b3653dd5f1
+ARG SINGBOX_VERSION=v1.14.2
+ARG MIHOMO_VERSION=v1.19.32
+ARG SINGBOX_SHA256=8f6cb4bcf94d2b33c65d52e0d5b142db29a938336f1ff7267f397ac3758fc297
+ARG MIHOMO_SHA256=8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10
 LABEL io.vpnbot.sing-box.version=$SINGBOX_VERSION io.vpnbot.mihomo.version=$MIHOMO_VERSION
 
 # libqrencode-tools, а НЕ libqrencode: второй кладёт только libqrencode.so, а

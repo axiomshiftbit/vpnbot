@@ -103,6 +103,23 @@ try {
         $store->configure(['host' => 'vpn.example.test', 'sni' => in_array($protocol, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test']);
         $id = managedProtocolFixtureUser($store, 'Навигация');
         $store->configure([], true); (new ProtocolModules($bot->protocolModulesFile))->set($protocol, true);
+        if ($protocol === 'masque') {
+            $screen = chatClick($bot, '/protocolModules');
+            $callbacks = array_column(chatButtons($screen), 'callback_data');
+            chatCheck(in_array('/protocolModules masque', $callbacks, true) && in_array('/protocol masque', $callbacks, true),
+                'MASQUE: общий список содержит отдельные выключатель и настройки');
+            foreach ([false, true] as $enabled) {
+                $screen = chatClick($bot, '/protocolModules masque');
+                chatCheck($store->read()['enabled'] === $enabled && (new ProtocolModules($bot->protocolModulesFile))->enabled('masque') === $enabled,
+                    'MASQUE: реальный callback переключает оба состояния');
+                $buttons = array_column(chatButtons($screen), 'text', 'callback_data');
+                chatCheck(str_starts_with($buttons['/protocolModules masque'], $enabled ? '🟢' : '🔴'), 'MASQUE: цвет отражает новое состояние');
+                chatCheck(chatBack($screen) === '/menu config' && count($bot->transport->messages) === 1,
+                    'MASQUE: переключение остаётся в общем списке без новых сообщений');
+                $detail = chatClick($bot, '/protocol masque');
+                chatCheck(chatBack($detail) === '/protocolModules', 'MASQUE: настройки доступны при любом состоянии и возвращают в список');
+            }
+        }
         chatClick($bot, "/!protocol $protocol");
         for ($repeat = 0; $repeat < 3; $repeat++) {
             $screen = chatClick($bot, "/!po $protocol");

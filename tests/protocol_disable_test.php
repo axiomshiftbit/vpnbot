@@ -66,6 +66,26 @@ try {
         $bot->admin = false; $bot->protocolCommand($protocol, 'toggle'); $bot->admin = true;
         $check($store->read() === $before && $modules->enabled($protocol), "$protocol: переключение доступно только администратору");
     }
+    $store = $bot->protocolStore('masque');
+    $before = $store->read(); $beforeModules = $modules->read();
+    $bot->protocolModulesToggle('masque');
+    $check(!$store->read()['enabled'] && $modules->read() === array_replace($beforeModules, ['masque' => false]),
+        'MASQUE: общий выключатель синхронно отключает сервис и контейнер');
+    $check($store->read()['users'] === $before['users'] && $store->read()['settings'] === $before['settings'],
+        'MASQUE: общий выключатель сохраняет доступы и настройки');
+    $bot->admin = false; $bot->protocolModulesToggle('masque'); $bot->admin = true;
+    $check(!$store->read()['enabled'] && !$modules->enabled('masque'), 'MASQUE: общий выключатель только для администратора');
+    $bot->protocolModulesToggle('masque');
+    $check($store->read()['enabled'] && $modules->read() === $beforeModules && $store->read()['users'] === $before['users'],
+        'MASQUE: общий выключатель повторно включает сервис с прежними доступами');
+    $file = $bot->protocolModulesFile;
+    $bot->protocolModulesFile = "$root/unwritable-modules.json";
+    mkdir($bot->protocolModulesFile, 0700); // A directory cannot be replaced by the settings file.
+    $failed = false;
+    try { @$bot->protocolModulesToggle('masque'); } catch (RuntimeException $e) { $failed = true; }
+    $bot->protocolModulesFile = $file;
+    $check($failed && $store->read()['enabled'] && $modules->read() === $beforeModules
+        && $store->read()['users'] === $before['users'], 'MASQUE: сбой записи выключателя откатывает состояние сервиса');
     echo "protocol_disable_test: $checks OK\n";
 } finally {
     $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);

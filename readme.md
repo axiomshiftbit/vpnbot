@@ -79,6 +79,11 @@ IKEv2 и L2TP/IPsec имеют отдельные переключатели, н
 он удаляется, когда выключены оба, либо общий переключатель IPsec.
 Существующие протоколы при обновлении остаются включёнными.
 
+MASQUE переключается кнопкой **🟢/🔴 MASQUE** в этом же списке.
+Кнопка **Настройки** рядом открывает параметры и доступы, в том числе при
+выключенном сервисе. Оба выключателя MASQUE синхронизируют состояние сервиса
+и контейнера; повторное включение сохраняет индивидуальные запреты и лимиты.
+
 TeleMT **3.5.9** выключается вместе с MTProto и WEB-прокси. Секреты пользователей,
 их индивидуальные запреты и настройки WEB сохраняются. При ручном управлении Docker
 бот останавливает ядро; контейнер останавливает администратор. После включения и
@@ -248,7 +253,7 @@ NGINX/сайта он не включён. Wildcard SNI ShadowTLS, отключ�
 Мультиплексирование ShadowTLS по умолчанию выключено; при включении без
 явного выбора транспорта используется `smux`. Для `h2mux` нужен клиент с
 исправлением [GO-2026-4918](https://pkg.go.dev/vuln/GO-2026-4918): официальный
-Mihomo 1.19.31 ещё включает затронутый `golang.org/x/net`.
+Mihomo 1.19.32 ещё включает затронутый `golang.org/x/net`.
 
 Для службы управления на хосте нужен Python 3.9 или новее; установщик
 `scripts/init.sh` устанавливает пакет `python3`.
@@ -283,7 +288,7 @@ systemd-службы `vpnbot.service` опцией `--profile '*'`, чтобы �
 без новых сервисов не сможет управлять их доступами.
 
 Форматы сверяются с документацией [AnyTLS](https://sing-box.sagernet.org/configuration/inbound/anytls/),
-[Mieru](https://github.com/enfein/mieru/tree/v3.37.0/docs),
+[Mieru](https://github.com/enfein/mieru/tree/v3.38.0/docs),
 [TUIC](https://sing-box.sagernet.org/configuration/inbound/tuic/),
 [ShadowTLS](https://sing-box.sagernet.org/configuration/inbound/shadowtls/) и
 [mihomo SS/UoT](https://wiki.metacubex.one/en/config/proxies/ss/).
@@ -292,15 +297,15 @@ Compose. AnyTLS, TUIC и ShadowTLS используют образ
 `ghcr.io/axiomshiftbit/vpnbot-protocol:dev` с sing-box и API статистики, но работают
 в трёх отдельных контейнерах. Mieru использует
 `ghcr.io/axiomshiftbit/vpnbot-mieru:dev` с сервером mita.
-`SINGBOX_VERSION=v1.14.1` управляет ядром трёх протоколов и утилитой PHP;
-`MIHOMO_VERSION=v1.19.31` — утилитой PHP; `MIERU_VERSION=v3.37.0` — mita.
+`SINGBOX_VERSION=v1.14.2` управляет ядром трёх протоколов и утилитой PHP;
+`MIHOMO_VERSION=v1.19.32` — утилитой PHP; `MIERU_VERSION=v3.38.0` — mita.
 `PROTOCOL_GO_VERSION` выбирает Go для сборки серверов. TUIC v5 и ShadowTLS v3
 обозначают версии протокола, а не исполняемого файла.
 
 Чтобы выбрать стабильные версии вместе с проверяемыми контрольными суммами:
 
 ```bash
-python3 scripts/update_protocol_versions.py --singbox v1.14.1 --mihomo v1.19.31 --mieru v3.37.0
+python3 scripts/update_protocol_versions.py --singbox v1.14.2 --mihomo v1.19.32 --mieru v3.38.0
 # Проверить текущие стабильные релизы без изменения файла:
 python3 scripts/update_protocol_versions.py --singbox latest --mihomo latest --mieru latest --dry-run
 ```
@@ -413,13 +418,13 @@ REALITY, WebSocket или XHTTP. Доступны аутентификация X
 Encryption не применяется; при возврате к VLESS выбранная пара сохраняется.
 [Документация VLESS Encryption](https://xtls.github.io/en/config/outbounds/vless.html).
 
-Официальный sing-box 1.14.1 не поддерживает VLESS Encryption и новое
+Официальный sing-box 1.14.2 не поддерживает VLESS Encryption и новое
 рукопожатие REALITY Xray 26.9.8+. Несовместимая подписка отклоняется с
 объяснением; отключение Encryption не исправляет новое рукопожатие REALITY.
 Для sing-box нужны прежнее серверное ядро либо WebSocket/TLS или Trojan/gRPC
 без VLESS Encryption. XHTTP также отсутствует в официальном sing-box.
 [Формат VLESS sing-box](https://sing-box.sagernet.org/configuration/outbound/vless/),
-[его REALITY-клиент](https://github.com/SagerNet/sing-box/blob/v1.14.1/common/tls/reality_client.go).
+[его REALITY-клиент](https://github.com/SagerNet/sing-box/blob/v1.14.2/common/tls/reality_client.go).
 
 В образе `xr` ветки `dev` доступны XTLS `v26.9.9`, `v26.9.30`, `v26.7.28`
 и отдельный форк SMUX. Обновите код бота и образ `xr`, затем откройте

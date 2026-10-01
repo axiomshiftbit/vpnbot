@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +14,19 @@ spec.loader.exec_module(pins)
 
 
 class VersionPinsTests(unittest.TestCase):
+    def test_image_defaults_match_checked_in_pins(self):
+        keys = r'(?:SINGBOX|MIHOMO|MIERU)_(?:VERSION|SHA256|SOURCE_SHA256)'
+        values = dict(re.findall(r'^(' + keys + r')=(.+)$', (ROOT / '.env').read_text(), re.M))
+        for name in ('php', 'protocol', 'mieru'):
+            defaults = re.findall(r'^ARG (' + keys + r')=(.+)$', (ROOT / f'dockerfile/{name}.dockerfile').read_text(), re.M)
+            self.assertTrue(defaults)
+            for key, value in defaults:
+                self.assertEqual(values[key], value, f'{name}: {key}')
+        defaults = re.findall(r'\$\{(' + keys + r'):-([^}]+)\}', (ROOT / 'docker-compose.yml').read_text())
+        self.assertTrue(defaults)
+        for key, value in defaults:
+            self.assertEqual(values[key], value, f'Compose: {key}')
+
     def test_version_rejects_non_stable_or_command_input(self):
         for value in ("", "1.2", "v1.2.3-beta1", "../tags/v1.2.3", "1.2.3\n", "$(id)", "1.2.3;id"):
             with self.subTest(value=value), self.assertRaises(ValueError):

@@ -6,12 +6,91 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
+	"github.com/enfein/mieru/v3/apis/common"
 	"github.com/enfein/mieru/v3/apis/constant"
 	"github.com/enfein/mieru/v3/apis/model"
 	"github.com/enfein/mieru/v3/pkg/appctl/appctlpb"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestVPNBotUDPForwardingPolicyAndShutdown(t *testing.T) {
+	for _, closeControl := range []bool{false, true} {
+		t.Run(map[bool]string{false: "client-close", true: "control-close"}[closeControl], func(t *testing.T) {
+			listen := func() *net.UDPConn {
+				c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { c.Close() })
+				return c
+			}
+			upstream, downstream, stranger := listen(), listen(), listen()
+			server, client := net.Pipe()
+			control, controlPeer := net.Pipe()
+			defer server.Close()
+			defer client.Close()
+			defer control.Close()
+			defer controlPeer.Close()
+			server.SetDeadline(time.Now().Add(5 * time.Second))
+			client.SetDeadline(time.Now().Add(5 * time.Second))
+			policy := &Server{config: &Config{}}
+			done := make(chan error, 1)
+			go func() {
+				done <- RunUDPForwardingLoop(upstream, common.NewPacketOverStreamTunnel(server), downstream.LocalAddr().(*net.UDPAddr), control, policy.checkDestination)
+			}()
+			tunnel := common.NewPacketOverStreamTunnel(client)
+			packet := func(ip string) []byte {
+				var b bytes.Buffer
+				b.Write([]byte{0, 0, 0})
+				addr := model.AddrSpec{IP: net.ParseIP(ip), Port: 9999}
+				if err := addr.WriteToSocks5(&b); err != nil {
+					t.Fatal(err)
+				}
+				b.WriteString("payload")
+				return b.Bytes()
+			}
+			buf := make([]byte, 1024)
+			for _, ip := range []string{"1.1.1.1", "127.0.0.1", "1.1.1.1"} {
+				p := packet(ip)
+				if _, err := tunnel.Write(p); err != nil {
+					t.Fatal(err)
+				}
+				downstream.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+				n, _, err := downstream.ReadFromUDP(buf)
+				if ip == "127.0.0.1" {
+					if e, ok := err.(net.Error); !ok || !e.Timeout() {
+						t.Fatal("private packet was forwarded", err)
+					}
+				} else if err != nil || !bytes.Equal(buf[:n], p) {
+					t.Fatal("public packet failed", err)
+				}
+			}
+			p := packet("1.1.1.1")
+			stranger.WriteToUDP(p, upstream.LocalAddr().(*net.UDPAddr))
+			client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			if _, err := tunnel.Read(buf); err == nil {
+				t.Fatal("unsolicited sender accepted")
+			}
+			client.SetReadDeadline(time.Now().Add(time.Second))
+			downstream.WriteToUDP(p, upstream.LocalAddr().(*net.UDPAddr))
+			if n, err := tunnel.Read(buf); err != nil || !bytes.Equal(buf[:n], p) {
+				t.Fatal("downstream response failed", err)
+			}
+			if closeControl {
+				controlPeer.Close()
+			} else {
+				client.Close()
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("UDP forwarding did not stop after disconnect")
+			}
+		})
+	}
+}
 
 type changingResolver struct {
 	ips   []net.IP

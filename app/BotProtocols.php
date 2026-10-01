@@ -430,7 +430,10 @@ trait BotProtocols
             $buttons[] = [['text' => ($blocked ? '🟡 ' : ($settings[$key] ? '🟢 ' : '🔴 ')) . $label . $hint, 'callback_data' => "/protocolModules $key"]];
         }
         foreach (ManagedProtocol::NAMES as $key => $label) {
-            $buttons[] = [['text' => ($settings[$key] ? '🟢 ' : '🔴 ') . $label, 'callback_data' => "/protocol $key"]];
+            $row = [['text' => ($settings[$key] ? '🟢 ' : '🔴 ') . $label,
+                'callback_data' => $key === 'masque' ? "/protocolModules $key" : "/protocol $key"]];
+            if ($key === 'masque') $row[] = ['text' => 'Настройки', 'callback_data' => "/protocol $key"];
+            $buttons[] = $row;
         }
         $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => '/menu config']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
@@ -441,13 +444,33 @@ trait BotProtocols
         if (!$this->admin) return;
         try {
             $modules = new ProtocolModules($this->protocolModulesFile);
-            if (!isset(ProtocolModules::DEFAULTS[$module]) || isset(ManagedProtocol::NAMES[$module])) return;
-            if ($module === 'telemt') $this->toggleTelemtService();
+            if (!isset(ProtocolModules::DEFAULTS[$module]) || (isset(ManagedProtocol::NAMES[$module]) && $module !== 'masque')) return;
+            if ($module === 'masque') $this->toggleManagedProtocol($module);
+            elseif ($module === 'telemt') $this->toggleTelemtService();
             else $modules->toggle($module);
             $this->protocolModulesMenu();
         } catch (Throwable $e) {
             $this->protocolError('Не удалось сохранить настройки протоколов.', '/protocolModules');
         }
+    }
+
+    private function toggleManagedProtocol(string $protocol): void
+    {
+        $this->withLock('protocol-toggle', function () use ($protocol) {
+            $store = $this->protocolStore($protocol);
+            $state = $store->read();
+            $on = !$state['enabled'];
+            if ($on && !empty($state['settings']['self_hosted'])) $this->prepareProtocolSelfHost();
+            $store->configure([], $on);
+            try {
+                (new ProtocolModules($this->protocolModulesFile))->set($protocol, $on);
+            } catch (Throwable $e) {
+                $store->configure([], $state['enabled']);
+                throw $e;
+            }
+            $this->syncManagedUpstreams();
+            $this->syncXrayProtocolUsers();
+        });
     }
 
     public function protocolRelayEndpoint(string $protocol, string $name): array
@@ -599,20 +622,7 @@ trait BotProtocols
                 return;
             }
             if ($action === 'toggle') {
-                $this->withLock('protocol-toggle', function () use ($store, $protocol) {
-                    $state = $store->read();
-                    $on = !$state['enabled'];
-                    if ($on && !empty($state['settings']['self_hosted'])) $this->prepareProtocolSelfHost();
-                    $store->configure([], $on);
-                    try {
-                        (new ProtocolModules($this->protocolModulesFile))->set($protocol, $on);
-                    } catch (Throwable $e) {
-                        $store->configure([], $state['enabled']);
-                        throw $e;
-                    }
-                    $this->syncManagedUpstreams();
-                    $this->syncXrayProtocolUsers();
-                });
+                $this->toggleManagedProtocol($protocol);
             } elseif ($action === 'auto') {
                 if (in_array($protocol, ['anytls', 'shadowtls'], true)) $this->prepareProtocolSelfHost();
                 $this->configureProtocolSelfHost($protocol);
