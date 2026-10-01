@@ -101,6 +101,42 @@ $i = [
         'en' => 'core',
         'ru' => 'ядро',
     ],
+    'xray versions' => [
+        'en' => 'Core / version',
+        'ru' => 'Ядро / версия',
+    ],
+    'xray versions hint' => [
+        'en' => 'Choose an installed version. Switching restarts Xray and interrupts current connections. The config is checked before stopping the core. Refresh client subscriptions afterwards: REALITY compatibility and SMUX depend on the selected core.',
+        'ru' => 'Выберите установленную версию. Переключение перезапускает Xray и прерывает текущие соединения. Конфиг проверяется до остановки ядра. После смены обновите подписки клиентов: совместимость REALITY и SMUX зависит от выбранного ядра.',
+    ],
+    'xray running' => [
+        'en' => 'Running',
+        'ru' => 'Работает',
+    ],
+    'xray version switched' => [
+        'en' => 'Xray core switched. Refresh client subscriptions.',
+        'ru' => 'Ядро Xray переключено. Обновите подписки клиентов.',
+    ],
+    'xray version missing' => [
+        'en' => 'The selected version is missing from the xr image. Update the image or choose an installed version.',
+        'ru' => 'Выбранной версии нет в образе xr. Обновите образ или выберите установленную версию.',
+    ],
+    'xray version incompatible' => [
+        'en' => 'The selected core rejected the config. The previous core is preserved. Check transport and encryption compatibility.',
+        'ru' => 'Выбранное ядро не приняло конфиг. Прежнее ядро сохранено. Проверьте совместимость транспорта и шифрования.',
+    ],
+    'xray start failed' => [
+        'en' => 'The selected core did not start. The previous core and config were restored.',
+        'ru' => 'Выбранное ядро не запустилось. Прежнее ядро и конфигурация восстановлены.',
+    ],
+    'xray rollback failed' => [
+        'en' => 'Switching failed; recovery could not be confirmed. Check Xray status and logs before retrying.',
+        'ru' => 'Переключение не удалось, восстановление не подтверждено. Проверьте состояние и журнал Xray перед повторной попыткой.',
+    ],
+    'xray switch busy' => [
+        'en' => 'Xray settings are being changed. Try again shortly.',
+        'ru' => 'Настройки Xray сейчас изменяются. Повторите немного позже.',
+    ],
     'smux hint'            => [
         'en' => 'SMUX multiplexes every stream into ONE carrier connection: no TLS handshake per request, one long session instead of hundreds of short ones, less load on the server. Needs the fork core (Jolymmiles/Xray-core) — upstream XTLS only knows its own mux.cool. A broken carrier drops every stream inside it, so keep it off if the link is unstable.',
         'ru' => 'SMUX сводит все потоки в ОДНО несущее соединение: не платим хендшейком за каждый запрос, вместо сотен коротких сессий одна долгая, серверу дешевле. Нужно форк-ядро (Jolymmiles/Xray-core) — апстримный XTLS знает только свой mux.cool. Обрыв несущего коннекта роняет все потоки внутри, так что на нестабильном канале лучше выключить.',

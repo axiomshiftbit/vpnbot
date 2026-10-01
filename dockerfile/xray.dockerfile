@@ -2,8 +2,8 @@ ARG image=alpine:3.23
 FROM $image
 
 # ── Версии Xray-core ──────────────────────────────────────────────────────────
-# В образе живут ДВА ядра, и это осознанно: апстримный XTLS/Xray-core в
-# /usr/bin/xray и форк Jolymmiles/Xray-core в /usr/bin/xray-smux. Форк умеет
+# В образе до трёх версий XTLS/Xray-core: /usr/bin/xray, xray-2, xray-3,
+# и форк Jolymmiles/Xray-core в /usr/bin/xray-smux. Форк умеет
 # sing-mux (протоколы smux/h2mux) и TCP Brutal — с ним сервер принимает
 # мультиплексированные соединения штатных sing-box и mihomo, чего апстрим не
 # умеет вовсе (у него только свой mux.cool). Активное ядро выбирает симлинк
@@ -11,7 +11,7 @@ FROM $image
 # то есть переключение и откат — без пересборки образа.
 #
 # Каждая версия управляется СВОЕЙ переменной (build-arg). Допустимые значения
-# у обеих одинаковы:
+# у основного ядра и форка одинаковы:
 #
 #   ""           → последний СТАБИЛЬНЫЙ релиз (releases/latest) — поведение по умолчанию
 #   "prerelease" → последний релиз, СТРОГО помеченный как pre-release / beta
@@ -23,10 +23,10 @@ FROM $image
 #       XRAY_VERSION:      ${XRAY_VERSION}       # значение берётся из .env
 #       XRAY_FORK_VERSION: ${XRAY_FORK_VERSION}
 #
-# Способ 2 — вручную: раскомментируйте РОВНО ОДНУ строку ниже (она переопределит default).
+# Дополнительные слоты: пустое значение исключает бинарник из сборки.
 ARG XRAY_VERSION=""
-# ARG XRAY_VERSION="prerelease"
-# ARG XRAY_VERSION="v1.8.24"
+ARG XRAY_VERSION_2=""
+ARG XRAY_VERSION_3=""
 ARG XRAY_FORK_VERSION=""
 
 # .dat из архива не берём: geoip/geosite ядро получает из /logs/geodata
@@ -36,8 +36,8 @@ ARG XRAY_FORK_VERSION=""
 # прогон dev на 9684fb4). Четыре попытки с нарастающей паузой.
 # GNU grep нужен для быстрой проверки REALITY в Go-бинарнике: BusyBox/musl
 # тратит на тот же regex несколько секунд CPU при каждой пробе из бота.
-# Дефолтный симлинк — на апстрим: контейнер без маркера (или с маркером на форк,
-# но со старым образом без второго бинаря) обязан вести себя ровно как раньше.
+# Дефолтный симлинк — на основной апстрим; сохранённый выбор восстанавливает
+# start_xray.sh. Отсутствующий выбранный слот требует явного выбора другого.
 RUN fetch_xray() { \
         repo="$1"; ver="$2"; dest="$3"; \
         case "$ver" in \
@@ -65,6 +65,8 @@ RUN fetch_xray() { \
     apk add --no-cache openssh openssl jq curl grep \
     && mkdir /root/.ssh \
     && fetch_xray XTLS/Xray-core       "$XRAY_VERSION"      /usr/bin/xray \
+    && { [ -z "$XRAY_VERSION_2" ] || fetch_xray XTLS/Xray-core "$XRAY_VERSION_2" /usr/bin/xray-2; } \
+    && { [ -z "$XRAY_VERSION_3" ] || fetch_xray XTLS/Xray-core "$XRAY_VERSION_3" /usr/bin/xray-3; } \
     && fetch_xray Jolymmiles/Xray-core "$XRAY_FORK_VERSION" /usr/bin/xray-smux \
     && mkdir -p /usr/local/bin \
     && ln -sf /usr/bin/xray /usr/local/bin/xray

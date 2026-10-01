@@ -88,7 +88,7 @@ jobs:
                 SINGBOX_SOURCE_SHA256)              out="$out anytls" ;;
                 MIERU_VERSION|MIERU_SOURCE_SHA256)   out="$out mieru" ;;
                 PROTOCOL_GO_VERSION)               out="$out anytls mieru" ;;
-                XRAY_VERSION|XRAY_FORK_VERSION)    out="$out xr" ;;
+                XRAY_VERSION|XRAY_VERSION_2|XRAY_VERSION_3|XRAY_FORK_VERSION) out="$out xr" ;;
                 OCSERV_VERSION)                    out="$out oc" ;;
                 ADGUARD_VERSION)                   out="$out ad" ;;
                 HYSTERIA_VERSION)                  out="$out hy" ;;
@@ -297,6 +297,34 @@ jobs:
 
       # Готовые образы для проверки на стенде без отдельного PAT с read:packages.
       # В архив входит только образ из registry; файлы раннера и runtime не входят.
+      - name: Проверить встроенные версии Xray
+        if: matrix.service == 'xr'
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-xr:sha-${GITHUB_SHA}"
+          docker pull "$image"
+          while read -r key binary; do
+            expected=$(sed -n "s/^${key}=//p" .env)
+            if [[ "$key" == XRAY_VERSION_[23] && -z "$expected" ]]; then
+              docker run --rm --network=none --entrypoint sh "$image" -c 'test ! -e "$1"' check "$binary"
+              continue
+            fi
+            actual=$(docker run --rm --network=none --entrypoint "$binary" "$image" version)
+            actual=${actual%%$'\n'*}
+            echo "$key: $actual"
+            docker run --rm --network=none --entrypoint sha256sum "$image" "$binary"
+            if [[ "$expected" == v* ]]; then
+              read -r name version rest <<< "$actual"
+              test "$name" = Xray
+              test "$version" = "${expected#v}"
+            fi
+          done <<'XRAY_CORES'
+          XRAY_VERSION /usr/bin/xray
+          XRAY_VERSION_2 /usr/bin/xray-2
+          XRAY_VERSION_3 /usr/bin/xray-3
+          XRAY_FORK_VERSION /usr/bin/xray-smux
+          XRAY_CORES
+
       - name: Сохранить изменённые образы для проверки dev
         if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec","snolc"]'), matrix.service)
         run: |

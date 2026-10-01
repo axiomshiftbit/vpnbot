@@ -691,6 +691,12 @@ class Bot
             case preg_match('~^/switchXrayCore$~', $this->input['callback'], $m):
                 $this->switchXrayCore();
                 break;
+            case preg_match('~^/xrayCoreMenu$~', $this->input['callback'], $m):
+                $this->xrayCoreMenu();
+                break;
+            case preg_match('~^/selectXrayCore (origin[23]?|fork)$~', $this->input['callback'], $m):
+                $this->selectXrayCore($m[1]);
+                break;
             case preg_match('~^/switchXrayTorrent$~', $this->input['callback'], $m):
                 $this->switchXrayTorrent();
                 break;
@@ -18688,7 +18694,9 @@ DNS-over-HTTPS with IP:
         // smux уезжают на апстримное ядро. Чиним молча и сразу.
         $probe = $this->xrayCoreProbe();
         $fork  = $probe['fork'];
-        if ($probe['ok'] && !$fork && $this->repairXrayCore($p)) {
+        if ($probe['ok'] && !$fork) {
+            $this->withLock('xray', fn() => $this->withLock('pac',
+                fn() => $this->repairXrayCore(), 20, false), 20, false);
             $p = $this->getPacConf();
         }
         $s    = $this->smuxSettings($p);
@@ -18727,7 +18735,7 @@ DNS-over-HTTPS with IP:
             $data[] = [[
                 'text'          => $this->i18n('xray core') . ': '
                     . ($core === 'fork' ? 'fork (smux)' : 'XTLS'),
-                'callback_data' => '/switchXrayCore',
+                'callback_data' => '/xrayCoreMenu',
             ]];
         }
 
@@ -18840,6 +18848,7 @@ DNS-over-HTTPS with IP:
         $r    = $this->applyXrayCore($core);
         if (empty($r['ok'])) {
             $error = match (true) {
+                in_array('rollback failed', $r['note'], true) => 'xray rollback failed',
                 in_array('vless encryption check failed', $r['note'], true) => 'vless encryption check failed',
                 in_array('xr unreachable', $r['note'], true) => 'smux xr unreachable',
                 in_array('fork missing', $r['note'], true) => 'smux fork missing',
@@ -24042,8 +24051,7 @@ DNS-over-HTTPS with IP:
     }
 
     // ---- Выбор ядра Xray ----------------------------------------------------
-    // В образе xr лежат ДВА бинаря: апстримный XTLS (/usr/bin/xray) и форк
-    // Jolymmiles (/usr/bin/xray-smux) с поддержкой sing-mux и TCP Brutal.
+    // В образе xr лежат до трёх версий XTLS и форк Jolymmiles со sing-mux.
     // Активное ядро — симлинк /usr/local/bin/xray (в PATH alpine он раньше
     // /usr/bin), желаемое — маркер /logs/xray_core, который переживает
     // пересоздание контейнера и читается start_xray.sh при каждом старте.
@@ -24051,6 +24059,100 @@ DNS-over-HTTPS with IP:
     public const XRAY_CORE_MARKER = '/logs/xray_core';
     public const XRAY_BIN_ORIGIN  = '/usr/bin/xray';
     public const XRAY_BIN_FORK    = '/usr/bin/xray-smux';
+    public const XRAY_BINARIES = [
+        'origin' => self::XRAY_BIN_ORIGIN,
+        'origin2' => '/usr/bin/xray-2',
+        'origin3' => '/usr/bin/xray-3',
+        'fork' => self::XRAY_BIN_FORK,
+    ];
+
+    public function xrayCoreMenu(): void
+    {
+        $versions = $this->xrayCoreInventory();
+        $probe = $this->xrayCoreProbe(true);
+        $selected = $this->xrayCoreSelection();
+        $running = $probe['running_selection'] ?? '';
+        $label = static fn($core) => ($core === 'fork' ? 'fork (SMUX)' : 'XTLS')
+            . ' ' . ($versions[$core] ?? '?');
+        $text = ['Menu → Xray → ' . $this->i18n('xray versions'), $this->i18n('xray versions hint')];
+        if (!$probe['ok']) {
+            $text[] = $this->i18n('smux xr unreachable');
+        } else {
+            $text[] = $this->i18n('xray running') . ': ' . ($running !== '' ? $label($running) : '—');
+            if (!isset($versions[$selected])) {
+                $text[] = $this->i18n('xray version missing');
+            } elseif ($running !== '' && $running !== $selected) {
+                $text[] = str_replace('%s', $label($running), $this->i18n('smux core mismatch'));
+            }
+        }
+        $data = [];
+        foreach ($versions as $core => $version) {
+            $data[] = [[
+                'text' => ($selected === $core ? '✓ ' : '') . $label($core),
+                'callback_data' => '/selectXrayCore ' . $core,
+            ]];
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function selectXrayCore(string $core): void
+    {
+        $r = $this->applyXrayCore($core);
+        $message = !empty($r['ok']) ? 'xray version switched' : match (true) {
+            in_array('rollback failed', $r['note'], true) => 'xray rollback failed',
+            in_array('core start failed', $r['note'], true) => 'xray start failed',
+            in_array('core missing', $r['note'], true), in_array('fork missing', $r['note'], true) => 'xray version missing',
+            in_array('xr unreachable', $r['note'], true) => 'smux xr unreachable',
+            in_array('core switch busy', $r['note'], true) => 'xray switch busy',
+            in_array('xray configuration check failed', $r['note'], true),
+            in_array('vless encryption check failed', $r['note'], true) => 'xray version incompatible',
+            default => 'smux apply failed',
+        };
+        $this->answer($this->input['callback_id'], $this->i18n($message), true);
+        $this->xrayCoreMenu();
+    }
+
+    public function xrayCoreSelection(?array $p = null): string
+    {
+        $core = ($p ?? $this->getPacConf())['xray_core'] ?? 'origin';
+        return is_string($core) && isset(self::XRAY_BINARIES[$core]) ? $core : 'origin';
+    }
+
+    // Версии читаем из образа: .env задаёт сборку, а не состав уже скачанного xr.
+    public function xrayCoreInventory(): array
+    {
+        $commands = [];
+        foreach (self::XRAY_BINARIES as $core => $bin) {
+            $commands[] = 'if test -x ' . $bin . '; then printf "' . $core . '|"; '
+                . $bin . ' version 2>/dev/null | head -n1; fi';
+        }
+        $out = (string) $this->ssh(implode('; ', $commands), 'xr');
+        if ($this->sshFailed) return [];
+        $versions = [];
+        foreach (explode("\n", $out) as $line) {
+            if (preg_match('~^(origin[23]?|fork)\|Xray\s+v?([0-9][\w.+-]*)\s~', $line, $m)) {
+                $versions[$m[1]] = $m[2];
+            }
+        }
+        return $versions;
+    }
+
+    // Проверяем именно запущенный бинарник, а не симлинк или успешный SSH.
+    // Две последовательные проверки процесса и API отсекают немедленное
+    // падение и процесс, который ещё не открыл слушатели.
+    public function xrayCoreStarted(string $core): bool
+    {
+        if (!isset(self::XRAY_BINARIES[$core])) return false;
+        $out = $this->ssh('n=0; good=0; while [ "$n" -lt 15 ]; do '
+            . 'p=$(pgrep -f "[x]ray run" | head -n1); '
+            . 'if [ -n "$p" ] && [ "$(readlink -f /proc/$p/exe 2>/dev/null)" = '
+            . escapeshellarg(self::XRAY_BINARIES[$core]) . ' ] '
+            . '&& timeout 1 xray api statsquery --server=127.0.0.1:8080 >/dev/null 2>&1; then good=$((good+1)); '
+            . 'else good=0; fi; [ "$good" -ge 2 ] && { printf XRAY_STARTED; break; }; '
+            . 'n=$((n+1)); sleep 0.2; done', 'xr');
+        return !$this->sshFailed && trim((string) $out) === 'XRAY_STARTED';
+    }
 
     // Ядро, ВЫБРАННОЕ в настройках. Источник истины для генерации конфигов:
     // smux нельзя класть клиентам, пока сервер не на форке.
@@ -24116,6 +24218,8 @@ DNS-over-HTTPS with IP:
             'active'  => $ok && trim($p[1] ?? '') === self::XRAY_BIN_FORK ? 'fork' : 'origin',
             'brutal'  => $ok && in_array('brutal', preg_split('~\s+~', trim($p[2] ?? '')) ?: [], true),
             'running' => $run === '' ? '' : ($run === self::XRAY_BIN_FORK ? 'fork' : 'origin'),
+            'selection' => $ok ? (array_search(trim($p[1] ?? ''), self::XRAY_BINARIES, true) ?: '') : '',
+            'running_selection' => array_search($run, self::XRAY_BINARIES, true) ?: '',
             'version' => $version,
             'reality' => $reality,
         ];
@@ -24169,6 +24273,14 @@ DNS-over-HTTPS with IP:
         if (!empty($this->time_xraycore) && time() - $this->time_xraycore < 300) {
             return;
         }
+        if ($this->xrayCore() !== 'fork') return;
+        // Cron не должен чинить промежуточное состояние ручного переключения.
+        $this->withLock('xray', fn() => $this->withLock('pac',
+            fn() => $this->checkXrayCoreLocked(), 1), 1);
+    }
+
+    private function checkXrayCoreLocked(): void
+    {
         $p = $this->getPacConf();
         if (!is_array($p) || $this->xrayCore($p) !== 'fork') {
             return;
@@ -24220,13 +24332,16 @@ DNS-over-HTTPS with IP:
     // прошла, следующее пересоздание контейнера уведёт ядро мимо настройки.
     public function writeCoreMarker(string $core): bool
     {
-        if (false === @file_put_contents(self::XRAY_CORE_MARKER, $core . "\n")) {
-            error_log('writeCoreMarker: ' . self::XRAY_CORE_MARKER . ' not written');
-
-            return false;
+        if (!isset(self::XRAY_BINARIES[$core])) return false;
+        $tmp = @tempnam(dirname(self::XRAY_CORE_MARKER), '.xray-core-');
+        if ($tmp === false) return false;
+        try {
+            return dirname($tmp) === dirname(self::XRAY_CORE_MARKER)
+                && file_put_contents($tmp, $core . "\n") === strlen($core) + 1
+                && @rename($tmp, self::XRAY_CORE_MARKER);
+        } finally {
+            if (is_file($tmp)) @unlink($tmp);
         }
-
-        return true;
     }
 
     // Возврат симлинка на форк — единственное направление, в котором чинить
@@ -24289,21 +24404,39 @@ DNS-over-HTTPS with IP:
     // кнопка должна давать рабочую конфигурацию, а не полуфабрикат.
     public function applyXrayCore(string $core): array
     {
-        $core = $core === 'fork' ? 'fork' : 'origin';
+        if (!isset(self::XRAY_BINARIES[$core])) {
+            return ['ok' => false, 'note' => ['core missing']];
+        }
+        $busy = ['ok' => false, 'note' => ['core switch busy']];
+        // Тот же порядок, что у applyVlessEncryption: xray, затем pac.
+        return $this->withLock('xray', fn() => $this->withLock('pac',
+            fn() => $this->applyXrayCoreLocked($core), 20, $busy), 20, $busy);
+    }
+
+    private function applyXrayCoreLocked(string $core): array
+    {
         $p    = $this->getPacConf();
         $previous = $p;
         $note = [];
 
         $probe = $this->xrayCoreProbe(true);
-        // На апстрим откатываемся всегда — даже если контейнер молчит: это
-        // безопасное направление. На форк — только когда бинарь реально виден.
+        if (!$probe['ok']) {
+            return ['ok' => false, 'note' => ['xr unreachable']];
+        }
         if ($core === 'fork' && !$probe['fork']) {
-            return ['ok' => false, 'note' => [$probe['ok'] ? 'fork missing' : 'xr unreachable']];
+            return ['ok' => false, 'note' => ['fork missing']];
+        }
+        if (in_array($core, ['origin2', 'origin3'], true) && !isset($this->xrayCoreInventory()[$core])) {
+            return ['ok' => false, 'note' => [$this->sshFailed ? 'xr unreachable' : 'core missing']];
         }
 
         $candidate = $this->getXray();
-        if (is_array($candidate) && ($candidate['inbounds'][0]['settings']['decryption'] ?? 'none') !== 'none'
-            && !$this->validateXrayConfig($candidate, $core === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN)) {
+        if (!is_array($candidate)) {
+            return ['ok' => false, 'note' => ['xray configuration check failed']];
+        }
+        $previousJson = $this->readXrayJson();
+        if (($candidate['inbounds'][0]['settings']['decryption'] ?? 'none') !== 'none'
+            && !$this->validateXrayConfig($candidate, self::XRAY_BINARIES[$core])) {
             return ['ok' => false, 'note' => ['vless encryption check failed']];
         }
 
@@ -24335,25 +24468,45 @@ DNS-over-HTTPS with IP:
         }
 
         // Маркер пишем из php напрямую: /logs — общий том с контейнером xr.
-        // Симлинк живёт в слое контейнера и пропадёт при пересоздании, маркер —
-        // нет; если записать его не вышло, ядро вернётся к апстриму на первом
-        // же `up --force-recreate`, и об этом надо сказать, а не молчать.
-        $bin = $core === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN;
+        // Без сохранённого маркера следующее пересоздание выберет другое ядро.
+        $bin = self::XRAY_BINARIES[$core];
         if (!$this->writeCoreMarker($core)) {
-            $note[] = 'marker failed';
+            $restored = $this->setPacConf($previous) !== false;
+            return ['ok' => false, 'note' => [$restored ? 'marker failed' : 'rollback failed']];
         }
-        $this->ssh('mkdir -p /usr/local/bin; ln -sf ' . $bin . ' /usr/local/bin/xray', 'xr');
+        $linked = $this->ssh('mkdir -p /usr/local/bin && ln -sf ' . $bin
+            . ' /usr/local/bin/xray && printf XRAY_LINK_OK', 'xr');
+        $linkOk = !$this->sshFailed && trim((string) $linked) === 'XRAY_LINK_OK';
+        $this->xrProbe = null;
         // Рестарт уже уходит в НОВОЕ ядро: pkill + `xray run` идут через симлинк.
-        if ($this->sshFailed || $this->restartXray($this->getXray()) === false) {
+        $restarted = $linkOk && $this->restartXray($candidate) !== false;
+        if (!$restarted || !$this->xrayCoreStarted($core)) {
             // Проверка перед restart сохраняет старый процесс; вернём также
             // его выбор в PAC и симлинке, чтобы подписки соответствовали ему.
-            $oldCore = $this->xrayCore($previous);
-            $this->setPacConf($previous);
-            $this->writeCoreMarker($oldCore);
-            $oldBin = $oldCore === 'fork' ? self::XRAY_BIN_FORK : self::XRAY_BIN_ORIGIN;
-            $this->ssh('ln -sf ' . $oldBin . ' /usr/local/bin/xray', 'xr');
+            $oldCore = $this->xrayCoreSelection($previous);
+            $saved = $this->setPacConf($previous) !== false;
+            $marked = $this->writeCoreMarker($oldCore);
+            $oldBin = self::XRAY_BINARIES[$oldCore];
+            $linked = $this->ssh('ln -sf ' . $oldBin . ' /usr/local/bin/xray && printf XRAY_LINK_OK', 'xr');
+            $restored = $saved && $marked && !$this->sshFailed && trim((string) $linked) === 'XRAY_LINK_OK';
+            $this->xrProbe = null;
+            // writeXrayJson пишет в тот же inode (он примонтирован в xr).
+            // Ошибка записи могла обрезать файл ещё до остановки процесса.
+            if ($previousJson !== '' && $this->readXrayJson() !== $previousJson) {
+                $written = $this->writeXrayJson($previousJson);
+                $restored = $restored && $written;
+            }
+            // При отказе парсера прежний процесс ещё жив. После неудачного
+            // старта нужно восстановить также рабочий конфиг и процесс.
+            if ($restarted) {
+                $restored = $restored && $this->restartXray($candidate) !== false
+                    && $this->xrayCoreStarted($oldCore);
+            }
             $this->xrayCoreProbe(true);
-            return ['ok' => false, 'note' => ['xray configuration check failed']];
+            return ['ok' => false, 'note' => [
+                $restarted ? 'core start failed' : ($linkOk ? 'xray configuration check failed' : 'core link failed'),
+                $restored ? 'previous core restored' : 'rollback failed',
+            ]];
         }
         // Ручное переключение обнуляет историю автопочинки: администратор только
         // что задал состояние явно, и прошлые неудачи к нему отношения не имеют.
@@ -24485,6 +24638,10 @@ DNS-over-HTTPS with IP:
             ],
         ];
         $torrentBlocked = $this->xrayTorrentBlocked($p);
+        $data[] = [[
+            'text' => $this->i18n('xray versions'),
+            'callback_data' => '/xrayCoreMenu',
+        ]];
         $data[] = [[
             'text' => 'VLESS Encryption: ' . $this->i18n(VlessEncryption::client($c, $p) === 'none' ? 'off' : 'on'),
             'callback_data' => '/vlessEncryption',

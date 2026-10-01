@@ -52,11 +52,12 @@ class SmuxNoticeBot extends Bot
     }
     public function brutalAvailable(): bool { return false; }
     public function writeCoreMarker(string $core): bool { return true; }
+    public function xrayCoreStarted(string $core): bool { return true; }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $this->sshCalls++;
         $this->sshFailed = false;
-        return '';
+        return str_contains($cmd, 'XRAY_LINK_OK') ? 'XRAY_LINK_OK' : '';
     }
     public function xrayCoreProbe(bool $fresh = false): array
     {

@@ -9,21 +9,25 @@ ssh-keygen -A
 # Задаём asset-путь ядру, иначе ext:geoip.dat:… не резолвится и xray не стартует.
 mkdir -p /logs/geodata
 export XRAY_LOCATION_ASSET=/logs/geodata
-# Активное ядро. В образе лежат оба: апстрим /usr/bin/xray и форк со sing-mux
-# /usr/bin/xray-smux; выбранное бот пишет в /logs/xray_core (общий с php том),
+# Активное ядро: три версии XTLS и форк со sing-mux. Выбор бот пишет
+# в /logs/xray_core (общий с php том),
 # а сюда оно приезжает симлинком — так все вызовы `xray …` (бот, статистика,
 # ручной ssh) сами попадают в нужный бинарь. Симлинк живёт в слое контейнера и
 # пропадает при пересоздании, поэтому восстанавливаем его на каждом старте.
-# Маркер просит форк, а бинаря нет (образ старее правки) — молча берём апстрим:
-# контейнер обязан подняться в любом случае.
-bin=/usr/bin/xray
-if [ "$(cat /logs/xray_core 2>/dev/null)" = fork ] && [ -x /usr/bin/xray-smux ]; then
-    bin=/usr/bin/xray-smux
-fi
+case "$(cat /logs/xray_core 2>/dev/null)" in
+    origin2) bin=/usr/bin/xray-2 ;;
+    origin3) bin=/usr/bin/xray-3 ;;
+    fork) bin=/usr/bin/xray-smux ;;
+    *) bin=/usr/bin/xray ;;
+esac
 mkdir -p /usr/local/bin
 ln -sf "$bin" /usr/local/bin/xray
 uuid=$(jq -r '.inbounds[0].settings.clients[0].id // empty' /xray.json 2>/dev/null)
-if [ -n "$uuid" ]; then
+if [ ! -x "$bin" ]; then
+    # SSH остаётся доступен, чтобы выбрать имеющуюся версию из бота.
+    # Тихая замена версии может нарушить совместимость REALITY и SMUX.
+    echo "$(date '+%Y-%m-%d %H:%M:%S') start_xray: selected core $bin missing — xray NOT started" >> /logs/xray_stdout
+elif [ -n "$uuid" ]; then
     # stderr ядра — в лог, а не в /dev/null: при битом xray.json причина старта
     # не была видна нигде, а контейнер жил через `tail -f /dev/null` и выглядел
     # здоровым.
