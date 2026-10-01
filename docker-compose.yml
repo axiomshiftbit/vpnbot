@@ -1130,6 +1130,42 @@ services:
         pids_limit: 128
         logging: *default-logging
 
+    masque:
+        profiles: ["masque"]
+        image: ghcr.io/axiomshiftbit/vpnbot-masque:${VPNBOT_TAG:-latest}
+        build:
+            context: dockerfile
+            dockerfile: masque.dockerfile
+            args:
+                MASQUE_GO_VERSION: ${MASQUE_GO_VERSION:-1.27.1}
+                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.9.30}
+                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-85162fa61eb6d1adc9199afff7b41299e69dedd094907e9c56ef665c236b3ef0}
+        environment:
+            PROTOCOL_DESIRED: /config/desired.json
+        volumes:
+            - ./config/protocols/masque:/config:ro
+            - ./config/protocols/masque/runtime:/state
+            - ./update/protocol-certs/masque:/certs:ro
+            - ./scripts/protocol_service.py:/protocol_service.py:ro
+            - ./scripts/masque_service.py:/masque_service.py:ro
+        ports:
+            - ${MASQUE_PORT:-24449}:24449/udp
+            - ${MASQUE_PORT:-24449}:24449/tcp
+        hostname: masque
+        container_name: masque-${VER}
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        restart: unless-stopped
+        stop_grace_period: 15s
+        init: true
+        networks:
+            default:
+                ipv4_address: 10.10.0.27
+        mem_limit: 256m
+        pids_limit: 128
+        logging: *default-logging
+
     snolc:
         profiles: ["snolc"]
         image: ghcr.io/axiomshiftbit/vpnbot-snolc:${VPNBOT_TAG:-latest}

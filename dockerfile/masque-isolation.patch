@@ -1,0 +1,27 @@
+--- a/proxy/masque/server.go
++++ b/proxy/masque/server.go
+@@ -431,8 +431,3 @@
+-		if other := s.lookup(dst); other != nil {
+-			if other != t {
+-				packet := buf.NewWithSize(int32(n))
+-				packet.Write(b[:n])
+-				if !other.send(packet) {
+-					packet.Release()
+-				}
+-			}
++		// VPNBot: assigned client addresses and the tunnel gateway are private.
++		// Direct peer forwarding bypasses dispatcher ACLs and per-user counters.
++		if s.inPool(dst) {
+@@ -441,3 +436 @@
+-		if s.inPool(dst) && !slices.Contains(s.local, dst) {
+-			continue
+-		}
++
+--- a/proxy/masque/server_test.go
++++ b/proxy/masque/server_test.go
+@@ -208,3 +208,2 @@
+-	require.Eventually(t, func() bool { return len(bConn.packets()) == 2 }, time.Second, time.Millisecond)
+-	require.Equal(t, [][]byte{toB, toB6}, bConn.packets())
+-	require.Equal(t, [][]byte{toServer, toInternet}, dev.packets())
++	require.Never(t, func() bool { return len(bConn.packets()) != 0 }, 30*time.Millisecond, time.Millisecond)
++	require.Equal(t, [][]byte{toInternet}, dev.packets())

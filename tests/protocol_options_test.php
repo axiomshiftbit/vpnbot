@@ -143,6 +143,7 @@ try {
         $store = $bot->protocolStore($protocol); $store->configure(['host' => 'vpn.example.test', 'sni' => 'vpn.example.test'], true);
         $id = managedProtocolFixtureUser($store, 'Fixture < &'); $modules->set($protocol, true);
         $baseline = $store->read()['config'];
+        if ($protocol === 'masque') continue; // Native MASQUE schema and exports: masque_test.php.
         $conflicts = match ($protocol) {
             'anytls' => [
                 ['server' => ['tls' => ['min_version' => '1.3']], 'singbox' => ['tls' => ['max_version' => '1.2']]],

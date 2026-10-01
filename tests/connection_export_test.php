@@ -75,6 +75,7 @@ try {
     foreach (['vless' => 'VLESS'] + ManagedProtocol::NAMES as $p => $_) {
         foreach ($bot->connectionFormats($p) as $format => $_) {
             $value = $bot->connectionExport($source, $p, $format); $profiles[$p][$format] = $value;
+            if ($p === 'masque') { connectionCheck($value['inbounds'][0]['listen'] === '127.0.0.1' && $value['outbounds'][0]['protocol'] === 'masque', 'MASQUE выдаёт полный нативный профиль'); continue; }
             if ($p === 'snolc') { connectionCheck(is_string($value) && str_starts_with($value, 'PK'), 'snolc выдаёт настоящий ZIP'); continue; }
             if (in_array($format, ['uri', 'sr'], true)) continue;
             $key = in_array($format, ['cl', 'clj'], true) ? 'proxies' : 'outbounds';
@@ -82,7 +83,7 @@ try {
             connectionCheck(count($value[$key]) === ($p === 'shadowtls' && $format === 'si' ? 2 : 1), "$p/$format: все необходимые звенья");
             connectionCheck(!str_contains(json_encode($value), 'domain_resolver'), 'Нет ссылки на DNS из полного профиля');
         }
-        if ($p !== 'snolc') connectionCheck($profiles[$p]['cl'] === $profiles[$p]['clj'], 'YAML и JSON Mihomo идентичны');
+        if (!in_array($p, ['snolc', 'masque'], true)) connectionCheck($profiles[$p]['cl'] === $profiles[$p]['clj'], 'YAML и JSON Mihomo идентичны');
     }
     $shadow = $profiles['shadowtls']['si']['outbounds'];
     connectionCheck($shadow[0]['detour'] === $shadow[1]['tag'] && str_contains($shadow[0]['password'], ':'), 'Цепочка ShadowTLS и ключи SS2022 сохранены');
@@ -92,7 +93,7 @@ try {
         connectionCheck($uri['scheme'] === $scheme && ($p === 'mieru' ? $query['profile'] : rawurldecode($uri['fragment'])) === $client['email'], "$p: схема и имя URI");
         connectionCheck(!str_contains($profiles[$p]['uri'], $client['subtoken']), 'URI не путает пароль с токеном подписки');
     }
-    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $p => $_) {
+    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true, 'masque' => true]) as $p => $_) {
         $text = $profiles[$p]['sr']; $node = $profiles[$p]['cl']['proxies'][0];
         connectionCheck(str_contains($text, $node['password']) && str_contains($text, (string)$node['port']), 'Памятка Shadowrocket содержит действительные параметры');
     }
@@ -158,7 +159,7 @@ try {
                 }
             }
         }
-        if (!in_array($p, ['vless', 'snolc'], true)) {
+        if (!in_array($p, ['vless', 'snolc', 'masque'], true)) {
             $screen = connectionClick($bot, "$prefix $p ios");
             connectionCheck(connectionBack($screen) === "$prefix $p" && str_contains($screen['text'], 'Shadowrocket'), 'Shadowrocket: правильный возврат и пояснение');
             connectionClick($bot, connectionBack($screen));

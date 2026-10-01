@@ -576,16 +576,16 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
-            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
+            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
                 $this->accessBatchStart($m[1]);
                 break;
             case preg_match('~^/ab ([a-f0-9]{12})(?: (show|pick|page|extend|quota|disable|reset|apply|cancel))?(?: ([a-f0-9]{12}|[a-f0-9]{16}|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->accessBatch($m[1], $m[2] ?? 'show', $m[3] ?? '');
                 break;
-            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
+            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
                 $this->serviceDiagnostics($m[1]);
                 break;
-            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
                 $this->accessPolicyMenu($m[1], $m[2], $m[3] ?? '');
                 break;
             case preg_match('~^/hyUsers(?: ([0-9]{1,6}))?$~D', $this->input['callback'], $m):
@@ -594,10 +594,10 @@ class Bot
             case preg_match('~^/hyUser (add|legacy-off|legacy-confirm|[a-f0-9]{16})(?: (show|toggle|rotate|reset|delete|delete-confirm|name|expires|quota|file|qr))?$~D', $this->input['callback'], $m):
                 $this->hyUserCommand($m[1], $m[2] ?? 'show');
                 break;
-            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|snolc)$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
                 $this->protocolPortPrompt($m[1]);
                 break;
-            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|snolc)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
                 $this->protocolManageRelays($m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/pf (anytls|shadowtls)(?: (show|reset|pick))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
@@ -610,25 +610,25 @@ class Bot
                     else $this->protocolModulesMenu();
                 }
                 break;
-            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|snolc))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|snolc|masque))?$~D', $this->input['callback'], $m):
                 $this->xrayProtocolsMenu($m[1], $m[2] ?? '');
                 break;
-            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|snolc))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|snolc|masque))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
                 $this->connectionExports($m[1], $m[2] ?? '', $m[3] ?? '');
                 break;
-            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|snolc)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
                 $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
                 break;
-            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->protocolRelay($m[1], $m[2], $m[3], $m[4] ?? '');
                 break;
-            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|snolc) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
+            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|snolc|masque) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
                 $this->protocolRelayPrompt($m[1], $m[2]);
                 break;
-            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|snolc) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
                 $this->protocolSubscriptions($m[1], $m[2], $m[3] ?? 'direct', $m[4] ?? '');
                 break;
-            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|snolc)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|snolc|masque)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
                 $this->protocolOptions($m[1], $m[2] ?? 'show', $m[3] ?? '', $m[4] ?? '');
                 break;
             // смена айпи сервера
@@ -2959,6 +2959,7 @@ class Bot
         $this->ensureTorrentBlock($c, $pac);
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
+        if (!$this->finalmaskCoreCompatible($pac, $this->xrayCoreSelection($pac))) return false;
         $this->ensureFinalmaskInbound($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
@@ -24434,6 +24435,9 @@ DNS-over-HTTPS with IP:
         if (!is_array($candidate)) {
             return ['ok' => false, 'note' => ['xray configuration check failed']];
         }
+        if (!$this->finalmaskCoreCompatible($p, $core)) {
+            return ['ok' => false, 'note' => ['xray configuration check failed']];
+        }
         $previousJson = $this->readXrayJson();
         if (($candidate['inbounds'][0]['settings']['decryption'] ?? 'none') !== 'none'
             && !$this->validateXrayConfig($candidate, self::XRAY_BINARIES[$core])) {
@@ -26582,40 +26586,58 @@ DNS-over-HTTPS with IP:
     // и rand>0, одновременно.
     public function finalmaskNoiseSettings(array $n, array $list): array
     {
-        $items = [];
-        foreach ($list as $it) {
-            $type   = ($it['type']   ?? '') ?: 'rand';
-            $packet = (string) ($it['packet'] ?? '');
-            $delay  = ($it['delay']  ?? '') ?: '10-16';
-            if ($type === 'rand') {
-                $items[] = [
-                    'rand'      => $packet !== '' ? $packet : '10-20',
-                    // randRange — диапазон байт-значений заполнения, обязан
-                    // укладываться в 0..255 (ядро проверяет на старте).
-                    'randRange' => '0-255',
-                    'delay'     => $delay,
-                ];
-                continue;
-            }
-            // str/hex/base64 без пакета ядро не примет — как и в
-            // applyDpiFragment(), пропускаем пустые, а не шлём мусор.
-            if ($packet === '') {
-                continue;
-            }
-            $items[] = [
-                'type'   => $type,
-                'packet' => $packet,
-                'delay'  => $delay,
-            ];
-        }
-        if (!$items) {
-            $items[] = ['rand' => '10-20', 'randRange' => '0-255', 'delay' => '10-16'];
-        }
+        return XrayNoise::settings($n, $list);
+    }
 
-        return [
-            'reset' => ($n['reset'] ?? '') ?: '5-10',
-            'noise' => $items,
-        ];
+    public function finalmaskUsesExpressions(array $p): bool
+    {
+        $s = $this->finalmaskSettings($p);
+        return !empty($s['enabled']) && !empty($s['noise']['enabled'])
+            && in_array('exp', array_column($this->finalmaskNoiseList($p), 'type'), true);
+    }
+
+    public function finalmaskCoreCompatible(array $p, string $core): bool
+    {
+        if (!$this->finalmaskUsesExpressions($p)) return true;
+        $version = $this->xrayCoreInventory()[$core] ?? '';
+        return $version !== '' && version_compare($version, '26.9.30', '>=');
+    }
+
+    public function applyFinalmaskSettings(array $settings): bool
+    {
+        if (!$this->admin) return false;
+        try {
+            return $this->withLock('xray', fn() => $this->withLock('pac', function () use ($settings) {
+                $before = $this->getPacConf(); $p = $before; $p['finalmask'] = $settings;
+                // Validate even disabled masks before saving values that will later be enabled.
+                $this->finalmaskNoiseSettings($settings['noise'], $settings['noise']['list']);
+                if (!$this->finalmaskCoreCompatible($p, $this->xrayCoreSelection($p))) {
+                    throw new InvalidArgumentException('UDP noise exp требует Xray 26.9.30 или новее. Выберите совместимое ядро либо выключите noise.');
+                }
+                $old = $this->getXray(); $candidate = $old;
+                $this->ensureFinalmaskInbound($candidate, $p);
+                if ($this->setPacConf($p) === false) throw new RuntimeException('Не удалось сохранить finalmask');
+                if (($old['inbounds'][0]['streamSettings']['finalmask'] ?? null)
+                    === ($candidate['inbounds'][0]['streamSettings']['finalmask'] ?? null)) return true;
+                try {
+                    if ($this->restartXray($candidate) && $this->xrayCoreStarted($this->xrayCoreSelection($p))) return true;
+                } catch (Throwable $e) {
+                    // A failed launch can throw after saving PAC; it needs the same rollback.
+                }
+                $saved = $this->setPacConf($before) !== false;
+                try {
+                    $restored = $this->restartXray($old) && $this->xrayCoreStarted($this->xrayCoreSelection($before));
+                } catch (Throwable $e) {
+                    $restored = false;
+                }
+                throw new RuntimeException($saved && $restored
+                    ? 'finalmask не применён; прежние настройки восстановлены.'
+                    : 'finalmask не применён; восстановление не подтверждено. Проверьте состояние Xray.');
+            }, 20, false), 20, false);
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $this->answer($this->input['callback_id'] ?? '', $e->getMessage(), true);
+            return false;
+        }
     }
 
     // Серверный inbound: единственное место, куда finalmask вообще пишется —
@@ -26643,20 +26665,6 @@ DNS-over-HTTPS with IP:
             return;
         }
         $c['inbounds'][0]['streamSettings']['finalmask'] = $fm;
-    }
-
-    // Рестартуем ядро только когда собранный блок реально изменился — иначе
-    // каждое нажатие в меню рвало бы все живые соединения (тот же приём, что
-    // syncSmuxLive()).
-    public function syncFinalmaskLive(array $p): void
-    {
-        $c   = $this->getXray();
-        $was = $c['inbounds'][0]['streamSettings']['finalmask'] ?? null;
-        $this->ensureFinalmaskInbound($c, $p);
-        $now = $c['inbounds'][0]['streamSettings']['finalmask'] ?? null;
-        if ($was !== $now) {
-            $this->restartXray($c);
-        }
     }
 
     // ---- finalmask submenu ---------------------------------------------------
@@ -26694,7 +26702,7 @@ DNS-over-HTTPS with IP:
             ]];
             if (!empty($s['noise']['enabled'])) {
                 $text[] = $this->i18n('finalmask noise hint');
-                $text[] = $this->noiseExamplesHint();
+                $text[] = $this->finalmaskNoiseHint();
                 $data[] = [['text' => 'reset: ' . $s['noise']['reset'], 'callback_data' => '/finalmaskSet noise_reset']];
                 foreach ($this->finalmaskNoiseList($p) as $i => $ne) {
                     $data[] = [
@@ -26739,8 +26747,7 @@ DNS-over-HTTPS with IP:
                 return $this->finalmaskMenu();
         }
         $p['finalmask'] = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->finalmaskMenu();
     }
 
@@ -26775,11 +26782,16 @@ DNS-over-HTTPS with IP:
             $list = $this->finalmaskNoiseList($p);
             $idx  = (int) $nm[1];
             if (isset($list[$idx])) {
-                $list[$idx][$nm[2]] = $this->isDefaultValue($val) ? '' : $val;
+                $list[$idx][$nm[2]] = $nm[2] === 'delay' && $val === '0' ? '0' : ($this->isDefaultValue($val) ? '' : $val);
+                if ($nm[2] === 'type') {
+                    $list[$idx]['packet'] = match ($val) {
+                        'exp' => XrayNoise::dynamicPackets()[0]['packet'], 'hex' => 'deadbeef',
+                        'base64' => 'SGVsbG8=', 'str' => 'hello', default => '50-150',
+                    };
+                }
                 $s['noise']['list'] = array_values($list);
                 $p['finalmask']     = $s;
-                $this->setPacConf($p);
-                $this->syncFinalmaskLive($p);
+                if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
             }
 
             return $this->finalmaskMenu();
@@ -26793,8 +26805,7 @@ DNS-over-HTTPS with IP:
             default: return $this->finalmaskMenu();
         }
         $p['finalmask'] = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->finalmaskMenu();
     }
 
@@ -26817,9 +26828,9 @@ DNS-over-HTTPS with IP:
                 ? 'Потолок числа кусков. Пусто — без ограничения (дефолт ядра).'
                 : 'Cap on the number of segments. Empty = no cap (core default).',
             'noise_reset' => $ru
-                ? 'Через сколько секунд можно повторить пачку шумовых пакетов на тот же адрес, например <code>5-10</code>.'
-                : 'Seconds before the noise burst can repeat to the same address, e.g. <code>5-10</code>.',
-            'noise_type', 'noise_packet', 'noise_delay' => $this->noiseExamplesHint(),
+                ? 'Время без исходящих UDP-пакетов к адресу, после которого следующая отправка повторяет шум: 1–86400 секунд, например <code>5-10</code>. При непрерывном трафике это не периодический таймер.'
+                : 'Idle seconds with no outgoing UDP packets to an address before the next send repeats the burst: 1–86400, e.g. <code>5-10</code>. Continuous traffic resets this timer.',
+            'noise_type', 'noise_packet', 'noise_delay' => $this->finalmaskNoiseHint(),
             default => '',
         };
     }
@@ -26867,20 +26878,34 @@ DNS-over-HTTPS with IP:
         $s['fragment']['delay']    = $ps['interval'];
         $s['fragment']['maxSplit'] = $ps['maxSplit'];
         $p['finalmask'] = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->answer($this->input['callback_id'], $ps['label']);
         $this->finalmaskMenu();
+    }
+
+    public function finalmaskNoiseHint(): string
+    {
+        return $this->noiseExamplesHint() . "\n\n" . ($this->language === 'ru'
+            ? 'exp (Xray 26.9.30+): &lt;b hex&gt; — байты, &lt;r N-M&gt; — случайные байты, &lt;rc N-M&gt; — буквы, &lt;rd N-M&gt; — цифры, &lt;t&gt; — время, &lt;c&gt; — счётчик, &lt;n&gt; — nonce. Пример: <code>&lt;b 0d0a&gt;&lt;t&gt;&lt;c&gt;&lt;n&gt;&lt;rc 20-40&gt;</code>. Каждый пакет создаётся заново. До 8 пакетов по 1400 байт; задержка 0–1000 мс, reset 1–86400 с. Действует только на UDP-транспорт; MASQUE настраивается отдельно.'
+            : 'exp (Xray 26.9.30+): &lt;b hex&gt; bytes, &lt;r N-M&gt; random bytes, &lt;rc N-M&gt; letters, &lt;rd N-M&gt; digits, &lt;t&gt; timestamp, &lt;c&gt; counter, &lt;n&gt; nonce. Packets are regenerated on every send. Up to 8 packets of 1400 bytes; delay 0–1000 ms, reset 1–86400 s. UDP transports only; configure MASQUE separately.');
+    }
+
+    public function finalmaskNoisePresets(): array
+    {
+        return $this->noisePresets() + ['dynamic' => [
+            'label' => $this->language === 'ru' ? 'Динамический exp · 26.9.30+' : 'Dynamic exp · 26.9.30+',
+            'list' => XrayNoise::dynamicPackets(),
+        ]];
     }
 
     public function finalmaskNoisePresetsMenu(): void
     {
         $text[] = 'Menu -> ' . $this->i18n('xray') . ' -> ' . $this->i18n('dpi masking') . ' -> finalmask -> ' . $this->i18n('noise') . ' ' . $this->i18n('presets');
-        $text[] = $this->noisePresetsHint();
+        $text[] = $this->finalmaskNoiseHint();
 
         $data = [];
         $row  = [];
-        foreach ($this->noisePresets() as $key => $ps) {
+        foreach ($this->finalmaskNoisePresets() as $key => $ps) {
             $row[] = ['text' => $ps['label'], 'callback_data' => "/finalmaskNoisePreset $key"];
             if (count($row) === 2) {
                 $data[] = $row;
@@ -26897,7 +26922,7 @@ DNS-over-HTTPS with IP:
 
     public function finalmaskNoisePreset($key): void
     {
-        $presets = $this->noisePresets();
+        $presets = $this->finalmaskNoisePresets();
         if (!isset($presets[$key])) {
             $this->answer($this->input['callback_id'], 'unknown preset', true);
 
@@ -26910,8 +26935,7 @@ DNS-over-HTTPS with IP:
         $s['noise']['enabled'] = 1;
         $s['noise']['list']    = $ps['list'];
         $p['finalmask'] = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->answer($this->input['callback_id'], $ps['label']);
         $this->finalmaskMenu();
     }
@@ -26924,8 +26948,7 @@ DNS-over-HTTPS with IP:
         $list[] = ['type' => 'rand', 'packet' => '50-150', 'delay' => '10-16'];
         $s['noise']['list'] = array_values($list);
         $p['finalmask']     = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->finalmaskMenu();
     }
 
@@ -26939,8 +26962,7 @@ DNS-over-HTTPS with IP:
         }
         $s['noise']['list'] = array_values($list);
         $p['finalmask']     = $s;
-        $this->setPacConf($p);
-        $this->syncFinalmaskLive($p);
+        if (!$this->applyFinalmaskSettings($s)) { $this->finalmaskMenu(); return; }
         $this->finalmaskMenu();
     }
 
@@ -30036,13 +30058,13 @@ DNS-over-HTTPS with IP:
         foreach (ManagedProtocol::NAMES as $protocol => $name) {
             $state = $this->protocolStore($protocol)->read();
             $enabled = $this->protocolModuleEnabled($protocol) && $state['enabled'];
-            $transport = $protocol === 'tuic' ? 'UDP' : ($protocol === 'mieru' ? 'TCP/UDP' : 'TCP');
+            $transport = $protocol === 'tuic' ? 'UDP' : (in_array($protocol, ['mieru', 'masque'], true) ? 'TCP/UDP' : 'TCP');
             $pending = $enabled && !$this->protocolPortApplied($protocol, $state);
             $data[] = [['text' => ($enabled ? ($pending ? '🟡 ' : '🟢 ') : '🔴 ') . $name . ' · ' . $state['settings']['port'] . '/' . $transport,
                 'callback_data' => "/protocolPort $protocol"]];
             if ($pending) $text[] = "$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.";
         }
-        $text[] = 'Mieru, TUIC, ShadowTLS и snolc: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
+        $text[] = 'Mieru, TUIC, ShadowTLS, snolc и MASQUE: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
         if (!empty($pac['restart'])) {
             $data[] = [
                 [

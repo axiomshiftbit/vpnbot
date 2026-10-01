@@ -10,8 +10,8 @@ import subprocess
 import sys
 import uuid
 
-DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False}
-SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "telemt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "snolc")
+DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False, "masque": False}
+SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "telemt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "snolc", "masque")
 SYSTEMD_UNIT = Path('/etc/systemd/system/vpnbot.service')
 
 
@@ -183,7 +183,7 @@ def environment(s):
 
 def bindings(root):
     ports = {}
-    for service in ("mieru", "tuic", "shadowtls", "snolc"):
+    for service in ("mieru", "tuic", "shadowtls", "snolc", "masque"):
         path = root / "config/protocols" / service / "desired.json"
         if path.exists():
             try: port = json.loads(path.read_text())["settings"]["port"]
@@ -196,7 +196,7 @@ def sync_certificates(root, current):
     # Network-facing cores see only their selected TLS pair. In particular,
     # never mount the directory containing the other VPNs' CA/private keys.
     source_root = (root / 'certs').resolve()
-    for service in ('anytls', 'tuic'):
+    for service in ('anytls', 'tuic', 'masque'):
         desired = root / 'config/protocols' / service / 'desired.json'
         if not current[service] or not desired.exists(): continue
         config = json.loads(desired.read_text())['settings']
@@ -238,7 +238,7 @@ def check_port(s, service, port):
     own = compose(s, ['ps', '-q', service], capture=True)
     own.check_returncode()
     identities = set(own.stdout.split())
-    for network in (('tcp', 'udp') if service == 'mieru' else ('udp',) if service == 'tuic' else ('tcp',)):
+    for network in (('tcp', 'udp') if service in ('mieru', 'masque') else ('udp',) if service == 'tuic' else ('tcp',)):
         used = subprocess.run(['docker', 'ps', '--filter', f'publish={port}/{network}', '--format', '{{.ID}}'],
                               capture_output=True, check=True).stdout.split()
         # Docker ps uses short IDs; compose ps uses full IDs.
@@ -261,8 +261,8 @@ def apply(root):
             for filename in ('nginx.conf', 'nginx_default.conf'):
                 prepare_upstream(root, filename)
         certificate_errors = {}
-        for service in ('anytls', 'tuic'):
-            try: sync_certificates(root, current | {other: False for other in ('anytls', 'tuic') if other != service})
+        for service in ('anytls', 'tuic', 'masque'):
+            try: sync_certificates(root, current | {other: False for other in ('anytls', 'tuic', 'masque') if other != service})
             except (OSError, ValueError, KeyError, TypeError): certificate_errors[service] = 'certificate_copy_failed'
         status = root / "config/protocol-services.status.json"
         previous = json.loads(status.read_text()) if status.exists() else {}
@@ -289,7 +289,7 @@ def apply(root):
                                   "errors": pending_errors | failures | {service: 'operation_pending'},
                                   "failed_service": next(iter(failures), None)})
             if enabled(current, service):
-                if service in ('mieru', 'tuic', 'shadowtls', 'snolc'):
+                if service in ('mieru', 'tuic', 'shadowtls', 'snolc', 'masque'):
                     if service not in ports:
                         failures[service] = 'invalid_protocol_port'
                         continue

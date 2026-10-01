@@ -131,12 +131,12 @@ try {
             $screen = chatClick($bot, "/!po $protocol show client.fingerprint");
             chatCheck(chatBack($screen) === "/!po $protocol show client", 'Вложенный fingerprint возвращается в группу');
         }
-        $path = $protocol === 'mieru' ? 'server.mtu' : 'singbox.connect_timeout';
+        $path = $protocol === 'masque' ? 'noise.reset' : ($protocol === 'mieru' ? 'server.mtu' : 'singbox.connect_timeout');
         chatClick($bot, "/!po $protocol edit $path");
         $screen = chatReply($bot, 'неверно');
         chatCheck(str_contains($screen['text'], '❌'), 'Ошибка ввода видна в текущем меню');
         chatClick($bot, chatButtons($screen)[0]['callback_data']);
-        $screen = chatReply($bot, $protocol === 'mieru' ? '1400' : '10s');
+        $screen = chatReply($bot, $protocol === 'masque' ? '60-120' : ($protocol === 'mieru' ? '1400' : '10s'));
         chatCheck(!str_contains($screen['text'], '❌'), 'Повторный ввод сохраняется');
         chatClick($bot, "/!po $protocol reset");
         foreach (["name $id" => 'Новое имя', "quota $id" => '0.5', "expires $id" => '2026-12-01 12:00'] as $action => $value) {
@@ -162,14 +162,15 @@ try {
             chatClick($bot, chatBack($screen));
             $key = substr(hash('sha256', 'relay-' . $protocol), 0, 16);
             $screen = chatClick($bot, $prefix . "pr $protocol $id $key");
-            foreach (['', 'provider'] as $action) {
+            foreach ($protocol === 'masque' ? [''] : ['', 'provider'] as $action) {
                 chatClick($bot, rtrim($prefix . "ps $protocol $id $key $action"));
                 chatCheck(count($bot->transport->messages) === 1, 'Подписка и provider редактируют меню');
             }
-            chatClick($bot, $prefix . "pr $protocol $id $key yaml");
-            chatClick($bot, $prefix . "pr $protocol $id $key mihomo");
+            if ($protocol !== 'masque') chatClick($bot, $prefix . "pr $protocol $id $key yaml");
+            $exportFormat = $protocol === 'masque' ? 'native' : 'mihomo';
+            chatClick($bot, $prefix . "pr $protocol $id $key $exportFormat");
             chatCheck(count($bot->transport->messages) === 2, 'Выгрузка: меню и один файл');
-            chatClick($bot, $prefix . "pr $protocol $id $key mihomo");
+            chatClick($bot, $prefix . "pr $protocol $id $key $exportFormat");
             chatCheck(count($bot->transport->messages) === 2, 'Повторная выгрузка убирает предыдущий файл');
             chatClick($bot, "$entry $protocol");
             chatCheck(count($bot->transport->messages) === 1, 'Выход удаляет временную выгрузку');

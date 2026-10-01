@@ -66,7 +66,7 @@ try {
     $name = 'relay.with.dots-' . str_repeat('r', 16);
     $bot->conf['relays'][$name] = ['address' => 'legacy.example.test', 'portmap' => [443 => 444], 'hy_port' => 1234];
     $key = substr(hash('sha256', $name), 0, 16);
-    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $protocol => $label) {
+    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true, 'masque' => true]) as $protocol => $label) {
         $store = $bot->protocolStore($protocol);
         $store->configure(['host' => 'origin.example.test', 'sni' => $protocol . '.example.test'], true);
         $id = managedProtocolFixtureUser($store, 'Пользователь < &'); $modules->set($protocol, true);

@@ -9,6 +9,7 @@ trait BotServiceDiagnostics
             'tls_expired' => 'сертификат TLS истёк; обновите SSL',
             'tls_not_yet_valid' => 'сертификат TLS ещё не действует; проверьте время сервера',
             'tls_name_mismatch' => 'сертификат не соответствует SNI',
+            'tls_key_mismatch' => 'сертификат TLS и закрытый ключ не соответствуют друг другу',
             'tls_invalid' => 'сертификат TLS не прошёл проверку',
             'tls_unavailable' => 'не удалось прочитать сертификат или ключ TLS',
             'port_in_use' => 'порт уже занят; выберите свободный порт',
@@ -37,7 +38,7 @@ trait BotServiceDiagnostics
         if ($scope === 'hy') {
             $config = @yaml_parse_file($this->hysteriaConf);
             if (is_array($config) && is_string($config['tls']['cert'] ?? null)) $cert = $config['tls']['cert'];
-        } elseif (in_array($scope, ['anytls', 'tuic'], true)) $cert = $state['settings']['certificate'];
+        } elseif (in_array($scope, ['anytls', 'tuic', 'masque'], true)) $cert = $state['settings']['certificate'];
         elseif ($scope === 'shadowtls' && !empty($state['settings']['self_hosted'])) $cert = '/certs/cert_public';
         if ($cert !== null) {
             try {

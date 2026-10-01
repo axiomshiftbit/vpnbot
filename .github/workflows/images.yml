@@ -21,6 +21,7 @@ on:
       - 'dockerfile/**'
       - 'scripts/hysteria_service.py'
       - 'scripts/snolc_service.py'
+      - 'scripts/masque_service.py'
       - 'scripts/protocol_service.py'
       - 'app/snolc/**'
       - '.dockerignore'
@@ -30,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: 'Сервисы через запятую (ng,php,wg,...). Пусто — все 17.'
+        description: 'Сервисы через запятую (ng,php,wg,...). Пусто — все 18.'
         required: false
         default: ''
   # Базовые образы запиннены не все (golang:alpine, python:3.13-slim,
@@ -69,7 +70,7 @@ jobs:
           SERVICES: ${{ inputs.services }}
         run: |
           set -euo pipefail
-          ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy anytls mieru snolc"
+          ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy anytls mieru snolc masque"
 
           # Какие образы задевает правка .env. Раньше любая строка (хоть смена
           # таймзоны) пересобирала все 14, а это десятки минут CI из-за tt.
@@ -89,6 +90,7 @@ jobs:
                 MIERU_VERSION|MIERU_SOURCE_SHA256)   out="$out mieru" ;;
                 PROTOCOL_GO_VERSION)               out="$out anytls mieru" ;;
                 XRAY_VERSION|XRAY_VERSION_2|XRAY_VERSION_3|XRAY_FORK_VERSION) out="$out xr" ;;
+                MASQUE_GO_VERSION|MASQUE_XRAY_VERSION|MASQUE_SOURCE_SHA256) out="$out masque" ;;
                 OCSERV_VERSION)                    out="$out oc" ;;
                 ADGUARD_VERSION)                   out="$out ad" ;;
                 HYSTERIA_VERSION)                  out="$out hy" ;;
@@ -130,6 +132,7 @@ jobs:
               hysteria.dockerfile)    echo hy ;;
               protocol.dockerfile) echo anytls ;;
               mieru.dockerfile) echo mieru ;;
+              masque.dockerfile|masque-isolation.patch) echo masque ;;
               snolc.dockerfile) echo snolc ;;
               snolc-core.patch|snolc-modules.patch) echo snolc ;;
             esac
@@ -169,6 +172,9 @@ jobs:
               done
               if echo "${CHANGED}" | grep -qE '^\.env$'; then
                 SEL="${SEL} $(env_targets)"
+              fi
+              if echo "${CHANGED}" | grep -qE '^scripts/(masque_service|protocol_service)\.py$'; then
+                SEL="${SEL} masque"
               fi
               if echo "${CHANGED}" | grep -qE '^scripts/hysteria_service\.py$'; then
                 SEL="${SEL} hy"
@@ -325,6 +331,36 @@ jobs:
           XRAY_FORK_VERSION /usr/bin/xray-smux
           XRAY_CORES
 
+      - name: Проверить ядро и зависимости MASQUE
+        if: matrix.service == 'masque'
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-masque:sha-${GITHUB_SHA}"
+          docker pull "$image"
+          expected=$(sed -n 's/^MASQUE_XRAY_VERSION=//p' .env)
+          actual=$(docker run --rm --network=none --entrypoint /usr/local/bin/xray "$image" version)
+          read -r name version rest <<< "$actual"
+          test "$name" = Xray
+          test "$version" = "${expected#v}"
+          [[ "$actual" == *vpnbot-masque.1* ]]
+          docker run --rm --network=none --entrypoint sh -v "$PWD/scripts:/scripts:ro" "$image" -ec '
+            openssl version
+            python3 -c "import sys; sys.path.insert(0, '\''/scripts'\''); from masque_service import MasqueSupervisor"
+            sha256sum /usr/local/bin/xray
+          '
+          container=$(docker create --entrypoint /usr/local/bin/xray "$image" version)
+          docker cp "$container:/usr/local/bin/xray" "$RUNNER_TEMP/xray-masque"
+          docker rm "$container"
+
+      - name: Ядро MASQUE для проверки тестовым сервером
+        if: matrix.service == 'masque' && github.ref_name == 'dev'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: vpnbot-core-masque
+          path: ${{ runner.temp }}/xray-masque
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Сохранить изменённые образы для проверки dev
         if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec","snolc"]'), matrix.service)
         run: |
@@ -393,6 +429,7 @@ jobs:
           - protocol
           - mieru
           - snolc
+          - masque
     steps:
       # Своим шагом, а не actions/delete-package-versions: у того удержание
       # считается по всем версиям подряд и канальный тег защитить нечем

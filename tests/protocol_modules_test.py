@@ -23,7 +23,7 @@ class ProtocolModulesTests(unittest.TestCase):
         (self.root / 'update').mkdir()
         self.desired = self.root / 'config/protocol-services.json'
         self.status = self.root / 'config/protocol-services.status.json'
-        self.ports = {'mieru': 24445, 'tuic': 9443, 'shadowtls': 24447, 'snolc': 24448}
+        self.ports = {'mieru': 24445, 'tuic': 9443, 'shadowtls': 24447, 'snolc': 24448, 'masque': 24449}
         for name, options in [('bindings', {'return_value': self.ports}), ('sync_certificates', {}),
                               ('check_port', {}), ('prepare_upstream', {})]:
             stub = patch.object(modules, name, **options)

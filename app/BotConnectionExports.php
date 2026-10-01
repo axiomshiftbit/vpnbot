@@ -4,6 +4,7 @@ trait BotConnectionExports
 {
     public function connectionFormats(string $protocol): array
     {
+        if ($protocol === 'masque') return ['native' => 'MASQUE · полный JSON Xray 26.9.30+'];
         if ($protocol === 'snolc') return ['native' => 'snolc SSH + Noise · ZIP'];
         $formats = ['cl' => 'Mihomo · YAML', 'clj' => 'Mihomo · JSON'];
         if ($protocol !== 'mieru') $formats['si'] = 'sing-box · JSON';
@@ -88,6 +89,7 @@ trait BotConnectionExports
         if (!$this->protocolPortApplied($protocol, $state)) throw new RuntimeException('Внешний порт ещё не применён. Проверьте Settings → Ports.');
         foreach ($state['users'] as $id => $user) {
             if (($user['xray_source'] ?? '') !== $source || !hash_equals($user['xray_credential'], ManagedProtocol::xrayCredential($client))) continue;
+            if ($protocol === 'masque') return $store->profile($id, 'native', $state);
             if ($protocol === 'snolc') return $store->profileDocument($id, 'native', $state)['body'];
             if ($format === 'uri') return $store->connectionUri($id, $state);
             $profile = $store->profile($id, $type === 'cl' ? 'mihomo' : 'singbox', $state);
@@ -173,6 +175,9 @@ trait BotConnectionExports
             if ($protocol === 'snolc') $text = ['snolc SSH + Noise · ' . self::esc($client['email']),
                 'Архив для нативного клиента Linux x86_64 с glibc и Python 3.11+. Внутри профиль, проверенные версии модулей и инструкция запуска. SOCKS5 передаёт TCP и UDP. Сохраните архив до следующего нажатия.',
                 'В Mihomo, sing-box и текущий импорт snolcNG этот архив не добавляется.'];
+            if ($protocol === 'masque') $text = ['MASQUE · ' . self::esc($client['email']),
+                'Полный профиль для Xray 26.9.30 или новее. Запуск: xray run -config profile.json. Локальный SOCKS5: 127.0.0.1:1080, TCP и UDP. Проверка TLS включена.',
+                'HTTP/3 использует UDP, HTTP/2 — TCP. Выбор транспорта и UDP-маскировка находятся в настройках MASQUE. После изменений скачайте профиль заново.'];
             $buttons = [];
             if ($protocol === '') {
                 foreach ($labels as $key => $label) $buttons[] = [['text' => $label, 'callback_data' => "$prefix $key"]];
