@@ -187,7 +187,7 @@ $bot->pacFake = ['rulessetlist' => [
     'proxy:domain:86400:https://x.example/c.mrs'  => 1,
     'proxy:86400:https://x.example/d.srs'         => 1,
 ]];
-$cl  = $bot->addClashRuleSet(['add-rule-providers' => 1, 'rules' => [['MATCH', 'DIRECT']]]);
+$cl  = $bot->addClashRuleSet(['add-rule-providers' => 1, 'proxy-groups' => [['name' => 'PROXY']], 'rules' => [['MATCH', 'DIRECT']]]);
 $fmt = array_column($cl['rule-providers'] ?? [], 'format');
 sort($fmt);
 rsAssert($fmt === ['mrs', 'yaml', 'yaml'],

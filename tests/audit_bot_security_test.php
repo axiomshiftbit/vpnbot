@@ -92,7 +92,8 @@ secAssert(strpos($syncDeny, 'nginx -t') !== false
     'конфиг проверяется до reload: невалидный не должен доживать до рестарта контейнера');
 
 // Вход тоже закрыт — иначе мусор копится в pac.json до ближайшей синхронизации.
-secAssert((bool) preg_match("~in_array\(\\\$type, \['white', 'deny'\]\)\) \{\s*\n(\s*//[^\n]*\n)*\s*if \(!self::ipOrCidr\(\\\$v\)\)~", $src),
+secAssert(str_contains($src, "if (in_array(\$type, ['white', 'deny'], true)) {")
+    && str_contains($src, 'if (self::ipOrCidr($entry)) $list[] = $entry;'),
     'addInclude() не кладёт в white/deny ничего, кроме адреса или подсети');
 
 // ── 4. СРЕДНИЕ того же отчёта ───────────────────────────────────────────────
