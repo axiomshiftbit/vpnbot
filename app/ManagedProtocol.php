@@ -368,11 +368,19 @@ final class ManagedProtocol
     public function snapshot(): array
     {
         $state = $this->read();
-        unset($state['config'], $state['restore_usage']);
         $usage = $this->usage();
+        if (isset($state['restore_usage']) && ($usage['restored'] ?? '') !== $state['restore_usage']['id']) {
+            // Выключенный supervisor ещё не перенёс восстановленные счётчики
+            // в runtime. Повторный бэкап обязан сохранить именно их.
+            $usage = $state['restore_usage'];
+            unset($usage['id']);
+        }
+        unset($state['config'], $state['restore_usage']);
         unset($usage['restored']);
         foreach (array_keys($usage['users'] ?? []) as $id) unset($usage['users'][$id]['last']);
-        return ['state' => $state, 'usage' => $usage];
+        $snapshot = ['state' => $state, 'usage' => $usage];
+        $this->validateSnapshot($snapshot);
+        return $snapshot;
     }
 
     public function validateSnapshot(array $snapshot): void

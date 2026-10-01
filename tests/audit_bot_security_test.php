@@ -102,7 +102,7 @@ secAssert(str_contains($src, "if (in_array(\$type, ['white', 'deny'], true)) {")
 // есть на промпт «send the export file:» можно было ответить строкой и
 // получить file_get_contents() по произвольному пути или URL (allow_url_fopen
 // включён) — чтение файла и SSRF во внутреннюю сеть от root.
-$import = substr($src, strpos($src, 'public function importFile('), 1400);
+$import = substr($src, strpos($src, 'public function importFile('), 2400);
 secAssert(str_contains($import, '$file !== $this->update'),
     'importFile() принимает локальный путь только от selfUpdate()');
 secAssert(strpos($import, '$file !== $this->update') < strpos($import, 'file_get_contents($file)'),

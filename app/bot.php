@@ -163,6 +163,7 @@ class Bot
     // на временный, в файловую систему контейнера не ходя.
     public $htpasswd = '/app/webapp/.htpasswd';
     public $telemtDecoyDir = '/config/telemt/decoy';
+    public string $backupWarpRoot = '/etc/warp';
     // Свойством, как xrayConf и htpasswd, — ровно ради тестов: путь был
     // захардкожен, и прогон tests/audit_cron_test.php внутри контейнера
     // перезаписывал БОЕВОЙ /config/deny и дёргал `nginx -s reload`.
@@ -414,8 +415,7 @@ class Bot
 
             return false;
         }
-        @chmod($tmp, 0600);
-        $ok = fwrite($h, $data) === strlen($data);
+        $ok = @chmod($tmp, 0600) && fwrite($h, $data) === strlen($data) && fflush($h) && fsync($h);
         fclose($h);
         // Результат записи раньше не проверялся: при переполненном диске в
         // ./certs оставался обрезанный ключ, а nginx падал на рестарте.
@@ -426,9 +426,10 @@ class Bot
             return false;
         }
         // Существовавший ранее файл мог быть создан старой версией с 0644.
-        @chmod($path, 0600);
-
-        return true;
+        $dir = @fopen(dirname($path), 'r');
+        if ($dir === false) return false;
+        try { return fsync($dir); }
+        finally { fclose($dir); }
     }
 
     public function auth()
@@ -1932,7 +1933,7 @@ class Bot
                 $this->addOverrideHtml();
                 break;
             case preg_match('~^/export$~', $this->input['callback'], $m):
-                $this->pinBackup();
+                if (!$this->pinBackup()) $this->send($this->input['chat'], $this->i18n('backup create failed'));
                 break;
             case preg_match('~^/import$~', $this->input['callback'], $m):
                 $this->import();
@@ -6529,9 +6530,11 @@ NFT;
 
                 // Если последний бэкап был сделан до начала текущего периода - делаем бэкап
                 if ($lastBackupTime < $lastScheduledBackup) {
-                    $c['last_backup_time'] = $now;
-                    $this->setPacConf($c);
-                    $this->pinBackup();
+                    if ($this->pinBackup()) {
+                        $c = $this->getPacConf();
+                        $c['last_backup_time'] = $now;
+                        $this->setPacConf($c);
+                    }
                 }
             }
         }
@@ -6620,24 +6623,38 @@ NFT;
     {
         require __DIR__ . '/config.php';
         $conf = $this->getPacConf();
-        $bot  = preg_replace('~[\W]~iu', '_', $this->request('getMyName', [])['result']['name']);
-        $json = $this->export();
+        $bot  = preg_replace('~[\W]~iu', '_', $this->request('getMyName', [])['result']['name'] ?? 'VPNBot');
+        try { $json = $this->export(); }
+        catch (Throwable $error) {
+            error_log('pinBackup: ' . get_class($error) . ' at ' . basename($error->getFile()) . ':' . $error->getLine());
+            return false;
+        }
         if (!is_string($json) || !is_array(json_decode($json, true))) {
+            return false;
+        }
+        // Облачный Bot API отправляет файлы до 50 МБ, но getFile скачивает
+        // только до 20 МБ. Такая копия должна оставаться восстанавливаемой.
+        if (strlen($json) > 20 * 1024 * 1024) {
+            error_log('pinBackup: snapshot exceeds Telegram getFile limit');
             return false;
         }
         if (!empty($file)) {
             if (!$this->writePrivateKey($file, $json)) return false;
         }
-        if (!empty($conf['pinbackup'])) {
-            $this->pinAdmin($conf['pinbackup'], 1);
-        }
         // Полный экспорт содержит ключи: отправляем из памяти, без временного
         // файла с обычными правами чтения в /logs.
-        $conf['pinbackup'] = $this->sendFile($c['admin'][0], new CURLStringFile(
+        $sent = $this->sendFile($c['admin'][0], new CURLStringFile(
             $json, "{$bot}_export_" . date('d_m_Y_H_i') . '.json', 'application/json'
-        ))['result']['message_id'];
-        $this->setPacConf($conf);
-        $this->pinAdmin($conf['pinbackup']);
+        ));
+        if (empty($sent['ok']) || !is_int($sent['result']['message_id'] ?? null)) return false;
+        $previous = $conf['pinbackup'] ?? null;
+        $conf['pinbackup'] = $sent['result']['message_id'];
+        if ($this->setPacConf($conf) === false) return false;
+        $pinned = $this->pinAdmin($conf['pinbackup']);
+        // Не теряем прежнее закрепление при отказе отправки или закрепления.
+        if (!empty($pinned['ok']) && !empty($previous) && $previous !== $conf['pinbackup']) {
+            $this->pinAdmin($previous, 1);
+        }
         return true;
     }
 
@@ -7009,31 +7026,34 @@ NFT;
     public function export()
     {
         $this->syncOcUsers();
-        $this->wg = 0;
-        $wg = [
-            'server'  => $this->readConfig(),
-            'clients' => json_decode(file_get_contents($this->clients), true) ?: [],
-        ];
-        $this->wg = 1;
-        $wg1 = [
-            'server'  => $this->readConfig(),
-            'clients' => json_decode(file_get_contents($this->clients1), true) ?: [],
-        ];
+        foreach ([$this->xrayConf, $this->hwid, '/config/ssserver.json', '/config/sslocal.json', '/config/ckserver.json', '/config/ckusers.json'] as $path) {
+            if (is_file($path) && !is_array(json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR))) {
+                throw new RuntimeException('Повреждён файл конфигурации: ' . basename($path));
+            }
+        }
+        $wg = $this->backupWireGuard(0);
+        $wg1 = $this->backupWireGuard(1);
         // Инстанс, выбранный для снятия дампа, не должен протекать в остаток
         // запроса (финальный menu(), getInstanceWG-рендеры) — как в import()
         // и shutdownClient/syncPortClients.
         unset($this->wg);
         $telemtBackup = $this->telemtBackupSnapshot();
+        $ssl = false;
+        if (is_file($this->protocolCertRoot . '/cert_private')) {
+            $private = file_get_contents($this->protocolCertRoot . '/cert_private');
+            $public = @file_get_contents($this->protocolCertRoot . '/cert_public');
+            if (!is_string($private) || !is_string($public) || !@openssl_x509_check_private_key($public, $private)) {
+                throw new RuntimeException('Не удалось сохранить полную TLS-пару');
+            }
+            $ssl = ['private' => $private, 'public' => $public];
+        }
         $conf = [
             'wg'  => $wg,
             'wg1' => $wg1,
             'ad'  => yaml_parse_file($this->adguard),
             'pac' => $telemtBackup['pac'],
             'hwid' => file_exists($this->hwid) ? (json_decode(file_get_contents($this->hwid), true) ?: []) : [],
-            'ssl' => file_exists('/certs/cert_private') && preg_match('~BEGIN PRIVATE KEY~', file_get_contents('/certs/cert_private')) ? [
-                'private' => file_get_contents('/certs/cert_private'),
-                'public'  => file_get_contents('/certs/cert_public'),
-            ] : false,
+            'ssl' => $ssl,
             'dnstt' => file_exists('/config/dnstt/server.key') ? [
                 'private' => file_get_contents('/config/dnstt/server.key'),
                 'public'  => file_get_contents('/config/dnstt/server.pub'),
@@ -7057,8 +7077,228 @@ NFT;
             'xraystats'     => $this->getXrayStats(),
             'managed_protocols' => $this->exportManagedProtocols(),
             'telemt_quota' => $telemtBackup['telemt_quota'],
+            'extra_files' => $this->backupExtraFiles(),
         ];
-        return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        foreach (['ad', 'hy', 'oc', 'ocu', 'tt'] as $key) {
+            if ($conf[$key] === false) throw new RuntimeException('Не удалось прочитать раздел бэкапа: ' . $key);
+        }
+        return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    }
+
+    private function backupWireGuard(int $instance): array
+    {
+        $clients = $instance ? $this->clients1 : $this->clients;
+        $path = dirname($clients) . '/wg' . $instance . '.conf';
+        $users = is_file($clients) ? json_decode((string) file_get_contents($clients), true, 512, JSON_THROW_ON_ERROR) : [];
+        if (!is_array($users)) throw new RuntimeException('Некорректный список WireGuard');
+        // Локальный bind-файл доступен и при выключенном контейнере.
+        if (is_file($path)) {
+            $body = file_get_contents($path);
+            if ($body === false) throw new RuntimeException('Конфигурация WireGuard недоступна');
+            $server = $this->parseWireGuardConfig($body);
+        } else {
+            $this->wg = $instance;
+            try { $server = $this->readConfig(); }
+            finally { unset($this->wg); }
+            if ($this->sshFailed) throw new RuntimeException('Не удалось сохранить WireGuard');
+        }
+        if ($users && empty($server['interface'])) throw new RuntimeException('Неполная конфигурация WireGuard');
+        return ['server' => $server, 'clients' => $users];
+    }
+
+    private function restoreBackupWireGuard(array $snapshot, int $switch): bool
+    {
+        $instance = $this->getInstanceWG() === 'wg1' ? 1 : 0;
+        $path = dirname($instance ? $this->clients1 : $this->clients) . '/wg' . $instance . '.conf';
+        $body = $this->createConfig($snapshot['server']);
+        // Сохраняем inode: этот файл отдельно примонтирован в WG-контейнер.
+        $old = is_file($path) ? file_get_contents($path) : null;
+        if (file_put_contents($path, $body, LOCK_EX) !== strlen($body)) {
+            if (is_string($old)) file_put_contents($path, $old, LOCK_EX);
+            return false;
+        }
+        $this->chmodSecret($path);
+        if ($this->saveClients($snapshot['clients'] ?? []) === false) return false;
+        if (!$this->protocolModuleEnabled($instance ? 'wg1' : 'wg')) return true;
+        if (!$this->restartWG($body, $switch)) return false;
+        $this->iptablesWG();
+        return !$this->sshFailed;
+    }
+
+    // Только данные пользователя. Конфиги Nginx, скрипты, Docker, токен бота
+    // и системные SSH-ключи из загруженного JSON не исполняются/не заменяются.
+    public function backupExtraPaths(): array
+    {
+        $root = dirname($this->pac);
+        $paths = [];
+        foreach (['stlsserver.json', 'ss.acl', 'clash.json', 'sing.json', 'v2ray.json',
+            'trusttunnel/hosts.toml', 'trusttunnel/rules.toml'] as $name) $paths[$name] = "$root/$name";
+        foreach (['index.html', 'loading.css'] as $name) $paths['telemt/decoy/' . $name] = $this->telemtDecoyDir . '/' . $name;
+        $paths['webapp/override.html'] = dirname($this->htpasswd) . '/override.html';
+        $panel = getenv('PANEL_DIR') ?: "$root/panel";
+        foreach (['password-display.key', 'password-display.json', 'initial_password.txt'] as $name) $paths['panel/' . $name] = "$panel/$name";
+        return $paths;
+    }
+
+    private function backupExtraPath(string $name): string
+    {
+        $path = $this->backupExtraPaths()[$name] ?? null;
+        if ($path === null && preg_match('~^warp/(?:clients/[a-zA-Z0-9_.-]{1,48}/)?wgcf-(?:account\.toml|profile\.conf)$~D', $name)) {
+            $path = $this->backupWarpRoot . '/' . substr($name, 5);
+        }
+        if ($path === null || str_contains($name, '..')) throw new RuntimeException('Посторонний файл в бэкапе');
+        for ($p = $path; $p !== dirname($p); $p = dirname($p)) {
+            if (is_link($p)) throw new RuntimeException('Симлинк в пути бэкапа');
+        }
+        return $path;
+    }
+
+    public function backupExtraFiles(): array
+    {
+        $paths = $this->backupExtraPaths();
+        foreach (['wgcf-account.toml', 'wgcf-profile.conf', 'clients/*/wgcf-account.toml', 'clients/*/wgcf-profile.conf'] as $pattern) {
+            foreach (glob($this->backupWarpRoot . '/' . $pattern) ?: [] as $path) {
+                $paths['warp/' . substr($path, strlen($this->backupWarpRoot) + 1)] = $path;
+            }
+        }
+        $files = [];
+        foreach ($paths as $name => $path) {
+            $this->backupExtraPath($name);
+            if (!file_exists($path)) continue;
+            if (!is_file($path) || filesize($path) > 4 * 1024 * 1024 || ($body = file_get_contents($path)) === false) {
+                throw new RuntimeException('Дополнительный файл недоступен для бэкапа');
+            }
+            $files[$name] = base64_encode($body);
+        }
+        $this->validateBackupExtraFiles($files);
+        return $files;
+    }
+
+    public function validateBackupExtraFiles(array $files): array
+    {
+        if (count($files) > 8192) throw new RuntimeException('Слишком много файлов в бэкапе');
+        $decoded = []; $total = 0;
+        foreach ($files as $name => $data) {
+            if (!is_string($name)) throw new RuntimeException('Неверное имя файла бэкапа');
+            $this->backupExtraPath($name);
+            if (!is_string($data) || strlen($data) > 5600000 || ($body = base64_decode($data, true)) === false) {
+                throw new RuntimeException('Некорректный файл бэкапа');
+            }
+            $total += strlen($body);
+            if ($total > 16 * 1024 * 1024) throw new RuntimeException('Слишком большой бэкап');
+            if (str_ends_with($name, '.json') && !is_array(json_decode($body, true, 512, JSON_THROW_ON_ERROR))) {
+                throw new RuntimeException('Некорректный JSON в бэкапе');
+            }
+            if ($name === 'panel/password-display.key' && strlen($body) !== 32) throw new RuntimeException('Некорректный ключ хранилища пароля');
+            $decoded[$name] = $body;
+        }
+        foreach (['panel/password-display.key' => 'panel/password-display.json'] as $a => $b) {
+            if (isset($decoded[$a]) !== isset($decoded[$b])) throw new RuntimeException('Неполное хранилище пароля');
+        }
+        return $decoded;
+    }
+
+    public function restoreBackupExtraFiles(array $files): void
+    {
+        $decoded = $this->validateBackupExtraFiles($files);
+        $before = [];
+        foreach ($decoded as $name => $_) {
+            $path = $this->backupExtraPath($name);
+            $before[$path] = file_exists($path) ? [file_get_contents($path), fileperms($path) & 0777] : null;
+            if ($before[$path] !== null && !is_string($before[$path][0])) throw new RuntimeException('Не удалось сохранить прежний файл');
+        }
+        $written = [];
+        try {
+            foreach ($decoded as $name => $body) {
+                $path = $this->backupExtraPath($name);
+                if (!is_dir(dirname($path)) && !@mkdir(dirname($path), 0755, true)) throw new RuntimeException('Не удалось создать каталог восстановления');
+                // Запись может отказать уже после rename (например, на fsync).
+                $written[] = $path;
+                if (!$this->writePrivateKey($path, $body)) throw new RuntimeException('Не удалось восстановить дополнительный файл');
+                if (str_ends_with($name, '.html') || str_ends_with($name, '.css')) {
+                    if (!chmod($path, 0644)) throw new RuntimeException('Не удалось установить права страницы');
+                }
+            }
+        } catch (Throwable $error) {
+            foreach (array_reverse($written) as $path) {
+                $old = $before[$path];
+                if ($old === null) $ok = @unlink($path);
+                else $ok = $this->writePrivateKey($path, $old[0]) && @chmod($path, $old[1]);
+                if (!$ok) throw new RuntimeException('Откат дополнительных файлов не завершён', previous: $error);
+            }
+            throw $error;
+        }
+    }
+
+    private function restoreBackupExtraServices(array $files): bool
+    {
+        $ok = true;
+        if (isset($files['warp/wgcf-profile.conf']) && $this->protocolModuleEnabled('wp')) {
+            $ok = $this->withLock('warp-control', function () {
+                if (!$this->warpCommand('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true')) return false;
+                return !empty($this->getPacConf()['warpoff']) || $this->warpCommand('wg-quick up /etc/warp/wgcf-profile.conf');
+            });
+        }
+        if (isset($files['stlsserver.json']) && $this->protocolModuleEnabled('ss')) {
+            $this->ssh(self::PKILL_STLS, 'ss');
+            if (!empty($this->getStlsConfig()['Enabled'])) {
+                $port = (int) (getenv('STLSPORT') ?: 3443);
+                $cmd = 'if [ -s /certs/cert_public ] && [ -s /certs/cert_private ]; then c=/certs/cert; else c=/certs/self; fi; '
+                    . 'nohup setsid simple-tls -s -b :' . $port . ' -d 127.0.0.1:' . self::SS_INTERNAL_PORT
+                    . ' -cert "${c}_public" -key "${c}_private" </dev/null >>/logs/simple-tls.log 2>&1 & '
+                    . 'sleep 1; pgrep -f "[s]imple-tls -s" >/dev/null && printf STLS_OK';
+                if (trim($this->ssh($cmd, 'ss')) !== 'STLS_OK') $ok = false;
+            }
+        }
+        return $ok;
+    }
+
+    public function restoreBackupXray(array $config): bool
+    {
+        $core = $this->xrayCoreSelection();
+        if (!$this->protocolModuleEnabled('xr')) {
+            return $this->writeXrayJson(json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))
+                && $this->writeCoreMarker($core);
+        }
+        return $this->withLock('xray', function () use ($config, $core) {
+            $probe = $this->xrayCoreProbe(true);
+            $old = $probe['selection'] ?? '';
+            if (empty($probe['ok']) || !isset(self::XRAY_BINARIES[$old])) return false;
+            if (!$this->validateXrayConfig($config, self::XRAY_BINARIES[$core])) return false;
+            $before = $this->readXrayJson();
+            $link = fn($selection) => trim($this->ssh('ln -sf ' . self::XRAY_BINARIES[$selection]
+                . ' /usr/local/bin/xray && printf XRAY_LINK_OK', 'xr')) === 'XRAY_LINK_OK';
+            if (!$link($core)) return false;
+            $this->xrProbe = null;
+            if ($this->writeCoreMarker($core) && $this->restartXray($config) && $this->xrayCoreStarted($core)) return true;
+            $link($old);
+            $this->writeCoreMarker($old);
+            if ($before !== '') $this->writeXrayJson($before);
+            $this->xrProbe = null;
+            $this->ssh('pkill xray; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >>/logs/xray_stdout 2>&1 &', 'xr');
+            return false;
+        });
+    }
+
+    private function restoreBackupCertificates(array $pair): bool
+    {
+        $before = [];
+        foreach (['private', 'public'] as $part) {
+            $path = $this->protocolCertRoot . '/cert_' . $part;
+            $before[$part] = is_file($path) ? file_get_contents($path) : null;
+            if ($before[$part] === false) return false;
+        }
+        foreach (['private', 'public'] as $part) {
+            if ($this->writePrivateKey($this->protocolCertRoot . '/cert_' . $part, $pair[$part])) continue;
+            foreach ($before as $oldPart => $body) {
+                $path = $this->protocolCertRoot . '/cert_' . $oldPart;
+                if ($body === null) $ok = !file_exists($path) || @unlink($path);
+                else $ok = $this->writePrivateKey($path, $body);
+                if (!$ok) error_log('importFile: TLS rollback failed');
+            }
+            return false;
+        }
+        return true;
     }
 
     public function backupHasTelemt(array $pac): bool
@@ -7105,6 +7345,19 @@ NFT;
         ]);
     }
 
+    protected function backupImportError(string $stage, bool $local, ?Throwable $error = null): bool
+    {
+        // Сообщение исключения может содержать URL с токеном или секрет из
+        // файла. Сохраняем только этап, класс и место ошибки.
+        error_log('importFile: stage=' . $stage . ($error ? ' ' . get_class($error)
+            . ' at ' . basename($error->getFile()) . ':' . $error->getLine() : ''));
+        if (!$local) {
+            $this->send($this->input['chat'], '❌ ' . $this->i18n('backup restore interrupted')
+                . "\n" . $this->i18n('backup stage ' . $stage) . "\n" . $this->i18n('try again'));
+        }
+        return false;
+    }
+
     public function importFile($file = false)
     {
         // $file приезжает ПЕРВЫМ аргументом из reply(), а туда всегда идёт
@@ -7117,42 +7370,70 @@ NFT;
         // вызывающему — selfUpdate() с константой $this->update.
         if (!empty($file) && $file !== $this->update) {
             $file = false;
-            $this->answer($this->input['callback_id'] ?? null, 'error', true);
-            return false;
+            return $this->backupImportError('file', false);
         }
+        try { return $this->restoreBackup($file); }
+        catch (Throwable $error) { return $this->backupImportError('apply', !empty($file), $error); }
+        finally { unset($this->wg); }
+    }
+
+    private function restoreBackup($file): bool
+    {
         if (!empty($file)) {
-            $json = json_decode(file_get_contents($file), true);
+            $json = json_decode((string) @file_get_contents($file), true);
         } else {
-            $r    = $this->request('getFile', ['file_id' => $this->input['file_id']]);
-            $json = json_decode(file_get_contents($this->file . $r['result']['file_path']), true);
+            if (empty($this->input['file_id'])) return $this->backupImportError('file', false);
+            $r = $this->request('getFile', ['file_id' => $this->input['file_id']]);
+            if (empty($r['ok']) || !is_string($r['result']['file_path'] ?? null)) return $this->backupImportError('file', false);
+            // URL содержит токен бота: предупреждение PHP не должно попасть в лог.
+            $json = json_decode((string) @file_get_contents($this->file . $r['result']['file_path']), true);
         }
-        if (empty($json) || !is_array($json)) {
-            $this->answer($this->input['callback_id'], 'error', true);
-            return false;
+        if (empty($json) || !is_array($json) || !array_intersect(array_keys($json), [
+            'pac', 'wg', 'wg1', 'ad', 'hwid', 'ssl', 'dnstt', 'xray', 'hy', 'hy_users',
+            'oc', 'ocu', 'tt', 'ss', 'sl', 'cloak', 'ckusers', 'ovpn', 'ipsec', 'xraystats', 'managed_protocols', 'extra_files',
+        ])) {
+            return $this->backupImportError('file', !empty($file));
         } else {
+            foreach (['pac', 'wg', 'wg1', 'ad', 'hwid', 'ssl', 'dnstt', 'xray', 'hy', 'hy_users',
+                'ss', 'sl', 'cloak', 'ckusers', 'ovpn', 'ipsec', 'xraystats', 'managed_protocols', 'extra_files'] as $key) {
+                if (isset($json[$key]) && $json[$key] !== false && !is_array($json[$key])) {
+                    return $this->backupImportError('file', !empty($file));
+                }
+            }
             $ok = true;
             $switch_amnezia = $switch_wg1amnezia = 0;
+            if (array_key_exists('extra_files', $json)) $this->validateBackupExtraFiles($json['extra_files']);
+            if (!empty($json['ssl']) && (!is_string($json['ssl']['public'] ?? null)
+                || !is_string($json['ssl']['private'] ?? null)
+                || !@openssl_x509_check_private_key($json['ssl']['public'], $json['ssl']['private']))) {
+                return $this->backupImportError('certificates', !empty($file));
+            }
+            foreach (['wg', 'wg1'] as $key) {
+                if (!empty($json[$key]['clients']) && empty($json[$key]['server']['interface'])) {
+                    return $this->backupImportError('file', !empty($file));
+                }
+            }
             try {
                 $telemtLimits = $this->telemtLimitsOf($json['pac'] ?? []);
                 if (array_key_exists('telemt_quota', $json)) $this->telemtValidateQuotaState($json['telemt_quota'], $json['pac'] ?? []);
-                elseif (array_filter($telemtLimits, static fn($row) => !empty($row['quota']))) return false;
-            } catch (Throwable $error) { return false; }
-            if (array_key_exists('tt', $json) && !is_string($json['tt'])) return false;
+                elseif (array_filter($telemtLimits, static fn($row) => !empty($row['quota']))) return $this->backupImportError('telemt', !empty($file));
+            } catch (Throwable $error) { return $this->backupImportError('telemt', !empty($file), $error); }
+            if (array_key_exists('tt', $json) && !is_string($json['tt'])) return $this->backupImportError('trusttunnel', !empty($file));
             if (array_key_exists('hy_users', $json)) {
                 try { HysteriaUsers::validateSnapshot($json['hy_users']); }
-                catch (Throwable $e) { return false; }
+                catch (Throwable $e) { return $this->backupImportError('hysteria', !empty($file), $e); }
             }
             if (array_key_exists('managed_protocols', $json)) {
                 try { $this->importManagedProtocols($json['managed_protocols']); }
-                catch (Throwable $e) { return false; }
+                catch (Throwable $e) { return $this->backupImportError('protocols', !empty($file), $e); }
             }
+            if (array_key_exists('extra_files', $json)) $this->restoreBackupExtraFiles($json['extra_files']);
             // certs
             if (!empty($json['ssl'])) {
                 $out[] = 'update certificates';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                if (!$this->writePrivateKey('/certs/cert_private', $json['ssl']['private'])
-                    || file_put_contents('/certs/cert_public', $json['ssl']['public']) === false) {
-                    return false;
+                if (!$this->restoreBackupCertificates($json['ssl'])) {
+                    return $this->backupImportError('certificates', !empty($file));
                 }
             }
             // pac
@@ -7172,29 +7453,25 @@ NFT;
                 $json['pac'] = $this->preservePanelPswd($json['pac'], $this->getPacConf());
                 if ($this->backupHasTelemt($json['pac'])) {
                     $this->telemtQuotaRestore($json['telemt_quota'] ?? null, $json['pac']);
-                } elseif ($this->setPacConf($json['pac']) === false) return false;
+                } elseif ($this->setPacConf($json['pac']) === false) return $this->backupImportError('settings', !empty($file));
                 $out[] = 'update naiveproxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->restartNaive();
                 $this->pacUpdate('1');
             }
             // wg
-            if (!empty($json['wg'])) {
+            if (!empty($json['wg']['server'])) {
                 $out[] = 'update wireguard';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->wg = 0;
-                $this->saveClients($json['wg']['clients']);
-                $this->restartWG($this->createConfig($json['wg']['server']), $switch_amnezia);
-                $this->iptablesWG();
+                if (!$this->restoreBackupWireGuard($json['wg'], $switch_amnezia)) $ok = false;
             }
             // wg1
-            if (!empty($json['wg1'])) {
+            if (!empty($json['wg1']['server'])) {
                 $out[] = 'update wireguard 1';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->wg = 1;
-                $this->saveClients($json['wg1']['clients']);
-                $this->restartWG($this->createConfig($json['wg1']['server']), $switch_wg1amnezia);
-                $this->iptablesWG();
+                if (!$this->restoreBackupWireGuard($json['wg1'], $switch_wg1amnezia)) $ok = false;
             }
             // выбранный для restore инстанс не должен протекать в остаток
             // запроса (финальный menu(), getInstanceWG-рендеры) — как в
@@ -7205,7 +7482,7 @@ NFT;
                 $out[] = 'update adguard';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->stopAd();
-                yaml_emit_file($this->adguard, $json['ad']);
+                if (!yaml_emit_file($this->adguard, $json['ad'])) throw new RuntimeException('Не удалось восстановить AdGuard');
                 $this->startAd();
             }
             // ss
@@ -7214,7 +7491,7 @@ NFT;
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->ssh('pkill ssserver', 'ss');
                 if (empty($json['ss']['acl'])) $json['ss']['acl'] = '/config/ss.acl';
-                file_put_contents('/config/ssserver.json', json_encode($json['ss'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                if (file_put_contents('/config/ssserver.json', json_encode($json['ss'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)) === false) throw new RuntimeException('Не удалось восстановить Shadowsocks');
                 $this->chmodSecret('/config/ssserver.json');
                 // Ключ outbound_proxy («ss через warp») приезжает вместе с
                 // бэкапом, а правило в WARP_SOCKS — нет, и единственный
@@ -7231,7 +7508,7 @@ NFT;
                 $out[] = 'update shadowsocks proxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->ssh('pkill sslocal', 'proxy');
-                file_put_contents('/config/sslocal.json', json_encode($json['sl'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                if (file_put_contents('/config/sslocal.json', json_encode($json['sl'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)) === false) throw new RuntimeException('Не удалось восстановить Shadowsocks proxy');
                 $this->ssh('sslocal -v -d -c /config.json', 'proxy');
             }
             // hwid
@@ -7239,7 +7516,7 @@ NFT;
                 $out[] = 'update hwid devices';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $data = is_array($json['hwid']) ? $json['hwid'] : [];
-                file_put_contents($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                if (file_put_contents($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)) === false) throw new RuntimeException('Не удалось восстановить HWID');
             }
             // xray
             if (!empty($json['xray'])) {
@@ -7253,7 +7530,7 @@ NFT;
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                     $this->datSync(true);
                 }
-                if (!$this->restartXray($json['xray'])) {
+                if (!$this->restoreBackupXray($json['xray'])) {
                     $ok = false;
                     $out[] = '❌ xray: configuration rejected; previous configuration preserved';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -7274,11 +7551,11 @@ NFT;
                 $out[] = 'update ocserv';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if (array_key_exists('ocu', $json)) {
-                    file_put_contents('/config/ocserv.passwd', $json['ocu']);
+                    if (!$this->writePrivateKey('/config/ocserv.passwd', $json['ocu'])) throw new RuntimeException('Не удалось восстановить пользователей OpenConnect');
                     $this->chmodSecret('/config/ocserv.passwd');
                     $this->syncOcUsers();
                 }
-                $this->restartOcserv($json['oc']);
+                if ($this->restartOcserv($json['oc']) === false) $ok = false;
             }
             // hysteria
             if (!empty($json['hy'])) {
@@ -7302,7 +7579,7 @@ NFT;
                     if (!$this->writePrivateKey($paths['cred'], $json['tt'])) return false;
                     return true;
                 });
-                if ($restored) $this->restartTt();
+                if ($restored) { if ($this->restartTt() === false) $ok = false; }
                 else $ok = false;
             }
             // cloak
@@ -7310,10 +7587,10 @@ NFT;
                 $out[] = 'update cloak';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->ssh(self::PKILL_CK, 'ss');
-                file_put_contents(
+                if (file_put_contents(
                     '/config/ckserver.json',
                     json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-                );
+                ) === false) throw new RuntimeException('Не удалось восстановить Cloak');
                 // Восстанавливаем side-store с именами; если в бэкапе нет
                 // (старый формат) — getCloakUsers() забутстрапит из BypassUID.
                 if (!empty($json['ckusers']) && is_array($json['ckusers'])) {
@@ -7367,11 +7644,11 @@ NFT;
                 $out[] = 'update dnstt certificates';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if (!is_dir('/config/dnstt')) mkdir('/config/dnstt', 0700, true);
-                $this->writePrivateKey('/config/dnstt/server.key', $json['dnstt']['private']);
-                file_put_contents('/config/dnstt/server.pub', $json['dnstt']['public']);
+                if (!$this->writePrivateKey('/config/dnstt/server.key', $json['dnstt']['private'])
+                    || !$this->writePrivateKey('/config/dnstt/server.pub', $json['dnstt']['public'])) throw new RuntimeException('Не удалось восстановить DNSTT');
                 if (!empty($json['dnstt']['ssh_private']) && !empty($json['dnstt']['ssh_public'])) {
-                    $this->writePrivateKey('/config/dnstt/ssh_host_ed25519_key', $json['dnstt']['ssh_private']);
-                    file_put_contents('/config/dnstt/ssh_host_ed25519_key.pub', $json['dnstt']['ssh_public']);
+                    if (!$this->writePrivateKey('/config/dnstt/ssh_host_ed25519_key', $json['dnstt']['ssh_private'])
+                        || !$this->writePrivateKey('/config/dnstt/ssh_host_ed25519_key.pub', $json['dnstt']['ssh_public'])) throw new RuntimeException('Не удалось восстановить ключи DNSTT');
                 }
             }
             if (array_key_exists('pac', $json) || !empty($json['dnstt'])) {
@@ -7379,17 +7656,18 @@ NFT;
                 // продолжал принимать старый пароль/ключ до перезапуска.
                 $this->dnsttStart();
             }
+            if (isset($json['extra_files']) && !$this->restoreBackupExtraServices($json['extra_files'])) $ok = false;
             // nginx
             $out[] = $this->i18n('reset nginx');
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
 
             $this->cloakNginx();
 
-            $out[] = "end import";
+            $out[] = $this->i18n($ok ? 'backup restore completed' : 'backup restore incomplete');
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
             $this->language = $this->getPacConf()['language'] ?: 'en';
             $this->limit    = $this->getPacConf()['limitpage'] ?: 5;
-            if (empty($file)) {
+            if (empty($file) && $ok) {
                 sleep(3);
                 $this->menu();
             }
@@ -9980,9 +10258,11 @@ NFT;
         // callback. takeReply() перечитывает state под локом и сразу удаляет.
         $state = $this->takeReply($this->input['reply']);
         if (!empty($state)) {
-            $this->delete($this->input['chat'], $this->input['reply']);
-            $this->delete($this->input['chat'], $this->input['message_id']);
             $callback = $state['callback'];
+            $this->delete($this->input['chat'], $this->input['reply']);
+            // Документ с бэкапом остаётся у администратора, в том числе при
+            // отказе проверки или обрыве восстановления.
+            if ($callback !== 'importFile') $this->delete($this->input['chat'], $this->input['message_id']);
             $this->protocolReturnMain = !empty($state['protocol_main'])
                 && in_array($callback, ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true);
             $this->protocolRelayOrigin = $state['protocol_relay'] ?? [];
@@ -21532,7 +21812,7 @@ DNS-over-HTTPS with IP:
         if ($mask === null) {
             return true;
         }
-        return ctype_digit($mask)
+        return preg_match('~^[0-9]+$~D', $mask) === 1
             && (int) $mask <= (str_contains($ip, ':') ? 128 : 32);
     }
 
@@ -28496,7 +28776,7 @@ DNS-over-HTTPS with IP:
     // Mihomo — целое число секунд; приведение (int)'1d' давало одну секунду.
     public static function ruleSetInterval(string $value): ?int
     {
-        if (ctype_digit($value)) $value .= 's';
+        if (preg_match('~^[0-9]+$~D', $value)) $value .= 's';
         if (!preg_match('~^(?:\d+(?:\.\d+)?[smhdw])+$~', $value)) return null;
         preg_match_all('~(\d+(?:\.\d+)?)([smhdw])~', $value, $parts, PREG_SET_ORDER);
         $seconds = 0;
@@ -30975,6 +31255,11 @@ DNS-over-HTTPS with IP:
     public function readConfig()
     {
         $r = $this->ssh('cat /etc/wireguard/wg0.conf', $this->getInstanceWG());
+        return $this->parseWireGuardConfig($r);
+    }
+
+    private function parseWireGuardConfig(string $r): ?array
+    {
         $r = explode(PHP_EOL, $r);
         $r = array_filter($r);
         // Инициализация: при недоступном контейнере ssh() отдаёт "", цикл ниже
@@ -31710,7 +31995,12 @@ DNS-over-HTTPS with IP:
         // "" и пользователю показывался «успех» на невыполненной операции.
         // Запись конфига — единственный шаг, который обязан пройти; на down
         // ошибку игнорируем (интерфейс мог быть не поднят — это норма).
-        $this->ssh("echo '$b64' | base64 -d > /etc/wireguard/wg0.conf", $this->getInstanceWG());
+        $local = dirname($this->clients) . '/' . ($this->getInstanceWG() === 'wg1' ? 'wg1' : 'wg0') . '.conf';
+        if (!is_file($local) || file_get_contents($local) !== $conf_str) {
+            $this->ssh("echo '$b64' | base64 -d > /etc/wireguard/wg0.conf", $this->getInstanceWG());
+        } else {
+            $this->sshFailed = false;
+        }
         if ($this->sshFailed) {
             return false;
         }

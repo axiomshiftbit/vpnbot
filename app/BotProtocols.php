@@ -911,9 +911,21 @@ trait BotProtocols
                 $after = $edit($before);
                 if ($before === $after) return true;
                 $temporary = ($service === 'ng' ? '/etc/nginx/protocol-validation-' : '/tmp/upstream-') . bin2hex(random_bytes(8)) . '.conf';
-                $cmd = 'umask 077; printf %s ' . escapeshellarg(base64_encode($after)) . ' | base64 -d > ' . $temporary
-                    . '; nginx -t -c ' . $temporary . ' >/dev/null 2>&1 && printf VPNBOT_VALID; rm -f ' . $temporary;
-                if (!str_contains($this->ssh($cmd, $service), 'VPNBOT_VALID')) return false;
+                try {
+                    // exec-запрос SSH ограничен размером пакета. Конфиг после
+                    // base64 уже превышает этот предел; передаём частями,
+                    // кратными четырём, и проверяем каждую запись до nginx -t.
+                    foreach (str_split(base64_encode($after), 12000) as $part => $chunk) {
+                        $cmd = 'umask 077; ' . ($part === 0 ? 'set -C; ' : '')
+                            . 'printf %s ' . escapeshellarg($chunk) . ' | base64 -d '
+                            . ($part === 0 ? '> ' : '>> ') . $temporary . ' && printf VPNBOT_STAGED';
+                        if (trim($this->ssh($cmd, $service)) !== 'VPNBOT_STAGED') return false;
+                    }
+                    if (!str_contains($this->ssh('nginx -t -c ' . $temporary
+                        . ' >/dev/null 2>&1 && printf VPNBOT_VALID', $service), 'VPNBOT_VALID')) return false;
+                } finally {
+                    $this->ssh('rm -f -- ' . $temporary, $service);
+                }
                 if (!flock($lock, LOCK_EX)) return false;
                 if (file_get_contents($path) !== $before) { flock($lock, LOCK_UN); continue; }
                 $ok = $write($after);

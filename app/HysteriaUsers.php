@@ -143,7 +143,9 @@ final class HysteriaUsers
     {
         return $this->locked(function () {
             $state = $this->read();
-            $usage = $this->usage();
+            $pending = $state['restore_usage'] ?? null;
+            $usage = $pending && !is_file($this->root . '/runtime/usage.json') ? [] : $this->usage();
+            if ($pending && ($usage['restored'] ?? '') !== $pending['id']) $usage = ['users' => $pending['users']];
             foreach ($state['users'] as $id => $user) {
                 if (($usage['users'][$id]['reset'] ?? null) !== $user['reset']) {
                     throw new RuntimeException('Дождитесь применения счётчиков Hysteria перед резервным копированием');

@@ -149,6 +149,54 @@ $i = [
         'ru' => 'HTTPS Lanes без подбора не подходит для iOS. Выберите «Авто» или «Без подбора · HTTPS».',
         'en' => 'Fixed HTTPS Lanes does not support iOS. Select Auto or Fixed HTTPS.',
     ],
+    'backup create failed' => [
+        'ru' => '❌ Не удалось создать или отправить резервную копию. Предыдущая копия сохранена. Повторите попытку.',
+        'en' => '❌ Could not create or send the backup. The previous backup is preserved. Try again.',
+    ],
+    'backup restore interrupted' => [
+        'ru' => 'Восстановление прервано.',
+        'en' => 'Restore interrupted.',
+    ],
+    'backup restore completed' => [
+        'ru' => '✅ Восстановление завершено.',
+        'en' => '✅ Restore completed.',
+    ],
+    'backup restore incomplete' => [
+        'ru' => '❌ Восстановление выполнено не полностью. Проверьте ошибки выше. Файл бэкапа сохранён в чате.',
+        'en' => '❌ Restore incomplete. Check the errors above. The backup file remains in the chat.',
+    ],
+    'backup stage file' => [
+        'ru' => 'Не удалось загрузить или прочитать JSON-файл бэкапа.',
+        'en' => 'Could not download or read the backup JSON file.',
+    ],
+    'backup stage telemt' => [
+        'ru' => 'Ошибка проверки квот TeleMT в бэкапе.',
+        'en' => 'The TeleMT quota snapshot is invalid.',
+    ],
+    'backup stage trusttunnel' => [
+        'ru' => 'Неверный формат настроек TrustTunnel.',
+        'en' => 'Invalid TrustTunnel backup format.',
+    ],
+    'backup stage hysteria' => [
+        'ru' => 'Ошибка проверки пользователей Hysteria в бэкапе.',
+        'en' => 'The Hysteria user snapshot is invalid.',
+    ],
+    'backup stage protocols' => [
+        'ru' => 'Не удалось восстановить дополнительные протоколы или подготовить их сайт. Причина записана в журнал ошибок PHP.',
+        'en' => 'Could not restore managed protocols or prepare their cover site. See the PHP error log.',
+    ],
+    'backup stage certificates' => [
+        'ru' => 'Не удалось записать сертификаты.',
+        'en' => 'Could not write the certificates.',
+    ],
+    'backup stage settings' => [
+        'ru' => 'Не удалось сохранить настройки бота.',
+        'en' => 'Could not save the bot settings.',
+    ],
+    'backup stage apply' => [
+        'ru' => 'Не все настройки применены. Файл бэкапа сохранён в чате; место ошибки записано в журнал PHP. Повторите восстановление после устранения причины.',
+        'en' => 'Some settings were not applied. The backup remains in the chat; the error location is in the PHP log. Retry after fixing the cause.',
+    ],
     'update backup failed' => [
         'ru' => 'Не удалось сохранить резервную копию. Обновление отменено; текущие настройки сохранены.',
         'en' => 'Could not save the backup. Update cancelled; current settings are preserved.',

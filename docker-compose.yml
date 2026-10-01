@@ -236,6 +236,7 @@ services:
             - ./.git:/.git
             - ./scripts/start_service.sh:/start_service.sh
             - ./docker-compose.override.yml:/docker/compose
+            - warp:/etc/warp
         environment:
             IP: ${IP}
             VER: ${VER}
