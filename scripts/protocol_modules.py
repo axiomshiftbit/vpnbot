@@ -273,15 +273,21 @@ def apply(root):
         applied = old.copy()
         applied_ports = previous.get('bindings', {}).copy()
         failures = certificate_errors.copy()
+        pending_errors = previous.get('errors', {}).copy()
         changed = []
         for service in SERVICES:
             same = old.get(service) == current[service]
             same = same and previous.get("bindings", {}).get(service) == ports.get(service)
             if service == "ipsec":
                 same = same and all(old.get(k) == current[k] for k in ("l2tp", "ikev2"))
-            pending = previous.get('errors', {}).get(service, '')
-            if same and service in old and pending not in ('operation_failed', 'operation_failed_rolled_back'):
+            pending = pending_errors.get(service, '')
+            if same and service in old and pending not in ('operation_pending', 'operation_failed', 'operation_failed_rolled_back'):
                 continue
+            # Persist intent before Docker: an interrupted operation must be retried
+            # even if the user has since switched back to the previous settings.
+            write_status(status, {"ok": False, "settings": applied, "bindings": applied_ports, "changed": changed,
+                                  "errors": pending_errors | failures | {service: 'operation_pending'},
+                                  "failed_service": next(iter(failures), None)})
             if enabled(current, service):
                 if service in ('mieru', 'tuic', 'shadowtls', 'snolc'):
                     if service not in ports:
@@ -307,6 +313,7 @@ def apply(root):
                 failures[service] = 'operation_failed_rolled_back' if rolled_back else 'operation_failed'
                 continue
             applied[service] = current[service]
+            pending_errors.pop(service, None)
             if service == 'ipsec':
                 for key in ('ikev2', 'l2tp'): applied[key] = current[key]
             if service in ports: applied_ports[service] = ports[service]
