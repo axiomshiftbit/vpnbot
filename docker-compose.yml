@@ -103,7 +103,8 @@ services:
             - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./logs/:/logs/
-            - ./app/webapp:/app
+            # Страницы обновляет php; nginx достаточно доступа на чтение.
+            - ./app/webapp:/app:ro
         ports:
             - 80:80
         hostname: nginx
@@ -235,6 +236,7 @@ services:
             - ./.git:/.git
             - ./scripts/start_service.sh:/start_service.sh
             - ./docker-compose.override.yml:/docker/compose
+            - warp:/etc/warp
         environment:
             IP: ${IP}
             VER: ${VER}
@@ -499,6 +501,7 @@ services:
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/telemt:/telemt
             - ./scripts/start_telemt.sh:/start_telemt.sh
+            - ./scripts/telemt_state.py:/telemt_state.py:ro
             - ./logs:/logs
         hostname: telemt
         container_name: telemt-${VER}
@@ -510,7 +513,7 @@ services:
               required: true # default
             - path: ./override.env
               required: false
-        stop_grace_period: 1s
+        stop_grace_period: 45s
         command: ["/bin/sh", "/start_telemt.sh"]
         networks:
             default:

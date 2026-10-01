@@ -30,7 +30,7 @@ class TelemtSupervisorTest(unittest.TestCase):
                              ('/ssh/key.pub', root / 'public'), ('ssh-keygen -A', 'true'),
                              ('/usr/sbin/sshd', 'true'), ('/telemt/', str(root / 'telemt') + '/'),
                              ('/logs', root / 'logs'), ('pgrep -x telemt', 'pgrep -x ' + name),
-                             ('pkill -9 -x telemt', 'pkill -9 -x ' + name),
+                             ('pkill -TERM -x telemt', 'pkill -TERM -x ' + name),
                              ('telemt run', str(core) + ' run')]:
                 script = script.replace(old, str(new))
             config = root / 'telemt/telemt.toml'
@@ -86,9 +86,21 @@ class TelemtSupervisorTest(unittest.TestCase):
                     state.write_text('1\n')
                     time.sleep(1.2)
                     self.assertEqual([], pids(), 'Без пользователей ядро не стартует')
+                    config.write_text('show_link = ["alice"]\n')
+                    wait_for(lambda: len(pids()) == 1)
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    time.sleep(1.2)  # Очередная итерация ждёт тот же лок, что и бот.
+                    process.terminate()
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    process.wait(timeout=5)
+                    self.assertEqual(0, process.returncode)
+                    self.assertEqual([], pids(), 'SIGTERM не оставляет поздний запуск ядра')
                 finally:
                     fcntl.flock(lock, fcntl.LOCK_UN)
-                    os.killpg(process.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     process.wait(timeout=5)
 
 

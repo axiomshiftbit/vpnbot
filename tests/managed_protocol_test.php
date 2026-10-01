@@ -20,6 +20,7 @@ class ManagedTestBot extends Bot {
         mpCheck(flock($lock, LOCK_EX | LOCK_NB), 'Сетевой вызов не удерживает блокировку');
         fclose($lock);
         $this->commands[] = $cmd;
+        if (str_contains($cmd, 'VPNBOT_STAGED')) return 'VPNBOT_STAGED';
         return str_contains($cmd, 'VPNBOT_VALID') ? ($this->valid ? 'VPNBOT_VALID' : '') : ($this->applied ? 'VPNBOT_APPLIED' : '');
     }
 }

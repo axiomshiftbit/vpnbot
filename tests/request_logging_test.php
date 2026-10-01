@@ -12,6 +12,8 @@ $log = "$dir/requests_error";
 foreach (['ClashTemplateValidator.php', 'VlessEncryption.php', 'BotProtocols.php', 'BotProtocolOptions.php', 'BotProtocolSubscriptions.php', 'BotConnectionExports.php', 'BotHysteria.php', 'AccessPolicy.php', 'AccessBatch.php', 'BotAccessPolicies.php', 'BotAccessBatch.php', 'BotServiceDiagnostics.php', 'HysteriaUsers.php', 'ProtocolModules.php', 'ManagedProtocol.php', 'SnolcProfile.php', 'MasqueProfile.php', 'XrayNoise.php', 'ProtocolOptions.php', 'ProtocolOptionHelp.php', 'PanelPasswordVault.php'] as $file) {
     copy(__DIR__ . '/../app/' . $file, "$dir/$file");
 }
+copy(__DIR__ . '/../app/BotMenuHelp.php', "$dir/BotMenuHelp.php");
+copy(__DIR__ . '/../app/BotTelemtLimits.php', "$dir/BotTelemtLimits.php");
 file_put_contents("$dir/bot.php", str_replace("'/logs/requests_error'", var_export($log, true),
     file_get_contents(__DIR__ . '/../app/bot.php')));
 require "$dir/bot.php";

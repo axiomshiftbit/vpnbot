@@ -124,7 +124,7 @@ class ProtocolTests(unittest.TestCase):
                  patch.object(modules, 'compose', return_value=subprocess.CompletedProcess([], 0)) as compose:
                 desired.write_text(json.dumps(old | {'telemt': False}))
                 modules.apply(root)
-                self.assertEqual([['stop', '--timeout', '10', 'telemt'], ['rm', '--force', 'telemt']],
+                self.assertEqual([['stop', '--timeout', '45', 'telemt'], ['rm', '--force', 'telemt']],
                                  [call.args[1] for call in compose.call_args_list])
                 self.assertEqual(['telemt'], json.loads(status.read_text())['changed'])
                 compose.reset_mock()

@@ -301,7 +301,7 @@ def apply(root):
                 result = compose(current, ["up", "-d", "--no-deps", service], capture=True)
             else:
                 # Explicit service names activate profiles for stop/rm, never for a pull.
-                result = compose(current, ["stop", "--timeout", "10", service], capture=True)
+                result = compose(current, ["stop", "--timeout", "45" if service == 'telemt' else "10", service], capture=True)
                 if result.returncode == 0:
                     result = compose(current, ["rm", "--force", service], capture=True)
             if result.returncode != 0:

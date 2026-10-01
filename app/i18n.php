@@ -1,6 +1,206 @@
 <?php
 
 $i = [
+    'menu help' => [
+        'ru' => '📖 Справка',
+        'en' => '📖 Help',
+    ],
+    'menu help topics' => [
+        'ru' => '📑 Все темы',
+        'en' => '📑 All topics',
+    ],
+    'menu help choose' => [
+        'ru' => 'Выберите тему. Открытие справки не меняет настройки.',
+        'en' => 'Choose a topic. Opening help does not change settings.',
+    ],
+    'preset tap applies' => [
+        'ru' => 'Нажатие применяет шаблон. Значения и примеры — в справке.',
+        'en' => 'Tap to apply a preset. Values and examples are in Help.',
+    ],
+    'naive relay short' => [
+        'ru' => 'Имя relay должно вести на relay-сервер и входить в TLS-сертификат origin.',
+        'en' => 'The relay hostname must point to the relay and be covered by the origin TLS certificate.',
+    ],
+    'vless encryption refresh' => [
+        'ru' => 'После изменения шифрования или ротации ключей все клиенты должны обновить профили.',
+        'en' => 'All clients must refresh profiles after changing encryption or rotating keys.',
+    ],
+    'finalmask udp only' => [
+        'ru' => 'UDP-шум действует только на внешний UDP-транспорт. Для VLESS/REALITY по TCP он не работает; MASQUE настраивается отдельно.',
+        'en' => 'UDP noise affects only the outer UDP transport. It does not affect VLESS/REALITY over TCP; configure MASQUE separately.',
+    ],
+    'telemt web transport' => [
+        'ru' => 'Транспорт WEB',
+        'en' => 'WEB transport',
+    ],
+    'telemt web path' => [
+        'ru' => 'Путь WEB · path',
+        'en' => 'WEB path',
+    ],
+    'telemt users cards' => [
+        'ru' => 'Выберите пользователя: в карточке находятся ссылки MTProxy и WEB, QR и управление доступом.',
+        'en' => 'Select a user for MTProxy and WEB links, QR codes and access settings.',
+    ],
+    'telemt user enable' => [
+        'ru' => 'Включить доступ',
+        'en' => 'Enable access',
+    ],
+    'telemt user disable' => [
+        'ru' => 'Отключить доступ',
+        'en' => 'Disable access',
+    ],
+    'telemt user disabled' => [
+        'ru' => 'Доступ выключен: ссылки сохранены, но подключение запрещено до включения.',
+        'en' => 'Access is disabled. Links are preserved but connections are blocked until enabled.',
+    ],
+    'telemt limits' => ['ru' => '📊 Квота / Limit IP', 'en' => '📊 Quota / Limit IP'],
+    'telemt limits quota' => ['ru' => 'Квота трафика', 'en' => 'Traffic quota'],
+    'telemt limits ips' => ['ru' => 'Лимит одновременных IP', 'en' => 'Concurrent IP limit'],
+    'telemt limits used' => ['ru' => 'Израсходовано', 'en' => 'Used'],
+    'telemt limits active' => ['ru' => 'активных IP', 'en' => 'active IPs'],
+    'telemt limits since' => ['ru' => 'Начало учёта', 'en' => 'Accounting since'],
+    'telemt limits reset' => ['ru' => 'Сбросить расход', 'en' => 'Reset usage'],
+    'telemt limits saved' => ['ru' => '✅ Применено.', 'en' => '✅ Applied.'],
+    'telemt limits snapshot' => ['ru' => 'последняя сохранённая запись; текущий расход недоступен', 'en' => 'last saved checkpoint; live usage unavailable'],
+    'telemt limits exhausted' => ['ru' => '⛔ Квота исчерпана. Для подключения увеличьте квоту или сбросьте расход.', 'en' => '⛔ Quota exhausted. Increase the quota or reset usage to reconnect.'],
+    'telemt limits input quota' => [
+        'ru' => 'Введите квоту в GiB: например 10, 100 или 0,5. 1 GiB = 1024³ байт. Допустимо 0–1000000, до 6 знаков после точки/запятой. 0 — безлимит. После включения из безлимита расход начинается с нуля; изменение действующей квоты сохраняет расход.',
+        'en' => 'Enter a quota in GiB, e.g. 10, 100 or 0.5. 1 GiB = 1024³ bytes. Range: 0–1000000, up to 6 decimal places. 0 means unlimited. Enabling a quota starts fresh; changing an active quota preserves usage.',
+    ],
+    'telemt limits input ips' => [
+        'ru' => 'Введите целое число 0–1000. 0 — без ограничения IP. Например 2 или 3 для нескольких сетей. Это число одновременных адресов, а не устройств; IPv4 и IPv6 считаются отдельно.',
+        'en' => 'Enter an integer from 0 to 1000. 0 disables the IP limit. Try 2 or 3 for multiple networks. This counts concurrent addresses, not devices; IPv4 and IPv6 are separate.',
+    ],
+    'telemt limits apply note' => [
+        'ru' => 'Квота и IP общие для MTProxy + WEB этого пользователя. Применение и сброс переподключают всех пользователей TeleMT.',
+        'en' => 'Quota and IP limits are shared by this user’s MTProxy + WEB. Applying changes or resetting usage reconnects all TeleMT users.',
+    ],
+    'telemt limits reset confirm' => [
+        'ru' => 'Начать учёт трафика этого пользователя с нуля? Размер квоты и Limit IP сохранятся. Все соединения TeleMT будут переподключены.',
+        'en' => 'Start this user’s traffic accounting from zero? Quota size and Limit IP stay unchanged. All TeleMT connections will reconnect.',
+    ],
+    'telemt limits invalid' => ['ru' => 'Некорректные настройки лимитов TeleMT.', 'en' => 'Invalid TeleMT limits.'],
+    'telemt limits stale' => ['ru' => 'Доступ изменился. Откройте карточку пользователя заново.', 'en' => 'Access has changed. Reopen the user card.'],
+    'telemt limits service off' => ['ru' => 'Сначала включите контейнер TeleMT.', 'en' => 'Enable the TeleMT container first.'],
+    'telemt limits need image' => ['ru' => 'Для лимитов обновите образ и контейнер TeleMT. Служба сохранения расхода недоступна.', 'en' => 'Update the TeleMT image and container first. The quota persistence helper is unavailable.'],
+    'telemt limits stop error' => ['ru' => 'TeleMT не подтвердил штатную остановку и сохранение расхода. Проверьте контейнер и свободное место.', 'en' => 'TeleMT did not confirm graceful shutdown and quota persistence. Check the container and free disk space.'],
+    'telemt limits state error' => ['ru' => 'Не удалось безопасно применить или прочитать расход TeleMT. Проверьте контейнер, место на диске и файл data/telemt.limit.json. При утрате файла восстановите резервную копию; расход автоматически не обнуляется.', 'en' => 'Could not safely apply or read TeleMT usage. Check the container, disk space and data/telemt.limit.json. Restore a backup if the file was lost; usage is never silently reset.'],
+    'telemt user restart note' => [
+        'ru' => 'Изменение доступа перезапускает TeleMT: активные соединения переподключатся.',
+        'en' => 'Access changes restart TeleMT; active connections will reconnect.',
+    ],
+    'telemt user regen' => [
+        'ru' => '🔄 Сменить секрет',
+        'en' => '🔄 Rotate secret',
+    ],
+    'telemt user delete' => [
+        'ru' => '🗑 Удалить пользователя',
+        'en' => '🗑 Delete user',
+    ],
+    'telemt user confirm regen' => [
+        'ru' => 'Будет создан новый секрет. Прежние ссылки MTProxy и WEB этого пользователя перестанут работать. После смены выдайте обе новые ссылки.',
+        'en' => 'A new secret will invalidate this user’s MTProxy and WEB links. Issue both new links after rotation.',
+    ],
+    'telemt user confirm delete' => [
+        'ru' => 'Пользователь и его секрет будут удалены. Подключение по его ссылкам MTProxy и WEB станет недоступно.',
+        'en' => 'The user and secret will be deleted. Their MTProxy and WEB links will no longer connect.',
+    ],
+    'telemt web direct only' => [
+        'ru' => 'WEB подключается напрямую к своему HTTPS-поддомену; выбранный relay относится только к MTProxy.',
+        'en' => 'WEB uses its HTTPS hostname directly; the selected relay applies only to MTProxy.',
+    ],
+    'telemt qr failed' => [
+        'ru' => 'Не удалось создать QR. Используйте ссылку из карточки пользователя.',
+        'en' => 'Could not create a QR code. Use the link in the user card.',
+    ],
+    'telemt web path generate' => [
+        'ru' => '🎲 Сгенерировать новый путь',
+        'en' => '🎲 Generate a new path',
+    ],
+    'telemt web path reset' => [
+        'ru' => 'Использовать корень /',
+        'en' => 'Use root /',
+    ],
+    'telemt web path setup' => [
+        'ru' => 'Генерация сама сохраняет случайный путь, применяет его к активному WEB и обновляет ссылки 🌐. Активный TeleMT перезапускается. Раздайте новые ссылки; клиент должен поддерживать WEB с путём. Возврат к / может снова включить прежние корневые ссылки.',
+        'en' => 'Generation saves a random path, applies it to active WEB and updates 🌐 links. Active TeleMT restarts. Issue new links; clients must support WEB paths. Returning to / may reactivate previous root links.',
+    ],
+    'telemt web mode auto-https' => [
+        'ru' => 'Авто · только HTTPS',
+        'en' => 'Auto · HTTPS only',
+    ],
+    'telemt web mode auto-full' => [
+        'ru' => 'Авто · HTTPS + WebSocket',
+        'en' => 'Auto · HTTPS + WebSocket',
+    ],
+    'telemt web mode https' => [
+        'ru' => 'Без подбора · HTTPS',
+        'en' => 'Fixed · HTTPS',
+    ],
+    'telemt web mode https-lanes' => [
+        'ru' => 'Без подбора · HTTPS Lanes',
+        'en' => 'Fixed · HTTPS Lanes',
+    ],
+    'telemt web select mode' => [
+        'ru' => '✅ — выбранный режим. Для Android + iOS: любой «Авто» или «Без подбора · HTTPS». Нужна версия Telegram с поддержкой WEB. Выбор другого режима перезапускает активный TeleMT; ссылки сохраняются.',
+        'en' => '✅ marks the selected mode. For Android + iOS use either Auto mode or Fixed HTTPS. Telegram must support WEB. Changing mode restarts active TeleMT; links stay valid.',
+    ],
+    'telemt web lanes ios' => [
+        'ru' => 'HTTPS Lanes без подбора не подходит для iOS. Выберите «Авто» или «Без подбора · HTTPS».',
+        'en' => 'Fixed HTTPS Lanes does not support iOS. Select Auto or Fixed HTTPS.',
+    ],
+    'backup create failed' => [
+        'ru' => '❌ Не удалось создать или отправить резервную копию. Предыдущая копия сохранена. Повторите попытку.',
+        'en' => '❌ Could not create or send the backup. The previous backup is preserved. Try again.',
+    ],
+    'backup restore interrupted' => [
+        'ru' => 'Восстановление прервано.',
+        'en' => 'Restore interrupted.',
+    ],
+    'backup restore completed' => [
+        'ru' => '✅ Восстановление завершено.',
+        'en' => '✅ Restore completed.',
+    ],
+    'backup restore incomplete' => [
+        'ru' => '❌ Восстановление выполнено не полностью. Проверьте ошибки выше. Файл бэкапа сохранён в чате.',
+        'en' => '❌ Restore incomplete. Check the errors above. The backup file remains in the chat.',
+    ],
+    'backup protocol failed' => [
+        'ru' => 'Не удалось применить настройки или запустить сервис.',
+        'en' => 'Could not apply the settings or start the service.',
+    ],
+    'backup stage file' => [
+        'ru' => 'Не удалось загрузить или прочитать JSON-файл бэкапа.',
+        'en' => 'Could not download or read the backup JSON file.',
+    ],
+    'backup stage telemt' => [
+        'ru' => 'Ошибка проверки квот TeleMT в бэкапе.',
+        'en' => 'The TeleMT quota snapshot is invalid.',
+    ],
+    'backup stage trusttunnel' => [
+        'ru' => 'Неверный формат настроек TrustTunnel.',
+        'en' => 'Invalid TrustTunnel backup format.',
+    ],
+    'backup stage hysteria' => [
+        'ru' => 'Ошибка проверки пользователей Hysteria в бэкапе.',
+        'en' => 'The Hysteria user snapshot is invalid.',
+    ],
+    'backup stage protocols' => [
+        'ru' => 'Не удалось восстановить дополнительные протоколы или подготовить их сайт. Причина записана в журнал ошибок PHP.',
+        'en' => 'Could not restore managed protocols or prepare their cover site. See the PHP error log.',
+    ],
+    'backup stage certificates' => [
+        'ru' => 'Не удалось записать сертификаты.',
+        'en' => 'Could not write the certificates.',
+    ],
+    'backup stage settings' => [
+        'ru' => 'Не удалось сохранить настройки бота.',
+        'en' => 'Could not save the bot settings.',
+    ],
+    'backup stage apply' => [
+        'ru' => 'Не все настройки применены. Файл бэкапа сохранён в чате; место ошибки записано в журнал PHP. Повторите восстановление после устранения причины.',
+        'en' => 'Some settings were not applied. The backup remains in the chat; the error location is in the PHP log. Retry after fixing the cause.',
+    ],
     'update backup failed' => [
         'ru' => 'Не удалось сохранить резервную копию. Обновление отменено; текущие настройки сохранены.',
         'en' => 'Could not save the backup. Update cancelled; current settings are preserved.',
@@ -858,16 +1058,16 @@ $i = [
         'ru' => 'Что делать с ClientHello, чей SNI не совпадает с Fake-TLS доменом. reject_handshake = вести себя как обычный веб-сервер (дефолт). mask = прозрачно фронтить любой SNI на mask-host — полезно при рассинхроне ссылки и домена ("Unknown TLS SNI"). drop = молча закрыть.',
     ],
     'telemt web'  => [
-        'en' => 'WEB (Telegram Desktop / Android)',
-        'ru' => 'WEB (Telegram Desktop / Android)',
+        'en' => 'WEB proxy',
+        'ru' => 'WEB-прокси',
     ],
     'telemt web note'  => [
         'en' => 'WEB carries MTProto inside ordinary HTTPS on its own subdomain (port 443, no port in the link). Import the link in Telegram Desktop (Settings -> Advanced -> Connection type -> proxy type WEB) or open it in Telegram for Android. Compatible Telegram iOS versions use the https carrier; with negotiation enabled, keep https as the final fallback. Clients without WEB support use the regular tg://proxy links.',
         'ru' => 'WEB несёт MTProto внутри обычного HTTPS на своём поддомене (порт 443, в ссылке порта нет). Ссылка импортируется в Telegram Desktop (Настройки -> Продвинутые -> Тип соединения -> тип прокси WEB) или открывается в Telegram для Android. Совместимые версии Telegram iOS используют carrier https; при включённом подборе оставьте https последним запасным вариантом. Клиентам без WEB нужны обычные ссылки tg://proxy.',
     ],
     'telemt web link'  => [
-        'en' => 'WEB link for Telegram Desktop / Android',
-        'ru' => 'ссылка WEB для Telegram Desktop / Android',
+        'en' => 'WEB link for compatible Telegram clients',
+        'ru' => 'ссылка WEB для совместимых клиентов Telegram',
     ],
     'telemt web cert hint'  => [
         'en' => 'the WEB host needs its own SAN in the certificate: run "renew SSL" once after enabling, otherwise Telegram (Desktop, Android) refuses the connection',
@@ -890,8 +1090,8 @@ $i = [
         'ru' => 'IP сервера неизвестен (переменная IP пуста): WEB нужен конкретный публичный адрес',
     ],
     'telemt web secret changed'  => [
-        'en' => 'Secret format changed — every WEB link issued before is now invalid. Hand out the new ones (button 🌐).',
-        'ru' => 'Формат секрета изменён — все выданные раньше WEB-ссылки больше не действуют. Раздайте новые (кнопка 🌐).',
+        'en' => 'WEB secret format changed. Issue links from user cards. Rotate the user secret for permanent revocation.',
+        'ru' => 'Формат WEB-секрета изменён. Выдайте ссылки из карточек пользователей. Для окончательного отзыва доступа смените секрет пользователя.',
     ],
     'telemt web need version'  => [
         'en' => 'the running telemt is older than 3.5.0 — it ignores the WEB config entirely, so the links would be handed out with nothing serving them. Update the telemt image.',
@@ -934,12 +1134,12 @@ $i = [
         'ru' => 'путь WEB и диагностика бриджа требуют telemt 3.5.8+: старый бинарь молча их игнорирует, и ссылки с путём вели бы туда, где никто не отвечает. Обновите образ telemt.',
     ],
     'telemt web path note'  => [
-        'en' => 'path: the WEB endpoints move under a secret random prefix, and links carry it. Each enable picks a new prefix and invalidates every WEB link issued before — a quick way to revoke leaked links without touching user secrets. Needs a Telegram client that supports path WEB links: check on your Desktop/Android version before handing links out.',
-        'ru' => 'path: WEB-эндпоинты уходят под секретный случайный префикс, и ссылки несут его в себе. Каждое включение выбирает новый префикс и гасит все выданные раньше WEB-ссылки — быстрый отзыв утёкших ссылок без смены секретов пользователей. Нужен клиент Telegram с поддержкой WEB-ссылок с путём: проверьте на своей версии Desktop/Android, прежде чем раздавать ссылки.',
+        'en' => 'path adds a secret prefix to the WEB address. Generate a new path, then distribute the updated links from user cards. Clients must support WEB links with paths. Native MTProxy links stay valid.',
+        'ru' => 'path добавляет секретный префикс к WEB-адресу. Сгенерируйте новый путь, затем раздайте обновлённые ссылки из карточек пользователей. Клиент должен поддерживать WEB-ссылки с путём. Обычные MTProxy-ссылки сохраняются.',
     ],
     'telemt web path changed'  => [
-        'en' => 'WEB path changed — every WEB link issued before is now invalid. Hand out the new ones (button 🌐).',
-        'ru' => 'Путь WEB изменён — все выданные раньше WEB-ссылки больше не действуют. Раздайте новые (кнопка 🌐).',
+        'en' => 'WEB path changed. Issue links from user cards. Restoring an old path may reactivate its old links.',
+        'ru' => 'Путь WEB изменён. Выдайте ссылки из карточек пользователей. При возврате к прежнему пути соответствующие старые ссылки могут снова заработать.',
     ],
     'telemt web diag'  => [
         'en' => 'bridge diagnostics',

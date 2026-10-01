@@ -32,7 +32,7 @@ class ProtocolInterfaceBot extends Bot {
     public function getSSConfig() { return []; }
     public function getCloakConfig() { return []; }
     public function getStlsConfig() { return []; }
-    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { return ''; }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { return str_contains($cmd, 'telemt_state.py') ? 'TELEMT_STATE_OK' : ''; }
     public function telemtWriteServiceState(bool $enabled): void {}
     public function telemtWriteToml(string $toml): void {}
     protected function sessionApply(callable $fn) { $fn(); }

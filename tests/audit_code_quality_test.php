@@ -110,13 +110,12 @@ $maxName = 20;
 $worst   = strlen('/telemtQr ') + $maxName + 1 + 32;
 cqAssert($worst <= 64, "самая длинная кнопка укладывается в лимит Telegram: $worst байт");
 
-// Якорь — сам рендер строки пользователя (ссылка с эмодзи), а не объявление
-// роута: строка «/telemtToggleUser» встречается в файле и там, и там.
-// Ограничиваем проверку методом, а не длиной комментариев и строк в байтах.
-$renderStart = strpos($src, 'public function telemtUsers(');
-$render = substr($src, $renderStart, strpos($src, 'public function telemtMode(', $renderStart) - $renderStart);
-cqAssert(str_contains($render, 'strlen($cb) <= 64'),
-    'рендер отбрасывает кнопку с слишком длинным callback_data (записи, заведённые до лимита)');
+// Карточки используют стабильные короткие ключи: старое длинное имя больше
+// не лишается кнопок управления и не превышает лимит вместе с relay.
+foreach (['', 'toggle', 'regen-confirm', 'delete-confirm', 'qr', 'web'] as $action) {
+    cqAssert(strlen($bot->telemtUserCallback(str_repeat('a', 200), 999999, str_repeat('r', 200), $action)) <= 64,
+        'Карточка длинного имени и relay укладывается в callback_data: ' . $action);
+}
 
 // ── 4. СРЕДНИЕ того же отчёта ───────────────────────────────────────────────
 
