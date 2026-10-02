@@ -12,6 +12,10 @@ require "$root/app/bot.php";
 require __DIR__.'/managed_protocol_fixture.php';
 require __DIR__.'/../app/i18n.php';
 class RoundTripBot extends Bot {
+ public string $syncedDomain = '';
+ public bool $rejectXray = false;
+ public function restoreBackupXray(array $config): bool { return !$this->rejectXray && parent::restoreBackupXray($config); }
+ public function syncManagedUpstreams(): void { $this->syncedDomain=$this->getPacConf()['domain']??''; }
  public function __construct(public string $dir,array $translations){
   $this->pac="$dir/config/pac.json";$this->clients="$dir/config/clients.json";$this->clients1="$dir/config/clients1.json";
   $this->protocolRoot="$dir/config/protocols";$this->protocolModulesFile="$dir/config/protocol-services.json";
@@ -35,7 +39,7 @@ class RoundTripBot extends Bot {
  public function setUpstreamDomainOcserv($domain){}
  public function setUpstreamDomainNaive($domain){}
  public function restartOcserv($conf,bool $syncCamouflage=true){return file_put_contents("$this->dir/config/ocserv.conf",$conf)!==false;}
- public function dnsttStart(){}
+ public function dnsttStart(){return true;}
  public function telemtQuotaPath():string{return "$this->dir/config/telemt/data/telemt.limit.json";}
  public function telemtQuotaRestore(?array $state,array $conf):void{$this->telemtQuotaWrite($state);$this->setPacConf($conf);}
  public function writeCoreMarker(string $core):bool{return file_put_contents("$this->dir/logs/xray_core",$core)!==false;}
@@ -75,10 +79,16 @@ try{
  $b->setPacConf(['language'=>'ru']);file_put_contents("$root/config/wg0.conf",'changed');file_put_contents("$root/config/wg1.conf",'changed');
  file_put_contents("$root/config/telemt/decoy/index.html",'changed');file_put_contents("$root/warp/wgcf-profile.conf",'changed');
  rtCheck($b->importFile($b->update)===true,'Полное восстановление возвращает успех');
+ rtCheck($b->syncedDomain===$snapshot['pac']['domain'],'Маршруты протоколов применены после восстановления домена');
  $after=json_decode($b->export(),true,512,JSON_THROW_ON_ERROR);
  foreach(['pac','telemt_quota','extra_files','wg','wg1','ssl','ss','sl','xray','ad','tt'] as $section)rtCheck($after[$section]===$snapshot[$section],"$section: данные пережили полный цикл");
  rtCheck($after['hy_users']['state']['users']===$snapshot['hy_users']['state']['users'] && $after['hy_users']['usage']===$snapshot['hy_users']['usage'],'Пользователи и расход Hysteria сохранены');
  rtCheck(file_get_contents("$root/logs/xray_core")==='origin3','Выбор версии Xray восстановлен и при выключенном контейнере');
  rtCheck($b->importFile($b->update)===true,'Повторное восстановление работает');
+ $beforeStats=['users'=>[['global'=>['upload'=>123,'download'=>456]]]];
+ $b->setXrayStats($beforeStats);$b->rejectXray=true;
+ file_put_contents($b->update,json_encode(['xray'=>$snapshot['xray'],'xraystats'=>['users'=>[['global'=>['upload'=>99999,'download'=>77777]]]]]));
+ rtCheck($b->importFile($b->update)===false,'Отказ ядра возвращает неполное восстановление');
+ rtCheck($b->getXrayStats()===$beforeStats,'Отвергнутый снимок Xray не меняет расход прежних пользователей');
  echo "backup_roundtrip_test OK\n";
 }finally{rtRemove($root);}

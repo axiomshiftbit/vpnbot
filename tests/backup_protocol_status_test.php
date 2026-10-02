@@ -30,10 +30,17 @@ class BackupStatusBot extends Bot {
     public function ssh($cmd, $service='wg', $wait=true, $log='/dev/null') {
         $this->commands[]=[$service,$cmd]; $this->sshFailed=false;
         if (!$this->protocolModuleEnabled($service)) return parent::ssh($cmd,$service,$wait,$log);
+        if (str_contains($cmd,'VPNBOT_SERVICE_READY')) return $this->startFails ? '' : 'VPNBOT_SERVICE_READY';
         if ($service==='hy') return $this->managed ? 'managed' : '';
         if ($service==='tt' && str_contains($cmd,'VPNBOT_TT_STOPPED')) return $this->stopFails ? '' : 'VPNBOT_TT_STOPPED';
         if ($service==='tt') $this->sshFailed=$this->startFails;
         return '';
+    }
+    public function verifyBackupServices(array $json): array {
+        // Эмуляция только подтверждения supervisor: обработчик проверки остаётся настоящим.
+        $state=$this->hysteriaUsersStore()->read(); @mkdir("$this->root/hysteria/runtime",0700,true);
+        ManagedProtocol::writeJson("$this->root/hysteria/runtime/status.json",['time'=>time(),'running'=>true,'revision'=>$state['revision']]);
+        return parent::verifyBackupServices($json);
     }
     public function restartWG($conf_str, $switch=false) { return false; }
     public function restartOcserv($conf, bool $syncCamouflage=true) { return false; }
@@ -64,7 +71,7 @@ try {
 
     $modules->setMany(['hy'=>true,'tt'=>true]); $b->commands=[];
     protocolStatusCheck($b->importFile($b->update)===true,'Включённые протоколы восстанавливаются через настоящие обработчики');
-    protocolStatusCheck(count($b->commands)===3,'Проверены supervisor Hysteria и stop/start TrustTunnel');
+    protocolStatusCheck(count($b->commands)===4,'Проверены supervisor Hysteria и stop/start TrustTunnel');
     $b->managed=false; file_put_contents($b->update,json_encode(['hy'=>$hy]));
     protocolStatusCheck($b->importFile($b->update)===false && str_contains(end($b->messages),'❌ Hysteria:'),'Сбой включённой Hysteria назван в итоговом сообщении');
     $b->managed=true;

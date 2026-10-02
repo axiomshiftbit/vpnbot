@@ -105,7 +105,7 @@ secAssert(str_contains($src, "if (in_array(\$type, ['white', 'deny'], true)) {")
 $import = substr($src, strpos($src, 'public function importFile('), 2400);
 secAssert(str_contains($import, '$file !== $this->update'),
     'importFile() принимает локальный путь только от selfUpdate()');
-secAssert(strpos($import, '$file !== $this->update') < strpos($import, 'file_get_contents($file)'),
+secAssert(strpos($import, '$file !== $this->update') < strpos($import, 'backupReadFile($file)'),
     'проверка стоит до чтения файла');
 
 // config(): серверный wg0.conf уходил в чат вместе с PrivateKey сервера и

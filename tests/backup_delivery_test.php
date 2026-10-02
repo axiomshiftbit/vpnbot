@@ -11,16 +11,18 @@ class BackupDeliveryBot extends Bot {
     public array $conf = ['pinbackup' => 10];
     public array $calls = [];
     public array $response = ['ok' => true, 'result' => ['message_id' => 20]];
+    public bool $concurrentEdit = false;
     public bool $pinOk = true;
     public bool $saveOk = true;
     public string $snapshot = '{"pac":{"domain":"example.test"}}';
-    public function __construct() {}
+    public function __construct() { global $dir; $this->pac="$dir/pac.json"; }
     public function getPacConf() { return $this->conf; }
     public function setPacConf($conf) { $this->calls[] = 'save'; if (!$this->saveOk) return false; $this->conf = $conf; return true; }
     public function export() { return $this->snapshot; }
     public function request($method, $data, $json_header = 0) { return ['ok' => false]; }
     public function sendFile($chat, $id_url_cFile, $caption = false, $to = false) {
         if (!$id_url_cFile instanceof CURLStringFile || $id_url_cFile->data !== $this->snapshot) throw new RuntimeException('Содержимое отправки изменилось');
+        if ($this->concurrentEdit) $this->conf['domain']='changed-during-send.example';
         $this->calls[] = 'send'; return $this->response;
     }
     public function pinAdmin($pin, $unpin = false) { $this->calls[] = ($unpin ? 'unpin:' : 'pin:') . $pin; return ['ok' => $this->pinOk]; }
@@ -53,8 +55,11 @@ try {
     deliveryCheck($b->conf['last_backup_time'] >= $before && $b->conf['pinbackup'] === 20, 'Повтор расписания сохраняет время успеха и новый pin');
     $calls = $b->calls; $b->checkBackup();
     deliveryCheck($b->calls === $calls, 'Успешная плановая копия не отправляется повторно в тот же период');
+    $b = new BackupDeliveryBot; $b->concurrentEdit=true;
+    deliveryCheck($b->pinBackup() && $b->conf['domain']==='changed-during-send.example', 'Отправка не затирает параллельные изменения настроек');
     echo "backup_delivery_test OK\n";
 } finally {
     foreach (glob("$dir/*") as $file) unlink($file);
+    @unlink("$dir/.backup.lock");
     rmdir($dir);
 }

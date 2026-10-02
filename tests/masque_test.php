@@ -96,6 +96,9 @@ try {
     ManagedProtocol::writeJson($store->directory() . '/runtime/usage.json', ['users' => [$id => ['reset' => $u['reset'], 'upload' => 5, 'download' => 5]]]);
     masqueReject(fn() => $store->profile($id, 'native'));
     $store->user($id, [], 'reset'); masqueCheck($store->profile($id, 'native')['outbounds'][0]['protocol'] === 'masque', 'Сброс квоты');
+    masqueReject(fn() => $store->snapshot()); // Старая ревизия счётчиков ещё не подтверждает новый период.
+    $u = $store->read()['users'][$id];
+    ManagedProtocol::writeJson($store->directory() . '/runtime/usage.json', ['users' => [$id => ['reset' => $u['reset'], 'upload' => 0, 'download' => 0]]]);
     $snapshot = $store->snapshot(); $store->user($id, [], 'rotate');
     masqueCheck($store->read()['users'][$id]['password'] !== $snapshot['state']['users'][$id]['password'], 'Ротация пароля');
     $store->restore($snapshot); masqueCheck($store->read()['users'] === $snapshot['state']['users'], 'Восстановление доступа из backup');

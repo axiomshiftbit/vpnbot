@@ -12,16 +12,26 @@ class BackupErrorBot extends Bot {
     public int $applied = 0;
     public function __construct(public string $root, array $translations) {
         $this->i18n = $translations; $this->language = 'ru'; $this->update = "$root/local.json";
-        $this->file = "$root/"; $this->input = ['chat' => 1, 'message_id' => 1, 'callback_id' => false, 'file_id' => 'synthetic-file'];
+        $this->pac="$root/pac.json"; $this->file = "$root/"; $this->input = ['chat' => 1, 'message_id' => 1, 'callback_id' => false, 'file_id' => 'synthetic-file'];
     }
     public function request($method, $data, $json_header = 0) { if ($method !== 'getFile') throw new LogicException('Unexpected API'); return $this->apiResult; }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->messages[] = $text; }
     public function answer($callback_id, $textNotify = false, $notify = false) { throw new LogicException('Документ не является callback query'); }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') {}
-    public function importManagedProtocols(array $data): void { if ($this->failProtocols) throw new RuntimeException('SYNTHETIC_SECRET_DO_NOT_LOG'); $this->applied++; }
+    public function importManagedProtocols(array $data, bool $syncUpstreams = true): void { if ($this->failProtocols) throw new RuntimeException('SYNTHETIC_SECRET_DO_NOT_LOG'); $this->applied++; }
     public function cloakNginx() {}
     public function menu($type = false, $arg = false, $return = false) {}
     public function getPacConf() { return ['language' => 'ru', 'limitpage' => 5]; }
+}
+class BackupWriteErrorBot extends BackupErrorBot {
+    public array $commands = [];
+    protected function backupWriteInPlace(string $path, string $body): bool { return false; }
+    public function ssh($cmd, $service='wg', $wait=true, $log='/dev/null') {
+        if (str_contains($cmd,'VPNBOT_AD_STOPPED')) { $this->commands[]='wait-ad'; return 'VPNBOT_AD_STOPPED'; }
+        $this->commands[]=$cmd; return '';
+    }
+    public function stopAd() { $this->commands[]='stop-ad'; }
+    public function startAd() { $this->commands[]='start-ad'; }
 }
 function backupCheck(bool $ok, string $name): void { if (!$ok) throw new RuntimeException($name); }
 $root = sys_get_temp_dir() . '/vpnbot-backup-errors-' . bin2hex(random_bytes(6)); mkdir($root, 0700);
@@ -33,7 +43,7 @@ try {
         'missing_quota' => ['pac' => ['telemt_users' => ['test' => 'synthetic'], 'telemt_user_limits' => ['test' => ['quota' => 1]]]],
         'trusttunnel' => ['tt' => []],
         'hysteria' => ['hy_users' => ['broken' => true]],
-        'protocols' => ['managed_protocols' => []],
+        'protocols' => ['managed_protocols' => ['modules'=>[], 'protocols'=>[]]],
     ];
     foreach ($cases as $name => $data) {
         $b = new BackupErrorBot($root, $i); $b->failProtocols = true;
@@ -50,12 +60,12 @@ try {
     $b = new BackupErrorBot($root, $i);
     backupCheck($b->importFile('/etc/passwd') === false && count($b->messages) === 1, 'Произвольный путь не читается');
     $b = new BackupErrorBot($root, $i); $b->failProtocols = true;
-    file_put_contents($b->update, json_encode(['managed_protocols' => []]));
+    file_put_contents($b->update, json_encode(['managed_protocols' => ['modules'=>[], 'protocols'=>[]]]));
     backupCheck($b->importFile($b->update) === false && !$b->messages, 'selfUpdate сам обрабатывает отказ локальной копии');
     $log = file_get_contents("$root/errors.log");
     backupCheck(str_contains($log, 'stage=protocols RuntimeException') && !str_contains($log, 'SYNTHETIC_SECRET_DO_NOT_LOG'), 'Журнал содержит место ошибки без секрета');
     $b = new BackupErrorBot($root, $i);
-    file_put_contents("$root/upload.json", json_encode(['managed_protocols' => []]));
+    file_put_contents("$root/upload.json", json_encode(['managed_protocols' => ['modules'=>[], 'protocols'=>[]]]));
     backupCheck($b->importFile() === true && $b->applied === 1 && !$b->messages, 'Успешный импорт продолжает работать');
     foreach ([true, false] as $fail) {
         $b = new BackupErrorBot($root, $i); $b->failProtocols = $fail;
@@ -64,9 +74,16 @@ try {
         backupCheck($b->deleted === [20], 'Документ бэкапа остаётся в чате при успехе и отказе');
         backupCheck(count($b->messages) === ($fail ? 1 : 0), 'reply сообщает об отказе ровно один раз');
     }
+    foreach (['ss','sl','ad'] as $section) {
+        $b = new BackupWriteErrorBot($root, $i);
+        file_put_contents("$root/upload.json",json_encode([$section=>['test'=>'synthetic']]));
+        backupCheck($b->importFile()===false && count($b->messages)===1, "$section: отказ записи виден");
+        backupCheck($b->commands===($section==='ad' ? ['stop-ad','wait-ad','start-ad'] : []), "$section: отказ записи не оставляет прежний сервис остановленным");
+    }
     echo "backup_import_errors_test OK\n";
 } finally {
     ini_set('error_log', $oldLog);
     foreach (glob("$root/*") as $p) unlink($p);
+    @unlink("$root/.backup.lock");
     rmdir($root);
 }

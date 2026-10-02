@@ -10,6 +10,7 @@ require_once __DIR__ . '/BotServiceDiagnostics.php';
 require_once __DIR__ . '/BotAccessBatch.php';
 require_once __DIR__ . '/BotMenuHelp.php';
 require_once __DIR__ . '/BotTelemtLimits.php';
+require_once __DIR__ . '/BotBackup.php';
 
 class Bot
 {
@@ -20,6 +21,7 @@ class Bot
     use BotAccessBatch;
     use BotMenuHelp;
     use BotTelemtLimits;
+    use BotBackup;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -408,8 +410,10 @@ class Bot
         // не остаётся вовсе (прежний вариант с touch+chmod сужал его, но не
         // закрывал, вопреки докблоку). rename сохраняет права временного файла
         // и атомарен для читателей.
-        $tmp = $path . '.' . getmypid() . '.tmp';
-        $h   = @fopen($tmp, 'w');
+        $tmp = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        $mask = umask(0077);
+        $h   = @fopen($tmp, 'x');
+        umask($mask);
         if ($h === false) {
             error_log("writePrivateKey: cannot create $tmp");
 
@@ -3483,33 +3487,8 @@ class Bot
 
     public function writeXrayJson(string $json): bool
     {
-        // 'c' — открыть/создать, НЕ обрезая: усечение делаем сами, уже под
-        // локом, иначе читатель успевал увидеть пустой файл.
-        $h = @fopen($this->xrayConf, 'c');
-        if (false === $h) {
-            error_log('writeXrayJson: xray.json not written — cannot open');
-
-            return false;
-        }
-        if (!flock($h, LOCK_EX)) {
-            fclose($h);
-            error_log('writeXrayJson: xray.json not written — cannot lock');
-
-            return false;
-        }
-        $n  = ftruncate($h, 0) && rewind($h) ? fwrite($h, $json) : false;
-        $ok = $n === strlen($json) && fflush($h);
-        flock($h, LOCK_UN);
-        fclose($h);
-        // В xray.json лежат realitySettings.privateKey и все UUID клиентов, а
-        // ./config целиком смонтирован в девять контейнеров.
-        $this->chmodSecret($this->xrayConf);
-        if (!$ok) {
-            // In-place запись, в отличие от rename(), не откатывается: на
-            // переполненном диске на месте конфига остаётся обрезанный файл.
-            // Кричим в лог — иначе следующий старт ядра молча потеряет всех.
-            error_log('writeXrayJson: xray.json TRUNCATED — write failed');
-        }
+        $ok = $this->backupWriteInPlace($this->xrayConf, $json);
+        if (!$ok) error_log('writeXrayJson: write failed; previous data restored where possible');
         if ($ok) {
             try { $this->syncXrayProtocolUsers(); }
             catch (Throwable $e) { error_log('syncXrayProtocolUsers: failed; background retry pending'); }
@@ -4263,7 +4242,8 @@ class Bot
 
             return false;
         }
-        file_put_contents('/config/ocserv.conf', $conf);
+        if (!$this->writePrivateKey('/config/ocserv.conf', $conf)) return false;
+        if (!$this->protocolModuleEnabled('oc')) return true;
         $this->ssh('pkill ocserv', 'oc');
         $pac = $this->getPacConf();
         $ocUsers = is_array($pac[self::OC_USERS] ?? null)
@@ -6521,6 +6501,12 @@ NFT;
 
     public function checkBackup()
     {
+        try { $this->withBackupLock(fn() => $this->checkBackupSchedule()); }
+        catch (Throwable $error) { error_log('checkBackup: ' . get_class($error)); }
+    }
+
+    private function checkBackupSchedule()
+    {
         $c = $this->getPacConf();
         if (!empty($c['backup'])) {
             $now = time();
@@ -6624,8 +6610,16 @@ NFT;
 
     public function pinBackup($file = false)
     {
+        try { return $this->withBackupLock(fn() => $this->sendBackup($file)); }
+        catch (Throwable $error) {
+            error_log('pinBackup: ' . get_class($error));
+            return false;
+        }
+    }
+
+    private function sendBackup($file)
+    {
         require __DIR__ . '/config.php';
-        $conf = $this->getPacConf();
         $bot  = preg_replace('~[\W]~iu', '_', $this->request('getMyName', [])['result']['name'] ?? 'VPNBot');
         try { $json = $this->export(); }
         catch (Throwable $error) {
@@ -6650,6 +6644,9 @@ NFT;
             $json, "{$bot}_export_" . date('d_m_Y_H_i') . '.json', 'application/json'
         ));
         if (empty($sent['ok']) || !is_int($sent['result']['message_id'] ?? null)) return false;
+        // Экспорт/Telegram могут занять секунды. Не возвращаем на диск старую
+        // копию PAC поверх настроек, изменённых за это время.
+        $conf = $this->getPacConf();
         $previous = $conf['pinbackup'] ?? null;
         $conf['pinbackup'] = $sent['result']['message_id'];
         if ($this->setPacConf($conf) === false) return false;
@@ -7028,8 +7025,13 @@ NFT;
 
     public function export()
     {
+        return $this->withBackupLock(fn() => $this->exportBackup());
+    }
+
+    private function exportBackup()
+    {
         $this->syncOcUsers();
-        foreach ([$this->xrayConf, $this->hwid, '/config/ssserver.json', '/config/sslocal.json', '/config/ckserver.json', '/config/ckusers.json'] as $path) {
+        foreach ([$this->xrayConf, $this->hwid, '/config/xray.stats', '/config/ssserver.json', '/config/sslocal.json', '/config/ckserver.json', '/config/ckusers.json'] as $path) {
             if (is_file($path) && !is_array(json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR))) {
                 throw new RuntimeException('Повреждён файл конфигурации: ' . basename($path));
             }
@@ -7042,6 +7044,9 @@ NFT;
         unset($this->wg);
         $telemtBackup = $this->telemtBackupSnapshot();
         $ssl = false;
+        if (is_file($this->protocolCertRoot . '/cert_private') !== is_file($this->protocolCertRoot . '/cert_public')) {
+            throw new RuntimeException('Неполная TLS-пара');
+        }
         if (is_file($this->protocolCertRoot . '/cert_private')) {
             $private = file_get_contents($this->protocolCertRoot . '/cert_private');
             $public = @file_get_contents($this->protocolCertRoot . '/cert_public');
@@ -7085,6 +7090,7 @@ NFT;
         foreach (['ad', 'hy', 'oc', 'ocu', 'tt'] as $key) {
             if ($conf[$key] === false) throw new RuntimeException('Не удалось прочитать раздел бэкапа: ' . $key);
         }
+        $this->validateBackup($conf);
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
@@ -7116,12 +7122,12 @@ NFT;
         $body = $this->createConfig($snapshot['server']);
         // Сохраняем inode: этот файл отдельно примонтирован в WG-контейнер.
         $old = is_file($path) ? file_get_contents($path) : null;
-        if (file_put_contents($path, $body, LOCK_EX) !== strlen($body)) {
-            if (is_string($old)) file_put_contents($path, $old, LOCK_EX);
+        if (!$this->backupWriteInPlace($path, $body)) return false;
+        $this->chmodSecret($path);
+        if ($this->saveClients($snapshot['clients'] ?? []) === false) {
+            if (is_string($old)) $this->backupWriteInPlace($path, $old);
             return false;
         }
-        $this->chmodSecret($path);
-        if ($this->saveClients($snapshot['clients'] ?? []) === false) return false;
         if (!$this->protocolModuleEnabled($instance ? 'wg1' : 'wg')) return true;
         if (!$this->restartWG($body, $switch)) return false;
         $this->iptablesWG();
@@ -7225,7 +7231,7 @@ NFT;
         } catch (Throwable $error) {
             foreach (array_reverse($written) as $path) {
                 $old = $before[$path];
-                if ($old === null) $ok = @unlink($path);
+                if ($old === null) $ok = !file_exists($path) || @unlink($path);
                 else $ok = $this->writePrivateKey($path, $old[0]) && @chmod($path, $old[1]);
                 if (!$ok) throw new RuntimeException('Откат дополнительных файлов не завершён', previous: $error);
             }
@@ -7375,7 +7381,7 @@ NFT;
             $file = false;
             return $this->backupImportError('file', false);
         }
-        try { return $this->restoreBackup($file); }
+        try { return $this->withBackupLock(fn() => $this->restoreBackup($file)); }
         catch (Throwable $error) { return $this->backupImportError('apply', !empty($file), $error); }
         finally { unset($this->wg); }
     }
@@ -7383,20 +7389,26 @@ NFT;
     private function restoreBackup($file): bool
     {
         if (!empty($file)) {
-            $json = json_decode((string) @file_get_contents($file), true);
+            $raw = $this->backupReadFile($file);
         } else {
             if (empty($this->input['file_id'])) return $this->backupImportError('file', false);
             $r = $this->request('getFile', ['file_id' => $this->input['file_id']]);
             if (empty($r['ok']) || !is_string($r['result']['file_path'] ?? null)) return $this->backupImportError('file', false);
             // URL содержит токен бота: предупреждение PHP не должно попасть в лог.
-            $json = json_decode((string) @file_get_contents($this->file . $r['result']['file_path']), true);
+            if (($r['result']['file_size'] ?? 0) > self::BACKUP_MAX_BYTES) return $this->backupImportError('file', false);
+            $raw = @file_get_contents($this->file . $r['result']['file_path'], false, null, 0, self::BACKUP_MAX_BYTES + 1);
         }
+        if (!is_string($raw) || strlen($raw) > self::BACKUP_MAX_BYTES) return $this->backupImportError('file', !empty($file));
+        $json = json_decode($raw, true, 128);
+        unset($raw);
         if (empty($json) || !is_array($json) || !array_intersect(array_keys($json), [
             'pac', 'wg', 'wg1', 'ad', 'hwid', 'ssl', 'dnstt', 'xray', 'hy', 'hy_users',
             'oc', 'ocu', 'tt', 'ss', 'sl', 'cloak', 'ckusers', 'ovpn', 'ipsec', 'xraystats', 'managed_protocols', 'extra_files',
         ])) {
             return $this->backupImportError('file', !empty($file));
         } else {
+            try { $this->validateBackup($json); }
+            catch (Throwable $error) { return $this->backupImportError('file', !empty($file), $error); }
             foreach (['pac', 'wg', 'wg1', 'ad', 'hwid', 'ssl', 'dnstt', 'xray', 'hy', 'hy_users',
                 'ss', 'sl', 'cloak', 'ckusers', 'ovpn', 'ipsec', 'xraystats', 'managed_protocols', 'extra_files'] as $key) {
                 if (isset($json[$key]) && $json[$key] !== false && !is_array($json[$key])) {
@@ -7404,6 +7416,7 @@ NFT;
                 }
             }
             $ok = true;
+            $xrayApplied = true;
             $out = [];
             $failed = function (string $protocol) use (&$ok, &$out): void {
                 $ok = false;
@@ -7433,7 +7446,7 @@ NFT;
                 catch (Throwable $e) { return $this->backupImportError('hysteria', !empty($file), $e); }
             }
             if (array_key_exists('managed_protocols', $json)) {
-                try { $this->importManagedProtocols($json['managed_protocols']); }
+                try { $this->importManagedProtocols($json['managed_protocols'], false); }
                 catch (Throwable $e) { return $this->backupImportError('protocols', !empty($file), $e); }
             }
             if (array_key_exists('extra_files', $json)) $this->restoreBackupExtraFiles($json['extra_files']);
@@ -7465,7 +7478,7 @@ NFT;
                 } elseif ($this->setPacConf($json['pac']) === false) return $this->backupImportError('settings', !empty($file));
                 $out[] = 'update naiveproxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->restartNaive();
+                if (!$this->restartNaive() && self::naiveReady($json['pac'])) $failed('NaiveProxy');
                 $this->pacUpdate('1');
             }
             // wg
@@ -7491,41 +7504,35 @@ NFT;
                 $out[] = 'update adguard';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->stopAd();
-                if (!yaml_emit_file($this->adguard, $json['ad'])) throw new RuntimeException('Не удалось восстановить AdGuard');
-                $this->startAd();
+                if ($this->protocolModuleEnabled('ad')) {
+                    // AdGuard дописывает YAML при SIGTERM. Ждём завершения,
+                    // иначе старый процесс может затереть восстановленный файл.
+                    $stopped = $this->ssh('i=0; while test -s /opt/adguardhome/pid && test "$(readlink /proc/$(cat /opt/adguardhome/pid)/exe)" = /opt/adguardhome/AdGuardHome; do '
+                        . '[ "$i" -lt 50 ] || exit 1; sleep 0.2; i=$((i+1)); done; printf VPNBOT_AD_STOPPED', 'ad');
+                    if (trim($stopped) !== 'VPNBOT_AD_STOPPED') throw new RuntimeException('Не удалось остановить AdGuard перед восстановлением');
+                }
+                try {
+                    if (!$this->backupWriteInPlace($this->adguard, yaml_emit($json['ad']))) throw new RuntimeException('Не удалось восстановить AdGuard');
+                } finally { $this->startAd(); }
             }
             // ss
             if (!empty($json['ss'])) {
                 $out[] = 'update shadowsocks server';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->ssh('pkill ssserver', 'ss');
-                if (empty($json['ss']['acl'])) $json['ss']['acl'] = '/config/ss.acl';
-                if (file_put_contents('/config/ssserver.json', json_encode($json['ss'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)) === false) throw new RuntimeException('Не удалось восстановить Shadowsocks');
-                $this->chmodSecret('/config/ssserver.json');
-                // Ключ outbound_proxy («ss через warp») приезжает вместе с
-                // бэкапом, а правило в WARP_SOCKS — нет, и единственный
-                // источник истины перестаёт быть единственным. Бэкап С ключом
-                // на хосте БЕЗ правила молча ронял весь TCP клиентов ss (у
-                // ядра нет отката на direct), бэкап БЕЗ ключа оставлял лишний
-                // ACCEPT висеть до пересоздания wp. Ставим ДО старта ssserver
-                // — по той же причине, что и в ssWarp().
-                $this->warpSocksAllowSS(self::ssWarpOn(is_array($json['ss']) ? $json['ss'] : null));
-                $this->ssh('ssserver -v -d -c /config.json', 'ss');
+                if (!$this->restoreBackupShadowsocks('ss', $json['ss'])) $failed('Shadowsocks');
             }
             // sl
             if (!empty($json['sl'])) {
                 $out[] = 'update shadowsocks proxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->ssh('pkill sslocal', 'proxy');
-                if (file_put_contents('/config/sslocal.json', json_encode($json['sl'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)) === false) throw new RuntimeException('Не удалось восстановить Shadowsocks proxy');
-                $this->ssh('sslocal -v -d -c /config.json', 'proxy');
+                if (!$this->restoreBackupShadowsocks('sl', $json['sl'])) $failed('Shadowsocks proxy');
             }
             // hwid
             if (array_key_exists('hwid', $json)) {
                 $out[] = 'update hwid devices';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $data = is_array($json['hwid']) ? $json['hwid'] : [];
-                if (file_put_contents($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)) === false) throw new RuntimeException('Не удалось восстановить HWID');
+                if (!$this->writePrivateKey($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))) throw new RuntimeException('Не удалось восстановить HWID');
             }
             // xray
             if (!empty($json['xray'])) {
@@ -7540,6 +7547,7 @@ NFT;
                     $this->datSync(true);
                 }
                 if (!$this->restoreBackupXray($json['xray'])) {
+                    $xrayApplied = false;
                     $ok = false;
                     $out[] = '❌ xray: configuration rejected; previous configuration preserved';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -7547,13 +7555,16 @@ NFT;
                     $this->xrayUpdateRules();
                 }
                 $this->adguardXrayClients();
-                $this->setUpstreamDomain($json['pac']['transport'] != 'Reality' ? 't' : ($json['pac']['reality']['domain'] ?: $json['xray']['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]));
+                $pac = $json['pac'] ?? $this->getPacConf();
+                if ($this->setUpstreamDomain(($pac['transport'] ?? '') !== 'Reality' ? 't' : ($pac['reality']['domain'] ?? $json['xray']['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] ?? '')) === false) $failed('NGINX Xray');
             }
             // xraystats
-            if (!empty($json['xraystats'])) {
+            // Индексы счётчиков относятся к пользователям снимка. При отказе
+            // Xray остаётся прежний список: его расход менять нельзя.
+            if (array_key_exists('xraystats', $json) && $xrayApplied) {
                 $out[] = 'update xray stats';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->setXrayStats($json['xraystats']);
+                if (!$this->setXrayStats($json['xraystats'])) $failed('Xray statistics');
             }
             // ocserv
             if (!empty($json['oc'])) {
@@ -7577,6 +7588,10 @@ NFT;
             }
             if (array_key_exists('hy_users', $json)) {
                 $this->hysteriaUsersStore()->restore($json['hy_users']);
+            } elseif (!empty($json['hy']) && $this->protocolModuleEnabled('hy') && is_file($this->hysteriaUsersRoot . '/users.json')) {
+                // Новая ревизия позволяет отличить применение YAML от старого
+                // успешного статуса supervisor при импорте старого формата.
+                $this->hysteriaUsersStore()->change(static function (&$state) {});
             }
             // trusttunnel
             if (array_key_exists('tt', $json)) {
@@ -7594,18 +7609,18 @@ NFT;
             if (!empty($json['cloak'])) {
                 $out[] = 'update cloak';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $this->ssh(self::PKILL_CK, 'ss');
-                if (file_put_contents(
+                if (!$this->writePrivateKey(
                     '/config/ckserver.json',
                     json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-                ) === false) throw new RuntimeException('Не удалось восстановить Cloak');
+                )) throw new RuntimeException('Не удалось восстановить Cloak');
                 // Восстанавливаем side-store с именами; если в бэкапе нет
                 // (старый формат) — getCloakUsers() забутстрапит из BypassUID.
                 if (!empty($json['ckusers']) && is_array($json['ckusers'])) {
-                    $this->setCloakUsers($json['ckusers']);
+                    if (!$this->writePrivateKey('/config/ckusers.json', json_encode(array_values($json['ckusers']), JSON_THROW_ON_ERROR))) throw new RuntimeException('Не удалось восстановить пользователей Cloak');
                 } else {
-                    @unlink('/config/ckusers.json');
+                    if (file_exists('/config/ckusers.json') && !unlink('/config/ckusers.json')) throw new RuntimeException('Не удалось обновить пользователей Cloak');
                 }
+                $this->ssh(self::PKILL_CK, 'ss');
                 if (!empty($json['cloak']['Enabled'])) {
                     $this->ssh($this->ckServerRestartCmd(), 'ss');
                 }
@@ -7635,7 +7650,7 @@ NFT;
                 $out[] = 'update ipsec';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if ($this->importIpsecPki($json['ipsec'])) {
-                    $this->restartIpsec();
+                    if ($this->restartIpsec() === false) $failed('IPsec');
                 } else {
                     $ok = false;
                     $out[] = '❌ ipsec: invalid snapshot or write failed';
@@ -7644,34 +7659,41 @@ NFT;
             }
             if (array_key_exists('pac', $json)) {
                 $domain = $json['pac']['domain'] ?? '';
-                $this->setUpstreamDomainOcserv($domain);
-                $this->setUpstreamDomainNaive($domain);
+                if ($this->setUpstreamDomainOcserv($domain) === false) $failed('NGINX OpenConnect');
+                if ($this->setUpstreamDomainNaive($domain) === false) $failed('NGINX NaiveProxy');
             }
             // dnstt
             if (!empty($json['dnstt'])) {
                 $out[] = 'update dnstt certificates';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                if (!is_dir('/config/dnstt')) mkdir('/config/dnstt', 0700, true);
-                if (!$this->writePrivateKey('/config/dnstt/server.key', $json['dnstt']['private'])
-                    || !$this->writePrivateKey('/config/dnstt/server.pub', $json['dnstt']['public'])) throw new RuntimeException('Не удалось восстановить DNSTT');
+                $keys = ['server.key' => $json['dnstt']['private'], 'server.pub' => $json['dnstt']['public']];
                 if (!empty($json['dnstt']['ssh_private']) && !empty($json['dnstt']['ssh_public'])) {
-                    if (!$this->writePrivateKey('/config/dnstt/ssh_host_ed25519_key', $json['dnstt']['ssh_private'])
-                        || !$this->writePrivateKey('/config/dnstt/ssh_host_ed25519_key.pub', $json['dnstt']['ssh_public'])) throw new RuntimeException('Не удалось восстановить ключи DNSTT');
+                    $keys['ssh_host_ed25519_key'] = $json['dnstt']['ssh_private'];
+                    $keys['ssh_host_ed25519_key.pub'] = $json['dnstt']['ssh_public'];
                 }
+                $this->restoreBackupTree($keys, '/config/dnstt');
             }
             if (array_key_exists('pac', $json) || !empty($json['dnstt'])) {
                 // Настройки и ключи уже восстановлены. Без reload демон
                 // продолжал принимать старый пароль/ключ до перезапуска.
-                $this->dnsttStart();
+                if (!$this->dnsttStart()) $failed('DNSTT');
             }
             if (isset($json['extra_files'])) {
                 foreach ($this->restoreBackupExtraServices($json['extra_files']) as $protocol) $failed($protocol);
             }
+            if (isset($json['managed_protocols'])) {
+                // Домен PAC и маршруты остальных сервисов уже восстановлены.
+                // Иначе валидный SNI из снимка может конфликтовать со СТАРЫМ
+                // основным доменом и оборвать восстановление на новом сервере.
+                try { $this->syncManagedUpstreams(); }
+                catch (Throwable $error) { $failed('NGINX AnyTLS'); }
+            }
+            foreach ($this->verifyBackupServices($json) as $protocol) $failed($protocol);
             // nginx
             $out[] = $this->i18n('reset nginx');
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
 
-            $this->cloakNginx();
+            if ($this->cloakNginx() === false) $failed('NGINX');
 
             $out[] = $this->i18n($ok ? 'backup restore completed' : 'backup restore incomplete');
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -17247,6 +17269,7 @@ DNS-over-HTTPS with IP:
         // SSH/chpasswd; общий sshd_config всех контейнеров остаётся строгим.
         if (!is_dir('/config/dnstt')) mkdir('/config/dnstt', 0700, true);
         if (!$this->writePrivateKey('/config/dnstt/settings.json', json_encode($settings))) return false;
+        if (!$this->protocolModuleEnabled('dnstt')) return true;
         $out = $this->ssh('/bin/sh /start_dnstt.sh --reload', 'dnstt');
         return !$this->sshFailed && str_contains((string) $out, 'dnstt-ready');
     }
@@ -23907,7 +23930,7 @@ DNS-over-HTTPS with IP:
 
     public function setXrayStats($x)
     {
-        file_put_contents('/config/xray.stats', json_encode($x));
+        return $this->writePrivateKey('/config/xray.stats', json_encode($x, JSON_THROW_ON_ERROR));
     }
 
     public function resetXrUser($i)
@@ -29458,9 +29481,9 @@ DNS-over-HTTPS with IP:
         // поломка всплыла бы только при следующем рестарте контейнера — 443 не
         // поднимется и весь внешний доступ ляжет.
         if (!$this->isHostname($domain)) {
-            return;
+            return false;
         }
-        $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#domain', "$domain reality;"));
+        return $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#domain', "$domain reality;"));
     }
 
     /**
@@ -29503,13 +29526,13 @@ DNS-over-HTTPS with IP:
         // Пустая строка — штатный «сброс» (см. вызов при удалении домена),
         // остальное обязано быть хостнеймом: см. комментарий в setUpstreamDomain.
         if ('' !== (string) $domain && !$this->isHostname($domain)) {
-            return;
+            return false;
         }
         $sub   = $this->getHashSubdomain('oc');
         $body  = ($domain && $sub) ? "$sub.$domain ocserv;" : "#$sub.\$domain ocserv;";
         // Ровно те же две правки, что были сделаны для #naive, — сюда они тогда
         // не доехали (см. upstreamReplace).
-        $this->editUpstream(fn($nginx) => self::upstreamReplace(self::ocservDtlsUpstream($nginx), '#ocserv', $body));
+        return $this->editUpstream(fn($nginx) => self::upstreamReplace(self::ocservDtlsUpstream($nginx), '#ocserv', $body));
     }
 
     // Хосты, которые upstream-nginx по SNI отдаёт контейнеру naive: основной
@@ -29546,7 +29569,7 @@ DNS-over-HTTPS with IP:
     {
         // См. setUpstreamDomainOcserv: пустая строка допустима, мусор — нет.
         if ('' !== (string) $domain && !$this->isHostname($domain)) {
-            return;
+            return false;
         }
         $sub   = $this->getHashSubdomain('np');
         // Строк может быть несколько: основной поддомен + адреса relay для
@@ -29556,7 +29579,7 @@ DNS-over-HTTPS with IP:
         $body  = $hosts
             ? implode("\n", array_map(fn($h) => "$h naive;", $hosts))
             : "#$sub.\$domain naive;";
-        $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#naive', $body));
+        return $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#naive', $body));
     }
 
     public function getHashBot($notset = false)
@@ -29622,7 +29645,8 @@ DNS-over-HTTPS with IP:
         CONF;
         $template = preg_replace('~(location /adguard.+?})\s*location~s', $r, $template);
         $template = preg_replace('~(/webapp|/pac|/adguard|/ws|/grpc|/v2ray|location /dns-query)~', '${1}' . $h, $template);
-        file_put_contents('/config/nginx.conf', $template);
+        if (!is_string($template) || $template === ''
+            || !$this->editProtocolProxyConfig('/config/nginx.conf', 'ng', static fn($before) => $template)) return false;
         $x = $this->getXray();
         if (!empty($x['inbounds'][0]['streamSettings']['wsSettings']['path'])) {
             $x['inbounds'][0]['streamSettings']['wsSettings']['path'] = "/ws$h";
@@ -29637,7 +29661,7 @@ DNS-over-HTTPS with IP:
             $this->restartXray($x);
         }
 
-        return $this->ssh('nginx -s reload', 'ng');
+        return trim($this->ssh('nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1 && printf VPNBOT_NGINX_READY', 'ng')) === 'VPNBOT_NGINX_READY';
     }
 
     // Возвращаемое значение подставляется в «<sub>.<domain>» и уезжает в
@@ -31971,17 +31995,7 @@ DNS-over-HTTPS with IP:
 
             return false;
         }
-        $tmp = $f . '.' . getmypid() . '.tmp';
-        if (file_put_contents($tmp, $json) === false) {
-            @unlink($tmp);
-
-            return false;
-        }
-        // Права ставим на ВРЕМЕННОМ файле: после rename() он и станет боевым, а
-        // в clients.json лежат приватные ключи пиров и preshared-ключи.
-        $this->chmodSecret($tmp);
-
-        return rename($tmp, $f);
+        return $this->writePrivateKey($f, $json);
     }
 
     public function getWGType($revert = 0)
@@ -32015,8 +32029,8 @@ DNS-over-HTTPS with IP:
             return false;
         }
         $this->ssh("{$this->getWGType((int) $switch)}-quick down wg0", $this->getInstanceWG());
-        $this->ssh("{$this->getWGType()}-quick up wg0", $this->getInstanceWG());
-        return !$this->sshFailed;
+        $up = $this->ssh("{$this->getWGType()}-quick up wg0 >/dev/null 2>&1 && printf VPNBOT_WG_READY", $this->getInstanceWG());
+        return !$this->sshFailed && trim($up) === 'VPNBOT_WG_READY';
     }
 
     public function autoupdate()
@@ -32682,7 +32696,7 @@ DNS-over-HTTPS with IP:
 
     public function ttRunning()
     {
-        return (bool) $this->ssh('pgrep -f trusttunnel_endpoint', 'tt');
+        return (bool) $this->ssh('pgrep -f "[t]rusttunnel_endpoint"', 'tt');
     }
 
     public function restartTtMenu()
@@ -33169,7 +33183,7 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
-            $files[$rel] = base64_encode(file_get_contents($f->getPathname()));
+            $files[$rel] = base64_encode($this->backupReadFile($f->getPathname()));
         }
         return $files ?: null;
     }
@@ -33216,119 +33230,31 @@ DNS-over-HTTPS with IP:
         }
         $this->ovpnRestoreError = '';
         $root = dirname($this->ovpnPaths()['pki']);
-        @mkdir($root, 0755, true);
-        $decoded = [];
-        foreach ($files as $rel => $b64) {
-            // Защита от path traversal: запрещаем .. и абсолютные пути,
-            // нормализуем разделители.
-            $rel = str_replace('\\', '/', $rel);
-            if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false) {
-                $this->ovpnRestoreError = 'недопустимое имя файла в снимке';
-                return false;
+        try {
+            $decoded = $this->decodeBackupTree($files, $root, self::OVPN_SNAPSHOT_CORE);
+            $this->validateBackupPki($decoded, 'ovpn');
+            if (!is_dir($root) && !mkdir($root, 0755, true)) throw new RuntimeException('Не удалось создать каталог OpenVPN');
+            $keep = array_fill_keys(array_merge(array_keys($decoded), self::OVPN_SNAPSHOT_OPTIONAL), true);
+            $remove = [];
+            if (is_dir($root)) {
+                $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+                foreach ($iterator as $entry) {
+                    $relative = substr($entry->getPathname(), strlen($root) + 1);
+                    if (str_starts_with($relative, '.restore-')) continue;
+                    if ($entry->isLink()) throw new RuntimeException('Симлинк в каталоге OpenVPN');
+                    if (!$entry->isFile() || isset($keep[$relative]) || in_array($entry->getFilename(), self::OVPN_RUNTIME_FILES, true)) continue;
+                    $remove[] = $relative;
+                }
             }
-            $data = base64_decode((string) $b64, true);
-            if ($data === false) {
-                $this->ovpnRestoreError = "битый base64: $rel";
-                return false;
-            }
-            $decoded[$rel] = $data;
-        }
-        // Не начинаем точное восстановление из обрезанного/чужого снимка:
-        // иначе удаление лишних файлов могло бы уничтожить рабочий PKI.
-        // Отвергаем только по ЯДРУ снимка и говорим, чего именно не хватило —
-        // «incomplete or invalid» без деталей не давало ни одной зацепки.
-        $missing = array_values(array_diff(self::OVPN_SNAPSHOT_CORE, array_keys($decoded)));
-        if ($missing !== []) {
-            $this->ovpnRestoreError = 'в снимке нет обязательных файлов: ' . implode(', ', $missing);
+            $modes = [];
+            foreach ($decoded as $relative => $_) $modes[$relative] = $this->ovpnFileMode($relative);
+            $this->restoreBackupTree($decoded, $root, $modes, $remove);
+            return true;
+        } catch (Throwable $error) {
+            // Все пути проверены; данные ключей/сертификатов в текст не попадают.
+            $this->ovpnRestoreError = $error->getMessage();
             return false;
         }
-
-        // Раскладываем снимок в отдельный каталог ВНУТРИ $root (та же ФС, так
-        // что перенос ниже — обычный rename без EXDEV) и только потом,
-        // короткой второй фазой, переставляем файлы на места. Так сбой записи
-        // или chmod'а не оставляет PKI полуразобранным: до фазы переноса не
-        // тронут ни один рабочий файл. tempnam() здесь не годится вовсе — при
-        // недоступном каталоге он молча уходит в /tmp, и rename ломается на
-        // границе файловых систем.
-        $stage = "$root/.restore-" . getmypid() . '-' . bin2hex(random_bytes(4));
-        $fail  = function (string $why) use ($stage) {
-            $this->rmrf($stage);
-            $this->ovpnRestoreError = $why;
-            return false;
-        };
-        if (!@mkdir($stage, 0700, true)) {
-            return $fail('не создать временный каталог восстановления');
-        }
-        foreach ($decoded as $rel => $data) {
-            $path = "$stage/$rel";
-            if (!is_dir(dirname($path)) && !@mkdir(dirname($path), 0755, true)) {
-                return $fail("не создать каталог для $rel");
-            }
-            if (file_put_contents($path, $data) === false) {
-                return $fail("не записать $rel");
-            }
-            if (!chmod($path, $this->ovpnFileMode($rel))) {
-                return $fail("не выставить права на $rel");
-            }
-        }
-
-        // Фаза переноса. Всё, что не удалось переставить, оставляет PKI в
-        // смешанном состоянии — об этом надо сказать прямым текстом, а не
-        // прежним «бэкап неполный или повреждён».
-        foreach (array_keys($decoded) as $rel) {
-            $path = "$root/$rel";
-            if (!is_dir(dirname($path)) && !@mkdir(dirname($path), 0755, true)) {
-                $this->ovpnRestoreError = "PKI восстановлен ЧАСТИЧНО: не создать каталог для $rel";
-                $this->rmrf($stage);
-                return false;
-            }
-            if (!@rename("$stage/$rel", $path)) {
-                $this->ovpnRestoreError = "PKI восстановлен ЧАСТИЧНО: не перенести $rel";
-                $this->rmrf($stage);
-                return false;
-            }
-        }
-        $this->rmrf($stage);
-
-        // Файлы, которых в снимке нет, удаляем — ради этого точное
-        // восстановление и делалось (иначе revoked/* от более нового состояния
-        // конфликтует с вернувшимся active-cert). Кроме двух групп: runtime
-        // демона и «желательных» файлов, которые снимок мог легально не
-        // содержать — их регенерирует start_ovpn.sh, но до рестарта они нужны.
-        $keep = array_fill_keys(array_keys($decoded), true);
-        foreach (self::OVPN_SNAPSHOT_OPTIONAL as $opt) {
-            $keep[$opt] = true;
-        }
-        $rii  = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::CHILD_FIRST
-        );
-        foreach ($rii as $f) {
-            if (!$f->isFile() && !$f->isLink()) {
-                continue;
-            }
-            $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
-            if (in_array($f->getFilename(), self::OVPN_RUNTIME_FILES, true) || isset($keep[$rel])) {
-                continue;
-            }
-            if (!@unlink($f->getPathname())) {
-                $this->ovpnRestoreError = "PKI восстановлен, но не удалить лишний файл $rel";
-                return false;
-            }
-        }
-        // OpenVPN отказывается стартовать с приватниками доступными группе/всем.
-        // Страховка на случай ключей, которых в снимке не было (сохранённые
-        // выше OVPN_SNAPSHOT_OPTIONAL, остатки прошлых восстановлений).
-        foreach (array_merge(
-            glob("$root/pki/private/*.key") ?: [],
-            glob("$root/pki/revoked/private_by_serial/*.key") ?: []
-        ) as $k) {
-            chmod($k, 0600);
-        }
-        if (file_exists("$root/pki/ta.key")) {
-            chmod("$root/pki/ta.key", 0600);
-        }
-        return true;
     }
 
     public function getOvpnPort()
@@ -34470,7 +34396,7 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
-            $files[$rel] = base64_encode(file_get_contents($f->getPathname()));
+            $files[$rel] = base64_encode($this->backupReadFile($f->getPathname()));
         }
         return $files ?: null;
     }
@@ -34478,26 +34404,17 @@ DNS-over-HTTPS with IP:
     public function importIpsecPki(array $files)
     {
         $root = $this->ipsecPaths()['conf'];
-        $decoded = [];
-        foreach ($files as $rel => $b64) {
-            // Защита от path traversal — как в importOvpnPki.
-            $rel = str_replace('\\', '/', $rel);
-            if ($rel === '' || $rel[0] === '/' || strpos($rel, '..') !== false || str_contains($rel, "\0")) {
-                return false;
-            }
-            if (!is_string($b64) || ($data = base64_decode($b64, true)) === false) return false;
-            $decoded[$rel] = $data;
+        try {
+            $decoded = $this->decodeBackupTree($files, $root);
+            if (array_filter(array_keys($decoded), static fn($name) => str_starts_with($name, 'pki/'))) $this->validateBackupPki($decoded, 'ipsec');
+            if (!is_dir($root) && !@mkdir($root, 0700, true)) return false;
+            if (!chmod($root, 0700)) return false;
+            $this->restoreBackupTree($decoded, $root);
+            return true;
+        } catch (Throwable $error) {
+            error_log('importIpsecPki: ' . get_class($error));
+            return false;
         }
-        // Проверяем весь снимок до первой записи: битый base64 прежде
-        // превращал рабочий PSK/ключ в пустой файл и ронял обе службы.
-        if (!is_dir($root) && !@mkdir($root, 0700, true)) return false;
-        if (!@chmod($root, 0700)) return false;
-        foreach ($decoded as $rel => $data) {
-            $path = "$root/$rel";
-            if (!is_dir(dirname($path)) && !@mkdir(dirname($path), 0700, true)) return false;
-            if (!$this->writePrivateKey($path, $data)) return false;
-        }
-        return true;
     }
 
     // swanctl.conf лежит в бэкапе, и importIpsecPki() кладёт снимок обратно —
@@ -34511,6 +34428,16 @@ DNS-over-HTTPS with IP:
 
     public function restartIpsec()
     {
+        if (!$this->protocolModuleEnabled('ipsec')) return true;
+        // Старые контейнеры держат копии PKI в /etc/swanctl. После restore
+        // они устаревали: процесс работал, но клиенты получали старый CA.
+        // Ссылки нужны и здесь для уже созданных контейнеров, и в entrypoint.
+        $sync = 'test -s /config/ipsec/pki/ca.crt && test -s /config/ipsec/pki/server.crt && test -s /config/ipsec/pki/server.key'
+            . ' && ln -sfn /config/ipsec/pki/ca.crt /etc/swanctl/x509ca/ca.crt'
+            . ' && ln -sfn /config/ipsec/pki/server.crt /etc/swanctl/x509/server.crt'
+            . ' && ln -sfn /config/ipsec/pki/server.key /etc/swanctl/private/server.key'
+            . ' && printf VPNBOT_IPSEC_PKI_READY';
+        if (trim($this->ssh($sync, 'ipsec')) !== 'VPNBOT_IPSEC_PKI_READY') return false;
         $this->migrateIpsecConf();
         // Гарантированная остановка обоих демонов, затем перезапуск через
         // /etc/run_ipsec_daemons.sh (его генерирует start_ipsec.sh — там
@@ -34520,7 +34447,11 @@ DNS-over-HTTPS with IP:
             'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep charon >/dev/null || break; sleep 0.2; done',
             'ipsec'
         );
-        $this->ssh('sh /etc/run_ipsec_daemons.sh', 'ipsec', false, '/dev/null');
+        // Дополнительная загрузка проверяет и старый run_ipsec_daemons.sh,
+        // который не возвращал ошибку swanctl. Наличия charon недостаточно.
+        $result = $this->ssh('sh /etc/run_ipsec_daemons.sh >/dev/null 2>&1'
+            . ' && swanctl --load-all --noprompt >>/logs/ipsec.log 2>&1 && printf VPNBOT_IPSEC_READY', 'ipsec');
+        return trim($result) === 'VPNBOT_IPSEC_READY';
     }
 
     // Явный рестарт charon+xl2tpd из меню: после ручных правок swanctl.conf,

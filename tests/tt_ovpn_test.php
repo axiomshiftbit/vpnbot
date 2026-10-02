@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__.'/backup_pki_fixture.php';
+$pkiFixture=backupPkiFixture();
 
 // TrustTunnel + OpenVPN: инварианты, которые ловятся не предупреждением, а
 // отказом клиента подключиться.
@@ -277,11 +279,11 @@ $restoreBot  = new class ($restoreRoot) extends Bot {
 file_put_contents($restoreRoot . '/pki/revoked/certs_by_serial/stale.crt', 'must disappear');
 file_put_contents($restoreRoot . '/openvpn-status.log', 'runtime must survive');
 $restoreFiles = [
-    'pki/ca.crt'                 => 'ca',
-    'pki/issued/server.crt'      => 'server cert',
-    'pki/issued/alice.crt'       => 'client cert',
-    'pki/private/server.key'     => 'server key',
-    'pki/private/alice.key'      => 'client key',
+    'pki/ca.crt'                 => $pkiFixture['ca'],
+    'pki/issued/server.crt'      => $pkiFixture['server'],
+    'pki/issued/alice.crt'       => $pkiFixture['server'],
+    'pki/private/server.key'     => $pkiFixture['key'],
+    'pki/private/alice.key'      => $pkiFixture['key'],
     'pki/crl.pem'                => 'crl',
     'pki/index.txt'              => "V\texpiry\t\tserial\tunknown\t/CN=alice\n",
     'pki/serial'                 => 'next serial',
@@ -294,8 +296,8 @@ ttAssert($restoreBot->importOvpnPki($restoreSnapshot, true) === true,
     'точное восстановление принимает полный OpenVPN snapshot');
 ttAssert(!file_exists($restoreRoot . '/pki/revoked/certs_by_serial/stale.crt'),
     'точное восстановление удаляет revoked-файл, которого нет в бэкапе');
-ttAssert(file_get_contents($restoreRoot . '/pki/issued/alice.crt') === 'client cert'
-    && file_get_contents($restoreRoot . '/pki/private/alice.key') === 'client key',
+ttAssert(file_get_contents($restoreRoot . '/pki/issued/alice.crt') === $pkiFixture['server']
+    && file_get_contents($restoreRoot . '/pki/private/alice.key') === $pkiFixture['key'],
     'сертификат и приватный ключ клиента восстанавливаются без искажения');
 ttAssert(file_get_contents($restoreRoot . '/openvpn-status.log') === 'runtime must survive',
     'точное восстановление сохраняет исключённый runtime status-файл');
@@ -398,9 +400,9 @@ file_put_contents($restoreRoot2 . '/pki/crl.pem', 'старый crl остаёт
 file_put_contents($restoreRoot2 . '/pki/ta.key', 'старый ta остаётся');
 file_put_contents($restoreRoot2 . '/ipp.txt', 'alice,10.8.0.5');
 $minimal = array_map('base64_encode', [
-    'pki/ca.crt'             => 'ca',
-    'pki/issued/server.crt'  => 'server cert',
-    'pki/private/server.key' => 'server key',
+    'pki/ca.crt'             => $pkiFixture['ca'],
+    'pki/issued/server.crt'  => $pkiFixture['server'],
+    'pki/private/server.key' => $pkiFixture['key'],
     'server.conf'            => 'server config',
     'pki/revoked/private_by_serial/AB12.key' => 'revoked key',
 ]);
@@ -420,7 +422,7 @@ $restoreBot2->importOvpnPki(['pki/ca.crt' => base64_encode('ca')], true);
 ttAssert(str_contains($restoreBot2->ovpnRestoreError, 'pki/issued/server.crt')
     && str_contains($restoreBot2->ovpnRestoreError, 'server.conf'),
     'отказ называет конкретные недостающие файлы, а не «incomplete or invalid»');
-ttAssert(file_get_contents($restoreRoot2 . '/pki/ca.crt') === 'ca',
+ttAssert(file_get_contents($restoreRoot2 . '/pki/ca.crt') === $pkiFixture['ca'],
     'отвергнутый снимок не трогает PKI');
 ttAssert(strpos($botSrc, "str_contains(\$this->ovpnRestoreError, 'ЧАСТИЧНО')") !== false,
     'прерванный перенос отличается от отвергнутого снимка при восстановлении из бэкапа');

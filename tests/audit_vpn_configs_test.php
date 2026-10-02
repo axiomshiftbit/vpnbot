@@ -87,7 +87,7 @@ vcAssert(substr_count($src, 'chmodSecret(') >= 7,
     'права ставятся на xray.json, clients.json, ssserver.json, hysteria.yaml, ocserv.passwd');
 // Окно в БАЙТАХ, комментарии кириллицей — по два байта на символ.
 $wx = substr($src, strpos($src, 'public function writeXrayJson('), 4200);
-vcAssert(str_contains($wx, 'chmodSecret($this->xrayConf)'),
+vcAssert(str_contains($wx, 'backupWriteInPlace($this->xrayConf, $json)'),
     'xray.json (privateKey reality + все UUID) пишется с 0600');
 
 // ── 6. Reality: подписи клиентов ────────────────────────────────────────────

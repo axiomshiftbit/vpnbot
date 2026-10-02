@@ -347,7 +347,7 @@ trait BotProtocols
         if ($info) header('Subscription-Userinfo: ' . implode('; ', $info));
     }
 
-    public function importManagedProtocols(array $data): void
+    public function validateManagedBackup(array $data): array
     {
         if (!is_array($data['modules'] ?? null) || !is_array($data['protocols'] ?? null)
             || array_diff_key($data['modules'], ProtocolModules::DEFAULTS)
@@ -370,17 +370,25 @@ trait BotProtocols
             }
         }
         if (array_diff_key($certificates, $allowed)) throw new InvalidArgumentException('Посторонний TLS-файл в резервной копии');
+        return $material;
+    }
+
+    public function importManagedProtocols(array $data, bool $syncUpstreams = true): void
+    {
+        $material = $this->validateManagedBackup($data);
         foreach (['anytls', 'shadowtls'] as $protocol) {
             if (!empty($data['protocols'][$protocol]['state']['settings']['self_hosted'])) {
                 $this->prepareProtocolSelfHost();
                 break;
             }
         }
-        foreach ($material as $path => $body) if (!$this->writePrivateKey($this->managedCertificatePath($path, true), $body)) throw new RuntimeException('Не удалось восстановить TLS-файл');
+        $certificates = [];
+        foreach ($material as $path => $body) $certificates[substr($path, 7)] = $body;
+        if ($certificates) $this->restoreBackupTree($certificates, $this->protocolCertRoot);
         foreach ($data['protocols'] as $protocol => $snapshot) $this->protocolStore($protocol)->restore($snapshot);
         $modules = new ProtocolModules($this->protocolModulesFile);
         $modules->setMany($data['modules']);
-        $this->syncManagedUpstreams();
+        if ($syncUpstreams) $this->syncManagedUpstreams();
     }
 
     public function filterProtocolButtons($rows)
@@ -896,13 +904,7 @@ trait BotProtocols
         if (!is_file($path)) return false;
         $lock = @fopen(dirname($path) . '/' . pathinfo($path, PATHINFO_FILENAME) . '.lock', 'c');
         if (!$lock) return false;
-        $write = static function (string $body) use ($path): bool {
-            $file = @fopen($path, 'c+');
-            if (!$file) return false;
-            try {
-                return fwrite($file, $body) === strlen($body) && ftruncate($file, strlen($body)) && fflush($file) && fsync($file);
-            } finally { fclose($file); }
-        };
+        $write = fn(string $body): bool => $this->backupWriteInPlace($path, $body);
         try {
             for ($attempt = 0; $attempt < 4; $attempt++) {
                 if (!flock($lock, LOCK_EX)) return false;

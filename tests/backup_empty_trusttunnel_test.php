@@ -6,6 +6,7 @@ class EmptyTrustTunnelBackupBot extends Bot
     public bool $failWrite = false;
     public int $restarts = 0;
     public function __construct(public string $root) {
+        $this->pac = "$root/pac.json";
         $this->update = "$root/backup.json";
         $this->input = ['chat' => 1, 'message_id' => 1, 'callback_id' => 'test'];
     }
@@ -13,6 +14,7 @@ class EmptyTrustTunnelBackupBot extends Bot
     public function getPacConf() { return ['language' => 'ru', 'limitpage' => 5]; }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') {}
     public function cloakNginx() {}
+    public function ssh($cmd,$service='wg',$wait=true,$log='/dev/null') { return str_contains($cmd,'VPNBOT_SERVICE_READY') ? 'VPNBOT_SERVICE_READY' : ''; }
     public function restartTt() { $this->restarts++; return true; }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
     public function writePrivateKey(string $path, string $data): bool { return !$this->failWrite && parent::writePrivateKey($path, $data); }
@@ -37,5 +39,6 @@ try {
     echo "backup_empty_trusttunnel_test OK\n";
 } finally {
     foreach (glob("$root/*") as $file) unlink($file);
+    @unlink("$root/.backup.lock");
     rmdir($root);
 }

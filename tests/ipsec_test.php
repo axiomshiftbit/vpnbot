@@ -209,7 +209,7 @@ ipsecAssert(
     'бот применяет миграции сам — restore бэкапа кладёт swanctl.conf из снимка'
 );
 ipsecAssert(
-    (bool) preg_match('~function restartIpsec\(\)\s*\{\s*\$this->migrateIpsecConf\(\);~', $botSrc),
+    (bool) preg_match('~function restartIpsec\(\).*?\$this->migrateIpsecConf\(\);.*?pkill -9 charon~s', $botSrc),
     'restartIpsec() мигрирует конфиг до перезапуска демонов'
 );
 // Шаблон нового конфига обязан нести тот же фолбэк, что и миграция.
@@ -253,6 +253,27 @@ foreach (glob($dir . '/*') ?: [] as $f) {
 }
 @rmdir($dir);
 
+$restart = new class extends Bot {
+    public bool $enabled = true;
+    public bool $pkiReady = true;
+    public bool $loadReady = true;
+    public array $commands = [];
+    public function __construct() {}
+    public function protocolModuleEnabled(string $service): bool { return $this->enabled; }
+    public function ssh($cmd,$service='wg',$wait=true,$log='/dev/null') {
+        $this->commands[]=$cmd;
+        if (str_contains($cmd,'VPNBOT_IPSEC_PKI_READY')) return $this->pkiReady ? 'VPNBOT_IPSEC_PKI_READY' : '';
+        if (str_contains($cmd,'VPNBOT_IPSEC_READY')) return $this->loadReady ? 'VPNBOT_IPSEC_READY' : '';
+        return '';
+    }
+};
+ipsecAssert($restart->restartIpsec()===true,'Перезапуск подтверждает загрузку ключей и конфигурации');
+$restart->commands=[];$restart->pkiReady=false;
+ipsecAssert($restart->restartIpsec()===false && count($restart->commands)===1,'Ошибка подготовки PKI не останавливает рабочий процесс');
+$restart->pkiReady=true;$restart->loadReady=false;
+ipsecAssert($restart->restartIpsec()===false,'Ошибка swanctl видна вызывающему коду');
+$restart->enabled=false;$restart->commands=[];
+ipsecAssert($restart->restartIpsec()===true && !$restart->commands,'Выключенный IPsec сохраняет настройки без обращения к контейнеру');
 if ($failed) {
     echo "$failed test(s) failed\n";
     exit(1);
