@@ -90,7 +90,10 @@ def migrate_upstream(text):
 def migrate_nginx(text):
     # The fixed Compose address keeps NGINX bootable when optional SS is absent.
     # Preserve custom backends and the trailing URI used by the v2ray plugin.
-    return re.sub(r'(?m)^(\s*proxy_pass\s+)http://ss:8388/;', r'\g<1>http://10.10.0.6:8388/;', text)
+    # Include commented template directives: cloakNginx activates them when a
+    # domain and its certificate are restored, after this migration has run.
+    return re.sub(r'(?m)^(\s*(?:#[ \t]*)?proxy_pass\s+)http://ss:8388/;',
+                  r'\g<1>http://10.10.0.6:8388/;', text)
 
 
 def prepare_upstream(root, filename='upstream.conf'):

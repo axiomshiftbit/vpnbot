@@ -35,8 +35,10 @@ class ProtocolTests(unittest.TestCase):
         after = modules.migrate_nginx(before)
         self.assertIn('proxy_pass http://10.10.0.6:8388/;', after)
         self.assertIn('proxy_pass http://other:8388/;', after)
-        self.assertIn('# proxy_pass http://ss:8388/;', after)
+        self.assertIn('# proxy_pass http://10.10.0.6:8388/;', after)
         self.assertEqual(after, modules.migrate_nginx(after))
+        self.assertEqual('  proxy_pass\n    http://10.10.0.6:8388/;\n',
+                         modules.migrate_nginx('  proxy_pass\n    http://ss:8388/;\n'))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); (root/'config').mkdir(); (root/'update').mkdir()
             path = root/'config/nginx.conf'; path.write_text(before); inode = path.stat().st_ino
@@ -48,6 +50,33 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(after, path.read_text())
             self.assertEqual(inode, path.stat().st_ino)
             self.assertEqual(before, (root/'update/nginx.before-protocols.conf').read_text())
+
+    def test_optional_ss_migration_covers_inactive_domain_template(self):
+        before = ('#-domain\n    # server {\n    #     location /v2ray {\n'
+                  '    #         proxy_pass http://ss:8388/;\n    #     }\n    # }\n#-domain\n'
+                  '# Explanation: proxy_pass http://ss:8388/;\n'
+                  '# proxy_pass http://custom:8388/;\n# proxy_pass http://ss:9000/;\n')
+        after = modules.migrate_nginx(before)
+        self.assertIn('    #         proxy_pass http://10.10.0.6:8388/;', after)
+        self.assertIn('# Explanation: proxy_pass http://ss:8388/;', after)
+        self.assertIn('# proxy_pass http://custom:8388/;', after)
+        self.assertIn('# proxy_pass http://ss:9000/;', after)
+        self.assertEqual(after, modules.migrate_nginx(after))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root/'config').mkdir(); (root/'update').mkdir()
+            path = root/'config/nginx_default.conf'; path.write_text(before)
+            inode = path.stat().st_ino
+            with patch.object(modules, 'validate_upstream'):
+                modules.prepare_upstream(root, path.name)
+            self.assertEqual(after, path.read_text())
+            self.assertEqual(inode, path.stat().st_ino)
+
+    def test_shipped_nginx_templates_do_not_require_optional_ss_dns(self):
+        for name in ('nginx.conf', 'nginx_default.conf'):
+            with self.subTest(template=name):
+                text = (ROOT/'config'/name).read_text()
+                self.assertNotIn('proxy_pass http://ss:8388/;', text)
+                self.assertEqual(2, text.count('proxy_pass http://10.10.0.6:8388/;'))
 
     def test_hysteria_container_starts_saved_configuration(self):
         for configured in (True, False):
