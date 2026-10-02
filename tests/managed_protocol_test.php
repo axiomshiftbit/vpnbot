@@ -49,7 +49,7 @@ try {
     mpCheck($profile['outbounds'][0]['tls']['enabled'] && empty($profile['outbounds'][0]['tls']['insecure']), 'TLS проверяется');
     mpCheck($profile['inbounds'][0]['listen'] === '127.0.0.1', 'Локальный прокси закрыт от LAN');
     $m->user($a, ['quota' => 1024]);
-    ManagedProtocol::writeJson($m->directory() . '/runtime/usage.json', ['users' => [$a => ['upload' => 100, 'download' => 924, 'reset' => $after['reset'], 'last' => ['upload' => 100]]]]);
+    ManagedProtocol::writeJson($m->directory() . '/runtime/usage.json', ['users' => [$a => ['upload' => 100, 'download' => 924, 'reset' => $after['reset'], 'last' => ['upload' => 100]], $b => ['upload' => 0, 'download' => 0, 'reset' => $m->read()['users'][$b]['reset']]]]);
     mpCheck(!$m->allowed($m->read()['users'][$a], $a), 'Квота на границе закрывает выдачу');
     $snapshot = $m->snapshot();
     mpCheck(!isset($snapshot['usage']['users'][$a]['last']), 'Снимок не переносит базу счётчиков другого процесса');

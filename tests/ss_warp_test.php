@@ -167,9 +167,10 @@ swAssert(!preg_match('~\(string\)\s*\(\$ss\[self::SS_WARP_KEY\]~', $menu),
 preg_match('~\n\s+// ss\n.*?\n\s+// sl\n~s', $src, $im);
 $imp = $im[0] ?? '';
 swAssert($imp !== '', 'ветка ss в импорте настроек найдена');
-swAssert(str_contains($imp, 'warpSocksAllowSS(self::ssWarpOn('),
+$restore = file_get_contents(__DIR__ . '/../app/BotBackup.php');
+swAssert(str_contains($imp, "restoreBackupShadowsocks('ss'") && str_contains($restore, 'warpSocksAllowSS(self::ssWarpOn('),
     'импорт выставляет ACL по приехавшему ssserver.json');
-swAssert(strpos($imp, 'warpSocksAllowSS') < strpos($imp, 'ssserver -v -d -c /config.json'),
+swAssert(strpos($restore, 'warpSocksAllowSS') < strpos($restore, ' -v -d -c /config.json'),
     'и делает это ДО старта ssserver — как в самом тумблере');
 
 if ($failed) {

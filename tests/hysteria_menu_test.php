@@ -6,6 +6,7 @@ class HyMenuBot extends Bot {
     public array $messages=[]; public array $buttons=[]; public array $commands=[]; public array $prompt=[];
     public bool $writeFail=false; public bool $managed=true; public bool $module=true;
     public function __construct(string $root) {
+        $this->pac="$root/pac.json";
         $this->hysteriaUsersRoot="$root/hysteria"; $this->hysteriaConf="$root/hysteria.yaml"; $this->update="$root/backup.json";
         $this->ip='2001:db8::10'; $this->admin=true; $this->input=['chat'=>1,'message_id'=>1,'callback_id'=>'test'];
     }
@@ -23,6 +24,12 @@ class HyMenuBot extends Bot {
     public function send($chat,$text,?int $to=0,$button=false,$reply=false,$mode='HTML',$disable_notification=false) { $this->messages[]=$text;return ['result'=>['message_id'=>2]]; }
     public function stashReply($r,array $state) { $this->prompt=$state; }
     public function protocolError(string $message,string $back,string $retry=''): void { $this->messages[]=$message; }
+    public function verifyBackupServices(array $json): array {
+        $state=$this->hysteriaUsersStore()->read();
+        ManagedProtocol::writeJson($this->hysteriaUsersRoot.'/runtime/status.json',['time'=>time(),'running'=>true,'revision'=>$state['revision']]);
+        ManagedProtocol::writeJson($this->hysteriaUsersRoot.'/runtime/usage.json',['users'=>$state['restore_usage']['users'],'restored'=>$state['restore_usage']['id']]);
+        return parent::verifyBackupServices($json);
+    }
     public function cloakNginx() {}
 }
 $root=sys_get_temp_dir().'/vpnbot-hy-menu-'.bin2hex(random_bytes(6));mkdir($root,0700);

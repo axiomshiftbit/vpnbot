@@ -368,6 +368,7 @@ final class ManagedProtocol
     public function snapshot(): array
     {
         $state = $this->read();
+        $original = $state;
         $usage = $this->usage();
         if (isset($state['restore_usage']) && ($usage['restored'] ?? '') !== $state['restore_usage']['id']) {
             // Выключенный supervisor ещё не перенёс восстановленные счётчики
@@ -380,6 +381,7 @@ final class ManagedProtocol
         foreach (array_keys($usage['users'] ?? []) as $id) unset($usage['users'][$id]['last']);
         $snapshot = ['state' => $state, 'usage' => $usage];
         $this->validateSnapshot($snapshot);
+        if ($this->read() !== $original) throw new RuntimeException('Настройки протокола изменились во время резервного копирования');
         return $snapshot;
     }
 
@@ -387,6 +389,7 @@ final class ManagedProtocol
     {
         if (!is_array($snapshot['state'] ?? null) || !is_array($snapshot['usage'] ?? null)) throw new InvalidArgumentException('Неверная резервная копия протокола');
         $this->validate($snapshot['state']);
+        if (isset($snapshot['usage']['users']) && !is_array($snapshot['usage']['users'])) throw new InvalidArgumentException('Неверные счётчики пользователей');
         if (isset($snapshot['usage']['native_metrics']) && ($this->protocol !== 'mieru'
             || !is_string($snapshot['usage']['native_metrics']) || strlen($snapshot['usage']['native_metrics']) > 32 * 1024 * 1024
             || base64_decode($snapshot['usage']['native_metrics'], true) === false)) throw new InvalidArgumentException('Неверная история квоты Mieru');
@@ -395,6 +398,12 @@ final class ManagedProtocol
             foreach (['upload', 'download'] as $key) if (!is_int($record[$key] ?? null) || $record[$key] < 0) throw new InvalidArgumentException('Неверные счётчики');
             if (isset($record['charged']) && ($this->protocol !== 'snolc' || !is_int($record['charged']) || $record['charged'] < 0)) throw new InvalidArgumentException('Неверный учёт квоты snolc');
             if (!preg_match('/\A[a-f0-9]{16}\z/D', $record['reset'] ?? '')) throw new InvalidArgumentException('Неверный счётчик сброса');
+        }
+        foreach ($snapshot['state']['users'] as $id => $user) {
+            if ((!empty($user['quota']) || !empty($user['rolling_quota']))
+                && ($snapshot['usage']['users'][$id]['reset'] ?? null) !== $user['reset']) {
+                throw new InvalidArgumentException('Снимок не содержит расход текущего периода пользователя');
+            }
         }
     }
 

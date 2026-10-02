@@ -121,11 +121,11 @@ if [ "$SAN_OK" != "1" ] && [ -s "$PKI/ca.key" ] && [ -n "$IP" ]; then
 fi
 chmod 600 "$PKI/ca.key" "$PKI/server.key" 2>/dev/null
 
-# swanctl подхватывает креды из стандартных каталогов — кладём копии
-# (идемпотентно, каждый старт).
-cp -f "$PKI/ca.crt"     /etc/swanctl/x509ca/ca.crt     2>>"$LOG" || log "MISSING ca.crt"
-cp -f "$PKI/server.crt" /etc/swanctl/x509/server.crt   2>>"$LOG" || log "MISSING server.crt"
-cp -f "$PKI/server.key" /etc/swanctl/private/server.key 2>>"$LOG" || log "MISSING server.key"
+# swanctl читает текущие файлы bind mount и после восстановления бэкапа.
+# Отдельные копии оставляли прежний CA/ключ до пересоздания контейнера.
+ln -sfn "$PKI/ca.crt"     /etc/swanctl/x509ca/ca.crt       2>>"$LOG" || log "PKI link FAILED"
+ln -sfn "$PKI/server.crt" /etc/swanctl/x509/server.crt     2>>"$LOG" || log "PKI link FAILED"
+ln -sfn "$PKI/server.key" /etc/swanctl/private/server.key 2>>"$LOG" || log "PKI link FAILED"
 
 # ─── secrets.conf: PSK + EAP-юзеры (правит бот) ──────────────────────────
 # Формат swanctl. Начальный файл — только PSK; дальше бот РЕГЕНЕРИРУЕТ файл
@@ -411,9 +411,10 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     sleep 0.3
 done
 if [ -S /var/run/charon.vici ]; then
-    swanctl --load-all >> "$LOG" 2>&1
+    swanctl --load-all --noprompt >> "$LOG" 2>&1 || exit 1
 else
     echo "[run_ipsec \$(date +%H:%M:%S)] charon.vici did not appear — charon failed to start" >> "$LOG"
+    exit 1
 fi
 if [ "\${IPSEC_L2TP_ENABLED:-1}" = 1 ]; then
     xl2tpd -D >>/logs/l2tp.log 2>&1 &
