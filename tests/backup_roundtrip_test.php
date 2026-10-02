@@ -13,6 +13,8 @@ require __DIR__.'/managed_protocol_fixture.php';
 require __DIR__.'/../app/i18n.php';
 class RoundTripBot extends Bot {
  public string $syncedDomain = '';
+ public bool $rejectXray = false;
+ public function restoreBackupXray(array $config): bool { return !$this->rejectXray && parent::restoreBackupXray($config); }
  public function syncManagedUpstreams(): void { $this->syncedDomain=$this->getPacConf()['domain']??''; }
  public function __construct(public string $dir,array $translations){
   $this->pac="$dir/config/pac.json";$this->clients="$dir/config/clients.json";$this->clients1="$dir/config/clients1.json";
@@ -83,5 +85,10 @@ try{
  rtCheck($after['hy_users']['state']['users']===$snapshot['hy_users']['state']['users'] && $after['hy_users']['usage']===$snapshot['hy_users']['usage'],'Пользователи и расход Hysteria сохранены');
  rtCheck(file_get_contents("$root/logs/xray_core")==='origin3','Выбор версии Xray восстановлен и при выключенном контейнере');
  rtCheck($b->importFile($b->update)===true,'Повторное восстановление работает');
+ $beforeStats=['users'=>[['global'=>['upload'=>123,'download'=>456]]]];
+ $b->setXrayStats($beforeStats);$b->rejectXray=true;
+ file_put_contents($b->update,json_encode(['xray'=>$snapshot['xray'],'xraystats'=>['users'=>[['global'=>['upload'=>99999,'download'=>77777]]]]]));
+ rtCheck($b->importFile($b->update)===false,'Отказ ядра возвращает неполное восстановление');
+ rtCheck($b->getXrayStats()===$beforeStats,'Отвергнутый снимок Xray не меняет расход прежних пользователей');
  echo "backup_roundtrip_test OK\n";
 }finally{rtRemove($root);}

@@ -7416,6 +7416,7 @@ NFT;
                 }
             }
             $ok = true;
+            $xrayApplied = true;
             $out = [];
             $failed = function (string $protocol) use (&$ok, &$out): void {
                 $ok = false;
@@ -7546,6 +7547,7 @@ NFT;
                     $this->datSync(true);
                 }
                 if (!$this->restoreBackupXray($json['xray'])) {
+                    $xrayApplied = false;
                     $ok = false;
                     $out[] = '❌ xray: configuration rejected; previous configuration preserved';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -7557,7 +7559,9 @@ NFT;
                 if ($this->setUpstreamDomain(($pac['transport'] ?? '') !== 'Reality' ? 't' : ($pac['reality']['domain'] ?? $json['xray']['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] ?? '')) === false) $failed('NGINX Xray');
             }
             // xraystats
-            if (array_key_exists('xraystats', $json)) {
+            // Индексы счётчиков относятся к пользователям снимка. При отказе
+            // Xray остаётся прежний список: его расход менять нельзя.
+            if (array_key_exists('xraystats', $json) && $xrayApplied) {
                 $out[] = 'update xray stats';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if (!$this->setXrayStats($json['xraystats'])) $failed('Xray statistics');
