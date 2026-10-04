@@ -10,7 +10,7 @@
 # Бинарь запускается ботом по ssh: restartTelemt() пишет /telemt/telemt.toml
 # и поднимает `telemt run`. Entrypoint восстанавливает процесс после сбоя,
 # учитывая сохранённый выключатель сервиса и общую с ботом блокировку.
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 ARG TELEMT_VERSION=3.5.13
 
 FROM ghcr.io/telemt/telemt:${TELEMT_VERSION} AS dl

@@ -135,7 +135,6 @@ $panel = new Panel($bot, ['key' => 'test-token:AAH', 'admin' => [111]], $store);
 $panel->setPassword('correct horse');
 
 $sign = (new ReflectionMethod(Panel::class, 'sign'));
-$sign->setAccessible(true);
 $exp = time() + 3600;
 
 $_COOKIE['panel'] = $exp . '.' . $sign->invoke($panel, $exp);
@@ -322,7 +321,6 @@ putenv('PANEL_TRUSTED');
 // preg_match с массивом во втором аргументе — TypeError, то есть 500 вместо
 // ответа. Для /pac<hash>?t=te этот путь вообще не аутентифицирован.
 $tload = new ReflectionMethod(Panel::class, 'tload');
-$tload->setAccessible(true);
 $_POST = ['ty' => ['x'], 'te' => ['y']];
 ob_start();
 $tload->invoke($panel);
@@ -330,7 +328,6 @@ $outJson = json_decode((string) ob_get_clean(), true);
 panelAssert(is_array($outJson) && false === ($outJson['status'] ?? null), 'tload с ty[] отвечает, а не падает');
 
 $editor = new ReflectionMethod(Panel::class, 'editor');
-$editor->setAccessible(true);
 $_GET = ['ty' => ['x']];
 ob_start();
 $editor->invoke($panel);
@@ -359,14 +356,12 @@ panelAssert(count($after['messages']) === 2, 'битый текст сохран
 // ── мультиадминство: подпись/аутентификация несёт выбранного админа ─────────
 $multi = new Panel($bot, ['key' => 'test-token:AAH', 'admin' => [111, 222]], $store);
 $sign2 = new ReflectionMethod(Panel::class, 'sign');
-$sign2->setAccessible(true);
 
 $exp2 = time() + 3600;
 $_COOKIE['panel'] = $exp2 . '.222.' . $sign2->invoke($multi, $exp2, 222);
 panelAssert($multi->authed(), 'валидная кука с явным admin=222 пускает');
 
 $chatId2 = new ReflectionMethod(Panel::class, 'chatId');
-$chatId2->setAccessible(true);
 panelAssert(222 === $chatId2->invoke($multi), 'chatId() отражает выбранного при логине админа');
 
 $_COOKIE['panel'] = $exp2 . '.999.' . $sign2->invoke($multi, $exp2, 999);
@@ -390,7 +385,6 @@ unset($_COOKIE['panel']);
 $_COOKIE['panel'] = $exp2 . '.222.' . $sign2->invoke($multi, $exp2, 222);
 panelAssert($multi->authed(), 'кука для diag()-проверки валидна');
 $diag = new ReflectionMethod(Panel::class, 'diag');
-$diag->setAccessible(true);
 ob_start();
 $diag->invoke($multi);
 $diagOut = json_decode((string) ob_get_clean(), true);
@@ -405,7 +399,6 @@ $dismissId = $store->put(['text' => 'уберите меня']);
 panelAssert(!($store->read()['messages'][$dismissId]['deleted'] ?? false), 'сообщение перед dismiss() ещё живое');
 $_POST      = ['message_id' => $dismissId];
 $dismiss    = new ReflectionMethod(Panel::class, 'dismiss');
-$dismiss->setAccessible(true);
 ob_start();
 $dismiss->invoke($panel);
 $dismissOut = json_decode((string) ob_get_clean(), true);
@@ -416,7 +409,6 @@ panelAssert(!empty($store->read()['messages'][$dismissId]['deleted']), 'dismiss(
 // ── login() на мультиадминной панели требует известный admin в POST ─────────
 $clear->invoke($multi); // счётчик попыток общий с $panel — сбрасываем перед проверкой
 $login = new ReflectionMethod(Panel::class, 'login');
-$login->setAccessible(true);
 
 $_POST = ['password' => 'another one', 'admin' => 222];
 ob_start();

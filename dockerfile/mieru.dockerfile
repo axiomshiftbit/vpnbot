@@ -19,7 +19,7 @@ RUN go test -vet=off ./pkg/socks5 -run TestVPNBot -count=1
 RUN CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /mita ./cmd/mita \
     && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /mieru-control ./cmd/vpnbot-control
 
-FROM alpine:3.23
+FROM alpine:3.24
 ARG MIERU_VERSION
 ARG MIERU_SOURCE_SHA256
 LABEL io.vpnbot.mieru.version=$MIERU_VERSION io.vpnbot.mieru.source-sha256=$MIERU_SOURCE_SHA256

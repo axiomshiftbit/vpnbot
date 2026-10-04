@@ -86,7 +86,6 @@ panelPswdAssert(
 // password_verify) — полный путь: HMAC-кука подписана текущим хешем пароля.
 $panel = new Panel($bot, ['key' => 'test-token:AAH', 'admin' => [111]], $store);
 $sign  = new ReflectionMethod(Panel::class, 'sign');
-$sign->setAccessible(true);
 $exp              = time() + 3600;
 $_COOKIE['panel'] = $exp . '.' . $sign->invoke($panel, $exp);
 panelPswdAssert($panel->authed(), 'пароль, установленный Bot::setPanelPassword(), не пускает через Panel::authed()');
@@ -140,7 +139,6 @@ panelPswdAssert(str_contains($sent, 'panel.php passwd'), 'panelPswdSet: подс
 // проверен выше на обычном пароле; вызываем приватный метод напрямую, как
 // panel_test.php делает для Panel::sign()/rateHit().)
 $copy = new ReflectionMethod(Bot::class, 'sendPanelPasswordCopy');
-$copy->setAccessible(true);
 $xssPass = '<script>alert(1)</script>&"\'';
 $copy->invoke($bot2, $xssPass);
 $last2 = array_key_last($store->read()['messages']);

@@ -121,7 +121,6 @@ try {
         importAssert(curl_getinfo($ch, CURLINFO_HTTP_CODE) === 302, "$code: browser gets an app redirect before HWID registration");
         importAssert(str_contains((string) $response, 'Location: ' . $schemes[$code] . '://'), "$code: real HTTP Location");
         importAssert(!str_contains((string) $response, 'credential'), "$code: redirect does not expose VPN credentials");
-        curl_close($ch);
     }
     foreach ([['t=s&s=subscription-token', 403], ['t=s&s=subscription-token&r=w', 403],
         ['t=s&s=credential&r=sr', 404], ['t=s&s=subscription-token&r=sr&disabled=1', 404],
@@ -130,7 +129,6 @@ try {
         curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5]);
         curl_exec($ch);
         importAssert(curl_getinfo($ch, CURLINFO_HTTP_CODE) === $status, 'HWID and strict/disabled subscription gates remain enforced');
-        curl_close($ch);
     }
     $ch = curl_init("http://$address/?t=vl&s=subscription-token");
     curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true,
@@ -141,7 +139,6 @@ try {
     importAssert(base64_decode($header[1] ?? '', true) === "Тест & # + ' <имя>\r\nX-Injected: yes",
         'Hiddify receives the original Unicode title through the response header');
     importAssert(!str_contains((string) $response, "\r\nX-Injected:"), 'title cannot inject a response header');
-    curl_close($ch);
 } finally {
     proc_terminate($proc);
     proc_close($proc);

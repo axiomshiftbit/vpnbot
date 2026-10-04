@@ -24,6 +24,7 @@ on:
       - 'scripts/masque_service.py'
       - 'scripts/protocol_service.py'
       - 'app/snolc/**'
+      - 'tests/php_runtime_test.sh'
       - '.dockerignore'
       - '.env'
       - 'docker-compose.yml'
@@ -174,6 +175,9 @@ jobs:
               if echo "${CHANGED}" | grep -qE '^\.env$'; then
                 SEL="${SEL} $(env_targets)"
               fi
+              if echo "${CHANGED}" | grep -qE '^tests/php_runtime_test\.sh$'; then
+                SEL="${SEL} php"
+              fi
               if echo "${CHANGED}" | grep -qE '^scripts/(masque_service|protocol_service)\.py$'; then
                 SEL="${SEL} masque"
               fi
@@ -257,6 +261,8 @@ jobs:
       # такой прогон публикуется как :sha-… и :nightly, а канальный тег
       # двигает только push или ручной workflow_dispatch.
       - name: Канал публикации
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           CHANNEL='${{ github.ref_name == 'master' && 'latest' || 'dev' }}'
           IMG='ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}'
@@ -266,7 +272,9 @@ jobs:
             echo "*.tags=${IMG}:sha-${{ github.sha }}"
             if [ '${{ github.event_name }}' = 'schedule' ]; then
               echo "*.tags=${IMG}:nightly"
-            else
+            elif [ "$REF_NAME" = 'dev' ] || [ "$REF_NAME" = 'master' ]; then
+              # Ручная сборка тестовой ветки публикует только sha-тег:
+              # проверка миграции не должна заранее переключать канал dev.
               echo "*.tags=${IMG}:${CHANNEL}"
             fi
             echo 'BAKE_TAGS_EOF'
@@ -334,6 +342,10 @@ jobs:
             php)
               verify SINGBOX_VERSION /usr/bin/sing-box version
               verify MIHOMO_VERSION /usr/bin/mihomo -v
+              docker run --rm --network=none --entrypoint sh \
+                -v "$PWD/tests/php_runtime_test.sh:/runtime-test.sh:ro" \
+                -v "$PWD/config/php.ini:/etc/php85/php.ini:ro" \
+                "$image" /runtime-test.sh
               docker run --rm --network=none --entrypoint sh "$image" -ec '
                 printf "%s\n" '\''{"version":3,"rules":[{"domain":["example.test"]}]}'\'' > /tmp/rules.json
                 sing-box rule-set compile --output /tmp/rules.srs /tmp/rules.json

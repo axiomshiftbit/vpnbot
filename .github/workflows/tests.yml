@@ -78,3 +78,64 @@ jobs:
             fi
           done
           exit $fail
+
+  alpine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['84', '85']
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Xray для проверки конфигураций
+        run: |
+          set -euo pipefail
+          xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
+          mkdir -p "$xray_test_dir"
+          cd "$xray_test_dir"
+          curl --fail --location --retry 3 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip
+          echo 'f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e  Xray-linux-64.zip' | sha256sum --check
+          unzip -q Xray-linux-64.zip xray
+          chmod +x xray
+
+      # Проверяем целевой PHP на musl и прежнюю ветку для совместимости кода
+      # при обновлении. bash/util-linux/pcntl нужны тестовым fixtures и
+      # проверке хостовых скриптов; в рабочий PHP-образ они не добавляются.
+      - name: Все тесты на Alpine и PHP ${{ matrix.php }}
+        env:
+          PHP_SERIES: ${{ matrix.php }}
+        run: |
+          set -euo pipefail
+          base=$(sed -n 's/^IMAGE=//p' .env)
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -v "$PWD/config/php.ini:/etc/php${PHP_SERIES}/php.ini:ro" \
+            -v "$RUNNER_TEMP/vpnbot-xray/xray:/audit-xray:ro" \
+            -e PHP_SERIES -e VLESS_TEST_XRAY=/audit-xray -w /workspace \
+            "$base" sh -ec '
+              apk add --no-cache bash util-linux coreutils findutils make git curl openssl python3 py3-yaml \
+                php${PHP_SERIES} php${PHP_SERIES}-mbstring php${PHP_SERIES}-session \
+                php${PHP_SERIES}-phar php${PHP_SERIES}-zip php${PHP_SERIES}-curl \
+                php${PHP_SERIES}-openssl php${PHP_SERIES}-iconv php${PHP_SERIES}-intl \
+                php${PHP_SERIES}-pecl-ssh2 php${PHP_SERIES}-pecl-yaml php${PHP_SERIES}-pcntl
+              ln -s /usr/bin/php${PHP_SERIES} /usr/bin/php
+              mkdir -p /logs
+              php -v
+              python3 -m unittest discover -s tests -p "*_test.py"
+              for f in app/*.php app/panel/*.php tests/*.php; do
+                php -d error_reporting=32767 -l "$f" >/dev/null
+              done
+              failed=0
+              for f in tests/*_test.php; do
+                if output=$(php -d error_reporting=32767 -d error_log=/dev/stderr -d display_errors=1 "$f" 2>&1); then
+                  if printf "%s" "$output" | grep -q "Deprecated:"; then
+                    echo "DEPRECATED $f"; printf "%s\n" "$output"; failed=1
+                  fi
+                else
+                  echo "FAIL $f"; printf "%s\n" "$output"; failed=1
+                fi
+              done
+              exit "$failed"
+            '

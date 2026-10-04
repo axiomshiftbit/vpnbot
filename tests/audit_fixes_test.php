@@ -133,7 +133,6 @@ $spy = new class extends Bot {
     {
         $this->calls = [];
         $m           = new ReflectionMethod(Bot::class, 'callIpReturn');
-        $m->setAccessible(true);
         $m->invoke($this, $fun, 0, 0);
 
         return $this->calls;

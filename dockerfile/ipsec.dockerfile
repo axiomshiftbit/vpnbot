@@ -1,4 +1,4 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 FROM $image
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка

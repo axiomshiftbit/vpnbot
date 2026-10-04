@@ -115,7 +115,6 @@ $p = cpsBytes($cps);
 t(strlen($p) === 1200, 'cpsQUICInitial: 1200 байт (RFC 9000 §14.1), ' . strlen($p));
 
 $keysM = new ReflectionMethod(Bot::class, 'quicInitialKeys');
-$keysM->setAccessible(true);
 $dcidLen = ord($p[5]);
 $dcid    = substr($p, 6, $dcidLen);
 $scidLen = ord($p[6 + $dcidLen]);

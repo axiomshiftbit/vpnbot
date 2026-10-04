@@ -1,4 +1,4 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 
 # ── Версии (задаются в .env, пробрасываются через args в compose) ─────────────
 # ВАЖНО: тег forwardproxy обязан СОВПАДАТЬ с CADDY_VERSION — у klzgrad теги

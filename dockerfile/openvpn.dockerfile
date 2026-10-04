@@ -1,4 +1,4 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 FROM $image
 
 ARG OPENVPN_VERSION=2.7.7

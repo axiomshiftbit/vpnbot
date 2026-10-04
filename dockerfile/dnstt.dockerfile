@@ -1,4 +1,4 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 # Пин на коммит, как TT_REF у trusttunnel: без него каждая пересборка брала
 # текущий master upstream, и два образа с одним тегом могли содержать разный
 # dnstt. Обновлять — сменить DNSTT_REF в .env и закоммитить (CI пересоберёт)

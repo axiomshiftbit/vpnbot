@@ -411,7 +411,6 @@ smAssert($bot->smuxBlock($pacH2, 'cl')['protocol'] === 'h2mux', 'mihomo сохр
 // осталась бы как есть, поэтому такой маркер обязан ловиться валидатором.
 require_once __DIR__ . '/../app/ClashTemplateValidator.php';
 $ref = new ReflectionMethod(ClashTemplateValidator::class, 'scanUnknownPlaceholders');
-$ref->setAccessible(true);
 $w = [];
 $ref->invokeArgs(null, [['a' => '~smux~', 'b' => '~smux:h2mux~', 'c' => '~smux:yamux~', 'd' => '~nosuch~'], '', &$w]);
 smAssert(count($w) === 2, 'валидатор ругается ровно на yamux и на неизвестный маркер: ' . json_encode($w, JSON_UNESCAPED_UNICODE));

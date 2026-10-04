@@ -6511,8 +6511,16 @@ NFT;
 
     public function checkBackup()
     {
-        try { $this->withBackupLock(fn() => $this->checkBackupSchedule()); }
-        catch (Throwable $error) { error_log('checkBackup: ' . get_class($error)); }
+        try {
+            // Выключенное расписание не должно спорить за lock с ручным
+            // экспортом/восстановлением и выдавать ложную ошибку в cron.
+            if (empty($this->getPacConf()['backup'])) return;
+            $this->withBackupLock(fn() => $this->checkBackupSchedule());
+        } catch (Throwable $error) {
+            // Место отказа помогает отличить занятый lock от ошибки экспорта.
+            // Текст исключения может содержать секреты и здесь не выводится.
+            error_log('checkBackup: ' . get_class($error) . ' at ' . basename($error->getFile()) . ':' . $error->getLine());
+        }
     }
 
     private function checkBackupSchedule()
@@ -10615,7 +10623,6 @@ NFT;
         }
         curl_setopt_array($ch, $opt);
         $r = curl_exec($ch);
-        curl_close($ch);
         return $r ?: 'lost connect to unit';
     }
 
@@ -13003,7 +13010,6 @@ DNS-over-HTTPS with IP:
             ]);
             curl_exec($ch);
             $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
 
             if (strlen($buf) > $max) {
                 return ['ok' => false, 'err' => 'response too large'];
@@ -22680,7 +22686,6 @@ DNS-over-HTTPS with IP:
             curl_exec($ch);
             $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $error = curl_errno($ch);
-            curl_close($ch);
 
             if (strlen($buf) > $max) {
                 return 'response too large';
@@ -22974,7 +22979,6 @@ DNS-over-HTTPS with IP:
             ] + $extra);
             $r   = curl_exec($ch);
             $err = curl_errno($ch);
-            curl_close($ch);
             return [$r, $err];
         };
 

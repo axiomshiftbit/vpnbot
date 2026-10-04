@@ -1,4 +1,4 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 FROM $image
 
 # Пины версий (задаются в .env, пробрасываются через args в compose).

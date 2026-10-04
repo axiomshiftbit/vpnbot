@@ -1,4 +1,4 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 FROM $image
 
 # Версии живут в .env (см. аннотации renovate там же) и приезжают build-args
@@ -17,20 +17,19 @@ LABEL io.vpnbot.sing-box.version=$SINGBOX_VERSION io.vpnbot.mihomo.version=$MIHO
 # и «show QR» молча не работал: qrencode не находился, png не создавался,
 # sendPhoto уходил с несуществующим путём. Пакет лежит в репозитории community,
 # он включён в /etc/apk/repositories базового образа.
-RUN apk add --no-cache --update php84 \
-    php84-mbstring \
-    php84-session \
-    php84-phar \
-    php84-zip \
-    php84-curl \
-    php84-opcache \
-    php84-openssl \
-    php84-iconv \
-    php84-intl \
-    php84-pecl-ssh2 \
-    php84-pecl-yaml \
-    unit \
-    unit-php84 \
+RUN apk add --no-cache --update php85 \
+    php85-mbstring \
+    php85-session \
+    php85-phar \
+    php85-zip \
+    php85-curl \
+    php85-openssl \
+    php85-iconv \
+    php85-intl \
+    php85-pecl-ssh2 \
+    php85-pecl-yaml \
+    freeunit \
+    freeunit-php85 \
     xxd \
     certbot \
     libqrencode-tools \
@@ -39,6 +38,10 @@ RUN apk add --no-cache --update php84 \
     curl \
     git \
     py3-qt5 \
+    # Alpine 3.24 устанавливает только php85; скрипты бота вызывают php.
+    && ln -s /usr/bin/php85 /usr/bin/php \
+    # OPcache встроен в PHP 8.5, отдельного php85-opcache в Alpine нет.
+    && php -r 'foreach (["mbstring", "session", "phar", "zip", "curl", "openssl", "iconv", "intl", "ssh2", "yaml", "Zend OPcache"] as $module) { if (!extension_loaded($module)) { fwrite(STDERR, "Missing PHP module: $module\n"); exit(1); } }' \
     && mkdir /root/.ssh \
     # ${VER#v} — тег без ведущей «v»: в именах ассетов sing-box версия идёт без
     # неё, а в теге релиза она есть.

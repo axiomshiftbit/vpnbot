@@ -17,7 +17,6 @@ function getSize($url)
         CURLOPT_TIMEOUT        => 10,
     ]);
     $r = curl_exec($ch);
-    curl_close($ch);
     if (!preg_match('~content-length.+?(\d+)~ius', (string) $r, $m)) {
         return 0;
     }

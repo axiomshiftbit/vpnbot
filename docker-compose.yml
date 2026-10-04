@@ -28,7 +28,7 @@ services:
             context: dockerfile
             dockerfile: nginx.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 NGINX_VERSION: ${NGINX_VERSION:-1.30.5}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -89,7 +89,7 @@ services:
             context: dockerfile
             dockerfile: nginx.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 NGINX_VERSION: ${NGINX_VERSION:-1.30.5}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -146,7 +146,7 @@ services:
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
                 MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.32}
@@ -162,7 +162,7 @@ services:
             - 127.0.0.1:8090:8090
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./config/php.ini:/etc/php84/php.ini
+            - ./config/php.ini:/etc/php85/php.ini
             - ./config/:/config/
             - ./certs/:/certs/
             - ./ssh:/ssh
@@ -217,7 +217,7 @@ services:
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
                 MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.32}
@@ -225,7 +225,7 @@ services:
                 MIHOMO_SHA256: ${MIHOMO_SHA256:-8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
-            - ./config/php.ini:/etc/php84/php.ini
+            - ./config/php.ini:/etc/php85/php.ini
             - ./config/:/config/
             - ./certs/:/certs/
             - ./ssh:/ssh
@@ -343,7 +343,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
@@ -397,7 +397,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
@@ -495,7 +495,7 @@ services:
         build:
             dockerfile: dockerfile/telemt.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 TELEMT_VERSION: ${TELEMT_VERSION:-3.5.13}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -535,7 +535,7 @@ services:
         build:
             dockerfile: dockerfile/xray.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 XRAY_VERSION: ${XRAY_VERSION:-}
                 XRAY_VERSION_2: ${XRAY_VERSION_2:-}
                 XRAY_VERSION_3: ${XRAY_VERSION_3:-}
@@ -578,7 +578,7 @@ services:
         build:
             dockerfile: dockerfile/ocserv.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 OCSERV_VERSION: ${OCSERV_VERSION:-1.5.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -621,7 +621,7 @@ services:
         build:
             dockerfile: dockerfile/naive.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 # CADDY_VERSION и FORWARDPROXY_VERSION меняются ТОЛЬКО парой:
                 # тег плагина = версия caddy + суффикс -naive (см. dockerfile).
                 CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.25}
@@ -669,7 +669,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
@@ -728,7 +728,7 @@ services:
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -763,7 +763,7 @@ services:
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 # Пустое значение любого из четырёх = releases/latest
                 # (прежнее поведение). Значения по умолчанию — то, что стоит
                 # в бою; менять здесь не нужно, правьте .env.
@@ -813,7 +813,7 @@ services:
         build:
             dockerfile: dockerfile/dnstt.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 DNSTT_REF: ${DNSTT_REF:-0c5c52a57d899c05428c116898941761a2ed83c2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -850,7 +850,7 @@ services:
         build:
             dockerfile: dockerfile/openvpn.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
                 OPENVPN_VERSION: ${OPENVPN_VERSION:-2.7.7}
                 EASYRSA_VERSION: ${EASYRSA_VERSION:-3.2.7}
                 EASYRSA_SHA256: ${EASYRSA_SHA256:-308743bc9fe871b902d47dbe98d749daff3a05b27531684f02625ce7208d4598}
@@ -901,7 +901,7 @@ services:
         build:
             dockerfile: dockerfile/ipsec.dockerfile
             args:
-                image: ${IMAGE:-alpine:3.23}
+                image: ${IMAGE:-alpine:3.24}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/ipsec:/config/ipsec
