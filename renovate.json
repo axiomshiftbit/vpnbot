@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", ":semanticCommitTypeAll(build)"],
-  "timezone": "Europe/Samara",
+  "timezone": "Europe/Moscow",
   "schedule": ["before 6am on monday"],
   "prConcurrentLimit": 3,
   "pinDigests": true,
@@ -47,7 +47,7 @@
       "allowedVersions": "<=26.9.30"
     },
     {
-      "description": "Alpine нельзя поднимать выше 3.23: начиная с 3.24 из репозиториев вырезан пакет unit (NGINX Unit), которым запускается php-контейнер, — образ php просто перестанет собираться. Снимать потолок только вместе с переездом php на другой сервер приложений.",
+      "description": "Пока сохраняем проверенную Alpine 3.23. В 3.24 unit/unit-php84 заменены на freeunit/freeunit-php84 с прежними именами через provides. Снимать потолок после проверки перехода PHP, control API, панели и обновления существующих установок на FreeUnit.",
       "matchDepNames": ["alpine"],
       "allowedVersions": "<3.24"
     },
