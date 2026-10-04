@@ -1,5 +1,7 @@
 #!/bin/bash
 set -e
+mkdir -p /logs
+exec >>/logs/warp 2>&1
 
 cat /ssh/key.pub > /root/.ssh/authorized_keys
 ssh-keygen -A

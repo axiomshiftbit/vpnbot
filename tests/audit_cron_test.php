@@ -176,23 +176,13 @@ class LogsTestBot extends CronTestBot
 {
     public string $dir = '';
 
-    public function logFiles(): array
-    {
-        $skip = ['menu_status.json', 'menu_versions.json'];
-        $out  = [];
-        foreach (scandir($this->dir) ?: [] as $v) {
-            if (str_starts_with($v, '.') || in_array($v, $skip, true) || !is_file("{$this->dir}/$v")) {
-                continue;
-            }
-            $out[] = $v;
-        }
-        sort($out);
-        return $out;
-    }
+    protected function logDirectory(): string { return $this->dir; }
+
 }
 
 $lb = (new ReflectionClass(LogsTestBot::class))->newInstanceWithoutConstructor();
 $lb->dir = sys_get_temp_dir() . '/logs_' . getmypid();
+$lb->protocolRoot = $lb->dir . '/protocols';
 @mkdir($lb->dir . '/geodata', 0777, true);
 file_put_contents($lb->dir . '/nginx_access', "x\n");
 file_put_contents($lb->dir . '/xray', "y\n");

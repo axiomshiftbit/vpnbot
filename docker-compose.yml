@@ -29,7 +29,7 @@ services:
             dockerfile: nginx.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                NGINX_VERSION: ${NGINX_VERSION:-1.30.4}
+                NGINX_VERSION: ${NGINX_VERSION:-1.30.5}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/upstream.conf:/etc/nginx/nginx.conf
@@ -90,7 +90,7 @@ services:
             dockerfile: nginx.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                NGINX_VERSION: ${NGINX_VERSION:-1.30.4}
+                NGINX_VERSION: ${NGINX_VERSION:-1.30.5}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/nginx.conf:/etc/nginx/nginx.conf
@@ -147,7 +147,7 @@ services:
             dockerfile: dockerfile/php.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.11.1}
+                DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
                 MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.32}
                 SINGBOX_SHA256: ${SINGBOX_SHA256:-8f6cb4bcf94d2b33c65d52e0d5b142db29a938336f1ff7267f397ac3758fc297}
@@ -218,7 +218,7 @@ services:
             dockerfile: dockerfile/php.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
-                DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.11.1}
+                DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
                 MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.32}
                 SINGBOX_SHA256: ${SINGBOX_SHA256:-8f6cb4bcf94d2b33c65d52e0d5b142db29a938336f1ff7267f397ac3758fc297}
@@ -346,9 +346,10 @@ services:
                 image: ${IMAGE:-alpine:3.23}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
         volumes:
+            - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg0.conf:/etc/wireguard/wg0.conf
             # :ro — каталог смонтирован ради чтения /config/pac.json (start_wg.sh,
@@ -399,9 +400,10 @@ services:
                 image: ${IMAGE:-alpine:3.23}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
         volumes:
+            - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
             - ./config/wg1.conf:/etc/wireguard/wg0.conf
             # :ro — см. комментарий у wg0-сервиса.
@@ -670,7 +672,7 @@ services:
                 image: ${IMAGE:-alpine:3.23}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.2.32}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
                 MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
         cap_add:
             - NET_ADMIN
@@ -679,6 +681,7 @@ services:
         devices:
             - /dev/net/tun:/dev/net/tun
         volumes:
+            - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
@@ -727,6 +730,7 @@ services:
             args:
                 image: ${IMAGE:-alpine:3.23}
         volumes:
+            - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
             - ./config/sslocal.json:/config.json
             - ./ssh/pub:/ssh:ro
@@ -847,6 +851,9 @@ services:
             dockerfile: dockerfile/openvpn.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.23}
+                OPENVPN_VERSION: ${OPENVPN_VERSION:-2.7.7}
+                EASYRSA_VERSION: ${EASYRSA_VERSION:-3.2.7}
+                EASYRSA_SHA256: ${EASYRSA_SHA256:-308743bc9fe871b902d47dbe98d749daff3a05b27531684f02625ce7208d4598}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/openvpn:/etc/openvpn
@@ -957,7 +964,7 @@ services:
         build:
             dockerfile: dockerfile/trusttunnel.dockerfile
             args:
-                TT_REF: ${TT_REF:-aae4b79f5e470deac76928379c241040811b50f0}
+                TT_REF: ${TT_REF:-v1.1.0}
         volumes:
             - ./config/.profile:/root/.bashrc:ro
             - ./ssh/pub:/ssh:ro

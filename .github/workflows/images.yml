@@ -92,6 +92,7 @@ jobs:
                 XRAY_VERSION|XRAY_VERSION_2|XRAY_VERSION_3|XRAY_FORK_VERSION) out="$out xr" ;;
                 MASQUE_GO_VERSION|MASQUE_XRAY_VERSION|MASQUE_SOURCE_SHA256) out="$out masque" ;;
                 OCSERV_VERSION)                    out="$out oc" ;;
+                OPENVPN_VERSION|EASYRSA_VERSION|EASYRSA_SHA256) out="$out ovpn" ;;
                 ADGUARD_VERSION)                   out="$out ad" ;;
                 HYSTERIA_VERSION)                  out="$out hy" ;;
                 TELEMT_VERSION)                    out="$out telemt" ;;

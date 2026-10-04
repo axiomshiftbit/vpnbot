@@ -12,7 +12,8 @@ tmp=$(mktemp) || exit 1
 jq '.server_port = 8388 | if (.acl // "") == "" then .acl = "/config/ss.acl" else . end' /config.json > "$tmp"
 [ -s "$tmp" ] && cat "$tmp" > /config.json
 rm -f "$tmp"
-ssserver -v -d -c /config.json
+mkdir -p /logs
+nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &
 
 # Cloak (ck-server) рядом с ssserver: терминирует TLS на $CKPORT и
 # форвардит расшифрованный shadowsocks-трафик в ssserver на 127.0.0.1:8388.

@@ -59,12 +59,9 @@ def migrate_systemd_stop(root):
 
 
 def migrate_upstream(text):
-    """Add optional DNS resolution and the TLS bridge to existing installations."""
+    """Keep optional backends usable without DNS records and retain the TLS bridge."""
     if not re.search(r'\bresolver\s', text):
         text = text.replace('stream {', 'stream {\n    resolver 127.0.0.11 valid=10s ipv6=off;', 1)
-    for name, host, port in (("ocserv", "oc", 443), ("openvpn", "ovpn", 1194), ("trusttunnel", "tt", 8443)):
-        pattern = r'upstream\s+' + name + r'\s*\{\s*server\s+' + host + ':' + str(port) + r'\s*;\s*\}'
-        text = re.sub(pattern, f'upstream {name} {{\n        zone {name} 64k;\n        server {host}:{port} resolve;\n    }}', text)
     if 'upstream anytls_bridge' not in text:
         block = '''
     upstream anytls_backend {
@@ -83,7 +80,17 @@ def migrate_upstream(text):
         text = text[:position] + block + text[position:]
     if not re.search(r'^\s*#anytls\s*$', text, re.M):
         text = re.sub(r'(map\s+\$ssl_preread_server_name\s+\$sni_name\s*\{)',
-                      r'\1\n        #anytls\n        # disabled\n        #anytls', text, count=1)
+                      r'\1\n        #anytls\n        # disabled\n        #anytls\n', text, count=1)
+    # Optional containers have no Docker DNS record while disabled. Periodic
+    # resolution then fills upstream_error even without client traffic. Compose
+    # fixes these addresses; preserve custom hosts, ports and upstream options.
+    for name, host, port, address in (("ocserv", "oc", 443, "10.10.0.11"),
+                                      ("openvpn", "ovpn", 1194, "10.10.0.19"),
+                                      ("trusttunnel", "tt", 8443, "10.10.0.18"),
+                                      ("anytls_backend", "anytls", 8443, "10.10.0.22")):
+        pattern = (r'(upstream\s+' + name + r'\s*\{[^{}]*?\bserver\s+)'
+                   + host + ':' + str(port) + r'(?:\s+resolve)?(\s*;)')
+        text = re.sub(pattern, r'\g<1>' + address + ':' + str(port) + r'\g<2>', text)
     return text
 
 

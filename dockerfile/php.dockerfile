@@ -4,7 +4,7 @@ FROM $image
 # Версии живут в .env (см. аннотации renovate там же) и приезжают build-args
 # из docker-compose.yml. Значения по умолчанию — на случай сборки напрямую
 # `docker build`, без compose.
-ARG DNSLOOKUP_VERSION=v1.11.1
+ARG DNSLOOKUP_VERSION=v1.12.0
 ARG SINGBOX_VERSION=v1.14.2
 ARG MIHOMO_VERSION=v1.19.32
 ARG SINGBOX_SHA256=8f6cb4bcf94d2b33c65d52e0d5b142db29a938336f1ff7267f397ac3758fc297

@@ -1130,8 +1130,8 @@ class Bot
             case preg_match('~^/getMirror$~', $this->input['callback'], $m):
                 $this->getMirror();
                 break;
-            case preg_match('~^/logs$~', $this->input['callback'], $m):
-                $this->logs();
+            case preg_match('~^/logs(?: (\d+))?$~', $this->input['callback'], $m):
+                $this->logs((int) ($m[1] ?? 0));
                 break;
             case preg_match('~^/dnstt$~', $this->input['callback'] ?: $this->input['message'], $m):
                 $this->dnstt(!empty($this->input['callback']));
@@ -5125,8 +5125,8 @@ NFT;
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->chmodSecret('/config/ssserver.json');
         file_put_contents('/config/sslocal.json', json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->ssh('ssserver -v -d -c /config.json', 'ss');
-        $this->ssh('sslocal -v -d -c /config.json', 'proxy');
+        $this->ssh('mkdir -p /logs; nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &', 'ss');
+        $this->ssh('mkdir -p /logs; nohup setsid sslocal -v -c /config.json </dev/null >>/logs/shadowsocks_proxy 2>&1 &', 'proxy');
 
         if (empty($nomenu)) {
             $this->menu('ss');
@@ -5174,8 +5174,8 @@ NFT;
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->chmodSecret('/config/ssserver.json');
         file_put_contents('/config/sslocal.json', json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->ssh('ssserver -v -d -c /config.json', 'ss');
-        $this->ssh('sslocal -v -d -c /config.json', 'proxy');
+        $this->ssh('mkdir -p /logs; nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &', 'ss');
+        $this->ssh('mkdir -p /logs; nohup setsid sslocal -v -c /config.json </dev/null >>/logs/shadowsocks_proxy 2>&1 &', 'proxy');
         $this->menu('ss');
     }
 
@@ -5572,8 +5572,8 @@ NFT;
         file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         $this->chmodSecret('/config/ssserver.json');
         file_put_contents('/config/sslocal.json',  json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->ssh('ssserver -v -d -c /config.json', 'ss');
-        $this->ssh('sslocal -v -d -c /config.json', 'proxy');
+        $this->ssh('mkdir -p /logs; nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &', 'ss');
+        $this->ssh('mkdir -p /logs; nohup setsid sslocal -v -c /config.json </dev/null >>/logs/shadowsocks_proxy 2>&1 &', 'proxy');
     }
 
     // ---- SS через WARP (outbound_proxy у ssserver) --------------------------
@@ -5711,7 +5711,7 @@ NFT;
         // Только ssserver: sslocal в контейнере proxy ходит в ss:8388, его
         // исходящие — это уже туннель, цепочка к ним отношения не имеет.
         $this->ssh('pkill ssserver', 'ss');
-        $this->ssh('ssserver -v -d -c /config.json', 'ss');
+        $this->ssh('mkdir -p /logs; nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &', 'ss');
         $this->menu('ss');
     }
 
@@ -6596,7 +6596,7 @@ NFT;
                 if ($lastCleanTime < $lastScheduledClean) {
                     $c['last_clean_logs_time'] = $now;
                     $this->setPacConf($c);
-                    $this->cleanLog();
+                    $this->cleanLog(true);
                 }
             }
         }
@@ -30866,29 +30866,47 @@ DNS-over-HTTPS with IP:
      * каталог, «удалить» — unlink. Кэши menu_status/menu_versions логами не
      * являются вовсе.
      */
-    public function logFiles(): array
+    protected function logDirectory(): string { return '/logs'; }
+
+    protected function logPaths(): array
     {
         // Служебные файлы, которые лежат в /logs, но логами не являются: кэши
         // меню и счётчики лимитера подписок. Показывать их как логи (и давать
         // кнопку «очистить») незачем.
-        $skip = ['menu_status.json', 'menu_versions.json', 'sub_ratelimit.json'];
+        $skip = ['menu_status.json', 'menu_versions.json', 'sub_ratelimit.json', 'xray_core'];
+        $dir = $this->logDirectory();
         $out  = [];
-        foreach (scandir('/logs/') ?: [] as $v) {
-            if (str_starts_with($v, '.') || in_array($v, $skip, true) || !is_file("/logs/$v")) {
+        foreach (is_dir($dir) ? scandir($dir) : [] as $v) {
+            if (!preg_match('/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,53}$/D', $v) || in_array($v, $skip, true)
+                || is_link("$dir/$v") || !is_file("$dir/$v")) {
                 continue;
             }
-            $out[] = $v;
+            $out[$v] = "$dir/$v";
         }
-        sort($out);
+        foreach (['anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque'] as $protocol) {
+            foreach (['core.log', 'core.previous.log'] as $name) {
+                $path = "$this->protocolRoot/$protocol/runtime/$name";
+                if (is_file($path) && !is_link($path)
+                    && realpath($path) === realpath($this->protocolRoot) . "/$protocol/runtime/$name") {
+                    $out["$protocol.$name"] = $path;
+                }
+            }
+        }
+        ksort($out);
         return $out;
     }
 
-    public function logs()
+    public function logFiles(): array { return array_keys($this->logPaths()); }
+
+    public function logs($page = 0)
     {
         $p = $this->getPacConf();
+        $paths = $this->logPaths();
+        $pages = max(1, (int) ceil(count($paths) / 20));
+        $page = max(0, min((int) $page, $pages - 1));
         $data = [];
-        foreach ($this->logFiles() as $v) {
-            $size   = filesize("/logs/$v");
+        foreach (array_slice($paths, $page * 20, 20, true) as $v => $path) {
+            $size   = filesize($path);
             // Кнопка несёт ИМЯ файла, а не позицию в scandir: позиции ехали от
             // появления нового файла, и «очистить» попадало в соседний лог.
             $data[] = [
@@ -30902,15 +30920,22 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
+        if ($pages > 1) {
+            $navigation = [];
+            if ($page > 0) $navigation[] = ['text' => '←', 'callback_data' => '/logs ' . ($page - 1)];
+            $navigation[] = ['text' => ($page + 1) . "/$pages", 'callback_data' => "/logs $page"];
+            if ($page + 1 < $pages) $navigation[] = ['text' => '→', 'callback_data' => '/logs ' . ($page + 1)];
+            $data[] = $navigation;
+        }
         $data[] = [
             [
                 'text'          => $this->i18n('clean all'),
                 'callback_data' => "/cleanLog",
             ],
         ];
-        $autocleanlogs = array_filter(explode('/', $p['autocleanlogs']));
+        $autocleanlogs = array_values(array_filter(explode('/', $p['autocleanlogs'] ?? '')));
         if (!empty($autocleanlogs)) {
-            if (!empty(strtotime($autocleanlogs[0])) && !empty(strtotime($autocleanlogs[1]))) {
+            if (count($autocleanlogs) === 2 && strtotime($autocleanlogs[0]) !== false && strtotime($autocleanlogs[1]) !== false) {
                 $autocleanlogs = "{$autocleanlogs[0]} start / {$autocleanlogs[1]} period";
             } else {
                 $autocleanlogs = $this->i18n('off') . " {$p['autocleanlogs']} - wrong format";
@@ -30940,7 +30965,7 @@ DNS-over-HTTPS with IP:
     // действительно есть в списке логов (заодно отсекает «..» и любой обход).
     protected function logFileOr404(string $name): ?string
     {
-        return in_array($name, $this->logFiles(), true) ? "/logs/$name" : null;
+        return $this->logPaths()[$name] ?? null;
     }
 
     public function getLog($name)
@@ -30948,6 +30973,9 @@ DNS-over-HTTPS with IP:
         $f = $this->logFileOr404((string) $name);
         if ($f === null) {
             return $this->logs();
+        }
+        if (filesize($f) === 0) {
+            return $this->answer($this->input['callback_id'], $this->i18n('log empty'));
         }
         $this->sendFile(
             $this->input['chat'],
@@ -30963,23 +30991,22 @@ DNS-over-HTTPS with IP:
         $this->logs();
     }
 
-    public function cleanLog()
+    public function cleanLog($nomenu = false)
     {
         // По списку logFiles(), а не по сырому scandir: раньше сюда попадали и
         // «.», и «..», и каталог geodata — file_put_contents на них сыпал
         // warning'ами при каждой автоочистке по расписанию.
-        foreach ($this->logFiles() as $v) {
-            file_put_contents("/logs/$v", '');
+        foreach ($this->logPaths() as $path) {
+            file_put_contents($path, '');
         }
-        $this->logs();
+        if (!$nomenu) $this->logs();
     }
 
     public function delLog($name)
     {
-        if (($f = $this->logFileOr404((string) $name)) !== null) {
-            unlink($f);
-        }
-        $this->logs();
+        // Старые кнопки удаления тоже очищают файл: unlink оставлял демон
+        // писать в удалённый inode, и журнал пропадал до перезапуска сервиса.
+        $this->clearLog($name);
     }
 
     public function selfUpdate(): bool
@@ -32098,8 +32125,9 @@ DNS-over-HTTPS with IP:
         if ($this->sshFailed) {
             return false;
         }
-        $this->ssh("{$this->getWGType((int) $switch)}-quick down wg0", $this->getInstanceWG());
-        $up = $this->ssh("{$this->getWGType()}-quick up wg0 >/dev/null 2>&1 && printf VPNBOT_WG_READY", $this->getInstanceWG());
+        $log = $this->getInstanceWG() === 'wg1' ? '/logs/wireguard1' : '/logs/wireguard';
+        $this->ssh("mkdir -p /logs; {$this->getWGType((int) $switch)}-quick down wg0 >>$log 2>&1", $this->getInstanceWG());
+        $up = $this->ssh("{$this->getWGType()}-quick up wg0 >>$log 2>&1 && printf VPNBOT_WG_READY", $this->getInstanceWG());
         return !$this->sshFailed && trim($up) === 'VPNBOT_WG_READY';
     }
 

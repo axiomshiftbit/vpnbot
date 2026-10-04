@@ -1245,6 +1245,10 @@ $i = [
         'en' => 'auto backup',
         'ru' => 'автобэкап',
     ],
+    'log empty' => [
+        'ru' => 'Журнал пока пуст.',
+        'en' => 'The log is empty.',
+    ],
     'logs'  => [
         'en' => 'logs',
         'ru' => 'логи',
