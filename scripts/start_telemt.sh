@@ -11,12 +11,12 @@ ssh-keygen -A
 mkdir -p /telemt/data /logs
 [ -f /logs/telemt ] || : > /logs/telemt
 
-state() { python3 /telemt_state.py "$@"; }
+state() { python3 /telemt_state.py "$@" 2>>/logs/telemt; }
 state_watch=
 watch_state() {
     if command -v python3 >/dev/null && [ -f /telemt_state.py ]; then
         if [ -z "$state_watch" ] || ! kill -0 "$state_watch" 2>/dev/null; then
-            python3 /telemt_state.py watch >/dev/null &
+            python3 /telemt_state.py watch >/dev/null 2>>/logs/telemt &
             state_watch=$!
         fi
     fi

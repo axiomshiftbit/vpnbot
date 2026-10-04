@@ -37,8 +37,8 @@ FROM $image
 #   этот путь уже доказал.
 ARG AWG_GO_VERSION=v3.1.20260828
 ARG AWG_TOOLS_VERSION=v3.1.20260812
-ARG WGCF_VERSION=v2.2.32
-ARG TUN2SOCKS_VERSION=v2.6.0
+ARG WGCF_VERSION=v2.3.0
+ARG TUN2SOCKS_VERSION=v2.7.0
 # microsocks пинится коммитом, а не тегом: последний тег v1.0.5 от 2024-05-24,
 # master с тех пор ушёл на два коммита вперёд, и клонировался как раз master —
 # то есть образ менялся молча от пересборки к пересборке. Приём тот же, что у

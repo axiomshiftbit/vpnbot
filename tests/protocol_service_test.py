@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -112,11 +113,11 @@ class ProtocolTests(unittest.TestCase):
                         self.assertEqual(cover and enabled, candidate.called)
                     self.assertEqual(expected, json.loads((root / 'runtime/status.json').read_text())['phase'])
 
-    def test_trusttunnel_has_optional_dns_when_disabled(self):
+    def test_trusttunnel_starts_without_dns_when_disabled(self):
         old = 'stream { upstream trusttunnel { server tt:8443; } map $ssl_preread_server_name $sni_name { default other; } }'
         new = modules.migrate_upstream(old)
-        self.assertIn('server tt:8443 resolve;', new)
-        self.assertIn('zone trusttunnel 64k;', new)
+        self.assertIn('server 10.10.0.18:8443;', new)
+        self.assertIn('#anytls\n default other;', new)
         self.assertEqual(new, modules.migrate_upstream(new))
         with patch.object(modules, 'bindings', return_value={}):
             self.assertIn('tt', modules.environment(modules.DEFAULTS)['COMPOSE_PROFILES'].split(','))
@@ -165,9 +166,31 @@ class ProtocolTests(unittest.TestCase):
     def test_upstream_migration_preserves_customization_and_is_repeatable(self):
         old = 'stream {\n upstream ocserv { server oc:443; }\n upstream openvpn { server ovpn:1194; }\n map $ssl_preread_server_name $sni_name { custom.test other; }\n}'
         new = modules.migrate_upstream(old)
-        self.assertIn('server oc:443 resolve;', new); self.assertIn('custom.test other;', new)
+        self.assertIn('server 10.10.0.11:443;', new); self.assertIn('custom.test other;', new)
         self.assertIn('listen 127.0.0.1:10444 proxy_protocol;', new)
         self.assertEqual(new, modules.migrate_upstream(new))
+
+    def test_upstream_fixed_addresses_preserve_custom_backends_and_old_zones(self):
+        old = 'stream {\n upstream ocserv { zone ocserv 64k; server oc:443 resolve; }\n upstream openvpn { server ovpn:1194; }\n upstream trusttunnel { zone trusttunnel 64k; server custom.test:8443 resolve; }\n upstream anytls_backend { zone anytls_backend 64k; server anytls:8443 resolve; }\n upstream anytls_bridge { server 127.0.0.1:10444; }\n upstream custom { server oc:443 resolve; }\n map $ssl_preread_server_name $sni_name { custom.test other; }\n}'
+        new = modules.migrate_upstream(old)
+        self.assertIn('zone ocserv 64k; server 10.10.0.11:443;', new)
+        self.assertIn('server 10.10.0.19:1194;', new)
+        self.assertIn('zone anytls_backend 64k; server 10.10.0.22:8443;', new)
+        self.assertIn('server custom.test:8443 resolve;', new)
+        self.assertIn('upstream custom { server oc:443 resolve; }', new)
+        self.assertEqual(new, modules.migrate_upstream(new))
+        self.assertIn('server oc:9443;', modules.migrate_upstream(old.replace('oc:443 resolve;', 'oc:9443;')))
+
+    def test_log_mounts_and_static_upstreams_match_compose(self):
+        compose = (ROOT / 'docker-compose.yml').read_text()
+        def block(service):
+            return re.search(r'^    ' + service + r':\n(.*?)(?=^    [a-z][a-z0-9_-]*:|\Z)', compose, re.M | re.S).group(1)
+        for service in ['wg', 'wg1', 'wp', 'proxy']:
+            self.assertRegex(block(service), r'- \./logs/?:/logs/?\s')
+        upstream = modules.migrate_upstream((ROOT / 'config/upstream.conf').read_text())
+        for service, name, port in [('oc', 'ocserv', 443), ('ovpn', 'openvpn', 1194), ('tt', 'trusttunnel', 8443), ('anytls', 'anytls_backend', 8443)]:
+            address = re.search(r'ipv4_address: ([0-9.]+)', block(service)).group(1)
+            self.assertRegex(upstream, r'upstream ' + name + r'\s*\{[^}]*server ' + re.escape(address) + ':' + str(port) + ';')
 
     def test_usage_deltas_reset_and_restart(self):
         with tempfile.TemporaryDirectory() as directory:

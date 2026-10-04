@@ -1,18 +1,16 @@
 ARG image=alpine:3.23
 
 # ── Версия nginx ──────────────────────────────────────────────────────────────
-# alpine 3.23 держит в main nginx 1.28.x — это уже LEGACY-ветка по нумерации
-# upstream (актуальная стабильная — 1.30.x). Пакет alpine при этом полностью
-# пропатчен: в APKBUILD 1.28.3-r7 лежат бэкпорты ВСЕХ CVE вплоть до 1.30.4,
-# то есть переход на 1.30 — это НЕ про безопасность, а про фиксы и фичи ветки
-# 1.29/1.30 (proxy поверх HTTP/2, max_headers, 0-RTT в QUIC, совместимость с
-# OpenSSL 4.0, десятки багфиксов в h2/h3 и proxy).
+# Alpine 3.23 держит пакет nginx 1.28.x с бэкпортами. Здесь собирается
+# стабильная upstream-ветка 1.30.x; 1.30.5 включает CVE-2026-90439 и все
+# предыдущие исправления этой ветки. Пакетную версию нельзя использовать
+# для определения уязвимостей заменённого бинаря — проверяем nginx -v.
 #
 # Взять 1.30 из репозитория edge нельзя: пакет собран под библиотеки edge
 # (openssl/pcre2 другой версии), apk потащил бы их в базу 3.23 — и edge к тому
 # же плавающий, что противоречит пинам во всём остальном репозитории.
 # Поэтому бинарь собирается из исходников с пином NGINX_VERSION в .env.
-ARG NGINX_VERSION=1.30.4
+ARG NGINX_VERSION=1.30.5
 
 FROM $image AS build
 ARG NGINX_VERSION
@@ -80,6 +78,7 @@ RUN set -eux; \
     /out/nginx -v 2>&1 | grep -q "nginx/${NGINX_VERSION}$"
 
 FROM $image
+ARG NGINX_VERSION
 # Пакет alpine ставится НЕ ради бинаря — ради обвязки, которую иначе пришлось бы
 # воспроизводить руками и рано или поздно разойтись: пользователь nginx с
 # фиксированными uid/gid 100/101 (под ними лежат файлы в бинд-маунте /logs),
@@ -94,12 +93,15 @@ FROM $image
 # nginx-mod-stream) в этом образе ВЕРНЁТ пакетные 1.28.3 поверх — молча, без
 # ошибки сборки. Сейчас ни один слой этого не делает; если понадобится —
 # ставить пакет ДО COPY и не трогать apk после.
-RUN apk add --no-cache nginx-mod-stream openssh \
+# Версия участвует в ключе кеша: обновляя nginx, обновляем и библиотеки
+# Alpine 3.23. Иначе apk-слой мог сохранить старый OpenSSL из прошлой сборки.
+RUN echo "NGINX runtime packages for ${NGINX_VERSION}" \
+    && apk upgrade --no-cache \
+    && apk add --no-cache nginx-mod-stream openssh \
     && mkdir /root/.ssh \
     && mkdir /var/cache/nginx
 COPY --from=build /out/nginx /usr/sbin/nginx
 COPY --from=build /out/ngx_stream_module.so /usr/lib/nginx/modules/ngx_stream_module.so
-ARG NGINX_VERSION
 # Проверка на этапе сборки, а не на сервере: версия та, что просили, и
 # ngx_stream_module.so реально грузится этим бинарём (несовпадение ABI модуля и
 # ядра nginx иначе вылезло бы только при старте upstream-контейнера, где стрим и

@@ -37,6 +37,7 @@ trait BotTelemtLimits
         if (!in_array($action, ['version', 'prepare', 'ready', 'checkpoint', 'stop', 'reset'], true)) throw new LogicException('TeleMT state action');
         $command = 'python3 /telemt_state.py ' . $action;
         if ($action === 'reset') $command .= ' ' . escapeshellarg(base64_encode($name));
+        $command .= ' 2>>/logs/telemt';
         if (!$required) {
             $command = 'if command -v python3 >/dev/null && [ -f /telemt_state.py ]; then ' . $command
                 . '; else printf "TELEMT_STATE_OK\\n"; fi';
@@ -51,7 +52,7 @@ trait BotTelemtLimits
     {
         $out = $this->ssh(<<<'SH'
             if command -v python3 >/dev/null && [ -f /telemt_state.py ]; then
-                python3 /telemt_state.py stop
+                python3 /telemt_state.py stop 2>>/logs/telemt
             else
                 pkill -TERM -x telemt 2>/dev/null || true
                 i=0; while pgrep -x telemt >/dev/null && [ "$i" -lt 150 ]; do sleep 0.2; i=$((i+1)); done

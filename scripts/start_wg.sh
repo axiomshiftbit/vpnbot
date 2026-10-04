@@ -1,4 +1,12 @@
 #!/bin/bash
+# Журнал обоих инстансов доступен в меню бота, включая запуск tun2socks.
+HOSTNAME="${HOSTNAME:-$(hostname)}"
+mkdir -p /logs
+if [ "$HOSTNAME" = "wireguard1" ]; then
+    exec >>/logs/wireguard1 2>&1
+else
+    exec >>/logs/wireguard 2>&1
+fi
 INTERFACE_VPN="tun0"
 TABLE_ID=100
 
@@ -81,7 +89,6 @@ PAC=/config/pac.json
 # HOSTNAME кладёт в окружение docker, сама busybox ash её не заводит: при
 # ручном запуске через ssh переменная могла не пробрасываться, и скрипт брал
 # ключи нулевого инстанса (amnezia вместо wg1_amnezia), поднимая не тот стек.
-HOSTNAME="${HOSTNAME:-$(hostname)}"
 if [ "$HOSTNAME" = "wireguard1" ]
 then
     PFX=wg1_
@@ -121,7 +128,9 @@ fi
 iptables -A FORWARD -i $INTERFACE_VPN -j ACCEPT
 iptables -A FORWARD -o $INTERFACE_VPN -j ACCEPT
 iptables -t nat -I POSTROUTING 1 -s "$ADDRESS" -j RETURN
-tun2socks -device $INTERFACE_VPN -proxy socks5://xr:10808 &
+# tun2socks 2.7 использует pflag: длинным параметрам нужны два дефиса.
+# С одним дефисом -device/-proxy разбираются как -d evice / -p roxy.
+tun2socks --device "$INTERFACE_VPN" --proxy socks5://xr:10808 &
 
 if [ "$(pac amnezia)" -eq 1 ]
 then

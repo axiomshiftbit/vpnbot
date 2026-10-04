@@ -128,7 +128,7 @@ swAssert($body !== '', 'тело ssWarp() найдено');
 // Перезапускать надо только ssserver: sslocal живёт в другом контейнере и
 // цепочки не касается.
 swAssert(str_contains($body, "pkill ssserver"), 'тумблер перезапускает ssserver');
-swAssert(str_contains($body, "ssserver -v -d -c /config.json"), 'и поднимает его обратно');
+swAssert(str_contains($body, "nohup setsid ssserver -v -c /config.json"), 'и поднимает его обратно');
 // Именно вызовы, а не слово: в комментарии тела sslocal упомянут по делу.
 swAssert(!preg_match('~ssh\(\s*.[^\n]*sslocal~', $body), 'sslocal тумблер не перезапускает');
 // Порядок в ветке включения: сначала ACL, потом конфиг и рестарт — иначе
