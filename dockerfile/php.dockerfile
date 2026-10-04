@@ -38,8 +38,8 @@ RUN apk add --no-cache --update php85 \
     curl \
     git \
     py3-qt5 \
-    # Alpine 3.24 устанавливает только php85; скрипты бота вызывают php.
-    && ln -s /usr/bin/php85 /usr/bin/php \
+    # Скрипты бота вызывают php; обновляем ссылку и при её наличии в APK.
+    && ln -sf /usr/bin/php85 /usr/bin/php \
     # OPcache встроен в PHP 8.5, отдельного php85-opcache в Alpine нет.
     && php -r 'foreach (["mbstring", "session", "phar", "zip", "curl", "openssl", "iconv", "intl", "ssh2", "yaml", "Zend OPcache"] as $module) { if (!extension_loaded($module)) { fwrite(STDERR, "Missing PHP module: $module\n"); exit(1); } }' \
     && mkdir /root/.ssh \

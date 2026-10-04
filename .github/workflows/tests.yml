@@ -120,7 +120,7 @@ jobs:
                 php${PHP_SERIES}-phar php${PHP_SERIES}-zip php${PHP_SERIES}-curl \
                 php${PHP_SERIES}-openssl php${PHP_SERIES}-iconv php${PHP_SERIES}-intl \
                 php${PHP_SERIES}-pecl-ssh2 php${PHP_SERIES}-pecl-yaml php${PHP_SERIES}-pcntl
-              ln -s /usr/bin/php${PHP_SERIES} /usr/bin/php
+              ln -sf /usr/bin/php${PHP_SERIES} /usr/bin/php
               mkdir -p /logs
               php -v
               python3 -m unittest discover -s tests -p "*_test.py"

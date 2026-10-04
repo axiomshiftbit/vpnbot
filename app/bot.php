@@ -2283,7 +2283,7 @@ class Bot
             }
             try {
                 $modules->set('telemt', !$enabled);
-                if (!$enabled) $this->applyTelemt();
+                if (!$enabled) $this->applyTelemt(deferStart: true);
             } catch (Throwable $e) {
                 if ($modules->enabled('telemt') !== $enabled) $modules->set('telemt', $enabled);
                 $this->telemtWriteServiceState($enabled);
@@ -2312,7 +2312,7 @@ class Bot
         });
     }
 
-    private function applyTelemt(?string $resetQuota = null)
+    private function applyTelemt(?string $resetQuota = null, bool $deferStart = false)
     {
         if (!$this->protocolModuleEnabled('telemt')) {
             $this->telemtWriteServiceState(false);
@@ -2325,13 +2325,20 @@ class Bot
         @mkdir('/config/telemt/data', 0755, true);
         $web = $this->telemtWebEnabled($conf);
         $limits = $this->telemtLimitsOf($conf);
-        if ($limits) $this->telemtStateRun('version');
+        if ($limits && !$deferStart) $this->telemtStateRun('version');
         // Snapshot decoy-сайта telemt читает один раз при старте — файл должен
         // существовать РАНЬШЕ запуска бинаря, иначе конфиг не загрузится.
         if ($web) {
             $this->telemtWebDecoy();
         }
         $this->telemtWriteToml($this->telemtToml($conf));
+        // После выключения хостовая служба удаляет контейнер. Готовим файлы
+        // без SSH: новый контейнер (или супервизор ручного Docker) запустит
+        // ядро после освобождения общей блокировки, восстановив квоты.
+        if ($deferStart) {
+            $this->telemtWriteServiceState(true);
+            return;
+        }
         $this->telemtWriteServiceState(false);
         $this->telemtStop();
         if ($resetQuota !== null) $this->telemtStateRun('reset', $resetQuota);
@@ -14528,8 +14535,8 @@ DNS-over-HTTPS with IP:
     public function getAmneziaShortLink($client)
     {
         $pac           = $this->getPacConf();
-        $domain        = $pac[$this->getInstanceWG(1) . 'endpoint'] ? $this->ip : $this->getDomain();
-        $dnsRaw        = $client['interface']['DNS'] ?: $pac[$this->getInstanceWG(1) . 'dns'] ?: $this->dns;
+        $domain        = !empty($pac[$this->getInstanceWG(1) . 'endpoint']) ? $this->ip : $this->getDomain();
+        $dnsRaw        = ($client['interface']['DNS'] ?? '') ?: ($pac[$this->getInstanceWG(1) . 'dns'] ?? '') ?: $this->dns;
         $dns           = array_map('trim', explode(',', $dnsRaw));
         $ports         = $this->getPorts();
         $wgPort        = (int) $ports[$this->getInstanceWG()]['port'];
@@ -14636,12 +14643,12 @@ DNS-over-HTTPS with IP:
                     ],
                     [
                         [
-                            'text'          => $this->i18n($clients[$client]['# off'] ? 'off' : 'on'),
+                            'text'          => $this->i18n(!empty($clients[$client]['# off']) ? 'off' : 'on'),
                             'callback_data' => $this->cbWG("/switchClient {$client}_$page"),
                         ],
                         [
-                            'text'          => $this->i18n($clients[$client]['interface']['DNS'] ? 'delete internal dns' : 'set internal dns'),
-                            'callback_data' => $this->cbWG("/" . ($clients[$client]['interface']['DNS'] ? 'delete' : '') . "dns {$client}_$page"),
+                            'text'          => $this->i18n(!empty($clients[$client]['interface']['DNS']) ? 'delete internal dns' : 'set internal dns'),
+                            'callback_data' => $this->cbWG("/" . (!empty($clients[$client]['interface']['DNS']) ? 'delete' : '') . "dns {$client}_$page"),
                         ],
                     ],
                     [
@@ -14652,7 +14659,7 @@ DNS-over-HTTPS with IP:
                     ],
                     [
                         [
-                            'text'          => $this->i18n('MTU') . " " . ($clients[$client]['interface']['MTU'] ?: $this->getPacConf()[$this->getInstanceWG(1) . 'mtu'] ?: $this->mtu),
+                            'text'          => $this->i18n('MTU') . " " . (($clients[$client]['interface']['MTU'] ?? 0) ?: ($this->getPacConf()[$this->getInstanceWG(1) . 'mtu'] ?? 0) ?: $this->mtu),
                             'callback_data' => $this->cbWG("/changeMTU {$client}_$page"),
                         ],
                     ],
@@ -17939,7 +17946,7 @@ DNS-over-HTTPS with IP:
         }
         $menu   = [
             'main' => [
-                'text' => implode("\n", $main ?: []),
+                'text' => implode("\n", $main ?? []),
                 'data' => array_merge(
                     [
                         [
@@ -31588,7 +31595,7 @@ DNS-over-HTTPS with IP:
             // (applyRotatedPeerKeys) уже написан правильно.
             $conf[] = !empty($peer['# PublicKey']) ? '# [Peer]' : '[Peer]';
                 if (!empty($peer['Endpoint'])) {
-                    $host = $pac[$this->getInstanceWG(1) . 'endpoint'] ? $this->ip : $this->getDomain();
+                    $host = !empty($pac[$this->getInstanceWG(1) . 'endpoint']) ? $this->ip : $this->getDomain();
                     $port = $ports[$this->getInstanceWG()]['port'];
                     if ($relay !== null) {
                         $host = $relay['awg_address'];

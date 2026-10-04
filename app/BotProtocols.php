@@ -455,6 +455,7 @@ trait BotProtocols
             else $modules->toggle($module);
             $this->protocolModulesMenu();
         } catch (Throwable $e) {
+            error_log('protocolModulesToggle: ' . get_class($e) . ' at ' . basename($e->getFile()) . ':' . $e->getLine());
             $this->protocolError('Не удалось сохранить настройки протоколов.', '/protocolModules');
         }
     }

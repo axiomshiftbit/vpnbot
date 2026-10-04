@@ -9,6 +9,7 @@ class TelemtLifecycleBot extends Bot {
     public string $fixture;
     public bool $slow = false;
     public bool $failState = false;
+    public bool $containerRemoved = false;
     public function __construct(string $root) {
         $this->fixture = $root; $this->pac = "$root/pac.json"; $this->ip = '203.0.113.10'; $this->key = 'fixture';
         $this->protocolModulesFile = "$root/modules.json"; $this->admin = true;
@@ -33,8 +34,15 @@ class TelemtLifecycleBot extends Bot {
     }
     public function telemtUsers($relay = '', int $page = 0) {}
     public function telemtWebRefresh(bool $was): void {}
+    public function telemtWebDecoy(): void { file_put_contents($this->fixture . '/decoy', 'fixture'); }
+    public function telemtQuotaPath(): string { return $this->fixture . '/quota.json'; }
     public function cloakNginx() {}
-    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { return str_contains($cmd, 'telemt_state.py') ? 'TELEMT_STATE_OK' : ''; }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
+        if ($service === 'telemt' && $this->containerRemoved) {
+            throw new RuntimeException('Выключенный контейнер удалён хостовой службой');
+        }
+        return str_contains($cmd, 'telemt_state.py') ? 'TELEMT_STATE_OK' : '';
+    }
 }
 
 class TelemtWriteGuardBot extends TelemtLifecycleBot {
@@ -112,12 +120,33 @@ try {
     // WEB-decoy не относится к этой проверке, сохраняем WEB выключенным до включения.
     $bot->telemtConfUpdate(static function (&$c) { $c['telemt_web'] = 0; });
     $saved = file_get_contents($bot->pac);
+    $bot->containerRemoved = true;
     $bot->toggleTelemtService();
+    $bot->containerRemoved = false;
     $check($modules->enabled('telemt') && file_get_contents("$root/service-enabled") === "1\n", 'Повторное включение разрешает запуск');
     $check(file_get_contents($bot->pac) === $saved, 'Включение не меняет секреты и запрет пользователя');
     $check(str_contains(file_get_contents("$root/active.toml"), '"alice" = false'), 'После включения индивидуальный запрет сохранён');
     $bot->admin = false; $bot->toggleTelemtService();
     $check($modules->enabled('telemt'), 'Неадминистратор не выключает модуль'); $bot->admin = true;
+    // Повторяем цикл с WEB, квотой и уже накопленным расходом.
+    $bot->telemtConfUpdate(static function (&$c) {
+        $c['telemt_web'] = 1;
+        $c['telemt_user_limits']['alice'] = ['quota' => 1024, 'ips' => 2];
+    });
+    $bot->telemtQuotaWrite(['last_reset_epoch_secs' => 100,
+        'users' => ['alice' => ['used_bytes' => 777, 'last_reset_epoch_secs' => 100]]]);
+    $bot->telemtWebHost($bot->getPacConf());
+    $saved = file_get_contents($bot->pac);
+    $quota = file_get_contents($bot->telemtQuotaPath());
+    $bot->toggleTelemtService();
+    $bot->containerRemoved = true;
+    $bot->toggleTelemtService();
+    $bot->containerRemoved = false;
+    $check(file_get_contents($bot->pac) === $saved, 'Удаление и создание контейнера сохраняет WEB, секреты и лимиты');
+    $check(file_get_contents($bot->telemtQuotaPath()) === $quota, 'Удаление и создание контейнера сохраняет накопленный расход');
+    $check($modules->enabled('telemt') && file_get_contents("$root/service-enabled") === "1\n"
+        && str_contains(file_get_contents("$root/active.toml"), '[web]') && is_file("$root/decoy"),
+        'WEB-конфиг и decoy готовы до запуска нового контейнера');
     $guard->failWrite = true; $guard->failSettings = false;
     $modules->set('telemt', false);
     try { $guard->toggleTelemtService(); $check(false, 'Ошибка TOML должна отменять включение модуля'); } catch (RuntimeException $e) {}
