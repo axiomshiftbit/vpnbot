@@ -277,6 +277,10 @@ jobs:
           files: docker-compose.yml
           targets: ${{ matrix.service }}
           push: true
+          # apk --no-cache не отключает кеш слоёв Docker. Плановая сборка
+          # должна заново получить базу и пакеты даже при неизменном Dockerfile.
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
           # Только этим input'ом, а не через set: у bake-action свой дефолт
           # provenance для GitHub Actions (mode=max), и он перекрывает
           # *.attest=... из set — проверено на публикации, attestation
