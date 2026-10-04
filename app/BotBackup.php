@@ -4,6 +4,7 @@ trait BotBackup
 {
     private bool $backupLocked = false;
     public const BACKUP_MAX_BYTES = 20 * 1024 * 1024;
+    protected const BACKUP_APPLY_TIMEOUT = 60;
 
     // php и service видят один каталог конфигурации. Две операции restore
     // либо export/restore не должны перемешивать разделы разных снимков.
@@ -243,13 +244,15 @@ trait BotBackup
                 $failed[] = 'Hysteria';
             }
         }
-        $deadline = microtime(true) + 10;
+        // Host-worker создаёт контейнеры последовательно. При восстановлении
+        // на чистой установке последние ядра ещё могут ожидать своей очереди.
+        $deadline = microtime(true) + static::BACKUP_APPLY_TIMEOUT;
         while ($pending) {
             foreach ($pending as $name => [$root, $revision, $restoreId]) {
                 $status = json_decode((string) @file_get_contents("$root/status.json"), true);
                 $usage = json_decode((string) @file_get_contents("$root/usage.json"), true);
                 if (is_array($status) && ($status['time'] ?? 0) >= time() - 15 && empty($status['error'])
-                    && ($status['revision'] ?? null) === $revision
+                    && is_int($status['revision'] ?? null) && $status['revision'] >= $revision
                     && ($restoreId === null || ($usage['restored'] ?? null) === $restoreId)
                     && (!empty($status['running']) || in_array($status['phase'] ?? '', ['idle', 'disabled'], true))) {
                     unset($pending[$name]);

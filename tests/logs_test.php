@@ -28,6 +28,7 @@ mkdir($root);
 $b = (new ReflectionClass(LogMenuTestBot::class))->newInstanceWithoutConstructor();
 $b->dir = "$root/logs";
 $b->protocolRoot = "$root/protocols";
+$b->hysteriaUsersRoot = "$root/hysteria";
 $b->input = ['chat' => 1, 'message_id' => 2, 'callback_id' => 'test'];
 try {
     logCheck($b->logFiles() === [], 'Отсутствующий каталог безопасен');
@@ -44,12 +45,17 @@ try {
         file_put_contents("$b->protocolRoot/$protocol/runtime/status.json", '{"phase":"running"}');
         file_put_contents("$b->protocolRoot/$protocol/runtime/usage.json", '{"bytes":99}');
     }
-    logCheck(count($b->logFiles()) === 18, 'Все плоские журналы и оба поколения шести протоколов доступны');
+    mkdir("$b->hysteriaUsersRoot/runtime", 0700, true);
+    file_put_contents("$b->hysteriaUsersRoot/runtime/core.log", "hysteria native log\n");
+    file_put_contents("$b->hysteriaUsersRoot/runtime/usage.json", '{"bytes":123}');
+    logCheck(count($b->logFiles()) === 19, 'Доступны плоские журналы, шесть протоколов и нативный журнал Hysteria');
     foreach ($protected as $name => $data) logCheck(!in_array($name, $b->logFiles(), true), "Служебный файл $name скрыт");
     $b->getLog('anytls.core.previous.log');
     logCheck($b->files === ["$b->protocolRoot/anytls/runtime/core.previous.log"], 'Кнопка отдаёт нужный журнал');
     foreach (['../outside', 'linked', 'xray_core', 'anytls.status.json'] as $name) { $b->getLog($name); $b->clearLog($name); $b->delLog($name); }
     logCheck(count($b->files) === 1, 'Обход пути, ссылка и служебные файлы не отправлены');
+    $b->getLog('hysteria.core.log');
+    logCheck(end($b->files) === "$b->hysteriaUsersRoot/runtime/core.log", 'Нативный журнал Hysteria доступен из меню');
     $writer = fopen("$b->dir/telemt", 'ab');
     $inode = fileinode("$b->dir/telemt");
     $b->clearLog('telemt');
@@ -66,6 +72,10 @@ try {
     foreach ($protected as $name => $data) logCheck(file_get_contents("$b->dir/$name") === $data, "$name не стёрт общей очисткой");
     logCheck(file_get_contents("$root/outside") === 'keep', 'Цель симлинка не изменена');
     logCheck(file_get_contents("$b->protocolRoot/anytls/runtime/usage.json") === '{"bytes":99}', 'Расход протокола не сброшен');
+    logCheck(file_get_contents("$b->hysteriaUsersRoot/runtime/usage.json") === '{"bytes":123}', 'Очистка Hysteria не сбрасывает расход');
+    rename($b->hysteriaUsersRoot, "$root/hysteria-moved");
+    symlink("$root/hysteria-moved", $b->hysteriaUsersRoot);
+    logCheck(!in_array('hysteria.core.log', $b->logFiles(), true), 'Симлинк каталога Hysteria отфильтрован');
     unlink("$b->protocolRoot/tuic/runtime/core.log");
     symlink("$root/outside", "$b->protocolRoot/tuic/runtime/core.log");
     logCheck(!in_array('tuic.core.log', $b->logFiles(), true), 'Симлинк в журнале протокола отфильтрован');

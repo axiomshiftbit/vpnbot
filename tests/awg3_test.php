@@ -26,6 +26,11 @@ function awgAssert(bool $cond, string $msg): void
 // Подменяем только детект версии — остальное чистое, ssh/pac.json не нужны.
 class Awg3TestBot extends Bot
 {
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
+    {
+        return '';
+    }
+
     public $supports3 = true;
 
     public function awgSupports3(): ?bool

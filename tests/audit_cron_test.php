@@ -25,6 +25,11 @@ function cronAssert(bool $cond, string $msg): void
 
 class CronTestBot extends Bot
 {
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
+    {
+        return 'syntax is ok';
+    }
+
     public array $pacFake = [];
     public array $sent    = [];
     public array $hwidLog = [];

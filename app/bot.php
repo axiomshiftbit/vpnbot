@@ -119,6 +119,8 @@ class Bot
     // Нужен, потому что ssh() возвращает "" и по возвращаемому значению
     // «команда не выполнилась» неотличимо от «команда не дала вывода».
     public $sshFailed = false;
+    // Только начальная настройка service.php ждёт поднимающиеся контейнеры.
+    public int $sshStartupWait = 0;
     // Тот же случай, плюс тесты DoH подменяют путь присваиванием на временный
     // файл — с дефолтом на свойстве это продолжает работать как раньше.
     public $adguard = '/config/AdGuardHome.yaml';
@@ -6153,7 +6155,7 @@ NFT;
         if (empty($clients[$client])) {
             return $this->menu('wg', $page);
         }
-        if ($clients[$client]['# off']) {
+        if (!empty($clients[$client]['# off'])) {
             $this->switchClient($client);
             $clients = $this->readClients();
         }
@@ -6866,6 +6868,7 @@ NFT;
             ],
         ];
         $text = '';
+        $i = 0;
         foreach ($items as $k => $v) {
             if (($t = gmdate($k, $seconds) - $v['diff']) > 0) {
                 $text .= " $t{$v['sign']}";
@@ -7808,7 +7811,7 @@ NFT;
         $server = $this->readConfig();
         $i      = $this->peerIndexByClient($server, $clients[$client]);
 
-        if ($clients[$client]['# off']) {
+        if (!empty($clients[$client]['# off'])) {
             unset($clients[$client]['# off']);
         } else {
             $clients[$client]['# off'] = 1;
@@ -9947,7 +9950,7 @@ NFT;
     // включённость amnezia и доступность tools для набора 3.0.
     public function rotateAmneziaCron(): void
     {
-        $saved = $this->wg;
+        $saved = $this->wg ?? 0;
         foreach ([0, 1] as $inst) {
             try {
                 $this->wg = $inst;
@@ -10489,7 +10492,7 @@ NFT;
         $r  = $this->send($c['admin'][0], "start $ip");
 
         $this->input['chat']        = $c['admin'][0];
-        $this->input['message_id']  = $r['result']['message_id'];
+        $this->input['message_id']  = $r['result']['message_id'] ?? null;
         $this->input['callback_id'] = false;
         if ($initialSetup) {
             $this->addDomain(str_replace('.', '-', $this->ip) . '.nip.io', 1);
@@ -10538,6 +10541,7 @@ NFT;
     public function setSSL($name)
     {
         $conf = $this->getPacConf();
+        $bundle = '';
         switch ($name) {
             case 'letsencrypt':
                 // Домен уходит в shell (certbot) в нескольких местах без кавычек.
@@ -10546,7 +10550,7 @@ NFT;
                 // каждую подстановку.
                 if (!preg_match('~^[a-zA-Z0-9.-]+$~', (string) ($conf['domain'] ?? ''))) {
                     $this->send($this->input['chat'], 'ERROR: invalid domain');
-                    break;
+                    return $this->menu('config');
                 }
                 $out   = ['Install certificate:'];
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -10555,7 +10559,7 @@ NFT;
                 // рядом domain_aliases экранированы, а этот параметр пропустили.
                 if (!empty($conf['adguardkey']) && !preg_match('~^[a-zA-Z0-9-]+$~', (string) $conf['adguardkey'])) {
                     $this->send($this->input['chat'], 'ERROR: invalid adguard subdomain');
-                    break;
+                    return $this->menu('config');
                 }
                 $adguardClient = !empty($conf['adguardkey']) ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
                 $oc = $this->getHashSubdomain('oc');
@@ -10584,7 +10588,7 @@ NFT;
                 exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . ($tw ? " -d $tw.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
                 if ($code > 0) {
                     $this->send($this->input['chat'], "ERROR\n" . implode("\n", $out));
-                    break;
+                    return $this->menu('config');
                 }
                 $out[] = 'Generate bundle';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -14067,7 +14071,7 @@ DNS-over-HTTPS with IP:
                     : (($v['online'] === 'online' || $vlessOn) ? '🟢' : '🔴');
                 $t = [
                     'name'    => $this->getName($v),
-                    'time'    => $this->getTime(strtotime($v['## time'])),
+                    'time'    => $this->getTime(strtotime($v['## time'] ?? '')),
                     'status'  => $circle,
                     'traffic' => $tr,
                 ];
@@ -14900,10 +14904,12 @@ DNS-over-HTTPS with IP:
         $this->sessionApply(function () {
             unset($_SESSION['proxylistentry']);
         });
-        $rmpac  = stat(__DIR__ . '/zapretlists/rmpac');
-        $rpac   = stat(__DIR__ . '/zapretlists/rpac');
-        $mpac   = stat(__DIR__ . '/zapretlists/mpac');
-        $pac    = stat(__DIR__ . '/zapretlists/pac');
+        // До первой генерации PAC-файлов ещё нет, но настройки доступны.
+        $urls = [];
+        $rmpac  = @stat(__DIR__ . '/zapretlists/rmpac');
+        $rpac   = @stat(__DIR__ . '/zapretlists/rpac');
+        $mpac   = @stat(__DIR__ . '/zapretlists/mpac');
+        $pac    = @stat(__DIR__ . '/zapretlists/pac');
         $conf   = $this->getPacConf();
         $ip     = $this->getDomain();
         $hash   = $this->getHashBot();
@@ -18068,8 +18074,11 @@ DNS-over-HTTPS with IP:
             'update'       => $type == 'update'  ? $this->updatebot()                      : false,
         ];
 
-        $text = $menu[$type ?: 'main' ]['text'];
-        $data = $menu[$type ?: 'main' ]['data'];
+        $selected = $menu[$type ?: 'main'] ?? null;
+        // Некоторые разделы (например PAC) уже отправили своё меню.
+        if (!is_array($selected)) return;
+        $text = $selected['text'];
+        $data = $selected['data'];
 
         if (empty($type)) {
             $data = array_chunk(array_merge(...$this->filterProtocolButtons($data)), 2);
@@ -21254,7 +21263,7 @@ DNS-over-HTTPS with IP:
             return;
         }
         $this->time_wgtrack = time();
-        $saved = $this->wg;
+        $saved = $this->wg ?? 0;
         foreach ([0, 1] as $inst) {
             try {
                 $this->wg = $inst;
@@ -25190,7 +25199,7 @@ DNS-over-HTTPS with IP:
             ],
         ];
 
-        $ip_count      = $p['ip_count'] ?: 1;
+        $ip_count      = ($p['ip_count'] ?? 0) ?: 1;
         $hwidEnabled   = !empty($p['hwid_limit_enabled']);
         $defaultHwids  = max(1, (int) ($p['hwid_device_count'] ?: 1));
         $data[] = [
@@ -29688,7 +29697,7 @@ DNS-over-HTTPS with IP:
             $aliasNames .= " *.$a $a";
         }
         $template = preg_replace('~server_name domain~', "server_name " . ($conf['domain'] ? " *.{$conf['domain']} {$conf['domain']}$aliasNames" : '_'), $template);
-        if ($conf['domain'] && $conf['letsencrypt']) {
+        if ($conf['domain'] && !empty($conf['letsencrypt'])) {
             $template = preg_replace('/#~([^\n]+)?/', "#~{$conf['letsencrypt']}", $template);
             preg_match_all('~#-domain.+?#-domain~s', $template, $m);
             foreach ($m[0] as $v) {
@@ -29937,7 +29946,7 @@ DNS-over-HTTPS with IP:
                     'callback_data' => "/adguardpsswd",
                 ],
                 [
-                    'text'          => 'ClientID' . ($conf['adguardkey'] ? ": {$conf['adguardkey']}" : ''),
+                    'text'          => 'ClientID' . (!empty($conf['adguardkey']) ? ": {$conf['adguardkey']}" : ''),
                     'callback_data' => "/setAdguardKey",
                 ],
             ],
@@ -30189,13 +30198,16 @@ DNS-over-HTTPS with IP:
 
     public function expireCert()
     {
-        $c = openssl_x509_read(file_get_contents("/certs/cert_public"));
-        return openssl_x509_parse($c)["validTo_time_t"] ?: false;
+        $cert = @file_get_contents($this->protocolCertRoot . '/cert_public');
+        $info = is_string($cert) ? @openssl_x509_parse($cert) : false;
+        return $info['validTo_time_t'] ?? false;
     }
 
     public function domainsCert()
     {
-        $domains = openssl_x509_parse(openssl_x509_read(file_get_contents("/certs/cert_public")))['extensions']["subjectAltName"];
+        $cert = @file_get_contents($this->protocolCertRoot . '/cert_public');
+        $info = is_string($cert) ? @openssl_x509_parse($cert) : false;
+        $domains = $info['extensions']['subjectAltName'] ?? '';
         if (empty($domains)) {
             return false;
         }
@@ -30461,9 +30473,9 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/import",
             ],
         ];
-        $backup = array_filter(explode('/', $conf['backup']));
+        $backup = array_filter(explode('/', $conf['backup'] ?? ''));
         if (!empty($backup)) {
-            if (!empty(strtotime($backup[0])) && !empty(strtotime($backup[1]))) {
+            if (!empty(strtotime($backup[0] ?? '')) && !empty(strtotime($backup[1] ?? ''))) {
                 $backup = "{$backup[0]} start / {$backup[1]} period";
             } else {
                 $backup = $this->i18n('off') . " {$conf['backup']} - wrong format";
@@ -30894,11 +30906,15 @@ DNS-over-HTTPS with IP:
             }
             $out[$v] = "$dir/$v";
         }
+        $roots = ['hysteria' => $this->hysteriaUsersRoot];
         foreach (['anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque'] as $protocol) {
+            $roots[$protocol] = "$this->protocolRoot/$protocol";
+        }
+        foreach ($roots as $protocol => $root) {
             foreach (['core.log', 'core.previous.log'] as $name) {
-                $path = "$this->protocolRoot/$protocol/runtime/$name";
+                $path = "$root/runtime/$name";
                 if (is_file($path) && !is_link($path)
-                    && realpath($path) === realpath($this->protocolRoot) . "/$protocol/runtime/$name") {
+                    && realpath($path) === realpath(dirname($root)) . '/' . basename($root) . "/runtime/$name") {
                     $out["$protocol.$name"] = $path;
                 }
             }
@@ -31457,6 +31473,8 @@ DNS-over-HTTPS with IP:
         $r = $this->ssh($this->getWGType(), $this->getInstanceWG());
         $r = explode(PHP_EOL, $r);
         $r = array_filter($r);
+        $data = [];
+        $d = null;
         $i = 0;
         foreach ($r as $k => $v) {
             if (preg_match('~^(interface|peer):~', $v, $m)) {
@@ -32155,18 +32173,33 @@ DNS-over-HTTPS with IP:
         $this->send($this->input['chat'], "disconnect: \n" . var_export($args, true) . "\n", $this->input['message_id']);
     }
 
+    public function waitForSshService(string $service, int $timeout = 30): bool
+    {
+        $deadline = microtime(true) + $timeout;
+        do {
+            if ($this->tcpProbe($service, 22, min(1.0, max(.01, $deadline - microtime(true))))['ok']) return true;
+            if (microtime(true) >= $deadline) return false;
+            usleep(100000);
+        } while (true);
+    }
+
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $data = "";
         $this->sshFailed = false;
         if (!$this->protocolModuleEnabled($service)) return '';
         try {
+            // Compose service_started не гарантирует готовность sshd. Ждём
+            // до команд, которые останавливают ядро или применяют конфиг.
+            if ($this->sshStartupWait > 0 && !$this->waitForSshService($service, $this->sshStartupWait)) {
+                throw new RuntimeException('SSH service startup timed out');
+            }
             // ssh2_connect не принимает таймаут и по умолчанию ждёт TCP-коннект
             // минутами (лежащий контейнер = зависший вебхук-воркер). 5с хватает
             // внутри docker-сети с запасом.
             $prevTimeout = ini_get('default_socket_timeout');
             ini_set('default_socket_timeout', '5');
-            $c = ssh2_connect($service, 22);
+            $c = @ssh2_connect($service, 22);
             ini_set('default_socket_timeout', $prevTimeout);
             if (empty($c)) {
                 throw new Exception("no connection to $service: \n$cmd\n" . var_export($c, true));
@@ -33440,7 +33473,7 @@ DNS-over-HTTPS with IP:
         $rows = explode("\n", file_get_contents($p['status']));
         $out  = [];
         foreach ($rows as $row) {
-            $cols = str_getcsv($row);
+            $cols = str_getcsv($row, ',', '"', '');
             if (($cols[0] ?? '') !== 'CLIENT_LIST') {
                 continue;
             }
