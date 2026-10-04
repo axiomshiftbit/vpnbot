@@ -1016,6 +1016,9 @@ class Bot
             case preg_match('~^/telemtWebMode(?: (https|https-lanes|auto-https|auto-full))?$~', $this->input['callback'], $m):
                 $this->telemtWebMode($m[1] ?? '');
                 break;
+            case preg_match('~^/telemtWebHttp (method|conveyor)(?: (post|put|on|off))?$~D', $this->input['callback'], $m):
+                $this->telemtWebHttp($m[1], $m[2] ?? '');
+                break;
             case preg_match('~^/menuhelp ([a-z0-9_-]+) (\d+)(?: ([\w.-]+))?$~', $this->input['callback'], $m):
                 $this->menuHelp($m[1], (int) $m[2], $m[3] ?? '');
                 break;
@@ -2208,6 +2211,8 @@ class Bot
             } else {
                 $t .= "carrier = " . $q($this->telemtWebCarrierOf($conf)) . "\n\n";
             }
+            $t .= "carrier_method = " . $q($this->telemtWebCarrierMethodOf($conf)) . "\n";
+            $t .= "conveyor = " . $b($this->telemtBool($conf, 'telemt_web_conveyor', true)) . "\n\n";
             $t .= $this->telemtWebLimitsToml();
             // Отчёты бриджа о событиях ДО рукопожатия (telemt >= 3.5.8). Фича
             // работает только при enabled + sideband + capture_lifecycle, а
@@ -2623,6 +2628,11 @@ class Bot
             $t .= "$k = $v\n";
         }
         return $t . "\n";
+    }
+
+    public function telemtWebCarrierMethodOf(array $conf): string
+    {
+        return ($conf['telemt_web_carrier_method'] ?? 'post') === 'put' ? 'put' : 'post';
     }
 
     public function telemtWebSecretModeOf(array $conf): string
@@ -16041,6 +16051,7 @@ DNS-over-HTTPS with IP:
         $data[] = [['text' => $this->i18n('telemt settings'), 'callback_data' => "/telemtSettings"]];
         $data[] = [['text' => $this->i18n('telemt masking'), 'callback_data' => "/telemtMasking"]];
         $data[] = [['text' => $this->i18n('telemt diagnostics'), 'callback_data' => "/telemtDiagnostics"]];
+        $data[] = $this->menuHelpButton('telemt_main');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/menu"]];
 
         if ($update) {
@@ -16183,6 +16194,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/telemtSetMode $m",
             ]];
         }
+        $data[] = $this->menuHelpButton('telemt_mode');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
@@ -16220,6 +16232,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/telemtSetSni $a",
             ]];
         }
+        $data[] = $this->menuHelpButton('telemt_sni');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
@@ -16303,6 +16316,18 @@ DNS-over-HTTPS with IP:
                 . $this->i18n('telemt web mode ' . $this->telemtWebModeOf($conf)),
             'callback_data' => "/telemtWebMode",
         ]];
+        $version = ltrim($this->telemtVersion(), 'vV');
+        $data[] = [[
+            'text' => $this->i18n('telemt web method') . ': ' . strtoupper($this->telemtWebCarrierMethodOf($conf)),
+            'callback_data' => '/telemtWebHttp method',
+        ]];
+        $data[] = [[
+            'text' => $this->i18n('telemt web conveyor') . ': '
+                . ($version !== 'unknown' && version_compare($version, '3.5.13', '>=')
+                    ? $this->telemtState($this->telemtBool($conf, 'telemt_web_conveyor', true))
+                    : $this->i18n('telemt web unavailable')),
+            'callback_data' => '/telemtWebHttp conveyor',
+        ]];
         $data[] = [[
             'text'          => 'secret: ' . $this->telemtWebSecretModeOf($conf),
             'callback_data' => "/telemtWebSecret",
@@ -16381,6 +16406,48 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/telemtWebMode ' . $choice]];
         }
         $data[] = $this->menuHelpButton('telemt_carrier');
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemtWeb']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
+    }
+
+    // Явный выбор, а не toggle: повтор доставленного callback не меняет
+    // настройку второй раз и не переподключает пользователей.
+    public function telemtWebHttp(string $setting, string $value = ''): void
+    {
+        if (!in_array($setting, ['method', 'conveyor'], true)) return;
+        [$key, $minimum, $choices] = $setting === 'method'
+            ? ['telemt_web_carrier_method', '3.5.12', ['post', 'put']]
+            : ['telemt_web_conveyor', '3.5.13', ['on', 'off']];
+        $current = fn(array $conf): string => $setting === 'method'
+            ? $this->telemtWebCarrierMethodOf($conf)
+            : ($this->telemtBool($conf, $key, true) ? 'on' : 'off');
+        $version = ltrim($this->telemtVersion(), 'vV');
+        $supported = $version !== 'unknown' && version_compare($version, $minimum, '>=');
+        $notice = sprintf($this->i18n('telemt web http need version'), $minimum);
+        if (in_array($value, $choices, true)) {
+            $changed = $this->telemtConfUpdate(function (&$conf) use ($setting, $key, $value, $current, $supported, $notice) {
+                if ($current($conf) === $value) return false;
+                // POST остаётся доступным для возврата к старому ядру.
+                if (!$supported && !($setting === 'method' && $value === 'post')) {
+                    $this->answer($this->input['callback_id'], $notice, true);
+                    return false;
+                }
+                $conf[$key] = $setting === 'method' ? $value : (int) ($value === 'on');
+                return true;
+            });
+            if ($changed && $this->telemtWebEnabled($this->getPacConf())) $this->restartTelemt();
+        }
+        $selected = $current($this->getPacConf());
+        $text = ['Menu → TeleMT → WEB → ' . $this->i18n('telemt web ' . $setting),
+            $this->i18n('telemt web ' . $setting . ' note')];
+        if (!$supported) $text[] = '⚠ ' . $notice;
+        $data = [];
+        foreach ($choices as $choice) {
+            $data[] = [['text' => ($choice === $selected ? '✅ ' : '')
+                . ($setting === 'method' ? strtoupper($choice) : $this->i18n('telemt web conveyor ' . $choice)),
+                'callback_data' => '/telemtWebHttp ' . $setting . ' ' . $choice]];
+        }
+        $data[] = $this->menuHelpButton('telemt_' . $setting);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemtWeb']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
     }
@@ -16538,6 +16605,7 @@ DNS-over-HTTPS with IP:
             ]];
         }
         $data[] = [['text' => '➕ ' . $this->i18n('add relay'), 'callback_data' => '/telemtRelayAdd']];
+        $data[] = $this->menuHelpButton('telemt_relays');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemt']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data ?: false);
     }
@@ -16719,6 +16787,7 @@ DNS-over-HTTPS with IP:
         $text[] = "fast mode: " . $this->i18n('on');
 
         $data[] = [['text' => $this->i18n('changeFakeDomain'), 'callback_data' => "/telemtDomain"]];
+        $data[] = $this->menuHelpButton('telemt_settings');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
@@ -16783,6 +16852,7 @@ DNS-over-HTTPS with IP:
             $data[] = [['text' => $this->i18n('telemt report'), 'callback_data' => "/telemtReport"]];
         }
         $data[] = [['text' => $this->i18n('telemt observe'), 'callback_data' => "/telemtShowBeobachten"]];
+        $data[] = $this->menuHelpButton('telemt_diagnostics');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/telemt"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }

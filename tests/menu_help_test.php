@@ -135,7 +135,75 @@ $check(!$bot->telemtWebEnabled($bot->conf) && $bot->reloads === 1, 'WEB выкл
 $bot->click('/telemtWebToggle');
 $check($bot->telemtWebEnabled($bot->conf) && $bot->reloads === 2, 'WEB включается вместе с маршрутом nginx');
 
-$topics = ['telemt' => '', 'telemt_carrier' => '', 'telemt_path' => '', 'telemt_mask' => '', 'dpi' => '', 'smux' => '', 'finalmask' => '',
+// HTTP-параметры меняются настоящими callbacks и остаются независимыми от
+// транспорта, ссылок и квот; повтор доставки не перезапускает ядро.
+foreach (['ru', 'en'] as $language) foreach (['https', 'https-lanes', 'auto-https', 'auto-full'] as $mode) {
+    $bot = new MenuHelpTestBot($i); $bot->language = $language; $bot->version = '3.5.13';
+    $bot->conf += $configFor($mode);
+    $bot->conf += ['telemt_web_path' => 'test/path', 'telemt_user_limits' => ['alice' => ['quota'=>5000, 'ips'=>2]], 'unrelated'=>['keep'=>1]];
+    $before = $bot->conf;
+    $links = [$bot->linkTelemt('alice'), $bot->linkTelemtWeb('alice')];
+    $bot->click('/telemtWeb');
+    $check(in_array('/telemtWebHttp method', $callbacks($bot->screen), true), 'HTTP-метод доступен из WEB');
+    $check(in_array('/telemtWebHttp conveyor', $callbacks($bot->screen), true), 'Конвейер доступен из WEB');
+    $toml = $bot->telemtToml($bot->conf);
+    $check(str_contains($toml, "carrier_method = \"post\"\nconveyor = true\n"), 'Обновление старой конфигурации сохраняет штатные POST и conveyor=true');
+    foreach (['method'=>'post', 'conveyor'=>'on'] as $setting=>$default) {
+        $bot->click('/telemtWebHttp ' . $setting);
+        $check($bot->conf === $before && $bot->restarts === 0 && $bot->writes === 0, 'Просмотр настройки не пишет конфиг');
+        $buttons = array_merge(...$bot->screen[1]);
+        $selected = array_values(array_filter($buttons, fn($b)=>str_starts_with($b['text'], '✅')));
+        $check(count($selected) === 1 && $selected[0]['callback_data'] === '/telemtWebHttp ' . $setting . ' ' . $default, 'Выбран правильный дефолт');
+    }
+    foreach (['method put', 'conveyor off', 'method post', 'conveyor on'] as $index=>$selection) {
+        $bot->click('/telemtWebHttp ' . $selection);
+        $check($bot->restarts === $index+1 && $bot->writes === $index+1, 'Изменение записано и применено ровно раз');
+        $bot->click('/telemtWebHttp ' . $selection);
+        $check($bot->restarts === $index+1 && $bot->writes === $index+1, 'Повторное нажатие не переподключает пользователей');
+        $remaining = $bot->conf; unset($remaining['telemt_web_carrier_method'], $remaining['telemt_web_conveyor']);
+        $check($remaining === $before, 'Не затронуты путь, квоты, транспорт, пользователи и посторонние настройки');
+        $check([$bot->linkTelemt('alice'), $bot->linkTelemtWeb('alice')] === $links, 'Обе ссылки остаются прежними');
+        $toml = $bot->telemtToml($bot->conf);
+        preg_match('~\[web\]\n(.*?)\[web.limits\]~s', $toml, $section);
+        $check(str_contains($section[1], 'carrier_method = "' . ($index < 2 ? 'put' : 'post') . '"'), 'HTTP-метод записан в нужную TOML-таблицу');
+        $check(str_contains($section[1], 'conveyor = ' . (in_array($index, [1,2], true) ? 'false' : 'true')), 'Конвейер записан явным TOML boolean');
+        foreach ($callbacks($bot->screen) as $callback) $check(strlen($callback) <= 64, 'HTTP callback в лимите Telegram');
+        $check(end($bot->screen[1])[0]['callback_data'] === '/telemtWeb' && $bot->reloads === 0, 'Возврат в WEB; Nginx не требует изменения');
+    }
+}
+foreach (['3.5.9', '3.5.11', '3.5.12', '3.5.13', 'v3.5.13', 'unknown'] as $version) {
+    $bot = new MenuHelpTestBot($i); $bot->version = $version;
+    $before = $bot->conf;
+    $methodOk = in_array($version, ['3.5.12', '3.5.13', 'v3.5.13'], true);
+    $conveyorOk = in_array($version, ['3.5.13', 'v3.5.13'], true);
+    $bot->click('/telemtWebHttp method put');
+    $check(($bot->conf['telemt_web_carrier_method'] ?? 'post') === ($methodOk ? 'put' : 'post'), 'PUT доступен только с 3.5.12 и известной версией');
+    $bot->click('/telemtWebHttp conveyor off');
+    $check($bot->telemtBool($bot->conf, 'telemt_web_conveyor', true) === !$conveyorOk, 'Конвейер управляется только с 3.5.13');
+    $check($bot->restarts === (int)$methodOk + (int)$conveyorOk, 'Недоступные настройки не перезапускают ядро');
+    $check(count($bot->answers) === 2 - (int)$methodOk - (int)$conveyorOk, 'Для старого ядра показано объяснение');
+    $bot->click('/telemtWeb');
+    $buttons = array_merge(...$bot->screen[1]);
+    $conveyor = array_values(array_filter($buttons, fn($b)=>($b['callback_data']??'') === '/telemtWebHttp conveyor'))[0];
+    $check(str_contains($conveyor['text'], $bot->i18n('telemt web unavailable')) === !$conveyorOk, 'На старом ядре меню не обещает работающий конвейер');
+}
+$bot = new MenuHelpTestBot($i); $bot->version = '3.5.9'; $bot->conf['telemt_web_carrier_method'] = 'put';
+$bot->click('/telemtWebHttp method post');
+$check($bot->conf['telemt_web_carrier_method'] === 'post' && $bot->answers === [], 'Возврат к POST доступен после отката ядра');
+$bot = new MenuHelpTestBot($i); $bot->version = '3.5.13'; $bot->conf['telemt_web'] = 0;
+$bot->click('/telemtWebHttp method put'); $bot->click('/telemtWebHttp conveyor off');
+$check($bot->conf['telemt_web_carrier_method'] === 'put' && $bot->conf['telemt_web_conveyor'] === 0 && $bot->restarts === 0, 'WEB off: оба параметра сохраняются без обрыва MTProxy');
+$check(!str_contains($bot->telemtToml($bot->conf), 'carrier_method') && !str_contains($bot->telemtToml($bot->conf), 'conveyor ='), 'WEB off: параметры не попадают в чужую TOML-секцию');
+$before = $bot->conf; $writes = $bot->writes;
+foreach (['/telemtWebHttp method on', '/telemtWebHttp conveyor put', '/telemtWebHttp method DELETE'] as $callback) $bot->click($callback);
+$bot->telemtWebHttp('invalid', 'put');
+$check($bot->conf === $before && $bot->writes === $writes && $bot->restarts === 0, 'Чужие значения и комбинации не меняют конфиг');
+foreach ([null, [], 'PUT', "put\n[access]", false, 1] as $invalid) {
+    $check($bot->telemtWebCarrierMethodOf(['telemt_web_carrier_method'=>$invalid]) === 'post', 'Повреждённый сохранённый метод возвращается к POST');
+}
+
+$topics = ['telemt_main' => '', 'telemt_mode' => '', 'telemt_sni' => '', 'telemt_settings' => '', 'telemt_relays' => '', 'telemt_diagnostics' => '',
+    'telemt' => '', 'telemt_carrier' => '', 'telemt_path' => '', 'telemt_method' => '', 'telemt_conveyor' => '', 'telemt_mask' => '', 'dpi' => '', 'smux' => '', 'finalmask' => '',
     'dpi_frag' => '', 'dpi_noise' => '', 'finalmask_frag' => '', 'finalmask_noise' => '', 'encryption' => '',
     'awg' => '1_4', 'naive_relay' => 'relay.example-test'];
 foreach (ManagedProtocol::NAMES as $protocol => $name) {
@@ -165,6 +233,34 @@ foreach (['ru', 'en'] as $lang) foreach ($topics as $topic => $context) {
         $check(!str_contains($text, '0011223344556677'), 'Справка не раскрывает секрет пользователя');
         if ($page === 0 && count($pages) > 1) $check(count($cbs) === count($pages) + 1, 'Оглавление открывает все темы');
     }
+}
+// Проверяем, что справку можно открыть из каждого соответствующего меню.
+// Только статус процесса подменяется; просмотр самой справки выше запрещает SSH.
+foreach (['ru', 'en'] as $lang) {
+    $bot = new class($i) extends MenuHelpTestBot {
+        public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
+            if ($service === 'telemt' && $cmd === 'pgrep -x telemt') return '123';
+            return parent::ssh($cmd, $service, $wait, $log);
+        }
+    };
+    $bot->language = $lang;
+    [$bot->conf] = $bot->normalizeTelemtUsers($bot->conf);
+    $before = $bot->conf;
+    foreach (['/telemt'=>'telemt_main', '/telemtMode'=>'telemt_mode', '/telemtSni'=>'telemt_sni',
+        '/telemtSettings'=>'telemt_settings', '/telemtRelays'=>'telemt_relays', '/telemtDiagnostics'=>'telemt_diagnostics',
+        '/telemtMasking'=>'telemt_mask'] as $menu=>$topic) {
+        $bot->click($menu);
+        $help = '/menuhelp ' . $topic . ' 0';
+        $check(in_array($help, $callbacks($bot->screen), true), "$lang: из $menu доступна справка");
+        $bot->click($help);
+        $check(end($bot->screen[1])[0]['callback_data'] === $menu, "$lang: возврат из справки в $menu");
+        $check($bot->conf === $before && $bot->writes === 0 && $bot->restarts === 0, 'Просмотр меню и справки не меняет настройки');
+    }
+    $bot->version = '3.5.13';
+    $bot->click('/telemtWebHttp conveyor');
+    $labels = array_column(array_merge(...$bot->screen[1]), 'text');
+    $check(in_array('✅ ' . $bot->i18n('telemt web conveyor on'), $labels, true)
+        && in_array($bot->i18n('telemt web conveyor off'), $labels, true), 'Состояния конвейера подписаны словами');
 }
 $bot = new MenuHelpTestBot($i);
 $bot->click('/!menuhelp p_masque 1 a123456789abcdef');

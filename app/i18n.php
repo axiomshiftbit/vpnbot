@@ -37,6 +37,46 @@ $i = [
         'ru' => 'Путь WEB · path',
         'en' => 'WEB path',
     ],
+    'telemt web method' => [
+        'ru' => 'HTTP-метод',
+        'en' => 'HTTP method',
+    ],
+    'telemt web conveyor' => [
+        'ru' => 'Конвейер WEB',
+        'en' => 'WEB conveyor',
+    ],
+    'telemt web conveyor on' => [
+        'ru' => 'Включён',
+        'en' => 'Enabled',
+    ],
+    'telemt web conveyor off' => [
+        'ru' => 'Выключен',
+        'en' => 'Disabled',
+    ],
+    'telemt web unavailable' => [
+        'ru' => 'недоступно',
+        'en' => 'unavailable',
+    ],
+    'telemt web http need version' => [
+        'ru' => 'Эта настройка требует TeleMT %s+. Обновите образ и контейнер TeleMT.',
+        'en' => 'This setting requires TeleMT %s+. Update the TeleMT image and container.',
+    ],
+    'telemt web method note' => [
+        'ru' => 'POST — стандартный вариант. PUT может улучшить повторное использование HTTP-соединений в Linux WebKitGTK. Настройка действует на передачу и приём через HTTPS и HTTPS-lanes, включая повторы запросов. WebSocket использует прежний GET Upgrade. Ссылки сохраняются; при включённом WEB изменение переподключает всех пользователей TeleMT.',
+        'en' => 'POST is the default. PUT may improve HTTP connection reuse in Linux WebKitGTK. Applies to HTTPS and HTTPS-lanes upload, download and retries. WebSocket keeps GET Upgrade. Links stay valid; changing this with WEB enabled reconnects all TeleMT users.',
+    ],
+    'telemt web conveyor note' => [
+        'ru' => 'По умолчанию включён. Совместимый WEB-клиент может отправлять до четырёх HTTP-запросов параллельно; ядро сохраняет порядок данных и распознаёт повторы. Старые клиенты продолжают последовательную передачу. WebSocket не меняется. При проблемах совместимости конвейер можно выключить. Ссылки сохраняются; при включённом WEB изменение переподключает всех пользователей TeleMT.',
+        'en' => 'Enabled by default. Compatible WEB clients can send up to four HTTP requests concurrently; the core preserves data order and detects retries. Older clients remain sequential. WebSocket is unchanged. Disable it to troubleshoot compatibility. Links stay valid; changing this with WEB enabled reconnects all TeleMT users.',
+    ],
+    'telemt web method help' => [
+        'ru' => "<b>Что меняется</b>\nСпособ отправки HTTP-запросов между WEB-клиентом и TeleMT: POST или PUT. Он применяется к передаче, приёму и повторным запросам в HTTPS и HTTPS-lanes. Это не смена протокола Telegram, домена или шифрования. Создание сессии и WebSocket-подключения сохраняют прежние методы.\n\n<b>Что выбрать</b>\n<b>POST</b> — значение по умолчанию. Оставьте его, если подключение работает нормально. <b>PUT</b> может помочь Linux-клиентам на WebKitGTK повторно использовать HTTP-соединения и уменьшить затраты на создание новых. На других клиентах улучшение может быть незаметно. Если после выбора PUT соединение ухудшилось, верните POST; промежуточный прокси может ограничивать разрешённые методы. Гарантии ускорения или обхода блокировок нет.\n\n<b>Применение</b>\nНужен образ TeleMT 3.5.12+. Настройка общая для всех WEB-пользователей, включая HTTPS-варианты в Auto. При включённом WEB бот перезапускает всё ядро TeleMT: MTProxy и WEB переподключатся. Ссылки, секреты, квоты и сохранённый расход остаются прежними. При выключенном WEB выбор сохраняется до его включения.",
+        'en' => "<b>What changes</b>\nThe HTTP request method between the WEB client and TeleMT: POST or PUT. It applies to HTTPS and HTTPS-lanes upload, download and retries. It does not change Telegram's protocol, hostname or encryption. Session creation and WebSocket connections keep their existing methods.\n\n<b>Which to choose</b>\n<b>POST</b> is the default; keep it when connections work normally. <b>PUT</b> may help Linux clients using WebKitGTK reuse HTTP connections and reduce connection setup overhead. Other clients may see no improvement. Switch back to POST if PUT causes problems; intermediary proxies may restrict HTTP methods. Neither faster transfers nor bypassing blocks is guaranteed.\n\n<b>Applying the change</b>\nRequires TeleMT 3.5.12+. Applies to all WEB users, including HTTPS candidates in Auto mode. With WEB enabled, the bot restarts the entire TeleMT core, reconnecting MTProxy and WEB users. Links, secrets, quotas and saved usage stay unchanged. With WEB disabled, the choice is saved for the next enable.",
+    ],
+    'telemt web conveyor help' => [
+        'ru' => "<b>Что даёт конвейер</b>\nПри последовательной отправке клиент ждёт подтверждения предыдущего HTTP-запроса. Конвейер позволяет совместимому WEB-клиенту держать до четырёх запросов в работе одновременно. Это уменьшает ожидание на соединениях с большой задержкой и может ускорить передачу. Ядро сохраняет порядок данных и распознаёт повторные запросы, чтобы не передавать их полезные данные дважды. Результат зависит от клиента и сети; фиксированного прироста скорости нет.\n\n<b>Что выбрать</b>\nПо умолчанию <b>включён</b>. Поддержка согласуется с клиентом; старые клиенты продолжают последовательную отправку. Параметр действует на HTTPS и HTTPS-lanes, в том числе при Auto, и не меняет WebSocket. Если после обновления появились обрывы или зависания, временно выключите конвейер и сравните поведение на том же транспорте и HTTP-методе. Выключение ограничивает параллельную отправку, а не отключает WEB-прокси.\n\n<b>Применение</b>\nНужен образ TeleMT 3.5.13+. Настройка общая для всех WEB-пользователей. При включённом WEB изменение перезапускает всё ядро TeleMT и переподключает MTProxy и WEB. Ссылки, секреты, квоты и сохранённый расход остаются прежними. При выключенном WEB выбор сохраняется до его включения.",
+        'en' => "<b>What the conveyor does</b>\nSequential upload waits for the previous HTTP request to be acknowledged. The conveyor lets compatible WEB clients keep up to four requests in flight. This reduces waiting on high latency connections and may improve throughput. The core preserves data order and recognizes retries so their payload is not delivered twice. Results depend on the client and network; no fixed speed gain is guaranteed.\n\n<b>Which to choose</b>\n<b>Enabled</b> by default. Support is negotiated with the client; older clients keep sequential uploads. Applies to HTTPS and HTTPS-lanes, including Auto candidates, and does not change WebSocket. If an upgrade causes disconnects or stalls, temporarily disable the conveyor and compare using the same transport and HTTP method. Disabling it limits parallel uploads; it does not disable WEB proxying.\n\n<b>Applying the change</b>\nRequires TeleMT 3.5.13+. Applies to all WEB users. With WEB enabled, changing it restarts the entire TeleMT core and reconnects MTProxy and WEB. Links, secrets, quotas and saved usage stay unchanged. With WEB disabled, the choice is saved for the next enable.",
+    ],
     'telemt users cards' => [
         'ru' => 'Выберите пользователя: в карточке находятся ссылки MTProxy и WEB, QR и управление доступом.',
         'en' => 'Select a user for MTProxy and WEB links, QR codes and access settings.',
@@ -146,8 +186,8 @@ $i = [
         'en' => '✅ marks the selected mode. For Android + iOS use either Auto mode or Fixed HTTPS. Telegram must support WEB. Changing mode restarts active TeleMT; links stay valid.',
     ],
     'telemt web lanes ios' => [
-        'ru' => 'HTTPS Lanes без подбора не подходит для iOS. Выберите «Авто» или «Без подбора · HTTPS».',
-        'en' => 'Fixed HTTPS Lanes does not support iOS. Select Auto or Fixed HTTPS.',
+        'ru' => 'Для iOS-клиента с поддержкой WEB выберите «Авто» или «Без подбора · HTTPS»: фиксированный HTTPS Lanes не подходит. Наличие WEB в App Store пока не подтверждено; подробности в справке.',
+        'en' => 'For an iOS client with WEB support, select Auto or Fixed HTTPS instead of Fixed HTTPS Lanes. App Store support is not yet confirmed; see Help.',
     ],
     'backup create failed' => [
         'ru' => '❌ Не удалось создать или отправить резервную копию. Предыдущая копия сохранена. Повторите попытку.',
@@ -1062,8 +1102,8 @@ $i = [
         'ru' => 'WEB-прокси',
     ],
     'telemt web note'  => [
-        'en' => 'WEB carries MTProto inside ordinary HTTPS on its own subdomain (port 443, no port in the link). Import the link in Telegram Desktop (Settings -> Advanced -> Connection type -> proxy type WEB) or open it in Telegram for Android. Compatible Telegram iOS versions use the https carrier; with negotiation enabled, keep https as the final fallback. Clients without WEB support use the regular tg://proxy links.',
-        'ru' => 'WEB несёт MTProto внутри обычного HTTPS на своём поддомене (порт 443, в ссылке порта нет). Ссылка импортируется в Telegram Desktop (Настройки -> Продвинутые -> Тип соединения -> тип прокси WEB) или открывается в Telegram для Android. Совместимые версии Telegram iOS используют carrier https; при включённом подборе оставьте https последним запасным вариантом. Клиентам без WEB нужны обычные ссылки tg://proxy.',
+        'en' => 'WEB carries MTProto inside HTTPS on its own subdomain (port 443, no port in the link). Use a Telegram build supporting WEB: import the link in Desktop connection settings or open it in compatible Android. For iOS, an experimental implementation exists; availability in the App Store app is not confirmed. See Help for details. Clients without WEB support use regular tg://proxy links.',
+        'ru' => 'WEB несёт MTProto внутри HTTPS на своём поддомене (порт 443, в ссылке порта нет). Нужна сборка Telegram с поддержкой WEB: импортируйте ссылку в настройках соединения Desktop или откройте в совместимом Android. Для iOS существует экспериментальная реализация; наличие WEB в приложении из App Store пока не подтверждено. Подробности — в справке. Клиентам без WEB нужны обычные ссылки tg://proxy.',
     ],
     'telemt web link'  => [
         'en' => 'WEB link for compatible Telegram clients',
