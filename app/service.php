@@ -30,6 +30,7 @@ $bot->dontshowcron = 1;
 $bot->sslip($initialSetup);
 $bot->adguardSync();
 $bot->cloakNginx();
+$bot->restartNaive();
 $bot->syncDeny();
 $bot->cleanDocker();
 $bot->dnsttStart();

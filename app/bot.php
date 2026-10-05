@@ -660,6 +660,7 @@ class Bot
             case preg_match('~^/menu (?P<type>addpeer) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>wg) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
+            case preg_match('~^/menu (?P<type>tt) (?P<arg>\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt|ovpn|l2tp|ikev2)$~', $this->input['callback'], $m):
                 $this->menu(type: $m['type'] ?? false, arg: $m['arg'] ?? false);
                 break;
@@ -4328,12 +4329,24 @@ class Bot
         return $this->withLock('naive', fn() => $this->applyNaive());
     }
 
+    public static function migrateNaiveTimeout(string $conf): string
+    {
+        // Дополняем только штатный servers-блок без ручной timeout-политики.
+        // Сохранённый Caddyfile переживает обновление и восстановление бэкапа.
+        if (preg_match('~^[ \t]*(?:timeouts|read_body_idle)\b~m', $conf)
+            || preg_match_all('~^[ \t]*servers[ \t]*\{[ \t]*$~m', $conf) !== 1) {
+            return $conf;
+        }
+        return preg_replace('~(^[ \t]*servers[ \t]*\{[ \t]*$)~m',
+            "$1\n\t\ttimeouts {\n\t\t\tread_body_idle -1s\n\t\t}", $conf, 1) ?? $conf;
+    }
+
     private function applyNaive()
     {
         $pac  = $this->getPacConf();
         $user = (string) ($pac['naive']['user'] ?? '');
         $pass = (string) ($pac['naive']['pass'] ?? '');
-        $c    = self::migrateNaiveAcl(file_get_contents('/config/Caddyfile'));
+        $c    = self::migrateNaiveTimeout(self::migrateNaiveAcl(file_get_contents('/config/Caddyfile')));
         // Плейсхолдер — то же значение, что в шаблоне config/Caddyfile: пока
         // креды не заданы, caddy не должен подниматься (тот же гард в
         // start_np.sh), иначе сервис работает с угадываемым паролем.
@@ -18066,7 +18079,7 @@ DNS-over-HTTPS with IP:
             'oc'           => $type == 'oc'      ? $this->ocMenu()                         : false,
             'naive'        => $type == 'naive'   ? $this->naiveMenu()                      : false,
             'hy'           => $type == 'hy'      ? $this->hysteriaMenu()                   : false,
-            'tt'           => $type == 'tt'      ? $this->ttMenu()                         : false,
+            'tt'           => $type == 'tt'      ? $this->ttMenu((int) $arg)               : false,
             'ovpn'         => $type == 'ovpn'    ? $this->ovpnMenu()                       : false,
             'l2tp'         => $type == 'l2tp'    ? $this->l2tpMenu()                       : false,
             'ikev2'        => $type == 'ikev2'   ? $this->ikev2Menu()                      : false,
@@ -23038,32 +23051,74 @@ DNS-over-HTTPS with IP:
 
     public function cleanDocker()
     {
+        // Тот же lock берёт загрузчик манифеста: иначе очистка могла прочитать
+        // старый список, а затем удалить уже скачанные новые образы.
+        $lock = @fopen(dirname($this->update) . '/image-bundle.lock', 'c');
+        if ($lock === false || !flock($lock, LOCK_SH | LOCK_NB)) {
+            return;
+        }
         $i = [];
         $c = [];
-        // (array) вокруг ответа: dockerApi() отдаёт null, когда сокет недоступен
-        // или ответ не JSON, а foreach по null — это warning на каждом проходе.
-        // is_array($v) — на случай ответа-ошибки вида {"message":"..."}: он
-        // декодируется в массив строк, и $v['RepoTags'] полез бы в строку.
-        foreach ((array) $this->dockerApi('/images/json') as $v) {
+        $protected = [];
+        $bundled = false;
+        // Образы выключенных протоколов, подготовленного обновления и отката
+        // могут не иметь контейнеров. Их нельзя удалять при старте service.
+        foreach (['image-bundle.json', 'image-bundle.previous.json', 'image-bundle.pending.json'] as $name) {
+            $path = dirname($this->update) . '/' . $name;
+            if (!file_exists($path)) {
+                continue;
+            }
+            $bundled = true;
+            $bundle = json_decode((string) @file_get_contents($path), true);
+            if (!is_array($bundle) || ($bundle['schema'] ?? null) !== 1
+                || !is_array($bundle['images'] ?? null) || count($bundle['images']) !== 18) {
+                error_log('cleanDocker: invalid image bundle; cleanup skipped');
+                return;
+            }
+            foreach ($bundle['images'] as $ref) {
+                if (!is_string($ref) || !preg_match('~^ghcr\.io/axiomshiftbit/vpnbot-[a-z]+@sha256:[a-f0-9]{64}$~D', $ref)) {
+                    error_log('cleanDocker: invalid image reference; cleanup skipped');
+                    return;
+                }
+                $protected[] = $ref;
+            }
+        }
+        $images = $this->dockerApi('/images/json');
+        $containers = $this->dockerApi('/containers/json?all=1');
+        if (!is_array($images) || !array_is_list($images)
+            || !is_array($containers) || !array_is_list($containers)) {
+            return;
+        }
+        // Docker API может отдавать записи без RepoTags (pull по digest).
+        // Для отбора и защиты используем также RepoDigests.
+        foreach ($images as $v) {
             if (!is_array($v)) {
                 continue;
             }
-            foreach ((array) ($v['RepoTags'] ?? []) as $j) {
+            $refs = array_merge((array) ($v['RepoTags'] ?? []), (array) ($v['RepoDigests'] ?? []));
+            if (array_intersect($refs, $protected)) {
+                $c[] = $v['Id'] ?? null;
+            }
+            foreach ($refs as $j) {
                 if (self::isVpnbotImage($j)) {
                     $i[] = $v['Id'] ?? null;
                     break;
                 }
             }
         }
-        foreach ((array) $this->dockerApi('/containers/json?all=1') as $v) {
-            if (is_array($v) && self::isVpnbotImage($v['Image'] ?? null)) {
+        foreach ($containers as $v) {
+            if (is_array($v)) {
                 $c[] = $v['ImageID'] ?? null;
             }
         }
         foreach (array_diff(array_filter($i), array_filter($c)) as $v) {
             $this->dockerApi("/images/$v", 'DELETE');
         }
-        $this->dockerApi('/images/prune', 'POST', ['dangling' => true]);
+        // Глобальный prune не умеет исключать digest из манифеста и удалял
+        // уже скачанные образы сразу после отключения последнего контейнера.
+        if (!$bundled) {
+            $this->dockerApi('/images/prune', 'POST', ['dangling' => true]);
+        }
         $this->dockerApi('/build/prune', 'POST');
     }
 
@@ -32789,6 +32844,41 @@ DNS-over-HTTPS with IP:
         return $this->withLock('trusttunnel', fn() => $this->restartTtLocked());
     }
 
+    public static function migrateTtMetrics(string $conf): string
+    {
+        // Существующую, в том числе явно отключённую, ручную политику не меняем.
+        if (preg_match('~\bmetrics\b~i', $conf)) return $conf;
+        return rtrim($conf) . "\n\n# Bot: loopback-only per-user statistics.\n[metrics]\n"
+            . "address = \"127.0.0.1:1987\"\nrequest_timeout_secs = 3\nper_client_metrics = true\n";
+    }
+
+    public static function parseTtClientStats(string $json): ?array
+    {
+        $rows = json_decode($json, true);
+        if (!str_starts_with(ltrim($json), '[') || !is_array($rows) || !array_is_list($rows)) return null;
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || !is_string($row['username'] ?? null)) return null;
+            foreach (['sessions', 'inbound', 'outbound'] as $key) {
+                if (!is_int($row[$key] ?? null) || $row[$key] < 0) return null;
+            }
+            $ip = $row['ip'] ?? null;
+            if ($ip !== null && (!is_string($ip) || !filter_var($ip, FILTER_VALIDATE_IP))) return null;
+            if (array_key_exists($row['username'], $out)) return null;
+            $out[$row['username']] = ['sessions' => $row['sessions'], 'upload' => $row['inbound'],
+                'download' => $row['outbound'], 'ip' => $ip];
+        }
+        return $out;
+    }
+
+    public function ttClientStats(): ?array
+    {
+        if (!$this->protocolModuleEnabled('tt')) return null;
+        // Адрес фиксирован: метрики с именами/IP никогда не публикуются наружу.
+        $json = $this->ssh("curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:1987/clients 2>/dev/null", 'tt');
+        return self::parseTtClientStats((string) $json);
+    }
+
     private function restartTtLocked()
     {
         if (!$this->protocolModuleEnabled('tt')) return true;
@@ -32800,6 +32890,9 @@ DNS-over-HTTPS with IP:
             if (!file_exists($p['vpn']) || !file_exists($p['rules'])) {
                 return false; // templates missing — init.sh ещё не развернул
             }
+            $conf = (string) file_get_contents($p['vpn']);
+            $migrated = self::migrateTtMetrics($conf);
+            if ($migrated !== $conf && !$this->writePrivateKey($p['vpn'], $migrated)) return false;
         }
 
         // Linux truncates /proc/<pid>/comm to 15 chars, so the binary name
@@ -33127,9 +33220,20 @@ DNS-over-HTTPS with IP:
 
         $text   = [];
         $text[] = 'Menu -> TrustTunnel -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
-        $text[] = 'server: ' . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = 'server: ' . ($domain ? '<code>' . self::esc("$domain:$port") . '</code>' : 'domain unavailable');
         $text[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $text[] = 'password: <code>' . htmlspecialchars($users[$user], ENT_QUOTES) . '</code>';
+        $stats = $this->ttClientStats()[$user] ?? null;
+        $text[] = '';
+        if ($stats === null) {
+            $text[] = $this->i18n('tt stats unavailable');
+        } else {
+            $text[] = $this->i18n('tt sessions') . ': ' . $stats['sessions'];
+            $text[] = '↑ ' . $this->i18n('tt uploaded') . ': ' . $this->fmtBytes($stats['upload']);
+            $text[] = '↓ ' . $this->i18n('tt downloaded') . ': ' . $this->fmtBytes($stats['download']);
+            if ($stats['ip'] !== null) $text[] = $this->i18n('tt peer ip') . ': <code>' . self::esc($stats['ip']) . '</code>';
+            $text[] = '<i>' . $this->i18n('tt stats lifetime') . '</i>';
+        }
 
         $data   = [];
         $data[] = [
@@ -33156,6 +33260,8 @@ DNS-over-HTTPS with IP:
             'text'          => $this->i18n('delete'),
             'callback_data' => "/delttus $user",
         ]];
+        $data[] = [['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => "/ttClientMenu $user"]];
+        $data[] = $this->menuHelpButton('tt', $user);
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/menu tt',
@@ -33163,17 +33269,20 @@ DNS-over-HTTPS with IP:
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
-    public function ttMenu()
+    public function ttMenu(int $page = 0)
     {
         $domain   = $this->ttDomain();
         $port     = $this->getTtPort();
         $users    = $this->getClientsTt();
         $running  = $this->ttRunning();
         $blockers = $this->ttBlockers();
+        $stats    = $running ? $this->ttClientStats() : null;
+        $pages    = max(1, (int) ceil(count($users) / 20));
+        $page     = max(0, min($page, $pages - 1));
 
         $text   = [];
         $text[] = "Menu -> TrustTunnel";
-        $text[] = "server: " . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = "server: " . ($domain ? '<code>' . self::esc("$domain:$port") . '</code>' : 'domain unavailable');
         $text[] = $this->i18n($running ? 'on' : 'off') . ' trusttunnel';
         $text[] = 'clients: ' . count($users);
         // Раньше меню молчало обо всём, кроме отсутствующего сертификата, и
@@ -33205,7 +33314,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/showTtLog',
             ],
         ];
-        foreach ($users as $u => $_) {
+        foreach (array_slice($users, $page * 20, 20, true) as $u => $_) {
             // callback_data не переживает пробелы (роутер разбирает \S+), а имя
             // могло появиться и ручной правкой credentials.toml. Такие клиенты
             // показываем строкой, а не мёртвой кнопкой.
@@ -33215,10 +33324,19 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             $data[] = [[
-                'text'          => "🔑 $u",
+                'text'          => (isset($stats[$u]) ? ($stats[$u]['sessions'] > 0 ? '🟢 ' : '⚪ ') : '🔑 ') . $u,
                 'callback_data' => "/ttClientMenu $u",
             ]];
         }
+        if ($pages > 1) {
+            $nav = [];
+            if ($page > 0) $nav[] = ['text' => '←', 'callback_data' => '/menu tt ' . ($page - 1)];
+            $nav[] = ['text' => ($page + 1) . "/$pages", 'callback_data' => "/menu tt $page"];
+            if ($page + 1 < $pages) $nav[] = ['text' => '→', 'callback_data' => '/menu tt ' . ($page + 1)];
+            $data[] = $nav;
+        }
+        $data[] = [['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => "/menu tt $page"]];
+        $data[] = $this->menuHelpButton('tt');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),

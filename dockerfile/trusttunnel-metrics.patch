@@ -1,0 +1,36 @@
+--- a/lib/src/http1_codec.rs
++++ b/lib/src/http1_codec.rs
+@@ -106,8 +106,10 @@
+                 .listen_protocols
+                 .http1
+                 .as_ref()
+-                .unwrap()
+-                .upload_buffer_size,
++                // The loopback metrics listener also uses HTTP/1, even when
++                // public HTTP/1 proxying is disabled in listen_protocols.
++                .map_or_else(crate::settings::Http1Settings::default_upload_buffer_size,
++                    |settings| settings.upload_buffer_size),
+             parent_id_chain,
+             next_request_id: 0..,
+         }
+@@ -641,3 +643,20 @@
+         Err(e) => Err(io::Error::other(e.to_string())),
+     }
+ }
++
++#[cfg(test)]
++mod metrics_http1_tests {
++    use super::*;
++
++    #[tokio::test]
++    async fn metrics_without_public_http1() {
++        let mut settings = Settings::default();
++        settings.listen_protocols.http1 = None;
++        let settings = Arc::new(settings);
++        let (io, _peer) = tokio::io::duplex(1024);
++        let codec = Http1Codec::new(settings.clone(), io, log_utils::IdChain::empty());
++        assert_eq!(codec.upload_buffer_size,
++            crate::settings::Http1Settings::default_upload_buffer_size());
++        assert!(settings.listen_protocols.http1.is_none());
++    }
++}

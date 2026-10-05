@@ -26,3 +26,9 @@ max_concurrent_streams = 1000
 recv_udp_payload_size = 1350
 send_udp_payload_size = 1350
 enable_early_data = true
+
+# Статистика доступна боту только через SSH внутри контейнера.
+[metrics]
+address = "127.0.0.1:1987"
+request_timeout_secs = 3
+per_client_metrics = true

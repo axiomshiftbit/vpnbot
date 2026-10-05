@@ -1629,6 +1629,18 @@ $i = [
         'en' => 'name is unsupported by the bot, rename it in credentials.toml',
         'ru' => 'имя не поддерживается ботом, переименуйте в credentials.toml',
     ],
+    'tt stats unavailable' => [
+        'ru' => 'Статистика недоступна: проверьте запуск TrustTunnel и настройки метрик. Подробности — в справке.',
+        'en' => 'Statistics unavailable: check TrustTunnel and its metrics settings. See Help.',
+    ],
+    'tt sessions' => ['ru' => 'Активные сессии', 'en' => 'Active sessions'],
+    'tt uploaded' => ['ru' => 'Отправлено клиентом', 'en' => 'Uploaded by client'],
+    'tt downloaded' => ['ru' => 'Получено клиентом', 'en' => 'Downloaded by client'],
+    'tt peer ip' => ['ru' => 'IP соединения у сервера', 'en' => 'Peer IP seen by endpoint'],
+    'tt stats lifetime' => [
+        'ru' => 'Трафик с запуска ядра; после перезапуска счётчики обнуляются.',
+        'en' => 'Traffic since core startup; counters reset on restart.',
+    ],
     'win dns guard'  => [
         'en' => 'block-outside-dns (Windows)',
         'ru' => 'block-outside-dns (Windows)',

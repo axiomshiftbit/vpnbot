@@ -115,20 +115,25 @@ def check_image_overrides(root):
 def fetch(channel, destination):
     if channel not in ('dev', 'latest', 'nightly'):
         raise ValueError('unknown release channel')
-    ref = BUNDLE_REPO + ':bundle-' + channel
-    command('docker', 'pull', ref)
-    # Resolve once. A concurrent promotion cannot change the object being read.
-    image = command('docker', 'image', 'inspect', '--format', '{{.Id}}', ref)
-    container = command('docker', 'create', image, '/bundle.json')
-    try:
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / 'bundle.json'
-            command('docker', 'cp', container + ':/bundle.json', str(target))
-            bundle = read(target)
-            atomic(destination, canonical(bundle))
-            return bundle
-    finally:
-        command('docker', 'rm', container)
+    parent = Path(destination).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    # Serialize metadata replacement against Bot.cleanDocker's inventory scan.
+    with (parent / 'image-bundle.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        ref = BUNDLE_REPO + ':bundle-' + channel
+        command('docker', 'pull', ref)
+        # Resolve once. A concurrent promotion cannot change the object being read.
+        image = command('docker', 'image', 'inspect', '--format', '{{.Id}}', ref)
+        container = command('docker', 'create', image, '/bundle.json')
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / 'bundle.json'
+                command('docker', 'cp', container + ':/bundle.json', str(target))
+                bundle = read(target)
+                atomic(destination, canonical(bundle))
+                return bundle
+        finally:
+            command('docker', 'rm', container)
 
 
 def activate(root, bundle):

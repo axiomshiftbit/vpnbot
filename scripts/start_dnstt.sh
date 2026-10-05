@@ -64,7 +64,13 @@ fi
 pkill -x dnstt-server || true
 # Отзываем уже открытые SSH-сеансы при смене пароля или отключении.
 pkill -u vpnbot || true
-if [ -s /dnstt/settings.json ] && jq -e '.domain and .password_hash' /dnstt/settings.json >/dev/null; then
+# Пустые настройки бота сериализуются как []; это штатный выключенный
+# туннель, а не ошибка jq при обращении к полям объекта.
+if [ -s /dnstt/settings.json ] && jq -e '
+    if type == "object" then
+        (.domain | type == "string") and (.password_hash | type == "string")
+        and (.domain != "") and (.password_hash != "")
+    else false end' /dnstt/settings.json >/dev/null; then
     jq -r '"vpnbot:" + .password_hash' /dnstt/settings.json | chpasswd -e
     if [ ! -s /dnstt/server.key ]; then
         dnstt-server -gen-key -privkey-file /dnstt/server.key -pubkey-file /dnstt/server.pub >/dev/null

@@ -35,11 +35,18 @@ RUN git init -q . \
 RUN cargo build --release --bin trusttunnel_endpoint \
     && cargo build --release --bin setup_wizard \
     && strip target/release/trusttunnel_endpoint target/release/setup_wizard
+# 1.1.0: внутренний HTTP/1 обработчик метрик паникует, если публичный HTTP/1
+# выключен. Оставляем публичную политику прежней; исправляем только default.
+COPY trusttunnel-metrics.patch /trusttunnel-metrics.patch
+RUN git apply --check /trusttunnel-metrics.patch && git apply /trusttunnel-metrics.patch \
+    && cargo test --release -p trusttunnel --lib metrics_without_public_http1 \
+    && cargo build --release --bin trusttunnel_endpoint --bin setup_wizard \
+    && strip target/release/trusttunnel_endpoint target/release/setup_wizard
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
-        ca-certificates iproute2 openssh-server \
+        ca-certificates curl iproute2 openssh-server \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /root/.ssh /run/sshd /trusttunnel_endpoint
 COPY --from=build /src/target/release/trusttunnel_endpoint /usr/local/bin/

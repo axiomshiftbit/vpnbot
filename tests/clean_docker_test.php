@@ -112,5 +112,71 @@ foreach ($called as $path) {
     t($ok, "вызов dockerApi('$path') должен быть в allowlist брокера");
 }
 
+
+// Реальная очистка с Docker API на границе: активный/предыдущий/подготовленный
+// комплект должен пережить отключение всех использующих его контейнеров.
+class CleanDockerFixture extends Bot
+{
+    public array $inventory = [];
+    public array $containers = [];
+    public array $calls = [];
+    public bool $unavailable = false;
+    public function dockerApi($url, $method = 'GET', $data = [])
+    {
+        $this->calls[] = [$url, $method];
+        if ($method !== 'GET' || $this->unavailable) { return null; }
+        return $url === '/images/json' ? $this->inventory : $this->containers;
+    }
+}
+$dir = sys_get_temp_dir() . '/vpnbot-clean-' . bin2hex(random_bytes(6));
+mkdir($dir, 0700);
+$b = (new ReflectionClass(CleanDockerFixture::class))->newInstanceWithoutConstructor();
+$b->update = $dir . '/json';
+$names = ['ng','php','wg','ad','telemt','xr','oc','np','ss','dnstt','ovpn','ipsec','tt','hysteria','protocol','mieru','snolc','masque'];
+try {
+    foreach (['image-bundle.json','image-bundle.previous.json','image-bundle.pending.json'] as $index => $file) {
+        $digest = 'sha256:' . str_repeat((string) ($index + 1), 64);
+        $images = [];
+        foreach ($names as $name) {
+            $ref = 'ghcr.io/axiomshiftbit/vpnbot-' . $name . '@' . $digest;
+            $images[$name] = $ref;
+            $b->inventory[] = ['Id' => $name . $index, 'RepoTags' => null, 'RepoDigests' => [$ref]];
+        }
+        file_put_contents($dir . '/' . $file, json_encode(['schema' => 1, 'images' => $images]));
+    }
+    $b->inventory[] = ['Id' => 'obsolete', 'RepoTags' => ['ghcr.io/axiomshiftbit/vpnbot-wg:old']];
+    $b->inventory[] = ['Id' => 'running', 'RepoTags' => ['vpnbot-php:local']];
+    $b->inventory[] = ['Id' => 'foreign', 'RepoTags' => ['alpine:3.24']];
+    $b->containers = [['ImageID' => 'running']];
+    $held = fopen($dir . '/image-bundle.lock', 'c');
+    flock($held, LOCK_EX);
+    $b->cleanDocker();
+    t($b->calls === [], 'очистка не пересекается с загрузкой нового манифеста');
+    flock($held, LOCK_UN);
+    fclose($held);
+    $b->cleanDocker();
+    $deleted = array_values(array_filter($b->calls, static fn($x) => $x[1] === 'DELETE'));
+    t($deleted === [['/images/obsolete', 'DELETE']], 'сохраняются 54 digest, используемый и чужой образы; удаляется только устаревший');
+    t(!in_array(['/images/prune', 'POST'], $b->calls, true), 'глобальный prune не удаляет digest выключенных протоколов');
+    foreach (['{', '{"schema":1,"images":[]}', '{"schema":2,"images":{}}'] as $broken) {
+        file_put_contents($dir . '/image-bundle.pending.json', $broken);
+        $b->calls = [];
+        $b->cleanDocker();
+        t($b->calls === [], 'повреждённый манифест блокирует удаление');
+    }
+    foreach (glob($dir . '/*') as $file) { unlink($file); }
+    $b->calls = [];
+    $b->unavailable = true;
+    $b->cleanDocker();
+    t(!array_filter($b->calls, static fn($x) => $x[1] !== 'GET'), 'нет очистки при недоступной инвентаризации Docker');
+    $b->unavailable = false;
+    $b->calls = [];
+    $b->cleanDocker();
+    t(in_array(['/images/prune', 'POST'], $b->calls, true), 'прежняя очистка остаётся для установки без манифестов');
+} finally {
+    foreach (glob($dir . '/*') as $file) { unlink($file); }
+    rmdir($dir);
+}
+
 echo $failed ? "\n$failed FAILED\n" : "OK\n";
 exit($failed ? 1 : 0);
