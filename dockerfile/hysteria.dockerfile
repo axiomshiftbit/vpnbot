@@ -2,6 +2,7 @@ ARG HYSTERIA_VERSION=v2.12.3
 ARG PROTOCOL_GO_VERSION=1.27.1
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS core
 ARG HYSTERIA_VERSION
+ENV GOWORK=off
 RUN apk add --no-cache ca-certificates curl git
 COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh apernet/hysteria "app/$HYSTERIA_VERSION" /source \
