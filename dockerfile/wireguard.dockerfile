@@ -3,6 +3,7 @@ ARG PROTOCOL_GO_VERSION=1.27.1
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS helpers
 ARG WGCF_VERSION=v2.3.0
 ARG TUN2SOCKS_VERSION=v2.7.0
+ARG AWG_GO_VERSION=v3.1.20260828
 RUN apk add --no-cache ca-certificates curl git
 COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh ViRb3/wgcf "$WGCF_VERSION" /wgcf \
@@ -12,14 +13,18 @@ RUN sh /build-tools/go-source.sh xjasonlyu/tun2socks "$TUN2SOCKS_VERSION" /tun2s
     && cd /tun2socks && sh /build-tools/go-security.sh \
     && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/xjasonlyu/tun2socks/v2/internal/version.Version=$TUN2SOCKS_VERSION" -o /out/tun2socks .
 
+# Go стабильной Alpine может отставать от требований исправленных модулей.
+# Компилятор закреплён отдельно и не попадает в рабочий образ.
+RUN sh /build-tools/go-source.sh amnezia-vpn/amneziawg-go "$AWG_GO_VERSION" /amneziawg-go \
+    && cd /amneziawg-go && sh /build-tools/go-security.sh \
+    && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /out/amneziawg-go .
+
 FROM $image
 COPY --from=helpers /out/ /usr/bin/
-COPY dockerfile/go-security.sh /build-tools/go-security.sh
 
 # Пины версий (задаются в .env, пробрасываются через args в compose).
-# amneziawg-go с v3.0.3 требует go >= 1.24.4 — Go ставится пакетом из edge
-# в .build-deps и удаляется после сборки (раньше golang:1.22.3-alpine
-# копировался в образ целиком и оставался в рантайме).
+# amneziawg-go собирается в helpers с закреплённым Go; runtime использует
+# только пакеты стабильной Alpine, без смешивания репозиториев.
 #
 # v3.0.20260805 обязателен для 3.0 с ContentPaddingAddition: до него keepalive
 # опознавался по длине пакета (send.go `len(elem.packet) != MessageKeepaliveSize`,
@@ -50,7 +55,6 @@ COPY dockerfile/go-security.sh /build-tools/go-security.sh
 #   учитывает в размере пакета служебный заголовок («fix: use udp window for
 #   RandomPaddingAddition») — паддинг перестаёт выбиваться за размер, который
 #   этот путь уже доказал.
-ARG AWG_GO_VERSION=v3.1.20260828
 ARG AWG_TOOLS_VERSION=v3.1.20260812
 ARG WGCF_VERSION=v2.3.0
 ARG TUN2SOCKS_VERSION=v2.7.0
@@ -61,17 +65,13 @@ ARG TUN2SOCKS_VERSION=v2.7.0
 ARG MICROSOCKS_REF=96bf8a87408c36951b73b7957687f42904e620f8
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
-# реально сходила в edge за свежими wireguard-tools/openssh без --no-cache.
+# обновила пакеты стабильной ветки: wireguard-tools/openssh без --no-cache.
 #   docker compose build --build-arg APK_REFRESH=$(date +%F) wg
 # Дефолт статичный — обычный build переиспользует кеш.
-ARG APK_REFRESH=2026-07-04
+ARG APK_REFRESH=2026-10-05
 
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
-    printf '%s\n' \
-        'https://dl-cdn.alpinelinux.org/alpine/edge/main' \
-        'https://dl-cdn.alpinelinux.org/alpine/edge/community' \
-        > /etc/apk/repositories; \
     apk update; \
     apk upgrade --no-cache --available; \
     apk add --no-cache \
@@ -87,9 +87,7 @@ RUN set -eux; \
     apk add --no-cache --virtual .build-deps \
         alpine-sdk \
         git \
-        go \
         linux-headers; \
-    git clone --depth 1 --branch ${AWG_GO_VERSION} https://github.com/amnezia-vpn/amneziawg-go; \
     git clone --depth 1 --branch ${AWG_TOOLS_VERSION} https://github.com/amnezia-vpn/amneziawg-tools.git; \
     mkdir -p /microsocks; \
     cd /microsocks; \
@@ -97,16 +95,13 @@ RUN set -eux; \
     git remote add origin https://github.com/rofl0r/microsocks.git; \
     git fetch -q --depth 1 origin "${MICROSOCKS_REF}"; \
     git checkout -q FETCH_HEAD; \
-    cd /amneziawg-go; \
-    sh /build-tools/go-security.sh; \
-    make install; \
     cd /amneziawg-tools/src; \
     make install WITH_WGQUICK=yes; \
     cd /microsocks; \
     make; \
     mv microsocks /usr/bin/microsocks; \
     cd /; \
-    rm -rf /amneziawg-go /amneziawg-tools /microsocks /root/go /root/.cache; \
+    rm -rf /amneziawg-tools /microsocks /root/go /root/.cache; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
     # у wgcf нет `--version`/`version` — версию для меню бота (warpVersion)

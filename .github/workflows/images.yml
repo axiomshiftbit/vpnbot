@@ -170,6 +170,21 @@ jobs:
           docker cp "$container:/usr/local/bin/xray" "$RUNNER_TEMP/xray-masque"
           docker rm "$container"
 
+      - name: Проверить стабильную базу VPN-образов
+        if: contains(fromJSON('["wg","oc","ovpn","ipsec"]'), matrix.service)
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-${IMAGE_NAME}:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker pull "$image"
+          docker run --rm --network=none --entrypoint sh "$image" -ec '
+            grep -Ex "3\\.24\\.[0-9]+" /etc/alpine-release
+            test -s /etc/apk/repositories
+            ! grep -Ev "^https?://[^ ]+/alpine/v3\\.24/(main|community)$|^#|^[[:space:]]*$" /etc/apk/repositories
+            ! command -v go
+          '
+
       - name: Идентификатор проверенного образа
         env:
           METADATA: ${{ steps.image.outputs.metadata }}

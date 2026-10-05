@@ -6,19 +6,15 @@ ARG EASYRSA_VERSION=3.2.7
 ARG EASYRSA_SHA256=308743bc9fe871b902d47dbe98d749daff3a05b27531684f02625ce7208d4598
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
-# реально сходила в edge за свежими openvpn/openssl без --no-cache.
+# обновила пакеты стабильной ветки: openvpn/openssl без --no-cache.
 #   docker compose build --build-arg APK_REFRESH=$(date +%F) ovpn
 # Дефолт статичный — обычный build переиспользует кеш.
-ARG APK_REFRESH=2026-10-04
+ARG APK_REFRESH=2026-10-05
 
-# OpenVPN берём из edge, фиксируя upstream-версию; ревизии пакета -rN
+# OpenVPN берём из стабильной Alpine, фиксируя upstream-версию; ревизии -rN
 # допускаются. Easy-RSA ставится из официального релиза: пакет Alpine отстаёт.
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
-    printf '%s\n' \
-        'https://dl-cdn.alpinelinux.org/alpine/edge/main' \
-        'https://dl-cdn.alpinelinux.org/alpine/edge/community' \
-        > /etc/apk/repositories; \
     apk update; \
     apk upgrade --no-cache --available; \
     apk add --no-cache \
