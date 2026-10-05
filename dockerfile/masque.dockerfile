@@ -17,7 +17,8 @@ FROM alpine:3.24
 ARG MASQUE_XRAY_VERSION=v26.9.30
 ARG MASQUE_SOURCE_SHA256=85162fa61eb6d1adc9199afff7b41299e69dedd094907e9c56ef665c236b3ef0
 LABEL io.vpnbot.masque.version=$MASQUE_XRAY_VERSION io.vpnbot.masque.source-sha256=$MASQUE_SOURCE_SHA256
-RUN apk add --no-cache ca-certificates python3 openssl
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates python3 openssl
 COPY --from=build /xray /usr/local/bin/xray
 COPY --from=build /build/LICENSE /usr/share/licenses/xray/LICENSE
 ENTRYPOINT ["python3", "/masque_service.py", "/state"]

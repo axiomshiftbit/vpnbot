@@ -34,14 +34,12 @@ preup:
 	bash ./update/update.sh &
 pull: # обновление образов из ghcr.io/axiomshiftbit
 	touch ./override.env
-	# Тег канала (dev/latest) плавающий, а pull_policy по умолчанию = missing:
-	# `up` НЕ станет обновлять уже лежащий локально образ с тем же тегом, поэтому
-	# pull делается явно. Префикс `-` и --ignore-pull-failures обязательны:
-	# недоступный registry не должен мешать запуску — останутся локальные образы,
-	# а чего нет вовсе, соберётся из dockerfile (секции build: сохранены).
-	# --ignore-buildable здесь НЕ годится: build: есть у всех сервисов, и она
-	# пропустила бы вообще всё.
-	-python3 scripts/protocol_modules.py compose pull --ignore-pull-failures
+	# Проверенный комплект выбирается целиком. Ошибка допуска/сети не разрешает
+	# собрать случайную замену из Dockerfile или смешать теги разных запусков.
+	python3 scripts/image_bundle.py ensure
+	# Digest неизменяем: уже скачанный проверенный образ пригоден и без сети.
+	# Недостающий образ обязан успешно скачаться до остановки служб.
+	python3 scripts/protocol_modules.py compose pull --policy missing
 start: pull # запуск контейнеров
 	touch ./override.env ./docker-compose.override.yml ./config/location.conf ./config/override.conf
 	# L2TP/IPsec (сервис ipsec) требует модуль ядра l2tp_ppp на ХОСТЕ — контейнер
@@ -61,7 +59,9 @@ d: # остановка контейнеров
 	docker compose --profile '*' down --remove-orphans
 dv: # остановка контейнеров
 	docker compose --profile '*' down -v
-r: d u
+r: pull
+	$(MAKE) d
+	$(MAKE) u
 ps: # список контейнеров
 	docker compose ps
 l: # логи из контейнеров
@@ -107,7 +107,7 @@ push: # образы публикует CI, вручную не пушим
 	@echo "Образы собирает и публикует CI: .github/workflows/images.yml -> ghcr.io/axiomshiftbit."
 	@echo "Ручной 'docker compose push' перезаписал бы их сборкой с этой машины —"
 	@echo "с другими версиями базовых образов и без записи о том, из какого коммита."
-	@echo "Нужна внеочередная сборка: gh workflow run images.yml [-f services=ss,tt]"
+	@echo "Нужна внеочередная сборка: gh workflow run images.yml --ref dev"
 	@exit 1
 s:
 	git status -su

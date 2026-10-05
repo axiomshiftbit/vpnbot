@@ -8,6 +8,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import uuid
 
 DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False, "masque": False}
@@ -240,8 +241,26 @@ def sync_certificates(root, current):
 def compose(s, arguments, capture=False, input_data=None, port_overrides=None):
     env = environment(s)
     for service, port in (port_overrides or {}).items(): env[service.upper() + '_PORT'] = str(port)
-    return subprocess.run(["docker", "compose", "--env-file", ".env", "--env-file", "override.env"] + arguments,
+    # Import by path as tests and host workers can load this module from outside
+    # scripts/. The overlay is also used by the off/on supervisor.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('image_bundle', Path(__file__).with_name('image_bundle.py'))
+    bundle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bundle)
+    files = bundle.compose_files(Path.cwd(), env)
+    if files and arguments and arguments[0] == 'up' and '--no-build' not in arguments:
+        arguments = [arguments[0], '--no-build'] + arguments[1:]
+    return subprocess.run(["docker", "compose"] + files + ["--env-file", ".env", "--env-file", "override.env"] + arguments,
                           env=env, capture_output=capture, input=input_data, check=False)
+
+
+def container_states(current):
+    result = compose(current, ['ps', '--all', '--format', 'json'], capture=True)
+    result.check_returncode()
+    raw = result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+    raw = (raw or '').strip()
+    rows = json.loads(raw) if raw.startswith('[') else [json.loads(line) for line in raw.splitlines()]
+    return {row['Service']: row['State'] for row in rows}
 
 
 def check_port(s, service, port):
@@ -277,8 +296,20 @@ def apply(root):
         status = root / "config/protocol-services.status.json"
         previous = json.loads(status.read_text()) if status.exists() else {}
         ports = bindings(root)
-        if previous.get("settings") == current and previous.get("bindings", {}) == ports and previous.get("ok") and not certificate_errors:
-            return
+        unchanged = previous.get("settings") == current and previous.get("bindings", {}) == ports and previous.get("ok") and not certificate_errors
+        missing = set()
+        checked_at = previous.get('checked_at', 0)
+        if unchanged:
+            if 0 <= time.time() - checked_at < 30:
+                return
+            actual = container_states(current)
+            missing = {service for service in SERVICES
+                       if (enabled(current, service) and actual.get(service) != 'running')
+                       or (not enabled(current, service) and service in actual)}
+            checked_at = time.time()
+            if not missing:
+                write_status(status, previous | {'checked_at': checked_at})
+                return
         old = previous.get("settings", {})
         applied = old.copy()
         applied_ports = previous.get('bindings', {}).copy()
@@ -291,7 +322,7 @@ def apply(root):
             if service == "ipsec":
                 same = same and all(old.get(k) == current[k] for k in ("l2tp", "ikev2"))
             pending = pending_errors.get(service, '')
-            if same and service in old and pending not in ('operation_pending', 'operation_failed', 'operation_failed_rolled_back'):
+            if same and service in old and service not in missing and pending not in ('operation_pending', 'operation_failed', 'operation_failed_rolled_back'):
                 continue
             # Persist intent before Docker: an interrupted operation must be retried
             # even if the user has since switched back to the previous settings.
@@ -334,7 +365,7 @@ def apply(root):
         if "oc" in changed and current["oc"]:
             compose(current, ["exec", "-T", "ad", "sh", "-c", 'address=$(getent hosts oc | awk "{print \\$1}"); [ -z "$address" ] || ip route replace 10.0.2.0/24 via "$address"'], capture=True)
         write_status(status, {"ok": not failures, "settings": applied, "bindings": applied_ports, "changed": changed,
-                              "errors": failures, "failed_service": next(iter(failures), None)})
+                              "errors": failures, "failed_service": next(iter(failures), None), 'checked_at': checked_at})
     finally:
         lock.close()
 

@@ -26,7 +26,8 @@ FROM alpine:3.24
 ARG SINGBOX_VERSION
 ARG SINGBOX_SOURCE_SHA256
 LABEL io.vpnbot.sing-box.version=$SINGBOX_VERSION io.vpnbot.sing-box.source-sha256=$SINGBOX_SOURCE_SHA256
-RUN apk add --no-cache ca-certificates python3 openssl
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates python3 openssl
 COPY --from=build /sing-box /protocol-stats /usr/local/bin/
 COPY --from=build /build/LICENSE /usr/share/licenses/sing-box/LICENSE
 ENTRYPOINT ["python3", "/protocol_service.py", "/state"]

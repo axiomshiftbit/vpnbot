@@ -17,7 +17,8 @@ LABEL io.vpnbot.sing-box.version=$SINGBOX_VERSION io.vpnbot.mihomo.version=$MIHO
 # и «show QR» молча не работал: qrencode не находился, png не создавался,
 # sendPhoto уходил с несуществующим путём. Пакет лежит в репозитории community,
 # он включён в /etc/apk/repositories базового образа.
-RUN apk add --no-cache --update php85 \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache --update php85 \
     php85-mbstring \
     php85-session \
     php85-phar \

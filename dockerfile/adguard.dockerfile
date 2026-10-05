@@ -5,6 +5,7 @@
 # Значение приходит из .env через build.args (ADGUARD_VERSION).
 ARG ADGUARD_VERSION=v0.107.79
 FROM adguard/adguardhome:${ADGUARD_VERSION}
-RUN apk add --no-cache --update openssh \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache --update openssh \
     && mkdir /root/.ssh
 ENV ENV="/root/.ashrc"

@@ -62,7 +62,8 @@ RUN fetch_xray() { \
           && chmod +x "$dest" \
           && rm -rf /tmp/xr; \
     }; \
-    apk add --no-cache openssh openssl jq curl grep \
+    apk upgrade --no-cache \
+    && apk add --no-cache openssh openssl jq curl grep \
     && mkdir /root/.ssh \
     && fetch_xray XTLS/Xray-core       "$XRAY_VERSION"      /usr/bin/xray \
     && { [ -z "$XRAY_VERSION_2" ] || fetch_xray XTLS/Xray-core "$XRAY_VERSION_2" /usr/bin/xray-2; } \

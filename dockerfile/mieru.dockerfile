@@ -23,7 +23,8 @@ FROM alpine:3.24
 ARG MIERU_VERSION
 ARG MIERU_SOURCE_SHA256
 LABEL io.vpnbot.mieru.version=$MIERU_VERSION io.vpnbot.mieru.source-sha256=$MIERU_SOURCE_SHA256
-RUN apk add --no-cache ca-certificates python3 \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates python3 \
     && addgroup -S mita && adduser -S -G mita mita
 COPY --from=build /mita /mieru-control /usr/local/bin/
 COPY --from=build /build/LICENSE /usr/share/licenses/mieru/LICENSE

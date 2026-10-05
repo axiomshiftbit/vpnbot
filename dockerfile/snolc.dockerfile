@@ -20,7 +20,7 @@ RUN patch -p1 < modules.patch \
 
 FROM debian:trixie-slim
 LABEL io.vpnbot.snolc.version="0.0.4+vpnbot.3"
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
       ca-certificates python3 python3-cryptography \
     && rm -rf /var/lib/apt/lists/*
 COPY app/snolc /snolc

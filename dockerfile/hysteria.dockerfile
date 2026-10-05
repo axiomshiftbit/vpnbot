@@ -4,7 +4,8 @@
 # нельзя. Значение приходит из .env через build.args (HYSTERIA_VERSION).
 ARG HYSTERIA_VERSION=v2.12.3
 FROM tobyxdd/hysteria:${HYSTERIA_VERSION}
-RUN apk add --no-cache openssh python3 py3-yaml \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache openssh python3 py3-yaml \
     && mkdir -p /root/.ssh
 COPY scripts/hysteria_service.py /hysteria_service.py
 ENV ENV="/root/.ashrc"

@@ -94,9 +94,11 @@ class VersionPinsTests(unittest.TestCase):
             self.assertIn("PROTOCOL_GO_VERSION:", block)
         self.assertEqual(2, text.count("                MIHOMO_SHA256:"))
         ci = (ROOT / ".github/workflows/images.yml").read_text()
-        self.assertIn("[A-Za-z_][A-Za-z0-9_]*", ci)
-        self.assertIn('SINGBOX_VERSION)                   out="$out php anytls"', ci)
-        self.assertIn('MIERU_VERSION|MIERU_SOURCE_SHA256)   out="$out mieru"', ci)
+        # A release is now a complete set: every pin change builds and tests all
+        # shared images, so there is no partial env-to-target filter to maintain.
+        for service in ('php', 'anytls', 'mieru'):
+            self.assertIn('{service: ' + service + ', image:', ci)
+        self.assertIn('files: docker-compose.yml', ci)
 
 
 if __name__ == "__main__":

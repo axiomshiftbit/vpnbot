@@ -81,10 +81,10 @@ chAssert(!preg_match('~download/v1\.11\.1/~', $df), 'версия dnslookup не
 chAssert(!preg_match('~sing-box-1\.14\.0-linux~', $df), 'версия sing-box не зашита в URL');
 chAssert(!preg_match('~mihomo-linux-amd64-v1\.19\.30~', $df), 'версия mihomo не зашита в URL');
 
-// CI: новая переменная не должна пересобирать все 14 образов.
+// CI читает все аргументы из Compose и проверяет полный комплект.
 $ci = (string) file_get_contents(__DIR__ . '/../.github/workflows/images.yml');
-chAssert(str_contains($ci, 'DNSLOOKUP_VERSION|SINGBOX_SHA256|MIHOMO_VERSION|MIHOMO_SHA256'),
-    'images.yml знает пины утилит PHP');
+chAssert(str_contains($ci, 'files: docker-compose.yml') && str_contains($ci, '{service: php, image: php}'),
+    'images.yml собирает PHP с пинами Compose');
 
 // ── 4. Образы ───────────────────────────────────────────────────────────────
 foreach (glob(__DIR__ . '/../dockerfile/*.dockerfile') as $file) {
@@ -115,10 +115,10 @@ chAssert(!str_contains($head, 'packages: write'),
     'packages: write снят с уровня workflow — джобу plan он не нужен');
 chAssert((bool) preg_match('~build:.*?permissions:\s*\n\s*contents: read\s*\n\s*packages: write~s', $ci),
     'права на запись пакетов объявлены в джобе build');
-chAssert(str_contains($ci, 'неизвестный сервис'),
-    'ручной ввод services сверяется со списком: значение уходит в имя публикуемого пакета');
-chAssert(str_contains($ci, 'length) > 0'),
-    'prune не трогает версии без тегов: иначе удалялись бы дочерние манифесты живого канального тега');
+chAssert(!str_contains($ci, 'inputs.services'),
+    'частичный комплект через произвольный ввод services больше не публикуется');
+chAssert(!str_contains($ci, 'gh api --method DELETE'),
+    'старый prune не удаляет образы сохранённых комплектов и отката');
 
 // stop_grace_period у сервисов с состоянием
 foreach (['ad', 'ipsec', 'ovpn'] as $svc) {

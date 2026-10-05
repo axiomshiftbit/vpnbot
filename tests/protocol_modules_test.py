@@ -28,6 +28,48 @@ class ProtocolModulesTests(unittest.TestCase):
                               ('check_port', {}), ('prepare_upstream', {})]:
             stub = patch.object(modules, name, **options)
             stub.start(); self.addCleanup(stub.stop)
+        stub = patch.object(modules, 'container_states', side_effect=lambda current: {
+            service: 'running' for service in modules.SERVICES if modules.enabled(current, service)})
+        stub.start(); self.addCleanup(stub.stop)
+
+    def test_missing_enabled_containers_are_recreated_after_external_deployment(self):
+        current = modules.DEFAULTS.copy()
+        self.state(current)
+        with patch.object(modules, 'container_states', return_value={'telemt': 'running'}), \
+             patch.object(modules, 'compose', return_value=subprocess.CompletedProcess([], 0)) as compose:
+            modules.apply(self.root)
+        restarted = [call.args[1][-1] for call in compose.call_args_list if call.args[1][:1] == ['up']]
+        self.assertEqual(set(restarted), {s for s in modules.SERVICES if modules.enabled(current, s)} - {'telemt'})
+        state = json.loads(self.status.read_text())
+        self.assertTrue(state['ok'])
+        self.assertEqual(current, state['settings'])
+        self.assertGreater(state['checked_at'], 0)
+
+    def test_periodic_reconciliation_does_not_probe_docker_each_second(self):
+        current = modules.DEFAULTS.copy()
+        self.state(current)
+        modules.apply(self.root)
+        with patch.object(modules, 'container_states') as snapshot:
+            modules.apply(self.root)
+            snapshot.assert_not_called()
+
+    def test_disabled_but_externally_started_container_is_removed(self):
+        current = dict.fromkeys(modules.DEFAULTS, False)
+        self.state(current)
+        with patch.object(modules, 'container_states', return_value={'telemt': 'running'}), \
+             patch.object(modules, 'compose', return_value=subprocess.CompletedProcess([], 0)) as compose:
+            modules.apply(self.root)
+        self.assertEqual([['stop', '--timeout', '45', 'telemt'], ['rm', '--force', 'telemt']],
+                         [call.args[1] for call in compose.call_args_list])
+
+    def test_inventory_failure_does_not_recreate_or_stop_services(self):
+        self.state(modules.DEFAULTS.copy())
+        before = self.status.read_bytes()
+        with patch.object(modules, 'container_states', side_effect=RuntimeError('Docker unavailable')), \
+             patch.object(modules, 'compose') as compose:
+            with self.assertRaises(RuntimeError): modules.apply(self.root)
+            compose.assert_not_called()
+        self.assertEqual(before, self.status.read_bytes())
 
     def state(self, settings):
         self.desired.write_text(json.dumps(settings))

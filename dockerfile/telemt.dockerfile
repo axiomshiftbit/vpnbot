@@ -24,7 +24,8 @@ COPY --from=dl /app/telemt /usr/local/bin/telemt
 # (telemtVersion()), как /etc/wgcf_version у warp. Это версия РЕАЛЬНО
 # запущенного образа, а не пин из .env (они расходятся, пока образ не
 # пересобран после смены TELEMT_VERSION).
-RUN apk add --no-cache openssh python3 \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache openssh python3 \
     && chmod +x /usr/local/bin/telemt \
     && echo "${TELEMT_VERSION}" > /etc/telemt_version \
     && mkdir -p /root/.ssh

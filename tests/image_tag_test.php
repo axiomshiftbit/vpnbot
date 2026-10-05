@@ -125,8 +125,8 @@ itAssert(Bot::branchTag('feature/x') === 'dev', 'Bot::branchTag(любая др�
 itAssert(Bot::branchTag(" master \n") === 'latest', 'пробелы/перевод строки из /update/branch не ломают выбор');
 
 // --- 8: соответствие сверено с CI, а не выдумано ------------------------------
-$ci = (string) file_get_contents(__DIR__ . '/../.github/workflows/images.yml');
-itAssert(str_contains($ci, "github.ref_name == 'master' && 'latest' || 'dev'"),
+$ci = (string) file_get_contents(__DIR__ . '/../scripts/ci_publish_bundle.py');
+itAssert(str_contains($ci, "'latest' if branch == 'master' else 'dev'"),
     'правило каналов в images.yml не изменилось (иначе править branchTag и sync_image_tag.sh)');
 
 // --- 9: update.sh действительно зовёт скрипт ----------------------------------

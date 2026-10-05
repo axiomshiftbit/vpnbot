@@ -16,6 +16,7 @@ ARG SIMPLE_TLS_VERSION=v0.8.0
 # Хелпер: URL ассета релиза по тегу (или latest при пустом теге).
 # grep/cut оставлены как были — jq в этот слой ещё не установлен.
 RUN set -eux; \
+    apk upgrade --no-cache; \
     apk add --no-cache openssh git xz jq unzip; \
     mkdir /root/.ssh; \
     asset() { \

@@ -33,5 +33,7 @@ VER=$(git describe --tags --always 2>/dev/null || echo local)
 
 touch ./override.env ./docker-compose.override.yml
 
+python3 scripts/image_bundle.py ensure || exit 1
+
 exec env IP="$IP" VER="$VER" \
     python3 scripts/protocol_modules.py compose up -d --force-recreate

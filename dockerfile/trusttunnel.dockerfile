@@ -37,7 +37,7 @@ RUN cargo build --release --bin trusttunnel_endpoint \
     && strip target/release/trusttunnel_endpoint target/release/setup_wizard
 
 FROM debian:bookworm-slim
-RUN apt-get update \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         ca-certificates iproute2 openssh-server \
     && rm -rf /var/lib/apt/lists/* \
