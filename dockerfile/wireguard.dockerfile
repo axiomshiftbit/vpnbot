@@ -4,8 +4,10 @@ FROM golang:${PROTOCOL_GO_VERSION}-alpine AS helpers
 ARG WGCF_VERSION=v2.3.0
 ARG TUN2SOCKS_VERSION=v2.7.0
 ARG AWG_GO_VERSION=v3.1.20260828
-RUN apk add --no-cache ca-certificates curl git
-COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+ARG XRAY_VERSION=v26.9.30
+RUN apk add --no-cache ca-certificates curl git jq
+COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 dockerfile/build-xray.sh /build-tools/
+RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/warp-socks
 RUN sh /build-tools/go-source.sh ViRb3/wgcf "$WGCF_VERSION" /wgcf \
     && cd /wgcf && sh /build-tools/go-security.sh \
     && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /out/wgcf .
@@ -58,11 +60,6 @@ COPY --from=helpers /out/ /usr/bin/
 ARG AWG_TOOLS_VERSION=v3.1.20260812
 ARG WGCF_VERSION=v2.3.0
 ARG TUN2SOCKS_VERSION=v2.7.0
-# microsocks пинится коммитом, а не тегом: последний тег v1.0.5 от 2024-05-24,
-# master с тех пор ушёл на два коммита вперёд, и клонировался как раз master —
-# то есть образ менялся молча от пересборки к пересборке. Приём тот же, что у
-# TT_REF. Обновлять: сменить MICROSOCKS_REF в .env и закоммитить.
-ARG MICROSOCKS_REF=96bf8a87408c36951b73b7957687f42904e620f8
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
 # обновила пакеты стабильной ветки: wireguard-tools/openssh без --no-cache.
@@ -89,19 +86,10 @@ RUN set -eux; \
         git \
         linux-headers; \
     git clone --depth 1 --branch ${AWG_TOOLS_VERSION} https://github.com/amnezia-vpn/amneziawg-tools.git; \
-    mkdir -p /microsocks; \
-    cd /microsocks; \
-    git init -q .; \
-    git remote add origin https://github.com/rofl0r/microsocks.git; \
-    git fetch -q --depth 1 origin "${MICROSOCKS_REF}"; \
-    git checkout -q FETCH_HEAD; \
     cd /amneziawg-tools/src; \
     make install WITH_WGQUICK=yes; \
-    cd /microsocks; \
-    make; \
-    mv microsocks /usr/bin/microsocks; \
     cd /; \
-    rm -rf /amneziawg-tools /microsocks /root/go /root/.cache; \
+    rm -rf /amneziawg-tools /root/go /root/.cache; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
     # у wgcf нет `--version`/`version` — версию для меню бота (warpVersion)
@@ -116,6 +104,6 @@ RUN set -eux; \
     command -v wg-quick; \
     command -v tun2socks; \
     command -v wgcf; \
-    command -v microsocks; \
+    command -v warp-socks; \
     wg --version; \
     awg --version

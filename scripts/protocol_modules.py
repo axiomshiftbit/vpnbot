@@ -104,6 +104,26 @@ def migrate_nginx(text):
                   r'\g<1>http://10.10.0.6:8388/;', text)
 
 
+def xray_nginx_routes(text, xray):
+    # Cold update counterpart of Bot::xrayNginxRoutes. Keep the route enabled
+    # only for the actual inbound on xr:443; preserve custom backends.
+    networks = []
+    for inbound in xray.get('inbounds', []):
+        stream = inbound.get('streamSettings', {})
+        listen = str(inbound.get('listen', ''))
+        if str(inbound.get('port', '')) == '443' and stream.get('security', '') in ('', 'none') and listen != '::1' and not listen.startswith('127.'):
+            networks.append(stream.get('network', ''))
+    text = re.sub(r'(?m)^[ \t]*(?:#[ \t]*)?return 404; # vpnbot-inactive-xray-route\r?\n', '', text)
+    def route(m):
+        backend = r'\bgrpc_pass\s+grpc://xr:443\s*;' if m[2] == 'grpc' else r'\bproxy_pass\s+http://xr_backend\s*;'
+        if not re.search(backend, m[3]): return m[0]
+        active = 'grpc' in networks if m[2] == 'grpc' else bool(set(networks) & {'ws', 'xhttp'})
+        if active: return m[0]
+        prefix = re.match(r'^([ \t]*(?:#[ \t]*)?)location', m[1])[1]
+        return m[1] + '\n' + prefix + '    return 404; # vpnbot-inactive-xray-route' + m[3]
+    return re.sub(r'(^[ \t]*(?:#[ \t]*)?location[ \t]+/(ws|grpc)[A-Za-z0-9_-]*[ \t]*\{)(.*?^[ \t]*(?:#[ \t]*)?\})', route, text, flags=re.M | re.S)
+
+
 def prepare_upstream(root, filename='upstream.conf'):
     path = root / 'config' / filename
     if not path.exists(): return
@@ -115,6 +135,10 @@ def prepare_upstream(root, filename='upstream.conf'):
             before = path.read_text()
             fcntl.flock(lock, fcntl.LOCK_UN)
             after = migrate_upstream(before) if service == 'up' else migrate_nginx(before)
+            if service == 'ng':
+                xray_path = root / 'config/xray.json'
+                xray_text = xray_path.read_text() if xray_path.exists() else ''
+                after = xray_nginx_routes(after, (json.loads(xray_text) or {}) if xray_text.strip() else {})
             if before == after: return
             validate_upstream(root, after, service)
             fcntl.flock(lock, fcntl.LOCK_EX)

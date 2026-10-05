@@ -350,7 +350,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
-                MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.9.30}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -405,7 +405,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
-                MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.9.30}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -679,11 +679,12 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
-                MICROSOCKS_REF: ${MICROSOCKS_REF:-96bf8a87408c36951b73b7957687f42904e620f8}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.9.30}
         cap_add:
             - NET_ADMIN
         sysctls:
             - net.ipv4.conf.all.src_valid_mark=1
+            - net.ipv4.ip_local_port_range=20000 29999
         devices:
             - /dev/net/tun:/dev/net/tun
         volumes:

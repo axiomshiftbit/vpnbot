@@ -204,7 +204,7 @@ foreach ([null, [], 'PUT', "put\n[access]", false, 1] as $invalid) {
 
 $topics = ['telemt_main' => '', 'telemt_mode' => '', 'telemt_sni' => '', 'telemt_settings' => '', 'telemt_relays' => '', 'telemt_diagnostics' => '',
     'telemt' => '', 'telemt_carrier' => '', 'telemt_path' => '', 'telemt_method' => '', 'telemt_conveyor' => '', 'telemt_mask' => '', 'dpi' => '', 'smux' => '', 'finalmask' => '',
-    'dpi_frag' => '', 'dpi_noise' => '', 'finalmask_frag' => '', 'finalmask_noise' => '', 'encryption' => '',
+    'dpi_frag' => '', 'dpi_noise' => '', 'finalmask_frag' => '', 'finalmask_noise' => '', 'encryption' => '', 'warp' => '',
     'awg' => '1_4', 'naive_relay' => 'relay.example-test', 'tt' => 'alice'];
 foreach (ManagedProtocol::NAMES as $protocol => $name) {
     $topics['p_' . $protocol] = 'a123456789abcdef';

@@ -839,7 +839,7 @@ trait BotProtocols
             if (in_array($protocol, ['anytls', 'shadowtls', 'tuic', 'masque'], true)) $buttons[] = [['text' => in_array($protocol, ['tuic', 'masque'], true) ? 'Использовать домен сервера' : 'Прикрытие своим сайтом · авто', 'callback_data' => "/protocol $protocol auto"]];
             if ($protocol !== 'snolc') $buttons[] = [['text' => 'Выход: ' . $s['settings']['egress'], 'callback_data' => "/protocol $protocol egress"]];
             if ($s['settings']['egress'] === 'warp') {
-                $text[] = 'Выход через WARP передаёт только TCP приложений. UDP отклоняется; при отказе WARP прямой обход не включается.';
+                $text[] = 'Выход через WARP передаёт TCP и поддерживаемый этим протоколом UDP. Переключатели UDP сохраняют своё действие. При отказе WARP прямой обход не включается.';
             }
             if ($protocol !== 'snolc') $buttons[] = [['text' => 'Дополнительные настройки', 'callback_data' => "/po $protocol"]];
             if (in_array($protocol, ['anytls', 'shadowtls'], true)) {

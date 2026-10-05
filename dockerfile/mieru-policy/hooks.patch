@@ -142,3 +142,19 @@
  			if clientAddr == nil {
  				clientAddr = &net.UDPAddr{
  					IP:   append(net.IP(nil), addr.IP...),
+--- a/pkg/socks5/handler.go
++++ b/pkg/socks5/handler.go
+@@ -284,9 +284,4 @@
+-	if err := rewriteSocks5ResponseBindPort(resp, udpPort); err != nil {
+-		UDPAssociateErrors.Add(1)
+-		udpConn.Close()
+-		egressConn.Close()
+-		return err
+-	}
+-
+-	// Send response to client.
+-	if _, err := proxyConn.Write(resp.Raw); err != nil {
++	// The client receives UDP through Mieru and rewrites this local port.
++	// Do not forward the egress SOCKS address: it belongs to another host.
++	bind := model.AddrSpec{IP: net.IPv4zero, Port: udpPort}
++	if err := model.WriteSocks5Response(proxyConn, constant.Socks5ReplySuccess, bind); err != nil {

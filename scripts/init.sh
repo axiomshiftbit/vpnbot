@@ -103,9 +103,39 @@ apt install -y \
     unzip \
     rsync \
     iptables \
-    iproute2 \
-    xtables-addons-common \
-    xtables-addons-dkms
+    iproute2
+
+# xt_ipp2p — модуль ЯДРА ХОСТА, а не контейнера. Один xtables-addons-dkms
+# без заголовков работающего ядра может оставить только сборку для старого.
+install_ipp2p() {
+    local kernel image header status
+    kernel="$(uname -r)"
+    local -a headers=("linux-headers-$kernel")
+    # Следуем уже выбранной ветке ядра: Debian cloud/обычная, Ubuntu HWE,
+    # generic и т. п. Не устанавливаем другое ядро ради его заголовков.
+    while read -r image status; do
+        [ "$status" = installed ] || continue
+        image="${image%:*}"
+        case "$image" in linux-image-[0-9]*|linux-image-unsigned-*) continue;; esac
+        header="${image/linux-image-/linux-headers-}"
+        # Обновление уже установленного headers-meta на Ubuntu через
+        # linux-generic может заодно обновить image-meta и установить ядро.
+        [ "$(dpkg-query -W -f='${db:Status-Status}' "$header" 2>/dev/null)" = installed ] && continue
+        if apt-cache show "$header" >/dev/null 2>&1; then headers+=("$header"); fi
+    done < <(dpkg-query -W -f='${binary:Package} ${db:Status-Status}\n' 'linux-image-*' 2>/dev/null || true)
+    if ! apt install -y --no-install-recommends xtables-addons-common xtables-addons-dkms "${headers[@]}"; then
+        echo "ERROR: нет заголовков для работающего ядра $kernel; xt_ipp2p не готов." >&2
+        echo "Установите соответствующие linux-headers из репозитория вашего ядра и повторите установку." >&2
+        return 1
+    fi
+    if ! dkms autoinstall -k "$kernel" || ! modprobe xt_ipp2p; then
+        echo "ERROR: xt_ipp2p не собран или не загружается для $kernel. Проверьте журнал DKMS и политику подписи модулей." >&2
+        return 1
+    fi
+    printf 'xt_ipp2p\n' > /etc/modules-load.d/vpnbot-ipp2p.conf
+    echo "kernel module xt_ipp2p loaded (torrent signatures ready)"
+}
+install_ipp2p
 
 # L2TP/IPsec (сервис ipsec) требует на ХОСТЕ модуль l2tp_ppp — контейнер его
 # загрузить не может (только NET_ADMIN, без /lib/modules). Тянет за собой

@@ -9,6 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WarpServiceTest(unittest.TestCase):
+    def test_proc_udp_range_is_read_by_production_shell(self):
+        source = (ROOT / 'scripts/start_wp.sh').read_text()
+        guard = source[source.index('udp_range=$('):source.index('cat > /run/warp-socks.json')]
+        expected = ':'.join(Path('/proc/sys/net/ipv4/ip_local_port_range').read_text().split())
+        for shell in ('sh', 'bash'):
+            with self.subTest(shell=shell):
+                result = subprocess.run([shell, '-c', 'set -e\n' + guard],
+                                        env=dict(os.environ, SOCKS_UDP_PORTS=expected), capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+
     def test_failed_handshake_does_not_leave_ready_interface(self):
         source = (ROOT / 'scripts/start_wp.sh').read_text()
         functions = source[source.index('tunnel_up() {'):source.index('MS_PID=""')]

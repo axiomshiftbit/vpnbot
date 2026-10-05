@@ -3095,8 +3095,14 @@ class Bot
                 error_log('restartXray: configuration rejected by active core; previous configuration preserved');
                 return false;
             }
+            $previous = $this->getXray() ?? [];
+            if (!$this->syncXrayNginxRoutes($c)) {
+                error_log('restartXray: NGINX transport routes rejected; previous configuration preserved');
+                return false;
+            }
             $this->collectSession();
             if (!$this->writeXrayJson($json)) {
+                $this->syncXrayNginxRoutes($previous);
                 return false;
             }
             $this->ssh('pkill xray', 'xr');
@@ -3124,6 +3130,8 @@ class Bot
     // запрещает egress-ACL (обе цепочки WARP_SOCKS* в start_wp.sh).
     public const WARP_SOCKS_IP   = '10.10.0.13/32';
     public const WARP_SOCKS_PORT = '1080';
+    // Relay-порты WARP SOCKS; синхронно с SOCKS_UDP_PORTS в start_wp.sh.
+    public const WARP_SOCKS_UDP_PORTS = '20000-29999';
 
     // Фактический адрес wp из compose: в override его можно переназначить, и
     // тогда захардкоженная константа молча разъедется с реальностью — правило
@@ -3233,8 +3241,10 @@ class Bot
                 // смены адресации в override старая копия обязана сняться, а не
                 // остаться дублем впереди новой.
                 || (count($ip) === 1 && $out === 'direct'
-                    && (string) ($r['port'] ?? '') === self::WARP_SOCKS_PORT
-                    && (string) ($r['network'] ?? '') === 'tcp')
+                    && (((string) ($r['port'] ?? '') === self::WARP_SOCKS_PORT
+                            && (string) ($r['network'] ?? '') === 'tcp')
+                        || ((string) ($r['port'] ?? '') === self::WARP_SOCKS_UDP_PORTS
+                            && (string) ($r['network'] ?? '') === 'udp')))
             );
             if (!$isGuard) {
                 $rules[] = $r;
@@ -3264,6 +3274,14 @@ class Bot
                 'ip'          => [$warpSocksIp],
                 'port'        => self::WARP_SOCKS_PORT,
                 'network'     => 'tcp',
+                'outboundTag' => 'direct',
+            ];
+            $guards[] = [
+                'type'        => 'field',
+                'inboundTag'  => $warpTags,
+                'ip'          => [$warpSocksIp],
+                'port'        => self::WARP_SOCKS_UDP_PORTS,
+                'network'     => 'udp',
                 'outboundTag' => 'direct',
             ];
         }
@@ -7286,7 +7304,7 @@ NFT;
         if (isset($files['warp/wgcf-profile.conf']) && $this->protocolModuleEnabled('wp')) {
             if (!$this->withLock('warp-control', function () {
                 if (!$this->warpCommand('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true')) return false;
-                return !empty($this->getPacConf()['warpoff']) || $this->warpCommand('wg-quick up /etc/warp/wgcf-profile.conf');
+                return !empty($this->getPacConf()['warpoff']) || $this->warpCommand('{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }');
             })) $failed[] = 'WARP';
         }
         if (isset($files['stlsserver.json']) && $this->protocolModuleEnabled('ss')) {
@@ -10037,8 +10055,18 @@ NFT;
         $c[$this->getInstanceWG(1) . 'blocktorrent'] = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']) ? 0 : 1;
         $this->setPacConf($c);
         $this->iptablesWG();
-        $this->answer($this->input['callback_id'], 'доступ к торрентам ' . ($c[$this->getInstanceWG(1) . 'blocktorrent'] ? 'заблокирован' : 'разблокирован'), true);
+        $on = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']);
+        $note = $on && !$this->wgTorrentRulesReady() ? 'torrent wg incomplete' : ($on ? 'torrent wg on' : 'torrent wg off');
+        $this->answer($this->input['callback_id'], $this->i18n($note), true);
         $this->menu('wg', $page);
+    }
+
+    public function wgTorrentRulesReady(): bool
+    {
+        // Проверяем реально установленные правила, включая после смены ядра.
+        // -C у ipp2p бывает ненадёжен; awk нормализует пробелы вывода -S.
+        $out = $this->ssh('iptables -S | awk \'NF == 9 && $1 == "-A" && ($2 == "FORWARD" || $2 == "OUTPUT") && $3 == "-p" && ($4 == "tcp" || $4 == "udp") && $5 == "-m" && $6 == "ipp2p" && $7 == "--bit" && $8 == "-j" && $9 == "DROP" { have[$2 " " $4]=1 } END { if (length(have) == 4) print "VPNBOT_TORRENT_READY" }\'', $this->getInstanceWG());
+        return !$this->sshFailed && trim((string) $out) === 'VPNBOT_TORRENT_READY';
     }
 
     public function switchEndpoint($page = 0)
@@ -14107,6 +14135,7 @@ DNS-over-HTTPS with IP:
         }
         $ver  = $this->wgVersion();
         $text = "Menu -> " . $this->getTitleWG() . ($ver ? "\n$ver" : '') . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
+        if ($bt && !$this->wgTorrentRulesReady()) $text .= "\n\n⚠️ " . $this->i18n('torrent wg incomplete');
         $data[] = [
             [
                 'text'          => '📜 ' . $this->i18n('connection log'),
@@ -25621,11 +25650,11 @@ DNS-over-HTTPS with IP:
             }
             $stopped = false;
             $restore = function () use ($off, $save, $chat, &$log, &$stopped) {
-                $ok = !$stopped || $this->warpCommand('pkill -x microsocks 2>/dev/null || true; '
+                $ok = !$stopped || $this->warpCommand('pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; '
                     . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true; '
                     . 'cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
                     . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; else rm -f "$f" || exit 1; fi; done');
-                if ($ok && $stopped && !$off) $ok = $this->warpCommand('wg-quick up /etc/warp/wgcf-profile.conf');
+                if ($ok && $stopped && !$off) $ok = $this->warpCommand('{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }');
                 if ($ok) {
                     $save($off);
                     $this->warpCommand('rm -rf /etc/warp/.bak');
@@ -25638,7 +25667,7 @@ DNS-over-HTTPS with IP:
                 // Watchdog не должен поднимать туннель во время смены аккаунта.
                 $save(true);
                 $stopped = true;
-                if (!$step('stopping warp', 'pkill -x microsocks 2>/dev/null || true; '
+                if (!$step('stopping warp', 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; '
                     . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true')) { $restore(); return; }
                 if (!$step('registering WARP account', 'umask 077; cd /etc/warp && '
                     . 'rm -f wgcf-profile.conf wgcf-account.toml && wgcf register --accept-tos && chmod 600 wgcf-account.toml')) { $restore(); return; }
@@ -25647,7 +25676,7 @@ DNS-over-HTTPS with IP:
                 }
                 if (!$step('generating profile', 'umask 077; cd /etc/warp && wgcf generate && '
                     . 'sh /warp_fixup.sh && chmod 600 wgcf-account.toml wgcf-profile.conf')) { $restore(); return; }
-                if (!$off && !$step('starting warp', 'wg-quick up /etc/warp/wgcf-profile.conf')) { $restore(); return; }
+                if (!$off && !$step('starting warp', '{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }')) { $restore(); return; }
                 $save($off, true);
             } catch (\Throwable $e) {
                 $restore();
@@ -25662,7 +25691,7 @@ DNS-over-HTTPS with IP:
 
     public function warpStatus()
     {
-        // socks5h (резолв на стороне microsocks, т.е. через туннель) и таймаут
+        // socks5h (резолв на стороне SOCKS, т.е. через туннель) и таймаут
         // 8с: с прежним `-m 1` и локальным резолвом живой WARP регулярно
         // показывался как off на медленном первом соединении.
         $st = $this->ssh('curl -m 8 -s -x socks5h://wp:1080 https://www.cloudflare.com/cdn-cgi/trace', 'xr');
@@ -25768,7 +25797,7 @@ DNS-over-HTTPS with IP:
 
     // Включение/выключение туннеля. Раньше вся функция была построена на
     // warp-cli/warp-svc (официальный клиент Cloudflare), которых в образе wp
-    // НЕТ — там только wgcf + wg + microsocks. То есть каждая команда
+    // НЕТ — там wgcf + wg + SOCKS-прокси. То есть каждая команда
     // возвращала "not found", туннель не менялся, но флаг warpoff в pac.json
     // всё равно переключался: состояние бота расходилось с реальностью.
     // Теперь выключаем ровно тем же способом, каким поднимаем — wg-quick,
@@ -25779,7 +25808,7 @@ DNS-over-HTTPS with IP:
         $this->withLock('warp-control', function () {
             $off = !empty($this->getPacConf()['warpoff']);
             if (!empty($this->selfupdate)) {
-                if ($off) $this->ssh('pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
+                if ($off) $this->ssh('pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
                 return;
             }
             $save = function ($disabled) {
@@ -25790,9 +25819,9 @@ DNS-over-HTTPS with IP:
                     if (!$this->setPacConf($p)) throw new RuntimeException('Не удалось сохранить настройки WARP');
                 });
             };
-            $stop = 'pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
+            $stop = 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
             if ($off) {
-                if (!$this->warpCommand('wg show wgcf-profile >/dev/null 2>&1 || wg-quick up /etc/warp/wgcf-profile.conf')) {
+                if (!$this->warpCommand('wg show wgcf-profile >/dev/null 2>&1 || { sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }')) {
                     $this->send($this->input['chat'], 'warp up failed');
                     return;
                 }
@@ -25847,6 +25876,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/offWarp",
             ],
         ];
+        $data[] = $this->menuHelpButton('warp');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -29740,6 +29770,42 @@ DNS-over-HTTPS with IP:
         return $p['hashbot'];
     }
 
+    // /ws и /grpc ведут на один xr:443. Только транспорт фактического inbound
+    // может принимать запросы: HTTP/1-ответ WS нельзя читать как HTTP/2 frame.
+    // Старые ссылки получают 404, пока пользователь не обновит подписку.
+    // Чужие backend/location и другие inbound Xray не изменяются.
+    public static function xrayNginxRoutes(string $text, array $xray): string
+    {
+        $networks = [];
+        foreach ($xray['inbounds'] ?? [] as $inbound) {
+            $stream = $inbound['streamSettings'] ?? [];
+            $listen = (string) ($inbound['listen'] ?? '');
+            if ((string) ($inbound['port'] ?? '') === '443'
+                && in_array($stream['security'] ?? '', ['', 'none'], true)
+                && $listen !== '::1' && !str_starts_with($listen, '127.')) {
+                $networks[] = $stream['network'] ?? '';
+            }
+        }
+        $text = preg_replace('~^[ \t]*(?:#[ \t]*)?return 404; # vpnbot-inactive-xray-route\r?\n~m', '', $text);
+        return preg_replace_callback('~(^[ \t]*(?:#[ \t]*)?location[ \t]+/(ws|grpc)[A-Za-z0-9_-]*[ \t]*\{)(.*?^[ \t]*(?:#[ \t]*)?\})~ms',
+            static function ($m) use ($networks) {
+                $backend = $m[2] === 'grpc' ? '~\bgrpc_pass\s+grpc://xr:443\s*;~' : '~\bproxy_pass\s+http://xr_backend\s*;~';
+                if (!preg_match($backend, $m[3])) return $m[0];
+                $active = $m[2] === 'grpc' ? in_array('grpc', $networks, true) : (bool) array_intersect(['ws', 'xhttp'], $networks);
+                if ($active) return $m[0];
+                preg_match('~^([ \t]*(?:#[ \t]*)?)location~', $m[1], $prefix);
+                return $m[1] . "\n" . $prefix[1] . '    return 404; # vpnbot-inactive-xray-route' . $m[3];
+            }, $text);
+    }
+
+    public function syncXrayNginxRoutes(array $xray): bool
+    {
+        $path = dirname($this->xrayConf) . '/nginx.conf';
+        if (!is_file($path)) return true;
+        return $this->editProtocolProxyConfig($path, 'ng',
+            static fn($text) => self::xrayNginxRoutes($text, $xray));
+    }
+
     public function cloakNginx()
     {
         $conf     = $this->getPacConf();
@@ -29790,6 +29856,7 @@ DNS-over-HTTPS with IP:
         CONF;
         $template = preg_replace('~(location /adguard.+?})\s*location~s', $r, $template);
         $template = preg_replace('~(/webapp|/pac|/adguard|/ws|/grpc|/v2ray|location /dns-query)~', '${1}' . $h, $template);
+        if (is_string($template)) $template = self::xrayNginxRoutes($template, $this->getXray() ?? []);
         if (!is_string($template) || $template === ''
             || !$this->editProtocolProxyConfig('/config/nginx.conf', 'ng', static fn($before) => $template)) return false;
         $x = $this->getXray();
@@ -31251,6 +31318,8 @@ DNS-over-HTTPS with IP:
     {
         $p = $this->getPacConf();
         $x = $this->getXray();
+        $previousPac = $p;
+        $previousXray = $x;
         $h = $this->getHashBot();
 
         $p['reality']['domain']      = $p['reality']['domain'] ?: $this->defaultFakeDomain();
@@ -31382,12 +31451,32 @@ DNS-over-HTTPS with IP:
             $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
         }
 
-        $this->setUpstreamDomain($transport == 'Reality'
-            ? ($p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0])
-            : 't'
-        );
-        $this->setPacConf($p);
-        $this->restartXray($x);
+        // Ссылки в меню должны соответствовать принятому конфигу ядра и nginx.
+        // При отказе возвращаем свои поля, сохраняя параллельные правки PAC.
+        $save = function (array $values): bool {
+            return $this->withLock('pac', function () use ($values) {
+                $current = $this->getPacConf();
+                foreach (['transport', 'reality', 'xray'] as $key) {
+                    if (array_key_exists($key, $values)) $current[$key] = $values[$key];
+                    else unset($current[$key]);
+                }
+                return (bool) $this->setPacConf($current);
+            });
+        };
+        $started = false;
+        $ok = $save($p) && ($started = $this->restartXray($x))
+            && $this->xrayCoreStarted($this->xrayCoreSelection($p))
+            && $this->setUpstreamDomain($transport === 'Reality' ? $p['reality']['domain'] : 't');
+        if (!$ok) {
+            $restored = $save($previousPac);
+            if ($started) {
+                $restored = $restored && $this->restartXray($previousXray)
+                    && $this->xrayCoreStarted($this->xrayCoreSelection($previousPac));
+            }
+            $this->answer($this->input['callback_id'], $restored
+                ? 'Не удалось переключить транспорт. Предыдущие настройки сохранены.'
+                : 'Не удалось переключить транспорт и полностью восстановить настройки. Проверьте журнал Xray.', true);
+        }
         $this->xray();
     }
 
