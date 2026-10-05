@@ -92,7 +92,7 @@ class VersionPinsTests(unittest.TestCase):
             self.assertIn("SINGBOX_VERSION:", block)
             self.assertIn("SINGBOX_SOURCE_SHA256:", block)
             self.assertIn("PROTOCOL_GO_VERSION:", block)
-        self.assertEqual(2, text.count("                MIHOMO_SHA256:"))
+        self.assertEqual(2, text.count("                MIHOMO_SOURCE_SHA256:"))
         ci = (ROOT / ".github/workflows/images.yml").read_text()
         # A release is now a complete set: every pin change builds and tests all
         # shared images, so there is no partial env-to-target filter to maintain.

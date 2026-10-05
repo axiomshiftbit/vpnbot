@@ -10,7 +10,9 @@ ARG DNSTT_REF=0c5c52a57d899c05428c116898941761a2ed83c2
 # еженедельная пересборка того же коммита берёт другой компилятор, и «откатить
 # образ по sha» перестаёт что-либо значить. Digest'ы к базам проставляет
 # renovate (pinDigests в renovate.json).
-FROM golang:1.25-alpine AS go
+ARG PROTOCOL_GO_VERSION=1.27.1
+FROM golang:${PROTOCOL_GO_VERSION}-alpine AS go
+COPY dockerfile/go-security.sh /build-tools/go-security.sh
 ARG DNSTT_REF
 # Приём trusttunnel (git init + fetch --depth 1 <sha>) здесь НЕ работает:
 # bamsoftware отдаёт репозиторий по dumb http, а тот не умеет shallow —
@@ -20,6 +22,7 @@ RUN apk add --no-cache git \
     && git clone https://www.bamsoftware.com/git/dnstt.git \
     && cd /go/dnstt \
     && git checkout -q "${DNSTT_REF}" \
+    && sh /build-tools/go-security.sh \
     && cd /go/dnstt/dnstt-server \
     && go build -ldflags="-s -w" -trimpath \
     && rm -rf /go/dnstt/.git \

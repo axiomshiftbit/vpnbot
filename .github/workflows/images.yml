@@ -189,6 +189,7 @@ jobs:
           name: descriptor-${{ matrix.image }}
           path: ${{ runner.temp }}/descriptor/*.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
   bundle:
     needs: build
@@ -214,6 +215,7 @@ jobs:
           name: image-bundle
           path: ${{ runner.temp }}/bundle.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
   security:
     needs: bundle
@@ -263,15 +265,13 @@ jobs:
           name: image-bundle
           path: ${{ runner.temp }}
       - name: Установка, протоколы, отказы, сохранность данных и откат на VPNBotTest
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
         run: python3 scripts/ci_test_bundle.py "$RUNNER_TEMP/bundle.json" "$RUNNER_TEMP/native.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-admission
           path: ${{ runner.temp }}/native.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
   publish:
     needs: [build, tests, bundle, security, native]

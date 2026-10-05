@@ -1,5 +1,20 @@
 ARG image=alpine:3.24
+ARG PROTOCOL_GO_VERSION=1.27.1
+FROM golang:${PROTOCOL_GO_VERSION}-alpine AS helpers
+ARG WGCF_VERSION=v2.3.0
+ARG TUN2SOCKS_VERSION=v2.7.0
+RUN apk add --no-cache ca-certificates curl git
+COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+RUN sh /build-tools/go-source.sh ViRb3/wgcf "$WGCF_VERSION" /wgcf \
+    && cd /wgcf && sh /build-tools/go-security.sh \
+    && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /out/wgcf .
+RUN sh /build-tools/go-source.sh xjasonlyu/tun2socks "$TUN2SOCKS_VERSION" /tun2socks \
+    && cd /tun2socks && sh /build-tools/go-security.sh \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/xjasonlyu/tun2socks/v2/internal/version.Version=$TUN2SOCKS_VERSION" -o /out/tun2socks .
+
 FROM $image
+COPY --from=helpers /out/ /usr/bin/
+COPY dockerfile/go-security.sh /build-tools/go-security.sh
 
 # Пины версий (задаются в .env, пробрасываются через args в compose).
 # amneziawg-go с v3.0.3 требует go >= 1.24.4 — Go ставится пакетом из edge
@@ -83,6 +98,7 @@ RUN set -eux; \
     git fetch -q --depth 1 origin "${MICROSOCKS_REF}"; \
     git checkout -q FETCH_HEAD; \
     cd /amneziawg-go; \
+    sh /build-tools/go-security.sh; \
     make install; \
     cd /amneziawg-tools/src; \
     make install WITH_WGQUICK=yes; \
@@ -93,14 +109,6 @@ RUN set -eux; \
     rm -rf /amneziawg-go /amneziawg-tools /microsocks /root/go /root/.cache; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
-    cd /tmp; \
-    wget -O tun2socks.zip https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-linux-amd64.zip; \
-    unzip tun2socks.zip; \
-    mv tun2socks-linux-amd64 /usr/bin/tun2socks; \
-    chmod +x /usr/bin/tun2socks; \
-    rm -f tun2socks.zip; \
-    wget -O /usr/bin/wgcf https://github.com/ViRb3/wgcf/releases/download/${WGCF_VERSION}/wgcf_${WGCF_VERSION#v}_linux_amd64; \
-    chmod +x /usr/bin/wgcf; \
     # у wgcf нет `--version`/`version` — версию для меню бота (warpVersion)
     # фиксируем в файл на этапе сборки
     printf '%s\n' "${WGCF_VERSION#v}" > /etc/wgcf_version; \
