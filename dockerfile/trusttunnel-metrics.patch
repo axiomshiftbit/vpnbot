@@ -13,7 +13,7 @@
              parent_id_chain,
              next_request_id: 0..,
          }
-@@ -641,3 +643,20 @@
+@@ -641,3 +643,24 @@
          Err(e) => Err(io::Error::other(e.to_string())),
      }
  }
@@ -27,7 +27,11 @@
 +        let mut settings = Settings::default();
 +        settings.listen_protocols.http1 = None;
 +        let settings = Arc::new(settings);
-+        let (io, _peer) = tokio::io::duplex(1024);
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let connect = tokio::net::TcpStream::connect(listener.local_addr().unwrap());
++        let (client, accepted) = tokio::join!(connect, listener.accept());
++        let _peer = client.unwrap();
++        let (io, _) = accepted.unwrap();
 +        let codec = Http1Codec::new(settings.clone(), io, log_utils::IdChain::empty());
 +        assert_eq!(codec.upload_buffer_size,
 +            crate::settings::Http1Settings::default_upload_buffer_size());
