@@ -12,6 +12,8 @@ ARG STRONGSWAN_SHA256=fe6c97481298767213cfc2e9a1da29fdd8018d481ff4cb9cf028309965
 
 # В Alpine пока strongSwan 6.0.7 без исправлений безопасности 6.1.0.
 # Собираем проверенный upstream; IKEv1 с 6.1 нужно включать явно для L2TP.
+# procps-ng сохраняет pgrep -x по имени charon при запуске по полному пути:
+# BusyBox стабильной Alpine иначе даёт ложный отказ проверки backup/restore.
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
     apk update; \
@@ -20,6 +22,7 @@ RUN set -eux; \
         openssh \
         bash \
         python3 \
+        procps-ng \
         xl2tpd \
         ppp \
         iptables \
