@@ -971,7 +971,8 @@ services:
         profiles: ["tt"]
         image: ghcr.io/axiomshiftbit/vpnbot-tt:${VPNBOT_TAG:-latest}
         build:
-            dockerfile: dockerfile/trusttunnel.dockerfile
+            context: dockerfile
+            dockerfile: trusttunnel.dockerfile
             args:
                 TT_REF: ${TT_REF:-v1.1.0}
         volumes:
