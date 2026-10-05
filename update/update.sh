@@ -72,6 +72,16 @@ do
             cp "$pwd/scripts/image_bundle.py" "$pwd/update/image_bundle.py" || continue
         fi
 
+        # Restart also needs its selected images before any working container
+        # is stopped. A registry failure must not turn a restart into downtime.
+        if [[ "$cmd" == "2" && -f "$pwd/scripts/image_bundle.py" ]]; then
+            if ! make pull >/dev/null 2>&1; then
+                tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Restart cancelled before stopping services: the selected image set is not available. Current services are unchanged.\"}"
+                : > "$pwd/update/pipe"
+                continue
+            fi
+        fi
+
         tg_draft "stopping the bot"
         if ! docker compose --profile '*' down --remove-orphans; then
             tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update cancelled: could not stop services safely.\"}"

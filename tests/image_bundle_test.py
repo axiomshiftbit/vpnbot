@@ -118,6 +118,18 @@ class ImageBundleTests(unittest.TestCase):
         with patch.object(bundle, 'command', return_value='a' * 40), self.assertRaises(ValueError):
             bundle.compose_files(self.root, {'VPNBOT_TAG': 'sha-' + 'a' * 40})
 
+    def test_custom_image_overrides_are_not_silently_replaced(self):
+        for image in ('custom/php:tested', bundle.REGISTRY + 'php:sha-' + 'a' * 40,
+                      candidate()['images']['php']):
+            data = {'services': {'php': {'image': image}}}
+            result = subprocess.CompletedProcess([], 0, json.dumps(data).encode(), b'')
+            with self.subTest(image=image), patch.object(bundle.subprocess, 'run', return_value=result):
+                with self.assertRaises(ValueError): bundle.check_image_overrides(self.root)
+        for channel in ('dev', 'latest'):
+            data = {'services': {'php': {'image': bundle.REGISTRY + 'php:' + channel}}}
+            result = subprocess.CompletedProcess([], 0, json.dumps(data).encode(), b'')
+            with patch.object(bundle.subprocess, 'run', return_value=result): bundle.check_image_overrides(self.root)
+
     def test_simultaneous_writes_never_produce_a_mixed_manifest(self):
         path = self.root / 'bundle.json'; bundle.atomic(path, bundle.canonical(candidate()))
         code = ('import sys;sys.path.insert(0,sys.argv[1]);import image_bundle as b;'
@@ -126,6 +138,33 @@ class ImageBundleTests(unittest.TestCase):
         while any(p.poll() is None for p in processes): bundle.read(path)
         self.assertTrue(all(p.wait() == 0 for p in processes))
         self.assertIn(bundle.read(path)['run'], range(1, 13))
+
+    def test_prepare_registry_or_pull_failure_keeps_code_runtime_and_active_set(self):
+        value = candidate()
+        active = self.root / 'update/image-bundle.json'
+        bundle.atomic(active, bundle.canonical(value))
+        runtime = self.root / 'clients.json'; runtime.write_text('new client and current usage')
+        for failure in ('registry', 'pull'):
+            before = {p: p.read_bytes() for p in (active, runtime)}
+            def invoke(args, **kwargs):
+                if args[0] == 'git': return subprocess.CompletedProcess(args, 0)
+                return subprocess.CompletedProcess(args, 1, b'', b'private registry error')
+            with patch.object(bundle, 'check_image_overrides'), patch.object(bundle, 'command', return_value=''), \
+                 patch.object(bundle.subprocess, 'run', side_effect=invoke), \
+                 patch.object(bundle, 'fetch', side_effect=RuntimeError('registry unavailable') if failure == 'registry' else None,
+                              return_value=value):
+                with self.subTest(failure=failure), self.assertRaises(RuntimeError):
+                    bundle.prepare(self.root, 'dev', self.root / 'pending.json')
+            self.assertEqual(before, {p: p.read_bytes() for p in before})
+
+    def test_no_network_is_needed_for_an_existing_matching_bundle(self):
+        value = candidate(); bundle.atomic(self.root / 'update/image-bundle.json', bundle.canonical(value))
+        with patch.dict(os.environ, {}, clear=True), patch.object(bundle, 'command', return_value=value['source']), \
+             patch.object(bundle, 'check_image_overrides'), patch.object(bundle, 'fetch') as fetch:
+            self.assertEqual(value, bundle.ensure(self.root))
+            fetch.assert_not_called()
+        with patch.dict(os.environ, {}, clear=True), patch.object(bundle, 'command', return_value='f' * 40):
+            with self.assertRaises(ValueError): bundle.ensure(self.root)
 
 
 if __name__ == '__main__':

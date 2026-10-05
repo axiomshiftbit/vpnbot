@@ -94,13 +94,22 @@ def command(*args):
     return result.stdout.decode().strip()
 
 
-def resolve(ref):
-    result = subprocess.run(['docker', 'buildx', 'imagetools', 'inspect', '--raw', ref],
-                            capture_output=True, check=True)
-    value = json.loads(result.stdout)
-    if value.get('schemaVersion') != 2 or 'config' not in value:
-        raise ValueError('expected a single linux/amd64 image manifest')
-    return 'sha256:' + hashlib.sha256(result.stdout).hexdigest()
+def check_image_overrides(root):
+    # Let Compose resolve YAML, env files and interpolation itself. Never print
+    # the resolved configuration: it can contain installation credentials.
+    args = ['docker', 'compose', '--profile', '*', '--env-file', '.env']
+    if (root / 'override.env').exists():
+        args += ['--env-file', 'override.env']
+    result = subprocess.run(args + ['config', '--format', 'json'], cwd=root, capture_output=True)
+    if result.returncode:
+        raise ValueError('cannot validate local Compose settings')
+    services = json.loads(result.stdout)['services']
+    for service, name in SERVICES.items():
+        if service not in services:
+            continue
+        image = services[service].get('image', '')
+        if image not in {REGISTRY + name + ':' + tag for tag in ('dev', 'latest', 'nightly')}:
+            raise ValueError('custom image override prevents a bundle update: ' + service)
 
 
 def fetch(channel, destination):
@@ -147,6 +156,7 @@ def prepare(root, branch, destination):
     for file in (root / '.env', root / 'override.env'):
         if file.exists() and re.search(r'^VPNBOT_TAG=sha-', file.read_text(), re.M):
             raise ValueError('explicit image pin prevents an automatic update')
+    check_image_overrides(root)
     bundle = fetch('latest' if branch == 'master' else 'dev', destination)
     command('git', '-C', str(root), 'fetch', '-q', 'origin')
     command('git', '-C', str(root), 'merge-base', '--is-ancestor', bundle['source'], 'origin/' + branch)
@@ -176,6 +186,7 @@ def ensure(root):
         value = read(path)
         if value['source'] != command('git', '-C', str(root), 'rev-parse', 'HEAD'):
             raise ValueError('checkout and active bundle differ')
+        check_image_overrides(root)
         return value
     # Explicit immutable legacy pins are deliberate manual rollback choices.
     for file in (root / '.env', root / 'override.env'):
@@ -184,6 +195,7 @@ def ensure(root):
     branch = command('git', '-C', str(root), 'rev-parse', '--abbrev-ref', 'HEAD')
     if branch not in ('dev', 'master'):
         raise ValueError('start requires a released branch or an explicit image pin')
+    check_image_overrides(root)
     value = fetch('latest' if branch == 'master' else 'dev', root / 'update/image-bundle.pending.json')
     activate(root, value)
     return value

@@ -147,7 +147,10 @@ def validate_upstream(root, candidate, service='up'):
     image = upstream['image']
     exists = subprocess.run(['docker', 'image', 'inspect', image], capture_output=True)
     if exists.returncode:
-        compose(current, ['build', service], capture=True).check_returncode()
+        if '@sha256:' in image:
+            subprocess.run(['docker', 'pull', image], capture_output=True, check=True)
+        else:
+            compose(current, ['build', service], capture=True).check_returncode()
     command = ['docker', 'run', '--rm', '-i', '--network', 'none', '--log-driver', 'none',
                '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--entrypoint', '/bin/sh']
     if service == 'ng':
