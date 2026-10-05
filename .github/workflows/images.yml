@@ -170,6 +170,17 @@ jobs:
           docker cp "$container:/usr/local/bin/xray" "$RUNNER_TEMP/xray-masque"
           docker rm "$container"
 
+      - name: Проверить DNS-маршрут до запуска OpenConnect
+        if: matrix.service == 'ad'
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-ad:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker pull "$image"
+          docker run --rm --network=none --entrypoint sh -e VPNBOT_IMAGE_TEST=1 \
+            -v "$PWD/tests/adguard_routes_test.sh:/test.sh:ro" \
+            -v "$PWD/scripts/start_ad.sh:/entrypoint-under-test.sh:ro" \
+            "$image" /test.sh
+
       - name: Проверить стабильную базу VPN-образов
         if: contains(fromJSON('["wg","oc","ovpn","ipsec"]'), matrix.service)
         env:
