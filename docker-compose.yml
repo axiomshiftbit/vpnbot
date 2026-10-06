@@ -1188,39 +1188,6 @@ services:
         pids_limit: 128
         logging: *default-logging
 
-    snolc:
-        profiles: ["snolc"]
-        image: ghcr.io/axiomshiftbit/vpnbot-snolc:${VPNBOT_TAG:-latest}
-        build:
-            context: .
-            dockerfile: dockerfile/snolc.dockerfile
-        environment:
-            PROTOCOL_DESIRED: /config/desired.json
-        volumes:
-            - ./config/protocols/snolc:/config:ro
-            - ./config/protocols/snolc/runtime:/state
-            - ./scripts/protocol_service.py:/protocol_service.py:ro
-            - ./scripts/snolc_service.py:/snolc_service.py:ro
-            - ./app/snolc:/snolc:ro
-        ports:
-            - ${SNOLC_PORT:-24448}:24448/tcp
-        hostname: snolc
-        container_name: snolc-${VER}
-        read_only: true
-        cap_drop: [ALL]
-        security_opt: [no-new-privileges:true]
-        restart: unless-stopped
-        stop_grace_period: 20s
-        init: true
-        networks:
-            default:
-                ipv4_address: 10.10.0.26
-        # Bound resources for this experimental SSH/Noise service.
-        cpus: 1.0
-        mem_limit: 256m
-        pids_limit: 128
-        logging: *default-logging
-
     shadowtls:
         profiles: ["shadowtls"]
         image: ghcr.io/axiomshiftbit/vpnbot-protocol:${VPNBOT_TAG:-latest}

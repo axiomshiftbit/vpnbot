@@ -45,7 +45,6 @@ jobs:
           - {service: hy, image: hysteria}
           - {service: anytls, image: protocol}
           - {service: mieru, image: mieru}
-          - {service: snolc, image: snolc}
           - {service: masque, image: masque}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -262,7 +261,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [ng, php, wg, ad, telemt, xr, oc, np, ss, dnstt, ovpn, ipsec, tt, hysteria, protocol, mieru, snolc, masque]
+        image: [ng, php, wg, ad, telemt, xr, oc, np, ss, dnstt, ovpn, ipsec, tt, hysteria, protocol, mieru, masque]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:

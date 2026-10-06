@@ -1,19 +1,10 @@
 # Allow only source inputs needed by root-context image builds.
 # No runtime data, environment files, Git history or keys are sent to Docker.
 *
-!app/
-!app/snolc/
-!app/snolc/**
 !scripts/
 !scripts/protocol_service.py
-!scripts/snolc_service.py
 !scripts/hysteria_service.py
 !dockerfile/
-!dockerfile/snolc.dockerfile
-!dockerfile/snolc-core.patch
-!dockerfile/snolc-modules.patch
-!dockerfile/snolc-sources/
-!dockerfile/snolc-sources/**
 !dockerfile/go-*.sh
 !dockerfile/go-sources.sha256
 !dockerfile/build-xray.sh

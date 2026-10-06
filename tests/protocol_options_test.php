@@ -136,10 +136,6 @@ try {
     $bot->protocolModulesFile = "$root/modules.json"; $bot->upstreamFile = "$root/upstream.conf";
     $modules = new ProtocolModules($bot->protocolModulesFile);
     foreach (ManagedProtocol::NAMES as $protocol => $_) {
-        if ($protocol === 'snolc') {
-            optCheck(ProtocolOptions::groups($protocol) === [] && ProtocolOptions::schema($protocol) === [], 'snolc не предлагает настройки чужих ядер');
-            continue;
-        }
         $store = $bot->protocolStore($protocol); $store->configure(['host' => 'vpn.example.test', 'sni' => 'vpn.example.test'], true);
         $id = managedProtocolFixtureUser($store, 'Fixture < &'); $modules->set($protocol, true);
         $baseline = $store->read()['config'];

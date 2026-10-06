@@ -21,7 +21,6 @@ final class ProtocolOptions
     public static function groups(string $protocol): array
     {
         if ($protocol === 'masque') return ['client' => 'Клиент Xray', 'noise' => 'UDP-маскировка · finalmask'];
-        if ($protocol === 'snolc') return [];
         return $protocol === 'mieru'
             ? ['server' => 'Сервер Mieru', 'client' => 'Клиенты Mieru', 'native' => 'Только Mieru JSON / URI', 'mihomo' => 'Только Mihomo']
             : ['server' => 'Сервер', 'client' => 'Общие настройки клиентов', 'singbox' => 'Только sing-box', 'mihomo' => 'Только Mihomo']
@@ -30,7 +29,6 @@ final class ProtocolOptions
 
     public static function schema(string $protocol): array
     {
-        if ($protocol === 'snolc') return [];
         if ($protocol === 'masque') return [
             'client' => ['http' => ['enum', ['h3', 'h2']]],
             'noise' => ['enabled' => ['bool'], 'reset' => ['text', 1, 16],

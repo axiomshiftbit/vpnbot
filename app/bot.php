@@ -588,16 +588,16 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
-            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
+            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|masque)$~D', $this->input['callback'], $m):
                 $this->accessBatchStart($m[1]);
                 break;
             case preg_match('~^/ab ([a-f0-9]{12})(?: (show|pick|page|extend|quota|disable|reset|apply|cancel))?(?: ([a-f0-9]{12}|[a-f0-9]{16}|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->accessBatch($m[1], $m[2] ?? 'show', $m[3] ?? '');
                 break;
-            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
+            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|masque)$~D', $this->input['callback'], $m):
                 $this->serviceDiagnostics($m[1]);
                 break;
-            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|masque) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
                 $this->accessPolicyMenu($m[1], $m[2], $m[3] ?? '');
                 break;
             case preg_match('~^/hyUsers(?: ([0-9]{1,6}))?$~D', $this->input['callback'], $m):
@@ -606,10 +606,10 @@ class Bot
             case preg_match('~^/hyUser (add|legacy-off|legacy-confirm|[a-f0-9]{16})(?: (show|toggle|rotate|reset|delete|delete-confirm|name|expires|quota|file|qr))?$~D', $this->input['callback'], $m):
                 $this->hyUserCommand($m[1], $m[2] ?? 'show');
                 break;
-            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|masque)$~D', $this->input['callback'], $m):
                 $this->protocolPortPrompt($m[1]);
                 break;
-            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|masque)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
                 $this->protocolManageRelays($m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/pf (anytls|shadowtls)(?: (show|reset|pick))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
@@ -622,25 +622,25 @@ class Bot
                     else $this->protocolModulesMenu();
                 }
                 break;
-            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|snolc|masque))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|masque))?$~D', $this->input['callback'], $m):
                 $this->xrayProtocolsMenu($m[1], $m[2] ?? '');
                 break;
-            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|snolc|masque))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|masque))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
                 $this->connectionExports($m[1], $m[2] ?? '', $m[3] ?? '');
                 break;
-            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|masque)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
                 $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
                 break;
-            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|masque) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->protocolRelay($m[1], $m[2], $m[3], $m[4] ?? '');
                 break;
-            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|snolc|masque) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
+            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|masque) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
                 $this->protocolRelayPrompt($m[1], $m[2]);
                 break;
-            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|masque) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
                 $this->protocolSubscriptions($m[1], $m[2], $m[3] ?? 'direct', $m[4] ?? '');
                 break;
-            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|snolc|masque)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|masque)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
                 $this->protocolOptions($m[1], $m[2] ?? 'show', $m[3] ?? '', $m[4] ?? '');
                 break;
             // смена айпи сервера
@@ -23100,7 +23100,7 @@ DNS-over-HTTPS with IP:
             $bundled = true;
             $bundle = json_decode((string) @file_get_contents($path), true);
             if (!is_array($bundle) || ($bundle['schema'] ?? null) !== 1
-                || !is_array($bundle['images'] ?? null) || count($bundle['images']) !== 18) {
+                || !is_array($bundle['images'] ?? null) || !in_array(count($bundle['images']), [17, 18], true)) {
                 error_log('cleanDocker: invalid image bundle; cleanup skipped');
                 return;
             }
@@ -30748,7 +30748,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/protocolPort $protocol"]];
             if ($pending) $text[] = "$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.";
         }
-        $text[] = 'Mieru, TUIC, ShadowTLS, snolc и MASQUE: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
+        $text[] = 'Mieru, TUIC, ShadowTLS и MASQUE: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
         if (!empty($pac['restart'])) {
             $data[] = [
                 [
@@ -31029,7 +31029,7 @@ DNS-over-HTTPS with IP:
             $out[$v] = "$dir/$v";
         }
         $roots = ['hysteria' => $this->hysteriaUsersRoot];
-        foreach (['anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque'] as $protocol) {
+        foreach (['anytls', 'mieru', 'tuic', 'shadowtls', 'masque'] as $protocol) {
             $roots[$protocol] = "$this->protocolRoot/$protocol";
         }
         foreach ($roots as $protocol => $root) {

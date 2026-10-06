@@ -232,6 +232,7 @@ trait BotBackup
         }
         $pending = [];
         foreach ($json['managed_protocols']['protocols'] ?? [] as $name => $_) {
+            if (!isset(ManagedProtocol::NAMES[$name])) continue;
             if (!$this->protocolModuleEnabled($name)) continue;
             $store = $this->protocolStore($name); $state = $store->read();
             $pending[$name] = [$store->directory() . '/runtime', $state['revision'], $state['restore_usage']['id'] ?? null];

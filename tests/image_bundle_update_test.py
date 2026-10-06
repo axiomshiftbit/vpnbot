@@ -67,9 +67,9 @@ if a[0]=='pull':raise SystemExit(1 if mode=='registry-failure' else 0)
 if a[:2]==['image','inspect']:print('sha256:'+'a'*64)
 elif a[0]=='create':print('fixture-metadata')
 elif a[0]=='cp':shutil.copyfile(b/'candidate.json',a[-1])
-elif a[0]=='rm':pass
+elif a[0] in ('rm','ps'):pass
 elif a[0]=='compose':
- if 'config' in a:print(json.dumps({'services':{'php':{'image':'ghcr.io/axiomshiftbit/vpnbot-php:dev'}}}))
+ if 'config' in a:print(json.dumps({'name':'synthetic-bot','services':{'php':{'image':'ghcr.io/axiomshiftbit/vpnbot-php:dev'}}}))
  elif 'pull' in a:raise SystemExit(1 if mode=='image-failure' else 0)
  elif 'up' in a or 'down' in a:pass
  else:raise SystemExit(2)
@@ -87,9 +87,9 @@ else:raise SystemExit(2)
             time.sleep(.05)
         self.fail('updater fixture timed out')
 
-    def run_update(self, command='1'):
+    def run_update(self, command='1', worker='update/update.sh'):
         with (self.base / 'worker.log').open('wb') as output:
-            process = subprocess.Popen(['bash', 'update/update.sh'], cwd=self.root, env=self.env,
+            process = subprocess.Popen(['bash', worker], cwd=self.root, env=self.env,
                                        stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 self.wait_for(lambda: (self.root / 'update/update_pid').exists())
@@ -129,6 +129,33 @@ else:raise SystemExit(2)
                 self.assertFalse(any('down' in args or 'up' in args for args in events))
                 self.assertEqual(self.before, self.git('rev-parse', 'HEAD'))
                 self.assertEqual(self.runtime, (self.root / 'config/custom.json').read_text())
+
+    def test_staged_updater_crosses_the_old_image_layout_without_changing_runtime(self):
+        # Old releases require the retired image in every manifest and cannot
+        # read a new release directly. Stage only trusted update helpers first.
+        old = self.root / 'scripts/image_bundle.py'
+        old.write_text(old.read_text().replace("'masque': 'masque',", "'masque': 'masque', 'snolc': 'snolc',"))
+        previous = dict(self.value, source=self.before, images=self.value['images'] | {
+            'snolc': bundle.REGISTRY + 'snolc@sha256:' + 'c' * 64})
+        bundle.atomic(self.root / 'update/image-bundle.json', bundle.canonical(previous))
+        events = self.run_update()
+        self.assertFalse(any('down' in event for event in events))
+        self.assertEqual(self.before, self.git('rev-parse', 'HEAD'))
+        staged = self.root / 'update/retirement-tools'; staged.mkdir()
+        for name in ('image_bundle.py', 'protocol_modules.py'):
+            shutil.copy2(ROOT / 'scripts' / name, staged / name)
+        script = (ROOT / 'update/update.sh').read_text()
+        self.assertEqual(4, script.count('"$pwd/scripts/image_bundle.py"'))
+        script = script.replace('"$pwd/scripts/image_bundle.py"', '"$pwd/update/retirement-tools/image_bundle.py"')
+        (staged / 'update.sh').write_text(script)
+        (self.root / 'update/update_pid').unlink(missing_ok=True)
+        self.events.write_text('')
+        events = self.run_update(worker='update/retirement-tools/update.sh')
+        self.assertEqual(self.after, self.git('rev-parse', 'HEAD'))
+        self.assertEqual(self.value, bundle.read(self.root / 'update/image-bundle.json'))
+        self.assertEqual(previous, bundle.read(self.root / 'update/image-bundle.previous.json', allow_retired=True))
+        self.assertEqual(self.runtime, (self.root / 'config/custom.json').read_text())
+        self.assertTrue(any('up' in args and '--no-build' in args for args in events))
 
 
 if __name__ == '__main__':

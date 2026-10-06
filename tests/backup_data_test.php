@@ -32,12 +32,11 @@ try {
     $ids=[];
     foreach (ManagedProtocol::NAMES as $protocol=>$_) {
         $store=$source->protocolStore($protocol);
-        $store->configure(['host'=>"$protocol.example.test",'sni'=>$protocol === 'snolc' ? '' : "$protocol.example.test"], true);
+        $store->configure(['host'=>"$protocol.example.test",'sni'=>"$protocol.example.test"], true);
         $id=managedProtocolFixtureUser($store,'Пользователь '.$protocol); $ids[$protocol]=$id;
         $store->user($id,['quota'=>10000000,'expires'=>2000000000]);
         $state=$store->read();
         $usage=['users'=>[$id=>['upload'=>12345,'download'=>67890,'reset'=>$state['users'][$id]['reset'],'last'=>['upload'=>3]]]];
-        if ($protocol==='snolc') $usage['users'][$id]['charged']=90000;
         if ($protocol==='mieru') $usage['native_metrics']=base64_encode('synthetic-native-history');
         ManagedProtocol::writeJson($store->directory().'/runtime/usage.json',$usage);
     }

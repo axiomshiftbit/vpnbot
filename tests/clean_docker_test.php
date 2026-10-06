@@ -132,7 +132,7 @@ $dir = sys_get_temp_dir() . '/vpnbot-clean-' . bin2hex(random_bytes(6));
 mkdir($dir, 0700);
 $b = (new ReflectionClass(CleanDockerFixture::class))->newInstanceWithoutConstructor();
 $b->update = $dir . '/json';
-$names = ['ng','php','wg','ad','telemt','xr','oc','np','ss','dnstt','ovpn','ipsec','tt','hysteria','protocol','mieru','snolc','masque'];
+$names = ['ng','php','wg','ad','telemt','xr','oc','np','ss','dnstt','ovpn','ipsec','tt','hysteria','protocol','mieru','masque'];
 try {
     foreach (['image-bundle.json','image-bundle.previous.json','image-bundle.pending.json'] as $index => $file) {
         $digest = 'sha256:' . str_repeat((string) ($index + 1), 64);
@@ -156,7 +156,7 @@ try {
     fclose($held);
     $b->cleanDocker();
     $deleted = array_values(array_filter($b->calls, static fn($x) => $x[1] === 'DELETE'));
-    t($deleted === [['/images/obsolete', 'DELETE']], 'сохраняются 54 digest, используемый и чужой образы; удаляется только устаревший');
+    t($deleted === [['/images/obsolete', 'DELETE']], 'сохраняются 51 digest, используемый и чужой образы; удаляется только устаревший');
     t(!in_array(['/images/prune', 'POST'], $b->calls, true), 'глобальный prune не удаляет digest выключенных протоколов');
     foreach (['{', '{"schema":1,"images":[]}', '{"schema":2,"images":{}}'] as $broken) {
         file_put_contents($dir . '/image-bundle.pending.json', $broken);

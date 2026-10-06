@@ -46,7 +46,7 @@ try {
     $modules = new ProtocolModules($bot->protocolModulesFile); $legacy = [];
     foreach (ManagedProtocol::NAMES as $protocol => $_) {
         $store = $bot->protocolStore($protocol);
-        $store->configure(['host' => 'vpn.example.test', 'sni' => in_array($protocol, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test'], true);
+        $store->configure(['host' => 'vpn.example.test', 'sni' => ($protocol === 'mieru') ? '' : 'vpn.example.test'], true);
         $legacy[$protocol] = managedProtocolFixtureUser($store, 'Старый отдельный доступ'); $modules->set($protocol, true);
     }
     $bot->syncXrayProtocolUsers();
