@@ -26,9 +26,12 @@ def migrate_systemd_stop(root):
         directories = re.findall(rb'^WorkingDirectory=(.*)$', before, re.M)
         if not directories or Path(os.fsdecode(directories[-1].rstrip(b'\r'))).resolve() != root.resolve():
             return False
-        old = b'ExecStop=/bin/sh -c "docker compose down --remove-orphans"'
-        if before.splitlines().count(old) != 1: return False
-        new = b'ExecStop=/bin/sh -c "docker compose --profile \'*\' down --remove-orphans"'
+        stock = (b'ExecStop=/bin/sh -c "docker compose down --remove-orphans"',
+                 b'ExecStop=/bin/sh -c "docker compose --profile \'*\' down --remove-orphans"')
+        matching = [line for line in before.splitlines() if line in stock]
+        if len(matching) != 1: return False
+        old = matching[0]
+        new = b'ExecStop=/bin/sh -c "sh ./scripts/stop_update.sh ./update/update_pid && docker compose --profile \'*\' down --remove-orphans"'
         after = re.sub(rb'^' + re.escape(old) + rb'(?=\r?$)', lambda match: new, before, count=1, flags=re.M)
         original = unit.stat()
 

@@ -391,11 +391,21 @@ class SystemdMigrationTests(unittest.TestCase):
         self.assertIn(b'# Example: ' + self.old_stop + b'\n', text)
         self.assertIn(b'Environment=KEEP_CUSTOM=true\n', text)
         self.assertIn(b'ExecStopPost=/bin/true\n', text)
-        self.assertIn(b'\nExecStop=/bin/sh -c "docker compose --profile \'*\' down --remove-orphans"\n', text)
+        self.assertIn(b'\nExecStop=/bin/sh -c "sh ./scripts/stop_update.sh ./update/update_pid && docker compose --profile \'*\' down --remove-orphans"\n', text)
         self.assertEqual(self.before, self.backup.read_bytes())
         self.assertEqual(0o600, self.backup.stat().st_mode & 0o777)
         self.assertEqual(0o640, self.unit.stat().st_mode & 0o777)
         reload.assert_called_once_with(['systemctl', 'daemon-reload'], capture_output=True, check=True, timeout=30)
+
+    def test_previous_profile_aware_stop_is_also_upgraded(self):
+        previous = self.before.replace(b'\n' + self.old_stop + b'\n',
+                                       b'\nExecStop=/bin/sh -c "docker compose --profile \'*\' down --remove-orphans"\n')
+        self.unit.write_bytes(previous)
+        with patch.object(modules.subprocess, 'run'):
+            self.assertTrue(modules.migrate_systemd_stop(self.root))
+            self.assertFalse(modules.migrate_systemd_stop(self.root))
+        self.assertIn(b'stop_update.sh ./update/update_pid && docker compose', self.unit.read_bytes())
+        self.assertEqual(previous, self.backup.read_bytes())
 
     def test_foreign_custom_and_symlink_units_are_preserved(self):
         with patch.object(modules.subprocess, 'run') as reload:

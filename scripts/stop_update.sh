@@ -13,10 +13,18 @@
 pidfile=${1:-./update/update_pid}
 
 pid=$(tr -dc '0-9' < "$pidfile" 2>/dev/null)
-[ -n "$pid" ] || exit 0
 
 # -a: cmdline разделён нулями, grep без него считает файл бинарным.
-grep -qa 'update.sh' "/proc/$pid/cmdline" 2>/dev/null || exit 0
+if [ -n "$pid" ] && grep -qa 'update.sh' "/proc/$pid/cmdline" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+fi
 
-kill -TERM "$pid" 2>/dev/null
+# TERM может завершить bash раньше его дочерней операции Compose. Дочерний
+# процесс сохраняет унаследованный lock воркера до завершения операции.
+# Ждём и при уже умершем родителе; иначе следующий up/down гоняется с apply.
+lock="$(dirname "$pidfile")/.lock"
+if [ -e "$lock" ] && ! flock -w 60 "$lock" true; then
+    echo 'update.sh: операция ещё выполняется; остановка контейнеров отменена' >&2
+    exit 1
+fi
 exit 0

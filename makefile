@@ -51,11 +51,12 @@ start: pull # запуск контейнеров
 	# WARP wg-quick требует эти модули при восстановлении правил netfilter.
 	-modprobe -a xt_comment xt_mark xt_connmark 2>/dev/null && printf 'xt_comment\nxt_mark\nxt_connmark\n' > /etc/modules-load.d/vpnbot-warp.conf || echo "WARN: netfilter modules unavailable — WARP wg-quick may fail"
 	IP=$(IP) VER=$(VER) python3 scripts/protocol_modules.py compose up -d --force-recreate
-u: preup start
+u: start
+	$(MAKE) preup
 d: # остановка контейнеров
 	# Через скрипт: PID из update_pid переиспользуются, и голый kill -9 после
 	# ребута уходил произвольному процессу. См. scripts/stop_update.sh.
-	-sh ./scripts/stop_update.sh ./update/update_pid
+	sh ./scripts/stop_update.sh ./update/update_pid
 	docker compose --profile '*' down --remove-orphans
 dv: # остановка контейнеров
 	docker compose --profile '*' down -v
