@@ -65,18 +65,20 @@ jobs:
           test "$(cat /etc/vpnbot-ci-test-host)" = home-build
           # Публикация вызывает gh; на GitHub-hosted он предустановлен, здесь — нет.
           command -v gh
-          test -z "$(docker ps -q)"
+          # Задания сборки идут параллельно на нескольких runner одной VM:
+          # чужие сборщики buildx допустимы, любые другие контейнеры — нет.
+          test -z "$(docker ps --format '{{.Names}}' | grep -v '^buildx_buildkit_' || true)"
           python3 -c 'import shutil; assert shutil.disk_usage("/var/lib/docker").free >= 12 * 1024**3, "Недостаточно места для безопасной сборки"'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
           driver-opts: |
-            ${{ inputs.test_runner && 'memory=6g' || '' }}
-            ${{ inputs.test_runner && 'memory-swap=8g' || '' }}
+            ${{ inputs.test_runner && 'memory=4g' || '' }}
+            ${{ inputs.test_runner && 'memory-swap=6g' || '' }}
             ${{ inputs.test_runner && 'cpu-period=100000' || '' }}
-            ${{ inputs.test_runner && 'cpu-quota=400000' || '' }}
+            ${{ inputs.test_runner && 'cpu-quota=800000' || '' }}
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = ${{ inputs.test_runner && 4 || 1 }}
+              max-parallelism = ${{ inputs.test_runner && 8 || 1 }}
               maxUsedSpace = "4GB"
               minFreeSpace = "3GB"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -316,7 +318,9 @@ jobs:
           image=$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/bundle.json"))["images"][os.environ["IMAGE_NAME"]])')
           bash scripts/ci_scan_image.sh "$image"
   native:
-    needs: [bundle, tests]
+    # security в зависимостях: при нескольких runner сетевой стенд не должен
+    # делить машину с параллельными проверками CVE.
+    needs: [bundle, tests, security]
     if: github.repository == 'axiomshiftbit/vpnbot' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit'))
     runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 180
