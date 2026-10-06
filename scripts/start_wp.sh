@@ -298,6 +298,10 @@ iptables -C INPUT -p tcp --dport "$SOCKS_PORT" -j WARP_SOCKS 2>/dev/null \
 iptables -C INPUT ! -i "$WGCF_IF" -p udp --dport "$SOCKS_UDP_PORTS" -j WARP_SOCKS 2>/dev/null \
     || iptables -I INPUT ! -i "$WGCF_IF" -p udp --dport "$SOCKS_UDP_PORTS" -j WARP_SOCKS
 iptables -A WARP_SOCKS -i lo -j ACCEPT
+# Служебные UDP-запросы контейнера (например DNS при выключенном WARP)
+# используют тот же ephemeral-диапазон. Пропускаем только ответы на них:
+# новые запросы к SOCKS relay по-прежнему ограничены списком клиентов.
+iptables -A WARP_SOCKS -p udp -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j ACCEPT
 for ip in $SOCKS_ALLOW; do
     iptables -A WARP_SOCKS -s "$ip" -j ACCEPT
 done
