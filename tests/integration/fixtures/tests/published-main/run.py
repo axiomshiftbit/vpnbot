@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess,time,json,re
 base=Path(__file__).parent
-cases=['wireguard','openvpn','ikev2','l2tp','openconnect','adguard','shadowsocks','proxies','trusttunnel_native','naive_native','dnstt','hysteria_extra','warp_network','telemt','telemt_web']
+cases=['wireguard','wireguard_extra','openvpn','openvpn_extra','ikev2','l2tp','openconnect','adguard','shadowsocks','proxies','trusttunnel_native','naive_native','dnstt','dnstt_identity','hysteria_extra','warp_network','telemt','telemt_web']
 rows=[]
 for name in cases:
  start=time.monotonic()

@@ -234,7 +234,7 @@ INNER'''
  def native(label):
   output=R/'published-main/results.json';output.unlink(missing_ok=True)
   run(label,['python3',str(R/'published-main/run.py')],timeout=1800)
-  rows=json.loads(output.read_text());check('native',label+'-complete',len(rows)==15 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
+  rows=json.loads(output.read_text());check('native',label+'-complete',len(rows)==18 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
   shutil.copy2(output,O/(label+'.json'))
   for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py")]:
    result=O/(label+"-"+name)
@@ -269,6 +269,12 @@ INNER'''
  rows=json.loads((R/'published-optional-results.json').read_text());check('native','optional-HTTP-HTTPS-TCP-UDP',len(rows)==18 and all(x['ok'] for x in rows));counts['native']+=len(rows)
  run('naive-idle',['python3',str(Path(__file__).with_name('naive_idle.py'))],environ=env|{'VPNBOT_TEST_RESULTS':str(O)},timeout=140)
  rows=json.loads((O/'naive-idle.json').read_text());check('native','Naive75-seconds-idle',len(rows)==5 and all(x['ok'] for x in rows));counts['native']+=len(rows)
+ # Отдельные мини-стенды на настоящих ядрах проверяемых образов Telemt и MASQUE.
+ for name,extra in [('telemt-native',[candidate['images']['telemt'],candidate['images']['php'],candidate['images']['ng']]),('masque-native',[candidate['images']['masque'],candidate['images']['php'],str(R/'xray')])]:
+  result=Path('/opt/vpnbot-hosted-ci')/name/'results.json';result.unlink(missing_ok=True)
+  run(name,['python3',str(result.with_name('run.py')),str(a.checkout),*extra],timeout=1500)
+  rows=json.loads(result.read_text());check('native',name+'-complete',bool(rows) and all(x['exit']==0 and x['total']>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
+  shutil.copy2(result,O/(name+'.json'))
  # FreeUnit must replace a killed PHP application worker without losing config.
  script='''import pathlib,json,os
 pids=[]
