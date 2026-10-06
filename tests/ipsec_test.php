@@ -43,7 +43,7 @@ function ipsecBot(string $sas)
 // ── 1. list-sas: IKE-id = логин (iOS/macOS с нашим .mobileconfig) ──────────
 $sasIkeId = <<<TXT
 ikev2: #4, ESTABLISHED, IKEv2, 8452cb54824dca66_i e7fc112f97ebdb83_r*
-  local  '203.0.113.104' @ 10.10.0.21[4500]
+  local  '203.0.113.10' @ 10.10.0.21[4500]
   remote 'test' @ 10.10.0.8[4500] [10.9.2.1]
   AES_GCM_16-256/PRF_HMAC_SHA2_384/ECP_384
   established 12s ago
@@ -65,7 +65,7 @@ ipsecAssert(($st['test']['since'] ?? '') === 12, 'аптайм сессии');
 // ── 2. list-sas: EAP-id отличается от IKE-id (.sswan, Windows) ─────────────
 $sasEapId = <<<TXT
 ikev2: #6, ESTABLISHED, IKEv2, 80584894e0cba75f_i 6d7a0862959081e3_r*
-  local  '203.0.113.104' @ 10.10.0.21[4500]
+  local  '203.0.113.10' @ 10.10.0.21[4500]
   remote '10.10.0.8' @ 10.10.0.8[4500] EAP: 'test' [10.9.2.1]
   AES_GCM_16-256/PRF_HMAC_SHA2_384/ECP_384
   established 5s ago
