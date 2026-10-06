@@ -89,6 +89,47 @@ class SnolcTests(unittest.TestCase):
             resumed.prepare_restore(state)
             self.assertIn('pending', resumed.admin, 'A retry must not discard the new ledger journal')
 
+    def test_complete_client_installs_offline_with_licenses_and_verified_modules(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            core, adapter, bundle = root / 'core', root / 'adapter', root / 'bundle.zip'
+            core.write_bytes(b'patched core'); adapter.write_bytes(b'patched module')
+            build(core, adapter, adapter, bundle)
+            with patch('socket.create_connection', side_effect=AssertionError('network is forbidden')):
+                install_patches(root / 'runtime', bundle, install_base=True)
+            self.assertEqual(b'patched core', (root / 'runtime/bin/snolc').read_bytes())
+            for name in ('adapter-socks5', 'carrier-ssh', 'protection-noise', 'policy-local'):
+                library = root / 'runtime/packages/store' / name / ('libsnolc_' + name.replace('-', '_') + '.so')
+                lock = root / 'runtime/packages/locks/owenewans' / name / '0.0.4.toml'
+                self.assertEqual(hashlib.sha256(library.read_bytes()).hexdigest(), tomllib.loads(lock.read_text())['content_sha256'])
+                for notice in ('LICENSE', 'THIRD_PARTY_NOTICES.txt'):
+                    self.assertTrue((root / 'runtime/licenses' / name / notice).stat().st_size)
+
+    def test_rehashed_corrupt_release_cannot_replace_existing_client(self):
+        import hashlib
+        import zipfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            core, adapter, bundle = root / 'core', root / 'adapter', root / 'bundle.zip'
+            core.write_bytes(b'patched core'); adapter.write_bytes(b'patched module')
+            build(core, adapter, adapter, bundle)
+            with zipfile.ZipFile(bundle) as archive:
+                files = {name: archive.read(name) for name in archive.namelist()}
+            name = 'archives/policy-local-0.0.4-x86_64-unknown-linux-gnu.tar.gz'
+            files[name] = b'wrong upstream release'
+            manifest = json.loads(files['manifest.json'])
+            manifest['sha256'][name] = hashlib.sha256(files[name]).hexdigest()
+            files['manifest.json'] = json.dumps(manifest).encode()
+            with zipfile.ZipFile(bundle, 'w') as archive:
+                for name, data in files.items(): archive.writestr(name, data)
+            binary = root / 'runtime/bin/snolc'; binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'existing working client')
+            with self.assertRaisesRegex(RuntimeError, 'SHA256'):
+                install_patches(root / 'runtime', bundle, install_base=True)
+            self.assertEqual(b'existing working client', binary.read_bytes())
+            self.assertFalse((root / 'runtime/packages').exists())
+
     def test_client_restarts_stuck_carrier_and_cleans_up_child(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

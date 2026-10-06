@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from snolc_config import install, install_patches, write_config, write_private
+from snolc_config import install_patches, write_config, write_private
 
 
 def prepare(profile, root, packages=None, socks_port=1080):
@@ -81,7 +81,7 @@ def run_client(binary, path, reconnect_timeout=20):
 
 def main():
     parser = argparse.ArgumentParser(description="VPNBot snolc: SSH + Noise, локальный SOCKS5")
-    parser.add_argument("--install", action="store_true", help="Скачать ядро и модули с проверкой SHA256")
+    parser.add_argument("--install", action="store_true", help="Установить ядро и модули из ZIP с проверкой SHA256")
     parser.add_argument("--prepare", action="store_true", help="Только создать конфигурацию")
     parser.add_argument("--profile", default=str(Path(__file__).with_name("profile.json")))
     parser.add_argument("--directory", default=str(Path(__file__).with_name("runtime")))
@@ -97,8 +97,7 @@ def main():
             bundle = Path(__file__).with_name("client-patches.zip")
             if not bundle.is_file():
                 raise RuntimeError("Скачайте полный ZIP после запуска сервиса snolc.")
-            install(root)
-            install_patches(root, bundle)
+            install_patches(root, bundle, install_base=True)
         profile = json.loads(Path(args.profile).read_text())
         path = prepare(profile, root, socks_port=args.socks_port)
         binary = root / "bin/snolc"

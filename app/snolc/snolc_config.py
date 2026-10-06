@@ -7,17 +7,21 @@ from pathlib import Path
 import platform
 import tarfile
 import tomllib
-import urllib.request
 import uuid
 import zipfile
 
 VERSION = "0.0.4"
 TARGET = "x86_64-unknown-linux-gnu"
+CLIENT_PACKAGES = ("snolc", "adapter-socks5", "carrier-ssh", "protection-noise", "policy-local")
 PRIVATE_NETS = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
                 "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16",
                 "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4", "::/128", "::1/128",
                 "::ffff:0:0/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64",
                 "2001::/32", "2002::/16", "fc00::/7", "fe80::/10", "ff00::/8"]
+
+
+def archive_name(name):
+    return f"{name}-{VERSION}-{TARGET}.tar.gz"
 
 
 def toml_value(value):
@@ -62,16 +66,19 @@ def install(root, server=False, archives=None):
     manifest = json.loads(Path(__file__).with_name("releases.json").read_text())
     names = ["snolc", "adapter-direct" if server else "adapter-socks5",
              "carrier-ssh", "protection-noise", "policy-local"]
+    archives = Path(archives) if archives else Path(__file__).with_name("archives")
+    packages = []
     for name in names:
         entry = manifest[name]
-        filename = f"{name}-{VERSION}-{TARGET}.tar.gz"
-        if archives:
-            data = (Path(archives) / filename).read_bytes()
+        filename = archive_name(name)
+        if archives.is_dir():
+            data = (archives / filename).read_bytes()
         else:
-            repo = "snolc" if name == "snolc" else "snolc-modules"
-            url = f"https://github.com/owenewans/{repo}/releases/download/v{VERSION}/{filename}"
-            with urllib.request.urlopen(url, timeout=60) as response:
-                data = response.read(64 * 1024 * 1024 + 1)
+            with zipfile.ZipFile(archives) as bundle:
+                member = bundle.getinfo("archives/" + filename)
+                if member.file_size > 64 * 1024 * 1024:
+                    raise RuntimeError("oversized_release_archive")
+                data = bundle.read(member)
         if len(data) > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != entry["sha256"]:
             raise RuntimeError("Не совпала SHA256 загруженного snolc.")
         relative = "bin/snolc" if name == "snolc" else f"lib/libsnolc_{name.replace('-', '_')}.so"
@@ -80,11 +87,17 @@ def install(root, server=False, archives=None):
             if not member.isfile() or member.size > 64 * 1024 * 1024:
                 raise RuntimeError("invalid_package_member")
             body = archive.extractfile(member).read()
+            notices = {}
             for notice in ("LICENSE", "THIRD_PARTY_NOTICES.txt"):
                 member = archive.getmember(notice)
                 if not member.isfile() or member.size > 4 * 1024 * 1024:
                     raise RuntimeError("invalid_package_notice")
-                write_private(root / "licenses" / name / notice, archive.extractfile(member).read())
+                notices[notice] = archive.extractfile(member).read()
+        packages.append((name, relative, body, notices))
+    # Validate every pinned archive before replacing any installed component.
+    for name, relative, body, notices in packages:
+        for notice, data in notices.items():
+            write_private(root / "licenses" / name / notice, data)
         if name == "snolc":
             write_private(root / "bin/snolc", body, 0o500)
             continue
@@ -97,21 +110,25 @@ def install(root, server=False, archives=None):
         write_private(root / "packages/locks/owenewans" / name / f"{VERSION}.toml", toml(lock))
 
 
-def install_patches(root, bundle, server=False):
+def install_patches(root, bundle, server=False, install_base=False):
     """Use the tested client binaries delivered by the bot's server image."""
     root = Path(root)
     names = {"snolc", "libsnolc_adapter_socks5.so", "libsnolc_policy_local.so"}
+    release_names = {"archives/" + archive_name(name) for name in CLIENT_PACKAGES}
+    expected = names | release_names | {"manifest.json"}
     with zipfile.ZipFile(bundle) as archive:
-        if set(archive.namelist()) != names | {"manifest.json"}:
+        if set(archive.namelist()) != expected or len(archive.namelist()) != len(expected):
             raise ValueError("invalid_patch_bundle")
         if any(info.file_size > 8 * 1024 * 1024 for info in archive.infolist()):
             raise ValueError("oversized_patch_bundle")
         manifest = json.loads(archive.read("manifest.json"))
-        if manifest["version"] != "0.0.4+vpnbot.3" or set(manifest["sha256"]) != names:
+        if manifest["version"] != "0.0.4+vpnbot.3" or set(manifest["sha256"]) != names | release_names:
             raise ValueError("invalid_patch_version")
-        files = {name: archive.read(name) for name in names}
+        files = {name: archive.read(name) for name in names | release_names}
     if any(hashlib.sha256(data).hexdigest() != manifest["sha256"][name] for name, data in files.items()):
         raise ValueError("invalid_patch_digest")
+    if install_base:
+        install(root, server=server, archives=bundle)
     write_private(root / "bin/snolc", files["snolc"], 0o500)
     for module in (["policy-local"] if server else ["adapter-socks5", "policy-local"]):
         name = "libsnolc_" + module.replace("-", "_") + ".so"

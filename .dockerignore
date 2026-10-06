@@ -12,6 +12,8 @@
 !dockerfile/snolc.dockerfile
 !dockerfile/snolc-core.patch
 !dockerfile/snolc-modules.patch
+!dockerfile/snolc-sources/
+!dockerfile/snolc-sources/**
 !dockerfile/go-*.sh
 !dockerfile/go-sources.sha256
 !dockerfile/build-xray.sh

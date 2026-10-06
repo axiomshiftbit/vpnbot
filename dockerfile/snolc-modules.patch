@@ -182,3 +182,19 @@
      }
 
      #[test]
+
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -39,2 +39,2 @@
+-snolc = { version = "=0.0.4", git = "https://github.com/owenewans/snolc.git", rev = "1acd4bbffe2da418f95ce8188f5e9bd7793c145b" }
+-snolc-sdk = { version = "=0.0.4", git = "https://github.com/owenewans/snolc.git", rev = "1acd4bbffe2da418f95ce8188f5e9bd7793c145b" }
++snolc = { version = "=0.0.4", path = "../build/crates/snolc" }
++snolc-sdk = { version = "=0.0.4", path = "../build/crates/snolc-sdk" }
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1990 +1989,0 @@
+-source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
+@@ -2011 +2009,0 @@
+-source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
+@@ -2139 +2136,0 @@
+-source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
