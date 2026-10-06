@@ -24514,6 +24514,11 @@ DNS-over-HTTPS with IP:
         if (!$probe['ok'] || ($probe['running'] !== '' && $probe['running'] !== $probe['active'])) {
             return false;
         }
+        // REALITY из дерева форка принимает ClientHello без гибридной группы
+        // через обычный X25519, поэтому sing-box с ним совместим.
+        if (!empty($probe['reality_local'])) {
+            return false;
+        }
         // Форк может выпускаться с новой датой, сохраняя прежний REALITY.
         // Проверяем версию зависимости из Go build info самого бинаря.
         if (preg_match('~^v0\.0\.0-(\d{14})-[0-9a-f]+$~D', $probe['reality'] ?? '', $build)) {
@@ -24811,7 +24816,11 @@ DNS-over-HTTPS with IP:
                 . '"$(p=$(pgrep -f "[x]ray run" | head -n1); test -n "$p" && readlink -f /proc/$p/exe 2>/dev/null)" '
                 . '"$(xray version 2>&1 | head -n1; printf "\nREALITY_BUILD="; '
                 . 'LC_ALL=C grep -a -m 1 -oE \'github\\.com/xtls/reality[[:space:]]+v[0-9A-Za-z.+_-]+\' /usr/local/bin/xray 2>/dev/null '
-                . '| head -n1 | awk \'{print $2}\')"',
+                . '| head -n1 | awk \'{printf "%s", $2}\'; '
+                // Форк с 26.10.5 собирает REALITY из своего дерева (replace в
+                // go.mod): версия зависимости та же, что у апстрима, поведение — нет.
+                . 'LC_ALL=C grep -a -q -E \'=>[[:space:]]+\\./third_party/reality[[:space:]]\' /usr/local/bin/xray 2>/dev/null '
+                . '&& printf "+local")"',
             'xr'
         );
         // ok=false — контейнер не ответил. Отличать это от «форка нет» ОБЯЗАТЕЛЬНО:
@@ -24826,9 +24835,14 @@ DNS-over-HTTPS with IP:
         $run = $ok ? trim($p[3] ?? '') : '';
         $version = $ok ? trim(implode('|', array_slice($p, 4))) : '';
         $reality = '';
+        $realityLocal = false;
         if (preg_match('~\nREALITY_BUILD=(\S*)$~D', $version, $build)) {
             $reality = $build[1];
             $version = rtrim(substr($version, 0, -strlen($build[0])));
+            if (str_ends_with($reality, '+local')) {
+                $realityLocal = true;
+                $reality = substr($reality, 0, -6);
+            }
         }
 
         return $this->xrProbe = [
@@ -24841,6 +24855,7 @@ DNS-over-HTTPS with IP:
             'running_selection' => array_search($run, self::XRAY_BINARIES, true) ?: '',
             'version' => $version,
             'reality' => $reality,
+            'reality_local' => $realityLocal,
         ];
     }
 

@@ -61,8 +61,15 @@ jobs:
           echo 'f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
+          # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
+          # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
+          curl --fail --location --retry 3 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.10.5-1858/Xray-linux-64.zip
+          echo '973e38863bd1756dcc6ead5f939a03ad55abca15a12ecb37f7b519e40ded2a32  Xray-fork-linux-64.zip' | sha256sum --check
+          mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
+          chmod +x fork/xray
           sudo install -d -m 1777 /logs
           echo "VLESS_TEST_XRAY=$xray_test_dir/xray" >> "$GITHUB_ENV"
+          echo "XRAY_FORK_TEST_BINARY=$xray_test_dir/fork/xray" >> "$GITHUB_ENV"
 
       - name: Синтаксис
         run: |
@@ -109,6 +116,12 @@ jobs:
           echo 'f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
+          # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
+          # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
+          curl --fail --location --retry 3 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.10.5-1858/Xray-linux-64.zip
+          echo '973e38863bd1756dcc6ead5f939a03ad55abca15a12ecb37f7b519e40ded2a32  Xray-fork-linux-64.zip' | sha256sum --check
+          mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
+          chmod +x fork/xray
 
       # Проверяем целевой PHP на musl и прежнюю ветку для совместимости кода
       # при обновлении. bash/util-linux/pcntl нужны тестовым fixtures и
@@ -123,7 +136,8 @@ jobs:
             -v "$PWD:/workspace" \
             -v "$PWD/config/php.ini:/etc/php${PHP_SERIES}/php.ini:ro" \
             -v "$RUNNER_TEMP/vpnbot-xray/xray:/audit-xray:ro" \
-            -e PHP_SERIES -e VLESS_TEST_XRAY=/audit-xray -w /workspace \
+            -v "$RUNNER_TEMP/vpnbot-xray/fork/xray:/audit-xray-fork:ro" \
+            -e PHP_SERIES -e VLESS_TEST_XRAY=/audit-xray -e XRAY_FORK_TEST_BINARY=/audit-xray-fork -w /workspace \
             "$base" sh -ec '
               apk add --no-cache bash util-linux coreutils findutils make git curl openssl python3 py3-yaml \
                 php${PHP_SERIES} php${PHP_SERIES}-mbstring php${PHP_SERIES}-session \

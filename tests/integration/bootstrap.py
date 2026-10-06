@@ -259,6 +259,7 @@ networks:
     for image, src, dst in [(candidate['images']['php'], '/usr/bin/mihomo', 'clients/mihomo'),
                             (candidate['images']['php'], '/usr/bin/sing-box', 'clients/sing-box'),
                             (candidate['images']['masque'], '/usr/local/bin/xray', 'tests/xray'),
+                            (candidate['images']['xr'], '/usr/bin/xray-smux', 'tests/xray-fork'),
                             (client_image, '/usr/bin/mieru', 'tests/optional-native/bin/mieru')]:
         docker_file(image, src, ROOT / dst)
     print('START fresh-users', flush=True)

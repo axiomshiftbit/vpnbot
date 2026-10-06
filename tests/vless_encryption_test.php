@@ -259,6 +259,13 @@ veAssert($bot->subscriptionCompatibilityError($bot->x, $bot->p, 'si') === 'reali
 $_GET = ['s' => 'test-sub', 't' => 'cl'];
 $profile = yaml_parse($bot->subscription(true));
 veAssert($profile['proxies'][0]['reality-opts']['support-x25519mlkem768'] === true, 'Новый REALITY не ограничен upstream-ядром');
+// Форк 26.10.5: та же версия зависимости, но REALITY из дерева форка снова
+// принимает ClientHello без гибридной группы.
+$bot->probe['version'] = 'Xray 26.10.5-1858';
+$bot->probe['reality_local'] = true;
+veAssert(!$bot->realityRequiresMlkem(), 'REALITY из дерева форка не блокирует sing-box');
+veAssert($bot->subscriptionCompatibilityError($bot->x, $bot->p, 'si') === '', 'Подписка sing-box выдаётся на форке с собственным REALITY');
+$bot->probe['reality_local'] = false;
 $bot->probe['version'] = 'Xray 26.9.5-0936';
 veAssert($bot->realityRequiresMlkem(), 'Backport REALITY определяется по зависимости, а не имени релиза');
 $bot->probe['reality'] = 'v0.0.0-20260322125925-9234c772ba8f';

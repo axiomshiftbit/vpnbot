@@ -11,7 +11,8 @@ COPY dockerfile/build-xray.sh /build-tools/build-xray.sh
 RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/xray \
     && { [ -z "$XRAY_VERSION_2" ] || sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION_2" /out/xray-2; } \
     && { [ -z "$XRAY_VERSION_3" ] || sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION_3" /out/xray-3; } \
-    && sh /build-tools/build-xray.sh Jolymmiles/Xray-core "$XRAY_FORK_VERSION" /out/xray-smux
+    && sh /build-tools/build-xray.sh Jolymmiles/Xray-core "$XRAY_FORK_VERSION" /out/xray-smux http2legacy \
+        './testing/release/... ./transport/internet/reality/... ./infra/conf/... ./common/mux/... ./transport/internet/splithttp/... ./common/singmux/... ./proxy/vless/...'
 
 FROM $image
 RUN apk upgrade --no-cache \

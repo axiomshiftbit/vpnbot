@@ -43,6 +43,24 @@ try {
                 . json_encode(['version' => $probe['version'], 'reality' => $probe['reality']]));
         }
     }
+    // Форк с 26.10.5: версия зависимости апстримная, но модуль заменён копией
+    // из дерева форка. Замена другого модуля признаком не считается.
+    $strict = 'v0.0.0-20260908062103-8cdf7bf9c7f0';
+    $cases = [
+        "=>\t./third_party/reality\t(devel)\n" => true,
+        "=>\t./third_party/realityx\t(devel)\n" => false,
+        "=>\t./third_party/other\t(devel)\n" => false,
+        '' => false,
+    ];
+    foreach ($cases as $replacement => $local) {
+        file_put_contents($bot->binary, $prefix . "dep\tgithub.com/xtls/reality\t$strict\n" . $replacement
+            . "dep\tgithub.com/other/module\tv1.0.0\th1:fixture\n");
+        $probe = $bot->xrayCoreProbe(true);
+        if ($probe['reality'] !== $strict || $probe['reality_local'] !== $local) {
+            throw new RuntimeException('Неверно распознана замена модуля REALITY: '
+                . json_encode([$replacement, $probe['reality'], $probe['reality_local']]));
+        }
+    }
     file_put_contents($bot->binary, $prefix);
     if ($bot->xrayCoreProbe(true)['reality'] !== '') {
         throw new RuntimeException('Старое значение REALITY осталось после смены бинарника');
@@ -51,7 +69,7 @@ try {
     if ($bot->xrayCoreProbe(true)['reality'] !== '') {
         throw new RuntimeException('Несуществующий бинарник получил версию REALITY');
     }
-    echo "xray_build_info_test OK (binary input, first match, replacement, missing dependency/file)\n";
+    echo "xray_build_info_test OK (binary input, first match, replacement, in-tree REALITY, missing dependency/file)\n";
 } finally {
     foreach (glob($root . '/*') as $file) { unlink($file); }
     rmdir($root);

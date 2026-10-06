@@ -176,6 +176,12 @@ jobs:
           XRAY_VERSION_3 /usr/bin/xray-3
           XRAY_FORK_VERSION /usr/bin/xray-smux
           XRAY_CORES
+          # У форка тег сборки и REALITY из собственного дерева видны только в
+          # самом бинарнике: без них сборка тоже проходит, а поведение другое.
+          docker run --rm --network=none --entrypoint sh "$image" -ec '
+            grep -a -q -E -- "-tags=([^[:space:]]*,)?http2legacy" /usr/bin/xray-smux
+            grep -a -q -E "=>[[:space:]]+\./third_party/reality[[:space:]]" /usr/bin/xray-smux
+          '
 
       - name: Проверить ядро и зависимости MASQUE
         if: matrix.service == 'masque'

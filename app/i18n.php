@@ -526,8 +526,8 @@ $i = [
         'ru' => 'Профили REALITY для Xray/mihomo используют Chrome с X25519MLKEM768 для совместимости с Xray 26.9.9. Остальные транспорты используют выбранный fingerprint.',
     ],
     'reality singbox mlkem' => [
-        'en' => 'This REALITY core requires X25519MLKEM768; official sing-box 1.14.2 removes it from ClientHello. Use Xray/mihomo, a compatible server core, or WebSocket/TLS or Trojan/gRPC.',
-        'ru' => 'Это ядро REALITY требует X25519MLKEM768; официальный sing-box 1.14.2 удаляет его из ClientHello. Используйте Xray/mihomo, совместимое серверное ядро либо WebSocket/TLS или Trojan/gRPC.',
+        'en' => 'This REALITY core requires X25519MLKEM768; official sing-box 1.14.2 removes it from ClientHello. Use Xray/mihomo, a compatible server core (the fork 26.10.5+ accepts sing-box), or WebSocket/TLS or Trojan/gRPC.',
+        'ru' => 'Это ядро REALITY требует X25519MLKEM768; официальный sing-box 1.14.2 удаляет его из ClientHello. Используйте Xray/mihomo, совместимое серверное ядро (форк 26.10.5+ принимает sing-box) либо WebSocket/TLS или Trojan/gRPC.',
     ],
     'xhttp singbox warn'   => [
         'en' => '⚠️ XHTTP is an Xray transport: stock sing-box has no such transport type and will reject the config. Use v2rayNG / v2rayN / mihomo, or a sing-box build with XHTTP support.',
