@@ -63,6 +63,8 @@ jobs:
         if: inputs.test_runner
         run: |
           test "$(cat /etc/vpnbot-ci-test-host)" = home-build
+          # Публикация вызывает gh; на GitHub-hosted он предустановлен, здесь — нет.
+          command -v gh
           test -z "$(docker ps -q)"
           python3 -c 'import shutil; assert shutil.disk_usage("/var/lib/docker").free >= 12 * 1024**3, "Недостаточно места для безопасной сборки"'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
