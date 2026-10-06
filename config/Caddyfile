@@ -12,6 +12,12 @@
 		exclude http.log.error
 	}
 	servers {
+		# CONNECT передаёт данные как тело запроса. Пауза в VPN-туннеле
+		# допустима; новый минутный read_body_idle Caddy 2.11.6+ обрывал её.
+		# Тайм-ауты заголовков, записи и внешнего NGINX сохраняются.
+		timeouts {
+			read_body_idle -1s
+		}
 		# Дефолт caddy — «h1 h2 h3». h3 убран намеренно: QUIC до этого
 		# контейнера не доходит. Внешний 443 разбирает upstream-nginx по SNI
 		# через ssl_preread, а тот читает SNI только из TLS ClientHello по TCP

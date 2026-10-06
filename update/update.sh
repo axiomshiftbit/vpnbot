@@ -59,6 +59,29 @@ do
         _chat_id=$(echo "$_curl_data" | grep -o '"chat_id":[0-9-]*' | head -1 | cut -d: -f2)
         _message_id=$(echo "$_curl_data" | grep -o '"message_id":[0-9]*' | head -1 | cut -d: -f2)
 
+        released_source=''
+        if [[ "$cmd" == "1" && -f "$pwd/scripts/image_bundle.py" ]]; then
+            release_branch=${branch:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}
+            tg_draft "checking the tested image set"
+            if ! released_source=$(python3 "$pwd/scripts/image_bundle.py" prepare "$release_branch" "$pwd/update/image-bundle.pending.json" --root "$pwd"); then
+                tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update cancelled before stopping services: no compatible tested image set is available, images could not be downloaded, or a manual pin/local commit prevents the update. Current services are unchanged.\"}"
+                : > "$pwd/update/pipe"
+                continue
+            fi
+            # Keep the activator through checkout, including a branch switch.
+            cp "$pwd/scripts/image_bundle.py" "$pwd/update/image_bundle.py" || continue
+        fi
+
+        # Restart also needs its selected images before any working container
+        # is stopped. A registry failure must not turn a restart into downtime.
+        if [[ "$cmd" == "2" && -f "$pwd/scripts/image_bundle.py" ]]; then
+            if ! make pull >/dev/null 2>&1; then
+                tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Restart cancelled before stopping services: the selected image set is not available. Current services are unchanged.\"}"
+                : > "$pwd/update/pipe"
+                continue
+            fi
+        fi
+
         tg_draft "stopping the bot"
         if ! docker compose --profile '*' down --remove-orphans; then
             tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update cancelled: could not stop services safely.\"}"
@@ -98,11 +121,21 @@ do
             if [[ $git_ok -eq 1 && -n "$branch" ]]
             then
                 tg_draft "changing branch"
-                git checkout -t "origin/$branch" >/dev/null 2>&1 || git checkout "$branch" >/dev/null 2>&1 || git_ok=0
+                if [[ -n "$released_source" ]]; then
+                    git show-ref --verify --quiet "refs/heads/$branch" || git branch "$branch" "$released_source" >/dev/null 2>&1 || git_ok=0
+                    git checkout "$branch" >/dev/null 2>&1 || git_ok=0
+                else
+                    git checkout -t "origin/$branch" >/dev/null 2>&1 || git checkout "$branch" >/dev/null 2>&1 || git_ok=0
+                fi
             fi
             tg_draft "applying updates"
             if [[ $git_ok -eq 1 ]]; then
-                git pull --ff-only >/dev/null 2>&1 || git_ok=0
+                if [[ -n "$released_source" ]]; then
+                    git merge --ff-only "$released_source" >/dev/null 2>&1 || git_ok=0
+                    [[ $(git rev-parse HEAD) == "$released_source" ]] || git_ok=0
+                else
+                    git pull --ff-only >/dev/null 2>&1 || git_ok=0
+                fi
             fi
             after=$(git rev-parse HEAD 2>/dev/null)
 
@@ -110,6 +143,13 @@ do
             if ! bash "$pwd/update/preserve_update_state.sh" restore "$pwd"; then
                 tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update stopped: runtime restore failed. Services remain stopped; backup retained in update/runtime-state.\"}"
                 exit 1
+            fi
+
+            if [[ $git_ok -eq 1 && -n "$released_source" ]]; then
+                if ! python3 "$pwd/update/image_bundle.py" activate "$pwd/update/image-bundle.pending.json" --root "$pwd"; then
+                    tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update stopped: code and tested images do not match. Runtime data and the previous image manifest are retained.\"}"
+                    exit 1
+                fi
             fi
 
             if [[ $git_ok -ne 1 ]]; then

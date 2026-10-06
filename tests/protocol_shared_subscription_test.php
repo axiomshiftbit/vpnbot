@@ -46,7 +46,7 @@ try {
     $modules = new ProtocolModules($bot->protocolModulesFile); $legacy = [];
     foreach (ManagedProtocol::NAMES as $protocol => $_) {
         $store = $bot->protocolStore($protocol);
-        $store->configure(['host' => 'vpn.example.test', 'sni' => in_array($protocol, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test'], true);
+        $store->configure(['host' => 'vpn.example.test', 'sni' => ($protocol === 'mieru') ? '' : 'vpn.example.test'], true);
         $legacy[$protocol] = managedProtocolFixtureUser($store, 'Старый отдельный доступ'); $modules->set($protocol, true);
     }
     $bot->syncXrayProtocolUsers();
@@ -62,10 +62,25 @@ try {
         $bot->syncXrayProtocolUsers(); sharedCheck($store->read()['revision'] === $state['revision'], 'Повторная синхронизация не пишет ревизию и не перезапускает ядро');
     }
     sharedCheck(count(array_unique($secrets)) === count(ManagedProtocol::NAMES) && !in_array($client['id'], $secrets, true), 'У каждого протокола отдельный секрет');
-    foreach (['clash', 'sing'] as $kind) $bot->templates[$kind] = json_decode(file_get_contents(__DIR__ . '/../config/' . $kind . '.json'), true);
+    foreach (['clash', 'sing', 'v2ray'] as $kind) $bot->templates[$kind] = json_decode(file_get_contents(__DIR__ . '/../config/' . $kind . '.json'), true);
     $plain = [];
     foreach (array_keys(ManagedProtocol::NAMES) as $protocol) $modules->set($protocol, false);
     $plain['cl'] = sharedProfile($bot, 'cl'); $plain['si'] = sharedProfile($bot, 'si');
+    $savedConf = $bot->conf;
+    $optional = ['linkdomain' => '', 'outbound' => 'proxy']
+        + array_fill_keys(['includelist', 'blocklist', 'warplist', 'processlist', 'packagelist', 'subnetlist'], []);
+    $bot->conf = array_replace($bot->conf, $optional, ['transport' => 'Websocket']);
+    $expected = [];
+    foreach (['s', 'cl', 'si'] as $format) $expected[$format] = sharedProfile($bot, $format);
+    $bot->conf = array_diff_key($bot->conf, $optional);
+    foreach (['s', 'cl', 'si'] as $format) sharedCheck(sharedProfile($bot, $format) === $expected[$format], "$format: отсутствующие настройки равнозначны значениям по умолчанию");
+    $bot->conf = array_replace($bot->conf, array_fill_keys(array_keys($optional), null));
+    foreach (['s', 'cl', 'si'] as $format) sharedCheck(sharedProfile($bot, $format) === $expected[$format], "$format: настройки null сохраняют значения по умолчанию");
+    $bot->conf = [];
+    sharedCheck($bot->getDomain(true) === $bot->ip, 'Без домена и CDN используется IP сервера');
+    $bot->conf = ['domain' => 'origin.example.test', 'linkdomain' => 'cdn.example.test'];
+    sharedCheck($bot->getDomain() === 'origin.example.test' && $bot->getDomain(true) === 'cdn.example.test', 'Заданные основной домен и CDN сохраняются');
+    $bot->conf = $savedConf;
     foreach (array_keys(ManagedProtocol::NAMES) as $protocol) $modules->set($protocol, true);
     $mihomo = sharedProfile($bot, 'cl'); $sing = sharedProfile($bot, 'si');
     sharedCheck($mihomo === sharedProfile($bot, 'clj'), 'Полная общая подписка YAML и JSON семантически идентична');

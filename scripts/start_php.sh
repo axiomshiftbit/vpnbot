@@ -1,4 +1,7 @@
 #!/bin/sh
+set -e
+# Маркер предыдущего запуска не подтверждает готовность нового процесса.
+rm -f /start
 # Пара ключей пересоздавалась при КАЖДОМ старте php, а authorized_keys в
 # остальных контейнерах обновляется только их собственным start_*.sh. Один
 # `docker restart php` (его же провоцирует healthcheck) — и у php новый
@@ -18,7 +21,12 @@ fi
 mkdir -p /ssh/pub
 cp /ssh/key.pub /ssh/pub/key.pub
 chmod 0644 /ssh/pub/key.pub
-openssl req -newkey rsa:2048 -sha256 -nodes -x509 -days 365 -keyout /certs/self_private -out /certs/self_public  -subj "/C=NN/ST=N/L=N/O=N/CN=$IP"
+# Обновление образа не должно менять сертификат существующих клиентов.
+# Отсутствующий или истёкший сертификат создаётся при первоначальном запуске.
+if [ ! -s /certs/self_private ] || [ ! -s /certs/self_public ] \
+    || ! openssl x509 -checkend 0 -noout -in /certs/self_public >/dev/null 2>&1; then
+    openssl req -newkey rsa:2048 -sha256 -nodes -x509 -days 365 -keyout /certs/self_private -out /certs/self_public -subj "/C=NN/ST=N/L=N/O=N/CN=$IP"
+fi
 # Control API unit — ТОЛЬКО unix-сокет. Аутентификации у него нет by design,
 # поэтому `--control 0.0.0.0:8080` означал: любой контейнер сети default ходит
 # на 10.10.0.7:8080 и через PUT /config объявляет приложение с произвольным
@@ -37,8 +45,11 @@ if [ -f "/ssh/key.pub" ] && [ -s "/ssh/key.pub" ]; then
         sleep 0.1
         i=$((i + 1))
     done
-    curl --unix-socket "$CONTROL_SOCK" -X PUT --data-binary @/config/unit.json http://localhost/config
-    php init.php
+    # Неверный JSON, отсутствующий PHP-модуль или недоступный control API
+    # должны остановить запуск: polling без работающего HTTP вводит в заблуждение.
+    curl --fail --silent --show-error --max-time 10 --unix-socket "$CONTROL_SOCK" \
+        -X PUT --data-binary @/config/unit.json http://localhost/config
+    exec php init.php
 else
     exit 1;
 fi

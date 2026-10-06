@@ -47,9 +47,9 @@
       "allowedVersions": "<=26.9.30"
     },
     {
-      "description": "Пока сохраняем проверенную Alpine 3.23. В 3.24 unit/unit-php84 заменены на freeunit/freeunit-php84 с прежними именами через provides. Снимать потолок после проверки перехода PHP, control API, панели и обновления существующих установок на FreeUnit.",
+      "description": "Alpine 3.24 с FreeUnit и PHP 8.5. Патчи этой ветки разрешены; следующий minor требует отдельной проверки модулей PHP, control API и обновления установок.",
       "matchDepNames": ["alpine"],
-      "allowedVersions": "<3.24"
+      "allowedVersions": "<3.25"
     },
     {
       "description": "nginx собирается из исходников (dockerfile/nginx.dockerfile), версия — в NGINX_VERSION. Ветку выбираем по чётности минора: 1.30 — stable, 1.31 — mainline. Автоматически берём только патчи внутри текущей стабильной ветки; смена минора (в том числе прыжок на mainline) — вручную, через dependency dashboard: ровно там меняется поведение — с 1.29 proxy_http_version по умолчанию 1.1, keepalive к бэкенду включён, Host валидируется по RFC 3986.",

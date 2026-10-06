@@ -19,11 +19,12 @@ RUN go test -vet=off ./pkg/socks5 -run TestVPNBot -count=1
 RUN CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /mita ./cmd/mita \
     && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /mieru-control ./cmd/vpnbot-control
 
-FROM alpine:3.23
+FROM alpine:3.24
 ARG MIERU_VERSION
 ARG MIERU_SOURCE_SHA256
 LABEL io.vpnbot.mieru.version=$MIERU_VERSION io.vpnbot.mieru.source-sha256=$MIERU_SOURCE_SHA256
-RUN apk add --no-cache ca-certificates python3 \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates python3 \
     && addgroup -S mita && adduser -S -G mita mita
 COPY --from=build /mita /mieru-control /usr/local/bin/
 COPY --from=build /build/LICENSE /usr/share/licenses/mieru/LICENSE

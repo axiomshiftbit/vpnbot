@@ -5,7 +5,6 @@ trait BotConnectionExports
     public function connectionFormats(string $protocol): array
     {
         if ($protocol === 'masque') return ['native' => 'MASQUE · полный JSON Xray 26.9.30+'];
-        if ($protocol === 'snolc') return ['native' => 'snolc SSH + Noise · ZIP'];
         $formats = ['cl' => 'Mihomo · YAML', 'clj' => 'Mihomo · JSON'];
         if ($protocol !== 'mieru') $formats['si'] = 'sing-box · JSON';
         if ($protocol === 'vless') {
@@ -90,7 +89,6 @@ trait BotConnectionExports
         foreach ($state['users'] as $id => $user) {
             if (($user['xray_source'] ?? '') !== $source || !hash_equals($user['xray_credential'], ManagedProtocol::xrayCredential($client))) continue;
             if ($protocol === 'masque') return $store->profile($id, 'native', $state);
-            if ($protocol === 'snolc') return $store->profileDocument($id, 'native', $state)['body'];
             if ($format === 'uri') return $store->connectionUri($id, $state);
             $profile = $store->profile($id, $type === 'cl' ? 'mihomo' : 'singbox', $state);
             return self::connectionNodes($profile, $type, name: $client['email'] . ' · ' . ManagedProtocol::NAMES[$protocol]);
@@ -158,12 +156,10 @@ trait BotConnectionExports
             if ($format !== '') {
                 $value = $this->connectionExport($source, $protocol, $format);
                 $extension = in_array($format, ['uri', 'sr'], true) ? 'txt' : ($format === 'cl' ? 'yaml' : 'json');
-                if ($protocol === 'snolc') $extension = 'zip';
                 $body = is_string($value) ? $value : ($format === 'cl' ? yaml_emit($value, YAML_UTF8_ENCODING)
                     : json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
                 $filename = self::safeFileName($client['email'], 'client') . "-$protocol-$format.$extension";
                 $mime = $extension === 'yaml' ? 'application/yaml' : ($extension === 'json' ? 'application/json' : 'text/plain');
-                if ($protocol === 'snolc') $mime = 'application/zip';
                 $this->protocolOutput = true;
                 try { $this->sendFile($this->input['chat'], new CURLStringFile($body, $filename, $mime)); }
                 finally { $this->protocolOutput = false; }
@@ -172,9 +168,6 @@ trait BotConnectionExports
             $text = ['Отдельные подключения · ' . self::esc($client['email']),
                 'JSON/YAML содержит только подключение в proxies/outbounds, без DNS, маршрутов, rule-set, TUN и локальных портов. Добавьте эти записи в свою конфигурацию и выберите прокси в её группе или правилах.',
                 'Это файлы для ручного импорта, не подписка. Сохраните файл до следующего нажатия: временные сообщения удаляются.'];
-            if ($protocol === 'snolc') $text = ['snolc SSH + Noise · ' . self::esc($client['email']),
-                'Архив для нативного клиента Linux x86_64 с glibc и Python 3.11+. Внутри профиль, проверенные версии модулей и инструкция запуска. SOCKS5 передаёт TCP и UDP. Сохраните архив до следующего нажатия.',
-                'В Mihomo, sing-box и текущий импорт snolcNG этот архив не добавляется.'];
             if ($protocol === 'masque') $text = ['MASQUE · ' . self::esc($client['email']),
                 'Полный профиль для Xray 26.9.30 или новее. Запуск: xray run -config profile.json. Локальный SOCKS5: 127.0.0.1:1080, TCP и UDP. Проверка TLS включена.',
                 'HTTP/3 использует UDP, HTTP/2 — TCP. Выбор транспорта и UDP-маскировка находятся в настройках MASQUE. После изменений скачайте профиль заново.'];

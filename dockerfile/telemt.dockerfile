@@ -10,7 +10,7 @@
 # Бинарь запускается ботом по ssh: restartTelemt() пишет /telemt/telemt.toml
 # и поднимает `telemt run`. Entrypoint восстанавливает процесс после сбоя,
 # учитывая сохранённый выключатель сервиса и общую с ботом блокировку.
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 ARG TELEMT_VERSION=3.5.13
 
 FROM ghcr.io/telemt/telemt:${TELEMT_VERSION} AS dl
@@ -24,7 +24,8 @@ COPY --from=dl /app/telemt /usr/local/bin/telemt
 # (telemtVersion()), как /etc/wgcf_version у warp. Это версия РЕАЛЬНО
 # запущенного образа, а не пин из .env (они расходятся, пока образ не
 # пересобран после смены TELEMT_VERSION).
-RUN apk add --no-cache openssh python3 \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache openssh python3 \
     && chmod +x /usr/local/bin/telemt \
     && echo "${TELEMT_VERSION}" > /etc/telemt_version \
     && mkdir -p /root/.ssh

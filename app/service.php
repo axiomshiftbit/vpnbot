@@ -11,6 +11,7 @@ if ($c['debug']) {
 }
 
 $bot = new Bot($c['key'], $i);
+$bot->sshStartupWait = 30;
 
 // После старого updater конфиги ещё пусты, но ожидается их восстановление.
 // Такой запуск не должен назначать nip.io поверх сохранённого домена.
@@ -29,13 +30,14 @@ $bot->dontshowcron = 1;
 $bot->sslip($initialSetup);
 $bot->adguardSync();
 $bot->cloakNginx();
+$bot->restartNaive();
 $bot->syncDeny();
 $bot->cleanDocker();
 $bot->dnsttStart();
 $bot->restartHysteria();
 $bot->restartTt();
 $c = $bot->getPacConf();
-$bot->setUpstreamDomain($c['transport'] != 'Reality' ? 't' : $c['reality']['domain']);
+$bot->setUpstreamDomain(($c['transport'] ?? '') != 'Reality' ? 't' : $c['reality']['domain']);
 $bot->setUpstreamDomainNaive($c['domain']);
 $bot->setUpstreamDomainOcserv($c['domain']);
 $bot->syncOcservCamouflage();

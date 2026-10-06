@@ -23,6 +23,15 @@ add() {
     chain="$1"
     shift
     iptables -C "$chain" "$@" -j DROP 2>/dev/null && return 0
+    # У xt_ipp2p 3.27 с iptables-nft проверка -C может не узнать своё же
+    # правило (служебные поля match меняются в ядре). Сверяем только точное
+    # правило --bit, иначе повторный запуск накапливает дубликаты.
+    if [ "$#" -eq 5 ] && [ "$3" = -m ] && [ "$4" = ipp2p ] && [ "$5" = --bit ]; then
+        if iptables -S "$chain" 2>/dev/null | awk -v chain="$chain" -v proto="$2" '
+            NF == 9 && $1 == "-A" && $2 == chain && $3 == "-p" && $4 == proto &&
+            $5 == "-m" && $6 == "ipp2p" && $7 == "--bit" && $8 == "-j" && $9 == "DROP" { found=1 }
+            END { exit !found }'; then return 0; fi
+    fi
     if ! iptables -I "$chain" "$@" -j DROP 2>>"$LOG"; then
         log "FAILED: iptables -I $chain $* -j DROP"
         return 1

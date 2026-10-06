@@ -14,6 +14,9 @@ WGCF_DIR="/etc/warp"
 WGCF_CONF="$WGCF_DIR/wgcf-profile.conf"
 WGCF_TOML="$WGCF_DIR/wgcf-account.toml"
 SOCKS_PORT="${SOCKS_PORT:-1080}"
+# Xray выдаёт отдельный UDP relay для каждой SOCKS5-ассоциации. Диапазон
+# закреплён sysctl в compose и разрешён в Bot::WARP_SOCKS_UDP_PORTS.
+SOCKS_UDP_PORTS=20000:29999
 
 WARP_LICENSE_KEY=$(cat /config/pac.json | jq -r '.warp // empty')
 
@@ -140,7 +143,7 @@ warp_disabled() {
     [ "$(jq -r '.warpoff // empty' /config/pac.json 2>/dev/null)" = "1" ]
 }
 
-# Kill-switch: microsocks поднимается ТОЛЬКО при живом туннеле.
+# Kill-switch: SOCKS поднимается ТОЛЬКО при живом туннеле.
 #
 # Раньше прокси слушал :1080 независимо от состояния wgcf-profile, а правила
 # iptables ниже ограничивают лишь ВХОД в прокси, не выход из контейнера. Когда
@@ -165,7 +168,8 @@ PROXY_UID=$(id -u warp-proxy)
 case "$SOCKS_PORT" in ''|*[!0-9]*) echo "Invalid SOCKS_PORT" >&2; exit 1;; esac
 for firewall in iptables ip6tables; do
     "$firewall" -N WARP_PROXY_OUT 2>/dev/null || "$firewall" -F WARP_PROXY_OUT
-    "$firewall" -A WARP_PROXY_OUT -p tcp --sport "$SOCKS_PORT" -m conntrack --ctstate ESTABLISHED -j RETURN
+    "$firewall" -A WARP_PROXY_OUT -p tcp --sport "$SOCKS_PORT" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN
+    "$firewall" -A WARP_PROXY_OUT -p udp --sport "$SOCKS_UDP_PORTS" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN
     if [ "$firewall" = iptables ]; then
         private_nets="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4"
     else
@@ -178,6 +182,28 @@ for firewall in iptables ip6tables; do
     "$firewall" -A WARP_PROXY_OUT -j REJECT
 done
 
+# Конфиг не содержит учётных данных. Сам процесс и все его дочерние процессы
+# работают без root; UID-фильтр действует и на DNS, и на UDP, и на TCP.
+# Диапазон задаётся только в сетевом namespace контейнера wp, не на хосте.
+# ash читает builtin read по байту; некоторые proc/sys-файлы при следующем
+# чтении уже возвращают EOF. С set -e это прерывало штатный запуск через sh.
+udp_range=$(awk '{print $1 ":" $2}' /proc/sys/net/ipv4/ip_local_port_range)
+if [ "$udp_range" != "$SOCKS_UDP_PORTS" ]; then
+    echo "[warp] Incorrect UDP relay range; recreate wp with current compose" >&2
+    exit 1
+fi
+cat > /run/warp-socks.json <<EOF
+{
+  "log": {"loglevel": "warning", "access": "none"},
+  "inbounds": [{
+    "listen": "0.0.0.0", "port": $SOCKS_PORT, "protocol": "socks",
+    "settings": {"auth": "noauth", "udp": true}
+  }],
+  "outbounds": [{"protocol": "freedom", "streamSettings": {"sockopt": {"domainStrategy": "UseIPv4"}}}]
+}
+EOF
+chmod 644 /run/warp-socks.json
+
 tunnel_up() {
     wg show "$WGCF_IF" >/dev/null 2>&1
 }
@@ -186,6 +212,12 @@ tunnel_up() {
 # успех, даже когда endpoint не отвечает.
 warp_up() {
     wg-quick up "$WGCF_CONF" || return 1
+    # Служебный порт WireGuard отделён от SOCKS relay и не опубликован.
+    # Это нужно до handshake, в том числе при повторном подъёме watchdog.
+    if ! wg set "$WGCF_IF" listen-port 51820; then
+        wg-quick down "$WGCF_CONF" 2>/dev/null || true
+        return 1
+    fi
     i=0
     while [ "$i" -lt 15 ]; do
         hs=$(wg show "$WGCF_IF" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -n | tail -1)
@@ -208,7 +240,7 @@ socks_running() {
 socks_start() {
     # WireGuard сохраняет владельца исходного сокета у зашифрованного UDP
     # пакета. Его выпускаем по fwmark wg-quick; непривилегированный процесс
-    # microsocks сам выставить этот mark не может. Без исключения UID-фильтр
+    # SOCKS сам выставить этот mark не может. Без исключения UID-фильтр
     # блокировал бы и настоящий туннель, а не только прямой выход.
     tunnel_mark=$(wg show "$WGCF_IF" fwmark) || return 1
     case "$tunnel_mark" in ''|off|0|0x0|*[!0-9a-fx]*) return 1;; esac
@@ -218,14 +250,15 @@ socks_start() {
             || return 1
     done
     socks_running && return 0
-    echo "[warp] Starting microsocks on port $SOCKS_PORT..."
-    su -s /bin/sh -c "exec microsocks -p $SOCKS_PORT" warp-proxy &
+    echo "[warp] Starting Xray SOCKS5 TCP:$SOCKS_PORT UDP:$SOCKS_UDP_PORTS..."
+    su -s /bin/sh -c 'exec warp-socks run -config /run/warp-socks.json' warp-proxy &
     MS_PID=$!
 }
 socks_stop() {
     socks_running || return 0
-    echo "[warp] Stopping microsocks: туннеля нет, выпускать трафик мимо WARP нельзя"
-    kill "$MS_PID" 2>/dev/null
+    echo "[warp] Stopping SOCKS: туннеля нет, выпускать трафик мимо WARP нельзя"
+    pkill -x warp-socks 2>/dev/null || true
+    wait "$MS_PID" 2>/dev/null || true
     MS_PID=""
 }
 
@@ -243,7 +276,7 @@ fi
 # endpoint'а (engage.cloudflareclient.com) при пере-поднятии не ломается.
 printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 
-# microsocks не умеет ACL и слушает 0.0.0.0, а в docker-сети проекта он виден
+# SOCKS слушает 0.0.0.0, а в docker-сети проекта он виден
 # КАЖДОМУ контейнеру. Клиент любого VPN тоже попадает сюда: его трафик
 # маскируется под адрес своего контейнера (например 10.8.0.0/24 -> 10.10.0.19
 # у openvpn), то есть выглядит как обычный внутренний источник. В итоге прокси
@@ -260,7 +293,15 @@ echo "[warp] (WARP_SOCKS_ALLOW=\"ip1 ip2\" overrides the xray part if xray lives
 if iptables -N WARP_SOCKS 2>/dev/null; then :; else iptables -F WARP_SOCKS; fi
 iptables -C INPUT -p tcp --dport "$SOCKS_PORT" -j WARP_SOCKS 2>/dev/null \
     || iptables -I INPUT -p tcp --dport "$SOCKS_PORT" -j WARP_SOCKS
+# Ответы внешних UDP-серверов приходят через wgcf-profile. ACL ограничивает
+# только клиентскую сторону relay: пакеты, пришедшие НЕ через туннель.
+iptables -C INPUT ! -i "$WGCF_IF" -p udp --dport "$SOCKS_UDP_PORTS" -j WARP_SOCKS 2>/dev/null \
+    || iptables -I INPUT ! -i "$WGCF_IF" -p udp --dport "$SOCKS_UDP_PORTS" -j WARP_SOCKS
 iptables -A WARP_SOCKS -i lo -j ACCEPT
+# Служебные UDP-запросы контейнера (например DNS при выключенном WARP)
+# используют тот же ephemeral-диапазон. Пропускаем только ответы на них:
+# новые запросы к SOCKS relay по-прежнему ограничены списком клиентов.
+iptables -A WARP_SOCKS -p udp -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j ACCEPT
 for ip in $SOCKS_ALLOW; do
     iptables -A WARP_SOCKS -s "$ip" -j ACCEPT
 done
@@ -273,8 +314,8 @@ iptables -A WARP_SOCKS -j DROP
 # держит для него точечное direct-правило. Убрать ту дырку нельзя — у клиента
 # сразу отваливаются все сайты, идущие через WARP.
 #
-# Значит режем не вход, а ВЫХОД: microsocks не умеет ACL по назначению и
-# выполняет CONNECT куда попросят, включая внутренние адреса проекта. Без этого
+# Ограничиваем и ВЫХОД: SOCKS принимает назначения от клиента, включая
+# внутренние адреса проекта. Без этого
 # блока любой клиент VPN, дозвонившись до прокси, ходил бы через него в
 # docker-сеть (панель, AdGuard, sshd контейнеров, socks-inbound'ы xray) в обход
 # гейта. Выход в интернет через туннель WARP — назначения публичные — не задет.
@@ -301,7 +342,7 @@ else
 fi
 
 # Строго ПЕРЕД общей WARP_SOCKS_OUT: её ACCEPT для loopback и established
-# нужен служебным процессам, но не должен обходить ограничения microsocks.
+# нужен служебным процессам, но не должен обходить ограничения SOCKS.
 for firewall in iptables ip6tables; do
     "$firewall" -D OUTPUT -m owner --uid-owner "$PROXY_UID" -j WARP_PROXY_OUT 2>/dev/null || true
     "$firewall" -I OUTPUT 1 -m owner --uid-owner "$PROXY_UID" -j WARP_PROXY_OUT
@@ -351,7 +392,7 @@ while true; do
         fi
     fi
     if ! socks_running; then
-        echo "[warp] microsocks died — restarting..."
+        echo "[warp] SOCKS died — restarting..."
         socks_start
     fi
     if sh /warp_probe.sh; then

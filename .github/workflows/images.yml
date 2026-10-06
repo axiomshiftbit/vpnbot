@@ -1,313 +1,104 @@
-# Сборка и публикация образов сервисов в ghcr.io/axiomshiftbit.
-#
-# Зачем: docker-compose.yml ссылался на чужие образы mercurykd/vpnbot-*, а
-# `docker compose up` при дефолтном pull_policy=missing сначала делает pull и
-# только потом собирает недостающее. Форк переписал часть dockerfile'ов, не
-# поднимая теги, — на чистом хосте скачивались образы автора, и правки форка
-# не применялись. Плюс пять образов (ss, ovpn, ipsec, tt, telemt) у автора не
-# существуют вовсе, а сборка tt — это cargo build двух Rust-бинарей, который
-# на VPS с 1-2 ГБ падает по OOM. Собираем всё здесь, на хост приезжает готовое.
-#
-# Сборка идёт через `docker buildx bake` поверх самого docker-compose.yml:
-# bake читает оттуда dockerfile, context и build.args (то есть все пины версий
-# из .env) — дублировать два десятка переменных в этом файле не нужно.
-
+# Build once -> checks -> disposable GitHub VPN stand -> atomic image-set pointer.
+# No PR code is executed by this publication workflow. Candidate tags never
+# replace working channels; publishing never rebuilds a tested image.
 name: images
-
 on:
   push:
     branches: [dev, master]
-    paths:
-      - 'dockerfile/**'
-      - 'scripts/hysteria_service.py'
-      - 'scripts/snolc_service.py'
-      - 'scripts/masque_service.py'
-      - 'scripts/protocol_service.py'
-      - 'app/snolc/**'
-      - '.dockerignore'
-      - '.env'
-      - 'docker-compose.yml'
-      - '.github/workflows/images.yml'
   workflow_dispatch:
     inputs:
-      services:
-        description: 'Сервисы через запятую (ng,php,wg,...). Пусто — все 18.'
-        required: false
-        default: ''
-  # Базовые образы запиннены не все (golang:alpine, python:3.13-slim,
-  # debian:bookworm-slim), а часть сборок тянет релизы с github. Еженедельный
-  # прогон подбирает патчи безопасности.
+      test_runner:
+        description: 'Резервный запуск на выделенном VPNBotTest (обычно выключено)'
+        type: boolean
+        default: false
   schedule:
     - cron: '0 4 * * 1'
-
-# packages: write НЕ на уровне workflow: джобу plan (git diff + jq) права на
-# запись пакетов не нужны вовсе, а с ними компрометация любого его шага давала
-# заливку произвольного образа в ghcr под именем проекта. Джоб prune свои права
-# и так переобъявляет локально.
 permissions:
   contents: read
-
-# Отменять на полпути нельзя: половина образов уже была бы опубликована.
 concurrency:
   group: images-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
-  plan:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.pick.outputs.matrix }}
-      count: ${{ steps.pick.outputs.count }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - id: pick
-        env:
-          EVENT: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
-          SERVICES: ${{ inputs.services }}
-        run: |
-          set -euo pipefail
-          ALL="ng php wg ad telemt xr oc np ss dnstt ovpn ipsec tt hy anytls mieru snolc masque"
-
-          # Какие образы задевает правка .env. Раньше любая строка (хоть смена
-          # таймзоны) пересобирала все 14, а это десятки минут CI из-за tt.
-          # Неизвестная переменная — повод собрать всё: пропустить нужную
-          # пересборку хуже, чем сделать лишнюю.
-          env_targets() {
-            git show "${BEFORE}:.env" 2>/dev/null | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sort > /tmp/env.old || true
-            git show "${GITHUB_SHA}:.env"          | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sort > /tmp/env.new
-            out=""
-            for v in $(diff /tmp/env.old /tmp/env.new | sed -nE 's/^[<>] ([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' | sort -u); do
-              case "$v" in
-                NGINX_VERSION)                     out="$out ng" ;;
-                DNSLOOKUP_VERSION|SINGBOX_SHA256|MIHOMO_VERSION|MIHOMO_SHA256)
-                                                   out="$out php" ;;
-                SINGBOX_VERSION)                   out="$out php anytls" ;;
-                SINGBOX_SOURCE_SHA256)              out="$out anytls" ;;
-                MIERU_VERSION|MIERU_SOURCE_SHA256)   out="$out mieru" ;;
-                PROTOCOL_GO_VERSION)               out="$out anytls mieru" ;;
-                XRAY_VERSION|XRAY_VERSION_2|XRAY_VERSION_3|XRAY_FORK_VERSION) out="$out xr" ;;
-                MASQUE_GO_VERSION|MASQUE_XRAY_VERSION|MASQUE_SOURCE_SHA256) out="$out masque" ;;
-                OCSERV_VERSION)                    out="$out oc" ;;
-                OPENVPN_VERSION|EASYRSA_VERSION|EASYRSA_SHA256) out="$out ovpn" ;;
-                ADGUARD_VERSION)                   out="$out ad" ;;
-                HYSTERIA_VERSION)                  out="$out hy" ;;
-                TELEMT_VERSION)                    out="$out telemt" ;;
-                TT_REF)                            out="$out tt" ;;
-                DNSTT_REF)                         out="$out dnstt" ;;
-                AWG_GO_VERSION|AWG_TOOLS_VERSION|WGCF_VERSION|MICROSOCKS_REF)
-                                                   out="$out wg" ;;
-                CADDY_GO_VERSION|XCADDY_VERSION|CADDY_VERSION|FORWARDPROXY_VERSION)
-                                                   out="$out np" ;;
-                SS_RUST_VERSION|V2RAY_PLUGIN_VERSION|CLOAK_VERSION|SIMPLE_TLS_VERSION)
-                                                   out="$out ss" ;;
-                # Рантайм-настройки: в сборку не уходят вовсе.
-                TZ|IP|VER|VPNBOT_TAG|TELEGRAM_API|ENV|WGADDRESS|WG1ADDRESS|CKPORT|STLSPORT|TTPORT|OVPNPORT|OVPNPROTO|OVPNSUBNET|L2TPSUBNET|IKEV2SUBNET)
-                                                   ;;
-                # IMAGE — базовый alpine для большинства образов; всё прочее
-                # неизвестно.
-                *)                                 out="${ALL}"; break ;;
-              esac
-            done
-            echo "$out"
-          }
-
-          df2svc() {
-            case "$1" in
-              nginx.dockerfile)       echo ng ;;
-              php.dockerfile)         echo php ;;
-              wireguard.dockerfile)   echo wg ;;
-              adguard.dockerfile)     echo ad ;;
-              telemt.dockerfile)      echo telemt ;;
-              xray.dockerfile)        echo xr ;;
-              ocserv.dockerfile)      echo oc ;;
-              naive.dockerfile)       echo np ;;
-              shadowsocks.dockerfile) echo ss ;;
-              dnstt.dockerfile)       echo dnstt ;;
-              openvpn.dockerfile)     echo ovpn ;;
-              ipsec.dockerfile)       echo ipsec ;;
-              trusttunnel.dockerfile) echo tt ;;
-              hysteria.dockerfile)    echo hy ;;
-              protocol.dockerfile) echo anytls ;;
-              mieru.dockerfile) echo mieru ;;
-              masque.dockerfile|masque-isolation.patch) echo masque ;;
-              snolc.dockerfile) echo snolc ;;
-              snolc-core.patch|snolc-modules.patch) echo snolc ;;
-            esac
-          }
-
-          if [ -n "${SERVICES}" ]; then
-            SEL=$(echo "${SERVICES}" | tr ',' ' ')
-            # Значение уходит в targets bake и в ИМЯ публикуемого пакета.
-            # Опечатка вроде «xr,ss » давала попытку собрать несуществующий
-            # target и мусорное имя в ghcr — сверяем со списком.
-            for s in ${SEL}; do
-              case " ${ALL} " in
-                *" ${s} "*) ;;
-                *) echo "неизвестный сервис: '${s}' (допустимы: ${ALL})" >&2; exit 1 ;;
-              esac
-            done
-          elif [ "${EVENT}" != 'push' ]; then
-            SEL="${ALL}"
-          elif [ -z "${BEFORE}" ] || [ "${BEFORE}" = '0000000000000000000000000000000000000000' ]; then
-            # Первый push ветки: сравнивать не с чем.
-            SEL="${ALL}"
-          else
-            CHANGED=$(git diff --name-only "${BEFORE}" "${GITHUB_SHA}" || echo '')
-            # compose держит build.args и контексты всех сервисов, сам workflow —
-            # правила сборки: и то и другое влияет на любой образ.
-            if echo "${CHANGED}" | grep -qE '^(docker-compose\.yml|\.github/workflows/images\.yml)$'; then
-              SEL="${ALL}"
-            else
-              SEL=""
-              for f in $(echo "${CHANGED}" | grep '^dockerfile/' || true); do
-                case "$f" in
-                  dockerfile/protocol-stats/*|dockerfile/protocol-policy/*) s=anytls ;;
-                  dockerfile/mieru-control/*|dockerfile/mieru-policy/*) s=mieru ;;
-                  *) s=$(df2svc "$(basename "$f")") ;;
-                esac
-                [ -n "$s" ] && SEL="${SEL} ${s}"
-              done
-              if echo "${CHANGED}" | grep -qE '^\.env$'; then
-                SEL="${SEL} $(env_targets)"
-              fi
-              if echo "${CHANGED}" | grep -qE '^scripts/(masque_service|protocol_service)\.py$'; then
-                SEL="${SEL} masque"
-              fi
-              if echo "${CHANGED}" | grep -qE '^scripts/hysteria_service\.py$'; then
-                SEL="${SEL} hy"
-              fi
-              if echo "${CHANGED}" | grep -qE '^(scripts/(snolc_service|protocol_service)\.py|app/snolc/|\.dockerignore$)'; then
-                SEL="${SEL} snolc"
-              fi
-            fi
-          fi
-
-          # Уникализируем: два сервиса одного образа не должны собираться дважды.
-          # || true обязателен: при пустом SEL (правка не задела ни одного
-          # dockerfile) grep возвращает 1 и set -e уронил бы весь job.
-          SEL=$(echo "${SEL}" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' || true)
-
-          MATRIX='[]'
-          for s in ${SEL}; do
-            case "$s" in
-              anytls) img=protocol ;;
-              hy) img=hysteria ;;
-              *)  img="$s" ;;
-            esac
-            MATRIX=$(echo "${MATRIX}" | jq -c --arg s "$s" --arg i "$img" '. + [{service:$s, image:$i}]')
-          done
-
-          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
-          echo "count=$(echo "${MATRIX}" | jq 'length')" >> "$GITHUB_OUTPUT"
-          echo "Собираем: ${SEL:-(нечего)}"
-          # В сводку запуска: иначе, чтобы понять, почему собралось 14 образов
-          # вместо одного, приходится лезть в лог джоба.
-          {
-            echo "### Образы к сборке"
-            echo ""
-            echo "${SEL:-_нечего: правка не задела ни одного образа_}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
+  tests:
+    uses: ./.github/workflows/tests.yml
+    with:
+      test_runner: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner }}
   build:
-    needs: plan
-    if: needs.plan.outputs.count != '0'
+    needs: tests
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-latest' }}
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-latest
-    # tt компилирует два Rust-бинаря с нуля; остальные укладываются в 20 минут.
-    timeout-minutes: 120
-    # bake-action по умолчанию заливает build record (*.dockerbuild) артефактом
-    # прогона: трасса сборки вместе с окружением раннера. Репозиторий приватный,
-    # образы тянет тот же владелец — читать эту трассу некому, а лежит она
-    # рядом с логами. Выключаем по той же логике, что provenance/sbom ниже.
-    # Кавычки не для красоты: actions/toolkit читает эти переменные как строку и
-    # сравнивает с 'false' — YAML-булев сюда попадает только через сериализацию.
     env:
       DOCKER_BUILD_SUMMARY: 'false'
       DOCKER_BUILD_RECORD_UPLOAD: 'false'
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+        include:
+          - {service: ng, image: ng}
+          - {service: php, image: php}
+          - {service: wg, image: wg}
+          - {service: ad, image: ad}
+          - {service: telemt, image: telemt}
+          - {service: xr, image: xr}
+          - {service: oc, image: oc}
+          - {service: np, image: np}
+          - {service: ss, image: ss}
+          - {service: dnstt, image: dnstt}
+          - {service: ovpn, image: ovpn}
+          - {service: ipsec, image: ipsec}
+          - {service: tt, image: tt}
+          - {service: hy, image: hysteria}
+          - {service: anytls, image: protocol}
+          - {service: mieru, image: mieru}
+          - {service: masque, image: masque}
     steps:
-      - uses: actions/checkout@v5
-
-      # compose объявляет override.env как необязательный, но bake разбирает
-      # весь файл целиком — пусть файл существует.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - run: touch override.env
-
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
+      - name: Проверить резервный выделенный хост перед сборкой
+        if: inputs.test_runner
+        run: |
+          test "$(cat /etc/vpnbot-ci-test-host)" = vpnbot-test
+          test -z "$(docker ps -q)"
+          python3 -c 'import shutil; assert shutil.disk_usage("/var/lib/docker").free >= 6 * 1024**3, "Недостаточно места для безопасной сборки"'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver-opts: |
+            ${{ inputs.test_runner && 'memory=1280m' || '' }}
+            ${{ inputs.test_runner && 'memory-swap=2560m' || '' }}
+            ${{ inputs.test_runner && 'cpu-period=100000' || '' }}
+            ${{ inputs.test_runner && 'cpu-quota=75000' || '' }}
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 1
+              maxUsedSpace = "4GB"
+              minFreeSpace = "3GB"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Прогон по расписанию НЕ двигает канальный тег. Он пересобирает тот же
-      # коммит с другим содержимым (свежая база golang/debian, новый снимок
-      # edge-репозиториев alpine, свежие релизы с github), и раньше результат
-      # уезжал прямо в :latest/:dev — то есть поведение прода менялось без
-      # коммита, а «откат на предыдущий образ» было нечем сделать. Теперь
-      # такой прогон публикуется как :sha-… и :nightly, а канальный тег
-      # двигает только push или ручной workflow_dispatch.
-      - name: Канал публикации
-        run: |
-          CHANNEL='${{ github.ref_name == 'master' && 'latest' || 'dev' }}'
-          IMG='ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}'
-          echo "CHANNEL=${CHANNEL}" >> "$GITHUB_ENV"
-          {
-            echo 'BAKE_TAGS<<BAKE_TAGS_EOF'
-            echo "*.tags=${IMG}:sha-${{ github.sha }}"
-            if [ '${{ github.event_name }}' = 'schedule' ]; then
-              echo "*.tags=${IMG}:nightly"
-            else
-              echo "*.tags=${IMG}:${CHANNEL}"
-            fi
-            echo 'BAKE_TAGS_EOF'
-          } >> "$GITHUB_ENV"
-
-      - uses: docker/bake-action@v7
+      - uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7
+        id: image
         with:
           files: docker-compose.yml
           targets: ${{ matrix.service }}
           push: true
-          # apk --no-cache не отключает кеш слоёв Docker. Плановая сборка
-          # должна заново получить базу и пакеты даже при неизменном Dockerfile.
           pull: true
-          no-cache: ${{ github.event_name == 'schedule' }}
-          # Только этим input'ом, а не через set: у bake-action свой дефолт
-          # provenance для GitHub Actions (mode=max), и он перекрывает
-          # *.attest=... из set — проверено на публикации, attestation
-          # приезжала с полным github_event_payload.
-          #
-          # false, а не mode=min: attestation полезна для проверки
-          # происхождения ЧУЖИХ образов, а здесь и репозиторий приватный, и
-          # образы тянет тот же владелец. Выгоды нет, а любой режим кроме
-          # выключенного тащит в публичный registry метаданные о приватной
-          # сборке. sbom по той же причине.
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
           provenance: false
           sbom: false
-          # platform задаём явно: в php/wg/ss/xray жёстко зашиты ассеты
-          # linux-amd64/x86_64, на arm-раннере собралось бы нерабочее.
-          # Кеш со scope на сервис — с общим scope 14 сборок затирают друг друга.
-          # image.source нужен, чтобы пакет сам привязался к репозиторию.
-          #
           set: |
             *.platform=linux/amd64
-            ${{ env.BAKE_TAGS }}
+            *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
             *.cache-from=type=gha,scope=${{ matrix.service }}
-            *.cache-to=type=gha,mode=max,scope=${{ matrix.service }}
+            *.cache-to=${{ inputs.test_runner && 'type=inline' || format('type=gha,mode=max,scope={0}', matrix.service) }}
             *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             *.labels.org.opencontainers.image.revision=${{ github.sha }}
-
-      # Готовые образы для проверки на стенде без отдельного PAT с read:packages.
-      # В архив входит только образ из registry; файлы раннера и runtime не входят.
       - name: Проверить версии sing-box, Mihomo и Mieru
         if: contains(fromJSON('["php","anytls","mieru"]'), matrix.service)
         env:
@@ -315,7 +106,7 @@ jobs:
           IMAGE_NAME: ${{ matrix.image }}
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-${IMAGE_NAME}:sha-${GITHUB_SHA}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-${IMAGE_NAME}:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker pull "$image"
           verify() {
             key=$1; binary=$2; flag=$3
@@ -334,6 +125,10 @@ jobs:
             php)
               verify SINGBOX_VERSION /usr/bin/sing-box version
               verify MIHOMO_VERSION /usr/bin/mihomo -v
+              docker run --rm --network=none --entrypoint sh \
+                -v "$PWD/tests/php_runtime_test.sh:/runtime-test.sh:ro" \
+                -v "$PWD/config/php.ini:/etc/php85/php.ini:ro" \
+                "$image" /runtime-test.sh
               docker run --rm --network=none --entrypoint sh "$image" -ec '
                 printf "%s\n" '\''{"version":3,"rules":[{"domain":["example.test"]}]}'\'' > /tmp/rules.json
                 sing-box rule-set compile --output /tmp/rules.srs /tmp/rules.json
@@ -354,7 +149,7 @@ jobs:
         if: matrix.service == 'xr'
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-xr:sha-${GITHUB_SHA}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-xr:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker pull "$image"
           while read -r key binary; do
             expected=$(sed -n "s/^${key}=//p" .env)
@@ -382,7 +177,7 @@ jobs:
         if: matrix.service == 'masque'
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-masque:sha-${GITHUB_SHA}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-masque:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker pull "$image"
           expected=$(sed -n 's/^MASQUE_XRAY_VERSION=//p' .env)
           actual=$(docker run --rm --network=none --entrypoint /usr/local/bin/xray "$image" version)
@@ -399,131 +194,217 @@ jobs:
           docker cp "$container:/usr/local/bin/xray" "$RUNNER_TEMP/xray-masque"
           docker rm "$container"
 
-      - name: Ядро MASQUE для проверки тестовым сервером
-        if: matrix.service == 'masque' && github.ref_name == 'dev'
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: vpnbot-core-masque
-          path: ${{ runner.temp }}/xray-masque
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Сохранить изменённые образы для проверки dev
-        if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec","snolc"]'), matrix.service)
+      - name: Проверить DNS-маршрут до запуска OpenConnect
+        if: matrix.service == 'ad'
         run: |
           set -euo pipefail
-          image='ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:sha-${{ github.sha }}'
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-ad:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker pull "$image"
-          revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")
-          test "$revision" = "$GITHUB_SHA"
-          docker image inspect --format 'Runtime image {{.Id}} {{range .RepoDigests}}{{.}} {{end}}' "$image"
-          docker save "$image" | gzip -1 > "$RUNNER_TEMP/vpnbot-${{ matrix.image }}.tar.gz"
+          docker run --rm --network=none --entrypoint sh -e VPNBOT_IMAGE_TEST=1 \
+            -v "$PWD/tests/adguard_routes_test.sh:/test.sh:ro" \
+            -v "$PWD/scripts/start_ad.sh:/entrypoint-under-test.sh:ro" \
+            "$image" /test.sh
 
-      - name: Образ для тестового стенда
-        if: github.ref_name == 'dev' && github.event_name != 'schedule' && contains(fromJSON('["anytls","mieru","ipsec","snolc"]'), matrix.service)
-        uses: actions/upload-artifact@v7.0.1
+      - name: Проверить стабильную базу VPN-образов
+        if: contains(fromJSON('["wg","oc","ovpn","ipsec"]'), matrix.service)
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-${IMAGE_NAME}:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker pull "$image"
+          docker run --rm --network=none --entrypoint sh "$image" -ec '
+            grep -Ex "3\\.24\\.[0-9]+" /etc/alpine-release
+            test -s /etc/apk/repositories
+            ! grep -Ev "^https?://[^ ]+/alpine/v3\\.24/(main|community)$|^#|^[[:space:]]*$" /etc/apk/repositories
+            ! command -v go
+          '
+          if [[ "$IMAGE_NAME" == ipsec ]]; then
+            # start_ipsec запускает charon по абсолютному пути. Проверка
+            # восстановления должна находить его через pgrep -x по имени.
+            docker run --rm --network=none --entrypoint sh "$image" -ec '
+              /bin/sleep 30 & child=$!
+              trap "kill $child 2>/dev/null || true" EXIT
+              pgrep -x sleep | grep -qx "$child"
+            '
+          fi
+
+      - name: Идентификатор проверенного образа
+        env:
+          METADATA: ${{ steps.image.outputs.metadata }}
+          SERVICE: ${{ matrix.service }}
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib,re
+          e=os.environ; digest=json.loads(e['METADATA'])[e['SERVICE']]['containerimage.digest']
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}',digest)
+          value=dict(image=e['IMAGE_NAME'],digest=digest,source=e['GITHUB_SHA'],run=int(e['GITHUB_RUN_ID']),attempt=int(e['GITHUB_RUN_ATTEMPT']))
+          path=pathlib.Path(e['RUNNER_TEMP'])/'descriptor';path.mkdir()
+          (path/(e['IMAGE_NAME']+'.json')).write_text(json.dumps(value))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vpnbot-image-${{ matrix.image }}
-          path: ${{ runner.temp }}/vpnbot-${{ matrix.image }}.tar.gz
+          name: descriptor-${{ matrix.image }}
+          path: ${{ runner.temp }}/descriptor/*.json
           if-no-files-found: error
-          compression-level: 0
           overwrite: true
           retention-days: 1
-
-  # Старые версии образов копятся навсегда: registry их не вытесняет, а каждый
-  # прогон кладёт новый sha-тег. За месяц ежедневных сборок это десятки гигабайт
-  # у аккаунта, и найти нужную версию в списке становится нельзя.
-  #
-  # Держим три последних sha-версии на пакет: на откат. Версии, несущие
-  # КАНАЛЬНЫЙ тег (latest, dev), не удаляются никогда — независимо от возраста.
-  #
-  # Раньше здесь стоял actions/delete-package-versions с min-versions-to-keep: 3
-  # и рассуждением «тег latest всегда на самой свежей, поэтому удержание его не
-  # заденет». Для latest это верно, а для dev — НЕТ: сборки с master кладут
-  # новые версии, dev-версия уезжает за третье место и удаляется ВМЕСТЕ С ТЕГОМ.
-  # К 2026-08-09 тег :dev остался ровно у одного пакета из 14, а
-  # docker-compose.yml по умолчанию тянет ${VPNBOT_TAG:-dev} и .env ставит
-  # VPNBOT_TAG=dev — то есть свежая установка падала на «manifest unknown»
-  # для 13 образов. Спасало только override.env с latest на боевых хостах.
-  #
-  # Чистим все пакеты, а не только собранные в этом прогоне: сборка обычно
-  # частичная (plan сужает матрицу), и пакеты, которые давно не пересобирались,
-  # иначе копили бы хвост вечно. Лишнего не удалит — если версий три или меньше,
-  # шаг ничего не делает.
-  prune:
+      - name: Освободить локальную копию проверенного образа на резервном runner
+        if: always() && inputs.test_runner
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-${IMAGE_NAME}:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker image inspect "$image" >/dev/null 2>&1; then
+            docker image rm "$image"
+          fi
+  bundle:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-latest' }}
+    outputs:
+      fingerprint: ${{ steps.manifest.outputs.fingerprint }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: descriptor-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/descriptors
+      - id: manifest
+        run: |
+          set -euo pipefail
+          hash=$(python3 scripts/image_bundle.py collect "$RUNNER_TEMP/descriptors" "$RUNNER_TEMP/bundle.json" --source "$GITHUB_SHA" --run "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT")
+          echo "fingerprint=$hash" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-bundle
+          path: ${{ runner.temp }}/bundle.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+  security:
+    needs: bundle
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
     permissions:
-      packages: write
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
-        image:
-          - ng
-          - php
-          - wg
-          - ad
-          - telemt
-          - xr
-          - oc
-          - np
-          - ss
-          - dnstt
-          - ovpn
-          - ipsec
-          - tt
-          - hysteria
-          - protocol
-          - mieru
-          - snolc
-          - masque
+        image: [ng, php, wg, ad, telemt, xr, oc, np, ss, dnstt, ovpn, ipsec, tt, hysteria, protocol, mieru, masque]
     steps:
-      # Своим шагом, а не actions/delete-package-versions: у того удержание
-      # считается по всем версиям подряд и канальный тег защитить нечем
-      # (ignore-versions матчится по имени версии, а у container-пакета это
-      # digest, не тег).
-      #
-      # github.token хватает, пока у репозитория роль admin в настройках пакета
-      # (её выдаёт сама публикация из Actions). Если GitHub однажды ответит 403,
-      # класть в секрет GHCR_PRUNE_TOKEN отдельный PAT с read:packages +
-      # delete:packages — и НИЧЕГО больше: этот токен умеет только удалять образы.
-      - name: Удалить старые sha-версии, сохранив канальные теги
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: image-bundle
+          path: ${{ runner.temp }}
+      - name: Проверка CVE точного digest
         env:
-          GH_TOKEN: ${{ secrets.GHCR_PRUNE_TOKEN || github.token }}
-          PKG: vpnbot-${{ matrix.image }}
-          KEEP: '3'
+          IMAGE_NAME: ${{ matrix.image }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh api "/users/axiomshiftbit/packages/container/${PKG}/versions?per_page=100" > versions.json
-
-          # Кандидат на удаление — версия, у которой ВСЕ теги вида sha-… либо
-          # тегов нет вовсе (осиротевший манифест). Версия с latest/dev в
-          # список не попадает никогда. `[] | all` — true, поэтому untagged
-          # тоже кандидат, и это правильно.
-          # length > 0 обязателен: `[] | all` истинно, поэтому версия БЕЗ тегов
-          # тоже попадала в кандидаты. Сейчас осиротевших манифестов не бывает
-          # (provenance/sbom выключены, платформа одна), но стоит вернуть
-          # attestation или arm64 — и мы удалим дочерние манифесты живого
-          # канального тега, получив `manifest unknown` при pull. Ровно этот
-          # инцидент уже был с тегом :dev. Untagged чистить — отдельным
-          # осознанным прогоном.
-          ids=$(jq -r --argjson keep "${KEEP}" '
-            [ .[] | select(((.metadata.container.tags // []) | length) > 0)
-                  | select((.metadata.container.tags // []) | map(startswith("sha-")) | all) ]
-            | sort_by(.created_at) | reverse | .[$keep:] | .[].id
-          ' versions.json)
-
-          kept=$(jq -r '
-            [ .[] | select(((.metadata.container.tags // []) | map(startswith("sha-")) | all) | not) ]
-            | map(.metadata.container.tags | join(",")) | join(" ")
-          ' versions.json)
-          echo "${PKG}: канальные версии сохраняются -> ${kept:-(нет)}"
-
-          if [ -z "${ids}" ]; then
-            echo "${PKG}: удалять нечего"
-            exit 0
+          image=$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/bundle.json"))["images"][os.environ["IMAGE_NAME"]])')
+          bash scripts/ci_scan_image.sh "$image"
+  native:
+    needs: [bundle, tests]
+    if: github.repository == 'axiomshiftbit/vpnbot' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit'))
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: image-bundle
+          path: ${{ runner.temp }}
+      - name: Подготовить одноразовую виртуальную машину
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]; then
+            # Только стандартные ненужные SDK свежего GitHub runner.
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          else
+            test "$(cat /etc/vpnbot-ci-test-host)" = vpnbot-test
           fi
-          for id in ${ids}; do
-            echo "${PKG}: удаляю версию ${id}"
-            gh api --method DELETE "/users/axiomshiftbit/packages/container/${PKG}/versions/${id}"
-          done
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-yaml python3-cryptography tcpdump curl openssl iptables kmod
+          sudo modprobe wireguard
+          sudo modprobe l2tp_ppp
+          sudo modprobe -a xt_comment xt_mark xt_connmark
+          sudo mkdir -p /dev/net
+          test -c /dev/net/tun || sudo mknod /dev/net/tun c 10 200
+          test -c /dev/ppp || sudo mknod /dev/ppp c 108 0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Загрузить точные образы и проверенные тестовые клиенты
+        run: python3 scripts/ci_hosted_test.py assets ${{ inputs.test_runner && '--local-test' || '' }} --manifest "$RUNNER_TEMP/bundle.json"
+      - name: Удалить доступ к registry перед запуском VPN-стенда
+        if: always()
+        run: docker logout ghcr.io
+      - name: Чистая установка, протоколы, бэкап, восстановление и откат
+        run: |
+          sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci_hosted_test.py test ${{ inputs.test_runner && '--local-test' || '' }} \
+            --manifest "$RUNNER_TEMP/bundle.json" --output "$RUNNER_TEMP/native.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-admission
+          path: ${{ runner.temp }}/native.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+      - name: Удалить одноразовые ключи, конфиги и бэкапы
+        if: always()
+        run: |
+          if sudo test -f /opt/vpnbot-hosted-ci/owner; then
+            sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+              python3 scripts/ci_hosted_test.py cleanup ${{ inputs.test_runner && '--local-test' || '' }}
+          fi
+  publish:
+    needs: [build, tests, bundle, security, native]
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: image-bundle
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: native-admission
+          path: ${{ runner.temp }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Допуск, защита от устаревшего запуска, атомарная публикация комплекта
+        env:
+          CHECKS: '{"build":"${{ needs.build.result }}","tests":"${{ needs.tests.result }}","security":"${{ needs.security.result }}","native":"${{ needs.native.result }}"}'
+          EXPECTED_BUNDLE: ${{ needs.bundle.outputs.fingerprint }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/ci_publish_bundle.py "$RUNNER_TEMP/release/bundle.json" "$RUNNER_TEMP/native.json"
+# Old sha-only garbage collection could delete images referenced by a retained
+# bundle. Keep released candidates until a bundle-aware retention job is added.

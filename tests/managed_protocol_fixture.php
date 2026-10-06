@@ -3,10 +3,6 @@
 // Simulate a user saved by versions predating the shared VLESS subscriptions.
 function managedProtocolFixtureUser(ManagedProtocol $store, string $name): string
 {
-    if ($store->protocol === 'snolc') {
-        @mkdir($store->directory() . '/runtime', 0700, true);
-        file_put_contents($store->directory() . '/runtime/client-patches.zip', 'synthetic client bundle');
-    }
     $id = 'a' . bin2hex(random_bytes(7)) . 'b';
     $store->change(static function (&$state) use ($store, $id, $name) {
         $user = ['name' => trim($name), 'password' => ManagedProtocol::secret(), 'token' => bin2hex(random_bytes(32)),

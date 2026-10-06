@@ -45,7 +45,7 @@ try {
     }
     foreach (ManagedProtocol::NAMES as $protocol => $_) {
         $store = $bot->protocolStore($protocol);
-        $store->configure(['host' => 'vpn.example.test', 'sni' => in_array($protocol, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test'], true);
+        $store->configure(['host' => 'vpn.example.test', 'sni' => ($protocol === 'mieru') ? '' : 'vpn.example.test'], true);
         $modules->set($protocol, true);
         $active = managedProtocolFixtureUser($store, 'Активный');
         $disabled = managedProtocolFixtureUser($store, 'Отключённый');

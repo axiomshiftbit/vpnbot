@@ -25,6 +25,11 @@ done
 # из openresolv 3.17.4 (alpine edge) в docker падает и роняет wg-quick up.
 sed -i '/^DNS[[:space:]]*=/d' "$WGCF_CONF"
 
+# Отдельный внутренний порт туннеля: случайный порт может попасть в диапазон
+# SOCKS relay, где INPUT пропускает только прокси-клиентов. Профиль используют
+# также кнопки ON, смена ключа и восстановление старой резервной копии.
+sed -i '/^ListenPort[[:space:]]*=/d; /^\[Interface\]/a ListenPort = 51820' "$WGCF_CONF"
+
 # Держит handshake живым без полезного трафика; по возрасту handshake
 # warp_probe.sh судит о здоровье туннеля, когда curl в образе отсутствует.
 grep -q '^PersistentKeepalive' "$WGCF_CONF" || \

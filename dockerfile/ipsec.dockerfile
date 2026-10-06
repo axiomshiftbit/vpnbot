@@ -1,29 +1,28 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 FROM $image
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
-# реально сходила в edge за свежими xl2tpd/openssl без --no-cache.
+# обновила пакеты стабильной ветки: xl2tpd/openssl без --no-cache.
 #   docker compose build --build-arg APK_REFRESH=$(date +%F) ipsec
 # Дефолт статичный — обычный build переиспользует кеш.
-ARG APK_REFRESH=2026-09-16
+ARG APK_REFRESH=2026-10-05
 ARG STRONGSWAN_VERSION=6.1.0
 # Архив проверен по PGP-подписи upstream (DF42C170B34DBA77).
 ARG STRONGSWAN_SHA256=fe6c97481298767213cfc2e9a1da29fdd8018d481ff4cb9cf0283099654f20d4
 
 # В Alpine пока strongSwan 6.0.7 без исправлений безопасности 6.1.0.
 # Собираем проверенный upstream; IKEv1 с 6.1 нужно включать явно для L2TP.
+# procps-ng сохраняет pgrep -x по имени charon при запуске по полному пути:
+# BusyBox стабильной Alpine иначе даёт ложный отказ проверки backup/restore.
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
-    printf '%s\n' \
-        'https://dl-cdn.alpinelinux.org/alpine/edge/main' \
-        'https://dl-cdn.alpinelinux.org/alpine/edge/community' \
-        > /etc/apk/repositories; \
     apk update; \
     apk upgrade --no-cache --available; \
     apk add --no-cache \
         openssh \
         bash \
         python3 \
+        procps-ng \
         xl2tpd \
         ppp \
         iptables \

@@ -1,4 +1,4 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
 FROM $image
 
 # Версия релиза ocserv (https://gitlab.com/openconnect/ocserv/-/releases).
@@ -8,17 +8,13 @@ FROM $image
 ARG OCSERV_VERSION=1.5.0
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
-# реально сходила в edge за свежими gnutls/openssh без --no-cache.
+# обновила пакеты стабильной ветки: gnutls/openssh без --no-cache.
 #   docker compose build --build-arg APK_REFRESH=$(date +%F) oc
 # Дефолт статичный — обычный build переиспользует кеш.
-ARG APK_REFRESH=2026-07-04
+ARG APK_REFRESH=2026-10-05
 
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
-    printf '%s\n' \
-        'https://dl-cdn.alpinelinux.org/alpine/edge/main' \
-        'https://dl-cdn.alpinelinux.org/alpine/edge/community' \
-        > /etc/apk/repositories; \
     apk update; \
     apk upgrade --no-cache --available; \
     # постоянные пакеты: -dev тянут за собой runtime-библиотеки ocserv/occtl,

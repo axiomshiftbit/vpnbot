@@ -54,7 +54,7 @@ def release_pins(core, wanted):
         raise ValueError("Релиз не является запрошенной стабильной версией")
     prefix = core.upper()
     pins = {prefix + "_VERSION": tag}
-    if core in ("singbox", "mieru"):
+    if core in REPOS:
         pins[prefix + "_SOURCE_SHA256"] = digest(f"https://codeload.github.com/{repo}/tar.gz/refs/tags/{tag}")
     if core != "mieru":
         filename = (f"sing-box-{tag[1:]}-linux-amd64-musl.tar.gz" if core == "singbox"

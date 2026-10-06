@@ -119,6 +119,8 @@ class Bot
     // Нужен, потому что ssh() возвращает "" и по возвращаемому значению
     // «команда не выполнилась» неотличимо от «команда не дала вывода».
     public $sshFailed = false;
+    // Только начальная настройка service.php ждёт поднимающиеся контейнеры.
+    public int $sshStartupWait = 0;
     // Тот же случай, плюс тесты DoH подменяют путь присваиванием на временный
     // файл — с дефолтом на свойстве это продолжает работать как раньше.
     public $adguard = '/config/AdGuardHome.yaml';
@@ -586,16 +588,16 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
-            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
+            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|masque)$~D', $this->input['callback'], $m):
                 $this->accessBatchStart($m[1]);
                 break;
             case preg_match('~^/ab ([a-f0-9]{12})(?: (show|pick|page|extend|quota|disable|reset|apply|cancel))?(?: ([a-f0-9]{12}|[a-f0-9]{16}|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->accessBatch($m[1], $m[2] ?? 'show', $m[3] ?? '');
                 break;
-            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
+            case preg_match('~^/diag (hy|anytls|mieru|tuic|shadowtls|masque)$~D', $this->input['callback'], $m):
                 $this->serviceDiagnostics($m[1]);
                 break;
-            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ap (hy|anytls|mieru|tuic|shadowtls|masque) ([a-f0-9]{16})(?: (schedule|alerts))?$~D', $this->input['callback'], $m):
                 $this->accessPolicyMenu($m[1], $m[2], $m[3] ?? '');
                 break;
             case preg_match('~^/hyUsers(?: ([0-9]{1,6}))?$~D', $this->input['callback'], $m):
@@ -604,10 +606,10 @@ class Bot
             case preg_match('~^/hyUser (add|legacy-off|legacy-confirm|[a-f0-9]{16})(?: (show|toggle|rotate|reset|delete|delete-confirm|name|expires|quota|file|qr))?$~D', $this->input['callback'], $m):
                 $this->hyUserCommand($m[1], $m[2] ?? 'show');
                 break;
-            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocolPort (anytls|mieru|tuic|shadowtls|masque)$~D', $this->input['callback'], $m):
                 $this->protocolPortPrompt($m[1]);
                 break;
-            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/prmanage (anytls|mieru|tuic|shadowtls|masque)(?: ([a-f0-9]{16}))?$~D', $this->input['callback'], $m):
                 $this->protocolManageRelays($m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/pf (anytls|shadowtls)(?: (show|reset|pick))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
@@ -620,25 +622,25 @@ class Bot
                     else $this->protocolModulesMenu();
                 }
                 break;
-            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|snolc|masque))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xp ([a-f0-9]{32})(?: (anytls|mieru|tuic|shadowtls|masque))?$~D', $this->input['callback'], $m):
                 $this->xrayProtocolsMenu($m[1], $m[2] ?? '');
                 break;
-            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|snolc|masque))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/xc ([a-f0-9]{32})(?: (vless|anytls|mieru|tuic|shadowtls|masque))?(?: (cl|clj|si|s|uri|sr|ios|native))?$~D', $this->input['callback'], $m):
                 $this->connectionExports($m[1], $m[2] ?? '', $m[3] ?? '');
                 break;
-            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/protocol (anytls|mieru|tuic|shadowtls|masque)(?: ([a-z-]+))?(?: ([a-f0-9]{16}|[0-9]{1,6}))?(?: (singbox|mihomo|uri|native|native-uri))?$~D', $this->input['callback'], $m):
                 $this->protocolCommand($m[1], $m[2] ?? '', $m[3] ?? '', $m[4] ?? '');
                 break;
-            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/pr (anytls|mieru|tuic|shadowtls|masque) ([a-f0-9]{16}) (page|[a-f0-9]{16})(?: (singbox|mihomo|uri|native|native-uri|yaml|qr|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->protocolRelay($m[1], $m[2], $m[3], $m[4] ?? '');
                 break;
-            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|snolc|masque) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
+            case preg_match('~^/prset (anytls|mieru|tuic|shadowtls|masque) ([\w.\-]{1,32})$~D', $this->input['callback'], $m):
                 $this->protocolRelayPrompt($m[1], $m[2]);
                 break;
-            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|snolc|masque) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/ps (anytls|mieru|tuic|shadowtls|masque) ([a-f0-9]{16})(?: (direct|[a-f0-9]{16}))?(?: (provider))?$~D', $this->input['callback'], $m):
                 $this->protocolSubscriptions($m[1], $m[2], $m[3] ?? 'direct', $m[4] ?? '');
                 break;
-            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|snolc|masque)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/po (anytls|mieru|tuic|shadowtls|masque)(?: (show|edit|reset|export|pick))?(?: ([a-zA-Z][a-zA-Z0-9_.-]*|@[a-f0-9]{12}))?(?: ([0-9]{1,2}))?$~D', $this->input['callback'], $m):
                 $this->protocolOptions($m[1], $m[2] ?? 'show', $m[3] ?? '', $m[4] ?? '');
                 break;
             // смена айпи сервера
@@ -658,6 +660,7 @@ class Bot
             case preg_match('~^/menu (?P<type>addpeer) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>wg) (?P<arg>(?:-)?\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>client) (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
+            case preg_match('~^/menu (?P<type>tt) (?P<arg>\d+)$~', $this->input['callback'], $m):
             case preg_match('~^/menu (?P<type>pac|adguard|config|ss|lang|oc|naive|mirror|update|hy|tt|ovpn|l2tp|ikev2)$~', $this->input['callback'], $m):
                 $this->menu(type: $m['type'] ?? false, arg: $m['arg'] ?? false);
                 break;
@@ -2283,7 +2286,7 @@ class Bot
             }
             try {
                 $modules->set('telemt', !$enabled);
-                if (!$enabled) $this->applyTelemt();
+                if (!$enabled) $this->applyTelemt(deferStart: true);
             } catch (Throwable $e) {
                 if ($modules->enabled('telemt') !== $enabled) $modules->set('telemt', $enabled);
                 $this->telemtWriteServiceState($enabled);
@@ -2312,7 +2315,7 @@ class Bot
         });
     }
 
-    private function applyTelemt(?string $resetQuota = null)
+    private function applyTelemt(?string $resetQuota = null, bool $deferStart = false)
     {
         if (!$this->protocolModuleEnabled('telemt')) {
             $this->telemtWriteServiceState(false);
@@ -2325,13 +2328,20 @@ class Bot
         @mkdir('/config/telemt/data', 0755, true);
         $web = $this->telemtWebEnabled($conf);
         $limits = $this->telemtLimitsOf($conf);
-        if ($limits) $this->telemtStateRun('version');
+        if ($limits && !$deferStart) $this->telemtStateRun('version');
         // Snapshot decoy-сайта telemt читает один раз при старте — файл должен
         // существовать РАНЬШЕ запуска бинаря, иначе конфиг не загрузится.
         if ($web) {
             $this->telemtWebDecoy();
         }
         $this->telemtWriteToml($this->telemtToml($conf));
+        // После выключения хостовая служба удаляет контейнер. Готовим файлы
+        // без SSH: новый контейнер (или супервизор ручного Docker) запустит
+        // ядро после освобождения общей блокировки, восстановив квоты.
+        if ($deferStart) {
+            $this->telemtWriteServiceState(true);
+            return;
+        }
         $this->telemtWriteServiceState(false);
         $this->telemtStop();
         if ($resetQuota !== null) $this->telemtStateRun('reset', $resetQuota);
@@ -3085,8 +3095,14 @@ class Bot
                 error_log('restartXray: configuration rejected by active core; previous configuration preserved');
                 return false;
             }
+            $previous = $this->getXray() ?? [];
+            if (!$this->syncXrayNginxRoutes($c)) {
+                error_log('restartXray: NGINX transport routes rejected; previous configuration preserved');
+                return false;
+            }
             $this->collectSession();
             if (!$this->writeXrayJson($json)) {
+                $this->syncXrayNginxRoutes($previous);
                 return false;
             }
             $this->ssh('pkill xray', 'xr');
@@ -3114,6 +3130,8 @@ class Bot
     // запрещает egress-ACL (обе цепочки WARP_SOCKS* в start_wp.sh).
     public const WARP_SOCKS_IP   = '10.10.0.13/32';
     public const WARP_SOCKS_PORT = '1080';
+    // Relay-порты WARP SOCKS; синхронно с SOCKS_UDP_PORTS в start_wp.sh.
+    public const WARP_SOCKS_UDP_PORTS = '20000-29999';
 
     // Фактический адрес wp из compose: в override его можно переназначить, и
     // тогда захардкоженная константа молча разъедется с реальностью — правило
@@ -3223,8 +3241,10 @@ class Bot
                 // смены адресации в override старая копия обязана сняться, а не
                 // остаться дублем впереди новой.
                 || (count($ip) === 1 && $out === 'direct'
-                    && (string) ($r['port'] ?? '') === self::WARP_SOCKS_PORT
-                    && (string) ($r['network'] ?? '') === 'tcp')
+                    && (((string) ($r['port'] ?? '') === self::WARP_SOCKS_PORT
+                            && (string) ($r['network'] ?? '') === 'tcp')
+                        || ((string) ($r['port'] ?? '') === self::WARP_SOCKS_UDP_PORTS
+                            && (string) ($r['network'] ?? '') === 'udp')))
             );
             if (!$isGuard) {
                 $rules[] = $r;
@@ -3254,6 +3274,14 @@ class Bot
                 'ip'          => [$warpSocksIp],
                 'port'        => self::WARP_SOCKS_PORT,
                 'network'     => 'tcp',
+                'outboundTag' => 'direct',
+            ];
+            $guards[] = [
+                'type'        => 'field',
+                'inboundTag'  => $warpTags,
+                'ip'          => [$warpSocksIp],
+                'port'        => self::WARP_SOCKS_UDP_PORTS,
+                'network'     => 'udp',
                 'outboundTag' => 'direct',
             ];
         }
@@ -4319,12 +4347,24 @@ class Bot
         return $this->withLock('naive', fn() => $this->applyNaive());
     }
 
+    public static function migrateNaiveTimeout(string $conf): string
+    {
+        // Дополняем только штатный servers-блок без ручной timeout-политики.
+        // Сохранённый Caddyfile переживает обновление и восстановление бэкапа.
+        if (preg_match('~^[ \t]*(?:timeouts|read_body_idle)\b~m', $conf)
+            || preg_match_all('~^[ \t]*servers[ \t]*\{[ \t]*$~m', $conf) !== 1) {
+            return $conf;
+        }
+        return preg_replace('~(^[ \t]*servers[ \t]*\{[ \t]*$)~m',
+            "$1\n\t\ttimeouts {\n\t\t\tread_body_idle -1s\n\t\t}", $conf, 1) ?? $conf;
+    }
+
     private function applyNaive()
     {
         $pac  = $this->getPacConf();
         $user = (string) ($pac['naive']['user'] ?? '');
         $pass = (string) ($pac['naive']['pass'] ?? '');
-        $c    = self::migrateNaiveAcl(file_get_contents('/config/Caddyfile'));
+        $c    = self::migrateNaiveTimeout(self::migrateNaiveAcl(file_get_contents('/config/Caddyfile')));
         // Плейсхолдер — то же значение, что в шаблоне config/Caddyfile: пока
         // креды не заданы, caddy не должен подниматься (тот же гард в
         // start_np.sh), иначе сервис работает с угадываемым паролем.
@@ -6146,7 +6186,7 @@ NFT;
         if (empty($clients[$client])) {
             return $this->menu('wg', $page);
         }
-        if ($clients[$client]['# off']) {
+        if (!empty($clients[$client]['# off'])) {
             $this->switchClient($client);
             $clients = $this->readClients();
         }
@@ -6511,8 +6551,16 @@ NFT;
 
     public function checkBackup()
     {
-        try { $this->withBackupLock(fn() => $this->checkBackupSchedule()); }
-        catch (Throwable $error) { error_log('checkBackup: ' . get_class($error)); }
+        try {
+            // Выключенное расписание не должно спорить за lock с ручным
+            // экспортом/восстановлением и выдавать ложную ошибку в cron.
+            if (empty($this->getPacConf()['backup'])) return;
+            $this->withBackupLock(fn() => $this->checkBackupSchedule());
+        } catch (Throwable $error) {
+            // Место отказа помогает отличить занятый lock от ошибки экспорта.
+            // Текст исключения может содержать секреты и здесь не выводится.
+            error_log('checkBackup: ' . get_class($error) . ' at ' . basename($error->getFile()) . ':' . $error->getLine());
+        }
     }
 
     private function checkBackupSchedule()
@@ -6851,6 +6899,7 @@ NFT;
             ],
         ];
         $text = '';
+        $i = 0;
         foreach ($items as $k => $v) {
             if (($t = gmdate($k, $seconds) - $v['diff']) > 0) {
                 $text .= " $t{$v['sign']}";
@@ -7255,7 +7304,7 @@ NFT;
         if (isset($files['warp/wgcf-profile.conf']) && $this->protocolModuleEnabled('wp')) {
             if (!$this->withLock('warp-control', function () {
                 if (!$this->warpCommand('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true')) return false;
-                return !empty($this->getPacConf()['warpoff']) || $this->warpCommand('wg-quick up /etc/warp/wgcf-profile.conf');
+                return !empty($this->getPacConf()['warpoff']) || $this->warpCommand('{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }');
             })) $failed[] = 'WARP';
         }
         if (isset($files['stlsserver.json']) && $this->protocolModuleEnabled('ss')) {
@@ -7793,7 +7842,7 @@ NFT;
         $server = $this->readConfig();
         $i      = $this->peerIndexByClient($server, $clients[$client]);
 
-        if ($clients[$client]['# off']) {
+        if (!empty($clients[$client]['# off'])) {
             unset($clients[$client]['# off']);
         } else {
             $clients[$client]['# off'] = 1;
@@ -9932,7 +9981,7 @@ NFT;
     // включённость amnezia и доступность tools для набора 3.0.
     public function rotateAmneziaCron(): void
     {
-        $saved = $this->wg;
+        $saved = $this->wg ?? 0;
         foreach ([0, 1] as $inst) {
             try {
                 $this->wg = $inst;
@@ -10006,8 +10055,18 @@ NFT;
         $c[$this->getInstanceWG(1) . 'blocktorrent'] = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']) ? 0 : 1;
         $this->setPacConf($c);
         $this->iptablesWG();
-        $this->answer($this->input['callback_id'], 'доступ к торрентам ' . ($c[$this->getInstanceWG(1) . 'blocktorrent'] ? 'заблокирован' : 'разблокирован'), true);
+        $on = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']);
+        $note = $on && !$this->wgTorrentRulesReady() ? 'torrent wg incomplete' : ($on ? 'torrent wg on' : 'torrent wg off');
+        $this->answer($this->input['callback_id'], $this->i18n($note), true);
         $this->menu('wg', $page);
+    }
+
+    public function wgTorrentRulesReady(): bool
+    {
+        // Проверяем реально установленные правила, включая после смены ядра.
+        // -C у ipp2p бывает ненадёжен; awk нормализует пробелы вывода -S.
+        $out = $this->ssh('iptables -S | awk \'NF == 9 && $1 == "-A" && ($2 == "FORWARD" || $2 == "OUTPUT") && $3 == "-p" && ($4 == "tcp" || $4 == "udp") && $5 == "-m" && $6 == "ipp2p" && $7 == "--bit" && $8 == "-j" && $9 == "DROP" { have[$2 " " $4]=1 } END { if (length(have) == 4) print "VPNBOT_TORRENT_READY" }\'', $this->getInstanceWG());
+        return !$this->sshFailed && trim((string) $out) === 'VPNBOT_TORRENT_READY';
     }
 
     public function switchEndpoint($page = 0)
@@ -10474,7 +10533,7 @@ NFT;
         $r  = $this->send($c['admin'][0], "start $ip");
 
         $this->input['chat']        = $c['admin'][0];
-        $this->input['message_id']  = $r['result']['message_id'];
+        $this->input['message_id']  = $r['result']['message_id'] ?? null;
         $this->input['callback_id'] = false;
         if ($initialSetup) {
             $this->addDomain(str_replace('.', '-', $this->ip) . '.nip.io', 1);
@@ -10523,6 +10582,7 @@ NFT;
     public function setSSL($name)
     {
         $conf = $this->getPacConf();
+        $bundle = '';
         switch ($name) {
             case 'letsencrypt':
                 // Домен уходит в shell (certbot) в нескольких местах без кавычек.
@@ -10531,7 +10591,7 @@ NFT;
                 // каждую подстановку.
                 if (!preg_match('~^[a-zA-Z0-9.-]+$~', (string) ($conf['domain'] ?? ''))) {
                     $this->send($this->input['chat'], 'ERROR: invalid domain');
-                    break;
+                    return $this->menu('config');
                 }
                 $out   = ['Install certificate:'];
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -10540,7 +10600,7 @@ NFT;
                 // рядом domain_aliases экранированы, а этот параметр пропустили.
                 if (!empty($conf['adguardkey']) && !preg_match('~^[a-zA-Z0-9-]+$~', (string) $conf['adguardkey'])) {
                     $this->send($this->input['chat'], 'ERROR: invalid adguard subdomain');
-                    break;
+                    return $this->menu('config');
                 }
                 $adguardClient = !empty($conf['adguardkey']) ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
                 $oc = $this->getHashSubdomain('oc');
@@ -10569,7 +10629,7 @@ NFT;
                 exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . ($tw ? " -d $tw.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
                 if ($code > 0) {
                     $this->send($this->input['chat'], "ERROR\n" . implode("\n", $out));
-                    break;
+                    return $this->menu('config');
                 }
                 $out[] = 'Generate bundle';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -10615,7 +10675,6 @@ NFT;
         }
         curl_setopt_array($ch, $opt);
         $r = curl_exec($ch);
-        curl_close($ch);
         return $r ?: 'lost connect to unit';
     }
 
@@ -13003,7 +13062,6 @@ DNS-over-HTTPS with IP:
             ]);
             curl_exec($ch);
             $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
 
             if (strlen($buf) > $max) {
                 return ['ok' => false, 'err' => 'response too large'];
@@ -14054,7 +14112,7 @@ DNS-over-HTTPS with IP:
                     : (($v['online'] === 'online' || $vlessOn) ? '🟢' : '🔴');
                 $t = [
                     'name'    => $this->getName($v),
-                    'time'    => $this->getTime(strtotime($v['## time'])),
+                    'time'    => $this->getTime(strtotime($v['## time'] ?? '')),
                     'status'  => $circle,
                     'traffic' => $tr,
                 ];
@@ -14077,6 +14135,7 @@ DNS-over-HTTPS with IP:
         }
         $ver  = $this->wgVersion();
         $text = "Menu -> " . $this->getTitleWG() . ($ver ? "\n$ver" : '') . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
+        if ($bt && !$this->wgTorrentRulesReady()) $text .= "\n\n⚠️ " . $this->i18n('torrent wg incomplete');
         $data[] = [
             [
                 'text'          => '📜 ' . $this->i18n('connection log'),
@@ -14522,8 +14581,8 @@ DNS-over-HTTPS with IP:
     public function getAmneziaShortLink($client)
     {
         $pac           = $this->getPacConf();
-        $domain        = $pac[$this->getInstanceWG(1) . 'endpoint'] ? $this->ip : $this->getDomain();
-        $dnsRaw        = $client['interface']['DNS'] ?: $pac[$this->getInstanceWG(1) . 'dns'] ?: $this->dns;
+        $domain        = !empty($pac[$this->getInstanceWG(1) . 'endpoint']) ? $this->ip : $this->getDomain();
+        $dnsRaw        = ($client['interface']['DNS'] ?? '') ?: ($pac[$this->getInstanceWG(1) . 'dns'] ?? '') ?: $this->dns;
         $dns           = array_map('trim', explode(',', $dnsRaw));
         $ports         = $this->getPorts();
         $wgPort        = (int) $ports[$this->getInstanceWG()]['port'];
@@ -14630,12 +14689,12 @@ DNS-over-HTTPS with IP:
                     ],
                     [
                         [
-                            'text'          => $this->i18n($clients[$client]['# off'] ? 'off' : 'on'),
+                            'text'          => $this->i18n(!empty($clients[$client]['# off']) ? 'off' : 'on'),
                             'callback_data' => $this->cbWG("/switchClient {$client}_$page"),
                         ],
                         [
-                            'text'          => $this->i18n($clients[$client]['interface']['DNS'] ? 'delete internal dns' : 'set internal dns'),
-                            'callback_data' => $this->cbWG("/" . ($clients[$client]['interface']['DNS'] ? 'delete' : '') . "dns {$client}_$page"),
+                            'text'          => $this->i18n(!empty($clients[$client]['interface']['DNS']) ? 'delete internal dns' : 'set internal dns'),
+                            'callback_data' => $this->cbWG("/" . (!empty($clients[$client]['interface']['DNS']) ? 'delete' : '') . "dns {$client}_$page"),
                         ],
                     ],
                     [
@@ -14646,7 +14705,7 @@ DNS-over-HTTPS with IP:
                     ],
                     [
                         [
-                            'text'          => $this->i18n('MTU') . " " . ($clients[$client]['interface']['MTU'] ?: $this->getPacConf()[$this->getInstanceWG(1) . 'mtu'] ?: $this->mtu),
+                            'text'          => $this->i18n('MTU') . " " . (($clients[$client]['interface']['MTU'] ?? 0) ?: ($this->getPacConf()[$this->getInstanceWG(1) . 'mtu'] ?? 0) ?: $this->mtu),
                             'callback_data' => $this->cbWG("/changeMTU {$client}_$page"),
                         ],
                     ],
@@ -14887,10 +14946,12 @@ DNS-over-HTTPS with IP:
         $this->sessionApply(function () {
             unset($_SESSION['proxylistentry']);
         });
-        $rmpac  = stat(__DIR__ . '/zapretlists/rmpac');
-        $rpac   = stat(__DIR__ . '/zapretlists/rpac');
-        $mpac   = stat(__DIR__ . '/zapretlists/mpac');
-        $pac    = stat(__DIR__ . '/zapretlists/pac');
+        // До первой генерации PAC-файлов ещё нет, но настройки доступны.
+        $urls = [];
+        $rmpac  = @stat(__DIR__ . '/zapretlists/rmpac');
+        $rpac   = @stat(__DIR__ . '/zapretlists/rpac');
+        $mpac   = @stat(__DIR__ . '/zapretlists/mpac');
+        $pac    = @stat(__DIR__ . '/zapretlists/pac');
         $conf   = $this->getPacConf();
         $ip     = $this->getDomain();
         $hash   = $this->getHashBot();
@@ -17933,7 +17994,7 @@ DNS-over-HTTPS with IP:
         }
         $menu   = [
             'main' => [
-                'text' => implode("\n", $main ?: []),
+                'text' => implode("\n", $main ?? []),
                 'data' => array_merge(
                     [
                         [
@@ -18047,7 +18108,7 @@ DNS-over-HTTPS with IP:
             'oc'           => $type == 'oc'      ? $this->ocMenu()                         : false,
             'naive'        => $type == 'naive'   ? $this->naiveMenu()                      : false,
             'hy'           => $type == 'hy'      ? $this->hysteriaMenu()                   : false,
-            'tt'           => $type == 'tt'      ? $this->ttMenu()                         : false,
+            'tt'           => $type == 'tt'      ? $this->ttMenu((int) $arg)               : false,
             'ovpn'         => $type == 'ovpn'    ? $this->ovpnMenu()                       : false,
             'l2tp'         => $type == 'l2tp'    ? $this->l2tpMenu()                       : false,
             'ikev2'        => $type == 'ikev2'   ? $this->ikev2Menu()                      : false,
@@ -18055,8 +18116,11 @@ DNS-over-HTTPS with IP:
             'update'       => $type == 'update'  ? $this->updatebot()                      : false,
         ];
 
-        $text = $menu[$type ?: 'main' ]['text'];
-        $data = $menu[$type ?: 'main' ]['data'];
+        $selected = $menu[$type ?: 'main'] ?? null;
+        // Некоторые разделы (например PAC) уже отправили своё меню.
+        if (!is_array($selected)) return;
+        $text = $selected['text'];
+        $data = $selected['data'];
 
         if (empty($type)) {
             $data = array_chunk(array_merge(...$this->filterProtocolButtons($data)), 2);
@@ -21241,7 +21305,7 @@ DNS-over-HTTPS with IP:
             return;
         }
         $this->time_wgtrack = time();
-        $saved = $this->wg;
+        $saved = $this->wg ?? 0;
         foreach ([0, 1] as $inst) {
             try {
                 $this->wg = $inst;
@@ -22680,7 +22744,6 @@ DNS-over-HTTPS with IP:
             curl_exec($ch);
             $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $error = curl_errno($ch);
-            curl_close($ch);
 
             if (strlen($buf) > $max) {
                 return 'response too large';
@@ -22974,7 +23037,6 @@ DNS-over-HTTPS with IP:
             ] + $extra);
             $r   = curl_exec($ch);
             $err = curl_errno($ch);
-            curl_close($ch);
             return [$r, $err];
         };
 
@@ -23018,32 +23080,74 @@ DNS-over-HTTPS with IP:
 
     public function cleanDocker()
     {
+        // Тот же lock берёт загрузчик манифеста: иначе очистка могла прочитать
+        // старый список, а затем удалить уже скачанные новые образы.
+        $lock = @fopen(dirname($this->update) . '/image-bundle.lock', 'c');
+        if ($lock === false || !flock($lock, LOCK_SH | LOCK_NB)) {
+            return;
+        }
         $i = [];
         $c = [];
-        // (array) вокруг ответа: dockerApi() отдаёт null, когда сокет недоступен
-        // или ответ не JSON, а foreach по null — это warning на каждом проходе.
-        // is_array($v) — на случай ответа-ошибки вида {"message":"..."}: он
-        // декодируется в массив строк, и $v['RepoTags'] полез бы в строку.
-        foreach ((array) $this->dockerApi('/images/json') as $v) {
+        $protected = [];
+        $bundled = false;
+        // Образы выключенных протоколов, подготовленного обновления и отката
+        // могут не иметь контейнеров. Их нельзя удалять при старте service.
+        foreach (['image-bundle.json', 'image-bundle.previous.json', 'image-bundle.pending.json'] as $name) {
+            $path = dirname($this->update) . '/' . $name;
+            if (!file_exists($path)) {
+                continue;
+            }
+            $bundled = true;
+            $bundle = json_decode((string) @file_get_contents($path), true);
+            if (!is_array($bundle) || ($bundle['schema'] ?? null) !== 1
+                || !is_array($bundle['images'] ?? null) || !in_array(count($bundle['images']), [17, 18], true)) {
+                error_log('cleanDocker: invalid image bundle; cleanup skipped');
+                return;
+            }
+            foreach ($bundle['images'] as $ref) {
+                if (!is_string($ref) || !preg_match('~^ghcr\.io/axiomshiftbit/vpnbot-[a-z]+@sha256:[a-f0-9]{64}$~D', $ref)) {
+                    error_log('cleanDocker: invalid image reference; cleanup skipped');
+                    return;
+                }
+                $protected[] = $ref;
+            }
+        }
+        $images = $this->dockerApi('/images/json');
+        $containers = $this->dockerApi('/containers/json?all=1');
+        if (!is_array($images) || !array_is_list($images)
+            || !is_array($containers) || !array_is_list($containers)) {
+            return;
+        }
+        // Docker API может отдавать записи без RepoTags (pull по digest).
+        // Для отбора и защиты используем также RepoDigests.
+        foreach ($images as $v) {
             if (!is_array($v)) {
                 continue;
             }
-            foreach ((array) ($v['RepoTags'] ?? []) as $j) {
+            $refs = array_merge((array) ($v['RepoTags'] ?? []), (array) ($v['RepoDigests'] ?? []));
+            if (array_intersect($refs, $protected)) {
+                $c[] = $v['Id'] ?? null;
+            }
+            foreach ($refs as $j) {
                 if (self::isVpnbotImage($j)) {
                     $i[] = $v['Id'] ?? null;
                     break;
                 }
             }
         }
-        foreach ((array) $this->dockerApi('/containers/json?all=1') as $v) {
-            if (is_array($v) && self::isVpnbotImage($v['Image'] ?? null)) {
+        foreach ($containers as $v) {
+            if (is_array($v)) {
                 $c[] = $v['ImageID'] ?? null;
             }
         }
         foreach (array_diff(array_filter($i), array_filter($c)) as $v) {
             $this->dockerApi("/images/$v", 'DELETE');
         }
-        $this->dockerApi('/images/prune', 'POST', ['dangling' => true]);
+        // Глобальный prune не умеет исключать digest из манифеста и удалял
+        // уже скачанные образы сразу после отключения последнего контейнера.
+        if (!$bundled) {
+            $this->dockerApi('/images/prune', 'POST', ['dangling' => true]);
+        }
         $this->dockerApi('/build/prune', 'POST');
     }
 
@@ -25179,7 +25283,7 @@ DNS-over-HTTPS with IP:
             ],
         ];
 
-        $ip_count      = $p['ip_count'] ?: 1;
+        $ip_count      = ($p['ip_count'] ?? 0) ?: 1;
         $hwidEnabled   = !empty($p['hwid_limit_enabled']);
         $defaultHwids  = max(1, (int) ($p['hwid_device_count'] ?: 1));
         $data[] = [
@@ -25546,11 +25650,11 @@ DNS-over-HTTPS with IP:
             }
             $stopped = false;
             $restore = function () use ($off, $save, $chat, &$log, &$stopped) {
-                $ok = !$stopped || $this->warpCommand('pkill -x microsocks 2>/dev/null || true; '
+                $ok = !$stopped || $this->warpCommand('pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; '
                     . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true; '
                     . 'cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
                     . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; else rm -f "$f" || exit 1; fi; done');
-                if ($ok && $stopped && !$off) $ok = $this->warpCommand('wg-quick up /etc/warp/wgcf-profile.conf');
+                if ($ok && $stopped && !$off) $ok = $this->warpCommand('{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }');
                 if ($ok) {
                     $save($off);
                     $this->warpCommand('rm -rf /etc/warp/.bak');
@@ -25563,7 +25667,7 @@ DNS-over-HTTPS with IP:
                 // Watchdog не должен поднимать туннель во время смены аккаунта.
                 $save(true);
                 $stopped = true;
-                if (!$step('stopping warp', 'pkill -x microsocks 2>/dev/null || true; '
+                if (!$step('stopping warp', 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; '
                     . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true')) { $restore(); return; }
                 if (!$step('registering WARP account', 'umask 077; cd /etc/warp && '
                     . 'rm -f wgcf-profile.conf wgcf-account.toml && wgcf register --accept-tos && chmod 600 wgcf-account.toml')) { $restore(); return; }
@@ -25572,7 +25676,7 @@ DNS-over-HTTPS with IP:
                 }
                 if (!$step('generating profile', 'umask 077; cd /etc/warp && wgcf generate && '
                     . 'sh /warp_fixup.sh && chmod 600 wgcf-account.toml wgcf-profile.conf')) { $restore(); return; }
-                if (!$off && !$step('starting warp', 'wg-quick up /etc/warp/wgcf-profile.conf')) { $restore(); return; }
+                if (!$off && !$step('starting warp', '{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }')) { $restore(); return; }
                 $save($off, true);
             } catch (\Throwable $e) {
                 $restore();
@@ -25587,7 +25691,7 @@ DNS-over-HTTPS with IP:
 
     public function warpStatus()
     {
-        // socks5h (резолв на стороне microsocks, т.е. через туннель) и таймаут
+        // socks5h (резолв на стороне SOCKS, т.е. через туннель) и таймаут
         // 8с: с прежним `-m 1` и локальным резолвом живой WARP регулярно
         // показывался как off на медленном первом соединении.
         $st = $this->ssh('curl -m 8 -s -x socks5h://wp:1080 https://www.cloudflare.com/cdn-cgi/trace', 'xr');
@@ -25693,7 +25797,7 @@ DNS-over-HTTPS with IP:
 
     // Включение/выключение туннеля. Раньше вся функция была построена на
     // warp-cli/warp-svc (официальный клиент Cloudflare), которых в образе wp
-    // НЕТ — там только wgcf + wg + microsocks. То есть каждая команда
+    // НЕТ — там wgcf + wg + SOCKS-прокси. То есть каждая команда
     // возвращала "not found", туннель не менялся, но флаг warpoff в pac.json
     // всё равно переключался: состояние бота расходилось с реальностью.
     // Теперь выключаем ровно тем же способом, каким поднимаем — wg-quick,
@@ -25704,7 +25808,7 @@ DNS-over-HTTPS with IP:
         $this->withLock('warp-control', function () {
             $off = !empty($this->getPacConf()['warpoff']);
             if (!empty($this->selfupdate)) {
-                if ($off) $this->ssh('pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
+                if ($off) $this->ssh('pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true', 'wp');
                 return;
             }
             $save = function ($disabled) {
@@ -25715,9 +25819,9 @@ DNS-over-HTTPS with IP:
                     if (!$this->setPacConf($p)) throw new RuntimeException('Не удалось сохранить настройки WARP');
                 });
             };
-            $stop = 'pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
+            $stop = 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
             if ($off) {
-                if (!$this->warpCommand('wg show wgcf-profile >/dev/null 2>&1 || wg-quick up /etc/warp/wgcf-profile.conf')) {
+                if (!$this->warpCommand('wg show wgcf-profile >/dev/null 2>&1 || { sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }')) {
                     $this->send($this->input['chat'], 'warp up failed');
                     return;
                 }
@@ -25772,6 +25876,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/offWarp",
             ],
         ];
+        $data[] = $this->menuHelpButton('warp');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -26625,10 +26730,10 @@ DNS-over-HTTPS with IP:
     public function getDomain($cdn = false)
     {
         $c = $this->getPacConf();
-        if ($cdn && $c['linkdomain']) {
+        if ($cdn && !empty($c['linkdomain'])) {
             return $c['linkdomain'];
         }
-        return $c['domain'] ?: $this->ip;
+        return ($c['domain'] ?? '') ?: $this->ip;
     }
 
     // Хост, из которого строятся все ссылки подписки (страница sub(), URL
@@ -28076,7 +28181,7 @@ DNS-over-HTTPS with IP:
         }
         $c = $tpl;
 
-        $outbound = $pac['outbound'] ?: 'proxy';
+        $outbound = ($pac['outbound'] ?? '') ?: 'proxy';
         // Prefix the outbound/proxy name with server-country flag(s) so the client
         // shows e.g. "🇫🇷 proxy" next to the node. A relay subscription hops
         // relay → origin, so it gets two flags — the relay endpoint's first, then
@@ -28500,12 +28605,12 @@ DNS-over-HTTPS with IP:
             $json = json_encode($c);
         }
         $c = json_decode($this->replaceTags($json, [
-            '"~pac~"'        => json_encode(array_keys(array_filter($pac['includelist'] ?: []))),
-            '"~block~"'      => json_encode(array_keys(array_filter($pac['blocklist'] ?: []))),
-            '"~warp~"'       => json_encode(array_keys(array_filter($pac['warplist'] ?: []))),
-            '"~process~"'    => json_encode(array_keys(array_filter($pac['processlist'] ?: []))),
-            '"~package~"'    => json_encode(array_keys(array_filter($pac['packagelist'] ?: []))),
-            '"~subnet~"'     => json_encode(array_keys(array_filter($pac['subnetlist'] ?: []))),
+            '"~pac~"'        => json_encode(array_keys(array_filter(($pac['includelist'] ?? []) ?: []))),
+            '"~block~"'      => json_encode(array_keys(array_filter(($pac['blocklist'] ?? []) ?: []))),
+            '"~warp~"'       => json_encode(array_keys(array_filter(($pac['warplist'] ?? []) ?: []))),
+            '"~process~"'    => json_encode(array_keys(array_filter(($pac['processlist'] ?? []) ?: []))),
+            '"~package~"'    => json_encode(array_keys(array_filter(($pac['packagelist'] ?? []) ?: []))),
+            '"~subnet~"'     => json_encode(array_keys(array_filter(($pac['subnetlist'] ?? []) ?: []))),
             '"~warp_port~"'      => (int) ($warp['port'] ?? 2408),
             '"~warp_mtu~"'       => (int) ($warp['mtu'] ?? 1280),
             '~warp_server~'      => $warp['server'] ?? '',
@@ -29665,6 +29770,42 @@ DNS-over-HTTPS with IP:
         return $p['hashbot'];
     }
 
+    // /ws и /grpc ведут на один xr:443. Только транспорт фактического inbound
+    // может принимать запросы: HTTP/1-ответ WS нельзя читать как HTTP/2 frame.
+    // Старые ссылки получают 404, пока пользователь не обновит подписку.
+    // Чужие backend/location и другие inbound Xray не изменяются.
+    public static function xrayNginxRoutes(string $text, array $xray): string
+    {
+        $networks = [];
+        foreach ($xray['inbounds'] ?? [] as $inbound) {
+            $stream = $inbound['streamSettings'] ?? [];
+            $listen = (string) ($inbound['listen'] ?? '');
+            if ((string) ($inbound['port'] ?? '') === '443'
+                && in_array($stream['security'] ?? '', ['', 'none'], true)
+                && $listen !== '::1' && !str_starts_with($listen, '127.')) {
+                $networks[] = $stream['network'] ?? '';
+            }
+        }
+        $text = preg_replace('~^[ \t]*(?:#[ \t]*)?return 404; # vpnbot-inactive-xray-route\r?\n~m', '', $text);
+        return preg_replace_callback('~(^[ \t]*(?:#[ \t]*)?location[ \t]+/(ws|grpc)[A-Za-z0-9_-]*[ \t]*\{)(.*?^[ \t]*(?:#[ \t]*)?\})~ms',
+            static function ($m) use ($networks) {
+                $backend = $m[2] === 'grpc' ? '~\bgrpc_pass\s+grpc://xr:443\s*;~' : '~\bproxy_pass\s+http://xr_backend\s*;~';
+                if (!preg_match($backend, $m[3])) return $m[0];
+                $active = $m[2] === 'grpc' ? in_array('grpc', $networks, true) : (bool) array_intersect(['ws', 'xhttp'], $networks);
+                if ($active) return $m[0];
+                preg_match('~^([ \t]*(?:#[ \t]*)?)location~', $m[1], $prefix);
+                return $m[1] . "\n" . $prefix[1] . '    return 404; # vpnbot-inactive-xray-route' . $m[3];
+            }, $text);
+    }
+
+    public function syncXrayNginxRoutes(array $xray): bool
+    {
+        $path = dirname($this->xrayConf) . '/nginx.conf';
+        if (!is_file($path)) return true;
+        return $this->editProtocolProxyConfig($path, 'ng',
+            static fn($text) => self::xrayNginxRoutes($text, $xray));
+    }
+
     public function cloakNginx()
     {
         $conf     = $this->getPacConf();
@@ -29677,7 +29818,7 @@ DNS-over-HTTPS with IP:
             $aliasNames .= " *.$a $a";
         }
         $template = preg_replace('~server_name domain~', "server_name " . ($conf['domain'] ? " *.{$conf['domain']} {$conf['domain']}$aliasNames" : '_'), $template);
-        if ($conf['domain'] && $conf['letsencrypt']) {
+        if ($conf['domain'] && !empty($conf['letsencrypt'])) {
             $template = preg_replace('/#~([^\n]+)?/', "#~{$conf['letsencrypt']}", $template);
             preg_match_all('~#-domain.+?#-domain~s', $template, $m);
             foreach ($m[0] as $v) {
@@ -29715,6 +29856,7 @@ DNS-over-HTTPS with IP:
         CONF;
         $template = preg_replace('~(location /adguard.+?})\s*location~s', $r, $template);
         $template = preg_replace('~(/webapp|/pac|/adguard|/ws|/grpc|/v2ray|location /dns-query)~', '${1}' . $h, $template);
+        if (is_string($template)) $template = self::xrayNginxRoutes($template, $this->getXray() ?? []);
         if (!is_string($template) || $template === ''
             || !$this->editProtocolProxyConfig('/config/nginx.conf', 'ng', static fn($before) => $template)) return false;
         $x = $this->getXray();
@@ -29926,7 +30068,7 @@ DNS-over-HTTPS with IP:
                     'callback_data' => "/adguardpsswd",
                 ],
                 [
-                    'text'          => 'ClientID' . ($conf['adguardkey'] ? ": {$conf['adguardkey']}" : ''),
+                    'text'          => 'ClientID' . (!empty($conf['adguardkey']) ? ": {$conf['adguardkey']}" : ''),
                     'callback_data' => "/setAdguardKey",
                 ],
             ],
@@ -30178,13 +30320,16 @@ DNS-over-HTTPS with IP:
 
     public function expireCert()
     {
-        $c = openssl_x509_read(file_get_contents("/certs/cert_public"));
-        return openssl_x509_parse($c)["validTo_time_t"] ?: false;
+        $cert = @file_get_contents($this->protocolCertRoot . '/cert_public');
+        $info = is_string($cert) ? @openssl_x509_parse($cert) : false;
+        return $info['validTo_time_t'] ?? false;
     }
 
     public function domainsCert()
     {
-        $domains = openssl_x509_parse(openssl_x509_read(file_get_contents("/certs/cert_public")))['extensions']["subjectAltName"];
+        $cert = @file_get_contents($this->protocolCertRoot . '/cert_public');
+        $info = is_string($cert) ? @openssl_x509_parse($cert) : false;
+        $domains = $info['extensions']['subjectAltName'] ?? '';
         if (empty($domains)) {
             return false;
         }
@@ -30450,9 +30595,9 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/import",
             ],
         ];
-        $backup = array_filter(explode('/', $conf['backup']));
+        $backup = array_filter(explode('/', $conf['backup'] ?? ''));
         if (!empty($backup)) {
-            if (!empty(strtotime($backup[0])) && !empty(strtotime($backup[1]))) {
+            if (!empty(strtotime($backup[0] ?? '')) && !empty(strtotime($backup[1] ?? ''))) {
                 $backup = "{$backup[0]} start / {$backup[1]} period";
             } else {
                 $backup = $this->i18n('off') . " {$conf['backup']} - wrong format";
@@ -30603,7 +30748,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/protocolPort $protocol"]];
             if ($pending) $text[] = "$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.";
         }
-        $text[] = 'Mieru, TUIC, ShadowTLS, snolc и MASQUE: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
+        $text[] = 'Mieru, TUIC, ShadowTLS и MASQUE: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
         if (!empty($pac['restart'])) {
             $data[] = [
                 [
@@ -30883,11 +31028,15 @@ DNS-over-HTTPS with IP:
             }
             $out[$v] = "$dir/$v";
         }
-        foreach (['anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque'] as $protocol) {
+        $roots = ['hysteria' => $this->hysteriaUsersRoot];
+        foreach (['anytls', 'mieru', 'tuic', 'shadowtls', 'masque'] as $protocol) {
+            $roots[$protocol] = "$this->protocolRoot/$protocol";
+        }
+        foreach ($roots as $protocol => $root) {
             foreach (['core.log', 'core.previous.log'] as $name) {
-                $path = "$this->protocolRoot/$protocol/runtime/$name";
+                $path = "$root/runtime/$name";
                 if (is_file($path) && !is_link($path)
-                    && realpath($path) === realpath($this->protocolRoot) . "/$protocol/runtime/$name") {
+                    && realpath($path) === realpath(dirname($root)) . '/' . basename($root) . "/runtime/$name") {
                     $out["$protocol.$name"] = $path;
                 }
             }
@@ -31169,6 +31318,8 @@ DNS-over-HTTPS with IP:
     {
         $p = $this->getPacConf();
         $x = $this->getXray();
+        $previousPac = $p;
+        $previousXray = $x;
         $h = $this->getHashBot();
 
         $p['reality']['domain']      = $p['reality']['domain'] ?: $this->defaultFakeDomain();
@@ -31300,12 +31451,32 @@ DNS-over-HTTPS with IP:
             $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
         }
 
-        $this->setUpstreamDomain($transport == 'Reality'
-            ? ($p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0])
-            : 't'
-        );
-        $this->setPacConf($p);
-        $this->restartXray($x);
+        // Ссылки в меню должны соответствовать принятому конфигу ядра и nginx.
+        // При отказе возвращаем свои поля, сохраняя параллельные правки PAC.
+        $save = function (array $values): bool {
+            return $this->withLock('pac', function () use ($values) {
+                $current = $this->getPacConf();
+                foreach (['transport', 'reality', 'xray'] as $key) {
+                    if (array_key_exists($key, $values)) $current[$key] = $values[$key];
+                    else unset($current[$key]);
+                }
+                return (bool) $this->setPacConf($current);
+            });
+        };
+        $started = false;
+        $ok = $save($p) && ($started = $this->restartXray($x))
+            && $this->xrayCoreStarted($this->xrayCoreSelection($p))
+            && $this->setUpstreamDomain($transport === 'Reality' ? $p['reality']['domain'] : 't');
+        if (!$ok) {
+            $restored = $save($previousPac);
+            if ($started) {
+                $restored = $restored && $this->restartXray($previousXray)
+                    && $this->xrayCoreStarted($this->xrayCoreSelection($previousPac));
+            }
+            $this->answer($this->input['callback_id'], $restored
+                ? 'Не удалось переключить транспорт. Предыдущие настройки сохранены.'
+                : 'Не удалось переключить транспорт и полностью восстановить настройки. Проверьте журнал Xray.', true);
+        }
         $this->xray();
     }
 
@@ -31446,6 +31617,8 @@ DNS-over-HTTPS with IP:
         $r = $this->ssh($this->getWGType(), $this->getInstanceWG());
         $r = explode(PHP_EOL, $r);
         $r = array_filter($r);
+        $data = [];
+        $d = null;
         $i = 0;
         foreach ($r as $k => $v) {
             if (preg_match('~^(interface|peer):~', $v, $m)) {
@@ -31584,7 +31757,7 @@ DNS-over-HTTPS with IP:
             // (applyRotatedPeerKeys) уже написан правильно.
             $conf[] = !empty($peer['# PublicKey']) ? '# [Peer]' : '[Peer]';
                 if (!empty($peer['Endpoint'])) {
-                    $host = $pac[$this->getInstanceWG(1) . 'endpoint'] ? $this->ip : $this->getDomain();
+                    $host = !empty($pac[$this->getInstanceWG(1) . 'endpoint']) ? $this->ip : $this->getDomain();
                     $port = $ports[$this->getInstanceWG()]['port'];
                     if ($relay !== null) {
                         $host = $relay['awg_address'];
@@ -32144,18 +32317,33 @@ DNS-over-HTTPS with IP:
         $this->send($this->input['chat'], "disconnect: \n" . var_export($args, true) . "\n", $this->input['message_id']);
     }
 
+    public function waitForSshService(string $service, int $timeout = 30): bool
+    {
+        $deadline = microtime(true) + $timeout;
+        do {
+            if ($this->tcpProbe($service, 22, min(1.0, max(.01, $deadline - microtime(true))))['ok']) return true;
+            if (microtime(true) >= $deadline) return false;
+            usleep(100000);
+        } while (true);
+    }
+
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $data = "";
         $this->sshFailed = false;
         if (!$this->protocolModuleEnabled($service)) return '';
         try {
+            // Compose service_started не гарантирует готовность sshd. Ждём
+            // до команд, которые останавливают ядро или применяют конфиг.
+            if ($this->sshStartupWait > 0 && !$this->waitForSshService($service, $this->sshStartupWait)) {
+                throw new RuntimeException('SSH service startup timed out');
+            }
             // ssh2_connect не принимает таймаут и по умолчанию ждёт TCP-коннект
             // минутами (лежащий контейнер = зависший вебхук-воркер). 5с хватает
             // внутри docker-сети с запасом.
             $prevTimeout = ini_get('default_socket_timeout');
             ini_set('default_socket_timeout', '5');
-            $c = ssh2_connect($service, 22);
+            $c = @ssh2_connect($service, 22);
             ini_set('default_socket_timeout', $prevTimeout);
             if (empty($c)) {
                 throw new Exception("no connection to $service: \n$cmd\n" . var_export($c, true));
@@ -32745,6 +32933,41 @@ DNS-over-HTTPS with IP:
         return $this->withLock('trusttunnel', fn() => $this->restartTtLocked());
     }
 
+    public static function migrateTtMetrics(string $conf): string
+    {
+        // Существующую, в том числе явно отключённую, ручную политику не меняем.
+        if (preg_match('~\bmetrics\b~i', $conf)) return $conf;
+        return rtrim($conf) . "\n\n# Bot: loopback-only per-user statistics.\n[metrics]\n"
+            . "address = \"127.0.0.1:1987\"\nrequest_timeout_secs = 3\nper_client_metrics = true\n";
+    }
+
+    public static function parseTtClientStats(string $json): ?array
+    {
+        $rows = json_decode($json, true);
+        if (!str_starts_with(ltrim($json), '[') || !is_array($rows) || !array_is_list($rows)) return null;
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || !is_string($row['username'] ?? null)) return null;
+            foreach (['sessions', 'inbound', 'outbound'] as $key) {
+                if (!is_int($row[$key] ?? null) || $row[$key] < 0) return null;
+            }
+            $ip = $row['ip'] ?? null;
+            if ($ip !== null && (!is_string($ip) || !filter_var($ip, FILTER_VALIDATE_IP))) return null;
+            if (array_key_exists($row['username'], $out)) return null;
+            $out[$row['username']] = ['sessions' => $row['sessions'], 'upload' => $row['inbound'],
+                'download' => $row['outbound'], 'ip' => $ip];
+        }
+        return $out;
+    }
+
+    public function ttClientStats(): ?array
+    {
+        if (!$this->protocolModuleEnabled('tt')) return null;
+        // Адрес фиксирован: метрики с именами/IP никогда не публикуются наружу.
+        $json = $this->ssh("curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:1987/clients 2>/dev/null", 'tt');
+        return self::parseTtClientStats((string) $json);
+    }
+
     private function restartTtLocked()
     {
         if (!$this->protocolModuleEnabled('tt')) return true;
@@ -32756,6 +32979,9 @@ DNS-over-HTTPS with IP:
             if (!file_exists($p['vpn']) || !file_exists($p['rules'])) {
                 return false; // templates missing — init.sh ещё не развернул
             }
+            $conf = (string) file_get_contents($p['vpn']);
+            $migrated = self::migrateTtMetrics($conf);
+            if ($migrated !== $conf && !$this->writePrivateKey($p['vpn'], $migrated)) return false;
         }
 
         // Linux truncates /proc/<pid>/comm to 15 chars, so the binary name
@@ -33083,9 +33309,20 @@ DNS-over-HTTPS with IP:
 
         $text   = [];
         $text[] = 'Menu -> TrustTunnel -> <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
-        $text[] = 'server: ' . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = 'server: ' . ($domain ? '<code>' . self::esc("$domain:$port") . '</code>' : 'domain unavailable');
         $text[] = 'login: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $text[] = 'password: <code>' . htmlspecialchars($users[$user], ENT_QUOTES) . '</code>';
+        $stats = $this->ttClientStats()[$user] ?? null;
+        $text[] = '';
+        if ($stats === null) {
+            $text[] = $this->i18n('tt stats unavailable');
+        } else {
+            $text[] = $this->i18n('tt sessions') . ': ' . $stats['sessions'];
+            $text[] = '↑ ' . $this->i18n('tt uploaded') . ': ' . $this->fmtBytes($stats['upload']);
+            $text[] = '↓ ' . $this->i18n('tt downloaded') . ': ' . $this->fmtBytes($stats['download']);
+            if ($stats['ip'] !== null) $text[] = $this->i18n('tt peer ip') . ': <code>' . self::esc($stats['ip']) . '</code>';
+            $text[] = '<i>' . $this->i18n('tt stats lifetime') . '</i>';
+        }
 
         $data   = [];
         $data[] = [
@@ -33112,6 +33349,8 @@ DNS-over-HTTPS with IP:
             'text'          => $this->i18n('delete'),
             'callback_data' => "/delttus $user",
         ]];
+        $data[] = [['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => "/ttClientMenu $user"]];
+        $data[] = $this->menuHelpButton('tt', $user);
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/menu tt',
@@ -33119,17 +33358,20 @@ DNS-over-HTTPS with IP:
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
-    public function ttMenu()
+    public function ttMenu(int $page = 0)
     {
         $domain   = $this->ttDomain();
         $port     = $this->getTtPort();
         $users    = $this->getClientsTt();
         $running  = $this->ttRunning();
         $blockers = $this->ttBlockers();
+        $stats    = $running ? $this->ttClientStats() : null;
+        $pages    = max(1, (int) ceil(count($users) / 20));
+        $page     = max(0, min($page, $pages - 1));
 
         $text   = [];
         $text[] = "Menu -> TrustTunnel";
-        $text[] = "server: " . ($domain ? "<code>$domain:$port</code>" : 'domain unavailable');
+        $text[] = "server: " . ($domain ? '<code>' . self::esc("$domain:$port") . '</code>' : 'domain unavailable');
         $text[] = $this->i18n($running ? 'on' : 'off') . ' trusttunnel';
         $text[] = 'clients: ' . count($users);
         // Раньше меню молчало обо всём, кроме отсутствующего сертификата, и
@@ -33161,7 +33403,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/showTtLog',
             ],
         ];
-        foreach ($users as $u => $_) {
+        foreach (array_slice($users, $page * 20, 20, true) as $u => $_) {
             // callback_data не переживает пробелы (роутер разбирает \S+), а имя
             // могло появиться и ручной правкой credentials.toml. Такие клиенты
             // показываем строкой, а не мёртвой кнопкой.
@@ -33171,10 +33413,19 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             $data[] = [[
-                'text'          => "🔑 $u",
+                'text'          => (isset($stats[$u]) ? ($stats[$u]['sessions'] > 0 ? '🟢 ' : '⚪ ') : '🔑 ') . $u,
                 'callback_data' => "/ttClientMenu $u",
             ]];
         }
+        if ($pages > 1) {
+            $nav = [];
+            if ($page > 0) $nav[] = ['text' => '←', 'callback_data' => '/menu tt ' . ($page - 1)];
+            $nav[] = ['text' => ($page + 1) . "/$pages", 'callback_data' => "/menu tt $page"];
+            if ($page + 1 < $pages) $nav[] = ['text' => '→', 'callback_data' => '/menu tt ' . ($page + 1)];
+            $data[] = $nav;
+        }
+        $data[] = [['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => "/menu tt $page"]];
+        $data[] = $this->menuHelpButton('tt');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -33429,7 +33680,7 @@ DNS-over-HTTPS with IP:
         $rows = explode("\n", file_get_contents($p['status']));
         $out  = [];
         foreach ($rows as $row) {
-            $cols = str_getcsv($row);
+            $cols = str_getcsv($row, ',', '"', '');
             if (($cols[0] ?? '') !== 'CLIENT_LIST') {
                 continue;
             }

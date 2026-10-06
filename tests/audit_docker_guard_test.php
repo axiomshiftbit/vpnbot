@@ -51,17 +51,29 @@ guardAssert(($r[1]['ip'] ?? null) === [Bot::WARP_SOCKS_IP]
     'вторым идёт точечный allow клиентского WARP SOCKS');
 guardAssert(($r[1]['inboundTag'] ?? null) === ['vless_tls'],
     'WARP SOCKS разрешён только внешнему клиентскому inbound');
-guardAssert(($r[2]['ip'] ?? null) === [Bot::DOCKER_NET] && ($r[2]['outboundTag'] ?? '') === 'block',
-    'третьим — блок всей docker-сети');
-guardAssert(in_array('vless_tls', $r[2]['inboundTag'] ?? [], true),
+guardAssert(($r[2]['ip'] ?? null) === [Bot::WARP_SOCKS_IP]
+    && ($r[2]['port'] ?? '') === Bot::WARP_SOCKS_UDP_PORTS
+    && ($r[2]['network'] ?? '') === 'udp'
+    && ($r[2]['inboundTag'] ?? null) === ['vless_tls']
+    && ($r[2]['outboundTag'] ?? '') === 'direct',
+    'UDP relay разрешён только на адресе WARP и только внешнему inbound');
+$script = file_get_contents(__DIR__ . '/../scripts/start_wp.sh');
+preg_match('~^SOCKS_UDP_PORTS=([0-9]+):([0-9]+)$~m', $script, $udpRange);
+guardAssert(($udpRange[1] ?? '') . '-' . ($udpRange[2] ?? '') === Bot::WARP_SOCKS_UDP_PORTS,
+    'диапазон Xray совпадает с relay и firewall WARP');
+guardAssert(!preg_match('~^        ports:~m', preg_split('~^    [a-z0-9_-]+:$~m', explode("    wp:\n", file_get_contents(__DIR__ . '/../docker-compose.yml'))[1])[0]),
+    'WARP SOCKS и UDP relay не публикуются на хосте');
+guardAssert(($r[3]['ip'] ?? null) === [Bot::DOCKER_NET] && ($r[3]['outboundTag'] ?? '') === 'block',
+    'после исключений — блок всей docker-сети');
+guardAssert(in_array('vless_tls', $r[3]['inboundTag'] ?? [], true),
     'ГЛАВНОЕ: клиентский inbound vless_tls закрыт от docker-сети');
-guardAssert(in_array('wg-in', $r[2]['inboundTag'] ?? [], true),
+guardAssert(in_array('wg-in', $r[3]['inboundTag'] ?? [], true),
     'внутренний socks клиентов wg остался закрыт');
-guardAssert(!in_array('api', $r[2]['inboundTag'] ?? [], true),
+guardAssert(!in_array('api', $r[3]['inboundTag'] ?? [], true),
     'служебный api-inbound гейтом не трогается');
-guardAssert(($r[0]['inboundTag'] ?? null) === ($r[2]['inboundTag'] ?? null),
+guardAssert(($r[0]['inboundTag'] ?? null) === ($r[3]['inboundTag'] ?? null),
     'allow и block навешаны на один и тот же набор тегов');
-guardAssert(($r[3]['domain'] ?? null) === ['example.com'],
+guardAssert(($r[4]['domain'] ?? null) === ['example.com'],
     'пользовательское правило сохранено и ушло вниз');
 guardAssert(in_array('block', array_column($c['outbounds'], 'tag'), true),
     'blackhole-outbound добавлен: правило на несуществующий тег молча теряет смысл');
@@ -86,8 +98,8 @@ $bot->ensureWgGuard($legacy);
 $guards = array_values(array_filter($legacy['routing']['rules'],
     static fn($r) => in_array($r['ip'] ?? null,
         [[Bot::DOCKER_NET], [Bot::INTERNAL_DNS], [Bot::WARP_SOCKS_IP]], true)));
-guardAssert(count($guards) === 3, 'старая узкая копия снята, а не оставлена дублем');
-guardAssert(in_array('vless_tls', $guards[2]['inboundTag'] ?? [], true),
+guardAssert(count($guards) === 4, 'старая узкая копия снята, а не оставлена дублем');
+guardAssert(in_array('vless_tls', $guards[3]['inboundTag'] ?? [], true),
     'гейт перевыставлен на полный набор тегов');
 
 // ── 4. Гейт восстанавливается после xrayUpdateRules ─────────────────────────
@@ -160,6 +172,10 @@ $stale['routing']['rules'] = [[
     'type' => 'field', 'inboundTag' => ['vless-in'], 'ip' => ['10.10.9.13/32'],
     'port' => Bot::WARP_SOCKS_PORT, 'network' => 'tcp', 'outboundTag' => 'direct',
 ]];
+$stale['routing']['rules'][] = [
+    'type' => 'field', 'inboundTag' => ['vless-in'], 'ip' => ['10.10.9.13/32'],
+    'port' => Bot::WARP_SOCKS_UDP_PORTS, 'network' => 'udp', 'outboundTag' => 'direct',
+];
 $bot->ensureWgGuard($stale);
 guardAssert(!array_filter($stale['routing']['rules'],
     static fn($r) => ($r['ip'] ?? null) === ['10.10.9.13/32']),

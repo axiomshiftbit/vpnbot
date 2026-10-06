@@ -1,5 +1,24 @@
-ARG image=alpine:3.23
+ARG image=alpine:3.24
+ARG PROTOCOL_GO_VERSION=1.27.1
+FROM golang:${PROTOCOL_GO_VERSION}-alpine AS plugins
+ARG V2RAY_PLUGIN_VERSION=v5.49.0
+ARG CLOAK_VERSION=v2.12.0
+ARG SIMPLE_TLS_VERSION=v0.8.0
+RUN apk add --no-cache ca-certificates curl git
+COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+RUN sh /build-tools/go-source.sh teddysun/v2ray-plugin "$V2RAY_PLUGIN_VERSION" /v2ray-plugin \
+    && cd /v2ray-plugin && sh /build-tools/go-security.sh \
+    && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /out/v2ray-plugin .
+RUN sh /build-tools/go-source.sh cbeuw/Cloak "$CLOAK_VERSION" /cloak \
+    && cd /cloak && sh /build-tools/go-security.sh \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${CLOAK_VERSION#v}" -o /out/ck-server ./cmd/ck-server \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${CLOAK_VERSION#v}" -o /out/ck-client ./cmd/ck-client
+RUN sh /build-tools/go-source.sh IrineSistiana/simple-tls "$SIMPLE_TLS_VERSION" /simple-tls \
+    && cd /simple-tls && sh /build-tools/go-security.sh \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${SIMPLE_TLS_VERSION#v}" -o /out/simple-tls .
+
 FROM $image
+COPY --from=plugins /out/ /usr/bin/
 
 # ── Версии (задаются в .env, пробрасываются через args в compose) ─────────────
 # Раньше все четыре компонента тянулись через releases/latest: пересборка молча
@@ -16,6 +35,7 @@ ARG SIMPLE_TLS_VERSION=v0.8.0
 # Хелпер: URL ассета релиза по тегу (или latest при пустом теге).
 # grep/cut оставлены как были — jq в этот слой ещё не установлен.
 RUN set -eux; \
+    apk upgrade --no-cache; \
     apk add --no-cache openssh git xz jq unzip; \
     mkdir /root/.ssh; \
     asset() { \
@@ -26,18 +46,8 @@ RUN set -eux; \
     }; \
     wget -O shadowsocks-rust.tar.xz "$(asset shadowsocks/shadowsocks-rust "$SS_RUST_VERSION" '\.x86_64-unknown-linux-musl\.tar\.xz$')"; \
     tar -xf shadowsocks-rust.tar.xz; \
-    wget -O v2ray-plugin.tar.gz "$(asset teddysun/v2ray-plugin "$V2RAY_PLUGIN_VERSION" 'v2ray-plugin-linux-amd64')"; \
-    tar -xf v2ray-plugin.tar.gz; \
-    wget -O /usr/bin/ck-server "$(asset cbeuw/Cloak "$CLOAK_VERSION" 'ck-server-linux-amd64')"; \
-    wget -O /usr/bin/ck-client "$(asset cbeuw/Cloak "$CLOAK_VERSION" 'ck-client-linux-amd64')"; \
-    chmod +x /usr/bin/ck-server /usr/bin/ck-client; \
-    wget -O simple-tls.zip "$(asset IrineSistiana/simple-tls "$SIMPLE_TLS_VERSION" 'simple-tls-linux-amd64\.zip$')"; \
-    unzip -j -o simple-tls.zip -d /tmp/stls; \
-    mv /tmp/stls/simple-tls /usr/bin/simple-tls; \
-    chmod +x /usr/bin/simple-tls; \
     mv sslocal ssserver ssmanager ssservice ssurl /usr/bin/; \
-    mv v2ray-plugin_linux_amd64 /usr/bin/v2ray-plugin; \
-    rm -rf /tmp/stls simple-tls.zip v2ray-plugin.tar.gz shadowsocks-rust.tar.xz; \
+    rm -f shadowsocks-rust.tar.xz; \
     # sanity: все четыре бинаря на месте и запускаются — иначе битая сборка
     # всплыла бы только в рантайме (ср. `caddy version` в naive.dockerfile)
     ssserver --version; \

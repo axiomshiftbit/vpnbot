@@ -8,10 +8,11 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import uuid
 
-DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False, "masque": False}
-SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "telemt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "snolc", "masque")
+DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "masque": False}
+SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "telemt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "masque")
 SYSTEMD_UNIT = Path('/etc/systemd/system/vpnbot.service')
 
 
@@ -25,9 +26,12 @@ def migrate_systemd_stop(root):
         directories = re.findall(rb'^WorkingDirectory=(.*)$', before, re.M)
         if not directories or Path(os.fsdecode(directories[-1].rstrip(b'\r'))).resolve() != root.resolve():
             return False
-        old = b'ExecStop=/bin/sh -c "docker compose down --remove-orphans"'
-        if before.splitlines().count(old) != 1: return False
-        new = b'ExecStop=/bin/sh -c "docker compose --profile \'*\' down --remove-orphans"'
+        stock = (b'ExecStop=/bin/sh -c "docker compose down --remove-orphans"',
+                 b'ExecStop=/bin/sh -c "docker compose --profile \'*\' down --remove-orphans"')
+        matching = [line for line in before.splitlines() if line in stock]
+        if len(matching) != 1: return False
+        old = matching[0]
+        new = b'ExecStop=/bin/sh -c "sh ./scripts/stop_update.sh ./update/update_pid && docker compose --profile \'*\' down --remove-orphans"'
         after = re.sub(rb'^' + re.escape(old) + rb'(?=\r?$)', lambda match: new, before, count=1, flags=re.M)
         original = unit.stat()
 
@@ -103,6 +107,26 @@ def migrate_nginx(text):
                   r'\g<1>http://10.10.0.6:8388/;', text)
 
 
+def xray_nginx_routes(text, xray):
+    # Cold update counterpart of Bot::xrayNginxRoutes. Keep the route enabled
+    # only for the actual inbound on xr:443; preserve custom backends.
+    networks = []
+    for inbound in xray.get('inbounds', []):
+        stream = inbound.get('streamSettings', {})
+        listen = str(inbound.get('listen', ''))
+        if str(inbound.get('port', '')) == '443' and stream.get('security', '') in ('', 'none') and listen != '::1' and not listen.startswith('127.'):
+            networks.append(stream.get('network', ''))
+    text = re.sub(r'(?m)^[ \t]*(?:#[ \t]*)?return 404; # vpnbot-inactive-xray-route\r?\n', '', text)
+    def route(m):
+        backend = r'\bgrpc_pass\s+grpc://xr:443\s*;' if m[2] == 'grpc' else r'\bproxy_pass\s+http://xr_backend\s*;'
+        if not re.search(backend, m[3]): return m[0]
+        active = 'grpc' in networks if m[2] == 'grpc' else bool(set(networks) & {'ws', 'xhttp'})
+        if active: return m[0]
+        prefix = re.match(r'^([ \t]*(?:#[ \t]*)?)location', m[1])[1]
+        return m[1] + '\n' + prefix + '    return 404; # vpnbot-inactive-xray-route' + m[3]
+    return re.sub(r'(^[ \t]*(?:#[ \t]*)?location[ \t]+/(ws|grpc)[A-Za-z0-9_-]*[ \t]*\{)(.*?^[ \t]*(?:#[ \t]*)?\})', route, text, flags=re.M | re.S)
+
+
 def prepare_upstream(root, filename='upstream.conf'):
     path = root / 'config' / filename
     if not path.exists(): return
@@ -114,6 +138,10 @@ def prepare_upstream(root, filename='upstream.conf'):
             before = path.read_text()
             fcntl.flock(lock, fcntl.LOCK_UN)
             after = migrate_upstream(before) if service == 'up' else migrate_nginx(before)
+            if service == 'ng':
+                xray_path = root / 'config/xray.json'
+                xray_text = xray_path.read_text() if xray_path.exists() else ''
+                after = xray_nginx_routes(after, (json.loads(xray_text) or {}) if xray_text.strip() else {})
             if before == after: return
             validate_upstream(root, after, service)
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -146,7 +174,10 @@ def validate_upstream(root, candidate, service='up'):
     image = upstream['image']
     exists = subprocess.run(['docker', 'image', 'inspect', image], capture_output=True)
     if exists.returncode:
-        compose(current, ['build', service], capture=True).check_returncode()
+        if '@sha256:' in image:
+            subprocess.run(['docker', 'pull', image], capture_output=True, check=True)
+        else:
+            compose(current, ['build', service], capture=True).check_returncode()
     command = ['docker', 'run', '--rm', '-i', '--network', 'none', '--log-driver', 'none',
                '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--entrypoint', '/bin/sh']
     if service == 'ng':
@@ -170,9 +201,46 @@ def settings(root):
     if not path.exists():
         return DEFAULTS.copy()
     value = json.loads(path.read_text())
+    if isinstance(value, dict): value.pop('snolc', None)
     if not isinstance(value, dict) or value.keys() - DEFAULTS.keys() or any(type(v) is not bool for v in value.values()):
         raise ValueError("invalid module settings")
     return DEFAULTS | value
+
+
+def retire_snolc(root, inspect_containers=False):
+    """Remove the retired service of this Compose project; keep rollback data private."""
+    path = root / 'config/protocol-services.json'
+    directory = root / 'config/protocols/snolc'
+    with open(root / 'update/retired-protocols.lock', 'a') as migration:
+        fcntl.flock(migration, fcntl.LOCK_EX)
+        with open(str(path) + '.lock', 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            value = json.loads(path.read_text()) if path.exists() else {}
+            if not isinstance(value, dict): raise ValueError('invalid module settings')
+            if directory.is_symlink(): raise ValueError('retired state must not be a symlink')
+            if not inspect_containers and 'snolc' not in value and not directory.exists(): return
+            current = settings(root)
+            resolved = compose(current, ['config', '--format', 'json'], capture=True)
+            resolved.check_returncode()
+            project = json.loads(resolved.stdout)['name']
+            result = subprocess.run(['docker', 'ps', '--all', '--quiet',
+                                     '--filter', 'label=com.docker.compose.project=' + project,
+                                     '--filter', 'label=com.docker.compose.service=snolc'],
+                                    capture_output=True, check=True, text=True, timeout=30)
+            ids = result.stdout.split()
+            if any(not re.fullmatch('[a-f0-9]{12,64}', uid) for uid in ids):
+                raise ValueError('invalid container identity')
+            if ids:
+                subprocess.run(['docker', 'stop', '--time', '20', *ids], capture_output=True, check=True, timeout=60)
+                subprocess.run(['docker', 'rm', *ids], capture_output=True, check=True, timeout=30)
+            if directory.exists():
+                archive = root / 'update/retired-protocols'
+                archive.mkdir(mode=0o700, exist_ok=True)
+                os.chmod(archive, 0o700)
+                directory.rename(archive / ('snolc-' + uuid.uuid4().hex))
+            if 'snolc' in value:
+                del value['snolc']
+                write_status(path, value)
 
 
 def enabled(s, service):
@@ -193,7 +261,7 @@ def environment(s):
 
 def bindings(root):
     ports = {}
-    for service in ("mieru", "tuic", "shadowtls", "snolc", "masque"):
+    for service in ("mieru", "tuic", "shadowtls", "masque"):
         path = root / "config/protocols" / service / "desired.json"
         if path.exists():
             try: port = json.loads(path.read_text())["settings"]["port"]
@@ -240,8 +308,26 @@ def sync_certificates(root, current):
 def compose(s, arguments, capture=False, input_data=None, port_overrides=None):
     env = environment(s)
     for service, port in (port_overrides or {}).items(): env[service.upper() + '_PORT'] = str(port)
-    return subprocess.run(["docker", "compose", "--env-file", ".env", "--env-file", "override.env"] + arguments,
+    # Import by path as tests and host workers can load this module from outside
+    # scripts/. The overlay is also used by the off/on supervisor.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('image_bundle', Path(__file__).with_name('image_bundle.py'))
+    bundle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bundle)
+    files = bundle.compose_files(Path.cwd(), env)
+    if files and arguments and arguments[0] == 'up' and '--no-build' not in arguments:
+        arguments = [arguments[0], '--no-build'] + arguments[1:]
+    return subprocess.run(["docker", "compose"] + files + ["--env-file", ".env", "--env-file", "override.env"] + arguments,
                           env=env, capture_output=capture, input=input_data, check=False)
+
+
+def container_states(current):
+    result = compose(current, ['ps', '--all', '--format', 'json'], capture=True)
+    result.check_returncode()
+    raw = result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+    raw = (raw or '').strip()
+    rows = json.loads(raw) if raw.startswith('[') else [json.loads(line) for line in raw.splitlines()]
+    return {row['Service']: row['State'] for row in rows}
 
 
 def check_port(s, service, port):
@@ -266,6 +352,7 @@ def apply(root):
     lock = open(root / "update/protocol-services.lock", "a")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        retire_snolc(root)
         current = settings(root)
         if not current['ss']:
             for filename in ('nginx.conf', 'nginx_default.conf'):
@@ -276,9 +363,23 @@ def apply(root):
             except (OSError, ValueError, KeyError, TypeError): certificate_errors[service] = 'certificate_copy_failed'
         status = root / "config/protocol-services.status.json"
         previous = json.loads(status.read_text()) if status.exists() else {}
+        for key in ('settings', 'bindings', 'errors'):
+            previous.get(key, {}).pop('snolc', None)
         ports = bindings(root)
-        if previous.get("settings") == current and previous.get("bindings", {}) == ports and previous.get("ok") and not certificate_errors:
-            return
+        unchanged = previous.get("settings") == current and previous.get("bindings", {}) == ports and previous.get("ok") and not certificate_errors
+        missing = set()
+        checked_at = previous.get('checked_at', 0)
+        if unchanged:
+            if 0 <= time.time() - checked_at < 30:
+                return
+            actual = container_states(current)
+            missing = {service for service in SERVICES
+                       if (enabled(current, service) and actual.get(service) != 'running')
+                       or (not enabled(current, service) and service in actual)}
+            checked_at = time.time()
+            if not missing:
+                write_status(status, previous | {'checked_at': checked_at})
+                return
         old = previous.get("settings", {})
         applied = old.copy()
         applied_ports = previous.get('bindings', {}).copy()
@@ -291,7 +392,7 @@ def apply(root):
             if service == "ipsec":
                 same = same and all(old.get(k) == current[k] for k in ("l2tp", "ikev2"))
             pending = pending_errors.get(service, '')
-            if same and service in old and pending not in ('operation_pending', 'operation_failed', 'operation_failed_rolled_back'):
+            if same and service in old and service not in missing and pending not in ('operation_pending', 'operation_failed', 'operation_failed_rolled_back'):
                 continue
             # Persist intent before Docker: an interrupted operation must be retried
             # even if the user has since switched back to the previous settings.
@@ -299,7 +400,7 @@ def apply(root):
                                   "errors": pending_errors | failures | {service: 'operation_pending'},
                                   "failed_service": next(iter(failures), None)})
             if enabled(current, service):
-                if service in ('mieru', 'tuic', 'shadowtls', 'snolc', 'masque'):
+                if service in ('mieru', 'tuic', 'shadowtls', 'masque'):
                     if service not in ports:
                         failures[service] = 'invalid_protocol_port'
                         continue
@@ -334,38 +435,10 @@ def apply(root):
         if "oc" in changed and current["oc"]:
             compose(current, ["exec", "-T", "ad", "sh", "-c", 'address=$(getent hosts oc | awk "{print \\$1}"); [ -z "$address" ] || ip route replace 10.0.2.0/24 via "$address"'], capture=True)
         write_status(status, {"ok": not failures, "settings": applied, "bindings": applied_ports, "changed": changed,
-                              "errors": failures, "failed_service": next(iter(failures), None)})
+                              "errors": failures, "failed_service": next(iter(failures), None), 'checked_at': checked_at})
     finally:
         lock.close()
 
-
-def confirm_snolc_port(root):
-    """Acknowledge a manually applied port using read-only Docker inspection."""
-    (root / 'update').mkdir(exist_ok=True)
-    with open(root / 'update/protocol-services.lock', 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        current = settings(root)
-        port = bindings(root).get('snolc')
-        if not current['snolc'] or port is None:
-            raise ValueError('snolc_not_configured')
-        result = compose(current, ['ps', '--status', 'running', '-q', 'snolc'], capture=True)
-        identities = result.stdout.split()
-        if result.returncode or len(identities) != 1:
-            raise RuntimeError('snolc_not_running')
-        inspected = subprocess.run(['docker', 'inspect', '--format',
-                                    '{"running":{{.State.Running}},"ports":{{json .NetworkSettings.Ports}}}',
-                                    identities[0]], capture_output=True, check=True)
-        actual = json.loads(inspected.stdout)
-        published = (actual.get('ports') or {}).get('24448/tcp') or []
-        if not actual.get('running') or not any(item.get('HostPort') == str(port) for item in published):
-            raise RuntimeError('snolc_port_not_published')
-        path = root / 'config/protocol-services.status.json'
-        status = json.loads(path.read_text()) if path.exists() else {}
-        status.setdefault('settings', {})['snolc'] = True
-        status.setdefault('bindings', {})['snolc'] = port
-        status.setdefault('errors', {}).pop('snolc', None)
-        status.update(ok=not status['errors'], failed_service=next(iter(status['errors']), None))
-        write_status(path, status)
 
 
 def write_status(path, value):
@@ -423,14 +496,12 @@ def main():
         Path(sys.argv[3]).write_text(text)
         return 0
     root = Path.cwd()
-    if command == "confirm-port" and sys.argv[2:] == ["snolc"]:
-        confirm_snolc_port(root)
-        return 0
     if command == "apply":
         apply(root)
         return 0
     if command == "compose":
         if sys.argv[2:3] == ["up"]:
+            retire_snolc(root, inspect_containers=True)
             migrate_systemd_stop(root)
             sync_certificates(root, settings(root))
             prepare_upstream(root)

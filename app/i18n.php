@@ -993,6 +993,18 @@ $i = [
         'en' => 'torrents',
         'ru' => 'торренты',
     ],
+    'torrent wg on' => [
+        'en' => 'BitTorrent signature blocking enabled. Encrypted traffic is not guaranteed to be detected.',
+        'ru' => 'Блокировка сигнатур BitTorrent включена. Обнаружение зашифрованного трафика не гарантируется.',
+    ],
+    'torrent wg off' => [
+        'en' => 'BitTorrent signature blocking disabled.',
+        'ru' => 'Блокировка сигнатур BitTorrent выключена.',
+    ],
+    'torrent wg incomplete' => [
+        'en' => 'Torrent blocking is requested, but not all ipp2p rules are active. Check the block_torrent log and the host kernel headers / xtables-addons-dkms. String rules alone provide partial coverage.',
+        'ru' => 'Блокировка торрентов выбрана, но не все правила ipp2p действуют. Проверьте журнал block_torrent и заголовки ядра / xtables-addons-dkms на хосте. Одни строковые правила дают лишь частичную защиту.',
+    ],
     'torrent xray on'  => [
         'en' => 'torrents blocked for xray clients',
         'ru' => 'торренты для клиентов xray блокируются',
@@ -1628,6 +1640,18 @@ $i = [
     'tt bad name'  => [
         'en' => 'name is unsupported by the bot, rename it in credentials.toml',
         'ru' => 'имя не поддерживается ботом, переименуйте в credentials.toml',
+    ],
+    'tt stats unavailable' => [
+        'ru' => 'Статистика недоступна: проверьте запуск TrustTunnel и настройки метрик. Подробности — в справке.',
+        'en' => 'Statistics unavailable: check TrustTunnel and its metrics settings. See Help.',
+    ],
+    'tt sessions' => ['ru' => 'Активные сессии', 'en' => 'Active sessions'],
+    'tt uploaded' => ['ru' => 'Отправлено клиентом', 'en' => 'Uploaded by client'],
+    'tt downloaded' => ['ru' => 'Получено клиентом', 'en' => 'Downloaded by client'],
+    'tt peer ip' => ['ru' => 'IP соединения у сервера', 'en' => 'Peer IP seen by endpoint'],
+    'tt stats lifetime' => [
+        'ru' => 'Трафик с запуска ядра; после перезапуска счётчики обнуляются.',
+        'en' => 'Traffic since core startup; counters reset on restart.',
     ],
     'win dns guard'  => [
         'en' => 'block-outside-dns (Windows)',

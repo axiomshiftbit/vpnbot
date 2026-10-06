@@ -6,6 +6,7 @@ require_once __DIR__ . '/../app/bot.php';
 class RestartValidationBot extends Bot
 {
     public bool $valid = false;
+    public bool $routesValid = true;
     public int $collections = 0;
     public array $commands = [];
     public array $checked = [];
@@ -18,6 +19,7 @@ class RestartValidationBot extends Bot
         return $this->valid;
     }
     public function collectSession() { $this->collections++; }
+    public function syncXrayNginxRoutes(array $config): bool { return $this->routesValid; }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $this->commands[] = $cmd;
@@ -42,6 +44,12 @@ try {
         throw new RuntimeException('Проверяется не окончательный формат конфигурации');
     }
     $bot->valid = true;
+    $bot->routesValid = false;
+    if ($bot->restartXray($config) !== false || $bot->commands || $bot->collections
+        || file_get_contents($bot->xrayConf) !== '{"previous":true}') {
+        throw new RuntimeException('Отказ NGINX изменил конфиг или остановил Xray');
+    }
+    $bot->routesValid = true;
     if (!$bot->restartXray($config) || $bot->collections !== 1 || count($bot->commands) !== 2
         || file_get_contents($bot->xrayConf) === '{"previous":true}') {
         throw new RuntimeException('Корректный конфиг не применён');

@@ -87,11 +87,10 @@ $esc = htmlspecialchars($mkLink('u', 'a&b', 'h'), ENT_QUOTES | ENT_SUBSTITUTE, '
 npAssert(!str_contains($esc, '&b'), '& экранируется для HTML');
 
 // ── 3. Тег версии caddy ─────────────────────────────────────────────────────
-// Пара пиннится вместе: FORWARDPROXY_VERSION = CADDY_VERSION . '-naive'.
+// У Caddy стабильный semver; совместимость отдельного тега плагина проверяет native CI.
 $tagOk = fn(string $v) => (bool) preg_match('~^v\d+\.\d+\.\d+$~', $v);
 foreach (['v2.11.2', 'v2.10.0', 'v2.9.1'] as $v) {
     npAssert($tagOk($v), "валидный тег: $v");
-    npAssert("$v-naive" === $v . '-naive', "парный тег плагина для $v");
 }
 foreach (['2.11.2', 'v2.11', 'latest', 'naive', 'v2.11.2-naive', '', 'v2.11.2; rm -rf /'] as $v) {
     npAssert(!$tagOk($v), 'невалидный тег отбивается: ' . var_export($v, true));
@@ -147,6 +146,15 @@ npAssert(str_contains($newAcl, 'deny 169.254.0.0/16') && str_contains($newAcl, '
 npAssert(Bot::migrateNaiveAcl($newAcl) === $newAcl, 'миграция ACL идемпотентна');
 $customAcl = "acl {\nallow 192.168.1.1\ndeny all\n}";
 npAssert(Bot::migrateNaiveAcl($customAcl) === $customAcl, 'ручной ACL администратора сохранён');
+$legacyTimeout = "{\n\tservers {\n\t\tprotocols h1 h2\n\t}\n}\n:443 {\n\tforward_proxy {\n\t\tbasic_auth user pass\n\t}\n}\n";
+$withTimeout = Bot::migrateNaiveTimeout($legacyTimeout);
+npAssert(str_contains($withTimeout, 'read_body_idle -1s'), 'старый конфиг допускает простой CONNECT более минуты');
+npAssert(str_contains($withTimeout, 'basic_auth user pass') && str_contains($withTimeout, 'protocols h1 h2'),
+    'миграция сохраняет аутентификацию и транспорты');
+npAssert(Bot::migrateNaiveTimeout($withTimeout) === $withTimeout, 'миграция тайм-аута идемпотентна');
+$manualTimeout = str_replace('protocols h1 h2', "timeouts {\nread_body_idle 5m\n}\nprotocols h1 h2", $legacyTimeout);
+npAssert(Bot::migrateNaiveTimeout($manualTimeout) === $manualTimeout, 'ручная timeout-политика сохраняется');
+npAssert(Bot::migrateNaiveTimeout($customAcl) === $customAcl, 'нестандартный конфиг не перестраивается');
 npAssert(!preg_match('~^\s*allow\s+all\s*$~m', $caddyfile),
     'штатный шаблон не разрешает частные сети до встроенных запретов forwardproxy');
 

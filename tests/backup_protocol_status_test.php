@@ -12,6 +12,7 @@ class BackupStatusBot extends Bot {
     public bool $startFails = false;
     public function __construct(public string $root, array $translations) {
         $this->i18n=$translations; $this->language='ru'; $this->ip='192.0.2.1';
+        $this->ports=['wg'=>'51820/udp','wg1'=>'51821/udp'];
         $this->update="$root/backup.json"; $this->pac="$root/pac.json";
         $this->protocolModulesFile="$root/modules.json";
         $this->hysteriaUsersRoot="$root/hysteria"; $this->hysteriaConf="$root/hysteria.yaml";

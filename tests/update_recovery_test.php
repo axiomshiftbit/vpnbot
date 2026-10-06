@@ -150,6 +150,7 @@ class Bot {
     public string $update = __DIR__ . '/json';
     public bool $selfupdate = false;
     public int $dontshowcron = 0;
+    public int $sshStartupWait = 0;
     public function __construct(...$args) {}
     public function getPacConf() { return self::PAC_DEFAULTS; }
     public function selfUpdate() { return !is_file(__DIR__ . '/fail'); }

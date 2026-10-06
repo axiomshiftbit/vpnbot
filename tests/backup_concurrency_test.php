@@ -19,6 +19,11 @@ try {
     $first->setPacConf(['domain'=>'before.example','language'=>'ru','limitpage'=>5]);
     file_put_contents($first->update,json_encode(['pac'=>['domain'=>'restored.example','language'=>'ru','limitpage'=>5]]));
     $lock=new ReflectionMethod(Bot::class,'withBackupLock');
+    $lock->invoke($first,function() use($second,$root) {
+        $second->checkBackup();
+        lockCheck(!is_file("$root/error.log") || filesize("$root/error.log")===0,
+            'Выключенное расписание не конкурирует с ручным бэкапом и не пишет ложную ошибку');
+    });
     $lock->invoke($first,function() use($second,$first,$lock,$root) {
         lockCheck($lock->invoke($first,fn()=>42)===42,'Вложенный экспорт не блокирует собственную операцию');
         if (function_exists('pcntl_fork')) {

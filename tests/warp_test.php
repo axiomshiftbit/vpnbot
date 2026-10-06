@@ -83,12 +83,12 @@ warpAssert(str_contains($startWp, 'for firewall in iptables ip6tables; do')
 warpAssert(str_contains($startWp, '-A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN')
     && str_contains($startWp, '-A WARP_PROXY_OUT -j REJECT'),
     'вне интерфейса WARP трафик прокси запрещён');
-warpAssert(str_contains($startWp, 'su -s /bin/sh -c "exec microsocks -p $SOCKS_PORT" warp-proxy'),
+warpAssert(str_contains($startWp, "su -s /bin/sh -c 'exec warp-socks run -config /run/warp-socks.json' warp-proxy"),
     'процесс действительно запускается под UID, к которому применён запрет');
 warpAssert(str_contains($startWp, 'wg show "$WGCF_IF" fwmark')
     && str_contains($startWp, '-p udp -m mark --mark "$tunnel_mark" -j RETURN'),
     'зашифрованный UDP WireGuard с тем же UID разрешён по fwmark интерфейса');
-warpAssert(substr_count($botSrc, 'pkill -x microsocks 2>/dev/null || true; wg-quick down') >= 2,
+warpAssert(substr_count($botSrc, 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down') >= 2,
     'ручное и автоматическое выключение останавливают прокси до удаления маршрутов');
 
 // ── 2. Allowlist: резолв, фолбэк, override ─────────────────────────────────

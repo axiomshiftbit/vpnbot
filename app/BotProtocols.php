@@ -111,7 +111,6 @@ trait BotProtocols
             $transport = $protocol === 'tuic' ? 'UDP' : (in_array($protocol, ['mieru', 'masque'], true) ? 'TCP/UDP' : 'TCP');
             $text .= "Меняется внешний порт $transport в Docker и в выдаваемых профилях. Адрес, SNI и внутренний порт сохраняются. Применение может кратко прервать соединения этого протокола.\n"
                 . 'Откройте новый порт в своём внешнем firewall/NAT, затем обновите клиентскую подписку. Переадресация на отдельном relay меняется вручную. 0 не отключает сервис; выключатель находится в настройках протокола.';
-            if ($protocol === 'snolc') $text .= "\nПри ручном управлении Docker измените публикацию TCP-порта и DNAT на 10.10.0.26:24448. Подтвердите проброс командой python3 scripts/protocol_modules.py confirm-port snolc из каталога установки. Затем скачайте новый ZIP клиента. Внешний UDP-порт не нужен.";
         }
         $this->update($this->input['chat'], $this->input['message_id'], self::esc($text), [[['text' => $this->i18n('back'), 'callback_data' => '/ports']]]);
         if ($protocol === 'anytls') return;
@@ -125,7 +124,7 @@ trait BotProtocols
         if (!$this->admin) return;
         try {
             $input = trim((string) $input);
-            if (!in_array($protocol, ['mieru', 'tuic', 'shadowtls', 'snolc', 'masque'], true)
+            if (!in_array($protocol, ['mieru', 'tuic', 'shadowtls', 'masque'], true)
                 || !preg_match('/\A[0-9]{4,5}\z/D', $input) || (int) $input < 1024 || (int) $input > 65535) {
                 throw new InvalidArgumentException('Внешний порт должен быть целым числом 1024–65535.');
             }
@@ -144,7 +143,7 @@ trait BotProtocols
     public function managedProtocolVersionCells(): array
     {
         $cells = [];
-        foreach (['anytls' => 'AnyTLS/sb', 'mieru' => 'Mieru', 'tuic' => 'TUIC5/sb', 'shadowtls' => 'ShadowTLS3/sb', 'snolc' => 'snolc', 'masque' => 'MASQUE/Xray'] as $protocol => $label) {
+        foreach (['anytls' => 'AnyTLS/sb', 'mieru' => 'Mieru', 'tuic' => 'TUIC5/sb', 'shadowtls' => 'ShadowTLS3/sb', 'masque' => 'MASQUE/Xray'] as $protocol => $label) {
             if (!$this->protocolModuleEnabled($protocol)) { $cells[] = "$label выкл."; continue; }
             $status = $this->protocolStore($protocol)->status();
             $version = $status['core_version'] ?? '';
@@ -214,7 +213,7 @@ trait BotProtocols
     {
         $names = [];
         foreach (ManagedProtocol::NAMES as $protocol => $_) {
-            if (in_array($protocol, ['mieru', 'shadowtls', 'snolc'], true)) continue;
+            if (in_array($protocol, ['mieru', 'shadowtls'], true)) continue;
             $state = $this->protocolStore($protocol)->read();
             $sni = $state['settings']['sni'];
             if ($sni !== '' && ManagedProtocol::hostname($sni) && !filter_var($sni, FILTER_VALIDATE_IP)) $names[] = $sni;
@@ -349,8 +348,9 @@ trait BotProtocols
 
     public function validateManagedBackup(array $data): array
     {
-        if (!is_array($data['modules'] ?? null) || !is_array($data['protocols'] ?? null)
-            || array_diff_key($data['modules'], ProtocolModules::DEFAULTS)
+        if (!is_array($data['modules'] ?? null) || !is_array($data['protocols'] ?? null)) throw new InvalidArgumentException('Неверная резервная копия модулей');
+        unset($data['modules']['snolc'], $data['protocols']['snolc']);
+        if (array_diff_key($data['modules'], ProtocolModules::DEFAULTS)
             || array_diff_key($data['protocols'], ManagedProtocol::NAMES)) throw new InvalidArgumentException('Неверная резервная копия модулей');
         foreach ($data['modules'] as $value) if (!is_bool($value)) throw new InvalidArgumentException('Неверное состояние модуля');
         foreach ($data['protocols'] as $protocol => $snapshot) $this->protocolStore($protocol)->validateSnapshot($snapshot);
@@ -376,6 +376,7 @@ trait BotProtocols
     public function importManagedProtocols(array $data, bool $syncUpstreams = true): void
     {
         $material = $this->validateManagedBackup($data);
+        unset($data['modules']['snolc'], $data['protocols']['snolc']);
         foreach (['anytls', 'shadowtls'] as $protocol) {
             if (!empty($data['protocols'][$protocol]['state']['settings']['self_hosted'])) {
                 $this->prepareProtocolSelfHost();
@@ -455,6 +456,7 @@ trait BotProtocols
             else $modules->toggle($module);
             $this->protocolModulesMenu();
         } catch (Throwable $e) {
+            error_log('protocolModulesToggle: ' . get_class($e) . ' at ' . basename($e->getFile()) . ':' . $e->getLine());
             $this->protocolError('Не удалось сохранить настройки протоколов.', '/protocolModules');
         }
     }
@@ -532,7 +534,7 @@ trait BotProtocols
         try {
             $store = $this->protocolStore($protocol);
             if (!$this->protocolModuleEnabled($protocol)) throw new RuntimeException('Протокол отключён');
-            $store->profile($id, in_array($protocol, ['snolc', 'masque'], true) ? 'native' : 'mihomo'); // Includes current expiry/quota/revocation checks.
+            $store->profile($id, $protocol === 'masque' ? 'native' : 'mihomo'); // Includes current expiry/quota/revocation checks.
             $relays = [];
             foreach ($this->getPacConf()['relays'] ?? [] as $name => $_) {
                 try { $endpoint = $this->protocolRelayEndpoint($protocol, (string) $name); }
@@ -571,8 +573,8 @@ trait BotProtocols
                 $transport = $protocol === 'tuic' ? 'UDP' : ($protocol === 'masque' ? 'TCP/UDP' : ($protocol === 'mieru' ? $settings['transport'] : 'TCP'));
                 $text[] = self::esc($name) . ': <code>' . self::esc($endpoint['host']) . '</code> · ' . $endpoint['port'] . ' ' . $transport;
                 $text[] = 'Переадресация на <code>' . self::esc($settings['host']) . '</code> · ' . $settings['port'] . ' ' . $transport . '.';
-                if (!in_array($protocol, ['mieru', 'snolc'], true)) $text[] = 'SNI: <code>' . self::esc($settings['sni']) . '</code>. Проверка сертификата включена.';
-                $text[] = ($protocol === 'snolc' ? 'Relay передаёт SSH без завершения шифрования; ключи сервера сохраняются.' : ($protocol === 'mieru' ? 'Relay передаёт зашифрованный поток Mieru.' : 'Relay передаёт зашифрованный поток без завершения TLS.'))
+                if ($protocol !== 'mieru') $text[] = 'SNI: <code>' . self::esc($settings['sni']) . '</code>. Проверка сертификата включена.';
+                $text[] = ($protocol === 'mieru' ? 'Relay передаёт зашифрованный поток Mieru.' : 'Relay передаёт зашифрованный поток без завершения TLS.')
                     . ' После изменения адреса или порта обновите подписку либо импортируйте профиль заново.';
                 if (isset($store->formats()['uri'])) {
                     $text[] = '<code>' . self::esc($store->profile($id, 'uri', $state, $endpoint)) . '</code>';
@@ -580,7 +582,7 @@ trait BotProtocols
                 }
                 foreach ($store->formats() as $f => $label) $buttons[] = [['text' => $label . ' · relay', 'callback_data' => "$prefix $key $f"]];
                 $buttons[] = [['text' => '🔗 Подписки · relay', 'callback_data' => "/ps $protocol $id $key"]];
-                if (!in_array($protocol, ['snolc', 'masque'], true)) $buttons[] = [['text' => 'Запись прокси · скопировать', 'callback_data' => "$prefix $key yaml"]];
+                if ($protocol !== 'masque') $buttons[] = [['text' => 'Запись прокси · скопировать', 'callback_data' => "$prefix $key yaml"]];
                 if ($domain = $this->getDomain()) {
                     $base = 'https://' . $domain . '/pac' . $this->getHashBot() . '/protocol/' . $protocol . '/' . $state['users'][$id]['token'];
                     foreach ($store->formats() as $f => $label) if (!str_contains($f, 'uri')) {
@@ -617,9 +619,9 @@ trait BotProtocols
                     'expires' => 'Срок: дата и время UTC в формате 2026-10-01 12:00, либо 0 без срока:',
                     'quota' => 'Лимит в ГиБ (например 10 или 0.5), либо 0 без лимита:',
                     'rolling' => 'Квота Mieru: число дней и МиБ через пробел, например 30 10240. Либо 0 без периодической квоты:',
-                    'settings' => $protocol === 'snolc' ? 'Адрес сервера и TCP-порт через пробел (например vpn.example.com 24448):' : ($protocol === 'mieru' ? 'Адрес сервера, порт и транспорт TCP или UDP через пробел (например vpn.example.com 24445 TCP):'
+                    'settings' => $protocol === 'mieru' ? 'Адрес сервера, порт и транспорт TCP или UDP через пробел (например vpn.example.com 24445 TCP):'
                         : ($protocol === 'shadowtls' ? 'Адрес VPN, домен сайта прикрытия с TLS 1.3 и отдельный порт через пробел (например vpn.example.com www.microsoft.com 24447):'
-                        : 'Адрес сервера, SNI и порт через пробел (например vpn.example.com vpn.example.com 443):')),
+                        : 'Адрес сервера, SNI и порт через пробел (например vpn.example.com vpn.example.com 443):'),
                 };
                 $r = $this->send($this->input['chat'], $prompt, $this->input['message_id'], reply: 'Введите значение');
                 $this->stashReply($r, ['start_message' => $this->input['message_id'],
@@ -672,7 +674,7 @@ trait BotProtocols
                 try { $this->sendQr($protocol . '-' . $id . ($relayKey === '' ? '' : '-relay-' . $relayKey), $store->profile($id, 'uri', endpoint: $endpoint)); }
                 finally { $this->protocolOutput = false; }
                 return;
-            } elseif ($action === 'egress' && $protocol !== 'snolc') {
+            } elseif ($action === 'egress') {
                 $on = $state['settings']['egress'] === 'direct';
                 $source = match ($protocol) { 'mieru' => '10.10.0.23', 'tuic' => '10.10.0.24', 'shadowtls' => '10.10.0.25', 'masque' => '10.10.0.27', default => '10.10.0.22' };
                 if ($on && !str_contains($this->ssh(self::warpSocksAllowCmd($source, true), 'wp'), self::SS_ACL_PRESENT)) {
@@ -726,10 +728,7 @@ trait BotProtocols
                 $store->user($id, ['expires' => $input === '0' ? null : $time->getTimestamp()]);
             } elseif ($action === 'settings') {
                 $parts = preg_split('/\s+/', $input);
-                if ($protocol === 'snolc') {
-                    if (count($parts) !== 2 || !preg_match('/\A[0-9]+\z/D', $parts[1])) throw new InvalidArgumentException('Нужны адрес и TCP-порт');
-                    $settings = ['host' => $parts[0], 'sni' => '', 'port' => (int) $parts[1]];
-                } elseif ($protocol === 'mieru') {
+                if ($protocol === 'mieru') {
                     if (count($parts) !== 3 || !preg_match('/\A[0-9]+\z/D', $parts[1]) || (int) $parts[1] < 1024) throw new InvalidArgumentException('Нужны адрес, порт 1024–65535 и TCP/UDP');
                     $settings = ['host' => $parts[0], 'sni' => '', 'port' => (int) $parts[1], 'transport' => strtoupper($parts[2])];
                 } else {
@@ -794,7 +793,7 @@ trait BotProtocols
                 foreach ($store->formats() as $format => $label) {
                     $buttons[] = [['text' => $label, 'callback_data' => "/protocol $protocol export $id $format"]];
                 }
-                if (!in_array($protocol, ['snolc', 'masque'], true)) $buttons[] = [['text' => 'Запись прокси · скопировать', 'callback_data' => "/protocol $protocol yaml $id"]];
+                if ($protocol !== 'masque') $buttons[] = [['text' => 'Запись прокси · скопировать', 'callback_data' => "/protocol $protocol yaml $id"]];
                 $buttons[] = [['text' => '🔗 Relay', 'callback_data' => "/protocol $protocol relays $id"]];
                 $buttons[] = [['text' => '🔗 Подписки', 'callback_data' => "/ps $protocol $id"]];
                 $domain = $this->getDomain();
@@ -816,12 +815,12 @@ trait BotProtocols
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "/protocol $protocol"]];
         } else {
             $buttons[] = [['text' => 'Диагностика', 'callback_data' => "/diag $protocol"]];
-            $text[] = self::esc($s['settings']['host'] . ':' . $s['settings']['port'] . ($protocol === 'snolc' ? ' · TCP' : ($protocol === 'mieru' ? ' · ' . $s['settings']['transport'] : ' · SNI ' . $s['settings']['sni'])));
+            $text[] = self::esc($s['settings']['host'] . ':' . $s['settings']['port'] . ($protocol === 'mieru' ? ' · ' . $s['settings']['transport'] : ' · SNI ' . $s['settings']['sni']));
             if (!empty($s['settings']['self_hosted'])) $text[] = 'Прикрытие собственным сайтом: https://' . self::esc($protocol === 'anytls' ? $s['settings']['cover_host'] : $s['settings']['sni']) . '. Домен берётся из настроек этого сервера.';
             if ($protocol === 'anytls' && !empty($s['settings']['self_hosted'])) $text[] = 'Имя поддомена формируется автоматически. Запись DNS (A/AAAA/CNAME или wildcard) должна указывать на этот сервер, а сертификат TLS — включать это имя.';
-            $text[] = $protocol === 'snolc' ? 'Экспериментальный SSH + Noise; клиент Linux x86_64. Инструкция — в справке и архиве.' : ($protocol === 'mieru' ? 'Без TLS; транспорт TCP/UDP. Клиент: Mihomo или нативный Mieru.'
+            $text[] = $protocol === 'mieru' ? 'Без TLS; транспорт TCP/UDP. Клиент: Mihomo или нативный Mieru.'
                 : ($protocol === 'shadowtls' ? 'Прикрытие: сайт с TLS 1.3 на указанном SNI.'
-                : 'Для TLS требуется действительный сертификат на указанное имя. После добавления имени обновите SSL в настройках.'));
+                : 'Для TLS требуется действительный сертификат на указанное имя. После добавления имени обновите SSL в настройках.');
             if ($protocol === 'masque') $text[] = 'HTTP/3 (UDP) и HTTP/2 (TCP). Клиент: Xray 26.9.30+.';
             if ($protocol === 'tuic') {
                 $text[] = 'TUIC v5 требует доступного UDP-порта. Блокировка UDP прерывает и TCP, и UDP приложений. Проверка TLS включена. 0-RTT: '
@@ -834,13 +833,13 @@ trait BotProtocols
                 $buttons[] = [['text' => 'UDP через TCP: ' . ($s['settings']['udp_over_tcp'] ? 'включён' : 'выключен'), 'callback_data' => "/protocol $protocol udp-mode"]];
             }
             $buttons[] = [['text' => $s['enabled'] ? 'Отключить сервис' : 'Включить сервис', 'callback_data' => "/protocol $protocol toggle"]];
-            $buttons[] = [['text' => $protocol === 'snolc' ? 'Адрес / TCP-порт' : ($protocol === 'mieru' ? 'Адрес / порт / транспорт' : 'Адрес / SNI / порт'), 'callback_data' => "/protocol $protocol settings"]];
+            $buttons[] = [['text' => ($protocol === 'mieru' ? 'Адрес / порт / транспорт' : 'Адрес / SNI / порт'), 'callback_data' => "/protocol $protocol settings"]];
             if (in_array($protocol, ['anytls', 'shadowtls', 'tuic', 'masque'], true)) $buttons[] = [['text' => in_array($protocol, ['tuic', 'masque'], true) ? 'Использовать домен сервера' : 'Прикрытие своим сайтом · авто', 'callback_data' => "/protocol $protocol auto"]];
-            if ($protocol !== 'snolc') $buttons[] = [['text' => 'Выход: ' . $s['settings']['egress'], 'callback_data' => "/protocol $protocol egress"]];
+            $buttons[] = [['text' => 'Выход: ' . $s['settings']['egress'], 'callback_data' => "/protocol $protocol egress"]];
             if ($s['settings']['egress'] === 'warp') {
-                $text[] = 'Выход через WARP передаёт только TCP приложений. UDP отклоняется; при отказе WARP прямой обход не включается.';
+                $text[] = 'Выход через WARP передаёт TCP и поддерживаемый этим протоколом UDP. Переключатели UDP сохраняют своё действие. При отказе WARP прямой обход не включается.';
             }
-            if ($protocol !== 'snolc') $buttons[] = [['text' => 'Дополнительные настройки', 'callback_data' => "/po $protocol"]];
+            $buttons[] = [['text' => 'Дополнительные настройки', 'callback_data' => "/po $protocol"]];
             if (in_array($protocol, ['anytls', 'shadowtls'], true)) {
                 $buttons[] = [['text' => 'TLS fingerprint: ' . ($s['settings']['options']['client']['fingerprint'] ?? 'default'),
                     'callback_data' => "/pf $protocol"]];
@@ -951,8 +950,8 @@ trait BotProtocols
         try {
             $store = $this->protocolStore($protocol); $state = $store->read();
             if (!$this->protocolModuleEnabled($protocol)) throw new RuntimeException('Сервис выключен');
-            $store->profile($id, in_array($protocol, ['snolc', 'masque'], true) ? 'native' : 'mihomo', $state); // Same access checks as every export.
-            if (in_array($protocol, ['snolc', 'masque'], true) && $action === 'provider') throw new InvalidArgumentException('Этот протокол не поддерживается Mihomo provider');
+            $store->profile($id, $protocol === 'masque' ? 'native' : 'mihomo', $state); // Same access checks as every export.
+            if ($protocol === 'masque' && $action === 'provider') throw new InvalidArgumentException('Этот протокол не поддерживается Mihomo provider');
             $domain = $this->getDomain();
             if (!$domain) throw new RuntimeException('Сначала настройте домен и SSL');
             $relay = '';
@@ -984,7 +983,7 @@ trait BotProtocols
                 $text[] = 'Личные ссылки: не публикуйте их. После изменения параметров обновите подписку или скачайте профиль заново. Инструкция — в справке.';
             }
             $back = $relay === '' ? "/protocol $protocol user $id" : "/pr $protocol $id $relayKey";
-            $buttons = $action === '' && !in_array($protocol, ['snolc', 'masque'], true) ? [[['text' => 'Подключить provider YAML', 'callback_data' => "/ps $protocol $id $relayKey provider"]]] : [];
+            $buttons = $action === '' && $protocol !== 'masque' ? [[['text' => 'Подключить provider YAML', 'callback_data' => "/ps $protocol $id $relayKey provider"]]] : [];
             if ($action === '') $buttons[] = $this->menuHelpButton('ps_' . $protocol, $id . '.' . $relayKey);
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => $action === '' ? $back : "/ps $protocol $id $relayKey"]];
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
@@ -1000,11 +999,11 @@ trait BotProtocols
             $store = $this->protocolStore($protocol); $s = $store->read(); $id = null;
             if (!isset($store->formats($s)[$format])) { $this->subRateLimit('', 'miss'); http_response_code(404); return; }
             foreach ($s['users'] as $uid => $u) if (hash_equals($u['token'], $token)) { $id = $uid; break; }
-            if ($id === null || (!in_array($protocol, ['snolc', 'masque'], true) && isset($s['users'][$id]['xray_source'])) || !$this->protocolModuleEnabled($protocol) || !$s['enabled']) {
+            if ($id === null || ($protocol !== 'masque' && isset($s['users'][$id]['xray_source'])) || !$this->protocolModuleEnabled($protocol) || !$s['enabled']) {
                 $this->subRateLimit('', 'miss'); http_response_code(404); return;
             }
             $this->subRateLimit($protocol . ':' . $id);
-            if (in_array($protocol, ['snolc', 'masque'], true) && isset($s['users'][$id]['xray_source'])) {
+            if ($protocol === 'masque' && isset($s['users'][$id]['xray_source'])) {
                 $this->syncXrayProtocolUsers();
                 $s = $store->read();
             }
@@ -1039,8 +1038,7 @@ trait BotProtocols
             if ($u['quota'] !== null) $info[] = 'total=' . $u['quota'];
             if ($u['expires'] !== null) $info[] = 'expire=' . $u['expires'];
             if ($info) header('Subscription-Userinfo: ' . implode('; ', $info));
-            header('Content-Type: ' . $document['mime'] . ($document['extension'] === 'zip' ? '' : '; charset=utf-8'));
-            if ($document['extension'] === 'zip') header('Content-Disposition: attachment; filename="snolc-client.zip"');
+            header('Content-Type: ' . $document['mime'] . '; charset=utf-8');
             echo $document['body'];
         } catch (Throwable $e) {
             http_response_code(503);

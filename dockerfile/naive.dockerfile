@@ -1,30 +1,9 @@
-ARG image=alpine:3.23
-
-# ── Версии (задаются в .env, пробрасываются через args в compose) ─────────────
-# ВАЖНО: тег forwardproxy обязан СОВПАДАТЬ с CADDY_VERSION — у klzgrad теги
-# называются по версии caddy, под которую плагин проверен: v2.11.2 ↔
-# v2.11.2-naive. Другой пары upstream не проверял.
-#
-# Ветку `@naive`, как было раньше, не используем: README naiveproxy прямо
-# говорит «Do not use the master branch to track updates… Use stable releases
-# and the associated tags». С плавающей веткой (и xcaddy@latest, и
-# golang:alpine) каждая пересборка давала другой бинарь без возможности отката.
-#
-# Известные пары: v2.11.2-naive, v2.10.0-naive, v2.9.1-naive — все три тега
-# указывают на один коммит forwardproxy (d62c80d), меняется только заявленная
-# совместимость. CADDY_GO_VERSION держим не ниже требования caddy (go.mod caddy
-# v2.11.2 → go 1.25.0).
-#
-# На 2026-09-01 у caddy вышли v2.11.3 и v2.11.4, но тегов плагина под них нет:
-# последний у klzgrad — по-прежнему v2.11.2-naive. Пара остаётся на v2.11.2;
-# поднимать один только CADDY_VERSION нельзя (сборка упадёт на git ls-remote
-# ниже, и это правильно — непроверенная комбинация ломается в рантайме).
-#
-# Тег здесь — ЧЕЛОВЕЧЕСКИЙ пин: go его как версию модуля не примет, сборка
-# разворачивает его в коммит через git ls-remote (см. ниже).
-ARG CADDY_GO_VERSION=1.25
+ARG image=alpine:3.24
+# Caddy и forwardproxy закреплены отдельно. Плагин v2.11.2-naive сохраняет
+# совместимый API; сочетание с исправленным Caddy допускают только native-тесты.
+ARG CADDY_GO_VERSION=1.27.1
 ARG XCADDY_VERSION=v0.4.7
-ARG CADDY_VERSION=v2.11.2
+ARG CADDY_VERSION=v2.11.7
 ARG FORWARDPROXY_VERSION=v2.11.2-naive
 
 FROM golang:${CADDY_GO_VERSION}-alpine AS go
@@ -61,6 +40,7 @@ RUN set -eux; \
 
 FROM $image
 COPY --from=go /go/caddy /usr/local/bin/
-RUN apk add --no-cache openssh \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache openssh \
     && mkdir /root/.ssh \
     && caddy version

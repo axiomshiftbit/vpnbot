@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Reports stay on the runner. Only a pass/fail status enters Actions artifacts.
+set -euo pipefail
+image=$1
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+curl -fsSL --retry 3 -o "$work/trivy.tar.gz" https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.tar.gz
+echo "c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f  $work/trivy.tar.gz" | sha256sum -c -
+tar -xzf "$work/trivy.tar.gz" -C "$work" trivy
+export TRIVY_CACHE_DIR="$work/cache"
+"$work/trivy" image --download-db-only --no-progress
+# A cached/stale or incomplete DB must not silently admit a release.
+python3 - "$work/cache/db/metadata.json" <<'PY'
+import datetime,json,sys
+d=json.load(open(sys.argv[1]))
+now=datetime.datetime.now(datetime.timezone.utc)
+updated=datetime.datetime.fromisoformat(d['UpdatedAt'].replace('Z','+00:00'))
+assert datetime.timedelta(0) <= now-updated <= datetime.timedelta(hours=48), 'stale vulnerability DB'
+assert d['Version']==2, 'unknown vulnerability DB schema'
+PY
+"$work/trivy" image --skip-db-update --no-progress --scanners vuln \
+    --pkg-types os,library --format json --output "$work/result.json" "$image"
+python3 - "$work/result.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+os=d.get('Metadata',{}).get('OS',{})
+assert os.get('Family') in ('alpine','debian') and not os.get('EOSL',False), 'unsupported/EOL operating system'
+results=d.get('Results',[])
+assert any(x.get('Class')=='os-pkgs' for x in results), 'OS package scan missing'
+blocked=[]
+for result in results:
+    for v in result.get('Vulnerabilities',[]):
+        if v.get('Severity') in ('HIGH','CRITICAL') and v.get('FixedVersion'):
+            blocked.append((v['VulnerabilityID'],v.get('PkgName'),v.get('InstalledVersion'),v['FixedVersion']))
+for row in sorted(set(blocked)):print('BLOCK',*row)
+print('Security gate:',len(blocked),'fixable high/critical findings')
+sys.exit(bool(blocked))
+PY
