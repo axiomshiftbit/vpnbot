@@ -154,6 +154,14 @@ class HostedCITests(unittest.TestCase):
         with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted'}, clear=True):
             ci.host(False)
 
+    def test_manual_stand_accepts_only_the_designated_home_host(self):
+        with patch.object(ci.Path, 'read_text', return_value='home-build\n'):
+            ci.host(True)
+        for marker in ('prod-1', 'prod-2', '', 'vpnbot-test', 'home-build-other'):
+            with self.subTest(marker=marker), patch.object(ci.Path, 'read_text', return_value=marker):
+                with self.assertRaises(ValueError):
+                    ci.host(True)
+
     def test_cleanup_refuses_unknown_state_before_any_docker_command(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(ci, 'ROOT', Path(directory)), patch.object(ci, 'command') as docker:

@@ -80,7 +80,7 @@ def failed_protocols(checkout):
 
 def host(local):
     if local:
-        if Path('/etc/vpnbot-ci-test-host').read_text().strip() != 'vpnbot-test':
+        if Path('/etc/vpnbot-ci-test-host').read_text().strip() != 'home-build':
             raise ValueError('local proof requires the designated disposable test host')
     elif not (os.environ.get('GITHUB_ACTIONS') == 'true'
               and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'):

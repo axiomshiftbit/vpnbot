@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       test_runner:
-        description: 'Резервный запуск на выделенном VPNBotTest (обычно выключено)'
+        description: 'Выполнить сборку и полный тестовый стенд на домашней Ubuntu VM'
         type: boolean
         default: false
   schedule:
@@ -25,7 +25,7 @@ jobs:
       test_runner: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner }}
   build:
     needs: tests
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -59,22 +59,22 @@ jobs:
         with:
           persist-credentials: false
       - run: touch override.env
-      - name: Проверить резервный выделенный хост перед сборкой
+      - name: Проверить домашний тестовый хост перед сборкой
         if: inputs.test_runner
         run: |
-          test "$(cat /etc/vpnbot-ci-test-host)" = vpnbot-test
+          test "$(cat /etc/vpnbot-ci-test-host)" = home-build
           test -z "$(docker ps -q)"
-          python3 -c 'import shutil; assert shutil.disk_usage("/var/lib/docker").free >= 6 * 1024**3, "Недостаточно места для безопасной сборки"'
+          python3 -c 'import shutil; assert shutil.disk_usage("/var/lib/docker").free >= 12 * 1024**3, "Недостаточно места для безопасной сборки"'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
           driver-opts: |
-            ${{ inputs.test_runner && 'memory=1280m' || '' }}
-            ${{ inputs.test_runner && 'memory-swap=2560m' || '' }}
+            ${{ inputs.test_runner && 'memory=6g' || '' }}
+            ${{ inputs.test_runner && 'memory-swap=8g' || '' }}
             ${{ inputs.test_runner && 'cpu-period=100000' || '' }}
-            ${{ inputs.test_runner && 'cpu-quota=75000' || '' }}
+            ${{ inputs.test_runner && 'cpu-quota=400000' || '' }}
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = 1
+              max-parallelism = ${{ inputs.test_runner && 4 || 1 }}
               maxUsedSpace = "4GB"
               minFreeSpace = "3GB"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -261,7 +261,7 @@ jobs:
           fi
   bundle:
     needs: build
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     outputs:
       fingerprint: ${{ steps.manifest.outputs.fingerprint }}
     steps:
@@ -287,7 +287,7 @@ jobs:
           retention-days: 1
   security:
     needs: bundle
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -316,7 +316,7 @@ jobs:
   native:
     needs: [bundle, tests]
     if: github.repository == 'axiomshiftbit/vpnbot' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit'))
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 180
     permissions:
       contents: read
@@ -336,7 +336,7 @@ jobs:
             # Только стандартные ненужные SDK свежего GitHub runner.
             sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           else
-            test "$(cat /etc/vpnbot-ci-test-host)" = vpnbot-test
+            test "$(cat /etc/vpnbot-ci-test-host)" = home-build
           fi
           sudo apt-get update -qq
           sudo apt-get install -y python3-yaml python3-cryptography tcpdump curl openssl iptables kmod
@@ -377,7 +377,7 @@ jobs:
           fi
   publish:
     needs: [build, tests, bundle, security, native]
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-test"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 20
     permissions:
       contents: read
