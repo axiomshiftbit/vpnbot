@@ -26730,10 +26730,10 @@ DNS-over-HTTPS with IP:
     public function getDomain($cdn = false)
     {
         $c = $this->getPacConf();
-        if ($cdn && $c['linkdomain']) {
+        if ($cdn && !empty($c['linkdomain'])) {
             return $c['linkdomain'];
         }
-        return $c['domain'] ?: $this->ip;
+        return ($c['domain'] ?? '') ?: $this->ip;
     }
 
     // Хост, из которого строятся все ссылки подписки (страница sub(), URL
@@ -28181,7 +28181,7 @@ DNS-over-HTTPS with IP:
         }
         $c = $tpl;
 
-        $outbound = $pac['outbound'] ?: 'proxy';
+        $outbound = ($pac['outbound'] ?? '') ?: 'proxy';
         // Prefix the outbound/proxy name with server-country flag(s) so the client
         // shows e.g. "🇫🇷 proxy" next to the node. A relay subscription hops
         // relay → origin, so it gets two flags — the relay endpoint's first, then
@@ -28605,12 +28605,12 @@ DNS-over-HTTPS with IP:
             $json = json_encode($c);
         }
         $c = json_decode($this->replaceTags($json, [
-            '"~pac~"'        => json_encode(array_keys(array_filter($pac['includelist'] ?: []))),
-            '"~block~"'      => json_encode(array_keys(array_filter($pac['blocklist'] ?: []))),
-            '"~warp~"'       => json_encode(array_keys(array_filter($pac['warplist'] ?: []))),
-            '"~process~"'    => json_encode(array_keys(array_filter($pac['processlist'] ?: []))),
-            '"~package~"'    => json_encode(array_keys(array_filter($pac['packagelist'] ?: []))),
-            '"~subnet~"'     => json_encode(array_keys(array_filter($pac['subnetlist'] ?: []))),
+            '"~pac~"'        => json_encode(array_keys(array_filter(($pac['includelist'] ?? []) ?: []))),
+            '"~block~"'      => json_encode(array_keys(array_filter(($pac['blocklist'] ?? []) ?: []))),
+            '"~warp~"'       => json_encode(array_keys(array_filter(($pac['warplist'] ?? []) ?: []))),
+            '"~process~"'    => json_encode(array_keys(array_filter(($pac['processlist'] ?? []) ?: []))),
+            '"~package~"'    => json_encode(array_keys(array_filter(($pac['packagelist'] ?? []) ?: []))),
+            '"~subnet~"'     => json_encode(array_keys(array_filter(($pac['subnetlist'] ?? []) ?: []))),
             '"~warp_port~"'      => (int) ($warp['port'] ?? 2408),
             '"~warp_mtu~"'       => (int) ($warp['mtu'] ?? 1280),
             '~warp_server~'      => $warp['server'] ?? '',
