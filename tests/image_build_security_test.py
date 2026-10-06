@@ -1,9 +1,12 @@
 import importlib.util
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -44,6 +47,59 @@ else:
                                  '/unused', 'bad-checksum'], capture_output=True, text=True)
         self.assertNotEqual(0, result.returncode)
         self.assertIn('контрольной суммы', result.stderr)
+
+    def test_moved_tag_keeps_reviewed_commit_and_checksum_enforcement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / 'go-source.sh'
+            script.write_bytes((ROOT / 'dockerfile/go-source.sh').read_bytes())
+            commit = 'a' * 40
+            for name, revision in [('reviewed', commit), ('moved', 'b' * 40)]:
+                with tarfile.open(root / (name + '.tar.gz'), 'w:gz',
+                                  pax_headers={'comment': revision}) as archive:
+                    info = tarfile.TarInfo('core/source.txt')
+                    payload = b'reviewed source\n'
+                    info.size = len(payload)
+                    archive.addfile(info, io.BytesIO(payload))
+            checksum = hashlib.sha256((root / 'reviewed.tar.gz').read_bytes()).hexdigest()
+            curl = root / 'curl'
+            curl.write_text('''#!/usr/bin/env python3
+import pathlib,shutil,sys
+root=pathlib.Path(__file__).parent
+url=next(arg for arg in sys.argv if arg.startswith('https://'))
+(root/'requested-url').write_text(url)
+archive='moved' if '/refs/tags/' in url else 'reviewed'
+shutil.copyfile(root/(archive+'.tar.gz'),sys.argv[sys.argv.index('-o')+1])
+''')
+            curl.chmod(0o700)
+            manifest = root / 'go-sources.sha256'
+            destination = root / 'source'
+            env = os.environ | {'PATH': str(root) + ':' + os.environ['PATH']}
+
+            def fetch(pin='', digest=checksum):
+                manifest.write_text(f'{digest}  example/core/v1  {pin}\n')
+                return subprocess.run(['sh', str(script), 'example/core', 'v1', str(destination)],
+                                      env=env, capture_output=True, text=True)
+
+            self.assertNotEqual(0, fetch().returncode)
+            self.assertFalse((destination / 'source.txt').exists())
+            self.assertEqual(0, fetch(commit).returncode)
+            self.assertEqual(b'reviewed source\n', (destination / 'source.txt').read_bytes())
+            self.assertTrue((root / 'requested-url').read_text().endswith('/' + commit))
+            (destination / 'source.txt').unlink()
+            self.assertNotEqual(0, fetch(commit, '0' * 64).returncode)
+            self.assertFalse((destination / 'source.txt').exists())
+            (root / 'requested-url').unlink()
+            self.assertNotEqual(0, fetch('unreviewed-branch').returncode)
+            self.assertFalse((root / 'requested-url').exists())
+
+            # Callers supplying a checksum explicitly still use the requested tag.
+            manifest.write_text('')
+            digest = hashlib.sha256((root / 'moved.tar.gz').read_bytes()).hexdigest()
+            result = subprocess.run(['sh', str(script), 'example/core', 'v1', str(destination), digest],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue((root / 'requested-url').read_text().endswith('/refs/tags/v1'))
 
     def test_external_test_code_is_part_of_admission_identity(self):
         sys.path.insert(0, str(ROOT / 'scripts'))
