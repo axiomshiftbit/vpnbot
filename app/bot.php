@@ -33846,6 +33846,14 @@ DNS-over-HTTPS with IP:
         return $this->ssh('sh /ovpn_migrate.sh 2>/dev/null || true', 'ovpn');
     }
 
+    // Ядра с модулем ovpn (DCO, Linux 6.16+) создают туннель OpenVPN отдельным
+    // сетевым интерфейсом, и после pkill -9 он остаётся. Следующий запуск
+    // получает tun1 с той же подсетью, маршрут остаётся на мёртвом tun0 —
+    // клиенты подключаются, но трафик не идёт. Процесса в этот момент уже нет,
+    // поэтому любой tun* в контейнере — брошенный.
+    private const OVPN_DROP_STALE_TUN = 'for d in /sys/class/net/tun*; do '
+        . '[ -e "$d" ] && ip link del "${d##*/}" 2>/dev/null; done; ';
+
     public function restartOvpn()
     {
         $this->migrateOvpnServerConf();
@@ -33853,7 +33861,9 @@ DNS-over-HTTPS with IP:
         // keyfile» и бот показывает on→off. Лучше ничего не запускать, чтобы
         // статус честно оставался off и пользователь увидел причину в меню.
         if ($this->ovpnPkiMissing()) {
-            $this->ssh('pkill -9 openvpn 2>/dev/null || true', 'ovpn');
+            $this->ssh('pkill -9 openvpn 2>/dev/null; '
+                . 'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep openvpn >/dev/null || break; sleep 0.2; done; '
+                . self::OVPN_DROP_STALE_TUN . 'true', 'ovpn');
             return;
         }
         // Гарантированная остановка: pkill -9 + ждём полного отсутствия
@@ -33863,6 +33873,7 @@ DNS-over-HTTPS with IP:
         $this->ssh(
             'pkill -9 openvpn 2>/dev/null; ' .
             'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep openvpn >/dev/null || break; sleep 0.2; done; ' .
+            self::OVPN_DROP_STALE_TUN .
             'rm -f /var/run/openvpn-mgmt.sock',
             'ovpn'
         );

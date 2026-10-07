@@ -233,6 +233,32 @@ ttAssert(
     (bool) preg_match('~function restartOvpn\(\)\s*\{\s*\$this->migrateOvpnServerConf\(\);~', $botSrc),
     'restartOvpn() применяет миграции до старта демона'
 );
+// Ядро с модулем ovpn (DCO) оставляет интерфейс убитого демона: без очистки
+// маршрут подсети клиентов остаётся на мёртвом tun0 и трафик не идёт.
+preg_match('~function restartOvpn\(\)\s*\{(.*?)\n    \}~s', $botSrc, $restart);
+ttAssert(
+    substr_count($restart[1] ?? '', 'pkill -9 openvpn') === 2
+        && substr_count($restart[1] ?? '', 'self::OVPN_DROP_STALE_TUN') === 2,
+    'каждое убийство демона OpenVPN убирает брошенные tun-интерфейсы'
+);
+ttAssert(
+    strpos($restart[1] ?? '', 'self::OVPN_DROP_STALE_TUN') < strrpos($restart[1] ?? '', 'openvpn --config'),
+    'брошенные интерфейсы убираются до запуска нового демона'
+);
+$drop = (new ReflectionClassConstant(Bot::class, 'OVPN_DROP_STALE_TUN'))->getValue();
+$net = sys_get_temp_dir() . '/vpnbot-ovpn-net-' . bin2hex(random_bytes(4));
+mkdir($net . '/bin', 0700, true);
+foreach (['tun0', 'tun3', 'eth0', 'lo'] as $device) { touch($net . '/' . $device); }
+file_put_contents($net . '/bin/ip', "#!/bin/sh\necho \"\$*\" >> '$net/calls'\n");
+chmod($net . '/bin/ip', 0700);
+shell_exec('PATH=' . escapeshellarg($net . '/bin') . ':$PATH; ' . str_replace('/sys/class/net', $net, $drop) . 'true');
+ttAssert(
+    file_get_contents($net . '/calls') === "link del tun0\nlink del tun3\n",
+    'удаляются только tun-интерфейсы'
+);
+array_map('unlink', array_merge(glob($net . '/bin/*'), array_filter(glob($net . '/*'), 'is_file')));
+rmdir($net . '/bin');
+rmdir($net);
 ttAssert(
     strpos($botSrc, 'nobind\\npersist-tun\\nremote-cert-tls server') !== false,
     'клиентский .ovpn без deprecated persist-key'
