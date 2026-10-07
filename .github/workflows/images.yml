@@ -75,10 +75,10 @@ jobs:
             ${{ inputs.test_runner && 'memory=2g' || '' }}
             ${{ inputs.test_runner && 'memory-swap=3g' || '' }}
             ${{ inputs.test_runner && 'cpu-period=100000' || '' }}
-            ${{ inputs.test_runner && 'cpu-quota=800000' || '' }}
+            ${{ inputs.test_runner && 'cpu-quota=200000' || '' }}
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = ${{ inputs.test_runner && 8 || 1 }}
+              max-parallelism = ${{ inputs.test_runner && 4 || 1 }}
               maxUsedSpace = "4GB"
               minFreeSpace = "3GB"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
