@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-from image_bundle import BUNDLE_REPO, REGISTRY, admit, command, fingerprint, read
+from image_bundle import BUNDLE_REPO, REGISTRY, admit, command, fingerprint, read, source_reference
 
 
 def main():
@@ -46,6 +46,11 @@ def main():
                 raise ValueError('branch moved during publication')
             command('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false',
                     '--tag', BUNDLE_REPO + ':bundle-' + channel, ref)
+            if channel == 'dev':
+                # По этой ссылке master, перемотанный ровно на этот коммит,
+                # берёт уже проверенный комплект без пересборки.
+                command('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false',
+                        '--tag', source_reference(bundle['source']), ref)
     print('Published image set:', release, 'channel:', channel or 'candidate only', 'source:', bundle['source'])
 
 

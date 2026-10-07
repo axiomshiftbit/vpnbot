@@ -117,15 +117,25 @@ def check_image_overrides(root):
             raise ValueError('custom image override prevents a bundle update: ' + service)
 
 
+def source_reference(source):
+    """Неизменяемая ссылка на допущенный комплект конкретного коммита."""
+    if not isinstance(source, str) or not COMMIT.fullmatch(source):
+        raise ValueError('invalid source commit')
+    return BUNDLE_REPO + ':bundle-source-' + source
+
+
 def fetch(channel, destination):
     if channel not in ('dev', 'latest', 'nightly'):
         raise ValueError('unknown release channel')
+    return fetch_reference(BUNDLE_REPO + ':bundle-' + channel, destination)
+
+
+def fetch_reference(ref, destination):
     parent = Path(destination).parent
     parent.mkdir(parents=True, exist_ok=True)
     # Serialize metadata replacement against Bot.cleanDocker's inventory scan.
     with (parent / 'image-bundle.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        ref = BUNDLE_REPO + ':bundle-' + channel
         command('docker', 'pull', ref)
         # Resolve once. A concurrent promotion cannot change the object being read.
         image = command('docker', 'image', 'inspect', '--format', '{{.Id}}', ref)
@@ -271,7 +281,11 @@ def main():
             data = json.loads(path.read_text())
             if set(data) != {'image', 'digest', 'source', 'run', 'attempt'} or data['image'] in images:
                 raise ValueError('invalid build descriptor')
-            if (data['source'], data['run'], data['attempt']) != (args.source, args.run, args.attempt):
+            # Образ задан неизменяемым digest, поэтому сборка из более ранней
+            # попытки ТОГО ЖЕ запуска и коммита равноценна: перезапуск одной
+            # упавшей сборки не должен требовать пересборки остальных.
+            if (data['source'], data['run']) != (args.source, args.run) \
+                    or type(data['attempt']) is not int or not 1 <= data['attempt'] <= args.attempt:
                 raise ValueError('descriptor belongs to another build')
             images[data['image']] = REGISTRY + data['image'] + '@' + data['digest']
         bundle = validate(dict(schema=1, source=args.source, run=args.run, attempt=args.attempt, state_epoch=1, images=images))
