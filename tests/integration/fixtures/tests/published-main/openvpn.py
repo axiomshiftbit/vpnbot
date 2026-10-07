@@ -26,7 +26,9 @@ p=OUT/'client.ovpn';p.write_text(profile);run('docker','cp',str(p),C+':/tmp/audi
 try:
  ok=connect('connect');check('generated-profile-tls-handshake',ok)
  if not ok:raise SystemExit(1)
- for _ in range(16):
+ # С ядерным модулем ovpn (DCO) сервер пишет файл состояния раз в 12-14 с, а не
+ # раз в 5, как задано в конфиге: ждём с запасом.
+ for _ in range(50):
   if bot('ovpn-status')['online']:break
   time.sleep(.5)
  check('bot-sees-session',bot('ovpn-status')['online'])
@@ -43,7 +45,7 @@ try:
  # фактическое прекращение трафика, не только асинхронный online-маркер.
  r=exe('curl','-4','--interface','tun0','--noproxy','*','-sS','--max-time','3','http://example.com/')
  check('disabled-traffic-stops',r.returncode!=0)
- for _ in range(15):
+ for _ in range(50):
   if not bot('ovpn-status')['online']:break
   time.sleep(.5)
  check('disabled-session-kicked',bot('ovpn-status')['online'],False)
