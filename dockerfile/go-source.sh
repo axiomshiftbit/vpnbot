@@ -18,6 +18,7 @@ fi
 mkdir -p "$destination"
 archive=$(mktemp)
 trap 'rm -f "$archive"' EXIT
-curl -fL --retry 3 "https://codeload.github.com/$repo/tar.gz/$reference" -o "$archive"
+# Обрыв посреди скачивания (curl 56) без --retry-all-errors не повторяется.
+curl -fL --retry 5 --retry-all-errors --retry-delay 5 "https://codeload.github.com/$repo/tar.gz/$reference" -o "$archive"
 printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
 tar -xf "$archive" -C "$destination" --strip-components=1

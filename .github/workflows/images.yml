@@ -81,13 +81,46 @@ jobs:
               max-parallelism = ${{ inputs.test_runner && 4 || 1 }}
               maxUsedSpace = "4GB"
               minFreeSpace = "3GB"
+      # Сборку нельзя перезапустить отдельно: комплект принимает образы только
+      # одной попытки. Поэтому сетевые шаги повторяются здесь же, один раз.
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        id: login
+        continue-on-error: true
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.login.outcome == 'failure'
+        run: sleep 30
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        if: steps.login.outcome == 'failure'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7
         id: image
+        continue-on-error: true
+        with:
+          files: docker-compose.yml
+          targets: ${{ matrix.service }}
+          push: true
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          provenance: false
+          sbom: false
+          set: |
+            *.platform=linux/amd64
+            *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
+            *.cache-from=type=gha,scope=${{ matrix.service }}
+            *.cache-to=${{ inputs.test_runner && 'type=inline' || format('type=gha,mode=max,scope={0}', matrix.service) }}
+            *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            *.labels.org.opencontainers.image.revision=${{ github.sha }}
+      - if: steps.image.outcome == 'failure'
+        run: sleep 30
+      - uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7
+        id: image_retry
+        if: steps.image.outcome == 'failure'
         with:
           files: docker-compose.yml
           targets: ${{ matrix.service }}
@@ -241,7 +274,7 @@ jobs:
 
       - name: Идентификатор проверенного образа
         env:
-          METADATA: ${{ steps.image.outputs.metadata }}
+          METADATA: ${{ steps.image.outcome == 'success' && steps.image.outputs.metadata || steps.image_retry.outputs.metadata }}
           SERVICE: ${{ matrix.service }}
           IMAGE_NAME: ${{ matrix.image }}
         run: |
@@ -254,6 +287,18 @@ jobs:
           (path/(e['IMAGE_NAME']+'.json')).write_text(json.dumps(value))
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: descriptor
+        continue-on-error: true
+        with:
+          name: descriptor-${{ matrix.image }}
+          path: ${{ runner.temp }}/descriptor/*.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+      - if: steps.descriptor.outcome == 'failure'
+        run: sleep 30
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.descriptor.outcome == 'failure'
         with:
           name: descriptor-${{ matrix.image }}
           path: ${{ runner.temp }}/descriptor/*.json
