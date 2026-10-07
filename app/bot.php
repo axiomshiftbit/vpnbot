@@ -719,6 +719,9 @@ class Bot
             case preg_match('~^/smuxSet (\w+)$~', $this->input['callback'], $m):
                 $this->smuxSet($m[1]);
                 break;
+            case preg_match('~^/xhttpMuxToggle$~', $this->input['callback'], $m):
+                $this->xhttpMuxToggle();
+                break;
             case preg_match('~^/dpiToggle (\w+)$~', $this->input['callback'], $m):
                 $this->dpiToggle($m[1]);
                 break;
@@ -3050,6 +3053,7 @@ class Bot
         $this->ensureTorrentBlock($c, $pac);
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
+        $this->ensureXhttpMuxInbound($c, $pac);
         if (!$this->finalmaskCoreCompatible($pac, $this->xrayCoreSelection($pac))) return false;
         $this->ensureFinalmaskInbound($c);
         $c['stats'] = new stdClass();
@@ -19323,6 +19327,13 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/smuxToggle enabled',
             ]];
         }
+        if ($fork && $core === 'fork' && ($p['transport'] ?? '') === 'xhttp') {
+            $text[] = $this->i18n('xhttp mux hint');
+            $data[] = [[
+                'text'          => 'Mux.Cool (XHTTP): ' . $on($p['xhttp_mux']['enabled'] ?? 0),
+                'callback_data' => '/xhttpMuxToggle',
+            ]];
+        }
         if ($fork && $core === 'fork' && !empty($s['enabled'])) {
             $text[] = $this->i18n('smux link warn');
             // xhttp уже мультиплексирует на уровне транспорта (xmux в
@@ -19526,6 +19537,107 @@ DNS-over-HTTPS with IP:
         if ($what === 'enabled') {
             $this->answer($this->input['callback_id'], $this->i18n($s['enabled'] ? 'smux enabled' : 'smux disabled'), true);
         }
+        $this->smuxMenu();
+    }
+
+    // ---- Mux.Cool поверх XHTTP (форк 26.10.5+) ------------------------------
+    // Апстрим принимает на XHTTP-входе только XUDP; форк — и TCP-сессии
+    // Mux.Cool: все потоки клиента идут одной сессией XHTTP вместо сессии на
+    // поток. В packet-up даунлинк такой сессии — один долгий ответ, который
+    // прокси и CDN рвут по простою, поэтому сервер подаёт в него KeepAlive.
+    // Клиентский блок уходит только в JSON-профиль Xray: sing-box и mihomo
+    // Mux.Cool не знают, а в ссылку vless:// он не помещается.
+    public const XHTTP_MUX_FORK_MIN  = '26.10.5';
+    public const XHTTP_MUX_KEEPALIVE = ['muxKeepAliveSecs' => '20-40', 'muxKeepAliveBytes' => '64-512'];
+
+    public function xhttpMuxActive(?array $p = null): bool
+    {
+        $p = $p ?? $this->getPacConf();
+
+        return ($p['transport'] ?? '') === 'xhttp' && $this->xrayCore($p) === 'fork'
+            && !empty($p['xhttp_mux']['enabled']);
+    }
+
+    // Старый форк и апстрим рвут TCP-сессию Mux.Cool на XHTTP: включать можно
+    // только при подтверждённой версии ядра в образе.
+    public function xhttpMuxReady(): bool
+    {
+        $version = $this->xrayCoreInventory()['fork'] ?? '';
+
+        return $version !== '' && version_compare($version, self::XHTTP_MUX_FORK_MIN, '>=');
+    }
+
+    // Блок mux клиентского outbound'а; null — блока быть не должно. При
+    // включённом SMUX его позже снимает applyClientSmux(): оба сразу Build()
+    // запрещает, и SMUX старше.
+    public function xhttpMuxClient(array $p): ?array
+    {
+        // UDP оставляем как без mux: отдельными XUDP-соединениями и с QUIC
+        // (по умолчанию включённый mux отклоняет UDP/443).
+        return $this->xhttpMuxActive($p)
+            ? ['enabled' => true, 'concurrency' => 8, 'xudpConcurrency' => 16, 'xudpProxyUDP443' => 'allow']
+            : null;
+    }
+
+    public function ensureXhttpMuxInbound(array &$c, ?array $p = null): void
+    {
+        if (($c['inbounds'][0]['streamSettings']['network'] ?? '') !== 'xhttp'
+            || !is_array($c['inbounds'][0]['streamSettings']['xhttpSettings'] ?? null)) {
+            return;
+        }
+        $extra = $c['inbounds'][0]['streamSettings']['xhttpSettings']['extra'] ?? [];
+        $extra = is_array($extra) ? $extra : [];
+        foreach (array_keys(self::XHTTP_MUX_KEEPALIVE) as $key) {
+            unset($extra[$key]);
+        }
+        if ($this->xhttpMuxActive($p)) {
+            $extra += self::XHTTP_MUX_KEEPALIVE;
+        }
+        // Пустой PHP-массив ушёл бы в JSON как [], а ядро ждёт объект.
+        if ($extra === []) {
+            unset($c['inbounds'][0]['streamSettings']['xhttpSettings']['extra']);
+        } else {
+            $c['inbounds'][0]['streamSettings']['xhttpSettings']['extra'] = $extra;
+        }
+    }
+
+    // Возвращает ключ сообщения об отказе либо пустую строку.
+    public function applyXhttpMux(bool $enable): string
+    {
+        $p = $this->getPacConf();
+        if ($enable) {
+            $refuse = match (true) {
+                $this->xrayCore($p) !== 'fork' => 'smux select fork',
+                ($p['transport'] ?? '') !== 'xhttp' => 'xhttp mux needs xhttp',
+                !$this->xhttpMuxReady() => 'xhttp mux old fork',
+                default => '',
+            };
+            if ($refuse !== '') {
+                return $refuse;
+            }
+        }
+        $old = $p;
+        $p['xhttp_mux'] = ['enabled' => $enable ? 1 : 0];
+        $c = $this->getXray();
+        $was = $c['inbounds'][0]['streamSettings']['xhttpSettings']['extra'] ?? null;
+        $this->ensureXhttpMuxInbound($c, $p);
+        $now = $c['inbounds'][0]['streamSettings']['xhttpSettings']['extra'] ?? null;
+        // Сначала настройка: restartXray() читает её сам при сборке конфига.
+        if ($this->setPacConf($p) === false || ($was !== $now && $this->restartXray($c) === false)) {
+            $this->setPacConf($old);
+
+            return 'smux apply failed';
+        }
+
+        return '';
+    }
+
+    public function xhttpMuxToggle(): void
+    {
+        $enable = empty($this->getPacConf()['xhttp_mux']['enabled']);
+        $error = $this->applyXhttpMux($enable);
+        $this->answer($this->input['callback_id'],
+            $this->i18n($error !== '' ? $error : ($enable ? 'xhttp mux enabled' : 'xhttp mux disabled')), true);
         $this->smuxMenu();
     }
 
@@ -25025,6 +25137,7 @@ DNS-over-HTTPS with IP:
         $p['xray_core']                 = 'origin';
         $p['smux']['enabled']           = 0;
         $p['smux']['brutal']['enabled'] = 0;
+        $p['xhttp_mux']                 = ['enabled' => 0];
         $this->setPacConf($p);
         $this->writeCoreMarker('origin');
         error_log('repairXrayCore: ' . $why . ' — smux disabled, core reset to upstream');
@@ -25098,6 +25211,8 @@ DNS-over-HTTPS with IP:
         } else {
             $p['smux']['enabled']           = 0;
             $p['smux']['brutal']['enabled'] = 0;
+            // Апстрим TCP-сессии Mux.Cool на XHTTP не принимает.
+            $p['xhttp_mux'] = ['enabled' => 0];
             $note[] = 'smux off';
         }
         if ($this->setPacConf($p) === false) {
@@ -28305,6 +28420,9 @@ DNS-over-HTTPS with IP:
                             ]
                         ];
                         unset($c['outbounds'][$index]['mux']);
+                        if (($mux = $this->xhttpMuxClient($pac)) !== null) {
+                            $c['outbounds'][$index]['mux'] = $mux;
+                        }
                         break;
                     case 'trojan-grpc':
                         $c['outbounds'][$index] = [

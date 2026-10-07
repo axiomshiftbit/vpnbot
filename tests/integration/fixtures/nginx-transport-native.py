@@ -50,6 +50,27 @@ try:
   for engine in ('xray','mihomo') if transport=='xhttp' else ('xray','mihomo','sing-box'):
    before=len(ns['lab'].RESULTS);ns['exchange'](str(i)+'-'+transport,engine,binary=pathlib.Path('/opt/vpnbot-hosted-ci/tests/xray') if engine=='xray' else pathlib.Path('/opt/vpnbot-hosted-ci/clients')/engine)
    check(str(i)+'-'+engine+'-real-traffic',all(r['passed'] for r in ns['lab'].RESULTS[before:]))
+ # Mux.Cool поверх XHTTP (форк 26.10.5+): сервер с KeepAlive, клиент Xray берёт
+ # блок mux из подписки. Ядро возвращаем сами: маркер ядра не входит в files.
+ core0=json.loads((B/'config/pac.json').read_text()).get('xray_core','origin')
+ bot('transport','xhttp');check('muxcool-fork-selected',bot('xray-core','fork')['result'].get('ok'));bot('xray-smux','off')
+ try:
+  check('muxcool-enabled',bot('xray-xhttp-mux','on')['result']=={'error':'','enabled':True})
+  x=json.loads((B/'config/xray.json').read_text());extra=x['inbounds'][0]['streamSettings']['xhttpSettings']['extra']
+  check('muxcool-server-keepalive',extra.get('muxKeepAliveSecs')=='20-40' and extra.get('muxKeepAliveBytes')=='64-512')
+  ns['fetch']();node=next(o for o in json.loads((O/'clients/full-xray.json').read_text())['outbounds'] if o['protocol']=='vless')
+  check('muxcool-client-profile',node.get('mux',{}).get('enabled') is True and node['mux'].get('concurrency')==8 and 'smux' not in node)
+  for engine in ('xray','mihomo'):
+   before=len(ns['lab'].RESULTS);ns['exchange']('muxcool-xhttp',engine,binary=pathlib.Path('/opt/vpnbot-hosted-ci/tests/xray') if engine=='xray' else pathlib.Path('/opt/vpnbot-hosted-ci/clients')/engine)
+   check('muxcool-'+engine+'-real-traffic',len(ns['lab'].RESULTS)>before and all(r['passed'] for r in ns['lab'].RESULTS[before:]))
+  check('muxcool-disabled',bot('xray-xhttp-mux','off')['result']=={'error':'','enabled':False})
+  x=json.loads((B/'config/xray.json').read_text())
+  check('muxcool-server-keepalive-removed','muxKeepAliveSecs' not in x['inbounds'][0]['streamSettings']['xhttpSettings'].get('extra',{}))
+  ns['fetch']();node=next(o for o in json.loads((O/'clients/full-xray.json').read_text())['outbounds'] if o['protocol']=='vless')
+  check('muxcool-client-profile-clean','mux' not in node)
+  before=len(ns['lab'].RESULTS);ns['exchange']('muxcool-off-xhttp','xray',binary=pathlib.Path('/opt/vpnbot-hosted-ci/tests/xray'));check('muxcool-off-xray-real-traffic',all(r['passed'] for r in ns['lab'].RESULTS[before:]))
+ finally:
+  check('muxcool-core-returned',bot('xray-core',core0)['result'].get('ok'))
  # Parser rejection must keep the already running core and saved selection.
  oldpac=(B/'config/pac.json').read_bytes();oldx=(B/'config/xray.json').read_bytes();ng=(B/'config/nginx.conf').read_bytes()
  with (B/'config/nginx.conf').open('ab') as f:f.write(b'\nvpn_bot_test_invalid_directive on;\n')

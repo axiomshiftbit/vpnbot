@@ -389,6 +389,26 @@ $i = [
         'en' => 'SMUX disabled. Refresh client profiles.',
         'ru' => 'SMUX выключен. Обновите клиентские профили.',
     ],
+    'xhttp mux hint' => [
+        'en' => 'Mux.Cool (XHTTP): the fork 26.10.5+ carries all TCP streams of an Xray client in one XHTTP session and keeps its idle downlink alive. Only JSON profiles of Xray clients get it; with SMUX enabled SMUX wins. XHTTP already multiplexes requests itself, so enable this only when the number of sessions matters (CDN limits).',
+        'ru' => 'Mux.Cool (XHTTP): форк 26.10.5+ ведёт все TCP-потоки клиента Xray одной сессией XHTTP и не даёт её простаивающему каналу оборваться. Блок получают только JSON-профили клиентов Xray; при включённом SMUX действует SMUX. XHTTP и сам мультиплексирует запросы, поэтому включайте только когда важно число сессий (лимиты CDN).',
+    ],
+    'xhttp mux needs xhttp' => [
+        'en' => 'Mux.Cool over XHTTP needs the XHTTP transport.',
+        'ru' => 'Mux.Cool поверх XHTTP доступен только с транспортом XHTTP.',
+    ],
+    'xhttp mux old fork' => [
+        'en' => 'The fork core in this xr image is older than 26.10.5 (or xr is unreachable): it drops Mux.Cool TCP sessions over XHTTP. Update the xr image first.',
+        'ru' => 'Форк-ядро в образе xr старше 26.10.5 (или xr недоступен): оно рвёт TCP-сессии Mux.Cool поверх XHTTP. Сначала обновите образ xr.',
+    ],
+    'xhttp mux enabled' => [
+        'en' => 'Mux.Cool over XHTTP is on. Xray clients must update their subscription.',
+        'ru' => 'Mux.Cool поверх XHTTP включён. Клиентам Xray нужно обновить подписку.',
+    ],
+    'xhttp mux disabled' => [
+        'en' => 'Mux.Cool over XHTTP is off. Xray clients must update their subscription.',
+        'ru' => 'Mux.Cool поверх XHTTP выключен. Клиентам Xray нужно обновить подписку.',
+    ],
     'smux select fork' => [
         'en' => 'Select the fork (smux) core first to enable SMUX.',
         'ru' => 'Для включения SMUX сначала выберите ядро fork (smux).',

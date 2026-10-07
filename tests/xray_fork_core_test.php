@@ -164,6 +164,34 @@ try {
         fcAssert(isset($c['inbounds'][0]['streamSettings']['finalmask']['udp']), 'UDP noise exp попадает в конфиг сервера');
         fcAssert(fcAccepts($c), 'форк принимает UDP noise с выражениями (апстрим 26.9.30)');
     }
+    // ── Mux.Cool поверх XHTTP: ключи KeepAlive и клиентский блок ─────────────
+    if (version_compare($version, Bot::XHTTP_MUX_FORK_MIN, '>=')) {
+        $pac = ['xray_core' => 'fork', 'transport' => 'xhttp', 'xhttp_mux' => ['enabled' => 1]];
+        $xhttp = static fn(array $extra) => $server(['streamSettings' => ['network' => 'xhttp',
+            'xhttpSettings' => ['mode' => 'auto', 'path' => '/ws', 'extra' => $extra]]]);
+        $c = $xhttp(['xPaddingBytes' => '100-1000', 'scMaxBufferedPosts' => 30,
+            'scMaxEachPostBytes' => 1000000, 'scStreamUpServerSecs' => '20-80']);
+        $bot->ensureXhttpMuxInbound($c, $pac);
+        fcAssert(isset($c['inbounds'][0]['streamSettings']['xhttpSettings']['extra']['muxKeepAliveSecs']),
+            'KeepAlive попадает в серверный конфиг XHTTP');
+        fcAssert(fcAccepts($c), 'ядро принимает серверный XHTTP с KeepAlive Mux.Cool');
+        // Неизвестный ключ ядро молча пропустило бы: отказ на мусорном значении
+        // доказывает, что эти ключи оно действительно разбирает.
+        foreach (array_keys(Bot::XHTTP_MUX_KEEPALIVE) as $key) {
+            fcAssert(!fcAccepts($xhttp([$key => 'not-a-range'])), "ядро разбирает ключ $key");
+        }
+        $mux = $bot->xhttpMuxClient($pac);
+        $out = $client([]);
+        unset($out['outbounds'][0]['smux']);
+        $out['outbounds'][0]['mux'] = $mux;
+        $out['outbounds'][0]['streamSettings'] = ['network' => 'xhttp', 'security' => 'tls',
+            'xhttpSettings' => ['host' => 'vpn.example.test', 'mode' => 'packet-up', 'path' => '/ws',
+                'extra' => $bot->xhttpClientExtra()],
+            'tlsSettings' => ['serverName' => 'vpn.example.test', 'alpn' => ['h2', 'http/1.1'], 'fingerprint' => 'chrome']];
+        fcAssert($mux !== null && fcAccepts($out), 'ядро принимает клиентский XHTTP с Mux.Cool');
+        $out['outbounds'][0]['smux'] = $bot->smuxBlock(['xray_core' => 'fork', 'smux' => ['enabled' => 1]], 's');
+        fcAssert(!fcAccepts($out), 'ядро отвергает Mux.Cool и SMUX на одном выходе');
+    }
     echo "xray_fork_core_test OK ($checks проверок форк-ядром $version)\n";
 } finally {
     foreach (glob($work . '/*') as $file) { unlink($file); }

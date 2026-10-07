@@ -350,6 +350,9 @@ switch ($action) {
     case 'xray-smux':
         $p=$b->getPacConf();$p['smux']=$b->smuxSettings($p);$p['smux']['protocol']=$argv[2];$p['smux']['enabled']=$argv[2]!=='off';$p['smux']['brutal']['enabled']=0;$b->setPacConf($p);$b->syncSmuxLive($p);
         break;
+    case 'xray-xhttp-mux':
+        $result=['error'=>$b->applyXhttpMux($argv[2]==='on'),'enabled'=>!empty($b->getPacConf()['xhttp_mux']['enabled'])];
+        break;
     case 'wg-export':
         $b->promptInstWG((int)($argv[2] ?? 0));
         $clients=$b->readClients();
