@@ -5,7 +5,7 @@ class NativeLimitsBot extends Bot {
  public string $root; public array $fixture, $screen=[], $prompt=[];
  public function getWgMsg(){return null;}
  public function getPorts(){return ['telemt'=>['port'=>8443,'enable'=>true]];}
- public function telemtVersion():string{return '3.5.13';}
+ public function telemtVersion():string{return getenv('TELEMT_VERSION')?:'unknown';}
  public function telemtQuotaPath():string{return $this->root.'/data/telemt.limit.json';}
  public function withLock(string $name,callable $fn,int $timeout=0,$busy=null){$f=fopen($this->root.'/.lock.'.$name,'c');flock($f,LOCK_EX);try{return $fn();}finally{flock($f,LOCK_UN);fclose($f);}}
  public function telemtWriteServiceState(bool $enabled):void{file_put_contents($this->root.'/service-enabled',$enabled?"1\n":"0\n");}
@@ -21,6 +21,8 @@ class NativeLimitsBot extends Bot {
  public function cloakNginx(){}
  public function ssh($cmd,$service='wg',$wait=true,$log='/dev/null'){
   $this->sshFailed=false;
+  if(str_starts_with($cmd,'python3 -c ')&&str_contains($cmd,'getaddrinfo')){exec($cmd.' 2>/dev/null',$lines);return implode("\n",$lines);}
+  if(preg_match('~^sleep (\d+); pgrep -x telemt$~D',$cmd,$m)){sleep((int)$m[1]);$cmd='while [ $i -lt 3 ]';}
   if(str_starts_with($cmd,'telemt run'))$action='start';
   elseif(str_contains($cmd,'while [ $i -lt 3 ]'))$action='probe';
   elseif(preg_match('~telemt_state.py (version|prepare|ready|checkpoint|stop|reset)(?: \'([A-Za-z0-9+/=]+)\')?~',$cmd,$m)){$action=$m[1];$arg=$m[2]??'';}
@@ -40,6 +42,7 @@ class NativeLimitsBot extends Bot {
 $b=(new ReflectionClass(NativeLimitsBot::class))->newInstanceWithoutConstructor();$b->root=$argv[2];$b->fixture=json_decode(file_get_contents($b->root.'/fixture.json'),true);
 $b->pac=$b->root.'/pac.json';$b->protocolModulesFile=$b->root.'/modules.json';$b->key='fixture';$b->ip='203.0.113.10';$b->language='ru';$b->i18n=$i;$b->admin=true;
 $b->input=['chat'=>1,'message_id'=>2,'callback_id'=>3,'callback'=>'','message'=>''];$q=json_decode(stream_get_contents(STDIN),true);$name=$q['name']??'alice';
+$extra=[];
 try {
  switch($q['action']){
  case 'start':$b->restartTelemt();break;
@@ -52,7 +55,8 @@ try {
  case 'add':$b->telemtUserAdd($name);break;
  case 'service':$b->toggleTelemtService();break;
  case 'backup':file_put_contents($b->root.'/backup.json',json_encode($b->telemtBackupSnapshot()));break;
+ case 'decoy':$extra['error']=$b->telemtWebDecoyApply((string)$q['value']);break;
  case 'restore':$data=json_decode(file_get_contents($b->root.'/backup.json'),true);$b->telemtQuotaRestore($data['telemt_quota'],$data['pac']);break;
  }
- echo json_encode(['ok'=>true,'screen'=>$b->screen,'limits'=>$b->getPacConf()['telemt_user_limits']??[]]);
+ echo json_encode(['ok'=>true,'screen'=>$b->screen,'limits'=>$b->getPacConf()['telemt_user_limits']??[]]+$extra);
 }catch(Throwable $e){echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);exit(1);}

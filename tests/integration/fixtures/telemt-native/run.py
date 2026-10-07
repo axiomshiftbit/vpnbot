@@ -10,7 +10,7 @@ import json, os, subprocess, sys, time
 HERE = Path(__file__).resolve().parent
 SOURCE, TELEMT_IMAGE, PHP_IMAGE, NGINX_IMAGE = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3], sys.argv[4]
 PHP = 'vpnbot-telemt-php85'  # имя зашито в сценариях
-CASES = ['probe_product', 'probe_settings', 'probe_conveyor', 'probe_container', 'probe_extra', 'probe_nginx']
+CASES = ['probe_product', 'probe_settings', 'probe_conveyor', 'probe_container', 'probe_extra', 'probe_nginx', 'probe_decoy']
 
 
 def docker(*args):
@@ -30,10 +30,16 @@ nginx = HERE / 'bin/nginx'
 nginx.write_text('#!/bin/sh\nexec docker run --rm --init --network host --label vpnbot.hosted-ci=true '
                  f'-v {HERE}:{HERE} -v {SOURCE}:{SOURCE}:ro --entrypoint nginx {NGINX_IMAGE} "$@"\n')
 nginx.chmod(0o755)
+version = docker('run', '--rm', '--network', 'none', '--entrypoint', 'cat', TELEMT_IMAGE, '/etc/telemt_version')
+# Сайт-приманка бот принимает только по приватному адресу вне loopback: берём
+# адрес моста docker0 — он есть на хосте и виден контейнеру с сетью хоста.
+bridge = json.loads(subprocess.run(['ip', '-j', '-4', 'addr', 'show', 'docker0'], check=True, capture_output=True,
+                                   text=True).stdout)[0]['addr_info'][0]['local']
 env = os.environ | {'SOURCE_DIR': str(SOURCE), 'TELEMT_BINARY': str(binary), 'TELEMT_IMAGE': TELEMT_IMAGE,
-                    'NGINX_BINARY': str(nginx)}
+                    'NGINX_BINARY': str(nginx), 'TELEMT_VERSION': version, 'DECOY_ORIGIN_IP': bridge}
 rows = []
 docker('run', '-d', '--name', PHP, '--label', 'vpnbot.hosted-ci=true', '--network', 'host',
+       '-e', 'TELEMT_VERSION=' + version, '--add-host', 'decoy-origin.test:' + bridge,
        '--entrypoint', 'sleep', '-v', f'{SOURCE}:{SOURCE}:ro', '-v', f'{HERE}:{HERE}', PHP_IMAGE, 'infinity')
 try:
     for name in CASES:

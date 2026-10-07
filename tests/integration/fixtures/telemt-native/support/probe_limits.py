@@ -20,6 +20,15 @@ def wait(fn,seconds=3):
  return False
 def port():
  with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
+def ports(count):
+ # Все сокеты держим открытыми до конца выбора: освобождённый порт ядро ОС
+ # охотно выдаёт следующему bind(0), и два листенера получили бы один номер.
+ held=[socket.socket() for _ in range(count)]
+ try:
+  for s in held:s.bind(('127.0.0.1',0))
+  return [s.getsockname()[1] for s in held]
+ finally:
+  for s in held:s.close()
 def aes(key,iv):return Cipher(algorithms.AES(key),modes.CTR(iv)).encryptor()
 def exact(s,n):
  out=b''
@@ -55,7 +64,8 @@ class Core:
   self.root=ROOT/name;self.root.mkdir(exist_ok=True);(self.root/'decoy').mkdir(exist_ok=True)
   (self.root/'quota.json').unlink(missing_ok=True)
   (self.root/'decoy/index.html').write_text('<!doctype html><title>Cover</title>Cover')
-  self.n,self.w,self.a=port(),port(),port();self.dc=DCS(('127.0.0.1',0),DC)
+  # Сначала долгоживущий сервер, потом порты ядра — иначе он занял бы один из них.
+  self.dc=DCS(('127.0.0.1',0),DC);self.n,self.w,self.a=ports(3)
   threading.Thread(target=self.dc.serve_forever,daemon=True).start();self.proc=None;self.children=[]
   self.config=f'''[general]
 log_level = "normal"

@@ -161,6 +161,62 @@ $i = [
         'ru' => 'Использовать корень /',
         'en' => 'Use root /',
     ],
+    'telemt web decoy' => [
+        'ru' => 'Сайт-приманка',
+        'en' => 'Decoy site',
+    ],
+    'telemt web decoy builtin' => [
+        'ru' => 'встроенная страница',
+        'en' => 'built-in page',
+    ],
+    'telemt web decoy ask' => [
+        'ru' => 'Указать адрес',
+        'en' => 'Set address',
+    ],
+    'telemt web decoy setup' => [
+        'ru' => 'Запрос к WEB-хосту без секрета получает встроенную страницу. Вместо неё TeleMT может передавать такие запросы на ваш сайт во внутренней сети: <code>http://адрес[:порт]</code>, без пути. Сайт на самом сервере доступен по адресу шлюза <code>10.10.0.1</code>. С TeleMT 3.5.14 вместо IP можно указать имя хоста: оно разрешается при запуске TeleMT и закрепляется до следующего перезапуска.' . "\n\n" . '⚠ Всё, что отвечает по этому адресу, станет доступно из интернета под именем WEB-хоста. Служебные адреса сборки (<code>10.10.x.x</code>, кроме шлюза), loopback и публичные адреса не принимаются. Пока имя хоста не разрешается, TeleMT не запускается целиком — для независимости от DNS указывайте IP. Активный TeleMT перезапускается; ссылки остаются прежними.',
+        'en' => 'A request to the WEB host without a secret gets the built-in page. Instead, TeleMT can pass such requests to your site on the internal network: <code>http://address[:port]</code>, no path. A site on the server itself is reachable at the gateway <code>10.10.0.1</code>. Since TeleMT 3.5.14 a host name may replace the IP: it is resolved when TeleMT starts and pinned until the next restart.' . "\n\n" . '⚠ Whatever answers at this address becomes reachable from the internet under the WEB host name. Service addresses of this stack (<code>10.10.x.x</code> except the gateway), loopback and public addresses are refused. While the host name does not resolve, TeleMT does not start at all — use an IP to stay independent of DNS. Active TeleMT restarts; links stay the same.',
+    ],
+    'telemt web decoy changed' => [
+        'ru' => 'Сайт-приманка изменён.',
+        'en' => 'Decoy site changed.',
+    ],
+    'telemt web decoy bad url' => [
+        'ru' => 'Нужен адрес вида http://адрес[:порт] без пути, логина и параметров.',
+        'en' => 'Expected http://address[:port] without a path, credentials or query.',
+    ],
+    'telemt web decoy own port' => [
+        'ru' => 'Порт 8080 занят WEB-листенером самого TeleMT: такой адрес он отвергает как петлю.',
+        'en' => 'Port 8080 belongs to the WEB listener of TeleMT itself: it rejects such an address as a loop.',
+    ],
+    'telemt web decoy not private' => [
+        'ru' => 'Адрес не принят: нужен приватный адрес вне сети сборки (10.10.x.x, кроме шлюза 10.10.0.1), не loopback и не link-local.',
+        'en' => 'Address refused: a private address outside the stack network (10.10.x.x except the gateway 10.10.0.1) is required, not loopback or link-local.',
+    ],
+    'telemt web decoy need version' => [
+        'ru' => 'Имя хоста поддерживает TeleMT 3.5.14 и новее. Обновите образ или укажите IP.',
+        'en' => 'Host names need TeleMT 3.5.14 or newer. Update the image or use an IP.',
+    ],
+    'telemt web decoy unchecked' => [
+        'ru' => 'Не удалось проверить адрес: контейнер TeleMT недоступен. Настройка не изменена.',
+        'en' => 'The address could not be checked: the TeleMT container is unreachable. Nothing was changed.',
+    ],
+    'telemt web decoy unresolved' => [
+        'ru' => 'Имя хоста не разрешается в контейнере TeleMT. Настройка не изменена.',
+        'en' => 'The host name does not resolve inside the TeleMT container. Nothing was changed.',
+    ],
+    'telemt web decoy no answer' => [
+        'ru' => 'Адрес не отвечает по HTTP из контейнера TeleMT. Настройка не изменена.',
+        'en' => 'The address does not answer HTTP from the TeleMT container. Nothing was changed.',
+    ],
+    'telemt web decoy redirect' => [
+        'ru' => 'Сайт перенаправляет на сам WEB-хост — получилась бы петля. Настройка не изменена.',
+        'en' => 'The site redirects to the WEB host itself, which would loop. Nothing was changed.',
+    ],
+    'telemt web decoy reverted' => [
+        'ru' => 'TeleMT не запустился с этим адресом. Возвращена встроенная страница.',
+        'en' => 'TeleMT did not start with this address. The built-in page is back.',
+    ],
     'telemt web path setup' => [
         'ru' => 'Генерация сама сохраняет случайный путь, применяет его к активному WEB и обновляет ссылки 🌐. Активный TeleMT перезапускается. Раздайте новые ссылки; клиент должен поддерживать WEB с путём. Возврат к / может снова включить прежние корневые ссылки.',
         'en' => 'Generation saves a random path, applies it to active WEB and updates 🌐 links. Active TeleMT restarts. Issue new links; clients must support WEB paths. Returning to / may reactivate previous root links.',

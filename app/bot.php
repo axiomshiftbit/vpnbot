@@ -1034,6 +1034,9 @@ class Bot
             case preg_match('~^/telemtWebPath(?: (generate|reset))?$~', $this->input['callback'], $m):
                 $this->telemtWebPath($m[1] ?? '');
                 break;
+            case preg_match('~^/telemtWebDecoy(?: (ask|reset))?$~', $this->input['callback'], $m):
+                $this->telemtWebDecoyMenu($m[1] ?? '');
+                break;
             case preg_match('~^/telemtWebDiag$~', $this->input['callback'], $m):
                 $this->telemtWebDiag();
                 break;
@@ -2237,6 +2240,14 @@ class Bot
                 $t .= "capture_frames = false\n";
                 $t .= "body_capture = \"off\"\n\n";
             }
+            $decoy = $this->telemtWebDecoyOf($conf);
+            if ($decoy !== null && $decoy['name']) {
+                // Неразрешимое имя — отказ подготовки конфигурации, то есть
+                // telemt не стартует вовсе. Короткий срок держит такой отказ
+                // внутри окна, в котором applyTelemt() его ещё замечает.
+                $t .= "[web.timeouts]\n";
+                $t .= "decoy_resolve_secs = " . self::TELEMT_WEB_DECOY_RESOLVE_SECS . "\n\n";
+            }
             $t .= "[[web.vhosts]]\n";
             $t .= "host = " . $q($this->telemtWebHost($conf)) . "\n";
             $path = $this->telemtWebPathOf($conf);
@@ -2249,9 +2260,19 @@ class Bot
             $address = str_contains((string) $this->ip, ':') ? "[{$this->ip}]" : $this->ip;
             $t .= "public_addr = " . $q("$address:443") . "\n\n";
             $t .= "[web.vhosts.decoy]\n";
-            $t .= "mode = \"static_directory\"\n";
-            $t .= "directory = " . $q(self::TELEMT_WEB_DECOY_DIR) . "\n";
-            $t .= "index = \"index.html\"\n";
+            if ($decoy === null) {
+                $t .= "mode = \"static_directory\"\n";
+                $t .= "directory = " . $q(self::TELEMT_WEB_DECOY_DIR) . "\n";
+                $t .= "index = \"index.html\"\n";
+            } else {
+                $t .= "mode = \"http_upstream\"\n";
+                $t .= "upstream = " . $q($decoy['origin']) . "\n";
+                // Имя хоста telemt разрешает один раз, при подготовке
+                // конфигурации, и закрепляет адрес до следующей (3.5.14+).
+                if ($decoy['name']) {
+                    $t .= "resolve = \"startup\"\n";
+                }
+            }
             $secretMode = $this->telemtWebSecretModeOf($conf);
             foreach ($this->telemtWebProfiles($conf) as $name) {
                 $t .= "\n[[web.vhosts.profiles]]\n";
@@ -2372,6 +2393,28 @@ class Bot
             'i=0; while [ $i -lt 3 ]; do sleep 1; pgrep -x telemt && break; i=$((i+1)); done',
             'telemt'
         ) : '1';
+        // Имя хоста своего сайта-приманки telemt разрешает уже после старта
+        // процесса: пока ответа DNS нет, pgrep его видит. Ждём дольше срока
+        // разрешения и смотрим ещё раз — иначе отказ остался бы незамеченным.
+        $decoy = $web ? $this->telemtWebDecoyOf($conf) : null;
+        if ($probe && $decoy !== null && $decoy['name']) {
+            $probe = $this->ssh('sleep ' . (self::TELEMT_WEB_DECOY_RESOLVE_SECS + 1) . '; pgrep -x telemt', 'telemt');
+        }
+        // Первая ступень отката — свой сайт-приманка: адрес задаёт администратор,
+        // и его доступность от бота не зависит. Возвращаем встроенную страницу.
+        if ($web && !$probe && !$this->sshFailed && $decoy !== null) {
+            error_log('restartTelemt: telemt не поднялся со своим сайтом-приманкой — возвращаем встроенную страницу');
+            $conf = $this->telemtSave(static function (&$current) {
+                unset($current['telemt_web_decoy']);
+                return $current;
+            });
+            $this->telemtWriteToml($this->telemtToml($conf));
+            $this->ssh('telemt run --data-path /telemt/data /telemt/telemt.toml', 'telemt', false, '/logs/telemt');
+            $probe = $this->ssh(
+                'i=0; while [ $i -lt 3 ]; do sleep 1; pgrep -x telemt && break; i=$((i+1)); done',
+                'telemt'
+            );
+        }
         // Промежуточная ступень отката: сначала снимаем ТОЛЬКО негоциацию.
         // Незнакомый ключ сам по себе конфиг не рушит (telemt его игнорирует,
         // см. telemtWebNegotiationVersionOk), но НЕВАЛИДНАЯ КОМБИНАЦИЯ значений
@@ -2666,6 +2709,199 @@ class Bot
         $p = $conf['telemt_web_path'] ?? '';
         return is_string($p) && strlen($p) <= 128
             && preg_match('~^[A-Za-z0-9][A-Za-z0-9_-]*(?:/[A-Za-z0-9][A-Za-z0-9_-]*)*$~D', $p) ? $p : '';
+    }
+
+    // ---- Свой сайт-приманка WEB (web.vhosts.decoy = http_upstream) ----------
+    // По умолчанию запрос без секрета получает встроенную страницу. Вместо неё
+    // telemt может передавать такие запросы на приватный HTTP-origin: по
+    // IP-адресу — с появления WEB, по имени хоста — с 3.5.14 (resolve =
+    // "startup": имя разрешается при подготовке конфигурации и закрепляется).
+    //
+    // Всё, что отвечает по этому адресу, становится доступно из интернета под
+    // именем WEB-хоста. Поэтому правило telemt («loopback, приватный или
+    // link-local адрес») здесь сужено: без loopback контейнера telemt (там его
+    // собственный API), без сети самой сборки (панель, unit без аутентификации,
+    // AdGuard, Docker API) и без link-local (метаданные облака). Остаются хост
+    // — шлюз docker-сети — и прочие приватные адреса.
+    public const TELEMT_WEB_DECOY_NAME_MIN     = '3.5.14';
+    public const TELEMT_WEB_DECOY_GATEWAY      = '10.10.0.1';
+    public const TELEMT_WEB_DECOY_RESOLVE_SECS = 2;
+
+    public static function telemtWebDecoyAddressOk(string $ip): bool
+    {
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            if ($ip === self::TELEMT_WEB_DECOY_GATEWAY) {
+                return true;
+            }
+            $n  = ip2long($ip);
+            $in = static fn(string $net, int $bits): bool => ($n >> (32 - $bits)) === (ip2long($net) >> (32 - $bits));
+            [$own, $ownBits] = explode('/', self::DOCKER_NET);
+
+            return !$in($own, (int) $ownBits)
+                && ($in('10.0.0.0', 8) || $in('172.16.0.0', 12) || $in('192.168.0.0', 16));
+        }
+        $raw = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? inet_pton($ip) : false;
+
+        // fc00::/7. IPv4-mapped адреса (::ffff:a.b.c.d) telemt приватными не считает.
+        return $raw !== false && (ord($raw[0]) & 0xfe) === 0xfc;
+    }
+
+    // Разбор по правилам telemt (config/load/decoy_dns.rs), но строже. URL-парсер
+    // ядра принимает за IPv4 и «127.1», и «0x7f000001», и восьмеричные октеты:
+    // здесь IPv4 допускается только каноническим, а имя не может кончаться
+    // числом — иначе проверенный адрес и адрес, по которому пойдёт запрос,
+    // могли бы разойтись.
+    // Возвращает ['origin', 'host', 'port', 'name'] либо ['error' => ключ i18n].
+    public static function telemtWebDecoyParse(string $value): array
+    {
+        $bad = ['error' => 'telemt web decoy bad url'];
+        if (!preg_match('~^http://(\[[0-9A-Fa-f:.]+\]|[^\s/:?#@\[\]\\\\]+)(?::(\d{1,5}))?/?$~D', trim($value), $m)) {
+            return $bad;
+        }
+        $host = strtolower($m[1]);
+        $port = ($m[2] ?? '') === '' ? 80 : (int) $m[2];
+        if ($port < 1 || $port > 65535) {
+            return $bad;
+        }
+        // WEB-листенер слушает 0.0.0.0, и любой адрес на его порту telemt
+        // отвергает как петлю на самого себя.
+        if ($port === self::TELEMT_WEB_PORT) {
+            return ['error' => 'telemt web decoy own port'];
+        }
+        $name = false;
+        if ($host[0] === '[') {
+            $ip = substr($host, 1, -1);
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+                return $bad;
+            }
+            $ip   = inet_ntop(inet_pton($ip));
+            $host = "[$ip]";
+        } elseif (preg_match('~^[0-9.]+$~D', $host)) {
+            if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                return $bad;
+            }
+            $ip = $host;
+        } else {
+            $labels = explode('.', $host);
+            if (strlen($host) > 253
+                || !preg_match('~^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*$~D', $host)
+                || preg_match('~^(?:\d+|0x[0-9a-f]*)$~D', end($labels))
+                || str_contains($host, 'xn--')) {
+                return $bad;
+            }
+            $name = true;
+        }
+        if (!$name && !self::telemtWebDecoyAddressOk($ip)) {
+            return ['error' => 'telemt web decoy not private'];
+        }
+
+        return [
+            'origin' => 'http://' . $host . (($m[2] ?? '') === '' ? '' : ':' . $port),
+            'host'   => $name ? $host : $ip,
+            'port'   => $port,
+            'name'   => $name,
+        ];
+    }
+
+    // Сохранённый свой сайт-приманка либо null — встроенная страница. Мусор из
+    // pac.json или бэкапа равен отсутствию настройки.
+    public function telemtWebDecoyOf(array $conf): ?array
+    {
+        $value = $conf['telemt_web_decoy'] ?? '';
+        if (!is_string($value) || $value === '') {
+            return null;
+        }
+        $decoy = self::telemtWebDecoyParse($value);
+
+        return isset($decoy['error']) ? null : $decoy;
+    }
+
+    // Проверка изнутри контейнера telemt — оттуда же пойдут запросы: куда
+    // разрешается имя и отвечает ли адрес по HTTP. Отдельным методом — тест
+    // подменяет только его.
+    public function telemtWebDecoyProbe(array $decoy): ?array
+    {
+        $code = 'import socket,sys,json,http.client' . "\n"
+            . 'h,p,a=sys.argv[1],int(sys.argv[2]),sys.argv[3]' . "\n"
+            . 'o={"addresses":[],"status":0,"location":""}' . "\n"
+            . 'try:' . "\n"
+            . ' for x in socket.getaddrinfo(h,p,type=socket.SOCK_STREAM):' . "\n"
+            . '  if x[4][0] not in o["addresses"]:o["addresses"].append(x[4][0])' . "\n"
+            . 'except OSError:pass' . "\n"
+            . 'if o["addresses"]:' . "\n"
+            . ' try:' . "\n"
+            . '  c=http.client.HTTPConnection(o["addresses"][0],p,timeout=3);c.request("GET","/",headers={"Host":a})' . "\n"
+            . '  r=c.getresponse();o["status"]=r.status;o["location"]=r.getheader("Location") or ""' . "\n"
+            . ' except Exception:pass' . "\n"
+            . 'print(json.dumps(o))';
+        $out = $this->ssh('python3 -c ' . escapeshellarg($code) . ' ' . escapeshellarg($decoy['host']) . ' '
+            . (int) $decoy['port'] . ' ' . escapeshellarg(substr($decoy['origin'], 7)), 'telemt');
+        $probe = $this->sshFailed ? null : json_decode(trim((string) $out), true);
+
+        return is_array($probe) && is_array($probe['addresses'] ?? null) ? $probe : null;
+    }
+
+    // Сохраняет свой сайт-приманку ('' — вернуть встроенную страницу) и
+    // перезапускает активный WEB. Возвращает ключ сообщения об отказе либо ''.
+    public function telemtWebDecoyApply(string $value): string
+    {
+        $decoy = null;
+        if (trim($value) !== '') {
+            $decoy = self::telemtWebDecoyParse($value);
+            if (isset($decoy['error'])) {
+                return $decoy['error'];
+            }
+            // Образ старше имя не примет: ключ resolve он сочтёт неизвестным,
+            // а сам адрес отвергнет как «не IP-литерал».
+            if ($decoy['name'] && !$this->telemtVersionAtLeast(self::TELEMT_WEB_DECOY_NAME_MIN)) {
+                return 'telemt web decoy need version';
+            }
+            $probe = $this->telemtWebDecoyProbe($decoy);
+            if ($probe === null) {
+                return 'telemt web decoy unchecked';
+            }
+            if (!$probe['addresses']) {
+                return 'telemt web decoy unresolved';
+            }
+            foreach ($probe['addresses'] as $address) {
+                if (!is_string($address) || !self::telemtWebDecoyAddressOk($address)) {
+                    return 'telemt web decoy not private';
+                }
+            }
+            if (empty($probe['status'])) {
+                return 'telemt web decoy no answer';
+            }
+            // Перенаправление на сам WEB-хост — петля: запрос вернётся в telemt
+            // и снова уйдёт на этот же адрес.
+            $target = parse_url((string) ($probe['location'] ?? ''), PHP_URL_HOST);
+            $host   = $this->telemtWebHost($this->getPacConf());
+            if ((int) $probe['status'] >= 300 && (int) $probe['status'] < 400
+                && is_string($target) && $host !== '' && strtolower($target) === $host) {
+                return 'telemt web decoy redirect';
+            }
+        }
+        $origin = $decoy['origin'] ?? '';
+        $changed = $this->telemtConfUpdate(function (&$conf) use ($origin) {
+            if (($conf['telemt_web_decoy'] ?? '') === $origin) {
+                return false;
+            }
+            if ($origin === '') {
+                unset($conf['telemt_web_decoy']);
+            } else {
+                $conf['telemt_web_decoy'] = $origin;
+            }
+
+            return true;
+        });
+        if ($changed && $this->telemtWebEnabled($this->getPacConf())) {
+            $this->restartTelemt();
+            // Лестница откатов в applyTelemt() могла снять настройку сама.
+            if ($origin !== '' && $this->telemtWebDecoyOf($this->getPacConf()) === null) {
+                return 'telemt web decoy reverted';
+            }
+        }
+
+        return '';
     }
 
     // Порог для ключей 3.5.8 (base_path, web.debug.sideband). Старый бинарь их
@@ -16344,6 +16580,9 @@ DNS-over-HTTPS with IP:
         $path   = $this->telemtWebPathOf($conf);
         $diag   = $this->telemtBool($conf, 'telemt_web_diag');
         $text[] = "path: " . ($path === '' ? '/' : htmlspecialchars("/$path/", ENT_QUOTES));
+        $decoy  = $this->telemtWebDecoyOf($conf);
+        $text[] = "decoy: " . ($decoy === null ? $this->i18n('telemt web decoy builtin')
+            : '<code>' . htmlspecialchars($decoy['origin'], ENT_QUOTES) . '</code>');
         $text[] = "profiles: " . count($profiles) . '/' . count($users);
         if (count($users) > count($profiles)) {
             $text[] = "\n⚠ " . $this->i18n('telemt web profiles capped');
@@ -16400,6 +16639,11 @@ DNS-over-HTTPS with IP:
         $data[] = [[
             'text'          => $this->i18n('telemt web path') . ': ' . ($path === '' ? '/' : "/$path/"),
             'callback_data' => "/telemtWebPath",
+        ]];
+        $data[] = [[
+            'text'          => $this->i18n('telemt web decoy') . ': '
+                . ($decoy === null ? $this->i18n('telemt web decoy builtin') : $decoy['origin']),
+            'callback_data' => "/telemtWebDecoy",
         ]];
         $data[] = [[
             'text'          => $this->i18n('telemt web diag') . ': ' . $this->telemtState($diag),
@@ -16571,6 +16815,53 @@ DNS-over-HTTPS with IP:
             [['text' => $this->i18n('back'), 'callback_data' => '/telemtWeb']],
         ];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
+    }
+
+    // Свой сайт-приманка: адрес вводится ответом на запрос, возврат к
+    // встроенной странице — отдельная кнопка.
+    public function telemtWebDecoyMenu(string $action = '', string $notice = '')
+    {
+        if ($action === 'ask') {
+            $r = $this->send(
+                $this->input['chat'],
+                "@{$this->input['username']} enter decoy origin, e.g. http://" . self::TELEMT_WEB_DECOY_GATEWAY . ":8081",
+                $this->input['message_id'],
+                reply: 'enter decoy origin',
+            );
+            $this->stashReply($r, [
+                'start_message' => $this->input['message_id'],
+                'callback'      => 'telemtWebDecoySet',
+                'args'          => [],
+            ]);
+            return;
+        }
+        if ($action === 'reset') {
+            $was    = $this->telemtWebDecoyOf($this->getPacConf()) !== null;
+            $notice = $this->telemtWebDecoyApply('');
+            if ($notice === '' && $was) {
+                $notice = 'telemt web decoy changed';
+            }
+        }
+        $decoy = $this->telemtWebDecoyOf($this->getPacConf());
+        $text  = ['Menu → TeleMT → WEB → ' . $this->i18n('telemt web decoy'),
+            'decoy: ' . ($decoy === null ? $this->i18n('telemt web decoy builtin')
+                : '<code>' . self::esc($decoy['origin']) . '</code>'),
+            $this->i18n('telemt web decoy setup')];
+        if ($notice !== '') {
+            $text[] = ($notice === 'telemt web decoy changed' ? 'ℹ ' : '⚠ ') . $this->i18n($notice);
+        }
+        $data = [
+            [['text' => $this->i18n('telemt web decoy ask'), 'callback_data' => '/telemtWebDecoy ask']],
+            [['text' => ($decoy === null ? '✅ ' : '') . $this->i18n('telemt web decoy builtin'), 'callback_data' => '/telemtWebDecoy reset']],
+            [['text' => $this->i18n('back'), 'callback_data' => '/telemtWeb']],
+        ];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
+    }
+
+    public function telemtWebDecoySet($origin)
+    {
+        $notice = $this->telemtWebDecoyApply((string) $origin);
+        $this->telemtWebDecoyMenu('', $notice === '' ? 'telemt web decoy changed' : $notice);
     }
 
     // Отчёты бриджа Telegram Desktop о сбоях до рукопожатия (web.debug.sideband).
