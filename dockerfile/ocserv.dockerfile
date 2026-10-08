@@ -13,6 +13,13 @@ ARG OCSERV_VERSION=1.5.0
 # Дефолт статичный — обычный build переиспользует кеш.
 ARG APK_REFRESH=2026-10-05
 
+# 1.5.0: main() при завершении читает s->abnormal_exit уже после
+# talloc_free(s->main_pool). На musl освобождённая память сразу возвращается
+# ядру, и каждая остановка ocserv (pkill при перезапуске ботом) заканчивается
+# segfault в ocserv-main. Патч повторяет исправление из master апстрима;
+# --fuzz=0 уронит сборку, когда оно войдёт в релиз, — тогда патч удалить.
+COPY dockerfile/ocserv-exit-after-free.patch /ocserv-exit-after-free.patch
+
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
     apk update; \
@@ -40,16 +47,18 @@ RUN set -eux; \
         linux-headers \
         curl \
         tar \
+        patch \
         protobuf-c-compiler \
         gperf; \
     curl -fsSL "https://gitlab.com/openconnect/ocserv/-/archive/${OCSERV_VERSION}/ocserv-${OCSERV_VERSION}.tar.gz" \
         | tar xz -C /tmp; \
     cd /tmp/ocserv-${OCSERV_VERSION}; \
+    patch -p1 --fuzz=0 < /ocserv-exit-after-free.patch; \
     meson setup build -Dbuildtype=release -Dstrip=true -Dfirewall-script=iptables; \
     ninja -C build; \
     meson install -C build; \
     cd /; \
-    rm -rf /tmp/ocserv-*; \
+    rm -rf /tmp/ocserv-* /ocserv-exit-after-free.patch; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
     # sanity: все нужные боту бинарники на месте, и ocserv запускается
