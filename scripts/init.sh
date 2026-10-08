@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/axiomshiftbit/vpnbot.git"
+REPO_URL="git@axiomshiftbit:axiomshiftbit/vpnbot.git"
 INSTALL_DIR="/root/vpnbot"
 ARCHIVE_NAME="vpnbot.zip"
 
@@ -42,36 +42,64 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # Репозиторий приватный: установка из git и последующие обновления (update.sh
-# делает git fetch/pull) требуют GitHub-токена с read-доступом к axiomshiftbit/vpnbot.
-# Токен передаётся через переменную окружения GH_TOKEN (или VPNBOT_TOKEN).
-# При установке из архива токен не нужен.
-TOKEN="${GH_TOKEN:-${VPNBOT_TOKEN:-}}"
-
-# Токен НЕ вшивается в URL origin. Раньше origin выглядел как
-# https://x-access-token:<pat>@github.com/... — и это значило: PAT в открытом
-# виде навсегда в /root/vpnbot/.git/config (его показывает любой `git remote -v`
-# и любой бэкап каталога), PAT в argv на время clone/fetch/pull (виден в `ps`
-# всем процессам хоста), PAT в сообщениях об ошибках git.
-# Вместо этого — стандартный credential.helper store с файлом 0600 вне репозитория:
-# origin остаётся чистым, а update.sh продолжает тянуть обновления без ввода.
+# и бот делают git fetch) ходят в axiomshiftbit/vpnbot по deploy-ключу ТОЛЬКО ДЛЯ
+# ЧТЕНИЯ. Ключ создаётся на сервере и не покидает его; в GitHub добавляется
+# лишь публичная половина (Settings → Deploy keys, без права записи).
+# При установке из архива ключ не нужен.
+#
+# Ключ и настройки ssh лежат внутри .git, пути в них относительные: каталог
+# .git смонтирован в контейнеры php и service как /.git, и `git -C / fetch`
+# оттуда находит те же файлы. Порт 443 узла ssh.github.com — на случай
+# закрытого наружу порта 22.
+DEPLOY_DIR=".git/vpnbot-readonly-ssh"
+# Файл токена прежней схемы (credential.helper store) — удаляется при переходе.
 CRED_FILE="/root/.vpnbot-git-credentials"
 
-setup_git_credentials() {
-    [ -n "$TOKEN" ] || return 0
-    ( umask 077; printf 'https://x-access-token:%s@github.com\n' "$TOKEN" > "$CRED_FILE" )
-    chmod 600 "$CRED_FILE"
-}
-
-git_cred_opt() {
-    if [ -n "$TOKEN" ]; then
-        printf 'credential.helper=store --file=%s' "$CRED_FILE"
-    else
-        printf 'credential.helper='
+setup_deploy_key() {
+    local dir="$INSTALL_DIR/$DEPLOY_DIR"
+    ( umask 077; mkdir -p "$dir" )
+    chmod 700 "$dir"
+    if [ ! -f "$dir/id_ed25519" ]; then
+        ( umask 077; ssh-keygen -q -t ed25519 -N '' -C "vpnbot-$(hostname)-readonly" -f "$dir/id_ed25519" )
+    elif [ ! -f "$dir/id_ed25519.pub" ]; then
+        ssh-keygen -y -f "$dir/id_ed25519" > "$dir/id_ed25519.pub"
     fi
+    ( umask 077
+      cat > "$dir/config" <<EOF
+Host axiomshiftbit
+    HostName ssh.github.com
+    User git
+    Port 443
+    IdentityFile $DEPLOY_DIR/id_ed25519
+    IdentitiesOnly yes
+    BatchMode yes
+    ConnectTimeout 10
+    ServerAliveInterval 15
+    ServerAliveCountMax 2
+    StrictHostKeyChecking yes
+    UserKnownHostsFile $DEPLOY_DIR/known_hosts
+EOF
+      # Публичные ключи узла GitHub (https://api.github.com/meta, ssh_keys).
+      cat > "$dir/known_hosts" <<'EOF'
+github.com,[ssh.github.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+github.com,[ssh.github.com]:443 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+github.com,[ssh.github.com]:443 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+EOF
+    )
 }
 
-repo_clone_url() {
-    printf '%s' "$REPO_URL"
+# Переключение origin на ключ — только после проверки доступа: до этого
+# установка, работающая по токену, продолжает получать обновления.
+use_deploy_key() {
+    git -C "$INSTALL_DIR" config core.sshCommand "ssh -F $DEPLOY_DIR/config"
+    # set-url заодно лечит установки, где в origin остался вшитый PAT.
+    if git -C "$INSTALL_DIR" remote get-url origin >/dev/null 2>&1; then
+        git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
+    else
+        git -C "$INSTALL_DIR" remote add origin "$REPO_URL"
+    fi
+    git -C "$INSTALL_DIR" config --unset-all credential.helper || true
+    rm -f "$CRED_FILE"
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -100,6 +128,7 @@ apt install -y \
     make \
     python3 \
     git \
+    openssh-client \
     unzip \
     rsync \
     iptables \
@@ -240,36 +269,51 @@ install_from_archive() {
 
 install_from_git() {
     echo "installing from git: $REPO_URL ($BRANCH)"
-    if [ -z "$TOKEN" ]; then
-        echo "private repo: set GH_TOKEN (read access to axiomshiftbit/vpnbot) for git install" >&2
-        echo "or place $ARCHIVE_NAME next to this script for offline archive install" >&2
+    if [ ! -d "$INSTALL_DIR/.git" ]; then
+        if [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+            echo "$INSTALL_DIR exists without .git and no $ARCHIVE_NAME found" >&2
+            echo "place $ARCHIVE_NAME next to this script for archive-mode update, or remove $INSTALL_DIR" >&2
+            exit 1
+        fi
+        # Пустой репозиторий вместо clone: ключу нужно место ещё до первой
+        # загрузки, а повторный запуск продолжает с того же места.
+        git init -q "$INSTALL_DIR"
+    fi
+    setup_deploy_key
+    if ! GIT_SSH_COMMAND="ssh -F $DEPLOY_DIR/config" git -C "$INSTALL_DIR" \
+            ls-remote --exit-code "$REPO_URL" "refs/heads/$BRANCH" >/dev/null 2>&1; then
+        echo "GitHub не принял deploy-ключ этого сервера (или недоступен ssh.github.com:443)." >&2
+        echo "Добавьте публичный ключ в axiomshiftbit/vpnbot: Settings → Deploy keys → Add deploy key," >&2
+        echo "БЕЗ галочки «Allow write access», затем запустите установку ещё раз:" >&2
+        echo >&2
+        cat "$INSTALL_DIR/$DEPLOY_DIR/id_ed25519.pub" >&2
         exit 1
     fi
-    setup_git_credentials
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        echo "repo already exists at $INSTALL_DIR, pulling latest..."
-        # Чистый origin + credential.helper в конфиге репозитория. set-url здесь
-        # ещё и ЛЕЧИТ установки, где в origin остался вшитый PAT.
-        git -C "$INSTALL_DIR" remote set-url origin "$(repo_clone_url)"
-        if [ -n "$TOKEN" ]; then
-            git -C "$INSTALL_DIR" config credential.helper "store --file=$CRED_FILE"
-        fi
-        git -C "$INSTALL_DIR" fetch origin "$BRANCH"
-        git -C "$INSTALL_DIR" checkout "$BRANCH"
-        git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
-    elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
-        echo "$INSTALL_DIR exists without .git and no $ARCHIVE_NAME found" >&2
-        echo "place $ARCHIVE_NAME next to this script for archive-mode update, or remove $INSTALL_DIR" >&2
-        exit 1
+    use_deploy_key
+    git -C "$INSTALL_DIR" fetch origin "$BRANCH"
+    if [ -f "$INSTALL_DIR/update/image-bundle.json" ]; then
+        # Рабочая установка: код и образы переключает вместе только обновление
+        # из бота. Сдвиг кода здесь разошёлся бы с активным комплектом образов.
+        echo "installation is active: code stays as is, update it from the bot"
+        return 0
+    fi
+    # Код берём из коммита ОПУБЛИКОВАННОГО комплекта образов, а не с вершины
+    # ветки: пока вершина не прошла сборку и стенд, make u отказал бы
+    # («code does not match the tested image set»).
+    local channel=dev released
+    [ "$BRANCH" != master ] || channel=latest
+    git -C "$INSTALL_DIR" checkout -q --detach "origin/$BRANCH"
+    ( cd "$INSTALL_DIR" && python3 scripts/image_bundle.py fetch "$channel" update/image-bundle.pending.json )
+    released="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"])' \
+        "$INSTALL_DIR/update/image-bundle.pending.json")"
+    git -C "$INSTALL_DIR" merge-base --is-ancestor "$released" "origin/$BRANCH"
+    if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        git -C "$INSTALL_DIR" checkout -q "$BRANCH"
+        git -C "$INSTALL_DIR" merge -q --ff-only "$released"
     else
-        # -c ...=store --file=… в argv — это путь, а не секрет; сам токен лежит
-        # в файле 0600. После клона тот же helper прописывается в конфиг репо,
-        # чтобы update.sh тянул обновления приватного репозитория без ввода.
-        git -c "$(git_cred_opt)" clone --branch "$BRANCH" "$(repo_clone_url)" "$INSTALL_DIR"
-        if [ -n "$TOKEN" ]; then
-            git -C "$INSTALL_DIR" config credential.helper "store --file=$CRED_FILE"
-        fi
+        git -C "$INSTALL_DIR" checkout -q -b "$BRANCH" "$released"
     fi
+    git -C "$INSTALL_DIR" branch -q --set-upstream-to="origin/$BRANCH" "$BRANCH"
 }
 
 if [ -n "$ARCHIVE" ]; then
@@ -281,10 +325,15 @@ fi
 cd "$INSTALL_DIR"
 
 mkdir -p ./app
-cat > ./app/config.php <<EOF
+if [ -s ./app/config.php ]; then
+    # Здесь же бот хранит администратора: перезапись сбросила бы привязку.
+    echo "app/config.php already exists — kept as is (edit it to change the bot key)"
+else
+    cat > ./app/config.php <<EOF
 <?php
 
 \$c = ['key' => '$KEY'];
 EOF
+fi
 
 make u

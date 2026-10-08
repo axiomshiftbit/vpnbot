@@ -15,39 +15,52 @@ environment: ubuntu 22.04/24.04, debian 11/12
 
 ## Install:
 
-Репозиторий приватный — установка возможна только с вашим GitHub-токеном
-(fine-grained PAT, доступ только к `axiomshiftbit/vpnbot`, права `Contents: Read`).
-Без токена ни ссылка, ни клонирование не работают, и сам репозиторий другим не виден.
+Репозиторий приватный: сервер получает код по **deploy-ключу только для чтения**.
+Ключ создаётся на самом сервере и его не покидает; в GitHub добавляется лишь
+публичная половина. GitHub-токен для установки и обновлений не нужен.
 
-Сохраните токен в переменной (держите в секрете). Чтобы команда с токеном не
-попала в историю shell, поставьте пробел перед командой (` export GH_TOKEN=...`):
+1. Скопируйте установщик на сервер с машины, где есть доступ к репозиторию:
 ```shell
- export GH_TOKEN=github_pat_xxx
+scp scripts/init.sh root@SERVER:/root/init.sh
 ```
+2. Запустите его на сервере — stable (`master`) или development (`dev`):
+```shell
+VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash /root/init.sh master
+```
+Первый запуск ставит пакеты и Docker, создаёт ключ, печатает его публичную
+половину (`ssh-ed25519 …`) и останавливается.
 
-stable (master):
-```shell
-curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/axiomshiftbit/vpnbot/contents/scripts/init.sh?ref=master" \
-  | GH_TOKEN="$GH_TOKEN" VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash -s master
-```
-development (dev):
-```shell
-curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/axiomshiftbit/vpnbot/contents/scripts/init.sh?ref=dev" \
-  | GH_TOKEN="$GH_TOKEN" VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash -s dev
-```
+3. Добавьте напечатанную строку в GitHub: `axiomshiftbit/vpnbot` → **Settings →
+Deploy keys → Add deploy key**, галочку **Allow write access** не ставьте.
+То же из консоли: `gh repo deploy-key add key.pub --repo axiomshiftbit/vpnbot --title vpnbot-SERVER-readonly`.
+
+4. Повторите команду из шага 2 — установка скачает код и запустит бота.
+Код берётся из коммита последнего опубликованного комплекта образов ветки, а
+не с её вершины: коммит, ещё не прошедший сборку и стенд, на сервер не попадает.
+
 Ключ бота передаётся переменной `VPNBOT_KEY`, а не аргументом: аргумент виден
 в `ps` всем процессам хоста и остаётся в history. Старая форма
 (`bash init.sh YOUR_TELEGRAM_BOT_KEY master`) ещё работает, но предупреждает.
 
-GitHub-токен в URL репозитория больше не вшивается: `origin` остаётся чистым,
-а токен ложится в `/root/.vpnbot-git-credentials` (0600) и подхватывается
-`credential.helper`. Установка поверх старой инсталляции заодно вычищает PAT
-из `.git/config`.
+Ключ и настройки SSH лежат в `/root/vpnbot/.git/vpnbot-readonly-ssh/`
+(каталог 0700): `id_ed25519` — закрытый ключ, `id_ed25519.pub` — публичный,
+`config` и `known_hosts` — подключение к `ssh.github.com:443` с проверкой
+ключей узла GitHub. `origin` — `git@axiomshiftbit:axiomshiftbit/vpnbot.git`, Git находит
+ключ через `core.sshCommand`. Закрытый ключ не копируйте и не публикуйте; у
+каждого сервера свой ключ, отзывается он удалением из Deploy keys. Каталог
+`.git` смонтирован в контейнеры `php` и `service`: проверка обновлений ботом
+использует тот же ключ.
 
-Установка из архива (offline, токен не нужен) — положите `vpnbot.zip` рядом
+Установка по GitHub-токену больше не поддерживается. Если на сервере остались
+её следы, запуск установщика после проверки доступа по ключу переключает
+`origin`, убирает `credential.helper` и удаляет `/root/.vpnbot-git-credentials`.
+На работающей установке повторный запуск не меняет код (его вместе с образами
+обновляет бот) и не перезаписывает `app/config.php`, но заново выполняет
+`make u`, то есть пересоздаёт контейнеры.
+
+Установка из архива (offline, ключ не нужен) — положите `vpnbot.zip` рядом
 со скриптом и запустите `VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash init.sh master`.
+Такая установка удаляет `/root/vpnbot/.git` вместе с deploy-ключом.
 #### Tests:
 ```shell
 make test

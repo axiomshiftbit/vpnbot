@@ -6966,7 +6966,7 @@ NFT;
                 $b          = exec('git -C / rev-parse --abbrev-ref HEAD');
                 // Сверяемся со СВОИМ репозиторием, а не с upstream: raw для
                 // приватного репо недоступен, поэтому читаем version удалённой
-                // ветки через git (в remote уже встроен x-access-token).
+                // ветки через git (доступ — по deploy-ключу из /.git).
                 exec('git -C / fetch -q 2>/dev/null');
                 $last       = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
                 if (!empty($last) && $last != $this->last && $last != $current) {
