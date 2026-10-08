@@ -77,7 +77,7 @@ switch ($cmd) {
         require $file;
         $c['admin'] = array_values(array_unique(array_merge((array) ($c['admin'] ?? []), [(int) $id])));
         file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
-        echo "Владельцы бота: " . implode(', ', $c['admin']) . "\n";
+        echo "Администраторы бота (первый — владелец): " . implode(', ', $c['admin']) . "\n";
         break;
 
     case 'reset':

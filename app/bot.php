@@ -11122,8 +11122,49 @@ NFT;
         $this->menu('adguard');
     }
 
+    // Владелец — первый в списке администраторов: его назначает первое
+    // обращение к ничейному боту (auth()) или `php panel.php admin <id>`.
+    // Состав администраторов меняет только он. Остальным достаточно было
+    // добавить свой второй аккаунт или удалить владельца, чтобы закрепиться
+    // либо отобрать бота: любой администратор выгружает xray.json и ключи.
+    // В панели личность не подтверждена Telegram — общий пароль даёт войти от
+    // имени любого администратора, включая владельца, — поэтому оттуда состав
+    // не меняется вовсе.
+    public function isOwner(): bool
+    {
+        $from = $this->input['from'] ?? null;
+        // Только целое или строка из цифр: (int) '100abc' и (int) 100.9 дают 100.
+        // preg_match, а не ctype_digit: расширения ctype в образе php нет.
+        if ($this->transport || !(is_int($from) || (is_string($from) && preg_match('/^\d+$/D', $from))) || (int) $from <= 0) {
+            return false;
+        }
+        $file = __DIR__ . '/config.php';
+        if (function_exists('opcache_invalidate')) {
+            opcache_invalidate($file);
+        }
+        require $file;
+        $admins = array_values((array) ($c['admin'] ?? []));
+
+        return $admins !== [] && (int) $admins[0] === (int) $from;
+    }
+
+    private function denyAdminChange()
+    {
+        $text = 'only the owner can manage admins';
+        if (!empty($this->input['callback_id'])) {
+            $this->answer($this->input['callback_id'], $text, true);
+        } else {
+            $this->send($this->input['chat'], $text, $this->input['message_id']);
+        }
+
+        return $this->menu('config');
+    }
+
     public function enterAdmin()
     {
+        if (!$this->isOwner()) {
+            return $this->denyAdminChange();
+        }
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} enter id",
@@ -11982,6 +12023,11 @@ NFT;
 
     public function addAdmin($id)
     {
+        // Проверка и здесь, а не только у кнопки: это обработчик ответа на
+        // приглашение, и ответить на него может не тот, кто его вызвал.
+        if (!$this->isOwner()) {
+            return $this->denyAdminChange();
+        }
         $file = __DIR__ . '/config.php';
         require $file;
         // $id — сырой текст ответа на промпт. Раньше он клался в config.php как
@@ -12003,6 +12049,9 @@ NFT;
 
     public function delAdmin($id)
     {
+        if (!$this->isOwner()) {
+            return $this->denyAdminChange();
+        }
         $file = __DIR__ . '/config.php';
         require $file;
         // Тот же класс, что в allowIp, но цена выше: при промахе
@@ -12024,6 +12073,11 @@ NFT;
         // меню идут подряд и подтверждения не имеют — хватало промаха пальцем.
         if (count((array) $c['admin']) <= 1) {
             $this->answer($this->input['callback_id'], 'cannot remove the last admin', true);
+            return $this->menu('config');
+        }
+        // Владелец себя не удаляет: владельцем молча стал бы следующий в списке.
+        if ($i === 0) {
+            $this->answer($this->input['callback_id'], 'cannot remove the owner', true);
             return $this->menu('config');
         }
         unset($c['admin'][$i]);
@@ -31073,22 +31127,25 @@ DNS-over-HTTPS with IP:
             'text' => 'Посмотреть пароль панели',
             'callback_data' => '/panelShowPswd',
         ]];
-        $data[] = [
-            [
-                'text'          => "{$this->i18n('add')} {$this->i18n('admin')}",
-                'callback_data' => "/addadmin",
-            ],
-        ];
-        $file = __DIR__ . '/config.php';
-        opcache_invalidate($file);
-        require $file;
-        foreach ($c['admin'] as $k => $v) {
+        // Состав администраторов видит и меняет только владелец (isOwner()).
+        if ($this->isOwner()) {
             $data[] = [
                 [
-                    'text'          => $this->i18n('delete') . " $v",
-                    'callback_data' => "/deladmin $v",
+                    'text'          => "{$this->i18n('add')} {$this->i18n('admin')}",
+                    'callback_data' => "/addadmin",
                 ],
             ];
+            $file = __DIR__ . '/config.php';
+            opcache_invalidate($file);
+            require $file;
+            foreach (array_slice(array_values((array) $c['admin']), 1) as $v) {
+                $data[] = [
+                    [
+                        'text'          => $this->i18n('delete') . " $v",
+                        'callback_data' => "/deladmin $v",
+                    ],
+                ];
+            }
         }
         $data[] = [
             [
