@@ -38,12 +38,11 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: ./.github/actions/setup-buildx
         if: github.ref == 'refs/heads/master' && github.event_name != 'schedule'
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      - uses: ./.github/actions/registry-login
         if: github.ref == 'refs/heads/master' && github.event_name != 'schedule'
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: decision
@@ -103,7 +102,7 @@ jobs:
           # чужие сборщики buildx допустимы, любые другие контейнеры — нет.
           test -z "$(docker ps --format '{{.Names}}' | grep -v '^buildx_buildkit_' || true)"
           python3 -c 'import shutil; assert shutil.disk_usage("/var/lib/docker").free >= 12 * 1024**3, "Недостаточно места для безопасной сборки"'
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: ./.github/actions/setup-buildx
         with:
           driver-opts: |
             ${{ inputs.test_runner && 'memory=3g' || '' }}
@@ -115,21 +114,10 @@ jobs:
               max-parallelism = ${{ inputs.test_runner && 4 || 1 }}
               maxUsedSpace = "4GB"
               minFreeSpace = "3GB"
-      # Сборку нельзя перезапустить отдельно: комплект принимает образы только
-      # одной попытки. Поэтому сетевые шаги повторяются здесь же, один раз.
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        id: login
-        continue-on-error: true
+      # Сетевые шаги повторяются здесь же: перезапуск задания стоит полной
+      # пересборки образа.
+      - uses: ./.github/actions/registry-login
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - if: steps.login.outcome == 'failure'
-        run: sleep 30
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        if: steps.login.outcome == 'failure'
-        with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7
@@ -178,7 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}-${IMAGE_NAME}:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker pull "$image"
+          sh scripts/ci_retry.sh docker pull "$image"
           verify() {
             key=$1; binary=$2; flag=$3
             expected=$(sed -n "s/^${key}=//p" .env)
@@ -221,7 +209,7 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}-xr:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker pull "$image"
+          sh scripts/ci_retry.sh docker pull "$image"
           while read -r key binary; do
             expected=$(sed -n "s/^${key}=//p" .env)
             if [[ "$key" == XRAY_VERSION_[23] && -z "$expected" ]]; then
@@ -255,7 +243,7 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}-masque:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker pull "$image"
+          sh scripts/ci_retry.sh docker pull "$image"
           expected=$(sed -n 's/^MASQUE_XRAY_VERSION=//p' .env)
           actual=$(docker run --rm --network=none --entrypoint /usr/local/bin/xray "$image" version)
           read -r name version rest <<< "$actual"
@@ -276,7 +264,7 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}-ad:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker pull "$image"
+          sh scripts/ci_retry.sh docker pull "$image"
           docker run --rm --network=none --entrypoint sh -e VPNBOT_IMAGE_TEST=1 \
             -v "$PWD/tests/adguard_routes_test.sh:/test.sh:ro" \
             -v "$PWD/scripts/start_ad.sh:/entrypoint-under-test.sh:ro" \
@@ -289,7 +277,7 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}-${IMAGE_NAME}:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker pull "$image"
+          sh scripts/ci_retry.sh docker pull "$image"
           docker run --rm --network=none --entrypoint sh "$image" -ec '
             grep -Ex "3\\.24\\.[0-9]+" /etc/alpine-release
             test -s /etc/apk/repositories
@@ -320,25 +308,10 @@ jobs:
           path=pathlib.Path(e['RUNNER_TEMP'])/'descriptor';path.mkdir()
           (path/(e['IMAGE_NAME']+'.json')).write_text(json.dumps(value))
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        id: descriptor
-        continue-on-error: true
+      - uses: ./.github/actions/upload-artifact
         with:
           name: descriptor-${{ matrix.image }}
           path: ${{ runner.temp }}/descriptor/*.json
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 1
-      - if: steps.descriptor.outcome == 'failure'
-        run: sleep 30
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: steps.descriptor.outcome == 'failure'
-        with:
-          name: descriptor-${{ matrix.image }}
-          path: ${{ runner.temp }}/descriptor/*.json
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 1
       - name: Освободить локальную копию проверенного образа на резервном runner
         if: always() && inputs.test_runner
         env:
@@ -357,7 +330,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/download-artifact
         with:
           pattern: descriptor-*
           merge-multiple: true
@@ -367,13 +340,10 @@ jobs:
           set -euo pipefail
           hash=$(python3 scripts/image_bundle.py collect "$RUNNER_TEMP/descriptors" "$RUNNER_TEMP/bundle.json" --source "$GITHUB_SHA" --run "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT")
           echo "fingerprint=$hash" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: ./.github/actions/upload-artifact
         with:
           name: image-bundle
           path: ${{ runner.temp }}/bundle.json
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 1
   security:
     needs: bundle
     runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
@@ -389,7 +359,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/download-artifact
         with:
           name: image-bundle
           path: ${{ runner.temp }}
@@ -416,7 +386,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/download-artifact
         with:
           name: image-bundle
           path: ${{ runner.temp }}
@@ -429,17 +399,16 @@ jobs:
           else
             test "$(cat /etc/vpnbot-ci-test-host)" = home-build
           fi
-          sudo apt-get update -qq
-          sudo apt-get install -y python3-yaml python3-cryptography tcpdump curl openssl iptables kmod
+          sh scripts/ci_retry.sh sudo apt-get update -qq
+          sh scripts/ci_retry.sh sudo apt-get install -y python3-yaml python3-cryptography tcpdump curl openssl iptables kmod
           sudo modprobe wireguard
           sudo modprobe l2tp_ppp
           sudo modprobe -a xt_comment xt_mark xt_connmark
           sudo mkdir -p /dev/net
           test -c /dev/net/tun || sudo mknod /dev/net/tun c 10 200
           test -c /dev/ppp || sudo mknod /dev/ppp c 108 0
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      - uses: ./.github/actions/registry-login
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Загрузить точные образы и проверенные тестовые клиенты
@@ -452,13 +421,10 @@ jobs:
           sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
             python3 scripts/ci_hosted_test.py test ${{ inputs.test_runner && '--local-test' || '' }} \
             --manifest "$RUNNER_TEMP/bundle.json" --output "$RUNNER_TEMP/native.json"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: ./.github/actions/upload-artifact
         with:
           name: native-admission
           path: ${{ runner.temp }}/native.json
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 1
       - name: Удалить одноразовые ключи, конфиги и бэкапы
         if: always()
         run: |
@@ -477,18 +443,17 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/download-artifact
         with:
           name: image-bundle
           path: ${{ runner.temp }}/release
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/download-artifact
         with:
           name: native-admission
           path: ${{ runner.temp }}
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      - uses: ./.github/actions/setup-buildx
+      - uses: ./.github/actions/registry-login
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Допуск, защита от устаревшего запуска, атомарная публикация комплекта

@@ -1,0 +1,51 @@
+# Сетевой сбой между runner и внешним сервисом не должен обрывать прогон:
+# действие повторяется после пауз 15, 45, 90 с. Последняя попытка идёт
+# без continue-on-error и решает исход шага.
+name: Вход в реестр образов с повторами
+description: Повторяет действие при сетевом сбое
+inputs:
+  username:
+    required: true
+  password:
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      id: attempt1
+      continue-on-error: true
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+    - if: steps.attempt1.outcome == 'failure'
+      shell: bash
+      run: sleep 15
+    - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      id: attempt2
+      continue-on-error: true
+      if: steps.attempt1.outcome == 'failure'
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+    - if: steps.attempt2.outcome == 'failure'
+      shell: bash
+      run: sleep 45
+    - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      id: attempt3
+      continue-on-error: true
+      if: steps.attempt2.outcome == 'failure'
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+    - if: steps.attempt3.outcome == 'failure'
+      shell: bash
+      run: sleep 90
+    - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      if: steps.attempt3.outcome == 'failure'
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}

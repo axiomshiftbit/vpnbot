@@ -38,8 +38,8 @@ jobs:
         if: inputs.test_runner
         run: |
           test "$(cat /etc/vpnbot-ci-test-host)" = home-build
-          sudo apt-get update -qq
-          sudo apt-get install -y php-cli php-curl php-mbstring php-xml php-zip php-intl
+          sh scripts/ci_retry.sh sudo apt-get update -qq
+          sh scripts/ci_retry.sh sudo apt-get install -y php-cli php-curl php-mbstring php-xml php-zip php-intl
 
       - name: Версия PHP
         run: php -v
@@ -47,8 +47,8 @@ jobs:
       - name: YAML для проверки подписок
         run: |
           php_version=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
-          sudo apt-get update -qq
-          sudo apt-get install -y "php${php_version}-yaml" python3-yaml
+          sh scripts/ci_retry.sh sudo apt-get update -qq
+          sh scripts/ci_retry.sh sudo apt-get install -y "php${php_version}-yaml" python3-yaml
           php -r 'exit(extension_loaded("yaml") ? 0 : 1);'
 
       - name: Xray для проверки конфигураций
@@ -57,13 +57,13 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 3 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip
           echo 'f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
           # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
-          curl --fail --location --retry 3 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.10.5-1858/Xray-linux-64.zip
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.10.5-1858/Xray-linux-64.zip
           echo '973e38863bd1756dcc6ead5f939a03ad55abca15a12ecb37f7b519e40ded2a32  Xray-fork-linux-64.zip' | sha256sum --check
           mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
           chmod +x fork/xray
@@ -112,13 +112,13 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 3 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip
           echo 'f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
           # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
-          curl --fail --location --retry 3 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.10.5-1858/Xray-linux-64.zip
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.10.5-1858/Xray-linux-64.zip
           echo '973e38863bd1756dcc6ead5f939a03ad55abca15a12ecb37f7b519e40ded2a32  Xray-fork-linux-64.zip' | sha256sum --check
           mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
           chmod +x fork/xray
@@ -132,6 +132,7 @@ jobs:
         run: |
           set -euo pipefail
           base=$(sed -n 's/^IMAGE=//p' .env)
+          sh scripts/ci_retry.sh docker pull "$base"
           docker run --rm \
             -v "$PWD:/workspace" \
             -v "$PWD/config/php.ini:/etc/php${PHP_SERIES}/php.ini:ro" \
@@ -139,7 +140,7 @@ jobs:
             -v "$RUNNER_TEMP/vpnbot-xray/fork/xray:/audit-xray-fork:ro" \
             -e PHP_SERIES -e VLESS_TEST_XRAY=/audit-xray -e XRAY_FORK_TEST_BINARY=/audit-xray-fork -w /workspace \
             "$base" sh -ec '
-              apk add --no-cache bash util-linux coreutils findutils make git curl openssl python3 py3-yaml \
+              sh scripts/ci_retry.sh apk add --no-cache bash util-linux coreutils findutils make git curl openssl python3 py3-yaml \
                 php${PHP_SERIES} php${PHP_SERIES}-mbstring php${PHP_SERIES}-session \
                 php${PHP_SERIES}-phar php${PHP_SERIES}-zip php${PHP_SERIES}-curl \
                 php${PHP_SERIES}-openssl php${PHP_SERIES}-iconv php${PHP_SERIES}-intl \

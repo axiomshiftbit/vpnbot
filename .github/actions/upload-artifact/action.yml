@@ -1,0 +1,59 @@
+# Сетевой сбой между runner и GitHub не должен обрывать прогон, уже прошедший
+# сборку или стенд: Отправка артефакта повторяется после пауз 15, 45, 90 с.
+# Последняя попытка идёт без continue-on-error и решает исход шага.
+name: Отправка артефакта с повторами
+description: Повторяет действие при сетевом сбое
+inputs:
+  name:
+    required: true
+  path:
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      id: attempt1
+      continue-on-error: true
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 1
+    - if: steps.attempt1.outcome == 'failure'
+      shell: bash
+      run: sleep 15
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      id: attempt2
+      continue-on-error: true
+      if: steps.attempt1.outcome == 'failure'
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 1
+    - if: steps.attempt2.outcome == 'failure'
+      shell: bash
+      run: sleep 45
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      id: attempt3
+      continue-on-error: true
+      if: steps.attempt2.outcome == 'failure'
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 1
+    - if: steps.attempt3.outcome == 'failure'
+      shell: bash
+      run: sleep 90
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: steps.attempt3.outcome == 'failure'
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 1

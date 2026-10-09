@@ -11,14 +11,22 @@ import subprocess
 import sys
 import tempfile
 
+from ci_retry import retrying
 from image_bundle import BUNDLE_REPO, command, fetch_reference, source_reference
+
+
+def network(*args):
+    return retrying(command, *args)
 
 
 def admitted(source):
     """Комплект, опубликованный для этого коммита, либо None."""
     with tempfile.TemporaryDirectory() as directory:
         try:
-            bundle = fetch_reference(source_reference(source), Path(directory) / 'bundle.json')
+            # Отсутствие ссылки и сбой сети реестр не различает, а ошибка здесь
+            # стоит полной пересборки вместо переноса — повторяем и это.
+            bundle = retrying(fetch_reference, source_reference(source), Path(directory) / 'bundle.json',
+                              errors=(RuntimeError, subprocess.SubprocessError))
         except (RuntimeError, subprocess.SubprocessError):
             # Ссылки нет или реестр недоступен: безопасная сторона — собрать заново.
             return None
@@ -36,12 +44,17 @@ def promote():
     if bundle is None:
         return False
     for ref in bundle['images'].values():
-        command('docker', 'buildx', 'imagetools', 'inspect', ref)
-    remote = command('gh', 'api', 'repos/' + os.environ['GITHUB_REPOSITORY'] + '/commits/' + branch, '--jq', '.sha')
-    if remote != source:
-        raise ValueError('newer code exists; stale run cannot publish')
-    command('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false',
-            '--tag', BUNDLE_REPO + ':bundle-latest', source_reference(source))
+        network('docker', 'buildx', 'imagetools', 'inspect', ref)
+    def move_channel():
+        # Повтор после сбоя сети проверяет ветку заново: пауза между попытками
+        # не должна стать окном для публикации устаревшего комплекта.
+        remote = command('gh', 'api', 'repos/' + os.environ['GITHUB_REPOSITORY'] + '/commits/' + branch, '--jq', '.sha')
+        if remote != source:
+            raise ValueError('newer code exists; stale run cannot publish')
+        command('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false',
+                '--tag', BUNDLE_REPO + ':bundle-latest', source_reference(source))
+
+    retrying(move_channel)
     print('Promoted admitted image set: release-' + str(bundle['run']) + '-' + str(bundle['attempt']),
           'channel: latest source:', source)
     return True

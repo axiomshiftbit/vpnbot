@@ -1,0 +1,62 @@
+# Сетевой сбой между runner и GitHub не должен обрывать прогон, уже прошедший
+# сборку или стенд: Загрузка артефакта повторяется после пауз 15, 45, 90 с.
+# Последняя попытка идёт без continue-on-error и решает исход шага.
+name: Загрузка артефакта с повторами
+description: Повторяет действие при сетевом сбое
+inputs:
+  name:
+    required: false
+    default: ''
+  pattern:
+    required: false
+    default: ''
+  merge-multiple:
+    required: false
+    default: 'false'
+  path:
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      id: attempt1
+      continue-on-error: true
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+        path: ${{ inputs.path }}
+    - if: steps.attempt1.outcome == 'failure'
+      shell: bash
+      run: sleep 15
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      id: attempt2
+      continue-on-error: true
+      if: steps.attempt1.outcome == 'failure'
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+        path: ${{ inputs.path }}
+    - if: steps.attempt2.outcome == 'failure'
+      shell: bash
+      run: sleep 45
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      id: attempt3
+      continue-on-error: true
+      if: steps.attempt2.outcome == 'failure'
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+        path: ${{ inputs.path }}
+    - if: steps.attempt3.outcome == 'failure'
+      shell: bash
+      run: sleep 90
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      if: steps.attempt3.outcome == 'failure'
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+        path: ${{ inputs.path }}

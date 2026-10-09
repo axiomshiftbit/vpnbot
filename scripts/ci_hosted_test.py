@@ -11,9 +11,16 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
+import ci_retry
+from ci_retry import retrying
 from image_bundle import BUNDLE_REPO, atomic, canonical, command, fingerprint, read
+
+
+def network(*args):
+    return retrying(command, *args)
 
 ROOT = Path('/opt/vpnbot-hosted-ci')
 GROUPS = {'unit', 'native', 'modules', 'backup_restore', 'update_rollback', 'faults', 'telegram_http'}
@@ -33,7 +40,7 @@ def client_downloads(destination):
     for url, digest, names in releases:
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / 'client.tar'
-            urllib.request.urlretrieve(url, archive)
+            retrying(urllib.request.urlretrieve, url, archive, errors=(OSError,))
             if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
                 raise ValueError('client archive checksum mismatch')
             with tarfile.open(archive) as tar:
@@ -90,10 +97,15 @@ def host(local):
 def rollback_reference(branch):
     channel = 'dev' if branch == 'dev' else 'latest'
     ref = BUNDLE_REPO + ':bundle-' + channel
-    probe = subprocess.run(['docker', 'manifest', 'inspect', ref], capture_output=True,
-                           text=True, timeout=90)
-    if probe.returncode == 0:
-        return ref
+    # Сбой сети повторяем; «манифеста нет» — окончательный ответ реестра.
+    for delay in (*ci_retry.DELAYS, None):
+        probe = subprocess.run(['docker', 'manifest', 'inspect', ref], capture_output=True,
+                               text=True, timeout=90)
+        if probe.returncode == 0:
+            return ref
+        if delay is None or re.search(r'\b(?:manifest unknown|no such manifest)\b', probe.stderr, re.I):
+            break
+        time.sleep(delay)
     # The first master publication has no stable bundle yet. Use a previously
     # admitted dev release, never the untested candidate. An authentication or
     # network error must not silently select a different rollback release.
@@ -106,11 +118,11 @@ def rollback_reference(branch):
 def assets(checkout, manifest):
     bundle = read(manifest)
     for image in bundle['images'].values():
-        command('docker', 'pull', image)
+        network('docker', 'pull', image)
     # The former complete release is a rollback input, never an admission report.
     # It may contain the retired protocol during the initial 18 -> 17 migration.
     ref = rollback_reference(os.environ.get('GITHUB_REF_NAME'))
-    command('docker', 'pull', ref)
+    network('docker', 'pull', ref)
     image = command('docker', 'image', 'inspect', '--format', '{{.Id}}', ref)
     container = command('docker', 'create', '--network', 'none', image, '/bundle.json')
     try:
@@ -125,7 +137,7 @@ def assets(checkout, manifest):
     atomic(manifest.with_name('rollback-bundle.json'), canonical(previous))
     previous = {name: previous['images'][name] for name in ('php', 'ng')}
     for image in previous.values():
-        command('docker', 'pull', image)
+        network('docker', 'pull', image)
     atomic(manifest.with_name('rollback-images.json'), canonical(previous))
     values = dict(line.split('=', 1) for line in (checkout / '.env').read_text().splitlines()
                   if line and not line.startswith('#') and '=' in line)

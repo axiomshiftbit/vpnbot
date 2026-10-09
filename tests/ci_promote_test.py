@@ -111,9 +111,60 @@ class PromoteTest(unittest.TestCase):
                 self.assertEqual(calls, [])
 
     def test_no_admitted_set_means_full_build(self):
-        result, calls = self.run_promote(found=None)
+        # Отсутствие ссылки и сбой сети неразличимы: перед полной сборкой
+        # загрузка комплекта повторяется.
+        with patch.object(promote.retrying.__globals__['time'], 'sleep') as sleep:
+            result, calls = self.run_promote(found=None)
         self.assertIs(result, False)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls, [('fetch', bundles.BUNDLE_REPO + ':bundle-source-' + SOURCE)] * 4)
+        self.assertEqual(sleep.call_count, 3)
+
+    def test_registry_hiccup_during_promotion_is_retried(self):
+        # Первый запрос к GitHub и первое присвоение тега обрываются.
+        failed = set()
+
+        def flaky(*args):
+            key = args[:4] if args[0] == 'docker' else args[:2]
+            if key in (('gh', 'api'), ('docker', 'buildx', 'imagetools', 'create')) and key not in failed:
+                failed.add(key)
+                raise RuntimeError('docker operation failed')
+            return SOURCE if args[:2] == ('gh', 'api') else ''
+
+        env = dict(GITHUB_REF_NAME='master', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_SHA=SOURCE, FULL_BUILD='',
+                   GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
+        with patch.dict(os.environ, env, clear=True), patch.object(promote, 'command', flaky), \
+                patch.object(promote, 'fetch_reference', lambda ref, destination: bundle()), patch('sys.stdout', io.StringIO()), \
+                patch.object(promote.retrying.__globals__['time'], 'sleep') as sleep:
+            self.assertIs(promote.promote(), True)
+        self.assertEqual((len(failed), sleep.call_count), (2, 2))
+
+    def test_branch_is_checked_again_before_every_attempt_to_move_the_channel(self):
+        # Тег не присвоился из-за сети, а за время паузы ветка ушла вперёд:
+        # повтор обязан заметить это и канал не трогать.
+        state = {'remote': SOURCE, 'creates': 0}
+
+        def command(*args):
+            if args[:2] == ('gh', 'api'):
+                return state['remote']
+            if args[:4] == ('docker', 'buildx', 'imagetools', 'create'):
+                state['creates'] += 1
+                state['remote'] = OTHER
+                raise RuntimeError('docker operation failed')
+            return ''
+
+        env = dict(GITHUB_REF_NAME='master', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_SHA=SOURCE, FULL_BUILD='',
+                   GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
+        with patch.dict(os.environ, env, clear=True), patch.object(promote, 'command', command), \
+                patch.object(promote, 'fetch_reference', lambda ref, destination: bundle()), patch('sys.stdout', io.StringIO()), \
+                patch.object(promote.retrying.__globals__['time'], 'sleep'), self.assertRaisesRegex(ValueError, 'newer code'):
+            promote.promote()
+        self.assertEqual(state['creates'], 1)
+
+    def test_moved_branch_is_reported_at_once_without_retries(self):
+        with patch.object(promote.retrying.__globals__['time'], 'sleep') as sleep:
+            result, calls = self.run_promote(remote=OTHER)
+        self.assertIsInstance(result, ValueError)
+        self.assertEqual((sleep.call_count, sum(c[:2] == ('gh', 'api') for c in calls)), (0, 1))
 
     def test_set_of_another_commit_is_an_error_not_a_fallback(self):
         result, calls = self.run_promote(found=bundle(source=OTHER))
@@ -151,6 +202,62 @@ class PublishTest(unittest.TestCase):
                     patch.object(sys, 'argv', ['ci_publish_bundle.py', str(manifest), str(evidence)]):
                 publish.main()
         return [c[6] for c in calls if c[:4] == ('docker', 'buildx', 'imagetools', 'create')]
+
+    def test_registry_hiccup_during_publication_is_retried(self):
+        # Каждая команда публикации один раз обрывается: итог тот же, что без сбоев.
+        clean = self.publish('dev')
+        seen = set()
+        calls = []
+
+        def flaky(*args):
+            if args not in seen:
+                seen.add(args)
+                raise RuntimeError('docker operation failed')
+            calls.append(args)
+            return SOURCE if args[:2] == ('gh', 'api') else ''
+
+        value = bundle()
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, evidence = Path(directory) / 'bundle.json', Path(directory) / 'native.json'
+            manifest.write_bytes(bundles.canonical(value))
+            evidence.write_text('{}')
+            env = dict(CHECKS='{}', EXPECTED_BUNDLE=bundles.fingerprint(value), GITHUB_SHA=SOURCE, GITHUB_REF_NAME='dev',
+                       GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
+            # Сборка конверта получает временный каталог: его путь у каждой попытки свой.
+            with patch.dict(os.environ, env, clear=True), patch.object(publish, 'command', flaky), \
+                    patch.object(publish, 'admit', lambda *a: None), patch('sys.stdout', io.StringIO()), \
+                    patch.object(sys, 'argv', ['ci_publish_bundle.py', str(manifest), str(evidence)]), \
+                    patch.object(publish.retrying.__globals__['time'], 'sleep') as sleep:
+                publish.main()
+        self.assertEqual([c[6] for c in calls if c[:4] == ('docker', 'buildx', 'imagetools', 'create')], clean)
+        self.assertGreaterEqual(sleep.call_count, len(clean))
+
+    def test_publication_checks_the_branch_again_before_every_attempt(self):
+        state = {'remote': SOURCE, 'moves': 0}
+        value = bundle()
+
+        def command(*args):
+            if args[:2] == ('gh', 'api'):
+                return state['remote']
+            if args[:4] == ('docker', 'buildx', 'imagetools', 'create') and args[6] == bundles.BUNDLE_REPO + ':bundle-dev':
+                state['moves'] += 1
+                state['remote'] = OTHER
+                raise RuntimeError('docker operation failed')
+            return ''
+
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, evidence = Path(directory) / 'bundle.json', Path(directory) / 'native.json'
+            manifest.write_bytes(bundles.canonical(value))
+            evidence.write_text('{}')
+            env = dict(CHECKS='{}', EXPECTED_BUNDLE=bundles.fingerprint(value), GITHUB_SHA=SOURCE, GITHUB_REF_NAME='dev',
+                       GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
+            with patch.dict(os.environ, env, clear=True), patch.object(publish, 'command', command), \
+                    patch.object(publish, 'admit', lambda *a: None), patch('sys.stdout', io.StringIO()), \
+                    patch.object(sys, 'argv', ['ci_publish_bundle.py', str(manifest), str(evidence)]), \
+                    patch.object(publish.retrying.__globals__['time'], 'sleep'), \
+                    self.assertRaisesRegex(ValueError, 'branch moved'):
+                publish.main()
+        self.assertEqual(state['moves'], 1)
 
     def test_only_a_dev_publication_leaves_the_commit_reference(self):
         reference = bundles.BUNDLE_REPO + ':bundle-source-' + SOURCE

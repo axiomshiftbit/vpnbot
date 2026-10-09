@@ -129,8 +129,18 @@ class HostedCITests(unittest.TestCase):
                 self.assertEqual(ci.rollback_reference('master'), dev)
                 with self.assertRaises(RuntimeError): ci.rollback_reference('dev')
         for error in ('unauthorized', 'denied', 'connection timeout', 'unknown registry failure'):
-            with patch.object(ci.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', error)):
+            with patch.object(ci.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', error)) as run, \
+                    patch.object(ci.time, 'sleep') as sleep:
                 with self.assertRaises(RuntimeError): ci.rollback_reference('master')
+            # Сбой сети повторяется, но другой комплект для отката не выбирается.
+            self.assertEqual((run.call_count, sleep.call_count), (4, 3))
+        with patch.object(ci.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'manifest unknown')) as run, \
+                patch.object(ci.time, 'sleep') as sleep:
+            self.assertEqual(ci.rollback_reference('master'), dev)
+        self.assertEqual((run.call_count, sleep.call_count), (1, 0))
+        with patch.object(ci.subprocess, 'run', side_effect=[subprocess.CompletedProcess([], 1, '', 'connection timeout'),
+                                                           subprocess.CompletedProcess([], 0, '{}', '')]), patch.object(ci.time, 'sleep'):
+            self.assertEqual(ci.rollback_reference('master'), stable)
 
     def test_partial_false_or_extra_results_cannot_admit_images(self):
         bundle = dict(schema=1, source='a' * 40, run=1, attempt=1, state_epoch=1,
