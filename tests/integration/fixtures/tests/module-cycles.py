@@ -32,8 +32,11 @@ def ready(service):
         s=json.loads(f.read_text())
         desired=json.loads((B/'config/protocols'/service/'desired.json').read_text())
         return s.get('running') and not s.get('error') and s.get('revision')==desired.get('revision') and time.time()-s.get('time',0)<30
-    pattern={'oc':'ocserv','ovpn':'openvpn','tt':'trusttunnel_end','hy':'hysteria','ss':'ssserver','dnstt':'dnstt-server','telemt':'telemt','ipsec':'charon'}[service]
-    # /proc comm truncates the TrustTunnel binary name; all other names are exact.
+    # Имя TrustTunnel длиннее 15 символов, и точное совпадение зависит от
+    # реализации pgrep: procps сравнивает с обрезанным именем, busybox (Alpine) —
+    # с полным. Ищем так же, как бот: по командной строке.
+    if service=='tt':return run('docker','exec',i,'pgrep','-f','[t]rusttunnel_endpoint').returncode==0
+    pattern={'oc':'ocserv','ovpn':'openvpn','hy':'hysteria','ss':'ssserver','dnstt':'dnstt-server','telemt':'telemt','ipsec':'charon'}[service]
     return run('docker','exec',i,'pgrep','-x',pattern).returncode==0
 def wait(predicate,seconds=70):
     end=time.monotonic()+seconds
