@@ -16,7 +16,7 @@ $VPNBOT_PRIVATE_MARKERS (по одной строке) и ищется во вс
 неизвестный ключ по тому же пути блокирует.
 
   ci_scan_layers.py ghcr.io/…@sha256:… [ещё образы]
-  ci_scan_layers.py --tree КАТАЛОГ      файлы репозитория (git ls-files)
+  ci_scan_layers.py --tree КАТАЛОГ      файлы репозитория
 """
 import base64
 import hashlib
@@ -190,14 +190,22 @@ def scan_config(config, allowed, private=None):
     return found + scan_bytes('', (history + '\n' + json.dumps(settings)).encode(), 'image config or build history', allowed, private)
 
 
+def tracked(root):
+    """Файлы под управлением git; в распакованном архиве без .git — все файлы."""
+    root = Path(root)
+    if (root / '.git').exists():
+        listing = subprocess.run(['git', '-c', 'safe.directory=*', '-C', str(root), 'ls-files', '-z'], check=True, capture_output=True)
+        return sorted(filter(None, listing.stdout.decode().split('\0')))
+    return sorted(str(path.relative_to(root)) for path in root.rglob('*') if path.is_file() and '__pycache__' not in path.parts)
+
+
 def scan_tree(root, allowed, private=None, addresses=None):
     """Файлы репозитория под управлением git: из них собираются образы.
 
     addresses — общеизвестные публичные адреса; без списка адреса не проверяются.
     """
-    names = subprocess.run(['git', '-c', 'safe.directory=*', '-C', str(root), 'ls-files', '-z'], check=True, capture_output=True).stdout.decode().split('\0')
     found = []
-    for name in filter(None, names):
+    for name in tracked(root):
         path = Path(root) / name
         if not path.is_file() or path.is_symlink():
             continue

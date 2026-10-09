@@ -361,6 +361,15 @@ class RepositoryTest(unittest.TestCase):
         self.assertEqual(sorted(row[:2] for row in found), [('SSH identity', 'id_ed25519'), ('Telegram bot token', 'notes.md'),
                                                            ('private key', 'id_ed25519'), ('public IP address ' + SERVER, 'notes.md')])
 
+    def test_unpacked_archive_without_git_is_scanned_as_a_whole(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'sub').mkdir()
+            (Path(directory) / 'sub/notes.md').write_bytes(SAMPLES['GitHub token'])
+            (Path(directory) / '__pycache__').mkdir()
+            (Path(directory) / '__pycache__/x.pyc').write_bytes(SAMPLES['GitHub token'])
+            self.assertEqual(layers.tracked(directory), ['sub/notes.md'])
+            self.assertEqual([row[:2] for row in layers.scan_tree(directory, set())], [('GitHub token', 'sub/notes.md')])
+
     def test_public_addresses_are_recognised(self):
         text = f'8.8.8.8 10.0.0.1 172.16.5.4 192.168.0.1 127.0.0.1 169.254.1.1 100.64.0.1 999.1.1.1 v1.2.3.4-rc {SERVER}:443 [{OTHER_SERVER}]'.encode()
         self.assertEqual(layers.public_addresses(text), {'8.8.8.8', SERVER, OTHER_SERVER})
@@ -382,10 +391,11 @@ class DockerfileTest(unittest.TestCase):
         for rule in rules[1:]:
             with self.subTest(rule):
                 self.assertRegex(rule, r'^(!(scripts|dockerfile)/|\*\*/)')
-        tracked = subprocess.run(['git', '-c', 'safe.directory=*', '-C', str(ROOT), 'ls-files', 'dockerfile'], check=True, capture_output=True, text=True).stdout.split()
+        # Сервисы с context: dockerfile отправляют сборщику весь каталог. В
+        # распакованном архиве без .git посторонних файлов быть не может.
+        tracked = [name for name in layers.tracked(ROOT) if name.startswith('dockerfile/')]
         present = sorted(str(p.relative_to(ROOT)) for p in (ROOT / 'dockerfile').rglob('*') if p.is_file() and '__pycache__' not in p.parts)
-        # Сервисы с context: dockerfile отправляют сборщику весь каталог.
-        self.assertEqual(sorted(tracked), present, 'в каталоге dockerfile лежит файл вне репозитория')
+        self.assertEqual(tracked, present, 'в каталоге dockerfile лежит файл вне репозитория')
 
     def test_nothing_sensitive_is_copied_into_an_image(self):
         forbidden = re.compile(r'(^|[\s/])(\.env|override\.env|config(/|\s)|ssh(/|\s)|certs?(/|\s)|logs(/|\s)|\.git|id_[a-z0-9]+|\S+\.(pem|key|p12|ovpn))(\s|$)')
