@@ -18,7 +18,7 @@ while read -r module fixed; do
 done <<'PINS'
 google.golang.org/grpc v1.83.2
 golang.org/x/crypto v0.56.0
-golang.org/x/net v0.56.0
+golang.org/x/net v0.60.0
 golang.org/x/text v0.39.0
 golang.org/x/mod v0.40.0
 github.com/go-jose/go-jose/v3 v3.0.5

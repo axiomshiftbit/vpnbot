@@ -14,8 +14,8 @@ COPY mieru-policy/ /policy/
 COPY go-retry.sh /build-tools/go-retry.sh
 RUN patch -p1 --fuzz=0 < /policy/hooks.patch \
     && cp /policy/*.go pkg/socks5/
-RUN sh /build-tools/go-retry.sh go get google.golang.org/grpc@v1.83.2 golang.org/x/crypto@v0.56.0 \
-      golang.org/x/net@v0.58.0 golang.org/x/text@v0.41.0
+RUN sh /build-tools/go-retry.sh go get google.golang.org/grpc@v1.83.2 golang.org/x/crypto@v0.57.0 \
+      golang.org/x/net@v0.60.0 golang.org/x/text@v0.42.0
 RUN sh /build-tools/go-retry.sh go test -vet=off ./pkg/socks5 -run TestVPNBot -count=1
 RUN CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /mita ./cmd/mita \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /mieru-control ./cmd/vpnbot-control

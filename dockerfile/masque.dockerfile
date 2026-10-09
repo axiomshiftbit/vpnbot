@@ -9,7 +9,9 @@ RUN curl -fL --retry 3 "https://codeload.github.com/XTLS/Xray-core/tar.gz/refs/t
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY masque-isolation.patch /masque-isolation.patch
 COPY go-retry.sh /build-tools/go-retry.sh
+# CVE-2026-78669: ядро этой версии закрепляет golang.org/x/net v0.58.0.
 RUN patch -p1 --fuzz=0 < /masque-isolation.patch \
+    && sh /build-tools/go-retry.sh go get golang.org/x/net@v0.60.0 \
     && sh /build-tools/go-retry.sh go test ./proxy/masque ./transport/internet/finalmask/noise \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -buildvcs=false \
        -ldflags '-s -w -X github.com/xtls/xray-core/core.build=vpnbot-masque.1' -o /xray ./main

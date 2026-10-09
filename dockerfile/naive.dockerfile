@@ -30,8 +30,10 @@ RUN set -eux; \
     fi; \
     echo "forwardproxy ${FORWARDPROXY_VERSION} -> ${FORWARDPROXY_REF}"; \
     go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}; \
+    # CVE-2026-78669: Caddy этой версии тянет golang.org/x/net v0.58.0.
     /go/bin/xcaddy build ${CADDY_VERSION} \
-        --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@${FORWARDPROXY_REF}; \
+        --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@${FORWARDPROXY_REF} \
+        --replace golang.org/x/net=golang.org/x/net@v0.60.0; \
     # sanity: собрался ровно запрошенный caddy и именно с форком klzgrad —
     # иначе расхождение всплыло бы только в рантайме (ср. `wg --version` в
     # wireguard.dockerfile)
