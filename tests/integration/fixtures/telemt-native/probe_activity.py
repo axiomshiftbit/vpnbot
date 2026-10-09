@@ -56,7 +56,8 @@ try:
  a=track()
  check('online_connections_and_addresses',a['conns']==2 and sorted(a['online'])==['127.0.0.2','127.0.0.3'],user=a)
  check('traffic_counts_both_directions',a['bytes']==10200,bytes=a['bytes'])
- check('journal_has_first_sighting',sorted(a['ips'])==['127.0.0.2','127.0.0.3'] and all(r['count']==1 and r['first']==r['last'] for r in a['ips'].values()),ips=a['ips'])
+ # Адрес мог попасть в журнал секундой раньше — при нажатии «обновить» выше.
+ check('journal_has_first_sighting',sorted(a['ips'])==['127.0.0.2','127.0.0.3'] and all(r['count']==1 and 0<=r['last']-r['first']<=30 for r in a['ips'].values()),ips=a['ips'])
  b=track('bob');check('users_are_separate',b['conns']==1 and b['online']==['127.0.0.4'] and b['bytes']==600 and list(b['ips'])==['127.0.0.4'],user=b)
  a=track();check('repeated_poll_does_not_double_count',a['bytes']==10200 and all(r['count']==1 for r in a['ips'].values()),user=a)
  screen=call('card')['screen']['text'];check('card_reports_online','онлайн' in screen and '<code>127.0.0.2</code>' in screen and '<code>127.0.0.3</code>' in screen and 'подключения: 2' in screen,screen=screen[:400])
