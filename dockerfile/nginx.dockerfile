@@ -14,9 +14,12 @@ ARG NGINX_VERSION=1.30.5
 
 FROM $image AS build
 ARG NGINX_VERSION
+COPY sources.sha256 /sources.sha256
 RUN set -eux; \
     apk add --no-cache build-base linux-headers openssl-dev pcre2-dev zlib-dev; \
     wget -O nginx.tar.gz "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"; \
+    # Без строки для этой версии sha256sum не получает ни одной суммы и отказывает.
+    awk -v key="nginx/${NGINX_VERSION}" '$2 == key {print $1 "  nginx.tar.gz"}' /sources.sha256 | sha256sum -c -; \
     tar -xzf nginx.tar.gz; \
     cd "nginx-${NGINX_VERSION}"; \
     # Флаги — копия конфигурации пакета alpine (main/nginx/APKBUILD), из неё

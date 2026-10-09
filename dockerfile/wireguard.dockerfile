@@ -10,16 +10,16 @@ COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 dockerfile/build-xray.sh /b
 RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/warp-socks
 RUN sh /build-tools/go-source.sh ViRb3/wgcf "$WGCF_VERSION" /wgcf \
     && cd /wgcf && sh /build-tools/go-security.sh \
-    && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /out/wgcf .
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /out/wgcf .
 RUN sh /build-tools/go-source.sh xjasonlyu/tun2socks "$TUN2SOCKS_VERSION" /tun2socks \
     && cd /tun2socks && sh /build-tools/go-security.sh \
-    && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/xjasonlyu/tun2socks/v2/internal/version.Version=$TUN2SOCKS_VERSION" -o /out/tun2socks .
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags "-s -w -X github.com/xjasonlyu/tun2socks/v2/internal/version.Version=$TUN2SOCKS_VERSION" -o /out/tun2socks .
 
 # Go стабильной Alpine может отставать от требований исправленных модулей.
 # Компилятор закреплён отдельно и не попадает в рабочий образ.
 RUN sh /build-tools/go-source.sh amnezia-vpn/amneziawg-go "$AWG_GO_VERSION" /amneziawg-go \
     && cd /amneziawg-go && sh /build-tools/go-security.sh \
-    && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /out/amneziawg-go .
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /out/amneziawg-go .
 
 FROM $image
 COPY --from=helpers /out/ /usr/bin/
@@ -66,6 +66,7 @@ ARG TUN2SOCKS_VERSION=v2.7.0
 #   docker compose build --build-arg APK_REFRESH=$(date +%F) wg
 # Дефолт статичный — обычный build переиспользует кеш.
 ARG APK_REFRESH=2026-10-05
+COPY dockerfile/sources.sha256 /sources.sha256
 
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
@@ -86,6 +87,8 @@ RUN set -eux; \
         git \
         linux-headers; \
     git clone --depth 1 --branch ${AWG_TOOLS_VERSION} https://github.com/amnezia-vpn/amneziawg-tools.git; \
+    # Тег можно переписать: коммит обязан совпасть с закреплённым для этой версии.
+    test "$(git -C /amneziawg-tools rev-parse HEAD)" = "$(awk -v key="amneziawg-tools/${AWG_TOOLS_VERSION}" '$2 == key {print $1}' /sources.sha256)"; \
     cd /amneziawg-tools/src; \
     make install WITH_WGQUICK=yes; \
     cd /; \

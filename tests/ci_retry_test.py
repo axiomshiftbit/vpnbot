@@ -64,6 +64,64 @@ class ShellRetryTest(unittest.TestCase):
             self.assertEqual((result.returncode, attempts), (0, 3))
 
 
+class GoRetryTest(unittest.TestCase):
+    """dockerfile/go-retry.sh: повтор только при сбое загрузки модулей."""
+    NETWORK = 'go: github.com/x/y@v1.0.0: Get "https://proxy.golang.org/github.com/x/y/@v/v1.0.0.mod": net/http: TLS handshake timeout'
+
+    def run_go(self, failures, message, extra=''):
+        with tempfile.TemporaryDirectory() as directory:
+            counter = Path(directory) / 'count'
+            counter.write_text('0')
+            fake = Path(directory) / 'go'
+            fake.write_text('#!/bin/sh\nn=$(cat "%s"); n=$((n + 1)); echo "$n" > "%s"\n'
+                            'echo "stdout-line"\n[ "$n" -gt %d ] && exit 0\necho \'%s\' >&2\n%s\nexit 1\n'
+                            % (counter, counter, failures, message.replace("'", "'\\''"), extra))
+            fake.chmod(0o755)
+            result = subprocess.run(['sh', str(ROOT / 'dockerfile/go-retry.sh'), str(fake), 'build', './...'],
+                                    env=os.environ | {'GO_RETRY_DELAYS': '0.05 0.05 0.05'}, capture_output=True, text=True)
+            return result, int(counter.read_text())
+
+    def test_success_passes_output_through_once(self):
+        result, attempts = self.run_go(0, self.NETWORK)
+        self.assertEqual((result.returncode, attempts, result.stdout), (0, 1, 'stdout-line\n'))
+
+    def test_module_download_failure_is_retried(self):
+        for message in (self.NETWORK, 'go: verifying module: Get "https://sum.golang.org/lookup/x": dial tcp: i/o timeout',
+                        'go: module lookup: unexpected EOF', 'go: downloading: read: connection reset by peer'):
+            with self.subTest(message=message[:40]):
+                result, attempts = self.run_go(2, message)
+                self.assertEqual((result.returncode, attempts), (0, 3))
+                self.assertEqual(result.stderr.count('go-retry:'), 2)
+
+    def test_persistent_network_failure_gives_up_after_four_attempts(self):
+        result, attempts = self.run_go(99, self.NETWORK)
+        self.assertEqual((result.returncode, attempts), (1, 4))
+        self.assertIn('TLS handshake timeout', result.stderr)
+
+    def test_compile_and_test_failures_are_not_retried(self):
+        for message in ('./main.go:10:2: undefined: missing', '--- FAIL: TestDial (0.00s)\n    dial_test.go:9: dial tcp 127.0.0.1:1: i/o timeout',
+                        'FAIL\tgithub.com/x/y\t0.012s', 'panic: runtime error', 'go: errors parsing go.mod'):
+            with self.subTest(message=message[:30]):
+                result, attempts = self.run_go(99, message)
+                self.assertEqual((result.returncode, attempts), (1, 1))
+                self.assertNotIn('go-retry:', result.stderr)
+
+    def test_every_go_command_in_image_builds_goes_through_the_wrapper(self):
+        bare = re.compile(r'(?<![\w/.-])go (?:build|test|get|list|mod) ')
+        files = sorted((ROOT / 'dockerfile').glob('*.dockerfile')) + [ROOT / 'dockerfile/build-xray.sh', ROOT / 'dockerfile/go-security.sh']
+        wrapped = 0
+        for path in files:
+            for line in path.read_text().splitlines():
+                if line.lstrip().startswith('#'):
+                    continue
+                wrapped += line.count('go-retry.sh')
+                with self.subTest(path.name, line=line.strip()[:60]):
+                    self.assertIsNone(bare.search(re.sub(r'go-retry\.sh"? go \w+ ', '', line)))
+        self.assertGreaterEqual(wrapped, 25)
+        for name in ('protocol', 'mieru', 'masque', 'dnstt'):
+            self.assertIn('go-retry.sh', re.findall(r'^COPY .*$', (ROOT / 'dockerfile' / (name + '.dockerfile')).read_text(), re.M).__str__(), name)
+
+
 class PythonRetryTest(unittest.TestCase):
     def test_retries_then_returns_the_value(self):
         calls = []

@@ -15,8 +15,11 @@ on:
         description: 'master: собрать и проверить заново, даже если комплект этого коммита уже допущен в dev'
         type: boolean
         default: false
+  # Раз в две недели на серверах GitHub: пересборка со свежими пакетами и
+  # проверка уязвимостей. На домашней VM тот же прогон запускает её собственный
+  # таймер (scripts/ci_home_schedule.py): он навёрстывает пропуск после включения.
   schedule:
-    - cron: '0 4 * * 1'
+    - cron: '0 4 1,15 * *'
 permissions:
   contents: read
 concurrency:
@@ -330,6 +333,13 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      # Trivy не видит программы, собранные из исходников на C, готовые
+      # бинарники на Rust и объявления безопасности самих приложений.
+      - name: Известные уязвимости и свежесть закреплённых версий
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: python3 scripts/ci_check_components.py
       - uses: ./.github/actions/download-artifact
         with:
           pattern: descriptor-*

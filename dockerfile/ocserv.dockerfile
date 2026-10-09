@@ -19,6 +19,7 @@ ARG APK_REFRESH=2026-10-05
 # segfault в ocserv-main. Патч повторяет исправление из master апстрима;
 # --fuzz=0 уронит сборку, когда оно войдёт в релиз, — тогда патч удалить.
 COPY dockerfile/ocserv-exit-after-free.patch /ocserv-exit-after-free.patch
+COPY dockerfile/sources.sha256 /sources.sha256
 
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
@@ -50,15 +51,17 @@ RUN set -eux; \
         patch \
         protobuf-c-compiler \
         gperf; \
-    curl -fsSL "https://gitlab.com/openconnect/ocserv/-/archive/${OCSERV_VERSION}/ocserv-${OCSERV_VERSION}.tar.gz" \
-        | tar xz -C /tmp; \
+    curl -fsSL "https://gitlab.com/openconnect/ocserv/-/archive/${OCSERV_VERSION}/ocserv-${OCSERV_VERSION}.tar.gz" -o /tmp/ocserv.tar.gz; \
+    awk -v key="ocserv/${OCSERV_VERSION}" '$2 == key {print $1 "  /tmp/ocserv.tar.gz"}' /sources.sha256 | sha256sum -c -; \
+    tar xzf /tmp/ocserv.tar.gz -C /tmp; \
+    rm /tmp/ocserv.tar.gz; \
     cd /tmp/ocserv-${OCSERV_VERSION}; \
     patch -p1 --fuzz=0 < /ocserv-exit-after-free.patch; \
     meson setup build -Dbuildtype=release -Dstrip=true -Dfirewall-script=iptables; \
     ninja -C build; \
     meson install -C build; \
     cd /; \
-    rm -rf /tmp/ocserv-* /ocserv-exit-after-free.patch; \
+    rm -rf /tmp/ocserv-* /ocserv-exit-after-free.patch /sources.sha256; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
     # sanity: все нужные боту бинарники на месте, и ocserv запускается

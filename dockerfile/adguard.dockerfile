@@ -17,7 +17,7 @@ ARG ADGUARD_VERSION
 COPY --from=frontend /source/build /source/build
 WORKDIR /source
 RUN sh /build-tools/go-security.sh \
-    && CGO_ENABLED=0 go build -trimpath \
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath \
        -ldflags "-s -w -X github.com/AdguardTeam/AdGuardHome/internal/version.version=$ADGUARD_VERSION -X github.com/AdguardTeam/AdGuardHome/internal/version.channel=release" -o /AdGuardHome .
 
 FROM adguard/adguardhome:${ADGUARD_VERSION}

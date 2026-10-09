@@ -11,13 +11,14 @@ RUN curl -fL --retry 3 "https://codeload.github.com/enfein/mieru/tar.gz/refs/tag
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY mieru-control/main.go ./cmd/vpnbot-control/main.go
 COPY mieru-policy/ /policy/
+COPY go-retry.sh /build-tools/go-retry.sh
 RUN patch -p1 --fuzz=0 < /policy/hooks.patch \
     && cp /policy/*.go pkg/socks5/
-RUN go get google.golang.org/grpc@v1.83.2 golang.org/x/crypto@v0.56.0 \
+RUN sh /build-tools/go-retry.sh go get google.golang.org/grpc@v1.83.2 golang.org/x/crypto@v0.56.0 \
       golang.org/x/net@v0.58.0 golang.org/x/text@v0.41.0
-RUN go test -vet=off ./pkg/socks5 -run TestVPNBot -count=1
-RUN CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /mita ./cmd/mita \
-    && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /mieru-control ./cmd/vpnbot-control
+RUN sh /build-tools/go-retry.sh go test -vet=off ./pkg/socks5 -run TestVPNBot -count=1
+RUN CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /mita ./cmd/mita \
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /mieru-control ./cmd/vpnbot-control
 
 FROM alpine:3.24
 ARG MIERU_VERSION

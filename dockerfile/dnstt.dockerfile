@@ -12,7 +12,7 @@ ARG DNSTT_REF=0c5c52a57d899c05428c116898941761a2ed83c2
 # renovate (pinDigests в renovate.json).
 ARG PROTOCOL_GO_VERSION=1.27.2
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS go
-COPY dockerfile/go-security.sh /build-tools/go-security.sh
+COPY dockerfile/go-security.sh dockerfile/go-retry.sh /build-tools/
 ARG DNSTT_REF
 # Приём trusttunnel (git init + fetch --depth 1 <sha>) здесь НЕ работает:
 # bamsoftware отдаёт репозиторий по dumb http, а тот не умеет shallow —
@@ -24,7 +24,7 @@ RUN apk add --no-cache git \
     && git checkout -q "${DNSTT_REF}" \
     && sh /build-tools/go-security.sh \
     && cd /go/dnstt/dnstt-server \
-    && go build -ldflags="-s -w" -trimpath \
+    && sh /build-tools/go-retry.sh go build -ldflags="-s -w" -trimpath \
     && rm -rf /go/dnstt/.git \
     && apk del git
 FROM $image

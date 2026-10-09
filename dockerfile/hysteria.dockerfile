@@ -7,7 +7,7 @@ RUN apk add --no-cache ca-certificates curl git
 COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh apernet/hysteria "app/$HYSTERIA_VERSION" /source \
     && cd /source/app && sh /build-tools/go-security.sh \
-    && CGO_ENABLED=0 go build -trimpath \
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath \
        -ldflags "-s -w -X github.com/apernet/hysteria/app/v2/cmd.appVersion=$HYSTERIA_VERSION -X github.com/apernet/hysteria/app/v2/cmd.appType=release" -o /hysteria .
 
 FROM tobyxdd/hysteria:${HYSTERIA_VERSION}

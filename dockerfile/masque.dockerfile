@@ -8,9 +8,10 @@ RUN curl -fL --retry 3 "https://codeload.github.com/XTLS/Xray-core/tar.gz/refs/t
     && echo "${MASQUE_SOURCE_SHA256}  source.tar.gz" | sha256sum -c - \
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY masque-isolation.patch /masque-isolation.patch
+COPY go-retry.sh /build-tools/go-retry.sh
 RUN patch -p1 --fuzz=0 < /masque-isolation.patch \
-    && go test ./proxy/masque ./transport/internet/finalmask/noise \
-    && CGO_ENABLED=0 go build -trimpath -buildvcs=false \
+    && sh /build-tools/go-retry.sh go test ./proxy/masque ./transport/internet/finalmask/noise \
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -buildvcs=false \
        -ldflags '-s -w -X github.com/xtls/xray-core/core.build=vpnbot-masque.1' -o /xray ./main
 
 FROM alpine:3.24

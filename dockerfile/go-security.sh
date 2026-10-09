@@ -3,8 +3,9 @@
 # понижения более новых версий upstream. Итоговый бинарник проверяет Trivy.
 set -eu
 export GOWORK=off
+tools=$(dirname "$0")
 while read -r module fixed; do
-    modules=$(go list -m -mod=mod -f '{{.Path}} {{.Version}}' all)
+    modules=$(sh "$tools/go-retry.sh" go list -m -mod=mod -f '{{.Path}} {{.Version}}' all)
     current=$(printf '%s\n' "$modules" | awk -v name="$module" '$1 == name {print $2}')
     [ -n "$current" ] || continue
     oldest=$(printf '%s\n%s\n' "$current" "$fixed" | sort -V | head -1)
@@ -12,7 +13,7 @@ while read -r module fixed; do
         # go get может поднять зависимые модули выше наших минимальных пинов.
         # Перечитываем граф перед следующим шагом, чтобы не понизить их и не
         # задать одновременно несовместимые точные версии.
-        go get "$module@$fixed"
+        sh "$tools/go-retry.sh" go get "$module@$fixed"
     fi
 done <<'PINS'
 google.golang.org/grpc v1.83.2

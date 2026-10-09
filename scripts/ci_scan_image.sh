@@ -21,21 +21,6 @@ assert d['Version']==2, 'unknown vulnerability DB schema'
 PY
 # Находки не меняют код возврата Trivy (их разбирает проверка ниже), поэтому
 # повтор касается только сбоя загрузки образа из реестра.
-sh "$retry" "$work/trivy" image --skip-db-update --no-progress --scanners vuln \
+sh "$retry" "$work/trivy" image --skip-db-update --no-progress --scanners vuln,secret \
     --pkg-types os,library --format json --output "$work/result.json" "$image"
-python3 - "$work/result.json" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1]))
-os=d.get('Metadata',{}).get('OS',{})
-assert os.get('Family') in ('alpine','debian') and not os.get('EOSL',False), 'unsupported/EOL operating system'
-results=d.get('Results',[])
-assert any(x.get('Class')=='os-pkgs' for x in results), 'OS package scan missing'
-blocked=[]
-for result in results:
-    for v in result.get('Vulnerabilities',[]):
-        if v.get('Severity') in ('HIGH','CRITICAL') and v.get('FixedVersion'):
-            blocked.append((v['VulnerabilityID'],v.get('PkgName'),v.get('InstalledVersion'),v['FixedVersion']))
-for row in sorted(set(blocked)):print('BLOCK',*row)
-print('Security gate:',len(blocked),'fixable high/critical findings')
-sys.exit(bool(blocked))
-PY
+python3 "$(dirname "$0")/ci_scan_gate.py" "$work/result.json"

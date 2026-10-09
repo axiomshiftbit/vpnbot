@@ -21,9 +21,9 @@ if [ -n "$tests" ]; then
         [ ! -d "${pattern%/...}" ] || present="$present $pattern"
     done
     # shellcheck disable=SC2086
-    [ -z "$present" ] || CGO_ENABLED=0 go test ${tags:+-tags "$tags"} -count=1 -timeout 15m -skip Geodata $present
+    [ -z "$present" ] || CGO_ENABLED=0 sh /build-tools/go-retry.sh go test ${tags:+-tags "$tags"} -count=1 -timeout 15m -skip Geodata $present
 fi
-CGO_ENABLED=0 go build ${tags:+-tags "$tags"} -trimpath -buildvcs=false \
+CGO_ENABLED=0 sh /build-tools/go-retry.sh go build ${tags:+-tags "$tags"} -trimpath -buildvcs=false \
     -ldflags '-s -w -X github.com/xtls/xray-core/core.build=vpnbot-security.1' -o "$output" ./main
 "$output" version
 # Тег сборки меняет поведение ядра, а без него сборка тоже проходит: сверяем

@@ -10,14 +10,14 @@ RUN apk add --no-cache ca-certificates curl git
 COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh ameshkov/dnslookup "$DNSLOOKUP_VERSION" /dnslookup \
     && cd /dnslookup && sh /build-tools/go-security.sh \
-    && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.VersionString=${DNSLOOKUP_VERSION#v}" -o /out/dnslookup .
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags "-s -w -X main.VersionString=${DNSLOOKUP_VERSION#v}" -o /out/dnslookup .
 RUN sh /build-tools/go-source.sh SagerNet/sing-box "$SINGBOX_VERSION" /singbox "$SINGBOX_SOURCE_SHA256" \
     && cd /singbox && sh /build-tools/go-security.sh \
-    && CGO_ENABLED=0 go build -trimpath -tags with_quic,with_utls,with_v2ray_api \
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -tags with_quic,with_utls,with_v2ray_api \
        -ldflags "-s -w -X github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION#v}" -o /out/sing-box ./cmd/sing-box
 RUN sh /build-tools/go-source.sh MetaCubeX/mihomo "$MIHOMO_VERSION" /mihomo "$MIHOMO_SOURCE_SHA256" \
     && cd /mihomo && sh /build-tools/go-security.sh \
-    && CGO_ENABLED=0 go build -trimpath -tags with_gvisor \
+    && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -tags with_gvisor \
        -ldflags "-s -w -X github.com/metacubex/mihomo/constant.Version=$MIHOMO_VERSION" -o /out/mihomo .
 
 FROM $image
