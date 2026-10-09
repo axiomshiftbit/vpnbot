@@ -67,8 +67,13 @@ try {
                 $check(in_array($back, $b->callbacks(), true) && in_array("/menuhelp $topic 0", $b->callbacks(), true), "$language/$topic/$page: есть возврат и оглавление");
                 foreach ($b->callbacks() as $callback) $check(strlen($callback) <= 64, "$language/$topic/$page: callback в пределах лимита");
             }
-            // Страницы на двух языках разные и не пустые копии друг друга.
-            $check(array_keys($content) !== array_keys((new HyHelpBot($i, $language === 'ru' ? 'en' : 'ru', $root))->menuHelpContent($topic)[2]), "$language/$topic: заголовки переведены");
+            // Справка только на русском при любом языке интерфейса.
+            $check($content === (new HyHelpBot($i, 'ru', $root))->menuHelpContent($topic)[2], "$language/$topic: текст тот же, что на русском");
+            $check(!array_filter(array_keys($content), static fn($name) => !preg_match('~[А-Яа-яЁё]~u', $name)), "$language/$topic: заголовки страниц на русском");
+            foreach ($content as $name => $page) {
+                $plain = preg_replace('~<code>.*?</code>|<[^>]+>~su', '', $page);
+                $check(preg_match_all('~[А-Яа-яЁё]~u', $plain) > 4 * preg_match_all('~[A-Za-z]~', $plain), "$language/$topic/«{$name}»: страница написана по-русски");
+            }
         }
         $check($b->writes === 0 && $b->restarts === 0 && $b->ssh === 0, "$language: просмотр справки ничего не меняет и не обращается к ядру");
         $check($b->menuHelpContent('hy_tune', 'main')[1] === '/hyTune' && $b->menuHelpContent('hy', 'x')[1] === '/menu hy', "$language: контекст не подменяет маршрут возврата");
