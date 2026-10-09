@@ -48,6 +48,10 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl iproute2 openssh-server \
     && rm -rf /var/lib/apt/lists/* \
+    # Пакет openssh-server в Debian создаёт ключи узла при установке: они
+    # оказались бы в публичном образе, одинаковые у всех установок. Свои ключи
+    # каждый контейнер создаёт при старте (ssh-keygen -A в start_tt.sh).
+    && rm -f /etc/ssh/ssh_host_* \
     && mkdir -p /root/.ssh /run/sshd /trusttunnel_endpoint
 COPY --from=build /src/target/release/trusttunnel_endpoint /usr/local/bin/
 COPY --from=build /src/target/release/setup_wizard         /usr/local/bin/

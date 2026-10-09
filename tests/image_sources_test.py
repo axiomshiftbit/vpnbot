@@ -70,6 +70,21 @@ class ImageSourcesTest(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(defaults, {env[key]})
 
+    def test_no_ssh_host_keys_are_baked_into_an_image(self):
+        # В Debian и Ubuntu установка openssh-server сразу создаёт ключи узла;
+        # в Alpine — нет. Ключ в слое публичного образа известен всем.
+        for path in DOCKERFILES:
+            text = path.read_text()
+            debian = re.search(r'^FROM (?:debian|ubuntu)[:\w.-]*\s*$', text, re.M)
+            installs = re.search(r'apt-get install[^;]*openssh-server', text.replace('\\\n', ' '))
+            with self.subTest(path.name):
+                self.assertNotRegex(text, r'^RUN .*ssh-keygen -A', 'ключи узла создаются при старте контейнера, а не при сборке')
+                if debian and installs:
+                    self.assertIn('rm -f /etc/ssh/ssh_host_*', text)
+        scripts = {p.name: p.read_text() for p in (ROOT / 'scripts').glob('start_*.sh')}
+        self.assertIn('ssh-keygen -A', scripts['start_tt.sh'])
+        self.assertLess(scripts['start_tt.sh'].index('ssh-keygen -A'), scripts['start_tt.sh'].index('sshd'))
+
     def check_snippet(self, key, content):
         """Та же команда, что в Dockerfile, на подставном файле."""
         with tempfile.TemporaryDirectory() as directory:

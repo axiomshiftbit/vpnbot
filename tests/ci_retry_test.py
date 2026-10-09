@@ -86,7 +86,10 @@ class GoRetryTest(unittest.TestCase):
         self.assertEqual((result.returncode, attempts, result.stdout), (0, 1, 'stdout-line\n'))
 
     def test_module_download_failure_is_retried(self):
-        for message in (self.NETWORK, 'go: verifying module: Get "https://sum.golang.org/lookup/x": dial tcp: i/o timeout',
+        # Вторая запись — дословный вид отказа go build из прогона 37936217179.
+        for message in (self.NETWORK, 'core/icmp.go:7:2: gvisor.dev/gvisor@v0.0.0-20260701204157-69c2d17aea96: Get "https://proxy.golang.org/gvisor.dev/gvisor/@v/v0.0.0-20260701204157-69c2d17aea96.zip": net/http: TLS handshake timeout',
+                        'main.go:10:2: gopkg.in/yaml.v3@v3.0.1: reading https://proxy.golang.org/gopkg.in/yaml.v3/@v/v3.0.1.zip: 502 Bad Gateway',
+                        'go: verifying module: Get "https://sum.golang.org/lookup/x": dial tcp: i/o timeout',
                         'go: module lookup: unexpected EOF', 'go: downloading: read: connection reset by peer'):
             with self.subTest(message=message[:40]):
                 result, attempts = self.run_go(2, message)
@@ -97,6 +100,17 @@ class GoRetryTest(unittest.TestCase):
         result, attempts = self.run_go(99, self.NETWORK)
         self.assertEqual((result.returncode, attempts), (1, 4))
         self.assertIn('TLS handshake timeout', result.stderr)
+
+    def test_proxy_falls_back_to_direct_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / 'go'
+            fake.write_text('#!/bin/sh\necho "$GOPROXY"\n')
+            fake.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if k != 'GOPROXY'}
+            result = subprocess.run(['sh', str(ROOT / 'dockerfile/go-retry.sh'), str(fake)], env=env, capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), 'https://proxy.golang.org|direct')
+            result = subprocess.run(['sh', str(ROOT / 'dockerfile/go-retry.sh'), str(fake)], env=env | {'GOPROXY': 'off'}, capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), 'off')
 
     def test_compile_and_test_failures_are_not_retried(self):
         for message in ('./main.go:10:2: undefined: missing', '--- FAIL: TestDial (0.00s)\n    dial_test.go:9: dial tcp 127.0.0.1:1: i/o timeout',
