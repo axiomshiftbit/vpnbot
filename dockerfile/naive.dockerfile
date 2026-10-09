@@ -1,7 +1,7 @@
 ARG image=alpine:3.24
 # Caddy и forwardproxy закреплены отдельно. Плагин v2.11.2-naive сохраняет
 # совместимый API; сочетание с исправленным Caddy допускают только native-тесты.
-ARG CADDY_GO_VERSION=1.27.1
+ARG CADDY_GO_VERSION=1.27.2
 ARG XCADDY_VERSION=v0.4.7
 ARG CADDY_VERSION=v2.11.7
 ARG FORWARDPROXY_VERSION=v2.11.2-naive

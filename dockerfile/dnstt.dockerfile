@@ -10,7 +10,7 @@ ARG DNSTT_REF=0c5c52a57d899c05428c116898941761a2ed83c2
 # еженедельная пересборка того же коммита берёт другой компилятор, и «откатить
 # образ по sha» перестаёт что-либо значить. Digest'ы к базам проставляет
 # renovate (pinDigests в renovate.json).
-ARG PROTOCOL_GO_VERSION=1.27.1
+ARG PROTOCOL_GO_VERSION=1.27.2
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS go
 COPY dockerfile/go-security.sh /build-tools/go-security.sh
 ARG DNSTT_REF
