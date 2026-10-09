@@ -9,6 +9,7 @@ foreach (['BotBackup.php', 'bot.php', 'ClashTemplateValidator.php', 'VlessEncryp
 }
 copy(__DIR__ . '/../app/BotMenuHelp.php', "$dir/BotMenuHelp.php");
 copy(__DIR__ . '/../app/BotTelemtLimits.php', "$dir/BotTelemtLimits.php");
+copy(__DIR__ . '/../app/BotTelemtActivity.php', "$dir/BotTelemtActivity.php");
 file_put_contents("$dir/config.php", '<?php $c = ["admin" => [1]];');
 require "$dir/bot.php";
 

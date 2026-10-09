@@ -10,6 +10,7 @@ require_once __DIR__ . '/BotServiceDiagnostics.php';
 require_once __DIR__ . '/BotAccessBatch.php';
 require_once __DIR__ . '/BotMenuHelp.php';
 require_once __DIR__ . '/BotTelemtLimits.php';
+require_once __DIR__ . '/BotTelemtActivity.php';
 require_once __DIR__ . '/BotBackup.php';
 
 class Bot
@@ -21,6 +22,7 @@ class Bot
     use BotAccessBatch;
     use BotMenuHelp;
     use BotTelemtLimits;
+    use BotTelemtActivity;
     use BotBackup;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
@@ -992,7 +994,7 @@ class Bot
             case preg_match('~^/telemtUsersPage (\d+)(?: ([\w.\-]+))?$~', $this->input['callback'], $m):
                 $this->telemtUsers($m[2] ?? '', (int) $m[1]);
                 break;
-            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|reset|qreset-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|reset|log|logclear|qreset-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
                 $this->telemtUserAction($m[1], (int) $m[2], $m[3], $m[4] ?? '');
                 break;
             case preg_match('~^/tu ([tdr]) (\w+) (\d+) ([\w.\-]+)$~', $this->input['callback'], $m):
@@ -2053,15 +2055,15 @@ class Bot
         $t .= "port = 443\n";
         $t .= "listen_addr_ipv4 = \"0.0.0.0\"\n\n";
         // Управляющий HTTP-API нужен боту для расширенной диагностики
-        // (/v1/* эндпоинты: health, stats, security posture). Включаем его
-        // при beobachten или пользовательских лимитах, строго на loopback внутри
+        // (/v1/* эндпоинты: health, stats, security posture), квот и учёта
+        // подключений (BotTelemtActivity). Включён всегда, строго на loopback внутри
         // контейнера (listen 127.0.0.1 + whitelist). Наружу 9091 НЕ
         // публикуется (нет ports: в compose), дополнительно режется nft на
         // хосте; бот ходит к API по ssh изнутри контейнера. auth_header пуст —
         // loopback-изоляции network namespace достаточно (как в upstream
         // prod-образе). Для квот API снимает контрольные записи расхода.
         $t .= "[server.api]\n";
-        $t .= "enabled = " . $b($beobachten || (bool) $limits) . "\n";
+        $t .= "enabled = true\n";
         $t .= "listen = \"127.0.0.1:9091\"\n";
         $t .= "whitelist = [\"127.0.0.1/32\", \"::1/128\"]\n";
         // read_only отключает ТОЛЬКО изменяющие маршруты, все GET-эндпоинты
@@ -6500,6 +6502,7 @@ NFT;
             'checkAccessPolicies',
             'trackOnline',
             'trackWgOnline',
+            'trackTelemtOnline',
             'rotateAmneziaCron',
             'refreshExtSubCache',
             'checkDatUpdates',
@@ -16424,14 +16427,26 @@ DNS-over-HTTPS with IP:
         if (!isset($relays[$relay])) $relay = '';
         $pages = max(1, (int) ceil(count($users) / 8));
         $page = max(0, min($page, $pages - 1));
+        $this->telemtActivityRefresh();
+        $activity = $this->getTelemtActivity();
+        $onlineNow = 0;
+        foreach (array_keys($users) as $name) {
+            $seen = $this->telemtActivityOf((string) $name, $activity);
+            if ($seen && ($seen['conns'] > 0 || $seen['online'])) $onlineNow++;
+        }
         $text = ['Menu → TeleMT → ' . $this->i18n('telemt users'),
-            'users: ' . count($users) . ' · ' . ($page + 1) . ' / ' . $pages,
+            'users: ' . count($users) . ' · ' . $this->i18n('online') . ': ' . $onlineNow . ' · ' . ($page + 1) . ' / ' . $pages,
             'MTProxy: ' . ($relay === '' ? $this->i18n('telemt direct') : self::esc($relay)),
             $this->i18n('telemt users cards')];
         $data = [];
         foreach (array_slice($users, $page * 8, 8, true) as $name => $secret) {
             $enabled = !array_key_exists($name, $conf['telemt_user_enabled'] ?? []) || !empty($conf['telemt_user_enabled'][$name]);
-            $data[] = [['text' => ($enabled ? '🟢 ' : '🔴 ') . mb_strimwidth((string) $name, 0, 60, '…'),
+            // Точка — разрешён ли доступ; подключения и трафик — справа.
+            $seen = $this->telemtActivityOf((string) $name, $activity);
+            $tail = '';
+            if ($seen && ($seen['conns'] > 0 || $seen['online'])) $tail .= ' · 👤' . max(1, (int) $seen['conns']);
+            if ($seen && $seen['bytes'] > 0) $tail .= ' · ' . $this->fmtBytes((int) $seen['bytes']);
+            $data[] = [['text' => ($enabled ? '🟢 ' : '🔴 ') . mb_strimwidth((string) $name, 0, 60 - mb_strlen($tail), '…') . $tail,
                 'callback_data' => $this->telemtUserCallback((string) $name, $page, $relay)]];
         }
         $rarg = $relay === '' ? '' : ' ' . $relay;
@@ -16474,6 +16489,8 @@ DNS-over-HTTPS with IP:
         }
         switch ($action) {
             case 'limits': $this->telemtUserLimits($name, $page, $relay); return;
+            case 'log': $this->telemtUserLog($name, $page, $relay); return;
+            case 'logclear': $this->telemtUserLog($name, $page, $relay, true); return;
             case 'quota': $this->telemtLimitPrompt($name, $page, $relay, 'quota'); return;
             case 'ips': $this->telemtLimitPrompt($name, $page, $relay, 'ips'); return;
             case 'reset': $this->telemtResetQuota($name, $page, $relay); return;
@@ -16505,6 +16522,7 @@ DNS-over-HTTPS with IP:
         $native = $this->linkTelemt($name, $rl);
         $text = ['Menu → TeleMT → ' . $this->i18n('telemt users'), '<b>' . self::esc(mb_strimwidth($name, 0, 256, '…')) . '</b> · ' . $this->telemtState($enabled)];
         if (!$enabled) $text[] = $this->i18n('telemt user disabled');
+        $text[] = implode("\n", $this->telemtActivityLines($name));
         $text[] = $this->i18n('telemt user restart note');
         $text[] = '<b>MTProxy</b> · ' . ($relay === '' ? $this->i18n('telemt direct') : self::esc($relay)) . "\n<code>" . self::esc($native) . '</code>';
         $data = [[['text' => '🔗 MTProxy', 'url' => $native]]];
@@ -16527,6 +16545,7 @@ DNS-over-HTTPS with IP:
         }
         $data[] = $qr;
         $data[] = [['text' => $this->i18n('telemt limits'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'limits')]];
+        $data[] = [['text' => '📜 ' . $this->i18n('connection log'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'log')]];
         $data[] = [['text' => $this->i18n($enabled ? 'telemt user disable' : 'telemt user enable'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'toggle')]];
         $data[] = [['text' => $this->i18n('telemt user regen'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'regen')]];
         $data[] = [['text' => $this->i18n('telemt user delete'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'delete')]];
@@ -17680,6 +17699,8 @@ DNS-over-HTTPS with IP:
         $this->telemtConfUpdate(static function (&$conf) use ($name) {
             unset($conf['telemt_users'][$name], $conf['telemt_user_enabled'][$name], $conf['telemt_user_limits'][$name]);
         });
+        // Новый пользователь с тем же именем не наследует чужой журнал и трафик.
+        $this->telemtActivityForget((string) $name);
         $this->restartTelemt();
         $this->telemtWebRefresh($was);
         $this->telemtUsers($relay, $page);

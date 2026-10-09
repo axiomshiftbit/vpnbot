@@ -232,8 +232,11 @@ tmAssert(str_contains($toml, 'read_only = true'), 'изменяющие марш
 
 $b = $mk('tls');
 $toml = $b->telemtToml($b->pacFake);
-tmAssert(str_contains($toml, "[server.api]\nenabled = false"), 'без beobachten сокет API не открывается');
-tmAssert(str_contains($toml, 'read_only = true'), 'read_only задан и в выключенном состоянии');
+// API нужен и без beobachten: по нему бот ведёт учёт подключений и трафика.
+tmAssert(str_contains($toml, "[server.api]\nenabled = true"), 'без beobachten API включён для учёта подключений');
+tmAssert(str_contains($toml, 'listen = "127.0.0.1:9091"') && str_contains($toml, 'whitelist = ["127.0.0.1/32", "::1/128"]'),
+    'и остаётся только на loopback');
+tmAssert(str_contains($toml, 'read_only = true'), 'изменяющие маршруты отключены и здесь');
 
 if ($failed) {
     echo "telemt_test FAILED ($failed)\n";

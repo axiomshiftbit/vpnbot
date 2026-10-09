@@ -14,6 +14,7 @@ foreach (['BotBackup.php', 'ClashTemplateValidator.php', 'VlessEncryption.php', 
 }
 copy(__DIR__ . '/../app/BotMenuHelp.php', "$dir/BotMenuHelp.php");
 copy(__DIR__ . '/../app/BotTelemtLimits.php', "$dir/BotTelemtLimits.php");
+copy(__DIR__ . '/../app/BotTelemtActivity.php', "$dir/BotTelemtActivity.php");
 file_put_contents("$dir/bot.php", str_replace("'/logs/requests_error'", var_export($log, true),
     file_get_contents(__DIR__ . '/../app/bot.php')));
 require "$dir/bot.php";

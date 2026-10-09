@@ -7,6 +7,10 @@ class NativeLimitsBot extends Bot {
  public function getPorts(){return ['telemt'=>['port'=>8443,'enable'=>true]];}
  public function telemtVersion():string{return getenv('TELEMT_VERSION')?:'unknown';}
  public function telemtQuotaPath():string{return $this->root.'/data/telemt.limit.json';}
+ public function telemtActivityPath():string{return $this->root.'/activity.json';}
+ public function getGeoCache():array{return [];}
+ public function setGeoCache(array $cache){}
+ public function geoLookup(string $ip,array &$cache,bool $cacheOnly=false):array{return [];}
  public function withLock(string $name,callable $fn,int $timeout=0,$busy=null){$f=fopen($this->root.'/.lock.'.$name,'c');flock($f,LOCK_EX);try{return $fn();}finally{flock($f,LOCK_UN);fclose($f);}}
  public function telemtWriteServiceState(bool $enabled):void{file_put_contents($this->root.'/service-enabled',$enabled?"1\n":"0\n");}
  public function telemtWriteToml(string $toml):void{
@@ -53,10 +57,13 @@ try {
  case 'click':$b->click($b->telemtUserCallback($name,1,'',$q['op']));break;
  case 'reset':$b->click($b->telemtUserCallback($name,1,'','reset'));$b->click($b->screen['buttons'][0][0]['callback_data']);break;
  case 'add':$b->telemtUserAdd($name);break;
+ case 'track':$extra['tracked']=$b->trackTelemtOnline(true);break;
+ case 'card':$b->click($b->telemtUserCallback($name,1,''));break;
+ case 'users':$b->click('/telemtUsersPage 0');break;
  case 'service':$b->toggleTelemtService();break;
  case 'backup':file_put_contents($b->root.'/backup.json',json_encode($b->telemtBackupSnapshot()));break;
  case 'decoy':$extra['error']=$b->telemtWebDecoyApply((string)$q['value']);break;
  case 'restore':$data=json_decode(file_get_contents($b->root.'/backup.json'),true);$b->telemtQuotaRestore($data['telemt_quota'],$data['pac']);break;
  }
- echo json_encode(['ok'=>true,'screen'=>$b->screen,'limits'=>$b->getPacConf()['telemt_user_limits']??[]]+$extra);
+ echo json_encode(['ok'=>true,'screen'=>$b->screen,'limits'=>$b->getPacConf()['telemt_user_limits']??[],'activity'=>$b->getTelemtActivity()]+$extra);
 }catch(Throwable $e){echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);exit(1);}

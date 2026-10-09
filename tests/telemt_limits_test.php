@@ -152,7 +152,7 @@ try {
     $check(!str_contains($b->toml,'[access.user_data_quota]'), 'Безлимит опускает таблицу quota');
     $b->telemtChangeLimit('alice','ips',0,$fp);
     $check(!str_contains($b->toml,'[access.user_max_unique_ips]'), 'Выключение IP опускает таблицу');
-    $check(str_contains($b->toml,"[server.api]\nenabled = false"), 'API закрывается без диагностики и лимитов');
+    $check(str_contains($b->toml,"[server.api]\nenabled = true") && str_contains($b->toml, 'read_only = true'), 'API остаётся для учёта подключений, но только на чтение');
     $b->telemtChangeLimit('alice','quota',1000,$fp);
     $backup = $b->telemtBackupSnapshot();
     $check($backup['pac'] === $b->conf && $backup['telemt_quota']['users']['bob']['used_bytes'] === 888,'Согласованная резервная копия');
