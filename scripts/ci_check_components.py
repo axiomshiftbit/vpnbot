@@ -7,6 +7,10 @@ Trivy видит пакеты Alpine и модули внутри Go-бинар�
 объявленные их авторами. Этот скрипт сверяет закреплённые версии с NVD (по
 CPE продукта) и с объявлениями безопасности репозиториев GitHub.
 
+У ocserv нет записей ни в NVD, ни на GitHub: автор отмечает исправления
+безопасности пометкой [SECURITY] в описании релиза на GitLab. Релиз новее
+закреплённого с такой пометкой (или с номером CVE) блокирует допуск.
+
 Допуск блокируют уязвимости HIGH и CRITICAL, для которых известна версия с
 исправлением. Недоступный источник после повторов — тоже отказ: отсутствие
 ответа не равно отсутствию уязвимостей. Отставание версий только печатается.
@@ -27,7 +31,8 @@ from ci_retry import retrying
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKING = {'HIGH', 'CRITICAL'}
 # Версия: ключ .env либо ARG в Dockerfile. cpe — продукт в NVD; repo — источник
-# объявлений безопасности и последнего релиза.
+# объявлений безопасности и последнего релиза; gitlab — проект, чьи описания
+# релизов служат объявлениями.
 COMPONENTS = [
     dict(name='nginx', pin='NGINX_VERSION', cpe='f5:nginx'),
     dict(name='strongSwan', pin='dockerfile/ipsec.dockerfile:STRONGSWAN_VERSION', cpe='strongswan:strongswan', repo='strongswan/strongswan'),
@@ -46,7 +51,7 @@ COMPONENTS = [
     dict(name='Mieru', pin='MIERU_VERSION', repo='enfein/mieru'),
     dict(name='AmneziaWG', pin='AWG_GO_VERSION', repo='amnezia-vpn/amneziawg-go'),
     dict(name='amneziawg-tools', pin='AWG_TOOLS_VERSION', repo='amnezia-vpn/amneziawg-tools'),
-    dict(name='ocserv', pin='OCSERV_VERSION'),
+    dict(name='ocserv', pin='OCSERV_VERSION', gitlab='openconnect/ocserv'),
 ]
 
 
@@ -145,6 +150,30 @@ def advisory_findings(repo, version, token):
     return sorted(set(found))
 
 
+SECURITY_NOTE = re.compile(r'\[SECURITY\]|\bCVE-\d{4}-\d{4,}|\bsecurity (?:fix|issue|vulnerabilit)', re.I)
+
+
+def gitlab_findings(project, version):
+    """Релизы проекта GitLab новее закреплённого: (находки, последняя версия)."""
+    data = fetch('https://gitlab.com/api/v4/projects/' + urllib.parse.quote(project, safe='') + '/releases?per_page=100')
+    if not isinstance(data, list) or not all(isinstance(item, dict) and item.get('tag_name') for item in data):
+        raise ValueError('unexpected GitLab response')
+    current = numbers(version)
+    if current not in {numbers(item['tag_name']) for item in data}:
+        # Без закреплённой версии в списке нельзя судить, что вышло после неё.
+        raise ValueError('pinned version is not among GitLab releases')
+    newer = sorted((item for item in data if numbers(item['tag_name']) > current and not item.get('upcoming_release')),
+                   key=lambda item: numbers(item['tag_name']))
+    found = []
+    for item in newer:
+        notes = item.get('description') or ''
+        if SECURITY_NOTE.search(notes):
+            idents = sorted(set(re.findall(r'CVE-\d{4}-\d{4,}', notes))) or ['security fix in ' + item['tag_name']]
+            # Важность автор не указывает: исправление уже выпущено, обновляемся.
+            found += [(ident, 'HIGH', True) for ident in idents]
+    return found, (newer[-1]['tag_name'] if newer else None)
+
+
 def latest_release(repo, prefix, token):
     data = fetch(f'https://api.github.com/repos/{repo}/releases?per_page=30', token)
     tags = [r['tag_name'] for r in data if not r.get('prerelease') and not r.get('draft') and r['tag_name'].startswith(prefix)
@@ -163,11 +192,14 @@ def check(root=ROOT, token=None, freshness=True):
         if item.get('repo'):
             findings += [(ident, level, fixable, 'GitHub') for ident, level, fixable in advisory_findings(item['repo'], version, token)]
         newer = None
+        if item.get('gitlab'):
+            noted, newer = gitlab_findings(item['gitlab'], version)
+            findings += [(ident, level, fixable, 'GitLab') for ident, level, fixable in noted]
         if freshness and item.get('repo'):
             latest = latest_release(item['repo'], item.get('tag_prefix', ''), token)
             if latest and numbers(latest) > numbers(version):
                 newer = latest
-        sources = [s for s, key in (('NVD', 'cpe'), ('GitHub', 'repo')) if item.get(key)]
+        sources = [s for s, key in (('NVD', 'cpe'), ('GitHub', 'repo'), ('GitLab', 'gitlab')) if item.get(key)]
         rows.append(dict(name=name, version=version, findings=findings, newer=newer, sources=sources))
         blocked += [(name, version, *finding) for finding in findings if finding[1] in BLOCKING and finding[2]]
     return rows, blocked

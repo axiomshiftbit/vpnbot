@@ -27,8 +27,9 @@ def advisory(ident, level, vulnerable, patched, cve_id=None):
 class Api:
     """Подмена сети: ответы по подстроке адреса; неизвестный адрес — ошибка теста."""
 
-    def __init__(self, nvd=None, advisories=None, releases=None, broken=()):
+    def __init__(self, nvd=None, advisories=None, releases=None, broken=(), gitlab=None):
         self.nvd, self.advisories, self.releases, self.broken, self.calls = nvd or {}, advisories or {}, releases or {}, broken, []
+        self.gitlab = gitlab
 
     def __call__(self, url, token=None):
         self.calls.append((url, token))
@@ -39,6 +40,11 @@ class Api:
                 if product.replace(':', '%3A') in url:
                     return {'vulnerabilities': rows}
             return {'vulnerabilities': []}
+        if 'gitlab.com' in url:
+            assert 'openconnect%2Focserv' in url, url
+            if self.gitlab is None:
+                return [{'tag_name': components.pins()['ocserv'], 'description': '- [SECURITY] fixed long ago'}]
+            return self.gitlab
         repo = url.split('/repos/')[1].split('/security-advisories')[0].split('/releases')[0]
         if '/security-advisories' in url:
             return self.advisories.get(repo, [])
@@ -82,7 +88,8 @@ class ComponentsTest(unittest.TestCase):
         with_repo = sum(1 for item in components.COMPONENTS if item.get('repo'))
         self.assertEqual(sum('nvd.nist.gov' in url for url, _ in api.calls), with_cpe)
         self.assertEqual(sum('/security-advisories' in url for url, _ in api.calls), with_repo)
-        self.assertEqual({row['name'] for row in rows if not row['sources']}, {'ocserv'})
+        self.assertEqual({row['name'] for row in rows if not row['sources']}, set())
+        self.assertEqual(sum('gitlab.com' in url for url, _ in api.calls), 1)
 
     def test_high_nvd_finding_blocks_and_lower_is_reported(self):
         api = Api(nvd={'f5:nginx': [cve('CVE-1', 'HIGH'), cve('CVE-2', 'MEDIUM'), cve('CVE-3', 'CRITICAL'), cve('CVE-4', 'HIGH', 'Rejected')]})
@@ -126,8 +133,35 @@ class ComponentsTest(unittest.TestCase):
         self.assertEqual({row['name']: row['newer'] for row in rows if row['newer']}, {'Hysteria': 'app/v9.0.0'})
         self.assertIn('вышла версия app/v9.0.0', components.report(rows, blocked))
 
+    def test_ocserv_security_release_newer_than_the_pin_blocks(self):
+        pinned = components.pins()['ocserv']
+        major, minor, patch_level = components.numbers(pinned)[:3]
+        older, newer, newest = f'{major}.{minor - 1}.9', f'{major}.{minor}.{patch_level + 1}', f'{major}.{minor + 1}.0'
+        release = lambda tag, notes, **extra: {'tag_name': tag, 'description': notes, **extra}
+        cases = [
+            ([release(older, '- [SECURITY] old fix'), release(pinned, '- [SECURITY] already included')], [], None),
+            ([release(pinned, ''), release(newer, '- Added an option\n- Fixed a crash on reload')], [], newer),
+            ([release(pinned, ''), release(newer, '- [SECURITY] Fixed heap overflow (#1)')], ['security fix in ' + newer], newer),
+            ([release(pinned, ''), release(newer, 'fixes CVE-2027-12345 and CVE-2027-0001'), release(newest, None)], ['CVE-2027-0001', 'CVE-2027-12345'], newest),
+            ([release(pinned, ''), release(newer, '- [SECURITY] not out yet', upcoming_release=True)], [], None),
+        ]
+        for releases, expected, latest in cases:
+            with self.subTest(expected=expected, latest=latest):
+                rows, blocked = self.run_check(Api(gitlab=releases))
+                self.assertEqual([b[2] for b in blocked], expected)
+                row = next(row for row in rows if row['name'] == 'ocserv')
+                self.assertEqual((row['newer'], row['sources']), (latest, ['GitLab']))
+        text = components.report(*self.run_check(Api(gitlab=cases[2][0])))
+        self.assertIn('BLOCK security fix in ' + newer + ' HIGH (GitLab)', text)
+        self.assertIn('ocserv ' + pinned + ': проверено по GitLab', text)
+
+    def test_ocserv_pin_missing_from_the_release_list_is_not_a_clean_bill(self):
+        for answer in ([], [{'tag_name': '0.0.1', 'description': ''}], {'message': '404'}, [{'description': 'no tag'}]):
+            with self.subTest(answer=answer), self.assertRaises(ValueError):
+                self.run_check(Api(gitlab=answer))
+
     def test_unreachable_source_fails_closed_after_retries(self):
-        for broken in ('nvd.nist.gov', '/security-advisories', '/releases'):
+        for broken in ('nvd.nist.gov', '/security-advisories', 'api.github.com/repos/XTLS/Xray-core/releases', 'gitlab.com'):
             api = Api(broken=(broken,))
             with self.subTest(broken=broken), self.assertRaises(OSError):
                 self.run_check(api)
@@ -160,7 +194,8 @@ class ComponentsTest(unittest.TestCase):
         api = Api()
         with patch.dict(os.environ, {'NVD_API_KEY': 'nvd-key'}, clear=False):
             self.run_check(api)
-        self.assertTrue(all(token == ('nvd-key' if 'nvd.nist.gov' in url else 't0ken') for url, token in api.calls))
+        expected = lambda url: 'nvd-key' if 'nvd.nist.gov' in url else None if 'gitlab.com' in url else 't0ken'
+        self.assertTrue(all(token == expected(url) for url, token in api.calls))
 
 
 if __name__ == '__main__':

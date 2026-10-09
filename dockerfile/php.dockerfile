@@ -58,4 +58,8 @@ RUN apk upgrade --no-cache \
     && ln -sf /usr/bin/php85 /usr/bin/php \
     # OPcache встроен в PHP 8.5, отдельного php85-opcache в Alpine нет.
     && php -r 'foreach (["mbstring", "session", "phar", "zip", "curl", "openssl", "iconv", "intl", "ssh2", "yaml", "Zend OPcache"] as $module) { if (!extension_loaded($module)) { fwrite(STDERR, "Missing PHP module: $module\n"); exit(1); } }' \
+    # Учебные сертификаты и закрытые ключи из тестов certbot и acme в работе не
+    # нужны, а проверка слоёв образа допускает закрытые ключи только по списку.
+    && find /usr/lib/python3*/site-packages/certbot /usr/lib/python3*/site-packages/acme -type d -name testdata -prune -exec rm -rf {} + \
+    && certbot --version \
     && mkdir /root/.ssh

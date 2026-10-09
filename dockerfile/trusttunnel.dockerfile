@@ -4,20 +4,25 @@
 #   или локально: TT_REF=<sha|tag> docker compose build tt
 ARG TT_REF=v1.1.0
 
-FROM python:3.13-slim-bookworm AS build
+# Сборка и итоговый образ на Alpine, как у остальных сервисов. Компилятор
+# берётся готовым образом rust:<версия>-alpine: установщик rustup из сети
+# (без контрольной суммы) больше не нужен.
+# Версию держим в синхроне с rust-toolchain.toml апстрима (channel = "1.95").
+ARG RUST_VERSION=1.95.0
+ARG image=alpine:3.24
+
+FROM rust:${RUST_VERSION}-alpine AS build
 ARG TT_REF
-# Держим в синхроне с rust-toolchain.toml апстрима (сейчас channel = "1.95").
-# Если разойдётся — rustup всё равно доскачает нужный канал по toolchain-файлу
-# из клона, но это лишний слой и минуты сборки.
-ARG RUST_VERSION=1.95
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential cmake curl make git libclang-dev ca-certificates pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- --default-toolchain "${RUST_VERSION}" -y --profile minimal
-ENV PATH="/root/.cargo/bin:${PATH}" \
-    CARGO_NET_GIT_FETCH_WITH_CLI=true
+ARG RUST_VERSION
+RUN apk add --no-cache build-base cmake git clang-dev linux-headers perl pkgconf
+# RUSTUP_TOOLCHAIN: компилятор уже в образе; без переменной rustup по
+# rust-toolchain.toml апстрима скачал бы тот же канал заново.
+# -crt-static: сборочным скриптам (bindgen) нужна динамическая загрузка
+# libclang, а статически слинкованная программа на musl её не умеет.
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    RUSTUP_TOOLCHAIN=${RUST_VERSION} \
+    RUSTFLAGS="-C target-feature=-crt-static"
+COPY sources.sha256 /sources.sha256
 WORKDIR /src
 # Фетчим ровно нужный ref, а не клонируем ветку: `clone --depth 50` + checkout
 # работал только пока пин лежал в последних 50 коммитах master, а с пином на
@@ -31,7 +36,11 @@ RUN git init -q . \
         v[0-9]*) git fetch -q --depth 1 origin "refs/tags/${TT_REF}:refs/tags/${TT_REF}" ;; \
         *) git fetch -q --depth 1 origin "${TT_REF}" ;; \
     esac \
-    && git checkout -q FETCH_HEAD
+    && git checkout -q FETCH_HEAD \
+    # Тег можно переписать: коммит обязан совпасть с закреплённым для этой
+    # версии. Пин на полный коммит проверяет сам себя.
+    && pinned=$(awk -v key="trusttunnel/${TT_REF}" '$2 == key {print $1}' /sources.sha256) \
+    && test "$(git rev-parse HEAD)" = "${pinned:-$TT_REF}"
 RUN cargo build --release --bin trusttunnel_endpoint \
     && cargo build --release --bin setup_wizard \
     && strip target/release/trusttunnel_endpoint target/release/setup_wizard
@@ -43,16 +52,16 @@ RUN git apply --check /trusttunnel-metrics.patch && git apply /trusttunnel-metri
     && cargo build --release --bin trusttunnel_endpoint --bin setup_wizard \
     && strip target/release/trusttunnel_endpoint target/release/setup_wizard
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get upgrade -y --no-install-recommends \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates curl iproute2 openssh-server \
-    && rm -rf /var/lib/apt/lists/* \
-    # Пакет openssh-server в Debian создаёт ключи узла при установке: они
-    # оказались бы в публичном образе, одинаковые у всех установок. Свои ключи
-    # каждый контейнер создаёт при старте (ssh-keygen -A в start_tt.sh).
-    && rm -f /etc/ssh/ssh_host_* \
-    && mkdir -p /root/.ssh /run/sshd /trusttunnel_endpoint
+FROM $image
+# Alpine вместо Debian: в образе на Debian сканер находил десятки уязвимостей
+# высокой важности без исправления, и блокировать по ним было нечем. Ключи
+# узла SSH пакет openssh в Alpine при установке не создаёт — их делает
+# start_tt.sh при старте контейнера.
+RUN apk upgrade --no-cache --available \
+    && apk add --no-cache ca-certificates curl iproute2 openssh libgcc \
+    && mkdir -p /root/.ssh /trusttunnel_endpoint
 COPY --from=build /src/target/release/trusttunnel_endpoint /usr/local/bin/
 COPY --from=build /src/target/release/setup_wizard         /usr/local/bin/
 WORKDIR /trusttunnel_endpoint
+# Сборка откажет, если бинарнику не хватает библиотеки в итоговом образе.
+RUN trusttunnel_endpoint --version && setup_wizard --help >/dev/null

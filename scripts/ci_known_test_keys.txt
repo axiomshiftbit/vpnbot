@@ -1,0 +1,16 @@
+# Учебные ключи из состава чужих пакетов: они опубликованы вместе с исходниками
+# этих пакетов и ничего не защищают. Формат: «<sha256 находки>  <откуда>».
+# Отпечаток печатает scripts/ci_scan_layers.py; добавлять строку только после
+# того, как найден источник ключа. Любой другой ключ по тем же путям блокирует.
+#
+# GnuTLS: ключи самопроверки, встроенные в саму библиотеку; образы oc и php.
+12f9683a787ecd8c8bc2a9e7117930d91288e59f14dfc9aca5b8166a6cef174a  gnutls self-test key, libgnutls.so
+21bb3b513b17ebda5dd27e94f9b031acf960b753c180cebb6d9a07dd31ffe882  gnutls self-test key, libgnutls.so
+4523182543867f0d03ea379d43d0b0feda7ca6c4d8d1fc63810fd117a82768ab  gnutls self-test key, libgnutls.so
+4cd47c583b5b94c5311f33c8bef91c9ff12d1f339ddaa22e3c3b287f1294960f  gnutls self-test key, libgnutls.so
+8a67b4c9d7f680693de0076190694e10d077a731f702c74219a35c35e30df5fd  gnutls self-test key, libgnutls.so
+fd1e01cd7537e3ee3b0533c5fcdf19dc3a7db691f18c2c4a88cf7f8cd13f8384  gnutls self-test key, libgnutls.so
+# amneziawg-tools: примеры настроек в справочных страницах awg(8) и awg-quick(8), образ wg.
+1839987b46f42935f97e1393cb39a9b38de5c080d5536e4488931587abc30808  example key in awg(8) and awg-quick(8) man pages
+77ded56fbf593cbfaa5d136080371d1ec30c501f0224c7976cc0a6009c8aa149  example key in awg-quick(8) man page
+bbc3b412030dd9d97da6fbcb2e6da5c6a8137c7f0609700f5bc0a36176c04bbd  example key in awg-quick(8) man page

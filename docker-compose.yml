@@ -975,6 +975,7 @@ services:
             context: dockerfile
             dockerfile: trusttunnel.dockerfile
             args:
+                image: ${IMAGE:-alpine:3.24}
                 TT_REF: ${TT_REF:-v1.1.0}
         volumes:
             - ./config/.profile:/root/.bashrc:ro

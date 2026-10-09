@@ -63,7 +63,7 @@ class ScanGateTest(unittest.TestCase):
         self.assertIn('Security gate: 1 fixable', text)
 
     def test_unknown_or_unsupported_system_is_not_admitted(self):
-        for data in (report(family='ubuntu'), report(eosl=True), report(os_class=False), {'Results': []}, {}):
+        for data in (report(family='ubuntu'), report(family='debian'), report(eosl=True), report(os_class=False), {'Results': []}, {}):
             with self.subTest(data=str(data)[:40]), self.assertRaises(AssertionError):
                 self.run_gate(data)
 

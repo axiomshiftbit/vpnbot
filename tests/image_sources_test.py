@@ -9,9 +9,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILES = sorted((ROOT / 'dockerfile').glob('*.dockerfile'))
 MANIFEST = ROOT / 'dockerfile/sources.sha256'
-# Установщик rustup не закреплён суммой: он лишь выбирает закреплённую версию
-# компилятора на сборочном этапе, в итоговый образ не попадает.
-ALLOWED = {('trusttunnel.dockerfile', 'https://sh.rustup.rs')}
 VERIFIED = re.compile(r'sha256sum\s+(?:-c|--check)|go-source\.sh|git checkout -q "\$\{?\w+\}?"|rev-parse HEAD\)" = ')
 
 
@@ -30,13 +27,10 @@ class ImageSourcesTest(unittest.TestCase):
         seen = 0
         for path in DOCKERFILES:
             for run in instructions(path):
-                urls = re.findall(r'https?://[^\s"\')]+', run)
-                fetches = re.search(r'\b(?:curl|wget)\b[^;&|]*https?://|\bgit clone\b|\$\(asset ', run)
+                fetches = re.search(r'\b(?:curl|wget)\b[^;&|]*https?://|\bgit (?:clone|fetch)\b|\$\(asset ', run)
                 if not fetches:
                     continue
                 seen += 1
-                if any((path.name, url) in ALLOWED for url in urls):
-                    continue
                 with self.subTest(path.name, step=run[:70]):
                     self.assertRegex(run, VERIFIED, 'загрузка без проверки суммы или коммита')
         self.assertGreaterEqual(seen, 10)
@@ -45,8 +39,6 @@ class ImageSourcesTest(unittest.TestCase):
         for path in DOCKERFILES:
             for run in instructions(path):
                 for pipe in re.findall(r'\b(?:curl|wget)\b[^;&]*https?://[^;&]*\|\s*(?:sudo\s+)?(sh|bash|tar|python3?)\b', run):
-                    if any(name == path.name for name, _ in ALLOWED) and 'sh.rustup.rs' in run:
-                        continue
                     with self.subTest(path.name):
                         self.fail('загрузка сразу передаётся в ' + pipe)
 
@@ -58,7 +50,7 @@ class ImageSourcesTest(unittest.TestCase):
         env = env_pins()
         ocserv = re.search(r'^OCSERV_VERSION=(\S+)$', (ROOT / '.env').read_text(), re.M).group(1)
         for key in ('nginx/' + env['NGINX_VERSION'], 'ocserv/' + ocserv, 'shadowsocks-rust/' + env['SS_RUST_VERSION'],
-                    'amneziawg-tools/' + env['AWG_TOOLS_VERSION']):
+                    'amneziawg-tools/' + env['AWG_TOOLS_VERSION'], 'trusttunnel/' + env['TT_REF']):
             with self.subTest(key):
                 self.assertIn(key, keys, 'для закреплённой версии нет строки в dockerfile/sources.sha256')
 
@@ -84,6 +76,25 @@ class ImageSourcesTest(unittest.TestCase):
         scripts = {p.name: p.read_text() for p in (ROOT / 'scripts').glob('start_*.sh')}
         self.assertIn('ssh-keygen -A', scripts['start_tt.sh'])
         self.assertLess(scripts['start_tt.sh'].index('ssh-keygen -A'), scripts['start_tt.sh'].index('sshd'))
+
+    def test_trusttunnel_commit_is_pinned_and_no_installer_is_downloaded(self):
+        source = (ROOT / 'dockerfile/trusttunnel.dockerfile').read_text()
+        self.assertNotIn('rustup.rs', source)
+        self.assertRegex(source, r'(?m)^FROM rust:\$\{RUST_VERSION\}-alpine AS build$')
+        self.assertRegex(re.search(r'^ARG RUST_VERSION=(\S+)$', source, re.M).group(1), r'^\d+\.\d+\.\d+$')
+        # Тег сверяется с записью в sources.sha256, полный коммит — сам с собой.
+        lookup = """pinned=$(awk -v key="trusttunnel/${TT_REF}" '$2 == key {print $1}' %s)"""
+        compare = 'test "%s" = "${pinned:-$TT_REF}"'
+        self.assertIn(lookup % '/sources.sha256', source)
+        self.assertIn(compare % '$(git rev-parse HEAD)', source)
+        command = lookup % MANIFEST + ' && ' + compare % '$HEAD'
+        pinned = next(line.split()[0] for line in MANIFEST.read_text().splitlines() if line.endswith('  trusttunnel/' + env_pins()['TT_REF']))
+        other = 'f' * 40
+        for ref, head, expected in ((env_pins()['TT_REF'], pinned, 0), (env_pins()['TT_REF'], other, 1), ('v9.9.9', other, 1), ('v9.9.9', 'v9.9.9', 0),
+                                    (other, other, 0), (other, pinned, 1)):
+            with self.subTest(ref=ref, head=head[:7]):
+                done = subprocess.run(['sh', '-c', command], env={'TT_REF': ref, 'HEAD': head, 'PATH': '/usr/bin:/bin'})
+                self.assertEqual(done.returncode, expected)
 
     def check_snippet(self, key, content):
         """Та же команда, что в Dockerfile, на подставном файле."""

@@ -2,7 +2,7 @@
 """Решение о допуске образа по отчёту Trivy (JSON).
 
 Блокируют: уязвимости HIGH и CRITICAL с известным исправлением, секреты в слоях
-образа, неподдерживаемая или неопознанная ОС, отсутствие проверки пакетов ОС.
+образа, ОС образа не Alpine или снятая с поддержки, отсутствие проверки пакетов ОС.
 Уязвимости без исправления только перечисляются: обновлять пока не на что.
 """
 import json
@@ -11,7 +11,9 @@ import sys
 
 def gate(d):
     os = d.get('Metadata', {}).get('OS', {})
-    assert os.get('Family') in ('alpine', 'debian') and not os.get('EOSL', False), 'unsupported/EOL operating system'
+    # Только Alpine: для Debian сканер показывал десятки уязвимостей высокой
+    # важности без исправления, и блокировать по ним было нечем.
+    assert os.get('Family') == 'alpine' and not os.get('EOSL', False), 'unsupported/EOL operating system'
     results = d.get('Results', [])
     assert any(x.get('Class') == 'os-pkgs' for x in results), 'OS package scan missing'
     blocked, unfixed, secrets, medium = [], [], [], 0
