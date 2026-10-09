@@ -4960,7 +4960,7 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter hysteria SNI / masquerade host (e.g. {$this->getDomain()})",
+            "@{$this->input['username']} enter hysteria SNI / masquerade host (e.g. {$this->getDomain()}), <code>0</code> = default",
             $this->input['message_id'],
             reply: 'enter hysteria SNI',
         );
@@ -4980,7 +4980,8 @@ class Bot
     {
         $name = trim($name);
         $pac  = $this->getPacConf();
-        if ($name === '') {
+        // Пустое сообщение Telegram не отправит: возврат к домену бота — нулём.
+        if ($name === '' || $name === '0') {
             unset($pac['hysteria_sni']);
         } elseif (preg_match('~^[A-Za-z0-9.-]+$~', $name)) {
             $pac['hysteria_sni'] = $name;
@@ -5047,7 +5048,7 @@ class Bot
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} enter UDP port range for hopping, e.g. <code>20000-50000</code> "
-            . "(comma/dash multi-port: <code>1234,5000-6000</code>) — empty = off.\n\n"
+            . "(comma/dash multi-port: <code>1234,5000-6000</code>) — <code>0</code> = off.\n\n"
             . "⚠️ " . $this->i18n('port hopping fw hint'),
             $this->input['message_id'],
             reply: 'enter port range',
@@ -5094,7 +5095,8 @@ class Bot
 
     public function chHyHop($text)
     {
-        $hop = $this->normalizeHyHop((string) $text);
+        // Пустое сообщение Telegram не отправит: выключение — нулём.
+        $hop = trim((string) $text) === '0' ? '' : $this->normalizeHyHop((string) $text);
         if ($hop === false) {
             $this->send($this->input['chat'], $this->i18n('port hopping bad') . ': <code>' . htmlspecialchars((string) $text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>');
             return $this->menu('hy');
@@ -5284,7 +5286,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter bandwidth: up down (mbps), e.g. 200 200 — empty = BBR (auto)",
+            "@{$this->input['username']} enter bandwidth: up down (mbps), e.g. 200 200 — <code>0</code> = BBR (auto)",
             $this->input['message_id'],
             reply: 'enter bandwidth',
         );
@@ -23900,6 +23902,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/hyConfig",
             ],
         ];
+        $data[] = $this->menuHelpButton('hy');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),

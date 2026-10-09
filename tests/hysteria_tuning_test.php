@@ -124,7 +124,7 @@ try {
     // ── кнопки и маршрутизация ──────────────────────────────────────────────
     $b->conf['hysteria_obfs'] = 'x'; $b->click('/hyTune');
     foreach (array_merge(...$b->screen['buttons']) as $button) $check(strlen($button['callback_data']) <= 64, 'callback укладывается в лимит Telegram');
-    $check(count($b->screen['buttons']) === 6, 'пять настроек и возврат');
+    $check(count($b->screen['buttons']) === 7, 'пять настроек, справка и возврат');
     $before = $b->conf;
     foreach (['/hyTune evil', '/hyTune cc extra', '/hyTune  cc', '/hyTuneX'] as $bad) { $b->screen = []; $b->click($bad); $check($b->conf === $before, "«{$bad}» ничего не меняет"); }
     $main = array_merge(...$b->hysteriaMenu()['data']);

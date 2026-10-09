@@ -149,9 +149,9 @@ services:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
                 image: ${IMAGE:-alpine:3.24}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
                 MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.32}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-67dd8f8c37ecaaadcfcafad1f0827eed4b034c963b86fd3aa5c0d7a36876845d}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
                 MIHOMO_SOURCE_SHA256: ${MIHOMO_SOURCE_SHA256:-ab130b7fab3893d01aa44c0d39be34a26da716c1d36832fbac9fa054a1d862a0}
         ports:
             # 127.0.0.1:8081:8080 убран: 8080 в этом контейнере — control API
@@ -221,9 +221,9 @@ services:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
                 image: ${IMAGE:-alpine:3.24}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
                 MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.32}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-67dd8f8c37ecaaadcfcafad1f0827eed4b034c963b86fd3aa5c0d7a36876845d}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
                 MIHOMO_SOURCE_SHA256: ${MIHOMO_SOURCE_SHA256:-ab130b7fab3893d01aa44c0d39be34a26da716c1d36832fbac9fa054a1d862a0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
@@ -1054,8 +1054,8 @@ services:
             dockerfile: protocol.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-67dd8f8c37ecaaadcfcafad1f0827eed4b034c963b86fd3aa5c0d7a36876845d}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
         environment:
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
@@ -1125,8 +1125,8 @@ services:
             dockerfile: protocol.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-67dd8f8c37ecaaadcfcafad1f0827eed4b034c963b86fd3aa5c0d7a36876845d}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
         environment:
             PROTOCOL_KIND: tuic
             PROTOCOL_DESIRED: /config/desired.json
@@ -1196,8 +1196,8 @@ services:
             dockerfile: protocol.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.2}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-67dd8f8c37ecaaadcfcafad1f0827eed4b034c963b86fd3aa5c0d7a36876845d}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
         environment:
             PROTOCOL_KIND: shadowtls
             PROTOCOL_DESIRED: /config/desired.json

@@ -2,9 +2,9 @@ ARG image=alpine:3.24
 ARG PROTOCOL_GO_VERSION=1.27.1
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS helpers
 ARG DNSLOOKUP_VERSION=v1.12.0
-ARG SINGBOX_VERSION=v1.14.2
+ARG SINGBOX_VERSION=v1.14.3
 ARG MIHOMO_VERSION=v1.19.32
-ARG SINGBOX_SOURCE_SHA256=67dd8f8c37ecaaadcfcafad1f0827eed4b034c963b86fd3aa5c0d7a36876845d
+ARG SINGBOX_SOURCE_SHA256=9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386
 ARG MIHOMO_SOURCE_SHA256=ab130b7fab3893d01aa44c0d39be34a26da716c1d36832fbac9fa054a1d862a0
 RUN apk add --no-cache ca-certificates curl git
 COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
@@ -21,7 +21,7 @@ RUN sh /build-tools/go-source.sh MetaCubeX/mihomo "$MIHOMO_VERSION" /mihomo "$MI
        -ldflags "-s -w -X github.com/metacubex/mihomo/constant.Version=$MIHOMO_VERSION" -o /out/mihomo .
 
 FROM $image
-ARG SINGBOX_VERSION=v1.14.2
+ARG SINGBOX_VERSION=v1.14.3
 ARG MIHOMO_VERSION=v1.19.32
 LABEL io.vpnbot.sing-box.version=$SINGBOX_VERSION io.vpnbot.mihomo.version=$MIHOMO_VERSION
 COPY --from=helpers /out/ /usr/bin/

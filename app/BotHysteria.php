@@ -291,6 +291,7 @@ trait BotHysteria
         $data[] = [['text' => $this->i18n('hy tune loss') . ': ' . $on(empty($pac['hysteria_no_loss_comp'])), 'callback_data' => '/hyTune loss']];
         $data[] = [['text' => $this->i18n('hy tune ignorebw') . ': ' . $on(!empty($pac['hysteria_ignore_client_bw'])), 'callback_data' => '/hyTune ignorebw']];
         $data[] = [['text' => 'sniff: ' . $on(!empty($pac['hysteria_sniff'])), 'callback_data' => '/hyTune sniff']];
+        $data[] = $this->menuHelpButton('hy_tune');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/menu hy']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
     }

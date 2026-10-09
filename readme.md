@@ -170,6 +170,10 @@ WEB-ссылка использует прямое подключение.
 Общий пароль даёт отдельный доступ без персональных ограничений: после перевода
 клиентов его можно отключить отдельной кнопкой с подтверждением.
 
+В меню Hysteria есть **справка** по всем кнопкам: подключение, общий пароль и
+персональные доступы, маскировка, обфускация и скорость, смена портов, relay,
+диагностика. Смена портов, свой сайт маскировки и полоса выключаются ответом `0`.
+
 В **Hysteria → Тонкие настройки** собраны параметры ядра 2.8–2.13:
 
 - **obfs** — тип обфускации: `salamander` либо `gecko` (экспериментальная, ядро
@@ -389,7 +393,7 @@ Compose. AnyTLS, TUIC и ShadowTLS используют образ
 `ghcr.io/axiomshiftbit/vpnbot-protocol:dev` с sing-box и API статистики, но работают
 в трёх отдельных контейнерах. Mieru использует
 `ghcr.io/axiomshiftbit/vpnbot-mieru:dev` с сервером mita.
-`SINGBOX_VERSION=v1.14.2` управляет ядром трёх протоколов и утилитой PHP;
+`SINGBOX_VERSION=v1.14.3` управляет ядром трёх протоколов и утилитой PHP;
 `MIHOMO_VERSION=v1.19.32` — утилитой PHP; `MIERU_VERSION=v3.38.0` — mita.
 `PROTOCOL_GO_VERSION` выбирает Go для сборки серверов и вспомогательных утилит. TUIC v5 и ShadowTLS v3
 обозначают версии протокола, а не исполняемого файла.
@@ -397,7 +401,7 @@ Compose. AnyTLS, TUIC и ShadowTLS используют образ
 Чтобы выбрать стабильные версии вместе с проверяемыми контрольными суммами:
 
 ```bash
-python3 scripts/update_protocol_versions.py --singbox v1.14.2 --mihomo v1.19.32 --mieru v3.38.0
+python3 scripts/update_protocol_versions.py --singbox v1.14.3 --mihomo v1.19.32 --mieru v3.38.0
 # Проверить текущие стабильные релизы без изменения файла:
 python3 scripts/update_protocol_versions.py --singbox latest --mihomo latest --mieru latest --dry-run
 ```
