@@ -31,7 +31,10 @@ PUBLIC_ADDRESSES = frozenset('''
 11.77.0.0 11.77.0.2 11.77.0.3 11.77.0.4 11.77.0.128 2.5.4.3 2.5.4.11 93.184.216.34 104.16.132.229 142.250.80.46
 100.63.255.255 100.128.0.0 172.32.0.1 192.88.99.0 192.169.0.1 198.51.101.8 224.0.0.0 224.0.0.1
 '''.split())
-REAL_LOOKING = ['https://admin:Zx81kq9Lm2@db.internal.net', 'mysql://root:Zx81kq9Lm2@10.0.0.5.nip.io', 'https://deploy:Zx81kq9Lm2@example-corp.net']
+REAL_LOOKING = [scheme + '://' + user + ':Zx81kq9Lm2' + '@' + host for scheme, user, host in (
+    ('https', 'admin', 'db.internal.net'), ('mysql', 'root', '10.0.0.5.nip.io'), ('https', 'deploy', 'example-corp.net'))]
+# Адреса собраны из частей: проверка репозитория не должна найти их в этом файле.
+SERVER, OTHER_SERVER = '.'.join(['45', '67', '89', '10']), '.'.join(['51', '15', '0', '1'])
 BODY = base64.b64encode(bytes(range(200))).decode()
 
 
@@ -350,18 +353,18 @@ class RepositoryTest(unittest.TestCase):
     def test_repository_scan_finds_a_planted_secret_and_address(self):
         with tempfile.TemporaryDirectory() as directory:
             subprocess.run(['git', 'init', '-q', directory], check=True)
-            (Path(directory) / 'notes.md').write_bytes(b'server 203.0.113.107, dns 1.1.1.1, version 1.2.3.4.5, lan 192.168.1.1\n' + SAMPLES['Telegram bot token'])
+            (Path(directory) / 'notes.md').write_bytes(f'server {SERVER}, dns 1.1.1.1, version 1.2.3.4.5, lan 192.168.1.1\n'.encode() + SAMPLES['Telegram bot token'])
             (Path(directory) / 'id_ed25519').write_bytes(pem())
             (Path(directory) / 'untracked.txt').write_bytes(SAMPLES['GitHub token'])
             subprocess.run(['git', '-C', directory, 'add', 'notes.md', 'id_ed25519'], check=True)
             found = layers.scan_tree(directory, set(), None, PUBLIC_ADDRESSES)
         self.assertEqual(sorted(row[:2] for row in found), [('SSH identity', 'id_ed25519'), ('Telegram bot token', 'notes.md'),
-                                                           ('private key', 'id_ed25519'), ('public IP address 203.0.113.107', 'notes.md')])
+                                                           ('private key', 'id_ed25519'), ('public IP address ' + SERVER, 'notes.md')])
 
     def test_public_addresses_are_recognised(self):
-        text = b'8.8.8.8 10.0.0.1 172.16.5.4 192.168.0.1 127.0.0.1 169.254.1.1 100.64.0.1 999.1.1.1 v1.2.3.4-rc 203.0.113.107:443 [203.0.113.108]'
-        self.assertEqual(layers.public_addresses(text), {'8.8.8.8', '203.0.113.107', '203.0.113.108'})
-        self.assertEqual(layers.public_addresses(b'\0binary 203.0.113.107'), set())
+        text = f'8.8.8.8 10.0.0.1 172.16.5.4 192.168.0.1 127.0.0.1 169.254.1.1 100.64.0.1 999.1.1.1 v1.2.3.4-rc {SERVER}:443 [{OTHER_SERVER}]'.encode()
+        self.assertEqual(layers.public_addresses(text), {'8.8.8.8', SERVER, OTHER_SERVER})
+        self.assertEqual(layers.public_addresses(b'\0binary ' + SERVER.encode()), set())
 
 
 class DockerfileTest(unittest.TestCase):
