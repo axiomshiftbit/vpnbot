@@ -49,8 +49,9 @@ $row = static fn(string $name, int $conns, array $active, array $recent, int $oc
     'username' => $name, 'current_connections' => $conns, 'active_unique_ips_list' => $active,
     'recent_unique_ips_list' => $recent, 'total_octets' => $octets, 'links' => ['classic' => ['tg://secret-must-not-be-stored']],
 ];
-$feed = static function (TelemtActivityBot $b, array $rows, int $boot = 1000) {
-    $b->feed = ['/v1/users' => $rows, '/v1/system/info' => ['process_started_at_epoch_secs' => $boot]];
+$feed = static function (TelemtActivityBot $b, array $rows, int $boot = 1000, ?array $quota = null) {
+    $b->feed = ['/v1/users' => $rows, '/v1/system/info' => ['process_started_at_epoch_secs' => $boot],
+        '/v1/stats/users/quota' => $quota === null ? null : ['users' => $quota]];
     return $b->trackTelemtOnline(true);
 };
 // Сдвиг часов: тест переписывает метки времени в сохранённом состоянии.
@@ -210,14 +211,17 @@ try {
     $check($b->fetches === $fetches + 1, 'устаревший снимок меню обновляет само');
     $list = $labels($b->screen);
     $check(str_contains($b->screen['text'], 'users: 4 · ' . $i['online']['ru'] . ': 2'), 'список показывает число подключённых');
-    $check(str_contains($list[0], 'alice') && str_contains($list[0], '👤2') && str_contains($list[0], $b->fmtBytes(5 * 1024 * 1024)), 'кнопка: соединения и трафик');
+    $check($list[0] === '🟢 alice · 👤2 · ' . $b->fmtBytes(5 * 1024 * 1024), 'кнопка: соединения и трафик');
+    $check(in_array('🟢 <b>x</b> · 👤1 · ' . $b->fmtBytes(2048), $list, true), 'кнопка: одно соединение');
     $check(in_array('🟢 carol', $list, true), 'не подключавшийся — без пометок');
-    $check(in_array('🟢 bob · ' . $b->fmtBytes(100), $list, true), 'отключившийся — трафик без отметки подключения');
+    $check(in_array('🟢 bob · ' . $b->fmtBytes(100), $list, true), 'отключившийся — трафик без отметки «в сети»');
     $check(mb_strlen($list[0]) <= 64, 'подпись кнопки не длиннее прежнего предела');
 
     $b->telemtUserCard('alice');
     $card = $b->screen['text'];
-    $check(str_contains($card, '🟢 ' . $i['online']['ru']) && str_contains($card, '<code>198.51.100.1</code>, <code>2001:db8::1</code>'), 'карточка: онлайн и адреса');
+    $check(str_contains($card, '🟢 ' . $i['online']['ru'] . ' · ' . $i['connections']['ru'] . ': 2')
+        && str_contains($card, '<code>198.51.100.1</code>, <code>2001:db8::1</code>'), 'карточка: онлайн, число соединений и адреса');
+    $check(!str_contains($card, $i['telemt limits quota']['ru'] . ':'), 'без квоты строки квоты в карточке нет');
     $check(str_contains($card, $i['telemt activity traffic']['ru'] . ': ' . $b->fmtBytes(5 * 1024 * 1024)), 'карточка: трафик');
     $log = array_values(array_filter(array_merge(...$b->screen['buttons']), static fn($btn) => str_contains($btn['text'], $i['connection log']['ru'])));
     $check(count($log) === 1 && strlen($log[0]['callback_data']) <= 64, 'кнопка журнала есть и укладывается в лимит Telegram');
@@ -238,6 +242,38 @@ try {
     $check(str_contains($b->screen['text'], $i['no log']['ru']) && $b->telemtActivityOf('alice')['ips'] === [], 'журнал очищен');
     $check($b->telemtActivityOf('alice')['bytes'] === 5 * 1024 * 1024 && in_array('🗑 ' . $i['log cleared']['ru'], $b->answers, true), 'трафик сохранён, действие подтверждено');
     $check(!array_filter(array_merge(...$b->screen['buttons']), static fn($btn) => str_contains($btn['text'], $i['clear log']['ru'])), 'у пустого журнала кнопки очистки нет');
+
+    // ── квота в списке и карточке ───────────────────────────────────────────
+    $b->conf['telemt_user_limits'] = ['alice' => ['quota' => 1000000], 'bob' => ['quota' => 500, 'ips' => 2]];
+    $rows = [$row('alice', 1, ['198.51.100.1'], [], 5 * 1024 * 1024), $row('bob', 0, [], [], 0), $row('<b>x</b>', 0, [], [], 2048), $row('carol', 0, [], [], 0)];
+    $feed($b, $rows, 4000, [['username' => 'alice', 'used_bytes' => 400000, 'last_reset_epoch_secs' => 1], ['username' => 'bob', 'used_bytes' => 500, 'last_reset_epoch_secs' => 1],
+        ['username' => 'carol', 'used_bytes' => 'много'], 'мусор', ['username' => ['x'], 'used_bytes' => 1]]);
+    $check($b->telemtActivityOf('alice')['quota_used'] === 400000 && $b->telemtActivityOf('bob')['quota_used'] === 500, 'расход квоты снят с ядра');
+    $check($b->telemtActivityOf('carol')['quota_used'] === null && $b->telemtActivityOf('<b>x</b>')['quota_used'] === null, 'мусор и пользователи без квоты — без расхода');
+    $b->telemtUsers(); $list = $labels($b->screen);
+    $check(count(array_filter($list, static fn($l) => str_contains($l, 'bob') && str_ends_with($l, ' · ⛔'))) === 1, 'исчерпанная квота отмечена в списке');
+    $check(!array_filter($list, static fn($l) => str_contains($l, 'alice') && str_contains($l, '⛔')), 'неисчерпанная квота не отмечается');
+    $b->telemtUserCard('alice');
+    $check(str_contains($b->screen['text'], $i['telemt limits quota']['ru'] . ': ' . $b->fmtBytes(400000) . ' / ' . $b->fmtBytes(1000000))
+        && !str_contains($b->screen['text'], $i['telemt limits exhausted']['ru']), 'карточка: расход и размер квоты');
+    $b->telemtUserCard('bob');
+    $check(str_contains($b->screen['text'], $i['telemt limits exhausted']['ru']), 'карточка: квота исчерпана');
+    // Квоту сняли в настройках — старый расход не должен рисовать ⛔.
+    unset($b->conf['telemt_user_limits']['bob']['quota']);
+    $b->telemtUsers();
+    $check(!array_filter($labels($b->screen), static fn($l) => str_contains($l, '⛔')), 'без квоты отметки исчерпания нет');
+    $feed($b, $rows, 4000, null);
+    $check($b->telemtActivityOf('alice')['quota_used'] === null, 'ядро перестало отдавать расход — устаревшее значение не хранится');
+    $b->conf['telemt_user_limits'] = ['alice' => ['quota' => 'много']];
+    $b->telemtUsers(); $b->telemtUserCard('alice');
+    $check(str_contains($b->screen['text'], 'alice') && !str_contains($b->screen['text'], $i['telemt limits quota']['ru'] . ':'), 'повреждённые лимиты не мешают открыть список и карточку');
+    unset($b->conf['telemt_user_limits']);
+    $feed($b, [
+        $row('alice', 2, ['198.51.100.1', '2001:db8::1'], [], 5 * 1024 * 1024),
+        $row('bob', 0, [], [], 0),
+        $row('<b>x</b>', 1, ['198.51.100.3'], [], 2048),
+        $row('carol', 0, [], [], 0),
+    ], 4000);
 
     // Имя с разметкой нигде не становится HTML.
     $b->telemtUserCard('<b>x</b>');

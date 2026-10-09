@@ -10,7 +10,7 @@ import json, os, subprocess, sys, time
 HERE = Path(__file__).resolve().parent
 SOURCE, TELEMT_IMAGE, PHP_IMAGE, NGINX_IMAGE = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3], sys.argv[4]
 PHP = 'vpnbot-telemt-php85'  # имя зашито в сценариях
-CASES = ['probe_product', 'probe_activity', 'probe_settings', 'probe_conveyor', 'probe_container', 'probe_extra', 'probe_nginx', 'probe_decoy']
+CASES = ['probe_product', 'probe_activity', 'probe_edges', 'probe_settings', 'probe_conveyor', 'probe_container', 'probe_extra', 'probe_nginx', 'probe_decoy']
 
 
 def docker(*args):

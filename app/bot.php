@@ -16438,14 +16438,12 @@ DNS-over-HTTPS with IP:
             'users: ' . count($users) . ' · ' . $this->i18n('online') . ': ' . $onlineNow . ' · ' . ($page + 1) . ' / ' . $pages,
             'MTProxy: ' . ($relay === '' ? $this->i18n('telemt direct') : self::esc($relay)),
             $this->i18n('telemt users cards')];
+        $quotas = $this->telemtActivityQuotas($conf);
         $data = [];
         foreach (array_slice($users, $page * 8, 8, true) as $name => $secret) {
             $enabled = !array_key_exists($name, $conf['telemt_user_enabled'] ?? []) || !empty($conf['telemt_user_enabled'][$name]);
-            // Точка — разрешён ли доступ; подключения и трафик — справа.
-            $seen = $this->telemtActivityOf((string) $name, $activity);
-            $tail = '';
-            if ($seen && ($seen['conns'] > 0 || $seen['online'])) $tail .= ' · 👤' . max(1, (int) $seen['conns']);
-            if ($seen && $seen['bytes'] > 0) $tail .= ' · ' . $this->fmtBytes((int) $seen['bytes']);
+            // Точка — разрешён ли доступ; «в сети», трафик и квота — справа.
+            $tail = $this->telemtActivityTail($this->telemtActivityOf((string) $name, $activity), $quotas[$name] ?? 0);
             $data[] = [['text' => ($enabled ? '🟢 ' : '🔴 ') . mb_strimwidth((string) $name, 0, 60 - mb_strlen($tail), '…') . $tail,
                 'callback_data' => $this->telemtUserCallback((string) $name, $page, $relay)]];
         }
@@ -16522,7 +16520,7 @@ DNS-over-HTTPS with IP:
         $native = $this->linkTelemt($name, $rl);
         $text = ['Menu → TeleMT → ' . $this->i18n('telemt users'), '<b>' . self::esc(mb_strimwidth($name, 0, 256, '…')) . '</b> · ' . $this->telemtState($enabled)];
         if (!$enabled) $text[] = $this->i18n('telemt user disabled');
-        $text[] = implode("\n", $this->telemtActivityLines($name));
+        $text[] = implode("\n", $this->telemtActivityLines($name, $this->telemtActivityQuotas($conf)[$name] ?? 0));
         $text[] = $this->i18n('telemt user restart note');
         $text[] = '<b>MTProxy</b> · ' . ($relay === '' ? $this->i18n('telemt direct') : self::esc($relay)) . "\n<code>" . self::esc($native) . '</code>';
         $data = [[['text' => '🔗 MTProxy', 'url' => $native]]];

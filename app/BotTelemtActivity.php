@@ -71,16 +71,23 @@ trait BotTelemtActivity
         if (!$names) {
             return false;
         }
-        $api  = $this->telemtApiFetch(['/v1/users', '/v1/system/info']);
+        $api  = $this->telemtApiFetch(['/v1/users', '/v1/system/info', '/v1/stats/users/quota']);
         $rows = $api['/v1/users'] ?? null;
         if (!is_array($rows)) {
             return false;
         }
         $boot = (int) ($api['/v1/system/info']['process_started_at_epoch_secs'] ?? 0);
+        // Расход квоты ядро отдаёт только для пользователей с квотой.
+        $quota = [];
+        foreach ((array) ($api['/v1/stats/users/quota']['users'] ?? []) as $item) {
+            if (is_array($item) && is_string($item['username'] ?? null) && is_int($item['used_bytes'] ?? null)) {
+                $quota[$item['username']] = max(0, $item['used_bytes']);
+            }
+        }
 
         // Меню и cron — разные процессы: без блокировки два снимка подряд
         // дважды прибавили бы один и тот же прирост трафика.
-        return (bool) $this->withLock('telemtactivity', function () use ($rows, $names, $boot) {
+        return (bool) $this->withLock('telemtactivity', function () use ($rows, $names, $boot, $quota) {
             $state = $this->getTelemtActivity();
             $now   = time();
             // Ядро перезапускалось — его счётчик начался с нуля. Без времени
@@ -100,6 +107,7 @@ trait BotTelemtActivity
                 $user['bytes'] += $raw >= $prev ? $raw - $prev : $raw;
                 $user['raw']    = $raw;
                 $user['conns']  = max(0, (int) ($row['current_connections'] ?? 0));
+                $user['quota_used'] = $quota[$name] ?? null;
                 $active = self::telemtActivityIps($row['active_unique_ips_list'] ?? []);
                 $user['online'] = $active;
                 if ($user['conns'] > 0 || $active) {
@@ -164,7 +172,7 @@ trait BotTelemtActivity
         if (!isset($state['users'][$name])) {
             return null;
         }
-        $user = (array) $state['users'][$name] + ['bytes' => 0, 'since' => 0, 'last' => 0, 'conns' => 0, 'online' => [], 'ips' => []];
+        $user = (array) $state['users'][$name] + ['bytes' => 0, 'since' => 0, 'last' => 0, 'conns' => 0, 'online' => [], 'ips' => [], 'quota_used' => null];
         $user['fresh'] = time() - (int) $state['at'] <= self::TELEMT_ACTIVITY_FRESH;
         if (!$user['fresh']) {
             $user['conns'] = 0;
@@ -190,8 +198,40 @@ trait BotTelemtActivity
         }, 5);
     }
 
-    // Строки карточки пользователя: состояние, адреса, трафик.
-    public function telemtActivityLines(string $name): array
+    // Размеры квот для отметок в меню. Повреждённые лимиты останавливают ядро
+    // (telemtToml), но список и карточка должны открываться, чтобы это исправить.
+    public function telemtActivityQuotas(array $conf): array
+    {
+        try {
+            return array_map(static fn($row) => (int) ($row['quota'] ?? 0), $this->telemtLimitsOf($conf));
+        } catch (Throwable $error) {
+            return [];
+        }
+    }
+
+    // Подпись в списке: «👤2» — в сети, два соединения; затем трафик и ⛔,
+    // если квота исчерпана и ядро новые соединения не принимает.
+    public function telemtActivityTail(?array $user, int $quota): string
+    {
+        if (!$user) {
+            return '';
+        }
+        $tail = '';
+        if ($user['conns'] > 0 || $user['online']) {
+            $tail .= ' · 👤' . max(1, (int) $user['conns']);
+        }
+        if ($user['bytes'] > 0) {
+            $tail .= ' · ' . $this->fmtBytes((int) $user['bytes']);
+        }
+        if ($quota > 0 && $user['quota_used'] !== null && $user['quota_used'] >= $quota) {
+            $tail .= ' · ⛔';
+        }
+
+        return $tail;
+    }
+
+    // Строки карточки пользователя: состояние, адреса, трафик, квота.
+    public function telemtActivityLines(string $name, int $quota = 0): array
     {
         $this->telemtActivityRefresh();
         $user = $this->telemtActivityOf($name);
@@ -209,11 +249,17 @@ trait BotTelemtActivity
                 . ($user['last'] ? ' · ' . $this->i18n('last seen') . ': ' . date('d.m.Y H:i', (int) $user['last']) : '');
         }
 
-        return [
+        $lines = [
             $line,
             $this->i18n('telemt activity traffic') . ': ' . $this->fmtBytes((int) $user['bytes'])
                 . ($user['since'] ? ' · ' . $this->i18n('telemt activity since') . ' ' . date('d.m.Y', (int) $user['since']) : ''),
         ];
+        if ($quota > 0 && $user['quota_used'] !== null) {
+            $lines[] = $this->i18n('telemt limits quota') . ': ' . $this->fmtBytes((int) $user['quota_used']) . ' / ' . $this->fmtBytes($quota)
+                . ($user['quota_used'] >= $quota ? "\n" . $this->i18n('telemt limits exhausted') : '');
+        }
+
+        return $lines;
     }
 
     public function telemtUserLog(string $name, int $page = 0, string $relay = '', bool $clear = false): void
