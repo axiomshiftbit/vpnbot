@@ -179,4 +179,119 @@ trait BotHysteria
         $buttons[] = [['text' => 'Удалить', 'callback_data' => "/hyUser $id delete"], ['text' => $this->i18n('back'), 'callback_data' => '/hyUsers']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
     }
+
+    // ── Тонкие настройки ядра (Hysteria 2.8–2.13) ───────────────────────────
+    // Обфускация: Salamander превращает пакеты в шум; Gecko (с 2.9.2,
+    // экспериментальная) дополнительно дробит пакеты рукопожатия QUIC. Тип
+    // обязан совпадать у сервера и клиента и уходит в hy2://-ссылку.
+    public const HY_OBFS_TYPES = ['salamander', 'gecko'];
+    // Управление перегрузкой без Brutal (с 2.8.0): три профиля BBR и Reno.
+    public const HY_CC = [
+        'bbr'              => ['type' => 'bbr', 'bbrProfile' => 'standard'],
+        'bbr-conservative' => ['type' => 'bbr', 'bbrProfile' => 'conservative'],
+        'bbr-aggressive'   => ['type' => 'bbr', 'bbrProfile' => 'aggressive'],
+        'reno'             => ['type' => 'reno'],
+    ];
+
+    public function hyObfsType(array $pac): string
+    {
+        return in_array($pac['hysteria_obfs_type'] ?? '', self::HY_OBFS_TYPES, true) ? $pac['hysteria_obfs_type'] : 'salamander';
+    }
+
+    public function hyCc(array $pac): string
+    {
+        return isset(self::HY_CC[$pac['hysteria_cc'] ?? '']) ? $pac['hysteria_cc'] : 'bbr';
+    }
+
+    // Gecko старое ядро не знает и с таким конфигом не стартует вовсе.
+    public function hyGeckoSupported(): bool
+    {
+        return preg_match('~\d+(?:\.\d+)+~', html_entity_decode($this->hysteriaVersion()), $m) === 1 && version_compare($m[0], '2.9.2', '>=');
+    }
+
+    // Единственное место, где настройки из pac попадают в hysteria.yaml.
+    public function hyApplyTuning(array $c, array $pac): array
+    {
+        if (!empty($pac['hysteria_obfs'])) {
+            $type = $this->hyObfsType($pac);
+            $c['obfs'] = ['type' => $type, $type => ['password' => $pac['hysteria_obfs']]];
+        } else {
+            unset($c['obfs']);
+        }
+        if (!empty($pac['hysteria_bw_up']) && !empty($pac['hysteria_bw_down'])) {
+            $c['bandwidth'] = ['up' => $pac['hysteria_bw_up'], 'down' => $pac['hysteria_bw_down']];
+            // Компенсация потерь Brutal шлёт быстрее заданной полосы; на
+            // некоторых каналах её отключение делает скорость ровнее (с 2.10.0).
+            if (!empty($pac['hysteria_no_loss_comp'])) $c['bandwidth']['disableLossCompensation'] = true;
+        } else {
+            unset($c['bandwidth']);
+        }
+        $c['congestion'] = self::HY_CC[$this->hyCc($pac)];
+        // Сервер не верит полосе, заявленной клиентом, и применяет свой
+        // контроллер: клиент не может выпросить себе Brutal.
+        if (!empty($pac['hysteria_ignore_client_bw'])) $c['ignoreClientBandwidth'] = true;
+        else unset($c['ignoreClientBandwidth']);
+        // Sniff достаёт домен из HTTP/TLS/QUIC и заменяет им адрес назначения:
+        // имя резолвит AdGuard сервера, и его фильтры действуют, даже когда
+        // клиент прислал готовый IP.
+        if (!empty($pac['hysteria_sniff'])) $c['sniff'] = ['enable' => true, 'timeout' => '2s'];
+        else unset($c['sniff']);
+
+        return $c;
+    }
+
+    public function hyTune(string $action = ''): void
+    {
+        $pac = $this->getPacConf();
+        $before = $pac;
+        $notice = '';
+        switch ($action) {
+            case 'obfs':
+                if (empty($pac['hysteria_obfs'])) break;
+                if ($this->hyObfsType($pac) === 'salamander' && !$this->hyGeckoSupported()) {
+                    $notice = 'Gecko требует ядро Hysteria 2.9.2 или новее: обновите образ.';
+                    break;
+                }
+                $pac['hysteria_obfs_type'] = $this->hyObfsType($pac) === 'gecko' ? 'salamander' : 'gecko';
+                break;
+            case 'cc':
+                $keys = array_keys(self::HY_CC);
+                $pac['hysteria_cc'] = $keys[(array_search($this->hyCc($pac), $keys, true) + 1) % count($keys)];
+                break;
+            case 'loss':
+            case 'ignorebw':
+            case 'sniff':
+                $key = ['loss' => 'hysteria_no_loss_comp', 'ignorebw' => 'hysteria_ignore_client_bw', 'sniff' => 'hysteria_sniff'][$action];
+                if (empty($pac[$key])) $pac[$key] = 1;
+                else unset($pac[$key]);
+                break;
+        }
+        if ($pac !== $before) {
+            $this->setPacConf($pac);
+            if (!$this->restartHysteria()) {
+                // Конфиг не записан или ядро его не приняло: настройку не оставляем.
+                $this->setPacConf($before);
+                $pac = $before;
+                $notice = 'Не удалось применить настройку: конфигурация Hysteria не изменена.';
+            }
+        }
+        $brutal = !empty($pac['hysteria_bw_up']) && !empty($pac['hysteria_bw_down']);
+        $obfs = !empty($pac['hysteria_obfs']);
+        $on = fn($value) => $this->i18n($value ? 'on' : 'off');
+        $text = ['Menu -> Hysteria -> ' . $this->i18n('hy tune')];
+        if ($notice !== '') $text[] = '⚠️ ' . $notice;
+        $text[] = '<b>obfs</b>: ' . ($obfs ? $this->hyObfsType($pac) : $this->i18n('off')) . "\n" . $this->i18n('hy tune obfs');
+        $text[] = '<b>cc</b>: ' . ($brutal ? 'brutal · ' : '') . $this->hyCc($pac) . "\n" . $this->i18n('hy tune cc');
+        $text[] = '<b>' . $this->i18n('hy tune loss') . '</b>: ' . $on(empty($pac['hysteria_no_loss_comp'])) . "\n" . $this->i18n('hy tune loss note');
+        $text[] = '<b>' . $this->i18n('hy tune ignorebw') . '</b>: ' . $on(!empty($pac['hysteria_ignore_client_bw'])) . "\n" . $this->i18n('hy tune ignorebw note');
+        $text[] = '<b>sniff</b>: ' . $on(!empty($pac['hysteria_sniff'])) . "\n" . $this->i18n('hy tune sniff note');
+        $data = [];
+        if ($obfs) $data[] = [['text' => 'obfs: ' . $this->hyObfsType($pac), 'callback_data' => '/hyTune obfs']];
+        $data[] = [['text' => 'cc: ' . $this->hyCc($pac), 'callback_data' => '/hyTune cc']];
+        $data[] = [['text' => $this->i18n('hy tune loss') . ': ' . $on(empty($pac['hysteria_no_loss_comp'])), 'callback_data' => '/hyTune loss']];
+        $data[] = [['text' => $this->i18n('hy tune ignorebw') . ': ' . $on(!empty($pac['hysteria_ignore_client_bw'])), 'callback_data' => '/hyTune ignorebw']];
+        $data[] = [['text' => 'sniff: ' . $on(!empty($pac['hysteria_sniff'])), 'callback_data' => '/hyTune sniff']];
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/menu hy']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
+    }
 }

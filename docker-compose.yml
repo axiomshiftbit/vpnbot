@@ -1015,7 +1015,7 @@ services:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.1}
                 # :-default обязателен: пустая подстановка перекрыла бы дефолт
                 # ARG, и FROM с пустым тегом уронил бы сборку.
-                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.12.3}
+                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.13.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro

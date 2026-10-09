@@ -994,7 +994,12 @@ class Bot
             case preg_match('~^/telemtUsersPage (\d+)(?: ([\w.\-]+))?$~', $this->input['callback'], $m):
                 $this->telemtUsers($m[2] ?? '', (int) $m[1]);
                 break;
-            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|reset|log|logclear|qreset-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/telemtUsersRefresh (\d+)(?: ([\w.\-]+))?$~', $this->input['callback'], $m):
+                // Кнопка «обновить»: свежий снимок с ядра, а не кеш меню.
+                $this->trackTelemtOnline(true);
+                $this->telemtUsers($m[2] ?? '', (int) $m[1]);
+                break;
+            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|reset|log|logclear|refresh|qreset-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
                 $this->telemtUserAction($m[1], (int) $m[2], $m[3], $m[4] ?? '');
                 break;
             case preg_match('~^/tu ([tdr]) (\w+) (\d+) ([\w.\-]+)$~', $this->input['callback'], $m):
@@ -1281,6 +1286,9 @@ class Bot
                 break;
             case preg_match('~^/changeHySNI$~', $this->input['callback'], $m):
                 $this->changeHySNI();
+                break;
+            case preg_match('~^/hyTune(?: (obfs|cc|loss|ignorebw|sniff))?$~', $this->input['callback'], $m):
+                $this->hyTune($m[1] ?? '');
                 break;
             case preg_match('~^/toggleHyObfs$~', $this->input['callback'], $m):
                 $this->toggleHyObfs();
@@ -4689,28 +4697,12 @@ class Bot
         $c = self::hysteriaGuard($c);
         $c['auth']['password'] = $pac['hysteria_pass'] ?? '';
 
-        // Salamander obfs — XOR-обфускация QUIC-пакетов общим секретом, ломает
-        // QUIC-фингерпринтинг и активные пробы. Пароль ОБЯЗАН совпадать у всех
-        // клиентов (идёт в hy2://-ссылку). Пусто = obfs выключен.
-        if (!empty($pac['hysteria_obfs'])) {
-            $c['obfs'] = [
-                'type'       => 'salamander',
-                'salamander' => ['password' => $pac['hysteria_obfs']],
-            ];
-        } else {
-            unset($c['obfs']);
-        }
-
+        // obfs — обфускация QUIC-пакетов общим секретом, ломает QUIC-фингерпринтинг
+        // и активные пробы. Пароль и тип ОБЯЗАНЫ совпадать у всех клиентов (идут в
+        // hy2://-ссылку). Пусто = obfs выключен.
         // bandwidth включает congestion control Brutal (агрессивный, лучше на
-        // потерях/перегруженных каналах). Без значений — остаётся BBR.
-        if (!empty($pac['hysteria_bw_up']) && !empty($pac['hysteria_bw_down'])) {
-            $c['bandwidth'] = [
-                'up'   => $pac['hysteria_bw_up'],
-                'down' => $pac['hysteria_bw_down'],
-            ];
-        } else {
-            unset($c['bandwidth']);
-        }
+        // потерях/перегруженных каналах). Без значений — контроллер из hysteria_cc.
+        $c = $this->hyApplyTuning($c, $pac);
 
         // Masquerade decoy host (server-only): reverse-proxy для зондов на тот
         // же UDP-порт. Кастомный hysteria_sni имеет приоритет над доменом; см.
@@ -4816,7 +4808,7 @@ class Bot
             $q['insecure'] = '1';
         }
         if (!empty($pac['hysteria_obfs'])) {
-            $q['obfs']          = 'salamander';
+            $q['obfs']          = $this->hyObfsType($pac);
             $q['obfs-password'] = $pac['hysteria_obfs'];
         }
         $query = $q ? '?' . http_build_query($q) : '';
@@ -16460,6 +16452,9 @@ DNS-over-HTTPS with IP:
             }
             array_push($data, ...array_chunk($choices, 2));
         }
+        // Длинное имя relay не помещается в 64 байта callback_data: обновляем прямой список.
+        $refresh = "/telemtUsersRefresh $page$rarg";
+        $data[] = [['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => strlen($refresh) <= 64 ? $refresh : "/telemtUsersRefresh $page"]];
         $data[] = [['text' => $this->i18n('telemt add user'), 'callback_data' => '/telemtAddUser']];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/telemt']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
@@ -16488,6 +16483,7 @@ DNS-over-HTTPS with IP:
         switch ($action) {
             case 'limits': $this->telemtUserLimits($name, $page, $relay); return;
             case 'log': $this->telemtUserLog($name, $page, $relay); return;
+            case 'refresh': $this->trackTelemtOnline(true); break;
             case 'logclear': $this->telemtUserLog($name, $page, $relay, true); return;
             case 'quota': $this->telemtLimitPrompt($name, $page, $relay, 'quota'); return;
             case 'ips': $this->telemtLimitPrompt($name, $page, $relay, 'ips'); return;
@@ -16542,6 +16538,7 @@ DNS-over-HTTPS with IP:
             $data[] = [['text' => $this->i18n('telemt web'), 'callback_data' => '/telemtWeb']];
         }
         $data[] = $qr;
+        $data[] = [['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'refresh')]];
         $data[] = [['text' => $this->i18n('telemt limits'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'limits')]];
         $data[] = [['text' => '📜 ' . $this->i18n('connection log'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'log')]];
         $data[] = [['text' => $this->i18n($enabled ? 'telemt user disable' : 'telemt user enable'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'toggle')]];
@@ -23816,7 +23813,7 @@ DNS-over-HTTPS with IP:
         $insec  = !empty($pac['hysteria_insecure']);
         $bwUp   = $pac['hysteria_bw_up']   ?? '';
         $bwDown = $pac['hysteria_bw_down'] ?? '';
-        $cc     = ($bwUp && $bwDown) ? "brutal ($bwUp / $bwDown)" : 'bbr';
+        $cc     = ($bwUp && $bwDown) ? "brutal ($bwUp / $bwDown)" : $this->hyCc($pac);
         $hop    = $pac['hysteria_hop'] ?? '';
         $link   = $this->linkHysteria();
 
@@ -23825,7 +23822,7 @@ DNS-over-HTTPS with IP:
         $text[] = "server: " . ($port ? "<code>$domain:$port</code>" : 'port unavailable');
         $text[] = 'Общий пароль: <code>' . self::esc($pass) . '</code>';
         $text[] = "masq (decoy): <code>$sni</code>";
-        $text[] = "obfs: " . ($obfsOn ? "salamander <code>$obfs</code>" : $this->i18n('off'));
+        $text[] = "obfs: " . ($obfsOn ? $this->hyObfsType($pac) . " <code>$obfs</code>" : $this->i18n('off'));
         $text[] = "cc: <code>$cc</code>";
         $text[] = "insecure: " . $this->i18n($insec ? 'on' : 'off');
         $text[] = "port hopping: " . ($hop !== '' ? "<code>$hop</code>" : $this->i18n('off'));
@@ -23894,6 +23891,10 @@ DNS-over-HTTPS with IP:
             ];
         }
         $data[] = [
+            [
+                'text'          => $this->i18n('hy tune'),
+                'callback_data' => '/hyTune',
+            ],
             [
                 'text'          => 'config',
                 'callback_data' => "/hyConfig",

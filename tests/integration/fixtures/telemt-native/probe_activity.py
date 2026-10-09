@@ -48,6 +48,11 @@ try:
  n1=c.native('127.0.0.2');n2=c.native('127.0.0.3');nb=c.native('127.0.0.4',p.BOB)
  check('clients_pass_traffic',n1.echo(b'x'*5000)==b'x'*5000 and n2.echo(b'y'*100)==b'y'*100 and nb.echo(b'z'*300)==b'z'*300)
  check('core_reports_connections',p.wait(lambda:core_user()['current_connections']==2 and core_user()['total_octets']==10200,5),core=core_user())
+ # Кнопки «обновить» сами снимают состояние с ядра: отдельного опроса до них не было.
+ out=call('click',op='refresh');check('card_refresh_button_shows_online','онлайн' in out['screen']['text'] and '<code>127.0.0.2</code>' in out['screen']['text'] and out['activity']['users']['alice']['conns']==2,screen=out['screen']['text'][:300])
+ nb.close();check('bob_disconnected',p.wait(lambda:core_user('bob')['current_connections']==0,5))
+ out=call('users-refresh');check('list_refresh_button_updates_status','онлайн: 1' in out['screen']['text'] and not any('bob' in row[0]['text'] and '👤' in row[0]['text'] for row in out['screen']['buttons']),text=out['screen']['text'][:200])
+ nb=c.native('127.0.0.4',p.BOB);check('bob_reconnected',nb.echo(b'')==b'' and p.wait(lambda:core_user('bob')['current_connections']==1,5))
  a=track()
  check('online_connections_and_addresses',a['conns']==2 and sorted(a['online'])==['127.0.0.2','127.0.0.3'],user=a)
  check('traffic_counts_both_directions',a['bytes']==10200,bytes=a['bytes'])

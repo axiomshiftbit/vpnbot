@@ -60,6 +60,7 @@ try {
  case 'track':$extra['tracked']=$b->trackTelemtOnline(true);break;
  case 'card':$b->click($b->telemtUserCallback($name,1,''));break;
  case 'users':$b->click('/telemtUsersPage 0');break;
+ case 'users-refresh':$b->click('/telemtUsersRefresh 0');break;
  case 'service':$b->toggleTelemtService();break;
  case 'backup':file_put_contents($b->root.'/backup.json',json_encode($b->telemtBackupSnapshot()));break;
  case 'decoy':$extra['error']=$b->telemtWebDecoyApply((string)$q['value']);break;

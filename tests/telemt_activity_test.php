@@ -243,6 +243,47 @@ try {
     $check($b->telemtActivityOf('alice')['bytes'] === 5 * 1024 * 1024 && in_array('🗑 ' . $i['log cleared']['ru'], $b->answers, true), 'трафик сохранён, действие подтверждено');
     $check(!array_filter(array_merge(...$b->screen['buttons']), static fn($btn) => str_contains($btn['text'], $i['clear log']['ru'])), 'у пустого журнала кнопки очистки нет');
 
+    // ── кнопка «обновить»: свежий снимок, а не кеш меню ─────────────────────
+    $feed($b, [$row('alice', 0, [], [], 5 * 1024 * 1024), $row('bob', 0, [], [], 0), $row('<b>x</b>', 0, [], [], 2048), $row('carol', 0, [], [], 0)], 4000);
+    $b->telemtUsers('', 0);
+    $refresh = array_values(array_filter(array_merge(...$b->screen['buttons']), static fn($btn) => str_contains($btn['text'], $i['refresh']['ru'])));
+    $check(count($refresh) === 1 && $refresh[0]['callback_data'] === '/telemtUsersRefresh 0', 'в списке есть кнопка «обновить»');
+    $check(str_contains($b->screen['text'], $i['online']['ru'] . ': 0'), 'до обновления никто не в сети');
+    // Пользователь подключился сразу после снимка: меню ещё показывает кеш.
+    $b->feed['/v1/users'] = [$row('alice', 3, ['198.51.100.1'], [], 5 * 1024 * 1024), $row('bob', 0, [], [], 0), $row('<b>x</b>', 0, [], [], 2048), $row('carol', 0, [], [], 0)];
+    $b->telemtUsers('', 0);
+    $check(str_contains($b->screen['text'], $i['online']['ru'] . ': 0'), 'повторное открытие в течение 5 с берёт кеш');
+    $fetches = $b->fetches;
+    $b->click($refresh[0]['callback_data']);
+    $check($b->fetches === $fetches + 1 && str_contains($b->screen['text'], $i['online']['ru'] . ': 1'), 'кнопка «обновить» опрашивает ядро и показывает подключившегося');
+    $check(count(array_filter($labels($b->screen), static fn($l) => str_contains($l, 'alice') && str_contains($l, '👤3'))) === 1, 'отметка «в сети» появилась на кнопке пользователя');
+    $b->feed['/v1/users'][0] = $row('alice', 0, [], [], 6 * 1024 * 1024);
+    $b->telemtUserCard('alice');
+    $cardRefresh = array_values(array_filter(array_merge(...$b->screen['buttons']), static fn($btn) => str_contains($btn['text'], $i['refresh']['ru'])));
+    $check(count($cardRefresh) === 1 && strlen($cardRefresh[0]['callback_data']) <= 64 && str_contains($b->screen['text'], '🟢 ' . $i['online']['ru']), 'в карточке есть «обновить», пока показан кеш');
+    $fetches = $b->fetches;
+    $b->click($cardRefresh[0]['callback_data']);
+    $check($b->fetches === $fetches + 1 && str_contains($b->screen['text'], '⚪ ' . $i['offline']['ru']) && str_contains($b->screen['text'], $b->fmtBytes(6 * 1024 * 1024)),
+        'обновление карточки показывает отключение и новый трафик');
+    $check(str_contains($b->screen['text'], 'alice') && !str_contains($b->screen['text'], 'users:'), 'после обновления остаёмся в карточке');
+    // Страница и relay сохраняются; слишком длинное имя relay не ломает кнопку.
+    $b->conf['telemt_relays'] = ['r1' => ['address' => '203.0.113.5:443'], str_repeat('r', 60) => ['address' => '203.0.113.6:443']];
+    $find = static fn(array $screen) => array_values(array_filter(array_merge(...$screen['buttons']), static fn($btn) => str_starts_with($btn['callback_data'], '/telemtUsersRefresh')))[0]['callback_data'];
+    $b->telemtUsers('r1', 0);
+    $check($find($b->screen) === '/telemtUsersRefresh 0 r1', 'обновление сохраняет выбранный relay');
+    $b->click('/telemtUsersRefresh 0 r1');
+    $check(str_contains($b->screen['text'], 'MTProxy: r1'), 'после обновления relay тот же');
+    $b->telemtUsers(str_repeat('r', 60), 0);
+    $check(strlen($find($b->screen)) <= 64, 'длинное имя relay: callback в пределах лимита Telegram');
+    foreach (['/telemtUsersRefresh', '/telemtUsersRefresh x', '/telemtUsersRefresh 0 a b', '/telemtUsersRefresh 0 ../x'] as $bad) {
+        $fetches = $b->fetches; $b->click($bad);
+        $check($b->fetches === $fetches, "«{$bad}» не опрашивает ядро");
+    }
+    unset($b->conf['telemt_relays']);
+    $b->running = false; $b->click('/telemtUsersRefresh 0');
+    $check(str_contains($b->screen['text'], 'users: 4'), 'обновление при остановленном сервисе не ломает список');
+    $b->running = true;
+
     // ── квота в списке и карточке ───────────────────────────────────────────
     $b->conf['telemt_user_limits'] = ['alice' => ['quota' => 1000000], 'bob' => ['quota' => 500, 'ips' => 2]];
     $rows = [$row('alice', 1, ['198.51.100.1'], [], 5 * 1024 * 1024), $row('bob', 0, [], [], 0), $row('<b>x</b>', 0, [], [], 2048), $row('carol', 0, [], [], 0)];
