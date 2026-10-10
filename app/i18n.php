@@ -542,6 +542,10 @@ $i = [
         'en' => 'Set the WebDAV address, e.g. https://webdav.yandex.ru',
         'ru' => 'Задайте адрес WebDAV, например https://webdav.yandex.ru',
     ],
+    'xdrive unresolved'  => [
+        'en' => 'The storage address does not resolve right now (DNS). Check the name or try again later.',
+        'ru' => 'Адрес хранилища сейчас не разрешается (DNS). Проверьте имя или повторите позже.',
+    ],
     'xdrive private url' => [
         'en' => 'The storage address points to a private or local network; an external storage is required.',
         'ru' => 'Адрес хранилища ведёт в частную или локальную сеть; нужно внешнее хранилище.',
@@ -1841,6 +1845,130 @@ $i = [
     'history'  => [
         'en' => 'history',
         'ru' => 'история',
+    ],
+    'ovpn bad name'  => [
+        'en' => 'Invalid name: use Latin letters, digits, dot, dash and underscore.',
+        'ru' => 'Недопустимое имя: используйте латинские буквы, цифры, точку, дефис и подчёркивание.',
+    ],
+    'ovpn long name'  => [
+        'en' => 'The name is too long (40 characters at most).',
+        'ru' => 'Имя слишком длинное (не более 40 символов).',
+    ],
+    'ovpn user exists'  => [
+        'en' => 'a client with this name already exists',
+        'ru' => 'клиент с таким именем уже есть',
+    ],
+    'ovpn issue failed'  => [
+        'en' => 'the certificate was not issued — see the OpenVPN log (button "log tail")',
+        'ru' => 'сертификат не выпущен — причина в журнале OpenVPN (кнопка «журнал»)',
+    ],
+    'ovpn pki busy'  => [
+        'en' => 'the PKI is busy (the container is initialising) — try again in a minute',
+        'ru' => 'PKI занят (контейнер инициализируется) — повторите через минуту',
+    ],
+    'ovpn pki not ready'  => [
+        'en' => 'The PKI is not ready — restart OpenVPN from this menu and try again.',
+        'ru' => 'PKI не готов — нажмите «перезагрузка» в этом меню и повторите.',
+    ],
+    'ovpn pki incomplete user'  => [
+        'en' => 'the client files are incomplete — reissue the certificate or restart OpenVPN',
+        'ru' => 'файлы клиента неполные — перевыпустите сертификат или перезапустите OpenVPN',
+    ],
+    'ovpn pki missing'  => [
+        'en' => 'PKI is incomplete, missing',
+        'ru' => 'PKI неполный, не хватает',
+    ],
+    'ovpn pki restart'  => [
+        'en' => 'restart the ovpn container to finish the initialisation: <code>docker compose restart ovpn</code>',
+        'ru' => 'перезапустите контейнер ovpn, чтобы завершить инициализацию: <code>docker compose restart ovpn</code>',
+    ],
+    'ovpn clients'  => [
+        'en' => 'clients',
+        'ru' => 'клиенты',
+    ],
+    'ovpn proto'  => [
+        'en' => 'protocol',
+        'ru' => 'протокол',
+    ],
+    'ovpn gateway'  => [
+        'en' => 'all traffic via VPN',
+        'ru' => 'весь трафик через VPN',
+    ],
+    'ovpn routes'  => [
+        'en' => 'networks',
+        'ru' => 'сети',
+    ],
+    'ovpn mss auto'  => [
+        'en' => 'auto',
+        'ru' => 'авто',
+    ],
+    'ovpn split empty'  => [
+        'en' => '"All traffic via VPN" is off and no networks are set: clients connect, but only DNS goes through the tunnel. Add networks or turn the switch on.',
+        'ru' => '«Весь трафик через VPN» выключен, а сети не заданы: клиенты подключаются, но через туннель идёт только DNS. Добавьте сети или включите переключатель.',
+    ],
+    'ovpn routes hint'  => [
+        'en' => 'Networks that clients reach through the VPN, in CIDR form, separated by spaces, commas or new lines — for example <code>203.0.113.0/24 198.51.100.7</code>. An address without a prefix is a single host. Send <code>-</code> to clear the list. Clients receive the change on the next connection; current sessions are restarted.',
+        'ru' => 'Сети, в которые клиенты ходят через VPN, в записи CIDR через пробел, запятую или с новой строки — например <code>203.0.113.0/24 198.51.100.7</code>. Адрес без префикса — один узел. Отправьте <code>-</code>, чтобы очистить список. Клиенты получают изменение при следующем подключении; текущие сессии перезапускаются.',
+    ],
+    'ovpn routes bad'  => [
+        'en' => 'Not an IPv4 network',
+        'ru' => 'Это не сеть IPv4',
+    ],
+    'ovpn routes many'  => [
+        'en' => 'Too many networks, the limit is',
+        'ru' => 'Слишком много сетей, не более',
+    ],
+    'ovpn conf markers'  => [
+        'en' => 'server.conf has no markers for this setting and the migration did not add them — see the OpenVPN log.',
+        'ru' => 'В server.conf нет маркеров этой настройки, и миграция их не добавила — смотрите журнал OpenVPN.',
+    ],
+    'ovpn renew'  => [
+        'en' => 'reissue certificate',
+        'ru' => 'перевыпустить сертификат',
+    ],
+    'ovpn renew confirm'  => [
+        'en' => 'The current certificate will be revoked and a new one issued under the same name, valid for 10 years. The old .ovpn file stops working at once and the active session is closed; the bot sends a new .ovpn that must be delivered to the client. Blocking, the traffic counter and the limit are kept.',
+        'ru' => 'Действующий сертификат будет отозван, и под тем же именем выпущен новый, на 10 лет. Прежний файл .ovpn сразу перестанет работать, активная сессия закроется; бот пришлёт новый .ovpn, который нужно передать клиенту. Блокировка, счётчик трафика и лимит сохраняются.',
+    ],
+    'ovpn renew failed'  => [
+        'en' => 'The certificate was not revoked, nothing has changed — see the OpenVPN log.',
+        'ru' => 'Сертификат отозвать не удалось, ничего не изменилось — смотрите журнал OpenVPN.',
+    ],
+    'ovpn renew lost'  => [
+        'en' => 'The old certificate is revoked, but the new one was not issued — see the OpenVPN log. Add the client again:',
+        'ru' => 'Старый сертификат отозван, а новый выпустить не удалось — причина в журнале OpenVPN. Добавьте клиента заново:',
+    ],
+    'ovpn traffic total'  => [
+        'en' => 'traffic total',
+        'ru' => 'трафик всего',
+    ],
+    'ovpn traffic since'  => [
+        'en' => 'since',
+        'ru' => 'с',
+    ],
+    'ovpn traffic reset'  => [
+        'en' => 'reset counter',
+        'ru' => 'сбросить счётчик',
+    ],
+    'ovpn limit'  => [
+        'en' => 'traffic limit',
+        'ru' => 'лимит трафика',
+    ],
+    'ovpn limit hint'  => [
+        'en' => 'Traffic limit in gigabytes (download plus upload), for example <code>50</code> or <code>0.5</code>. <code>0</code> removes the limit. When the counter reaches the limit, the client is blocked and you get a message; to let the client back in, raise the limit or reset the counter and press "enable".',
+        'ru' => 'Лимит трафика в гигабайтах (приём плюс отдача), например <code>50</code> или <code>0.5</code>. <code>0</code> — снять лимит. Когда счётчик дойдёт до лимита, клиент блокируется, а вам приходит сообщение; чтобы вернуть доступ, увеличьте лимит или сбросьте счётчик и нажмите «разблокировать».',
+    ],
+    'ovpn limit bad'  => [
+        'en' => 'Enter a number of gigabytes, for example 50 or 0.5.',
+        'ru' => 'Введите число гигабайт, например 50 или 0.5.',
+    ],
+    'ovpn limit reached'  => [
+        'en' => 'the traffic limit is reached, the client is blocked',
+        'ru' => 'лимит трафика исчерпан, клиент заблокирован',
+    ],
+    'ovpn limit enable'  => [
+        'en' => 'The traffic limit is used up. Raise the limit or reset the counter first.',
+        'ru' => 'Лимит трафика исчерпан. Сначала увеличьте лимит или сбросьте счётчик.',
     ],
     'confirm delete ovpn'  => [
         'en' => 'delete client? this revokes the certificate irreversibly',

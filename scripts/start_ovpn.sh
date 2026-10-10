@@ -185,8 +185,19 @@ tls-version-min 1.2
 
 server $NET $MASK
 ifconfig-pool-persist /etc/openvpn/ipp.txt
+# Bot switches between "all traffic" and "selected networks" here.
+#ovpn-gateway
 push "redirect-gateway def1 bypass-dhcp"
+#ovpn-gateway
+#ovpn-routes
+#ovpn-routes
 push "dhcp-option DNS 10.10.0.5"
+
+# Bot sets mssfix and the second listening socket (udp+tcp) between these markers.
+#ovpn-mss
+#ovpn-mss
+#ovpn-dual
+#ovpn-dual
 
 # block-outside-dns разбирается в options.c только под #ifdef _WIN32. Для
 # любого не-Windows клиента это НЕИЗВЕСТНАЯ push-опция, а неизвестная опция в

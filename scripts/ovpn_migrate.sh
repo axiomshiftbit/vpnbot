@@ -81,4 +81,26 @@ sed -i '/^[[:space:]]*cipher[[:space:]]/d' "$SRV"
 # always persisted across restarts.» — директива больше ничего не делает.
 sed -i '/^[[:space:]]*persist-key[[:space:]]*$/d' "$SRV"
 
+# #7: «весь трафик через VPN» стал переключателем. Действующая строка
+# redirect-gateway заключается в маркеры на своём месте; лишние повторы
+# убираются, иначе выключенный переключатель оставлял бы шлюз включённым.
+# Строки нет (её убрали руками) — блок заводится пустым.
+if ! grep -q '^#ovpn-gateway[[:space:]]*$' "$SRV"; then
+    if grep -qE '^[[:space:]]*push[[:space:]]+"redirect-gateway' "$SRV"; then
+        awk '/^[[:space:]]*push[[:space:]]+"redirect-gateway/ { if (!done) { print "#ovpn-gateway"; print; print "#ovpn-gateway"; done = 1 } next } { print }' "$SRV" > "$SRV.migrate" \
+            && cat "$SRV.migrate" > "$SRV"
+        rm -f "$SRV.migrate"
+    else
+        printf '\n#ovpn-gateway\n#ovpn-gateway\n' >> "$SRV"
+    fi
+fi
+
+# #8: блоки, которые заполняет бот: дополнительные сети, mssfix и второй
+# сокет для режима udp+tcp.
+for marker in ovpn-routes ovpn-mss ovpn-dual; do
+    if ! grep -q "^#$marker[[:space:]]*\$" "$SRV"; then
+        printf '\n#%s\n#%s\n' "$marker" "$marker" >> "$SRV"
+    fi
+done
+
 exit 0

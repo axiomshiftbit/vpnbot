@@ -13,6 +13,7 @@ require_once __DIR__ . '/BotTelemtLimits.php';
 require_once __DIR__ . '/BotTelemtActivity.php';
 require_once __DIR__ . '/BotBackup.php';
 require_once __DIR__ . '/BotXdrive.php';
+require_once __DIR__ . '/BotOvpn.php';
 
 class Bot
 {
@@ -26,6 +27,7 @@ class Bot
     use BotTelemtActivity;
     use BotBackup;
     use BotXdrive;
+    use BotOvpn;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -1429,6 +1431,24 @@ class Bot
                 break;
             case preg_match('~^/ovpnClientLog (\S+)$~', $this->input['callback'], $m):
                 $this->ovpnClientLog($m[1]);
+                break;
+            case preg_match('~^/renewOvpnUser (\S+)( confirm)?$~', $this->input['callback'], $m):
+                $this->renewOvpnUser($m[1], !empty($m[2]));
+                break;
+            case preg_match('~^/resetOvpnTraffic (\S+)$~', $this->input['callback'], $m):
+                $this->resetOvpnTraffic($m[1]);
+                break;
+            case preg_match('~^/setOvpnLimit (\S+)$~', $this->input['callback'], $m):
+                $this->setOvpnLimit($m[1]);
+                break;
+            case preg_match('~^/toggleOvpnGateway$~', $this->input['callback'], $m):
+                $this->toggleOvpnGateway();
+                break;
+            case preg_match('~^/setOvpnRoutes$~', $this->input['callback'], $m):
+                $this->setOvpnRoutes();
+                break;
+            case preg_match('~^/toggleOvpnMss$~', $this->input['callback'], $m):
+                $this->toggleOvpnMss();
                 break;
             case preg_match('~^/addL2tpUser$~', $this->input['callback'], $m):
                 $this->addL2tpUser();
@@ -6537,6 +6557,7 @@ NFT;
             'trackOnline',
             'trackWgOnline',
             'trackTelemtOnline',
+            'trackOvpnTraffic',
             'rotateAmneziaCron',
             'refreshExtSubCache',
             'checkDatUpdates',
@@ -31396,11 +31417,10 @@ DNS-over-HTTPS with IP:
     public function setPort($port, $container)
     {
         $port  = (int) $port;
-        $ovpnProto = str_starts_with($this->getOvpnProto(), 'tcp') ? 'tcp' : 'udp';
         $ports = [
             'hy'   => ['443/udp'],
             'tt'   => ['8443/tcp', '8443/udp'],
-            'ovpn' => ["1194/$ovpnProto"],
+            'ovpn' => array_map(static fn($proto) => "1194/$proto", $this->ovpnListenProtos()),
         ];
         foreach ($this->ports as $service => $target) {
             $ports[$service] = [$target];
@@ -31462,7 +31482,7 @@ DNS-over-HTTPS with IP:
 
         // Same architecture as TT: client → host:PORT → DNAT → upstream:PORT
         // → proxy_pass openvpn (ovpn:1194/udp). Sync upstream listen + .env
-        // fallback. UDP-only, no TCP.
+        // fallback. Протоколы — по server.conf (udp, tcp или оба).
         if ($container === 'ovpn') {
             $listen = ($port > 0 && $port != ($disable['ovpn'] ?? 0)) ? $port : (int)(getenv('OVPNPORT') ?: 1194);
             $this->setUpstreamPortOvpn($listen);
@@ -31493,15 +31513,13 @@ DNS-over-HTTPS with IP:
     public function setUpstreamPortOvpn($port, $proto = null)
     {
         $port  = (int) $port ?: 1194;
-        $proto = $proto ?: $this->getOvpnProto();
         $f     = '/config/upstream.conf';
         if (!file_exists($f)) {
             return;
         }
-        $listen = str_starts_with($proto, 'tcp')
-            ? "listen      $port reuseport;"
-            : "listen      $port udp reuseport;";
-        $block = "#ovpn-port\n    server {\n        $listen\n        proxy_pass  openvpn;\n    }\n    #ovpn-port";
+        // Явный $proto — один протокол; без него — то, что слушает сервер
+        // (в режиме udp+tcp два блока, как у TrustTunnel).
+        $block = self::ovpnUpstreamBlock($port, $proto ? [str_starts_with($proto, 'tcp') ? 'tcp' : 'udp'] : $this->ovpnListenProtos());
         $re = '~^[ \t]*#ovpn-port[ \t]*\R.+?^[ \t]*#ovpn-port[ \t]*$~sm';
         $this->editUpstream(fn($nginx) => preg_replace($re, $block, $nginx));
     }
@@ -34082,7 +34100,7 @@ DNS-over-HTTPS with IP:
     // восстановлении не удаляются. openvpn-status.log перезаписывается каждые
     // 5 секунд, ipp.txt (ifconfig-pool-persist) хранит ТЕКУЩИЕ привязки
     // клиент→IP — вернуть его из бэкапа значит раздать вчерашние адреса.
-    public const OVPN_RUNTIME_FILES = ['openvpn-status.log', 'ipp.txt'];
+    public const OVPN_RUNTIME_FILES = ['openvpn-status.log', 'ipp.txt', 'traffic.json', 'traffic.json.tmp'];
 
     // Без этих файлов PKI нерабочий — снимок с пропуском отвергаем целиком.
     public const OVPN_SNAPSHOT_CORE = [
@@ -34332,13 +34350,17 @@ DNS-over-HTTPS with IP:
     public function ovpnCertInfo($user)
     {
         static $cache = [];
-        if (array_key_exists($user, $cache)) {
-            return $cache[$user];
-        }
         $p = $this->ovpnPaths();
         $f = "{$p['issued']}/$user.crt";
+        // Ключ с временем файла: в режиме long polling объект живёт часами, а
+        // сертификат перевыпускается под тем же именем.
+        clearstatcache(true, $f);
         if (!file_exists($f)) {
-            return $cache[$user] = null;
+            return null;
+        }
+        $user = $f . '|' . filemtime($f) . '|' . filesize($f);
+        if (array_key_exists($user, $cache)) {
+            return $cache[$user];
         }
         $crt = file_get_contents($f);
         // easyrsa кладёт перед PEM plaintext-метаданные — openssl_x509_parse
@@ -34382,6 +34404,9 @@ DNS-over-HTTPS with IP:
     public function ovpnRealIp($real)
     {
         $real = trim((string) $real);
+        // Сервер с несколькими сокетами (udp+tcp) ставит перед адресом
+        // протокол: "tcp4-server:203.0.113.5:34082".
+        $real = preg_replace('~^(?:udp|tcp)[46]?(?:-server)?:~', '', $real);
         if ($real === '') {
             return '';
         }
@@ -34501,14 +34526,14 @@ DNS-over-HTTPS with IP:
     {
         $user = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
         if (empty($user) || $user === 'server') {
-            $this->send($this->input['chat'], 'wrong username');
+            $this->send($this->input['chat'], $this->i18n('ovpn bad name'));
             return $this->menu('ovpn');
         }
         // X.509 ограничивает CN 64 символами (easyrsa падает с невнятной
         // ошибкой), а callback_data телеграма — 64 БАЙТАМИ на всю строку
         // "/delOvpnUser <name> confirm". 40 укладывается в оба лимита.
         if (strlen($user) > 40) {
-            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            $this->send($this->input['chat'], $this->i18n('ovpn long name'));
             return $this->menu('ovpn');
         }
         // Лок с таймаутом: на первом старте контейнер держит его весь init PKI,
@@ -34524,39 +34549,85 @@ DNS-over-HTTPS with IP:
             if (!file_exists($p['ca']) || !file_exists($p['pki'] . '/private/ca.key')) {
                 return 'pki';
             }
-            $u = escapeshellarg($user);
-            // Та же болезнь, что у server-cert: если прошлый build-client-full
-            // упал после создания reqs/$user.req, повтор даст "file already
-            // exists". Чистим stale артефакты перед новой попыткой.
-            $this->ssh(
-                "rm -f /etc/openvpn/pki/reqs/$u.req /etc/openvpn/pki/private/$u.key /etc/openvpn/pki/issued/$u.crt && " .
-                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE=3650 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
-                ">>/logs/openvpn.log 2>&1",
-                'ovpn'
-            );
-            return in_array($user, $this->getOvpnUsers(), true) ? 'ok' : 'failed';
+            return $this->ovpnIssueLocked($user);
         }, 25, 'busy');
         if ($issued === 'busy') {
-            $this->send($this->input['chat'], '⏳ ' . $this->i18n('OpenVPN')
-                . ': PKI занят (контейнер инициализируется) — повторите через минуту');
+            $this->send($this->input['chat'], '⏳ ' . $this->i18n('OpenVPN') . ': ' . $this->i18n('ovpn pki busy'));
             return $this->menu('ovpn');
         }
         if ($issued === 'exists') {
-            $this->send($this->input['chat'], "user $user already exists");
+            $this->send($this->input['chat'], htmlspecialchars($user, ENT_QUOTES) . ': ' . $this->i18n('ovpn user exists'));
             return $this->menu('ovpn');
         }
         if ($issued === 'pki') {
-            $this->send($this->input['chat'], 'PKI not ready — restart ovpn container first');
+            $this->send($this->input['chat'], $this->i18n('ovpn pki not ready'));
             return $this->menu('ovpn');
         }
         if ($issued !== 'ok') {
-            $this->send($this->input['chat'], "failed to issue cert for $user (check /logs/openvpn.log)");
+            $this->send($this->input['chat'], htmlspecialchars($user, ENT_QUOTES) . ': ' . $this->i18n('ovpn issue failed'));
         } else {
             // Сразу отдаём готовый .ovpn — иначе админу пришлось бы лезть
             // в подменю клиента ради единственного очевидного действия.
             $this->sendOvpnConfigFile($user);
         }
         $this->menu('ovpn');
+    }
+
+    // Выпуск сертификата клиента. Вызывать под withOvpnPkiLock().
+    protected function ovpnIssueLocked(string $user): string
+    {
+        $u = escapeshellarg($user);
+        // Та же болезнь, что у server-cert: если прошлый build-client-full
+        // упал после создания reqs/$user.req, повтор даст "file already
+        // exists". Чистим stale артефакты перед новой попыткой.
+        $this->ssh(
+            "rm -f /etc/openvpn/pki/reqs/$u.req /etc/openvpn/pki/private/$u.key /etc/openvpn/pki/issued/$u.crt && " .
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE=3650 /usr/share/easy-rsa/easyrsa build-client-full $u nopass " .
+            ">>/logs/openvpn.log 2>&1",
+            'ovpn'
+        );
+        clearstatcache();
+        return in_array($user, $this->getOvpnUsers(), true) ? 'ok' : 'failed';
+    }
+
+    // Отзыв сертификата клиента: 'revoked', 'absent' или 'failed'. Вызывать
+    // под withOvpnPkiLock().
+    protected function ovpnRevokeLocked(string $user): string
+    {
+        $p    = $this->ovpnPaths();
+        $cert = $p['issued'] . '/' . $user . '.crt';
+        // Повтор старой confirm-кнопки после успешного первого удаления:
+        // операция идемпотентна и не вызывает EasyRSA на отсутствующем CN.
+        if (!file_exists($cert)) {
+            return 'absent';
+        }
+        $u = escapeshellarg($user);
+        // Скрипт умеет безопасно дочинить legacy/overlay-состояние, где
+        // issued-cert активен, записи index.txt нет, а идентичные файлы уже
+        // остались в revoked/. Успех он печатает только после проверки CRL.
+        //
+        // Он приезжает в контейнер bind-mount'ом (docker-compose.yml), а
+        // app/ обновляется НЕЗАВИСИМО от compose — на хосте, где контейнеры
+        // ещё не пересозданы, файла просто нет, и `sh` ругается в stderr:
+        // маркера в stdout нет, лог пуст, кнопка «удалить» мертва без единой
+        // подсказки. Пока переход не завершён, откатываемся на прежнюю
+        // inline-команду: она слабее (не чинит рассинхрон index.txt/revoked),
+        // но так же подтверждает успех наличием serial в НОВОМ CRL.
+        $out = $this->ssh(
+            "if [ -f /revoke_ovpn_client.sh ]; then VPNBOT_OVPN_LOCK_HELD=1 sh /revoke_ovpn_client.sh $u; else " .
+            "echo __VPNBOT_REVOKE_NOSCRIPT__ >>/logs/openvpn.log; " .
+            "serial=\$(openssl x509 -in /etc/openvpn/pki/issued/$u.crt -noout -serial 2>>/logs/openvpn.log | cut -d= -f2); " .
+            "if [ -n \"\$serial\" ] && " .
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u >>/logs/openvpn.log 2>&1 && " .
+            "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 /usr/share/easy-rsa/easyrsa gen-crl >>/logs/openvpn.log 2>&1 && " .
+            "openssl crl -in /etc/openvpn/pki/crl.pem -noout -text 2>>/logs/openvpn.log | grep -Fqi \"Serial Number: \$serial\"; " .
+            "then echo __VPNBOT_REVOKED__; else echo __VPNBOT_REVOKE_FAILED__; fi; fi",
+            'ovpn'
+        );
+        clearstatcache();
+        return str_contains((string) $out, '__VPNBOT_REVOKED__') && !file_exists($cert)
+            ? 'revoked'
+            : 'failed';
     }
 
     public function delOvpnUser($user, $confirm = false)
@@ -34577,44 +34648,9 @@ DNS-over-HTTPS with IP:
             ];
             return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
         }
-        $revoked = $this->withOvpnPkiLock(function () use ($user) {
-            $p    = $this->ovpnPaths();
-            $cert = $p['issued'] . '/' . $user . '.crt';
-            // Повтор старой confirm-кнопки после успешного первого удаления:
-            // операция идемпотентна и не вызывает EasyRSA на отсутствующем CN.
-            if (!file_exists($cert)) {
-                return 'absent';
-            }
-            $u = escapeshellarg($user);
-            // Скрипт умеет безопасно дочинить legacy/overlay-состояние, где
-            // issued-cert активен, записи index.txt нет, а идентичные файлы уже
-            // остались в revoked/. Успех он печатает только после проверки CRL.
-            //
-            // Он приезжает в контейнер bind-mount'ом (docker-compose.yml), а
-            // app/ обновляется НЕЗАВИСИМО от compose — на хосте, где контейнеры
-            // ещё не пересозданы, файла просто нет, и `sh` ругается в stderr:
-            // маркера в stdout нет, лог пуст, кнопка «удалить» мертва без единой
-            // подсказки. Пока переход не завершён, откатываемся на прежнюю
-            // inline-команду: она слабее (не чинит рассинхрон index.txt/revoked),
-            // но так же подтверждает успех наличием serial в НОВОМ CRL.
-            $out = $this->ssh(
-                "if [ -f /revoke_ovpn_client.sh ]; then VPNBOT_OVPN_LOCK_HELD=1 sh /revoke_ovpn_client.sh $u; else " .
-                "echo __VPNBOT_REVOKE_NOSCRIPT__ >>/logs/openvpn.log; " .
-                "serial=\$(openssl x509 -in /etc/openvpn/pki/issued/$u.crt -noout -serial 2>>/logs/openvpn.log | cut -d= -f2); " .
-                "if [ -n \"\$serial\" ] && " .
-                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 /usr/share/easy-rsa/easyrsa revoke $u >>/logs/openvpn.log 2>&1 && " .
-                "EASYRSA_PKI=/etc/openvpn/pki EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 /usr/share/easy-rsa/easyrsa gen-crl >>/logs/openvpn.log 2>&1 && " .
-                "openssl crl -in /etc/openvpn/pki/crl.pem -noout -text 2>>/logs/openvpn.log | grep -Fqi \"Serial Number: \$serial\"; " .
-                "then echo __VPNBOT_REVOKED__; else echo __VPNBOT_REVOKE_FAILED__; fi; fi",
-                'ovpn'
-            );
-            return str_contains((string) $out, '__VPNBOT_REVOKED__') && !file_exists($cert)
-                ? 'revoked'
-                : 'failed';
-        }, 25, 'busy');
+        $revoked = $this->withOvpnPkiLock(fn() => $this->ovpnRevokeLocked($user), 25, 'busy');
         if ($revoked === 'busy') {
-            $this->send($this->input['chat'], '⏳ ' . $this->i18n('OpenVPN')
-                . ': PKI занят (контейнер инициализируется) — повторите через минуту');
+            $this->send($this->input['chat'], '⏳ ' . $this->i18n('OpenVPN') . ': ' . $this->i18n('ovpn pki busy'));
             return $this->menu('ovpn');
         }
         if ($revoked === 'failed') {
@@ -34623,6 +34659,12 @@ DNS-over-HTTPS with IP:
         }
         $p = $this->ovpnPaths();
         @unlink($p['ccd'] . '/' . $user);
+        // Счётчик трафика удаляется вместе с клиентом: новый клиент с тем же
+        // именем не должен унаследовать чужой объём и лимит.
+        $this->ovpnTrafficSync(static function (array $users) use ($user) {
+            unset($users[$user]);
+            return $users;
+        });
         // crl.pem is re-read on every TLS handshake → new connections from
         // this CN get rejected. Kick the live session, if any.
         $this->ovpnMgmt(["kill $user", 'exit']);
@@ -34651,7 +34693,7 @@ DNS-over-HTTPS with IP:
         // Любой пустой компонент = битый .ovpn, клиент не подключится и будет
         // ругаться на "VERIFY ERROR" без внятной подсказки. Лучше сказать явно.
         if (empty($crt) || empty($key) || empty($ca) || empty($ta)) {
-            $this->send($this->input['chat'], "PKI for $user is incomplete — restart ovpn container");
+            $this->send($this->input['chat'], htmlspecialchars((string) $user, ENT_QUOTES) . ': ' . $this->i18n('ovpn pki incomplete user'));
             return false;
         }
         // strip easyrsa's pre-cert plaintext metadata; keep only the PEM block
@@ -34666,7 +34708,12 @@ DNS-over-HTTPS with IP:
         // начиная с 2.6 (шифр согласуется по data-ciphers), а сама директива
         // помечена deprecated. `persist-key` убран по той же причине — 2.7
         // отвечает «DEPRECATED OPTION: --persist-key option ignored».
-        $ovpn   = "client\ndev tun\nproto $proto\nremote $host $port\nresolv-retry infinite\nnobind\npersist-tun\nremote-cert-tls server\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
+        // Сервер слушает udp и tcp: клиент пробует UDP и через несколько
+        // секунд без ответа сам переходит на TCP.
+        $remote = $this->isOvpnDual()
+            ? "remote $host $port udp4\nremote $host $port tcp4\nserver-poll-timeout 8"
+            : "proto $proto\nremote $host $port";
+        $ovpn   = "client\ndev tun\n$remote\nresolv-retry infinite\nnobind\npersist-tun\nremote-cert-tls server\nauth SHA256\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\ntls-version-min 1.2\nverb 3\n";
         $ovpn  .= "<ca>\n$ca</ca>\n";
         $ovpn  .= "<cert>\n$crt\n</cert>\n";
         $ovpn  .= "<key>\n$key</key>\n";
@@ -34724,6 +34771,11 @@ DNS-over-HTTPS with IP:
         if (empty($user) || !in_array($user, $this->getOvpnUsers(), true)) {
             return $this->menu('ovpn');
         }
+        if ($this->ovpnTraffic($user)['limited']) {
+            // Иначе клиент включился бы и молча качал сверх лимита.
+            $this->send($this->input['chat'], '🚫 ' . $this->i18n('ovpn limit enable'));
+            return $this->ovpnClientMenu($user);
+        }
         $p = $this->ovpnPaths();
         @unlink($p['ccd'] . '/' . $user);
         $this->ovpnClientMenu($user);
@@ -34779,7 +34831,7 @@ DNS-over-HTTPS with IP:
             $cfg = file_get_contents($p['srv']);
         }
         if (!preg_match($re, $cfg)) {
-            $this->send($this->input['chat'], 'server.conf without #ovpn-winblockdns markers — check /logs/openvpn.log');
+            $this->send($this->input['chat'], $this->i18n('ovpn conf markers'));
             return $this->menu('ovpn');
         }
         $on   = $this->isOvpnWinBlockDns();
@@ -34812,14 +34864,21 @@ DNS-over-HTTPS with IP:
         if (!file_exists($p['srv'])) {
             return $this->menu('ovpn');
         }
-        $cur = $this->getOvpnProto();
-        $new = ($cur === 'tcp4') ? 'udp4' : 'tcp4';
-        $cfg = file_get_contents($p['srv']);
+        // По кругу: udp → tcp → udp+tcp → udp. В режиме udp+tcp основной
+        // протокол в server.conf — udp4, а оба сокета заданы блоком #ovpn-dual.
+        $cur  = $this->getOvpnProto();
+        $dual = !$this->isOvpnDual() && $cur === 'tcp4';
+        $new  = $dual || $this->isOvpnDual() ? 'udp4' : 'tcp4';
         // Строка `proto XXX` генерируется start_ovpn.sh при первом запуске;
         // дальше бот переписывает только её, остальной конфиг не трогаем.
-        if (!preg_match('~^\s*proto\s+\S+~m', $cfg)) {
+        if (!preg_match('~^\s*proto\s+\S+~m', (string) file_get_contents($p['srv']))) {
             return $this->menu('ovpn');
         }
+        if (!$this->ovpnSetBlock('ovpn-dual', $dual ? "local * 1194 udp4\nlocal * 1194 tcp4" : '')) {
+            $this->send($this->input['chat'], $this->i18n('ovpn conf markers'));
+            return $this->menu('ovpn');
+        }
+        $cfg = file_get_contents($p['srv']);
         $cfg = preg_replace('~^\s*proto\s+\S+~m', "proto $new", $cfg, 1);
         // explicit-exit-notify ignored for --proto tcp → удаляем для TCP и
         // возвращаем для UDP. Иначе лог openvpn засорён "NOTICE: ... ignored".
@@ -34835,7 +34894,7 @@ DNS-over-HTTPS with IP:
         // docker-compose override (ports: ["PORT:1194/proto"]), если задано
         // прямое пробрасывание, иначе клиенты получат не тот транспорт.
         $port = $this->getOvpnPort();
-        $this->setUpstreamPortOvpn($port, $new);
+        $this->setUpstreamPortOvpn($port);
         $this->syncOvpnOverridePort();
         $this->restartOvpn();
         $this->menu('ovpn');
@@ -34858,9 +34917,8 @@ DNS-over-HTTPS with IP:
         if (!isset($c['services']['ovpn']['ports'][0])) {
             return;
         }
-        $proto = str_starts_with($this->getOvpnProto(), 'tcp') ? 'tcp' : 'udp';
         $host  = (int) explode(':', $c['services']['ovpn']['ports'][0])[0];
-        $c['services']['ovpn']['ports'] = ["$host:1194/$proto"];
+        $c['services']['ovpn']['ports'] = array_map(static fn($proto) => "$host:1194/$proto", $this->ovpnListenProtos());
         file_put_contents($f, $this->emitComposeWithOverrides($c, $overrides));
     }
 
@@ -35002,14 +35060,21 @@ DNS-over-HTTPS with IP:
         $isolated = $this->isOvpnIsolated();
         $p       = $this->ovpnPaths();
 
-        $proto  = $this->getOvpnProto();
-        $pshort = str_starts_with($proto, 'tcp') ? 'tcp' : 'udp';
+        $pshort = implode('+', $this->ovpnListenProtos());
+        $full   = $this->isOvpnFullTunnel();
+        $routes = $this->getOvpnRoutes();
+        $mss    = $this->getOvpnMss();
 
         $text   = [];
         $text[] = "Menu -> " . $this->i18n('OpenVPN');
-        $text[] = "server: <code>$host:$port/$pshort</code>";
+        $text[] = $this->i18n('server') . ": <code>$host:$port/$pshort</code>";
         $text[] = $this->i18n($running ? 'on' : 'off') . " openvpn";
-        $text[] = 'proto: ' . $pshort;
+        $text[] = $this->i18n('ovpn proto') . ': ' . $pshort;
+        $text[] = $this->i18n('ovpn gateway') . ': ' . $this->i18n($full ? 'on' : 'off')
+            . ($routes ? ' · ' . $this->i18n('ovpn routes') . ': ' . count($routes) : '');
+        if (!$full && !$routes) {
+            $text[] = '⚠ ' . $this->i18n('ovpn split empty');
+        }
         // Inline hint clarifies what the adjacent toggle actually does — без
         // этого пользователь видит "трафик между клиентами: off" и не
         // понимает, в какую сторону флаг работает.
@@ -35025,11 +35090,11 @@ DNS-over-HTTPS with IP:
             $text[] = '⚠ ' . $this->i18n('win dns guard') . ': '
                 . $this->i18n('on') . ' <i>(' . $this->i18n('win dns warn') . ')</i>';
         }
-        $text[] = "clients: " . count($users) . " (" . count($online) . " " . $this->i18n('online') . ")";
+        $text[] = $this->i18n('ovpn clients') . ': ' . count($users) . " (" . count($online) . " " . $this->i18n('online') . ")";
         $pkiMissing = $this->ovpnPkiMissing();
         if ($pkiMissing) {
-            $text[] = '⚠ PKI incomplete, missing: ' . implode(', ', $pkiMissing);
-            $text[] = '   → <code>docker compose restart ovpn</code> чтобы доинициализировать';
+            $text[] = '⚠ ' . $this->i18n('ovpn pki missing') . ': ' . implode(', ', $pkiMissing);
+            $text[] = '   → ' . $this->i18n('ovpn pki restart');
         }
         if (!empty($online)) {
             $text[]  = '';
@@ -35058,10 +35123,24 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/changePort ovpn',
             ],
             [
-                'text'          => 'proto: ' . $pshort,
+                'text'          => $this->i18n('ovpn proto') . ': ' . $pshort,
                 'callback_data' => '/toggleOvpnProto',
             ],
         ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('ovpn gateway') . ': ' . $this->i18n($full ? 'on' : 'off'),
+                'callback_data' => '/toggleOvpnGateway',
+            ],
+            [
+                'text'          => $this->i18n('ovpn routes') . ': ' . count($routes),
+                'callback_data' => '/setOvpnRoutes',
+            ],
+        ];
+        $data[] = [[
+            'text'          => 'MSS: ' . ($mss ?: $this->i18n('ovpn mss auto')),
+            'callback_data' => '/toggleOvpnMss',
+        ]];
         $data[] = [[
             'text'          => $this->i18n('inter-client') . ': ' . $this->i18n($isolated ? 'off' : 'on'),
             'callback_data' => '/toggleOvpnIsolation',
@@ -35121,6 +35200,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/ovpnClientMenu $u",
             ]];
         }
+        $data[] = $this->menuHelpButton('ovpn');
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/menu',
@@ -35188,12 +35268,30 @@ DNS-over-HTTPS with IP:
             $text[] = $this->i18n('last seen') . ': '
                 . ($seen ? "{$seen['ts']} ({$seen['dir']})" : $this->i18n('never'));
         }
+        $this->ovpnTrafficSync();
+        $text[] = $this->ovpnTrafficLine($user);
 
         $data   = [];
-        $data[] = [[
-            'text'          => $this->i18n('download') . ' .ovpn',
-            'callback_data' => "/getOvpnConfig $user",
-        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('download') . ' .ovpn',
+                'callback_data' => "/getOvpnConfig $user",
+            ],
+            [
+                'text'          => '♻️ ' . $this->i18n('ovpn renew'),
+                'callback_data' => "/renewOvpnUser $user",
+            ],
+        ];
+        $data[] = [
+            [
+                'text'          => $this->i18n('ovpn limit'),
+                'callback_data' => "/setOvpnLimit $user",
+            ],
+            [
+                'text'          => $this->i18n('ovpn traffic reset'),
+                'callback_data' => "/resetOvpnTraffic $user",
+            ],
+        ];
         $data[] = [
             $isDis
                 ? ['text' => $this->i18n('enable'),  'callback_data' => "/enableOvpnUser $user"]

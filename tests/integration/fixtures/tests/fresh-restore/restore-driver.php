@@ -153,7 +153,42 @@ switch ($action) {
         $result=['sent'=>$sent===true,'name'=>$capture->document?->postname,'xml'=>$capture->document?->data];
         break;
     case 'ovpn-proto':
-        $b->toggleOvpnProto(); $result=['proto'=>$b->getOvpnProto()];
+        $b->toggleOvpnProto(); $result=['proto'=>$b->getOvpnProto(),'listen'=>implode('+',$b->ovpnListenProtos())];
+        break;
+    case 'ovpn-renew':
+        $before=hash_file('sha256','/config/openvpn/pki/issued/auditov.crt');
+        $b->renewOvpnUser('auditov',true);
+        clearstatcache();
+        $after=is_file('/config/openvpn/pki/issued/auditov.crt') ? hash_file('sha256','/config/openvpn/pki/issued/auditov.crt') : '';
+        $result=['reissued'=>$after!=='' && $after!==$before,'listed'=>in_array('auditov',$b->getOvpnUsers(),true)];
+        break;
+    case 'ovpn-gateway':
+        $b->toggleOvpnGateway(); $result=['full'=>$b->isOvpnFullTunnel()];
+        break;
+    case 'ovpn-routes':
+        $b->saveOvpnRoutes((string)($argv[2] ?? '-')); $result=['routes'=>$b->getOvpnRoutes()];
+        break;
+    case 'ovpn-mss':
+        $b->toggleOvpnMss(); $result=['mss'=>$b->getOvpnMss()];
+        break;
+    case 'ovpn-traffic':
+        $b->ovpnTrafficSync(static fn(array $users) => $users);
+        $result=$b->ovpnTraffic('auditov')+['disabled'=>$b->isOvpnUserDisabled('auditov')];
+        break;
+    case 'ovpn-traffic-reset':
+        $b->resetOvpnTraffic('auditov'); $result=$b->ovpnTraffic('auditov');
+        break;
+    case 'ovpn-limit':
+        // Байтовый лимит задаётся напрямую: через меню наименьший шаг — мегабайт,
+        // а стенд не гоняет через туннель такой объём.
+        $bytes=(int)($argv[2] ?? 0);
+        $b->ovpnTrafficSync(static function (array $users) use ($bytes) { $users['auditov']=['limit'=>$bytes]+($users['auditov'] ?? []); return $users; });
+        $b->trackOvpnTraffic();
+        $result=$b->ovpnTraffic('auditov')+['disabled'=>$b->isOvpnUserDisabled('auditov')];
+        break;
+    case 'ovpn-menu':
+        $menu=$b->ovpnMenu(); $b->ovpnClientMenu('auditov');
+        $result=['main'=>str_contains($menu['text'],'OpenVPN'),'client'=>(bool)preg_grep('~auditov~',$b->transport->messages),'help'=>count($b->menuHelpContent('ovpn')[2] ?? [])];
         break;
     case 'ovpn-revoke':
         $b->delOvpnUser('auditov',true);

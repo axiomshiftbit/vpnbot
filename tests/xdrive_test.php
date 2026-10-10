@@ -221,6 +221,7 @@ $check(VlessEncryption::pair($bot->confPac['xdrive']['enc']) !== null, 'ключ
 $refusals = [
     'xdrive need folder' => static function (XdBot $b, array &$s) { $s['folder'] = ''; },
     'xdrive private url' => static function (XdBot $b, array &$s) { $s['url'] = 'https://inner.example-disk.net'; },
+    'xdrive unresolved' => static function (XdBot $b, array &$s) { $s['url'] = 'https://no-such-name.example-disk.net'; },
     'xdrive needs vless' => static function (XdBot $b, array &$s) { $b->confXray['inbounds'][0]['protocol'] = 'trojan'; },
     'xdrive core old' => static function (XdBot $b, array &$s) { $b->confPac['xray_core'] = 'origin2'; },
     'xdrive keys failed' => static function (XdBot $b, array &$s) { $b->sshOk = false; },
@@ -395,6 +396,24 @@ $routes = substr($source, strpos($source, "case preg_match('~^/xdrive$~'"), 1800
 foreach (['xdriveMenu', 'xdriveToggle', 'xdriveService', 'xdriveSet', 'xdriveProbeMenu', 'xdriveRotate', 'xdriveUsers', 'xdriveProfile'] as $method) {
     $check(str_contains($routes, '$this->' . $method . '('), "маршрут подключён: $method");
 }
+
+// --- Сбой DNS не выключает работающий вход --------------------------------
+$b = new XdBot();
+$check($b->applyXdrive(['enabled' => 1] + $webdav) === '', 'DNS: вход включён при разрешающемся имени');
+$restarts = $b->restarts;
+$b->resolved = [];
+$check($b->xdriveProblems($b->xdriveSettings()) === ['xdrive unresolved'], 'DNS: неразрешающееся имя — отдельное замечание, а не «внутренний адрес»');
+$enter($b, 'poll', '3000');
+$check(!empty($b->xdriveSettings()['enabled']) && $b->xdriveSettings()['poll'] === 3000, 'DNS: правка другого поля при сбое DNS не выключает XDRIVE');
+$check($b->xdriveActive($b->confPac, $b->confXray) && count(array_filter($b->confXray['inbounds'], static fn($in) => ($in['tag'] ?? '') === 'xdrive')) === 1, 'DNS: вход остаётся в конфиге ядра');
+$check($b->xdriveClientConfig($b->confXray['inbounds'][0]['settings']['clients'][0]) !== null, 'DNS: профиль клиента выдаётся и при сбое DNS');
+$check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe incomplete', 'DNS: проверка хранилища при сбое DNS не выполняется');
+$enter($b, 'url', 'https://other-name.example-disk.net/dav');
+$check(str_contains($b->xdriveSettings()['url'], 'webdav.example-disk.net') && !empty($b->xdriveSettings()['enabled']), 'DNS: новый адрес, который не разрешается, не принимается, прежний остаётся');
+$b->resolved = ['webdav.example-disk.net' => ['10.10.0.7']];
+$enter($b, 'poll', '4000');
+$check(empty($b->xdriveSettings()['enabled']), 'DNS: имя, ставшее внутренним адресом, по-прежнему выключает XDRIVE');
+$check($b->xdriveClientConfig($b->confXray['inbounds'][0]['settings']['clients'][0]) === null, 'DNS: и профиль с внутренним адресом не выдаётся');
 
 foreach ($failures as $failure) echo "FAIL: $failure\n";
 if ($failures) exit(1);

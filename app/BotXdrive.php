@@ -79,6 +79,15 @@ trait BotXdrive
         return true;
     }
 
+    // Удалось ли вообще узнать адрес. Имя, которое сейчас не разрешается
+    // (сбой DNS), — не то же, что внутренний адрес: работающий вход из-за
+    // него не выключается, но включить XDRIVE с таким адресом нельзя.
+    public function xdriveHostResolves(string $url): bool
+    {
+        $host = trim((string) parse_url($url, PHP_URL_HOST), '[]');
+        return $host !== '' && (filter_var($host, FILTER_VALIDATE_IP) || (bool) $this->xdriveResolve($host));
+    }
+
     protected function xdriveResolve(string $host): array
     {
         $found = [];
@@ -112,7 +121,7 @@ trait BotXdrive
             case 'webdav':
                 $url = self::xdriveWebdavUrl($s['url']);
                 if ($url === null) $problems[] = 'xdrive need url';
-                elseif (!$this->xdriveHostPublic($url)) $problems[] = 'xdrive private url';
+                elseif (!$this->xdriveHostPublic($url)) $problems[] = $this->xdriveHostResolves($url) ? 'xdrive private url' : 'xdrive unresolved';
                 if (!self::xdriveFolderOk($s['folder'])) $problems[] = 'xdrive need folder';
                 if ($secrets !== 2 || count($s['secrets']) !== 2) $problems[] = 'xdrive need login';
                 break;
@@ -133,7 +142,7 @@ trait BotXdrive
                         break 2;
                     }
                     if (!$this->xdriveHostPublic($target)) {
-                        $problems[] = 'xdrive private url';
+                        $problems[] = $this->xdriveHostResolves($target) ? 'xdrive private url' : 'xdrive unresolved';
                         break 2;
                     }
                 }
@@ -219,7 +228,8 @@ trait BotXdrive
         $p = $p ?? $this->getPacConf();
         $s = $this->xdriveSettings($p);
         $pair = VlessEncryption::pair($s['enc']);
-        if (empty($s['enabled']) || $pair === null || $this->xdriveProblems($s) || !is_string($client['id'] ?? null) || $client['id'] === '') {
+        // Профилю DNS не нужен: сбой разрешения имени выдаче не мешает.
+        if (empty($s['enabled']) || $pair === null || array_diff($this->xdriveProblems($s), ['xdrive unresolved']) || !is_string($client['id'] ?? null) || $client['id'] === '') {
             return null;
         }
         return [
@@ -307,7 +317,14 @@ trait BotXdrive
                 $s = $this->xdriveSettings(['xdrive' => $s]);
                 if (!empty($s['enabled'])) {
                     if (($x['inbounds'][0]['protocol'] ?? '') !== 'vless') return 'xdrive needs vless';
-                    if ($problems = $this->xdriveProblems($s)) return $problems[0];
+                    $problems = $this->xdriveProblems($s);
+                    // Вход уже работал с этим же адресом: сбой DNS в момент
+                    // правки другого поля не причина отказывать в сохранении.
+                    $was = $this->xdriveSettings($old);
+                    if (!empty($was['enabled']) && [$was['service'], $was['url'], $was['template']] === [$s['service'], $s['url'], $s['template']]) {
+                        $problems = array_values(array_diff($problems, ['xdrive unresolved']));
+                    }
+                    if ($problems) return $problems[0];
                     if (!$this->xdriveCoreReady($p)) return 'xdrive core old';
                     if ($rotate || VlessEncryption::pair($s['enc']) === null) {
                         // Вывод содержит закрытые ключи: не показывать и не писать в журнал.
@@ -455,7 +472,8 @@ trait BotXdrive
         }
         // Неполные настройки сохраняются выключенными: заполнять их приходится по одному полю.
         $s = $this->xdriveSettings(['xdrive' => $s]);
-        if (!empty($s['enabled']) && $this->xdriveProblems($s)) $s['enabled'] = 0;
+        // Сбой DNS — не повод выключать работающий вход при правке другого поля.
+        if (!empty($s['enabled']) && array_diff($this->xdriveProblems($s), ['xdrive unresolved'])) $s['enabled'] = 0;
         $error = $s === $before ? '' : $this->applyXdrive($s);
         $this->xdriveMenu($error !== '' ? $error : ($field === 'url' && $s['url'] === '' && $value !== '' ? 'xdrive need url' : ''));
     }

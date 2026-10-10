@@ -341,7 +341,10 @@ $addBody = substr($botSrc, strpos($botSrc, 'public function addovus('), 5000);
 $delBody = substr($botSrc, strpos($botSrc, 'public function delOvpnUser('), 6000);
 ttAssert(strpos($addBody, 'withOvpnPkiLock(') !== false, 'выдача OpenVPN-сертификата выполняется под PKI-lock');
 ttAssert(strpos($delBody, 'withOvpnPkiLock(') !== false, 'отзыв OpenVPN-сертификата выполняется под PKI-lock');
-ttAssert(strpos($delBody, '__VPNBOT_REVOKED__') !== false && strpos($delBody, '/revoke_ovpn_client.sh') !== false,
+// Отзыв вынесен в ovpnRevokeLocked(): им же пользуется перевыпуск сертификата.
+$revokeBody = substr($botSrc, strpos($botSrc, 'protected function ovpnRevokeLocked('), 4000);
+ttAssert(strpos($delBody, '$this->ovpnRevokeLocked($user)') !== false, 'удаление клиента отзывает сертификат общей функцией');
+ttAssert(strpos($revokeBody, '__VPNBOT_REVOKED__') !== false && strpos($revokeBody, '/revoke_ovpn_client.sh') !== false,
     'бот принимает успех только от проверяющего CRL revoke-скрипта');
 $revokeScript = file_get_contents(__DIR__ . '/../scripts/revoke_ovpn_client.sh');
 ttAssert(strpos($revokeScript, 'reconstructed missing index entry') !== false,
@@ -393,12 +396,12 @@ ttAssert(preg_match('~^listen_address = "0\.0\.0\.0:8443"~m', $vpn) === 1, 'list
 // compose: пока контейнер не пересоздан, файла в нём нет. Без фолбэка кнопка
 // «удалить клиента» умирала молча — маркера нет, лог пуст.
 $delBody2 = substr($botSrc, strpos($botSrc, 'public function delOvpnUser('), 8000);
-ttAssert(strpos($delBody2, 'if [ -f /revoke_ovpn_client.sh ]; then') !== false,
+ttAssert(strpos($revokeBody, 'if [ -f /revoke_ovpn_client.sh ]; then') !== false,
     'бот проверяет наличие revoke-скрипта в контейнере');
-ttAssert(strpos($delBody2, '__VPNBOT_REVOKE_NOSCRIPT__') !== false
-    && strpos($delBody2, 'easyrsa revoke') !== false,
+ttAssert(strpos($revokeBody, '__VPNBOT_REVOKE_NOSCRIPT__') !== false
+    && strpos($revokeBody, 'easyrsa revoke') !== false,
     'без скрипта отзыв идёт прежней inline-командой, а факт отката виден в журнале');
-ttAssert(strpos($delBody2, "}, 25, 'busy');") !== false,
+ttAssert(strpos($delBody2, "\$this->ovpnRevokeLocked(\$user), 25, 'busy');") !== false,
     'интерактивный отзыв не ждёт PKI-lock бесконечно');
 $addBody2 = substr($botSrc, strpos($botSrc, 'public function addovus('), 8000);
 ttAssert(strpos($addBody2, "}, 25, 'busy');") !== false,
@@ -454,8 +457,8 @@ ttAssert(strpos($botSrc, "str_contains(\$this->ovpnRestoreError, 'ЧАСТИЧН
     'прерванный перенос отличается от отвергнутого снимка при восстановлении из бэкапа');
 
 // Экспорт исключает runtime-файлы демона.
-ttAssert(strpos($botSrc, "public const OVPN_RUNTIME_FILES = ['openvpn-status.log', 'ipp.txt']") !== false,
-    'openvpn-status.log и ipp.txt не попадают в снимок');
+ttAssert(strpos($botSrc, "public const OVPN_RUNTIME_FILES = ['openvpn-status.log', 'ipp.txt', 'traffic.json', 'traffic.json.tmp'];") !== false,
+    'openvpn-status.log, ipp.txt и счётчики трафика не попадают в снимок');
 
 // revoke_ovpn_client.sh: отсутствие active-файла — не конфликт.
 $revokeSrc = file_get_contents(__DIR__ . '/../scripts/revoke_ovpn_client.sh');
