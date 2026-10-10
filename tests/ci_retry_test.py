@@ -236,6 +236,31 @@ class WorkflowRetryTest(unittest.TestCase):
                 if re.search(r'\bcurl\b.*https?://', line):
                     self.assertIn('--retry-all-errors', line, line.strip())
 
+    def test_stand_client_image_build_survives_a_network_failure(self):
+        source = (ROOT / 'tests/integration/clients.dockerfile').read_text().replace('\\\n', ' ')
+        for line in source.splitlines():
+            for command in re.findall(r'\bcurl\b[^&;]*https?://[^&;]*', line):
+                with self.subTest(command[:60]):
+                    self.assertIn('--retry-all-errors', command)
+        # git clone сам не повторяется: он стоит в цикле, и неудачная попытка убирает за собой.
+        self.assertRegex(source, r'for attempt in 1 2 3 4 5; do\s+git clone \S+ /dnstt && break;\s+rm -rf /dnstt; sleep 10;\s+done')
+        self.assertEqual(len(re.findall(r'\bgit clone\b', source)), 1)
+        script = (ROOT / 'scripts/ci_hosted_test.py').read_text()
+        self.assertIn('retrying(lambda: subprocess.run(args, check=True, timeout=1200), errors=(subprocess.CalledProcessError,))', script)
+
+    def test_build_preflight_and_process_check_do_not_race(self):
+        workflow = (ROOT / '.github/workflows/images.yml').read_text()
+        # Проверочный контейнер соседнего задания живёт секунды: проверка ждёт, но в конце всё равно требует пустого списка.
+        start = workflow.index('Проверить домашний тестовый хост перед сборкой')
+        preflight = workflow[start:workflow.index('./.github/actions/setup-buildx', start)]
+        self.assertRegex(preflight, r'for attempt in \$\(seq 1 24\); do\n\s+foreign=\$\(docker ps[^\n]+\n\s+\[ -z "\$foreign" \] && break\n\s+sleep 5\n\s+done\n\s+test -z "\$foreign"')
+        # Имя процесса проверяется после exec, а не сразу после запуска в фоне.
+        start = workflow.index('/bin/sleep 30 & child=$!')
+        check = workflow[start:workflow.index('Идентификатор проверенного образа', start)]
+        self.assertLess(check.index('until [ "$(cat /proc/$child/comm 2>/dev/null)" = sleep ]'), check.index('pgrep -x sleep | grep -qx "$child"'))
+        # Пауза перед повторной сборкой длиннее типичного сбоя Docker Hub.
+        self.assertIn("      - if: steps.image.outcome == 'failure'\n        run: sleep 120\n", workflow)
+
     def test_release_scripts_route_registry_and_api_calls_through_retries(self):
         for name in ('ci_publish_bundle.py', 'ci_promote_bundle.py', 'ci_hosted_test.py'):
             with self.subTest(name):

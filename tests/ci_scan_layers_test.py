@@ -246,6 +246,34 @@ class PrivateMarkersTest(unittest.TestCase):
         found = layers.scan_config({'config': {'Env': ['UPSTREAM=203.0.113.77']}, 'history': []}, set(), private)
         self.assertEqual([row[0] for row in found], ['private marker #1'])
 
+    def test_markers_come_from_the_runner_file_and_from_the_repository_secret(self):
+        with tempfile.NamedTemporaryFile('w', suffix='.txt') as stream:
+            stream.write('203.0.113.77\n# комментарий\nshared.example-corp.net\n')
+            stream.flush()
+            both = layers.markers(stream.name, text='shared.example-corp.net\n\n  198.51.100.9  \n# тоже комментарий\n')
+            with patch.dict(os.environ, {'VPNBOT_PRIVATE_MARKERS_TEXT': '198.51.100.9\n'}):
+                from_environment = layers.markers(stream.name)
+        only_secret = layers.markers('/nonexistent/markers', text='198.51.100.9\n')
+        self.assertEqual((both.groups, from_environment.groups, only_secret.groups), (3, 3, 1), 'повтор в двух источниках — одна примета')
+        found = scan({'/etc/a': b'peer 198.51.100.9', '/etc/b': b'203.0.113.77', '/etc/c': b'x.shared.example-corp.net'}, private=both)
+        self.assertEqual(sorted(row[:2] for row in found), [('private marker #1', '/etc/b'), ('private marker #2', '/etc/c'), ('private marker #3', '/etc/a')])
+        self.assertEqual([row[:2] for row in scan({'/etc/a': b'peer 198.51.100.9'}, private=only_secret)], [('private marker #1', '/etc/a')])
+        with patch.dict(os.environ, {'VPNBOT_PRIVATE_MARKERS_TEXT': ''}):
+            self.assertIsNone(layers.markers('/nonexistent/markers'))
+
+    def test_workflow_passes_the_secret_to_both_scans_and_never_prints_it(self):
+        workflow = (ROOT / '.github/workflows/images.yml').read_text()
+        self.assertEqual(workflow.count('VPNBOT_PRIVATE_MARKERS_TEXT: ${{ secrets.PRIVATE_MARKERS }}'), 2)
+        self.assertNotRegex(workflow, r'echo[^\n]*PRIVATE_MARKERS|run:[^\n]*secrets\.PRIVATE_MARKERS')
+        out = io.StringIO()
+        with patch.dict(os.environ, {'VPNBOT_PRIVATE_MARKERS_TEXT': '198.51.100.9\n'}), patch.object(layers, 'MARKERS', Path('/nonexistent')), \
+                patch.object(layers, 'open_url', Registry([layer({'/etc/app.conf': b'upstream 198.51.100.9;'})])), patch.object(ci_retry.time, 'sleep'), patch('sys.stdout', out):
+            code = layers.main([ImageTest.REF])
+        self.assertEqual(code, 1)
+        self.assertIn('Private markers: loaded (1)', out.getvalue())
+        self.assertIn('BLOCK private marker #1: /etc/app.conf', out.getvalue())
+        self.assertNotIn('198.51.100', out.getvalue())
+
     def test_missing_or_empty_marker_file_disables_only_this_rule(self):
         self.assertIsNone(layers.markers('/nonexistent/markers'))
         self.assertIsNone(self.markers('# только комментарий\n\n'))

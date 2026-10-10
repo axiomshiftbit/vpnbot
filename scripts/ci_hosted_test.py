@@ -150,7 +150,9 @@ def assets(checkout, manifest):
         args += ['--build-arg', name + '=' + value]
     # This context contains test code only, never the checkout's .git or state.
     args.append(str(checkout / 'tests/integration'))
-    subprocess.run(args, check=True, timeout=1200)
+    # Сборка скачивает базовые образы и исходники клиентов: сетевой сбой — не
+    # повод перезапускать всё задание.
+    retrying(lambda: subprocess.run(args, check=True, timeout=1200), errors=(subprocess.CalledProcessError,))
     client_downloads(manifest.with_name('client-tools'))
     print('Candidate images, rollback pair and disposable clients prepared')
 

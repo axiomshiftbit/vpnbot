@@ -103,7 +103,15 @@ jobs:
           command -v gh
           # Задания сборки идут параллельно на нескольких runner одной VM:
           # чужие сборщики buildx допустимы, любые другие контейнеры — нет.
-          test -z "$(docker ps --format '{{.Names}}' | grep -v '^buildx_buildkit_' || true)"
+          # Соседнее задание после своей сборки на секунды запускает проверочный
+          # контейнер образа: ждём, пока он завершится. Настоящий посторонний
+          # контейнер никуда не денется, и проверка откажет.
+          for attempt in $(seq 1 24); do
+            foreign=$(docker ps --format '{{.Names}}' | grep -v '^buildx_buildkit_' || true)
+            [ -z "$foreign" ] && break
+            sleep 5
+          done
+          test -z "$foreign"
           python3 -c 'import shutil; assert shutil.disk_usage("/var/lib/docker").free >= 12 * 1024**3, "Недостаточно места для безопасной сборки"'
       - uses: ./.github/actions/setup-buildx
         with:
@@ -141,8 +149,10 @@ jobs:
             *.cache-to=${{ inputs.test_runner && 'type=inline' || format('type=gha,mode=max,scope={0}', matrix.service) }}
             *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             *.labels.org.opencontainers.image.revision=${{ github.sha }}
+      # Сбой получения базового образа с Docker Hub длится дольше полуминуты:
+      # 2026-10-09 обе попытки с паузой 30 с упёрлись в один и тот же таймаут.
       - if: steps.image.outcome == 'failure'
-        run: sleep 30
+        run: sleep 120
       - uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7
         id: image_retry
         if: steps.image.outcome == 'failure'
@@ -293,6 +303,11 @@ jobs:
             docker run --rm --network=none --entrypoint sh "$image" -ec '
               /bin/sleep 30 & child=$!
               trap "kill $child 2>/dev/null || true" EXIT
+              # Дочерний процесс становится sleep не мгновенно: до exec он ещё sh.
+              waited=0
+              until [ "$(cat /proc/$child/comm 2>/dev/null)" = sleep ] || [ "$waited" -ge 50 ]; do
+                waited=$((waited + 1)); sleep 0.1
+              done
               pgrep -x sleep | grep -qx "$child"
             '
           fi
@@ -340,10 +355,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: python3 scripts/ci_check_components.py
-      # Адреса боевых серверов и другие приметы установки известны только
-      # runner (файл /etc/vpnbot-ci-private-markers); остальные правила те же,
-      # что в тестах.
+      # Адреса боевых серверов и другие приметы установки в репозитории не
+      # хранятся: на домашнем runner это файл /etc/vpnbot-ci-private-markers,
+      # на серверах GitHub — секрет репозитория PRIVATE_MARKERS (по примете
+      # на строку). Без обоих источников остальные правила работают как прежде.
       - name: Секреты и приметы установки в файлах репозитория
+        env:
+          VPNBOT_PRIVATE_MARKERS_TEXT: ${{ secrets.PRIVATE_MARKERS }}
         run: python3 scripts/ci_scan_layers.py --tree .
       - uses: ./.github/actions/download-artifact
         with:
@@ -394,6 +412,7 @@ jobs:
           IMAGE_NAME: ${{ matrix.image }}
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          VPNBOT_PRIVATE_MARKERS_TEXT: ${{ secrets.PRIVATE_MARKERS }}
         run: |
           set -euo pipefail
           image=$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/bundle.json"))["images"][os.environ["IMAGE_NAME"]])')
