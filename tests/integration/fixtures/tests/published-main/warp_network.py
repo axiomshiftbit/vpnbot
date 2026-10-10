@@ -60,7 +60,7 @@ for _ in range(40):
  if docker('warp-audit','wg','show','wgcf-profile').returncode==0 and curl(timeout=4).returncode==0:break
  time.sleep(1)
 check('watchdog-restores-lost-tunnel',curl().returncode==0,{'seconds':time.monotonic()-started})
-menu=bot('warp-menu');check('menu-shows-tunnel-and-proxy',menu=={'tunnel':True,'socks':True,'profile':True},menu)
+menu=bot('warp-menu');check('menu-shows-tunnel-and-proxy',menu=={'tunnel':True,'socks':True},menu)
 bot('warp-toggle');check('proxy-stopped-immediately-by-off',not listener())
 check('disabled-warp-is-healthy-for-docker',docker('warp-audit','sh','/warp_probe.sh').returncode==0)
 started=time.monotonic();bot('warp-toggle');check('proxy-recovers-on',wait_proxy());took=time.monotonic()-started

@@ -261,9 +261,11 @@ switch ($action) {
         $result=$b->warpStatus();
         break;
     case 'warp-menu':
+        // Содержимое профиля здесь не проверяется: на стенде каталог /etc/warp
+        // подключён контейнеру wp отдельно, php его файлов не видит.
         $b->warp();$text=implode("\n",$b->transport->messages);
         $result=['tunnel'=>(bool)preg_match('~'.preg_quote($b->i18n('warp tunnel').': '.$b->i18n('warp handshake'),'~').' \\d+ ~u',$text),
-            'socks'=>str_contains($text,$b->i18n('warp socks').': '.$b->i18n('on')),'profile'=>str_contains($text,'[Peer]')];
+            'socks'=>str_contains($text,$b->i18n('warp socks').': '.$b->i18n('on'))];
         break;
     case 'warp-backup':
         $b->warpBackup((string)($argv[2] ?? ''));
