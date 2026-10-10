@@ -68,7 +68,10 @@ class PhpStartupTest(unittest.TestCase):
 
     def test_restart_preserves_keys_and_certificate(self):
         self.assertEqual(0, self.run_script('start_php.sh').returncode)
-        files = [*self.root.joinpath('ssh').glob('key*'), *self.root.joinpath('certs').glob('*')]
+        host_keys = sorted(self.root.joinpath('ssh/hosts').glob('*/ssh_host_ed25519_key*'))
+        # Ключи узлов SSH сервисов: закрытый и открытый на каждый, повторный старт их не меняет.
+        self.assertGreaterEqual(len(host_keys), 34)
+        files = [*self.root.joinpath('ssh').glob('key*'), *self.root.joinpath('certs').glob('*'), *host_keys]
         before = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
         self.assertEqual(0, self.run_script('start_php.sh').returncode)
         self.assertEqual(before, {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files})

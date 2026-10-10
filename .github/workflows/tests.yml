@@ -126,6 +126,7 @@ jobs:
       # Проверяем целевой PHP на musl и прежнюю ветку для совместимости кода
       # при обновлении. bash/util-linux/pcntl нужны тестовым fixtures и
       # проверке хостовых скриптов; в рабочий PHP-образ они не добавляются.
+      # openssh-keygen: start_php.sh выдаёт сервисам ключи узлов SSH.
       - name: Все тесты на Alpine и PHP ${{ matrix.php }}
         env:
           PHP_SERIES: ${{ matrix.php }}
@@ -140,7 +141,7 @@ jobs:
             -v "$RUNNER_TEMP/vpnbot-xray/fork/xray:/audit-xray-fork:ro" \
             -e PHP_SERIES -e VLESS_TEST_XRAY=/audit-xray -e XRAY_FORK_TEST_BINARY=/audit-xray-fork -w /workspace \
             "$base" sh -ec '
-              sh scripts/ci_retry.sh apk add --no-cache bash util-linux coreutils findutils make git curl openssl python3 py3-yaml \
+              sh scripts/ci_retry.sh apk add --no-cache bash util-linux coreutils findutils make git curl openssl openssh-keygen python3 py3-yaml \
                 php${PHP_SERIES} php${PHP_SERIES}-mbstring php${PHP_SERIES}-session \
                 php${PHP_SERIES}-phar php${PHP_SERIES}-zip php${PHP_SERIES}-curl \
                 php${PHP_SERIES}-openssl php${PHP_SERIES}-iconv php${PHP_SERIES}-intl \
