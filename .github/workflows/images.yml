@@ -15,6 +15,10 @@ on:
         description: 'master: собрать и проверить заново, даже если комплект этого коммита уже допущен в dev'
         type: boolean
         default: false
+      promote_master:
+        description: 'dev: после успешной публикации передвинуть master на этот же коммит и перенести комплект'
+        type: boolean
+        default: false
   # Раз в две недели на серверах GitHub: пересборка со свежими пакетами и
   # проверка уязвимостей. На домашней VM тот же прогон запускает её собственный
   # таймер (scripts/ci_home_schedule.py): он навёрстывает пропуск после включения.
@@ -503,5 +507,23 @@ jobs:
           EXPECTED_BUNDLE: ${{ needs.bundle.outputs.fingerprint }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/ci_publish_bundle.py "$RUNNER_TEMP/release/bundle.json" "$RUNNER_TEMP/native.json"
+  # Только по флажку и только после публикации комплекта dev: master двигается
+  # вперёд на проверенный коммит, затем короткий прогон master переносит канал.
+  # Права встроенного токена не расширяются — работает отдельный PROMOTE_TOKEN.
+  release:
+    needs: publish
+    if: github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && github.ref == 'refs/heads/dev' && inputs.test_runner && inputs.promote_master
+    runs-on: [self-hosted, Linux, X64, vpnbot-home]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Передвинуть master на проверенный коммит и запустить перенос комплекта
+        env:
+          PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+        run: python3 scripts/ci_promote_master.py
 # Old sha-only garbage collection could delete images referenced by a retained
 # bundle. Keep released candidates until a bundle-aware retention job is added.
