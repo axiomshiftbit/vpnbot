@@ -187,6 +187,17 @@ else
     echo "WARN: netfilter modules unavailable — WARP wg-quick may fail" >&2
 fi
 
+# strongSwan при запуске проверяет, умеет ли ядро интерфейсы XFRM, и без
+# модуля пишет в журнал ipsec «failed to create XFRM interface». Самому боту
+# эти интерфейсы не нужны, модуль загружается ради чистого журнала. Он
+# зависит от IPv6: на ядре с ipv6.disable=1 не загружается вовсе — это не
+# ошибка, IKEv2 и L2TP работают и без него.
+if modprobe xfrm_interface 2>/dev/null; then
+    echo 'xfrm_interface' > /etc/modules-load.d/vpnbot-xfrm.conf
+else
+    echo "NOTE: kernel module xfrm_interface unavailable (IPv6 disabled in the kernel?) — IPsec works without it"
+fi
+
 # Docker ставим из официального apt-репозитория с проверкой ключа, а не
 # `curl https://get.docker.com | sh`. Тот скрипт исполнялся root'ом без сверки
 # подписи или контрольной суммы (-f защищает только от HTTP-ошибок), то есть

@@ -50,6 +50,9 @@ start: pull # запуск контейнеров
 	-modprobe l2tp_ppp 2>/dev/null && echo l2tp_ppp > /etc/modules-load.d/vpnbot-l2tp.conf || echo "WARN: l2tp_ppp unavailable — L2TP off, IKEv2 ok"
 	# WARP wg-quick требует эти модули при восстановлении правил netfilter.
 	-modprobe -a xt_comment xt_mark xt_connmark 2>/dev/null && printf 'xt_comment\nxt_mark\nxt_connmark\n' > /etc/modules-load.d/vpnbot-warp.conf || echo "WARN: netfilter modules unavailable — WARP wg-quick may fail"
+	# Только ради чистого журнала ipsec (см. init.sh); на ядре без IPv6 модуль
+	# не загружается — молча пропускаем, чтобы не шуметь при каждом обновлении.
+	-modprobe xfrm_interface 2>/dev/null && echo xfrm_interface > /etc/modules-load.d/vpnbot-xfrm.conf || true
 	IP=$(IP) VER=$(VER) python3 scripts/protocol_modules.py compose up -d --force-recreate
 u: start
 	$(MAKE) preup
