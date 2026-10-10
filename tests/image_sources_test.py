@@ -96,6 +96,27 @@ class ImageSourcesTest(unittest.TestCase):
                 done = subprocess.run(['sh', '-c', command], env={'TT_REF': ref, 'HEAD': head, 'PATH': '/usr/bin:/bin'})
                 self.assertEqual(done.returncode, expected)
 
+    def test_trusttunnel_endpoint_runs_with_mimalloc_and_keeps_its_process_name(self):
+        source = (ROOT / 'dockerfile/trusttunnel.dockerfile').read_text()
+        self.assertRegex(source, r'apk add --no-cache [^\n]*\bmimalloc2\b')
+        self.assertIn('COPY --from=build /src/target/release/trusttunnel_endpoint /usr/local/libexec/', source)
+        wrapper = re.search(r"printf '%s\\n' '(#!/bin/sh)' '([^']+)'", source)
+        self.assertEqual(wrapper.group(2), 'LD_PRELOAD=/usr/lib/libmimalloc-secure.so.2 exec /usr/local/libexec/trusttunnel_endpoint "$@"')
+        # Та же обёртка на подставной программе: аргументы доходят как есть,
+        # переменная видна только ей, имя процесса — по нему бот ищет endpoint.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / 'libexec').mkdir()
+            real = base / 'libexec/trusttunnel_endpoint'
+            real.write_text('#!/bin/sh\nprintf "%s|" "$LD_PRELOAD" "$@"; cat /proc/$$/comm\n')
+            real.chmod(0o755)
+            script = base / 'trusttunnel_endpoint'
+            script.write_text(wrapper.group(1) + '\n' + wrapper.group(2).replace('LD_PRELOAD=/usr/lib/', 'LD_PRELOAD=/nonexistent/')
+                              .replace('/usr/local/libexec/', str(base) + '/libexec/') + '\n')
+            script.chmod(0o755)
+            done = subprocess.run([str(script), 'vpn.toml', 'two words'], capture_output=True, text=True)
+            self.assertEqual(done.stdout.strip(), '/nonexistent/libmimalloc-secure.so.2|vpn.toml|two words|trusttunnel_end')
+
     def check_snippet(self, key, content):
         """Та же команда, что в Dockerfile, на подставном файле."""
         with tempfile.TemporaryDirectory() as directory:

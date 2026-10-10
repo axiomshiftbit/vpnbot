@@ -58,10 +58,20 @@ FROM $image
 # узла SSH пакет openssh в Alpine при установке не создаёт — их делает
 # start_tt.sh при старте контейнера.
 RUN apk upgrade --no-cache --available \
-    && apk add --no-cache ca-certificates curl iproute2 openssh libgcc \
-    && mkdir -p /root/.ssh /trusttunnel_endpoint
-COPY --from=build /src/target/release/trusttunnel_endpoint /usr/local/bin/
+    && apk add --no-cache ca-certificates curl iproute2 openssh libgcc mimalloc2 \
+    && mkdir -p /root/.ssh /trusttunnel_endpoint /usr/local/libexec
+COPY --from=build /src/target/release/trusttunnel_endpoint /usr/local/libexec/
 COPY --from=build /src/target/release/setup_wizard         /usr/local/bin/
+# Распределитель памяти musl плохо переносит многопоточную нагрузку: при пяти
+# одновременных клиентах endpoint тратил втрое-вчетверо больше процессора и
+# отдавал в 2,5 раза меньше, чем сборка под glibc (замер 2026-10-10: 2,6 против
+# 6,6 Гбит/с). С mimalloc показатели прежние. Библиотека подключается только
+# самому endpoint (защищённый вариант со сторожевыми страницами), а не sshd и
+# оболочке; exec сохраняет имя процесса, по которому его ищет бот.
+RUN test -f /usr/lib/libmimalloc-secure.so.2 \
+    && printf '%s\n' '#!/bin/sh' 'LD_PRELOAD=/usr/lib/libmimalloc-secure.so.2 exec /usr/local/libexec/trusttunnel_endpoint "$@"' \
+        > /usr/local/bin/trusttunnel_endpoint \
+    && chmod 755 /usr/local/bin/trusttunnel_endpoint
 WORKDIR /trusttunnel_endpoint
 # Сборка откажет, если бинарнику не хватает библиотеки в итоговом образе.
 RUN trusttunnel_endpoint --version && setup_wizard --help >/dev/null
