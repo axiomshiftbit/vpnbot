@@ -1874,6 +1874,18 @@ $i = [
         'en' => 'Regenerate EVERY client\'s private/public key at once (and the shared presharedkey, if AmneziaWG). Every currently saved config/QR stops working immediately and SILENTLY — no error, the connection just drops. There is no way to auto-notify or re-push new configs to users; you must redistribute them by hand afterward.',
         'ru' => 'Разово перевыпустить приватный/публичный ключ КАЖДОГО клиента (и общий presharedkey, если это AmneziaWG). Все уже сохранённые у пользователей конфиги/QR перестанут работать сразу и МОЛЧА — без ошибки, соединение просто пропадёт. Автоматически уведомить или переслать новые конфиги пользователям бот не может — только вручную.',
     ],
+    'l2tp profile ports'  => [
+        'en' => 'The built-in iOS/macOS L2TP client works only with the standard IPsec ports 500 and 4500. The server uses other ports, so the profile is not issued — use IKEv2.',
+        'ru' => 'Встроенный клиент L2TP в iOS и macOS работает только со стандартными портами IPsec 500 и 4500. На сервере заданы другие порты, поэтому профиль не выдаётся — используйте IKEv2.',
+    ],
+    'ikev2 on demand'  => [
+        'en' => 'auto-connect',
+        'ru' => 'автоподключение',
+    ],
+    'ikev2 on demand hint'  => [
+        'en' => 'Profile with Connect On Demand: iOS/macOS bring the VPN up by themselves and restore it after a drop. The VPN switch will turn back on — to stop it, disable "Connect On Demand" in the VPN settings (ⓘ next to the profile). Installing it replaces the regular vpnbot profile of this user.',
+        'ru' => 'Профиль с подключением по требованию: iOS и macOS сами поднимают VPN и возвращают его после обрыва. Переключатель VPN будет включаться обратно — чтобы остановить, выключите «Подключать по запросу» в настройках VPN (ⓘ рядом с профилем). Установка заменяет обычный профиль vpnbot этого пользователя.',
+    ],
     'no native l2tp'  => [
         'en' => 'no native L2TP client, use IKEv2 instead',
         'ru' => 'нет нативного L2TP-клиента, используйте IKEv2',

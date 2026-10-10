@@ -1454,6 +1454,9 @@ class Bot
             case preg_match('~^/getL2tpCreds (\S+)$~', $this->input['callback'], $m):
                 $this->sendL2tpCreds($m[1]);
                 break;
+            case preg_match('~^/getL2tpProfile (\S+)$~', $this->input['callback'], $m):
+                $this->sendL2tpProfile($m[1]);
+                break;
             case preg_match('~^/showL2tpLog$~', $this->input['callback'], $m):
                 $this->showL2tpLog();
                 break;
@@ -1489,6 +1492,11 @@ class Bot
                 break;
             case preg_match('~^/getIkev2Profile (\S+)$~', $this->input['callback'], $m):
                 $this->sendIkev2Profile($m[1]);
+                break;
+            // Короткое имя: с 40-символьным логином данные кнопки обязаны
+            // уложиться в 64 байта, иначе Telegram отклонит всё меню клиента.
+            case preg_match('~^/ikev2Auto (\S+)$~', $this->input['callback'], $m):
+                $this->sendIkev2Profile($m[1], true);
                 break;
             case preg_match('~^/getIkev2Sswan (\S+)$~', $this->input['callback'], $m):
                 $this->sendIkev2Sswan($m[1]);
@@ -35728,6 +35736,87 @@ DNS-over-HTTPS with IP:
         $this->menu('l2tp');
     }
 
+    // Профиль встроенного клиента L2TP для iOS и macOS: тот же payload
+    // com.apple.vpn.managed, что у IKEv2, но VPNType L2TP. SharedSecret по
+    // формату Apple — данные (base64), а не строка.
+    public function l2tpMobileconfig(string $user, string $pass, string $host, string $psk): string
+    {
+        $eu   = htmlspecialchars($user, ENT_QUOTES | ENT_XML1);
+        $eh   = htmlspecialchars($host, ENT_QUOTES | ENT_XML1);
+        $ep   = htmlspecialchars($pass, ENT_QUOTES | ENT_XML1);
+        $psk  = base64_encode($psk);
+        $vpnUuid = $this->ikev2Uuid("l2tp-vpn-$host-$user");
+        $topUuid = $this->ikev2Uuid("l2tp-top-$host-$user");
+        return <<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key><string>com.apple.vpn.managed</string>
+            <key>PayloadIdentifier</key><string>org.vpnbot.l2tp.$eu</string>
+            <key>PayloadUUID</key><string>$vpnUuid</string>
+            <key>PayloadVersion</key><integer>1</integer>
+            <key>PayloadDisplayName</key><string>vpnbot L2TP</string>
+            <key>UserDefinedName</key><string>vpnbot L2TP $eu</string>
+            <key>VPNType</key><string>L2TP</string>
+            <key>IPSec</key>
+            <dict>
+                <key>AuthenticationMethod</key><string>SharedSecret</string>
+                <key>LocalIdentifierType</key><string>KeyID</string>
+                <key>SharedSecret</key><data>$psk</data>
+            </dict>
+            <key>IPv4</key>
+            <dict>
+                <key>OverridePrimary</key><integer>1</integer>
+            </dict>
+            <key>PPP</key>
+            <dict>
+                <key>AuthName</key><string>$eu</string>
+                <key>AuthPassword</key><string>$ep</string>
+                <key>CommRemoteAddress</key><string>$eh</string>
+                <key>TokenCard</key><false/>
+            </dict>
+        </dict>
+    </array>
+    <key>PayloadType</key><string>Configuration</string>
+    <key>PayloadIdentifier</key><string>org.vpnbot.l2tp.profile.$eu</string>
+    <key>PayloadUUID</key><string>$topUuid</string>
+    <key>PayloadVersion</key><integer>1</integer>
+    <key>PayloadDisplayName</key><string>vpnbot L2TP ($eu)</string>
+</dict>
+</plist>
+XML;
+    }
+
+    public function sendL2tpProfile($user)
+    {
+        $users = $this->getL2tpUsers();
+        $psk   = $this->getIpsecPsk();
+        if (!isset($users[$user]) || $psk === '') {
+            $this->send($this->input['chat'], 'PSK not ready — restart ipsec container');
+            return false;
+        }
+        // Встроенный клиент Apple не умеет задавать порты IKE: профиль с
+        // нестандартными портами установился бы, но не подключался.
+        $ports = $this->ipsecPorts();
+        if ($ports['ike'] !== 500 || $ports['natt'] !== 4500) {
+            $this->send($this->input['chat'], $this->i18n('l2tp profile ports'));
+            return false;
+        }
+        $this->sendFile(
+            $this->input['from'],
+            new CURLStringFile(
+                $this->l2tpMobileconfig($user, (string) $users[$user]['pass'], $this->ipsecHost(), $psk),
+                "$user-l2tp.mobileconfig",
+                'application/x-apple-aspen-config'
+            )
+        );
+        return true;
+    }
+
     public function l2tpClientMenu($user)
     {
         $user  = preg_replace('~[^a-zA-Z0-9_.\-]~', '', (string) $user);
@@ -35757,10 +35846,16 @@ DNS-over-HTTPS with IP:
         }
 
         $data   = [];
-        $data[] = [[
-            'text'          => $this->i18n('credentials'),
-            'callback_data' => "/getL2tpCreds $user",
-        ]];
+        $data[] = [
+            [
+                'text'          => $this->i18n('credentials'),
+                'callback_data' => "/getL2tpCreds $user",
+            ],
+            [
+                'text'          => '.mobileconfig',
+                'callback_data' => "/getL2tpProfile $user",
+            ],
+        ];
         $data[] = [
             $isDis
                 ? ['text' => $this->i18n('enable'),  'callback_data' => "/enableL2tpUser $user"]
@@ -36166,23 +36261,29 @@ DNS-over-HTTPS with IP:
         );
     }
 
-    public function sendIkev2Profile($user)
+    // $onDemand — «подключение по требованию»: iOS/macOS сами поднимают VPN
+    // при любом обращении в сеть и возвращают его после обрыва. Выдаётся
+    // отдельной кнопкой: с таким профилем VPN нельзя просто выключить
+    // переключателем, поэтому обычный профиль остаётся прежним.
+    public function ikev2Mobileconfig(string $user, string $pass, string $host, string $caB64, bool $onDemand = false): string
     {
-        $users = $this->getIkev2Users();
-        $caB64 = $this->ikev2CaB64();
-        if (!isset($users[$user]) || $caB64 === '') {
-            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
-            return false;
-        }
-        $host = $this->ipsecHost();
-        $pass = $users[$user]['pass'];
         $eu   = htmlspecialchars($user, ENT_QUOTES | ENT_XML1);
         $eh   = htmlspecialchars($host, ENT_QUOTES | ENT_XML1);
         $ep   = htmlspecialchars($pass, ENT_QUOTES | ENT_XML1);
         $vpnUuid  = $this->ikev2Uuid("vpn-$host-$user");
         $certUuid = $this->ikev2Uuid("ca-$host");
         $topUuid  = $this->ikev2Uuid("top-$host-$user");
-        $xml = <<<XML
+        $demand = !$onDemand ? '' : <<<XML
+
+                <key>OnDemandEnabled</key><integer>1</integer>
+                <key>OnDemandRules</key>
+                <array>
+                    <dict>
+                        <key>Action</key><string>Connect</string>
+                    </dict>
+                </array>
+XML;
+        return <<<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -36223,7 +36324,7 @@ DNS-over-HTTPS with IP:
                     <key>IntegrityAlgorithm</key><string>SHA2-256</string>
                     <key>DiffieHellmanGroup</key><integer>14</integer>
                     <key>LifeTimeInMinutes</key><integer>1440</integer>
-                </dict>
+                </dict>$demand
             </dict>
         </dict>
         <dict>
@@ -36243,9 +36344,21 @@ DNS-over-HTTPS with IP:
 </dict>
 </plist>
 XML;
+    }
+
+    public function sendIkev2Profile($user, $onDemand = false)
+    {
+        $users = $this->getIkev2Users();
+        $caB64 = $this->ikev2CaB64();
+        if (!isset($users[$user]) || $caB64 === '') {
+            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            return false;
+        }
+        $xml = $this->ikev2Mobileconfig($user, (string) $users[$user]['pass'], $this->ipsecHost(), $caB64, (bool) $onDemand);
         $this->sendFile(
             $this->input['from'],
-            new CURLStringFile($xml, "$user.mobileconfig", 'application/x-apple-aspen-config')
+            new CURLStringFile($xml, $onDemand ? "$user-ondemand.mobileconfig" : "$user.mobileconfig", 'application/x-apple-aspen-config'),
+            $onDemand ? $this->i18n('ikev2 on demand hint') : false
         );
         return true;
     }
@@ -36430,6 +36543,10 @@ XML;
                 'callback_data' => "/getIkev2Sswan $user",
             ],
         ];
+        $data[] = [[
+            'text'          => '.mobileconfig · ' . $this->i18n('ikev2 on demand'),
+            'callback_data' => "/ikev2Auto $user",
+        ]];
         $data[] = [[
             'text'          => $this->i18n('credentials'),
             'callback_data' => "/getIkev2Creds $user",

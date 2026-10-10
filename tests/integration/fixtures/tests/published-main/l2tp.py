@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, pathlib, re, subprocess, time
+import json, os, pathlib, plistlib, re, subprocess, time
 ROOT=pathlib.Path('/opt/vpnbot-hosted-ci/stand'); OUT=ROOT/'results/l2tp'; OUT.mkdir(mode=0o700,exist_ok=True)
 os.umask(0o077); C='vpnbot-audit-ipsecclient'; results=[]
 def run(*a,timeout=45): return subprocess.run(a,capture_output=True,text=True,timeout=timeout)
@@ -27,6 +27,14 @@ def connect_ppp(label):
 def stop_ppp(): exe('xl2tpd-control','disconnect-lac','audit');time.sleep(.5)
 password=re.search(r'^#?"auditl2"\s+\*\s+"([^"]+)"', (ROOT/'bot/config/ipsec/chap-secrets').read_text(), re.M)[1]
 psk=(ROOT/'bot/config/ipsec/psk').read_text().strip()
+# Профиль для iOS/macOS должен нести те самые PSK и пароль, с которыми сервер
+# принимает подключение: ниже клиент соединяется значениями из профиля.
+issued=bot('l2-profile');check('profile-issued',issued['sent'] and issued['name']=='auditl2-l2tp.mobileconfig')
+vpn=plistlib.loads(issued['xml'].encode())['PayloadContent'][0]
+check('profile-is-l2tp-for-this-server',(vpn['VPNType'],vpn['PPP']['CommRemoteAddress'],vpn['PPP']['AuthName'],vpn['IPv4']['OverridePrimary']),('L2TP','203.0.113.10','auditl2',1))
+check('profile-carries-server-psk',vpn['IPSec']['SharedSecret']==psk.encode())
+check('profile-carries-user-password',vpn['PPP']['AuthPassword']==password)
+psk=vpn['IPSec']['SharedSecret'].decode();password=vpn['PPP']['AuthPassword']
 conf='''connections {
  auditl2 {
   version = 1

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, pathlib, re, subprocess, time
+import copy, json, os, pathlib, plistlib, re, ssl, subprocess, time
 ROOT=pathlib.Path('/opt/vpnbot-hosted-ci/stand');OUT=ROOT/'results/ikev2';OUT.mkdir(exist_ok=True,mode=0o700)
 os.umask(0o077)
 C='vpnbot-audit-ipsecclient';results=[]
@@ -30,6 +30,20 @@ resolve=OUT/'audit-resolve.conf';resolve.write_text('charon { plugins { resolve 
 run('docker','cp',str(resolve),C+':/etc/strongswan.d/audit-resolve.conf').check_returncode()
 exe('sh','-c',"printf 'nameserver 1.1.1.1\n' > /etc/resolv.conf").check_returncode()
 password=users['auditike']['pass']
+# Профили iOS/macOS: обычный остаётся без автоподключения, вариант «по
+# требованию» отличается только двумя ключами; пароль и CA — те же, с которыми
+# ниже проходит настоящее подключение.
+ca_der=ssl.PEM_cert_to_DER_cert((ROOT/'bot/config/ipsec/pki/ca.crt').read_text())
+plain=bot('ike-profile')['result'];auto=bot('ike-profile-auto')['result']
+check('profiles-issued',(plain['sent'],plain['name'],auto['sent'],auto['name']),(True,'auditike.mobileconfig',True,'auditike-ondemand.mobileconfig'))
+plain=plistlib.loads(plain['xml'].encode());auto=plistlib.loads(auto['xml'].encode())
+ike=auto['PayloadContent'][0]['IKEv2']
+check('ondemand-profile-connects-by-itself',(ike.get('OnDemandEnabled'),ike.get('OnDemandRules')),(1,[{'Action':'Connect'}]))
+check('regular-profile-does-not','OnDemandEnabled' not in plain['PayloadContent'][0]['IKEv2'] and 'OnDemandRules' not in plain['PayloadContent'][0]['IKEv2'])
+same=copy.deepcopy(auto);del same['PayloadContent'][0]['IKEv2']['OnDemandEnabled'],same['PayloadContent'][0]['IKEv2']['OnDemandRules']
+check('ondemand-differs-only-by-two-keys',same==plain)
+check('profile-carries-server-ca-and-credentials',(auto['PayloadContent'][1]['PayloadContent']==ca_der,ike['AuthPassword']==password,ike['AuthName'],ike['RemoteAddress']),(True,True,'auditike','203.0.113.10'))
+password=ike['AuthPassword']
 conf='''connections {
  auditike {
   version = 2

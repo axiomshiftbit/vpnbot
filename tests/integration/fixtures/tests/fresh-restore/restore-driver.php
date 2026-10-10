@@ -136,6 +136,22 @@ switch ($action) {
     case 'l2-enable':
         $b->enableL2tpUser('auditl2');
         break;
+    case 'l2-profile':
+    case 'ike-profile':
+    case 'ike-profile-auto':
+        // Профиль несёт пароль и PSK: в каталог журналов стенда не пишется.
+        $capture=new class {
+            public int $calls=0; public $document=null; public array $messages=[];
+            public function call($method,$data,$json=0) {
+                $this->calls++;
+                if (is_array($data) && ($data['document'] ?? null) instanceof CURLStringFile) $this->document=$data['document'];
+                return ['ok'=>true,'result'=>['message_id'=>$this->calls,'chat'=>['id'=>1]]];
+            }
+        };
+        $b->transport=$capture;
+        $sent=$action==='l2-profile' ? $b->sendL2tpProfile('auditl2') : $b->sendIkev2Profile('auditike',$action==='ike-profile-auto');
+        $result=['sent'=>$sent===true,'name'=>$capture->document?->postname,'xml'=>$capture->document?->data];
+        break;
     case 'ovpn-proto':
         $b->toggleOvpnProto(); $result=['proto'=>$b->getOvpnProto()];
         break;
