@@ -355,13 +355,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: python3 scripts/ci_check_components.py
-      # Адреса боевых серверов и другие приметы установки в репозитории не
-      # хранятся: на домашнем runner это файл /etc/vpnbot-ci-private-markers,
-      # на серверах GitHub — секрет репозитория PRIVATE_MARKERS (по примете
-      # на строку). Без обоих источников остальные правила работают как прежде.
+      # Адреса боевых серверов и другие приметы установки известны только
+      # своему runner (файл /etc/vpnbot-ci-private-markers): ни в репозиторий,
+      # ни в секреты GitHub они не кладутся. Остальные правила те же, что в тестах.
       - name: Секреты и приметы установки в файлах репозитория
-        env:
-          VPNBOT_PRIVATE_MARKERS_TEXT: ${{ secrets.PRIVATE_MARKERS }}
         run: python3 scripts/ci_scan_layers.py --tree .
       - uses: ./.github/actions/download-artifact
         with:
@@ -412,7 +409,6 @@ jobs:
           IMAGE_NAME: ${{ matrix.image }}
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          VPNBOT_PRIVATE_MARKERS_TEXT: ${{ secrets.PRIVATE_MARKERS }}
         run: |
           set -euo pipefail
           image=$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/bundle.json"))["images"][os.environ["IMAGE_NAME"]])')

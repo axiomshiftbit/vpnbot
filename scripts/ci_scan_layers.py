@@ -7,11 +7,10 @@
 и настройками бота, остатки сборки в домашних и временных каталогах, пароли в
 /etc/shadow, переменные окружения, история сборки и аттестации образа.
 
-Адреса боевых серверов, домены и прочие приметы конкретной установки в
-репозитории не хранятся. Их список (по одной строке) берётся из файла на
-runner ($VPNBOT_PRIVATE_MARKERS, по умолчанию /etc/vpnbot-ci-private-markers)
-и из переменной $VPNBOT_PRIVATE_MARKERS_TEXT — в неё сборка на серверах GitHub
-передаёт секрет репозитория PRIVATE_MARKERS. Приметы ищутся во всех слоях.
+Адреса боевых серверов, домены и прочие приметы конкретной установки не
+хранятся ни в репозитории, ни в секретах GitHub: их список лежит только на
+своём runner в файле $VPNBOT_PRIVATE_MARKERS (по одной строке) и ищется во
+всех слоях. Прогоны на серверах GitHub идут без этого правила.
 
 Значения не печатаются — только вид находки, путь и отпечаток. Тестовые ключи
 из состава чужих пакетов перечислены по отпечаткам в ci_known_test_keys.txt:
@@ -96,16 +95,12 @@ def known():
     return {line.split()[0] for line in KNOWN.read_text().splitlines() if line and not line.startswith('#')}
 
 
-def markers(path=None, text=None):
-    """Приметы конкретной установки: адреса серверов, домены, учётные записи.
-
-    Источники складываются: файл на runner и текст из переменной окружения.
-    """
+def markers(path=None):
+    """Приметы конкретной установки: адреса серверов, домены, учётные записи."""
     path = Path(path or MARKERS)
-    lines = path.read_text().splitlines() if path.is_file() else []
-    lines += (os.environ.get('VPNBOT_PRIVATE_MARKERS_TEXT', '') if text is None else text).splitlines()
-    # Порядок сохраняется: номер приметы в отчёте — её место в этом списке.
-    values = list(dict.fromkeys(line.strip() for line in lines if line.strip() and not line.strip().startswith('#')))
+    if not path.is_file():
+        return None
+    values = [line.strip() for line in path.read_text().splitlines() if line.strip() and not line.startswith('#')]
     if not values:
         return None
     parts = '|'.join('(?P<m%d>%s)' % (index, re.escape(value)) for index, value in enumerate(values))
