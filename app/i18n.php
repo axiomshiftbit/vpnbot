@@ -458,6 +458,210 @@ $i = [
         'en' => 'SMUX disabled. Refresh client profiles.',
         'ru' => 'SMUX выключен. Обновите клиентские профили.',
     ],
+    'xdrive intro' => [
+        'en' => 'XDRIVE connects through a cloud storage folder: the server opens no port and clients only need to reach the storage. Clients: Xray only. The profile contains the storage credentials — hand it to trusted people only.',
+        'ru' => 'XDRIVE — подключение через папку облачного хранилища: сервер не открывает порт, а клиенту нужен доступ только к хранилищу. Клиент — только Xray. В профиле лежит доступ к хранилищу: выдавайте его только своим.',
+    ],
+    'xdrive inactive' => [
+        'en' => 'XDRIVE is enabled but not running: the selected Xray core does not support it, the main inbound is not VLESS, or the keys are missing. See help.',
+        'ru' => 'XDRIVE включён, но не работает: выбранное ядро Xray его не поддерживает, основной вход не VLESS или нет ключей. Подробности — в справке.',
+    ],
+    'xdrive service' => [
+        'en' => 'Storage',
+        'ru' => 'Хранилище',
+    ],
+    'xdrive plain http' => [
+        'en' => 'The storage address uses http://: the storage password travels unencrypted.',
+        'ru' => 'Адрес хранилища начинается с http://: пароль хранилища передаётся открыто.',
+    ],
+    'xdrive url' => [
+        'en' => 'WebDAV address',
+        'ru' => 'Адрес WebDAV',
+    ],
+    'xdrive folder' => [
+        'en' => 'Folder',
+        'ru' => 'Папка',
+    ],
+    'xdrive login' => [
+        'en' => 'Login',
+        'ru' => 'Логин',
+    ],
+    'xdrive password' => [
+        'en' => 'Password',
+        'ru' => 'Пароль',
+    ],
+    'xdrive folder id' => [
+        'en' => 'Folder ID',
+        'ru' => 'ID папки',
+    ],
+    'xdrive template' => [
+        'en' => 'Template',
+        'ru' => 'Шаблон',
+    ],
+    'xdrive secrets' => [
+        'en' => 'Secrets',
+        'ru' => 'Секреты',
+    ],
+    'xdrive poll' => [
+        'en' => 'Idle polling',
+        'ru' => 'Опрос в простое',
+    ],
+    'xdrive probe' => [
+        'en' => 'Check storage',
+        'ru' => 'Проверить хранилище',
+    ],
+    'xdrive rotate' => [
+        'en' => 'New keys',
+        'ru' => 'Новые ключи',
+    ],
+    'xdrive profiles' => [
+        'en' => 'Client profiles',
+        'ru' => 'Профили клиентов',
+    ],
+    'xdrive enabled' => [
+        'en' => 'XDRIVE enabled. Send the profiles to users.',
+        'ru' => 'XDRIVE включён. Раздайте профили пользователям.',
+    ],
+    'xdrive disabled' => [
+        'en' => 'XDRIVE disabled.',
+        'ru' => 'XDRIVE выключен.',
+    ],
+    'xdrive rotate off' => [
+        'en' => 'Enable XDRIVE first.',
+        'ru' => 'Сначала включите XDRIVE.',
+    ],
+    'xdrive rotated' => [
+        'en' => 'New encryption keys are in effect. Old profiles no longer work — send new ones.',
+        'ru' => 'Новые ключи шифрования действуют. Старые профили больше не работают — раздайте новые.',
+    ],
+    'xdrive probe ok' => [
+        'en' => 'The storage works: listing, writing, reading and deleting succeeded.',
+        'ru' => 'Хранилище работает: список, запись, чтение и удаление прошли.',
+    ],
+    'xdrive need url' => [
+        'en' => 'Set the WebDAV address, e.g. https://webdav.yandex.ru',
+        'ru' => 'Задайте адрес WebDAV, например https://webdav.yandex.ru',
+    ],
+    'xdrive private url' => [
+        'en' => 'The storage address points to a private or local network; an external storage is required.',
+        'ru' => 'Адрес хранилища ведёт в частную или локальную сеть; нужно внешнее хранилище.',
+    ],
+    'xdrive need folder' => [
+        'en' => 'Set the folder name: Latin letters, digits, dot, dash, underscore.',
+        'ru' => 'Задайте имя папки: латинские буквы, цифры, точка, дефис, подчёркивание.',
+    ],
+    'xdrive need login' => [
+        'en' => 'Set the storage login and password.',
+        'ru' => 'Задайте логин и пароль хранилища.',
+    ],
+    'xdrive need folder id' => [
+        'en' => 'Set the Google Drive folder ID (the part of the folder link after /folders/).',
+        'ru' => 'Задайте ID папки Google Drive (часть ссылки на папку после /folders/).',
+    ],
+    'xdrive need google keys' => [
+        'en' => 'Set Client ID, Client Secret and Refresh Token.',
+        'ru' => 'Задайте Client ID, Client Secret и Refresh Token.',
+    ],
+    'xdrive need template' => [
+        'en' => 'Set a valid template: a JSON object with put, get, delete and list (with namesRegex).',
+        'ru' => 'Задайте корректный шаблон: объект JSON с put, get, delete и list (с namesRegex).',
+    ],
+    'xdrive needs vless' => [
+        'en' => 'XDRIVE needs a VLESS main inbound; the current transport uses another protocol.',
+        'ru' => 'XDRIVE требует основной вход VLESS; текущий транспорт использует другой протокол.',
+    ],
+    'xdrive core old' => [
+        'en' => 'The selected Xray core does not support XDRIVE. Select the upstream core 26.9.30+ or the fork 26.10.5+.',
+        'ru' => 'Выбранное ядро Xray не поддерживает XDRIVE. Выберите оригинальное ядро 26.9.30+ или форк 26.10.5+.',
+    ],
+    'xdrive keys failed' => [
+        'en' => 'Could not generate encryption keys: the xr container did not answer.',
+        'ru' => 'Не удалось создать ключи шифрования: контейнер xr не ответил.',
+    ],
+    'xdrive check failed' => [
+        'en' => 'The Xray core rejected the configuration; nothing was changed.',
+        'ru' => 'Ядро Xray отклонило конфигурацию; ничего не изменено.',
+    ],
+    'xdrive save failed' => [
+        'en' => 'Could not apply the settings; the previous ones remain.',
+        'ru' => 'Не удалось применить настройки; прежние сохранены.',
+    ],
+    'xdrive probe incomplete' => [
+        'en' => 'Fill in the storage settings first.',
+        'ru' => 'Сначала заполните настройки хранилища.',
+    ],
+    'xdrive probe unreachable' => [
+        'en' => 'The storage did not answer: check the address and the server\'s Internet access.',
+        'ru' => 'Хранилище не ответило: проверьте адрес и доступ сервера в Интернет.',
+    ],
+    'xdrive probe auth' => [
+        'en' => 'The storage rejected the credentials.',
+        'ru' => 'Хранилище отклонило учётные данные.',
+    ],
+    'xdrive probe folder' => [
+        'en' => 'The folder was not found in the storage: create it first.',
+        'ru' => 'Папка в хранилище не найдена: сначала создайте её.',
+    ],
+    'xdrive probe denied' => [
+        'en' => 'The storage refused the request.',
+        'ru' => 'Хранилище отказало в запросе.',
+    ],
+    'xdrive probe template' => [
+        'en' => 'A custom template cannot be checked from the bot; enable XDRIVE and try a client.',
+        'ru' => 'Свой шаблон из бота не проверяется; включите XDRIVE и проверьте клиентом.',
+    ],
+    'xdrive probe write' => [
+        'en' => 'The storage does not allow writing to the folder.',
+        'ru' => 'Хранилище не даёт записывать в папку.',
+    ],
+    'xdrive probe read' => [
+        'en' => 'A written file could not be read back unchanged.',
+        'ru' => 'Записанный файл не удалось прочитать без искажений.',
+    ],
+    'xdrive probe list' => [
+        'en' => 'A written file is missing from the folder listing: the server answers PROPFIND in an unsupported form.',
+        'ru' => 'Записанный файл не виден в списке папки: сервер отвечает на PROPFIND в неподдерживаемом виде.',
+    ],
+    'xdrive probe delete' => [
+        'en' => 'The storage does not allow deleting files: the folder would overflow.',
+        'ru' => 'Хранилище не даёт удалять файлы: папка переполнится.',
+    ],
+    'xdrive hint url' => [
+        'en' => 'WebDAV address without the folder, e.g. https://webdav.yandex.ru or https://cloud.example.com/remote.php/dav/files/user',
+        'ru' => 'Адрес WebDAV без папки, например https://webdav.yandex.ru или https://cloud.example.com/remote.php/dav/files/user',
+    ],
+    'xdrive hint folder' => [
+        'en' => 'WebDAV: the name of an existing empty folder used only for XDRIVE. Google Drive: the folder ID from its link.',
+        'ru' => 'WebDAV: имя существующей пустой папки, отведённой только под XDRIVE. Google Drive: ID папки из ссылки на неё.',
+    ],
+    'xdrive hint template' => [
+        'en' => 'Template JSON in one message. Placeholders: {folder}, {name}, {prefix}, {secret0}, {secret1}…',
+        'ru' => 'JSON шаблона одним сообщением. Подстановки: {folder}, {name}, {prefix}, {secret0}, {secret1}…',
+    ],
+    'xdrive hint secrets' => [
+        'en' => 'Template secrets, one per line: the first becomes {secret0}, the second {secret1}, and so on. Your message will be deleted.',
+        'ru' => 'Секреты шаблона, по одному на строку: первый станет {secret0}, второй — {secret1} и так далее. Сообщение будет удалено.',
+    ],
+    'xdrive hint poll' => [
+        'en' => 'How often an idle server asks the storage for new connections, in ms: 500–10000. Larger values mean fewer requests and a slower first response.',
+        'ru' => 'Как часто сервер в простое спрашивает хранилище о новых подключениях, в мс: 500–10000. Больше — меньше запросов и медленнее первый ответ.',
+    ],
+    'xdrive hint secret' => [
+        'en' => 'The value is saved to the bot settings and placed into client profiles. Your message will be deleted.',
+        'ru' => 'Значение сохраняется в настройках бота и попадает в профили клиентов. Сообщение будет удалено.',
+    ],
+    'xdrive profiles hint' => [
+        'en' => 'Choose a user: the bot sends a ready Xray config. The file contains the storage credentials and the encryption key.',
+        'ru' => 'Выберите пользователя: бот пришлёт готовый конфиг Xray. В файле лежат доступ к хранилищу и ключ шифрования.',
+    ],
+    'xdrive profile unavailable' => [
+        'en' => 'The profile is unavailable: enable and complete XDRIVE first.',
+        'ru' => 'Профиль недоступен: сначала включите и настройте XDRIVE.',
+    ],
+    'xdrive profile caption' => [
+        'en' => 'XDRIVE profile for Xray: xray run -c file.json, then SOCKS 127.0.0.1:10808 or HTTP 127.0.0.1:10809. Do not forward it to strangers.',
+        'ru' => 'Профиль XDRIVE для Xray: xray run -c файл.json, затем SOCKS 127.0.0.1:10808 или HTTP 127.0.0.1:10809. Не пересылайте посторонним.',
+    ],
     'xhttp mux hint' => [
         'en' => 'Mux.Cool (XHTTP): the fork 26.10.5+ carries all TCP streams of an Xray client in one XHTTP session and keeps its idle downlink alive. Only JSON profiles of Xray clients get it; with SMUX enabled SMUX wins. XHTTP already multiplexes requests itself, so enable this only when the number of sessions matters (CDN limits).',
         'ru' => 'Mux.Cool (XHTTP): форк 26.10.5+ ведёт все TCP-потоки клиента Xray одной сессией XHTTP и не даёт её простаивающему каналу оборваться. Блок получают только JSON-профили клиентов Xray; при включённом SMUX действует SMUX. XHTTP и сам мультиплексирует запросы, поэтому включайте только когда важно число сессий (лимиты CDN).',

@@ -12,6 +12,7 @@ require_once __DIR__ . '/BotMenuHelp.php';
 require_once __DIR__ . '/BotTelemtLimits.php';
 require_once __DIR__ . '/BotTelemtActivity.php';
 require_once __DIR__ . '/BotBackup.php';
+require_once __DIR__ . '/BotXdrive.php';
 
 class Bot
 {
@@ -24,6 +25,7 @@ class Bot
     use BotTelemtLimits;
     use BotTelemtActivity;
     use BotBackup;
+    use BotXdrive;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -705,6 +707,30 @@ class Bot
                 break;
             case preg_match('~^/smuxMenu$~', $this->input['callback'], $m):
                 $this->smuxMenu();
+                break;
+            case preg_match('~^/xdrive$~', $this->input['callback'], $m):
+                $this->xdriveMenu();
+                break;
+            case preg_match('~^/xdriveToggle$~', $this->input['callback'], $m):
+                $this->xdriveToggle();
+                break;
+            case preg_match('~^/xdriveService (webdav|gdrive|template)$~', $this->input['callback'], $m):
+                $this->xdriveService($m[1]);
+                break;
+            case preg_match('~^/xdriveSet (url|folder|template|secrets|poll|secret[0-2])$~', $this->input['callback'], $m):
+                $this->xdriveSet($m[1]);
+                break;
+            case preg_match('~^/xdriveProbe$~', $this->input['callback'], $m):
+                $this->xdriveProbeMenu();
+                break;
+            case preg_match('~^/xdriveRotate$~', $this->input['callback'], $m):
+                $this->xdriveRotate();
+                break;
+            case preg_match('~^/xdriveUsers (\d{1,5})$~', $this->input['callback'], $m):
+                $this->xdriveUsers((int) $m[1]);
+                break;
+            case preg_match('~^/xdriveProfile ([a-f0-9]{16})$~', $this->input['callback'], $m):
+                $this->xdriveProfile($m[1]);
                 break;
             case preg_match('~^/switchXrayCore$~', $this->input['callback'], $m):
                 $this->switchXrayCore();
@@ -3295,6 +3321,9 @@ class Bot
             return false;
         }
         $this->applySniffingToXray($c, $pac);
+        // До гейтов ниже: они собирают теги всех входов с пользователями, и
+        // вход XDRIVE должен получить те же запреты, что и основной.
+        $this->ensureXdriveInbound($c, $pac);
         $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
         // Строго до ensureWgGuard(): тот кладёт свои гейты в голову правил, и
@@ -20942,13 +20971,16 @@ DNS-over-HTTPS with IP:
                 // primary match: IP + destination host:port + email in one pass, for
                 // the connection-history log. Falls back to the IP+email-only match on
                 // lines without an "accepted …" clause so online tracking never degrades.
+                // Через XDRIVE клиент приходит «из хранилища»: ядро пишет адрес
+                // 127.0.0.1. Пользователь при этом онлайн, но это не его IP —
+                // в счёт ограничения по числу адресов он идти не должен.
                 if (preg_match('~\sfrom\s(\d{1,3}(?:\.\d{1,3}){3})\D.*?accepted\s+\S+?:([^\s]+):(\d+).*?email:\s*(\S+)~', $l, $m)) {
                     $seen[$m[4]]['ts']         = $now;
-                    $seen[$m[4]]['ips'][$m[1]] = $now;
+                    if (!str_starts_with($m[1], '127.')) $seen[$m[4]]['ips'][$m[1]] = $now;
                     $events[] = ['email' => $m[4], 'ip' => $m[1], 'dst' => $m[2] . ':' . $m[3], 'ts' => $now];
                 } elseif (preg_match('~\sfrom\s(\d{1,3}(?:\.\d{1,3}){3})\D.*?email:\s*(\S+)~', $l, $m)) {
                     $seen[$m[2]]['ts']         = $now;
-                    $seen[$m[2]]['ips'][$m[1]] = $now;
+                    if (!str_starts_with($m[1], '127.')) $seen[$m[2]]['ips'][$m[1]] = $now;
                     $events[] = ['email' => $m[2], 'ip' => $m[1], 'dst' => null, 'ts' => $now];
                 }
             }
@@ -20996,7 +21028,7 @@ DNS-over-HTTPS with IP:
                     // Внутренние адреса выбрасываем: это не IP клиента, и они
                     // портили бы и список в /onlines, и его счётчик.
                     if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
-                        && $this->ipInRange($ip, self::DOCKER_NET)
+                        && ($this->ipInRange($ip, self::DOCKER_NET) || str_starts_with($ip, '127.'))
                     ) {
                         continue;
                     }
@@ -25771,6 +25803,10 @@ DNS-over-HTTPS with IP:
         $data[] = [[
             'text' => 'VLESS Encryption: ' . $this->i18n(VlessEncryption::client($c, $p) === 'none' ? 'off' : 'on'),
             'callback_data' => '/vlessEncryption',
+        ]];
+        $data[] = [[
+            'text' => 'XDRIVE: ' . $this->i18n(!empty($p['xdrive']['enabled']) ? 'on' : 'off'),
+            'callback_data' => '/xdrive',
         ]];
         $data[] = [
             [

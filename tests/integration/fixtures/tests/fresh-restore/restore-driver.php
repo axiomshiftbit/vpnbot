@@ -409,6 +409,34 @@ switch ($action) {
         file_put_contents("$dir/share-link.txt",$b->linkXray(0));
         $result['transport']=$b->getPacConf()['transport'];
         break;
+    // XDRIVE: те же действия, что выполняют кнопки меню.
+    case 'xdrive-enable':
+        $error=$b->applyXdrive(['enabled'=>1,'service'=>'webdav','url'=>$argv[2],'folder'=>$argv[3],'secrets'=>[$argv[4],$argv[5]]]);
+    case 'xdrive-state':
+        $x=$b->getXray();$in=array_values(array_filter($x['inbounds'],fn($v)=>($v['tag']??'')==='xdrive'));
+        $result=['error'=>$error??'','active'=>$b->xdriveActive(null,$x),'inbounds'=>count($in),
+            'clients'=>array_column($in[0]['settings']['clients']??[],'email'),'main'=>array_column($x['inbounds'][0]['settings']['clients']??[],'email'),
+            'encrypted'=>($in[0]['settings']['decryption']??'none')!=='none','core_ready'=>$b->xdriveCoreReady()];
+        break;
+    case 'xdrive-probe':
+        $result=['error'=>$b->xdriveProbe($b->xdriveSettings())];
+        break;
+    case 'xdrive-profile':
+        $client=$b->getXray()['inbounds'][0]['settings']['clients'][(int)$argv[2]];
+        $b->xdriveProfile(Bot::xdriveClientKey($client));
+        $result=['files'=>array_values(array_map('basename',glob('/logs/audit-files/xdrive-*.json')))];
+        break;
+    case 'xdrive-rotate':
+        $result=['error'=>$b->applyXdrive($b->xdriveSettings(),true)];
+        break;
+    case 'xdrive-disable':
+        $result=['error'=>$b->applyXdrive(['enabled'=>0]+$b->xdriveSettings())];
+        break;
+    case 'xdrive-menu':
+        $b->xdriveMenu();$text=implode("\n",$b->transport->messages);
+        $s=$b->xdriveSettings();
+        $result=['shown'=>str_contains($text,'XDRIVE'),'secret_hidden'=>!str_contains($text,$s['secrets'][1]??'-'),'problems'=>$b->xdriveProblems($s)];
+        break;
     default:
         exit(2);
 }
