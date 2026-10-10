@@ -114,8 +114,13 @@ class HostKeysTest(unittest.TestCase):
         self.assertEqual(set(listed), set(with_sshd()))
         for scenario in ('accepted-with-its-own-key', 'impostor-rejected', 'neighbour-key-rejected', 'accepted-again-after-restore',
                          'recreated-service-keeps-its-key', 'restarted-service-keeps-its-key', 'service-without-a-key-waits-for-php',
-                         'lost-key-reissued', 'php-restart-keeps-other-keys', 'key-mount-is-read-only'):
+                         'lost-key-reissued', 'php-restart-keeps-other-keys', 'key-mount-is-read-only', 'impostor-key-is-really-served',
+                         'neighbour-key-is-really-served', 'own-key-is-served-again'):
             self.assertIn(scenario, text)
+        # Подмена обязана быть настоящей: sshd находится по pid-файлу, а не по имени
+        # (busybox pgrep его не находит), и отданный ключ сверяется с подложенным.
+        self.assertNotIn('pgrep -', text)
+        self.assertIn('/run/sshd.pid', text)
 
     def test_host_keys_are_not_part_of_the_repository_or_a_backup(self):
         # Правило «/ssh/*» с единственным исключением: ключи узлов в репозиторий не попадают.

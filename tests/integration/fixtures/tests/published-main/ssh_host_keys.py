@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json,os,pathlib,subprocess,time
+import base64,hashlib,json,os,pathlib,subprocess,time
 os.umask(0o077);R=pathlib.Path('/opt/vpnbot-hosted-ci/stand');O=R/'results/ssh-host-keys';O.mkdir(mode=0o700,exist_ok=True);results=[]
 SERVICES=['up','ng','service','wg','wg1','ad','telemt','xr','oc','np','wp','proxy','ss','dnstt','ovpn','ipsec','tt','hy']
 def run(*a,timeout=60):return subprocess.run(list(map(str,a)),capture_output=True,text=True,timeout=timeout)
@@ -9,13 +9,18 @@ def probe(*services):
  (O/'last-probe.json').write_text(json.dumps(v,indent=2));return v
 def sshd(container,*command):return run('docker','exec',container,'sh','-c',' '.join(command))
 # sshd отдаёт ключ, загруженный при старте: после замены файла его перечитывает SIGHUP.
-RELOAD='kill -HUP "$(pgrep -o -x sshd)"'
+# Номер процесса — из pid-файла: pgrep из busybox сравнивает с заголовком
+# процесса «sshd: … [listener]» и по имени sshd его не находит.
+RELOAD='test -s /run/sshd.pid && kill -HUP "$(cat /run/sshd.pid)"'
+def fingerprint(public):return hashlib.sha1(base64.b64decode(public.split()[1])).hexdigest()
+def installed(container):return fingerprint(run('docker','exec',container,'cat','/etc/ssh/ssh_host_ed25519_key.pub').stdout)
 run('docker','cp','/opt/vpnbot-hosted-ci/suite/ssh_host_key.php','php-audit:/tmp/ssh-host-key.php').check_returncode()
 v=probe(*SERVICES);check('no-PHP-warnings',v['warning_count']==0);check('keys-issued-strict-mode',v['strict'])
 live=[s for s in SERVICES if v['result'][s]['reachable']]
 check('enough-services-running',len(live)>=12)
 for s in live:
  check(s+'-accepted-with-its-own-key',v['result'][s]['ok'] and not v['result'][s]['failed'])
+ check(s+'-serves-an-ed25519-key',len(v['result'][s]['served'])==40)
  check(s+'-key-known-to-the-bot',v['result'][s]['pinned'])
 keys={}
 for s in live:
@@ -31,16 +36,20 @@ r=run('docker','exec','xray-audit','sh','-c','touch /hostkey/x');check('key-moun
 try:
  r=sshd('xray-audit','rm -f /etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key.pub','&&','ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/ssh_host_ed25519_key','&&',RELOAD)
  check('impostor-key-installed',r.returncode==0);time.sleep(1.5)
- v=probe('xr','ng');check('impostor-rejected',v['result']['xr']['reachable'] and not v['result']['xr']['ok'] and v['result']['xr']['failed'])
+ v=probe('xr','ng');own=fingerprint('x '+keys['xr'])
+ check('impostor-key-is-really-served',v['result']['xr']['served']==installed('xray-audit')!=own)
+ check('impostor-rejected',v['result']['xr']['reachable'] and not v['result']['xr']['ok'] and v['result']['xr']['failed'])
  check('other-service-unaffected',v['result']['ng']['ok'])
  # Ключ соседа тоже не годится: сервис не может выдать себя за другой.
  other=R/'bot/ssh/hosts/ng/ssh_host_ed25519_key'
  run('docker','cp',other,'xray-audit:/etc/ssh/ssh_host_ed25519_key').check_returncode();run('docker','cp',str(other)+'.pub','xray-audit:/etc/ssh/ssh_host_ed25519_key.pub').check_returncode()
  r=sshd('xray-audit','chown root:root /etc/ssh/ssh_host_ed25519_key*','&&','chmod 600 /etc/ssh/ssh_host_ed25519_key','&&',RELOAD);check('neighbour-key-installed',r.returncode==0);time.sleep(1.5)
- v=probe('xr');check('neighbour-key-rejected',v['result']['xr']['reachable'] and not v['result']['xr']['ok'] and v['result']['xr']['failed'])
+ v=probe('xr');check('neighbour-key-is-really-served',v['result']['xr']['served']==fingerprint('x '+keys['ng'])!=own)
+ check('neighbour-key-rejected',v['result']['xr']['reachable'] and not v['result']['xr']['ok'] and v['result']['xr']['failed'])
 finally:
  r=sshd('xray-audit','cp -p /hostkey/ssh_host_ed25519_key /hostkey/ssh_host_ed25519_key.pub /etc/ssh/','&&',RELOAD);check('own-key-restored',r.returncode==0);time.sleep(1.5)
-v=probe('xr');check('accepted-again-after-restore',v['result']['xr']['ok'] and not v['result']['xr']['failed'])
+v=probe('xr');check('own-key-is-served-again',v['result']['xr']['served']==own)
+check('accepted-again-after-restore',v['result']['xr']['ok'] and not v['result']['xr']['failed'])
 # Пересоздание контейнера ключ не меняет: бот узнаёт сервис без своего перезапуска.
 before=keys.get('ss')
 if before:

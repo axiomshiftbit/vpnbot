@@ -71,8 +71,25 @@ try {
     $check(file_get_contents($pin) === $line($other, 'dnstt'), 'dnstt: запомнен новый ключ');
     $check(!$bot->sshHostKeyTrusted('dnstt', $print($third)), 'dnstt: после смены прежний ключ больше не годится');
     $check(!$bot->sshHostKeyTrusted('dnstt', $print($own)), 'dnstt: посторонний ключ не годится никогда');
+    // Две замены подряд, как при восстановлении из копии: ключ заменили вне
+    // бота, бот перезагрузил sshd (и запомнил ключ), затем вернули прежний.
+    file_put_contents($bot->dnsttHostKey, $line($third, 'dnstt'));
+    $check($bot->sshHostKeyTrusted('dnstt', $print($other)), 'dnstt: вторая замена — до перезагрузки годится запомненный');
+    $bot->sshHostKeyRememberDnstt();   // успешная перезагрузка: sshd отдаёт $third
+    file_put_contents($bot->dnsttHostKey, $line($own, 'dnstt'));
+    $check($bot->sshHostKeyTrusted('dnstt', $print($third)), 'dnstt: после перезагрузки и новой замены sshd узнаётся');
+    $check(!$bot->sshHostKeyTrusted('dnstt', $print($other)), 'dnstt: ключ до перезагрузки больше не годится');
+    $bot->sshHostKeyRememberDnstt();   // вторая перезагрузка: sshd отдаёт $own
+    $check($bot->sshHostKeyTrusted('dnstt', $print($own)) && !$bot->sshHostKeyTrusted('dnstt', $print($third)), 'dnstt: после второй перезагрузки действует только последний ключ');
+    // Негодный файл настроек запомненный ключ не затирает.
+    file_put_contents($bot->dnsttHostKey, 'garbage');
+    $bot->sshHostKeyRememberDnstt();
+    $check($bot->sshHostKeyTrusted('dnstt', $print($own)), 'dnstt: негодный файл не затирает запомненный ключ');
     unlink($bot->dnsttHostKey);
-    $check($bot->sshHostKeyTrusted('dnstt', $print($other)), 'dnstt: без файла настроек действует запомненный ключ');
+    $check($bot->sshHostKeyTrusted('dnstt', $print($own)), 'dnstt: без файла настроек действует запомненный ключ');
+    // Перезагрузка — место, где ключ запоминается; без этого две замены подряд блокируют бота.
+    $start = substr($source = file_get_contents(__DIR__ . '/../app/bot.php'), strpos($source, 'public function dnsttStart()'), 1800);
+    $check(strpos($start, "start_dnstt.sh --reload") < strpos($start, '$this->sshHostKeyRememberDnstt();'), 'dnstt: ключ запоминается после успешной перезагрузки');
 } finally {
     exec('rm -rf ' . escapeshellarg($root));
 }

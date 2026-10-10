@@ -17772,7 +17772,10 @@ DNS-over-HTTPS with IP:
         if (!$this->writePrivateKey('/config/dnstt/settings.json', json_encode($settings))) return false;
         if (!$this->protocolModuleEnabled('dnstt')) return true;
         $out = $this->ssh('/bin/sh /start_dnstt.sh --reload', 'dnstt');
-        return !$this->sshFailed && str_contains((string) $out, 'dnstt-ready');
+        if ($this->sshFailed || !str_contains((string) $out, 'dnstt-ready')) return false;
+        // sshd перечитал ключ узла из настроек: теперь он отдаёт именно его.
+        $this->sshHostKeyRememberDnstt();
+        return true;
     }
 
     public function dnsttDownload()
@@ -32869,12 +32872,25 @@ DNS-over-HTTPS with IP:
         $known = self::sshHostKeyFingerprint((string) @file_get_contents($pin));
         if ($known !== null && hash_equals($known, $fingerprint)) return true;
         if ($service !== 'dnstt') return false;
-        $current = (string) @file_get_contents($this->dnsttHostKey);
-        $expected = self::sshHostKeyFingerprint($current);
+        $expected = self::sshHostKeyFingerprint((string) @file_get_contents($this->dnsttHostKey));
         if ($expected === null || !hash_equals($expected, $fingerprint)) return false;
+        $this->sshHostKeyRememberDnstt();
+        return true;
+    }
+
+    /**
+     * Запомнить текущий ключ dnstt из настроек как принятый. Вызывается, когда
+     * sshd заведомо отдаёт именно его: ключ только что предъявлен либо sshd
+     * только что перечитал настройки по команде бота. Без второго случая
+     * две замены ключа подряд оставляли бы бота с устаревшим ключом.
+     */
+    public function sshHostKeyRememberDnstt(): void
+    {
+        $current = (string) @file_get_contents($this->dnsttHostKey);
+        if (self::sshHostKeyFingerprint($current) === null || !is_dir($this->sshHostKeys)) return;
+        $pin = "$this->sshHostKeys/dnstt/ssh_host_ed25519_key.pub";
         if (!is_dir(dirname($pin))) @mkdir(dirname($pin), 0700, true);
         @file_put_contents($pin, $current, LOCK_EX);
-        return true;
     }
 
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
