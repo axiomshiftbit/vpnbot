@@ -50,14 +50,16 @@ class ImageSourcesTest(unittest.TestCase):
         env = env_pins()
         ocserv = re.search(r'^OCSERV_VERSION=(\S+)$', (ROOT / '.env').read_text(), re.M).group(1)
         for key in ('nginx/' + env['NGINX_VERSION'], 'ocserv/' + ocserv, 'shadowsocks-rust/' + env['SS_RUST_VERSION'],
-                    'amneziawg-tools/' + env['AWG_TOOLS_VERSION'], 'trusttunnel/' + env['TT_REF']):
+                    'amneziawg-tools/' + env['AWG_TOOLS_VERSION'], 'trusttunnel/' + env['TT_REF'],
+                    'openvpn/' + env['OPENVPN_VERSION']):
             with self.subTest(key):
                 self.assertIn(key, keys, 'для закреплённой версии нет строки в dockerfile/sources.sha256')
 
     def test_dockerfile_defaults_match_the_pins(self):
         env = env_pins()
         for name, key in (('nginx.dockerfile', 'NGINX_VERSION'), ('ocserv.dockerfile', 'OCSERV_VERSION'),
-                          ('shadowsocks.dockerfile', 'SS_RUST_VERSION'), ('wireguard.dockerfile', 'AWG_TOOLS_VERSION')):
+                          ('shadowsocks.dockerfile', 'SS_RUST_VERSION'), ('wireguard.dockerfile', 'AWG_TOOLS_VERSION'),
+                          ('openvpn.dockerfile', 'OPENVPN_VERSION')):
             defaults = set(re.findall(rf'^ARG {key}=(\S+)$', (ROOT / 'dockerfile' / name).read_text(), re.M))
             with self.subTest(name):
                 self.assertEqual(defaults, {env[key]})
@@ -145,7 +147,8 @@ class ImageSourcesTest(unittest.TestCase):
     def test_dockerfiles_use_the_same_verification_command(self):
         for name, key, target in (('nginx.dockerfile', 'nginx/${NGINX_VERSION}', 'nginx.tar.gz'),
                                   ('ocserv.dockerfile', 'ocserv/${OCSERV_VERSION}', '/tmp/ocserv.tar.gz'),
-                                  ('shadowsocks.dockerfile', 'shadowsocks-rust/${SS_RUST_VERSION}', 'shadowsocks-rust.tar.xz')):
+                                  ('shadowsocks.dockerfile', 'shadowsocks-rust/${SS_RUST_VERSION}', 'shadowsocks-rust.tar.xz'),
+                                  ('openvpn.dockerfile', 'openvpn/${OPENVPN_VERSION}', '/tmp/openvpn.tar.gz')):
             expected = "awk -v key=\"%s\" '$2 == key {print $1 \"  %s\"}' /sources.sha256 | sha256sum -c -" % (key, target)
             with self.subTest(name):
                 source = (ROOT / 'dockerfile' / name).read_text()

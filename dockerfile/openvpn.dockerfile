@@ -1,7 +1,7 @@
 ARG image=alpine:3.24
 FROM $image
 
-ARG OPENVPN_VERSION=2.7.7
+ARG OPENVPN_VERSION=2.7.8
 ARG EASYRSA_VERSION=3.2.7
 ARG EASYRSA_SHA256=308743bc9fe871b902d47dbe98d749daff3a05b27531684f02625ce7208d4598
 
@@ -11,20 +11,53 @@ ARG EASYRSA_SHA256=308743bc9fe871b902d47dbe98d749daff3a05b27531684f02625ce7208d4
 # Дефолт статичный — обычный build переиспользует кеш.
 ARG APK_REFRESH=2026-10-05
 
-# OpenVPN берём из стабильной Alpine, фиксируя upstream-версию; ревизии -rN
-# допускаются. Easy-RSA ставится из официального релиза: пакет Alpine отстаёт.
+# OpenVPN собирается из официального архива с проверкой суммы: пакет Alpine
+# отстаёт от исправлений безопасности (2.7.8 закрывает CVE-2026-84790 и
+# CVE-2026-84964, а в Alpine 3.24 и edge на 2026-10-10 лежит 2.7.7). Параметры
+# configure те же, что у пакета Alpine. Когда пакет догонит, можно вернуться
+# к установке пакетом. Easy-RSA ставится из официального релиза.
+COPY dockerfile/sources.sha256 /sources.sha256
+
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
     apk update; \
     apk upgrade --no-cache --available; \
+    # постоянные пакеты: библиотеки, с которыми слинкован openvpn, и то, что
+    # нужно боту и start_ovpn.sh
     apk add --no-cache \
         openssh \
         bash \
-        "openvpn~${OPENVPN_VERSION}" \
         iptables \
         iproute2 \
         openssl \
-        netcat-openbsd; \
+        netcat-openbsd \
+        libcap-ng \
+        libnl3 \
+        lz4-libs \
+        lzo \
+        pkcs11-helper; \
+    apk add --no-cache --virtual .build-deps \
+        build-base \
+        linux-headers \
+        openssl-dev \
+        libcap-ng-dev \
+        libnl3-dev \
+        lz4-dev \
+        lzo-dev \
+        pkcs11-helper-dev; \
+    wget -O /tmp/openvpn.tar.gz "https://github.com/OpenVPN/openvpn/releases/download/v${OPENVPN_VERSION}/openvpn-${OPENVPN_VERSION}.tar.gz"; \
+    awk -v key="openvpn/${OPENVPN_VERSION}" '$2 == key {print $1 "  /tmp/openvpn.tar.gz"}' /sources.sha256 | sha256sum -c -; \
+    tar -xzf /tmp/openvpn.tar.gz -C /tmp; \
+    rm /tmp/openvpn.tar.gz; \
+    cd /tmp/openvpn-${OPENVPN_VERSION}; \
+    # Плагин auth-pam в Alpine вынесен в отдельный пакет, и образ его не ставил.
+    ./configure --prefix=/usr --sysconfdir=/etc/openvpn --enable-dco --enable-pkcs11 --disable-dns-updown-by-default \
+        --disable-plugin-auth-pam; \
+    make -j"$(nproc)"; \
+    make install-strip; \
+    cd /; \
+    rm -rf /tmp/openvpn-* /sources.sha256 /usr/share/man /usr/share/doc/openvpn /usr/include/openvpn /usr/lib/openvpn/plugins/*.la; \
+    apk del .build-deps; \
     wget -O /tmp/easyrsa.tgz "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz"; \
     echo "${EASYRSA_SHA256}  /tmp/easyrsa.tgz" | sha256sum -c -; \
     mkdir -p /usr/share/easy-rsa; \

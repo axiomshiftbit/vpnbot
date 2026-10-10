@@ -874,7 +874,7 @@ services:
             dockerfile: dockerfile/openvpn.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.24}
-                OPENVPN_VERSION: ${OPENVPN_VERSION:-2.7.7}
+                OPENVPN_VERSION: ${OPENVPN_VERSION:-2.7.8}
                 EASYRSA_VERSION: ${EASYRSA_VERSION:-3.2.7}
                 EASYRSA_SHA256: ${EASYRSA_SHA256:-308743bc9fe871b902d47dbe98d749daff3a05b27531684f02625ce7208d4598}
         volumes:
