@@ -113,5 +113,6 @@ try:
  check('unencrypted-l2tp-rejected',connect_ppp('plaintext'),False)
 finally:
  exe('ip','rule','del','priority','200');exe('ip','route','flush','table','200');stop_ppp();exe('swanctl','--terminate','--ike','auditl2','--timeout','5');bot('l2-enable')
+menu=bot('ipsec-menu');check('client-menu-renders-with-new-button',(menu['l2tp_profile'],menu['l2tp_buttons'],menu['fits']),(True,7,True))
 print(json.dumps({'passed':sum(r['passed'] for r in results),'total':len(results)}))
 raise SystemExit(0 if all(r['passed'] for r in results) else 1)

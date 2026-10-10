@@ -7,9 +7,14 @@ require '/app/calc.php';
 class AuditTransport {
     public int $calls = 0;
     public array $messages = [];
+    public array $keyboards = [];
     public function call($method, $data, $json = 0) {
         $this->calls++;
         if (is_array($data) && isset($data['text'])) $this->messages[]=$data['text'];
+        if (is_array($data) && isset($data['reply_markup'])) {
+            $markup=is_string($data['reply_markup']) ? json_decode($data['reply_markup'],true) : $data['reply_markup'];
+            if (is_array($markup['inline_keyboard'] ?? null)) $this->keyboards[]=$markup['inline_keyboard'];
+        }
         if (is_array($data) && ($data['document'] ?? null) instanceof CURLStringFile) {
             $dir='/logs/audit-files';
             if (!is_dir($dir)) mkdir($dir,0700,true);
@@ -135,6 +140,15 @@ switch ($action) {
         break;
     case 'l2-enable':
         $b->enableL2tpUser('auditl2');
+        break;
+    case 'ipsec-menu':
+        // Меню клиентов и новые кнопки отрисовываются на живом сервере без предупреждений PHP.
+        $buttons=static function (Bot $b): array { $all=[]; foreach (($b->transport->keyboards[count($b->transport->keyboards)-1] ?? []) as $row) foreach ($row as $button) $all[]=$button['callback_data'] ?? ''; return $all; };
+        $b->l2tpClientMenu('auditl2'); $l2=$buttons($b);
+        $b->ikev2ClientMenu('auditike'); $ike=$buttons($b);
+        $result=['l2tp_profile'=>in_array('/getL2tpProfile auditl2',$l2,true),'l2tp_buttons'=>count($l2),
+            'ikev2_auto'=>in_array('/ikev2Auto auditike',$ike,true),'ikev2_buttons'=>count($ike),
+            'fits'=>max(array_map('strlen',array_merge($l2,$ike,[''])))<=64];
         break;
     case 'l2-profile':
     case 'ike-profile':

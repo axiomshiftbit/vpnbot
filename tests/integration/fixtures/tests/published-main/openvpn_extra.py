@@ -55,6 +55,15 @@ try:
  dead=OUT/'client-udp-dead.ovpn';dead.write_text(re.sub(r'(?m)^(remote 10\.10\.0\.19) \d+ udp4$',r'\1 9 udp4',(OUT/'client.ovpn').read_text()))
  run('docker','cp',str(dead),C+':/tmp/audit.ovpn').check_returncode()
  check('dual-falls-back-to-tcp',(connect('dual-tcp'),link()),(True,'TCPv4_CLIENT'));traffic('dual-tcp-https')
+ # Тот же режим снаружи приходит через nginx сборки (upstream 10.10.0.10): бот
+ # обязан открыть там оба протокола, иначе запасной TCP работал бы только в стенде.
+ for _ in range(30):
+  if exe('sh','-c','nc -z -w1 10.10.0.10 1194').returncode==0:break
+  time.sleep(.5)
+ for label,source,expect in (('udp',OUT/'client.ovpn','UDPv4'),('tcp',dead,'TCPv4_CLIENT')):
+  via=OUT/('client-nginx-'+label+'.ovpn');via.write_text(source.read_text().replace('remote 10.10.0.19 ','remote 10.10.0.10 '))
+  run('docker','cp',str(via),C+':/tmp/audit.ovpn').check_returncode()
+  check('dual-through-nginx-'+label,(connect('nginx-'+label),link()),(True,expect));traffic('dual-through-nginx-'+label+'-https')
  check('bot-switch-udp',bot('ovpn-proto'),{'proto':'udp4','listen':'udp'})
  profile();check('udp-after-three-switches',connect('udp-final'));traffic('udp-final-https')
  # Выборочная маршрутизация: шлюз клиента не меняется, приходят только заданные сети и путь к DNS.

@@ -111,5 +111,6 @@ try:
         check('enabled-credential-reconnects',connect('enabled-connect'))
 finally:
     terminate();bot('ike-enable')
+menu=bot('ipsec-menu')['result'];check('client-menu-renders-with-new-button',(menu['ikev2_auto'],menu['ikev2_buttons'],menu['fits']),(True,9,True))
 print(json.dumps({'passed':sum(x['passed'] for x in results),'total':len(results)}))
 raise SystemExit(0 if all(x['passed'] for x in results) else 1)

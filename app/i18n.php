@@ -2306,6 +2306,38 @@ $i = [
         'en' => 'monthly reset',
         'ru' => 'ежемесячный сброс',
     ],
+    'changelog branch'  => [
+        'en' => 'branch',
+        'ru' => 'ветка',
+    ],
+    'changelog installed'  => [
+        'en' => 'Installed',
+        'ru' => 'Установлено',
+    ],
+    'changelog available'  => [
+        'en' => 'In the branch',
+        'ru' => 'В ветке',
+    ],
+    'changelog pending'  => [
+        'en' => 'Not installed yet',
+        'ru' => 'Ещё не установлено',
+    ],
+    'changelog pending note'  => [
+        'en' => 'These changes are in the branch; they arrive with the next bot update once the image set is built.',
+        'ru' => 'Эти изменения уже есть в ветке; они придут со следующим обновлением бота, когда соберётся комплект образов.',
+    ],
+    'changelog up to date'  => [
+        'en' => 'The installed version matches the branch.',
+        'ru' => 'Установленная версия совпадает с веткой.',
+    ],
+    'changelog history'  => [
+        'en' => 'Installed changes',
+        'ru' => 'Установленные изменения',
+    ],
+    'changelog upstream'  => [
+        'en' => 'Versions of the original project',
+        'ru' => 'Версии исходного проекта',
+    ],
     'changelog'  => [
         'en' => 'changelog',
         'ru' => 'список изменений',

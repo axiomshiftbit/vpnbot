@@ -428,6 +428,7 @@ $restoreBot2  = new class ($restoreRoot2) extends Bot {
 file_put_contents($restoreRoot2 . '/pki/crl.pem', 'старый crl остаётся');
 file_put_contents($restoreRoot2 . '/pki/ta.key', 'старый ta остаётся');
 file_put_contents($restoreRoot2 . '/ipp.txt', 'alice,10.8.0.5');
+file_put_contents($restoreRoot2 . '/traffic.json', '{"users":{"alice":{"rx":7}}}');
 $minimal = array_map('base64_encode', [
     'pki/ca.crt'             => $pkiFixture['ca'],
     'pki/issued/server.crt'  => $pkiFixture['server'],
@@ -442,6 +443,11 @@ ttAssert(file_get_contents($restoreRoot2 . '/pki/crl.pem') === 'старый crl
     'служебные файлы, которых нет в снимке, не удаляются');
 ttAssert(file_get_contents($restoreRoot2 . '/ipp.txt') === 'alice,10.8.0.5',
     'ipp.txt ведёт демон — восстановление его не трогает');
+ttAssert(file_get_contents($restoreRoot2 . '/traffic.json') === '{"users":{"alice":{"rx":7}}}',
+    'счётчики трафика восстановление не трогает: снимок не должен откатывать их назад');
+$afterRestore = $restoreBot2->exportOvpnPki(true);
+ttAssert(is_array($afterRestore) && isset($afterRestore['server.conf']) && !isset($afterRestore['traffic.json']) && !isset($afterRestore['ipp.txt']),
+    'счётчики трафика и ipp.txt в снимок не попадают, остальное попадает');
 ttAssert((fileperms($restoreRoot2 . '/pki/revoked/private_by_serial/AB12.key') & 0777) === 0600,
     'приватный ключ отозванного клиента восстанавливается закрытым');
 ttAssert(glob($restoreRoot2 . '/.restore-*') === [],

@@ -7056,7 +7056,7 @@ NFT;
                                 [
                                     [
                                         'text'    => 'changelog',
-                                        'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
+                                        'web_app' => ['url' => $this->changelogUrl()],
                                     ],
                                     [
                                         'text'          => $this->i18n('update bot'),
@@ -18562,7 +18562,7 @@ DNS-over-HTTPS with IP:
             array_unshift($data, [
                 [
                     'text'    => 'changelog',
-                    'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
+                    'web_app' => ['url' => $this->changelogUrl()],
                 ],
                 [
                     'text'          => $this->i18n('update bot'),
@@ -30329,6 +30329,73 @@ DNS-over-HTTPS with IP:
         return $this->editUpstream(fn($nginx) => self::upstreamReplace($nginx, '#naive', $body));
     }
 
+    // Ключ просмотра changelog. Страница показывает историю коммитов
+    // приватного репозитория, а адрес /pac<hash> знает любой владелец
+    // подписки: без ключа из кнопки администратора отдаётся только прежний
+    // общий список версий.
+    public function changelogKey(): string
+    {
+        return substr(hash_hmac('sha256', 'vpnbot-changelog', (string) $this->key), 0, 32);
+    }
+
+    public function changelogUrl(): string
+    {
+        $domain = $this->getPacConf()['domain'] ?: $this->ip;
+        return "https://$domain/pac" . $this->getHashBot() . '?t=changelog&k=' . $this->changelogKey();
+    }
+
+    // Текст changelog из истории своего репозитория: что установлено и какие
+    // изменения уже есть в ветке, но ещё не установлены. Файл version ведёт
+    // исходный проект, изменений этой сборки в нём нет — он идёт в конце.
+    public function changelogBuild(string $repo = '/'): string
+    {
+        $git = 'git -C ' . escapeshellarg($repo) . ' ';
+        $branch = trim((string) shell_exec($git . 'rev-parse --abbrev-ref HEAD 2>/dev/null'));
+        $legacy = trim((string) @file_get_contents(rtrim($repo, '/') . '/version'));
+        if ($branch === '' || !preg_match('~^[\w./-]+$~', $branch)) {
+            return $legacy;
+        }
+        shell_exec($git . 'fetch -q 2>/dev/null');
+        $format = '--no-merges --date=short ' . escapeshellarg('--format=%h%x09%ad%x09%s');
+        $rows = static function (string $out): array {
+            $rows = [];
+            foreach (array_filter(explode("\n", trim($out)), 'strlen') as $line) {
+                $part = explode("\t", $line, 3);
+                if (count($part) === 3) {
+                    $rows[] = $part;
+                }
+            }
+            return $rows;
+        };
+        $remote  = escapeshellarg("origin/$branch");
+        $pending = $rows((string) shell_exec($git . "log -n 100 $format HEAD..$remote 2>/dev/null"));
+        $done    = $rows((string) shell_exec($git . "log -n 60 $format HEAD 2>/dev/null"));
+        if (!$done) {
+            return $legacy;
+        }
+        $line = static fn(array $row) => "$row[1]  $row[2]";
+        $text = ['vpnbot · ' . $this->i18n('changelog branch') . ' ' . $branch,
+            $this->i18n('changelog installed') . ': ' . $done[0][0] . ' · ' . $done[0][1]];
+        if ($pending) {
+            $text[] = $this->i18n('changelog available') . ': ' . $pending[0][0] . ' · ' . $pending[0][1];
+            $text[] = '';
+            $text[] = mb_strtoupper($this->i18n('changelog pending')) . ' (' . count($pending) . ')';
+            $text[] = $this->i18n('changelog pending note');
+            $text = array_merge($text, array_map($line, $pending));
+        } else {
+            $text[] = $this->i18n('changelog up to date');
+        }
+        $text[] = '';
+        $text[] = mb_strtoupper($this->i18n('changelog history'));
+        $text = array_merge($text, array_map($line, $done));
+        if ($legacy !== '') {
+            $text[] = '';
+            $text[] = mb_strtoupper($this->i18n('changelog upstream'));
+            $text[] = $legacy;
+        }
+        return implode("\n", $text) . "\n";
+    }
+
     public function getHashBot($notset = false)
     {
         $p = $this->getPacConf();
@@ -30922,7 +30989,7 @@ DNS-over-HTTPS with IP:
                 ],
                 [
                     'text'    => $this->i18n('changelog'),
-                    'web_app' => ['url' => "https://$domain/pac$hash?t=changelog"],
+                    'web_app' => ['url' => $this->changelogUrl()],
                 ],
             ],
             [

@@ -283,6 +283,11 @@ switch (true) {
                 // (то, что приедет при обновлении); если git недоступен —
                 // откатываемся на локально установленный /version.
                 header('Content-Type: text/plain; charset=utf-8');
+                header('X-Content-Type-Options: nosniff');
+                // С ключом из кнопки администратора — история изменений своего
+                // репозитория; без ключа (ссылку знает любой владелец
+                // подписки) — только прежний общий список версий.
+                $admin = is_string($_GET['k'] ?? null) && hash_equals($bot->changelogKey(), $_GET['k']);
                 // `git fetch` — сетевая операция, а эндпоинт доступен любому
                 // владельцу ссылки подписки и ничем не ограничен: в цикле это
                 // сколько угодно параллельных fetch'ей. Отдаём из кэша не чаще
@@ -291,7 +296,7 @@ switch (true) {
                 // лежит в общем /tmp, и заранее созданный кем-то другим
                 // changelog.cache заставил бы @file_put_contents молча
                 // провалиться, а нас — отдавать чужое содержимое.
-                $cache = sys_get_temp_dir() . '/changelog_' . hash('sha256', $c['key']) . '.cache';
+                $cache = sys_get_temp_dir() . '/changelog_' . hash('sha256', $c['key'] . ($admin ? '|admin' : '')) . '.cache';
                 if (is_file($cache) && time() - filemtime($cache) < 60) {
                     echo (string) file_get_contents($cache);
                     exit;
@@ -313,9 +318,13 @@ switch (true) {
                     echo is_file($cache) ? (string) file_get_contents($cache) : (string) @file_get_contents('/version');
                     exit;
                 }
-                $b = exec('git -C / rev-parse --abbrev-ref HEAD');
-                exec('git -C / fetch -q 2>/dev/null');
-                $log = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
+                if ($admin) {
+                    $log = $bot->changelogBuild();
+                } else {
+                    $b = exec('git -C / rev-parse --abbrev-ref HEAD');
+                    exec('git -C / fetch -q 2>/dev/null');
+                    $log = shell_exec('git -C / show ' . escapeshellarg("origin/$b:version") . ' 2>/dev/null');
+                }
                 if (empty(trim((string) $log))) {
                     $log = @file_get_contents('/version');
                 }
