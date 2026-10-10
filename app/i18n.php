@@ -2022,6 +2022,66 @@ $i = [
         'en' => 'behind NAT (registry fix + reboot)',
         'ru' => 'за NAT (правка реестра + перезагрузка)',
     ],
+    'warp key format'  => [
+        'en' => 'Invalid key format: only Latin letters, digits and dashes.',
+        'ru' => 'Неверный формат ключа: допустимы латинские буквы, цифры и дефис.',
+    ],
+    'warp up failed'  => [
+        'en' => 'WARP did not come up: no handshake with the Cloudflare server within 15 seconds. The switch stays off; see the warp log.',
+        'ru' => 'WARP не поднялся: за 15 секунд нет рукопожатия с сервером Cloudflare. Переключатель остался выключенным; подробности в журнале warp.',
+    ],
+    'warp stop failed'  => [
+        'en' => 'WARP was marked as off, but the stop command did not finish — check the wp container.',
+        'ru' => 'WARP отмечен выключенным, но команда остановки не завершилась — проверьте контейнер wp.',
+    ],
+    'warp backup found'  => [
+        'en' => 'A previous key change was interrupted halfway: a copy of the old account is still stored. A new change is not started so that this copy is not lost. Restore the previous account from the copy, or delete the copy if the current account suits you.',
+        'ru' => 'Прошлая смена ключа оборвалась посередине: копия прежнего аккаунта осталась на сервере. Новая смена не начинается, чтобы эту копию не потерять. Верните прежний аккаунт из копии или удалите копию, если текущий аккаунт вас устраивает.',
+    ],
+    'warp backup restore'  => [
+        'en' => 'restore previous account',
+        'ru' => 'вернуть прежний аккаунт',
+    ],
+    'warp backup drop'  => [
+        'en' => 'delete the copy',
+        'ru' => 'удалить копию',
+    ],
+    'warp backup restored'  => [
+        'en' => 'The previous WARP account is restored.',
+        'ru' => 'Прежний аккаунт WARP возвращён.',
+    ],
+    'warp backup dropped'  => [
+        'en' => 'The copy is deleted. You can change the key now.',
+        'ru' => 'Копия удалена. Теперь ключ можно менять.',
+    ],
+    'warp backup failed'  => [
+        'en' => 'Could not finish; the copy is kept. See the warp log.',
+        'ru' => 'Не удалось завершить; копия сохранена. Подробности в журнале warp.',
+    ],
+    'warp tunnel'  => [
+        'en' => 'tunnel',
+        'ru' => 'туннель',
+    ],
+    'warp tunnel down'  => [
+        'en' => 'down',
+        'ru' => 'не поднят',
+    ],
+    'warp handshake'  => [
+        'en' => 'handshake',
+        'ru' => 'рукопожатие',
+    ],
+    'warp seconds ago'  => [
+        'en' => 's ago',
+        'ru' => 'с назад',
+    ],
+    'warp socks'  => [
+        'en' => 'SOCKS for Xray',
+        'ru' => 'SOCKS для Xray',
+    ],
+    'warp socks pending'  => [
+        'en' => 'starts within a minute',
+        'ru' => 'запустится в течение минуты',
+    ],
     'warp no profile'  => [
         'en' => 'wgcf profile is missing — restart the wp container',
         'ru' => 'профиль wgcf отсутствует — перезапустите контейнер wp',

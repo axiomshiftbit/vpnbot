@@ -22,7 +22,9 @@ SOCKS_PORT="${SOCKS_PORT:-1080}"
 # закреплён sysctl в compose и разрешён в Bot::WARP_SOCKS_UDP_PORTS.
 SOCKS_UDP_PORTS=20000:29999
 
-WARP_LICENSE_KEY=$(cat /config/pac.json | jq -r '.warp // empty')
+# Повреждённый или ещё не записанный pac.json не должен ронять контейнер в
+# цикл перезапусков (set -e): без ключа поднимаемся на бесплатном тарифе.
+WARP_LICENSE_KEY=$(jq -r '.warp // empty' /config/pac.json 2>/dev/null || true)
 
 # Кто имеет право пользоваться SOCKS'ом (см. блок фильтра ниже). Резолвим
 # ИМЕННО ЗДЕСЬ: ниже мы перепишем /etc/resolv.conf на 1.1.1.1 и docker-DNS
@@ -353,7 +355,7 @@ for firewall in iptables ip6tables; do
 done
 
 if tunnel_up; then
-    socks_start
+    socks_start || echo "[warp] SOCKS не запущен: нет fwmark туннеля или не встало правило фильтра"
 else
     echo "[warp] SOCKS не запущен: нет туннеля WARP (см. kill-switch выше)"
 fi
@@ -367,11 +369,26 @@ fi
 # restart-политика (unless-stopped в compose), это чинит и умерший sshd/т.п.
 # Профиль и аккаунт НЕ трогаем: авто-перегенерация при ложном срабатывании
 # потеряла бы аккаунт с license key.
+# Пауза между проходами прерывается ботом (touch /run/warp-kick после кнопок
+# «включить» и «set key»): иначе туннель уже поднят, а SOCKS ждал бы следующего
+# прохода до минуты, и всё это время маршруты «через WARP» не работали бы.
+rm -f /run/warp-kick
+wait_tick() {
+    waited=0
+    while [ "$waited" -lt 60 ]; do
+        if [ -e /run/warp-kick ]; then
+            rm -f /run/warp-kick
+            return 0
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+}
 set +e
 FAILS=0
 BOUNCES=0
 while true; do
-    sleep 60
+    wait_tick
     # Выключен намеренно — туннеля быть не должно, а значит и прокси тоже.
     if warp_disabled; then
         socks_stop
@@ -383,7 +400,7 @@ while true; do
     # она идёт ЧЕРЕЗ прокси, а прокси мы держим закрытым. Сначала поднимаем.
     if ! tunnel_up; then
         if warp_up; then
-            socks_start
+            socks_start || echo "[warp] SOCKS не запущен: нет fwmark туннеля или не встало правило фильтра"
             FAILS=0
         else
             BOUNCES=$((BOUNCES + 1))
@@ -396,8 +413,8 @@ while true; do
         fi
     fi
     if ! socks_running; then
-        echo "[warp] SOCKS died — restarting..."
-        socks_start
+        echo "[warp] SOCKS is not running — starting..."
+        socks_start || echo "[warp] SOCKS не запущен: нет fwmark туннеля или не встало правило фильтра"
     fi
     if sh /warp_probe.sh; then
         FAILS=0
@@ -418,7 +435,7 @@ while true; do
         socks_stop
         wg-quick down "$WGCF_CONF" 2>/dev/null
         if warp_up; then
-            socks_start
+            socks_start || echo "[warp] SOCKS не запущен: нет fwmark туннеля или не встало правило фильтра"
         else
             echo "[warp] bounce failed — SOCKS остаётся закрытым"
         fi

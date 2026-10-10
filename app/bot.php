@@ -1904,6 +1904,9 @@ class Bot
             case preg_match('~^/warp$~', $this->input['callback'], $m):
                 $this->warp();
                 break;
+            case preg_match('~^/warpBackup (restore|drop)$~', $this->input['callback'], $m):
+                $this->warpBackup($m[1]);
+                break;
             case preg_match('~^/warpPlus$~', $this->input['callback'], $m):
                 $this->warpPlus();
                 break;
@@ -26168,6 +26171,58 @@ DNS-over-HTTPS with IP:
         ]);
     }
 
+    // Остановить прокси и туннель. Прокси первым: без туннеля он не должен
+    // принимать соединения ни секунды.
+    private const WARP_STOP = 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; '
+        . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
+
+    // Поднять туннель и дождаться настоящего рукопожатия, как это делает
+    // warp_up() в start_wp.sh: wg-quick up успешен и при недоступном endpoint,
+    // и бот сообщал «включено» при неработающем туннеле. Без рукопожатия
+    // интерфейс убирается, чтобы сторож не принял его за готовый туннель.
+    private const WARP_UP = '{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf || exit 1; '
+        . 'i=0; while [ "$i" -lt 15 ]; do '
+        . 'hs=$(wg show wgcf-profile latest-handshakes 2>/dev/null | awk \'{print $2}\' | sort -n | tail -1); '
+        . '[ -n "$hs" ] && [ "$hs" -gt 0 ] 2>/dev/null && exit 0; sleep 1; i=$((i + 1)); done; '
+        . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null; exit 1; }';
+
+    // Разбудить сторож в контейнере wp: он запускает SOCKS сразу, а не на
+    // следующем проходе через минуту. В старом контейнере файл просто не читают.
+    private function warpKick(): void
+    {
+        $this->ssh('touch /run/warp-kick 2>/dev/null || true', 'wp');
+    }
+
+    // Незавершённая смена ключа: вернуть прежний аккаунт из копии или убрать копию.
+    public function warpBackup(string $action)
+    {
+        $this->withLock('warp-control', function () use ($action) {
+            $chat = $this->input['chat'];
+            if (!$this->warpCommand('test -e /etc/warp/.bak')) {
+                return;
+            }
+            if ($action === 'drop') {
+                $this->send($chat, $this->i18n($this->warpCommand('rm -rf /etc/warp/.bak') ? 'warp backup dropped' : 'warp backup failed'));
+                return;
+            }
+            $off = !empty($this->getPacConf()['warpoff']);
+            // Возвращаются только те файлы, что есть в копии: чего в ней нет,
+            // то на момент обрыва ещё не успели заменить.
+            $ok = $this->warpCommand(self::WARP_STOP . '; cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
+                . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; fi; done');
+            if ($ok && !$off) {
+                $ok = $this->warpCommand(self::WARP_UP);
+            }
+            if ($ok) {
+                $this->warpCommand('rm -rf /etc/warp/.bak');
+                $this->warpKick();
+            }
+            $this->warpprofile = null;
+            $this->send($chat, $this->i18n($ok ? 'warp backup restored' : 'warp backup failed'));
+        });
+        $this->warp();
+    }
+
     // SSH возвращает только stdout: пустой вывод не доказывает exit 0.
     private function warpCommand(string $command): bool
     {
@@ -26180,7 +26235,18 @@ DNS-over-HTTPS with IP:
     {
         $key = trim((string) $key);
         if ($key !== '' && !preg_match('~^[A-Za-z0-9-]+$~', $key)) {
-            $this->send($this->input['chat'], 'invalid license key format');
+            $this->send($this->input['chat'], $this->i18n('warp key format'));
+            return;
+        }
+        // Копия осталась от смены ключа, оборванной посередине (перезапуск
+        // контейнера, обрыв связи). Раньше любая следующая смена молча
+        // упиралась в неё навсегда; удалять её сами не можем — в ней может
+        // лежать единственный экземпляр оплаченного аккаунта.
+        if ($this->warpCommand('test -e /etc/warp/.bak')) {
+            $this->send($this->input['chat'], '⚠️ ' . $this->i18n('warp backup found'), button: [[
+                ['text' => $this->i18n('warp backup restore'), 'callback_data' => '/warpBackup restore'],
+                ['text' => $this->i18n('warp backup drop'), 'callback_data' => '/warpBackup drop'],
+            ]]);
             return;
         }
         $this->withLock('warp-control', function () use ($key) {
@@ -26223,12 +26289,13 @@ DNS-over-HTTPS with IP:
                     . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true; '
                     . 'cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
                     . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; else rm -f "$f" || exit 1; fi; done');
-                if ($ok && $stopped && !$off) $ok = $this->warpCommand('{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }');
+                if ($ok && $stopped && !$off) $ok = $this->warpCommand(self::WARP_UP);
                 if ($ok) {
                     $save($off);
                     $this->warpCommand('rm -rf /etc/warp/.bak');
                 }
                 $this->warpprofile = null;
+                if ($ok) $this->warpKick();
                 $log .= $ok ? "previous account restored\n" : "restore failed; backup retained, WARP disabled\n";
                 $this->send($chat, $log);
             };
@@ -26245,7 +26312,7 @@ DNS-over-HTTPS with IP:
                 }
                 if (!$step('generating profile', 'umask 077; cd /etc/warp && wgcf generate && '
                     . 'sh /warp_fixup.sh && chmod 600 wgcf-account.toml wgcf-profile.conf')) { $restore(); return; }
-                if (!$off && !$step('starting warp', '{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }')) { $restore(); return; }
+                if (!$off && !$step('starting warp', self::WARP_UP)) { $restore(); return; }
                 $save($off, true);
             } catch (\Throwable $e) {
                 $restore();
@@ -26253,6 +26320,7 @@ DNS-over-HTTPS with IP:
             }
             $this->warpprofile = null;
             $this->warpCommand('rm -rf /etc/warp/.bak');
+            $this->warpKick();
             $this->send($chat, $log);
         });
         $this->warp();
@@ -26390,15 +26458,18 @@ DNS-over-HTTPS with IP:
             };
             $stop = 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
             if ($off) {
-                if (!$this->warpCommand('wg show wgcf-profile >/dev/null 2>&1 || { sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }')) {
-                    $this->send($this->input['chat'], 'warp up failed');
+                if (!$this->warpCommand('wg show wgcf-profile >/dev/null 2>&1 || ' . self::WARP_UP)) {
+                    $this->send($this->input['chat'], '❌ ' . $this->i18n('warp up failed'));
                     return;
                 }
                 try { $save(false); }
                 catch (\Throwable $e) { $this->warpCommand($stop); throw $e; }
+                // Только после снятия флага: иначе сторож проснётся, увидит
+                // «выключено» и остановит прокси вместо запуска.
+                $this->warpKick();
             } else {
                 $save(true);
-                if (!$this->warpCommand($stop)) $this->send($this->input['chat'], 'warp stop failed');
+                if (!$this->warpCommand($stop)) $this->send($this->input['chat'], '❌ ' . $this->i18n('warp stop failed'));
             }
         });
         if (empty($this->selfupdate)) $this->warp();
@@ -26418,7 +26489,23 @@ DNS-over-HTTPS with IP:
         // не поднят, trace пуст: показываем явный "off", чтобы строка статуса
         // не выглядела пустой/сломанной.
         $trace  = trim((string) $this->ssh('wgcf trace', 'wp'));
-        $text[] = "status: " . ($trace !== '' ? "<pre>$trace</pre>" : '<code>off</code>');
+        // Содержимое файлов и вывод команд экранируются: один символ «<» в
+        // них — и Telegram отклоняет всё сообщение, меню не открывается.
+        $esc    = static fn($value) => htmlspecialchars((string) $value, ENT_NOQUOTES);
+        $text[] = "status: " . ($trace !== '' ? '<pre>' . $esc($trace) . '</pre>' : '<code>off</code>');
+        // trace выше идёт от root напрямую и ничего не говорит о прокси, через
+        // который в WARP ходит Xray. Его состояние и возраст рукопожатия —
+        // отдельной строкой.
+        $state = (string) $this->ssh('pgrep -x warp-socks >/dev/null 2>&1 && echo socks=1 || echo socks=0; '
+            . 'hs=$(wg show wgcf-profile latest-handshakes 2>/dev/null | awk \'{print $2}\' | sort -n | tail -1); '
+            . 'echo "hs=${hs:-0}"; echo "now=$(date +%s)"', 'wp');
+        if (preg_match('~socks=([01])~', $state, $ms) && preg_match('~hs=(\d+)~', $state, $mh) && preg_match('~now=(\d+)~', $state, $mn)) {
+            $age    = (int) $mh[1] > 0 ? max(0, (int) $mn[1] - (int) $mh[1]) : null;
+            $text[] = $this->i18n('warp tunnel') . ': ' . ($age === null ? $this->i18n('warp tunnel down')
+                : $this->i18n('warp handshake') . ' ' . $age . ' ' . $this->i18n('warp seconds ago'));
+            $text[] = $this->i18n('warp socks') . ': ' . $this->i18n($ms[1] === '1' ? 'on' : 'off')
+                . (!$off && $ms[1] !== '1' && $age !== null ? ' <i>(' . $this->i18n('warp socks pending') . ')</i>' : '');
+        }
         // Профиль и аккаунт печатаются ЦЕЛИКОМ — осознанное решение владельца:
         // меню warp задумано как «всё под рукой», ключи оттуда копируют в
         // сторонние клиенты. Держим в уме, что в wgcf-account.toml лежат
@@ -26428,9 +26515,9 @@ DNS-over-HTTPS with IP:
         // подавления меню падало бы в PHP-warning вместо показа статуса.
         $a      = (string) @file_get_contents('/etc/warp/wgcf-account.toml');
         $c      = (string) @file_get_contents('/etc/warp/wgcf-profile.conf');
-        $text[] = "key: <code>" . ($p['warp'] ?? '') . "</code>";
-        $text[] = "<pre>$a</pre>";
-        $text[] = "<pre>$c</pre>";
+        $text[] = "key: <code>" . $esc($p['warp'] ?? '') . "</code>";
+        $text[] = '<pre>' . $esc($a) . '</pre>';
+        $text[] = '<pre>' . $esc($c) . '</pre>';
         if (!$prof) {
             $text[] = '⚠ ' . $this->i18n('warp no profile');
         }

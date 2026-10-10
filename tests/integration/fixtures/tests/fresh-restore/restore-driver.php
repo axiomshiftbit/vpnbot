@@ -260,6 +260,20 @@ switch ($action) {
     case 'warp-status':
         $result=$b->warpStatus();
         break;
+    case 'warp-menu':
+        $b->warp();$text=implode("\n",$b->transport->messages);
+        $result=['tunnel'=>(bool)preg_match('~'.preg_quote($b->i18n('warp tunnel').': '.$b->i18n('warp handshake'),'~').' \\d+ ~u',$text),
+            'socks'=>str_contains($text,$b->i18n('warp socks').': '.$b->i18n('on')),'profile'=>str_contains($text,'[Peer]')];
+        break;
+    case 'warp-backup':
+        $b->warpBackup((string)($argv[2] ?? ''));
+        $result=['off'=>!empty($b->getPacConf()['warpoff'])];
+        break;
+    case 'warp-key-blocked':
+        // Смена ключа при оставшейся копии не должна дойти до регистрации в Cloudflare.
+        $b->addWarpPlus('');$text=implode("\n",$b->transport->messages);
+        $result=['explained'=>str_contains($text,$b->i18n('warp backup found')),'buttons'=>count($b->transport->keyboards)];
+        break;
     case 'ad-export':
         $p=$b->getPacConf();$xr=$b->getXray();$ad=yaml_parse_file('/config/AdGuardHome.yaml');
         file_put_contents('/logs/audit-ad.json',json_encode(['password'=>$p['adpswd'],'hash'=>$b->getHashBot(),'domain'=>$p['domain'],'doh_id'=>$b->dohClientId($xr['inbounds'][0]['settings']['clients'][0]['id']),'tls'=>$ad['tls'],'dns'=>$ad['dns']]));

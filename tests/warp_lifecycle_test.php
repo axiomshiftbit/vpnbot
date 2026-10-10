@@ -11,6 +11,9 @@ class WarpLifecycleBot extends Bot
     public function __construct(public string $root) {
         $this->pac = "$root/pac.json";
         $this->input = ['chat' => 1, 'message_id' => 1];
+        $this->language = 'ru';
+        require __DIR__ . '/../app/i18n.php';
+        $this->i18n = $i;
     }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) {
         $f = fopen("$this->root/$name.lock", 'c'); flock($f, LOCK_EX);
@@ -37,7 +40,8 @@ class WarpLifecycleBot extends Bot
         fclose($pipes[0]); $out = stream_get_contents($pipes[1]); fclose($pipes[1]); proc_close($p);
         return $out;
     }
-    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { return []; }
+    public array $sent = [];
+    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->sent[] = [$text, $button]; return []; }
     public function sendDraft($chat, $draft_id, $text = '', $mode = 'HTML') {}
     public function warp() {}
 }
@@ -50,7 +54,21 @@ name=${0##*/}
 printf '%s %s\n' "$name" "$1" >> "$WARP_TEST_ROOT/calls"
 case "$name:$1" in
   pkill:*) exit 0;;
-  wg:show) test -f "$WARP_TEST_ROOT/up"; exit $?;;
+  # Ожидание рукопожатия считает секундами; остальные паузы настоящие.
+  sleep:1) exit 0;;
+  sleep:*) exec /bin/sleep "$@";;
+  wg:show)
+    test -f "$WARP_TEST_ROOT/up" || exit 1
+    # Рукопожатие есть, только если «сервер» отвечает.
+    # handshake — молчит только новый аккаунт; handshake-all — сервер недоступен вовсе.
+    if [ "$3" = latest-handshakes ]; then
+      case "$WARP_TEST_FAIL" in
+        handshake-all) ;;
+        handshake) if grep -q ORIGINAL "$WARP_TEST_ROOT/warp/wgcf-profile.conf"; then printf 'PEER\t1760000000\n'; fi;;
+        *) printf 'PEER\t1760000000\n';;
+      esac
+    fi
+    exit 0;;
   wg-quick:down) rm -f "$WARP_TEST_ROOT/up"; exit 0;;
   wg-quick:up)
     if [ "$WARP_TEST_FAIL" = up ] && ! grep -q ORIGINAL "$WARP_TEST_ROOT/warp/wgcf-profile.conf"; then exit 1; fi
@@ -66,7 +84,7 @@ case "$name:$1" in
     esac;;
 esac
 SH;
-foreach (['wgcf', 'wg-quick', 'wg', 'pkill'] as $name) { file_put_contents("$root/bin/$name", $fake); chmod("$root/bin/$name", 0700); }
+foreach (['wgcf', 'wg-quick', 'wg', 'pkill', 'sleep'] as $name) { file_put_contents("$root/bin/$name", $fake); chmod("$root/bin/$name", 0700); }
 $failures = []; $checks = 0;
 $check = function ($ok, $name) use (&$failures, &$checks) { $checks++; if (!$ok) $failures[] = $name; };
 $remove = function ($path) use (&$remove) {
@@ -85,8 +103,8 @@ $reset = function (bool $off = true) use ($root, $remove) {
 };
 try {
     foreach ([true, false] as $off) {
-        foreach (['register', 'update', 'generate', 'up'] as $fail) {
-            if ($off && $fail === 'up') continue;
+        foreach (['register', 'update', 'generate', 'up', 'handshake'] as $fail) {
+            if ($off && in_array($fail, ['up', 'handshake'], true)) continue;
             $b = $reset($off); $b->fail = $fail; $b->addWarpPlus('NEW-LICENSE');
             $check($b->getPacConf()['warp'] === 'OLD-LICENSE', "$fail: прежняя лицензия сохранена");
             $check(!empty($b->getPacConf()['warpoff']) === $off, "$fail: прежний переключатель сохранён");
@@ -101,6 +119,48 @@ try {
             $check(($b->getPacConf()['parallel'] ?? '') === 'saved', 'Сохранено параллельное изменение pac');
         }
     }
+    // --- включение: настоящее рукопожатие, а не код возврата wg-quick
+    $b = $reset(); $b->offWarp();
+    $check(empty($b->getPacConf()['warpoff']) && is_file("$root/up"), 'Включение при отвечающем сервере');
+    $kicks = static fn(WarpLifecycleBot $b) => array_keys(array_filter($b->commands, static fn($c) => str_contains($c, 'touch /run/warp-kick')));
+    $ups = array_keys(array_filter($b->commands, static fn($c) => str_contains($c, 'wg-quick up')));
+    $check(count($kicks($b)) === 1, 'После включения сторож будится один раз');
+    $check($ups && max($ups) < $kicks($b)[0], 'Сторож будится после подъёма туннеля');
+    $b = $reset(); $b->fail = 'handshake-all'; $b->offWarp();
+    $check(!empty($b->getPacConf()['warpoff']) && !is_file("$root/up"), 'Без рукопожатия переключатель остаётся выключенным, интерфейс убран');
+    $check(!$kicks($b), 'Без рукопожатия сторож не будится');
+    $b = $reset(false); $b->offWarp();
+    $check(!empty($b->getPacConf()['warpoff']) && !is_file("$root/up") && !$kicks($b), 'Выключение останавливает туннель и не будит сторож');
+    $b = $reset(false); $b->addWarpPlus('NEW-LICENSE');
+    $check(count($kicks($b)) === 1, 'После смены ключа сторож будится');
+    $b = $reset(false); $b->fail = 'handshake-all'; $b->addWarpPlus('NEW-LICENSE');
+    $check(!empty($b->getPacConf()['warpoff']) && !is_file("$root/up") && $b->getPacConf()['warp'] === 'OLD-LICENSE'
+        && file_get_contents("$root/warp/.bak/wgcf-account.toml") === 'ORIGINAL ACCOUNT', 'Сервер недоступен и при откате: WARP выключен, копия прежнего аккаунта сохранена');
+    // --- незавершённая смена ключа: копия прежнего аккаунта осталась
+    $stale = function (bool $off) use ($reset, $root) {
+        $b = $reset($off); mkdir("$root/warp/.bak", 0700);
+        file_put_contents("$root/warp/.bak/wgcf-account.toml", 'PAID ACCOUNT'); file_put_contents("$root/warp/.bak/wgcf-profile.conf", 'PAID PROFILE');
+        return $b;
+    };
+    $b = $stale(true); $b->addWarpPlus('NEW-LICENSE');
+    $check(file_get_contents("$root/warp/wgcf-account.toml") === 'ORIGINAL ACCOUNT' && file_get_contents("$root/warp/.bak/wgcf-account.toml") === 'PAID ACCOUNT'
+        && $b->getPacConf()['warp'] === 'OLD-LICENSE' && !str_contains((string) @file_get_contents("$root/calls"), 'wgcf'), 'Оставшаяся копия: смена ключа не начинается, копия цела');
+    $check(count($b->sent) === 1 && str_contains($b->sent[0][0], 'оборвалась') && array_column($b->sent[0][1][0], 'callback_data') === ['/warpBackup restore', '/warpBackup drop'], 'Оставшаяся копия: объяснение и две кнопки');
+    foreach ([true, false] as $off) {
+        $b = $stale($off); $b->warpBackup('restore');
+        $check(file_get_contents("$root/warp/wgcf-account.toml") === 'PAID ACCOUNT' && file_get_contents("$root/warp/wgcf-profile.conf") === 'PAID PROFILE' && !is_dir("$root/warp/.bak"), 'Возврат из копии: оба файла возвращены, копия убрана');
+        $check(is_file("$root/up") === !$off && !empty($b->getPacConf()['warpoff']) === $off, 'Возврат из копии сохраняет on/off');
+    }
+    $b = $stale(false); $b->fail = 'handshake-all'; $b->warpBackup('restore');
+    $check(is_dir("$root/warp/.bak") && file_get_contents("$root/warp/.bak/wgcf-account.toml") === 'PAID ACCOUNT', 'Возврат не удался: копия сохранена');
+    $b = $stale(true); unlink("$root/warp/.bak/wgcf-profile.conf"); $b->warpBackup('restore');
+    $check(file_get_contents("$root/warp/wgcf-account.toml") === 'PAID ACCOUNT' && file_get_contents("$root/warp/wgcf-profile.conf") === 'ORIGINAL PROFILE', 'Возврат трогает только файлы, которые есть в копии');
+    $b = $stale(true); $b->warpBackup('drop');
+    $check(!is_dir("$root/warp/.bak") && file_get_contents("$root/warp/wgcf-account.toml") === 'ORIGINAL ACCOUNT', 'Удаление копии не трогает текущий аккаунт');
+    $b->addWarpPlus('NEW-LICENSE');
+    $check($b->getPacConf()['warp'] === 'NEW-LICENSE', 'После удаления копии ключ снова можно менять');
+    $b = $reset(); $b->warpBackup('restore');
+    $check(file_get_contents("$root/warp/wgcf-account.toml") === 'ORIGINAL ACCOUNT' && !str_contains((string) @file_get_contents("$root/calls"), 'wg-quick'), 'Копии нет: кнопка ничего не делает');
     $b = $reset(); $b->addWarpPlus('invalid key');
     $check(!$b->commands, 'Некорректный ключ отклонён до изменения сервера');
     $b = $reset(); $b->transportFailure = true; $b->offWarp();

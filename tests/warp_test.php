@@ -128,11 +128,11 @@ warpAssert(
 // Тест фиксирует это как намеренное поведение, чтобы вывод не «оптимизировали»
 // обратно, и одновременно требует, чтобы чтение не падало на свежей установке.
 warpAssert(
-    (bool) preg_match('~\$text\[\] = "<pre>\$a</pre>";~', $botSrc),
+    strpos($botSrc, "\$text[] = '<pre>' . \$esc(\$a) . '</pre>';") !== false,
     'wgcf-account.toml печатается в меню целиком'
 );
 warpAssert(
-    (bool) preg_match('~\$text\[\] = "<pre>\$c</pre>";~', $botSrc),
+    strpos($botSrc, "\$text[] = '<pre>' . \$esc(\$c) . '</pre>';") !== false,
     'wgcf-profile.conf печатается в меню целиком'
 );
 warpAssert(
@@ -141,7 +141,7 @@ warpAssert(
     'файлы читаются с подавлением warning — на свежей установке их ещё нет'
 );
 warpAssert(
-    strpos($botSrc, '"key: <code>" . ($p[\'warp\'] ?? \'\')') !== false,
+    strpos($botSrc, '"key: <code>" . $esc($p[\'warp\'] ?? \'\')') !== false,
     'лицензионный ключ показывается полностью, без Undefined-key при его отсутствии'
 );
 // Приложение бота работает от root (config/unit.json: "user": "root"),
@@ -290,7 +290,35 @@ foreach (glob($wdir . '/clients/*') ?: [] as $d) {
 @rmdir($wdir);
 
 // ── 6. Проба живости ───────────────────────────────────────────────────────
-warpAssert(strpos($probe, 'socks5h://127.0.0.1') !== false, 'проба ходит через сам SOCKS (socks5h — резолв в туннеле)');
+warpAssert(strpos($probe, 'answer=$(trace socks5h https://www.cloudflare.com/cdn-cgi/trace)') !== false
+    && strpos($probe, '-x "$1://127.0.0.1:$SOCKS_PORT"') !== false, 'проба ходит через сам SOCKS (socks5h — резолв в туннеле)');
+// Поведение пробы проверяется исполнением с подставным curl.
+$probeRun = static function (string $domain, string $ip, string $pac = '{}') use ($probe): array {
+    $dir = sys_get_temp_dir() . '/vpnbot-probe-' . bin2hex(random_bytes(5)); mkdir("$dir/bin", 0700, true);
+    file_put_contents("$dir/pac.json", $pac);
+    file_put_contents("$dir/bin/curl", "#!/bin/sh\nprintf '%s\\n' \"\$*\" >> $dir/calls\ncase \"\$*\" in *1.1.1.1*) printf '%b' '$ip';; *) printf '%b' '$domain';; esac\n");
+    chmod("$dir/bin/curl", 0700);
+    file_put_contents("$dir/probe.sh", str_replace('/config/pac.json', "$dir/pac.json", $probe));
+    exec('PATH=' . escapeshellarg("$dir/bin:" . getenv('PATH')) . ' sh ' . escapeshellarg("$dir/probe.sh") . ' 2>/dev/null', $out, $code);
+    $calls = is_file("$dir/calls") ? count(file("$dir/calls")) : 0;
+    exec('rm -rf ' . escapeshellarg($dir));
+    return [$code === 0, $calls];
+};
+warpAssert($probeRun('h=x\\nwarp=on\\n', '') === [true, 1], 'проба: ответ warp=on — здоров, второй попытки нет');
+warpAssert($probeRun('warp=plus\\n', '') === [true, 1], 'проба: warp=plus — здоров');
+warpAssert($probeRun('warp=off\\n', 'warp=on\\n') === [false, 1], 'проба: получен ответ «не WARP» — отказ, вторая попытка его не перекрывает');
+warpAssert($probeRun('', 'warp=on\\n') === [true, 2], 'проба: ответа нет (сбой DNS) — вторая попытка по адресу спасает рабочий туннель');
+warpAssert($probeRun('', '') === [false, 2] && $probeRun('', 'warp=off\\n') === [false, 2], 'проба: обе попытки без WARP — отказ');
+// jq есть в образе wg, но не во всех средах запуска тестов.
+if (trim((string) shell_exec('command -v jq 2>/dev/null')) !== '') {
+    warpAssert($probeRun('', '', '{"warpoff":1}') === [true, 0], 'проба: выключенный кнопкой WARP здоров, сеть не трогается');
+}
+warpAssert(strpos($probe, "'.warpoff // empty'") !== false && strpos($probe, "'.warpoff // empty'") < strpos($probe, 'trace()'), 'проба: выключатель читается до обращения в сеть');
+warpAssert($probeRun('', '', '{broken') === [false, 2], 'проба: повреждённый pac.json не считается выключателем');
+warpAssert(strpos($probe, 'curl -m 6 ') !== false && strpos(file_get_contents(__DIR__ . '/../docker-compose.yml'), 'test: ["CMD", "sh", "/warp_probe.sh"]') !== false, 'две попытки по 6 с укладываются в таймаут healthcheck');
+warpAssert(strpos($startWp, 'wait_tick') !== false && strpos($startWp, '/run/warp-kick') !== false && strpos($startWp, "\n    sleep 60\n") === false,
+    'пауза сторожа прерывается ботом');
+warpAssert(strpos($startWp, "jq -r '.warp // empty' /config/pac.json 2>/dev/null || true") !== false, 'повреждённый pac.json не роняет контейнер на старте');
 warpAssert(strpos($probe, "warp=(on|plus)") !== false, 'проба требует именно warp=on|plus, а не просто ответ');
 warpAssert(strpos($probe, 'sort -n | tail -1') !== false, 'fallback берёт свежайший handshake среди пиров');
 warpAssert(strpos($botSrc, "socks5h://wp:1080") !== false, 'статус в боте тоже читается через socks5h');

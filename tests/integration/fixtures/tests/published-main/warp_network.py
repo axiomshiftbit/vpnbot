@@ -5,8 +5,9 @@ def run(*a,timeout=120,input=None):return subprocess.run(a,capture_output=True,t
 def check(n,v,detail=None):
  results.append({'name':n,'passed':bool(v),'detail':detail});(O/'results.json').write_text(json.dumps(results,indent=2));print(('PASS ' if v else 'FAIL ')+n,flush=True)
 def docker(c,*a,**kw):return run('docker','exec',c,*a,**kw)
-def bot(a):
- p=docker('php-audit','php','/tmp/audit-driver.php',a);p.check_returncode();j=json.loads(p.stdout);check('bot-'+a,not j['warnings']);return j['result']
+def bot(a,*more):
+ p=docker('php-audit','php','/tmp/audit-driver.php',a,*more);p.check_returncode();j=json.loads(p.stdout);check('bot-'+a,not j['warnings']);return j['result']
+def files():return docker('warp-audit','sh','-c','cd /etc/warp && sha256sum wgcf-profile.conf; ls -a | grep -c "^\\.bak$"').stdout.split()
 def curl(c='xray-audit',url='https://example.com/',timeout=8):
  start=time.monotonic()
  q=docker(c,'curl','-4','-sS','--noproxy','','-x','socks5h://10.10.0.13:1080','--max-time',str(timeout),url,timeout=timeout+10)
@@ -53,8 +54,24 @@ for url,label in [('http://10.10.0.5/','adguard'),('http://10.10.0.7:8090/','pan
 check('unapproved-source-denied',curl(c='vpnbot-audit-wgclient',timeout=3).returncode!=0)
 docker('warp-audit','wg-quick','down','/etc/warp/wgcf-profile.conf').check_returncode();check('proxy-still-running-after-link-loss',listener());q=curl(timeout=3);check('no-direct-leak-after-link-loss',q.returncode!=0)
 check('root-management-still-works',docker('warp-audit','curl','-4','-sS','--max-time','8','https://example.com/').returncode==0)
+# Сторож сам возвращает пропавший туннель; пауза между его проходами прерывается, как это делает бот.
+docker('warp-audit','touch','/run/warp-kick').check_returncode();started=time.monotonic()
+for _ in range(40):
+ if docker('warp-audit','wg','show','wgcf-profile').returncode==0 and curl(timeout=4).returncode==0:break
+ time.sleep(1)
+check('watchdog-restores-lost-tunnel',curl().returncode==0,{'seconds':time.monotonic()-started})
+menu=bot('warp-menu');check('menu-shows-tunnel-and-proxy',menu=={'tunnel':True,'socks':True,'profile':True},menu)
 bot('warp-toggle');check('proxy-stopped-immediately-by-off',not listener())
-bot('warp-toggle');check('proxy-recovers-on',wait_proxy());q=curl();check('traffic-recovers-on',q.returncode==0,{'exit':q.returncode,'stderr':q.stderr})
+check('disabled-warp-is-healthy-for-docker',docker('warp-audit','sh','/warp_probe.sh').returncode==0)
+started=time.monotonic();bot('warp-toggle');check('proxy-recovers-on',wait_proxy());took=time.monotonic()-started
+check('proxy-recovers-within-seconds-not-a-minute',took<30,{'seconds':took})
+q=curl();check('traffic-recovers-on',q.returncode==0,{'exit':q.returncode,'stderr':q.stderr})
+# Оборванная смена ключа: копия прежнего аккаунта цела, новая смена не начинается, возврат из копии работает.
+before=files();docker('warp-audit','sh','-c','cd /etc/warp && mkdir -m 700 .bak && cp -p wgcf-profile.conf .bak/ && printf "# damaged\\n" >> wgcf-profile.conf').check_returncode()
+blocked=bot('warp-key-blocked');check('interrupted-key-change-is-explained',blocked=={'explained':True,'buttons':1},blocked)
+check('interrupted-key-change-keeps-the-copy',files()[-1]=='1' and files()[0]!=before[0])
+bot('warp-backup','restore');after=files();check('backup-restores-previous-profile',after[0]==before[0] and after[-1]=='0',after)
+check('proxy-works-after-backup-restore',wait_proxy() and curl().returncode==0)
 run('docker','restart','warp-audit').check_returncode();check('proxy-survives-restart',wait_proxy());docker('warp-audit','iptables','-I','WARP_SOCKS_OUT','1','-p','udp','-d','10.10.0.245','--dport','51820','-j','RETURN').check_returncode();check('traffic-survives-restart',curl().returncode==0)
 bot('warp-toggle')
 print(json.dumps({'passed':sum(x['passed'] for x in results),'total':len(results),'external_provider':'controlled WireGuard peer; no Cloudflare account used'}));raise SystemExit(0 if all(x['passed'] for x in results) else 1)
