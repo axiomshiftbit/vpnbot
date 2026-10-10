@@ -123,6 +123,9 @@ class Bot
     public $sshFailed = false;
     // Только начальная настройка service.php ждёт поднимающиеся контейнеры.
     public int $sshStartupWait = 0;
+    // Открытые ключи узлов SSH сервисов (см. sshHostKeyTrusted).
+    public string $sshHostKeys = '/ssh/hosts';
+    public string $dnsttHostKey = '/config/dnstt/ssh_host_ed25519_key.pub';
     // Тот же случай, плюс тесты DoH подменяют путь присваиванием на временный
     // файл — с дефолтом на свойстве это продолжает работать как раньше.
     public $adguard = '/config/AdGuardHome.yaml';
@@ -32831,6 +32834,49 @@ DNS-over-HTTPS with IP:
         } while (true);
     }
 
+    /**
+     * Отпечаток (SHA-1, 20 байт) из строки открытого ключа «ssh-ed25519 <base64>»;
+     * ssh2_fingerprint других хешей не умеет. null — ключа нет или он не того вида:
+     * подключение без известного ключа узла не выполняется.
+     */
+    public static function sshHostKeyFingerprint(string $publicKey): ?string
+    {
+        if (!preg_match('~^ssh-ed25519 ([A-Za-z0-9+/]+={0,2})(?:\s|$)~', $publicKey, $m)) return null;
+        $blob = base64_decode($m[1], true);
+        // Запись ключа: длина и имя алгоритма, затем 32 байта ключа.
+        if ($blob === false || strlen($blob) !== 51 || !str_starts_with($blob, "\0\0\0\x0bssh-ed25519")) return null;
+        return sha1($blob, true);
+    }
+
+    /**
+     * Принадлежит ли предъявленный ключ узла этому сервису. Ключи сервисов
+     * создаёт start_php.sh в каталоге, недоступном другим контейнерам.
+     *
+     * dnstt держит свой постоянный ключ рядом с настройками: им же
+     * пользуются клиенты туннеля. При замене ключа (восстановление из копии)
+     * sshd отдаёт прежний до перезагрузки, которую бот выполняет по SSH, —
+     * поэтому для dnstt годится и текущий ключ из настроек, и последний
+     * принятый, а принятый текущий запоминается.
+     */
+    public function sshHostKeyTrusted(string $service, string $fingerprint): bool
+    {
+        if (!preg_match('/^[a-z0-9]+$/', $service) || strlen($fingerprint) !== 20) return false;
+        // Обновление: новый код бота начинает работать сразу после git pull, а
+        // контейнеры пересоздаются позже. Пока php ни разу не выдал ключи,
+        // каталога нет и бот ведёт себя как раньше; после выдачи — только строго.
+        if (!is_dir($this->sshHostKeys)) return true;
+        $pin = "$this->sshHostKeys/$service/ssh_host_ed25519_key.pub";
+        $known = self::sshHostKeyFingerprint((string) @file_get_contents($pin));
+        if ($known !== null && hash_equals($known, $fingerprint)) return true;
+        if ($service !== 'dnstt') return false;
+        $current = (string) @file_get_contents($this->dnsttHostKey);
+        $expected = self::sshHostKeyFingerprint($current);
+        if ($expected === null || !hash_equals($expected, $fingerprint)) return false;
+        if (!is_dir(dirname($pin))) @mkdir(dirname($pin), 0700, true);
+        @file_put_contents($pin, $current, LOCK_EX);
+        return true;
+    }
+
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $data = "";
@@ -32847,10 +32893,16 @@ DNS-over-HTTPS with IP:
             // внутри docker-сети с запасом.
             $prevTimeout = ini_get('default_socket_timeout');
             ini_set('default_socket_timeout', '5');
-            $c = @ssh2_connect($service, 22);
+            $c = @ssh2_connect($service, 22, ['hostkey' => 'ssh-ed25519']);
             ini_set('default_socket_timeout', $prevTimeout);
             if (empty($c)) {
                 throw new Exception("no connection to $service: \n$cmd\n" . var_export($c, true));
+            }
+            // Сверяем ключ узла до входа и до отправки команды: иначе любой, кто
+            // уже внутри сети Docker, мог ответить вместо сервиса и получить
+            // команду, а в ней бывает закрытый ключ клиента.
+            if (!$this->sshHostKeyTrusted((string) $service, (string) ssh2_fingerprint($c, SSH2_FINGERPRINT_SHA1 | SSH2_FINGERPRINT_RAW))) {
+                throw new Exception("host key mismatch for $service (recreate the container): \n$cmd");
             }
             $a = ssh2_auth_pubkey_file($c, 'root', '/ssh/key.pub', '/ssh/key');
             if (empty($a)) {

@@ -21,6 +21,22 @@ fi
 mkdir -p /ssh/pub
 cp /ssh/key.pub /ssh/pub/key.pub
 chmod 0644 /ssh/pub/key.pub
+# Ключи узлов SSH для сервисов. Раньше каждый контейнер при старте создавал
+# случайный ключ, а бот его не проверял: тот, кто уже внутри сети Docker,
+# мог выдать себя за любой сервис и получить команды бота, а в них бывают
+# закрытые ключи клиентов. Теперь ключ сервиса постоянный, сервис получает
+# только свой каталог (./ssh/hosts/<сервис>:/hostkey:ro), а бот сверяет
+# отпечаток до входа и до отправки команды. Список совпадает с сервисами
+# docker-compose.yml, у которых подключён /hostkey; у dnstt свой постоянный
+# ключ в /config/dnstt.
+for service in up ng service wg wg1 ad telemt xr oc np wp proxy ss ovpn ipsec tt hy; do
+    host_key="/ssh/hosts/$service/ssh_host_ed25519_key"
+    mkdir -p "/ssh/hosts/$service"
+    if [ ! -s "$host_key" ] || [ ! -s "$host_key.pub" ]; then
+        rm -f "$host_key" "$host_key.pub"
+        ssh-keygen -q -t ed25519 -N '' -C "$service" -f "$host_key"
+    fi
+done
 # Обновление образа не должно менять сертификат существующих клиентов.
 # Отсутствующий или истёкший сертификат создаётся при первоначальном запуске.
 if [ ! -s /certs/self_private ] || [ ! -s /certs/self_public ] \
