@@ -4,7 +4,7 @@ FROM golang:${PROTOCOL_GO_VERSION}-alpine AS helpers
 ARG WGCF_VERSION=v2.3.0
 ARG TUN2SOCKS_VERSION=v2.7.0
 ARG AWG_GO_VERSION=v3.1.20260828
-ARG XRAY_VERSION=v26.9.30
+ARG XRAY_VERSION=v26.10.10
 RUN apk add --no-cache ca-certificates curl git jq
 COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 dockerfile/build-xray.sh /build-tools/
 RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/warp-socks

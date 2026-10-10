@@ -57,8 +57,8 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip
-          echo 'f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e  Xray-linux-64.zip' | sha256sum --check
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.10/Xray-linux-64.zip
+          echo '72a5fde819713a103c6fc26a87aa025c1518c918a34eba4bc38d64dc0728e5d9  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
@@ -112,8 +112,8 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip
-          echo 'f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e  Xray-linux-64.zip' | sha256sum --check
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.10/Xray-linux-64.zip
+          echo '72a5fde819713a103c6fc26a87aa025c1518c918a34eba4bc38d64dc0728e5d9  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
