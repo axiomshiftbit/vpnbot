@@ -26,6 +26,27 @@ SOCKS_UDP_PORTS=20000:29999
 # цикл перезапусков (set -e): без ключа поднимаемся на бесплатном тарифе.
 WARP_LICENSE_KEY=$(jq -r '.warp // empty' /config/pac.json 2>/dev/null || true)
 
+# Режим туннеля: WireGuard (wgcf) либо MASQUE (warp_masque.sh — там же описано
+# устройство режима). Флаг пишет бот в pac.json, сторож перечитывает его на
+# каждом проходе и переключает режим без перезапуска контейнера. Без скрипта
+# режима (контейнер создан прежним compose) остаётся WireGuard.
+warp_mode() {
+    if [ -f /warp_masque.sh ] && [ "$(jq -r '.warp_mode // empty' /config/pac.json 2>/dev/null)" = masque ]; then
+        echo masque
+    else
+        echo wireguard
+    fi
+}
+# До узла MASQUE — HTTP/3 (UDP 443) либо HTTP/2 (TCP 443).
+masque_alpn() {
+    if [ "$(jq -r '.warp_masque_h2 // empty' /config/pac.json 2>/dev/null)" = 1 ]; then echo h2; else echo h3; fi
+}
+MODE=$(warp_mode)
+ALPN=$(masque_alpn)
+# /run переживает перезапуск контейнера: отметка прошлого запуска уверяла бы
+# бота, что прокси уже работает в этом режиме.
+rm -f /run/warp-mode
+
 # Кто имеет право пользоваться SOCKS'ом (см. блок фильтра ниже). Резолвим
 # ИМЕННО ЗДЕСЬ: ниже мы перепишем /etc/resolv.conf на 1.1.1.1 и docker-DNS
 # (127.0.0.11), который знает имена контейнеров, станет недоступен.
@@ -93,54 +114,62 @@ retry() {
 #   1) регистрируем аккаунт, только если его нет;
 #   2) генерируем профиль, только если его нет (в т.ч. восстанавливаем
 #      пропавший профиль из уже существующего аккаунта — чинит случай рабочего сервера).
-if [ ! -f "$WGCF_TOML" ]; then
-    echo "[warp] Registering WARP account..."
-    retry wgcf register --accept-tos
-    if [ -n "$WARP_LICENSE_KEY" ]; then
-        echo "[warp] Applying license key..."
-        # Заменяем license_key в wgcf-account.toml на WARP_LICENSE_KEY.
-        # Через awk с -v, а не через sed-интерполяцию: значение приходит из
-        # pac.json (его вводит пользователь в боте) и попадало прямо в ТЕЛО
-        # sed-выражения — символы /, & и \ ломали выражение или подставляли не
-        # тот текст, причём код возврата не проверялся, и следующий
-        # `wgcf update` тихо уходил со старым ключом. Плюс ключ переставал
-        # светиться в argv (`ps` внутри контейнера).
-        if grep -q '^license_key' "$WGCF_TOML"; then
-            tmp_toml="$WGCF_TOML.tmp.$$"
-            if LK="$WARP_LICENSE_KEY" awk '
-                    /^license_key/ { printf "license_key = \"%s\"\n", ENVIRON["LK"]; next }
-                    { print }
-                ' "$WGCF_TOML" > "$tmp_toml" && [ -s "$tmp_toml" ]; then
-                cat "$tmp_toml" > "$WGCF_TOML"
-            else
-                echo "[warp] WARNING: не удалось подставить license key — оставляем прежний"
+# Аккаунт и профиль WireGuard. Функция, а не код верхнего уровня: в режиме
+# MASQUE аккаунт WireGuard не нужен, и сбой его регистрации не должен ронять
+# контейнер — он заводится позже, при первом переключении на WireGuard.
+wg_bootstrap() {
+    if [ ! -f "$WGCF_TOML" ]; then
+        echo "[warp] Registering WARP account..."
+        retry wgcf register --accept-tos || return 1
+        if [ -n "$WARP_LICENSE_KEY" ]; then
+            echo "[warp] Applying license key..."
+            # Заменяем license_key в wgcf-account.toml на WARP_LICENSE_KEY.
+            # Через awk с -v, а не через sed-интерполяцию: значение приходит из
+            # pac.json (его вводит пользователь в боте) и попадало прямо в ТЕЛО
+            # sed-выражения — символы /, & и \ ломали выражение или подставляли не
+            # тот текст, причём код возврата не проверялся, и следующий
+            # `wgcf update` тихо уходил со старым ключом. Плюс ключ переставал
+            # светиться в argv (`ps` внутри контейнера).
+            if grep -q '^license_key' "$WGCF_TOML"; then
+                tmp_toml="$WGCF_TOML.tmp.$$"
+                if LK="$WARP_LICENSE_KEY" awk '
+                        /^license_key/ { printf "license_key = \"%s\"\n", ENVIRON["LK"]; next }
+                        { print }
+                    ' "$WGCF_TOML" > "$tmp_toml" && [ -s "$tmp_toml" ]; then
+                    cat "$tmp_toml" > "$WGCF_TOML"
+                else
+                    echo "[warp] WARNING: не удалось подставить license key — оставляем прежний"
+                fi
+                rm -f "$tmp_toml"
             fi
-            rm -f "$tmp_toml"
+            # Провал update (невалидный/исчерпанный ключ) НЕ фатален: иначе скрипт
+            # умирал до generate, рестартился, на втором проходе блок пропускался
+            # (toml уже есть) — и warp молча поднимался free-tier. Лучше явный
+            # WARNING в лог и тот же free-tier без лишнего краш-цикла.
+            retry wgcf update || \
+                echo "[warp] WARNING: wgcf update failed — license key NOT applied, continuing free tier"
         fi
-        # Провал update (невалидный/исчерпанный ключ) НЕ фатален: иначе скрипт
-        # умирал до generate, рестартился, на втором проходе блок пропускался
-        # (toml уже есть) — и warp молча поднимался free-tier. Лучше явный
-        # WARNING в лог и тот же free-tier без лишнего краш-цикла.
-        retry wgcf update || \
-            echo "[warp] WARNING: wgcf update failed — license key NOT applied, continuing free tier"
     fi
+
+    if [ ! -f "$WGCF_CONF" ]; then
+        echo "[warp] Generating WireGuard profile..."
+        retry wgcf generate || return 1
+    fi
+
+    # wgcf кладёт account.toml с 0644, а в нём лежат private_key аккаунта и
+    # access_token — им управляют подпиской WARP+. Профиль wg-quick и так требует
+    # 0600, аккаунт приводим к тому же.
+    chmod 600 "$WGCF_TOML" "$WGCF_CONF" 2>/dev/null || true
+
+    # Фиксапы профиля (IPv6 из списков, DNS-строка, PersistentKeepalive) — общий
+    # с кнопкой «set key» бота скрипт, правки только в warp_fixup.sh. Выполняется
+    # БЕЗУСЛОВНО при каждом старте, а не при генерации: профиль обычно уже лежит
+    # в named-volume, и блок генерации выше не выполняется.
+    sh /warp_fixup.sh || return 1
+}
+if [ "$MODE" = wireguard ]; then
+    wg_bootstrap
 fi
-
-if [ ! -f "$WGCF_CONF" ]; then
-    echo "[warp] Generating WireGuard profile..."
-    retry wgcf generate
-fi
-
-# wgcf кладёт account.toml с 0644, а в нём лежат private_key аккаунта и
-# access_token — им управляют подпиской WARP+. Профиль wg-quick и так требует
-# 0600, аккаунт приводим к тому же.
-chmod 600 "$WGCF_TOML" "$WGCF_CONF" 2>/dev/null || true
-
-# Фиксапы профиля (IPv6 из списков, DNS-строка, PersistentKeepalive) — общий
-# с кнопкой «set key» бота скрипт, правки только в warp_fixup.sh. Выполняется
-# БЕЗУСЛОВНО при каждом старте, а не при генерации: профиль обычно уже лежит
-# в named-volume, и блок генерации выше не выполняется.
-sh /warp_fixup.sh
 
 # Кнопка «warp on/off» в боте пишет флаг warpoff в pac.json. Читаем его И на
 # старте, И в watchdog'е: иначе сторож через три минуты поднял бы туннель
@@ -172,21 +201,44 @@ WGCF_IF="$(basename "$WGCF_CONF" .conf)"
 id warp-proxy >/dev/null 2>&1 || adduser -D -H -s /sbin/nologin warp-proxy
 PROXY_UID=$(id -u warp-proxy)
 case "$SOCKS_PORT" in ''|*[!0-9]*) echo "Invalid SOCKS_PORT" >&2; exit 1;; esac
-for firewall in iptables ip6tables; do
-    "$firewall" -N WARP_PROXY_OUT 2>/dev/null || "$firewall" -F WARP_PROXY_OUT
-    "$firewall" -A WARP_PROXY_OUT -p tcp --sport "$SOCKS_PORT" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN
-    "$firewall" -A WARP_PROXY_OUT -p udp --sport "$SOCKS_UDP_PORTS" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN
-    if [ "$firewall" = iptables ]; then
-        private_nets="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4"
-    else
-        private_nets="::/128 ::1/128 ::ffff:0:0/96 fc00::/7 fe80::/10 ff00::/8"
+# Адрес и протокол узла MASQUE; задаются в masque_up().
+MASQUE_ENDPOINT=""
+MASQUE_PROTO=udp
+MS_PID=""
+# Цепочка зависит от режима и перестраивается с нуля. Пока в ней нет
+# завершающего REJECT, она пропускает всё, поэтому при работающем прокси
+# функция отказывает: сначала socks_stop.
+proxy_firewall() {
+    if [ -n "$MS_PID" ] && kill -0 "$MS_PID" 2>/dev/null; then
+        return 1
     fi
-    for net in $private_nets; do
-        "$firewall" -A WARP_PROXY_OUT -d "$net" -j REJECT
+    for firewall in iptables ip6tables; do
+        "$firewall" -N WARP_PROXY_OUT 2>/dev/null || "$firewall" -F WARP_PROXY_OUT
+        "$firewall" -A WARP_PROXY_OUT -p tcp --sport "$SOCKS_PORT" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN
+        "$firewall" -A WARP_PROXY_OUT -p udp --sport "$SOCKS_UDP_PORTS" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN
+        if [ "$firewall" = iptables ]; then
+            private_nets="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4"
+        else
+            private_nets="::/128 ::1/128 ::ffff:0:0/96 fc00::/7 fe80::/10 ff00::/8"
+        fi
+        for net in $private_nets; do
+            "$firewall" -A WARP_PROXY_OUT -d "$net" -j REJECT
+        done
+        if [ "$MODE" = masque ]; then
+            # Интерфейса туннеля нет: соединение с узлом Cloudflare держит сам
+            # прокси. Ему разрешён только этот адрес и порт 443 — всё прикладное
+            # идёт внутри туннеля. Узел IPv4, по IPv6 не разрешено ничего. Пока
+            # адрес неизвестен, прокси не выпускается никуда.
+            if [ "$firewall" = iptables ] && [ -n "$MASQUE_ENDPOINT" ]; then
+                "$firewall" -A WARP_PROXY_OUT -d "$MASQUE_ENDPOINT" -p "$MASQUE_PROTO" --dport 443 -j RETURN || return 1
+            fi
+        else
+            "$firewall" -A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN
+        fi
+        "$firewall" -A WARP_PROXY_OUT -j REJECT || return 1
     done
-    "$firewall" -A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN
-    "$firewall" -A WARP_PROXY_OUT -j REJECT
-done
+}
+proxy_firewall
 
 # Конфиг не содержит учётных данных. Сам процесс и все его дочерние процессы
 # работают без root; UID-фильтр действует и на DNS, и на UDP, и на TCP.
@@ -239,7 +291,71 @@ warp_up() {
     return 1
 }
 
-MS_PID=""
+# MASQUE: аккаунт (при первом включении регистрируется сам, как и аккаунт
+# WireGuard), конфиг прокси с проверкой ядром и правило для адреса узла.
+# Туннель прокси устанавливает при первом запросе, поэтому его живость
+# подтверждает уже проба сторожа, а не эта функция.
+MASQUE_READY=0
+MASQUE_ACCOUNT=""
+masque_up() {
+    MASQUE_READY=0
+    if ! sh /warp_masque.sh exists; then
+        echo "[warp] MASQUE: registering device..."
+        sh /warp_masque.sh register >/dev/null || { echo "[warp] MASQUE: registration failed"; return 1; }
+        sh /warp_masque.sh commit
+    fi
+    MASQUE_ENDPOINT=$(sh /warp_masque.sh endpoint) || { echo "[warp] MASQUE: no valid endpoint in the account"; return 1; }
+    if [ "$ALPN" = h2 ]; then MASQUE_PROTO=tcp; else MASQUE_PROTO=udp; fi
+    # Имя оканчивается на .json: ядро определяет формат конфига по расширению.
+    (umask 077; sh /warp_masque.sh config "$SOCKS_PORT" "$ALPN" > /run/warp-socks-masque.new.json) || return 1
+    if ! warp-socks run -test -config /run/warp-socks-masque.new.json >/dev/null 2>&1; then
+        echo "[warp] MASQUE: proxy config rejected by the core"
+        rm -f /run/warp-socks-masque.new.json
+        return 1
+    fi
+    # В этом конфиге закрытый ключ устройства: читать его может только прокси.
+    chown root:warp-proxy /run/warp-socks-masque.new.json || return 1
+    chmod 640 /run/warp-socks-masque.new.json || return 1
+    mv /run/warp-socks-masque.new.json /run/warp-socks-masque.json || return 1
+    proxy_firewall || return 1
+    echo "[warp] MASQUE: endpoint $MASQUE_ENDPOINT $MASQUE_PROTO/443 ($ALPN)"
+    MASQUE_ACCOUNT=$(masque_account)
+    MASQUE_READY=1
+}
+
+# Общие для обоих режимов «поднять», «опустить» и «готов ли» — ими пользуются
+# запуск и сторож.
+link_ready() {
+    if [ "$MODE" = masque ]; then [ "$MASQUE_READY" = 1 ]; else tunnel_up; fi
+}
+link_up() {
+    if [ "$MODE" = masque ]; then
+        masque_up
+    else
+        [ -f "$WGCF_CONF" ] || wg_bootstrap || return 1
+        warp_up
+    fi
+}
+link_down() {
+    MASQUE_READY=0
+    # Конфиг с закрытым ключом устройства не оставляем после выхода из режима.
+    rm -f /run/warp-socks-masque.json /run/warp-socks-masque.new.json
+    wg-quick down "$WGCF_CONF" 2>/dev/null || true
+}
+# Отметка «прокси работает в таком-то режиме»: по ней бот узнаёт, что сторож
+# уже выполнил переключение.
+mode_name() {
+    if [ "$1" = masque ]; then echo "masque $2"; else echo wireguard; fi
+}
+mode_mark() {
+    mode_name "$MODE" "$ALPN" > /run/warp-mode
+}
+# Отпечаток аккаунта MASQUE: бот мог перерегистрировать устройство (смена
+# ключа WARP+), и тогда конфиг прокси нужно собрать заново.
+masque_account() {
+    cksum /etc/warp/masque/device.json 2>/dev/null || true
+}
+
 socks_running() {
     [ -n "$MS_PID" ] && kill -0 "$MS_PID" 2>/dev/null
 }
@@ -248,19 +364,32 @@ socks_start() {
     # пакета. Его выпускаем по fwmark wg-quick; непривилегированный процесс
     # SOCKS сам выставить этот mark не может. Без исключения UID-фильтр
     # блокировал бы и настоящий туннель, а не только прямой выход.
-    tunnel_mark=$(wg show "$WGCF_IF" fwmark) || return 1
-    case "$tunnel_mark" in ''|off|0|0x0|*[!0-9a-fx]*) return 1;; esac
-    for firewall in iptables ip6tables; do
-        "$firewall" -C WARP_PROXY_OUT -p udp -m mark --mark "$tunnel_mark" -j RETURN 2>/dev/null \
-            || "$firewall" -I WARP_PROXY_OUT 1 -p udp -m mark --mark "$tunnel_mark" -j RETURN \
-            || return 1
-    done
-    socks_running && return 0
-    echo "[warp] Starting Xray SOCKS5 TCP:$SOCKS_PORT UDP:$SOCKS_UDP_PORTS..."
-    su -s /bin/sh -c 'exec warp-socks run -config /run/warp-socks.json' warp-proxy &
+    # В режиме MASQUE туннеля WireGuard и его метки нет: прокси выходит
+    # только к узлу, правило для которого ставит masque_up().
+    if [ "$MODE" = masque ]; then
+        [ "$MASQUE_READY" = 1 ] || return 1
+        socks_config=/run/warp-socks-masque.json
+    else
+        socks_config=/run/warp-socks.json
+        tunnel_mark=$(wg show "$WGCF_IF" fwmark) || return 1
+        case "$tunnel_mark" in ''|off|0|0x0|*[!0-9a-fx]*) return 1;; esac
+        for firewall in iptables ip6tables; do
+            "$firewall" -C WARP_PROXY_OUT -p udp -m mark --mark "$tunnel_mark" -j RETURN 2>/dev/null \
+                || "$firewall" -I WARP_PROXY_OUT 1 -p udp -m mark --mark "$tunnel_mark" -j RETURN \
+                || return 1
+        done
+    fi
+    if socks_running; then
+        mode_mark
+        return 0
+    fi
+    echo "[warp] Starting Xray SOCKS5 TCP:$SOCKS_PORT UDP:$SOCKS_UDP_PORTS ($MODE)..."
+    su -s /bin/sh -c "exec warp-socks run -config $socks_config" warp-proxy &
     MS_PID=$!
+    mode_mark
 }
 socks_stop() {
+    rm -f /run/warp-mode
     socks_running || return 0
     echo "[warp] Stopping SOCKS: туннеля нет, выпускать трафик мимо WARP нельзя"
     pkill -x warp-socks 2>/dev/null || true
@@ -273,8 +402,8 @@ wg-quick down "$WGCF_CONF" 2>/dev/null || true
 if warp_disabled; then
     echo "[warp] disabled via warpoff in pac.json — tunnel not started"
 else
-    echo "[warp] Starting WireGuard (WARP)..."
-    warp_up || echo "[warp] tunnel did NOT come up — SOCKS остаётся закрытым до восстановления"
+    echo "[warp] Starting WARP ($MODE)..."
+    link_up || echo "[warp] tunnel did NOT come up — SOCKS остаётся закрытым до восстановления"
 fi
 
 # DNS контейнера — через туннель. Пишем напрямую, без resolvconf (он в docker
@@ -354,7 +483,7 @@ for firewall in iptables ip6tables; do
     "$firewall" -I OUTPUT 1 -m owner --uid-owner "$PROXY_UID" -j WARP_PROXY_OUT
 done
 
-if tunnel_up; then
+if link_ready; then
     socks_start || echo "[warp] SOCKS не запущен: нет fwmark туннеля или не встало правило фильтра"
 else
     echo "[warp] SOCKS не запущен: нет туннеля WARP (см. kill-switch выше)"
@@ -372,7 +501,8 @@ fi
 # Пауза между проходами прерывается ботом (touch /run/warp-kick после кнопок
 # «включить» и «set key»): иначе туннель уже поднят, а SOCKS ждал бы следующего
 # прохода до минуты, и всё это время маршруты «через WARP» не работали бы.
-rm -f /run/warp-kick
+# Файл при запуске не удаляется: сигнал мог прийти, пока скрипт ещё стартовал,
+# и тогда первый проход просто случится сразу.
 wait_tick() {
     waited=0
     while [ "$waited" -lt 60 ]; do
@@ -389,6 +519,23 @@ FAILS=0
 BOUNCES=0
 while true; do
     wait_tick
+    # Бот сменил режим или транспорт MASQUE: прокси гасим первым, прежний
+    # туннель убираем, фильтр перестраиваем под новый режим — и дальше обычный
+    # путь «туннеля нет → поднять».
+    want_mode=$(warp_mode)
+    want_alpn=$(masque_alpn)
+    if [ "$want_mode" != "$MODE" ] || { [ "$MODE" = masque ] && [ "$want_alpn" != "$ALPN" ]; } \
+        || { [ "$MODE" = masque ] && [ "$MASQUE_READY" = 1 ] && [ "$(masque_account)" != "$MASQUE_ACCOUNT" ]; }; then
+        echo "[warp] switching mode: $(mode_name "$MODE" "$ALPN") -> $(mode_name "$want_mode" "$want_alpn")"
+        socks_stop
+        link_down
+        MODE=$want_mode
+        ALPN=$want_alpn
+        MASQUE_ENDPOINT=""
+        proxy_firewall || echo "[warp] kill-switch chain was NOT rebuilt"
+        FAILS=0
+        BOUNCES=0
+    fi
     # Выключен намеренно — туннеля быть не должно, а значит и прокси тоже.
     if warp_disabled; then
         socks_stop
@@ -398,10 +545,13 @@ while true; do
     fi
     # Туннель лежит (не поднялся на старте или сдох): пробу гонять бесполезно,
     # она идёт ЧЕРЕЗ прокси, а прокси мы держим закрытым. Сначала поднимаем.
-    if ! tunnel_up; then
-        if warp_up; then
+    if ! link_ready; then
+        if link_up; then
             socks_start || echo "[warp] SOCKS не запущен: нет fwmark туннеля или не встало правило фильтра"
             FAILS=0
+            # Прокси только что запущен и ещё не слушает порт: проба в этом же
+            # проходе дала бы ложный отказ. Проверим на следующем.
+            continue
         else
             BOUNCES=$((BOUNCES + 1))
             echo "[warp] tunnel still down (attempt $BOUNCES/3)"
@@ -415,6 +565,7 @@ while true; do
     if ! socks_running; then
         echo "[warp] SOCKS is not running — starting..."
         socks_start || echo "[warp] SOCKS не запущен: нет fwmark туннеля или не встало правило фильтра"
+        continue
     fi
     if sh /warp_probe.sh; then
         FAILS=0
@@ -433,8 +584,8 @@ while true; do
         # Прокси гасим НА ВРЕМЯ пере-поднятия: именно в это окно трафик уходил
         # мимо туннеля с публичного IP сервера.
         socks_stop
-        wg-quick down "$WGCF_CONF" 2>/dev/null
-        if warp_up; then
+        link_down
+        if link_up; then
             socks_start || echo "[warp] SOCKS не запущен: нет fwmark туннеля или не встало правило фильтра"
         else
             echo "[warp] bounce failed — SOCKS остаётся закрытым"

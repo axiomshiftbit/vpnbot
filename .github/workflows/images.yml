@@ -287,6 +287,25 @@ jobs:
             -v "$PWD/scripts/start_ad.sh:/entrypoint-under-test.sh:ro" \
             "$image" /test.sh
 
+      # Режим WARP через MASQUE целиком зависит от образа wg: openssl для ключа
+      # устройства, ядро прокси с поддержкой WARP в MASQUE и то, что оно
+      # принимает конфиг, собранный скриптом режима. Cloudflare не нужен.
+      - name: Проверить режим WARP через MASQUE в образе wg
+        if: matrix.service == 'wg'
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-wg:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sh scripts/ci_retry.sh docker pull "$image"
+          expected=$(sed -n 's/^XRAY_VERSION=//p' .env)
+          actual=$(docker run --rm --network=none --entrypoint warp-socks "$image" version)
+          read -r name version rest <<< "$actual"
+          test "$name" = Xray
+          test "$version" = "${expected#v}"
+          docker run --rm --network=none --entrypoint sh \
+            -v "$PWD/scripts:/scripts:ro" \
+            -v "$PWD/tests/warp_masque_image_test.sh:/test.sh:ro" \
+            "$image" /test.sh
+
       - name: Проверить стабильную базу VPN-образов
         if: contains(fromJSON('["wg","oc","ovpn","ipsec"]'), matrix.service)
         env:

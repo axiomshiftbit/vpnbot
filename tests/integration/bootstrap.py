@@ -170,6 +170,23 @@ def bootstrap(checkout, candidate, client_image):
     write(warp / 'wgcf-account.toml', '# generated synthetic fixture; no provider account\n')
     write(warp / 'wgcf-profile.conf', '[Interface]\nPrivateKey = ' + key + '\nAddress = 172.30.0.2/32\n'
           '[Peer]\nPublicKey = ' + public + '\nAllowedIPs = 0.0.0.0/0\nEndpoint = 10.10.0.245:51820\n')
+    # MASQUE device fixture: synthetic as well, Cloudflare is never contacted.
+    # The endpoint is a TEST-NET-3 address nothing answers from, so the stand
+    # checks what does not need Cloudflare: refusal without an outage, the
+    # kill switch, failing closed and the way back to WireGuard.
+    masque = warp / 'masque'
+    masque.mkdir(mode=0o700, parents=True, exist_ok=True)
+    sec1 = run('openssl', 'ecparam', '-name', 'prime256v1', '-genkey', '-noout')
+    write(masque / 'key.pem', run('openssl', 'pkcs8', '-topk8', '-nocrypt', input=sec1))
+    endpoint_key = run('openssl', 'ecparam', '-name', 'prime256v1', '-genkey', '-noout')
+    write(masque / 'device.json', {
+        'id': 'stand-synthetic-device', 'endpoint_v4': '203.0.113.77:0', 'endpoint_v6': '',
+        'endpoint_public_key': run('openssl', 'pkey', '-pubout', input=endpoint_key),
+        'address_v4': '172.16.0.2', 'address_v6': '', 'account_type': 'free', 'warp_plus': False, 'registered': 0})
+    write(masque / 'wgcf-account.toml', '# generated synthetic fixture; no provider account\n')
+    # The bot re-registers a device whose licence mark differs from pac.json:
+    # the mark of "no key" keeps the stand away from Cloudflare.
+    write(masque / 'license.sha256', hashlib.sha256(b'').hexdigest() + '\n')
     services = {s: {} for s in candidate_services()}
     # All public entrypoints on the disposable stand bind to loopback only.
     # The original ports inside containers and real bot protocol code stay intact.

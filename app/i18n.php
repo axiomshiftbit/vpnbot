@@ -2082,6 +2082,66 @@ $i = [
         'en' => 'starts within a minute',
         'ru' => 'запустится в течение минуты',
     ],
+    'warp mode'  => [
+        'en' => 'mode',
+        'ru' => 'режим',
+    ],
+    'warp mode switched'  => [
+        'en' => 'WARP mode:',
+        'ru' => 'Режим WARP:',
+    ],
+    'warp mode reverted'  => [
+        'en' => 'The new mode did not come up within the waiting time, so the previous one is restored. Details are in the warp log.',
+        'ru' => 'Новый режим не заработал за отведённое время — возвращён прежний. Подробности в журнале warp.',
+    ],
+    'warp masque transport'  => [
+        'en' => 'MASQUE transport',
+        'ru' => 'транспорт MASQUE',
+    ],
+    'warp masque device'  => [
+        'en' => 'MASQUE device',
+        'ru' => 'устройство MASQUE',
+    ],
+    'warp masque no device'  => [
+        'en' => 'not registered',
+        'ru' => 'не зарегистрировано',
+    ],
+    'warp masque plan'  => [
+        'en' => 'plan',
+        'ru' => 'тариф',
+    ],
+    'warp masque endpoint'  => [
+        'en' => 'endpoint',
+        'ru' => 'узел',
+    ],
+    'warp masque no container'  => [
+        'en' => 'The WARP container does not answer. Check that it is running and try again.',
+        'ru' => 'Контейнер WARP не отвечает. Проверьте, что он запущен, и повторите.',
+    ],
+    'warp masque old image'  => [
+        'en' => 'This WARP container does not support MASQUE. Update the bot so that the containers are recreated with the current images.',
+        'ru' => 'Этот контейнер WARP не поддерживает MASQUE. Обновите бота, чтобы контейнеры пересоздались с актуальными образами.',
+    ],
+    'warp masque old core'  => [
+        'en' => 'MASQUE needs Xray 26.10.10 or newer inside the WARP container; it has',
+        'ru' => 'Для MASQUE в контейнере WARP нужно ядро Xray 26.10.10 или новее; сейчас там',
+    ],
+    'warp masque register failed'  => [
+        'en' => 'The MASQUE device was not registered at Cloudflare, the mode is unchanged. If a WARP+ key is set, check it; Cloudflare may also be limiting registrations from this address — try again later. Details are in the warp log.',
+        'ru' => 'Устройство MASQUE не зарегистрировано в Cloudflare, режим не изменён. Если задан ключ WARP+, проверьте его; возможно также, что Cloudflare временно ограничил регистрации с этого адреса — повторите позже. Подробности в журнале warp.',
+    ],
+    'warp masque unreachable'  => [
+        'en' => 'The trial MASQUE connection from this server did not get through, the mode is unchanged. The server network may block UDP 443 to Cloudflare; WireGuard keeps working.',
+        'ru' => 'Пробное подключение по MASQUE с этого сервера не прошло, режим не изменён. Возможно, сеть сервера не пропускает UDP 443 до Cloudflare; WireGuard продолжает работать.',
+    ],
+    'warp masque transport unreachable'  => [
+        'en' => 'The trial connection over this transport did not get through, the transport is unchanged.',
+        'ru' => 'Пробное подключение по этому транспорту не прошло, транспорт не изменён.',
+    ],
+    'warp masque up failed'  => [
+        'en' => 'WARP did not come up over MASQUE: the proxy gave no WARP answer within the waiting time. The switch stays off; see the warp log.',
+        'ru' => 'WARP по MASQUE не поднялся: прокси не дал ответа WARP за отведённое время. Переключатель остался выключенным; подробности в журнале warp.',
+    ],
     'warp no profile'  => [
         'en' => 'wgcf profile is missing — restart the wp container',
         'ru' => 'профиль wgcf отсутствует — перезапустите контейнер wp',

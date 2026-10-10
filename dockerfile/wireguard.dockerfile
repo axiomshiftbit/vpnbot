@@ -7,7 +7,12 @@ ARG AWG_GO_VERSION=v3.1.20260828
 ARG XRAY_VERSION=v26.10.10
 RUN apk add --no-cache ca-certificates curl git jq
 COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 dockerfile/build-xray.sh /build-tools/
-RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/warp-socks
+# Прокси WARP собирается из того же ядра. В режиме MASQUE он сам держит туннель
+# до Cloudflare, поэтому на дереве с поднятыми зависимостями (go-security.sh)
+# прогоняются собственные тесты ядра для этого транспорта: рукопожатие WARP по
+# HTTP/3 и HTTP/2, сверка ключа узла, отказ при чужом ключе.
+RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/warp-socks '' \
+        './transport/internet/masque/... ./proxy/masque/...'
 RUN sh /build-tools/go-source.sh ViRb3/wgcf "$WGCF_VERSION" /wgcf \
     && cd /wgcf && sh /build-tools/go-security.sh \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /out/wgcf .
@@ -80,6 +85,7 @@ RUN set -eux; \
         wireguard-tools \
         curl \
         jq \
+        openssl \
         bash \
         htop; \
     apk add --no-cache --virtual .build-deps \
@@ -108,5 +114,11 @@ RUN set -eux; \
     command -v tun2socks; \
     command -v wgcf; \
     command -v warp-socks; \
+    # режим WARP через MASQUE: ключ устройства P-256 создаёт openssl, а ядро
+    # прокси обязано понимать настройку warp транспорта masque (26.10.10+)
+    command -v openssl; \
+    openssl ecparam -name prime256v1 -genkey -noout -out /tmp/masque-probe.pem; \
+    openssl pkcs8 -topk8 -nocrypt -in /tmp/masque-probe.pem -out /dev/null; \
+    rm -f /tmp/masque-probe.pem; \
     wg --version; \
     awg --version

@@ -267,6 +267,19 @@ switch ($action) {
         $result=['tunnel'=>(bool)preg_match('~'.preg_quote($b->i18n('warp tunnel').': '.$b->i18n('warp handshake'),'~').' \\d+ ~u',$text),
             'socks'=>str_contains($text,$b->i18n('warp socks').': '.$b->i18n('on'))];
         break;
+    case 'warp-mode':
+        // Кнопка «режим»: что стало с настройкой и что бот ответил администратору.
+        $b->warpSwitchMode();$text=implode("\n",$b->transport->messages);
+        $result=['mode'=>$b->warpMode(),'refused'=>str_contains($text,$b->i18n('warp masque unreachable')),
+            'switched'=>str_contains($text,$b->i18n('warp mode switched')),'reverted'=>str_contains($text,$b->i18n('warp mode reverted'))];
+        break;
+    case 'warp-masque-state':
+        $b->warp();$text=implode("\n",$b->transport->messages);
+        $buttons=[];foreach (($b->transport->keyboards[count($b->transport->keyboards)-1] ?? []) as $row) foreach ($row as $button) $buttons[]=$button['callback_data'] ?? '';
+        $result=['supported'=>$b->warpMasqueSupported(),'mode'=>$b->warpMode(),'device'=>$b->warpMasqueStatus()['id'] ?? '',
+            'menu_mode'=>str_contains($text,$b->i18n('warp mode').': <b>'.$b->warpModeName($b->warpMode(),$b->warpMasqueH2()).'</b>'),
+            'mode_button'=>in_array('/warpMode',$buttons,true),'transport_button'=>in_array('/warpMasqueHttp',$buttons,true)];
+        break;
     case 'warp-backup':
         $b->warpBackup((string)($argv[2] ?? ''));
         $result=['off'=>!empty($b->getPacConf()['warpoff'])];

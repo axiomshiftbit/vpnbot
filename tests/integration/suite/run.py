@@ -195,7 +195,7 @@ try:
  unit=O/'unit';unit.mkdir()
  archive=subprocess.check_output(['git','archive','HEAD'],cwd=a.checkout)
  subprocess.run(['tar','-x','-C',str(unit)],input=archive,check=True)
- unitcode='''apk add --no-cache bash util-linux coreutils findutils make php85-pcntl py3-yaml >/tmp/packages.log 2>&1
+ unitcode='''apk add --no-cache bash util-linux coreutils findutils make jq openssl php85-pcntl py3-yaml >/tmp/packages.log 2>&1
 mkdir -p /logs
 python3 -m unittest discover -s tests -p '*_test.py' || exit 1
 python3 - <<'INNER'

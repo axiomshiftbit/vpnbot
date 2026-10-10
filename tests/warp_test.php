@@ -47,7 +47,7 @@ warpAssert(strpos($startWp, 'iptables -F WARP_SOCKS') !== false, 'цепочка
 // прокси уже слушает, а ограничений ещё нет. Запуск теперь идёт через
 // socks_start(), поэтому сравниваем с местом ВЫЗОВА, а не определения функции.
 warpAssert(
-    strpos($startWp, 'iptables -A WARP_SOCKS -j DROP') < strpos($startWp, 'if tunnel_up; then'),
+    strpos($startWp, 'iptables -A WARP_SOCKS -j DROP') < strpos($startWp, "if link_ready; then\n    socks_start"),
     'фильтр ставится раньше запуска microsocks'
 );
 
@@ -58,9 +58,10 @@ warpAssert(
 // уходил с публичного IP сервера — молча, без следа в логах.
 warpAssert(strpos($startWp, 'socks_start()') !== false && strpos($startWp, 'socks_stop()') !== false,
     'запуск и остановка прокси вынесены в функции');
-warpAssert((bool) preg_match('~if tunnel_up; then\s*\n\s*socks_start~', $startWp),
+warpAssert((bool) preg_match('~if link_ready; then\s*\n\s*socks_start~', $startWp)
+    && (bool) preg_match('~link_ready\(\) \{\s*\n\s*if \[ "\$MODE" = masque \]; then \[ "\$MASQUE_READY" = 1 \]; else tunnel_up; fi~', $startWp),
     'на старте прокси поднимается только при живом туннеле');
-warpAssert(strpos($startWp, 'warp_up || echo') !== false,
+warpAssert(strpos($startWp, 'link_up || echo') !== false,
     'код возврата поднятия туннеля на старте проверяется');
 warpAssert((bool) preg_match('~warp_up\(\)[^}]*wg-quick up "\$WGCF_CONF" \|\| return 1~s', $startWp),
     'warp_up() возвращает ошибку, если wg-quick не отработал');
@@ -68,8 +69,8 @@ warpAssert(strpos($startWp, 'latest-handshakes') !== false && strpos($startWp, '
     'warp_up() ждёт настоящего рукопожатия: wg-quick up успешен и при мёртвом endpoint');
 // Именно окно bounce'а и было главной утечкой.
 warpAssert(
-    strpos($startWp, 'socks_stop') < strpos($startWp, 'wg-quick down "$WGCF_CONF" 2>/dev/null
-        if warp_up; then'),
+    (bool) preg_match('~restarting tunnel[^\n]*\n(?:\s*#[^\n]*\n)*\s*socks_stop\n\s*link_down\n\s*if link_up; then~', $startWp)
+    && (bool) preg_match('~link_down\(\) \{\s*\n\s*MASQUE_READY=0\s*\n(?:\s*#[^\n]*\n)*\s*rm -f /run/warp-socks-masque\.json[^\n]*\n\s*wg-quick down "\$WGCF_CONF"~', $startWp),
     'при пере-поднятии туннеля прокси гасится ДО wg-quick down'
 );
 warpAssert((bool) preg_match('~if warp_disabled; then\s*\n\s*socks_stop~', $startWp),
@@ -83,7 +84,8 @@ warpAssert(str_contains($startWp, 'for firewall in iptables ip6tables; do')
 warpAssert(str_contains($startWp, '-A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN')
     && str_contains($startWp, '-A WARP_PROXY_OUT -j REJECT'),
     'вне интерфейса WARP трафик прокси запрещён');
-warpAssert(str_contains($startWp, "su -s /bin/sh -c 'exec warp-socks run -config /run/warp-socks.json' warp-proxy"),
+warpAssert(str_contains($startWp, 'su -s /bin/sh -c "exec warp-socks run -config $socks_config" warp-proxy')
+    && str_contains($startWp, "socks_config=/run/warp-socks.json\n"),
     'процесс действительно запускается под UID, к которому применён запрет');
 warpAssert(str_contains($startWp, 'wg show "$WGCF_IF" fwmark')
     && str_contains($startWp, '-p udp -m mark --mark "$tunnel_mark" -j RETURN'),
@@ -318,6 +320,9 @@ warpAssert($probeRun('', '', '{broken') === [false, 2], 'проба: повре�
 warpAssert(strpos($probe, 'curl -m 6 ') !== false && strpos(file_get_contents(__DIR__ . '/../docker-compose.yml'), 'test: ["CMD", "sh", "/warp_probe.sh"]') !== false, 'две попытки по 6 с укладываются в таймаут healthcheck');
 warpAssert(strpos($startWp, 'wait_tick') !== false && strpos($startWp, '/run/warp-kick') !== false && strpos($startWp, "\n    sleep 60\n") === false,
     'пауза сторожа прерывается ботом');
+warpAssert(strpos($startWp, "\nrm -f /run/warp-kick\n") === false, 'сигнал бота, пришедший во время запуска контейнера, не теряется');
+warpAssert(strpos($startWp, "\nrm -f /run/warp-mode\n") !== false && strpos($startWp, "\nrm -f /run/warp-mode\n") < strpos($startWp, 'proxy_firewall() {'),
+    'отметка режима прошлого запуска убирается до любых действий');
 warpAssert(strpos($startWp, "jq -r '.warp // empty' /config/pac.json 2>/dev/null || true") !== false, 'повреждённый pac.json не роняет контейнер на старте');
 warpAssert(strpos($probe, "warp=(on|plus)") !== false, 'проба требует именно warp=on|plus, а не просто ответ');
 warpAssert(strpos($probe, 'sort -n | tail -1') !== false, 'fallback берёт свежайший handshake среди пиров');

@@ -73,5 +73,37 @@ check('interrupted-key-change-keeps-the-copy',files()[-1]=='1' and files()[0]!=b
 bot('warp-backup','restore');after=files();check('backup-restores-previous-profile',after[0]==before[0] and after[-1]=='0',after)
 check('proxy-works-after-backup-restore',wait_proxy() and curl().returncode==0)
 run('docker','restart','warp-audit').check_returncode();check('proxy-survives-restart',wait_proxy());docker('warp-audit','iptables','-I','WARP_SOCKS_OUT','1','-p','udp','-d','10.10.0.245','--dport','51820','-j','RETURN').check_returncode();check('traffic-survives-restart',curl().returncode==0)
+# ---- WARP через MASQUE. Cloudflare стенд не трогает: устройство синтетическое, его узел
+# (203.0.113.77) не отвечает. Проверяется то, что от Cloudflare не зависит.
+def wp(command,timeout=20):return docker('warp-audit','sh','-c',command,timeout=timeout)
+def mode_file():return wp('cat /run/warp-mode 2>/dev/null').stdout.strip()
+def wait_mode(want,seconds=60):
+ end=time.monotonic()+seconds
+ while time.monotonic()<end:
+  if mode_file()==want:return True
+  time.sleep(1)
+ return False
+def chain():return wp('iptables -S WARP_PROXY_OUT').stdout
+state=bot('warp-masque-state');check('masque-supported-by-the-image',state['supported']=='' and state['mode']=='wireguard' and state['device']=='stand-sy',state)
+check('wireguard-menu-offers-the-mode-switch',state['menu_mode'] and state['mode_button'] and not state['transport_button'],state)
+# Узел недостижим: пробное подключение не проходит, бот отказывает, работающий WireGuard не затронут.
+started=time.monotonic();switch=bot('warp-mode');check('masque-refused-when-the-endpoint-is-unreachable',switch=={'mode':'wireguard','refused':True,'switched':False,'reverted':False},switch)
+check('refusal-did-not-interrupt-wireguard',listener() and mode_file()=='wireguard' and curl().returncode==0,{'seconds':time.monotonic()-started})
+check('trial-connection-left-nothing-behind',wp('ls /run | grep -c masque-check').stdout.strip()=='0' and '203.0.113.77' not in chain())
+# Режим задан настройками напрямую, как после восстановления из копии: контейнер обязан работать закрыто.
+p=R/'bot/config/pac.json';j=json.loads(p.read_text());j['warp_mode']='masque';p.write_text(json.dumps(j))
+wp('touch /run/warp-kick').check_returncode();check('container-switches-to-masque-on-the-flag',wait_mode('masque h3'))
+rules=chain();check('masque-kill-switch-allows-only-the-endpoint','-A WARP_PROXY_OUT -d 203.0.113.77/32 -p udp -m udp --dport 443 -j RETURN' in rules and 'wgcf-profile' not in rules and rules.strip().endswith('-j REJECT --reject-with icmp-port-unreachable'),rules)
+check('masque-has-no-wireguard-interface',wp('wg show wgcf-profile').returncode!=0)
+user=wp('ps -o user,args | grep "[w]arp-socks run"').stdout;check('masque-proxy-unprivileged',bool(user.strip()) and all(line.split()[0]!='root' for line in user.splitlines()) and 'warp-socks-masque.json' in user,user)
+check('masque-config-readable-by-the-proxy-only',wp('stat -c "%a %U:%G" /run/warp-socks-masque.json').stdout.strip()=='640 root:warp-proxy')
+q=curl(timeout=5);check('masque-fails-closed-without-the-endpoint',q.returncode!=0,{'exit':q.returncode})
+check('masque-unapproved-source-denied',curl(c='vpnbot-audit-wgclient',timeout=3).returncode!=0)
+state=bot('warp-masque-state');check('masque-menu-shows-mode-device-and-transport',state['mode']=='masque' and state['menu_mode'] and state['mode_button'] and state['transport_button'],state)
+# Обратно в WireGuard кнопкой бота: бот ждёт отметку сторожа, которая ставится только после рукопожатия.
+switch=bot('warp-mode');check('bot-returns-to-wireguard',switch=={'mode':'wireguard','refused':False,'switched':True,'reverted':False},switch)
+check('proxy-works-after-return-to-wireguard',mode_file()=='wireguard' and wait_proxy() and curl().returncode==0)
+rules=chain();check('wireguard-kill-switch-restored','-A WARP_PROXY_OUT -o wgcf-profile -j RETURN' in rules and '203.0.113.77' not in rules,rules)
+check('masque-config-with-the-key-removed',wp('ls /run/warp-socks-masque.json 2>/dev/null | wc -l').stdout.strip()=='0')
 bot('warp-toggle')
 print(json.dumps({'passed':sum(x['passed'] for x in results),'total':len(results),'external_provider':'controlled WireGuard peer; no Cloudflare account used'}));raise SystemExit(0 if all(x['passed'] for x in results) else 1)

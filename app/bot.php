@@ -14,6 +14,7 @@ require_once __DIR__ . '/BotTelemtActivity.php';
 require_once __DIR__ . '/BotBackup.php';
 require_once __DIR__ . '/BotXdrive.php';
 require_once __DIR__ . '/BotOvpn.php';
+require_once __DIR__ . '/BotWarpMasque.php';
 
 class Bot
 {
@@ -28,6 +29,7 @@ class Bot
     use BotBackup;
     use BotXdrive;
     use BotOvpn;
+    use BotWarpMasque;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -1906,6 +1908,12 @@ class Bot
                 break;
             case preg_match('~^/warpBackup (restore|drop)$~', $this->input['callback'], $m):
                 $this->warpBackup($m[1]);
+                break;
+            case preg_match('~^/warpMode$~', $this->input['callback'], $m):
+                $this->warpSwitchMode();
+                break;
+            case preg_match('~^/warpMasqueHttp$~', $this->input['callback'], $m):
+                $this->warpMasqueHttp();
                 break;
             case preg_match('~^/warpPlus$~', $this->input['callback'], $m):
                 $this->warpPlus();
@@ -26201,16 +26209,21 @@ DNS-over-HTTPS with IP:
             if (!$this->warpCommand('test -e /etc/warp/.bak')) {
                 return;
             }
+            // Оборванная смена ключа в режиме MASQUE могла оставить и новое
+            // устройство MASQUE неподтверждённым: его судьба та же, что у копии.
+            $masque = '[ ! -f /warp_masque.sh ] || sh /warp_masque.sh ';
             if ($action === 'drop') {
-                $this->send($chat, $this->i18n($this->warpCommand('rm -rf /etc/warp/.bak') ? 'warp backup dropped' : 'warp backup failed'));
+                $this->send($chat, $this->i18n($this->warpCommand($masque . 'commit; rm -rf /etc/warp/.bak') ? 'warp backup dropped' : 'warp backup failed'));
                 return;
             }
-            $off = !empty($this->getPacConf()['warpoff']);
+            $p   = $this->getPacConf();
+            $off = !empty($p['warpoff']);
             // Возвращаются только те файлы, что есть в копии: чего в ней нет,
             // то на момент обрыва ещё не успели заменить.
-            $ok = $this->warpCommand(self::WARP_STOP . '; cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
+            $ok = $this->warpCommand(self::WARP_STOP . '; ' . $masque . 'rollback; cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
                 . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; fi; done');
-            if ($ok && !$off) {
+            // В режиме MASQUE туннель WireGuard не поднимается: прокси запустит сторож.
+            if ($ok && !$off && $this->warpMode($p) === 'wireguard') {
                 $ok = $this->warpCommand(self::WARP_UP);
             }
             if ($ok) {
@@ -26252,6 +26265,9 @@ DNS-over-HTTPS with IP:
         $this->withLock('warp-control', function () use ($key) {
             $before = $this->getPacConf();
             $off = !empty($before['warpoff']);
+            // В режиме MASQUE новый ключ получает и устройство MASQUE, а
+            // туннель WireGuard после смены аккаунта не поднимается.
+            $masque = $this->warpMode($before) === 'masque';
             $chat = $this->input['chat'];
             $log = '';
             $step = function ($label, $command) use ($chat, &$log) {
@@ -26284,12 +26300,13 @@ DNS-over-HTTPS with IP:
                 return;
             }
             $stopped = false;
-            $restore = function () use ($off, $save, $chat, &$log, &$stopped) {
+            $restore = function () use ($off, $masque, $save, $chat, &$log, &$stopped) {
                 $ok = !$stopped || $this->warpCommand('pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; '
                     . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true; '
+                    . ($masque ? 'sh /warp_masque.sh rollback; ' : '')
                     . 'cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
                     . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; else rm -f "$f" || exit 1; fi; done');
-                if ($ok && $stopped && !$off) $ok = $this->warpCommand(self::WARP_UP);
+                if ($ok && $stopped && !$off && !$masque) $ok = $this->warpCommand(self::WARP_UP);
                 if ($ok) {
                     $save($off);
                     $this->warpCommand('rm -rf /etc/warp/.bak');
@@ -26312,14 +26329,19 @@ DNS-over-HTTPS with IP:
                 }
                 if (!$step('generating profile', 'umask 077; cd /etc/warp && wgcf generate && '
                     . 'sh /warp_fixup.sh && chmod 600 wgcf-account.toml wgcf-profile.conf')) { $restore(); return; }
-                if (!$off && !$step('starting warp', self::WARP_UP)) { $restore(); return; }
+                if ($masque) {
+                    // Прежнее устройство MASQUE хранится до commit: rollback в
+                    // $restore() вернёт его вместе с аккаунтом WireGuard.
+                    if (!$step('registering MASQUE device', "WARP_LICENSE_KEY='$key' WARP_LICENSE_STRICT=1 sh /warp_masque.sh register")) { $restore(); return; }
+                    if (!$off && !$step('checking MASQUE connection', 'sh /warp_masque.sh check ' . ($this->warpMasqueH2($before) ? 'h2' : 'h3'))) { $restore(); return; }
+                } elseif (!$off && !$step('starting warp', self::WARP_UP)) { $restore(); return; }
                 $save($off, true);
             } catch (\Throwable $e) {
                 $restore();
                 throw $e;
             }
             $this->warpprofile = null;
-            $this->warpCommand('rm -rf /etc/warp/.bak');
+            $this->warpCommand(($masque ? 'sh /warp_masque.sh commit; ' : '') . 'rm -rf /etc/warp/.bak');
             $this->warpKick();
             $this->send($chat, $log);
         });
@@ -26457,7 +26479,19 @@ DNS-over-HTTPS with IP:
                 });
             };
             $stop = 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
-            if ($off) {
+            if ($off && $this->warpMode() === 'masque') {
+                // Туннель MASQUE держит прокси, а его запускает сторож: снимаем
+                // флаг, будим сторож и ждём ответа пробы. Не дождались —
+                // возвращаем «выключено», как и при неудаче WireGuard.
+                $save(false);
+                $this->warpKick();
+                if (!$this->warpAwait('masque', $this->warpMasqueH2())) {
+                    $save(true);
+                    $this->warpCommand($stop);
+                    $this->send($this->input['chat'], '❌ ' . $this->i18n('warp masque up failed'));
+                    return;
+                }
+            } elseif ($off) {
                 if (!$this->warpCommand('wg show wgcf-profile >/dev/null 2>&1 || ' . self::WARP_UP)) {
                     $this->send($this->input['chat'], '❌ ' . $this->i18n('warp up failed'));
                     return;
@@ -26488,7 +26522,13 @@ DNS-over-HTTPS with IP:
         // stderr — ssh() читает только stdout, поэтому трейс чистый. Если WARP
         // не поднят, trace пуст: показываем явный "off", чтобы строка статуса
         // не выглядела пустой/сломанной.
-        $trace  = trim((string) $this->ssh('wgcf trace', 'wp'));
+        // В режиме MASQUE туннеля в контейнере нет, и запрос от root ушёл бы
+        // напрямую: состояние WARP видно только через сам прокси.
+        $mode   = $this->warpMode($p);
+        $h2     = $this->warpMasqueH2($p);
+        $trace  = trim((string) $this->ssh($mode === 'masque'
+            ? 'curl -m 8 -s -x socks5h://127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace'
+            : 'wgcf trace', 'wp'));
         // Содержимое файлов и вывод команд экранируются: один символ «<» в
         // них — и Telegram отклоняет всё сообщение, меню не открывается.
         $esc    = static fn($value) => htmlspecialchars((string) $value, ENT_NOQUOTES);
@@ -26499,10 +26539,22 @@ DNS-over-HTTPS with IP:
         $state = (string) $this->ssh('pgrep -x warp-socks >/dev/null 2>&1 && echo socks=1 || echo socks=0; '
             . 'hs=$(wg show wgcf-profile latest-handshakes 2>/dev/null | awk \'{print $2}\' | sort -n | tail -1); '
             . 'echo "hs=${hs:-0}"; echo "now=$(date +%s)"', 'wp');
+        $text[] = $this->i18n('warp mode') . ': <b>' . $this->warpModeName($mode, $h2) . '</b>';
         if (preg_match('~socks=([01])~', $state, $ms) && preg_match('~hs=(\d+)~', $state, $mh) && preg_match('~now=(\d+)~', $state, $mn)) {
             $age    = (int) $mh[1] > 0 ? max(0, (int) $mn[1] - (int) $mh[1]) : null;
-            $text[] = $this->i18n('warp tunnel') . ': ' . ($age === null ? $this->i18n('warp tunnel down')
-                : $this->i18n('warp handshake') . ' ' . $age . ' ' . $this->i18n('warp seconds ago'));
+            if ($mode === 'masque') {
+                // Рукопожатия WireGuard здесь нет: показываем устройство MASQUE.
+                $device = $this->warpMasqueStatus();
+                $text[] = $this->i18n('warp masque device') . ': ' . (empty($device['id']) ? $this->i18n('warp masque no device')
+                    : '<code>' . $esc($device['id']) . '…</code> · ' . $this->i18n('warp masque endpoint') . ' <code>'
+                        . $esc(preg_replace('~:\d+$~', '', (string) ($device['endpoint_v4'] ?? ''))) . '</code> · '
+                        // Тариф, а не признак warp_plus: Cloudflare ставит его и бесплатным аккаунтам.
+                        . $this->i18n('warp masque plan') . ' <code>' . $esc(($device['account_type'] ?? '') ?: '?') . '</code>');
+                $age = 0;
+            } else {
+                $text[] = $this->i18n('warp tunnel') . ': ' . ($age === null ? $this->i18n('warp tunnel down')
+                    : $this->i18n('warp handshake') . ' ' . $age . ' ' . $this->i18n('warp seconds ago'));
+            }
             $text[] = $this->i18n('warp socks') . ': ' . $this->i18n($ms[1] === '1' ? 'on' : 'off')
                 . (!$off && $ms[1] !== '1' && $age !== null ? ' <i>(' . $this->i18n('warp socks pending') . ')</i>' : '');
         }
@@ -26518,7 +26570,8 @@ DNS-over-HTTPS with IP:
         $text[] = "key: <code>" . $esc($p['warp'] ?? '') . "</code>";
         $text[] = '<pre>' . $esc($a) . '</pre>';
         $text[] = '<pre>' . $esc($c) . '</pre>';
-        if (!$prof) {
+        // В режиме MASQUE профиль WireGuard не нужен и может отсутствовать.
+        if (!$prof && $mode === 'wireguard') {
             $text[] = '⚠ ' . $this->i18n('warp no profile');
         }
 
@@ -26532,6 +26585,17 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/offWarp",
             ],
         ];
+        $data[] = [[
+            'text'          => $this->i18n('warp mode') . ': ' . $this->warpModeName($mode, $h2) . ' → '
+                . ($mode === 'masque' ? 'WireGuard' : 'MASQUE'),
+            'callback_data' => '/warpMode',
+        ]];
+        if ($mode === 'masque') {
+            $data[] = [[
+                'text'          => $this->i18n('warp masque transport') . ': ' . ($h2 ? 'HTTP/2 → HTTP/3' : 'HTTP/3 → HTTP/2'),
+                'callback_data' => '/warpMasqueHttp',
+            ]];
+        }
         $data[] = $this->menuHelpButton('warp');
         $data[] = [
             [

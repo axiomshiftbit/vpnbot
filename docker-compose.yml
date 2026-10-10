@@ -709,6 +709,9 @@ services:
             - ./scripts/start_wp.sh:/start_wp.sh
             - ./scripts/warp_fixup.sh:/warp_fixup.sh
             - ./scripts/warp_probe.sh:/warp_probe.sh
+            # Второй режим туннеля — WARP через MASQUE. Только чтение: скрипт
+            # вызывают и start_wp.sh, и бот по ssh.
+            - ./scripts/warp_masque.sh:/warp_masque.sh:ro
             - warp:/etc/warp
         hostname: warp
         container_name: warp-${VER}
