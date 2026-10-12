@@ -383,11 +383,14 @@ trait BotOvpn
         return ['rx' => $rx, 'tx' => $tx];
     }
 
-    // Итог по клиенту: ['rx','tx','since','limit','limited'].
+    // Итог по клиенту: ['rx','tx','since','limit','limited']. since = 0 —
+    // учёт ещё не начинался (клиент ни разу не подключался): иначе датой
+    // начала каждый день оказывалось бы «сегодня».
     public function ovpnTraffic(string $user): array
     {
-        $row = self::ovpnTrafficUser($this->ovpnTrafficLoad()['users'][$user] ?? []);
-        return self::ovpnTrafficTotal($row) + ['since' => $row['since'], 'limit' => $row['limit'], 'limited' => $row['limited']];
+        $saved = $this->ovpnTrafficLoad()['users'][$user] ?? null;
+        $row = self::ovpnTrafficUser(is_array($saved) ? $saved : []);
+        return self::ovpnTrafficTotal($row) + ['since' => is_array($saved) ? $row['since'] : 0, 'limit' => $row['limit'], 'limited' => $row['limited']];
     }
 
     // Шаг cron: обновляет счётчики и блокирует исчерпавших лимит. Решение
@@ -487,7 +490,7 @@ trait BotOvpn
     {
         $t = $this->ovpnTraffic($user);
         $line = $this->i18n('ovpn traffic total') . ': ↓' . $this->fmtBytes($t['rx']) . ' ↑' . $this->fmtBytes($t['tx'])
-            . ' (' . $this->i18n('ovpn traffic since') . ' ' . date('Y-m-d', $t['since']) . ')';
+            . ($t['since'] > 0 ? ' (' . $this->i18n('ovpn traffic since') . ' ' . date('Y-m-d', $t['since']) . ')' : '');
         if ($t['limit'] > 0) {
             $line .= "\n" . ($t['limited'] ? '🚫 ' : '') . $this->i18n('ovpn limit') . ': ' . $this->fmtBytes($t['rx'] + $t['tx'])
                 . ' / ' . $this->fmtBytes($t['limit']);

@@ -54,6 +54,7 @@ class WarpModeTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
         (self.dir / 'run').mkdir()
+        (self.dir / 'warp').mkdir()
         self.log = self.dir / 'log'
         # Имена с дефисом нельзя объявить функцией оболочки: подменяются файлами в PATH.
         (self.dir / 'bin').mkdir()
@@ -77,7 +78,8 @@ SOCKS_PORT=1080; SOCKS_UDP_PORTS=20000:29999; WGCF_IF=wgcf-profile; WGCF_CONF=/n
 iptables() { echo "iptables $*" >> "$LOG"; }
 ip6tables() { echo "ip6tables $*" >> "$LOG"; }
 '''
-        environ = dict(os.environ, LOG=str(self.log), PATH=str(self.dir / 'bin') + ':' + os.environ['PATH'], FAIL='')
+        environ = dict(os.environ, LOG=str(self.log), PATH=str(self.dir / 'bin') + ':' + os.environ['PATH'], FAIL='',
+                       WGCF_DIR=str(self.dir / 'warp'))
         environ.update(env)
         return subprocess.run(['sh', '-c', prelude + script], env=environ, capture_output=True, text=True, timeout=30)
 
@@ -145,13 +147,14 @@ MODE=masque; ALPN=%s; MASQUE_ENDPOINT=""; MASQUE_PROTO=udp
 proxy_firewall() { echo "firewall $MODE $MASQUE_ENDPOINT $MASQUE_PROTO" >> "$LOG"; }
 chown() { echo "chown $*" >> "$LOG"; }
 tunnel_up() { return 1; }
+date() { echo "$NOW"; }
 ''' % alpn + functions + '''
 link_up; echo "up=$? ready=$MASQUE_READY"
 link_ready && echo link-ready || echo link-not-ready
 mode_mark; cat "%s/run/warp-mode"
 link_down; echo "after-down ready=$MASQUE_READY"
 ''' % self.dir
-        result = self.shell(script, STATE=str(self.dir), FAIL=fail.get('fail', ''))
+        result = self.shell(script, STATE=str(self.dir), FAIL=fail.get('fail', ''), NOW=str(fail.get('now', 1000000)))
         return result.stdout.splitlines(), self.log.read_text().splitlines()
 
     def test_masque_link_validates_the_config_with_the_core_and_protects_the_key(self):
@@ -191,6 +194,47 @@ link_down; echo "after-down ready=$MASQUE_READY"
                 self.assertIn('link-not-ready', out)
                 self.assertFalse([line for line in log if line.startswith('firewall ')], 'узел не разрешается, пока режим не готов')
                 self.assertFalse((self.dir / 'run/warp-socks-masque.new.json').exists() and fail == 'core')
+
+    def test_failed_device_registration_is_retried_with_a_growing_pause(self):
+        retry = self.dir / 'warp/masque.retry'
+
+        def attempt(now, fail='register'):
+            out, log = self.masque_up(account=False, fail=fail, now=now)
+            return out, log.count('masque register')
+
+        out, tried = attempt(1000000)
+        self.assertEqual((tried, retry.read_text()), (1, '1 1000000\n'))
+        self.assertIn('[warp] MASQUE: registration failed, next attempt in 2 min', out)
+        self.assertIn('up=1 ready=0', out)
+        out, tried = attempt(1000119)
+        self.assertEqual((tried, retry.read_text()), (0, '1 1000000\n'), 'до конца паузы Cloudflare не трогаем')
+        self.assertIn('[warp] MASQUE: no device, next registration attempt in 1 min', out)
+        self.assertIn('up=1 ready=0', out)
+        self.assertEqual((attempt(1000120)[1], retry.read_text()), (1, '2 1000120\n'), 'пауза вышла — вторая попытка')
+        self.assertEqual(attempt(1000120 + 239)[1], 0, 'после второго отказа пауза вдвое длиннее')
+        self.assertEqual((attempt(1000120 + 240)[1], retry.read_text()), (1, '3 1000360\n'))
+        retry.write_text('40 1000000\n')
+        self.assertEqual(attempt(1000000 + 21599)[1], 0, 'пауза растёт не дальше шести часов')
+        self.assertEqual(attempt(1000000 + 21600)[1], 1)
+        for mark, label in (('3 2000000\n', 'часы ушли назад'), ('x y\n', 'повреждённая отметка'), ('', 'пустая отметка'),
+                            ('08 0999990\n', 'числа с ведущим нулём')):
+            with self.subTest(label):
+                retry.write_text(mark)
+                self.assertEqual(attempt(1000000)[1], 1)
+        retry.write_text('5 999999\n')
+        (self.dir / 'account').write_text('')
+        out, tried = attempt(1000000, fail='')
+        self.assertEqual((tried, retry.exists()), (0, False), 'устройство уже есть (его завёл бот): отметка снята, пауза не действует')
+        (self.dir / 'account').unlink()
+        retry.write_text('1 1\n')
+        out, tried = attempt(1000000, fail='')
+        self.assertIn('up=0 ready=1', out)
+        self.assertEqual((tried, retry.exists()), (1, False), 'удачная регистрация снимает отметку')
+
+    def test_watchdog_does_not_restart_the_container_while_waiting_to_register(self):
+        loop = self.source[self.source.index('while true; do\n    wait_tick'):]
+        failed = loop[loop.index('if ! link_ready; then'):loop.index('if ! socks_running; then')]
+        self.assertLess(failed.index('[ "$MASQUE_WAITING" = 1 ]; then\n                continue'), failed.index('BOUNCES=$((BOUNCES + 1))'))
 
     def socks_start(self, mode, ready):
         self.log.write_text('')

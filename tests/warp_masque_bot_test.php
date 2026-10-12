@@ -135,7 +135,11 @@ case "$name" in
   curl)
     url=''; for a in "$@"; do case "$a" in http*) url=$a ;; esac; done
     case "$url" in
-      *cdn-cgi/trace) [ "$WARP_TEST_TRACE" = none ] || printf 'warp=%s\n' "$WARP_TEST_TRACE"; exit 0 ;;
+      *cdn-cgi/trace)
+        # Настоящий запрос проходит только через уже запущенный пробный прокси:
+        # без ожидания проба иногда завершалась раньше, чем он успевал стартовать.
+        i=0; while [ -e "$WARP_RUN_DIR/warp-masque-check" ] && [ ! -e "$WARP_TEST_ROOT/check-ran" ] && [ "$i" -lt 100 ]; do /bin/sleep 0.05; i=$((i + 1)); done
+        [ "$WARP_TEST_TRACE" = none ] || printf 'warp=%s\n' "$WARP_TEST_TRACE"; exit 0 ;;
     esac
     cat > /dev/null
     out=$(arg_after -o "$@"); key=$(arg_after -d "$@" | jq -r .key)
@@ -313,6 +317,16 @@ try {
     $b = $reset('wireguard', false, true, 'OLD-KEY'); $old = $b->device();
     $b->addWarpPlus('NEW-KEY');
     $check($b->device() === $old && $b->calls('wg-quick up') === 1, 'в режиме WireGuard смена ключа устройство MASQUE не трогает (перерегистрируется при переключении)');
+
+    // ---- отметка «не подтверждено», оставшаяся от другой оборванной операции ----
+    $b = $reset('masque', false, true, 'OLD-KEY'); $old = $b->device(); touch("$root/warp/masque/.pending"); $b->t_fail = 'register';
+    $b->addWarpPlus('NEW-KEY');
+    $check($old !== '' && $b->device() === $old && $b->getPacConf()['warp'] === 'OLD-KEY' && $b->ran('warp_masque.sh rollback') === 0,
+        'смена ключа отказала до регистрации MASQUE: рабочее устройство не откатывается по чужой отметке');
+    $b = $reset('wireguard', false, true); $old = $b->device(); touch("$root/warp/masque/.pending");
+    $b->warpSwitchMode();
+    $check($b->warpMode() === 'masque' && $b->device() === $old && !file_exists("$root/warp/masque/.pending") && $b->calls('wgcf register') === 0,
+        'переключение на MASQUE с проверенным устройством подтверждает его и снимает старую отметку');
 
     // ---- оборванная смена ключа в режиме MASQUE ------------------------------
     $b = $reset('masque', false, true); $old = $b->device();

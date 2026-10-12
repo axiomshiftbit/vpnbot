@@ -254,6 +254,21 @@ class WarpMasqueScriptTest(unittest.TestCase):
         self.assertEqual(((self.dir / 'wgcf-account.toml').read_text(), Path(str(self.dir) + '.old').exists(), (self.dir / '.pending').exists()),
                          (second, False, False))
 
+    def test_rollback_skips_a_registration_that_was_never_confirmed(self):
+        self.run_script('register')
+        self.run_script('commit')
+        confirmed = (self.dir / 'wgcf-account.toml').read_text()
+        # Бот оборвался между регистрацией и подтверждением…
+        self.run_script('register')
+        abandoned = (self.dir / 'wgcf-account.toml').read_text()
+        # …а следующая смена ключа регистрирует ещё одно устройство и откатывается.
+        self.run_script('register')
+        self.assertNotIn((self.dir / 'wgcf-account.toml').read_text(), (confirmed, abandoned))
+        self.assertEqual((Path(str(self.dir) + '.old') / 'wgcf-account.toml').read_text(), confirmed)
+        self.run_script('rollback')
+        self.assertEqual((self.dir / 'wgcf-account.toml').read_text(), confirmed, 'откат вернул подтверждённое устройство, а не брошенное')
+        self.assertFalse((self.dir / '.pending').exists() or Path(str(self.dir) + '.old').exists())
+
     def test_rollback_of_the_very_first_registration_leaves_no_account(self):
         self.run_script('register')
         self.run_script('rollback')

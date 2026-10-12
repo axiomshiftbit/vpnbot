@@ -156,9 +156,10 @@ trait BotWarpMasque
                     $this->send($chat, $log . '❌ ' . $this->i18n('warp masque unreachable'));
                     return;
                 }
-                if ($registered) {
-                    $this->warpCommand('sh /warp_masque.sh commit');
-                }
+                // Проба прошла — устройство подтверждено, в том числе оставшееся
+                // неподтверждённым от прошлой оборванной попытки: иначе отметка
+                // жила бы дальше, и чужой откат убрал бы рабочее устройство.
+                $this->warpCommand('sh /warp_masque.sh commit');
             }
             $this->warpSaveMode($to);
             $this->warpKick();

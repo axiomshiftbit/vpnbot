@@ -236,6 +236,8 @@ $bot->status(['alice' => [1000, 2000, '2026-10-10 10:00:00', 1]]);
 $bot->ovpnTrafficSync();
 $t = $bot->ovpnTraffic('alice');
 check([$t['rx'], $t['tx']] === [1000, 2000] && $bot->ovpnTraffic('bob')['rx'] === 0, 'a live session is counted');
+check($t['since'] >= time() - 2 && str_contains($bot->ovpnTrafficLine('alice'), date('Y-m-d')), 'counting starts with the first session');
+check($bot->ovpnTraffic('bob')['since'] === 0 && !str_contains($bot->ovpnTrafficLine('bob'), date('Y')), 'a client that never connected has no start date');
 $saved = filemtime($bot->ovpnTrafficPath());
 $bot->status(['alice' => [5000, 7000, '2026-10-10 10:00:00', 1]]);
 $bot->ovpnTrafficSync();
@@ -341,7 +343,7 @@ foreach (["/getOvpnConfig $long", "/renewOvpnUser $long", "/setOvpnLimit $long",
     check(isset($buttons[$data]), "client menu button: $data");
 }
 check(strlen("/renewOvpnUser $long confirm") <= 64 && strlen("/delOvpnUser $long confirm") <= 64, 'confirmation buttons fit as well');
-check(str_contains($bot->text(), 'трафик всего: ↓0 B ↑0 B (с ' . date('Y-m-d') . ')'), 'client menu shows the running total');
+check(str_contains($bot->text(), 'трафик всего: ↓0 B ↑0 B') && !str_contains($bot->text(), '↑0 B (с '), 'client menu shows the running total, without a start date before the first session');
 $bot->t_messages = [];
 $bot->route("/renewOvpnUser $long");
 check(isset(buttonsOf($bot->t_buttons)["/renewOvpnUser $long confirm"]), 'reissue is routed');

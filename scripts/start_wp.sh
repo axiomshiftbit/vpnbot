@@ -297,13 +297,62 @@ warp_up() {
 # подтверждает уже проба сторожа, а не эта функция.
 MASQUE_READY=0
 MASQUE_ACCOUNT=""
+# Авторегистрация устройства повторяется с растущей паузой: 2, 4, 8… минут, но
+# не реже раза в 6 часов. Попытка, дошедшая до Cloudflare, создаёт там новое
+# устройство, а сторож возвращается сюда каждую минуту: без паузы отказ
+# привязки ключа давал бы сотни регистраций в сутки и упирался в лимит
+# Cloudflare, общий с режимом WireGuard. Отметка «число отказов и время
+# последнего» лежит в томе warp и переживает перезапуск контейнера. Бот
+# регистрирует устройство по команде администратора и паузы не ждёт.
+MASQUE_RETRY="$WGCF_DIR/masque.retry"
+MASQUE_WAITING=0
+masque_register_fails() {
+    fails=0
+    if [ -f "$MASQUE_RETRY" ]; then read -r fails _ < "$MASQUE_RETRY" || true; fi
+    # Число с ведущим нулём оболочка прочла бы как восьмеричное.
+    case "$fails" in ''|*[!0-9]*|0?*|???????*) fails=0 ;; esac
+    echo "$fails"
+}
+# Сколько секунд осталось до следующей попытки; 0 — можно пробовать.
+masque_register_wait() {
+    fails=$(masque_register_fails)
+    [ "$fails" -gt 0 ] || { echo 0; return 0; }
+    last=0
+    read -r _ last < "$MASQUE_RETRY" || true
+    case "$last" in ''|*[!0-9]*|0?*|????????????*) last=0 ;; esac
+    pause=120
+    n=1
+    while [ "$n" -lt "$fails" ] && [ "$pause" -lt 21600 ]; do
+        pause=$((pause * 2))
+        n=$((n + 1))
+    done
+    [ "$pause" -le 21600 ] || pause=21600
+    left=$((last + pause - $(date +%s)))
+    # Часы ушли назад дальше самой паузы — такой отметке не верим.
+    if [ "$left" -le 0 ] || [ "$left" -gt "$pause" ]; then echo 0; else echo "$left"; fi
+}
 masque_up() {
     MASQUE_READY=0
     if ! sh /warp_masque.sh exists; then
+        left=$(masque_register_wait)
+        if [ "$left" -gt 0 ]; then
+            # Одна строка на всю паузу, а не каждую минуту.
+            [ "$MASQUE_WAITING" = 1 ] || echo "[warp] MASQUE: no device, next registration attempt in $(((left + 59) / 60)) min"
+            MASQUE_WAITING=1
+            return 1
+        fi
+        MASQUE_WAITING=0
         echo "[warp] MASQUE: registering device..."
-        sh /warp_masque.sh register >/dev/null || { echo "[warp] MASQUE: registration failed"; return 1; }
+        if ! sh /warp_masque.sh register >/dev/null; then
+            echo "$(($(masque_register_fails) + 1)) $(date +%s)" > "$MASQUE_RETRY"
+            echo "[warp] MASQUE: registration failed, next attempt in $((($(masque_register_wait) + 59) / 60)) min"
+            MASQUE_WAITING=1
+            return 1
+        fi
         sh /warp_masque.sh commit
     fi
+    MASQUE_WAITING=0
+    rm -f "$MASQUE_RETRY"
     MASQUE_ENDPOINT=$(sh /warp_masque.sh endpoint) || { echo "[warp] MASQUE: no valid endpoint in the account"; return 1; }
     if [ "$ALPN" = h2 ]; then MASQUE_PROTO=tcp; else MASQUE_PROTO=udp; fi
     # Имя оканчивается на .json: ядро определяет формат конфига по расширению.
@@ -553,6 +602,11 @@ while true; do
             # проходе дала бы ложный отказ. Проверим на следующем.
             continue
         else
+            # Пауза перед повторной регистрацией MASQUE — не сбой туннеля:
+            # перезапуск контейнера её не сократит.
+            if [ "$MODE" = masque ] && [ "$MASQUE_WAITING" = 1 ]; then
+                continue
+            fi
             BOUNCES=$((BOUNCES + 1))
             echo "[warp] tunnel still down (attempt $BOUNCES/3)"
             if [ "$BOUNCES" -gt 3 ]; then

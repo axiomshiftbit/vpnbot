@@ -234,9 +234,16 @@ register() {
     license_mark "$applied" > license.sha256
     : > .pending
 
-    rm -rf "$DIR.old"
-    if [ -e "$DIR" ]; then
-        mv "$DIR" "$DIR.old"
+    if [ -e "$DIR/.pending" ] && [ -e "$DIR.old" ]; then
+        # Прошлая регистрация так и осталась неподтверждённой (бот оборвался
+        # до commit): откат должен вернуть не её, а последнее подтверждённое
+        # устройство, которое всё ещё лежит рядом.
+        rm -rf "$DIR"
+    else
+        rm -rf "$DIR.old"
+        if [ -e "$DIR" ]; then
+            mv "$DIR" "$DIR.old"
+        fi
     fi
     mv "$new" "$DIR"
     trap - EXIT

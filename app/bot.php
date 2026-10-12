@@ -26300,10 +26300,15 @@ DNS-over-HTTPS with IP:
                 return;
             }
             $stopped = false;
-            $restore = function () use ($off, $masque, $save, $chat, &$log, &$stopped) {
+            // Откатывать устройство MASQUE можно, только если эта смена ключа
+            // сама его зарегистрировала: отметка «не подтверждено» могла
+            // остаться от другой оборванной операции, и откат по ней убрал бы
+            // рабочее устройство.
+            $registered = false;
+            $restore = function () use ($off, $masque, $save, $chat, &$log, &$stopped, &$registered) {
                 $ok = !$stopped || $this->warpCommand('pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; '
                     . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true; '
-                    . ($masque ? 'sh /warp_masque.sh rollback; ' : '')
+                    . ($registered ? 'sh /warp_masque.sh rollback; ' : '')
                     . 'cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
                     . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; else rm -f "$f" || exit 1; fi; done');
                 if ($ok && $stopped && !$off && !$masque) $ok = $this->warpCommand(self::WARP_UP);
@@ -26333,6 +26338,7 @@ DNS-over-HTTPS with IP:
                     // Прежнее устройство MASQUE хранится до commit: rollback в
                     // $restore() вернёт его вместе с аккаунтом WireGuard.
                     if (!$step('registering MASQUE device', "WARP_LICENSE_KEY='$key' WARP_LICENSE_STRICT=1 sh /warp_masque.sh register")) { $restore(); return; }
+                    $registered = true;
                     if (!$off && !$step('checking MASQUE connection', 'sh /warp_masque.sh check ' . ($this->warpMasqueH2($before) ? 'h2' : 'h3'))) { $restore(); return; }
                 } elseif (!$off && !$step('starting warp', self::WARP_UP)) { $restore(); return; }
                 $save($off, true);
