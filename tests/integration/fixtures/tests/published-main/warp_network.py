@@ -90,6 +90,11 @@ check('wireguard-menu-offers-the-mode-switch',state['menu_mode'] and state['mode
 started=time.monotonic();switch=bot('warp-mode');check('masque-refused-when-the-endpoint-is-unreachable',switch=={'mode':'wireguard','refused':True,'switched':False,'reverted':False},switch)
 check('refusal-did-not-interrupt-wireguard',listener() and mode_file()=='wireguard' and curl().returncode==0,{'seconds':time.monotonic()-started})
 check('trial-connection-left-nothing-behind',wp('ls /run | grep -c masque-check').stdout.strip()=='0' and '203.0.113.77' not in chain())
+# Проба HTTP/2 при поднятом WireGuard: на её время скрипт помечает ответы узла по TCP (иначе строгий
+# rp_filter их отбрасывает) и обязан убрать правило за собой. Узел не отвечает, поэтому проба отказывает.
+q=wp('(sleep 2; iptables -t mangle -S PREROUTING | grep -c "sport 443") & sh /warp_masque.sh check h2; echo "exit=$?"; wait',timeout=120);seen=q.stdout.split()
+check('masque-http2-trial-marks-tcp-replies-while-it-runs','1' in seen and 'exit=1' in seen,{'stdout':q.stdout,'stderr':q.stderr})
+check('masque-http2-trial-left-nothing-behind',wp('iptables -t mangle -S PREROUTING | grep -c "sport 443"').stdout.strip()=='0' and wp('ls /run | grep -c masque-check').stdout.strip()=='0' and listener() and mode_file()=='wireguard')
 # Режим задан настройками напрямую, как после восстановления из копии: контейнер обязан работать закрыто.
 p=R/'bot/config/pac.json';j=json.loads(p.read_text());j['warp_mode']='masque';p.write_text(json.dumps(j))
 wp('touch /run/warp-kick').check_returncode();check('container-switches-to-masque-on-the-flag',wait_mode('masque h3'))

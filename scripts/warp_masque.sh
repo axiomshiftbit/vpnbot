@@ -276,7 +276,20 @@ check() {
     ln -sf "$(command -v warp-socks)" "$probe"
     result=1
     pid=''
-    trap 'if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi; rm -f "$conf" "$probe"' EXIT
+    reply=''
+    trap 'if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+        if [ -n "$reply" ]; then iptables -t mangle -D $reply 2>/dev/null || true; fi
+        rm -f "$conf" "$probe"' EXIT
+    # wg-quick возвращает метку только ответам UDP (CONNMARK). Ответ узла по TCP
+    # (HTTP/2) приходит без неё, и при строгом rp_filter ядро его отбрасывает:
+    # обратный путь без метки ведёт в туннель. На время пробы помечаем такие
+    # ответы сами; пакеты из самого туннеля правило не трогает.
+    if [ -n "$mark" ] && [ "$alpn" = h2 ]; then
+        node=$(endpoint) || fail 'bad endpoint'
+        reply="PREROUTING ! -i wgcf-profile -p tcp -s $node --sport 443 -j MARK --set-mark $mark"
+        # shellcheck disable=SC2086
+        iptables -t mangle -I $reply 2>/dev/null || reply=''
+    fi
     if config "$CHECK_PORT" "$alpn" "$mark" 127.0.0.1 > "$conf" && "$probe" run -test -config "$conf" >/dev/null 2>&1; then
         "$probe" run -config "$conf" >/dev/null 2>&1 &
         pid=$!

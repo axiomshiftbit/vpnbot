@@ -102,7 +102,7 @@ class WarpMasqueScriptTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / 'bin').mkdir()
         (self.root / 'run').mkdir()
-        for name in ('wgcf', 'curl', 'warp-socks', 'wg', 'sleep'):
+        for name in ('wgcf', 'curl', 'warp-socks', 'wg', 'sleep', 'iptables'):
             path = self.root / 'bin' / name
             path.write_text(FAKE)
             path.chmod(0o700)
@@ -343,7 +343,16 @@ class WarpMasqueScriptTest(unittest.TestCase):
         self.assertEqual(self.run_script('check', 'h2', WARP_TEST_FWMARK='0xca6c').returncode, 0)
         stream = json.loads((self.root / 'running-warp-masque-check.json').read_text())['outbounds'][0]['streamSettings']
         self.assertEqual((stream['sockopt'], stream['tlsSettings']['alpn']), ({'mark': 51820}, ['h2']))
-        self.assertEqual(self.run_script('check', 'h3', WARP_TEST_FWMARK='off').returncode, 0, 'метка off — туннеля нет')
+        # Ответы узла по TCP wg-quick не помечает: при строгом rp_filter без
+        # своего правила проба HTTP/2 отказывала бы при рабочем узле.
+        rule = 'PREROUTING ! -i wgcf-profile -p tcp -s 162.159.198.2 --sport 443 -j MARK --set-mark 51820'
+        self.assertEqual(self.calls('iptables'), ['iptables -t mangle -I ' + rule, 'iptables -t mangle -D ' + rule],
+                         'правило ставится на время пробы и убирается')
+        (self.root / 'calls').unlink()
+        self.assertEqual(self.run_script('check', 'h3', WARP_TEST_FWMARK='0xca6c').returncode, 0)
+        self.assertEqual(self.calls('iptables'), [], 'ответам UDP метку возвращает сам wg-quick')
+        self.assertEqual(self.run_script('check', 'h2', WARP_TEST_FWMARK='off').returncode, 0, 'метка off — туннеля нет')
+        self.assertEqual(self.calls('iptables'), [], 'без туннеля WireGuard помечать нечего')
 
     def test_trial_connection_fails_without_a_warp_answer(self):
         self.run_script('register')

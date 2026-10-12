@@ -147,7 +147,7 @@ case "$name" in
     printf 200 ;;
 esac
 SH;
-foreach (['wgcf', 'wg-quick', 'wg', 'pkill', 'sleep', 'curl', 'warp-socks', 'probe'] as $name) { file_put_contents("$root/bin/$name", $fake); chmod("$root/bin/$name", 0700); }
+foreach (['wgcf', 'wg-quick', 'wg', 'pkill', 'sleep', 'curl', 'warp-socks', 'probe', 'iptables'] as $name) { file_put_contents("$root/bin/$name", $fake); chmod("$root/bin/$name", 0700); }
 exec('openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null | openssl pkey -pubout -out ' . escapeshellarg("$root/endpoint.pub.pem") . ' 2>/dev/null');
 
 $failures = []; $checks = 0;
