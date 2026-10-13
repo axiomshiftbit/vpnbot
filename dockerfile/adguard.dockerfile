@@ -9,8 +9,13 @@ RUN sh /build-tools/go-source.sh AdguardTeam/AdGuardHome "$ADGUARD_VERSION" /sou
 FROM node:24-alpine AS frontend
 COPY --from=source /source /source
 WORKDIR /source
-RUN npm --prefix client_v2 ci --no-audit --no-fund \
-    && npm --prefix client_v2 run build-prod
+# Интерфейс — каталог client, как в официальных выпусках каналов release и
+# beta (bamboo-specs/release.yaml: clientDir 'client'). Новый интерфейс
+# client_v2 AdGuard пока выпускает только в канале edge; Makefile в тегах
+# указывает на него по умолчанию, поэтому сборка «как в Makefile» давала
+# стабильную версию с интерфейсом edge — не таким, как у официального архива.
+RUN npm --prefix client ci --no-audit --no-fund \
+    && npm --prefix client run build-prod
 
 FROM source AS core
 ARG ADGUARD_VERSION

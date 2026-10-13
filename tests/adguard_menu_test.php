@@ -265,6 +265,14 @@ try {
     file_put_contents($bot->adguard, '');
     adgAssert(str_contains($bot->adguardMenu()['text'], 'не читается'), 'меню не сообщает о нечитаемом конфиге');
 
+    // ── Образ: интерфейс официального выпуска ───────────────────────────────
+    // Сборка «как в Makefile» берёт client_v2 — интерфейс канала edge; выпуски
+    // release собираются с каталогом client.
+    $dockerfile = (string) file_get_contents(__DIR__ . '/../dockerfile/adguard.dockerfile');
+    adgAssert(str_contains($dockerfile, 'npm --prefix client ci') && str_contains($dockerfile, 'npm --prefix client run build-prod')
+        && !preg_match('~--prefix\s+client_v2~', $dockerfile), 'образ AdGuard собирается не с интерфейсом официального выпуска');
+    adgAssert(str_contains($dockerfile, 'go-security.sh') && str_contains($dockerfile, 'version.channel=release'), 'из сборки AdGuard пропали исправления Go или канал release');
+
     // ── Сброс — только с подтверждением ─────────────────────────────────────
     $bot = $new(); yaml_emit_file($bot->adguard, $base); file_put_contents($bot->pac, json_encode(['adpswd' => 'secret-pass']));
     $bot->adguardreset();
