@@ -46,6 +46,8 @@ class RoutesBehaviorBot extends Bot
     public function sendFile($chat, $id_url_cFile, $caption = false, $to = false) { $this->exported = $id_url_cFile->data; }
     public function sessionApply(callable $fn) { $fn(); }
     public function validateRouteRegexes(array $patterns): bool { return !$patterns || $this->regexValid; }
+    public array $probe = [];
+    public function ruleSetProbe(string $url): string { return $this->probe[$url] ?? ''; }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
 }
 
@@ -274,6 +276,33 @@ foreach ([...range(0, $pageCount), -1, 999] as $page) {
         $check($callbacks === [...$expected, '/routeshelp 0', '/routes'], 'Стрелки ведут к соседним темам, кнопка всех тем — к оглавлению');
     }
 }
+
+// ── rule-set: проверка источника при добавлении и подпись ядра в меню ───────
+$check(Bot::ruleSetBodyError('srs', "SRS\x01rest") === '' && Bot::ruleSetBodyError('srs', '<html>404</html>') !== '', 'rule-set: .srs узнаётся по сигнатуре');
+$check(Bot::ruleSetBodyError('mrs', "\x28\xb5\x2f\xfd\x04") === '' && Bot::ruleSetBodyError('mrs', 'payload:') !== '', 'rule-set: .mrs узнаётся по сигнатуре');
+$check(Bot::ruleSetBodyError('json', '{"version":1,"rules":[]}') === '' && Bot::ruleSetBodyError('json', '{"message":"Not Found"}') !== ''
+    && Bot::ruleSetBodyError('json', 'not json') !== '', 'rule-set: JSON обязан содержать rules');
+$check(Bot::ruleSetBodyError('yaml', "# list\npayload:\n  - DOMAIN,a.test\n") === '' && Bot::ruleSetBodyError('yml', "<!DOCTYPE html><p>payload:</p>") !== ''
+    && Bot::ruleSetBodyError('yaml', "rules:\n - a\n") !== '', 'rule-set: YAML обязан содержать payload');
+$check(Bot::ruleSetBodyError('txt', "DOMAIN,a.test\n") === '' && Bot::ruleSetBodyError('txt', " \n") !== ''
+    && Bot::ruleSetBodyError('txt', "<html><body>blocked</body></html>") !== '', 'rule-set: пустой TXT и страница HTML отмечаются');
+$check(Bot::ruleSetCore('https://x.test/a.srs?v=1') === 'sing-box' && Bot::ruleSetCore('https://x.test/a.json') === 'sing-box'
+    && Bot::ruleSetCore('https://x.test/a.yaml') === 'Mihomo' && Bot::ruleSetCore('https://x.test/a.mrs') === 'Mihomo', 'rule-set: ядро определяется по формату');
+$rs = new RoutesBehaviorBot();
+$rs->probe = ['https://rules.test/dead.srs' => 'http 404'];
+$rs->addInclude("block:1d:https://rules.test/dead.srs\nproxy:1h:https://rules.test/ok.yaml", 'rulessetlist');
+$check(count($rs->conf['rulessetlist']) === 2, 'rule-set: непрошедший проверку источник всё равно сохраняется');
+$warn = implode("\n", $rs->messages);
+$check(str_contains($warn, 'dead.srs — http 404') && !str_contains($warn, 'ok.yaml'), 'rule-set: о недоступном источнике сообщается, об исправном — нет');
+$rs->messages = [];
+$rs->addInclude('block:1d:https://rules.test/dead.srs', 'rulessetlist');
+$check(!str_contains(implode("\n", $rs->messages), 'не прошёл проверку'), 'rule-set: повторное добавление той же записи источник не перепроверяет');
+$plainRs = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+$check($plainRs->ruleSetProbe('http://127.0.0.1/a.srs') === '' && $plainRs->ruleSetProbe('https://127.0.0.1/a.srs') !== '', 'rule-set: http не запрашивается, внутренний адрес по https не проходит');
+$rs->updates = [];
+$rs->xtlsrulesset();
+$menuText = end($rs->updates)[0];
+$check(str_contains($menuText, '→ sing-box') && str_contains($menuText, '→ Mihomo'), 'rule-set: в меню подписано, каким ядром источник используется');
 
 foreach ($failures as $failure) echo "FAIL: $failure\n";
 echo "routes_behavior_test: $checks checks, " . count($failures) . " failures\n";

@@ -12413,7 +12413,8 @@ DNS-over-HTTPS with IP:
                         . "sing-box: .srs/.json. Mihomo: .yaml/.yml/.txt/.mrs. "
                         . "Для MRS укажите behavior: domain или ipcidr.\n"
                         . "block/reject — блокировать; direct — напрямую; proxy — VPN.\n"
-                        . "Для Mihomo лучше MRS/YAML: ошибочный TXT может стать пустым списком.",
+                        . "Для Mihomo лучше MRS/YAML: ошибочный TXT может стать пустым списком.\n"
+                        . "Ссылку https бот проверит сразу и предупредит, если по ней не rule-set.",
                     $this->input['message_id'],
                     reply: 'outbound[:behavior]:time:URL',
                 );
@@ -12494,10 +12495,10 @@ DNS-over-HTTPS with IP:
         $entries = $type === 'rulessetlist'
             ? array_filter(array_map('trim', preg_split('~\r\n|\r|\n~', $domains)))
             : $this->splitRouteInput($domains);
-        $lastKey = null; $dups = 0; $merged = 0; $invalid = 0;
+        $lastKey = null; $dups = 0; $merged = 0; $invalid = 0; $added = [];
         if ($entries) {
-            $this->changeRouteList($type, function (&$list) use ($entries, $type, &$lastKey, &$dups, &$merged, &$invalid) {
-                $seen = [];
+            $this->changeRouteList($type, function (&$list) use ($entries, $type, &$lastKey, &$dups, &$merged, &$invalid, &$added) {
+                $seen = []; $added = [];
                 if ($this->isRouteEntryList($type)) {
                     foreach (array_keys($list) as $key) {
                         if (($canon = $this->routeEntryCanonKey((string) $key)) !== '') $seen[$canon] = $key;
@@ -12515,6 +12516,7 @@ DNS-over-HTTPS with IP:
                     $lastKey = $seen[$canon] ?? $key;
                     if (($canon !== '' && isset($seen[$canon])) || array_key_exists($key, $list)) { $dups++; continue; }
                     $list[$key] = true;
+                    $added[] = $key;
                 }
                 if (in_array($type, ['white', 'deny'], true)) $list = array_values(array_unique($list));
                 elseif ($this->isRouteEntryList($type)) ['list' => $list, 'removed' => $merged] = $this->dedupeRouteList($list);
@@ -12524,6 +12526,20 @@ DNS-over-HTTPS with IP:
         if ($dups) $this->send($this->input['from'], $this->i18n('duplicates skipped') . ": $dups");
         if ($merged) $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
         if ($invalid) $this->send($this->input['from'], "Неверных записей пропущено: $invalid. Формат и примеры — routes → Справка.");
+        // Недоступный или подменённый источник не просто «не сработает»:
+        // sing-box без кеша отказывается запускаться, пока не скачает каждый
+        // rule-set профиля. Запись не отклоняем — у клиента сеть другая, — но
+        // предупреждаем сразу, а не когда у пользователей перестанет
+        // подниматься VPN.
+        if ($type === 'rulessetlist') {
+            $problems = [];
+            foreach (array_slice($added, 0, 5) as $key) {
+                $url = self::parseRuleSetKey((string) $key)['url'] ?? '';
+                if ($url !== '' && ($why = $this->ruleSetProbe($url)) !== '') $problems[] = self::esc("$url — $why");
+            }
+            if ($problems) $this->send($this->input['from'], "⚠️ rule-set не прошёл проверку с сервера. Если источник недоступен и клиентам, "
+                . "sing-box с таким профилем не запустится, Mihomo останется без этих правил:\n" . implode("\n", $problems));
+        }
         $keys = array_keys($this->getPacConf()[$type] ?? []);
         $index = array_search($lastKey, $keys, true);
         $page = $index === false ? 0 : (int) floor($index / $this->limit);
@@ -16553,7 +16569,11 @@ DNS-over-HTTPS with IP:
                     // Ключ — "name.dat:URL"/"outbound:time:URL": в URL встречаются
                     // & и =, а parse_mode=HTML отвергает всё сообщение на
                     // неэкранированном амперсанде, и список переставал открываться.
-                    $push('<blockquote><code>' . htmlspecialchars($k, ENT_QUOTES) . '</code></blockquote>');
+                    $push('<blockquote><code>' . htmlspecialchars($k, ENT_QUOTES) . '</code></blockquote>'
+                        // Источник берёт только одно ядро — подписываем какое,
+                        // иначе «правило добавлено, а в клиенте его нет».
+                        . ($type === 'rulessetlist' && ($rs = self::parseRuleSetKey((string) $k)) !== null
+                            ? '→ ' . self::ruleSetCore($rs['url']) : ''));
                 } elseif (in_array($type, ['blocklist', 'warplist', 'includelist'])) {
                     // block/warp/proxy: в кнопке длинная запись обрезается
                     // Telegram'ом, поэтому дублируем её в тело сообщения —
@@ -30715,6 +30735,50 @@ DNS-over-HTTPS with IP:
     public static function ruleSetFormat(string $url): string
     {
         return strtolower(pathinfo((string) parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION));
+    }
+
+    // Каким ядром источник будет использован: формат выбирает ядро, а не
+    // наоборот — srs/json понимает только sing-box, остальное только Mihomo.
+    public static function ruleSetCore(string $url): string
+    {
+        return in_array(self::ruleSetFormat($url), ['srs', 'json'], true) ? 'sing-box' : 'Mihomo';
+    }
+
+    // Пробная загрузка источника с сервера. '' — всё в порядке либо проверить
+    // нечем: ссылки http:// не запрашиваем (защита от обращений во внутреннюю
+    // сеть действует только для https), слишком большой файл не разбираем.
+    public function ruleSetProbe(string $url): string
+    {
+        if (!str_starts_with(strtolower($url), 'https://')) {
+            return '';
+        }
+        $r = $this->datHttpGet($url, [], 8 << 20, 15);
+        if (empty($r['ok'])) {
+            $err = (string) ($r['err'] ?? 'fetch failed');
+            return $err === 'response too large' ? '' : $err;
+        }
+        return self::ruleSetBodyError(self::ruleSetFormat($url), (string) ($r['body'] ?? ''));
+    }
+
+    // Похоже ли тело на rule-set своего формата. Ловит главное: страницу
+    // ошибки или «просмотр файла» вместо самого файла.
+    public static function ruleSetBodyError(string $format, string $body): string
+    {
+        $html = (bool) preg_match('~^\s*<(?:!doctype|html|\?xml)~i', substr($body, 0, 512));
+        if ($format === 'srs') {
+            return str_starts_with($body, 'SRS') ? '' : 'это не файл .srs';
+        }
+        if ($format === 'mrs') {
+            return str_starts_with($body, "\x28\xb5\x2f\xfd") ? '' : 'это не файл .mrs';
+        }
+        if ($format === 'json') {
+            $json = json_decode($body, true);
+            return is_array($json) && is_array($json['rules'] ?? null) ? '' : 'в JSON нет списка rules';
+        }
+        if (in_array($format, ['yaml', 'yml'], true)) {
+            return !$html && preg_match('~^\s*payload\s*:~m', $body) ? '' : 'в файле нет раздела payload';
+        }
+        return $html || trim($body) === '' ? 'пустой список или страница HTML' : '';
     }
 
     public function addClashRuleSet($c)
