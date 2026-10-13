@@ -23,12 +23,16 @@ class ChangelogBot extends Bot
 $root = sys_get_temp_dir() . '/vpnbot-changelog-' . bin2hex(random_bytes(6));
 register_shutdown_function(static fn() => exec('rm -rf ' . escapeshellarg($root)));
 mkdir($root);
-$git = static fn(string $dir, string $args) => sh('git -C ' . escapeshellarg($dir) . ' -c user.name=t -c user.email=t@example.org -c commit.gpgsign=false ' . $args);
+// gc.auto=0 и maintenance.auto=false обязательны: тест делает десятки коммитов
+// подряд, а git после части из них запускает фоновую упаковку объектов. Она
+// шла одновременно со следующим коммитом, и тот изредка падал с «bad tree
+// object HEAD» (прогон 38469252248, alpine 85) — без всякой связи с кодом.
+$git = static fn(string $dir, string $args) => sh('git -C ' . escapeshellarg($dir) . ' -c user.name=t -c user.email=t@example.org -c commit.gpgsign=false -c gc.auto=0 -c maintenance.auto=false ' . $args);
 $commit = static function (string $dir, string $subject, string $date) use ($git): void {
     file_put_contents("$dir/file.txt", $subject . "\n", FILE_APPEND);
     $git($dir, 'add -A');
     sh('GIT_AUTHOR_DATE=' . escapeshellarg("$date 12:00:00 +0000") . ' GIT_COMMITTER_DATE=' . escapeshellarg("$date 12:00:00 +0000")
-        . ' git -C ' . escapeshellarg($dir) . ' -c user.name=t -c user.email=t@example.org -c commit.gpgsign=false commit -q -m ' . escapeshellarg($subject));
+        . ' git -C ' . escapeshellarg($dir) . ' -c user.name=t -c user.email=t@example.org -c commit.gpgsign=false -c gc.auto=0 -c maintenance.auto=false commit -q -m ' . escapeshellarg($subject));
 };
 sh('git init -q -b dev ' . escapeshellarg("$root/origin"));
 file_put_contents("$root/origin/version", "27.03.2026 v2.30\n- старая запись исходного проекта\n");
