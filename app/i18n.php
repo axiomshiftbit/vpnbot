@@ -2679,6 +2679,118 @@ $i = [
         'en' => 'The bot will message admins when a disk is 90% full or CPU load stays at 90% for an hour.',
         'ru' => 'Бот сообщит администраторам, если диск заполнен на 90% или процессор час загружен на 90%.',
     ],
+    'adg settings' => [
+        'en' => "settings",
+        'ru' => "настройки",
+    ],
+    'adg statistics' => [
+        'en' => "statistics",
+        'ru' => "статистика",
+    ],
+    'adg protection' => [
+        'en' => "protection",
+        'ru' => "защита",
+    ],
+    'adg queries' => [
+        'en' => "queries",
+        'ru' => "запросов",
+    ],
+    'adg blocked' => [
+        'en' => "blocked",
+        'ru' => "заблокировано",
+    ],
+    'adg rate limit' => [
+        'en' => "rate limit",
+        'ru' => "лимит запросов",
+    ],
+    'adg users' => [
+        'en' => "users",
+        'ru' => "пользователей",
+    ],
+    'adg dot open' => [
+        'en' => "DoT port is published and the allowed clients list is empty: anyone can use this resolver. Press «fill allowed clients».",
+        'ru' => "Порт DoT опубликован, а список разрешённых пуст: резолвером может пользоваться любой. Нажмите «заполнить список разрешённых».",
+    ],
+    'adg reset confirm' => [
+        'en' => "Reset AdGuard to defaults? Filters, clients, upstreams and the allowed clients list will be erased.",
+        'ru' => "Сбросить AdGuard к заводским настройкам? Будут стёрты фильтры, клиенты, апстримы и список разрешённых.",
+    ],
+    'adg not responding' => [
+        'en' => "AdGuard does not respond",
+        'ru' => "AdGuard не отвечает",
+    ],
+    'adg not applied' => [
+        'en' => "Setting not applied",
+        'ru' => "Настройка не применена",
+    ],
+    'adg days' => [
+        'en' => "d",
+        'ru' => "дн.",
+    ],
+    'adg query log' => [
+        'en' => "query log",
+        'ru' => "журнал запросов",
+    ],
+    'adg stats keep' => [
+        'en' => "statistics",
+        'ru' => "статистика",
+    ],
+    'adg hide ip' => [
+        'en' => "hide client IPs in the log",
+        'ru' => "скрывать IP клиентов в журнале",
+    ],
+    'adg safe search' => [
+        'en' => "safe search",
+        'ru' => "безопасный поиск",
+    ],
+    'adg mode lb' => [
+        'en' => "in turn",
+        'ru' => "по очереди",
+    ],
+    'adg mode parallel' => [
+        'en' => "parallel",
+        'ru' => "параллельно",
+    ],
+    'adg mode fastest' => [
+        'en' => "fastest",
+        'ru' => "самый быстрый",
+    ],
+    'adg settings hint' => [
+        'en' => "Changes apply at once, AdGuard is not restarted.\nProtection: filtering on or off; a pause turns it back on by itself.\nUpstream mode: in turn — by speed; parallel — ask all, take the first answer; fastest — pick the fastest address.",
+        'ru' => "Изменения применяются сразу, AdGuard не перезапускается.\nЗащита: фильтрация включена или выключена; пауза сама включит её обратно.\nРежим апстримов: по очереди — с учётом скорости; параллельно — спросить все, взять первый ответ; самый быстрый — выбрать самый быстрый адрес.",
+    ],
+    'adg hint rate' => [
+        'en' => "Answers per second for one /24 subnet. All WireGuard clients share one subnet, and so do clients that reach AdGuard through containers: with many users 20/s is not enough.",
+        'ru' => "Ответов в секунду на одну подсеть /24. Все клиенты WireGuard — одна подсеть, как и те, кто приходит через контейнеры: при большом числе пользователей 20/с мало.",
+    ],
+    'adg hint qlog' => [
+        'en' => "How long every DNS request of every user is kept. Shorter means less disk space and less stored data.",
+        'ru' => "Сколько хранится каждый DNS-запрос каждого пользователя. Короче — меньше места на диске и меньше хранимых данных.",
+    ],
+    'adg hint stats' => [
+        'en' => "How long the counters for the statistics screen are kept.",
+        'ru' => "Сколько хранятся счётчики для экрана статистики.",
+    ],
+    'adg period' => [
+        'en' => "period",
+        'ru' => "период",
+    ],
+    'adg avg time' => [
+        'en' => "average answer time",
+        'ru' => "среднее время ответа",
+    ],
+    'adg top blocked' => [
+        'en' => "Top blocked",
+        'ru' => "Чаще всего блокируется",
+    ],
+    'adg top domains' => [
+        'en' => "Top domains",
+        'ru' => "Чаще всего запрашивается",
+    ],
+    'adg top clients' => [
+        'en' => "Top clients",
+        'ru' => "Самые активные клиенты",
+    ],
 ];
 
 if (file_exists(__DIR__ . '/i18n.override.php')) {

@@ -975,6 +975,15 @@ class Bot
             case preg_match('~^/adgFillAllowedClients(?: (\d+))?$~', $this->input['callback'], $m):
                 $this->adgFillAllowedClients(($m[1] ?? '') ?: false);
                 break;
+            case preg_match('~^/adgSettings(?: (rate|qlog|stats))?$~', $this->input['callback'], $m):
+                $this->adgSettings($m[1] ?? '');
+                break;
+            case preg_match('~^/adgSet (protection|safesearch|rate|mode|qlog|stats|anon) (\w{1,12})$~', $this->input['callback'], $m):
+                $this->adgSet($m[1], $m[2]);
+                break;
+            case preg_match('~^/adgStats$~', $this->input['callback'], $m):
+                $this->adgStats();
+                break;
             case preg_match('~^/offWarp$~', $this->input['callback'], $m):
                 $this->offWarp();
                 break;
@@ -1649,8 +1658,8 @@ class Bot
             case preg_match('~^/enterPage$~', $this->input['callback'], $m):
                 $this->enterPage();
                 break;
-            case preg_match('~^/adguardreset$~', $this->input['callback'], $m):
-                $this->adguardreset();
+            case preg_match('~^/adguardreset(?: (yes))?$~', $this->input['callback'], $m):
+                $this->adguardreset(($m[1] ?? '') === 'yes');
                 break;
             case preg_match('~^/addupstream$~', $this->input['callback'], $m):
                 $this->addupstream();
@@ -11162,15 +11171,123 @@ NFT;
         $pac['adpswd'] = $pac['adpswd'] ?: bin2hex(random_bytes(16));
         $this->setPacConf($pac);
         $ssl = $this->nginxGetTypeCert();
-        $c   = yaml_parse_file($this->adguard);
+        if (($c = $this->adguardConf()) === null) {
+            error_log('adguardSync: AdGuardHome.yaml не читается, конфиг не тронут');
+            return;
+        }
         $this->stopAd();
-        $c['users'][0]['password'] = password_hash($pac['adpswd'], PASSWORD_DEFAULT);
+        $c['users'][0]['password'] = self::adguardPasswordHash((string) $pac['adpswd']);
         if (!empty($ssl) && !empty($pac['domain']) && empty($c['tls']['enabled'])) {
             $c['tls']['enabled']     = true;
             $c['tls']['server_name'] = $pac['domain'];
         }
-        yaml_emit_file($this->adguard, $c);
+        $this->adguardWrite($c);
         $this->startAd();
+    }
+
+    // Конфиг AdGuardHome массивом; null — файла нет или он не разобрался.
+    // Все правки идут через эту пару: раньше результат yaml_parse_file() не
+    // проверялся, и на нечитаемом файле `$c['users'][0][...] = …` создавало
+    // массив из одного ключа, который тут же записывался поверх конфига —
+    // вместе с апстримами, клиентами, фильтрами и списком разрешённых.
+    public function adguardConf(): ?array
+    {
+        $c = is_file($this->adguard) ? @yaml_parse_file($this->adguard) : false;
+        return is_array($c) && $c ? $c : null;
+    }
+
+    // Запись целиком и атомарно (временный файл + rename): оборванная запись
+    // не оставляет AdGuard с половиной конфига. В файле хеш пароля панели,
+    // поэтому временный файл создаётся пустым, получает 0600 и только потом
+    // наполняется — ни он, ни итоговый файл не бывают читаемы посторонним.
+    public function adguardWrite(array $c): bool
+    {
+        $tmp = $this->adguard . '.' . getmypid() . '.tmp';
+        if (is_file($tmp)) {
+            unlink($tmp);
+        }
+        $h = @fopen($tmp, 'x');
+        if ($h === false || !fclose($h) || !@chmod($tmp, 0600)
+            || !@yaml_emit_file($tmp, $c) || (int) @filesize($tmp) === 0 || !@rename($tmp, $this->adguard)
+        ) {
+            @unlink($tmp);
+            error_log('adguardWrite: AdGuardHome.yaml не записан');
+            return false;
+        }
+        return true;
+    }
+
+    // Хеш для users[].password. Именно bcrypt и явно: AdGuardHome понимает
+    // только его, а PASSWORD_DEFAULT в будущей версии PHP может стать другим
+    // алгоритмом — панель тогда перестала бы пускать после первой же правки.
+    public static function adguardPasswordHash(string $password): string
+    {
+        return password_hash($password, PASSWORD_BCRYPT);
+    }
+
+    // Пароль панели. bcrypt учитывает только первые 72 байта: всё, что
+    // длиннее, на вход не влияет, и «длинный» пароль был бы обманчиво
+    // надёжным. Пустой и слишком короткий не принимаем — пароль здесь
+    // единственная защита панели.
+    public static function adguardPasswordValid(string $password): bool
+    {
+        return strlen($password) >= 8 && strlen($password) <= 72 && !preg_match('~[\x00-\x1f\x7f]~', $password);
+    }
+
+    // ClientID AdGuardHome: строчные латинские буквы, цифры и дефис, до 63
+    // символов. Проверка обязательна: значение идёт в allowed_clients, а на
+    // записи не этого вида AdGuardHome не запускается вовсе («bad ip, cidr,
+    // or clientid») — DNS всей установки ложится от одного ввода в меню.
+    public static function adguardClientIdValid(string $id): bool
+    {
+        return (bool) preg_match('~^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$~D', $id);
+    }
+
+    public string $adguardApiError = '';
+
+    // HTTP API AdGuardHome во внутренней сети: настройки меняются на ходу, без
+    // перезапуска и разрыва DNS. null — отказ (причина в adguardApiError).
+    public function adguardApi(string $method, string $path, ?array $body = null, int $timeout = 8): ?array
+    {
+        $this->adguardApiError = '';
+        $conf = $this->adguardConf();
+        $port = (int) preg_replace('~^.*:~', '', (string) ($conf['http']['address'] ?? '')) ?: 80;
+        $user = (string) ($conf['users'][0]['name'] ?? 'admin');
+        $ch   = curl_init("http://ad:$port/control/$path");
+        $opts = [
+            CURLOPT_CUSTOMREQUEST  => $method,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_PROXY          => '',
+            // Запрос несёт пароль панели: только HTTP до контейнера ad и
+            // никаких переходов по Location — пароль не должен уйти по
+            // адресу, который назовёт ответ.
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_PROTOCOLS      => CURLPROTO_HTTP,
+            CURLOPT_HTTPAUTH       => CURLAUTH_BASIC,
+            CURLOPT_CONNECTTIMEOUT => 2,
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_USERPWD        => $user . ':' . (string) (($this->getPacConf() ?: [])['adpswd'] ?? ''),
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+        ];
+        if ($body !== null) {
+            $opts[CURLOPT_POSTFIELDS] = json_encode($body, JSON_UNESCAPED_SLASHES);
+        }
+        curl_setopt_array($ch, $opts);
+        $raw  = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if ($raw === false || $code < 200 || $code >= 300) {
+            // 401/403: пароль в боте не тот, что в AdGuard (его сменили в самой
+            // панели), либо AdGuard на время закрыл вход после неудачных
+            // попыток. Тело ответа в этом случае не пересказываем.
+            $this->adguardApiError = match (true) {
+                $code === 401 || $code === 403 => "http $code: пароль в боте не совпадает с паролем панели — задайте его кнопкой «сменить пароль»",
+                $code > 0                      => "http $code " . trim(mb_substr((string) $raw, 0, 200)),
+                default                        => 'AdGuard не отвечает',
+            };
+            return null;
+        }
+        $json = json_decode((string) $raw, true);
+        return is_array($json) ? $json : [];
     }
 
     public function adguardpsswd()
@@ -11220,9 +11337,35 @@ NFT;
 
     public function setAdKey($key)
     {
-        $c = $this->getPacConf();
-        $c['adguardkey'] = $key;
-        $this->setPacConf($c);
+        $key = strtolower(trim((string) $key));
+        if ($key === '-') {
+            $key = ''; // «-» убирает ClientID
+        }
+        if ($key !== '' && !self::adguardClientIdValid($key)) {
+            $this->send($this->input['from'], 'ClientID не принят: строчные латинские буквы, цифры и дефис, до 63 символов. «-» — убрать ClientID.');
+            return $this->menu('adguard');
+        }
+        $old = (string) (($this->getPacConf() ?: [])['adguardkey'] ?? '');
+        $this->pacConfUpdate(function (&$c) use ($key) {
+            $c['adguardkey'] = $key;
+        });
+        // Список разрешённых уже ведётся — меняем в нём прежний ClientID на
+        // новый сразу: иначе новый адрес DoH/DoT из меню не работал бы до
+        // ручного «заполнить».
+        $conf = $this->adguardConf();
+        $list = $conf['dns']['allowed_clients'] ?? [];
+        if ($old !== $key && is_array($list) && $list) {
+            $next = array_values(array_filter($list, static fn($v) => (string) $v !== $old || $old === ''));
+            if ($key !== '' && !in_array($key, $next, true)) {
+                $next[] = $key;
+            }
+            if ($next !== array_values($list)) {
+                $conf['dns']['allowed_clients'] = $next;
+                $this->stopAd();
+                $this->adguardWrite($conf);
+                $this->startAd();
+            }
+        }
         $this->menu('adguard');
     }
 
@@ -12192,24 +12335,47 @@ NFT;
 
     public function chpsswd($pass)
     {
+        $pass = trim((string) $pass);
+        if (!self::adguardPasswordValid($pass)) {
+            $this->send($this->input['from'], 'Пароль не принят: от 8 до 72 символов (в байтах), без переводов строк.');
+            return $this->menu('adguard');
+        }
+        if (($c = $this->adguardConf()) === null) {
+            $this->send($this->input['from'], 'AdGuardHome.yaml не читается — пароль не изменён.');
+            return $this->menu('adguard');
+        }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
         $out[] = $this->stopAd();
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        $c = yaml_parse_file($this->adguard);
-        $c['users'][0]['password'] = password_hash($pass, PASSWORD_DEFAULT);
-        yaml_emit_file($this->adguard, $c);
-        $p = $this->getPacConf();
-        $p['adpswd'] = $pass;
-        $this->setPacConf($p);
+        $c['users'][0]['password'] = self::adguardPasswordHash($pass);
+        // Сначала конфиг AdGuard, потом pac.json: при отказе записи бот
+        // продолжает показывать пароль, с которым панель действительно пускает.
+        if ($this->adguardWrite($c)) {
+            $this->pacConfUpdate(function (&$p) use ($pass) {
+                $p['adpswd'] = $pass;
+            });
+        } else {
+            $this->send($this->input['from'], 'Не удалось записать AdGuardHome.yaml — пароль не изменён.');
+        }
         $out[] = $this->startAd();
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
         sleep(3);
         $this->menu('adguard');
     }
 
-    public function adguardreset()
+    public function adguardreset(bool $confirmed = false)
     {
+        // Сброс стирает фильтры, клиентов, апстримы и список разрешённых (с
+        // опубликованным DoT резолвер после этого открыт всем) — одно
+        // случайное нажатие не должно этого делать.
+        if (!$confirmed) {
+            $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('adg reset confirm'), [
+                [['text' => '⚠️ ' . $this->i18n('reset settings'), 'callback_data' => '/adguardreset yes']],
+                [['text' => $this->i18n('back'), 'callback_data' => '/menu adguard']],
+            ]);
+            return;
+        }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
         exec('git -C / checkout config/AdGuardHome.yaml');
@@ -12217,6 +12383,194 @@ NFT;
         $this->cloakNginx();
         sleep(3);
         $this->menu('adguard');
+    }
+
+    // ── Настройки AdGuard через его API: без перезапуска и разрыва DNS ─────
+    public const ADG_RATE_LIMITS = [0, 20, 100, 300, 500, 700, 900, 1100];
+    public const ADG_RETENTION_DAYS = [0, 1, 7, 30, 90];
+    public const ADG_UPSTREAM_MODES = ['lb' => 'load_balance', 'parallel' => 'parallel', 'fastest' => 'fastest_addr'];
+
+    // Срок хранения из ответа API (миллисекунды) в днях; 0 — выключено.
+    public static function adgRetentionDays(?array $config): int
+    {
+        return empty($config['enabled']) ? 0 : (int) round((int) ($config['interval'] ?? 0) / 86400000);
+    }
+
+    public function adgSettings(string $pick = '')
+    {
+        $path = 'Menu -> AdGuard -> ' . $this->i18n('adg settings');
+        $back = [['text' => $this->i18n('back'), 'callback_data' => $pick === '' ? '/menu adguard' : '/adgSettings']];
+        $status = $this->adguardApi('GET', 'status', null, 4);
+        $dns    = $status === null ? null : $this->adguardApi('GET', 'dns_info', null, 4);
+        if ($status === null || $dns === null) {
+            $this->update($this->input['chat'], $this->input['message_id'],
+                "$path\n\n⚠️ " . $this->i18n('adg not responding') . ': ' . self::esc($this->adguardApiError), [$back]);
+            return;
+        }
+        $qlog  = self::adgRetentionDays($this->adguardApi('GET', 'querylog/config', null, 4));
+        $stats = self::adgRetentionDays($this->adguardApi('GET', 'stats/config', null, 4));
+        $days  = fn(int $d) => $d === 0 ? $this->i18n('off') : $d . ' ' . $this->i18n('adg days');
+        $rate  = (int) ($dns['ratelimit'] ?? 0);
+        $mark  = fn(bool $on) => $on ? '✅ ' : '';
+        // Подменю выбора значения.
+        if ($pick !== '') {
+            [$title, $current, $values, $label] = match ($pick) {
+                'rate'  => [$this->i18n('adg rate limit'), $rate, self::ADG_RATE_LIMITS,
+                    fn(int $v) => $v === 0 ? $this->i18n('off') : "$v/s"],
+                'qlog'  => [$this->i18n('adg query log'), $qlog, self::ADG_RETENTION_DAYS, $days],
+                default => [$this->i18n('adg stats keep'), $stats, self::ADG_RETENTION_DAYS, $days],
+            };
+            $data = [];
+            foreach (array_chunk($values, 4) as $chunk) {
+                $data[] = array_map(fn(int $v) => ['text' => $mark($v === $current) . $label($v), 'callback_data' => "/adgSet $pick $v"], $chunk);
+            }
+            $data[] = $back;
+            $this->update($this->input['chat'], $this->input['message_id'],
+                "$path -> $title\n\n" . $this->i18n("adg hint $pick"), $data);
+            return;
+        }
+        $protection = !empty($status['protection_enabled']);
+        $paused     = (int) ($status['protection_disabled_duration'] ?? 0);
+        $safe       = $this->adguardApi('GET', 'safesearch/status', null, 4);
+        $anon       = !empty($this->adguardApi('GET', 'querylog/config', null, 4)['anonymize_client_ip']);
+        $mode       = array_search((string) ($dns['upstream_mode'] ?? '') ?: 'load_balance', self::ADG_UPSTREAM_MODES, true) ?: 'lb';
+        $onoff      = fn(bool $on) => $this->i18n($on ? 'on' : 'off');
+        $data = [
+            [['text' => '🛡 ' . $this->i18n('adg protection') . ': ' . $onoff($protection)
+                . (!$protection && $paused > 0 ? ' (' . (int) ceil($paused / 60000) . ' min)' : ''),
+                'callback_data' => '/adgSet protection ' . ($protection ? 'off' : 'on')]],
+            [
+                ['text' => '⏸ 10 min', 'callback_data' => '/adgSet protection 10'],
+                ['text' => '⏸ 60 min', 'callback_data' => '/adgSet protection 60'],
+            ],
+            [['text' => $this->i18n('adg safe search') . ': ' . $onoff(!empty($safe['enabled'])),
+                'callback_data' => '/adgSet safesearch ' . (!empty($safe['enabled']) ? 'off' : 'on')]],
+            [['text' => $this->i18n('adg rate limit') . ': ' . ($rate === 0 ? $this->i18n('off') : "$rate/s"), 'callback_data' => '/adgSettings rate']],
+        ];
+        $row = [];
+        foreach (array_keys(self::ADG_UPSTREAM_MODES) as $key) {
+            $row[] = ['text' => $mark($key === $mode) . $this->i18n("adg mode $key"), 'callback_data' => "/adgSet mode $key"];
+        }
+        $data[] = $row;
+        $data[] = [
+            ['text' => $this->i18n('adg query log') . ': ' . $days($qlog), 'callback_data' => '/adgSettings qlog'],
+            ['text' => $this->i18n('adg stats keep') . ': ' . $days($stats), 'callback_data' => '/adgSettings stats'],
+        ];
+        $data[] = [['text' => $this->i18n('adg hide ip') . ': ' . $onoff($anon), 'callback_data' => '/adgSet anon ' . ($anon ? 'off' : 'on')]];
+        $data[] = $back;
+        $this->update($this->input['chat'], $this->input['message_id'], "$path\n\n" . $this->i18n('adg settings hint'), $data);
+    }
+
+    // Одна настройка. Значения сверяются со списками допустимых: в API уходит
+    // только то, что предлагает меню.
+    public function adgSet(string $key, string $value)
+    {
+        $ok   = null;
+        $pick = '';
+        switch ($key) {
+            case 'protection':
+                if (in_array($value, ['on', 'off'], true)) {
+                    $ok = $this->adguardApi('POST', 'protection', ['enabled' => $value === 'on', 'duration' => 0]);
+                } elseif (in_array($value, ['10', '60'], true)) {
+                    $ok = $this->adguardApi('POST', 'protection', ['enabled' => false, 'duration' => (int) $value * 60000]);
+                }
+                break;
+            case 'safesearch':
+                if (in_array($value, ['on', 'off'], true)) {
+                    $current = $this->adguardApi('GET', 'safesearch/status') ?? [];
+                    // Перечень поисковиков берём у самого AdGuard: он растёт от версии к версии.
+                    $services = array_fill_keys(array_keys(array_diff_key($current, ['enabled' => 1])), true)
+                        ?: array_fill_keys(['bing', 'duckduckgo', 'ecosia', 'google', 'pixabay', 'yandex', 'youtube'], true);
+                    $ok = $this->adguardApi('PUT', 'safesearch/settings', ['enabled' => $value === 'on'] + $services);
+                }
+                break;
+            case 'rate':
+                $pick = 'rate';
+                if (preg_match('~^\d{1,5}$~D', $value) && in_array((int) $value, self::ADG_RATE_LIMITS, true)) {
+                    $ok = $this->adguardApi('POST', 'dns_config', ['ratelimit' => (int) $value]);
+                }
+                break;
+            case 'mode':
+                if (isset(self::ADG_UPSTREAM_MODES[$value])) {
+                    $ok = $this->adguardApi('POST', 'dns_config', ['upstream_mode' => self::ADG_UPSTREAM_MODES[$value]]);
+                }
+                break;
+            case 'qlog':
+            case 'stats':
+                $pick = $key;
+                if (preg_match('~^\d{1,5}$~D', $value) && in_array((int) $value, self::ADG_RETENTION_DAYS, true)) {
+                    $path    = $key === 'qlog' ? 'querylog/config' : 'stats/config';
+                    $current = $this->adguardApi('GET', $path);
+                    if ($current !== null) {
+                        $days = (int) $value;
+                        // Выключение срок не трогает: AdGuard не принимает интервал короче часа.
+                        $body = ['enabled' => $days > 0, 'interval' => $days > 0 ? $days * 86400000 : (int) ($current['interval'] ?? 86400000),
+                            'ignored' => array_values((array) ($current['ignored'] ?? []))];
+                        if ($key === 'qlog') {
+                            $body['anonymize_client_ip'] = !empty($current['anonymize_client_ip']);
+                        }
+                        $ok = $this->adguardApi('PUT', "$path/update", $body);
+                    }
+                }
+                break;
+            case 'anon':
+                if (in_array($value, ['on', 'off'], true) && ($current = $this->adguardApi('GET', 'querylog/config')) !== null) {
+                    $ok = $this->adguardApi('PUT', 'querylog/config/update', ['enabled' => !empty($current['enabled']),
+                        'interval' => (int) ($current['interval'] ?? 86400000), 'ignored' => array_values((array) ($current['ignored'] ?? [])),
+                        'anonymize_client_ip' => $value === 'on']);
+                }
+                break;
+        }
+        if ($ok === null) {
+            $this->send($this->input['from'], '⚠️ ' . $this->i18n('adg not applied') . ': ' . self::esc($this->adguardApiError ?: 'bad value'));
+        }
+        $this->adgSettings($ok === null ? '' : $pick);
+    }
+
+    // Сводка за период хранения статистики: сколько запросов, сколько
+    // заблокировано, кто и куда ходит чаще всего.
+    public function adgStats()
+    {
+        $path = 'Menu -> AdGuard -> ' . $this->i18n('adg statistics');
+        $back = [[['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => '/adgStats']],
+            [['text' => $this->i18n('back'), 'callback_data' => '/menu adguard']]];
+        $stats = $this->adguardApi('GET', 'stats', null, 6);
+        if ($stats === null) {
+            $this->update($this->input['chat'], $this->input['message_id'],
+                "$path\n\n⚠️ " . $this->i18n('adg not responding') . ': ' . self::esc($this->adguardApiError), $back);
+            return;
+        }
+        // Идентификатор из DoH-адреса → имя пользователя.
+        $names = [];
+        foreach ((array) (($this->getXray() ?: [])['inbounds'][0]['settings']['clients'] ?? []) as $client) {
+            $names[$this->dohClientId((string) ($client['id'] ?? ''))] = (string) ($client['email'] ?? '');
+        }
+        $total   = (int) ($stats['num_dns_queries'] ?? 0);
+        $blocked = (int) ($stats['num_blocked_filtering'] ?? 0);
+        $units   = count((array) ($stats['dns_queries'] ?? [])) . ' ' . (($stats['time_units'] ?? '') === 'days' ? 'd' : 'h');
+        $text    = [$path, '', $this->i18n('adg period') . ": $units, " . date('Y-m-d H:i'),
+            $this->i18n('adg queries') . ": $total",
+            $this->i18n('adg blocked') . ": $blocked" . ($total > 0 ? ' (' . round($blocked / $total * 100, 1) . '%)' : ''),
+            $this->i18n('adg avg time') . ': ' . round((float) ($stats['avg_processing_time'] ?? 0) * 1000, 1) . ' ms'];
+        $top = function (string $title, array $rows, bool $clients = false) use (&$text, $names) {
+            $lines = [];
+            foreach (array_slice($rows, 0, 5) as $row) {
+                foreach ((array) $row as $name => $count) {
+                    $name    = (string) $name;
+                    $shown   = $clients && ($names[$name] ?? '') !== '' ? $names[$name] : $name;
+                    $lines[] = ' ' . (int) $count . ' — <code>' . self::esc(mb_strimwidth($shown, 0, 60, '…')) . '</code>';
+                }
+            }
+            if ($lines) {
+                $text[] = '';
+                $text[] = "<b>$title</b>";
+                $text   = array_merge($text, $lines);
+            }
+        };
+        $top($this->i18n('adg top blocked'), (array) ($stats['top_blocked_domains'] ?? []));
+        $top($this->i18n('adg top domains'), (array) ($stats['top_queried_domains'] ?? []));
+        $top($this->i18n('adg top clients'), (array) ($stats['top_clients'] ?? []), true);
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $back);
     }
 
     public function guidv4($data = null) {
@@ -12233,13 +12587,87 @@ NFT;
         return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
     }
 
+    // Записи клиентов AdGuard для пользователей Xray: имя в журнале запросов
+    // и личная политика. Вызывается на каждое добавление, удаление и
+    // переименование пользователя.
     public function adguardXrayClients()
     {
         $xr = $this->getXray();
-        $ad = yaml_parse_file($this->adguard);
-        $tmp = [];
-        foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-            $tmp[] = [
+        $ad = $this->adguardConf();
+        // Нечитаемый xray.json или AdGuardHome.yaml — ничего не трогаем:
+        // раньше здесь писался конфиг из одного раздела clients.
+        if (!is_array($xr) || $ad === null) {
+            return;
+        }
+        $before = $ad;
+        $next   = self::adguardMergeClients(
+            (array) ($ad['clients']['persistent'] ?? []),
+            (array) ($xr['inbounds'][0]['settings']['clients'] ?? []),
+            fn(string $uid) => $this->dohClientId($uid),
+            date_default_timezone_get(),
+        );
+        $ad['clients']['persistent'] = $next;
+        // Список разрешённых ведётся (не пуст) — держим в нём ровно
+        // действующих пользователей. Раньше новый пользователь в список не
+        // попадал: его DNS молча отклонялся до ручного «заполнить», а
+        // идентификатор удалённого оставался пропуском навсегда.
+        $allowed = $ad['dns']['allowed_clients'] ?? null;
+        if (is_array($allowed) && $allowed) {
+            $ids = [];
+            foreach ($next as $client) {
+                foreach ((array) ($client['ids'] ?? []) as $id) {
+                    if (self::adguardBotClientId((string) $id)) {
+                        $ids[(string) $id] = true;
+                    }
+                }
+            }
+            $list = array_values(array_filter(array_map('strval', $allowed),
+                static fn($v) => !self::adguardBotClientId($v) || isset($ids[$v])));
+            foreach (array_keys($ids) as $id) {
+                if (!in_array($id, $list, true)) {
+                    $list[] = $id;
+                }
+            }
+            $ad['dns']['allowed_clients'] = $list;
+        }
+        // Ничего не изменилось — AdGuard не перезапускаем: каждый перезапуск
+        // это секунды без DNS у всех пользователей.
+        if ($ad == $before) {
+            return;
+        }
+        $this->stopAd();
+        $this->adguardWrite($ad);
+        $this->startAd();
+    }
+
+    // Идентификатор, который выдаёт бот (dohClientId): «doh-» и 16 hex.
+    public static function adguardBotClientId(string $id): bool
+    {
+        return (bool) preg_match('~^doh-[0-9a-f]{16}$~D', $id);
+    }
+
+    // Сводит записи клиентов AdGuard с пользователями Xray, сохраняя всё,
+    // что администратор настроил в панели: личные фильтры, блокировку
+    // сервисов, апстримы пользователя и клиентов, заведённых вручную.
+    // Прежде список пересобирался с нуля на каждое изменение пользователя.
+    public static function adguardMergeClients(array $existing, array $xrayClients, callable $dohId, string $timezone): array
+    {
+        $byUid = [];
+        foreach ($existing as $client) {
+            if (is_array($client) && isset($client['uid'])) {
+                $byUid[(string) $client['uid']] = $client;
+            }
+        }
+        $result = [];
+        $names  = [];
+        $uids   = [];
+        foreach ($xrayClients as $v) {
+            $uid = (string) ($v['id'] ?? '');
+            if ($uid === '' || isset($uids[$uid])) {
+                continue;
+            }
+            $uids[$uid] = true;
+            $client = $byUid[$uid] ?? [
                 'safe_search' => [
                     'enabled'    => true,
                     'bing'       => true,
@@ -12250,26 +12678,11 @@ NFT;
                     'youtube'    => true,
                 ],
                 'blocked_services' => [
-                    'schedule' => ['time_zone' => date_default_timezone_get()],
+                    'schedule' => ['time_zone' => $timezone],
                     'ids'      => [],
                 ],
-                'name'                        => $v['email'],
-                // Производный id, а не uuid: именно он приходит от клиента
-                // последним сегментом DoH-пути, и по нему AdGuard сопоставляет
-                // per-client политику. Оставь тут uuid — политика и разбивка
-                // query-лога по клиентам просто перестанут работать, потому что
-                // приходящий идентификатор ни с чем не совпадёт (см. dohClientId
-                // и adgFillAllowedClients).
-                'ids'                         => [$this->dohClientId((string) $v['id'])],
                 'tags'                        => [],
                 'upstreams'                   => [],
-                // uid — ВНУТРЕННИЙ идентификатор AdGuard, и он обязан быть
-                // настоящим UUID: на 16-hex значении парсер конфига падает
-                // («invalid UUID length: 16»), AdGuardHome не поднимается
-                // вовсе и DNS всей установки ложится. Проверено на рабочем сервере
-                // 2026-08-18. Сопоставление клиента по DoH-пути идёт ТОЛЬКО
-                // через 'ids' выше — производный id нужен именно там.
-                'uid'                         => (string) $v['id'],
                 'upstreams_cache_size'        => 0,
                 'upstreams_cache_enabled'     => false,
                 'use_global_settings'         => true,
@@ -12280,11 +12693,42 @@ NFT;
                 'ignore_querylog'             => false,
                 'ignore_statistics'           => false,
             ];
+            $client['name'] = (string) ($v['email'] ?? $uid);
+            // Производный id, а не uuid: именно он приходит от клиента
+            // последним сегментом DoH-пути, и по нему AdGuard сопоставляет
+            // per-client политику (см. dohClientId и adgFillAllowedClients).
+            // Свои дополнительные идентификаторы записи (IP, MAC) остаются.
+            $extra = array_values(array_filter(array_map('strval', (array) ($client['ids'] ?? [])),
+                static fn($id) => !self::adguardBotClientId($id)));
+            $client['ids'] = array_values(array_unique(array_merge([$dohId($uid)], $extra)));
+            // uid — ВНУТРЕННИЙ идентификатор AdGuard, и он обязан быть
+            // настоящим UUID: на 16-hex значении парсер конфига падает
+            // («invalid UUID length: 16»), AdGuardHome не поднимается
+            // вовсе и DNS всей установки ложится. Проверено на рабочем сервере
+            // 2026-08-18.
+            $client['uid'] = $uid;
+            $names[$client['name']] = true;
+            $result[] = $client;
         }
-        $ad['clients']['persistent'] = $tmp;
-        yaml_emit_file($this->adguard, $ad);
-        $this->stopAd();
-        $this->startAd();
+        // Клиенты, заведённые в панели вручную: не наши (нет выданного ботом
+        // id) и не занимают имя пользователя — имена в AdGuard уникальны.
+        foreach ($existing as $client) {
+            if (!is_array($client) || isset($uids[(string) ($client['uid'] ?? '')])) {
+                continue;
+            }
+            // Запись удалённого пользователя узнаём по идентификатору: нынешний
+            // «doh-…», а у записей прежних версий — 16 hex, его же вид EUI-64
+            // или сам UUID. Запись вовсе без идентификаторов AdGuard не примет.
+            $ids  = array_map('strval', (array) ($client['ids'] ?? []));
+            $ours = preg_grep('~^(?:doh-[0-9a-f]{16}|[0-9a-f]{16}|(?:[0-9a-f]{2}:){7}[0-9a-f]{2}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$~i', $ids);
+            $name = (string) ($client['name'] ?? '');
+            if (!$ids || $ours || $name === '' || isset($names[$name])) {
+                continue;
+            }
+            $names[$name] = true;
+            $result[] = $client;
+        }
+        return $result;
     }
 
     public function checkdns()
@@ -12344,29 +12788,77 @@ DNS-over-HTTPS with IP:
         ]);
     }
 
+    // Запись апстрима, как её понимает AdGuardHome: адрес (tcp/tls/https/
+    // h3/quic/sdns, голый IP, «домен/IP:порт») и необязательная привязка к
+    // доменам «[/домен/домен2/]адрес». «#» вместо адреса — «для этих доменов
+    // брать общие апстримы».
+    public static function adguardUpstreamValid(string $url): bool
+    {
+        if (!preg_match('~^(?:\[/[a-z0-9._*\-/]+/\])?(\S+)$~i', $url, $m) || preg_match('~[\x00-\x20"\'<>\\\\]~', $url)) {
+            return false;
+        }
+        $addr = $m[1];
+        if ($addr === '#') {
+            return $m[0] !== '#'; // «#» допустим только с привязкой к доменам
+        }
+        return (bool) preg_match('~^(tcp|udp|tls|https|quic|sdns|h3)://[^\s/]\S*$~i', $addr)
+            || filter_var($addr, FILTER_VALIDATE_IP) !== false
+            || (bool) preg_match('~^\[?[a-zA-Z0-9:.\-]+]?(:\d{1,5})?$~', $addr);
+    }
+
+    // Проба апстрима самим AdGuardHome. '' — отвечает либо проверить нечем
+    // (AdGuard не запущен); иначе причина отказа.
+    public function adguardUpstreamProbe(string $url): string
+    {
+        $r = $this->adguardApi('POST', 'test_upstream_dns',
+            ['upstream_dns' => [$url], 'bootstrap_dns' => [], 'fallback_dns' => [], 'private_upstream' => []], 25);
+        if ($r === null) {
+            // 4xx — AdGuard запись разобрал и отверг; нет ответа — не судим.
+            return str_starts_with($this->adguardApiError, 'http 4') ? $this->adguardApiError : '';
+        }
+        foreach ($r as $result) {
+            // «WARNING: …» AdGuard ставит апстриму для отдельных доменов,
+            // который не знает проверочного имени: для внутреннего DNS это
+            // нормально, отказом не считаем.
+            if ((string) $result !== 'OK' && !str_starts_with((string) $result, 'WARNING')) {
+                return mb_substr((string) $result, 0, 200);
+            }
+        }
+        return '';
+    }
+
     public function upstream($url)
     {
         // AdGuard — резолвер для ВСЕХ клиентов установки, и с нераспознанным
         // апстримом он не стартует. Ошибку при этом никто не увидит: startAd()
         // фоновый. То есть одна опечатка в промпте «enter url» роняла DNS всей
-        // сборки. Принимаем ровно то, что понимает сам AdGuard: схемы
-        // tcp/tls/https/quic/sdns, голый IP и «домен/IP:порт».
+        // сборки. Принимаем ровно то, что понимает сам AdGuard.
         $url = trim((string) $url);
-        $ok  = (bool) preg_match('~^(tcp|tls|https|quic|sdns|h3)://\S+$~i', $url)
-            || filter_var($url, FILTER_VALIDATE_IP) !== false
-            || (bool) preg_match('~^\[?[a-zA-Z0-9:.\-]+]?(:\d{1,5})?$~', $url);
-        if (!$ok) {
+        if (!self::adguardUpstreamValid($url)) {
             $this->send($this->input['chat'], self::esc($url) . ' - wrong upstream format', $this->input['message_id']);
 
+            return $this->menu('adguard');
+        }
+        if (($c = $this->adguardConf()) === null) {
+            $this->send($this->input['from'], 'AdGuardHome.yaml не читается — апстрим не добавлен.');
+            return $this->menu('adguard');
+        }
+        if (in_array($url, array_map('strval', (array) ($c['dns']['upstream_dns'] ?? [])), true)) {
+            $this->send($this->input['from'], self::esc($url) . ' — такой апстрим уже есть.');
+            return $this->menu('adguard');
+        }
+        // Нерабочий адрес раньше принимался молча: при единственном апстриме
+        // это DNS без ответов, при нескольких — задержки на каждом запросе.
+        if (($why = $this->adguardUpstreamProbe($url)) !== '') {
+            $this->send($this->input['from'], 'Апстрим не добавлен, проверка не прошла: ' . self::esc("$url — $why"));
             return $this->menu('adguard');
         }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
         $out[] = $this->stopAd();
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        $c = yaml_parse_file($this->adguard);
         $c['dns']['upstream_dns'][] = $url;
-        yaml_emit_file($this->adguard, $c);
+        $this->adguardWrite($c);
         $out[] = $this->startAd();
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
         sleep(3);
@@ -12375,13 +12867,17 @@ DNS-over-HTTPS with IP:
 
     public function delupstream($k)
     {
+        $c = $this->adguardConf();
+        // Номер из старого сообщения мог устареть — удаляем только то, что есть.
+        if ($c === null || !isset($c['dns']['upstream_dns'][(int) $k])) {
+            return $this->menu('adguard');
+        }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
         $this->stopAd();
-        $c = yaml_parse_file($this->adguard);
-        unset($c['dns']['upstream_dns'][$k]);
+        unset($c['dns']['upstream_dns'][(int) $k]);
         $c['dns']['upstream_dns'] = array_values($c['dns']['upstream_dns']);
-        yaml_emit_file($this->adguard, $c);
+        $this->adguardWrite($c);
         $this->startAd();
         $this->menu('adguard');
     }
@@ -31702,6 +32198,13 @@ DNS-over-HTTPS with IP:
                 proxy_pass http://ad/;
                 proxy_redirect / /adguard/;
                 proxy_cookie_path / /adguard/;
+                # AdGuardHome отдаёт страницы панели без заголовков кеширования,
+                # и браузер (особенно встроенный в Telegram) после обновления
+                # образа продолжал показывать прежний интерфейс: на двух
+                # серверах с одним и тем же образом панель выглядела по-разному.
+                # expires, а не add_header: тот отменил бы заголовки
+                # безопасности, заданные уровнем выше.
+                expires -1;
             }
             location
         CONF;
@@ -31862,7 +32365,11 @@ DNS-over-HTTPS with IP:
         $domain = $this->getDomain();
         $hash   = $this->getHashBot();
         $scheme = empty($ssl = $this->nginxGetTypeCert()) ? 'http' : 'https';
-        $text   = "$scheme://$domain/adguard$hash\nLogin: admin\nPass: <span class='tg-spoiler'>{$conf['adpswd']}</span>\n\n";
+        // Пароль и ClientID вводит администратор: без экранирования символ
+        // «<» или «&» в пароле делал сообщение невалидным HTML, и меню
+        // AdGuard переставало открываться совсем.
+        $text   = "$scheme://$domain/adguard$hash\nLogin: admin\nPass: <span class='tg-spoiler'>" . self::esc($conf['adpswd'] ?? '') . "</span>\n\n";
+        $ad     = $this->adguardConf() ?? [];
         if ($ssl) {
             // Алиасы обслуживаются тем же server-блоком nginx (cloakNginx кладёт
             // их в server_name) и покрыты тем же сертом после «renew SSL» —
@@ -31871,7 +32378,8 @@ DNS-over-HTTPS with IP:
             // Фолбэк на $domain: без настроенного домена это IP, и dnsDomains()
             // пуст — вывод должен остаться прежним.
             $dnsDomains = $this->dnsDomains($conf) ?: [$domain];
-            $adkey      = !empty($conf['adguardkey']) ? $conf['adguardkey'] : '';
+            // Ключ, сохранённый до появления проверки, в адреса не подставляем.
+            $adkey      = !empty($conf['adguardkey']) && self::adguardClientIdValid((string) $conf['adguardkey']) ? $conf['adguardkey'] : '';
             $doh        = [];
             $dot        = [];
             foreach ($dnsDomains as $d) {
@@ -31881,9 +32389,26 @@ DNS-over-HTTPS with IP:
             $text .= "DNS over HTTPS:\n<code>$ip</code>\n" . implode("\n", $doh) . "\n\n";
             $text .= "DNS over TLS:\n" . implode("\n", $dot);
         }
-        $status = $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad") ? 'on' : 'off');
-        $safesearch = yaml_parse_file($this->adguard)['filtering']['safe_search']['enabled'];
+        $status = $this->i18n(exec("JSON=1 timeout 2 dnslookup google.com ad 2>/dev/null") ? 'on' : 'off');
+        $safesearch = !empty($ad['filtering']['safe_search']['enabled']);
         $text .= "\n\nstatus: $status\t\tsafesearch: " . $this->i18n($safesearch ? 'on' : 'off');
+        if ($ad === []) {
+            $text .= "\n⚠️ AdGuardHome.yaml не читается";
+        }
+        // Живое состояние — у самого AdGuard: защита, лимит и сводка за период.
+        if (($live = $this->adguardApi('GET', 'status', null, 3)) !== null) {
+            $paused = (int) ($live['protection_disabled_duration'] ?? 0);
+            $text  .= "\n" . $this->i18n('adg protection') . ': ' . (!empty($live['protection_enabled']) ? $this->i18n('on')
+                : $this->i18n('off') . ($paused > 0 ? ' (' . (int) ceil($paused / 60000) . ' min)' : '') . ' ⚠️');
+            if (($stats = $this->adguardApi('GET', 'stats', null, 3)) !== null) {
+                $total   = (int) ($stats['num_dns_queries'] ?? 0);
+                $blocked = (int) ($stats['num_blocked_filtering'] ?? 0);
+                $text   .= "\n" . $this->i18n('adg queries') . ": $total, " . $this->i18n('adg blocked') . ": $blocked"
+                    . ($total > 0 ? ' (' . round($blocked / $total * 100, 1) . '%)' : '');
+            }
+        }
+        $rate = (int) ($ad['dns']['ratelimit'] ?? 20);
+        $text .= "\n" . $this->i18n('adg rate limit') . ': ' . ($rate > 0 ? "$rate/s" : $this->i18n('off'));
         $ver = $this->adguardVersion();
         if ($ver['running'] !== '' || $ver['pinned'] !== '') {
             $esc   = fn($v) => htmlspecialchars((string) $v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -31897,8 +32422,19 @@ DNS-over-HTTPS with IP:
                 $text .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, нужна пересборка)';
             }
         }
-        $allowedClients = yaml_parse_file($this->adguard)['dns']['allowed_clients'];
-        $text .= $allowedClients ? "\n\nallowed clients: \n - " . implode("\n - ", $allowedClients) : '';
+        $allowedClients = array_map('strval', (array) ($ad['dns']['allowed_clients'] ?? []));
+        if ($allowedClients) {
+            // Пользователей бывают сотни: показываем сети и ключ, а выданные
+            // ботом идентификаторы — числом, иначе текст не влезает в сообщение.
+            $own   = array_filter($allowedClients, [self::class, 'adguardBotClientId']);
+            $other = array_slice(array_values(array_diff($allowedClients, $own)), 0, 30);
+            $text .= "\n\nallowed clients: \n - " . implode("\n - ", array_map([self::class, 'esc'], $other))
+                . ($own ? "\n - " . $this->i18n('adg users') . ': ' . count($own) : '');
+        } elseif (!empty($this->getPorts()['ad']['enable'])) {
+            // Порт DoT опубликован, список разрешённых пуст — резолвером может
+            // пользоваться любой, кто знает адрес сервера.
+            $text .= "\n\n⚠️ " . $this->i18n('adg dot open');
+        }
 
         $data = [
             [
@@ -31921,6 +32457,16 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => 'ClientID' . (!empty($conf['adguardkey']) ? ": {$conf['adguardkey']}" : ''),
                     'callback_data' => "/setAdguardKey",
+                ],
+            ],
+            [
+                [
+                    'text'          => '⚙️ ' . $this->i18n('adg settings'),
+                    'callback_data' => '/adgSettings',
+                ],
+                [
+                    'text'          => '📊 ' . $this->i18n('adg statistics'),
+                    'callback_data' => '/adgStats',
                 ],
             ],
         ];
@@ -31956,12 +32502,12 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/addupstream",
             ],
         ];
-        $upstreams = yaml_parse_file($this->adguard)['dns']['upstream_dns'];
-        if (!empty($upstreams)) {
+        $upstreams = $ad['dns']['upstream_dns'] ?? [];
+        if (!empty($upstreams) && is_array($upstreams)) {
             foreach ($upstreams as $k => $v) {
                 $data[] = [
                     [
-                        'text'          => $v,
+                        'text'          => (string) $v,
                         'callback_data' => "/menu adguard",
                     ],
                     [
@@ -31991,10 +32537,9 @@ DNS-over-HTTPS with IP:
     // перезапускает только при фактическом изменении YAML.
     public function migrateDohClientIds(): bool
     {
-        if (!is_file($this->adguard)) {
+        if (($c = $this->adguardConf()) === null) {
             return false;
         }
-        $c            = yaml_parse_file($this->adguard);
         $uuidMap      = [];
         $legacyMap    = [];
         $legacyAlias  = [];
@@ -32085,7 +32630,7 @@ DNS-over-HTTPS with IP:
             return false;
         }
         $this->stopAd();
-        yaml_emit_file($this->adguard, $c);
+        $this->adguardWrite($c);
         $this->startAd();
         return true;
     }
@@ -32093,10 +32638,13 @@ DNS-over-HTTPS with IP:
     public function adgFillAllowedClients($delete = false)
     {
         $pac = $this->getPacConf();
+        if (($c = $this->adguardConf()) === null) {
+            $this->send($this->input['from'], 'AdGuardHome.yaml не читается — список не изменён.');
+            return $this->menu('adguard');
+        }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
         $this->stopAd();
-        $c = yaml_parse_file($this->adguard);
         if (!empty($delete)) {
             unset($c['dns']['allowed_clients']);
         } else {
@@ -32105,7 +32653,9 @@ DNS-over-HTTPS with IP:
             $keepLegacy = $this->dohLegacyAllowed();
             $c['dns']['allowed_clients'] = [];
             $c['dns']['allowed_clients'][] = '10.10.0.0/24';
-            if (!empty($pac['adguardkey'])) {
+            // Только корректный ClientID: на любой другой записи AdGuardHome
+            // не запускается (ключ мог сохраниться до появления проверки).
+            if (!empty($pac['adguardkey']) && self::adguardClientIdValid((string) $pac['adguardkey'])) {
                 $c['dns']['allowed_clients'][] = $pac['adguardkey'];
             }
             $c['dns']['allowed_clients'][] = getenv('WGADDRESS');
@@ -32134,7 +32684,7 @@ DNS-over-HTTPS with IP:
             $c['dns']['allowed_clients'] = array_values(array_unique(array_filter(
                 $c['dns']['allowed_clients'], static fn($v) => (string) $v !== '')));
         }
-        yaml_emit_file($this->adguard, $c);
+        $this->adguardWrite($c);
         $this->startAd();
         $this->menu('adguard');
     }

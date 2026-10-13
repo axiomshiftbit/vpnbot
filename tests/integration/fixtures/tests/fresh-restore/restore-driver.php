@@ -296,6 +296,48 @@ switch ($action) {
     case 'ad-sync':
         $b->adguardSync();$b->adguardXrayClients();
         break;
+    // AdGuard: те же действия, что кнопки меню; ответ — состояние самого AdGuard.
+    case 'ad-set':
+    case 'ad-upstream':
+    case 'ad-delupstream':
+    case 'ad-key':
+    case 'ad-fill':
+    case 'ad-clients':
+    case 'ad-password':
+    case 'ad-menu':
+    case 'ad-state':
+        if ($action==='ad-set') $b->adgSet($argv[2],$argv[3]);
+        if ($action==='ad-upstream') $b->upstream($argv[2]);
+        if ($action==='ad-delupstream') {
+            $index=array_search($argv[2],(array)($b->adguardConf()['dns']['upstream_dns'] ?? []),true);
+            if ($index!==false) $b->delupstream($index);
+        }
+        if ($action==='ad-key') $b->setAdKey($argv[2]);
+        if ($action==='ad-fill') $b->adgFillAllowedClients($argv[2]==='clear');
+        if ($action==='ad-clients') {
+            // Переименование первого пользователя и обратно — как кнопка в меню.
+            $x=$b->getXray();$x['inbounds'][0]['settings']['clients'][0]['email']=$argv[2];$b->saveXray($x);$b->adguardXrayClients();
+        }
+        if ($action==='ad-password') $b->chpsswd($argv[2]);
+        // После перезапуска AdGuard поднимается около секунды: ждём ответа,
+        // но только пока он не отвечает вовсе — отказ по паролю не повторяем.
+        for ($try=0;$try<40 && $b->adguardApi('GET','status',null,2)===null && $b->adguardApiError==='AdGuard не отвечает';$try++) usleep(250000);
+        $menu=$action==='ad-menu' ? $b->adguardMenu() : null;
+        if ($action==='ad-menu') { $b->adgSettings();$b->adgStats(); }
+        $conf=$b->adguardConf() ?? [];$dns=$b->adguardApi('GET','dns_info');
+        $result=['api'=>$dns!==null,'api_error'=>$b->adguardApiError,'messages'=>$b->transport->messages,
+            'ratelimit'=>$dns['ratelimit'] ?? null,'mode'=>$dns['upstream_mode'] ?? null,
+            'protection'=>$b->adguardApi('GET','status')['protection_enabled'] ?? null,
+            'querylog'=>$b->adguardApi('GET','querylog/config'),'stats'=>$b->adguardApi('GET','stats/config'),
+            'safesearch'=>$b->adguardApi('GET','safesearch/status')['enabled'] ?? null,
+            'allowed'=>array_values((array)($b->adguardApi('GET','access/list')['allowed_clients'] ?? [])),
+            'clients'=>array_column((array)($b->adguardApi('GET','clients')['clients'] ?? []),null,'name'),
+            'upstreams'=>array_values((array)($conf['dns']['upstream_dns'] ?? [])),
+            'users'=>array_column((array)($b->getXray()['inbounds'][0]['settings']['clients'] ?? []),'email'),
+            'doh_ids'=>array_map(fn($v)=>$b->dohClientId((string)$v['id']),(array)($b->getXray()['inbounds'][0]['settings']['clients'] ?? [])),
+            'key'=>(string)($b->getPacConf()['adguardkey'] ?? ''),'mode_bits'=>is_file('/config/AdGuardHome.yaml') ? fileperms('/config/AdGuardHome.yaml')&0777 : 0,
+            'menu'=>$menu['text'] ?? '','menu_buttons'=>json_encode($menu['data'] ?? [],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)];
+        break;
     case 'naive-rotate':
         $b->genNaivePass();
         break;

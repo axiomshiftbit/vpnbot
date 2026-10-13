@@ -116,7 +116,9 @@ dohAssert(str_contains($src, "'migrateDohClientIds',"),
 $mig = substr($src, strpos($src, 'public function migrateDohClientIds('), 4000);
 dohAssert(str_contains($mig, "\$c['clients']['persistent']"),
     'миграция переписывает и persistent-клиентов, а не только allowed_clients');
-dohAssert(str_contains($src, "'ids'                         => [\$this->dohClientId("),
+$mergeCheck = Bot::adguardMergeClients([], [['id' => 'd0b8f2a4-1c3e-4f5a-9b7d-2e6c8a0f4b11', 'email' => 'm']],
+    static fn(string $u) => 'doh-0123456789abcdef', 'UTC');
+dohAssert(($mergeCheck[0]['ids'] ?? null) === ['doh-0123456789abcdef'],
     'adguardXrayClients() пишет производный id в ids, иначе миграцию тут же откатывало бы обратно');
 dohAssert(str_contains($mig, "implode(':', str_split(\$legacy, 2))"),
     'миграция узнаёт EUI-64, в который AdGuard переписал старый 16-hex id');
@@ -127,7 +129,7 @@ dohAssert(str_contains($src, 'isset($previous[$legacy])'),
 // А вот uid обязан остаться UUID: на 16-hex значении AdGuardHome отказывается
 // читать конфиг («invalid UUID length: 16») и не поднимается вовсе — DNS всей
 // установки ложится. Поймано на рабочем сервере 2026-08-18.
-dohAssert(str_contains($src, "'uid'                         => (string) \$v['id'],"),
+dohAssert(($mergeCheck[0]['uid'] ?? null) === 'd0b8f2a4-1c3e-4f5a-9b7d-2e6c8a0f4b11',
     'uid персонального клиента остаётся UUID, а не производным id');
 dohAssert(!str_contains($mig, "['uid'] = \$map["),
     'миграция не переписывает uid');
