@@ -2147,8 +2147,8 @@ $i = [
         'ru' => 'профиль wgcf отсутствует — перезапустите контейнер wp',
     ],
     'fp hint'  => [
-        'en' => 'uTLS masks the TLS ClientHello (JA3/JA4). chrome is the safest default; random/randomized change the fingerprint per connection, which is itself unusual for a browser.',
-        'ru' => 'uTLS маскирует TLS ClientHello (JA3/JA4). chrome — самый безопасный выбор; random/randomized меняют отпечаток на каждое соединение, что для браузера само по себе нетипично.',
+        'en' => 'The fingerprint is a client setting: which browser the client imitates in its TLS ClientHello (JA3/JA4). The server neither stores nor checks it — this value goes into links and subscriptions, and a client with another value connects just the same. chrome is the safest default; random/randomized change the fingerprint per connection, which is itself unusual for a browser.',
+        'ru' => 'Отпечаток — настройка клиента: под какой браузер он маскирует своё TLS-приветствие (JA3/JA4). Сервер её не хранит и не сверяет — значение уходит в ссылки и подписки, а клиент с другим значением подключится так же. chrome — самый безопасный выбор; random/randomized меняют отпечаток на каждое соединение, что для браузера само по себе нетипично.',
     ],
     'fp noalpn warn'  => [
         'en' => 'randomizednoalpn sends no ALPN: gRPC will not negotiate h2 and XHTTP falls back to http/1.1',
@@ -2790,6 +2790,10 @@ $i = [
     'adg top clients' => [
         'en' => "Top clients",
         'ru' => "Самые активные клиенты",
+    ],
+    'fp reality warn' => [
+        'en' => 'REALITY on Xray 26.9.8+ accepts only chrome, firefox and safari: the server takes a client with «%s» for a stranger. Links and subscriptions get chrome instead.',
+        'ru' => 'REALITY на ядре Xray 26.9.8 и новее принимает только chrome, firefox и safari: клиента с «%s» сервер считает чужим. В ссылки и подписки вместо него идёт chrome.',
     ],
 ];
 

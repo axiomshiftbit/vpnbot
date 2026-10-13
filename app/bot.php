@@ -12938,7 +12938,7 @@ DNS-over-HTTPS with IP:
                     "@{$this->input['username']} список IP-подсетей: <b>IPv4/IPv6[/cidr]</b>, "
                         . "напр. <code>10.0.0.0/24</code>, <code>2001:db8::/32</code>.\n\n"
                         . "<b>Как вводить:</b> в столбик (по одной на строку) или в строку "
-                        . "через запятую и пробел: <code>10.0.0.0/24, 2001:db8::/32</code>.",
+                        . "через запятую либо пробел: <code>10.0.0.0/24, 2001:db8::/32</code>.",
                     $this->input['message_id'],
                     reply: 'list separated by commas',
                 );
@@ -12957,10 +12957,10 @@ DNS-over-HTTPS with IP:
                         . "<code>regexp:</code> — регулярное выражение, напр. regexp:.*\\.ru\$\n"
                         . "без префикса — домен-суффикс; IPv4/IPv6[/cidr] — как есть.\n\n"
                         . "<b>Как вводить:</b> в столбик (по одной записи на строку) "
-                        . "или в строку через запятую и пробел, напр. "
-                        . "<code>domain:vk.com, keyword:reddit</code>\n"
+                        . "или в строку через запятую либо пробел, напр. "
+                        . "<code>domain:vk.com, keyword:reddit</code> или <code>vk.com youtube.com</code>\n"
                         . "Записи <code>regexp:</code> — каждую с новой строки "
-                        . "(regex может содержать запятые)."
+                        . "(regex может содержать запятые и пробелы)."
                     : '';
                 // ext:/extip: — только для block/warp (применяются на сервере;
                 // на клиенте .dat нет). Сначала .dat добавляется в routes → dat.
@@ -12969,6 +12969,15 @@ DNS-over-HTTPS with IP:
                         . "<code>ext:</code> — категория доменов из .dat, напр. ext:dlc.dat:github\n"
                         . "<code>extip:</code> — категория IP из .dat, напр. extip:zkeenip.dat:akamai\n"
                         . "Сначала добавьте .dat в routes → dat.";
+                }
+                // Имя процесса может содержать пробел («Google Chrome Helper»),
+                // имя пакета Android — нет: для пакетов пробел разделяет записи.
+                if (in_array($type, ['processlist', 'tunprocess'], true)) {
+                    $hint .= "\n\n<b>Как вводить:</b> в столбик или в строку через запятую. "
+                        . "Пробел — часть имени процесса, записи он не разделяет.";
+                } elseif (in_array($type, ['packagelist', 'tunpackage'], true)) {
+                    $hint .= "\n\n<b>Как вводить:</b> в столбик или в строку через запятую либо пробел, "
+                        . "напр. <code>org.telegram.messenger com.example.app</code>";
                 }
                 $r = $this->send(
                     $this->input['chat'],
@@ -12990,11 +12999,11 @@ DNS-over-HTTPS with IP:
         if ($type === 'datlist') { $this->addDat($domains); return; }
         $entries = $type === 'rulessetlist'
             ? array_filter(array_map('trim', preg_split('~\r\n|\r|\n~', $domains)))
-            : $this->splitRouteInput($domains);
-        $lastKey = null; $dups = 0; $merged = 0; $invalid = 0; $added = [];
+            : $this->splitRouteInput($domains, !in_array($type, ['processlist', 'tunprocess'], true));
+        $lastKey = null; $dups = 0; $merged = 0; $invalid = 0; $added = []; $rejected = []; $off = [];
         if ($entries) {
-            $this->changeRouteList($type, function (&$list) use ($entries, $type, &$lastKey, &$dups, &$merged, &$invalid, &$added) {
-                $seen = []; $added = [];
+            $this->changeRouteList($type, function (&$list) use ($entries, $type, &$lastKey, &$dups, &$merged, &$invalid, &$added, &$rejected, &$off) {
+                $seen = []; $added = []; $rejected = []; $off = []; $invalid = 0; $dups = 0;
                 if ($this->isRouteEntryList($type)) {
                     foreach (array_keys($list) as $key) {
                         if (($canon = $this->routeEntryCanonKey((string) $key)) !== '') $seen[$canon] = $key;
@@ -13003,14 +13012,21 @@ DNS-over-HTTPS with IP:
                 foreach ($entries as $entry) {
                     if (in_array($type, ['white', 'deny'], true)) {
                         if (self::ipOrCidr($entry)) $list[] = $entry;
-                        else $invalid++;
+                        else { $invalid++; $rejected[] = $entry; }
                         continue;
                     }
                     $key = $this->isRouteEntryList($type) ? $this->normalizeRouteEntry($entry) : trim($entry);
-                    if (!$this->routeListEntryValid($type, $key)) { $invalid++; continue; }
+                    if (!$this->routeListEntryValid($type, $key)) { $invalid++; $rejected[] = $entry; continue; }
                     $canon = $this->isRouteEntryList($type) ? $this->routeEntryCanonKey($key) : '';
                     $lastKey = $seen[$canon] ?? $key;
-                    if (($canon !== '' && isset($seen[$canon])) || array_key_exists($key, $list)) { $dups++; continue; }
+                    if (($canon !== '' && isset($seen[$canon])) || array_key_exists($key, $list)) {
+                        $dups++;
+                        // Запись уже есть, но выключена: повторный ввод её не
+                        // включает (как и в остальных списках), и без подсказки
+                        // это выглядело как «добавил, а не работает».
+                        if (($list[$lastKey] ?? true) === false) $off[(string) $lastKey] = true;
+                        continue;
+                    }
                     $list[$key] = true;
                     $added[] = $key;
                 }
@@ -13021,7 +13037,12 @@ DNS-over-HTTPS with IP:
         }
         if ($dups) $this->send($this->input['from'], $this->i18n('duplicates skipped') . ": $dups");
         if ($merged) $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
-        if ($invalid) $this->send($this->input['from'], "Неверных записей пропущено: $invalid. Формат и примеры — routes → Справка.");
+        if ($off) $this->send($this->input['from'], "Уже есть в списке, но выключены — включите кнопкой записи:\n"
+            . implode("\n", array_map(fn($e) => '<code>' . self::esc(mb_strimwidth((string) $e, 0, 80, '…')) . '</code>', array_slice(array_keys($off), 0, 5))));
+        // Называем сами записи: по одному числу не понять, что именно не принято.
+        if ($invalid) $this->send($this->input['from'], "Неверных записей пропущено: $invalid. Формат и примеры — routes → Справка.\n"
+            . implode("\n", array_map(fn($e) => '<code>' . self::esc(mb_strimwidth((string) $e, 0, 80, '…')) . '</code>', array_slice($rejected, 0, 5)))
+            . ($invalid > 5 ? "\n…" : ''));
         // Недоступный или подменённый источник не просто «не сработает»:
         // sing-box без кеша отказывается запускаться, пока не скачает каждый
         // rule-set профиля. Запись не отклоняем — у клиента сеть другая, — но
@@ -13721,10 +13742,17 @@ DNS-over-HTTPS with IP:
 
     /**
      * Разбивает пользовательский ввод списка на записи: по переводам строк, затем
-     * по запятым — КРОМЕ строк, начинающихся с regexp: (regex может содержать
-     * запятые, напр. a{1,3}). Пустые записи отбрасываются.
+     * по запятым и пробелам — КРОМЕ записи regexp:, которая забирает остаток
+     * строки (regex может содержать и запятые, напр. a{1,3}, и пробелы). Пустые
+     * записи отбрасываются.
+     *
+     * Пробел — разделитель наравне с запятой: в домене, адресе и имени пакета
+     * его быть не может. Раньше «vk.com youtube.com» одной строкой отклонялось
+     * целиком как одна неверная запись, а в списке package сохранялось одной
+     * записью, которая не совпадает ни с чем. $spaces = false — для списков,
+     * где пробел бывает частью значения (имя процесса: «Google Chrome Helper»).
      */
-    public function splitRouteInput(string $input): array
+    public function splitRouteInput(string $input, bool $spaces = true): array
     {
         $out = [];
         foreach (preg_split('~\r\n|\r|\n~', $input) as $line) {
@@ -13747,8 +13775,23 @@ DNS-over-HTTPS with IP:
                     break;
                 }
                 $part = trim($part);
-                if ($part !== '') {
+                if ($part === '') {
+                    continue;
+                }
+                if (!$spaces) {
                     $out[] = $part;
+                    continue;
+                }
+                $words = preg_split('~\s+~u', $part);
+                foreach ($words as $j => $word) {
+                    // regexp: после пробела тоже забирает остаток — вместе с
+                    // хвостом строки за следующими запятыми.
+                    if (preg_match('~^regexp:~i', $word)) {
+                        $rest = trim(implode(' ', array_slice($words, $j)) . (isset($parts[$i + 1]) ? ',' . implode(',', array_slice($parts, $i + 1)) : ''));
+                        $out[] = $rest;
+                        break 2;
+                    }
+                    $out[] = $word;
                 }
             }
         }
@@ -19903,10 +19946,41 @@ DNS-over-HTTPS with IP:
     // Единая точка чтения отпечатка: пустое, неизвестное или снятое с
     // поддержки значение (например "unsafe" из старого pac.json) превращается
     // в chrome — так же, как это делает сам Xray для пустой строки.
-    public function fingerprint()
+    public function fingerprintChosen(): string
     {
         $fp = (string) ($this->getPacConf()['fingerprint'] ?? '');
         return in_array($fp, $this->fingerprints(), true) ? $fp : 'chrome';
+    }
+
+    // Отпечатки, с которыми клиента принимает сервер REALITY. С выпуска
+    // Xray 26.9.8 (библиотека REALITY от 2026-09-08: «Reject outdated/strange
+    // Client Hello that doesn't have X25519MLKEM768») сервер отвергает
+    // ClientHello без постквантовой доли ключа и отдаёт такому клиенту
+    // настоящий сайт-маску. Из набора uTLS её несут только современные
+    // chrome, firefox и safari. Проверено на ядрах сборки: 26.10.10 и 26.9.30
+    // не принимают ios, edge, qq, android и 360 ни с каким сайтом, а random и
+    // randomized срабатывают через раз — как повезёт с выбором; 26.7.28 и
+    // форк принимают ios, edge и qq. Сервер решает сам: старый клиент с
+    // отпечатком ios к новому серверу тоже не подключается.
+    public const REALITY_FINGERPRINTS = ['chrome', 'firefox', 'safari'];
+
+    // Выбранный отпечаток для REALITY не годится: сервер такого клиента не узнает.
+    public function fingerprintRejectedByReality(?string $fp = null, ?array $pac = null): bool
+    {
+        $pac = $pac ?? $this->getPacConf();
+        return (($pac['transport'] ?? '') === 'Reality')
+            && !in_array($fp ?? $this->fingerprintChosen(), self::REALITY_FINGERPRINTS, true);
+    }
+
+    // Отпечаток, который уходит в ссылки, подписки и профили. Это настройка
+    // КЛИЕНТА: под какой браузер он маскирует своё TLS-приветствие. Сервер её
+    // не хранит и не сверяет — клиент с другим значением подключится так же.
+    // Для REALITY несовместимый выбор заменяется на chrome: иначе бот
+    // раздавал бы профили, с которыми клиент не подключается вовсе.
+    public function fingerprint()
+    {
+        $fp = $this->fingerprintChosen();
+        return $this->fingerprintRejectedByReality($fp) ? 'chrome' : $fp;
     }
 
     // Ядра клиентов знают РАЗНЫЕ наборы имён, и ведут себя при незнакомом
@@ -19948,7 +20022,7 @@ DNS-over-HTTPS with IP:
             $c['fingerprint'] = $fingerprint;
         } else {
             // bare call (no/invalid arg): cycle to the next fingerprint in the list
-            $current          = $this->fingerprint();
+            $current          = $this->fingerprintChosen();
             $i                = array_search($current, $allowed, true);
             $c['fingerprint'] = $allowed[($i === false ? 0 : $i + 1) % count($allowed)];
         }
@@ -19959,9 +20033,13 @@ DNS-over-HTTPS with IP:
     public function fingerprintMenu()
     {
         $pac     = $this->getPacConf();
-        $current = $this->fingerprint();
+        $current = $this->fingerprintChosen();
+        $reality = ($pac['transport'] ?? '') === 'Reality';
         $text[]  = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('fingerprint');
         $text[]  = $this->i18n('fingerprint') . ': <code>' . $current . '</code>';
+        if ($this->fingerprintRejectedByReality($current, $pac)) {
+            $text[] = '⚠ ' . sprintf($this->i18n('fp reality warn'), $current);
+        }
         // Один и тот же выбор доезжает до трёх разных ядер под разными
         // именами — показываем, во что он превращается, иначе «почему в clash
         // другой отпечаток» выясняется только чтением исходников.
@@ -19981,7 +20059,8 @@ DNS-over-HTTPS with IP:
         $row  = [];
         foreach ($this->fingerprints() as $fp) {
             $row[] = [
-                'text'          => ucfirst($fp) . ' ' . ($current === $fp ? $this->i18n('on') : $this->i18n('off')),
+                'text'          => ucfirst($fp) . ' ' . ($current === $fp ? $this->i18n('on') : $this->i18n('off'))
+                    . ($reality && !in_array($fp, self::REALITY_FINGERPRINTS, true) ? ' ⚠' : ''),
                 'callback_data' => "/changeFingerprint $fp",
             ];
             if (count($row) === 2) {

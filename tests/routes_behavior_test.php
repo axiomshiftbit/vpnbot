@@ -304,6 +304,87 @@ $rs->xtlsrulesset();
 $menuText = end($rs->updates)[0];
 $check(str_contains($menuText, '→ sing-box') && str_contains($menuText, '→ Mihomo'), 'rule-set: в меню подписано, каким ядром источник используется');
 
+// ── Ввод записей: столбик, запятая, пробел — и их смесь ─────────────────────
+$forms = [
+    'столбик'             => "vk.com\nyoutube.com\nkeyword:reddit",
+    'запятая'             => 'vk.com,youtube.com,keyword:reddit',
+    'запятая с пробелом'  => 'vk.com, youtube.com, keyword:reddit',
+    'пробел'              => 'vk.com youtube.com keyword:reddit',
+    'несколько пробелов'  => "  vk.com   youtube.com\tkeyword:reddit  ",
+    'смесь'               => "vk.com youtube.com,\n keyword:reddit\r\n",
+];
+foreach (['includelist', 'blocklist', 'warplist'] as $type) {
+    foreach ($forms as $name => $input) {
+        $in = new RoutesBehaviorBot(); $in->addInclude($input, $type);
+        $check(array_keys($in->conf[$type]) === ['keyword:reddit', 'vk.com', 'youtube.com'] && $in->messages === [],
+            "Ввод «{$name}» в $type даёт три записи: " . json_encode(array_keys($in->conf[$type])) . ' ' . json_encode($in->messages, JSON_UNESCAPED_UNICODE));
+    }
+}
+foreach (["10.0.0.0/8\n172.16.5.5\n2001:db8::/32", '10.0.0.0/8,172.16.5.5,2001:db8::/32', '10.0.0.0/8 172.16.5.5 2001:db8::/32', "10.0.0.0/8, 172.16.5.5\n2001:db8::/32"] as $input) {
+    $in = new RoutesBehaviorBot(); $in->addInclude($input, 'subnetlist');
+    $check(array_keys($in->conf['subnetlist']) == ['10.0.0.0/8', '172.16.5.5', '2001:db8::/32'], 'subnet: ввод ' . json_encode($input) . ' → ' . json_encode(array_keys($in->conf['subnetlist'])));
+}
+foreach (["org.a.b\ncom.c.d", 'org.a.b,com.c.d', 'org.a.b com.c.d', 'org.a.b,  com.c.d'] as $input) {
+    $in = new RoutesBehaviorBot(); $in->addInclude($input, 'packagelist');
+    $check(array_keys($in->conf['packagelist']) === ['com.c.d', 'org.a.b'], 'package: ввод ' . json_encode($input) . ' → ' . json_encode(array_keys($in->conf['packagelist'])));
+}
+// Имя процесса может содержать пробел: разделители — только запятая и новая строка.
+$in = new RoutesBehaviorBot(); $in->addInclude("Google Chrome Helper, firefox\nchrome.exe", 'processlist');
+$check(array_keys($in->conf['processlist']) === ['Google Chrome Helper', 'chrome.exe', 'firefox'], 'process: пробел остаётся частью имени: ' . json_encode(array_keys($in->conf['processlist'])));
+// regexp: забирает остаток строки вместе с запятыми и пробелами; до него записи делятся как обычно.
+$check($bot->splitRouteInput('a.com b.com regexp:^x{1,3} y, z$') === ['a.com', 'b.com', 'regexp:^x{1,3} y, z$'], 'regexp после пробела забирает остаток строки: ' . json_encode($bot->splitRouteInput('a.com b.com regexp:^x{1,3} y, z$')));
+$check($bot->splitRouteInput("regexp:a b,c\nd.com e.com") === ['regexp:a b,c', 'd.com', 'e.com'], 'regexp в начале строки не делится, следующая строка — как обычно');
+$check($bot->splitRouteInput('a.com, b.com c.com', false) === ['a.com', 'b.com c.com'], 'без деления по пробелам пробел остаётся в записи');
+$check($bot->splitRouteInput(" \n ,  , \t") === [], 'пустой ввод не даёт записей');
+// Отклонённые записи называются, а верные из того же ввода сохраняются.
+$in = new RoutesBehaviorBot(); $in->addInclude('good.test bad_domain!.test 999.1.1.1 keyword: <b>x</b>', 'includelist');
+$said = implode("\n", $in->messages);
+$check(array_keys($in->conf['includelist']) === ['good.test'] && str_contains($said, 'пропущено: 4') && str_contains($said, '<code>999.1.1.1</code>')
+    && str_contains($said, '&lt;b&gt;x&lt;/b&gt;') && !str_contains($said, '<b>x</b>'), 'Неверные записи названы и экранированы, верная сохранена: ' . $said);
+
+// ── Сведение дублей: одна и та же запись в разных написаниях ────────────────
+$dup = function (string $type, array $inputs, array $start = []) { $b = new RoutesBehaviorBot(); $b->conf[$type] = $start; foreach ($inputs as $i) $b->addInclude($i, $type); return $b; };
+foreach ([
+    'регистр, точка в конце и префикс domain:' => [['vk.com VK.COM vk.com. domain:vk.com'], ['domain:vk.com']],
+    'то же в два приёма'                       => [['vk.com', 'domain:VK.com'], ['vk.com']],
+    'keyword без учёта регистра'               => [['keyword:Reddit keyword:reddit'], ['keyword:Reddit']],
+    'IDN и его punycode'                       => [['пример.рф xn--e1afmkfd.xn--p1ai'], ['xn--e1afmkfd.xn--p1ai']],
+    'адрес и адрес/32'                         => [['1.2.3.4 1.2.3.4/32'], ['1.2.3.4']],
+    'IPv6 в трёх написаниях'                   => [['2001:0DB8::1 2001:db8::1/128 2001:db8:0:0::1'], ['2001:0DB8::1']],
+    'одна подсеть дважды'                      => [['10.0.0.0/8, 10.0.0.0/8'], ['10.0.0.0/8']],
+    'одинаковый regexp'                        => [['regexp:.*\.ru$', 'regexp:.*\.ru$'], ['regexp:.*\.ru$']],
+    'категория geosite без учёта регистра'     => [['geosite:CN geosite:cn'], ['geosite:CN']],
+] as $name => [$inputs, $want]) {
+    $b = $dup('includelist', $inputs);
+    $check(array_keys($b->conf['includelist']) === $want && preg_match('~duplicates (skipped|merged)~', implode(' ', $b->messages)) === 1,
+        "Дубли ($name) сведены к одной записи: " . json_encode(array_keys($b->conf['includelist']), JSON_UNESCAPED_UNICODE) . ' ' . json_encode($b->messages));
+}
+// Разные по смыслу записи дублями не считаются.
+foreach ([['full:vk.com vk.com'], ['sub.vk.com vk.com'], ['keyword:vk vk.com'], ['1.2.3.0/24 1.2.3.4'], ["regexp:^vk\\.com$\nvk.com"], ['geosite:cn geoip:cn']] as $inputs) {
+    $b = $dup('includelist', $inputs);
+    $check(count($b->conf['includelist']) === 2 && $b->messages === [], 'Разные записи не сведены: ' . json_encode($inputs) . ' → ' . json_encode(array_keys($b->conf['includelist'])));
+}
+foreach (['blocklist', 'warplist'] as $type) {
+    $b = $dup($type, ['ads.test ADS.test domain:ads.test 198.51.100.1 198.51.100.1/32']);
+    $check(array_keys($b->conf[$type]) === ['198.51.100.1', 'domain:ads.test'], "Дубли в $type сведены: " . json_encode(array_keys($b->conf[$type])));
+}
+$b = $dup('subnetlist', ['10.0.0.1 10.0.0.1/32 10.0.0.0/24 10.0.0.0/24']);
+$check(array_keys($b->conf['subnetlist']) == ['10.0.0.0/24', '10.0.0.1'], 'Дубли в subnet сведены: ' . json_encode(array_keys($b->conf['subnetlist'])));
+$b = $dup('packagelist', ['org.a.b org.a.b, org.a.b']);
+$check(array_keys($b->conf['packagelist']) === ['org.a.b'], 'Повтор пакета не добавляется');
+$b = $dup('rulessetlist', ["block:1d:https://r.test/a.srs\nblock:1d:https://r.test/a.srs"]);
+$check(count($b->conf['rulessetlist']) === 1, 'Повтор rule-set не добавляется');
+// Запись уже есть, но выключена: не включается молча и не дублируется — о ней сообщается.
+$b = $dup('includelist', ['VK.com domain:vk.com new.test'], ['vk.com' => false]);
+$check($b->conf['includelist'] === ['new.test' => true, 'vk.com' => false] && str_contains(implode("\n", $b->messages), 'выключены') && str_contains(implode("\n", $b->messages), '<code>vk.com</code>'),
+    'Повторный ввод выключенной записи: состояние не меняется, о ней сказано: ' . json_encode($b->conf['includelist']) . ' ' . json_encode($b->messages, JSON_UNESCAPED_UNICODE));
+// Кнопка «схлопнуть дубли» на списке, накопленном до появления канона.
+$b = new RoutesBehaviorBot();
+$b->conf['includelist'] = ['VK.com' => true, 'domain:vk.com' => true, 'vk.com' => false, '1.2.3.4' => true, '1.2.3.4/32' => true, 'keep.test' => true];
+$b->dedupeList('includelist');
+$check(count($b->conf['includelist']) === 3 && isset($b->conf['includelist']['keep.test']) && in_array(true, array_intersect_key($b->conf['includelist'], ['VK.com' => 1, 'domain:vk.com' => 1, 'vk.com' => 1]), true),
+    'Кнопка сведения дублей оставляет по одной включённой записи: ' . json_encode($b->conf['includelist']));
+
 foreach ($failures as $failure) echo "FAIL: $failure\n";
 echo "routes_behavior_test: $checks checks, " . count($failures) . " failures\n";
 exit($failures ? 1 : 0);
