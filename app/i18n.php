@@ -2792,8 +2792,30 @@ $i = [
         'ru' => "Самые активные клиенты",
     ],
     'fp reality warn' => [
-        'en' => 'REALITY on Xray 26.9.8+ accepts only chrome, firefox and safari: the server takes a client with «%s» for a stranger. Links and subscriptions get chrome instead.',
-        'ru' => 'REALITY на ядре Xray 26.9.8 и новее принимает только chrome, firefox и safari: клиента с «%s» сервер считает чужим. В ссылки и подписки вместо него идёт chrome.',
+        'en' => 'The saved fingerprint «%s» does not work with REALITY: chrome is used instead.',
+        'ru' => 'Сохранённый отпечаток «%s» с REALITY не работает: вместо него используется chrome.',
+    ],
+    'fp reality note' => [
+        'en' => 'REALITY: Xray and Mihomo profiles always get chrome — the only fingerprint both clients connect with on Xray 26.9.8+. The choice below applies to sing-box profiles.',
+        'ru' => 'REALITY: профили для Xray и Mihomo всегда получают chrome — единственный отпечаток, с которым на ядре Xray 26.9.8 и новее подключаются оба клиента. Выбор ниже действует для профилей sing-box.',
+    ],
+    'fp compat' => [
+        'en' => "<b>Where each fingerprint works</b> (measured on the cores of this build)\n"
+            . "• REALITY, Xray 26.9.8 and newer: Xray clients — chrome, firefox, safari; Mihomo — chrome only, with the support-x25519mlkem768 option (the bot sets it); sing-box 1.14 does not connect at all.\n"
+            . "• REALITY, core 26.7.28 or the fork: also ios, edge, qq — in sing-box and Mihomo too.\n"
+            . "• android and 360 never work with REALITY: these samples have no TLS 1.3.\n"
+            . "• WebSocket, gRPC, XHTTP (plain TLS): every fingerprint in the list works.\n"
+            . "• random picks one of 11 samples when the client starts; with REALITY only 4 of them fit, so it is offered for plain TLS only.\n"
+            . "• randomized and randomizednoalpn are removed: the handshake failed every other time even with plain TLS.\n"
+            . "Why: ios, edge and qq are snapshots of 2020–2022 browsers without the post-quantum key share, and the new REALITY server accepts a ClientHello only with it. The bot cannot fix that — it needs newer samples in uTLS or the previous core.",
+        'ru' => "<b>Где какой отпечаток работает</b> (замер на ядрах этой сборки)\n"
+            . "• REALITY, ядро Xray 26.9.8 и новее: клиенты на Xray — chrome, firefox, safari; Mihomo — только chrome и с опцией support-x25519mlkem768 (бот её ставит сам); sing-box 1.14 не подключается совсем.\n"
+            . "• REALITY, ядро 26.7.28 или форк: ещё ios, edge, qq — в том числе в sing-box и Mihomo.\n"
+            . "• android и 360 с REALITY не работают нигде: в этих образцах нет TLS 1.3.\n"
+            . "• WebSocket, gRPC, XHTTP (обычный TLS): работают все отпечатки из списка.\n"
+            . "• random при запуске клиента выбирает один из 11 образцов; для REALITY из них годятся 4, поэтому он предлагается только для обычного TLS.\n"
+            . "• randomized и randomizednoalpn убраны: рукопожатие срывалось через раз даже с обычным TLS.\n"
+            . "Почему так: ios, edge и qq — снимки браузеров 2020–2022 годов без постквантовой доли ключа, а новый сервер REALITY принимает приветствие только с ней. Со стороны бота это не исправить — нужны новые образцы в uTLS либо прежнее ядро.",
     ],
 ];
 

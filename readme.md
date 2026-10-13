@@ -563,6 +563,23 @@ VM не заменяет проверки на физических клиент
 Для REALITY бот выдаёт Xray/mihomo профиль с fingerprint `chrome`, а mihomo
 дополнительно получает `reality-opts.support-x25519mlkem768: true`.
 Остальные транспорты сохраняют выбранный в меню fingerprint.
+
+Отпечаток — настройка клиента: сервер его не хранит и не сверяет, значение из
+меню попадает только в ссылки и подписки. Замер на ядрах сборки (2026-10-13):
+
+| Сервер | Клиент на Xray | Mihomo | sing-box |
+|---|---|---|---|
+| REALITY, Xray 26.9.8 и новее | chrome, firefox, safari | только chrome, с `support-x25519mlkem768` | не подключается |
+| REALITY, 26.7.28 или форк | ещё ios, edge, qq | ещё ios, edge, qq | ещё ios, edge, qq |
+| WebSocket, gRPC, XHTTP (обычный TLS) | все из списка | все из списка | все из списка |
+
+`android` и `360` с REALITY не работают нигде (в этих образцах нет TLS 1.3),
+`random` выбирает один из 11 образцов и для REALITY не предлагается.
+`randomized` и `randomizednoalpn` из меню убраны: рукопожатие срывалось через
+раз даже с обычным TLS. `ios`, `edge` и `qq` — снимки браузеров 2020–2022 годов
+без постквантовой доли ключа; новый сервер REALITY такое приветствие отвергает,
+и со стороны бота это не исправить. При REALITY меню предлагает только
+`chrome`, `firefox`, `safari` (выбор действует для профилей sing-box).
 [Требование REALITY](https://github.com/XTLS/REALITY/commit/8cdf7bf9c7f09cb9814bf08c3eb877f68b85fba8),
 [настройка mihomo](https://wiki.metacubex.one/en/config/proxies/tls/).
 

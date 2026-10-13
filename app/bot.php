@@ -19938,9 +19938,26 @@ DNS-over-HTTPS with IP:
     //     uTLS и защищает: маскировка молча выключается.
     // Поэтому значение не предлагаем, а уже сохранённое подменяем в
     // fingerprint().
+    //
+    // "randomized" и "randomizednoalpn" убраны 2026-10-13: рукопожатие с ними
+    // срывалось через раз даже с обычным TLS (nginx стенда: 2 из 3 и 1 из 3
+    // попыток), а с REALITY — почти всегда. Случайный набор расширений
+    // ClientHello не обязан быть приемлемым для сервера. Сохранённое прежде
+    // значение читается как chrome (см. fingerprintChosen()).
     public function fingerprints()
     {
-        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized', 'randomizednoalpn'];
+        return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random'];
+    }
+
+    // Отпечатки, которые имеет смысл предлагать при текущем транспорте.
+    // Для REALITY — только те, что принимает сервер любого ядра сборки
+    // (см. REALITY_FINGERPRINTS): остальные либо не работают вовсе (android,
+    // 360 — в этих образцах нет TLS 1.3), либо только на старом ядре (ios,
+    // edge, qq), либо через раз (random). С обычным TLS годятся все.
+    public function fingerprintsFor(?array $pac = null): array
+    {
+        $pac = $pac ?? $this->getPacConf();
+        return ($pac['transport'] ?? '') === 'Reality' ? self::REALITY_FINGERPRINTS : $this->fingerprints();
     }
 
     // Единая точка чтения отпечатка: пустое, неизвестное или снятое с
@@ -19952,16 +19969,27 @@ DNS-over-HTTPS with IP:
         return in_array($fp, $this->fingerprints(), true) ? $fp : 'chrome';
     }
 
-    // Отпечатки, с которыми клиента принимает сервер REALITY. С выпуска
-    // Xray 26.9.8 (библиотека REALITY от 2026-09-08: «Reject outdated/strange
-    // Client Hello that doesn't have X25519MLKEM768») сервер отвергает
-    // ClientHello без постквантовой доли ключа и отдаёт такому клиенту
-    // настоящий сайт-маску. Из набора uTLS её несут только современные
-    // chrome, firefox и safari. Проверено на ядрах сборки: 26.10.10 и 26.9.30
-    // не принимают ios, edge, qq, android и 360 ни с каким сайтом, а random и
-    // randomized срабатывают через раз — как повезёт с выбором; 26.7.28 и
-    // форк принимают ios, edge и qq. Сервер решает сам: старый клиент с
-    // отпечатком ios к новому серверу тоже не подключается.
+    // Отпечатки, с которыми клиента на ядре Xray принимает сервер REALITY
+    // любого ядра сборки. С выпуска Xray 26.9.8 (библиотека REALITY от
+    // 2026-09-08: «Reject outdated/strange Client Hello that doesn't have
+    // X25519MLKEM768») сервер отвергает ClientHello без постквантовой доли
+    // ключа и отдаёт такому клиенту настоящий сайт-маску. В uTLS её несут
+    // только свежие образцы: chrome (Chrome 133), firefox (Firefox 148) и
+    // safari (Safari 26.3). ios, edge и qq — снимки браузеров 2020–2022 годов
+    // (iOS 14, Edge 106, QQ 11.1) без неё; android (OkHttp Android 11) и 360
+    // не умеют TLS 1.3 и с REALITY не работали никогда; random при запуске
+    // выбирает один из 11 образцов, из которых подходят 4.
+    //
+    // Замер на ядрах сборки и официальном бинарнике (2026-10-13):
+    //   26.10.10, 26.9.30 — chrome, firefox, safari;
+    //   26.7.28, форк 26.10.6 — ещё ios, edge, qq.
+    // Решает сервер: старый клиент с ios к новому серверу не подключается.
+    // Другие клиенты на сервере 26.9.8+: Mihomo — только chrome и только с
+    // support-x25519mlkem768; sing-box 1.14.3 — ни с одним отпечатком. Поэтому
+    // профили REALITY для Xray и Mihomo всегда получают chrome (subscription(),
+    // linkXray()), а выбор из меню для REALITY касается только sing-box.
+    // Со стороны бота это не исправить: нужны новые образцы в uTLS либо
+    // прежнее ядро.
     public const REALITY_FINGERPRINTS = ['chrome', 'firefox', 'safari'];
 
     // Выбранный отпечаток для REALITY не годится: сервер такого клиента не узнает.
@@ -20016,13 +20044,13 @@ DNS-over-HTTPS with IP:
 
     public function changeFingerprint($fingerprint = false)
     {
-        $allowed = $this->fingerprints();
+        $allowed = $this->fingerprintsFor();
         $c       = $this->getPacConf();
         if ($fingerprint && in_array($fingerprint, $allowed, true)) {
             $c['fingerprint'] = $fingerprint;
         } else {
             // bare call (no/invalid arg): cycle to the next fingerprint in the list
-            $current          = $this->fingerprintChosen();
+            $current          = $this->fingerprint();
             $i                = array_search($current, $allowed, true);
             $c['fingerprint'] = $allowed[($i === false ? 0 : $i + 1) % count($allowed)];
         }
@@ -20040,6 +20068,9 @@ DNS-over-HTTPS with IP:
         if ($this->fingerprintRejectedByReality($current, $pac)) {
             $text[] = '⚠ ' . sprintf($this->i18n('fp reality warn'), $current);
         }
+        if ($reality) {
+            $text[] = $this->i18n('fp reality note');
+        }
         // Один и тот же выбор доезжает до трёх разных ядер под разными
         // именами — показываем, во что он превращается, иначе «почему в clash
         // другой отпечаток» выясняется только чтением исходников.
@@ -20054,13 +20085,15 @@ DNS-over-HTTPS with IP:
             $text[] = '⚠ ' . $this->i18n('fp noalpn warn');
         }
         $text[] = '<i>' . $this->i18n('fp hint') . '</i>';
+        $text[] = '';
+        $text[] = $this->i18n('fp compat');
 
         $data = [];
         $row  = [];
-        foreach ($this->fingerprints() as $fp) {
+        $effective = $this->fingerprint();
+        foreach ($this->fingerprintsFor($pac) as $fp) {
             $row[] = [
-                'text'          => ucfirst($fp) . ' ' . ($current === $fp ? $this->i18n('on') : $this->i18n('off'))
-                    . ($reality && !in_array($fp, self::REALITY_FINGERPRINTS, true) ? ' ⚠' : ''),
+                'text'          => ucfirst($fp) . ' ' . ($effective === $fp ? $this->i18n('on') : $this->i18n('off')),
                 'callback_data' => "/changeFingerprint $fp",
             ];
             if (count($row) === 2) {

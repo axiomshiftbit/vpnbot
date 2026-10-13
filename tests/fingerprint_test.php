@@ -72,6 +72,11 @@ foreach ($list as $fp) {
 fpAssert(!in_array('unsafe', $list, true), '«unsafe» не предлагается: ломает Reality и снимает маскировку в TLS');
 fpAssert(in_array('chrome', $list, true), 'chrome остаётся в списке как дефолт');
 fpAssert(count($list) === count(array_unique($list)), 'в списке нет дублей');
+// Случайный набор расширений ClientHello срывал рукопожатие через раз даже с
+// обычным TLS (замер на nginx стенда 2026-10-13): в меню этих значений нет,
+// а сохранённое прежде читается как chrome.
+fpAssert(!in_array('randomized', $list, true) && !in_array('randomizednoalpn', $list, true), 'нестабильные randomized-отпечатки убраны из меню');
+fpAssert(fpBot('randomized')->fingerprint() === 'chrome' && fpBot('randomizednoalpn')->fingerprint() === 'chrome', 'сохранённый randomized читается как chrome');
 
 // ── 2. Чтение значения: неизвестное/снятое → chrome ────────────────────────
 fpAssert(fpBot('firefox')->fingerprint() === 'firefox', 'валидное значение читается как есть');
@@ -133,8 +138,9 @@ fpAssert(strpos(file_get_contents(__DIR__ . '/../config/sing.json'), '"enabled":
 
 // ── REALITY: в профили уходит только отпечаток, который примет сервер ───────
 // Сервер REALITY с Xray 26.9.8 отвергает ClientHello без X25519MLKEM768;
-// из набора uTLS её несут chrome, firefox и safari (сверено на настоящем
-// ядре — см. reality_fingerprint_core_test.php).
+// из набора uTLS её несут chrome, firefox и safari (сверено на настоящих
+// ядрах — reality_fingerprint_core_test.php и набор стенда
+// reality_fingerprints).
 class FpRealityBot extends Bot
 {
     public array $conf = [];
@@ -147,37 +153,60 @@ class FpRealityBot extends Bot
 }
 $rb = new FpRealityBot();
 $rb->input = ['chat' => 1, 'message_id' => 1];
+$labels = fn() => array_map(fn($b) => strtolower(strtok($b['text'], ' ')), array_filter(array_merge(...$rb->screen[1]), fn($b) => str_starts_with($b['callback_data'], '/changeFingerprint')));
 fpAssert(Bot::REALITY_FINGERPRINTS === ['chrome', 'firefox', 'safari'], 'набор отпечатков REALITY изменён без сверки с ядром');
-fpAssert(array_diff(Bot::REALITY_FINGERPRINTS, $rb->fingerprints()) === [], 'отпечаток REALITY отсутствует в меню');
+fpAssert(array_diff(Bot::REALITY_FINGERPRINTS, $rb->fingerprints()) === [], 'отпечаток REALITY отсутствует в общем списке');
 foreach ($rb->fingerprints() as $fp) {
     $accepted = in_array($fp, Bot::REALITY_FINGERPRINTS, true);
     $rb->conf = ['transport' => 'Reality', 'fingerprint' => $fp];
-    fpAssert($rb->fingerprintChosen() === $fp, "выбор $fp не сохраняется как выбранный");
+    fpAssert($rb->fingerprintChosen() === $fp, "выбор $fp не читается как сохранённый");
     fpAssert($rb->fingerprint() === ($accepted ? $fp : 'chrome'), "REALITY: в профили уходит $fp → " . $rb->fingerprint());
     fpAssert($rb->fingerprintRejectedByReality() === !$accepted, "REALITY: пригодность $fp определена неверно");
-    // Остальные транспорты — обычный TLS: сервер отпечаток не проверяет вовсе.
+    // Остальные транспорты — обычный TLS: nginx принимает любой образец.
     foreach (['Websocket', 'xhttp', 'trojan-grpc', ''] as $transport) {
         $rb->conf = ['transport' => $transport, 'fingerprint' => $fp];
         fpAssert($rb->fingerprint() === $fp && !$rb->fingerprintRejectedByReality(), "$transport: отпечаток $fp подменён");
     }
 }
+// Меню при REALITY предлагает только принимаемые и объясняет, что для Xray и Mihomo всегда chrome.
 $rb->conf = ['transport' => 'Reality', 'fingerprint' => 'ios'];
+fpAssert($rb->fingerprintsFor() === Bot::REALITY_FINGERPRINTS, 'для REALITY предлагаются не только принимаемые отпечатки');
 $rb->fingerprintMenu();
-fpAssert(str_contains($rb->screen[0], 'fp reality warn') && str_contains($rb->screen[0], '<code>ios</code>'), 'меню не предупреждает о несовместимом отпечатке');
-$labels = array_column(array_merge(...$rb->screen[1]), 'text');
-fpAssert(count(preg_grep('~⚠~u', $labels)) === count($rb->fingerprints()) - 3 && !preg_grep('~^(Chrome|Firefox|Safari) .*⚠~u', $labels), 'несовместимые с REALITY отпечатки не помечены: ' . json_encode($labels, JSON_UNESCAPED_UNICODE));
+fpAssert(array_values($labels()) === ['chrome', 'firefox', 'safari'], 'кнопки меню при REALITY: ' . json_encode(array_values($labels())));
+fpAssert(str_contains($rb->screen[0], 'fp reality warn') && str_contains($rb->screen[0], 'fp reality note') && str_contains($rb->screen[0], 'fp compat'), 'меню не объясняет поведение при REALITY');
+fpAssert(str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Chrome on'), 'действующий отпечаток (chrome вместо ios) не отмечен');
 $rb->conf = ['transport' => 'Reality', 'fingerprint' => 'firefox'];
 $rb->fingerprintMenu();
-fpAssert(!str_contains($rb->screen[0], 'fp reality warn'), 'предупреждение при совместимом отпечатке');
+fpAssert(!str_contains($rb->screen[0], 'fp reality warn') && str_contains($rb->screen[0], 'fp reality note'), 'лишнее предупреждение при совместимом отпечатке');
+// Обычный TLS: весь список, без примечаний REALITY.
 $rb->conf = ['transport' => 'Websocket', 'fingerprint' => 'ios'];
 $rb->fingerprintMenu();
-fpAssert(!str_contains($rb->screen[0], 'fp reality warn') && !preg_grep('~⚠~u', array_column(array_merge(...$rb->screen[1]), 'text')), 'предупреждение REALITY показано для обычного TLS');
-// Перебор кнопкой идёт по выбранному значению, а не по подменённому: иначе с ios он застревал бы на firefox.
+fpAssert(array_values($labels()) === $rb->fingerprints() && !str_contains($rb->screen[0], 'fp reality'), 'меню при обычном TLS: ' . json_encode(array_values($labels())));
+fpAssert(str_contains($rb->screen[0], 'fp compat') && str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Ios on'), 'при обычном TLS выбранный ios не отмечен');
+foreach (array_merge(...$rb->screen[1]) as $button) {
+    fpAssert(strlen($button['callback_data']) <= 64, 'длинные данные кнопки');
+}
+// Выбор и перебор — только из предлагаемого: несовместимое значение сохранить нельзя.
+$rb->conf = ['transport' => 'Reality', 'fingerprint' => 'firefox'];
+$rb->changeFingerprint('ios');
+fpAssert($rb->conf['fingerprint'] === 'safari', 'несовместимый выбор при REALITY не должен сохраняться как есть: ' . $rb->conf['fingerprint']);
 $rb->conf = ['transport' => 'Reality', 'fingerprint' => 'ios'];
 $rb->changeFingerprint();
-fpAssert($rb->conf['fingerprint'] === 'android', 'перебор отпечатков сбился: ' . $rb->conf['fingerprint']);
+fpAssert($rb->conf['fingerprint'] === 'firefox', 'перебор при REALITY идёт по принимаемым: ' . $rb->conf['fingerprint']);
+$rb->changeFingerprint('safari');
+fpAssert($rb->conf['fingerprint'] === 'safari', 'совместимый выбор не сохранён');
+$rb->conf = ['transport' => 'Websocket', 'fingerprint' => 'chrome'];
+$rb->changeFingerprint('android');
+fpAssert($rb->conf['fingerprint'] === 'android', 'при обычном TLS android должен выбираться');
+$rb->changeFingerprint('randomized');
+fpAssert($rb->conf['fingerprint'] === 'edge', 'убранный отпечаток выбрать нельзя: ' . $rb->conf['fingerprint']);
 // Сервер отпечаток не хранит: это настройка клиента.
 fpAssert(!str_contains((string) json_encode(json_decode((string) file_get_contents(__DIR__ . '/../config/xray.json'), true)), 'fingerprint'), 'в серверном шаблоне xray.json появился fingerprint');
+// Текст совместимости есть на обоих языках и не длиннее сообщения Telegram.
+require __DIR__ . '/../app/i18n.php';
+foreach (['en', 'ru'] as $lang) {
+    fpAssert(mb_strlen($i['fp compat'][$lang] . $i['fp hint'][$lang] . $i['fp reality note'][$lang]) < 3000 && str_contains($i['fp compat'][$lang], 'sing-box'), "текст совместимости ($lang) пуст или слишком длинен");
+}
 
 if ($failed) {
     echo "$failed test(s) failed\n";
