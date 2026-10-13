@@ -146,7 +146,10 @@ try {
         $snippet = html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $expected = $store->profile($id, 'mihomo')['proxies']; $expected[0]['name'] = "$key-$id";
         uiCheck(yaml_parse("proxies:\n" . $snippet)['proxies'] === $expected, "$key: блок вставляется в proxies без потери обоих слоёв и параметров");
-        uiCheck(!str_contains($snippet, '---') && !str_contains($snippet, 'mixed-port:'), "$key: блок не заменяет настройки роутера");
+        // Признак начала документа YAML — «---» в начале строки. Поиск по всему
+        // тексту срабатывал и на случайном ключе пользователя (base64url
+        // содержит «-»): раз в несколько сотен прогонов тест падал без причины.
+        uiCheck(preg_match('~^---~m', $snippet) !== 1 && !str_contains($snippet, 'mixed-port:'), "$key: блок не заменяет настройки роутера");
         $screens[$key . '-yaml'] = ['text' => $yamlText, 'buttons' => $yamlButtons];
         $deniedYaml = function () use ($bot, $key, $id, $store): void {
             $bot->input['callback'] = "/protocol $key yaml $id"; $bot->action(); $bot->input['callback'] = false;
