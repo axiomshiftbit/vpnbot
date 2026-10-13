@@ -177,7 +177,7 @@ class DatUrlTestBot extends Bot
     public string $testDir;
     public array $conf     = [];
     public array $fetched  = [];
-    public string $body    = 'first';
+    public string $body    = "\x0a\x07\x0a\x05FIRST";
 
     public function datDir(): string
     {
@@ -187,6 +187,11 @@ class DatUrlTestBot extends Bot
     public function getPacConf()
     {
         return $this->conf;
+    }
+
+    public function datFetchSum(string $url): ?string
+    {
+        return null; // сеть в тесте не трогаем
     }
 
     public function datFetchRaw(string $url, array $validators = []): array
@@ -212,7 +217,7 @@ routeAssert($b->fetched === [], 'повторная синхронизация �
 
 // URL сменили, имя то же — файл обязан перекачаться с нового адреса.
 $b->conf = ['datlist' => ['dlc.dat:https://b.example/dlc.dat' => true]];
-$b->body = 'second';
+$b->body = "\x0a\x08\x0a\x06SECOND";
 $b->fetched = [];
 $b->datSync();
 routeAssert(count($b->fetched) === 1, 'смена URL не подхвачена: сети не было');
@@ -221,7 +226,7 @@ routeAssert(
     $b->fetched[0]['validators'] === [],
     'валидаторы прежнего источника ушли новому: ' . json_encode($b->fetched[0]['validators']),
 );
-routeAssert(file_get_contents("$dir/dlc.dat") === 'second', 'на диске остался файл от старого URL');
+routeAssert(file_get_contents("$dir/dlc.dat") === "\x0a\x08\x0a\x06SECOND", 'на диске остался файл от старого URL');
 
 // Две записи с одним именем и разными URL — коллизия, а не тихая победа первой.
 $b->conf = ['datlist' => [

@@ -2535,6 +2535,150 @@ $i = [
         'en' => 'main outbound name: ',
         'ru' => 'имя основного аутбаунда: ',
     ],
+    'auto update' => [
+        'en' => 'auto update',
+        'ru' => 'автообновление',
+    ],
+    'last update' => [
+        'en' => 'last update',
+        'ru' => 'последнее обновление',
+    ],
+    'next update' => [
+        'en' => 'next update',
+        'ru' => 'следующее обновление',
+    ],
+    'select update interval' => [
+        'en' => 'Select update interval',
+        'ru' => 'Выберите интервал обновления',
+    ],
+    'custom interval' => [
+        'en' => 'custom interval',
+        'ru' => 'свой интервал',
+    ],
+    'dat run hour' => [
+        'en' => 'Run hour',
+        'ru' => 'Час запуска',
+    ],
+    'dat any hour' => [
+        'en' => 'any hour',
+        'ru' => 'без привязки к часу',
+    ],
+    'dat categories' => [
+        'en' => 'categories',
+        'ru' => 'категории',
+    ],
+    'dat not downloaded' => [
+        'en' => 'not downloaded',
+        'ru' => 'не скачан',
+    ],
+    'dat no files' => [
+        'en' => 'No downloaded .dat files yet.',
+        'ru' => 'Скачанных .dat пока нет.',
+    ],
+    'dat category usage' => [
+        'en' => 'use in block / WARP as',
+        'ru' => 'в block / WARP пишите',
+    ],
+    'dat show all' => [
+        'en' => 'show all',
+        'ru' => 'показать все',
+    ],
+    'dat search prompt' => [
+        'en' => 'part of the category name',
+        'ru' => 'часть названия категории',
+    ],
+    'dat interval prompt' => [
+        'en' => 'update interval: number and unit, e.g. 90m, 36h, 10d (from 15m to 90d)',
+        'ru' => 'интервал обновления: число и единица, например 90m, 36h, 10d (от 15m до 90d)',
+    ],
+    'dat interval invalid' => [
+        'en' => 'Interval not accepted. Enter a number with m, h or d, from 15m to 90d.',
+        'ru' => 'Интервал не принят. Введите число с m, h или d, от 15m до 90d.',
+    ],
+    'search' => [
+        'en' => 'search',
+        'ru' => 'поиск',
+    ],
+    'enter ext user agent' => [
+        'en' => 'User-Agent for fetching external subscriptions (one value for all of them). Send "-" to restore the default. Current:',
+        'ru' => 'User-Agent для загрузки внешних подписок (общий для всех). Отправьте «-», чтобы вернуть значение по умолчанию. Сейчас:',
+    ],
+    'ext user agent invalid' => [
+        'en' => 'User-Agent not accepted: printable Latin characters only, up to 200.',
+        'ru' => 'User-Agent не принят: только печатные латинские символы, до 200.',
+    ],
+    'status time' => [
+        'en' => 'Server time',
+        'ru' => 'Время сервера',
+    ],
+    'status uptime' => [
+        'en' => 'Uptime',
+        'ru' => 'Работает без перезагрузки',
+    ],
+    'status kernel' => [
+        'en' => 'Kernel',
+        'ru' => 'Ядро',
+    ],
+    'status cpu' => [
+        'en' => 'CPU',
+        'ru' => 'Процессор',
+    ],
+    'status cores' => [
+        'en' => 'cores',
+        'ru' => 'ядер',
+    ],
+    'status load' => [
+        'en' => 'load average, 1 / 5 / 15 min',
+        'ru' => 'средняя нагрузка за 1 / 5 / 15 мин',
+    ],
+    'status memory' => [
+        'en' => 'Memory',
+        'ru' => 'Память',
+    ],
+    'status swap' => [
+        'en' => 'swap used',
+        'ru' => 'подкачка: занято',
+    ],
+    'status disk' => [
+        'en' => 'Disk',
+        'ru' => 'Диск',
+    ],
+    'status data disk' => [
+        'en' => 'Bot data disk',
+        'ru' => 'Диск с данными бота',
+    ],
+    'status used' => [
+        'en' => 'used',
+        'ru' => 'занято',
+    ],
+    'status of' => [
+        'en' => 'of',
+        'ru' => 'из',
+    ],
+    'status free' => [
+        'en' => 'free',
+        'ru' => 'свободно',
+    ],
+    'disk alert' => [
+        'en' => 'Disk is almost full',
+        'ru' => 'Диск почти заполнен',
+    ],
+    'disk alert cleared' => [
+        'en' => 'Disk space is back to normal',
+        'ru' => 'Место на диске снова в норме',
+    ],
+    'cpu alert' => [
+        'en' => 'CPU load has stayed high for the last hour, average',
+        'ru' => 'Процессор загружен уже час, в среднем',
+    ],
+    'cpu alert cleared' => [
+        'en' => 'CPU load is back to normal, last 10 minutes average',
+        'ru' => 'Загрузка процессора снова в норме, за последние 10 минут в среднем',
+    ],
+    'status alerts hint' => [
+        'en' => 'The bot will message admins when a disk is 90% full or CPU load stays at 90% for an hour.',
+        'ru' => 'Бот сообщит администраторам, если диск заполнен на 90% или процессор час загружен на 90%.',
+    ],
 ];
 
 if (file_exists(__DIR__ . '/i18n.override.php')) {

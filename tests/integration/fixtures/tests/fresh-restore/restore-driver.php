@@ -531,6 +531,53 @@ switch ($action) {
         $s=$b->xdriveSettings();
         $result=['shown'=>str_contains($text,'XDRIVE'),'secret_hidden'=>!str_contains($text,$s['secrets'][1]??'-'),'problems'=>$b->xdriveProblems($s)];
         break;
+    // Файлы .dat: те же действия, что выполняют кнопки меню routes → dat.
+    // Каждое действие возвращает полное состояние: файлы, реестр, расписание,
+    // правила рабочего конфига и отправленные сообщения.
+    case 'dat-add':
+    case 'dat-list':
+    case 'dat-refresh':
+    case 'dat-interval':
+    case 'dat-cron':
+    case 'dat-cats':
+    case 'dat-reset':
+    case 'dat-state':
+        $ok=null;
+        if ($action==='dat-add') $b->addDat(str_replace('|',"\n",$argv[2]));
+        if ($action==='dat-list') $ok=$b->changeRouteList($argv[2],function(&$list) use ($argv) {
+            if ($argv[4]==='del') unset($list[$argv[3]]); else $list[$argv[3]]=$argv[4]==='on';
+        });
+        if ($action==='dat-refresh') $b->datRefresh();
+        if ($action==='dat-interval') $b->datScheduleCustomSet($argv[2]);
+        if ($action==='dat-cron') {
+            $b->pacConfUpdate(function(&$p) { $p['dat_update_next']=1; });
+            $b->checkDatUpdates();
+        }
+        if ($action==='dat-cats') $b->datCats($b->datFileKey($argv[2]),0,$argv[3] ?? '');
+        if ($action==='dat-reset') {
+            // Возврат стенда к исходному виду: только записи самой проверки.
+            foreach (['blocklist','warplist'] as $name) $b->changeRouteList($name,function(&$list) {
+                foreach (array_keys($list) as $entry) if (preg_match('~^(ext|extip|geosite|geoip):~',(string)$entry)) unset($list[$entry]);
+            });
+            $b->changeRouteList('datlist',function(&$list) { $list=[]; });
+            $b->pacConfUpdate(function(&$p) {
+                foreach (array_keys($p) as $name) if (str_starts_with((string)$name,'dat_update_')) unset($p[$name]);
+            });
+            foreach (glob($b->datDir().'/*') ?: [] as $file) if (is_file($file)) unlink($file);
+        }
+        $p=$b->getPacConf();$x=$b->getXray();$files=[];$stray=[];
+        foreach (glob($b->datDir().'/*') ?: [] as $file) {
+            $name=basename($file);
+            if (str_ends_with($name,'.dat')) $files[$name]=['sha'=>hash_file('sha256',$file),'mtime'=>filemtime($file),
+                'verified'=>!empty($b->datReadMeta($name)['verified']),'error'=>(string)($b->datReadMeta($name)['error'] ?? ''),'cats'=>$b->datCategories($name)];
+            elseif (!preg_match('~^[\w.-]+\.dat\.meta$~',$name) || !is_file(substr($file,0,-5))) $stray[]=$name;
+        }
+        // (object): пустой массив PHP иначе уходит в JSON списком, а не словарём.
+        $result=['ok'=>$ok,'messages'=>$b->transport->messages,'files'=>(object)$files,'stray'=>$stray,
+            'datlist'=>(object)($p['datlist'] ?? []),'blocklist'=>(object)($p['blocklist'] ?? []),'warplist'=>(object)($p['warplist'] ?? []),
+            'schedule'=>(object)array_filter($p,fn($name)=>str_starts_with((string)$name,'dat_update_'),ARRAY_FILTER_USE_KEY),
+            'rules'=>json_encode($x['routing']['rules'] ?? [],JSON_UNESCAPED_SLASHES),'admins'=>count((array)($c['admin'] ?? [])),'now'=>time()];
+        break;
     default:
         exit(2);
 }

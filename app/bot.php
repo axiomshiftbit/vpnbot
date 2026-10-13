@@ -113,14 +113,26 @@ class Bot
         'pka' => ['PersistentKeepalive',    0, 65535, '[Peer], дефолт 20, рек. 20-30'],
     ];
     private const DAT_UPDATE_INTERVALS = [
-        0      => 'off',
-        3600   => '1h',
-        21600  => '6h',
-        43200  => '12h',
-        86400  => '1d',
-        259200 => '3d',
-        604800 => '7d',
+        0       => 'off',
+        1800    => '30m',
+        3600    => '1h',
+        7200    => '2h',
+        10800   => '3h',
+        21600   => '6h',
+        43200   => '12h',
+        86400   => '1d',
+        172800  => '2d',
+        259200  => '3d',
+        604800  => '7d',
+        1209600 => '14d',
+        2592000 => '30d',
     ];
+    // Свой интервал (ввод вида 90m / 36h / 10d) допустим в этих пределах.
+    private const DAT_UPDATE_MIN = 900;
+    private const DAT_UPDATE_MAX = 7776000;
+    // Повтор после неудачной попытки — не позже чем через час: при интервале
+    // 7d сбой сети иначе оставлял бы устаревшие данные ещё на неделю.
+    private const DAT_UPDATE_RETRY = 3600;
 
     public $input;
     // Взводится ssh() при любой неудаче (нет коннекта/авторизации/exec).
@@ -199,6 +211,8 @@ class Bot
     public $time3;
     public $time_xray_stats;
     public $time_extsub;
+    // Замеры загрузки процессора для оповещения (шаг cron checkCpuLoad).
+    public array $cpuWatch = ['prev' => null, 'at' => 0, 'samples' => [], 'alert' => false];
     public $time_relayhealth;
     public $time_xraycore;
     // Кеш пробы контейнера xr на время запроса — см. xrayCoreProbe().
@@ -1680,6 +1694,9 @@ class Bot
             case preg_match('~^/extAdd (\d+) (link|sub)$~', $this->input['callback'], $m):
                 $this->extAddPrompt($m[1], $m[2]);
                 break;
+            case preg_match('~^/extUA (\d+)$~', $this->input['callback'], $m):
+                $this->extUAPrompt($m[1]);
+                break;
             case preg_match('~^/extRename (\d+)_(\d+)$~', $this->input['callback'], $m):
                 $this->extRename($m[1], $m[2]);
                 break;
@@ -1974,6 +1991,21 @@ class Bot
                 break;
             case preg_match('~^/datscheduleset (\d+)$~', $this->input['callback'], $m):
                 $this->datScheduleSet((int) $m[1]);
+                break;
+            case preg_match('~^/datschedulecustom$~', $this->input['callback'], $m):
+                $this->datScheduleCustom();
+                break;
+            case preg_match('~^/datschedulehour (\d{1,2}|off)$~', $this->input['callback'], $m):
+                $this->datScheduleHour($m[1] === 'off' ? null : (int) $m[1]);
+                break;
+            case preg_match('~^/datfiles$~', $this->input['callback'], $m):
+                $this->datFiles();
+                break;
+            case preg_match('~^/datcats (k[0-9a-f]{12})(?: (\d+))?(?: ([a-z0-9!@._-]{1,24}))?$~D', $this->input['callback'], $m):
+                $this->datCats($m[1], (int) ($m[2] ?? 0), $m[3] ?? '');
+                break;
+            case preg_match('~^/datcatsearch (k[0-9a-f]{12})$~', $this->input['callback'], $m):
+                $this->datCatSearch($m[1]);
                 break;
             case preg_match('~^/templateCopy (\w+)(?: (.+))?$~', $this->input['callback'], $m):
                 $this->templateCopy($m[1], $m[2] ?? false);
@@ -6572,6 +6604,8 @@ NFT;
             'rotateAmneziaCron',
             'refreshExtSubCache',
             'checkDatUpdates',
+            'checkDiskSpace',
+            'checkCpuLoad',
             'backfillSubTokens',
             'checkRelayHealth',
             'checkXrayCore',
@@ -7909,7 +7943,8 @@ NFT;
                 // Сами .dat в бэкап не входят (перекачиваемые по URL из datlist), а
                 // восстановленный конфиг может ссылаться на ext:. Докачиваем файлы и
                 // только затем проверяем новый конфиг ядром.
-                if (!empty($json['pac']['datlist'])) {
+                $datNeeded = $this->datSourcesPresent($json['pac'] ?? []);
+                if ($datNeeded) {
                     $out[] = 'update dat';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                     $this->datSync(true);
@@ -7919,7 +7954,7 @@ NFT;
                     $ok = false;
                     $out[] = '❌ xray: configuration rejected; previous configuration preserved';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                } elseif (!empty($json['pac']['datlist'])) {
+                } elseif ($datNeeded) {
                     $this->xrayUpdateRules();
                 }
                 $this->adguardXrayClients();
@@ -12781,22 +12816,56 @@ DNS-over-HTTPS with IP:
                         if (!@link($file, $copy)) { $errors[] = 'asset backup failed'; break; }
                         $backups[$file] = $copy;
                     }
+                    $snapshot = $type === 'datlist' && !$errors;
                     if (!$errors) $errors = $this->datSync();
                     foreach (array_keys(array_filter($list)) as $entry) {
+                        if ($type === 'datlist' || !empty($before[$type][$entry])) continue;
                         $c = $this->classifyRouteEntry((string) $entry);
-                        if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])
-                            && empty($before[$type][$entry])) $errors[] = 'missing dat';
+                        if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
+                            $errors[] = 'нет файла ' . $this->datResolve(explode(':', (string) $c['value'], 2)[0])
+                                . ' — сначала добавьте его в routes → dat';
+                        } elseif (($missing = $this->datCategoryError($c)) !== null) {
+                            $errors[] = $missing;
+                        }
                     }
                     if ($errors || $this->xrayUpdateRules($before) === false) {
                         $restored = true;
-                        foreach ($backups as $file => $copy) if (!@rename($copy, $file)) $restored = false;
+                        foreach ($backups as $file => $copy) {
+                            if (!@rename($copy, $file)) $restored = false;
+                            // Файл не менялся — копия и он один и тот же inode, и
+                            // rename() тогда ничего не делает: копия оставалась в
+                            // каталоге навсегда, по одной на каждый отказ.
+                            clearstatcache(true, $copy);
+                            if (is_file($file) && file_exists($copy)) @unlink($copy);
+                        }
+                        // Файлы, появившиеся за неудачную попытку (скачанный .dat
+                        // отвергнутого источника, его отметка об отказе), в
+                        // прежнем списке не значатся — убираем их сразу, а не при
+                        // следующей удачной синхронизации.
+                        if ($snapshot) foreach (glob($this->datDir() . '/*') ?: [] as $file) {
+                            if (is_file($file) && !isset($backups[$file]) && !preg_match('~\.\d+\.[0-9a-f]+$~', $file)) @unlink($file);
+                        }
                         $restored = $this->setPacConf($before) && $restored;
-                        $this->send($this->input['from'], $restored
+                        // Причина по каждому файлу: раньше http 404, занятое имя и
+                        // отсутствующая категория сводились к одной общей фразе.
+                        $why = $errors ? "\n" . implode("\n", $this->datErrorLines($errors)) : '';
+                        $this->send($this->input['from'], ($restored
                             ? 'Правила не применены. Проверьте .dat, категории и доступность Xray. Предыдущий список сохранён.'
-                            : 'Xray не принял правила; не удалось полностью восстановить список и .dat. Проверьте доступность файлов.');
+                            : 'Xray не принял правила; не удалось полностью восстановить список и .dat. Проверьте доступность файлов.') . $why);
                         return false;
                     }
                     foreach ($backups as $copy) @unlink($copy);
+                    // Источник выключен или удалён, а правила на него остались:
+                    // без файла они в конфиг не попадают — говорим об этом.
+                    if ($type === 'datlist') {
+                        $left = [];
+                        foreach (array_diff($this->datEnabledNames($before), $this->datEnabledNames($conf)) as $gone) {
+                            if (($n = $this->datRefCount($conf, $gone)) > 0) $left[] = self::esc("$gone — $n");
+                        }
+                        if ($left) $this->send($this->input['from'],
+                            "⚠️ На отключённый .dat ссылаются включённые правила block/WARP — они больше не действуют:\n"
+                            . implode("\n", $left));
+                    }
                 }
                 return true;
             });
@@ -13353,8 +13422,20 @@ DNS-over-HTTPS with IP:
     // Готов ли .dat для ext-значения "file.dat:tag" (файл уже скачан на сервере).
     public function datFileReady(string $value): bool
     {
-        $file = explode(':', $value, 2)[0];
+        $file = $this->datResolve(explode(':', $value, 2)[0]);
         return $file !== '' && is_file($this->datPath($file));
+    }
+
+    // Имя файла из ext-ссылки, как оно лежит на диске. Реестр хранит имена в
+    // нижнем регистре, а в правиле их пишут и как «Foo.DAT»: ядро ищет файл
+    // по точному имени, поэтому при расхождении берём существующий вариант.
+    public function datResolve(string $file): string
+    {
+        $file = basename($file);
+        if ($file !== '' && !is_file($this->datPath($file)) && is_file($this->datPath(strtolower($file)))) {
+            return strtolower($file);
+        }
+        return $file;
     }
 
     // Нормализует ext-значение "file.dat:tag" в токен для xray: file-часть → basename
@@ -13362,7 +13443,7 @@ DNS-over-HTTPS with IP:
     public function extAssetRef(string $value): string
     {
         [$file, $tag] = array_pad(explode(':', $value, 2), 2, null);
-        $ref = basename((string) $file);
+        $ref = $this->datResolve((string) $file);
         return $tag === null ? $ref : "$ref:$tag";
     }
 
@@ -13370,11 +13451,45 @@ DNS-over-HTTPS with IP:
     // редиректов, что и doFetchExtSub, но без декодирования тела и с бОльшим лимитом
     // (.dat бывают в несколько МБ). $validators (etag/last_modified) включают
     // условный GET: если ресурс не изменился, сервер отвечает 304 без тела.
-    // Возвращает ['ok'=>bool,'body'=>...,'etag'=>...,'last_modified'=>...,
+    // Возвращает ['ok'=>bool,'file'=>путь к телу,'etag'=>...,'last_modified'=>...,
     // 'not_modified'=>bool,'err'=>...].
+    //
+    // Тело пишется сразу во временный файл каталога .dat, а не копится в
+    // памяти: geosite.dat на 30+ МБ при лимите PHP в 128 МБ обрывал процесс
+    // фатальной ошибкой (строка растёт удвоением), а в cron это падение
+    // всего демона. Имя файла — с тем же хвостом «.<pid>.<uniqid>», что у
+    // прочих временных файлов каталога: уборка осиротевших его не трогает.
     public function datFetchRaw(string $url, array $validators = []): array
     {
-        $max = 64 << 20; // 64 MiB
+        $dir = $this->datDir();
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        // 256 МиБ: geosite.dat сборки runetfreedom весит 74 МБ и в прежние
+        // 64 МиБ не проходил («response too large»). Оборванную передачу
+        // повторяем один раз — на больших файлах разрыв не редкость, а
+        // следующая плановая попытка только через час.
+        for ($try = 0; ; $try++) {
+            $r = $this->datHttpGet($url, $validators, 256 << 20, 600, $dir . '/fetch.' . getmypid() . '.' . uniqid());
+            if (!empty($r['ok']) || $try >= 1 || !str_starts_with((string) ($r['err'] ?? ''), 'transfer failed')) {
+                return $r;
+            }
+        }
+    }
+
+    // $sink — файл для тела; без него (малые ответы вроде файла суммы) тело
+    // возвращается строкой в 'body'.
+    public function datHttpGet(string $url, array $validators, int $max, int $timeout, ?string $sink = null): array
+    {
+        $r = $this->datHttpRequest($url, $validators, $max, $timeout, $sink);
+        if ($sink !== null && !isset($r['file'])) {
+            @unlink($sink);
+        }
+        return $r;
+    }
+
+    private function datHttpRequest(string $url, array $validators, int $max, int $timeout, ?string $sink): array
+    {
         $reqHeaders = [];
         if (!empty($validators['etag'])) {
             $reqHeaders[] = 'If-None-Match: ' . $validators['etag'];
@@ -13391,6 +13506,11 @@ DNS-over-HTTPS with IP:
             $port    = (int) ($p['port'] ?? 443);
             $resolve = $this->curlResolveEntries($p['host'], $port, $ips);
             $buf      = '';
+            $size     = 0;
+            $out      = null;
+            if ($sink !== null && ($out = @fopen($sink, 'wb')) === false) {
+                return ['ok' => false, 'err' => 'write failed'];
+            }
             $location = '';
             $etag     = '';
             $lastMod  = '';
@@ -13399,8 +13519,15 @@ DNS-over-HTTPS with IP:
                 CURLOPT_URL             => $url,
                 CURLOPT_RESOLVE         => $resolve,
                 CURLOPT_HTTPHEADER      => $reqHeaders,
-                CURLOPT_CONNECTTIMEOUT  => 5,
-                CURLOPT_TIMEOUT         => 30,
+                // Прокси из окружения сам разрешает имена и обходит адреса,
+                // проверенные safeExtUrlIps: соединяемся только напрямую.
+                CURLOPT_PROXY           => '',
+                CURLOPT_CONNECTTIMEOUT  => 10,
+                // geoip.dat весит десятки мегабайт: общий предел щедрый, а
+                // зависшую передачу обрывает порог скорости.
+                CURLOPT_TIMEOUT         => $timeout,
+                CURLOPT_LOW_SPEED_LIMIT => 1024,
+                CURLOPT_LOW_SPEED_TIME  => 30,
                 CURLOPT_FOLLOWLOCATION  => false,
                 CURLOPT_USERAGENT       => 'vpnbot',
                 CURLOPT_PROTOCOLS       => CURLPROTO_HTTPS,
@@ -13408,9 +13535,16 @@ DNS-over-HTTPS with IP:
                 // Прозрачно распаковываем gzip/deflate/br: .dat — бинарь, нужен
                 // сырой, а зеркало может отдать со сжатием (иначе файл битый).
                 CURLOPT_ENCODING        => '',
-                CURLOPT_WRITEFUNCTION   => function ($ch, $chunk) use (&$buf, $max) {
-                    $buf .= $chunk;
-                    return strlen($buf) > $max ? 0 : strlen($chunk);
+                CURLOPT_WRITEFUNCTION   => function ($ch, $chunk) use (&$buf, &$size, $out, $max) {
+                    $size += strlen($chunk);
+                    if ($size > $max) {
+                        return 0;
+                    }
+                    if ($out === null) {
+                        $buf .= $chunk;
+                        return strlen($chunk);
+                    }
+                    return (int) fwrite($out, $chunk); // меньше длины — curl прервёт передачу
                 },
                 CURLOPT_HEADERFUNCTION  => function ($ch, $header) use (&$location, &$etag, &$lastMod) {
                     if (stripos($header, 'location:') === 0) {
@@ -13424,10 +13558,19 @@ DNS-over-HTTPS with IP:
                 },
             ]);
             curl_exec($ch);
-            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $code  = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $errno = curl_errno($ch);
+            if ($out !== null && !fclose($out)) {
+                return ['ok' => false, 'err' => 'write failed'];
+            }
 
-            if (strlen($buf) > $max) {
+            if ($size > $max) {
                 return ['ok' => false, 'err' => 'response too large'];
+            }
+            // Передача оборвалась (таймаут, разрыв), а код ответа уже 200:
+            // без этой проверки обрезанное тело считалось удачной загрузкой.
+            if ($errno !== 0) {
+                return ['ok' => false, 'err' => 'transfer failed: ' . (curl_strerror($errno) ?: "curl $errno")];
             }
             // 304 Not Modified: ресурс не менялся, тело не передавалось.
             if ($code === 304) {
@@ -13443,10 +13586,11 @@ DNS-over-HTTPS with IP:
             if ($code < 200 || $code >= 300) {
                 return ['ok' => false, 'err' => $code ? "http $code" : 'connection/timeout error'];
             }
-            if ($buf === '') {
+            if ($size === 0) {
                 return ['ok' => false, 'err' => 'empty body'];
             }
-            return ['ok' => true, 'body' => $buf, 'etag' => $etag, 'last_modified' => $lastMod];
+            return ['ok' => true, 'etag' => $etag, 'last_modified' => $lastMod]
+                + ($sink !== null ? ['file' => $sink] : ['body' => $buf]);
         }
         return ['ok' => false, 'err' => 'too many redirects'];
     }
@@ -13479,10 +13623,22 @@ DNS-over-HTTPS with IP:
     }
 
     // Качает один .dat и атомарно (temp+rename) кладёт в /logs/geodata. '' — успех.
-    // $changed сообщает планировщику, надо ли перезагрузить xray. Условный GET:
-    // если файл уже есть, шлём сохранённые etag/last_modified — при 304 тело не
-    // качается вовсе (экономия трафика на больших .dat при частом расписании).
+    // $changed сообщает планировщику, надо ли перезагрузить xray. Итог попытки
+    // (время и причина отказа) пишется в sidecar — его показывает меню dat.
     public function datDownload(string $name, string $url, ?bool &$changed = null): string
+    {
+        $err  = $this->datDownloadFile($name, $url, $changed);
+        $meta = $this->datReadMeta($name);
+        $meta['checked_at'] = time();
+        $meta['error']      = $err;
+        $this->datWriteMeta($name, $meta);
+        return $err;
+    }
+
+    // Условный GET: если файл уже есть, шлём сохранённые etag/last_modified —
+    // при 304 тело не качается вовсе (экономия трафика на больших .dat при
+    // частом расписании).
+    public function datDownloadFile(string $name, string $url, ?bool &$changed = null): string
     {
         $changed = false;
         $dest    = $this->datPath($name);
@@ -13503,48 +13659,251 @@ DNS-over-HTTPS with IP:
         if (!empty($r['not_modified'])) {
             return ''; // сервер подтвердил 304 — файл актуален, тело не качали
         }
-        $dir = $this->datDir();
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0755, true);
-        }
-        $newSha  = hash('sha256', $r['body']);
-        $newMeta = [
-            'etag'          => (string) ($r['etag'] ?? ''),
-            'last_modified' => (string) ($r['last_modified'] ?? ''),
-            'sha'           => $newSha,
-            // Источник, из которого лежащий на диске файл реально скачан:
-            // datSync() по нему понимает, что URL в реестре сменили.
-            'url'           => $url,
-        ];
-        // Тело пришло (200). Если байты те же (сервер не поддержал 304, но контент
-        // не изменился) — только освежаем валидаторы, файл и xray не трогаем.
-        if ($exists) {
-            $oldSha = (string) ($meta['sha'] ?? '');
-            if ($oldSha === '') {
-                $h = @hash_file('sha256', $dest);
-                $oldSha = is_string($h) ? $h : '';
+        $tmp = null;
+        try {
+            if (($tmp = $this->datBodyFile($dest, $r)) === null) {
+                return 'write failed';
             }
-            if ($oldSha !== '' && hash_equals($oldSha, $newSha)) {
+            $newSha = (string) hash_file('sha256', $tmp);
+            $oldSha = '';
+            if ($exists) {
+                $oldSha = (string) ($meta['sha'] ?? '');
+                if ($oldSha === '') {
+                    $h = @hash_file('sha256', $dest);
+                    $oldSha = is_string($h) ? $h : '';
+                }
+            }
+            $same = $oldSha !== '' && hash_equals($oldSha, $newSha);
+            // Байты те же — сумма уже сверена при прошлой загрузке этого файла.
+            $verified = $same && !empty($meta['verified']);
+            if (!$same) {
+                $sum = $this->datFetchSum($url);
+                if ($sum !== null && !hash_equals($sum, $newSha)) {
+                    // Выпуск мог смениться между запросом файла и запросом суммы:
+                    // один повтор обоих, и только потом отказ.
+                    @unlink($tmp);
+                    $tmp = null;
+                    $r   = $this->datFetchRaw($url);
+                    if (empty($r['ok']) || !empty($r['not_modified'])) {
+                        return $r['err'] ?? 'fetch failed';
+                    }
+                    if (($tmp = $this->datBodyFile($dest, $r)) === null) {
+                        return 'write failed';
+                    }
+                    $newSha = (string) hash_file('sha256', $tmp);
+                    $sum    = $this->datFetchSum($url);
+                    if ($sum !== null && !hash_equals($sum, $newSha)) {
+                        return 'sha256 не совпала с опубликованной; прежний файл сохранён';
+                    }
+                }
+                $verified = $sum !== null;
+            }
+            $newMeta = [
+                'etag'          => (string) ($r['etag'] ?? ''),
+                'last_modified' => (string) ($r['last_modified'] ?? ''),
+                'sha'           => $newSha,
+                // Источник, из которого лежащий на диске файл реально скачан:
+                // datSync() по нему понимает, что URL в реестре сменили.
+                'url'           => $url,
+                // true — сумма сверена с опубликованным рядом .sha256sum.
+                'verified'      => $verified,
+            ];
+            // Тело пришло (200), но байты те же (сервер не поддержал 304) — только
+            // освежаем валидаторы, файл и xray не трогаем.
+            if ($same) {
                 $this->datWriteMeta($name, $newMeta);
                 return '';
             }
+            // Страница ошибки или архив вместо .dat: раньше такой файл ложился на
+            // диск, если на него ещё не ссылалось ни одно правило, и отказ
+            // всплывал позже — при добавлении ext:-записи.
+            if ($this->datParseCategories($tmp) === null) {
+                return 'не похоже на .dat (нужен формат geosite/geoip); прежний файл сохранён';
+            }
+            if (!$this->validateDatReplacement($name, basename($tmp))) {
+                return 'Xray отклонил .dat; прежний файл сохранён';
+            }
+            if (!rename($tmp, $dest)) {
+                return 'rename failed';
+            }
+            $tmp = null;
+            $this->datWriteMeta($name, $newMeta);
+            $changed = true;
+            return '';
+        } finally {
+            if ($tmp !== null) {
+                @unlink($tmp);
+            }
+        }
+    }
+
+    // Тело ответа datFetchRaw() как файл в каталоге .dat: готовый 'file' либо
+    // строка 'body', записанная во временный файл. null — записать не удалось.
+    public function datBodyFile(string $dest, array $r): ?string
+    {
+        if (isset($r['file'])) {
+            return is_file($r['file']) ? $r['file'] : null;
+        }
+        $dir = dirname($dest);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
         }
         $tmp = $dest . '.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, $r['body']) === false) {
+        if (!isset($r['body']) || file_put_contents($tmp, $r['body']) === false) {
             @unlink($tmp);
-            return 'write failed';
+            return null;
         }
-        if (!$this->validateDatReplacement($name, basename($tmp))) {
-            @unlink($tmp);
-            return 'Xray отклонил .dat; прежний файл сохранён';
+        return $tmp;
+    }
+
+    // Сумма из файла <URL>.sha256sum, который выпуски v2fly, Loyalsoldier и
+    // runetfreedom кладут рядом с .dat. null — суммы нет (источник её не
+    // публикует или запрос не удался): тогда файл принимается без сверки.
+    public function datFetchSum(string $url): ?string
+    {
+        $path = (string) parse_url($url, PHP_URL_PATH);
+        if (!preg_match('~\.dat$~i', $path) || preg_match('~[?#]~', $url)) {
+            return null;
         }
-        if (!rename($tmp, $dest)) {
-            @unlink($tmp);
-            return 'rename failed';
+        $r = $this->datHttpGet($url . '.sha256sum', [], 4096, 20);
+        if (empty($r['ok']) || !preg_match('~^\s*([0-9a-f]{64})(?:\s|$)~i', (string) ($r['body'] ?? ''), $m)) {
+            return null;
         }
-        $this->datWriteMeta($name, $newMeta);
-        $changed = true;
-        return '';
+        return strtolower($m[1]);
+    }
+
+    private static function pbVarint(string $buf, int &$i): ?int
+    {
+        $value = 0;
+        for ($shift = 0; $shift < 35; $shift += 7) {
+            if (!isset($buf[$i])) {
+                return null;
+            }
+            $byte = ord($buf[$i++]);
+            $value |= ($byte & 0x7f) << $shift;
+            if ($byte < 0x80) {
+                return $value;
+            }
+        }
+        return null;
+    }
+
+    // Категории внутри .dat (нижний регистр). Файл — protobuf GeoSiteList или
+    // GeoIPList: подряд идущие записи поля 1, у каждой первым полем код
+    // категории. Читаются только заголовки записей, тела пропускаются: geoip.dat
+    // весит десятки мегабайт. null — файл не этого формата.
+    public function datParseCategories(string $path): ?array
+    {
+        $size = (int) @filesize($path);
+        $fh   = $size > 0 ? @fopen($path, 'rb') : false;
+        if ($fh === false) {
+            return null;
+        }
+        try {
+            $cats = [];
+            $pos  = 0;
+            while ($pos < $size) {
+                if (fseek($fh, $pos) !== 0) {
+                    return null;
+                }
+                $head = (string) fread($fh, 320);
+                if (($head[0] ?? '') !== "\x0a") {
+                    return null;
+                }
+                $i   = 1;
+                $len = self::pbVarint($head, $i);
+                if ($len === null || $pos + $i + $len > $size) {
+                    return null;
+                }
+                $next = $pos + $i + $len;
+                if ($len > 0 && ($head[$i] ?? '') === "\x0a") {
+                    $i++;
+                    $l = self::pbVarint($head, $i);
+                    if ($l === null || $l > 255 || $l > $len) {
+                        return null;
+                    }
+                    $code = substr($head, $i, $l);
+                    if (strlen($code) !== $l || !preg_match('~^[\x21-\x7e]+$~D', $code)) {
+                        return null;
+                    }
+                    $cats[strtolower($code)] = true;
+                }
+                $pos = $next;
+            }
+            return $cats ? array_map('strval', array_keys($cats)) : null;
+        } finally {
+            fclose($fh);
+        }
+    }
+
+    public function datCategories(string $name): ?array
+    {
+        static $memo = [];
+        $path = $this->datPath($name);
+        if (!is_file($path)) {
+            return null;
+        }
+        clearstatcache(true, $path);
+        $key = $path . '|' . filemtime($path) . '|' . filesize($path);
+        if (!array_key_exists($key, $memo)) {
+            if (count($memo) > 32) {
+                $memo = []; // cron живёт неделями, файлы меняются — не копим
+            }
+            $memo[$key] = $this->datParseCategories($path);
+        }
+        return $memo[$key];
+    }
+
+    // Для записи ext:/extip:/geosite:/geoip: — текст ошибки, если в скачанном
+    // файле нет названной категории. null — категория есть либо проверить
+    // нечем (файла нет, формат не разобран): тогда решает само ядро.
+    public function datCategoryError(array $c): ?string
+    {
+        if (in_array($c['kind'], ['ext', 'extip'], true)) {
+            [$file, $tag] = array_pad(explode(':', (string) $c['value'], 2), 2, '');
+            $file = $this->datResolve($file);
+        } elseif (isset(self::CORE_DAT[$c['kind']])) {
+            $file = self::CORE_DAT[$c['kind']];
+            $tag  = (string) $c['value'];
+        } else {
+            return null;
+        }
+        $cats = $file === '' ? null : $this->datCategories($file);
+        // «!» — отрицание у geoip, «@» — атрибут у geosite: к имени не относятся.
+        $tag = explode('@', ltrim(strtolower(trim($tag)), '!'), 2)[0];
+        if ($cats === null || $tag === '' || in_array($tag, $cats, true)) {
+            return null;
+        }
+        return "в файле $file нет категории $tag";
+    }
+
+    // Сколько включённых записей block/WARP ссылается на файл через ext:/extip:.
+    public function datRefCount(array $conf, string $name): int
+    {
+        $count = 0;
+        foreach (self::ROUTE_ENTRY_LISTS as $list) {
+            foreach (array_keys(array_filter($conf[$list] ?? [])) as $e) {
+                $c = $this->classifyRouteEntry((string) $e);
+                if (in_array($c['kind'], ['ext', 'extip'], true) && $this->routeEntryUsable($c)
+                    && strcasecmp(basename(explode(':', (string) $c['value'], 2)[0]), $name) === 0
+                ) {
+                    $count++;
+                }
+            }
+        }
+        return $count;
+    }
+
+    // Имена файлов, объявленных включёнными записями реестра.
+    public function datEnabledNames(array $conf): array
+    {
+        $names = [];
+        foreach (array_keys(array_filter($conf['datlist'] ?? [])) as $key) {
+            if (preg_match('~^([\w.\-]+\.dat):~i', (string) $key, $m)) {
+                $names[basename($m[1])] = true;
+            }
+        }
+        return array_map('strval', array_keys($names));
     }
 
     // Проверяем уже используемые категории ДО замены asset. Иначе ответ
@@ -13652,6 +14011,15 @@ DNS-over-HTTPS with IP:
             // удалял бы их прямо перед rename() — вторая сторона падала с
             // "rename failed". Их подчистит сам породивший процесс.
             if (preg_match('~\.\d+\.[0-9a-f]+$~', $base)) {
+                // Но брошенные (процесс убит посреди загрузки; копии, которые
+                // прежние версии оставляли после отклонённой правки реестра)
+                // сами не исчезнут и держат место: сутки — заведомо дольше
+                // любой загрузки. Возраст — по ctime: у резервной копии,
+                // сделанной жёсткой ссылкой, mtime достаётся от старого файла,
+                // а ctime — время создания самой ссылки.
+                if (time() - (int) @filectime($f) > 86400) {
+                    @unlink($f);
+                }
                 continue;
             }
             // sidecar валидаторов принадлежит своему .dat — чистим их заодно.
@@ -13667,6 +14035,55 @@ DNS-over-HTTPS with IP:
         return $errors;
     }
 
+    public function datIntervalValid(int $interval): bool
+    {
+        return $interval === 0 || ($interval >= self::DAT_UPDATE_MIN && $interval <= self::DAT_UPDATE_MAX);
+    }
+
+    // Ввод «90m», «36h», «10d» (и м/ч/д) → секунды; null — не разобрано или
+    // вне допустимых пределов.
+    public function datParseInterval(string $text): ?int
+    {
+        if (!preg_match('~^\s*(\d{1,5})\s*(m|h|d|м|ч|д)\s*$~iu', $text, $m)) {
+            return null;
+        }
+        $unit = ['m' => 60, 'м' => 60, 'h' => 3600, 'ч' => 3600, 'd' => 86400, 'д' => 86400][mb_strtolower($m[2])];
+        $interval = (int) $m[1] * $unit;
+        return $interval > 0 && $this->datIntervalValid($interval) ? $interval : null;
+    }
+
+    // Час запуска действует только для интервалов от суток.
+    public function datUpdateHour(array $conf): ?int
+    {
+        $hour = $conf['dat_update_hour'] ?? null;
+        return is_int($hour) && $hour >= 0 && $hour <= 23
+            && (int) ($conf['dat_update_interval'] ?? 0) >= 86400 ? $hour : null;
+    }
+
+    // Время следующего запуска. С заданным часом — первое HH:00 (пояс бота)
+    // позже чем через «интервал минус сутки»: запуск держится своего часа и
+    // не уезжает, а пауза никогда не длиннее интервала.
+    public function datNextRun(int $from, int $interval, ?int $hour = null): int
+    {
+        if ($hour === null || $interval < 86400) {
+            return $from + $interval;
+        }
+        $after = $from + $interval - 86400;
+        [$y, $mo, $d] = array_map('intval', explode('-', date('Y-n-j', $after)));
+        $next = mktime($hour, 0, 0, $mo, $d, $y);
+        if ($next <= $after) {
+            $next = mktime($hour, 0, 0, $mo, $d + 1, $y);
+        }
+        return $next;
+    }
+
+    // Есть ли что обновлять: включённые источники реестра либо встроенные
+    // geosite.dat/geoip.dat, нужные записям geosite:/geoip:.
+    public function datSourcesPresent(array $conf): bool
+    {
+        return !empty(array_filter($conf['datlist'] ?? [])) || $this->coreDatNeeded($conf) !== [];
+    }
+
     public function datRecordUpdate(int $at, bool $success = false): void
     {
         $this->pacConfUpdate(function (&$conf) use ($at, $success) {
@@ -13674,17 +14091,24 @@ DNS-over-HTTPS with IP:
                 return;
             }
             $conf['dat_update_last_attempt'] = $at;
-            if (!array_key_exists('dat_update_last_success', $conf)) {
-                $conf['dat_update_last_success'] = 0;
-            }
             $interval = (int) ($conf['dat_update_interval'] ?? 0);
-            if (isset(self::DAT_UPDATE_INTERVALS[$interval]) && $interval > 0) {
-                $conf['dat_update_next'] = $at + $interval;
+            if ($this->datIntervalValid($interval) && $interval > 0) {
+                $conf['dat_update_next'] = $this->datNextRun($at, $interval, $this->datUpdateHour($conf));
             }
             if ($success) {
                 $conf['dat_update_last_success'] = $at;
+                unset($conf['dat_update_failed']);
             }
         });
+    }
+
+    public function datErrorLines(array $errors): array
+    {
+        $lines = [];
+        foreach ($errors as $name => $err) {
+            $lines[] = self::esc(is_string($name) ? "$name — $err" : (string) $err);
+        }
+        return $lines;
     }
 
     // Кнопка «обновить»: перекачать все .dat, пересобрать серверные правила, отчёт.
@@ -13700,14 +14124,25 @@ DNS-over-HTTPS with IP:
                 $this->datRecordUpdate($runAt, true);
             }
             if ($errors) {
-                $lines = [];
-                foreach ($errors as $name => $err) {
-                    $lines[] = self::esc("$name — $err");
-                }
-                $this->send($this->input['from'], "dat: ошибки загрузки:\n" . implode("\n", $lines));
+                $this->send($this->input['from'], "dat: ошибки загрузки:\n" . implode("\n", $this->datErrorLines($errors)));
             }
         });
         $this->xtlsdat();
+    }
+
+    public function datNotifyAdmins(string $text): void
+    {
+        $this->notifyAdmins($text);
+    }
+
+    // Сообщение всем администраторам из cron: там нет $this->input.
+    public function notifyAdmins(string $text): void
+    {
+        $c = [];
+        require __DIR__ . '/config.php';
+        foreach ((array) ($c['admin'] ?? []) as $admin) {
+            $this->send($admin, $text);
+        }
     }
 
     // Cron: обновляет включённые источники по выбранному интервалу. Время
@@ -13719,9 +14154,10 @@ DNS-over-HTTPS with IP:
             $conf     = $this->getPacConf();
             $interval = (int) ($conf['dat_update_interval'] ?? 0);
             if (
-                !isset(self::DAT_UPDATE_INTERVALS[$interval])
+                !is_array($conf)
+                || !$this->datIntervalValid($interval)
                 || $interval === 0
-                || empty(array_filter($conf['datlist'] ?? []))
+                || !$this->datSourcesPresent($conf)
             ) {
                 return;
             }
@@ -13737,45 +14173,129 @@ DNS-over-HTTPS with IP:
             if ($changed) {
                 if ($this->xrayUpdateRules() === false) $errors['xray'] = 'правила не применены';
             }
+            $wasFailing = !empty($conf['dat_update_failed']);
             if (!$errors) {
                 $this->datRecordUpdate($now, true);
+                if ($wasFailing) {
+                    $this->datNotifyAdmins('✅ dat: автообновление снова работает');
+                }
                 return;
             }
+            // Отказ: повтор не позже чем через час, а не через полный интервал.
+            $this->pacConfUpdate(function (&$c) use ($now, $interval) {
+                if (!is_array($c)) {
+                    return;
+                }
+                $c['dat_update_next']   = $now + min($interval, self::DAT_UPDATE_RETRY);
+                $c['dat_update_failed'] = 1;
+            });
             foreach ($errors as $name => $err) {
                 error_log("dat auto-update[$name]: $err");
+            }
+            // Одно сообщение на серию отказов: повторы идут каждый час.
+            if (!$wasFailing) {
+                $this->datNotifyAdmins("⚠️ dat: автообновление не удалось, повтор через "
+                    . $this->datUpdateIntervalLabel(min($interval, self::DAT_UPDATE_RETRY)) . ":\n"
+                    . implode("\n", $this->datErrorLines($errors)));
             }
         });
     }
 
     public function datUpdateIntervalLabel(int $interval): string
     {
-        return self::DAT_UPDATE_INTERVALS[$interval] ?? 'off';
+        if (isset(self::DAT_UPDATE_INTERVALS[$interval])) {
+            return self::DAT_UPDATE_INTERVALS[$interval];
+        }
+        if (!$this->datIntervalValid($interval)) {
+            return 'off';
+        }
+        if ($interval % 86400 === 0) {
+            return intdiv($interval, 86400) . 'd';
+        }
+        return $interval % 3600 === 0 ? intdiv($interval, 3600) . 'h' : (int) ceil($interval / 60) . 'm';
+    }
+
+    // Подпись расписания: «1d, 04:00» при заданном часе запуска.
+    public function datScheduleLabel(array $conf): string
+    {
+        $label = $this->datUpdateIntervalLabel((int) ($conf['dat_update_interval'] ?? 0));
+        $hour  = $this->datUpdateHour($conf);
+        return $hour === null ? $label : sprintf('%s, %02d:00', $label, $hour);
     }
 
     public function datScheduleSet(int $interval): void
     {
-        if (!isset(self::DAT_UPDATE_INTERVALS[$interval])) {
+        if (!$this->datIntervalValid($interval)) {
             $this->xtlsdat();
             return;
         }
         $this->pacConfUpdate(function (&$conf) use ($interval) {
             $conf['dat_update_interval'] = $interval;
             if ($interval > 0) {
-                // После выбора интервала первая автоматическая проверка будет через
-                // полный период; для немедленной загрузки остаётся кнопка «обновить».
-                $conf['dat_update_next'] = time() + $interval;
+                // Первая автоматическая проверка — через период (с заданным
+                // часом — в этот час); для немедленной загрузки остаётся
+                // кнопка «обновить».
+                $conf['dat_update_next'] = $this->datNextRun(time(), $interval, $this->datUpdateHour($conf));
             } else {
-                unset($conf['dat_update_next']);
+                unset($conf['dat_update_next'], $conf['dat_update_failed']);
             }
         });
         $this->datSchedule();
     }
 
+    public function datScheduleHour(?int $hour): void
+    {
+        if ($hour !== null && $hour > 23) {
+            $this->datSchedule();
+            return;
+        }
+        $this->pacConfUpdate(function (&$conf) use ($hour) {
+            if ($hour === null) {
+                unset($conf['dat_update_hour']);
+            } else {
+                $conf['dat_update_hour'] = $hour;
+            }
+            $interval = (int) ($conf['dat_update_interval'] ?? 0);
+            if ($interval > 0 && $this->datIntervalValid($interval)) {
+                $conf['dat_update_next'] = $this->datNextRun(time(), $interval, $this->datUpdateHour($conf));
+            }
+        });
+        $this->datSchedule();
+    }
+
+    public function datScheduleCustom(): void
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('dat interval prompt'),
+            $this->input['message_id'],
+            reply: '90m / 36h / 10d',
+        );
+        $this->stashReply($r, [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'datScheduleCustomSet',
+            'args'          => [],
+        ]);
+    }
+
+    public function datScheduleCustomSet(string $text): void
+    {
+        $interval = $this->datParseInterval($text);
+        if ($interval === null) {
+            $this->send($this->input['from'], $this->i18n('dat interval invalid'));
+            $this->datSchedule();
+            return;
+        }
+        $this->datScheduleSet($interval);
+    }
+
     public function datSchedule(): void
     {
-        $current = (int) ($this->getPacConf()['dat_update_interval'] ?? 0);
+        $conf    = $this->getPacConf();
+        $current = (int) ($conf['dat_update_interval'] ?? 0);
+        $hour    = $this->datUpdateHour($conf ?: []);
         $text = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes')
-            . " -> dat -> auto update\nSelect update interval:";
+            . " -> dat -> " . $this->i18n('auto update') . "\n" . $this->i18n('select update interval') . ':';
         $data = [];
         $row  = [];
         foreach (self::DAT_UPDATE_INTERVALS as $seconds => $label) {
@@ -13783,13 +14303,35 @@ DNS-over-HTTPS with IP:
                 'text'          => ($current === $seconds ? '✅ ' : '') . $label,
                 'callback_data' => "/datscheduleset $seconds",
             ];
-            if (count($row) === 2) {
+            if (count($row) === 3) {
                 $data[] = $row;
                 $row = [];
             }
         }
-        if ($row) {
-            $data[] = $row;
+        $custom = !isset(self::DAT_UPDATE_INTERVALS[$current]) && $this->datIntervalValid($current);
+        $row[] = [
+            'text'          => ($custom ? '✅ ' . $this->datUpdateIntervalLabel($current) . ' · ' : '✏️ ')
+                . $this->i18n('custom interval'),
+            'callback_data' => '/datschedulecustom',
+        ];
+        $data[] = $row;
+        if ($current >= 86400 && $this->datIntervalValid($current)) {
+            $text .= "\n\n" . $this->i18n('dat run hour') . ' (' . date_default_timezone_get() . '): '
+                . ($hour === null ? $this->i18n('dat any hour') : sprintf('%02d:00', $hour));
+            for ($h = 0; $h < 24; $h += 6) {
+                $row = [];
+                for ($i = $h; $i < $h + 6; $i++) {
+                    $row[] = [
+                        'text'          => ($hour === $i ? '✅' : '') . sprintf('%02d', $i),
+                        'callback_data' => "/datschedulehour $i",
+                    ];
+                }
+                $data[] = $row;
+            }
+            $data[] = [[
+                'text'          => ($hour === null ? '✅ ' : '') . $this->i18n('dat any hour'),
+                'callback_data' => '/datschedulehour off',
+            ]];
         }
         $data[] = [[
             'text'          => $this->i18n('back'),
@@ -13805,16 +14347,62 @@ DNS-over-HTTPS with IP:
 
     public function datLastUpdateAt(array $conf): int
     {
-        if (array_key_exists('dat_update_last_success', $conf)) {
+        if ((int) ($conf['dat_update_last_success'] ?? 0) > 0) {
             return (int) $conf['dat_update_last_success'];
         }
         $last = 0;
-        // Для установок, обновившихся с версии без timestamp, показываем время
-        // реально лежащего на диске самого свежего .dat.
+        // Удачной отметки нет (установка обновилась с версии без timestamp
+        // либо первая попытка не удалась) — показываем время самого свежего
+        // .dat, реально лежащего на диске.
         foreach (glob($this->datDir() . '/*.dat') ?: [] as $file) {
             $last = max($last, (int) @filemtime($file));
         }
         return $last;
+    }
+
+    public static function datHumanSize(int $bytes): string
+    {
+        if ($bytes >= 1 << 20) {
+            return round($bytes / (1 << 20), 1) . ' MB';
+        }
+        return $bytes >= 1024 ? round($bytes / 1024) . ' KB' : "$bytes B";
+    }
+
+    // Строки состояния файлов для меню: размер, дата загрузки, итог последней
+    // попытки. Встроенные geosite.dat/geoip.dat — когда они используются.
+    public function datStatusLines(array $conf): array
+    {
+        $names = $this->datEnabledNames($conf);
+        foreach ($this->coreDatNeeded($conf) as $core) {
+            if (!in_array($core, $names, true)) {
+                $names[] = $core;
+            }
+        }
+        $lines = [];
+        $used  = 0;
+        foreach ($names as $name) {
+            // Ниже в том же сообщении идёт список реестра со своим бюджетом
+            // 3500 символов, а предел Telegram — 4096: блоку состояния
+            // оставляем немного.
+            if (count($lines) >= 8 || $used > 420) {
+                $lines[] = '…';
+                break;
+            }
+            $path = $this->datPath($name);
+            $meta = $this->datReadMeta($name);
+            $err  = (string) ($meta['error'] ?? '');
+            if (is_file($path)) {
+                $line = self::esc($name) . ' — ' . self::datHumanSize((int) filesize($path))
+                    . ', ' . date('Y-m-d H:i', (int) filemtime($path))
+                    . (!empty($meta['verified']) ? ', sha256 ✅' : '');
+            } else {
+                $line = self::esc($name) . ' — ' . $this->i18n('dat not downloaded');
+            }
+            $line   .= $err !== '' ? "\n⚠️ " . self::esc(mb_substr($err, 0, 70)) : '';
+            $used   += mb_strlen($line);
+            $lines[] = $line;
+        }
+        return $lines;
     }
 
     // Меню routes -> dat: реестр ссылок, расписание и ручное обновление.
@@ -13822,27 +14410,35 @@ DNS-over-HTTPS with IP:
     {
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> dat';
 
-        $conf     = $this->getPacConf();
+        $conf     = $this->getPacConf() ?: [];
         $interval = (int) ($conf['dat_update_interval'] ?? 0);
         $last     = $this->datLastUpdateAt($conf);
-        $text[]   = 'auto update: ' . $this->datUpdateIntervalLabel($interval);
-        $text[]   = 'last update: ' . ($last > 0 ? date('Y-m-d H:i:s', $last) : '—');
+        $text[]   = $this->i18n('auto update') . ': ' . $this->datScheduleLabel($conf);
+        $text[]   = $this->i18n('last update') . ': ' . ($last > 0 ? date('Y-m-d H:i:s', $last) : '—');
         if ($interval > 0) {
             $next = (int) ($conf['dat_update_next'] ?? 0);
-            $text[] = 'next update: ' . ($next > 0
+            $text[] = $this->i18n('next update') . ': ' . ($next > 0
                 ? date('Y-m-d H:i:s', $next)
-                : 'soon');
+                : 'soon') . (!empty($conf['dat_update_failed']) ? ' ⚠️' : '');
+        }
+        if ($status = $this->datStatusLines($conf)) {
+            $text[] = '';
+            $text   = array_merge($text, $status);
         }
 
         [$data, $tmp] = $this->listPac('datlist', $page, 'xtlsdat', 1);
         $text = array_merge($text, $tmp ?: []);
         $data[] = [
             [
-                'text'          => '⏱ auto update: ' . $this->datUpdateIntervalLabel($interval),
+                'text'          => '⏱ ' . $this->i18n('auto update') . ': ' . $this->datScheduleLabel($conf),
                 'callback_data' => '/datschedule',
             ],
         ];
         $data[] = [
+            [
+                'text'          => '📂 ' . $this->i18n('dat categories'),
+                'callback_data' => '/datfiles',
+            ],
             [
                 'text'          => '🔄 ' . $this->i18n('update'),
                 'callback_data' => "/datrefresh",
@@ -13862,6 +14458,121 @@ DNS-over-HTTPS with IP:
         );
     }
 
+    public function datFileKey(string $name): string
+    {
+        return 'k' . substr(hash('sha256', $name), 0, 12);
+    }
+
+    // Скачанные файлы каталога: имя => ключ для кнопки (имя файла в данные
+    // кнопки не кладём — у Telegram на них 64 байта).
+    public function datDownloadedFiles(): array
+    {
+        $files = [];
+        foreach (glob($this->datDir() . '/*.dat') ?: [] as $file) {
+            if (is_file($file)) {
+                $files[basename($file)] = $this->datFileKey(basename($file));
+            }
+        }
+        ksort($files);
+        return $files;
+    }
+
+    // Меню выбора файла для просмотра категорий.
+    public function datFiles(): void
+    {
+        $text = ["Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> dat -> '
+            . $this->i18n('dat categories')];
+        $data = [];
+        foreach ($this->datDownloadedFiles() as $name => $key) {
+            $cats   = $this->datCategories($name);
+            $data[] = [[
+                'text'          => $name . ' (' . ($cats === null ? '?' : count($cats)) . ')',
+                'callback_data' => "/datcats $key",
+            ]];
+        }
+        if (!$data) {
+            $text[] = $this->i18n('dat no files');
+        }
+        $data[] = [[
+            'text'          => $this->i18n('back'),
+            'callback_data' => '/xtlsdat',
+        ]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    // Страничный список категорий файла; $query — отбор по подстроке.
+    public function datCats(string $key, int $page = 0, string $query = ''): void
+    {
+        $name = array_search($key, $this->datDownloadedFiles(), true);
+        if ($name === false) {
+            $this->datFiles();
+            return;
+        }
+        $name = (string) $name;
+        $all  = $this->datCategories($name) ?? [];
+        sort($all, SORT_STRING);
+        $cats = $query === '' ? $all : array_values(array_filter($all, static fn($c) => str_contains($c, $query)));
+        $per   = 60;
+        $pages = max(1, (int) ceil(count($cats) / $per));
+        $page  = max(0, min($page, $pages - 1));
+        $prefix = match ($name) {
+            'geosite.dat' => ['geosite:'],
+            'geoip.dat'   => ['geoip:'],
+            default       => ["ext:$name:", "extip:$name:"],
+        };
+        $text = [
+            "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('routes') . ' -> dat -> ' . self::esc($name),
+            $this->i18n('dat categories') . ': ' . count($cats)
+                . ($query !== '' ? ' / ' . count($all) . ' (' . self::esc($query) . ')' : ''),
+            $this->i18n('dat category usage') . ': '
+                . implode(' / ', array_map(static fn($p) => '<code>' . self::esc($p) . '…</code>', $prefix)),
+            '',
+        ];
+        $text[] = implode(' ', array_map(
+            static fn($c) => '<code>' . self::esc($c) . '</code>',
+            array_slice($cats, $page * $per, $per)
+        )) ?: '—';
+        $suffix = $query !== '' ? " $query" : '';
+        $data   = [];
+        if ($pages > 1) {
+            $data[] = [
+                ['text' => '<<', 'callback_data' => "/datcats $key " . ($page > 0 ? $page - 1 : $pages - 1) . $suffix],
+                ['text' => ($page + 1) . '/' . $pages, 'callback_data' => "/datcats $key $page$suffix"],
+                ['text' => '>>', 'callback_data' => "/datcats $key " . ($page < $pages - 1 ? $page + 1 : 0) . $suffix],
+            ];
+        }
+        $row = [['text' => '🔎 ' . $this->i18n('search'), 'callback_data' => "/datcatsearch $key"]];
+        if ($query !== '') {
+            $row[] = ['text' => $this->i18n('dat show all'), 'callback_data' => "/datcats $key 0"];
+        }
+        $data[] = $row;
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/datfiles']];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function datCatSearch(string $key): void
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('dat search prompt'),
+            $this->input['message_id'],
+            reply: 'google',
+        );
+        $this->stashReply($r, [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'datCatSearchSet',
+            'args'          => [$key],
+        ]);
+    }
+
+    public function datCatSearchSet(string $text, string $key): void
+    {
+        // В данные кнопок листания запрос уходит как есть — оставляем только
+        // символы, из которых состоят имена категорий, и режем длину.
+        $query = substr((string) preg_replace('~[^a-z0-9!@._-]~', '', strtolower(trim($text))), 0, 24);
+        $this->datCats($key, 0, $query);
+    }
+
     // Разбор пользовательского ввода источников .dat (по строкам), скачивание,
     // сохранение реестра и пересборка серверных правил.
     public function addDat(string $input)
@@ -13874,7 +14585,11 @@ DNS-over-HTTPS with IP:
                 $errors[] = 'неверный формат: ' . self::esc($line);
                 continue;
             }
-            $entries[$line] = true;
+            // Имя файла — в нижний регистр: ссылку ext:Foo.dat:… ядро ищет по
+            // точному имени, и «Foo.DAT» в реестре с «foo.dat» в правиле
+            // расходились молча.
+            [$name, $url] = explode(':', $line, 2);
+            $entries[strtolower($name) . ':' . $url] = true;
         }
         if ($entries) $this->changeRouteList('datlist', static function (&$list) use ($entries) {
             $list += $entries; // повторное добавление не включает выключенный источник
@@ -20781,18 +21496,159 @@ DNS-over-HTTPS with IP:
     // host kernel's view inside the container, so this reflects the whole machine.
     public function cpuUsage()
     {
-        $sample = function () {
-            $line = (@file('/proc/stat') ?: [''])[0];
-            $p    = array_map('intval', array_slice(preg_split('~\s+~', trim($line)), 1));
-            $idle = ($p[3] ?? 0) + ($p[4] ?? 0); // idle + iowait
-            return [$idle, array_sum($p)];
-        };
-        [$idle1, $total1] = $sample();
-        usleep(200000); // 200ms window
-        [$idle2, $total2] = $sample();
-        $dt = $total2 - $total1;
-        $di = $idle2 - $idle1;
-        return $dt > 0 ? (int) round((1 - $di / $dt) * 100) : 0;
+        $first = $this->cpuTimes();
+        // 500 мс: за прежние 200 мс в окно попадала в основном работа самого
+        // запроса, и простаивающий сервер показывал 20–30 %.
+        usleep(500000);
+        return self::cpuPercent($first, $this->cpuTimes()) ?? 0;
+    }
+
+    // [простой, всего] в тиках из первой строки /proc/stat.
+    public function cpuTimes(): array
+    {
+        $line = (@file('/proc/stat') ?: [''])[0];
+        $p    = array_map('intval', array_slice(preg_split('~\s+~', trim($line)), 1));
+        $idle = ($p[3] ?? 0) + ($p[4] ?? 0); // idle + iowait
+        // guest и guest_nice ядро уже включило в user и nice: в сумму их
+        // не берём, иначе время гостевых машин считается дважды.
+        return [$idle, array_sum(array_slice($p, 0, 8))];
+    }
+
+    // Загрузка в процентах между двумя снимками cpuTimes(); null — счётчик не
+    // сдвинулся (или сброшен перезагрузкой).
+    public static function cpuPercent(array $from, array $to): ?int
+    {
+        $dt = $to[1] - $from[1];
+        $di = $to[0] - $from[0];
+        return $dt > 0 && $di >= 0 ? max(0, min(100, (int) round((1 - $di / $dt) * 100))) : null;
+    }
+
+    // Файловые системы для показа и для оповещения: «/» контейнера — это
+    // хранилище Docker; каталог данных бота подключён с хоста и может лежать
+    // на другом разделе.
+    public function diskTargets(): array
+    {
+        $targets = ['/' => 'status disk'];
+        $root    = @stat('/');
+        $logs    = @stat('/logs');
+        if ($root && $logs && $root['dev'] !== $logs['dev']
+            && (int) @disk_total_space('/logs') !== (int) @disk_total_space('/')) {
+            $targets['/logs'] = 'status data disk';
+        }
+        return $targets;
+    }
+
+    private const DISK_ALERT_PERCENT = 90;
+    private const DISK_ALERT_CLEAR   = 85;
+    private const CPU_ALERT_PERCENT  = 90;
+    private const CPU_ALERT_CLEAR    = 80;
+
+    // Cron: диск заполнен на 90 % и больше — сообщение администраторам.
+    public function checkDiskSpace(): void
+    {
+        static $last = 0;
+        if (time() - $last < 300) {
+            return;
+        }
+        $last  = time();
+        $usage = [];
+        foreach ($this->diskTargets() as $path => $title) {
+            $usage[$title] = $this->diskUsage($path);
+        }
+        foreach ($this->diskAlertStep($usage, time()) as $message) {
+            $this->notifyAdmins($message);
+        }
+    }
+
+    // Решает, о чём сообщить. Одно сообщение при переходе за порог, затем
+    // напоминание раз в сутки, пока место не освободят; отбой — ниже 85 %,
+    // чтобы колебание у самого порога не давало серию сообщений.
+    // $usage: подпись => [занято, всего, свободно, процент].
+    public function diskAlertStep(array $usage, int $now): array
+    {
+        $state    = (array) (($this->getPacConf() ?: [])['disk_alert'] ?? []);
+        $new      = $state;
+        $messages = [];
+        foreach ($usage as $title => [$used, $total, $avail, $percent]) {
+            if ($total <= 0) {
+                continue;
+            }
+            $line = $this->i18n($title) . ": $percent% — " . $this->i18n('status used') . ' ' . $this->fmtBytes($used)
+                . ' ' . $this->i18n('status of') . ' ' . $this->fmtBytes($total)
+                . ', ' . $this->i18n('status free') . ' ' . $this->fmtBytes($avail);
+            if ($percent >= self::DISK_ALERT_PERCENT) {
+                if ($now - (int) ($state[$title] ?? 0) >= 86400) {
+                    $messages[]  = '⚠️ ' . $this->i18n('disk alert') . "\n" . $line;
+                    $new[$title] = $now;
+                }
+            } elseif ($percent < self::DISK_ALERT_CLEAR && isset($state[$title])) {
+                $messages[] = '✅ ' . $this->i18n('disk alert cleared') . "\n" . $line;
+                unset($new[$title]);
+            }
+        }
+        if ($new !== $state) {
+            $this->pacConfUpdate(function (&$conf) use ($new) {
+                if (!is_array($conf)) {
+                    return;
+                }
+                if ($new) {
+                    $conf['disk_alert'] = $new;
+                } else {
+                    unset($conf['disk_alert']);
+                }
+            });
+        }
+        return $messages;
+    }
+
+    // Cron: раз в минуту снимает загрузку процессора между двумя проходами
+    // (без паузы внутри шага) и сообщает, если она держится час.
+    public function checkCpuLoad(): void
+    {
+        $now = time();
+        if ($now - $this->cpuWatch['at'] < 60) {
+            return;
+        }
+        $times = $this->cpuTimes();
+        $prev  = $this->cpuWatch['prev'];
+        $this->cpuWatch['prev'] = $times;
+        $this->cpuWatch['at']   = $now;
+        $percent = $prev === null ? null : self::cpuPercent($prev, $times);
+        if ($percent === null) {
+            return;
+        }
+        $event = $this->cpuAlertStep($percent, $now);
+        if ($event !== null) {
+            $this->notifyAdmins(($event[0] === 'high' ? '⚠️ ' . $this->i18n('cpu alert') : '✅ ' . $this->i18n('cpu alert cleared'))
+                . ": {$event[1]}% (" . $this->cpuCores() . ' ' . $this->i18n('status cores') . ')');
+        }
+    }
+
+    // Окно в час: тревога, когда замеры покрывают не меньше 55 минут и их
+    // среднее от 90 %; отбой — среднее за последние 10 минут ниже 80 %.
+    // Состояние живёт в процессе cron: после его перезапуска час отсчитывается
+    // заново. Возвращает ['high'|'ok', процент] либо null.
+    public function cpuAlertStep(int $percent, int $now): ?array
+    {
+        $samples = $this->cpuWatch['samples'];
+        $samples[$now] = $percent;
+        $samples = array_filter($samples, static fn($at) => $at > $now - 3600, ARRAY_FILTER_USE_KEY);
+        $this->cpuWatch['samples'] = $samples;
+        if (!$this->cpuWatch['alert']) {
+            $average = array_sum($samples) / count($samples);
+            if ($now - array_key_first($samples) >= 3300 && count($samples) >= 30 && $average >= self::CPU_ALERT_PERCENT) {
+                $this->cpuWatch['alert'] = true;
+                return ['high', (int) round($average)];
+            }
+            return null;
+        }
+        $recent = array_filter($samples, static fn($at) => $at > $now - 600, ARRAY_FILTER_USE_KEY);
+        $average = array_sum($recent) / count($recent);
+        if ($average < self::CPU_ALERT_CLEAR) {
+            $this->cpuWatch['alert'] = false;
+            return ['ok', (int) round($average)];
+        }
+        return null;
     }
 
     public function cpuCores()
@@ -20800,36 +21656,114 @@ DNS-over-HTTPS with IP:
         return max(1, preg_match_all('~^cpu\d+~m', @file_get_contents('/proc/stat') ?: ''));
     }
 
-    // [usedBytes, totalBytes] from /proc/meminfo (host RAM as seen in the container).
-    public function memInfo()
+    // [usedBytes, totalBytes, swapUsedBytes, swapTotalBytes] from /proc/meminfo
+    // (host RAM as seen in the container).
+    public function memInfo(?string $meminfo = null)
     {
-        $m   = @file_get_contents('/proc/meminfo') ?: '';
+        $m   = $meminfo ?? (@file_get_contents('/proc/meminfo') ?: '');
         $get = fn($k) => preg_match('~^' . $k . ':\s+(\d+)\s*kB~m', $m, $x) ? (int) $x[1] * 1024 : 0;
         $total = $get('MemTotal');
         $avail = $get('MemAvailable') ?: ($get('MemFree') + $get('Buffers') + $get('Cached'));
-        return [max(0, $total - $avail), $total];
+        $swap  = $get('SwapTotal');
+        return [max(0, $total - $avail), $total, max(0, $swap - $get('SwapFree')), $swap];
+    }
+
+    // Строка данных `df -Pk` → [used, total, avail] в байтах; null — не разобрана.
+    public static function parseDfLine(string $line): ?array
+    {
+        if (!preg_match('~\s(\d+)\s+(\d+)\s+(\d+)\s+\d+%(?:\s|$)~', $line, $m)) {
+            return null;
+        }
+        return [(int) $m[2] * 1024, (int) $m[1] * 1024, (int) $m[3] * 1024];
+    }
+
+    // [used, total, avail, percent] файловой системы, как их показывает df.
+    // disk_free_space() отдаёт место, доступное непривилегированным, поэтому
+    // «всего минус свободно» включало резерв root (на ext4 — 5 % диска) и
+    // завышало занятое; точные числа берём у df, а PHP остаётся запасным путём.
+    public function diskUsage(string $path): array
+    {
+        $total = (int) (@disk_total_space($path) ?: 0);
+        $avail = (int) (@disk_free_space($path) ?: 0);
+        $used  = max(0, $total - $avail);
+        $out   = [];
+        @exec('df -Pk ' . escapeshellarg($path) . ' 2>/dev/null', $out);
+        if (($df = self::parseDfLine((string) end($out))) !== null && $df[1] > 0) {
+            [$used, $total, $avail] = $df;
+        }
+        // Процент — от места, доступного для записи, с округлением вверх, как у df.
+        $percent = $used + $avail > 0 ? (int) ceil($used / ($used + $avail) * 100) : 0;
+        return [$used, $total, $avail, $percent];
+    }
+
+    // «45d 3h 12m»: getTime() для этого не годится — он считает календарными
+    // месяцами от 1970 года и показывает только две старшие единицы.
+    public static function fmtUptime(int $seconds): string
+    {
+        $seconds = max(0, $seconds);
+        $d = intdiv($seconds, 86400);
+        $h = intdiv($seconds % 86400, 3600);
+        $m = intdiv($seconds % 3600, 60);
+        return ($d ? "{$d}d " : '') . ($d || $h ? "{$h}h " : '') . "{$m}m";
+    }
+
+    // Полоска заполнения из десяти делений: «▓▓▓░░░░░░░».
+    public static function usageBar(int $percent): string
+    {
+        $filled = max(0, min(10, (int) round($percent / 10)));
+        return str_repeat('▓', $filled) . str_repeat('░', 10 - $filled);
+    }
+
+    // Блок одного ресурса: «занято X из Y (N%)», полоска и «свободно Z».
+    // От 90 % — предупреждение: место или память на исходе.
+    public function usageBlock(string $title, int $used, int $total, int $free, int $percent): array
+    {
+        return [
+            "<b>$title</b>" . ($percent >= 90 ? ' ⚠️' : ''),
+            '<code>' . self::usageBar($percent) . " $percent%</code>",
+            $this->i18n('status used') . ': ' . $this->fmtBytes($used) . ' ' . $this->i18n('status of') . ' ' . $this->fmtBytes($total),
+            $this->i18n('status free') . ': ' . $this->fmtBytes($free),
+        ];
     }
 
     public function serverStatus()
     {
         $up    = (int) (float) (@file('/proc/uptime') ?: [0])[0];
         $load  = sys_getloadavg() ?: [0, 0, 0];
-        [$memUsed, $memTotal] = $this->memInfo();
-        $dt    = @disk_total_space('/') ?: 0;
-        $df    = @disk_free_space('/') ?: 0;
-        $du    = max(0, $dt - $df);
-        $pct   = fn($u, $t) => $t > 0 ? round($u / $t * 100) : 0;
+        $cores = $this->cpuCores();
+        $cpu   = $this->cpuUsage();
+        [$memUsed, $memTotal, $swapUsed, $swapTotal] = $this->memInfo();
+        $pct   = fn($u, $t) => $t > 0 ? (int) round($u / $t * 100) : 0;
 
         $text   = [];
         $text[] = "Menu -> " . $this->i18n('server status');
         $text[] = '';
-        $text[] = '<code>';
-        $text[] = 'uptime:  ' . $this->getTime(time() + $up);
-        $text[] = 'cpu:     ' . $this->cpuUsage() . '% (' . $this->cpuCores() . ' cores)';
-        $text[] = 'load:    ' . implode(' / ', array_map(fn($l) => round($l, 2), array_slice($load, 0, 3)));
-        $text[] = 'memory:  ' . $this->fmtBytes($memUsed) . ' / ' . $this->fmtBytes($memTotal) . ' (' . $pct($memUsed, $memTotal) . '%)';
-        $text[] = 'disk:    ' . $this->fmtBytes($du) . ' / ' . $this->fmtBytes($dt) . ' (' . $pct($du, $dt) . '%)';
-        $text[] = '</code>';
+        $text[] = '🕒 ' . $this->i18n('status time') . ': ' . date('Y-m-d H:i:s') . ' (' . self::esc(date_default_timezone_get()) . ')';
+        $text[] = '⏱ ' . $this->i18n('status uptime') . ': ' . self::fmtUptime($up);
+        $text[] = '🧩 ' . $this->i18n('status kernel') . ': ' . self::esc(php_uname('r') . ' ' . php_uname('m'));
+        $text[] = '';
+        $text[] = '<b>⚙️ ' . $this->i18n('status cpu') . '</b>' . ($cpu >= 90 ? ' ⚠️' : '');
+        $text[] = '<code>' . self::usageBar($cpu) . " $cpu%</code>";
+        $text[] = $this->i18n('status cores') . ": $cores";
+        // Средняя длина очереди за 1, 5 и 15 минут; выше числа ядер — сервер
+        // не успевает.
+        $text[] = $this->i18n('status load') . ': '
+            . implode(' / ', array_map(fn($l) => round($l, 2), array_slice($load, 0, 3)))
+            . (($load[0] ?? 0) > $cores ? ' ⚠️' : '');
+        $text[] = '';
+        $text   = array_merge($text, $this->usageBlock('🧠 ' . $this->i18n('status memory'),
+            $memUsed, $memTotal, max(0, $memTotal - $memUsed), $pct($memUsed, $memTotal)));
+        if ($swapTotal > 0) {
+            $text[] = $this->i18n('status swap') . ': ' . $this->fmtBytes($swapUsed) . ' '
+                . $this->i18n('status of') . ' ' . $this->fmtBytes($swapTotal) . ' (' . $pct($swapUsed, $swapTotal) . '%)';
+        }
+        foreach ($this->diskTargets() as $path => $title) {
+            [$used, $total, $avail, $percent] = $this->diskUsage($path);
+            $text[] = '';
+            $text   = array_merge($text, $this->usageBlock(($path === '/' ? '💾 ' : '📁 ') . $this->i18n($title), $used, $total, $avail, $percent));
+        }
+        $text[] = '';
+        $text[] = '<i>' . $this->i18n('status alerts hint') . '</i>';
 
         $data   = [];
         $data[] = [[
@@ -23279,7 +24213,7 @@ DNS-over-HTTPS with IP:
                 CURLOPT_CONNECTTIMEOUT => 4,
                 CURLOPT_TIMEOUT        => 6,
                 CURLOPT_FOLLOWLOCATION => false,
-                CURLOPT_USERAGENT      => 'v2rayNG/1.8.5',
+                CURLOPT_USERAGENT      => $this->extSubUserAgent(),
                 CURLOPT_PROTOCOLS      => CURLPROTO_HTTPS,
                 CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
                 CURLOPT_WRITEFUNCTION  => function ($ch, $chunk) use (&$buf, $max) {
@@ -27000,6 +27934,12 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
+                'text'          => 'User-Agent: ' . mb_strimwidth($this->extSubUserAgent(), 0, 40, '…'),
+                'callback_data' => "/extUA {$i}",
+            ],
+        ];
+        $data[] = [
+            [
                 'text'          => $this->i18n('back'),
                 'callback_data' => "/userXr $i",
             ],
@@ -27029,6 +27969,57 @@ DNS-over-HTTPS with IP:
             'callback'       => 'extAddSave',
             'args'           => [$i, $kind],
         ]);
+    }
+
+    public const EXT_SUB_USER_AGENT = 'v2rayNG/1.8.5';
+
+    // User-Agent, с которым бот забирает внешние подписки. Провайдеры отдают
+    // разное содержимое разным клиентам, поэтому значение настраивается;
+    // оно общее для всех подписок.
+    public function extSubUserAgent(): string
+    {
+        $ua = (string) (($this->getPacConf() ?: [])['extsub_user_agent'] ?? '');
+        return self::extSubUserAgentValid($ua) ? $ua : self::EXT_SUB_USER_AGENT;
+    }
+
+    // Только печатные ASCII: перевод строки в значении дописал бы в запрос
+    // чужие заголовки.
+    public static function extSubUserAgentValid(string $ua): bool
+    {
+        return (bool) preg_match('~^[\x21-\x7e][\x20-\x7e]{0,199}$~D', $ua);
+    }
+
+    public function extUAPrompt($i)
+    {
+        $r = $this->send(
+            $this->input['chat'],
+            "@{$this->input['username']} " . $this->i18n('enter ext user agent')
+                . "\n<code>" . self::esc($this->extSubUserAgent()) . '</code>',
+            $this->input['message_id'],
+            reply: self::EXT_SUB_USER_AGENT,
+        );
+        $this->stashReply($r, [
+            'start_message' => $this->input['message_id'],
+            'callback'      => 'extUASave',
+            'args'          => [$i],
+        ]);
+    }
+
+    public function extUASave($text, $i)
+    {
+        $ua = trim((string) $text);
+        if ($ua === '-' || $ua === self::EXT_SUB_USER_AGENT) {
+            $this->pacConfUpdate(function (&$conf) {
+                unset($conf['extsub_user_agent']);
+            });
+        } elseif (self::extSubUserAgentValid($ua)) {
+            $this->pacConfUpdate(function (&$conf) use ($ua) {
+                $conf['extsub_user_agent'] = $ua;
+            });
+        } else {
+            $this->send($this->input['from'], $this->i18n('ext user agent invalid'));
+        }
+        $this->extUser($i);
     }
 
     public function extAddSave($text, $i, $kind)
