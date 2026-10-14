@@ -406,7 +406,9 @@ class Panel
         }
         $plain            = bin2hex(random_bytes(9));
         $conf['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
-        if (!PanelPasswordVault::remember($this->store->dir(), $plain, $conf['panelpswd'])) throw new RuntimeException('Не удалось сохранить защищённую копию пароля');
+        // Без токена бота ключа для копии нет: пароль задаём, просмотр в боте
+        // появится после входа, когда токен будет записан.
+        if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException('Не удалось сохранить защищённую копию пароля');
         if ($this->bot->setPacConf($conf) === false) throw new RuntimeException('Не удалось сохранить пароль панели');
         $f = $this->store->dir() . '/initial_password.txt';
         @touch($f);
@@ -421,9 +423,10 @@ class Panel
         if (strlen((string) $plain) < 8 || strlen((string) $plain) > 72) throw new InvalidArgumentException('Пароль панели: от 8 до 72 байт');
         $conf              = $this->pacConf();
         $conf['panelpswd'] = password_hash((string) $plain, PASSWORD_DEFAULT);
-        if (!PanelPasswordVault::remember($this->store->dir(), (string) $plain, $conf['panelpswd'])) throw new RuntimeException('Не удалось сохранить защищённую копию пароля');
+        if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), (string) $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException('Не удалось сохранить защищённую копию пароля');
         if ($this->bot->setPacConf($conf) === false) throw new RuntimeException('Не удалось сохранить пароль панели');
         @unlink($this->store->dir() . '/initial_password.txt');
+        PanelPasswordVault::settle($this->store->dir(), $conf['panelpswd']);
     }
 
     /**
@@ -482,7 +485,11 @@ class Panel
             $admin = $chosen;
         }
         $this->rateClear();
-        PanelPasswordVault::remember($this->store->dir(), $pass, $hash);
+        // Вход подтвердил действующий хеш: копия для просмотра в боте
+        // обновляется, а записи старого формата и стартовый пароль удаляются.
+        if (PanelPasswordVault::remember($this->store->dir(), $pass, $hash, $this->key)) {
+            PanelPasswordVault::settle($this->store->dir(), $hash);
+        }
         $this->issueSession($admin);
 
         return $this->json(['ok' => true, 'admin' => $admin]);
@@ -517,6 +524,13 @@ class Panel
 
     private function logout()
     {
+        // Кука подписана и сама по себе не хранится на сервере: удаление в
+        // браузере не мешало скопированной куке работать до конца срока.
+        // Вышедшую сессию запоминаем как отозванную до её истечения.
+        $v = (string) ($_COOKIE[self::COOKIE] ?? '');
+        if (preg_match('~^(\d+)\.~', $v, $m)) {
+            $this->revoked($v, (int) $m[1]);
+        }
         setcookie(self::COOKIE, '', [
             'expires'  => 1,
             'path'     => $this->prefix . '/',
@@ -567,7 +581,7 @@ class Panel
             if ($exp < time() || !in_array($admin, $this->admins, true)) {
                 return false;
             }
-            if (!hash_equals($this->sign($exp, $admin), $m[3])) {
+            if (!hash_equals($this->sign($exp, $admin), $m[3]) || $this->revoked($v)) {
                 return false;
             }
             $this->actingAdmin = $admin;
@@ -576,7 +590,7 @@ class Panel
         }
         if (preg_match('~^(\d+)\.([0-9a-f]{64})$~', $v, $m)) {
             $exp = (int) $m[1];
-            if ($exp < time() || !hash_equals($this->sign($exp), $m[2])) {
+            if ($exp < time() || !hash_equals($this->sign($exp), $m[2]) || $this->revoked($v)) {
                 return false;
             }
             $this->actingAdmin = $this->admins[0] ?? 0;
@@ -585,6 +599,42 @@ class Panel
         }
 
         return false;
+    }
+
+    /**
+     * Список вышедших сессий: отпечаток куки => её срок. С $until запись
+     * добавляется, без него — только проверка. Истёкшие записи выбрасываются
+     * при каждом обращении, так что список не длиннее числа выходов за TTL.
+     * Если файл не открыть, сессия не считается отозванной: иначе сломанный
+     * файл запер бы панель, а проверка подписи остаётся.
+     */
+    private function revoked($cookie, $until = 0)
+    {
+        $f = $this->store->dir() . '/revoked.json';
+        if (!$until && !is_file($f)) {
+            return false;
+        }
+        $h = @fopen($f, 'c+');
+        if (!$h) {
+            return false;
+        }
+        @chmod($f, 0600);
+        flock($h, $until ? LOCK_EX : LOCK_SH);
+        $list = json_decode((string) stream_get_contents($h), true);
+        $list = array_filter(is_array($list) ? $list : [], fn ($exp) => is_int($exp) && $exp >= time());
+        $id   = hash('sha256', (string) $cookie);
+        $hit  = isset($list[$id]);
+        if ($until) {
+            $list[$id] = (int) $until;
+            rewind($h);
+            ftruncate($h, 0);
+            fwrite($h, (string) json_encode($list));
+            fflush($h);
+        }
+        flock($h, LOCK_UN);
+        fclose($h);
+
+        return $hit;
     }
 
     private function rateFile()

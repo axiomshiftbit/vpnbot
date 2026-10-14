@@ -57,6 +57,8 @@ header button:hover{background:var(--btnh)}
 .msg .body .tg-spoiler{background:var(--dim);color:transparent;border-radius:3px;cursor:pointer}
 .msg .body .tg-spoiler.show{background:transparent;color:inherit}
 .msg .time{color:var(--dim);font-size:11px;margin-top:4px}
+/* Черновик — ход долгой операции, итог придёт отдельным сообщением. */
+.msg.draft{border-style:dashed;opacity:.85}
 .kb{display:flex;flex-direction:column;gap:5px;margin-top:8px}
 .kb .row{display:flex;gap:5px;flex-wrap:wrap}
 .kb button,.kb a{flex:1 1 120px;background:var(--btn);border:1px solid var(--line);color:var(--text);border-radius:9px;
@@ -180,7 +182,7 @@ function render(m){
   if (!el){
     el = document.createElement("div");
     el.id = "m" + m.id;
-    el.className = "msg" + (m.own ? " own" : "");
+    el.className = "msg" + (m.own ? " own" : "") + (m.draft ? " draft" : "");
     // Лента строго по возрастанию id: правки приходят вперемешку с новыми.
     let next = null;
     for (const c of feed.children) if (+c.id.slice(1) > m.id){ next = c; break; }

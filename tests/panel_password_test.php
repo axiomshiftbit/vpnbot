@@ -44,6 +44,8 @@ class PanelPswdTestBot extends Bot
     public function __construct()
     {
         $this->admin = true;
+        // Копия пароля для просмотра шифруется ключом из токена бота.
+        $this->key   = 'test-token:AAH';
     }
 
     public function getHashBot($notset = false)

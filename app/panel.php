@@ -40,7 +40,7 @@ switch ($cmd) {
         echo "  ssh -L $port:127.0.0.1:$port <сервер>\n";
         if ($plain) {
             echo "\nСгенерирован пароль: $plain\n";
-            echo "Он же лежит в " . Panel::dataDir() . "/initial_password.txt — удалите после входа.\n";
+            echo "Он же лежит в " . Panel::dataDir() . "/initial_password.txt — файл удалится после первого входа.\n";
         }
         if (empty($c['admin'])) {
             echo "\nВНИМАНИЕ: в config.php пуст \$c['admin'] — бот никому не принадлежит.\n";

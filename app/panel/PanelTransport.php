@@ -13,6 +13,8 @@ require_once __DIR__ . '/Store.php';
 class PanelTransport
 {
     private $store;
+    /** draft_id => message_id пузыря с ходом выполнения (см. draft()). */
+    private $drafts = [];
 
     public function __construct(PanelStore $store)
     {
@@ -36,10 +38,17 @@ class PanelTransport
 
         switch ($method) {
             case 'sendMessage':
+                $this->closeDrafts();
+
                 return $this->sendMessage($data);
 
             case 'editMessageText':
+                $this->closeDrafts();
+
                 return $this->editMessageText($data);
+
+            case 'sendMessageDraft':
+                return $this->draft($data);
 
             case 'deleteMessage':
                 $this->store->delete((int) ($data['message_id'] ?? 0));
@@ -56,9 +65,13 @@ class PanelTransport
                 return ['ok' => true, 'result' => true];
 
             case 'sendPhoto':
+                $this->closeDrafts();
+
                 return $this->sendAttachment($data, 'photo');
 
             case 'sendDocument':
+                $this->closeDrafts();
+
                 return $this->sendAttachment($data, 'document');
 
             case 'getFile':
@@ -70,7 +83,6 @@ class PanelTransport
                 return ['ok' => true, 'result' => ['name' => 'panel']];
 
             // Смысла вне Telegram не имеют, но вызываются: молча подтверждаем.
-            case 'sendMessageDraft':
             case 'pinChatMessage':
             case 'unpinChatMessage':
             case 'setMyCommands':
@@ -95,6 +107,37 @@ class PanelTransport
         ]);
 
         return $this->result($id, $data);
+    }
+
+    /**
+     * Черновик Telegram — ход долгой операции (переключение WARP, проверки
+     * MASQUE): бот шлёт его повторно с тем же draft_id и растущим текстом, а
+     * итог — обычным сообщением. В панели черновик — пузырь, который
+     * правится на месте; опрос ленты идёт параллельно с обработчиком, так что
+     * ход виден вживую. Итоговое сообщение того же действия черновик убирает
+     * (closeDrafts()). Ответ — как у Telegram: true, без message_id.
+     */
+    private function draft(array $data)
+    {
+        $key  = (string) ($data['draft_id'] ?? '');
+        $text = (string) ($data['text'] ?? '');
+        if (isset($this->drafts[$key]) && $this->store->edit($this->drafts[$key], ['text' => $text])) {
+            return ['ok' => true, 'result' => true];
+        }
+        if ('' !== $text) {
+            $this->drafts[$key] = $this->store->put(['text' => $text, 'draft' => true]);
+        }
+
+        return ['ok' => true, 'result' => true];
+    }
+
+    /** Убирает черновики: их заменяет итоговое сообщение. */
+    public function closeDrafts()
+    {
+        foreach ($this->drafts as $id) {
+            $this->store->delete($id);
+        }
+        $this->drafts = [];
     }
 
     private function editMessageText(array $data)

@@ -4086,8 +4086,9 @@ class Bot
         if (!is_array($c)) throw new RuntimeException('Настройки недоступны — пароль не изменён');
         $c['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
         $dir = getenv('PANEL_DIR') ?: '/config/panel';
-        if (!PanelPasswordVault::remember($dir, $plain, $c['panelpswd'])) throw new RuntimeException('Не удалось сохранить защищённую копию — пароль не изменён');
+        if (!PanelPasswordVault::remember($dir, $plain, $c['panelpswd'], (string) $this->key)) throw new RuntimeException('Не удалось сохранить защищённую копию — пароль не изменён');
         if ($this->setPacConf($c) === false) throw new RuntimeException('Не удалось записать настройки — пароль не изменён');
+        PanelPasswordVault::settle($dir, $c['panelpswd']);
         // Как Panel::setPassword(): протухший initial_password.txt с уже
         // недействительным паролем не должен пережить смену.
         @unlink($dir . '/initial_password.txt');
@@ -4097,7 +4098,7 @@ class Bot
     {
         if (!$this->admin) return;
         $hash = (string) ($this->getPacConf()['panelpswd'] ?? '');
-        $pass = PanelPasswordVault::reveal(getenv('PANEL_DIR') ?: '/config/panel', $hash);
+        $pass = PanelPasswordVault::reveal(getenv('PANEL_DIR') ?: '/config/panel', $hash, (string) $this->key);
         $text = $pass === null
             ? 'Для текущего пароля сохранён только хеш. Войдите в веб-панель с действующим паролем или задайте новый — после этого здесь будет доступен просмотр.'
             : "Пароль веб-панели:\n<span class=\"tg-spoiler\">" . self::esc($pass) . '</span>';
@@ -7612,8 +7613,10 @@ NFT;
             if ($name === 'panel/password-display.key' && strlen($body) !== 32) throw new RuntimeException('Некорректный ключ хранилища пароля');
             $decoded[$name] = $body;
         }
-        foreach (['panel/password-display.key' => 'panel/password-display.json'] as $a => $b) {
-            if (isset($decoded[$a]) !== isset($decoded[$b])) throw new RuntimeException('Неполное хранилище пароля');
+        // Ключ файлом был только у прежнего формата копии пароля (теперь ключ
+        // выводится из токена бота): старому бэкапу без шифротекста он ни к чему.
+        if (isset($decoded['panel/password-display.key']) && !isset($decoded['panel/password-display.json'])) {
+            throw new RuntimeException('Неполное хранилище пароля');
         }
         return $decoded;
     }

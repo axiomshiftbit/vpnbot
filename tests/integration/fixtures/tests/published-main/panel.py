@@ -213,6 +213,7 @@ try:
     gen = next((g.group(1) for t in texts for g in [re.search(r'<code>([0-9a-f]{32})</code>', t)] if g), None)
     check('generated-password-shown-in-feed', bool(gen))
     check('generated-password-logs-in', bool(gen) and login(gen)[0] == 200)
+    check('display-copy-key-not-stored-beside', run('docker', 'exec', PHP, 'test', '-e', '/config/panel/password-display.key').returncode != 0)
     C = fresh or C
     run('docker', 'exec', '-w', '/app', PHP, 'php', 'panel.php', 'passwd', PASSWORD).check_returncode()
     check('cli-password-change-ends-sessions', req('GET', P + '/state', headers={'Cookie': C})[0] == 401)
@@ -246,10 +247,12 @@ try:
     s, ck, _ = login(PASSWORD); C = ck.split(';')[0]
     s, _, ck, _ = post(C, 'logout', {})
     check('logout-clears-cookie', s == 200 and any(x.startswith('panel=') and 'max-age=0' in x.lower() for x in ck))
+    check('logout-revokes-copied-cookie', req('GET', P + '/state', headers={'Cookie': C})[0] == 401)
+    check('revoked-list-private', run('docker', 'exec', PHP, 'stat', '-c', '%a', '/config/panel/revoked.json').stdout.strip() == '600')
 finally:
     if admins() != original_admins: set_admins(json.dumps(original_admins))
     if bool(pac('adgbrowser')) != bool(original_browser):
         php('$f="/config/pac.json";$c=json_decode(file_get_contents($f),true);$c["adgbrowser"]=' + ('1' if original_browser else '0') + ';file_put_contents($f,json_encode($c,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));')
-    php('@unlink("/config/panel/login_attempts.json"); foreach (glob("/config/panel/files/*") ?: [] as $f) @unlink($f); @unlink("/config/panel/state.json");')
+    php('@unlink("/config/panel/login_attempts.json"); @unlink("/config/panel/revoked.json"); foreach (glob("/config/panel/files/*") ?: [] as $f) @unlink($f); @unlink("/config/panel/state.json");')
 print(json.dumps({'passed': sum(x['passed'] for x in results), 'total': len(results)}))
 raise SystemExit(0 if all(x['passed'] for x in results) else 1)

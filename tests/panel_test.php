@@ -484,4 +484,43 @@ preg_match('~^post_max_size\s*=\s*(\d+)M~m', $ini, $pm);
 panelAssert((int) ($unit['settings']['http']['max_body_size'] ?? 0) >= (int) ($pm[1] ?? PHP_INT_MAX) * 1048576,
     'unit.json: max_body_size не меньше post_max_size из php.ini');
 
+// ── выход отзывает куку на сервере ───────────────────────────────────────────
+// Подписанная кука не хранится на сервере: прежде удаление в браузере не
+// мешало её копии работать до конца срока (12 ч).
+$expL = time() + 3600;
+$sessionA = $expL . '.' . $sign->invoke($panel, $expL);
+$sessionB = ($expL + 1) . '.' . $sign->invoke($panel, $expL + 1);
+$_COOKIE['panel'] = $sessionA;
+panelAssert($panel->authed(), 'сессия до выхода действует');
+$logout = new ReflectionMethod(Panel::class, 'logout');
+ob_start();
+$logout->invoke($panel);
+ob_end_clean();
+panelAssert(!$panel->authed(), 'после выхода та же кука не пускает');
+$_COOKIE['panel'] = $sessionB;
+panelAssert($panel->authed(), 'выход не задевает другие сессии');
+$revoked = json_decode((string) file_get_contents($store->dir() . '/revoked.json'), true);
+panelAssert(1 === count($revoked) && $expL === reset($revoked) && (fileperms($store->dir() . '/revoked.json') & 0777) === 0600,
+    'в списке отозванных — отпечаток и срок вышедшей куки, файл закрыт');
+file_put_contents($store->dir() . '/revoked.json', json_encode(['old' => time() - 5] + $revoked));
+$_COOKIE['panel'] = $sessionB;
+ob_start();
+$logout->invoke($panel);
+ob_end_clean();
+panelAssert(2 === count(json_decode((string) file_get_contents($store->dir() . '/revoked.json'), true)), 'истёкшие записи выбрасываются');
+unset($_COOKIE['panel']);
+
+// ── черновики (ход долгих операций) видны в ленте ────────────────────────────
+$store->reset();
+$draftBot            = new PanelTestBot();
+$draftBot->transport = new PanelTransport($store);
+$rd = $draftBot->sendDraft(777, 1, "шаг 1...");
+panelAssert(true === ($rd['result'] ?? null), 'sendMessageDraft отвечает как Telegram — true без message_id');
+$draftBot->sendDraft(777, 1, "шаг 1... ok\nшаг 2...");
+$drafts = array_values(array_filter($store->read()['messages'], fn ($m) => !empty($m['draft']) && empty($m['deleted'])));
+panelAssert(1 === count($drafts) && str_contains($drafts[0]['text'], 'шаг 2'), 'черновик с тем же draft_id правится на месте');
+$draftBot->send(777, "итог", 0);
+$live = array_values(array_filter($store->read()['messages'], fn ($m) => empty($m['deleted'])));
+panelAssert(1 === count($live) && 'итог' === $live[0]['text'], 'итоговое сообщение убирает черновик');
+
 echo "panel_test: OK\n";
