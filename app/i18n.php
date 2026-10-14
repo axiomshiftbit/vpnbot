@@ -2703,10 +2703,6 @@ $i = [
         'en' => "rate limit",
         'ru' => "лимит запросов",
     ],
-    'adg users' => [
-        'en' => "users",
-        'ru' => "пользователей",
-    ],
     'adg dot open' => [
         'en' => "DoT port is published and the allowed clients list is empty: anyone can use this resolver. Press «fill allowed clients».",
         'ru' => "Порт DoT опубликован, а список разрешённых пуст: резолвером может пользоваться любой. Нажмите «заполнить список разрешённых».",
@@ -2756,8 +2752,8 @@ $i = [
         'ru' => "самый быстрый",
     ],
     'adg settings hint' => [
-        'en' => "Changes apply at once, AdGuard is not restarted.\nProtection: filtering on or off; a pause turns it back on by itself.\nUpstream mode: in turn — by speed; parallel — ask all, take the first answer; fastest — pick the fastest address.",
-        'ru' => "Изменения применяются сразу, AdGuard не перезапускается.\nЗащита: фильтрация включена или выключена; пауза сама включит её обратно.\nРежим апстримов: по очереди — с учётом скорости; параллельно — спросить все, взять первый ответ; самый быстрый — выбрать самый быстрый адрес.",
+        'en' => "Changes apply at once, AdGuard is not restarted.",
+        'ru' => "Изменения применяются сразу, AdGuard не перезапускается.",
     ],
     'adg hint rate' => [
         'en' => "Answers per second for one /24 subnet. All WireGuard clients share one subnet, and so do clients that reach AdGuard through containers: with many users 20/s is not enough.",

@@ -257,11 +257,16 @@ try {
     adgAssert(str_contains($menu['text'], 'adg rate limit: 20/s') && !str_contains($menu['text'], 'adg dot open'), 'лимит не показан либо ложное предупреждение о DoT');
     $bot->dotPublished = true;
     adgAssert(str_contains($bot->adguardMenu()['text'], 'adg dot open'), 'нет предупреждения об открытом DoT');
-    $c['dns']['allowed_clients'] = array_merge(['10.10.0.0/24', 'my-key'], array_map(fn($i) => sprintf('doh-%016x', $i), range(1, 300))); yaml_emit_file($bot->adguard, $c);
+    // Список разрешённых показывается целиком, у идентификаторов пользователей — имя.
+    $bot->xrayFake['inbounds'][0]['settings']['clients'] = [['id' => $u1, 'email' => 'alice <admin>'], ['id' => $u2, 'email' => 'bob']];
+    $legacyBob = $bot->legacyDohClientId($u2);
+    $c['dns']['allowed_clients'] = array_merge(['10.10.0.0/24', 'my-key', $bot->dohClientId($u1), $legacyBob],
+        array_map(fn($i) => sprintf('doh-%016x', $i), range(1, 300))); yaml_emit_file($bot->adguard, $c);
     $text = $bot->adguardMenu()['text'];
-    adgAssert(!str_contains($text, 'adg dot open') && str_contains($text, 'adg users: 300') && str_contains($text, 'my-key') && mb_strlen($text) < 1500, 'список разрешённых не свёрнут: ' . mb_strlen($text));
+    adgAssert(!str_contains($text, 'adg dot open') && str_contains($text, 'my-key') && str_contains($text, sprintf('doh-%016x', 300)), 'список разрешённых показан не целиком');
+    adgAssert(str_contains($text, $bot->dohClientId($u1) . ' — alice &lt;admin&gt;') && str_contains($text, "$legacyBob — bob"), 'у идентификаторов нет имён пользователей: ' . mb_substr($text, -800));
     $callbacks = json_encode($bot->adguardMenu()['data']);
-    adgAssert(str_contains($callbacks, '/adgSettings') && str_contains($callbacks, '/adgStats'), 'нет кнопок настроек и статистики');
+    adgAssert(str_contains($callbacks, '/adgSettings') && str_contains($callbacks, '/adgStats') && str_contains($callbacks, '/menuhelp adguard 0'), 'нет кнопок настроек, статистики или справки');
     file_put_contents($bot->adguard, '');
     adgAssert(str_contains($bot->adguardMenu()['text'], 'не читается'), 'меню не сообщает о нечитаемом конфиге');
 
@@ -272,6 +277,28 @@ try {
     adgAssert(str_contains($dockerfile, 'npm --prefix client ci') && str_contains($dockerfile, 'npm --prefix client run build-prod')
         && !preg_match('~--prefix\s+client_v2~', $dockerfile), 'образ AdGuard собирается не с интерфейсом официального выпуска');
     adgAssert(str_contains($dockerfile, 'go-security.sh') && str_contains($dockerfile, 'version.channel=release'), 'из сборки AdGuard пропали исправления Go или канал release');
+
+    // ── Справка: кнопки на экранах, возврат туда, откуда открыта ────────────
+    $bot = $new(); yaml_emit_file($bot->adguard, $base); file_put_contents($bot->pac, json_encode(['adpswd' => 'secret-pass']));
+    $bot->adgSettings();
+    adgAssert(str_contains(json_encode(end($bot->screens)[1]), '/menuhelp adguard 0 settings'), 'в настройках нет кнопки справки');
+    adgAssert(mb_strlen(end($bot->screens)[0]) < 200, 'экран настроек снова перегружен подсказкой');
+    $bot->adgSettings('rate');
+    adgAssert(str_contains(json_encode(end($bot->screens)[1]), '/menuhelp adguard 0 rate'), 'в выборе лимита нет кнопки справки');
+    $bot->adgStats();
+    adgAssert(str_contains(json_encode(end($bot->screens)[1]), '/menuhelp adguard 0 statistics'), 'в статистике нет кнопки справки');
+    foreach (['' => '/menu adguard', 'settings' => '/adgSettings', 'qlog' => '/adgSettings qlog', 'statistics' => '/adgStats', 'junk' => '/menu adguard'] as $ctx => $route) {
+        adgAssert(($bot->menuHelpContent('adguard', $ctx)[1] ?? '') === $route, "справка из «{$ctx}» возвращает не туда");
+    }
+    $pages = $bot->menuHelpContent('adguard')[2];
+    adgAssert(count($pages) >= 8, 'в справке AdGuard не хватает тем');
+    foreach ($pages as $title => $body) {
+        adgAssert($bot->messageTextLength("AdGuard → help\n\n<b>$title</b>\n\n$body") < 3500, "страница «{$title}» не влезает в сообщение");
+        $tags = preg_replace('~</?(?:b|code)>~', '', $body);
+        adgAssert(!str_contains($tags, '<') && !str_contains($tags, '>'), "в странице «{$title}» разметка, которую Telegram не примет");
+        adgAssert(substr_count($body, '<b>') === substr_count($body, '</b>') && substr_count($body, '<code>') === substr_count($body, '</code>'), "в странице «{$title}» незакрытый тег");
+    }
+    adgAssert(strlen('/menuhelp adguard ' . count($pages) . ' statistics') <= 64, 'данные кнопки справки длиннее 64 байт');
 
     // ── Сброс — только с подтверждением ─────────────────────────────────────
     $bot = $new(); yaml_emit_file($bot->adguard, $base); file_put_contents($bot->pac, json_encode(['adpswd' => 'secret-pass']));

@@ -12424,6 +12424,7 @@ NFT;
             foreach (array_chunk($values, 4) as $chunk) {
                 $data[] = array_map(fn(int $v) => ['text' => $mark($v === $current) . $label($v), 'callback_data' => "/adgSet $pick $v"], $chunk);
             }
+            $data[] = $this->menuHelpButton('adguard', $pick);
             $data[] = $back;
             $this->update($this->input['chat'], $this->input['message_id'],
                 "$path -> $title\n\n" . $this->i18n("adg hint $pick"), $data);
@@ -12457,6 +12458,7 @@ NFT;
             ['text' => $this->i18n('adg stats keep') . ': ' . $days($stats), 'callback_data' => '/adgSettings stats'],
         ];
         $data[] = [['text' => $this->i18n('adg hide ip') . ': ' . $onoff($anon), 'callback_data' => '/adgSet anon ' . ($anon ? 'off' : 'on')]];
+        $data[] = $this->menuHelpButton('adguard', 'settings');
         $data[] = $back;
         $this->update($this->input['chat'], $this->input['message_id'], "$path\n\n" . $this->i18n('adg settings hint'), $data);
     }
@@ -12533,6 +12535,7 @@ NFT;
     {
         $path = 'Menu -> AdGuard -> ' . $this->i18n('adg statistics');
         $back = [[['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => '/adgStats']],
+            $this->menuHelpButton('adguard', 'statistics'),
             [['text' => $this->i18n('back'), 'callback_data' => '/menu adguard']]];
         $stats = $this->adguardApi('GET', 'stats', null, 6);
         if ($stats === null) {
@@ -32435,13 +32438,8 @@ DNS-over-HTTPS with IP:
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} введите версию AdGuardHome тегом <code>vX.Y.Z</code> (например <code>v0.107.78</code>).\n\n"
-            . "Теги — на hub.docker.com/r/adguard/adguardhome/tags.\n\n"
-            . "ВНИМАНИЕ: понижать версию нельзя. AdGuardHome мигрирует "
-            . "<code>/config/AdGuardHome.yaml</code> вперёд без обратной совместимости — "
-            . "после отката старая версия свой же конфиг не прочитает.\n\n"
-            . "Пин ложится в .env, но образы приезжают готовыми из ghcr.io — сам по себе он ничего не изменит.\n"
-            . "Применить локально: <code>docker compose build ad</code>, затем <code>make r</code>.\n"
-            . "Либо закоммитить .env в репозиторий: CI пересоберёт образ, и <code>make r</code> подтянет его.",
+            . "ВНИМАНИЕ: понижать версию нельзя — старая версия не прочитает обновлённый конфиг. "
+            . "Версия только записывается в .env; как её применить — AdGuard → «📖 Справка» → «Версия, сброс и неполадки».",
             $this->input['message_id'],
             reply: 'введите версию AdGuardHome',
         );
@@ -32536,12 +32534,20 @@ DNS-over-HTTPS with IP:
         }
         $allowedClients = array_map('strval', (array) ($ad['dns']['allowed_clients'] ?? []));
         if ($allowedClients) {
-            // Пользователей бывают сотни: показываем сети и ключ, а выданные
-            // ботом идентификаторы — числом, иначе текст не влезает в сообщение.
-            $own   = array_filter($allowedClients, [self::class, 'adguardBotClientId']);
-            $other = array_slice(array_values(array_diff($allowedClients, $own)), 0, 30);
-            $text .= "\n\nallowed clients: \n - " . implode("\n - ", array_map([self::class, 'esc'], $other))
-                . ($own ? "\n - " . $this->i18n('adg users') . ': ' . count($own) : '');
+            // Весь список, как и раньше; у идентификаторов, выданных ботом, —
+            // имя пользователя. Длинный текст update() сам делит на сообщения.
+            $names = [];
+            foreach ((array) (($this->getXray() ?: [])['inbounds'][0]['settings']['clients'] ?? []) as $client) {
+                if (($uid = (string) ($client['id'] ?? '')) === '') {
+                    continue;
+                }
+                $legacy = $this->legacyDohClientId($uid);
+                foreach ([$this->dohClientId($uid), $legacy, implode(':', str_split($legacy, 2))] as $id) {
+                    $names[$id] = (string) ($client['email'] ?? '');
+                }
+            }
+            $text .= "\n\nallowed clients: \n - " . implode("\n - ", array_map(
+                static fn($v) => self::esc($v) . (($names[$v] ?? '') !== '' ? ' — ' . self::esc($names[$v]) : ''), $allowedClients));
         } elseif (!empty($this->getPorts()['ad']['enable'])) {
             // Порт DoT опубликован, список разрешённых пуст — резолвером может
             // пользоваться любой, кто знает адрес сервера.
@@ -32629,6 +32635,7 @@ DNS-over-HTTPS with IP:
                 ];
             }
         }
+        $data[] = $this->menuHelpButton('adguard');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
