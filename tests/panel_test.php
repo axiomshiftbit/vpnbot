@@ -444,4 +444,44 @@ $noCurrent->setPacConf(['domain' => 'x.test']); // на панели парол�
 $restored3 = $noCurrent->preservePanelPswd(['domain' => 'y.test'], $noCurrent->getPacConf());
 panelAssert(empty($restored3['panelpswd']), 'нет текущего пароля — restore не выдумывает его из ничего');
 
+// ── id администраторов строкой (так их писали старые версии addAdmin) ───────
+// Строгие in_array() в login()/authed() и список на странице входа ждут целые:
+// со строками второй админ получал «unknown admin», а JSON.parse на странице
+// падал на &quot;.
+$legacy = new Panel($bot, ['key' => 'test-token:AAH', 'admin' => ['111', '222']], $store);
+$_COOKIE['panel'] = $exp2 . '.222.' . $sign2->invoke($legacy, $exp2, 222);
+panelAssert($legacy->authed(), 'строковые id: кука второго админа пускает');
+panelAssert(222 === $chatId2->invoke($legacy), 'строковые id: chatId() целый');
+unset($_COOKIE['panel']);
+$_SERVER = ['REMOTE_ADDR' => '127.0.0.1', 'HTTP_HOST' => '127.0.0.1:8090', 'REQUEST_METHOD' => 'GET'];
+ob_start();
+$legacy->route('/paneldeadbeef/');
+$page = (string) ob_get_clean();
+panelAssert(str_contains($page, 'JSON.parse("[111,222]")'), 'строковые id: список админов на странице — разбираемый JSON');
+$_SERVER = [];
+
+// ── действия бота выполняются по очереди ─────────────────────────────────────
+// Telegram-бот читает апдейты polling'ом по одному, а панель обслуживают
+// несколько воркеров unit: параллельные «прочитать pac.json → записать» теряли
+// запись (проверено на стенде).
+$serial = new ReflectionMethod(Panel::class, 'serial');
+panelAssert('done' === $serial->invoke($panel, fn () => 'done'), 'serial() выполняет действие и возвращает его результат');
+$probe = fopen($store->dir() . '/dispatch.lock', 'c');
+panelAssert(flock($probe, LOCK_EX | LOCK_NB), 'serial() отпускает блокировку после действия');
+flock($probe, LOCK_UN);
+fclose($probe);
+$src = (string) file_get_contents(__DIR__ . '/../app/panel/Panel.php');
+foreach (['click', 'text', 'upload', 'tsave'] as $a) {
+    panelAssert(str_contains($src, "case '$a':\n                return \$this->serial(fn () => \$this->$a());"), "/$a идёт через serial()");
+}
+
+// ── лимит тела запроса unit не ниже лимита загрузки панели ──────────────────
+// Без settings.http.max_body_size unit режет тело на 8 МБ и рвёт соединение,
+// а панель обещала 20 МиБ: файл 9 МиБ молча не доходил.
+$unit = json_decode((string) file_get_contents(__DIR__ . '/../config/unit.json'), true);
+$ini  = (string) file_get_contents(__DIR__ . '/../config/php.ini');
+preg_match('~^post_max_size\s*=\s*(\d+)M~m', $ini, $pm);
+panelAssert((int) ($unit['settings']['http']['max_body_size'] ?? 0) >= (int) ($pm[1] ?? PHP_INT_MAX) * 1048576,
+    'unit.json: max_body_size не меньше post_max_size из php.ini');
+
 echo "panel_test: OK\n";

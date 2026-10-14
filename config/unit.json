@@ -33,6 +33,11 @@
 			}
 		}
 	},
+	"settings": {
+		"http": {
+			"max_body_size": 25165824
+		}
+	},
 	"access_log": {
 		"path": "/logs/unit_access",
 		"format": "$remote_addr - - [$time_local] \"$method\" $status $body_bytes_sent"

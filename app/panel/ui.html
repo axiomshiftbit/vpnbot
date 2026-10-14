@@ -137,7 +137,7 @@ footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);pa
 <script>
 const PREFIX = "{{PREFIX}}";
 const ADMINS = JSON.parse("{{ADMINS}}");
-let rev = 0, replyTo = 0, replyHint = "", timer = null, inflight = false, ttl = 0;
+let rev = 0, replyTo = 0, replyHint = "", timer = null, inflight = false, ttl = 0, uploadLimit = 0;
 
 const $ = id => document.getElementById(id);
 const feed = $("feed");
@@ -161,6 +161,15 @@ function toast(t, alert){
   el.style.display = "block";
   clearTimeout(el._t);
   el._t = setTimeout(() => el.style.display = "none", alert ? 6000 : 3000);
+}
+
+// Ответ сервера с ошибкой (409 — бот занят предыдущей командой, 413, 500…)
+// раньше молча терялся: кнопка «отжималась», и ничего не происходило.
+async function failed(r){
+  if (r.ok || r.status === 401) return false;
+  const d = await r.json().catch(() => ({}));
+  toast(d.error || ("ошибка " + r.status), true);
+  return true;
 }
 
 function atBottom(){ return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120; }
@@ -314,7 +323,7 @@ async function click(id, data, btn){
   busy(true);
   try{
     const r = await api("click", form({message_id:id, data:data}));
-    if (r.status === 401) showLogin();
+    if (r.status === 401) showLogin(); else await failed(r);
   }catch(e){ toast("сеть недоступна"); }
   finally{ busy(false); if (btn) btn.disabled = false; poll(); }
 }
@@ -327,11 +336,18 @@ async function send(){
   try{
     const r = await api("text", form({text:t, reply_to:replyTo}));
     if (r.status === 401) showLogin();
-  }catch(e){ toast("сеть недоступна"); }
+    else if (await failed(r) && !$("text").value) $("text").value = t;
+  }catch(e){ toast("сеть недоступна"); $("text").value = $("text").value || t; }
   finally{ busy(false); poll(); }
 }
 
 function upload(f){
+  // Больше лимита сервер оборвёт соединение, не дочитав тело, — понятной
+  // ошибки браузер не получит. Лимит берётся из /diag.
+  if (uploadLimit && f.size > uploadLimit){
+    toast("файл больше " + (uploadLimit / 1048576).toFixed(1) + " МиБ", true);
+    return Promise.resolve();
+  }
   const fd = new FormData();
   fd.append("file", f);
   fd.append("reply_to", replyTo);
@@ -342,7 +358,14 @@ function upload(f){
     xhr.open("POST", PREFIX + "/upload");
     xhr.setRequestHeader("X-Panel", "1");
     xhr.upload.onprogress = e => { if (e.lengthComputable) busy(Math.round(e.loaded / e.total * 100)); };
-    xhr.onload = () => { if (xhr.status === 401) showLogin(); };
+    xhr.onload = () => {
+      if (xhr.status === 401) return showLogin();
+      if (xhr.status >= 400){
+        let err = "";
+        try{ err = JSON.parse(xhr.responseText).error || ""; }catch(e){}
+        toast(err || "файл не принят: ошибка " + xhr.status, true);
+      }
+    };
     xhr.onerror = () => toast("не удалось отправить файл");
     xhr.onloadend = () => { busy(false); poll(); resolve(); };
     busy(0);
@@ -368,6 +391,7 @@ async function loadDiag(){
     const d = await r.json();
     if (!d.ok) return;
     ttl = d.ttl;
+    uploadLimit = d.upload_limit || 0;
     $("who").dataset.admin = d.admin;
     tickWho();
     clearInterval(ttlTimer);

@@ -20,6 +20,8 @@ class Panel
     private const MAX_TRIES  = 5;
     private const TRY_WINDOW = 300;
     private const MAX_UPLOAD = 20971520; // 20 MiB
+    /** Сколько секунд действие ждёт, пока бот закончит предыдущее (см. serial()). */
+    private const SERIAL_WAIT = 30;
 
     /** Действия, меняющие состояние: только POST (см. route()). */
     private const MUTATING = ['login', 'logout', 'click', 'text', 'upload', 'reset', 'tload', 'tsave', 'dismiss'];
@@ -37,7 +39,11 @@ class Panel
     {
         $this->bot       = $bot;
         $this->key       = (string) ($c['key'] ?? '');
-        $this->admins    = array_values((array) ($c['admin'] ?? []));
+        // Старые версии addAdmin() клали в config.php сырой текст ответа, то
+        // есть id строкой. Строгие in_array() ниже и список на странице входа
+        // ждут целые: со строками второй админ получал «unknown admin», а
+        // JSON.parse на странице падал на &quot;. Bot::auth() сравнивает так же.
+        $this->admins    = array_values(array_map('intval', (array) ($c['admin'] ?? [])));
         $this->store     = $store ?: new PanelStore(self::dataDir());
         $this->transport = new PanelTransport($this->store);
         $this->prefix    = '/panel' . $bot->getHashBot();
@@ -352,7 +358,7 @@ class Panel
                 return $this->tload();
 
             case 'tsave':
-                return $this->tsave();
+                return $this->serial(fn () => $this->tsave());
 
             case 'state':
                 return $this->state();
@@ -364,13 +370,13 @@ class Panel
                 return $this->dismiss();
 
             case 'click':
-                return $this->click();
+                return $this->serial(fn () => $this->click());
 
             case 'text':
-                return $this->text();
+                return $this->serial(fn () => $this->text());
 
             case 'upload':
-                return $this->upload();
+                return $this->serial(fn () => $this->upload());
 
             case 'file':
                 return $this->file();
@@ -477,6 +483,14 @@ class Panel
         }
         $this->rateClear();
         PanelPasswordVault::remember($this->store->dir(), $pass, $hash);
+        $this->issueSession($admin);
+
+        return $this->json(['ok' => true, 'admin' => $admin]);
+    }
+
+    /** Подписанная кука сессии от имени $admin на TTL от текущего момента. */
+    private function issueSession($admin)
+    {
         $exp   = time() + self::TTL;
         $value = count($this->admins) > 1
             ? $exp . '.' . $admin . '.' . $this->sign($exp, $admin)
@@ -492,8 +506,6 @@ class Panel
             // https-прокси — там кука обязана быть secure.
             'secure'   => self::httpsRequest(),
         ]);
-
-        return $this->json(['ok' => true, 'admin' => $admin]);
     }
 
     private static function httpsRequest(): bool
@@ -1178,6 +1190,7 @@ class Panel
         set_time_limit(0);
         ignore_user_abort(true);
         $this->attach();
+        $hash = $this->passwordHash();
         try {
             $this->bot->input($update);
         } catch (Throwable $e) {
@@ -1188,8 +1201,56 @@ class Panel
                 session_write_close();
             }
         }
+        // Смена пароля кнопками настроек обнуляет все сессии (подпись куки
+        // завязана на хеш), в том числе ту, из которой его сменили, — а
+        // сгенерированный пароль бот показывает в этой же ленте: админ попадал
+        // на форму входа без пароля. Текущая сессия получает новую куку,
+        // остальные по-прежнему сбрасываются.
+        try {
+            $now = $this->passwordHash();
+            if ('' !== $now && $now !== $hash) {
+                $this->issueSession($this->chatId());
+            }
+        } catch (Throwable $e) {
+            error_log('panel dispatch: ' . $e->getMessage());
+        }
 
         return $this->json(['ok' => true]);
+    }
+
+    /**
+     * В Telegram бот читает апдейты polling'ом строго по одному, а панель
+     * обслуживают до четырёх воркеров unit: два быстрых клика шли параллельно,
+     * и обработчики вида «прочитать pac.json → изменить → записать» теряли
+     * запись друг друга (на стенде два одновременных переключения adgbrowser
+     * давали одно в 5 случаях из 6). Действия бота выполняем по очереди, как в
+     * Telegram. Ждём ограниченно: долгая операция (обновление, certbot) не
+     * должна собрать за собой все воркеры — тогда встал бы и опрос ленты.
+     */
+    private function serial(callable $fn)
+    {
+        $f = $this->store->dir() . '/dispatch.lock';
+        $h = @fopen($f, 'c');
+        if (!$h) {
+            // Как в rateHit(): сломанный файл блокировки не должен запирать панель.
+            return $fn();
+        }
+        @chmod($f, 0600);
+        $until = microtime(true) + self::SERIAL_WAIT;
+        while (!flock($h, LOCK_EX | LOCK_NB)) {
+            if (microtime(true) >= $until) {
+                fclose($h);
+
+                return $this->json(['ok' => false, 'error' => 'бот ещё выполняет предыдущую команду — повторите позже'], 409);
+            }
+            usleep(200000);
+        }
+        try {
+            return $fn();
+        } finally {
+            flock($h, LOCK_UN);
+            fclose($h);
+        }
     }
 
     /** Подключает панельный транспорт к боту (и путь скачивания файлов). */
