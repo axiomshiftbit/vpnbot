@@ -41,6 +41,10 @@ def stop(p,f):
  f.close()
 def http():
  r=run('docker','exec',C,'curl','--retry','3','--retry-all-errors','--retry-delay','1','--socks5-hostname','127.0.0.1:'+str(PROBE_PORT),'--noproxy','','-fsS','--max-time','12','https://example.com/',timeout=60);(O/('curl-'+str(len(results))+'.log')).write_text(r.stdout+r.stderr);return r
+def isolated(url):
+ # Без -f: любой ответ HTTP (даже 403 панели) значит, что соединение с
+ # внутренней сетью состоялось. Изоляция — это отсутствие ответа вовсе.
+ r=run('docker','exec',C,'curl','--socks5-hostname','127.0.0.1:'+str(PROBE_PORT),'--noproxy','','-sS','--max-time','3',url,timeout=30);return r.returncode!=0 and not r.stdout
 def proof(action):
  for attempt in range(20):
   r=run('docker','exec','php-audit','php','/tmp/tt-metrics-proof.php',action);r.check_returncode();v=json.loads(r.stdout)
@@ -62,6 +66,8 @@ for proto in ['http2','http3']:
   r=http();check(proto+'-https',r.returncode==0 and 'Example Domain' in r.stdout)
   st=proof('stats')['audittt'];check(proto+'-live-session-and-traffic',st['sessions']>0 and st['upload']>0 and st['download']>0)
   check(proto+'-real-user-card',all(proof('menu').values()))
+  for name,url in [('docker-api','http://10.10.0.8:2375/version'),('panel','http://10.10.0.7:8090/'),('adguard-admin','http://10.10.0.5:80/')]:
+   check(proto+'-'+name+'-isolated',r.returncode==0 and isolated(url))
  finally:stop(p,f)
 check('metrics-help-route',all(proof('help').values()))
 check('metrics-restart-success',proof('restart') is True)

@@ -58,6 +58,9 @@ try:
  check('profile-is-for-one-user',sum(text.count(i['id']) for i in config['inbounds'][0]['settings']['clients'])==1)
  start_client(profile)
  code,size=fetch();check('page-through-the-storage',code=='200' and size>0)
+ for name,url in [('docker-api','http://10.10.0.8:2375/version'),('panel','http://10.10.0.7:8090/'),('adguard-admin','http://10.10.0.5:80/')]:
+  r=exe('curl','--socks5-hostname','127.0.0.1:'+str(SOCKS),'--noproxy','','-sS','--max-time','5',url,timeout=30)
+  check('internal-'+name+'-isolated',r.returncode!=0 and not r.stdout)
  code,size=fetch('/large');check('large-answer-through-the-storage',code=='200' and size==len('VPNBot controlled payload\n')*40960)
  ok=0
  for attempt in range(5):ok+=fetch()[0]=='200'

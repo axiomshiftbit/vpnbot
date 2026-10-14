@@ -58,6 +58,7 @@ try:
         # Bind к audit заставляет идти к Docker API именно через VPN.
         r=curl('http://10.10.0.8:2375/version',4);check(name+'-docker-api-blocked',r.returncode!=0)
         r=curl('http://10.10.0.7:8090/',4);check(name+'-panel-blocked',r.returncode!=0)
+        r=curl('http://10.10.0.5:80/',4);check(name+'-adguard-admin-blocked',r.returncode!=0)
         info=bot('wg-toggle',inst);check(name+'-disabled',info['result']['disabled'])
         r=curl('https://example.com/',4);check(name+'-disabled-traffic-blocked',r.returncode!=0)
         info=bot('wg-toggle',inst);check(name+'-enabled',info['result']['disabled'],False)

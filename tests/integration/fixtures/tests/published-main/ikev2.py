@@ -96,7 +96,7 @@ try:
         vip=status['result']['virtual'];assert re.fullmatch(r'10\.9\.2\.\d+',vip)
         for scheme in ('http','https'):
             r=http(scheme+'://example.com/');save(scheme,r);check(scheme+'-traffic',r.returncode==0 and 'Example Domain' in r.stdout)
-        for name,url in [('docker-api','http://10.10.0.8:2375/version'),('panel','http://10.10.0.7:8090/')]:
+        for name,url in [('docker-api','http://10.10.0.8:2375/version'),('panel','http://10.10.0.7:8090/'),('adguard-admin','http://10.10.0.5:80/')]:
             r=http(url,4);save(name,r);check(name+'-network-isolation',r.returncode!=0)
         bot('ike-disable');time.sleep(.5)
         check('disabled-session-kicked',bot('ike-status')['result']['online'],False)

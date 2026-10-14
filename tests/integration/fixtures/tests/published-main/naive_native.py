@@ -19,7 +19,7 @@ def test(a,label,expect=True):
     r=run('curl','--noproxy','','--socks5-hostname','127.0.0.1:19899','-sS','--max-time','12',scheme+'://example.com/')
     check(label+'-'+scheme,(r.returncode==0 and 'Example Domain' in r.stdout)==expect)
    if expect:
-    for name,url in [('docker','http://10.10.0.8:2375/version'),('adguard','http://10.10.0.5:80/')]:
+    for name,url in [('docker','http://10.10.0.8:2375/version'),('panel','http://10.10.0.7:8090/'),('adguard','http://10.10.0.5:80/')]:
      r=run('curl','--noproxy','','--socks5-hostname','127.0.0.1:19899','-sS','--max-time','3',url);check(label+'-'+name+'-isolated',r.returncode!=0 and not r.stdout)
   finally:p.terminate();p.wait(timeout=5)
 a=creds();test(a,'official-native');bot('naive-rotate');test(a,'old-password',False);test(creds(),'rotated-password')

@@ -234,7 +234,7 @@ INNER'''
  def native(label):
   output=R/'published-main/results.json';output.unlink(missing_ok=True)
   run(label,['python3',str(R/'published-main/run.py')],timeout=1800)
-  rows=json.loads(output.read_text());check('native',label+'-complete',len(rows)==23 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
+  rows=json.loads(output.read_text());check('native',label+'-complete',len(rows)==24 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
   shutil.copy2(output,O/(label+'.json'))
   for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py")]:
    result=O/(label+"-"+name)
@@ -266,7 +266,7 @@ INNER'''
    capture(['docker','network','disconnect','vpnbot-protocol-test',d['Id']])
  (R/'published-optional-results.json').unlink(missing_ok=True)
  run('native-optional',['python3',str(R/'published-optional.py')],timeout=300)
- rows=json.loads((R/'published-optional-results.json').read_text());check('native','optional-HTTP-HTTPS-TCP-UDP',len(rows)==18 and all(x['ok'] for x in rows));counts['native']+=len(rows)
+ rows=json.loads((R/'published-optional-results.json').read_text());check('native','optional-HTTP-HTTPS-TCP-UDP',len(rows)==28 and all(x['ok'] for x in rows));counts['native']+=len(rows)
  run('naive-idle',['python3',str(Path(__file__).with_name('naive_idle.py'))],environ=env|{'VPNBOT_TEST_RESULTS':str(O)},timeout=140)
  rows=json.loads((O/'naive-idle.json').read_text());check('native','Naive75-seconds-idle',len(rows)==5 and all(x['ok'] for x in rows));counts['native']+=len(rows)
  # Отдельные мини-стенды на настоящих ядрах проверяемых образов Telemt, MASQUE и Hysteria.

@@ -9,6 +9,14 @@ def attach(name,address=None):
  networks=json.loads(run(['docker','inspect',name]).stdout)[0]['NetworkSettings']['Networks']
  if 'vpnbot-protocol-test' in networks:return
  run(['docker','network','connect']+(['--ip',address] if address else [])+['vpnbot-protocol-test',name]).check_returncode()
+# Без -f: любой ответ HTTP (даже 403 панели) значит, что соединение с внутренней
+# сетью состоялось. Изоляция — это отсутствие ответа вовсе.
+INTERNAL=['http://10.10.0.8:2375/version','http://10.10.0.7:8090/','http://10.10.0.5:80/']
+def isolated(port):
+ for url in INTERNAL:
+  p=run(['curl','--noproxy','','--socks5-hostname',f'127.0.0.1:{port}','-sS','--max-time','4',url])
+  if p.returncode==0 or p.stdout:return False
+ return True
 def client_ready(proc):
  deadline=time.monotonic()+10
  while proc.poll() is None and time.monotonic()<deadline:
@@ -25,6 +33,7 @@ for proto,file,boundary,engines in [('anytls','integration_anytls.py',"\ndriver(
   with ns['Client'](engine) as c:
    ok,body=c.request();check(proto+'/'+engine+'/restored-profile-HTTP',ok and body==b'VPNBOT-PROTOCOL-TARGET\n')
    ok,body=c.request('https://anytls.test:8443/',https=True);check(proto+'/'+engine+'/restored-profile-HTTPS',ok and body==b'VPNBOT-PROTOCOL-TARGET\n')
+   check(proto+'/'+engine+'/internal-network-isolated',isolated(c.port))
 # MASQUE использует реальный основной контейнер, прежнего пользователя и TLS.
 attach('masque-audit')
 code="require '/app/ManagedProtocol.php';$s=new ManagedProtocol('masque','/config/protocols');foreach($s->read()['users'] as $id=>$u){if($s->allowed($u,$id)){file_put_contents('/logs/audit-masque-afterrestore.json',json_encode($s->profile($id,'native')));exit;}}exit(1);"
@@ -40,5 +49,6 @@ for http in ['h2','h3']:
   proc=subprocess.Popen([str(r/'xray'),'run','-config',str(path)],stdout=log,stderr=log)
   try:
    client_ready(proc);p=run(['curl','--noproxy','','--socks5-hostname','127.0.0.1:1088','--max-time','8','-fsS','http://11.77.0.2:8081/']);(r/f'masque-postrestore-{http}-curl.log').write_text('exit='+str(p.returncode)+'\n'+p.stderr);check('masque/'+http+'/restored-profile-TCP',p.returncode==0 and p.stdout=='VPNBOT-PROTOCOL-TARGET\n')
+   check('masque/'+http+'/internal-network-isolated',isolated(1088))
   finally:proc.terminate();proc.wait(timeout=10)
 print(json.dumps({'passed':sum(x['ok'] for x in rows),'total':len(rows)}))

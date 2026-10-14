@@ -47,6 +47,8 @@ try:
    label=kind+('-salamander' if obfs else '-quic');n=node(kind,a)
    if not h.start(kind,label,h.profile(kind,copy.deepcopy(n))):continue
    r=h.http('https://example.com/');h.save(label,r);h.check(label+'-https',r.returncode==0 and 'Example Domain' in r.stdout)
+   for name,url in [('docker-api','http://10.10.0.8:2375/version'),('panel','http://10.10.0.7:8090/'),('adguard-admin','http://10.10.0.5:80/')]:
+    r=h.http(url,3);h.save(label+'-'+name,r);h.check(label+'-'+name+'-isolated',not r.stdout and r.returncode!=0)
    r=h.exe('python3','-c',h.UDP,timeout=15);h.save(label+'-udp',r)
    if r.returncode:h.save(label+'-udp-client',h.exe('cat','/tmp/audit-proxy.log'))
    h.check(label+'-udp',r.returncode==0)
