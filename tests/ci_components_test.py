@@ -27,9 +27,10 @@ def advisory(ident, level, vulnerable, patched, cve_id=None):
 class Api:
     """Подмена сети: ответы по подстроке адреса; неизвестный адрес — ошибка теста."""
 
-    def __init__(self, nvd=None, advisories=None, releases=None, broken=(), gitlab=None):
+    def __init__(self, nvd=None, advisories=None, releases=None, broken=(), gitlab=None, go=None):
         self.nvd, self.advisories, self.releases, self.broken, self.calls = nvd or {}, advisories or {}, releases or {}, broken, []
         self.gitlab = gitlab
+        self.go = go if go is not None else [{'version': 'go' + components.pins()['Go'], 'stable': True}]
 
     def __call__(self, url, token=None):
         self.calls.append((url, token))
@@ -40,6 +41,8 @@ class Api:
                 if product.replace(':', '%3A') in url:
                     return {'vulnerabilities': rows}
             return {'vulnerabilities': []}
+        if url.startswith('https://go.dev/dl/'):
+            return self.go
         if 'gitlab.com' in url:
             assert 'openconnect%2Focserv' in url, url
             if self.gitlab is None:
@@ -88,7 +91,10 @@ class ComponentsTest(unittest.TestCase):
         with_repo = sum(1 for item in components.COMPONENTS if item.get('repo'))
         self.assertEqual(sum('nvd.nist.gov' in url for url, _ in api.calls), with_cpe)
         self.assertEqual(sum('/security-advisories' in url for url, _ in api.calls), with_repo)
-        self.assertEqual({row['name'] for row in rows if not row['sources']}, set())
+        # Без источника уязвимостей — только компиляторы и snolc: их проверяет Trivy.
+        self.assertEqual({row['name'] for row in rows if not row['sources']},
+                         {item['name'] for item in components.COMPONENTS if item.get('toolchain') or item.get('release')})
+        self.assertTrue(all(row.get('freshness') and not row['unchecked'] for row in rows if not row['sources']))
         self.assertEqual(sum('gitlab.com' in url for url, _ in api.calls), 1)
 
     def test_high_nvd_finding_blocks_and_lower_is_reported(self):
@@ -132,6 +138,29 @@ class ComponentsTest(unittest.TestCase):
         self.assertEqual(blocked, [])
         self.assertEqual({row['name']: row['newer'] for row in rows if row['newer']}, {'Hysteria': 'app/v9.0.0'})
         self.assertIn('вышла версия app/v9.0.0', components.report(rows, blocked))
+
+    def test_toolchains_and_snolc_report_freshness_without_blocking(self):
+        found = components.pins()
+        self.assertEqual(found['snolc'], '0.0.4')
+        self.assertEqual(found['Rust (snolc)'], '1.99.1')
+        api = Api(go=[{'version': 'go1.99.0rc1', 'stable': False}, {'version': 'go1.98.4', 'stable': True}],
+                  releases={'rust-lang/rust': [('1.200.0', False)], 'owenewans/snolc': [('v0.0.5', False), ('v0.1.0-rc1', True)]})
+        rows, blocked = self.run_check(api)
+        self.assertEqual(blocked, [])
+        newer = {row['name']: row['newer'] for row in rows if row['newer']}
+        self.assertEqual(newer['Go'], 'go1.98.4')
+        self.assertEqual(newer['Rust (snolc)'], '1.200.0')
+        self.assertEqual(newer['snolc'], 'v0.0.5')
+        # Уязвимости этих компонентов ищет Trivy в бинарниках: сюда не ходим.
+        self.assertFalse(any('owenewans/snolc/security-advisories' in url or 'rust-lang/rust/security' in url for url, _ in api.calls))
+
+    def test_unreachable_freshness_source_is_reported_but_not_fatal(self):
+        api = Api(broken=('go.dev', 'rust-lang/rust/releases', 'owenewans/snolc/releases'))
+        rows, blocked = self.run_check(api)
+        self.assertEqual(blocked, [])
+        text = components.report(rows, blocked)
+        for name in ('Go', 'Rust (snolc)', 'snolc'):
+            self.assertIn(f"{name} {components.pins()[name]}: источник свежести недоступен", text)
 
     def test_ocserv_security_release_newer_than_the_pin_blocks(self):
         pinned = components.pins()['ocserv']
@@ -194,7 +223,7 @@ class ComponentsTest(unittest.TestCase):
         api = Api()
         with patch.dict(os.environ, {'NVD_API_KEY': 'nvd-key'}, clear=False):
             self.run_check(api)
-        expected = lambda url: 'nvd-key' if 'nvd.nist.gov' in url else None if 'gitlab.com' in url else 't0ken'
+        expected = lambda url: 'nvd-key' if 'nvd.nist.gov' in url else None if 'gitlab.com' in url or 'go.dev' in url else 't0ken'
         self.assertTrue(all(token == expected(url) for url, token in api.calls))
 
 

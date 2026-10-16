@@ -4,7 +4,8 @@
 Trivy видит пакеты Alpine и модули внутри Go-бинарников. Он не видит программы,
 собранные из исходников на C (nginx, strongSwan, pppd, ocserv), готовые
 бинарники на Rust (TeleMT, shadowsocks-rust) и уязвимости самих приложений,
-объявленные их авторами. Этот скрипт сверяет закреплённые версии с NVD (по
+объявленные их авторами. snolc собирается cargo auditable: зависимости его
+ядра и модулей Trivy видит сам. Этот скрипт сверяет закреплённые версии с NVD (по
 CPE продукта) и с объявлениями безопасности репозиториев GitHub.
 
 У ocserv нет записей ни в NVD, ни на GitHub: автор отмечает исправления
@@ -14,6 +15,11 @@ CPE продукта) и с объявлениями безопасности р
 Допуск блокируют уязвимости HIGH и CRITICAL, для которых известна версия с
 исправлением. Недоступный источник после повторов — тоже отказ: отсутствие
 ответа не равно отсутствию уязвимостей. Отставание версий только печатается.
+
+Компиляторы Go и Rust и snolc проверяются только на свежесть (release/
+toolchain): уязвимости стандартной библиотеки Go и пакетов Rust находит Trivy
+в собранных бинарниках. Недоступный источник свежести не блокирует допуск —
+репозиторий snolc уже бывал недоступен.
 """
 import json
 import os
@@ -52,6 +58,12 @@ COMPONENTS = [
     dict(name='AmneziaWG', pin='AWG_GO_VERSION', repo='amnezia-vpn/amneziawg-go'),
     dict(name='amneziawg-tools', pin='AWG_TOOLS_VERSION', repo='amnezia-vpn/amneziawg-tools'),
     dict(name='ocserv', pin='OCSERV_VERSION', gitlab='openconnect/ocserv'),
+    dict(name='Go', pin='PROTOCOL_GO_VERSION', toolchain='go'),
+    dict(name='Go (Caddy)', pin='CADDY_GO_VERSION', toolchain='go'),
+    dict(name='Go (MASQUE)', pin='MASQUE_GO_VERSION', toolchain='go'),
+    dict(name='Rust (snolc)', pin='dockerfile/snolc.dockerfile:RUST_VERSION', release='rust-lang/rust'),
+    dict(name='Rust (TrustTunnel)', pin='dockerfile/trusttunnel.dockerfile:RUST_VERSION', release='rust-lang/rust'),
+    dict(name='snolc', pin='dockerfile/snolc.dockerfile:SNOLC_VERSION', release='owenewans/snolc'),
 ]
 
 
@@ -181,6 +193,22 @@ def latest_release(repo, prefix, token):
     return max(tags, key=numbers) if tags else None
 
 
+def latest_go():
+    data = fetch('https://go.dev/dl/?mode=json')
+    if not isinstance(data, list):
+        raise ValueError('unexpected go.dev response')
+    stable = [item['version'] for item in data if item.get('stable') and numbers(item.get('version', ''))]
+    return max(stable, key=numbers) if stable else None
+
+
+def latest_only(item, token):
+    """Свежесть компилятора или snolc: (последняя версия или None, источник ответил)."""
+    try:
+        return (latest_go() if item.get('toolchain') == 'go' else latest_release(item['release'], '', token)), True
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, False
+
+
 def check(root=ROOT, token=None, freshness=True):
     rows, blocked = [], []
     versions = pins(root)
@@ -192,6 +220,11 @@ def check(root=ROOT, token=None, freshness=True):
         if item.get('repo'):
             findings += [(ident, level, fixable, 'GitHub') for ident, level, fixable in advisory_findings(item['repo'], version, token)]
         newer = None
+        if item.get('toolchain') or item.get('release'):
+            latest, answered = latest_only(item, token) if freshness else (None, True)
+            rows.append(dict(name=name, version=version, findings=[], newer=latest if latest and numbers(latest) > numbers(version) else None,
+                             sources=[], freshness='go.dev' if item.get('toolchain') else 'GitHub', unchecked=not answered))
+            continue
         if item.get('gitlab'):
             noted, newer = gitlab_findings(item['gitlab'], version)
             findings += [(ident, level, fixable, 'GitLab') for ident, level, fixable in noted]
@@ -209,7 +242,11 @@ def report(rows, blocked):
     lines = []
     for row in rows:
         state = 'нет источника данных' if not row['sources'] else ', '.join(row['sources'])
-        lines.append(f"{row['name']} {row['version']}: проверено по {state}" if row['sources'] else f"{row['name']} {row['version']}: {state}")
+        if row.get('freshness'):
+            state = 'источник свежести недоступен' if row['unchecked'] else 'свежесть по ' + row['freshness']
+            lines.append(f"{row['name']} {row['version']}: {state}")
+        else:
+            lines.append(f"{row['name']} {row['version']}: проверено по {state}" if row['sources'] else f"{row['name']} {row['version']}: {state}")
         for ident, level, fixable, source in row['findings']:
             lines.append(f"  {'BLOCK' if level in BLOCKING and fixable else 'note '} {ident} {level} ({source})")
         if row['newer']:
