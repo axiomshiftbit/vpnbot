@@ -11,17 +11,35 @@ telegram bot to manage servers (inside the bot)
 - automatic ssl
 
 ---
-environment: ubuntu 22.04/24.04, debian 11/12
+environment: ubuntu 22.04/24.04, debian 11/12/13
 
 ## Install:
 
 Репозиторий приватный: сервер получает код по **deploy-ключу только для чтения**.
 Ключ создаётся на самом сервере и его не покидает; в GitHub добавляется лишь
 публичная половина. GitHub-токен для установки и обновлений не нужен.
+Образы контейнеров в `ghcr.io/axiomshiftbit/vpnbot-*` публичные: входить в реестр
+на сервере не нужно.
 
-1. Скопируйте установщик на сервер с машины, где есть доступ к репозиторию:
+**Перед установкой понадобятся:**
+- токен Telegram-бота: создайте бота у [@BotFather](https://t.me/BotFather)
+  (`/newbot`) и скопируйте выданный ключ;
+- доступ к `axiomshiftbit/vpnbot`, достаточный для добавления deploy-ключа
+  (владелец или администратор репозитория);
+- сервер Ubuntu 22.04/24.04 или Debian 11/12/13, вход под `root`, публичный
+  IP; свободные порты 80 и 443 (на них nginx бота и выпуск сертификатов);
+  исходящий доступ к `ssh.github.com:443`, `ghcr.io` и `download.docker.com`.
+
+1. Скопируйте установщик на сервер с машины, где есть доступ к репозиторию —
+   из клона:
 ```shell
 scp scripts/init.sh root@SERVER:/root/init.sh
+```
+   или без клона, через `ghx` (токен остаётся на вашей машине):
+```shell
+ghx run axiomshiftbit api -H 'Accept: application/vnd.github.raw' \
+    'repos/axiomshiftbit/vpnbot/contents/scripts/init.sh?ref=master' > init.sh
+scp init.sh root@SERVER:/root/init.sh
 ```
 2. Запустите его на сервере — stable (`master`) или development (`dev`):
 ```shell
@@ -31,12 +49,76 @@ VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash /root/init.sh master
 половину (`ssh-ed25519 …`) и останавливается.
 
 3. Добавьте напечатанную строку в GitHub: `axiomshiftbit/vpnbot` → **Settings →
-Deploy keys → Add deploy key**, галочку **Allow write access** не ставьте.
-То же из консоли: `gh repo deploy-key add key.pub --repo axiomshiftbit/vpnbot --title vpnbot-SERVER-readonly`.
+Deploy keys → Add deploy key**, галочку **Allow write access** не ставьте
+(подробно — в разделе «Deploy-ключ: что вводить и где» ниже).
+Название — по образцу `vpnbot-SERVER-readonly`. То же из консоли: сохраните
+строку на своей машине в файл `key.pub` и выполните
+`ghx run axiomshiftbit repo deploy-key add key.pub --repo axiomshiftbit/vpnbot --title vpnbot-SERVER-readonly`.
+Строку можно снова вывести на сервере: `cat /root/vpnbot/.git/vpnbot-readonly-ssh/id_ed25519.pub`.
 
 4. Повторите команду из шага 2 — установка скачает код и запустит бота.
 Код берётся из коммита последнего опубликованного комплекта образов ветки, а
 не с её вершины: коммит, ещё не прошедший сборку и стенд, на сервер не попадает.
+
+5. Проверьте, что контейнеры запущены: `cd /root/vpnbot && make ps`
+   (журналы — `make l`).
+
+6. **Сразу напишите боту `/start` со своего аккаунта Telegram.** Первый, кто
+   напишет боту после установки, становится его администратором (записывается
+   в `app/config.php`), поэтому не давайте ссылку на бота никому до этого
+   шага. Других администраторов можно добавить позже в меню бота.
+
+### Deploy-ключ: что вводить и где
+
+**На сервере ничего вводить не нужно.** Ключ создаёт сам установщик при первом
+запуске (`/root/vpnbot/.git/vpnbot-readonly-ssh/id_ed25519`) и сам же
+подключает его к Git — копировать ключи, править `~/.ssh/config` или
+вставлять что-то в терминал сервера не требуется. Ваша задача — перенести
+**одну строку** с сервера в GitHub.
+
+1. Первый запуск `init.sh` на сервере заканчивается так (адрес сервера и ключ
+   у вас будут свои):
+```text
+installing from git: git@axiomshiftbit:axiomshiftbit/vpnbot.git (master)
+GitHub не принял deploy-ключ этого сервера (или недоступен ssh.github.com:443).
+Добавьте публичный ключ в axiomshiftbit/vpnbot: Settings → Deploy keys → Add deploy key,
+БЕЗ галочки «Allow write access», затем запустите установку ещё раз:
+
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...  vpnbot-myserver-readonly
+```
+   Скопируйте **последнюю строку целиком** — от `ssh-ed25519` до конца
+   (`vpnbot-<имя сервера>-readonly`). Это публичная половина ключа: её можно
+   показывать, закрытая остаётся на сервере. Вывести строку повторно:
+   `cat /root/vpnbot/.git/vpnbot-readonly-ssh/id_ed25519.pub`.
+2. В браузере откройте `https://github.com/axiomshiftbit/vpnbot/settings/keys`
+   (репозиторий → **Settings** → в меню слева **Deploy keys**) и нажмите
+   **Add deploy key**:
+   - **Title** — понятное имя, например `vpnbot-myserver-readonly`;
+   - **Key** — вставьте скопированную строку;
+   - **Allow write access** — **не отмечайте**: серверу нужно только чтение;
+   - нажмите **Add key** (GitHub может попросить подтвердить пароль или 2FA).
+3. Вернитесь на сервер и **повторите ту же команду**, что в шаге 2 установки:
+   `VPNBOT_KEY=… bash /root/init.sh master`. Теперь она скачает код и запустит
+   бота. Проверить доступ вручную: `git -C /root/vpnbot fetch origin` —
+   команда завершается без ошибок.
+
+Если не получается:
+- `Key is already in use` — эта строка уже добавлена в другой репозиторий или
+  аккаунт GitHub; у каждого сервера свой ключ, не переносите его с другой машины.
+- Повторный запуск снова печатает «GitHub не принял deploy-ключ…» — строка
+  скопирована не целиком или добавлена в другой репозиторий; сравните её с
+  выводом `cat …/id_ed25519.pub`. Если ключ на месте, проверьте, что сервер
+  выходит наружу на `ssh.github.com:443` (пути в настройках ключа
+  относительные, поэтому команда — из `/root/vpnbot`):
+  `cd /root/vpnbot && ssh -F .git/vpnbot-readonly-ssh/config -T git@axiomshiftbit`
+  должна ответить `Hi axiomshiftbit/vpnbot! You've successfully authenticated…`.
+- Добавлять deploy-ключи может только владелец или администратор репозитория:
+  если раздела **Deploy keys** нет в меню, попросите владельца добавить строку.
+
+Дальше бот обновляется из своего меню («Обновить»): код и образы приходят
+вместе из проверенного комплекта ветки (`master` — stable, `dev` — development).
+Выводя сервер из работы, удалите его ключ в **Settings → Deploy keys** — доступ
+сервера к репозиторию сразу пропадёт.
 
 Ключ бота передаётся переменной `VPNBOT_KEY`, а не аргументом: аргумент виден
 в `ps` всем процессам хоста и остаётся в history. Старая форма
