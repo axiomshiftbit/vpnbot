@@ -82,7 +82,9 @@ class ImageBundleTests(unittest.TestCase):
             bundle.activate(self.root, changed)
         self.assertEqual(original, bundle.read(active))
 
-    def test_retired_image_is_kept_only_in_the_previous_manifest(self):
+    def test_optional_snolc_image_is_accepted_but_never_started(self):
+        # Прежний выпуск (откат) и следующий (переход кнопкой обновления) могут
+        # содержать образ snolc; в Compose он не попадает.
         old = candidate()
         old['images']['snolc'] = bundle.REGISTRY + 'snolc@sha256:' + 'b' * 64
         active = self.root / 'update/image-bundle.json'
@@ -90,12 +92,15 @@ class ImageBundleTests(unittest.TestCase):
         new = candidate(); new['run'] += 1
         with patch.object(bundle, 'command', return_value=new['source']): bundle.activate(self.root, new)
         self.assertEqual(new, bundle.read(active))
-        previous = active.with_name('image-bundle.previous.json')
-        self.assertEqual(old, bundle.read(previous, allow_retired=True))
-        with self.assertRaises(ValueError): bundle.read(previous)
-        with self.assertRaises(ValueError): bundle.overlay(old)
-        del old['images']['php']
-        with self.assertRaises(ValueError): bundle.validate(old, allow_retired=True)
+        self.assertEqual(old, bundle.read(active.with_name('image-bundle.previous.json')))
+        upcoming = copy.deepcopy(old); upcoming['run'] += 2
+        with patch.object(bundle, 'command', return_value=upcoming['source']): bundle.activate(self.root, upcoming)
+        self.assertEqual(upcoming, bundle.read(active))
+        self.assertNotIn('snolc', {ref.split('@')[0] for ref in (s['image'] for s in bundle.overlay(upcoming)['services'].values())})
+        for broken in (dict(upcoming['images'], snolc='ghcr.io/axiomshiftbit/vpnbot-snolc:latest'),
+                       dict(upcoming['images'], other=bundle.REGISTRY + 'other@sha256:' + 'c' * 64),
+                       {k: v for k, v in upcoming['images'].items() if k != 'php'}):
+            with self.assertRaises(ValueError): bundle.validate(dict(upcoming, images=broken))
 
     def test_successful_switch_retains_previous_set_without_touching_runtime(self):
         active = self.root / 'update/image-bundle.json'

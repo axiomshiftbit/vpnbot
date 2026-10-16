@@ -24,6 +24,10 @@ SERVICES = {
     'shadowtls': 'protocol', 'mieru': 'mieru', 'masque': 'masque',
 }
 IMAGES = sorted(set(SERVICES.values()))
+# Образ snolc этот код не запускает, но он бывает в комплекте: в прежних
+# выпусках (откат) и в следующих, куда протокол возвращается. Установленный
+# обновлятель должен принять такой комплект, иначе кнопка «Обновить» отказала бы.
+OPTIONAL = {'snolc'}
 DIGEST = re.compile(r'sha256:[0-9a-f]{64}\Z')
 COMMIT = re.compile(r'[0-9a-f]{40}\Z')
 
@@ -37,7 +41,7 @@ def fingerprint(bundle):
     return hashlib.sha256(canonical(bundle)).hexdigest()
 
 
-def validate(bundle, *, allow_retired=False):
+def validate(bundle):
     if not isinstance(bundle, dict) or set(bundle) != {'schema', 'source', 'run', 'attempt', 'state_epoch', 'images'}:
         raise ValueError('invalid bundle fields')
     if bundle['schema'] != 1 or bundle['state_epoch'] != 1:
@@ -47,12 +51,9 @@ def validate(bundle, *, allow_retired=False):
     if any(type(bundle[k]) is not int or bundle[k] < 1 for k in ('run', 'attempt')):
         raise ValueError('invalid build identity')
     images = bundle['images']
-    expected = set(IMAGES)
-    # Read the previous manifest for rollback without allowing retired images
-    # into newly built candidates or their Compose overlay.
-    if allow_retired and isinstance(images, dict) and 'snolc' in images:
-        expected.add('snolc')
-    if not isinstance(images, dict) or set(images) != expected:
+    # Новые кандидаты собираются ровно из IMAGES (collect), а в Compose идут
+    # только образы из SERVICES (overlay): необязательный образ не запускается.
+    if not isinstance(images, dict) or set(images) - OPTIONAL != set(IMAGES):
         raise ValueError('incomplete image set')
     for name, ref in images.items():
         prefix = REGISTRY + name + '@'
@@ -61,8 +62,8 @@ def validate(bundle, *, allow_retired=False):
     return bundle
 
 
-def read(path, *, allow_retired=False):
-    return validate(json.loads(Path(path).read_text()), allow_retired=allow_retired)
+def read(path):
+    return validate(json.loads(Path(path).read_text()))
 
 
 def atomic(path, data):
@@ -163,7 +164,7 @@ def activate(root, bundle):
     with (current.parent / 'image-bundle.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if current.exists():
-            prior = read(current, allow_retired=True)
+            prior = read(current)
             if prior != bundle:
                 atomic(root / 'update/image-bundle.previous.json', canonical(prior))
         atomic(current, canonical(bundle))

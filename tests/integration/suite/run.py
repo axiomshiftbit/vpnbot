@@ -22,7 +22,7 @@ if 'TELEGRAM_API=tg-audit:8443' not in (B/'.env').read_text():raise RuntimeError
 if (B/'update/pipe').read_text().strip():raise RuntimeError('another update request is pending')
 # The archive-based stand has no usable Git HEAD; keep an explicit immutable
 # baseline manifest for both preflight and finally, just as normal stand startup.
-baseline_bundle=ib.read('/opt/vpnbot-hosted-ci/active-test-bundle.json', allow_retired=True)
+baseline_bundle=ib.read('/opt/vpnbot-hosted-ci/active-test-bundle.json')
 baseline_services=ib.SERVICES | ({'snolc':'snolc'} if 'snolc' in baseline_bundle['images'] else {})
 ib.atomic(O/'baseline.json',ib.canonical(baseline_bundle))
 

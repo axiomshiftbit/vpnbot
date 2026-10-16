@@ -130,6 +130,15 @@ else:raise SystemExit(2)
                 self.assertEqual(self.before, self.git('rev-parse', 'HEAD'))
                 self.assertEqual(self.runtime, (self.root / 'config/custom.json').read_text())
 
+    def test_installed_updater_accepts_a_release_that_adds_snolc(self):
+        self.value['images']['snolc'] = bundle.REGISTRY + 'snolc@sha256:' + 'c' * 64
+        (self.base / 'candidate.json').write_text(json.dumps(self.value))
+        events = self.run_update()
+        self.assertEqual(self.after, self.git('rev-parse', 'HEAD'))
+        self.assertEqual(self.value, bundle.read(self.root / 'update/image-bundle.json'))
+        self.assertEqual(self.runtime, (self.root / 'config/custom.json').read_text())
+        self.assertTrue(any('up' in args and '--no-build' in args for args in events))
+
     def test_staged_updater_crosses_the_old_image_layout_without_changing_runtime(self):
         # Old releases require the retired image in every manifest and cannot
         # read a new release directly. Stage only trusted update helpers first.
@@ -153,7 +162,7 @@ else:raise SystemExit(2)
         events = self.run_update(worker='update/retirement-tools/update.sh')
         self.assertEqual(self.after, self.git('rev-parse', 'HEAD'))
         self.assertEqual(self.value, bundle.read(self.root / 'update/image-bundle.json'))
-        self.assertEqual(previous, bundle.read(self.root / 'update/image-bundle.previous.json', allow_retired=True))
+        self.assertEqual(previous, bundle.read(self.root / 'update/image-bundle.previous.json'))
         self.assertEqual(self.runtime, (self.root / 'config/custom.json').read_text())
         self.assertTrue(any('up' in args and '--no-build' in args for args in events))
 

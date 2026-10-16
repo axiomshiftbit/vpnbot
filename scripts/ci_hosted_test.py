@@ -120,7 +120,7 @@ def assets(checkout, manifest):
     for image in bundle['images'].values():
         network('docker', 'pull', image)
     # The former complete release is a rollback input, never an admission report.
-    # It may contain the retired protocol during the initial 18 -> 17 migration.
+    # It may contain the optional snolc image (image_bundle.OPTIONAL).
     ref = rollback_reference(os.environ.get('GITHUB_REF_NAME'))
     network('docker', 'pull', ref)
     image = command('docker', 'image', 'inspect', '--format', '{{.Id}}', ref)
@@ -129,7 +129,7 @@ def assets(checkout, manifest):
         with tempfile.TemporaryDirectory() as directory:
             previous = Path(directory) / 'bundle.json'
             command('docker', 'cp', container + ':/bundle.json', str(previous))
-            previous = read(previous, allow_retired=True)
+            previous = read(previous)
     finally:
         command('docker', 'rm', container)
     # The pair changes together; current protocol data is never replaced by an
@@ -179,7 +179,7 @@ def test(checkout, manifest, output):
     command('git', 'config', '--global', '--add', 'safe.directory', str(checkout))
     baseline = json.loads(manifest.with_name('rollback-images.json').read_text())
     atomic(ROOT / 'rollback-images.json', canonical(baseline))
-    previous = read(manifest.with_name('rollback-bundle.json'), allow_retired=True)
+    previous = read(manifest.with_name('rollback-bundle.json'))
     atomic(ROOT / 'rollback-bundle.json', canonical(previous))
     results = ROOT / 'results'
     results.mkdir(mode=0o700)
