@@ -134,7 +134,14 @@ else:raise SystemExit(2)
         previous = dict(self.value, source=self.before,
                         images={k: v for k, v in self.value['images'].items() if k != 'snolc'})
         bundle.atomic(self.root / 'update/image-bundle.json', bundle.canonical(previous))
+        # Установленный код без snolc (мост 17b209e) уже записал overlay нового
+        # комплекта по своему списку сервисов: snolc в нём не закреплён.
+        stale = bundle.overlay(self.value); del stale['services']['snolc']
+        bundle.atomic(self.root / 'update' / ('compose-images-' + bundle.fingerprint(self.value) + '.json'), bundle.canonical(stale))
         events = self.run_update()
+        up = [args for args in events if args[0] == 'compose' and 'up' in args][-1]
+        overlay = next(arg for arg in up if 'compose-images-' in arg)
+        self.assertEqual(self.value['images']['snolc'], json.loads(Path(overlay).read_text())['services']['snolc']['image'])
         self.assertEqual(self.after, self.git('rev-parse', 'HEAD'))
         self.assertEqual(self.value, bundle.read(self.root / 'update/image-bundle.json'))
         self.assertEqual(previous, bundle.read(self.root / 'update/image-bundle.previous.json', previous=True))

@@ -45,6 +45,7 @@ if (($argv[1] ?? '') === 'setup' && isset(ManagedProtocol::NAMES[$module])) {
 $settings = (new ProtocolModules($b->protocolModulesFile))->read();
 $managed = isset(ManagedProtocol::NAMES[$module]) ? $b->protocolStore($module)->read() : null;
 echo json_encode(['module'=>$module, 'requested'=>$settings[$module], 'enabled'=>$b->protocolModuleEnabled($module),
+    'protocol_enabled'=>$managed === null ? null : $managed['enabled'],
     'users'=>$managed === null ? null : count($managed['users']),
     'active_users'=>$managed === null ? null : count(array_filter($managed['users'], static fn($u)=>$u['enabled'])),
     'errors'=>$b->errors, 'warnings'=>$warnings, 'transport_calls'=>$b->transport->calls], JSON_UNESCAPED_UNICODE) . "\n";

@@ -259,7 +259,7 @@ class SnolcTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'snolc-0.0.4-x86_64-unknown-linux-gnu.tar.gz').write_bytes(b'wrong release')
-            with self.assertRaises(RuntimeError): install(root / 'out', archives=root)
+            with self.assertRaisesRegex(RuntimeError, 'SHA256'): install(root / 'out', archives=root)
             self.assertFalse((root / 'out/bin/snolc').exists())
 
     def test_optional_service_uses_only_tcp_and_keeps_state_when_disabled(self):

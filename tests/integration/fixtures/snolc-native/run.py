@@ -13,6 +13,8 @@ LAB = Path(__file__).resolve().parent
 SOURCE, IMAGE, PHP_IMAGE = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3]
 SERVER, TARGET = 'vpnbot-snolc-native-server', 'vpnbot-snolc-native-target'
 NETWORKS = {'vpnbot-snolc-public': '198.51.100.0/24', 'vpnbot-snolc-private': '10.77.99.0/24'}
+# Число проверок matrix.py: выпавшая проверка не должна пройти незаметно.
+CHECKS = 90
 
 
 def run(*args, timeout=120):
@@ -74,4 +76,5 @@ finally:
     with (LAB / 'server-container.log').open('wb') as log:
         subprocess.run(['docker', 'logs', SERVER], stdout=log, stderr=log)
     cleanup()
-raise SystemExit(1 if not rows or any(r['exit'] or not r['total'] or r['passed'] != r['total'] for r in rows) else 0)
+raise SystemExit(1 if not rows or sum(r['total'] for r in rows) != CHECKS
+                 or any(r['exit'] or r['passed'] != r['total'] for r in rows) else 0)

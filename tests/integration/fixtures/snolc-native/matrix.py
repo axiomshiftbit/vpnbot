@@ -1,6 +1,6 @@
 """Матрица snolc: клиент из ZIP бота против контейнера проверяемого образа."""
 from pathlib import Path
-import concurrent.futures, copy, hashlib, json, os, signal, socket, struct, subprocess, sys, threading, time, zipfile
+import concurrent.futures, contextlib, copy, hashlib, json, os, signal, socket, statistics, struct, subprocess, sys, threading, time, zipfile
 
 LAB = Path(__file__).resolve().parent
 SOURCE, IMAGE, PHP_IMAGE = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -9,6 +9,10 @@ STATE = LAB / 'proto/snolc/runtime'
 CLIENT = LAB / 'client'
 PUBLIC, PRIVATE = '198.51.100.2', '10.77.99.2'
 VERSION = b'snolc 0.0.4+vpnbot.3 wire 1'
+TICK = os.sysconf('SC_CLK_TCK')
+# Доля ядра в простое. До исправлений vpnbot.1/vpnbot.3 простой стоил 15–18 %
+# и сервера, и клиента; после — около 1 %.
+IDLE_LIMIT = 5
 RESULTS = {}
 PROCS = {}
 
@@ -16,7 +20,8 @@ PROCS = {}
 def check(name, ok, detail=None):
     RESULTS[name] = bool(ok)
     (LAB / 'results/matrix.json').write_text(json.dumps(RESULTS, indent=2))
-    print(('PASS ' if ok else 'FAIL ') + name + ('' if ok or detail is None else ' ' + json.dumps(detail)), flush=True)
+    # Замеры (CPU, задержка, скорость) печатаются и при успехе: по ним видно запас до порога.
+    print(('PASS ' if ok else 'FAIL ') + name + ('' if detail is None else ' ' + json.dumps(detail)), flush=True)
     if not ok:
         raise RuntimeError(name)
 
@@ -140,28 +145,91 @@ def rx(sock, n):
     return data
 
 
+@contextlib.contextmanager
+def association(port=1085, host=PUBLIC, domain=False):
+    """UDP ASSOCIATE: отдаёт функцию отправки одного кадра и сокет ответов."""
+    with socket.create_connection(('127.0.0.1', port), timeout=5) as control_socket:
+        control_socket.sendall(b'\x05\x01\x00')
+        if rx(control_socket, 2) != b'\x05\x00':
+            raise OSError('socks method rejected')
+        control_socket.sendall(b'\x05\x03\x00\x01' + b'\0' * 6)
+        head = rx(control_socket, 4)
+        if head[1]:
+            raise OSError('udp associate rejected')
+        rx(control_socket, 4 if head[3] == 1 else 16)
+        relay = struct.unpack('!H', rx(control_socket, 2))[0]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            # Пачка из 16 кадров по 64 КиБ больше буфера по умолчанию; поднять предел может только root.
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, getattr(socket, 'SO_RCVBUFFORCE', 33), 8 * 1024 * 1024)
+            except PermissionError:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
+            sock.settimeout(10)
+            target = (b'\x03' + bytes([len(host)]) + host.encode()) if domain else b'\x01' + socket.inet_aton(host)
+            yield (lambda data: sock.sendto(b'\0\0\0' + target + struct.pack('!H', 9099) + data, ('127.0.0.1', relay))), sock
+
+
 def udp(port=1085, host=PUBLIC, size=512, domain=False, count=1):
     try:
-        with socket.create_connection(('127.0.0.1', port), timeout=5) as control_socket:
-            control_socket.sendall(b'\x05\x01\x00')
-            assert rx(control_socket, 2) == b'\x05\x00'
-            control_socket.sendall(b'\x05\x03\x00\x01' + b'\0' * 6)
-            head = rx(control_socket, 4)
-            if head[1]:
-                return False
-            rx(control_socket, 4 if head[3] == 1 else 16)
-            relay = struct.unpack('!H', rx(control_socket, 2))[0]
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.settimeout(10)
-                target = (b'\x03' + bytes([len(host)]) + host.encode()) if domain else b'\x01' + socket.inet_aton(host)
-                for _ in range(count):
-                    data = os.urandom(size)
-                    sock.sendto(b'\0\0\0' + target + struct.pack('!H', 9099) + data, ('127.0.0.1', relay))
-                    if not sock.recv(65535).endswith(data):
-                        return False
-                return True
-    except (OSError, EOFError, AssertionError):
+        with association(port, host, domain) as (send, sock):
+            for _ in range(count):
+                data = os.urandom(size)
+                send(data)
+                if not sock.recv(65535).endswith(data):
+                    return False
+            return True
+    except (OSError, EOFError):
         return False
+
+
+def udp_burst(count, size, port=1085):
+    """Все кадры подряд без ожидания ответа, затем все ответы в любом порядке.
+
+    Пачка идёт по уже открытому потоку: кадры, отправленные до открытия потока
+    UDP на сервере, ядро 0.0.4 не доставляет. Мгновенную пачку больше очереди
+    клиента (десятки датаграмм по 64 КиБ при туннеле ~13 Мбит/с) ядро
+    отбрасывает — для UDP это допустимо, поэтому размеры пачек реалистичные.
+    """
+    try:
+        with association(port) as (send, sock):
+            warm = os.urandom(64)
+            send(warm)
+            if not sock.recv(65535).endswith(warm):
+                return False
+            sent = [os.urandom(size) for _ in range(count)]
+            for data in sent:
+                send(data)
+            received = {sock.recv(65535)[-size:] for _ in range(count)}
+            return received == set(sent)
+    except (OSError, EOFError):
+        return False
+
+
+def socks_tcp(port, host, target_port):
+    sock = socket.create_connection(('127.0.0.1', port), timeout=10)
+    sock.sendall(b'\x05\x01\x00')
+    if rx(sock, 2) != b'\x05\x00':
+        raise OSError('socks method rejected')
+    sock.sendall(b'\x05\x01\x00\x01' + socket.inet_aton(host) + struct.pack('!H', target_port))
+    head = rx(sock, 4)
+    if head[1]:
+        raise OSError('socks connect rejected')
+    rx(sock, (4 if head[3] == 1 else 16) + 2)
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    return sock
+
+
+def rtt_ms(count=50):
+    """Медиана круга 32 байт по одному потоку: опрос ядра раз в 10 мс дал бы 10+ мс."""
+    with socks_tcp(1085, PUBLIC, 8083) as sock:
+        samples = []
+        for _ in range(count):
+            started = time.perf_counter()
+            sock.sendall(b'r' * 32)
+            if rx(sock, 32) != b'r' * 32:
+                raise OSError('echo mismatch')
+            samples.append((time.perf_counter() - started) * 1000)
+    return round(statistics.median(samples), 2)
 
 
 def hosts(name, address):
@@ -183,6 +251,65 @@ def server_ready(timeout=40):
 def cpu_usec():
     stat = docker('exec', SERVER, 'cat', '/sys/fs/cgroup/cpu.stat')
     return int(next(line.split()[1] for line in stat.splitlines() if line.startswith('usage_usec')))
+
+
+def proc_stat(pid):
+    return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+
+
+def client_core(name='main'):
+    """PID ядра snolc, которое запустил client.py этого клиента (та же группа процессов)."""
+    group = PROCS[name][0].pid
+    for entry in Path('/proc').iterdir():
+        try:
+            if entry.name.isdigit() and int(proc_stat(entry.name)[2]) == group and os.readlink(entry / 'exe').endswith('/snolc'):
+                return int(entry.name)
+        except (OSError, ValueError, IndexError):
+            pass
+    raise RuntimeError('client core not found')
+
+
+def server_core():
+    """PID ядра сервера на хосте: процесс «snolc run» в контейнере."""
+    for line in docker('top', SERVER, '-eo', 'pid,args').splitlines()[1:]:
+        pid, args = line.split(None, 1)
+        if '/snolc run ' in args:
+            return int(pid)
+    raise RuntimeError('server core not found')
+
+
+def footprint(pid):
+    rss = next(line for line in Path(f'/proc/{pid}/status').read_text().splitlines() if line.startswith('VmRSS:'))
+    return {'fds': len(os.listdir(f'/proc/{pid}/fd')), 'rss_kib': int(rss.split()[1])}
+
+
+def idle_load(client=None, seconds=10):
+    """Доля ядра за окно простоя: весь контейнер сервера и ядро клиента."""
+    time.sleep(3)  # ожидание ядра растёт до 10 мс только после паузы в передаче
+    pid = client_core(client) if client else None
+    cpu = lambda: (int(proc_stat(pid)[11]) + int(proc_stat(pid)[12])) / TICK if pid else 0
+    server, own, started = cpu_usec(), cpu(), time.monotonic()
+    time.sleep(seconds)
+    span = time.monotonic() - started
+    return {'server': round((cpu_usec() - server) / (span * 1e6) * 100, 2), 'client': round((cpu() - own) / span * 100, 2)}
+
+
+def tunnel_events():
+    """Подключения и обрывы туннелей в журнале ядра сервера."""
+    text = (STATE / 'core.log').read_bytes()
+    return {'established': text.count(b'state: "established"'), 'errors': text.count(b'ModuleError')}
+
+
+def restarts(name='main'):
+    """Сколько раз client.py перезапускал зависшее ядро."""
+    return (Path(PROCS[name][1].name).read_bytes()).count('повторное подключение'.encode())
+
+
+def upload(size=64 * 1024, port=1085):
+    data = os.urandom(size)
+    r = subprocess.run(['curl', '--noproxy', '', '--socks5-hostname', f'127.0.0.1:{port}', '--max-time', '30', '-fsS',
+                        '--data-binary', '@-', f'http://{PUBLIC}:8082/upload'], input=data, capture_output=True)
+    return r.returncode == 0 and r.stdout.decode() == hashlib.sha256(data).hexdigest()
 
 
 def soak(seconds=60):
@@ -208,6 +335,8 @@ def main():
     applied()
     check('server-image-version', docker('exec', SERVER, '/opt/snolc/runtime/bin/snolc', '--version').strip().encode() == VERSION)
     check('server-running-with-active-user', server_ready())
+    load = idle_load()
+    check('idle-cpu-server-without-clients', load['server'] < IDLE_LIMIT, load)
     # ZIP выдаёт код бота (как кнопка в карточке и личная ссылка).
     control('zip', a)
     archive = LAB / 'exports' / f'{a}.zip'
@@ -219,8 +348,10 @@ def main():
         check('zip-has-no-server-seed', all(seed.encode() not in bundle.read(n) for n in names))
         bundle.extractall(CLIENT)
     check('zip-profile-matches-bot', json.loads((CLIENT / 'profile.json').read_text()) == profile(a))
-    prepared = subprocess.run([sys.executable, 'client.py', '--install', '--prepare'], cwd=CLIENT, capture_output=True, text=True, timeout=60)
-    check('client-install-and-prepare', prepared.returncode == 0 and 'Конфигурация проверена.' in prepared.stdout,
+    # Без сети: ZIP обязан содержать все модули и исправленное ядро (42c9d99).
+    prepared = subprocess.run(['unshare', '--net', sys.executable, 'client.py', '--install', '--prepare'], cwd=CLIENT,
+                              capture_output=True, text=True, timeout=60)
+    check('client-install-offline-and-prepare', prepared.returncode == 0 and 'Конфигурация проверена.' in prepared.stdout,
           {'rc': prepared.returncode, 'out': prepared.stdout[-300:], 'err': prepared.stderr[-300:]})
     binary = (CLIENT / 'runtime/bin/snolc').read_bytes()
     check('client-is-glibc-build', b'/lib64/ld-linux-x86-64.so.2' in binary[:4096])
@@ -229,7 +360,26 @@ def main():
     start('main', profile(a), 1085)
     check('tcp-small', recover())
     check('udp-small', udp())
+    load = idle_load('main')
+    check('idle-cpu-connected-client', load['server'] < IDLE_LIMIT and load['client'] < IDLE_LIMIT, load)
+    # Открытый, но молчащий поток и UDP-ассоциация: vpnbot.3 снижал опрос и в этом режиме.
+    with socks_tcp(1085, PUBLIC, 8083) as held, association() as (send, sock):
+        held.sendall(b'hold')
+        send(b'hold')
+        opened = rx(held, 4) == b'hold' and sock.recv(65535).endswith(b'hold')
+        load = idle_load('main')
+        held.sendall(b'more')
+        opened = opened and rx(held, 4) == b'more'
+    check('idle-cpu-open-tcp-and-udp', opened and load['server'] < IDLE_LIMIT and load['client'] < IDLE_LIMIT, load)
+    rtt = rtt_ms()
+    check('tcp-rtt-median-below-5ms', rtt < 5, {'ms': rtt})
     check('download-8MiB', good(size=8 * 1024 * 1024))
+    started = time.monotonic()
+    fetched = good(size=32 * 1024 * 1024)
+    rate = round(32 * 8 * 1.048576 / (time.monotonic() - started), 1)
+    # SSH + Noise в пользовательском режиме: 11–13 Мбит/с; регрессия ожидания
+    # ядра (сентябрь 2026) давала 3,3–4,9 Мбит/с.
+    check('download-32MiB-above-7-Mbit', fetched and rate > 7, {'mbit': rate})
     data = os.urandom(2 * 1024 * 1024)
     (LAB / 'upload.bin').write_bytes(data)
     r = subprocess.run(['curl', '--noproxy', '', '--socks5-hostname', '127.0.0.1:1085', '--max-time', '90', '-fsS',
@@ -242,9 +392,26 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(8) as pool:
         parallel = list(pool.map(lambda _: udp(size=60000, count=4), range(8)))
     check('udp-parallel-8x4x60000', all(parallel), parallel)
+    check('udp-burst-16x4096-no-loss', udp_burst(16, 4096))
+    check('udp-burst-6x32768-no-loss', udp_burst(6, 32768))
+    check('udp-after-burst', udp())
+    # Регрессия vpnbot.3: после TCP-нагрузки параллельные максимальные UDP-кадры
+    # терялись при полной очереди устройства и обгоняли открытие потока.
+    with concurrent.futures.ThreadPoolExecutor(12) as pool:
+        loads = [pool.submit(good, size=4 * 1024 * 1024) for _ in range(4)]
+        time.sleep(1)
+        flows = list(pool.map(lambda _: udp(size=65497, count=4), range(8)))
+        loaded = [future.result() for future in loads]
+    check('udp-parallel-8x4x65497-under-tcp-load', all(flows) and all(loaded), {'udp': flows, 'tcp': loaded})
     with concurrent.futures.ThreadPoolExecutor(16) as pool:
         flows = list(pool.map(lambda _: good(size=64 * 1024), range(16)))
     check('tcp-16-parallel-flows', all(flows), flows)
+    # Регрессия vpnbot.3: данные нового потока опережали команду открытия и рвали туннель.
+    events = tunnel_events()
+    with concurrent.futures.ThreadPoolExecutor(32) as pool:
+        sent = list(pool.map(lambda _: upload(), range(32)))
+    check('tcp-32-parallel-uploads-exact-hash', all(sent), sent)
+    check('parallel-opens-keep-tunnel', tunnel_events() == events and restarts() == 0, [events, tunnel_events(), restarts()])
 
     # Приватные сети закрыты, хотя цель по приватному адресу доступна серверу.
     check('private-target-reachable-from-server', docker('exec', SERVER, 'python3', '-c',
@@ -263,6 +430,23 @@ def main():
     with socket.create_connection(('198.51.100.3', 24448), timeout=5) as probe:
         probe.sendall(os.urandom(4096))
     check('garbage-on-port-does-not-break-service', good())
+    # Регрессии vpnbot.1: закрытые потоки и UDP после закрытия SOCKS5 не освобождались.
+    # Лимит пользователя — 32 одновременных потока: утечка закрыла бы доступ.
+    server_pid, client_pid = server_core(), client_core()
+    before = [footprint(server_pid), footprint(client_pid)]
+    # UDP — по 8 одновременно: закрытый поток UDP освобождается с задержкой, и 16
+    # одновременных ассоциаций со сменой упираются в лимит 32 (замер 2026-10-16).
+    with concurrent.futures.ThreadPoolExecutor(16) as pool:
+        churn = list(pool.map(lambda _: good(size=4096), range(300)))
+    with concurrent.futures.ThreadPoolExecutor(8) as pool:
+        churn += list(pool.map(lambda _: udp(size=300), range(100)))
+    check('churn-300-tcp-100-udp-within-flow-limit', all(churn), {'failed': churn.count(False)})
+    time.sleep(5)
+    after = [footprint(server_pid), footprint(client_pid)]
+    check('server-fds-released-after-churn', after[0]['fds'] <= before[0]['fds'] + 8, [before[0], after[0]])
+    check('client-fds-released-after-churn', after[1]['fds'] <= before[1]['fds'] + 8, [before[1], after[1]])
+    check('server-memory-bounded-after-churn', after[0]['rss_kib'] < before[0]['rss_kib'] + 32768, [before[0], after[0]])
+    check('new-flows-after-churn', good() and udp())
     stop('main')
 
     original = profile(a)
@@ -311,6 +495,33 @@ def main():
     check('quota-survives-container-restart', denied())
     edit(a, {'quota': None}, 'reset')
     check('quota-reset-reopens-access', recover())
+    # Регрессия vpnbot.3 (модули): остаток резерва меньше кадра пополнялся только
+    # на контрольной точке, и параллельный UDP ждал больше 8 с.
+    edit(a, {'quota': 16 * 1024 * 1024}, 'reset')
+
+    def worst_wait(_):
+        worst = 0
+        try:
+            with association() as (send, sock):
+                for _ in range(6):
+                    data, started = os.urandom(60000), time.monotonic()
+                    send(data)
+                    if not sock.recv(65535).endswith(data):
+                        return None
+                    worst = max(worst, round(time.monotonic() - started, 2))
+        except (OSError, EOFError):
+            return None
+        return worst
+    with concurrent.futures.ThreadPoolExecutor(4) as pool:
+        waits = list(pool.map(worst_wait, range(4)))
+    check('udp-large-datagrams-under-quota-not-starved', all(w is not None and w < 2.5 for w in waits), waits)
+    edit(a, {'quota': 262144}, 'reset')
+    with concurrent.futures.ThreadPoolExecutor(3) as pool:
+        runs = list(pool.map(lambda _: http(size=1024 * 1024, timeout=20), range(3)))
+    delivered = sum(len(r.stdout) for r in runs)
+    check('concurrent-quota-3-transfers-bounded', all(r.returncode for r in runs) and delivered <= 262144, {'delivered': delivered})
+    edit(a, {'quota': None}, 'reset')
+    check('quota-cleared-after-concurrency', recover())
 
     control('configure', '{}', '0')
     applied()
@@ -318,6 +529,15 @@ def main():
     control('configure', '{}', '1')
     applied()
     check('service-on-keeps-credentials', recover())
+    docker('restart', '-t', '20', SERVER, timeout=60)
+    applied()
+    check('client-recovers-after-server-restart', recover(seconds=60))
+    # Сервер замер на 25 с (процессы заморожены, сеть контейнера жива): клиент не
+    # должен остаться без туннеля. Сам запускатель проверяет snolc_service_test.
+    docker('pause', SERVER)
+    time.sleep(25)
+    docker('unpause', SERVER)
+    check('client-survives-server-stall-25s', recover(seconds=60), {'launcher_restarts': restarts()})
 
     b = control('add', 'Native B')['id']
     applied()
@@ -357,13 +577,10 @@ def main():
     check('deleted-user-denied', denied(1086))
     stop('second')
 
-    # Простой с подключённым клиентом: исправление vpnbot.3 снижало опрос ядра.
-    time.sleep(3)
-    first, started = cpu_usec(), time.monotonic()
-    time.sleep(10)
-    load = (cpu_usec() - first) / ((time.monotonic() - started) * 1e6) * 100
-    print('idle cpu percent', round(load, 1), flush=True)
-    check('idle-cpu-below-60-percent-of-core', load < 60, {'percent': round(load, 1)})
+    # Простой после всей нагрузки: ни сервер, ни клиент не остаются в активном опросе.
+    load = idle_load('main')
+    print('idle cpu percent', load, flush=True)
+    check('idle-cpu-after-load', load['server'] < IDLE_LIMIT and load['client'] < IDLE_LIMIT, load)
     inspection = json.loads(docker('inspect', SERVER))[0]
     check('no-oom-and-same-restrictions', not inspection['State']['OOMKilled'] and inspection['HostConfig']['ReadonlyRootfs']
           and inspection['HostConfig']['CapDrop'] == ['ALL'] and inspection['HostConfig']['Memory'] == 256 * 1024 * 1024)

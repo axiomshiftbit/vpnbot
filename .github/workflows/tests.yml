@@ -145,7 +145,7 @@ jobs:
                 php${PHP_SERIES} php${PHP_SERIES}-mbstring php${PHP_SERIES}-session \
                 php${PHP_SERIES}-phar php${PHP_SERIES}-zip php${PHP_SERIES}-curl \
                 php${PHP_SERIES}-openssl php${PHP_SERIES}-iconv php${PHP_SERIES}-intl \
-                php${PHP_SERIES}-pecl-ssh2 php${PHP_SERIES}-pecl-yaml php${PHP_SERIES}-pcntl
+                php${PHP_SERIES}-pecl-ssh2 php${PHP_SERIES}-pecl-yaml php${PHP_SERIES}-pcntl php${PHP_SERIES}-sodium
               ln -sf /usr/bin/php${PHP_SERIES} /usr/bin/php
               mkdir -p /logs
               php -v

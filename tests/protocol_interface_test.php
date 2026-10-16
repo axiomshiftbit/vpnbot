@@ -59,6 +59,11 @@ set_error_handler(function ($level, $message, $file, $line) {
     if (error_reporting() & $level) throw new ErrorException($message, 0, $level, $file, $line);
     return false;
 });
+function snolcDeniedUi(callable $call, string $name): void
+{
+    try { $call(); } catch (RuntimeException | InvalidArgumentException $e) { uiCheck(true, $name); return; }
+    uiCheck(false, $name);
+}
 try {
     $bot = new ProtocolInterfaceBot($i);
     $bot->protocolRoot = "$root/protocols"; $bot->protocolModulesFile = "$root/protocol-services.json";
@@ -233,9 +238,23 @@ try {
     uiCheck(str_contains($text, '/native') && !str_contains(json_encode($buttons), 'provider'), 'snolc: HTTP-архив без ложного provider');
     $before = $snolc->read();
     $bot->protocolCommand('snolc', 'toggle');
-    uiCheck(!$modules->enabled('snolc') && $snolc->read()['users'] === $before['users'], 'snolc: выключение сохраняет всех пользователей');
+    uiCheck(!$modules->enabled('snolc') && !$snolc->read()['enabled'], 'snolc: выключение снимает оба флага — контейнер и протокол');
+    uiCheck($snolc->read()['users'] === $before['users'] && $snolc->read()['settings'] === $before['settings'], 'snolc: выключение сохраняет всех пользователей и ключи');
+    $bot->protocolCommand('snolc'); [$text, $buttons] = uiLast($bot);
+    uiCheck(str_contains(json_encode($buttons, JSON_UNESCAPED_UNICODE), 'Включить сервис'), 'snolc: карточка выключенного сервиса предлагает включение');
+    snolcDeniedUi(fn() => $snolc->profileDocument($id, 'native'), 'snolc: выключенный сервис не выдаёт ZIP');
+    // Кнопка из старого сообщения (/protocolModules snolc) не переключает управляемый протокол.
+    $bot->input['callback'] = '/protocolModules snolc'; $bot->action(); $bot->input['callback'] = false;
+    uiCheck(!$modules->enabled('snolc') && !$snolc->read()['enabled'], 'snolc: устаревшая кнопка списка модулей ничего не меняет');
     $bot->protocolCommand('snolc', 'toggle');
-    uiCheck($modules->enabled('snolc') && $snolc->read()['settings']['server_seed'] === $before['settings']['server_seed'], 'snolc: включение сохраняет ключи сервера');
+    uiCheck($modules->enabled('snolc') && $snolc->read()['enabled'], 'snolc: включение ставит оба флага');
+    uiCheck($snolc->read()['settings'] === $before['settings'] && $snolc->read()['users'] === $before['users'], 'snolc: включение сохраняет ключи сервера и пользователей');
+    uiCheck($snolc->profileDocument($id, 'native')['extension'] === 'zip', 'snolc: после включения ZIP снова выдаётся');
+    // Настройки модулей не записались: флаг протокола возвращается, состояния не расходятся.
+    $file = $bot->protocolModulesFile; $bot->protocolModulesFile = "$root/absent-directory/modules.json";
+    $bot->protocolCommand('snolc', 'toggle');
+    $bot->protocolModulesFile = $file;
+    uiCheck($modules->enabled('snolc') && $snolc->read()['enabled'], 'snolc: сбой записи модулей откатывает флаг протокола');
     $bot->admin = false; $before = $snolc->read();
     $bot->protocolCommand('snolc', 'toggle');
     uiCheck($snolc->read() === $before, 'snolc: неадминистратор не меняет модуль');

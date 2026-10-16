@@ -62,6 +62,12 @@ try {
     readinessCheck($bot->verifyBackupServices($snapshot) === [], 'Следующая ревизия cron с тем же восстановленным расходом уже применена');
     ManagedProtocol::writeJson("$runtime/status.json", array_replace($ready, ['running' => false, 'phase' => 'idle']));
     readinessCheck($bot->verifyBackupServices($snapshot) === [], 'Пустой протокол может быть применён без рабочего процесса');
+    // Как настоящий ProtocolModules::enabled(): незнакомое имя считается включённым.
+    $unknownEnabled = new class($root) extends BackupReadinessBot {
+        public function protocolModuleEnabled(string $service): bool { return $service === 'snolc' || !isset(ProtocolModules::DEFAULTS[$service]); }
+    };
+    $foreign = ['managed_protocols' => ['protocols' => ['snolc' => [], 'future-protocol' => []]]];
+    readinessCheck($unknownEnabled->verifyBackupServices($foreign) === [], 'Протокол из копии другой версии пропускается без отказа');
     echo "backup_readiness_test OK\n";
 } finally {
     if (is_resource($writer)) { proc_terminate($writer); proc_close($writer); }

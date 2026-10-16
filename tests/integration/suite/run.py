@@ -176,7 +176,7 @@ try:
  unit=O/'unit';unit.mkdir()
  archive=subprocess.check_output(['git','archive','HEAD'],cwd=a.checkout)
  subprocess.run(['tar','-x','-C',str(unit)],input=archive,check=True)
- unitcode='''apk add --no-cache bash util-linux coreutils findutils make jq openssl php85-pcntl py3-yaml >/tmp/packages.log 2>&1
+ unitcode='''apk add --no-cache bash util-linux coreutils findutils make jq openssl php85-pcntl php85-sodium py3-yaml >/tmp/packages.log 2>&1
 mkdir -p /logs
 python3 -m unittest discover -s tests -p '*_test.py' || exit 1
 python3 - <<'INNER'
@@ -198,7 +198,7 @@ INNER'''
  # Both full off/on cycles, including shared IKEv2/L2TP and deleted TeleMT.
  (R/'module-cycle-results.json').unlink(missing_ok=True)
  run('module-cycles',['python3',str(R/'module-cycles.py')],timeout=1500)
- rows=json.loads((R/'module-cycle-results.json').read_text());check('modules','full-module-cycles',len(rows)==333 and all(x['ok'] for x in rows));counts['modules']+=len(rows)
+ rows=json.loads((R/'module-cycle-results.json').read_text());check('modules','full-module-cycles',len(rows)==357 and all(x['ok'] for x in rows));counts['modules']+=len(rows)
  verify_images({s:candidate['images'][im] for s,im in ib.SERVICES.items()},'modules')
  # Regression found on a production server: settings/status say ON, Docker container vanished
  # during an external compose deployment. No toggle/settings change is sent.

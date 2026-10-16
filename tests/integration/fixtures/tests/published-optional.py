@@ -69,7 +69,8 @@ code="require '/app/ManagedProtocol.php';$s=new ManagedProtocol('snolc','/config
 run(['docker','exec','php-audit','php','-r',code]).check_returncode()
 client=r/'snolc-postrestore';shutil.rmtree(client,ignore_errors=True)
 with zipfile.ZipFile(b/'logs/audit-snolc-afterrestore.zip') as bundle:bundle.extractall(client)
-p=subprocess.run([sys.executable,'client.py','--install','--prepare'],cwd=client,capture_output=True,text=True,timeout=60)
+# Без сети: всё нужное для установки обязано лежать в ZIP.
+p=subprocess.run(['unshare','--net',sys.executable,'client.py','--install','--prepare'],cwd=client,capture_output=True,text=True,timeout=60)
 check('snolc/restored-profile-installs-offline',p.returncode==0)
 with (r/'snolc-postrestore.log').open('w') as log:
  proc=subprocess.Popen([sys.executable,str(client/'client.py'),'--socks-port','1089'],cwd=client,stdout=log,stderr=log,start_new_session=True)

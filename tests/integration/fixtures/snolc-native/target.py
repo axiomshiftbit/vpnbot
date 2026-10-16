@@ -1,4 +1,4 @@
-"""Цель трафика snolc: HTTP (байты и хеш выгрузки) и UDP-эхо на всех адресах."""
+"""Цель трафика snolc: HTTP (байты и хеш выгрузки), TCP- и UDP-эхо на всех адресах."""
 import hashlib, http.server, socket, threading
 
 
@@ -42,5 +42,22 @@ def echo():
         data, peer = udp.recvfrom(65535); udp.sendto(data, peer)
 
 
+def tcp_echo(conn):
+    with conn:
+        try:
+            while data := conn.recv(65536):
+                conn.sendall(data)
+        except OSError:
+            pass
+
+
+def tcp():
+    server = socket.create_server(('0.0.0.0', 8083), backlog=64)
+    while True:
+        conn, _ = server.accept()
+        threading.Thread(target=tcp_echo, args=(conn,), daemon=True).start()
+
+
 threading.Thread(target=echo, daemon=True).start()
+threading.Thread(target=tcp, daemon=True).start()
 http.server.ThreadingHTTPServer(('0.0.0.0', 8082), Http).serve_forever()

@@ -98,7 +98,7 @@ set_error_handler(static function ($level, $message, $file, $line) {
 try {
     $bot = new ProtocolChatBot($i); $bot->protocolRoot = $root . '/protocols';
     $bot->protocolModulesFile = $root . '/modules.json'; $bot->upstreamFile = $root . '/upstream.conf';
-    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $protocol => $name) {
+    foreach (ManagedProtocol::NAMES as $protocol => $name) {
         $store = $bot->protocolStore($protocol);
         $store->configure(['host' => 'vpn.example.test', 'sni' => in_array($protocol, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test']);
         $id = managedProtocolFixtureUser($store, 'Навигация');
@@ -152,6 +152,9 @@ try {
             }
         }
         chatClick($bot, "/!protocol $protocol");
+        // У snolc нет дополнительных настроек ядра (ProtocolOptions): остальная навигация общая.
+        $options = $protocol !== 'snolc';
+        if ($options) {
         for ($repeat = 0; $repeat < 3; $repeat++) {
             $screen = chatClick($bot, "/!po $protocol");
             chatCheck(count($bot->transport->messages) === 1, "$protocol: дополнительные настройки редактируют одно меню");
@@ -187,6 +190,7 @@ try {
         $screen = chatReply($bot, $protocol === 'masque' ? '60-120' : ($protocol === 'mieru' ? '1400' : '10s'));
         chatCheck(!str_contains($screen['text'], '❌'), 'Повторный ввод сохраняется');
         chatClick($bot, "/!po $protocol reset");
+        }
         foreach (["name $id" => 'Новое имя', "quota $id" => '0.5', "expires $id" => '2026-12-01 12:00'] as $action => $value) {
             chatClick($bot, "/!protocol $protocol $action"); chatReply($bot, $value);
         }
@@ -210,12 +214,12 @@ try {
             chatClick($bot, chatBack($screen));
             $key = substr(hash('sha256', 'relay-' . $protocol), 0, 16);
             $screen = chatClick($bot, $prefix . "pr $protocol $id $key");
-            foreach ($protocol === 'masque' ? [''] : ['', 'provider'] as $action) {
+            foreach (in_array($protocol, ['masque', 'snolc'], true) ? [''] : ['', 'provider'] as $action) {
                 chatClick($bot, rtrim($prefix . "ps $protocol $id $key $action"));
                 chatCheck(count($bot->transport->messages) === 1, 'Подписка и provider редактируют меню');
             }
-            if ($protocol !== 'masque') chatClick($bot, $prefix . "pr $protocol $id $key yaml");
-            $exportFormat = $protocol === 'masque' ? 'native' : 'mihomo';
+            if (!in_array($protocol, ['masque', 'snolc'], true)) chatClick($bot, $prefix . "pr $protocol $id $key yaml");
+            $exportFormat = in_array($protocol, ['masque', 'snolc'], true) ? 'native' : 'mihomo';
             chatClick($bot, $prefix . "pr $protocol $id $key $exportFormat");
             chatCheck(count($bot->transport->messages) === 2, 'Выгрузка: меню и один файл');
             chatClick($bot, $prefix . "pr $protocol $id $key $exportFormat");
@@ -232,7 +236,7 @@ try {
             chatClick($bot, "$entry $protocol");
             chatCheck(count($bot->transport->messages) === 1, 'Выход удаляет QR, запасной файл и пояснение');
         }
-        chatClick($bot, "/!po $protocol edit $path");
+        chatClick($bot, $options ? "/!po $protocol edit $path" : "/!protocol $protocol name $id");
         chatClick($bot, '/menu');
         chatCheck(count($bot->transport->messages) === 1, 'Уход в другое меню отменяет ввод');
         $before = $store->read()['settings'];

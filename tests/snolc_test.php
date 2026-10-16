@@ -30,12 +30,13 @@ try {
     snolcCheck(!str_contains(json_encode($profile), $state['settings']['server_seed']), 'Корневой секрет сервера не выдаётся клиенту');
     snolcCheck(strlen($profile['credential']) === 64 && $profile['credential'] !== $state['users'][$id]['token'], 'Отдельный ключ policy-local');
     $seed = hex2bin($state['settings']['server_seed']);
-    if (extension_loaded('sodium')) {
-        $derive = static fn($key) => hash_hmac('sha256', 'vpnbot/snolc/' . $key . '/v1', $seed, true);
-        $public = sodium_crypto_sign_publickey(sodium_crypto_sign_seed_keypair($derive('ssh')));
-        snolcCheck($profile['server']['ssh_public_key'] === 'ssh-ed25519 ' . base64_encode(pack('N', 11) . 'ssh-ed25519' . pack('N', 32) . $public), 'OpenSSL и sodium: одинаковый SSH pin');
-        snolcCheck($profile['server']['noise_public_key'] === bin2hex(sodium_crypto_scalarmult_base($derive('noise'))), 'OpenSSL и sodium: одинаковый Noise pin');
-    }
+    // Независимая сверка ключей, выведенных через OpenSSL. Пакет sodium ставят
+    // задания тестов (tests.yml, стенд); без него сверка не должна молча пропадать.
+    snolcCheck(extension_loaded('sodium'), 'Для сверки ключей нужно расширение sodium');
+    $derive = static fn($key) => hash_hmac('sha256', 'vpnbot/snolc/' . $key . '/v1', $seed, true);
+    $public = sodium_crypto_sign_publickey(sodium_crypto_sign_seed_keypair($derive('ssh')));
+    snolcCheck($profile['server']['ssh_public_key'] === 'ssh-ed25519 ' . base64_encode(pack('N', 11) . 'ssh-ed25519' . pack('N', 32) . $public), 'OpenSSL и sodium: одинаковый SSH pin');
+    snolcCheck($profile['server']['noise_public_key'] === bin2hex(sodium_crypto_scalarmult_base($derive('noise'))), 'OpenSSL и sodium: одинаковый Noise pin');
     $relay = $store->profile($id, 'native', endpoint: ['host' => 'relay.example.test', 'port' => 24449]);
     snolcCheck($relay['server']['host'] === 'relay.example.test' && $relay['server']['port'] === 24449, 'Адрес relay');
     snolcCheck(array_diff_assoc($profile['server'], $relay['server']) === ['host' => 'vpn.example.test', 'port' => 24448], 'Relay сохраняет оба pin и пароль транспорта');
