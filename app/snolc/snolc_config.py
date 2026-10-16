@@ -13,6 +13,9 @@ import zipfile
 VERSION = "0.0.4"
 TARGET = "x86_64-unknown-linux-gnu"
 CLIENT_PACKAGES = ("snolc", "adapter-socks5", "carrier-ssh", "protection-noise", "policy-local")
+# Файлы клиента, собранные из закреплённых исходников (client-patches.zip):
+# ядро и все модули. Из архивов выпуска берутся только лицензии и lock-файлы.
+PATCHED = ("snolc",) + tuple("libsnolc_" + name.replace("-", "_") + ".so" for name in CLIENT_PACKAGES[1:])
 PRIVATE_NETS = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
                 "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16",
                 "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4", "::/128", "::1/128",
@@ -118,7 +121,7 @@ def install(root, server=False, archives=None, built=None):
 def install_patches(root, bundle, install_base=False):
     """Use the tested client binaries delivered by the bot's server image."""
     root = Path(root)
-    names = {"snolc", "libsnolc_adapter_socks5.so", "libsnolc_policy_local.so"}
+    names = set(PATCHED)
     release_names = {"archives/" + archive_name(name) for name in CLIENT_PACKAGES}
     expected = names | release_names | {"manifest.json"}
     with zipfile.ZipFile(bundle) as archive:
@@ -135,7 +138,7 @@ def install_patches(root, bundle, install_base=False):
     if install_base:
         install(root, archives=bundle)
     write_private(root / "bin/snolc", files["snolc"], 0o500)
-    for module in ("adapter-socks5", "policy-local"):
+    for module in CLIENT_PACKAGES[1:]:
         name = "libsnolc_" + module.replace("-", "_") + ".so"
         write_private(root / "packages/store" / module / name, files[name], 0o400)
         path = root / "packages/locks/owenewans" / module / "0.0.4.toml"

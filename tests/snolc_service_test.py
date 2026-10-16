@@ -10,10 +10,18 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from snolc_service import SnolcSupervisor
-from snolc_config import install, install_patches, toml, main_config, PRIVATE_NETS
+from snolc_config import install, install_patches, toml, main_config, PRIVATE_NETS, PATCHED
 from build_patches import build
 import protocol_modules
 import tomllib
+
+
+def built_client(root, core=b'patched core', module=b'patched module'):
+    """Каталог сборки клиента: ядро и все модули из исходников."""
+    built = root / 'built-client'; built.mkdir()
+    for name in PATCHED:
+        (built / name).write_bytes(core if name == 'snolc' else module + b' ' + name.encode())
+    return built
 
 
 class SnolcTests(unittest.TestCase):
@@ -49,26 +57,24 @@ class SnolcTests(unittest.TestCase):
         import zipfile
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            core, adapter, bundle = root / 'core', root / 'adapter', root / 'bundle.zip'
-            core.write_bytes(b'patched core'); adapter.write_bytes(b'patched adapter')
-            build(core, adapter, adapter, bundle)
-            lock = root / 'runtime/packages/locks/owenewans/adapter-socks5/0.0.4.toml'
-            lock.parent.mkdir(parents=True)
-            lock.write_text('content_sha256 = "old"\npackage = "adapter"\n')
-            policy_lock = lock.parent.parent / 'policy-local/0.0.4.toml'
-            policy_lock.parent.mkdir()
-            policy_lock.write_text('content_sha256 = "old"\npackage = "policy"\n')
+            built, bundle = built_client(root), root / 'bundle.zip'
+            build(built, bundle)
+            locks = root / 'runtime/packages/locks/owenewans'
+            for module in ('adapter-socks5', 'carrier-ssh', 'protection-noise', 'policy-local'):
+                (locks / module).mkdir(parents=True)
+                (locks / module / '0.0.4.toml').write_text(f'content_sha256 = "old"\npackage = "{module}"\n')
             install_patches(root / 'runtime', bundle)
             self.assertEqual(b'patched core', (root / 'runtime/bin/snolc').read_bytes())
-            self.assertEqual(hashlib.sha256(adapter.read_bytes()).hexdigest(), tomllib.loads(lock.read_text())['content_sha256'])
+            for module in ('adapter-socks5', 'carrier-ssh', 'protection-noise', 'policy-local'):
+                name = 'libsnolc_' + module.replace('-', '_') + '.so'
+                self.assertEqual(hashlib.sha256((built / name).read_bytes()).hexdigest(),
+                                 tomllib.loads((locks / module / '0.0.4.toml').read_text())['content_sha256'])
             self.assertEqual(0o500, (root / 'runtime/bin/snolc').stat().st_mode & 0o777)
             with zipfile.ZipFile(bundle) as archive:
-                manifest = archive.read('manifest.json')
+                files = {name: archive.read(name) for name in archive.namelist()}
+            files['libsnolc_carrier_ssh.so'] = b'tampered'
             with zipfile.ZipFile(bundle, 'w') as archive:
-                archive.writestr('manifest.json', manifest)
-                archive.writestr('snolc', b'tampered')
-                archive.writestr('libsnolc_adapter_socks5.so', adapter.read_bytes())
-                archive.writestr('libsnolc_policy_local.so', adapter.read_bytes())
+                for name, data in files.items(): archive.writestr(name, data)
             with self.assertRaises(ValueError): install_patches(root / 'runtime', bundle)
             self.assertEqual(b'patched core', (root / 'runtime/bin/snolc').read_bytes())
 
@@ -93,15 +99,16 @@ class SnolcTests(unittest.TestCase):
         import hashlib
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            core, adapter, bundle = root / 'core', root / 'adapter', root / 'bundle.zip'
-            core.write_bytes(b'patched core'); adapter.write_bytes(b'patched module')
-            build(core, adapter, adapter, bundle)
+            built, bundle = built_client(root), root / 'bundle.zip'
+            build(built, bundle)
             with patch('socket.create_connection', side_effect=AssertionError('network is forbidden')):
                 install_patches(root / 'runtime', bundle, install_base=True)
             self.assertEqual(b'patched core', (root / 'runtime/bin/snolc').read_bytes())
             for name in ('adapter-socks5', 'carrier-ssh', 'protection-noise', 'policy-local'):
                 library = root / 'runtime/packages/store' / name / ('libsnolc_' + name.replace('-', '_') + '.so')
                 lock = root / 'runtime/packages/locks/owenewans' / name / '0.0.4.toml'
+                # Каждый модуль — собранный из исходников, не бинарник выпуска автора.
+                self.assertEqual((built / library.name).read_bytes(), library.read_bytes())
                 self.assertEqual(hashlib.sha256(library.read_bytes()).hexdigest(), tomllib.loads(lock.read_text())['content_sha256'])
                 for notice in ('LICENSE', 'THIRD_PARTY_NOTICES.txt'):
                     self.assertTrue((root / 'runtime/licenses' / name / notice).stat().st_size)
@@ -136,9 +143,8 @@ class SnolcTests(unittest.TestCase):
         import zipfile
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            core, adapter, bundle = root / 'core', root / 'adapter', root / 'bundle.zip'
-            core.write_bytes(b'patched core'); adapter.write_bytes(b'patched module')
-            build(core, adapter, adapter, bundle)
+            bundle = root / 'bundle.zip'
+            build(built_client(root), bundle)
             with zipfile.ZipFile(bundle) as archive:
                 files = {name: archive.read(name) for name in archive.namelist()}
             name = 'archives/policy-local-0.0.4-x86_64-unknown-linux-gnu.tar.gz'

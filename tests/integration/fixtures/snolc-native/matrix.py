@@ -353,6 +353,13 @@ def main():
                               capture_output=True, text=True, timeout=60)
     check('client-install-offline-and-prepare', prepared.returncode == 0 and 'Конфигурация проверена.' in prepared.stdout,
           {'rc': prepared.returncode, 'out': prepared.stdout[-300:], 'err': prepared.stderr[-300:]})
+    # Ядро и все модули клиента — сборка из исходников (client-patches.zip), не бинарники выпуска.
+    with zipfile.ZipFile(CLIENT / 'client-patches.zip') as patches:
+        installed = {'snolc': CLIENT / 'runtime/bin/snolc'} | {
+            name: CLIENT / 'runtime/packages/store' / name[9:-3].replace('_', '-') / name
+            for name in patches.namelist() if name.startswith('libsnolc_')}
+        check('client-runs-only-source-built-components', len(installed) == 5
+              and all(path.read_bytes() == patches.read(name) for name, path in installed.items()), sorted(installed))
     binary = (CLIENT / 'runtime/bin/snolc').read_bytes()
     check('client-is-glibc-build', b'/lib64/ld-linux-x86-64.so.2' in binary[:4096])
     check('client-version', subprocess.run([str(CLIENT / 'runtime/bin/snolc'), '--version'], capture_output=True).stdout.strip() == VERSION)

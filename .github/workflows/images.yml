@@ -321,6 +321,10 @@ jobs:
               grep -qx "\"target\" = \"x86_64-unknown-linux-musl\"" "/opt/snolc/runtime/packages/locks/owenewans/$module/0.0.4.toml"
             done
             cd / && python3 -c "from snolc_service import SnolcSupervisor"
+            # Список пакетов Cargo (cargo auditable) для шлюза Trivy: ядро и опись модулей.
+            for binary in /opt/snolc/runtime/bin/snolc /opt/snolc/sbom/vpnbot-snolc-modules; do
+              grep -q "dep-v0" "$binary"
+            done
           '
           # Клиентский комплект собран для glibc: его ядро запускается на самом runner.
           container=$(docker create --network=none "$image")
@@ -333,6 +337,11 @@ jobs:
               assert manifest['version'] == '0.0.4+vpnbot.3'
               for name, digest in manifest['sha256'].items():
                   assert hashlib.sha256(bundle.read(name)).hexdigest() == digest, name
+              # Ядро и все модули клиента — из исходников, под glibc.
+              built = ['snolc'] + ['libsnolc_' + m + '.so' for m in ('adapter_socks5', 'carrier_ssh', 'protection_noise', 'policy_local')]
+              for name in built:
+                  assert name in manifest['sha256'], name + ' is not built from source'
+                  assert b'GLIBC_' in bundle.read(name), name + ' is not a glibc build'
               core = bundle.read('snolc')
           assert b'/lib64/ld-linux-x86-64.so.2' in core[:4096], 'client core is not a glibc build'
           with open(sys.argv[2], 'wb') as stream:

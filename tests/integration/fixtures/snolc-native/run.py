@@ -14,7 +14,7 @@ SOURCE, IMAGE, PHP_IMAGE = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3]
 SERVER, TARGET = 'vpnbot-snolc-native-server', 'vpnbot-snolc-native-target'
 NETWORKS = {'vpnbot-snolc-public': '198.51.100.0/24', 'vpnbot-snolc-private': '10.77.99.0/24'}
 # Число проверок matrix.py: выпавшая проверка не должна пройти незаметно.
-CHECKS = 90
+CHECKS = 91
 
 
 def run(*args, timeout=120):
