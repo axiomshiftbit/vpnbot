@@ -239,8 +239,11 @@ def compose_files(root, env):
     if env.get('VPNBOT_TAG', '').startswith('sha-') and not selected:
         raise ValueError('remove the explicit image pin before a bundle update')
     target = root / 'update' / ('compose-images-' + fingerprint(bundle) + '.json')
-    if not target.exists():
-        atomic(target, canonical(overlay(bundle)))
+    # Файл того же комплекта мог записать прежний код (prepare перед обновлением)
+    # по своему списку сервисов: сверяем содержимое, а не только имя.
+    data = canonical(overlay(bundle))
+    if not target.exists() or target.read_bytes() != data:
+        atomic(target, data)
     separator = env.get('COMPOSE_PATH_SEPARATOR', os.pathsep)
     files = env.get('COMPOSE_FILE', '').split(separator) if env.get('COMPOSE_FILE') else ['docker-compose.yml']
     if not env.get('COMPOSE_FILE') and (root / 'docker-compose.override.yml').is_file():

@@ -131,6 +131,18 @@ class ImageBundleTests(unittest.TestCase):
         self.assertEqual(bundle.overlay(value), json.loads(Path(files[-1]).read_text()))
         self.assertEqual('TZ=Europe/Moscow\nPORT=1234\n', override.read_text())
 
+    def test_overlay_written_by_previous_code_is_replaced(self):
+        # prepare установленного кода пишет overlay того же комплекта по своему
+        # списку сервисов (мост: без snolc). Новый код не должен его принять.
+        value = candidate(); path = self.root / 'update/image-bundle.json'; bundle.atomic(path, bundle.canonical(value))
+        stale = bundle.overlay(value); del stale['services']['snolc']
+        target = self.root / 'update' / ('compose-images-' + bundle.fingerprint(value) + '.json')
+        bundle.atomic(target, bundle.canonical(stale))
+        with patch.object(bundle, 'command', return_value='a' * 40):
+            files = bundle.compose_files(self.root, {})
+        self.assertEqual(str(target), files[-1])
+        self.assertEqual(value['images']['snolc'], json.loads(target.read_text())['services']['snolc']['image'])
+
     def test_missing_explicit_bundle_and_explicit_rollback_pin_fail_closed(self):
         with self.assertRaises(ValueError): bundle.compose_files(self.root, {'VPNBOT_BUNDLE_FILE': str(self.root / 'absent')})
         bundle.atomic(self.root / 'update/image-bundle.json', bundle.canonical(candidate()))
