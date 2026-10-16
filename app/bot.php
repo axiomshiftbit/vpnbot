@@ -3412,6 +3412,9 @@ class Bot
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
         $this->ensureXhttpMuxInbound($c, $pac);
+        if (is_array($c['inbounds'][0]['streamSettings']['realitySettings'] ?? null)) {
+            $this->ensureRealityRequireMlkem($c['inbounds'][0]['streamSettings']['realitySettings'], $pac);
+        }
         if (!$this->finalmaskCoreCompatible($pac, $this->xrayCoreSelection($pac))) return false;
         $this->ensureFinalmaskInbound($c);
         $c['stats'] = new stdClass();
@@ -19955,15 +19958,13 @@ DNS-over-HTTPS with IP:
         return ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random'];
     }
 
-    // Отпечатки, которые имеет смысл предлагать при текущем транспорте.
-    // Для REALITY — только те, что принимает сервер любого ядра сборки
-    // (см. REALITY_FINGERPRINTS): остальные либо не работают вовсе (android,
-    // 360 — в этих образцах нет TLS 1.3), либо только на старом ядре (ios,
-    // edge, qq), либо через раз (random). С обычным TLS годятся все.
+    // Отпечаток выбирает администратор при любом транспорте: бот не подменяет
+    // выбор, а предупреждает (fingerprintWarnings()), если текущее ядро такого
+    // клиента не примет. Так новые образцы uTLS с X25519MLKEM768 становятся
+    // доступны без правки бота, а пометки в меню считаются по фактическому ядру.
     public function fingerprintsFor(?array $pac = null): array
     {
-        $pac = $pac ?? $this->getPacConf();
-        return ($pac['transport'] ?? '') === 'Reality' ? self::REALITY_FINGERPRINTS : $this->fingerprints();
+        return $this->fingerprints();
     }
 
     // Единая точка чтения отпечатка: пустое, неизвестное или снятое с
@@ -19975,8 +19976,12 @@ DNS-over-HTTPS with IP:
         return in_array($fp, $this->fingerprints(), true) ? $fp : 'chrome';
     }
 
-    // Отпечатки, с которыми клиента на ядре Xray принимает сервер REALITY
-    // любого ядра сборки. С выпуска Xray 26.9.8 (библиотека REALITY от
+    // Отпечатки, которые несут X25519MLKEM768 и потому принимаются сервером
+    // REALITY, требующим ML-KEM. Это знание для предупреждений, а не запрет:
+    // набор стенда reality_fingerprints сверяет его с настоящими ядрами сборки и
+    // сообщает, если другие образцы uTLS тоже начали проходить.
+    //
+    // С выпуска Xray 26.9.8 (библиотека REALITY от
     // 2026-09-08: «Reject outdated/strange Client Hello that doesn't have
     // X25519MLKEM768») сервер отвергает ClientHello без постквантовой доли
     // ключа и отдаёт такому клиенту настоящий сайт-маску. В uTLS её несут
@@ -19986,35 +19991,70 @@ DNS-over-HTTPS with IP:
     // не умеют TLS 1.3 и с REALITY не работали никогда; random при запуске
     // выбирает один из 11 образцов, из которых подходят 4.
     //
-    // Замер на ядрах сборки и официальном бинарнике (2026-10-13):
-    //   26.10.10, 26.9.30 — chrome, firefox, safari;
-    //   26.7.28, форк 26.10.6 — ещё ios, edge, qq.
-    // Решает сервер: старый клиент с ios к новому серверу не подключается.
-    // Другие клиенты на сервере 26.9.8+: Mihomo — только chrome и только с
-    // support-x25519mlkem768; sing-box 1.14.3 — ни с одним отпечатком. Поэтому
-    // профили REALITY для Xray и Mihomo всегда получают chrome (subscription(),
-    // linkXray()), а выбор из меню для REALITY касается только sing-box.
-    // Со стороны бота это не исправить: нужны новые образцы в uTLS либо
-    // прежнее ядро.
+    // Перекрёстный замер (2026-10-16): сервер 26.10.10 принимает клиентов
+    // Xray всех версий сборки (26.7.28 … форк 26.10.13) с chrome, firefox и
+    // safari; Mihomo 1.19.32 — только с chrome (и support-x25519mlkem768);
+    // sing-box 1.14.3 — ни с одним. Ядро 26.7.28 и форк без requireMlkem
+    // принимают и ios, edge, qq. Решает сервер; выбор уходит в профили как
+    // есть, а меню предупреждает (fingerprintWarnings()).
     public const REALITY_FINGERPRINTS = ['chrome', 'firefox', 'safari'];
 
-    // Выбранный отпечаток для REALITY не годится: сервер такого клиента не узнает.
+    // Образцы без TLS 1.3: сервер REALITY их не принимает ни на каком ядре.
+    public const REALITY_NO_TLS13 = ['android', '360'];
+
+    // Не примет ли сервер REALITY текущего ядра клиента с этим отпечатком.
+    // Требование ML-KEM определяет само ядро (realityRequiresMlkem()); старое
+    // ядро и форк без requireMlkem принимают любой образец с TLS 1.3.
     public function fingerprintRejectedByReality(?string $fp = null, ?array $pac = null): bool
     {
         $pac = $pac ?? $this->getPacConf();
-        return (($pac['transport'] ?? '') === 'Reality')
-            && !in_array($fp ?? $this->fingerprintChosen(), self::REALITY_FINGERPRINTS, true);
+        $fp  = $fp ?? $this->fingerprintChosen();
+        if (($pac['transport'] ?? '') !== 'Reality') {
+            return false;
+        }
+        if (in_array($fp, self::REALITY_NO_TLS13, true)) {
+            return true;
+        }
+        return !in_array($fp, self::REALITY_FINGERPRINTS, true) && $this->realityRequiresMlkem();
+    }
+
+    // Предупреждения к выбранному отпечатку при текущем транспорте и ядре:
+    // строки для меню и всплывающего ответа. Пусто — клиенты подключатся.
+    public function fingerprintWarnings(?string $fp = null, ?array $pac = null): array
+    {
+        $pac = $pac ?? $this->getPacConf();
+        $fp  = $fp ?? $this->fingerprintChosen();
+        $out = [];
+        if (($pac['transport'] ?? '') === 'Reality') {
+            if (in_array($fp, self::REALITY_NO_TLS13, true)) {
+                $out[] = sprintf($this->i18n('fp reality no tls13'), $fp);
+            } else {
+                $mlkem = $this->realityRequiresMlkem();
+                // random на ядре без ML-KEM стабилен (замер: 10 из 10 у всех
+                // клиентов); с ML-KEM проходит, лишь когда выпал образец с ним.
+                if ($mlkem && $fp === 'random') {
+                    $out[] = $this->i18n('fp reality random');
+                } elseif ($mlkem && !in_array($fp, self::REALITY_FINGERPRINTS, true)) {
+                    $out[] = sprintf($this->i18n('fp reality mlkem'), $fp, implode(', ', self::REALITY_FINGERPRINTS));
+                }
+                if ($mlkem && $fp !== 'chrome') {
+                    $out[] = $this->i18n('fp reality mihomo');
+                }
+            }
+        }
+        if ($this->fingerprintNoAlpn($fp) && in_array($pac['transport'] ?? '', ['trojan-grpc', 'xhttp'], true)) {
+            $out[] = $this->i18n('fp noalpn warn');
+        }
+        return $out;
     }
 
     // Отпечаток, который уходит в ссылки, подписки и профили. Это настройка
     // КЛИЕНТА: под какой браузер он маскирует своё TLS-приветствие. Сервер её
-    // не хранит и не сверяет — клиент с другим значением подключится так же.
-    // Для REALITY несовместимый выбор заменяется на chrome: иначе бот
-    // раздавал бы профили, с которыми клиент не подключается вовсе.
+    // не хранит и не сверяет. Выбор администратора уходит как есть: если ядро
+    // такого клиента не примет, меню предупреждает (fingerprintWarnings()).
     public function fingerprint()
     {
-        $fp = $this->fingerprintChosen();
-        return $this->fingerprintRejectedByReality($fp) ? 'chrome' : $fp;
+        return $this->fingerprintChosen();
     }
 
     // Ядра клиентов знают РАЗНЫЕ наборы имён, и ведут себя при незнакомом
@@ -20061,6 +20101,17 @@ DNS-over-HTTPS with IP:
             $c['fingerprint'] = $allowed[($i === false ? 0 : $i + 1) % count($allowed)];
         }
         $this->setPacConf($c);
+        // Выбор сохранён; если клиенты с ним не подключатся — сказать сразу.
+        // Окно answerCallbackQuery вмещает 200 символов: в нём главное
+        // предупреждение, полный список — в меню ниже.
+        $warnings = $this->fingerprintWarnings($c['fingerprint'], $c);
+        if ($warnings && !empty($this->input['callback_id'])) {
+            $alert = '⚠ ' . $warnings[0];
+            if (mb_strlen($alert) > 200) {
+                $alert = mb_substr($alert, 0, 199) . '…';
+            }
+            $this->answer($this->input['callback_id'], $alert, true);
+        }
         $this->fingerprintMenu();
     }
 
@@ -20071,11 +20122,11 @@ DNS-over-HTTPS with IP:
         $reality = ($pac['transport'] ?? '') === 'Reality';
         $text[]  = "Menu -> " . $this->i18n('xray') . ' -> ' . $this->i18n('fingerprint');
         $text[]  = $this->i18n('fingerprint') . ': <code>' . $current . '</code>';
-        if ($this->fingerprintRejectedByReality($current, $pac)) {
-            $text[] = '⚠ ' . sprintf($this->i18n('fp reality warn'), $current);
+        foreach ($this->fingerprintWarnings($current, $pac) as $warning) {
+            $text[] = '⚠ ' . $warning;
         }
         if ($reality) {
-            $text[] = $this->i18n('fp reality note');
+            $text[] = $this->i18n($this->realityRequiresMlkem() ? 'fp reality core mlkem' : 'fp reality core any');
         }
         // Один и тот же выбор доезжает до трёх разных ядер под разными
         // именами — показываем, во что он превращается, иначе «почему в clash
@@ -20085,11 +20136,6 @@ DNS-over-HTTPS with IP:
         if ($si !== $current || $cl !== $current) {
             $text[] = 'sing-box: <code>' . $si . '</code> · mihomo: <code>' . $cl . '</code>';
         }
-        // randomizednoalpn не шлёт ALPN — gRPC без h2 не поедет вовсе, а XHTTP
-        // откатится на http/1.1.
-        if ($this->fingerprintNoAlpn($current) && in_array($pac['transport'] ?? '', ['trojan-grpc', 'xhttp'], true)) {
-            $text[] = '⚠ ' . $this->i18n('fp noalpn warn');
-        }
         $text[] = '<i>' . $this->i18n('fp hint') . '</i>';
         $text[] = '';
         $text[] = $this->i18n('fp compat');
@@ -20098,8 +20144,10 @@ DNS-over-HTTPS with IP:
         $row  = [];
         $effective = $this->fingerprint();
         foreach ($this->fingerprintsFor($pac) as $fp) {
+            // ⚠ — с текущим ядром REALITY клиент с этим отпечатком не подключится.
             $row[] = [
-                'text'          => ucfirst($fp) . ' ' . ($effective === $fp ? $this->i18n('on') : $this->i18n('off')),
+                'text'          => ucfirst($fp) . ' ' . ($effective === $fp ? $this->i18n('on') : $this->i18n('off'))
+                    . ($this->fingerprintRejectedByReality($fp, $pac) ? ' ⚠' : ''),
                 'callback_data' => "/changeFingerprint $fp",
             ];
             if (count($row) === 2) {
@@ -20220,6 +20268,13 @@ DNS-over-HTTPS with IP:
                 ['text' => 'minClientVer: ' . (($r['minClientVer'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_minClientVer'],
                 ['text' => 'maxClientVer: ' . (($r['maxClientVer'] ?? '') ?: '—'), 'callback_data' => '/dpiSet r_maxClientVer'],
             ];
+            if ($this->xrayCore($p) === 'fork') {
+                $text[] = $this->i18n('reality require mlkem hint');
+                $data[] = [['text' => $this->i18n('reality require mlkem') . ': ' . $on($r['requireMlkem'] ?? 0),
+                    'callback_data' => '/dpiToggle requireMlkem']];
+            } else {
+                $text[] = $this->i18n('reality mlkem origin always');
+            }
             $data[] = [
                 ['text' => 'spiderX: ' . ($spiderX ?: '—'),              'callback_data' => '/dpiSet r_spiderX'],
                 ['text' => '🎲 ' . $this->i18n('autogen'),               'callback_data' => '/dpiGenSpiderX'],
@@ -20709,6 +20764,22 @@ DNS-over-HTTPS with IP:
                     }
                     $p['reality']['mldsa'] = 1;
                 }
+                $this->setPacConf($p);
+                $this->syncRealityLive($p);
+                break;
+            case 'requireMlkem':
+                $enable = empty($p['reality']['requireMlkem']);
+                if ($enable) {
+                    $refuse = match (true) {
+                        $this->xrayCore($p) !== 'fork' => 'reality mlkem select fork',
+                        !$this->realityRequireMlkemReady() => 'reality mlkem old fork',
+                        default => '',
+                    };
+                    if ($refuse !== '') {
+                        return $this->answer($this->input['callback_id'], $this->i18n($refuse), true);
+                    }
+                }
+                $p['reality']['requireMlkem'] = $enable ? 1 : 0;
                 $this->setPacConf($p);
                 $this->syncRealityLive($p);
                 break;
@@ -21335,6 +21406,10 @@ DNS-over-HTTPS with IP:
     // Клиентский блок уходит только в JSON-профиль Xray: sing-box и mihomo
     // Mux.Cool не знают, а в ссылку vless:// он не помещается.
     public const XHTTP_MUX_FORK_MIN  = '26.10.5';
+    // realitySettings.requireMlkem (форк 26.10.13+): сервер REALITY форка по
+    // умолчанию принимает ClientHello без X25519MLKEM768; с флагом — отказывает,
+    // как апстрим, у которого это правило включено всегда и не настраивается.
+    public const REALITY_REQUIRE_MLKEM_FORK_MIN = '26.10.13';
     public const XHTTP_MUX_KEEPALIVE = ['muxKeepAliveSecs' => '20-40', 'muxKeepAliveBytes' => '64-512'];
 
     public function xhttpMuxActive(?array $p = null): bool
@@ -21343,6 +21418,22 @@ DNS-over-HTTPS with IP:
 
         return ($p['transport'] ?? '') === 'xhttp' && $this->xrayCore($p) === 'fork'
             && !empty($p['xhttp_mux']['enabled']);
+    }
+
+    public function realityRequireMlkemActive(?array $p = null): bool
+    {
+        $p = $p ?? $this->getPacConf();
+
+        return $this->xrayCore($p) === 'fork' && !empty($p['reality']['requireMlkem']);
+    }
+
+    // Старый форк не знает поля requireMlkem и молча его пропустит: включать
+    // можно только при подтверждённой версии ядра в образе.
+    public function realityRequireMlkemReady(): bool
+    {
+        $version = $this->xrayCoreInventory()['fork'] ?? '';
+
+        return $version !== '' && version_compare($version, self::REALITY_REQUIRE_MLKEM_FORK_MIN, '>=');
     }
 
     // Старый форк и апстрим рвут TCP-сессию Mux.Cool на XHTTP: включать можно
@@ -24177,9 +24268,6 @@ DNS-over-HTTPS with IP:
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $fp     = $this->fingerprint();
-        if (($pac['transport'] ?? '') === 'Reality') {
-            $fp = 'chrome';
-        }
         // Share-link #remark shown as the node name in the client, prefixed with
         // the origin server-country flag (e.g. "🇫🇷 email"). subVless() re-flags
         // this with the relay's country for relay subscriptions.
@@ -26113,6 +26201,19 @@ DNS-over-HTTPS with IP:
         } else {
             unset($rs['mldsa65Seed']);
         }
+        $this->ensureRealityRequireMlkem($rs, $p);
+    }
+
+    // Только для форка: апстрим требует гибридную группу всегда. Зовётся и при
+    // каждом restartXray(): смена ядра обязана снять или вернуть флаг, не трогая
+    // остальные параметры REALITY, которые админ мог поправить вручную.
+    public function ensureRealityRequireMlkem(array &$rs, array $p): void
+    {
+        if ($this->realityRequireMlkemActive($p)) {
+            $rs['requireMlkem'] = true;
+        } else {
+            unset($rs['requireMlkem']);
+        }
     }
 
     // Rotate the shared Reality parameters: pbk (keypair) + sid (shortId).
@@ -26641,9 +26742,10 @@ DNS-over-HTTPS with IP:
             return false;
         }
         // REALITY из дерева форка принимает ClientHello без гибридной группы
-        // через обычный X25519, поэтому sing-box с ним совместим.
+        // через обычный X25519, поэтому sing-box с ним совместим — пока админ
+        // не включил requireMlkem (форк 26.10.13+).
         if (!empty($probe['reality_local'])) {
-            return false;
+            return $probe['active'] === 'fork' && $this->realityRequireMlkemActive();
         }
         // Форк может выпускаться с новой датой, сохраняя прежний REALITY.
         // Проверяем версию зависимости из Go build info самого бинаря.
@@ -27312,7 +27414,9 @@ DNS-over-HTTPS with IP:
             $text[] = $this->i18n('xhttp singbox warn');
         }
         if (($p['transport'] ?? '') === 'Reality') {
-            $text[] = $this->i18n('reality mlkem clients');
+            foreach ($this->fingerprintWarnings() as $warning) {
+                $text[] = '⚠ ' . $warning;
+            }
             if ($this->realityRequiresMlkem()) {
                 $text[] = $this->i18n('reality singbox mlkem');
             }
@@ -30588,10 +30692,6 @@ DNS-over-HTTPS with IP:
             $fingerprint = $this->normalizeFingerprint($fingerprint, 'singbox');
         } elseif ($_GET['t'] === 'cl') {
             $fingerprint = $this->normalizeFingerprint($fingerprint, 'mihomo');
-        }
-        // Chrome несёт нужный новому REALITY X25519MLKEM768 key_share.
-        if (($pac['transport'] ?? '') === 'Reality' && $_GET['t'] !== 'si') {
-            $fingerprint = 'chrome';
         }
 
         switch ($_GET['t']) {

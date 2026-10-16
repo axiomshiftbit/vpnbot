@@ -184,7 +184,9 @@ foreach ($pairs as $auth => $settings) {
                 veAssert(!str_contains($body, end($private)), 'Серверный секрет не попадает в подписку');
                 if ($transport === 'Reality' && $format === 'cl') {
                     veAssert($config['proxies'][0]['reality-opts']['support-x25519mlkem768'] === true, 'mihomo REALITY включает MLKEM');
-                    veAssert($config['proxies'][0]['client-fingerprint'] === 'chrome', 'mihomo REALITY использует совместимый fingerprint');
+                    // Отпечаток выбирает администратор; бот его не подменяет (предупреждает в меню).
+                    veAssert($config['proxies'][0]['client-fingerprint'] === $bot->normalizeFingerprint($bot->fingerprint(), 'mihomo'),
+                        'mihomo REALITY получает выбранный отпечаток');
                 }
             }
         }

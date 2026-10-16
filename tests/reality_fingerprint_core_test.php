@@ -97,12 +97,21 @@ try {
     exec(escapeshellarg($binary) . ' version 2>&1', $versionOut);
     $version = preg_match('~Xray\s+v?([0-9.]+)~', (string) ($versionOut[0] ?? ''), $vm) ? $vm[1] : '?';
     $uuid = '11111111-1111-4111-8111-111111111111';
+    // Форк 26.10.13+ проходит ещё раз с requireMlkem: флаг ставит сам бот.
+    $fork = $binary === getenv('XRAY_FORK_TEST_BINARY');
+    $modes = $fork && version_compare($version, Bot::REALITY_REQUIRE_MLKEM_FORK_MIN, '>=') ? [false, true] : [false];
+  foreach ($modes as $requireMlkem) {
+    $reality = ['dest' => "127.0.0.1:$maskPort", 'serverNames' => ['mask.example.test'], 'privateKey' => $priv[1], 'shortIds' => ['abcd1234']];
+    $policy = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+    $policy->ensureRealityRequireMlkem($reality, ['xray_core' => $fork ? 'fork' : 'origin', 'reality' => ['requireMlkem' => $requireMlkem ? 1 : 0]]);
+    if ($requireMlkem !== isset($reality['requireMlkem'])) {
+        throw new RuntimeException('бот не поставил requireMlkem так, как ожидалось');
+    }
     $serverPort = $freePort();
     file_put_contents("$work/server.json", json_encode(['log' => ['loglevel' => 'warning'], 'inbounds' => [[
         'listen' => '127.0.0.1', 'port' => $serverPort, 'protocol' => 'vless',
         'settings' => ['clients' => [['id' => $uuid, 'flow' => 'xtls-rprx-vision']], 'decryption' => 'none'],
-        'streamSettings' => ['network' => 'tcp', 'security' => 'reality', 'realitySettings' => [
-            'dest' => "127.0.0.1:$maskPort", 'serverNames' => ['mask.example.test'], 'privateKey' => $priv[1], 'shortIds' => ['abcd1234']]],
+        'streamSettings' => ['network' => 'tcp', 'security' => 'reality', 'realitySettings' => $reality],
         // Выход — заглушка с HTTP-ответом: запрос, дошедший до неё, получает
         // «403» по туннелю. Настоящая цель не нужна (и выход freedom ядра к
         // адресам самой машины не пускает), а ответ возможен только после
@@ -151,10 +160,16 @@ try {
                 . substr(trim((string) @file_get_contents("$work/client-$fingerprint.log")), -200);
         }
     }
+    // Форк без флага принимает ClientHello без ML-KEM (ios), с флагом — нет.
+    if ($fork && $modes !== [false] && !empty($seen['ios']) === $requireMlkem) {
+        $failures[] = "форк $version с requireMlkem=" . ($requireMlkem ? 'true' : 'false')
+            . ($requireMlkem ? ' принял' : ' не принял') . ' отпечаток ios';
+    }
     $accepted = implode(' ', array_keys(array_filter($seen)));
     $rejected = implode(' ', array_keys(array_filter($seen, static fn($ok) => !$ok)));
     $stop($server);
-    echo "ядро $version: принимает $accepted" . ($rejected === '' ? '' : "; отвергает $rejected") . "\n";
+    echo "ядро $version" . ($requireMlkem ? ' (requireMlkem)' : '') . ": принимает $accepted" . ($rejected === '' ? '' : "; отвергает $rejected") . "\n";
+  }
   }
 } finally {
     foreach ([$maskPid ?? 0] as $pid) {

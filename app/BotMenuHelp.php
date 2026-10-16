@@ -199,6 +199,7 @@ trait BotMenuHelp
                     $t('Клиентская маскировка', 'Client-side masking') => $this->i18n('dpi hint'),
                     $t('TLS-фрагментация', 'TLS fragmentation') => $this->dpiFieldHint('fragment') . "\n\n" . $this->dpiFieldHint('fragment_maxSplit'),
                     $t('UDP-шум и примеры', 'UDP noise and examples') => $this->dpiFieldHint('noise') . "\n\n" . $this->noiseExamplesHint(),
+                    'ML-KEM (REALITY)' => $this->i18n('reality require mlkem hint') . "\n\n" . $this->i18n('reality mlkem origin always'),
                 ]];
             case 'smux':
                 return ['Vless → SMUX', '/smuxMenu', [

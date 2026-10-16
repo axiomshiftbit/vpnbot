@@ -818,9 +818,25 @@ $i = [
         'en' => 'Could not save Encryption settings. Check config access and retry.',
         'ru' => 'Не удалось сохранить настройки Encryption. Проверьте доступ к конфигам и повторите попытку.',
     ],
-    'reality mlkem clients' => [
-        'en' => 'REALITY profiles for Xray/mihomo use Chrome with X25519MLKEM768 for compatibility with Xray 26.9.9. Other transports use the selected fingerprint.',
-        'ru' => 'Профили REALITY для Xray/mihomo используют Chrome с X25519MLKEM768 для совместимости с Xray 26.9.9. Остальные транспорты используют выбранный fingerprint.',
+    'reality require mlkem' => [
+        'en' => 'Require ML-KEM',
+        'ru' => 'Требовать ML-KEM',
+    ],
+    'reality require mlkem hint' => [
+        'en' => 'Require ML-KEM (fork 26.10.13+): the REALITY server rejects a ClientHello without the X25519MLKEM768 key share and shows the cover site, as original Xray always does. Turned away: sing-box, mihomo without support-x25519mlkem768, Xray fingerprints ios/edge/qq. Accepted: chrome, firefox, safari.',
+        'ru' => 'Требовать ML-KEM (форк 26.10.13+): сервер REALITY отклоняет ClientHello без ключа X25519MLKEM768 и показывает сайт-маску, как всегда делает оригинальный Xray. Не подключатся: sing-box, mihomo без support-x25519mlkem768, отпечатки Xray ios/edge/qq. Подключатся: chrome, firefox, safari.',
+    ],
+    'reality mlkem origin always' => [
+        'en' => 'Original Xray core: REALITY always requires X25519MLKEM768 (not configurable). The fork core lets you choose.',
+        'ru' => 'Оригинальное ядро Xray: REALITY всегда требует X25519MLKEM768 (не настраивается). Выбор есть у форк-ядра.',
+    ],
+    'reality mlkem select fork' => [
+        'en' => 'Select the fork core first: the original core always requires ML-KEM.',
+        'ru' => 'Сначала выберите форк-ядро: оригинальное и так всегда требует ML-KEM.',
+    ],
+    'reality mlkem old fork' => [
+        'en' => 'The fork core in this xr image is older than 26.10.13 (or xr is unreachable) and ignores this setting. Update the xr image first.',
+        'ru' => 'Форк-ядро в образе xr старше 26.10.13 (или xr недоступен) и не знает этой настройки. Сначала обновите образ xr.',
     ],
     'reality singbox mlkem' => [
         'en' => 'This REALITY core requires X25519MLKEM768; official sing-box 1.14.2 removes it from ClientHello. Use Xray/mihomo, a compatible server core (the fork 26.10.5+ accepts sing-box), or WebSocket/TLS or Trojan/gRPC.',
@@ -2787,31 +2803,45 @@ $i = [
         'en' => "Top clients",
         'ru' => "Самые активные клиенты",
     ],
-    'fp reality warn' => [
-        'en' => 'The saved fingerprint «%s» does not work with REALITY: chrome is used instead.',
-        'ru' => 'Сохранённый отпечаток «%s» с REALITY не работает: вместо него используется chrome.',
+    'fp reality no tls13' => [
+        'en' => '«%s» has no TLS 1.3: no REALITY server accepts it, clients will not connect.',
+        'ru' => '«%s» без TLS 1.3: его не принимает ни один сервер REALITY, клиенты не подключатся.',
     ],
-    'fp reality note' => [
-        'en' => 'REALITY: Xray and Mihomo profiles always get chrome — the only fingerprint both clients connect with on Xray 26.9.8+. The choice below applies to sing-box profiles.',
-        'ru' => 'REALITY: профили для Xray и Mihomo всегда получают chrome — единственный отпечаток, с которым на ядре Xray 26.9.8 и новее подключаются оба клиента. Выбор ниже действует для профилей sing-box.',
+    'fp reality mlkem' => [
+        'en' => 'This REALITY core requires X25519MLKEM768, and «%s» does not carry it: clients will get the cover site. Known to work: %s.',
+        'ru' => 'Это ядро REALITY требует X25519MLKEM768, а у «%s» его нет: клиенты получат сайт-маску. Работают: %s.',
+    ],
+    'fp reality mihomo' => [
+        'en' => 'Mihomo connects to this REALITY core with chrome only.',
+        'ru' => 'Mihomo подключится к этому ядру REALITY только с chrome.',
+    ],
+    'fp reality random' => [
+        'en' => 'random picks a browser sample when the client starts: this REALITY core accepts only samples with X25519MLKEM768, so the client connects only sometimes.',
+        'ru' => 'random при запуске клиента берёт образец браузера: это ядро REALITY принимает лишь образцы с X25519MLKEM768, поэтому клиент подключается только иногда.',
+    ],
+    'fp reality core mlkem' => [
+        'en' => 'REALITY core: requires X25519MLKEM768 (original Xray 26.9.8+ or the fork with «Require ML-KEM»). Fingerprints marked ⚠ will not connect.',
+        'ru' => 'Ядро REALITY требует X25519MLKEM768 (оригинальный Xray 26.9.8+ или форк с «Требовать ML-KEM»). Отпечатки с пометкой ⚠ не подключатся.',
+    ],
+    'fp reality core any' => [
+        'en' => 'REALITY core: accepts any fingerprint with TLS 1.3 (core 26.7.28 or the fork without «Require ML-KEM»).',
+        'ru' => 'Ядро REALITY принимает любой отпечаток с TLS 1.3 (ядро 26.7.28 или форк без «Требовать ML-KEM»).',
     ],
     'fp compat' => [
         'en' => "<b>Where each fingerprint works</b> (measured on the cores of this build)\n"
-            . "• REALITY, Xray 26.9.8 and newer: Xray clients — chrome, firefox, safari; Mihomo — chrome only, with the support-x25519mlkem768 option (the bot sets it); sing-box 1.14 does not connect at all.\n"
-            . "• REALITY, core 26.7.28 or the fork: also ios, edge, qq — in sing-box and Mihomo too.\n"
+            . "• REALITY on a core that requires ML-KEM (original Xray 26.9.8+, the fork with «Require ML-KEM»): Xray clients of any version — chrome, firefox, safari; Mihomo — chrome only, with support-x25519mlkem768 (the bot sets it); sing-box 1.14 does not connect at all.\n"
+            . "• REALITY on core 26.7.28 or the fork without the flag: any fingerprint with TLS 1.3 (chrome, firefox, safari, ios, edge, qq) — in Xray, Mihomo and sing-box.\n"
             . "• android and 360 never work with REALITY: these samples have no TLS 1.3.\n"
             . "• WebSocket, gRPC, XHTTP (plain TLS): every fingerprint in the list works.\n"
-            . "• random picks one of 11 samples when the client starts; with REALITY only 4 of them fit, so it is offered for plain TLS only.\n"
-            . "• randomized and randomizednoalpn are removed: the handshake failed every other time even with plain TLS.\n"
-            . "Why: ios, edge and qq are snapshots of 2020–2022 browsers without the post-quantum key share, and the new REALITY server accepts a ClientHello only with it. The bot cannot fix that — it needs newer samples in uTLS or the previous core.",
+            . "• random picks a browser sample when the client starts: stable on plain TLS and on REALITY without ML-KEM, only sometimes on a core that requires ML-KEM.\n"
+            . "The bot does not replace your choice: it marks fingerprints that the current core will not accept with ⚠ and warns before saving.",
         'ru' => "<b>Где какой отпечаток работает</b> (замер на ядрах этой сборки)\n"
-            . "• REALITY, ядро Xray 26.9.8 и новее: клиенты на Xray — chrome, firefox, safari; Mihomo — только chrome и с опцией support-x25519mlkem768 (бот её ставит сам); sing-box 1.14 не подключается совсем.\n"
-            . "• REALITY, ядро 26.7.28 или форк: ещё ios, edge, qq — в том числе в sing-box и Mihomo.\n"
+            . "• REALITY на ядре, требующем ML-KEM (оригинальный Xray 26.9.8+, форк с «Требовать ML-KEM»): клиенты на Xray любой версии — chrome, firefox, safari; Mihomo — только chrome и с опцией support-x25519mlkem768 (бот её ставит сам); sing-box 1.14 не подключается совсем.\n"
+            . "• REALITY на ядре 26.7.28 или форке без этого флага: любой отпечаток с TLS 1.3 (chrome, firefox, safari, ios, edge, qq) — в Xray, Mihomo и sing-box.\n"
             . "• android и 360 с REALITY не работают нигде: в этих образцах нет TLS 1.3.\n"
             . "• WebSocket, gRPC, XHTTP (обычный TLS): работают все отпечатки из списка.\n"
-            . "• random при запуске клиента выбирает один из 11 образцов; для REALITY из них годятся 4, поэтому он предлагается только для обычного TLS.\n"
-            . "• randomized и randomizednoalpn убраны: рукопожатие срывалось через раз даже с обычным TLS.\n"
-            . "Почему так: ios, edge и qq — снимки браузеров 2020–2022 годов без постквантовой доли ключа, а новый сервер REALITY принимает приветствие только с ней. Со стороны бота это не исправить — нужны новые образцы в uTLS либо прежнее ядро.",
+            . "• random при запуске клиента берёт образец браузера: стабилен с обычным TLS и с REALITY без ML-KEM, а на ядре, требующем ML-KEM, подключается только иногда.\n"
+            . "Бот не подменяет выбор: отпечатки, которые текущее ядро не примет, отмечены ⚠, а при выборе такого бот предупреждает.",
     ],
 ];
 

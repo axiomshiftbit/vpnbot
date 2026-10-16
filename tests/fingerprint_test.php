@@ -136,76 +136,129 @@ array_walk_recursive($sing, function ($v, $k) use (&$found) {
 fpAssert($found, 'sing.json несёт fingerprint внутри utls');
 fpAssert(strpos(file_get_contents(__DIR__ . '/../config/sing.json'), '"enabled": true') !== false, 'utls в sing.json включён');
 
-// ── REALITY: в профили уходит только отпечаток, который примет сервер ───────
-// Сервер REALITY с Xray 26.9.8 отвергает ClientHello без X25519MLKEM768;
-// из набора uTLS её несут chrome, firefox и safari (сверено на настоящих
-// ядрах — reality_fingerprint_core_test.php и набор стенда
-// reality_fingerprints).
+// ── REALITY: выбор администратора не подменяется, бот предупреждает ─────────
+// Сервер REALITY, требующий ML-KEM (апстрим 26.9.8+, форк с requireMlkem),
+// отвергает ClientHello без X25519MLKEM768; из набора uTLS её несут chrome,
+// firefox и safari (сверено на настоящих ядрах — reality_fingerprint_core_test.php
+// и набор стенда reality_fingerprints). Старое ядро и форк без флага принимают
+// любой образец с TLS 1.3; android и 360 без TLS 1.3 не принимает никто.
 class FpRealityBot extends Bot
 {
     public array $conf = [];
     public array $screen = ['', []];
+    public array $popups = [];
+    public bool $mlkem = true;
     public function __construct() {}
     public function getPacConf() { return $this->conf; }
     public function setPacConf(array $conf) { $this->conf = $conf; return true; }
     public function i18n(string $menu): string { return $menu; }
+    public function realityRequiresMlkem(): bool { return $this->mlkem; }
+    public function answer($callback_id, $textNotify = false, $notify = false) { $this->popups[] = $textNotify; }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screen = [$text, is_array($button) ? $button : []]; }
 }
 $rb = new FpRealityBot();
-$rb->input = ['chat' => 1, 'message_id' => 1];
-$labels = fn() => array_map(fn($b) => strtolower(strtok($b['text'], ' ')), array_filter(array_merge(...$rb->screen[1]), fn($b) => str_starts_with($b['callback_data'], '/changeFingerprint')));
+$rb->input = ['chat' => 1, 'message_id' => 1, 'callback_id' => 7];
+$buttons = fn() => array_filter(array_merge(...$rb->screen[1]), fn($b) => str_starts_with($b['callback_data'], '/changeFingerprint'));
+$labels = fn() => array_values(array_map(fn($b) => strtolower(strtok($b['text'], ' ')), $buttons()));
+$warned = fn() => array_values(array_map(fn($b) => strtolower(strtok($b['text'], ' ')), array_filter($buttons(), fn($b) => str_ends_with($b['text'], '⚠'))));
 fpAssert(Bot::REALITY_FINGERPRINTS === ['chrome', 'firefox', 'safari'], 'набор отпечатков REALITY изменён без сверки с ядром');
 fpAssert(array_diff(Bot::REALITY_FINGERPRINTS, $rb->fingerprints()) === [], 'отпечаток REALITY отсутствует в общем списке');
-foreach ($rb->fingerprints() as $fp) {
-    $accepted = in_array($fp, Bot::REALITY_FINGERPRINTS, true);
-    $rb->conf = ['transport' => 'Reality', 'fingerprint' => $fp];
-    fpAssert($rb->fingerprintChosen() === $fp, "выбор $fp не читается как сохранённый");
-    fpAssert($rb->fingerprint() === ($accepted ? $fp : 'chrome'), "REALITY: в профили уходит $fp → " . $rb->fingerprint());
-    fpAssert($rb->fingerprintRejectedByReality() === !$accepted, "REALITY: пригодность $fp определена неверно");
-    // Остальные транспорты — обычный TLS: nginx принимает любой образец.
-    foreach (['Websocket', 'xhttp', 'trojan-grpc', ''] as $transport) {
-        $rb->conf = ['transport' => $transport, 'fingerprint' => $fp];
-        fpAssert($rb->fingerprint() === $fp && !$rb->fingerprintRejectedByReality(), "$transport: отпечаток $fp подменён");
+fpAssert(Bot::REALITY_NO_TLS13 === ['android', '360'], 'набор образцов без TLS 1.3 изменён без сверки');
+foreach ([true, false] as $mlkem) {
+    $rb->mlkem = $mlkem;
+    foreach ($rb->fingerprints() as $fp) {
+        $noTls13 = in_array($fp, Bot::REALITY_NO_TLS13, true);
+        $carries = in_array($fp, Bot::REALITY_FINGERPRINTS, true);
+        $rb->conf = ['transport' => 'Reality', 'fingerprint' => $fp];
+        $tag = "$fp, ML-KEM " . ($mlkem ? 'да' : 'нет');
+        fpAssert($rb->fingerprint() === $fp, "REALITY: выбор подменён ($tag) → " . $rb->fingerprint());
+        fpAssert($rb->fingerprintRejectedByReality() === ($noTls13 || ($mlkem && !$carries)), "REALITY: пригодность определена неверно ($tag)");
+        $w = $rb->fingerprintWarnings();
+        fpAssert(in_array('fp reality no tls13', $w, true) === $noTls13, "предупреждение о TLS 1.3 ($tag)");
+        fpAssert(in_array('fp reality mlkem', $w, true) === (!$noTls13 && $mlkem && !$carries && $fp !== 'random'), "предупреждение об ML-KEM ($tag)");
+        fpAssert(in_array('fp reality mihomo', $w, true) === (!$noTls13 && $mlkem && $fp !== 'chrome'), "предупреждение о Mihomo ($tag)");
+        // random стабилен на ядре без ML-KEM; с ML-KEM — отдельное предупреждение.
+        fpAssert(in_array('fp reality random', $w, true) === ($fp === 'random' && $mlkem), "предупреждение о random ($tag)");
+        // Остальные транспорты — обычный TLS: nginx принимает любой образец.
+        foreach (['Websocket', 'xhttp', 'trojan-grpc', ''] as $transport) {
+            $rb->conf = ['transport' => $transport, 'fingerprint' => $fp];
+            fpAssert($rb->fingerprint() === $fp && !$rb->fingerprintRejectedByReality() && $rb->fingerprintWarnings() === [],
+                "$transport: отпечаток $fp подменён или помечен");
+        }
     }
 }
-// Меню при REALITY предлагает только принимаемые и объясняет, что для Xray и Mihomo всегда chrome.
+// Меню при REALITY: весь список, ⚠ у несовместимых с текущим ядром, объяснение правила ядра.
+$rb->mlkem = true;
 $rb->conf = ['transport' => 'Reality', 'fingerprint' => 'ios'];
-fpAssert($rb->fingerprintsFor() === Bot::REALITY_FINGERPRINTS, 'для REALITY предлагаются не только принимаемые отпечатки');
 $rb->fingerprintMenu();
-fpAssert(array_values($labels()) === ['chrome', 'firefox', 'safari'], 'кнопки меню при REALITY: ' . json_encode(array_values($labels())));
-fpAssert(str_contains($rb->screen[0], 'fp reality warn') && str_contains($rb->screen[0], 'fp reality note') && str_contains($rb->screen[0], 'fp compat'), 'меню не объясняет поведение при REALITY');
-fpAssert(str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Chrome on'), 'действующий отпечаток (chrome вместо ios) не отмечен');
-$rb->conf = ['transport' => 'Reality', 'fingerprint' => 'firefox'];
+fpAssert($labels() === $rb->fingerprints(), 'кнопки меню при REALITY: ' . json_encode($labels()));
+fpAssert($warned() === ['ios', 'android', 'edge', '360', 'qq', 'random'], 'пометки ⚠ при ядре с ML-KEM: ' . json_encode($warned()));
+fpAssert(str_contains($rb->screen[0], 'fp reality mlkem') && str_contains($rb->screen[0], 'fp reality core mlkem') && str_contains($rb->screen[0], 'fp compat'),
+    'меню не объясняет поведение при REALITY');
+fpAssert(str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Ios on'), 'выбранный ios не отмечен');
+$rb->mlkem = false;
 $rb->fingerprintMenu();
-fpAssert(!str_contains($rb->screen[0], 'fp reality warn') && str_contains($rb->screen[0], 'fp reality note'), 'лишнее предупреждение при совместимом отпечатке');
-// Обычный TLS: весь список, без примечаний REALITY.
+fpAssert($warned() === ['android', '360'], 'пометки ⚠ при ядре без ML-KEM: ' . json_encode($warned()));
+fpAssert(!str_contains($rb->screen[0], 'fp reality mlkem') && str_contains($rb->screen[0], 'fp reality core any'), 'ядро без ML-KEM: лишнее предупреждение');
+// Обычный TLS: весь список, без пометок и примечаний REALITY.
 $rb->conf = ['transport' => 'Websocket', 'fingerprint' => 'ios'];
 $rb->fingerprintMenu();
-fpAssert(array_values($labels()) === $rb->fingerprints() && !str_contains($rb->screen[0], 'fp reality'), 'меню при обычном TLS: ' . json_encode(array_values($labels())));
+fpAssert($labels() === $rb->fingerprints() && $warned() === [] && !str_contains($rb->screen[0], 'fp reality'), 'меню при обычном TLS: ' . json_encode($labels()));
 fpAssert(str_contains($rb->screen[0], 'fp compat') && str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Ios on'), 'при обычном TLS выбранный ios не отмечен');
 foreach (array_merge(...$rb->screen[1]) as $button) {
     fpAssert(strlen($button['callback_data']) <= 64, 'длинные данные кнопки');
 }
-// Выбор и перебор — только из предлагаемого: несовместимое значение сохранить нельзя.
-$rb->conf = ['transport' => 'Reality', 'fingerprint' => 'firefox'];
+// Выбор сохраняется как есть; несовместимый — со всплывающим предупреждением.
+$rb->mlkem = true; $rb->popups = [];
+$rb->conf = ['transport' => 'Reality', 'fingerprint' => 'chrome'];
 $rb->changeFingerprint('ios');
-fpAssert($rb->conf['fingerprint'] === 'safari', 'несовместимый выбор при REALITY не должен сохраняться как есть: ' . $rb->conf['fingerprint']);
-$rb->conf = ['transport' => 'Reality', 'fingerprint' => 'ios'];
+fpAssert($rb->conf['fingerprint'] === 'ios', 'выбор при REALITY не сохранён: ' . $rb->conf['fingerprint']);
+fpAssert(count($rb->popups) === 1 && str_contains((string) $rb->popups[0], 'fp reality mlkem'), 'нет всплывающего предупреждения о несовместимом выборе');
+// Окно ответа Telegram — не больше 200 символов при любом сочетании и языке.
+$realI18n = new class extends FpRealityBot { public function i18n(string $menu): string { return Bot::i18n($menu); } };
+$realI18n->input = $rb->input;
+$realI18n->i18n = (static function () { require __DIR__ . '/../app/i18n.php'; return $i; })();
+$seenPopups = [];
+foreach (['ru', 'en'] as $lang) {
+    $realI18n->language = $lang;
+    foreach ([true, false] as $mlkem) {
+        $realI18n->mlkem = $mlkem;
+        foreach ($realI18n->fingerprints() as $fp) {
+            foreach (['Reality', 'xhttp', 'trojan-grpc'] as $transport) {
+                $realI18n->conf = ['transport' => $transport, 'fingerprint' => 'chrome']; $realI18n->popups = [];
+                $realI18n->changeFingerprint($fp);
+                foreach ($realI18n->popups as $popup) {
+                    fpAssert(mb_strlen((string) $popup) <= 200, "окно ответа длиннее 200 ($lang, $transport, $fp)");
+                    $seenPopups[$lang][] = $popup;
+                }
+            }
+        }
+    }
+}
+fpAssert(count($seenPopups['ru'] ?? []) >= 5 && preg_match('~[а-я]~u', $seenPopups['ru'][0]) && !str_contains($seenPopups['en'][0] ?? '', 'fp reality'),
+    'проверка длины прошла по настоящим текстам предупреждений');
+$rb->popups = [];
+$rb->changeFingerprint('chrome');
+fpAssert($rb->conf['fingerprint'] === 'chrome' && $rb->popups === [], 'лишнее предупреждение при совместимом выборе');
 $rb->changeFingerprint();
-fpAssert($rb->conf['fingerprint'] === 'firefox', 'перебор при REALITY идёт по принимаемым: ' . $rb->conf['fingerprint']);
-$rb->changeFingerprint('safari');
-fpAssert($rb->conf['fingerprint'] === 'safari', 'совместимый выбор не сохранён');
+fpAssert($rb->conf['fingerprint'] === 'firefox', 'перебор идёт по всему списку: ' . $rb->conf['fingerprint']);
 $rb->conf = ['transport' => 'Websocket', 'fingerprint' => 'chrome'];
 $rb->changeFingerprint('android');
 fpAssert($rb->conf['fingerprint'] === 'android', 'при обычном TLS android должен выбираться');
 $rb->changeFingerprint('randomized');
 fpAssert($rb->conf['fingerprint'] === 'edge', 'убранный отпечаток выбрать нельзя: ' . $rb->conf['fingerprint']);
+// Ссылки и подписки берут выбор как есть: принудительного chrome в коде нет.
+$botSource = file_get_contents(__DIR__ . '/../app/bot.php');
+fpAssert(!preg_match('~\$(fp|fingerprint)\s*=\s*\'chrome\'~', $botSource), 'в ссылках или подписках остался принудительный chrome');
 // Сервер отпечаток не хранит: это настройка клиента.
 fpAssert(!str_contains((string) json_encode(json_decode((string) file_get_contents(__DIR__ . '/../config/xray.json'), true)), 'fingerprint'), 'в серверном шаблоне xray.json появился fingerprint');
 // Текст совместимости есть на обоих языках и не длиннее сообщения Telegram.
 require __DIR__ . '/../app/i18n.php';
 foreach (['en', 'ru'] as $lang) {
-    fpAssert(mb_strlen($i['fp compat'][$lang] . $i['fp hint'][$lang] . $i['fp reality note'][$lang]) < 3000 && str_contains($i['fp compat'][$lang], 'sing-box'), "текст совместимости ($lang) пуст или слишком длинен");
+    fpAssert(mb_strlen($i['fp compat'][$lang] . $i['fp hint'][$lang] . $i['fp reality core mlkem'][$lang]) < 3000 && str_contains($i['fp compat'][$lang], 'sing-box'), "текст совместимости ($lang) пуст или слишком длинен");
+    foreach (['fp reality no tls13', 'fp reality mlkem', 'fp reality mihomo', 'fp reality random', 'fp reality core mlkem', 'fp reality core any'] as $key) {
+        fpAssert(($i[$key][$lang] ?? '') !== '', "нет текста $key ($lang)");
+    }
 }
 
 if ($failed) {
