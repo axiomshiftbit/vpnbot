@@ -176,7 +176,7 @@ class LayerRulesTest(unittest.TestCase):
             '/srv/.bash_history': 'shell or tool history', '/srv/.viminfo': 'shell or tool history',
             '/src/.git/config': 'git metadata', '/var/backup/users.sql': 'database or dump', '/etc/app.conf.bak': 'database or dump',
             '/app/config.php': 'vpnbot runtime data', '/config/pac.json': 'vpnbot runtime data', '/config/wg0.conf': 'vpnbot runtime data',
-            '/config/hysteria/users.json': 'vpnbot runtime data', '/certs/cert_private': 'vpnbot runtime data', '/ssh/key': 'vpnbot runtime data',
+            '/config/hysteria/users.json': 'vpnbot runtime data', '/config/protocols/snolc/ssh-private': 'vpnbot runtime data', '/certs/cert_private': 'vpnbot runtime data', '/ssh/key': 'vpnbot runtime data',
             '/logs/xray.log': 'vpnbot runtime data', '/tmp/build.log': 'leftover in a home or temporary directory',
             '/root/notes.txt': 'leftover in a home or temporary directory', '/home/ci/x': 'leftover in a home or temporary directory',
         }

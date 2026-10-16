@@ -78,7 +78,7 @@ PATHS = [(label, re.compile(pattern)) for label, pattern in [
     ('shell or tool history', r'/\.(?:[a-z]+_history|viminfo|lesshst|wget-hsts)$'),
     ('git metadata', r'/\.git/(?:config|HEAD|packed-refs)$'),
     ('database or dump', r'\.(?:sqlite3?|sql|sql\.gz|dump|bak|backup|old|orig|swp)$'),
-    ('vpnbot runtime data', r'^/(?:app/config\.php|config/[^/]+\.(?:json|conf|yaml|yml|toml|key)|config/(?:hysteria|trusttunnel|telemt|mieru|masque)/.+|certs/.+|ssh/.+|logs/.+|update/.+)$'),
+    ('vpnbot runtime data', r'^/(?:app/config\.php|config/[^/]+\.(?:json|conf|yaml|yml|toml|key)|config/(?:hysteria|trusttunnel|telemt|mieru|masque|protocols)/.+|certs/.+|ssh/.+|logs/.+|update/.+)$'),
     ('leftover in a home or temporary directory', r'^/(?:root|home/[^/]+|tmp|var/tmp)/.+$'),
 ]]
 # .env в репозитории — закреплённые версии, а не секреты; каталоги и дампы там свои.
