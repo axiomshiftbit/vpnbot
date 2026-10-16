@@ -384,7 +384,7 @@ systemd-службы `vpnbot.service` опцией `--profile '*'`, чтобы �
 без новых сервисов не сможет управлять их доступами.
 
 Форматы сверяются с документацией [AnyTLS](https://sing-box.sagernet.org/configuration/inbound/anytls/),
-[Mieru](https://github.com/enfein/mieru/tree/v3.38.0/docs),
+[Mieru](https://github.com/enfein/mieru/tree/v3.38.1/docs),
 [TUIC](https://sing-box.sagernet.org/configuration/inbound/tuic/),
 [ShadowTLS](https://sing-box.sagernet.org/configuration/inbound/shadowtls/) и
 [mihomo SS/UoT](https://wiki.metacubex.one/en/config/proxies/ss/).
@@ -394,14 +394,14 @@ Compose. AnyTLS, TUIC и ShadowTLS используют образ
 в трёх отдельных контейнерах. Mieru использует
 `ghcr.io/axiomshiftbit/vpnbot-mieru:dev` с сервером mita.
 `SINGBOX_VERSION=v1.14.3` управляет ядром трёх протоколов и утилитой PHP;
-`MIHOMO_VERSION=v1.19.32` — утилитой PHP; `MIERU_VERSION=v3.38.0` — mita.
+`MIHOMO_VERSION=v1.19.32` — утилитой PHP; `MIERU_VERSION=v3.38.1` — mita.
 `PROTOCOL_GO_VERSION` выбирает Go для сборки серверов и вспомогательных утилит. TUIC v5 и ShadowTLS v3
 обозначают версии протокола, а не исполняемого файла.
 
 Чтобы выбрать стабильные версии вместе с проверяемыми контрольными суммами:
 
 ```bash
-python3 scripts/update_protocol_versions.py --singbox v1.14.3 --mihomo v1.19.32 --mieru v3.38.0
+python3 scripts/update_protocol_versions.py --singbox v1.14.3 --mihomo v1.19.32 --mieru v3.38.1
 # Проверить текущие стабильные релизы без изменения файла:
 python3 scripts/update_protocol_versions.py --singbox latest --mihomo latest --mieru latest --dry-run
 ```
@@ -709,7 +709,7 @@ XTLS; после отката образа `xr` на более старый ф�
 
 Версии задаются в `.env` (для локальной сборки — в `override.env`):
 `XRAY_VERSION=v26.10.10`, `XRAY_VERSION_2=v26.9.30`,
-`XRAY_VERSION_3=v26.7.28`, `XRAY_FORK_VERSION=v26.10.6-2241`.
+`XRAY_VERSION_3=v26.7.28`, `XRAY_FORK_VERSION=v26.10.13-2347`.
 Слоты хранят место, а не версию: если до обновления был выбран второй слот
 (тогда `v26.9.9`), после обновления образа `xr` он запустит `v26.9.30`, а
 основной слот вместо `v26.9.30` — `v26.10.10`. Проверьте выбор в меню.

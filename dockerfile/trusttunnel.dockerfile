@@ -7,8 +7,9 @@ ARG TT_REF=v1.1.0
 # Сборка и итоговый образ на Alpine, как у остальных сервисов. Компилятор
 # берётся готовым образом rust:<версия>-alpine: установщик rustup из сети
 # (без контрольной суммы) больше не нужен.
-# Версию держим в синхроне с rust-toolchain.toml апстрима (channel = "1.95").
-ARG RUST_VERSION=1.95.0
+# Последний стабильный Rust; rust-toolchain.toml апстрима закрепляет канал
+# 1.95, RUSTUP_TOOLCHAIN ниже его заменяет.
+ARG RUST_VERSION=1.99.1
 ARG image=alpine:3.24
 
 FROM rust:${RUST_VERSION}-alpine AS build

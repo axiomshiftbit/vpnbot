@@ -1107,8 +1107,8 @@ services:
             dockerfile: mieru.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.2}
-                MIERU_VERSION: ${MIERU_VERSION:-v3.38.0}
-                MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-f81708e5c35d6ccd6fefce1d0d9b09cccade3517a5695fe58586de74bff16ec7}
+                MIERU_VERSION: ${MIERU_VERSION:-v3.38.1}
+                MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-e021145e8d6f2acb73e75238efea8722914a6a12a521bc7f08a1ac3b6d618e51}
         environment:
             PROTOCOL_DESIRED: /config/desired.json
         volumes:

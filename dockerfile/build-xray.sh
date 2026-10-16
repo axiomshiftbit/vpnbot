@@ -20,8 +20,13 @@ if [ -n "$tests" ]; then
     for pattern in $tests; do
         [ ! -d "${pattern%/...}" ] || present="$present $pattern"
     done
+    # Форк 26.10.13 добавил в testing/release проверки самого репозитория:
+    # им нужны git-чекаут (git check-ignore, ls-files) и bash, а сборка идёт
+    # из архива исходников на Alpine. Тег http2legacy сверяется ниже по
+    # готовому бинарнику.
+    skip='Geodata|^TestAgentDocPathsExist$|^TestExplicitBuildTagsKeepHTTP2Legacy$|^TestSetupWorktree|^TestGates'
     # shellcheck disable=SC2086
-    [ -z "$present" ] || CGO_ENABLED=0 sh /build-tools/go-retry.sh go test ${tags:+-tags "$tags"} -count=1 -timeout 15m -skip Geodata $present
+    [ -z "$present" ] || CGO_ENABLED=0 sh /build-tools/go-retry.sh go test ${tags:+-tags "$tags"} -count=1 -timeout 15m -skip "$skip" $present
 fi
 CGO_ENABLED=0 sh /build-tools/go-retry.sh go build ${tags:+-tags "$tags"} -trimpath -buildvcs=false \
     -ldflags '-s -w -X github.com/xtls/xray-core/core.build=vpnbot-security.1' -o "$output" ./main
