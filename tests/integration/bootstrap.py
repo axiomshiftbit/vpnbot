@@ -207,7 +207,7 @@ def bootstrap(checkout, candidate, client_image):
             text += '    volumes:\n      - ' + str(ca) + ':/test-ca.pem:ro\n'
         if name == 'wp':
             text += '    volumes:\n      - ' + str(warp) + ':/etc/warp\n'
-        if name in ('anytls', 'mieru', 'tuic', 'shadowtls', 'masque'):
+        if name in ('anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque'):
             text += '    networks:\n      default: {}\n      protocol_test: {}\n'
     text += '''  tg-audit:
     image: ''' + candidate['images']['php'] + '''
@@ -233,10 +233,10 @@ networks:
     run('docker', 'network', 'create', '--subnet', '11.77.0.0/24',
         '--ip-range', '11.77.0.128/25', '--internal', 'vpnbot-protocol-test')
     print('START fresh-installation', flush=True)
-    # Start the real 25-service installation. Module choices are synthetic input.
+    # Start the real 26-service installation. Module choices are synthetic input.
     write(BOT / 'config/protocol-services.json', {n: True for n in
           ('oc', 'ovpn', 'ipsec', 'ikev2', 'l2tp', 'tt', 'hy', 'ss', 'dnstt', 'telemt',
-           'anytls', 'mieru', 'tuic', 'shadowtls', 'masque')})
+           'anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque')})
     config = json.loads(run('docker', 'compose', '--profile', '*', '--env-file', '.env',
                             '--env-file', 'override.env', 'config', '--format', 'json', cwd=BOT))
     validate_compose_inputs(config)
@@ -320,5 +320,6 @@ def prepare_users():
 $b=new Bot($c['key'],$i);$m=$b->protocolStore('masque');
 $m->configure(['host'=>'127.0.0.1','sni'=>'masque.test','port'=>24449,
 'certificate'=>'/certs/vpnbot-migration/server.crt','private_key'=>'/certs/vpnbot-migration/server.key'],true);
+$b->protocolStore('snolc')->configure(['host'=>'127.0.0.1','port'=>24448],true);
 $b->syncXrayProtocolUsers();$b->syncManagedUpstreams();"""
     run('docker', 'exec', 'php-audit', 'php', '-r', code)

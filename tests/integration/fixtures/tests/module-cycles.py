@@ -2,7 +2,7 @@ from pathlib import Path
 import hashlib, json, os, re, subprocess, time, sys
 R=Path('/opt/vpnbot-hosted-ci/tests')
 B=Path('/opt/vpnbot-hosted-ci/stand/bot')
-SERVICES=['oc','ovpn','tt','hy','ss','dnstt','telemt','ipsec','anytls','mieru','tuic','shadowtls','masque']
+SERVICES=['oc','ovpn','tt','hy','ss','dnstt','telemt','ipsec','anytls','mieru','tuic','shadowtls','masque','snolc']
 MANAGED=SERVICES[8:]
 rows=[]
 def run(*args,timeout=75):

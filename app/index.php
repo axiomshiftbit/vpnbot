@@ -119,7 +119,7 @@ switch (true) {
         break;
 
     case str_starts_with((string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), "/pac$hash/protocol/"):
-        if (preg_match('~^' . preg_quote("/pac$hash/protocol/", '~') . '(anytls|mieru|tuic|shadowtls|masque)/([a-f0-9]{64})/(singbox|mihomo|uri|native|native-uri)$~D',
+        if (preg_match('~^' . preg_quote("/pac$hash/protocol/", '~') . '(anytls|mieru|tuic|shadowtls|snolc|masque)/([a-f0-9]{64})/(singbox|mihomo|uri|native|native-uri)$~D',
             (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), $m)) {
             $bot->protocolMachine($m[1], $m[2], $m[3]);
         } else {

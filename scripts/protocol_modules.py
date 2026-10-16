@@ -11,8 +11,8 @@ import sys
 import time
 import uuid
 
-DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "masque": False}
-SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "telemt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "masque")
+DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False, "masque": False}
+SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "telemt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "snolc", "masque")
 SYSTEMD_UNIT = Path('/etc/systemd/system/vpnbot.service')
 
 
@@ -201,46 +201,9 @@ def settings(root):
     if not path.exists():
         return DEFAULTS.copy()
     value = json.loads(path.read_text())
-    if isinstance(value, dict): value.pop('snolc', None)
     if not isinstance(value, dict) or value.keys() - DEFAULTS.keys() or any(type(v) is not bool for v in value.values()):
         raise ValueError("invalid module settings")
     return DEFAULTS | value
-
-
-def retire_snolc(root, inspect_containers=False):
-    """Remove the retired service of this Compose project; keep rollback data private."""
-    path = root / 'config/protocol-services.json'
-    directory = root / 'config/protocols/snolc'
-    with open(root / 'update/retired-protocols.lock', 'a') as migration:
-        fcntl.flock(migration, fcntl.LOCK_EX)
-        with open(str(path) + '.lock', 'a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            value = json.loads(path.read_text()) if path.exists() else {}
-            if not isinstance(value, dict): raise ValueError('invalid module settings')
-            if directory.is_symlink(): raise ValueError('retired state must not be a symlink')
-            if not inspect_containers and 'snolc' not in value and not directory.exists(): return
-            current = settings(root)
-            resolved = compose(current, ['config', '--format', 'json'], capture=True)
-            resolved.check_returncode()
-            project = json.loads(resolved.stdout)['name']
-            result = subprocess.run(['docker', 'ps', '--all', '--quiet',
-                                     '--filter', 'label=com.docker.compose.project=' + project,
-                                     '--filter', 'label=com.docker.compose.service=snolc'],
-                                    capture_output=True, check=True, text=True, timeout=30)
-            ids = result.stdout.split()
-            if any(not re.fullmatch('[a-f0-9]{12,64}', uid) for uid in ids):
-                raise ValueError('invalid container identity')
-            if ids:
-                subprocess.run(['docker', 'stop', '--time', '20', *ids], capture_output=True, check=True, timeout=60)
-                subprocess.run(['docker', 'rm', *ids], capture_output=True, check=True, timeout=30)
-            if directory.exists():
-                archive = root / 'update/retired-protocols'
-                archive.mkdir(mode=0o700, exist_ok=True)
-                os.chmod(archive, 0o700)
-                directory.rename(archive / ('snolc-' + uuid.uuid4().hex))
-            if 'snolc' in value:
-                del value['snolc']
-                write_status(path, value)
 
 
 def enabled(s, service):
@@ -261,7 +224,7 @@ def environment(s):
 
 def bindings(root):
     ports = {}
-    for service in ("mieru", "tuic", "shadowtls", "masque"):
+    for service in ("mieru", "tuic", "shadowtls", "snolc", "masque"):
         path = root / "config/protocols" / service / "desired.json"
         if path.exists():
             try: port = json.loads(path.read_text())["settings"]["port"]
@@ -352,7 +315,6 @@ def apply(root):
     lock = open(root / "update/protocol-services.lock", "a")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        retire_snolc(root)
         current = settings(root)
         if not current['ss']:
             for filename in ('nginx.conf', 'nginx_default.conf'):
@@ -363,8 +325,6 @@ def apply(root):
             except (OSError, ValueError, KeyError, TypeError): certificate_errors[service] = 'certificate_copy_failed'
         status = root / "config/protocol-services.status.json"
         previous = json.loads(status.read_text()) if status.exists() else {}
-        for key in ('settings', 'bindings', 'errors'):
-            previous.get(key, {}).pop('snolc', None)
         ports = bindings(root)
         unchanged = previous.get("settings") == current and previous.get("bindings", {}) == ports and previous.get("ok") and not certificate_errors
         missing = set()
@@ -400,7 +360,7 @@ def apply(root):
                                   "errors": pending_errors | failures | {service: 'operation_pending'},
                                   "failed_service": next(iter(failures), None)})
             if enabled(current, service):
-                if service in ('mieru', 'tuic', 'shadowtls', 'masque'):
+                if service in ('mieru', 'tuic', 'shadowtls', 'snolc', 'masque'):
                     if service not in ports:
                         failures[service] = 'invalid_protocol_port'
                         continue
@@ -439,6 +399,34 @@ def apply(root):
     finally:
         lock.close()
 
+
+def confirm_snolc_port(root):
+    """Acknowledge a manually applied port using read-only Docker inspection."""
+    (root / 'update').mkdir(exist_ok=True)
+    with open(root / 'update/protocol-services.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        current = settings(root)
+        port = bindings(root).get('snolc')
+        if not current['snolc'] or port is None:
+            raise ValueError('snolc_not_configured')
+        result = compose(current, ['ps', '--status', 'running', '-q', 'snolc'], capture=True)
+        identities = result.stdout.split()
+        if result.returncode or len(identities) != 1:
+            raise RuntimeError('snolc_not_running')
+        inspected = subprocess.run(['docker', 'inspect', '--format',
+                                    '{"running":{{.State.Running}},"ports":{{json .NetworkSettings.Ports}}}',
+                                    identities[0]], capture_output=True, check=True)
+        actual = json.loads(inspected.stdout)
+        published = (actual.get('ports') or {}).get('24448/tcp') or []
+        if not actual.get('running') or not any(item.get('HostPort') == str(port) for item in published):
+            raise RuntimeError('snolc_port_not_published')
+        path = root / 'config/protocol-services.status.json'
+        status = json.loads(path.read_text()) if path.exists() else {}
+        status.setdefault('settings', {})['snolc'] = True
+        status.setdefault('bindings', {})['snolc'] = port
+        status.setdefault('errors', {}).pop('snolc', None)
+        status.update(ok=not status['errors'], failed_service=next(iter(status['errors']), None))
+        write_status(path, status)
 
 
 def write_status(path, value):
@@ -496,12 +484,14 @@ def main():
         Path(sys.argv[3]).write_text(text)
         return 0
     root = Path.cwd()
+    if command == "confirm-port" and sys.argv[2:] == ["snolc"]:
+        confirm_snolc_port(root)
+        return 0
     if command == "apply":
         apply(root)
         return 0
     if command == "compose":
         if sys.argv[2:3] == ["up"]:
-            retire_snolc(root, inspect_containers=True)
             migrate_systemd_stop(root)
             sync_certificates(root, settings(root))
             prepare_upstream(root)

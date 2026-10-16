@@ -39,7 +39,7 @@ try {
     file_put_contents("$root/outside", 'keep');
     symlink("$root/outside", "$b->dir/linked");
     foreach (['wireguard', 'wireguard1', 'warp', 'shadowsocks', 'shadowsocks_proxy', 'telemt'] as $name) file_put_contents("$b->dir/$name", "$name test log\n");
-    foreach (['anytls', 'mieru', 'tuic', 'shadowtls', 'masque'] as $protocol) {
+    foreach (['anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque'] as $protocol) {
         mkdir("$b->protocolRoot/$protocol/runtime", 0777, true);
         foreach (['core.log', 'core.previous.log'] as $name) file_put_contents("$b->protocolRoot/$protocol/runtime/$name", "$protocol $name\n");
         file_put_contents("$b->protocolRoot/$protocol/runtime/status.json", '{"phase":"running"}');
@@ -48,7 +48,7 @@ try {
     mkdir("$b->hysteriaUsersRoot/runtime", 0700, true);
     file_put_contents("$b->hysteriaUsersRoot/runtime/core.log", "hysteria native log\n");
     file_put_contents("$b->hysteriaUsersRoot/runtime/usage.json", '{"bytes":123}');
-    logCheck(count($b->logFiles()) === 17, 'Доступны плоские журналы, пять протоколов и нативный журнал Hysteria');
+    logCheck(count($b->logFiles()) === 19, 'Доступны плоские журналы, шесть протоколов и нативный журнал Hysteria');
     foreach ($protected as $name => $data) logCheck(!in_array($name, $b->logFiles(), true), "Служебный файл $name скрыт");
     $b->getLog('anytls.core.previous.log');
     logCheck($b->files === ["$b->protocolRoot/anytls/runtime/core.previous.log"], 'Кнопка отдаёт нужный журнал');

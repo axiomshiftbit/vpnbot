@@ -1,8 +1,11 @@
 # Allow only source inputs needed by root-context image builds.
 # No runtime data, environment files, Git history or keys are sent to Docker.
 *
+# Только файлы клиента snolc: весь app/ (с app/config.php) в контекст не попадает.
+!app/snolc/**
 !scripts/
 !scripts/protocol_service.py
+!scripts/snolc_service.py
 !scripts/hysteria_service.py
 !dockerfile/
 !dockerfile/go-*.sh

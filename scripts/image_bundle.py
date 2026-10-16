@@ -21,13 +21,13 @@ SERVICES = {
     'xr': 'xr', 'oc': 'oc', 'np': 'np', 'ss': 'ss', 'proxy': 'ss',
     'dnstt': 'dnstt', 'ovpn': 'ovpn', 'ipsec': 'ipsec', 'tt': 'tt',
     'hy': 'hysteria', 'anytls': 'protocol', 'tuic': 'protocol',
-    'shadowtls': 'protocol', 'mieru': 'mieru', 'masque': 'masque',
+    'shadowtls': 'protocol', 'mieru': 'mieru', 'snolc': 'snolc', 'masque': 'masque',
 }
 IMAGES = sorted(set(SERVICES.values()))
-# Образ snolc этот код не запускает, но он бывает в комплекте: в прежних
-# выпусках (откат) и в следующих, куда протокол возвращается. Установленный
-# обновлятель должен принять такой комплект, иначе кнопка «Обновить» отказала бы.
-OPTIONAL = {'snolc'}
+# Комплекты, выпущенные без snolc (2026-10-06 … 2026-10-16), его образа не
+# содержат. Такой комплект допустим только как предыдущий (откат): текущий
+# обязан закрепить digest каждого сервиса.
+ABSENT_BEFORE = {'snolc'}
 DIGEST = re.compile(r'sha256:[0-9a-f]{64}\Z')
 COMMIT = re.compile(r'[0-9a-f]{40}\Z')
 
@@ -41,7 +41,7 @@ def fingerprint(bundle):
     return hashlib.sha256(canonical(bundle)).hexdigest()
 
 
-def validate(bundle):
+def validate(bundle, *, previous=False):
     if not isinstance(bundle, dict) or set(bundle) != {'schema', 'source', 'run', 'attempt', 'state_epoch', 'images'}:
         raise ValueError('invalid bundle fields')
     if bundle['schema'] != 1 or bundle['state_epoch'] != 1:
@@ -51,9 +51,10 @@ def validate(bundle):
     if any(type(bundle[k]) is not int or bundle[k] < 1 for k in ('run', 'attempt')):
         raise ValueError('invalid build identity')
     images = bundle['images']
-    # Новые кандидаты собираются ровно из IMAGES (collect), а в Compose идут
-    # только образы из SERVICES (overlay): необязательный образ не запускается.
-    if not isinstance(images, dict) or set(images) - OPTIONAL != set(IMAGES):
+    expected = set(IMAGES)
+    if previous and isinstance(images, dict) and not ABSENT_BEFORE & set(images):
+        expected -= ABSENT_BEFORE
+    if not isinstance(images, dict) or set(images) != expected:
         raise ValueError('incomplete image set')
     for name, ref in images.items():
         prefix = REGISTRY + name + '@'
@@ -62,8 +63,8 @@ def validate(bundle):
     return bundle
 
 
-def read(path):
-    return validate(json.loads(Path(path).read_text()))
+def read(path, *, previous=False):
+    return validate(json.loads(Path(path).read_text()), previous=previous)
 
 
 def atomic(path, data):
@@ -164,7 +165,7 @@ def activate(root, bundle):
     with (current.parent / 'image-bundle.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if current.exists():
-            prior = read(current)
+            prior = read(current, previous=True)
             if prior != bundle:
                 atomic(root / 'update/image-bundle.previous.json', canonical(prior))
         atomic(current, canonical(bundle))

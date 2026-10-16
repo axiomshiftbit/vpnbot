@@ -31,8 +31,8 @@ class ImageBundleTests(unittest.TestCase):
     def test_complete_set_covers_shared_and_optional_containers(self):
         value = candidate()
         overlay = bundle.overlay(value)['services']
-        self.assertEqual(17, len(value['images']))
-        self.assertEqual(25, len(overlay))
+        self.assertEqual(18, len(value['images']))
+        self.assertEqual(26, len(overlay))
         for a, b in [('php', 'service'), ('wg', 'wp'), ('ng', 'dockerproxy'), ('anytls', 'tuic')]:
             self.assertEqual(overlay[a], overlay[b])
 
@@ -82,25 +82,24 @@ class ImageBundleTests(unittest.TestCase):
             bundle.activate(self.root, changed)
         self.assertEqual(original, bundle.read(active))
 
-    def test_optional_snolc_image_is_accepted_but_never_started(self):
-        # Прежний выпуск (откат) и следующий (переход кнопкой обновления) могут
-        # содержать образ snolc; в Compose он не попадает.
-        old = candidate()
-        old['images']['snolc'] = bundle.REGISTRY + 'snolc@sha256:' + 'b' * 64
+    def test_bundle_without_snolc_is_accepted_only_as_previous(self):
+        # Комплекты, выпущенные до возвращения snolc, нужны только для отката:
+        # текущий комплект обязан закрепить образ каждого сервиса.
+        old = candidate(); del old['images']['snolc']
         active = self.root / 'update/image-bundle.json'
         bundle.atomic(active, bundle.canonical(old))
         new = candidate(); new['run'] += 1
         with patch.object(bundle, 'command', return_value=new['source']): bundle.activate(self.root, new)
         self.assertEqual(new, bundle.read(active))
-        self.assertEqual(old, bundle.read(active.with_name('image-bundle.previous.json')))
-        upcoming = copy.deepcopy(old); upcoming['run'] += 2
-        with patch.object(bundle, 'command', return_value=upcoming['source']): bundle.activate(self.root, upcoming)
-        self.assertEqual(upcoming, bundle.read(active))
-        self.assertNotIn('snolc', {ref.split('@')[0] for ref in (s['image'] for s in bundle.overlay(upcoming)['services'].values())})
-        for broken in (dict(upcoming['images'], snolc='ghcr.io/axiomshiftbit/vpnbot-snolc:latest'),
-                       dict(upcoming['images'], other=bundle.REGISTRY + 'other@sha256:' + 'c' * 64),
-                       {k: v for k, v in upcoming['images'].items() if k != 'php'}):
-            with self.assertRaises(ValueError): bundle.validate(dict(upcoming, images=broken))
+        previous = active.with_name('image-bundle.previous.json')
+        self.assertEqual(old, bundle.read(previous, previous=True))
+        with self.assertRaises(ValueError): bundle.read(previous)
+        with self.assertRaises(ValueError): bundle.overlay(old)
+        with patch.object(bundle, 'command', return_value=old['source']), self.assertRaises(ValueError):
+            bundle.activate(self.root, old)
+        self.assertEqual(new, bundle.read(active))
+        del old['images']['php']
+        with self.assertRaises(ValueError): bundle.validate(old, previous=True)
 
     def test_successful_switch_retains_previous_set_without_touching_runtime(self):
         active = self.root / 'update/image-bundle.json'

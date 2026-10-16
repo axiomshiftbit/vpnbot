@@ -5,7 +5,7 @@ class BackupReadinessBot extends Bot
 {
     public function __construct(string $root) { $this->protocolRoot = $root; }
     public function getPacConf() { return []; }
-    public function protocolModuleEnabled(string $service): bool { return $service === 'mieru'; }
+    public function protocolModuleEnabled(string $service): bool { return $service === 'snolc'; }
 }
 class ImmediateBackupReadinessBot extends BackupReadinessBot
 {
@@ -25,11 +25,11 @@ mkdir($root, 0700);
 $writer = null;
 try {
     $bot = new BackupReadinessBot($root);
-    $store = $bot->protocolStore('mieru');
+    $store = $bot->protocolStore('snolc');
     $store->restore($store->snapshot());
     $state = $store->read();
     $runtime = $store->directory() . '/runtime';
-    $snapshot = ['managed_protocols' => ['protocols' => ['mieru' => []]]];
+    $snapshot = ['managed_protocols' => ['protocols' => ['snolc' => []]]];
     $ready = ['time' => time(), 'running' => true, 'revision' => $state['revision']];
     $usage = ['restored' => $state['restore_usage']['id']];
     ManagedProtocol::writeJson("$runtime/usage.json", $usage);
@@ -52,11 +52,11 @@ try {
         'остановленный процесс' => ['running' => false],
     ] as $name => $changes) {
         ManagedProtocol::writeJson("$runtime/status.json", array_replace($ready, $changes));
-        readinessCheck($bot->verifyBackupServices($snapshot) === ['mieru'], "Не замечен отказ: $name");
+        readinessCheck($bot->verifyBackupServices($snapshot) === ['snolc'], "Не замечен отказ: $name");
     }
     ManagedProtocol::writeJson("$runtime/status.json", $ready);
     ManagedProtocol::writeJson("$runtime/usage.json", ['restored' => 'previous-restore']);
-    readinessCheck($bot->verifyBackupServices($snapshot) === ['mieru'], 'Расход другого восстановления не подтверждает успех');
+    readinessCheck($bot->verifyBackupServices($snapshot) === ['snolc'], 'Расход другого восстановления не подтверждает успех');
     ManagedProtocol::writeJson("$runtime/usage.json", $usage);
     ManagedProtocol::writeJson("$runtime/status.json", array_replace($ready, ['revision' => $state['revision'] + 1]));
     readinessCheck($bot->verifyBackupServices($snapshot) === [], 'Следующая ревизия cron с тем же восстановленным расходом уже применена');

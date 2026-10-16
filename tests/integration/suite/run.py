@@ -23,7 +23,7 @@ if (B/'update/pipe').read_text().strip():raise RuntimeError('another update requ
 # The archive-based stand has no usable Git HEAD; keep an explicit immutable
 # baseline manifest for both preflight and finally, just as normal stand startup.
 baseline_bundle=ib.read('/opt/vpnbot-hosted-ci/active-test-bundle.json')
-baseline_services=ib.SERVICES | ({'snolc':'snolc'} if 'snolc' in baseline_bundle['images'] else {})
+baseline_services=ib.SERVICES
 ib.atomic(O/'baseline.json',ib.canonical(baseline_bundle))
 
 def run(name,cmd,timeout=180,work=B,environ=None,good=True):
@@ -126,8 +126,6 @@ baseline_flags=(B/'config/protocol-services.json').read_bytes()
 # Keep a readable code snapshot, separate from runtime state; rollback never
 # restores an old client/usage backup over data written during this test.
 tracked=subprocess.check_output(['git','ls-files','-z'],cwd=a.checkout).decode().split('\0')
-removed=['app/SnolcProfile.php','scripts/snolc_service.py']+[str(p.relative_to(B)) for p in (B/'app/snolc').rglob('*') if p.is_file() and '__pycache__' not in str(p)]
-tracked=sorted(set(tracked+removed))
 for name in tracked:
  if not name or not (name.startswith(('app/','scripts/','update/')) or name in ('.env','docker-compose.yml','makefile')):continue
  if name=='app/config.php':raise RuntimeError('private runtime config entered Git')
@@ -135,9 +133,6 @@ for name in tracked:
  src=B/name
  if src.is_file():
   dst=O/'old-code'/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(src,dst)
-fixture_files={name:(B/name).read_bytes() for name in ('compose.audit.yml','compose.migration.json','compose.fresh.json')}
-retired_state=B/'config/protocols/snolc'
-retired_dirs=set((B/'update/retired-protocols').glob('snolc-*'))
 ib.atomic(transaction,ib.canonical({'results':str(O),'paths':paths,'baseline':baseline}))
 try:
  # Pin rollback images while the candidate is running, including against image GC.
@@ -157,15 +152,6 @@ try:
   dst=B/name;dst.parent.mkdir(parents=True,exist_ok=True)
   if (a.checkout/name).is_file():shutil.copy2(a.checkout/name,dst)
   else:dst.unlink(missing_ok=True)
- # Remove this stand's former port/image overrides before resolving the new Compose.
- for name,original in fixture_files.items():
-  if name.endswith('.json'):
-   doc=json.loads(original);doc.get('services',{}).pop('snolc',None)
-   (B/name).write_text(json.dumps(doc))
-  else:
-   # Preserve Compose !override tags and every unrelated byte.
-   text=re.sub(r'(?ms)^  snolc:\n.*?(?=^  [a-zA-Z0-9_-]+:|\Z)', '', original.decode())
-   (B/name).write_text(text)
  # Only this test fixture overrides the Telegram endpoint; all application,
  # supervisor and protocol code is the exact checkout being admitted.
  f=B/'.env';f.write_text(re.sub(r'^TELEGRAM_API=.*$', 'TELEGRAM_API=tg-audit:8443',f.read_text(),flags=re.M))
@@ -174,13 +160,8 @@ try:
  candidate_started=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
  deploy(env,'deploy-candidate');startworker(env);drivers()
  verify_images({s:candidate['images'][im] for s,im in ib.SERVICES.items()},'native')
- check('native','retired-container-absent','snolc' not in containers())
- check('native','retired-state-archived',not retired_state.exists())
- check('native','retired-module-absent','snolc' not in json.loads((B/'config/protocol-services.json').read_text()))
  for name in paths:
   if name=='.env':continue
-  if not (a.checkout/name).exists():
-   check('native','retired-source-absent-'+name,not (B/name).exists());continue
   check('native','source-'+name,(B/name).read_bytes()==(a.checkout/name).read_bytes())
  # Check the cold-start DNS return route BEFORE module cycles can repair it.
  current=containers();oc_address=current['oc']['NetworkSettings']['Networks']['vpnbot-audit_default']['IPAddress']
@@ -217,7 +198,7 @@ INNER'''
  # Both full off/on cycles, including shared IKEv2/L2TP and deleted TeleMT.
  (R/'module-cycle-results.json').unlink(missing_ok=True)
  run('module-cycles',['python3',str(R/'module-cycles.py')],timeout=1500)
- rows=json.loads((R/'module-cycle-results.json').read_text());check('modules','full-module-cycles',len(rows)==310 and all(x['ok'] for x in rows));counts['modules']+=len(rows)
+ rows=json.loads((R/'module-cycle-results.json').read_text());check('modules','full-module-cycles',len(rows)==333 and all(x['ok'] for x in rows));counts['modules']+=len(rows)
  verify_images({s:candidate['images'][im] for s,im in ib.SERVICES.items()},'modules')
  # Regression found on a production server: settings/status say ON, Docker container vanished
  # during an external compose deployment. No toggle/settings change is sent.
@@ -245,19 +226,12 @@ INNER'''
  # Native backup roundtrip: change real saved client data, restore all sections,
  # then prove that the previously issued profiles still pass actual traffic.
  run('backup-pause-cron',['docker','stop','service-audit']);saved=bot('backup-save');check('backup_restore','full-export-sections',saved['sections']>=23)
- # Restore an older backup containing the removed service: it must stay absent.
- old_backup=B/'logs/audit-full-backup.json'
- payload=json.loads(old_backup.read_text())
- payload['managed_protocols']['modules']['snolc']=True
- payload['managed_protocols']['protocols']['snolc']={'state':{'protocol':'snolc'},'usage':{}}
- old_backup.write_text(json.dumps(payload))
  baseline_identity=identities()
  clients=B/'config/clients.json';v=json.loads(clients.read_text());first=next(iter(v)) if isinstance(v,dict) else 0
  v[first]['name']='CI changed before restore';clients.write_text(json.dumps(v))
  check('backup_restore','runtime-changed-before-restore',identities()!=baseline_identity)
  restored_result=bot('backup-restore');check('backup_restore','full-restore',restored_result.get('ok') and restored_result.get('error_messages')==0)
  check('backup_restore','restored-clients-and-identities',identities()==baseline_identity)
- check('backup_restore','legacy-backup-does-not-revive-retired-service','snolc' not in containers() and not retired_state.exists() and 'snolc' not in json.loads((B/'config/protocol-services.json').read_text()))
  run('backup-resume-cron',['docker','start','service-audit']);native('native-after-restore')
  # Optional native client probes use the established isolated target network.
  for service in ('masque',):
@@ -266,11 +240,11 @@ INNER'''
    capture(['docker','network','disconnect','vpnbot-protocol-test',d['Id']])
  (R/'published-optional-results.json').unlink(missing_ok=True)
  run('native-optional',['python3',str(R/'published-optional.py')],timeout=300)
- rows=json.loads((R/'published-optional-results.json').read_text());check('native','optional-HTTP-HTTPS-TCP-UDP',len(rows)==28 and all(x['ok'] for x in rows));counts['native']+=len(rows)
+ rows=json.loads((R/'published-optional-results.json').read_text());check('native','optional-HTTP-HTTPS-TCP-UDP',len(rows)==32 and all(x['ok'] for x in rows));counts['native']+=len(rows)
  run('naive-idle',['python3',str(Path(__file__).with_name('naive_idle.py'))],environ=env|{'VPNBOT_TEST_RESULTS':str(O)},timeout=140)
  rows=json.loads((O/'naive-idle.json').read_text());check('native','Naive75-seconds-idle',len(rows)==5 and all(x['ok'] for x in rows));counts['native']+=len(rows)
- # Отдельные мини-стенды на настоящих ядрах проверяемых образов Telemt, MASQUE и Hysteria.
- for name,extra in [('telemt-native',[candidate['images']['telemt'],candidate['images']['php'],candidate['images']['ng']]),('masque-native',[candidate['images']['masque'],candidate['images']['php'],str(R/'xray')]),('hysteria-native',[candidate['images']['hysteria'],candidate['images']['php']])]:
+ # Отдельные мини-стенды на настоящих ядрах проверяемых образов Telemt, MASQUE, Hysteria и snolc.
+ for name,extra in [('telemt-native',[candidate['images']['telemt'],candidate['images']['php'],candidate['images']['ng']]),('masque-native',[candidate['images']['masque'],candidate['images']['php'],str(R/'xray')]),('hysteria-native',[candidate['images']['hysteria'],candidate['images']['php']]),('snolc-native',[candidate['images']['snolc'],candidate['images']['php']])]:
   result=Path('/opt/vpnbot-hosted-ci')/name/'results.json';result.unlink(missing_ok=True)
   run(name,['python3',str(result.with_name('run.py')),str(a.checkout),*extra],timeout=1500)
   rows=json.loads(result.read_text());check('native',name+'-complete',bool(rows) and all(x['exit']==0 and x['total']>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
@@ -342,11 +316,6 @@ finally:
    if source.exists():
     dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,dest)
    else:dest.unlink(missing_ok=True)
-  for name,original in fixture_files.items():(B/name).write_bytes(original)
-  archives=set((B/'update/retired-protocols').glob('snolc-*'))-retired_dirs
-  if not retired_state.exists() and archives:
-   assert len(archives)==1
-   next(iter(archives)).rename(retired_state)
   # Restore original module intent even when a cycle failed while OFF.
   (B/'config/protocol-services.json').write_bytes(baseline_flags)
   if old_pending is None:pending_file.unlink(missing_ok=True)

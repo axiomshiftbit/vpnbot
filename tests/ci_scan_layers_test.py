@@ -391,6 +391,9 @@ class DockerfileTest(unittest.TestCase):
     DOCKERFILES = sorted((ROOT / 'dockerfile').glob('*.dockerfile'))
     # Готовые образы авторов программ; остальное собирается на Alpine.
     UPSTREAM = ('adguard/adguardhome:', 'tobyxdd/hysteria:', 'ghcr.io/telemt/telemt:')
+    # Клиент snolc выдаётся для Linux с glibc: эта стадия только собирает файлы
+    # ZIP клиента, сам образ остаётся на Alpine.
+    GLIBC_CLIENT = ('snolc.dockerfile', 'rust:${RUST_VERSION}-slim-trixie', 'client')
 
     def lines(self, path, keyword):
         text = re.sub(r'^\s*#.*\n', '', path.read_text(), flags=re.M).replace('\\\n', ' ')
@@ -401,7 +404,9 @@ class DockerfileTest(unittest.TestCase):
         self.assertEqual(rules[0], '*')
         for rule in rules[1:]:
             with self.subTest(rule):
-                self.assertRegex(rule, r'^(!(scripts|dockerfile)/|\*\*/)')
+                # app/snolc — файлы клиента snolc, упаковываемые в образ; остальной
+                # app/ (с app/config.php) в контекст сборки не попадает.
+                self.assertRegex(rule, r'^(!(scripts|dockerfile)/|\*\*/|!app/snolc/\*\*$)')
         # Сервисы с context: dockerfile отправляют сборщику весь каталог. В
         # распакованном архиве без .git посторонних файлов быть не может.
         tracked = [name for name in layers.tracked(ROOT) if name.startswith('dockerfile/')]
@@ -440,7 +445,8 @@ class DockerfileTest(unittest.TestCase):
                 image, _, stage = arguments.partition(' AS ')
                 with self.subTest(path.name, image=image):
                     self.assertTrue(image in stages or image == '$image' or image.startswith('alpine:') or image.endswith('-alpine')
-                                    or image.startswith(self.UPSTREAM), 'образ не на Alpine')
+                                    or image.startswith(self.UPSTREAM) or (path.name, image, stage.strip()) == self.GLIBC_CLIENT,
+                                    'образ не на Alpine')
                 stages.add(stage.strip())
             defaults = re.findall(r'^ARG image=(\S+)$', path.read_text(), re.M)
             self.assertTrue(all(value.startswith('alpine:') for value in defaults))

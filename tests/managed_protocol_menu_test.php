@@ -57,7 +57,7 @@ try {
     $stores = []; $bindings = [];
     foreach (ManagedProtocol::NAMES as $key => $label) {
         $stores[$key] = $store = $bot->protocolStore($key);
-        $store->configure(['host' => 'vpn.example.test', 'sni' => "$key.example.test"]);
+        $store->configure(['host' => 'vpn.example.test', 'sni' => $key === 'snolc' ? '' : "$key.example.test"]);
         $bindings[$key] = $store->read()['settings']['port'];
     }
     file_put_contents($bot->upstreamFile, "anytls.example.test anytls_bridge;\n");

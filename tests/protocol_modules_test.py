@@ -23,7 +23,7 @@ class ProtocolModulesTests(unittest.TestCase):
         (self.root / 'update').mkdir()
         self.desired = self.root / 'config/protocol-services.json'
         self.status = self.root / 'config/protocol-services.status.json'
-        self.ports = {'mieru': 24445, 'tuic': 9443, 'shadowtls': 24447, 'masque': 24449}
+        self.ports = {'mieru': 24445, 'tuic': 9443, 'shadowtls': 24447, 'snolc': 24448, 'masque': 24449}
         for name, options in [('bindings', {'return_value': self.ports}), ('sync_certificates', {}),
                               ('check_port', {}), ('prepare_upstream', {})]:
             stub = patch.object(modules, name, **options)
@@ -44,43 +44,6 @@ class ProtocolModulesTests(unittest.TestCase):
         self.assertTrue(state['ok'])
         self.assertEqual(current, state['settings'])
         self.assertGreater(state['checked_at'], 0)
-
-    def test_retired_container_and_settings_are_removed_only_from_this_project(self):
-        self.desired.write_text(json.dumps({'snolc': True, 'mieru': True}))
-        directory = self.root / 'config/protocols/snolc'
-        directory.mkdir(parents=True)
-        (directory / 'desired.json').write_bytes(b'old credentials')
-        other = self.root / 'config/protocols/mieru'
-        other.mkdir(); (other / 'desired.json').write_bytes(b'keep credentials')
-        resolved = subprocess.CompletedProcess([], 0, b'{"name":"fixture-project"}')
-        found = subprocess.CompletedProcess([], 0, 'abcdef123456\n')
-        with patch.object(modules, 'compose', return_value=resolved), \
-             patch.object(modules.subprocess, 'run', return_value=found) as run:
-            modules.retire_snolc(self.root)
-            self.assertEqual(['docker', 'ps', '--all', '--quiet',
-                              '--filter', 'label=com.docker.compose.project=fixture-project',
-                              '--filter', 'label=com.docker.compose.service=snolc'], run.call_args_list[0].args[0])
-            self.assertEqual(['docker', 'stop', '--time', '20', 'abcdef123456'], run.call_args_list[1].args[0])
-            self.assertEqual(['docker', 'rm', 'abcdef123456'], run.call_args_list[2].args[0])
-            run.reset_mock(); modules.retire_snolc(self.root); run.assert_not_called()
-        self.assertFalse(directory.exists())
-        self.assertEqual({'mieru': True}, json.loads(self.desired.read_text()))
-        archives = list((self.root / 'update/retired-protocols').glob('*/desired.json'))
-        self.assertEqual([b'old credentials'], [p.read_bytes() for p in archives])
-        self.assertEqual(0o700, archives[0].parent.parent.stat().st_mode & 0o777)
-        self.assertEqual(b'keep credentials', (other / 'desired.json').read_bytes())
-
-    def test_retired_container_stop_failure_keeps_all_saved_state(self):
-        self.desired.write_text('{"snolc":true,"mieru":true}')
-        before = self.desired.read_bytes()
-        resolved = subprocess.CompletedProcess([], 0, b'{"name":"fixture-project"}')
-        with patch.object(modules, 'compose', return_value=resolved), \
-             patch.object(modules.subprocess, 'run', side_effect=[subprocess.CompletedProcess([], 0, 'abcdef123456'),
-                 subprocess.CalledProcessError(1, 'docker stop')]) as run:
-            with self.assertRaises(subprocess.CalledProcessError): modules.retire_snolc(self.root)
-            self.assertEqual(2, run.call_count)
-        self.assertEqual(before, self.desired.read_bytes())
-        self.assertNotIn('snolc', modules.settings(self.root))
 
     def test_periodic_reconciliation_does_not_probe_docker_each_second(self):
         current = modules.DEFAULTS.copy()

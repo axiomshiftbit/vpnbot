@@ -98,9 +98,9 @@ set_error_handler(static function ($level, $message, $file, $line) {
 try {
     $bot = new ProtocolChatBot($i); $bot->protocolRoot = $root . '/protocols';
     $bot->protocolModulesFile = $root . '/modules.json'; $bot->upstreamFile = $root . '/upstream.conf';
-    foreach (ManagedProtocol::NAMES as $protocol => $name) {
+    foreach (array_diff_key(ManagedProtocol::NAMES, ['snolc' => true]) as $protocol => $name) {
         $store = $bot->protocolStore($protocol);
-        $store->configure(['host' => 'vpn.example.test', 'sni' => ($protocol === 'mieru') ? '' : 'vpn.example.test']);
+        $store->configure(['host' => 'vpn.example.test', 'sni' => in_array($protocol, ['mieru', 'snolc'], true) ? '' : 'vpn.example.test']);
         $id = managedProtocolFixtureUser($store, 'Навигация');
         $store->configure([], true); (new ProtocolModules($bot->protocolModulesFile))->set($protocol, true);
         if ($protocol === 'masque') {
