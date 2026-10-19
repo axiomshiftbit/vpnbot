@@ -13,6 +13,7 @@ require_once __DIR__ . '/BotTelemtLimits.php';
 require_once __DIR__ . '/BotTelemtActivity.php';
 require_once __DIR__ . '/BotBackup.php';
 require_once __DIR__ . '/BotXdrive.php';
+require_once __DIR__ . '/BotExitNodes.php';
 require_once __DIR__ . '/BotOvpn.php';
 require_once __DIR__ . '/BotWarpMasque.php';
 
@@ -28,6 +29,7 @@ class Bot
     use BotTelemtActivity;
     use BotBackup;
     use BotXdrive;
+    use BotExitNodes;
     use BotOvpn;
     use BotWarpMasque;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
@@ -749,6 +751,57 @@ class Bot
                 break;
             case preg_match('~^/xdriveProfile ([a-f0-9]{16})$~', $this->input['callback'], $m):
                 $this->xdriveProfile($m[1]);
+                break;
+            case preg_match('~^/exits$~', $this->input['callback'], $m):
+                $this->exitNodesMenu();
+                break;
+            case preg_match('~^/exit ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->exitNodeMenu($m[1]);
+                break;
+            case preg_match('~^/exitAdd$~', $this->input['callback'], $m):
+                $this->exitAddPrompt();
+                break;
+            case preg_match('~^/exitCheckAll$~', $this->input['callback'], $m):
+                $this->exitCheckAll();
+                break;
+            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|Yt|Sets|SetAdd) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                match ($m[1]) {
+                    'Check' => $this->exitCheck($m[2]), 'Refresh' => $this->exitRefresh($m[2]), 'Toggle' => $this->exitToggle($m[2]),
+                    'Quic' => $this->exitQuic($m[2]), 'Name' => $this->exitNamePrompt($m[2]), 'Link' => $this->exitLinkPrompt($m[2]),
+                    'Del' => $this->exitDelete($m[2]), 'DelYes' => $this->exitDelete($m[2], true), 'RtAdd' => $this->exitRouteAddPrompt($m[2]),
+                    'Yt' => $this->exitYoutube($m[2]), 'Sets' => $this->exitSetsMenu($m[2]), 'SetAdd' => $this->exitSetAddPrompt($m[2]),
+                };
+                break;
+            case preg_match('~^/exitRoutes ([a-f0-9]{8}) (\d{1,5})$~', $this->input['callback'], $m):
+                $this->exitRoutesMenu($m[1], (int) $m[2]);
+                break;
+            case preg_match('~^/exit(Rt|RtDel|Set|SetDel) ([a-f0-9]{8}) ([a-f0-9]{10})$~', $this->input['callback'], $m):
+                if ($m[1] === 'Rt' || $m[1] === 'RtDel') $this->exitRouteToggle($m[2], $m[3], $m[1] === 'RtDel');
+                else $this->exitSetToggle($m[2], $m[3], $m[1] === 'SetDel');
+                break;
+            case preg_match('~^/exitUsers ([a-f0-9]{8}) (\d{1,5})$~', $this->input['callback'], $m):
+                $this->exitUsersMenu($m[1], (int) $m[2]);
+                break;
+            case preg_match('~^/exitU ([a-f0-9]{8}) (\d{1,6}) (\d{1,5})$~', $this->input['callback'], $m):
+                $this->exitUserToggle($m[1], (int) $m[2], (int) $m[3]);
+                break;
+            case preg_match('~^/exitAll ([a-f0-9]{8}) (on|off)$~', $this->input['callback'], $m):
+                $this->exitAllUsers($m[1], $m[2] === 'on');
+                break;
+            case preg_match('~^/exitUser (\d{1,6})$~', $this->input['callback'], $m):
+                $this->exitUserMenu((int) $m[1]);
+                break;
+            case preg_match('~^/exitUT (\d{1,6}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->exitUserNodeToggle((int) $m[1], $m[2]);
+                break;
+            case preg_match('~^/exitRelay$~', $this->input['callback'], $m):
+                $this->exitRelayMenu();
+                break;
+            case preg_match('~^/exitRelayAdd$~', $this->input['callback'], $m):
+                $this->exitRelayAddPrompt();
+                break;
+            case preg_match('~^/exitRelayLink (\d{1,6})$~', $this->input['callback'], $m):
+                $this->exitRelayLink((int) $m[1]);
                 break;
             case preg_match('~^/switchXrayCore$~', $this->input['callback'], $m):
                 $this->switchXrayCore();
@@ -3412,6 +3465,9 @@ class Bot
         // Строго до ensureWgGuard(): тот кладёт свои гейты в голову правил, и
         // правило торрентов обязано оказаться ПОД ними, а не над.
         $this->ensureTorrentBlock($c, $pac);
+        // Узлы выхода — тоже до ensureWgGuard(): их служебные входы проверки
+        // получают те же гейты, а правила встают под защитными.
+        $this->ensureExitNodes($c, $pac);
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
         $this->ensureXhttpMuxInbound($c, $pac);
@@ -6624,6 +6680,7 @@ NFT;
             'checkCpuLoad',
             'backfillSubTokens',
             'checkRelayHealth',
+            'checkExitNodes',
             'checkXrayCore',
             'checkRealityMask',
             'warmGeoCache',
@@ -13976,12 +14033,15 @@ DNS-over-HTTPS with IP:
     public function coreDatNeeded(array $conf): array
     {
         $need = [];
-        foreach (self::ROUTE_ENTRY_LISTS as $list) {
-            foreach (array_keys(array_filter($conf[$list] ?? [])) as $e) {
-                $kind = $this->classifyRouteEntry((string) $e)['kind'];
-                if (isset(self::CORE_DAT[$kind])) {
-                    $need[self::CORE_DAT[$kind]] = true;
-                }
+        $entries = [];
+        foreach (self::ROUTE_ENTRY_LISTS as $list) $entries = array_merge($entries, array_keys(array_filter($conf[$list] ?? [])));
+        // Маршруты узлов выхода пишутся теми же записями: geosite:/geoip: в них
+        // тоже требуют встроенных .dat.
+        foreach ($this->exitNodes($conf) as $node) $entries = array_merge($entries, array_keys(array_filter($node['routes'])));
+        foreach ($entries as $e) {
+            $kind = $this->classifyRouteEntry((string) $e)['kind'];
+            if (isset(self::CORE_DAT[$kind])) {
+                $need[self::CORE_DAT[$kind]] = true;
             }
         }
         return array_keys($need);
@@ -27721,6 +27781,9 @@ DNS-over-HTTPS with IP:
         $data[] = [[
             'text' => 'XDRIVE: ' . $this->i18n(!empty($p['xdrive']['enabled']) ? 'on' : 'off'),
             'callback_data' => '/xdrive',
+        ], [
+            'text' => '🌍 Узлы выхода' . (($exitCount = count($this->exitNodes($p))) ? " ($exitCount)" : ''),
+            'callback_data' => '/exits',
         ]];
         $data[] = [
             [
@@ -28674,6 +28737,10 @@ DNS-over-HTTPS with IP:
         }
         $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
         $data[] = [['text' => 'Протоколы в готовой подписке', 'callback_data' => '/xp ' . ManagedProtocol::xraySource($c)]];
+        if ($this->exitNodes($pac) || !empty($c['exit_relay'])) {
+            $exitOn = count(self::exitClientNodes($c));
+            $data[] = [['text' => '🌍 Узлы выхода' . ($exitOn ? " ($exitOn)" : ''), 'callback_data' => "/exitUser $i"]];
+        }
         $data[] = [['text' => 'Отдельные подключения · ссылки и файлы', 'callback_data' => '/xc ' . ManagedProtocol::xraySource($c)]];
         $data[] = [
             ['text' => 'Mihomo JSON · подписка', 'web_app' => ['url' => "https://{$domain}/pac$hash?t=clj&s={$stok}"]],

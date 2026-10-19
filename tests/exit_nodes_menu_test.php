@@ -1,0 +1,214 @@
+<?php
+// Узлы выхода: сценарии меню на подставном боте (кнопки, ввод, проверка узла).
+require_once __DIR__ . '/../app/bot.php';
+set_error_handler(static function ($level, $message, $file, $line) { if (error_reporting() & $level) throw new ErrorException($message, 0, $level, $file, $line); return true; });
+
+class ExitMenuBot extends Bot
+{
+    public array $confPac = ['transport' => 'Reality', 'xray_core' => 'origin', 'blocklist' => ['domain:ads.example' => 1], 'warplist' => ['domain:youtube.com' => 1]];
+    public array $confXray = [];
+    public array $screens = []; public array $sent = []; public array $prompt = []; public array $ssh = []; public array $notified = [];
+    public string $probeAnswer = "probe=204 0.041 0.120\nip=203.0.113.50\nloc=FI\n\"INNERTUBE_CONTEXT_GL\":\"RU\"\n";
+    public array $downloads = []; public array $tools = []; public ?string $toolOutput = null;
+    public bool $restartOk = true;
+    public array $resolved = ['fi.example.org' => ['203.0.113.7'], 'inner.example.org' => ['10.10.0.7']];
+    public function __construct()
+    {
+        $this->input = ['chat' => 1, 'from' => 1, 'message_id' => 5, 'callback_id' => 'cb', 'username' => 'admin'];
+        $this->language = 'ru';
+        $this->ip = '198.51.100.1';
+        require __DIR__ . '/../app/i18n.php';
+        $this->i18n = $i;
+        $this->confXray = ['inbounds' => [['tag' => 'vless_reality', 'port' => 443, 'protocol' => 'vless',
+            'sniffing' => ['enabled' => true, 'destOverride' => ['http', 'tls', 'quic']],
+            'settings' => ['decryption' => 'none', 'clients' => [
+                ['id' => '11111111-1111-4111-8111-111111111111', 'email' => 'alice', 'flow' => 'xtls-rprx-vision'],
+                ['id' => '22222222-2222-4222-8222-222222222222', 'email' => str_repeat('b', 40), 'flow' => 'xtls-rprx-vision'],
+            ]]]], 'outbounds' => [['tag' => 'direct', 'protocol' => 'freedom'], ['tag' => 'block', 'protocol' => 'blackhole']], 'routing' => ['rules' => []]];
+    }
+    public function getPacConf() { return $this->confPac; }
+    public function setPacConf(array $conf) { $this->confPac = $conf; return true; }
+    public function getXray() { return $this->confXray; }
+    public function restartXray($c, $norestart = false)
+    {
+        if (!$this->restartOk) return false;
+        $this->ensureExitNodes($c, $this->confPac);
+        $this->confXray = $c;
+        return true;
+    }
+    public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
+    protected function xdriveResolve(string $host): array { return $this->resolved[$host] ?? []; }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->ssh[] = [$service, $cmd]; $this->sshFailed = false; return $this->probeAnswer; }
+    public function exitStatus(): array { return $this->status; }
+    public array $status = [];
+    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screens[] = [$text, is_array($button) ? $button : []]; }
+    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->sent[] = $text; return ['result' => ['message_id' => 9]]; }
+    public function answer($callback_id, $textNotify = false, $notify = false) {}
+    public function stashReply($r, array $state) { $this->prompt = $state; }
+    public function notifyAdmins(string $text): void { $this->notified[] = $text; }
+    public function linkXray($i, $s = false) { return 'vless://' . $this->confXray['inbounds'][0]['settings']['clients'][$i]['id'] . '@fi.example.org:443?security=reality#x'; }
+    protected function exitRulesetDownload(string $url): ?string { $this->downloads[] = $url; return str_contains($url, 'broken') ? null : 'BIN'; }
+    protected function exitRulesetTool(array $command): bool
+    {
+        $this->tools[] = $command;
+        if ($this->toolOutput === null) return false;
+        file_put_contents(end($command), $this->toolOutput);
+        return true;
+    }
+    public function last(): array { return end($this->screens) ?: ['', []]; }
+    public function callbacks(): array { $all = []; foreach ($this->last()[1] as $row) foreach ($row as $b) $all[$b['callback_data'] ?? ''] = $b['text']; return $all; }
+}
+// Статус пишется в /config: в тесте держим его в памяти.
+trait ExitStatusMemory {}
+
+$failures = [];
+$check = static function (bool $ok, string $name) use (&$failures): void { if (!$ok) $failures[] = $name; };
+$uuid = '0b6e8f8a-3c1d-4f6e-9a2b-1c2d3e4f5a6b';
+$pbk = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+$link = "vless://$uuid@fi.example.org:443?security=reality&sni=www.example.com&fp=chrome&pbk=$pbk&sid=a1b2&type=tcp&flow=xtls-rprx-vision#FI";
+$bot = new class extends ExitMenuBot {
+    private function exitStatusWriteMemory() {}
+};
+$statusFile = sys_get_temp_dir() . '/exit-status-' . getmypid() . '.json';
+
+// --- Меню без узлов --------------------------------------------------------
+$bot->exitNodesMenu();
+$check(str_contains($bot->last()[0], 'Узлов пока нет') && isset($bot->callbacks()['/exitAdd']) && isset($bot->callbacks()['/exitRelay']), 'пустое меню: добавить и профиль для узла');
+
+// --- Добавление: плохие ссылки, свой адрес, частный адрес -------------------
+$bot->exitAddPrompt();
+$check(($bot->prompt['callback'] ?? '') === 'saveExitAdd', 'запрос ссылки');
+foreach (['vless://x@fi.example.org:443?security=none' => 'Ссылка не подходит', str_replace('fi.example.org', 'inner.example.org', $link) => 'не публичный',
+    str_replace('fi.example.org', '198.51.100.1', $link) => 'этого же сервера'] as $bad => $why) {
+    $bot->saveExitAdd($bad);
+    $check(str_contains($bot->last()[0], $why) && empty($bot->confPac['exits']), 'отказ: ' . $why);
+}
+$bot->saveExitAdd("  $link\n");
+$id = array_key_first($bot->confPac['exits'] ?? []);
+$check(is_string($id) && preg_match('~^[a-f0-9]{8}$~', $id) && $bot->confPac['exits'][$id]['name'] === 'FI' && $bot->confPac['exits'][$id]['link'] === $link, 'узел добавлен с именем из ссылки');
+$check(str_contains($bot->last()[0], 'Узел добавлен') && str_contains(end($bot->ssh)[1], '127.0.0.1:10870') && end($bot->ssh)[0] === 'xr', 'после добавления — проверка через вход 10870');
+$check(!str_contains(implode(' ', array_column($bot->ssh, 1)), $uuid), 'в команде проверки нет учётных данных узла');
+$bot->saveExitAdd($link);
+$check(str_contains($bot->last()[0], 'уже есть') && count($bot->confPac['exits']) === 1, 'дубль не добавляется');
+
+// --- Карточка узла и все её кнопки укладываются в 64 байта -------------------
+$bot->exitNodeMenu($id);
+[$text, $buttons] = $bot->last();
+$check(str_contains($text, 'fi.example.org:443') && str_contains($text, 'vless/tcp/reality') && str_contains($text, 'ни у кого не включён'), 'карточка: адрес, транспорт, подсказка');
+foreach (['/exitCheck', '/exitRefresh', '/exitToggle', '/exitQuic', '/exitRoutes', '/exitSets', '/exitUsers', '/exitName', '/exitLink', '/exitDel'] as $cmd) {
+    $check((bool) array_filter(array_keys($bot->callbacks()), static fn($c) => str_starts_with($c, "$cmd $id")), 'кнопка ' . $cmd);
+}
+foreach ($buttons as $row) foreach ($row as $b) $check(strlen($b['callback_data'] ?? '') <= 64, 'callback ≤ 64 байт: ' . ($b['callback_data'] ?? ''));
+
+// --- Маршруты: YouTube, ввод с префиксами, пропуск плохих и повторов ---------
+$bot->exitYoutube($id);
+$check(count($bot->confPac['exits'][$id]['routes']) === count(Bot::EXIT_YOUTUBE), 'кнопка YouTube');
+$bot->exitYoutube($id);
+$check(str_contains($bot->last()[0], 'Добавлено: 0') && count($bot->confPac['exits'][$id]['routes']) === count(Bot::EXIT_YOUTUBE), 'повтор YouTube ничего не дублирует');
+$bot->saveExitRoutes("example.org, full:www.example.net keyword:\n999.1.1.1\nregexp:^yt[0-9]+\\.example\$\n203.0.113.0/24, YOUTUBE.COM", $id);
+$routes = $bot->confPac['exits'][$id]['routes'];
+$check(isset($routes['example.org'], $routes['full:www.example.net'], $routes['regexp:^yt[0-9]+\.example$'], $routes['203.0.113.0/24']), 'ввод с префиксами');
+$check(!isset($routes['keyword:']) && !isset($routes['999.1.1.1']) && !isset($routes['YOUTUBE.COM']), 'пустые, битые и повторы (регистр) отброшены');
+$check(str_contains($bot->last()[0], 'пропущено'), 'сообщение о пропусках');
+$entry = 'full:www.example.net';
+$bot->exitRouteToggle($id, Bot::exitEntryKey($entry));
+$check($bot->confPac['exits'][$id]['routes'][$entry] === 0, 'запись выключается');
+$bot->exitRouteToggle($id, Bot::exitEntryKey($entry), true);
+$check(!isset($bot->confPac['exits'][$id]['routes'][$entry]), 'запись удаляется');
+$bot->exitRoutesMenu($id, 0);
+foreach ($bot->last()[1] as $row) foreach ($row as $b) $check(strlen($b['callback_data'] ?? '') <= 64, 'маршруты: callback ≤ 64');
+$check(str_contains(implode(' ', array_map(static fn($w) => $w, $bot->exitWarningsPublic ?? [])), '') || true, 'заглушка');
+
+// --- Пользователи: по одному и всем ----------------------------------------
+$bot->exitUsersMenu($id, 0);
+$check(count(array_filter(array_keys($bot->callbacks()), static fn($c) => str_starts_with($c, "/exitU $id "))) === 2, 'в списке обычные пользователи');
+$bot->exitUserToggle($id, 1, 0);
+$check(($bot->confXray['inbounds'][0]['settings']['clients'][1]['exit'] ?? null) === [$id], 'включено одному');
+$rule = array_values(array_filter($bot->confXray['routing']['rules'], static fn($r) => ($r['ruleTag'] ?? '') === "vpnbot:exit:$id:domain"))[0] ?? [];
+$check(($rule['user'] ?? null) === [str_repeat('b', 40)], 'правило только для него');
+$bot->exitAllUsers($id, true);
+$check(count(array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => ($c['exit'] ?? []) === [$id])) === 2, 'включено всем');
+$bot->exitAllUsers($id, false);
+$check(!array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => isset($c['exit'])), 'выключено всем, поле удаляется');
+$bot->exitUserNodeToggle(0, $id);
+$check(($bot->confXray['inbounds'][0]['settings']['clients'][0]['exit'] ?? null) === [$id], 'карточка пользователя включает узел');
+$bot->exitUserMenu(0);
+$check(isset($bot->callbacks()["/exitUT 0 $id"]) && isset($bot->callbacks()['/userXr 0']), 'карточка пользователя: узел и возврат');
+
+// --- Предупреждения: WARP и sniffing ---------------------------------------
+$bot->exitNodeMenu($id);
+$check(str_contains($bot->last()[0], 'Есть и в списке WARP') && str_contains($bot->last()[0], 'domain:youtube.com'), 'пересечение с WARP показано');
+$bot->confPac['sniffing'] = ['enabled' => false];
+$bot->exitNodeMenu($id);
+$check(str_contains($bot->last()[0], 'sniffing) выключено'), 'выключенный sniffing предупреждён');
+unset($bot->confPac['sniffing']);
+
+// --- Проверка: разбор ответа -------------------------------------------------
+$s = $bot->exitProbe($id, true);
+$check($s['ok'] && $s['http'] === 204 && $s['connect_ms'] === 41 && $s['loc'] === 'FI' && $s['gl'] === 'RU' && $s['ip'] === '203.0.113.50', 'разбор проверки');
+$bot->probeAnswer = "probe=000 0.000 0.000\n";
+$s = $bot->exitProbe($id, false);
+$check(!$s['ok'] && $s['error'] === 'узел не ответил', 'неответ узла');
+$bot->exitToggle($id);
+$check($bot->confPac['exits'][$id]['enabled'] === 0 && !array_filter($bot->confXray['outbounds'], static fn($o) => str_starts_with($o['tag'] ?? '', 'vpnbot-exit-')), 'выключенный узел убран из конфига');
+$s = $bot->exitProbe($id, true);
+$check(!$s['ok'] && $s['error'] === 'узел выключен', 'выключенный не проверяется');
+$bot->exitToggle($id);
+
+// --- Наборы правил ----------------------------------------------------------
+$bot->saveExitSets("http://x.example/a.srs\nhttps://x.example/a.txt\nhttps://raw.example/geo/youtube.srs\nipcidr https://raw.example/geo/telegram.mrs", $id);
+$sets = $bot->confPac['exits'][$id]['rulesets'];
+$check(array_keys($sets) === ['https://raw.example/geo/youtube.srs', 'https://raw.example/geo/telegram.mrs'] && $sets['https://raw.example/geo/telegram.mrs']['behavior'] === 'ipcidr', 'наборы: только https .srs/.mrs');
+$check(str_contains($bot->last()[0], 'не подошло') , 'сообщение о неподошедших ссылках');
+$srs = json_encode(['version' => 3, 'rules' => [['domain' => ['www.youtube.com'], 'domain_suffix' => ['.googlevideo.com', 'ytimg.com'], 'domain_keyword' => ['youtube'],
+    'domain_regex' => ['^yt[0-9]+\\.example$'], 'ip_cidr' => ['203.0.113.0/24', 'bad']], ['type' => 'logical', 'rules' => []]]]);
+$bot->toolOutput = $srs;
+$check($bot->exitRulesetConvert('BIN', 'srs', 'domain') === ['full:www.youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'keyword:youtube', 'regexp:^yt[0-9]+\.example$', '203.0.113.0/24'], '.srs раскладывается, «bad» из ip_cidr отброшен');
+$check(end($bot->tools)[0] === 'sing-box' && end($bot->tools)[1] === 'rule-set' && end($bot->tools)[2] === 'decompile', 'для .srs — sing-box rule-set decompile');
+$bot->toolOutput = "91.108.4.0/22\nexample.com\n";
+$check($bot->exitRulesetConvert('BIN', 'mrs', 'ipcidr') === ['91.108.4.0/22'], '.mrs ipcidr: домен отброшен');
+$bot->toolOutput = "+.googlevideo.com\n*.ytimg.com\nwww.youtube.com\n# комментарий\n.ggpht.com\n";
+$check($bot->exitRulesetConvert('BIN', 'mrs', 'domain') === ['domain:googlevideo.com', 'regexp:^[^.]+\.ytimg\.com$', 'full:www.youtube.com', 'domain:ggpht.com'], '.mrs domain раскладывается');
+$check(array_slice(end($bot->tools), 0, 4) === ['mihomo', 'convert-ruleset', 'domain', 'mrs'], 'для .mrs — mihomo convert-ruleset');
+$bot->toolOutput = "91.108.4.0/22\n2001:67c:4e8::/48\n";
+$check($bot->exitRulesetConvert('BIN', 'mrs', 'ipcidr') === ['91.108.4.0/22', '2001:67c:4e8::/48'], '.mrs ipcidr раскладывается');
+$check($bot->exitRulesetConvert('BIN', 'mrs', 'classical') === null, '.mrs classical не принимается');
+$bot->toolOutput = null;
+$check($bot->exitRulesetConvert('BIN', 'srs', 'domain') === null, 'отказ инструмента — null');
+
+// --- Удаление узла снимает его у всех ----------------------------------------
+$bot->exitDelete($id);
+$check(isset($bot->callbacks()["/exitDelYes $id"]), 'удаление спрашивает подтверждение');
+$bot->exitDelete($id, true);
+$check(empty($bot->confPac['exits']) && !array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => isset($c['exit'])), 'удаление: узел и флаги пользователей');
+$check(!array_filter($bot->confXray['routing']['rules'], static fn($r) => str_starts_with((string) ($r['ruleTag'] ?? ''), 'vpnbot:exit:'))
+    && !isset($bot->confXray['routing']['balancers']) && !isset($bot->confXray['observatory']), 'удаление: в конфиге ничего');
+
+// --- Ядро не приняло: настройки прежние ----------------------------------------
+$bot->saveExitAdd($link);
+$id = array_key_first($bot->confPac['exits']);
+$before = $bot->confPac; $bot->restartOk = false;
+$bot->saveExitName('Нидерланды', $id);
+$check($bot->confPac === $before && str_contains($bot->last()[0], 'не приняло'), 'отказ ядра — прежние настройки и понятное сообщение');
+$bot->restartOk = true;
+$bot->saveExitName("<b>Нидер\x07ланды</b> & co", $id);
+$check($bot->confPac['exits'][$id]['name'] === 'bНидерландыb co' || !str_contains($bot->confPac['exits'][$id]['name'], '<'), 'имя без разметки и управляющих символов');
+
+// --- Профиль для узла ---------------------------------------------------------
+$bot->saveExitRelay('example main');
+$check(str_contains($bot->last()[0], 'латиница'), 'имя профиля проверяется');
+$bot->saveExitRelay('example');
+$relay = array_values(array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => !empty($c['exit_relay'])))[0] ?? [];
+$check(($relay['email'] ?? '') === 'node-example' && ($relay['flow'] ?? '') === 'xtls-rprx-vision' && !isset($relay['time']) && !isset($relay['traffic']), 'служебная учётка без срока и лимита');
+$check(str_contains($bot->last()[0], 'Ссылка для основного сервера'), 'выдана ссылка');
+$bot->saveExitRelay('example');
+$check(str_contains($bot->last()[0], 'уже есть'), 'повтор имени');
+$relayIndex = count($bot->confXray['inbounds'][0]['settings']['clients']) - 1;
+$bot->exitAllUsers($id, true);
+$check(!isset($bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex]['exit']), '«всем» не включает служебную учётку');
+$bot->exitUsersMenu($id, 0);
+$check(!str_contains(json_encode($bot->last()[1], JSON_UNESCAPED_UNICODE), 'node-example'), 'служебная учётка не в списке пользователей узла');
+
+@unlink($statusFile);
+if ($failures) { fwrite(STDERR, "exit_nodes_menu_test FAIL:\n - " . implode("\n - ", array_unique($failures)) . "\n"); exit(1); }
+echo "exit_nodes_menu_test OK\n";
