@@ -177,13 +177,13 @@ $srs = json_encode(['version' => 3, 'rules' => [['domain' => ['www.youtube.com']
 $bot->toolOutput = $srs;
 $check($bot->exitRulesetConvert('BIN', 'srs', 'domain') === ['full:www.youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'keyword:youtube', 'regexp:^yt[0-9]+\.example$', '203.0.113.0/24'], '.srs раскладывается, «bad» из ip_cidr отброшен');
 $check(end($bot->tools)[0] === 'sing-box' && end($bot->tools)[1] === 'rule-set' && end($bot->tools)[2] === 'decompile', 'для .srs — sing-box rule-set decompile');
-$bot->toolOutput = "91.108.4.0/22\nexample.com\n";
-$check($bot->exitRulesetConvert('BIN', 'mrs', 'ipcidr') === ['91.108.4.0/22'], '.mrs ipcidr: домен отброшен');
+$bot->toolOutput = "198.51.100.0/22\nexample.com\n";
+$check($bot->exitRulesetConvert('BIN', 'mrs', 'ipcidr') === ['198.51.100.0/22'], '.mrs ipcidr: домен отброшен');
 $bot->toolOutput = "+.googlevideo.com\n*.ytimg.com\nwww.youtube.com\n# комментарий\n.ggpht.com\n";
 $check($bot->exitRulesetConvert('BIN', 'mrs', 'domain') === ['domain:googlevideo.com', 'regexp:^[^.]+\.ytimg\.com$', 'full:www.youtube.com', 'domain:ggpht.com'], '.mrs domain раскладывается');
 $check(array_slice(end($bot->tools), 0, 4) === ['mihomo', 'convert-ruleset', 'domain', 'mrs'], 'для .mrs — mihomo convert-ruleset');
-$bot->toolOutput = "91.108.4.0/22\n2001:67c:4e8::/48\n";
-$check($bot->exitRulesetConvert('BIN', 'mrs', 'ipcidr') === ['91.108.4.0/22', '2001:67c:4e8::/48'], '.mrs ipcidr раскладывается');
+$bot->toolOutput = "198.51.100.0/22\n2001:db8::/48\n";
+$check($bot->exitRulesetConvert('BIN', 'mrs', 'ipcidr') === ['198.51.100.0/22', '2001:db8::/48'], '.mrs ipcidr раскладывается');
 $check($bot->exitRulesetConvert('BIN', 'mrs', 'classical') === null, '.mrs classical не принимается');
 $bot->toolOutput = null;
 $check($bot->exitRulesetConvert('BIN', 'srs', 'domain') === null, 'отказ инструмента — null');
