@@ -6,6 +6,11 @@
 # .env (VPNBOT_TAG, TZ, IP, порты) — правка в нём просто игнорировалась.
 -include override.env
 export
+# cron (@reboot make r из make cron) запускает make с PATH=/usr/bin:/bin, а
+# modprobe, sysctl, nft и ip лежат в sbin: после перезагрузки рецепты молча
+# не находили их («command not found» гасили «|| echo WARN»). Дописываем sbin
+# в конец, не меняя порядок уже заданного PATH.
+export PATH := $(PATH):/usr/local/sbin:/usr/sbin:/sbin
 
 IP := $(or $(IP),$(shell hostname -I | awk '{print $$1}'))
 # VER идёт в имена контейнеров (container_name: php-${VER} и т.д.). Если в клоне

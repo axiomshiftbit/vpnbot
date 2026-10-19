@@ -62,6 +62,15 @@ class InstallAutostartTest(unittest.TestCase):
         self.assertEqual(1, sum('cd /root/vpnbot && make r' in line for line in lines), lines)
         self.assertIn('0 3 * * 6 /opt/scripts/update.sh', lines)
 
+    def test_make_finds_sbin_tools_under_cron_path(self):
+        # cron даёт make только /usr/bin:/bin, а modprobe/sysctl/nft — в sbin.
+        result = subprocess.run(['make', '-s', '-C', str(ROOT), '--eval=vpnbot-print-path: ; @echo "$$PATH"', 'vpnbot-print-path'],
+                                env={'PATH': '/usr/bin:/bin'}, capture_output=True, text=True, check=True)
+        path = result.stdout.strip().split(':')
+        self.assertEqual(['/usr/bin', '/bin'], path[:2], 'исходный PATH идёт первым')
+        for directory in ('/usr/local/sbin', '/usr/sbin', '/sbin'):
+            self.assertIn(directory, path)
+
 
 if __name__ == '__main__':
     unittest.main()
