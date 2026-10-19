@@ -179,11 +179,14 @@ foreach ([true, false] as $mlkem) {
         fpAssert(in_array('fp reality mihomo', $w, true) === (!$noTls13 && $mlkem && $fp !== 'chrome'), "предупреждение о Mihomo ($tag)");
         // random стабилен на ядре без ML-KEM; с ML-KEM — отдельное предупреждение.
         fpAssert(in_array('fp reality random', $w, true) === ($fp === 'random' && $mlkem), "предупреждение о random ($tag)");
-        // Остальные транспорты — обычный TLS: nginx принимает любой образец.
+        // Обычный TLS: WebSocket принимает любой образец; gRPC и XHTTP идут
+        // только по HTTP/2, а в android и 360 нет h2 (замер на стенде 2026-10-19).
         foreach (['Websocket', 'xhttp', 'trojan-grpc', ''] as $transport) {
             $rb->conf = ['transport' => $transport, 'fingerprint' => $fp];
-            fpAssert($rb->fingerprint() === $fp && !$rb->fingerprintRejectedByReality() && $rb->fingerprintWarnings() === [],
-                "$transport: отпечаток $fp подменён или помечен");
+            $noH2 = in_array($transport, ['xhttp', 'trojan-grpc'], true) && in_array($fp, ['android', '360'], true);
+            fpAssert($rb->fingerprint() === $fp && !$rb->fingerprintRejectedByReality() && $rb->fingerprintRejected() === $noH2
+                && $rb->fingerprintWarnings() === ($noH2 ? ['fp no h2 warn'] : []),
+                "$transport: отпечаток $fp подменён или помечен неверно");
         }
     }
 }
@@ -205,6 +208,14 @@ $rb->conf = ['transport' => 'Websocket', 'fingerprint' => 'ios'];
 $rb->fingerprintMenu();
 fpAssert($labels() === $rb->fingerprints() && $warned() === [] && !str_contains($rb->screen[0], 'fp reality'), 'меню при обычном TLS: ' . json_encode($labels()));
 fpAssert(str_contains($rb->screen[0], 'fp compat') && str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Ios on'), 'при обычном TLS выбранный ios не отмечен');
+// gRPC и XHTTP: ⚠ у образцов без HTTP/2, независимо от ядра.
+foreach (['trojan-grpc', 'xhttp'] as $transport) {
+    $rb->conf = ['transport' => $transport, 'fingerprint' => 'android'];
+    $rb->fingerprintMenu();
+    fpAssert($warned() === Bot::FINGERPRINTS_NO_H2 && str_contains($rb->screen[0], 'fp no h2 warn') && !str_contains($rb->screen[0], 'fp reality'),
+        "пометки ⚠ при $transport: " . json_encode($warned()));
+}
+fpAssert(Bot::FINGERPRINTS_NO_H2 === ['android', '360'], 'набор образцов без h2 изменён без замера');
 foreach (array_merge(...$rb->screen[1]) as $button) {
     fpAssert(strlen($button['callback_data']) <= 64, 'длинные данные кнопки');
 }
@@ -256,7 +267,7 @@ fpAssert(!str_contains((string) json_encode(json_decode((string) file_get_conten
 require __DIR__ . '/../app/i18n.php';
 foreach (['en', 'ru'] as $lang) {
     fpAssert(mb_strlen($i['fp compat'][$lang] . $i['fp hint'][$lang] . $i['fp reality core mlkem'][$lang]) < 3000 && str_contains($i['fp compat'][$lang], 'sing-box'), "текст совместимости ($lang) пуст или слишком длинен");
-    foreach (['fp reality no tls13', 'fp reality mlkem', 'fp reality mihomo', 'fp reality random', 'fp reality core mlkem', 'fp reality core any'] as $key) {
+    foreach (['fp reality no tls13', 'fp reality mlkem', 'fp reality mihomo', 'fp reality random', 'fp reality core mlkem', 'fp reality core any', 'fp no h2 warn'] as $key) {
         fpAssert(($i[$key][$lang] ?? '') !== '', "нет текста $key ($lang)");
     }
 }

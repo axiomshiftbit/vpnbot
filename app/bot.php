@@ -20006,6 +20006,12 @@ DNS-over-HTTPS with IP:
     // Образцы без TLS 1.3: сервер REALITY их не принимает ни на каком ядре.
     public const REALITY_NO_TLS13 = ['android', '360'];
 
+    // Образцы без h2 в ALPN: uTLS ставит свой список ALPN поверх профиля, и
+    // nginx согласует http/1.1, а gRPC и XHTTP бота идут только по HTTP/2.
+    // Замер на стенде (2026-10-19, профили бота): Xray и Mihomo с android и
+    // 360 не подключаются, sing-box — с android (его образец 360 несёт h2).
+    public const FINGERPRINTS_NO_H2 = ['android', '360'];
+
     // Не примет ли сервер REALITY текущего ядра клиента с этим отпечатком.
     // Требование ML-KEM определяет само ядро (realityRequiresMlkem()); старое
     // ядро и форк без requireMlkem принимают любой образец с TLS 1.3.
@@ -20020,6 +20026,17 @@ DNS-over-HTTPS with IP:
             return true;
         }
         return !in_array($fp, self::REALITY_FINGERPRINTS, true) && $this->realityRequiresMlkem();
+    }
+
+    // Не подключится ли клиент с этим отпечатком при текущих транспорте и
+    // ядре: REALITY (fingerprintRejectedByReality) либо gRPC/XHTTP без h2.
+    public function fingerprintRejected(?string $fp = null, ?array $pac = null): bool
+    {
+        $pac = $pac ?? $this->getPacConf();
+        $fp  = $fp ?? $this->fingerprintChosen();
+        return $this->fingerprintRejectedByReality($fp, $pac)
+            || (in_array($pac['transport'] ?? '', ['trojan-grpc', 'xhttp'], true)
+                && ($this->fingerprintNoAlpn($fp) || in_array($fp, self::FINGERPRINTS_NO_H2, true)));
     }
 
     // Предупреждения к выбранному отпечатку при текущем транспорте и ядре:
@@ -20048,6 +20065,9 @@ DNS-over-HTTPS with IP:
         }
         if ($this->fingerprintNoAlpn($fp) && in_array($pac['transport'] ?? '', ['trojan-grpc', 'xhttp'], true)) {
             $out[] = $this->i18n('fp noalpn warn');
+        }
+        if (in_array($fp, self::FINGERPRINTS_NO_H2, true) && in_array($pac['transport'] ?? '', ['trojan-grpc', 'xhttp'], true)) {
+            $out[] = sprintf($this->i18n('fp no h2 warn'), $fp);
         }
         return $out;
     }
@@ -20148,10 +20168,10 @@ DNS-over-HTTPS with IP:
         $row  = [];
         $effective = $this->fingerprint();
         foreach ($this->fingerprintsFor($pac) as $fp) {
-            // ⚠ — с текущим ядром REALITY клиент с этим отпечатком не подключится.
+            // ⚠ — при текущих транспорте и ядре клиент с этим отпечатком не подключится.
             $row[] = [
                 'text'          => ucfirst($fp) . ' ' . ($effective === $fp ? $this->i18n('on') : $this->i18n('off'))
-                    . ($this->fingerprintRejectedByReality($fp, $pac) ? ' ⚠' : ''),
+                    . ($this->fingerprintRejected($fp, $pac) ? ' ⚠' : ''),
                 'callback_data' => "/changeFingerprint $fp",
             ];
             if (count($row) === 2) {
