@@ -67,7 +67,11 @@ try {
     file_put_contents("$work/cert.pem", $public . $private);
     chmod("$work/cert.pem", 0600);
     $maskPort = $freePort();
-    $context = stream_context_create(['ssl' => ['local_cert' => "$work/cert.pem", 'verify_peer' => false]]);
+    // ALPN обязателен: REALITY 26.10.17+ кладёт в EncryptedExtensions
+    // подтверждение SNI и дополняет блок до длины блока маски; у маски без
+    // ALPN блок пуст, места нет, и сервер отвергает всех клиентов. Настоящие
+    // сайты и nginx бота (http2 on) отвечают с ALPN.
+    $context = stream_context_create(['ssl' => ['local_cert' => "$work/cert.pem", 'verify_peer' => false, 'alpn_protocols' => 'h2,http/1.1']]);
     $mask = stream_socket_server("tcp://127.0.0.1:$maskPort", $errno, $error, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $context);
     $maskPid = pcntl_fork();
     if ($maskPid === 0) {

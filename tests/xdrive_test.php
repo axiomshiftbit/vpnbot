@@ -272,6 +272,7 @@ $check(array_column($profile['inbounds'], 'port') === [10808, 10809] && array_un
 $json = json_encode($profile);
 $check(!str_contains($json, '22222222-2222') && !str_contains($json, $bot->confPac['xdrive']['enc']['decryption']), 'в профиле нет чужих идентификаторов и серверного ключа');
 $check(!isset($out['settings']['vnext'][0]['users'][0]['flow']) && !isset($out['streamSettings']['security']), 'без flow и без TLS: их у транспорта нет');
+$check($out['mux'] === ['enabled' => true], 'профиль с Mux.Cool: без него ядро 26.10.17+ клиента не загружает');
 $check($bot->xdriveClientConfig(['email' => 'no-id']) === null && $bot->xdriveClientConfig($alice, ['xdrive' => ['enabled' => 0] + $bot->confPac['xdrive']]) === null
     && $bot->xdriveClientConfig($alice, ['xdrive' => ['folder' => ''] + $bot->confPac['xdrive']]) === null, 'профиль не выдаётся без идентификатора, при выключенном или неполном XDRIVE');
 

@@ -144,7 +144,10 @@ config() {
                 settings: {address: $address, port: 443, remoteDNS: ["1.1.1.1", "1.0.0.1"]},
                 streamSettings: ({
                     method: "masque",
-                    masqueSettings: {warp: {privateKey: $key, publicKey: $public, address: [$local4 + "/32"]}},
+                    # Пустой User-Agent, как у официального клиента WARP: с 26.10.17
+                    # ядро без этого поля подставляет User-Agent Chrome.
+                    masqueSettings: {warp: {privateKey: $key, publicKey: $public, address: [$local4 + "/32"]},
+                        headers: {"User-Agent": ""}},
                     security: "tls",
                     tlsSettings: ({serverName: $sni} + (if $alpn == "h2" then {alpn: ["h2"]} else {} end))
                 } + (if $mark != "" then {sockopt: {mark: ($mark | tonumber)}} else {} end))

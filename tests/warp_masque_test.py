@@ -297,6 +297,7 @@ class WarpMasqueScriptTest(unittest.TestCase):
         self.assertEqual(warp['privateKey'], (self.dir / 'key.pem').read_text())
         self.assertEqual(warp['publicKey'], (self.root / 'endpoint.pub.pem').read_text().strip())
         self.assertEqual(warp['address'], ['172.16.0.2/32'], 'внутри туннеля только IPv4, как и в режиме WireGuard')
+        self.assertEqual(stream['masqueSettings']['headers'], {'User-Agent': ''}, 'без User-Agent, как официальный клиент WARP')
         self.assertNotIn('routing', config)
 
     def test_http2_transport_fwmark_and_listen_address(self):

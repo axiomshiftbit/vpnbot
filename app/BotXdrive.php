@@ -156,6 +156,9 @@ trait BotXdrive
     // streamSettings транспорта — одинаковые у сервера и клиента.
     public static function xdriveStream(array $s): array
     {
+        // «Google Drive» понимают все ядра с XDRIVE; 26.10.17+ называет его
+        // google-drive и на старое имя только предупреждает в журнале, а
+        // клиенту с ядром до 26.10.17 новое имя незнакомо.
         $settings = match ($s['service']) {
             'gdrive' => ['remoteFolder' => $s['folder'], 'service' => 'Google Drive', 'secrets' => $s['secrets']],
             'template' => ['remoteFolder' => $s['folder'], 'service' => 'template', 'secrets' => $s['secrets'],
@@ -246,6 +249,10 @@ trait BotXdrive
                 'settings' => ['vnext' => [['address' => '127.0.0.1', 'port' => 10444,
                     'users' => [['id' => $client['id'], 'encryption' => $pair['encryption']]]]]],
                 'streamSettings' => self::xdriveStream($s),
+                // Ядро 26.10.17+ не загружает клиента XDRIVE без Mux.Cool: все
+                // соединения идут одной сессией через хранилище. Старым ядрам
+                // блок не мешает.
+                'mux' => ['enabled' => true],
             ]],
         ];
     }

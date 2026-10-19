@@ -43,6 +43,10 @@ def mask(port):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_3
     context.load_cert_chain(CERT, KEY)
+    # Без ALPN блок EncryptedExtensions маски пуст, а REALITY 26.10.17+
+    # добавляет в свой подтверждение SNI и дополняет его до длины блока
+    # маски — места нет, сервер отвергает всех. Сайты и nginx бота с ALPN.
+    context.set_alpn_protocols(['h2', 'http/1.1'])
     server = socket.socket()
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(('127.0.0.1', port))

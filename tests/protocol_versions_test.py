@@ -84,6 +84,18 @@ class VersionPinsTests(unittest.TestCase):
         with patch.object(pins, "request", side_effect=metadata), self.assertRaises(ValueError):
             pins.release_pins("singbox", "latest")
 
+    def test_go_toolchain_keeps_xtls_vision_working(self):
+        # Ядра до 26.10.17 (#7176) находят rawInput в crypto/tls по смещению
+        # поля; в Go 1.27.3+ там указатель, и сервер с Vision падает SIGSEGV.
+        # Все слоты xr собираются одним PROTOCOL_GO_VERSION.
+        env = dict(re.findall(r'^([A-Z0-9_]+)=(.*)$', (ROOT / '.env').read_text(), re.M))
+        number = lambda value: tuple(int(part) for part in re.findall(r'\d+', value)[:3])
+        if number(env['PROTOCOL_GO_VERSION']) < (1, 27, 3):
+            return
+        for key in ('XRAY_VERSION', 'XRAY_VERSION_2', 'XRAY_VERSION_3', 'XRAY_FORK_VERSION'):
+            if env.get(key):
+                self.assertGreaterEqual(number(env[key]), (26, 10, 17), f'{key} не переживёт Go {env["PROTOCOL_GO_VERSION"]}')
+
     def test_compose_passes_pins_to_every_affected_image(self):
         text = (ROOT / "docker-compose.yml").read_text()
         for service in ("anytls", "tuic", "shadowtls"):
