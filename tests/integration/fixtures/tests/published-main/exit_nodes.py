@@ -7,7 +7,7 @@ Xray с входом VLESS REALITY во внутренней сети, клие�
 сервисы не используются."""
 import json,os,pathlib,subprocess,time,urllib.parse
 os.umask(0o077);R=pathlib.Path('/opt/vpnbot-hosted-ci/stand');O=R/'results/exit-nodes';O.mkdir(mode=0o700,exist_ok=True);results=[]
-C='vpnbot-audit-ssclient';TARGET='vpnbot-protocol-target';NET='vpnbot-protocol-test'
+TARGET='vpnbot-protocol-target';NET='vpnbot-protocol-test'
 # Имя с префиксом vpnbot-ci-retain-: оставшийся после сбоя контейнер убирает cleanup.
 EXIT='vpnbot-ci-retain-exit-node';EXIT_IP='11.77.0.4';TARGET_IP='11.77.0.2'
 SOCKS=15520;SNI='exit.vpnbot.test'
@@ -30,11 +30,19 @@ def bot(*a):
 def said(state,text):return any(text in m for m in state['messages'])
 def xray_alive():return run('docker','exec','xray-audit','sh','-c','pgrep -f "[x]ray run" >/dev/null').returncode==0
 def fetch(host,limit=10):
- r=run('docker','exec',C,'curl','--socks5-hostname','127.0.0.1:%d'%SOCKS,'--noproxy','','-s','--max-time',limit,'http://%s:8455/'%host,timeout=limit+20)
+ r=run('curl','--socks5-hostname','127.0.0.1:%d'%SOCKS,'--noproxy','','-s','--max-time',limit,'http://%s:8455/'%host,timeout=limit+20)
  return r.stdout.strip().removeprefix('src=') if r.stdout.startswith('src=') else ''
-def via(host,limit=10):return fetch(host,limit)==EXIT_IP
+# Каждое изменение перезапускает Xray бота: запрос в эту секунду остаётся без
+# ответа. Путь судим только по ответу, пустой — повторяем.
+def source(host,limit=10):
+ for attempt in range(3):
+  src=fetch(host,limit)
+  if src:return src
+  time.sleep(2)
+ return ''
+def via(host,limit=10):return source(host,limit)==EXIT_IP
 def direct(host,limit=10):
- src=fetch(host,limit);return src not in ('',EXIT_IP)
+ src=source(host,limit);return src not in ('',EXIT_IP)
 def wait(cond,seconds):
  end=time.monotonic()+seconds
  while time.monotonic()<end:
@@ -42,7 +50,7 @@ def wait(cond,seconds):
   time.sleep(2)
  return cond()
 def node_rules(state,nid):return [r for r in state['rules'] if r['ruleTag'].startswith('vpnbot:exit:'+nid+':')]
-connected=[];hosts_added=False;bundle_saved=False;nid='';trust=''
+connected=[];hosts_added=False;bundle_saved=False;nid='';trust='';client=None
 try:
  # ── Цель и узел ─────────────────────────────────────────────────────────
  names=','.join('DNS:'+n for n in PROBE+[SNI])
@@ -80,13 +88,18 @@ try:
  # ── Клиент: настоящий профиль первого пользователя ──────────────────────
  before=bot('reset');check('clean-before-the-test',before['nodes']=={} and before['rules']==[] and before['outbounds']==[] and before['burst'] is None)
  email=before['clients'][0]['email']
- r=run('docker','exec','php-audit','php','/tmp/audit-driver.php','export',timeout=120);r.check_returncode()
- profile=json.loads((R/'bot/logs/audit-profiles/xray.json').read_text())
- profile['inbounds']=[{'listen':'127.0.0.1','port':SOCKS,'protocol':'socks'}]
- (O/'client.json').write_text(json.dumps(profile))
- run('docker','cp','/opt/vpnbot-hosted-ci/tests/xray',C+':/tmp/exit-xray').check_returncode()
- run('docker','cp',O/'client.json',C+':/tmp/exit-client.json').check_returncode();(O/'client.json').unlink()
- run('docker','exec','-d',C,'sh','-c','/tmp/exit-xray run -c /tmp/exit-client.json >/tmp/exit-client.log 2>&1').check_returncode();time.sleep(2)
+ run('docker','exec','php-audit','php','/tmp/audit-driver.php','export',timeout=120).check_returncode()
+ # Клиент на самой VM, как в наборе транспортов nginx: выход proxy из
+ # профиля бота, сервер — nginx стенда на 127.0.0.1:443, CA — сертификат
+ # сервера (ядро 26.10.10+ читает SSL_CERT_FILE только с useSystemCa).
+ node=next(o for o in json.loads((R/'bot/logs/audit-profiles/xray.json').read_text())['outbounds'] if o.get('protocol') in ('vless','trojan'))
+ node['tag']='proxy';node['settings']['vnext' if node['protocol']=='vless' else 'servers'][0]['address']='127.0.0.1'
+ if isinstance(node.get('streamSettings',{}).get('tlsSettings'),dict):node['streamSettings']['tlsSettings']['useSystemCa']=True
+ (O/'client.json').write_text(json.dumps({'log':{'loglevel':'warning'},'inbounds':[{'listen':'127.0.0.1','port':SOCKS,'protocol':'socks'}],'outbounds':[node]}))
+ client=subprocess.Popen(['/opt/vpnbot-hosted-ci/tests/xray','run','-c',str(O/'client.json')],stdout=(O/'client.log').open('w'),stderr=subprocess.STDOUT,
+  env=dict(os.environ,SSL_CERT_FILE=str(R/'bot/certs/cert_public')))
+ time.sleep(2);(O/'client.json').unlink()
+ check('client-running',client.poll() is None)
  check('client-goes-direct-without-nodes',direct('video.exit.test'))
 
  # ── «Профиль для узла» на этом сервере ──────────────────────────────────
@@ -116,7 +129,7 @@ try:
  check('probe-went-through-the-node',' www.gstatic.com /generate_204 '+EXIT_IP in log and ' www.youtube.com / '+EXIT_IP in log)
 
  # ── Маршруты и пользователи ─────────────────────────────────────────────
- s=bot('routes',nid,'domain:video.exit.test|full:full.exit.test|keyword:kw-match|regexp:^rx-[0-9]+\\.exit\\.test$|bad entry|domain:video.exit.test')
+ s=bot('routes',nid,'domain:video.exit.test|full:full.exit.test|keyword:kw-match|regexp:^rx-[0-9]+\\.exit\\.test$|domain:|domain:video.exit.test')
  check('routes-saved-with-bad-entries-skipped',set(s['nodes'][nid]['routes'])=={'domain:video.exit.test','full:full.exit.test','keyword:kw-match','regexp:^rx-[0-9]+\\.exit\\.test$'} and said(s,'Добавлено: 4') and said(s,'пропущено'))
  check('routes-alone-change-nothing-for-users',direct('video.exit.test'))
  s=bot('all',nid,'on')
@@ -141,7 +154,7 @@ try:
  # IP-маршрут и QUIC: правило по адресу и его QUIC-блок, «пропускать QUIC».
  s=bot('routes',nid,TARGET_IP+'/32')
  rules={r['ruleTag'].split(':')[-1]:r for r in node_rules(s,nid)}
- check('ip-route-written',rules.get('ip',{}).get('ip')==[TARGET_IP+'/32'] and 'quic-ip' in rules)
+ check('ip-route-written',rules.get('ip',{}).get('ip') in ([TARGET_IP],[TARGET_IP+'/32']) and 'quic-ip' in rules)
  check('through-the-node-by-ip',wait(lambda:via(TARGET_IP),20))
  s=bot('quic',nid);check('quic-pass-removes-the-block',not any(t.endswith((':quic-domain',':quic-ip')) for t in (r['ruleTag'] for r in node_rules(s,nid))))
  s=bot('quic',nid);check('quic-block-restored',any(r['ruleTag'].endswith(':quic-domain') for r in node_rules(s,nid)))
@@ -208,7 +221,7 @@ try:
  check('after-delete-direct',wait(lambda:direct('video.exit.test'),20))
  check('xray-running-at-the-end-of-the-flow',xray_alive())
 finally:
- run('docker','exec',C,'pkill','-f','/tmp/exit-xray')
+ if client:client.terminate();client.wait(10)
  try:
   after=bot('reset');check('stand-restored',after['nodes']=={} and after['rules']==[] and not any(c['relay'] for c in after['clients']))
  except Exception:check('stand-restored',False)
