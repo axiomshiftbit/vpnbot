@@ -67,6 +67,7 @@ $dirty['inbounds'][] = ['tag' => 'vpnbot-exit-probe-deadbeef', 'port' => 10870, 
 $dirty['routing']['rules'][] = ['type' => 'field', 'ruleTag' => 'vpnbot:exit:deadbeef:domain', 'domain' => ['x'], 'balancerTag' => 'vpnbot-exit-deadbeef'];
 $dirty['routing']['balancers'] = [['tag' => 'vpnbot-exit-deadbeef', 'selector' => ['vpnbot-exit-deadbeef']]];
 $dirty['observatory'] = ['subjectSelector' => ['vpnbot-exit-'], 'probeURL' => 'https://x'];
+$dirty['burstObservatory'] = ['subjectSelector' => ['vpnbot-exit-'], 'pingConfig' => ['interval' => '10s']];
 $bot->ensureExitNodes($dirty, []);
 $check($dirty === $base, 'следы удалённого узла снимаются полностью');
 
@@ -102,7 +103,8 @@ $quic = array_values(array_filter($c['routing']['rules'], static fn($r) => ($r['
 $check($quic['network'] === 'udp' && $quic['port'] === '443' && $quic['outboundTag'] === 'block' && $quic['user'] === ['alice'], 'QUIC к доменам узла режется');
 $check($c['routing']['balancers'] === [['tag' => 'vpnbot-exit-a1b2c3d4', 'selector' => ['vpnbot-exit-a1b2c3d4'], 'strategy' => ['type' => 'random'], 'fallbackTag' => 'direct']],
     'random + fallbackTag direct (leastPing до первой пробы отдал бы трафик мимо узла)');
-$check($c['observatory'] === ['subjectSelector' => ['vpnbot-exit-'], 'probeURL' => 'https://www.gstatic.com/generate_204', 'probeInterval' => '30s', 'enableConcurrency' => true], 'своя observatory');
+$check($c['burstObservatory'] === ['subjectSelector' => ['vpnbot-exit-'], 'pingConfig' => ['destination' => 'https://www.gstatic.com/generate_204', 'interval' => '10s', 'sampling' => 3, 'timeout' => '5s']]
+    && !isset($c['observatory']), 'своя burstObservatory (одна потерянная проба не хоронит узел)');
 $again = $c; $bot->ensureExitNodes($again, $pac);
 $check($again === $c, 'повторная сборка ничего не меняет');
 
@@ -124,7 +126,12 @@ $c = $withUsers; $c['observatory'] = ['subjectSelector' => ['proxy-'], 'probeURL
 $bot->ensureExitNodes($c, $pac);
 $check($c['observatory'] === ['subjectSelector' => ['proxy-', 'vpnbot-exit-'], 'probeURL' => 'https://custom.example/204'], 'чужая observatory дополнена');
 $bot->ensureExitNodes($c, []);
-$check($c['observatory'] === ['subjectSelector' => ['proxy-'], 'probeURL' => 'https://custom.example/204'], 'после удаления узлов чужая observatory прежняя');
+$check($c['observatory'] === ['subjectSelector' => ['proxy-'], 'probeURL' => 'https://custom.example/204'] && !isset($c['burstObservatory']), 'после удаления узлов чужая observatory прежняя');
+$c = $withUsers; $c['burstObservatory'] = ['subjectSelector' => ['lb-'], 'pingConfig' => ['interval' => '1m']];
+$bot->ensureExitNodes($c, $pac);
+$check($c['burstObservatory']['subjectSelector'] === ['lb-', 'vpnbot-exit-'] && $c['burstObservatory']['pingConfig'] === ['interval' => '1m'] && !isset($c['observatory']), 'чужая burstObservatory дополнена');
+$bot->ensureExitNodes($c, []);
+$check($c['burstObservatory'] === ['subjectSelector' => ['lb-'], 'pingConfig' => ['interval' => '1m']], 'чужая burstObservatory восстановлена');
 
 // --- Несколько узлов: свои порты проверки, порядок = приоритет -------------
 $q = $pac; $q['exits']['b5b6b7b8'] = ['name' => 'DE', 'link' => $link, 'routes' => ['domain:example.org' => 1]];

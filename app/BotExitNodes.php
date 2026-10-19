@@ -28,7 +28,10 @@ trait BotExitNodes
     public const EXIT_PROBE_PORT = 10870;
     public const EXIT_MAX = 8;
     public const EXIT_PROBE_URL = 'https://www.gstatic.com/generate_204';
-    public const EXIT_PROBE_INTERVAL = '30s';
+    // burstObservatory: 3 пробы за 30 с в случайные моменты, окно живости 60 с.
+    // Узел «мёртв», только если в окне отказали ВСЕ пробы (обычная observatory
+    // хоронит после одной потерянной пробы — YouTube дёргался бы на прямой выход).
+    public const EXIT_PING = ['destination' => self::EXIT_PROBE_URL, 'interval' => '10s', 'sampling' => 3, 'timeout' => '5s'];
     public const EXIT_RULESET_DIR = '/logs/exit-rulesets';
     public const EXIT_RULESET_MAX_BYTES = 16 * 1024 * 1024;
     public const EXIT_RULESET_MAX_ENTRIES = 200000;
@@ -146,13 +149,16 @@ trait BotExitNodes
             $c['routing']['balancers'] = array_values(array_filter((array) $c['routing']['balancers'], static fn($b) => !$own($b['tag'] ?? '')));
             if (!$c['routing']['balancers']) unset($c['routing']['balancers']);
         }
-        // observatory в конфиге одна: чужую (из webapp) не трогаем, а только
-        // добавляем в неё свой префикс. Своя — та, где кроме нас никого нет.
-        $foreign = [];
-        if (is_array($c['observatory'] ?? null)) {
-            $foreign = array_values(array_diff((array) ($c['observatory']['subjectSelector'] ?? []), [self::EXIT_TAG]));
-            if (!$foreign) unset($c['observatory']);
-            else $c['observatory']['subjectSelector'] = $foreign;
+        // Проверка живости у ядра одна: при observatory и burstObservatory сразу
+        // работает только burst. Чужую (из webapp) не трогаем — добавляем в неё
+        // свой префикс; своя — та, где кроме нашего префикса ничего нет.
+        $foreign = null;
+        foreach (['burstObservatory', 'observatory'] as $block) {
+            if (!is_array($c[$block] ?? null)) continue;
+            $left = array_values(array_diff((array) ($c[$block]['subjectSelector'] ?? []), [self::EXIT_TAG]));
+            if (!$left) { unset($c[$block]); continue; }
+            $c[$block]['subjectSelector'] = $left;
+            $foreign ??= $block;
         }
 
         $probe = $rules = [];
@@ -195,11 +201,10 @@ trait BotExitNodes
         }
         if ($probe) array_unshift($c['routing']['rules'], ...$probe);
         if ($balanced) {
-            if ($foreign) {
-                $c['observatory']['subjectSelector'] = array_values(array_unique(array_merge($foreign, [self::EXIT_TAG])));
+            if ($foreign !== null) {
+                $c[$foreign]['subjectSelector'] = array_values(array_unique(array_merge($c[$foreign]['subjectSelector'], [self::EXIT_TAG])));
             } else {
-                $c['observatory'] = ['subjectSelector' => [self::EXIT_TAG], 'probeURL' => self::EXIT_PROBE_URL,
-                    'probeInterval' => self::EXIT_PROBE_INTERVAL, 'enableConcurrency' => true];
+                $c['burstObservatory'] = ['subjectSelector' => [self::EXIT_TAG], 'pingConfig' => self::EXIT_PING];
             }
         }
     }
@@ -478,7 +483,11 @@ trait BotExitNodes
         elseif (!empty($sniff['routeOnly'])) $warnings[] = '⚠️ sniffing в режиме routeOnly: на узел уйдёт адрес, полученный на этом сервере, а не домен — видео пойдёт с серверов страны этого сервера.';
         $warp = array_keys(array_filter($p['warplist'] ?? []));
         $both = array_intersect(array_keys(array_filter($node['routes'])), $warp);
-        if ($both) $warnings[] = '⚠️ Есть и в списке WARP (узел важнее): ' . self::esc(implode(', ', array_slice($both, 0, 5)));
+        // Подписки sing-box и Mihomo отправляют домены WARP в WARP сами (через
+        // warpSOCKS5 10.10.0.13), и до правила узла на сервере они доходят уже
+        // с адресом WARP: «узел важнее» верно лишь для клиентов Xray.
+        if ($both) $warnings[] = '⚠️ Есть и в списке WARP: клиенты Xray пойдут через узел, а sing-box и Mihomo — в WARP. Оставьте запись в одном списке: '
+            . self::esc(implode(', ', array_slice($both, 0, 5)));
         $block = array_intersect(array_keys(array_filter($node['routes'])), array_keys(array_filter($p['blocklist'] ?? [])));
         if ($block) $warnings[] = '⚠️ Есть и в блок-листе (блокировка важнее): ' . self::esc(implode(', ', array_slice($block, 0, 5)));
         return $warnings;
@@ -518,6 +527,7 @@ trait BotExitNodes
             'Адрес: <code>' . self::esc($parsed ? $parsed['address'] . ':' . $parsed['port'] : 'ссылка не разбирается') . '</code>'
                 . ($parsed ? ' · ' . self::esc($parsed['outbound']['protocol'] . '/' . $parsed['outbound']['streamSettings']['network'] . '/' . $parsed['outbound']['streamSettings']['security']) : ''),
             "Маршрутов: $routes · наборов правил: $sets · пользователей: $users",
+            $this->exitTrafficLine($id),
             'QUIC к доменам узла: ' . ($node['quic'] === 'block' ? 'блокируется (браузер сразу идёт по TCP через узел)' : 'пропускается'),
             'При отказе узла: напрямую с этого сервера'];
         if (!$users) $text[] = 'ℹ️ Узел пока ни у кого не включён: «Пользователи» или карточка пользователя.';
@@ -536,6 +546,17 @@ trait BotExitNodes
             [['text' => $this->i18n('back'), 'callback_data' => '/exits']],
         ];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    // Счётчики выхода узла в ядре: с последнего запуска Xray, вместе с пробами.
+    public function exitTrafficLine(string $id): string
+    {
+        if (empty($this->exitNodes()[$id]['enabled'])) return 'Трафик через узел: —';
+        $stats = $this->xrayStatCounters();
+        if ($stats === null) return 'Трафик через узел: нет данных';
+        $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
+        return 'Трафик через узел с запуска Xray: ↑' . $this->getBytes($stats[$name . 'uplink'] ?? 0)
+            . ' ↓' . $this->getBytes($stats[$name . 'downlink'] ?? 0);
     }
 
     private function exitPrompt(string $text, string $callback, array $args): void

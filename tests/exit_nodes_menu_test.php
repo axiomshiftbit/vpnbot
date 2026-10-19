@@ -39,6 +39,8 @@ class ExitMenuBot extends Bot
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
     protected function xdriveResolve(string $host): array { return $this->resolved[$host] ?? []; }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->ssh[] = [$service, $cmd]; $this->sshFailed = false; return $this->probeAnswer; }
+    public ?array $counters = [];
+    public function xrayStatCounters(): ?array { return $this->counters; }
     public function exitStatus(): array { return $this->status; }
     public array $status = [];
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screens[] = [$text, is_array($button) ? $button : []]; }
@@ -95,6 +97,11 @@ $check(str_contains($bot->last()[0], 'уже есть') && count($bot->confPac['
 $bot->exitNodeMenu($id);
 [$text, $buttons] = $bot->last();
 $check(str_contains($text, 'fi.example.org:443') && str_contains($text, 'vless/tcp/reality') && str_contains($text, 'ни у кого не включён'), 'карточка: адрес, транспорт, подсказка');
+$bot->counters = ["outbound>>>vpnbot-exit-$id>>>traffic>>>uplink" => 2048, "outbound>>>vpnbot-exit-$id>>>traffic>>>downlink" => 3 * 1024 * 1024];
+$check(str_contains($bot->exitTrafficLine($id), '↑') && str_contains($bot->exitTrafficLine($id), '3'), 'трафик через узел');
+$bot->counters = null;
+$check($bot->exitTrafficLine($id) === 'Трафик через узел: нет данных', 'трафик: нет данных');
+$bot->counters = [];
 foreach (['/exitCheck', '/exitRefresh', '/exitToggle', '/exitQuic', '/exitRoutes', '/exitSets', '/exitUsers', '/exitName', '/exitLink', '/exitDel'] as $cmd) {
     $check((bool) array_filter(array_keys($bot->callbacks()), static fn($c) => str_starts_with($c, "$cmd $id")), 'кнопка ' . $cmd);
 }
@@ -182,7 +189,7 @@ $check(isset($bot->callbacks()["/exitDelYes $id"]), 'удаление спраш
 $bot->exitDelete($id, true);
 $check(empty($bot->confPac['exits']) && !array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => isset($c['exit'])), 'удаление: узел и флаги пользователей');
 $check(!array_filter($bot->confXray['routing']['rules'], static fn($r) => str_starts_with((string) ($r['ruleTag'] ?? ''), 'vpnbot:exit:'))
-    && !isset($bot->confXray['routing']['balancers']) && !isset($bot->confXray['observatory']), 'удаление: в конфиге ничего');
+    && !isset($bot->confXray['routing']['balancers']) && !isset($bot->confXray['observatory']) && !isset($bot->confXray['burstObservatory']), 'удаление: в конфиге ничего');
 
 // --- Ядро не приняло: настройки прежние ----------------------------------------
 $bot->saveExitAdd($link);
