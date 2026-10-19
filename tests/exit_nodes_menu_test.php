@@ -252,6 +252,27 @@ $check(!isset($bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex][
 $bot->exitUsersMenu($id, 0);
 $check(!str_contains(json_encode($bot->last()[1], JSON_UNESCAPED_UNICODE), 'node-example'), 'служебная учётка не в списке пользователей узла');
 
+// --- Обновление набора: новое содержимое сначала проверяет ядро -------------
+$sets = new class extends ExitMenuBot {
+    public string $dir = ''; public string $binary = 'BIN'; public bool $coreOk = true; public array $validated = [];
+    public function exitRulesetFile(string $key): string { return $this->dir . '/' . substr(hash('sha256', $key), 0, 24) . '.json'; }
+    protected function exitRulesetDownload(string $url): ?string { return $this->binary; }
+    public function validateXrayConfig(array $config, string $binary = 'xray'): bool { $this->validated[] = $config; return $this->coreOk; }
+};
+$sets->dir = sys_get_temp_dir() . '/exit-sets-' . getmypid();
+@mkdir($sets->dir, 0700);
+$url = 'https://raw.example/geo/video.srs';
+$sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_suffix' => ['video.example']]]]);
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'] && count($sets->validated) === 1
+    && ($sets->validated[0]['routing']['rules'][0]['domain'] ?? null) === ['domain:video.example'], 'новый набор проверен ядром и принят');
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && count($sets->validated) === 1, 'то же содержимое ядро повторно не проверяет');
+$sets->binary = 'BIN2'; $sets->coreOk = false;
+$sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_regex' => ['(']]]]);
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'не принят ядром Xray' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'],
+    'набор, который ядро не принимает, не заменяет прежний');
+array_map('unlink', glob($sets->dir . '/*') ?: []);
+@rmdir($sets->dir);
+
 // --- Восстановление из копии: наборы разбираются до сборки конфига ----------
 $restore = new class extends ExitMenuBot {
     public array $order = [];

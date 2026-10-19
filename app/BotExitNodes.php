@@ -441,12 +441,24 @@ trait BotExitNodes
         $binary = self::exitRulesetUrlValid($url) ? $this->exitRulesetDownload($url) : null;
         $entries = $binary === null ? null : $this->exitRulesetConvert($binary, $format, (string) ($set['behavior'] ?? 'domain'));
         $error = $binary === null ? 'не скачался' : ($entries === null ? 'не разобран' : (!$entries ? 'пустой' : ''));
+        // Записи набора попадают в каждую сборку конфига: битая регулярка из
+        // чужого источника сделала бы так, что ядро отвергает любое изменение
+        // Xray. Новое содержимое сначала проверяет выбранное ядро.
+        if ($error === '' && hash('sha256', $binary) !== ($cache['hash'] ?? '') && !$this->exitRulesetCoreAccepts($entries)) $error = 'не принят ядром Xray';
         $cache = ['key' => $url, 'time' => time(), 'error' => $error]
             + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary)] : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '']);
         @mkdir(self::EXIT_RULESET_DIR, 0700, true);
         $file = $this->exitRulesetFile($url);
         if (@file_put_contents("$file.tmp", json_encode($cache, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) !== false) @rename("$file.tmp", $file);
         return $error;
+    }
+
+    public function exitRulesetCoreAccepts(array $entries): bool
+    {
+        $x = $this->listToXrayRules(array_fill_keys($entries, 1));
+        $rules = [];
+        foreach (['domain', 'ip'] as $field) if ($x[$field]) $rules[] = ['type' => 'field', $field => $x[$field], 'outboundTag' => 'direct'];
+        return $this->validateXrayConfig(['outbounds' => [['protocol' => 'freedom', 'tag' => 'direct']], 'routing' => ['rules' => $rules]]);
     }
 
     /** Обновить наборы узла, которым пора (или все при $force); true — записи изменились. */
