@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Какие отпечатки uTLS принимает сервер REALITY каждого ядра.
 
-check.py СЕРТИФИКАТ КЛЮЧ [--server-extra JSON] ЯДРО [ЯДРО…] -- ОТПЕЧАТОК…
+check.py СЕРТИФИКАТ КЛЮЧ [--server-extra JSON] [--no-alpn] ЯДРО [ЯДРО…] -- ОТПЕЧАТОК…
 
 Для каждого ядра: сервер REALITY с локальным сайтом-маской (TLS 1.3) и клиент
 того же ядра с каждым отпечатком. Выход сервера — заглушка с HTTP-ответом:
 код 403 через туннель возможен только после рукопожатия, которое сервер
 признал своим. Внешняя сеть не нужна. Печатает JSON: ядро → отпечаток → bool.
 --server-extra — поля realitySettings сервера, выданные кодом бота (requireMlkem).
+--no-alpn — маска без ALPN: такую Xray 26.10.17+ отвергает (Bot::realityAcksServerName).
 """
 import json, os, re, socket, ssl, subprocess, sys, threading, time
 
@@ -20,6 +21,9 @@ if CORES[:1] == ['--server-extra']:
     with open(CORES[1]) as stream:
         EXTRA = json.load(stream)
     CORES = CORES[2:]
+NO_ALPN = CORES[:1] == ['--no-alpn']
+if NO_ALPN:
+    CORES = CORES[1:]
 UUID, SID, SNI = '11111111-1111-4111-8111-111111111111', 'abcd1234', 'mask.example.test'
 
 
@@ -46,7 +50,8 @@ def mask(port):
     # Без ALPN блок EncryptedExtensions маски пуст, а REALITY 26.10.17+
     # добавляет в свой подтверждение SNI и дополняет его до длины блока
     # маски — места нет, сервер отвергает всех. Сайты и nginx бота с ALPN.
-    context.set_alpn_protocols(['h2', 'http/1.1'])
+    if not NO_ALPN:
+        context.set_alpn_protocols(['h2', 'http/1.1'])
     server = socket.socket()
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(('127.0.0.1', port))

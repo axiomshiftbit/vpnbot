@@ -2046,6 +2046,9 @@ class Bot
             case preg_match('~^/selfFakeDomain$~', $this->input['callback'], $m):
                 $this->selfFakeDomain();
                 break;
+            case preg_match('~^/checkFakeDomain$~', $this->input['callback'], $m):
+                $this->checkFakeDomain();
+                break;
             case preg_match('~^/include (\w+)$~', $this->input['callback'], $m):
                 $this->include($m[1]);
                 break;
@@ -6622,6 +6625,7 @@ NFT;
             'backfillSubTokens',
             'checkRelayHealth',
             'checkXrayCore',
+            'checkRealityMask',
             'warmGeoCache',
             'refreshMenuStatusCache',
             'refreshMenuVersionsCache',
@@ -26758,6 +26762,169 @@ DNS-over-HTTPS with IP:
             && version_compare($match[1], '26.9.8', '>=');
     }
 
+    // Сайт-маска REALITY. Библиотека REALITY с 3c98159 (Xray 26.10.17)
+    // подтверждает SNI в EncryptedExtensions и дополняет свою запись до длины
+    // записи маски: её запись — 10 байт сообщения, тип и 16 байт AEAD, то есть
+    // 27 байт после заголовка. Маска без ALPN и без подтверждения SNI
+    // присылает 23, сервер пишет «padding: -4» и отвергает всех клиентов.
+    // Склеенная запись маски (весь ответ одной записью) длиннее заведомо.
+    public const REALITY_MASK_MIN_RECORD = 27;
+    // Результат проверки: устойчивый держим 6 часов, сбой связи — 10 минут.
+    public const REALITY_MASK_TTL   = 21600;
+    public const REALITY_MASK_RETRY = 600;
+    protected const REALITY_MASK_FILE = '/logs/reality_mask.json';
+
+    // Требует ли ядро от маски непустого EncryptedExtensions. Правило по дате
+    // библиотеки REALITY в бинаре, как в realityRequiresMlkem(); у форка со
+    // своей копией REALITY дата — от исходной версии (26.10.13: 8cdf7bf).
+    public function realityAcksServerName(): bool
+    {
+        $probe = $this->xrayCoreProbe();
+        if (!$probe['ok'] || ($probe['running'] !== '' && $probe['running'] !== $probe['active'])) {
+            return false;
+        }
+        if (preg_match('~^v0\.0\.0-(\d{14})-[0-9a-f]+$~D', $probe['reality'] ?? '', $build)) {
+            return strcmp($build[1], '20260921001439') >= 0;
+        }
+        return $probe['active'] === 'origin'
+            && preg_match('~Xray\s+v?(\d+\.\d+\.\d+)~i', $probe['version'], $match)
+            && version_compare($match[1], '26.10.17', '>=');
+    }
+
+    // Адрес и SNI маски из рабочего конфига; ['', ''] — проверять нечего.
+    public function realityMaskTarget(?array $x = null): array
+    {
+        $x  = $x ?? $this->getXray();
+        $rs = $x['inbounds'][0]['streamSettings']['realitySettings'] ?? [];
+        $target = (string) ($rs['target'] ?? $rs['dest'] ?? '');
+        $sni    = (string) ($rs['serverNames'][0] ?? '');
+        if (!preg_match('~^[A-Za-z0-9.-]+:\d{1,5}$~D', $target) || !$this->isHostname($sni)) {
+            return ['', ''];
+        }
+        return [$target, $sni];
+    }
+
+    // Команда пробы: обычное приветствие с ALPN, как у браузерных отпечатков.
+    // -msg печатает заголовки записей; длина первой зашифрованной записи и
+    // есть то, что сервер REALITY повторяет. grep оставляет нужные строки.
+    public static function realityMaskCommand(string $target, string $sni): string
+    {
+        return 'timeout 10 openssl s_client -connect ' . escapeshellarg($target)
+            . ' -servername ' . escapeshellarg($sni) . ' -alpn h2,http/1.1 -msg </dev/null 2>&1'
+            . " | grep -E -A1 '^<<< .*RecordHeader|^New, |^ALPN protocol|^No ALPN|errno=|:error:' | head -n 80";
+    }
+
+    // Разбор вывода пробы: ok, short (ядро 26.10.17+ маску отвергнет), tls12
+    // (REALITY с маской без TLS 1.3 не работает ни на каком ядре), fail.
+    public static function realityMaskVerdict(string $out): array
+    {
+        $alpn = preg_match('~^ALPN protocol: (\S+)~m', $out, $m) ? $m[1] : '';
+        if (!preg_match('~^New, (TLSv1\.[0-3]),~m', $out, $m)) {
+            $reason = match (true) {
+                trim($out) === ''                    => 'timeout',
+                str_contains($out, 'BIO_lookup')     => 'DNS',
+                str_contains($out, 'errno=111')      => 'connection refused',
+                default                              => 'TLS handshake',
+            };
+            return ['status' => 'fail', 'reason' => $reason, 'alpn' => '', 'record' => 0];
+        }
+        if ($m[1] !== 'TLSv1.3') {
+            return ['status' => 'tls12', 'reason' => $m[1], 'alpn' => $alpn, 'record' => 0];
+        }
+        if (!preg_match('~^<<< [^\n]*RecordHeader[^\n]*\n\s*17 03 03 ([0-9a-f]{2}) ([0-9a-f]{2})~mi', $out, $r)) {
+            return ['status' => 'fail', 'reason' => 'TLS handshake', 'alpn' => $alpn, 'record' => 0];
+        }
+        $record = (int) hexdec($r[1] . $r[2]);
+        return [
+            'status' => $record >= self::REALITY_MASK_MIN_RECORD ? 'ok' : 'short',
+            'reason' => '',
+            'alpn'   => $alpn,
+            'record' => $record,
+        ];
+    }
+
+    // Проба из контейнера xr — тем же путём, которым к маске ходит REALITY.
+    public function realityMaskProbe(string $target, string $sni): array
+    {
+        $out = (string) $this->ssh(self::realityMaskCommand($target, $sni), 'xr');
+        if ($this->sshFailed) {
+            return ['status' => 'error', 'reason' => 'ssh', 'alpn' => '', 'record' => 0];
+        }
+        return self::realityMaskVerdict($out);
+    }
+
+    // Последний результат для текущих адреса и SNI маски; null — его нет.
+    public function realityMaskCached(?array $x = null): ?array
+    {
+        [$target, $sni] = $this->realityMaskTarget($x);
+        if ($target === '' || !is_file(static::REALITY_MASK_FILE)) {
+            return null;
+        }
+        $c = json_decode((string) @file_get_contents(static::REALITY_MASK_FILE), true);
+        if (!is_array($c) || ($c['target'] ?? '') !== $target || ($c['sni'] ?? '') !== $sni) {
+            return null;
+        }
+        return $c;
+    }
+
+    // Проверить маску, если результата нет или он устарел ($fresh — всегда).
+    public function realityMaskCheck(bool $fresh = false): ?array
+    {
+        $x = $this->getXray();
+        [$target, $sni] = $this->realityMaskTarget($x);
+        if ($target === '') {
+            return null;
+        }
+        $c = $this->realityMaskCached($x);
+        if (!$fresh && $c !== null) {
+            $ttl = in_array($c['status'] ?? '', ['ok', 'short', 'tls12'], true) ? self::REALITY_MASK_TTL : self::REALITY_MASK_RETRY;
+            if (time() - (int) ($c['ts'] ?? 0) < $ttl) {
+                return $c;
+            }
+        }
+        $r = $this->realityMaskProbe($target, $sni) + ['target' => $target, 'sni' => $sni, 'ts' => time()];
+        if (@file_put_contents(static::REALITY_MASK_FILE, json_encode($r), LOCK_EX) === false) {
+            error_log('realityMaskCheck: cannot write ' . static::REALITY_MASK_FILE);
+        }
+        return $r;
+    }
+
+    // Cron: маска могла перестать отвечать с ALPN или стать недоступной.
+    public function checkRealityMask(): void
+    {
+        if (($this->getPacConf()['transport'] ?? '') === 'Reality') {
+            $this->realityMaskCheck();
+        }
+    }
+
+    // Предупреждения о маске для меню Xray; только по сохранённому результату.
+    public function realityMaskWarnings(?array $r = null): array
+    {
+        $r = $r ?? $this->realityMaskCached();
+        $domain = htmlspecialchars((string) ($r['sni'] ?? ''), ENT_QUOTES);
+        return match ($r['status'] ?? '') {
+            'short' => [sprintf($this->i18n($this->realityAcksServerName() ? 'reality mask short now' : 'reality mask short'), $domain)],
+            'tls12' => [sprintf($this->i18n('reality mask tls12'), $domain)],
+            'fail'  => [sprintf($this->i18n('reality mask fail'), $domain, htmlspecialchars((string) ($r['reason'] ?? ''), ENT_QUOTES))],
+            default => [],
+        };
+    }
+
+    // Кнопка «проверить»: проба сразу, итог во всплывающем окне и в меню.
+    public function checkFakeDomain()
+    {
+        $r = $this->realityMaskCheck(true);
+        $warnings = $r === null ? [] : $this->realityMaskWarnings($r);
+        $text = match (true) {
+            $r === null                     => 'fake domain: ?',
+            ($r['status'] ?? '') === 'error' => 'fake domain: ? (ssh)',
+            (bool) $warnings                => '⚠ ' . html_entity_decode(strip_tags($warnings[0]), ENT_QUOTES),
+            default                         => '✅ TLS 1.3, ALPN ' . (($r['alpn'] ?? '') ?: '—'),
+        };
+        $this->answer($this->input['callback_id'], mb_substr($text, 0, 200), true);
+        $this->xray();
+    }
+
     public function subscriptionCompatibilityError(array $xr, array $pac, string $type): string
     {
         $encryption = VlessEncryption::client($xr, $pac);
@@ -27392,7 +27559,10 @@ DNS-over-HTTPS with IP:
         $p      = $this->getPacConf();
         $text[] = "Menu -> " . $this->i18n('xray');
         if (!empty($c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0])) {
-            $text[] = "fake domain: <code>{$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}</code>";
+            // Итог проверки маски — из кеша (checkRealityMask()), без пробы.
+            $mask = ($p['transport'] ?? '') === 'Reality' ? $this->realityMaskCached($c) : null;
+            $text[] = "fake domain: <code>{$c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]}</code>"
+                . (($mask['status'] ?? '') === 'ok' ? ' · ALPN ' . htmlspecialchars(($mask['alpn'] ?? '') ?: '—', ENT_QUOTES) : '');
         }
         $xrayVersion = $this->getXrayVersion();
         $text[] = 'xray version: ' . ($xrayVersion !== '' ? "<code>$xrayVersion</code>" : '?');
@@ -27414,7 +27584,7 @@ DNS-over-HTTPS with IP:
             $text[] = $this->i18n('xhttp singbox warn');
         }
         if (($p['transport'] ?? '') === 'Reality') {
-            foreach ($this->fingerprintWarnings() as $warning) {
+            foreach (array_merge($this->realityMaskWarnings($mask ?? null), $this->fingerprintWarnings()) as $warning) {
                 $text[] = '⚠ ' . $warning;
             }
             if ($this->realityRequiresMlkem()) {
@@ -27575,6 +27745,10 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => $this->i18n('selfFakeDomain'),
                     'callback_data' => "/selfFakeDomain",
+                ],
+                [
+                    'text'          => '🔍 ' . $this->i18n('check fake domain'),
+                    'callback_data' => "/checkFakeDomain",
                 ],
             ];
             $data[] = [
@@ -33924,6 +34098,8 @@ DNS-over-HTTPS with IP:
         $this->setPacConf($p);
         $this->restartXray($c);
         $this->setUpstreamDomain($domain);
+        // Сразу проверить новую маску: меню ниже покажет предупреждение.
+        $this->realityMaskCheck(true);
         $this->xray();
     }
 

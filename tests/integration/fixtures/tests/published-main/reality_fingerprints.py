@@ -6,7 +6,7 @@ Xray 26.9.8 сервер отвергает ClientHello без X25519MLKEM768, �
 «не тем» отпечатком молча получает сайт-маску: такое изменение в очередном
 обновлении ядра должно всплыть в сборке, а не у пользователей. Проверка идёт в
 одноразовом контейнере без сети."""
-import json,os,pathlib,re,shutil,subprocess
+import json,os,pathlib,re,shutil,subprocess,time
 os.umask(0o077);ROOT=pathlib.Path('/opt/vpnbot-hosted-ci');R=ROOT/'stand';O=R/'results/reality-fingerprints';O.mkdir(mode=0o700,exist_ok=True);results=[]
 NAME='vpnbot-ci-retain-reality';CORES={'main':'xray','slot2':'xray-2','slot3':'xray-3','fork':'xray-smux'}
 def run(*a,timeout=60):return subprocess.run(list(map(str,a)),capture_output=True,text=True,timeout=timeout)
@@ -17,6 +17,7 @@ $b=new class extends Bot{public array $probe=[];public array $conf=[];public fun
 public function xrayCoreProbe(bool $fresh=false):array{return $this->probe;}public function getPacConf(){return $this->conf;}};
 $b->probe=$in['probe']??[];$b->conf=$in['pac'];
 if(isset($in['reality'])){$rs=$in['reality'];$b->ensureRealityRequireMlkem($rs,$in['pac']);echo json_encode($rs);}
+elseif(!empty($in['acks']))echo json_encode($b->realityAcksServerName());
 else echo json_encode($b->realityRequiresMlkem());'''
 def bot(data):
  r=run('docker','exec','php-audit','php','-r',PHP,'--',json.dumps(data));r.check_returncode();return json.loads(r.stdout)
@@ -58,6 +59,33 @@ try:
   # (тогда бот перестанет предупреждать о них). random проходит через раз.
   newer=sorted(fp for fp,ok in accepted.items() if ok and requires and fp not in required and not fp.startswith('random'))
   if newer:print('NOTICE %s (ML-KEM) принимает и %s — проверьте REALITY_FINGERPRINTS'%(slot,', '.join(newer)),flush=True)
+ # Маска без ALPN: Xray 26.10.17+ отвергает всех клиентов (подтверждение SNI
+ # не помещается в запись маски). Бот предупреждает по realityAcksServerName —
+ # правило обязано совпасть с поведением каждого ядра.
+ r=run('docker','run','--rm','--name',NAME,'--network','none','--entrypoint','python3','-v',str(work)+':/cores:ro','-v',str(ROOT/'reality-cores')+':/lab:ro',image,
+  '/lab/check.py','/cores/cert.pem','/cores/key.pem','--no-alpn',*['/cores/'+b for b in CORES.values()],'--','chrome',timeout=900)
+ (O/'output-no-alpn.log').write_text(r.stdout+r.stderr)
+ bare=json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode==0 and r.stdout.strip() else {}
+ (O/'accepted-no-alpn.json').write_text(json.dumps(bare,indent=2))
+ for slot,binary in CORES.items():
+  ok=bare.get(binary,{}).get('accepted',{}).get('chrome')
+  acks=bot({'probe':probe(work/binary,report.get(binary,{}).get('version',''),slot),'pac':{},'acks':1})
+  check('%s-no-alpn-mask-bot-rule-matches-core'%slot,ok is not None and acks==(ok is False))
+ # Проба маски самим ботом: его ssh в контейнер xr, openssl и grep образа xr.
+ # Две маски внутри xray-audit (с ALPN и без) и nginx бота («steal from yourself»).
+ for name in ('key.pem','cert.pem'):run('docker','cp',work/name,'xray-audit:/tmp/mask-'+name).check_returncode()
+ for port,alpn in ((27451,['-alpn','h2,http/1.1']),(27452,[])):
+  run('docker','exec','-d','xray-audit','openssl','s_server','-accept','127.0.0.1:%d'%port,'-cert','/tmp/mask-cert.pem','-key','/tmp/mask-key.pem','-tls1_3','-www','-quiet',*alpn).check_returncode()
+ time.sleep(1)
+ MASK="""require '/app/config.php';require '/app/bot.php';require '/app/i18n.php';$b=new Bot($c['key'],$i);
+$d=(string)($b->getPacConf()['domain']??'');$out=[];
+foreach([['127.0.0.1:27451','mask.example.test'],['127.0.0.1:27452','mask.example.test'],['10.10.1.2:443',$d]] as [$t,$s])$out[]=$b->realityMaskProbe($t,$s)+['sni'=>$s];
+echo json_encode($out);"""
+ r=run('docker','exec','php-audit','php','-r',MASK,timeout=120);(O/'bot-mask-probe.json').write_text(r.stdout+r.stderr)
+ masks=json.loads(r.stdout) if r.returncode==0 and r.stdout.strip().startswith('[') else [{},{},{}]
+ check('bot-probe-mask-alpn-ok',masks[0].get('status')=='ok' and masks[0].get('alpn')=='h2')
+ check('bot-probe-mask-no-alpn-short',masks[1].get('status')=='short' and masks[1].get('record')==23)
+ check('bot-probe-self-nginx-ok',masks[2].get('sni')!='' and masks[2].get('status')=='ok' and masks[2].get('alpn')=='h2')
  # Форк 26.10.13+: requireMlkem, выставленный кодом бота, — сервер ведёт себя как апстрим.
  minimum=re.search(r"REALITY_REQUIRE_MLKEM_FORK_MIN\s*=\s*'([0-9.]+)'",source).group(1)
  forkv=re.search(r'Xray\s+v?([0-9.]+)',report.get(CORES['fork'],{}).get('version',''))
@@ -76,6 +104,7 @@ try:
   probe_fork=probe(work/CORES['fork'],report[CORES['fork']]['version'],'fork')
   check('fork-requireMlkem-bot-rule',bot({'probe':probe_fork,'pac':pac}) is True)
 finally:
+ run('docker','exec','xray-audit','sh','-c','pkill -f "[s]_server -accept 127.0.0.1:2745"; rm -f /tmp/mask-cert.pem /tmp/mask-key.pem')
  run('docker','rm','-f',NAME)
  shutil.rmtree(work,ignore_errors=True)
 print(json.dumps({'passed':sum(x['passed'] for x in results),'total':len(results)}))
