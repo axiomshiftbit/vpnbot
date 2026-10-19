@@ -1,7 +1,7 @@
 ARG MASQUE_GO_VERSION=1.27.2
 FROM golang:${MASQUE_GO_VERSION}-alpine AS build
-ARG MASQUE_XRAY_VERSION=v26.9.30
-ARG MASQUE_SOURCE_SHA256=85162fa61eb6d1adc9199afff7b41299e69dedd094907e9c56ef665c236b3ef0
+ARG MASQUE_XRAY_VERSION=v26.10.17
+ARG MASQUE_SOURCE_SHA256=62fb186017bc29c3d10950d7a1a61fd40aff0cb92ba2b77363e9004455f6bf89
 RUN apk add --no-cache ca-certificates curl tar patch
 WORKDIR /build
 RUN curl -fL --retry 3 "https://codeload.github.com/XTLS/Xray-core/tar.gz/refs/tags/${MASQUE_XRAY_VERSION}" -o source.tar.gz \
@@ -9,16 +9,14 @@ RUN curl -fL --retry 3 "https://codeload.github.com/XTLS/Xray-core/tar.gz/refs/t
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY masque-isolation.patch /masque-isolation.patch
 COPY go-retry.sh /build-tools/go-retry.sh
-# CVE-2026-78669: ядро этой версии закрепляет golang.org/x/net v0.58.0.
 RUN patch -p1 --fuzz=0 < /masque-isolation.patch \
-    && sh /build-tools/go-retry.sh go get golang.org/x/net@v0.60.0 \
     && sh /build-tools/go-retry.sh go test ./proxy/masque ./transport/internet/finalmask/noise \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -buildvcs=false \
        -ldflags '-s -w -X github.com/xtls/xray-core/core.build=vpnbot-masque.1' -o /xray ./main
 
 FROM alpine:3.24
-ARG MASQUE_XRAY_VERSION=v26.9.30
-ARG MASQUE_SOURCE_SHA256=85162fa61eb6d1adc9199afff7b41299e69dedd094907e9c56ef665c236b3ef0
+ARG MASQUE_XRAY_VERSION=v26.10.17
+ARG MASQUE_SOURCE_SHA256=62fb186017bc29c3d10950d7a1a61fd40aff0cb92ba2b77363e9004455f6bf89
 LABEL io.vpnbot.masque.version=$MASQUE_XRAY_VERSION io.vpnbot.masque.source-sha256=$MASQUE_SOURCE_SHA256
 RUN apk upgrade --no-cache \
     && apk add --no-cache ca-certificates python3 openssl

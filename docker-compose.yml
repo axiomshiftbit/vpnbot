@@ -1181,8 +1181,8 @@ services:
             dockerfile: masque.dockerfile
             args:
                 MASQUE_GO_VERSION: ${MASQUE_GO_VERSION:-1.27.2}
-                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.9.30}
-                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-85162fa61eb6d1adc9199afff7b41299e69dedd094907e9c56ef665c236b3ef0}
+                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.10.17}
+                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-62fb186017bc29c3d10950d7a1a61fd40aff0cb92ba2b77363e9004455f6bf89}
         environment:
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
