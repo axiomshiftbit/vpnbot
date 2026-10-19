@@ -316,7 +316,7 @@ jobs:
           # Сервер — Alpine, ядро и модули собраны под musl из закреплённых исходников.
           docker run --rm --network=none --entrypoint sh "$image" -ec '
             grep -Ex "3\\.24\\.[0-9]+" /etc/alpine-release
-            test "$(/opt/snolc/runtime/bin/snolc --version)" = "snolc 0.0.4+vpnbot.3 wire 1"
+            test "$(/opt/snolc/runtime/bin/snolc --version)" = "snolc 0.0.4+vpnbot.4 wire 1"
             for module in adapter-direct carrier-ssh protection-noise policy-local; do
               grep -qx "\"target\" = \"x86_64-unknown-linux-musl\"" "/opt/snolc/runtime/packages/locks/owenewans/$module/0.0.4.toml"
             done
@@ -334,7 +334,7 @@ jobs:
           import hashlib, json, os, subprocess, sys, zipfile
           with zipfile.ZipFile(sys.argv[1]) as bundle:
               manifest = json.loads(bundle.read('manifest.json'))
-              assert manifest['version'] == '0.0.4+vpnbot.3'
+              assert manifest['version'] == '0.0.4+vpnbot.4'
               for name, digest in manifest['sha256'].items():
                   assert hashlib.sha256(bundle.read(name)).hexdigest() == digest, name
               # Ядро и все модули клиента — из исходников, под glibc.
@@ -348,7 +348,7 @@ jobs:
               stream.write(core)
           os.chmod(sys.argv[2], 0o700)
           version = subprocess.run([sys.argv[2], '--version'], capture_output=True, check=True, timeout=10).stdout.strip()
-          assert version == b'snolc 0.0.4+vpnbot.3 wire 1', version
+          assert version == b'snolc 0.0.4+vpnbot.4 wire 1', version
           print('snolc client:', version.decode())
           PY
 

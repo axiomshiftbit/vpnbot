@@ -15,6 +15,8 @@ REGRESSIONS = {
     },
     ('snolc-core.patch', 'crates/snolc/src/mux.rs'): {
         'vpnbot_open_precedes_data_after_another_stream_unblocks_the_writer',  # vpnbot.3: порядок кадров
+        'vpnbot_dropped_stream_releases_receive_window',  # vpnbot.4: данные закрытого потока занимали окно
+        'vpnbot_slow_reader_does_not_reset_session',  # vpnbot.4: медленный читатель рвал сессию
     },
     ('snolc-core.patch', 'crates/snolc/src/stack.rs'): {
         'vpnbot_regression_udp_peer_drop_releases_policy_flow',  # vpnbot.1: UDP после закрытия SOCKS5

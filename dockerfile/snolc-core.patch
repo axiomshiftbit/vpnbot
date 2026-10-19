@@ -55,13 +55,10 @@
              Poll::Ready(Err(_)) => SnolIoResult::error(snolc_abi::STATUS_IO),
              Poll::Pending => SnolIoResult::pending(),
          }
-@@ -598,6 +612,53 @@
-             )
-         };
-         assert_eq!(result, SnolIoResult::progress(0));
-+    }
-+
-+    #[test]
+@@ -601,6 +615,53 @@
+     }
+ 
+     #[test]
 +    fn vpnbot_regression_datagram_waits_for_flush_without_duplicate_frames() {
 +        struct BufferedStream {
 +            pending: Vec<u8>,
@@ -106,9 +103,12 @@
 +            assert_eq!(io.stream.delivered, expected);
 +            assert!(io.stream.pending.is_empty());
 +        }
-     }
-
-     #[test]
++    }
++
++    #[test]
+     fn mux_datagram_frames_zero_and_maximum_payloads() {
+         let payload = vec![9; crate::wire::MAX_UDP_PAYLOAD];
+         let mut encoded = vec![0, 0];
 --- a/crates/snolc/src/engine.rs
 +++ b/crates/snolc/src/engine.rs
 @@ -19,7 +19,7 @@
@@ -120,11 +120,10 @@
  use crate::logging::{FileLogger, LogError};
  use crate::mux::{MuxError, MuxSession, MuxStream, OpenFlowFuture};
  use crate::stack::{
-@@ -32,6 +32,28 @@
- const MODULE_POLL_INTERVAL: Duration = Duration::ZERO;
+@@ -33,6 +33,28 @@
  static OPERATION_NEXT: AtomicU64 = AtomicU64::new(1);
  type ContextMap = HashMap<(u64, Vec<u8>), Vec<u8>>;
-+
+ 
 +#[derive(Default)]
 +struct IdleBackoff {
 +    delay: Duration,
@@ -146,9 +145,10 @@
 +        self.delay
 +    }
 +}
-
++
  pub type ResponseFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, EngineError>> + Send>>;
  type ControlSender = oneshot::Sender<Result<Vec<u8>, EngineError>>;
+ 
 @@ -431,7 +453,7 @@
              log_errors,
              pending_controls: VecDeque::new(),
@@ -161,7 +161,7 @@
 @@ -499,7 +521,9 @@
              .collect();
          self.emit(Event::Lifecycle(Lifecycle::Running));
-
+ 
 +        let mut idle_backoff = IdleBackoff::default();
          loop {
 +            take_io_progress();
@@ -188,11 +188,11 @@
 +                }
              }
          }
-
+ 
 @@ -706,7 +736,7 @@
          }
      }
-
+ 
 -    fn poll_tunnels(&mut self, tunnels: &mut [TunnelRuntime], stack: &SharedStackBridge) {
 +    fn poll_tunnels(&mut self, tunnels: &mut [TunnelRuntime], stack: &SharedStackBridge) -> bool {
          let mut established = 0;
@@ -211,11 +211,11 @@
          }
 +        progressed
      }
-
+ 
      fn drain_module_events(&mut self) {
 @@ -942,13 +974,6 @@
  }
-
+ 
  impl TunnelRuntime {
 -    fn is_idle(&self) -> bool {
 -        match &self.state {
@@ -229,7 +229,7 @@
              Role::Client => Some(Instant::now() + binding.connect_timeout),
 @@ -1152,16 +1177,6 @@
  }
-
+ 
  impl EstablishedSession {
 -    fn is_idle(&self, role: Role) -> bool {
 -        if !self.active.is_empty() {
@@ -247,7 +247,7 @@
 @@ -1223,6 +1238,11 @@
              return Ok(());
          }
-
+ 
 +        // Do not reserve a seventeenth stream and reset the whole session
 +        // while all sixteen available flow slots are still occupied.
 +        if self.active.len() >= binding.yamux.max_streams_per_session - 1 {
@@ -259,7 +259,7 @@
 @@ -1429,6 +1449,10 @@
              });
          }
-
+ 
 +        // Keep established flows alive while the per-session budget is full.
 +        if self.active.len() + self.openings.len() >= binding.yamux.max_streams_per_session - 1 {
 +            return Ok(());
@@ -269,7 +269,7 @@
                  match modules[*adapter].adapter_accept(context) {
 @@ -1760,20 +1784,25 @@
      }
-
+ 
      fn reap_closed(&mut self, modules: &[LoadedModule]) {
 +        // accept/respond futures temporarily own the mux. Retain the closed
 +        // handles until it returns, otherwise their stream reservations leak.
@@ -348,11 +348,10 @@
  use std::ffi::CStr;
  use std::io;
  use std::marker::PhantomData;
-@@ -24,6 +25,20 @@
-     | snolc_abi::CLASS_POLICY;
+@@ -25,6 +26,20 @@
  const MAX_DESCRIPTION: usize = 65_536;
  const MAX_CONFIG_ERROR: usize = 4096;
-+
+ 
 +thread_local! {
 +    // ABI wake callbacks can fire on every poll, even without readable data.
 +    // Only completed transfers count as work for the engine's idle backoff.
@@ -366,9 +365,10 @@
 +pub(crate) fn note_io_progress() {
 +    IO_PROGRESS.with(|progress| progress.set(true));
 +}
-
++
  pub struct LoadedModule {
      descriptor: NonNull<SnolModuleDescriptor>,
+     library: Arc<Library>,
 @@ -1015,6 +1030,9 @@
  fn map_io(result: SnolIoResult, limit: usize, read: bool) -> Poll<io::Result<usize>> {
      match result.tag {
@@ -380,9 +380,9 @@
          }
          snolc_abi::IO_PENDING if result.code == snolc_abi::STATUS_OK && result.count == 0 => {
 @@ -1181,6 +1199,33 @@
-
+ 
      use super::*;
-
+ 
 +    #[test]
 +    fn vpnbot_only_transferred_bytes_keep_the_engine_busy() {
 +        take_io_progress();
@@ -415,7 +415,41 @@
          unsafe { *written = 0 };
 --- a/crates/snolc/src/mux.rs
 +++ b/crates/snolc/src/mux.rs
-@@ -408,6 +408,7 @@
+@@ -29,6 +29,8 @@
+     eof: bool,
+     reader: Option<Waker>,
+     completed_write: usize,
++    // vpnbot: поток закрыт локально — его данные отбрасываются, окно не занимают.
++    dropped: bool,
+ }
+ 
+ struct PendingWrite {
+@@ -65,6 +67,8 @@
+     spare_reads: Vec<Vec<u8>>,
+     controls: VecDeque<(u8, u32)>,
+     closed: bool,
++    // vpnbot: цикл сессии ждёт, пока читатели освободят окно.
++    drive_waker: Option<Waker>,
+ }
+ 
+ pub struct MuxStream<T> {
+@@ -109,6 +113,7 @@
+                 spare_reads: Vec::new(),
+                 controls: VecDeque::new(),
+                 closed: false,
++                drive_waker: None,
+             })),
+             role,
+             policy_open: false,
+@@ -374,6 +379,7 @@
+             eof: false,
+             reader: None,
+             completed_write: 0,
++            dropped: false,
+         });
+         Ok(())
+     }
+@@ -408,6 +414,7 @@
                  result => return result,
              }
          }
@@ -423,7 +457,7 @@
          if self.write.is_none() {
              self.write = Some(PendingWrite {
                  bytes: self.frame(kind, stream, &[]),
-@@ -460,6 +461,9 @@
+@@ -460,6 +467,9 @@
                  Poll::Pending => return Poll::Pending,
              }
          }
@@ -433,11 +467,54 @@
          let length = input.len().min(self.split_send_size);
          self.write = Some(PendingWrite {
              bytes: self.frame(FRAME_DATA, stream, &input[..length]),
-@@ -707,6 +711,14 @@
-                 accepted: 0,
+@@ -528,6 +538,19 @@
+         if frame.kind == FRAME_DATA {
+             let remaining = frame.length - frame.wire_consumed;
+             if frame.bytes.len() != remaining {
++                // vpnbot: протокол без управления потоком. При заполненном окне
++                // не рвать сессию, а не вычитывать канал, пока потребители не
++                // освободят место; кадр своего потока читатель заберёт напрямую.
++                let state = self.streams.get_mut(frame.stream as usize).and_then(Option::as_mut);
++                // Неизвестный поток пропускаем: ниже это ошибка протокола.
++                let live = state.as_ref().is_some_and(|state| !state.dropped);
++                if live && self.received_bytes.saturating_add(remaining) > self.receive_limit {
++                    if let Some(waker) = state.and_then(|state| state.reader.take()) {
++                        waker.wake();
++                    }
++                    self.drive_waker = Some(context.waker().clone());
++                    return Poll::Pending;
++                }
+                 frame.bytes.resize(remaining, 0);
+             }
+         }
+@@ -577,9 +600,7 @@
+             let length =
+                 u32::from_be_bytes(self.read_header[5..9].try_into().expect("size")) as usize;
+             self.read_header_offset = 0;
+-            if length > self.split_send_size
+-                || self.received_bytes.saturating_add(length) > self.receive_limit
+-            {
++            if length > self.split_send_size {
+                 return Poll::Ready(Err(io::Error::new(
+                     io::ErrorKind::InvalidData,
+                     "mux receive limit exceeded",
+@@ -674,6 +695,12 @@
+                     .ok_or_else(|| {
+                         io::Error::new(io::ErrorKind::InvalidData, "unknown mux stream")
+                     })?;
++                if state.dropped {
++                    let mut bytes = frame.bytes;
++                    bytes.clear();
++                    self.spare_reads.push(bytes);
++                    return Ok(());
++                }
+                 self.received_bytes += frame.bytes.len();
+                 state.input.push_back(frame.bytes);
+                 if let Some(waker) = state.reader.take() {
+@@ -708,6 +735,14 @@
              });
          }
-+    }
+     }
 +
 +    fn poll_queued_controls(&mut self, context: &mut Context<'_>) -> Poll<io::Result<()>> {
 +        while !self.controls.is_empty() {
@@ -445,14 +522,51 @@
 +            std::task::ready!(self.poll_flush_write(context))?;
 +        }
 +        Poll::Ready(Ok(()))
-     }
++    }
  }
-
-@@ -920,6 +932,71 @@
-     use super::*;
+ 
+ impl<T> MuxStream<T> {
+@@ -722,10 +757,25 @@
+ 
+ impl<T> Drop for MuxStream<T> {
+     fn drop(&mut self) {
++        let mut connection = self.connection.borrow_mut();
++        // vpnbot: непрочитанное больше никто не заберёт — вернуть окну сессии.
++        let mut released = 0;
++        if let Some(state) = connection.streams.get_mut(self.id as usize).and_then(Option::as_mut) {
++            released = state.input.iter().map(Vec::len).sum::<usize>() - state.offset;
++            state.input.clear();
++            state.offset = 0;
++            state.reader = None;
++            state.dropped = true;
++        }
++        connection.received_bytes -= released;
++        if released != 0
++            && let Some(waker) = connection.drive_waker.take()
++        {
++            waker.wake();
++        }
+         if self.write_closed {
+             return;
+         }
+-        let mut connection = self.connection.borrow_mut();
+         if !connection.closed {
+             connection.controls.push_back((FRAME_FIN, self.id));
+         }
+@@ -766,6 +816,9 @@
+         };
+         if count != 0 {
+             connection.received_bytes -= count;
++            if let Some(waker) = connection.drive_waker.take() {
++                waker.wake();
++            }
+             if let Some(mut bytes) = recycled {
+                 bytes.clear();
+                 connection.spare_reads.push(bytes);
+@@ -921,6 +974,183 @@
      use crate::config::Config;
      use crate::wire::{Destination, OpenStatus};
-+
+ 
 +    struct BlockedWire {
 +        blocked: bool,
 +        sent: Vec<u8>,
@@ -517,18 +631,128 @@
 +        }
 +        assert_ne!(data_frames, 0);
 +    }
-
++
++    // vpnbot: сессия с одним открытым потоком и политикой. Окно приёма —
++    // как у бота (17 потоков, 4456448 байт).
++    async fn vpnbot_session() -> (
++        MuxSession<Async<UnixStream>>,
++        MuxSession<Async<UnixStream>>,
++        MuxStream<Async<UnixStream>>,
++        MuxStream<Async<UnixStream>>,
++    ) {
++        let (left, right) = UnixStream::pair().unwrap();
++        let config = Config::parse(
++            include_str!("../../../config/templates/snolc-server-low-memory.toml"),
++            Path::new("/etc/snolc"),
++        )
++        .unwrap();
++        let mut client = MuxSession::new(Async::new(left).unwrap(), Mode::Client, &config.yamux);
++        let mut server = MuxSession::new(Async::new(right).unwrap(), Mode::Server, &config.yamux);
++        let (client_policy, server_policy) = future::join(
++            client.open_policy("policy-local"),
++            server.accept_policy("policy-local"),
++        )
++        .await;
++        std::mem::forget((client_policy.unwrap(), server_policy.unwrap()));
++        let request = OpenRequest {
++            kind: StreamKind::Tcp,
++            destination: Destination::Domain("example.com".into()),
++            port: 443,
++            metadata: Vec::new(),
++        };
++        let open = client.begin_open_flow_confirmed(request).unwrap();
++        let accept = async {
++            let (_, mut flow) = server.accept_flow().await.unwrap();
++            server
++                .respond_flow(&mut flow, &OpenResponse { status: OpenStatus::Ok, reason: String::new() })
++                .await
++                .unwrap();
++            flow
++        };
++        let (opened, server_flow) = future::join(open, accept).await;
++        (client, server, opened.unwrap().1, server_flow)
++    }
++
++    // Обслуживать сессию клиента заданное время, как цикл ядра; ошибка
++    // сессии — результат.
++    async fn vpnbot_drive(client: &mut MuxSession<Async<UnixStream>>, millis: u64) -> Result<(), MuxError> {
++        let drive = poll_fn(|context| loop {
++            match client.poll_drive(context) {
++                Poll::Ready(Ok(())) => continue,
++                other => return other,
++            }
++        });
++        match future::select(Box::pin(drive), Box::pin(async_io::Timer::after(std::time::Duration::from_millis(millis)))).await {
++            future::Either::Left((result, _)) => result,
++            future::Either::Right(_) => Ok(()),
++        }
++    }
++
++    // Поток закрыт локально, а сервер ещё дослал данные: окно сессии должно
++    // освободиться. Иначе «осиротевшие» байты копятся до receive_limit, и
++    // клиент рвёт всю сессию («mux receive limit exceeded»).
++    #[test]
++    fn vpnbot_dropped_stream_releases_receive_window() {
++        async_io::block_on(async {
++            let (mut client, _server, client_flow, mut server_flow) = vpnbot_session().await;
++            drop(client_flow);
++            let payload = vec![0x5a; 1024 * 1024];
++            let (sent, driven) = future::join(
++                async { server_flow.write_all(&payload).await.and(server_flow.flush().await) },
++                vpnbot_drive(&mut client, 1500),
++            )
++            .await;
++            sent.unwrap();
++            driven.unwrap();
++            assert_eq!(client.connection.borrow().received_bytes, 0, "окно занято данными закрытого потока");
++        });
++    }
++
++    // Потребитель потока медленнее канала: сессия не должна рваться, данные
++    // ждут в канале (обратное давление), а затем доходят без потерь.
++    #[test]
++    fn vpnbot_slow_reader_does_not_reset_session() {
++        async_io::block_on(async {
++            let (mut client, _server, mut client_flow, mut server_flow) = vpnbot_session().await;
++            let payload: Vec<u8> = (0..6 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
++            // Ни одна сторона не должна ждать вечно: отказ теста, а не зависание.
++            let limit = || async_io::Timer::after(std::time::Duration::from_secs(30));
++            let send = async {
++                let write = async { server_flow.write_all(&payload).await.and(server_flow.flush().await) };
++                match future::select(Box::pin(write), Box::pin(limit())).await {
++                    future::Either::Left((result, _)) => result,
++                    future::Either::Right(_) => Err(std::io::Error::other("отправка не завершилась за 30 с")),
++                }
++            };
++            let receive = async {
++                // Читатель просыпается позже, чем канал заполнит окно сессии.
++                let reader = async {
++                    async_io::Timer::after(std::time::Duration::from_millis(1500)).await;
++                    let mut got = vec![0; payload.len()];
++                    client_flow.read_exact(&mut got).await?;
++                    Ok::<_, MuxError>(got)
++                };
++                match future::select(Box::pin(vpnbot_drive(&mut client, 30_000)), Box::pin(reader)).await {
++                    future::Either::Left((Err(error), _)) => Err(error),
++                    future::Either::Left((Ok(()), _)) => Err(MuxError::Closed),
++                    future::Either::Right((got, _)) => got,
++                }
++            };
++            let (sent, got) = future::join(send, receive).await;
++            assert!(got.unwrap() == payload, "данные искажены");
++            sent.unwrap();
++        });
++    }
++
      #[test]
      fn policy_precedes_user_flow() {
+         async_io::block_on(async {
 --- a/crates/snolc/src/stack.rs
 +++ b/crates/snolc/src/stack.rs
-@@ -890,6 +890,16 @@
-
-     fn close(&mut self) -> io::Result<()> {
-         Ok(())
-+    }
-+}
-+
+@@ -893,6 +893,16 @@
+     }
+ }
+ 
 +// Closing either half must wake the other half with a missing-flow error.
 +// Otherwise the retained policy port keeps the UDP lease alive forever.
 +impl Drop for UdpDatagramPort {
@@ -536,12 +760,15 @@
 +        if let Some(bridge) = self.bridge.upgrade() {
 +            let _ = bridge.borrow_mut().close_udp(self.lease.handle);
 +        }
-     }
- }
-
++    }
++}
++
+ impl Drop for UdpFlowLease {
+     fn drop(&mut self) {
+         if let Some(bridge) = self.bridge.upgrade() {
 @@ -1783,7 +1793,10 @@
      }
-
+ 
      fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
 -        if self.stopped {
 +        // smoltcp considers a consumed token a successful send. If the queue
@@ -553,7 +780,7 @@
          Some(BoundedTxToken {
 @@ -2207,6 +2220,16 @@
      }
-
+ 
      #[test]
 +    fn vpnbot_regression_udp_peer_drop_releases_policy_flow() {
 +        let bridge = shared_bridge();
@@ -568,13 +795,10 @@
      fn stopped_device_stops_tcp_exchange() {
          let mut bridge = bridge();
          let flow = bridge.open_tcp(metadata()).unwrap();
-@@ -2261,6 +2284,29 @@
-             DatagramRead::Datagram(4)
-         );
-         assert_eq!(&output, b"four");
-+    }
-+
-+    #[test]
+@@ -2264,6 +2287,29 @@
+     }
+ 
+     #[test]
 +    fn vpnbot_udp_burst_waits_for_device_capacity_without_dropping() {
 +        let text = include_str!("../../../config/templates/snolc-server-low-memory.toml");
 +        let mut config = Config::parse(text, Path::new("/etc/snolc")).unwrap();
@@ -595,9 +819,12 @@
 +            assert!(output.iter().all(|byte| *byte == index as u8));
 +        }
 +        assert_eq!(bridge.device.dropped, 0);
-     }
-
-     #[test]
++    }
++
++    #[test]
+     fn stale_handle_cannot_reach_reused_flow() {
+         let mut bridge = bridge();
+         let first = bridge.open_tcp(metadata()).unwrap();
 @@ -2909,7 +2955,7 @@
          let bridge = shared_bridge();
          let baseline = bridge.managed_bytes();
@@ -623,7 +850,7 @@
              println!(
                  "snolc {} wire {}",
 -                env!("CARGO_PKG_VERSION"),
-+                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.3"),
++                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.4"),
                  snolc::WIRE_VERSION
              );
              Ok(())
