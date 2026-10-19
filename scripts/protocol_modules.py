@@ -163,6 +163,25 @@ def prepare_upstream(root, filename='upstream.conf'):
         raise RuntimeError('upstream changed during migration')
 
 
+def ensure_self_certificate(root):
+    """nginx -t и сам nginx требуют /certs/self_*, а на свежей установке их ещё
+    нет: start_php.sh создаёт пару только при первом запуске php, позже этой
+    проверки. Создаём ту же пару той же командой; php её затем сохраняет."""
+    public, private = root / 'certs/self_public', root / 'certs/self_private'
+    if all(path.is_file() and path.stat().st_size for path in (public, private)): return
+    public.parent.mkdir(parents=True, exist_ok=True)
+    tmp_public, tmp_private = public.with_name('.self_public.new'), private.with_name('.self_private.new')
+    try:
+        subprocess.run(['openssl', 'req', '-newkey', 'rsa:2048', '-sha256', '-nodes', '-x509', '-days', '365',
+                        '-keyout', str(tmp_private), '-out', str(tmp_public),
+                        '-subj', '/C=NN/ST=N/L=N/O=N/CN=' + os.environ.get('IP', '')],
+                       capture_output=True, check=True, timeout=60)
+        os.chmod(tmp_private, 0o600); os.chmod(tmp_public, 0o644)
+        os.replace(tmp_private, private); os.replace(tmp_public, public)
+    finally:
+        for path in (tmp_public, tmp_private): path.unlink(missing_ok=True)
+
+
 def validate_upstream(root, candidate, service='up'):
     # No live service, public port, or SSH is needed during a cold update.
     # Use the exact selected NGINX image and its bind mounts. Static upstream
@@ -494,6 +513,7 @@ def main():
         if sys.argv[2:3] == ["up"]:
             migrate_systemd_stop(root)
             sync_certificates(root, settings(root))
+            ensure_self_certificate(root)
             prepare_upstream(root)
             for filename in ('nginx.conf', 'nginx_default.conf'):
                 prepare_upstream(root, filename)

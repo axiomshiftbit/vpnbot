@@ -28,6 +28,43 @@ if [ -z "$KEY" ]; then
     exit 1
 fi
 
+# Ключ бота уходит в app/config.php внутри PHP-строки в одинарных кавычках и в
+# каждый запрос к Telegram. Пробелы и \r — частый след копирования из Windows и
+# мессенджеров: Telegram отвечает на такой ключ 401, php остаётся unhealthy, и
+# установка падала с невнятным «dependency php failed to start». Значение
+# ключа в сообщениях не печатается.
+normalize_bot_key() {
+    KEY="$(printf '%s' "$KEY" | tr -d ' \t\r\n')"
+    if ! [[ "$KEY" =~ ^[0-9]{5,15}:[A-Za-z0-9_-]{30,64}$ ]]; then
+        echo "ключ бота не похож на токен Telegram (ожидается вид 123456789:AA…): скопируйте его у @BotFather заново" >&2
+        exit 1
+    fi
+}
+
+# getMe до записи config.php: явный отказ Telegram (401) останавливает
+# установку понятным сообщением. Недоступный Telegram — не повод отказывать:
+# бот работает и без него (веб-панель), поэтому только предупреждение.
+# URL с ключом передаётся curl через stdin (-K -), а не аргументом: аргументы
+# видны в ps всем процессам хоста.
+check_bot_key() {
+    local reply
+    if ! reply="$(printf 'url = "%s/bot%s/getMe"\n' "${TELEGRAM_API:-https://api.telegram.org}" "$KEY" \
+            | curl -sS --max-time 15 -K - 2>/dev/null)"; then
+        echo "WARN: Telegram недоступен — ключ бота не проверен; бот запустится и будет ждать Telegram" >&2
+        return 0
+    fi
+    case "$reply" in
+        *'"ok":true'*) echo "ключ бота принят Telegram" ;;
+        *'"error_code":401'*)
+            echo "Telegram отверг ключ бота (401 Unauthorized): проверьте токен у @BotFather (/token) и запустите установку снова" >&2
+            exit 1
+            ;;
+        *) echo "WARN: неожиданный ответ Telegram на getMe — ключ бота не проверен" >&2 ;;
+    esac
+}
+
+normalize_bot_key
+
 case "$BRANCH" in
     master|dev) ;;
     *)
@@ -340,6 +377,7 @@ if [ -s ./app/config.php ]; then
     # Здесь же бот хранит администратора: перезапись сбросила бы привязку.
     echo "app/config.php already exists — kept as is (edit it to change the bot key)"
 else
+    check_bot_key
     cat > ./app/config.php <<EOF
 <?php
 

@@ -52,6 +52,38 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(inode, path.stat().st_ino)
             self.assertEqual(before, (root/'update/nginx.before-protocols.conf').read_text())
 
+    def test_fresh_install_creates_self_certificate_before_nginx_check(self):
+        # Чистая установка: nginx -t в compose up шёл раньше, чем php создавал
+        # /certs/self_*, и make start отказывал на «cannot load certificate».
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root/'certs').mkdir()
+            with patch.dict(os.environ, {'IP': '203.0.113.7'}):
+                modules.ensure_self_certificate(root)
+            public, private = root/'certs/self_public', root/'certs/self_private'
+            self.assertEqual((0o644, 0o600), (public.stat().st_mode & 0o777, private.stat().st_mode & 0o777))
+            subject = subprocess.run(['openssl', 'x509', '-noout', '-subject', '-in', str(public)],
+                                     capture_output=True, text=True, check=True).stdout
+            self.assertIn('CN=203.0.113.7', subject.replace(' ', ''))
+            match = subprocess.run(['sh', '-c', 'openssl x509 -noout -pubkey -in "$1" | cmp -s - "$2"', 'sh', str(public), '/dev/stdin'],
+                                   input=subprocess.run(['openssl', 'pkey', '-pubout', '-in', str(private)], capture_output=True, check=True).stdout)
+            self.assertEqual(0, match.returncode, 'ключ и сертификат из одной пары')
+            before = (public.read_bytes(), private.read_bytes())
+            modules.ensure_self_certificate(root)
+            self.assertEqual(before, (public.read_bytes(), private.read_bytes()), 'готовая пара не перевыпускается')
+            private.write_bytes(b'')
+            modules.ensure_self_certificate(root)
+            self.assertNotEqual(before[0], public.read_bytes(), 'пустой ключ — новая пара')
+            self.assertEqual(['self_private', 'self_public'], sorted(p.name for p in (root/'certs').iterdir()))
+        calls = []
+        with patch.object(modules, 'migrate_systemd_stop'), patch.object(modules, 'sync_certificates'), \
+                patch.object(modules, 'settings'), patch.object(modules, 'compose') as compose, \
+                patch.object(modules, 'ensure_self_certificate', side_effect=lambda root: calls.append('cert')), \
+                patch.object(modules, 'prepare_upstream', side_effect=lambda root, name='upstream.conf': calls.append(name)), \
+                patch.object(modules.sys, 'argv', ['protocol_modules.py', 'compose', 'up', '-d']):
+            compose.return_value.returncode = 0
+            modules.main()
+        self.assertEqual(['cert', 'upstream.conf', 'nginx.conf', 'nginx_default.conf'], calls)
+
     def test_optional_ss_migration_covers_inactive_domain_template(self):
         before = ('#-domain\n    # server {\n    #     location /v2ray {\n'
                   '    #         proxy_pass http://ss:8388/;\n    #     }\n    # }\n#-domain\n'
