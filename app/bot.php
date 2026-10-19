@@ -764,13 +764,17 @@ class Bot
             case preg_match('~^/exitCheckAll$~', $this->input['callback'], $m):
                 $this->exitCheckAll();
                 break;
-            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|Yt|Sets|SetAdd) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|Yt|Sets|SetAdd|Auto) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 match ($m[1]) {
+                    'Auto' => $this->exitAuto($m[2]),
                     'Check' => $this->exitCheck($m[2]), 'Refresh' => $this->exitRefresh($m[2]), 'Toggle' => $this->exitToggle($m[2]),
                     'Quic' => $this->exitQuic($m[2]), 'Name' => $this->exitNamePrompt($m[2]), 'Link' => $this->exitLinkPrompt($m[2]),
                     'Del' => $this->exitDelete($m[2]), 'DelYes' => $this->exitDelete($m[2], true), 'RtAdd' => $this->exitRouteAddPrompt($m[2]),
                     'Yt' => $this->exitYoutube($m[2]), 'Sets' => $this->exitSetsMenu($m[2]), 'SetAdd' => $this->exitSetAddPrompt($m[2]),
                 };
+                break;
+            case preg_match('~^/exitCopy ([a-f0-9]{8}) (warp|move|pac)$~', $this->input['callback'], $m):
+                $this->exitCopyRoutes($m[1], $m[2]);
                 break;
             case preg_match('~^/exitRoutes ([a-f0-9]{8}) (\d{1,5})$~', $this->input['callback'], $m):
                 $this->exitRoutesMenu($m[1], (int) $m[2]);
@@ -26081,7 +26085,7 @@ DNS-over-HTTPS with IP:
                 'Reality'     => ['id' => $uuid, 'flow' => 'xtls-rprx-vision', 'email' => $user[0], 'subtoken' => $stok],
                 'trojan-grpc' => ['id' => $uuid, 'password' => bin2hex(random_bytes(16)), 'email' => $user[0], 'subtoken' => $stok],
                 default       => ['id' => $uuid, 'email' => $user[0], 'subtoken' => $stok],
-            };
+            } + (($auto = $this->exitAutoNodes($p)) ? ['exit' => $auto] : []);
             // Пополняем списки в цикле: иначе дубликаты ВНУТРИ одной пачки
             // («a@x,a@x») проходили проверку и заводили двух клиентов с одним
             // email — статистика xray считается как раз по email.

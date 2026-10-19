@@ -58,6 +58,10 @@ class ExitMenuBot extends Bot
         return true;
     }
     public function last(): array { return end($this->screens) ?: ['', []]; }
+    public function changeRouteList(string $type, callable $edit): bool { $list = $this->confPac[$type] ?? []; $edit($list); $this->confPac[$type] = $list; return true; }
+    public function adguardXrayClients() {}
+    public function userXr($i) { $this->screens[] = ['user ' . $i, []]; }
+    public function xray($page = 0) { $this->screens[] = ["xray", []]; }
     public function callbacks(): array { $all = []; foreach ($this->last()[1] as $row) foreach ($row as $b) $all[$b['callback_data'] ?? ''] = $b['text']; return $all; }
 }
 // Статус пишется в /config: в тесте держим его в памяти.
@@ -200,6 +204,37 @@ $check($bot->confPac === $before && str_contains($bot->last()[0], 'не прин
 $bot->restartOk = true;
 $bot->saveExitName("<b>Нидер\x07ланды</b> & co", $id);
 $check($bot->confPac['exits'][$id]['name'] === 'bНидерландыb co' || !str_contains($bot->confPac['exits'][$id]['name'], '<'), 'имя без разметки и управляющих символов');
+
+// --- Новым пользователям -------------------------------------------------------
+$bot->exitYoutube($id);
+$bot->exitAuto($id);
+$check($bot->confPac['exits'][$id]['auto'] === 1 && $bot->exitAutoNodes($bot->confPac) === [$id] && str_contains($bot->last()[0], 'включается сразу'), 'флажок «новым» включён');
+$bot->addxrus('carol');
+$carol = array_values(array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => ($c['email'] ?? '') === 'carol'))[0] ?? [];
+$check(($carol['exit'] ?? null) === [$id], 'новый пользователь сразу получил узел');
+$rule = array_values(array_filter($bot->confXray['routing']['rules'], static fn($r) => ($r['ruleTag'] ?? '') === "vpnbot:exit:$id:domain"))[0] ?? [];
+$check(in_array('carol', $rule['user'] ?? [], true), 'и попал в правило узла');
+$bot->exitAuto($id);
+$bot->addxrus('dave');
+$dave = array_values(array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => ($c['email'] ?? '') === 'dave'))[0] ?? [];
+$check(!isset($dave['exit']), 'без флажка новый пользователь узел не получает');
+
+// --- Маршруты из списков routes ---------------------------------------------
+$bot->confPac['warplist'] = ['domain:chatgpt.com' => 1, 'domain:openai.com' => 1, 'domain:off.example' => 0];
+$bot->confPac['includelist'] = ['domain:pac.example' => 1];
+$before = count($bot->confPac['exits'][$id]['routes']);
+$bot->exitCopyRoutes($id, 'warp');
+$routes = $bot->confPac['exits'][$id]['routes'];
+$check(isset($routes['domain:chatgpt.com'], $routes['domain:openai.com']) && !isset($routes['domain:off.example']) && count($bot->confPac['warplist']) === 3, 'копирование из WARP: включённые записи, WARP не тронут');
+$bot->exitCopyRoutes($id, 'pac');
+$check(isset($bot->confPac['exits'][$id]['routes']['domain:pac.example']), 'копирование из списка VPN (pac)');
+$bot->exitCopyRoutes($id, 'move');
+$check($bot->confPac['warplist'] === ['domain:off.example' => 0] && str_contains($bot->last()[0], 'Перенесено из WARP: 2'), 'перенос из WARP убирает их из WARP');
+$bot->confPac['includelist'] = [];
+$bot->exitCopyRoutes($id, 'pac');
+$check(str_contains($bot->last()[0], 'пуст'), 'пустой список — сообщение');
+$bot->exitRoutesMenu($id, 0);
+$check(isset($bot->callbacks()["/exitCopy $id warp"], $bot->callbacks()["/exitCopy $id move"], $bot->callbacks()["/exitCopy $id pac"]), 'кнопки копирования');
 
 // --- Профиль для узла ---------------------------------------------------------
 $bot->saveExitRelay('example main');

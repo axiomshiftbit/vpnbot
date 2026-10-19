@@ -43,7 +43,7 @@ trait BotExitNodes
     public static function exitNodeDefaults(): array
     {
         return ['name' => '', 'link' => '', 'enabled' => 1, 'quic' => 'block', 'routes' => [], 'rulesets' => [],
-            'created' => 0, 'status' => []];
+            'auto' => 0, 'created' => 0, 'status' => []];
     }
 
     /** id => нормализованный узел; порядок вставки задаёт приоритет и порт проверки. */
@@ -60,10 +60,17 @@ trait BotExitNodes
             $node['link'] = is_string($node['link']) ? $node['link'] : '';
             $node['enabled'] = empty($node['enabled']) ? 0 : 1;
             $node['quic'] = $node['quic'] === 'pass' ? 'pass' : 'block';
+            $node['auto'] = empty($node['auto']) ? 0 : 1;
             foreach (['routes', 'rulesets', 'status'] as $field) $node[$field] = is_array($node[$field]) ? $node[$field] : [];
             $nodes[$id] = $node;
         }
         return $nodes;
+    }
+
+    /** Узлы с флажком «новым пользователям» — их получает новый пользователь Xray. */
+    public function exitAutoNodes(?array $p = null): array
+    {
+        return array_map('strval', array_keys(array_filter($this->exitNodes($p), static fn($node) => !empty($node['auto']))));
     }
 
     /** Новый id: всегда с буквой, иначе ключ массива станет числом. */
@@ -448,6 +455,7 @@ trait BotExitNodes
         if (!$nodes) return;
         $restart = false;
         foreach ($nodes as $id => $node) {
+            $id = (string) $id;
             $before = $this->exitStatus()[$id] ?? [];
             $now = $this->exitProbe($id, false);
             if ($before && !empty($before['ok']) !== !empty($now['ok'])) {
@@ -529,7 +537,8 @@ trait BotExitNodes
             "Маршрутов: $routes · наборов правил: $sets · пользователей: $users",
             $this->exitTrafficLine($id),
             'QUIC к доменам узла: ' . ($node['quic'] === 'block' ? 'блокируется (браузер сразу идёт по TCP через узел)' : 'пропускается'),
-            'При отказе узла: напрямую с этого сервера'];
+            'При отказе узла: напрямую с этого сервера',
+            'Новым пользователям: ' . ($node['auto'] ? 'включается сразу' : 'не включается')];
         if (!$users) $text[] = 'ℹ️ Узел пока ни у кого не включён: «Пользователи» или карточка пользователя.';
         if (!$routes && !$sets) $text[] = 'ℹ️ Маршрутов нет: «Маршруты» → например «YouTube».';
         array_push($text, ...$this->exitWarnings($node));
@@ -539,7 +548,9 @@ trait BotExitNodes
             [['text' => ($node['enabled'] ? '✅ Включён' : '⏸ Выключен'), 'callback_data' => "/exitToggle $id"],
                 ['text' => 'QUIC: ' . ($node['quic'] === 'block' ? 'блок' : 'пропуск'), 'callback_data' => "/exitQuic $id"]],
             [['text' => "🧭 Маршруты ($routes)", 'callback_data' => "/exitRoutes $id 0"], ['text' => "📦 Наборы .srs/.mrs ($sets)", 'callback_data' => "/exitSets $id"]],
-            [['text' => "👥 Пользователи ($users)", 'callback_data' => "/exitUsers $id 0"]],
+            [['text' => "👥 Пользователи ($users)", 'callback_data' => "/exitUsers $id 0"],
+                ['text' => '🆕 Новым: ' . ($node['auto'] ? 'да' : 'нет'), 'callback_data' => "/exitAuto $id"]],
+
             [['text' => '✏️ Имя', 'callback_data' => "/exitName $id"], ['text' => '🔗 Заменить ссылку', 'callback_data' => "/exitLink $id"],
                 ['text' => '🗑 Удалить', 'callback_data' => "/exitDel $id"]],
             $this->menuHelpButton('exitnodes'),
@@ -631,6 +642,12 @@ trait BotExitNodes
     public function exitQuic(string $id): void
     {
         $error = $this->exitEditNode($id, static function (array &$node) { $node['quic'] = $node['quic'] === 'block' ? 'pass' : 'block'; return ''; });
+        $this->exitNodeMenu($id, $error === '' ? '' : $this->exitError($error));
+    }
+
+    public function exitAuto(string $id): void
+    {
+        $error = $this->exitEditNode($id, static function (array &$node) { $node['auto'] = $node['auto'] ? 0 : 1; return ''; });
         $this->exitNodeMenu($id, $error === '' ? '' : $this->exitError($error));
     }
 
@@ -736,6 +753,8 @@ trait BotExitNodes
             $data[] = $nav;
         }
         $data[] = [['text' => '➕ Добавить', 'callback_data' => "/exitRtAdd $id"], ['text' => '▶️ YouTube', 'callback_data' => "/exitYt $id"]];
+        $data[] = [['text' => '📋 Копировать из WARP', 'callback_data' => "/exitCopy $id warp"], ['text' => '📦 Перенести из WARP', 'callback_data' => "/exitCopy $id move"]];
+        $data[] = [['text' => '📋 Копировать из списка VPN (pac)', 'callback_data' => "/exitCopy $id pac"]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
@@ -774,6 +793,25 @@ trait BotExitNodes
             return '';
         });
         $this->exitRoutesMenu((string) $id, PHP_INT_MAX, $error !== '' ? $this->exitError($error) : "Добавлено: $added" . ($skipped ? ", пропущено (повтор или неверная запись): $skipped" : ''));
+    }
+
+    /**
+     * Записи из списков Vless → routes. «Перенести из WARP» копирует и убирает
+     * их из WARP: подписки sing-box и Mihomo отправляют домены WARP в WARP
+     * сами, и до узла такие домены бы не дошли.
+     */
+    public function exitCopyRoutes(string $id, string $from): void
+    {
+        $list = $from === 'pac' ? 'includelist' : 'warplist';
+        $entries = array_map('strval', array_keys(array_filter($this->getPacConf()[$list] ?? [])));
+        if (!$entries) { $this->exitRoutesMenu($id, 0, $from === 'pac' ? 'Список VPN (pac) пуст' : 'Список WARP пуст'); return; }
+        $this->saveExitRoutes('', $id, $entries);
+        if ($from !== 'move' || !isset($this->exitNodes()[$id])) return;
+        $moved = array_values(array_intersect($entries, array_map('strval', array_keys($this->exitNodes()[$id]['routes']))));
+        $ok = $this->changeRouteList('warplist', static function (&$warp) use ($moved) {
+            foreach ($moved as $entry) unset($warp[$entry]);
+        });
+        $this->exitRoutesMenu($id, PHP_INT_MAX, $ok ? 'Перенесено из WARP: ' . count($moved) : 'Скопировано, но убрать из WARP не удалось');
     }
 
     public function exitYoutube(string $id): void
