@@ -252,6 +252,17 @@ $check(!isset($bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex][
 $bot->exitUsersMenu($id, 0);
 $check(!str_contains(json_encode($bot->last()[1], JSON_UNESCAPED_UNICODE), 'node-example'), 'служебная учётка не в списке пользователей узла');
 
+// --- Восстановление из копии: наборы разбираются до сборки конфига ----------
+$restore = new class extends ExitMenuBot {
+    public array $order = [];
+    public function exitRefreshRulesets(string $id, bool $force = false): bool { $this->order[] = "refresh $id"; return true; }
+    public function protocolModuleEnabled(string $service): bool { return false; }
+    public function writeXrayJson(string $json): bool { $this->order[] = 'write'; return true; }
+    public function writeCoreMarker(string $core): bool { return true; }
+};
+$restore->confPac['exits'] = ['a1b2c3d4' => ['link' => $link, 'rulesets' => ['https://raw.example/geo/youtube.srs' => ['on' => 1]]], 'e5f6a7b8' => ['link' => $link]];
+$check($restore->restoreBackupXray(['restored' => true]) && $restore->order === ['refresh a1b2c3d4', 'refresh e5f6a7b8', 'write'], 'восстановление: наборы узлов до записи конфига');
+
 @unlink($statusFile);
 if ($failures) { fwrite(STDERR, "exit_nodes_menu_test FAIL:\n - " . implode("\n - ", array_unique($failures)) . "\n"); exit(1); }
 echo "exit_nodes_menu_test OK\n";

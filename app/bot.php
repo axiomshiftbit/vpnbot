@@ -7746,6 +7746,9 @@ NFT;
 
     public function restoreBackupXray(array $config): bool
     {
+        // Наборы правил узлов выхода, как и .dat, в копию не входят: разбираем
+        // их до сборки конфига, иначе их маршруты появились бы только с cron.
+        foreach (array_keys($this->exitNodes()) as $id) $this->exitRefreshRulesets((string) $id);
         $core = $this->xrayCoreSelection();
         if (!$this->protocolModuleEnabled('xr')) {
             return $this->writeXrayJson(json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))
