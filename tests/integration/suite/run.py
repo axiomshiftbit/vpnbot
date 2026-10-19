@@ -215,7 +215,7 @@ INNER'''
  def native(label):
   output=R/'published-main/results.json';output.unlink(missing_ok=True)
   run(label,['python3',str(R/'published-main/run.py')],timeout=1800)
-  rows=json.loads(output.read_text());check('native',label+'-complete',len(rows)==24 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
+  rows=json.loads(output.read_text());check('native',label+'-complete',len(rows)==25 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
   shutil.copy2(output,O/(label+'.json'))
   for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py")]:
    result=O/(label+"-"+name)

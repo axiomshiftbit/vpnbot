@@ -620,6 +620,64 @@ switch ($action) {
             'schedule'=>(object)array_filter($p,fn($name)=>str_starts_with((string)$name,'dat_update_'),ARRAY_FILTER_USE_KEY),
             'rules'=>json_encode($x['routing']['rules'] ?? [],JSON_UNESCAPED_SLASHES),'admins'=>count((array)($c['admin'] ?? [])),'now'=>time()];
         break;
+    // Узлы выхода: те же действия, что выполняют кнопки меню Xray → Узлы
+    // выхода. Каждое действие возвращает узлы, их состояние, пользователей и
+    // то, что попало в рабочий конфиг Xray.
+    case 'exit':
+        $id=$argv[3] ?? '';
+        switch ($argv[2]) {
+            case 'add': $b->saveExitAdd($argv[3]); break;
+            case 'routes': $b->saveExitRoutes(str_replace('|',"\n",$argv[4]),$id); break;
+            case 'route-off': $b->exitRouteToggle($id,Bot::exitEntryKey($argv[4])); break;
+            case 'sets': $b->saveExitSets(str_replace('|',"\n",$argv[4]),$id); break;
+            case 'set-del': $b->exitSetToggle($id,Bot::exitEntryKey($argv[4]),true); break;
+            case 'all': $b->exitAllUsers($id,$argv[4]==='on'); break;
+            case 'user': $b->exitUserNodeToggle((int)$argv[4],$id); break;
+            case 'toggle': $b->exitToggle($id); break;
+            case 'quic': $b->exitQuic($id); break;
+            case 'auto': $b->exitAuto($id); break;
+            case 'check': $b->exitCheck($id); break;
+            case 'refresh': $b->exitRefresh($id); break;
+            case 'delete': $b->exitDelete($id,true); break;
+            case 'cron': $b->checkExitNodes(); break;
+            case 'menus':
+                $b->exitNodesMenu();$b->exitNodeMenu($id);$b->exitRoutesMenu($id);$b->exitSetsMenu($id);$b->exitUsersMenu($id);$b->exitRelayMenu();
+                break;
+            case 'relay': $b->saveExitRelay($argv[3]); break;
+            case 'adduser': $b->addxrus($argv[3]); break;
+            case 'deluser':
+                foreach ($b->getXray()['inbounds'][0]['settings']['clients'] as $k=>$client) if (($client['email'] ?? '')===$argv[3]) { $b->delxr($k); break; }
+                break;
+            case 'reset':
+                // Возврат стенда: узлы, флажки пользователей, служебные учётки проверки.
+                $b->applyExitNodes(function (array &$p, array &$x) {
+                    unset($p['exits']);
+                    foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $k=>$client) unset($x['inbounds'][0]['settings']['clients'][$k]['exit']);
+                    $x['inbounds'][0]['settings']['clients']=array_values(array_filter($x['inbounds'][0]['settings']['clients'] ?? [],
+                        fn($client)=>!preg_match('~^(node-ci|ci-exit)~',(string)($client['email'] ?? ''))));
+                    return '';
+                });
+                @unlink(Bot::EXIT_STATUS_FILE);
+                foreach (glob(Bot::EXIT_RULESET_DIR.'/*') ?: [] as $file) unlink($file);
+                break;
+            case 'state': break;
+            default: exit(2);
+        }
+        $p=$b->getPacConf();$x=$b->getXray();
+        $own=fn($tag)=>str_starts_with((string)$tag,Bot::EXIT_TAG);
+        $result=['nodes'=>(object)$b->exitNodes(),'status'=>(object)$b->exitStatus(),
+            'clients'=>array_map(fn($client)=>['email'=>$client['email'] ?? '','exit'=>$client['exit'] ?? null,'relay'=>!empty($client['exit_relay']),'flow'=>$client['flow'] ?? ''],$x['inbounds'][0]['settings']['clients'] ?? []),
+            'outbounds'=>array_values(array_filter($x['outbounds'] ?? [],fn($o)=>$own($o['tag'] ?? ''))),
+            'outbound_tags'=>array_column($x['outbounds'] ?? [],'tag'),
+            'inbounds'=>array_values(array_filter($x['inbounds'] ?? [],fn($i)=>$own($i['tag'] ?? ''))),
+            'rules'=>array_values(array_filter($x['routing']['rules'] ?? [],fn($r)=>str_starts_with((string)($r['ruleTag'] ?? ''),Bot::EXIT_RULE))),
+            'order'=>array_map(fn($r)=>(string)($r['ruleTag'] ?? ($r['outboundTag'] ?? $r['balancerTag'] ?? '')).(isset($r['protocol']) ? ':'.implode(',',(array)$r['protocol']) : ''),$x['routing']['rules'] ?? []),
+            'balancers'=>array_values(array_filter($x['routing']['balancers'] ?? [],fn($v)=>$own($v['tag'] ?? ''))),
+            'burst'=>$x['burstObservatory'] ?? null,'observatory'=>$x['observatory'] ?? null,
+            'sets'=>array_map(fn($file)=>json_decode(file_get_contents($file),true),glob(Bot::EXIT_RULESET_DIR.'/*.json') ?: []),
+            'messages'=>$b->transport->messages,'buttons'=>array_merge(...array_map(fn($k)=>array_column(array_merge(...$k),'callback_data'),$b->transport->keyboards ?: [[]])),
+            'admins'=>count((array)($c['admin'] ?? [])),'transport'=>$p['transport'] ?? ''];
+        break;
     default:
         exit(2);
 }
