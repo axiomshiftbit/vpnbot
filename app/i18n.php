@@ -2844,20 +2844,20 @@ $i = [
         'ru' => 'Ядро REALITY требует X25519MLKEM768 (оригинальный Xray 26.9.8+ или форк с «Требовать ML-KEM»). Отпечатки с пометкой ⚠ не подключатся.',
     ],
     'fp reality core any' => [
-        'en' => 'REALITY core: accepts any fingerprint with TLS 1.3 (core 26.7.28 or the fork without «Require ML-KEM»).',
-        'ru' => 'Ядро REALITY принимает любой отпечаток с TLS 1.3 (ядро 26.7.28 или форк без «Требовать ML-KEM»).',
+        'en' => 'REALITY core: accepts any fingerprint with TLS 1.3 (the fork without «Require ML-KEM»).',
+        'ru' => 'Ядро REALITY принимает любой отпечаток с TLS 1.3 (форк без «Требовать ML-KEM»).',
     ],
     'fp compat' => [
         'en' => "<b>Where each fingerprint works</b> (measured on the cores of this build)\n"
             . "• REALITY on a core that requires ML-KEM (original Xray 26.9.8+, the fork with «Require ML-KEM»): Xray clients of any version — chrome, firefox, safari; Mihomo — chrome only, with support-x25519mlkem768 (the bot sets it); sing-box 1.14 does not connect at all.\n"
-            . "• REALITY on core 26.7.28 or the fork without the flag: any fingerprint with TLS 1.3 (chrome, firefox, safari, ios, edge, qq) — in Xray, Mihomo and sing-box.\n"
+            . "• REALITY on the fork without the flag: any fingerprint with TLS 1.3 (chrome, firefox, safari, ios, edge, qq) — in Xray, Mihomo and sing-box.\n"
             . "• android and 360 never work with REALITY: these samples have no TLS 1.3.\n"
             . "• WebSocket, gRPC, XHTTP (plain TLS): every fingerprint in the list works.\n"
             . "• random picks a browser sample when the client starts: stable on plain TLS and on REALITY without ML-KEM, only sometimes on a core that requires ML-KEM.\n"
             . "The bot does not replace your choice: it marks fingerprints that the current core will not accept with ⚠ and warns before saving.",
         'ru' => "<b>Где какой отпечаток работает</b> (замер на ядрах этой сборки)\n"
             . "• REALITY на ядре, требующем ML-KEM (оригинальный Xray 26.9.8+, форк с «Требовать ML-KEM»): клиенты на Xray любой версии — chrome, firefox, safari; Mihomo — только chrome и с опцией support-x25519mlkem768 (бот её ставит сам); sing-box 1.14 не подключается совсем.\n"
-            . "• REALITY на ядре 26.7.28 или форке без этого флага: любой отпечаток с TLS 1.3 (chrome, firefox, safari, ios, edge, qq) — в Xray, Mihomo и sing-box.\n"
+            . "• REALITY на форке без этого флага: любой отпечаток с TLS 1.3 (chrome, firefox, safari, ios, edge, qq) — в Xray, Mihomo и sing-box.\n"
             . "• android и 360 с REALITY не работают нигде: в этих образцах нет TLS 1.3.\n"
             . "• WebSocket, gRPC, XHTTP (обычный TLS): работают все отпечатки из списка.\n"
             . "• random при запуске клиента берёт образец браузера: стабилен с обычным TLS и с REALITY без ML-KEM, а на ядре, требующем ML-KEM, подключается только иногда.\n"
