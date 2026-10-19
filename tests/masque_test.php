@@ -66,6 +66,28 @@ try {
     masqueCheck($h2['tlsSettings']['alpn'] === ['h2'] && !isset($h2['finalmask']), 'H2 не получает неработающую UDP-маску');
     $store->configureOption('noise.enabled', false);
     masqueCheck(!isset($store->read()['config']['inbounds'][0]['streamSettings']['finalmask']), 'Выключение удаляет маску');
+    // XMUX: без настроек поле не выдаётся (умолчание ядра), с ними — всегда со сроком туннеля.
+    $xmux = fn() => $store->profile($id, 'native')['outbounds'][0]['streamSettings']['masqueSettings']['xmux'] ?? null;
+    $store->configureOption('client.connections', 3);
+    masqueCheck($xmux() === ['maxConnections' => 3, 'hMaxReusableSecs' => '1800-3000'], 'XMUX: туннели и срок по умолчанию');
+    masqueCheck($store->profile($id, 'native')['outbounds'][0]['streamSettings']['tlsSettings']['alpn'] === ['h2'], 'XMUX и H2 вместе');
+    $store->configureOption('client.http', 'h3');
+    masqueCheck($xmux() === ['maxConnections' => 3, 'hMaxReusableSecs' => '1800-3000'], 'XMUX и H3');
+    $store->configureOption('client.reuse', '600');
+    masqueCheck($xmux() === ['maxConnections' => 3, 'hMaxReusableSecs' => 600], 'XMUX: срок числом');
+    $store->configureOption('client.connections', null);
+    masqueCheck($xmux() === ['maxConnections' => 1, 'hMaxReusableSecs' => 600], 'XMUX: только срок — один туннель');
+    $store->configureOption('client.reuse', '60-86400');
+    masqueCheck($xmux() === ['maxConnections' => 1, 'hMaxReusableSecs' => '60-86400'], 'XMUX: границы диапазона');
+    foreach ([['connections', 0], ['connections', 5], ['connections', '2'], ['reuse', '59'], ['reuse', '900-600'],
+        ['reuse', '86401'], ['reuse', '60-86401'], ['reuse', 'abc'], ['reuse', '60-'], ['reuse', ' 600'], ['reuse', 600]] as [$field, $value]) {
+        $before = file_get_contents($store->directory() . '/desired.json');
+        masqueReject(fn() => $store->configureOption('client.' . $field, $value));
+        masqueCheck(file_get_contents($store->directory() . '/desired.json') === $before, 'XMUX: отказ не меняет состояние');
+    }
+    $store->configureOption('client.reuse', null);
+    masqueCheck($xmux() === null && !isset($store->read()['settings']['options']['client']['reuse']), 'XMUX: сброс возвращает умолчание ядра');
+    masqueCheck($store->read()['config']['inbounds'][0]['settings']['address'] === ['10.14.0.1/21', 'fd14::1/118'], 'Пул: 1022 туннеля, IPv4 кончается последним');
     $config = $store->read()['config'];
     masqueCheck($config['inbounds'][1]['listen'] === '127.0.0.1' && $config['api']['services'] === ['StatsService'], 'API закрыт на loopback');
     masqueCheck($config['policy']['levels'][0]['statsUserUplink'] && $config['policy']['levels'][0]['statsUserDownlink'], 'Индивидуальные счётчики');
@@ -74,7 +96,7 @@ try {
     $bot->protocolCommand('masque'); [$text, $buttons] = end($bot->screens);
     masqueCheck(str_contains($text, 'HTTP/3') && str_contains($text, '26.9.30'), 'Меню объясняет совместимость');
     masqueCheck(str_contains(json_encode($buttons), '/po masque'), 'Настройки доступны');
-    foreach (['client', 'client.http', 'noise', 'noise.enabled', 'noise.reset', 'noise.packets'] as $path) {
+    foreach (['client', 'client.http', 'client.connections', 'client.reuse', 'noise', 'noise.enabled', 'noise.reset', 'noise.packets'] as $path) {
         $bot->protocolOptions('masque', path: $path); [$text, $buttons] = end($bot->screens);
         masqueCheck(mb_strlen(strip_tags($text)) < 4096, 'Настройки помещаются в Telegram');
         foreach ($buttons as $row) foreach ($row as $button) masqueCheck(strlen($button['callback_data']) <= 64, 'Размер callback');

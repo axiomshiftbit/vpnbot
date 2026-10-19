@@ -56,6 +56,25 @@ try:
  check('mismatched_key_preserves_current',wait_for(lambda:status().get('phase')=='error' and status().get('pid')==before and status().get('error')=='tls_key_mismatch'));c=client();check('mismatched_key_old_traffic_survives',wait_for(lambda:tcp(),10));stop(c);(ROOT/'certs/cert_private').write_bytes(key);check('matching_key_restored',wait_for(lambda:status().get('phase')=='running'))
  subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','2','-subj','/CN=masque.example.test','-addext','subjectAltName=DNS:masque.example.test','-keyout','/lab/certs/cert_private','-out','/lab/certs/cert_public'],check=True,capture_output=True)
  check('certificate_renewal_restarts_core',wait_for(lambda:status().get('phase')=='running' and status().get('pid')!=before));c=client();check('new_certificate_traffic',wait_for(lambda:tcp()));stop(c)
+ # XMUX из профиля бота: оригинальное ядро с 26.10.17, форк с 26.10.13; старые поле не знают.
+ version=subprocess.run(['/client-xray','version'],capture_output=True,text=True).stdout.split()[1]
+ xmux_core=tuple(map(int,version.split('-')[0].split('.')))>=((26,10,13) if '-' in version else (26,10,17))
+ cfg=json.loads((ROOT/'client-xmux.json').read_text());cfg['log']['loglevel']='debug';write(ROOT/'client-xmux.json',cfg)
+ check('xmux_profile_accepted_by_client',subprocess.run(['/client-xray','run','-test','-config','/lab/client-xmux.json'],capture_output=True).returncode==0)
+ open(ROOT/'client-1080.log','w').close();c=client('xmux');ok=[]
+ def xmux_load():
+  for _ in range(8):ok.append(tcp());ok.append(udp(size=512))
+ jobs=[threading.Thread(target=xmux_load) for _ in range(4)]
+ for t in jobs:t.start()
+ for t in jobs:t.join()
+ check('xmux_parallel_64_tcp_udp',len(ok)==64 and all(ok))
+ created=lambda:(ROOT/'client-1080.log').read_text(errors='replace').count('XMUX: creating xmuxClient')
+ check('xmux_tunnels_'+('3' if xmux_core else 'ignored_by_old_core'),created()==3 if xmux_core else created()==0)
+ if xmux_core:
+  first=created();time.sleep(62)
+  for _ in range(4):ok.append(tcp())
+  check('xmux_reuse_expiry_opens_new_tunnel',created()>first and all(ok[-4:]))
+ check('xmux_server_alive',supervisor.poll() is None and status().get('running'));stop(c)
  check('generation_count_bounded',len(list(STATE.glob('generation-*')))<=2)
  check('core_log_bounded',(STATE/'core.log').stat().st_size<1100000)
  print('EXTRAS COMPLETED',len(RESULTS),flush=True)

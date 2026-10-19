@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/XrayNoise.php';
+require_once __DIR__ . '/MasqueProfile.php';
 
 require_once __DIR__ . "/ProtocolOptionHelp.php";
 
@@ -32,7 +33,7 @@ final class ProtocolOptions
     {
         if ($protocol === 'snolc') return [];
         if ($protocol === 'masque') return [
-            'client' => ['http' => ['enum', ['h3', 'h2']]],
+            'client' => ['http' => ['enum', ['h3', 'h2']], 'connections' => ['int', 1, 4], 'reuse' => ['text', 2, 11]],
             'noise' => ['enabled' => ['bool'], 'reset' => ['text', 1, 16],
                 'packets' => ['list', ['object', ['type' => ['enum', ['rand', 'str', 'hex', 'base64', 'exp']],
                     'packet' => ['text', 1, 4096], 'delay' => ['text', 1, 16]]], 8]],
@@ -192,6 +193,7 @@ final class ProtocolOptions
         if ($protocol === 'masque') {
             $noise = $options['noise'] ?? [];
             XrayNoise::settings($noise + ['reset' => '60-120'], $noise['packets'] ?? XrayNoise::dynamicPackets());
+            MasqueProfile::xmux($options['client'] ?? []);
             return;
         }
         $server = $options['server'] ?? []; $client = $options['client'] ?? []; $singbox = $options['singbox'] ?? [];

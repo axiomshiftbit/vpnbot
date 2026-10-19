@@ -14,6 +14,10 @@ foreach (['h3','h2'] as $http) {
  $s->configureOption('client.http',$http);
  ManagedProtocol::writeJson($root.'/client-'.$http.'.json',$s->profile($a,'native'));
 }
+// XMUX (26.10.17+): три туннеля, срок 60 с — профиль из бота как есть.
+$s->configureOption('client.http','h3'); $s->configureOption('client.connections',3); $s->configureOption('client.reuse','60');
+ManagedProtocol::writeJson($root.'/client-xmux.json',$s->profile($a,'native'));
+$s->configureOption('client.connections',null); $s->configureOption('client.reuse',null);
 $s->configureOption('client.http','h3'); $s->configureOption('noise.enabled',true);
 $s->configureOption('noise.reset','1');
 copy($s->directory().'/desired.json', $root.'/desired-noise.json');
