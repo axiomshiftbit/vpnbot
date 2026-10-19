@@ -64,9 +64,9 @@ class ProtocolTests(unittest.TestCase):
             subject = subprocess.run(['openssl', 'x509', '-noout', '-subject', '-in', str(public)],
                                      capture_output=True, text=True, check=True).stdout
             self.assertIn('CN=203.0.113.7', subject.replace(' ', ''))
-            match = subprocess.run(['sh', '-c', 'openssl x509 -noout -pubkey -in "$1" | cmp -s - "$2"', 'sh', str(public), '/dev/stdin'],
-                                   input=subprocess.run(['openssl', 'pkey', '-pubout', '-in', str(private)], capture_output=True, check=True).stdout)
-            self.assertEqual(0, match.returncode, 'ключ и сертификат из одной пары')
+            pubkey = lambda *args: subprocess.run(['openssl', *args], capture_output=True, check=True).stdout
+            self.assertEqual(pubkey('x509', '-noout', '-pubkey', '-in', str(public)), pubkey('pkey', '-pubout', '-in', str(private)),
+                             'ключ и сертификат из одной пары')
             before = (public.read_bytes(), private.read_bytes())
             modules.ensure_self_certificate(root)
             self.assertEqual(before, (public.read_bytes(), private.read_bytes()), 'готовая пара не перевыпускается')
