@@ -28,6 +28,8 @@ def profile(kind, port):
     if kind=='xray':
         node=next(n for n in full['outbounds'] if n['protocol'] in ('vless','trojan')); node['tag']='proxy'
         node['settings']['vnext' if node['protocol']=='vless' else 'servers'][0]['address']='127.0.0.1'
+        # Xray 26.10.10+ без useSystemCa доверяет только встроенным корням и не читает SSL_CERT_FILE с CA стенда.
+        if isinstance(node.get('streamSettings',{}).get('tlsSettings'),dict):node['streamSettings']['tlsSettings']['useSystemCa']=True
         return {'log':{'loglevel':'warning'},'inbounds':[{'listen':'127.0.0.1','port':port,'protocol':'socks','settings':{'udp':True}}],'outbounds':[node]}
     if kind=='mihomo':
         node=next(n for n in full['proxies'] if n['type'] in ('vless','trojan')); node['name']='proxy'; node['server']='127.0.0.1'

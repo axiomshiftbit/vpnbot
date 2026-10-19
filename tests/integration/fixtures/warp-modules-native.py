@@ -102,6 +102,7 @@ try:
      cfg['socks5Port']=19090;cfg['rpcPort']=19091;localenv['MIERU_CONFIG_JSON_FILE']=str(path);cmd=['/opt/vpnbot-hosted-ci/tests/optional-native/bin/mieru','run']
     else:
      cfg['inbounds'][0]['port']=19090;out=cfg['outbounds'][0];out['settings']['address']=address;out['streamSettings']['tlsSettings']['alpn']=[mode]
+     out['streamSettings']['tlsSettings']['useSystemCa']=True  # Xray 26.10.10+: иначе SSL_CERT_FILE не читается
      localenv['SSL_CERT_FILE']=str(B/'certs/vpnbot-migration/server.crt');cmd=['/opt/vpnbot-hosted-ci/tests/xray','run','-config',str(path)]
     path.write_text(json.dumps(cfg));cases.append((label+mode,protocol,transport,cmd,dict(localenv)));f=(O/(label+mode+'.log')).open('ab');p=subprocess.Popen(cmd,cwd=P,env=localenv,stdout=f,stderr=f);children.append((p,f))
     try:
