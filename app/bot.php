@@ -786,8 +786,8 @@ class Bot
             case preg_match('~^/exitUsers ([a-f0-9]{8}) (\d{1,5})$~', $this->input['callback'], $m):
                 $this->exitUsersMenu($m[1], (int) $m[2]);
                 break;
-            case preg_match('~^/exitU ([a-f0-9]{8}) (\d{1,6}) (\d{1,5})$~', $this->input['callback'], $m):
-                $this->exitUserToggle($m[1], (int) $m[2], (int) $m[3]);
+            case preg_match('~^/exitU ([a-f0-9]{8}) ([a-f0-9]{10}) (\d{1,5})$~', $this->input['callback'], $m):
+                $this->exitUserToggle($m[1], $m[2], (int) $m[3]);
                 break;
             case preg_match('~^/exitAll ([a-f0-9]{8}) (on|off)$~', $this->input['callback'], $m):
                 $this->exitAllUsers($m[1], $m[2] === 'on');

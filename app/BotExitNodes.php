@@ -200,9 +200,12 @@ trait BotExitNodes
         if ($rules) {
             $this->ensureBlockOutbound($c);
             $this->ensureDirectOutbound($c);
+            // Ниже блок-листа и правила торрентов (ensureTorrentBlock ставит его
+            // в голову раньше нас): блокировка старше узла.
             $position = 0;
             foreach ($c['routing']['rules'] as $k => $rule) {
-                if (str_starts_with((string) ($rule['ruleTag'] ?? ''), 'vpnbot:routes:block:')) $position = $k + 1;
+                if (str_starts_with((string) ($rule['ruleTag'] ?? ''), 'vpnbot:routes:block:')
+                    || (($rule['outboundTag'] ?? '') === 'block' && (array) ($rule['protocol'] ?? []) === ['bittorrent'])) $position = $k + 1;
             }
             array_splice($c['routing']['rules'], $position, 0, $rules);
         }
@@ -279,8 +282,10 @@ trait BotExitNodes
         if ($port === null || $node === null) return ['time' => time(), 'ok' => false, 'error' => 'узел не найден'];
         if (empty($node['enabled'])) return ['time' => time(), 'ok' => false, 'error' => 'узел выключен'];
         $proxy = "127.0.0.1:$port";
+        // Задержка — время до первого байта generate_204 через узел: time_connect
+        // при --socks5-hostname — это подключение к самому входу на 127.0.0.1.
         $cmd = "c(){ curl -s --socks5-hostname $proxy --max-time 12 \"\$@\"; }; "
-            . "c -o /dev/null -w 'probe=%{http_code} %{time_connect} %{time_starttransfer}\\n' " . self::EXIT_PROBE_URL . '; '
+            . "c -o /dev/null -w 'probe=%{http_code} %{time_starttransfer}\\n' " . self::EXIT_PROBE_URL . '; '
             . "c https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|loc)='; ";
         if ($full) {
             $cmd .= "c -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36' "
@@ -290,10 +295,9 @@ trait BotExitNodes
         $out = (string) $this->ssh($cmd . 'true', 'xr');
         $status = ['time' => time(), 'ok' => false];
         if ($this->sshFailed) return $status + ['error' => 'нет связи с контейнером Xray'];
-        if (preg_match('~^probe=(\d{3}) ([0-9.]+) ([0-9.]+)$~m', $out, $m)) {
+        if (preg_match('~^probe=(\d{3}) ([0-9.]+)$~m', $out, $m)) {
             $status['http'] = (int) $m[1];
-            $status['connect_ms'] = (int) round((float) $m[2] * 1000);
-            $status['ttfb_ms'] = (int) round((float) $m[3] * 1000);
+            $status['ms'] = (int) round((float) $m[2] * 1000);
             $status['ok'] = $status['http'] === 204;
         }
         if (preg_match('~^loc=([A-Z]{2})$~m', $out, $m)) $status['loc'] = $m[1];
@@ -314,7 +318,7 @@ trait BotExitNodes
         $s = $this->exitStatus()[$id] ?? [];
         if (!$s) return '⚪ ещё не проверялся';
         $line = !empty($s['ok']) ? '🟢 работает' : '🔴 ' . self::esc($s['error'] ?? 'не работает');
-        if (!empty($s['ok'])) $line .= ' · ' . (int) ($s['connect_ms'] ?? 0) . ' мс';
+        if (!empty($s['ok'])) $line .= ' · ' . (int) ($s['ms'] ?? 0) . ' мс';
         if (!empty($s['loc'])) $line .= ' · выход ' . self::esc($s['loc']);
         if (!empty($s['gl'])) $line .= ' · YouTube видит ' . self::esc($s['gl']);
         return $line . ' · ' . date('H:i', (int) $s['time']);
@@ -325,32 +329,49 @@ trait BotExitNodes
     // его на записи маршрута (domain:/full:/keyword:/regexp:/IP) инструментами
     // самих ядер из образа php и кладёт в /logs/exit-rulesets. Не в резервную
     // копию: после восстановления наборы скачаются заново.
-    public static function exitRulesetUrlValid(string $url): bool
+    public static function exitRulesetUrlValid(string $url, bool $format = true): bool
     {
         $parts = parse_url($url);
         return is_array($parts) && strtolower($parts['scheme'] ?? '') === 'https' && !empty($parts['host'])
-            && !isset($parts['user']) && !isset($parts['pass']) && strlen($url) <= 500 && !preg_match('~[\s"\'\\\\<>]~', $url)
-            && in_array(self::ruleSetFormat($url), ['srs', 'mrs'], true);
+            && !isset($parts['user']) && !isset($parts['pass']) && strlen($url) <= ($format ? 500 : 2000) && !preg_match('~[\s"\'\\\\<>]~', $url)
+            && (!$format || in_array(self::ruleSetFormat($url), ['srs', 'mrs'], true));
     }
 
     // Скачивание с ограничением размера; в тестах подменяется.
     protected function exitRulesetDownload(string $url): ?string
     {
-        if (!$this->xdriveHostPublic($url)) return null;
-        $data = '';
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => false, CURLOPT_FOLLOWLOCATION => true, CURLOPT_MAXREDIRS => 3,
-            CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
-            CURLOPT_CONNECTTIMEOUT => 15, CURLOPT_TIMEOUT => 90, CURLOPT_FAILONERROR => true,
-            CURLOPT_WRITEFUNCTION => static function ($ch, $chunk) use (&$data) {
-                $data .= $chunk;
-                return strlen($data) > self::EXIT_RULESET_MAX_BYTES ? 0 : strlen($chunk);
-            },
-        ]);
-        $ok = curl_exec($ch);
-        curl_close($ch);
-        return $ok === true && $data !== '' ? $data : null;
+        // Переходы по Location — вручную: каждый адрес проверяется на
+        // публичность (выпуски GitHub переадресуют на другой хост, а чужой
+        // переход мог бы увести запрос во внутреннюю сеть).
+        for ($hop = 0; $hop <= 3; $hop++) {
+            if (!self::exitRulesetUrlValid($url, false) || !$this->xdriveHostPublic($url)) return null;
+            $data = '';
+            $location = '';
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => false, CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+                CURLOPT_CONNECTTIMEOUT => 15, CURLOPT_TIMEOUT => 90,
+                CURLOPT_HEADERFUNCTION => static function ($ch, $header) use (&$location) {
+                    if (preg_match('~^location:\s*(\S+)~i', $header, $m)) $location = $m[1];
+                    return strlen($header);
+                },
+                CURLOPT_WRITEFUNCTION => static function ($ch, $chunk) use (&$data) {
+                    $data .= $chunk;
+                    return strlen($data) > self::EXIT_RULESET_MAX_BYTES ? 0 : strlen($chunk);
+                },
+            ]);
+            $ok = curl_exec($ch);
+            $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            curl_close($ch);
+            if ($ok !== true) return null;
+            if (in_array($code, [301, 302, 303, 307, 308], true) && $location !== '') {
+                $url = str_starts_with($location, '/') ? preg_replace('~^(https://[^/]+).*$~', '$1', $url) . $location : $location;
+                continue;
+            }
+            return $code === 200 && $data !== '' ? $data : null;
+        }
+        return null;
     }
 
     // Запуск инструмента ядра; в тестах подменяется.
@@ -437,7 +458,8 @@ trait BotExitNodes
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set) || empty($set['on'])) continue;
             $cache = $this->exitRulesetCache((string) $url);
-            $interval = max(3600, (int) ($set['interval'] ?? 86400));
+            // Неудачная попытка повторяется через час, а не через сутки.
+            $interval = ($cache['error'] ?? '') !== '' ? 3600 : max(3600, (int) ($set['interval'] ?? 86400));
             if (!$force && $cache && time() - (int) ($cache['time'] ?? 0) < $interval) continue;
             $before = $cache['hash'] ?? '';
             $this->exitRulesetRefresh((string) $url, $set);
@@ -550,7 +572,6 @@ trait BotExitNodes
             [['text' => "🧭 Маршруты ($routes)", 'callback_data' => "/exitRoutes $id 0"], ['text' => "📦 Наборы .srs/.mrs ($sets)", 'callback_data' => "/exitSets $id"]],
             [['text' => "👥 Пользователи ($users)", 'callback_data' => "/exitUsers $id 0"],
                 ['text' => '🆕 Новым: ' . ($node['auto'] ? 'да' : 'нет'), 'callback_data' => "/exitAuto $id"]],
-
             [['text' => '✏️ Имя', 'callback_data' => "/exitName $id"], ['text' => '🔗 Заменить ссылку', 'callback_data' => "/exitLink $id"],
                 ['text' => '🗑 Удалить', 'callback_data' => "/exitDel $id"]],
             $this->menuHelpButton('exitnodes'),
@@ -589,6 +610,9 @@ trait BotExitNodes
         if (!$this->xdriveHostPublic('https://' . (str_contains($address, ':') ? "[$address]" : $address))) return 'адрес узла не публичный или не разрешается';
         $own = array_filter([(string) ($this->ip ?? ''), (string) ($this->getPacConf()['domain'] ?? '')]);
         if (in_array(strtolower($address), array_map('strtolower', $own), true)) return 'это адрес этого же сервера';
+        // Домен, разрешающийся в адрес этого сервера, — тоже он сам.
+        $resolved = filter_var($address, FILTER_VALIDATE_IP) ? [$address] : $this->xdriveResolve($address);
+        if ((string) ($this->ip ?? '') !== '' && in_array((string) $this->ip, $resolved, true)) return 'адрес узла указывает на этот же сервер';
         return '';
     }
 
@@ -852,7 +876,8 @@ trait BotExitNodes
             if (!is_array($set)) continue;
             $cache = $this->exitRulesetCache((string) $url);
             $state = !$cache ? '⏳ не скачан' : (($cache['error'] ?? '') !== '' ? '⚠️ ' . $cache['error'] : count($cache['entries'] ?? []) . ' записей');
-            $text[] = "\n" . (!empty($set['on']) ? '✅' : '⏸') . ' <code>' . self::esc((string) $url) . '</code> — ' . self::esc($state)
+            $shown = mb_strlen((string) $url) > 90 ? mb_substr((string) $url, 0, 60) . '…' . mb_substr((string) $url, -25) : (string) $url;
+            $text[] = "\n" . (!empty($set['on']) ? '✅' : '⏸') . ' <code>' . self::esc($shown) . '</code> — ' . self::esc($state)
                 . (self::ruleSetFormat((string) $url) === 'mrs' ? ' · ' . self::esc((string) ($set['behavior'] ?? 'domain')) : '');
             $key = self::exitEntryKey((string) $url);
             $data[] = [['text' => (!empty($set['on']) ? '✅ ' : '⏸ ') . mb_substr(basename((string) parse_url((string) $url, PHP_URL_PATH)), 0, 40), 'callback_data' => "/exitSet $id $key"],
@@ -925,7 +950,7 @@ trait BotExitNodes
         foreach (array_slice($list, $page * self::EXIT_PAGE, self::EXIT_PAGE, true) as $i => $client) {
             $on = in_array($id, self::exitClientNodes($client), true);
             $data[] = [['text' => ($on ? '✅ ' : '⬜ ') . mb_substr((string) ($client['email'] ?? '—'), 0, 40) . (!empty($client['off']) ? ' ⛔' : ''),
-                'callback_data' => "/exitU $id $i $page"]];
+                'callback_data' => "/exitU $id " . self::exitClientKey($client) . " $page"]];
         }
         if ($pages > 1) {
             $nav = [];
@@ -939,13 +964,21 @@ trait BotExitNodes
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
-    /** Включить/выключить узел пользователям; $only — индексы, null — всем обычным. */
+    // Пользователь в кнопке — отпечаток email, а не номер: список мог
+    // измениться, пока меню открыто, и узел включился бы не тому.
+    public static function exitClientKey(array $client): string
+    {
+        return substr(hash('sha256', 'exit-user:' . (string) ($client['email'] ?? '')), 0, 10);
+    }
+
+    /** Включить/выключить узел пользователям; $only — ключи exitClientKey или номера, null — всем обычным. */
     public function exitSetUsers(string $id, ?array $only, ?bool $on): string
     {
         return $this->applyExitNodes(function (array &$p, array &$x) use ($id, $only, $on) {
             if (!isset($this->exitNodes($p)[$id])) return 'exit not found';
             foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $i => $client) {
-                if (!is_array($client) || !empty($client['exit_relay']) || ($only !== null && !in_array($i, $only, true))) continue;
+                if (!is_array($client) || !empty($client['exit_relay'])) continue;
+                if ($only !== null && !in_array($i, $only, true) && !in_array(self::exitClientKey($client), $only, true)) continue;
                 $nodes = self::exitClientNodes($client);
                 $want = $on ?? !in_array($id, $nodes, true);
                 $nodes = $want ? array_values(array_unique([...$nodes, $id])) : array_values(array_diff($nodes, [$id]));
@@ -956,9 +989,9 @@ trait BotExitNodes
         });
     }
 
-    public function exitUserToggle(string $id, int $i, int $page = 0): void
+    public function exitUserToggle(string $id, string $key, int $page = 0): void
     {
-        $error = $this->exitSetUsers($id, [$i], null);
+        $error = $this->exitSetUsers($id, [$key], null);
         $this->exitUsersMenu($id, $page, $error === '' ? '' : $this->exitError($error));
     }
 

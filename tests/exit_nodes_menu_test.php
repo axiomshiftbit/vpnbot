@@ -8,10 +8,10 @@ class ExitMenuBot extends Bot
     public array $confPac = ['transport' => 'Reality', 'xray_core' => 'origin', 'blocklist' => ['domain:ads.example' => 1], 'warplist' => ['domain:youtube.com' => 1]];
     public array $confXray = [];
     public array $screens = []; public array $sent = []; public array $prompt = []; public array $ssh = []; public array $notified = [];
-    public string $probeAnswer = "probe=204 0.041 0.120\nip=203.0.113.50\nloc=FI\n\"INNERTUBE_CONTEXT_GL\":\"RU\"\n";
+    public string $probeAnswer = "probe=204 0.120\nip=203.0.113.50\nloc=FI\n\"INNERTUBE_CONTEXT_GL\":\"RU\"\n";
     public array $downloads = []; public array $tools = []; public ?string $toolOutput = null;
     public bool $restartOk = true;
-    public array $resolved = ['fi.example.org' => ['203.0.113.7'], 'inner.example.org' => ['10.10.0.7']];
+    public array $resolved = ['fi.example.org' => ['203.0.113.7'], 'inner.example.org' => ['10.10.0.7'], 'self.example.org' => ['198.51.100.1']];
     public function __construct()
     {
         $this->input = ['chat' => 1, 'from' => 1, 'message_id' => 5, 'callback_id' => 'cb', 'username' => 'admin'];
@@ -85,7 +85,8 @@ $check(str_contains($bot->last()[0], 'Узлов пока нет') && isset($bot
 $bot->exitAddPrompt();
 $check(($bot->prompt['callback'] ?? '') === 'saveExitAdd', 'запрос ссылки');
 foreach (['vless://x@fi.example.org:443?security=none' => 'Ссылка не подходит', str_replace('fi.example.org', 'inner.example.org', $link) => 'не публичный',
-    str_replace('fi.example.org', '198.51.100.1', $link) => 'этого же сервера'] as $bad => $why) {
+    str_replace('fi.example.org', '198.51.100.1', $link) => 'этого же сервера',
+    str_replace('fi.example.org', 'self.example.org', $link) => 'указывает на этот же сервер'] as $bad => $why) {
     $bot->saveExitAdd($bad);
     $check(str_contains($bot->last()[0], $why) && empty($bot->confPac['exits']), 'отказ: ' . $why);
 }
@@ -133,7 +134,7 @@ $check(str_contains(implode(' ', array_map(static fn($w) => $w, $bot->exitWarnin
 // --- Пользователи: по одному и всем ----------------------------------------
 $bot->exitUsersMenu($id, 0);
 $check(count(array_filter(array_keys($bot->callbacks()), static fn($c) => str_starts_with($c, "/exitU $id "))) === 2, 'в списке обычные пользователи');
-$bot->exitUserToggle($id, 1, 0);
+$bot->exitUserToggle($id, Bot::exitClientKey($bot->confXray['inbounds'][0]['settings']['clients'][1]), 0);
 $check(($bot->confXray['inbounds'][0]['settings']['clients'][1]['exit'] ?? null) === [$id], 'включено одному');
 $rule = array_values(array_filter($bot->confXray['routing']['rules'], static fn($r) => ($r['ruleTag'] ?? '') === "vpnbot:exit:$id:domain"))[0] ?? [];
 $check(($rule['user'] ?? null) === [str_repeat('b', 40)], 'правило только для него');
@@ -156,8 +157,8 @@ unset($bot->confPac['sniffing']);
 
 // --- Проверка: разбор ответа -------------------------------------------------
 $s = $bot->exitProbe($id, true);
-$check($s['ok'] && $s['http'] === 204 && $s['connect_ms'] === 41 && $s['loc'] === 'FI' && $s['gl'] === 'RU' && $s['ip'] === '203.0.113.50', 'разбор проверки');
-$bot->probeAnswer = "probe=000 0.000 0.000\n";
+$check($s['ok'] && $s['http'] === 204 && $s['ms'] === 120 && $s['loc'] === 'FI' && $s['gl'] === 'RU' && $s['ip'] === '203.0.113.50', 'разбор проверки');
+$bot->probeAnswer = "probe=000 0.000\n";
 $s = $bot->exitProbe($id, false);
 $check(!$s['ok'] && $s['error'] === 'узел не ответил', 'неответ узла');
 $bot->exitToggle($id);

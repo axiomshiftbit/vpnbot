@@ -108,6 +108,14 @@ $check($c['burstObservatory'] === ['subjectSelector' => ['vpnbot-exit-'], 'pingC
 $again = $c; $bot->ensureExitNodes($again, $pac);
 $check($again === $c, 'повторная сборка ничего не меняет');
 
+// --- Без блок-листа правила узла всё равно ниже правила торрентов ----------
+$c = $withUsers;
+$c['routing']['rules'] = [['type' => 'field', 'inboundTag' => ['vless_reality'], 'protocol' => ['bittorrent'], 'outboundTag' => 'block'],
+    ['type' => 'field', 'inboundTag' => ['api'], 'outboundTag' => 'api']];
+$bot->ensureExitNodes($c, $pac);
+$check(($c['routing']['rules'][1]['protocol'] ?? null) === ['bittorrent'] && str_starts_with($c['routing']['rules'][2]['ruleTag'] ?? '', 'vpnbot:exit:a1b2c3d4:quic'),
+    'торренты блокируются раньше правила узла');
+
 // --- QUIC «пропускать», выключенный узел, битая ссылка ---------------------
 $c = $withUsers; $q = $pac; $q['exits']['a1b2c3d4']['quic'] = 'pass';
 $bot->ensureExitNodes($c, $q);
