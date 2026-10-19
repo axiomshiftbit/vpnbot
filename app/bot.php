@@ -27039,12 +27039,23 @@ DNS-over-HTTPS with IP:
         if ($json === false) {
             return false;
         }
-        $file = @tempnam('/logs', '.xray-check-');
-        if ($file === false) {
+        // Xray 26.10.17+ в `run` читает файл только с расширением конфига
+        // (.json и т. п.), даже с -format json: имя от tempnam он отвергает,
+        // и любой конфиг считался бы неверным. tempnam лишь занимает имя;
+        // файл .json создаётся рядом режимом «x» (не идёт по чужой ссылке) и
+        // получает 0600 до записи содержимого.
+        $base = @tempnam('/logs', '.xray-check-');
+        if ($base === false) {
             return false;
         }
+        $file = $base . '.json';
         try {
-            if (dirname($file) !== '/logs' || file_put_contents($file, $json) === false) {
+            if (dirname($base) !== '/logs' || ($h = @fopen($file, 'x')) === false) {
+                return false;
+            }
+            $written = chmod($file, 0600) && fwrite($h, $json) === strlen($json);
+            fclose($h);
+            if (!$written) {
                 return false;
             }
             $out = $this->ssh('XRAY_LOCATION_ASSET=/logs/geodata timeout 15 ' . escapeshellarg($binary)
@@ -27052,6 +27063,7 @@ DNS-over-HTTPS with IP:
             return !$this->sshFailed && trim((string) $out) === 'XRAY_CONFIG_OK';
         } finally {
             @unlink($file);
+            @unlink($base);
         }
     }
 

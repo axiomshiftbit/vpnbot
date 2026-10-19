@@ -24,6 +24,10 @@ class VlessCheckTestBot extends Bot
         if (!preg_match("/-config '([^']+)'/", $cmd, $m)) {
             throw new RuntimeException('Нет проверяемого конфига');
         }
+        // Xray 26.10.17+ не читает в `run` файл без расширения конфига.
+        if (!str_ends_with($m[1], '.json')) {
+            throw new RuntimeException('Временный конфиг без расширения .json');
+        }
         if ((fileperms($m[1]) & 0777) !== 0600) {
             throw new RuntimeException('Временный конфиг доступен посторонним');
         }
@@ -54,6 +58,6 @@ if ($bot->validateXrayConfig($config, $binary)) {
     throw new RuntimeException('Невалидный конфиг принят');
 }
 foreach ($bot->temporaryFiles as $file) {
-    if (file_exists($file)) { throw new RuntimeException('Временный конфиг не удалён'); }
+    if (file_exists($file) || file_exists(substr($file, 0, -5))) { throw new RuntimeException('Временный конфиг не удалён'); }
 }
 echo "vless_encryption_check_test OK ({$bot->checks} проверки реальным ядром)\n";
