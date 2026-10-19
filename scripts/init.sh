@@ -63,6 +63,21 @@ check_bot_key() {
     esac
 }
 
+# Автозапуск после перезагрузки. У большинства контейнеров restart: "no", их
+# поднимает только make: без этого шага после ребута чистого сервера работали
+# одни php/nginx/upstream/service/warp, а Xray, WireGuard и остальное — нет.
+# Служба vpnbot.service (scripts/install_as_service.sh), если включена, уже
+# делает это сама — тогда cron не добавляется, иначе старт был бы двойным.
+install_autostart() {
+    if systemctl is-enabled --quiet vpnbot.service 2>/dev/null; then
+        echo "autostart: vpnbot.service"
+    elif make cron; then
+        echo "autostart: cron @reboot make r"
+    else
+        echo "WARN: автозапуск не установлен — выполните make cron вручную" >&2
+    fi
+}
+
 normalize_bot_key
 
 case "$BRANCH" in
@@ -386,3 +401,4 @@ EOF
 fi
 
 make u
+install_autostart

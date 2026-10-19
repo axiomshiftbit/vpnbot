@@ -156,10 +156,11 @@ make test
 make r
 ```
 #### autoload:
-```shell
-crontab -e
-```
-add `@reboot cd /root/vpnbot && make r` and save
+Установщик (`init.sh`) сам добавляет в cron `@reboot cd /root/vpnbot && make r`
+(`make cron`; убрать — `make uncron`), если не включена служба `vpnbot.service`
+(`scripts/install_as_service.sh`). Без автозапуска после перезагрузки
+поднимаются только контейнеры с `restart: unless-stopped` (php, nginx, upstream,
+service, warp), а Xray, WireGuard и остальные — нет.
 
 ---
 
