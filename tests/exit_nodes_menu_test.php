@@ -160,11 +160,14 @@ $s = $bot->exitProbe($id, true);
 $check($s['ok'] && $s['http'] === 204 && $s['ms'] === 120 && $s['loc'] === 'FI' && $s['gl'] === 'RU' && $s['ip'] === '203.0.113.50', 'разбор проверки');
 $bot->probeAnswer = "probe=000 0.000\n";
 $s = $bot->exitProbe($id, false);
-$check(!$s['ok'] && $s['error'] === 'узел не ответил', 'неответ узла');
+$check(!$s['ok'] && $s['error'] === 'no answer' && $bot->exitErrorText($s['error']) === 'узел не ответил', 'неответ узла: код в состоянии, текст при показе');
 $bot->exitToggle($id);
 $check($bot->confPac['exits'][$id]['enabled'] === 0 && !array_filter($bot->confXray['outbounds'], static fn($o) => str_starts_with($o['tag'] ?? '', 'vpnbot-exit-')), 'выключенный узел убран из конфига');
 $s = $bot->exitProbe($id, true);
-$check(!$s['ok'] && $s['error'] === 'узел выключен', 'выключенный не проверяется');
+$check(!$s['ok'] && $s['error'] === 'disabled', 'выключенный не проверяется');
+$bot->language = 'en';
+$check($bot->exitErrorText('no answer') === 'node did not answer' && $bot->exitErrorText('http:502') === 'node answered 502' && $bot->exitErrorText('старый текст') === 'старый текст', 'код ошибки показывается на языке интерфейса');
+$bot->language = 'ru';
 $bot->exitToggle($id);
 
 // --- Наборы правил ----------------------------------------------------------
@@ -293,7 +296,7 @@ $check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && ($sets->exitRulese
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && count($sets->validated) === 1, 'то же содержимое ядро повторно не проверяет');
 $sets->binary = 'BIN2'; $sets->coreOk = false;
 $sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_regex' => ['(']]]]);
-$check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'не принят ядром Xray' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'],
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'core' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'],
     'набор, который ядро не принимает, не заменяет прежний');
 array_map('unlink', glob($sets->dir . '/*') ?: []);
 @rmdir($sets->dir);

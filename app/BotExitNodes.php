@@ -279,8 +279,8 @@ trait BotExitNodes
     {
         $port = $this->exitProbePort($id);
         $node = $this->exitNodes()[$id] ?? null;
-        if ($port === null || $node === null) return ['time' => time(), 'ok' => false, 'error' => $this->t('узел не найден', 'node not found')];
-        if (empty($node['enabled'])) return ['time' => time(), 'ok' => false, 'error' => $this->t('узел выключен', 'node disabled')];
+        if ($port === null || $node === null) return ['time' => time(), 'ok' => false, 'error' => 'not found'];
+        if (empty($node['enabled'])) return ['time' => time(), 'ok' => false, 'error' => 'disabled'];
         $proxy = "127.0.0.1:$port";
         // Задержка — время до первого байта generate_204 через узел: time_connect
         // при --socks5-hostname — это подключение к самому входу на 127.0.0.1.
@@ -294,7 +294,7 @@ trait BotExitNodes
         }
         $out = (string) $this->ssh($cmd . 'true', 'xr');
         $status = ['time' => time(), 'ok' => false];
-        if ($this->sshFailed) return $status + ['error' => $this->t('нет связи с контейнером Xray', 'no connection to the Xray container')];
+        if ($this->sshFailed) return $status + ['error' => 'xray'];
         if (preg_match('~^probe=(\d{3}) ([0-9.]+)$~m', $out, $m)) {
             $status['http'] = (int) $m[1];
             $status['ms'] = (int) round((float) $m[2] * 1000);
@@ -304,7 +304,7 @@ trait BotExitNodes
         if (preg_match('~^ip=([0-9a-fA-F:.]{2,45})$~m', $out, $m)) $status['ip'] = $m[1];
         if (preg_match('~"INNERTUBE_CONTEXT_GL":"([A-Z]{2})"~', $out, $m)) $status['gl'] = $m[1];
         if ($full) $status['full'] = 1;
-        if (!$status['ok']) $status['error'] = !empty($status['http']) ? $this->t('узел ответил ', 'node answered ') . $status['http'] : $this->t('узел не ответил', 'node did not answer');
+        if (!$status['ok']) $status['error'] = !empty($status['http']) ? 'http:' . $status['http'] : 'no answer';
         $previous = $this->exitStatus()[$id] ?? [];
         // Страна YouTube из полной проверки живёт до следующей полной.
         if (!$full && isset($previous['gl'])) $status['gl'] = $previous['gl'];
@@ -312,12 +312,32 @@ trait BotExitNodes
         return $status;
     }
 
+    // В файлах состояния — коды ошибок, текст на языке интерфейса подставляется
+    // при показе (язык бота могли сменить после пробы). Старые файлы с
+    // готовым текстом показываются как есть.
+    public function exitErrorText(string $code): string
+    {
+        if (str_starts_with($code, 'http:')) return $this->t('узел ответил ', 'node answered ') . substr($code, 5);
+        return match ($code) {
+            'not found' => $this->t('узел не найден', 'node not found'),
+            'disabled' => $this->t('узел выключен', 'node disabled'),
+            'xray' => $this->t('нет связи с контейнером Xray', 'no connection to the Xray container'),
+            'no answer' => $this->t('узел не ответил', 'node did not answer'),
+            'download' => $this->t('не скачался', 'not downloaded'),
+            'parse' => $this->t('не разобран', 'not parsed'),
+            'empty' => $this->t('пустой', 'empty'),
+            'core' => $this->t('не принят ядром Xray', 'rejected by the Xray core'),
+            '' => $this->t('не работает', 'not working'),
+            default => $code,
+        };
+    }
+
     public function exitStatusLine(string $id, array $node): string
     {
         if (empty($node['enabled'])) return $this->t('⏸ выключен', '⏸ disabled');
         $s = $this->exitStatus()[$id] ?? [];
         if (!$s) return $this->t('⚪ ещё не проверялся', '⚪ not checked yet');
-        $line = !empty($s['ok']) ? $this->t('🟢 работает', '🟢 working') : '🔴 ' . self::esc($s['error'] ?? $this->t('не работает', 'not working'));
+        $line = !empty($s['ok']) ? $this->t('🟢 работает', '🟢 working') : '🔴 ' . self::esc($this->exitErrorText((string) ($s['error'] ?? '')));
         if (!empty($s['ok'])) $line .= ' · ' . (int) ($s['ms'] ?? 0) . $this->t(' мс', ' ms');
         if (!empty($s['loc'])) $line .= $this->t(' · выход ', ' · exit ') . self::esc($s['loc']);
         if (!empty($s['gl'])) $line .= $this->t(' · YouTube видит ', ' · YouTube sees ') . self::esc($s['gl']);
@@ -440,11 +460,11 @@ trait BotExitNodes
         $format = self::ruleSetFormat($url);
         $binary = self::exitRulesetUrlValid($url) ? $this->exitRulesetDownload($url) : null;
         $entries = $binary === null ? null : $this->exitRulesetConvert($binary, $format, (string) ($set['behavior'] ?? 'domain'));
-        $error = $binary === null ? $this->t('не скачался', 'not downloaded') : ($entries === null ? $this->t('не разобран', 'not parsed') : (!$entries ? $this->t('пустой', 'empty') : ''));
+        $error = $binary === null ? 'download' : ($entries === null ? 'parse' : (!$entries ? 'empty' : ''));
         // Записи набора попадают в каждую сборку конфига: битая регулярка из
         // чужого источника сделала бы так, что ядро отвергает любое изменение
         // Xray. Новое содержимое сначала проверяет выбранное ядро.
-        if ($error === '' && hash('sha256', $binary) !== ($cache['hash'] ?? '') && !$this->exitRulesetCoreAccepts($entries)) $error = $this->t('не принят ядром Xray', 'rejected by the Xray core');
+        if ($error === '' && hash('sha256', $binary) !== ($cache['hash'] ?? '') && !$this->exitRulesetCoreAccepts($entries)) $error = 'core';
         $cache = ['key' => $url, 'time' => time(), 'error' => $error]
             + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary)] : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '']);
         @mkdir(self::EXIT_RULESET_DIR, 0700, true);
@@ -690,7 +710,7 @@ trait BotExitNodes
     public function exitCheck(string $id): void
     {
         $s = $this->exitProbe($id, true);
-        $this->exitNodeMenu($id, !empty($s['ok']) ? $this->t('Проверено: узел работает', 'Checked: the node is working') : $this->t('Проверено: ', 'Checked: ') . ($s['error'] ?? $this->t('узел не работает', 'the node is not working')));
+        $this->exitNodeMenu($id, !empty($s['ok']) ? $this->t('Проверено: узел работает', 'Checked: the node is working') : $this->t('Проверено: ', 'Checked: ') . $this->exitErrorText((string) ($s['error'] ?? '')));
     }
 
     public function exitRefresh(string $id): void
@@ -908,7 +928,7 @@ trait BotExitNodes
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set)) continue;
             $cache = $this->exitRulesetCache((string) $url);
-            $state = !$cache ? $this->t('⏳ не скачан', '⏳ not downloaded') : (($cache['error'] ?? '') !== '' ? '⚠️ ' . $cache['error'] : $this->t('записей: ', 'entries: ') . count($cache['entries'] ?? []));
+            $state = !$cache ? $this->t('⏳ не скачан', '⏳ not downloaded') : (($cache['error'] ?? '') !== '' ? '⚠️ ' . $this->exitErrorText((string) $cache['error']) : $this->t('записей: ', 'entries: ') . count($cache['entries'] ?? []));
             $shown = mb_strlen((string) $url) > 90 ? mb_substr((string) $url, 0, 60) . '…' . mb_substr((string) $url, -25) : (string) $url;
             $text[] = "\n" . (!empty($set['on']) ? '✅' : '⏸') . ' <code>' . self::esc($shown) . '</code> — ' . self::esc($state)
                 . (self::ruleSetFormat((string) $url) === 'mrs' ? ' · ' . self::esc((string) ($set['behavior'] ?? 'domain')) : '');
