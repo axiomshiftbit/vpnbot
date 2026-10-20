@@ -17457,13 +17457,13 @@ DNS-over-HTTPS with IP:
         $text    = [];
         $text[]  = 'Menu -> ShadowSocks';
         $text[]  = '';
-        $text[]  = '<b>Connection</b>';
+        $text[]  = $this->t('<b>Подключение</b>', '<b>Connection</b>');
         $text[]  = "server: <code>$domain:$port</code>";
         $text[]  = "transport: <code>$activeTransport</code>";
         $text[]  = $this->t('включено: <code>', 'enabled: <code>') . implode(', ', $enabledTransports) . '</code>';
         $text[]  = 'dns: <code>10.10.0.5</code>';
         $text[]  = '';
-        $text[]  = '<b>Credentials</b>';
+        $text[]  = $this->t('<b>Учётные данные</b>', '<b>Credentials</b>');
         $text[]  = 'method: <code>' . htmlspecialchars($ss['method'] ?? '', ENT_QUOTES) . '</code>';
         $text[]  = "password: <span class='tg-spoiler'>" . htmlspecialchars($ss['password'] ?? '', ENT_QUOTES) . '</span>';
         $text[]  = 'link: <code>' . htmlspecialchars($ss_link, ENT_QUOTES) . '</code>';
@@ -27791,7 +27791,10 @@ DNS-over-HTTPS with IP:
         $mainTag = (string) ($c['inbounds'][0]['tag'] ?? 'vless_tls');
         $extra   = [];
         foreach (($st['inbounds'] ?? []) as $t => $v) {
-            if ((string) $t === $mainTag || ((int) ($v['download'] ?? 0) + (int) ($v['upload'] ?? 0)) <= 0) {
+            // Входы проверки узлов выхода — служебные: их трафик и так в
+            // карточке узла («Трафик через узел»).
+            if ((string) $t === $mainTag || str_starts_with((string) $t, self::EXIT_PROBE_TAG)
+                || ((int) ($v['download'] ?? 0) + (int) ($v['upload'] ?? 0)) <= 0) {
                 continue;
             }
             $extra[] = htmlspecialchars((string) $t, ENT_QUOTES)
