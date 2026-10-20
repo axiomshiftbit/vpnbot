@@ -341,9 +341,25 @@ class Bot
             // $_SESSION дальше работают из памяти; точечные записи идут через
             // stashReply()/takeReply() (reopen → write/read → close).
             session_write_close();
-            $this->action();
+            try {
+                $this->action();
+            } catch (Throwable $error) {
+                $this->actionFailed($error);
+            }
         }
         $this->callbackCheck();
+    }
+
+    // Необработанный отказ действия (контейнер не ответил и т. п.): раньше PHP
+    // завершался фатальной ошибкой, и кнопка «крутилась» без ответа. Текст
+    // сообщения в журнал не пишется: это может быть введённый пароль.
+    public function actionFailed(Throwable $error): void
+    {
+        error_log('action ' . (string) ($this->input['callback'] ?: 'message') . ': ' . get_class($error) . ': '
+            . $error->getMessage() . ' @ ' . basename($error->getFile()) . ':' . $error->getLine());
+        $text = mb_substr($this->t('Не выполнено: ', 'Not done: ') . $error->getMessage(), 0, 200);
+        if (!empty($this->input['callback_id']) && empty($this->callback)) $this->answer($this->input['callback_id'], $text, true);
+        elseif (!empty($this->input['chat'])) $this->send($this->input['chat'], self::esc($text));
     }
 
     /**
@@ -3419,7 +3435,8 @@ class Bot
             ];
         }
         foreach ($c['routing']['rules'] as $v) {
-            if ($v['outboundTag'] == 'api') {
+            // У правил узлов выхода вместо outboundTag — balancerTag.
+            if (($v['outboundTag'] ?? '') === 'api') {
                 $rule = true;
                 break;
             }
@@ -4087,9 +4104,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter url",
+            $this->t("@{$this->input['username']} введите адрес", "@{$this->input['username']} enter url"),
             $this->input['message_id'],
-            reply: 'enter url',
+            reply: $this->t('введите адрес', 'enter url'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4131,9 +4148,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter password",
+            $this->t("@{$this->input['username']} введите пароль", "@{$this->input['username']} enter password"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите пароль', 'enter password'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4183,7 +4200,7 @@ class Bot
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите новый пароль веб-панели (не меньше 8 символов)", "@{$this->input['username']} enter new web panel password (min 8 chars)"),
             $this->input['message_id'],
-            reply: 'enter panel password',
+            reply: $this->t('введите пароль панели', 'enter panel password'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4253,7 +4270,7 @@ class Bot
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите ключ маскировки", "@{$this->input['username']} enter camouflage key"),
             $this->input['message_id'],
-            reply: 'enter camouflage key',
+            reply: $this->t('введите ключ маскировки', 'enter camouflage key'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4267,9 +4284,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter subdomain",
+            $this->t("@{$this->input['username']} введите поддомен", "@{$this->input['username']} enter subdomain"),
             $this->input['message_id'],
-            reply: 'enter subdomain',
+            reply: $this->t('введите поддомен', 'enter subdomain'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4283,9 +4300,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter dns",
+            $this->t("@{$this->input['username']} введите DNS", "@{$this->input['username']} enter dns"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите DNS', 'enter dns'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4308,7 +4325,7 @@ class Bot
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите пароль для <code>$user</code>", "@{$this->input['username']} enter password for <code>$user</code>"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите пароль', 'enter password'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4322,9 +4339,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter login",
+            $this->t("@{$this->input['username']} введите логин", "@{$this->input['username']} enter login"),
             $this->input['message_id'],
-            reply: 'enter login',
+            reply: $this->t('введите логин', 'enter login'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4338,9 +4355,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter subdomain",
+            $this->t("@{$this->input['username']} введите поддомен", "@{$this->input['username']} enter subdomain"),
             $this->input['message_id'],
-            reply: 'enter subdomain',
+            reply: $this->t('введите поддомен', 'enter subdomain'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4395,9 +4412,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter password",
+            $this->t("@{$this->input['username']} введите пароль", "@{$this->input['username']} enter password"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите пароль', 'enter password'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4411,9 +4428,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter password",
+            $this->t("@{$this->input['username']} введите пароль", "@{$this->input['username']} enter password"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите пароль', 'enter password'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4427,9 +4444,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter name",
+            $this->t("@{$this->input['username']} введите имя", "@{$this->input['username']} enter name"),
             $this->input['message_id'],
-            reply: 'enter name',
+            reply: $this->t('введите имя', 'enter name'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4443,9 +4460,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter name",
+            $this->t("@{$this->input['username']} введите имя", "@{$this->input['username']} enter name"),
             $this->input['message_id'],
-            reply: 'enter name:uuid [,name:uuid]',
+            reply: $this->t('введите имя:uuid [,имя:uuid]', 'enter name:uuid [,name:uuid]'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4459,9 +4476,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter name",
+            $this->t("@{$this->input['username']} введите имя", "@{$this->input['username']} enter name"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите имя', 'enter name'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4475,9 +4492,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} attach html",
+            $this->t("@{$this->input['username']} приложите файл html", "@{$this->input['username']} attach html"),
             $this->input['message_id'],
-            reply: 'attach html',
+            reply: $this->t('приложите файл html', 'attach html'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -5143,9 +5160,9 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter hysteria SNI / masquerade host (e.g. {$this->getDomain()}), <code>0</code> = default",
+            $this->t("@{$this->input['username']} введите SNI Hysteria / домен маскировки (например {$this->getDomain()}), <code>0</code> = по умолчанию", "@{$this->input['username']} enter hysteria SNI / masquerade host (e.g. {$this->getDomain()}), <code>0</code> = default"),
             $this->input['message_id'],
-            reply: 'enter hysteria SNI',
+            reply: $this->t('введите SNI Hysteria', 'enter hysteria SNI'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -5234,7 +5251,7 @@ class Bot
             . "(comma/dash multi-port: <code>1234,5000-6000</code>) — <code>0</code> = off.\n\n"
             . "⚠️ " . $this->i18n('port hopping fw hint'),
             $this->input['message_id'],
-            reply: 'enter port range',
+            reply: $this->t('введите диапазон портов', 'enter port range'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -5486,7 +5503,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите полосу: отдача и приём (Мбит/с), например 200 200; <code>0</code> = BBR (авто)", "@{$this->input['username']} enter bandwidth: up down (mbps), e.g. 200 200 — <code>0</code> = BBR (auto)"),
             $this->input['message_id'],
-            reply: 'enter bandwidth',
+            reply: $this->t('введите полосу', 'enter bandwidth'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -5700,9 +5717,9 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter simple-tls port",
+            $this->t("@{$this->input['username']} введите порт simple-tls", "@{$this->input['username']} enter simple-tls port"),
             $this->input['message_id'],
-            reply: 'enter simple-tls port',
+            reply: $this->t('введите порт simple-tls', 'enter simple-tls port'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -5732,7 +5749,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите SNI simple-tls (имя сервера в сертификате, например {$this->getDomain()})", "@{$this->input['username']} enter simple-tls SNI (server name in cert, e.g. {$this->getDomain()})"),
             $this->input['message_id'],
-            reply: 'enter simple-tls SNI',
+            reply: $this->t('введите SNI simple-tls', 'enter simple-tls SNI'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -6195,7 +6212,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите порт Cloak", "@{$this->input['username']} enter cloak port"),
             $this->input['message_id'],
-            reply: 'enter cloak port',
+            reply: $this->t('введите порт Cloak', 'enter cloak port'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -6234,7 +6251,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите домен маскировки (например www.bing.com)", "@{$this->input['username']} enter masquerade domain (e.g. www.bing.com)"),
             $this->input['message_id'],
-            reply: 'enter masquerade domain',
+            reply: $this->t('введите домен маскировки', 'enter masquerade domain'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -6340,7 +6357,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите имя пользователя Cloak", "@{$this->input['username']} enter cloak user name"),
             $this->input['message_id'],
-            reply: 'enter cloak user name',
+            reply: $this->t('введите имя пользователя Cloak', 'enter cloak user name'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -6515,7 +6532,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите название:", "@{$this->input['username']} enter the title:"),
             $this->input['message_id'],
-            reply: 'enter the title:',
+            reply: $this->t('введите название:', 'enter the title:'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -6532,7 +6549,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите время в формате https://www.php.net/manual/ru/function.strtotime.php:", "@{$this->input['username']} enter time like https://www.php.net/manual/ru/function.strtotime.php:"),
             $this->input['message_id'],
-            reply: 'enter time like https://www.php.net/manual/ru/function.strtotime.php:',
+            reply: $this->t('введите время в формате strtotime:', 'enter time like https://www.php.net/manual/ru/function.strtotime.php:'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -6549,7 +6566,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} отправьте файл экспорта:", "@{$this->input['username']} send the export file:"),
             $this->input['message_id'],
-            reply: 'send the export file:',
+            reply: $this->t('отправьте файл экспорта:', 'send the export file:'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -7870,7 +7887,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} отправьте файл экспорта:", "@{$this->input['username']} send the export file:"),
             $this->input['message_id'],
-            reply: 'send the export file:',
+            reply: $this->t('отправьте файл экспорта:', 'send the export file:'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -10930,7 +10947,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} отправьте домен-алиас (дополнительный SAN, маршрутизируется как основной)", "@{$this->input['username']} send alias domain (extra SAN, routed same as main)"),
             $this->input['message_id'],
-            reply: 'send alias domain',
+            reply: $this->t('отправьте домен-алиас', 'send alias domain'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -11174,7 +11191,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} перечислите подсети через запятую", "@{$this->input['username']} list subnets separated by commas"),
             $this->input['message_id'],
-            reply: 'list subnets separated by commas',
+            reply: $this->t('перечислите подсети через запятую', 'list subnets separated by commas'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11249,9 +11266,9 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter domain",
+            $this->t("@{$this->input['username']} введите домен", "@{$this->input['username']} enter domain"),
             $this->input['message_id'],
-            reply: 'enter domain',
+            reply: $this->t('введите домен', 'enter domain'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11266,7 +11283,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} отправьте файл с цепочкой сертификатов и закрытым ключом <code>cat key.pem ca.pem cert.pem</code>", "@{$this->input['username']} send file with your certificate chain and private key <code>cat key.pem ca.pem cert.pem</code>"),
             $this->input['message_id'],
-            reply: 'send file with your certificate chain and private key',
+            reply: $this->t('отправьте файл с цепочкой сертификатов и закрытым ключом', 'send file with your certificate chain and private key'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11413,9 +11430,9 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter password",
+            $this->t("@{$this->input['username']} введите пароль", "@{$this->input['username']} enter password"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите пароль', 'enter password'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11428,9 +11445,9 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter key",
+            $this->t("@{$this->input['username']} введите ключ", "@{$this->input['username']} enter key"),
             $this->input['message_id'],
-            reply: 'enter key',
+            reply: $this->t('введите ключ', 'enter key'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11445,7 +11462,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите время в формате https://www.php.net/manual/ru/function.strtotime.php:", "@{$this->input['username']} enter time like https://www.php.net/manual/ru/function.strtotime.php:"),
             $this->input['message_id'],
-            reply: 'enter time like https://www.php.net/manual/ru/function.strtotime.php:',
+            reply: $this->t('введите время в формате strtotime:', 'enter time like https://www.php.net/manual/ru/function.strtotime.php:'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11533,9 +11550,9 @@ NFT;
         }
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter id",
+            $this->t("@{$this->input['username']} введите id", "@{$this->input['username']} enter id"),
             $this->input['message_id'],
-            reply: 'enter id',
+            reply: $this->t('введите id', 'enter id'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11548,9 +11565,9 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter subdomain",
+            $this->t("@{$this->input['username']} введите поддомен", "@{$this->input['username']} enter subdomain"),
             $this->input['message_id'],
-            reply: 'enter subdomain',
+            reply: $this->t('введите поддомен', 'enter subdomain'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11579,7 +11596,7 @@ NFT;
             $this->input['chat'],
             $text,
             $this->input['message_id'],
-            reply: 'seconds:count, 300:2, 0 = off',
+            reply: $this->t('секунды:число, 300:2, 0 = выкл', 'seconds:count, 300:2, 0 = off'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11592,9 +11609,9 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} number port",
+            $this->t("@{$this->input['username']} номер порта", "@{$this->input['username']} number port"),
             $this->input['message_id'],
-            reply: 'number port',
+            reply: $this->t('номер порта', 'number port'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -11609,7 +11626,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите домен для ссылки", "@{$this->input['username']} enter domain for link"),
             $this->input['message_id'],
-            reply: 'enter domain for link',
+            reply: $this->t('введите домен для ссылки', 'enter domain for link'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -12361,7 +12378,7 @@ NFT;
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите число записей на странице", "@{$this->input['username']} enter limit on page"),
             $this->input['message_id'],
-            reply: 'enter limit on page',
+            reply: $this->t('введите число записей на странице', 'enter limit on page'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -12883,7 +12900,7 @@ DNS-over-HTTPS forcing HTTP/3 only:
 DNS-over-HTTPS with IP:
 <code>example.org https://dns.adguard.com/dns-query 94.140.14.14</code>"),
             $this->input['message_id'],
-            reply: 'enter command',
+            reply: $this->t('введите команду', 'enter command'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -12913,7 +12930,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите адрес апстрима", "@{$this->input['username']} enter address upstream"),
             $this->input['message_id'],
-            reply: 'enter address upstream',
+            reply: $this->t('введите адрес апстрима', 'enter address upstream'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -13074,7 +13091,7 @@ DNS-over-HTTPS with IP:
                         . $this->t("<b>Как вводить:</b> в столбик (по одной на строку) или в строку ", "<b>How to enter:</b> one per line, or on one line ")
                         . $this->t("через запятую либо пробел: <code>10.0.0.0/24, 2001:db8::/32</code>.", "separated by commas or spaces: <code>10.0.0.0/24, 2001:db8::/32</code>."),
                     $this->input['message_id'],
-                    reply: 'list separated by commas',
+                    reply: $this->t('перечислите через запятую', 'list separated by commas'),
                 );
                 break;
 
@@ -13117,7 +13134,7 @@ DNS-over-HTTPS with IP:
                     $this->input['chat'],
                     $this->t("@{$this->input['username']} перечислите через запятую$hint", "@{$this->input['username']} list separated by commas$hint"),
                     $this->input['message_id'],
-                    reply: 'list separated by commas',
+                    reply: $this->t('перечислите через запятую', 'list separated by commas'),
                 );
                 break;
         }
@@ -15300,7 +15317,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} перечислите домены через запятую", "@{$this->input['username']} list domains separated by commas"),
             $this->input['message_id'],
-            reply: 'list domains separated by commas',
+            reply: $this->t('перечислите домены через запятую', 'list domains separated by commas'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -15332,7 +15349,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} перечислите поддомены через запятую", "@{$this->input['username']} list subdomains separated by commas"),
             $this->input['message_id'],
-            reply: 'list subdomains separated by commas',
+            reply: $this->t('перечислите поддомены через запятую', 'list subdomains separated by commas'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -15364,7 +15381,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите регулярное выражение", "@{$this->input['username']} enter regular expression"),
             $this->input['message_id'],
-            reply: 'enter regular expression',
+            reply: $this->t('введите регулярное выражение', 'enter regular expression'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -15934,7 +15951,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите DNS через запятую", "@{$this->input['username']} enter dns separated by commas"),
             $this->input['message_id'],
-            reply: 'enter dns separated by commas',
+            reply: $this->t('введите DNS через запятую', 'enter dns separated by commas'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -15949,12 +15966,12 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter MTU\n\n"
+            $this->t("@{$this->input['username']} введите MTU\n\n", "@{$this->input['username']} enter MTU\n\n")
             . $this->t('Допустимо: <code>', 'Allowed: <code>') . self::MTU_MIN . '..' . self::MTU_MAX . $this->t('</code> — вне этих границ конфиг не примет клиент AmneziaVPN. ', '</code>; outside these bounds the AmneziaVPN client will not accept the config. ')
             . $this->t("Пусто или <code>0</code> — вернуть значение по умолчанию ({$this->mtu}).\n", "Empty or <code>0</code> restores the default ({$this->mtu}).\n")
             . $this->t('Ниже 1280 в туннеле перестанет работать IPv6.', 'Below 1280 IPv6 stops working in the tunnel.'),
             $this->input['message_id'],
-            reply: 'enter MTU',
+            reply: $this->t('введите MTU', 'enter MTU'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -15969,12 +15986,12 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter MTU\n\n"
+            $this->t("@{$this->input['username']} введите MTU\n\n", "@{$this->input['username']} enter MTU\n\n")
             . $this->t('Допустимо: <code>', 'Allowed: <code>') . self::MTU_MIN . '..' . self::MTU_MAX . $this->t('</code> — вне этих границ конфиг не примет клиент AmneziaVPN. ', '</code>; outside these bounds the AmneziaVPN client will not accept the config. ')
             . $this->t("Пусто или <code>0</code> — вернуть значение инстанса.\n", "Empty or <code>0</code> restores the instance value.\n")
             . $this->t('Ниже 1280 в туннеле перестанет работать IPv6.', 'Below 1280 IPv6 stops working in the tunnel.'),
             $this->input['message_id'],
-            reply: 'enter MTU',
+            reply: $this->t('введите MTU', 'enter MTU'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -16063,7 +16080,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите подсети через запятую", "@{$this->input['username']} enter subnet separated by commas"),
             $this->input['message_id'],
-            reply: 'enter subnet separated by commas',
+            reply: $this->t('введите подсети через запятую', 'enter subnet separated by commas'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -16143,9 +16160,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter like '10.0.0.0/24, -10.0.0.5/32'",
+            $this->t("@{$this->input['username']} введите, например, '10.0.0.0/24, -10.0.0.5/32'", "@{$this->input['username']} enter like '10.0.0.0/24, -10.0.0.5/32'"),
             $this->input['message_id'],
-            reply: 'enter like \'10.0.0.0/24, -10.0.0.5/32\'',
+            reply: $this->t('введите, например, \'10.0.0.0/24, -10.0.0.5/32\'', 'enter like \'10.0.0.0/24, -10.0.0.5/32\''),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -16316,7 +16333,7 @@ DNS-over-HTTPS with IP:
                     $this->input['chat'],
                     $this->t("@{$this->input['username']} перечислите подсети через запятую", "@{$this->input['username']} list subnets separated by commas"),
                     $this->input['message_id'],
-                    reply: 'list subnets separated by commas',
+                    reply: $this->t('перечислите подсети через запятую', 'list subnets separated by commas'),
                 );
                 $this->stashReply($r, [
                     'start_message' => $this->input['message_id'],
@@ -17443,7 +17460,7 @@ DNS-over-HTTPS with IP:
         $text[]  = '<b>Connection</b>';
         $text[]  = "server: <code>$domain:$port</code>";
         $text[]  = "transport: <code>$activeTransport</code>";
-        $text[]  = 'enabled: <code>' . implode(', ', $enabledTransports) . '</code>';
+        $text[]  = $this->t('включено: <code>', 'enabled: <code>') . implode(', ', $enabledTransports) . '</code>';
         $text[]  = 'dns: <code>10.10.0.5</code>';
         $text[]  = '';
         $text[]  = '<b>Credentials</b>';
@@ -17783,9 +17800,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter domain",
+            $this->t("@{$this->input['username']} введите домен", "@{$this->input['username']} enter domain"),
             $this->input['message_id'],
-            reply: 'enter domain',
+            reply: $this->t('введите домен', 'enter domain'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -17798,9 +17815,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter password",
+            $this->t("@{$this->input['username']} введите пароль", "@{$this->input['username']} enter password"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите пароль', 'enter password'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -18385,7 +18402,7 @@ DNS-over-HTTPS with IP:
                 $this->input['chat'],
                 $this->t("@{$this->input['username']} введите адрес сайта-приманки, например http://", "@{$this->input['username']} enter decoy origin, e.g. http://") . self::TELEMT_WEB_DECOY_GATEWAY . ":8081",
                 $this->input['message_id'],
-                reply: 'enter decoy origin',
+                reply: $this->t('введите адрес сайта-приманки', 'enter decoy origin'),
             );
             $this->stashReply($r, [
                 'start_message' => $this->input['message_id'],
@@ -19147,7 +19164,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите имя пользователя", "@{$this->input['username']} enter user name"),
             $this->input['message_id'],
-            reply: 'enter user name',
+            reply: $this->t('введите имя пользователя', 'enter user name'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -19208,9 +19225,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter fake-TLS domain (or 0 for default)",
+            $this->t("@{$this->input['username']} введите домен fake-TLS (или 0 по умолчанию)", "@{$this->input['username']} enter fake-TLS domain (or 0 for default)"),
             $this->input['message_id'],
-            reply: 'enter domain',
+            reply: $this->t('введите домен', 'enter domain'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -21866,7 +21883,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите число устройств HWID", "@{$this->input['username']} enter hwid devices count"),
             $this->input['message_id'],
-            reply: 'enter hwid devices count',
+            reply: $this->t('введите число устройств HWID', 'enter hwid devices count'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -26226,7 +26243,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите пароль (или оставьте пустым для автоматического)", "@{$this->input['username']} enter password (or leave empty to auto-generate)"),
             $this->input['message_id'],
-            reply: 'enter xr password',
+            reply: $this->t('введите пароль xr', 'enter xr password'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -26528,7 +26545,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} отправьте файл шаблона:", "@{$this->input['username']} send the template file:"),
             $this->input['message_id'],
-            reply: 'send the template file:',
+            reply: $this->t('отправьте файл шаблона:', 'send the template file:'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -26544,7 +26561,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} отправьте время, например 1 hour или 1 day", "@{$this->input['username']} send time like 1 hour or 1 day etc"),
             $this->input['message_id'],
-            reply: 'send time like 1 hour or 1 day etc',
+            reply: $this->t('отправьте время, например 1 hour или 1 day', 'send time like 1 hour or 1 day etc'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -26576,7 +26593,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} отправьте имя шаблона", "@{$this->input['username']} send the template name"),
             $this->input['message_id'],
-            reply: 'send the template name',
+            reply: $this->t('отправьте имя шаблона', 'send the template name'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -26843,9 +26860,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} send name",
+            $this->t("@{$this->input['username']} отправьте имя", "@{$this->input['username']} send name"),
             $this->input['message_id'],
-            reply: 'send name',
+            reply: $this->t('отправьте имя', 'send name'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -28185,9 +28202,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter key",
+            $this->t("@{$this->input['username']} введите ключ", "@{$this->input['username']} enter key"),
             $this->input['message_id'],
-            reply: 'enter key',
+            reply: $this->t('введите ключ', 'enter key'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -29446,7 +29463,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите число устройств HWID", "@{$this->input['username']} enter hwid devices count"),
             $this->input['message_id'],
-            reply: 'enter hwid devices count',
+            reply: $this->t('введите число устройств HWID', 'enter hwid devices count'),
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
@@ -34204,9 +34221,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter like: start / period",
+            $this->t("@{$this->input['username']} введите в формате: начало / период", "@{$this->input['username']} enter like: start / period"),
             $this->input['message_id'],
-            reply: 'enter like: now / 12 hours',
+            reply: $this->t('например: now / 12 hours', 'enter like: now / 12 hours'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -34220,9 +34237,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter like: start / period",
+            $this->t("@{$this->input['username']} введите в формате: начало / период", "@{$this->input['username']} enter like: start / period"),
             $this->input['message_id'],
-            reply: 'enter like: now / 12 hours',
+            reply: $this->t('например: now / 12 hours', 'enter like: now / 12 hours'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -34236,9 +34253,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter domain",
+            $this->t("@{$this->input['username']} введите домен", "@{$this->input['username']} enter domain"),
             $this->input['message_id'],
-            reply: 'enter domain',
+            reply: $this->t('введите домен', 'enter domain'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -36073,9 +36090,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter username",
+            $this->t("@{$this->input['username']} введите имя пользователя", "@{$this->input['username']} enter username"),
             $this->input['message_id'],
-            reply: 'enter username',
+            reply: $this->t('введите имя пользователя', 'enter username'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -36137,7 +36154,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите пароль для $user", "@{$this->input['username']} enter password for $user"),
             $this->input['message_id'],
-            reply: 'enter password',
+            reply: $this->t('введите пароль', 'enter password'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -36916,9 +36933,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter username",
+            $this->t("@{$this->input['username']} введите имя пользователя", "@{$this->input['username']} enter username"),
             $this->input['message_id'],
-            reply: 'enter username',
+            reply: $this->t('введите имя пользователя', 'enter username'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -37814,12 +37831,12 @@ DNS-over-HTTPS with IP:
         $def   = $which === 'ike' ? 500 : 4500;
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter $label port (default $def)\n\n"
+            $this->t("@{$this->input['username']} введите порт $label (по умолчанию $def)\n\n", "@{$this->input['username']} enter $label port (default $def)\n\n")
                 . $this->t("⚠️ Порт общий для L2TP/IPsec и IKEv2 (strongswan один). ", "⚠️ The port is shared by L2TP/IPsec and IKEv2 (one strongswan). ")
                 . $this->t("Нативные клиенты снаружи ждут 500/4500 — нестандартный порт ", "Native clients outside expect 500/4500; a non-standard port ")
                 . $this->t("требует ручного DNAT в nft (defines IPSEC_IKE/IPSEC_NATT).", "needs a manual DNAT in nft (defines IPSEC_IKE/IPSEC_NATT)."),
             $this->input['message_id'],
-            reply: "enter $label port",
+            reply: $this->t("введите порт $label", "enter $label port"),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -38095,9 +38112,9 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter username",
+            $this->t("@{$this->input['username']} введите имя пользователя", "@{$this->input['username']} enter username"),
             $this->input['message_id'],
-            reply: 'enter username',
+            reply: $this->t('введите имя пользователя', 'enter username'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -38668,9 +38685,9 @@ XML;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter username",
+            $this->t("@{$this->input['username']} введите имя пользователя", "@{$this->input['username']} enter username"),
             $this->input['message_id'],
-            reply: 'enter username',
+            reply: $this->t('введите имя пользователя', 'enter username'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
