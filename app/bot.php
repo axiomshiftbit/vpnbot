@@ -6011,7 +6011,7 @@ NFT;
             // то есть в SNI на порту cloak светился реальный домен VPN, ровно
             // то, что Cloak и должен прятать. Дефолт = RedirAddr; заданное
             // вручную значение (cloakDomain) не трогаем.
-            $c['ServerName'] = $c['ServerName'] ?: $c['RedirAddr'];
+            $c['ServerName'] = ($c['ServerName'] ?? '') ?: $c['RedirAddr'];
             $this->setCloakConfig($c);
             $this->syncCloakBypassUIDs();
             $this->ssh($this->ckServerRestartCmd(), 'ss');
@@ -16998,7 +16998,7 @@ DNS-over-HTTPS with IP:
     public function tunpackagemode()
     {
         $c = $this->getPacConf();
-        $c['tunpackagemode'] = $c['tunpackagemode'] ? 0 : 1;
+        $c['tunpackagemode'] = !empty($c['tunpackagemode']) ? 0 : 1;
         $this->setPacConf($c);
         $this->tun();
     }
@@ -17006,7 +17006,7 @@ DNS-over-HTTPS with IP:
     public function tunprocessmode()
     {
         $c = $this->getPacConf();
-        $c['tunprocessmode'] = $c['tunprocessmode'] ? 0 : 1;
+        $c['tunprocessmode'] = !empty($c['tunprocessmode']) ? 0 : 1;
         $this->setPacConf($c);
         $this->tun();
     }
@@ -21864,7 +21864,7 @@ DNS-over-HTTPS with IP:
     public function toggleHwidLimit($context = null)
     {
         $pac = $this->getPacConf();
-        $pac['hwid_limit_enabled'] = $pac['hwid_limit_enabled'] ? 0 : 1;
+        $pac['hwid_limit_enabled'] = !empty($pac['hwid_limit_enabled']) ? 0 : 1;
         if (!empty($pac['hwid_limit_enabled']) && empty($pac['hwid_device_count'])) {
             $pac['hwid_device_count'] = 1;
         }
@@ -22265,11 +22265,11 @@ DNS-over-HTTPS with IP:
     {
         $text   = 'Settings -> IP & Logs';
         $pac    = $this->getPacConf();
-        $d      = count($pac['deny'] ?: []);
-        $w      = count($pac['white'] ?: []);
+        $d      = count($pac['deny'] ?? []);
+        $w      = count($pac['white'] ?? []);
         $data[] = [
             [
-                'text'          => $this->i18n('autoscan') . ': ' . ($pac['autoscan'] ? $this->getTime(strtotime(($pac['autoscan_timeout'] ?: 3600) . ' seconds')) : $this->i18n('off')),
+                'text'          => $this->i18n('autoscan') . ': ' . (!empty($pac['autoscan']) ? $this->getTime(strtotime((($pac['autoscan_timeout'] ?? 0) ?: 3600) . ' seconds')) : $this->i18n('off')),
                 'callback_data' => '/autoScanTimeout',
             ],
         ];
@@ -23909,7 +23909,7 @@ DNS-over-HTTPS with IP:
         // квадрат уже на этапе сборки — три лога по сотне тысяч строк каждый
         // против нескольких тысяч уже накопленных адресов.
         $set = [];
-        foreach (array_merge($pac['white'] ?: [], $pac['deny'] ?: [], ['10.10.0.0/23']) as $v) {
+        foreach (array_merge(($pac['white'] ?? []) ?: [], ($pac['deny'] ?? []) ?: [], ['10.10.0.0/23']) as $v) {
             if (preg_match('~^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:(/\d{1,2}))?$~', $v, $m)) {
                 $set[$m[1] . ($m[2] ?: '/32')] = true;
             }
@@ -24151,7 +24151,7 @@ DNS-over-HTTPS with IP:
     public function denyList($page = 0, $white = 0)
     {
         $text    = 'Menu -> IP -> ' . ($white ? 'ignore' : 'block') . 'list';
-        $domains = $this->getPacConf()[$white ? 'white' : 'deny'] ?: [];
+        $domains = ($this->getPacConf()[$white ? 'white' : 'deny'] ?? []) ?: [];
         $all     = (int) ceil(count($domains) / $this->limit);
         $page    = min($page, $all - 1);
         $page    = $page < 0 ? $all - 1 : $page;
@@ -26817,7 +26817,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/templateCopy $type",
             ],
             [
-                'text'          => $this->i18n($pac["default{$type}template"] && !empty($pac["{$type}templates"][base64_decode($pac["default{$type}template"])]) ? 'off' : 'on'),
+                'text'          => $this->i18n(!empty($pac["default{$type}template"]) && !empty($pac["{$type}templates"][base64_decode($pac["default{$type}template"])]) ? 'off' : 'on'),
                 'callback_data' => "/defaultTemplate $type",
             ],
         ];
@@ -27889,7 +27889,7 @@ DNS-over-HTTPS with IP:
 
         $ip_count      = ($p['ip_count'] ?? 0) ?: 1;
         $hwidEnabled   = !empty($p['hwid_limit_enabled']);
-        $defaultHwids  = max(1, (int) ($p['hwid_device_count'] ?: 1));
+        $defaultHwids  = max(1, (int) (($p['hwid_device_count'] ?? 0) ?: 1));
         $data[] = [
             [
                 'text'          => $this->i18n('ip limit') . ' ' . (!empty($p['ip_limit']) ? ": {$p['ip_limit']} sec & $ip_count" : $this->i18n('off')),
@@ -27978,7 +27978,7 @@ DNS-over-HTTPS with IP:
         }
         $type    = !empty($this->getPacConf()['xtlslist']);
         $clients = array_filter($c['inbounds'][0]['settings']['clients'], fn($e) => !$type ? empty($e['off']) : !empty($e['off']));
-        uasort($clients, fn($a, $b) => ($a['time'] ?: PHP_INT_MAX) <=> ($b['time'] ?: PHP_INT_MAX));
+        uasort($clients, fn($a, $b) => (($a['time'] ?? 0) ?: PHP_INT_MAX) <=> (($b['time'] ?? 0) ?: PHP_INT_MAX));
 
         $wg  = json_decode(file_get_contents($this->clients), true) ?: [];
         $wg1 = json_decode(file_get_contents($this->clients1), true) ?: [];
@@ -28740,7 +28740,7 @@ DNS-over-HTTPS with IP:
         $devices      = $this->getHwidDevicesByUser($c['id']);
         $hwidEnabled  = !empty($pac['hwid_limit_enabled']) && empty($c['hwid_disabled']);
         $defaultHwid  = max(1, (int) ($pac['hwid_device_count'] ?: 1));
-        $hwidLimit    = $c['hwid_limit'] ? (int) $c['hwid_limit'] : $defaultHwid;
+        $hwidLimit    = !empty($c['hwid_limit']) ? (int) $c['hwid_limit'] : $defaultHwid;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . htmlspecialchars($c['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
         array_push($text, ...$this->subscriptionCardSummary($c, $i));
@@ -28864,11 +28864,11 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => $c['time'] ? "timer: " . $this->getTime($c['time']) : $this->i18n('timer'),
+                'text'          => !empty($c['time']) ? "timer: " . $this->getTime($c['time']) : $this->i18n('timer'),
                 'callback_data' => "/timerXr $i",
             ],
             [
-                'text'          => $this->i18n($c['off'] ? 'off' : 'on'),
+                'text'          => $this->i18n(!empty($c['off']) ? 'off' : 'on'),
                 'callback_data' => "/switchXr $i",
             ],
         ];
@@ -28882,9 +28882,9 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
-        $singtemplate  = $c['singtemplate'] ? base64_decode($c['singtemplate']) : 'default(' . ($pac['defaultsingtemplate'] && !empty($pac['singtemplates'][base64_decode($pac['defaultsingtemplate'])]) ? base64_decode($pac['defaultsingtemplate']) : 'origin') . ')';
-        $v2raytemplate = $c['v2raytemplate'] ? base64_decode($c['v2raytemplate']) : 'default(' . ($pac['defaultv2raytemplate'] && !empty($pac['v2raytemplates'][base64_decode($pac['defaultv2raytemplate'])]) ? base64_decode($pac['defaultv2raytemplate']) : 'origin') . ')';
-        $clashtemplate = $c['clashtemplate'] ? base64_decode($c['clashtemplate']) : 'default(' . ($pac['defaultclashtemplate'] && !empty($pac['clashtemplates'][base64_decode($pac['defaultclashtemplate'])]) ? base64_decode($pac['defaultclashtemplate']) : 'origin') . ')';
+        $singtemplate  = !empty($c['singtemplate']) ? base64_decode($c['singtemplate']) : 'default(' . (!empty($pac['defaultsingtemplate']) && !empty($pac['singtemplates'][base64_decode($pac['defaultsingtemplate'])]) ? base64_decode($pac['defaultsingtemplate']) : 'origin') . ')';
+        $v2raytemplate = !empty($c['v2raytemplate']) ? base64_decode($c['v2raytemplate']) : 'default(' . (!empty($pac['defaultv2raytemplate']) && !empty($pac['v2raytemplates'][base64_decode($pac['defaultv2raytemplate'])]) ? base64_decode($pac['defaultv2raytemplate']) : 'origin') . ')';
+        $clashtemplate = !empty($c['clashtemplate']) ? base64_decode($c['clashtemplate']) : 'default(' . (!empty($pac['defaultclashtemplate']) && !empty($pac['clashtemplates'][base64_decode($pac['defaultclashtemplate'])]) ? base64_decode($pac['defaultclashtemplate']) : 'origin') . ')';
         $data[]        = [
             [
                 'text'          => $this->i18n('v2ray') . ": $v2raytemplate",
@@ -32874,7 +32874,7 @@ DNS-over-HTTPS with IP:
     public function adguardChBr()
     {
         $c = $this->getPacConf();
-        $c['adgbrowser'] = $c['adgbrowser'] ? 0 : 1;
+        $c['adgbrowser'] = !empty($c['adgbrowser']) ? 0 : 1;
         $this->setPacConf($c);
         $this->cloakNginx();
         $this->answer($this->input['callback_id'], $this->i18n($c['adgbrowser'] ? 'browser_notify_on' : 'browser_notify_off'), true);
