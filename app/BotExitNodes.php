@@ -594,7 +594,7 @@ trait BotExitNodes
             // Страна, которую видит YouTube, сменилась: видео и рекомендации
             // пойдут по другой стране, хотя узел работает.
             if ($full && !empty($before['gl']) && !empty($now['gl']) && $before['gl'] !== $now['gl']) {
-                $this->notifyAdmins($this->t('🌐 YouTube теперь видит через узел ', '🌐 YouTube now sees through node ') . $name . ' '
+                $this->notifyAdmins($this->t('🌐 Через узел ', '🌐 Through node ') . $name . $this->t(' YouTube теперь видит страну ', ' YouTube now sees country ')
                     . self::esc($now['gl']) . $this->t(' (было ', ' (was ') . self::esc($before['gl']) . ')');
             }
             $restart = $this->exitRefreshRulesets($id) || $restart;
