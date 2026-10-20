@@ -44,6 +44,8 @@ class ExitToolsBot extends Bot
         return $this->sshHook ? ($this->sshHook)($cmd) : $this->sshAnswer;
     }
     public function exitStatus(): array { return $this->status; }
+    // Как на сервере: следующая проба видит записанное состояние.
+    protected function exitStatusWrite(string $id, array $status): void { $this->status[$id] = $status; }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screens[] = [$text, is_array($button) ? $button : []]; }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { return ['result' => ['message_id' => 9]]; }
     public function sendFile($chat, $id_url_cFile, $caption = false, $to = false) { $this->files[] = [$id_url_cFile, $caption]; return ['ok' => true]; }

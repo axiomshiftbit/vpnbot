@@ -43,6 +43,8 @@ class ExitMenuBot extends Bot
     public function xrayStatCounters(): ?array { return $this->counters; }
     public function exitStatus(): array { return $this->status; }
     public array $status = [];
+    protected function exitStatusWrite(string $id, array $status): void { $this->written[$id] = $status; }
+    public array $written = [];
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screens[] = [$text, is_array($button) ? $button : []]; }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->sent[] = $text; return ['result' => ['message_id' => 9]]; }
     public function answer($callback_id, $textNotify = false, $notify = false) {}

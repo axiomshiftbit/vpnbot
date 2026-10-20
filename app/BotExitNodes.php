@@ -282,7 +282,8 @@ trait BotExitNodes
         return is_array($data) ? $data : [];
     }
 
-    private function exitStatusWrite(string $id, array $status): void
+    // Файл общий для php и cron; в тестах подменяется, чтобы не тронуть /config сервера.
+    protected function exitStatusWrite(string $id, array $status): void
     {
         $this->withLock('exit-status', function () use ($id, $status) {
             $all = $this->exitStatus();
