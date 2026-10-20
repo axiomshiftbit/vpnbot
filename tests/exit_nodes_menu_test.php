@@ -150,6 +150,16 @@ $check(isset($bot->callbacks()["/exitUT 0 $id"]) && isset($bot->callbacks()['/us
 // --- Предупреждения: WARP и sniffing ---------------------------------------
 $bot->exitNodeMenu($id);
 $check(str_contains($bot->last()[0], 'Есть и в списке WARP') && str_contains($bot->last()[0], 'domain:youtube.com'), 'пересечение с WARP показано');
+// Записи наборов .srs/.mrs тоже сверяются с блок-листом и WARP.
+$setBot = new class extends ExitMenuBot {
+    public function exitRulesetCache(string $key): array { return ['entries' => ['domain:set-only.example']]; }
+};
+$setBot->confPac = ['exits' => ['abcdef12' => ['name' => 'S', 'link' => $link, 'routes' => [], 'rulesets' => ['https://example.org/s.srs' => ['on' => 1]]]],
+    'blocklist' => ['domain:set-only.example' => 1], 'warplist' => ['domain:set-only.example' => 1]] + $bot->confPac;
+$setBot->confXray = $bot->confXray;
+$setBot->exitNodeMenu('abcdef12');
+$check(str_contains($setBot->last()[0], 'Есть и в блок-листе') && str_contains($setBot->last()[0], 'Есть и в списке WARP') && str_contains($setBot->last()[0], 'domain:set-only.example'),
+    'пересечение записи набора с блок-листом и WARP показано');
 $bot->confPac['sniffing'] = ['enabled' => false];
 $bot->exitNodeMenu($id);
 $check(str_contains($bot->last()[0], 'sniffing) выключено'), 'выключенный sniffing предупреждён');

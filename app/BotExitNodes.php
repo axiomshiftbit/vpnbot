@@ -544,13 +544,15 @@ trait BotExitNodes
         if (empty($sniff['enabled'])) $warnings[] = $this->t('⚠️ Распознавание доменов (sniffing) выключено: правила по доменам не сработают. Включите его в Xray → DPI.', '⚠️ Domain sniffing is off: domain rules will not match. Turn it on in Xray → DPI.');
         elseif (!empty($sniff['routeOnly'])) $warnings[] = $this->t('⚠️ sniffing в режиме routeOnly: на узел уйдёт адрес, полученный на этом сервере, а не домен — видео пойдёт с серверов страны этого сервера.', '⚠️ sniffing is in routeOnly mode: the node receives the address resolved on this server rather than the domain, so video is served from this server\'s country.');
         $warp = array_keys(array_filter($p['warplist'] ?? []));
-        $both = array_intersect(array_keys(array_filter($node['routes'])), $warp);
+        // Записи наборов .srs/.mrs попадают в те же правила, что и ручные.
+        $entries = array_keys($this->exitNodeEntries($node));
+        $both = array_values(array_intersect($entries, $warp));
         // Подписки sing-box и Mihomo отправляют домены WARP в WARP сами (через
         // warpSOCKS5 10.10.0.13), и до правила узла на сервере они доходят уже
         // с адресом WARP: «узел важнее» верно лишь для клиентов Xray.
         if ($both) $warnings[] = $this->t('⚠️ Есть и в списке WARP: клиенты Xray пойдут через узел, а sing-box и Mihomo — в WARP. Оставьте запись в одном списке: ', '⚠️ Also in the WARP list: Xray clients go through the node, while sing-box and Mihomo go to WARP. Keep the entry in one list: ')
             . self::esc(implode(', ', array_slice($both, 0, 5)));
-        $block = array_intersect(array_keys(array_filter($node['routes'])), array_keys(array_filter($p['blocklist'] ?? [])));
+        $block = array_values(array_intersect($entries, array_keys(array_filter($p['blocklist'] ?? []))));
         if ($block) $warnings[] = $this->t('⚠️ Есть и в блок-листе (блокировка важнее): ', '⚠️ Also in the block list (blocking wins): ') . self::esc(implode(', ', array_slice($block, 0, 5)));
         return $warnings;
     }
