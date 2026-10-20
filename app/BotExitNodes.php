@@ -908,12 +908,14 @@ trait BotExitNodes
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set)) continue;
             $cache = $this->exitRulesetCache((string) $url);
-            $state = !$cache ? $this->t('⏳ не скачан', '⏳ not downloaded') : (($cache['error'] ?? '') !== '' ? '⚠️ ' . $cache['error'] : count($cache['entries'] ?? []) . $this->t(' записей', ' entries'));
+            $state = !$cache ? $this->t('⏳ не скачан', '⏳ not downloaded') : (($cache['error'] ?? '') !== '' ? '⚠️ ' . $cache['error'] : $this->t('записей: ', 'entries: ') . count($cache['entries'] ?? []));
             $shown = mb_strlen((string) $url) > 90 ? mb_substr((string) $url, 0, 60) . '…' . mb_substr((string) $url, -25) : (string) $url;
             $text[] = "\n" . (!empty($set['on']) ? '✅' : '⏸') . ' <code>' . self::esc($shown) . '</code> — ' . self::esc($state)
                 . (self::ruleSetFormat((string) $url) === 'mrs' ? ' · ' . self::esc((string) ($set['behavior'] ?? 'domain')) : '');
             $key = self::exitEntryKey((string) $url);
-            $data[] = [['text' => (!empty($set['on']) ? '✅ ' : '⏸ ') . mb_substr(basename((string) parse_url((string) $url, PHP_URL_PATH)), 0, 40), 'callback_data' => "/exitSet $id $key"],
+            // Тип .mrs в подписи: geosite/x.mrs и geoip/x.mrs иначе неразличимы.
+            $data[] = [['text' => (!empty($set['on']) ? '✅ ' : '⏸ ') . mb_substr(basename((string) parse_url((string) $url, PHP_URL_PATH)), 0, 40)
+                . (self::ruleSetFormat((string) $url) === 'mrs' ? ' · ' . (string) ($set['behavior'] ?? 'domain') : ''), 'callback_data' => "/exitSet $id $key"],
                 ['text' => '✖', 'callback_data' => "/exitSetDel $id $key"]];
         }
         $data[] = [['text' => $this->t('➕ Добавить набор', '➕ Add set'), 'callback_data' => "/exitSetAdd $id"]];
