@@ -39,6 +39,31 @@ trait BotExitNodes
     public const EXIT_YOUTUBE = ['domain:youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'domain:ggpht.com',
         'domain:youtu.be', 'domain:youtube-nocookie.com', 'domain:youtubei.googleapis.com', 'domain:youtubekids.com',
         'domain:yt.be', 'domain:youtube.googleapis.com', 'domain:wide-youtube.l.google.com'];
+    // Готовые наборы сервисов (кнопка «Сервисы»): домены без geosite.dat.
+    // Ключ — в данных кнопки, поэтому короткий.
+    public const EXIT_PRESETS = [
+        'yt' => ['YouTube', self::EXIT_YOUTUBE],
+        'openai' => ['ChatGPT / OpenAI', ['domain:openai.com', 'domain:chatgpt.com', 'domain:chat.com', 'domain:oaistatic.com',
+            'domain:oaiusercontent.com', 'domain:sora.com', 'full:openaiapi-site.azureedge.net', 'full:production-openaicom-storage.azureedge.net',
+            'full:chatgpt.livekit.cloud', 'full:host.livekit.cloud', 'full:turn.livekit.cloud']],
+        'gemini' => ['Gemini', ['domain:gemini.google.com', 'domain:gemini.google', 'domain:bard.google.com', 'domain:aistudio.google.com',
+            'domain:generativelanguage.googleapis.com', 'domain:alkalimakersuite-pa.clients6.google.com', 'domain:makersuite.google.com',
+            'domain:ai.google.dev', 'domain:notebooklm.google.com', 'domain:notebooklm.google', 'domain:deepmind.google', 'domain:labs.google',
+            'domain:proactivebackend-pa.googleapis.com', 'domain:robinfrontend-pa.googleapis.com']],
+        'netflix' => ['Netflix', ['domain:netflix.com', 'domain:netflix.net', 'domain:nflxext.com', 'domain:nflximg.com', 'domain:nflximg.net',
+            'domain:nflxso.net', 'domain:nflxvideo.net', 'domain:nflxsearch.net', 'domain:fast.com']],
+        'spotify' => ['Spotify', ['domain:spotify.com', 'domain:scdn.co', 'domain:spotifycdn.com', 'domain:spotify.design', 'domain:spoti.fi',
+            'domain:spotilocal.com', 'domain:pscdn.co', 'domain:spotify.link', 'domain:byspotify.com', 'domain:spotifycharts.com',
+            'full:audio-ak-spotify-com.akamaized.net', 'full:audio4-ak-spotify-com.akamaized.net', 'full:heads-ak-spotify-com.akamaized.net',
+            'full:heads4-ak-spotify-com.akamaized.net']],
+        'discord' => ['Discord', ['domain:discord.com', 'domain:discord.gg', 'domain:discordapp.com', 'domain:discordapp.net', 'domain:discord.media',
+            'domain:discordcdn.com', 'domain:discord.dev', 'domain:discord.new', 'domain:discord.gift', 'domain:discordstatus.com', 'domain:dis.gd',
+            'domain:discord.co']],
+        'insta' => ['Instagram', ['domain:instagram.com', 'domain:cdninstagram.com', 'domain:instagr.am', 'domain:ig.me', 'domain:igcdn.com',
+            'domain:igsonar.com', 'domain:fbcdn.net']],
+    ];
+    public const EXIT_SPEED_BYTES = 10000000;
+    public const EXIT_SPEED_URL = 'https://speed.cloudflare.com/__down?bytes=10000000';
 
     public static function exitNodeDefaults(): array
     {
@@ -621,6 +646,7 @@ trait BotExitNodes
         if (!$nodes) $text[] = $this->t("\nУзлов пока нет. На другом сервере откройте Xray → «Профиль для узла» и вставьте выданную ссылку сюда.", "\nNo nodes yet. On the other server open Xray → Node profile and paste the link it gives here.");
         if (count($nodes) < self::EXIT_MAX) $data[] = [['text' => $this->t('➕ Добавить узел', '➕ Add node'), 'callback_data' => '/exitAdd']];
         $data[] = [['text' => $this->t('🔁 Проверить все', '🔁 Check all'), 'callback_data' => '/exitCheckAll'], ['text' => $this->t('🪪 Профиль для узла', '🪪 Node profile'), 'callback_data' => '/exitRelay']];
+        $data[] = [['text' => $this->t('🧭 Куда пойдёт домен', '🧭 Where a domain goes'), 'callback_data' => '/exitWhere']];
         $data[] = $this->menuHelpButton('exitnodes');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -651,7 +677,8 @@ trait BotExitNodes
         array_push($text, ...$this->exitWarnings($node));
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [
-            [['text' => $this->t('🔍 Проверить', '🔍 Check'), 'callback_data' => "/exitCheck $id"], ['text' => $this->t('🔄 Обновить', '🔄 Refresh'), 'callback_data' => "/exitRefresh $id"]],
+            [['text' => $this->t('🔍 Проверить', '🔍 Check'), 'callback_data' => "/exitCheck $id"], ['text' => $this->t('⚡ Скорость', '⚡ Speed'), 'callback_data' => "/exitSpeed $id"],
+                ['text' => $this->t('🔄 Обновить', '🔄 Refresh'), 'callback_data' => "/exitRefresh $id"]],
             [['text' => ($node['enabled'] ? $this->t('✅ Включён', '✅ Enabled') : $this->t('⏸ Выключен', '⏸ Disabled')), 'callback_data' => "/exitToggle $id"],
                 ['text' => 'QUIC: ' . ($node['quic'] === 'block' ? $this->t('блок', 'block') : $this->t('пропуск', 'allow')), 'callback_data' => "/exitQuic $id"]],
             [['text' => $this->t("🧭 Маршруты ($routes)", "🧭 Routes ($routes)"), 'callback_data' => "/exitRoutes $id 0"], ['text' => $this->t("📦 Наборы .srs/.mrs ($sets)", "📦 Sets .srs/.mrs ($sets)"), 'callback_data' => "/exitSets $id"]],
@@ -766,6 +793,50 @@ trait BotExitNodes
         $this->exitNodeMenu($id, !empty($s['ok']) ? $this->t('Проверено: узел работает', 'Checked: the node is working') : $this->t('Проверено: ', 'Checked: ') . $this->exitErrorText((string) ($s['error'] ?? '')));
     }
 
+    /**
+     * Скорость: одна загрузка EXIT_SPEED_BYTES через вход проверки узла и одна
+     * напрямую из контейнера xr. ['node' => [...], 'direct' => [...]], где
+     * mbps — по фактически скачанному, даже если загрузку оборвал таймаут.
+     */
+    public function exitSpeed(string $id): array
+    {
+        $port = $this->exitProbePort($id);
+        $node = $this->exitNodes()[$id] ?? null;
+        if ($port === null || $node === null) return ['error' => 'not found'];
+        if (empty($node['enabled'])) return ['error' => 'disabled'];
+        $cmd = "s(){ curl -s -o /dev/null --max-time 20 -w '%{http_code} %{size_download} %{time_total}' \"\$@\" " . self::EXIT_SPEED_URL . '; echo; }; '
+            . "printf 'node='; s --socks5-hostname 127.0.0.1:$port; printf 'direct='; s; true";
+        $out = (string) $this->ssh($cmd, 'xr');
+        if ($this->sshFailed) return ['error' => 'xray'];
+        $result = [];
+        foreach (['node', 'direct'] as $way) {
+            if (!preg_match('~^' . $way . '=(\d{3}) ([0-9.]+) ([0-9.]+)$~m', $out, $m)) { $result[$way] = ['ok' => false, 'http' => 0]; continue; }
+            $bytes = (float) $m[2];
+            $time = (float) $m[3];
+            $result[$way] = ['ok' => $m[1] === '200' && $bytes > 0 && $time > 0, 'http' => (int) $m[1], 'bytes' => (int) $bytes,
+                'mbps' => $time > 0 ? round($bytes * 8 / $time / 1e6, 1) : 0.0, 'full' => (int) $bytes >= self::EXIT_SPEED_BYTES];
+        }
+        return $result;
+    }
+
+    public function exitSpeedText(array $r): string
+    {
+        if (isset($r['error'])) return $this->t('Скорость не измерена: ', 'Speed not measured: ') . $this->exitErrorText((string) $r['error']);
+        $part = function (array $w): string {
+            if (empty($w['ok'])) return $this->t('не скачалось', 'download failed') . (!empty($w['http']) ? " (HTTP {$w['http']})" : '');
+            $mbps = number_format((float) $w['mbps'], 1, $this->language === 'en' ? '.' : ',', '');
+            return $this->t("$mbps Мбит/с", "$mbps Mbit/s") . (empty($w['full']) ? $this->t(' (за 20 с скачано ', ' (in 20 s got ') . round($w['bytes'] / 1e6, 1) . $this->t(' МБ)', ' MB)') : '');
+        };
+        return $this->t('Скорость (загрузка 10 МБ): через узел ', 'Speed (10 MB download): through the node ') . $part($r['node'] ?? [])
+            . $this->t(' · напрямую ', ' · direct ') . $part($r['direct'] ?? []);
+    }
+
+    public function exitSpeedCheck(string $id): void
+    {
+        if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->t('Измеряю скорость, до 40 секунд…', 'Measuring speed, up to 40 seconds…'));
+        $this->exitNodeMenu($id, $this->exitSpeedText($this->exitSpeed($id)));
+    }
+
     public function exitRefresh(string $id): void
     {
         $changed = $this->exitRefreshRulesets($id, true);
@@ -829,7 +900,7 @@ trait BotExitNodes
             return '';
         });
         if ($error === '') {
-            foreach (array_keys($node['rulesets']) as $url) @unlink($this->exitRulesetFile((string) $url));
+            foreach (array_keys($node['rulesets']) as $url) $this->exitRulesetForget((string) $url);
         }
         $this->exitNodesMenu($error === '' ? $this->t('Узел удалён', 'Node deleted') : $this->exitError($error));
     }
@@ -861,9 +932,12 @@ trait BotExitNodes
             if ($page < $pages - 1) $nav[] = ['text' => '→', 'callback_data' => "/exitRoutes $id " . ($page + 1)];
             $data[] = $nav;
         }
-        $data[] = [['text' => $this->t('➕ Добавить', '➕ Add'), 'callback_data' => "/exitRtAdd $id"], ['text' => '▶️ YouTube', 'callback_data' => "/exitYt $id"]];
+        $data[] = [['text' => $this->t('➕ Добавить', '➕ Add'), 'callback_data' => "/exitRtAdd $id"], ['text' => '▶️ YouTube', 'callback_data' => "/exitYt $id"],
+            ['text' => $this->t('📚 Сервисы', '📚 Services'), 'callback_data' => "/exitPresets $id"]];
         $data[] = [['text' => $this->t('📋 Копировать из WARP', '📋 Copy from WARP'), 'callback_data' => "/exitCopy $id warp"], ['text' => $this->t('📦 Перенести из WARP', '📦 Move from WARP'), 'callback_data' => "/exitCopy $id move"]];
         $data[] = [['text' => $this->t('📋 Копировать из списка VPN (pac)', '📋 Copy from the VPN list (pac)'), 'callback_data' => "/exitCopy $id pac"]];
+        $data[] = [['text' => $this->t('📋 В другой узел', '📋 To another node'), 'callback_data' => "/exitCopyTo $id"],
+            ['text' => $this->t('📤 Экспорт', '📤 Export'), 'callback_data' => "/exitExport $id"], ['text' => $this->t('📥 Импорт', '📥 Import'), 'callback_data' => "/exitImport $id"]];
         if ($entries) $data[] = [['text' => $this->t('🧹 Очистить всё', '🧹 Clear all'), 'callback_data' => "/exitRtClear $id"]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -883,23 +957,40 @@ trait BotExitNodes
             . $this->t('Наборы правил sing-box (.srs) и Mihomo (.mrs) — в «Наборы .srs/.mrs».', 'sing-box (.srs) and Mihomo (.mrs) rule sets are under Sets .srs/.mrs.'), 'saveExitRoutes', [$id]);
     }
 
+    /** Добавить записи (запись => 1|0) к маршрутам узла без повторов; [добавлено, пропущено]. */
+    public function exitMergeRoutes(array &$node, array $entries): array
+    {
+        $added = $skipped = 0;
+        $seen = [];
+        foreach (array_keys($node['routes']) as $key) if (($canon = $this->routeEntryCanonKey((string) $key)) !== '') $seen[$canon] = true;
+        foreach ($entries as $entry => $on) {
+            $entry = trim((string) $entry);
+            $c = $this->classifyRouteEntry($entry);
+            $canon = $this->routeEntryCanonKey($entry);
+            if ($entry === '' || mb_strlen($entry) > 300 || !$this->routeEntryUsable($c) || isset($seen[$canon])) { $skipped++; continue; }
+            if (count($node['routes']) >= 2000) { $skipped++; continue; }
+            $node['routes'][$entry] = $on ? 1 : 0;
+            $seen[$canon] = true;
+            $added++;
+        }
+        return [$added, $skipped];
+    }
+
     public function saveExitRoutes($text, $id, array $preset = []): void
     {
         $entries = $preset ?: $this->splitRouteInput((string) $text);
         $added = $skipped = 0;
         $error = $this->exitEditNode((string) $id, function (array &$node) use ($entries, &$added, &$skipped) {
-            $seen = [];
-            foreach (array_keys($node['routes']) as $key) if (($canon = $this->routeEntryCanonKey((string) $key)) !== '') $seen[$canon] = true;
+            // Ключи массива: числовая строка («123») стала бы числом — берём по одной.
+            $map = [];
+            $dups = 0;
             foreach ($entries as $entry) {
                 $entry = trim((string) $entry);
-                $c = $this->classifyRouteEntry($entry);
-                $canon = $this->routeEntryCanonKey($entry);
-                if ($entry === '' || mb_strlen($entry) > 300 || !$this->routeEntryUsable($c) || isset($seen[$canon])) { $skipped++; continue; }
-                if (count($node['routes']) >= 2000) { $skipped++; continue; }
-                $node['routes'][$entry] = 1;
-                $seen[$canon] = true;
-                $added++;
+                if (isset($map[$entry])) { $dups++; continue; }
+                $map[$entry] = 1;
             }
+            [$added, $skipped] = $this->exitMergeRoutes($node, $map);
+            $skipped += $dups;
             return '';
         });
         $this->exitRoutesMenu((string) $id, PHP_INT_MAX, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : ''));
@@ -927,6 +1018,186 @@ trait BotExitNodes
     public function exitYoutube(string $id): void
     {
         $this->saveExitRoutes('', $id, self::EXIT_YOUTUBE);
+    }
+
+    // Набор считается добавленным, если у узла есть все его записи (в любом
+    // состоянии). Повторное нажатие убирает записи набора.
+    public function exitPresetState(array $node, string $key): bool
+    {
+        $have = [];
+        foreach (array_keys($node['routes']) as $entry) $have[$this->routeEntryCanonKey((string) $entry)] = true;
+        foreach (self::EXIT_PRESETS[$key][1] as $entry) if (!isset($have[$this->routeEntryCanonKey($entry)])) return false;
+        return true;
+    }
+
+    public function exitPresetsMenu(string $id, string $notice = ''): void
+    {
+        $node = $this->exitNodes()[$id] ?? null;
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> Сервисы', ' -> Services'),
+            $this->t('Нажмите на сервис, чтобы добавить его домены в маршруты узла; ✅ — уже добавлен, повторное нажатие убирает его записи.', 'Tap a service to add its domains to the node routes; ✅ means it is added, tapping again removes its entries.')];
+        if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
+        $data = [];
+        foreach (array_chunk(array_keys(self::EXIT_PRESETS), 2) as $pair) {
+            $data[] = array_map(fn($key) => ['text' => ($this->exitPresetState($node, $key) ? '✅ ' : '➕ ') . self::EXIT_PRESETS[$key][0], 'callback_data' => "/exitPre $id $key"], $pair);
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exitRoutes $id 0"]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function exitPresetToggle(string $id, string $key): void
+    {
+        if (!isset(self::EXIT_PRESETS[$key])) { $this->exitPresetsMenu($id); return; }
+        [$title, $entries] = self::EXIT_PRESETS[$key];
+        $node = $this->exitNodes()[$id] ?? null;
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
+        $remove = $this->exitPresetState($node, $key);
+        $count = 0;
+        $error = $this->exitEditNode($id, function (array &$node) use ($entries, $remove, &$count) {
+            if ($remove) {
+                $drop = array_flip(array_map(fn($e) => $this->routeEntryCanonKey($e), $entries));
+                foreach (array_keys($node['routes']) as $entry) {
+                    if (isset($drop[$this->routeEntryCanonKey((string) $entry)])) { unset($node['routes'][$entry]); $count++; }
+                }
+                return '';
+            }
+            [$count] = $this->exitMergeRoutes($node, array_fill_keys($entries, 1));
+            return '';
+        });
+        $this->exitPresetsMenu($id, $error !== '' ? $this->exitError($error) : ($remove ? $this->t("$title: убрано записей $count", "$title: removed $count entries")
+            : $this->t("$title: добавлено записей $count", "$title: added $count entries")));
+    }
+
+    // ── Копирование, экспорт и импорт маршрутов ─────────────────────────────
+    public const EXIT_IMPORT_MAX_BYTES = 2 * 1024 * 1024;
+
+    /** Выбор узла, в который скопировать маршруты и наборы этого узла. */
+    public function exitCopyToMenu(string $id): void
+    {
+        $node = $this->exitNodes()[$id] ?? null;
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
+        $others = array_filter($this->exitNodes(), static fn($n, $other) => (string) $other !== $id, ARRAY_FILTER_USE_BOTH);
+        if (!$others) { $this->exitRoutesMenu($id, 0, $this->t('Другого узла нет: добавьте второй узел', 'There is no other node: add a second one')); return; }
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> В другой узел', ' -> To another node'),
+            $this->t('Маршруты и наборы .srs/.mrs этого узла добавятся к выбранному (повторы пропускаются, его записи остаются). Пользователи не копируются.', 'Routes and .srs/.mrs sets of this node are added to the chosen one (duplicates are skipped, its own entries stay). Users are not copied.')];
+        $data = [];
+        foreach ($others as $other => $n) $data[] = [['text' => '🌍 ' . mb_substr($n['name'] !== '' ? $n['name'] : (string) $other, 0, 40), 'callback_data' => "/exitCopyTo $id $other"]];
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exitRoutes $id 0"]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function exitCopyTo(string $from, string $to): void
+    {
+        $source = $this->exitNodes()[$from] ?? null;
+        if ($source === null || $from === $to || !isset($this->exitNodes()[$to])) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
+        $this->exitImportInto($to, $source['routes'], $source['rulesets'], $this->t('Скопировано из ', 'Copied from ') . ($source['name'] !== '' ? $source['name'] : $from) . ': ');
+    }
+
+    /** Текст экспорта: запись на строку, выключенные — «# off: », наборы — «set: [тип] ссылка». */
+    public function exitExportText(array $node): string
+    {
+        $lines = ['# vpnbot exit node routes: ' . preg_replace('~[\r\n]~', ' ', $node['name']), '# ' . date('Y-m-d H:i')];
+        foreach ($node['routes'] as $entry => $on) $lines[] = ($on ? '' : '# off: ') . $entry;
+        foreach ($node['rulesets'] as $url => $set) {
+            if (!is_array($set)) continue;
+            $behavior = self::ruleSetFormat((string) $url) === 'mrs' ? ($set['behavior'] ?? 'domain') . ' ' : '';
+            $lines[] = (empty($set['on']) ? '# off: ' : '') . 'set: ' . $behavior . $url;
+        }
+        return implode("\n", $lines) . "\n";
+    }
+
+    /** Разбор текста экспорта: [маршруты запись => 1|0, наборы ссылка => набор, неверных строк]. */
+    public function exitImportParse(string $text): array
+    {
+        $routes = $sets = [];
+        $bad = 0;
+        foreach (preg_split('~\R~', $text) as $line) {
+            $line = trim($line);
+            $on = 1;
+            if (preg_match('~^#\s*off:\s*(.+)$~i', $line, $m)) { $line = trim($m[1]); $on = 0; }
+            if ($line === '' || str_starts_with($line, '#')) continue;
+            if (preg_match('~^set:\s*(?:(domain|ipcidr)\s+)?(\S+)$~i', $line, $m)) {
+                if (!self::exitRulesetUrlValid($m[2])) { $bad++; continue; }
+                $sets[$m[2]] = ['on' => $on, 'behavior' => strtolower($m[1] ?: 'domain'), 'interval' => 86400];
+                continue;
+            }
+            foreach ($this->splitRouteInput($line) as $entry) $routes[(string) $entry] ??= $on;
+        }
+        return [$routes, $sets, $bad];
+    }
+
+    /** Добавить маршруты и наборы в узел $id и показать итог. */
+    private function exitImportInto(string $id, array $routes, array $sets, string $prefix = ''): void
+    {
+        $added = $skipped = $setsAdded = 0;
+        $newSets = [];
+        $error = $this->exitEditNode($id, function (array &$node) use ($routes, $sets, &$added, &$skipped, &$setsAdded, &$newSets) {
+            [$added, $skipped] = $this->exitMergeRoutes($node, $routes);
+            foreach ($sets as $url => $set) {
+                if (!is_array($set) || isset($node['rulesets'][$url]) || count($node['rulesets']) >= 20) continue;
+                $node['rulesets'][$url] = ['on' => empty($set['on']) ? 0 : 1, 'behavior' => ($set['behavior'] ?? 'domain') === 'ipcidr' ? 'ipcidr' : 'domain',
+                    'interval' => max(3600, (int) ($set['interval'] ?? 86400))];
+                $newSets[$url] = $node['rulesets'][$url];
+                $setsAdded++;
+            }
+            return '';
+        });
+        if ($error === '' && $newSets) {
+            // Набор с тем же адресом уже мог быть разобран для другого узла.
+            foreach ($newSets as $url => $set) if (!empty($set['on']) && !$this->exitRulesetCache((string) $url)) $this->exitRulesetRefresh((string) $url, $set);
+            $this->withLock('xray', fn() => $this->restartXray($this->getXray()), 20, false);
+        }
+        $this->exitRoutesMenu($id, 0, $error !== '' ? $this->exitError($error)
+            : $prefix . $this->t("маршрутов добавлено $added, наборов $setsAdded", "routes added $added, sets $setsAdded") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : ''));
+    }
+
+    public function exitExport(string $id): void
+    {
+        $node = $this->exitNodes()[$id] ?? null;
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
+        if (!$node['routes'] && !$node['rulesets']) { $this->exitRoutesMenu($id, 0, $this->t('Экспортировать нечего: маршрутов и наборов нет', 'Nothing to export: no routes or sets')); return; }
+        $file = 'exit-routes-' . (preg_replace('~[^A-Za-z0-9._-]+~', '_', $node['name']) ?: $id) . '.txt';
+        $this->sendFile($this->input['chat'], new CURLStringFile($this->exitExportText($node), $file, 'text/plain'),
+            $this->t('Маршруты узла ', 'Routes of node ') . $this->exitName($id, $node) . $this->t('. Импорт: Маршруты → «Импорт» на любом узле или сервере.', '. Import: Routes → Import on any node or server.'));
+        $this->exitRoutesMenu($id, 0, $this->t('Файл отправлен', 'File sent'));
+    }
+
+    public function exitImportPrompt(string $id): void
+    {
+        $this->exitPrompt($this->t("пришлите файл экспорта маршрутов (.txt) или вставьте записи текстом.\nЗаписи добавятся к имеющимся, повторы пропускаются. Строки <code># off: </code> — выключенные записи, <code>set: </code> — наборы .srs/.mrs.", "send a route export file (.txt) or paste the entries as text.\nEntries are added to the existing ones, duplicates are skipped. <code># off: </code> lines are disabled entries, <code>set: </code> lines are .srs/.mrs sets."),
+            'saveExitImport', [$id]);
+    }
+
+    // Файл из Telegram; в тестах подменяется.
+    protected function exitImportDownload(): ?string
+    {
+        if (empty($this->input['file_id'])) return null;
+        $r = $this->request('getFile', ['file_id' => $this->input['file_id']]);
+        if (empty($r['ok']) || !is_string($r['result']['file_path'] ?? null) || ($r['result']['file_size'] ?? 0) > self::EXIT_IMPORT_MAX_BYTES) return null;
+        // В адресе файла — токен бота: предупреждение PHP не должно уйти в журнал.
+        $data = @file_get_contents($this->file . $r['result']['file_path'], false, null, 0, self::EXIT_IMPORT_MAX_BYTES + 1);
+        return is_string($data) && strlen($data) <= self::EXIT_IMPORT_MAX_BYTES ? $data : null;
+    }
+
+    public function saveExitImport($text, $id): void
+    {
+        $id = (string) $id;
+        $text = (string) $text;
+        if (trim($text) === '' && !empty($this->input['file_id'])) {
+            $text = $this->exitImportDownload();
+            if ($text === null || !mb_check_encoding($text, 'UTF-8')) { $this->exitRoutesMenu($id, 0, $this->t('Файл не прочитан (нужен текст UTF-8 до 2 МБ)', 'File not read (UTF-8 text up to 2 MB is needed)')); return; }
+        }
+        [$routes, $sets, $bad] = $this->exitImportParse($text);
+        if (!$routes && !$sets) { $this->exitRoutesMenu($id, 0, $this->t('Записей не найдено', 'No entries found') . ($bad ? $this->t(", неверных строк: $bad", ", invalid lines: $bad") : '')); return; }
+        $this->exitImportInto($id, $routes, $sets, $this->t('Импорт: ', 'Import: ') . ($bad ? $this->t("неверных строк $bad, ", "invalid lines $bad, ") : ''));
+    }
+
+    // Кэш набора общий для узлов с одинаковой ссылкой: удаляется, только когда
+    // набор не нужен больше ни одному узлу.
+    private function exitRulesetForget(string $url, ?array $p = null): void
+    {
+        foreach ($this->exitNodes($p) as $node) if (isset($node['rulesets'][$url])) return;
+        @unlink($this->exitRulesetFile($url));
     }
 
     private function exitFindEntry(array $node, string $key, string $field = 'routes'): ?string
@@ -1038,7 +1309,7 @@ trait BotExitNodes
             else $node['rulesets'][$url]['on'] = empty($node['rulesets'][$url]['on']) ? 1 : 0;
             return '';
         });
-        if ($error === '' && $removed !== null) @unlink($this->exitRulesetFile($removed));
+        if ($error === '' && $removed !== null) $this->exitRulesetForget($removed);
         $this->exitSetsMenu($id, $error === '' ? '' : $this->exitError($error));
     }
 
@@ -1134,6 +1405,260 @@ trait BotExitNodes
     {
         $error = $this->exitSetUsers($id, [$i], null);
         $this->exitUserMenu($i, $error === '' ? '' : $this->exitError($error));
+    }
+
+    // ── «Куда пойдёт домен» ────────────────────────────────────────────────
+    // Ответ даёт само ядро: временный Xray в контейнере xr получает правила
+    // сервера в том же порядке, по одному SOCKS-входу на каждого проверяемого
+    // пользователя (w<k>) и по выходу-«чёрной дыре» на каждое правило (r<n>).
+    // Поля user и inboundTag бот заменяет входами, сеть и порт сверяет сам
+    // (TCP 443); правила с полями, которые без настоящего соединения не
+    // проверить (source, protocol, process…), не участвуют. Журнал доступа
+    // ядра показывает, какое правило сработало («->»), или выход по
+    // умолчанию («>>»). Домен проверяется так же, как его видит сервер,
+    // включая geosite/ext и IPIfNonMatch.
+    public const EXIT_TRACE_MAX_CASES = 8;
+    public const EXIT_TRACE_FIELDS = ['type', 'ruleTag', 'domain', 'ip', 'port', 'network', 'inboundTag', 'user', 'outboundTag', 'balancerTag', 'domainMatcher'];
+
+    /** Домен или адрес из ввода (ссылку, «host:порт», «host/путь» тоже принимает); null — не подходит. */
+    public static function exitTraceTarget(string $raw): ?string
+    {
+        $raw = trim($raw);
+        if (preg_match('~^[a-z][a-z0-9+.-]*://~i', $raw)) $raw = (string) parse_url($raw, PHP_URL_HOST);
+        $raw = preg_replace('~[/?#].*$~s', '', $raw) ?? '';
+        if (preg_match('~^\[([0-9a-f:.]+)\](?::\d+)?$~i', $raw, $m)) $raw = $m[1];
+        elseif (substr_count($raw, ':') === 1) $raw = explode(':', $raw)[0];
+        $raw = strtolower(trim($raw, ". \t"));
+        if (filter_var($raw, FILTER_VALIDATE_IP) !== false) return $raw;
+        return preg_match('~^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$~D', $raw) ? $raw : null;
+    }
+
+    public static function exitPortMatches($spec, int $port): bool
+    {
+        foreach (preg_split('~\s*,\s*~', trim(is_array($spec) ? implode(',', $spec) : (string) $spec)) as $part) {
+            if (preg_match('~^(\d+)\s*-\s*(\d+)$~', $part, $m) && $port >= (int) $m[1] && $port <= (int) $m[2]) return true;
+            if (preg_match('~^\d+$~', $part) && (int) $part === $port) return true;
+        }
+        return false;
+    }
+
+    public static function exitUserMatches(array $users, string $email): bool
+    {
+        foreach ($users as $user) {
+            $user = (string) $user;
+            if ($user === $email) return true;
+            if (str_starts_with($user, 'regexp:') && @preg_match('~' . str_replace('~', '\~', substr($user, 7)) . '~', $email) === 1) return true;
+        }
+        return false;
+    }
+
+    public static function exitIpInCidr(string $ip, string $cidr): bool
+    {
+        [$net, $bits] = array_pad(explode('/', $cidr, 2), 2, null);
+        $a = @inet_pton($ip);
+        $b = @inet_pton((string) $net);
+        if ($a === false || $b === false || strlen($a) !== strlen($b)) return false;
+        $bits = $bits === null || $bits === '' ? strlen($a) * 8 : max(0, min(strlen($a) * 8, (int) $bits));
+        $bytes = intdiv($bits, 8);
+        if (substr($a, 0, $bytes) !== substr($b, 0, $bytes)) return false;
+        if ($bits % 8 === 0) return true;
+        $mask = (0xff << (8 - $bits % 8)) & 0xff;
+        return (ord($a[$bytes]) & $mask) === (ord($b[$bytes]) & $mask);
+    }
+
+    /** Временный конфиг: $cases — [['label' => …, 'email' => string|null], …]. */
+    public function exitTraceConfig(array $x, array $cases, int $base, string $dir): array
+    {
+        $main = (string) ($x['inbounds'][0]['tag'] ?? '');
+        $rules = [['type' => 'field', 'inboundTag' => ['trace-dns'], 'outboundTag' => 'trace-dns-out']];
+        $outbounds = [['protocol' => 'blackhole', 'tag' => 'r-default'], ['protocol' => 'freedom', 'tag' => 'trace-dns-out']];
+        foreach ($x['routing']['rules'] ?? [] as $n => $r) {
+            if (!is_array($r) || array_diff(array_keys($r), self::EXIT_TRACE_FIELDS)) continue;
+            if (isset($r['network']) && !in_array('tcp', preg_split('~\s*,\s*~', strtolower(is_array($r['network']) ? implode(',', $r['network']) : (string) $r['network'])), true)) continue;
+            if (isset($r['port']) && !self::exitPortMatches($r['port'], 443)) continue;
+            if (isset($r['inboundTag']) && !in_array($main, (array) $r['inboundTag'], true)) continue;
+            $tags = [];
+            foreach ($cases as $k => $case) {
+                if (!isset($r['user']) || ($case['email'] !== null && self::exitUserMatches((array) $r['user'], (string) $case['email']))) $tags[] = "w$k";
+            }
+            if (!$tags) continue;
+            $rule = ['type' => 'field', 'inboundTag' => $tags, 'outboundTag' => "r$n"];
+            foreach (['domain', 'ip', 'domainMatcher'] as $field) if (isset($r[$field])) $rule[$field] = $r[$field];
+            $rules[] = $rule;
+            $outbounds[] = ['protocol' => 'blackhole', 'tag' => "r$n"];
+        }
+        $inbounds = [];
+        foreach (array_keys($cases) as $k) $inbounds[] = ['tag' => "w$k", 'listen' => '127.0.0.1', 'port' => $base + $k, 'protocol' => 'socks', 'settings' => ['auth' => 'noauth', 'udp' => false]];
+        // Запросы DNS самого ядра (IPIfNonMatch) — мимо проверяемых правил.
+        $dns = is_array($x['dns'] ?? null) ? $x['dns'] : ['servers' => ['localhost']];
+        $dns['tag'] = 'trace-dns';
+        $routing = ['domainStrategy' => $x['routing']['domainStrategy'] ?? 'AsIs', 'rules' => $rules];
+        if (isset($x['routing']['domainMatcher'])) $routing['domainMatcher'] = $x['routing']['domainMatcher'];
+        return ['log' => ['loglevel' => 'warning', 'access' => "$dir/access.log", 'error' => "$dir/error.log"],
+            'dns' => $dns, 'inbounds' => $inbounds, 'outbounds' => $outbounds, 'routing' => $routing];
+    }
+
+    // /logs общий с xr: ядро читает конфиг и пишет журналы туда. В тестах подменяется.
+    protected function exitTraceRoot(): string
+    {
+        return '/logs';
+    }
+
+    /** k => номер сработавшего правила xray.json, -1 — выход по умолчанию, null — ответа ядра нет; null целиком — ядро не запустилось. */
+    public function exitTrace(string $target, array $cases): ?array
+    {
+        $x = $this->getXray();
+        if (!is_array($x) || !$cases) return null;
+        $base = random_int(41000, 48000);
+        $dir = $this->exitTraceRoot() . '/.exit-trace-' . bin2hex(random_bytes(6));
+        if (!@mkdir($dir, 0700)) return null;
+        try {
+            $json = json_encode($this->exitTraceConfig($x, $cases, $base, $dir), JSON_UNESCAPED_SLASHES);
+            if ($json === false || @file_put_contents("$dir/config.json", $json) === false) return null;
+            $host = str_contains($target, ':') ? "[$target]" : $target;
+            $curl = '';
+            foreach (array_keys($cases) as $k) $curl .= 'curl -s -o /dev/null --max-time 5 --socks5-hostname 127.0.0.1:' . ($base + $k) . ' ' . escapeshellarg("https://$host/") . '; ';
+            $bin = self::XRAY_BINARIES[$this->xrayCoreSelection()];
+            $out = (string) $this->ssh('XRAY_LOCATION_ASSET=/logs/geodata timeout 60 ' . escapeshellarg($bin) . ' run -c ' . escapeshellarg("$dir/config.json")
+                . ' >/dev/null 2>&1 & p=$!; i=0; while [ $i -lt 300 ] && ! grep -q " started" ' . escapeshellarg("$dir/error.log") . ' 2>/dev/null; do sleep 0.1; i=$((i+1)); done; '
+                . 'grep -q " started" ' . escapeshellarg("$dir/error.log") . ' 2>/dev/null && printf TRACE_STARTED; ' . $curl
+                . 'sleep 0.5; kill $p 2>/dev/null; wait $p 2>/dev/null; true', 'xr');
+            if ($this->sshFailed || !str_contains($out, 'TRACE_STARTED')) return null;
+            $result = array_fill_keys(array_keys($cases), null);
+            preg_match_all('~\[w(\d+) (?:->|>>) r(-default|\d+)\]~', (string) @file_get_contents("$dir/access.log"), $m, PREG_SET_ORDER);
+            foreach ($m as [, $k, $rule]) if (array_key_exists((int) $k, $result) && $result[(int) $k] === null) $result[(int) $k] = $rule === '-default' ? -1 : (int) $rule;
+            return $result;
+        } finally {
+            foreach (glob("$dir/*") ?: [] as $file) @unlink($file);
+            @rmdir($dir);
+        }
+    }
+
+    /** Запись списка, которой подходит домен или адрес: ['entry' => …, 'exact' => bool] или null. */
+    public function exitTraceEntry(string $host, array $entries): ?array
+    {
+        $ip = filter_var($host, FILTER_VALIDATE_IP) !== false;
+        $category = null;
+        foreach ($entries as $entry) {
+            $c = $this->classifyRouteEntry((string) $entry);
+            $v = strtolower($c['value']);
+            $hit = match ($c['kind']) {
+                'domain', 'suffix' => !$ip && $v !== '' && ($host === $v || str_ends_with($host, ".$v")),
+                'full' => !$ip && $host === $v,
+                'keyword' => !$ip && $v !== '' && str_contains($host, $v),
+                'regexp' => !$ip && $c['value'] !== '' && @preg_match('~' . str_replace('~', '\~', $c['value']) . '~', $host) === 1,
+                'ip' => $ip && self::exitIpInCidr($host, $c['value']),
+                default => false,
+            };
+            if ($hit) return ['entry' => (string) $entry, 'exact' => true];
+            if (in_array($c['kind'], ['geosite', 'geoip', 'ext', 'extip'], true)) $category ??= (string) $entry;
+        }
+        return $category === null ? null : ['entry' => $category, 'exact' => false];
+    }
+
+    /** Пользователи для проверки: заданный или «без узлов» и по одному пользователю каждого узла. */
+    public function exitTraceCases(?string $email): array
+    {
+        $x = $this->getXray();
+        if ($email !== null) {
+            foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $client) {
+                $have = (string) ($client['email'] ?? '');
+                if ($have !== '' && strcasecmp($have, $email) === 0) return [['label' => $have, 'email' => $have, 'off' => !empty($client['off'])]];
+            }
+            return [];
+        }
+        $cases = [['label' => $this->t('пользователь без узлов', 'a user without nodes'), 'email' => null, 'off' => false]];
+        foreach ($this->exitNodes() as $id => $node) {
+            if (empty($node['enabled']) || count($cases) >= self::EXIT_TRACE_MAX_CASES) continue;
+            $emails = $this->exitNodeEmails($x, (string) $id);
+            if ($emails) $cases[] = ['label' => $this->t('пользователи узла ', 'users of node ') . ($node['name'] !== '' ? $node['name'] : (string) $id) . " ({$emails[0]})", 'email' => $emails[0], 'off' => false];
+        }
+        return $cases;
+    }
+
+    /** Строки ответа для одного пользователя по номеру правила. */
+    public function exitTraceDescribe(?int $rule, string $host): string
+    {
+        if ($rule === null) return $this->t('ядро не ответило', 'the core did not answer');
+        $x = $this->getXray();
+        $p = $this->getPacConf();
+        if ($rule < 0) {
+            return $this->exitTraceOutbound((string) ($x['outbounds'][0]['tag'] ?? 'direct'))
+                . $this->t("\n   ни одно правило не подошло — выход по умолчанию", "\n   no rule matched: the default outbound");
+        }
+        $r = $x['routing']['rules'][$rule] ?? [];
+        $to = (string) ($r['balancerTag'] ?? $r['outboundTag'] ?? '');
+        $tag = (string) ($r['ruleTag'] ?? '');
+        $text = $this->exitTraceOutbound($to);
+        $entries = null;
+        if (preg_match('~^vpnbot:routes:(block|warp):~', $tag, $m)) {
+            $text .= "\n   " . ($m[1] === 'block' ? $this->t('правило: блок-лист (Vless → routes)', 'rule: block list (Vless → routes)') : $this->t('правило: список WARP (Vless → routes)', 'rule: WARP list (Vless → routes)'));
+            $entries = array_keys(array_filter($p[$m[1] === 'block' ? 'blocklist' : 'warplist'] ?? []));
+        } elseif (preg_match('~^' . preg_quote(self::EXIT_RULE, '~') . '([a-f0-9]{8}):~', $tag, $m) && ($node = $this->exitNodes($p)[$m[1]] ?? null)) {
+            $text .= "\n   " . $this->t('правило: маршруты узла', 'rule: node routes');
+            $entries = array_keys($this->exitNodeEntries($node));
+        } else {
+            $text .= "\n   " . ($tag !== '' ? $this->t('правило ', 'rule ') . '<code>' . self::esc($tag) . '</code>' : $this->t('правило №', 'rule #') . ($rule + 1) . $this->t(' в xray.json (без метки)', ' in xray.json (no tag)'));
+        }
+        if ($entries !== null && ($hit = $this->exitTraceEntry($host, $entries)) !== null) {
+            $text .= $hit['exact'] ? $this->t(', запись ', ', entry ') . '<code>' . self::esc($hit['entry']) . '</code>'
+                : $this->t(', одна из категорий .dat (например <code>', ', one of the .dat categories (e.g. <code>') . self::esc($hit['entry']) . '</code>)';
+        } elseif ($entries !== null && filter_var($host, FILTER_VALIDATE_IP) === false && isset($r['ip']) && !isset($r['domain'])) {
+            $text .= $this->t(', по адресу, в который разрешился домен', ', by the address the domain resolved to');
+        }
+        return $text;
+    }
+
+    private function exitTraceOutbound(string $to): string
+    {
+        if (str_starts_with($to, self::EXIT_TAG)) {
+            $id = substr($to, strlen(self::EXIT_TAG));
+            $node = $this->exitNodes()[$id] ?? null;
+            $line = '🌍 ' . $this->t('через узел ', 'through node ') . '<b>' . ($node ? $this->exitName($id, $node) : self::esc($id)) . '</b>';
+            $s = $this->exitStatus()[$id] ?? [];
+            if ($s && empty($s['ok'])) $line .= $this->t(' — сейчас узел не отвечает, поэтому напрямую', ': the node is not answering now, so direct');
+            if ($node && $node['quic'] === 'block') $line .= $this->t("\n   QUIC (UDP 443) к нему блокируется: браузер перейдёт на TCP", "\n   QUIC (UDP 443) to it is blocked: the browser switches to TCP");
+            return $line;
+        }
+        return match ($to) {
+            'block' => '🚫 ' . $this->t('блокируется', 'blocked'),
+            'warp' => '☁️ WARP',
+            'direct' => '➡️ ' . $this->t('напрямую с этого сервера', 'direct from this server'),
+            default => '➡️ ' . $this->t('выход ', 'outbound ') . '<code>' . self::esc($to) . '</code>',
+        };
+    }
+
+    public function exitWherePrompt(): void
+    {
+        $this->exitPrompt($this->t("домен или адрес, а через пробел — пользователь Xray (необязательно).\nНапример: <code>www.youtube.com</code> или <code>chatgpt.com alice</code>.\nБез пользователя бот покажет маршрут для пользователя без узлов и для пользователей каждого узла.",
+            "a domain or address and, after a space, an Xray user (optional).\nFor example: <code>www.youtube.com</code> or <code>chatgpt.com alice</code>.\nWithout a user the bot shows the route for a user without nodes and for users of each node."), 'saveExitWhere', []);
+    }
+
+    public function saveExitWhere($text): void
+    {
+        $parts = preg_split('~\s+~', trim((string) $text), 2);
+        $target = self::exitTraceTarget((string) ($parts[0] ?? ''));
+        $lines = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> Куда пойдёт домен', ' -> Exit nodes -> Where a domain goes')];
+        if ($target === null) {
+            $lines[] = $this->t('Не похоже на домен или адрес: ', 'This does not look like a domain or address: ') . '<code>' . self::esc(mb_substr((string) ($parts[0] ?? ''), 0, 100)) . '</code>';
+        } else {
+            $user = isset($parts[1]) ? trim($parts[1]) : null;
+            $cases = $this->exitTraceCases($user === '' ? null : $user);
+            $lines[] = '<code>' . self::esc($target) . '</code>' . $this->t(' — TCP 443, как запрос видит этот сервер', ': TCP 443, as this server sees the request');
+            if (!$cases) {
+                $lines[] = $this->t('Пользователь не найден: ', 'User not found: ') . '<code>' . self::esc(mb_substr((string) $user, 0, 60)) . '</code>';
+            } elseif (($result = $this->exitTrace($target, $cases)) === null) {
+                $lines[] = $this->t('Проверка не удалась: временный Xray в контейнере xr не запустился.', 'The check failed: the temporary Xray in the xr container did not start.');
+            } else {
+                foreach ($cases as $k => $case) {
+                    $lines[] = "\n<b>" . self::esc($case['label']) . '</b>' . (!empty($case['off']) ? $this->t(' (отключён)', ' (disabled)') : '') . ":\n" . $this->exitTraceDescribe($result[$k] ?? null, $target);
+                }
+                $lines[] = $this->t("\nКлиенты sing-box и Mihomo сами отправляют домены из списка WARP в WARP, а домены, которые приложение шлёт мимо VPN, до сервера не доходят.",
+                    "\nsing-box and Mihomo clients send WARP-list domains to WARP by themselves, and domains an app sends outside the VPN never reach the server.");
+            }
+        }
+        $data = [[['text' => $this->t('🧭 Другой домен', '🧭 Another domain'), 'callback_data' => '/exitWhere']], [['text' => $this->i18n('back'), 'callback_data' => '/exits']]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $lines), $data);
     }
 
     // ── Этот сервер как узел: «Профиль для узла» ───────────────────────────

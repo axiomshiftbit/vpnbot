@@ -782,8 +782,19 @@ class Bot
             case preg_match('~^/exitCheckAll$~', $this->input['callback'], $m):
                 $this->exitCheckAll();
                 break;
-            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Auto) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+            case preg_match('~^/exitWhere$~', $this->input['callback'], $m):
+                $this->exitWherePrompt();
+                break;
+            case preg_match('~^/exitPre ([a-f0-9]{8}) ([a-z]{1,8})$~', $this->input['callback'], $m):
+                $this->exitPresetToggle($m[1], $m[2]);
+                break;
+            case preg_match('~^/exitCopyTo ([a-f0-9]{8}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->exitCopyTo($m[1], $m[2]);
+                break;
+            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Auto|Speed|Presets|CopyTo|Export|Import) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 match ($m[1]) {
+                    'Speed' => $this->exitSpeedCheck($m[2]), 'Presets' => $this->exitPresetsMenu($m[2]), 'CopyTo' => $this->exitCopyToMenu($m[2]),
+                    'Export' => $this->exitExport($m[2]), 'Import' => $this->exitImportPrompt($m[2]),
                     'RtClear' => $this->exitRoutesClear($m[2]), 'RtClearYes' => $this->exitRoutesClear($m[2], true),
                     'Auto' => $this->exitAuto($m[2]),
                     'Check' => $this->exitCheck($m[2]), 'Refresh' => $this->exitRefresh($m[2]), 'Toggle' => $this->exitToggle($m[2]),
