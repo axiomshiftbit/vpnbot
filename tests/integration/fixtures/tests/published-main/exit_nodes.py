@@ -214,7 +214,14 @@ try:
  s=bot('adduser','ci-exit-new');new=[c for c in s['clients'] if c['email']=='ci-exit-new']
  check('new-user-gets-the-auto-node',new and new[0]['exit']==[nid] and 'ci-exit-new' in next(r for r in node_rules(s,nid) if r['ruleTag'].endswith(':domain'))['user'])
  s=bot('deluser','ci-exit-new');check('deleted-user-leaves-the-rules',not any('ci-exit-new' in r.get('user',[]) for r in s['rules']))
- menus=bot('menus',nid);check('menus-open',len(menus['messages'])>=6 and '/exitAdd' in menus['buttons'] and '/exitRelayAdd' in menus['buttons'])
+ # ── Куда пойдёт домен (временный Xray в xray-audit), сервисы, экспорт ──
+ s=bot('where',nid,'video.exit.test '+email);check('where-shows-the-node-for-a-node-user',said(s,'через узел <b>') and said(s,'запись <code>domain:video.exit.test</code>'))
+ s=bot('where',nid,'direct.exit.test '+email);check('where-shows-no-node-for-other-domains',not said(s,'через узел <b>') and (said(s,'ни одно правило не подошло') or said(s,'напрямую')))
+ s=bot('where',nid,'video.exit.test');check('where-without-user-shows-both',said(s,'пользователь без узлов') and said(s,'пользователи узла'))
+ s=bot('preset',nid,'discord');check('service-preset-added',all(e in s['nodes'][nid]['routes'] for e in ('domain:discord.com','domain:discord.gg')))
+ s=bot('preset',nid,'discord');check('service-preset-removed',not any(e.startswith('domain:discord') for e in s['nodes'][nid]['routes']) and 'domain:video.exit.test' in s['nodes'][nid]['routes'])
+ s=bot('roundtrip',nid);check('export-import-roundtrip',said(s,'"same":true'))
+ menus=bot('menus',nid);check('menus-open',len(menus['messages'])>=7 and '/exitAdd' in menus['buttons'] and '/exitRelayAdd' in menus['buttons'])
  check('menus-hide-the-node-keys',not any(public in m or uid in m for m in menus['messages']))
  s=bot('delete',nid);check('node-deleted',s['nodes']=={} and s['outbounds']==[] and s['inbounds']==[] and s['rules']==[] and s['balancers']==[] and s['burst'] is None)
  check('deleted-node-cleared-from-users',all(c['exit'] is None for c in s['clients']) and s['sets']==[])

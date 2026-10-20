@@ -640,8 +640,16 @@ switch ($action) {
             case 'refresh': $b->exitRefresh($id); break;
             case 'delete': $b->exitDelete($id,true); break;
             case 'cron': $b->checkExitNodes(); break;
+            case 'where': $b->saveExitWhere($argv[4]); break;
+            case 'preset': $b->exitPresetToggle($id,$argv[4]); break;
+            case 'roundtrip':
+                // Экспорт и разбор того же текста дают прежние маршруты и наборы.
+                $node=$b->exitNodes()[$id];
+                [$routes,$sets]=$b->exitImportParse($b->exitExportText($node));
+                $b->transport->messages[]=json_encode(['same'=>$routes==$node['routes'] && array_keys($sets)==array_map('strval',array_keys($node['rulesets']))]);
+                break;
             case 'menus':
-                $b->exitNodesMenu();$b->exitNodeMenu($id);$b->exitRoutesMenu($id);$b->exitSetsMenu($id);$b->exitUsersMenu($id);$b->exitRelayMenu();
+                $b->exitNodesMenu();$b->exitNodeMenu($id);$b->exitRoutesMenu($id);$b->exitSetsMenu($id);$b->exitUsersMenu($id);$b->exitRelayMenu();$b->exitPresetsMenu($id);
                 break;
             case 'relay': $b->saveExitRelay($argv[3]); break;
             case 'adduser': $b->addxrus($argv[3]); break;
