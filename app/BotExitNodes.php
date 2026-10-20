@@ -1156,7 +1156,7 @@ trait BotExitNodes
         $node = $this->exitNodes()[$id] ?? null;
         if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
         if (!$node['routes'] && !$node['rulesets']) { $this->exitRoutesMenu($id, 0, $this->t('Экспортировать нечего: маршрутов и наборов нет', 'Nothing to export: no routes or sets')); return; }
-        $file = 'exit-routes-' . (preg_replace('~[^A-Za-z0-9._-]+~', '_', $node['name']) ?: $id) . '.txt';
+        $file = 'exit-routes-' . (trim((string) preg_replace('~[^A-Za-z0-9._-]+~', '_', $node['name']), '_.') ?: $id) . '.txt';
         $this->sendFile($this->input['chat'], new CURLStringFile($this->exitExportText($node), $file, 'text/plain'),
             $this->t('Маршруты узла ', 'Routes of node ') . $this->exitName($id, $node) . $this->t('. Импорт: Маршруты → «Импорт» на любом узле или сервере.', '. Import: Routes → Import on any node or server.'));
         $this->exitRoutesMenu($id, 0, $this->t('Файл отправлен', 'File sent'));
