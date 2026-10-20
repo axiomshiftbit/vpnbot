@@ -45,6 +45,7 @@ class ExitMenuBot extends Bot
     public array $status = [];
     protected function exitStatusWrite(string $id, array $status): void { $this->written[$id] = $status; }
     public array $written = [];
+    protected function exitRulesetDir(): string { return sys_get_temp_dir() . '/exit-rulesets-test-' . getmypid(); }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screens[] = [$text, is_array($button) ? $button : []]; }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->sent[] = $text; return ['result' => ['message_id' => 9]]; }
     public function answer($callback_id, $textNotify = false, $notify = false) {}
@@ -325,5 +326,8 @@ $restore->confPac['exits'] = ['a1b2c3d4' => ['link' => $link, 'rulesets' => ['ht
 $check($restore->restoreBackupXray(['restored' => true]) && $restore->order === ['refresh a1b2c3d4', 'refresh e5f6a7b8', 'write'], 'восстановление: наборы узлов до записи конфига');
 
 @unlink($statusFile);
+$cacheDir = sys_get_temp_dir() . '/exit-rulesets-test-' . getmypid();
+array_map('unlink', glob("$cacheDir/*") ?: []);
+@rmdir($cacheDir);
 if ($failures) { fwrite(STDERR, "exit_nodes_menu_test FAIL:\n - " . implode("\n - ", array_unique($failures)) . "\n"); exit(1); }
 echo "exit_nodes_menu_test OK\n";

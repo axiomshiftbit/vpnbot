@@ -46,6 +46,7 @@ class ExitToolsBot extends Bot
     public function exitStatus(): array { return $this->status; }
     // Как на сервере: следующая проба видит записанное состояние.
     protected function exitStatusWrite(string $id, array $status): void { $this->status[$id] = $status; }
+    protected function exitRulesetDir(): string { return sys_get_temp_dir() . '/exit-rulesets-test-' . getmypid(); }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screens[] = [$text, is_array($button) ? $button : []]; }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { return ['result' => ['message_id' => 9]]; }
     public function sendFile($chat, $id_url_cFile, $caption = false, $to = false) { $this->files[] = [$id_url_cFile, $caption]; return ['ok' => true]; }
@@ -322,6 +323,9 @@ if ($xray && is_executable($xray) && trim((string) shell_exec('command -v curl')
     echo "exit_nodes_tools_test: VLESS_TEST_XRAY не задан — проверка настоящим ядром пропущена\n";
 }
 @rmdir($root);
+$cacheDir = sys_get_temp_dir() . '/exit-rulesets-test-' . getmypid();
+array_map('unlink', glob("$cacheDir/*") ?: []);
+@rmdir($cacheDir);
 
 if ($failures) {
     fwrite(STDERR, "exit_nodes_tools_test FAILED:\n- " . implode("\n- ", $failures) . "\n");

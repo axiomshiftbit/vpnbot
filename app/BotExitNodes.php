@@ -150,9 +150,15 @@ trait BotExitNodes
         return $entries;
     }
 
+    // Каталог кэша наборов; в тестах подменяется, чтобы не тронуть /logs сервера.
+    protected function exitRulesetDir(): string
+    {
+        return self::EXIT_RULESET_DIR;
+    }
+
     public function exitRulesetFile(string $key): string
     {
-        return self::EXIT_RULESET_DIR . '/' . substr(hash('sha256', $key), 0, 24) . '.json';
+        return $this->exitRulesetDir() . '/' . substr(hash('sha256', $key), 0, 24) . '.json';
     }
 
     public function exitRulesetCache(string $key): array
@@ -533,7 +539,7 @@ trait BotExitNodes
         if ($error === '' && hash('sha256', $binary) !== ($cache['hash'] ?? '') && !$this->exitRulesetCoreAccepts($entries)) $error = 'core';
         $cache = ['key' => $url, 'time' => time(), 'error' => $error]
             + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary)] : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '']);
-        @mkdir(self::EXIT_RULESET_DIR, 0700, true);
+        @mkdir($this->exitRulesetDir(), 0700, true);
         $file = $this->exitRulesetFile($url);
         if (@file_put_contents("$file.tmp", json_encode($cache, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) !== false) @rename("$file.tmp", $file);
         return $error;
