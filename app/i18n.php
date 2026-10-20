@@ -1355,7 +1355,7 @@ $i = [
         'ru' => 'прыгающее меню выкл',
     ],
     'listSubnet'  => [
-        'en' => 'listSubnet',
+        'en' => 'subnet list',
         'ru' => 'список подсетей',
     ],
     'AllowedIPs'  => [
@@ -1555,11 +1555,11 @@ $i = [
         'ru' => 'задайте порт в "настройки -> Ports", чтобы открыть прокси',
     ],
     'defaultDNS'  => [
-        'en' => 'defaultDNS',
+        'en' => 'default DNS',
         'ru' => 'дефолтный днс',
     ],
     'defaultMTU'  => [
-        'en' => 'defaultMTU',
+        'en' => 'default MTU',
         'ru' => 'дефолтный MTU',
     ],
     'debug'  => [
@@ -1615,7 +1615,7 @@ $i = [
         'ru' => 'GeoIp/GeoSite',
     ],
     'changeFakeDomain'  => [
-        'en' => 'changeFakeDomain',
+        'en' => 'fake domain',
         'ru' => 'фейковый домен',
     ],
     'fingerprint'  => [
@@ -1628,11 +1628,11 @@ $i = [
     ],
     'reality mask short' => [
         'en' => 'Fake domain %s answers without ALPN: Xray 26.10.17+ rejects every REALITY client with it. Before updating the core pick a site with HTTP/2 or «steal from yourself».',
-        'ru' => 'Фейковый домен %s отвечает без ALPN: Xray 26.10.17+ с ним отвергает всех клиентов REALITY. До обновления ядра выберите сайт с HTTP/2 или «steal from yourself».',
+        'ru' => 'Фейковый домен %s отвечает без ALPN: Xray 26.10.17+ с ним отвергает всех клиентов REALITY. До обновления ядра выберите сайт с HTTP/2 или «маска своим сайтом».',
     ],
     'reality mask short now' => [
         'en' => 'Fake domain %s answers without ALPN: this REALITY core rejects every client with it. Pick a site with HTTP/2 or «steal from yourself».',
-        'ru' => 'Фейковый домен %s отвечает без ALPN: это ядро REALITY отвергает с ним всех клиентов. Выберите сайт с HTTP/2 или «steal from yourself».',
+        'ru' => 'Фейковый домен %s отвечает без ALPN: это ядро REALITY отвергает с ним всех клиентов. Выберите сайт с HTTP/2 или «маска своим сайтом».',
     ],
     'reality mask tls12' => [
         'en' => 'Fake domain %s does not answer with TLS 1.3: REALITY does not work with it.',

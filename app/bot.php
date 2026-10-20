@@ -28050,6 +28050,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/onlines",
             ],
         ];
+        $data[] = $this->menuHelpButton('xray');
 
         $data[] = [
             [
@@ -28948,6 +28949,7 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
+        $data[] = $this->menuHelpButton('xray_user', (string) $i);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),

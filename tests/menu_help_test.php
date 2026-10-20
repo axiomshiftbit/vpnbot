@@ -205,7 +205,8 @@ foreach ([null, [], 'PUT', "put\n[access]", false, 1] as $invalid) {
 $topics = ['telemt_main' => '', 'telemt_mode' => '', 'telemt_sni' => '', 'telemt_settings' => '', 'telemt_relays' => '', 'telemt_diagnostics' => '',
     'telemt' => '', 'telemt_carrier' => '', 'telemt_path' => '', 'telemt_method' => '', 'telemt_conveyor' => '', 'telemt_mask' => '', 'dpi' => '', 'smux' => '', 'finalmask' => '',
     'dpi_frag' => '', 'dpi_noise' => '', 'finalmask_frag' => '', 'finalmask_noise' => '', 'encryption' => '', 'warp' => '',
-    'awg' => '1_4', 'naive_relay' => 'relay.example-test', 'tt' => 'alice'];
+    'awg' => '1_4', 'naive_relay' => 'relay.example-test', 'tt' => 'alice', 'xray' => '', 'xray_user' => '3', 'exitnodes' => '',
+    'hy' => '', 'hy_tune' => '', 'ovpn' => '', 'xdrive' => '', 'adguard' => ''];
 foreach (ManagedProtocol::NAMES as $protocol => $name) {
     $topics['p_' . $protocol] = 'a123456789abcdef';
     $topics['ps_' . $protocol] = 'a123456789abcdef.0123456789abcdef';
@@ -219,6 +220,7 @@ foreach (['ru', 'en'] as $lang) foreach ($topics as $topic => $context) {
         [$text, $buttons] = $bot->screen;
         $check($bot->messageTextLength($text) < 4096, "$lang/$topic/$page: длина сообщения");
         $check(mb_strlen(strip_tags($text)) > 40, "$lang/$topic/$page: содержимое не пустое");
+        if ($lang === 'en') $check(!preg_match('~\p{Cyrillic}~u', html_entity_decode(strip_tags($text))), "$lang/$topic/$page: английская справка без русского текста");
         preg_match_all('~<(/?)([a-z]+)(?:\s[^<>]*)?>~i', $text, $tags, PREG_SET_ORDER);
         $stack = [];
         foreach ($tags as $tag) {
