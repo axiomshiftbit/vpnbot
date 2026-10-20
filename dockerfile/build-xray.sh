@@ -23,8 +23,10 @@ if [ -n "$tests" ]; then
     # Форк 26.10.13 добавил в testing/release проверки самого репозитория:
     # им нужны git-чекаут (git check-ignore, ls-files) и bash, а сборка идёт
     # из архива исходников на Alpine. Тег http2legacy сверяется ниже по
-    # готовому бинарнику.
-    skip='Geodata|^TestAgentDocPathsExist$|^TestExplicitBuildTagsKeepHTTP2Legacy$|^TestSetupWorktree|^TestGates'
+    # готовому бинарнику. Два теста splithttp форка сравнивают скорость с
+    # обычным HTTP/2 (не ниже 85 %), автор сам помечает их timing-sensitive:
+    # на загруженном сборщике (2 vCPU, четыре сборки рядом) они падают.
+    skip='Geodata|^TestAgentDocPathsExist$|^TestExplicitBuildTagsKeepHTTP2Legacy$|^TestSetupWorktree|^TestGates|^TestFlowFastReaderKeepsThroughput$|^TestFlowClientKeepsThroughput$'
     # shellcheck disable=SC2086
     [ -z "$present" ] || CGO_ENABLED=0 sh /build-tools/go-retry.sh go test ${tags:+-tags "$tags"} -count=1 -timeout 15m -skip "$skip" $present
 fi
