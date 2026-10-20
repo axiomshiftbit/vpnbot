@@ -17587,6 +17587,7 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
+        $data[] = $this->menuHelpButton('ss');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -25612,6 +25613,7 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
+        $data[] = $this->menuHelpButton('naive');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -25983,6 +25985,7 @@ DNS-over-HTTPS with IP:
                 ],
             ];
         }
+        $data[] = $this->menuHelpButton('oc');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -38100,6 +38103,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/l2tpClientMenu $u",
             ]];
         }
+        $data[] = $this->menuHelpButton('ipsec', 'l2tp');
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/menu',
@@ -38673,6 +38677,7 @@ XML;
                 'callback_data' => "/ikev2ClientMenu $u",
             ]];
         }
+        $data[] = $this->menuHelpButton('ipsec', 'ikev2');
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/menu',
