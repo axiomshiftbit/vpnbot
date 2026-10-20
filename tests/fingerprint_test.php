@@ -196,8 +196,8 @@ $rb->conf = ['transport' => 'Reality', 'fingerprint' => 'ios'];
 $rb->fingerprintMenu();
 fpAssert($labels() === $rb->fingerprints(), 'кнопки меню при REALITY: ' . json_encode($labels()));
 fpAssert($warned() === ['ios', 'android', 'edge', '360', 'qq', 'random'], 'пометки ⚠ при ядре с ML-KEM: ' . json_encode($warned()));
-fpAssert(str_contains($rb->screen[0], 'fp reality mlkem') && str_contains($rb->screen[0], 'fp reality core mlkem') && str_contains($rb->screen[0], 'fp compat'),
-    'меню не объясняет поведение при REALITY');
+fpAssert(str_contains($rb->screen[0], 'fp reality mlkem') && str_contains($rb->screen[0], 'fp reality core mlkem')
+    && str_contains(json_encode($rb->screen[1]), '/menuhelp fingerprint 0'), 'меню не объясняет поведение при REALITY или нет справки');
 fpAssert(str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Ios on'), 'выбранный ios не отмечен');
 $rb->mlkem = false;
 $rb->fingerprintMenu();
@@ -207,7 +207,7 @@ fpAssert(!str_contains($rb->screen[0], 'fp reality mlkem') && str_contains($rb->
 $rb->conf = ['transport' => 'Websocket', 'fingerprint' => 'ios'];
 $rb->fingerprintMenu();
 fpAssert($labels() === $rb->fingerprints() && $warned() === [] && !str_contains($rb->screen[0], 'fp reality'), 'меню при обычном TLS: ' . json_encode($labels()));
-fpAssert(str_contains($rb->screen[0], 'fp compat') && str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Ios on'), 'при обычном TLS выбранный ios не отмечен');
+fpAssert(str_contains(json_encode($rb->screen[1]), '/menuhelp fingerprint 0') && str_contains(json_encode($rb->screen[1], JSON_UNESCAPED_UNICODE), 'Ios on'), 'при обычном TLS выбранный ios не отмечен');
 // gRPC и XHTTP: ⚠ у образцов без HTTP/2, независимо от ядра.
 foreach (['trojan-grpc', 'xhttp'] as $transport) {
     $rb->conf = ['transport' => $transport, 'fingerprint' => 'android'];
@@ -266,7 +266,13 @@ fpAssert(!str_contains((string) json_encode(json_decode((string) file_get_conten
 // Текст совместимости есть на обоих языках и не длиннее сообщения Telegram.
 require __DIR__ . '/../app/i18n.php';
 foreach (['en', 'ru'] as $lang) {
-    fpAssert(mb_strlen($i['fp compat'][$lang] . $i['fp hint'][$lang] . $i['fp reality core mlkem'][$lang]) < 3000 && str_contains($i['fp compat'][$lang], 'sing-box'), "текст совместимости ($lang) пуст или слишком длинен");
+    // Совместимость — в справке: ядра, клиенты, VLESS Encryption, транспорты.
+    $rb->language = $lang;
+    [, $back, $pages] = $rb->menuHelpContent('fingerprint');
+    $help = implode("\n", array_keys($pages)) . "\n" . implode("\n", $pages);
+    fpAssert($back === '/fingerprintMenu' && count($pages) === 5 && str_contains($help, 'sing-box') && str_contains($help, 'VLESS Encryption')
+        && str_contains($help, $i['reality require mlkem'][$lang]) && str_contains($help, 'X25519MLKEM768') && str_contains($help, 'android'), "справка об отпечатках ($lang) неполна");
+    foreach ($pages as $name => $page) fpAssert(mb_strlen("$name\n\n$page") < 3500, "страница справки «{$name}» ($lang) слишком длинна");
     foreach (['fp reality no tls13', 'fp reality mlkem', 'fp reality mihomo', 'fp reality random', 'fp reality core mlkem', 'fp reality core any', 'fp no h2 warn'] as $key) {
         fpAssert(($i[$key][$lang] ?? '') !== '', "нет текста $key ($lang)");
     }

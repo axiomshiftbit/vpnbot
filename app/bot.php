@@ -20308,9 +20308,8 @@ DNS-over-HTTPS with IP:
         if ($si !== $current || $cl !== $current) {
             $text[] = 'sing-box: <code>' . $si . '</code> · mihomo: <code>' . $cl . '</code>';
         }
-        $text[] = '<i>' . $this->i18n('fp hint') . '</i>';
-        $text[] = '';
-        $text[] = $this->i18n('fp compat');
+        $text[] = '<i>' . $this->t('Отпечаток — настройка клиента. Какой отпечаток работает с каким ядром, транспортом и клиентом, в том числе с постквантовым шифрованием, — в справке.',
+            'The fingerprint is a client setting. Which fingerprint works with which core, transport and client, including post-quantum encryption, is in the help.') . '</i>';
 
         $data = [];
         $row  = [];
@@ -20330,6 +20329,7 @@ DNS-over-HTTPS with IP:
         if ($row) {
             $data[] = $row;
         }
+        $data[] = $this->menuHelpButton('fingerprint');
         $data[] = [[
             'text'          => $this->i18n('back'),
             'callback_data' => '/xray',

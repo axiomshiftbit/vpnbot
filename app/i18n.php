@@ -2182,10 +2182,6 @@ $i = [
         'en' => 'wgcf profile is missing — restart the wp container',
         'ru' => 'профиль wgcf отсутствует — перезапустите контейнер wp',
     ],
-    'fp hint'  => [
-        'en' => 'The fingerprint is a client setting: which browser the client imitates in its TLS ClientHello (JA3/JA4). The server neither stores nor checks it — this value goes into links and subscriptions, and a client with another value connects just the same. chrome is the safest default; random/randomized change the fingerprint per connection, which is itself unusual for a browser.',
-        'ru' => 'Отпечаток — настройка клиента: под какой браузер он маскирует своё TLS-приветствие (JA3/JA4). Сервер её не хранит и не сверяет — значение уходит в ссылки и подписки, а клиент с другим значением подключится так же. chrome — самый безопасный выбор; random/randomized меняют отпечаток на каждое соединение, что для браузера само по себе нетипично.',
-    ],
     'fp no h2 warn'  => [
         'en' => '«%s» offers no HTTP/2 (ALPN): with gRPC and XHTTP, Xray and Mihomo clients will not connect. Use chrome, firefox, safari, ios, edge or qq.',
         'ru' => '«%s» не предлагает HTTP/2 (ALPN): с gRPC и XHTTP клиенты Xray и Mihomo не подключатся. Выберите chrome, firefox, safari, ios, edge или qq.',
@@ -2850,22 +2846,6 @@ $i = [
     'fp reality core any' => [
         'en' => 'REALITY core: accepts any fingerprint with TLS 1.3 (the fork without «Require ML-KEM»).',
         'ru' => 'Ядро REALITY принимает любой отпечаток с TLS 1.3 (форк без «Требовать ML-KEM»).',
-    ],
-    'fp compat' => [
-        'en' => "<b>Where each fingerprint works</b> (measured on the cores of this build)\n"
-            . "• REALITY on a core that requires ML-KEM (original Xray 26.9.8+, the fork with «Require ML-KEM»): Xray clients of any version — chrome, firefox, safari; Mihomo — chrome only, with support-x25519mlkem768 (the bot sets it); sing-box 1.14 does not connect at all.\n"
-            . "• REALITY on the fork without the flag: any fingerprint with TLS 1.3 (chrome, firefox, safari, ios, edge, qq) — in Xray, Mihomo and sing-box.\n"
-            . "• android and 360 never work with REALITY: these samples have no TLS 1.3.\n"
-            . "• WebSocket (plain TLS): every fingerprint in the list works. gRPC and XHTTP need HTTP/2: android and 360 do not offer it, Xray and Mihomo clients with them do not connect.\n"
-            . "• random picks a browser sample when the client starts: stable on plain TLS and on REALITY without ML-KEM, only sometimes on a core that requires ML-KEM.\n"
-            . "The bot does not replace your choice: it marks fingerprints that the current core will not accept with ⚠ and warns before saving.",
-        'ru' => "<b>Где какой отпечаток работает</b> (замер на ядрах этой сборки)\n"
-            . "• REALITY на ядре, требующем ML-KEM (оригинальный Xray 26.9.8+, форк с «Требовать ML-KEM»): клиенты на Xray любой версии — chrome, firefox, safari; Mihomo — только chrome и с опцией support-x25519mlkem768 (бот её ставит сам); sing-box 1.14 не подключается совсем.\n"
-            . "• REALITY на форке без этого флага: любой отпечаток с TLS 1.3 (chrome, firefox, safari, ios, edge, qq) — в Xray, Mihomo и sing-box.\n"
-            . "• android и 360 с REALITY не работают нигде: в этих образцах нет TLS 1.3.\n"
-            . "• WebSocket (обычный TLS): работают все отпечатки из списка. gRPC и XHTTP нужен HTTP/2: в android и 360 его нет, клиенты Xray и Mihomo с ними не подключатся.\n"
-            . "• random при запуске клиента берёт образец браузера: стабилен с обычным TLS и с REALITY без ML-KEM, а на ядре, требующем ML-KEM, подключается только иногда.\n"
-            . "Бот не подменяет выбор: отпечатки, которые текущее ядро не примет, отмечены ⚠, а при выборе такого бот предупреждает.",
     ],
 ];
 
