@@ -459,7 +459,7 @@ ttAssert(str_contains($restoreBot2->ovpnRestoreError, 'pki/issued/server.crt')
     'отказ называет конкретные недостающие файлы, а не «incomplete or invalid»');
 ttAssert(file_get_contents($restoreRoot2 . '/pki/ca.crt') === $pkiFixture['ca'],
     'отвергнутый снимок не трогает PKI');
-ttAssert(strpos($botSrc, "str_contains(\$this->ovpnRestoreError, 'ЧАСТИЧНО')") !== false,
+ttAssert(strpos($botSrc, 'if ($this->ovpnRestorePartial) {') !== false && strpos($botSrc, '$this->ovpnRestorePartial = $error->getCode() === self::BACKUP_PARTIAL;') !== false,
     'прерванный перенос отличается от отвергнутого снимка при восстановлении из бэкапа');
 
 // Экспорт исключает runtime-файлы демона.

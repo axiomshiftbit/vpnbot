@@ -236,6 +236,31 @@ $bot->exitCopyRoutes($id, 'pac');
 $check(str_contains($bot->last()[0], 'пуст'), 'пустой список — сообщение');
 $bot->exitRoutesMenu($id, 0);
 $check(isset($bot->callbacks()["/exitCopy $id warp"], $bot->callbacks()["/exitCopy $id move"], $bot->callbacks()["/exitCopy $id pac"]), 'кнопки копирования');
+// «Очистить всё»: с подтверждением, наборы и пользователи остаются.
+$check(isset($bot->callbacks()["/exitRtClear $id"]), 'кнопка «Очистить всё» при наличии маршрутов');
+$bot->confPac['exits'][$id]['rulesets'] = ['https://example.org/x.srs' => ['on' => 1, 'behavior' => 'domain', 'interval' => 86400]];
+$bot->exitAllUsers($id, true);
+$before = $bot->confPac['exits'][$id]['routes'];
+$usersBefore = array_column($bot->confXray['inbounds'][0]['settings']['clients'], 'exit', 'email');
+$bot->exitRoutesClear($id);
+$check($bot->confPac['exits'][$id]['routes'] === $before && isset($bot->callbacks()["/exitRtClearYes $id"], $bot->callbacks()["/exitRoutes $id 0"]) && str_contains($bot->last()[0], '(' . count($before) . ')'), 'сначала только подтверждение с числом записей');
+$bot->exitRoutesClear($id, true);
+$check($bot->confPac['exits'][$id]['routes'] === [] && str_contains($bot->last()[0], 'Все маршруты удалены'), 'все маршруты удалены');
+$check(isset($bot->confPac['exits'][$id]['rulesets']['https://example.org/x.srs']) && $usersBefore && array_column($bot->confXray['inbounds'][0]['settings']['clients'], 'exit', 'email') === $usersBefore, 'наборы и пользователи узла остались');
+$check(!isset($bot->callbacks()["/exitRtClear $id"]), 'без маршрутов кнопки нет');
+$bot->exitRoutesClear($id);
+$check(str_contains($bot->last()[0], 'Маршрутов нет'), 'пустой список: сообщение вместо подтверждения');
+$bot->language = 'en';
+$bot->saveExitRoutes('domain:example.org', $id);
+$bot->exitRoutesMenu($id, 0);
+$check(($bot->callbacks()["/exitRtClear $id"] ?? '') === '🧹 Clear all', 'кнопка на английском');
+$bot->exitRoutesClear($id);
+$check(str_contains($bot->last()[0], 'Delete all routes of node') && !preg_match('~[А-Яа-яЁё]~u', preg_replace('~<b>.*?</b>~s', '', $bot->last()[0])), 'подтверждение на английском (кроме имени узла)');
+$bot->exitRoutesClear($id, true);
+$check(str_contains($bot->last()[0], 'All routes deleted'), 'итог на английском');
+$bot->language = 'ru';
+$bot->exitAllUsers($id, false);
+$bot->confPac['exits'][$id]['rulesets'] = [];
 
 // --- Профиль для узла ---------------------------------------------------------
 $bot->saveExitRelay('example main');

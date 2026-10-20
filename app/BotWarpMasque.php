@@ -98,7 +98,7 @@ trait BotWarpMasque
                 unset($p['warp_masque_h2']);
             }
             if (!$this->setPacConf($p)) {
-                throw new RuntimeException('Не удалось сохранить настройки WARP');
+                throw new RuntimeException($this->t('Не удалось сохранить настройки WARP', 'Could not save the WARP settings'));
             }
         });
     }

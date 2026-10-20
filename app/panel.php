@@ -35,23 +35,23 @@ set_exception_handler(function (Throwable $e) {
 switch ($cmd) {
     case 'url':
         $plain = $panel->ensurePassword();
-        echo "Панель: http://127.0.0.1:$port{$panel->prefix()}/\n";
-        echo "Порт наружу не открыт — пробросьте его по ssh:\n";
-        echo "  ssh -L $port:127.0.0.1:$port <сервер>\n";
+        echo Lang::t("Панель: http://127.0.0.1:$port{$panel->prefix()}/\n", "Panel: http://127.0.0.1:$port{$panel->prefix()}/\n");
+        echo Lang::t("Порт наружу не открыт — пробросьте его по ssh:\n", "The port is not open to the outside; forward it over ssh:\n");
+        echo Lang::t("  ssh -L $port:127.0.0.1:$port <сервер>\n", "  ssh -L $port:127.0.0.1:$port <server>\n");
         if ($plain) {
-            echo "\nСгенерирован пароль: $plain\n";
-            echo "Он же лежит в " . Panel::dataDir() . "/initial_password.txt — файл удалится после первого входа.\n";
+            echo Lang::t("\nСгенерирован пароль: $plain\n", "\nGenerated password: $plain\n");
+            echo Lang::t("Он же лежит в ", "It is also stored in ") . Panel::dataDir() . Lang::t("/initial_password.txt — файл удалится после первого входа.\n", "/initial_password.txt; the file is deleted after the first sign-in.\n");
         }
         if (empty($c['admin'])) {
-            echo "\nВНИМАНИЕ: в config.php пуст \$c['admin'] — бот никому не принадлежит.\n";
-            echo "Задайте владельца: php panel.php admin <telegram-id>\n";
+            echo Lang::t("\nВНИМАНИЕ: в config.php пуст \$c['admin'] — бот никому не принадлежит.\n", "\nWARNING: \$c['admin'] is empty in config.php; the bot belongs to nobody.\n");
+            echo Lang::t("Задайте владельца: php panel.php admin <telegram-id>\n", "Set the owner: php panel.php admin <telegram-id>\n");
         }
         break;
 
     case 'passwd':
         $new = $argv[2] ?? null;
         if (null === $new) {
-            echo 'Новый пароль: ';
+            echo Lang::t('Новый пароль: ', 'New password: ');
             // Эхо в терминале гасим: пароль не должен остаться на экране и в
             // истории команд (аргументом его тоже видно в ps, но это выбор).
             @shell_exec('stty -echo 2>/dev/null');
@@ -60,32 +60,32 @@ switch ($cmd) {
             echo "\n";
         }
         if (strlen($new) < 8) {
-            fwrite(STDERR, "Пароль короче 8 символов — отказ.\n");
+            fwrite(STDERR, Lang::t("Пароль короче 8 символов — отказ.\n", "The password is shorter than 8 characters; refused.\n"));
             exit(1);
         }
         $panel->setPassword($new);
-        echo "Пароль обновлён, все открытые сессии панели сброшены.\n";
+        echo Lang::t("Пароль обновлён, все открытые сессии панели сброшены.\n", "Password updated, all open panel sessions are reset.\n");
         break;
 
     case 'admin':
         $id = $argv[2] ?? '';
         if (!preg_match('~^-?\d+$~', (string) $id)) {
-            fwrite(STDERR, "Нужен числовой telegram-id: php panel.php admin <id>\n");
+            fwrite(STDERR, Lang::t("Нужен числовой telegram-id: php panel.php admin <id>\n", "A numeric telegram-id is needed: php panel.php admin <id>\n"));
             exit(1);
         }
         $file = __DIR__ . '/config.php';
         require $file;
         $c['admin'] = array_values(array_unique(array_merge((array) ($c['admin'] ?? []), [(int) $id])));
         file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
-        echo "Администраторы бота (первый — владелец): " . implode(', ', $c['admin']) . "\n";
+        echo Lang::t("Администраторы бота (первый — владелец): ", "Bot administrators (the first is the owner): ") . implode(', ', $c['admin']) . "\n";
         break;
 
     case 'reset':
         $panel->store()->reset();
-        echo "Лента панели очищена.\n";
+        echo Lang::t("Лента панели очищена.\n", "The panel feed is cleared.\n");
         break;
 
     default:
-        fwrite(STDERR, "Команды: url | passwd [пароль] | admin <id> | reset\n");
+        fwrite(STDERR, Lang::t("Команды: url | passwd [пароль] | admin <id> | reset\n", "Commands: url | passwd [password] | admin <id> | reset\n"));
         exit(1);
 }

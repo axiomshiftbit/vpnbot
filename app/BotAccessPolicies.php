@@ -6,11 +6,11 @@ trait BotAccessPolicies
     {
         $used = $this->xrUserTraffic($this->getXrayStats(), $index) + array_sum($this->xrayProtocolUsage($client));
         $limit = (int) ($client['traffic'] ?? 0); $expires = (int) ($client['time'] ?? 0);
-        $status = !empty($client['off']) ? (!empty($client['traffic_off']) ? 'квота исчерпана' : 'выключен')
-            : ($expires && $expires <= time() ? 'срок истёк' : ($limit && $used >= $limit ? 'квота исчерпана' : 'доступен'));
-        return ['<b>Доступ: ' . $status . '</b>',
-            'Срок (UTC): ' . ($expires ? gmdate('Y-m-d H:i', $expires) : 'без ограничения'),
-            'Общий расход: ' . $this->getBytes($used) . '; осталось: ' . ($limit ? $this->getBytes(max(0, $limit - $used)) : 'без лимита')];
+        $status = !empty($client['off']) ? (!empty($client['traffic_off']) ? $this->t('квота исчерпана', 'quota used up') : $this->t('выключен', 'disabled'))
+            : ($expires && $expires <= time() ? $this->t('срок истёк', 'expired') : ($limit && $used >= $limit ? $this->t('квота исчерпана', 'quota used up') : $this->t('доступен', 'available')));
+        return [$this->t('<b>Доступ: ', '<b>Access: ') . $status . '</b>',
+            $this->t('Срок (UTC): ', 'Expiry (UTC): ') . ($expires ? gmdate('Y-m-d H:i', $expires) : $this->t('без ограничения', 'unlimited')),
+            $this->t('Общий расход: ', 'Total usage: ') . $this->getBytes($used) . $this->t('; осталось: ', '; remaining: ') . ($limit ? $this->getBytes(max(0, $limit - $used)) : $this->t('без лимита', 'no limit'))];
     }
 
     public function accessStore(string $scope): HysteriaUsers|ManagedProtocol
@@ -29,25 +29,25 @@ trait BotAccessPolicies
         if (!$this->admin) return;
         try {
             $store = $this->accessStore($scope); $user = $store->read()['users'][$id] ?? null;
-            if (!$user) throw new InvalidArgumentException('Пользователь удалён');
+            if (!$user) throw new InvalidArgumentException($this->t('Пользователь удалён', 'User deleted'));
             if (isset($user['xray_source'])) {
                 $this->xrayProtocolsMenu($user['xray_source']); return;
             }
             if (in_array($action, ['schedule', 'alerts'], true)) {
                 $example = (new DateTimeImmutable('first day of next month', new DateTimeZone('UTC')))->format('Y-m-01 00:00');
                 $prompt = $action === 'schedule'
-                    ? 'Введите период и первую дату сброса UTC: day, week или month, затем YYYY-MM-DD HH:MM. Например: month ' . $example . '. Значение 0 отключает расписание. Ручной выключатель и срок доступа сохраняются.'
-                    : 'Введите пороги уведомлений администратору: процент расхода и дни до окончания срока, например 80 3. Для отключения соответствующего предупреждения укажите 0. Диапазоны: 0–100 и 0–365.';
-                $r = $this->send($this->input['chat'], $prompt, $this->input['message_id'], reply: 'Введите значение');
+                    ? $this->t('Введите период и первую дату сброса UTC: day, week или month, затем YYYY-MM-DD HH:MM. Например: month ', 'Enter the period and the first UTC reset date: day, week or month, then YYYY-MM-DD HH:MM. For example: month ') . $example . $this->t('. Значение 0 отключает расписание. Ручной выключатель и срок доступа сохраняются.', '. 0 disables the schedule. The manual switch and the access expiry stay.')
+                    : $this->t('Введите пороги уведомлений администратору: процент расхода и дни до окончания срока, например 80 3. Для отключения соответствующего предупреждения укажите 0. Диапазоны: 0–100 и 0–365.', 'Enter the admin notification thresholds: usage percent and days before expiry, e.g. 80 3. Enter 0 to disable the corresponding warning. Ranges: 0–100 and 0–365.');
+                $r = $this->send($this->input['chat'], $prompt, $this->input['message_id'], reply: $this->t('Введите значение', 'Enter a value'));
                 $this->stashReply($r, ['start_message' => $this->input['message_id'], 'callback' => 'accessPolicyReply', 'args' => [$scope, $id, $action]]);
                 return;
             }
-            $text = ['Квота и уведомления → ' . self::esc($user['name']), ...$this->accessPolicySummary($user),
-                'Сброс расхода не продлевает срок и не включает доступ, выключенный вручную. После простоя пропущенные периоды выполняются одним сбросом. Все даты в UTC.',
-                'Уведомления получает администратор. Проверка — в периодическом цикле бота; временная недоступность статистики откладывает предупреждение о трафике.'];
+            $text = [$this->t('Квота и уведомления → ', 'Quota and notifications → ') . self::esc($user['name']), ...$this->accessPolicySummary($user),
+                $this->t('Сброс расхода не продлевает срок и не включает доступ, выключенный вручную. После простоя пропущенные периоды выполняются одним сбросом. Все даты в UTC.', 'A usage reset does not extend the expiry and does not enable access disabled by hand. After downtime missed periods are done in a single reset. All dates are UTC.'),
+                $this->t('Уведомления получает администратор. Проверка — в периодическом цикле бота; временная недоступность статистики откладывает предупреждение о трафике.', 'The administrator receives the notifications. The check runs in the bot\'s periodic loop; temporarily unavailable statistics postpone the traffic warning.')];
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), [
-                [['text' => 'Расписание сброса', 'callback_data' => "/ap $scope $id schedule"]],
-                [['text' => 'Пороги уведомлений', 'callback_data' => "/ap $scope $id alerts"]],
+                [['text' => $this->t('Расписание сброса', 'Reset schedule'), 'callback_data' => "/ap $scope $id schedule"]],
+                [['text' => $this->t('Пороги уведомлений', 'Notification thresholds'), 'callback_data' => "/ap $scope $id alerts"]],
                 [['text' => $this->i18n('back'), 'callback_data' => $this->accessBack($scope, $id)]],
             ]);
         } catch (RuntimeException | InvalidArgumentException $e) { $this->protocolError($e->getMessage(), $this->accessBack($scope)); }
@@ -62,10 +62,10 @@ trait BotAccessPolicies
             elseif ($action === 'alerts' && preg_match('/\A([0-9]{1,3}) ([0-9]{1,3})\z/D', $text, $m)) {
                 $value = ['percent' => (int) $m[1], 'days' => (int) $m[2]];
                 AccessPolicy::validate(['alerts' => $value]);
-            } else throw new InvalidArgumentException('Неверное значение');
+            } else throw new InvalidArgumentException($this->t('Неверное значение', 'Invalid value'));
             $this->accessStore($scope)->change(static function (&$state) use ($id, $action, $value) {
-                if (!isset($state['users'][$id])) throw new InvalidArgumentException('Пользователь удалён');
-                if (isset($state['users'][$id]['xray_source'])) throw new InvalidArgumentException('Этот доступ использует общий лимит VLESS');
+                if (!isset($state['users'][$id])) throw new InvalidArgumentException(Lang::t('Пользователь удалён', 'User deleted'));
+                if (isset($state['users'][$id]['xray_source'])) throw new InvalidArgumentException(Lang::t('Этот доступ использует общий лимит VLESS', 'This access uses the shared VLESS limit'));
                 $field = $action === 'schedule' ? 'quota_schedule' : 'alerts';
                 if ($value === null) unset($state['users'][$id][$field]);
                 else $state['users'][$id][$field] = $value;
@@ -78,9 +78,9 @@ trait BotAccessPolicies
     {
         $s = $user['quota_schedule'] ?? null; $a = $user['alerts'] ?? ['percent' => 0, 'days' => 0];
         return [
-            $s ? 'Сброс: ' . AccessPolicy::PERIODS[$s['period']] . '; следующий (UTC): ' . gmdate('Y-m-d H:i', $s['next']) : 'Автоматический сброс: выключен',
-            'Предупреждения: ' . ($a['percent'] ? $a['percent'] . '% расхода' : 'трафик — выкл.')
-                . '; ' . ($a['days'] ? 'за ' . $a['days'] . ' дн. до окончания' : 'срок — выкл.'),
+            $s ? $this->t('Сброс: ', 'Reset: ') . AccessPolicy::periodLabel($s['period']) . $this->t('; следующий (UTC): ', '; next (UTC): ') . gmdate('Y-m-d H:i', $s['next']) : $this->t('Автоматический сброс: выключен', 'Automatic reset: off'),
+            $this->t('Предупреждения: ', 'Warnings: ') . ($a['percent'] ? $a['percent'] . $this->t('% расхода', '% of usage') : $this->t('трафик — выкл.', 'traffic: off'))
+                . '; ' . ($a['days'] ? $this->t('за ', '') . $a['days'] . $this->t(' дн. до окончания', ' d before expiry') : $this->t('срок — выкл.', 'expiry: off')),
         ];
     }
 
@@ -124,9 +124,9 @@ trait BotAccessPolicies
                                 $label = $scope === 'hy' ? 'Hysteria' : ManagedProtocol::NAMES[$scope];
                                 $message = self::esc($label . ' → ' . $user['name']) . "\n";
                                 $message .= $kind === 'quota'
-                                    ? 'Расход: ' . $this->getBytes(AccessPolicy::bytes($user, $row)) . ' из ' . $this->getBytes($user['quota'])
-                                    : 'Срок (UTC): ' . gmdate('Y-m-d H:i', $user['expires']);
-                                $message .= "\nДоступ: " . AccessPolicy::reason($user, AccessPolicy::bytes($user, $row), $now);
+                                    ? $this->t('Расход: ', 'Usage: ') . $this->getBytes(AccessPolicy::bytes($user, $row)) . $this->t(' из ', ' of ') . $this->getBytes($user['quota'])
+                                    : $this->t('Срок (UTC): ', 'Expiry (UTC): ') . gmdate('Y-m-d H:i', $user['expires']);
+                                $message .= $this->t("\nДоступ: ", "\nAccess: ") . AccessPolicy::reason($user, AccessPolicy::bytes($user, $row), $now);
                                 $sent = $this->send($admin, $message);
                                 if (!empty($sent['result']['message_id'])) {
                                     $keep[$key] = $signature;

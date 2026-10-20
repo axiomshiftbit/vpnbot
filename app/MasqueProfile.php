@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/Lang.php';
 require_once __DIR__ . '/XrayNoise.php';
 
 /** Native Xray CONNECT-IP profiles. Other bundled clients cannot import these. */
@@ -21,7 +22,7 @@ final class MasqueProfile
         $reuse = (string) ($client['reuse'] ?? '1800-3000');
         if (!preg_match('/\A([0-9]{2,5})(?:-([0-9]{2,5}))?\z/D', $reuse, $m)
             || (int) $m[1] < 60 || (int) ($m[2] ?? $m[1]) < (int) $m[1] || (int) ($m[2] ?? $m[1]) > 86400) {
-            throw new InvalidArgumentException('XMUX: срок туннеля — 60–86400 секунд, число или диапазон, начало не выше конца');
+            throw new InvalidArgumentException(Lang::t('XMUX: срок туннеля — 60–86400 секунд, число или диапазон, начало не выше конца', 'XMUX: tunnel lifetime 60–86400 seconds, a number or range, the start not above the end'));
         }
         return ['maxConnections' => $client['connections'] ?? 1, 'hMaxReusableSecs' => isset($m[2]) ? $reuse : (int) $reuse];
     }

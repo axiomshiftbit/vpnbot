@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/Lang.php';
 require_once __DIR__ . '/ProtocolOptions.php';
 require_once __DIR__ . '/AccessPolicy.php';
 require_once __DIR__ . '/SnolcProfile.php';
@@ -13,11 +14,11 @@ final class ManagedProtocol
     public function formats(?array $state = null): array
     {
         if ($this->protocol === 'masque') return ['native' => 'Xray 26.9.30+ · MASQUE JSON'];
-        if ($this->protocol === 'snolc') return ['native' => 'Нативный клиент snolc · ZIP'];
+        if ($this->protocol === 'snolc') return ['native' => Lang::t('Нативный клиент snolc · ZIP', 'Native snolc client · ZIP')];
         $formats = $this->protocol === 'mieru'
-            ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => 'Полный профиль Mihomo · YAML']
-            : ['singbox' => 'sing-box JSON · прокси', 'mihomo' => 'Полный профиль Mihomo · YAML']
-                + ($this->protocol === 'anytls' ? ['uri' => 'Ссылка TXT'] : []);
+            ? ['native' => 'mieru JSON', 'native-uri' => 'mieru:// TXT', 'uri' => 'mierus:// TXT', 'mihomo' => Lang::t('Полный профиль Mihomo · YAML', 'Full Mihomo profile · YAML')]
+            : ['singbox' => Lang::t('sing-box JSON · прокси', 'sing-box JSON · proxy'), 'mihomo' => Lang::t('Полный профиль Mihomo · YAML', 'Full Mihomo profile · YAML')]
+                + ($this->protocol === 'anytls' ? ['uri' => Lang::t('Ссылка TXT', 'TXT link')] : []);
         $options = ($state ?? $this->read())['settings']['options'] ?? [];
         if ($this->protocol === 'anytls' && (!empty($options['client']) || !empty($options['singbox']) || !empty($options['mihomo']))) unset($formats['uri']);
         if ($this->protocol === 'mieru' && array_diff_key($options['native'] ?? [], ['mtu' => true])) unset($formats['uri']);
@@ -26,7 +27,7 @@ final class ManagedProtocol
 
     public function __construct(public readonly string $protocol, public readonly string $root = '/config/protocols')
     {
-        if (!isset(self::NAMES[$protocol])) throw new InvalidArgumentException('Неизвестный протокол');
+        if (!isset(self::NAMES[$protocol])) throw new InvalidArgumentException(Lang::t('Неизвестный протокол', 'Unknown protocol'));
     }
 
     public function directory(): string { return $this->root . '/' . $this->protocol; }
@@ -66,10 +67,10 @@ final class ManagedProtocol
     public static function readJson(string $path): array
     {
         $raw = @file_get_contents($path);
-        if ($raw === false) throw new RuntimeException('Не удалось прочитать состояние протокола');
+        if ($raw === false) throw new RuntimeException(Lang::t('Не удалось прочитать состояние протокола', 'Could not read the protocol state'));
         try { $value = json_decode($raw, true, 512, JSON_THROW_ON_ERROR); }
-        catch (JsonException $e) { throw new RuntimeException('Повреждён JSON состояния протокола'); }
-        if (!is_array($value)) throw new RuntimeException('Неверный формат состояния протокола');
+        catch (JsonException $e) { throw new RuntimeException(Lang::t('Повреждён JSON состояния протокола', 'The protocol state JSON is damaged')); }
+        if (!is_array($value)) throw new RuntimeException(Lang::t('Неверный формат состояния протокола', 'Invalid protocol state format'));
         return $value;
     }
 
@@ -96,15 +97,15 @@ final class ManagedProtocol
         $old = umask(0077);
         $file = @fopen($tmp, 'x');
         umask($old);
-        if (!$file) throw new RuntimeException('Не удалось создать файл состояния');
+        if (!$file) throw new RuntimeException(Lang::t('Не удалось создать файл состояния', 'Could not create the state file'));
         try {
             if (fwrite($file, $json) !== strlen($json) || !fflush($file) || !fsync($file)) {
-                throw new RuntimeException('Не удалось записать состояние');
+                throw new RuntimeException(Lang::t('Не удалось записать состояние', 'Could not write the state'));
             }
-            if (!@rename($tmp, $path)) throw new RuntimeException('Не удалось заменить состояние');
+            if (!@rename($tmp, $path)) throw new RuntimeException(Lang::t('Не удалось заменить состояние', 'Could not replace the state'));
             $directory = @fopen(dirname($path), 'r');
-            if (!$directory) throw new RuntimeException('Не удалось открыть каталог состояния');
-            try { if (!fsync($directory)) throw new RuntimeException('Не удалось синхронизировать каталог состояния'); }
+            if (!$directory) throw new RuntimeException(Lang::t('Не удалось открыть каталог состояния', 'Could not open the state directory'));
+            try { if (!fsync($directory)) throw new RuntimeException(Lang::t('Не удалось синхронизировать каталог состояния', 'Could not sync the state directory')); }
             finally { fclose($directory); }
         } finally {
             fclose($file);
@@ -117,17 +118,17 @@ final class ManagedProtocol
     {
         $dir = $this->directory();
         if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
-            throw new RuntimeException('Не удалось создать каталог протокола');
+            throw new RuntimeException(Lang::t('Не удалось создать каталог протокола', 'Could not create the protocol directory'));
         }
         if (!is_dir($dir . '/runtime') && !@mkdir($dir . '/runtime', 0700) && !is_dir($dir . '/runtime')) {
-            throw new RuntimeException('Не удалось создать каталог статистики');
+            throw new RuntimeException(Lang::t('Не удалось создать каталог статистики', 'Could not create the statistics directory'));
         }
         $old = umask(0077);
         $lock = @fopen($dir . '/state.lock', 'c');
         umask($old);
-        if (!$lock) throw new RuntimeException('Не удалось открыть блокировку');
+        if (!$lock) throw new RuntimeException(Lang::t('Не удалось открыть блокировку', 'Could not open the lock'));
         try {
-            if (!flock($lock, LOCK_EX)) throw new RuntimeException('Не удалось заблокировать состояние');
+            if (!flock($lock, LOCK_EX)) throw new RuntimeException(Lang::t('Не удалось заблокировать состояние', 'Could not lock the state'));
             $state = $this->read();
             if ($this->protocol === 'snolc' && $state['settings']['server_seed'] === '') {
                 $state['settings']['server_seed'] = bin2hex(random_bytes(32));
@@ -159,59 +160,59 @@ final class ManagedProtocol
         if (($s['schema'] ?? null) !== 1 || ($s['protocol'] ?? '') !== $this->protocol
             || !is_int($s['revision'] ?? null) || $s['revision'] < 0 || !is_bool($s['enabled'] ?? null)
             || !is_array($s['users'] ?? null) || !is_array($s['settings'] ?? null)) {
-            throw new InvalidArgumentException('Неверная структура состояния');
+            throw new InvalidArgumentException(Lang::t('Неверная структура состояния', 'Invalid state structure'));
         }
         $c = $s['settings'];
-        if (array_key_exists('options', $c) && !is_array($c['options'])) throw new InvalidArgumentException('Неверные дополнительные настройки');
+        if (array_key_exists('options', $c) && !is_array($c['options'])) throw new InvalidArgumentException(Lang::t('Неверные дополнительные настройки', 'Invalid advanced settings'));
         ProtocolOptions::validate($this->protocol, $c['options'] ?? [], $c);
-        if (array_key_exists('self_hosted', $c) && !is_bool($c['self_hosted'])) throw new InvalidArgumentException('Неверный режим собственного сайта');
-        if (array_key_exists('cover_host', $c) && !is_string($c['cover_host'])) throw new InvalidArgumentException('Неверный адрес сайта прикрытия');
+        if (array_key_exists('self_hosted', $c) && !is_bool($c['self_hosted'])) throw new InvalidArgumentException(Lang::t('Неверный режим собственного сайта', 'Invalid own-site mode'));
+        if (array_key_exists('cover_host', $c) && !is_string($c['cover_host'])) throw new InvalidArgumentException(Lang::t('Неверный адрес сайта прикрытия', 'Invalid cover site address'));
         if ($this->protocol === 'anytls' && ($c['cover_host'] ?? '') !== '') {
             if (!self::hostname($c['cover_host']) || filter_var($c['cover_host'], FILTER_VALIDATE_IP)
                 || strcasecmp($c['cover_host'], $c['sni'] ?? '') === 0) {
-                throw new InvalidArgumentException('Сайт прикрытия AnyTLS должен иметь отдельное доменное имя');
+                throw new InvalidArgumentException(Lang::t('Сайт прикрытия AnyTLS должен иметь отдельное доменное имя', 'The AnyTLS cover site must have a separate domain name'));
             }
         }
         foreach (['port', 'listen_port'] as $key) {
-            if (!is_int($c[$key] ?? null) || $c[$key] < 1 || $c[$key] > 65535) throw new InvalidArgumentException('Порт: 1–65535');
+            if (!is_int($c[$key] ?? null) || $c[$key] < 1 || $c[$key] > 65535) throw new InvalidArgumentException(Lang::t('Порт: 1–65535', 'Port: 1–65535'));
         }
         foreach (['host', 'sni'] as $key) {
             if (!is_string($c[$key] ?? null) || ($c[$key] !== '' && !self::hostname($c[$key])
-                && !filter_var($c[$key], FILTER_VALIDATE_IP))) throw new InvalidArgumentException('Неверное имя сервера');
-            if ($s['enabled'] && $c[$key] === '' && ($key === 'host' || !in_array($this->protocol, ['mieru', 'snolc'], true))) throw new InvalidArgumentException('Сначала задайте адрес сервера и, для TLS, SNI');
+                && !filter_var($c[$key], FILTER_VALIDATE_IP))) throw new InvalidArgumentException(Lang::t('Неверное имя сервера', 'Invalid server name'));
+            if ($s['enabled'] && $c[$key] === '' && ($key === 'host' || !in_array($this->protocol, ['mieru', 'snolc'], true))) throw new InvalidArgumentException(Lang::t('Сначала задайте адрес сервера и, для TLS, SNI', 'Set the server address first and, for TLS, the SNI'));
         }
         if (!filter_var($c['dns'] ?? '', FILTER_VALIDATE_IP) || !in_array($c['egress'] ?? '', ['direct', 'warp'], true)) {
-            throw new InvalidArgumentException('Неверный DNS или маршрут');
+            throw new InvalidArgumentException(Lang::t('Неверный DNS или маршрут', 'Invalid DNS or route'));
         }
-        if (!is_array($c['blocked_ips'] ?? null)) throw new InvalidArgumentException('Неверный список служебных адресов');
-        foreach ($c['blocked_ips'] as $ip) if (!filter_var($ip, FILTER_VALIDATE_IP)) throw new InvalidArgumentException('Неверный служебный адрес');
+        if (!is_array($c['blocked_ips'] ?? null)) throw new InvalidArgumentException(Lang::t('Неверный список служебных адресов', 'Invalid list of service addresses'));
+        foreach ($c['blocked_ips'] as $ip) if (!filter_var($ip, FILTER_VALIDATE_IP)) throw new InvalidArgumentException(Lang::t('Неверный служебный адрес', 'Invalid service address'));
         foreach (['certificate', 'private_key'] as $key) {
             if (!is_string($c[$key] ?? null) || !preg_match('~\A/certs/[a-zA-Z0-9_./-]+\z~D', $c[$key])
-                || str_contains($c[$key], '..')) throw new InvalidArgumentException('Сертификат должен находиться в /certs');
+                || str_contains($c[$key], '..')) throw new InvalidArgumentException(Lang::t('Сертификат должен находиться в /certs', 'The certificate must be in /certs'));
         }
         if ($this->protocol === 'anytls' && ($c['port'] !== 443 || $c['listen_port'] !== 8443
             || ($c['sni'] !== '' && !self::hostname($c['sni'])) || filter_var($c['sni'], FILTER_VALIDATE_IP))) {
-            throw new InvalidArgumentException('AnyTLS: общий TCP-порт 443, внутренний 8443 и отдельное доменное имя SNI');
+            throw new InvalidArgumentException(Lang::t('AnyTLS: общий TCP-порт 443, внутренний 8443 и отдельное доменное имя SNI', 'AnyTLS: shared TCP port 443, internal 8443 and a separate SNI domain name'));
         }
         if ($this->protocol === 'mieru' && (!in_array($c['transport'] ?? '', ['TCP', 'UDP'], true)
-            || $c['port'] < 1024 || $c['listen_port'] !== 24445)) throw new InvalidArgumentException('Mieru: внешний порт 1024–65535, внутренний 24445, транспорт TCP или UDP');
+            || $c['port'] < 1024 || $c['listen_port'] !== 24445)) throw new InvalidArgumentException(Lang::t('Mieru: внешний порт 1024–65535, внутренний 24445, транспорт TCP или UDP', 'Mieru: external port 1024–65535, internal 24445, TCP or UDP transport'));
         if ($this->protocol === 'snolc' && ($c['port'] < 1024 || $c['listen_port'] !== 24448 || $c['egress'] !== 'direct'
             || $c['sni'] !== '' || (($s['enabled'] || ($c['server_seed'] ?? '') !== '')
                 && !preg_match('/\A[a-f0-9]{64}\z/D', $c['server_seed'] ?? '')))) {
-            throw new InvalidArgumentException('snolc: внешний TCP-порт 1024–65535, внутренний 24448; SSH + Noise без SNI, выход direct');
+            throw new InvalidArgumentException(Lang::t('snolc: внешний TCP-порт 1024–65535, внутренний 24448; SSH + Noise без SNI, выход direct', 'snolc: external TCP port 1024–65535, internal 24448; SSH + Noise without SNI, direct egress'));
         }
         if ($this->protocol === 'masque' && ($c['port'] < 1024 || $c['listen_port'] !== 24449)) {
-            throw new InvalidArgumentException('MASQUE: внешний порт 1024–65535, внутренний 24449 TCP/UDP');
+            throw new InvalidArgumentException(Lang::t('MASQUE: внешний порт 1024–65535, внутренний 24449 TCP/UDP', 'MASQUE: external port 1024–65535, internal 24449 TCP/UDP'));
         }
         if ($this->protocol === 'tuic' && ($c['port'] < 1024 || $c['listen_port'] !== 9443
             || !in_array($c['udp_mode'] ?? '', ['native', 'quic'], true)
-            || !in_array($c['congestion'] ?? '', ['cubic', 'new_reno', 'bbr'], true))) throw new InvalidArgumentException('Неверный порт или режим TUIC');
+            || !in_array($c['congestion'] ?? '', ['cubic', 'new_reno', 'bbr'], true))) throw new InvalidArgumentException(Lang::t('Неверный порт или режим TUIC', 'Invalid TUIC port or mode'));
         if ($this->protocol === 'shadowtls' && ($c['port'] < 1024 || $c['listen_port'] !== 24447
             || !is_bool($c['udp_over_tcp'] ?? null) || !is_int($c['handshake_port'] ?? null)
             || $c['handshake_port'] < 1 || $c['handshake_port'] > 65535
             || ($c['sni'] !== '' && (!self::hostname($c['sni']) || filter_var($c['sni'], FILTER_VALIDATE_IP)))
             || (($s['enabled'] || ($c['ss_server_key'] ?? '') !== '') && !self::ssKey($c['ss_server_key'] ?? null)))) {
-            throw new InvalidArgumentException('Неверные параметры ShadowTLS: отдельный порт, домен TLS 1.3 и ключ SS2022');
+            throw new InvalidArgumentException(Lang::t('Неверные параметры ShadowTLS: отдельный порт, домен TLS 1.3 и ключ SS2022', 'Invalid ShadowTLS parameters: a separate port, a TLS 1.3 domain and an SS2022 key'));
         }
         foreach ($s['users'] as $id => $u) {
             if (!preg_match('/\A[a-f0-9]{16}\z/D', (string) $id) || !is_array($u)
@@ -219,32 +220,32 @@ final class ManagedProtocol
                 || preg_match('/[\x00-\x1f\x7f]/', $u['name']) || !is_bool($u['enabled'] ?? null)
                 || !preg_match('/\A[a-f0-9]{64}\z/D', $u['token'] ?? '')
                 || !preg_match('/\A[A-Za-z0-9_-]{43}\z/D', $u['password'] ?? '')
-                || !preg_match('/\A[a-f0-9]{16}\z/D', $u['reset'] ?? '')) throw new InvalidArgumentException('Неверные данные доступа');
+                || !preg_match('/\A[a-f0-9]{16}\z/D', $u['reset'] ?? '')) throw new InvalidArgumentException(Lang::t('Неверные данные доступа', 'Invalid access data'));
             if (isset($u['xray_source']) && (!is_string($u['xray_source']) || !preg_match('/\A[a-f0-9]{32}\z/D', $u['xray_source'])
                 || !is_string($u['xray_credential'] ?? null) || !preg_match('/\A[a-f0-9]{64}\z/D', $u['xray_credential']))) {
-                throw new InvalidArgumentException('Неверная связь с пользователем VLESS');
+                throw new InvalidArgumentException(Lang::t('Неверная связь с пользователем VLESS', 'Invalid link to the VLESS user'));
             }
             AccessPolicy::validate($u);
             foreach (['expires', 'quota'] as $key) {
                 if (!array_key_exists($key, $u) || ($u[$key] !== null && (!is_int($u[$key]) || $u[$key] <= 0))) {
-                    throw new InvalidArgumentException('Срок и лимит должны быть положительными или отсутствовать');
+                    throw new InvalidArgumentException(Lang::t('Срок и лимит должны быть положительными или отсутствовать', 'Expiry and limit must be positive or absent'));
                 }
             }
             if (isset($u['rolling_quota'])) {
-                if ($this->protocol !== 'mieru' || !is_array($u['rolling_quota'])) throw new InvalidArgumentException('Неверная периодическая квота');
+                if ($this->protocol !== 'mieru' || !is_array($u['rolling_quota'])) throw new InvalidArgumentException(Lang::t('Неверная периодическая квота', 'Invalid periodic quota'));
                 foreach (['days' => 365, 'megabytes' => 2147483647] as $key => $max) {
-                    if (!is_int($u['rolling_quota'][$key] ?? null) || $u['rolling_quota'][$key] < 1 || $u['rolling_quota'][$key] > $max) throw new InvalidArgumentException('Неверная периодическая квота');
+                    if (!is_int($u['rolling_quota'][$key] ?? null) || $u['rolling_quota'][$key] < 1 || $u['rolling_quota'][$key] > $max) throw new InvalidArgumentException(Lang::t('Неверная периодическая квота', 'Invalid periodic quota'));
                 }
             }
-            if ($this->protocol === 'tuic' && !preg_match('/\A[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\z/D', $u['uuid'] ?? '')) throw new InvalidArgumentException('Неверный UUID TUIC');
-            if ($this->protocol === 'shadowtls' && !self::ssKey($u['ss_key'] ?? null)) throw new InvalidArgumentException('Неверный личный ключ SS2022');
+            if ($this->protocol === 'tuic' && !preg_match('/\A[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\z/D', $u['uuid'] ?? '')) throw new InvalidArgumentException(Lang::t('Неверный UUID TUIC', 'Invalid TUIC UUID'));
+            if ($this->protocol === 'shadowtls' && !self::ssKey($u['ss_key'] ?? null)) throw new InvalidArgumentException(Lang::t('Неверный личный ключ SS2022', 'Invalid personal SS2022 key'));
         }
     }
 
     public function configure(array $settings, ?bool $enabled = null): array
     {
         return $this->change(function (&$s) use ($settings, $enabled) {
-            if (array_diff_key($settings, $s['settings'])) throw new InvalidArgumentException('Неизвестная настройка');
+            if (array_diff_key($settings, $s['settings'])) throw new InvalidArgumentException(Lang::t('Неизвестная настройка', 'Unknown setting'));
             $s['settings'] = array_replace($s['settings'], $settings);
             if ($enabled !== null) $s['enabled'] = $enabled;
         });
@@ -252,7 +253,7 @@ final class ManagedProtocol
 
     public function configureOptions(string $group, array $options): array
     {
-        if (!isset(ProtocolOptions::groups($this->protocol)[$group])) throw new InvalidArgumentException('Неизвестная группа настроек');
+        if (!isset(ProtocolOptions::groups($this->protocol)[$group])) throw new InvalidArgumentException(Lang::t('Неизвестная группа настроек', 'Unknown settings group'));
         return $this->change(static function (&$state) use ($group, $options) {
             if ($options === []) unset($state['settings']['options'][$group]);
             else $state['settings']['options'][$group] = $options;
@@ -264,7 +265,7 @@ final class ManagedProtocol
         ProtocolOptions::definition($this->protocol, $path);
         return $this->change(static function (&$state) use ($path, $value) {
             if ($path === '') {
-                if ($value !== null) throw new InvalidArgumentException('Выберите параметр');
+                if ($value !== null) throw new InvalidArgumentException(Lang::t('Выберите параметр', 'Choose a parameter'));
                 $state['settings']['options'] = [];
                 return;
             }
@@ -344,18 +345,18 @@ final class ManagedProtocol
     public function user(string $id, array $fields = [], string $action = ''): array
     {
         return $this->change(function (&$s) use ($id, $fields, $action) {
-            if (!isset($s['users'][$id])) throw new InvalidArgumentException('Доступ не найден');
-            if (array_diff_key($fields, array_flip(['name', 'enabled', 'expires', 'quota', 'rolling_quota']))) throw new InvalidArgumentException('Неизвестное поле');
+            if (!isset($s['users'][$id])) throw new InvalidArgumentException(Lang::t('Доступ не найден', 'Access not found'));
+            if (array_diff_key($fields, array_flip(['name', 'enabled', 'expires', 'quota', 'rolling_quota']))) throw new InvalidArgumentException(Lang::t('Неизвестное поле', 'Unknown field'));
             $s['users'][$id] = array_replace($s['users'][$id], $fields);
             if ($action === 'delete') unset($s['users'][$id]);
             elseif (in_array($action, ['rotate', 'rotate-outer', 'rotate-inner'], true)) {
-                if ($action !== 'rotate' && $this->protocol !== 'shadowtls') throw new InvalidArgumentException('Действие только для ShadowTLS');
+                if ($action !== 'rotate' && $this->protocol !== 'shadowtls') throw new InvalidArgumentException(Lang::t('Действие только для ShadowTLS', 'Action only for ShadowTLS'));
                 if ($action !== 'rotate-inner') $s['users'][$id]['password'] = self::secret();
                 $s['users'][$id]['token'] = bin2hex(random_bytes(32));
                 if ($this->protocol === 'tuic') $s['users'][$id]['uuid'] = self::uuid();
                 if ($this->protocol === 'shadowtls' && $action !== 'rotate-outer') $s['users'][$id]['ss_key'] = base64_encode(random_bytes(16));
             } elseif ($action === 'reset') $s['users'][$id]['reset'] = bin2hex(random_bytes(8));
-            elseif ($action !== '') throw new InvalidArgumentException('Неизвестное действие');
+            elseif ($action !== '') throw new InvalidArgumentException(Lang::t('Неизвестное действие', 'Unknown action'));
         });
     }
 
@@ -381,28 +382,28 @@ final class ManagedProtocol
         foreach (array_keys($usage['users'] ?? []) as $id) unset($usage['users'][$id]['last']);
         $snapshot = ['state' => $state, 'usage' => $usage];
         $this->validateSnapshot($snapshot);
-        if ($this->read() !== $original) throw new RuntimeException('Настройки протокола изменились во время резервного копирования');
+        if ($this->read() !== $original) throw new RuntimeException(Lang::t('Настройки протокола изменились во время резервного копирования', 'The protocol settings changed during the backup'));
         return $snapshot;
     }
 
     public function validateSnapshot(array $snapshot): void
     {
-        if (!is_array($snapshot['state'] ?? null) || !is_array($snapshot['usage'] ?? null)) throw new InvalidArgumentException('Неверная резервная копия протокола');
+        if (!is_array($snapshot['state'] ?? null) || !is_array($snapshot['usage'] ?? null)) throw new InvalidArgumentException(Lang::t('Неверная резервная копия протокола', 'Invalid protocol backup'));
         $this->validate($snapshot['state']);
-        if (isset($snapshot['usage']['users']) && !is_array($snapshot['usage']['users'])) throw new InvalidArgumentException('Неверные счётчики пользователей');
+        if (isset($snapshot['usage']['users']) && !is_array($snapshot['usage']['users'])) throw new InvalidArgumentException(Lang::t('Неверные счётчики пользователей', 'Invalid user counters'));
         if (isset($snapshot['usage']['native_metrics']) && ($this->protocol !== 'mieru'
             || !is_string($snapshot['usage']['native_metrics']) || strlen($snapshot['usage']['native_metrics']) > 32 * 1024 * 1024
-            || base64_decode($snapshot['usage']['native_metrics'], true) === false)) throw new InvalidArgumentException('Неверная история квоты Mieru');
+            || base64_decode($snapshot['usage']['native_metrics'], true) === false)) throw new InvalidArgumentException(Lang::t('Неверная история квоты Mieru', 'Invalid Mieru quota history'));
         foreach ($snapshot['usage']['users'] ?? [] as $id => $record) {
-            if (!preg_match('/\A[a-f0-9]{16}\z/D', (string) $id) || !is_array($record)) throw new InvalidArgumentException('Неверные счётчики');
-            foreach (['upload', 'download'] as $key) if (!is_int($record[$key] ?? null) || $record[$key] < 0) throw new InvalidArgumentException('Неверные счётчики');
-            if (isset($record['charged']) && ($this->protocol !== 'snolc' || !is_int($record['charged']) || $record['charged'] < 0)) throw new InvalidArgumentException('Неверный учёт квоты snolc');
-            if (!preg_match('/\A[a-f0-9]{16}\z/D', $record['reset'] ?? '')) throw new InvalidArgumentException('Неверный счётчик сброса');
+            if (!preg_match('/\A[a-f0-9]{16}\z/D', (string) $id) || !is_array($record)) throw new InvalidArgumentException(Lang::t('Неверные счётчики', 'Invalid counters'));
+            foreach (['upload', 'download'] as $key) if (!is_int($record[$key] ?? null) || $record[$key] < 0) throw new InvalidArgumentException(Lang::t('Неверные счётчики', 'Invalid counters'));
+            if (isset($record['charged']) && ($this->protocol !== 'snolc' || !is_int($record['charged']) || $record['charged'] < 0)) throw new InvalidArgumentException(Lang::t('Неверный учёт квоты snolc', 'Invalid snolc quota accounting'));
+            if (!preg_match('/\A[a-f0-9]{16}\z/D', $record['reset'] ?? '')) throw new InvalidArgumentException(Lang::t('Неверный счётчик сброса', 'Invalid reset counter'));
         }
         foreach ($snapshot['state']['users'] as $id => $user) {
             if ((!empty($user['quota']) || !empty($user['rolling_quota']))
                 && ($snapshot['usage']['users'][$id]['reset'] ?? null) !== $user['reset']) {
-                throw new InvalidArgumentException('Снимок не содержит расход текущего периода пользователя');
+                throw new InvalidArgumentException(Lang::t('Снимок не содержит расход текущего периода пользователя', 'The snapshot lacks the user\'s usage for the current period'));
             }
         }
     }
@@ -508,7 +509,7 @@ final class ManagedProtocol
         if ($this->protocol === 'snolc') return SnolcProfile::document($profile, $this->directory() . '/runtime/client-patches.zip');
         if ($format === 'mihomo') {
             $body = yaml_emit($profile, YAML_UTF8_ENCODING);
-            if ($body === false) throw new RuntimeException('Не удалось сформировать YAML');
+            if ($body === false) throw new RuntimeException(Lang::t('Не удалось сформировать YAML', 'Could not build the YAML'));
             return ['body' => $body, 'extension' => 'yaml', 'mime' => 'application/yaml'];
         }
         return [
@@ -521,7 +522,7 @@ final class ManagedProtocol
     public function profile(string $id, string $format, ?array $state = null, ?array $endpoint = null): array|string
     {
         $state ??= $this->read();
-        if (!isset($this->formats($state)[$format])) throw new InvalidArgumentException('Используйте полный профиль: этот формат не переносит выбранные настройки');
+        if (!isset($this->formats($state)[$format])) throw new InvalidArgumentException(Lang::t('Используйте полный профиль: этот формат не переносит выбранные настройки', 'Use the full profile: this format does not carry the selected settings'));
         $profile = $this->baseProfile($id, $format, $state, $endpoint);
         return is_array($profile) && !in_array($this->protocol, ['snolc', 'masque'], true) ? ProtocolOptions::profile($this->protocol, $format, $profile, $state['settings']) : $profile;
     }
@@ -530,9 +531,9 @@ final class ManagedProtocol
     // tuning is exported separately as JSON/YAML, without inventing URI fields.
     public function connectionUri(string $id, ?array $state = null): string
     {
-        if ($this->protocol === 'masque') throw new InvalidArgumentException('Для MASQUE скачайте JSON Xray 26.9.30 или новее.');
-        if ($this->protocol === 'snolc') throw new InvalidArgumentException('Для snolc SSH + Noise скачайте нативный архив клиента.');
-        if ($this->protocol === 'shadowtls') throw new InvalidArgumentException('Для связки ShadowTLS + Shadowsocks используйте JSON/YAML: совместимая ссылка импорта не поддерживается.');
+        if ($this->protocol === 'masque') throw new InvalidArgumentException(Lang::t('Для MASQUE скачайте JSON Xray 26.9.30 или новее.', 'For MASQUE download the JSON for Xray 26.9.30 or newer.'));
+        if ($this->protocol === 'snolc') throw new InvalidArgumentException(Lang::t('Для snolc SSH + Noise скачайте нативный архив клиента.', 'For snolc SSH + Noise download the native client archive.'));
+        if ($this->protocol === 'shadowtls') throw new InvalidArgumentException(Lang::t('Для связки ShadowTLS + Shadowsocks используйте JSON/YAML: совместимая ссылка импорта не поддерживается.', 'For ShadowTLS + Shadowsocks use JSON/YAML: a compatible import link is not supported.'));
         return $this->baseProfile($id, 'uri', $state);
     }
 
@@ -540,7 +541,7 @@ final class ManagedProtocol
     {
         $s = $state ?? $this->read();
         if (!isset($s['users'][$id]) || !$s['enabled'] || !$this->allowed($s['users'][$id], $id)) {
-            throw new RuntimeException('Доступ отключён, истёк или исчерпан');
+            throw new RuntimeException(Lang::t('Доступ отключён, истёк или исчерпан', 'Access is disabled, expired or used up'));
         }
         $u = $s['users'][$id]; $c = $s['settings'];
         if ($endpoint !== null) {
@@ -570,7 +571,7 @@ final class ManagedProtocol
             'mode' => 'rule', 'proxies' => [['name' => 'VPN', 'type' => 'anytls', 'server' => $c['host'],
                 'port' => $c['port'], 'password' => $u['password'], 'sni' => $c['sni'],
                 'udp' => true, 'skip-cert-verify' => false]], 'rules' => ['MATCH,VPN', 'MATCH,REJECT']];
-        throw new InvalidArgumentException('Клиент не поддерживается для этого протокола');
+        throw new InvalidArgumentException(Lang::t('Клиент не поддерживается для этого протокола', 'The client is not supported for this protocol'));
     }
 
     public static function validateClientEndpoint(array $endpoint): void
@@ -579,7 +580,7 @@ final class ManagedProtocol
             || !is_string($endpoint['host'] ?? null)
             || (!self::hostname($endpoint['host']) && !filter_var($endpoint['host'], FILTER_VALIDATE_IP))
             || !is_int($endpoint['port'] ?? null) || $endpoint['port'] < 1 || $endpoint['port'] > 65535) {
-            throw new InvalidArgumentException('Нужны адрес relay (домен или IP) и порт 1–65535');
+            throw new InvalidArgumentException(Lang::t('Нужны адрес relay (домен или IP) и порт 1–65535', 'A relay address (domain or IP) and port 1–65535 are needed'));
         }
     }
 
@@ -603,7 +604,7 @@ final class ManagedProtocol
                 'udp-over-tcp' => $c['udp_over_tcp'], 'udp-over-tcp-version' => 2,
                 'plugin' => 'shadow-tls', 'plugin-opts' => ['host' => $c['sni'], 'password' => $u['password'],
                     'version' => 3, 'skip-cert-verify' => false]]], 'rules' => ['MATCH,VPN', 'MATCH,REJECT']];
-        throw new InvalidArgumentException('Для связки ShadowTLS + SS используйте полный профиль');
+        throw new InvalidArgumentException(Lang::t('Для связки ShadowTLS + SS используйте полный профиль', 'For ShadowTLS + SS use the full profile'));
     }
 
     private function tuicProfile(array $u, array $c, string $format): array|string
@@ -628,7 +629,7 @@ final class ManagedProtocol
                 'uuid' => $u['uuid'], 'password' => $u['password'], 'congestion-controller' => $c['congestion'], 'udp-relay-mode' => $c['udp_mode'],
                 'sni' => $c['sni'], 'alpn' => ['h3'], 'skip-cert-verify' => false, 'disable-sni' => false,
                 'reduce-rtt' => false, 'heartbeat-interval' => 10000, 'udp' => true]], 'rules' => ['MATCH,VPN', 'MATCH,REJECT']];
-        throw new InvalidArgumentException('Для TUIC используйте полный профиль sing-box или mihomo');
+        throw new InvalidArgumentException(Lang::t('Для TUIC используйте полный профиль sing-box или mihomo', 'For TUIC use the full sing-box or mihomo profile'));
     }
 
     private function mieruProfile(string $id, array $u, array $c, string $format): array|string
@@ -677,7 +678,7 @@ final class ManagedProtocol
             'proxies' => [['name' => 'VPN', 'type' => 'mieru', 'server' => $c['host'], 'port' => $c['port'],
                 'transport' => $c['transport'], 'udp' => true, 'username' => $id, 'password' => $u['password'], 'multiplexing' => 'MULTIPLEXING_LOW',
                 'handshake-mode' => 'HANDSHAKE_STANDARD']], 'rules' => ['MATCH,VPN', 'MATCH,REJECT']];
-        throw new InvalidArgumentException('Клиент не поддерживается для Mieru');
+        throw new InvalidArgumentException(Lang::t('Клиент не поддерживается для Mieru', 'The client is not supported for Mieru'));
     }
 
     private static function protoField(int $number, string|int $value): string

@@ -245,9 +245,9 @@ class Panel
         header('X-Content-Type-Options: nosniff');
         $from = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
         $p    = self::port();
-        echo 'panel: доступ с ' . (filter_var($from, FILTER_VALIDATE_IP) ? $from : 'неизвестного адреса')
-            . " запрещён. Панель — только с хоста (ssh -L $p:127.0.0.1:$p), "
-            . "иначе задайте PANEL_TRUSTED в .env\n";
+        echo Lang::t('panel: доступ с ', 'panel: access from ') . (filter_var($from, FILTER_VALIDATE_IP) ? $from : Lang::t('неизвестного адреса', 'an unknown address'))
+            . Lang::t(" запрещён. Панель — только с хоста (ssh -L $p:127.0.0.1:$p), ", " is denied. The panel is only for the host (ssh -L $p:127.0.0.1:$p), ")
+            . Lang::t("иначе задайте PANEL_TRUSTED в .env\n", "otherwise set PANEL_TRUSTED in .env\n");
     }
 
     /** 403 «чужое имя в Host» (DNS rebinding). */
@@ -257,7 +257,7 @@ class Panel
         header('Content-Type: text/plain; charset=utf-8');
         header('X-Content-Type-Options: nosniff');
         echo "panel: Host \"" . htmlspecialchars((string) ($_SERVER['HTTP_HOST'] ?? ''), ENT_QUOTES)
-            . "\" не разрешён. Ходите по 127.0.0.1/localhost (ssh -L) либо задайте PANEL_HOSTS в .env\n";
+            . Lang::t("\" не разрешён. Ходите по 127.0.0.1/localhost (ssh -L) либо задайте PANEL_HOSTS в .env\n", "\" is not allowed. Use 127.0.0.1/localhost (ssh -L) or set PANEL_HOSTS in .env\n");
     }
 
     public function prefix()
@@ -408,8 +408,8 @@ class Panel
         $conf['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
         // Без токена бота ключа для копии нет: пароль задаём, просмотр в боте
         // появится после входа, когда токен будет записан.
-        if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException('Не удалось сохранить защищённую копию пароля');
-        if ($this->bot->setPacConf($conf) === false) throw new RuntimeException('Не удалось сохранить пароль панели');
+        if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException(Lang::t('Не удалось сохранить защищённую копию пароля', 'Could not save the protected password copy'));
+        if ($this->bot->setPacConf($conf) === false) throw new RuntimeException(Lang::t('Не удалось сохранить пароль панели', 'Could not save the panel password'));
         $f = $this->store->dir() . '/initial_password.txt';
         @touch($f);
         @chmod($f, 0600);
@@ -420,11 +420,11 @@ class Panel
 
     public function setPassword($plain)
     {
-        if (strlen((string) $plain) < 8 || strlen((string) $plain) > 72) throw new InvalidArgumentException('Пароль панели: от 8 до 72 байт');
+        if (strlen((string) $plain) < 8 || strlen((string) $plain) > 72) throw new InvalidArgumentException(Lang::t('Пароль панели: от 8 до 72 байт', 'Panel password: 8 to 72 bytes'));
         $conf              = $this->pacConf();
         $conf['panelpswd'] = password_hash((string) $plain, PASSWORD_DEFAULT);
-        if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), (string) $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException('Не удалось сохранить защищённую копию пароля');
-        if ($this->bot->setPacConf($conf) === false) throw new RuntimeException('Не удалось сохранить пароль панели');
+        if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), (string) $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException(Lang::t('Не удалось сохранить защищённую копию пароля', 'Could not save the protected password copy'));
+        if ($this->bot->setPacConf($conf) === false) throw new RuntimeException(Lang::t('Не удалось сохранить пароль панели', 'Could not save the panel password'));
         @unlink($this->store->dir() . '/initial_password.txt');
         PanelPasswordVault::settle($this->store->dir(), $conf['panelpswd']);
     }
@@ -440,7 +440,7 @@ class Panel
     {
         $conf = $this->bot->getPacConf();
         if (!is_array($conf)) {
-            throw new RuntimeException('pac.json недоступен или повреждён — пароль панели не записан');
+            throw new RuntimeException(Lang::t('pac.json недоступен или повреждён — пароль панели не записан', 'pac.json is unavailable or damaged; the panel password is not written'));
         }
 
         return $conf;
@@ -683,6 +683,57 @@ class Panel
 
     // ── страница ────────────────────────────────────────────────────────────
 
+    // Английская страница панели: замены видимых строк ui.html и редактора
+    // JSON (вместе с кавычками или угловыми скобками, чтобы не задеть
+    // комментарии и код).
+    private const UI_EN = [
+        ['ru' => 'lang="ru"', 'en' => 'lang="en"'],
+        ['ru' => '>очистить<', 'en' => '>clear<'],
+        ['ru' => '>выход<', 'en' => '>sign out<'],
+        ['ru' => 'placeholder="сообщение или команда"', 'en' => 'placeholder="message or command"'],
+        ['ru' => 'title="отправить файл"', 'en' => 'title="send a file"'],
+        ['ru' => 'placeholder="подпись к файлу (необязательно)"', 'en' => 'placeholder="file caption (optional)"'],
+        ['ru' => '<h1>Панель управления</h1>', 'en' => '<h1>Control panel</h1>'],
+        ['ru' => 'placeholder="пароль"', 'en' => 'placeholder="password"'],
+        ['ru' => '>Войти<', 'en' => '>Sign in<'],
+        ['ru' => '"ошибка "', 'en' => '"error "'],
+        ['ru' => '"убрать из ленты"', 'en' => '"remove from the feed"'],
+        ['ru' => '"это сообщение ожидает ваш ответ — удалить всё равно?"', 'en' => '"this message is waiting for your answer; delete anyway?"'],
+        ['ru' => '"файл"', 'en' => '"file"'],
+        ['ru' => '"↩ ответ на запрос: "', 'en' => '"↩ reply to the prompt: "'],
+        ['ru' => '"введите значение"', 'en' => '"enter a value"'],
+        ['ru' => '"сообщение или команда"', 'en' => '"message or command"'],
+        ['ru' => '"подпись к файлу (необязательно)"', 'en' => '"file caption (optional)"'],
+        ['ru' => '"сеть недоступна"', 'en' => '"network unavailable"'],
+        ['ru' => '"файл больше "', 'en' => '"file larger than "'],
+        ['ru' => '" МиБ"', 'en' => '" MiB"'],
+        ['ru' => '"файл не принят: ошибка "', 'en' => '"file rejected: error "'],
+        ['ru' => '"не удалось отправить файл"', 'en' => '"could not send the file"'],
+        ['ru' => '"ч "', 'en' => '"h "'],
+        ['ru' => '"м"', 'en' => '"m"'],
+        ['ru' => '"от "', 'en' => '"as "'],
+        ['ru' => '"сессия: "', 'en' => '"session: "'],
+        ['ru' => '"очистить ленту панели? (на настройках бота не сказывается)"', 'en' => '"clear the panel feed? (bot settings are not affected)"'],
+        ['ru' => '"скопировано"', 'en' => '"copied"'],
+        ['ru' => '"действовать как "', 'en' => '"act as "'],
+        ['ru' => '"слишком много попыток, подождите"', 'en' => '"too many attempts, please wait"'],
+        ['ru' => '"неверный пароль"', 'en' => '"wrong password"'],
+        ['ru' => '>Загрузить с диска<', 'en' => '>Load from disk<'],
+        ['ru' => '>Скачать<', 'en' => '>Download<'],
+        ['ru' => '>Сохранить<', 'en' => '>Save<'],
+        ['ru' => '"ошибка загрузки"', 'en' => '"load error"'],
+        ['ru' => '"сохраняю…"', 'en' => '"saving…"'],
+        ['ru' => '"сохранено"', 'en' => '"saved"'],
+        ['ru' => '"ошибка"', 'en' => '"error"'],
+        ['ru' => '"загружено из файла — не забудьте сохранить"', 'en' => '"loaded from file; do not forget to save"'],
+        ['ru' => '"неверный JSON"', 'en' => '"invalid JSON"'],
+    ];
+
+    public static function localize(string $html): string
+    {
+        return Lang::$en ? strtr($html, array_column(self::UI_EN, 'en', 'ru')) : $html;
+    }
+
     private function page($authed)
     {
         header('Content-Type: text/html; charset=utf-8');
@@ -692,7 +743,7 @@ class Panel
         // состоянии установки — в кэш (в т.ч. общий) ей попадать незачем.
         header('Cache-Control: no-store');
         self::csp();
-        $html = (string) file_get_contents(__DIR__ . '/ui.html');
+        $html = self::localize((string) file_get_contents(__DIR__ . '/ui.html'));
         // Список id — не секрет: те же id уже видны любому админу в
         // configMenu() бота. Отдаём его только когда есть из чего выбирать —
         // однo-админские установки страницу логина не меняют вовсе.
@@ -726,10 +777,10 @@ class Panel
     private function bootNote()
     {
         if (empty($this->admins)) {
-            return 'Бот ещё не присвоен: в config.php пуст $c[\'admin\']. Задайте свой Telegram-id: php panel.php admin <id>';
+            return Lang::t('Бот ещё не присвоен: в config.php пуст $c[\'admin\']. Задайте свой Telegram-id: php panel.php admin <id>', 'The bot is not assigned yet: $c[\'admin\'] is empty in config.php. Set your Telegram id: php panel.php admin <id>');
         }
         if ('' === $this->passwordHash()) {
-            return 'Пароль не задан: php panel.php passwd';
+            return Lang::t('Пароль не задан: php panel.php passwd', 'No password set: php panel.php passwd');
         }
 
         return '';
@@ -878,7 +929,7 @@ class Panel
         $jName   = json_encode($name, JSON_UNESCAPED_UNICODE);
         $eTy     = $this->esc($ty);
         $eName   = $this->esc($name);
-        echo <<<HTML
+        echo self::localize(<<<HTML
         <!DOCTYPE html>
         <html lang="ru" style="height:100%">
         <head>
@@ -950,7 +1001,7 @@ class Panel
         </script>
         </body>
         </html>
-        HTML;
+        HTML);
     }
 
     private function esc($s)
@@ -1121,7 +1172,7 @@ class Panel
         // пустые, ошибки в них нет. Без отдельной проверки пользователь видел
         // бы невнятное «upload failed» на любом большом файле.
         if (empty($_FILES) && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $limit) {
-            return $this->json(['ok' => false, 'error' => 'файл больше ' . $this->human($limit) . ' (php.ini)'], 413);
+            return $this->json(['ok' => false, 'error' => Lang::t('файл больше ', 'file larger than ') . $this->human($limit) . ' (php.ini)'], 413);
         }
         // Поле, отправленное как file[], даёт массивы в каждом ключе $_FILES;
         // is_uploaded_file(array) — TypeError, то есть фатал вместо ответа.
@@ -1132,7 +1183,7 @@ class Panel
             return $this->json(['ok' => false, 'error' => 'upload failed'], 400);
         }
         if (($f['size'] ?? 0) > $limit) {
-            return $this->json(['ok' => false, 'error' => 'файл больше ' . $this->human($limit)], 413);
+            return $this->json(['ok' => false, 'error' => Lang::t('файл больше ', 'file larger than ') . $this->human($limit)], 413);
         }
         // Загруженные файлы к сообщениям не привязаны (reply() удаляет наш
         // бабл ДО того, как обработчик прочитает файл), поэтому их не
@@ -1176,7 +1227,7 @@ class Panel
 
     private function human($bytes)
     {
-        return $bytes >= 1048576 ? round($bytes / 1048576, 1) . ' МиБ' : round($bytes / 1024) . ' КиБ';
+        return $bytes >= 1048576 ? round($bytes / 1048576, 1) . Lang::t(' МиБ', ' MiB') : round($bytes / 1024) . Lang::t(' КиБ', ' KiB');
     }
 
     /**
@@ -1291,7 +1342,7 @@ class Panel
             if (microtime(true) >= $until) {
                 fclose($h);
 
-                return $this->json(['ok' => false, 'error' => 'бот ещё выполняет предыдущую команду — повторите позже'], 409);
+                return $this->json(['ok' => false, 'error' => Lang::t('бот ещё выполняет предыдущую команду — повторите позже', 'the bot is still running the previous command; retry later')], 409);
             }
             usleep(200000);
         }

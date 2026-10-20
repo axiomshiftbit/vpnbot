@@ -27,9 +27,9 @@ trait BotProtocolSubscriptions
         $old = umask(0077);
         $lock = @fopen($this->protocolRoot . '/xray-sync.lock', 'c');
         umask($old);
-        if (!$lock) throw new RuntimeException('Не удалось открыть блокировку синхронизации протоколов');
+        if (!$lock) throw new RuntimeException($this->t('Не удалось открыть блокировку синхронизации протоколов', 'Could not open the protocol sync lock'));
         try {
-            if (!flock($lock, LOCK_EX)) throw new RuntimeException('Не удалось заблокировать синхронизацию протоколов');
+            if (!flock($lock, LOCK_EX)) throw new RuntimeException($this->t('Не удалось заблокировать синхронизацию протоколов', 'Could not lock the protocol sync'));
             $this->syncXrayProtocolUsersLocked();
         } finally {
             flock($lock, LOCK_UN);
@@ -54,7 +54,7 @@ trait BotProtocolSubscriptions
         if (!$stores) return;
         $xray = $this->getXray();
         if (!is_array($xray) || !is_array($xray['inbounds'][0]['settings']['clients'] ?? null)) {
-            throw new RuntimeException('Не удалось прочитать пользователей VLESS для синхронизации');
+            throw new RuntimeException($this->t('Не удалось прочитать пользователей VLESS для синхронизации', 'Could not read VLESS users for the sync'));
         }
         $stats = $this->getXrayStats();
         foreach ($stores as $protocol => $store) {
@@ -115,10 +115,10 @@ trait BotProtocolSubscriptions
         if (!$this->admin) return;
         try {
             $found = $this->xrayProtocolClient($source);
-            if ($found === null) { $this->protocolError('Пользователь удалён.', '/xray'); return; }
+            if ($found === null) { $this->protocolError($this->t('Пользователь удалён.', 'User deleted.'), '/xray'); return; }
             [$index, $client] = $found;
             if ($toggle !== '') {
-                if (!isset(ManagedProtocol::NAMES[$toggle])) throw new InvalidArgumentException('Неизвестный протокол');
+                if (!isset(ManagedProtocol::NAMES[$toggle])) throw new InvalidArgumentException($this->t('Неизвестный протокол', 'Unknown protocol'));
                 $this->xrayConfUpdate(static function (&$xray) use ($source, $toggle) {
                     foreach ($xray['inbounds'][0]['settings']['clients'] as &$user) if (ManagedProtocol::xraySource($user) === $source) {
                         $user['managed_protocols'][$toggle] = ($user['managed_protocols'][$toggle] ?? true) === false;
@@ -127,17 +127,17 @@ trait BotProtocolSubscriptions
                 $this->syncXrayProtocolUsers();
                 [$index, $client] = $this->xrayProtocolClient($source);
             }
-            $text = ['Протоколы в подписке · ' . self::esc($client['email']),
-                'Используются прежние ссылки и выбранные шаблоны Mihomo / sing-box: DNS, Fake IP, правила и rule-set сохраняются. В группе основного подключения можно выбрать VLESS или новый протокол; по умолчанию остаётся прежнее подключение.',
-                'Новые протоколы доступны после включения сервиса. Mieru доступен только в Mihomo; MASQUE выдаётся JSON для Xray 26.9.30+, snolc — отдельным ZIP в карточке подключений. Связанные пользователи имеют общий срок, выключатель и лимит трафика; секреты у каждого протокола свои.',
-                'После изменения обновите подписку в клиенте. Учёт общего лимита обновляется службой бота примерно раз в 10 секунд.',
-                'Если VLESS несовместим с обычным sing-box (XHTTP, новый REALITY или VLESS Encryption), в его подписке останутся только совместимые новые протоколы. Шаблон с цепочкой через такой VLESS требует совместимого транспорта VLESS.'];
+            $text = [$this->t('Протоколы в подписке · ', 'Protocols in the subscription · ') . self::esc($client['email']),
+                $this->t('Используются прежние ссылки и выбранные шаблоны Mihomo / sing-box: DNS, Fake IP, правила и rule-set сохраняются. В группе основного подключения можно выбрать VLESS или новый протокол; по умолчанию остаётся прежнее подключение.', 'The previous links and the selected Mihomo / sing-box templates are used: DNS, Fake IP, rules and rule-set stay. In the main connection group you can choose VLESS or a new protocol; the previous connection stays the default.'),
+                $this->t('Новые протоколы доступны после включения сервиса. Mieru доступен только в Mihomo; MASQUE выдаётся JSON для Xray 26.9.30+, snolc — отдельным ZIP в карточке подключений. Связанные пользователи имеют общий срок, выключатель и лимит трафика; секреты у каждого протокола свои.', 'New protocols are available after their service is enabled. Mieru is available only in Mihomo; MASQUE is issued as JSON for Xray 26.9.30+, snolc as a separate ZIP in the connections card. Linked users share the expiry, switch and traffic limit; each protocol has its own secrets.'),
+                $this->t('После изменения обновите подписку в клиенте. Учёт общего лимита обновляется службой бота примерно раз в 10 секунд.', 'After a change refresh the subscription in the client. The shared limit accounting is updated by the bot service about every 10 seconds.'),
+                $this->t('Если VLESS несовместим с обычным sing-box (XHTTP, новый REALITY или VLESS Encryption), в его подписке останутся только совместимые новые протоколы. Шаблон с цепочкой через такой VLESS требует совместимого транспорта VLESS.', 'If VLESS is incompatible with ordinary sing-box (XHTTP, new REALITY or VLESS Encryption), its subscription keeps only the compatible new protocols. A template chaining through such VLESS needs a compatible VLESS transport.')];
             $buttons = [];
             foreach (ManagedProtocol::NAMES as $protocol => $label) {
                 $selected = ($client['managed_protocols'][$protocol] ?? true) !== false;
                 $state = $this->protocolStore($protocol)->read();
                 $enabled = $state['enabled'] && $this->protocolModuleEnabled($protocol);
-                $buttons[] = [['text' => ($selected ? '🟢 ' : '🔴 ') . $label . ($enabled ? '' : ' · сервис выключен'), 'callback_data' => "/xp $source $protocol"]];
+                $buttons[] = [['text' => ($selected ? '🟢 ' : '🔴 ') . $label . ($enabled ? '' : $this->t(' · сервис выключен', ' · service off')), 'callback_data' => "/xp $source $protocol"]];
             }
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "/userXr $index"]];
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);

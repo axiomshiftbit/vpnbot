@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/Lang.php';
 require_once __DIR__ . '/ManagedProtocol.php';
 
 /** Optional containers are independent from their saved VPN credentials. */
@@ -16,8 +17,8 @@ final class ProtocolModules
     {
         if (!file_exists($this->path)) return self::DEFAULTS;
         $settings = ManagedProtocol::readJson($this->path);
-        if (array_diff_key($settings, self::DEFAULTS)) throw new RuntimeException('Неизвестный модуль протокола');
-        foreach ($settings as $value) if (!is_bool($value)) throw new RuntimeException('Повреждены настройки модулей');
+        if (array_diff_key($settings, self::DEFAULTS)) throw new RuntimeException(Lang::t('Неизвестный модуль протокола', 'Unknown protocol module'));
+        foreach ($settings as $value) if (!is_bool($value)) throw new RuntimeException(Lang::t('Повреждены настройки модулей', 'The module settings are damaged'));
         return array_replace(self::DEFAULTS, $settings);
     }
 
@@ -36,14 +37,14 @@ final class ProtocolModules
 
     public function setMany(array $values): void
     {
-        if (array_diff_key($values, self::DEFAULTS)) throw new InvalidArgumentException('Неизвестный модуль');
-        foreach ($values as $value) if (!is_bool($value)) throw new InvalidArgumentException('Неверное состояние модуля');
+        if (array_diff_key($values, self::DEFAULTS)) throw new InvalidArgumentException(Lang::t('Неизвестный модуль', 'Unknown module'));
+        foreach ($values as $value) if (!is_bool($value)) throw new InvalidArgumentException(Lang::t('Неверное состояние модуля', 'Invalid module state'));
         $this->update(static fn($settings) => array_replace($settings, $values));
     }
 
     public function toggle(string $key): void
     {
-        if (!isset(self::DEFAULTS[$key])) throw new InvalidArgumentException('Неизвестный модуль');
+        if (!isset(self::DEFAULTS[$key])) throw new InvalidArgumentException(Lang::t('Неизвестный модуль', 'Unknown module'));
         $this->update(static fn($settings) => array_replace($settings, [$key => !$settings[$key]]));
     }
 
@@ -52,9 +53,9 @@ final class ProtocolModules
         $old = umask(0077);
         $lock = @fopen($this->path . '.lock', 'c');
         umask($old);
-        if (!$lock) throw new RuntimeException('Не удалось открыть блокировку модулей');
+        if (!$lock) throw new RuntimeException(Lang::t('Не удалось открыть блокировку модулей', 'Could not open the module lock'));
         try {
-            if (!flock($lock, LOCK_EX)) throw new RuntimeException('Модули заняты');
+            if (!flock($lock, LOCK_EX)) throw new RuntimeException(Lang::t('Модули заняты', 'Modules are busy'));
             $settings = $change($this->read());
             ManagedProtocol::writeJson($this->path, $settings);
         } finally {

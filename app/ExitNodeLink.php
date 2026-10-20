@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/Lang.php';
+
 /**
  * Ссылка узла выхода → выход Xray.
  *
@@ -26,44 +28,44 @@ final class ExitNodeLink
     {
         $link = trim($link);
         if ($link === '' || strlen($link) > self::MAX_LENGTH || preg_match('~[\x00-\x20\x7f]~', $link)) {
-            throw new InvalidArgumentException('ссылка пустая, слишком длинная или с пробелами');
+            throw new InvalidArgumentException(Lang::t('ссылка пустая, слишком длинная или с пробелами', 'the link is empty, too long or contains spaces'));
         }
         if (!preg_match('~^(vless|trojan)://([^@/?#]+)@(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})/?\?([^#]*)(?:#(.*))?$~D', $link, $m)) {
-            throw new InvalidArgumentException('нужна ссылка vless:// или trojan:// из «Профиля для узла»');
+            throw new InvalidArgumentException(Lang::t('нужна ссылка vless:// или trojan:// из «Профиля для узла»', 'a vless:// or trojan:// link from Node profile is needed'));
         }
         [, $scheme, $credential, $host, $port, $query] = $m;
         $remark = isset($m[6]) ? rawurldecode($m[6]) : '';
         $credential = rawurldecode($credential);
         $host = trim($host, '[]');
         $port = (int) $port;
-        if ($port < 1 || $port > 65535) throw new InvalidArgumentException('неверный порт');
-        if (!filter_var($host, FILTER_VALIDATE_IP) && !self::hostname($host)) throw new InvalidArgumentException('неверный адрес узла');
+        if ($port < 1 || $port > 65535) throw new InvalidArgumentException(Lang::t('неверный порт', 'invalid port'));
+        if (!filter_var($host, FILTER_VALIDATE_IP) && !self::hostname($host)) throw new InvalidArgumentException(Lang::t('неверный адрес узла', 'invalid node address'));
         $q = self::query($query);
         $security = $q['security'] ?? '';
         $type = $q['type'] ?? 'tcp';
         foreach (['allowInsecure', 'insecure', 'allow_insecure'] as $unsafe) {
-            if (isset($q[$unsafe]) && $q[$unsafe] !== '0' && $q[$unsafe] !== 'false') throw new InvalidArgumentException('ссылка без проверки сертификата не принимается');
+            if (isset($q[$unsafe]) && $q[$unsafe] !== '0' && $q[$unsafe] !== 'false') throw new InvalidArgumentException(Lang::t('ссылка без проверки сертификата не принимается', 'a link without certificate verification is not accepted'));
         }
-        if (!in_array($security, ['reality', 'tls'], true)) throw new InvalidArgumentException('нужна защита REALITY или TLS');
+        if (!in_array($security, ['reality', 'tls'], true)) throw new InvalidArgumentException(Lang::t('нужна защита REALITY или TLS', 'REALITY or TLS protection is required'));
         $fp = $q['fp'] ?? 'chrome';
-        if (!in_array($fp, self::FINGERPRINTS, true)) throw new InvalidArgumentException('неизвестный отпечаток fp');
+        if (!in_array($fp, self::FINGERPRINTS, true)) throw new InvalidArgumentException(Lang::t('неизвестный отпечаток fp', 'unknown fp fingerprint'));
         $sni = $q['sni'] ?? '';
-        if (!self::hostname($sni)) throw new InvalidArgumentException('неверный sni');
+        if (!self::hostname($sni)) throw new InvalidArgumentException(Lang::t('неверный sni', 'invalid sni'));
 
         $stream = ['network' => $type, 'security' => $security];
         if ($security === 'reality') {
-            if ($type !== 'tcp') throw new InvalidArgumentException('REALITY поддерживается только с type=tcp');
+            if ($type !== 'tcp') throw new InvalidArgumentException(Lang::t('REALITY поддерживается только с type=tcp', 'REALITY is supported only with type=tcp'));
             $pbk = $q['pbk'] ?? '';
             $sid = $q['sid'] ?? '';
-            if (!preg_match('~^[A-Za-z0-9_-]{43}$~D', $pbk)) throw new InvalidArgumentException('неверный ключ REALITY pbk');
-            if (!preg_match('~^[0-9a-f]{0,16}$~D', $sid) || strlen($sid) % 2) throw new InvalidArgumentException('неверный shortId sid');
+            if (!preg_match('~^[A-Za-z0-9_-]{43}$~D', $pbk)) throw new InvalidArgumentException(Lang::t('неверный ключ REALITY pbk', 'invalid REALITY key pbk'));
+            if (!preg_match('~^[0-9a-f]{0,16}$~D', $sid) || strlen($sid) % 2) throw new InvalidArgumentException(Lang::t('неверный shortId sid', 'invalid shortId sid'));
             $reality = ['serverName' => $sni, 'fingerprint' => $fp, 'publicKey' => $pbk, 'shortId' => $sid];
             if (isset($q['spx'])) {
-                if (!preg_match('~^/[\x21-\x7e]{0,200}$~D', $q['spx'])) throw new InvalidArgumentException('неверный spiderX spx');
+                if (!preg_match('~^/[\x21-\x7e]{0,200}$~D', $q['spx'])) throw new InvalidArgumentException(Lang::t('неверный spiderX spx', 'invalid spiderX spx'));
                 $reality['spiderX'] = $q['spx'];
             }
             if (isset($q['pqv'])) {
-                if (!preg_match('~^[A-Za-z0-9_-]{100,3000}$~D', $q['pqv'])) throw new InvalidArgumentException('неверный ключ ML-DSA pqv');
+                if (!preg_match('~^[A-Za-z0-9_-]{100,3000}$~D', $q['pqv'])) throw new InvalidArgumentException(Lang::t('неверный ключ ML-DSA pqv', 'invalid ML-DSA key pqv'));
                 $reality['mldsa65Verify'] = $q['pqv'];
             }
             $stream['realitySettings'] = $reality;
@@ -71,7 +73,7 @@ final class ExitNodeLink
             $tls = ['serverName' => $sni, 'fingerprint' => $fp];
             if (isset($q['alpn']) && $q['alpn'] !== '') {
                 $alpn = explode(',', $q['alpn']);
-                if (count($alpn) > 3 || array_diff($alpn, ['h2', 'http/1.1', 'h3'])) throw new InvalidArgumentException('неверный alpn');
+                if (count($alpn) > 3 || array_diff($alpn, ['h2', 'http/1.1', 'h3'])) throw new InvalidArgumentException(Lang::t('неверный alpn', 'invalid alpn'));
                 $tls['alpn'] = $alpn;
             }
             $stream['tlsSettings'] = $tls;
@@ -81,42 +83,42 @@ final class ExitNodeLink
                     break;
                 case 'xhttp':
                     $xhttp = ['path' => self::path($q['path'] ?? '/'), 'mode' => $q['mode'] ?? 'auto'] + self::hostField($q);
-                    if (!in_array($xhttp['mode'], self::XHTTP_MODES, true)) throw new InvalidArgumentException('неверный режим XHTTP');
+                    if (!in_array($xhttp['mode'], self::XHTTP_MODES, true)) throw new InvalidArgumentException(Lang::t('неверный режим XHTTP', 'invalid XHTTP mode'));
                     if (isset($q['extra']) && $q['extra'] !== '') {
                         $extra = json_decode($q['extra'], true);
-                        if (!is_array($extra) || array_is_list($extra) || strlen($q['extra']) > 4000) throw new InvalidArgumentException('неверный extra XHTTP');
+                        if (!is_array($extra) || array_is_list($extra) || strlen($q['extra']) > 4000) throw new InvalidArgumentException(Lang::t('неверный extra XHTTP', 'invalid XHTTP extra'));
                         $xhttp['extra'] = $extra;
                     }
                     $stream['xhttpSettings'] = $xhttp;
                     break;
                 case 'grpc':
                     $service = $q['serviceName'] ?? '';
-                    if (!preg_match('~^[A-Za-z0-9._/-]{1,200}$~D', $service)) throw new InvalidArgumentException('неверный serviceName');
+                    if (!preg_match('~^[A-Za-z0-9._/-]{1,200}$~D', $service)) throw new InvalidArgumentException(Lang::t('неверный serviceName', 'invalid serviceName'));
                     $stream['grpcSettings'] = ['serviceName' => $service, 'multiMode' => ($q['mode'] ?? 'gun') === 'multi'];
                     break;
                 default:
-                    throw new InvalidArgumentException('транспорт ' . $type . ' не поддерживается');
+                    throw new InvalidArgumentException(Lang::t('транспорт ', 'transport ') . $type . Lang::t(' не поддерживается', ' is not supported'));
             }
         }
 
         if ($scheme === 'vless') {
             if (!preg_match('~^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$~D', strtolower($credential))) {
-                throw new InvalidArgumentException('неверный UUID пользователя');
+                throw new InvalidArgumentException(Lang::t('неверный UUID пользователя', 'invalid user UUID'));
             }
-            if ($type === 'grpc') throw new InvalidArgumentException('VLESS с gRPC бот не выдаёт');
+            if ($type === 'grpc') throw new InvalidArgumentException(Lang::t('VLESS с gRPC бот не выдаёт', 'the bot does not issue VLESS over gRPC'));
             $encryption = $q['encryption'] ?? 'none';
             if ($encryption !== 'none' && !preg_match('~^mlkem768x25519plus\.(native|xorpub|random)\.(0rtt|1rtt)\.[A-Za-z0-9_-]{40,3000}(?:\.[A-Za-z0-9_-]{40,3000})*$~D', $encryption)) {
-                throw new InvalidArgumentException('неверный VLESS Encryption');
+                throw new InvalidArgumentException(Lang::t('неверный VLESS Encryption', 'invalid VLESS Encryption'));
             }
             $flow = $q['flow'] ?? '';
-            if (!in_array($flow, ['', 'xtls-rprx-vision'], true)) throw new InvalidArgumentException('неизвестный flow');
-            if ($flow !== '' && $security !== 'reality' && $encryption === 'none') throw new InvalidArgumentException('flow Vision без REALITY не поддерживается');
+            if (!in_array($flow, ['', 'xtls-rprx-vision'], true)) throw new InvalidArgumentException(Lang::t('неизвестный flow', 'unknown flow'));
+            if ($flow !== '' && $security !== 'reality' && $encryption === 'none') throw new InvalidArgumentException(Lang::t('flow Vision без REALITY не поддерживается', 'flow Vision without REALITY is not supported'));
             $user = ['id' => strtolower($credential), 'encryption' => $encryption];
             if ($flow !== '') $user['flow'] = $flow;
             $outbound = ['protocol' => 'vless', 'settings' => ['vnext' => [['address' => $host, 'port' => $port, 'users' => [$user]]]]];
         } else {
-            if ($security !== 'tls' || $type !== 'grpc') throw new InvalidArgumentException('Trojan поддерживается только с TLS и gRPC');
-            if (!preg_match('~^[\x21-\x7e]{8,128}$~D', $credential)) throw new InvalidArgumentException('неверный пароль Trojan');
+            if ($security !== 'tls' || $type !== 'grpc') throw new InvalidArgumentException(Lang::t('Trojan поддерживается только с TLS и gRPC', 'Trojan is supported only with TLS and gRPC'));
+            if (!preg_match('~^[\x21-\x7e]{8,128}$~D', $credential)) throw new InvalidArgumentException(Lang::t('неверный пароль Trojan', 'invalid Trojan password'));
             $outbound = ['protocol' => 'trojan', 'settings' => ['servers' => [['address' => $host, 'port' => $port, 'password' => $credential]]]];
         }
         $outbound['streamSettings'] = $stream;
@@ -133,10 +135,10 @@ final class ExitNodeLink
             if ($pair === '') continue;
             [$key, $value] = array_pad(explode('=', $pair, 2), 2, '');
             $key = rawurldecode($key);
-            if (!preg_match('~^[A-Za-z][A-Za-z0-9_]{0,31}$~D', $key)) throw new InvalidArgumentException('неверный параметр ссылки');
-            if (array_key_exists($key, $result)) throw new InvalidArgumentException('параметр ' . $key . ' повторяется');
+            if (!preg_match('~^[A-Za-z][A-Za-z0-9_]{0,31}$~D', $key)) throw new InvalidArgumentException(Lang::t('неверный параметр ссылки', 'invalid link parameter'));
+            if (array_key_exists($key, $result)) throw new InvalidArgumentException(Lang::t('параметр ', 'parameter ') . $key . Lang::t(' повторяется', ' is repeated'));
             $value = rawurldecode(str_replace('+', '%20', $value));
-            if (!mb_check_encoding($value, 'UTF-8') || preg_match('~[\x00-\x1f\x7f]~', $value)) throw new InvalidArgumentException('неверное значение ' . $key);
+            if (!mb_check_encoding($value, 'UTF-8') || preg_match('~[\x00-\x1f\x7f]~', $value)) throw new InvalidArgumentException(Lang::t('неверное значение ', 'invalid value ') . $key);
             $result[$key] = $value;
         }
         return $result;
@@ -149,14 +151,14 @@ final class ExitNodeLink
 
     private static function path(string $path): string
     {
-        if (!preg_match('#^/[A-Za-z0-9._~/-]{0,200}$#D', $path)) throw new InvalidArgumentException('неверный path');
+        if (!preg_match('#^/[A-Za-z0-9._~/-]{0,200}$#D', $path)) throw new InvalidArgumentException(Lang::t('неверный path', 'invalid path'));
         return $path;
     }
 
     private static function hostField(array $q): array
     {
         if (!isset($q['host']) || $q['host'] === '') return [];
-        if (!self::hostname($q['host'])) throw new InvalidArgumentException('неверный host');
+        if (!self::hostname($q['host'])) throw new InvalidArgumentException(Lang::t('неверный host', 'invalid host'));
         return ['host' => $q['host']];
     }
 }

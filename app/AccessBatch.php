@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/Lang.php';
+
 /** A preview contains only identities, non-secret changes and hashes of reviewed rows. */
 final class AccessBatch
 {
@@ -13,19 +15,19 @@ final class AccessBatch
             return $number > 0 ? max(1, (int) round($number * 1073741824)) : null;
         }
         if (in_array($action, ['disable', 'reset'], true) && $text === '') return null;
-        throw new InvalidArgumentException('Продление: 1–3660 дней. Лимит: 0–1000000 ГиБ');
+        throw new InvalidArgumentException(Lang::t('Продление: 1–3660 дней. Лимит: 0–1000000 ГиБ', 'Extension: 1–3660 days. Limit: 0–1000000 GiB'));
     }
 
     public static function preview(array $users, array $ids, string $action, ?int $value, int $now): array
     {
-        if (!$ids || count($ids) > 20 || count(array_unique($ids)) !== count($ids)) throw new InvalidArgumentException('Выберите от 1 до 20 пользователей');
-        if (!in_array($action, ['extend', 'quota', 'disable', 'reset'], true)) throw new InvalidArgumentException('Неизвестное групповое действие');
+        if (!$ids || count($ids) > 20 || count(array_unique($ids)) !== count($ids)) throw new InvalidArgumentException(Lang::t('Выберите от 1 до 20 пользователей', 'Choose 1 to 20 users'));
+        if (!in_array($action, ['extend', 'quota', 'disable', 'reset'], true)) throw new InvalidArgumentException(Lang::t('Неизвестное групповое действие', 'Unknown bulk action'));
         $rows = [];
         foreach ($ids as $id) {
             $user = $users[$id] ?? null; $skip = ''; $after = [];
-            if (!$user) $skip = 'пользователь удалён';
-            elseif (isset($user['xray_source'])) $skip = 'общий доступ VLESS: изменяется в его карточке';
-            elseif ($action === 'extend' && $user['expires'] === null) $skip = 'срок не ограничен';
+            if (!$user) $skip = Lang::t('пользователь удалён', 'user deleted');
+            elseif (isset($user['xray_source'])) $skip = Lang::t('общий доступ VLESS: изменяется в его карточке', 'shared VLESS access: change it in its card');
+            elseif ($action === 'extend' && $user['expires'] === null) $skip = Lang::t('срок не ограничен', 'no expiry');
             else {
                 $after = match ($action) {
                     'extend' => ['expires' => max($now, $user['expires']) + $value * 86400],
@@ -33,9 +35,9 @@ final class AccessBatch
                     'disable' => ['enabled' => false],
                     'reset' => ['reset' => true],
                 };
-                if ($action !== 'reset' && array_intersect_key($user, $after) === $after) $skip = 'уже установлено';
+                if ($action !== 'reset' && array_intersect_key($user, $after) === $after) $skip = Lang::t('уже установлено', 'already set');
             }
-            $rows[] = ['id' => (string) $id, 'name' => $user['name'] ?? 'Удалённый пользователь', 'skip' => $skip,
+            $rows[] = ['id' => (string) $id, 'name' => $user['name'] ?? Lang::t('Удалённый пользователь', 'Deleted user'), 'skip' => $skip,
                 'before' => $user ? self::fingerprint($user) : '', 'after' => $after];
         }
         return ['action' => $action, 'created' => $now, 'rows' => $rows];
@@ -43,11 +45,11 @@ final class AccessBatch
 
     public static function apply(array &$users, array $preview, int $now): int
     {
-        if ($preview['created'] < $now - 600 || $preview['created'] > $now) throw new InvalidArgumentException('Предварительный просмотр устарел; создайте новый');
+        if ($preview['created'] < $now - 600 || $preview['created'] > $now) throw new InvalidArgumentException(Lang::t('Предварительный просмотр устарел; создайте новый', 'The preview is outdated; create a new one'));
         foreach ($preview['rows'] as $row) {
             if ($row['skip'] !== '') continue;
             if (!isset($users[$row['id']]) || !hash_equals($row['before'], self::fingerprint($users[$row['id']]))) {
-                throw new InvalidArgumentException('Данные выбранных пользователей изменились. Создайте новый предварительный просмотр');
+                throw new InvalidArgumentException(Lang::t('Данные выбранных пользователей изменились. Создайте новый предварительный просмотр', 'The selected users have changed. Create a new preview'));
             }
         }
         $changed = 0;

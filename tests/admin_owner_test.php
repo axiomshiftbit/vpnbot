@@ -79,7 +79,7 @@ try {
     $check($admins() === [100, 300, 999], 'владелец удаляет администратора, порядок сохранён');
     $bot = $as(100);
     $bot->delAdmin(100);
-    $check($admins() === [100, 300, 999] && in_array('answer:cannot remove the owner', $bot->log, true), 'владелец себя не удаляет');
+    $check($admins() === [100, 300, 999] && in_array('answer:нельзя удалить владельца', $bot->log, true), 'владелец себя не удаляет');
     $as(100)->delAdmin(12345);
     $check($admins() === [100, 300, 999], 'неизвестный id ничего не удаляет');
 
@@ -94,7 +94,7 @@ try {
     $setAdmins([100]);
     $bot = $as(100);
     $bot->delAdmin(100);
-    $check($admins() === [100] && in_array('answer:cannot remove the last admin', $bot->log, true), 'последний администратор не удаляется');
+    $check($admins() === [100] && in_array('answer:нельзя удалить последнего администратора', $bot->log, true), 'последний администратор не удаляется');
     $setAdmins([]);
     $check($as(100)->isOwner() === false, 'пустой список: владельца нет');
     $as(100, false)->addAdmin('100');

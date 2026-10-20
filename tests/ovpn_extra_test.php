@@ -306,6 +306,20 @@ $bot->saveOvpnLimit('0', 'alice');
 check($bot->ovpnTraffic('alice')['limit'] === 0, 'zero removes the limit');
 $bot->saveOvpnLimit('1', 'mallory');
 check(!isset(json_decode(file_get_contents($bot->ovpnTrafficPath()), true)['users']['mallory']), 'no limit for an unknown client');
+// Лимиты входят в резервную копию, счётчики нет: восстановление их не откатывает.
+$bot->saveOvpnLimit('3', 'alice');
+$limits = $bot->ovpnLimitsSnapshot();
+check($limits === ['alice' => 3 * 1024 ** 3], 'backup keeps the limits of clients that have one');
+$before = $bot->ovpnTraffic('alice');
+$bot->saveOvpnLimit('0', 'alice'); $bot->saveOvpnLimit('7', 'bob');
+$bot->restoreOvpnLimits($limits);
+check($bot->ovpnTraffic('alice')['limit'] === 3 * 1024 ** 3 && $bot->ovpnTraffic('bob')['limit'] === 0, 'restore sets the limits from the backup and clears the others');
+check($bot->ovpnTraffic('alice')['rx'] === $before['rx'] && $bot->ovpnTraffic('alice')['tx'] === $before['tx'], 'restoring limits leaves the counters as they are');
+Bot::validateOvpnLimits(['alice' => 1, '123' => 5]);
+foreach ([['alice' => 0], ['a b' => 5], ['alice' => '5'], 'x'] as $bad) {
+    try { Bot::validateOvpnLimits($bad); check(false, 'invalid limits rejected: ' . json_encode($bad)); } catch (InvalidArgumentException) { check(true, 'invalid limits rejected'); }
+}
+$bot->saveOvpnLimit('0', 'alice');
 // Перевыпуск на секунду убирает сертификат: проход cron в этот момент не должен стереть счётчик.
 rename("$bot->t_root/pki/issued/bob.crt", "$bot->t_root/bob.crt.aside");
 $bot->ovpnTrafficSync(static fn($users) => $users);
@@ -366,6 +380,13 @@ $help = implode("\n", $pages);
 foreach (['add peer', 'kick', 'history', 'log tail', 'restart', 'ovpn renew', 'ovpn gateway', 'ovpn routes', 'ovpn limit', 'ovpn traffic reset', 'ovpn traffic total', 'ovpn proto', 'inter-client', 'win dns guard', 'enable', 'disable'] as $key) {
     check(str_contains($help, $bot->i18n($key)), "help names the button as the menu does: $key");
 }
+$bot->language = 'en';
+$enHelp = implode("\n", $bot->menuHelpContent('ovpn')[2]);
+check(!preg_match('~[А-Яа-яЁё]~u', $enHelp), 'English help has no Russian text');
+foreach (['add peer', 'kick', 'history', 'log tail', 'restart', 'ovpn renew', 'ovpn gateway', 'ovpn routes', 'ovpn limit', 'ovpn traffic reset', 'ovpn traffic total', 'ovpn proto', 'inter-client', 'win dns guard', 'enable', 'disable'] as $key) {
+    check(stripos($enHelp, $bot->i18n($key)) !== false, "English help names the button as the menu does: $key");
+}
+$bot->language = 'ru';
 $source = file_get_contents(__DIR__ . '/../app/bot.php') . file_get_contents(__DIR__ . '/../app/BotOvpn.php');
 preg_match_all("~i18n\\('(ovpn [a-z ]+)'\\)~", $source, $used);
 check(count(array_unique($used[1])) >= 30, 'translation keys are found in the code');

@@ -388,7 +388,12 @@ foreach ($help[2] as $title => $page) {
     $check(substr_count($page, '<b>') === substr_count($page, '</b>') && substr_count($page, '<code>') === substr_count($page, '</code>'), "разметка страницы закрыта: $title");
 }
 $bot->language = 'en';
-$check($bot->menuHelpContent('xdrive')[2] === $help[2], 'справка XDRIVE одна и та же при любом языке бота — русская');
+$english = $bot->menuHelpContent('xdrive')[2];
+$check(count($english) === 9 && !preg_match('~[А-Яа-яЁё]~u', implode('', array_keys($english)) . implode('', $english)), 'английская справка XDRIVE: девять страниц без русского текста');
+foreach (['Check storage', 'New keys', 'Idle polling', 'Client profiles', '10808', 'namesRegex', 'Refresh Token'] as $needle) {
+    $check(str_contains(implode("\n", $english), $needle), "английская справка упоминает: $needle");
+}
+$bot->language = 'ru';
 $all = implode("\n", $help[2]);
 foreach (['26.9.30', 'webdav.yandex.ru', 'Пароли приложений', 'Refresh Token', 'namesRegex', '10808', 'Новые ключи', 'Опрос в простое', 'Проверить хранилище'] as $needle) {
     $check(str_contains($all, $needle), "справка упоминает: $needle");

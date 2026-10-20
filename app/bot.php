@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/Lang.php';
 require_once __DIR__ . '/ClashTemplateValidator.php';
 require_once __DIR__ . '/VlessEncryption.php';
 require_once __DIR__ . '/BotProtocols.php';
@@ -106,13 +107,13 @@ class Bot
     // страницей. PersistentKeepalive живёт в [Peer], а не в amnezia_keys —
     // хранится отдельным ключом pac.json (см. awgKeepalive()).
     public const AWG3_FIELDS = [
-        'pad' => ['ContentPaddingAddition', 0, 65535, 'рек. 10-40'],
-        'rka' => ['RekeyAfterTime',         1, 65535, 'сек, дефолт 120, рек. 110-130'],
-        'rkt' => ['RekeyTimeout',           1, 65535, 'сек, дефолт 5, рек. 5-10'],
-        'rja' => ['RejectAfterTime',        1, 65535, 'сек, дефолт 180, рек. 170-190'],
-        'kat' => ['KeepaliveTimeout',       1, 65535, 'сек, дефолт 10, рек. 10-15'],
-        'mha' => ['MaxHandshakeAttempts',   1, 65535, 'дефолт 18, рек. 15-25'],
-        'pka' => ['PersistentKeepalive',    0, 65535, '[Peer], дефолт 20, рек. 20-30'],
+        'pad' => ['ContentPaddingAddition', 0, 65535, ['ru' => 'рек. 10-40', 'en' => 'rec. 10-40']],
+        'rka' => ['RekeyAfterTime',         1, 65535, ['ru' => 'сек, дефолт 120, рек. 110-130', 'en' => 's, default 120, rec. 110-130']],
+        'rkt' => ['RekeyTimeout',           1, 65535, ['ru' => 'сек, дефолт 5, рек. 5-10', 'en' => 's, default 5, rec. 5-10']],
+        'rja' => ['RejectAfterTime',        1, 65535, ['ru' => 'сек, дефолт 180, рек. 170-190', 'en' => 's, default 180, rec. 170-190']],
+        'kat' => ['KeepaliveTimeout',       1, 65535, ['ru' => 'сек, дефолт 10, рек. 10-15', 'en' => 's, default 10, rec. 10-15']],
+        'mha' => ['MaxHandshakeAttempts',   1, 65535, ['ru' => 'дефолт 18, рек. 15-25', 'en' => 'default 18, rec. 15-25']],
+        'pka' => ['PersistentKeepalive',    0, 65535, ['ru' => '[Peer], дефолт 20, рек. 20-30', 'en' => '[Peer], default 20, rec. 20-30']],
     ];
     private const DAT_UPDATE_INTERVALS = [
         0       => 'off',
@@ -256,6 +257,7 @@ class Bot
         $this->ip       = getenv('IP');
         $this->i18n     = $i18n;
         $this->language = $this->getPacConf()['language'] ?: 'en';
+        Lang::$en = $this->language === 'en';
         $this->dns      = '1.1.1.1, 8.8.8.8';
         $this->mtu      = 1350;
         $this->limit    = $this->getPacConf()['limitpage'] ?: 5;
@@ -764,8 +766,9 @@ class Bot
             case preg_match('~^/exitCheckAll$~', $this->input['callback'], $m):
                 $this->exitCheckAll();
                 break;
-            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|Yt|Sets|SetAdd|Auto) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Auto) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 match ($m[1]) {
+                    'RtClear' => $this->exitRoutesClear($m[2]), 'RtClearYes' => $this->exitRoutesClear($m[2], true),
                     'Auto' => $this->exitAuto($m[2]),
                     'Check' => $this->exitCheck($m[2]), 'Refresh' => $this->exitRefresh($m[2]), 'Toggle' => $this->exitToggle($m[2]),
                     'Quic' => $this->exitQuic($m[2]), 'Name' => $this->exitNamePrompt($m[2]), 'Link' => $this->exitLinkPrompt($m[2]),
@@ -2471,7 +2474,7 @@ class Bot
     {
         @mkdir('/config/telemt', 0755, true);
         if (!$this->writePrivateKey('/config/telemt/service-enabled', $enabled ? "1\n" : "0\n")) {
-            throw new RuntimeException('Не удалось сохранить состояние TeleMT');
+            throw new RuntimeException($this->t('Не удалось сохранить состояние TeleMT', 'Could not save the TeleMT state'));
         }
     }
 
@@ -2513,7 +2516,7 @@ class Bot
             $conf = $this->getPacConf();
             $before = $conf;
             $result = $fn($conf);
-            if ($conf !== $before && !$this->setPacConf($conf)) throw new RuntimeException('Не удалось сохранить настройки Telemt');
+            if ($conf !== $before && !$this->setPacConf($conf)) throw new RuntimeException($this->t('Не удалось сохранить настройки Telemt', 'Could not save the Telemt settings'));
             return $result;
         });
     }
@@ -2647,7 +2650,7 @@ class Bot
     public function telemtWriteToml(string $toml): void
     {
         if (!$this->writePrivateKey('/config/telemt/telemt.toml', $toml)) {
-            throw new RuntimeException('Не удалось записать конфигурацию Telemt; перезапуск отменён');
+            throw new RuntimeException($this->t('Не удалось записать конфигурацию Telemt; перезапуск отменён', 'Could not write the Telemt configuration; restart cancelled'));
         }
     }
 
@@ -3219,12 +3222,12 @@ class Bot
     {
         $dir = $this->telemtDecoyDir;
         if (is_link($dir) || (!is_dir($dir) && !@mkdir($dir, 0755, true))) {
-            throw new RuntimeException('Не удалось создать каталог страницы TeleMT');
+            throw new RuntimeException($this->t('Не удалось создать каталог страницы TeleMT', 'Could not create the TeleMT page directory'));
         }
         $file = "$dir/index.html";
         $css = "$dir/loading.css";
         if (is_link($file) || is_link($css)) {
-            throw new RuntimeException('Файлы страницы TeleMT не должны быть символическими ссылками');
+            throw new RuntimeException($this->t('Файлы страницы TeleMT не должны быть символическими ссылками', 'TeleMT page files must not be symbolic links'));
         }
         $template = __DIR__ . '/telemt-decoy';
         // Обновляем только прежнюю штатную «It works!» или наш текущий HTML.
@@ -3250,7 +3253,7 @@ class Bot
                 if ($body === false || $tmp === false
                     || file_put_contents($tmp, $body) !== strlen($body)
                     || !chmod($tmp, 0644) || !rename($tmp, $target)) {
-                    throw new RuntimeException('Не удалось сохранить страницу TeleMT');
+                    throw new RuntimeException($this->t('Не удалось сохранить страницу TeleMT', 'Could not save the TeleMT page'));
                 }
             } finally {
                 if ($tmp !== false && is_file($tmp)) @unlink($tmp);
@@ -4075,6 +4078,7 @@ class Bot
     {
         $conf = $this->getPacConf();
         $this->language = $conf['language'] = $lang;
+        Lang::$en = $this->language === 'en';
         $this->setPacConf($conf);
         $this->menu('config');
     }
@@ -4147,13 +4151,13 @@ class Bot
     // подписи куки завязаны на текущий хеш пароля (Panel::sign()).
     public function setPanelPassword(string $plain): void
     {
-        if (strlen($plain) < 8 || strlen($plain) > 72) throw new InvalidArgumentException('Пароль панели: от 8 до 72 байт');
+        if (strlen($plain) < 8 || strlen($plain) > 72) throw new InvalidArgumentException($this->t('Пароль панели: от 8 до 72 байт', 'Panel password: 8 to 72 bytes'));
         $c              = $this->getPacConf();
-        if (!is_array($c)) throw new RuntimeException('Настройки недоступны — пароль не изменён');
+        if (!is_array($c)) throw new RuntimeException($this->t('Настройки недоступны — пароль не изменён', 'Settings are unavailable; the password is unchanged'));
         $c['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
         $dir = getenv('PANEL_DIR') ?: '/config/panel';
-        if (!PanelPasswordVault::remember($dir, $plain, $c['panelpswd'], (string) $this->key)) throw new RuntimeException('Не удалось сохранить защищённую копию — пароль не изменён');
-        if ($this->setPacConf($c) === false) throw new RuntimeException('Не удалось записать настройки — пароль не изменён');
+        if (!PanelPasswordVault::remember($dir, $plain, $c['panelpswd'], (string) $this->key)) throw new RuntimeException($this->t('Не удалось сохранить защищённую копию — пароль не изменён', 'Could not save the protected copy; the password is unchanged'));
+        if ($this->setPacConf($c) === false) throw new RuntimeException($this->t('Не удалось записать настройки — пароль не изменён', 'Could not write the settings; the password is unchanged'));
         PanelPasswordVault::settle($dir, $c['panelpswd']);
         // Как Panel::setPassword(): протухший initial_password.txt с уже
         // недействительным паролем не должен пережить смену.
@@ -4166,8 +4170,8 @@ class Bot
         $hash = (string) ($this->getPacConf()['panelpswd'] ?? '');
         $pass = PanelPasswordVault::reveal(getenv('PANEL_DIR') ?: '/config/panel', $hash, (string) $this->key);
         $text = $pass === null
-            ? 'Для текущего пароля сохранён только хеш. Войдите в веб-панель с действующим паролем или задайте новый — после этого здесь будет доступен просмотр.'
-            : "Пароль веб-панели:\n<span class=\"tg-spoiler\">" . self::esc($pass) . '</span>';
+            ? $this->t('Для текущего пароля сохранён только хеш. Войдите в веб-панель с действующим паролем или задайте новый — после этого здесь будет доступен просмотр.', 'Only a hash is stored for the current password. Sign in to the web panel with the current password or set a new one; then viewing becomes available here.')
+            : $this->t("Пароль веб-панели:\n<span class=\"tg-spoiler\">", "Web panel password:\n<span class=\"tg-spoiler\">") . self::esc($pass) . '</span>';
         $this->send($this->input['chat'], $text, $this->input['message_id'],
             [[['text' => $this->i18n('back'), 'callback_data' => '/menu config']]]);
     }
@@ -4177,7 +4181,7 @@ class Bot
         if (!$this->admin) return;
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter new web panel password (min 8 chars)",
+            $this->t("@{$this->input['username']} введите новый пароль веб-панели (не меньше 8 символов)", "@{$this->input['username']} enter new web panel password (min 8 chars)"),
             $this->input['message_id'],
             reply: 'enter panel password',
         );
@@ -4201,8 +4205,8 @@ class Bot
         $safe = htmlspecialchars($pass, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $this->send(
             $this->input['chat'],
-            "✅ Пароль веб-панели:\n<span class=\"tg-spoiler\"><code>$safe</code></span>\n\n"
-                . "Сменить пароль: <code>docker compose exec php php panel.php passwd</code>",
+            $this->t("✅ Пароль веб-панели:\n<span class=\"tg-spoiler\"><code>$safe</code></span>\n\n", "✅ Web panel password:\n<span class=\"tg-spoiler\"><code>$safe</code></span>\n\n")
+                . $this->t("Сменить пароль: <code>docker compose exec php php panel.php passwd</code>", "Change password: <code>docker compose exec php php panel.php passwd</code>"),
             $this->input['message_id'],
         );
     }
@@ -4214,7 +4218,7 @@ class Bot
         if (!$this->admin) return;
         $pass = trim((string) $pass);
         if (strlen($pass) < 8 || strlen($pass) > 72) {
-            $this->send($this->input['chat'], 'Пароль должен содержать от 8 до 72 байт — попробуйте снова', $this->input['message_id']);
+            $this->send($this->input['chat'], $this->t('Пароль должен содержать от 8 до 72 байт — попробуйте снова', 'The password must be 8 to 72 bytes; try again'), $this->input['message_id']);
         } else {
             $this->setPanelPassword($pass);
             $this->sendPanelPasswordCopy($pass);
@@ -4247,7 +4251,7 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter camouflage key",
+            $this->t("@{$this->input['username']} введите ключ маскировки", "@{$this->input['username']} enter camouflage key"),
             $this->input['message_id'],
             reply: 'enter camouflage key',
         );
@@ -4302,7 +4306,7 @@ class Bot
         $user = htmlspecialchars($clients[$i], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter password for <code>$user</code>",
+            $this->t("@{$this->input['username']} введите пароль для <code>$user</code>", "@{$this->input['username']} enter password for <code>$user</code>"),
             $this->input['message_id'],
             reply: 'enter password',
         );
@@ -4350,14 +4354,14 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} введите версию caddy тегом <code>vX.Y.Z</code> (например <code>v2.11.2</code>).\n\n"
-            . "Плагин forwardproxy пиннится ПАРОЙ автоматически: <code>vX.Y.Z-naive</code>. "
-            . "У klzgrad теги названы по версии caddy, под которую плагин проверен, и другой пары upstream не проверял.\n\n"
-            . "Пин ложится в .env, но образы приезжают готовыми из ghcr.io — сам по себе он ничего не изменит.\n"
-            . "Применить локально: <code>docker compose build np</code>, затем <code>make r</code>.\n"
-            . "Либо закоммитить .env в репозиторий: CI пересоберёт образ, и <code>make r</code> подтянет его.",
+            $this->t("@{$this->input['username']} введите версию caddy тегом <code>vX.Y.Z</code> (например <code>v2.11.2</code>).\n\n", "@{$this->input['username']} enter the caddy version as a tag <code>vX.Y.Z</code> (e.g. <code>v2.11.2</code>).\n\n")
+            . $this->t("Плагин forwardproxy пиннится ПАРОЙ автоматически: <code>vX.Y.Z-naive</code>. ", "The forwardproxy plugin is pinned as a PAIR automatically: <code>vX.Y.Z-naive</code>. ")
+            . $this->t("У klzgrad теги названы по версии caddy, под которую плагин проверен, и другой пары upstream не проверял.\n\n", "klzgrad names tags after the caddy version the plugin was tested with, and upstream has not tested other pairs.\n\n")
+            . $this->t("Пин ложится в .env, но образы приезжают готовыми из ghcr.io — сам по себе он ничего не изменит.\n", "The pin goes into .env, but images arrive ready-made from ghcr.io, so by itself it changes nothing.\n")
+            . $this->t("Применить локально: <code>docker compose build np</code>, затем <code>make r</code>.\n", "To apply locally: <code>docker compose build np</code>, then <code>make r</code>.\n")
+            . $this->t("Либо закоммитить .env в репозиторий: CI пересоберёт образ, и <code>make r</code> подтянет его.", "Or commit .env to the repository: CI rebuilds the image and <code>make r</code> pulls it."),
             $this->input['message_id'],
-            reply: 'введите версию caddy',
+            reply: $this->t('введите версию caddy', 'enter the caddy version'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -4373,7 +4377,7 @@ class Bot
     {
         $v = trim((string) $v);
         if (!preg_match('~^v\d+\.\d+\.\d+$~', $v)) {
-            $this->update($this->input['chat'], $this->input['message_id'], 'нужен тег вида vX.Y.Z (например v2.11.2)');
+            $this->update($this->input['chat'], $this->input['message_id'], $this->t('нужен тег вида vX.Y.Z (например v2.11.2)', 'a tag like vX.Y.Z is needed (e.g. v2.11.2)'));
             sleep(3);
             return $this->menu('naive');
         }
@@ -4653,7 +4657,7 @@ class Bot
     protected function setOcUserPassword(string $user, string $pass): bool
     {
         if (!$this->saveOcPassword($user, $pass)) {
-            $this->send($this->input['chat'], 'OpenConnect: не удалось сохранить пароль');
+            $this->send($this->input['chat'], $this->t('OpenConnect: не удалось сохранить пароль', 'OpenConnect: could not save the password'));
             return false;
         }
         $this->restartOcserv(file_get_contents('/config/ocserv.conf'));
@@ -4818,7 +4822,7 @@ class Bot
         // Caddy получает каталог /config: атомарная замена видна контейнеру.
         // При отказе записи работающий процесс остаётся с прежним конфигом.
         if (!$this->writePrivateKey('/config/Caddyfile', $t)) {
-            throw new RuntimeException('Не удалось сохранить конфигурацию Naive');
+            throw new RuntimeException($this->t('Не удалось сохранить конфигурацию Naive', 'Could not save the Naive configuration'));
         }
         $this->ssh('pkill caddy', 'np');
         if (!$ok || empty($this->getHashSubdomain('np'))) {
@@ -4833,7 +4837,7 @@ class Bot
             if (!empty($this->input['chat'])) {
                 $this->send(
                     $this->input['chat'],
-                    'naive: caddy отверг конфиг, сервис не запущен — ' . htmlspecialchars(strtok($v, "\n"), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
+                    $this->t('naive: caddy отверг конфиг, сервис не запущен — ', 'naive: caddy rejected the config, the service is not running: ') . htmlspecialchars(strtok($v, "\n"), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
                     $this->input['message_id'] ?? null
                 );
             }
@@ -5007,7 +5011,7 @@ class Bot
     {
         $dns = trim((string) $dns);
         if (filter_var($dns, FILTER_VALIDATE_IP) === false) {
-            $this->send($this->input['chat'], "$dns - wrong dns address", $this->input['message_id']);
+            $this->send($this->input['chat'], $this->t("$dns: неверный адрес DNS", "$dns - wrong dns address"), $this->input['message_id']);
             return $this->menu('oc');
         }
         $c = file_get_contents('/config/ocserv.conf');
@@ -5035,7 +5039,7 @@ class Bot
         } else {
             // Без проверки строка вида «x;}\nserver { listen 443; }» уезжала в
             // /config/upstream.conf и в default-domain ocserv.conf.
-            $this->send($this->input['chat'], "$domain - wrong subdomain format", $this->input['message_id']);
+            $this->send($this->input['chat'], $this->t("$domain: неверный формат поддомена", "$domain - wrong subdomain format"), $this->input['message_id']);
             return $this->menu('oc');
         }
         $this->setPacConf($pac);
@@ -5054,7 +5058,7 @@ class Bot
         } elseif (self::isSubdomainLabel($domain)) {
             $pac['np_domain'] = $domain;
         } else {
-            $this->send($this->input['chat'], "$domain - wrong subdomain format", $this->input['message_id']);
+            $this->send($this->input['chat'], $this->t("$domain: неверный формат поддомена", "$domain - wrong subdomain format"), $this->input['message_id']);
             return $this->menu('naive');
         }
         $this->setPacConf($pac);
@@ -5071,7 +5075,7 @@ class Bot
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
-            'значение не принято: допустимы латиница, цифры и . _ ~ - ! $ & \' ( ) * + , ; = : @ % (до 128 символов), без пробелов'
+            $this->t('значение не принято: допустимы латиница, цифры и . _ ~ - ! $ & \' ( ) * + , ; = : @ % (до 128 символов), без пробелов', 'value rejected: allowed are Latin letters, digits and . _ ~ - ! $ & \' ( ) * + , ; = : @ % (up to 128 characters), no spaces')
         );
         sleep(3);
         $this->menu('naive');
@@ -5086,7 +5090,7 @@ class Bot
         $this->withLock('pac', function () use ($user) {
             $pac = $this->getPacConf();
             $pac['naive']['user'] = $user;
-            if (!$this->setPacConf($pac)) throw new RuntimeException('Не удалось сохранить логин Naive');
+            if (!$this->setPacConf($pac)) throw new RuntimeException($this->t('Не удалось сохранить логин Naive', 'Could not save the Naive login'));
         });
         $this->restartNaive();
         $this->menu('naive');
@@ -5101,7 +5105,7 @@ class Bot
         $this->withLock('pac', function () use ($pass) {
             $pac = $this->getPacConf();
             $pac['naive']['pass'] = $pass;
-            if (!$this->setPacConf($pac)) throw new RuntimeException('Не удалось сохранить пароль Naive');
+            if (!$this->setPacConf($pac)) throw new RuntimeException($this->t('Не удалось сохранить пароль Naive', 'Could not save the Naive password'));
         });
         $this->restartNaive();
         $this->menu('naive');
@@ -5226,7 +5230,7 @@ class Bot
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter UDP port range for hopping, e.g. <code>20000-50000</code> "
+            $this->t("@{$this->input['username']} введите диапазон UDP-портов для смены портов, например <code>20000-50000</code> ", "@{$this->input['username']} enter UDP port range for hopping, e.g. <code>20000-50000</code> ")
             . "(comma/dash multi-port: <code>1234,5000-6000</code>) — <code>0</code> = off.\n\n"
             . "⚠️ " . $this->i18n('port hopping fw hint'),
             $this->input['message_id'],
@@ -5310,7 +5314,22 @@ class Bot
         // nft хочет диапазон через дефис (20000-50000); запятые-списки разворачиваем
         // в anonymous set { ... } прямо в правиле.
         $set = (strpos($hop, ',') !== false) ? '{ ' . str_replace(',', ', ', $hop) . ' }' : $hop;
-        $snippet = <<<NFT
+        $snippet = $this->language === 'en' ? <<<NFT
+# ── Hysteria port hopping: re-DNAT of the UDP range to the real port ──
+# The range must match the one in the hy2:// link ($hop).
+# REQUIRED (this is enough for hopping to work):
+# 1) table ip nat (dockernat), chain prerouting, next to the Hysteria DNAT line:
+        fib daddr type local udp dport $set dnat to \$HYSTERIA_IP:\$HYSTERIA_OUTPUT
+# 2) table ip nat (dockernat), chain output, next to the Hysteria output line:
+        ip daddr != 127.0.0.0/8 fib daddr type local udp dport $set dnat to \$HYSTERIA_IP:\$HYSTERIA_OUTPUT
+#
+# NOT needed (explained so you are not tempted to add it):
+# - FORWARD: after DNAT dport = \$HYSTERIA_OUTPUT (not the range); the traffic is
+#   already covered by the existing FWD-HYSTERIA (daddr \$HYSTERIA_IP + dport OUTPUT).
+# - INPUT: DNAT in prerouting happens BEFORE INPUT, and a packet with the container
+#   daddr goes to FORWARD, not INPUT; hopping needs no range in INPUT.
+# After editing: nft -c -f <your_conf> (check) → nft -f <your_conf>.
+NFT : <<<NFT
 # ── Hysteria port hopping: реднат UDP-диапазона на реальный порт ──
 # Диапазон должен совпадать с тем, что в hy2://-ссылке ($hop).
 # ОБЯЗАТЕЛЬНО (этого достаточно для работы хоппинга):
@@ -5465,7 +5484,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter bandwidth: up down (mbps), e.g. 200 200 — <code>0</code> = BBR (auto)",
+            $this->t("@{$this->input['username']} введите полосу: отдача и приём (Мбит/с), например 200 200; <code>0</code> = BBR (авто)", "@{$this->input['username']} enter bandwidth: up down (mbps), e.g. 200 200 — <code>0</code> = BBR (auto)"),
             $this->input['message_id'],
             reply: 'enter bandwidth',
         );
@@ -5555,7 +5574,7 @@ NFT;
 
         $pass = $this->normalizeOcPassword($pass);
         if ($pass === false) {
-            $this->send($this->input['chat'], 'OpenConnect password: use 1-128 chars, no new lines');
+            $this->send($this->input['chat'], $this->t('Пароль OpenConnect: 1–128 символов, без переводов строк', 'OpenConnect password: use 1-128 chars, no new lines'));
             $this->ocUser($i);
             return;
         }
@@ -5711,7 +5730,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter simple-tls SNI (server name in cert, e.g. {$this->getDomain()})",
+            $this->t("@{$this->input['username']} введите SNI simple-tls (имя сервера в сертификате, например {$this->getDomain()})", "@{$this->input['username']} enter simple-tls SNI (server name in cert, e.g. {$this->getDomain()})"),
             $this->input['message_id'],
             reply: 'enter simple-tls SNI',
         );
@@ -6174,7 +6193,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter cloak port",
+            $this->t("@{$this->input['username']} введите порт Cloak", "@{$this->input['username']} enter cloak port"),
             $this->input['message_id'],
             reply: 'enter cloak port',
         );
@@ -6213,7 +6232,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter masquerade domain (e.g. www.bing.com)",
+            $this->t("@{$this->input['username']} введите домен маскировки (например www.bing.com)", "@{$this->input['username']} enter masquerade domain (e.g. www.bing.com)"),
             $this->input['message_id'],
             reply: 'enter masquerade domain',
         );
@@ -6319,7 +6338,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter cloak user name",
+            $this->t("@{$this->input['username']} введите имя пользователя Cloak", "@{$this->input['username']} enter cloak user name"),
             $this->input['message_id'],
             reply: 'enter cloak user name',
         );
@@ -6352,7 +6371,7 @@ NFT;
         }
         $uidOut = $this->ssh('ck-server -uid 2>&1', 'ss') ?: '';
         if (!preg_match('~[A-Za-z0-9+/]{22}==~', $uidOut, $m)) {
-            $this->send($this->input['chat'], 'failed to generate UID');
+            $this->send($this->input['chat'], $this->t('Не удалось создать UID', 'failed to generate UID'));
             return $this->menuCkUsers();
         }
         $list[] = ['name' => $name, 'uid' => $m[0], 'created' => time()];
@@ -6373,7 +6392,7 @@ NFT;
         }
         $c = $this->getCloakConfig();
         if (($u['uid'] ?? '') === ($c['UID'] ?? '')) {
-            $this->send($this->input['chat'], 'cannot delete default user (use regen keys instead)');
+            $this->send($this->input['chat'], $this->t('Пользователя по умолчанию удалить нельзя (смените ключи кнопкой regen keys)', 'cannot delete default user (use regen keys instead)'));
             return $this->menuCkUsers();
         }
         $list = array_values(array_filter(
@@ -6494,7 +6513,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter the title:",
+            $this->t("@{$this->input['username']} введите название:", "@{$this->input['username']} enter the title:"),
             $this->input['message_id'],
             reply: 'enter the title:',
         );
@@ -6511,7 +6530,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter time like https://www.php.net/manual/ru/function.strtotime.php:",
+            $this->t("@{$this->input['username']} введите время в формате https://www.php.net/manual/ru/function.strtotime.php:", "@{$this->input['username']} enter time like https://www.php.net/manual/ru/function.strtotime.php:"),
             $this->input['message_id'],
             reply: 'enter time like https://www.php.net/manual/ru/function.strtotime.php:',
         );
@@ -6528,7 +6547,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} send the export file:",
+            $this->t("@{$this->input['username']} отправьте файл экспорта:", "@{$this->input['username']} send the export file:"),
             $this->input['message_id'],
             reply: 'send the export file:',
         );
@@ -6549,7 +6568,7 @@ NFT;
         $r = $this->request('getFile', ['file_id' => $this->input['file_id']]);
         $f = isset($r['result']['file_path']) ? @file_get_contents($this->file . $r['result']['file_path']) : false;
         if ($f === false || trim($f) === '') {
-            $this->send($this->input['from'], 'Файл пуст или недоступен. Существующий список сохранён.');
+            $this->send($this->input['from'], $this->t('Файл пуст или недоступен. Существующий список сохранён.', 'The file is empty or unavailable. The existing list is kept.'));
             $this->backXtlsList($type);
             return;
         }
@@ -6581,12 +6600,12 @@ NFT;
                 ksort($list);
             }
             if (!$list) {
-                $this->send($this->input['from'], 'В файле нет корректных правил. Существующий список сохранён.');
+                $this->send($this->input['from'], $this->t('В файле нет корректных правил. Существующий список сохранён.', 'The file has no valid rules. The existing list is kept.'));
                 $this->backXtlsList($type);
                 return;
             }
             $this->changeRouteList($type, function (&$current) use ($list) { $current = $list; });
-            if ($invalid) $this->send($this->input['from'], "Неверных записей пропущено: $invalid.");
+            if ($invalid) $this->send($this->input['from'], $this->t("Неверных записей пропущено: $invalid.", "Invalid entries skipped: $invalid."));
             if ($merged > 0) {
                 $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
             }
@@ -6607,7 +6626,7 @@ NFT;
         }
         $server = $this->readConfig();
         if (empty($server['interface'])) {
-            $this->wgConfUnavailable('срок действия не изменён');
+            $this->wgConfUnavailable($this->t('срок действия не изменён', 'expiry unchanged'));
             return $this->menu('client', "{$client}_$page");
         }
         // Пир — по адресу (peerIndexByClient), а не перебором с прямым чтением
@@ -6927,7 +6946,7 @@ NFT;
                         }
                         if ($pac['silence'] == 0 || $pac['silence'] == 1) {
                             foreach ($c['admin'] as $k => $v) {
-                                $this->send($v, "suspicious ips found: $text" . ($ban ? "\nbanned:$ban" : ''), button: $ips ?: [[
+                                $this->send($v, $this->t("найдены подозрительные IP: $text", "suspicious ips found: $text") . ($ban ? "\nbanned:$ban" : ''), button: $ips ?: [[
                                     [
                                         'text'          => $this->i18n('analyze'),
                                         'callback_data' => '/analysisIp',
@@ -7041,7 +7060,7 @@ NFT;
                     if (is_file(__DIR__ . '/config.php')) {
                         require __DIR__ . '/config.php';
                         foreach (($c['admin'] ?? []) as $admin) {
-                            $this->send($admin, "vless: reset stats");
+                            $this->send($admin, $this->t("vless: статистика сброшена", "vless: reset stats"));
                         }
                     }
                 }
@@ -7430,7 +7449,7 @@ NFT;
                 $this->restartXray($x);
                 require __DIR__ . '/config.php';
                 foreach (($c['admin'] ?? []) as $admin) {
-                    $this->send($admin, "vless: traffic limit reached, disabled:\n" . implode("\n", $disabled));
+                    $this->send($admin, $this->t("vless: лимит трафика исчерпан, отключены:\n", "vless: traffic limit reached, disabled:\n") . implode("\n", $disabled));
                 }
             }
         } catch (\Throwable $e) {
@@ -7476,7 +7495,7 @@ NFT;
         // пользователю об этом не сообщалось вовсе.
         $server = $this->readConfig();
         if (empty($server['interface'])) {
-            $this->wgConfUnavailable('имя не изменено');
+            $this->wgConfUnavailable($this->t('имя не изменено', 'name unchanged'));
             return $this->menu('client', "{$client}_$page");
         }
         $clients[$client]['interface']['## name'] = $name;
@@ -7513,7 +7532,7 @@ NFT;
         $this->syncOcUsers();
         foreach ([$this->xrayConf, $this->hwid, '/config/xray.stats', '/config/ssserver.json', '/config/sslocal.json', '/config/ckserver.json', '/config/ckusers.json'] as $path) {
             if (is_file($path) && !is_array(json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR))) {
-                throw new RuntimeException('Повреждён файл конфигурации: ' . basename($path));
+                throw new RuntimeException($this->t('Повреждён файл конфигурации: ', 'Damaged configuration file: ') . basename($path));
             }
         }
         $wg = $this->backupWireGuard(0);
@@ -7525,13 +7544,13 @@ NFT;
         $telemtBackup = $this->telemtBackupSnapshot();
         $ssl = false;
         if (is_file($this->protocolCertRoot . '/cert_private') !== is_file($this->protocolCertRoot . '/cert_public')) {
-            throw new RuntimeException('Неполная TLS-пара');
+            throw new RuntimeException($this->t('Неполная TLS-пара', 'Incomplete TLS pair'));
         }
         if (is_file($this->protocolCertRoot . '/cert_private')) {
             $private = file_get_contents($this->protocolCertRoot . '/cert_private');
             $public = @file_get_contents($this->protocolCertRoot . '/cert_public');
             if (!is_string($private) || !is_string($public) || !@openssl_x509_check_private_key($public, $private)) {
-                throw new RuntimeException('Не удалось сохранить полную TLS-пару');
+                throw new RuntimeException($this->t('Не удалось сохранить полную TLS-пару', 'Could not save the full TLS pair'));
             }
             $ssl = ['private' => $private, 'public' => $public];
         }
@@ -7561,6 +7580,7 @@ NFT;
             'cloak'         => file_exists('/config/ckserver.json') ? (json_decode(file_get_contents('/config/ckserver.json'), true) ?: null) : null,
             'ckusers'       => file_exists('/config/ckusers.json') ? (json_decode(file_get_contents('/config/ckusers.json'), true) ?: null) : null,
             'ovpn'          => $this->exportOvpnPki(),
+            'ovpn_limits'   => $this->ovpnLimitsSnapshot(),
             'ipsec'         => $this->exportIpsecPki(),
             'xraystats'     => $this->getXrayStats(),
             'managed_protocols' => $this->exportManagedProtocols(),
@@ -7568,7 +7588,7 @@ NFT;
             'extra_files' => $this->backupExtraFiles(),
         ];
         foreach (['ad', 'hy', 'oc', 'ocu', 'tt'] as $key) {
-            if ($conf[$key] === false) throw new RuntimeException('Не удалось прочитать раздел бэкапа: ' . $key);
+            if ($conf[$key] === false) throw new RuntimeException($this->t('Не удалось прочитать раздел бэкапа: ', 'Could not read the backup section: ') . $key);
         }
         $this->validateBackup($conf);
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
@@ -7579,19 +7599,19 @@ NFT;
         $clients = $instance ? $this->clients1 : $this->clients;
         $path = dirname($clients) . '/wg' . $instance . '.conf';
         $users = is_file($clients) ? json_decode((string) file_get_contents($clients), true, 512, JSON_THROW_ON_ERROR) : [];
-        if (!is_array($users)) throw new RuntimeException('Некорректный список WireGuard');
+        if (!is_array($users)) throw new RuntimeException($this->t('Некорректный список WireGuard', 'Invalid WireGuard list'));
         // Локальный bind-файл доступен и при выключенном контейнере.
         if (is_file($path)) {
             $body = file_get_contents($path);
-            if ($body === false) throw new RuntimeException('Конфигурация WireGuard недоступна');
+            if ($body === false) throw new RuntimeException($this->t('Конфигурация WireGuard недоступна', 'The WireGuard configuration is unavailable'));
             $server = $this->parseWireGuardConfig($body);
         } else {
             $this->wg = $instance;
             try { $server = $this->readConfig(); }
             finally { unset($this->wg); }
-            if ($this->sshFailed) throw new RuntimeException('Не удалось сохранить WireGuard');
+            if ($this->sshFailed) throw new RuntimeException($this->t('Не удалось сохранить WireGuard', 'Could not save WireGuard'));
         }
-        if ($users && empty($server['interface'])) throw new RuntimeException('Неполная конфигурация WireGuard');
+        if ($users && empty($server['interface'])) throw new RuntimeException($this->t('Неполная конфигурация WireGuard', 'Incomplete WireGuard configuration'));
         return ['server' => $server, 'clients' => $users];
     }
 
@@ -7632,12 +7652,12 @@ NFT;
     private function backupExtraPath(string $name): string
     {
         $path = $this->backupExtraPaths()[$name] ?? null;
-        if ($path === null && preg_match('~^warp/(?:clients/[a-zA-Z0-9_.-]{1,48}/)?wgcf-(?:account\.toml|profile\.conf)$~D', $name)) {
+        if ($path === null && preg_match('~^warp/(?:(?:clients/[a-zA-Z0-9_.-]{1,48}/)?wgcf-(?:account\.toml|profile\.conf)|masque/(?:device\.json|key\.pem|license\.sha256))$~D', $name)) {
             $path = $this->backupWarpRoot . '/' . substr($name, 5);
         }
-        if ($path === null || str_contains($name, '..')) throw new RuntimeException('Посторонний файл в бэкапе');
+        if ($path === null || str_contains($name, '..')) throw new RuntimeException($this->t('Посторонний файл в бэкапе', 'A foreign file in the backup'));
         for ($p = $path; $p !== dirname($p); $p = dirname($p)) {
-            if (is_link($p)) throw new RuntimeException('Симлинк в пути бэкапа');
+            if (is_link($p)) throw new RuntimeException($this->t('Симлинк в пути бэкапа', 'A symlink in the backup path'));
         }
         return $path;
     }
@@ -7650,12 +7670,19 @@ NFT;
                 $paths['warp/' . substr($path, strlen($this->backupWarpRoot) + 1)] = $path;
             }
         }
+        // Устройство WARP MASQUE: без него восстановленный сервер регистрирует
+        // новое и занимает ещё одно из пяти мест ключа WARP+. Неподтверждённая
+        // регистрация (.pending) в копию не идёт: её откатит warp_masque.sh.
+        $masque = $this->backupWarpRoot . '/masque';
+        if (is_file("$masque/device.json") && is_file("$masque/key.pem") && !file_exists("$masque/.pending")) {
+            foreach (['device.json', 'key.pem', 'license.sha256'] as $name) $paths["warp/masque/$name"] = "$masque/$name";
+        }
         $files = [];
         foreach ($paths as $name => $path) {
             $this->backupExtraPath($name);
             if (!file_exists($path)) continue;
             if (!is_file($path) || filesize($path) > 4 * 1024 * 1024 || ($body = file_get_contents($path)) === false) {
-                throw new RuntimeException('Дополнительный файл недоступен для бэкапа');
+                throw new RuntimeException($this->t('Дополнительный файл недоступен для бэкапа', 'An additional file is unavailable for the backup'));
             }
             $files[$name] = base64_encode($body);
         }
@@ -7665,26 +7692,29 @@ NFT;
 
     public function validateBackupExtraFiles(array $files): array
     {
-        if (count($files) > 8192) throw new RuntimeException('Слишком много файлов в бэкапе');
+        if (count($files) > 8192) throw new RuntimeException($this->t('Слишком много файлов в бэкапе', 'Too many files in the backup'));
         $decoded = []; $total = 0;
         foreach ($files as $name => $data) {
-            if (!is_string($name)) throw new RuntimeException('Неверное имя файла бэкапа');
+            if (!is_string($name)) throw new RuntimeException($this->t('Неверное имя файла бэкапа', 'Invalid backup file name'));
             $this->backupExtraPath($name);
             if (!is_string($data) || strlen($data) > 5600000 || ($body = base64_decode($data, true)) === false) {
-                throw new RuntimeException('Некорректный файл бэкапа');
+                throw new RuntimeException($this->t('Некорректный файл бэкапа', 'Invalid backup file'));
             }
             $total += strlen($body);
-            if ($total > 16 * 1024 * 1024) throw new RuntimeException('Слишком большой бэкап');
+            if ($total > 16 * 1024 * 1024) throw new RuntimeException($this->t('Слишком большой бэкап', 'The backup is too large'));
             if (str_ends_with($name, '.json') && !is_array(json_decode($body, true, 512, JSON_THROW_ON_ERROR))) {
-                throw new RuntimeException('Некорректный JSON в бэкапе');
+                throw new RuntimeException($this->t('Некорректный JSON в бэкапе', 'Invalid JSON in the backup'));
             }
-            if ($name === 'panel/password-display.key' && strlen($body) !== 32) throw new RuntimeException('Некорректный ключ хранилища пароля');
+            if ($name === 'panel/password-display.key' && strlen($body) !== 32) throw new RuntimeException($this->t('Некорректный ключ хранилища пароля', 'Invalid password vault key'));
             $decoded[$name] = $body;
+        }
+        if (isset($decoded['warp/masque/device.json']) !== isset($decoded['warp/masque/key.pem'])) {
+            throw new RuntimeException($this->t('Неполное устройство WARP MASQUE', 'Incomplete WARP MASQUE device'));
         }
         // Ключ файлом был только у прежнего формата копии пароля (теперь ключ
         // выводится из токена бота): старому бэкапу без шифротекста он ни к чему.
         if (isset($decoded['panel/password-display.key']) && !isset($decoded['panel/password-display.json'])) {
-            throw new RuntimeException('Неполное хранилище пароля');
+            throw new RuntimeException($this->t('Неполное хранилище пароля', 'Incomplete password vault'));
         }
         return $decoded;
     }
@@ -7696,18 +7726,24 @@ NFT;
         foreach ($decoded as $name => $_) {
             $path = $this->backupExtraPath($name);
             $before[$path] = file_exists($path) ? [file_get_contents($path), fileperms($path) & 0777] : null;
-            if ($before[$path] !== null && !is_string($before[$path][0])) throw new RuntimeException('Не удалось сохранить прежний файл');
+            if ($before[$path] !== null && !is_string($before[$path][0])) throw new RuntimeException($this->t('Не удалось сохранить прежний файл', 'Could not save the previous file'));
         }
         $written = [];
+        // Восстанавливается подтверждённое устройство MASQUE: отметка
+        // незавершённой регистрации на этом сервере иначе откатила бы его.
+        $pending = $this->backupWarpRoot . '/masque/.pending';
+        $hadPending = isset($decoded['warp/masque/device.json']) && file_exists($pending);
         try {
+            if ($hadPending && !@unlink($pending)) throw new RuntimeException($this->t('Не удалось восстановить дополнительный файл', 'Could not restore an additional file'));
             foreach ($decoded as $name => $body) {
                 $path = $this->backupExtraPath($name);
-                if (!is_dir(dirname($path)) && !@mkdir(dirname($path), 0755, true)) throw new RuntimeException('Не удалось создать каталог восстановления');
+                $mode = str_starts_with($name, 'warp/masque/') ? 0700 : 0755;
+                if (!is_dir(dirname($path)) && !@mkdir(dirname($path), $mode, true)) throw new RuntimeException($this->t('Не удалось создать каталог восстановления', 'Could not create the restore directory'));
                 // Запись может отказать уже после rename (например, на fsync).
                 $written[] = $path;
-                if (!$this->writePrivateKey($path, $body)) throw new RuntimeException('Не удалось восстановить дополнительный файл');
+                if (!$this->writePrivateKey($path, $body)) throw new RuntimeException($this->t('Не удалось восстановить дополнительный файл', 'Could not restore an additional file'));
                 if (str_ends_with($name, '.html') || str_ends_with($name, '.css')) {
-                    if (!chmod($path, 0644)) throw new RuntimeException('Не удалось установить права страницы');
+                    if (!chmod($path, 0644)) throw new RuntimeException($this->t('Не удалось установить права страницы', 'Could not set the page permissions'));
                 }
             }
         } catch (Throwable $error) {
@@ -7715,8 +7751,9 @@ NFT;
                 $old = $before[$path];
                 if ($old === null) $ok = !file_exists($path) || @unlink($path);
                 else $ok = $this->writePrivateKey($path, $old[0]) && @chmod($path, $old[1]);
-                if (!$ok) throw new RuntimeException('Откат дополнительных файлов не завершён', previous: $error);
+                if (!$ok) throw new RuntimeException($this->t('Откат дополнительных файлов не завершён', 'The rollback of additional files did not finish'), previous: $error);
             }
+            if ($hadPending) @touch($pending);
             throw $error;
         }
     }
@@ -7724,7 +7761,11 @@ NFT;
     private function restoreBackupExtraServices(array $files): array
     {
         $failed = [];
-        if (isset($files['warp/wgcf-profile.conf']) && $this->protocolModuleEnabled('wp')) {
+        // В режиме MASQUE туннель WireGuard не поднимается: восстановленные
+        // режим и устройство применяет сторож контейнера.
+        if ((isset($files['warp/wgcf-profile.conf']) || isset($files['warp/masque/device.json'])) && $this->protocolModuleEnabled('wp') && $this->warpMode() === 'masque') {
+            $this->warpKick();
+        } elseif (isset($files['warp/wgcf-profile.conf']) && $this->protocolModuleEnabled('wp')) {
             if (!$this->withLock('warp-control', function () {
                 if (!$this->warpCommand('wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true')) return false;
                 return !empty($this->getPacConf()['warpoff']) || $this->warpCommand('{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }');
@@ -7827,7 +7868,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} send the export file:",
+            $this->t("@{$this->input['username']} отправьте файл экспорта:", "@{$this->input['username']} send the export file:"),
             $this->input['message_id'],
             reply: 'send the export file:',
         );
@@ -7994,10 +8035,10 @@ NFT;
                     // иначе старый процесс может затереть восстановленный файл.
                     $stopped = $this->ssh('i=0; while test -s /opt/adguardhome/pid && test "$(readlink /proc/$(cat /opt/adguardhome/pid)/exe)" = /opt/adguardhome/AdGuardHome; do '
                         . '[ "$i" -lt 50 ] || exit 1; sleep 0.2; i=$((i+1)); done; printf VPNBOT_AD_STOPPED', 'ad');
-                    if (trim($stopped) !== 'VPNBOT_AD_STOPPED') throw new RuntimeException('Не удалось остановить AdGuard перед восстановлением');
+                    if (trim($stopped) !== 'VPNBOT_AD_STOPPED') throw new RuntimeException($this->t('Не удалось остановить AdGuard перед восстановлением', 'Could not stop AdGuard before the restore'));
                 }
                 try {
-                    if (!$this->backupWriteInPlace($this->adguard, yaml_emit($json['ad']))) throw new RuntimeException('Не удалось восстановить AdGuard');
+                    if (!$this->backupWriteInPlace($this->adguard, yaml_emit($json['ad']))) throw new RuntimeException($this->t('Не удалось восстановить AdGuard', 'Could not restore AdGuard'));
                 } finally { $this->startAd(); }
             }
             // ss
@@ -8017,7 +8058,7 @@ NFT;
                 $out[] = 'update hwid devices';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $data = is_array($json['hwid']) ? $json['hwid'] : [];
-                if (!$this->writePrivateKey($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))) throw new RuntimeException('Не удалось восстановить HWID');
+                if (!$this->writePrivateKey($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))) throw new RuntimeException($this->t('Не удалось восстановить HWID', 'Could not restore HWID'));
             }
             // xray
             if (!empty($json['xray'])) {
@@ -8057,7 +8098,7 @@ NFT;
                 $out[] = 'update ocserv';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if (array_key_exists('ocu', $json)) {
-                    if (!$this->writePrivateKey('/config/ocserv.passwd', $json['ocu'])) throw new RuntimeException('Не удалось восстановить пользователей OpenConnect');
+                    if (!$this->writePrivateKey('/config/ocserv.passwd', $json['ocu'])) throw new RuntimeException($this->t('Не удалось восстановить пользователей OpenConnect', 'Could not restore OpenConnect users'));
                     $this->chmodSecret('/config/ocserv.passwd');
                     $this->syncOcUsers();
                 }
@@ -8068,7 +8109,7 @@ NFT;
                 $out[] = 'update hysteria';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if (!$this->writePrivateKey($this->hysteriaConf, yaml_emit($json['hy']))) {
-                    throw new RuntimeException('Не удалось восстановить конфигурацию Hysteria');
+                    throw new RuntimeException($this->t('Не удалось восстановить конфигурацию Hysteria', 'Could not restore the Hysteria configuration'));
                 }
                 if (!$this->restartHysteria()) $failed('Hysteria');
             }
@@ -8098,13 +8139,13 @@ NFT;
                 if (!$this->writePrivateKey(
                     '/config/ckserver.json',
                     json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-                )) throw new RuntimeException('Не удалось восстановить Cloak');
+                )) throw new RuntimeException($this->t('Не удалось восстановить Cloak', 'Could not restore Cloak'));
                 // Восстанавливаем side-store с именами; если в бэкапе нет
                 // (старый формат) — getCloakUsers() забутстрапит из BypassUID.
                 if (!empty($json['ckusers']) && is_array($json['ckusers'])) {
-                    if (!$this->writePrivateKey('/config/ckusers.json', json_encode(array_values($json['ckusers']), JSON_THROW_ON_ERROR))) throw new RuntimeException('Не удалось восстановить пользователей Cloak');
+                    if (!$this->writePrivateKey('/config/ckusers.json', json_encode(array_values($json['ckusers']), JSON_THROW_ON_ERROR))) throw new RuntimeException($this->t('Не удалось восстановить пользователей Cloak', 'Could not restore Cloak users'));
                 } else {
-                    if (file_exists('/config/ckusers.json') && !unlink('/config/ckusers.json')) throw new RuntimeException('Не удалось обновить пользователей Cloak');
+                    if (file_exists('/config/ckusers.json') && !unlink('/config/ckusers.json')) throw new RuntimeException($this->t('Не удалось обновить пользователей Cloak', 'Could not update Cloak users'));
                 }
                 $this->ssh(self::PKILL_CK, 'ss');
                 if (!empty($json['cloak']['Enabled'])) {
@@ -8116,14 +8157,16 @@ NFT;
                 $out[] = 'update openvpn';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if ($this->importOvpnPki($json['ovpn'])) {
+                    // Старая копия без раздела лимитов прежние лимиты не трогает.
+                    if (isset($json['ovpn_limits'])) $this->restoreOvpnLimits($json['ovpn_limits']);
                     $this->restartOvpn();
                 } else {
                     $ok = false;
                     // Причина конкретная: «снимок отвергнут, PKI не тронут» и
                     // «перенос оборвался, PKI смешанный» требуют РАЗНЫХ действий
                     // от админа, а прежний общий текст их не различал.
-                    $out[] = '❌ openvpn: ' . ($this->ovpnRestoreError ?: 'снимок не восстановлен');
-                    if (str_contains($this->ovpnRestoreError, 'ЧАСТИЧНО')) {
+                    $out[] = '❌ openvpn: ' . ($this->ovpnRestoreError ?: $this->t('снимок не восстановлен', 'snapshot not restored'));
+                    if ($this->ovpnRestorePartial) {
                         // Демон продолжает работать со смесью старого и нового
                         // PKI — рестарт заставит его перечитать то, что легло.
                         $this->restartOvpn();
@@ -8184,6 +8227,7 @@ NFT;
             $out[] = $this->i18n($ok ? 'backup restore completed' : 'backup restore incomplete');
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
             $this->language = $this->getPacConf()['language'] ?: 'en';
+        Lang::$en = $this->language === 'en';
             $this->limit    = $this->getPacConf()['limitpage'] ?: 5;
             if (empty($file) && $ok) {
                 sleep(3);
@@ -8327,15 +8371,15 @@ NFT;
     public static function validateAwgRange(string $s, int $min = 0, int $max = 65535): string
     {
         if (!preg_match('~^(\d{1,5})(?:-(\d{1,5}))?$~', $s, $m)) {
-            return 'формат: N или LO-HI (только цифры и один дефис, без пробелов)';
+            return Lang::t('формат: N или LO-HI (только цифры и один дефис, без пробелов)', 'format: N or LO-HI (digits and one hyphen only, no spaces)');
         }
         $lo = (int) $m[1];
         $hi = isset($m[2]) ? (int) $m[2] : $lo;
         if ($hi < $lo) {
-            return "верхняя граница ($hi) меньше нижней ($lo)";
+            return Lang::t("верхняя граница ($hi) меньше нижней ($lo)", "the upper bound ($hi) is less than the lower one ($lo)");
         }
         if ($lo < $min || $hi > $max) {
-            return "значения допустимы в пределах $min..$max";
+            return Lang::t("значения допустимы в пределах $min..$max", "values are allowed within $min..$max");
         }
         return '';
     }
@@ -8475,8 +8519,8 @@ NFT;
         // выбрасывает ключи раньше, чем успевает передоговориться
         // (timers.go: keyRefreshTimeoutSending против keychainExpireTime).
         if ($rejectLo <= $rekeyHi) {
-            return "RejectAfterTime ($rejectLo) должен быть больше верхней границы RekeyAfterTime ($rekeyHi), "
-                . 'иначе пир отбросит сессию раньше, чем попробует рекей';
+            return Lang::t("RejectAfterTime ($rejectLo) должен быть больше верхней границы RekeyAfterTime ($rekeyHi), ", "RejectAfterTime ($rejectLo) must be greater than the RekeyAfterTime upper bound ($rekeyHi), ")
+                . Lang::t('иначе пир отбросит сессию раньше, чем попробует рекей', 'otherwise the peer drops the session before it tries to rekey');
         }
         // 2. Принимающая сторона рекеит через
         // max(0, RejectAfterTime - KeepaliveTimeout.lo - RekeyTimeout.lo)
@@ -8486,8 +8530,8 @@ NFT;
         [$kaLo, ]  = self::awgRangeBounds($val('KeepaliveTimeout'));
         [$rktLo, ] = self::awgRangeBounds($val('RekeyTimeout'));
         if ($rejectLo <= $kaLo + $rktLo) {
-            return "RejectAfterTime ($rejectLo) должен быть больше KeepaliveTimeout ($kaLo) + RekeyTimeout ($rktLo), "
-                . 'иначе принимающая сторона уходит в рекей на каждом пакете';
+            return Lang::t("RejectAfterTime ($rejectLo) должен быть больше KeepaliveTimeout ($kaLo) + RekeyTimeout ($rktLo), ", "RejectAfterTime ($rejectLo) must be greater than KeepaliveTimeout ($kaLo) + RekeyTimeout ($rktLo), ")
+                . Lang::t('иначе принимающая сторона уходит в рекей на каждом пакете', 'otherwise the receiving side rekeys on every packet');
         }
         return '';
     }
@@ -8636,13 +8680,13 @@ NFT;
     ];
 
     public const AMNEZIA_TEMPLATE_DESCS = [
-        'standard_2'   => 'балансир: умеренные junk-пакеты и I1–I5',
-        'aggressive_2' => 'против GFW-класса DPI; +10–15% трафика',
-        'mobile_2'     => 'мелкие junk, экономит батарею и трафик',
-        'classic_1'    => 'без 2.0-полей, совместимо со старыми клиентами',
-        'standard_3'   => 'балансир + header protection и рандомные тайминги',
-        'aggressive_3' => 'максимум обфускации 3.0; +10–15% трафика',
-        'mobile_3'     => 'мелкие junk, редкий рекей — экономит батарею',
+        'standard_2'   => ['ru' => 'балансир: умеренные junk-пакеты и I1–I5', 'en' => 'balanced: moderate junk packets and I1–I5'],
+        'aggressive_2' => ['ru' => 'против GFW-класса DPI; +10–15% трафика', 'en' => 'against GFW-class DPI; +10–15% traffic'],
+        'mobile_2'     => ['ru' => 'мелкие junk, экономит батарею и трафик', 'en' => 'small junk, saves battery and traffic'],
+        'classic_1'    => ['ru' => 'без 2.0-полей, совместимо со старыми клиентами', 'en' => 'no 2.0 fields, compatible with old clients'],
+        'standard_3'   => ['ru' => 'балансир + header protection и рандомные тайминги', 'en' => 'balanced + header protection and random timings'],
+        'aggressive_3' => ['ru' => 'максимум обфускации 3.0; +10–15% трафика', 'en' => 'maximum 3.0 obfuscation; +10–15% traffic'],
+        'mobile_3'     => ['ru' => 'мелкие junk, редкий рекей — экономит батарею', 'en' => 'small junk, rare rekey; saves battery'],
     ];
 
     public function applyAmneziaTemplate($template, $page = 0)
@@ -8704,7 +8748,7 @@ NFT;
         $text = ['Menu -> Wireguard -> amnezia templates (' . $this->amneziaProtoLabel($ver) . ')', ''];
         foreach ($labels as $k => $label) {
             $mark = ($k === $current) ? '• ' : '';
-            $text[] = "$mark<b>$label</b> — " . $descs[$k];
+            $text[] = "$mark<b>$label</b> — " . $descs[$k][$this->language === 'en' ? 'en' : 'ru'];
         }
         $data = [];
         foreach ($labels as $k => $label) {
@@ -8735,17 +8779,17 @@ NFT;
     public function awg3UnsupportedText(): string
     {
         $v = $this->awgToolsVersion();
-        return 'AWG 3.0 недоступен: в контейнере amneziawg-tools '
-            . ($v === null ? '(версия неизвестна, контейнер не отвечает)' : $v)
-            . ', нужна ≥ 3.0 — пересоберите wg-контейнер';
+        return $this->t('AWG 3.0 недоступен: в контейнере amneziawg-tools ', 'AWG 3.0 is unavailable: amneziawg-tools in the container ')
+            . ($v === null ? $this->t('(версия неизвестна, контейнер не отвечает)', '(version unknown, the container does not respond)') : $v)
+            . $this->t(', нужна ≥ 3.0 — пересоберите wg-контейнер', ', ≥ 3.0 is needed; rebuild the wg container');
     }
 
     public function awg31UnsupportedText(): string
     {
         $v = $this->awgToolsVersion();
-        return 'AWG 3.1 недоступен: в контейнере amneziawg-tools '
-            . ($v === null ? '(версия неизвестна, контейнер не отвечает)' : $v)
-            . ', нужна ≥ 3.1 — пересоберите wg-контейнер';
+        return $this->t('AWG 3.1 недоступен: в контейнере amneziawg-tools ', 'AWG 3.1 is unavailable: amneziawg-tools in the container ')
+            . ($v === null ? $this->t('(версия неизвестна, контейнер не отвечает)', '(version unknown, the container does not respond)') : $v)
+            . $this->t(', нужна ≥ 3.1 — пересоберите wg-контейнер', ', ≥ 3.1 is needed; rebuild the wg container');
     }
 
     public function amneziaProtoMenu($page = 0)
@@ -8757,15 +8801,15 @@ NFT;
         $inst   = $this->wgNum();
 
         $text = [
-            'Menu -> Wireguard -> версия протокола amnezia',
+            $this->t('Menu -> Wireguard -> версия протокола amnezia', 'Menu -> Wireguard -> amnezia protocol version'),
             '',
-            '<b>1.x</b> — Jc/Jmin/Jmax, S1-S2, H1-H4. Понимают все клиенты.',
-            '<b>2.0</b> — плюс S3/S4 и сигнатурные пакеты I1-I5.',
-            '<b>3.0</b> — плюс header protection, рандомизированный паддинг и тайминги.',
+            $this->t('<b>1.x</b> — Jc/Jmin/Jmax, S1-S2, H1-H4. Понимают все клиенты.', '<b>1.x</b>: Jc/Jmin/Jmax, S1-S2, H1-H4. All clients understand it.'),
+            $this->t('<b>2.0</b> — плюс S3/S4 и сигнатурные пакеты I1-I5.', '<b>2.0</b>: plus S3/S4 and the I1-I5 signature packets.'),
+            $this->t('<b>3.0</b> — плюс header protection, рандомизированный паддинг и тайминги.', '<b>3.0</b>: plus header protection, randomised padding and timings.'),
             '',
-            'Смена версии не перегенерирует уже подобранные поля — только добавляет или снимает те, которых нет в целевой версии.',
+            $this->t('Смена версии не перегенерирует уже подобранные поля — только добавляет или снимает те, которых нет в целевой версии.', 'Changing the version does not regenerate fields already chosen; it only adds or removes those absent in the target version.'),
             '',
-            '⚠️ После смены версии клиентам нужно перекачать конфиги, иначе связь пропадёт.',
+            $this->t('⚠️ После смены версии клиентам нужно перекачать конфиги, иначе связь пропадёт.', '⚠️ After changing the version clients must download their configs again, otherwise the connection is lost.'),
         ];
         if ($sup3 !== true) {
             $text[] = '';
@@ -8882,17 +8926,17 @@ NFT;
             'Menu -> Wireguard -> AWG 3.0',
             '',
             'amneziawg-tools: <code>' . htmlspecialchars((string) ($this->awgToolsVersion() ?? '—'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>'
-                . ($sup3 === true ? ' ✅' : ($sup3 === false ? ' ⛔ нужна ≥ 3.0' : ' ⚠️ контейнер не отвечает')),
+                . ($sup3 === true ? ' ✅' : ($sup3 === false ? $this->t(' ⛔ нужна ≥ 3.0', ' ⛔ ≥ 3.0 is needed') : $this->t(' ⚠️ контейнер не отвечает', ' ⚠️ the container does not respond'))),
             'AWG 3.1 (RandomTrailers/DisableCookies): '
-                . ($sup31 === true ? '✅' : ($sup31 === false ? '⛔ нужна ≥ 3.1' : '⚠️ контейнер не отвечает')),
+                . ($sup31 === true ? '✅' : ($sup31 === false ? $this->t('⛔ нужна ≥ 3.1', '⛔ ≥ 3.1 is needed') : $this->t('⚠️ контейнер не отвечает', '⚠️ the container does not respond'))),
             '',
         ];
         $report = self::amneziaKeysReport($keys, true, array_merge(self::AWG_KEYS_3, self::AWG_KEYS_31));
-        $text[] = '<code>' . ($report !== '' ? $report : '3.0-поля не заданы') . '</code>';
+        $text[] = '<code>' . ($report !== '' ? $report : $this->t('3.0-поля не заданы', '3.0 fields are not set')) . '</code>';
         $text[] = 'PersistentKeepalive: <code>' . htmlspecialchars((string) $this->awgKeepalive(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>';
         $text[] = '';
-        $text[] = '⚠️ Любое изменение здесь ломает уже розданные конфиги: клиентам нужно перекачать их заново. Header protection дополнительно требует S1–S4 ≥ ' . self::AWG_HPK_MIN_S . '.';
-        if ($dc === 'on') $text[] = '⚠️ DisableCookies отключает штатную защиту WireGuard от флуда подключений.';
+        $text[] = $this->t('⚠️ Любое изменение здесь ломает уже розданные конфиги: клиентам нужно перекачать их заново. Header protection дополнительно требует S1–S4 ≥ ', '⚠️ Any change here breaks the configs already handed out: clients must download them again. Header protection also requires S1–S4 ≥ ') . self::AWG_HPK_MIN_S . '.';
+        if ($dc === 'on') $text[] = $this->t('⚠️ DisableCookies отключает штатную защиту WireGuard от флуда подключений.', '⚠️ DisableCookies disables the standard WireGuard protection against connection floods.');
 
         $data = [
             [
@@ -8989,7 +9033,7 @@ NFT;
         // Header protection использует S1-S4 как nonce, поэтому паддинги обязаны
         // существовать и быть >= 12. Набор 1.x их просто не содержит.
         if (!isset($keys['S3'], $keys['S4'])) {
-            $this->answer($this->input['callback_id'] ?? null, 'сначала переключитесь на 2.0 или 3.0: header protection требует S3/S4', true);
+            $this->answer($this->input['callback_id'] ?? null, $this->t('сначала переключитесь на 2.0 или 3.0: header protection требует S3/S4', 'switch to 2.0 or 3.0 first: header protection needs S3/S4'), true);
             return $this->menu('wg', $page);
         }
 
@@ -9022,7 +9066,7 @@ NFT;
     {
         $prefix = $this->getInstanceWG(1);
         $hpk    = (string) ($this->getPacConf()[$prefix . 'amnezia_keys']['HeaderProtectionKey'] ?? '');
-        $this->answer($this->input['callback_id'] ?? null, $hpk !== '' ? $hpk : 'HeaderProtectionKey не задан', true);
+        $this->answer($this->input['callback_id'] ?? null, $hpk !== '' ? $hpk : $this->t('HeaderProtectionKey не задан', 'HeaderProtectionKey is not set'), true);
     }
 
     public function resetAwg3($page = 0)
@@ -9062,7 +9106,7 @@ NFT;
             return $this->menu('wg', $page);
         }
         if ($cur !== 'on' && self::amneziaProtoVer($keys) !== 3) {
-            $this->answer($this->input['callback_id'] ?? null, 'сначала переключитесь на шаблон 3.0', true);
+            $this->answer($this->input['callback_id'] ?? null, $this->t('сначала переключитесь на шаблон 3.0', 'switch to a 3.0 template first'), true);
             return $this->menu('wg', $page);
         }
 
@@ -9087,7 +9131,7 @@ NFT;
             return $this->menu('wg', $page);
         }
         if ($cur !== 'on' && self::amneziaProtoVer($keys) !== 3) {
-            $this->answer($this->input['callback_id'] ?? null, 'сначала переключитесь на шаблон 3.0', true);
+            $this->answer($this->input['callback_id'] ?? null, $this->t('сначала переключитесь на шаблон 3.0', 'switch to a 3.0 template first'), true);
             return $this->menu('wg', $page);
         }
 
@@ -9115,7 +9159,7 @@ NFT;
         if (!empty($this->input['callback_id'])) {
             $this->answer(
                 $this->input['callback_id'],
-                '🔄 amneziawg-tools: ' . ($v ?? 'контейнер не отвечает'),
+                '🔄 amneziawg-tools: ' . ($v ?? $this->t('контейнер не отвечает', 'the container does not respond')),
             );
         }
         $this->awg3Menu($page);
@@ -9138,6 +9182,7 @@ NFT;
             return $this->menu('wg', $page);
         }
         [$key, $min, $max, $hint] = self::AWG3_FIELDS[$tok];
+        $hint = $hint[$this->language === 'en' ? 'en' : 'ru'];
         $prefix = $this->getInstanceWG(1);
         $cur    = $key === 'PersistentKeepalive'
             ? (string) $this->awgKeepalive()
@@ -9145,13 +9190,13 @@ NFT;
 
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} введите значение <b>$key</b> — число или диапазон <code>LO-HI</code> ($hint).\n\n"
-            . "Текущее: <code>" . htmlspecialchars($cur, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n"
-            . "Допустимо: $min..$max. <code>0</code> — вернуть значение по умолчанию.\n\n"
-            . "Диапазон пишется без пробелов (<code>110-130</code>): amneziawg отвергает конфиг целиком при любой ошибке разбора.\n"
-            . "После изменения клиентам нужно перекачать конфиги.",
+            $this->t("@{$this->input['username']} введите значение <b>$key</b> — число или диапазон <code>LO-HI</code> ($hint).\n\n", "@{$this->input['username']} enter the <b>$key</b> value: a number or a range <code>LO-HI</code> ($hint).\n\n")
+            . $this->t("Текущее: <code>", "Current: <code>") . htmlspecialchars($cur, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n"
+            . $this->t("Допустимо: $min..$max. <code>0</code> — вернуть значение по умолчанию.\n\n", "Allowed: $min..$max. <code>0</code> restores the default.\n\n")
+            . $this->t("Диапазон пишется без пробелов (<code>110-130</code>): amneziawg отвергает конфиг целиком при любой ошибке разбора.\n", "Write the range without spaces (<code>110-130</code>): amneziawg rejects the whole config on any parse error.\n")
+            . $this->t("После изменения клиентам нужно перекачать конфиги.", "After a change clients must download their configs again."),
             $this->input['message_id'],
-            reply: "введите $key",
+            reply: $this->t("введите $key", "enter $key"),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -9753,23 +9798,23 @@ NFT;
     {
         return [
             'QUIC (UDP/443)' => [
-                'Initial v1, связные DCID/SCID/Length (RFC 9000 §17.2)'
+                $this->t('Initial v1, связные DCID/SCID/Length (RFC 9000 §17.2)', 'Initial v1, linked DCID/SCID/Length (RFC 9000 §17.2)')
                     => $this->cpsQUIC(1200),
             ],
             'DNS / mDNS (UDP/53)' => [
-                'RU: Yandex DNS-ответ (yabs.yandex.ru)'
+                $this->t('RU: Yandex DNS-ответ (yabs.yandex.ru)', 'RU: Yandex DNS answer (yabs.yandex.ru)')
                     => '<b 0x8580000100010000000004796162730679616e6465780272750000010001c00c000100010001c00c000100010000026d000457fa27d1><r 50>',
-                'RU: Yandex DNS-ответ (widget.tickets.kinopoisk + Afisha)'
+                $this->t('RU: Yandex DNS-ответ (widget.tickets.kinopoisk + Afisha)', 'RU: Yandex DNS answer (widget.tickets.kinopoisk + Afisha)')
                     => '<b 0x084481800001000300000000077469636b65747306776964676574096b696e6f706f69736b0272750000010001c00c0005000100000039001806776964676574077469636b6574730679616e646578c025c0390005000100000039002b1765787465726e616c2d7469636b6574732d776964676574066166697368610679616e646578036e657400c05d000100010000001c000457fafe25>',
-                'Global: Cloudflare A-ответ (cloudflare.com → 104.16.132.229)'
+                $this->t('Global: Cloudflare A-ответ (cloudflare.com → 104.16.132.229)', 'Global: Cloudflare A answer (cloudflare.com → 104.16.132.229)')
                     => $this->cpsDNSResponseA('cloudflare.com', '104.16.132.229', 120),
-                'Global: Google A-ответ (google.com → 142.250.80.46)'
+                $this->t('Global: Google A-ответ (google.com → 142.250.80.46)', 'Global: Google A answer (google.com → 142.250.80.46)')
                     => $this->cpsDNSResponseA('google.com', '142.250.80.46', 120),
-                'Global: A-запрос www.google.com (recursion desired)'
+                $this->t('Global: A-запрос www.google.com (recursion desired)', 'Global: A query www.google.com (recursion desired)')
                     => '<r 2><b 0x012000010000000000000377777706676f6f676c6503636f6d0000010001><r 80>',
-                'Global: A-запрос cloudflare.com (recursion desired)'
+                $this->t('Global: A-запрос cloudflare.com (recursion desired)', 'Global: A query cloudflare.com (recursion desired)')
                     => '<r 2><b 0x012000010000000000000a636c6f7564666c61726503636f6d0000010001><r 80>',
-                'Global: mDNS-запрос _services._dns-sd._udp.local'
+                $this->t('Global: mDNS-запрос _services._dns-sd._udp.local', 'Global: mDNS query _services._dns-sd._udp.local')
                     => '<b 0x000000000001000000000000095f7365727669636573075f646e732d7364045f756470056c6f63616c00000c0001><r 80>',
             ],
             'TLS / DTLS' => [
@@ -9781,25 +9826,25 @@ NFT;
             'HTTP' => [
                 'HTTP/2 preface + SETTINGS frame (consistent frame_len)'
                     => $this->cpsHTTP2(123),
-                'HTTP/1.1 GET / с Host: cloudflare.com'
+                $this->t('HTTP/1.1 GET / с Host: cloudflare.com', 'HTTP/1.1 GET / with Host: cloudflare.com')
                     => '<b 0x474554202f20485454502f312e310d0a486f73743a20636c6f7564666c6172652e636f6d0d0a4163636570743a202a2f2a0d0a0d0a><r 70>',
             ],
             'WebRTC / NTP (UDP)' => [
-                'STUN Binding Request, ICE-атрибуты TLV (RFC 5389)'
+                $this->t('STUN Binding Request, ICE-атрибуты TLV (RFC 5389)', 'STUN Binding Request, ICE TLV attributes (RFC 5389)')
                     => $this->cpsSTUN(),
-                'NTPv4 client request, ровно 48 байт (RFC 5905 §7.3)'
+                $this->t('NTPv4 client request, ровно 48 байт (RFC 5905 §7.3)', 'NTPv4 client request, exactly 48 bytes (RFC 5905 §7.3)')
                     => $this->cpsNTP(),
             ],
             'BitTorrent (UDP)' => [
-                'DHT ping, 56 байт (BEP 5)'
+                $this->t('DHT ping, 56 байт (BEP 5)', 'DHT ping, 56 bytes (BEP 5)')
                     => $this->cpsDHT(),
-                'DHT find_node, 92 байта (BEP 5)'
+                $this->t('DHT find_node, 92 байта (BEP 5)', 'DHT find_node, 92 bytes (BEP 5)')
                     => $this->cpsDHT(true),
-                'uTP ST_SYN, 20 байт (BEP 29)'
+                $this->t('uTP ST_SYN, 20 байт (BEP 29)', 'uTP ST_SYN, 20 bytes (BEP 29)')
                     => $this->cpsUTP(),
             ],
-            'Прочее' => [
-                'Лёгкий профиль (минимальный валидный 2.0)'
+            $this->t('Прочее', 'Other') => [
+                $this->t('Лёгкий профиль (минимальный валидный 2.0)', 'Light profile (minimal valid 2.0)')
                     => '<b 0xc000000001><r 100>',
             ],
         ];
@@ -9811,24 +9856,24 @@ NFT;
         $cur     = $c[$this->getInstanceWG(1) . 'amnezia_keys']['I1'] ?? '—';
         $presets = $this->cpsPresets();
         $lines   = [
-            "@{$this->input['username']} введите строку I1 (CPS) или 0 — отключить цепочку 2.0.",
+            $this->t("@{$this->input['username']} введите строку I1 (CPS) или 0 — отключить цепочку 2.0.", "@{$this->input['username']} enter the I1 (CPS) string, or 0 to disable the 2.0 chain."),
             '',
-            'Текущее: <code>' . htmlspecialchars($cur) . '</code>',
+            $this->t('Текущее: <code>', 'Current: <code>') . htmlspecialchars($cur) . '</code>',
             '',
-            'Правила: hex в &lt;b 0x..&gt; — чётное число символов (целые байты). Без пробелов между токенами.',
+            $this->t('Правила: hex в &lt;b 0x..&gt; — чётное число символов (целые байты). Без пробелов между токенами.', 'Rules: hex in &lt;b 0x..&gt; needs an even number of characters (whole bytes). No spaces between tokens.'),
             '',
-            'Про размер: рекомендация «≥100 байт» — про правдоподобие, а не требование парсера. Для имитации конкретного протокола ВЕРНЕЕ совпасть с его настоящим размером: клиентский NTP — ровно 48 байт, DHT ping — 56, uTP SYN — 20, и добивка сделала бы их подозрительнее, а не незаметнее.',
+            $this->t('Про размер: рекомендация «≥100 байт» — про правдоподобие, а не требование парсера. Для имитации конкретного протокола ВЕРНЕЕ совпасть с его настоящим размером: клиентский NTP — ровно 48 байт, DHT ping — 56, uTP SYN — 20, и добивка сделала бы их подозрительнее, а не незаметнее.', 'About size: the "≥100 bytes" advice is about plausibility, not a parser requirement. To imitate a specific protocol it is MORE accurate to match its real size: a client NTP packet is exactly 48 bytes, DHT ping 56, uTP SYN 20, and padding would make them more suspicious, not less.'),
             '',
-            'Кнопка «QUIC Initial» в меню генерирует и сразу ставит настоящий шифрованный Initial (RFC 9001): 1200 байт, расшифровывается Wireshark как обычный QUIC. Платой идёт статичность — AEAD-тег покрывает пакет целиком, поэтому теги &lt;r&gt; внутрь не вставить и все хендшейки шлют один и тот же пакет. Держите включённой авто-ротацию либо берите пресет QUIC из списка ниже — он случаен на каждом пакете, но расшифровку не переживёт.',
+            $this->t('Кнопка «QUIC Initial» в меню генерирует и сразу ставит настоящий шифрованный Initial (RFC 9001): 1200 байт, расшифровывается Wireshark как обычный QUIC. Платой идёт статичность — AEAD-тег покрывает пакет целиком, поэтому теги &lt;r&gt; внутрь не вставить и все хендшейки шлют один и тот же пакет. Держите включённой авто-ротацию либо берите пресет QUIC из списка ниже — он случаен на каждом пакете, но расшифровку не переживёт.', 'The QUIC Initial button in the menu generates and immediately sets a real encrypted Initial (RFC 9001): 1200 bytes that Wireshark decrypts as ordinary QUIC. The price is that it is static: the AEAD tag covers the whole packet, so &lt;r&gt; tags cannot go inside and every handshake sends the same packet. Keep auto-rotation on, or take the QUIC preset from the list below: it is random on every packet but does not survive decryption.'),
             '',
-            'Токены CPS:',
-            '<code>&lt;b 0xHEX&gt;</code> — литерал-байты, для заголовков протоколов',
-            '<code>&lt;r N&gt;</code>     — N случайных байт, для CID/padding/IP/random fields',
-            '<code>&lt;rc N&gt;</code>    — N случайных printable-ASCII (буквы+цифры+пунктуация)',
-            '<code>&lt;rd N&gt;</code>    — N случайных ASCII-цифр (0-9), для числовых ID',
-            '<code>&lt;t&gt;</code>       — 4-байтный UNIX-timestamp',
+            $this->t('Токены CPS:', 'CPS tokens:'),
+            $this->t('<code>&lt;b 0xHEX&gt;</code> — литерал-байты, для заголовков протоколов', '<code>&lt;b 0xHEX&gt;</code>: literal bytes, for protocol headers'),
+            $this->t('<code>&lt;r N&gt;</code>     — N случайных байт, для CID/padding/IP/random fields', '<code>&lt;r N&gt;</code>     : N random bytes, for CID/padding/IP/random fields'),
+            $this->t('<code>&lt;rc N&gt;</code>    — N случайных printable-ASCII (буквы+цифры+пунктуация)', '<code>&lt;rc N&gt;</code>    : N random printable ASCII (letters, digits, punctuation)'),
+            $this->t('<code>&lt;rd N&gt;</code>    — N случайных ASCII-цифр (0-9), для числовых ID', '<code>&lt;rd N&gt;</code>    : N random ASCII digits (0-9), for numeric IDs'),
+            $this->t('<code>&lt;t&gt;</code>       — 4-байтный UNIX-timestamp', '<code>&lt;t&gt;</code>       : a 4-byte UNIX timestamp'),
             '',
-            'I1 пишется одинаково в server и client (требование протокола: обе стороны должны консьюмить тот же junk-паттерн). Для разнообразия fingerprint\'а во времени включите авто-ротацию: rotate: every Nd.',
+            $this->t('I1 пишется одинаково в server и client (требование протокола: обе стороны должны консьюмить тот же junk-паттерн). Для разнообразия fingerprint\'а во времени включите авто-ротацию: rotate: every Nd.', 'I1 is written the same on the server and the client (a protocol requirement: both sides must consume the same junk pattern). To vary the fingerprint over time, enable auto-rotation: rotate: every Nd.'),
         ];
 
         // Пресеты уезжают ОТДЕЛЬНЫМИ сообщениями, а не в одном со шпаргалкой:
@@ -9837,7 +9882,7 @@ NFT;
         // вроде яндексового DNS-ответа — это сразу ~270 символов, поэтому режем
         // по секциям с запасом, а не «когда-нибудь потом».
         $chunks = [];
-        $cur    = ['Готовые примеры (нажмите на строку — скопируется):'];
+        $cur    = [$this->t('Готовые примеры (нажмите на строку — скопируется):', 'Ready examples (tap a line to copy it):')];
         $curLen = mb_strlen($cur[0]);
         foreach ($presets as $section => $items) {
             $block = ['', "<b>— $section —</b>"];
@@ -9867,7 +9912,7 @@ NFT;
             $this->input['chat'],
             implode("\n", $lines),
             $this->input['message_id'],
-            reply: 'введите I1 или 0',
+            reply: $this->t('введите I1 или 0', 'enter I1 or 0'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -9949,8 +9994,8 @@ NFT;
         // sendQr() деградирует осознанно, — но поведение меняется заметно.
         $this->send(
             $this->input['chat'],
-            'QUIC Initial: ' . strlen($cps) . " символов в I1.\n"
-            . 'Клиентский конфиг с ним не помещается в QR — «show QR» для AWG будет отдавать .conf файлом.'
+            'QUIC Initial: ' . strlen($cps) . $this->t(" символов в I1.\n", " characters in I1.\n")
+            . $this->t('Клиентский конфиг с ним не помещается в QR — «show QR» для AWG будет отдавать .conf файлом.', 'A client config with it does not fit in a QR code; show QR for AWG will send a .conf file.')
         );
         $this->setAmneziaI1Value($cps, $inst, $page);
     }
@@ -9969,7 +10014,7 @@ NFT;
             if (empty($silent)) {
                 $this->send(
                     $this->input['chat'] ?? '',
-                    'wireguard: конфиг недоступен (контейнер не отвечает), amnezia не переключена',
+                    $this->t('wireguard: конфиг недоступен (контейнер не отвечает), amnezia не переключена', 'wireguard: the config is unavailable (the container does not respond), amnezia not switched'),
                     $this->input['message_id'] ?? null,
                 );
             }
@@ -10016,7 +10061,7 @@ NFT;
             if (empty($silent)) {
                 $this->send(
                     $this->input['chat'] ?? '',
-                    'wireguard: не удалось получить presharedkey (контейнер не отвечает), amnezia не переключена',
+                    $this->t('wireguard: не удалось получить presharedkey (контейнер не отвечает), amnezia не переключена', 'wireguard: could not get the presharedkey (the container does not respond), amnezia not switched'),
                     $this->input['message_id'] ?? null,
                 );
             }
@@ -10175,7 +10220,7 @@ NFT;
         }
         $conf = $this->readConfig();
         if (empty($conf['interface']['Address'])) {
-            $this->wgConfUnavailable('ключи клиентов не изменены');
+            $this->wgConfUnavailable($this->t('ключи клиентов не изменены', 'client keys unchanged'));
 
             return;
         }
@@ -10190,7 +10235,7 @@ NFT;
             $this->setPacConf($p);
             $psk = $this->presharedKey();
             if ($psk === '') {
-                $this->wgConfUnavailable('не удалось получить presharedkey (контейнер недоступен), ключи не изменены');
+                $this->wgConfUnavailable($this->t('не удалось получить presharedkey (контейнер недоступен), ключи не изменены', 'could not get the presharedkey (the container is unavailable), keys unchanged'));
 
                 return;
             }
@@ -10213,7 +10258,7 @@ NFT;
             }
         }
         if ($this->sshFailed || count($pairs) !== $n) {
-            $this->wgConfUnavailable('не удалось сгенерировать ключи для всех клиентов (контейнер недоступен), ничего не изменено');
+            $this->wgConfUnavailable($this->t('не удалось сгенерировать ключи для всех клиентов (контейнер недоступен), ничего не изменено', 'could not generate keys for all clients (the container is unavailable), nothing changed'));
 
             return;
         }
@@ -10300,7 +10345,7 @@ NFT;
             // Не alert-попапом: сюда приходят и нажатия кнопок, и ответы на
             // промпты, а в reply() callback_id подменён на message_id меню —
             // answerCallbackQuery по нему молча ничего не покажет.
-            $this->update($this->input['chat'], $this->input['message_id'], 'amneziawg отверг конфиг — изменения откачены');
+            $this->update($this->input['chat'], $this->input['message_id'], $this->t('amneziawg отверг конфиг — изменения откачены', 'amneziawg rejected the config; changes rolled back'));
             sleep(3);
             $this->menu('wg', $page);
         }
@@ -10429,13 +10474,13 @@ NFT;
         $last_str = $last ? date('Y-m-d H:i', $last) : '—';
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} введите период авто-ротации junk-полей в днях (0 — выкл).\n\n"
-            . "Текущий период: <code>" . ($cur ?: 'выкл') . "</code>\n"
-            . "Последняя ротация: <code>$last_str</code>\n\n"
-            . "Ротируются I1-I5, S3-S4 и весь блок 3.0, включая HeaderProtectionKey. S1/S2/H1-H4/Jc/PSK сохраняются.\n\n"
-            . "⚠️ На наборе 3.0 после каждой ротации клиенты ОБЯЗАНЫ перекачать конфиги: старый HeaderProtectionKey перестанет подходить, и связь пропадёт без сообщения об ошибке.",
+            $this->t("@{$this->input['username']} введите период авто-ротации junk-полей в днях (0 — выкл).\n\n", "@{$this->input['username']} enter the junk field auto-rotation period in days (0 to disable).\n\n")
+            . $this->t("Текущий период: <code>", "Current period: <code>") . ($cur ?: $this->t('выкл', 'off')) . "</code>\n"
+            . $this->t("Последняя ротация: <code>$last_str</code>\n\n", "Last rotation: <code>$last_str</code>\n\n")
+            . $this->t("Ротируются I1-I5, S3-S4 и весь блок 3.0, включая HeaderProtectionKey. S1/S2/H1-H4/Jc/PSK сохраняются.\n\n", "I1-I5, S3-S4 and the whole 3.0 block, including HeaderProtectionKey, are rotated. S1/S2/H1-H4/Jc/PSK are kept.\n\n")
+            . $this->t("⚠️ На наборе 3.0 после каждой ротации клиенты ОБЯЗАНЫ перекачать конфиги: старый HeaderProtectionKey перестанет подходить, и связь пропадёт без сообщения об ошибке.", "⚠️ With a 3.0 set, clients MUST download their configs again after every rotation: the old HeaderProtectionKey stops fitting and the connection drops without an error message."),
             $this->input['message_id'],
-            reply: 'введите N или 0',
+            reply: $this->t('введите N или 0', 'enter N or 0'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -10457,7 +10502,7 @@ NFT;
         $this->selectWG($inst);
         $text = trim($text);
         if (!preg_match('~^\d+$~', $text)) {
-            $this->update($this->input['chat'], $this->input['message_id'], 'rotation: введите целое число дней или 0');
+            $this->update($this->input['chat'], $this->input['message_id'], $this->t('rotation: введите целое число дней или 0', 'rotation: enter a whole number of days or 0'));
             sleep(3);
             $this->menu('wg', $page);
             return;
@@ -10615,7 +10660,7 @@ NFT;
         $c[$this->getInstanceWG(1) . 'exchange'] = !empty($c[$this->getInstanceWG(1) . 'exchange']) ? 0 : 1;
         $this->setPacConf($c);
         $this->iptablesWG();
-        $this->answer($this->input['callback_id'], 'обмен между пользователями ' . ($c[$this->getInstanceWG(1) . 'exchange'] ? 'заблокирован' : 'разблокирован'), true);
+        $this->answer($this->input['callback_id'], $this->t('обмен между пользователями ', 'traffic between users ') . ($c[$this->getInstanceWG(1) . 'exchange'] ? $this->t('заблокирован', 'blocked') : $this->t('разблокирован', 'unblocked')), true);
         $this->menu('wg', $page);
     }
 
@@ -10649,8 +10694,8 @@ NFT;
             $this->upload("$qr.conf", $code);
             $this->send(
                 $this->input['chat'],
-                htmlspecialchars($caption) . ' — ' . strlen($code) . ' байт, в QR не помещается (потолок '
-                . self::QR_MAX_BYTES . '). Отправлено файлом.'
+                htmlspecialchars($caption) . ' — ' . strlen($code) . $this->t(' байт, в QR не помещается (потолок ', ' bytes, does not fit in a QR code (limit ')
+                . self::QR_MAX_BYTES . $this->t('). Отправлено файлом.', '). Sent as a file.')
             );
             return;
         }
@@ -10668,7 +10713,7 @@ NFT;
             $this->upload("$qr.conf", $code);
             $this->send(
                 $this->input['chat'],
-                htmlspecialchars($caption) . ' — QR не сгенерировался (qrencode rc=' . (int) $rc . '). Отправлено файлом.'
+                htmlspecialchars($caption) . $this->t(' — QR не сгенерировался (qrencode rc=', ': the QR code was not generated (qrencode rc=') . (int) $rc . $this->t('). Отправлено файлом.', '). Sent as a file.')
             );
             return;
         }
@@ -10854,7 +10899,7 @@ NFT;
             $ascii = $this->idnAscii($domain);
             $ascii = $ascii === false ? $domain : $ascii;
             if (!preg_match(self::DOMAIN_RE, $ascii)) {
-                $this->send($this->input['chat'] ?? '', "$domain - wrong domain format", $this->input['message_id'] ?? null);
+                $this->send($this->input['chat'] ?? '', $this->t("$domain: неверный формат домена", "$domain - wrong domain format"), $this->input['message_id'] ?? null);
                 return empty($nomenu) ? $this->menu('config') : null;
             }
             $conf = $this->getPacConf();
@@ -10883,7 +10928,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} send alias domain (extra SAN, routed same as main)",
+            $this->t("@{$this->input['username']} отправьте домен-алиас (дополнительный SAN, маршрутизируется как основной)", "@{$this->input['username']} send alias domain (extra SAN, routed same as main)"),
             $this->input['message_id'],
             reply: 'send alias domain',
         );
@@ -10902,7 +10947,7 @@ NFT;
         // Домен уходит в exec (certbot) и в nginx.conf — принимаем только
         // безопасный синтаксис hostname, никаких shell-метасимволов.
         if (!preg_match(self::DOMAIN_RE, $domain)) {
-            $this->send($this->input['chat'], "$domain - wrong domain format", $this->input['message_id']);
+            $this->send($this->input['chat'], $this->t("$domain: неверный формат домена", "$domain - wrong domain format"), $this->input['message_id']);
             $this->menu('config');
             return;
         }
@@ -10914,7 +10959,7 @@ NFT;
         $this->setPacConf($conf);
         // nginx начинает принимать алиас сразу; серт — после «renew SSL».
         $this->cloakNginx();
-        $this->send($this->input['chat'], "alias added — press «renew SSL» to include it in the certificate", $this->input['message_id']);
+        $this->send($this->input['chat'], $this->t("алиас добавлен; нажмите «обновить SSL», чтобы он попал в сертификат", "alias added — press «renew SSL» to include it in the certificate"), $this->input['message_id']);
         $this->menu('config');
     }
 
@@ -11017,7 +11062,7 @@ NFT;
                 // всё остальное — это закрывает инъекцию проще, чем экранировать
                 // каждую подстановку.
                 if (!preg_match('~^[a-zA-Z0-9.-]+$~', (string) ($conf['domain'] ?? ''))) {
-                    $this->send($this->input['chat'], 'ERROR: invalid domain');
+                    $this->send($this->input['chat'], $this->t('ОШИБКА: неверный домен', 'ERROR: invalid domain'));
                     return $this->menu('config');
                 }
                 $out   = ['Install certificate:'];
@@ -11026,7 +11071,7 @@ NFT;
                 // в shell-строку certbot без кавычек. Валидируем как метку хоста:
                 // рядом domain_aliases экранированы, а этот параметр пропустили.
                 if (!empty($conf['adguardkey']) && !preg_match('~^[a-zA-Z0-9-]+$~', (string) $conf['adguardkey'])) {
-                    $this->send($this->input['chat'], 'ERROR: invalid adguard subdomain');
+                    $this->send($this->input['chat'], $this->t('ОШИБКА: неверный поддомен AdGuard', 'ERROR: invalid adguard subdomain'));
                     return $this->menu('config');
                 }
                 $adguardClient = !empty($conf['adguardkey']) ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
@@ -11078,7 +11123,7 @@ NFT;
             $this->restartTt();
             $this->telemtWebSync();
         } else {
-            $this->update($this->input['chat'], $this->input['message_id'], "wrong format key");
+            $this->update($this->input['chat'], $this->input['message_id'], $this->t("неверный формат ключа", "wrong format key"));
         }
         sleep(3);
         $this->menu('config');
@@ -11127,7 +11172,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} list subnets separated by commas",
+            $this->t("@{$this->input['username']} перечислите подсети через запятую", "@{$this->input['username']} list subnets separated by commas"),
             $this->input['message_id'],
             reply: 'list subnets separated by commas',
         );
@@ -11171,7 +11216,7 @@ NFT;
         }
         $conf = json_decode((string) $raw, true);
         if (!is_array($conf)) {
-            throw new RuntimeException('pac.json недоступен или повреждён — операция отменена');
+            throw new RuntimeException($this->t('pac.json недоступен или повреждён — операция отменена', 'pac.json is unavailable or damaged; the operation is cancelled'));
         }
 
         return $conf + self::PAC_DEFAULTS;
@@ -11219,7 +11264,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} send file with your certificate chain and private key <code>cat key.pem ca.pem cert.pem</code>",
+            $this->t("@{$this->input['username']} отправьте файл с цепочкой сертификатов и закрытым ключом <code>cat key.pem ca.pem cert.pem</code>", "@{$this->input['username']} send file with your certificate chain and private key <code>cat key.pem ca.pem cert.pem</code>"),
             $this->input['message_id'],
             reply: 'send file with your certificate chain and private key',
         );
@@ -11354,9 +11399,9 @@ NFT;
             // панели), либо AdGuard на время закрыл вход после неудачных
             // попыток. Тело ответа в этом случае не пересказываем.
             $this->adguardApiError = match (true) {
-                $code === 401 || $code === 403 => "http $code: пароль в боте не совпадает с паролем панели — задайте его кнопкой «сменить пароль»",
+                $code === 401 || $code === 403 => $this->t("http $code: пароль в боте не совпадает с паролем панели — задайте его кнопкой «сменить пароль»", "http $code: the password in the bot does not match the panel password; set it with the change password button"),
                 $code > 0                      => "http $code " . trim(mb_substr((string) $raw, 0, 200)),
-                default                        => 'AdGuard не отвечает',
+                default                        => $this->t('AdGuard не отвечает', 'AdGuard does not respond'),
             };
             return null;
         }
@@ -11398,7 +11443,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter time like https://www.php.net/manual/ru/function.strtotime.php:",
+            $this->t("@{$this->input['username']} введите время в формате https://www.php.net/manual/ru/function.strtotime.php:", "@{$this->input['username']} enter time like https://www.php.net/manual/ru/function.strtotime.php:"),
             $this->input['message_id'],
             reply: 'enter time like https://www.php.net/manual/ru/function.strtotime.php:',
         );
@@ -11416,7 +11461,7 @@ NFT;
             $key = ''; // «-» убирает ClientID
         }
         if ($key !== '' && !self::adguardClientIdValid($key)) {
-            $this->send($this->input['from'], 'ClientID не принят: строчные латинские буквы, цифры и дефис, до 63 символов. «-» — убрать ClientID.');
+            $this->send($this->input['from'], $this->t('ClientID не принят: строчные латинские буквы, цифры и дефис, до 63 символов. «-» — убрать ClientID.', 'ClientID rejected: lowercase Latin letters, digits and hyphens, up to 63 characters. "-" removes the ClientID.'));
             return $this->menu('adguard');
         }
         $old = (string) (($this->getPacConf() ?: [])['adguardkey'] ?? '');
@@ -11562,7 +11607,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter domain for link",
+            $this->t("@{$this->input['username']} введите домен для ссылки", "@{$this->input['username']} enter domain for link"),
             $this->input['message_id'],
             reply: 'enter domain for link',
         );
@@ -12314,7 +12359,7 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter limit on page",
+            $this->t("@{$this->input['username']} введите число записей на странице", "@{$this->input['username']} enter limit on page"),
             $this->input['message_id'],
             reply: 'enter limit on page',
         );
@@ -12334,7 +12379,7 @@ NFT;
         // страница не выходила за лимит сообщения Telegram.
         $n = (int) $text;
         if ($n < 1 || $n > 50) {
-            $this->send($this->input['chat'] ?? '', 'размер страницы: число от 1 до 50', $this->input['message_id'] ?? null);
+            $this->send($this->input['chat'] ?? '', $this->t('размер страницы: число от 1 до 50', 'page size: a number from 1 to 50'), $this->input['message_id'] ?? null);
             return $this->menu('config');
         }
         $c['limitpage'] = $n;
@@ -12393,12 +12438,12 @@ NFT;
         // сертификатов, правка маршрутов и nginx-конфигов. Кнопки «delete» в
         // меню идут подряд и подтверждения не имеют — хватало промаха пальцем.
         if (count((array) $c['admin']) <= 1) {
-            $this->answer($this->input['callback_id'], 'cannot remove the last admin', true);
+            $this->answer($this->input['callback_id'], $this->t('нельзя удалить последнего администратора', 'cannot remove the last admin'), true);
             return $this->menu('config');
         }
         // Владелец себя не удаляет: владельцем молча стал бы следующий в списке.
         if ($i === 0) {
-            $this->answer($this->input['callback_id'], 'cannot remove the owner', true);
+            $this->answer($this->input['callback_id'], $this->t('нельзя удалить владельца', 'cannot remove the owner'), true);
             return $this->menu('config');
         }
         unset($c['admin'][$i]);
@@ -12411,11 +12456,11 @@ NFT;
     {
         $pass = trim((string) $pass);
         if (!self::adguardPasswordValid($pass)) {
-            $this->send($this->input['from'], 'Пароль не принят: от 8 до 72 символов (в байтах), без переводов строк.');
+            $this->send($this->input['from'], $this->t('Пароль не принят: от 8 до 72 символов (в байтах), без переводов строк.', 'Password rejected: 8 to 72 characters (in bytes), without line breaks.'));
             return $this->menu('adguard');
         }
         if (($c = $this->adguardConf()) === null) {
-            $this->send($this->input['from'], 'AdGuardHome.yaml не читается — пароль не изменён.');
+            $this->send($this->input['from'], $this->t('AdGuardHome.yaml не читается — пароль не изменён.', 'AdGuardHome.yaml cannot be read; the password is unchanged.'));
             return $this->menu('adguard');
         }
         $out[] = 'Restart Adguard Home';
@@ -12430,7 +12475,7 @@ NFT;
                 $p['adpswd'] = $pass;
             });
         } else {
-            $this->send($this->input['from'], 'Не удалось записать AdGuardHome.yaml — пароль не изменён.');
+            $this->send($this->input['from'], $this->t('Не удалось записать AdGuardHome.yaml — пароль не изменён.', 'Could not write AdGuardHome.yaml; the password is unchanged.'));
         }
         $out[] = $this->startAd();
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
@@ -12812,7 +12857,19 @@ NFT;
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter dns address
+            $this->t("@{$this->input['username']} введите адрес DNS
+Обычный DNS:
+<code>example.org 94.140.14.14</code>
+DNS-over-TLS:
+<code>example.org tls://dns.adguard.com</code>
+DNS-over-TLS с IP:
+<code>example.org tls://dns.adguard.com 94.140.14.14</code>
+DNS-over-HTTPS с HTTP/2:
+<code>example.org https://dns.adguard.com/dns-query</code>
+DNS-over-HTTPS только по HTTP/3:
+<code>example.org h3://dns.google/dns-query</code>
+DNS-over-HTTPS с IP:
+<code>example.org https://dns.adguard.com/dns-query 94.140.14.14</code>", "@{$this->input['username']} enter dns address
 Plain DNS:
 <code>example.org 94.140.14.14</code>
 DNS-over-TLS:
@@ -12824,7 +12881,7 @@ DNS-over-HTTPS with HTTP/2:
 DNS-over-HTTPS forcing HTTP/3 only:
 <code>example.org h3://dns.google/dns-query</code>
 DNS-over-HTTPS with IP:
-<code>example.org https://dns.adguard.com/dns-query 94.140.14.14</code>",
+<code>example.org https://dns.adguard.com/dns-query 94.140.14.14</code>"),
             $this->input['message_id'],
             reply: 'enter command',
         );
@@ -12854,7 +12911,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter address upstream",
+            $this->t("@{$this->input['username']} введите адрес апстрима", "@{$this->input['username']} enter address upstream"),
             $this->input['message_id'],
             reply: 'enter address upstream',
         );
@@ -12912,22 +12969,22 @@ DNS-over-HTTPS with IP:
         // сборки. Принимаем ровно то, что понимает сам AdGuard.
         $url = trim((string) $url);
         if (!self::adguardUpstreamValid($url)) {
-            $this->send($this->input['chat'], self::esc($url) . ' - wrong upstream format', $this->input['message_id']);
+            $this->send($this->input['chat'], self::esc($url) . $this->t(': неверный формат апстрима', ' - wrong upstream format'), $this->input['message_id']);
 
             return $this->menu('adguard');
         }
         if (($c = $this->adguardConf()) === null) {
-            $this->send($this->input['from'], 'AdGuardHome.yaml не читается — апстрим не добавлен.');
+            $this->send($this->input['from'], $this->t('AdGuardHome.yaml не читается — апстрим не добавлен.', 'AdGuardHome.yaml cannot be read; the upstream is not added.'));
             return $this->menu('adguard');
         }
         if (in_array($url, array_map('strval', (array) ($c['dns']['upstream_dns'] ?? [])), true)) {
-            $this->send($this->input['from'], self::esc($url) . ' — такой апстрим уже есть.');
+            $this->send($this->input['from'], self::esc($url) . $this->t(' — такой апстрим уже есть.', ': this upstream already exists.'));
             return $this->menu('adguard');
         }
         // Нерабочий адрес раньше принимался молча: при единственном апстриме
         // это DNS без ответов, при нескольких — задержки на каждом запросе.
         if (($why = $this->adguardUpstreamProbe($url)) !== '') {
-            $this->send($this->input['from'], 'Апстрим не добавлен, проверка не прошла: ' . self::esc("$url — $why"));
+            $this->send($this->input['from'], $this->t('Апстрим не добавлен, проверка не прошла: ', 'Upstream not added, the check failed: ') . self::esc("$url — $why"));
             return $this->menu('adguard');
         }
         $out[] = 'Restart Adguard Home';
@@ -12980,14 +13037,14 @@ DNS-over-HTTPS with IP:
             case 'rulessetlist':
                 $r = $this->send(
                     $this->input['chat'],
-                    "@{$this->input['username']} <b>outbound[:behavior]:интервал:URL</b>\n"
+                    $this->t("@{$this->input['username']} <b>outbound[:behavior]:интервал:URL</b>\n", "@{$this->input['username']} <b>outbound[:behavior]:interval:URL</b>\n")
                         . "<code>proxy:1d:https://example.org/list.srs</code>\n"
-                        . "Каждый источник — с новой строки. Число — секунды; 1h — час, 1d — сутки.\n"
+                        . $this->t("Каждый источник — с новой строки. Число — секунды; 1h — час, 1d — сутки.\n", "Each source on its own line. A number means seconds; 1h is an hour, 1d a day.\n")
                         . "sing-box: .srs/.json. Mihomo: .yaml/.yml/.txt/.mrs. "
-                        . "Для MRS укажите behavior: domain или ipcidr.\n"
-                        . "block/reject — блокировать; direct — напрямую; proxy — VPN.\n"
-                        . "Для Mihomo лучше MRS/YAML: ошибочный TXT может стать пустым списком.\n"
-                        . "Ссылку https бот проверит сразу и предупредит, если по ней не rule-set.",
+                        . $this->t("Для MRS укажите behavior: domain или ipcidr.\n", "For MRS set behavior: domain or ipcidr.\n")
+                        . $this->t("block/reject — блокировать; direct — напрямую; proxy — VPN.\n", "block/reject: block; direct: direct; proxy: VPN.\n")
+                        . $this->t("Для Mihomo лучше MRS/YAML: ошибочный TXT может стать пустым списком.\n", "For Mihomo MRS/YAML is better: a malformed TXT may become an empty list.\n")
+                        . $this->t("Ссылку https бот проверит сразу и предупредит, если по ней не rule-set.", "The bot checks an https link right away and warns if it is not a rule-set."),
                     $this->input['message_id'],
                     reply: 'outbound[:behavior]:time:URL',
                 );
@@ -12997,12 +13054,12 @@ DNS-over-HTTPS with IP:
                 // Реестр внешних xray .dat: "name.dat:URL" (по одной на строку).
                 $r = $this->send(
                     $this->input['chat'],
-                    "@{$this->input['username']} <b>name.dat:URL</b> — ссылка на xray .dat "
-                        . "(geosite/geoip-формат). Пример:\n"
+                    $this->t("@{$this->input['username']} <b>name.dat:URL</b> — ссылка на xray .dat ", "@{$this->input['username']} <b>name.dat:URL</b>: a link to an xray .dat ")
+                        . $this->t("(geosite/geoip-формат). Пример:\n", "(geosite/geoip format). Example:\n")
                         . "<code>dlc.dat:https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat</code>\n"
-                        . "Несколько источников — по одному на строку.\n"
-                        . "Затем в block/warp ссылайтесь: <code>ext:dlc.dat:github</code> "
-                        . "(домены) или <code>extip:zkeenip.dat:akamai</code> (IP).",
+                        . $this->t("Несколько источников — по одному на строку.\n", "Several sources: one per line.\n")
+                        . $this->t("Затем в block/warp ссылайтесь: <code>ext:dlc.dat:github</code> ", "Then refer to it in block/warp: <code>ext:dlc.dat:github</code> ")
+                        . $this->t("(домены) или <code>extip:zkeenip.dat:akamai</code> (IP).", "(domains) or <code>extip:zkeenip.dat:akamai</code> (IP)."),
                     $this->input['message_id'],
                     reply: 'name.dat:URL',
                 );
@@ -13012,10 +13069,10 @@ DNS-over-HTTPS with IP:
                 // Список IP-подсетей (идёт прямо в ip-поля) — доменные префиксы не применяются.
                 $r = $this->send(
                     $this->input['chat'],
-                    "@{$this->input['username']} список IP-подсетей: <b>IPv4/IPv6[/cidr]</b>, "
-                        . "напр. <code>10.0.0.0/24</code>, <code>2001:db8::/32</code>.\n\n"
-                        . "<b>Как вводить:</b> в столбик (по одной на строку) или в строку "
-                        . "через запятую либо пробел: <code>10.0.0.0/24, 2001:db8::/32</code>.",
+                    $this->t("@{$this->input['username']} список IP-подсетей: <b>IPv4/IPv6[/cidr]</b>, ", "@{$this->input['username']} a list of IP subnets: <b>IPv4/IPv6[/cidr]</b>, ")
+                        . $this->t("напр. <code>10.0.0.0/24</code>, <code>2001:db8::/32</code>.\n\n", "e.g. <code>10.0.0.0/24</code>, <code>2001:db8::/32</code>.\n\n")
+                        . $this->t("<b>Как вводить:</b> в столбик (по одной на строку) или в строку ", "<b>How to enter:</b> one per line, or on one line ")
+                        . $this->t("через запятую либо пробел: <code>10.0.0.0/24, 2001:db8::/32</code>.", "separated by commas or spaces: <code>10.0.0.0/24, 2001:db8::/32</code>."),
                     $this->input['message_id'],
                     reply: 'list separated by commas',
                 );
@@ -13027,38 +13084,38 @@ DNS-over-HTTPS with IP:
                 // скопировать одним тапом. Каждая запись — с новой строки или через
                 // запятую (regexp: не режется по запятой — regex может содержать запятые).
                 $hint = in_array($type, ['includelist', 'blocklist', 'warplist'])
-                    ? "\n\n<b>Префиксы</b> (нажмите на слово, чтобы скопировать):\n"
-                        . "<code>domain:</code> — домен и все его поддомены, напр. domain:vk.com\n"
-                        . "<code>full:</code> — точное совпадение домена, напр. full:example.com\n"
-                        . "<code>keyword:</code> — совпадение по подстроке, напр. keyword:reddit\n"
-                        . "<code>regexp:</code> — регулярное выражение, напр. regexp:.*\\.ru\$\n"
-                        . "без префикса — домен-суффикс; IPv4/IPv6[/cidr] — как есть.\n\n"
-                        . "<b>Как вводить:</b> в столбик (по одной записи на строку) "
-                        . "или в строку через запятую либо пробел, напр. "
-                        . "<code>domain:vk.com, keyword:reddit</code> или <code>vk.com youtube.com</code>\n"
-                        . "Записи <code>regexp:</code> — каждую с новой строки "
-                        . "(regex может содержать запятые и пробелы)."
+                    ? $this->t("\n\n<b>Префиксы</b> (нажмите на слово, чтобы скопировать):\n", "\n\n<b>Prefixes</b> (tap a word to copy it):\n")
+                        . $this->t("<code>domain:</code> — домен и все его поддомены, напр. domain:vk.com\n", "<code>domain:</code>: a domain and all its subdomains, e.g. domain:vk.com\n")
+                        . $this->t("<code>full:</code> — точное совпадение домена, напр. full:example.com\n", "<code>full:</code>: an exact domain match, e.g. full:example.com\n")
+                        . $this->t("<code>keyword:</code> — совпадение по подстроке, напр. keyword:reddit\n", "<code>keyword:</code>: a substring match, e.g. keyword:reddit\n")
+                        . $this->t("<code>regexp:</code> — регулярное выражение, напр. regexp:.*\\.ru\$\n", "<code>regexp:</code>: a regular expression, e.g. regexp:.*\\.ru\$\n")
+                        . $this->t("без префикса — домен-суффикс; IPv4/IPv6[/cidr] — как есть.\n\n", "no prefix: a domain suffix; IPv4/IPv6[/cidr]: as is.\n\n")
+                        . $this->t("<b>Как вводить:</b> в столбик (по одной записи на строку) ", "<b>How to enter:</b> one entry per line ")
+                        . $this->t("или в строку через запятую либо пробел, напр. ", "or on one line separated by commas or spaces, e.g. ")
+                        . $this->t("<code>domain:vk.com, keyword:reddit</code> или <code>vk.com youtube.com</code>\n", "<code>domain:vk.com, keyword:reddit</code> or <code>vk.com youtube.com</code>\n")
+                        . $this->t("Записи <code>regexp:</code> — каждую с новой строки ", "Put each <code>regexp:</code> entry on its own line ")
+                        . $this->t("(regex может содержать запятые и пробелы).", "(a regex may contain commas and spaces).")
                     : '';
                 // ext:/extip: — только для block/warp (применяются на сервере;
                 // на клиенте .dat нет). Сначала .dat добавляется в routes → dat.
                 if (in_array($type, ['blocklist', 'warplist'])) {
-                    $hint .= "\n\n<b>Внешние .dat</b> (только на сервере):\n"
-                        . "<code>ext:</code> — категория доменов из .dat, напр. ext:dlc.dat:github\n"
-                        . "<code>extip:</code> — категория IP из .dat, напр. extip:zkeenip.dat:akamai\n"
-                        . "Сначала добавьте .dat в routes → dat.";
+                    $hint .= $this->t("\n\n<b>Внешние .dat</b> (только на сервере):\n", "\n\n<b>External .dat</b> (server only):\n")
+                        . $this->t("<code>ext:</code> — категория доменов из .dat, напр. ext:dlc.dat:github\n", "<code>ext:</code>: a domain category from a .dat, e.g. ext:dlc.dat:github\n")
+                        . $this->t("<code>extip:</code> — категория IP из .dat, напр. extip:zkeenip.dat:akamai\n", "<code>extip:</code>: an IP category from a .dat, e.g. extip:zkeenip.dat:akamai\n")
+                        . $this->t("Сначала добавьте .dat в routes → dat.", "Add the .dat in routes → dat first.");
                 }
                 // Имя процесса может содержать пробел («Google Chrome Helper»),
                 // имя пакета Android — нет: для пакетов пробел разделяет записи.
                 if (in_array($type, ['processlist', 'tunprocess'], true)) {
-                    $hint .= "\n\n<b>Как вводить:</b> в столбик или в строку через запятую. "
-                        . "Пробел — часть имени процесса, записи он не разделяет.";
+                    $hint .= $this->t("\n\n<b>Как вводить:</b> в столбик или в строку через запятую. ", "\n\n<b>How to enter:</b> one per line or on one line separated by commas. ")
+                        . $this->t("Пробел — часть имени процесса, записи он не разделяет.", "A space is part of a process name and does not separate entries.");
                 } elseif (in_array($type, ['packagelist', 'tunpackage'], true)) {
-                    $hint .= "\n\n<b>Как вводить:</b> в столбик или в строку через запятую либо пробел, "
-                        . "напр. <code>org.telegram.messenger com.example.app</code>";
+                    $hint .= $this->t("\n\n<b>Как вводить:</b> в столбик или в строку через запятую либо пробел, ", "\n\n<b>How to enter:</b> one per line or on one line separated by commas or spaces, ")
+                        . $this->t("напр. <code>org.telegram.messenger com.example.app</code>", "e.g. <code>org.telegram.messenger com.example.app</code>");
                 }
                 $r = $this->send(
                     $this->input['chat'],
-                    "@{$this->input['username']} list separated by commas$hint",
+                    $this->t("@{$this->input['username']} перечислите через запятую$hint", "@{$this->input['username']} list separated by commas$hint"),
                     $this->input['message_id'],
                     reply: 'list separated by commas',
                 );
@@ -13114,10 +13171,10 @@ DNS-over-HTTPS with IP:
         }
         if ($dups) $this->send($this->input['from'], $this->i18n('duplicates skipped') . ": $dups");
         if ($merged) $this->send($this->input['from'], $this->i18n('duplicates merged') . ": $merged");
-        if ($off) $this->send($this->input['from'], "Уже есть в списке, но выключены — включите кнопкой записи:\n"
+        if ($off) $this->send($this->input['from'], $this->t("Уже есть в списке, но выключены — включите кнопкой записи:\n", "Already in the list but disabled; enable them with the entry button:\n")
             . implode("\n", array_map(fn($e) => '<code>' . self::esc(mb_strimwidth((string) $e, 0, 80, '…')) . '</code>', array_slice(array_keys($off), 0, 5))));
         // Называем сами записи: по одному числу не понять, что именно не принято.
-        if ($invalid) $this->send($this->input['from'], "Неверных записей пропущено: $invalid. Формат и примеры — routes → Справка.\n"
+        if ($invalid) $this->send($this->input['from'], $this->t("Неверных записей пропущено: $invalid. Формат и примеры — routes → Справка.\n", "Invalid entries skipped: $invalid. Format and examples: routes → Help.\n")
             . implode("\n", array_map(fn($e) => '<code>' . self::esc(mb_strimwidth((string) $e, 0, 80, '…')) . '</code>', array_slice($rejected, 0, 5)))
             . ($invalid > 5 ? "\n…" : ''));
         // Недоступный или подменённый источник не просто «не сработает»:
@@ -13131,8 +13188,8 @@ DNS-over-HTTPS with IP:
                 $url = self::parseRuleSetKey((string) $key)['url'] ?? '';
                 if ($url !== '' && ($why = $this->ruleSetProbe($url)) !== '') $problems[] = self::esc("$url — $why");
             }
-            if ($problems) $this->send($this->input['from'], "⚠️ rule-set не прошёл проверку с сервера. Если источник недоступен и клиентам, "
-                . "sing-box с таким профилем не запустится, Mihomo останется без этих правил:\n" . implode("\n", $problems));
+            if ($problems) $this->send($this->input['from'], $this->t("⚠️ rule-set не прошёл проверку с сервера. Если источник недоступен и клиентам, ", "⚠️ The rule-set failed the check from the server. If the source is unavailable to clients too, ")
+                . $this->t("sing-box с таким профилем не запустится, Mihomo останется без этих правил:\n", "sing-box with this profile will not start, and Mihomo will stay without these rules:\n") . implode("\n", $problems));
         }
         $keys = array_keys($this->getPacConf()[$type] ?? []);
         $index = array_search($lastKey, $keys, true);
@@ -13408,12 +13465,12 @@ DNS-over-HTTPS with IP:
                     }
                 }
                 if (!$this->validateRouteRegexes($patterns)) {
-                    $this->send($this->input['from'], 'Правила не сохранены: ошибка проверки регулярного выражения RE2. Проверьте regexp и повторите.');
+                    $this->send($this->input['from'], $this->t('Правила не сохранены: ошибка проверки регулярного выражения RE2. Проверьте regexp и повторите.', 'Rules not saved: RE2 regular expression check error. Check regexp and retry.'));
                     return false;
                 }
                 $conf = $before; $conf[$type] = $list;
                 if (!$this->setPacConf($conf)) {
-                    $this->send($this->input['from'], 'Не удалось сохранить правила.');
+                    $this->send($this->input['from'], $this->t('Не удалось сохранить правила.', 'Could not save the rules.'));
                     return false;
                 }
                 if ($server) {
@@ -13432,8 +13489,8 @@ DNS-over-HTTPS with IP:
                         if ($type === 'datlist' || !empty($before[$type][$entry])) continue;
                         $c = $this->classifyRouteEntry((string) $entry);
                         if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) {
-                            $errors[] = 'нет файла ' . $this->datResolve(explode(':', (string) $c['value'], 2)[0])
-                                . ' — сначала добавьте его в routes → dat';
+                            $errors[] = $this->t('нет файла ', 'no file ') . $this->datResolve(explode(':', (string) $c['value'], 2)[0])
+                                . $this->t(' — сначала добавьте его в routes → dat', ': add it in routes → dat first');
                         } elseif (($missing = $this->datCategoryError($c)) !== null) {
                             $errors[] = $missing;
                         }
@@ -13460,8 +13517,8 @@ DNS-over-HTTPS with IP:
                         // отсутствующая категория сводились к одной общей фразе.
                         $why = $errors ? "\n" . implode("\n", $this->datErrorLines($errors)) : '';
                         $this->send($this->input['from'], ($restored
-                            ? 'Правила не применены. Проверьте .dat, категории и доступность Xray. Предыдущий список сохранён.'
-                            : 'Xray не принял правила; не удалось полностью восстановить список и .dat. Проверьте доступность файлов.') . $why);
+                            ? $this->t('Правила не применены. Проверьте .dat, категории и доступность Xray. Предыдущий список сохранён.', 'Rules not applied. Check .dat, categories and Xray availability. The previous list is kept.')
+                            : $this->t('Xray не принял правила; не удалось полностью восстановить список и .dat. Проверьте доступность файлов.', 'Xray did not accept the rules; the list and .dat could not be fully restored. Check that the files are available.')) . $why);
                         return false;
                     }
                     foreach ($backups as $copy) @unlink($copy);
@@ -13473,7 +13530,7 @@ DNS-over-HTTPS with IP:
                             if (($n = $this->datRefCount($conf, $gone)) > 0) $left[] = self::esc("$gone — $n");
                         }
                         if ($left) $this->send($this->input['from'],
-                            "⚠️ На отключённый .dat ссылаются включённые правила block/WARP — они больше не действуют:\n"
+                            $this->t("⚠️ На отключённый .dat ссылаются включённые правила block/WARP — они больше не действуют:\n", "⚠️ Enabled block/WARP rules refer to a disabled .dat; they no longer apply:\n")
                             . implode("\n", $left));
                     }
                 }
@@ -14328,7 +14385,7 @@ DNS-over-HTTPS with IP:
                     $newSha = (string) hash_file('sha256', $tmp);
                     $sum    = $this->datFetchSum($url);
                     if ($sum !== null && !hash_equals($sum, $newSha)) {
-                        return 'sha256 не совпала с опубликованной; прежний файл сохранён';
+                        return $this->t('sha256 не совпала с опубликованной; прежний файл сохранён', 'sha256 does not match the published one; the previous file is kept');
                     }
                 }
                 $verified = $sum !== null;
@@ -14353,10 +14410,10 @@ DNS-over-HTTPS with IP:
             // диск, если на него ещё не ссылалось ни одно правило, и отказ
             // всплывал позже — при добавлении ext:-записи.
             if ($this->datParseCategories($tmp) === null) {
-                return 'не похоже на .dat (нужен формат geosite/geoip); прежний файл сохранён';
+                return $this->t('не похоже на .dat (нужен формат geosite/geoip); прежний файл сохранён', 'does not look like a .dat (geosite/geoip format is needed); the previous file is kept');
             }
             if (!$this->validateDatReplacement($name, basename($tmp))) {
-                return 'Xray отклонил .dat; прежний файл сохранён';
+                return $this->t('Xray отклонил .dat; прежний файл сохранён', 'Xray rejected the .dat; the previous file is kept');
             }
             if (!rename($tmp, $dest)) {
                 return 'rename failed';
@@ -14509,7 +14566,7 @@ DNS-over-HTTPS with IP:
         if ($cats === null || $tag === '' || in_array($tag, $cats, true)) {
             return null;
         }
-        return "в файле $file нет категории $tag";
+        return $this->t("в файле $file нет категории $tag", "there is no category $tag in the file $file");
     }
 
     // Сколько включённых записей block/WARP ссылается на файл через ext:/extip:.
@@ -14613,7 +14670,7 @@ DNS-over-HTTPS with IP:
             // с одним именем и разными URL. Молча побеждала бы та, что скачалась
             // первой, причём навсегда; сообщаем об этом вместо тихой путаницы.
             if (isset($source[$name]) && $source[$name] !== $m[2]) {
-                $errors[$name] = 'имя занято другим источником: ' . $source[$name];
+                $errors[$name] = $this->t('имя занято другим источником: ', 'the name is taken by another source: ') . $source[$name];
                 continue;
             }
             $source[$name] = $m[2];
@@ -14754,12 +14811,12 @@ DNS-over-HTTPS with IP:
             $this->datRecordUpdate($runAt);
             $changed = false;
             $errors = $this->datSync(true, $changed);
-            if ($changed && $this->xrayUpdateRules() === false) $errors['xray'] = 'правила не применены';
+            if ($changed && $this->xrayUpdateRules() === false) $errors['xray'] = $this->t('правила не применены', 'rules not applied');
             if (!$errors) {
                 $this->datRecordUpdate($runAt, true);
             }
             if ($errors) {
-                $this->send($this->input['from'], "dat: ошибки загрузки:\n" . implode("\n", $this->datErrorLines($errors)));
+                $this->send($this->input['from'], $this->t("dat: ошибки загрузки:\n", "dat: download errors:\n") . implode("\n", $this->datErrorLines($errors)));
             }
         });
         $this->xtlsdat();
@@ -14806,13 +14863,13 @@ DNS-over-HTTPS with IP:
             $changed = false;
             $errors  = $this->datSync(true, $changed);
             if ($changed) {
-                if ($this->xrayUpdateRules() === false) $errors['xray'] = 'правила не применены';
+                if ($this->xrayUpdateRules() === false) $errors['xray'] = $this->t('правила не применены', 'rules not applied');
             }
             $wasFailing = !empty($conf['dat_update_failed']);
             if (!$errors) {
                 $this->datRecordUpdate($now, true);
                 if ($wasFailing) {
-                    $this->datNotifyAdmins('✅ dat: автообновление снова работает');
+                    $this->datNotifyAdmins($this->t('✅ dat: автообновление снова работает', '✅ dat: auto-update works again'));
                 }
                 return;
             }
@@ -14829,7 +14886,7 @@ DNS-over-HTTPS with IP:
             }
             // Одно сообщение на серию отказов: повторы идут каждый час.
             if (!$wasFailing) {
-                $this->datNotifyAdmins("⚠️ dat: автообновление не удалось, повтор через "
+                $this->datNotifyAdmins($this->t("⚠️ dat: автообновление не удалось, повтор через ", "⚠️ dat: auto-update failed, retry in ")
                     . $this->datUpdateIntervalLabel(min($interval, self::DAT_UPDATE_RETRY)) . ":\n"
                     . implode("\n", $this->datErrorLines($errors)));
             }
@@ -15217,7 +15274,7 @@ DNS-over-HTTPS with IP:
             $line = trim($line);
             if ($line === '') continue;
             if (!$this->routeListEntryValid('datlist', $line)) {
-                $errors[] = 'неверный формат: ' . self::esc($line);
+                $errors[] = $this->t('неверный формат: ', 'invalid format: ') . self::esc($line);
                 continue;
             }
             // Имя файла — в нижний регистр: ссылку ext:Foo.dat:… ядро ищет по
@@ -15241,7 +15298,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} list domains separated by commas",
+            $this->t("@{$this->input['username']} перечислите домены через запятую", "@{$this->input['username']} list domains separated by commas"),
             $this->input['message_id'],
             reply: 'list domains separated by commas',
         );
@@ -15273,7 +15330,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} list subdomains separated by commas",
+            $this->t("@{$this->input['username']} перечислите поддомены через запятую", "@{$this->input['username']} list subdomains separated by commas"),
             $this->input['message_id'],
             reply: 'list subdomains separated by commas',
         );
@@ -15305,7 +15362,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter regular expression",
+            $this->t("@{$this->input['username']} введите регулярное выражение", "@{$this->input['username']} enter regular expression"),
             $this->input['message_id'],
             reply: 'enter regular expression',
         );
@@ -15388,7 +15445,7 @@ DNS-over-HTTPS with IP:
     {
         $this->send(
             $this->input['chat'] ?? '',
-            "wireguard: конфиг недоступен (контейнер не отвечает), $what",
+            $this->t("wireguard: конфиг недоступен (контейнер не отвечает), $what", "wireguard: the config is unavailable (the container does not respond), $what"),
             $this->input['message_id'] ?? null,
         );
     }
@@ -15422,7 +15479,7 @@ DNS-over-HTTPS with IP:
         // исчезла, а пир на сервере продолжает пускать трафик, и вернуть его в
         // меню уже нечем.
         if (empty($conf['interface'])) {
-            $this->wgConfUnavailable('клиент не удалён');
+            $this->wgConfUnavailable($this->t('клиент не удалён', 'client not deleted'));
             return $menu ? $this->menu('wg', $page) : null;
         }
         // Пира ищем по адресу, а не по индексу: если совпадения нет, значит на
@@ -15652,7 +15709,7 @@ DNS-over-HTTPS with IP:
                 $eff = $this->amneziaKeysEffective();
                 if ($eff != $ak) {
                     $why = !self::awgHeaderProtectionOk($ak)
-                        ? 'header protection выключен: S1–S4 должны быть ≥ ' . self::AWG_HPK_MIN_S
+                        ? $this->t('header protection выключен: S1–S4 должны быть ≥ ', 'header protection is off: S1–S4 must be ≥ ') . self::AWG_HPK_MIN_S
                         : $this->awg3UnsupportedText();
                     $text[] = '⚠️ ' . htmlspecialchars($why, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
                 }
@@ -15875,7 +15932,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter dns separated by commas",
+            $this->t("@{$this->input['username']} введите DNS через запятую", "@{$this->input['username']} enter dns separated by commas"),
             $this->input['message_id'],
             reply: 'enter dns separated by commas',
         );
@@ -15893,9 +15950,9 @@ DNS-over-HTTPS with IP:
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} enter MTU\n\n"
-            . 'Допустимо: <code>' . self::MTU_MIN . '..' . self::MTU_MAX . '</code> — вне этих границ конфиг не примет клиент AmneziaVPN. '
-            . "Пусто или <code>0</code> — вернуть значение по умолчанию ({$this->mtu}).\n"
-            . 'Ниже 1280 в туннеле перестанет работать IPv6.',
+            . $this->t('Допустимо: <code>', 'Allowed: <code>') . self::MTU_MIN . '..' . self::MTU_MAX . $this->t('</code> — вне этих границ конфиг не примет клиент AmneziaVPN. ', '</code>; outside these bounds the AmneziaVPN client will not accept the config. ')
+            . $this->t("Пусто или <code>0</code> — вернуть значение по умолчанию ({$this->mtu}).\n", "Empty or <code>0</code> restores the default ({$this->mtu}).\n")
+            . $this->t('Ниже 1280 в туннеле перестанет работать IPv6.', 'Below 1280 IPv6 stops working in the tunnel.'),
             $this->input['message_id'],
             reply: 'enter MTU',
         );
@@ -15913,9 +15970,9 @@ DNS-over-HTTPS with IP:
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} enter MTU\n\n"
-            . 'Допустимо: <code>' . self::MTU_MIN . '..' . self::MTU_MAX . '</code> — вне этих границ конфиг не примет клиент AmneziaVPN. '
-            . "Пусто или <code>0</code> — вернуть значение инстанса.\n"
-            . 'Ниже 1280 в туннеле перестанет работать IPv6.',
+            . $this->t('Допустимо: <code>', 'Allowed: <code>') . self::MTU_MIN . '..' . self::MTU_MAX . $this->t('</code> — вне этих границ конфиг не примет клиент AmneziaVPN. ', '</code>; outside these bounds the AmneziaVPN client will not accept the config. ')
+            . $this->t("Пусто или <code>0</code> — вернуть значение инстанса.\n", "Empty or <code>0</code> restores the instance value.\n")
+            . $this->t('Ниже 1280 в туннеле перестанет работать IPv6.', 'Below 1280 IPv6 stops working in the tunnel.'),
             $this->input['message_id'],
             reply: 'enter MTU',
         );
@@ -15949,12 +16006,12 @@ DNS-over-HTTPS with IP:
     public static function validateMTU(string $s): string
     {
         if (!preg_match('~^\d{1,5}$~', $s)) {
-            return 'MTU задаётся числом (без пробелов, знаков и единиц измерения)';
+            return Lang::t('MTU задаётся числом (без пробелов, знаков и единиц измерения)', 'MTU is set as a number (no spaces, signs or units)');
         }
         $v = (int) $s;
         if ($v < self::MTU_MIN || $v > self::MTU_MAX) {
-            return "MTU допустим в пределах " . self::MTU_MIN . '..' . self::MTU_MAX
-                . ": конфиг с $v клиент AmneziaVPN не примет";
+            return Lang::t("MTU допустим в пределах ", "MTU is allowed within ") . self::MTU_MIN . '..' . self::MTU_MAX
+                . Lang::t(": конфиг с $v клиент AmneziaVPN не примет", ": the AmneziaVPN client will not accept a config with $v");
         }
         return '';
     }
@@ -16004,7 +16061,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter subnet separated by commas",
+            $this->t("@{$this->input['username']} введите подсети через запятую", "@{$this->input['username']} enter subnet separated by commas"),
             $this->input['message_id'],
             reply: 'enter subnet separated by commas',
         );
@@ -16257,7 +16314,7 @@ DNS-over-HTTPS with IP:
             case 'subnet':
                 $r = $this->send(
                     $this->input['chat'],
-                    "@{$this->input['username']} list subnets separated by commas",
+                    $this->t("@{$this->input['username']} перечислите подсети через запятую", "@{$this->input['username']} list subnets separated by commas"),
                     $this->input['message_id'],
                     reply: 'list subnets separated by commas',
                 );
@@ -16617,7 +16674,7 @@ DNS-over-HTTPS with IP:
         // молча оставался прежним — пользователю при этом рисовали успех.
         $body = @file_get_contents($url);
         if ($body === false) {
-            $this->send($this->input['chat'] ?? '', 'не удалось скачать список: ' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8'), $this->input['message_id'] ?? null);
+            $this->send($this->input['chat'] ?? '', $this->t('не удалось скачать список: ', 'could not download the list: ') . htmlspecialchars($url, ENT_QUOTES, 'UTF-8'), $this->input['message_id'] ?? null);
             return;
         }
         $pac   = $this->getPacConf();
@@ -17411,7 +17468,7 @@ DNS-over-HTTPS with IP:
             // слоя — маскировка — теряется целиком: полезная нагрузка Cloak
             // перестаёт быть неотличимой от случайной, то есть детектируется.
             $text[] = 'method: <code>' . htmlspecialchars($ckMethod, ENT_QUOTES) . '</code>'
-                . ($ckMethod === 'plain' ? ' ⚠️ только для отладки: трафик перестаёт быть неотличимым от случайного' : '');
+                . ($ckMethod === 'plain' ? $this->t(' ⚠️ только для отладки: трафик перестаёт быть неотличимым от случайного', ' ⚠️ debugging only: the traffic stops being indistinguishable from random') : '');
         }
         if ($ssWarpOn) {
             // Ядро принимает и цепочку из нескольких хопов (Chain(Vec<String>)
@@ -17531,6 +17588,12 @@ DNS-over-HTTPS with IP:
     public function i18n(string $menu): string
     {
         return ($this->i18n[$menu][$this->language] ?? '') ?: $menu;
+    }
+
+    // Текст вне словаря: русский, если язык не en (как у тестов без языка).
+    public function t(string $ru, string $en): string
+    {
+        return $this->language === 'en' ? $en : $ru;
     }
 
     // Пере-пиниваем глобальный выбранный инстанс (wg_instance в pac.json) на
@@ -17749,7 +17812,7 @@ DNS-over-HTTPS with IP:
     public function setdnsttPassword($text)
     {
         if (strlen($text) > 128 || preg_match('~[\x00\r\n]~', $text)) {
-            $this->send($this->input['chat'], 'dnstt: пароль до 128 символов, без перевода строки');
+            $this->send($this->input['chat'], $this->t('dnstt: пароль до 128 символов, без перевода строки', 'dnstt: password up to 128 characters, without line breaks'));
             return;
         }
         $c = $this->getPacConf();
@@ -17767,7 +17830,7 @@ DNS-over-HTTPS with IP:
     {
         $text = strtolower(trim($text));
         if ($text !== '' && !self::dnsttDomainOk($text)) {
-            $this->send($this->input['chat'], 'dnstt: некорректный домен');
+            $this->send($this->input['chat'], $this->t('dnstt: некорректный домен', 'dnstt: invalid domain'));
             return;
         }
         $c = $this->getPacConf();
@@ -18320,7 +18383,7 @@ DNS-over-HTTPS with IP:
         if ($action === 'ask') {
             $r = $this->send(
                 $this->input['chat'],
-                "@{$this->input['username']} enter decoy origin, e.g. http://" . self::TELEMT_WEB_DECOY_GATEWAY . ":8081",
+                $this->t("@{$this->input['username']} введите адрес сайта-приманки, например http://", "@{$this->input['username']} enter decoy origin, e.g. http://") . self::TELEMT_WEB_DECOY_GATEWAY . ":8081",
                 $this->input['message_id'],
                 reply: 'enter decoy origin',
             );
@@ -19082,7 +19145,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter user name",
+            $this->t("@{$this->input['username']} введите имя пользователя", "@{$this->input['username']} enter user name"),
             $this->input['message_id'],
             reply: 'enter user name',
         );
@@ -19767,7 +19830,7 @@ DNS-over-HTTPS with IP:
                     $protocolColumns[1][] = $this->i18n($portApplied ? 'on' : 'off') . ' ' . $state['settings']['port'];
                 } catch (RuntimeException | InvalidArgumentException $e) {
                     $protocolColumns[0][] = $this->i18n('off') . ' ' . $label;
-                    $protocolColumns[1][] = '— ошибка состояния';
+                    $protocolColumns[1][] = $this->t('— ошибка состояния', ': state error');
                 }
                 $managedProtocolButtons[] = ['text' => $label, 'callback_data' => "/!protocol $protocol"];
             }
@@ -20848,7 +20911,7 @@ DNS-over-HTTPS with IP:
                     if (!$this->mldsaKeysValid($p)) {
                         $mk = $this->genMldsaKeys();
                         if (empty($mk['seed']) || empty($mk['verify'])) {
-                            return $this->answer($this->input['callback_id'], 'mldsa keygen failed (xray too old?)', true);
+                            return $this->answer($this->input['callback_id'], $this->t('не удалось создать ключи ML-DSA (слишком старый Xray?)', 'mldsa keygen failed (xray too old?)'), true);
                         }
                         $p['reality']['mldsa65Seed']   = $mk['seed'];
                         $p['reality']['mldsa65Verify'] = $mk['verify'];
@@ -20881,7 +20944,7 @@ DNS-over-HTTPS with IP:
     public function dpiSet($field)
     {
         if (in_array($field, ['r_mldsa65Seed', 'r_mldsa65Verify'], true)) {
-            return $this->answer($this->input['callback_id'], 'ML-DSA-65 uses autogen only', true);
+            return $this->answer($this->input['callback_id'], $this->t('ML-DSA-65 задаётся только автоматически (autogen)', 'ML-DSA-65 uses autogen only'), true);
         }
 
         $prompt = "@{$this->input['username']} " . $this->i18n('enter value');
@@ -21073,7 +21136,7 @@ DNS-over-HTTPS with IP:
     {
         $mk = $this->genMldsaKeys();
         if (empty($mk['seed']) || empty($mk['verify'])) {
-            return $this->answer($this->input['callback_id'], 'mldsa keygen failed (xray too old?)', true);
+            return $this->answer($this->input['callback_id'], $this->t('не удалось создать ключи ML-DSA (слишком старый Xray?)', 'mldsa keygen failed (xray too old?)'), true);
         }
 
         $p = $this->getPacConf();
@@ -21093,7 +21156,7 @@ DNS-over-HTTPS with IP:
         $seed   = (string) ($p['reality']['mldsa65Seed'] ?? '');
         $verify = (string) ($p['reality']['mldsa65Verify'] ?? '');
         if ($seed === '' && $verify === '') {
-            return $this->answer($this->input['callback_id'], 'mldsa65 keys are empty — use autogen', true);
+            return $this->answer($this->input['callback_id'], $this->t('ключей ML-DSA-65 нет; используйте autogen', 'mldsa65 keys are empty — use autogen'), true);
         }
         $t   = [];
         $t[] = 'mldsa65 Seed:';
@@ -21801,7 +21864,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter hwid devices count",
+            $this->t("@{$this->input['username']} введите число устройств HWID", "@{$this->input['username']} enter hwid devices count"),
             $this->input['message_id'],
             reply: 'enter hwid devices count',
         );
@@ -24974,7 +25037,7 @@ DNS-over-HTTPS with IP:
             $this->answer(
                 $this->input['callback_id'],
                 empty($this->getPacConf()['subtoken_strict'])
-                    ? '⚠ rotated, but strict off — old uuid links still resolve'
+                    ? $this->t('⚠ ссылки сменены, но строгий режим выключен: старые ссылки с UUID ещё работают', '⚠ rotated, but strict off — old uuid links still resolve')
                     : '🔄 all subscription links rotated'
             );
         }
@@ -25490,7 +25553,7 @@ DNS-over-HTTPS with IP:
             $text[] = '';
             $text[] = 'caddy: ' . htmlspecialchars($ver['running'] ?: '—', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
                 . ($ver['pinned'] !== '' && $ver['pinned'] !== $ver['running']
-                    ? '  (пин: ' . htmlspecialchars($ver['pinned'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . ', нужна пересборка)'
+                    ? $this->t('  (пин: ', '  (pin: ') . htmlspecialchars($ver['pinned'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . $this->t(', нужна пересборка)', ', rebuild needed)')
                     : '');
         }
         $data[] = [
@@ -25647,7 +25710,7 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> Hysteria";
         $text[] = "version hysteria: <code>$version</code>";
         $text[] = "server: " . ($port ? "<code>$domain:$port</code>" : 'port unavailable');
-        $text[] = 'Общий пароль: <code>' . self::esc($pass) . '</code>';
+        $text[] = $this->t('Общий пароль: <code>', 'Shared password: <code>') . self::esc($pass) . '</code>';
         $text[] = "masq (decoy): <code>$sni</code>";
         $text[] = "obfs: " . ($obfsOn ? $this->hyObfsType($pac) . " <code>$obfs</code>" : $this->i18n('off'));
         $text[] = "cc: <code>$cc</code>";
@@ -25656,8 +25719,8 @@ DNS-over-HTTPS with IP:
         if ($link) {
             $text[] = "\n<code>" . self::esc($link) . '</code>';
         }
-        $data[] = [['text' => 'Персональные доступы', 'callback_data' => '/hyUsers']];
-        $data[] = [['text' => 'Диагностика', 'callback_data' => '/diag hy']];
+        $data[] = [['text' => $this->t('Персональные доступы', 'Personal access'), 'callback_data' => '/hyUsers']];
+        $data[] = [['text' => $this->t('Диагностика', 'Diagnostics'), 'callback_data' => '/diag hy']];
         $data[] = [
             [
                 'text'          => $this->i18n('change password'),
@@ -25841,9 +25904,9 @@ DNS-over-HTTPS with IP:
             // «контейнер не ответил», а не «пин разошёлся с образом».
             // Сравниваем без ведущей «v»: в .env пин записан как «1.5.0».
             if ($ver['pinned'] !== '' && $ver['running'] === '') {
-                $line .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, контейнер не отвечает)';
+                $line .= $this->t(' (пин: <code>', ' (pin: <code>') . $esc($ver['pinned']) . $this->t('</code>, контейнер не отвечает)', '</code>, the container does not respond)');
             } elseif ($ver['pinned'] !== '' && ltrim($ver['pinned'], 'vV') !== ltrim($ver['running'], 'vV')) {
-                $line .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, нужна пересборка)';
+                $line .= $this->t(' (пин: <code>', ' (pin: <code>') . $esc($ver['pinned']) . $this->t('</code>, нужна пересборка)', '</code>, rebuild needed)');
             }
             if ($ver['gnutls'] !== '') {
                 $line .= '  GnuTLS: <code>' . $esc($ver['gnutls']) . '</code>';
@@ -25984,7 +26047,7 @@ DNS-over-HTTPS with IP:
         foreach ($clients as $k => $v) {
             if ($i == $k) {
                 if (!$this->saveOcPassword($v, null)) {
-                    $this->send($this->input['chat'], 'OpenConnect: не удалось удалить пользователя');
+                    $this->send($this->input['chat'], $this->t('OpenConnect: не удалось удалить пользователя', 'OpenConnect: could not delete the user'));
                     break;
                 }
                 $this->ssh('occtl disconnect user ' . escapeshellarg($v), 'oc');
@@ -26161,7 +26224,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter password (or leave empty to auto-generate)",
+            $this->t("@{$this->input['username']} введите пароль (или оставьте пустым для автоматического)", "@{$this->input['username']} enter password (or leave empty to auto-generate)"),
             $this->input['message_id'],
             reply: 'enter xr password',
         );
@@ -26463,7 +26526,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} send the template file:",
+            $this->t("@{$this->input['username']} отправьте файл шаблона:", "@{$this->input['username']} send the template file:"),
             $this->input['message_id'],
             reply: 'send the template file:',
         );
@@ -26479,7 +26542,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} send time like 1 hour or 1 day etc",
+            $this->t("@{$this->input['username']} отправьте время, например 1 hour или 1 day", "@{$this->input['username']} send time like 1 hour or 1 day etc"),
             $this->input['message_id'],
             reply: 'send time like 1 hour or 1 day etc',
         );
@@ -26511,7 +26574,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} send the template name",
+            $this->t("@{$this->input['username']} отправьте имя шаблона", "@{$this->input['username']} send the template name"),
             $this->input['message_id'],
             reply: 'send the template name',
         );
@@ -27789,7 +27852,7 @@ DNS-over-HTTPS with IP:
             'text' => 'XDRIVE: ' . $this->i18n(!empty($p['xdrive']['enabled']) ? 'on' : 'off'),
             'callback_data' => '/xdrive',
         ], [
-            'text' => '🌍 Узлы выхода' . (($exitCount = count($this->exitNodes($p))) ? " ($exitCount)" : ''),
+            'text' => $this->t('🌍 Узлы выхода', '🌍 Exit nodes') . (($exitCount = count($this->exitNodes($p))) ? " ($exitCount)" : ''),
             'callback_data' => '/exits',
         ]];
         $data[] = [
@@ -27834,7 +27897,7 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => '🔄 rotate sub links',
+                'text'          => $this->t('🔄 сменить ссылки подписок', '🔄 rotate sub links'),
                 'callback_data' => '/rotateAllSubTokens',
             ],
         ];
@@ -27990,7 +28053,7 @@ DNS-over-HTTPS with IP:
         $text[] = "Menu -> " . $this->i18n('xray') . ' -> routes';
 
         $data = [
-            [['text' => '📖 Справка по правилам', 'callback_data' => '/routeshelp 0']],
+            [['text' => $this->t('📖 Справка по правилам', '📖 Rules help'), 'callback_data' => '/routeshelp 0']],
             [[
                 'text'          => $this->i18n('block'),
                 'callback_data' => "/xtlsblock",
@@ -28040,18 +28103,25 @@ DNS-over-HTTPS with IP:
 
     public function routesHelp(int $page = 0): void
     {
-        $pages = require __DIR__ . '/routes_help.php';
+        $pages = require __DIR__ . ($this->language === 'en' ? '/routes_help_en.php' : '/routes_help.php');
         $titles = array_keys($pages);
         $count = count($pages);
         $page = max(0, min($page, $count));
-        $text = "Menu → Vless → routes → Справка\n\n";
+        $text = 'Menu → Vless → routes → ' . $this->t('Справка', 'Help') . "\n\n";
         $data = [];
         if ($page === 0) {
-            $text .= "<b>Справка по правилам</b>\n\n"
+            $text .= $this->t(
+                "<b>Справка по правилам</b>\n\n"
                 . "Выберите тему. Если настраиваете правила впервые, начните с «С чего начать».\n\n"
                 . "В примерах: ✅ — совпадёт с правилом, ❌ — не совпадёт. "
                 . "Совпадение само по себе не означает блокировку: действие зависит от выбранного списка.\n\n"
-                . "Записи в моноширинном тексте можно копировать. Учебные домены и адреса замените своими.";
+                . "Записи в моноширинном тексте можно копировать. Учебные домены и адреса замените своими.",
+                "<b>Rules help</b>\n\n"
+                . "Choose a topic. If you are setting up rules for the first time, start with \"Getting started\".\n\n"
+                . "In the examples: ✅ matches the rule, ❌ does not. "
+                . "A match by itself does not mean blocking: the action depends on the selected list.\n\n"
+                . "Entries in monospace can be copied. Replace the example domains and addresses with your own.",
+            );
             foreach ($titles as $index => $title) {
                 $data[] = [['text' => ($index + 1) . '. ' . $title, 'callback_data' => '/routeshelp ' . ($index + 1)]];
             }
@@ -28063,7 +28133,7 @@ DNS-over-HTTPS with IP:
             $nav[] = ['text' => "$page/$count", 'callback_data' => "/routeshelp $page"];
             if ($page < $count) $nav[] = ['text' => '→', 'callback_data' => '/routeshelp ' . ($page + 1)];
             $data[] = $nav;
-            $data[] = [['text' => '📑 Все темы', 'callback_data' => '/routeshelp 0']];
+            $data[] = [['text' => $this->i18n('menu help topics'), 'callback_data' => '/routeshelp 0']];
         }
         $data[] = [['text' => $this->i18n('back') . ' → routes', 'callback_data' => '/routes']];
         $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
@@ -28237,7 +28307,7 @@ DNS-over-HTTPS with IP:
                         if ($key === '') unset($p['warp']);
                         else $p['warp'] = $key;
                     }
-                    if (!$this->setPacConf($p)) throw new RuntimeException('Не удалось сохранить настройки WARP');
+                    if (!$this->setPacConf($p)) throw new RuntimeException($this->t('Не удалось сохранить настройки WARP', 'Could not save the WARP settings'));
                 });
             };
             // Не удаляем оставшийся после аварии backup: в нём может быть
@@ -28429,7 +28499,7 @@ DNS-over-HTTPS with IP:
                     $p = $this->getPacConf();
                     if ($disabled) $p['warpoff'] = 1;
                     else unset($p['warpoff']);
-                    if (!$this->setPacConf($p)) throw new RuntimeException('Не удалось сохранить настройки WARP');
+                    if (!$this->setPacConf($p)) throw new RuntimeException($this->t('Не удалось сохранить настройки WARP', 'Could not save the WARP settings'));
                 });
             };
             $stop = 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
@@ -28657,14 +28727,14 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . htmlspecialchars($c['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
         array_push($text, ...$this->subscriptionCardSummary($c, $i));
-        $text[] = '<b>Подключение</b>';
+        $text[] = $this->t('<b>Подключение</b>', '<b>Connection</b>');
         if (file_exists(__DIR__ . '/subscription.php')) {
             $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         }
         $linkIndex = count($text);
         $text[] = '<pre><code>' . self::esc($this->linkXray($i)) . "</code></pre>\n";
 
-        $text[] = '<b>Импорт в приложения</b>';
+        $text[] = $this->t('<b>Импорт в приложения</b>', '<b>Import into apps</b>');
         array_push($text, ...$this->subscriptionImportLinks("$scheme://{$domain}/pac$hash", $stok, $c['email']));
 
         $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
@@ -28690,14 +28760,14 @@ DNS-over-HTTPS with IP:
             's' => $stok,
         ]));
 
-        $text[] = '<b>Подписки и файлы</b>';
+        $text[] = $this->t('<b>Подписки и файлы</b>', '<b>Subscriptions and files</b>');
         $text[] = "\nxray config: <pre><code>$xr</code></pre>";
         $text[] = "sing-box config: <pre><code>$si</code></pre>";
         $text[] = "mihomo config: <pre><code>$cl</code></pre>";
         $text[] = "v2rayNG (base64): <pre><code>$vl</code></pre>";
 
         $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$stok}'>windows service</a>";
-        $text[]   = 'Файлы из кнопок загрузки временные: сохраните их до следующего нажатия в этом меню.';
+        $text[]   = $this->t('Файлы из кнопок загрузки временные: сохраните их до следующего нажатия в этом меню.', 'Files from the download buttons are temporary: save them before the next tap in this menu.');
         $st       = $this->getXrayStats();
         $protocolUsage = $this->xrayProtocolUsage($c);
         $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0) + $protocolUsage['download']);
@@ -28743,15 +28813,15 @@ DNS-over-HTTPS with IP:
             ];
         }
         $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
-        $data[] = [['text' => 'Протоколы в готовой подписке', 'callback_data' => '/xp ' . ManagedProtocol::xraySource($c)]];
+        $data[] = [['text' => $this->t('Протоколы в готовой подписке', 'Protocols in the ready subscription'), 'callback_data' => '/xp ' . ManagedProtocol::xraySource($c)]];
         if ($this->exitNodes($pac) || !empty($c['exit_relay'])) {
             $exitOn = count(self::exitClientNodes($c));
-            $data[] = [['text' => '🌍 Узлы выхода' . ($exitOn ? " ($exitOn)" : ''), 'callback_data' => "/exitUser $i"]];
+            $data[] = [['text' => $this->t('🌍 Узлы выхода', '🌍 Exit nodes') . ($exitOn ? " ($exitOn)" : ''), 'callback_data' => "/exitUser $i"]];
         }
-        $data[] = [['text' => 'Отдельные подключения · ссылки и файлы', 'callback_data' => '/xc ' . ManagedProtocol::xraySource($c)]];
+        $data[] = [['text' => $this->t('Отдельные подключения · ссылки и файлы', 'Separate connections · links and files'), 'callback_data' => '/xc ' . ManagedProtocol::xraySource($c)]];
         $data[] = [
-            ['text' => 'Mihomo JSON · подписка', 'web_app' => ['url' => "https://{$domain}/pac$hash?t=clj&s={$stok}"]],
-            ['text' => 'Mihomo JSON · файл', 'callback_data' => "/dw $i clj"],
+            ['text' => $this->t('Mihomo JSON · подписка', 'Mihomo JSON · subscription'), 'web_app' => ['url' => "https://{$domain}/pac$hash?t=clj&s={$stok}"]],
+            ['text' => $this->t('Mihomo JSON · файл', 'Mihomo JSON · file'), 'callback_data' => "/dw $i clj"],
         ];
         $data[] = [[
             'text'          => '🧩 ' . $this->i18n('external links') . ($extOn ? " ($extOn)" : ''),
@@ -29374,7 +29444,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter hwid devices count",
+            $this->t("@{$this->input['username']} введите число устройств HWID", "@{$this->input['username']} enter hwid devices count"),
             $this->input['message_id'],
             reply: 'enter hwid devices count',
         );
@@ -29998,11 +30068,11 @@ DNS-over-HTTPS with IP:
                 // Validate even disabled masks before saving values that will later be enabled.
                 $this->finalmaskNoiseSettings($settings['noise'], $settings['noise']['list']);
                 if (!$this->finalmaskCoreCompatible($p, $this->xrayCoreSelection($p))) {
-                    throw new InvalidArgumentException('UDP noise exp требует Xray 26.9.30 или новее. Выберите совместимое ядро либо выключите noise.');
+                    throw new InvalidArgumentException($this->t('UDP noise exp требует Xray 26.9.30 или новее. Выберите совместимое ядро либо выключите noise.', 'UDP noise exp requires Xray 26.9.30 or newer. Choose a compatible core or turn noise off.'));
                 }
                 $old = $this->getXray(); $candidate = $old;
                 $this->ensureFinalmaskInbound($candidate, $p);
-                if ($this->setPacConf($p) === false) throw new RuntimeException('Не удалось сохранить finalmask');
+                if ($this->setPacConf($p) === false) throw new RuntimeException($this->t('Не удалось сохранить finalmask', 'Could not save finalmask'));
                 if (($old['inbounds'][0]['streamSettings']['finalmask'] ?? null)
                     === ($candidate['inbounds'][0]['streamSettings']['finalmask'] ?? null)) return true;
                 try {
@@ -30017,8 +30087,8 @@ DNS-over-HTTPS with IP:
                     $restored = false;
                 }
                 throw new RuntimeException($saved && $restored
-                    ? 'finalmask не применён; прежние настройки восстановлены.'
-                    : 'finalmask не применён; восстановление не подтверждено. Проверьте состояние Xray.');
+                    ? $this->t('finalmask не применён; прежние настройки восстановлены.', 'finalmask not applied; the previous settings are restored.')
+                    : $this->t('finalmask не применён; восстановление не подтверждено. Проверьте состояние Xray.', 'finalmask not applied; the restore is not confirmed. Check the Xray state.'));
             }, 20, false), 20, false);
         } catch (InvalidArgumentException | RuntimeException $e) {
             $this->answer($this->input['callback_id'] ?? '', $e->getMessage(), true);
@@ -31760,19 +31830,19 @@ DNS-over-HTTPS with IP:
     {
         $html = (bool) preg_match('~^\s*<(?:!doctype|html|\?xml)~i', substr($body, 0, 512));
         if ($format === 'srs') {
-            return str_starts_with($body, 'SRS') ? '' : 'это не файл .srs';
+            return str_starts_with($body, 'SRS') ? '' : Lang::t('это не файл .srs', 'this is not a .srs file');
         }
         if ($format === 'mrs') {
-            return str_starts_with($body, "\x28\xb5\x2f\xfd") ? '' : 'это не файл .mrs';
+            return str_starts_with($body, "\x28\xb5\x2f\xfd") ? '' : Lang::t('это не файл .mrs', 'this is not a .mrs file');
         }
         if ($format === 'json') {
             $json = json_decode($body, true);
-            return is_array($json) && is_array($json['rules'] ?? null) ? '' : 'в JSON нет списка rules';
+            return is_array($json) && is_array($json['rules'] ?? null) ? '' : Lang::t('в JSON нет списка rules', 'the JSON has no rules list');
         }
         if (in_array($format, ['yaml', 'yml'], true)) {
-            return !$html && preg_match('~^\s*payload\s*:~m', $body) ? '' : 'в файле нет раздела payload';
+            return !$html && preg_match('~^\s*payload\s*:~m', $body) ? '' : Lang::t('в файле нет раздела payload', 'the file has no payload section');
         }
-        return $html || trim($body) === '' ? 'пустой список или страница HTML' : '';
+        return $html || trim($body) === '' ? Lang::t('пустой список или страница HTML', 'an empty list or an HTML page') : '';
     }
 
     public function addClashRuleSet($c)
@@ -32820,11 +32890,11 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} введите версию AdGuardHome тегом <code>vX.Y.Z</code> (например <code>v0.107.78</code>).\n\n"
-            . "ВНИМАНИЕ: понижать версию нельзя — старая версия не прочитает обновлённый конфиг. "
-            . "Версия только записывается в .env; как её применить — AdGuard → «📖 Справка» → «Версия, сброс и неполадки».",
+            $this->t("@{$this->input['username']} введите версию AdGuardHome тегом <code>vX.Y.Z</code> (например <code>v0.107.78</code>).\n\n", "@{$this->input['username']} enter the AdGuardHome version as a tag <code>vX.Y.Z</code> (e.g. <code>v0.107.78</code>).\n\n")
+            . $this->t("ВНИМАНИЕ: понижать версию нельзя — старая версия не прочитает обновлённый конфиг. ", "WARNING: do not downgrade: an older version cannot read the updated config. ")
+            . $this->t("Версия только записывается в .env; как её применить — AdGuard → «📖 Справка» → «Версия, сброс и неполадки».", "The version is only written to .env; how to apply it: AdGuard → 📖 Help → Version, reset and troubleshooting."),
             $this->input['message_id'],
-            reply: 'введите версию AdGuardHome',
+            reply: $this->t('введите версию AdGuardHome', 'enter the AdGuardHome version'),
         );
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
@@ -32839,7 +32909,7 @@ DNS-over-HTTPS with IP:
         $v = trim((string) $v);
         // Теги AdGuard: v0.107.78, изредка беты вида v0.108.0-b.90.
         if (!preg_match('~^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$~', $v)) {
-            $this->update($this->input['chat'], $this->input['message_id'], 'нужен тег вида vX.Y.Z (например v0.107.78)');
+            $this->update($this->input['chat'], $this->input['message_id'], $this->t('нужен тег вида vX.Y.Z (например v0.107.78)', 'a tag like vX.Y.Z is needed (e.g. v0.107.78)'));
             sleep(3);
             return $this->menu('adguard');
         }
@@ -32886,7 +32956,7 @@ DNS-over-HTTPS with IP:
         $safesearch = !empty($ad['filtering']['safe_search']['enabled']);
         $text .= "\n\nstatus: $status\t\tsafesearch: " . $this->i18n($safesearch ? 'on' : 'off');
         if ($ad === []) {
-            $text .= "\n⚠️ AdGuardHome.yaml не читается";
+            $text .= $this->t("\n⚠️ AdGuardHome.yaml не читается", "\n⚠️ AdGuardHome.yaml cannot be read");
         }
         // Живое состояние — у самого AdGuard: защита, лимит и сводка за период.
         if (($live = $this->adguardApi('GET', 'status', null, 3)) !== null) {
@@ -32910,9 +32980,9 @@ DNS-over-HTTPS with IP:
             // «контейнер не ответил», а не «пин разошёлся с образом».
             // Сравниваем без ведущей «v» — так же, как в ocMenu.
             if ($ver['pinned'] !== '' && $ver['running'] === '') {
-                $text .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, контейнер не отвечает)';
+                $text .= $this->t(' (пин: <code>', ' (pin: <code>') . $esc($ver['pinned']) . $this->t('</code>, контейнер не отвечает)', '</code>, the container does not respond)');
             } elseif ($ver['pinned'] !== '' && ltrim($ver['pinned'], 'vV') !== ltrim($ver['running'], 'vV')) {
-                $text .= ' (пин: <code>' . $esc($ver['pinned']) . '</code>, нужна пересборка)';
+                $text .= $this->t(' (пин: <code>', ' (pin: <code>') . $esc($ver['pinned']) . $this->t('</code>, нужна пересборка)', '</code>, rebuild needed)');
             }
         }
         $allowedClients = array_map('strval', (array) ($ad['dns']['allowed_clients'] ?? []));
@@ -33141,7 +33211,7 @@ DNS-over-HTTPS with IP:
     {
         $pac = $this->getPacConf();
         if (($c = $this->adguardConf()) === null) {
-            $this->send($this->input['from'], 'AdGuardHome.yaml не читается — список не изменён.');
+            $this->send($this->input['from'], $this->t('AdGuardHome.yaml не читается — список не изменён.', 'AdGuardHome.yaml cannot be read; the list is unchanged.'));
             return $this->menu('adguard');
         }
         $out[] = 'Restart Adguard Home';
@@ -33353,7 +33423,7 @@ DNS-over-HTTPS with IP:
         // поэтому строка вне блока $conf['domain'] — показываем всегда.
         // Меняется только хеш-часть /panel<hash>/, IP и порт фиксированы.
         $panelPort = (int) (getenv('PANEL_PORT') ?: 8090);
-        $text[]    = "панель: <code>http://127.0.0.1:$panelPort/panel{$this->getHashBot()}/</code>";
+        $text[]    = $this->t("панель: <code>http://127.0.0.1:$panelPort/panel{$this->getHashBot()}/</code>", "panel: <code>http://127.0.0.1:$panelPort/panel{$this->getHashBot()}/</code>");
         if (!empty($conf['domain'])) {
             $ssl_expiry = $this->expireCert();
             $certs      = $this->domainsCert() ?: [];
@@ -33390,7 +33460,7 @@ DNS-over-HTTPS with IP:
         }
 
         $data = [
-            [['text' => 'Протоколы и контейнеры', 'callback_data' => '/protocolModules']],
+            [['text' => $this->t('Протоколы и контейнеры', 'Protocols and containers'), 'callback_data' => '/protocolModules']],
             [
                 [
                     'text'          => $conf['domain'] ? "{$this->i18n('delete')} {$conf['domain']}" : $this->i18n('install domain'),
@@ -33540,16 +33610,16 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => $this->i18n('change password') . ' (панель)',
+                'text'          => $this->i18n('change password') . $this->t(' (панель)', ' (panel)'),
                 'callback_data' => "/panelPswd",
             ],
             [
-                'text'          => $this->i18n('generate password') . ' (панель)',
+                'text'          => $this->i18n('generate password') . $this->t(' (панель)', ' (panel)'),
                 'callback_data' => "/panelGenPswd",
             ],
         ];
         $data[] = [[
-            'text' => 'Посмотреть пароль панели',
+            'text' => $this->t('Посмотреть пароль панели', 'Show panel password'),
             'callback_data' => '/panelShowPswd',
         ]];
         // Состав администраторов видит и меняет только владелец (isOwner()).
@@ -33579,7 +33649,7 @@ DNS-over-HTTPS with IP:
             ],
         ];
         $text[] = '';
-        $text[] = 'Пароль веб-панели (app/panel, порт 8090) — эти же действия остаются доступны через `panel.php passwd` на сервере, если бот недоступен.';
+        $text[] = $this->t('Пароль веб-панели (app/panel, порт 8090) — эти же действия остаются доступны через `panel.php passwd` на сервере, если бот недоступен.', 'Web panel password (app/panel, port 8090): the same actions stay available through `panel.php passwd` on the server if the bot is unavailable.');
         return [
             'text' => implode("\n", $text),
             'data' => $data,
@@ -33652,9 +33722,9 @@ DNS-over-HTTPS with IP:
             $pending = $enabled && !$this->protocolPortApplied($protocol, $state);
             $data[] = [['text' => ($enabled ? ($pending ? '🟡 ' : '🟢 ') : '🔴 ') . $name . ' · ' . $state['settings']['port'] . '/' . $transport,
                 'callback_data' => "/protocolPort $protocol"]];
-            if ($pending) $text[] = "$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.";
+            if ($pending) $text[] = $this->t("$name: ожидается применение внешнего порта; при занятом порте служба сохранит прежнюю привязку.", "$name: waiting for the external port to be applied; if the port is busy, the service keeps the previous binding.");
         }
-        $text[] = 'Mieru, TUIC, ShadowTLS, snolc и MASQUE: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.';
+        $text[] = $this->t('Mieru, TUIC, ShadowTLS, snolc и MASQUE: те же внешние порты, что в настройках протокола. AnyTLS: общий 443/TCP (SNI), отдельная смена недоступна.', 'Mieru, TUIC, ShadowTLS, snolc and MASQUE: the same external ports as in the protocol settings. AnyTLS: shared 443/TCP (SNI), a separate change is not available.');
         if (!empty($pac['restart'])) {
             $data[] = [
                 [
@@ -34190,7 +34260,7 @@ DNS-over-HTTPS with IP:
         if (!$this->isHostname($domain)) {
             $this->send(
                 $this->input['chat'],
-                self::esc($domain) . ' - wrong domain format',
+                self::esc($domain) . $this->t(': неверный формат домена', ' - wrong domain format'),
                 $this->input['message_id']
             );
             return $this->xray();
@@ -34379,8 +34449,8 @@ DNS-over-HTTPS with IP:
                     && $this->xrayCoreStarted($this->xrayCoreSelection($previousPac));
             }
             $this->answer($this->input['callback_id'], $restored
-                ? 'Не удалось переключить транспорт. Предыдущие настройки сохранены.'
-                : 'Не удалось переключить транспорт и полностью восстановить настройки. Проверьте журнал Xray.', true);
+                ? $this->t('Не удалось переключить транспорт. Предыдущие настройки сохранены.', 'Could not switch the transport. The previous settings are kept.')
+                : $this->t('Не удалось переключить транспорт и полностью восстановить настройки. Проверьте журнал Xray.', 'Could not switch the transport and fully restore the settings. Check the Xray log.'), true);
         }
         $this->xray();
     }
@@ -35020,7 +35090,7 @@ DNS-over-HTTPS with IP:
         // readConfig() возвращает null, если контейнер недоступен: без проверки
         // дальше шли обращения к null и создавался пир с битым адресом.
         if (empty($conf['interface']['Address'])) {
-            $this->send($this->input['chat'] ?? '', 'wireguard: конфиг недоступен (контейнер не отвечает), пир не создан', $this->input['message_id'] ?? null);
+            $this->send($this->input['chat'] ?? '', $this->t('wireguard: конфиг недоступен (контейнер не отвечает), пир не создан', 'wireguard: the config is unavailable (the container does not respond), peer not created'), $this->input['message_id'] ?? null);
             return;
         }
         $ipnet     = explode('/', $conf['interface']['Address']);
@@ -35049,7 +35119,7 @@ DNS-over-HTTPS with IP:
             }
         }
         if ($client_ip === null) {
-            $this->send($this->input['chat'] ?? '', 'wireguard: подсеть исчерпана, свободных адресов нет', $this->input['message_id'] ?? null);
+            $this->send($this->input['chat'] ?? '', $this->t('wireguard: подсеть исчерпана, свободных адресов нет', 'wireguard: the subnet is exhausted, no free addresses'), $this->input['message_id'] ?? null);
             return;
         }
         // Ключи остаются внутри shell контейнера: не подставляем секреты в
@@ -35069,7 +35139,7 @@ DNS-over-HTTPS with IP:
         // пользователь получал «успех» и нерабочий конфиг, который потом
         // приходилось вычищать руками. Лучше не создавать ничего.
         if ('' === $public_server_key || '' === $private_peer_key || '' === $public_peer_key) {
-            $this->send($this->input['chat'] ?? '', 'wireguard: не удалось сгенерировать ключи (контейнер недоступен), пир не создан', $this->input['message_id'] ?? null);
+            $this->send($this->input['chat'] ?? '', $this->t('wireguard: не удалось сгенерировать ключи (контейнер недоступен), пир не создан', 'wireguard: could not generate keys (the container is unavailable), peer not created'), $this->input['message_id'] ?? null);
             return;
         }
 
@@ -35084,7 +35154,7 @@ DNS-over-HTTPS with IP:
         // бы ни на сервере, ни у клиента.
         $psk = $amnezia ? $this->presharedKey() : '';
         if ($amnezia && $psk === '') {
-            $this->send($this->input['chat'] ?? '', 'wireguard: не удалось получить presharedkey (контейнер недоступен), пир не создан', $this->input['message_id'] ?? null);
+            $this->send($this->input['chat'] ?? '', $this->t('wireguard: не удалось получить presharedkey (контейнер недоступен), пир не создан', 'wireguard: could not get the presharedkey (the container is unavailable), peer not created'), $this->input['message_id'] ?? null);
             return;
         }
 
@@ -35852,7 +35922,7 @@ DNS-over-HTTPS with IP:
             $out .= "\n[[client]]\nusername = \"" . addcslashes($u, '"\\') . "\"\n"
                  .  "password = \"" . addcslashes($pass, '"\\') . "\"\n";
         }
-        if (!$this->writePrivateKey($p['cred'], $out)) throw new RuntimeException('Не удалось сохранить реквизиты TrustTunnel');
+        if (!$this->writePrivateKey($p['cred'], $out)) throw new RuntimeException($this->t('Не удалось сохранить реквизиты TrustTunnel', 'Could not save the TrustTunnel credentials'));
     }
 
     // hosts.toml переписывается целиком на каждом рестарте: ping_hosts /
@@ -35866,7 +35936,7 @@ DNS-over-HTTPS with IP:
         $out    = "# Generated by bot — do not edit manually.\n"
                 . "[[main_hosts]]\nhostname = \"$domain\"\n"
                 . "cert_chain_path = \"/certs/cert_public\"\nprivate_key_path = \"/certs/cert_private\"\n";
-        if (!$this->writePrivateKey($p['hosts'], $out)) throw new RuntimeException('Не удалось сохранить TLS TrustTunnel');
+        if (!$this->writePrivateKey($p['hosts'], $out)) throw new RuntimeException($this->t('Не удалось сохранить TLS TrustTunnel', 'Could not save the TrustTunnel TLS'));
     }
 
     // Всё, из-за чего демон не поднимется. Один список и для гейта в
@@ -36025,7 +36095,7 @@ DNS-over-HTTPS with IP:
         // callback_data телеграма — 64 БАЙТА на всю строку, самая длинная у нас
         // "/delttus <name> confirm" (21 + имя). 40 символов укладываются.
         if (strlen($user) > 40) {
-            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            $this->send($this->input['chat'], $this->t('имя слишком длинное (не более 40 символов)', 'username too long (max 40 chars)'));
             return $this->menu('tt');
         }
         $added = $this->ttUsersUpdate(static function (&$users) use ($user) {
@@ -36065,7 +36135,7 @@ DNS-over-HTTPS with IP:
     {
         $r = $this->send(
             $this->input['chat'],
-            "@{$this->input['username']} enter password for $user",
+            $this->t("@{$this->input['username']} введите пароль для $user", "@{$this->input['username']} enter password for $user"),
             $this->input['message_id'],
             reply: 'enter password',
         );
@@ -36141,10 +36211,10 @@ DNS-over-HTTPS with IP:
         if (($pac['letsencrypt'] ?? '') !== 'letsencrypt' && file_exists('/certs/cert_public')) {
             $cert = trim((string) file_get_contents('/certs/cert_public'));
         }
-        $toml  = "# TrustTunnel endpoint config (fallback, собран ботом).\n"
-               . "# Применение:\n"
+        $toml  = $this->t("# TrustTunnel endpoint config (fallback, собран ботом).\n", "# TrustTunnel endpoint config (fallback, built by the bot).\n")
+               . $this->t("# Применение:\n", "# How to apply:\n")
                . "#   setup_wizard --mode non-interactive \\\n"
-               . "#       --endpoint_config <этот файл> --settings trusttunnel_client.toml\n"
+               . $this->t("#       --endpoint_config <этот файл> --settings trusttunnel_client.toml\n", "#       --endpoint_config <this file> --settings trusttunnel_client.toml\n")
                . "#   trusttunnel_client -c trusttunnel_client.toml\n\n";
         $toml .= 'hostname = "' . $esc($host) . "\"\n";
         $toml .= 'addresses = ["' . $esc("$host:$port") . "\"]\n";
@@ -36458,6 +36528,7 @@ DNS-over-HTTPS with IP:
     // поле, а не исключение: восстановление идёт пачкой (wg, xray, ipsec…),
     // и падение одной секции не должно ронять остальные.
     public $ovpnRestoreError = '';
+    public bool $ovpnRestorePartial = false;
 
     // Снэпшот /config/openvpn — PKI (ca/server/issued/private/ta), serial,
     // index.txt, crl.pem, server.conf, ccd/. Каждый файл хранится как base64
@@ -36545,11 +36616,12 @@ DNS-over-HTTPS with IP:
             return $this->withOvpnPkiLock(fn() => $this->importOvpnPki($files, true));
         }
         $this->ovpnRestoreError = '';
+        $this->ovpnRestorePartial = false;
         $root = dirname($this->ovpnPaths()['pki']);
         try {
             $decoded = $this->decodeBackupTree($files, $root, self::OVPN_SNAPSHOT_CORE);
             $this->validateBackupPki($decoded, 'ovpn');
-            if (!is_dir($root) && !mkdir($root, 0755, true)) throw new RuntimeException('Не удалось создать каталог OpenVPN');
+            if (!is_dir($root) && !mkdir($root, 0755, true)) throw new RuntimeException($this->t('Не удалось создать каталог OpenVPN', 'Could not create the OpenVPN directory'));
             $keep = array_fill_keys(array_merge(array_keys($decoded), self::OVPN_SNAPSHOT_OPTIONAL), true);
             $remove = [];
             if (is_dir($root)) {
@@ -36557,7 +36629,7 @@ DNS-over-HTTPS with IP:
                 foreach ($iterator as $entry) {
                     $relative = substr($entry->getPathname(), strlen($root) + 1);
                     if (str_starts_with($relative, '.restore-')) continue;
-                    if ($entry->isLink()) throw new RuntimeException('Симлинк в каталоге OpenVPN');
+                    if ($entry->isLink()) throw new RuntimeException($this->t('Симлинк в каталоге OpenVPN', 'A symlink in the OpenVPN directory'));
                     if (!$entry->isFile() || isset($keep[$relative]) || in_array($entry->getFilename(), self::OVPN_RUNTIME_FILES, true)) continue;
                     $remove[] = $relative;
                 }
@@ -36569,6 +36641,7 @@ DNS-over-HTTPS with IP:
         } catch (Throwable $error) {
             // Все пути проверены; данные ключей/сертификатов в текст не попадают.
             $this->ovpnRestoreError = $error->getMessage();
+            $this->ovpnRestorePartial = $error->getCode() === self::BACKUP_PARTIAL;
             return false;
         }
     }
@@ -37742,9 +37815,9 @@ DNS-over-HTTPS with IP:
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} enter $label port (default $def)\n\n"
-                . "⚠️ Порт общий для L2TP/IPsec и IKEv2 (strongswan один). "
-                . "Нативные клиенты снаружи ждут 500/4500 — нестандартный порт "
-                . "требует ручного DNAT в nft (defines IPSEC_IKE/IPSEC_NATT).",
+                . $this->t("⚠️ Порт общий для L2TP/IPsec и IKEv2 (strongswan один). ", "⚠️ The port is shared by L2TP/IPsec and IKEv2 (one strongswan). ")
+                . $this->t("Нативные клиенты снаружи ждут 500/4500 — нестандартный порт ", "Native clients outside expect 500/4500; a non-standard port ")
+                . $this->t("требует ручного DNAT в nft (defines IPSEC_IKE/IPSEC_NATT).", "needs a manual DNAT in nft (defines IPSEC_IKE/IPSEC_NATT)."),
             $this->input['message_id'],
             reply: "enter $label port",
         );
@@ -37763,7 +37836,7 @@ DNS-over-HTTPS with IP:
         $other = $which === 'ike' ? $ports['natt'] : $ports['ike'];
         if ($port < 1 || $port > 65535 || $port === $other) {
             // charon не может слушать одинаковые port и port_nat_t.
-            $this->send($this->input['chat'], "wrong port (1-65535, must differ from $other)");
+            $this->send($this->input['chat'], $this->t("неверный порт (1–65535, должен отличаться от $other)", "wrong port (1-65535, must differ from $other)"));
             return $this->menu($menu);
         }
         $var = $which === 'ike' ? 'IPSECIKEPORT' : 'IPSECNATTPORT';
@@ -37779,8 +37852,8 @@ DNS-over-HTTPS with IP:
         $this->setPacConf($pac);
         $this->send(
             $this->input['chat'],
-            "⚠️ nft на хосте правится вручную: define IPSEC_IKE = {$this->ipsecPorts()['ike']}, "
-                . "define IPSEC_NATT = {$this->ipsecPorts()['natt']} + перезагрузка nftables.",
+            $this->t("⚠️ nft на хосте правится вручную: define IPSEC_IKE = {$this->ipsecPorts()['ike']}, ", "⚠️ nft on the host is edited by hand: define IPSEC_IKE = {$this->ipsecPorts()['ike']}, ")
+                . $this->t("define IPSEC_NATT = {$this->ipsecPorts()['natt']} + перезагрузка nftables.", "define IPSEC_NATT = {$this->ipsecPorts()['natt']} + reload nftables."),
         );
         $this->menu($menu);
     }
@@ -38044,7 +38117,7 @@ DNS-over-HTTPS with IP:
         // Лимит как у ovpn: callback_data телеграма 64 байта на строку
         // "/delL2tpUser <name> confirm".
         if (strlen($user) > 40) {
-            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            $this->send($this->input['chat'], $this->t('имя слишком длинное (не более 40 символов)', 'username too long (max 40 chars)'));
             return $this->menu('l2tp');
         }
         $users = $this->getL2tpUsers();
@@ -38227,7 +38300,7 @@ XML;
         $users = $this->getL2tpUsers();
         $psk   = $this->getIpsecPsk();
         if (!isset($users[$user]) || $psk === '') {
-            $this->send($this->input['chat'], 'PSK not ready — restart ipsec container');
+            $this->send($this->input['chat'], $this->t('PSK не готов: перезапустите контейнер ipsec', 'PSK not ready — restart ipsec container'));
             return false;
         }
         // Встроенный клиент Apple не умеет задавать порты IKE: профиль с
@@ -38615,7 +38688,7 @@ XML;
             return $this->menu('ikev2');
         }
         if (strlen($user) > 40) {
-            $this->send($this->input['chat'], 'username too long (max 40 chars)');
+            $this->send($this->input['chat'], $this->t('имя слишком длинное (не более 40 символов)', 'username too long (max 40 chars)'));
             return $this->menu('ikev2');
         }
         $users = $this->getIkev2Users();
@@ -38625,7 +38698,7 @@ XML;
         }
         $p = $this->ipsecPaths();
         if (!file_exists($p['ca'])) {
-            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container first');
+            $this->send($this->input['chat'], $this->t('PKI не готов: сначала перезапустите контейнер ipsec', 'PKI not ready — restart ipsec container first'));
             return $this->menu('ikev2');
         }
         $users[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
@@ -38655,10 +38728,10 @@ XML;
         $t[] = 'IPsec identifier: <code>' . htmlspecialchars($user, ENT_QUOTES) . '</code>';
         $t[] = 'auth: EAP-MSCHAPv2 (username + password)';
         $t[] = '';
-        $t[] = 'iOS/macOS: ' . $this->i18n('profile') . ' .mobileconfig (CA внутри)';
+        $t[] = 'iOS/macOS: ' . $this->i18n('profile') . $this->t(' .mobileconfig (CA внутри)', ' .mobileconfig (CA inside)');
         $t[] = 'Android: strongSwan app + .sswan ' . $this->i18n('profile');
-        $t[] = 'Android (встроенный VPN): тип IKEv2/IPSec MSCHAPv2, IPsec identifier = login';
-        $t[] = 'Windows: CA (кнопка в меню) + PowerShell:';
+        $t[] = $this->t('Android (встроенный VPN): тип IKEv2/IPSec MSCHAPv2, IPsec identifier = login', 'Android (built-in VPN): type IKEv2/IPSec MSCHAPv2, IPsec identifier = login');
+        $t[] = $this->t('Windows: CA (кнопка в меню) + PowerShell:', 'Windows: CA (button in the menu) + PowerShell:');
         $t[] = '<pre>certutil -addstore -f Root ca.pem'
             . "\nAdd-VpnConnection -Name vpnbot -ServerAddress $host -TunnelType IKEv2 -AuthenticationMethod EAP -EncryptionLevel Required"
             . "\nSet-VpnConnectionIPsecConfiguration -ConnectionName vpnbot -AuthenticationTransformConstants SHA256128 -CipherTransformConstants AES256 -EncryptionMethod AES256 -IntegrityCheckMethod SHA256 -DHGroup Group14 -PfsGroup None -Force</pre>";
@@ -38782,7 +38855,7 @@ XML;
         $users = $this->getIkev2Users();
         $caB64 = $this->ikev2CaB64();
         if (!isset($users[$user]) || $caB64 === '') {
-            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            $this->send($this->input['chat'], $this->t('PKI не готов: перезапустите контейнер ipsec', 'PKI not ready — restart ipsec container'));
             return false;
         }
         $xml = $this->ikev2Mobileconfig($user, (string) $users[$user]['pass'], $this->ipsecHost(), $caB64, (bool) $onDemand);
@@ -38799,7 +38872,7 @@ XML;
         $users = $this->getIkev2Users();
         $caB64 = $this->ikev2CaB64();
         if (!isset($users[$user]) || $caB64 === '') {
-            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            $this->send($this->input['chat'], $this->t('PKI не готов: перезапустите контейнер ipsec', 'PKI not ready — restart ipsec container'));
             return false;
         }
         $host = $this->ipsecHost();
@@ -38844,7 +38917,7 @@ XML;
     {
         $p = $this->ipsecPaths();
         if (!file_exists($p['ca'])) {
-            $this->send($this->input['chat'], 'PKI not ready — restart ipsec container');
+            $this->send($this->input['chat'], $this->t('PKI не готов: перезапустите контейнер ipsec', 'PKI not ready — restart ipsec container'));
             return $this->menu('ikev2');
         }
         $this->sendFile(

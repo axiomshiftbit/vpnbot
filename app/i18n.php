@@ -1644,7 +1644,7 @@ $i = [
     ],
     'selfFakeDomain'  => [
         'en' => 'steal from yourself',
-        'ru' => 'steal from yourself',
+        'ru' => 'маска своим сайтом',
     ],
     'page'  => [
         'en' => 'pagination',
@@ -2560,15 +2560,15 @@ $i = [
     ],
     'sing-box templates'  => [
         'en' => 'sing-box templates',
-        'ru' => 'sing-box templates',
+        'ru' => 'шаблоны sing-box',
     ],
     'mihomo templates'  => [
         'en' => 'mihomo templates',
-        'ru' => 'mihomo templates',
+        'ru' => 'шаблоны mihomo',
     ],
     'v2ray templates'  => [
         'en' => 'v2ray templates',
-        'ru' => 'v2ray templates',
+        'ru' => 'шаблоны v2ray',
     ],
     // С хвостовым пробелом: ключ подставляется перед значением в одну строку.
     'main outbound name: '  => [

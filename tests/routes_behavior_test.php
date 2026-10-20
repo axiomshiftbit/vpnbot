@@ -247,6 +247,21 @@ $check(str_contains(json_encode(end($bot->updates), JSON_UNESCAPED_UNICODE), '/r
 $help = require __DIR__ . '/../app/routes_help.php';
 $titles = array_keys($help);
 $pageCount = count($help);
+// Английская справка: те же страницы в том же порядке, те же примеры в <code>.
+$helpEn = require __DIR__ . '/../app/routes_help_en.php';
+$check(count($helpEn) === $pageCount, 'Английская справка routes: столько же страниц');
+foreach (array_map(null, array_values($help), array_values($helpEn)) as $n => [$ru, $en]) {
+    preg_match_all('~<code>.*?</code>~s', $ru, $codeRu); preg_match_all('~<code>.*?</code>~s', $en, $codeEn);
+    $latin = array_values(array_filter($codeRu[0], static fn($c) => !preg_match('~\p{Cyrillic}~u', $c)));
+    $check(count($codeRu[0]) === count($codeEn[0]) && array_values(array_intersect($codeEn[0], $latin)) === $latin, 'Английская справка routes: примеры страницы ' . ($n + 1) . ' совпадают');
+    $check(!preg_match('~\p{Cyrillic}~u', array_keys($helpEn)[$n] . $en), 'Английская справка routes: страница ' . ($n + 1) . ' без русского текста');
+}
+$bot->language = 'en';
+$bot->routesHelp(1);
+$check(str_contains(end($bot->updates)[0], $helpEn[array_keys($helpEn)[0]]) && !preg_match('~\p{Cyrillic}~u', json_encode(end($bot->updates), JSON_UNESCAPED_UNICODE)), 'В английском интерфейсе открывается английская справка routes');
+$bot->routesHelp(0);
+$check(!preg_match('~\p{Cyrillic}~u', json_encode(end($bot->updates), JSON_UNESCAPED_UNICODE)), 'Оглавление справки routes на английском');
+$bot->language = 'ru';
 $bot->routesHelp();
 [$indexBody, $indexButtons] = end($bot->updates);
 $check(array_column(array_merge(...$indexButtons), 'callback_data')

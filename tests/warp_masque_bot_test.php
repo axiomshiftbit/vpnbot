@@ -366,14 +366,17 @@ try {
     $b->warp();
     $check(str_contains(end($b->t_menu), 'mode: <b>WireGuard</b>'), 'меню на английском');
 
-    // Страницы о MASQUE только на русском — на обоих языках интерфейса одни и те же.
+    // Страницы о MASQUE на языке интерфейса.
     $b->language = 'en';
     $english = $b->menuHelpContent('warp')[2];
     $b->language = 'ru';
     [$title, $back, $pages] = $b->menuHelpContent('warp');
-    $check($title === 'WARP' && $back === '/warp' && count($pages) === 5, 'в справке WARP пять страниц, возврат в меню WARP');
+    $check($title === 'WARP' && $back === '/warp' && count($pages) === 5 && count($english) === 5, 'в справке WARP пять страниц, возврат в меню WARP');
     foreach (['Режим: WireGuard или MASQUE', 'MASQUE: транспорт, ключ и неполадки'] as $name) {
-        $check(isset($pages[$name]) && ($english[$name] ?? null) === $pages[$name], "страница справки есть и одинакова на обоих языках: $name");
+        $check(isset($pages[$name]), "страница справки есть: $name");
+    }
+    foreach (['Mode: WireGuard or MASQUE', 'MASQUE: transport, key and troubleshooting'] as $name) {
+        $check(isset($english[$name]) && !preg_match('~[А-Яа-яЁё]~u', $english[$name]), "английская страница справки есть: $name");
     }
     $help = $pages['Режим: WireGuard или MASQUE'] . "\n" . $pages['MASQUE: транспорт, ключ и неполадки'];
     foreach (['MASQUE', 'WireGuard', 'HTTP/2', 'HTTP/3', '443', 'маршрутизации', 'пробное подключение', 'ss через warp', '26.10.10', 'утечки'] as $word) {

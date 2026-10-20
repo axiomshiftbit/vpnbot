@@ -23,10 +23,10 @@ trait BotHysteria
             $state = $this->hysteriaUsersStore()->read();
             $pages = max(1, (int) ceil(count($state['users']) / 8));
             $page = max(0, min($page, $pages - 1));
-            $text = ['Hysteria → Персональные доступы',
-                'У каждого пользователя свои реквизиты, срок и квота. Общий пароль остаётся отдельным доступом без этих ограничений; отключите его после перехода клиентов.',
-                'Отзыв и смена пароля, истечение срока или квоты разрывают активные соединения Hysteria. Остальные пользователи переподключаются. Проверка ограничений выполняется примерно раз в секунду; возможен перерасход между проверками.'];
-            if (!$this->hyPersonalReady()) $text[] = 'Контроль доступа пока недоступен. Обновите образ Hysteria и проверьте состояние сервиса.';
+            $text = [$this->t('Hysteria → Персональные доступы', 'Hysteria → Personal access'),
+                $this->t('У каждого пользователя свои реквизиты, срок и квота. Общий пароль остаётся отдельным доступом без этих ограничений; отключите его после перехода клиентов.', 'Each user has their own credentials, expiry and quota. The shared password remains a separate access without these limits; disable it after clients have moved.'),
+                $this->t('Отзыв и смена пароля, истечение срока или квоты разрывают активные соединения Hysteria. Остальные пользователи переподключаются. Проверка ограничений выполняется примерно раз в секунду; возможен перерасход между проверками.', 'Revoking or changing a password, or reaching the expiry or quota, drops active Hysteria connections. Other users reconnect. Limits are checked about once a second; usage may overshoot between checks.')];
+            if (!$this->hyPersonalReady()) $text[] = $this->t('Контроль доступа пока недоступен. Обновите образ Hysteria и проверьте состояние сервиса.', 'Access control is not available yet. Update the Hysteria image and check the service state.');
             $buttons = [];
             foreach (array_slice($state['users'], $page * 8, 8, true) as $id => $user) {
                 $buttons[] = [['text' => ($user['enabled'] ? '🟢 ' : '🔴 ') . $user['name'], 'callback_data' => "/hyUser $id"]];
@@ -36,10 +36,10 @@ trait BotHysteria
                 ['text' => ($page + 1) . "/$pages", 'callback_data' => "/hyUsers $page"],
                 ['text' => '→', 'callback_data' => '/hyUsers ' . min($pages - 1, $page + 1)],
             ];
-            $buttons[] = [['text' => 'Добавить пользователя', 'callback_data' => '/hyUser add']];
-            $buttons[] = [['text' => 'Групповые действия', 'callback_data' => '/abstart hy']];
+            $buttons[] = [['text' => $this->t('Добавить пользователя', 'Add user'), 'callback_data' => '/hyUser add']];
+            $buttons[] = [['text' => $this->t('Групповые действия', 'Bulk actions'), 'callback_data' => '/abstart hy']];
             if (!empty($this->getPacConf()['hysteria_pass'])) {
-                $buttons[] = [['text' => 'Отключить общий пароль', 'callback_data' => '/hyUser legacy-off']];
+                $buttons[] = [['text' => $this->t('Отключить общий пароль', 'Disable shared password'), 'callback_data' => '/hyUser legacy-off']];
             }
             $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => '/menu hy']];
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
@@ -53,9 +53,9 @@ trait BotHysteria
             if ($id === 'add') { $this->hyUserPrompt('', 'name'); return; }
             if ($id === 'legacy-off') {
                 $this->update($this->input['chat'], $this->input['message_id'],
-                    'Отключить общий пароль Hysteria? Все старые общие ссылки перестанут подключаться. Персональные доступы сохранятся.',
-                    [[['text' => 'Отключить', 'callback_data' => '/hyUser legacy-confirm']],
-                     [['text' => 'Отмена', 'callback_data' => '/hyUsers']]]);
+                    $this->t('Отключить общий пароль Hysteria? Все старые общие ссылки перестанут подключаться. Персональные доступы сохранятся.', 'Disable the shared Hysteria password? All old shared links stop connecting. Personal access entries are kept.'),
+                    [[['text' => $this->t('Отключить', 'Disable'), 'callback_data' => '/hyUser legacy-confirm']],
+                     [['text' => $this->t('Отмена', 'Cancel'), 'callback_data' => '/hyUsers']]]);
                 return;
             }
             if ($id === 'legacy-confirm') {
@@ -70,21 +70,21 @@ trait BotHysteria
             if (!isset($store->read()['users'][$id])) { $this->hyUsers(); return; }
             if (in_array($action, ['name', 'expires', 'quota'], true)) { $this->hyUserPrompt($id, $action); return; }
             if ($action === 'delete') {
-                $this->update($this->input['chat'], $this->input['message_id'], 'Удалить персональный доступ Hysteria?',
-                    [[['text' => 'Удалить', 'callback_data' => "/hyUser $id delete-confirm"]],
-                     [['text' => 'Отмена', 'callback_data' => "/hyUser $id"]]]);
+                $this->update($this->input['chat'], $this->input['message_id'], $this->t('Удалить персональный доступ Hysteria?', 'Delete the personal Hysteria access?'),
+                    [[['text' => $this->t('Удалить', 'Delete'), 'callback_data' => "/hyUser $id delete-confirm"]],
+                     [['text' => $this->t('Отмена', 'Cancel'), 'callback_data' => "/hyUser $id"]]]);
                 return;
             }
             if (in_array($action, ['toggle', 'rotate', 'reset', 'delete-confirm'], true)) {
                 $store->edit($id, $action === 'delete-confirm' ? 'delete' : $action);
                 if ($action === 'delete-confirm') { $this->hyUsers(); return; }
             } elseif (!in_array($action, ['show', 'file', 'qr'], true)) {
-                throw new InvalidArgumentException('Неизвестное действие Hysteria');
+                throw new InvalidArgumentException($this->t('Неизвестное действие Hysteria', 'Unknown Hysteria action'));
             }
             $this->hyUserMenu($id);
             if (in_array($action, ['file', 'qr'], true)) {
                 $link = $this->hyPersonalLink($id);
-                if ($link === '') throw new RuntimeException('Доступ выключен, ограничен или ещё не применён');
+                if ($link === '') throw new RuntimeException($this->t('Доступ выключен, ограничен или ещё не применён', 'Access is disabled, limited or not applied yet'));
                 $this->protocolOutput = true;
                 if ($action === 'qr') $this->sendQr('hysteria-' . $id, $link, 'Hysteria');
                 else $this->sendFile($this->input['chat'], new CURLStringFile($link . "\n", 'hysteria-' . $id . '.txt', 'text/plain'));
@@ -98,11 +98,11 @@ trait BotHysteria
 
     public function hyUserPrompt(string $id, string $field): void
     {
-        $prompts = ['name' => 'Введите имя пользователя Hysteria (до 60 символов).',
-            'expires' => 'Введите срок в UTC: YYYY-MM-DD HH:MM. Значение 0 снимает ограничение.',
-            'quota' => 'Введите общий лимит отправленного и полученного трафика в GiB, например 10 или 0.5. Значение 0 снимает ограничение.'];
+        $prompts = ['name' => $this->t('Введите имя пользователя Hysteria (до 60 символов).', 'Enter the Hysteria user name (up to 60 characters).'),
+            'expires' => $this->t('Введите срок в UTC: YYYY-MM-DD HH:MM. Значение 0 снимает ограничение.', 'Enter the expiry in UTC: YYYY-MM-DD HH:MM. 0 removes the limit.'),
+            'quota' => $this->t('Введите общий лимит отправленного и полученного трафика в GiB, например 10 или 0.5. Значение 0 снимает ограничение.', 'Enter the total limit of sent and received traffic in GiB, e.g. 10 or 0.5. 0 removes the limit.')];
         if (!$this->admin || !isset($prompts[$field])) return;
-        $r = $this->send($this->input['chat'], $prompts[$field], $this->input['message_id'], reply: 'Введите значение');
+        $r = $this->send($this->input['chat'], $prompts[$field], $this->input['message_id'], reply: $this->t('Введите значение', 'Enter a value'));
         $this->stashReply($r, ['start_message' => $this->input['message_id'], 'callback' => 'hyUserReply', 'args' => [$id, $field]]);
     }
 
@@ -113,8 +113,8 @@ trait BotHysteria
             $store = $this->hysteriaUsersStore();
             $text = trim($text);
             if ($id === '') {
-                if ($field !== 'name') throw new InvalidArgumentException('Неверное действие');
-                if (!$this->hyPersonalReady()) throw new RuntimeException('Сначала обновите и запустите образ Hysteria с поддержкой персональных доступов');
+                if ($field !== 'name') throw new InvalidArgumentException($this->t('Неверное действие', 'Invalid action'));
+                if (!$this->hyPersonalReady()) throw new RuntimeException($this->t('Сначала обновите и запустите образ Hysteria с поддержкой персональных доступов', 'Update and start the Hysteria image with personal access support first'));
                 $id = $store->add($text);
             } else {
                 if ($field === 'name') $value = $text;
@@ -122,15 +122,15 @@ trait BotHysteria
                     $value = null;
                     if ($text !== '0') {
                         $date = DateTimeImmutable::createFromFormat('!Y-m-d H:i', $text, new DateTimeZone('UTC'));
-                        if (!$date || $date->format('Y-m-d H:i') !== $text) throw new InvalidArgumentException('Нужна дата YYYY-MM-DD HH:MM в UTC или 0');
+                        if (!$date || $date->format('Y-m-d H:i') !== $text) throw new InvalidArgumentException($this->t('Нужна дата YYYY-MM-DD HH:MM в UTC или 0', 'A date YYYY-MM-DD HH:MM in UTC or 0 is needed'));
                         $value = $date->getTimestamp();
                     }
                 } elseif ($field === 'quota') {
-                    if (!preg_match('/\A[0-9]{1,7}(?:[.,][0-9]{1,6})?\z/D', $text)) throw new InvalidArgumentException('Нужен лимит от 0 до 1000000 GiB');
+                    if (!preg_match('/\A[0-9]{1,7}(?:[.,][0-9]{1,6})?\z/D', $text)) throw new InvalidArgumentException($this->t('Нужен лимит от 0 до 1000000 GiB', 'A limit from 0 to 1000000 GiB is needed'));
                     $gib = (float) str_replace(',', '.', $text);
-                    if ($gib > 1000000) throw new InvalidArgumentException('Лимит слишком велик');
+                    if ($gib > 1000000) throw new InvalidArgumentException($this->t('Лимит слишком велик', 'The limit is too large'));
                     $value = $gib > 0 ? max(1, (int) round($gib * 1073741824)) : null;
-                } else throw new InvalidArgumentException('Неизвестное поле');
+                } else throw new InvalidArgumentException($this->t('Неизвестное поле', 'Unknown field'));
                 $store->edit($id, $field, $value);
             }
             $this->hyUserMenu($id);
@@ -160,23 +160,23 @@ trait BotHysteria
         $row = $usage['users'][$id] ?? null;
         $bytes = $row && $row['reset'] === $user['reset'] ? $row['upload'] + $row['download'] : 0;
         $text = ['Hysteria → ' . self::esc($user['name']),
-            'Доступ: ' . AccessPolicy::reason($user, AccessPolicy::bytes($user, $row), time()),
-            'Срок (UTC): ' . ($user['expires'] === null ? 'без ограничения' : gmdate('Y-m-d H:i', $user['expires'])),
-            'Расход: ' . number_format($bytes / 1073741824, 3, '.', '') . ' GiB',
-            'Квота: ' . ($user['quota'] === null ? 'без ограничения' : number_format($user['quota'] / 1073741824, 6, '.', '') . ' GiB')];
-        if ($user['quota'] !== null && AccessPolicy::bytes($user, $row) !== null) $text[] = 'Осталось: ' . $this->getBytes(max(0, $user['quota'] - $bytes));
+            $this->t('Доступ: ', 'Access: ') . AccessPolicy::reason($user, AccessPolicy::bytes($user, $row), time()),
+            $this->t('Срок (UTC): ', 'Expiry (UTC): ') . ($user['expires'] === null ? $this->t('без ограничения', 'unlimited') : gmdate('Y-m-d H:i', $user['expires'])),
+            $this->t('Расход: ', 'Usage: ') . number_format($bytes / 1073741824, 3, '.', '') . ' GiB',
+            $this->t('Квота: ', 'Quota: ') . ($user['quota'] === null ? $this->t('без ограничения', 'unlimited') : number_format($user['quota'] / 1073741824, 6, '.', '') . ' GiB')];
+        if ($user['quota'] !== null && AccessPolicy::bytes($user, $row) !== null) $text[] = $this->t('Осталось: ', 'Remaining: ') . $this->getBytes(max(0, $user['quota'] - $bytes));
         array_push($text, ...$this->accessPolicySummary($user));
         $link = $this->hyPersonalLink($id);
         if ($link !== '') $text[] = '<code>' . self::esc($link) . '</code>';
-        else $text[] = 'Ссылка недоступна: проверьте ограничения и состояние Hysteria.';
+        else $text[] = $this->t('Ссылка недоступна: проверьте ограничения и состояние Hysteria.', 'The link is unavailable: check the limits and the Hysteria state.');
         $buttons = [
-            [['text' => 'Календарь и уведомления', 'callback_data' => "/ap hy $id"]],
-            [['text' => $user['enabled'] ? 'Выключить' : 'Включить', 'callback_data' => "/hyUser $id toggle"], ['text' => 'Имя', 'callback_data' => "/hyUser $id name"]],
-            [['text' => 'Срок', 'callback_data' => "/hyUser $id expires"], ['text' => 'Квота', 'callback_data' => "/hyUser $id quota"]],
-            [['text' => 'Сменить реквизиты', 'callback_data' => "/hyUser $id rotate"], ['text' => 'Сбросить расход', 'callback_data' => "/hyUser $id reset"]],
+            [['text' => $this->t('Календарь и уведомления', 'Calendar and notifications'), 'callback_data' => "/ap hy $id"]],
+            [['text' => $user['enabled'] ? $this->t('Выключить', 'Disable') : $this->t('Включить', 'Enable'), 'callback_data' => "/hyUser $id toggle"], ['text' => $this->t('Имя', 'Name'), 'callback_data' => "/hyUser $id name"]],
+            [['text' => $this->t('Срок', 'Expiry'), 'callback_data' => "/hyUser $id expires"], ['text' => $this->t('Квота', 'Quota'), 'callback_data' => "/hyUser $id quota"]],
+            [['text' => $this->t('Сменить реквизиты', 'Change credentials'), 'callback_data' => "/hyUser $id rotate"], ['text' => $this->t('Сбросить расход', 'Reset usage'), 'callback_data' => "/hyUser $id reset"]],
         ];
-        if ($link !== '') $buttons[] = [['text' => 'Ссылка TXT', 'callback_data' => "/hyUser $id file"], ['text' => 'QR', 'callback_data' => "/hyUser $id qr"]];
-        $buttons[] = [['text' => 'Удалить', 'callback_data' => "/hyUser $id delete"], ['text' => $this->i18n('back'), 'callback_data' => '/hyUsers']];
+        if ($link !== '') $buttons[] = [['text' => $this->t('Ссылка TXT', 'TXT link'), 'callback_data' => "/hyUser $id file"], ['text' => 'QR', 'callback_data' => "/hyUser $id qr"]];
+        $buttons[] = [['text' => $this->t('Удалить', 'Delete'), 'callback_data' => "/hyUser $id delete"], ['text' => $this->i18n('back'), 'callback_data' => '/hyUsers']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $buttons);
     }
 
@@ -249,7 +249,7 @@ trait BotHysteria
             case 'obfs':
                 if (empty($pac['hysteria_obfs'])) break;
                 if ($this->hyObfsType($pac) === 'salamander' && !$this->hyGeckoSupported()) {
-                    $notice = 'Gecko требует ядро Hysteria 2.9.2 или новее: обновите образ.';
+                    $notice = $this->t('Gecko требует ядро Hysteria 2.9.2 или новее: обновите образ.', 'Gecko needs Hysteria core 2.9.2 or newer: update the image.');
                     break;
                 }
                 $pac['hysteria_obfs_type'] = $this->hyObfsType($pac) === 'gecko' ? 'salamander' : 'gecko';
@@ -272,7 +272,7 @@ trait BotHysteria
                 // Конфиг не записан или ядро его не приняло: настройку не оставляем.
                 $this->setPacConf($before);
                 $pac = $before;
-                $notice = 'Не удалось применить настройку: конфигурация Hysteria не изменена.';
+                $notice = $this->t('Не удалось применить настройку: конфигурация Hysteria не изменена.', 'Could not apply the setting: the Hysteria configuration is unchanged.');
             }
         }
         $brutal = !empty($pac['hysteria_bw_up']) && !empty($pac['hysteria_bw_down']);

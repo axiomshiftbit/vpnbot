@@ -279,8 +279,8 @@ trait BotExitNodes
     {
         $port = $this->exitProbePort($id);
         $node = $this->exitNodes()[$id] ?? null;
-        if ($port === null || $node === null) return ['time' => time(), 'ok' => false, 'error' => 'узел не найден'];
-        if (empty($node['enabled'])) return ['time' => time(), 'ok' => false, 'error' => 'узел выключен'];
+        if ($port === null || $node === null) return ['time' => time(), 'ok' => false, 'error' => $this->t('узел не найден', 'node not found')];
+        if (empty($node['enabled'])) return ['time' => time(), 'ok' => false, 'error' => $this->t('узел выключен', 'node disabled')];
         $proxy = "127.0.0.1:$port";
         // Задержка — время до первого байта generate_204 через узел: time_connect
         // при --socks5-hostname — это подключение к самому входу на 127.0.0.1.
@@ -294,7 +294,7 @@ trait BotExitNodes
         }
         $out = (string) $this->ssh($cmd . 'true', 'xr');
         $status = ['time' => time(), 'ok' => false];
-        if ($this->sshFailed) return $status + ['error' => 'нет связи с контейнером Xray'];
+        if ($this->sshFailed) return $status + ['error' => $this->t('нет связи с контейнером Xray', 'no connection to the Xray container')];
         if (preg_match('~^probe=(\d{3}) ([0-9.]+)$~m', $out, $m)) {
             $status['http'] = (int) $m[1];
             $status['ms'] = (int) round((float) $m[2] * 1000);
@@ -304,7 +304,7 @@ trait BotExitNodes
         if (preg_match('~^ip=([0-9a-fA-F:.]{2,45})$~m', $out, $m)) $status['ip'] = $m[1];
         if (preg_match('~"INNERTUBE_CONTEXT_GL":"([A-Z]{2})"~', $out, $m)) $status['gl'] = $m[1];
         if ($full) $status['full'] = 1;
-        if (!$status['ok']) $status['error'] = !empty($status['http']) ? 'узел ответил ' . $status['http'] : 'узел не ответил';
+        if (!$status['ok']) $status['error'] = !empty($status['http']) ? $this->t('узел ответил ', 'node answered ') . $status['http'] : $this->t('узел не ответил', 'node did not answer');
         $previous = $this->exitStatus()[$id] ?? [];
         // Страна YouTube из полной проверки живёт до следующей полной.
         if (!$full && isset($previous['gl'])) $status['gl'] = $previous['gl'];
@@ -314,13 +314,13 @@ trait BotExitNodes
 
     public function exitStatusLine(string $id, array $node): string
     {
-        if (empty($node['enabled'])) return '⏸ выключен';
+        if (empty($node['enabled'])) return $this->t('⏸ выключен', '⏸ disabled');
         $s = $this->exitStatus()[$id] ?? [];
-        if (!$s) return '⚪ ещё не проверялся';
-        $line = !empty($s['ok']) ? '🟢 работает' : '🔴 ' . self::esc($s['error'] ?? 'не работает');
-        if (!empty($s['ok'])) $line .= ' · ' . (int) ($s['ms'] ?? 0) . ' мс';
-        if (!empty($s['loc'])) $line .= ' · выход ' . self::esc($s['loc']);
-        if (!empty($s['gl'])) $line .= ' · YouTube видит ' . self::esc($s['gl']);
+        if (!$s) return $this->t('⚪ ещё не проверялся', '⚪ not checked yet');
+        $line = !empty($s['ok']) ? $this->t('🟢 работает', '🟢 working') : '🔴 ' . self::esc($s['error'] ?? $this->t('не работает', 'not working'));
+        if (!empty($s['ok'])) $line .= ' · ' . (int) ($s['ms'] ?? 0) . $this->t(' мс', ' ms');
+        if (!empty($s['loc'])) $line .= $this->t(' · выход ', ' · exit ') . self::esc($s['loc']);
+        if (!empty($s['gl'])) $line .= $this->t(' · YouTube видит ', ' · YouTube sees ') . self::esc($s['gl']);
         return $line . ' · ' . date('H:i', (int) $s['time']);
     }
 
@@ -440,11 +440,11 @@ trait BotExitNodes
         $format = self::ruleSetFormat($url);
         $binary = self::exitRulesetUrlValid($url) ? $this->exitRulesetDownload($url) : null;
         $entries = $binary === null ? null : $this->exitRulesetConvert($binary, $format, (string) ($set['behavior'] ?? 'domain'));
-        $error = $binary === null ? 'не скачался' : ($entries === null ? 'не разобран' : (!$entries ? 'пустой' : ''));
+        $error = $binary === null ? $this->t('не скачался', 'not downloaded') : ($entries === null ? $this->t('не разобран', 'not parsed') : (!$entries ? $this->t('пустой', 'empty') : ''));
         // Записи набора попадают в каждую сборку конфига: битая регулярка из
         // чужого источника сделала бы так, что ядро отвергает любое изменение
         // Xray. Новое содержимое сначала проверяет выбранное ядро.
-        if ($error === '' && hash('sha256', $binary) !== ($cache['hash'] ?? '') && !$this->exitRulesetCoreAccepts($entries)) $error = 'не принят ядром Xray';
+        if ($error === '' && hash('sha256', $binary) !== ($cache['hash'] ?? '') && !$this->exitRulesetCoreAccepts($entries)) $error = $this->t('не принят ядром Xray', 'rejected by the Xray core');
         $cache = ['key' => $url, 'time' => time(), 'error' => $error]
             + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary)] : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '']);
         @mkdir(self::EXIT_RULESET_DIR, 0700, true);
@@ -493,7 +493,7 @@ trait BotExitNodes
             $before = $this->exitStatus()[$id] ?? [];
             $now = $this->exitProbe($id, false);
             if ($before && !empty($before['ok']) !== !empty($now['ok'])) {
-                $this->notifyAdmins((!empty($now['ok']) ? '🟢 Узел выхода снова работает: ' : '🔴 Узел выхода не отвечает, трафик идёт напрямую: ')
+                $this->notifyAdmins((!empty($now['ok']) ? $this->t('🟢 Узел выхода снова работает: ', '🟢 Exit node is working again: ') : $this->t('🔴 Узел выхода не отвечает, трафик идёт напрямую: ', '🔴 Exit node is not responding, traffic goes direct: '))
                     . self::esc($node['name'] !== '' ? $node['name'] : $id));
             }
             $restart = $this->exitRefreshRulesets($id) || $restart;
@@ -521,35 +521,35 @@ trait BotExitNodes
         $p = $this->getPacConf();
         $warnings = [];
         $sniff = $this->sniffingSettings($p, $this->getXray()['inbounds'][0]['sniffing'] ?? null);
-        if (empty($sniff['enabled'])) $warnings[] = '⚠️ Распознавание доменов (sniffing) выключено: правила по доменам не сработают. Включите его в Xray → DPI.';
-        elseif (!empty($sniff['routeOnly'])) $warnings[] = '⚠️ sniffing в режиме routeOnly: на узел уйдёт адрес, полученный на этом сервере, а не домен — видео пойдёт с серверов страны этого сервера.';
+        if (empty($sniff['enabled'])) $warnings[] = $this->t('⚠️ Распознавание доменов (sniffing) выключено: правила по доменам не сработают. Включите его в Xray → DPI.', '⚠️ Domain sniffing is off: domain rules will not match. Turn it on in Xray → DPI.');
+        elseif (!empty($sniff['routeOnly'])) $warnings[] = $this->t('⚠️ sniffing в режиме routeOnly: на узел уйдёт адрес, полученный на этом сервере, а не домен — видео пойдёт с серверов страны этого сервера.', '⚠️ sniffing is in routeOnly mode: the node receives the address resolved on this server rather than the domain, so video is served from this server\'s country.');
         $warp = array_keys(array_filter($p['warplist'] ?? []));
         $both = array_intersect(array_keys(array_filter($node['routes'])), $warp);
         // Подписки sing-box и Mihomo отправляют домены WARP в WARP сами (через
         // warpSOCKS5 10.10.0.13), и до правила узла на сервере они доходят уже
         // с адресом WARP: «узел важнее» верно лишь для клиентов Xray.
-        if ($both) $warnings[] = '⚠️ Есть и в списке WARP: клиенты Xray пойдут через узел, а sing-box и Mihomo — в WARP. Оставьте запись в одном списке: '
+        if ($both) $warnings[] = $this->t('⚠️ Есть и в списке WARP: клиенты Xray пойдут через узел, а sing-box и Mihomo — в WARP. Оставьте запись в одном списке: ', '⚠️ Also in the WARP list: Xray clients go through the node, while sing-box and Mihomo go to WARP. Keep the entry in one list: ')
             . self::esc(implode(', ', array_slice($both, 0, 5)));
         $block = array_intersect(array_keys(array_filter($node['routes'])), array_keys(array_filter($p['blocklist'] ?? [])));
-        if ($block) $warnings[] = '⚠️ Есть и в блок-листе (блокировка важнее): ' . self::esc(implode(', ', array_slice($block, 0, 5)));
+        if ($block) $warnings[] = $this->t('⚠️ Есть и в блок-листе (блокировка важнее): ', '⚠️ Also in the block list (blocking wins): ') . self::esc(implode(', ', array_slice($block, 0, 5)));
         return $warnings;
     }
 
     public function exitNodesMenu(string $notice = ''): void
     {
         $nodes = $this->exitNodes();
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> Узлы выхода',
-            'Выбранные домены выбранных пользователей уходят через другой сервер с vpnbot. Если узел не отвечает — напрямую с этого сервера.'];
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода', ' -> Exit nodes'),
+            $this->t('Выбранные домены выбранных пользователей уходят через другой сервер с vpnbot. Если узел не отвечает — напрямую с этого сервера.', 'Selected domains of selected users leave through another vpnbot server. If the node does not respond, they go direct from this server.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
         foreach ($nodes as $id => $node) {
             $users = count($this->exitNodeEmails($this->getXray(), $id));
-            $text[] = "\n<b>" . $this->exitName($id, $node) . '</b> — ' . $this->exitStatusLine($id, $node) . " · пользователей: $users";
+            $text[] = "\n<b>" . $this->exitName($id, $node) . '</b> — ' . $this->exitStatusLine($id, $node) . $this->t(" · пользователей: $users", " · users: $users");
             $data[] = [['text' => ($node['enabled'] ? '🌍 ' : '⏸ ') . ($node['name'] !== '' ? mb_substr($node['name'], 0, 40) : $id), 'callback_data' => "/exit $id"]];
         }
-        if (!$nodes) $text[] = "\nУзлов пока нет. На другом сервере откройте Xray → «Профиль для узла» и вставьте выданную ссылку сюда.";
-        if (count($nodes) < self::EXIT_MAX) $data[] = [['text' => '➕ Добавить узел', 'callback_data' => '/exitAdd']];
-        $data[] = [['text' => '🔁 Проверить все', 'callback_data' => '/exitCheckAll'], ['text' => '🪪 Профиль для узла', 'callback_data' => '/exitRelay']];
+        if (!$nodes) $text[] = $this->t("\nУзлов пока нет. На другом сервере откройте Xray → «Профиль для узла» и вставьте выданную ссылку сюда.", "\nNo nodes yet. On the other server open Xray → Node profile and paste the link it gives here.");
+        if (count($nodes) < self::EXIT_MAX) $data[] = [['text' => $this->t('➕ Добавить узел', '➕ Add node'), 'callback_data' => '/exitAdd']];
+        $data[] = [['text' => $this->t('🔁 Проверить все', '🔁 Check all'), 'callback_data' => '/exitCheckAll'], ['text' => $this->t('🪪 Профиль для узла', '🪪 Node profile'), 'callback_data' => '/exitRelay']];
         $data[] = $this->menuHelpButton('exitnodes');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/xray']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -558,34 +558,34 @@ trait BotExitNodes
     public function exitNodeMenu(string $id, string $notice = ''): void
     {
         $node = $this->exitNodes()[$id] ?? null;
-        if ($node === null) { $this->exitNodesMenu('Узел не найден'); return; }
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
         $x = $this->getXray();
         $routes = count(array_filter($node['routes']));
         $sets = count(array_filter($node['rulesets'], static fn($s) => is_array($s) && !empty($s['on'])));
         $users = count($this->exitNodeEmails($x, $id));
         try { $parsed = ExitNodeLink::parse($node['link']); } catch (InvalidArgumentException $e) { $parsed = null; }
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> Узлы выхода -> ' . $this->exitName($id, $node),
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node),
             $this->exitStatusLine($id, $node),
-            'Адрес: <code>' . self::esc($parsed ? $parsed['address'] . ':' . $parsed['port'] : 'ссылка не разбирается') . '</code>'
+            $this->t('Адрес: <code>', 'Address: <code>') . self::esc($parsed ? $parsed['address'] . ':' . $parsed['port'] : $this->t('ссылка не разбирается', 'link cannot be parsed')) . '</code>'
                 . ($parsed ? ' · ' . self::esc($parsed['outbound']['protocol'] . '/' . $parsed['outbound']['streamSettings']['network'] . '/' . $parsed['outbound']['streamSettings']['security']) : ''),
-            "Маршрутов: $routes · наборов правил: $sets · пользователей: $users",
+            $this->t("Маршрутов: $routes · наборов правил: $sets · пользователей: $users", "Routes: $routes · rule sets: $sets · users: $users"),
             $this->exitTrafficLine($id),
-            'QUIC к доменам узла: ' . ($node['quic'] === 'block' ? 'блокируется (браузер сразу идёт по TCP через узел)' : 'пропускается'),
-            'При отказе узла: напрямую с этого сервера',
-            'Новым пользователям: ' . ($node['auto'] ? 'включается сразу' : 'не включается')];
-        if (!$users) $text[] = 'ℹ️ Узел пока ни у кого не включён: «Пользователи» или карточка пользователя.';
-        if (!$routes && !$sets) $text[] = 'ℹ️ Маршрутов нет: «Маршруты» → например «YouTube».';
+            $this->t('QUIC к доменам узла: ', 'QUIC to node domains: ') . ($node['quic'] === 'block' ? $this->t('блокируется (браузер сразу идёт по TCP через узел)', 'blocked (the browser goes over TCP through the node right away)') : $this->t('пропускается', 'allowed')),
+            $this->t('При отказе узла: напрямую с этого сервера', 'If the node fails: direct from this server'),
+            $this->t('Новым пользователям: ', 'For new users: ') . ($node['auto'] ? $this->t('включается сразу', 'enabled at once') : $this->t('не включается', 'not enabled'))];
+        if (!$users) $text[] = $this->t('ℹ️ Узел пока ни у кого не включён: «Пользователи» или карточка пользователя.', 'ℹ️ The node is not enabled for anyone yet: use Users or a user card.');
+        if (!$routes && !$sets) $text[] = $this->t('ℹ️ Маршрутов нет: «Маршруты» → например «YouTube».', 'ℹ️ No routes: Routes → for example YouTube.');
         array_push($text, ...$this->exitWarnings($node));
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [
-            [['text' => '🔍 Проверить', 'callback_data' => "/exitCheck $id"], ['text' => '🔄 Обновить', 'callback_data' => "/exitRefresh $id"]],
-            [['text' => ($node['enabled'] ? '✅ Включён' : '⏸ Выключен'), 'callback_data' => "/exitToggle $id"],
-                ['text' => 'QUIC: ' . ($node['quic'] === 'block' ? 'блок' : 'пропуск'), 'callback_data' => "/exitQuic $id"]],
-            [['text' => "🧭 Маршруты ($routes)", 'callback_data' => "/exitRoutes $id 0"], ['text' => "📦 Наборы .srs/.mrs ($sets)", 'callback_data' => "/exitSets $id"]],
-            [['text' => "👥 Пользователи ($users)", 'callback_data' => "/exitUsers $id 0"],
-                ['text' => '🆕 Новым: ' . ($node['auto'] ? 'да' : 'нет'), 'callback_data' => "/exitAuto $id"]],
-            [['text' => '✏️ Имя', 'callback_data' => "/exitName $id"], ['text' => '🔗 Заменить ссылку', 'callback_data' => "/exitLink $id"],
-                ['text' => '🗑 Удалить', 'callback_data' => "/exitDel $id"]],
+            [['text' => $this->t('🔍 Проверить', '🔍 Check'), 'callback_data' => "/exitCheck $id"], ['text' => $this->t('🔄 Обновить', '🔄 Refresh'), 'callback_data' => "/exitRefresh $id"]],
+            [['text' => ($node['enabled'] ? $this->t('✅ Включён', '✅ Enabled') : $this->t('⏸ Выключен', '⏸ Disabled')), 'callback_data' => "/exitToggle $id"],
+                ['text' => 'QUIC: ' . ($node['quic'] === 'block' ? $this->t('блок', 'block') : $this->t('пропуск', 'allow')), 'callback_data' => "/exitQuic $id"]],
+            [['text' => $this->t("🧭 Маршруты ($routes)", "🧭 Routes ($routes)"), 'callback_data' => "/exitRoutes $id 0"], ['text' => $this->t("📦 Наборы .srs/.mrs ($sets)", "📦 Sets .srs/.mrs ($sets)"), 'callback_data' => "/exitSets $id"]],
+            [['text' => $this->t("👥 Пользователи ($users)", "👥 Users ($users)"), 'callback_data' => "/exitUsers $id 0"],
+                ['text' => $this->t('🆕 Новым: ', '🆕 New users: ') . ($node['auto'] ? $this->t('да', 'yes') : $this->t('нет', 'no')), 'callback_data' => "/exitAuto $id"]],
+            [['text' => $this->t('✏️ Имя', '✏️ Name'), 'callback_data' => "/exitName $id"], ['text' => $this->t('🔗 Заменить ссылку', '🔗 Replace link'), 'callback_data' => "/exitLink $id"],
+                ['text' => $this->t('🗑 Удалить', '🗑 Delete'), 'callback_data' => "/exitDel $id"]],
             $this->menuHelpButton('exitnodes'),
             [['text' => $this->i18n('back'), 'callback_data' => '/exits']],
         ];
@@ -595,11 +595,11 @@ trait BotExitNodes
     // Счётчики выхода узла в ядре: с последнего запуска Xray, вместе с пробами.
     public function exitTrafficLine(string $id): string
     {
-        if (empty($this->exitNodes()[$id]['enabled'])) return 'Трафик через узел: —';
+        if (empty($this->exitNodes()[$id]['enabled'])) return $this->t('Трафик через узел: —', 'Traffic through the node: —');
         $stats = $this->xrayStatCounters();
-        if ($stats === null) return 'Трафик через узел: нет данных';
+        if ($stats === null) return $this->t('Трафик через узел: нет данных', 'Traffic through the node: no data');
         $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
-        return 'Трафик через узел с запуска Xray: ↑' . $this->getBytes($stats[$name . 'uplink'] ?? 0)
+        return $this->t('Трафик через узел с запуска Xray: ↑', 'Traffic through the node since Xray start: ↑') . $this->getBytes($stats[$name . 'uplink'] ?? 0)
             . ' ↓' . $this->getBytes($stats[$name . 'downlink'] ?? 0);
     }
 
@@ -612,47 +612,47 @@ trait BotExitNodes
 
     public function exitAddPrompt(): void
     {
-        $this->exitPrompt("вставьте ссылку из «Профиля для узла» другого сервера (vless:// или trojan://).\n"
-            . 'Сообщение со ссылкой бот сразу удалит.', 'saveExitAdd', []);
+        $this->exitPrompt($this->t("вставьте ссылку из «Профиля для узла» другого сервера (vless:// или trojan://).\n", "paste the link from the other server's Node profile (vless:// or trojan://).\n")
+            . $this->t('Сообщение со ссылкой бот сразу удалит.', 'The bot deletes the message with the link right away.'), 'saveExitAdd', []);
     }
 
     /** Проверка адреса узла: публичный и не этот же сервер (петля). '' — подходит. */
     public function exitAddressProblem(string $address): string
     {
-        if (!$this->xdriveHostPublic('https://' . (str_contains($address, ':') ? "[$address]" : $address))) return 'адрес узла не публичный или не разрешается';
+        if (!$this->xdriveHostPublic('https://' . (str_contains($address, ':') ? "[$address]" : $address))) return $this->t('адрес узла не публичный или не разрешается', 'the node address is not public or does not resolve');
         $own = array_filter([(string) ($this->ip ?? ''), (string) ($this->getPacConf()['domain'] ?? '')]);
-        if (in_array(strtolower($address), array_map('strtolower', $own), true)) return 'это адрес этого же сервера';
+        if (in_array(strtolower($address), array_map('strtolower', $own), true)) return $this->t('это адрес этого же сервера', 'this is the address of this very server');
         // Домен, разрешающийся в адрес этого сервера, — тоже он сам.
         $resolved = filter_var($address, FILTER_VALIDATE_IP) ? [$address] : $this->xdriveResolve($address);
-        if ((string) ($this->ip ?? '') !== '' && in_array((string) $this->ip, $resolved, true)) return 'адрес узла указывает на этот же сервер';
+        if ((string) ($this->ip ?? '') !== '' && in_array((string) $this->ip, $resolved, true)) return $this->t('адрес узла указывает на этот же сервер', 'the node address points to this very server');
         return '';
     }
 
     public function saveExitAdd($link): void
     {
-        try { $parsed = ExitNodeLink::parse((string) $link); } catch (InvalidArgumentException $e) { $this->exitNodesMenu('Ссылка не подходит: ' . $e->getMessage()); return; }
-        if (($problem = $this->exitAddressProblem($parsed['address'])) !== '') { $this->exitNodesMenu('Узел не добавлен: ' . $problem); return; }
+        try { $parsed = ExitNodeLink::parse((string) $link); } catch (InvalidArgumentException $e) { $this->exitNodesMenu($this->t('Ссылка не подходит: ', 'The link does not fit: ') . $e->getMessage()); return; }
+        if (($problem = $this->exitAddressProblem($parsed['address'])) !== '') { $this->exitNodesMenu($this->t('Узел не добавлен: ', 'Node not added: ') . $problem); return; }
         $id = self::exitNewId();
         $error = $this->applyExitNodes(function (array &$p) use ($id, $parsed, $link) {
             if (count($this->exitNodes($p)) >= self::EXIT_MAX) return 'exit too many';
             foreach ($this->exitNodes($p) as $node) if ($node['link'] === trim((string) $link)) return 'exit duplicate';
-            $p['exits'][$id] = ['name' => $parsed['remark'] !== '' ? $parsed['remark'] : 'узел ' . (count($this->exitNodes($p)) + 1),
+            $p['exits'][$id] = ['name' => $parsed['remark'] !== '' ? $parsed['remark'] : $this->t('узел ', 'node ') . (count($this->exitNodes($p)) + 1),
                 'link' => trim((string) $link), 'created' => time()] + self::exitNodeDefaults();
             return '';
         });
         if ($error !== '') { $this->exitNodesMenu($this->exitError($error)); return; }
         $this->exitProbe($id, true);
-        $this->exitNodeMenu($id, 'Узел добавлен. Добавьте маршруты и включите его пользователям.');
+        $this->exitNodeMenu($id, $this->t('Узел добавлен. Добавьте маршруты и включите его пользователям.', 'Node added. Add routes and enable it for users.'));
     }
 
     public function exitError(string $code): string
     {
         return match ($code) {
-            'exit too many' => 'Узлов не больше ' . self::EXIT_MAX,
-            'exit duplicate' => 'Такой узел уже есть',
-            'exit check failed' => 'Ядро Xray не приняло изменение — оставлены прежние настройки (проверьте записи regexp: и .dat)',
-            'exit not found' => 'Узел не найден',
-            default => 'Не удалось сохранить',
+            'exit too many' => $this->t('Узлов не больше ', 'Nodes at most ') . self::EXIT_MAX,
+            'exit duplicate' => $this->t('Такой узел уже есть', 'This node already exists'),
+            'exit check failed' => $this->t('Ядро Xray не приняло изменение — оставлены прежние настройки (проверьте записи regexp: и .dat)', 'The Xray core rejected the change; the previous settings are kept (check regexp: and .dat entries)'),
+            'exit not found' => $this->t('Узел не найден', 'Node not found'),
+            default => $this->t('Не удалось сохранить', 'Could not save'),
         };
     }
 
@@ -690,7 +690,7 @@ trait BotExitNodes
     public function exitCheck(string $id): void
     {
         $s = $this->exitProbe($id, true);
-        $this->exitNodeMenu($id, !empty($s['ok']) ? 'Проверено: узел работает' : 'Проверено: ' . ($s['error'] ?? 'узел не работает'));
+        $this->exitNodeMenu($id, !empty($s['ok']) ? $this->t('Проверено: узел работает', 'Checked: the node is working') : $this->t('Проверено: ', 'Checked: ') . ($s['error'] ?? $this->t('узел не работает', 'the node is not working')));
     }
 
     public function exitRefresh(string $id): void
@@ -698,49 +698,49 @@ trait BotExitNodes
         $changed = $this->exitRefreshRulesets($id, true);
         if ($changed) $this->withLock('xray', fn() => $this->restartXray($this->getXray()), 20, false);
         $s = $this->exitProbe($id, true);
-        $this->exitNodeMenu($id, 'Обновлено: наборы правил ' . ($changed ? 'изменились' : 'без изменений') . ', узел ' . (!empty($s['ok']) ? 'работает' : 'не работает'));
+        $this->exitNodeMenu($id, $this->t('Обновлено: наборы правил ', 'Refreshed: rule sets ') . ($changed ? $this->t('изменились', 'changed') : $this->t('без изменений', 'unchanged')) . $this->t(', узел ', ', node ') . (!empty($s['ok']) ? $this->t('работает', 'working') : $this->t('не работает', 'not working')));
     }
 
     public function exitCheckAll(): void
     {
         foreach (array_keys(array_filter($this->exitNodes(), static fn($n) => !empty($n['enabled']))) as $id) $this->exitProbe($id, true);
-        $this->exitNodesMenu('Проверено');
+        $this->exitNodesMenu($this->t('Проверено', 'Checked'));
     }
 
     public function exitNamePrompt(string $id): void
     {
-        $this->exitPrompt('новое имя узла (до 40 символов):', 'saveExitName', [$id]);
+        $this->exitPrompt($this->t('новое имя узла (до 40 символов):', 'new node name (up to 40 characters):'), 'saveExitName', [$id]);
     }
 
     public function saveExitName($name, $id): void
     {
         $name = trim(preg_replace('~[\x00-\x1f\x7f<>&]~u', '', (string) $name) ?? '');
         $error = $name === '' ? 'exit empty' : $this->exitEditNode((string) $id, static function (array &$node) use ($name) { $node['name'] = mb_substr($name, 0, 40); return ''; });
-        $this->exitNodeMenu((string) $id, $error === '' ? 'Имя сохранено' : ($error === 'exit empty' ? 'Пустое имя' : $this->exitError($error)));
+        $this->exitNodeMenu((string) $id, $error === '' ? $this->t('Имя сохранено', 'Name saved') : ($error === 'exit empty' ? $this->t('Пустое имя', 'Empty name') : $this->exitError($error)));
     }
 
     public function exitLinkPrompt(string $id): void
     {
-        $this->exitPrompt("новая ссылка узла (после «Новых ключей» или смены транспорта на узле).\nМаршруты и пользователи сохранятся. Сообщение бот удалит.", 'saveExitLink', [$id]);
+        $this->exitPrompt($this->t("новая ссылка узла (после «Новых ключей» или смены транспорта на узле).\nМаршруты и пользователи сохранятся. Сообщение бот удалит.", "new node link (after New keys or a transport change on the node).\nRoutes and users are kept. The bot deletes the message."), 'saveExitLink', [$id]);
     }
 
     public function saveExitLink($link, $id): void
     {
-        try { $parsed = ExitNodeLink::parse((string) $link); } catch (InvalidArgumentException $e) { $this->exitNodeMenu((string) $id, 'Ссылка не подходит: ' . $e->getMessage()); return; }
-        if (($problem = $this->exitAddressProblem($parsed['address'])) !== '') { $this->exitNodeMenu((string) $id, 'Не сохранено: ' . $problem); return; }
+        try { $parsed = ExitNodeLink::parse((string) $link); } catch (InvalidArgumentException $e) { $this->exitNodeMenu((string) $id, $this->t('Ссылка не подходит: ', 'The link does not fit: ') . $e->getMessage()); return; }
+        if (($problem = $this->exitAddressProblem($parsed['address'])) !== '') { $this->exitNodeMenu((string) $id, $this->t('Не сохранено: ', 'Not saved: ') . $problem); return; }
         $error = $this->exitEditNode((string) $id, static function (array &$node) use ($link) { $node['link'] = trim((string) $link); return ''; });
         if ($error === '') $this->exitProbe((string) $id, true);
-        $this->exitNodeMenu((string) $id, $error === '' ? 'Ссылка заменена' : $this->exitError($error));
+        $this->exitNodeMenu((string) $id, $error === '' ? $this->t('Ссылка заменена', 'Link replaced') : $this->exitError($error));
     }
 
     public function exitDelete(string $id, bool $confirmed = false): void
     {
         $node = $this->exitNodes()[$id] ?? null;
-        if ($node === null) { $this->exitNodesMenu('Узел не найден'); return; }
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
         if (!$confirmed) {
             $this->update($this->input['chat'], $this->input['message_id'],
-                'Удалить узел <b>' . $this->exitName($id, $node) . '</b>? Его маршруты удалятся, у пользователей он выключится.',
-                [[['text' => '🗑 Да, удалить', 'callback_data' => "/exitDelYes $id"], ['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]]]);
+                $this->t('Удалить узел <b>', 'Delete node <b>') . $this->exitName($id, $node) . $this->t('</b>? Его маршруты удалятся, у пользователей он выключится.', '</b>? Its routes are deleted and it is turned off for users.'),
+                [[['text' => $this->t('🗑 Да, удалить', '🗑 Yes, delete'), 'callback_data' => "/exitDelYes $id"], ['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]]]);
             return;
         }
         $error = $this->applyExitNodes(function (array &$p, array &$x) use ($id) {
@@ -758,19 +758,19 @@ trait BotExitNodes
         if ($error === '') {
             foreach (array_keys($node['rulesets']) as $url) @unlink($this->exitRulesetFile((string) $url));
         }
-        $this->exitNodesMenu($error === '' ? 'Узел удалён' : $this->exitError($error));
+        $this->exitNodesMenu($error === '' ? $this->t('Узел удалён', 'Node deleted') : $this->exitError($error));
     }
 
     // ── Маршруты узла ──────────────────────────────────────────────────────
     public function exitRoutesMenu(string $id, int $page = 0, string $notice = ''): void
     {
         $node = $this->exitNodes()[$id] ?? null;
-        if ($node === null) { $this->exitNodesMenu('Узел не найден'); return; }
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
         $entries = array_keys($node['routes']);
         $pages = max(1, (int) ceil(count($entries) / self::EXIT_PAGE));
         $page = max(0, min($page, $pages - 1));
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> Узлы выхода -> ' . $this->exitName($id, $node) . ' -> Маршруты',
-            'Нажмите на запись, чтобы выключить или включить её; ✖ — удалить.'];
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> Маршруты', ' -> Routes'),
+            $this->t('Нажмите на запись, чтобы выключить или включить её; ✖ — удалить.', 'Tap an entry to turn it off or on; ✖ deletes it.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
         foreach (array_slice($entries, $page * self::EXIT_PAGE, self::EXIT_PAGE) as $entry) {
@@ -788,25 +788,26 @@ trait BotExitNodes
             if ($page < $pages - 1) $nav[] = ['text' => '→', 'callback_data' => "/exitRoutes $id " . ($page + 1)];
             $data[] = $nav;
         }
-        $data[] = [['text' => '➕ Добавить', 'callback_data' => "/exitRtAdd $id"], ['text' => '▶️ YouTube', 'callback_data' => "/exitYt $id"]];
-        $data[] = [['text' => '📋 Копировать из WARP', 'callback_data' => "/exitCopy $id warp"], ['text' => '📦 Перенести из WARP', 'callback_data' => "/exitCopy $id move"]];
-        $data[] = [['text' => '📋 Копировать из списка VPN (pac)', 'callback_data' => "/exitCopy $id pac"]];
+        $data[] = [['text' => $this->t('➕ Добавить', '➕ Add'), 'callback_data' => "/exitRtAdd $id"], ['text' => '▶️ YouTube', 'callback_data' => "/exitYt $id"]];
+        $data[] = [['text' => $this->t('📋 Копировать из WARP', '📋 Copy from WARP'), 'callback_data' => "/exitCopy $id warp"], ['text' => $this->t('📦 Перенести из WARP', '📦 Move from WARP'), 'callback_data' => "/exitCopy $id move"]];
+        $data[] = [['text' => $this->t('📋 Копировать из списка VPN (pac)', '📋 Copy from the VPN list (pac)'), 'callback_data' => "/exitCopy $id pac"]];
+        if ($entries) $data[] = [['text' => $this->t('🧹 Очистить всё', '🧹 Clear all'), 'callback_data' => "/exitRtClear $id"]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
     public function exitRouteAddPrompt(string $id): void
     {
-        $this->exitPrompt("записи маршрута через узел.\n\n<b>Префиксы</b> (нажмите на слово, чтобы скопировать):\n"
-            . "<code>domain:</code> — домен и все его поддомены, напр. domain:youtube.com\n"
-            . "<code>full:</code> — точное совпадение домена, напр. full:www.youtube.com\n"
-            . "<code>keyword:</code> — совпадение по подстроке, напр. keyword:youtube\n"
-            . "<code>regexp:</code> — регулярное выражение, напр. regexp:.*\\.ru\$\n"
-            . "<code>geosite:</code> / <code>geoip:</code> — категории встроенных .dat, напр. geosite:youtube\n"
-            . "<code>ext:</code> / <code>extip:</code> — категории своих .dat из Vless → routes → dat, напр. ext:dlc.dat:youtube\n"
-            . "без префикса — домен-суффикс; IPv4/IPv6[/cidr] — как есть.\n\n"
-            . "<b>Как вводить:</b> в столбик или через запятую либо пробел; записи <code>regexp:</code> — каждую с новой строки.\n"
-            . 'Наборы правил sing-box (.srs) и Mihomo (.mrs) — в «Наборы .srs/.mrs».', 'saveExitRoutes', [$id]);
+        $this->exitPrompt($this->t("записи маршрута через узел.\n\n<b>Префиксы</b> (нажмите на слово, чтобы скопировать):\n", "route entries through the node.\n\n<b>Prefixes</b> (tap a word to copy it):\n")
+            . $this->t("<code>domain:</code> — домен и все его поддомены, напр. domain:youtube.com\n", "<code>domain:</code>: a domain and all its subdomains, e.g. domain:youtube.com\n")
+            . $this->t("<code>full:</code> — точное совпадение домена, напр. full:www.youtube.com\n", "<code>full:</code>: an exact domain match, e.g. full:www.youtube.com\n")
+            . $this->t("<code>keyword:</code> — совпадение по подстроке, напр. keyword:youtube\n", "<code>keyword:</code>: a substring match, e.g. keyword:youtube\n")
+            . $this->t("<code>regexp:</code> — регулярное выражение, напр. regexp:.*\\.ru\$\n", "<code>regexp:</code>: a regular expression, e.g. regexp:.*\\.ru\$\n")
+            . $this->t("<code>geosite:</code> / <code>geoip:</code> — категории встроенных .dat, напр. geosite:youtube\n", "<code>geosite:</code> / <code>geoip:</code>: categories of the built-in .dat, e.g. geosite:youtube\n")
+            . $this->t("<code>ext:</code> / <code>extip:</code> — категории своих .dat из Vless → routes → dat, напр. ext:dlc.dat:youtube\n", "<code>ext:</code> / <code>extip:</code>: categories of your own .dat from Vless → routes → dat, e.g. ext:dlc.dat:youtube\n")
+            . $this->t("без префикса — домен-суффикс; IPv4/IPv6[/cidr] — как есть.\n\n", "no prefix: a domain suffix; IPv4/IPv6[/cidr]: as is.\n\n")
+            . $this->t("<b>Как вводить:</b> в столбик или через запятую либо пробел; записи <code>regexp:</code> — каждую с новой строки.\n", "<b>How to enter:</b> one per line, or separated by commas or spaces; put each <code>regexp:</code> entry on its own line.\n")
+            . $this->t('Наборы правил sing-box (.srs) и Mihomo (.mrs) — в «Наборы .srs/.mrs».', 'sing-box (.srs) and Mihomo (.mrs) rule sets are under Sets .srs/.mrs.'), 'saveExitRoutes', [$id]);
     }
 
     public function saveExitRoutes($text, $id, array $preset = []): void
@@ -828,7 +829,7 @@ trait BotExitNodes
             }
             return '';
         });
-        $this->exitRoutesMenu((string) $id, PHP_INT_MAX, $error !== '' ? $this->exitError($error) : "Добавлено: $added" . ($skipped ? ", пропущено (повтор или неверная запись): $skipped" : ''));
+        $this->exitRoutesMenu((string) $id, PHP_INT_MAX, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : ''));
     }
 
     /**
@@ -840,14 +841,14 @@ trait BotExitNodes
     {
         $list = $from === 'pac' ? 'includelist' : 'warplist';
         $entries = array_map('strval', array_keys(array_filter($this->getPacConf()[$list] ?? [])));
-        if (!$entries) { $this->exitRoutesMenu($id, 0, $from === 'pac' ? 'Список VPN (pac) пуст' : 'Список WARP пуст'); return; }
+        if (!$entries) { $this->exitRoutesMenu($id, 0, $from === 'pac' ? $this->t('Список VPN (pac) пуст', 'The VPN list (pac) is empty') : $this->t('Список WARP пуст', 'The WARP list is empty')); return; }
         $this->saveExitRoutes('', $id, $entries);
         if ($from !== 'move' || !isset($this->exitNodes()[$id])) return;
         $moved = array_values(array_intersect($entries, array_map('strval', array_keys($this->exitNodes()[$id]['routes']))));
         $ok = $this->changeRouteList('warplist', static function (&$warp) use ($moved) {
             foreach ($moved as $entry) unset($warp[$entry]);
         });
-        $this->exitRoutesMenu($id, PHP_INT_MAX, $ok ? 'Перенесено из WARP: ' . count($moved) : 'Скопировано, но убрать из WARP не удалось');
+        $this->exitRoutesMenu($id, PHP_INT_MAX, $ok ? $this->t('Перенесено из WARP: ', 'Moved from WARP: ') . count($moved) : $this->t('Скопировано, но убрать из WARP не удалось', 'Copied, but removing from WARP failed'));
     }
 
     public function exitYoutube(string $id): void
@@ -859,6 +860,26 @@ trait BotExitNodes
     {
         foreach (array_keys($node[$field]) as $entry) if (hash_equals(self::exitEntryKey((string) $entry), $key)) return (string) $entry;
         return null;
+    }
+
+    // Удалить все записи маршрутов узла; наборы .srs/.mrs и пользователи остаются.
+    public function exitRoutesClear(string $id, bool $confirmed = false): void
+    {
+        $node = $this->exitNodes()[$id] ?? null;
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
+        if (!$node['routes']) { $this->exitRoutesMenu($id, 0, $this->t('Маршрутов нет', 'No routes')); return; }
+        if (!$confirmed) {
+            $this->update($this->input['chat'], $this->input['message_id'],
+                $this->t('Удалить все маршруты узла <b>', 'Delete all routes of node <b>') . $this->exitName($id, $node) . '</b> (' . count($node['routes']) . ')?'
+                . $this->t(' Наборы .srs/.mrs и пользователи не меняются.', ' Sets .srs/.mrs and users do not change.'),
+                [[['text' => $this->t('🧹 Да, очистить', '🧹 Yes, clear'), 'callback_data' => "/exitRtClearYes $id"], ['text' => $this->i18n('back'), 'callback_data' => "/exitRoutes $id 0"]]]);
+            return;
+        }
+        $error = $this->exitEditNode($id, function (array &$node) {
+            $node['routes'] = [];
+            return '';
+        });
+        $this->exitRoutesMenu($id, 0, $error === '' ? $this->t('Все маршруты удалены', 'All routes deleted') : $this->exitError($error));
     }
 
     public function exitRouteToggle(string $id, string $key, bool $delete = false): void
@@ -879,15 +900,15 @@ trait BotExitNodes
     public function exitSetsMenu(string $id, string $notice = ''): void
     {
         $node = $this->exitNodes()[$id] ?? null;
-        if ($node === null) { $this->exitNodesMenu('Узел не найден'); return; }
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> Узлы выхода -> ' . $this->exitName($id, $node) . ' -> Наборы правил',
-            'Наборы sing-box (.srs) и Mihomo (.mrs) по ссылке https://. Бот сам скачивает их, раскладывает на домены и подсети и обновляет раз в сутки (и по «Обновить» в карточке узла).'];
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> Наборы правил', ' -> Rule sets'),
+            $this->t('Наборы sing-box (.srs) и Mihomo (.mrs) по ссылке https://. Бот сам скачивает их, раскладывает на домены и подсети и обновляет раз в сутки (и по «Обновить» в карточке узла).', 'sing-box (.srs) and Mihomo (.mrs) sets by https:// link. The bot downloads them itself, expands them into domains and subnets and refreshes them once a day (and on Refresh in the node card).')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set)) continue;
             $cache = $this->exitRulesetCache((string) $url);
-            $state = !$cache ? '⏳ не скачан' : (($cache['error'] ?? '') !== '' ? '⚠️ ' . $cache['error'] : count($cache['entries'] ?? []) . ' записей');
+            $state = !$cache ? $this->t('⏳ не скачан', '⏳ not downloaded') : (($cache['error'] ?? '') !== '' ? '⚠️ ' . $cache['error'] : count($cache['entries'] ?? []) . $this->t(' записей', ' entries'));
             $shown = mb_strlen((string) $url) > 90 ? mb_substr((string) $url, 0, 60) . '…' . mb_substr((string) $url, -25) : (string) $url;
             $text[] = "\n" . (!empty($set['on']) ? '✅' : '⏸') . ' <code>' . self::esc($shown) . '</code> — ' . self::esc($state)
                 . (self::ruleSetFormat((string) $url) === 'mrs' ? ' · ' . self::esc((string) ($set['behavior'] ?? 'domain')) : '');
@@ -895,15 +916,15 @@ trait BotExitNodes
             $data[] = [['text' => (!empty($set['on']) ? '✅ ' : '⏸ ') . mb_substr(basename((string) parse_url((string) $url, PHP_URL_PATH)), 0, 40), 'callback_data' => "/exitSet $id $key"],
                 ['text' => '✖', 'callback_data' => "/exitSetDel $id $key"]];
         }
-        $data[] = [['text' => '➕ Добавить набор', 'callback_data' => "/exitSetAdd $id"]];
+        $data[] = [['text' => $this->t('➕ Добавить набор', '➕ Add set'), 'callback_data' => "/exitSetAdd $id"]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
     public function exitSetAddPrompt(string $id): void
     {
-        $this->exitPrompt("ссылка https:// на набор .srs или .mrs, по одной на строку.\n"
-            . 'Для .mrs перед ссылкой можно указать тип: <code>ipcidr https://…/x.mrs</code> (по умолчанию <code>domain</code>).',
+        $this->exitPrompt($this->t("ссылка https:// на набор .srs или .mrs, по одной на строку.\n", "an https:// link to a .srs or .mrs set, one per line.\n")
+            . $this->t('Для .mrs перед ссылкой можно указать тип: <code>ipcidr https://…/x.mrs</code> (по умолчанию <code>domain</code>).', 'For .mrs you can put the type before the link: <code>ipcidr https://…/x.mrs</code> (default <code>domain</code>).'),
             'saveExitSets', [$id]);
     }
 
@@ -929,7 +950,7 @@ trait BotExitNodes
             foreach ($new as $url => $set) $this->exitRulesetRefresh($url, $set);
             $this->withLock('xray', fn() => $this->restartXray($this->getXray()), 20, false);
         }
-        $this->exitSetsMenu((string) $id, $error !== '' ? $this->exitError($error) : "Добавлено: $added" . ($bad ? ", не подошло (нужна https:// ссылка на .srs или .mrs): $bad" : ''));
+        $this->exitSetsMenu((string) $id, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($bad ? $this->t(", не подошло (нужна https:// ссылка на .srs или .mrs): $bad", ", did not fit (an https:// link to .srs or .mrs is needed): $bad") : ''));
     }
 
     public function exitSetToggle(string $id, string $key, bool $delete = false): void
@@ -950,13 +971,13 @@ trait BotExitNodes
     public function exitUsersMenu(string $id, int $page = 0, string $notice = ''): void
     {
         $node = $this->exitNodes()[$id] ?? null;
-        if ($node === null) { $this->exitNodesMenu('Узел не найден'); return; }
+        if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
         $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
         $list = array_filter($clients, static fn($c) => is_array($c) && empty($c['exit_relay']));
         $pages = max(1, (int) ceil(count($list) / self::EXIT_PAGE));
         $page = max(0, min($page, $pages - 1));
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> Узлы выхода -> ' . $this->exitName($id, $node) . ' -> Пользователи',
-            'Маршрут через узел работает только у отмеченных. Служебные учётки узлов здесь не показываются.'];
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> Пользователи', ' -> Users'),
+            $this->t('Маршрут через узел работает только у отмеченных. Служебные учётки узлов здесь не показываются.', 'The route through the node works only for the checked users. Node service accounts are not shown here.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
         foreach (array_slice($list, $page * self::EXIT_PAGE, self::EXIT_PAGE, true) as $i => $client) {
@@ -971,7 +992,7 @@ trait BotExitNodes
             if ($page < $pages - 1) $nav[] = ['text' => '→', 'callback_data' => "/exitUsers $id " . ($page + 1)];
             $data[] = $nav;
         }
-        $data[] = [['text' => '✅ Включить всем', 'callback_data' => "/exitAll $id on"], ['text' => '⬜ Выключить всем', 'callback_data' => "/exitAll $id off"]];
+        $data[] = [['text' => $this->t('✅ Включить всем', '✅ Enable for all'), 'callback_data' => "/exitAll $id on"], ['text' => $this->t('⬜ Выключить всем', '⬜ Disable for all'), 'callback_data' => "/exitAll $id off"]];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
@@ -1010,7 +1031,7 @@ trait BotExitNodes
     public function exitAllUsers(string $id, bool $on): void
     {
         $error = $this->exitSetUsers($id, null, $on);
-        $this->exitUsersMenu($id, 0, $error === '' ? ($on ? 'Включено всем' : 'Выключено всем') : $this->exitError($error));
+        $this->exitUsersMenu($id, 0, $error === '' ? ($on ? $this->t('Включено всем', 'Enabled for all') : $this->t('Выключено всем', 'Disabled for all')) : $this->exitError($error));
     }
 
     // Карточка пользователя → его узлы.
@@ -1018,8 +1039,8 @@ trait BotExitNodes
     {
         $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
         if (!is_array($client)) { $this->xray(); return; }
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> ' . self::esc((string) ($client['email'] ?? '')) . ' -> Узлы выхода'];
-        if (!empty($client['exit_relay'])) $text[] = 'Это служебная учётка узла: маршруты через узлы ей не назначаются.';
+        $text = ['Menu -> ' . $this->i18n('xray') . ' -> ' . self::esc((string) ($client['email'] ?? '')) . $this->t(' -> Узлы выхода', ' -> Exit nodes')];
+        if (!empty($client['exit_relay'])) $text[] = $this->t('Это служебная учётка узла: маршруты через узлы ей не назначаются.', 'This is a node service account: routes through nodes are not assigned to it.');
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
         $mine = self::exitClientNodes($client);
@@ -1027,9 +1048,9 @@ trait BotExitNodes
             $id = (string) $id;
             if (!empty($client['exit_relay'])) break;
             $data[] = [['text' => (in_array($id, $mine, true) ? '✅ ' : '⬜ ') . mb_substr($node['name'] !== '' ? $node['name'] : $id, 0, 40)
-                . ($node['enabled'] ? '' : ' (выключен)'), 'callback_data' => "/exitUT $i $id"]];
+                . ($node['enabled'] ? '' : $this->t(' (выключен)', ' (disabled)')), 'callback_data' => "/exitUT $i $id"]];
         }
-        if (!$this->exitNodes()) $text[] = 'Узлов нет: Xray → Узлы выхода.';
+        if (!$this->exitNodes()) $text[] = $this->t('Узлов нет: Xray → Узлы выхода.', 'No nodes: Xray → Exit nodes.');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/userXr $i"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
@@ -1047,30 +1068,30 @@ trait BotExitNodes
     public function exitRelayMenu(string $notice = ''): void
     {
         $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> Профиль для узла',
-            'Этот сервер станет узлом выхода для другого бота: создайте служебную учётку и вставьте её ссылку на основном сервере в Xray → Узлы выхода → «Добавить узел».',
-            'Учётка без срока и лимита; её трафик никогда не уходит на узлы этого сервера (защита от петли).',
-            '⚠️ Если межсетевой экран пускает VPN только «своим» адресам (список my_server), добавьте туда адрес основного сервера — иначе его соединения будут ограничены как чужие.'];
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Профиль для узла', ' -> Node profile'),
+            $this->t('Этот сервер станет узлом выхода для другого бота: создайте служебную учётку и вставьте её ссылку на основном сервере в Xray → Узлы выхода → «Добавить узел».', 'This server becomes an exit node for another bot: create a service account and paste its link on the main server in Xray → Exit nodes → Add node.'),
+            $this->t('Учётка без срока и лимита; её трафик никогда не уходит на узлы этого сервера (защита от петли).', 'The account has no expiry or limit; its traffic never goes to this server\'s nodes (loop protection).'),
+            $this->t('⚠️ Если межсетевой экран пускает VPN только «своим» адресам (список my_server), добавьте туда адрес основного сервера — иначе его соединения будут ограничены как чужие.', '⚠️ If the firewall lets VPN in only from "own" addresses (the my_server list), add the main server\'s address there; otherwise its connections are limited as foreign ones.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
         foreach ($clients as $i => $client) {
             if (empty($client['exit_relay'])) continue;
             $data[] = [['text' => '🪪 ' . mb_substr((string) ($client['email'] ?? '—'), 0, 40) . (!empty($client['off']) ? ' ⛔' : ''), 'callback_data' => "/exitRelayLink $i"]];
         }
-        $data[] = [['text' => '➕ Создать профиль для узла', 'callback_data' => '/exitRelayAdd']];
+        $data[] = [['text' => $this->t('➕ Создать профиль для узла', '➕ Create node profile'), 'callback_data' => '/exitRelayAdd']];
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/exits']];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
     public function exitRelayAddPrompt(): void
     {
-        $this->exitPrompt('имя профиля для узла, например имя основного сервера (латиница, цифры, точка, дефис):', 'saveExitRelay', []);
+        $this->exitPrompt($this->t('имя профиля для узла, например имя основного сервера (латиница, цифры, точка, дефис):', 'node profile name, e.g. the name of the main server (Latin letters, digits, dot, hyphen):'), 'saveExitRelay', []);
     }
 
     public function saveExitRelay($name): void
     {
         $name = 'node-' . trim((string) $name);
-        if (!preg_match('~^node-[A-Za-z0-9][A-Za-z0-9._-]{0,30}$~D', $name)) { $this->exitRelayMenu('Имя: латиница, цифры, точка, дефис, до 30 символов'); return; }
+        if (!preg_match('~^node-[A-Za-z0-9][A-Za-z0-9._-]{0,30}$~D', $name)) { $this->exitRelayMenu($this->t('Имя: латиница, цифры, точка, дефис, до 30 символов', 'Name: Latin letters, digits, dot, hyphen, up to 30 characters')); return; }
         $index = null;
         $error = $this->applyExitNodes(function (array &$p, array &$x) use ($name, &$index) {
             foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $client) if (($client['email'] ?? '') === $name) return 'exit duplicate';
@@ -1081,20 +1102,20 @@ trait BotExitNodes
             $index = count($x['inbounds'][0]['settings']['clients']) - 1;
             return '';
         });
-        if ($error !== '' || $index === null) { $this->exitRelayMenu($error === 'exit duplicate' ? 'Профиль с таким именем уже есть' : $this->exitError($error)); return; }
-        $this->exitRelayLink($index, 'Профиль создан');
+        if ($error !== '' || $index === null) { $this->exitRelayMenu($error === 'exit duplicate' ? $this->t('Профиль с таким именем уже есть', 'A profile with this name already exists') : $this->exitError($error)); return; }
+        $this->exitRelayLink($index, $this->t('Профиль создан', 'Profile created'));
     }
 
     public function exitRelayLink(int $i, string $notice = ''): void
     {
         $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
-        if (!is_array($client) || empty($client['exit_relay'])) { $this->exitRelayMenu('Профиль не найден'); return; }
+        if (!is_array($client) || empty($client['exit_relay'])) { $this->exitRelayMenu($this->t('Профиль не найден', 'Profile not found')); return; }
         $link = (string) $this->linkXray($i);
-        $text = ['Menu -> ' . $this->i18n('xray') . ' -> Профиль для узла -> ' . self::esc((string) $client['email'])];
+        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Профиль для узла -> ', ' -> Node profile -> ') . self::esc((string) $client['email'])];
         if ($notice !== '') $text[] = '<b>' . self::esc($notice) . '</b>';
-        $text[] = $link !== '' ? "Ссылка для основного сервера (Xray → Узлы выхода → «Добавить узел»):\n<pre><code>" . self::esc($link) . '</code></pre>'
-            : 'Ссылку не выдать: текущий транспорт Xray её не поддерживает.';
-        $text[] = 'Отозвать доступ — удалить или отключить эту учётку в списке пользователей Xray.';
+        $text[] = $link !== '' ? $this->t("Ссылка для основного сервера (Xray → Узлы выхода → «Добавить узел»):\n<pre><code>", "Link for the main server (Xray → Exit nodes → Add node):\n<pre><code>") . self::esc($link) . '</code></pre>'
+            : $this->t('Ссылку не выдать: текущий транспорт Xray её не поддерживает.', 'No link: the current Xray transport does not support it.');
+        $text[] = $this->t('Отозвать доступ — удалить или отключить эту учётку в списке пользователей Xray.', 'To revoke access, delete or disable this account in the Xray user list.');
         $data = [[['text' => $this->i18n('back'), 'callback_data' => '/exitRelay']]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }

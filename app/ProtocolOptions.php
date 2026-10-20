@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/Lang.php';
 require_once __DIR__ . '/XrayNoise.php';
 require_once __DIR__ . '/MasqueProfile.php';
 
@@ -21,12 +22,12 @@ final class ProtocolOptions
 
     public static function groups(string $protocol): array
     {
-        if ($protocol === 'masque') return ['client' => 'Клиент Xray', 'noise' => 'UDP-маскировка · finalmask'];
+        if ($protocol === 'masque') return ['client' => Lang::t('Клиент Xray', 'Xray client'), 'noise' => Lang::t('UDP-маскировка · finalmask', 'UDP masking · finalmask')];
         if ($protocol === 'snolc') return [];
         return $protocol === 'mieru'
-            ? ['server' => 'Сервер Mieru', 'client' => 'Клиенты Mieru', 'native' => 'Только Mieru JSON / URI', 'mihomo' => 'Только Mihomo']
-            : ['server' => 'Сервер', 'client' => 'Общие настройки клиентов', 'singbox' => 'Только sing-box', 'mihomo' => 'Только Mihomo']
-                + ($protocol === 'shadowtls' ? ['multiplex' => 'Мультиплексирование SS'] : []);
+            ? ['server' => Lang::t('Сервер Mieru', 'Mieru server'), 'client' => Lang::t('Клиенты Mieru', 'Mieru clients'), 'native' => Lang::t('Только Mieru JSON / URI', 'Mieru JSON / URI only'), 'mihomo' => Lang::t('Только Mihomo', 'Mihomo only')]
+            : ['server' => Lang::t('Сервер', 'Server'), 'client' => Lang::t('Общие настройки клиентов', 'Shared client settings'), 'singbox' => Lang::t('Только sing-box', 'sing-box only'), 'mihomo' => Lang::t('Только Mihomo', 'Mihomo only')]
+                + ($protocol === 'shadowtls' ? ['multiplex' => Lang::t('Мультиплексирование SS', 'SS multiplexing')] : []);
     }
 
     public static function schema(string $protocol): array
@@ -113,7 +114,7 @@ final class ProtocolOptions
                     'socks5Port' => $int(1024, 65535), 'rpcPort' => $int(1024, 65535), 'httpProxyPort' => $int(1024, 65535)],
                 'mihomo' => $commonMihomo,
             ];
-        } else throw new InvalidArgumentException('Неизвестный протокол');
+        } else throw new InvalidArgumentException(Lang::t('Неизвестный протокол', 'Unknown protocol'));
         return $schema;
     }
 
@@ -121,9 +122,9 @@ final class ProtocolOptions
     {
         $rule = ['object', array_map(static fn($fields) => ['object', $fields], self::schema($protocol))];
         if ($path === '') return $rule;
-        if (strlen($path) > 96 || !preg_match('/\A[a-zA-Z][a-zA-Z0-9_-]*(?:\.[a-zA-Z][a-zA-Z0-9_-]*)*\z/D', $path)) throw new InvalidArgumentException('Неизвестный параметр');
+        if (strlen($path) > 96 || !preg_match('/\A[a-zA-Z][a-zA-Z0-9_-]*(?:\.[a-zA-Z][a-zA-Z0-9_-]*)*\z/D', $path)) throw new InvalidArgumentException(Lang::t('Неизвестный параметр', 'Unknown parameter'));
         foreach (explode('.', $path) as $key) {
-            if ($rule[0] !== 'object' || !isset($rule[1][$key])) throw new InvalidArgumentException('Неизвестный параметр');
+            if ($rule[0] !== 'object' || !isset($rule[1][$key])) throw new InvalidArgumentException(Lang::t('Неизвестный параметр', 'Unknown parameter'));
             $rule = $rule[1][$key];
         }
         return $rule;
@@ -146,7 +147,7 @@ final class ProtocolOptions
             if ($rule[0] === 'object') foreach ($rule[1] as $key => $child) $visit($child, $prefix === '' ? $key : "$prefix.$key");
         };
         $visit(self::definition($protocol));
-        if (count($matches) !== 1) throw new InvalidArgumentException('Неизвестный параметр');
+        if (count($matches) !== 1) throw new InvalidArgumentException(Lang::t('Неизвестный параметр', 'Unknown parameter'));
         return $matches[0];
     }
 
@@ -164,20 +165,20 @@ final class ProtocolOptions
     public static function describe(array $rule): string
     {
         return match ($rule[0]) {
-            'object' => 'Группа настроек.',
-            'bool' => 'Включено или выключено.',
-            'int' => "Целое число: {$rule[1]}–{$rule[2]}.",
-            'enum' => 'Значения: ' . implode(', ', $rule[1]) . '.',
-            'duration' => "Длительность с ms, s, m или h; диапазон {$rule[1]}–{$rule[2]} мс. Например 10s.",
-            'list' => 'JSON-массив, не более ' . $rule[2] . ' элементов. ' . self::describe($rule[1]),
-            'text' => "Текст: {$rule[1]}–{$rule[2]} символов, без управляющих знаков.",
-            'hostname' => 'Доменное имя без https://, пути и порта.',
-            'ip' => 'Адрес IPv4 или IPv6.',
-            'pin' => 'SHA-256 публичного ключа сертификата, 32 байта в base64.',
-            'hex' => 'HEX без 0x, от 1 до 12 байт.',
-            'rotation' => 'LOW_ENTROPY_MASK_NO_ROTATION либо LOW_ENTROPY_MASK_ROTATE_RIGHT_1…15 / LEFT_1…15.',
-            'hosts' => 'JSON-объект домен → IP, до 64 записей.',
-            'padding' => 'JSON-массив строк: stop=1…32, затем номер=диапазон[,c,диапазон]. До 33 строк, размеры 1–4096 байт. Например ["stop=2","0=30-30","1=100-400"].',
+            'object' => Lang::t('Группа настроек.', 'A settings group.'),
+            'bool' => Lang::t('Включено или выключено.', 'On or off.'),
+            'int' => Lang::t("Целое число: {$rule[1]}–{$rule[2]}.", "An integer: {$rule[1]}–{$rule[2]}."),
+            'enum' => Lang::t('Значения: ', 'Values: ') . implode(', ', $rule[1]) . '.',
+            'duration' => Lang::t("Длительность с ms, s, m или h; диапазон {$rule[1]}–{$rule[2]} мс. Например 10s.", "A duration with ms, s, m or h; range {$rule[1]}–{$rule[2]} ms. For example 10s."),
+            'list' => Lang::t('JSON-массив, не более ', 'A JSON array of at most ') . $rule[2] . Lang::t(' элементов. ', ' items. ') . self::describe($rule[1]),
+            'text' => Lang::t("Текст: {$rule[1]}–{$rule[2]} символов, без управляющих знаков.", "Text: {$rule[1]}–{$rule[2]} characters, no control characters."),
+            'hostname' => Lang::t('Доменное имя без https://, пути и порта.', 'A domain name without https://, path or port.'),
+            'ip' => Lang::t('Адрес IPv4 или IPv6.', 'An IPv4 or IPv6 address.'),
+            'pin' => Lang::t('SHA-256 публичного ключа сертификата, 32 байта в base64.', 'SHA-256 of the certificate public key, 32 bytes in base64.'),
+            'hex' => Lang::t('HEX без 0x, от 1 до 12 байт.', 'HEX without 0x, 1 to 12 bytes.'),
+            'rotation' => Lang::t('LOW_ENTROPY_MASK_NO_ROTATION либо LOW_ENTROPY_MASK_ROTATE_RIGHT_1…15 / LEFT_1…15.', 'LOW_ENTROPY_MASK_NO_ROTATION or LOW_ENTROPY_MASK_ROTATE_RIGHT_1…15 / LEFT_1…15.'),
+            'hosts' => Lang::t('JSON-объект домен → IP, до 64 записей.', 'A JSON object domain → IP, up to 64 entries.'),
+            'padding' => Lang::t('JSON-массив строк: stop=1…32, затем номер=диапазон[,c,диапазон]. До 33 строк, размеры 1–4096 байт. Например ["stop=2","0=30-30","1=100-400"].', 'A JSON array of strings: stop=1…32, then number=range[,c,range]. Up to 33 strings, sizes 1–4096 bytes. For example ["stop=2","0=30-30","1=100-400"].'),
         };
     }
 
@@ -198,59 +199,59 @@ final class ProtocolOptions
         }
         $server = $options['server'] ?? []; $client = $options['client'] ?? []; $singbox = $options['singbox'] ?? [];
         if ($protocol === 'tuic') foreach ([$server['tls'] ?? [], $client, $singbox['tls'] ?? []] as $tls) {
-            if (isset($tls['alpn']) && $tls['alpn'] === []) throw new InvalidArgumentException('TUIC требует непустой ALPN');
+            if (isset($tls['alpn']) && $tls['alpn'] === []) throw new InvalidArgumentException(Lang::t('TUIC требует непустой ALPN', 'TUIC requires a non-empty ALPN'));
         }
         if ($protocol === 'shadowtls' && !empty($settings['self_hosted']) && isset($server['handshake']['server_port'])
-            && $server['handshake']['server_port'] !== 10443) throw new InvalidArgumentException('Собственный сайт ShadowTLS использует внутренний порт 10443');
+            && $server['handshake']['server_port'] !== 10443) throw new InvalidArgumentException(Lang::t('Собственный сайт ShadowTLS использует внутренний порт 10443', 'The ShadowTLS own site uses internal port 10443'));
         foreach ([$server['tls'] ?? [], $singbox['tls'] ?? []] as $tls) {
-            if (($tls['min_version'] ?? '1.2') > ($tls['max_version'] ?? '1.3')) throw new InvalidArgumentException('Минимальная версия TLS выше максимальной');
+            if (($tls['min_version'] ?? '1.2') > ($tls['max_version'] ?? '1.3')) throw new InvalidArgumentException(Lang::t('Минимальная версия TLS выше максимальной', 'The minimum TLS version is above the maximum'));
             if (in_array($protocol, ['tuic', 'shadowtls'], true)
                 && (($tls['min_version'] ?? '1.3') !== '1.3' || ($tls['max_version'] ?? '1.3') !== '1.3')) {
-                throw new InvalidArgumentException('TUIC и ShadowTLS v3 требуют TLS 1.3');
+                throw new InvalidArgumentException(Lang::t('TUIC и ShadowTLS v3 требуют TLS 1.3', 'TUIC and ShadowTLS v3 require TLS 1.3'));
             }
-            if (isset($tls['spoof_method']) && empty($tls['spoof'])) throw new InvalidArgumentException('Для spoof_method сначала задайте spoof');
+            if (isset($tls['spoof_method']) && empty($tls['spoof'])) throw new InvalidArgumentException(Lang::t('Для spoof_method сначала задайте spoof', 'For spoof_method set spoof first'));
         }
         if ($protocol === 'anytls') {
             $serverTLS = $server['tls'] ?? []; $clientTLS = $singbox['tls'] ?? [];
             if (max($serverTLS['min_version'] ?? '1.2', $clientTLS['min_version'] ?? '1.2')
                 > min($serverTLS['max_version'] ?? '1.3', $clientTLS['max_version'] ?? '1.3')) {
-                throw new InvalidArgumentException('Версии TLS клиента и сервера не пересекаются');
+                throw new InvalidArgumentException(Lang::t('Версии TLS клиента и сервера не пересекаются', 'The client and server TLS versions do not overlap'));
             }
             foreach (['idle_session_check_interval', 'idle_session_timeout'] as $field) {
-                if (isset($client[$field]) && self::milliseconds($client[$field]) % 1000 !== 0) throw new InvalidArgumentException('Интервалы AnyTLS задаются целыми секундами для совместимости с Mihomo');
+                if (isset($client[$field]) && self::milliseconds($client[$field]) % 1000 !== 0) throw new InvalidArgumentException(Lang::t('Интервалы AnyTLS задаются целыми секундами для совместимости с Mihomo', 'AnyTLS intervals are set in whole seconds for Mihomo compatibility'));
             }
             if (!empty($settings['cover_host']) && isset($server['tls']['alpn']) && $server['tls']['alpn'] !== ['http/1.1']) {
-                throw new InvalidArgumentException('Сайт прикрытия AnyTLS использует ALPN http/1.1');
+                throw new InvalidArgumentException(Lang::t('Сайт прикрытия AnyTLS использует ALPN http/1.1', 'The AnyTLS cover site uses ALPN http/1.1'));
             }
         }
         if ($protocol === 'mieru') {
             foreach ([$server['trafficPattern'] ?? [], $client['trafficPattern'] ?? []] as $pattern) {
                 $nonce = $pattern['nonce'] ?? [];
-                if (isset($nonce['minLen'], $nonce['maxLen']) && $nonce['minLen'] > $nonce['maxLen']) throw new InvalidArgumentException('Mieru: minLen выше maxLen');
-                if (isset($nonce['maxLen']) && $nonce['maxLen'] < 12 && !isset($nonce['minLen'])) throw new InvalidArgumentException('Mieru: перед уменьшением maxLen задайте minLen; автоматически выбранный минимум может быть выше');
-                if (($nonce['type'] ?? '') === 'NONCE_TYPE_FIXED' && empty($nonce['customHexStrings'])) throw new InvalidArgumentException('Mieru: для FIXED нужны customHexStrings');
+                if (isset($nonce['minLen'], $nonce['maxLen']) && $nonce['minLen'] > $nonce['maxLen']) throw new InvalidArgumentException(Lang::t('Mieru: minLen выше maxLen', 'Mieru: minLen is above maxLen'));
+                if (isset($nonce['maxLen']) && $nonce['maxLen'] < 12 && !isset($nonce['minLen'])) throw new InvalidArgumentException(Lang::t('Mieru: перед уменьшением maxLen задайте minLen; автоматически выбранный минимум может быть выше', 'Mieru: set minLen before lowering maxLen; the automatically chosen minimum may be higher'));
+                if (($nonce['type'] ?? '') === 'NONCE_TYPE_FIXED' && empty($nonce['customHexStrings'])) throw new InvalidArgumentException(Lang::t('Mieru: для FIXED нужны customHexStrings', 'Mieru: FIXED needs customHexStrings'));
             }
             $native = $options['native'] ?? [];
             $ports = [$native['socks5Port'] ?? 1080, $native['rpcPort'] ?? 1081];
             if (isset($native['httpProxyPort'])) $ports[] = $native['httpProxyPort'];
-            if (count(array_unique($ports)) !== count($ports)) throw new InvalidArgumentException('Локальные порты Mieru должны отличаться');
+            if (count(array_unique($ports)) !== count($ports)) throw new InvalidArgumentException(Lang::t('Локальные порты Mieru должны отличаться', 'Mieru local ports must differ'));
         }
         foreach ([$server, $singbox] as $quic) if (isset($quic['stream_receive_window'], $quic['connection_receive_window'])
             && $quic['connection_receive_window'] < $quic['stream_receive_window']) {
-            throw new InvalidArgumentException('Окно соединения QUIC меньше окна потока');
+            throw new InvalidArgumentException(Lang::t('Окно соединения QUIC меньше окна потока', 'The QUIC connection window is smaller than the stream window'));
         }
         $mux = $options['multiplex'] ?? [];
-        if (!empty($mux['max_streams']) && !empty($mux['min_streams'])) throw new InvalidArgumentException('Укажите min_streams либо max_streams');
+        if (!empty($mux['max_streams']) && !empty($mux['min_streams'])) throw new InvalidArgumentException(Lang::t('Укажите min_streams либо max_streams', 'Set either min_streams or max_streams'));
         // ALPN is a negotiated property, not a label. Disjoint lists cannot work.
         $serverAlpn = $server['tls']['alpn'] ?? ($protocol === 'tuic' ? ['h3'] : (!empty($settings['cover_host']) ? ['http/1.1'] : []));
         foreach ([$client['alpn'] ?? [], $singbox['tls']['alpn'] ?? []] as $alpn) {
-            if ($serverAlpn && $alpn && !array_intersect($serverAlpn, $alpn)) throw new InvalidArgumentException('ALPN клиента и сервера не пересекаются');
+            if ($serverAlpn && $alpn && !array_intersect($serverAlpn, $alpn)) throw new InvalidArgumentException(Lang::t('ALPN клиента и сервера не пересекаются', 'The client and server ALPN do not overlap'));
         }
     }
 
     public static function milliseconds(string $duration): int
     {
-        if (!preg_match('/\A([0-9]{1,8})(ms|s|m|h)\z/D', $duration, $m)) throw new InvalidArgumentException('Длительность: целое число с ms, s, m или h');
+        if (!preg_match('/\A([0-9]{1,8})(ms|s|m|h)\z/D', $duration, $m)) throw new InvalidArgumentException(Lang::t('Длительность: целое число с ms, s, m или h', 'Duration: an integer with ms, s, m or h'));
         return (int) $m[1] * ['ms' => 1, 's' => 1000, 'm' => 60000, 'h' => 3600000][$m[2]];
     }
 
@@ -300,7 +301,7 @@ final class ProtocolOptions
                 }
                 break;
         }
-        if (!$ok) throw new InvalidArgumentException('Неверное или неподдерживаемое значение: ' . $path);
+        if (!$ok) throw new InvalidArgumentException(Lang::t('Неверное или неподдерживаемое значение: ', 'Invalid or unsupported value: ') . $path);
     }
 
     /** Merge objects, replace lists: array_replace_recursive leaves stale list entries. */

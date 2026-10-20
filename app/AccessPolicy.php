@@ -1,9 +1,20 @@
 <?php
 
+require_once __DIR__ . '/Lang.php';
+
 /** Optional calendar quotas for independent protocol users; all dates are UTC. */
 final class AccessPolicy
 {
-    public const PERIODS = ['day' => 'Каждый день', 'week' => 'Каждую неделю', 'month' => 'Каждый месяц'];
+    public const PERIODS = ['day' => true, 'week' => true, 'month' => true];
+
+    public static function periodLabel(string $period): string
+    {
+        return match ($period) {
+            'day' => Lang::t('Каждый день', 'Every day'),
+            'week' => Lang::t('Каждую неделю', 'Every week'),
+            default => Lang::t('Каждый месяц', 'Every month'),
+        };
+    }
 
     public static function validate(array $user): void
     {
@@ -12,17 +23,17 @@ final class AccessPolicy
             if (!is_array($s) || !is_string($s['period'] ?? null) || !isset(self::PERIODS[$s['period']])
                 || !is_int($s['anchor'] ?? null) || !is_int($s['next'] ?? null)
                 || $s['anchor'] < 1 || $s['next'] < $s['anchor'] || $s['next'] > 4102444800) {
-                throw new InvalidArgumentException('Неверное расписание сброса квоты');
+                throw new InvalidArgumentException(Lang::t('Неверное расписание сброса квоты', 'Invalid quota reset schedule'));
             }
             if (self::next($s['period'], $s['anchor'], $s['next'] - 1) !== $s['next']) {
-                throw new InvalidArgumentException('Дата сброса не соответствует расписанию');
+                throw new InvalidArgumentException(Lang::t('Дата сброса не соответствует расписанию', 'The reset date does not match the schedule'));
             }
         }
         if (isset($user['alerts'])) {
             $a = $user['alerts'];
             if (!is_array($a) || !is_int($a['percent'] ?? null) || $a['percent'] < 0 || $a['percent'] > 100
                 || !is_int($a['days'] ?? null) || $a['days'] < 0 || $a['days'] > 365) {
-                throw new InvalidArgumentException('Уведомления: 0–100 процентов и 0–365 дней');
+                throw new InvalidArgumentException(Lang::t('Уведомления: 0–100 процентов и 0–365 дней', 'Notifications: 0–100 percent and 0–365 days'));
             }
         }
     }
@@ -31,14 +42,14 @@ final class AccessPolicy
     {
         $date = DateTimeImmutable::createFromFormat('!Y-m-d H:i', $text, new DateTimeZone('UTC'));
         if (!$date || $date->format('Y-m-d H:i') !== $text || $date->getTimestamp() < 1 || $date->getTimestamp() > 4102444800) {
-            throw new InvalidArgumentException('Нужна дата YYYY-MM-DD HH:MM в UTC, до 2100 года');
+            throw new InvalidArgumentException(Lang::t('Нужна дата YYYY-MM-DD HH:MM в UTC, до 2100 года', 'A date YYYY-MM-DD HH:MM in UTC before 2100 is needed'));
         }
         return $date->getTimestamp();
     }
 
     public static function next(string $period, int $anchor, int $now): int
     {
-        if (!isset(self::PERIODS[$period])) throw new InvalidArgumentException('Неизвестный период');
+        if (!isset(self::PERIODS[$period])) throw new InvalidArgumentException(Lang::t('Неизвестный период', 'Unknown period'));
         if ($now < $anchor) return $anchor;
         if ($period !== 'month') {
             $step = $period === 'day' ? 86400 : 604800;
@@ -54,17 +65,17 @@ final class AccessPolicy
             $candidate = $month->setDate((int) $month->format('Y'), (int) $month->format('n'), min((int) $a->format('j'), (int) $month->format('t')));
             if ($candidate->getTimestamp() > $now) return $candidate->getTimestamp();
         }
-        throw new LogicException('Не удалось вычислить следующий месяц');
+        throw new LogicException(Lang::t('Не удалось вычислить следующий месяц', 'Could not compute the next month'));
     }
 
     public static function schedule(string $text, int $now): ?array
     {
         if ($text === '0') return null;
         if (!preg_match('/\A(day|week|month) (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\z/D', $text, $m)) {
-            throw new InvalidArgumentException('Введите day, week или month и первую дату UTC; либо 0');
+            throw new InvalidArgumentException(Lang::t('Введите day, week или month и первую дату UTC; либо 0', 'Enter day, week or month and the first UTC date; or 0'));
         }
         $anchor = self::date($m[2]);
-        if ($anchor <= $now) throw new InvalidArgumentException('Первый сброс должен быть в будущем');
+        if ($anchor <= $now) throw new InvalidArgumentException(Lang::t('Первый сброс должен быть в будущем', 'The first reset must be in the future'));
         return ['period' => $m[1], 'anchor' => $anchor, 'next' => $anchor];
     }
 
@@ -112,10 +123,10 @@ final class AccessPolicy
 
     public static function reason(array $user, ?int $bytes, int $now): string
     {
-        if (!$user['enabled']) return 'выключен вручную';
-        if ($user['expires'] !== null && $user['expires'] <= $now) return 'срок истёк';
-        if ($user['quota'] !== null && $bytes === null) return 'ожидаются счётчики';
-        if ($user['quota'] !== null && $bytes >= $user['quota']) return 'квота исчерпана';
-        return 'доступен';
+        if (!$user['enabled']) return Lang::t('выключен вручную', 'disabled manually');
+        if ($user['expires'] !== null && $user['expires'] <= $now) return Lang::t('срок истёк', 'expired');
+        if ($user['quota'] !== null && $bytes === null) return Lang::t('ожидаются счётчики', 'waiting for counters');
+        if ($user['quota'] !== null && $bytes >= $user['quota']) return Lang::t('квота исчерпана', 'quota used up');
+        return Lang::t('доступен', 'available');
     }
 }

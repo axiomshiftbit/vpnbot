@@ -67,12 +67,13 @@ try {
                 $check(in_array($back, $b->callbacks(), true) && in_array("/menuhelp $topic 0", $b->callbacks(), true), "$language/$topic/$page: есть возврат и оглавление");
                 foreach ($b->callbacks() as $callback) $check(strlen($callback) <= 64, "$language/$topic/$page: callback в пределах лимита");
             }
-            // Справка только на русском при любом языке интерфейса.
-            $check($content === (new HyHelpBot($i, 'ru', $root))->menuHelpContent($topic)[2], "$language/$topic: текст тот же, что на русском");
-            $check(!array_filter(array_keys($content), static fn($name) => !preg_match('~[А-Яа-яЁё]~u', $name)), "$language/$topic: заголовки страниц на русском");
+            // Справка на языке интерфейса: те же страницы, свой текст.
+            $ruContent = (new HyHelpBot($i, 'ru', $root))->menuHelpContent($topic)[2];
+            $check(count($content) === count($ruContent) && ($content === $ruContent) === ($language === 'ru'), "$language/$topic: справка на языке интерфейса");
             foreach ($content as $name => $page) {
                 $plain = preg_replace('~<code>.*?</code>|<[^>]+>~su', '', $page);
-                $check(preg_match_all('~[А-Яа-яЁё]~u', $plain) > 4 * preg_match_all('~[A-Za-z]~', $plain), "$language/$topic/«{$name}»: страница написана по-русски");
+                $cyrillic = preg_match_all('~[А-Яа-яЁё]~u', $name . $plain);
+                $check($language === 'ru' ? $cyrillic > 4 * preg_match_all('~[A-Za-z]~', $plain) : $cyrillic === 0, "$language/$topic/«{$name}»: страница на языке интерфейса");
             }
         }
         $check($b->writes === 0 && $b->restarts === 0 && $b->ssh === 0, "$language: просмотр справки ничего не меняет и не обращается к ядру");
@@ -86,6 +87,13 @@ try {
         'Групповые действия', 'Отключить общий пароль', 'маскировка', 'custom', 'obfs', 'insecure', 'cc', 'Brutal', 'port hopping', 'nft rule', 'relay', 'Диагностика', 'config',
         'UDP', 'hysteria2://', 'Тонких настройках'] as $term) {
         $check(str_contains($all, $term), "полная справка описывает «{$term}»");
+    }
+    // Английская справка называет кнопки так же, как английское меню.
+    $en = new HyHelpBot($i, 'en', $root);
+    $allEn = implode("\n", $en->menuHelpContent('hy')[2] + $en->menuHelpContent('hy_tune')[2]);
+    foreach ([$i['change password']['en'], $i['generate password']['en'], $i['masquerade']['en'], $i['hy tune']['en'], 'Personal access', 'Bulk actions',
+        'Disable shared password', 'Change credentials', 'Reset usage', 'Calendar and notifications', 'Diagnostics', 'nft rule', 'Ignore client bandwidth', 'Brutal loss compensation'] as $term) {
+        $check(stripos($allEn, $term) !== false, "английская справка называет «{$term}»");
     }
     $tune = implode("\n", $b->menuHelpContent('hy_tune')[2]);
     foreach (['salamander', 'gecko', '2.9.2', 'bbr-conservative', 'bbr-aggressive', 'reno', 'Компенсация потерь', 'Игнорировать полосу клиента', 'sniff', 'AdGuard', 'новые ссылки'] as $term) {

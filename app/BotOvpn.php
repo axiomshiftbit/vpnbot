@@ -485,6 +485,40 @@ trait BotOvpn
         $this->ovpnClientMenu($user);
     }
 
+    // Лимит — настройка клиента и входит в резервную копию. Счётчики в неё не
+    // входят: восстановление не должно откатывать их назад.
+    public function ovpnLimitsSnapshot(): array
+    {
+        $limits = [];
+        foreach ($this->ovpnTrafficLoad()['users'] as $cn => $row) {
+            $limit = self::ovpnTrafficUser(is_array($row) ? $row : [])['limit'];
+            if ($limit > 0) $limits[(string) $cn] = $limit;
+        }
+        return $limits;
+    }
+
+    public static function validateOvpnLimits(mixed $limits): void
+    {
+        if (!is_array($limits) || count($limits) > 10000) throw new InvalidArgumentException(Lang::t('Неверные лимиты OpenVPN', 'Invalid OpenVPN limits'));
+        foreach ($limits as $cn => $limit) {
+            if (!preg_match('~^[a-zA-Z0-9_.\-]{1,40}$~D', (string) $cn) || !is_int($limit) || $limit < 1) {
+                throw new InvalidArgumentException(Lang::t('Неверные лимиты OpenVPN', 'Invalid OpenVPN limits'));
+            }
+        }
+    }
+
+    // Полное восстановление: у клиентов без лимита в копии лимит снимается.
+    public function restoreOvpnLimits(array $limits): void
+    {
+        $this->ovpnTrafficSync(function (array $users) use ($limits) {
+            foreach ($limits as $cn => $_) $users[(string) $cn] ??= [];
+            foreach ($users as $cn => $row) {
+                $users[$cn] = ['limit' => (int) ($limits[(string) $cn] ?? 0)] + self::ovpnTrafficUser(is_array($row) ? $row : []);
+            }
+            return $users;
+        });
+    }
+
     // Строки и кнопки для меню клиента.
     public function ovpnTrafficLine(string $user): string
     {
