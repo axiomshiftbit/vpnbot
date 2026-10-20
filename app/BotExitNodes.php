@@ -308,8 +308,48 @@ trait BotExitNodes
         $previous = $this->exitStatus()[$id] ?? [];
         // Страна YouTube из полной проверки живёт до следующей полной.
         if (!$full && isset($previous['gl'])) $status['gl'] = $previous['gl'];
+        // Время полной проверки: cron делает её раз в сутки (сигнал о смене
+        // страны YouTube), отказ YouTube тоже считается попыткой.
+        $status['full_time'] = $full ? $status['time'] : (int) ($previous['full_time'] ?? 0);
+        $status['hist'] = self::exitHistoryAdd($previous['hist'] ?? [], $status['time'], $status['ok']);
         $this->exitStatusWrite($id, $status);
         return $status;
+    }
+
+    // История доступности: [время, 1|0] каждой пробы за последние сутки.
+    public const EXIT_HISTORY_SECONDS = 86400;
+    public const EXIT_GL_PERIOD = 86400;
+
+    public static function exitHistoryAdd($hist, int $time, bool $ok): array
+    {
+        $hist = array_values(array_filter(is_array($hist) ? $hist : [], static fn($h) => is_array($h) && count($h) === 2
+            && is_int($h[0]) && $h[0] > $time - self::EXIT_HISTORY_SECONDS && $h[0] <= $time));
+        $hist[] = [$time, $ok ? 1 : 0];
+        return $hist;
+    }
+
+    /** «Доступность за 24 ч: 99,3 % (287 проверок) · сбои: 12:05–12:20, 18:40» или ''. */
+    public function exitHistoryLine(array $status): string
+    {
+        $hist = array_values(array_filter((array) ($status['hist'] ?? []), static fn($h) => is_array($h) && count($h) === 2
+            && (int) $h[0] > time() - self::EXIT_HISTORY_SECONDS));
+        if (!$hist) return '';
+        $ok = count(array_filter($hist, static fn($h) => !empty($h[1])));
+        $pct = number_format($ok * 100 / count($hist), 1, $this->language === 'en' ? '.' : ',', '');
+        $n = count($hist);
+        $line = $this->t("Доступность за 24 ч: $pct % (проверок: $n)", "Availability over 24 h: $pct % (checks: $n)");
+        // Подряд идущие отказы — один сбой «начало–конец».
+        $outages = [];
+        foreach ($hist as $k => [$time, $up]) {
+            if ($up) continue;
+            if ($k > 0 && empty($hist[$k - 1][1]) && $outages) $outages[count($outages) - 1][1] = (int) $time;
+            else $outages[] = [(int) $time, (int) $time];
+        }
+        if ($outages) {
+            $shown = array_map(static fn($o) => date('H:i', $o[0]) . ($o[1] !== $o[0] ? '–' . date('H:i', $o[1]) : ''), array_slice($outages, -3));
+            $line .= $this->t(' · последние сбои: ', ' · last outages: ') . implode(', ', $shown);
+        }
+        return $line;
     }
 
     // В файлах состояния — коды ошибок, текст на языке интерфейса подставляется
@@ -511,10 +551,19 @@ trait BotExitNodes
         foreach ($nodes as $id => $node) {
             $id = (string) $id;
             $before = $this->exitStatus()[$id] ?? [];
-            $now = $this->exitProbe($id, false);
+            // Раз в сутки — полная проверка со страной YouTube.
+            $full = time() - (int) ($before['full_time'] ?? 0) >= self::EXIT_GL_PERIOD;
+            $now = $this->exitProbe($id, $full);
+            $name = self::esc($node['name'] !== '' ? $node['name'] : $id);
             if ($before && !empty($before['ok']) !== !empty($now['ok'])) {
                 $this->notifyAdmins((!empty($now['ok']) ? $this->t('🟢 Узел выхода снова работает: ', '🟢 Exit node is working again: ') : $this->t('🔴 Узел выхода не отвечает, трафик идёт напрямую: ', '🔴 Exit node is not responding, traffic goes direct: '))
-                    . self::esc($node['name'] !== '' ? $node['name'] : $id));
+                    . $name);
+            }
+            // Страна, которую видит YouTube, сменилась: видео и рекомендации
+            // пойдут по другой стране, хотя узел работает.
+            if ($full && !empty($before['gl']) && !empty($now['gl']) && $before['gl'] !== $now['gl']) {
+                $this->notifyAdmins($this->t('🌐 YouTube теперь видит через узел ', '🌐 YouTube now sees through node ') . $name . ' '
+                    . self::esc($now['gl']) . $this->t(' (было ', ' (was ') . self::esc($before['gl']) . ')');
             }
             $restart = $this->exitRefreshRulesets($id) || $restart;
         }
@@ -587,14 +636,16 @@ trait BotExitNodes
         $users = count($this->exitNodeEmails($x, $id));
         try { $parsed = ExitNodeLink::parse($node['link']); } catch (InvalidArgumentException $e) { $parsed = null; }
         $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node),
-            $this->exitStatusLine($id, $node),
+            $this->exitStatusLine($id, $node)];
+        if (!empty($node['enabled']) && ($history = $this->exitHistoryLine($this->exitStatus()[$id] ?? [])) !== '') $text[] = $history;
+        array_push($text,
             $this->t('Адрес: <code>', 'Address: <code>') . self::esc($parsed ? $parsed['address'] . ':' . $parsed['port'] : $this->t('ссылка не разбирается', 'link cannot be parsed')) . '</code>'
                 . ($parsed ? ' · ' . self::esc($parsed['outbound']['protocol'] . '/' . $parsed['outbound']['streamSettings']['network'] . '/' . $parsed['outbound']['streamSettings']['security']) : ''),
             $this->t("Маршрутов: $routes · наборов правил: $sets · пользователей: $users", "Routes: $routes · rule sets: $sets · users: $users"),
             $this->exitTrafficLine($id),
             $this->t('QUIC к доменам узла: ', 'QUIC to node domains: ') . ($node['quic'] === 'block' ? $this->t('блокируется (браузер сразу идёт по TCP через узел)', 'blocked (the browser goes over TCP through the node right away)') : $this->t('пропускается', 'allowed')),
             $this->t('При отказе узла: напрямую с этого сервера', 'If the node fails: direct from this server'),
-            $this->t('Новым пользователям: ', 'For new users: ') . ($node['auto'] ? $this->t('включается сразу', 'enabled at once') : $this->t('не включается', 'not enabled'))];
+            $this->t('Новым пользователям: ', 'For new users: ') . ($node['auto'] ? $this->t('включается сразу', 'enabled at once') : $this->t('не включается', 'not enabled')));
         if (!$users) $text[] = $this->t('ℹ️ Узел пока ни у кого не включён: «Пользователи» или карточка пользователя.', 'ℹ️ The node is not enabled for anyone yet: use Users or a user card.');
         if (!$routes && !$sets) $text[] = $this->t('ℹ️ Маршрутов нет: «Маршруты» → например «YouTube».', 'ℹ️ No routes: Routes → for example YouTube.');
         array_push($text, ...$this->exitWarnings($node));
