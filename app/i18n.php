@@ -1638,6 +1638,18 @@ $i = [
         'en' => 'Fake domain %s does not answer with TLS 1.3: REALITY does not work with it.',
         'ru' => 'Фейковый домен %s не отвечает по TLS 1.3: REALITY с ним не работает.',
     ],
+    'reality mask not applied' => [
+        'en' => 'The fake domain was not changed.',
+        'ru' => 'Фейковый домен не изменён.',
+    ],
+    'reality mask alpn cores' => [
+        'en' => 'A site without ALPN is accepted by the older cores and the fork: switch in Xray → Core / version.',
+        'ru' => 'Сайт без ALPN принимают более старые ядра и форк: переключить можно в Xray → Ядро / версия.',
+    ],
+    'xray core mask alpn' => [
+        'en' => 'Fake domain %s answers without ALPN: this core would reject every REALITY client. First pick a site with HTTP/2 or «steal from yourself».',
+        'ru' => 'Фейковый домен %s отвечает без ALPN: это ядро отвергнет всех клиентов REALITY. Сначала выберите сайт с HTTP/2 или «маска своим сайтом».',
+    ],
     'reality mask fail' => [
         'en' => 'Fake domain %s is unreachable from the server (%s): REALITY clients cannot connect.',
         'ru' => 'Фейковый домен %s недоступен с сервера (%s): клиенты REALITY не подключатся.',

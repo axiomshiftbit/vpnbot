@@ -26973,12 +26973,41 @@ DNS-over-HTTPS with IP:
         if (!$probe['ok'] || ($probe['running'] !== '' && $probe['running'] !== $probe['active'])) {
             return false;
         }
-        if (preg_match('~^v0\.0\.0-(\d{14})-[0-9a-f]+$~D', $probe['reality'] ?? '', $build)) {
+        return self::realityBuildAcksServerName((string) ($probe['reality'] ?? ''), (string) $probe['version'], $probe['active'] === 'origin');
+    }
+
+    public static function realityBuildAcksServerName(string $reality, string $version, bool $origin): bool
+    {
+        if (preg_match('~^v0\.0\.0-(\d{14})-[0-9a-f]+$~D', $reality, $build)) {
             return strcmp($build[1], '20260921001439') >= 0;
         }
-        return $probe['active'] === 'origin'
-            && preg_match('~Xray\s+v?(\d+\.\d+\.\d+)~i', $probe['version'], $match)
+        return $origin && preg_match('~Xray\s+v?(\d+\.\d+\.\d+)~i', $version, $match)
             && version_compare($match[1], '26.10.17', '>=');
+    }
+
+    // То же правило для ядра, на которое переключаются (не для работающего):
+    // слоты держат разные версии. null — контейнер xr не ответил.
+    public function xrayCoreAcksServerName(string $core): ?bool
+    {
+        $bin = self::XRAY_BINARIES[$core] ?? null;
+        if ($bin === null) return null;
+        $out = (string) $this->ssh($bin . ' version 2>&1 | head -n1; printf "\nREALITY_BUILD="; '
+            . 'LC_ALL=C grep -a -m 1 -oE \'github\\.com/xtls/reality[[:space:]]+v[0-9A-Za-z.+_-]+\' ' . $bin . ' 2>/dev/null '
+            . '| head -n1 | awk \'{printf "%s", $2}\'', 'xr');
+        if ($this->sshFailed || !preg_match('~^(.*)\nREALITY_BUILD=(\S*)$~sD', rtrim($out), $m)) return null;
+        return self::realityBuildAcksServerName($m[2], $m[1], $core !== 'fork');
+    }
+
+    // Защита REALITY: маску без TLS 1.3 не принимает ни одно ядро, маску без
+    // ALPN — ядро, подтверждающее SNI ($acks). Ключ i18n отказа или ''.
+    // Недоступная маска (fail/error) не повод отказывать: сбой может быть разовым.
+    public static function realityMaskRefusal(array $probe, bool $acks): string
+    {
+        return match ($probe['status'] ?? '') {
+            'tls12' => 'reality mask tls12',
+            'short' => $acks ? 'reality mask short now' : '',
+            default => '',
+        };
     }
 
     // Адрес и SNI маски из рабочего конфига; ['', ''] — проверять нечего.
@@ -27073,18 +27102,35 @@ DNS-over-HTTPS with IP:
             }
         }
         $r = $this->realityMaskProbe($target, $sni) + ['target' => $target, 'sni' => $sni, 'ts' => time()];
-        if (@file_put_contents(static::REALITY_MASK_FILE, json_encode($r), LOCK_EX) === false) {
-            error_log('realityMaskCheck: cannot write ' . static::REALITY_MASK_FILE);
-        }
+        // Отметка об отправленном уведомлении переживает перепроверку той же маски.
+        if (isset($c['alerted'])) $r['alerted'] = $c['alerted'];
+        $this->realityMaskSave($r);
         return $r;
     }
 
-    // Cron: маска могла перестать отвечать с ALPN или стать недоступной.
+    protected function realityMaskSave(array $r): void
+    {
+        if (@file_put_contents(static::REALITY_MASK_FILE, json_encode($r), LOCK_EX) === false) {
+            error_log('realityMaskCheck: cannot write ' . static::REALITY_MASK_FILE);
+        }
+    }
+
+    // Cron: маска могла перестать отвечать с ALPN или по TLS 1.3. Ядро не
+    // меняем, а один раз на каждое новое состояние сообщаем администраторам.
     public function checkRealityMask(): void
     {
-        if (($this->getPacConf()['transport'] ?? '') === 'Reality') {
-            $this->realityMaskCheck();
+        if (($this->getPacConf()['transport'] ?? '') !== 'Reality') return;
+        $r = $this->realityMaskCheck();
+        if ($r === null || ($r['status'] ?? '') === 'error') return;
+        $refusal = self::realityMaskRefusal($r, $this->realityAcksServerName());
+        if ($refusal === ($r['alerted'] ?? '')) return;
+        if ($refusal !== '') {
+            $this->notifyAdmins('⚠ ' . sprintf($this->i18n($refusal), self::esc((string) ($r['sni'] ?? ''))));
+            $r['alerted'] = $refusal;
+        } else {
+            unset($r['alerted']);
         }
+        $this->realityMaskSave($r);
     }
 
     // Предупреждения о маске для меню Xray; только по сохранённому результату.
@@ -27319,6 +27365,16 @@ DNS-over-HTTPS with IP:
 
     public function selectXrayCore(string $core): void
     {
+        // Ядро, подтверждающее SNI, с маской без ALPN отвергло бы всех клиентов
+        // REALITY: не переключаем, пока маска такая.
+        if (($this->getPacConf()['transport'] ?? '') === 'Reality' && $this->xrayCoreAcksServerName($core) === true) {
+            $mask = $this->realityMaskCheck(true);
+            if ($mask !== null && self::realityMaskRefusal($mask, true) === 'reality mask short now') {
+                $this->answer($this->input['callback_id'], mb_substr(sprintf($this->i18n('xray core mask alpn'), (string) ($mask['sni'] ?? '')), 0, 200), true);
+                $this->xrayCoreMenu();
+                return;
+            }
+        }
         $r = $this->applyXrayCore($core);
         $message = !empty($r['ok']) ? 'xray version switched' : match (true) {
             in_array('rollback failed', $r['note'], true) => 'xray rollback failed',
@@ -34341,6 +34397,18 @@ DNS-over-HTTPS with IP:
             );
             return $this->xray();
         }
+        // Маску проверяем до применения: с непригодной текущее ядро REALITY
+        // отвергло бы всех клиентов (см. realityMaskRefusal()).
+        $refusal = self::realityMaskRefusal($this->realityMaskProbe($self ? '10.10.1.2:443' : "$domain:443", $domain), $this->realityAcksServerName());
+        if ($refusal !== '') {
+            $this->send(
+                $this->input['chat'],
+                sprintf($this->i18n($refusal), self::esc($domain)) . "\n" . $this->i18n('reality mask not applied')
+                    . ($refusal === 'reality mask short now' ? ' ' . $this->i18n('reality mask alpn cores') : ''),
+                $this->input['message_id']
+            );
+            return $this->xray();
+        }
         $c = $this->getXray();
         $p = $this->getPacConf();
         $c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] = $domain;
@@ -34375,6 +34443,13 @@ DNS-over-HTTPS with IP:
 
         $p['reality']['domain']      = $p['reality']['domain'] ?: $this->defaultFakeDomain();
         $p['reality']['destination'] = $p['reality']['destination'] ?: $p['reality']['domain'] . ':443';
+        if ($transport === 'Reality' && ($previousPac['transport'] ?? '') !== 'Reality') {
+            $refusal = self::realityMaskRefusal($this->realityMaskProbe($p['reality']['destination'], $p['reality']['domain']), $this->realityAcksServerName());
+            if ($refusal !== '') {
+                $this->answer($this->input['callback_id'], mb_substr(html_entity_decode(strip_tags(sprintf($this->i18n($refusal), $p['reality']['domain'])), ENT_QUOTES), 0, 200), true);
+                return $this->xray();
+            }
+        }
         $p['transport'] = $transport;
 
         $p['reality']['domain']      = $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] ?? $p['reality']['domain'];
@@ -34454,18 +34529,18 @@ DNS-over-HTTPS with IP:
                 $x['inbounds'][0]['streamSettings'] = [
                     "network"         => "tcp",
                     "realitySettings" => [
-                        "dest"         => $p['reality']['destination'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['dest'],
+                        "dest"         => $p['reality']['destination'] ?: ($x['inbounds'][0]['streamSettings']['realitySettings']['dest'] ?? ''),
                         "maxClientVer" => "",
                         "maxTimeDiff"  => 0,
                         "minClientVer" => "0.0.0",
                         "privateKey"   => $p['reality']['privateKey'],
                         "serverNames"  => [
-                            $p['reality']['domain'] ?: $x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0]
+                            $p['reality']['domain'] ?: ($x['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] ?? '')
                         ],
                         // Весь набор, а не одно значение: иначе переключение
                         // транспорта туда-обратно схлопывало shortIds до одного
                         // и клиенты снова получали одинаковую подпись.
-                        "shortIds" => $x['inbounds'][0]['streamSettings']['realitySettings']['shortIds']
+                        "shortIds" => ($x['inbounds'][0]['streamSettings']['realitySettings']['shortIds'] ?? [])
                             ?: $this->realityShortIds((string) $p['reality']['shortId']),
                         "show"     => false,
                         "xver"     => 0
