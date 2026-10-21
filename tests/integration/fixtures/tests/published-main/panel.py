@@ -120,14 +120,19 @@ try:
     public = lambda path: run('curl', '-sk', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8', '--resolve', 'vpnbot.test:443:127.0.0.1', 'https://vpnbot.test' + path).stdout
     check('public-443-panel-looks-like-unknown-path', public(P + '/') == public('/nonexistent-' + secrets.token_hex(4)) and public(P + '/') != '200')
     # Адреса PHP бота не принимают multipart/form-data (PHP2Shell); прочие запросы к ним проходят как раньше.
-    changelog = '/pac' + pac('hashbot') + '?t=changelog'
-    for name, path in (('pac', changelog), ('webapp', '/webapp/'), ('tlgrm', '/tlgrm')):
-        check('public-443-multipart-rejected-' + name, public(path) != '415'
-              and run('curl', '-sk', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8', '--resolve', 'vpnbot.test:443:127.0.0.1',
-                      '-F', 'a=b', 'https://vpnbot.test' + path).stdout == '415')
-    check('public-443-pac-changelog-served', public(changelog) == '200')
-    check('public-443-tlgrm-json-not-blocked', run('curl', '-sk', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8', '--resolve', 'vpnbot.test:443:127.0.0.1',
-                                                   '-H', 'Content-Type: application/json', '-d', '{}', 'https://vpnbot.test/tlgrm').stdout != '415')
+    # По имени домена PHP доступен через /pac<хэш> и /webapp<хэш> (→ @php), /tlgrm — только в блоке по IP.
+    h = pac('hashbot')
+    changelog = '/pac' + h + '?t=changelog'
+    domain = lambda path, *extra: run('curl', '-sk', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8', '--resolve', 'vpnbot.test:443:127.0.0.1',
+                                      *extra, 'https://vpnbot.test' + path).stdout
+    by_ip = lambda path, *extra: run('docker', 'exec', PHP, 'curl', '-sk', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8',
+                                     *extra, 'https://10.10.0.2:10443' + path).stdout
+    check('public-443-multipart-rejected-pac', domain(changelog) == '200' and domain(changelog, '-F', 'a=b') == '415')
+    check('public-443-multipart-rejected-webapp', domain(f'/webapp{h}/save', '-d', 'a=b') not in ('', '000', '415')
+          and domain(f'/webapp{h}/save', '-F', 'a=b') == '415')
+    check('ip-443-multipart-rejected-tlgrm', by_ip('/tlgrm', '-H', 'Content-Type: application/json', '-d', '{}') not in ('', '000', '415')
+          and by_ip('/tlgrm', '-F', 'a=b') == '415')
+    check('ip-443-multipart-rejected-pac', by_ip(changelog, '-F', 'a=b') == '415' and by_ip(changelog) == '200')
 
     # ── CSRF, методы, доступ без входа ────────────────────────────────────────
     check('post-without-x-panel-rejected', req('POST', P + '/login', urlencode({'password': PASSWORD}).encode(), FORM)[0] == 400)
