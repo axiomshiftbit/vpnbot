@@ -6720,6 +6720,7 @@ NFT;
             // доехать даже если service.php оборвался раньше своей последней
             // строки. Идемпотентна и на «нечего менять» выходит сразу.
             'migrateDohClientIds',
+            'ensureNginxPhpMultipartGuard',
             'reconcileManagedUpstreams',
             'autoAnalyzeLogs',
             'xrayStatsUser',
@@ -32763,6 +32764,37 @@ DNS-over-HTTPS with IP:
         if (!is_file($path)) return true;
         return $this->editProtocolProxyConfig($path, 'ng',
             static fn($text) => self::xrayNginxRoutes($text, $xray));
+    }
+
+    // Адреса, через которые PHP бота доступен из интернета (/pac, /tlgrm,
+    // @php после /webapp), multipart/form-data не принимают: загрузки есть
+    // только у веб-панели, а она слушает 127.0.0.1:8090. PHP разбирает такое
+    // тело до кода бота, и уязвимость разборщика (PHP2Shell, CVE-2026-109618/
+    // 109619) достаётся без входа. Строка ставится и в закомментированные
+    // копии блоков (#-domain): uncomment() снимает первый «#». На установке
+    // cloakNginx() дописывает к /pac хэш бота — отсюда /pac[0-9A-Za-z]*.
+    public const NGINX_PHP_GUARD = 'vpnbot-php-multipart-guard';
+
+    public static function nginxPhpMultipartGuard(string $text): string
+    {
+        return (string) preg_replace_callback('~^([ \t]*(?:#[ \t]*)?)location[ \t]+(?:/pac[0-9A-Za-z]*|/tlgrm|@php)[ \t]*\{[ \t]*\r?\n(?![ \t]*(?:#[ \t]*)?if \(\$http_content_type[^\n]*' . self::NGINX_PHP_GUARD . ')~m',
+            static fn($m) => $m[0] . $m[1] . '    if ($http_content_type ~* "multipart/form-data") { return 415; } # ' . self::NGINX_PHP_GUARD . "\n",
+            $text);
+    }
+
+    // Установки до защиты: шаблон и рабочий nginx.conf лежат в config/ и при
+    // обновлении сохраняются как есть, поэтому строку дописывает cron.
+    public function ensureNginxPhpMultipartGuard(): bool
+    {
+        $root = dirname($this->xrayConf);
+        $template = "$root/nginx_default.conf";
+        if (is_file($template)) {
+            $body = (string) file_get_contents($template);
+            $guarded = self::nginxPhpMultipartGuard($body);
+            if ($guarded !== $body && !$this->backupWriteInPlace($template, $guarded)) return false;
+        }
+        if (!is_file("$root/nginx.conf")) return true;
+        return $this->editProtocolProxyConfig("$root/nginx.conf", 'ng', static fn($text) => self::nginxPhpMultipartGuard($text));
     }
 
     public function cloakNginx()

@@ -182,6 +182,9 @@ dohAssert(file_get_contents($migration->adguard) === $before
 // Путь DoH — секрет целиком, поэтому логировать его нельзя ни в каком формате.
 foreach (['nginx.conf', 'nginx_default.conf'] as $f) {
     $conf = (string) file_get_contents(__DIR__ . '/../config/' . $f);
+    // Строка защиты от multipart (nginx_php_guard_test) содержит свои «{ }»:
+    // тела location ниже разбираются до первой «}», поэтому её убираем.
+    $conf = (string) preg_replace('~^[^\n]*# ' . Bot::NGINX_PHP_GUARD . '\n~m', '', $conf);
     dohAssert((bool) preg_match('~log_format nopath~', $conf), "$f: формат без пути объявлен");
     dohAssert(!preg_match('~access_log /logs/nginx_doh_access;~', $conf),
         "$f: DoH больше не пишется дефолтным combined (путь в логе)");

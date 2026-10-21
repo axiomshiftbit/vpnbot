@@ -119,6 +119,15 @@ try:
             check(f'neighbour-{name}-{"panel" if path.startswith("/panel") else "listener"}-denied', r.stdout == '403')
     public = lambda path: run('curl', '-sk', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8', '--resolve', 'vpnbot.test:443:127.0.0.1', 'https://vpnbot.test' + path).stdout
     check('public-443-panel-looks-like-unknown-path', public(P + '/') == public('/nonexistent-' + secrets.token_hex(4)) and public(P + '/') != '200')
+    # Адреса PHP бота не принимают multipart/form-data (PHP2Shell); прочие запросы к ним проходят как раньше.
+    changelog = '/pac' + pac('hashbot') + '?t=changelog'
+    for name, path in (('pac', changelog), ('webapp', '/webapp/'), ('tlgrm', '/tlgrm')):
+        check('public-443-multipart-rejected-' + name, public(path) != '415'
+              and run('curl', '-sk', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8', '--resolve', 'vpnbot.test:443:127.0.0.1',
+                      '-F', 'a=b', 'https://vpnbot.test' + path).stdout == '415')
+    check('public-443-pac-changelog-served', public(changelog) == '200')
+    check('public-443-tlgrm-json-not-blocked', run('curl', '-sk', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8', '--resolve', 'vpnbot.test:443:127.0.0.1',
+                                                   '-H', 'Content-Type: application/json', '-d', '{}', 'https://vpnbot.test/tlgrm').stdout != '415')
 
     # ── CSRF, методы, доступ без входа ────────────────────────────────────────
     check('post-without-x-panel-rejected', req('POST', P + '/login', urlencode({'password': PASSWORD}).encode(), FORM)[0] == 400)
