@@ -40,7 +40,7 @@ class RealityMaskTestBot extends Bot
     }
     public function answer($callback_id, $textNotify = false, $notify = false) { $this->answers[] = $textNotify; }
     public function xray($page = 0) { $this->menus++; }
-    public function i18n(string $key): string { return $key . ($key === 'reality mask fail' ? ' %s %s' : (in_array($key, ['reality mask not applied', 'reality mask alpn cores'], true) ? '' : ' %s')); }
+    public function i18n(string $key): string { return $key . ($key === 'reality mask fail' ? ' %s %s' : (in_array($key, ['reality mask not applied', 'reality mask alpn cores', 'reality mask fits all', 'reality mask no alpn'], true) ? '' : ($key === 'reality mask fits cores' ? ' %s | %s' : ' %s'))); }
     public static function file(): string { return static::REALITY_MASK_FILE; }
     // Действия, которые защита обязана не выполнить (или выполнить) — только записываем.
     public array $notices = [];
@@ -211,13 +211,32 @@ try {
     // ── Кнопка «проверить» ──────────────────────────────────────────────────
     $bot->outputs = [$out['h2']];
     $bot->checkFakeDomain();
-    rmkAssert(end($bot->answers) === '✅ TLS 1.3, ALPN h2' && $bot->menus === 1, 'кнопка: маска в порядке');
+    rmkAssert(end($bot->answers) === '✅ TLS 1.3, ALPN h2 — reality mask fits all' && $bot->menus === 1, 'кнопка: маска в порядке, подходит всем ядрам');
     $bot->outputs = [$out['empty']];
     $bot->checkFakeDomain();
     rmkAssert(str_starts_with((string) end($bot->answers), '⚠ reality mask short') && mb_strlen((string) end($bot->answers)) <= 200, 'кнопка: предупреждение');
     $bot->outputs = [];
     $bot->checkFakeDomain();
     rmkAssert(end($bot->answers) === 'fake domain: ? (ssh)', 'кнопка: контейнер не ответил');
+    // Маска без ALPN на ядре, которое её принимает: какие установленные ядра подходят.
+    $inv = "origin|Xray 26.10.21 (Xray, Penetrates Everything.)\norigin2|Xray 26.9.30 (Xray, Penetrates Everything.)\norigin3|Xray 26.7.28 (Xray, Penetrates Everything.)\nfork|Xray 26.10.13-2347 (Xray, Penetrates Everything.)\n";
+    $rule = static fn(string $v, string $r) => "Xray $v (Xray, Penetrates Everything.)\nREALITY_BUILD=$r";
+    $acks = [$rule('26.10.21', 'v0.0.0-20261014101318-83f621788ca8'), $rule('26.9.30', 'v0.0.0-20260908062103-8cdf7bf9c7f0'),
+             $rule('26.7.28', ''), $rule('26.10.13-2347', 'v0.0.0-20260908062103-8cdf7bf9c7f0')];
+    $bot->outputs = array_merge([$out['empty'], $inv], $acks);
+    $bot->checkFakeDomain();
+    rmkAssert(end($bot->answers) === '⚠ reality mask fits cores 26.9.30, 26.7.28, форк 26.10.13-2347 | 26.10.21', 'кнопка: подходит старым ядрам и форку, не подходит 26.10.21');
+    $bot->outputs = array_merge([$out['empty'], "origin2|Xray 26.9.30 (x)\nfork|Xray 26.10.13-2347 (x)\n"], [$acks[1], $acks[3]]);
+    $bot->checkFakeDomain();
+    rmkAssert(end($bot->answers) === '✅ TLS 1.3, reality mask no alpn — reality mask fits all', 'кнопка: ALPN не требует ни одно установленное ядро');
+    $bot->outputs = [$out['empty'], $inv, $acks[0]];
+    $bot->checkFakeDomain();
+    rmkAssert(str_starts_with((string) end($bot->answers), '⚠ reality mask short '), 'кнопка: правило одного ядра не узнали — общее предупреждение');
+    $bot->probe = $probe(['reality' => 'v0.0.0-20261014101318-83f621788ca8']);
+    $bot->commands = [];
+    $bot->outputs = [$out['empty']];
+    $bot->checkFakeDomain();
+    rmkAssert(str_starts_with((string) end($bot->answers), '⚠ reality mask short now') && count($bot->commands) === 1, 'кнопка: выбранному ядру маска не подходит — прежнее предупреждение без опроса слотов');
 
     // ── Защита: совместимость маски и ядра (ALPN) ──────────────────────────
     $mask = static fn(string $status) => ['status' => $status, 'reason' => '', 'alpn' => '', 'record' => 0];
@@ -341,7 +360,7 @@ $fake = substr($src, strpos($src, 'public function setFakeDomain('), 3600);
 rmkAssert(str_contains($fake, '$this->realityMaskCheck(true);'), 'смена маски сразу её проверяет');
 require __DIR__ . '/../app/i18n.php';
 $i18n = $i;
-foreach (['check fake domain', 'reality mask short', 'reality mask short now', 'reality mask tls12', 'reality mask fail', 'reality mask not applied', 'reality mask alpn cores', 'xray core mask alpn'] as $key) {
+foreach (['check fake domain', 'reality mask short', 'reality mask short now', 'reality mask tls12', 'reality mask fail', 'reality mask not applied', 'reality mask alpn cores', 'xray core mask alpn', 'reality mask fits all', 'reality mask no alpn', 'reality mask fits cores'] as $key) {
     rmkAssert(!empty($i18n[$key]['ru']) && !empty($i18n[$key]['en']), "строка $key");
     $n = substr_count($i18n[$key]['ru'], '%s');
     rmkAssert($n === substr_count($i18n[$key]['en'], '%s'), "подстановки $key совпадают");

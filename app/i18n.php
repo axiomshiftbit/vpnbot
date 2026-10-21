@@ -1638,6 +1638,18 @@ $i = [
         'en' => 'Fake domain %s does not answer with TLS 1.3: REALITY does not work with it.',
         'ru' => 'Фейковый домен %s не отвечает по TLS 1.3: REALITY с ним не работает.',
     ],
+    'reality mask fits all' => [
+        'en' => 'the mask suits every core',
+        'ru' => 'маска подходит всем ядрам',
+    ],
+    'reality mask no alpn' => [
+        'en' => 'no ALPN',
+        'ru' => 'без ALPN',
+    ],
+    'reality mask fits cores' => [
+        'en' => 'TLS 1.3 without ALPN: suits cores %s. Does not suit: %s — REALITY clients will not connect there with this mask.',
+        'ru' => 'TLS 1.3 без ALPN: подходит ядрам %s. Не подходит: %s — клиенты REALITY с этой маской там не подключатся.',
+    ],
     'reality mask not applied' => [
         'en' => 'The fake domain was not changed.',
         'ru' => 'Фейковый домен не изменён.',

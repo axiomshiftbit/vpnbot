@@ -27150,15 +27150,37 @@ DNS-over-HTTPS with IP:
     public function checkFakeDomain()
     {
         $r = $this->realityMaskCheck(true);
+        $status = $r['status'] ?? '';
         $warnings = $r === null ? [] : $this->realityMaskWarnings($r);
+        // Маска без ALPN, но выбранное ядро её принимает: назвать установленные
+        // ядра, которым она подходит и не подходит, вместо общего предупреждения.
+        $fit = $status === 'short' && !$this->realityAcksServerName() ? $this->realityMaskCoreFit() : [[], []];
         $text = match (true) {
-            $r === null                     => 'fake domain: ?',
-            ($r['status'] ?? '') === 'error' => 'fake domain: ? (ssh)',
-            (bool) $warnings                => '⚠ ' . html_entity_decode(strip_tags($warnings[0]), ENT_QUOTES),
-            default                         => '✅ TLS 1.3, ALPN ' . (($r['alpn'] ?? '') ?: '—'),
+            $r === null          => 'fake domain: ?',
+            $status === 'error'  => 'fake domain: ? (ssh)',
+            $status === 'ok'     => '✅ TLS 1.3, ALPN ' . (($r['alpn'] ?? '') ?: '—') . ' — ' . $this->i18n('reality mask fits all'),
+            $fit[0] && !$fit[1]  => '✅ TLS 1.3, ' . $this->i18n('reality mask no alpn') . ' — ' . $this->i18n('reality mask fits all'),
+            (bool) $fit[0]       => '⚠ ' . sprintf($this->i18n('reality mask fits cores'), implode(', ', $fit[0]), implode(', ', $fit[1])),
+            (bool) $warnings     => '⚠ ' . html_entity_decode(strip_tags($warnings[0]), ENT_QUOTES),
+            default              => '✅ TLS 1.3, ALPN ' . (($r['alpn'] ?? '') ?: '—'),
         };
         $this->answer($this->input['callback_id'], mb_substr($text, 0, 200), true);
         $this->xray();
+    }
+
+    // Установленные ядра, которые примут маску без ALPN, и которые нет — по
+    // правилу каждого бинаря. [[], []] — состав или правило узнать не удалось.
+    public function realityMaskCoreFit(): array
+    {
+        $fit = $unfit = [];
+        foreach ($this->xrayCoreInventory() as $core => $version) {
+            $acks = $this->xrayCoreAcksServerName($core);
+            if ($acks === null) return [[], []];
+            $label = ($core === 'fork' ? $this->t('форк ', 'fork ') : '') . $version;
+            if ($acks) $unfit[$label] = true;
+            else $fit[$label] = true;
+        }
+        return [array_keys($fit), array_keys($unfit)];
     }
 
     public function subscriptionCompatibilityError(array $xr, array $pac, string $type): string
