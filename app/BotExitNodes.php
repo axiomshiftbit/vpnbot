@@ -1721,8 +1721,29 @@ trait BotExitNodes
         if ($notice !== '') $text[] = '<b>' . self::esc($notice) . '</b>';
         $text[] = $link !== '' ? $this->t("Ссылка для основного сервера (Xray → Узлы выхода → «Добавить узел»):\n<pre><code>", "Link for the main server (Xray → Exit nodes → Add node):\n<pre><code>") . self::esc($link) . '</code></pre>'
             : $this->t('Ссылку не выдать: текущий транспорт Xray её не поддерживает.', 'No link: the current Xray transport does not support it.');
-        $text[] = $this->t('Отозвать доступ — удалить или отключить эту учётку в списке пользователей Xray.', 'To revoke access, delete or disable this account in the Xray user list.');
-        $data = [[['text' => $this->i18n('back'), 'callback_data' => '/exitRelay']]];
+        $text[] = $this->t('Отозвать доступ — удалить профиль кнопкой ниже или отключить эту учётку в списке пользователей Xray.', 'To revoke access, delete the profile with the button below or disable this account in the Xray user list.');
+        $data = [
+            [['text' => $this->t('🗑 Удалить профиль', '🗑 Delete profile'), 'callback_data' => "/exitRelayDel $i"]],
+            [['text' => $this->i18n('back'), 'callback_data' => '/exitRelay']],
+        ];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    // Подтверждение несёт отпечаток имени: если список учёток сдвинулся,
+    // старая кнопка не удалит другую учётку на том же месте.
+    public function exitRelayDelete(int $i, string $mark = ''): void
+    {
+        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if (!is_array($client) || empty($client['exit_relay'])) { $this->exitRelayMenu($this->t('Профиль не найден', 'Profile not found')); return; }
+        $expected = substr(hash('sha256', (string) ($client['email'] ?? '')), 0, 8);
+        if ($mark === '') {
+            $this->update($this->input['chat'], $this->input['message_id'],
+                $this->t('Удалить профиль для узла <b>', 'Delete node profile <b>') . self::esc((string) ($client['email'] ?? '')) . $this->t('</b>? Основной сервер, где он добавлен узлом, больше не сможет через него выходить.', '</b>? The main server that added it as a node can no longer exit through it.'),
+                [[['text' => $this->t('🗑 Да, удалить', '🗑 Yes, delete'), 'callback_data' => "/exitRelayDelYes $i $expected"], ['text' => $this->i18n('back'), 'callback_data' => "/exitRelayLink $i"]]]);
+            return;
+        }
+        if (!hash_equals($expected, $mark)) { $this->exitRelayMenu($this->t('Профиль не найден', 'Profile not found')); return; }
+        $this->delxr($i, false);
+        $this->exitRelayMenu($this->t('Профиль удалён', 'Profile deleted'));
     }
 }

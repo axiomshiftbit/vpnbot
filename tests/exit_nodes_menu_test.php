@@ -63,6 +63,11 @@ class ExitMenuBot extends Bot
     public function last(): array { return end($this->screens) ?: ['', []]; }
     public function changeRouteList(string $type, callable $edit): bool { $list = $this->confPac[$type] ?? []; $edit($list); $this->confPac[$type] = $list; return true; }
     public function adguardXrayClients() {}
+    public array $removed = [];
+    public function getXrayStats() { return []; }
+    public function setXrayStats($x) { return true; }
+    public function deleteHwidUser($uid) { $this->removed[] = ['hwid', $uid]; }
+    public function deleteWarpClient($email) { $this->removed[] = ['warp', $email]; }
     public function userXr($i) { $this->screens[] = ['user ' . $i, []]; }
     public function xray($page = 0) { $this->screens[] = ["xray", []]; }
     public function callbacks(): array { $all = []; foreach ($this->last()[1] as $row) foreach ($row as $b) $all[$b['callback_data'] ?? ''] = $b['text']; return $all; }
@@ -292,6 +297,26 @@ $bot->exitAllUsers($id, true);
 $check(!isset($bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex]['exit']), '«всем» не включает служебную учётку');
 $bot->exitUsersMenu($id, 0);
 $check(!str_contains(json_encode($bot->last()[1], JSON_UNESCAPED_UNICODE), 'node-example'), 'служебная учётка не в списке пользователей узла');
+$bot->exitRelayLink($relayIndex);
+$check(isset($bot->callbacks()["/exitRelayDel $relayIndex"]), 'в профиле есть кнопка удаления');
+$bot->exitRelayDelete(0);
+$check(str_contains($bot->last()[0], 'Профиль не найден') && isset($bot->confXray['inbounds'][0]['settings']['clients'][0]), 'обычного пользователя кнопка профиля не удаляет');
+$bot->exitRelayDelete($relayIndex);
+$yes = "/exitRelayDelYes $relayIndex " . substr(hash('sha256', 'node-example'), 0, 8);
+$check(str_contains($bot->last()[0], 'Удалить профиль для узла <b>node-example</b>') && isset($bot->callbacks()[$yes]) && strlen($yes) <= 64, 'подтверждение удаления профиля');
+$bot->exitRelayDelete($relayIndex, '00000000');
+$check(str_contains($bot->last()[0], 'Профиль не найден') && isset($bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex]), 'чужой отпечаток не удаляет');
+$bot->exitRelayDelete($relayIndex, substr(hash('sha256', 'node-example'), 0, 8));
+$check(!in_array('node-example', array_column($bot->confXray['inbounds'][0]['settings']['clients'], 'email'), true) && in_array(['warp', 'node-example'], $bot->removed, true)
+    && str_contains($bot->last()[0], 'Профиль удалён') && !isset($bot->callbacks()["/exitRelayLink $relayIndex"]), 'профиль удалён, меню профилей без него');
+$bot->language = 'en';
+$bot->saveExitRelay('example');
+$relayIndex = array_key_last($bot->confXray['inbounds'][0]['settings']['clients']);
+$bot->exitRelayDelete($relayIndex);
+$check(str_contains($bot->last()[0], 'Delete node profile <b>node-example</b>?'), 'подтверждение на английском');
+$bot->exitRelayDelete($relayIndex, substr(hash('sha256', 'node-example'), 0, 8));
+$check(str_contains($bot->last()[0], 'Profile deleted'), 'итог удаления на английском');
+$bot->language = 'ru';
 
 // --- Обновление набора: новое содержимое сначала проверяет ядро -------------
 $sets = new class extends ExitMenuBot {

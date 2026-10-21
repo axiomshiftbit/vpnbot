@@ -837,6 +837,12 @@ class Bot
             case preg_match('~^/exitRelayLink (\d{1,6})$~', $this->input['callback'], $m):
                 $this->exitRelayLink((int) $m[1]);
                 break;
+            case preg_match('~^/exitRelayDel (\d{1,6})$~', $this->input['callback'], $m):
+                $this->exitRelayDelete((int) $m[1]);
+                break;
+            case preg_match('~^/exitRelayDelYes (\d{1,6}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->exitRelayDelete((int) $m[1], $m[2]);
+                break;
             case preg_match('~^/switchXrayCore$~', $this->input['callback'], $m):
                 $this->switchXrayCore();
                 break;
@@ -26088,7 +26094,7 @@ DNS-over-HTTPS with IP:
         $this->menu('oc');
     }
 
-    public function delxr($i)
+    public function delxr($i, $menu = true)
     {
         $r  = $this->getXray();
         $st = $this->getXrayStats();
@@ -26116,7 +26122,9 @@ DNS-over-HTTPS with IP:
                 break;
             }
         }
-        $this->xray();
+        if ($menu) {
+            $this->xray();
+        }
     }
 
     public function getClientsOc()
