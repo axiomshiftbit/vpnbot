@@ -89,6 +89,17 @@ foreach (['nginx.conf', 'nginx_default.conf'] as $name) {
     foreach ($m[1] as $next) guardAssert(str_contains($next, $line), "$name: первая строка location PHP — защита");
 }
 
+// Хэш бота меняется при переустановке: замена из cloakNginx() с любым хэшем
+// сохраняет все строки защиты, а миграция их не удваивает.
+$template = file_get_contents(__DIR__ . '/../config/nginx_default.conf');
+foreach ([bin2hex(random_bytes(4)), bin2hex(random_bytes(4))] as $h) {
+    $installed = preg_replace('~(/webapp|/pac|/adguard|/ws|/grpc|/v2ray|location /dns-query)~', '${1}' . $h, $template);
+    guardAssert(str_contains($installed, "location /pac$h {\n            $line\n"), "хэш $h: /pac$h защищён после cloakNginx()");
+    guardAssert(substr_count($installed, Bot::NGINX_PHP_GUARD) === 5, "хэш $h: все строки защиты на месте");
+    guardAssert(Bot::nginxPhpMultipartGuard($installed) === $installed, "хэш $h: миграция ничего не добавляет");
+    guardAssert(Bot::nginxPhpMultipartGuard(str_replace("            $line\n", '', $installed)) === $installed, "хэш $h: снятая защита возвращается миграцией");
+}
+
 // ── 3. cron дописывает защиту в старую установку ─────────────────────────────
 $dir = sys_get_temp_dir() . '/nginx-guard-' . bin2hex(random_bytes(4));
 mkdir($dir, 0700);
