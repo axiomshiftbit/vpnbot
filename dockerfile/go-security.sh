@@ -22,6 +22,7 @@ golang.org/x/net v0.60.0
 golang.org/x/text v0.39.0
 golang.org/x/mod v0.40.0
 github.com/klauspost/compress v1.18.7
+golang.org/x/crypto/x509roots/fallback v0.0.0-20261020153306-9f2b28d4331a
 github.com/go-jose/go-jose/v3 v3.0.5
 github.com/go-jose/go-jose/v4 v4.1.4
 github.com/smallstep/certificates v0.30.0

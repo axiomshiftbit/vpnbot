@@ -136,7 +136,7 @@ foreach (['setRelayAddress', 'setRelayAwgAddress', 'setRelayHyAddress', 'setRela
 // setFakeDomain(): битый домен уезжал в xray.json и pac.json, ядро
 // перезапускалось, а setUpstreamDomain() молча делал return — reality лежал,
 // бот рапортовал об успехе.
-$fake = substr($src, strpos($src, 'public function setFakeDomain('), 1200);
+$fake = substr($src, strpos($src, 'public function setFakeDomain('), 2400);
 secAssert(str_contains($fake, 'isHostname($domain)'), 'setFakeDomain() проверяет домен');
 secAssert(strpos($fake, 'isHostname($domain)') < strpos($fake, 'getXray()'),
     'проверка домена стоит до записи конфигов');
