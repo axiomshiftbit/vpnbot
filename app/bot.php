@@ -15938,7 +15938,7 @@ DNS-over-HTTPS with IP:
             }
         }
         $ver  = $this->wgVersion();
-        $text = "Menu -> " . $this->getTitleWG() . ($ver ? "\n$ver" : '') . "\n\n<code>" . implode(PHP_EOL, $text ?: []) . '</code>';
+        $text = "Menu -> " . $this->getTitleWG() . ($ver ? "\n$ver" : '') . "\n\n<code>" . implode(PHP_EOL, $text ?? []) . '</code>';
         if ($bt && !$this->wgTorrentRulesReady()) $text .= "\n\n⚠️ " . $this->i18n('torrent wg incomplete');
         $data[] = [
             [
@@ -21846,7 +21846,7 @@ DNS-over-HTTPS with IP:
     {
         $pac     = $this->getPacConf();
         $enabled = !empty($pac['hwid_limit_enabled']);
-        $count   = max(1, (int) ($pac['hwid_device_count'] ?: 1));
+        $count   = max(1, (int) (($pac['hwid_device_count'] ?? 0) ?: 1));
 
         $text[] = 'Settings -> ' . $this->i18n('hwid limit');
         $text[] = $this->i18n('hwid notice');
@@ -22159,7 +22159,7 @@ DNS-over-HTTPS with IP:
             return true;
         }
 
-        $limit = (int) ($client['hwid_limit'] ?: ($pac['hwid_device_count'] ?: 0));
+        $limit = (int) (($client['hwid_limit'] ?? 0) ?: ($pac['hwid_device_count'] ?? 0));
         if ($limit <= 0) {
             header('x-hwid-active: true');
             header('x-hwid-not-supported: false');
@@ -28765,7 +28765,7 @@ DNS-over-HTTPS with IP:
 
         $devices      = $this->getHwidDevicesByUser($c['id']);
         $hwidEnabled  = !empty($pac['hwid_limit_enabled']) && empty($c['hwid_disabled']);
-        $defaultHwid  = max(1, (int) ($pac['hwid_device_count'] ?: 1));
+        $defaultHwid  = max(1, (int) (($pac['hwid_device_count'] ?? 0) ?: 1));
         $hwidLimit    = !empty($c['hwid_limit']) ? (int) $c['hwid_limit'] : $defaultHwid;
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . htmlspecialchars($c['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
@@ -29362,7 +29362,7 @@ DNS-over-HTTPS with IP:
         $pages        = max(1, (int) ceil($total / $perPage));
         $page         = min(max((int) $page, 0), $pages - 1);
         $hwidsPage    = array_slice($hwids, $page * $perPage, $perPage);
-        $defaultHwid  = max(1, (int) ($pac['hwid_device_count'] ?: 1));
+        $defaultHwid  = max(1, (int) (($pac['hwid_device_count'] ?? 0) ?: 1));
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> {$client['email']} -> " . $this->i18n('hwid devices');
         $text[] = $this->i18n('hwid notice');
