@@ -652,6 +652,14 @@ switch ($action) {
                 $b->exitNodesMenu();$b->exitNodeMenu($id);$b->exitRoutesMenu($id);$b->exitSetsMenu($id);$b->exitUsersMenu($id);$b->exitRelayMenu();$b->exitPresetsMenu($id);
                 break;
             case 'relay': $b->saveExitRelay($argv[3]); break;
+            case 'relay-del':
+                // Кнопка «🗑 Удалить профиль»: экран подтверждения, затем «Да, удалить».
+                foreach ($b->getXray()['inbounds'][0]['settings']['clients'] as $k=>$client) if (($client['email'] ?? '')===$argv[3]) {
+                    $b->exitRelayDelete($k);
+                    $b->exitRelayDelete($k,substr(hash('sha256',$argv[3]),0,8));
+                    break;
+                }
+                break;
             case 'adduser': $b->addxrus($argv[3]); break;
             case 'deluser':
                 foreach ($b->getXray()['inbounds'][0]['settings']['clients'] as $k=>$client) if (($client['email'] ?? '')===$argv[3]) { $b->delxr($k); break; }

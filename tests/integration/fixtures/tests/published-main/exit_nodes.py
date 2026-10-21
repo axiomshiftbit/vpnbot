@@ -226,6 +226,9 @@ try:
  s=bot('delete',nid);check('node-deleted',s['nodes']=={} and s['outbounds']==[] and s['inbounds']==[] and s['rules']==[] and s['balancers']==[] and s['burst'] is None)
  check('deleted-node-cleared-from-users',all(c['exit'] is None for c in s['clients']) and s['sets']==[])
  check('after-delete-direct',wait(lambda:direct('video.exit.test'),20))
+ s=bot('relay-del','node-ci-main')
+ check('relay-profile-deleted',not any(c['email']=='node-ci-main' for c in s['clients']) and said(s,'Удалить профиль для узла <b>node-ci-main</b>') and said(s,'Профиль удалён'))
+ check('relay-delete-keeps-regular-users',email in [c['email'] for c in s['clients']])
  check('xray-running-at-the-end-of-the-flow',xray_alive())
 finally:
  if client:client.terminate();client.wait(10)
