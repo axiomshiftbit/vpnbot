@@ -230,8 +230,10 @@ do
     if [[ -f "$pwd/scripts/protocol_modules.py" && -f "$pwd/config/protocol-services.json" ]]; then
         # VER — из текущего дерева, как в makefile: окружение цикла унаследовано
         # от процесса, запущенного до обновления, и контейнеры протоколов
-        # пересоздавались бы со старой версией в имени.
-        VER="$(git -C "$pwd" describe --tags --always 2>/dev/null || echo local)" \
+        # пересоздавались бы со старой версией в имени. VER, заданный явно в
+        # override.env (так называет контейнеры стенд), остаётся в силе.
+        apply_ver=$(grep -m1 '^VER=' "$pwd/override.env" 2>/dev/null | cut -d'=' -f2-)
+        VER="${apply_ver:-$(git -C "$pwd" describe --tags --always 2>/dev/null || echo local)}" \
             python3 "$pwd/scripts/protocol_modules.py" apply >/dev/null 2>&1 || true
     fi
     sleep 1

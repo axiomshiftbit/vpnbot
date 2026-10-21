@@ -16,6 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class UpdateLoopVerTest(unittest.TestCase):
     def test_apply_gets_version_of_current_tree(self):
+        self.assertEqual(*self.apply_ver(None))
+
+    def test_override_env_ver_is_kept(self):
+        # Стенд задаёт имена контейнеров через VER=audit в override.env.
+        self.assertEqual(self.apply_ver('IP=203.0.113.10\nVER=audit\n')[0], 'audit')
+
+    def apply_ver(self, override):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / 'update').mkdir()
@@ -23,6 +30,8 @@ class UpdateLoopVerTest(unittest.TestCase):
             (repo / 'config').mkdir()
             (repo / 'update' / 'update.sh').write_text((ROOT / 'update' / 'update.sh').read_text())
             (repo / 'config' / 'protocol-services.json').write_text('{}')
+            if override is not None:
+                (repo / 'override.env').write_text(override)
             seen = repo / 'seen-ver'
             (repo / 'scripts' / 'protocol_modules.py').write_text(
                 'import os, pathlib\n'
@@ -45,7 +54,7 @@ class UpdateLoopVerTest(unittest.TestCase):
                 proc.kill()
                 proc.wait()
             self.assertTrue(seen.exists(), 'apply не запускался')
-            self.assertEqual(seen.read_text(), expected)
+            return seen.read_text(), expected
 
 
 if __name__ == '__main__':
