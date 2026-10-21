@@ -10,7 +10,7 @@ class ExitMenuBot extends Bot
     public array $screens = []; public array $sent = []; public array $prompt = []; public array $ssh = []; public array $notified = [];
     public string $probeAnswer = "probe=204 0.120\nip=203.0.113.50\nloc=FI\n\"INNERTUBE_CONTEXT_GL\":\"RU\"\n";
     public array $downloads = []; public array $tools = []; public ?string $toolOutput = null;
-    public bool $restartOk = true;
+    public bool $restartOk = true; public int $restarts = 0; public array $events = [];
     public array $resolved = ['fi.example.org' => ['203.0.113.7'], 'inner.example.org' => ['10.10.0.7'], 'self.example.org' => ['198.51.100.1']];
     public function __construct()
     {
@@ -31,6 +31,8 @@ class ExitMenuBot extends Bot
     public function getXray() { return $this->confXray; }
     public function restartXray($c, $norestart = false)
     {
+        $this->restarts++;
+        $this->events[] = 'restart';
         if (!$this->restartOk) return false;
         $this->ensureExitNodes($c, $this->confPac);
         $this->confXray = $c;
@@ -52,7 +54,7 @@ class ExitMenuBot extends Bot
     public function stashReply($r, array $state) { $this->prompt = $state; }
     public function notifyAdmins(string $text): void { $this->notified[] = $text; }
     public function linkXray($i, $s = false) { return 'vless://' . $this->confXray['inbounds'][0]['settings']['clients'][$i]['id'] . '@fi.example.org:443?security=reality#x'; }
-    protected function exitRulesetDownload(string $url): ?string { $this->downloads[] = $url; return str_contains($url, 'broken') ? null : 'BIN'; }
+    protected function exitRulesetDownload(string $url): ?string { $this->downloads[] = $url; $this->events[] = 'download'; return str_contains($url, 'broken') ? null : 'BIN'; }
     protected function exitRulesetTool(array $command): bool
     {
         $this->tools[] = $command;
@@ -189,7 +191,9 @@ $bot->language = 'ru';
 $bot->exitToggle($id);
 
 // --- Наборы правил ----------------------------------------------------------
+$bot->events = [];
 $bot->saveExitSets("http://x.example/a.srs\nhttps://x.example/a.txt\nhttps://raw.example/geo/youtube.srs\nipcidr https://raw.example/geo/telegram.mrs", $id);
+$check($bot->events === ['download', 'download', 'restart'], 'наборы скачаны до сохранения узла, Xray перезапущен один раз');
 $sets = $bot->confPac['exits'][$id]['rulesets'];
 $check(array_keys($sets) === ['https://raw.example/geo/youtube.srs', 'https://raw.example/geo/telegram.mrs'] && $sets['https://raw.example/geo/telegram.mrs']['behavior'] === 'ipcidr', 'наборы: только https .srs/.mrs');
 $check(str_contains($bot->last()[0], 'не подошло') , 'сообщение о неподошедших ссылках');
@@ -331,7 +335,14 @@ $url = 'https://raw.example/geo/video.srs';
 $sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_suffix' => ['video.example']]]]);
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'] && count($sets->validated) === 1
     && ($sets->validated[0]['routing']['rules'][0]['domain'] ?? null) === ['domain:video.example'], 'новый набор проверен ядром и принят');
+$tools = count($sets->tools);
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && count($sets->validated) === 1, 'то же содержимое ядро повторно не проверяет');
+$check(count($sets->tools) === $tools && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'], 'тот же файл не распаковывается заново');
+$cached = $sets->exitRulesetCache($url); $cached['parser'] = '0:srs:domain';
+file_put_contents($sets->exitRulesetFile($url), json_encode($cached));
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && count($sets->tools) === $tools + 1 && str_starts_with($sets->exitRulesetCache($url)['parser'] ?? '', Bot::EXIT_RULESET_PARSER . ':'),
+    'после смены версии разбора тот же файл разбирается заново');
+$check($sets->exitRulesetRefresh($url, ['on' => 1, 'behavior' => 'ipcidr']) === '' && count($sets->tools) === $tools + 2, 'другой тип набора — разбор заново');
 $sets->binary = 'BIN2'; $sets->coreOk = false;
 $sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_regex' => ['(']]]]);
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'core' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'],

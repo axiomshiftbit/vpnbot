@@ -35,7 +35,8 @@ class ExitToolsBot extends Bot
     public function getPacConf() { return $this->confPac; }
     public function setPacConf(array $conf) { $this->confPac = $conf; return true; }
     public function getXray() { return $this->confXray; }
-    public function restartXray($c, $norestart = false) { $this->ensureExitNodes($c, $this->confPac); $this->confXray = $c; return true; }
+    public int $restarts = 0;
+    public function restartXray($c, $norestart = false) { $this->restarts++; $this->ensureExitNodes($c, $this->confPac); $this->confXray = $c; return true; }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
@@ -169,7 +170,9 @@ $check($sets === ['https://example.com/a.srs' => ['on' => 1, 'behavior' => 'doma
 $bot->confPac['exits'][$id2]['routes'] = ['domain:other.example' => 1, 'example.org' => 1];
 $bot->input['file_id'] = 'file';
 $bot->download = $exported;
+$restarts = $bot->restarts;
 $bot->saveExitImport('', $id2);
+$check($bot->restarts === $restarts + 1, 'импорт с наборами: Xray перезапущен один раз');
 $n2 = $bot->confPac['exits'][$id2];
 $check(count($n2['routes']) === 5 && $n2['routes']['full:www.example.net'] === 0 && isset($n2['routes']['domain:other.example']) && count($n2['rulesets']) === 2, 'импорт файлом: добавлено к имеющимся, повтор пропущен');
 $check(str_contains($bot->last()[0], 'маршрутов добавлено 3, наборов 2') && str_contains($bot->last()[0], 'пропущено (повтор или неверная запись): 1'), 'импорт: итог');

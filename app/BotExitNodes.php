@@ -35,6 +35,9 @@ trait BotExitNodes
     public const EXIT_RULESET_DIR = '/logs/exit-rulesets';
     public const EXIT_RULESET_MAX_BYTES = 16 * 1024 * 1024;
     public const EXIT_RULESET_MAX_ENTRIES = 200000;
+    // Версия разбора наборов: при её смене кэш разбирается заново, даже если
+    // файл источника не изменился.
+    public const EXIT_RULESET_PARSER = 1;
     // Домены YouTube без зависимости от geosite.dat (кнопка «YouTube»).
     public const EXIT_YOUTUBE = ['domain:youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'domain:ggpht.com',
         'domain:youtu.be', 'domain:youtube-nocookie.com', 'domain:youtubei.googleapis.com', 'domain:youtubekids.com',
@@ -529,15 +532,22 @@ trait BotExitNodes
     {
         $cache = $this->exitRulesetCache($url);
         $format = self::ruleSetFormat($url);
+        $behavior = (string) ($set['behavior'] ?? 'domain');
+        $parser = self::EXIT_RULESET_PARSER . ":$format:$behavior";
         $binary = self::exitRulesetUrlValid($url) ? $this->exitRulesetDownload($url) : null;
-        $entries = $binary === null ? null : $this->exitRulesetConvert($binary, $format, (string) ($set['behavior'] ?? 'domain'));
+        // Суточное обновление обычно приносит тот же файл: его записи уже
+        // разобраны и проверены ядром, распаковывать заново незачем.
+        $same = $binary !== null && ($cache['error'] ?? '') === '' && !empty($cache['entries'])
+            && ($cache['parser'] ?? '') === $parser && hash('sha256', $binary) === ($cache['hash'] ?? '');
+        $entries = $binary === null ? null : ($same ? $cache['entries'] : $this->exitRulesetConvert($binary, $format, $behavior));
         $error = $binary === null ? 'download' : ($entries === null ? 'parse' : (!$entries ? 'empty' : ''));
         // Записи набора попадают в каждую сборку конфига: битая регулярка из
         // чужого источника сделала бы так, что ядро отвергает любое изменение
         // Xray. Новое содержимое сначала проверяет выбранное ядро.
         if ($error === '' && hash('sha256', $binary) !== ($cache['hash'] ?? '') && !$this->exitRulesetCoreAccepts($entries)) $error = 'core';
         $cache = ['key' => $url, 'time' => time(), 'error' => $error]
-            + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary)] : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '']);
+            + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary), 'parser' => $parser]
+                : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '', 'parser' => $cache['parser'] ?? '']);
         @mkdir($this->exitRulesetDir(), 0700, true);
         $file = $this->exitRulesetFile($url);
         if (@file_put_contents("$file.tmp", json_encode($cache, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) !== false) @rename("$file.tmp", $file);
@@ -1137,6 +1147,8 @@ trait BotExitNodes
     {
         $added = $skipped = $setsAdded = 0;
         $newSets = [];
+        // Набор с тем же адресом уже мог быть разобран для другого узла.
+        $this->exitRulesetPrefetch($id, $sets, false);
         $error = $this->exitEditNode($id, function (array &$node) use ($routes, $sets, &$added, &$skipped, &$setsAdded, &$newSets) {
             [$added, $skipped] = $this->exitMergeRoutes($node, $routes);
             foreach ($sets as $url => $set) {
@@ -1148,11 +1160,6 @@ trait BotExitNodes
             }
             return '';
         });
-        if ($error === '' && $newSets) {
-            // Набор с тем же адресом уже мог быть разобран для другого узла.
-            foreach ($newSets as $url => $set) if (!empty($set['on']) && !$this->exitRulesetCache((string) $url)) $this->exitRulesetRefresh((string) $url, $set);
-            $this->withLock('xray', fn() => $this->restartXray($this->getXray()), 20, false);
-        }
         $this->exitRoutesMenu($id, 0, $error !== '' ? $this->exitError($error)
             : $prefix . $this->t("маршрутов добавлено $added, наборов $setsAdded", "routes added $added, sets $setsAdded") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : ''));
     }
@@ -1290,6 +1297,9 @@ trait BotExitNodes
             if (!self::exitRulesetUrlValid($line)) { $bad++; continue; }
             $new[$line] = ['on' => 1, 'behavior' => $behavior, 'interval' => 86400];
         }
+        // Наборы скачиваются и разбираются до сохранения узла: тогда Xray
+        // перезапускается один раз и сразу с их записями.
+        $this->exitRulesetPrefetch((string) $id, $new, true);
         $error = !$new ? '' : $this->exitEditNode((string) $id, static function (array &$node) use ($new, &$added) {
             foreach ($new as $url => $set) {
                 if (isset($node['rulesets'][$url]) || count($node['rulesets']) >= 20) continue;
@@ -1298,11 +1308,26 @@ trait BotExitNodes
             }
             return '';
         });
-        if ($error === '' && $added) {
-            foreach ($new as $url => $set) $this->exitRulesetRefresh($url, $set);
-            $this->withLock('xray', fn() => $this->restartXray($this->getXray()), 20, false);
-        }
         $this->exitSetsMenu((string) $id, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($bad ? $this->t(", не подошло (нужна https:// ссылка на .srs или .mrs): $bad", ", did not fit (an https:// link to .srs or .mrs is needed): $bad") : ''));
+    }
+
+    /**
+     * Скачать и разобрать включённые наборы, которые узел $id ещё не содержит
+     * (места считаются, как при добавлении: выключенный набор тоже занимает).
+     * $force — заново, даже если набор уже в кэше (добавление ссылки вручную);
+     * иначе берётся кэш другого узла.
+     */
+    private function exitRulesetPrefetch(string $id, array $sets, bool $force): void
+    {
+        $node = $this->exitNodes()[$id] ?? null;
+        if ($node === null) return;
+        $free = 20 - count($node['rulesets']);
+        foreach ($sets as $url => $set) {
+            if ($free <= 0) break;
+            if (!is_array($set) || isset($node['rulesets'][$url])) continue;
+            $free--;
+            if (!empty($set['on']) && ($force || !$this->exitRulesetCache((string) $url))) $this->exitRulesetRefresh((string) $url, $set);
+        }
     }
 
     public function exitSetToggle(string $id, string $key, bool $delete = false): void
