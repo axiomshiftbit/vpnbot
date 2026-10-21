@@ -455,7 +455,6 @@ trait BotExitNodes
             ]);
             $ok = curl_exec($ch);
             $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-            curl_close($ch);
             if ($ok !== true) return null;
             if (in_array($code, [301, 302, 303, 307, 308], true) && $location !== '') {
                 $url = str_starts_with($location, '/') ? preg_replace('~^(https://[^/]+).*$~', '$1', $url) . $location : $location;
