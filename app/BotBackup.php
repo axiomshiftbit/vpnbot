@@ -20,9 +20,9 @@ trait BotBackup
         umask($mask);
         if (!$lock) throw new RuntimeException($this->t('Не удалось открыть блокировку бэкапа', 'Could not open the backup lock'));
         try {
-            $deadline = time() + $wait;
+            $deadline = microtime(true) + $wait;
             while (!flock($lock, LOCK_EX | LOCK_NB)) {
-                if (time() >= $deadline) throw new RuntimeException($this->t('Другая операция бэкапа ещё выполняется', 'Another backup operation is still running'));
+                if (microtime(true) >= $deadline) throw new RuntimeException($this->t('Другая операция бэкапа ещё выполняется', 'Another backup operation is still running'));
                 usleep(500000);
             }
             $this->backupLocked = true;
