@@ -1,6 +1,8 @@
 /app/config.php
 /certs/*
 !/certs/.gitkeep
+# обмен с acme-window (scripts/acme_window.py), создаётся на сервере
+/acme/
 /logs/*
 !/logs/.gitkeep
 /ssh/*

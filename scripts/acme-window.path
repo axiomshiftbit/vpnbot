@@ -1,0 +1,7 @@
+[Unit]
+Description=vpnbot: renewal requests from the bot
+[Path]
+PathExistsGlob=__VPNBOT_PATH__/acme/request/req-*
+Unit=acme-window.service
+[Install]
+WantedBy=paths.target

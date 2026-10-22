@@ -183,6 +183,11 @@ services:
             # docker.sock убран: Docker API теперь только через сервис
             # dockerproxy (см. его комментарий и config/dockerproxy.conf).
             - warp:/etc/warp
+            # Служба хоста acme-window (scripts/acme_window.py): бот кладёт
+            # запросы в request, служба пишет состояние в state — у бота только
+            # чтение, чтобы файлы, которые читает root хоста, писал только он.
+            - ./acme/request:/acme/request
+            - ./acme/state:/acme/state:ro
         environment:
             IP: ${IP}
             VER: ${VER}

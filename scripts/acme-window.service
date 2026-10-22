@@ -1,0 +1,18 @@
+[Unit]
+Description=vpnbot: Let's Encrypt renewal through a temporary HTTP-01 window
+After=docker.service nftables.service
+OnFailure=acme-window-close.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/acme-window run
+# Закрывает окно после любого завершения, в том числе по тайм-ауту и kill -9.
+ExecStopPost=/usr/bin/python3 /usr/local/sbin/acme-window close-all --if-unlocked
+# Ожидание очереди (до 25 мин) и одна попытка (до 18 мин) с запасом.
+TimeoutStartSec=50min
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelModules=yes
+ProtectKernelTunables=yes

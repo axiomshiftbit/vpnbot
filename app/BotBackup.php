@@ -10,7 +10,9 @@ trait BotBackup
 
     // php и service видят один каталог конфигурации. Две операции restore
     // либо export/restore не должны перемешивать разделы разных снимков.
-    private function withBackupLock(callable $action)
+    // $wait — сколько секунд ждать чужую операцию (установка сертификата
+    // службой acme-window ждёт восстановление, а не отказывает сразу).
+    private function withBackupLock(callable $action, int $wait = 0)
     {
         if ($this->backupLocked) return $action();
         $mask = umask(0077);
@@ -18,7 +20,11 @@ trait BotBackup
         umask($mask);
         if (!$lock) throw new RuntimeException($this->t('Не удалось открыть блокировку бэкапа', 'Could not open the backup lock'));
         try {
-            if (!flock($lock, LOCK_EX | LOCK_NB)) throw new RuntimeException($this->t('Другая операция бэкапа ещё выполняется', 'Another backup operation is still running'));
+            $deadline = time() + $wait;
+            while (!flock($lock, LOCK_EX | LOCK_NB)) {
+                if (time() >= $deadline) throw new RuntimeException($this->t('Другая операция бэкапа ещё выполняется', 'Another backup operation is still running'));
+                usleep(500000);
+            }
             $this->backupLocked = true;
             return $action();
         } finally {

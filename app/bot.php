@@ -17,6 +17,7 @@ require_once __DIR__ . '/BotXdrive.php';
 require_once __DIR__ . '/BotExitNodes.php';
 require_once __DIR__ . '/BotOvpn.php';
 require_once __DIR__ . '/BotWarpMasque.php';
+require_once __DIR__ . '/BotAcme.php';
 
 class Bot
 {
@@ -33,6 +34,7 @@ class Bot
     use BotExitNodes;
     use BotOvpn;
     use BotWarpMasque;
+    use BotAcme;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
 
@@ -1762,6 +1764,15 @@ class Bot
                 break;
             case preg_match('~^/setSSL (\w+)$~', $this->input['callback'], $m):
                 $this->setSSL($m[1]);
+                break;
+            case preg_match('~^/acmeMenu( refresh)?$~', $this->input['callback'], $m):
+                empty($m[1]) ? $this->acmeMenu() : $this->acmeRefresh();
+                break;
+            case preg_match('~^/acmeAuto ([a-z0-9]{1,32}) (on|off)$~', $this->input['callback'], $m):
+                $this->acmeAuto($m[1], $m[2] === 'on');
+                break;
+            case preg_match('~^/acmeRenew ([a-z0-9]{1,32})( confirm)?$~', $this->input['callback'], $m):
+                $this->acmeRenew($m[1], !empty($m[2]));
                 break;
             case preg_match('~^/lang (\w+)$~', $this->input['callback'], $m):
                 $this->setLang($m[1]);
@@ -7593,7 +7604,9 @@ NFT;
             'wg'  => $wg,
             'wg1' => $wg1,
             'ad'  => yaml_parse_file($this->adguard),
-            'pac' => $telemtBackup['pac'],
+            // acme_requested — пометка запроса к службе acme-window ЭТОГО сервера:
+            // в копию не идёт, на другом сервере она ничего не значит.
+            'pac' => array_diff_key($telemtBackup['pac'], ['acme_requested' => true]),
             'hwid' => file_exists($this->hwid) ? (json_decode(file_get_contents($this->hwid), true) ?: []) : [],
             'ssl' => $ssl,
             'dnstt' => file_exists('/config/dnstt/server.key') ? [
@@ -11070,7 +11083,7 @@ NFT;
         unlink('/certs/cert_private');
         unlink('/certs/cert_public');
         $conf = $this->getPacConf();
-        unset($conf['letsencrypt']);
+        unset($conf['letsencrypt'], $conf['acme_requested']);
         $this->setPacConf($conf);
         $this->adguardSync();
         $this->cloakNginx();
@@ -11092,48 +11105,33 @@ NFT;
         $bundle = '';
         switch ($name) {
             case 'letsencrypt':
-                // Домен уходит в shell (certbot) в нескольких местах без кавычек.
-                // Валидный хостнейм состоит только из [a-z0-9.-], поэтому отвергаем
-                // всё остальное — это закрывает инъекцию проще, чем экранировать
-                // каждую подстановку.
-                if (!preg_match('~^[a-zA-Z0-9.-]+$~', (string) ($conf['domain'] ?? ''))) {
-                    $this->send($this->input['chat'], $this->t('ОШИБКА: неверный домен', 'ERROR: invalid domain'));
+                try {
+                    $this->letsencryptNames($conf);
+                } catch (InvalidArgumentException $e) {
+                    $this->send($this->input['chat'], $e->getMessage());
+                    return $this->menu('config');
+                }
+                // Порт 80 закрыт firewall: выпуск ведёт служба хоста acme-window,
+                // она откроет порт только на время проверки (см. BotAcme).
+                if ($this->acmeAgent() && ($target = $this->acmeSelfTarget())) {
+                    // Перечитываем: letsencryptNames() мог дописать хеши поддоменов.
+                    $conf = $this->getPacConf();
+                    $conf['acme_requested'] = time();
+                    $this->setPacConf($conf);
+                    if (!$this->acmeRequest('renew', $target)) {
+                        $this->send($this->input['chat'], '❌ ' . $this->t('запрос службе хоста не записан', 'the request to the host service was not written'));
+                        return $this->menu('config');
+                    }
+                    $this->send($this->input['chat'], '⏳ ' . $this->t(
+                        'Запрос передан службе хоста: она откроет порт 80 на время проверки и пришлёт результат отдельным сообщением.',
+                        'The request is passed to the host service: it opens port 80 for the check and sends the result as a separate message.'
+                    ));
                     return $this->menu('config');
                 }
                 $out   = ['Install certificate:'];
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                // adguardkey — сырой ответ пользователя (setAdKey) и подставляется
-                // в shell-строку certbot без кавычек. Валидируем как метку хоста:
-                // рядом domain_aliases экранированы, а этот параметр пропустили.
-                if (!empty($conf['adguardkey']) && !preg_match('~^[a-zA-Z0-9-]+$~', (string) $conf['adguardkey'])) {
-                    $this->send($this->input['chat'], $this->t('ОШИБКА: неверный поддомен AdGuard', 'ERROR: invalid adguard subdomain'));
-                    return $this->menu('config');
-                }
-                $adguardClient = !empty($conf['adguardkey']) ? "-d {$conf['adguardkey']}.{$conf['domain']}" : '';
-                $oc = $this->getHashSubdomain('oc');
-                $np = $this->getHashSubdomain('np');
-                // WEB-режим telemt живёт на своём поддомене, и Telegram
-                // Desktop не откроет соединение без валидного сертификата
-                // ИМЕННО на это имя. SAN просим только при включённом WEB:
-                // каждое лишнее имя в запросе — лишняя зависимость выпуска
-                // сертификата от DNS-записи, в том числе у тех, кому WEB не
-                // нужен.
-                $tw = empty($conf['telemt_web']) ? '' : $this->getHashSubdomain('tw');
-                // Алиасы — дополнительные SAN того же серта (формат каждого
-                // провалидирован в addDomainAlias, в shell попадает безопасно).
-                $aliases = '';
-                foreach ($conf['domain_aliases'] ?? [] as $a) {
-                    $aliases .= ' -d ' . escapeshellarg($a);
-                    // DoT AdGuardHome отвечает по имени adguardkey.<домен>, и
-                    // меню теперь печатает эту точку входа для КАЖДОГО домена.
-                    // Без своего SAN на алиасе клиент упирался бы в
-                    // несовпадение имени в сертификате.
-                    if (!empty($conf['adguardkey'])) {
-                        $aliases .= ' -d ' . escapeshellarg($conf['adguardkey'] . '.' . $a);
-                    }
-                }
-                foreach ($this->managedCertificateNames() as $name) $aliases .= ' -d ' . escapeshellarg($name);
-                exec("certbot certonly --force-renew --preferred-chain 'ISRG Root X1' -n --agree-tos --email mail@{$conf['domain']} -d {$conf['domain']}" . ($oc ? " -d $oc.{$conf['domain']}" : '') . ($np ? " -d $np.{$conf['domain']}" : '') . ($tw ? " -d $tw.{$conf['domain']}" : '') . " $adguardClient$aliases --webroot -w /certs/ --logs-dir /logs --max-log-backups 0 2>&1", $out, $code);
+                [$code, $certbot] = $this->issueLetsencrypt($conf);
+                $out = array_merge($out, $certbot);
                 if ($code > 0) {
                     $this->send($this->input['chat'], "ERROR\n" . implode("\n", $out));
                     return $this->menu('config');
@@ -11142,22 +11140,16 @@ NFT;
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $bundle = file_get_contents("/etc/letsencrypt/live/{$conf['domain']}/privkey.pem") . file_get_contents("/etc/letsencrypt/live/{$conf['domain']}/fullchain.pem");
                 $conf['letsencrypt'] = 'letsencrypt';
+                unset($conf['acme_requested']);
                 break;
             case 'self':
                 $r      = $this->request('getFile', ['file_id' => $this->input['file_id']]);
                 $bundle = file_get_contents($this->file . $r['result']['file_path']);
                 $conf['letsencrypt'] = 'self';
+                unset($conf['acme_requested']);
                 break;
         }
-        if (preg_match('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', $bundle, $m)) {
-            $this->setPacConf($conf);
-            $this->writePrivateKey('/certs/cert_private', $m[0]);
-            file_put_contents('/certs/cert_public', preg_replace('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', '', $bundle));
-            $this->adguardSync();
-            $this->cloakNginx();
-            $this->restartTt();
-            $this->telemtWebSync();
-        } else {
+        if (!$this->applyCertificateBundle($bundle, $conf)) {
             $this->update($this->input['chat'], $this->input['message_id'], $this->t("неверный формат ключа", "wrong format key"));
         }
         sleep(3);
@@ -33680,6 +33672,15 @@ DNS-over-HTTPS with IP:
                     ],
                 ];
             }
+        }
+        // Служба хоста acme-window продлевает сертификаты этого бота и соседних
+        // проектов сервера, открывая порт 80 только на время проверки (BotAcme).
+        if ($this->acmeAgent() || $this->acmeAgentStale()) {
+            $acmeSelf = $this->acmeStates()[$this->acmeSelfTarget() ?? ''] ?? null;
+            $data[]   = [[
+                'text'          => '🔐 ' . $this->t('SSL автообновление', 'SSL auto-renewal') . ($acmeSelf ? ': ' . $this->i18n($acmeSelf['auto'] ? 'on' : 'off') : ''),
+                'callback_data' => '/acmeMenu',
+            ]];
         }
         $data[] = [
             [

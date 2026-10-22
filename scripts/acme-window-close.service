@@ -1,0 +1,8 @@
+[Unit]
+Description=vpnbot: close the Let's Encrypt HTTP-01 window after a failed run
+# Запускается OnFailure= основной службы — отдельно от её группы процессов, поэтому
+# срабатывает, даже если сигнал по всей группе убил и ExecStopPost.
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/acme-window close-all --if-unlocked
+TimeoutStartSec=2min

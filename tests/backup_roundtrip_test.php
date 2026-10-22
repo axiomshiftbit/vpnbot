@@ -58,7 +58,9 @@ try{
    'enabled'=>1,'quic'=>'block','routes'=>['domain:youtube.com'=>1,'full:www.example.test'=>0],
    'rulesets'=>['https://example.test/yt.srs'=>['on'=>0,'behavior'=>'domain','interval'=>86400]],'auto'=>1,'created'=>1700000000,'status'=>[]]],
   'xdrive'=>['enabled'=>0,'service'=>'webdav','url'=>'https://dav.example.test','folder'=>'vpnbot-xdrive','login'=>'u','password'=>'synthetic','poll'=>500],
-  'warp_mode'=>'masque'];
+  'warp_mode'=>'masque',
+  // Сертификат Let's Encrypt и пометка запроса к acme-window этого сервера.
+  'letsencrypt'=>'letsencrypt','acme_requested'=>1700000000];
  $b->setPacConf($pac);
  $b->telemtQuotaWrite(['last_reset_epoch_secs'=>0,'users'=>['test'=>['used_bytes'=>123456,'last_reset_epoch_secs'=>0]]]);
  foreach([0,1] as $n){
@@ -85,11 +87,13 @@ try{
  file_put_contents("$root/certs/cert_private",$private);file_put_contents("$root/certs/cert_public",$public);
  $json=$b->export();$snapshot=json_decode($json,true,512,JSON_THROW_ON_ERROR);file_put_contents($b->update,$json);
  rtCheck(count($snapshot)>=23,'Полный экспорт включает все секции');
+ rtCheck(($snapshot['pac']['letsencrypt']??'')==='letsencrypt' && !array_key_exists('acme_requested',$snapshot['pac']),'Признак Let\'s Encrypt в копии, пометки запроса acme-window нет');
+ rtCheck($snapshot['ssl']===['private'=>$private,'public'=>$public],'TLS-пара в копии целиком');
  foreach(['pac','telemt_quota','extra_files','managed_protocols','hy_users','wg','wg1','ssl','ss','sl','xray','ad','tt','ovpn','ipsec'] as $section)rtCheck(array_key_exists($section,$snapshot),"Секция $section присутствует");
  foreach(['warp/masque/device.json','warp/masque/key.pem','warp/masque/license.sha256'] as $name)rtCheck(isset($snapshot['extra_files'][$name]),"Устройство WARP MASQUE в копии: $name");
  // Неподтверждённая регистрация MASQUE в копию не идёт.
  touch("$root/warp/masque/.pending");rtCheck(!isset(json_decode($b->export(),true)['extra_files']['warp/masque/device.json']),'Неподтверждённое устройство MASQUE не сохраняется');
- $b->setPacConf(['language'=>'ru']);file_put_contents("$root/config/wg0.conf",'changed');file_put_contents("$root/config/wg1.conf",'changed');
+ $b->setPacConf(['language'=>'ru']);file_put_contents("$root/certs/cert_public",'changed');file_put_contents("$root/certs/cert_private",'changed');file_put_contents("$root/config/wg0.conf",'changed');file_put_contents("$root/config/wg1.conf",'changed');
  file_put_contents("$root/config/telemt/decoy/index.html",'changed');file_put_contents("$root/warp/wgcf-profile.conf",'changed');
  file_put_contents("$root/warp/masque/device.json",'{"id":"other"}');file_put_contents("$root/config/xray.json",'{"inbounds":[{"settings":{"clients":[]}}],"outbounds":[],"routing":{"rules":[]}}');
  rtCheck($b->importFile($b->update)===true,'Полное восстановление возвращает успех');
@@ -102,6 +106,7 @@ try{
  rtCheck(($b->getPacConf()['xdrive']['url']??'')==='https://dav.example.test' && $b->warpMode()==='masque','XDRIVE и режим WARP восстановлены');
  rtCheck(file_get_contents("$root/warp/masque/device.json")==='{"id":"synthetic"}' && !file_exists("$root/warp/masque/.pending"),'Устройство MASQUE восстановлено, отметка незавершённой регистрации снята');
  rtCheck(file_get_contents("$root/logs/xray_core")==='origin3','Выбор версии Xray восстановлен и при выключенном контейнере');
+ rtCheck(file_get_contents("$root/certs/cert_public")===$public && file_get_contents("$root/certs/cert_private")===$private && ($b->getPacConf()['letsencrypt']??'')==='letsencrypt','Сертификат и признак Let\'s Encrypt восстановлены: служба продлит его по сроку');
  rtCheck($b->importFile($b->update)===true,'Повторное восстановление работает');
  $beforeStats=['users'=>[['global'=>['upload'=>123,'download'=>456]]]];
  $b->setXrayStats($beforeStats);$b->rejectXray=true;
