@@ -30,8 +30,10 @@ CLIENT_IMAGE = 'vpnbot-hosted-clients:current'
 def client_downloads(destination):
     # Public upstream releases; pinned archives, no copied VPS executables.
     releases = [
-        ('https://github.com/klzgrad/naiveproxy/releases/download/v154.0.8037.49-2/naiveproxy-v154.0.8037.49-2-linux-x64.tar.xz',
-         '4823f654b1a3856efefa6980a97997b6c5153a693e4a4541a9a10e03d7e7d9e3', {'naive': 'naive'}),
+        # -5: блокировка скомпрометированных промежуточных eMudhra; файлы прежних
+        # выпусков автор удалил 2026-10-22, поэтому -2 больше не скачивается.
+        ('https://github.com/klzgrad/naiveproxy/releases/download/v154.0.8037.49-5/naiveproxy-v154.0.8037.49-5-linux-x64.tar.xz',
+         '80214dfea1767f6ecf63a3a79dc9f48b203460f51abc609357fff48dd5844c7d', {'naive': 'naive'}),
         ('https://github.com/TrustTunnel/TrustTunnelClient/releases/download/v1.1.7/trusttunnel_client-v1.1.7-linux-x86_64.tar.gz',
          '791f00819e0242b2c38a04bb1403c30aa32701efbcdb059fbc3a6793ff0a45b5',
          {'trusttunnel_client': 'trusttunnel', 'setup_wizard': 'setup_wizard'}),
