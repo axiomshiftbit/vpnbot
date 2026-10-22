@@ -3,7 +3,7 @@ import subprocess,time,json,re
 base=Path(__file__).parent
 cases=['wireguard','wireguard_extra','openvpn','openvpn_extra','ikev2','l2tp','openconnect','adguard','shadowsocks','proxies','trusttunnel_native','xdrive_native','dat_routes','routes_cores','exit_nodes','reality_fingerprints','naive_native','dnstt','dnstt_identity','hysteria_extra','warp_network','telemt','telemt_web','panel','ssh_host_keys']
 rows=[]
-for name in cases:
+def attempt(name):
  start=time.monotonic()
  print('START '+name,flush=True)
  try:
@@ -17,6 +17,17 @@ for name in cases:
    v=json.loads(line)
    if isinstance(v,dict) and 'passed' in v and 'total' in v:row.update({k:v[k] for k in ['passed','total']});break
   except ValueError:pass
+ return row
+for name in cases:
+ row=attempt(name)
+ # Набор и так идёт на одном стенде дважды (до и после восстановления), поэтому
+ # отказ повторяется один раз: случайный сетевой сбой не должен стоить
+ # перезапуска всего стенда (~80 мин), устойчивая ошибка провалит обе попытки.
+ # После тайм-аута не повторяем: убитый набор не успел убрать за собой.
+ if type(row['exit']) is int and row['exit']:
+  (base/(name+'.log')).replace(base/(name+'.attempt1.log'))
+  print('RETRY '+json.dumps(row),flush=True)
+  row=attempt(name)|{'retried':True}
  rows.append(row);(base/'results.json').write_text(json.dumps(rows,indent=2))
  print(json.dumps(row),flush=True)
 print('POSTRESTORE NATIVE COMPLETE',flush=True)

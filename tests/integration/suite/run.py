@@ -33,6 +33,18 @@ def run(name,cmd,timeout=180,work=B,environ=None,good=True):
  if good and q.returncode:raise RuntimeError(name+' exit '+str(q.returncode))
  return q.returncode
 
+retries=[]
+def twice(name,attempt):
+ # Самостоятельный набор (свои контейнеры с уборкой в finally, на стенде и так
+ # идёт не раз) при отказе повторяется один раз: случайный сетевой сбой не должен
+ # стоить перезапуска всего стенда (~80 мин), устойчивая ошибка провалит обе
+ # попытки. Тайм-аут (subprocess.TimeoutExpired) не повторяется.
+ try:return attempt()
+ except RuntimeError as error:print('RETRY '+name+': '+str(error),flush=True)
+ if (O/(name+'.log')).exists():(O/(name+'.log')).replace(O/(name+'.attempt1.log'))
+ retries.append(name);(O/'retries.json').write_text(json.dumps(retries))
+ return attempt()
+
 def capture(cmd,timeout=60,environ=None):
  q=subprocess.run(cmd,cwd=B,env=environ or env,capture_output=True,text=True,timeout=timeout)
  if q.returncode:raise RuntimeError('command failed: '+cmd[0])
@@ -214,14 +226,19 @@ INNER'''
  time.sleep(6)
  def native(label):
   output=R/'published-main/results.json';output.unlink(missing_ok=True)
-  run(label,['python3',str(R/'published-main/run.py')],timeout=1800)
-  rows=json.loads(output.read_text());check('native',label+'-complete',len(rows)==25 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
+  # 25 наборов идут ~1300 с; запас — на повтор упавшего набора (published-main/run.py).
+  run(label,['python3',str(R/'published-main/run.py')],timeout=2700)
+  rows=json.loads(output.read_text())
+  if any(x.get('retried') for x in rows):retries.extend(label+'/'+x['case'] for x in rows if x.get('retried'));(O/'retries.json').write_text(json.dumps(retries))
+  check('native',label+'-complete',len(rows)==25 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
   shutil.copy2(output,O/(label+'.json'))
   for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py")]:
-   result=O/(label+"-"+name)
-   run(label+"-"+name,["python3",script,str(result)],timeout=900)
-   extra=json.loads((result/"results.json").read_text())
-   check("native",label+"-"+name+"-complete",len(extra)>40 and all(r["passed"] for r in extra));counts["native"]+=len(extra)
+   def attempt(name=label+"-"+name,script=script):
+    result=O/name
+    run(name,["python3",script,str(result)],timeout=900)
+    extra=json.loads((result/"results.json").read_text())
+    check("native",name+"-complete",len(extra)>40 and all(r["passed"] for r in extra));counts["native"]+=len(extra)
+   twice(label+"-"+name,attempt)
  native('native-before-restore')
  # Native backup roundtrip: change real saved client data, restore all sections,
  # then prove that the previously issued profiles still pass actual traffic.
@@ -245,10 +262,12 @@ INNER'''
  rows=json.loads((O/'naive-idle.json').read_text());check('native','Naive75-seconds-idle',len(rows)==5 and all(x['ok'] for x in rows));counts['native']+=len(rows)
  # Отдельные мини-стенды на настоящих ядрах проверяемых образов Telemt, MASQUE, Hysteria и snolc.
  for name,extra in [('telemt-native',[candidate['images']['telemt'],candidate['images']['php'],candidate['images']['ng']]),('masque-native',[candidate['images']['masque'],candidate['images']['php'],str(R/'xray')]),('hysteria-native',[candidate['images']['hysteria'],candidate['images']['php']]),('snolc-native',[candidate['images']['snolc'],candidate['images']['php']])]:
-  result=Path('/opt/vpnbot-hosted-ci')/name/'results.json';result.unlink(missing_ok=True)
-  run(name,['python3',str(result.with_name('run.py')),str(a.checkout),*extra],timeout=1500)
-  rows=json.loads(result.read_text());check('native',name+'-complete',bool(rows) and all(x['exit']==0 and x['total']>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
-  shutil.copy2(result,O/(name+'.json'))
+  def attempt(name=name,extra=extra):
+   result=Path('/opt/vpnbot-hosted-ci')/name/'results.json';result.unlink(missing_ok=True)
+   run(name,['python3',str(result.with_name('run.py')),str(a.checkout),*extra],timeout=1500)
+   rows=json.loads(result.read_text());check('native',name+'-complete',bool(rows) and all(x['exit']==0 and x['total']>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
+   shutil.copy2(result,O/(name+'.json'))
+  twice(name,attempt)
  # FreeUnit must replace a killed PHP application worker without losing config.
  script='''import pathlib,json,os
 pids=[]

@@ -85,6 +85,17 @@ def failed_protocols(checkout):
                    and (r.get('exit') == 'timeout' or type(r.get('exit')) is int and r['exit'] != 0)})
 
 
+def retried_suites(results):
+    """Наборы стенда, прошедшие со второй попытки; в журнал — только имена наборов."""
+    try:
+        names = json.loads((results / 'retries.json').read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(names, list):
+        return []
+    return [n for n in names if isinstance(n, str) and re.fullmatch(r'[a-z0-9_-]{1,40}(/[a-z0-9_-]{1,40})?', n)]
+
+
 def host(local):
     if local:
         if Path('/etc/vpnbot-ci-test-host').read_text().strip() != 'home-build':
@@ -209,6 +220,9 @@ def test(checkout, manifest, output):
     atomic(output, canonical(result))
     output.chmod(0o644)  # Only public identifiers; uploader runs without sudo.
     print('Ephemeral VPN stand: all required groups passed; checks:', result['checks'])
+    retried = retried_suites(results)
+    if retried:
+        print('Passed on the second attempt:', ', '.join(retried))
 
 
 def cleanup():

@@ -118,6 +118,20 @@ class HostedCITests(unittest.TestCase):
                     results.write_text(invalid)
                     self.assertEqual(ci.failed_protocols(root), [])
 
+    def test_retried_suites_print_only_suite_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            results = Path(directory)
+            self.assertEqual(ci.retried_suites(results), [])
+            (results / 'retries.json').write_text(json.dumps([
+                'snolc-native', 'native-before-restore/shadowsocks', 'native-after-restore-nginx-transports',
+                'vless://secret@host', 'a b', ['x'], None, 'x' * 41,
+            ]))
+            self.assertEqual(ci.retried_suites(results), [
+                'snolc-native', 'native-before-restore/shadowsocks', 'native-after-restore-nginx-transports'])
+            for invalid in ('not JSON', '{}'):
+                (results / 'retries.json').write_text(invalid)
+                self.assertEqual(ci.retried_suites(results), [])
+
     def test_first_stable_release_uses_only_an_existing_admitted_channel(self):
         stable = ci.BUNDLE_REPO + ':bundle-latest'
         dev = ci.BUNDLE_REPO + ':bundle-dev'
