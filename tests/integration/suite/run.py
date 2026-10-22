@@ -229,7 +229,9 @@ INNER'''
   # 25 наборов идут ~1300 с; запас — на повтор упавшего набора (published-main/run.py).
   run(label,['python3',str(R/'published-main/run.py')],timeout=2700)
   rows=json.loads(output.read_text())
-  if any(x.get('retried') for x in rows):retries.extend(label+'/'+x['case'] for x in rows if x.get('retried'));(O/'retries.json').write_text(json.dumps(retries))
+  # Каталог наборов общий для обоих проходов: журнал первой попытки уносим в результаты с меткой прохода.
+  for x in rows:
+   if x.get('retried'):retries.append(label+'/'+x['case']);(R/'published-main'/(x['case']+'.attempt1.log')).replace(O/(label+'-'+x['case']+'.attempt1.log'));(O/'retries.json').write_text(json.dumps(retries))
   check('native',label+'-complete',len(rows)==25 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
   shutil.copy2(output,O/(label+'.json'))
   for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py")]:
