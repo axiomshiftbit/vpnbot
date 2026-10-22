@@ -58,7 +58,21 @@ try {
         $check($bot->isOwner() === false, "$label: не владелец");
     }
 
-    // ── владелец в панели: личность не подтверждена Telegram ─────────────────
+    // ── список администраторов в настройках: видят все, первым — владелец ────
+    $lines = $as(200)->adminListLines();
+    $check(count($lines) === 4, 'заголовок и три ID');
+    $check((bool) preg_match('~^<code>100</code> — (владелец|owner)$~u', $lines[1]), 'первый — владелец: ' . $lines[1]);
+    $check((bool) preg_match('~^<code>200</code> — (вы|you)$~u', $lines[2]), 'текущий администратор отмечен: ' . $lines[2]);
+    $check($lines[3] === '<code>300</code>', 'остальные без пометок');
+    $check((bool) preg_match('~— (владелец, вы|owner, you)$~u', $as(100)->adminListLines()[1]), 'владелец видит себя');
+    $check(!preg_grep('~— (вы|you)~u', $as(100, true, true)->adminListLines()), 'в панели «вы» не ставится: личность не подтверждена');
+    $setAdmins([]);
+    $empty = $as(100)->adminListLines();
+    $check(count($empty) === 2 && !str_contains($empty[1], '<id>'), 'пустой список объяснён, без сырого < > для HTML');
+    $setAdmins([100, '200; <b>', 300]);
+    $check(count($as(100)->adminListLines()) === 3, 'нечисловой ID в config.php не выводится');
+    $setAdmins([100, 200, 300]);
+
     $bot = $as(100, true, true);
     $bot->delAdmin(200); $bot->addAdmin('999'); $bot->enterAdmin();
     $check($admins() === [100, 200, 300] && !in_array('stash:addAdmin', $bot->log, true), 'панель не меняет состав даже от имени владельца');

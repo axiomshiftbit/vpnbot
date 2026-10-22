@@ -11541,6 +11541,36 @@ NFT;
         return $admins !== [] && (int) $admins[0] === (int) $from;
     }
 
+    // Кто управляет ботом: ID администраторов для меню настроек, первым —
+    // владелец. Видят все администраторы, менять состав может только владелец.
+    public function adminListLines(): array
+    {
+        $file = __DIR__ . '/config.php';
+        if (function_exists('opcache_invalidate')) {
+            opcache_invalidate($file);
+        }
+        require $file;
+        $from  = $this->transport ? null : ($this->input['from'] ?? null);
+        $lines = [$this->t('Администраторы бота (ID Telegram):', 'Bot administrators (Telegram ID):')];
+        foreach (array_values((array) ($c['admin'] ?? [])) as $n => $id) {
+            if (!is_int($id) && !(is_string($id) && preg_match('/^-?\d+$/D', $id))) {
+                continue;
+            }
+            $marks = [];
+            if ($n === 0) {
+                $marks[] = $this->t('владелец', 'owner');
+            }
+            if ($from !== null && (string) $from === (string) $id) {
+                $marks[] = $this->t('вы', 'you');
+            }
+            $lines[] = "<code>$id</code>" . ($marks ? ' — ' . implode(', ', $marks) : '');
+        }
+        if (count($lines) === 1) {
+            $lines[] = $this->t('не заданы — бот никому не принадлежит (php panel.php admin &lt;id&gt;)', 'none: the bot belongs to nobody (php panel.php admin &lt;id&gt;)');
+        }
+        return $lines;
+    }
+
     private function denyAdminChange()
     {
         $text = 'only the owner can manage admins';
@@ -33803,6 +33833,8 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/menu",
             ],
         ];
+        $text[] = '';
+        array_push($text, ...$this->adminListLines());
         $text[] = '';
         $text[] = $this->t('Пароль веб-панели (app/panel, порт 8090) — эти же действия остаются доступны через `panel.php passwd` на сервере, если бот недоступен.', 'Web panel password (app/panel, port 8090): the same actions stay available through `panel.php passwd` on the server if the bot is unavailable.');
         return [
