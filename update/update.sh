@@ -228,11 +228,20 @@ do
         exit 0
     fi
     if [[ -f "$pwd/scripts/protocol_modules.py" && -f "$pwd/config/protocol-services.json" ]]; then
-        # VER — из текущего дерева, как в makefile: окружение цикла унаследовано
-        # от процесса, запущенного до обновления, и контейнеры протоколов
-        # пересоздавались бы со старой версией в имени. VER, заданный явно в
-        # override.env (так называет контейнеры стенд), остаётся в силе.
+        # VER — тот, с которым make start создал контейнеры: окружение цикла
+        # унаследовано от процесса, запущенного до обновления, а git describe
+        # удлиняет хеш, если после git fetch префикс стал неоднозначным, — и
+        # apply пересоздал бы модуль под другим именем. Порядок: VER из
+        # override.env (так называет контейнеры стенд), VER работающего php
+        # этой установки (запоминается до перезапуска цикла), git describe.
         apply_ver=$(grep -m1 '^VER=' "$pwd/override.env" 2>/dev/null | cut -d'=' -f2-)
+        if [[ -z "$apply_ver" && -z "${running_ver:-}" ]] && command -v docker >/dev/null 2>&1; then
+            php_id=$(docker ps -q --filter "label=com.docker.compose.project.working_dir=$pwd" \
+                --filter label=com.docker.compose.service=php 2>/dev/null | head -n1)
+            [[ -n "$php_id" ]] && running_ver=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$php_id" 2>/dev/null \
+                | sed -n 's/^VER=//p' | head -n1)
+        fi
+        apply_ver=${apply_ver:-${running_ver:-}}
         VER="${apply_ver:-$(git -C "$pwd" describe --tags --always 2>/dev/null || echo local)}" \
             python3 "$pwd/scripts/protocol_modules.py" apply >/dev/null 2>&1 || true
     fi

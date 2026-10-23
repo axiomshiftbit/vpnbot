@@ -22,7 +22,15 @@ class UpdateLoopVerTest(unittest.TestCase):
         # Стенд задаёт имена контейнеров через VER=audit в override.env.
         self.assertEqual(self.apply_ver('IP=203.0.113.10\nVER=audit\n')[0], 'audit')
 
-    def apply_ver(self, override):
+    def test_running_php_ver_wins_over_describe(self):
+        # git describe удлиняет хеш, если префикс стал неоднозначным (на тестовом сервере —
+        # 9 знаков при контейнерах с 7): имя берётся у работающего php.
+        self.assertEqual(self.apply_ver(None, container_ver='2.30-773-g03fe93f')[0], '2.30-773-g03fe93f')
+
+    def test_override_env_beats_running_php(self):
+        self.assertEqual(self.apply_ver('VER=audit\n', container_ver='2.30-773-g03fe93f')[0], 'audit')
+
+    def apply_ver(self, override, container_ver=None):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / 'update').mkdir()
@@ -44,6 +52,18 @@ class UpdateLoopVerTest(unittest.TestCase):
             expected = subprocess.run(['git', '-C', str(repo), 'describe', '--tags', '--always'],
                                       capture_output=True, text=True, check=True).stdout.strip()
             env = dict(os.environ, VER='2.30-709-gstale')
+            # Подменный docker: без контейнера ответ пустой, как на чистой машине.
+            bin_dir = repo / 'fake-bin'
+            bin_dir.mkdir()
+            (bin_dir / 'docker').write_text(
+                '#!/bin/sh\n'
+                f'[ -n {container_ver or ""!r} ] || exit 0\n'
+                'case "$1" in\n'
+                f'  ps) case "$*" in *working_dir={repo}*service=php*) echo abc123 ;; esac ;;\n'
+                f'  inspect) printf "PATH=/usr/bin\\nVER=%s\\nTZ=UTC\\n" {container_ver or ""!r} ;;\n'
+                'esac\n')
+            (bin_dir / 'docker').chmod(0o755)
+            env['PATH'] = f'{bin_dir}:{env["PATH"]}'
             proc = subprocess.Popen(['bash', 'update/update.sh'], cwd=repo, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
