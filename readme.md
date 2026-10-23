@@ -183,6 +183,10 @@ service, warp), а Xray, WireGuard и остальные — нет.
 sh scripts/install_acme_window.sh          # из каталога бота, от root
 acme-window status                          # состояние; acme-window renew vpnbot --dry-run — пробный выпуск
 ```
+Служба копируется в `/usr/local/sbin/acme-window` и обновлением бота не меняется:
+если в выпуске изменились `scripts/acme_window.py` или юниты `scripts/acme-window*`,
+повторите `sh scripts/install_acme_window.sh` (настройки и состояние сохраняются).
+
 После установки в **Настройки** появляется «🔐 SSL автообновление»: срок,
 последняя попытка, включение автообновления и выпуск сейчас. «renew SSL» тогда
 передаёт запрос службе, а не запускает certbot сам. Без службы всё работает как
