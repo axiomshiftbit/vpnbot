@@ -543,8 +543,9 @@ trait BotExitNodes
         $error = $binary === null ? 'download' : ($entries === null ? 'parse' : (!$entries ? 'empty' : ''));
         // Записи набора попадают в каждую сборку конфига: битая регулярка из
         // чужого источника сделала бы так, что ядро отвергает любое изменение
-        // Xray. Новое содержимое сначала проверяет выбранное ядро.
-        if ($error === '' && hash('sha256', $binary) !== ($cache['hash'] ?? '') && !$this->exitRulesetCoreAccepts($entries)) $error = 'core';
+        // Xray. Всё, что разобрано заново, сначала проверяет выбранное ядро —
+        // и новый файл, и прежний файл после смены версии разбора или типа.
+        if ($error === '' && !$same && !$this->exitRulesetCoreAccepts($entries)) $error = 'core';
         $cache = ['key' => $url, 'time' => time(), 'error' => $error]
             + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary), 'parser' => $parser]
                 : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '', 'parser' => $cache['parser'] ?? '']);
@@ -574,9 +575,12 @@ trait BotExitNodes
             // Неудачная попытка повторяется через час, а не через сутки.
             $interval = ($cache['error'] ?? '') !== '' ? 3600 : max(3600, (int) ($set['interval'] ?? 86400));
             if (!$force && $cache && time() - (int) ($cache['time'] ?? 0) < $interval) continue;
-            $before = $cache['hash'] ?? '';
+            // Записи меняются и без нового файла: разбор заново другой версией
+            // или с другим типом набора.
+            $mark = static fn(array $c) => ($c['hash'] ?? '') . '|' . ($c['parser'] ?? '');
+            $before = $mark($cache);
             $this->exitRulesetRefresh((string) $url, $set);
-            if (($this->exitRulesetCache((string) $url)['hash'] ?? '') !== $before) $changed = true;
+            if ($mark($this->exitRulesetCache((string) $url)) !== $before) $changed = true;
         }
         return $changed;
     }

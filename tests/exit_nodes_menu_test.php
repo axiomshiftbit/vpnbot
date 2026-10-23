@@ -342,11 +342,37 @@ $cached = $sets->exitRulesetCache($url); $cached['parser'] = '0:srs:domain';
 file_put_contents($sets->exitRulesetFile($url), json_encode($cached));
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && count($sets->tools) === $tools + 1 && str_starts_with($sets->exitRulesetCache($url)['parser'] ?? '', Bot::EXIT_RULESET_PARSER . ':'),
     'после смены версии разбора тот же файл разбирается заново');
-$check($sets->exitRulesetRefresh($url, ['on' => 1, 'behavior' => 'ipcidr']) === '' && count($sets->tools) === $tools + 2, 'другой тип набора — разбор заново');
+$check(count($sets->validated) === 2, 'разобранное заново из того же файла снова проверяет ядро');
+$check($sets->exitRulesetRefresh($url, ['on' => 1, 'behavior' => 'ipcidr']) === '' && count($sets->tools) === $tools + 2 && count($sets->validated) === 3,
+    'другой тип набора — разбор заново и проверка ядром');
+// Тот же файл, другая версия разбора, а ядро новые записи не принимает: прежние остаются.
+$cached = $sets->exitRulesetCache($url); $cached['parser'] = '0:srs:domain';
+file_put_contents($sets->exitRulesetFile($url), json_encode($cached));
+$sets->coreOk = false;
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'core' && ($sets->exitRulesetCache($url)['parser'] ?? '') === '0:srs:domain',
+    'переразбор, который ядро отвергло, не заменяет прежние записи');
+$sets->coreOk = true;
+$sets->exitRulesetRefresh($url, ['on' => 1]);
 $sets->binary = 'BIN2'; $sets->coreOk = false;
 $sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_regex' => ['(']]]]);
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'core' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'],
     'набор, который ядро не принимает, не заменяет прежний');
+// Узел перезапускает Xray, когда записи изменились — в том числе без нового файла.
+$node = new class extends ExitMenuBot {
+    public string $dir = ''; public bool $coreOk = true;
+    public function exitRulesetFile(string $key): string { return $this->dir . '/' . substr(hash('sha256', $key), 0, 24) . '.json'; }
+    protected function exitRulesetDownload(string $url): ?string { return 'BIN'; }
+    public function validateXrayConfig(array $config, string $binary = 'xray'): bool { return $this->coreOk; }
+    public function exitNodes(?array $p = null): array { return ['n1' => ['rulesets' => ['https://raw.example/geo/node.srs' => ['on' => 1, 'behavior' => 'domain']]]]; }
+};
+$node->dir = $sets->dir;
+$node->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_suffix' => ['node.example']]]]);
+$nodeUrl = 'https://raw.example/geo/node.srs';
+$check($node->exitRefreshRulesets('n1', true) === true, 'первый разбор набора узла — изменение');
+$check($node->exitRefreshRulesets('n1', true) === false, 'тот же файл и разбор — без перезапуска Xray');
+$cached = $node->exitRulesetCache($nodeUrl); $cached['parser'] = '0:srs:domain';
+file_put_contents($node->exitRulesetFile($nodeUrl), json_encode($cached));
+$check($node->exitRefreshRulesets('n1', true) === true, 'переразбор того же файла — изменение, Xray перезапускается');
 array_map('unlink', glob($sets->dir . '/*') ?: []);
 @rmdir($sets->dir);
 
