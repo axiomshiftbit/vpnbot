@@ -170,28 +170,114 @@ service, warp), а Xray, WireGuard и остальные — нет.
 10 минут, принудительно выпускает сертификат кодом бота
 (`app/acme_renew.php`) и закрывает порт. Неудачные попытки повторяются через
 1, 2, 4 и затем каждые 6 часов (за неделю до истечения — каждый час); выпусков
-не больше 3 за 7 дней. Окно закрывается и при сбое: время жизни элемента в ядре,
-`ExecStopPost`, отдельная служба `OnFailure=` и очистка при следующем запуске.
+не больше 3 за 7 дней, неудачных проверок домена — не больше 3 в час. Окно
+закрывается и при сбое: время жизни элемента в ядре, `ExecStopPost`, отдельная
+служба `OnFailure=` и очистка при следующем запуске. Без службы всё работает как
+раньше; в боте её поведение описывает «Настройки → 🔐 SSL автообновление → 📖 Справка».
 
-Нужны наборы `ip filter acme_http_fwd` (и `ip dockernat acme_http_redirect`
-для перенаправления порта 80 на соседний проект) и постоянные правила, которые на
-них ссылаются, а также `/etc/acme-window/config.json`:
+**1. Что нужно заранее**
+- бот с этой функцией (контейнер `php` видит `/acme/request` и `/acme/state`:
+  `docker inspect` контейнера php, раздел Mounts);
+- на хосте `python3`, `openssl`, `docker` и firewall на nftables с таблицами
+  `ip filter` (цепочка `forward`) и `ip dockernat` (DNAT порта 80 на nginx бота);
+- все имена сертификата (домен, поддомены, алиасы) указывают на этот сервер —
+  иначе служба не откроет порт и сообщит «имя в DNS указывает не на этот сервер».
+
+**2. Правила nftables** — пустые наборы и постоянные правила, которые на них
+ссылаются; пока набор пуст, правила ничего не открывают. В `/etc/nftables.conf`:
+```
+table ip filter {
+    set acme_http_fwd {               # элементы «адрес . порт» добавляет только служба
+        type ipv4_addr . inet_service
+        flags timeout
+        size 8
+    }
+    chain forward {
+        # … защита от спуфинга, лимиты источников, чёрный список — выше …
+        iifname "eth0" ct status dnat meta mark != $BLACKLIST ct original ip daddr $PUBLIC_IP ct original proto-dst 80 ip daddr . tcp dport @acme_http_fwd limit rate 10/second log prefix "FWD-CERT-ACME: " level info
+        iifname "eth0" ct status dnat meta mark != $BLACKLIST ct original ip daddr $PUBLIC_IP ct original proto-dst 80 ip daddr . tcp dport @acme_http_fwd counter accept comment "acme-window"
+        # … разрешения для своих сетей и итоговый отказ — ниже …
+    }
+}
+```
+`eth0` — внешний интерфейс, `$PUBLIC_IP` — адрес сервера, `$BLACKLIST` — метка
+чёрного списка (без чёрного списка условие `meta mark` убрать). Место правил
+важно: после защиты от спуфинга, лимитов и чёрного списка, но до отказа чужим.
+Только если порт 80 должен вести к **другому** проекту на том же сервере (цель с
+`"redirect": true`), добавьте в `table ip dockernat` набор и правило **перед**
+обычным DNAT порта 80 — в цепочках `prerouting` и `output`:
+```
+    set acme_http_redirect { type inet_service; flags timeout; size 4; }
+    # в prerouting и output, перед «tcp dport 80 dnat to <nginx бота>:80»:
+    ip daddr $PUBLIC_IP tcp dport @acme_http_redirect counter dnat to 10.10.2.5:80 comment "acme-window-redirect"
+```
+Проверить файл — `nft -c -f /etc/nftables.conf`, применить — `nft -f
+/etc/nftables.conf` (перечитывает всё и сбрасывает счётчики) либо добавить те же
+`add set` / `insert rule … position <handle>` в работающие правила одной
+транзакцией. Записи журнала `FWD-CERT-ACME:` показывают, кто ходил в окно.
+
+**3. Настройки службы** — `/etc/acme-window/config.json`, владелец root, права
+600 (иначе служба откажется его читать):
 ```json
-{"public_ip": "203.0.113.10", "targets": [{"name": "vpnbot", "kind": "vpnbot", "upstream": "10.10.0.2:80"}]}
+{
+  "public_ip": "203.0.113.10",
+  "bot_dir": "/root/vpnbot",
+  "targets": [
+    {"name": "vpnbot", "kind": "vpnbot", "upstream": "10.10.0.2:80"}
+  ]
+}
 ```
+| Поле | Значение |
+|---|---|
+| `public_ip` | адрес сервера: на него должны указывать имена сертификата; по нему же проверяется, какой сертификат отдаёт сервер |
+| `bot_dir` | каталог бота, по умолчанию `/root/vpnbot` |
+| `name` | имя цели: латиница в нижнем регистре и цифры, до 32 знаков (`vpnbot`, `videobot`) |
+| `kind` | `vpnbot` — сертификат этого бота; `nginx-ssl` — соседний контейнер с certbot и скриптом `/renew-certificate.sh` |
+| `upstream` | адрес и порт 80 контейнера, куда ведёт DNAT (у бота — nginx, `10.10.0.2:80`); служба сверяет его с контейнером |
+| `verify_port` | порт, на котором проверяется отдаваемый сертификат (по умолчанию 443) |
+| `redirect` | `true` — на время окна порт 80 ведёт к этой цели (нужен набор `acme_http_redirect`); только для одной цели |
+| `container`, `cert_file` | для `nginx-ssl`: имя контейнера и путь на хосте к его `fullchain.pem` |
+| `auto` | автообновление при первом запуске (по умолчанию `true`; потом переключается в боте) |
+| `label` | подпись в боте: `{"ru": "…", "en": "…"}` |
+
+**4. Установка и проверка** (из каталога бота, от root):
 ```shell
-sh scripts/install_acme_window.sh          # из каталога бота, от root
-acme-window status                          # состояние; acme-window renew vpnbot --dry-run — пробный выпуск
+sh scripts/install_acme_window.sh            # сам проверит наборы и правила; без них не включится
+acme-window renew vpnbot --dry-run           # пробный выпуск у staging Let's Encrypt, сертификат не меняется
+acme-window status                           # срок, следующая попытка, последний итог
+nft list set ip filter acme_http_fwd         # снова пустой — порт закрыт
 ```
-Служба копируется в `/usr/local/sbin/acme-window` и обновлением бота не меняется:
-если в выпуске изменились `scripts/acme_window.py` или юниты `scripts/acme-window*`,
-повторите `sh scripts/install_acme_window.sh` (настройки и состояние сохраняются).
+Установщик кладёт `/usr/local/sbin/acme-window`, юниты `acme-window.service`
+(запуск), `acme-window-close.service` (закрытие при сбое), `acme-window.timer`
+(раз в час со случайной задержкой до 20 минут) и `acme-window.path` (запросы
+бота — сразу) в `/etc/systemd/system/`, каталоги `acme/request` и `acme/state`
+в каталоге бота. Состояние службы — `/var/lib/acme-window/state.json`, журнал —
+`journalctl -u acme-window -u acme-window-close`.
+
+**5. Обслуживание**
+- Служба копируется в `/usr/local/sbin/acme-window` и обновлением бота не меняется:
+  если в выпуске изменились `scripts/acme_window.py` или юниты `scripts/acme-window*`,
+  повторите `sh scripts/install_acme_window.sh` (настройки и состояние сохраняются).
+- Ручные команды: `acme-window renew <цель>` (выпустить сейчас, с учётом лимитов),
+  `acme-window check` (наборы и правила на месте), `acme-window close-all`.
+- Удаление: `sh scripts/install_acme_window.sh --uninstall` — юниты и программа
+  удаляются, окно закрывается; `/etc/acme-window` и `/var/lib/acme-window`
+  остаются. Правила с пустыми наборами можно не убирать: они ничего не открывают.
+- В бэкап бота входят сертификат и признак Let's Encrypt; настройки и состояние
+  службы остаются на сервере.
+
+**6. Если не работает**
+- `FATAL: нет /etc/acme-window/config.json` или `владелец должен быть root…` —
+  шаг 3; `FATAL: в nftables нет наборов или правил окна` — шаг 2.
+- `fail_dns` — имя сертификата не указывает на `public_ip`; `fail_preflight` —
+  нет контейнера nginx/php или он не на адресе `upstream`; `fail_issue` — ответ
+  Let's Encrypt в `journalctl -u acme-window`; `rate_limited` — исчерпан лимит.
+- Если служба не отвечает больше трёх часов, бот показывает это в меню и
+  «renew SSL» снова запускает certbot сам (при закрытом порте 80 — без успеха).
 
 После установки в **Настройки** появляется «🔐 SSL автообновление»: срок,
 последняя попытка, включение автообновления и выпуск сейчас. «renew SSL» тогда
-передаёт запрос службе, а не запускает certbot сам. Без службы всё работает как
-раньше.
-
+передаёт запрос службе, а не запускает certbot сам.
 ---
 
 ## Отключение протоколов и отдельные доступы
