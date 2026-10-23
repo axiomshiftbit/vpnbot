@@ -198,6 +198,7 @@ trait BotAcme
             $text[] = '';
             $text[] = '⚠️ ' . $this->t('служба хоста acme-window не отвечает больше трёх часов', 'the acme-window host service has not answered for over three hours');
         }
+        $data[] = $this->menuHelpButton('acme');
         $data[] = [
             ['text' => '🔄', 'callback_data' => '/acmeMenu refresh'],
             ['text' => $this->i18n('back'), 'callback_data' => '/menu config'],

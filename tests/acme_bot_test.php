@@ -150,6 +150,7 @@ foreach (['ru', 'en'] as $lang) {
     $callbacks = array_merge(...array_map(fn ($row) => array_column($row, 'callback_data'), $buttons));
     check(in_array('/acmeAuto vpnbot off', $callbacks, true) && in_array('/acmeRenew videobot', $callbacks, true), "$lang: кнопки обеих целей");
     check(in_array('/menu config', $callbacks, true) && in_array('/acmeMenu refresh', $callbacks, true), "$lang: назад и обновить");
+    check(in_array('/menuhelp acme 0', $callbacks, true), "$lang: кнопка справки");
     foreach ($callbacks as $cb) {
         check(strlen($cb) <= 64, "$lang: callback_data не длиннее 64 байт: $cb");
     }
