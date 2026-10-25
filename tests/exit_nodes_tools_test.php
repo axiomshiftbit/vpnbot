@@ -114,14 +114,18 @@ $bot->confPac['exits'][$id2]['enabled'] = 1;
 $bot->status = [];
 
 // --- Скорость ---------------------------------------------------------------
-$bot->sshAnswer = "node=200 10000000 2.000\ndirect=200 10000000 0.500\n";
+$bot->sshAnswer = "node=200 50000000 10.000 0\ndirect=200 50000000 2.500 0\n";
 $r = $bot->exitSpeed($id);
 $check($r['node']['mbps'] === 40.0 && $r['direct']['mbps'] === 160.0 && $r['node']['full'], 'скорость: Мбит/с по объёму и времени');
 $check(str_contains(end($bot->ssh)[1], '--socks5-hostname 127.0.0.1:10870') && end($bot->ssh)[0] === 'xr', 'скорость: через вход проверки узла в xr');
 $check(str_contains($bot->exitSpeedText($r), 'через узел 40,0 Мбит/с') && str_contains($bot->exitSpeedText($r), 'напрямую 160,0 Мбит/с'), 'скорость: текст');
-$bot->sshAnswer = "node=200 2500000 20.001\ndirect=000 0 0.000\n";
+$bot->sshAnswer = "node=200 2500000 20.001 28\ndirect=000 0 0.000 7\n";
 $text = $bot->exitSpeedText($bot->exitSpeed($id));
 $check(str_contains($text, 'за 20 с скачано 2.5 МБ') && str_contains($text, 'напрямую не скачалось'), 'скорость: обрыв по таймауту и отказ');
+$bot->sshAnswer = "node=200 2500000 0.500 18\ndirect=200 1024 0.100 0\n";
+$r = $bot->exitSpeed($id);
+$check(!$r['node']['ok'] && !$r['direct']['ok'], 'скорость: обрыв соединения и короткий HTTP 200 не замер');
+$check(str_contains($bot->exitSpeedText($r), 'curl 18') && !str_contains($bot->exitSpeedText($r), 'за 20 с'), 'скорость: ошибка не маскируется тайм-аутом');
 $bot->confPac['exits'][$id]['enabled'] = 0;
 $check(str_contains($bot->exitSpeedText($bot->exitSpeed($id)), 'узел выключен'), 'скорость: выключенный узел');
 $bot->confPac['exits'][$id]['enabled'] = 1;

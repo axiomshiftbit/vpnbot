@@ -65,8 +65,10 @@ trait BotExitNodes
         'insta' => ['Instagram', ['domain:instagram.com', 'domain:cdninstagram.com', 'domain:instagr.am', 'domain:ig.me', 'domain:igcdn.com',
             'domain:igsonar.com', 'domain:fbcdn.net']],
     ];
-    public const EXIT_SPEED_BYTES = 10000000;
-    public const EXIT_SPEED_URL = 'https://speed.cloudflare.com/__down?bytes=10000000';
+    // 10 МБ часто заканчивались до разгона TCP между серверами. Объём больше,
+    // но время по-прежнему ограничено 20 с на путь (не более 100 МБ за пробу).
+    public const EXIT_SPEED_BYTES = 50000000;
+    public const EXIT_SPEED_URL = 'https://speed.cloudflare.com/__down?bytes=50000000';
 
     public static function exitNodeDefaults(): array
     {
@@ -829,17 +831,22 @@ trait BotExitNodes
         $node = $this->exitNodes()[$id] ?? null;
         if ($port === null || $node === null) return ['error' => 'not found'];
         if (empty($node['enabled'])) return ['error' => 'disabled'];
-        $cmd = "s(){ curl -s -o /dev/null --max-time 20 -w '%{http_code} %{size_download} %{time_total}' \"\$@\" " . self::EXIT_SPEED_URL . '; echo; }; '
-            . "printf 'node='; s --socks5-hostname 127.0.0.1:$port; printf 'direct='; s; true";
+        $cmd = "s(){ curl -s -o /dev/null --max-time 20 -w '%{http_code} %{size_download} %{time_total}' \"\$@\" " . self::EXIT_SPEED_URL . "; rc=\$?; printf ' %s\\n' \"\$rc\"; }; "
+            . "printf 'node='; s --noproxy '' --socks5-hostname 127.0.0.1:$port; printf 'direct='; s --noproxy '*'; true";
         $out = (string) $this->ssh($cmd, 'xr');
         if ($this->sshFailed) return ['error' => 'xray'];
         $result = [];
         foreach (['node', 'direct'] as $way) {
-            if (!preg_match('~^' . $way . '=(\d{3}) ([0-9.]+) ([0-9.]+)$~m', $out, $m)) { $result[$way] = ['ok' => false, 'http' => 0]; continue; }
+            if (!preg_match('~^' . $way . '=(\d{3}) ([0-9.]+) ([0-9.]+) (\d{1,3})$~m', $out, $m)) { $result[$way] = ['ok' => false, 'http' => 0]; continue; }
             $bytes = (float) $m[2];
             $time = (float) $m[3];
-            $result[$way] = ['ok' => $m[1] === '200' && $bytes > 0 && $time > 0, 'http' => (int) $m[1], 'bytes' => (int) $bytes,
-                'mbps' => $time > 0 ? round($bytes * 8 / $time / 1e6, 1) : 0.0, 'full' => (int) $bytes >= self::EXIT_SPEED_BYTES];
+            $code = (int) $m[4];
+            $full = (int) $bytes >= self::EXIT_SPEED_BYTES;
+            // Код 28 — наше ограничение времени: уже принятые байты пригодны
+            // для оценки. Обрыв TCP, ошибка TLS и короткий ответ HTTP 200 — нет.
+            $result[$way] = ['ok' => $m[1] === '200' && $bytes > 0 && $time > 0 && (($code === 0 && $full) || $code === 28),
+                'http' => (int) $m[1], 'curl' => $code, 'bytes' => (int) $bytes, 'seconds' => $time,
+                'mbps' => $time > 0 ? round($bytes * 8 / $time / 1e6, 1) : 0.0, 'full' => $full];
         }
         return $result;
     }
@@ -848,12 +855,15 @@ trait BotExitNodes
     {
         if (isset($r['error'])) return $this->t('Скорость не измерена: ', 'Speed not measured: ') . $this->exitErrorText((string) $r['error']);
         $part = function (array $w): string {
-            if (empty($w['ok'])) return $this->t('не скачалось', 'download failed') . (!empty($w['http']) ? " (HTTP {$w['http']})" : '');
+            if (empty($w['ok'])) return $this->t('не скачалось', 'download failed')
+                . (!empty($w['curl']) ? " (curl {$w['curl']})" : (!empty($w['http']) ? " (HTTP {$w['http']})" : ''));
             $mbps = number_format((float) $w['mbps'], 1, $this->language === 'en' ? '.' : ',', '');
-            return $this->t("$mbps Мбит/с", "$mbps Mbit/s") . (empty($w['full']) ? $this->t(' (за 20 с скачано ', ' (in 20 s got ') . round($w['bytes'] / 1e6, 1) . $this->t(' МБ)', ' MB)') : '');
+            $seconds = round((float) ($w['seconds'] ?? 0), 1);
+            return $this->t("$mbps Мбит/с", "$mbps Mbit/s") . (empty($w['full']) ? $this->t(" (за $seconds с скачано ", " (in $seconds s got ") . round($w['bytes'] / 1e6, 1) . $this->t(' МБ)', ' MB)') : '');
         };
-        return $this->t('Скорость (загрузка 10 МБ): через узел ', 'Speed (10 MB download): through the node ') . $part($r['node'] ?? [])
-            . $this->t(' · напрямую ', ' · direct ') . $part($r['direct'] ?? []);
+        return $this->t('Скорость до Cloudflare (до 50 МБ на путь): через узел ', 'Speed to Cloudflare (up to 50 MB per path): through the node ') . $part($r['node'] ?? [])
+            . $this->t(' · напрямую ', ' · direct ') . $part($r['direct'] ?? [])
+            . $this->t("\nОценка одного соединения с учётом подключения; скорость YouTube может отличаться.", "\nSingle-connection estimate including connection setup; YouTube speed may differ.");
     }
 
     public function exitSpeedCheck(string $id): void
