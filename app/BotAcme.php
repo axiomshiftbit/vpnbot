@@ -375,7 +375,7 @@ trait BotAcme
             && (($conf['letsencrypt'] ?? '') === 'letsencrypt' || !empty($conf['acme_requested']));
     }
 
-    // Бандл ключа и цепочки → /certs и службы, которые читают сертификат.
+    // Проверяем каждый PEM-блок: OpenSSL при сверке ключа читает только первый.
     public static function certificatePairValid(string $public, string $private): bool
     {
         $count = preg_match_all('~-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----~s', $public, $certificates);
@@ -387,6 +387,7 @@ trait BotAcme
         return @openssl_x509_check_private_key($certificates[0][0], $private);
     }
 
+    // Бандл ключа и цепочки → /certs и службы, которые читают сертификат.
     public function applyCertificateBundle(string $bundle, array $conf): bool
     {
         if (!preg_match('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', $bundle, $m)) {
