@@ -24,6 +24,8 @@ class TelemtMenuBot extends Bot {
     public function getDomain($cdn = false) { return str_repeat('a', 60) . '.' . str_repeat('b', 60) . '.example.test'; }
     public function getPorts() { return ['telemt'=>['port'=>8443,'enable'=>true]]; }
     public function telemtVersion(): string { return '3.5.9'; }
+    public function telemtActivityRefresh(): void {}
+    public function getTelemtActivity(): array { return ['at'=>time(), 'boot'=>0, 'users'=>[]]; }
     public function telemtQr($name, $relay = '', bool $keepMenu = false) { $this->qr[] = ['mt', $name, $relay, $keepMenu]; }
     public function telemtWebLink($name, bool $keepMenu = false) { $this->qr[] = ['web', $name, $keepMenu]; }
     public function update($chat, $message, $text, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->screen = ['text'=>$text,'buttons'=>$button]; }

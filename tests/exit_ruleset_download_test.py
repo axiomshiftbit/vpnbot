@@ -39,7 +39,7 @@ class ExitRulesetDownloadTest(unittest.TestCase):
                 def handle(self):
                     try:
                         super().handle()
-                    except ConnectionResetError:
+                    except (ConnectionResetError, BrokenPipeError):
                         pass  # Клиент прерывает TLS при неверном имени сертификата.
 
                 def do_GET(self):

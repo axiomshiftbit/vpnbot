@@ -72,7 +72,7 @@ xrayConfAssert(fileinode($f) === $ino, 'укорачивающая запись 
 // ── 3. читатель ждёт писателя, а не ловит обрезанный файл ────────────────────
 // Держим LOCK_EX и обрезаем файл в отдельном процессе: пока лок жив,
 // readXrayJson() обязан блокироваться, а не прочитать пустоту.
-$holder = __DIR__ . '/../.xray_conf_lock_holder.php';
+$holder = $dir . '/lock_holder.php';
 file_put_contents($holder, <<<'PHP'
 <?php
 $h = fopen($argv[1], 'c');
