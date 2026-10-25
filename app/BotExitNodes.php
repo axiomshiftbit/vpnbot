@@ -37,7 +37,7 @@ trait BotExitNodes
     public const EXIT_RULESET_MAX_ENTRIES = 200000;
     // Версия разбора наборов: при её смене кэш разбирается заново, даже если
     // файл источника не изменился.
-    public const EXIT_RULESET_PARSER = 1;
+    public const EXIT_RULESET_PARSER = 2;
     // Домены YouTube без зависимости от geosite.dat (кнопка «YouTube»).
     public const EXIT_YOUTUBE = ['domain:youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'domain:ggpht.com',
         'domain:youtu.be', 'domain:youtube-nocookie.com', 'domain:youtubei.googleapis.com', 'domain:youtubekids.com',
@@ -478,8 +478,16 @@ trait BotExitNodes
     // Запуск инструмента ядра; в тестах подменяется.
     protected function exitRulesetTool(array $command): bool
     {
+        $command = array_merge(['python3', __DIR__ . '/exit_ruleset.py', 'tool'], $command);
         exec('timeout 120 ' . implode(' ', array_map('escapeshellarg', $command)) . ' >/dev/null 2>&1', $out, $code);
         return $code === 0;
+    }
+
+    private function exitRulesetNormalize(string $file, string $format): bool
+    {
+        $command = ['python3', __DIR__ . '/exit_ruleset.py', 'normalize', $file, "$file.safe", $format];
+        exec('timeout 30 ' . implode(' ', array_map('escapeshellarg', $command)) . ' >/dev/null 2>&1', $out, $code);
+        return $code === 0 && rename("$file.safe", $file);
     }
 
     /** Разложить содержимое набора в записи маршрута. null — формат не разобран. */
@@ -494,6 +502,7 @@ trait BotExitNodes
             $entries = $ips = [];
             if ($format === 'srs') {
                 if (!$this->exitRulesetTool(['sing-box', 'rule-set', 'decompile', $in, '-o', $outFile])) return null;
+                if (!$this->exitRulesetNormalize($outFile, $format)) return null;
                 $json = json_decode((string) @file_get_contents($outFile), true);
                 if (!is_array($json['rules'] ?? null)) return null;
                 foreach ($json['rules'] as $rule) {
@@ -507,6 +516,7 @@ trait BotExitNodes
             } else {
                 if (!in_array($behavior, ['domain', 'ipcidr'], true)) return null;
                 if (!$this->exitRulesetTool(['mihomo', 'convert-ruleset', $behavior, 'mrs', $in, $outFile])) return null;
+                if (!$this->exitRulesetNormalize($outFile, 'mrs')) return null;
                 foreach (preg_split('~\R~', (string) @file_get_contents($outFile)) as $line) {
                     $line = trim($line);
                     if ($line === '' || str_starts_with($line, '#')) continue;
