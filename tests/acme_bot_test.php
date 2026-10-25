@@ -214,6 +214,13 @@ try {
 flock($held, LOCK_UN);
 fclose($held);
 check($bot->installLetsencrypt('vpn.example.org') && count($bot->applied) === 1, 'после восстановления установка проходит');
+$bot->applied = [];
+$issuedNames = $bot->letsencryptNames($bot->conf);
+$bot->conf['domain_aliases'] = ['restored-alias.example.org'];
+check(!$bot->installLetsencrypt('vpn.example.org', $issuedNames) && $bot->applied === [],
+    'основной домен тот же, но алиасы изменились — восстановленный сертификат сохранён');
+check($bot->installLetsencrypt('vpn.example.org', array_reverse($bot->letsencryptNames($bot->conf)))
+    && count($bot->applied) === 1, 'неизменившиеся имена принимаются независимо от порядка SAN');
 
 // ── acme_renew.php: коды выхода без домена и без аргументов ──
 // Bot читает /config/pac.json по абсолютному пути. Там, где он есть (контейнер
@@ -241,6 +248,7 @@ if (file_exists('/config/pac.json')) {
 class AcmeCliBot extends Bot {
     public function __construct($key, $i) { $this->pac = __DIR__ . '/pac.json'; }
     public function getPacConf() { return ['domain' => 'restored.example.org', 'letsencrypt' => 'letsencrypt']; }
+    public function letsencryptNames(array $conf): array { return [$conf['domain'], 'restored-alias.example.org']; }
     public function applyCertificateBundle(string $bundle, array $conf): bool { return true; }
 }
 PHP;
@@ -250,6 +258,12 @@ PHP;
         $out = [];
         exec('cd ' . escapeshellarg($app) . ' && php acme_renew.php ' . $args . ' 2>&1', $out, $rc);
         check($rc === $code, "acme_renew.php $args: домен выпуска и совместимость → $code (получено $rc): " . implode(' ', $out));
+    }
+    foreach ([['issued-alias.example.org', 1], ['restored-alias.example.org', 0]] as [$alias, $code]) {
+        $out = [];
+        $names = escapeshellarg(json_encode(['restored.example.org', $alias]));
+        exec('cd ' . escapeshellarg($app) . ' && php acme_renew.php install restored.example.org ' . $names . ' 2>&1', $out, $rc);
+        check($rc === $code, "acme_renew.php: имена выпуска $alias → $code (получено $rc): " . implode(' ', $out));
     }
 }
 

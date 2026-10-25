@@ -344,12 +344,20 @@ trait BotAcme
     // не пройдёт между выпуском и установкой. Настройки читаются уже под
     // блокировкой: если восстановление сменило домен или вернуло свой
     // сертификат, выпущенный для прежних настроек не ставится.
-    public function installLetsencrypt(string $domain): bool
+    public function installLetsencrypt(string $domain, array $expectedNames = []): bool
     {
-        return $this->withBackupLock(function () use ($domain) {
+        return $this->withBackupLock(function () use ($domain, $expectedNames) {
             $conf = $this->getPacConf();
             if (($conf['domain'] ?? '') !== $domain || !$this->acmeWantsLetsencrypt($conf)) {
                 return false;
+            }
+            // Восстановление могло сменить только алиасы/поддомены, сохранив
+            // основной домен. Порядок SAN значения не имеет.
+            if ($expectedNames) {
+                $currentNames = $this->letsencryptNames($conf);
+                sort($currentNames, SORT_STRING);
+                sort($expectedNames, SORT_STRING);
+                if ($currentNames !== $expectedNames) return false;
             }
             $live   = "/etc/letsencrypt/live/$domain";
             $bundle = @file_get_contents("$live/privkey.pem") . @file_get_contents("$live/fullchain.pem");

@@ -248,8 +248,10 @@ class AcmeWindowTests(Base):
         self.assertEqual(target.preflight(), ['localhost'])
         self.write_docker(domains=['changed.example.org'])
         target.install()
-        self.assertEqual(self.calls('install')[0]['args'], ['localhost'],
-                         'установка проверяет домен начатого выпуска, а не новые настройки')
+        args = self.calls('install')[0]['args']
+        self.assertEqual(args[0], 'localhost')
+        self.assertEqual(json.loads(args[1]), ['localhost'],
+                         'установка проверяет имена начатого выпуска, а не новые настройки')
 
     def test_due_renews_inside_window_and_closes_it(self):
         info, when = self.due_cert()
