@@ -86,15 +86,7 @@ npAssert(!str_contains($mkLink('u', 'a/b', 'h'), 'a/b'), '/ в пароле ко
 $esc = htmlspecialchars($mkLink('u', 'a&b', 'h'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 npAssert(!str_contains($esc, '&b'), '& экранируется для HTML');
 
-// ── 3. Тег версии caddy ─────────────────────────────────────────────────────
-// У Caddy стабильный semver; совместимость отдельного тега плагина проверяет native CI.
-$tagOk = fn(string $v) => (bool) preg_match('~^v\d+\.\d+\.\d+$~', $v);
-foreach (['v2.11.2', 'v2.10.0', 'v2.9.1'] as $v) {
-    npAssert($tagOk($v), "валидный тег: $v");
-}
-foreach (['2.11.2', 'v2.11', 'latest', 'naive', 'v2.11.2-naive', '', 'v2.11.2; rm -rf /'] as $v) {
-    npAssert(!$tagOk($v), 'невалидный тег отбивается: ' . var_export($v, true));
-}
+// Выбор проверенной пары Caddy/forwardproxy исполняется в naive_version_pin_test.php.
 
 // ── 4. Генерация пароля ─────────────────────────────────────────────────────
 class NaivePasswordTestBot extends Bot

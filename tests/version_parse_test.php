@@ -66,6 +66,10 @@ $v = $bot->naiveVersion();
 verAssert($v['running'] === 'v2.11.2', 'caddy running: ' . json_encode($v));
 verAssert($v['pinned'] === 'v2.11.2', 'caddy pinned: ' . json_encode($v));
 
+$bot->out = ['np' => "v2.11.7 => /caddy@(devel)\n"];
+$v = $bot->naiveVersion();
+verAssert($v['running'] === 'v2.11.7', 'caddy с локальными upstream-патчами: ' . json_encode($v));
+
 // Современная сборка strongSwan содержит swanctl без устаревшего ipsec.
 // Исполняем именно команду пробы с разными наборами CLI.
 class StrongSwanProbeBot extends VersionTestBot
