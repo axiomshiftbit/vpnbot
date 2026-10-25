@@ -91,7 +91,12 @@ final class ManagedProtocol
 
     public static function writeJson(string $path, array $value): void
     {
-        if (isset($value['protocol'], $value['users'])) $value['users'] = (object) $value['users'];
+        if (isset($value['protocol'], $value['users'])) {
+            $value['users'] = (object) $value['users'];
+            // PHP decodes an empty JSON object as []; edits must preserve the
+            // pending restore's counter map until the supervisor consumes it.
+            if (isset($value['restore_usage']['users'])) $value['restore_usage']['users'] = (object) $value['restore_usage']['users'];
+        }
         $json = json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
         $tmp = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
         $old = umask(0077);

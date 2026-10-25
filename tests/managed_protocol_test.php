@@ -26,6 +26,22 @@ class ManagedTestBot extends Bot {
 }
 $root = sys_get_temp_dir() . '/vpnbot-managed-' . bin2hex(random_bytes(6)); mkdir($root, 0700);
 try {
+    foreach (array_keys(ManagedProtocol::NAMES) as $protocol) {
+        $pending = new ManagedProtocol($protocol, $root . '/pending');
+        $pending->configure(['host' => 'vpn.example.test', 'sni' => $protocol === 'snolc' ? '' : 'vpn.example.test'], true);
+        $uid = managedProtocolFixtureUser($pending, 'Unused profile');
+        $empty = $pending->snapshot();
+        $pending->restore($empty);
+        $restoreId = $pending->read()['restore_usage']['id'];
+        $pending->user($uid, ['name' => 'Edited before restore was applied']);
+        $saved = json_decode(file_get_contents($pending->directory() . '/desired.json'));
+        mpCheck(is_object($saved->restore_usage->users), "$protocol: правка сохраняет пустую таблицу счётчиков объектом JSON");
+        mpCheck($saved->restore_usage->id === $restoreId, "$protocol: правка не теряет ожидающее восстановление");
+        $empty['usage']['users'][$uid] = ['upload' => 17, 'download' => 29, 'reset' => $empty['state']['users'][$uid]['reset']];
+        $pending->restore($empty);
+        $pending->user($uid, ['name' => 'Edited with counters']);
+        mpCheck($pending->read()['restore_usage']['users'][$uid] === $empty['usage']['users'][$uid], "$protocol: накопленный расход не меняется");
+    }
     $m = new ManagedProtocol('anytls', $root);
     mpCheck(!$m->read()['enabled'], 'Новая установка не активирует протокол');
     $m->configure(['host' => 'vpn.example', 'sni' => 'vpn.example'], true);

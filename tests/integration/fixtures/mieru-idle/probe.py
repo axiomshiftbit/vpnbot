@@ -1,7 +1,7 @@
 from pathlib import Path
-import json, os, socket, socketserver, struct, subprocess, threading, time
+import json, os, socket, socketserver, struct, subprocess, sys, threading, time
 
-ROOT = Path('/probe'); rows=[]; processes=[]; sockets=[]
+ROOT = Path('/probe'); rows=[]; processes=[]; sockets=[]; supervisor=None
 os.umask(0o077)
 
 def check(name,ok):
@@ -69,6 +69,28 @@ try:
  try:open_default=sockets[1].recv(1)!=b''
  except TimeoutError:open_default=True
  check('disabled-timeout-keeps-idle-TCP',open_default)
+ # Exercise the bot's real supervisor and configs produced by reset/restore.
+ for process,log in reversed(processes):
+  process.terminate();process.wait(timeout=5);log.close()
+ processes.clear()
+ sys.path.insert(0,'/source')
+ from mieru_service import MieruSupervisor, atomic_json
+ state=ROOT/'state/mieru';supervisor=MieruSupervisor(state/'runtime')
+ supervisor.desired=state/'desired.json'
+ atomic_json(supervisor.desired,json.loads((ROOT/'initial-state.json').read_text()))
+ supervisor.tick()
+ check('supervisor-applies-idle-timeout',supervisor.alive() and json.loads((supervisor.current/'config.json').read_text())['advancedSettings']['tcpIdleTimeout']=='1m')
+ atomic_json(supervisor.desired,json.loads((ROOT/'reset-state.json').read_text()));supervisor.tick()
+ check('supervisor-reset-disables-timeout',supervisor.alive() and 'tcpIdleTimeout' not in json.loads((supervisor.current/'config.json').read_text()).get('advancedSettings',{}))
+ atomic_json(supervisor.desired,json.loads((ROOT/'restored-state.json').read_text()));supervisor.tick()
+ check('supervisor-restores-idle-timeout',supervisor.alive() and json.loads((supervisor.current/'config.json').read_text())['advancedSettings']['tcpIdleTimeout']=='1m')
+ client=launch(['/probe/mieru-client','run'],env|{'MIERU_CONFIG_JSON_FILE':str(clientcfg)},'restored-client.log');ready(18080,client)
+ with socket.create_connection(('127.0.0.1',18080),timeout=5) as restored:
+  restored.sendall(b'\x05\x01\x00');assert exact(restored,2)==b'\x05\x00'
+  restored.sendall(b'\x05\x01\x00\x01'+socket.inet_aton('198.51.100.2')+struct.pack('!H',8081))
+  head=exact(restored,4);assert head[1]==0;exact(restored,6 if head[3]==1 else 18)
+  restored.sendall(b'restored-profile')
+  check('old-profile-works-after-reset-and-restore',exact(restored,16)==b'restored-profile')
 finally:
  for s in sockets:s.close()
  for p,f in reversed(processes):
@@ -76,5 +98,6 @@ finally:
   try:p.wait(timeout=5)
   except subprocess.TimeoutExpired:p.kill();p.wait()
   f.close()
+ if supervisor is not None:supervisor.stop()
  target.shutdown();target.server_close()
 print(json.dumps({'passed':sum(x['passed'] for x in rows),'total':len(rows)}))
