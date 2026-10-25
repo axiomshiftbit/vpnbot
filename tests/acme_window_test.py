@@ -51,6 +51,8 @@ json_out = a[:1] == ['-j']
 if json_out:
     a = a[1:]
 if a[:2] == ['list', 'set']:
+    if st.get('fail_list'):
+        save(); sys.stderr.write('Operation not permitted\n'); sys.exit(1)
     k = key(a[2:])
     if k not in st['sets']:
         save(); sys.stderr.write('Error: No such file or directory\n'); sys.exit(1)
@@ -406,12 +408,36 @@ class AcmeWindowTests(Base):
         self.assertEqual(acme.main(['close-all', '--if-unlocked']), 0)
         self.assertEqual(self.open_sets(), {})
 
+    def test_nft_read_failure_is_not_reported_as_missing_or_closed(self):
+        self.write_nft(sets={'filter acme_http_fwd': [{'elem': '10.10.0.2 . 80', 'timeout': 600}],
+                             'dockernat acme_http_redirect': [{'elem': '80', 'timeout': 600}]}, fail_list=True)
+        self.assertEqual(acme.main(['close-all']), 1, 'ошибка проверки не означает успешное закрытие')
+        self.assertEqual(self.open_sets(), {}, 'аварийная очистка выполняется даже при отказе чтения')
+
+    def test_issue_failure_does_not_claim_failed_close_succeeded(self):
+        self.write_nft(sets={'filter acme_http_fwd': []}, fail_flush=True)
+        self.write_docker(issue='fail')
+        with patch.object(acme, 'log') as messages:
+            acme.main(['run'])
+        self.assertTrue(self.open_sets())
+        self.assertFalse(any('окно закрыто' in str(call.args[0]) for call in messages.call_args_list))
+
     def test_close_all_leaves_a_running_window_to_its_owner(self):
         self.write_nft(sets={'filter acme_http_fwd': [{'elem': '10.10.0.2 . 80', 'timeout': 600}]})
         fd = acme.take_lock(0)
         try:
             self.assertEqual(acme.main(['close-all', '--if-unlocked']), 0)
             self.assertEqual(len(self.open_sets()), 1)
+        finally:
+            os.close(fd)
+
+    def test_explicit_close_fails_if_another_issue_owns_the_window(self):
+        self.write_nft(sets={'filter acme_http_fwd': [{'elem': '10.10.0.2 . 80', 'timeout': 600}]})
+        fd = acme.take_lock(0)
+        try:
+            with patch.object(acme, 'LOCK_WAIT', 0):
+                self.assertEqual(acme.main(['close-all']), 75)
+            self.assertEqual(len(self.open_sets()), 1, 'закрытие не подтверждено; выпуск ещё работает')
         finally:
             os.close(fd)
 
@@ -472,6 +498,24 @@ class AcmeWindowTests(Base):
             acme.main(['run'])
         self.assertTrue(self.state()['vpnbot']['auto'])
         self.assertEqual(len(self.calls('issue')), 1)
+
+    def test_emergency_close_does_not_require_config(self):
+        env = dict(os.environ, ACME_WINDOW_CONFIG=str(self.config), ACME_WINDOW_STATE=str(self.state_dir))
+        for mode in ('missing', 'invalid-json', 'unsafe-permissions'):
+            with self.subTest(mode=mode):
+                self.write_config([{'name': 'vpnbot', 'kind': 'vpnbot', 'upstream': '10.10.0.2:80'}])
+                if mode == 'missing':
+                    self.config.unlink()
+                elif mode == 'invalid-json':
+                    self.config.write_text('{broken')
+                else:
+                    self.config.chmod(0o666)
+                acme.nft_batch(['add element ip filter acme_http_fwd { 10.10.0.2 . 80 timeout 600s }',
+                                'add element ip dockernat acme_http_redirect { 80 timeout 600s }'])
+                result = subprocess.run([sys.executable, str(ROOT / 'scripts/acme_window.py'),
+                                         'close-all', '--if-unlocked'], env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual({}, self.open_sets(), 'аварийное закрытие не зависит от настроек выпуска')
 
     def test_request_dir_symlink_is_ignored(self):
         os.rmdir(self.bot / 'acme/request')
@@ -587,6 +631,7 @@ class AcmeWindowSignalTests(Base):
         p, env = self.start()
         p.kill()
         p.wait(timeout=30)
+        p.stdout.close()
         sets = self.open_sets()
         self.assertEqual(sets['filter acme_http_fwd'][0]['timeout'], acme.WINDOW_SECONDS,
                          'после kill -9 окно держит только время жизни элемента')
@@ -620,6 +665,61 @@ class AcmeWindowUnitFilesTests(unittest.TestCase):
         self.assertIn('- ./acme/request:/acme/request\n', compose)
         self.assertIn('- ./acme/state:/acme/state:ro\n', compose)
         self.assertIn('\n/acme/\n', (ROOT / '.gitignore').read_text())
+
+
+class InstallerUninstallTests(unittest.TestCase):
+    def test_active_issue_stopped_before_removing_agent(self):
+        self.check_uninstall('loaded', False)
+
+    def test_uninstall_absent_service_is_idempotent(self):
+        self.check_uninstall('not-found', False)
+
+    def test_failed_stop_keeps_agent_installed(self):
+        self.check_uninstall('loaded', True)
+
+    def test_failed_close_keeps_agent_installed(self):
+        self.check_uninstall('loaded', False, fail_close=True)
+
+    def check_uninstall(self, load_state, fail_stop, fail_close=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            units = root / 'units'
+            units.mkdir()
+            agent = root / 'agent'
+            agent.write_text('import sys\nsys.exit(' + ('9' if fail_close else '0') + ')\n')
+            agent.chmod(0o755)
+            heartbeat = root / 'acme/state/agent.json'
+            heartbeat.parent.mkdir(parents=True)
+            heartbeat.write_text(json.dumps({'updated': int(time.time()), 'targets': ['vpnbot']}))
+            state = root / 'running'
+            if load_state == 'loaded':
+                state.touch()
+            systemctl = root / 'systemctl'
+            systemctl.write_text('#!' + sys.executable + '\n' +
+                'import os,sys\nfrom pathlib import Path\n' +
+                'state=Path(os.environ["TEST_SERVICE_RUNNING"])\n' +
+                'if sys.argv[1]=="show": print(os.environ["TEST_SERVICE_LOAD"])\n' +
+                'if sys.argv[1]=="stop":\n' +
+                ' if os.environ["TEST_STOP_FAIL"]=="1": sys.exit(1)\n' +
+                ' state.unlink(missing_ok=True)\n')
+            systemctl.chmod(0o755)
+            installer = root / 'install.sh'
+            installer.write_text((ROOT / 'scripts/install_acme_window.sh').read_text()
+                .replace('/usr/local/sbin/acme-window', str(agent))
+                .replace('/etc/systemd/system/', str(units) + '/'))
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
+                       TEST_SERVICE_RUNNING=str(state), TEST_SERVICE_LOAD=load_state,
+                       TEST_STOP_FAIL=str(int(fail_stop)))
+            result = subprocess.run(['sh', str(installer), '--uninstall'], env=env, cwd=root,
+                                    capture_output=True, text=True, timeout=15)
+            if fail_stop or fail_close:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(agent.exists(), 'нельзя удалить агент, пока закрытие окна не подтверждено')
+            else:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(state.exists(), 'после удаления выпуск не должен открывать окно')
+                self.assertFalse(agent.exists())
+                self.assertFalse(heartbeat.exists(), 'бот должен сразу обнаружить удаление службы')
 
 
 if __name__ == '__main__':

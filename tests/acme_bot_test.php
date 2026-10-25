@@ -16,6 +16,7 @@ class AcmeBot extends Bot
     public array $applied = [];
     public array $managed = [];
     public int $issueCode = 0;
+    public ?Closure $onIssue = null;
 
     public function __construct(string $language = 'ru')
     {
@@ -35,7 +36,7 @@ class AcmeBot extends Bot
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')
     { $this->updated[] = [$text, $button]; return ['ok' => true]; }
     public function menu($type = false, $arg = false, $return = false) { $this->updated[] = ['menu', $type]; }
-    public function issueLetsencrypt(array $conf, bool $dryRun = false): array { $this->issued[] = $dryRun; return [$this->issueCode, ['certbot output']]; }
+    public function issueLetsencrypt(array $conf, bool $dryRun = false): array { $this->issued[] = $dryRun; if ($this->onIssue) ($this->onIssue)($this); return [$this->issueCode, ['certbot output']]; }
     public function applyCertificateBundle(string $bundle, array $conf): bool { $this->applied[] = $conf; return true; }
     public function acmeWaitTaken(string $file, float $seconds = 4.0): bool { return !file_exists($file); }
 }
@@ -62,6 +63,9 @@ $clear = static function () use ($root): void { foreach (glob("$root/request/*")
 
 $bot = new AcmeBot();
 $bot->acmeRoot = $root;
+$bot->pac = "$root/pac.json";
+$bot->protocolCertRoot = "$root/certs";
+mkdir($bot->protocolCertRoot);
 
 // ── служба есть или нет ──
 check($bot->acmeAgent() === null && !$bot->acmeAgentStale(), 'без agent.json службы нет');
@@ -83,6 +87,13 @@ symlink("$root/outside/evil.json", "$root/state/evil.json");
 $states = $bot->acmeStates();
 check(array_keys($states) === ['vpnbot', 'videobot'], 'свой сертификат первым, мусор и ссылки отброшены: ' . implode(',', array_keys($states)));
 check($bot->acmeSelfTarget() === 'vpnbot', 'цель бота найдена по kind');
+$state('newbot', ['kind' => 'vpnbot']);
+file_put_contents("$root/state/agent.json", json_encode(['version' => 1, 'updated' => time(), 'targets' => ['newbot']]));
+check(array_keys($bot->acmeStates()) === ['newbot'], 'удалённые и переименованные цели не остаются в меню');
+check($bot->acmeSelfTarget() === 'newbot', 'выпуск направляется в актуальную цель, не в старый файл состояния');
+check(!$bot->acmeRequest('renew', 'vpnbot'), 'запрос к удалённой цели не принимается');
+unlink("$root/state/newbot.json");
+$agent(time());
 $state('videobot', ['busy' => true, 'updated' => time() - 2 * 3600]);
 check($bot->acmeStates()['videobot']['busy'] === false, 'зависший busy не показывается вечно');
 $state('videobot', ['last_detail' => str_repeat('x', 1000)]);
@@ -96,6 +107,11 @@ check(!$bot->acmeRequest('renew', 'unknown') && !$bot->acmeRequest('renew', '../
 check($requests() === [], 'отвергнутые запросы не оставляют файлов');
 check($bot->acmeRequest('refresh') && $requests() === ['req-refresh'], 'запрос обновления без цели');
 $clear();
+foreach ([['auto-on', 'auto-off'], ['auto-off', 'auto-on'], ['auto-on', 'auto-off', 'auto-on']] as $actions) {
+    foreach ($actions as $action) check($bot->acmeRequest($action, 'vpnbot'), 'переключение записано');
+    check($requests() === ['req-' . end($actions) . '-vpnbot'], 'очередь сохраняет последнее переключение');
+    $clear();
+}
 
 // ── имена и команда certbot ──
 $bot->conf = ['domain' => 'vpn.example.org', 'oc_domain' => 'aaaa1111', 'np_domain' => 'bbbb2222', 'tw_domain' => 'cccc3333',
@@ -221,6 +237,33 @@ check(!$bot->installLetsencrypt('vpn.example.org', $issuedNames) && $bot->applie
     'основной домен тот же, но алиасы изменились — восстановленный сертификат сохранён');
 check($bot->installLetsencrypt('vpn.example.org', array_reverse($bot->letsencryptNames($bot->conf)))
     && count($bot->applied) === 1, 'неизменившиеся имена принимаются независимо от порядка SAN');
+
+// Без службы ручной выпуск использует те же защиты от восстановления/смены SSL.
+unlink("$root/state/agent.json");
+$bot->issueCode = 0;
+foreach (['domain', 'aliases', 'mode', 'certificate', 'other', 'initial'] as $change) {
+    $bot->conf = ['domain' => 'vpn.example.org', 'oc_domain' => 'aaaa1111', 'np_domain' => 'bbbb2222',
+        'letsencrypt' => $change === 'initial' ? 'self' : 'letsencrypt', 'limitpage' => 5];
+    $bot->managed = [];
+    file_put_contents("$root/certs/cert_public", 'previous test certificate');
+    $bot->applied = [];
+    $bot->onIssue = static function ($b) use ($change, $root) {
+        if ($change === 'domain') $b->conf['domain'] = 'restored.example.org';
+        if ($change === 'aliases') $b->conf['domain_aliases'] = ['restored.example.org'];
+        if ($change === 'mode') $b->conf['letsencrypt'] = 'self';
+        if ($change === 'certificate') file_put_contents("$root/certs/cert_public", 'replacement test certificate');
+        if ($change === 'other') $b->conf['limitpage'] = 17;
+    };
+    $bot->setSSL('letsencrypt');
+    if (in_array($change, ['other', 'initial'], true)) {
+        check(count($bot->applied) === 1 && end($bot->applied)['letsencrypt'] === 'letsencrypt', "ручной выпуск: $change допускается");
+        if ($change === 'other') check(end($bot->applied)['limitpage'] === 17, 'параллельные настройки не откатываются');
+    } else {
+        check($bot->applied === [], "ручной выпуск не затирает изменение: $change");
+    }
+}
+$bot->onIssue = null;
+$agent(time());
 
 // ── acme_renew.php: коды выхода без домена и без аргументов ──
 // Bot читает /config/pac.json по абсолютному пути. Там, где он есть (контейнер

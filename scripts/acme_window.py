@@ -114,7 +114,12 @@ def tail(text, limit=300):
 # ── nftables ──────────────────────────────────────────────────────────────
 
 def set_exists(spec):
-    return run(['nft', 'list', 'set', *spec], timeout=15)[0] == 0
+    code, _, err = run(['nft', 'list', 'set', *spec], timeout=15)
+    if code == 0:
+        return True
+    if code == 1 and 'No such file or directory' in err:
+        return False
+    raise Fail('fail_window', 'cannot inspect nft set %s: %s' % (spec[2], tail(err)))
 
 
 def set_elements(spec):
@@ -136,12 +141,16 @@ def nft_batch(lines):
 
 def close_all(sets):
     """Удаляет все элементы окон; Fail, если после этого что-то осталось."""
+    # Сначала закрываем, затем проверяем. Ошибка чтения nft не означает,
+    # что набора нет, и не должна отменять попытку аварийного закрытия.
+    try:
+        nft_batch(['flush set ' + ' '.join(s) for s in sets])
+    except Fail:
+        # Необязательный redirect-набор может отсутствовать: тогда общая
+        # транзакция откатится, но существующие наборы всё равно очистятся.
+        for s in sets:
+            run(['nft', 'flush', 'set', *s], timeout=15)
     present = [s for s in sets if set_exists(s)]
-    if present:
-        try:
-            nft_batch(['flush set ' + ' '.join(s) for s in present])
-        except Fail:
-            pass
     left = [s for s in present if set_elements(s)]
     for s in left:
         # Запасной путь, если общая транзакция отказала.
@@ -427,9 +436,9 @@ def attempt(cfg, t, dry_run=False):
         # сигнал остановки): элементы всё равно истекут по времени жизни.
         try:
             close_all(sets)
+            log('%s: окно закрыто' % t['name'])
         except Fail as e:
             log('ВНИМАНИЕ: ' + e.detail)
-        log('%s: окно закрыто' % t['name'])
         raise
     try:
         close_all(sets)
@@ -693,7 +702,9 @@ def main(argv=None):
     c.add_argument('--if-unlocked', action='store_true')
     a = p.parse_args(argv)
 
-    cfg = load_config()
+    # Аварийное закрытие используют ExecStopPost/OnFailure и удаление службы.
+    # Оно должно работать и после удаления/повреждения настроек выпуска.
+    cfg = None if a.cmd == 'close-all' else load_config()
     if a.cmd == 'check':
         return 0 if check_nft(cfg) else 1
     if a.cmd == 'status':
@@ -712,7 +723,7 @@ def main(argv=None):
     sets = ALL_SETS
     fd = take_lock(0 if a.cmd == 'close-all' and a.if_unlocked else LOCK_WAIT)
     if fd is None:
-        if a.cmd == 'close-all':
+        if a.cmd == 'close-all' and a.if_unlocked:
             log('работает другой запуск: окно закроет он, а не успеет — время жизни элемента')
             return 0
         log('другой запуск не закончился за %d с' % LOCK_WAIT)

@@ -11080,14 +11080,20 @@ NFT;
 
     public function deleteSSL($notmenu = false)
     {
-        unlink('/certs/cert_private');
-        unlink('/certs/cert_public');
-        $conf = $this->getPacConf();
-        unset($conf['letsencrypt'], $conf['acme_requested']);
-        $this->setPacConf($conf);
-        $this->adguardSync();
-        $this->cloakNginx();
-        $this->telemtWebSync();
+        $this->withBackupLock(function () {
+            foreach (['cert_private', 'cert_public'] as $name) {
+                $file = $this->protocolCertRoot . '/' . $name;
+                if ((file_exists($file) || is_link($file)) && !@unlink($file)) {
+                    throw new RuntimeException($this->t('Не удалось удалить сертификат', 'Could not remove the certificate'));
+                }
+            }
+            $conf = $this->getPacConf();
+            unset($conf['letsencrypt'], $conf['acme_requested']);
+            $this->setPacConf($conf);
+            $this->adguardSync();
+            $this->cloakNginx();
+            $this->telemtWebSync();
+        }, $this->acmeInstallLockWait);
         if (!$notmenu) {
             $this->menu('config');
         }
@@ -11103,6 +11109,7 @@ NFT;
     {
         $conf = $this->getPacConf();
         $bundle = '';
+        $installed = null;
         switch ($name) {
             case 'letsencrypt':
                 try {
@@ -11130,6 +11137,13 @@ NFT;
                 }
                 $out   = ['Install certificate:'];
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+                [$conf, $names, $expectedState] = $this->withBackupLock(function () {
+                    $conf = $this->getPacConf();
+                    $names = $this->letsencryptNames($conf);
+                    $conf = $this->getPacConf(); // генерация поддоменов могла дописать настройки
+                    return [$conf, $names, ['mode' => $conf['letsencrypt'] ?? '',
+                        'certificate' => @hash_file('sha256', $this->protocolCertRoot . '/cert_public') ?: '']];
+                }, $this->acmeInstallLockWait);
                 [$code, $certbot] = $this->issueLetsencrypt($conf);
                 $out = array_merge($out, $certbot);
                 if ($code > 0) {
@@ -11138,18 +11152,29 @@ NFT;
                 }
                 $out[] = 'Generate bundle';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $bundle = file_get_contents("/etc/letsencrypt/live/{$conf['domain']}/privkey.pem") . file_get_contents("/etc/letsencrypt/live/{$conf['domain']}/fullchain.pem");
-                $conf['letsencrypt'] = 'letsencrypt';
-                unset($conf['acme_requested']);
+                $installed = $this->installLetsencrypt($conf['domain'], $names, $expectedState);
                 break;
             case 'self':
+                [$conf, $previousCertificate] = $this->withBackupLock(fn () => [$this->getPacConf(),
+                    @hash_file('sha256', $this->protocolCertRoot . '/cert_public') ?: ''], $this->acmeInstallLockWait);
                 $r      = $this->request('getFile', ['file_id' => $this->input['file_id']]);
-                $bundle = file_get_contents($this->file . $r['result']['file_path']);
-                $conf['letsencrypt'] = 'self';
-                unset($conf['acme_requested']);
+                $path = $r['result']['file_path'] ?? null;
+                // URL скачивания содержит токен бота: ошибка сети не должна
+                // выводить его в PHP warning. Пользователю — общий отказ ниже.
+                $bundle = is_string($path) && $path !== '' ? (string) @file_get_contents($this->file . $path) : '';
+                $installed = $this->withBackupLock(function () use ($bundle, $conf, $previousCertificate) {
+                    $current = $this->getPacConf();
+                    foreach (['domain', 'domain_aliases', 'letsencrypt'] as $field) {
+                        if (($current[$field] ?? null) !== ($conf[$field] ?? null)) return false;
+                    }
+                    if ((@hash_file('sha256', $this->protocolCertRoot . '/cert_public') ?: '') !== $previousCertificate) return false;
+                    $current['letsencrypt'] = 'self';
+                    unset($current['acme_requested']);
+                    return $this->applyCertificateBundle($bundle, $current);
+                }, $this->acmeInstallLockWait);
                 break;
         }
-        if (!$this->applyCertificateBundle($bundle, $conf)) {
+        if (!($installed ?? $this->applyCertificateBundle($bundle, $conf))) {
             $this->update($this->input['chat'], $this->input['message_id'], $this->t(
                 'Не удалось установить сертификат: проверьте ключ, цепочку сертификатов и доступность файлов',
                 'Could not install the certificate: check the key, certificate chain and file access'));

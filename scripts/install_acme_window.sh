@@ -21,7 +21,20 @@ units="acme-window.service acme-window-close.service acme-window.timer acme-wind
 
 if [ "${1:-}" = "--uninstall" ]; then
     systemctl disable --now acme-window.timer acme-window.path 2>/dev/null || true
-    [ -x /usr/local/sbin/acme-window ] && python3 /usr/local/sbin/acme-window close-all || true
+    # Отключение таймера не останавливает уже запущенный выпуск: он мог бы
+    # снова открыть окно после close-all и удаления файлов службы.
+    if [ "$(systemctl show -p LoadState --value acme-window.service)" != "not-found" ]; then
+        systemctl stop acme-window.service
+    fi
+    if [ -f /usr/local/sbin/acme-window ]; then
+        python3 /usr/local/sbin/acme-window close-all || {
+            echo "FATAL: закрытие окна не подтверждено; файлы службы сохранены" >&2
+            exit 1
+        }
+    fi
+    # Иначе бот ещё три часа принимает оставшийся heartbeat за работающую
+    # службу и отправляет запросы в очередь, которую уже некому читать.
+    rm -f "$path/acme/state/agent.json"
     for u in $units; do rm -f "/etc/systemd/system/$u"; done
     rm -f /usr/local/sbin/acme-window
     systemctl daemon-reload

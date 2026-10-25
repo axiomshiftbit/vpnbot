@@ -51,11 +51,16 @@ trait BotAcme
     public function acmeStates(): array
     {
         $states = [];
+        // Файлы удалённых/переименованных целей остаются на диске. Источник
+        // актуального списка — последний снимок службы, даже если он устарел.
+        $agent = $this->acmeReadJson("{$this->acmeRoot}/state/agent.json");
+        $targets = is_array($agent['targets'] ?? null) ? $agent['targets'] : null;
         foreach (glob("{$this->acmeRoot}/state/*.json") ?: [] as $file) {
             $name = basename($file, '.json');
             if ($name === 'agent' || !preg_match('~^[a-z0-9]{1,32}$~', $name)) {
                 continue;
             }
+            if ($targets !== null && !in_array($name, $targets, true)) continue;
             $s = $this->acmeReadJson($file);
             if (!$s || ($s['name'] ?? '') !== $name) {
                 continue;
@@ -94,10 +99,25 @@ trait BotAcme
             return false;
         }
         $file = "{$this->acmeRoot}/request/req-$action" . ($target !== '' ? "-$target" : '');
-        if (file_exists($file)) {
-            return true;
+        $lock = null;
+        try {
+            if ($action === 'auto-on' || $action === 'auto-off') {
+                // Пока служба занята выпуском, сохраняем последнее намерение.
+                // Два противоположных файла она обрабатывает по имени, не по времени.
+                $lock = @fopen("{$this->acmeRoot}/request/.auto.lock", 'c');
+                if (!$lock || !flock($lock, LOCK_EX)) return false;
+                $opposite = $action === 'auto-on' ? 'auto-off' : 'auto-on';
+                $old = "{$this->acmeRoot}/request/req-$opposite-$target";
+                if (file_exists($old) && !@unlink($old) && file_exists($old)) return false;
+            }
+            if (file_exists($file)) return true;
+            return @file_put_contents($file, time() . "\n") !== false;
+        } finally {
+            if (is_resource($lock)) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
         }
-        return @file_put_contents($file, time() . "\n") !== false;
     }
 
     // Ждём, пока служба заберёт запрос (обычно секунда-две).
@@ -344,11 +364,17 @@ trait BotAcme
     // не пройдёт между выпуском и установкой. Настройки читаются уже под
     // блокировкой: если восстановление сменило домен или вернуло свой
     // сертификат, выпущенный для прежних настроек не ставится.
-    public function installLetsencrypt(string $domain, array $expectedNames = []): bool
+    // expectedState — снимок перед ручным выпуском без службы; позволяет первый
+    // выпуск, но не замену собственного сертификата, загруженного во время certbot.
+    public function installLetsencrypt(string $domain, array $expectedNames = [], ?array $expectedState = null): bool
     {
-        return $this->withBackupLock(function () use ($domain, $expectedNames) {
+        return $this->withBackupLock(function () use ($domain, $expectedNames, $expectedState) {
             $conf = $this->getPacConf();
-            if (($conf['domain'] ?? '') !== $domain || !$this->acmeWantsLetsencrypt($conf)) {
+            if (($conf['domain'] ?? '') !== $domain) return false;
+            if ($expectedState !== null) {
+                if (($conf['letsencrypt'] ?? '') !== $expectedState['mode']
+                    || (@hash_file('sha256', $this->protocolCertRoot . '/cert_public') ?: '') !== $expectedState['certificate']) return false;
+            } elseif (!$this->acmeWantsLetsencrypt($conf)) {
                 return false;
             }
             // Восстановление могло сменить только алиасы/поддомены, сохранив
