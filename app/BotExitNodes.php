@@ -437,13 +437,18 @@ trait BotExitNodes
     {
         // Переходы по Location — вручную: каждый адрес проверяется на
         // публичность (выпуски GitHub переадресуют на другой хост, а чужой
-        // переход мог бы увести запрос во внутреннюю сеть).
+        // переход мог бы увести запрос во внутреннюю сеть). Проверенные адреса
+        // закрепляются за curl: иначе он разрешил бы имя заново, и имя с
+        // коротким TTL успело бы указать внутрь (DNS rebinding).
         for ($hop = 0; $hop <= 3; $hop++) {
-            if (!self::exitRulesetUrlValid($url, false) || !$this->xdriveHostPublic($url)) return null;
+            $ips = self::exitRulesetUrlValid($url, false) ? $this->safeExtUrlIps($url) : [];
+            if (!$ips) return null;
+            $parts = parse_url($url);
             $data = '';
             $location = '';
             $ch = curl_init($url);
             curl_setopt_array($ch, [
+                CURLOPT_RESOLVE => $this->curlResolveEntries((string) $parts['host'], (int) ($parts['port'] ?? 443), $ips),
                 CURLOPT_RETURNTRANSFER => false, CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
                 CURLOPT_CONNECTTIMEOUT => 15, CURLOPT_TIMEOUT => 90,
@@ -996,7 +1001,7 @@ trait BotExitNodes
         return [$added, $skipped];
     }
 
-    public function saveExitRoutes($text, $id, array $preset = []): void
+    public function saveExitRoutes($text, $id, array $preset = []): bool
     {
         $entries = $preset ?: $this->splitRouteInput((string) $text);
         $added = $skipped = 0;
@@ -1014,6 +1019,7 @@ trait BotExitNodes
             return '';
         });
         $this->exitRoutesMenu((string) $id, PHP_INT_MAX, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : ''));
+        return $error === '';
     }
 
     /**
@@ -1026,9 +1032,11 @@ trait BotExitNodes
         $list = $from === 'pac' ? 'includelist' : 'warplist';
         $entries = array_map('strval', array_keys(array_filter($this->getPacConf()[$list] ?? [])));
         if (!$entries) { $this->exitRoutesMenu($id, 0, $from === 'pac' ? $this->t('Список VPN (pac) пуст', 'The VPN list (pac) is empty') : $this->t('Список WARP пуст', 'The WARP list is empty')); return; }
-        $this->saveExitRoutes('', $id, $entries);
+        if (!$this->saveExitRoutes('', $id, $entries)) return;
         if ($from !== 'move' || !isset($this->exitNodes()[$id])) return;
-        $moved = array_values(array_intersect($entries, array_map('strval', array_keys($this->exitNodes()[$id]['routes']))));
+        // Повтор не включает уже выключенный маршрут. Удалять такой домен
+        // из WARP нельзя: в узле он тоже не действует, трафик ушёл бы напрямую.
+        $moved = array_values(array_intersect($entries, array_map('strval', array_keys(array_filter($this->exitNodes()[$id]['routes'])))));
         $ok = $this->changeRouteList('warplist', static function (&$warp) use ($moved) {
             foreach ($moved as $entry) unset($warp[$entry]);
         });

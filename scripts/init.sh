@@ -47,8 +47,18 @@ normalize_bot_key() {
 # URL с ключом передаётся curl через stdin (-K -), а не аргументом: аргументы
 # видны в ps всем процессам хоста.
 check_bot_key() {
-    local reply
-    if ! reply="$(printf 'url = "%s/bot%s/getMe"\n' "${TELEGRAM_API:-https://api.telegram.org}" "$KEY" \
+    local reply api host_re='^[][A-Za-z0-9.:-]+$'
+    # TELEGRAM_API — имя хоста (как в .env и в боте: api.telegram.org или своё
+    # зеркало), схема всегда https. Без неё curl ушёл бы по http и передал ключ
+    # бота открытым текстом; явный http:// не принимается.
+    api="${TELEGRAM_API:-api.telegram.org}"
+    api="${api#https://}"
+    api="${api%/}"
+    if [[ "$api" == *://* || ! "$api" =~ $host_re ]]; then
+        echo "TELEGRAM_API должен быть именем хоста Bot API (например api.telegram.org), запрос идёт только по https" >&2
+        exit 1
+    fi
+    if ! reply="$(printf 'url = "https://%s/bot%s/getMe"\n' "$api" "$KEY" \
             | curl -sS --max-time 15 -K - 2>/dev/null)"; then
         echo "WARN: Telegram недоступен — ключ бота не проверен; бот запустится и будет ждать Telegram" >&2
         return 0

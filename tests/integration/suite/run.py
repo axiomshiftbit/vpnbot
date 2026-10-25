@@ -202,7 +202,9 @@ for f in sorted(pathlib.Path('tests').glob('*_test.php')):
 pathlib.Path('/results/unit.json').write_text(json.dumps(rows))
 raise SystemExit(any(not x['ok'] for x in rows))
 INNER'''
- run('unit-php85',['docker','run','--rm','--name','vpnbot-ci-unit','-v',str(unit)+':/workspace','-v',str(O)+':/results','-v',str(R/'xray')+':/audit-xray:ro','-e','VLESS_TEST_XRAY=/audit-xray','-v',str(R/'xray-fork')+':/audit-xray-fork:ro','-e','XRAY_FORK_TEST_BINARY=/audit-xray-fork','-w','/workspace','--entrypoint','sh',candidate['images']['php'],'-ec',unitcode],timeout=1500)
+ # Как у сервисов Compose: init убирает осиротевшие процессы после проверки
+ # супервизоров, иначе pgrep видит зомби вместо перезапущенного ядра.
+ run('unit-php85',['docker','run','--rm','--init','--name','vpnbot-ci-unit','-v',str(unit)+':/workspace','-v',str(O)+':/results','-v',str(R/'xray')+':/audit-xray:ro','-e','VLESS_TEST_XRAY=/audit-xray','-v',str(R/'xray-fork')+':/audit-xray-fork:ro','-e','XRAY_FORK_TEST_BINARY=/audit-xray-fork','-w','/workspace','--entrypoint','sh',candidate['images']['php'],'-ec',unitcode],timeout=1500)
  rows=json.loads((O/'unit.json').read_text());check('unit','all-PHP85-test-files',len(rows)>=121 and all(x['ok'] for x in rows));counts['unit']+=len(rows)
  php("require '/app/bot.php';$b=(new ReflectionClass('Bot'))->newInstanceWithoutConstructor();$b->cleanDocker();")
  for name,ref in candidate['images'].items():
@@ -320,7 +322,7 @@ print('killed-one-application-worker')'''
  check('update_rollback','rollback-keeps-new-clients',identities()==preserve)
  check('update_rollback','rollback-keeps-new-usage',int(php(traffic))>=used)
  deploy(env,'return-candidate');drivers();startworker(env)
- check('update_rollback','PHP85-actually-running',php('echo (PHP_VERSION_ID >= 80511 && PHP_VERSION_ID < 80600) ? 1 : 0;')=='1')
+ check('update_rollback','PHP85-actually-running',php('echo (PHP_VERSION_ID >= 80512 && PHP_VERSION_ID < 80600) ? 1 : 0;')=='1')
  check('update_rollback','forward-keeps-new-clients',identities()==preserve)
  check('update_rollback','forward-keeps-new-usage',int(php(traffic))>=used)
  verify_images({s:candidate['images'][im] for s,im in ib.SERVICES.items()},'update_rollback')

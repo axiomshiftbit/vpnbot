@@ -335,6 +335,7 @@ class Target:
     def __init__(self, cfg, t):
         self.cfg, self.t = cfg, t
         self.php = None
+        self.domain = None
 
     def preflight(self):
         """Проверки до открытия окна; возвращает имена сертификата."""
@@ -361,6 +362,7 @@ class Target:
         names = [n for n in names if isinstance(n, str) and HOST_RE.match(n)]
         if not names:
             raise Fail('fail_preflight', 'no domain names')
+        self.domain = names[0]
         return names
 
     def issue(self, dry_run):
@@ -384,7 +386,9 @@ class Target:
     def install(self):
         if self.t['kind'] != 'vpnbot':
             return
-        code, out, err = run(['docker', 'exec', self.php, 'php', '/app/acme_renew.php', 'install'],
+        # Домен фиксируется до выпуска: восстановление могло сменить настройки
+        # между issue и install. PHP сравнит исходное имя под блокировкой бэкапа.
+        code, out, err = run(['docker', 'exec', self.php, 'php', '/app/acme_renew.php', 'install', self.domain],
                              timeout=INSTALL_TIMEOUT)
         if code != 0:
             raise Fail('fail_install', tail(err + '\n' + out))

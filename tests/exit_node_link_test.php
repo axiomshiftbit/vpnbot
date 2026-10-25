@@ -76,6 +76,15 @@ foreach ([
     'sni с путём' => str_replace('sni=a.example.com', 'sni=a.example.com%2Fx', $ok),
     'адрес с символами' => str_replace('@fi.example.org', '@nl_example$', $ok),
     'XHTTP extra список' => "vless://$uuid@fi.example.org:443?security=tls&type=xhttp&path=%2Fa&sni=fi.example.org&extra=%5B1%5D",
+    // Отдельное соединение для скачивания со своими настройками TLS — обход проверки сервера.
+    'XHTTP extra downloadSettings' => "vless://$uuid@fi.example.org:443?security=tls&type=xhttp&path=%2Fa&sni=fi.example.org&extra="
+        . rawurlencode(json_encode(['downloadSettings' => ['address' => 'evil.example.org', 'port' => 80, 'network' => 'xhttp', 'security' => 'none']])),
+    'XHTTP extra Unicode fold' => "vless://$uuid@fi.example.org:443?security=tls&type=xhttp&path=%2Fa&sni=fi.example.org&extra="
+        . rawurlencode(json_encode(['downloadſettingſ' => ['address' => 'evil.example.org', 'port' => 80, 'network' => 'xhttp', 'security' => 'none']])),
+    'XHTTP extra DownloadSettings' => "vless://$uuid@fi.example.org:443?security=tls&type=xhttp&path=%2Fa&sni=fi.example.org&extra="
+        . rawurlencode(json_encode(['xmux' => [], 'DownloadSettings' => ['security' => 'tls', 'tlsSettings' => ['allowInsecure' => true]]])),
+    'XHTTP вложенный extra' => "vless://$uuid@fi.example.org:443?security=tls&type=xhttp&path=%2Fa&sni=fi.example.org&extra="
+        . rawurlencode(json_encode(['extra' => ['downloadSettings' => []]])),
     'XHTTP чужой режим' => "vless://$uuid@fi.example.org:443?security=tls&type=xhttp&path=%2Fa&sni=fi.example.org&mode=evil",
     'path без слэша' => "vless://$uuid@fi.example.org:443?security=tls&type=ws&path=a&sni=fi.example.org",
     'path с кавычкой' => "vless://$uuid@fi.example.org:443?security=tls&type=ws&path=%2Fa%22b&sni=fi.example.org",

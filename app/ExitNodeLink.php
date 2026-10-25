@@ -87,6 +87,15 @@ final class ExitNodeLink
                     if (isset($q['extra']) && $q['extra'] !== '') {
                         $extra = json_decode($q['extra'], true);
                         if (!is_array($extra) || array_is_list($extra) || strlen($q['extra']) > 4000) throw new InvalidArgumentException(Lang::t('неверный extra XHTTP', 'invalid XHTTP extra'));
+                        // downloadSettings — отдельное соединение со своими streamSettings
+                        // (в том числе security none или allowInsecure): обход запрета на
+                        // связь без проверки сервера. Go сравнивает имена полей без
+                        // учёта регистра Unicode: например, ſ тоже совпадает с s.
+                        foreach (array_keys($extra) as $key) {
+                            if (preg_match('~^(?:downloadsettings|extra)$~iuD', (string) $key)) {
+                                throw new InvalidArgumentException(Lang::t('extra XHTTP с отдельным соединением не принимается', 'XHTTP extra with a separate connection is not accepted'));
+                            }
+                        }
                         $xhttp['extra'] = $extra;
                     }
                     $stream['xhttpSettings'] = $xhttp;

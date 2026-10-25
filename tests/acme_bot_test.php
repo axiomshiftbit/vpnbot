@@ -235,6 +235,22 @@ if (file_exists('/config/pac.json')) {
         exec('cd ' . escapeshellarg($app) . ' && php acme_renew.php ' . $args . ' 2>&1', $out, $rc);
         check($rc === $code, "acme_renew.php $args → $code (получено $rc): " . implode(' ', $out));
     }
+    // Настоящий CLI передаёт домен выпуска в проверку под блокировкой.
+    // Подменены только настройки и применение сертификата, без сервисов хоста.
+    $fixture = <<<'PHP'
+class AcmeCliBot extends Bot {
+    public function __construct($key, $i) { $this->pac = __DIR__ . '/pac.json'; }
+    public function getPacConf() { return ['domain' => 'restored.example.org', 'letsencrypt' => 'letsencrypt']; }
+    public function applyCertificateBundle(string $bundle, array $conf): bool { return true; }
+}
+PHP;
+    file_put_contents("$app/config.php", file_get_contents("$app/config.php") . "\n" . $fixture);
+    file_put_contents("$app/acme_renew.php", str_replace('new Bot(', 'new AcmeCliBot(', file_get_contents("$app/acme_renew.php")));
+    foreach ([['install issued.example.org', 1], ['install restored.example.org', 0], ['install', 0]] as [$args, $code]) {
+        $out = [];
+        exec('cd ' . escapeshellarg($app) . ' && php acme_renew.php ' . $args . ' 2>&1', $out, $rc);
+        check($rc === $code, "acme_renew.php $args: домен выпуска и совместимость → $code (получено $rc): " . implode(' ', $out));
+    }
 }
 
 echo "acme_bot_test OK ($checks checks)\n";

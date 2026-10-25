@@ -128,6 +128,7 @@ foreach (['vpnbot-xdrive' => true, 'a' => true, 'x.y_z-1' => true, '' => false, 
 foreach (['https://webdav.example-disk.net' => true, 'https://93.184.216.34' => true, 'https://inner.example-disk.net' => false, 'https://mixed.example-disk.net' => false,
     'https://10.10.0.5' => false, 'https://127.0.0.1' => false, 'https://192.168.1.1' => false, 'https://169.254.169.254' => false, 'https://[::1]' => false,
     'https://172.16.0.1' => false, 'https://100.64.0.1' => false, 'https://100.127.255.254' => false, 'https://100.128.0.0' => true,
+    'https://[64:ff9b::7f00:1]' => false, 'https://[64:ff9b:1::a00:5]' => false,
     'https://unknown.example-disk.net' => false] as $url => $public) {
     $check($bot->xdriveHostPublic($url) === $public, 'внешнее ли хранилище: ' . $url);
 }

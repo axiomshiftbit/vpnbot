@@ -73,8 +73,9 @@ trait BotXdrive
         if (!$addresses) return false;
         foreach ($addresses as $address) {
             if (!filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) return false;
-            // Общее адресное пространство провайдеров (100.64.0.0/10) фильтр PHP частным не считает.
-            if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && (ip2long($address) & 0xFFC00000) === 0x64400000) return false;
+            // CGNAT 100.64.0.0/10 и NAT64 64:ff9b::/96 (через него достижим и
+            // 127.0.0.1) фильтр PHP частными не считает.
+            if (self::isCarrierRange($address)) return false;
         }
         return true;
     }

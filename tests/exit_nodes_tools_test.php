@@ -135,6 +135,7 @@ foreach (Bot::EXIT_PRESETS as $key => [$title, $entries]) {
     $check(preg_match('~^[a-z]{1,8}$~', $key) === 1 && $entries, "набор $key: ключ и записи");
     foreach ($entries as $entry) $check($bot->routeEntryUsable($bot->classifyRouteEntry($entry)), "набор $key: запись $entry");
 }
+$bot->exitSetUsers($id, [Bot::exitClientKey(['email' => 'alice'])], true);
 $bot->saveExitRoutes('example.org', $id);
 $bot->exitPresetsMenu($id);
 $check(isset($bot->callbacks()["/exitPre $id openai"]) && str_contains($bot->callbacks()["/exitPre $id openai"], '➕'), 'наборы: меню');
@@ -143,7 +144,9 @@ $bot->exitPresetToggle($id, 'openai');
 $routes = $bot->confPac['exits'][$id]['routes'];
 $check(count($routes) === 1 + count(Bot::EXIT_PRESETS['openai'][1]) && str_contains($bot->last()[0], 'добавлено записей ' . count(Bot::EXIT_PRESETS['openai'][1])), 'наборы: добавлены все записи');
 $check(str_contains($bot->callbacks()["/exitPre $id openai"], '✅'), 'наборы: отмечен как добавленный');
-$check(in_array("vpnbot:exit:$id:domain", array_column($bot->confXray['routing']['rules'], 'ruleTag'), true) || true, 'наборы: правила собираются');
+$rules = array_values(array_filter($bot->confXray['routing']['rules'], static fn($r) => ($r['ruleTag'] ?? '') === "vpnbot:exit:$id:domain"));
+$check(count($rules) === 1 && in_array('domain:openai.com', $rules[0]['domain'], true)
+    && $rules[0]['user'] === ['alice'], 'наборы: правило OpenAI применяется к назначенному пользователю');
 $bot->exitPresetToggle($id, 'openai');
 $check(array_keys($bot->confPac['exits'][$id]['routes']) === ['example.org'] && str_contains($bot->last()[0], 'убрано записей'), 'наборы: повтор убирает только записи набора');
 $bot->exitPresetToggle($id, 'nope');

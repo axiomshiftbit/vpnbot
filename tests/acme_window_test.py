@@ -242,6 +242,15 @@ class AcmeWindowTests(Base):
         agent = json.loads((self.bot / 'acme/state/agent.json').read_text())
         self.assertEqual(agent['targets'], ['vpnbot'])
 
+    def test_install_keeps_domain_from_preflight_when_settings_change(self):
+        cfg = acme.load_config()
+        target = acme.Target(cfg, cfg['targets'][0])
+        self.assertEqual(target.preflight(), ['localhost'])
+        self.write_docker(domains=['changed.example.org'])
+        target.install()
+        self.assertEqual(self.calls('install')[0]['args'], ['localhost'],
+                         'установка проверяет домен начатого выпуска, а не новые настройки')
+
     def test_due_renews_inside_window_and_closes_it(self):
         info, when = self.due_cert()
         with patch.object(acme, 'now', return_value=when):

@@ -256,6 +256,26 @@ $bot->exitCopyRoutes($id, 'pac');
 $check(isset($bot->confPac['exits'][$id]['routes']['domain:pac.example']), 'копирование из списка VPN (pac)');
 $bot->exitCopyRoutes($id, 'move');
 $check($bot->confPac['warplist'] === ['domain:off.example' => 0] && str_contains($bot->last()[0], 'Перенесено из WARP: 2'), 'перенос из WARP убирает их из WARP');
+$savedPac = $bot->confPac;
+$savedXray = $bot->confXray;
+$bot->confPac['exits'][$id]['routes'] = ['domain:kept.example' => 0];
+$bot->confPac['warplist'] = ['domain:kept.example' => 1, 'domain:new.example' => 1];
+$bot->exitCopyRoutes($id, 'move');
+$check(($bot->confPac['warplist']['domain:kept.example'] ?? 0) === 1
+    && $bot->confPac['exits'][$id]['routes']['domain:kept.example'] === 0,
+    'перенос сохраняет WARP для уже выключенной записи узла');
+$check(!isset($bot->confPac['warplist']['domain:new.example'])
+    && ($bot->confPac['exits'][$id]['routes']['domain:new.example'] ?? 0) === 1,
+    'перенос убирает из WARP только действующие маршруты узла');
+$bot->confPac['warplist'] = ['domain:new.example' => 1, 'domain:another.example' => 1];
+$beforeMove = $bot->confPac;
+$bot->restartOk = false;
+$bot->exitCopyRoutes($id, 'move');
+$check($bot->confPac === $beforeMove, 'отказ Xray при переносе оставляет оба списка без изменений');
+$check(!str_contains($bot->last()[0], 'Перенесено из WARP:'), 'отказ переноса не подменяется сообщением об успехе');
+$bot->restartOk = true;
+$bot->confPac = $savedPac;
+$bot->confXray = $savedXray;
 $bot->confPac['includelist'] = [];
 $bot->exitCopyRoutes($id, 'pac');
 $check(str_contains($bot->last()[0], 'пуст'), 'пустой список — сообщение');

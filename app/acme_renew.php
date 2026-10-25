@@ -6,7 +6,7 @@
  *
  *   php acme_renew.php check                 имена сертификата (JSON); код 3 — не Let's Encrypt
  *   php acme_renew.php issue [--dry-run]     certbot; порт 80 в это время открыт службой
- *   php acme_renew.php install               бандл в /certs и перезапуск зависимых служб
+ *   php acme_renew.php install ДОМЕН         бандл в /certs, если домен выпуска ещё актуален
  *   php acme_renew.php notify ЦЕЛЬ РЕЗУЛЬТАТ сообщение администраторам по /acme/state/ЦЕЛЬ.json
  *
  * issue и install разделены: служба закрывает порт сразу после certbot и не
@@ -49,7 +49,10 @@ switch ($cmd) {
         if (!$letsencrypt) {
             exit(3);
         }
-        if (!$bot->installLetsencrypt($conf['domain'])) {
+        // Без аргумента оставлен прежний вызов для ещё не обновлённой службы.
+        // Новая служба передаёт домен, зафиксированный перед выпуском.
+        $domain = (string) ($argv[2] ?? $conf['domain']);
+        if (!$bot->installLetsencrypt($domain)) {
             fwrite(STDERR, "acme_renew: not installed: settings changed or no key and chain in /etc/letsencrypt/live/{$conf['domain']}\n");
             exit(1);
         }
@@ -73,6 +76,6 @@ switch ($cmd) {
         exit($sent > 0 ? 0 : 1);
 
     default:
-        fwrite(STDERR, "usage: php acme_renew.php check|issue [--dry-run]|install|notify TARGET RESULT\n");
+        fwrite(STDERR, "usage: php acme_renew.php check|issue [--dry-run]|install [DOMAIN]|notify TARGET RESULT\n");
         exit(2);
 }
