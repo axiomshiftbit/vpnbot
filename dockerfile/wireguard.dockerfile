@@ -1,7 +1,7 @@
 ARG image=alpine:3.24
 ARG PROTOCOL_GO_VERSION=1.27.3
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS helpers
-ARG WGCF_VERSION=v2.3.0
+ARG WGCF_VERSION=v2.3.1
 ARG TUN2SOCKS_VERSION=v2.7.0
 ARG AWG_GO_VERSION=v3.1.20260828
 ARG XRAY_VERSION=v26.10.21
@@ -15,6 +15,7 @@ RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/warp-socks
         './transport/internet/masque/... ./proxy/masque/...'
 RUN sh /build-tools/go-source.sh ViRb3/wgcf "$WGCF_VERSION" /wgcf \
     && cd /wgcf && sh /build-tools/go-security.sh \
+    && sh /build-tools/go-retry.sh go test ./cloudflare -count=1 \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /out/wgcf .
 RUN sh /build-tools/go-source.sh xjasonlyu/tun2socks "$TUN2SOCKS_VERSION" /tun2socks \
     && cd /tun2socks && sh /build-tools/go-security.sh \
@@ -63,7 +64,7 @@ COPY --from=helpers /out/ /usr/bin/
 #   RandomPaddingAddition») — паддинг перестаёт выбиваться за размер, который
 #   этот путь уже доказал.
 ARG AWG_TOOLS_VERSION=v3.1.20260812
-ARG WGCF_VERSION=v2.3.0
+ARG WGCF_VERSION=v2.3.1
 ARG TUN2SOCKS_VERSION=v2.7.0
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка

@@ -59,10 +59,27 @@ class ImageSourcesTest(unittest.TestCase):
         env = env_pins()
         for name, key in (('nginx.dockerfile', 'NGINX_VERSION'), ('ocserv.dockerfile', 'OCSERV_VERSION'),
                           ('shadowsocks.dockerfile', 'SS_RUST_VERSION'), ('wireguard.dockerfile', 'AWG_TOOLS_VERSION'),
+                          ('wireguard.dockerfile', 'WGCF_VERSION'), ('naive.dockerfile', 'CADDY_VERSION'),
+                          ('naive.dockerfile', 'FORWARDPROXY_VERSION'),
                           ('openvpn.dockerfile', 'OPENVPN_VERSION')):
             defaults = set(re.findall(rf'^ARG {key}=(\S+)$', (ROOT / 'dockerfile' / name).read_text(), re.M))
             with self.subTest(name):
                 self.assertEqual(defaults, {env[key]})
+
+    def test_shared_warp_and_naive_sources_match_compose_defaults(self):
+        env = env_pins()
+        compose = (ROOT / 'docker-compose.yml').read_text()
+        manifest = (ROOT / 'dockerfile/go-sources.sha256').read_text()
+        for key, repo, count in (('WGCF_VERSION', 'ViRb3/wgcf', 3),
+                                 ('CADDY_VERSION', 'caddyserver/caddy', 1),
+                                 ('FORWARDPROXY_VERSION', 'klzgrad/forwardproxy', 1)):
+            with self.subTest(key):
+                defaults = re.findall(r'\$\{' + key + r':-([^}]+)\}', compose)
+                self.assertEqual(defaults, [env[key]] * count)
+                rows = [line.split() for line in manifest.splitlines() if line and not line.startswith('#')]
+                pins = [row for row in rows if row[1] == repo + '/' + env[key]]
+                self.assertEqual(len(pins), 1)
+                self.assertRegex(pins[0][0], r'^[0-9a-f]{64}$')
 
     def test_no_ssh_host_keys_are_baked_into_an_image(self):
         # В Debian и Ubuntu установка openssh-server сразу создаёт ключи узла;

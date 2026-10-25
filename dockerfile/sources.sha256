@@ -3,7 +3,7 @@
 # вместо суммы — полный коммит тега. При смене версии в .env строку нужно
 # обновить: без неё сборка образа откажет до использования скачанного.
 6c20565aa2325cb82216ae804f4a4ff1875179014759a381c42ddc8e11c4906d  nginx/1.30.5
-e7e7073fd51b62c09b8629f1320558a1e80b8bf832a51513dd95e4e309a9d11e  ocserv/1.5.0
+e7893e8781801df1ec751996005f77b7db884305b42e2c1ab41cf56c17516cca  ocserv/1.6.0
 8439bf43c324b0fc273e663d0b1f8926fd8f666cbd1e0fd59b35096f0e778e92  shadowsocks-rust/v1.25.0
 ee0f0a9aa34ff0a0da4b3433b9512781cfe02843  amneziawg-tools/v3.1.20260812
 fab5b8353a19332f935fa30869307d37d4a898d1  trusttunnel/v1.1.0

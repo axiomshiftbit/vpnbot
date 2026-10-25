@@ -527,9 +527,16 @@ TLS завершает VPN-сервер. Поля прежних протоко�
 | Протокол | Дополнительные настройки |
 |---|---|
 | AnyTLS | Padding, интервалы и число простаивающих сессий, metadata, UDP, повторное использование сессий Mihomo, ALPN и TLS, TCP keepalive/MPTCP |
-| Mieru | Multiplexing, handshake mode, traffic pattern: seed, fragmentation, nonce, padding, low entropy; MTU нативного клиента/сервера, DNS, журналирование и метрики |
+| Mieru | Multiplexing, handshake mode, traffic pattern: seed, fragmentation, nonce, padding, low entropy; MTU нативного клиента/сервера, DNS, журналирование, метрики и тайм-аут простоя TCP |
 | TUIC v5 | Congestion, UDP-over-stream, heartbeat, 0-RTT, таймауты, окна QUIC, число потоков, размер пакета/PMTU; отдельные параметры QUIC Mihomo |
 | ShadowTLS v3 + SS | TLS fingerprint и ALPN клиента, соединение с сайтом прикрытия, UoT v2, согласованное мультиплексирование SS (h2mux/smux/yamux, padding, ограничения соединений и потоков) |
+
+В Mieru 3.39.0+ параметр «Сервер → advancedSettings → tcpIdleTimeout»
+закрывает TCP-соединение после простоя от `1m` до `24h` (например, `15m`).
+По умолчанию он выключен; кнопка «Сбросить» выключает его снова. Данные любого
+потока и служебные пакеты клиента продлевают таймер. UDP-транспорт не затрагивается,
+выданные профили менять не нужно. Настройка входит в резервную копию. Перед
+ручным возвратом на Mieru старше 3.39.0 сбросьте её: старое ядро не знает этого поля.
 
 Browser fingerprint (`chrome`, `firefox`, `edge`, `safari`, `ios`, `random`)
 доступен для AnyTLS и ShadowTLS на клиенте. `default` оставляет выбор клиенту.
@@ -589,7 +596,7 @@ systemd-службы `vpnbot.service` опцией `--profile '*'`, чтобы �
 без новых сервисов не сможет управлять их доступами.
 
 Форматы сверяются с документацией [AnyTLS](https://sing-box.sagernet.org/configuration/inbound/anytls/),
-[Mieru](https://github.com/enfein/mieru/tree/v3.38.1/docs),
+[Mieru](https://github.com/enfein/mieru/tree/v3.39.0/docs),
 [TUIC](https://sing-box.sagernet.org/configuration/inbound/tuic/),
 [ShadowTLS](https://sing-box.sagernet.org/configuration/inbound/shadowtls/) и
 [mihomo SS/UoT](https://wiki.metacubex.one/en/config/proxies/ss/).
@@ -599,14 +606,14 @@ Compose. AnyTLS, TUIC и ShadowTLS используют образ
 в трёх отдельных контейнерах. Mieru использует
 `ghcr.io/axiomshiftbit/vpnbot-mieru:dev` с сервером mita.
 `SINGBOX_VERSION=v1.14.4` управляет ядром трёх протоколов и утилитой PHP;
-`MIHOMO_VERSION=v1.19.33` — утилитой PHP; `MIERU_VERSION=v3.38.1` — mita.
+`MIHOMO_VERSION=v1.19.33` — утилитой PHP; `MIERU_VERSION=v3.39.0` — mita.
 `PROTOCOL_GO_VERSION` выбирает Go для сборки серверов и вспомогательных утилит. TUIC v5 и ShadowTLS v3
 обозначают версии протокола, а не исполняемого файла.
 
 Чтобы выбрать стабильные версии вместе с проверяемыми контрольными суммами:
 
 ```bash
-python3 scripts/update_protocol_versions.py --singbox v1.14.4 --mihomo v1.19.33 --mieru v3.38.1
+python3 scripts/update_protocol_versions.py --singbox v1.14.4 --mihomo v1.19.33 --mieru v3.39.0
 # Проверить текущие стабильные релизы без изменения файла:
 python3 scripts/update_protocol_versions.py --singbox latest --mihomo latest --mieru latest --dry-run
 ```
@@ -626,7 +633,7 @@ fuzz, затем запускаются их Go-тесты; совместимо
 
 Правка `.env` **на сервере не меняет скачиваемый готовый образ**. Для обычного
 обновления измените пины в репозитории, соберите образы CI в своей ветке и
-обновите бот после успешного завершения CI. Каждый выпуск содержит все 17
+обновите бот после успешного завершения CI. Каждый выпуск содержит все 18
 образов, включая общие образы нескольких протоколов.
 Для самостоятельной сборки используйте отдельную рабочую копию без активного
 манифеста выпуска:

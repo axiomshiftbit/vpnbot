@@ -143,6 +143,20 @@ try {
         $store = $bot->protocolStore($protocol); $store->configure(['host' => 'vpn.example.test', 'sni' => 'vpn.example.test'], true);
         $id = managedProtocolFixtureUser($store, 'Fixture < &'); $modules->set($protocol, true);
         $baseline = $store->read()['config'];
+        if ($protocol === 'mieru') {
+            $path = 'server.advancedSettings.tcpIdleTimeout';
+            $profile = $store->profile($id, 'native');
+            optCheck(!isset($baseline['advancedSettings']['tcpIdleTimeout']), 'Mieru: тайм-аут по умолчанию выключен');
+            $store->configureOption($path, '15m');
+            optCheck($store->read()['config']['advancedSettings']['tcpIdleTimeout'] === '15m', 'Mieru: тайм-аут передаётся ядру');
+            optCheck($store->profile($id, 'native') === $profile, 'Mieru: серверный тайм-аут не меняет профиль клиента');
+            $snapshot = $store->snapshot();
+            $store->configureOption($path, null);
+            optCheck(!isset($store->read()['config']['advancedSettings']['tcpIdleTimeout']), 'Mieru: сброс выключает тайм-аут');
+            $store->restore($snapshot);
+            optCheck($store->read()['config']['advancedSettings']['tcpIdleTimeout'] === '15m', 'Mieru: бэкап восстанавливает тайм-аут');
+            $store->configureOption($path, null);
+        }
         if ($protocol === 'masque') continue; // Native MASQUE schema and exports: masque_test.php.
         $conflicts = match ($protocol) {
             'anytls' => [
@@ -156,6 +170,9 @@ try {
                 ['server' => ['stream_receive_window' => 32768, 'connection_receive_window' => 16384]],
             ],
             'mieru' => [
+                ['server' => ['advancedSettings' => ['tcpIdleTimeout' => '0s']]],
+                ['server' => ['advancedSettings' => ['tcpIdleTimeout' => '59s']]],
+                ['server' => ['advancedSettings' => ['tcpIdleTimeout' => '25h']]],
                 ['server' => ['trafficPattern' => ['nonce' => ['maxLen' => 6]]]],
                 ['client' => ['trafficPattern' => ['nonce' => ['minLen' => 12, 'maxLen' => 6]]]],
                 ['native' => ['socks5Port' => 1081]],

@@ -1,0 +1,25 @@
+--- a/forwardproxy_test.go
++++ b/forwardproxy_test.go
+@@ -52 +52 @@
+-func connectAndGetViaProxy(targetHost, resource, proxyAddr, httpTargetVer, proxyCredentials, httpProxyVer string, useTLS bool) (*http.Response, error) {
++func connectAndGetViaProxy(targetHost, resource, proxyAddr, httpTargetVer, proxyCredentials, httpProxyVer string, useTLS bool, responseOnly ...bool) (*http.Response, error) {
+@@ -101,0 +102,5 @@
++	}
++	// A plain redirect listener is not a CONNECT proxy. Compare its initial
++	// response without mistaking an empty HTTP 200 for an established tunnel.
++	if len(responseOnly) > 0 && responseOnly[0] {
++		return resp, nil
+--- a/probe_resist_test.go
++++ b/probe_resist_test.go
+@@ -250 +250 @@
+-				responseProbeResist, err := connectAndGetViaProxy(caddyTestTarget.addr, resource, changePort(caddyForwardProxyProbeResist.addr, caddyForwardProxyProbeResist.httpRedirPort), httpTargetVer, wrongCreds, httpProxyVer, useTLS)
++				responseProbeResist, err := connectAndGetViaProxy(caddyTestTarget.addr, resource, changePort(caddyForwardProxyProbeResist.addr, caddyForwardProxyProbeResist.httpRedirPort), httpTargetVer, wrongCreds, httpProxyVer, useTLS, true)
+@@ -255 +255 @@
+-				responseReference, err := connectAndGetViaProxy(caddyTestTarget.addr, resource, changePort(caddyDummyProbeResist.addr, caddyDummyProbeResist.httpRedirPort), httpTargetVer, wrongCreds, httpProxyVer, useTLS)
++				responseReference, err := connectAndGetViaProxy(caddyTestTarget.addr, resource, changePort(caddyDummyProbeResist.addr, caddyDummyProbeResist.httpRedirPort), httpTargetVer, wrongCreds, httpProxyVer, useTLS, true)
+@@ -269 +269 @@
+-				responseProbeResist, err := connectAndGetViaProxy(caddyForwardProxyProbeResist.addr, resource, changePort(caddyForwardProxyProbeResist.addr, caddyForwardProxyProbeResist.httpRedirPort), httpTargetVer, wrongCreds, httpProxyVer, useTLS)
++				responseProbeResist, err := connectAndGetViaProxy(caddyForwardProxyProbeResist.addr, resource, changePort(caddyForwardProxyProbeResist.addr, caddyForwardProxyProbeResist.httpRedirPort), httpTargetVer, wrongCreds, httpProxyVer, useTLS, true)
+@@ -274 +274 @@
+-				responseReference, err := connectAndGetViaProxy(caddyDummyProbeResist.addr, resource, changePort(caddyDummyProbeResist.addr, caddyDummyProbeResist.httpRedirPort), httpTargetVer, wrongCreds, httpProxyVer, useTLS)
++				responseReference, err := connectAndGetViaProxy(caddyDummyProbeResist.addr, resource, changePort(caddyDummyProbeResist.addr, caddyDummyProbeResist.httpRedirPort), httpTargetVer, wrongCreds, httpProxyVer, useTLS, true)

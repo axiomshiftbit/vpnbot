@@ -72,7 +72,7 @@
  			dstAddr, err := resolveSocks5UDPAddr(context.Background(), resolver, datagram.Addr)
  			if err != nil {
  				log.Debugf("UDP associate %v ResolveUDPAddr() failed: %v", udpConn.LocalAddr(), err)
-@@ -107,8 +110,7 @@
+@@ -107,6 +110,5 @@
  			if ok {
  				header = v.([]byte)
  			} else {
@@ -80,8 +80,6 @@
 -				addrMap.Store(addr.String(), header)
 +				continue
  			}
- 			_, err = conn.Write(append(append([]byte(nil), header...), buf[:n]...))
- 			if err != nil {
 @@ -129,7 +131,7 @@
  
  // RunUDPForwardingLoop exchanges socks5 UDP packets between a mieru proxy client and a socks5 proxy server,

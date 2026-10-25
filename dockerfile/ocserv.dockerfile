@@ -5,7 +5,7 @@ FROM $image
 # С 1.4.2 апстрим собирается только meson'ом (autotools удалены из дерева),
 # поэтому сборка идёт из релизного тарболла, а не из git master.
 # Задаётся в .env (OCSERV_VERSION=…) и пробрасывается через args в compose.
-ARG OCSERV_VERSION=1.5.0
+ARG OCSERV_VERSION=1.6.0
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
 # обновила пакеты стабильной ветки: gnutls/openssh без --no-cache.
@@ -13,12 +13,6 @@ ARG OCSERV_VERSION=1.5.0
 # Дефолт статичный — обычный build переиспользует кеш.
 ARG APK_REFRESH=2026-10-05
 
-# 1.5.0: main() при завершении читает s->abnormal_exit уже после
-# talloc_free(s->main_pool). На musl освобождённая память сразу возвращается
-# ядру, и каждая остановка ocserv (pkill при перезапуске ботом) заканчивается
-# segfault в ocserv-main. Патч повторяет исправление из master апстрима;
-# --fuzz=0 уронит сборку, когда оно войдёт в релиз, — тогда патч удалить.
-COPY dockerfile/ocserv-exit-after-free.patch /ocserv-exit-after-free.patch
 COPY dockerfile/sources.sha256 /sources.sha256
 
 RUN set -eux; \
@@ -48,7 +42,6 @@ RUN set -eux; \
         linux-headers \
         curl \
         tar \
-        patch \
         protobuf-c-compiler \
         gperf; \
     curl -fsSL "https://gitlab.com/openconnect/ocserv/-/archive/${OCSERV_VERSION}/ocserv-${OCSERV_VERSION}.tar.gz" -o /tmp/ocserv.tar.gz; \
@@ -56,12 +49,11 @@ RUN set -eux; \
     tar xzf /tmp/ocserv.tar.gz -C /tmp; \
     rm /tmp/ocserv.tar.gz; \
     cd /tmp/ocserv-${OCSERV_VERSION}; \
-    patch -p1 --fuzz=0 < /ocserv-exit-after-free.patch; \
     meson setup build -Dbuildtype=release -Dstrip=true -Dfirewall-script=iptables; \
     ninja -C build; \
     meson install -C build; \
     cd /; \
-    rm -rf /tmp/ocserv-* /ocserv-exit-after-free.patch /sources.sha256; \
+    rm -rf /tmp/ocserv-* /sources.sha256; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
     # sanity: все нужные боту бинарники на месте, и ocserv запускается

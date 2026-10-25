@@ -357,7 +357,7 @@ services:
                 image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
                 XRAY_VERSION: ${XRAY_VERSION:-v26.10.21}
         volumes:
             - ./logs:/logs
@@ -413,7 +413,7 @@ services:
                 image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
                 XRAY_VERSION: ${XRAY_VERSION:-v26.10.21}
         volumes:
             - ./logs:/logs
@@ -598,7 +598,7 @@ services:
             dockerfile: dockerfile/ocserv.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.24}
-                OCSERV_VERSION: ${OCSERV_VERSION:-1.5.0}
+                OCSERV_VERSION: ${OCSERV_VERSION:-1.6.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
@@ -646,7 +646,7 @@ services:
                 CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.27.3}
                 XCADDY_VERSION: ${XCADDY_VERSION:-v0.4.7}
                 CADDY_VERSION: ${CADDY_VERSION:-v2.11.7}
-                FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.2-naive}
+                FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.7-naive2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
@@ -693,7 +693,7 @@ services:
                 image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
-                WGCF_VERSION: ${WGCF_VERSION:-v2.3.0}
+                WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
                 XRAY_VERSION: ${XRAY_VERSION:-v26.10.21}
         cap_add:
             - NET_ADMIN
@@ -1112,8 +1112,8 @@ services:
             dockerfile: mieru.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
-                MIERU_VERSION: ${MIERU_VERSION:-v3.38.1}
-                MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-e021145e8d6f2acb73e75238efea8722914a6a12a521bc7f08a1ac3b6d618e51}
+                MIERU_VERSION: ${MIERU_VERSION:-v3.39.0}
+                MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-434198ea0558bc440379e9a0a97f6904ba8dd6b213dd6fb9d578388eba7d2f12}
         environment:
             PROTOCOL_DESIRED: /config/desired.json
         volumes:

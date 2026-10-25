@@ -1,44 +1,41 @@
 ARG image=alpine:3.24
-# Caddy и forwardproxy закреплены отдельно. Плагин v2.11.2-naive сохраняет
-# совместимый API; сочетание с исправленным Caddy допускают только native-тесты.
+# Плагин требует патчи Caddy из того же стабильного релиза forwardproxy.
 ARG CADDY_GO_VERSION=1.27.3
 ARG XCADDY_VERSION=v0.4.7
 ARG CADDY_VERSION=v2.11.7
-ARG FORWARDPROXY_VERSION=v2.11.2-naive
+ARG FORWARDPROXY_VERSION=v2.11.7-naive2
 
-FROM golang:${CADDY_GO_VERSION}-alpine AS go
+FROM golang:${CADDY_GO_VERSION}-alpine AS source
 ARG XCADDY_VERSION
 ARG CADDY_VERSION
 ARG FORWARDPROXY_VERSION
-RUN set -eux; \
-    apk add --no-cache git; \
-    # Тег forwardproxy НЕЛЬЗЯ отдать go как версию модуля: «v2.11.2-naive» —
-    # валидный semver с мажором 2, а путь github.com/klzgrad/forwardproxy идёт
-    # без суффикса /v2, и go падает ещё на разборе go.mod:
-    #   replace github.com/klzgrad/forwardproxy: version "v2.11.2-naive"
-    #   invalid: should be v0 or v1, not v2
-    # Имена веток и хеши коммитов go, наоборот, резолвит сам (VersionFixer →
-    # псевдоверсия v0.0.0-<дата>-<хеш>), поэтому тег разворачиваем в коммит
-    # здесь: пин остаётся ровно тем же (тег неизменяем), а go его принимает.
-    # Ветку @naive не берём по той же причине, что и раньше — она плавающая.
-    FORWARDPROXY_REF="$(git ls-remote https://github.com/klzgrad/forwardproxy \
-        "refs/tags/${FORWARDPROXY_VERSION}^{}" "refs/tags/${FORWARDPROXY_VERSION}" \
-        | tail -1 | cut -f1)"; \
-    if [ -z "$FORWARDPROXY_REF" ]; then \
-        echo "нет тега ${FORWARDPROXY_VERSION} в klzgrad/forwardproxy — у upstream теги есть не под каждый релиз caddy" >&2; \
-        exit 1; \
-    fi; \
-    echo "forwardproxy ${FORWARDPROXY_VERSION} -> ${FORWARDPROXY_REF}"; \
-    go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}; \
-    # CVE-2026-78669: Caddy этой версии тянет golang.org/x/net v0.58.0.
-    /go/bin/xcaddy build ${CADDY_VERSION} \
-        --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@${FORWARDPROXY_REF} \
-        --replace golang.org/x/net=golang.org/x/net@v0.60.0; \
-    # sanity: собрался ровно запрошенный caddy и именно с форком klzgrad —
-    # иначе расхождение всплыло бы только в рантайме (ср. `wg --version` в
-    # wireguard.dockerfile)
-    ./caddy version | grep -q "${CADDY_VERSION}"; \
-    ./caddy build-info | grep -q "klzgrad/forwardproxy"
+RUN apk add --no-cache ca-certificates curl git patch
+COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+RUN sh /build-tools/go-source.sh caddyserver/caddy "$CADDY_VERSION" /caddy \
+    && sh /build-tools/go-source.sh klzgrad/forwardproxy "$FORWARDPROXY_VERSION" /forwardproxy \
+    && test "$(cat /forwardproxy/CADDY_VERSION)" = "$CADDY_VERSION" \
+    && cd /caddy \
+    && patch -p1 --fuzz=0 < /forwardproxy/caddy-sing-quic-bbrv1.patch \
+    && patch -p1 --fuzz=0 < /forwardproxy/caddy-read-idle-timeout.patch \
+    && sh /build-tools/go-security.sh
+
+FROM source AS go
+COPY dockerfile/naive-tests/*.go /caddy/modules/caddyhttp/
+COPY dockerfile/naive-tests/upstream-redirect.patch /forwardproxy-tests.patch
+RUN cd /caddy \
+    && sh /build-tools/go-retry.sh go test -mod=mod ./modules/caddyhttp -run 'Test(VPNBot|Idle)' -count=1 \
+    && cd /forwardproxy \
+    && patch -p1 --fuzz=0 < /forwardproxy-tests.patch \
+    && sh /build-tools/go-retry.sh go mod edit -replace github.com/caddyserver/caddy/v2=/caddy \
+    && sh /build-tools/go-security.sh \
+    && sh /build-tools/go-retry.sh go test -mod=mod ./... -count=1
+RUN sh /build-tools/go-retry.sh go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION} \
+    && /go/bin/xcaddy build ${CADDY_VERSION} \
+        --replace github.com/caddyserver/caddy/v2=/caddy \
+        --with github.com/caddyserver/forwardproxy=/forwardproxy \
+        --replace golang.org/x/net=golang.org/x/net@v0.60.0 \
+    && ./caddy version | grep -q "${CADDY_VERSION}" \
+    && ./caddy list-modules | grep -qx http.handlers.forward_proxy
 
 FROM $image
 COPY --from=go /go/caddy /usr/local/bin/

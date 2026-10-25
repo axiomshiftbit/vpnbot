@@ -37,6 +37,8 @@ class Bot
     use BotAcme;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
+    // Совместимость патчей и суммы исходников проверены для этой пары.
+    public const NAIVE_VERSION_PAIRS = ['v2.11.7' => 'v2.11.7-naive2'];
 
     // ── AmneziaWG: набор ключей [Interface] по версиям протокола ──────────────
     // ЕДИНСТВЕННЫЙ источник правды. Любой новый параметр обязан попасть сюда,
@@ -4397,14 +4399,13 @@ class Bot
 
     public function changeCaddyVersion()
     {
+        $versions = implode(', ', array_keys(self::NAIVE_VERSION_PAIRS));
         $r = $this->send(
             $this->input['chat'],
-            $this->t("@{$this->input['username']} введите версию caddy тегом <code>vX.Y.Z</code> (например <code>v2.11.2</code>).\n\n", "@{$this->input['username']} enter the caddy version as a tag <code>vX.Y.Z</code> (e.g. <code>v2.11.2</code>).\n\n")
-            . $this->t("Плагин forwardproxy пиннится ПАРОЙ автоматически: <code>vX.Y.Z-naive</code>. ", "The forwardproxy plugin is pinned as a PAIR automatically: <code>vX.Y.Z-naive</code>. ")
-            . $this->t("У klzgrad теги названы по версии caddy, под которую плагин проверен, и другой пары upstream не проверял.\n\n", "klzgrad names tags after the caddy version the plugin was tested with, and upstream has not tested other pairs.\n\n")
+            $this->t("@{$this->input['username']} введите проверенную версию Caddy: <code>$versions</code>.\n\n", "@{$this->input['username']} enter a tested Caddy version: <code>$versions</code>.\n\n")
+            . $this->t("Совместимая ревизия forwardproxy выбирается автоматически. Новую пару сначала проверяют с её патчами и контрольными суммами исходников.\n\n", "The compatible forwardproxy revision is selected automatically. A new pair must first be tested with its patches and source checksums.\n\n")
             . $this->t("Пин ложится в .env, но образы приезжают готовыми из ghcr.io — сам по себе он ничего не изменит.\n", "The pin goes into .env, but images arrive ready-made from ghcr.io, so by itself it changes nothing.\n")
-            . $this->t("Применить локально: <code>docker compose build np</code>, затем <code>make r</code>.\n", "To apply locally: <code>docker compose build np</code>, then <code>make r</code>.\n")
-            . $this->t("Либо закоммитить .env в репозиторий: CI пересоберёт образ, и <code>make r</code> подтянет его.", "Or commit .env to the repository: CI rebuilds the image and <code>make r</code> pulls it."),
+            . $this->t("Измените пины в репозитории, соберите и проверьте комплект CI, затем обновите бот. Для самостоятельной сборки нужна отдельная рабочая копия без активного манифеста выпуска; порядок описан в readme.", "Update the repository pins, build and test the CI bundle, then update the bot. A local build requires a separate working copy without an active release manifest; see the readme."),
             $this->input['message_id'],
             reply: $this->t('введите версию caddy', 'enter the caddy version'),
         );
@@ -4416,23 +4417,24 @@ class Bot
         ]);
     }
 
-    // Пин пишем только парой: рассинхрон caddy ↔ forwardproxy — это сборка с
-    // непроверенной комбинацией, и ломается она в рантайме, а не при build.
+    // Суффикс нельзя угадывать: исправленный выпуск может быть -naive2.
     public function chCaddyVersion($v)
     {
         $v = trim((string) $v);
-        if (!preg_match('~^v\d+\.\d+\.\d+$~', $v)) {
-            $this->update($this->input['chat'], $this->input['message_id'], $this->t('нужен тег вида vX.Y.Z (например v2.11.2)', 'a tag like vX.Y.Z is needed (e.g. v2.11.2)'));
+        $plugin = self::NAIVE_VERSION_PAIRS[$v] ?? null;
+        if ($plugin === null) {
+            $versions = implode(', ', array_keys(self::NAIVE_VERSION_PAIRS));
+            $this->update($this->input['chat'], $this->input['message_id'], $this->t("проверенные версии: $versions", "tested versions: $versions"));
             sleep(3);
             return $this->menu('naive');
         }
         $this->setEnvVar('CADDY_VERSION', $v);
-        $this->setEnvVar('FORWARDPROXY_VERSION', "$v-naive");
+        $this->setEnvVar('FORWARDPROXY_VERSION', $plugin);
         // setEnvVar меняет только .env: без putenv getenv() до рестарта php
         // отдавал бы старый пин, и меню показывало бы, что ничего не изменилось
         // (тот же приём, что в setIpsecPort).
         putenv("CADDY_VERSION=$v");
-        putenv("FORWARDPROXY_VERSION=$v-naive");
+        putenv("FORWARDPROXY_VERSION=$plugin");
         $this->menu('naive');
     }
 

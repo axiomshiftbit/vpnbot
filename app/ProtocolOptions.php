@@ -105,7 +105,8 @@ final class ProtocolOptions
             $logging = $enum(['FATAL', 'ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE']);
             $schema = [
                 'server' => ['mtu' => $int(1280, 1500), 'loggingLevel' => $logging,
-                    'advancedSettings' => ['object', ['metricsLoggingInterval' => ['duration', 1000, 86400000], 'userHintIsMandatory' => $bool]],
+                    'advancedSettings' => ['object', ['metricsLoggingInterval' => ['duration', 1000, 86400000], 'userHintIsMandatory' => $bool,
+                        'tcpIdleTimeout' => ['duration', 60000, 86400000]]],
                     'dns' => ['object', ['dualStack' => $enum(['USE_FIRST_IP', 'PREFER_IPv4', 'PREFER_IPv6', 'ONLY_IPv4', 'ONLY_IPv6']), 'hosts' => ['hosts']]],
                     'trafficPattern' => $pattern],
                 'client' => ['multiplexing' => $enum(self::MULTIPLEXING), 'handshakeMode' => $enum(self::HANDSHAKES), 'trafficPattern' => $pattern],
