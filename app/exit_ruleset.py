@@ -31,6 +31,9 @@ def normalize(source, destination, fmt):
                 continue
             for key, values in combined.items():
                 entries = rule.get(key, [])
+                # sing-box Listable serializes a single value as a string.
+                if isinstance(entries, str):
+                    entries = [entries]
                 if not isinstance(entries, list):
                     raise ValueError('invalid rule field')
                 count += len(entries)

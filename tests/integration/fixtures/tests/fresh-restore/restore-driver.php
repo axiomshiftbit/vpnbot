@@ -656,7 +656,13 @@ switch ($action) {
                 // Кнопка «🗑 Удалить профиль»: экран подтверждения, затем «Да, удалить».
                 foreach ($b->getXray()['inbounds'][0]['settings']['clients'] as $k=>$client) if (($client['email'] ?? '')===$argv[3]) {
                     $b->exitRelayDelete($k);
-                    $b->exitRelayDelete($k,substr(hash('sha256',$argv[3]),0,8));
+                    $confirm = null;
+                    foreach (end($b->transport->keyboards) as $row) foreach ($row as $button) {
+                        if (str_starts_with($button['callback_data'] ?? '', '/exitRelayDelYes ')) $confirm=$button['callback_data'];
+                    }
+                    if ($confirm === null) throw new RuntimeException('Relay delete confirmation button missing');
+                    $b->input['callback']=$confirm;
+                    $b->action();
                     break;
                 }
                 break;

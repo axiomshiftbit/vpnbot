@@ -34,10 +34,43 @@ class RulesetLimitsTests(unittest.TestCase):
         self.assertNotIn('port', rule)
 
     def test_bad_json_shapes_and_non_string_entries_fail(self):
-        for value in ([], {}, {'rules': {}}, {'rules': [{'domain': 'a.example'}]},
+        for value in ([], {}, {'rules': {}}, {'rules': [{'domain': 1}]},
+                      {'rules': [{'domain': None}]}, {'rules': [{'domain': False}]},
                       {'rules': [{'domain': [{'unexpected': []}]}]}):
             with self.subTest(value=value):
                 self.assertNotEqual(self.normalize(json.dumps(value))[0], 0)
+
+    def test_srs_single_strings_and_arrays_are_combined(self):
+        fields = {'domain': 'one.example', 'domain_suffix': 'suffix.example',
+                  'domain_keyword': 'word', 'domain_regex': '^test', 'ip_cidr': '192.0.2.1/32'}
+        code, body = self.normalize(json.dumps({'rules': [fields, {k: [v] for k, v in fields.items()}]}))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(body)['rules'], [{k: [v, v] for k, v in fields.items()}])
+
+    @unittest.skipUnless(shutil.which('php') and shutil.which('sing-box'), 'нужен образ PHP с настоящим sing-box')
+    def test_real_srs_single_and_multiple_values_are_imported(self):
+        for size in (1, 2):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as directory:
+                source, binary = Path(directory) / 'source.json', Path(directory) / 'test.srs'
+                fields = {'domain': [f'd{i}.example' for i in range(size)],
+                          'domain_suffix': [f's{i}.example' for i in range(size)],
+                          'domain_keyword': [f'word{i}' for i in range(size)],
+                          'domain_regex': [f'^regex{i}' for i in range(size)],
+                          'ip_cidr': [f'192.0.2.{i+1}/32' for i in range(size)]}
+                source.write_text(json.dumps({'version': 3, 'rules': [fields]}))
+                compiled = subprocess.run(['sing-box', 'rule-set', 'compile', str(source), '-o', str(binary)],
+                                          capture_output=True, text=True, timeout=30)
+                self.assertEqual(compiled.returncode, 0, compiled.stderr)
+                result = subprocess.run(['php', '-d', 'memory_limit=128M', '-r',
+                    'require $argv[1]; $b=(new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();'
+                    'echo json_encode($b->exitRulesetConvert(file_get_contents($argv[2]),"srs","domain"));',
+                    str(HELPER.parent / 'bot.php'), str(binary)], capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stderr[-1000:])
+                expected = []
+                for key, prefix in [('domain', 'full:'), ('domain_suffix', 'domain:'),
+                                    ('domain_keyword', 'keyword:'), ('domain_regex', 'regexp:'), ('ip_cidr', '')]:
+                    expected.extend(prefix + value for value in fields[key])
+                self.assertEqual(sorted(json.loads(result.stdout) or []), sorted(expected))
 
     def test_entry_limit_before_php(self):
         self.assertNotEqual(self.normalize(json.dumps({'rules': [{'domain': ['a.example'] * 200001}]}))[0], 0)
