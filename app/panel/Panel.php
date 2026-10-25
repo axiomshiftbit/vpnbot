@@ -474,8 +474,7 @@ class Panel
         }
         // Пароль общий на всю панель, а вот действовать после входа можно от
         // имени любого из настроенных админов (мультиадминство): при одном
-        // админе выбора нет и cookie остаётся в прежнем двухчастном виде —
-        // ни формат, ни путь к ленте не меняются для однo-админских установок.
+        // админе выбора нет.
         $admin = $this->admins[0] ?? 0;
         if (count($this->admins) > 1) {
             $chosen = (int) ($_POST['admin'] ?? 0);
@@ -499,9 +498,10 @@ class Panel
     private function issueSession($admin)
     {
         $exp   = time() + self::TTL;
-        $value = count($this->admins) > 1
-            ? $exp . '.' . $admin . '.' . $this->sign($exp, $admin)
-            : $exp . '.' . $this->sign($exp);
+        // Входы в одну секунду должны отзываться независимо. Одного срока
+        // и admin ID недостаточно: выход отзывал сразу обе одинаковые куки.
+        $nonce = bin2hex(random_bytes(16));
+        $value = $exp . '.' . $admin . '.' . $nonce . '.' . $this->sign($exp, $admin, $nonce);
         setcookie(self::COOKIE, $value, [
             'expires'  => $exp,
             'path'     => $this->prefix . '/',
@@ -553,11 +553,11 @@ class Panel
      * действовать от чужого имени без пароля. По умолчанию — admins[0], чтобы
      * старый однопараметрический вызов (в т.ч. в тестах) остался рабочим.
      */
-    private function sign($exp, $admin = null)
+    private function sign($exp, $admin = null, string $nonce = '')
     {
         $admin ??= $this->admins[0] ?? 0;
 
-        return hash_hmac('sha256', "panel|$exp|$admin|" . $this->passwordHash(), $this->key);
+        return hash_hmac('sha256', "panel|$exp|$admin|" . $this->passwordHash() . ($nonce !== '' ? '|' . $nonce : ''), $this->key);
     }
 
     public function authed()
@@ -572,6 +572,13 @@ class Panel
             return false;
         }
         $v = (string) ($_COOKIE[self::COOKIE] ?? '');
+        if (preg_match('~^(\d+)\.(-?\d+)\.([0-9a-f]{32})\.([0-9a-f]{64})$~D', $v, $m)) {
+            $exp = (int) $m[1]; $admin = (int) $m[2];
+            if ($exp < time() || !in_array($admin, $this->admins, true)
+                || !hash_equals($this->sign($exp, $admin, $m[3]), $m[4]) || $this->revoked($v)) return false;
+            $this->actingAdmin = $admin;
+            return true;
+        }
         // Трёхчастная кука — мультиадминство (exp.adminId.hmac). Двухчастная —
         // прежний формат для установок с одним админом: он не менялся, чтобы
         // не рвать уже выданные сессии там, где выбирать всё равно не из чего.

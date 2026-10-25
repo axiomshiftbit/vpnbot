@@ -156,9 +156,10 @@ try:
     C = ck.split(';')[0]
     check('page-after-login', b'if ("1" === "1")' in req('GET', P + '/', headers={'Cookie': C})[3])
     v = C.split('=', 1)[1].split('.')
-    for label, forged in [('expiry', str(int(v[0]) + 3600) + '.' + v[1]), ('signature', v[0] + '.' + '0' * 64),
-                          ('admin', v[0] + '.999.' + v[1])]:
-        check(f'forged-cookie-{label}-401', req('GET', P + '/state', headers={'Cookie': 'panel=' + forged})[0] == 401)
+    for label, index, replacement in [('expiry', 0, str(int(v[0]) + 3600)), ('signature', -1, '0' * 64),
+                                       ('admin', 1, '999'), ('nonce', 2, '0' * 32)]:
+        forged = v.copy(); forged[index] = replacement
+        check(f'forged-cookie-{label}-401', req('GET', P + '/state', headers={'Cookie': 'panel=' + '.'.join(forged)})[0] == 401)
     check('valid-cookie-foreign-host-403', req('GET', P + '/state', headers={'Cookie': C}, host='evil.example')[0] == 403)
 
     # ── обход путей ───────────────────────────────────────────────────────────
@@ -252,7 +253,8 @@ try:
     post(C1, 'click', {'message_id': m['id'], 'data': '/deladmin 222222'})
     check('panel-as-owner-cannot-change-admins', admins() == [owner, 222222])
     v = C2.split('=', 1)[1].split('.')
-    check('admin-id-swap-in-cookie-401', req('GET', P + '/state', headers={'Cookie': f'panel={v[0]}.{owner}.{v[2]}'})[0] == 401)
+    v[1] = str(owner)
+    check('admin-id-swap-in-cookie-401', req('GET', P + '/state', headers={'Cookie': 'panel=' + '.'.join(v)})[0] == 401)
     set_admins(f"['{owner}', '222222']")  # так их хранили старые версии addAdmin()
     lit = re.search(rb'JSON\.parse\("(.*?)"\)', req('GET', P + '/')[3])
     check('legacy-string-ids-login-page', lit and b'&quot;' not in lit.group(1))
