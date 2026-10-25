@@ -45,6 +45,8 @@ try {
         'ovpn wrong key'=>['ovpn'=>array_map('base64_encode',array_replace($pki,['pki/private/server.key'=>$pair['ca_key']]))],
         'ovpn invalid certificate'=>['ovpn'=>array_map('base64_encode',array_replace($pki,['pki/issued/alice.crt'=>'corrupted PEM']))],
         'ipsec wrong key'=>['ipsec'=>array_map('base64_encode',['pki/ca.crt'=>$pair['ca'],'pki/server.crt'=>$pair['server'],'pki/server.key'=>$pair['ca_key']])],
+        'ssl broken chain'=>['ssl'=>['private'=>$pair['key'], 'public'=>$pair['server']."\n-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n"]],
+        'ssl truncated chain'=>['ssl'=>['private'=>$pair['key'], 'public'=>$pair['server']."\n-----BEGIN CERTIFICATE-----\ntruncated\n"]],
     ];
     foreach ($cases as $name=>$case) {
         $b=new BackupPreflightBot($root,$i);
@@ -53,6 +55,7 @@ try {
         $result=$b->importFile($b->update);
         if ($result!==false || $b->writes!==0 || file_get_contents($b->pac)!==$before) $failed[]=$name;
     }
+    $b->validateBackup(['ssl'=>['private'=>$pair['key'], 'public'=>$pair['server'].$pair['ca']]]);
     if ($failed) throw new RuntimeException('Повреждённые секции изменили настройки: '.implode(', ',$failed));
     echo "backup_preflight_test OK\n";
 } finally { ini_set('error_log',$oldLog); (new BotCleanup)->remove($root); }

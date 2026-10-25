@@ -167,6 +167,13 @@ try {
     $badBackup = $backup; $badBackup['certificates']['/certs/custom/key.pem'] = base64_encode('broken key');
     try { $bot->importManagedProtocols($badBackup); throw new LogicException('invalid pair'); } catch (InvalidArgumentException $e) {}
     mpCheck(file_get_contents("$root/certs/custom/key.pem") === $keyPem && $tls->read() === $beforeRestore, 'Неверная TLS-пара не портит рабочие файлы и доступы');
+    foreach (["-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n", "-----BEGIN CERTIFICATE-----\ntruncated\n"] as $brokenChain) {
+        $badBackup = $backup;
+        $badBackup['certificates']['/certs/custom/cert.pem'] = base64_encode($certPem . $brokenChain);
+        $rejected = false;
+        try { $bot->importManagedProtocols($badBackup); } catch (InvalidArgumentException $error) { $rejected = true; }
+        mpCheck($rejected && file_get_contents("$root/certs/custom/key.pem") === $keyPem && $tls->read() === $beforeRestore, 'Повреждённая TLS-цепочка отвергается до восстановления');
+    }
     $bot->protocolRoot = "$root/self-host";
     $bot->conf = ['domain' => 'first.example.test'];
     $bot->configureProtocolSelfHost('anytls'); $bot->configureProtocolSelfHost('shadowtls');

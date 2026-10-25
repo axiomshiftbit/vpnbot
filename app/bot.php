@@ -7595,7 +7595,7 @@ NFT;
         if (is_file($this->protocolCertRoot . '/cert_private')) {
             $private = file_get_contents($this->protocolCertRoot . '/cert_private');
             $public = @file_get_contents($this->protocolCertRoot . '/cert_public');
-            if (!is_string($private) || !is_string($public) || !@openssl_x509_check_private_key($public, $private)) {
+            if (!is_string($private) || !is_string($public) || !self::certificatePairValid($public, $private)) {
                 throw new RuntimeException($this->t('Не удалось сохранить полную TLS-пару', 'Could not save the full TLS pair'));
             }
             $ssl = ['private' => $private, 'public' => $public];
@@ -8001,7 +8001,7 @@ NFT;
             if (array_key_exists('extra_files', $json)) $this->validateBackupExtraFiles($json['extra_files']);
             if (!empty($json['ssl']) && (!is_string($json['ssl']['public'] ?? null)
                 || !is_string($json['ssl']['private'] ?? null)
-                || !@openssl_x509_check_private_key($json['ssl']['public'], $json['ssl']['private']))) {
+                || !self::certificatePairValid($json['ssl']['public'], $json['ssl']['private']))) {
                 return $this->backupImportError('certificates', !empty($file));
             }
             foreach (['wg', 'wg1'] as $key) {

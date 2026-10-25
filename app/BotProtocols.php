@@ -366,7 +366,7 @@ trait BotProtocols
                     if (!is_string($body) || strlen($body) > 1400000 || ($material[$path] = base64_decode($body, true)) === false) throw new InvalidArgumentException($this->t('Неполная копия TLS-пары', 'Incomplete TLS pair copy'));
                     $this->managedCertificatePath($path);
                 }
-                if (!@openssl_x509_check_private_key($material[$settings['certificate']], $material[$settings['private_key']])) throw new InvalidArgumentException($this->t('TLS-сертификат не соответствует ключу', 'The TLS certificate does not match the key'));
+                if (!self::certificatePairValid($material[$settings['certificate']], $material[$settings['private_key']])) throw new InvalidArgumentException($this->t('TLS-сертификат не соответствует ключу', 'The TLS certificate does not match the key'));
             }
         }
         if (array_diff_key($certificates, $allowed)) throw new InvalidArgumentException($this->t('Посторонний TLS-файл в резервной копии', 'A foreign TLS file in the backup'));

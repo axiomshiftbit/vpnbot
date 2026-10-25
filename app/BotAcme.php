@@ -376,19 +376,24 @@ trait BotAcme
     }
 
     // Бандл ключа и цепочки → /certs и службы, которые читают сертификат.
-    public function applyCertificateBundle(string $bundle, array $conf): bool
+    public static function certificatePairValid(string $public, string $private): bool
     {
-        if (!preg_match('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', $bundle, $m)) {
-            return false;
-        }
-        $public = preg_replace('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', '', $bundle);
         $count = preg_match_all('~-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----~s', $public, $certificates);
         if (!$count || $count !== substr_count($public, '-----BEGIN CERTIFICATE-----')
             || $count !== substr_count($public, '-----END CERTIFICATE-----')) return false;
         foreach ($certificates[0] as $certificate) {
             if (!@openssl_x509_read($certificate)) return false;
         }
-        if (!@openssl_x509_check_private_key($certificates[0][0], $m[0])) return false;
+        return @openssl_x509_check_private_key($certificates[0][0], $private);
+    }
+
+    public function applyCertificateBundle(string $bundle, array $conf): bool
+    {
+        if (!preg_match('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', $bundle, $m)) {
+            return false;
+        }
+        $public = preg_replace('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', '', $bundle);
+        if (!self::certificatePairValid($public, $m[0])) return false;
         return $this->withBackupLock(function () use ($conf, $m, $public) {
             $previous = $this->getPacConf();
             if ($this->setPacConf($conf) === false) return false;

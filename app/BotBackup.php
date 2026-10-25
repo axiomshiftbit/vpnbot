@@ -311,7 +311,7 @@ trait BotBackup
             if ($wg['clients'] && empty($wg['server']['interface'])) throw new InvalidArgumentException($this->t('Нет сервера WireGuard', 'No WireGuard server'));
         }
         if (!empty($json['ssl']) && (!is_string($json['ssl']['private'] ?? null) || !is_string($json['ssl']['public'] ?? null)
-            || !@openssl_x509_check_private_key($json['ssl']['public'], $json['ssl']['private']))) throw new InvalidArgumentException($this->t('Неверная TLS-пара', 'Invalid TLS pair'));
+            || !self::certificatePairValid($json['ssl']['public'], $json['ssl']['private']))) throw new InvalidArgumentException($this->t('Неверная TLS-пара', 'Invalid TLS pair'));
         if (!empty($json['dnstt'])) {
             foreach (['private', 'public'] as $key) if (!is_string($json['dnstt'][$key] ?? null)
                 || !preg_match('/\A[0-9a-fA-F]{64}\s*\z/D', $json['dnstt'][$key])) throw new InvalidArgumentException($this->t('Неверная пара DNSTT', 'Invalid DNSTT pair'));
