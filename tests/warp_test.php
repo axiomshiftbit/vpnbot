@@ -277,7 +277,7 @@ warpAssert(
 );
 // Удаление клиента убирает и его аккаунт.
 warpAssert(
-    (bool) preg_match('~deleteHwidUser\(.*\n.*\n.*\n.*\n.*deleteWarpClient~', $botSrc),
+    (bool) preg_match('~function delxr\(.*?deleteWarpClient\(\$client\[.email.\]~s', $botSrc),
     'delxr() удаляет персональный WARP-аккаунт клиента'
 );
 warpAssert(strpos($botSrc, "rm -rf ' . escapeshellarg(\$this->warpClientDir(\$email))") !== false, 'каталог клиента удаляется через escapeshellarg');

@@ -1766,13 +1766,14 @@ trait BotExitNodes
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
-    // Подтверждение несёт отпечаток имени: если список учёток сдвинулся,
-    // старая кнопка не удалит другую учётку на том же месте.
+    // Имя и идентификатор доступа: старое подтверждение не удаляет новый
+    // профиль, созданный с тем же именем и оказавшийся на том же месте.
     public function exitRelayDelete(int $i, string $mark = ''): void
     {
         $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
         if (!is_array($client) || empty($client['exit_relay'])) { $this->exitRelayMenu($this->t('Профиль не найден', 'Profile not found')); return; }
-        $expected = substr(hash('sha256', (string) ($client['email'] ?? '')), 0, 8);
+        $source = ManagedProtocol::xraySource($client);
+        $expected = substr(hash('sha256', ($client['email'] ?? '') . ':' . $source), 0, 16);
         if ($mark === '') {
             $this->update($this->input['chat'], $this->input['message_id'],
                 $this->t('Удалить профиль для узла <b>', 'Delete node profile <b>') . self::esc((string) ($client['email'] ?? '')) . $this->t('</b>? Основной сервер, где он добавлен узлом, больше не сможет через него выходить.', '</b>? The main server that added it as a node can no longer exit through it.'),
@@ -1780,7 +1781,10 @@ trait BotExitNodes
             return;
         }
         if (!hash_equals($expected, $mark)) { $this->exitRelayMenu($this->t('Профиль не найден', 'Profile not found')); return; }
-        $this->delxr($i, false);
+        if (!$this->delxr($i, false, $source)) {
+            $this->exitRelayMenu($this->t('Не удалось удалить профиль. Прежний доступ сохранён.', 'Could not delete the profile. The previous access is preserved.'));
+            return;
+        }
         $this->exitRelayMenu($this->t('Профиль удалён', 'Profile deleted'));
     }
 }

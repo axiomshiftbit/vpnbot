@@ -31,6 +31,9 @@ class XrStatsTestBot extends Bot
     public array $stats    = [];
     public array $counters = [];
     public bool  $restarted = false;
+    public bool $rejectRestart = false;
+    public int $failWrites = 0;
+    public array $deleted = [];
 
     public function getXray()
     {
@@ -44,6 +47,7 @@ class XrStatsTestBot extends Bot
 
     public function setXrayStats($x)
     {
+        if ($this->failWrites > 0) { $this->failWrites--; return false; }
         $this->stats = $x;
     }
 
@@ -59,6 +63,7 @@ class XrStatsTestBot extends Bot
 
     public function restartXray($c, $norestart = false)
     {
+        if ($this->rejectRestart) return false;
         // Ровно то, из-за чего расходились индексы: клиенты переиндексируются.
         $c['inbounds'][0]['settings']['clients'] = array_values($c['inbounds'][0]['settings']['clients']);
         $this->xray = $c;
@@ -73,8 +78,8 @@ class XrStatsTestBot extends Bot
     public array $switched = [];
 
     // Внешние эффекты delxr(), не относящиеся к делу.
-    public function deleteHwidUser($id) {}
-    public function deleteWarpClient($email) {}
+    public function deleteHwidUser($id) { $this->deleted[] = ['hwid', $id]; }
+    public function deleteWarpClient($email) { $this->deleted[] = ['warp', $email]; }
     public function adguardXrayClients() {}
     public function xray($page = 0) {}
     public function menu($type = false, $arg = false, $return = false) {}
@@ -107,6 +112,16 @@ xrStatsAssert($bot->stats['users'][1]['global']['download'] === 30,
     . $bot->stats['users'][1]['global']['download']);
 
 // ── 2. foldSession ──────────────────────────────────────────────────────────
+$beforeXray = $bot->xray; $beforeStats = $bot->stats; $beforeDeleted = $bot->deleted;
+$bot->rejectRestart = true;
+xrStatsAssert($bot->delxr(0, false) === false && $bot->xray === $beforeXray && $bot->stats === $beforeStats
+    && $bot->deleted === $beforeDeleted, 'отказ ядра сохраняет статистику, HWID и WARP');
+$bot->rejectRestart = false; $bot->failWrites = 1;
+xrStatsAssert($bot->delxr(0, false) === false && $bot->xray === $beforeXray && $bot->stats === $beforeStats
+    && $bot->deleted === $beforeDeleted, 'отказ записи статистики не меняет пользователя');
+xrStatsAssert($bot->delxr(0, false, str_repeat('0', 32)) === false && $bot->xray === $beforeXray
+    && $bot->stats === $beforeStats && $bot->deleted === $beforeDeleted, 'смена идентичности перед удалением отвергается под блокировкой');
+
 $p = Bot::foldSession([
     'global'  => ['download' => 100, 'upload' => 10],
     'session' => ['download' => 5,   'upload' => 1],

@@ -326,19 +326,29 @@ $check(isset($bot->callbacks()["/exitRelayDel $relayIndex"]), 'в профиле
 $bot->exitRelayDelete(0);
 $check(str_contains($bot->last()[0], 'Профиль не найден') && isset($bot->confXray['inbounds'][0]['settings']['clients'][0]), 'обычного пользователя кнопка профиля не удаляет');
 $bot->exitRelayDelete($relayIndex);
-$yes = "/exitRelayDelYes $relayIndex " . substr(hash('sha256', 'node-example'), 0, 8);
+$yes = array_values(array_filter(array_keys($bot->callbacks()), static fn($callback) => str_starts_with($callback, '/exitRelayDelYes ')))[0];
+$mark = explode(' ', $yes)[2];
 $check(str_contains($bot->last()[0], 'Удалить профиль для узла <b>node-example</b>') && isset($bot->callbacks()[$yes]) && strlen($yes) <= 64, 'подтверждение удаления профиля');
 $bot->exitRelayDelete($relayIndex, '00000000');
 $check(str_contains($bot->last()[0], 'Профиль не найден') && isset($bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex]), 'чужой отпечаток не удаляет');
-$bot->exitRelayDelete($relayIndex, substr(hash('sha256', 'node-example'), 0, 8));
+$bot->restartOk = false; $removedBefore = $bot->removed;
+$bot->exitRelayDelete($relayIndex, $mark);
+$check(isset($bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex]) && $bot->removed === $removedBefore
+    && !str_contains($bot->last()[0], 'Профиль удалён'), 'отказ ядра не удаляет HWID/WARP и не сообщает об успехе');
+$bot->restartOk = true;
+$bot->exitRelayDelete($relayIndex, $mark);
 $check(!in_array('node-example', array_column($bot->confXray['inbounds'][0]['settings']['clients'], 'email'), true) && in_array(['warp', 'node-example'], $bot->removed, true)
     && str_contains($bot->last()[0], 'Профиль удалён') && !isset($bot->callbacks()["/exitRelayLink $relayIndex"]), 'профиль удалён, меню профилей без него');
 $bot->language = 'en';
 $bot->saveExitRelay('example');
 $relayIndex = array_key_last($bot->confXray['inbounds'][0]['settings']['clients']);
+$recreated = $bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex];
+$bot->exitRelayDelete($relayIndex, $mark);
+$check(($bot->confXray['inbounds'][0]['settings']['clients'][$relayIndex] ?? null) === $recreated, 'старое подтверждение не удаляет заново созданный профиль с тем же именем');
 $bot->exitRelayDelete($relayIndex);
 $check(str_contains($bot->last()[0], 'Delete node profile <b>node-example</b>?'), 'подтверждение на английском');
-$bot->exitRelayDelete($relayIndex, substr(hash('sha256', 'node-example'), 0, 8));
+$yes = array_values(array_filter(array_keys($bot->callbacks()), static fn($callback) => str_starts_with($callback, '/exitRelayDelYes ')))[0];
+$bot->exitRelayDelete($relayIndex, explode(' ', $yes)[2]);
 $check(str_contains($bot->last()[0], 'Profile deleted'), 'итог удаления на английском');
 $bot->language = 'ru';
 

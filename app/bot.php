@@ -842,7 +842,7 @@ class Bot
             case preg_match('~^/exitRelayDel (\d{1,6})$~', $this->input['callback'], $m):
                 $this->exitRelayDelete((int) $m[1]);
                 break;
-            case preg_match('~^/exitRelayDelYes (\d{1,6}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+            case preg_match('~^/exitRelayDelYes (\d{1,6}) ([a-f0-9]{8}|[a-f0-9]{16})$~', $this->input['callback'], $m):
                 $this->exitRelayDelete((int) $m[1], $m[2]);
                 break;
             case preg_match('~^/switchXrayCore$~', $this->input['callback'], $m):
@@ -26119,37 +26119,38 @@ DNS-over-HTTPS with IP:
         $this->menu('oc');
     }
 
-    public function delxr($i, $menu = true)
+    public function delxr($i, $menu = true, ?string $expectedSource = null)
     {
-        $r  = $this->getXray();
-        $st = $this->getXrayStats();
-        foreach ($r['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if ($i == $k) {
-                $this->deleteHwidUser($r['inbounds'][0]['settings']['clients'][$k]['id']);
-                // Персональный WARP-аккаунт живёт вне xray.json — убираем его
-                // здесь, иначе каталоги копятся, а устройства навсегда висят
-                // на аккаунте Cloudflare.
-                $this->deleteWarpClient($r['inbounds'][0]['settings']['clients'][$k]['email'] ?? '');
-                unset($r['inbounds'][0]['settings']['clients'][$k]);
-                unset($st['users'][$k]);
-                // Статистика привязана к клиенту ПОЗИЦИЕЙ в списке (см. сборку
-                // $p['users'] в checkTrafficLimits и чтение в userXr/sub), а
-                // restartXray() делает clients = array_values(). Без такой же
-                // переиндексации здесь ключи расходились: накопленный трафик
-                // всех, кто ниже удалённого, доставался соседу сверху, а
-                // последний клиент терял свой global — квоты считались с нуля.
-                if (!empty($st['users'])) {
-                    $st['users'] = array_values($st['users']);
+        $ok = $this->withLock('xray', function () use ($i, $expectedSource) {
+            $r = $this->getXray();
+            $client = $r['inbounds'][0]['settings']['clients'][$i] ?? null;
+            if ($client === null || ($expectedSource !== null && !hash_equals($expectedSource, ManagedProtocol::xraySource($client)))) return false;
+            $before = $this->getXrayStats(); $st = $before;
+            unset($r['inbounds'][0]['settings']['clients'][$i], $st['users'][$i]);
+            // restartXray переиндексирует клиентов и сворачивает session в
+            // global. Счётчики должны иметь тот же порядок до его вызова.
+            if (!empty($st['users'])) $st['users'] = array_values($st['users']);
+            $applied = false;
+            try {
+                if ($this->setXrayStats($st) === false) return false;
+                if ($this->restartXray($r) === false) return false;
+                $applied = true;
+            } finally {
+                if (!$applied && $this->setXrayStats($before) === false) {
+                    throw new RuntimeException($this->t('Не удалось вернуть статистику Xray', 'Could not restore Xray statistics'));
                 }
-                $this->setXrayStats($st);
-                $this->restartXray($r);
-                $this->adguardXrayClients();
-                break;
             }
-        }
+            $this->deleteHwidUser($client['id']);
+            // Персональный WARP-профиль удаляем только после принятия конфига.
+            $this->deleteWarpClient($client['email'] ?? '');
+            $this->adguardXrayClients();
+            return true;
+        });
         if ($menu) {
+            if (!$ok) $this->send($this->input['chat'], $this->t('Не удалось удалить пользователя Xray. Прежний доступ сохранён.', 'Could not delete the Xray user. The previous access is preserved.'));
             $this->xray();
         }
+        return $ok;
     }
 
     public function getClientsOc()
