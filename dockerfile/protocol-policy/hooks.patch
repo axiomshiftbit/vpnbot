@@ -1,9 +1,6 @@
 --- a/route/route.go
 +++ b/route/route.go
-@@ -299,6 +299,7 @@
- 		metadata.RouteRule = selectedRule.String()
- 	}
- 	metadata.RouteOutbound = selectedOutbound.Tag()
+@@ -330,3 +330,4 @@
 +	conn = r.restrictPackets(ctx, conn, metadata)
  	for _, tracker := range r.trackers {
  		conn = tracker.RoutedPacketConnection(ctx, conn, metadata, selectedRule, selectedOutbound)

@@ -151,10 +151,10 @@ services:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
                 image: ${IMAGE:-alpine:3.24}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
-                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.32}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
-                MIHOMO_SOURCE_SHA256: ${MIHOMO_SOURCE_SHA256:-ab130b7fab3893d01aa44c0d39be34a26da716c1d36832fbac9fa054a1d862a0}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
+                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.33}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
+                MIHOMO_SOURCE_SHA256: ${MIHOMO_SOURCE_SHA256:-e7c596b37ff27ec487d19b1920f73e0c97a78067ea35766530ee9659ade72711}
         ports:
             # 127.0.0.1:8081:8080 убран: 8080 в этом контейнере — control API
             # unit, у которого нет аутентификации. Он переведён на unix-сокет
@@ -228,10 +228,10 @@ services:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
                 image: ${IMAGE:-alpine:3.24}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
-                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.32}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
-                MIHOMO_SOURCE_SHA256: ${MIHOMO_SOURCE_SHA256:-ab130b7fab3893d01aa44c0d39be34a26da716c1d36832fbac9fa054a1d862a0}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
+                MIHOMO_VERSION: ${MIHOMO_VERSION:-v1.19.33}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
+                MIHOMO_SOURCE_SHA256: ${MIHOMO_SOURCE_SHA256:-e7c596b37ff27ec487d19b1920f73e0c97a78067ea35766530ee9659ade72711}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./config/php.ini:/etc/php85/php.ini
@@ -1080,8 +1080,8 @@ services:
             dockerfile: protocol.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
@@ -1151,8 +1151,8 @@ services:
             dockerfile: protocol.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
             PROTOCOL_KIND: tuic
             PROTOCOL_DESIRED: /config/desired.json
@@ -1255,8 +1255,8 @@ services:
             dockerfile: protocol.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
-                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.3}
-                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386}
+                SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
+                SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
             PROTOCOL_KIND: shadowtls
             PROTOCOL_DESIRED: /config/desired.json

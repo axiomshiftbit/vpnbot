@@ -178,7 +178,7 @@ service, warp), а Xray, WireGuard и остальные — нет.
 **1. Что нужно заранее**
 - бот с этой функцией (контейнер `php` видит `/acme/request` и `/acme/state`:
   `docker inspect` контейнера php, раздел Mounts);
-- на хосте `python3`, `openssl`, `docker` и firewall на nftables с таблицами
+- на хосте `systemd`, `python3`, `openssl`, `docker`, `nft` и firewall с таблицами
   `ip filter` (цепочка `forward`) и `ip dockernat` (DNAT порта 80 на nginx бота);
 - все имена сертификата (домен, поддомены, алиасы) указывают на этот сервер —
   иначе служба не откроет порт и сообщит «имя в DNS указывает не на этот сервер».
@@ -211,13 +211,18 @@ table ip filter {
     # в prerouting и output, перед «tcp dport 80 dnat to <nginx бота>:80»:
     ip daddr $PUBLIC_IP tcp dport @acme_http_redirect counter dnat to 10.10.2.5:80 comment "acme-window-redirect"
 ```
-Проверить файл — `nft -c -f /etc/nftables.conf`, применить — `nft -f
-/etc/nftables.conf` (перечитывает всё и сбрасывает счётчики) либо добавить те же
-`add set` / `insert rule … position <handle>` в работающие правила одной
-транзакцией. Записи журнала `FWD-CERT-ACME:` показывают, кто ходил в окно.
+Проверить файл — `nft -c -f /etc/nftables.conf`. На работающем сервере добавьте
+наборы и правила одной транзакцией `nft -f <файл-добавлений>` с командами
+`add set` / `insert rule … position <handle>`; расположение и handle существующих
+правил показывает `nft -a list ruleset`. Те же изменения сохраните в постоянном
+конфиге. Не загружайте целиком файл с `flush ruleset`, если Docker управляет
+своими правилами: это удалит и его NAT/фильтрацию. Полная загрузка допустима,
+только если конфиг хоста сам восстанавливает все нужные правила контейнеров.
+Записи журнала `FWD-CERT-ACME:` показывают, кто ходил в окно.
 
-**3. Настройки службы** — `/etc/acme-window/config.json`, владелец root, права
-600 (иначе служба откажется его читать):
+**3. Настройки службы** — `/etc/acme-window/config.json`, владелец root;
+рекомендуемые права — 600. Служба откажет при другом владельце или разрешённой
+записи для группы/остальных (чтение, например при 644, допускается):
 ```json
 {
   "public_ip": "203.0.113.10",
@@ -592,15 +597,15 @@ Compose. AnyTLS, TUIC и ShadowTLS используют образ
 `ghcr.io/axiomshiftbit/vpnbot-protocol:dev` с sing-box и API статистики, но работают
 в трёх отдельных контейнерах. Mieru использует
 `ghcr.io/axiomshiftbit/vpnbot-mieru:dev` с сервером mita.
-`SINGBOX_VERSION=v1.14.3` управляет ядром трёх протоколов и утилитой PHP;
-`MIHOMO_VERSION=v1.19.32` — утилитой PHP; `MIERU_VERSION=v3.38.1` — mita.
+`SINGBOX_VERSION=v1.14.4` управляет ядром трёх протоколов и утилитой PHP;
+`MIHOMO_VERSION=v1.19.33` — утилитой PHP; `MIERU_VERSION=v3.38.1` — mita.
 `PROTOCOL_GO_VERSION` выбирает Go для сборки серверов и вспомогательных утилит. TUIC v5 и ShadowTLS v3
 обозначают версии протокола, а не исполняемого файла.
 
 Чтобы выбрать стабильные версии вместе с проверяемыми контрольными суммами:
 
 ```bash
-python3 scripts/update_protocol_versions.py --singbox v1.14.3 --mihomo v1.19.32 --mieru v3.38.1
+python3 scripts/update_protocol_versions.py --singbox v1.14.4 --mihomo v1.19.33 --mieru v3.38.1
 # Проверить текущие стабильные релизы без изменения файла:
 python3 scripts/update_protocol_versions.py --singbox latest --mihomo latest --mieru latest --dry-run
 ```
