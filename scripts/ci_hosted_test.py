@@ -245,6 +245,8 @@ def cleanup():
         owned_probe = name.startswith(('vpnbot-ci-retain-', 'vpnbot-warp-udp-', 'vpnbot-warp-modules-')) or name == 'vpnbot-ci-unit'
         if labels.get('com.docker.compose.project') == 'vpnbot-audit' or labels.get('vpnbot.hosted-ci') == 'true' or owned_probe:
             command('docker', 'rm', '-f', ident)
+    for network in command('docker', 'network', 'ls', '-q', '--filter', 'label=vpnbot.hosted-ci=true').split():
+        command('docker', 'network', 'rm', network)
     for network in ('vpnbot-audit_default', 'vpnbot-audit_xray', 'vpnbot-protocol-test', 'vpnbot-warp-udp-test'):
         subprocess.run(['docker', 'network', 'rm', network], capture_output=True)
     for volume in ('vpnbot-audit_adguard', 'vpnbot-audit_warp'):

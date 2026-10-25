@@ -98,7 +98,7 @@ def probe(protocol, password='upgrade-password', trusted=True):
 try:
     if run('docker', 'network', 'inspect', NET).returncode == 0:
         raise RuntimeError('refusing to reuse an existing network')
-    need('docker', 'network', 'create', '--internal', '--subnet', '198.51.100.0/24', NET); network = True
+    need('docker', 'network', 'create', '--label', 'vpnbot.hosted-ci=true', '--internal', '--subnet', '198.51.100.0/24', NET); network = True
     need('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2',
          '-keyout', OUT / 'key.pem', '-out', OUT / 'cert.pem', '-subj', '/CN=upgrade.example.test',
          '-addext', 'subjectAltName=DNS:upgrade.example.test')
@@ -133,12 +133,12 @@ class Server(socketserver.ThreadingTCPServer):
  daemon_threads=True
 Server(('0.0.0.0',80),Echo).serve_forever()
 ''')
-    need('docker', 'run', '-d', '--name', TARGET, '--network', NET, '--ip', DEST,
+    need('docker', 'run', '-d', '--name', TARGET, '--label', 'vpnbot.hosted-ci=true', '--network', NET, '--ip', DEST,
          '--entrypoint', 'python3', '-v', f'{OUT}:/probe:ro', PHP, '/probe/echo.py'); owned.append(TARGET)
-    need('docker', 'run', '-d', '--name', SERVER, '--network', NET, '--ip', ADDRESS,
+    need('docker', 'run', '-d', '--name', SERVER, '--label', 'vpnbot.hosted-ci=true', '--network', NET, '--ip', ADDRESS,
          '--entrypoint', 'caddy', '-v', f'{OUT}:/probe:ro', IMAGE, 'run', '--config', '/probe/Caddyfile'); owned.append(SERVER)
     loopback = NET+'-loopback'
-    need('docker','run','-d','--name',loopback,'--network','container:'+SERVER,
+    need('docker','run','-d','--name',loopback,'--label','vpnbot.hosted-ci=true','--network','container:'+SERVER,
          '--entrypoint','python3','-v',f'{OUT}:/probe:ro',PHP,'/probe/echo.py');owned.append(loopback)
     deadline = time.monotonic() + 15
     for address,port in ((ADDRESS,443),(ADDRESS,80),(DEST,80)):

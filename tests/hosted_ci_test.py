@@ -192,6 +192,29 @@ class HostedCITests(unittest.TestCase):
                 with self.assertRaises(ValueError): ci.cleanup()
                 docker.assert_not_called()
 
+    def test_cleanup_removes_labelled_probe_network_and_preserves_foreign_resources(self):
+        calls = []
+        def command(*args):
+            calls.append(args)
+            if args == ('docker', 'ps', '-aq'): return 'owned foreign'
+            if args[:2] == ('docker', 'inspect'):
+                name = args[2]
+                labels = {'vpnbot.hosted-ci': 'true'} if name == 'owned' else {}
+                return json.dumps([{'Name': '/' + name, 'Config': {'Labels': labels}}])
+            if args == ('docker', 'network', 'ls', '-q', '--filter', 'label=vpnbot.hosted-ci=true'):
+                return 'owned-network'
+            return ''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'stand'; root.mkdir()
+            (root / 'owner').write_text('vpnbot-hosted-ci\n')
+            with patch.object(ci, 'ROOT', root), patch.object(ci, 'command', side_effect=command), \
+                    patch.object(ci.subprocess, 'run'):
+                ci.cleanup()
+            self.assertFalse(root.exists())
+        self.assertIn(('docker', 'rm', '-f', 'owned'), calls)
+        self.assertIn(('docker', 'network', 'rm', 'owned-network'), calls)
+        self.assertNotIn(('docker', 'rm', '-f', 'foreign'), calls)
+
     def test_changes_to_fixture_code_and_bootstrap_invalidate_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); suite = root / 'tests/integration'; suite.mkdir(parents=True)

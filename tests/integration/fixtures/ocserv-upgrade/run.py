@@ -70,7 +70,7 @@ def stop_server(label):
 
 try:
     if run('docker', 'network', 'inspect', NET).returncode == 0: raise RuntimeError('network already exists')
-    need('docker', 'network', 'create', '--internal', '--subnet', '198.51.100.0/24', NET); network = True
+    need('docker', 'network', 'create', '--label', 'vpnbot.hosted-ci=true', '--internal', '--subnet', '198.51.100.0/24', NET); network = True
     need('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2',
          '-keyout', OUT/'key.pem', '-out', OUT/'cert.pem', '-subj', '/CN=upgrade.example.test',
          '-addext', 'subjectAltName=DNS:upgrade.example.test')
@@ -103,10 +103,10 @@ config-per-user = /probe/users
     (OUT/'ocserv.conf').write_text(conf)
     need('docker', 'run', '--rm', '--network', 'none', '-i', '--entrypoint', 'ocpasswd',
          '-v', f'{OUT}:/probe', IMAGE, '-c', '/probe/passwd', 'upgrade', input=(password+'\n'+password+'\n').encode())
-    need('docker', 'create', '--name', SERVER, '--network', NET, '--ip', SERVER_IP,
+    need('docker', 'create', '--name', SERVER, '--label', 'vpnbot.hosted-ci=true', '--network', NET, '--ip', SERVER_IP,
          '--cap-add=NET_ADMIN', '--device=/dev/net/tun', '--entrypoint', 'ocserv',
          '-v', f'{OUT}:/probe:ro', IMAGE, '-f', '-d', '3', '-c', '/probe/ocserv.conf'); owned.append(SERVER)
-    need('docker', 'run', '-d', '--name', CLIENT, '--network', NET, '--ip', CLIENT_IP,
+    need('docker', 'run', '-d', '--name', CLIENT, '--label', 'vpnbot.hosted-ci=true', '--network', NET, '--ip', CLIENT_IP,
          '--cap-add=NET_ADMIN', '--device=/dev/net/tun', '-v', f'{OUT}:/probe:ro', CLIENT_IMAGE); owned.append(CLIENT)
     start_server()
     pid = need('docker','inspect','--format','{{.State.Pid}}',SERVER).decode().strip()
@@ -120,7 +120,7 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(('0.0.0.0',8080),H).serve_forever()
 ''')
     echo = NET+'-echo'
-    need('docker', 'run', '-d', '--name', echo, '--network', 'container:'+SERVER,
+    need('docker', 'run', '-d', '--name', echo, '--label', 'vpnbot.hosted-ci=true', '--network', 'container:'+SERVER,
          '-v', f'{OUT}:/probe:ro', '--entrypoint', 'python3', CLIENT_IMAGE, '/probe/echo_server.py'); owned.append(echo)
     check('wrong-password-rejected', not connect('wrong', valid_password=False))
     check('TLS-profile-accepted', connect('tls'))

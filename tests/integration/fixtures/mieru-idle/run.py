@@ -15,7 +15,7 @@ try:
  shutil.copy2(CLIENT,ROOT/'mieru-client');(ROOT/'mieru-client').chmod(0o700)
  shutil.copy2(LAB/'probe.py',ROOT/'probe.py')
  need('docker','run','--rm','--network','none','--entrypoint','php','-v',f'{SOURCE}:/source:ro','-v',f'{LAB}:/fixture:ro','-v',f'{ROOT}:/probe',PHP,'/fixture/fixture.php','/source','/probe')
- need('docker','run','-d','--name',NAME,'--network','none','--entrypoint','sleep','-v',f'{ROOT}:/probe','-v',f'{SOURCE}/scripts:/source:ro',IMAGE,'infinity');created=True
+ need('docker','run','-d','--name',NAME,'--label','vpnbot.hosted-ci=true','--network','none','--entrypoint','sleep','-v',f'{ROOT}:/probe','-v',f'{SOURCE}/scripts:/source:ro',IMAGE,'infinity');created=True
  pid=need('docker','inspect','--format','{{.State.Pid}}',NAME)
  need('nsenter','-t',pid,'-n','ip','addr','add','198.51.100.2/32','dev','lo')
  r=subprocess.run(['docker','exec',NAME,'python3','/probe/probe.py'],timeout=130)
