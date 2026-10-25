@@ -11150,7 +11150,9 @@ NFT;
                 break;
         }
         if (!$this->applyCertificateBundle($bundle, $conf)) {
-            $this->update($this->input['chat'], $this->input['message_id'], $this->t("неверный формат ключа", "wrong format key"));
+            $this->update($this->input['chat'], $this->input['message_id'], $this->t(
+                'Не удалось установить сертификат: проверьте ключ, цепочку сертификатов и доступность файлов',
+                'Could not install the certificate: check the key, certificate chain and file access'));
         }
         sleep(3);
         $this->menu('config');
