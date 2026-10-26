@@ -288,6 +288,16 @@ jobs:
             -v "$PWD/scripts/start_ad.sh:/entrypoint-under-test.sh:ro" \
             "$image" /test.sh
 
+      - name: Проверить остановку и восстановление AdGuard
+        if: matrix.service == 'ad'
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-ad:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --rm --network=none --entrypoint sh -e VPNBOT_IMAGE_TEST=1 \
+            -v "$PWD/tests/adguard_lifecycle_test.sh:/test.sh:ro" \
+            -v "$PWD/app/adguard_control.sh:/control-under-test.sh:ro" \
+            "$image" /test.sh
+
       # Режим WARP через MASQUE целиком зависит от образа wg: openssl для ключа
       # устройства, ядро прокси с поддержкой WARP в MASQUE и то, что оно
       # принимает конфиг, собранный скриптом режима. Cloudflare не нужен.

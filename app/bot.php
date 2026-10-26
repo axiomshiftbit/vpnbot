@@ -13104,12 +13104,25 @@ DNS-over-HTTPS with IP:
 
     public function startAd()
     {
-        return $this->ssh('/opt/adguardhome/AdGuardHome --no-check-update --pidfile /opt/adguardhome/pid -c /config/AdGuardHome.yaml -h 0.0.0.0 -w /opt/adguardhome/work', 'ad', false);
+        return $this->controlAd('start', 'VPNBOT_AD_STARTED');
     }
 
     public function stopAd()
     {
-        return $this->ssh('kill -15 $(cat /opt/adguardhome/pid)', 'ad');
+        return $this->controlAd('stop', 'VPNBOT_AD_STOPPED');
+    }
+
+    private function controlAd(string $action, string $marker): string
+    {
+        if (!$this->protocolModuleEnabled('ad')) return '';
+        $script = file_get_contents(__DIR__ . '/adguard_control.sh');
+        // Синхронно: запись YAML и следующий запуск допустимы лишь после
+        // завершения старого процесса, а не после отправки ему SIGTERM.
+        $result = $this->ssh('sh -c ' . escapeshellarg($script) . ' -- ' . $action, 'ad');
+        if (trim($result) !== $marker) {
+            throw new RuntimeException($this->t('Не удалось остановить или запустить AdGuard', 'Could not stop or start AdGuard'));
+        }
+        return '';
     }
 
     public function selfsslInstall()
