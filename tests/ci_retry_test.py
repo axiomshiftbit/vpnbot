@@ -213,14 +213,21 @@ class WorkflowRetryTest(unittest.TestCase):
             with self.subTest(path.parent.name):
                 steps = yaml.safe_load(path.read_text())['runs']['steps']
                 attempts = [s for s in steps if 'uses' in s]
-                waits = [s for s in steps if 'run' in s]
+                waits = [s for s in steps if s.get('run', '').startswith('sleep ')]
                 self.assertEqual(len(attempts), 4)
                 self.assertEqual(len({s['uses'] for s in attempts}), 1)
                 self.assertRegex(attempts[0]['uses'], r'@[0-9a-f]{40}$')
                 self.assertEqual(len({str(s['with']) for s in attempts}), 1)
                 self.assertTrue(all(s.get('continue-on-error') is True for s in attempts[:3]))
                 self.assertNotIn('continue-on-error', attempts[3])
-                self.assertNotIn('if', attempts[0])
+                if path.parent.name in ('upload-artifact', 'download-artifact'):
+                    self.assertEqual(attempts[0]['if'], "runner.environment != 'self-hosted'")
+                    local = [s for s in steps if s.get('if') == "runner.environment == 'self-hosted'"]
+                    self.assertEqual(len(local), 1)
+                    self.assertIn('sudo env -i', local[0]['run'])
+                    self.assertIn('scripts/ci_local_artifacts.py', local[0]['run'])
+                else:
+                    self.assertNotIn('if', attempts[0])
                 for index in (1, 2, 3):
                     self.assertEqual(attempts[index]['if'], f"steps.attempt{index}.outcome == 'failure'")
                 self.assertEqual([s['run'] for s in waits], ['sleep 15', 'sleep 45', 'sleep 90'])

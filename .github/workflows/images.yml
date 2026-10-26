@@ -590,5 +590,21 @@ jobs:
         env:
           PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
         run: python3 scripts/ci_promote_master.py
+  cleanup-artifacts:
+    needs: [publish, release]
+    if: always() && github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && needs.publish.result == 'success' && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: [self-hosted, Linux, X64, vpnbot-home]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Удалить промежуточные JSON завершённого запуска
+        run: |
+          sudo env -i PATH=/usr/bin:/bin \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" RUNNER_TEMP="$RUNNER_TEMP" \
+            python3 scripts/ci_local_artifacts.py cleanup
 # Old sha-only garbage collection could delete images referenced by a retained
 # bundle. Keep released candidates until a bundle-aware retention job is added.

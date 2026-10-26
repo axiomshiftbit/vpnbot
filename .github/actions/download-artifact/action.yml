@@ -2,7 +2,7 @@
 # сборку или стенд: Загрузка артефакта повторяется после пауз 15, 45, 90 с.
 # Последняя попытка идёт без continue-on-error и решает исход шага.
 name: Загрузка артефакта с повторами
-description: Повторяет действие при сетевом сбое
+description: JSON на HomeBuild; на GitHub повторяет передачу при сетевом сбое
 inputs:
   name:
     required: false
@@ -18,8 +18,23 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Передать JSON через хранилище HomeBuild
+      if: runner.environment == 'self-hosted'
+      shell: bash
+      env:
+        ARTIFACT_NAME: ${{ inputs.name }}
+        ARTIFACT_PATH: ${{ inputs.path }}
+        ARTIFACT_PATTERN: ${{ inputs.pattern }}
+        ARTIFACT_MERGE: ${{ inputs.merge-multiple }}
+      run: |
+        sudo env -i PATH=/usr/bin:/bin \
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
+          GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+          RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" RUNNER_TEMP="$RUNNER_TEMP" \
+          python3 scripts/ci_local_artifacts.py download --name "$ARTIFACT_NAME" --path "$ARTIFACT_PATH" --pattern "$ARTIFACT_PATTERN" --merge-multiple "$ARTIFACT_MERGE"
     - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
       id: attempt1
+      if: runner.environment != 'self-hosted'
       continue-on-error: true
       with:
         name: ${{ inputs.name }}
