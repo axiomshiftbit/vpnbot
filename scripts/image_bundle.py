@@ -227,13 +227,10 @@ def compose_files(root, env):
     """Add pins to every lifecycle operation, including disabled -> recreated."""
     root = Path(root)
     # The network is host-specific and opt-in. Backup data alone cannot enable it.
+    # Only presence matters: the network does not use the marker contents, and a
+    # damaged marker must neither drop the network nor stop every service. The
+    # bot treats the same file as attached and keeps the default outbound IPv4.
     enabled6 = (root / 'config/ipv6-egress.json').exists()
-    if enabled6:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('ipv6_egress', Path(__file__).with_name('ipv6_egress.py'))
-        ipv6 = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(ipv6)
-        ipv6.load(root)
     separator = env.get('COMPOSE_PATH_SEPARATOR', os.pathsep)
     files = env.get('COMPOSE_FILE', '').split(separator) if env.get('COMPOSE_FILE') else ['docker-compose.yml']
     if not env.get('COMPOSE_FILE') and (root / 'docker-compose.override.yml').is_file():

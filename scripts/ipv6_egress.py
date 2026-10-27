@@ -28,14 +28,6 @@ def validate(value):
     return {'enabled': True, 'public': str(address), 'interface': interface}
 
 
-def load(root):
-    path = Path(root) / 'config/ipv6-egress.json'
-    if not path.exists():
-        return None
-    # A malformed marker must not silently remove the IPv6 network.
-    return validate(json.loads(path.read_text()))
-
-
 def check_xray(root):
     # Только проверяем; не печатаем конфигурацию с учётными данными клиентов.
     config = json.loads((Path(root) / 'config/xray.json').read_text())

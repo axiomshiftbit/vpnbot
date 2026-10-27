@@ -135,9 +135,21 @@ trait BotExitNodes
     /** Настройка сети относится к хосту: чужой бэкап не включает IPv6/Docker. */
     protected function exitIpv6Network(): array
     {
-        $p = @json_decode((string) @file_get_contents(dirname($this->pac) . '/ipv6-egress.json'), true);
+        $p = @json_decode((string) @file_get_contents($this->exitIpv6Marker()), true);
         return is_array($p) && ($p['enabled'] ?? false) === true
             && filter_var($p['public'] ?? '', FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) ? $p : [];
+    }
+
+    private function exitIpv6Marker(): string
+    {
+        return dirname($this->pac) . '/ipv6-egress.json';
+    }
+
+    // Compose подключает сеть к xr по одному наличию маркера, даже повреждённого:
+    // обычный выход закрепляем за IPv4 по тому же признаку, а не по его разбору.
+    protected function exitIpv6Attached(): bool
+    {
+        return is_file($this->exitIpv6Marker());
     }
 
     public function exitIpv6Outbound(): array
@@ -226,18 +238,70 @@ trait BotExitNodes
     /** Без всех селекторов строгого узла нельзя безопасно выбрать запасной маршрут. */
     public function exitNodeRoutesReady(array $node, ?array $entries = null): bool
     {
+        return !$this->exitNodeRouteProblems($node, $entries);
+    }
+
+    /** Наборы без кэша и записи без .dat или неверные: из-за них маршруты узла не собрать. */
+    public function exitNodeRouteProblems(array $node, ?array $entries = null): array
+    {
+        $problems = [];
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set) || empty($set['on'])) continue;
             $cached = $this->exitRulesetCache((string) $url)['entries'] ?? [];
-            if (!is_array($cached) || !$cached) return false;
+            if (!is_array($cached) || !$cached) $problems[] = (string) $url;
         }
         foreach (array_keys($entries ?? $this->exitNodeEntries($node)) as $entry) {
-            $c = $this->classifyRouteEntry((string) $entry);
-            if (!$this->routeEntryUsable($c)) return false;
-            if (in_array($c['kind'], ['ext', 'extip'], true) && !$this->datFileReady($c['value'])) return false;
-            if (in_array($c['kind'], ['geosite', 'geoip'], true) && !$this->datFileReady(self::CORE_DAT[$c['kind']])) return false;
+            if (!$this->exitRouteEntryReady((string) $entry)) $problems[] = (string) $entry;
         }
+        return $problems;
+    }
+
+    public function exitRouteEntryReady(string $entry): bool
+    {
+        $c = $this->classifyRouteEntry($entry);
+        if (!$this->routeEntryUsable($c)) return false;
+        if (in_array($c['kind'], ['ext', 'extip'], true)) return $this->datFileReady($c['value']);
+        if (in_array($c['kind'], ['geosite', 'geoip'], true)) return $this->datFileReady(self::CORE_DAT[$c['kind']]);
         return true;
+    }
+
+    // Записи наборов проверены при разборе и правкой не меняются: правке
+    // достаточно наличия кэша наборов и готовности собственных записей узла.
+    // С $was (узел до правки, уже строгий) кэш перечитывается только у наборов,
+    // которые включила сама правка: файлы кэша бывают по несколько МиБ.
+    private function exitStrictProblems(array $node, ?array $was = null): array
+    {
+        if (empty($node['enabled']) || ($node['fallback'] ?? '') !== 'block') return [];
+        if ($was !== null && !empty($was['enabled']) && ($was['fallback'] ?? '') === 'block') {
+            foreach (array_keys($node['rulesets']) as $url) if (!empty($was['rulesets'][$url]['on'])) unset($node['rulesets'][$url]);
+        }
+        return $this->exitNodeRouteProblems($node, array_filter($node['routes']));
+    }
+
+    /** Строгий узел: скачать недостающие .dat для записей до их сохранения. */
+    private function exitFetchDat(array $entries): void
+    {
+        $sources = [];
+        foreach (array_keys(array_filter($this->getPacConf()['datlist'] ?? [])) as $key) {
+            if (preg_match('~^([\w.\-]+\.dat):(https://\S+)$~i', (string) $key, $m)) $sources[strtolower(basename($m[1]))] ??= [basename($m[1]), $m[2]];
+        }
+        $done = [];
+        foreach ($entries as $entry => $on) {
+            if (!$on || $this->exitRouteEntryReady((string) $entry)) continue;
+            $c = $this->classifyRouteEntry((string) $entry);
+            if (isset(self::CORE_DAT[$c['kind']])) {
+                // Свой источник встроенного имени в реестре главнее (как в datSync).
+                $file = self::CORE_DAT[$c['kind']];
+                [$file, $url] = $sources[$file] ?? [$file, self::CORE_DAT_URL[$file]];
+            } elseif (in_array($c['kind'], ['ext', 'extip'], true) && isset($sources[$name = strtolower(basename(explode(':', $c['value'], 2)[0]))])) {
+                [$file, $url] = $sources[$name];
+            } else {
+                continue;
+            }
+            if (isset($done[$file])) continue;
+            $done[$file] = true;
+            $this->datDownload($file, $url);
+        }
     }
 
     // Каталог кэша наборов; в тестах подменяется, чтобы не тронуть /logs сервера.
@@ -291,7 +355,7 @@ trait BotExitNodes
 
         $probe = $rules = $unavailable = [];
         $balanced = false;
-        $ipv6 = !empty($this->exitIpv6Network()['enabled']);
+        $ipv6 = $this->exitIpv6Attached();
         $relay = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
             if (!empty($client['exit_relay']) && !empty($client['exit_ipv6']) && empty($client['off']) && !empty($client['email'])) $relay[] = $client['email'];
@@ -412,6 +476,8 @@ trait BotExitNodes
     public const EXIT_STATUS_FILE = '/config/exit-nodes.status.json';
     public const EXIT_CRON_PERIOD = 300;
     private int $exitCronAt = 0;
+    // Записи, из-за которых exitEditNode отклонил правку строгого узла.
+    private array $exitNotReady = [];
 
     public function exitStatus(): array
     {
@@ -756,7 +822,9 @@ trait BotExitNodes
             $now = $this->exitProbe($id, $full);
             $name = self::esc($node['name'] !== '' ? $node['name'] : $id);
             if ($before && !empty($before['ok']) !== !empty($now['ok'])) {
-                $this->notifyAdmins((!empty($now['ok']) ? $this->t('🟢 Узел выхода снова работает: ', '🟢 Exit node is working again: ') : $this->t('🔴 Узел выхода не отвечает, трафик идёт напрямую: ', '🔴 Exit node is not responding, traffic goes direct: '))
+                $this->notifyAdmins((!empty($now['ok']) ? $this->t('🟢 Узел выхода снова работает: ', '🟢 Exit node is working again: ')
+                    : ($node['fallback'] === 'block' ? $this->t('🔴 Узел выхода не отвечает, его назначения блокируются (запасного выхода нет): ', '🔴 Exit node is not responding; its destinations are blocked (no fallback): ')
+                        : $this->t('🔴 Узел выхода не отвечает, трафик идёт напрямую: ', '🔴 Exit node is not responding, traffic goes direct: ')))
                     . $name);
             }
             // Страна, которую видит YouTube, сменилась: видео и рекомендации
@@ -793,7 +861,9 @@ trait BotExitNodes
             $warnings[] = $this->t('⛔ Не готовы правила строгого узла: нет набора/.dat или есть неверная запись. Трафик назначенных пользователей временно блокируется целиком. Восстановите наборы или явно выключите узел.', '⛔ Strict node rules are unavailable: a set/.dat is missing or an entry is invalid. All traffic of assigned users is temporarily blocked. Restore the sets or explicitly disable the node.');
         }
         if (($node['kind'] ?? '') === 'ipv6') {
-            if (empty($this->exitIpv6Network()['enabled'])) $warnings[] = $this->t('⚠️ Сеть IPv6 ещё не подготовлена на хосте. Выбранные назначения будут недоступны до настройки сети и firewall; запасного IPv4 нет.', '⚠️ The host IPv6 network is not prepared. Selected destinations remain unavailable until networking and the firewall are configured; there is no IPv4 fallback.');
+            if (empty($this->exitIpv6Network()['enabled'])) $warnings[] = $this->exitIpv6Attached()
+                ? $this->t('⚠️ Файл настройки IPv6 (config/ipv6-egress.json) повреждён: повторите подготовку на хосте. Пока он не исправлен, адрес выхода не сверяется с настроенным.', '⚠️ The IPv6 settings file (config/ipv6-egress.json) is damaged: repeat the host preparation. Until it is fixed, the egress address is not compared with the configured one.')
+                : $this->t('⚠️ Сеть IPv6 ещё не подготовлена на хосте. Выбранные назначения будут недоступны до настройки сети и firewall; запасного IPv4 нет.', '⚠️ The host IPv6 network is not prepared. Selected destinations remain unavailable until networking and the firewall are configured; there is no IPv4 fallback.');
             $warnings[] = $this->t('Только IPv6: домену нужна AAAA-запись. IPv4/CIDR выбирает маршрут, но не превращает адрес в IPv6.', 'IPv6 only: a domain needs an AAAA record. An IPv4/CIDR rule selects a route but does not translate the address to IPv6.');
         }
         $sniff = $this->sniffingSettings($p, $this->getXray()['inbounds'][0]['sniffing'] ?? null);
@@ -940,6 +1010,8 @@ trait BotExitNodes
             'exit duplicate' => $this->t('Такой узел уже есть', 'This node already exists'),
             'exit check failed' => $this->t('Ядро Xray не приняло изменение — оставлены прежние настройки (проверьте записи regexp: и .dat)', 'The Xray core rejected the change; the previous settings are kept (check regexp: and .dat entries)'),
             'exit not found' => $this->t('Узел не найден', 'Node not found'),
+            'exit not ready' => $this->t('Не сохранено: у строгого узла не готовы записи (нет .dat, набор не скачан или запись неверна), и весь трафик его пользователей был бы заблокирован. Исправьте или удалите: ', 'Not saved: the strict node has unavailable entries (missing .dat, set not downloaded or invalid entry), so all traffic of its users would be blocked. Fix or remove: ')
+                . implode(', ', array_map(static fn($e) => mb_substr($e, 0, 80), array_slice($this->exitNotReady, 0, 3))) . (count($this->exitNotReady) > 3 ? ' …' : ''),
             default => $this->t('Не удалось сохранить', 'Could not save'),
         };
     }
@@ -949,9 +1021,15 @@ trait BotExitNodes
     {
         return $this->applyExitNodes(function (array &$p) use ($id, $edit) {
             if (!isset($this->exitNodes($p)[$id])) return 'exit not found';
-            $node = $this->exitNodes($p)[$id];
+            $node = $was = $this->exitNodes($p)[$id];
+            $before = $this->exitStrictProblems($node);
             $error = $edit($node);
             if (is_string($error) && $error !== '') return $error;
+            // Неготовая запись строгого узла закрыла бы его пользователям весь
+            // трафик: такую правку не сохраняем. Прежние сбои (кэш пропал сам)
+            // не мешают править узел — их показывает карточка.
+            $this->exitNotReady = array_values(array_diff($this->exitStrictProblems($node, $was), $before));
+            if ($this->exitNotReady) return 'exit not ready';
             $p['exits'][$id] = $node;
             return '';
         });
@@ -1154,10 +1232,11 @@ trait BotExitNodes
             . $this->t('Наборы правил sing-box (.srs) и Mihomo (.mrs) — в «Наборы .srs/.mrs».', 'sing-box (.srs) and Mihomo (.mrs) rule sets are under Sets .srs/.mrs.'), 'saveExitRoutes', [$id]);
     }
 
-    /** Добавить записи (запись => 1|0) к маршрутам узла без повторов; [добавлено, пропущено]. */
+    /** Добавить записи (запись => 1|0) к маршрутам узла без повторов; [добавлено, пропущено, не готовы для строгого узла]. */
     public function exitMergeRoutes(array &$node, array $entries): array
     {
         $added = $skipped = 0;
+        $unready = [];
         $seen = [];
         foreach (array_keys($node['routes']) as $key) if (($canon = $this->routeEntryCanonKey((string) $key)) !== '') $seen[$canon] = true;
         foreach ($entries as $entry => $on) {
@@ -1166,31 +1245,49 @@ trait BotExitNodes
             $canon = $this->routeEntryCanonKey($entry);
             if ($entry === '' || mb_strlen($entry) > 300 || !$this->routeEntryUsable($c) || isset($seen[$canon])) { $skipped++; continue; }
             if (count($node['routes']) >= 2000) { $skipped++; continue; }
+            // Строгому узлу запись без .dat закрыла бы весь трафик его пользователей.
+            if ($on && ($node['fallback'] ?? '') === 'block' && !$this->exitRouteEntryReady($entry)) { $unready[] = $entry; continue; }
             $node['routes'][$entry] = $on ? 1 : 0;
             $seen[$canon] = true;
             $added++;
         }
-        return [$added, $skipped];
+        return [$added, $skipped, $unready];
+    }
+
+    /** Строгий ли узел (запасного выхода нет): локальный IPv6 или «При отказе: блок». */
+    private function exitStrict(string $id): bool
+    {
+        return ($this->exitNodes()[$id]['fallback'] ?? '') === 'block';
+    }
+
+    private function exitUnreadyNote(array $unready): string
+    {
+        if (!$unready) return '';
+        return $this->t(', не принято (строгий узел: нет .dat, набор не скачан или пуст): ', ', not accepted (strict node: missing .dat, set not downloaded or empty): ')
+            . count($unready) . ' — ' . implode(', ', array_map(static fn($e) => mb_substr((string) $e, 0, 80), array_slice($unready, 0, 3))) . (count($unready) > 3 ? ' …' : '');
     }
 
     public function saveExitRoutes($text, $id, array $preset = []): bool
     {
         $entries = $preset ?: $this->splitRouteInput((string) $text);
         $added = $skipped = 0;
-        $error = $this->exitEditNode((string) $id, function (array &$node) use ($entries, &$added, &$skipped) {
-            // Ключи массива: числовая строка («123») стала бы числом — берём по одной.
-            $map = [];
-            $dups = 0;
-            foreach ($entries as $entry) {
-                $entry = trim((string) $entry);
-                if (isset($map[$entry])) { $dups++; continue; }
-                $map[$entry] = 1;
-            }
-            [$added, $skipped] = $this->exitMergeRoutes($node, $map);
+        $unready = [];
+        // Ключи массива: числовая строка («123») стала бы числом — берём по одной.
+        $map = [];
+        $dups = 0;
+        foreach ($entries as $entry) {
+            $entry = trim((string) $entry);
+            if (isset($map[$entry])) { $dups++; continue; }
+            $map[$entry] = 1;
+        }
+        // Строгому узлу .dat нужен сразу: без него запись не будет принята.
+        if ($this->exitStrict((string) $id)) $this->exitFetchDat($map);
+        $error = $this->exitEditNode((string) $id, function (array &$node) use ($map, $dups, &$added, &$skipped, &$unready) {
+            [$added, $skipped, $unready] = $this->exitMergeRoutes($node, $map);
             $skipped += $dups;
             return '';
         });
-        $this->exitRoutesMenu((string) $id, PHP_INT_MAX, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : ''));
+        $this->exitRoutesMenu((string) $id, PHP_INT_MAX, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : '') . $this->exitUnreadyNote($unready));
         return $error === '';
     }
 
@@ -1330,13 +1427,15 @@ trait BotExitNodes
     private function exitImportInto(string $id, array $routes, array $sets, string $prefix = ''): void
     {
         $added = $skipped = $setsAdded = 0;
-        $newSets = [];
+        $newSets = $unready = [];
         // Набор с тем же адресом уже мог быть разобран для другого узла.
         $this->exitRulesetPrefetch($id, $sets, false);
-        $error = $this->exitEditNode($id, function (array &$node) use ($routes, $sets, &$added, &$skipped, &$setsAdded, &$newSets) {
-            [$added, $skipped] = $this->exitMergeRoutes($node, $routes);
+        if ($this->exitStrict($id)) $this->exitFetchDat($routes);
+        $error = $this->exitEditNode($id, function (array &$node) use ($routes, $sets, &$added, &$skipped, &$setsAdded, &$newSets, &$unready) {
+            [$added, $skipped, $unready] = $this->exitMergeRoutes($node, $routes);
             foreach ($sets as $url => $set) {
                 if (!is_array($set) || isset($node['rulesets'][$url]) || count($node['rulesets']) >= 20) continue;
+                if (!empty($set['on']) && $node['fallback'] === 'block' && !($this->exitRulesetCache((string) $url)['entries'] ?? [])) { $unready[] = (string) $url; continue; }
                 $node['rulesets'][$url] = ['on' => empty($set['on']) ? 0 : 1, 'behavior' => ($set['behavior'] ?? 'domain') === 'ipcidr' ? 'ipcidr' : 'domain',
                     'interval' => max(3600, (int) ($set['interval'] ?? 86400))];
                 $newSets[$url] = $node['rulesets'][$url];
@@ -1345,7 +1444,7 @@ trait BotExitNodes
             return '';
         });
         $this->exitRoutesMenu($id, 0, $error !== '' ? $this->exitError($error)
-            : $prefix . $this->t("маршрутов добавлено $added, наборов $setsAdded", "routes added $added, sets $setsAdded") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : ''));
+            : $prefix . $this->t("маршрутов добавлено $added, наборов $setsAdded", "routes added $added, sets $setsAdded") . ($skipped ? $this->t(", пропущено (повтор или неверная запись): $skipped", ", skipped (duplicate or invalid entry): $skipped") : '') . $this->exitUnreadyNote($unready));
     }
 
     public function exitExport(string $id): void
@@ -1426,6 +1525,9 @@ trait BotExitNodes
     public function exitRouteToggle(string $id, string $key, bool $delete = false): void
     {
         $page = 0;
+        $node = $this->exitNodes()[$id] ?? null;
+        $entry = $node === null || $delete ? null : $this->exitFindEntry($node, $key);
+        if ($entry !== null && empty($node['routes'][$entry]) && $this->exitStrict($id)) $this->exitFetchDat([$entry => 1]);
         $error = $this->exitEditNode($id, function (array &$node) use ($key, $delete, &$page) {
             $entry = $this->exitFindEntry($node, $key);
             if ($entry === null) return '';
@@ -1484,15 +1586,18 @@ trait BotExitNodes
         // Наборы скачиваются и разбираются до сохранения узла: тогда Xray
         // перезапускается один раз и сразу с их записями.
         $this->exitRulesetPrefetch((string) $id, $new, true);
-        $error = !$new ? '' : $this->exitEditNode((string) $id, static function (array &$node) use ($new, &$added) {
+        $unready = [];
+        $error = !$new ? '' : $this->exitEditNode((string) $id, function (array &$node) use ($new, &$added, &$unready) {
             foreach ($new as $url => $set) {
                 if (isset($node['rulesets'][$url]) || count($node['rulesets']) >= 20) continue;
+                // Строгий узел с нескачанным набором закрыл бы весь трафик своих пользователей.
+                if ($node['fallback'] === 'block' && !($this->exitRulesetCache((string) $url)['entries'] ?? [])) { $unready[] = (string) $url; continue; }
                 $node['rulesets'][$url] = $set;
                 $added++;
             }
             return '';
         });
-        $this->exitSetsMenu((string) $id, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($bad ? $this->t(", не подошло (нужна https:// ссылка на .srs или .mrs): $bad", ", did not fit (an https:// link to .srs or .mrs is needed): $bad") : ''));
+        $this->exitSetsMenu((string) $id, $error !== '' ? $this->exitError($error) : $this->t("Добавлено: $added", "Added: $added") . ($bad ? $this->t(", не подошло (нужна https:// ссылка на .srs или .mrs): $bad", ", did not fit (an https:// link to .srs or .mrs is needed): $bad") : '') . $this->exitUnreadyNote($unready));
     }
 
     /**
@@ -1517,6 +1622,12 @@ trait BotExitNodes
     public function exitSetToggle(string $id, string $key, bool $delete = false): void
     {
         $removed = null;
+        // Включаемый набор строгого узла скачиваем заранее: без кэша правка отклоняется.
+        $node = $this->exitNodes()[$id] ?? null;
+        $url = $node === null || $delete ? null : $this->exitFindEntry($node, $key, 'rulesets');
+        if ($url !== null && empty($node['rulesets'][$url]['on']) && $this->exitStrict($id) && !($this->exitRulesetCache($url)['entries'] ?? [])) {
+            $this->exitRulesetRefresh($url, $node['rulesets'][$url]);
+        }
         $error = $this->exitEditNode($id, function (array &$node) use ($key, $delete, &$removed) {
             $url = $this->exitFindEntry($node, $key, 'rulesets');
             if ($url === null) return '';
@@ -1826,12 +1937,17 @@ trait BotExitNodes
 
     private function exitTraceOutbound(string $to): string
     {
+        if ($to === self::EXIT_IPV6_TAG) {
+            return '🌍 ' . $this->t('через IPv6 этого сервера (профиль для узла «Выход: только IPv6»)', 'through this server’s IPv6 (node profile “Egress: IPv6 only”)');
+        }
         if (str_starts_with($to, self::EXIT_TAG)) {
             $id = substr($to, strlen(self::EXIT_TAG));
             $node = $this->exitNodes()[$id] ?? null;
             $line = '🌍 ' . $this->t('через узел ', 'through node ') . '<b>' . ($node ? $this->exitName($id, $node) : self::esc($id)) . '</b>';
             $s = $this->exitStatus()[$id] ?? [];
-            if ($s && empty($s['ok'])) $line .= $this->t(' — сейчас узел не отвечает, поэтому напрямую', ': the node is not answering now, so direct');
+            if ($s && empty($s['ok'])) $line .= $node && $node['fallback'] === 'block'
+                ? $this->t(' — сейчас узел не отвечает, поэтому соединение будет закрыто (запасного выхода нет)', ': the node is not answering now, so the connection will be closed (no fallback)')
+                : $this->t(' — сейчас узел не отвечает, поэтому напрямую', ': the node is not answering now, so direct');
             if ($node && $node['quic'] === 'block') $line .= $this->t("\n   QUIC (UDP 443) к нему блокируется: браузер перейдёт на TCP", "\n   QUIC (UDP 443) to it is blocked: the browser switches to TCP");
             return $line;
         }
@@ -1937,6 +2053,11 @@ trait BotExitNodes
             [['text' => $this->i18n('back'), 'callback_data' => '/exitRelay']],
         ];
         if (!empty($client['exit_ipv6'])) $text[] = $this->t('Для этой учётки весь разрешённый трафик выходит только через IPv6 этого сервера. На основном сервере выберите «При отказе: блок». Нужна подготовленная сеть IPv6; домену нужна AAAA-запись.', 'All permitted traffic for this account exits only through this server’s IPv6. Select “On failure: block” on the main server. The IPv6 network must be prepared; domains need AAAA records.');
+        if (!empty($client['exit_ipv6']) && empty($this->exitIpv6Network()['enabled'])) {
+            $text[] = $this->exitIpv6Attached()
+                ? $this->t('⚠️ Файл настройки IPv6 (config/ipv6-egress.json) повреждён: повторите подготовку на хосте.', '⚠️ The IPv6 settings file (config/ipv6-egress.json) is damaged: repeat the host preparation.')
+                : $this->t('⚠️ Сеть IPv6 на этом сервере не подготовлена: сейчас весь трафик этого профиля блокируется. Подготовьте сеть по README или верните «Выход: обычный».', '⚠️ The IPv6 network is not prepared on this server: all traffic of this profile is blocked now. Prepare the network as described in the README or switch back to “Egress: normal”.');
+        }
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 

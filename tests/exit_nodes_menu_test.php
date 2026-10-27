@@ -440,6 +440,70 @@ $check(empty($v6->confXray['inbounds'][0]['settings']['clients'][1]['exit_ipv6']
 $v6->restartOk = false;
 $v6->exitRelayIpv6(0);
 $check(empty($v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_ipv6']), 'откат при отказе перезапуска сохраняет прежний режим');
+
+// Строгий узел не принимает записи, из-за которых он закрыл бы весь трафик пользователей.
+$datDir = sys_get_temp_dir() . '/exit-strict-dat-' . getmypid();
+@mkdir($datDir, 0700, true);
+$strict = new class extends ExitMenuBot {
+    public string $dir = '';
+    public bool $datOk = false;
+    public array $datFetched = [];
+    public function datDir(): string { return $this->dir; }
+    public function datDownload(string $name, string $url, ?bool &$changed = null): string
+    {
+        $this->datFetched[] = [$name, $url];
+        if (!$this->datOk) return 'http 404';
+        file_put_contents($this->datPath($name), 'DAT');
+        return '';
+    }
+};
+$strict->dir = $datDir;
+$strict->exitIpv6Add();
+$sid = (string) array_key_first($strict->confPac['exits']);
+$strict->saveExitRoutes('domain:ok.example geosite:youtube ext:typo-missing.dat:youtube', $sid);
+$routes = $strict->exitNodes()[$sid]['routes'];
+$check(isset($routes['domain:ok.example']) && !isset($routes['geosite:youtube']) && !isset($routes['ext:typo-missing.dat:youtube']), 'строгий узел: записи без .dat не приняты, остальные сохранены');
+$check(str_contains($strict->last()[0], 'не принято') && str_contains($strict->last()[0], 'geosite:youtube'), 'строгий узел: ответ называет непринятые записи');
+$check($strict->datFetched === [['geosite.dat', Bot::CORE_DAT_URL['geosite.dat']]], 'строгий узел: встроенный .dat скачивается сразу, неизвестный ext: — нет');
+$strict->datOk = true;
+$strict->saveExitRoutes('geosite:youtube', $sid);
+$check(!empty($strict->exitNodes()[$sid]['routes']['geosite:youtube']), 'строгий узел: запись принята, когда .dat скачался');
+$strict->saveExitSets('https://sets.example/broken.srs', $sid);
+$check(!$strict->exitNodes()[$sid]['rulesets'] && str_contains($strict->last()[0], 'broken.srs'), 'строгий узел: нескачанный набор не добавлен');
+$strict->confPac['exits'][$sid]['routes']['ext:later.dat:x'] = 0;
+$key = Bot::exitEntryKey('ext:later.dat:x');
+$strict->exitRouteToggle($sid, $key);
+$check(empty($strict->exitNodes()[$sid]['routes']['ext:later.dat:x']) && str_contains($strict->last()[0], 'Не сохранено'), 'строгий узел: неготовую запись нельзя включить');
+$strict->confPac['exits'][$sid]['rulesets']['https://sets.example/broken2.srs'] = ['on' => 0, 'behavior' => 'domain', 'interval' => 86400];
+$strict->exitSetToggle($sid, Bot::exitEntryKey('https://sets.example/broken2.srs'));
+$check(empty($strict->exitNodes()[$sid]['rulesets']['https://sets.example/broken2.srs']['on']), 'строгий узел: нескачанный набор нельзя включить');
+// Обычная нода (запасной выход напрямую) сохраняет прежнее поведение.
+$legacy = new ExitMenuBot();
+$lid = 'a1b2c3d4';
+$legacy->confPac['exits'] = [$lid => ['link' => $link]];
+$legacy->saveExitSets('https://sets.example/broken.srs', $lid);
+$check(isset($legacy->exitNodes()[$lid]['rulesets']['https://sets.example/broken.srs']), 'обычная нода: набор добавляется, как раньше');
+$legacy->exitFallback($lid);
+$check($legacy->exitNodes()[$lid]['fallback'] === 'direct' && str_contains($legacy->last()[0], 'broken.srs'), 'переход в строгий режим отклонён, пока набор не скачан');
+$legacy->exitSetToggle($lid, Bot::exitEntryKey('https://sets.example/broken.srs'), true);
+$legacy->exitFallback($lid);
+$check($legacy->exitNodes()[$lid]['fallback'] === 'block', 'готовая нода переходит в строгий режим');
+// Тексты отказа строгого узла: уведомление и «Куда пойдёт домен» не обещают прямой выход.
+$legacy->status = [$lid => ['ok' => true, 'time' => time() - 60]];
+$legacy->probeAnswer = "probe=000 0\n";
+$legacy->checkExitNodes();
+$check(str_contains(implode("\n", $legacy->notified), 'блокируются') && !str_contains(implode("\n", $legacy->notified), 'напрямую'), 'уведомление об отказе строгого узла: блокировка');
+$legacy->status = [$lid => ['ok' => false, 'time' => time()]];
+$trace = new ReflectionMethod(Bot::class, 'exitTraceOutbound');
+$check(str_contains($trace->invoke($legacy, 'vpnbot-exit-' . $lid), 'будет закрыто'), '«Куда пойдёт домен»: строгий узел без ответа закрывает соединение');
+$check(str_contains($trace->invoke($legacy, Bot::EXIT_IPV6_TAG), 'IPv6 этого сервера'), '«Куда пойдёт домен»: служебный IPv6 не выдаётся за узел');
+// Карточка служебного профиля предупреждает, что сеть IPv6 не подготовлена.
+$v6->restartOk = true;
+$v6->exitRelayIpv6(0);
+$v6->exitRelayLink(0);
+$check(str_contains($v6->last()[0], 'не подготовлена'), 'профиль «только IPv6» без сети: предупреждение');
+array_map('unlink', glob("$datDir/*") ?: []);
+@rmdir($datDir);
 @unlink($statusFile);
 $cacheDir = sys_get_temp_dir() . '/exit-rulesets-test-' . getmypid();
 array_map('unlink', glob("$cacheDir/*") ?: []);

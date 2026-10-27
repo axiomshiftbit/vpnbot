@@ -15,6 +15,8 @@ class Ipv6ExitBot extends Bot
     public function getPacConf() { return $this->p; }
     public function getXray() { return $this->x; }
     protected function exitIpv6Network(): array { return $this->network; }
+    public bool $attached = false;
+    protected function exitIpv6Attached(): bool { return $this->attached; }
     public function exitStatus(): array { return []; }
     protected function exitStatusWrite(string $id, array $status): void { $this->saved[$id] = $status; }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->sshFailed = false; return $this->answerText; }
@@ -122,4 +124,10 @@ foreach (['typo', null, 1, []] as $invalidFallback) {
 $bad = $old; $bad['exits'][$remote]['kind'] = 'unknown';
 $c = $base; $bot->ensureExitNodes($c, $bad);
 $check(array_column($c['outbounds'], null, 'tag')['vpnbot-exit-' . $remote]['protocol'] === 'blackhole', 'Неизвестный тип выхода закрывает выбранное');
+// Compose подключает сеть по наличию маркера, даже повреждённого: обычный выход
+// закрепляется за IPv4 и без узлов, и без разобранной настройки.
+$bot->network = []; $bot->attached = true;
+$c = $base; $bot->ensureExitNodes($c, []);
+$check($c['outbounds'][0]['settings']['domainStrategy'] === 'ForceIPv4' && $c['outbounds'][0]['settings']['finalRules'][0]['ip'] === ['::/0'], 'Повреждённый маркер: обычный выход всё равно только IPv4');
+$bot->attached = false;
 echo "exit_ipv6_test: $checks OK\n";

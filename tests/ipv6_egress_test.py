@@ -46,9 +46,11 @@ class Ipv6EgressTests(unittest.TestCase):
             self.assertEqual(bundle.compose_files(root, {}), ['-f', 'docker-compose.yml', '-f', 'docker-compose.override.yml', '-f', str(root / 'docker-compose.ipv6.yml')])
             files = bundle.compose_files(root, {'COMPOSE_FILE': 'a.yml:b.yml'})
             self.assertEqual(files[:4], ['-f', 'a.yml', '-f', 'b.yml'])
+            # A damaged marker keeps the network and must not stop every service.
             marker.write_text('{bad')
-            with self.assertRaises(ValueError):
-                bundle.compose_files(root, {})
+            self.assertEqual(bundle.compose_files(root, {})[-1], str(root / 'docker-compose.ipv6.yml'))
+            marker.unlink()
+            self.assertEqual(bundle.compose_files(root, {}), [])
 
     def test_preparation_requires_protected_default_and_matching_snat(self):
         with tempfile.TemporaryDirectory() as directory:
