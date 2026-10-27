@@ -23,6 +23,7 @@
 # эфемерная карта «сообщение → wg-инстанс» (см. wgMsgFile в bot.php)
 /config/wg_msg.json
 /config/hwid.json
+/config/ipv6-egress.json
 # лента веб-панели, загруженные/отданные файлы и хеш пароля-заглушки
 /config/panel/
 /config/protocols/

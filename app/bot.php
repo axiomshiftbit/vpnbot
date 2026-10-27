@@ -783,6 +783,15 @@ class Bot
             case preg_match('~^/exitAdd$~', $this->input['callback'], $m):
                 $this->exitAddPrompt();
                 break;
+            case preg_match('~^/exitIpv6Add$~', $this->input['callback'], $m):
+                $this->exitIpv6Add();
+                break;
+            case preg_match('~^/exitFallback ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->exitFallback($m[1]);
+                break;
+            case preg_match('~^/exitRelayIpv6 (\d{1,6})$~', $this->input['callback'], $m):
+                $this->exitRelayIpv6((int) $m[1]);
+                break;
             case preg_match('~^/exitCheckAll$~', $this->input['callback'], $m):
                 $this->exitCheckAll();
                 break;
@@ -3522,6 +3531,7 @@ class Bot
         // Узлы выхода — тоже до ensureWgGuard(): их служебные входы проверки
         // получают те же гейты, а правила встают под защитными.
         $this->ensureExitNodes($c, $pac);
+        $this->ensureFreedomCompat($c);
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
         $this->ensureXhttpMuxInbound($c, $pac);
@@ -3708,7 +3718,10 @@ class Bot
         // иначе старые узкие копии остались бы в конфиге дублями и продолжали
         // бы совпадать раньше нового гейта.
         $rules = [];
+        $unavailable = [];
         foreach (($c['routing']['rules'] ?? []) as $r) {
+            if (($r['ruleTag'] ?? '') === 'vpnbot:ipv6:relay-guard') continue;
+            if (str_starts_with($r['ruleTag'] ?? '', self::EXIT_UNAVAILABLE)) { $unavailable[] = $r; continue; }
             $in  = (array) ($r['inboundTag'] ?? []);
             $ip  = (array) ($r['ip'] ?? []);
             $out = (string) ($r['outboundTag'] ?? '');
@@ -3730,7 +3743,7 @@ class Bot
         }
 
         if (empty($tags)) {
-            $c['routing']['rules'] = $rules;
+            $c['routing']['rules'] = array_merge($unavailable, $rules);
             return;
         }
 
@@ -3769,7 +3782,15 @@ class Bot
                 'ip'          => [self::DOCKER_NET],
                 'outboundTag' => 'block',
         ];
-        $c['routing']['rules'] = array_merge($guards, $rules);
+        // Строгому профилю узла не нужны исключения DNS/WARP во внутреннюю
+        // Docker-сеть. Иначе ранний allow обходил бы его конечный IPv6-выход.
+        $strictRelay = [];
+        foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
+            if (!empty($client['exit_relay']) && !empty($client['exit_ipv6']) && empty($client['off']) && !empty($client['email'])) $strictRelay[] = $client['email'];
+        }
+        if ($strictRelay) array_unshift($guards, ['type' => 'field', 'ruleTag' => 'vpnbot:ipv6:relay-guard',
+            'user' => array_values(array_unique($strictRelay)), 'ip' => [self::DOCKER_NET], 'outboundTag' => 'block']);
+        $c['routing']['rules'] = array_merge($unavailable, $guards, $rules);
     }
 
     // blackhole обязан существовать: правило с несуществующим тегом молча

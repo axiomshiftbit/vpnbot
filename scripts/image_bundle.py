@@ -226,12 +226,26 @@ def ensure(root):
 def compose_files(root, env):
     """Add pins to every lifecycle operation, including disabled -> recreated."""
     root = Path(root)
+    # The network is host-specific and opt-in. Backup data alone cannot enable it.
+    enabled6 = (root / 'config/ipv6-egress.json').exists()
+    if enabled6:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('ipv6_egress', Path(__file__).with_name('ipv6_egress.py'))
+        ipv6 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ipv6)
+        ipv6.load(root)
+    separator = env.get('COMPOSE_PATH_SEPARATOR', os.pathsep)
+    files = env.get('COMPOSE_FILE', '').split(separator) if env.get('COMPOSE_FILE') else ['docker-compose.yml']
+    if not env.get('COMPOSE_FILE') and (root / 'docker-compose.override.yml').is_file():
+        files.append('docker-compose.override.yml')
+    if enabled6:
+        files.append(str(root / 'docker-compose.ipv6.yml'))
     selected = env.get('VPNBOT_BUNDLE_FILE')
     path = Path(selected) if selected else root / 'update/image-bundle.json'
     if not path.exists():
         if selected:
             raise ValueError('requested image bundle is missing')
-        return []  # Existing installations keep working until their first bundle update.
+        return [part for f in files for part in ('-f', f)] if enabled6 else []
     bundle = read(path)
     if not selected and command('git', '-C', str(root), 'rev-parse', 'HEAD') != bundle['source']:
         raise ValueError('image bundle belongs to a different code revision')
@@ -244,10 +258,6 @@ def compose_files(root, env):
     data = canonical(overlay(bundle))
     if not target.exists() or target.read_bytes() != data:
         atomic(target, data)
-    separator = env.get('COMPOSE_PATH_SEPARATOR', os.pathsep)
-    files = env.get('COMPOSE_FILE', '').split(separator) if env.get('COMPOSE_FILE') else ['docker-compose.yml']
-    if not env.get('COMPOSE_FILE') and (root / 'docker-compose.override.yml').is_file():
-        files.append('docker-compose.override.yml')
     # Only image and pull policy change; ports, mounts, TZ and local settings stay.
     return [part for f in files + [str(target)] for part in ('-f', f)]
 

@@ -417,6 +417,29 @@ $restore = new class extends ExitMenuBot {
 $restore->confPac['exits'] = ['a1b2c3d4' => ['link' => $link, 'rulesets' => ['https://raw.example/geo/youtube.srs' => ['on' => 1]]], 'e5f6a7b8' => ['link' => $link]];
 $check($restore->restoreBackupXray(['restored' => true]) && $restore->order === ['refresh a1b2c3d4', 'refresh e5f6a7b8', 'write'], 'восстановление: наборы узлов до записи конфига');
 
+// IPv6 использует тот же интерфейс маршрутов, но не допускает fallback/link.
+$v6 = new ExitMenuBot();
+$v6->exitIpv6Add();
+$v6id = (string) array_key_first($v6->confPac['exits']);
+$check($v6->exitNodes()[$v6id]['kind'] === 'ipv6', 'кнопка создаёт локальный IPv6-выход');
+$buttons = [];
+foreach (end($v6->screens)[1] as $row) foreach ($row as $button) $buttons[] = $button['callback_data'] ?? '';
+$check(!in_array('/exitLink ' . $v6id, $buttons, true) && !in_array('/exitFallback ' . $v6id, $buttons, true), 'локальный IPv6 без ссылки и переключения fallback');
+$check(in_array('/exitSets ' . $v6id, $buttons, true) && in_array('/exitRoutes ' . $v6id . ' 0', $buttons, true), 'IPv6 использует маршруты и наборы правил');
+$v6->exitIpv6Add();
+$check(count($v6->confPac['exits']) === 1, 'повторное нажатие не создаёт дубль IPv6');
+$v6->exitFallback($v6id);
+$check($v6->exitNodes()[$v6id]['fallback'] === 'block', 'устаревшая кнопка не ослабляет IPv6');
+$v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_relay'] = 1;
+$v6->exitRelayIpv6(0);
+$check(!empty($v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_ipv6']), 'служебный профиль переключается на IPv6');
+$v6->exitRelayIpv6(0);
+$check(empty($v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_ipv6']), 'служебный профиль возвращается в обычный режим');
+$v6->exitRelayIpv6(1);
+$check(empty($v6->confXray['inbounds'][0]['settings']['clients'][1]['exit_ipv6']), 'обычная учётка не становится строгим relay случайной кнопкой');
+$v6->restartOk = false;
+$v6->exitRelayIpv6(0);
+$check(empty($v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_ipv6']), 'откат при отказе перезапуска сохраняет прежний режим');
 @unlink($statusFile);
 $cacheDir = sys_get_temp_dir() . '/exit-rulesets-test-' . getmypid();
 array_map('unlink', glob("$cacheDir/*") ?: []);
