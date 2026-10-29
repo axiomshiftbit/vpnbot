@@ -41,10 +41,15 @@ ghx run axiomshiftbit api -H 'Accept: application/vnd.github.raw' \
     'repos/axiomshiftbit/vpnbot/contents/scripts/init.sh?ref=master' > init.sh
 scp init.sh root@SERVER:/root/init.sh
 ```
-2. Запустите его на сервере — stable (`master`) или development (`dev`):
+2. Положите токен бота на сервере в файл, доступный только root, и запустите
+   установщик — stable (`master`) или development (`dev`):
 ```shell
-VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash /root/init.sh master
+install -m 600 /dev/null /root/.vpnbot-key
+nano /root/.vpnbot-key          # вставить токен от @BotFather, сохранить
+VPNBOT_KEY="$(cat /root/.vpnbot-key)" bash /root/init.sh master
 ```
+   Токен подставляется из файла, поэтому не попадает ни в history, ни в `ps`
+   (запись `VPNBOT_KEY=123456:AA… bash …` осталась бы в `~/.bash_history`).
 Первый запуск ставит пакеты и Docker, создаёт ключ, печатает его публичную
 половину (`ssh-ed25519 …`) и останавливается.
 
@@ -56,7 +61,7 @@ Deploy keys → Add deploy key**, галочку **Allow write access** не с�
 `ghx run axiomshiftbit repo deploy-key add key.pub --repo axiomshiftbit/vpnbot --title vpnbot-SERVER-readonly`.
 Строку можно снова вывести на сервере: `cat /root/vpnbot/.git/vpnbot-readonly-ssh/id_ed25519.pub`.
 
-4. Повторите команду из шага 2 — установка скачает код и запустит бота.
+4. Повторите последнюю команду из шага 2 — установка скачает код и запустит бота.
 Код берётся из коммита последнего опубликованного комплекта образов ветки, а
 не с её вершины: коммит, ещё не прошедший сборку и стенд, на сервер не попадает.
 
@@ -98,7 +103,7 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...  vpnbot-myserver-readonly
    - **Allow write access** — **не отмечайте**: серверу нужно только чтение;
    - нажмите **Add key** (GitHub может попросить подтвердить пароль или 2FA).
 3. Вернитесь на сервер и **повторите ту же команду**, что в шаге 2 установки:
-   `VPNBOT_KEY=… bash /root/init.sh master`. Теперь она скачает код и запустит
+   `VPNBOT_KEY="$(cat /root/.vpnbot-key)" bash /root/init.sh master`. Теперь она скачает код и запустит
    бота. Проверить доступ вручную: `git -C /root/vpnbot fetch origin` —
    команда завершается без ошибок.
 
@@ -123,6 +128,10 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...  vpnbot-myserver-readonly
 Ключ бота передаётся переменной `VPNBOT_KEY`, а не аргументом: аргумент виден
 в `ps` всем процессам хоста и остаётся в history. Старая форма
 (`bash init.sh YOUR_TELEGRAM_BOT_KEY master`) ещё работает, но предупреждает.
+Установщик записывает ключ в `app/config.php` (на работающей установке файл
+не перезаписывается), так что после установки `/root/.vpnbot-key` можно
+удалить: `rm /root/.vpnbot-key`. Ни ключ бота, ни закрытый deploy-ключ не
+выводите в терминал и не пересылайте.
 
 Ключ и настройки SSH лежат в `/root/vpnbot/.git/vpnbot-readonly-ssh/`
 (каталог 0700): `id_ed25519` — закрытый ключ, `id_ed25519.pub` — публичный,
@@ -141,7 +150,8 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...  vpnbot-myserver-readonly
 `make u`, то есть пересоздаёт контейнеры.
 
 Установка из архива (offline, ключ не нужен) — положите `vpnbot.zip` рядом
-со скриптом и запустите `VPNBOT_KEY=YOUR_TELEGRAM_BOT_KEY bash init.sh master`.
+со скриптом и запустите `VPNBOT_KEY="$(cat /root/.vpnbot-key)" bash init.sh master`
+(файл с ключом — как в шаге 2).
 Такая установка удаляет `/root/vpnbot/.git` вместе с deploy-ключом.
 #### Tests:
 ```shell
