@@ -1627,8 +1627,8 @@ $i = [
         'ru' => 'проверить',
     ],
     'reality mask short' => [
-        'en' => 'Fake domain %s answers without ALPN: Xray 26.10.17+ rejects every REALITY client with it. Before updating the core pick a site with HTTP/2 or «steal from yourself».',
-        'ru' => 'Фейковый домен %s отвечает без ALPN: Xray 26.10.17+ с ним отвергает всех клиентов REALITY. До обновления ядра выберите сайт с HTTP/2 или «маска своим сайтом».',
+        'en' => 'Fake domain %s answers without ALPN: Xray 26.10.17+ and the fork 26.10.28+ reject every REALITY client with it. Before updating the core pick a site with HTTP/2 or «steal from yourself».',
+        'ru' => 'Фейковый домен %s отвечает без ALPN: Xray 26.10.17+ и форк 26.10.28+ отвергают с ним всех клиентов REALITY. До обновления ядра выберите сайт с HTTP/2 или «маска своим сайтом».',
     ],
     'reality mask short now' => [
         'en' => 'Fake domain %s answers without ALPN: this REALITY core rejects every client with it. Pick a site with HTTP/2 or «steal from yourself».',
@@ -1655,8 +1655,8 @@ $i = [
         'ru' => 'Фейковый домен не изменён.',
     ],
     'reality mask alpn cores' => [
-        'en' => 'A site without ALPN is accepted by the older cores and the fork: switch in Xray → Core / version.',
-        'ru' => 'Сайт без ALPN принимают более старые ядра и форк: переключить можно в Xray → Ядро / версия.',
+        'en' => 'A site without ALPN is accepted only by older cores (Xray before 26.10.17, the fork before 26.10.28): switch in Xray → Core / version.',
+        'ru' => 'Сайт без ALPN принимают только более старые ядра (Xray до 26.10.17, форк до 26.10.28): переключить можно в Xray → Ядро / версия.',
     ],
     'xray core mask alpn' => [
         'en' => 'Fake domain %s answers without ALPN: this core would reject every REALITY client. First pick a site with HTTP/2 or «steal from yourself».',
