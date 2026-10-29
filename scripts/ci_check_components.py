@@ -16,10 +16,21 @@ CPE продукта) и с объявлениями безопасности р
 исправлением. Недоступный источник после повторов — тоже отказ: отсутствие
 ответа не равно отсутствию уязвимостей. Отставание версий только печатается.
 
-Компиляторы Go и Rust и snolc проверяются только на свежесть (release/
-toolchain): уязвимости стандартной библиотеки Go и пакетов Rust находит Trivy
-в собранных бинарниках. Недоступный источник свежести не блокирует допуск —
-репозиторий snolc уже бывал недоступен.
+У nginx запись в NVD появляется с опозданием: 1.30.5 проходил как чистый, хотя
+nginx.org уже объявил четыре исправленные в 1.30.6 уязвимости. Поэтому nginx
+сверяется ещё и со страницей объявлений nginx.org, и любое объявление,
+исправленное в закреплённой стабильной ветке, блокирует допуск независимо от
+важности: nginx стоит наружу, а исправление — номер патч-версии.
+
+Компиляторы Go и Rust, snolc, базовый Alpine и инструменты сборки проверяются
+только на свежесть (release/toolchain/git/alpine): уязвимости стандартной
+библиотеки Go и пакетов Rust находит Trivy в собранных бинарниках.
+Недоступный источник свежести не блокирует допуск — репозиторий snolc уже
+бывал недоступен.
+
+Каждая закреплённая версия (`*_VERSION`, `*_REF` в .env и ARG Dockerfile)
+обязана быть в COMPONENTS или в UNCHECKED с причиной — это проверяет тест.
+Перед полным прогоном: `make versions`.
 """
 import json
 import os
@@ -40,7 +51,7 @@ BLOCKING = {'HIGH', 'CRITICAL'}
 # объявлений безопасности и последнего релиза; gitlab — проект, чьи описания
 # релизов служат объявлениями.
 COMPONENTS = [
-    dict(name='nginx', pin='NGINX_VERSION', cpe='f5:nginx'),
+    dict(name='nginx', pin='NGINX_VERSION', cpe='f5:nginx', nginx=True, fresh='nginx/nginx', tag_prefix='release-', branch=True),
     dict(name='strongSwan', pin='dockerfile/ipsec.dockerfile:STRONGSWAN_VERSION', cpe='strongswan:strongswan', repo='strongswan/strongswan'),
     dict(name='pppd', pin='dockerfile/ipsec.dockerfile:PPP_VERSION', cpe='samba:ppp', repo='ppp-project/ppp'),
     dict(name='OpenVPN', pin='OPENVPN_VERSION', cpe='openvpn:openvpn', repo='OpenVPN/openvpn'),
@@ -64,7 +75,31 @@ COMPONENTS = [
     dict(name='Rust (snolc)', pin='dockerfile/snolc.dockerfile:RUST_VERSION', release='rust-lang/rust'),
     dict(name='Rust (TrustTunnel)', pin='dockerfile/trusttunnel.dockerfile:RUST_VERSION', release='rust-lang/rust'),
     dict(name='snolc', pin='dockerfile/snolc.dockerfile:SNOLC_VERSION', release='owenewans/snolc'),
+    # Только свежесть: у этих проектов нет ни CPE в NVD, ни объявлений GitHub,
+    # либо это инструменты сборки, не попадающие в образ.
+    dict(name='Xray (MASQUE)', pin='MASQUE_XRAY_VERSION', release='XTLS/Xray-core'),
+    dict(name='wgcf', pin='WGCF_VERSION', release='ViRb3/wgcf'),
+    dict(name='dnslookup', pin='DNSLOOKUP_VERSION', release='ameshkov/dnslookup'),
+    dict(name='xcaddy', pin='XCADDY_VERSION', release='caddyserver/xcaddy'),
+    # Старые теги caddy2-naive-<дата> выглядели бы «новее» по числам.
+    dict(name='forwardproxy (Naive)', pin='FORWARDPROXY_VERSION', release='klzgrad/forwardproxy', tag_prefix='v'),
+    dict(name='v2ray-plugin', pin='V2RAY_PLUGIN_VERSION', release='teddysun/v2ray-plugin'),
+    dict(name='Cloak', pin='CLOAK_VERSION', release='cbeuw/Cloak'),
+    dict(name='simple-tls', pin='SIMPLE_TLS_VERSION', release='IrineSistiana/simple-tls'),
+    dict(name='tun2socks', pin='dockerfile/wireguard.dockerfile:TUN2SOCKS_VERSION', release='xjasonlyu/tun2socks'),
+    dict(name='TrustTunnel', pin='dockerfile/trusttunnel.dockerfile:TT_REF', release='TrustTunnel/TrustTunnel'),
+    dict(name='cargo-auditable', pin='dockerfile/snolc.dockerfile:CARGO_AUDITABLE_VERSION', release='rust-secure-code/cargo-auditable'),
+    dict(name='Trivy', pin='scripts/ci_scan_image.sh:TRIVY', pattern=r'/trivy/releases/download/v([0-9.]+)/', release='aquasecurity/trivy'),
+    dict(name='DNSTT', pin='dockerfile/dnstt.dockerfile:DNSTT_REF', git='https://www.bamsoftware.com/git/dnstt.git'),
+    dict(name='Alpine', pin='IMAGE', alpine=True),
 ]
+
+# Закреплённые значения, которые сознательно не сверяются с последним выпуском.
+UNCHECKED = {
+    'XRAY_VERSION_2': 'слот ядра намеренно держит предыдущую версию',
+    'XRAY_VERSION_3': 'слот ядра намеренно держит старую версию',
+}
+FRESHNESS_ONLY = ('toolchain', 'release', 'git', 'alpine')
 
 
 def numbers(version):
@@ -80,7 +115,7 @@ def pins(root=ROOT):
         source = item['pin']
         if ':' in source:
             path, key = source.split(':')
-            match = re.search(rf'^ARG {key}=(\S+)$', (root / path).read_text(), re.M)
+            match = re.search(item.get('pattern') or rf'^ARG {key}=(\S+)$', (root / path).read_text(), re.M)
             value = match.group(1) if match else ''
         else:
             value = env.get(source, '')
@@ -104,6 +139,16 @@ def http_json(url, token=None):
 
 def fetch(url, token=None):
     return retrying(http_json, url, token, errors=(OSError, ValueError))
+
+
+def http_text(url):
+    request = urllib.request.Request(url, headers={'User-Agent': 'vpnbot-ci'})
+    with urllib.request.urlopen(request, timeout=40) as response:
+        return response.read().decode('utf-8', 'replace')
+
+
+def fetch_text(url):
+    return retrying(http_text, url, errors=(OSError, ValueError))
 
 
 def severity(cve):
@@ -186,11 +231,76 @@ def gitlab_findings(project, version):
     return found, (newer[-1]['tag_name'] if newer else None)
 
 
-def latest_release(repo, prefix, token):
+NGINX_ADVISORIES = 'https://nginx.org/en/security_advisories.html'
+NGINX_SEVERITY = {'major': 'HIGH', 'medium': 'MEDIUM', 'minor': 'LOW', 'low': 'LOW', 'none': 'LOW'}
+
+
+def nginx_findings(version):
+    """Объявления nginx.org, затрагивающие версию: (идентификатор, важность, исправлено).
+
+    «Not vulnerable: 1.31.7+, 1.30.6+» — исправление в каждой из веток;
+    «Vulnerable: 1.30.0-1.30.5, …» — затронутые диапазоны. Сборки только для
+    Windows (nginx/Windows …) к образу не относятся."""
+    page = fetch_text(NGINX_ADVISORIES)
+    entries = re.findall(r'<li><p>(.*?)</p></li>', page, re.S)
+    if len(entries) < 10:
+        raise ValueError('unexpected nginx.org advisories page')
+    current, found = numbers(version)[:3], []
+    for entry in entries:
+        # Каждый тег — граница строки: поля «Vulnerable:» и т. п. не слипаются со ссылками.
+        text = re.sub(r'<[^>]+>', '\n', entry)
+        level = re.search(r'Severity:\s*(\w+)', text)
+        vulnerable = re.search(r'^\s*Vulnerable:\s*(.+?)\s*$', text, re.M)
+        safe = re.search(r'^\s*Not vulnerable:\s*(.+?)\s*$', text, re.M)
+        if not level or not vulnerable:
+            raise ValueError('unexpected nginx.org advisory entry')
+        ranges = [part.strip() for part in vulnerable.group(1).split(',')]
+        hit = any(part == 'all' or (re.fullmatch(r'[0-9.]+-[0-9.]+', part)
+                  and numbers(part.split('-')[0]) <= current <= numbers(part.split('-')[1])) for part in ranges)
+        fixes = [numbers(part) for part in re.findall(r'([0-9.]+)\+', safe.group(1) if safe else '')]
+        if not hit or any(current >= fix and (current[:2] == fix[:2] or current[:2] > max(fixes)[:2]) for fix in fixes):
+            continue
+        ident = re.search(r'CVE-\d{4}-\d{4,}', text)
+        name = ident.group(0) if ident else 'nginx: ' + ' '.join(text.split('Severity')[0].split())[:60]
+        # Исправлено, если выпуск с исправлением есть в этой же или более новой ветке.
+        found.append((name, NGINX_SEVERITY.get(level.group(1).lower(), 'UNKNOWN'), any(fix > current for fix in fixes)))
+    return sorted(set(found))
+
+
+def latest_release(repo, prefix, token, branch=None):
+    """Последний стабильный выпуск; branch — версия, чья ветка (x.y) не меняется."""
     data = fetch(f'https://api.github.com/repos/{repo}/releases?per_page=30', token)
-    tags = [r['tag_name'] for r in data if not r.get('prerelease') and not r.get('draft') and r['tag_name'].startswith(prefix)
-            and numbers(r['tag_name'])]
+    if not isinstance(data, list):
+        raise ValueError('unexpected releases response')
+    tags = [r['tag_name'] for r in data if not r.get('prerelease') and not r.get('draft')]
+    if not data:
+        # Проект без GitHub-релизов (amneziawg-go): только теги.
+        listing = fetch(f'https://api.github.com/repos/{repo}/tags?per_page=30', token)
+        if not isinstance(listing, list):
+            raise ValueError('unexpected tags response')
+        tags = [t['name'] for t in listing if not re.search(r'(?i)(rc|beta|alpha|pre|dev)', t['name'])]
+    tags = [tag for tag in tags if tag.startswith(prefix) and numbers(tag)
+            and (branch is None or numbers(tag)[:2] == numbers(branch)[:2])]
     return max(tags, key=numbers) if tags else None
+
+
+def latest_git(url):
+    """Коммит основной ветки по «простому» HTTP-протоколу git (HEAD и info/refs)."""
+    head = re.match(r'ref: (refs/heads/\S+)', fetch_text(url.rstrip('/') + '/HEAD'))
+    refs = dict((name, sha) for sha, name in re.findall(r'^([0-9a-f]{40})\t(\S+)$', fetch_text(url.rstrip('/') + '/info/refs'), re.M))
+    if not head or head.group(1) not in refs:
+        raise ValueError('unexpected git refs response')
+    return refs[head.group(1)]
+
+
+def latest_alpine():
+    """(последняя стабильная ветка, дата окончания поддержки community закреплённой)."""
+    data = fetch('https://alpinelinux.org/releases.json')
+    if not isinstance(data, dict) or not data.get('latest_stable'):
+        raise ValueError('unexpected alpinelinux.org response')
+    return data['latest_stable'], {branch.get('rel_branch'): next((repo.get('eol_date') for repo in branch.get('repos', [])
+                                                                    if repo.get('name') == 'community'), None)
+                                   for branch in data.get('release_branches', [])}
 
 
 def latest_go():
@@ -202,11 +312,39 @@ def latest_go():
 
 
 def latest_only(item, token):
-    """Свежесть компилятора или snolc: (последняя версия или None, источник ответил)."""
+    """Свежесть без проверки уязвимостей: (последняя версия или None, источник ответил)."""
     try:
-        return (latest_go() if item.get('toolchain') == 'go' else latest_release(item['release'], '', token)), True
+        if item.get('toolchain') == 'go':
+            return latest_go(), True
+        if item.get('git'):
+            return latest_git(item['git']), True
+        if item.get('alpine'):
+            return latest_alpine()[0], True
+        return latest_release(item['release'], item.get('tag_prefix', ''), token), True
     except (OSError, ValueError, KeyError, TypeError):
         return None, False
+
+
+def newer_than(item, latest, version):
+    if not latest:
+        return None
+    if item.get('git'):
+        return latest[:12] if latest != version else None
+    return latest if numbers(latest) > numbers(version) else None
+
+
+def alpine_notes(version, today=None):
+    """Предупреждение: поддержка community закреплённой ветки кончилась или кончится за 30 дней."""
+    try:
+        _, eol = latest_alpine()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+    branch = 'v' + '.'.join(map(str, numbers(version)[:2]))
+    date = eol.get(branch)
+    today = today or time.strftime('%Y-%m-%d', time.gmtime())
+    if date and time.mktime(time.strptime(date, '%Y-%m-%d')) - time.mktime(time.strptime(today, '%Y-%m-%d')) <= 30 * 86400:
+        return [f'поддержка community {branch} заканчивается {date}' if date >= today else f'поддержка community {branch} закончилась {date}']
+    return []
 
 
 def check(root=ROOT, token=None, freshness=True):
@@ -220,21 +358,27 @@ def check(root=ROOT, token=None, freshness=True):
         if item.get('repo'):
             findings += [(ident, level, fixable, 'GitHub') for ident, level, fixable in advisory_findings(item['repo'], version, token)]
         newer = None
-        if item.get('toolchain') or item.get('release'):
+        if any(item.get(key) for key in FRESHNESS_ONLY):
             latest, answered = latest_only(item, token) if freshness else (None, True)
-            rows.append(dict(name=name, version=version, findings=[], newer=latest if latest and numbers(latest) > numbers(version) else None,
-                             sources=[], freshness='go.dev' if item.get('toolchain') else 'GitHub', unchecked=not answered))
+            source = 'go.dev' if item.get('toolchain') else 'git' if item.get('git') else 'alpinelinux.org' if item.get('alpine') else 'GitHub'
+            rows.append(dict(name=name, version=version, findings=[], newer=newer_than(item, latest, version), sources=[],
+                             freshness=source, unchecked=not answered,
+                             notes=alpine_notes(version) if item.get('alpine') and freshness else []))
             continue
         if item.get('gitlab'):
             noted, newer = gitlab_findings(item['gitlab'], version)
             findings += [(ident, level, fixable, 'GitLab') for ident, level, fixable in noted]
-        if freshness and item.get('repo'):
-            latest = latest_release(item['repo'], item.get('tag_prefix', ''), token)
+        if item.get('nginx'):
+            findings += [(ident, level, fixable, 'nginx.org') for ident, level, fixable in nginx_findings(version)]
+        if freshness and (item.get('repo') or item.get('fresh')):
+            latest = latest_release(item.get('repo') or item['fresh'], item.get('tag_prefix', ''), token,
+                                    version if item.get('branch') else None)
             if latest and numbers(latest) > numbers(version):
                 newer = latest
-        sources = [s for s, key in (('NVD', 'cpe'), ('GitHub', 'repo'), ('GitLab', 'gitlab')) if item.get(key)]
+        sources = [s for s, key in (('NVD', 'cpe'), ('GitHub', 'repo'), ('GitLab', 'gitlab'), ('nginx.org', 'nginx')) if item.get(key)]
         rows.append(dict(name=name, version=version, findings=findings, newer=newer, sources=sources))
-        blocked += [(name, version, *finding) for finding in findings if finding[1] in BLOCKING and finding[2]]
+        blocked += [(name, version, *finding) for finding in findings
+                    if (finding[1] in BLOCKING or finding[3] == 'nginx.org') and finding[2]]
     return rows, blocked
 
 
@@ -248,7 +392,9 @@ def report(rows, blocked):
         else:
             lines.append(f"{row['name']} {row['version']}: проверено по {state}" if row['sources'] else f"{row['name']} {row['version']}: {state}")
         for ident, level, fixable, source in row['findings']:
-            lines.append(f"  {'BLOCK' if level in BLOCKING and fixable else 'note '} {ident} {level} ({source})")
+            lines.append(f"  {'BLOCK' if (level in BLOCKING or source == 'nginx.org') and fixable else 'note '} {ident} {level} ({source})")
+        for note in row.get('notes', []):
+            lines.append(f"  внимание: {note}")
         if row['newer']:
             lines.append(f"  вышла версия {row['newer']}")
     outdated = [row for row in rows if row['newer']]

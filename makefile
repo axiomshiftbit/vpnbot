@@ -35,6 +35,8 @@ test: # прогон тестов (на ХОСТЕ, не внутри конте
 		out=$$(php "$$f" 2>&1) || { echo "$$out"; fail=1; }; \
 	done; \
 	if [ $$fail -eq 0 ]; then echo "tests OK"; else echo "TESTS FAILED"; exit 1; fi
+versions: # закреплённые версии: уязвимости и новые выпуски (перед полным прогоном; GH_TOKEN — от лимита API GitHub)
+	@python3 scripts/ci_check_components.py
 preup:
 	bash ./update/update.sh &
 pull: # обновление образов из ghcr.io/axiomshiftbit

@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import sys
 import unittest
 import urllib.error
@@ -24,13 +25,42 @@ def advisory(ident, level, vulnerable, patched, cve_id=None):
             'vulnerabilities': [{'vulnerable_version_range': vulnerable, 'patched_versions': patched}]}
 
 
+def nginx_entry(title, severity, cve_id, safe, vulnerable):
+    return (f'<li><p>{title}<br>Severity: {severity}<br><a href="x">Advisory</a><br><a href="y">{cve_id}</a><br>'
+            f'Not vulnerable: {safe}<br>Vulnerable: {vulnerable}<br><a href="p">The patch</a></p></li>')
+
+
+# Страница nginx.org без объявлений, затрагивающих закреплённую версию.
+QUIET_NGINX = '<ul>' + ''.join(nginx_entry(f'Old issue {n}', 'medium', f'CVE-2009-{1000 + n}', '0.8.15+', '0.1.0-0.8.14')
+                               for n in range(12)) + '</ul>'
+
+
 class Api:
     """Подмена сети: ответы по подстроке адреса; неизвестный адрес — ошибка теста."""
 
-    def __init__(self, nvd=None, advisories=None, releases=None, broken=(), gitlab=None, go=None):
+    def __init__(self, nvd=None, advisories=None, releases=None, broken=(), gitlab=None, go=None, tags=None,
+                 nginx=None, git_head=None, alpine=None):
         self.nvd, self.advisories, self.releases, self.broken, self.calls = nvd or {}, advisories or {}, releases or {}, broken, []
-        self.gitlab = gitlab
+        self.gitlab, self.tags = gitlab, tags or {}
         self.go = go if go is not None else [{'version': 'go' + components.pins()['Go'], 'stable': True}]
+        self.nginx = nginx if nginx is not None else QUIET_NGINX
+        self.git_head = git_head or components.pins()['DNSTT']
+        pinned = 'v' + '.'.join(map(str, components.numbers(components.pins()['Alpine'])[:2]))
+        self.alpine = alpine if alpine is not None else {
+            'latest_stable': pinned, 'release_branches': [{'rel_branch': pinned, 'repos': [{'name': 'community', 'eol_date': '2999-01-01'}]}]}
+        self.texts = []
+
+    def text(self, url):
+        self.texts.append(url)
+        if any(part in url for part in self.broken):
+            raise urllib.error.URLError('down')
+        if url == components.NGINX_ADVISORIES:
+            return self.nginx
+        if url.endswith('/HEAD'):
+            return 'ref: refs/heads/master\n'
+        if url.endswith('/info/refs'):
+            return f'{"1" * 40}\trefs/heads/any-domain\n{self.git_head}\trefs/heads/master\n{"2" * 40}\trefs/tags/v0.1\n'
+        raise AssertionError('unexpected text request: ' + url)
 
     def __call__(self, url, token=None):
         self.calls.append((url, token))
@@ -43,12 +73,16 @@ class Api:
             return {'vulnerabilities': []}
         if url.startswith('https://go.dev/dl/'):
             return self.go
+        if url == 'https://alpinelinux.org/releases.json':
+            return self.alpine
         if 'gitlab.com' in url:
             assert 'openconnect%2Focserv' in url, url
             if self.gitlab is None:
                 return [{'tag_name': components.pins()['ocserv'], 'description': '- [SECURITY] fixed long ago'}]
             return self.gitlab
-        repo = url.split('/repos/')[1].split('/security-advisories')[0].split('/releases')[0]
+        repo = url.split('/repos/')[1].split('/security-advisories')[0].split('/releases')[0].split('/tags')[0]
+        if '/tags' in url:
+            return [{'name': tag} for tag in self.tags.get(repo, [])]
         if '/security-advisories' in url:
             return self.advisories.get(repo, [])
         if '/releases' in url:
@@ -58,7 +92,8 @@ class Api:
 
 class ComponentsTest(unittest.TestCase):
     def run_check(self, api):
-        with patch.object(components, 'http_json', api), patch.object(ci_retry.time, 'sleep'), patch('sys.stdout', io.StringIO()):
+        with patch.object(components, 'http_json', api), patch.object(components, 'http_text', api.text), \
+                patch.object(ci_retry.time, 'sleep'), patch('sys.stdout', io.StringIO()):
             return components.check(token='t0ken')
 
     def test_every_pinned_version_is_found_in_the_repository(self):
@@ -91,9 +126,10 @@ class ComponentsTest(unittest.TestCase):
         with_repo = sum(1 for item in components.COMPONENTS if item.get('repo'))
         self.assertEqual(sum('nvd.nist.gov' in url for url, _ in api.calls), with_cpe)
         self.assertEqual(sum('/security-advisories' in url for url, _ in api.calls), with_repo)
-        # Без источника уязвимостей — только компиляторы и snolc: их проверяет Trivy.
+        # Без источника уязвимостей — только компиляторы, snolc, Alpine и инструменты сборки.
         self.assertEqual({row['name'] for row in rows if not row['sources']},
-                         {item['name'] for item in components.COMPONENTS if item.get('toolchain') or item.get('release')})
+                         {item['name'] for item in components.COMPONENTS if any(item.get(k) for k in components.FRESHNESS_ONLY)})
+        self.assertEqual(api.texts.count(components.NGINX_ADVISORIES), 1)
         self.assertTrue(all(row.get('freshness') and not row['unchecked'] for row in rows if not row['sources']))
         self.assertEqual(sum('gitlab.com' in url for url, _ in api.calls), 1)
 
@@ -197,14 +233,16 @@ class ComponentsTest(unittest.TestCase):
             self.assertEqual(sum(broken in url for url, _ in api.calls), 4)
 
     def test_malformed_answer_is_not_a_clean_bill(self):
-        with patch.object(components, 'http_json', lambda url, token=None: {'message': 'rate limit'}), patch.object(ci_retry.time, 'sleep'), \
+        with patch.object(components, 'http_json', lambda url, token=None: {'message': 'rate limit'}), \
+                patch.object(components, 'http_text', Api().text), patch.object(ci_retry.time, 'sleep'), \
                 self.assertRaises(ValueError):
             components.check(token=None)
 
     def test_command_line_exit_codes_and_no_secret_in_output(self):
         def run(api):
             out, err = io.StringIO(), io.StringIO()
-            with patch.object(components, 'http_json', api), patch.object(ci_retry.time, 'sleep'), patch('sys.stdout', out), patch('sys.stderr', err), \
+            with patch.object(components, 'http_json', api), patch.object(components, 'http_text', api.text), \
+                    patch.object(ci_retry.time, 'sleep'), patch('sys.stdout', out), patch('sys.stderr', err), \
                     patch.dict(os.environ, {'GH_TOKEN': 's3cret-token', 'NVD_API_KEY': 'nvd-s3cret'}, clear=False):
                 try:
                     code = components.main()
@@ -223,8 +261,62 @@ class ComponentsTest(unittest.TestCase):
         api = Api()
         with patch.dict(os.environ, {'NVD_API_KEY': 'nvd-key'}, clear=False):
             self.run_check(api)
-        expected = lambda url: 'nvd-key' if 'nvd.nist.gov' in url else None if 'gitlab.com' in url or 'go.dev' in url else 't0ken'
+        expected = lambda url: 'nvd-key' if 'nvd.nist.gov' in url else None if any(h in url for h in ('gitlab.com', 'go.dev', 'alpinelinux.org')) else 't0ken'
         self.assertTrue(all(token == expected(url) for url, token in api.calls))
+
+    def test_every_pinned_version_is_checked_or_exempt(self):
+        # Страж: новый пин без проверки свежести уходил бы в сборку незамеченным.
+        names = {line.split('=', 1)[0] for line in (ROOT / '.env').read_text().splitlines()
+                 if re.match(r'^[A-Z0-9_]*(VERSION[A-Z0-9_]*|_REF)=\S', line)} | {'IMAGE'}
+        for dockerfile in (ROOT / 'dockerfile').glob('*.dockerfile'):
+            names |= set(re.findall(r'^ARG ([A-Z0-9_]*(?:VERSION[A-Z0-9_]*|_REF))=[^"\s]\S*$', dockerfile.read_text(), re.M))
+        covered = {item['pin'].split(':')[-1] for item in components.COMPONENTS}
+        self.assertEqual(names - covered - set(components.UNCHECKED), set(), 'пин без проверки: дописать в COMPONENTS или UNCHECKED')
+        self.assertEqual(set(components.UNCHECKED) - names, set(), 'исключение для несуществующего пина')
+
+    def test_nginx_advisory_blocks_when_fixed_in_the_pinned_branch(self):
+        pinned = components.pins()['nginx']
+        major, minor, level = components.numbers(pinned)[:3]
+        fixed, mainline = f'{major}.{minor}.{level + 1}', f'{major}.{minor + 1}.0'
+        page = QUIET_NGINX.replace('</ul>', ''.join([
+            nginx_entry('Overflow', 'medium', 'CVE-2099-0001', f'{mainline}+, {fixed}+', f'{major}.{minor}.0-{pinned}'),
+            nginx_entry('Old branch only', 'medium', 'CVE-2099-0002', f'{pinned}+', f'{major}.{minor}.0-{major}.{minor}.{max(level - 1, 0)}'),
+            nginx_entry('Unfixed', 'low', 'CVE-2099-0003', 'none', 'all'),
+            nginx_entry('Windows only', 'major', 'CVE-2099-0004', f'{fixed}+', f'nginx/Windows 0.7.52-{pinned}'),
+            '<li><p>Major one<br>Severity: <b>major</b><br><a href="y">CVE-2099-0005</a><br>'
+            f'Not vulnerable: {fixed}+<br>Vulnerable: 0.1.0-{pinned}</p></li>',
+        ]) + '</ul>')
+        rows, blocked = self.run_check(Api(nginx=page, releases={'nginx/nginx': [('release-' + mainline, False), ('release-' + fixed, False)]}))
+        self.assertEqual([(b[2], b[3], b[5]) for b in blocked], [('CVE-2099-0001', 'MEDIUM', 'nginx.org'), ('CVE-2099-0005', 'HIGH', 'nginx.org')])
+        nginx = next(row for row in rows if row['name'] == 'nginx')
+        self.assertEqual(sorted(f[0] for f in nginx['findings']), ['CVE-2099-0001', 'CVE-2099-0003', 'CVE-2099-0005'])
+        # Свежесть — в своей стабильной ветке: mainline не предлагается.
+        self.assertEqual(nginx['newer'], 'release-' + fixed)
+        text = components.report(rows, blocked)
+        self.assertIn('BLOCK CVE-2099-0001 MEDIUM (nginx.org)', text)
+        self.assertIn('note  CVE-2099-0003 LOW (nginx.org)', text)
+
+    def test_nginx_page_that_cannot_be_read_is_not_a_clean_bill(self):
+        for page in ('<html>maintenance</html>', QUIET_NGINX.replace('Vulnerable:', 'Affected:')):
+            with self.subTest(page=page[:20]), self.assertRaises(ValueError):
+                self.run_check(Api(nginx=page))
+
+    def test_build_tools_git_refs_and_alpine_report_freshness(self):
+        found = components.pins()
+        self.assertEqual(found['Trivy'], '0.75.0')
+        head = 'f' * 40
+        api = Api(git_head=head, tags={'amnezia-vpn/amneziawg-go': ['v9.9.20990101', 'v9.9.20990202-rc1']},
+                  releases={'aquasecurity/trivy': [('v9.0.0', False)], 'TrustTunnel/TrustTunnel': [('v9.0.0-beta.1', True), (found['TrustTunnel'], False)],
+                            'klzgrad/forwardproxy': [('caddy2-naive-20991231', False), (found['forwardproxy (Naive)'], False)]},
+                  alpine={'latest_stable': 'v9.1', 'release_branches': [
+                      {'rel_branch': 'v' + '.'.join(map(str, components.numbers(found['Alpine'])[:2])), 'repos': [{'name': 'community', 'eol_date': '2000-01-01'}]}]})
+        rows, blocked = self.run_check(api)
+        self.assertEqual(blocked, [])
+        newer = {row['name']: row['newer'] for row in rows if row['newer']}
+        self.assertEqual(newer, {'Trivy': 'v9.0.0', 'DNSTT': head[:12], 'Alpine': 'v9.1', 'AmneziaWG': 'v9.9.20990101'})
+        text = components.report(rows, blocked)
+        self.assertIn('внимание: поддержка community', text)
+        self.assertIn('DNSTT ' + found['DNSTT'] + ': свежесть по git', text)
 
 
 if __name__ == '__main__':
