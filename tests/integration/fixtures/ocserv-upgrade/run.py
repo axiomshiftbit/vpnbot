@@ -63,6 +63,15 @@ def start_server():
         time.sleep(.1)
     raise RuntimeError('ocserv not ready')
 
+def wait_echo():
+    # docker run -d returns before python3 binds the port: traffic() then got
+    # «connection refused» from the server netns (stand 2026-10-29).
+    for _ in range(200):
+        r = run('nsenter', '-t', pid, '-n', 'ss', '-Hltn', 'sport = :8080')
+        if r.returncode == 0 and r.stdout.strip(): return
+        time.sleep(.1)
+    raise RuntimeError('echo server not ready')
+
 def stop_server(label):
     need('docker', 'stop', '--time', '15', SERVER)
     state = json.loads(need('docker', 'inspect', '--format', '{{json .State}}', SERVER))
@@ -122,6 +131,7 @@ HTTPServer(('0.0.0.0',8080),H).serve_forever()
     echo = NET+'-echo'
     need('docker', 'run', '-d', '--name', echo, '--label', 'vpnbot.hosted-ci=true', '--network', 'container:'+SERVER,
          '-v', f'{OUT}:/probe:ro', '--entrypoint', 'python3', CLIENT_IMAGE, '/probe/echo_server.py'); owned.append(echo)
+    wait_echo()
     check('wrong-password-rejected', not connect('wrong', valid_password=False))
     check('TLS-profile-accepted', connect('tls'))
     check('TLS-traffic', traffic())
