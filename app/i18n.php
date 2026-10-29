@@ -610,6 +610,14 @@ $i = [
         'en' => "Fragmentation and noise from this menu reach clients inside Xray subscription profiles. There are two forms.\n\n<b>freedom</b> (default): a separate freedom outbound with fragment and noises, through which the proxy dials. Every Xray client understands it. Xray 26.10.29+ logs that this form is deprecated and will be removed, but it still works.\n\n<b>finalmask</b>: the same masks in streamSettings.finalmask of the proxy outbound, without a separate outbound and without the warning. It needs Xray 26.3.27+ on the device:\n• 26.3.27 and newer — works;\n• 26.2.x — the profile does not load at all;\n• older — the profile loads, but the masks silently do nothing.\n\nThe bot does not know the core version of a client app, so it does not switch on its own. Switch to finalmask once every user's app runs Xray 26.3.27+, and hand out the subscription again. The server does not restart: only the profiles change.",
         'ru' => "Фрагментация и шум из этого меню попадают к клиентам в профилях подписки Xray. Форм две.\n\n<b>freedom</b> (по умолчанию): отдельный выход freedom с fragment и noises, через который подключается прокси. Её понимает любой клиент Xray. Xray 26.10.29+ пишет в журнал, что эта форма устарела и будет удалена, но пока она работает.\n\n<b>finalmask</b>: те же маски в streamSettings.finalmask прокси-выхода, без отдельного выхода и без предупреждения. Нужен Xray 26.3.27+ на устройстве:\n• 26.3.27 и новее — работает;\n• 26.2.x — профиль не загрузится вовсе;\n• старше — профиль загрузится, но маски молча не действуют.\n\nВерсию ядра клиентского приложения бот не знает, поэтому сам формат не меняет. Переключайте на finalmask, когда у всех пользователей приложения на Xray 26.3.27+, и обновите подписку. Сервер не перезапускается: меняются только профили.",
     ],
+    'dpi format fallback' => [
+        'en' => 'These noise or fragment values do not fit finalmask, so profiles still use the freedom form. Fix the packet (size 1–1400 bytes, delay 0–1000 ms, at most 8 packets).',
+        'ru' => 'Эти значения шума или фрагментации не подходят для finalmask, поэтому профили пока выходят в форме freedom. Исправьте пакет (размер 1–1400 байт, задержка 0–1000 мс, не больше 8 пакетов).',
+    ],
+    'dpi format exp' => [
+        'en' => 'Noise of type exp in finalmask needs Xray 26.9.30+ on clients; on older cores the profile will not load.',
+        'ru' => 'Шум типа exp в finalmask требует у клиентов Xray 26.9.30+; на более старых ядрах профиль не загрузится.',
+    ],
     'dpi format freedom hint' => [
         'en' => 'Fragment and noise go into client profiles as a freedom outbound: every Xray client understands it. Xray 26.10.29+ logs that this form is deprecated. If every client runs Xray 26.3.27+, switch the format to finalmask.',
         'ru' => 'Фрагментация и шум попадают в профили клиентов отдельным выходом freedom: его понимает любой клиент Xray. Xray 26.10.29+ пишет в журнал, что такая форма устарела. Если у всех клиентов Xray 26.3.27+, переключите формат на finalmask.',
@@ -641,6 +649,10 @@ $i = [
     'xdrive s3 core old' => [
         'en' => 'S3 needs the upstream Xray core 26.10.29+; the fork does not support it yet. Select it in Xray → Core / version.',
         'ru' => 'Для S3 нужно оригинальное ядро Xray 26.10.29+, форк его пока не поддерживает. Выберите его в Xray → Ядро / версия.',
+    ],
+    'xdrive s3 dotted bucket' => [
+        'en' => 'A bucket name with dots does not fit the storage certificate when the bucket is in the host name: turn path-style on or use a name without dots.',
+        'ru' => 'Имя бакета с точками не подходит к сертификату хранилища, когда бакет стоит в имени узла: включите path-style или возьмите имя без точек.',
     ],
     'xdrive probe bucket' => [
         'en' => 'The bucket was not found: check its name, the S3 address and path-style.',

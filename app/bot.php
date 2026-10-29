@@ -20513,6 +20513,17 @@ DNS-over-HTTPS with IP:
         if (!empty($f['enabled']) || !empty($n['enabled'])) {
             $finalmask = ($p['dpi']['format'] ?? '') === 'finalmask';
             $text[] = $this->i18n($finalmask ? 'dpi format finalmask hint' : 'dpi format freedom hint');
+            if ($finalmask) {
+                // Что на деле получат клиенты: applyDpiFragment() откатывается на
+                // freedom, если finalmask этих значений не примет.
+                $probe = ['outbounds' => [['tag' => 'proxy', 'streamSettings' => []]]];
+                $this->applyDpiFragment($probe, 0, $p);
+                if (!isset($probe['outbounds'][0]['streamSettings']['finalmask'])) {
+                    $text[] = '⚠️ ' . $this->i18n('dpi format fallback');
+                } elseif (!empty($n['enabled']) && in_array('exp', array_column($this->dpiNoiseList($p), 'type'), true)) {
+                    $text[] = '⚠️ ' . $this->i18n('dpi format exp');
+                }
+            }
             $data[] = [['text' => $this->i18n('dpi format') . ': ' . ($finalmask ? 'finalmask (Xray 26.3.27+)' : 'freedom'),
                 'callback_data' => '/dpiToggle format']];
         }
@@ -27848,8 +27859,13 @@ DNS-over-HTTPS with IP:
             return ['ok' => false, 'note' => ['xray configuration check failed']];
         }
         $previousJson = $this->readXrayJson();
+        // Вход XDRIVE проверяется в том виде, в каком его соберёт restartXray()
+        // для нового ядра: ядру без нужного хранилища (S3 на форке) вход не
+        // отдаётся, и отказывать в смене ядра из-за него не нужно.
+        $check = $candidate;
+        $this->ensureXdriveInbound($check, ['xray_core' => $core] + $p);
         if (($candidate['inbounds'][0]['settings']['decryption'] ?? 'none') !== 'none'
-            && !$this->validateXrayConfig($candidate, self::XRAY_BINARIES[$core])) {
+            && !$this->validateXrayConfig($check, self::XRAY_BINARIES[$core])) {
             return ['ok' => false, 'note' => ['vless encryption check failed']];
         }
 

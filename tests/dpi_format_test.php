@@ -116,10 +116,17 @@ $bot->dpiToggle('format');
 dfAssert(($bot->conf['dpi']['format'] ?? '') === 'finalmask', 'переключение на finalmask');
 $bot->dpiMenu();
 dfAssert(str_contains($bot->callbacks()['/dpiToggle format'] ?? '', 'finalmask (Xray 26.3.27+)'), 'кнопка показывает finalmask и нужную версию');
+$bot->conf['dpi']['noise'] = ['enabled' => 1, 'list' => [['type' => 'rand', 'packet' => '2000', 'delay' => '']]];
+$bot->dpiMenu();
+dfAssert(str_contains(end($bot->texts), $bot->i18n('dpi format fallback')), 'finalmask, но значения ему не подходят — меню предупреждает о форме freedom');
+$bot->conf['dpi']['noise']['list'] = [['type' => 'exp', 'packet' => '<r 10-20>', 'delay' => '']];
+$bot->dpiMenu();
+dfAssert(str_contains(end($bot->texts), $bot->i18n('dpi format exp')) && !str_contains(end($bot->texts), $bot->i18n('dpi format fallback')), 'шум exp в finalmask — предупреждение о Xray 26.9.30+');
+$bot->conf['dpi']['noise'] = ['enabled' => 0];
 $bot->dpiToggle('format');
 dfAssert(($bot->conf['dpi']['format'] ?? '') === 'freedom', 'и обратно на freedom');
 require __DIR__ . '/../app/i18n.php';
-foreach (['dpi format', 'dpi format freedom hint', 'dpi format finalmask hint', 'dpi format help'] as $key) {
+foreach (['dpi format', 'dpi format freedom hint', 'dpi format finalmask hint', 'dpi format help', 'dpi format fallback', 'dpi format exp'] as $key) {
     dfAssert(!empty($i[$key]['ru']) && !empty($i[$key]['en']) && preg_match('~[А-Яа-я]~u', $i[$key]['ru']) && !preg_match('~[А-Яа-я]~u', $i[$key]['en']), "перевод ru/en: $key");
 }
 

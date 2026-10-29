@@ -46,6 +46,7 @@ class XdS3Storage extends XdStorage
     public string $bucket = 'vpnbot-bucket';
     public string $access = 'AKIDVPNBOT';
     public array $raw = [];
+    public ?array $listReply = null;
     public function handle(string $method, string $url, array $headers, ?string $body): array
     {
         $this->log[] = "$method $url";
@@ -56,6 +57,7 @@ class XdS3Storage extends XdStorage
         $path = rawurldecode((string) parse_url($url, PHP_URL_PATH));
         [$bucket, $key] = array_pad(explode('/', ltrim($path, '/'), 2), 2, '');
         if ($bucket !== $this->bucket || !$this->folder) return [404, '<Error><Code>NoSuchBucket</Code></Error>'];
+        if ($method === 'GET' && $key === '' && $this->listReply !== null) return $this->listReply;
         if ($method === 'GET' && $key === '') {
             parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
             $items = '';
@@ -476,6 +478,8 @@ $check($problem(['bucket' => 'Bad_Bucket']) === ['xdrive need bucket'] && $probl
 $check($problem(['region' => 'EU West']) === ['xdrive need region'], 'S3: регион без пробелов и заглавных');
 $check($problem(['url' => 'https://93.184.216.34', 'path_style' => 0]) === ['xdrive s3 needs dns'], 'S3: адресация через имя узла требует имени DNS');
 $check($problem(['url' => 'https://inner-s3.example-disk.net']) === ['xdrive private url'], 'S3: внутренний адрес хранилища отклоняется');
+$check($problem(['bucket' => 'my.bucket', 'path_style' => 0]) === ['xdrive s3 dotted bucket'] && $problem(['bucket' => 'my.bucket']) === [],
+    'S3: бакет с точками в имени узла по https не подходит к сертификату, через путь — подходит');
 $check($problem(['secrets' => ['AKID/1', 'x']]) === ['xdrive need s3 keys'] && $problem(['secrets' => ['AKID']]) === ['xdrive need s3 keys'], 'S3: нужны ключ доступа без разделителей и секрет');
 $stream = Bot::xdriveStream($b->xdriveSettings(['xdrive' => $s3]))['xdriveSettings'];
 $check($stream === ['remoteFolder' => 'vpnbot-xdrive', 'service' => 's3', 'secrets' => ['AKIDVPNBOT', 'secret/key+1'],
@@ -490,6 +494,8 @@ $b->inventory['origin'] = '26.10.29';
 $check($b->applyXdrive(['enabled' => 1] + $s3) === '' && ($tag($b->confXray)[0]['streamSettings']['xdriveSettings']['service'] ?? '') === 's3', 'S3: ядро 26.10.29 — вход включён');
 $b->confPac['xray_core'] = 'fork';
 $check(!$b->xdriveCoreReady(null, 's3') && $b->xdriveCoreReady(null, 'webdav'), 'S3: форк 26.10.6 S3 не знает, WebDAV знает');
+$fork = new XdBot(); $fork->confPac['xray_core'] = 'fork'; $fork->inventory['fork'] = '26.11.30-0101';
+$check(!$fork->xdriveCoreReady(null, 's3'), 'S3: форк не получает S3 по одному номеру версии, пока поддержка не подтверждена');
 $b->confPac['xray_core'] = 'origin';
 $profile = $b->xdriveClientConfig($b->confXray['inbounds'][0]['settings']['clients'][0]);
 $check(($profile['outbounds'][0]['streamSettings']['xdriveSettings']['s3']['bucket'] ?? '') === 'vpnbot-bucket' && ($profile['outbounds'][0]['mux']['enabled'] ?? false), 'S3: профиль клиента с бакетом и Mux.Cool');
@@ -502,6 +508,12 @@ $b->storage = new XdS3Storage(); $b->storage->access = 'OTHER';
 $check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe auth', 'S3: чужой ключ — отказ доступа');
 $b->storage = new XdS3Storage(); $b->storage->bucket = 'other';
 $check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe bucket', 'S3: нет бакета');
+$b->storage = new XdS3Storage(); $b->storage->listReply = [400, '<Error><Code>AuthorizationHeaderMalformed</Code><Region>eu-west-1</Region></Error>'];
+$check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe region', 'S3: 400 AuthorizationHeaderMalformed — неверный регион');
+$b->storage = new XdS3Storage(); $b->storage->listReply = [400, '<Error><Code>InvalidArgument</Code></Error>'];
+$check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe denied', 'S3: прочий 400 — отказ, а не регион');
+$b->storage = new XdS3Storage(); $b->storage->listReply = [301, '<Error><Code>PermanentRedirect</Code></Error>'];
+$check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe region', 'S3: перенаправление — неверный регион или адрес');
 $b->storage = new XdS3Storage(); $b->storage->deny = ['PUT'];
 $check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe write', 'S3: запись запрещена');
 
@@ -523,6 +535,9 @@ $enter($b, 'region', '-');
 $check($b->xdriveSettings()['region'] === '' && !empty($b->xdriveSettings()['enabled']), 'S3: прочерк — регион по умолчанию, вход не выключается');
 $b->xdriveService('webdav');
 $check($b->xdriveSettings()['bucket'] === '' && $b->xdriveSettings()['path_style'] === 1, 'S3: смена хранилища сбрасывает настройки S3');
+$restarts = $b->restarts;
+$b->xdrivePathStyle();
+$check($b->xdriveSettings()['path_style'] === 1 && $b->restarts === $restarts, 'S3: path-style у WebDAV не меняется и Xray не перезапускается');
 
 foreach ($failures as $failure) echo "FAIL: $failure\n";
 if ($failures) exit(1);

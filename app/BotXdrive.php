@@ -21,9 +21,11 @@ trait BotXdrive
     public const XDRIVE_TAG = 'xdrive';
     // Первый выпуск ядра с транспортом; форк включает его с 26.10.5.
     public const XDRIVE_MIN_CORE = '26.9.30';
-    // Хранилище S3 появилось в ядре 26.10.29; форк его пока не знает
-    // (26.10.28), и номер его версии сравнивается так же.
+    // Хранилище S3 появилось в оригинальном ядре 26.10.29. Форк его пока не
+    // знает (26.10.28): нумерация у форка своя, поэтому для него порог задаётся
+    // отдельно и только после проверки выпуска; null — не поддерживает.
     public const XDRIVE_S3_MIN_CORE = '26.10.29';
+    public const XDRIVE_S3_FORK_MIN = null;
     public const XDRIVE_SERVICES = ['webdav' => 'WebDAV', 's3' => 'S3', 'gdrive' => 'Google Drive', 'template' => 'template'];
     // Имя файла — последняя часть ссылки в ответе PROPFIND; префикс пространства
     // имён у серверов разный (d:, D:, lp1:), сама папка заканчивается на «/».
@@ -164,6 +166,9 @@ trait BotXdrive
                 $ipHost = $url !== null && filter_var(trim((string) parse_url($url, PHP_URL_HOST), '[]'), FILTER_VALIDATE_IP);
                 if ($ipHost && empty($s['path_style'])) {
                     $problems[] = 'xdrive s3 needs dns';
+                } elseif (empty($s['path_style']) && str_contains($s['bucket'], '.') && str_starts_with(strtolower((string) $url), 'https://')) {
+                    // bucket.with.dots.endpoint не покрывается сертификатом *.endpoint.
+                    $problems[] = 'xdrive s3 dotted bucket';
                 } elseif (($base = self::xdriveS3Base($s)) !== null && !$this->xdriveHostPublic($base)) {
                     $problems[] = $this->xdriveHostResolves($base) ? 'xdrive private url' : 'xdrive unresolved';
                 }
@@ -233,8 +238,13 @@ trait BotXdrive
             $this->xdriveInventory = [time(), $this->xrayCoreInventory()];
         }
         $p = $p ?? $this->getPacConf();
-        $minimum = ($service ?? $this->xdriveSettings($p)['service']) === 's3' ? self::XDRIVE_S3_MIN_CORE : self::XDRIVE_MIN_CORE;
-        $version = (string) ($this->xdriveInventory[1][$this->xrayCoreSelection($p)] ?? '');
+        $core = $this->xrayCoreSelection($p);
+        $minimum = self::XDRIVE_MIN_CORE;
+        if (($service ?? $this->xdriveSettings($p)['service']) === 's3') {
+            $minimum = $core === 'fork' ? self::XDRIVE_S3_FORK_MIN : self::XDRIVE_S3_MIN_CORE;
+            if ($minimum === null) return false;
+        }
+        $version = (string) ($this->xdriveInventory[1][$core] ?? '');
         return $version !== '' && version_compare($version, $minimum, '>=');
     }
 
@@ -418,15 +428,20 @@ trait BotXdrive
         if ($code === 0) return 'xdrive probe unreachable';
         if ($code === 401 || $code === 403) return 'xdrive probe auth';
         if ($code === 404) return 'xdrive probe bucket';
-        // Неверный регион или адрес: S3 отвечает перенаправлением либо 400 с AuthorizationHeaderMalformed.
-        if (($code >= 300 && $code < 400) || $code === 400) return 'xdrive probe region';
+        // Неверный регион или адрес: S3 отвечает перенаправлением (PermanentRedirect)
+        // либо 400 с AuthorizationHeaderMalformed; прочие 400 — отказ, а не регион.
+        if (($code >= 300 && $code < 400) || ($code === 400 && preg_match('~AuthorizationHeaderMalformed|IllegalLocationConstraint|region~i', $answer))) {
+            return 'xdrive probe region';
+        }
         if ($code !== 200 || !str_contains($answer, 'ListBucketResult')) return 'xdrive probe denied';
         $name = 'vpnbot-check~' . bin2hex(random_bytes(8));
         $data = random_bytes(64);
         [$code] = $call('PUT', $prefix . $name, [], $data);
         if ($code < 200 || $code >= 300) return 'xdrive probe write';
         [$code, $read] = $call('GET', $prefix . $name);
-        [, $listing] = $call('GET', '', $list);
+        // Префикс — сам пробный объект: в рабочей папке ядра может быть больше 1000 файлов,
+        // и первая страница списка его не содержала бы.
+        [, $listing] = $call('GET', '', ['prefix' => $prefix . $name] + $list);
         $listed = str_contains($listing, '<Key>' . htmlspecialchars($prefix . $name, ENT_XML1) . '</Key>');
         [$deleted] = $call('DELETE', $prefix . $name);
         if ($code !== 200 || !hash_equals($data, $read)) return 'xdrive probe read';
@@ -580,6 +595,10 @@ trait BotXdrive
     public function xdrivePathStyle(): void
     {
         $s = $this->xdriveSettings();
+        if ($s['service'] !== 's3') {
+            $this->xdriveMenu();
+            return;
+        }
         $s['path_style'] = empty($s['path_style']) ? 1 : 0;
         $s = $this->xdriveSettings(['xdrive' => $s]);
         if (!empty($s['enabled']) && array_diff($this->xdriveProblems($s), ['xdrive unresolved'])) $s['enabled'] = 0;
