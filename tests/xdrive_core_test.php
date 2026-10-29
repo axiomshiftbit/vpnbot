@@ -200,8 +200,9 @@ try {
         'folder' => 'vpnbot-xdrive', 'secrets' => ['AKIDVPNBOTTEST', 'wJalr/K7MDENG+bPxRfiCY']];
     $s3Server = $server(['poll' => 500] + $base + $s3Settings);
     if (version_compare($v[1], Bot::XDRIVE_S3_MIN_CORE, '<')) {
-        xdAssert(!xdConfigOk($binary, $s3Server, $work), 'ядро до ' . Bot::XDRIVE_S3_MIN_CORE . ' не знает хранилища S3');
-        xdAssert(!$bot->xdriveCoreReady(null, 's3'), 'бот не включает S3 на таком ядре');
+        // 26.9.30 и форк 26.10.28 пропускают такой конфиг через run -test, но
+        // хранилища S3 не знают: защищает только порог версии в боте.
+        xdAssert(!$bot->xdriveCoreReady(null, 's3'), 'бот не включает S3 на ядре до ' . Bot::XDRIVE_S3_MIN_CORE);
     } else {
         xdAssert($bot->xdriveCoreReady(null, 's3'), 'бот считает ядро готовым к S3');
         xdAssert(xdConfigOk($binary, $s3Server, $work) && xdConfigOk($binary, $bot->xdriveClientConfig($users[0]), $work), 'ядро принимает конфиг S3 сервера и клиента');

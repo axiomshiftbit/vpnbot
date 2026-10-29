@@ -24,6 +24,8 @@ trait BotXdrive
     // Хранилище S3 появилось в оригинальном ядре 26.10.29. Форк его пока не
     // знает (26.10.28): нумерация у форка своя, поэтому для него порог задаётся
     // отдельно и только после проверки выпуска; null — не поддерживает.
+    // Проверка конфига ядром (run -test) тут не защищает: 26.9.30 и форк
+    // 26.10.28 пропускают service "s3", хотя работать с ним не умеют.
     public const XDRIVE_S3_MIN_CORE = '26.10.29';
     public const XDRIVE_S3_FORK_MIN = null;
     public const XDRIVE_SERVICES = ['webdav' => 'WebDAV', 's3' => 'S3', 'gdrive' => 'Google Drive', 'template' => 'template'];
