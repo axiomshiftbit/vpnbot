@@ -14,3 +14,6 @@ fd1e01cd7537e3ee3b0533c5fcdf19dc3a7db691f18c2c4a88cf7f8cd13f8384  gnutls self-te
 1839987b46f42935f97e1393cb39a9b38de5c080d5536e4488931587abc30808  example key in awg(8) and awg-quick(8) man pages
 77ded56fbf593cbfaa5d136080371d1ec30c501f0224c7976cc0a6009c8aa149  example key in awg-quick(8) man page
 bbc3b412030dd9d97da6fbcb2e6da5c6a8137c7f0609700f5bc0a36176c04bbd  example key in awg-quick(8) man page
+# Документация AWS (Signature Version 4): учебный ключ доступа из опубликованного
+# примера подписи — эталон проверки SigV4 в tests/xdrive_test.php, ничего не открывает.
+1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3  AWS SigV4 documentation example access key (AKIA…EXAMPLE), tests/xdrive_test.php

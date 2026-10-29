@@ -42,9 +42,9 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Xray 26.10.21 (исправленные встроенные корни; 26.10.10 и 26.10.17 отозваны) проверен с новым REALITY и VLESS Encryption. Следующие версии требуют отдельной проверки клиентов. mihomo получает support-x25519mlkem768 и Chrome; несовместимые подписки официального sing-box отклоняются ботом. Форк Jolymmiles имеет независимую версию.",
+      "description": "Xray 26.10.29 (корни и REALITY как у 26.10.21; 26.10.10 и 26.10.17 отозваны) проверен с новым REALITY и VLESS Encryption. Следующие версии требуют отдельной проверки клиентов. mihomo получает support-x25519mlkem768 и Chrome; несовместимые подписки официального sing-box отклоняются ботом. Форк Jolymmiles имеет независимую версию.",
       "matchDepNames": ["XTLS/Xray-core"],
-      "allowedVersions": "<=26.10.21"
+      "allowedVersions": "<=26.10.29"
     },
     {
       "description": "Alpine 3.24 с FreeUnit и PHP 8.5. Патчи этой ветки разрешены; следующий minor требует отдельной проверки модулей PHP, control API и обновления установок.",

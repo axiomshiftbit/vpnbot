@@ -756,11 +756,14 @@ class Bot
             case preg_match('~^/xdriveToggle$~', $this->input['callback'], $m):
                 $this->xdriveToggle();
                 break;
-            case preg_match('~^/xdriveService (webdav|gdrive|template)$~', $this->input['callback'], $m):
+            case preg_match('~^/xdriveService (webdav|s3|gdrive|template)$~', $this->input['callback'], $m):
                 $this->xdriveService($m[1]);
                 break;
-            case preg_match('~^/xdriveSet (url|folder|template|secrets|poll|secret[0-2])$~', $this->input['callback'], $m):
+            case preg_match('~^/xdriveSet (url|folder|template|secrets|poll|bucket|region|secret[0-2])$~', $this->input['callback'], $m):
                 $this->xdriveSet($m[1]);
+                break;
+            case preg_match('~^/xdrivePathStyle$~', $this->input['callback'], $m):
+                $this->xdrivePathStyle();
                 break;
             case preg_match('~^/xdriveProbe$~', $this->input['callback'], $m):
                 $this->xdriveProbeMenu();
@@ -20507,6 +20510,12 @@ DNS-over-HTTPS with IP:
                 ['text' => '📋 ' . $this->i18n('presets'),           'callback_data' => '/dpiNoisePresets'],
             ];
         }
+        if (!empty($f['enabled']) || !empty($n['enabled'])) {
+            $finalmask = ($p['dpi']['format'] ?? '') === 'finalmask';
+            $text[] = $this->i18n($finalmask ? 'dpi format finalmask hint' : 'dpi format freedom hint');
+            $data[] = [['text' => $this->i18n('dpi format') . ': ' . ($finalmask ? 'finalmask (Xray 26.3.27+)' : 'freedom'),
+                'callback_data' => '/dpiToggle format']];
+        }
         $text[] = "\n" . $this->i18n('sniffing');
         $data[] = [['text' => $this->i18n('sniffing') . ': ' . $on($s['enabled'] ?? 0), 'callback_data' => '/dpiToggle sniffing']];
         if (!empty($s['enabled'])) {
@@ -20993,6 +21002,11 @@ DNS-over-HTTPS with IP:
         switch ($what) {
             case 'fragment':
                 $p['dpi']['fragment']['enabled'] = empty($p['dpi']['fragment']['enabled']) ? 1 : 0;
+                $this->setPacConf($p);
+                break;
+            case 'format':
+                // Только формат клиентских профилей (t=s): сервер не перезапускается.
+                $p['dpi']['format'] = ($p['dpi']['format'] ?? '') === 'finalmask' ? 'freedom' : 'finalmask';
                 $this->setPacConf($p);
                 break;
             case 'noise':
@@ -30824,12 +30838,42 @@ DNS-over-HTTPS with IP:
     // Item 1: inject a freedom outbound carrying TLS fragment and/or UDP noise and
     // route the main proxy outbound through it via sockopt.dialerProxy (xray only).
     // No-op unless at least one is enabled, so default configs are unchanged.
+    //
+    // Формат finalmask (выбор администратора, dpi.format): те же маски прямо в
+    // streamSettings.finalmask прокси-выхода. Xray 26.10.29 называет fragment/
+    // noises у freedom устаревшими, но finalmask с fragment и noise есть только
+    // с 26.3.27: в 26.2.x профиль с ним не загрузится, ядра старше молча
+    // пропустят маски (проверено 2026-10-29 на выпусках 25.12.8…26.10.29).
+    // Версию ядра клиента бот не знает — поэтому по умолчанию
+    // прежний формат, а finalmask включает тот, у кого все клиенты новые.
     public function applyDpiFragment(array &$c, $index, array $pac): void
     {
         $frag  = !empty($pac['dpi']['fragment']['enabled']);
         $noise = !empty($pac['dpi']['noise']['enabled']);
         if (!$frag && !$noise) {
             return;
+        }
+        if (($pac['dpi']['format'] ?? '') === 'finalmask' && isset($c['outbounds'][$index])) {
+            $f = $pac['dpi']['fragment'] ?? [];
+            try {
+                $fm = $c['outbounds'][$index]['streamSettings']['finalmask'] ?? [];
+                if ($frag) {
+                    $fm['tcp'][] = ['type' => 'fragment', 'settings' => $this->finalmaskFragmentSettings([
+                        'packets'  => ($f['packets'] ?? '') ?: '1-3',
+                        'length'   => $f['length'] ?? '',
+                        'delay'    => $f['interval'] ?? '',
+                        'maxSplit' => $f['maxSplit'] ?? '',
+                    ])];
+                }
+                if ($noise) {
+                    $fm['udp'][] = ['type' => 'noise', 'settings' => XrayNoise::settings([], $this->dpiNoiseList($pac))];
+                }
+                $c['outbounds'][$index]['streamSettings']['finalmask'] = $fm;
+                return;
+            } catch (InvalidArgumentException) {
+                // Значения меню, которых finalmask не принимает (старые записи
+                // без проверки): профиль в прежнем формате, а не сломанный.
+            }
         }
         $settings = ['domainStrategy' => 'AsIs'];
         if ($frag) {

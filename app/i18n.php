@@ -602,6 +602,106 @@ $i = [
         'en' => 'The storage rejected the credentials.',
         'ru' => 'Хранилище отклонило учётные данные.',
     ],
+    'dpi format' => [
+        'en' => 'Format in profiles',
+        'ru' => 'Формат в профилях',
+    ],
+    'dpi format help' => [
+        'en' => "Fragmentation and noise from this menu reach clients inside Xray subscription profiles. There are two forms.\n\n<b>freedom</b> (default): a separate freedom outbound with fragment and noises, through which the proxy dials. Every Xray client understands it. Xray 26.10.29+ logs that this form is deprecated and will be removed, but it still works.\n\n<b>finalmask</b>: the same masks in streamSettings.finalmask of the proxy outbound, without a separate outbound and without the warning. It needs Xray 26.3.27+ on the device:\n• 26.3.27 and newer — works;\n• 26.2.x — the profile does not load at all;\n• older — the profile loads, but the masks silently do nothing.\n\nThe bot does not know the core version of a client app, so it does not switch on its own. Switch to finalmask once every user's app runs Xray 26.3.27+, and hand out the subscription again. The server does not restart: only the profiles change.",
+        'ru' => "Фрагментация и шум из этого меню попадают к клиентам в профилях подписки Xray. Форм две.\n\n<b>freedom</b> (по умолчанию): отдельный выход freedom с fragment и noises, через который подключается прокси. Её понимает любой клиент Xray. Xray 26.10.29+ пишет в журнал, что эта форма устарела и будет удалена, но пока она работает.\n\n<b>finalmask</b>: те же маски в streamSettings.finalmask прокси-выхода, без отдельного выхода и без предупреждения. Нужен Xray 26.3.27+ на устройстве:\n• 26.3.27 и новее — работает;\n• 26.2.x — профиль не загрузится вовсе;\n• старше — профиль загрузится, но маски молча не действуют.\n\nВерсию ядра клиентского приложения бот не знает, поэтому сам формат не меняет. Переключайте на finalmask, когда у всех пользователей приложения на Xray 26.3.27+, и обновите подписку. Сервер не перезапускается: меняются только профили.",
+    ],
+    'dpi format freedom hint' => [
+        'en' => 'Fragment and noise go into client profiles as a freedom outbound: every Xray client understands it. Xray 26.10.29+ logs that this form is deprecated. If every client runs Xray 26.3.27+, switch the format to finalmask.',
+        'ru' => 'Фрагментация и шум попадают в профили клиентов отдельным выходом freedom: его понимает любой клиент Xray. Xray 26.10.29+ пишет в журнал, что такая форма устарела. Если у всех клиентов Xray 26.3.27+, переключите формат на finalmask.',
+    ],
+    'dpi format finalmask hint' => [
+        'en' => 'Fragment and noise go into client profiles as finalmask. Clients need Xray 26.3.27+: on 26.2.x the profile will not load, older cores silently skip the masks.',
+        'ru' => 'Фрагментация и шум попадают в профили клиентов как finalmask. Клиентам нужен Xray 26.3.27+: на 26.2.x профиль не загрузится, более старые ядра молча пропустят маски.',
+    ],
+    'xdrive need s3 url' => [
+        'en' => 'Set the S3 endpoint, e.g. https://storage.yandexcloud.net',
+        'ru' => 'Задайте адрес S3 (endpoint), например https://storage.yandexcloud.net',
+    ],
+    'xdrive need bucket' => [
+        'en' => 'Set the bucket name: 3–63 lowercase Latin letters, digits, dots and hyphens.',
+        'ru' => 'Задайте имя бакета: 3–63 строчные латинские буквы, цифры, точки и дефисы.',
+    ],
+    'xdrive s3 needs dns' => [
+        'en' => 'Addressing the bucket by host name needs an endpoint with a DNS name, not an IP address: turn path-style on.',
+        'ru' => 'Адресации бакета через имя узла нужен адрес S3 с именем DNS, а не IP: включите path-style.',
+    ],
+    'xdrive need region' => [
+        'en' => 'The region is lowercase Latin letters, digits and hyphens, e.g. ru-central1 or auto.',
+        'ru' => 'Регион — строчные латинские буквы, цифры и дефисы, например ru-central1 или auto.',
+    ],
+    'xdrive need s3 keys' => [
+        'en' => 'Set the access key ID (no slashes, spaces or commas) and the secret key.',
+        'ru' => 'Задайте ключ доступа (без косой черты, пробелов и запятых) и секретный ключ.',
+    ],
+    'xdrive s3 core old' => [
+        'en' => 'S3 needs the upstream Xray core 26.10.29+; the fork does not support it yet. Select it in Xray → Core / version.',
+        'ru' => 'Для S3 нужно оригинальное ядро Xray 26.10.29+, форк его пока не поддерживает. Выберите его в Xray → Ядро / версия.',
+    ],
+    'xdrive probe bucket' => [
+        'en' => 'The bucket was not found: check its name, the S3 address and path-style.',
+        'ru' => 'Бакет не найден: проверьте его имя, адрес S3 и path-style.',
+    ],
+    'xdrive probe region' => [
+        'en' => 'The storage refused the signature region or redirected the request: check the region and the S3 address.',
+        'ru' => 'Хранилище не приняло регион подписи или перенаправило запрос: проверьте регион и адрес S3.',
+    ],
+    'xdrive s3 url' => [
+        'en' => 'S3 address',
+        'ru' => 'Адрес S3',
+    ],
+    'xdrive bucket' => [
+        'en' => 'Bucket',
+        'ru' => 'Бакет',
+    ],
+    'xdrive region' => [
+        'en' => 'Region',
+        'ru' => 'Регион',
+    ],
+    'xdrive path style' => [
+        'en' => 'path-style (bucket in the path)',
+        'ru' => 'path-style (бакет в пути)',
+    ],
+    'xdrive access key' => [
+        'en' => 'Access key',
+        'ru' => 'Ключ доступа',
+    ],
+    'xdrive secret key' => [
+        'en' => 'Secret key',
+        'ru' => 'Секретный ключ',
+    ],
+    'xdrive s3 clients' => [
+        'en' => 'S3 client profiles need Xray 26.10.29+ on the device.',
+        'ru' => 'Профилям для S3 нужен Xray 26.10.29+ на устройстве.',
+    ],
+    'xdrive hint bucket' => [
+        'en' => 'Bucket name as in the storage console, e.g. vpnbot-xdrive-1. Use a separate bucket or at least a separate key for XDRIVE.',
+        'ru' => 'Имя бакета, как в консоли хранилища, например vpnbot-xdrive-1. Под XDRIVE лучше отдельный бакет или хотя бы отдельный ключ.',
+    ],
+    'xdrive hint region' => [
+        'en' => 'Signature region: Yandex Object Storage — ru-central1, Cloudflare R2 — auto, MinIO and most others — us-east-1 (a dash or empty value means us-east-1).',
+        'ru' => 'Регион подписи: Yandex Object Storage — ru-central1, Cloudflare R2 — auto, MinIO и большинство остальных — us-east-1 (прочерк или пусто — us-east-1).',
+    ],
+    'xdrive hint s3 url' => [
+        'en' => 'S3 endpoint without the bucket: Yandex Object Storage — https://storage.yandexcloud.net, Cloudflare R2 — https://<account>.r2.cloudflarestorage.com, MinIO — https://minio.example.com',
+        'ru' => 'Адрес S3 (endpoint) без бакета: Yandex Object Storage — https://storage.yandexcloud.net, Cloudflare R2 — https://<аккаунт>.r2.cloudflarestorage.com, MinIO — https://minio.example.com',
+    ],
+    'xdrive hint s3 folder' => [
+        'en' => 'Prefix (folder) inside the bucket used only for XDRIVE, e.g. vpnbot-xdrive. Nothing needs to be created in advance.',
+        'ru' => 'Префикс (папка) внутри бакета только для XDRIVE, например vpnbot-xdrive. Заранее создавать ничего не нужно.',
+    ],
+    'xdrive hint s3 secret0' => [
+        'en' => 'Access key ID of a key with read and write access to this bucket only. It goes into client profiles. Your message will be deleted.',
+        'ru' => 'Идентификатор ключа доступа с правом чтения и записи только в этот бакет. Он попадает в профили клиентов. Сообщение будет удалено.',
+    ],
+    'xdrive hint s3 secret1' => [
+        'en' => 'Secret key of that access key. It is saved in the bot settings and goes into client profiles. Your message will be deleted.',
+        'ru' => 'Секретный ключ этого ключа доступа. Он сохраняется в настройках бота и попадает в профили клиентов. Сообщение будет удалено.',
+    ],
     'xdrive probe folder' => [
         'en' => 'The folder was not found in the storage: create it first.',
         'ru' => 'Папка в хранилище не найдена: сначала создайте её.',

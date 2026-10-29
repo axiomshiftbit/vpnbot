@@ -194,6 +194,37 @@ try {
     [$code] = xdFetch($socks, "http://127.0.0.1:$web/$marker.txt");
     xdAssert($code === 200, 'свой клиент продолжает работать после чужих попыток');
 
+    // 5. Хранилище S3 (ядро 26.10.29+): заглушка проверяет подпись SigV4 и ядра, и бота.
+    $s3 = xdPort(); $s3socks = xdPort();
+    $s3Settings = ['service' => 's3', 'url' => "http://127.0.0.1:$s3", 'bucket' => 'vpnbot-bucket', 'region' => 'ru-central1', 'path_style' => 1,
+        'folder' => 'vpnbot-xdrive', 'secrets' => ['AKIDVPNBOTTEST', 'wJalr/K7MDENG+bPxRfiCY']];
+    $s3Server = $server(['poll' => 500] + $base + $s3Settings);
+    if (version_compare($v[1], Bot::XDRIVE_S3_MIN_CORE, '<')) {
+        xdAssert(!xdConfigOk($binary, $s3Server, $work), 'ядро до ' . Bot::XDRIVE_S3_MIN_CORE . ' не знает хранилища S3');
+        xdAssert(!$bot->xdriveCoreReady(null, 's3'), 'бот не включает S3 на таком ядре');
+    } else {
+        xdAssert($bot->xdriveCoreReady(null, 's3'), 'бот считает ядро готовым к S3');
+        xdAssert(xdConfigOk($binary, $s3Server, $work) && xdConfigOk($binary, $bot->xdriveClientConfig($users[0]), $work), 'ядро принимает конфиг S3 сервера и клиента');
+        $processes[] = xdStart([$python, __DIR__ . '/integration/fixtures/xdrive/s3_server.py', '127.0.0.1', (string) $s3, 'vpnbot-bucket', 'ru-central1',
+            'AKIDVPNBOTTEST', 'wJalr/K7MDENG+bPxRfiCY'], "$work/s3.log");
+        xdAssert(xdWait($s3), 'заглушка S3 запущена');
+        xdAssert($bot->xdriveProbe($bot->xdriveSettings()) === '', 'проверка бота: подпись принята, запись, чтение, список и удаление');
+        $wrong = ['secrets' => ['AKIDVPNBOTTEST', 'other-secret']] + $bot->xdriveSettings();
+        xdAssert($bot->xdriveProbe($wrong) === 'xdrive probe auth', 'проверка бота с чужим секретом: отказ подписи');
+        file_put_contents("$work/s3-server.json", json_encode($s3Server, JSON_UNESCAPED_SLASHES));
+        $profile = $bot->xdriveClientConfig($users[1]);
+        $profile['inbounds'] = [['listen' => '127.0.0.1', 'port' => $s3socks, 'protocol' => 'socks']];
+        file_put_contents("$work/s3-client.json", json_encode($profile, JSON_UNESCAPED_SLASHES));
+        $processes[] = xdStart([$binary, 'run', '-c', "$work/s3-server.json"], "$work/s3-server.log");
+        $processes[] = xdStart([$binary, 'run', '-c', "$work/s3-client.json"], "$work/s3-client.log");
+        xdAssert(xdWait($s3socks), 'клиент Xray для S3 запущен');
+        usleep(700000);
+        [$code, $body] = xdFetch($s3socks, "http://127.0.0.1:$web/$marker.txt");
+        xdAssert($code === 200 && $body === str_repeat($marker . "\n", 4000), "ответ прошёл через S3 без искажений (код $code, " . strlen($body) . ' байт)');
+        xdAssert(!str_contains((string) @file_get_contents("$work/s3-server.log") . @file_get_contents("$work/s3-client.log"), 'SignatureDoesNotMatch'),
+            'ядро подписывает запросы так, как ждёт S3');
+    }
+
     echo "xdrive_core_test OK ($checks проверок ядром " . $v[1] . ")\n";
 } finally {
     foreach ($processes as $process) { @proc_terminate($process); @proc_close($process); }

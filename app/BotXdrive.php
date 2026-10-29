@@ -13,13 +13,18 @@
 //    лежит в хранилище, видит его владелец, а заголовок VLESS без шифрования
 //    содержит UUID пользователя. Ключи свои, от основного входа не зависят;
 //  - клиент — только Xray: профиль выдаётся файлом JSON и содержит доступ к
-//    хранилищу, поэтому годится лишь для своих.
+//    хранилищу, поэтому годится лишь для своих;
+//  - хранилища: WebDAV (через шаблон), S3-совместимое (Xray 26.10.29+),
+//    Google Drive и свой шаблон HTTP.
 trait BotXdrive
 {
     public const XDRIVE_TAG = 'xdrive';
     // Первый выпуск ядра с транспортом; форк включает его с 26.10.5.
     public const XDRIVE_MIN_CORE = '26.9.30';
-    public const XDRIVE_SERVICES = ['webdav' => 'WebDAV', 'gdrive' => 'Google Drive', 'template' => 'template'];
+    // Хранилище S3 появилось в ядре 26.10.29; форк его пока не знает
+    // (26.10.28), и номер его версии сравнивается так же.
+    public const XDRIVE_S3_MIN_CORE = '26.10.29';
+    public const XDRIVE_SERVICES = ['webdav' => 'WebDAV', 's3' => 'S3', 'gdrive' => 'Google Drive', 'template' => 'template'];
     // Имя файла — последняя часть ссылки в ответе PROPFIND; префикс пространства
     // имён у серверов разный (d:, D:, lp1:), сама папка заканчивается на «/».
     public const XDRIVE_WEBDAV_NAMES = '<(?:[A-Za-z0-9]+:)?href>[^<]*/([^/<]+)</(?:[A-Za-z0-9]+:)?href>';
@@ -29,7 +34,7 @@ trait BotXdrive
     public static function xdriveDefaults(): array
     {
         return ['enabled' => 0, 'service' => 'webdav', 'url' => '', 'folder' => '', 'secrets' => [],
-            'template' => '', 'poll' => self::XDRIVE_POLL[0], 'enc' => []];
+            'template' => '', 'poll' => self::XDRIVE_POLL[0], 'enc' => [], 'bucket' => '', 'region' => '', 'path_style' => 1];
     }
 
     public function xdriveSettings(?array $p = null): array
@@ -39,7 +44,8 @@ trait BotXdrive
         if (!isset(self::XDRIVE_SERVICES[$s['service']])) $s['service'] = 'webdav';
         $s['secrets'] = array_values(array_map('strval', is_array($s['secrets']) ? $s['secrets'] : []));
         $s['poll'] = max(self::XDRIVE_POLL[0], min(self::XDRIVE_POLL[1], (int) $s['poll']));
-        foreach (['url', 'folder', 'template'] as $field) $s[$field] = is_string($s[$field]) ? $s[$field] : '';
+        foreach (['url', 'folder', 'template', 'bucket', 'region'] as $field) $s[$field] = is_string($s[$field]) ? $s[$field] : '';
+        $s['path_style'] = empty($s['path_style']) ? 0 : 1;
         $s['enc'] = is_array($s['enc']) ? $s['enc'] : [];
         return $s;
     }
@@ -61,6 +67,30 @@ trait BotXdrive
     public static function xdriveFolderOk(string $folder): bool
     {
         return (bool) preg_match('~^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$~D', $folder);
+    }
+
+    // Имя бакета S3 в форме, годной и для адресации через путь, и через имя
+    // узла (bucket.endpoint): 3–63 символа, строчные буквы, цифры, точка, дефис.
+    public static function xdriveS3BucketOk(string $bucket): bool
+    {
+        return (bool) preg_match('~^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$~D', $bucket) && !str_contains($bucket, '..');
+    }
+
+    // Регион подписи SigV4; пусто — us-east-1 (так считает ядро).
+    public static function xdriveS3RegionOk(string $region): bool
+    {
+        return $region === '' || (bool) preg_match('~^[a-z0-9][a-z0-9-]{0,39}$~D', $region);
+    }
+
+    // Адрес, по которому ядро обращается к бакету: endpoint/bucket/ либо bucket.endpoint/.
+    public static function xdriveS3Base(array $s): ?string
+    {
+        $url = self::xdriveWebdavUrl($s['url']);
+        if ($url === null || !self::xdriveS3BucketOk($s['bucket'])) return null;
+        if (!empty($s['path_style'])) return $url . '/' . $s['bucket'] . '/';
+        $parts = parse_url($url);
+        return $parts['scheme'] . '://' . $s['bucket'] . '.' . $parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : '')
+            . ($parts['path'] ?? '') . '/';
     }
 
     // Хранилище должно быть внешним: бот и ядро не ходят по этому адресу во
@@ -126,6 +156,22 @@ trait BotXdrive
                 if (!self::xdriveFolderOk($s['folder'])) $problems[] = 'xdrive need folder';
                 if ($secrets !== 2 || count($s['secrets']) !== 2) $problems[] = 'xdrive need login';
                 break;
+            case 's3':
+                $url = self::xdriveWebdavUrl($s['url']);
+                if ($url === null) $problems[] = 'xdrive need s3 url';
+                if (!self::xdriveS3BucketOk($s['bucket'])) $problems[] = 'xdrive need bucket';
+                // Адресация через имя узла требует имени DNS, а не IP.
+                $ipHost = $url !== null && filter_var(trim((string) parse_url($url, PHP_URL_HOST), '[]'), FILTER_VALIDATE_IP);
+                if ($ipHost && empty($s['path_style'])) {
+                    $problems[] = 'xdrive s3 needs dns';
+                } elseif (($base = self::xdriveS3Base($s)) !== null && !$this->xdriveHostPublic($base)) {
+                    $problems[] = $this->xdriveHostResolves($base) ? 'xdrive private url' : 'xdrive unresolved';
+                }
+                if (!self::xdriveS3RegionOk($s['region'])) $problems[] = 'xdrive need region';
+                if (!self::xdriveFolderOk($s['folder'])) $problems[] = 'xdrive need folder';
+                // Ключ доступа уходит в заголовок Authorization: без разделителей.
+                if ($secrets !== 2 || count($s['secrets']) !== 2 || preg_match('~[/\s,]~', $s['secrets'][0])) $problems[] = 'xdrive need s3 keys';
+                break;
             case 'gdrive':
                 if (!preg_match('~^[A-Za-z0-9_-]{10,100}$~D', $s['folder'])) $problems[] = 'xdrive need folder id';
                 if ($secrets !== 3 || count($s['secrets']) !== 3) $problems[] = 'xdrive need google keys';
@@ -162,6 +208,9 @@ trait BotXdrive
         // клиенту с ядром до 26.10.17 новое имя незнакомо.
         $settings = match ($s['service']) {
             'gdrive' => ['remoteFolder' => $s['folder'], 'service' => 'Google Drive', 'secrets' => $s['secrets']],
+            's3' => ['remoteFolder' => $s['folder'], 'service' => 's3', 'secrets' => $s['secrets'],
+                's3' => ['endpoint' => (string) self::xdriveWebdavUrl($s['url']), 'bucket' => $s['bucket'], 'pathStyle' => !empty($s['path_style'])]
+                    + ($s['region'] !== '' ? ['region' => $s['region']] : [])],
             'template' => ['remoteFolder' => $s['folder'], 'service' => 'template', 'secrets' => $s['secrets'],
                 'template' => json_decode($s['template'], true)],
             default => ['remoteFolder' => $s['folder'], 'service' => 'template', 'secrets' => $s['secrets'],
@@ -178,13 +227,15 @@ trait BotXdrive
     // восстановления из копии, а ядро без транспорта с таким входом не
     // запустится вовсе. Ответ держится минуту — в режиме long polling один
     // объект бота живёт часами.
-    public function xdriveCoreReady(?array $p = null): bool
+    public function xdriveCoreReady(?array $p = null, ?string $service = null): bool
     {
         if ($this->xdriveInventory === null || time() - $this->xdriveInventory[0] >= 60) {
             $this->xdriveInventory = [time(), $this->xrayCoreInventory()];
         }
-        $version = (string) ($this->xdriveInventory[1][$this->xrayCoreSelection($p ?? $this->getPacConf())] ?? '');
-        return $version !== '' && version_compare($version, self::XDRIVE_MIN_CORE, '>=');
+        $p = $p ?? $this->getPacConf();
+        $minimum = ($service ?? $this->xdriveSettings($p)['service']) === 's3' ? self::XDRIVE_S3_MIN_CORE : self::XDRIVE_MIN_CORE;
+        $version = (string) ($this->xdriveInventory[1][$this->xrayCoreSelection($p)] ?? '');
+        return $version !== '' && version_compare($version, $minimum, '>=');
     }
 
     // Работает ли вход сейчас: включён, настроен, ключи целы, ядро умеет.
@@ -291,6 +342,7 @@ trait BotXdrive
             return match (true) { $code === 200 => '', $code === 0 => 'xdrive probe unreachable',
                 $code === 404 => 'xdrive probe folder', default => 'xdrive probe denied' };
         }
+        if ($s['service'] === 's3') return $this->xdriveProbeS3($s);
         if ($s['service'] !== 'webdav') return 'xdrive probe template';
         $base = self::xdriveWebdavUrl($s['url']) . '/' . $s['folder'] . '/';
         $auth = ['Authorization: Basic ' . base64_encode($s['secrets'][0] . ':' . $s['secrets'][1])];
@@ -313,6 +365,75 @@ trait BotXdrive
         return $deleted >= 200 && $deleted < 300 ? '' : 'xdrive probe delete';
     }
 
+    // Экранирование пути и параметров для SigV4: как s3EscapePath ядра
+    // (%20 вместо пробела, заглавные шестнадцатеричные, «/» в пути не трогается).
+    public static function xdriveS3Escape(string $value, bool $slash = true): string
+    {
+        $out = rawurlencode($value);
+        return $slash ? str_replace('%2F', '/', $out) : $out;
+    }
+
+    // Подписанный запрос к бакету: [адрес, заголовки]. Повторяет s3Storage.sign()
+    // ядра: подписаны host, x-amz-content-sha256, x-amz-date и content-type у PUT.
+    public static function xdriveS3Request(array $s, string $method, string $key, array $query, string $body, int $now): array
+    {
+        $parts = parse_url((string) self::xdriveS3Base($s));
+        $scheme = strtolower($parts['scheme']);
+        $port = isset($parts['port']) && $parts['port'] !== ($scheme === 'https' ? 443 : 80) ? ':' . $parts['port'] : '';
+        $host = $parts['host'] . $port;
+        $path = implode('/', array_map(static fn($segment) => self::xdriveS3Escape(rawurldecode($segment)), explode('/', $parts['path']))) . self::xdriveS3Escape($key);
+        ksort($query);
+        $rawQuery = implode('&', array_map(static fn($name, $value) => self::xdriveS3Escape((string) $name, false) . '=' . self::xdriveS3Escape((string) $value, false),
+            array_keys($query), $query));
+        $hash = hash('sha256', $body);
+        [$stamp, $date] = [gmdate('Ymd\THis\Z', $now), gmdate('Ymd', $now)];
+        $region = $s['region'] !== '' ? $s['region'] : 'us-east-1';
+        $headers = "host:$host\nx-amz-content-sha256:$hash\nx-amz-date:$stamp\n";
+        $signed = 'host;x-amz-content-sha256;x-amz-date';
+        $extra = [];
+        if ($method === 'PUT') {
+            $headers = "content-type:application/octet-stream\n" . $headers;
+            $signed = 'content-type;' . $signed;
+            $extra[] = 'Content-Type: application/octet-stream';
+        }
+        $canonical = "$method\n$path\n$rawQuery\n$headers\n$signed\n$hash";
+        $scope = "$date/$region/s3/aws4_request";
+        $key0 = hash_hmac('sha256', $date, 'AWS4' . $s['secrets'][1], true);
+        foreach ([$region, 's3', 'aws4_request'] as $part) $key0 = hash_hmac('sha256', $part, $key0, true);
+        $signature = hash_hmac('sha256', "AWS4-HMAC-SHA256\n$stamp\n$scope\n" . hash('sha256', $canonical), $key0);
+        return ["$scheme://$host$path" . ($rawQuery !== '' ? "?$rawQuery" : ''), [...$extra, "X-Amz-Date: $stamp", "X-Amz-Content-Sha256: $hash",
+            "Authorization: AWS4-HMAC-SHA256 Credential={$s['secrets'][0]}/$scope, SignedHeaders=$signed, Signature=$signature"]];
+    }
+
+    // Проверка бакета теми же запросами, что делает ядро: список, запись, чтение, удаление.
+    public function xdriveProbeS3(array $s): string
+    {
+        $call = function (string $method, string $key, array $query = [], string $body = '') use ($s): array {
+            [$url, $headers] = self::xdriveS3Request($s, $method, $key, $query, $body, time());
+            return $this->xdriveHttp($method, $url, $headers, $method === 'PUT' ? $body : null);
+        };
+        $prefix = $s['folder'] . '/';
+        $list = ['list-type' => '2', 'prefix' => $prefix, 'max-keys' => '1000', 'delimiter' => '/'];
+        [$code, $answer] = $call('GET', '', $list);
+        if ($code === 0) return 'xdrive probe unreachable';
+        if ($code === 401 || $code === 403) return 'xdrive probe auth';
+        if ($code === 404) return 'xdrive probe bucket';
+        // Неверный регион или адрес: S3 отвечает перенаправлением либо 400 с AuthorizationHeaderMalformed.
+        if (($code >= 300 && $code < 400) || $code === 400) return 'xdrive probe region';
+        if ($code !== 200 || !str_contains($answer, 'ListBucketResult')) return 'xdrive probe denied';
+        $name = 'vpnbot-check~' . bin2hex(random_bytes(8));
+        $data = random_bytes(64);
+        [$code] = $call('PUT', $prefix . $name, [], $data);
+        if ($code < 200 || $code >= 300) return 'xdrive probe write';
+        [$code, $read] = $call('GET', $prefix . $name);
+        [, $listing] = $call('GET', '', $list);
+        $listed = str_contains($listing, '<Key>' . htmlspecialchars($prefix . $name, ENT_XML1) . '</Key>');
+        [$deleted] = $call('DELETE', $prefix . $name);
+        if ($code !== 200 || !hash_equals($data, $read)) return 'xdrive probe read';
+        if (!$listed) return 'xdrive probe list';
+        return $deleted >= 200 && $deleted < 300 ? '' : 'xdrive probe delete';
+    }
+
     // Сохраняет настройки и перезапускает ядро. Возвращает ключ отказа либо ''.
     public function applyXdrive(array $s, bool $rotate = false): string
     {
@@ -329,11 +450,12 @@ trait BotXdrive
                     // Вход уже работал с этим же адресом: сбой DNS в момент
                     // правки другого поля не причина отказывать в сохранении.
                     $was = $this->xdriveSettings($old);
-                    if (!empty($was['enabled']) && [$was['service'], $was['url'], $was['template']] === [$s['service'], $s['url'], $s['template']]) {
+                    if (!empty($was['enabled']) && [$was['service'], $was['url'], $was['template'], $was['bucket'], $was['path_style']]
+                            === [$s['service'], $s['url'], $s['template'], $s['bucket'], $s['path_style']]) {
                         $problems = array_values(array_diff($problems, ['xdrive unresolved']));
                     }
                     if ($problems) return $problems[0];
-                    if (!$this->xdriveCoreReady($p)) return 'xdrive core old';
+                    if (!$this->xdriveCoreReady($p, $s['service'])) return $s['service'] === 's3' ? 'xdrive s3 core old' : 'xdrive core old';
                     if ($rotate || VlessEncryption::pair($s['enc']) === null) {
                         // Вывод содержит закрытые ключи: не показывать и не писать в журнал.
                         $pairs = VlessEncryption::parseOutput((string) $this->ssh('xray vlessenc', 'xr'));
@@ -374,7 +496,8 @@ trait BotXdrive
         if (!empty($s['enabled']) && !$this->xdriveActive($p, $this->getXray())) $text[] = '⚠️ ' . $this->i18n('xdrive inactive');
         $text[] = $this->i18n('xdrive service') . ': <b>' . self::XDRIVE_SERVICES[$s['service']] . '</b>';
         foreach ($problems as $problem) $text[] = '• ' . $this->i18n($problem);
-        if ($s['service'] === 'webdav' && str_starts_with(strtolower($s['url']), 'http://')) $text[] = '⚠️ ' . $this->i18n('xdrive plain http');
+        if (in_array($s['service'], ['webdav', 's3'], true) && str_starts_with(strtolower($s['url']), 'http://')) $text[] = '⚠️ ' . $this->i18n('xdrive plain http');
+        if ($s['service'] === 's3') $text[] = $this->i18n('xdrive s3 clients');
         $field = static fn(string $label, string $name, string $value) => [['text' => "$label: $value", 'callback_data' => '/xdriveSet ' . $name]];
         $data = [
             [['text' => 'XDRIVE: ' . $this->i18n(!empty($s['enabled']) ? 'on' : 'off'), 'callback_data' => '/xdriveToggle']],
@@ -387,6 +510,16 @@ trait BotXdrive
                 $data[] = $field($this->i18n('xdrive folder'), 'folder', $s['folder'] === '' ? '—' : $s['folder']);
                 $data[] = $field($this->i18n('xdrive login'), 'secret0', self::xdriveMask($s['secrets'][0] ?? ''));
                 $data[] = $field($this->i18n('xdrive password'), 'secret1', self::xdriveMask($s['secrets'][1] ?? ''));
+                break;
+            case 's3':
+                $data[] = $field($this->i18n('xdrive s3 url'), 'url', $s['url'] === '' ? '—' : $s['url']);
+                $data[] = $field($this->i18n('xdrive bucket'), 'bucket', $s['bucket'] === '' ? '—' : $s['bucket']);
+                $data[] = $field($this->i18n('xdrive region'), 'region', $s['region'] === '' ? 'us-east-1' : $s['region']);
+                $data[] = [['text' => $this->i18n('xdrive path style') . ': ' . $this->i18n(!empty($s['path_style']) ? 'on' : 'off'),
+                    'callback_data' => '/xdrivePathStyle']];
+                $data[] = $field($this->i18n('xdrive folder'), 'folder', $s['folder'] === '' ? '—' : $s['folder']);
+                $data[] = $field($this->i18n('xdrive access key'), 'secret0', self::xdriveMask($s['secrets'][0] ?? ''));
+                $data[] = $field($this->i18n('xdrive secret key'), 'secret1', self::xdriveMask($s['secrets'][1] ?? ''));
                 break;
             case 'gdrive':
                 $data[] = $field($this->i18n('xdrive folder id'), 'folder', $s['folder'] === '' ? '—' : $s['folder']);
@@ -426,7 +559,8 @@ trait BotXdrive
         }
         // Доступы другого хранилища к новому не подходят; работающий вход
         // выключается, чтобы не остаться с наполовину заполненными настройками.
-        $s = ['service' => $service, 'enabled' => 0, 'url' => '', 'folder' => '', 'secrets' => [], 'template' => ''] + $s;
+        $s = ['service' => $service, 'enabled' => 0, 'url' => '', 'folder' => '', 'secrets' => [], 'template' => '',
+            'bucket' => '', 'region' => '', 'path_style' => 1] + $s;
         $error = $this->applyXdrive($s);
         $this->xdriveMenu($error);
     }
@@ -442,6 +576,16 @@ trait BotXdrive
         $this->xdriveMenu($error !== '' ? $error : 'xdrive rotated');
     }
 
+    // Адресация бакета: через путь (endpoint/bucket) или через имя узла (bucket.endpoint).
+    public function xdrivePathStyle(): void
+    {
+        $s = $this->xdriveSettings();
+        $s['path_style'] = empty($s['path_style']) ? 1 : 0;
+        $s = $this->xdriveSettings(['xdrive' => $s]);
+        if (!empty($s['enabled']) && array_diff($this->xdriveProblems($s), ['xdrive unresolved'])) $s['enabled'] = 0;
+        $this->xdriveMenu($this->applyXdrive($s));
+    }
+
     public function xdriveProbeMenu(): void
     {
         $error = $this->xdriveProbe($this->xdriveSettings());
@@ -450,8 +594,12 @@ trait BotXdrive
 
     public function xdriveSet(string $field): void
     {
-        if (!preg_match('~^(url|folder|template|secrets|poll|secret[0-2])$~D', $field)) return;
-        $r = $this->send($this->input['chat'], "@{$this->input['username']} " . $this->i18n('enter value') . "\n\n" . $this->i18n('xdrive hint ' . preg_replace('~\d$~', '', $field)),
+        if (!preg_match('~^(url|folder|template|secrets|poll|bucket|region|secret[0-2])$~D', $field)) return;
+        $hint = 'xdrive hint ' . preg_replace('~\d$~', '', $field);
+        if ($this->xdriveSettings()['service'] === 's3' && in_array($field, ['url', 'folder', 'secret0', 'secret1'], true)) {
+            $hint = 'xdrive hint s3 ' . $field;
+        }
+        $r = $this->send($this->input['chat'], "@{$this->input['username']} " . $this->i18n('enter value') . "\n\n" . $this->i18n($hint),
             $this->input['message_id'], reply: $this->i18n('enter value'));
         $this->stashReply($r, ['start_message' => $this->input['message_id'], 'start_callback' => $this->input['callback_id'],
             'callback' => 'saveXdrive', 'args' => [$field]]);
@@ -475,6 +623,11 @@ trait BotXdrive
             $s['url'] = (string) (self::xdriveWebdavUrl($value) ?? '');
         } elseif (in_array($field, ['folder', 'template'], true)) {
             $s[$field] = $field === 'folder' ? trim($value, '/') : $value;
+        } elseif ($field === 'bucket') {
+            $s['bucket'] = strtolower($value);
+        } elseif ($field === 'region') {
+            // Пустое сообщение в Telegram не отправить: прочерк — регион по умолчанию.
+            $s['region'] = in_array($value, ['-', '—'], true) ? '' : strtolower($value);
         } else {
             return;
         }
@@ -483,7 +636,7 @@ trait BotXdrive
         // Сбой DNS — не повод выключать работающий вход при правке другого поля.
         if (!empty($s['enabled']) && array_diff($this->xdriveProblems($s), ['xdrive unresolved'])) $s['enabled'] = 0;
         $error = $s === $before ? '' : $this->applyXdrive($s);
-        $this->xdriveMenu($error !== '' ? $error : ($field === 'url' && $s['url'] === '' && $value !== '' ? 'xdrive need url' : ''));
+        $this->xdriveMenu($error !== '' ? $error : ($field === 'url' && $s['url'] === '' && $value !== '' ? ($s['service'] === 's3' ? 'xdrive need s3 url' : 'xdrive need url') : ''));
     }
 
     public function xdriveUsers(int $page = 0): void

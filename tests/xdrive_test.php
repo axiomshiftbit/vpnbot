@@ -40,6 +40,35 @@ class XdStorage
     }
 }
 
+// Бакет S3 в памяти: запросы, которые делает ядро (ListObjectsV2, PUT, GET, DELETE).
+class XdS3Storage extends XdStorage
+{
+    public string $bucket = 'vpnbot-bucket';
+    public string $access = 'AKIDVPNBOT';
+    public array $raw = [];
+    public function handle(string $method, string $url, array $headers, ?string $body): array
+    {
+        $this->log[] = "$method $url";
+        $this->raw[] = $headers;
+        $auth = (string) current(array_filter($headers, static fn($h) => str_starts_with($h, 'Authorization: ')));
+        if (!str_contains($auth, "Credential=$this->access/") || !str_contains($auth, 'SignedHeaders=')) return [403, '<Error><Code>InvalidAccessKeyId</Code></Error>'];
+        if (in_array($method, $this->deny, true)) return [403, ''];
+        $path = rawurldecode((string) parse_url($url, PHP_URL_PATH));
+        [$bucket, $key] = array_pad(explode('/', ltrim($path, '/'), 2), 2, '');
+        if ($bucket !== $this->bucket || !$this->folder) return [404, '<Error><Code>NoSuchBucket</Code></Error>'];
+        if ($method === 'GET' && $key === '') {
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+            $items = '';
+            foreach (array_keys($this->files) as $name) if (str_starts_with($name, $query['prefix'] ?? '')) $items .= '<Contents><Key>' . htmlspecialchars($name, ENT_XML1) . '</Key></Contents>';
+            return [200, "<?xml version=\"1.0\"?><ListBucketResult><IsTruncated>false</IsTruncated>$items</ListBucketResult>"];
+        }
+        if ($method === 'PUT') { $this->files[$key] = (string) $body; return [200, '']; }
+        if ($method === 'GET') return isset($this->files[$key]) ? [200, $this->files[$key]] : [404, ''];
+        if ($method === 'DELETE') { unset($this->files[$key]); return [204, '']; }
+        return [405, ''];
+    }
+}
+
 class XdBot extends Bot
 {
     public array $confPac = ['transport' => 'Reality', 'xray_core' => 'origin'];
@@ -111,8 +140,8 @@ $tag = static fn(array $c) => array_values(array_filter($c['inbounds'], static f
 $bot = new XdBot();
 $s = $bot->xdriveSettings();
 $check($s['enabled'] === 0 && $s['service'] === 'webdav' && $s['poll'] === 500 && $s['secrets'] === [], 'настройки по умолчанию: выключено');
-$check($bot->xdriveSettings(['xdrive' => ['service' => 'dropbox', 'poll' => 5, 'secrets' => 'x', 'enc' => 'y', 'url' => []]]) == ['enabled' => 0, 'service' => 'webdav', 'url' => '', 'folder' => '',
-    'secrets' => [], 'template' => '', 'poll' => 500, 'enc' => []], 'испорченные настройки приводятся к безопасным');
+$check($bot->xdriveSettings(['xdrive' => ['service' => 'dropbox', 'poll' => 5, 'secrets' => 'x', 'enc' => 'y', 'url' => [], 'bucket' => 7, 'path_style' => 'no']]) == ['enabled' => 0, 'service' => 'webdav', 'url' => '', 'folder' => '',
+    'secrets' => [], 'template' => '', 'poll' => 500, 'enc' => [], 'bucket' => '', 'region' => '', 'path_style' => 1], 'испорченные настройки приводятся к безопасным');
 $check($bot->xdriveSettings(['xdrive' => ['poll' => 999999]])['poll'] === 10000, 'интервал опроса ограничен сверху');
 foreach (['https://webdav.yandex.ru' => 'https://webdav.yandex.ru', 'https://cloud.example.com/remote.php/dav/files/user/' => 'https://cloud.example.com/remote.php/dav/files/user',
     ' http://dav.example.com:8080 ' => 'http://dav.example.com:8080'] as $input => $expected) {
@@ -376,21 +405,22 @@ $check($bot->confPac['xdrive']['service'] === 'template', 'неизвестны�
 $module = file_get_contents(__DIR__ . '/../app/BotXdrive.php');
 preg_match_all("~'(xdrive [a-z0-9 ]+)'~", $module, $used);
 $keys = array_unique($used[1]);
-foreach (['url', 'folder', 'template', 'secrets', 'poll', 'secret'] as $field) $keys[] = 'xdrive hint ' . $field;
+foreach (['url', 'folder', 'template', 'secrets', 'poll', 'secret', 'bucket', 'region', 's3 url', 's3 folder', 's3 secret0', 's3 secret1'] as $field) $keys[] = 'xdrive hint ' . $field;
 require __DIR__ . '/../app/i18n.php';
 foreach ($keys as $key) {
-    if ($key === 'xdrive hint ') continue;
+    if ($key === 'xdrive hint ' || $key === 'xdrive hint s3 ') continue;
     $check(!empty($i[$key]['ru']) && !empty($i[$key]['en']) && preg_match('~[А-Яа-я]~u', $i[$key]['ru']), "перевод есть: $key");
 }
 $help = $bot->menuHelpContent('xdrive');
-$check($help[0] === 'XDRIVE' && $help[1] === '/xdrive' && count($help[2]) === 9, 'справка: девять страниц, возврат в меню XDRIVE');
+$check($help[0] === 'XDRIVE' && $help[1] === '/xdrive' && count($help[2]) === 10, 'справка: десять страниц, возврат в меню XDRIVE');
 foreach ($help[2] as $title => $page) {
-    $check(preg_match('~[А-Яа-я]~u', $title . $page) && !preg_match('~\b(the|and|with|storage)\b~i', $page) && mb_strlen($page) < 3500, "страница справки на русском и помещается в сообщение: $title");
+    // Имена и адреса в <code> не переводятся (storage.editor, storage.yandexcloud.net).
+    $check(preg_match('~[А-Яа-я]~u', $title . $page) && !preg_match('~\b(the|and|with|storage)\b~i', preg_replace('~<code>.*?</code>~su', '', $page)) && mb_strlen($page) < 3500, "страница справки на русском и помещается в сообщение: $title");
     $check(substr_count($page, '<b>') === substr_count($page, '</b>') && substr_count($page, '<code>') === substr_count($page, '</code>'), "разметка страницы закрыта: $title");
 }
 $bot->language = 'en';
 $english = $bot->menuHelpContent('xdrive')[2];
-$check(count($english) === 9 && !preg_match('~[А-Яа-яЁё]~u', implode('', array_keys($english)) . implode('', $english)), 'английская справка XDRIVE: девять страниц без русского текста');
+$check(count($english) === 10 && !preg_match('~[А-Яа-яЁё]~u', implode('', array_keys($english)) . implode('', $english)), 'английская справка XDRIVE: десять страниц без русского текста');
 foreach (['Check storage', 'New keys', 'Idle polling', 'Client profiles', '10808', 'namesRegex', 'Refresh Token'] as $needle) {
     $check(str_contains(implode("\n", $english), $needle), "английская справка упоминает: $needle");
 }
@@ -399,8 +429,8 @@ $all = implode("\n", $help[2]);
 foreach (['26.9.30', 'webdav.yandex.ru', 'Пароли приложений', 'Refresh Token', 'namesRegex', '10808', 'Новые ключи', 'Опрос в простое', 'Проверить хранилище'] as $needle) {
     $check(str_contains($all, $needle), "справка упоминает: $needle");
 }
-$routes = substr($source, strpos($source, "case preg_match('~^/xdrive$~'"), 1800);
-foreach (['xdriveMenu', 'xdriveToggle', 'xdriveService', 'xdriveSet', 'xdriveProbeMenu', 'xdriveRotate', 'xdriveUsers', 'xdriveProfile'] as $method) {
+$routes = substr($source, strpos($source, "case preg_match('~^/xdrive$~'"), 2400);
+foreach (['xdriveMenu', 'xdriveToggle', 'xdriveService', 'xdriveSet', 'xdrivePathStyle', 'xdriveProbeMenu', 'xdriveRotate', 'xdriveUsers', 'xdriveProfile'] as $method) {
     $check(str_contains($routes, '$this->' . $method . '('), "маршрут подключён: $method");
 }
 
@@ -421,6 +451,78 @@ $b->resolved = ['webdav.example-disk.net' => ['10.10.0.7']];
 $enter($b, 'poll', '4000');
 $check(empty($b->xdriveSettings()['enabled']), 'DNS: имя, ставшее внутренним адресом, по-прежнему выключает XDRIVE');
 $check($b->xdriveClientConfig($b->confXray['inbounds'][0]['settings']['clients'][0]) === null, 'DNS: и профиль с внутренним адресом не выдаётся');
+
+// --- Хранилище S3 (ядро 26.10.29+) -----------------------------------------
+// Эталон из документации AWS (SigV4, GET Bucket с max-keys и prefix): тот же
+// набор подписанных заголовков, что у ядра.
+[$url, $headers] = Bot::xdriveS3Request(['url' => 'https://s3.amazonaws.com', 'bucket' => 'examplebucket', 'path_style' => 0, 'region' => 'us-east-1',
+    'secrets' => ['AKIAIOSFODNN7EXAMPLE', 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY']], 'GET', '', ['prefix' => 'J', 'max-keys' => '2'], '', gmmktime(0, 0, 0, 5, 24, 2013));
+$check($url === 'https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J', 'S3: адрес с бакетом в имени узла и упорядоченными параметрами');
+$check(end($headers) === 'Authorization: AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, '
+    . 'SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7', 'S3: подпись совпадает с эталоном AWS');
+[$url, $headers] = Bot::xdriveS3Request(['url' => 'https://s3.example-disk.net:443/base', 'bucket' => 'vpnbot-bucket', 'path_style' => 1, 'region' => '',
+    'secrets' => ['AKID', 'secret']], 'PUT', 'vpnbot xd/a~b', [], 'x', 0);
+$check($url === 'https://s3.example-disk.net/base/vpnbot-bucket/vpnbot%20xd/a~b' && in_array('Content-Type: application/octet-stream', $headers, true)
+    && str_contains(end($headers), '/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;'), 'S3: путь через бакет, %20, без порта по умолчанию, регион по умолчанию, тип у PUT');
+
+$s3 = ['service' => 's3', 'url' => 'https://s3.example-disk.net', 'bucket' => 'vpnbot-bucket', 'region' => 'ru-central1', 'path_style' => 1,
+    'folder' => 'vpnbot-xdrive', 'secrets' => ['AKIDVPNBOT', 'secret/key+1']];
+$b = new XdBot();
+$b->resolved += ['s3.example-disk.net' => ['93.184.216.34'], 'vpnbot-bucket.s3.example-disk.net' => ['93.184.216.34'], 'vpnbot-bucket2.s3.example-disk.net' => ['93.184.216.34'], 'inner-s3.example-disk.net' => ['10.10.0.9']];
+$check($b->xdriveProblems($b->xdriveSettings(['xdrive' => ['service' => 's3']])) === ['xdrive need s3 url', 'xdrive need bucket', 'xdrive need folder', 'xdrive need s3 keys'], 'S3: пустые настройки — все замечания');
+$problem = static fn(array $over) => $b->xdriveProblems($b->xdriveSettings(['xdrive' => $over + $s3]));
+$check($problem([]) === [], 'S3: полные настройки без замечаний');
+$check($problem(['bucket' => 'Bad_Bucket']) === ['xdrive need bucket'] && $problem(['bucket' => 'a..b']) === ['xdrive need bucket'], 'S3: имя бакета по правилам S3');
+$check($problem(['region' => 'EU West']) === ['xdrive need region'], 'S3: регион без пробелов и заглавных');
+$check($problem(['url' => 'https://93.184.216.34', 'path_style' => 0]) === ['xdrive s3 needs dns'], 'S3: адресация через имя узла требует имени DNS');
+$check($problem(['url' => 'https://inner-s3.example-disk.net']) === ['xdrive private url'], 'S3: внутренний адрес хранилища отклоняется');
+$check($problem(['secrets' => ['AKID/1', 'x']]) === ['xdrive need s3 keys'] && $problem(['secrets' => ['AKID']]) === ['xdrive need s3 keys'], 'S3: нужны ключ доступа без разделителей и секрет');
+$stream = Bot::xdriveStream($b->xdriveSettings(['xdrive' => $s3]))['xdriveSettings'];
+$check($stream === ['remoteFolder' => 'vpnbot-xdrive', 'service' => 's3', 'secrets' => ['AKIDVPNBOT', 'secret/key+1'],
+    's3' => ['endpoint' => 'https://s3.example-disk.net', 'bucket' => 'vpnbot-bucket', 'pathStyle' => true, 'region' => 'ru-central1']], 'S3: блок xdriveSettings для ядра');
+$check(!isset(Bot::xdriveStream($b->xdriveSettings(['xdrive' => ['region' => ''] + $s3]))['xdriveSettings']['s3']['region']), 'S3: пустой регион не передаётся (ядро возьмёт us-east-1)');
+
+// Версии ядер бот запоминает на минуту: старое и новое ядро — разные боты.
+$old = new XdBot();
+$old->resolved = $b->resolved;
+$check($old->applyXdrive(['enabled' => 1] + $s3) === 'xdrive s3 core old' && empty($old->xdriveSettings()['enabled']), 'S3: ядро 26.9.30 — отказ «нужно ядро 26.10.29»');
+$b->inventory['origin'] = '26.10.29';
+$check($b->applyXdrive(['enabled' => 1] + $s3) === '' && ($tag($b->confXray)[0]['streamSettings']['xdriveSettings']['service'] ?? '') === 's3', 'S3: ядро 26.10.29 — вход включён');
+$b->confPac['xray_core'] = 'fork';
+$check(!$b->xdriveCoreReady(null, 's3') && $b->xdriveCoreReady(null, 'webdav'), 'S3: форк 26.10.6 S3 не знает, WebDAV знает');
+$b->confPac['xray_core'] = 'origin';
+$profile = $b->xdriveClientConfig($b->confXray['inbounds'][0]['settings']['clients'][0]);
+$check(($profile['outbounds'][0]['streamSettings']['xdriveSettings']['s3']['bucket'] ?? '') === 'vpnbot-bucket' && ($profile['outbounds'][0]['mux']['enabled'] ?? false), 'S3: профиль клиента с бакетом и Mux.Cool');
+
+$b->storage = new XdS3Storage();
+$check($b->xdriveProbe($b->xdriveSettings()) === '' && $b->storage->files === [], 'S3: проверка проходит и убирает за собой');
+$check(str_contains($b->storage->log[0], 'GET https://s3.example-disk.net/vpnbot-bucket/?delimiter=%2F&list-type=2&max-keys=1000&prefix=vpnbot-xdrive%2F'), 'S3: список — ListObjectsV2 с префиксом папки');
+$check(count(array_filter($b->storage->log, static fn($l) => str_starts_with($l, 'PUT https://s3.example-disk.net/vpnbot-bucket/vpnbot-xdrive/vpnbot-check~'))) === 1, 'S3: пробный объект пишется в папку');
+$b->storage = new XdS3Storage(); $b->storage->access = 'OTHER';
+$check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe auth', 'S3: чужой ключ — отказ доступа');
+$b->storage = new XdS3Storage(); $b->storage->bucket = 'other';
+$check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe bucket', 'S3: нет бакета');
+$b->storage = new XdS3Storage(); $b->storage->deny = ['PUT'];
+$check($b->xdriveProbe($b->xdriveSettings()) === 'xdrive probe write', 'S3: запись запрещена');
+
+$b->xdriveMenu();
+$calls = $b->callbacks();
+foreach (['/xdriveService s3', '/xdriveSet url', '/xdriveSet bucket', '/xdriveSet region', '/xdrivePathStyle', '/xdriveSet folder', '/xdriveSet secret0', '/xdriveSet secret1'] as $callback) {
+    $check(isset($calls[$callback]), "S3: кнопка $callback");
+}
+$check(!str_contains(implode(' ', $calls), 'secret/key+1') && !str_contains(implode(' ', $calls), 'AKIDVPNBOT'), 'S3: ключи в меню скрыты');
+$b->xdrivePathStyle();
+$check($b->xdriveSettings()['path_style'] === 0 && !empty($b->xdriveSettings()['enabled']), 'S3: переключение адресации через имя узла');
+$b->xdriveSet('url');
+$check(str_contains(end($b->messages), $b->i18n('xdrive hint s3 url')), 'S3: подсказка к адресу — про endpoint S3');
+$enter($b, 'bucket', 'VPNBOT-Bucket2');
+$check($b->xdriveSettings()['bucket'] === 'vpnbot-bucket2', 'S3: имя бакета приводится к строчным');
+$enter($b, 'region', 'RU-Central1');
+$check($b->xdriveSettings()['region'] === 'ru-central1', 'S3: регион приводится к строчным');
+$enter($b, 'region', '-');
+$check($b->xdriveSettings()['region'] === '' && !empty($b->xdriveSettings()['enabled']), 'S3: прочерк — регион по умолчанию, вход не выключается');
+$b->xdriveService('webdav');
+$check($b->xdriveSettings()['bucket'] === '' && $b->xdriveSettings()['path_style'] === 1, 'S3: смена хранилища сбрасывает настройки S3');
 
 foreach ($failures as $failure) echo "FAIL: $failure\n";
 if ($failures) exit(1);

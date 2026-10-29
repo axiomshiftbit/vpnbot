@@ -358,7 +358,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.21}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.10.29}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -414,7 +414,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.21}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.10.29}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -694,7 +694,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.21}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.10.29}
         cap_add:
             - NET_ADMIN
         sysctls:
@@ -1186,8 +1186,8 @@ services:
             dockerfile: masque.dockerfile
             args:
                 MASQUE_GO_VERSION: ${MASQUE_GO_VERSION:-1.27.3}
-                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.10.21}
-                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-44ef4874529a03848c90f1fdcfb763350fbc5f1de741ec90e0024d651df25650}
+                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.10.29}
+                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-ee22c6f21855f70a52e19bff02fa71f4b28ce071d83ff9154fafcaa0f315a642}
         environment:
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
