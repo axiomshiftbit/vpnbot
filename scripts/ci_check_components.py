@@ -239,8 +239,10 @@ def nginx_findings(version):
     """Объявления nginx.org, затрагивающие версию: (идентификатор, важность, исправлено).
 
     «Not vulnerable: 1.31.7+, 1.30.6+» — исправление в каждой из веток;
-    «Vulnerable: 1.30.0-1.30.5, …» — затронутые диапазоны. Сборки только для
-    Windows (nginx/Windows …) к образу не относятся."""
+    «Vulnerable: 1.30.0-1.30.5, 1.31.0, …» — затронутые диапазоны и отдельные
+    версии (первый выпуск стабильной ветки часто указан одним номером). Сборки
+    только для Windows (nginx/Windows …) к образу не относятся. Нераспознанная
+    запись — отказ: пропустить затронутую версию хуже, чем остановить допуск."""
     page = fetch_text(NGINX_ADVISORIES)
     entries = re.findall(r'<li><p>(.*?)</p></li>', page, re.S)
     if len(entries) < 10:
@@ -254,9 +256,14 @@ def nginx_findings(version):
         safe = re.search(r'^\s*Not vulnerable:\s*(.+?)\s*$', text, re.M)
         if not level or not vulnerable:
             raise ValueError('unexpected nginx.org advisory entry')
-        ranges = [part.strip() for part in vulnerable.group(1).split(',')]
-        hit = any(part == 'all' or (re.fullmatch(r'[0-9.]+-[0-9.]+', part)
-                  and numbers(part.split('-')[0]) <= current <= numbers(part.split('-')[1])) for part in ranges)
+        hit = False
+        for part in (part.strip() for part in vulnerable.group(1).split(',')):
+            if part.startswith('nginx/Windows '):
+                continue
+            bounds = re.fullmatch(r'([0-9.]+)(?:-([0-9.]+))?', part)
+            if part != 'all' and not bounds:
+                raise ValueError('unexpected nginx.org vulnerable range')
+            hit = hit or part == 'all' or numbers(bounds.group(1)) <= current <= numbers(bounds.group(2) or bounds.group(1))
         fixes = [numbers(part) for part in re.findall(r'([0-9.]+)\+', safe.group(1) if safe else '')]
         if not hit or any(current >= fix and (current[:2] == fix[:2] or current[:2] > max(fixes)[:2]) for fix in fixes):
             continue
@@ -275,7 +282,8 @@ def latest_release(repo, prefix, token, branch=None):
     tags = [r['tag_name'] for r in data if not r.get('prerelease') and not r.get('draft')]
     if not data:
         # Проект без GitHub-релизов (amneziawg-go): только теги.
-        listing = fetch(f'https://api.github.com/repos/{repo}/tags?per_page=30', token)
+        # GitHub отдаёт теги не по номеру версии: берём страницу побольше.
+        listing = fetch(f'https://api.github.com/repos/{repo}/tags?per_page=100', token)
         if not isinstance(listing, list):
             raise ValueError('unexpected tags response')
         tags = [t['name'] for t in listing if not re.search(r'(?i)(rc|beta|alpha|pre|dev)', t['name'])]
@@ -311,18 +319,20 @@ def latest_go():
     return max(stable, key=numbers) if stable else None
 
 
-def latest_only(item, token):
-    """Свежесть без проверки уязвимостей: (последняя версия или None, источник ответил)."""
+def latest_only(item, version, token):
+    """Свежесть без проверки уязвимостей: (последняя версия или None, источник ответил, примечания)."""
     try:
         if item.get('toolchain') == 'go':
-            return latest_go(), True
+            return latest_go(), True, []
         if item.get('git'):
-            return latest_git(item['git']), True
+            return latest_git(item['git']), True, []
         if item.get('alpine'):
-            return latest_alpine()[0], True
-        return latest_release(item['release'], item.get('tag_prefix', ''), token), True
-    except (OSError, ValueError, KeyError, TypeError):
-        return None, False
+            latest, eol = latest_alpine()
+            return latest, True, alpine_notes(version, eol)
+        return latest_release(item['release'], item.get('tag_prefix', ''), token), True, []
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        # Сбой или непривычный ответ источника свежести не блокирует допуск.
+        return None, False, []
 
 
 def newer_than(item, latest, version):
@@ -333,12 +343,8 @@ def newer_than(item, latest, version):
     return latest if numbers(latest) > numbers(version) else None
 
 
-def alpine_notes(version, today=None):
+def alpine_notes(version, eol, today=None):
     """Предупреждение: поддержка community закреплённой ветки кончилась или кончится за 30 дней."""
-    try:
-        _, eol = latest_alpine()
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return []
     branch = 'v' + '.'.join(map(str, numbers(version)[:2]))
     date = eol.get(branch)
     today = today or time.strftime('%Y-%m-%d', time.gmtime())
@@ -359,11 +365,10 @@ def check(root=ROOT, token=None, freshness=True):
             findings += [(ident, level, fixable, 'GitHub') for ident, level, fixable in advisory_findings(item['repo'], version, token)]
         newer = None
         if any(item.get(key) for key in FRESHNESS_ONLY):
-            latest, answered = latest_only(item, token) if freshness else (None, True)
+            latest, answered, notes = latest_only(item, version, token) if freshness else (None, True, [])
             source = 'go.dev' if item.get('toolchain') else 'git' if item.get('git') else 'alpinelinux.org' if item.get('alpine') else 'GitHub'
             rows.append(dict(name=name, version=version, findings=[], newer=newer_than(item, latest, version), sources=[],
-                             freshness=source, unchecked=not answered,
-                             notes=alpine_notes(version) if item.get('alpine') and freshness else []))
+                             freshness=source, unchecked=not answered, notes=notes))
             continue
         if item.get('gitlab'):
             noted, newer = gitlab_findings(item['gitlab'], version)
@@ -371,10 +376,8 @@ def check(root=ROOT, token=None, freshness=True):
         if item.get('nginx'):
             findings += [(ident, level, fixable, 'nginx.org') for ident, level, fixable in nginx_findings(version)]
         if freshness and (item.get('repo') or item.get('fresh')):
-            latest = latest_release(item.get('repo') or item['fresh'], item.get('tag_prefix', ''), token,
-                                    version if item.get('branch') else None)
-            if latest and numbers(latest) > numbers(version):
-                newer = latest
+            newer = newer_than(item, latest_release(item.get('repo') or item['fresh'], item.get('tag_prefix', ''), token,
+                                                    version if item.get('branch') else None), version)
         sources = [s for s, key in (('NVD', 'cpe'), ('GitHub', 'repo'), ('GitLab', 'gitlab'), ('nginx.org', 'nginx')) if item.get(key)]
         rows.append(dict(name=name, version=version, findings=findings, newer=newer, sources=sources))
         blocked += [(name, version, *finding) for finding in findings

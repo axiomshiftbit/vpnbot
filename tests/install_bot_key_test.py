@@ -114,6 +114,23 @@ class InstallBotKeyTest(unittest.TestCase):
         self.assertIn(f'bot{KEY}/getMe', (self.tmp / 'curl.stdin').read_text())
         self.assertNotIn(KEY, result.stdout + result.stderr)
 
+    def test_empty_key_file_is_refused_before_the_branch_becomes_the_key(self):
+        # VPNBOT_KEY="$(cat /root/.vpnbot-key)" с пустым файлом: без проверки
+        # «master» из $1 стал бы ключом, а сообщение — про ключ в аргументе.
+        source = (ROOT / 'scripts/init.sh').read_text()
+        head = re.search(r'^KEY="\$\{VPNBOT_KEY:-\}"\n.*?^if \[ -z "\$KEY" \]; then\n.*?^fi\n', source, re.M | re.S).group()
+        script = self.tmp / 'args.sh'
+        script.write_text(head + 'printf "%s|%s" "$KEY" "$BRANCH"\n')
+        run = lambda env, *args: subprocess.run(['bash', str(script), *args], env={'PATH': '/usr/bin:/bin', **env}, capture_output=True, text=True)
+        empty = run({'VPNBOT_KEY': ''}, 'master')
+        self.assertEqual((1, ''), (empty.returncode, empty.stdout))
+        self.assertIn('VPNBOT_KEY пуст', empty.stderr)
+        self.assertEqual(f'{KEY}|dev', run({'VPNBOT_KEY': KEY}, 'dev').stdout)
+        legacy = run({}, KEY, 'dev')
+        self.assertEqual(f'{KEY}|dev', legacy.stdout)
+        self.assertIn('аргументом', legacy.stderr)
+        self.assertIn('usage', run({}).stderr)
+
     def test_rejected_key_stops_install_without_printing_it(self):
         result = self.run_key(KEY, 'unauthorized')
         self.assertEqual(1, result.returncode)

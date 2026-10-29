@@ -13,6 +13,12 @@ ARCHIVE_NAME="vpnbot.zip"
 # Стабильный релиз живёт в master, разработка — в dev. Поддерживаются только
 # эти две ветки — и для установки из git, и для установки из архива.
 KEY="${VPNBOT_KEY:-}"
+# Заданная, но пустая переменная — пустой файл ключа
+# (VPNBOT_KEY="$(cat /root/.vpnbot-key)"): иначе имя ветки ушло бы в ключ.
+if [ "${VPNBOT_KEY+set}" = set ] && [ -z "$KEY" ]; then
+    echo "VPNBOT_KEY пуст: положите токен бота в /root/.vpnbot-key (права 600) и запустите установку снова" >&2
+    exit 1
+fi
 if [ -n "$KEY" ]; then
     BRANCH="${1:-master}"
 else

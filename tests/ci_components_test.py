@@ -285,11 +285,14 @@ class ComponentsTest(unittest.TestCase):
             nginx_entry('Windows only', 'major', 'CVE-2099-0004', f'{fixed}+', f'nginx/Windows 0.7.52-{pinned}'),
             '<li><p>Major one<br>Severity: <b>major</b><br><a href="y">CVE-2099-0005</a><br>'
             f'Not vulnerable: {fixed}+<br>Vulnerable: 0.1.0-{pinned}</p></li>',
+            # Одна версия без диапазона (так nginx.org пишет, например, «1.25.0-1.25.5, 1.26.0»).
+            nginx_entry('Single release', 'low', 'CVE-2099-0006', f'{mainline}+, {fixed}+', f'0.1.0-0.1.1, {pinned}'),
         ]) + '</ul>')
         rows, blocked = self.run_check(Api(nginx=page, releases={'nginx/nginx': [('release-' + mainline, False), ('release-' + fixed, False)]}))
-        self.assertEqual([(b[2], b[3], b[5]) for b in blocked], [('CVE-2099-0001', 'MEDIUM', 'nginx.org'), ('CVE-2099-0005', 'HIGH', 'nginx.org')])
+        self.assertEqual([(b[2], b[3], b[5]) for b in blocked], [('CVE-2099-0001', 'MEDIUM', 'nginx.org'), ('CVE-2099-0005', 'HIGH', 'nginx.org'),
+                                                                 ('CVE-2099-0006', 'LOW', 'nginx.org')])
         nginx = next(row for row in rows if row['name'] == 'nginx')
-        self.assertEqual(sorted(f[0] for f in nginx['findings']), ['CVE-2099-0001', 'CVE-2099-0003', 'CVE-2099-0005'])
+        self.assertEqual(sorted(f[0] for f in nginx['findings']), ['CVE-2099-0001', 'CVE-2099-0003', 'CVE-2099-0005', 'CVE-2099-0006'])
         # Свежесть — в своей стабильной ветке: mainline не предлагается.
         self.assertEqual(nginx['newer'], 'release-' + fixed)
         text = components.report(rows, blocked)
@@ -297,7 +300,8 @@ class ComponentsTest(unittest.TestCase):
         self.assertIn('note  CVE-2099-0003 LOW (nginx.org)', text)
 
     def test_nginx_page_that_cannot_be_read_is_not_a_clean_bill(self):
-        for page in ('<html>maintenance</html>', QUIET_NGINX.replace('Vulnerable:', 'Affected:')):
+        for page in ('<html>maintenance</html>', QUIET_NGINX.replace('Vulnerable:', 'Affected:'),
+                     QUIET_NGINX.replace('0.1.0-0.8.14', '0.1.0 to 0.8.14')):
             with self.subTest(page=page[:20]), self.assertRaises(ValueError):
                 self.run_check(Api(nginx=page))
 
@@ -317,6 +321,18 @@ class ComponentsTest(unittest.TestCase):
         text = components.report(rows, blocked)
         self.assertIn('внимание: поддержка community', text)
         self.assertIn('DNSTT ' + found['DNSTT'] + ': свежесть по git', text)
+
+    def test_odd_alpine_answer_is_only_unchecked_freshness(self):
+        # Источник свежести: непривычный ответ не роняет проверку и не блокирует допуск.
+        for answer in ({'latest_stable': 'v9.1', 'release_branches': ['v9.1']},
+                       {'latest_stable': 'v9.1', 'release_branches': [{'rel_branch': 'v' + '.'.join(map(str, components.numbers(components.pins()['Alpine'])[:2])),
+                                                                       'repos': [{'name': 'community', 'eol_date': 'soon'}]}]}):
+            with self.subTest(answer=answer):
+                api = Api(alpine=answer)
+                rows, blocked = self.run_check(api)
+                alpine = next(row for row in rows if row['name'] == 'Alpine')
+                self.assertEqual((blocked, alpine['unchecked'], alpine['notes']), ([], True, []))
+                self.assertEqual(sum('alpinelinux.org' in url for url, _ in api.calls), 1)
 
 
 if __name__ == '__main__':
