@@ -28,4 +28,5 @@ github.com/go-jose/go-jose/v4 v4.1.4
 github.com/smallstep/certificates v0.30.0
 go.opentelemetry.io/otel v1.43.0
 go.opentelemetry.io/otel/sdk v1.43.0
+github.com/go-chi/chi/v5 v5.4.0
 PINS
