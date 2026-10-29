@@ -34,7 +34,7 @@ trait BotProtocols
             foreach ($outputs as $id) $this->delete($this->input['chat'], $id);
         }
         if (!empty($_SESSION['protocol_relay'][$key])) {
-            if (preg_match('~^/(relay(?:Menu|Add|Edit|Del)|switchRelayAggregate|setRelay\w+|prset)(?: |$)~', (string) $this->input['callback'])) {
+            if (preg_match('~^/(relay(?:Menu|Add|Edit|Del|DelOk|Ch|ChClear)|switchRelayAggregate|setRelay\w+|prset|menuhelp relay)(?: |$)~', (string) $this->input['callback'])) {
                 $this->protocolRelayOrigin = $_SESSION['protocol_relay'][$key];
             } else {
                 $this->sessionApply(function () use ($key) { unset($_SESSION['protocol_relay'][$key]); });

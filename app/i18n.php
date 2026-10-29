@@ -1003,16 +1003,16 @@ $i = [
         'ru' => 'добавить внешнюю подписку',
     ],
     'enter external link'  => [
-        'en' => 'enter a share link (vless://, vmess://, trojan://, ss:// …)',
-        'ru' => 'отправьте share-ссылку (vless://, vmess://, trojan://, ss:// …)',
+        'en' => 'send a share link (vless://, vmess://, trojan://, ss:// …); several links, one per line',
+        'ru' => 'отправьте share-ссылку (vless://, vmess://, trojan://, ss:// …); можно несколько, по одной на строку',
     ],
     'enter external subscription' => [
-        'en' => 'enter a remote subscription URL (https only)',
-        'ru' => 'отправьте URL удалённой подписки (только https)',
+        'en' => 'send a remote subscription URL (https only); several, one per line',
+        'ru' => 'отправьте URL удалённой подписки (только https); можно несколько, по одному на строку',
     ],
     'enter remark'         => [
-        'en' => 'enter a display name (empty to keep the original)',
-        'ru' => 'введите отображаемое имя (пусто — оставить как есть)',
+        'en' => 'enter a display name, up to 64 characters (0 restores the original name of the link)',
+        'ru' => 'введите отображаемое имя, до 64 символов (0 — вернуть исходное имя ссылки)',
     ],
     'ext status pending'   => [
         'en' => 'not fetched yet',

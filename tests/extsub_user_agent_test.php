@@ -22,9 +22,24 @@ class ExtUaTestBot extends Bot
         $this->sent[] = $text;
     }
 
-    public function extUser($i)
+    public array $notices = [];
+
+    public function extUser($i, string $notice = '')
     {
         $this->menus++;
+        $this->notices[] = $notice;
+    }
+
+    public function getXray()
+    {
+        return ['inbounds' => [['settings' => ['clients' => [['email' => 'a', 'ext' => [['kind' => 'sub', 'value' => 'https://sub.example.test/a', 'off' => 0]]]]]]]];
+    }
+
+    public array $refreshed = [];
+
+    public function refreshExtSubOne(string $url): void
+    {
+        $this->refreshed[] = $url;
     }
 }
 
@@ -44,9 +59,11 @@ try {
     foreach (["a\r\nX-Evil: 1", "a\nb", 'клиент', str_repeat('a', 201), "tab\there"] as $bad) {
         uaAssert(!Bot::extSubUserAgentValid($bad), 'bad User-Agent accepted: ' . json_encode($bad));
     }
+    uaAssert($bot->refreshed === ['https://sub.example.test/a'], 'subscriptions were not refetched with the new User-Agent');
     $bot->sent = [];
     $bot->extUASave('клиент/1.0', 0);
-    uaAssert($bot->extSubUserAgent() === 'Happ/2.1.0 (iOS)' && count($bot->sent) === 1, 'invalid value changed the setting');
+    uaAssert($bot->extSubUserAgent() === 'Happ/2.1.0 (iOS)' && $bot->sent === [] && str_contains(end($bot->notices), '⚠️'),
+        'invalid value changed the setting or was not explained on the screen');
 
     // Значение, испорченное в pac.json в обход бота, в запрос не уходит.
     file_put_contents($pac, json_encode(['extsub_user_agent' => "x\r\nHost: evil"]));

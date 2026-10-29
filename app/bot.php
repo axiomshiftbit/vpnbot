@@ -1144,6 +1144,15 @@ class Bot
             case preg_match('~^/relayDel (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->relayDel($m['arg']);
                 break;
+            case preg_match('~^/relayDelOk (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayDelOk($m['arg']);
+                break;
+            case preg_match('~^/relayCh (vless|wg|hy|np) (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayChannel($m[1], $m['arg']);
+                break;
+            case preg_match('~^/relayChClear (vless|wg|hy|np) (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->relayChannelClear($m[1], $m['arg']);
+                break;
             case preg_match('~^/id$~', $this->input['message'], $m):
                 $this->send($this->input['chat'], "your id: {$this->input['from']}\nchat id: {$this->input['chat']}", $this->input['message_id']);
                 break;
@@ -1824,14 +1833,14 @@ class Bot
             case preg_match('~^/extUA (\d+)$~', $this->input['callback'], $m):
                 $this->extUAPrompt($m[1]);
                 break;
-            case preg_match('~^/extRename (\d+)_(\d+)$~', $this->input['callback'], $m):
-                $this->extRename($m[1], $m[2]);
+            case preg_match('~^/extRename (\d+)_(\d+)(?:_([a-f0-9]{8}))?$~', $this->input['callback'], $m):
+                $this->extRename($m[1], $m[2], $m[3] ?? '');
                 break;
-            case preg_match('~^/extToggle (\d+)_(\d+)$~', $this->input['callback'], $m):
-                $this->extToggle($m[1], $m[2]);
+            case preg_match('~^/extToggle (\d+)_(\d+)(?:_([a-f0-9]{8}))?$~', $this->input['callback'], $m):
+                $this->extToggle($m[1], $m[2], $m[3] ?? '');
                 break;
-            case preg_match('~^/extDel (\d+)_(\d+)$~', $this->input['callback'], $m):
-                $this->extDel($m[1], $m[2]);
+            case preg_match('~^/extDel (\d+)_(\d+)(?:_([a-f0-9]{8}))?$~', $this->input['callback'], $m):
+                $this->extDel($m[1], $m[2], $m[3] ?? '');
                 break;
             case preg_match('~^/rotateSub (\d+)$~', $this->input['callback'], $m):
                 $this->rotateSubToken($m[1]);
@@ -5438,15 +5447,14 @@ NFT;
         $text[] = $this->i18n('hysteria relay hint');
 
         $data   = [];
-        $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $relay) {
             // Имя из одних цифр JSON-декодер делает int-ключом — приводим.
-            // Health — TCP-проба основного address; для hy-only relay её нет.
+            // Статуса нет: Hysteria — UDP, а проба relay стучит по TCP в адрес
+            // VLESS; её «✅» здесь выдавал бы чужой канал за рабочий.
             $name   = (string) $name;
-            $hl     = $this->relayHealthLabel($name, false, $health);
             $data[] = [
                 [
-                    'text'          => "🔗 $name: {$relay['hy_address']}" . ($hl !== '' ? "  $hl" : ''),
+                    'text'          => "🔗 $name: {$relay['hy_address']}",
                     'callback_data' => "/hyRelaySub $name",
                 ],
             ];
@@ -5477,10 +5485,7 @@ NFT;
         }
         $link = $this->linkHysteria($relay);
 
-        $text[] = "Menu -> Hysteria -> " . $this->i18n('relay') . " -> <b>$name</b> ({$relay['hy_address']})";
-        if (($hl = $this->relayHealthLabel($name, true)) !== '') {
-            $text[] = $this->i18n('relay health') . ": $hl";
-        }
+        $text[] = "Menu -> Hysteria -> " . $this->i18n('relay') . " -> <b>" . self::esc($name) . "</b> (" . self::esc($relay['hy_address']) . ")";
         // Явный порт перебивает карту — показываем то, что реально в ссылке.
         if (($hp = self::relayPortInput($relay['hy_port'] ?? '')) !== '') {
             $text[] = $this->i18n('relay hy port') . ": <code>$hp</code>";
@@ -10646,15 +10651,14 @@ NFT;
                 'callback_data' => $this->cbWG("/setWgRelay $page"),
             ],
         ];
-        $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $r) {
             // Имя из одних цифр JSON-декодер делает int-ключом — приводим.
-            // Health — TCP-проба основного address; для awg-only relay её нет.
+            // Статуса нет: WireGuard — UDP, а проба relay стучит по TCP в
+            // адрес VLESS и про этот канал ничего не говорит.
             $name   = (string) $name;
-            $hl     = $this->relayHealthLabel($name, false, $health);
             $data[] = [
                 [
-                    'text'          => ($cur === $name ? '✅ ' : '') . "🔗 $name: {$r['awg_address']}" . ($hl !== '' ? "  $hl" : ''),
+                    'text'          => ($cur === $name ? '✅ ' : '') . "🔗 $name: {$r['awg_address']}",
                     'callback_data' => $this->cbWG("/setWgRelay $page $name"),
                 ],
             ];
@@ -11745,38 +11749,144 @@ NFT;
     // serves an alternate ("relay") subscription where only the endpoint
     // address+port are swapped to the relay (SNI/serverName/host/DNS stay real).
     // Stored as $pac['relays'][<name>] = ['address' => ..., 'portmap' => [src=>dst]].
+    //
+    // Запись relay делится на каналы: у каждого протокола свой адрес и порт на
+    // relay (VLESS — address/portmap, WG/AWG — awg_*, Hysteria — hy_*,
+    // NaiveProxy — np_*, протоколы-модули — <протокол>_address/_port). Меню
+    // устроено так же: список relay → карточка relay со сводкой каналов →
+    // экран одного канала с его полями.
 
-    public function relayMenu()
+    // Поля каналов и колбэки их подсказок ввода.
+    public const RELAY_CHANNELS = [
+        'vless' => ['address' => ['address', '/setRelayAddress'], 'portmap' => ['portmap', '/setRelayPortMap']],
+        'wg'    => ['address' => ['awg_address', '/setRelayAwgAddress'], 'portmap' => ['awg_portmap', '/setRelayAwgPortMap']],
+        'hy'    => ['address' => ['hy_address', '/setRelayHyAddress'], 'port' => ['hy_port', '/setRelayHyPort'],
+            'portmap' => ['hy_portmap', '/setRelayHyPortMap']],
+        'np'    => ['address' => ['np_address', '/setRelayNpAddress'], 'port' => ['np_port', '/setRelayNpPort']],
+    ];
+
+    public function relayChannelLabel(string $ch): string
+    {
+        return match ($ch) {
+            'vless' => 'VLESS',
+            'wg'    => 'WireGuard / AWG',
+            'hy'    => 'Hysteria',
+            'np'    => 'NaiveProxy',
+        };
+    }
+
+    public function relayHostPort(string $host, $port): string
+    {
+        return (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? "[$host]" : $host) . ':' . $port;
+    }
+
+    public static function relayMapText($map): string
+    {
+        $pm = [];
+        foreach (is_array($map) ? $map : [] as $src => $dst) {
+            $pm[] = "{$src}→{$dst}";
+        }
+        return implode(', ', $pm);
+    }
+
+    // Короткая сводка канала: «адрес · порт/карта» или '' (канал пуст).
+    public function relayChannelSummary(array $r, string $ch): string
+    {
+        $f    = self::RELAY_CHANNELS[$ch];
+        $addr = trim((string) ($r[$f['address'][0]] ?? ''));
+        if ($addr === '') {
+            return '';
+        }
+        $parts = [$addr];
+        if (isset($f['port']) && ($p = self::relayPortInput($r[$f['port'][0]] ?? '')) !== '') {
+            $parts[] = $this->t('порт ', 'port ') . $p;
+        } elseif (isset($f['portmap']) && ($m = self::relayMapText($r[$f['portmap'][0]] ?? [])) !== '') {
+            $parts[] = $m;
+        } elseif ($ch === 'np') {
+            $parts[] = $this->t('порт 443', 'port 443');
+        } else {
+            $parts[] = $this->t('порты как у сервера', 'ports as on the server');
+        }
+        return implode(' · ', $parts);
+    }
+
+    // Relay, которые что-то меняют в подписке пользователя: адрес VLESS, адрес
+    // WG/AWG (прокси awg в шаблонах Mihomo) или адрес любого протокола-модуля.
+    public function relayForSubscription($r): bool
+    {
+        if (!is_array($r)) {
+            return false;
+        }
+        if (!empty($r['address']) || !empty($r['awg_address'])) {
+            return true;
+        }
+        foreach (array_keys(ManagedProtocol::NAMES) as $protocol) {
+            if (!empty($r[$protocol . '_address']) && !empty($r[$protocol . '_port'])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function relayMenu(string $notice = '')
     {
         $p      = $this->getPacConf();
-        $relays = $p['relays'] ?? [];
+        $relays = is_array($p['relays'] ?? null) ? $p['relays'] : [];
 
-        $text[] = "Menu -> " . ($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay');
-        $text[] = $this->i18n('relay hint');
+        $text[] = "Menu -> " . self::esc($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay');
+        if ($notice !== '') {
+            $text[] = $notice;
+        }
+        $text[] = $this->t(
+            'Relay — промежуточный сервер: клиент подключается к нему, а relay пересылает соединение на этот сервер (DNAT). Бот только подставляет адрес и порт relay в ссылки и подписки; пересылку на самом relay настраиваете вы.',
+            'A relay is an intermediate server: the client connects to it and the relay forwards the connection to this server (DNAT). The bot only puts the relay address and port into links and subscriptions; you set up the forwarding on the relay yourself.'
+        );
+        $text[] = '🧬 ' . $this->i18n('relay aggregate') . ': <b>' . $this->i18n(!empty($p['relay_aggregate']) ? 'on' : 'off') . '</b> — ' . (!empty($p['relay_aggregate'])
+            ? $this->t('подписка v2rayNG (base64) каждого пользователя содержит этот сервер и все работающие relay с адресом VLESS.',
+                "every user's v2rayNG (base64) subscription holds this server and every working relay with a VLESS address.")
+            : $this->t('в подписке v2rayNG (base64) только этот сервер; relay выдаются отдельными relay-подписками.',
+                'the v2rayNG (base64) subscription holds only this server; relays are issued as separate relay subscriptions.'));
+        $text[] = $this->t('Ссылки через relay: карточка пользователя → «relay-подписки». Подробности — в справке.',
+            'Links through a relay: user card → "relay subscriptions". Details are in Help.');
+        if (!$relays) {
+            $text[] = "\n" . $this->t('Relay пока нет: нажмите «➕ добавить relay».', 'No relays yet: tap "➕ add relay".');
+        }
 
         $data   = [];
         $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $r) {
-            $hl = $this->relayHealthLabel($name, false, $health);
+            $name = (string) $name; // имя из одних цифр JSON делает int-ключом
+            $r    = is_array($r) ? $r : [];
+            if (!empty($r['address'])) {
+                $what = $r['address'];
+                $hl   = $this->relayHealthLabel($name, false, $health);
+            } else {
+                $what = implode(', ', array_merge(
+                    array_map(fn($ch) => $this->relayChannelLabel($ch), array_filter(['wg', 'hy', 'np'], fn($ch) => $this->relayChannelSummary($r, $ch) !== '')),
+                    array_values(array_filter(ManagedProtocol::NAMES, fn($label, $protocol) => !empty($r[$protocol . '_address']), ARRAY_FILTER_USE_BOTH)),
+                )) ?: $this->t('каналы не заданы', 'no channels set');
+                $hl = '';
+            }
             $data[] = [
                 [
-                    'text'          => "$name: " . ($r['address'] ?: ($r['awg_address'] ?? '') ?: ($r['hy_address'] ?? '') ?: '—') . ($hl !== '' ? "  $hl" : ''),
+                    'text'          => "🔗 $name · " . mb_strimwidth($what, 0, 40, '…') . ($hl !== '' ? "  $hl" : ''),
                     'callback_data' => "/relayEdit $name",
                 ],
             ];
         }
         $data[] = [
             [
-                'text'          => '🧬 ' . $this->i18n('relay aggregate') . ': ' . $this->i18n(!empty($p['relay_aggregate']) ? 'on' : 'off'),
-                'callback_data' => '/switchRelayAggregate',
-            ],
-        ];
-        $data[] = [
-            [
                 'text'          => '➕ ' . $this->i18n('add relay'),
                 'callback_data' => '/relayAdd',
             ],
         ];
+        $data[] = [
+            [
+                'text'          => '🧬 ' . $this->i18n('relay aggregate') . ': ' . $this->i18n(!empty($p['relay_aggregate']) ? 'on' : 'off'),
+                'callback_data' => '/switchRelayAggregate',
+            ],
+        ];
+        $data[] = $this->menuHelpButton('relay');
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -11788,7 +11898,7 @@ NFT;
             $this->input['chat'],
             $this->input['message_id'],
             implode("\n", $text),
-            $data ?: false,
+            $data,
         );
     }
 
@@ -11796,9 +11906,9 @@ NFT;
     // base64 (v2rayNG) subscription, so one link exposes origin + all relays.
     public function switchRelayAggregate()
     {
-        $c = $this->getPacConf();
-        $c['relay_aggregate'] = empty($c['relay_aggregate']) ? 1 : 0;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['relay_aggregate'] = empty($c['relay_aggregate']) ? 1 : 0;
+        });
         $this->relayMenu();
     }
 
@@ -11819,24 +11929,34 @@ NFT;
 
     public function setRelayName($text)
     {
-        $c    = $this->getPacConf();
-        $name = trim($text);
+        $name = trim((string) $text);
         // Name is embedded in callback_data and in the &relay= link param, so
         // keep it to a short word/host-safe token.
-        if (!preg_match('~^[\w.\-]{1,32}$~', $name) || isset($c['relays'][$name])) {
-            $this->relayMenu();
+        if (!preg_match('~^[\w.\-]{1,32}$~D', $name)) {
+            $this->relayMenu('⚠️ ' . $this->t('Имя relay: латинские буквы, цифры, «.», «-», «_», до 32 символов. Relay не создан.',
+                'Relay name: Latin letters, digits, ".", "-", "_", up to 32 characters. The relay was not created.'));
             return;
         }
-        $c['relays'][$name] = ['address' => '', 'portmap' => []];
-        $this->setPacConf($c);
+        $created = $this->pacConfUpdate(function (&$c) use ($name) {
+            if (isset($c['relays'][$name])) {
+                return false;
+            }
+            $c['relays'][$name] = ['address' => '', 'portmap' => []];
+            return true;
+        });
+        if (!$created) {
+            $this->relayMenu('⚠️ ' . $this->t('Relay с таким именем уже есть.', 'A relay with this name already exists.'));
+            return;
+        }
         $this->relayEdit($name);
     }
 
-    public function relayEdit($name)
+    public function relayEdit($name, string $notice = '')
     {
-        $p = $this->getPacConf();
-        $r = $p['relays'][$name] ?? null;
-        if ($r === null) {
+        $name = (string) $name;
+        $p    = $this->getPacConf();
+        $r    = $p['relays'][$name] ?? null;
+        if (!is_array($r)) {
             $this->relayMenu();
             return;
         }
@@ -11846,113 +11966,47 @@ NFT;
         // Без экранирования один «<» в адресе ронял editMessageText в 400, и
         // экран relay умирал навсегда: значение уже в pac.json, а поменять его
         // можно только отсюда же.
-        $text[] = "Menu -> " . ($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay')
+        $text[] = "Menu -> " . self::esc($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay')
             . ' -> <b>' . self::esc($name) . '</b>';
-        $text[] = $this->i18n('relay address') . ': <code>' . self::esc($r['address'] ?: '—') . '</code>';
-        if (!empty($r['address']) && ($hl = $this->relayHealthLabel($name, true)) !== '') {
-            $text[] = $this->i18n('relay health') . ": $hl";
+        if ($notice !== '') {
+            $text[] = $notice;
         }
-        if (!empty($r['portmap'])) {
-            $pm = [];
-            foreach ($r['portmap'] as $src => $dst) {
-                $pm[] = "$src:$dst";
+        $text[] = $this->t(
+            'У каждого протокола свой канал: адрес и порт на relay. Пустой канал — протокол через этот relay не идёт. Нажмите на канал, чтобы задать его.',
+            'Each protocol has its own channel: an address and a port on the relay. An empty channel means the protocol does not go through this relay. Tap a channel to set it.'
+        ) . "\n";
+        foreach (array_keys(self::RELAY_CHANNELS) as $ch) {
+            $sum  = $this->relayChannelSummary($r, $ch);
+            $line = '<b>' . $this->relayChannelLabel($ch) . '</b>: ' . ($sum === '' ? '—' : '<code>' . self::esc($sum) . '</code>');
+            $key  = $ch === 'vless' ? $name : ($ch === 'np' ? "np:$name" : '');
+            if ($sum !== '' && $key !== '' && ($hl = $this->relayHealthLabel($key, true)) !== '') {
+                $line .= "  $hl";
             }
-            $text[] = $this->i18n('relay port map') . ': <code>' . self::esc(implode(', ', $pm)) . '</code>';
-        } else {
-            $text[] = $this->i18n('relay port map') . ': —';
+            $text[] = $line;
         }
-        // Отдельный relay для wireguard/awg-прокси внутри mihomo-конфига.
-        $text[] = $this->i18n('relay awg address') . ': <code>' . self::esc($r['awg_address'] ?? '' ?: '—') . '</code>';
-        if (!empty($r['awg_portmap'])) {
-            $pm = [];
-            foreach ($r['awg_portmap'] as $src => $dst) {
-                $pm[] = "$src:$dst";
-            }
-            $text[] = $this->i18n('relay awg port map') . ': <code>' . self::esc(implode(', ', $pm)) . '</code>';
-        } else {
-            $text[] = $this->i18n('relay awg port map') . ': —';
-        }
-        // Отдельный relay-канал для Hysteria (hy2://-ссылки в меню Hysteria):
-        // hy_address включает relay в выбор, hy_port/hy_portmap мапят его порты.
-        $text[] = $this->i18n('relay hy address') . ': <code>' . self::esc($r['hy_address'] ?? '' ?: '—') . '</code>';
-        $text[] = $this->i18n('relay hy port') . ': <code>' . self::esc(($r['hy_port'] ?? '') ?: '—') . '</code>';
-        if (!empty($r['hy_portmap'])) {
-            $pm = [];
-            foreach ($r['hy_portmap'] as $src => $dst) {
-                $pm[] = "$src:$dst";
-            }
-            $text[] = $this->i18n('relay hy port map') . ': <code>' . self::esc(implode(', ', $pm)) . '</code>';
-        } else {
-            $text[] = $this->i18n('relay hy port map') . ': —';
-        }
-        // Отдельный relay-канал для NaiveProxy: порт один (TLS), карта портов
-        // не нужна — только адрес и опциональный порт.
-        $text[] = $this->i18n('relay np address') . ': <code>' . self::esc($r['np_address'] ?? '' ?: '—') . '</code>';
-        $text[] = $this->i18n('relay np port') . ': <code>' . self::esc(($r['np_port'] ?? '') ?: '—') . '</code>';
         foreach (ManagedProtocol::NAMES as $protocol => $label) {
-            $address = $r[$protocol . '_address'] ?? '';
-            $text[] = self::esc($label) . ': <code>' . self::esc($address === '' ? '—' : $address . ' · ' . ($r[$protocol . '_port'] ?? '')) . '</code>';
+            $address = (string) ($r[$protocol . '_address'] ?? '');
+            $text[] = '<b>' . self::esc($label) . '</b>: ' . ($address === '' ? '—' : '<code>' . self::esc($address . ':' . ($r[$protocol . '_port'] ?? '')) . '</code>');
         }
 
-        // По две кнопки в строке: каналов уже четыре, в столбик карточка не
-        // помещается на экран.
-        $data[] = [
-            [
-                'text'          => $this->i18n('relay address'),
-                'callback_data' => "/setRelayAddress $name",
-            ],
-            [
-                'text'          => $this->i18n('relay port map'),
-                'callback_data' => "/setRelayPortMap $name",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('relay awg address'),
-                'callback_data' => "/setRelayAwgAddress $name",
-            ],
-            [
-                'text'          => $this->i18n('relay awg port map'),
-                'callback_data' => "/setRelayAwgPortMap $name",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('relay hy address'),
-                'callback_data' => "/setRelayHyAddress $name",
-            ],
-            [
-                'text'          => $this->i18n('relay hy port'),
-                'callback_data' => "/setRelayHyPort $name",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('relay hy port map'),
-                'callback_data' => "/setRelayHyPortMap $name",
-            ],
-        ];
-        $data[] = [
-            [
-                'text'          => $this->i18n('relay np address'),
-                'callback_data' => "/setRelayNpAddress $name",
-            ],
-            [
-                'text'          => $this->i18n('relay np port'),
-                'callback_data' => "/setRelayNpPort $name",
-            ],
-        ];
-        $protocolRelays = [];
-        foreach (ManagedProtocol::NAMES as $protocol => $label) {
-            $protocolRelays[] = ['text' => $label . ' · relay', 'callback_data' => "/prset $protocol $name"];
+        $buttons = [];
+        foreach (array_keys(self::RELAY_CHANNELS) as $ch) {
+            $buttons[] = [
+                'text'          => ($this->relayChannelSummary($r, $ch) === '' ? '➕ ' : '✏️ ') . $this->relayChannelLabel($ch),
+                'callback_data' => "/relayCh $ch $name",
+            ];
         }
-        foreach (array_chunk($protocolRelays, 2) as $row) $data[] = $row;
+        foreach (ManagedProtocol::NAMES as $protocol => $label) {
+            $buttons[] = ['text' => (empty($r[$protocol . '_address']) ? '➕ ' : '✏️ ') . $label, 'callback_data' => "/prset $protocol $name"];
+        }
+        $data = array_chunk($buttons, 2);
         $data[] = [
             [
                 'text'          => $this->i18n('relay delete'),
                 'callback_data' => "/relayDel $name",
             ],
         ];
+        $data[] = $this->menuHelpButton('relay', $name);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -11964,8 +12018,142 @@ NFT;
             $this->input['chat'],
             $this->input['message_id'],
             implode("\n", $text),
-            $data ?: false,
+            $data,
         );
+    }
+
+    // Экран одного канала relay: назначение, текущие значения, итоговая точка
+    // подключения для клиента и кнопки полей.
+    public function relayChannel(string $ch, $name, string $notice = '')
+    {
+        $name = (string) $name;
+        $p    = $this->getPacConf();
+        $r    = $p['relays'][$name] ?? null;
+        if (!isset(self::RELAY_CHANNELS[$ch]) || !is_array($r)) {
+            $this->relayMenu();
+            return;
+        }
+        $f = self::RELAY_CHANNELS[$ch];
+        $text[] = "Menu -> " . self::esc($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay')
+            . ' -> <b>' . self::esc($name) . '</b> -> ' . $this->relayChannelLabel($ch);
+        if ($notice !== '') {
+            $text[] = $notice;
+        }
+        $text[] = match ($ch) {
+            'vless' => $this->t(
+                'Подставляется в relay-подписки пользователей (Xray JSON, sing-box, Mihomo, v2rayNG) и в общую подписку «relay одной подпиской». Relay должен пересылать TCP 443 этого сервера (или порт из карты). По этому адресу бот раз в минуту проверяет, отвечает ли relay.',
+                "Used in users' relay subscriptions (Xray JSON, sing-box, Mihomo, v2rayNG) and in the shared \"relays in one sub\" subscription. The relay must forward TCP 443 of this server (or the port from the map). The bot checks this address once a minute to see whether the relay answers."),
+            'wg' => $this->t(
+                'Выбирается в меню WireGuard / AmneziaWG → relay: меняет Endpoint в выдаваемых конфигах и QR. Ещё подставляется в прокси awg пользовательских шаблонов Mihomo в relay-подписке. Relay должен пересылать UDP-порт WireGuard. UDP бот не проверяет.',
+                'Selected in the WireGuard / AmneziaWG menu → relay: changes the Endpoint in issued configs and QR codes. It is also put into the awg proxy of custom Mihomo templates in a relay subscription. The relay must forward the WireGuard UDP port. The bot does not check UDP.'),
+            'hy' => $this->t(
+                'Ссылки hy2:// в меню Hysteria → relay. Relay должен пересылать UDP-порт Hysteria и, если включён, весь диапазон port hopping. Явный порт перебивает карту и сводит диапазон hopping к одному порту. UDP бот не проверяет.',
+                'hy2:// links in the Hysteria menu → relay. The relay must forward the Hysteria UDP port and, if enabled, the whole port hopping range. An explicit port overrides the map and collapses the hopping range to one port. The bot does not check UDP.'),
+            'np' => $this->i18n('naive relay hint'),
+        };
+        $text[] = '';
+        $buttons = [];
+        foreach ($f as $field => [$key, $callback]) {
+            $value = $r[$key] ?? '';
+            $shown = $field === 'portmap' ? self::relayMapText($value) : trim((string) $value);
+            $label = match ($field) {
+                'address' => $this->t('Адрес', 'Address'),
+                'port'    => $this->t('Порт', 'Port'),
+                'portmap' => $this->t('Карта портов', 'Port map'),
+            };
+            $text[]    = "$label: " . ($shown === '' ? '—' : '<code>' . self::esc($shown) . '</code>');
+            $buttons[] = ['text' => '✏️ ' . $label, 'callback_data' => "$callback $name"];
+        }
+        $sum = $this->relayChannelSummary($r, $ch);
+        // Для TCP-каналов с одним портом сервера (VLESS — 443, NaiveProxy —
+        // 443) показываем точку подключения целиком: «адрес:порт».
+        $endpoint = match (true) {
+            $sum === '' => '',
+            $ch === 'vless' => $this->relayHostPort((string) $r['address'], self::relayPort($r, 443)),
+            $ch === 'np' => $this->relayHostPort((string) $r['np_address'], self::relayPortInput($r['np_port'] ?? '') ?: '443'),
+            default => $sum,
+        };
+        $text[] = $this->t('Клиент получит: ', 'The client gets: ') . ($sum === ''
+            ? $this->t('канал пуст — протокол через relay не идёт', 'the channel is empty, the protocol does not go through the relay')
+            : '<code>' . self::esc($endpoint) . '</code>');
+        $key = $ch === 'vless' ? $name : ($ch === 'np' ? "np:$name" : '');
+        if ($sum !== '' && $key !== '' && ($hl = $this->relayHealthLabel($key, true)) !== '') {
+            $text[] = $this->i18n('relay health') . ": $hl";
+        }
+        $data = array_chunk($buttons, 2);
+        if ($sum !== '' || !empty($r[$f['portmap'][0] ?? '']) || (isset($f['port']) && !empty($r[$f['port'][0]]))) {
+            $data[] = [['text' => '🧹 ' . $this->t('Очистить канал', 'Clear the channel'), 'callback_data' => "/relayChClear $ch $name"]];
+        }
+        $data[] = $this->menuHelpButton('relay', $name);
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/relayEdit $name"]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
+    }
+
+    public function relayChannelClear(string $ch, $name)
+    {
+        $name = (string) $name;
+        if (!isset(self::RELAY_CHANNELS[$ch])) {
+            $this->relayMenu();
+            return;
+        }
+        $exists = $this->pacConfUpdate(function (&$c) use ($ch, $name) {
+            if (!isset($c['relays'][$name])) {
+                return false;
+            }
+            foreach (self::RELAY_CHANNELS[$ch] as [$key]) {
+                unset($c['relays'][$name][$key]);
+            }
+            // Записи старого формата всегда несут address и portmap.
+            if ($ch === 'vless') {
+                $c['relays'][$name] += ['address' => '', 'portmap' => []];
+            }
+            return true;
+        });
+        if ($exists && $ch === 'np') {
+            $this->setUpstreamDomainNaive((string) ($this->getPacConf()['domain'] ?? ''));
+        }
+        $this->relayChannel($ch, $name);
+    }
+
+    // Общий путь сеттеров полей: запись под локом pac.json, затем экран канала.
+    // $fn получает запись relay по ссылке; relay мог исчезнуть, пока админ
+    // набирал ответ, — тогда возвращаемся к списку.
+    private function relaySetField(string $ch, string $name, callable $fn, string $notice = ''): void
+    {
+        $exists = $this->pacConfUpdate(function (&$c) use ($name, $fn) {
+            if (!isset($c['relays'][$name]) || !is_array($c['relays'][$name])) {
+                return false;
+            }
+            $fn($c['relays'][$name]);
+            return true;
+        });
+        if (!$exists) {
+            $this->relayMenu();
+            return;
+        }
+        $this->relayChannel($ch, $name, $notice);
+    }
+
+    private function relayAddressError(string $ch, string $name, string $text): void
+    {
+        $hint = preg_match('~^[^\s:/]+:\d+$~', trim($text)) || preg_match('~://~', $text)
+            ? $this->t('Вводите только домен или IP — без схемы и порта: порт задаётся отдельной кнопкой.',
+                'Enter only a domain or IP, without a scheme and port: the port has its own button.')
+            : $this->t('Нужен домен или IP-адрес.', 'A domain or an IP address is needed.');
+        $this->relayChannel($ch, $name, '⚠️ ' . $this->t('Адрес не сохранён. ', 'The address was not saved. ') . $hint);
+    }
+
+    private function relayPortMapError(string $ch, string $name): void
+    {
+        $this->relayChannel($ch, $name, '⚠️ ' . $this->t(
+            'Карта не сохранена: нужны пары «порт_сервера:порт_relay» через запятую, порты 1–65535, например 443:8443. 0 — очистить.',
+            'The map was not saved: pairs "server_port:relay_port" separated by commas are needed, ports 1–65535, e.g. 443:8443. 0 clears it.'));
+    }
+
+    private function relayPortError(string $ch, string $name): void
+    {
+        $this->relayChannel($ch, $name, '⚠️ ' . $this->t('Порт не сохранён: нужно число 1–65535, 0 — очистить.',
+            'The port was not saved: a number 1–65535 is needed, 0 clears it.'));
     }
 
     public function relayAddressPrompt($name)
@@ -11985,11 +12173,7 @@ NFT;
 
     public function setRelayAddress($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
-            $this->relayMenu();
-            return;
-        }
+        $name = (string) $name;
         // 0/пусто — очистка: relay выпадает из vless-подписок/списков (ключ
         // остаётся с '', как при создании), но awg/hy-каналы не трогаем.
         // Адрес уходит в клиентские ссылки и в tcpProbe() — мусору там не
@@ -11997,12 +12181,13 @@ NFT;
         // карточки relay: Telegram отвечал 400, а починить значение можно было
         // только с этого же, уже не открывающегося экрана.
         if (!$this->relayClearInput($text) && !$this->isHostOrIp($text)) {
-            $this->relayEdit($name);
+            $this->relayAddressError('vless', $name, (string) $text);
             return;
         }
-        $c['relays'][$name]['address'] = $this->relayClearInput($text) ? '' : trim($text);
-        $this->setPacConf($c);
-        $this->relayEdit($name);
+        $addr = $this->relayClearInput($text) ? '' : trim((string) $text);
+        $this->relaySetField('vless', $name, function (&$r) use ($addr) {
+            $r['address'] = $addr;
+        });
     }
 
     public function relayPortMapPrompt($name)
@@ -12022,16 +12207,15 @@ NFT;
 
     public function setRelayPortMap($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
-            $this->relayMenu();
+        $name = (string) $name;
+        $map  = $this->relayClearInput($text) ? [] : self::relayPortMapInput($text);
+        if ($map === null) {
+            $this->relayPortMapError('vless', $name);
             return;
         }
-        // 0/пусто — очистка (parseRelayPortMap('0') и так даст [], но явная
-        // ветка фиксирует контракт всех relay-сеттеров).
-        $c['relays'][$name]['portmap'] = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
-        $this->setPacConf($c);
-        $this->relayEdit($name);
+        $this->relaySetField('vless', $name, function (&$r) use ($map) {
+            $r['portmap'] = $map;
+        });
     }
 
     public function relayAwgAddressPrompt($name)
@@ -12051,23 +12235,19 @@ NFT;
 
     public function setRelayAwgAddress($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
-            $this->relayMenu();
-            return;
-        }
-        $addr = trim($text);
+        $name = (string) $name;
+        $addr = trim((string) $text);
         if (!$this->relayClearInput($addr) && !$this->isHostOrIp($addr)) {
-            $this->relayEdit($name);
+            $this->relayAddressError('wg', $name, $addr);
             return;
         }
-        if ($this->relayClearInput($addr)) {
-            unset($c['relays'][$name]['awg_address']);
-        } else {
-            $c['relays'][$name]['awg_address'] = $addr;
-        }
-        $this->setPacConf($c);
-        $this->relayEdit($name);
+        $this->relaySetField('wg', $name, function (&$r) use ($addr) {
+            if ($this->relayClearInput($addr)) {
+                unset($r['awg_address']);
+            } else {
+                $r['awg_address'] = $addr;
+            }
+        });
     }
 
     public function relayAwgPortMapPrompt($name)
@@ -12087,20 +12267,19 @@ NFT;
 
     public function setRelayAwgPortMap($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
-            $this->relayMenu();
+        $name = (string) $name;
+        $map  = $this->relayClearInput($text) ? [] : self::relayPortMapInput($text);
+        if ($map === null) {
+            $this->relayPortMapError('wg', $name);
             return;
         }
-        // 0/пусто — очистка (невалидный ввод парсер тоже сведёт к []).
-        $map = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
-        if (empty($map)) {
-            unset($c['relays'][$name]['awg_portmap']);
-        } else {
-            $c['relays'][$name]['awg_portmap'] = $map;
-        }
-        $this->setPacConf($c);
-        $this->relayEdit($name);
+        $this->relaySetField('wg', $name, function (&$r) use ($map) {
+            if (empty($map)) {
+                unset($r['awg_portmap']);
+            } else {
+                $r['awg_portmap'] = $map;
+            }
+        });
     }
 
     public function relayHyAddressPrompt($name)
@@ -12123,23 +12302,19 @@ NFT;
     // поле — relay из выбора пропадает.
     public function setRelayHyAddress($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
-            $this->relayMenu();
-            return;
-        }
-        $addr = trim($text);
+        $name = (string) $name;
+        $addr = trim((string) $text);
         if (!$this->relayClearInput($addr) && !$this->isHostOrIp($addr)) {
-            $this->relayEdit($name);
+            $this->relayAddressError('hy', $name, $addr);
             return;
         }
-        if ($this->relayClearInput($addr)) {
-            unset($c['relays'][$name]['hy_address']);
-        } else {
-            $c['relays'][$name]['hy_address'] = $addr;
-        }
-        $this->setPacConf($c);
-        $this->relayEdit($name);
+        $this->relaySetField('hy', $name, function (&$r) use ($addr) {
+            if ($this->relayClearInput($addr)) {
+                unset($r['hy_address']);
+            } else {
+                $r['hy_address'] = $addr;
+            }
+        });
     }
 
     public function relayHyPortMapPrompt($name)
@@ -12159,23 +12334,22 @@ NFT;
 
     // Отдельный маппинг портов для hy2://-ссылок (по образцу awg_portmap: без
     // отката на общий vless-portmap — UDP-порт hysteria у relay обычно
-    // проброшен отдельно). Пустой ввод сносит поле — порты идут как есть.
+    // проброшен отдельно). 0 сносит поле — порты идут как есть.
     public function setRelayHyPortMap($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
-            $this->relayMenu();
+        $name = (string) $name;
+        $map  = $this->relayClearInput($text) ? [] : self::relayPortMapInput($text);
+        if ($map === null) {
+            $this->relayPortMapError('hy', $name);
             return;
         }
-        // 0/пусто — очистка (невалидный ввод парсер тоже сведёт к []).
-        $map = $this->relayClearInput($text) ? [] : $this->parseRelayPortMap($text);
-        if (empty($map)) {
-            unset($c['relays'][$name]['hy_portmap']);
-        } else {
-            $c['relays'][$name]['hy_portmap'] = $map;
-        }
-        $this->setPacConf($c);
-        $this->relayEdit($name);
+        $this->relaySetField('hy', $name, function (&$r) use ($map) {
+            if (empty($map)) {
+                unset($r['hy_portmap']);
+            } else {
+                $r['hy_portmap'] = $map;
+            }
+        });
     }
 
     public function relayHyPortPrompt($name)
@@ -12194,21 +12368,22 @@ NFT;
     }
 
     // Один UDP-порт relay для hy2://-ссылок: перебивает и hy_portmap, и
-    // диапазон port hopping (см. linkHysteria). 0/мусор — очистка.
+    // диапазон port hopping (см. linkHysteria). 0 — очистка, мусор — отказ.
     public function setRelayHyPort($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
-            $this->relayMenu();
+        $name = (string) $name;
+        $p    = self::relayPortInput($text);
+        if ($p === '' && !$this->relayClearInput($text)) {
+            $this->relayPortError('hy', $name);
             return;
         }
-        if (($p = self::relayPortInput($text)) === '') {
-            unset($c['relays'][$name]['hy_port']);
-        } else {
-            $c['relays'][$name]['hy_port'] = $p;
-        }
-        $this->setPacConf($c);
-        $this->relayEdit($name);
+        $this->relaySetField('hy', $name, function (&$r) use ($p) {
+            if ($p === '') {
+                unset($r['hy_port']);
+            } else {
+                $r['hy_port'] = $p;
+            }
+        });
     }
 
     public function relayNpAddressPrompt($name)
@@ -12230,26 +12405,32 @@ NFT;
     // relay с np_address попадают в выбор меню NaiveProxy. В отличие от
     // остальных каналов адрес обязан быть доменом из сертификата origin —
     // клиент naive берёт SNI из хоста ссылки и проверяет по нему сертификат
-    // (см. i18n 'naive relay hint'). Пустой ввод сносит поле.
+    // (см. i18n 'naive relay hint'). 0 сносит поле.
     public function setRelayNpAddress($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
+        $name = (string) $name;
+        $addr = trim((string) $text);
+        if (!$this->relayClearInput($addr) && !$this->isHostOrIp($addr)) {
+            $this->relayAddressError('np', $name, $addr);
+            return;
+        }
+        $addr   = $this->relayClearInput($addr) ? '' : $addr;
+        $exists = $this->pacConfUpdate(function (&$c) use ($name, $addr) {
+            if (!isset($c['relays'][$name]) || !is_array($c['relays'][$name])) {
+                return false;
+            }
+            if ($addr === '') {
+                unset($c['relays'][$name]['np_address']);
+            } else {
+                $c['relays'][$name]['np_address'] = $addr;
+            }
+            return true;
+        });
+        if (!$exists) {
             $this->relayMenu();
             return;
         }
-        $addr = trim($text);
-        if (!$this->relayClearInput($addr) && !$this->isHostOrIp($addr)) {
-            $this->relayEdit($name);
-            return;
-        }
-        if ($this->relayClearInput($addr)) {
-            unset($c['relays'][$name]['np_address']);
-            $addr = '';
-        } else {
-            $c['relays'][$name]['np_address'] = $addr;
-        }
-        $this->setPacConf($c);
+        $c = $this->getPacConf();
         // SNI-маршрут upstream-nginx: без строки в map трафик relay уедет в
         // cloak вместо caddy (см. naiveSniHosts). Домена нет — и маршрута нет,
         // naive без серта всё равно не работает.
@@ -12257,16 +12438,13 @@ NFT;
         $this->setUpstreamDomainNaive($domain);
         // Адрес принят, но в map не попал (голый IP / основной домен) — молча
         // отдать нерабочую ссылку хуже, чем сказать об этом сразу.
+        $notice = '';
         if ($addr !== ''
             && !in_array($addr, self::naiveSniHosts($this->getHashSubdomain('np'), $domain, $c), true)
         ) {
-            $this->send(
-                $this->input['chat'],
-                '⚠️ ' . $this->i18n('naive relay sni skipped'),
-                $this->input['message_id'],
-            );
+            $notice = '⚠️ ' . $this->i18n('naive relay sni skipped');
         }
-        $this->relayEdit($name);
+        $this->relayChannel('np', $name, $notice);
     }
 
     public function relayNpPortPrompt($name)
@@ -12288,35 +12466,87 @@ NFT;
     // нужна — либо порт задан явно, либо в ссылке его нет вовсе. 0 — очистка.
     public function setRelayNpPort($text, $name = '')
     {
-        $c = $this->getPacConf();
-        if (!isset($c['relays'][$name])) {
+        $name = (string) $name;
+        $p    = self::relayPortInput($text);
+        if ($p === '' && !$this->relayClearInput($text)) {
+            $this->relayPortError('np', $name);
+            return;
+        }
+        $this->relaySetField('np', $name, function (&$r) use ($p) {
+            if ($p === '') {
+                unset($r['np_port']);
+            } else {
+                $r['np_port'] = $p;
+            }
+        });
+    }
+
+    // Удаление — с подтверждением: у relay могут быть пользователи, которые
+    // обновляют через него подписку, и выбор в меню WireGuard.
+    public function relayDel($name)
+    {
+        $name = (string) $name;
+        $p    = $this->getPacConf();
+        if (!isset($p['relays'][$name])) {
             $this->relayMenu();
             return;
         }
-        if (($p = self::relayPortInput($text)) === '') {
-            unset($c['relays'][$name]['np_port']);
-        } else {
-            $c['relays'][$name]['np_port'] = $p;
+        $wg = [];
+        foreach (['' => 'WireGuard / AWG 1', 'wg1_' => 'WireGuard / AWG 2'] as $prefix => $label) {
+            if ((string) ($p[$prefix . 'relay'] ?? '') === $name) {
+                $wg[] = $label;
+            }
         }
-        $this->setPacConf($c);
-        $this->relayEdit($name);
+        $text[] = "Menu -> " . self::esc($this->protocolRelayOrigin['label'] ?? $this->i18n('xray')) . " -> " . $this->i18n('relay')
+            . ' -> <b>' . self::esc($name) . '</b>';
+        $text[] = $this->t('Удалить relay? После удаления:', 'Delete the relay? After deletion:');
+        $text[] = $this->t(
+            '• relay-подписки через него перестанут обновляться: сервер ответит «Relay not found», клиенту нужна новая подписка;',
+            '• relay subscriptions through it stop refreshing: the server answers "Relay not found", the client needs a new subscription;');
+        $text[] = $this->t(
+            '• он исчезнет из «relay одной подпиской» и из выбора в меню WireGuard, Hysteria, NaiveProxy и протоколов-модулей;',
+            '• it disappears from "relays in one sub" and from the choice in the WireGuard, Hysteria, NaiveProxy and module protocol menus;');
+        $text[] = $this->t(
+            '• уже выданные ссылки и конфиги с его адресом продолжат вести на relay, пока он пересылает трафик.',
+            '• links and configs already issued with its address keep leading to the relay while it forwards traffic.');
+        if ($wg) {
+            $text[] = $this->t('Сейчас выбран в: ', 'Currently selected in: ') . implode(', ', $wg)
+                . $this->t(' — выдача вернётся к прямому адресу сервера.', ' — issuing returns to the direct server address.');
+        }
+        $data = [
+            [['text' => '🗑 ' . $this->t('Да, удалить', 'Yes, delete'), 'callback_data' => "/relayDelOk $name"]],
+            [['text' => $this->i18n('back'), 'callback_data' => "/relayEdit $name"]],
+        ];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
-    public function relayDel($name)
+    public function relayDelOk($name)
     {
-        $c = $this->getPacConf();
+        $name = (string) $name;
         // Адрес naive-канала жил ещё и в SNI-map upstream-nginx — оставить там
         // хост удалённого relay значит и дальше отдавать его трафик в caddy.
-        $hadNp = !empty($c['relays'][$name]['np_address']);
-        unset($c['relays'][$name]);
-        if (empty($c['relays'])) {
-            unset($c['relays']);
-        }
-        $this->setPacConf($c);
+        $hadNp = $this->pacConfUpdate(function (&$c) use ($name) {
+            if (!isset($c['relays'][$name])) {
+                return null;
+            }
+            $hadNp = !empty($c['relays'][$name]['np_address']);
+            unset($c['relays'][$name]);
+            if (empty($c['relays'])) {
+                unset($c['relays']);
+            }
+            // Выбор relay в меню WireGuard хранится по имени: снимаем его, чтобы
+            // relay с тем же именем, созданный позже, не подхватился молча.
+            foreach (['relay', 'wg1_relay'] as $key) {
+                if ((string) ($c[$key] ?? '') === $name) {
+                    unset($c[$key]);
+                }
+            }
+            return $hadNp;
+        });
         if ($hadNp) {
-            $this->setUpstreamDomainNaive((string) ($c['domain'] ?? ''));
+            $this->setUpstreamDomainNaive((string) ($this->getPacConf()['domain'] ?? ''));
         }
-        $this->relayMenu();
+        $this->relayMenu($hadNp === null ? '' : '🗑 ' . $this->t('Relay удалён: ', 'Relay deleted: ') . '<code>' . self::esc($name) . '</code>');
     }
 
     // Ввод-«очистка» для полей relay (адреса и маппинги, включая telemt):
@@ -12354,6 +12584,30 @@ NFT;
         }
         $map = $relay[$ch . 'portmap'] ?? [];
         return (string) (is_array($map) ? ($map[(string) $port] ?? $port) : $port);
+    }
+
+    // Строгий разбор карты портов из ввода админа: null, если хоть одна пара
+    // не «порт:порт» в 1..65535 — ошибка ввода не должна молча стирать карту
+    // или класть в ссылку порт 0/70000.
+    public static function relayPortMapInput($text): ?array
+    {
+        $map = [];
+        foreach (explode(',', (string) $text) as $pair) {
+            $pair = trim($pair);
+            if ($pair === '') {
+                continue;
+            }
+            if (!preg_match('~^(\d{1,5})\s*:\s*(\d{1,5})$~D', $pair, $m)) {
+                return null;
+            }
+            $src = self::relayPortInput($m[1]);
+            $dst = self::relayPortInput($m[2]);
+            if ($src === '' || $dst === '') {
+                return null;
+            }
+            $map[$src] = $dst;
+        }
+        return $map ?: null;
     }
 
     // Parse a 'src:dst,src:dst' port map (real port -> relay port). Both sides
@@ -24704,6 +24958,7 @@ DNS-over-HTTPS with IP:
 
     public function subVless()
     {
+        $relayRequested = array_key_exists('relay', $_GET);
         $this->normalizeSubGet();
         $xr  = $this->getXray();
         // Тот же guard, что в sub() и subscription(): getXray() отдаёт null на
@@ -24717,11 +24972,21 @@ DNS-over-HTTPS with IP:
         // Resolve by subtoken (preferred) or id (pre-subtoken links).
         $i      = $this->findClientBySid($xr, $_GET['s'] ?? '', !empty($pac['subtoken_strict']));
         $client = $i === null ? null : $xr['inbounds'][0]['settings']['clients'][$i];
-        if ($client === null || !empty($client['off'])) {
+        // Срок и лимит — как в subscription(): cron выключает такого клиента
+        // не мгновенно, а base64-подписка до этого выдавала ему ссылки.
+        if ($client === null || !empty($client['off'])
+            || ((int) ($client['time'] ?? 0) > 0 && $client['time'] <= time())
+            || ((int) ($client['traffic'] ?? 0) > 0 && $this->xrUserTraffic($this->getXrayStats(), $i)
+                + array_sum($this->xrayProtocolUsage($client)) >= (int) $client['traffic'])) {
             // Ведро промахов — как в sub()/subscription(): без него перебор sid
             // через t=vl не ограничен ничем.
             $this->subRateLimit('', 'miss');
             $this->subNotFound();
+        }
+        // Удалённый relay — 404, как в subscription(): иначе подписка, которую
+        // клиент брал ради relay, молча переезжала на прямой адрес сервера.
+        if ($relayRequested && (empty($_GET['relay']) || !isset($pac['relays'][$_GET['relay']]))) {
+            $this->subNotFound('Relay not found.');
         }
         if (!$this->processHwidRequest($client)) {
             exit;
@@ -24734,12 +24999,12 @@ DNS-over-HTTPS with IP:
         $links  = [$native];
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']])) {
             // Explicit relay requested: serve only that relay's node (unchanged).
-            $links = [$this->relaySwapLink($native, $pac['relays'][$_GET['relay']], $client['email'])];
+            $links = [$this->relaySwapLink($native, $pac['relays'][$_GET['relay']], $client['email'], (string) $_GET['relay'])];
         } elseif (!empty($pac['relay_aggregate'])) {
             // Aggregated sub: origin node + one node per enabled & reachable relay,
             // so a single link exposes every exit as a selectable node.
-            foreach ($this->activeRelaysForSub($pac) as $relay) {
-                $links[] = $this->relaySwapLink($native, $relay, $client['email']);
+            foreach ($this->activeRelaysForSub($pac) as $name => $relay) {
+                $links[] = $this->relaySwapLink($native, $relay, $client['email'], (string) $name);
             }
         }
 
@@ -24780,14 +25045,16 @@ DNS-over-HTTPS with IP:
     // ── Relay: link swap + reachability (health) ─────────────────────────────
     // Swap a share link's endpoint to $relay and re-flag its #remark (relay flag
     // first, origin second) when the endpoint actually moved. Shared by the
-    // single-relay and aggregated-subscription paths.
-    public function relaySwapLink(string $link, array $relay, string $email): string
+    // single-relay and aggregated-subscription paths. Имя relay дописывается к
+    // имени узла: relay в той же стране, что и сервер, иначе давал узел с тем
+    // же именем, и в «relay одной подпиской» их было не отличить.
+    public function relaySwapLink(string $link, array $relay, string $email, string $name = ''): string
     {
         $out = $this->relayVlessLink($link, $relay);
         if (!empty($relay['address'])) {
             $out = preg_replace_callback(
                 '~#[^#]*$~',
-                fn() => '#' . rawurlencode($this->flagName($email, [$relay['address'], $this->ip])),
+                fn() => '#' . rawurlencode($this->flagName($email . ($name !== '' ? " · $name" : ''), [$relay['address'], $this->ip])),
                 $out,
                 1,
             );
@@ -24831,8 +25098,9 @@ DNS-over-HTTPS with IP:
     }
 
     // Cron step: probe every relay's main endpoint (address : portmap[443] ?? 443)
-    // and cache the result. Interval-gated so the 10 s cron loop probes at most
-    // once a minute. awg-only relays (no TCP address) are not probed.
+    // and the NaiveProxy channel, and cache the result. Interval-gated so the
+    // 10 s cron loop probes at most once a minute. UDP channels (WG/AWG,
+    // Hysteria) cannot be checked by a TCP connect and are not probed.
     public function checkRelayHealth(): void
     {
         if (!empty($this->time_relayhealth) && time() - $this->time_relayhealth < 60) {
@@ -24845,15 +25113,29 @@ DNS-over-HTTPS with IP:
         $this->time_relayhealth = time();
         $health = [];
         foreach ($pac['relays'] ?? [] as $name => $r) {
-            if (empty($r['address'])) {
+            if (!is_array($r) || empty($r['address'])) {
                 continue;
             }
+            $name = (string) $name;
             // Порт берём тем же резолвером, что и ссылки (явный <ch>port >
             // portmap > порт origin): хардкод «portmap['443'] иначе 443» врал,
             // как только у relay задан явный порт, — проба стучалась не туда, и
             // ВСЕ relay показывались как «⛔ down».
             $port = (int) self::relayPort($r, 443);
-            $health[$name] = $this->tcpProbe($r['address'], $port);
+            $health[$name] = $this->tcpProbe($r['address'], $port) + ['host' => $r['address'], 'port' => $port];
+        }
+        // Канал NaiveProxy — тоже TCP, но со своим адресом и портом (np_port
+        // или 443). Ключ «np:<имя>» не пересекается с именами: «:» в имени
+        // relay запрещён. Совпадающую точку второй раз не стучим.
+        foreach ($pac['relays'] ?? [] as $name => $r) {
+            if (!is_array($r) || empty($r['np_address'])) {
+                continue;
+            }
+            $host = (string) $r['np_address'];
+            $port = (int) (self::relayPortInput($r['np_port'] ?? '') ?: 443);
+            $same = $health[(string) $name] ?? null;
+            $health["np:$name"] = ($same !== null && $same['host'] === $host && $same['port'] === $port)
+                ? $same : $this->tcpProbe($host, $port) + ['host' => $host, 'port' => $port];
         }
         $this->writeRelayHealth($health);
     }
@@ -25465,10 +25747,17 @@ DNS-over-HTTPS with IP:
     public function readExtSubCache(): array
     {
         $f = '/config/extsub.cache';
-        if (!is_file($f)) {
+        if (!is_file($f) || !($fp = @fopen($f, 'r'))) {
             return [];
         }
-        return json_decode((string) file_get_contents($f), true) ?: [];
+        // mutateExtSubCache() переписывает файл на месте (ftruncate + fwrite)
+        // под LOCK_EX: чтение без лока попадало в пустой или недописанный файл,
+        // и подписка в этот миг уходила без внешних узлов.
+        flock($fp, LOCK_SH);
+        $raw = stream_get_contents($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return json_decode((string) $raw, true) ?: [];
     }
 
     // Locked read-modify-write of the cache. $mutator receives the current cache
@@ -25770,9 +26059,9 @@ DNS-over-HTTPS with IP:
         $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $relay) {
             // Имя из одних цифр JSON-декодер делает int-ключом — приводим.
-            // Health — TCP-проба основного address; для np-only relay её нет.
+            // Статус — своя TCP-проба канала NaiveProxy (ключ «np:<имя>»).
             $name   = (string) $name;
-            $hl     = $this->relayHealthLabel($name, false, $health);
+            $hl     = $this->relayHealthLabel("np:$name", false, $health);
             $data[] = [
                 [
                     'text'          => "🔗 $name: {$relay['np_address']}" . ($hl !== '' ? "  $hl" : ''),
@@ -25809,7 +26098,7 @@ DNS-over-HTTPS with IP:
         $link = self::naiveReady($pac) ? $this->linkNaive($relay) : '';
 
         $text[] = "Menu -> NaiveProxy -> " . $this->i18n('relay') . " -> <b>$name</b> ({$relay['np_address']})";
-        if (($hl = $this->relayHealthLabel($name, true)) !== '') {
+        if (($hl = $this->relayHealthLabel("np:$name", true)) !== '') {
             $text[] = $this->i18n('relay health') . ": $hl";
         }
         if (($np = self::relayPortInput($relay['np_port'] ?? '')) !== '') {
@@ -28042,7 +28331,7 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => $this->i18n('relay') . ': ' . (!empty($p['relays']) ? count(array_filter($p['relays'], fn($e) => !empty($e['address']))) : $this->i18n('off')),
+                'text'          => '🔗 ' . $this->i18n('relay') . ': ' . (!empty($p['relays']) ? count($p['relays']) : $this->i18n('off')),
                 'callback_data' => '/relayMenu',
             ],
         ];
@@ -28965,6 +29254,9 @@ DNS-over-HTTPS with IP:
 
         $text[] = "Menu -> " . $this->i18n('xray') . " -> " . htmlspecialchars($c['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n";
         array_push($text, ...$this->subscriptionCardSummary($c, $i));
+        if ($scheme === 'http') {
+            $text[] = $this->subPlaintextWarning() . "\n";
+        }
         $text[] = $this->t('<b>Подключение</b>', '<b>Connection</b>');
         if (file_exists(__DIR__ . '/subscription.php')) {
             $text[] = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
@@ -29042,7 +29334,7 @@ DNS-over-HTTPS with IP:
                 'web_app' => ['url' => "https://{$domain}/pac$hash?t=cl&s={$stok}"]
             ],
         ];
-        if (!empty(array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']) || !empty($e['awg_address'])))) {
+        if (!empty(array_filter($pac['relays'] ?? [], fn($e) => $this->relayForSubscription($e)))) {
             $data[] = [
                 [
                     'text'          => '🔗 ' . $this->i18n('relay subscriptions'),
@@ -29197,7 +29489,40 @@ DNS-over-HTTPS with IP:
     // Per-client external links / remote subscriptions (3x-ui port). Lists the
     // client's ext rows with per-row toggle / rename / delete, plus add buttons.
     // Rows feed expandClientExt() → the base64 subscription (subVless / t=vl).
-    public function extUser($i)
+    // Короткий отпечаток строки внешней ссылки для callback_data: кнопки
+    // адресуют строку по номеру, а номер сдвигается после удаления. Без сверки
+    // повторное нажатие 🗑 в старом сообщении удаляло соседнюю строку.
+    public static function extRowKey(array $e): string
+    {
+        return substr(hash('sha256', ($e['kind'] ?? 'link') . "\n" . ($e['value'] ?? '')), 0, 8);
+    }
+
+    // Строка ext клиента $i под номером $k, если отпечаток совпал (или не
+    // передан — тогда только из свежего меню, см. маршруты).
+    private function extRowMatches(array $c, $i, $k, string $h): bool
+    {
+        $e = $c['inbounds'][0]['settings']['clients'][$i]['ext'][$k] ?? null;
+        return is_array($e) && $h !== '' && hash_equals(self::extRowKey($e), $h);
+    }
+
+    // Изменение ext под локом xray.json. Ядро поле ext не читает, поэтому
+    // перезапуск не нужен — только запись.
+    private function extUpdate(callable $fn)
+    {
+        return $this->withLock('xray', function () use ($fn) {
+            $c = $this->getXray();
+            if (!is_array($c)) {
+                return null;
+            }
+            $result = $fn($c);
+            if ($result !== null && $result !== false) {
+                $this->saveXray($c);
+            }
+            return $result;
+        });
+    }
+
+    public function extUser($i, string $notice = '')
     {
         $xray = $this->getXray();
         $c    = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
@@ -29208,42 +29533,57 @@ DNS-over-HTTPS with IP:
         $ext   = $c['ext'] ?? [];
         $cache = $this->readExtSubCache();
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('external links');
-        $text[] = $this->i18n('external hint') . "\n";
+        // Имя пользователя — ввод, уходит в parse_mode=HTML.
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . self::esc($c['email']) . " -> " . $this->i18n('external links');
+        if ($notice !== '') {
+            $text[] = $notice;
+        }
+        $text[] = $this->i18n('external hint');
+        $text[] = $this->t(
+            'Попадают только в подписку v2rayNG (base64) — её берут кнопки импорта Shadowrocket, Streisand и Hiddify. В Xray JSON, sing-box и Mihomo их нет. Удалённые подписки бот обновляет раз в 5 минут.',
+            'They go only into the v2rayNG (base64) subscription, which the Shadowrocket, Streisand and Hiddify import buttons use. Xray JSON, sing-box and Mihomo do not get them. The bot refreshes remote subscriptions every 5 minutes.') . "\n";
+        if (!$ext) {
+            $text[] = $this->t('Внешних ссылок пока нет.', 'No external links yet.');
+        }
 
         $data = [];
         foreach ($ext as $k => $e) {
             $icon  = ($e['kind'] ?? 'link') === 'sub' ? '📥' : '🔗';
             $short = mb_strimwidth((string) (($e['remark'] ?? '') !== '' ? $e['remark'] : ($e['value'] ?? '')), 0, 28, '…');
-            $line  = ($k + 1) . ". " . (empty($e['off']) ? '✅' : '⛔') . " $icon <code>" . htmlspecialchars($short) . "</code>";
+            $line  = ($k + 1) . ". " . (empty($e['off']) ? '✅' : '⛔') . " $icon <code>" . self::esc($short) . "</code>";
             // For remote subscriptions, surface the last-fetch status from cache:
             // node count + age on success, or the recorded error.
             if (($e['kind'] ?? '') === 'sub') {
                 $st = $cache[trim((string) ($e['value'] ?? ''))] ?? null;
                 if ($st === null) {
                     $line .= ' — ' . $this->i18n('ext status pending');
-                } elseif (!empty($st['err'])) {
-                    $line .= ' — ⚠️ ' . htmlspecialchars((string) $st['err']);
                 } else {
                     $n    = count($st['links'] ?? []);
                     $secs = !empty($st['ts']) ? max(0, time() - (int) $st['ts']) : null;
-                    $age  = $secs === null ? '?' : ($secs < 3600 ? floor($secs / 60) . 'm' : floor($secs / 3600) . 'h');
-                    $line .= " — $n " . $this->i18n('ext status nodes') . " · $age";
+                    $age  = $secs === null ? '' : ' · ' . ($secs < 3600 ? floor($secs / 60) . 'm' : floor($secs / 3600) . 'h');
+                    if (!empty($st['err'])) {
+                        // Ошибка последней попытки; в подписке остаются узлы
+                        // последней удачной загрузки, если она была.
+                        $line .= ' — ⚠️ ' . self::esc((string) $st['err']) . ($n ? ' · ' . $this->i18n('ext status nodes') . ": $n" . $age : '');
+                    } else {
+                        $line .= ' — ' . $this->i18n('ext status nodes') . ": $n" . $age;
+                    }
                 }
             }
             $text[] = $line;
+            $h      = self::extRowKey($e);
             $data[] = [
                 [
                     'text'          => (empty($e['off']) ? '✅' : '⛔') . " $icon $short",
-                    'callback_data' => "/extToggle {$i}_{$k}",
+                    'callback_data' => "/extToggle {$i}_{$k}_$h",
                 ],
                 [
                     'text'          => '✏️',
-                    'callback_data' => "/extRename {$i}_{$k}",
+                    'callback_data' => "/extRename {$i}_{$k}_$h",
                 ],
                 [
                     'text'          => '🗑',
-                    'callback_data' => "/extDel {$i}_{$k}",
+                    'callback_data' => "/extDel {$i}_{$k}_$h",
                 ],
             ];
         }
@@ -29261,10 +29601,11 @@ DNS-over-HTTPS with IP:
         ];
         $data[] = [
             [
-                'text'          => 'User-Agent: ' . mb_strimwidth($this->extSubUserAgent(), 0, 40, '…'),
+                'text'          => $this->t('🕵️ User-Agent загрузки: ', '🕵️ Fetch User-Agent: ') . mb_strimwidth($this->extSubUserAgent(), 0, 30, '…'),
                 'callback_data' => "/extUA {$i}",
             ],
         ];
+        $data[] = $this->menuHelpButton('ext', (string) $i);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -29275,7 +29616,7 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->input['message_id'],
             implode("\n", $text),
-            $data ?: false,
+            $data,
         );
     }
 
@@ -29300,6 +29641,37 @@ DNS-over-HTTPS with IP:
 
     public const EXT_SUB_USER_AGENT = 'v2rayNG/1.8.5';
 
+    // Готовые User-Agent для внешних подписок. Каждый получает в
+    // распространённых панелях (3x-ui, Marzban, Remnawave) список ссылок —
+    // единственное, что бот умеет разбирать. Версии v2rayNG, v2rayN и Happ
+    // намеренно старые: Marzban новым версиям (v2rayNG 1.8.18+, v2rayN 6.40+,
+    // Happ 1.63.1+) отдаёт JSON-конфиг, если владелец включил такой режим.
+    // Клиенты Clash/Mihomo, Stash и sing-box (SFA, SFI, Karing, HiddifyNext)
+    // получают YAML/JSON — в список не входят.
+    public const EXT_SUB_USER_AGENT_PRESETS = [
+        'v2rayNG/1.8.5' => ['ru' => 'по умолчанию: старая версия v2rayNG, список ссылок почти в любой панели',
+            'en' => 'default: an old v2rayNG version, a list of links from almost any panel'],
+        'v2rayN/6.31'   => ['ru' => 'v2rayN для Windows до 6.40: список ссылок и там, где новым версиям отдают JSON',
+            'en' => 'v2rayN for Windows before 6.40: a list of links even where newer versions get JSON'],
+        'Happ/1.63.0'   => ['ru' => 'для сервисов, которые пускают только Happ; версия до 1.63.1 получает список ссылок',
+            'en' => 'for services that let in only Happ; a version before 1.63.1 gets a list of links'],
+        'Streisand'     => ['ru' => 'для сервисов, которые пускают только Streisand (iOS, macOS)',
+            'en' => 'for services that let in only Streisand (iOS, macOS)'],
+        'Shadowrocket'  => ['ru' => 'для сервисов, которые пускают только Shadowrocket (iOS)',
+            'en' => 'for services that let in only Shadowrocket (iOS)'],
+    ];
+
+    // Список готовых значений для сообщения и справки: каждое в <code>, чтобы
+    // в Telegram его можно было скопировать нажатием.
+    public function extSubUserAgentPresetLines(): array
+    {
+        $lines = [];
+        foreach (self::EXT_SUB_USER_AGENT_PRESETS as $ua => $note) {
+            $lines[] = '<code>' . self::esc($ua) . '</code> — ' . self::esc($note[$this->language === 'ru' ? 'ru' : 'en']);
+        }
+        return $lines;
+    }
+
     // User-Agent, с которым бот забирает внешние подписки. Провайдеры отдают
     // разное содержимое разным клиентам, поэтому значение настраивается;
     // оно общее для всех подписок.
@@ -29321,7 +29693,11 @@ DNS-over-HTTPS with IP:
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} " . $this->i18n('enter ext user agent')
-                . "\n<code>" . self::esc($this->extSubUserAgent()) . '</code>',
+                . "\n<code>" . self::esc($this->extSubUserAgent()) . '</code>'
+                . "\n\n" . $this->t('Готовые значения — нажмите, чтобы скопировать, и отправьте ответом:', 'Ready values: tap to copy and send as a reply:')
+                . "\n" . implode("\n", $this->extSubUserAgentPresetLines())
+                . "\n\n" . $this->t('Не подходят Clash, Mihomo, Stash, sing-box (SFA, SFI), Karing и HiddifyNext: им сервисы отдают готовый конфиг, а боту нужен список ссылок. Подробнее — в справке.',
+                    'Clash, Mihomo, Stash, sing-box (SFA, SFI), Karing and HiddifyNext do not fit: services give them a ready config, while the bot needs a list of links. Details are in Help.'),
             $this->input['message_id'],
             reply: self::EXT_SUB_USER_AGENT,
         );
@@ -29344,43 +29720,99 @@ DNS-over-HTTPS with IP:
                 $conf['extsub_user_agent'] = $ua;
             });
         } else {
-            $this->send($this->input['from'], $this->i18n('ext user agent invalid'));
+            $this->extUser($i, '⚠️ ' . $this->i18n('ext user agent invalid'));
+            return;
         }
-        $this->extUser($i);
+        // С новым User-Agent провайдер может отдать другой состав узлов:
+        // сразу перечитываем подписки этого пользователя, чтобы результат был
+        // виден в меню (остальные обновит cron в течение 5 минут).
+        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? [];
+        foreach (array_unique(array_map(fn($e) => trim((string) ($e['value'] ?? '')),
+            array_filter($client['ext'] ?? [], fn($e) => ($e['kind'] ?? '') === 'sub' && empty($e['off'])))) as $url) {
+            if ($url !== '') {
+                $this->refreshExtSubOne($url);
+            }
+        }
+        $this->extUser($i, '✅ User-Agent: <code>' . self::esc($this->extSubUserAgent()) . '</code>');
     }
 
     public function extAddSave($text, $i, $kind)
     {
         $kind  = $kind === 'sub' ? 'sub' : 'link';
-        $value = trim((string) $text);
-        // link: a known-scheme share link; sub: an HTTPS URL (no plaintext http,
-        // so the remote provider's configs never traverse the network in clear).
-        $valid = $kind === 'sub'
-            ? (bool) preg_match('~^https://\S+~i', $value)
-            : $this->isKnownShareLink($value);
-        if ($valid) {
-            $c   = $this->getXray();
-            $cli = $c['inbounds'][0]['settings']['clients'][$i] ?? null;
-            if ($cli !== null) {
+        // Одно сообщение может нести несколько ссылок — по одной на строку.
+        // Раньше многострочный ввод сохранялся одной строкой ext и попадал в
+        // подписку как есть, вместе с любым мусором после первой ссылки.
+        $lines = array_values(array_filter(array_map('trim', preg_split('~\R~u', (string) $text)), fn($l) => $l !== ''));
+        $add   = [];
+        $bad   = 0;
+        foreach ($lines as $value) {
+            // link: a known-scheme share link; sub: an HTTPS URL (no plaintext
+            // http, so the remote provider's configs never traverse the network
+            // in clear) with a host and without spaces.
+            $valid = $kind === 'sub'
+                ? (bool) preg_match('~^https://[^\s/?#]+[^\s]*$~iD', $value) && strlen($value) <= 2048
+                : $this->isKnownShareLink($value) && strlen($value) <= 8192;
+            if ($valid) {
+                $add[$value] = true;
+            } else {
+                $bad++;
+            }
+        }
+        $result = $add ? $this->extUpdate(function (&$c) use ($i, $kind, $add) {
+            if (!isset($c['inbounds'][0]['settings']['clients'][$i])) {
+                return null;
+            }
+            $have = [];
+            foreach ($c['inbounds'][0]['settings']['clients'][$i]['ext'] ?? [] as $e) {
+                $have[($e['kind'] ?? 'link') . "\n" . trim((string) ($e['value'] ?? ''))] = true;
+            }
+            $added = 0;
+            foreach (array_keys($add) as $value) {
+                if (isset($have["$kind\n$value"])) {
+                    continue; // дубль уже есть в списке
+                }
                 $c['inbounds'][0]['settings']['clients'][$i]['ext'][] = [
                     'kind'   => $kind,
                     'value'  => $value,
                     'remark' => '',
                     'off'    => 0,
                 ];
-                $this->saveXray($c);
-                // Populate the cache now so the node shows up on the next
-                // subscription request without waiting for the cron tick.
-                if ($kind === 'sub') {
-                    $this->refreshExtSubOne($value);
-                }
+                $added++;
+            }
+            return $added ?: null;
+        }) : null;
+        $added = (int) $result;
+        // Populate the cache now so the node shows up on the next
+        // subscription request without waiting for the cron tick.
+        if ($kind === 'sub' && $added) {
+            foreach (array_keys($add) as $value) {
+                $this->refreshExtSubOne($value);
             }
         }
-        $this->extUser($i);
+        $notice = [];
+        if ($added) {
+            $notice[] = '✅ ' . $this->t('Добавлено: ', 'Added: ') . $added;
+        }
+        if (count($add) > $added) {
+            $notice[] = 'ℹ️ ' . $this->t('Уже были в списке: ', 'Already in the list: ') . (count($add) - $added);
+        }
+        if ($bad || !$lines) {
+            $notice[] = '⚠️ ' . ($kind === 'sub'
+                ? $this->t('Не принято: нужен адрес https://… без пробелов (обычный http не допускается).', 'Not accepted: an https://… address without spaces is needed (plain http is not allowed).')
+                : $this->t('Не принято: нужна ссылка vless://, vmess://, trojan://, ss://, ssr://, hysteria2://, hy2://, tuic://, wireguard://, anytls://, snell:// или socks://.',
+                    'Not accepted: a vless://, vmess://, trojan://, ss://, ssr://, hysteria2://, hy2://, tuic://, wireguard://, anytls://, snell:// or socks:// link is needed.'))
+                . ($bad ? ' (' . $bad . ')' : '');
+        }
+        $this->extUser($i, implode("\n", $notice));
     }
 
-    public function extRename($i, $k)
+    public function extRename($i, $k, string $h = '')
     {
+        $c = $this->getXray();
+        if (!$this->extRowMatches($c, $i, $k, $h)) {
+            $this->extUser($i, $this->extStaleNotice());
+            return;
+        }
         $r = $this->send(
             $this->input['chat'],
             "@{$this->input['username']} " . $this->i18n('enter remark'),
@@ -29391,40 +29823,56 @@ DNS-over-HTTPS with IP:
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
             'callback'       => 'extRenameSave',
-            'args'           => [$i, $k],
+            'args'           => [$i, $k, $h],
         ]);
     }
 
-    public function extRenameSave($text, $i, $k)
+    public function extRenameSave($text, $i, $k, string $h = '')
     {
-        $c = $this->getXray();
-        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
-            $c['inbounds'][0]['settings']['clients'][$i]['ext'][$k]['remark'] = trim((string) $text);
-            $this->saveXray($c);
-        }
-        $this->extUser($i);
+        // Имя уходит в #remark ссылки (rawurlencode) и в кнопку меню: обрезаем
+        // управляющие символы и длину. 0 — вернуть исходное имя ссылки.
+        $remark = trim(preg_replace('~[\p{C}]+~u', ' ', (string) $text) ?? '');
+        $remark = $remark === '0' ? '' : mb_substr($remark, 0, 64);
+        $done   = $this->extUpdate(function (&$c) use ($i, $k, $h, $remark) {
+            if (!$this->extRowMatches($c, $i, $k, $h)) {
+                return null;
+            }
+            $c['inbounds'][0]['settings']['clients'][$i]['ext'][$k]['remark'] = $remark;
+            return true;
+        });
+        $this->extUser($i, $done ? '' : $this->extStaleNotice());
     }
 
-    public function extToggle($i, $k)
+    public function extToggle($i, $k, string $h = '')
     {
-        $c = $this->getXray();
-        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
+        $done = $this->extUpdate(function (&$c) use ($i, $k, $h) {
+            if (!$this->extRowMatches($c, $i, $k, $h)) {
+                return null;
+            }
             $e = &$c['inbounds'][0]['settings']['clients'][$i]['ext'][$k];
             $e['off'] = empty($e['off']) ? 1 : 0;
             unset($e);
-            $this->saveXray($c);
-        }
-        $this->extUser($i);
+            return true;
+        });
+        $this->extUser($i, $done ? '' : $this->extStaleNotice());
     }
 
-    public function extDel($i, $k)
+    public function extDel($i, $k, string $h = '')
     {
-        $c = $this->getXray();
-        if (isset($c['inbounds'][0]['settings']['clients'][$i]['ext'][$k])) {
-            array_splice($c['inbounds'][0]['settings']['clients'][$i]['ext'], $k, 1);
-            $this->saveXray($c);
-        }
-        $this->extUser($i);
+        $done = $this->extUpdate(function (&$c) use ($i, $k, $h) {
+            if (!$this->extRowMatches($c, $i, $k, $h)) {
+                return null;
+            }
+            array_splice($c['inbounds'][0]['settings']['clients'][$i]['ext'], (int) $k, 1);
+            return true;
+        });
+        $this->extUser($i, $done ? '' : $this->extStaleNotice());
+    }
+
+    private function extStaleNotice(): string
+    {
+        return '⚠️ ' . $this->t('Список изменился — ничего не сделано. Проверьте его и нажмите кнопку ещё раз.',
+            'The list has changed, nothing was done. Check it and tap the button again.');
     }
 
     // Per-user relay subscriptions: pick a relay, then relaySub() renders that
@@ -29439,22 +29887,31 @@ DNS-over-HTTPS with IP:
             $this->userXr($i);
             return;
         }
-        $relays = array_filter($pac['relays'] ?? [], fn($e) => !empty($e['address']) || !empty($e['awg_address']));
+        $relays = array_filter($pac['relays'] ?? [], fn($e) => $this->relayForSubscription($e));
 
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> {$c['email']} -> " . $this->i18n('relay subscriptions');
-        $text[] = $this->i18n('relay hint');
+        // Имя пользователя приходит из ввода и уходит в parse_mode=HTML:
+        // «&» или «<» в нём роняли editMessageText в 400.
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . self::esc($c['email']) . " -> " . $this->i18n('relay subscriptions');
+        $text[] = $this->t(
+            'Та же подписка этого пользователя, но клиент подключается через выбранный relay: бот меняет только адрес и порт сервера, ключи, SNI и маршруты остаются прежними. Выберите relay, затем способ импорта.',
+            "The same subscription of this user, but the client connects through the chosen relay: the bot changes only the server address and port; keys, SNI and routes stay the same. Pick a relay, then the import method.");
+        if (!$relays) {
+            $text[] = "\n" . $this->t('Нет relay с адресом для подписок. Задайте его в меню Vless → relay.', 'No relay with an address for subscriptions. Set one in the Vless menu → relay.');
+        }
 
         $data   = [];
         $health = $this->readRelayHealth(); // read once for the whole list
         foreach ($relays as $name => $relay) {
-            $hl = $this->relayHealthLabel($name, false, $health);
+            $name = (string) $name;
+            $hl   = !empty($relay['address']) ? $this->relayHealthLabel($name, false, $health) : '';
             $data[] = [
                 [
-                    'text'          => "🔗 $name: " . ($relay['address'] ?: $relay['awg_address']) . ($hl !== '' ? "  $hl" : ''),
+                    'text'          => "🔗 $name: " . mb_strimwidth((string) (($relay['address'] ?? '') ?: ($relay['awg_address'] ?? '') ?: $this->t('протоколы-модули', 'module protocols')), 0, 40, '…') . ($hl !== '' ? "  $hl" : ''),
                     'callback_data' => "/relaySub {$i}_{$name}",
                 ],
             ];
         }
+        $data[] = $this->menuHelpButton('relay_user', (string) $i);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -29465,8 +29922,45 @@ DNS-over-HTTPS with IP:
             $this->input['chat'],
             $this->input['message_id'],
             implode("\n", $text),
-            $data ?: false,
+            $data,
         );
+    }
+
+    // Без сертификата бот выдаёт адреса подписок с http://: токен подписки и
+    // первый запрос идут открытым текстом (nginx на 80 только переадресует).
+    public function subPlaintextWarning(): string
+    {
+        return '⚠️ ' . $this->t(
+            'Нет TLS-сертификата: адреса подписок начинаются с http://, и токен подписки уходит в сеть открытым текстом. Задайте домен и выпустите сертификат (меню SSL), затем выдайте пользователям новые ссылки.',
+            'No TLS certificate: subscription addresses start with http://, and the subscription token travels over the network in plain text. Set a domain and issue a certificate (SSL menu), then give users new links.');
+    }
+
+    // Что именно пойдёт через relay в его подписке: по строке на канал.
+    // VLESS и прокси awg без канала остаются на адресе сервера; протокол-модуль
+    // без канала в relay-подписку не входит вовсе (appendXrayProtocols).
+    public function relaySubscriptionRoutes(array $relay): array
+    {
+        $via  = '→ ';
+        $out  = [];
+        $out[] = 'VLESS: ' . (!empty($relay['address'])
+            ? $via . '<code>' . self::esc($this->relayChannelSummary($relay, 'vless')) . '</code>'
+            : $this->t('напрямую на сервер (у relay нет адреса VLESS)', 'directly to the server (the relay has no VLESS address)'));
+        if (!empty($relay['awg_address'])) {
+            $out[] = $this->t('WG/AWG (прокси awg в шаблоне Mihomo): ', 'WG/AWG (awg proxy in a Mihomo template): ')
+                . $via . '<code>' . self::esc($this->relayChannelSummary($relay, 'wg')) . '</code>';
+        }
+        $modules = [];
+        foreach (ManagedProtocol::NAMES as $protocol => $label) {
+            if (in_array($protocol, ['snolc', 'masque'], true)) {
+                continue; // в общие подписки не входят (отдельные профили)
+            }
+            if (!empty($relay[$protocol . '_address']) && !empty($relay[$protocol . '_port'])) {
+                $modules[] = $label . ' ' . $via . '<code>' . self::esc($relay[$protocol . '_address'] . ':' . $relay[$protocol . '_port']) . '</code>';
+            }
+        }
+        $out[] = $this->t('Протоколы-модули (sing-box, Mihomo): ', 'Module protocols (sing-box, Mihomo): ')
+            . ($modules ? implode(', ', $modules) : $this->t('не входят — у relay нет их каналов', 'not included, the relay has no channels for them'));
+        return $out;
     }
 
     // Full link set for one relay, mirroring userXr's client links so every
@@ -29480,11 +29974,11 @@ DNS-over-HTTPS with IP:
         $c     = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
         $pac   = $this->getPacConf();
         $relay = $pac['relays'][$name] ?? null;
-        if ($c === null || $relay === null || (empty($relay['address']) && empty($relay['awg_address']))) {
+        if ($c === null || !$this->relayForSubscription($relay)) {
             $this->userRelay($i);
             return;
         }
-        $domain = $this->getDomain($pac['transport'] != 'Reality');
+        $domain = $this->getDomain(($pac['transport'] ?? '') != 'Reality');
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
         $email  = $c['email'];
@@ -29492,11 +29986,18 @@ DNS-over-HTTPS with IP:
         // Имя relay задаёт админ, а отсюда оно уходит в query-string ссылки:
         // пробел или & в имени резали параметр (и всё, что за ним) — клиент
         // импортировал подписку origin вместо relay.
-        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . htmlspecialchars($email, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
-            . " -> " . $this->i18n('relay subscriptions') . " -> <b>" . htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
-            . "</b> (" . htmlspecialchars($relay['address'] ?: $relay['awg_address'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . ")\n";
+        $text[] = "Menu -> " . $this->i18n('xray') . " -> " . self::esc($email)
+            . " -> " . $this->i18n('relay subscriptions') . " -> <b>" . self::esc($name) . "</b>";
+        if (!empty($relay['address']) && ($hl = $this->relayHealthLabel((string) $name, true)) !== '') {
+            $text[] = $this->i18n('relay health') . ": $hl";
+        }
+        array_push($text, ...$this->relaySubscriptionRoutes($relay));
+        if ($scheme === 'http') {
+            $text[] = $this->subPlaintextWarning();
+        }
+        $text[] = '';
 
-        array_push($text, ...$this->subscriptionImportLinks("$scheme://{$domain}/pac$hash", $stok, $email, $name));
+        array_push($text, ...$this->subscriptionImportLinks("$scheme://{$domain}/pac$hash", $stok, $email, (string) $name));
 
         // Raw content URLs for clients where a subscription URL is pasted
         // manually. 'vl' is the base64 vless:// share-link list for v2rayNG &
@@ -29515,11 +30016,12 @@ DNS-over-HTTPS with IP:
                 'h'     => $hash,
                 't'     => $t,
                 's'     => $stok,
-                'relay' => $name,
+                'relay' => (string) $name,
             ]));
             $text[] = "$label: <pre><code>$url</code></pre>";
         }
 
+        $data[] = $this->menuHelpButton('relay_user', (string) $i);
         $data[] = [
             [
                 'text'          => $this->i18n('back'),
@@ -35913,7 +36415,9 @@ DNS-over-HTTPS with IP:
         if (false !== $reply) {
             $extra = [
                 'force_reply'             => true,
-                'input_field_placeholder' => $reply,
+                // Bot API: подсказка в поле ввода — 1–64 символа; длинные
+                // тексты подсказок (адрес relay, внешние ссылки) обрезаем.
+                'input_field_placeholder' => mb_strimwidth((string) $reply, 0, 64, '…'),
                 'selective'               => true,
             ];
         }
