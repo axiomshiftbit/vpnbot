@@ -200,6 +200,8 @@ apt install -y \
     unzip \
     rsync \
     iptables \
+    nftables \
+    util-linux \
     iproute2
 
 # xt_ipp2p — модуль ЯДРА ХОСТА, а не контейнера. Один xtables-addons-dkms

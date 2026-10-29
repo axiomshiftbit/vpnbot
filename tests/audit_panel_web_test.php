@@ -59,14 +59,17 @@ pwAssert(strpos($chg, 'LOCK_EX | LOCK_NB') < strpos($chg, 'git -C / fetch'),
 pwAssert((bool) preg_match('~!flock\(\$h, LOCK_EX \| LOCK_NB\)\) \{\s*\n\s*echo~', $chg),
     'не получивший лок отдаёт кэш, а не встаёт в очередь');
 
-// ── 3. Cookie гейта AdGuard ─────────────────────────────────────────────────
-$cookie = substr($idx, strpos($idx, "setcookie('c'"), 700);
-pwAssert(str_contains($cookie, "'httponly' => true"), 'cookie гейта недоступна скриптам страницы');
+// ── 3. Пропуск в панель AdGuard ─────────────────────────────────────────────
+// Раньше пропуском была cookie c = публичный hash из ссылок подписки: её мог
+// выставить любой подписчик. Теперь — подписанный ключом бота токен со сроком,
+// который проверяет бот через auth_request nginx (подробно — adguard_gate_test).
+$src0 = (string) file_get_contents(__DIR__ . '/../app/bot.php');
+$cookie = substr($src0, strpos($src0, 'public function adguardSetGateCookie('), 900);
+pwAssert(str_contains($cookie, "'httponly' => true"), 'cookie пропуска недоступна скриптам страницы');
 pwAssert(str_contains($cookie, "'samesite' => 'Lax'"), 'cookie не уходит с межсайтовыми запросами');
-pwAssert(str_contains($cookie, "'secure'"), 'на HTTPS cookie помечается secure');
-// secure НЕ должен быть безусловным: на установке без сертификата cookie с ним
-// не сохранится, и вход в админку сломается.
-pwAssert(!str_contains($cookie, "'secure'   => true,"), 'secure выставляется по факту HTTPS, а не всегда');
+pwAssert(str_contains($cookie, "'secure' => \$secure") && str_contains($cookie, "!empty(\$_SERVER['HTTPS'])"), 'secure выставляется по факту HTTPS, а не всегда');
+$check = substr($idx, strpos($idx, '/webapp$hash/check'), 900);
+pwAssert(str_contains($check, 'adguardSetGateCookie($hash, Bot::ADGUARD_GATE_TTL)') && !str_contains($check, "setcookie('c', \$hash"), 'мини-приложение выдаёт подписанный пропуск, а не публичный hash');
 
 // ── 4. Пустой пароль AdGuard ────────────────────────────────────────────────
 $src = (string) file_get_contents(__DIR__ . '/../app/bot.php');

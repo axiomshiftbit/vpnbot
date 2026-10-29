@@ -17,6 +17,7 @@ class ExitMenuBot extends Bot
         $this->input = ['chat' => 1, 'from' => 1, 'message_id' => 5, 'callback_id' => 'cb', 'username' => 'admin'];
         $this->language = 'ru';
         $this->ip = '198.51.100.1';
+        $this->key = 'fixture';
         require __DIR__ . '/../app/i18n.php';
         $this->i18n = $i;
         $this->confXray = ['inbounds' => [['tag' => 'vless_reality', 'port' => 443, 'protocol' => 'vless',
@@ -66,8 +67,10 @@ class ExitMenuBot extends Bot
     public function changeRouteList(string $type, callable $edit): bool { $list = $this->confPac[$type] ?? []; $edit($list); $this->confPac[$type] = $list; return true; }
     public function adguardXrayClients() {}
     public array $removed = [];
-    public function getXrayStats() { return []; }
-    public function setXrayStats($x) { return true; }
+    public array $stats = [];
+    public function getXrayStats() { return $this->stats; }
+    public function setXrayStats($x) { $this->stats = $x; return true; }
+    public function nginxGetTypeCert() { return 'letsencrypt'; }
     public function deleteHwidUser($uid) { $this->removed[] = ['hwid', $uid]; }
     public function deleteWarpClient($email) { $this->removed[] = ['warp', $email]; }
     public function userXr($i) { $this->screens[] = ['user ' . $i, []]; }
@@ -112,11 +115,18 @@ $check(str_contains($bot->last()[0], 'уже есть') && count($bot->confPac['
 $bot->exitNodeMenu($id);
 [$text, $buttons] = $bot->last();
 $check(str_contains($text, 'fi.example.org:443') && str_contains($text, 'vless/tcp/reality') && str_contains($text, 'ни у кого не включён'), 'карточка: адрес, транспорт, подсказка');
-$bot->counters = ["outbound>>>vpnbot-exit-$id>>>traffic>>>uplink" => 2048, "outbound>>>vpnbot-exit-$id>>>traffic>>>downlink" => 3 * 1024 * 1024];
-$check(str_contains($bot->exitTrafficLine($id), '↑') && str_contains($bot->exitTrafficLine($id), '3'), 'трафик через узел');
-$bot->counters = null;
-$check($bot->exitTrafficLine($id) === 'Трафик через узел: нет данных', 'трафик: нет данных');
-$bot->counters = [];
+// Трафик узла копится в xray.stats (как у пользователей) и переживает
+// перезапуск ядра; сброс ставит отметку от текущего счётчика.
+$check(str_contains($bot->exitTrafficLine($id), 'ещё не подсчитан'), 'трафик: ещё не подсчитан');
+$bot->stats = ['exits' => [$id => ['session' => ['up' => 2048, 'down' => 3 * 1024 * 1024], 'global' => ['up' => 1024, 'down' => 0], 'base' => ['up' => 0, 'down' => 0], 'since' => 1700000000]]];
+$check(str_contains($bot->exitTrafficLine($id), '↑') && str_contains($bot->exitTrafficLine($id), '3') && $bot->exitTraffic($id)['up'] === 3072, 'трафик через узел: прошлые запуски + текущий');
+$folded = Bot::foldSession($bot->stats);
+$check($folded['exits'][$id]['global'] === ['up' => 3072, 'down' => 3 * 1024 * 1024] && $folded['exits'][$id]['session'] === ['up' => 0, 'down' => 0], 'перезапуск Xray сворачивает счётчик узла, не теряя его');
+$bot->exitTrafficReset($id);
+$check($bot->exitTraffic($id)['up'] === 0 && $bot->exitTraffic($id)['down'] === 0 && str_contains($bot->last()[0], 'сброшен'), 'сброс счётчика узла');
+$bot->stats['exits'][$id]['session']['down'] += 500;
+$check($bot->exitTraffic($id)['down'] === 500 && Bot::foldSession($bot->stats)['exits'][$id]['global']['down'] === 500, 'после сброса считается только новое, и при перезапуске тоже');
+$bot->stats = [];
 foreach (['/exitCheck', '/exitRefresh', '/exitToggle', '/exitQuic', '/exitRoutes', '/exitSets', '/exitUsers', '/exitName', '/exitLink', '/exitDel'] as $cmd) {
     $check((bool) array_filter(array_keys($bot->callbacks()), static fn($c) => str_starts_with($c, "$cmd $id")), 'кнопка ' . $cmd);
 }
@@ -152,10 +162,15 @@ $bot->exitAllUsers($id, true);
 $check(count(array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => ($c['exit'] ?? []) === [$id])) === 2, 'включено всем');
 $bot->exitAllUsers($id, false);
 $check(!array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => isset($c['exit'])), 'выключено всем, поле удаляется');
+$aliceKey = Bot::exitClientKey($bot->confXray['inbounds'][0]['settings']['clients'][0]);
 $bot->exitUserNodeToggle(0, $id);
+$check(!isset($bot->confXray['inbounds'][0]['settings']['clients'][0]['exit']) && str_contains($bot->last()[0], 'Список изменился'), 'кнопка карточки без отпечатка пользователя ничего не меняет');
+$bot->exitUserNodeToggle(0, $id, Bot::exitClientKey($bot->confXray['inbounds'][0]['settings']['clients'][1]));
+$check(!isset($bot->confXray['inbounds'][0]['settings']['clients'][0]['exit']) && !isset($bot->confXray['inbounds'][0]['settings']['clients'][1]['exit']), 'отпечаток другого пользователя (сдвинулся список) — ничего не меняется');
+$bot->exitUserNodeToggle(0, $id, $aliceKey);
 $check(($bot->confXray['inbounds'][0]['settings']['clients'][0]['exit'] ?? null) === [$id], 'карточка пользователя включает узел');
 $bot->exitUserMenu(0);
-$check(isset($bot->callbacks()["/exitUT 0 $id"]) && isset($bot->callbacks()['/userXr 0']), 'карточка пользователя: узел и возврат');
+$check(isset($bot->callbacks()["/exitUT 0 $id $aliceKey"]) && isset($bot->callbacks()['/userXr 0']), 'карточка пользователя: узел и возврат');
 
 // --- Предупреждения: WARP и sniffing ---------------------------------------
 $bot->exitNodeMenu($id);
@@ -431,11 +446,14 @@ $check(count($v6->confPac['exits']) === 1, 'повторное нажатие н
 $v6->exitFallback($v6id);
 $check($v6->exitNodes()[$v6id]['fallback'] === 'block', 'устаревшая кнопка не ослабляет IPv6');
 $v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_relay'] = 1;
+$v6mark = Bot::exitRelayMark($v6->confXray['inbounds'][0]['settings']['clients'][0]);
 $v6->exitRelayIpv6(0);
+$check(empty($v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_ipv6']), 'кнопка IPv6 без отпечатка профиля ничего не меняет');
+$v6->exitRelayIpv6(0, $v6mark);
 $check(!empty($v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_ipv6']), 'служебный профиль переключается на IPv6');
-$v6->exitRelayIpv6(0);
+$v6->exitRelayIpv6(0, $v6mark);
 $check(empty($v6->confXray['inbounds'][0]['settings']['clients'][0]['exit_ipv6']), 'служебный профиль возвращается в обычный режим');
-$v6->exitRelayIpv6(1);
+$v6->exitRelayIpv6(1, Bot::exitRelayMark($v6->confXray['inbounds'][0]['settings']['clients'][1]));
 $check(empty($v6->confXray['inbounds'][0]['settings']['clients'][1]['exit_ipv6']), 'обычная учётка не становится строгим relay случайной кнопкой');
 $v6->restartOk = false;
 $v6->exitRelayIpv6(0);
@@ -499,7 +517,7 @@ $check(str_contains($trace->invoke($legacy, 'vpnbot-exit-' . $lid), 'будет 
 $check(str_contains($trace->invoke($legacy, Bot::EXIT_IPV6_TAG), 'IPv6 этого сервера'), '«Куда пойдёт домен»: служебный IPv6 не выдаётся за узел');
 // Карточка служебного профиля предупреждает, что сеть IPv6 не подготовлена.
 $v6->restartOk = true;
-$v6->exitRelayIpv6(0);
+$v6->exitRelayIpv6(0, $v6mark);
 $v6->exitRelayLink(0);
 $check(str_contains($v6->last()[0], 'не подготовлена'), 'профиль «только IPv6» без сети: предупреждение');
 array_map('unlink', glob("$datDir/*") ?: []);

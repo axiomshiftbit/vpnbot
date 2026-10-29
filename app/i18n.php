@@ -1847,12 +1847,12 @@ $i = [
         'ru' => 'сторонний браузер',
     ],
     'browser_notify_on'  => [
-        'en' => 'the web panel can be opened in any browser',
-        'ru' => 'веб панель может быть открыта в любом браузере',
+        'en' => 'the web panel can be opened in any browser with a personal link: the 🔗 button in this menu',
+        'ru' => 'веб-панель можно открыть в любом браузере по личной ссылке: кнопка 🔗 в этом меню',
     ],
     'browser_notify_off'  => [
-        'en' => 'web panel is only available from telegram',
-        'ru' => 'веб панель доступна только из телеграмма',
+        'en' => 'the web panel is only available from Telegram',
+        'ru' => 'веб-панель доступна только из Telegram',
     ],
     'no updates'  => [
         'en' => 'no updates',

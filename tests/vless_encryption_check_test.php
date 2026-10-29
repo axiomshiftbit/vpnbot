@@ -2,41 +2,33 @@
 
 require_once __DIR__ . '/../app/bot.php';
 
-// Реальное ядро: регрессии формата временного файла и stats:{} после
+// Реальное ядро: конфигурация через stdin и stats:{} после
 // json_decode(..., true). В CI бинарник проверяется по SHA256.
 $binary = getenv('VLESS_TEST_XRAY');
 if (!$binary) {
     echo "vless_encryption_check_test SKIP: задайте VLESS_TEST_XRAY для проверки ядром\n";
     exit(0);
 }
-if (!is_executable($binary) || !is_writable('/logs')) {
-    throw new RuntimeException('Нужны исполняемый Xray и доступный /logs');
-}
+if (!is_executable($binary)) throw new RuntimeException('Нужен исполняемый Xray');
 
 class VlessCheckTestBot extends Bot
 {
     public int $checks = 0;
-    public array $temporaryFiles = [];
     public function __construct() {}
-    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
+    protected function sshInputCommand(string $cmd, string $input, string $service): string
     {
         $this->sshFailed = false;
-        if (!preg_match("/-config '([^']+)'/", $cmd, $m)) {
-            throw new RuntimeException('Нет проверяемого конфига');
-        }
-        // Xray 26.10.17+ не читает в `run` файл без расширения конфига.
-        if (!str_ends_with($m[1], '.json')) {
-            throw new RuntimeException('Временный конфиг без расширения .json');
-        }
-        if ((fileperms($m[1]) & 0777) !== 0600) {
-            throw new RuntimeException('Временный конфиг доступен посторонним');
-        }
-        $this->temporaryFiles[] = $m[1];
+        if (!str_contains($cmd, '-config stdin:') || str_contains($cmd, '11111111-2222')
+            || str_contains($cmd, '.xray-check-')) throw new RuntimeException('Конфиг должен идти только в stdin');
         $this->checks++;
-        $process = proc_open(['/bin/sh', '-c', $cmd], [0 => ['file', '/dev/null', 'r'],
+        $process = proc_open(['/bin/sh', '-c', $cmd], [0 => ['pipe', 'r'],
             1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+        fwrite($pipes[0], $input);
+        // stdin остаётся открытым: ограниченный head должен сам завершить
+        // поток для Xray, не ожидая EOF всего SSH-канала.
+        stream_set_timeout($pipes[1], 10);
         $output = stream_get_contents($pipes[1]);
-        fclose($pipes[1]);
+        fclose($pipes[0]); fclose($pipes[1]);
         proc_close($process);
         return $output;
     }
@@ -56,8 +48,5 @@ if (!$bot->validateXrayConfig($config, $binary)) {
 $config['inbounds'][0]['streamSettings']['network'] = 'invalid-network';
 if ($bot->validateXrayConfig($config, $binary)) {
     throw new RuntimeException('Невалидный конфиг принят');
-}
-foreach ($bot->temporaryFiles as $file) {
-    if (file_exists($file) || file_exists(substr($file, 0, -5))) { throw new RuntimeException('Временный конфиг не удалён'); }
 }
 echo "vless_encryption_check_test OK ({$bot->checks} проверки реальным ядром)\n";

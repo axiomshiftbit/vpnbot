@@ -16,7 +16,7 @@ RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/xray \
 
 FROM $image
 RUN apk upgrade --no-cache \
-    && apk add --no-cache openssh openssl jq curl grep \
+    && apk add --no-cache openssh openssl jq curl grep python3 \
     && mkdir -p /root/.ssh /usr/local/bin \
     && ln -sf /usr/bin/xray /usr/local/bin/xray
 COPY --from=cores /out/ /usr/bin/

@@ -8,10 +8,14 @@ x-logging:
 
 networks:
     default:
+        driver_opts:
+            com.docker.network.bridge.name: br-vpnbot0
         ipam:
             config:
                 - subnet: 10.10.0.0/24
     xray:
+        driver_opts:
+            com.docker.network.bridge.name: br-vpnbot1
         ipam:
             config:
                 - subnet: 10.10.1.0/24
@@ -569,6 +573,7 @@ services:
             # правка пережила бы рестарт.
             - ./config/xray.json:/xray.json:ro
             - ./scripts/start_xray.sh:/start_xray.sh
+            - ./scripts/xray_hot_apply.py:/xray_hot_apply.py:ro
             - ./logs:/logs
         hostname: xray
         container_name: xray-${VER}

@@ -77,7 +77,13 @@ trait BotExitNodes
     public static function exitNodeDefaults(): array
     {
         return ['name' => '', 'link' => '', 'kind' => 'remote', 'fallback' => 'direct', 'enabled' => 1, 'quic' => 'block', 'routes' => [], 'rulesets' => [],
-            'auto' => 0, 'created' => 0, 'status' => []];
+            'auto' => 0, 'created' => 0, 'status' => [], 'sub' => '', 'sub_time' => 0, 'sub_error' => '', 'members' => [], 'choice' => 'auto'];
+    }
+
+    private static function exitDirectFallback(array $node): bool
+    {
+        return ($node['fallback'] ?? '') === 'direct'
+            && (($node['kind'] ?? '') !== 'group' || in_array($node['choice'] ?? 'auto', ['auto', 'direct'], true));
     }
 
     /** id => нормализованный узел; порядок вставки задаёт приоритет и порт проверки. */
@@ -92,7 +98,7 @@ trait BotExitNodes
             $node += self::exitNodeDefaults();
             $node['name'] = is_string($node['name']) ? $node['name'] : '';
             $node['link'] = is_string($node['link']) ? $node['link'] : '';
-            if (!in_array($node['kind'], ['remote', 'ipv6'], true)) {
+            if (!in_array($node['kind'], ['remote', 'ipv6', 'group'], true)) {
                 $node['kind'] = 'remote';
                 $node['link'] = '';
                 $node['fallback'] = 'block';
@@ -103,7 +109,14 @@ trait BotExitNodes
             $node['enabled'] = empty($node['enabled']) ? 0 : 1;
             $node['quic'] = $node['quic'] === 'pass' ? 'pass' : 'block';
             $node['auto'] = empty($node['auto']) ? 0 : 1;
+            $node['sub'] = $node['kind'] === 'remote' && is_string($node['sub']) && self::exitRulesetUrlValid($node['sub'], false) ? $node['sub'] : '';
+            $node['sub_time'] = (int) $node['sub_time'];
+            $node['sub_error'] = is_string($node['sub_error']) ? mb_substr($node['sub_error'], 0, 120) : '';
             foreach (['routes', 'rulesets', 'status'] as $field) $node[$field] = is_array($node[$field]) ? $node[$field] : [];
+            $node['members'] = array_values(array_unique(array_filter(is_array($node['members']) ? $node['members'] : [],
+                static fn($member) => is_string($member) && preg_match('~^[a-f0-9]{8}$~D', $member) && $member !== $id)));
+            if (!is_string($node['choice']) || !preg_match('~^(?:auto|direct|[a-f0-9]{8})$~D', $node['choice'])
+                || ($node['choice'] === 'direct' && $node['fallback'] !== 'direct')) $node['choice'] = 'block';
             $nodes[$id] = $node;
         }
         return $nodes;
@@ -124,6 +137,7 @@ trait BotExitNodes
 
     public function exitNodeOutbound(array $node): ?array
     {
+        if (($node['kind'] ?? '') === 'group') return ['protocol' => 'blackhole'];
         if (($node['kind'] ?? '') === 'ipv6') return $this->exitIpv6Outbound();
         try {
             return ExitNodeLink::parse($node['link'])['outbound'];
@@ -189,10 +203,18 @@ trait BotExitNodes
         $this->exitNodeMenu($id, $error === '' ? '' : $this->exitError($error));
     }
 
-    public function exitRelayIpv6(int $i): void
+    // Отпечаток учётки в кнопке: номер строки сдвигается при удалении
+    // пользователей, и нажатие в старом сообщении переключило бы чужой профиль.
+    public static function exitRelayMark(array $client): string
     {
-        $error = $this->applyExitNodes(static function (array &$p, array &$x) use ($i) {
-            if (empty($x['inbounds'][0]['settings']['clients'][$i]['exit_relay'])) return 'exit not found';
+        return substr(hash('sha256', ($client['email'] ?? '') . ':' . ManagedProtocol::xraySource($client)), 0, 16);
+    }
+
+    public function exitRelayIpv6(int $i, string $mark = ''): void
+    {
+        $error = $this->applyExitNodes(static function (array &$p, array &$x) use ($i, $mark) {
+            $client = $x['inbounds'][0]['settings']['clients'][$i] ?? null;
+            if (!is_array($client) || empty($client['exit_relay']) || !hash_equals(self::exitRelayMark($client), $mark)) return 'exit stale';
             $x['inbounds'][0]['settings']['clients'][$i]['exit_ipv6'] = empty($x['inbounds'][0]['settings']['clients'][$i]['exit_ipv6']) ? 1 : 0;
             return '';
         });
@@ -329,9 +351,64 @@ trait BotExitNodes
         $c['outbounds'][] = ['protocol' => 'freedom', 'tag' => 'direct'];
     }
 
+    private function exitRestoreFamilyPolicy(array &$c): void
+    {
+        if (!is_array($c['outbounds'] ?? null)) return;
+        $deny = ['action' => 'block', 'ip' => ['::/0'], 'blockDelay' => 0];
+        $legacy = (bool) array_filter($c['outbounds'] ?? [], static fn($o) =>
+            str_starts_with((string) ($o['tag'] ?? ''), self::EXIT_TAG)
+            && ($o['protocol'] ?? '') === 'freedom' && ($o['sendThrough'] ?? '') === self::EXIT_IPV6_SOURCE);
+        foreach ($c['outbounds'] as $k => &$o) {
+            if (($o['protocol'] ?? '') !== 'freedom' || ($k !== 0 && ($o['tag'] ?? '') !== 'direct')) continue;
+            $saved = $o['_vpnbot_ipv4'] ?? null;
+            // Миграция прежнего генератора: узнаваемая тройка рядом с нашим
+            // IPv6-выходом. Произвольную ручную ForceIPv4 без неё не снимаем.
+            if ($saved === null && $legacy && ($o['settings']['domainStrategy'] ?? '') === 'ForceIPv4'
+                && ($o['streamSettings']['sockopt']['domainStrategy'] ?? '') === 'ForceIPv4'
+                && ($o['settings']['finalRules'][0] ?? null) === $deny) {
+                $saved = ['settings' => null, 'sockopt' => null, 'deny6' => null];
+            }
+            if (!is_array($saved) || array_diff(['settings', 'sockopt', 'deny6'], array_keys($saved))
+                || (!is_null($saved['settings']) && !is_string($saved['settings']))
+                || (!is_null($saved['sockopt']) && !is_string($saved['sockopt']))
+                || (!is_null($saved['deny6']) && !is_int($saved['deny6']))) continue;
+            if (($o['settings']['domainStrategy'] ?? 'ForceIPv4') === 'ForceIPv4') {
+                if ($saved['settings'] === null) unset($o['settings']['domainStrategy']);
+                else $o['settings']['domainStrategy'] = $saved['settings'];
+            }
+            if (($o['streamSettings']['sockopt']['domainStrategy'] ?? '') === 'ForceIPv4') {
+                if ($saved['sockopt'] === null) unset($o['streamSettings']['sockopt']['domainStrategy']);
+                else $o['streamSettings']['sockopt']['domainStrategy'] = $saved['sockopt'];
+                if (!$o['streamSettings']['sockopt']) unset($o['streamSettings']['sockopt']);
+                if (!$o['streamSettings']) unset($o['streamSettings']);
+            }
+            $rules = array_values(array_filter($o['settings']['finalRules'] ?? [], static fn($r) => $r !== $deny));
+            if ($saved['deny6'] !== null) array_splice($rules, max(0, $saved['deny6']), 0, [$deny]);
+            $o['settings']['finalRules'] = $rules;
+            unset($o['_vpnbot_ipv4']);
+        }
+        unset($o);
+    }
+
+    public static function exitFreedomStrategies(array &$c, string $version): void
+    {
+        // Старое ядро 26.7.28 без settings.domainStrategy ломает строгий IPv6
+        // даже при sockopt: проверено реальными TCP/UDP. Не судим по .env.
+        if (!preg_match('~^(\d+\.\d+\.\d+)~', $version, $m) || version_compare($m[1], '26.9.30', '<')) return;
+        foreach ($c['outbounds'] ?? [] as $k => $o) {
+            if (($o['protocol'] ?? '') !== 'freedom' ||
+                (!isset($o['_vpnbot_ipv4']) && !(str_starts_with((string) ($o['tag'] ?? ''), self::EXIT_TAG)
+                    && ($o['sendThrough'] ?? '') === self::EXIT_IPV6_SOURCE))) continue;
+            $strategy = $o['settings']['domainStrategy'] ?? null;
+            if ($strategy !== null && ($o['streamSettings']['sockopt']['domainStrategy'] ?? null) === $strategy
+                && !isset($o['settings']['targetStrategy'])) unset($c['outbounds'][$k]['settings']['domainStrategy']);
+        }
+    }
+
     public function ensureExitNodes(array &$c, ?array $p = null): void
     {
         $p = $p ?? $this->getPacConf();
+        $this->exitRestoreFamilyPolicy($c);
         $own = static fn($tag) => str_starts_with((string) $tag, self::EXIT_TAG);
         $c['outbounds'] = array_values(array_filter($c['outbounds'] ?? [], static fn($o) => !$own($o['tag'] ?? '')));
         $c['inbounds'] = array_values(array_filter($c['inbounds'] ?? [], static fn($i) => !$own($i['tag'] ?? '')));
@@ -343,18 +420,18 @@ trait BotExitNodes
         }
         // Проверка живости у ядра одна: при observatory и burstObservatory сразу
         // работает только burst. Чужую (из webapp) не трогаем — добавляем в неё
-        // свой префикс; своя — та, где кроме нашего префикса ничего нет.
+        // точные теги; своя — та, где кроме наших тегов ничего нет.
         $foreign = null;
         foreach (['burstObservatory', 'observatory'] as $block) {
             if (!is_array($c[$block] ?? null)) continue;
-            $left = array_values(array_diff((array) ($c[$block]['subjectSelector'] ?? []), [self::EXIT_TAG]));
+            $left = array_values(array_filter((array) ($c[$block]['subjectSelector'] ?? []), static fn($tag) => !$own($tag)));
             if (!$left) { unset($c[$block]); continue; }
             $c[$block]['subjectSelector'] = $left;
             $foreign ??= $block;
         }
 
         $probe = $rules = $unavailable = [];
-        $balanced = false;
+        $balanced = [];
         $ipv6 = $this->exitIpv6Attached();
         $relay = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
@@ -366,7 +443,8 @@ trait BotExitNodes
             $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . 'relay-ipv6', 'user' => array_values(array_unique($relay)), 'outboundTag' => self::EXIT_IPV6_TAG];
         }
         $index = 0;
-        foreach ($this->exitNodes($p) as $id => $node) {
+        $nodes = $this->exitNodes($p);
+        foreach ($nodes as $id => $node) {
             $id = (string) $id;
             $port = self::EXIT_PROBE_PORT + $index++;
             if (empty($node['enabled'])) continue;
@@ -381,8 +459,30 @@ trait BotExitNodes
             // должен видеть сам узел, а не обход.
             $c['inbounds'][] = ['tag' => self::EXIT_PROBE_TAG . $id, 'listen' => '127.0.0.1', 'port' => $port,
                 'protocol' => 'socks', 'settings' => ['auth' => 'noauth', 'udp' => false]];
+            $groupTarget = $groupProbe = null;
+            if ($node['kind'] === 'group') {
+                $members = [];
+                foreach ($node['members'] as $member) {
+                    $candidate = $nodes[$member] ?? [];
+                    if (($candidate['kind'] ?? '') === 'remote' && !empty($candidate['enabled']) && $this->exitNodeOutbound($candidate) !== null) $members[] = self::EXIT_TAG . $member;
+                }
+                $this->ensureBlockOutbound($c);
+                $this->ensureDirectOutbound($c);
+                if ($members) {
+                    $balanced = array_merge($balanced, $members);
+                    $c['routing']['balancers'][] = ['tag' => $tag, 'selector' => $members, 'strategy' => ['type' => 'leastPing'], 'fallbackTag' => $node['fallback']];
+                    $c['routing']['balancers'][] = ['tag' => $tag . '-probe', 'selector' => $members, 'strategy' => ['type' => 'leastPing'], 'fallbackTag' => 'block'];
+                }
+                $groupTarget = $members ? ['balancerTag' => $tag] : ['outboundTag' => $node['fallback']];
+                $groupProbe = $members ? ['balancerTag' => $tag . '-probe'] : ['outboundTag' => 'block'];
+                if ($node['choice'] !== 'auto') {
+                    $selected = self::EXIT_TAG . $node['choice'];
+                    $selected = in_array($selected, $members, true) ? $selected : ($node['choice'] === 'direct' && $node['fallback'] === 'direct' ? 'direct' : 'block');
+                    $groupTarget = $groupProbe = ['outboundTag' => $selected];
+                }
+            }
             $probe[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . $id . ':probe',
-                'inboundTag' => [self::EXIT_PROBE_TAG . $id], 'outboundTag' => $tag];
+                'inboundTag' => [self::EXIT_PROBE_TAG . $id]] + ($groupProbe ?? ['outboundTag' => $tag]);
             $emails = $this->exitNodeEmails($c, $id);
             $entries = $this->exitNodeEntries($node);
             if ($emails && $node['fallback'] === 'block' && !$this->exitNodeRoutesReady($node, $entries)) {
@@ -392,11 +492,11 @@ trait BotExitNodes
             }
             $x = $this->listToXrayRules($entries);
             if (!$emails || (!$x['domain'] && !$x['ip'])) continue;
-            $target = ['outboundTag' => $tag];
-            if ($node['kind'] !== 'ipv6' && $outbound['protocol'] !== 'blackhole') {
+            $target = $groupTarget ?? ['outboundTag' => $tag];
+            if ($node['kind'] === 'remote' && $outbound['protocol'] !== 'blackhole') {
                 $c['routing']['balancers'][] = ['tag' => $tag, 'selector' => [$tag], 'strategy' => ['type' => 'random'], 'fallbackTag' => $node['fallback']];
                 $target = ['balancerTag' => $tag];
-                $balanced = true;
+                $balanced[] = $tag;
             }
             // QUIC к доменам узла режем: браузер сразу переходит на TCP, и тот
             // идёт через узел (QUIC внутри TCP-туннеля к тому же медленнее).
@@ -428,9 +528,13 @@ trait BotExitNodes
                 if (($o['protocol'] ?? '') !== 'freedom' || ($k !== 0 && ($o['tag'] ?? '') !== 'direct')) continue;
                 $strategy = $o['settings']['domainStrategy'] ?? 'AsIs';
                 if (!in_array($strategy, ['AsIs', 'ForceIPv4'], true)) continue;
+                $deny6 = ['action' => 'block', 'ip' => ['::/0'], 'blockDelay' => 0];
+                $oldDeny = array_search($deny6, $o['settings']['finalRules'], true);
+                $o['_vpnbot_ipv4'] = ['settings' => $o['settings']['domainStrategy'] ?? null,
+                    'sockopt' => $o['streamSettings']['sockopt']['domainStrategy'] ?? null,
+                    'deny6' => $oldDeny === false ? null : $oldDeny];
                 $o['settings']['domainStrategy'] = 'ForceIPv4';
                 $o['streamSettings']['sockopt']['domainStrategy'] = 'ForceIPv4';
-                $deny6 = ['action' => 'block', 'ip' => ['::/0'], 'blockDelay' => 0];
                 $o['settings']['finalRules'] = array_values(array_filter($o['settings']['finalRules'], static fn($r) => $r !== $deny6));
                 array_unshift($o['settings']['finalRules'], $deny6);
             }
@@ -438,9 +542,9 @@ trait BotExitNodes
         }
         if ($balanced) {
             if ($foreign !== null) {
-                $c[$foreign]['subjectSelector'] = array_values(array_unique(array_merge($c[$foreign]['subjectSelector'], [self::EXIT_TAG])));
+                $c[$foreign]['subjectSelector'] = array_values(array_unique(array_merge($c[$foreign]['subjectSelector'], $balanced)));
             } else {
-                $c['burstObservatory'] = ['subjectSelector' => [self::EXIT_TAG], 'pingConfig' => self::EXIT_PING];
+                $c['burstObservatory'] = ['subjectSelector' => array_values(array_unique($balanced)), 'pingConfig' => self::EXIT_PING];
             }
         }
     }
@@ -510,20 +614,42 @@ trait BotExitNodes
         $node = $this->exitNodes()[$id] ?? null;
         if ($port === null || $node === null) return ['time' => time(), 'ok' => false, 'error' => 'not found'];
         if (empty($node['enabled'])) return ['time' => time(), 'ok' => false, 'error' => 'disabled'];
+        $out = (string) $this->ssh($this->exitProbeCommand($node, $port, $full), 'xr');
+        return $this->exitProbeResult($id, $node, $full, $out, $this->sshFailed);
+    }
+
+    private function exitProbeCommand(array $node, int $port, bool $full): string
+    {
         $proxy = "127.0.0.1:$port";
         // Задержка — время до первого байта generate_204 через узел: time_connect
         // при --socks5-hostname — это подключение к самому входу на 127.0.0.1.
-        $cmd = "c(){ curl -s --socks5-hostname $proxy --max-time 12 \"\$@\"; }; "
-            . "c -o /dev/null -w 'probe=%{http_code} %{time_starttransfer}\\n' " . self::EXIT_PROBE_URL . '; '
-            . "c https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|loc)='; ";
+        // Узел не ответил — остальные запросы не делаем (иначе мёртвый узел
+        // держал шаг cron ~36 с), а проверяем, открывается ли TCP до его
+        // адреса: так видно, лежит ли сервер или он отклоняет подключение.
+        $more = "c https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|loc)='; ";
         if ($full) {
-            $cmd .= "c -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36' "
+            $more .= "c -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36' "
                 . "-H 'Accept-Language: en-US,en;q=0.9' https://www.youtube.com/ | head -c 3000000 "
                 . "| grep -o '\"INNERTUBE_CONTEXT_GL\":\"[A-Z]*\"' | head -n 1; ";
         }
-        $out = (string) $this->ssh($cmd . 'true', 'xr');
+        $tcp = 'true';
+        if (($node['kind'] ?? '') !== 'ipv6') {
+            try {
+                $parsed = ExitNodeLink::parse($node['link']);
+                $tcp = 'if nc -z -w 4 ' . escapeshellarg($parsed['address']) . ' ' . (int) $parsed['port'] . ' 2>/dev/null; then echo tcp=1; else echo tcp=0; fi';
+            } catch (InvalidArgumentException $e) {
+            }
+        }
+        $cmd = "c(){ curl -s --socks5-hostname $proxy --max-time 12 \"\$@\"; }; "
+            . "r=\$(c -o /dev/null -w 'probe=%{http_code} %{time_starttransfer}' " . self::EXIT_PROBE_URL . "); printf '%s\\n' \"\$r\"; "
+            . "case \"\$r\" in probe=204*) $more;; *) $tcp;; esac; ";
+        return $cmd . 'true';
+    }
+
+    private function exitProbeResult(string $id, array $node, bool $full, string $out, bool $failed): array
+    {
         $status = ['time' => time(), 'ok' => false];
-        if ($this->sshFailed) return $status + ['error' => 'xray'];
+        if ($failed) { $status['error'] = 'xray'; $out = ''; }
         if (preg_match('~^probe=(\d{3}) ([0-9.]+)$~m', $out, $m)) {
             $status['http'] = (int) $m[1];
             $status['ms'] = (int) round((float) $m[2] * 1000);
@@ -531,18 +657,21 @@ trait BotExitNodes
         }
         if (preg_match('~^loc=([A-Z]{2})$~m', $out, $m)) $status['loc'] = $m[1];
         if (preg_match('~^ip=([0-9a-fA-F:.]{2,45})$~m', $out, $m)) $status['ip'] = $m[1];
-        if (($node['kind'] ?? '') === 'ipv6' && !filter_var($status['ip'] ?? '', FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+        if (!$failed && ($node['kind'] ?? '') === 'ipv6' && !filter_var($status['ip'] ?? '', FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
             $status['ok'] = false;
             $status['error'] = 'ipv6';
         }
         $expected = $this->exitIpv6Network()['public'] ?? '';
-        if (($node['kind'] ?? '') === 'ipv6' && $expected !== '' && @inet_pton($expected) !== @inet_pton($status['ip'] ?? '')) {
+        if (!$failed && ($node['kind'] ?? '') === 'ipv6' && $expected !== '' && @inet_pton($expected) !== @inet_pton($status['ip'] ?? '')) {
             $status['ok'] = false;
             $status['error'] = 'ipv6 source';
         }
         if (preg_match('~"INNERTUBE_CONTEXT_GL":"([A-Z]{2})"~', $out, $m)) $status['gl'] = $m[1];
         if ($full) $status['full'] = 1;
-        if (!$status['ok'] && empty($status['error'])) $status['error'] = !empty($status['http']) ? 'http:' . $status['http'] : 'no answer';
+        if (preg_match('~^tcp=([01])$~m', $out, $m)) $status['tcp'] = (int) $m[1];
+        if (!$status['ok'] && empty($status['error'])) {
+            $status['error'] = ($status['tcp'] ?? null) === 0 ? 'tcp' : (!empty($status['http']) ? 'http:' . $status['http'] : 'no answer');
+        }
         $previous = $this->exitStatus()[$id] ?? [];
         // Страна YouTube из полной проверки живёт до следующей полной.
         if (!$full && isset($previous['gl'])) $status['gl'] = $previous['gl'];
@@ -552,6 +681,43 @@ trait BotExitNodes
         $status['hist'] = self::exitHistoryAdd($previous['hist'] ?? [], $status['time'], $status['ok']);
         $this->exitStatusWrite($id, $status);
         return $status;
+    }
+
+    /** Не больше четырёх проб одновременно; вывод каждого узла изолирован. */
+    public function exitProbeMany(array $requests): array
+    {
+        if (count($requests) <= 1) {
+            $result = [];
+            foreach ($requests as $id => $full) $result[(string) $id] = $this->exitProbe((string) $id, (bool) $full);
+            return $result;
+        }
+        $nodes = $this->exitNodes();
+        $commands = $result = [];
+        foreach ($requests as $id => $full) {
+            $id = (string) $id;
+            $port = $this->exitProbePort($id);
+            if (!preg_match('~^[a-f0-9]{8}$~D', $id) || $port === null || empty($nodes[$id]['enabled'])) {
+                $result[$id] = ['time' => time(), 'ok' => false, 'error' => 'disabled'];
+                continue;
+            }
+            $commands[$id] = $this->exitProbeCommand($nodes[$id], $port, (bool) $full);
+        }
+        foreach (array_chunk($commands, 4, true) as $batch) {
+            // mktemp 0700, результаты не в общем /logs. trap удаляет только
+            // созданный каталог; адреса/ключи узлов в вывод не попадают.
+            $cmd = 'umask 077; d=$(mktemp -d /tmp/vpnbot-exit-probe.XXXXXX) || exit 1; '
+                . 'trap \'rm -rf "$d"\' EXIT; ';
+            foreach ($batch as $id => $probe) $cmd .= '( ' . $probe . ' ) > "$d/' . $id . '" 2>/dev/null & ';
+            $cmd .= 'wait; ';
+            foreach ($batch as $id => $_) $cmd .= 'printf "BEGIN ' . $id . '\\n"; cat "$d/' . $id . '"; printf "\\nEND ' . $id . '\\n"; ';
+            $out = (string) $this->ssh($cmd, 'xr');
+            $failed = $this->sshFailed;
+            foreach ($batch as $id => $_) {
+                $found = preg_match('~^BEGIN ' . $id . '\n(.*?)\nEND ' . $id . '$~ms', $out, $m) === 1;
+                $result[$id] = $this->exitProbeResult((string) $id, $nodes[$id], (bool) $requests[$id], $found ? $m[1] : '', $failed || !$found);
+            }
+        }
+        return $result;
     }
 
     // История доступности: [время, 1|0] каждой пробы за последние сутки.
@@ -601,6 +767,7 @@ trait BotExitNodes
             'disabled' => $this->t('узел выключен', 'node disabled'),
             'xray' => $this->t('нет связи с контейнером Xray', 'no connection to the Xray container'),
             'no answer' => $this->t('узел не ответил', 'node did not answer'),
+            'tcp' => $this->t('адрес узла недоступен по TCP: сервер выключен, порт закрыт или адрес сменился', 'the node address is unreachable over TCP: the server is down, the port is closed or the address changed'),
             'ipv6' => $this->t('выход через IPv6 не подтверждён', 'IPv6 egress was not verified'),
             'ipv6 source' => $this->t('выходной IPv6 отличается от настроенного', 'egress IPv6 differs from the configured address'),
             'download' => $this->t('не скачался', 'not downloaded'),
@@ -618,6 +785,10 @@ trait BotExitNodes
         $s = $this->exitStatus()[$id] ?? [];
         if (!$s) return $this->t('⚪ ещё не проверялся', '⚪ not checked yet');
         $line = !empty($s['ok']) ? $this->t('🟢 работает', '🟢 working') : '🔴 ' . self::esc($this->exitErrorText((string) ($s['error'] ?? '')));
+        // TCP до узла открывается, а прокси не отвечает — почти всегда ссылка
+        // устарела (новые ключи, другой транспорт) или узел ограничивает адрес
+        // этого сервера своим межсетевым экраном.
+        if (empty($s['ok']) && ($s['tcp'] ?? null) === 1) $line .= $this->t(' (TCP до узла есть: проверьте ссылку, список my_server и режим выхода профиля на узле)', ' (TCP to the node works: check the link, the my_server list and the profile egress mode on the node)');
         if (!empty($s['ok'])) $line .= ' · ' . (int) ($s['ms'] ?? 0) . $this->t(' мс', ' ms');
         if (!empty($s['loc'])) $line .= $this->t(' · выход ', ' · exit ') . self::esc($s['loc']);
         if (!empty($s['gl'])) $line .= $this->t(' · YouTube видит ', ' · YouTube sees ') . self::esc($s['gl']);
@@ -813,17 +984,27 @@ trait BotExitNodes
         $this->exitCronAt = time();
         $nodes = array_filter($this->exitNodes(), static fn($node) => !empty($node['enabled']));
         if (!$nodes) return;
+        $previous = $this->exitStatus();
+        $requests = [];
+        foreach ($nodes as $id => $_) $requests[$id] = time() - (int) ($previous[$id]['full_time'] ?? 0) >= self::EXIT_GL_PERIOD;
+        $probes = $this->exitProbeMany($requests);
         $restart = false;
         foreach ($nodes as $id => $node) {
             $id = (string) $id;
-            $before = $this->exitStatus()[$id] ?? [];
+            $before = $previous[$id] ?? [];
             // Раз в сутки — полная проверка со страной YouTube.
-            $full = time() - (int) ($before['full_time'] ?? 0) >= self::EXIT_GL_PERIOD;
-            $now = $this->exitProbe($id, $full);
+            $full = $requests[$id];
+            $now = $probes[$id];
             $name = self::esc($node['name'] !== '' ? $node['name'] : $id);
+            // Подписка узла: по расписанию и сразу после отказа — вдруг на узле
+            // сменили ключи. Новая ссылка применяется сразу и проверяется.
+            if ($node['sub'] !== '' && (empty($now['ok']) || time() - $node['sub_time'] >= self::EXIT_SUB_PERIOD) && $this->exitSubRefresh($id)) {
+                $this->notifyAdmins($this->t('🔄 Ссылка узла выхода обновлена по его подписке: ', '🔄 The exit node link was updated from its subscription: ') . $name);
+                $now = $this->exitProbe($id, $full);
+            }
             if ($before && !empty($before['ok']) !== !empty($now['ok'])) {
                 $this->notifyAdmins((!empty($now['ok']) ? $this->t('🟢 Узел выхода снова работает: ', '🟢 Exit node is working again: ')
-                    : ($node['fallback'] === 'block' ? $this->t('🔴 Узел выхода не отвечает, его назначения блокируются (запасного выхода нет): ', '🔴 Exit node is not responding; its destinations are blocked (no fallback): ')
+                    : (!self::exitDirectFallback($node) ? $this->t('🔴 Узел выхода не отвечает, его назначения блокируются (запасного выхода нет): ', '🔴 Exit node is not responding; its destinations are blocked (no fallback): ')
                         : $this->t('🔴 Узел выхода не отвечает, трафик идёт напрямую: ', '🔴 Exit node is not responding, traffic goes direct: ')))
                     . $name);
             }
@@ -897,6 +1078,7 @@ trait BotExitNodes
         }
         if (!$nodes) $text[] = $this->t("\nУзлов пока нет. На другом сервере откройте Xray → «Профиль для узла» и вставьте выданную ссылку сюда.", "\nNo nodes yet. On the other server open Xray → Node profile and paste the link it gives here.");
         if (count($nodes) < self::EXIT_MAX) $data[] = [['text' => $this->t('➕ Добавить узел', '➕ Add node'), 'callback_data' => '/exitAdd']];
+        if (count($nodes) < self::EXIT_MAX) $data[] = [['text' => $this->t('➕ Группа узлов', '➕ Node group'), 'callback_data' => '/exitGroupAdd']];
         if (count($nodes) < self::EXIT_MAX && !array_filter($nodes, static fn($n) => $n['kind'] === 'ipv6')) $data[] = [['text' => $this->t('➕ IPv6 этого сервера', '➕ This server IPv6'), 'callback_data' => '/exitIpv6Add']];
         $data[] = [['text' => $this->t('🔁 Проверить все', '🔁 Check all'), 'callback_data' => '/exitCheckAll'], ['text' => $this->t('🪪 Профиль для узла', '🪪 Node profile'), 'callback_data' => '/exitRelay']];
         $data[] = [['text' => $this->t('🧭 Куда пойдёт домен', '🧭 Where a domain goes'), 'callback_data' => '/exitWhere']];
@@ -918,13 +1100,15 @@ trait BotExitNodes
             $this->exitStatusLine($id, $node)];
         if (!empty($node['enabled']) && ($history = $this->exitHistoryLine($this->exitStatus()[$id] ?? [])) !== '') $text[] = $history;
         array_push($text,
-            $this->t('Адрес: <code>', 'Address: <code>') . self::esc($node['kind'] === 'ipv6' ? $this->t('IPv6 этого сервера', 'This server IPv6') : ($parsed ? $parsed['address'] . ':' . $parsed['port'] : $this->t('ссылка не разбирается', 'link cannot be parsed'))) . '</code>'
+            $this->t('Адрес: <code>', 'Address: <code>') . self::esc($node['kind'] === 'group' ? $this->t('группа узлов', 'node group') : ($node['kind'] === 'ipv6' ? $this->t('IPv6 этого сервера', 'This server IPv6') : ($parsed ? $parsed['address'] . ':' . $parsed['port'] : $this->t('ссылка не разбирается', 'link cannot be parsed')))) . '</code>'
                 . ($parsed ? ' · ' . self::esc($parsed['outbound']['protocol'] . '/' . $parsed['outbound']['streamSettings']['network'] . '/' . $parsed['outbound']['streamSettings']['security']) : ''),
             $this->t("Маршрутов: $routes · наборов правил: $sets · пользователей: $users", "Routes: $routes · rule sets: $sets · users: $users"),
-            $this->exitTrafficLine($id),
+            $node['kind'] === 'group' ? $this->t('Трафик группы учитывается у её узлов.', 'Group traffic is counted at its member nodes.') : $this->exitTrafficLine($id),
             $this->t('QUIC к доменам узла: ', 'QUIC to node domains: ') . ($node['quic'] === 'block' ? $this->t('блокируется (браузер сразу идёт по TCP через узел)', 'blocked (the browser goes over TCP through the node right away)') : $this->t('пропускается', 'allowed')),
-            $node['fallback'] === 'block' ? $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback') : $this->t('При отказе узла: напрямую с этого сервера', 'If the node fails: direct from this server'),
+            !self::exitDirectFallback($node) ? $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback') : $this->t('При отказе узла: напрямую с этого сервера', 'If the node fails: direct from this server'),
             $this->t('Новым пользователям: ', 'For new users: ') . ($node['auto'] ? $this->t('включается сразу', 'enabled at once') : $this->t('не включается', 'not enabled')));
+        if ($node['kind'] === 'remote') $text[] = $this->exitSubLine($node);
+        if ($node['kind'] === 'group') $text[] = $this->t('Выбор: ', 'Selection: ') . self::esc($node['choice'] === 'auto' ? $this->t('живой узел с минимальной задержкой', 'live node with the lowest latency') : $node['choice']);
         if (!$users) $text[] = $this->t('ℹ️ Узел пока ни у кого не включён: «Пользователи» или карточка пользователя.', 'ℹ️ The node is not enabled for anyone yet: use Users or a user card.');
         if (!$routes && !$sets) $text[] = $this->t('ℹ️ Маршрутов нет: «Маршруты» → например «YouTube».', 'ℹ️ No routes: Routes → for example YouTube.');
         array_push($text, ...$this->exitWarnings($node));
@@ -939,26 +1123,49 @@ trait BotExitNodes
                 ['text' => $this->t('🆕 Новым: ', '🆕 New users: ') . ($node['auto'] ? $this->t('да', 'yes') : $this->t('нет', 'no')), 'callback_data' => "/exitAuto $id"]],
             [['text' => $this->t('✏️ Имя', '✏️ Name'), 'callback_data' => "/exitName $id"], ['text' => $this->t('🔗 Заменить ссылку', '🔗 Replace link'), 'callback_data' => "/exitLink $id"],
                 ['text' => $this->t('🗑 Удалить', '🗑 Delete'), 'callback_data' => "/exitDel $id"]],
+            [['text' => $this->t('🧹 Сбросить счётчик трафика', '🧹 Reset the traffic counter'), 'callback_data' => "/exitTraf $id"]],
+            [['text' => $this->t('🔄 Подписка узла: ', '🔄 Node subscription: ') . ($node['sub'] !== '' ? $this->t('вкл', 'on') : $this->t('нет', 'none')), 'callback_data' => "/exitSub $id"]],
             $this->menuHelpButton('exitnodes'),
             [['text' => $this->i18n('back'), 'callback_data' => '/exits']],
         ];
-        if ($node['kind'] === 'ipv6') {
+        if ($node['kind'] !== 'remote') {
             $data[4] = array_values(array_filter($data[4], static fn($b) => !str_starts_with($b['callback_data'], '/exitLink ')));
-        } else {
+            unset($data[6]);
+            if ($node['kind'] === 'group') $data[5] = [['text' => $this->t('⚖️ Состав и выбор узла', '⚖️ Members and selection'), 'callback_data' => "/exitGroup $id"]];
+            $data = array_values($data);
+        }
+        if ($node['kind'] !== 'ipv6') {
             array_splice($data, 4, 0, [[['text' => $node['fallback'] === 'block' ? $this->t('При отказе: блок', 'On failure: block') : $this->t('При отказе: напрямую', 'On failure: direct'), 'callback_data' => "/exitFallback $id"]]]);
         }
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
-    // Счётчики выхода узла в ядре: с последнего запуска Xray, вместе с пробами.
+    // Трафик узла с последнего сброса: накопленное при прежних запусках Xray
+    // (global) и текущий запуск сверх отметки сброса. Вместе с пробами живости.
+    public function exitTraffic(string $id, ?array $stats = null): array
+    {
+        $e = ($stats ?? $this->getXrayStats())['exits'][$id] ?? [];
+        $sum = [];
+        foreach (['up', 'down'] as $dir) $sum[$dir] = (int) ($e['global'][$dir] ?? 0) + max(0, (int) ($e['session'][$dir] ?? 0) - (int) ($e['base'][$dir] ?? 0));
+        return $sum + ['since' => (int) ($e['since'] ?? 0)];
+    }
+
     public function exitTrafficLine(string $id): string
     {
-        if (empty($this->exitNodes()[$id]['enabled'])) return $this->t('Трафик через узел: —', 'Traffic through the node: —');
-        $stats = $this->xrayStatCounters();
-        if ($stats === null) return $this->t('Трафик через узел: нет данных', 'Traffic through the node: no data');
-        $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
-        return $this->t('Трафик через узел с запуска Xray: ↑', 'Traffic through the node since Xray start: ↑') . $this->getBytes($stats[$name . 'uplink'] ?? 0)
-            . ' ↓' . $this->getBytes($stats[$name . 'downlink'] ?? 0);
+        $t = $this->exitTraffic($id);
+        if (!$t['since']) return $this->t('Трафик через узел: ещё не подсчитан (обновляется раз в минуту)', 'Traffic through the node: not counted yet (updated once a minute)');
+        return $this->t('Трафик через узел с ', 'Traffic through the node since ') . date('d.m.Y H:i', $t['since']) . ': ↑' . $this->getBytes($t['up']) . ' ↓' . $this->getBytes($t['down']);
+    }
+
+    public function exitTrafficReset(string $id): void
+    {
+        if (!isset($this->exitNodes()[$id])) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
+        $p = $this->getXrayStats();
+        $e = $p['exits'][$id] ?? [];
+        $p['exits'][$id] = ['session' => $e['session'] ?? ['up' => 0, 'down' => 0], 'global' => ['up' => 0, 'down' => 0],
+            'base' => $e['session'] ?? ['up' => 0, 'down' => 0], 'since' => time()];
+        $this->setXrayStats($p);
+        $this->exitNodeMenu($id, $this->t('Счётчик трафика узла сброшен', 'The node traffic counter was reset'));
     }
 
     private function exitPrompt(string $text, string $callback, array $args): void
@@ -978,11 +1185,24 @@ trait BotExitNodes
     public function exitAddressProblem(string $address): string
     {
         if (!$this->xdriveHostPublic('https://' . (str_contains($address, ':') ? "[$address]" : $address))) return $this->t('адрес узла не публичный или не разрешается', 'the node address is not public or does not resolve');
-        $own = array_filter([(string) ($this->ip ?? ''), (string) ($this->getPacConf()['domain'] ?? '')]);
-        if (in_array(strtolower($address), array_map('strtolower', $own), true)) return $this->t('это адрес этого же сервера', 'this is the address of this very server');
+        // Свои имена: основной домен, его алиасы и домен для ссылок (CDN);
+        // свои адреса: IPv4 и настроенный публичный IPv6. Узел на них — петля.
+        $p = $this->getPacConf();
+        $own = array_filter(array_merge([(string) ($p['domain'] ?? ''), (string) ($p['linkdomain'] ?? '')],
+            array_map('strval', (array) ($p['domain_aliases'] ?? []))));
+        $host = strtolower(rtrim($address, '.'));
+        foreach (array_map('strtolower', $own) as $name) {
+            if ($host === $name || str_ends_with($host, ".$name")) return $this->t('это адрес этого же сервера', 'this is the address of this very server');
+        }
+        $ips = array_values(array_filter([(string) ($this->ip ?? ''), (string) ($this->exitIpv6Network()['public'] ?? '')]));
         // Домен, разрешающийся в адрес этого сервера, — тоже он сам.
         $resolved = filter_var($address, FILTER_VALIDATE_IP) ? [$address] : $this->xdriveResolve($address);
-        if ((string) ($this->ip ?? '') !== '' && in_array((string) $this->ip, $resolved, true)) return $this->t('адрес узла указывает на этот же сервер', 'the node address points to this very server');
+        foreach ($resolved as $ip) {
+            foreach ($ips as $mine) if (@inet_pton((string) $ip) !== false && @inet_pton((string) $ip) === @inet_pton($mine)) {
+                return $ip === $address ? $this->t('это адрес этого же сервера', 'this is the address of this very server')
+                    : $this->t('адрес узла указывает на этот же сервер', 'the node address points to this very server');
+            }
+        }
         return '';
     }
 
@@ -1010,6 +1230,7 @@ trait BotExitNodes
             'exit duplicate' => $this->t('Такой узел уже есть', 'This node already exists'),
             'exit check failed' => $this->t('Ядро Xray не приняло изменение — оставлены прежние настройки (проверьте записи regexp: и .dat)', 'The Xray core rejected the change; the previous settings are kept (check regexp: and .dat entries)'),
             'exit not found' => $this->t('Узел не найден', 'Node not found'),
+            'exit stale' => $this->t('Список изменился — ничего не сделано. Откройте меню заново и нажмите кнопку ещё раз.', 'The list has changed, nothing was done. Open the menu again and tap the button again.'),
             'exit not ready' => $this->t('Не сохранено: у строгого узла не готовы записи (нет .dat, набор не скачан или запись неверна), и весь трафик его пользователей был бы заблокирован. Исправьте или удалите: ', 'Not saved: the strict node has unavailable entries (missing .dat, set not downloaded or invalid entry), so all traffic of its users would be blocked. Fix or remove: ')
                 . implode(', ', array_map(static fn($e) => mb_substr($e, 0, 80), array_slice($this->exitNotReady, 0, 3))) . (count($this->exitNotReady) > 3 ? ' …' : ''),
             default => $this->t('Не удалось сохранить', 'Could not save'),
@@ -1039,6 +1260,67 @@ trait BotExitNodes
     {
         $error = $this->exitEditNode($id, static function (array &$node) { $node['enabled'] = $node['enabled'] ? 0 : 1; return ''; });
         $this->exitNodeMenu($id, $error === '' ? '' : $this->exitError($error));
+    }
+
+    public function exitGroupAdd(): void
+    {
+        $id = self::exitNewId();
+        $error = $this->applyExitNodes(function (array &$p) use ($id) {
+            if (count($this->exitNodes($p)) >= self::EXIT_MAX) return 'exit too many';
+            $p['exits'][$id] = ['kind' => 'group', 'name' => $this->t('Группа узлов', 'Node group'),
+                'fallback' => 'block', 'created' => time()] + self::exitNodeDefaults();
+            return '';
+        });
+        if ($error !== '') { $this->exitNodesMenu($this->exitError($error)); return; }
+        $this->exitGroupMenu($id);
+    }
+
+    public function exitGroupMenu(string $id, string $notice = ''): void
+    {
+        $nodes = $this->exitNodes();
+        $group = $nodes[$id] ?? null;
+        if (($group['kind'] ?? '') !== 'group') { $this->exitNodesMenu(); return; }
+        $text = [$this->t('⚖️ Группа: ', '⚖️ Group: ') . $this->exitName($id, $group),
+            $this->t('Включите в состав обычные удалённые узлы. Автоматический режим выбирает живой узел с минимальной задержкой. Сами узлы должны быть включены; их маршруты и список пользователей не копируются в группу.', 'Choose remote member nodes. Automatic mode selects a live node with the lowest latency. Members must be enabled; their routes and user lists are not copied to the group.'),
+            $this->t('Ручной выбор действует на новые соединения. Если выбранный узел выключен, удалён или сломан — трафик блокируется. Прямой выход доступен только при включённом запасном прямом выходе.', 'Manual selection affects new connections. A disabled, deleted or broken selected node blocks traffic. Direct selection is available only when direct fallback is enabled.'),
+            $this->t('Текущий выбор: ', 'Current selection: ') . self::esc($group['choice'])];
+        if ($notice !== '') $text[] = self::esc($notice);
+        $data = [[['text' => ($group['choice'] === 'auto' ? '✅ ' : '') . $this->t('Автоматически: минимальная задержка', 'Automatic: lowest latency'), 'callback_data' => "/exitChoice $id auto"]]];
+        foreach ($nodes as $member => $node) {
+            if ($node['kind'] !== 'remote') continue;
+            $selected = in_array((string) $member, $group['members'], true);
+            $row = [['text' => ($selected ? '✅ ' : '☐ ') . ($node['enabled'] ? '' : '⏸ ') . ($node['name'] ?: $member), 'callback_data' => "/exitMember $id $member"]];
+            if ($selected) $row[] = ['text' => ($group['choice'] === (string) $member ? '✅ ' : '') . $this->t('Выбрать', 'Select'), 'callback_data' => "/exitChoice $id $member"];
+            $data[] = $row;
+        }
+        if ($group['fallback'] === 'direct') $data[] = [['text' => $this->t('Напрямую с этого сервера', 'Direct from this server'), 'callback_data' => "/exitChoice $id direct"]];
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
+    }
+
+    public function exitGroupMember(string $id, string $member): void
+    {
+        $error = $this->applyExitNodes(function (array &$p) use ($id, $member) {
+            $nodes = $this->exitNodes($p);
+            if (($nodes[$id]['kind'] ?? '') !== 'group' || ($nodes[$member]['kind'] ?? '') !== 'remote') return 'exit not found';
+            $members = $nodes[$id]['members'];
+            $p['exits'][$id]['members'] = in_array($member, $members, true) ? array_values(array_diff($members, [$member])) : [...$members, $member];
+            // Removing a manually chosen member deliberately leaves its choice:
+            // generation blocks traffic until an administrator selects a target.
+            return '';
+        });
+        $this->exitGroupMenu($id, $error === '' ? '' : $this->exitError($error));
+    }
+
+    public function exitGroupChoice(string $id, string $choice): void
+    {
+        $error = $this->exitEditNode($id, static function (array &$node) use ($choice) {
+            if ($node['kind'] !== 'group') return 'exit not found';
+            if ($choice !== 'auto' && !($choice === 'direct' && $node['fallback'] === 'direct') && !in_array($choice, $node['members'], true)) return 'exit stale';
+            $node['choice'] = $choice;
+            return '';
+        });
+        $this->exitGroupMenu($id, $error === '' ? '' : $this->exitError($error));
     }
 
     public function exitQuic(string $id): void
@@ -1121,7 +1403,7 @@ trait BotExitNodes
 
     public function exitCheckAll(): void
     {
-        foreach (array_keys(array_filter($this->exitNodes(), static fn($n) => !empty($n['enabled']))) as $id) $this->exitProbe($id, true);
+        $this->exitProbeMany(array_fill_keys(array_keys(array_filter($this->exitNodes(), static fn($n) => !empty($n['enabled']))), true));
         $this->exitNodesMenu($this->t('Проверено', 'Checked'));
     }
 
@@ -1144,12 +1426,94 @@ trait BotExitNodes
 
     public function saveExitLink($link, $id): void
     {
-        if (($this->exitNodes()[(string) $id]['kind'] ?? '') === 'ipv6') { $this->exitNodeMenu((string) $id); return; }
+        if (($this->exitNodes()[(string) $id]['kind'] ?? '') !== 'remote') { $this->exitNodeMenu((string) $id); return; }
         try { $parsed = ExitNodeLink::parse((string) $link); } catch (InvalidArgumentException $e) { $this->exitNodeMenu((string) $id, $this->t('Ссылка не подходит: ', 'The link does not fit: ') . $e->getMessage()); return; }
         if (($problem = $this->exitAddressProblem($parsed['address'])) !== '') { $this->exitNodeMenu((string) $id, $this->t('Не сохранено: ', 'Not saved: ') . $problem); return; }
         $error = $this->exitEditNode((string) $id, static function (array &$node) use ($link) { $node['link'] = trim((string) $link); return ''; });
         if ($error === '') $this->exitProbe((string) $id, true);
         $this->exitNodeMenu((string) $id, $error === '' ? $this->t('Ссылка заменена', 'Link replaced') : $this->exitError($error));
+    }
+
+    // ── Подписка узла: ссылка обновляется сама ─────────────────────────────
+    // Как «подписки на выходы» в 3x-ui: узел задаётся адресом подписки его
+    // «Профиля для узла» (base64, формат v2rayNG). После «Новых ключей» или
+    // смены транспорта на узле его прежняя ссылка перестаёт работать — бот сам
+    // берёт новую из подписки: раз в 6 часов и сразу после отказа проверки.
+    // Скачивание — тем же защищённым путём, что внешние подписки (https,
+    // только публичные адреса, проверка каждой переадресации); новая ссылка
+    // проходит те же проверки, что вставленная руками.
+    public const EXIT_SUB_PERIOD = 21600;
+
+    public function exitSubLine(array $node): string
+    {
+        if ($node['sub'] === '') return $this->t('Подписка узла: нет — ссылку меняете вручную', 'Node subscription: none, you replace the link by hand');
+        $line = $this->t('Подписка узла: ссылка обновляется сама', 'Node subscription: the link updates itself');
+        if ($node['sub_time']) $line .= $this->t(' · проверено ', ' · checked ') . date('d.m H:i', $node['sub_time']);
+        if ($node['sub_error'] !== '') $line .= ' · ⚠️ ' . self::esc($node['sub_error']);
+        return $line;
+    }
+
+    /** Ссылка узла из подписки: ['link' => …] или ['error' => текст]. */
+    public function exitSubFetch(string $url): array
+    {
+        if (!self::exitRulesetUrlValid($url, false)) return ['error' => $this->t('нужен адрес https://', 'an https:// address is needed')];
+        $links = $this->doFetchExtSub($url);
+        if (is_string($links)) return ['error' => $links];
+        $problem = $this->t('в подписке нет подходящей ссылки vless:// или trojan://', 'the subscription has no suitable vless:// or trojan:// link');
+        foreach ($links as $link) {
+            try { $parsed = ExitNodeLink::parse((string) $link); } catch (InvalidArgumentException $e) { continue; }
+            if (($p = $this->exitAddressProblem($parsed['address'])) !== '') { $problem = $p; continue; }
+            return ['link' => trim((string) $link)];
+        }
+        return ['error' => $problem];
+    }
+
+    public function exitSubPrompt(string $id): void
+    {
+        $this->exitPrompt($this->t("адрес подписки профиля для узла (https://…). На сервере-узле: Xray → Узлы выхода → «Профиль для узла» → профиль → «Подписка для автообновления».\nБот будет сам заменять ссылку узла, если там сменят ключи или транспорт. <code>0</code> — отключить.",
+            "the node profile subscription address (https://…). On the node server: Xray → Exit nodes → Node profile → the profile → Subscription for auto-update.\nThe bot will replace the node link itself if keys or the transport change there. <code>0</code> turns it off."), 'saveExitSub', [$id]);
+    }
+
+    public function saveExitSub($text, $id): void
+    {
+        $id = (string) $id;
+        $url = trim((string) $text);
+        if (($this->exitNodes()[$id]['kind'] ?? '') !== 'remote') { $this->exitNodeMenu($id); return; }
+        if ($url === '0' || $url === '') {
+            $error = $this->exitEditNode($id, static function (array &$node) { $node['sub'] = ''; $node['sub_time'] = 0; $node['sub_error'] = ''; return ''; });
+            $this->exitNodeMenu($id, $error === '' ? $this->t('Подписка узла отключена', 'Node subscription turned off') : $this->exitError($error));
+            return;
+        }
+        $got = $this->exitSubFetch($url);
+        if (isset($got['error'])) { $this->exitNodeMenu($id, $this->t('Подписка не сохранена: ', 'Subscription not saved: ') . $got['error']); return; }
+        $changed = false;
+        $error = $this->exitEditNode($id, static function (array &$node) use ($url, $got, &$changed) {
+            $changed = $node['link'] !== $got['link'];
+            $node['sub'] = $url; $node['sub_time'] = time(); $node['sub_error'] = ''; $node['link'] = $got['link'];
+            return '';
+        });
+        if ($error === '' && $changed) $this->exitProbe($id, true);
+        $this->exitNodeMenu($id, $error !== '' ? $this->exitError($error)
+            : ($changed ? $this->t('Подписка сохранена, ссылка узла обновлена из неё', 'Subscription saved, the node link was updated from it') : $this->t('Подписка сохранена, ссылка узла совпадает', 'Subscription saved, the node link is the same')));
+    }
+
+    /** Обновить ссылку узла из подписки; true — ссылка сменилась (конфиг уже применён). */
+    public function exitSubRefresh(string $id): bool
+    {
+        $node = $this->exitNodes()[$id] ?? null;
+        if ($node === null || $node['sub'] === '') return false;
+        $got = $this->exitSubFetch($node['sub']);
+        $changed = false;
+        $error = $this->exitEditNode($id, static function (array &$n) use ($got, $node, &$changed) {
+            // Скачивание происходит вне блокировки; запоздавший ответ не
+            // должен отменять новую подписку или вручную заменённую ссылку.
+            if ($n['sub'] !== $node['sub'] || $n['link'] !== $node['link']) return 'exit stale';
+            $n['sub_time'] = time();
+            $n['sub_error'] = (string) ($got['error'] ?? '');
+            if (isset($got['link']) && $got['link'] !== $n['link']) { $n['link'] = $got['link']; $changed = true; }
+            return '';
+        });
+        return $error === '' && $changed;
     }
 
     public function exitDelete(string $id, bool $confirmed = false): void
@@ -1706,30 +2070,43 @@ trait BotExitNodes
         $this->exitUsersMenu($id, 0, $error === '' ? ($on ? $this->t('Включено всем', 'Enabled for all') : $this->t('Выключено всем', 'Disabled for all')) : $this->exitError($error));
     }
 
-    // Карточка пользователя → его узлы.
+    // Карточка пользователя → его узлы. У служебной учётки «Профиль для узла»
+    // своих узлов нет: вместо пустого списка — её назначение и переход к
+    // профилю (ссылка для основного сервера, режим выхода).
     public function exitUserMenu(int $i, string $notice = ''): void
     {
         $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
         if (!is_array($client)) { $this->xray(); return; }
         $text = ['Menu -> ' . $this->i18n('xray') . ' -> ' . self::esc((string) ($client['email'] ?? '')) . $this->t(' -> Узлы выхода', ' -> Exit nodes')];
-        if (!empty($client['exit_relay'])) $text[] = $this->t('Это служебная учётка узла: маршруты через узлы ей не назначаются.', 'This is a node service account: routes through nodes are not assigned to it.');
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
-        $mine = self::exitClientNodes($client);
-        foreach ($this->exitNodes() as $id => $node) {
-            $id = (string) $id;
-            if (!empty($client['exit_relay'])) break;
-            $data[] = [['text' => (in_array($id, $mine, true) ? '✅ ' : '⬜ ') . mb_substr($node['name'] !== '' ? $node['name'] : $id, 0, 40)
-                . ($node['enabled'] ? '' : $this->t(' (выключен)', ' (disabled)')), 'callback_data' => "/exitUT $i $id"]];
+        if (!empty($client['exit_relay'])) {
+            $text[] = $this->t('Это служебная учётка «Профиль для узла»: через неё другой сервер с vpnbot выпускает трафик своих пользователей через этот сервер. Узлы этого сервера ей не назначаются (защита от петли).',
+                'This is a “Node profile” service account: another vpnbot server sends its users’ traffic out through this server with it. This server’s nodes are not assigned to it (loop protection).');
+            $text[] = $this->t('Выход: ', 'Egress: ') . (!empty($client['exit_ipv6']) ? $this->t('только IPv6 этого сервера', 'this server’s IPv6 only') : $this->t('обычный', 'normal'))
+                . $this->t('. Ссылка, подписка и режим выхода — в профиле.', '. The link, subscription and egress mode are in the profile.');
+            $data[] = [['text' => $this->t('🪪 Открыть профиль для узла', '🪪 Open the node profile'), 'callback_data' => "/exitRelayLink $i"]];
+        } else {
+            $mine = self::exitClientNodes($client);
+            $key = self::exitClientKey($client);
+            foreach ($this->exitNodes() as $id => $node) {
+                $id = (string) $id;
+                $data[] = [['text' => (in_array($id, $mine, true) ? '✅ ' : '⬜ ') . mb_substr($node['name'] !== '' ? $node['name'] : $id, 0, 40)
+                    . ($node['enabled'] ? '' : $this->t(' (выключен)', ' (disabled)')), 'callback_data' => "/exitUT $i $id $key"]];
+            }
+            if (!$this->exitNodes()) $text[] = $this->t('Узлов нет: Xray → Узлы выхода.', 'No nodes: Xray → Exit nodes.');
         }
-        if (!$this->exitNodes()) $text[] = $this->t('Узлов нет: Xray → Узлы выхода.', 'No nodes: Xray → Exit nodes.');
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/userXr $i"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
     }
 
-    public function exitUserNodeToggle(int $i, string $id): void
+    public function exitUserNodeToggle(int $i, string $id, string $key = ''): void
     {
-        $error = $this->exitSetUsers($id, [$i], null);
+        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+        // Кнопка несёт отпечаток пользователя: после удаления кого-то из
+        // списка номер $i указывает на другого человека.
+        if (!is_array($client) || $key === '' || !hash_equals(self::exitClientKey($client), $key)) { $this->exitUserMenu($i, $this->exitError('exit stale')); return; }
+        $error = $this->exitSetUsers($id, [$key], null);
         $this->exitUserMenu($i, $error === '' ? '' : $this->exitError($error));
     }
 
@@ -1945,7 +2322,7 @@ trait BotExitNodes
             $node = $this->exitNodes()[$id] ?? null;
             $line = '🌍 ' . $this->t('через узел ', 'through node ') . '<b>' . ($node ? $this->exitName($id, $node) : self::esc($id)) . '</b>';
             $s = $this->exitStatus()[$id] ?? [];
-            if ($s && empty($s['ok'])) $line .= $node && $node['fallback'] === 'block'
+            if ($s && empty($s['ok'])) $line .= $node && !self::exitDirectFallback($node)
                 ? $this->t(' — сейчас узел не отвечает, поэтому соединение будет закрыто (запасного выхода нет)', ': the node is not answering now, so the connection will be closed (no fallback)')
                 : $this->t(' — сейчас узел не отвечает, поэтому напрямую', ': the node is not answering now, so direct');
             if ($node && $node['quic'] === 'block') $line .= $this->t("\n   QUIC (UDP 443) к нему блокируется: браузер перейдёт на TCP", "\n   QUIC (UDP 443) to it is blocked: the browser switches to TCP");
@@ -2002,7 +2379,7 @@ trait BotExitNodes
         $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Профиль для узла', ' -> Node profile'),
             $this->t('Этот сервер станет узлом выхода для другого бота: создайте служебную учётку и вставьте её ссылку на основном сервере в Xray → Узлы выхода → «Добавить узел».', 'This server becomes an exit node for another bot: create a service account and paste its link on the main server in Xray → Exit nodes → Add node.'),
             $this->t('Учётка без срока и лимита; её трафик никогда не уходит на узлы этого сервера (защита от петли).', 'The account has no expiry or limit; its traffic never goes to this server\'s nodes (loop protection).'),
-            $this->t('⚠️ Если межсетевой экран пускает VPN только «своим» адресам (список my_server), добавьте туда адрес основного сервера — иначе его соединения будут ограничены как чужие.', '⚠️ If the firewall lets VPN in only from "own" addresses (the my_server list), add the main server\'s address there; otherwise its connections are limited as foreign ones.')];
+            $this->t('⚠️ Добавьте адрес основного сервера в список «своих» адресов межсетевого экрана этого сервера (my_server в профилях nftables nftables). Иначе с его адреса пройдёт не больше 30 одновременных соединений и 30 новых в секунду — весь трафик его пользователей идёт с одного адреса и упрётся в этот лимит.', '⚠️ Add the main server address to this server’s firewall list of own addresses (my_server in the nftables nftables profiles). Otherwise its address gets at most 30 concurrent connections and 30 new ones per second: all its users’ traffic comes from one address and hits that limit.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
         foreach ($clients as $i => $client) {
@@ -2021,7 +2398,8 @@ trait BotExitNodes
 
     public function saveExitRelay($name): void
     {
-        $name = 'node-' . trim((string) $name);
+        // «node-» бот добавляет сам; введённый с ним же префикс не удваиваем.
+        $name = 'node-' . preg_replace('~^node-~i', '', trim((string) $name));
         if (!preg_match('~^node-[A-Za-z0-9][A-Za-z0-9._-]{0,30}$~D', $name)) { $this->exitRelayMenu($this->t('Имя: латиница, цифры, точка, дефис, до 30 символов', 'Name: Latin letters, digits, dot, hyphen, up to 30 characters')); return; }
         $index = null;
         $error = $this->applyExitNodes(function (array &$p, array &$x) use ($name, &$index) {
@@ -2046,9 +2424,17 @@ trait BotExitNodes
         if ($notice !== '') $text[] = '<b>' . self::esc($notice) . '</b>';
         $text[] = $link !== '' ? $this->t("Ссылка для основного сервера (Xray → Узлы выхода → «Добавить узел»):\n<pre><code>", "Link for the main server (Xray → Exit nodes → Add node):\n<pre><code>") . self::esc($link) . '</code></pre>'
             : $this->t('Ссылку не выдать: текущий транспорт Xray её не поддерживает.', 'No link: the current Xray transport does not support it.');
+        if ($link !== '') {
+            $pac = $this->getPacConf();
+            $hash = $this->getHashBot();
+            $sub = (empty($this->nginxGetTypeCert()) ? 'http' : 'https') . '://' . $this->getDomain(($pac['transport'] ?? '') != 'Reality') . "/pac$hash/"
+                . base64_encode(serialize(['h' => $hash, 't' => 'vl', 's' => $this->sidOf($client)]));
+            $text[] = $this->t("Подписка для автообновления (основной сервер: карточка узла → «🔄 Подписка узла»; после «Новых ключей» или смены транспорта он сам возьмёт новую ссылку):\n<pre><code>", "Subscription for auto-update (main server: node card → 🔄 Node subscription; after New keys or a transport change it takes the new link itself):\n<pre><code>")
+                . self::esc($sub) . '</code></pre>';
+        }
         $text[] = $this->t('Отозвать доступ — удалить профиль кнопкой ниже или отключить эту учётку в списке пользователей Xray.', 'To revoke access, delete the profile with the button below or disable this account in the Xray user list.');
         $data = [
-            [['text' => !empty($client['exit_ipv6']) ? $this->t('Выход: только IPv6', 'Egress: IPv6 only') : $this->t('Выход: обычный', 'Egress: normal'), 'callback_data' => "/exitRelayIpv6 $i"]],
+            [['text' => !empty($client['exit_ipv6']) ? $this->t('Выход: только IPv6', 'Egress: IPv6 only') : $this->t('Выход: обычный', 'Egress: normal'), 'callback_data' => "/exitRelayIpv6 $i " . self::exitRelayMark($client)]],
             [['text' => $this->t('🗑 Удалить профиль', '🗑 Delete profile'), 'callback_data' => "/exitRelayDel $i"]],
             [['text' => $this->i18n('back'), 'callback_data' => '/exitRelay']],
         ];
@@ -2068,7 +2454,7 @@ trait BotExitNodes
         $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
         if (!is_array($client) || empty($client['exit_relay'])) { $this->exitRelayMenu($this->t('Профиль не найден', 'Profile not found')); return; }
         $source = ManagedProtocol::xraySource($client);
-        $expected = substr(hash('sha256', ($client['email'] ?? '') . ':' . $source), 0, 16);
+        $expected = self::exitRelayMark($client);
         if ($mark === '') {
             $this->update($this->input['chat'], $this->input['message_id'],
                 $this->t('Удалить профиль для узла <b>', 'Delete node profile <b>') . self::esc((string) ($client['email'] ?? '')) . $this->t('</b>? Основной сервер, где он добавлен узлом, больше не сможет через него выходить.', '</b>? The main server that added it as a node can no longer exit through it.'),

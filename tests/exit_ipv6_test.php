@@ -130,4 +130,38 @@ $bot->network = []; $bot->attached = true;
 $c = $base; $bot->ensureExitNodes($c, []);
 $check($c['outbounds'][0]['settings']['domainStrategy'] === 'ForceIPv4' && $c['outbounds'][0]['settings']['finalRules'][0]['ip'] === ['::/0'], 'Повреждённый маркер: обычный выход всё равно только IPv4');
 $bot->attached = false;
+// Удаление/отключение IPv6-узла снимает только добавленную ботом политику.
+$bot->network = [];
+$c = $base; $bot->ensureExitNodes($c, $p);
+$bot->ensureExitNodes($c, []);
+$direct = array_column($c['outbounds'], null, 'tag')['direct'];
+$check(($direct['settings']['domainStrategy'] ?? 'AsIs') !== 'ForceIPv4'
+    && ($direct['streamSettings']['sockopt']['domainStrategy'] ?? 'AsIs') !== 'ForceIPv4', 'Удалённый IPv6-узел не оставляет ForceIPv4');
+$check(!in_array(['action' => 'block', 'ip' => ['::/0'], 'blockDelay' => 0], $direct['settings']['finalRules'] ?? [], true), 'Удалённый IPv6-узел не оставляет запрет ::/0');
+$custom = $base;
+$custom['outbounds'][0]['settings'] = ['domainStrategy' => 'ForceIPv4', 'finalRules' => [['action' => 'block', 'ip' => ['::/0'], 'blockDelay' => 0]]];
+$custom['outbounds'][0]['streamSettings']['sockopt']['domainStrategy'] = 'ForceIPv4';
+$c = $custom; $bot->ensureExitNodes($c, $p); $bot->ensureExitNodes($c, []);
+$check($c['outbounds'][0] === $custom['outbounds'][0], 'Явная исходная политика администратора сохраняется после удаления узла');
+$c = $base; $bot->ensureExitNodes($c, $p);
+foreach ($c['outbounds'] as &$o) unset($o['_vpnbot_ipv4']); unset($o);
+$bot->ensureExitNodes($c, []);
+$check(($c['outbounds'][0]['settings']['domainStrategy'] ?? 'AsIs') !== 'ForceIPv4', 'Миграция узнаваемой старой IPv6-политики снимает следы');
+foreach (['26.10.29', '26.9.30', '26.10.28-1202'] as $version) {
+    $c = $base; $bot->ensureExitNodes($c, $p); Bot::exitFreedomStrategies($c, $version);
+    foreach ($c['outbounds'] as $o) if (($o['protocol'] ?? '') === 'freedom') $check(!isset($o['settings']['domainStrategy']), 'Современное ядро: стратегия только в sockopt');
+    $same = $c; $bot->ensureExitNodes($c, $p); Bot::exitFreedomStrategies($c, $version);
+    $check($same === $c, 'Повторная генерация современной стратегии идемпотентна');
+    $bot->ensureExitNodes($c, []);
+    $check(!isset($c['outbounds'][0]['streamSettings']['sockopt']['domainStrategy']), 'Современная стратегия снимается после удаления узла');
+}
+foreach (['26.7.28', ''] as $version) {
+    $c = $base; $bot->ensureExitNodes($c, $p); Bot::exitFreedomStrategies($c, $version);
+    $check($c['outbounds'][0]['settings']['domainStrategy'] === 'ForceIPv4', 'Старое/неизвестное ядро сохраняет совместимость');
+}
+$mix = $p; $mix['exits'][$remote] = $old['exits'][$remote];
+$mix['exits']['abcdef03'] = ['link' => 'invalid', 'fallback' => 'block', 'routes' => ['domain:blocked.example' => 1]];
+$c = $base; $c['inbounds'][0]['settings']['clients'][0]['exit'][] = 'abcdef03';
+$bot->ensureExitNodes($c, $mix);
+$check($c['burstObservatory']['subjectSelector'] === ['vpnbot-exit-' . $remote], 'Observatory не проверяет локальный IPv6 и blackhole строгого узла');
 echo "exit_ipv6_test: $checks OK\n";

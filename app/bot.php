@@ -148,6 +148,7 @@ class Bot
     public $sshFailed = false;
     // Только начальная настройка service.php ждёт поднимающиеся контейнеры.
     public int $sshStartupWait = 0;
+    private ?string $sshInputData = null;
     // Открытые ключи узлов SSH сервисов (см. sshHostKeyTrusted).
     public string $sshHostKeys = '/ssh/hosts';
     public string $dnsttHostKey = '/config/dnstt/ssh_host_ed25519_key.pub';
@@ -789,11 +790,23 @@ class Bot
             case preg_match('~^/exitIpv6Add$~', $this->input['callback'], $m):
                 $this->exitIpv6Add();
                 break;
+            case preg_match('~^/exitGroupAdd$~', $this->input['callback'], $m):
+                $this->exitGroupAdd();
+                break;
+            case preg_match('~^/exitGroup ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->exitGroupMenu($m[1]);
+                break;
+            case preg_match('~^/exitMember ([a-f0-9]{8}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->exitGroupMember($m[1], $m[2]);
+                break;
+            case preg_match('~^/exitChoice ([a-f0-9]{8}) (auto|direct|[a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->exitGroupChoice($m[1], $m[2]);
+                break;
             case preg_match('~^/exitFallback ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitFallback($m[1]);
                 break;
-            case preg_match('~^/exitRelayIpv6 (\d{1,6})$~', $this->input['callback'], $m):
-                $this->exitRelayIpv6((int) $m[1]);
+            case preg_match('~^/exitRelayIpv6 (\d{1,6})(?: ([a-f0-9]{16}))?$~', $this->input['callback'], $m):
+                $this->exitRelayIpv6((int) $m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/exitCheckAll$~', $this->input['callback'], $m):
                 $this->exitCheckAll();
@@ -807,8 +820,9 @@ class Bot
             case preg_match('~^/exitCopyTo ([a-f0-9]{8}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitCopyTo($m[1], $m[2]);
                 break;
-            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Auto|Speed|Presets|CopyTo|Export|Import) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Auto|Speed|Presets|CopyTo|Export|Import|Traf|Sub) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 match ($m[1]) {
+                    'Traf' => $this->exitTrafficReset($m[2]), 'Sub' => $this->exitSubPrompt($m[2]),
                     'Speed' => $this->exitSpeedCheck($m[2]), 'Presets' => $this->exitPresetsMenu($m[2]), 'CopyTo' => $this->exitCopyToMenu($m[2]),
                     'Export' => $this->exitExport($m[2]), 'Import' => $this->exitImportPrompt($m[2]),
                     'RtClear' => $this->exitRoutesClear($m[2]), 'RtClearYes' => $this->exitRoutesClear($m[2], true),
@@ -841,8 +855,8 @@ class Bot
             case preg_match('~^/exitUser (\d{1,6})$~', $this->input['callback'], $m):
                 $this->exitUserMenu((int) $m[1]);
                 break;
-            case preg_match('~^/exitUT (\d{1,6}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
-                $this->exitUserNodeToggle((int) $m[1], $m[2]);
+            case preg_match('~^/exitUT (\d{1,6}) ([a-f0-9]{8})(?: ([a-f0-9]{10}))?$~', $this->input['callback'], $m):
+                $this->exitUserNodeToggle((int) $m[1], $m[2], $m[3] ?? '');
                 break;
             case preg_match('~^/exitRelay$~', $this->input['callback'], $m):
                 $this->exitRelayMenu();
@@ -1155,6 +1169,9 @@ class Bot
                 break;
             case preg_match('~^/id$~', $this->input['message'], $m):
                 $this->send($this->input['chat'], "your id: {$this->input['from']}\nchat id: {$this->input['chat']}", $this->input['message_id']);
+                break;
+            case preg_match('~^/adguardLink$~', $this->input['callback'], $m):
+                $this->adguardBrowserLink();
                 break;
             case preg_match('~^/adguardChBr$~', $this->input['callback'], $m):
                 $this->adguardChBr();
@@ -3466,6 +3483,29 @@ class Bot
 
     public function restartXray($c, $norestart = false)
     {
+        // Отдельный от xrayConfUpdate лок: сериализует запись/API/полный старт,
+        // включая старые вызывающие методы, не использующие xrayConfUpdate.
+        $path = $this->xrayConf . '.apply.lock';
+        if (is_link($path)) return false;
+        $mask = umask(0077);
+        $lock = @fopen($path, 'c');
+        umask($mask);
+        if ($lock === false) return false;
+        try {
+            $deadline = microtime(true) + 20;
+            while (!flock($lock, LOCK_EX | LOCK_NB)) {
+                if (microtime(true) >= $deadline) return false;
+                usleep(100000);
+            }
+            return $this->applyXrayConfig($c, $norestart);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    private function applyXrayConfig($c, $norestart = false)
+    {
         $c['inbounds'][0]['settings']['clients'] = array_values($c['inbounds'][0]['settings']['clients']);
         $c['log']['access'] = '/logs/xray';
         foreach ($c['inbounds'] as $v) {
@@ -3543,6 +3583,10 @@ class Bot
         // Узлы выхода — тоже до ensureWgGuard(): их служебные входы проверки
         // получают те же гейты, а правила встают под защитными.
         $this->ensureExitNodes($c, $pac);
+        if (array_filter($c['outbounds'] ?? [], static fn($o) => isset($o['_vpnbot_ipv4']) || ($o['sendThrough'] ?? '') === self::EXIT_IPV6_SOURCE)) {
+            $versions = $this->xrayCoreInventory();
+            self::exitFreedomStrategies($c, $versions[$this->xrayCoreSelection($pac)] ?? '');
+        }
         $this->ensureFreedomCompat($c);
         $this->ensureWgGuard($c);
         $this->ensureSmuxInbound($c);
@@ -3554,7 +3598,7 @@ class Bot
         $this->ensureFinalmaskInbound($c);
         $c['stats'] = new stdClass();
         $c['api'] = [
-            'services' => ['StatsService'],
+            'services' => ['StatsService', 'HandlerService', 'RoutingService'],
             'tag'      => 'api'
         ];
         $l = new stdClass();
@@ -3600,20 +3644,32 @@ class Bot
                 error_log('restartXray: NGINX transport routes rejected; previous configuration preserved');
                 return false;
             }
-            $this->collectSession();
             if (!$this->writeXrayJson($json)) {
                 $this->syncXrayNginxRoutes($previous);
                 return false;
             }
+            if ($this->tryXrayHotApply($previous, $c)) return true;
+            $this->collectSession();
             $this->ssh('pkill xray', 'xr');
             // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
             // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
             // старта — не требует правки override.env и совпадает с datDir().
-            $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >> /logs/xray_stdout 2>&1 &', 'xr');
+            $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >> /logs/xray_stdout 2>&1 & '
+                . 'xray_pid=$!; python3 /xray_hot_apply.py mark --pid "$xray_pid" >/dev/null 2>&1 || true', 'xr');
         } else {
             return $this->writeXrayJson($json);
         }
         return true;
+    }
+
+    protected function tryXrayHotApply(array $previous, array $target): bool
+    {
+        if (!in_array('HandlerService', $previous['api']['services'] ?? [], true)
+            || !in_array('RoutingService', $previous['api']['services'] ?? [], true)) return false;
+        $input = json_encode(['previous' => $previous, 'target' => $target], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($input === false || strlen($input) > 32 * 1024 * 1024) return false;
+        $out = $this->sshInputCommand('python3 /xray_hot_apply.py apply --size ' . strlen($input) . ' 2>/dev/null', $input, 'xr');
+        return !$this->sshFailed && trim($out) === 'APPLIED';
     }
 
     // Подсеть docker-compose сборки: в ней живут adguard (10.10.0.5), панель,
@@ -4141,6 +4197,15 @@ class Bot
         // учёт), но и оставлять её означало бы показывать в меню до минуты
         // цифры, которых в ядре уже нет.
         unset($p['inbounds']);
+        // Узлы выхода: session — абсолютный счётчик ядра, base — его значение
+        // в момент сброса счётчика админом (до следующего рестарта ядра).
+        foreach (($p['exits'] ?? []) as $id => $v) {
+            foreach (['up', 'down'] as $dir) {
+                $p['exits'][$id]['global'][$dir] = ($v['global'][$dir] ?? 0) + max(0, ($v['session'][$dir] ?? 0) - ($v['base'][$dir] ?? 0));
+                $p['exits'][$id]['session'][$dir] = 0;
+                $p['exits'][$id]['base'][$dir] = 0;
+            }
+        }
         foreach (($p['users'] ?? []) as $k => $v) {
             $p['users'][$k]['global']['download'] = ($v['global']['download'] ?? 0) + ($v['session']['download'] ?? 0);
             $p['users'][$k]['global']['upload']   = ($v['global']['upload'] ?? 0) + ($v['session']['upload'] ?? 0);
@@ -6967,6 +7032,31 @@ NFT;
                         'upload'   => $counters["inbound>>>$t>>>traffic>>>uplink"] ?? 0,
                     ];
                 }
+                // Трафик узлов выхода: копится так же, как у пользователей, —
+                // чтобы перезапуск Xray при каждой правке узлов его не обнулял.
+                $exits = [];
+                foreach (array_keys($this->exitNodes()) as $id) {
+                    $id = (string) $id;
+                    $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
+                    $current = ['up' => (int) ($counters[$name . 'uplink'] ?? 0), 'down' => (int) ($counters[$name . 'downlink'] ?? 0)];
+                    $previousExit = $p['exits'][$id] ?? [];
+                    // Пробы узла идут и при нулевом трафике основного inbound.
+                    // Его нули не обнаружат внешний restart: проверяем также
+                    // сам выход. Если foldSession уже сработал, session = 0
+                    // и повторного начисления здесь не будет.
+                    if ($current['up'] < ($previousExit['session']['up'] ?? 0)
+                        || $current['down'] < ($previousExit['session']['down'] ?? 0)) {
+                        foreach (['up', 'down'] as $direction) {
+                            $previousExit['global'][$direction] = ($previousExit['global'][$direction] ?? 0)
+                                + max(0, ($previousExit['session'][$direction] ?? 0) - ($previousExit['base'][$direction] ?? 0));
+                        }
+                        $previousExit['base'] = ['up' => 0, 'down' => 0];
+                    }
+                    $exits[$id] = ['session' => $current, 'global' => $previousExit['global'] ?? ['up' => 0, 'down' => 0],
+                        'base' => $previousExit['base'] ?? ['up' => 0, 'down' => 0], 'since' => (int) ($previousExit['since'] ?? time())];
+                }
+                if ($exits) $p['exits'] = $exits;
+                else unset($p['exits']);
                 if (!empty($users = $x['inbounds'][0]['settings']['clients'] ?? [])) {
                     $tmp = [];
                     foreach ($users as $k => $v) {
@@ -22516,7 +22606,9 @@ DNS-over-HTTPS with IP:
         $pac = $this->getPacConf();
         // Informational HWID headers (Remnawave/Hiddify convention): let clients
         // display device-limit status instead of just getting a 429.
-        if (empty($pac['hwid_limit_enabled']) || !empty($client['hwid_disabled'])) {
+        // Служебная учётка «Профиль для узла» — не устройство пользователя: её
+        // подписку скачивает бот основного сервера без X-HWID.
+        if (empty($pac['hwid_limit_enabled']) || !empty($client['hwid_disabled']) || !empty($client['exit_relay'])) {
             header('x-hwid-active: false');
             header('x-hwid-not-supported: false');
             header('x-hwid-max-devices-reached: false');
@@ -22646,7 +22738,7 @@ DNS-over-HTTPS with IP:
 
     public function ipMenu()
     {
-        $text   = 'Settings -> IP & Logs';
+        $text   = 'Settings -> IP &amp; Logs';
         $pac    = $this->getPacConf();
         $d      = count($pac['deny'] ?? []);
         $w      = count($pac['white'] ?? []);
@@ -27683,8 +27775,8 @@ DNS-over-HTTPS with IP:
 
     public function validateXrayConfig(array $config, string $binary = 'xray'): bool
     {
-        // /logs общий с xr. tempnam создаёт 0600; ошибки Xray могут содержать
-        // decryption, поэтому наружу выходит только маркер успеха.
+        // Проверка через stdin: закрытые ключи не появляются даже временно
+        // в общем /logs. Наружу выходит только маркер успеха.
         // getXray() читает JSON как массив: восстановить stats:{} до проверки,
         // как это делает restartXray() перед записью рабочего конфига.
         if (isset($config['stats']) && $config['stats'] === []) {
@@ -27697,32 +27789,14 @@ DNS-over-HTTPS with IP:
         if ($json === false) {
             return false;
         }
-        // Xray 26.10.17+ в `run` читает файл только с расширением конфига
-        // (.json и т. п.), даже с -format json: имя от tempnam он отвергает,
-        // и любой конфиг считался бы неверным. tempnam лишь занимает имя;
-        // файл .json создаётся рядом режимом «x» (не идёт по чужой ссылке) и
-        // получает 0600 до записи содержимого.
-        $base = @tempnam('/logs', '.xray-check-');
-        if ($base === false) {
-            return false;
-        }
-        $file = $base . '.json';
-        try {
-            if (dirname($base) !== '/logs' || ($h = @fopen($file, 'x')) === false) {
-                return false;
-            }
-            $written = chmod($file, 0600) && fwrite($h, $json) === strlen($json);
-            fclose($h);
-            if (!$written) {
-                return false;
-            }
-            $out = $this->ssh('XRAY_LOCATION_ASSET=/logs/geodata timeout 15 ' . escapeshellarg($binary)
-                . ' run -test -format json -config ' . escapeshellarg($file) . ' >/dev/null 2>&1 && printf XRAY_CONFIG_OK', 'xr');
-            return !$this->sshFailed && trim((string) $out) === 'XRAY_CONFIG_OK';
-        } finally {
-            @unlink($file);
-            @unlink($base);
-        }
+        if (strlen($json) > 32 * 1024 * 1024) return false;
+        // head завершает поток ровно после JSON: SSH2 не умеет закрыть только
+        // stdin канала, а ядро читает конфиг до EOF. BusyBox head есть и в
+        // прежних образах, поэтому не нужен временный файл или новый Python.
+        $out = $this->sshInputCommand('head -c ' . strlen($json)
+            . ' | XRAY_LOCATION_ASSET=/logs/geodata timeout 15 ' . escapeshellarg($binary)
+            . ' run -test -format json -config stdin: >/dev/null 2>&1 && printf XRAY_CONFIG_OK', $json, 'xr');
+        return !$this->sshFailed && trim($out) === 'XRAY_CONFIG_OK';
     }
 
     // Версия Xray-core из контейнера. `xray version` печатает строку вида
@@ -29344,7 +29418,9 @@ DNS-over-HTTPS with IP:
         }
         $extOn = count(array_filter($c['ext'] ?? [], fn($e) => empty($e['off'])));
         $data[] = [['text' => $this->t('Протоколы в готовой подписке', 'Protocols in the ready subscription'), 'callback_data' => '/xp ' . ManagedProtocol::xraySource($c)]];
-        if ($this->exitNodes($pac) || !empty($c['exit_relay'])) {
+        if (!empty($c['exit_relay'])) {
+            $data[] = [['text' => $this->t('🪪 Профиль для узла', '🪪 Node profile'), 'callback_data' => "/exitRelayLink $i"]];
+        } elseif ($this->exitNodes($pac)) {
             $exitOn = count(self::exitClientNodes($c));
             $data[] = [['text' => $this->t('🌍 Узлы выхода', '🌍 Exit nodes') . ($exitOn ? " ($exitOn)" : ''), 'callback_data' => "/exitUser $i"]];
         }
@@ -33558,13 +33634,17 @@ DNS-over-HTTPS with IP:
             }
         }
         $h = $this->getHashBot();
-        $s = empty($conf['adgbrowser']) ? '' : '#';
+        // Пропуск в панель AdGuard проверяет бот (adguardGateCheck): подписанная
+        // ключом бота cookie, выданная администратору мини-приложением Telegram
+        // или его одноразовой ссылкой. Раньше nginx сравнивал cookie с hash из
+        // ссылок подписки — его знает любой подписчик, и панель (а с ней
+        // блокировка входа AdGuard на 15 минут для всех после 5 неверных
+        // паролей) была открыта каждому, кто сам выставит cookie.
         $r = <<<CONF
         location /adguard/ {
-                access_log /logs/nginx_adguard_access;
-                if (\$cookie_c != "$h") {
-                    $s rewrite .* /webapp redirect;
-                }
+                access_log /logs/nginx_adguard_access noargs;
+                auth_request /adguard-gate;
+                error_page 401 = @adguardlogin;
                 proxy_pass http://ad/;
                 proxy_redirect / /adguard/;
                 proxy_cookie_path / /adguard/;
@@ -33575,6 +33655,17 @@ DNS-over-HTTPS with IP:
                 # expires, а не add_header: тот отменил бы заголовки
                 # безопасности, заданные уровнем выше.
                 expires -1;
+            }
+            location = /adguard-gate {
+                internal;
+                access_log off;
+                proxy_pass http://php;
+                proxy_pass_request_body off;
+                proxy_set_header Content-Length "";
+                proxy_set_header Host \$http_host;
+            }
+            location @adguardlogin {
+                return 302 /webapp;
             }
             location
         CONF;
@@ -33656,6 +33747,98 @@ DNS-over-HTTPS with IP:
         return base64_encode('admin:' . $this->getPacConf()['adpswd']);
     }
 
+    // ── Пропуск в веб-панель AdGuard ───────────────────────────────────────
+    // Токен «срок.случайное.подпись» с HMAC от ключа бота: подделать без ключа
+    // нельзя, срок проверяется. cookie — пропуск браузера в /adguard<hash>/,
+    // link — одноразовая ссылка администратору для стороннего браузера.
+    public const ADGUARD_GATE_TTL = 43200;     // cookie из Telegram: 12 ч
+    public const ADGUARD_LINK_TTL = 900;       // ссылка: 15 мин, один раз
+    public const ADGUARD_BROWSER_TTL = 604800; // cookie по ссылке: 7 дней
+
+    public function adguardGateSign(string $kind, int $exp, string $nonce): string
+    {
+        return substr(hash_hmac('sha256', "vpnbot-adguard-gate|$kind|$exp|$nonce", (string) $this->key), 0, 40);
+    }
+
+    public function adguardGateToken(string $kind, int $ttl): string
+    {
+        $exp = time() + $ttl;
+        $nonce = bin2hex(random_bytes(8));
+        return "$exp.$nonce." . $this->adguardGateSign($kind, $exp, $nonce);
+    }
+
+    public function adguardGateCheck(string $token, string $kind): bool
+    {
+        if ((string) $this->key === '' || !in_array($kind, ['cookie', 'link'], true)) return false;
+        if (!preg_match('~^(\d{10})\.([a-f0-9]{16})\.([a-f0-9]{40})$~D', $token, $m) || (int) $m[1] < time()) return false;
+        return hash_equals($this->adguardGateSign($kind, (int) $m[1], $m[2]), $m[3]);
+    }
+
+    // Ссылка действует один раз: случайная часть запоминается до истечения
+    // срока, повторный переход по ней (пересланное сообщение) отклоняется.
+    public function adguardLinkConsume(string $token): bool
+    {
+        if (!$this->adguardGateCheck($token, 'link')) return false;
+        [$exp, $nonce] = explode('.', $token);
+        $f = $this->adguardLinksFile();
+        if (is_link($f) || is_link($f . '.lock')) return false;
+        $lock = @fopen($f . '.lock', 'c');
+        if ($lock === false) return false;
+        @chmod($f . '.lock', 0600);
+        $temporary = null;
+        try {
+            $until = microtime(true) + 5;
+            while (!flock($lock, LOCK_EX | LOCK_NB)) {
+                if (microtime(true) >= $until) return false;
+                usleep(50000);
+            }
+            // Повреждённое хранилище нельзя считать пустым: уже использованная
+            // ссылка снова стала бы действующей. Запись атомарная; ENOSPC
+            // сохраняет прежнюю историю, cookie до её записи не выдаётся.
+            if ((int) $exp < time()) return false;
+            $raw = is_file($f) ? @file_get_contents($f) : '{}';
+            $used = is_string($raw) ? json_decode($raw, true) : null;
+            if (!is_array($used)) return false;
+            foreach ($used as $value) if (!is_int($value)) return false;
+            $used = array_filter($used, static fn($e) => $e >= time());
+            if (isset($used[$nonce])) return false;
+            $used[$nonce] = (int) $exp;
+            $temporary = @tempnam(dirname($f), '.adguard-links-');
+            if ($temporary === false || dirname($temporary) !== dirname($f)) return false;
+            if (!@chmod($temporary, 0600)) return false;
+            $json = json_encode($used);
+            return @file_put_contents($temporary, $json) === strlen($json) && @rename($temporary, $f);
+        } finally {
+            if (is_string($temporary) && is_file($temporary)) @unlink($temporary);
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    protected function adguardLinksFile(): string { return '/logs/.adguard-links.json'; }
+
+    public function adguardSetGateCookie(string $hash, int $ttl): void
+    {
+        $secure = !empty($_SERVER['HTTPS']) || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
+        setcookie('adg', $this->adguardGateToken('cookie', $ttl), ['expires' => time() + $ttl, 'path' => "/adguard$hash/",
+            'httponly' => true, 'samesite' => 'Lax', 'secure' => $secure]);
+        // Прежний пропуск (cookie c = публичный hash) больше ничего не открывает.
+        setcookie('c', '', ['expires' => 1, 'path' => '/']);
+    }
+
+    // Ссылка для стороннего браузера: только при включённом «сторонний
+    // браузер» и только администратору в чат.
+    public function adguardBrowserLink(): void
+    {
+        $conf = $this->getPacConf();
+        if (empty($conf['adgbrowser'])) { $this->menu('adguard'); return; }
+        $hash = $this->getHashBot();
+        $url = 'https://' . $this->getDomain() . "/webapp$hash/adg?t=" . $this->adguardGateToken('link', self::ADGUARD_LINK_TTL);
+        $this->send($this->input['chat'], $this->t('Ссылка на веб-панель AdGuard для любого браузера. Действует 15 минут и только один раз; браузер, открывший её, получит доступ на 7 дней. Не пересылайте её.',
+            'A link to the AdGuard web panel for any browser. It works for 15 minutes and only once; the browser that opens it gets access for 7 days. Do not forward it.')
+            . "\n<code>" . self::esc($url) . '</code>', $this->input['message_id']);
+    }
+
     public function adguardChBr()
     {
         $c = $this->getPacConf();
@@ -33663,6 +33846,8 @@ DNS-over-HTTPS with IP:
         $this->setPacConf($c);
         $this->cloakNginx();
         $this->answer($this->input['callback_id'], $this->i18n($c['adgbrowser'] ? 'browser_notify_on' : 'browser_notify_off'), true);
+        // Прежние ссылки и пропуска браузеров не отзываются переключателем:
+        // они ограничены сроком. Немедленно отозвать всё — сменить ключ бота.
         $this->menu('adguard');
     }
 
@@ -33822,6 +34007,10 @@ DNS-over-HTTPS with IP:
                     'callback_data' => '/adguardChBr'
                 ],
             ],
+            ...(!empty($conf['adgbrowser']) ? [[[
+                'text'          => $this->t('🔗 Ссылка для браузера (15 мин)', '🔗 Browser link (15 min)'),
+                'callback_data' => '/adguardLink',
+            ]]] : []),
             [
                 [
                     'text'          => $this->i18n('change password'),
@@ -36190,6 +36379,13 @@ DNS-over-HTTPS with IP:
         @file_put_contents($pin, $current, LOCK_EX);
     }
 
+    protected function sshInputCommand(string $cmd, string $input, string $service): string
+    {
+        $this->sshInputData = $input;
+        try { return (string) $this->ssh($cmd, $service); }
+        finally { $this->sshInputData = null; }
+    }
+
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $data = "";
@@ -36234,6 +36430,17 @@ DNS-over-HTTPS with IP:
             $s = ssh2_exec($c, $cmd);
             if (empty($s)) {
                 throw new Exception("exec fail: \n$cmd\n" . var_export($s, true));
+            }
+
+            if ($this->sshInputData !== null) {
+                // Конфигурация с ключами передаётся только через stdin SSH.
+                // Ни argv удалённого процесса, ни общие /logs её не содержат.
+                stream_set_blocking($s, true);
+                stream_set_timeout($s, 30);
+                for ($offset = 0, $size = strlen($this->sshInputData); $offset < $size; $offset += $written) {
+                    $written = fwrite($s, substr($this->sshInputData, $offset, 65536));
+                    if ($written === false || $written === 0) throw new RuntimeException('SSH input transfer failed');
+                }
             }
 
             if ($wait) {

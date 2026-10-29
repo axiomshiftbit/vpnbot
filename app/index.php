@@ -49,6 +49,28 @@ if (Panel::isPanelListener()) {
 $webapp = $bot->webappAuth($_GET, $c['key'], (array) ($c['admin'] ?? []));
 
 switch (true) {
+    // Пропуск в веб-панель AdGuard: подзапрос nginx (auth_request) перед
+    // каждым запросом к /adguard<hash>/. 204 — пускать, 401 — в мини-приложение.
+    case parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) === "/adguard$hash-gate":
+        http_response_code($bot->adguardGateCheck(is_string($_COOKIE['adg'] ?? null) ? $_COOKIE['adg'] : '', 'cookie') ? 204 : 401);
+        exit;
+
+    // Одноразовая ссылка администратора для стороннего браузера (кнопка в
+    // меню AdGuard при включённом «сторонний браузер»).
+    case parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) === "/webapp$hash/adg":
+        header('Cache-Control: no-store');
+        header('Referrer-Policy: no-referrer');
+        $token = is_string($_GET['t'] ?? null) ? $_GET['t'] : '';
+        if (empty($bot->getPacConf()['adgbrowser']) || !$bot->adguardLinkConsume($token)) {
+            http_response_code(403);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo "The link is invalid, expired or already used. Request a new one in the bot.\n";
+            exit;
+        }
+        $bot->adguardSetGateCookie($hash, Bot::ADGUARD_BROWSER_TTL);
+        header("Location: /adguard$hash/", true, 302);
+        exit;
+
     // tlgrm
     case 'POST' == $_SERVER['REQUEST_METHOD'] && preg_match('~^/tlgrm~', $_SERVER['REQUEST_URI']) && hash_equals($c['key'], (string) ($_GET['k'] ?? '')):
         $bot->input();
@@ -102,19 +124,13 @@ switch (true) {
 
     // adguard cookie
     case preg_match('~^' . preg_quote("/webapp$hash/check") . '~', $_SERVER['REQUEST_URI']) && $webapp:
-        // Флаги обязательны: значение cookie — это публичный hash из ссылок
-        // подписки, и сам по себе он ничего не авторизует (защищает админку
-        // только пароль AdGuard). Но без httponly его читает любой скрипт на
-        // странице, а без samesite он уходит с чужими межсайтовыми запросами.
-        // secure ставим только на HTTPS: на установке без сертификата cookie с
-        // ним просто не сохранится, и вход в админку сломается.
-        setcookie('c', $hash, [
-            'expires'  => 0,
-            'path'     => '/',
-            'httponly' => true,
-            'samesite' => 'Lax',
-            'secure'   => !empty($_SERVER['HTTPS']) || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https',
-        ]);
+        // Сюда попадает только администратор: initData подписан Telegram и
+        // сверен со списком админов ($webapp). httponly, samesite и secure
+        // ставит adguardSetGateCookie (secure — только на HTTPS: без
+        // сертификата cookie с ним не сохранится, и вход в панель сломается).
+        // Пропуск — подписанный ключом бота токен со сроком, а не публичный
+        // hash из ссылок подписки (его мог выставить себе любой подписчик).
+        $bot->adguardSetGateCookie($hash, Bot::ADGUARD_GATE_TTL);
         echo "/adguard$hash/";
         break;
 

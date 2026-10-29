@@ -10,6 +10,7 @@ candidate=ib.read(a.manifest)
 baseenv={k:os.environ[k] for k in ("PATH","HOME","LANG","LC_ALL","SHELL","TERM","TMPDIR") if k in os.environ}
 for n in ('VPNBOT_BUNDLE_FILE','GHCR_TOKEN','GHCR_USER','GITHUB_TOKEN','GH_TOKEN'):baseenv.pop(n,None)
 baseenv.update(VER='audit',COMPOSE_PROJECT_NAME='vpnbot-audit',COMPOSE_FILE='docker-compose.yml:compose.audit.yml:compose.migration.json:compose.fresh.json',COMPOSE_ENV_FILES='.env,override.env',VPNBOT_BUNDLE_FILE=str(O/'baseline.json'))
+baseenv['VPNBOT_HOST_SERVICES']='off'  # Separate host-service tests own their isolated systemd/firewall.
 env=baseenv|{'VPNBOT_BUNDLE_FILE':str(O/'candidate.json')}
 ib.atomic(O/'candidate.json',ib.canonical(candidate))
 counts=dict.fromkeys(('unit','native','modules','backup_restore','update_rollback','faults','telegram_http'),0)

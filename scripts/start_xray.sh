@@ -36,6 +36,10 @@ elif [ -n "$uuid" ]; then
     # не была видна нигде, а контейнер жил через `tail -f /dev/null` и выглядел
     # здоровым.
     xray run -config /xray.json >> /logs/xray_stdout 2>&1 &
+    xray_pid=$!
+    # Частное состояние привязано к конкретному процессу, а не только PID.
+    # Старый образ без python/helper продолжает работать с полным restart.
+    python3 /xray_hot_apply.py mark --pid "$xray_pid" >/dev/null 2>&1 || true
 else
     # Пустой uuid — это не «нечего запускать»: первый inbound без clients
     # (dokodemo/fallback-раскладка) или ошибка jq на битом конфиге дают ровно

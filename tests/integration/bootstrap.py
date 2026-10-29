@@ -21,6 +21,7 @@ ENV = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
        'COMPOSE_PROJECT_NAME': 'vpnbot-audit',
        'COMPOSE_FILE': 'docker-compose.yml:compose.audit.yml:compose.migration.json:compose.fresh.json',
        'COMPOSE_ENV_FILES': '.env,override.env',
+       'VPNBOT_HOST_SERVICES': 'off',
        'VPNBOT_BUNDLE_FILE': str(ROOT / 'active-test-bundle.json')}
 
 

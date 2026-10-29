@@ -23,12 +23,12 @@ class BundleUpdaterTests(unittest.TestCase):
         self.events = self.base / 'events'; self.events.touch()
         self.mode = self.base / 'mode'; self.mode.write_text('success')
         self.env = os.environ | {'PATH': str(self.bin) + ':' + os.environ['PATH'],
-                                 'BUNDLE_FIXTURE': str(self.base)}
+                                 'BUNDLE_FIXTURE': str(self.base), 'VPNBOT_HOST_SERVICES': 'off'}
         for key in ('VPNBOT_BUNDLE_FILE', 'COMPOSE_FILE', 'VPNBOT_TAG'):
             self.env.pop(key, None)
         for directory in ('scripts', 'update', 'config', 'certs', 'ssh'):
             (self.root / directory).mkdir()
-        for name in ('scripts/image_bundle.py', 'scripts/protocol_modules.py',
+        for name in ('scripts/image_bundle.py', 'scripts/protocol_modules.py', 'scripts/host_services.py',
                      'scripts/preserve_update_state.sh', 'scripts/sync_image_tag.sh', 'update/update.sh'):
             shutil.copy2(ROOT / name, self.root / name)
         (self.root / '.gitignore').write_text('update/*\n!update/update.sh\noverride.env\n')

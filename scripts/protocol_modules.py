@@ -299,8 +299,15 @@ def compose(s, arguments, capture=False, input_data=None, port_overrides=None):
     files = bundle.compose_files(Path.cwd(), env)
     if files and arguments and arguments[0] == 'up' and '--no-build' not in arguments:
         arguments = [arguments[0], '--no-build'] + arguments[1:]
-    return subprocess.run(["docker", "compose"] + files + ["--env-file", ".env", "--env-file", "override.env"] + arguments,
-                          env=env, capture_output=capture, input=input_data, check=False)
+    starting = bool(arguments and arguments[0] == 'up')
+    host_setup = Path(__file__).with_name('host_services.py')
+    if starting:
+        subprocess.run([sys.executable, str(host_setup), 'prepare', '--bot-dir', str(Path.cwd())], check=True)
+    result = subprocess.run(["docker", "compose"] + files + ["--env-file", ".env", "--env-file", "override.env"] + arguments,
+                            env=env, capture_output=capture, input=input_data, check=False)
+    if starting and result.returncode == 0 and '--no-deps' not in arguments:
+        subprocess.run([sys.executable, str(host_setup), 'finalize', '--bot-dir', str(Path.cwd())], check=True)
+    return result
 
 
 def container_states(current):

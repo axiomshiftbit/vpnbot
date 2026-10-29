@@ -208,6 +208,22 @@ t($bot->statsSaved['session'] === ['download' => 0, 'upload' => 0], 'session о�
 
 // ── dnsDomains ──────────────────────────────────────────────────────────────
 
+// Внешний restart при простое основного inbound не теряет трафик проб узла.
+$bot->pacFake = ['exits' => ['aaaaaaaa' => []]];
+$bot->statsFake = ['session' => ['upload' => 0, 'download' => 0], 'exits' => ['aaaaaaaa' => [
+    'global' => ['up' => 100, 'down' => 200], 'session' => ['up' => 50, 'down' => 70], 'base' => ['up' => 10, 'down' => 20], 'since' => 123]]];
+$bot->time_xray_stats = null;
+$bot->sshOut = json_encode(['stat' => [['name' => 'outbound>>>vpnbot-exit-aaaaaaaa>>>traffic>>>uplink', 'value' => 3]]]);
+$bot->xrayStatsUser();
+t($bot->statsSaved['exits']['aaaaaaaa']['global'] === ['up' => 140, 'down' => 250], 'трафик узла свёрнут независимо от основного inbound');
+t($bot->statsSaved['exits']['aaaaaaaa']['base'] === ['up' => 0, 'down' => 0], 'отметка сброса узла обнулена после смены ядра');
+t($bot->statsSaved['exits']['aaaaaaaa']['session'] === ['up' => 3, 'down' => 0], 'новая сессия узла сохранена');
+$bot->statsFake = $bot->statsSaved; $bot->time_xray_stats = null; $bot->xrayStatsUser();
+t($bot->statsSaved['exits']['aaaaaaaa']['global'] === ['up' => 140, 'down' => 250], 'повторный снимок не начисляет узел дважды');
+$bot->statsFake['session']['download'] = 100; $bot->statsFake['exits']['aaaaaaaa']['session']['down'] = 80;
+$bot->time_xray_stats = null; $bot->xrayStatsUser();
+t($bot->statsSaved['exits']['aaaaaaaa']['global'] === ['up' => 143, 'down' => 330], 'общий fold и отдельный выход не начисляют дважды');
+
 t($bot->dnsDomains(['domain' => 'a.com']) === ['a.com'], 'только главный домен');
 t(
     $bot->dnsDomains(['domain' => 'a.com', 'domain_aliases' => ['b.com', 'c.com']]) === ['a.com', 'b.com', 'c.com'],
