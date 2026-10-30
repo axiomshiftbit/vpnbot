@@ -85,6 +85,10 @@ panelAssert($msg['buttons'][0][0]['cb'] === '/x', 'editMessageText правит 
 
 $miss = $transport->call('editMessageText', ['message_id' => 424242, 'text' => 'nope']);
 panelAssert(empty($miss['ok']), 'правка несуществующего сообщения — ошибка, как в Telegram');
+panelAssert(($miss['error_code'] ?? null) === 400, 'исчезнувшее сообщение имеет определённый код Telegram');
+$restored = $bot->update(777, 424242, 'восстановленное меню', [[['text' => 'Назад', 'callback_data' => '/menu']]]);
+panelAssert(!empty($restored['ok']) && ($store->read()['messages'][$restored['result']['message_id']]['text'] ?? '') === 'восстановленное меню',
+    'бот восстанавливает меню после очистки истории панели');
 
 // ── force_reply ──────────────────────────────────────────────────────────────
 $rp  = $bot->send(777, 'введите имя', 0, false, 'имя клиента');

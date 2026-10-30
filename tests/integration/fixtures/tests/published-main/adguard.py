@@ -32,7 +32,15 @@ for transport in ['udp','tcp','tls']:
  except Exception as e:check('dns-'+transport,False,type(e).__name__)
 path='/dns-query'+a['hash']+'/'+a['doh_id'];q=query();s,h,r=req(path,'POST',q,{'Content-Type':'application/dns-message'});check('doh-post',s==200 and valid(q,r),s)
 s,h,r=req(path+'?dns='+base64.urlsafe_b64encode(q).decode().rstrip('='));check('doh-get',s==200 and valid(q,r),s)
-prefix='/adguard'+a['hash'];cookie={'Cookie':'c='+a['hash']};auth={**cookie,'Authorization':'Basic '+base64.b64encode(('admin:'+a['password']).encode()).decode()}
+prefix='/adguard'+a['hash']
+# Общедоступный хэш подписки больше не даёт пропуск в панель, даже с паролем.
+basic={'Authorization':'Basic '+base64.b64encode(('admin:'+a['password']).encode()).decode()}
+for label,headers in [('anonymous',{}),('public-hash',{'Cookie':'c='+a['hash']}),
+                      ('public-hash-with-password',{'Cookie':'c='+a['hash'],**basic}),
+                      ('forged',{'Cookie':'adg='+a['gate'][:-1]+('0' if a['gate'][-1]!='0' else '1')}),
+                      ('expired',{'Cookie':'adg='+a['expired_gate']}),('wrong-kind',{'Cookie':'adg='+a['link_gate']})]:
+ s,_,_=req(prefix+'/control/status',headers=headers);check('gate-rejects-'+label,s in (302,401,403),s)
+cookie={'Cookie':'adg='+a['gate']};auth={**cookie,**basic}
 s,_,_=req(prefix+'/control/status',headers=cookie);check('admin-cookie-alone-insufficient',s in [401,403],s)
 s,_,_=req(prefix+'/control/status',headers={**cookie,'Authorization':'Basic '+base64.b64encode(b'admin:wrong-password').decode()});check('admin-wrong-password-rejected',s in [401,403],s)
 s,_,b=req(prefix+'/control/status',headers=auth);check('admin-real-password',s==200 and 'version' in json.loads(b),s)

@@ -291,7 +291,8 @@ switch ($action) {
         break;
     case 'ad-export':
         $p=$b->getPacConf();$xr=$b->getXray();$ad=yaml_parse_file('/config/AdGuardHome.yaml');
-        file_put_contents('/logs/audit-ad.json',json_encode(['password'=>$p['adpswd'],'hash'=>$b->getHashBot(),'domain'=>$p['domain'],'doh_id'=>$b->dohClientId($xr['inbounds'][0]['settings']['clients'][0]['id']),'tls'=>$ad['tls'],'dns'=>$ad['dns']]));
+        file_put_contents('/logs/audit-ad.json',json_encode(['password'=>$p['adpswd'],'hash'=>$b->getHashBot(),'domain'=>$p['domain'],'doh_id'=>$b->dohClientId($xr['inbounds'][0]['settings']['clients'][0]['id']),'tls'=>$ad['tls'],'dns'=>$ad['dns'],
+            'gate'=>$b->adguardGateToken('cookie',Bot::ADGUARD_GATE_TTL),'expired_gate'=>$b->adguardGateToken('cookie',-60),'link_gate'=>$b->adguardGateToken('link',Bot::ADGUARD_LINK_TTL)]));
         break;
     case 'ad-sync':
         $b->adguardSync();$b->adguardXrayClients();
@@ -632,7 +633,16 @@ switch ($action) {
             case 'sets': $b->saveExitSets(str_replace('|',"\n",$argv[4]),$id); break;
             case 'set-del': $b->exitSetToggle($id,Bot::exitEntryKey($argv[4]),true); break;
             case 'all': $b->exitAllUsers($id,$argv[4]==='on'); break;
-            case 'user': $b->exitUserNodeToggle((int)$argv[4],$id); break;
+            case 'user':
+                // Нажимаем настоящую кнопку с отпечатком пользователя.
+                $b->exitUserMenu((int)$argv[4]);
+                $toggle=null;
+                foreach (end($b->transport->keyboards) as $row) foreach ($row as $button) {
+                    if (str_starts_with($button['callback_data'] ?? '', '/exitUT '.(int)$argv[4].' '.$id.' ')) $toggle=$button['callback_data'];
+                }
+                if ($toggle===null) throw new RuntimeException('Node user button missing');
+                $b->input['callback']=$toggle;$b->action();
+                break;
             case 'toggle': $b->exitToggle($id); break;
             case 'quic': $b->exitQuic($id); break;
             case 'auto': $b->exitAuto($id); break;
@@ -649,7 +659,7 @@ switch ($action) {
                 $b->transport->messages[]=json_encode(['same'=>$routes==$node['routes'] && array_keys($sets)==array_map('strval',array_keys($node['rulesets']))]);
                 break;
             case 'menus':
-                $b->exitNodesMenu();$b->exitNodeMenu($id);$b->exitRoutesMenu($id);$b->exitSetsMenu($id);$b->exitUsersMenu($id);$b->exitRelayMenu();$b->exitPresetsMenu($id);
+                $b->exitNodesMenu();$b->exitCreateMenu();$b->exitNodeMenu($id);$b->exitSettingsMenu($id);$b->exitDiagnosticsMenu($id);$b->exitRoutesMenu($id);$b->exitSetsMenu($id);$b->exitUsersMenu($id);$b->exitRelayMenu();$b->exitPresetsMenu($id);
                 break;
             case 'relay': $b->saveExitRelay($argv[3]); break;
             case 'relay-del':

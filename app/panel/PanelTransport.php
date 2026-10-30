@@ -153,7 +153,7 @@ class PanelTransport
             // Тот же ответ, что у Telegram на правку исчезнувшего сообщения —
             // Bot::request() такие в лог не пишет только для «not modified»,
             // поэтому строку берём телеграмную.
-            return ['ok' => false, 'description' => 'Bad Request: message to edit not found'];
+            return ['ok' => false, 'error_code' => 400, 'description' => 'Bad Request: message to edit not found'];
         }
 
         return $this->result($id, $data);
