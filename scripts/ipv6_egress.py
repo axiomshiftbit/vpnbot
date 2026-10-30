@@ -37,7 +37,10 @@ def check_xray(root):
             continue
         settings = outbound.get('settings', {})
         rules = settings.get('finalRules', [])
-        if settings.get('domainStrategy') != 'ForceIPv4' or not rules or rules[0].get('action') != 'block' or '::/0' not in rules[0].get('ip', []):
+        # Новые ядра используют sockopt: адаптер удаляет устаревшее поле freedom.
+        # Явная небезопасная legacy-настройка не должна маскироваться sockopt.
+        strategy = settings.get('domainStrategy', outbound.get('streamSettings', {}).get('sockopt', {}).get('domainStrategy'))
+        if strategy != 'ForceIPv4' or not rules or rules[0].get('action') != 'block' or '::/0' not in rules[0].get('ip', []):
             raise ValueError('Сначала добавьте в боте «IPv6 этого сервера»: обычный выход ещё не защищён от смены семейства адресов')
         checked = True
     if not checked:

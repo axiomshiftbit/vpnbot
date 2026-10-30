@@ -225,7 +225,7 @@ try {
         }
         $prompt = optClick($nav, "/!protocol $protocol name $id");
         $replyId = count($nav->transport->calls);
-        optCheck(!empty($_SESSION['reply'][$replyId]['protocol_main']), 'ForceReply сохраняет точку входа');
+        optCheck(!empty($_SESSION['reply'][$nav->input['chat'] . ':' . $replyId]['protocol_main']), 'ForceReply сохраняет точку входа');
         $nav->input['reply'] = $replyId; $nav->input['message'] = 'После ответа'; $nav->input['message_id'] = 999;
         $nav->reply();
         [, $data] = end($nav->transport->calls);

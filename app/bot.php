@@ -18,6 +18,7 @@ require_once __DIR__ . '/BotExitNodes.php';
 require_once __DIR__ . '/BotOvpn.php';
 require_once __DIR__ . '/BotWarpMasque.php';
 require_once __DIR__ . '/BotAcme.php';
+require_once __DIR__ . '/BotChatNavigation.php';
 
 class Bot
 {
@@ -35,6 +36,7 @@ class Bot
     use BotOvpn;
     use BotWarpMasque;
     use BotAcme;
+    use BotChatNavigation;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
     // Совместимость патчей и суммы исходников проверены для этой пары.
@@ -298,6 +300,7 @@ class Bot
 
     public function input($data = false)
     {
+        $this->chatNavigationActive = false;
         $this->admin     = false;
         // Пер-запросный инстанс WG обязан сбрасываться вместе с $this->admin:
         // в polling один объект Bot живёт на ВСЕ апдейты, а action() выставляет
@@ -353,6 +356,7 @@ class Bot
             }
         }
         $this->callbackCheck();
+        $this->chatNavigationActive = false;
     }
 
     // Необработанный отказ действия (контейнер не ответил и т. п.): раньше PHP
@@ -533,9 +537,14 @@ class Bot
         if (!empty($_SESSION['reply'])) {
             if (empty($this->input['reply'])) {
                 foreach ($_SESSION['reply'] as $k => $v) {
-                    $this->delete($this->input['chat'], $k);
+                    // Старые записи не содержат chat: их нельзя безопасно
+                    // привязать к текущему чату по одному message_id.
+                    if (!isset($v['chat'])) { unset($_SESSION['reply'][$k]); continue; }
+                    if ((string) $v['chat'] !== (string) $this->input['chat']) continue;
+                    $promptId = str_contains((string) $k, ':') ? (int) substr((string) $k, strrpos((string) $k, ':') + 1) : (int) $k;
+                    $this->delete($this->input['chat'], $promptId);
+                    unset($_SESSION['reply'][$k]);
                 }
-                unset($_SESSION['reply']);
             }
         }
     }
@@ -562,12 +571,13 @@ class Bot
         if (empty($r['result']['message_id'])) {
             return;
         }
+        $state['chat'] = $this->input['chat'];
         if ($this->protocolReturnMain && in_array($state['callback'] ?? '', ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true)) {
             $state['protocol_main'] = true;
         }
         if ($this->protocolRelayOrigin) $state['protocol_relay'] = $this->protocolRelayOrigin;
         $this->sessionApply(function () use ($r, $state) {
-            $_SESSION['reply'][$r['result']['message_id']] = $state;
+            $_SESSION['reply'][$state['chat'] . ':' . $r['result']['message_id']] = $state;
         });
     }
 
@@ -581,9 +591,16 @@ class Bot
     {
         $state = null;
         $this->sessionApply(function () use ($messageId, &$state) {
-            if (isset($_SESSION['reply'][$messageId]) && is_array($_SESSION['reply'][$messageId])) {
-                $state = $_SESSION['reply'][$messageId];
-                unset($_SESSION['reply'][$messageId]);
+            $key = ($this->input['chat'] ?? '') . ':' . $messageId;
+            if (!isset($_SESSION['reply'][$key])) $key = $messageId;
+            if (isset($_SESSION['reply'][$key]) && !isset($_SESSION['reply'][$key]['chat'])) {
+                unset($_SESSION['reply'][$key]);
+                return;
+            }
+            if (isset($_SESSION['reply'][$key]) && is_array($_SESSION['reply'][$key])
+                && (string) $_SESSION['reply'][$key]['chat'] === (string) $this->input['chat']) {
+                $state = $_SESSION['reply'][$key];
+                unset($_SESSION['reply'][$key]);
             }
         });
 
@@ -607,6 +624,7 @@ class Bot
 
     public function action()
     {
+        $this->chatNavigationStart();
         $telemtRoute = (string) (($this->input['callback'] ?? '') ?: ($this->input['message'] ?? ''));
         if (preg_match('~^(?:/telemt(?:[A-Z]|$)|/tuc? )~', $telemtRoute) && !$this->protocolModuleEnabled('telemt')) {
             if ($this->admin) $this->protocolModulesMenu();
@@ -781,6 +799,18 @@ class Bot
             case preg_match('~^/exits$~', $this->input['callback'], $m):
                 $this->exitNodesMenu();
                 break;
+            case preg_match('~^/exitCreate$~', $this->input['callback'], $m):
+                $this->exitCreateMenu();
+                break;
+            case preg_match('~^/exitOrder$~', $this->input['callback'], $m):
+                $this->exitOrderMenu();
+                break;
+            case preg_match('~^/exitMove ([a-f0-9]{8}) (up|down) ([a-f0-9]{16})$~', $this->input['callback'], $m):
+                $this->exitMove($m[1], $m[2], $m[3]);
+                break;
+            case preg_match('~^/exitPolicy ([a-f0-9]{8}) (block|direct)$~', $this->input['callback'], $m):
+                $this->exitFallback($m[1], $m[2]);
+                break;
             case preg_match('~^/exit ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitNodeMenu($m[1]);
                 break;
@@ -808,6 +838,9 @@ class Bot
             case preg_match('~^/exitRelayIpv6 (\d{1,6})(?: ([a-f0-9]{16}))?$~', $this->input['callback'], $m):
                 $this->exitRelayIpv6((int) $m[1], $m[2] ?? '');
                 break;
+            case preg_match('~^/exitRelayTransport (\d{1,6}) ([01]) ([a-f0-9]{16})$~', $this->input['callback'], $m):
+                $this->exitRelayTransport((int) $m[1], $m[2] === '1', $m[3]);
+                break;
             case preg_match('~^/exitCheckAll$~', $this->input['callback'], $m):
                 $this->exitCheckAll();
                 break;
@@ -820,8 +853,10 @@ class Bot
             case preg_match('~^/exitCopyTo ([a-f0-9]{8}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitCopyTo($m[1], $m[2]);
                 break;
-            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Auto|Speed|Presets|CopyTo|Export|Import|Traf|Sub) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Auto|Speed|Presets|CopyTo|Export|Import|Traf|TrafYes|Sub|SubNow|Settings|Diag) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 match ($m[1]) {
+                    'Settings' => $this->exitSettingsMenu($m[2]), 'Diag' => $this->exitDiagnosticsMenu($m[2]),
+                    'TrafYes' => $this->exitTrafficReset($m[2], true), 'SubNow' => $this->exitSubscriptionRefresh($m[2]),
                     'Traf' => $this->exitTrafficReset($m[2]), 'Sub' => $this->exitSubPrompt($m[2]),
                     'Speed' => $this->exitSpeedCheck($m[2]), 'Presets' => $this->exitPresetsMenu($m[2]), 'CopyTo' => $this->exitCopyToMenu($m[2]),
                     'Export' => $this->exitExport($m[2]), 'Import' => $this->exitImportPrompt($m[2]),
@@ -11037,7 +11072,6 @@ NFT;
                     '❌ ' . $this->i18n('error') . ': ' . htmlspecialchars($e->getMessage(), ENT_QUOTES)
                         . "\n" . $this->i18n('try again')
                 );
-                $this->replyMenuEdit = false;
                 $this->menu();
             } finally {
                 $this->replyMenuEdit = false;
@@ -15299,8 +15333,14 @@ DNS-over-HTTPS with IP:
     {
         $c = [];
         require __DIR__ . '/config.php';
-        foreach ((array) ($c['admin'] ?? []) as $admin) {
-            $this->send($admin, $text);
+        $navigation = $this->chatNavigationActive;
+        $this->chatNavigationActive = false;
+        try {
+            foreach ((array) ($c['admin'] ?? []) as $admin) {
+                $this->send($admin, $text);
+            }
+        } finally {
+            $this->chatNavigationActive = $navigation;
         }
     }
 
@@ -20450,7 +20490,9 @@ DNS-over-HTTPS with IP:
         $data = $selected['data'];
 
         if (empty($type)) {
-            $data = array_chunk(array_merge(...$this->filterProtocolButtons($data)), 2);
+            $buttons = array_merge(...$this->filterProtocolButtons($data));
+            array_splice($buttons, -2, 0, $this->menuHelpButton('navigation'));
+            $data = array_chunk($buttons, 2);
         }
 
         if (empty($type) && $update) {
@@ -20471,7 +20513,14 @@ DNS-over-HTTPS with IP:
             return [$text, $data];
         }
 
-        if (!empty($this->input['callback_id']) || $this->replyMenuEdit) {
+        $anchor = (empty($this->input['callback_id']) && !$this->replyMenuEdit
+            && in_array($this->input['message'] ?? '', ['/start', '/menu'], true))
+            ? $this->chatMenuAnchor($this->input['chat']) : 0;
+        if ($anchor) {
+            $this->delete($this->input['chat'], $this->input['message_id']);
+            $this->input['message_id'] = $anchor;
+        }
+        if (!empty($this->input['callback_id']) || $this->replyMenuEdit || $anchor) {
             $r = $this->update(
                 $this->input['chat'],
                 $this->input['message_id'],
@@ -20497,12 +20546,16 @@ DNS-over-HTTPS with IP:
                 $this->setWgMsg(null);
             }
         } else {
-            $this->send(
+            $r = $this->send(
                 $this->input['chat'],
                 $text,
                 $this->input['message_id'],
                 $data ?: false,
             );
+            if (!empty($r['ok']) && $this->chatOwnsOutput($this->input['chat'])
+                && in_array($this->input['message'] ?? '', ['/start', '/menu'], true)) {
+                $this->delete($this->input['chat'], $this->input['message_id']);
+            }
         }
     }
 
@@ -25012,7 +25065,7 @@ DNS-over-HTTPS with IP:
                 if (str_starts_with($link, 'vless://')) {
                     $link = str_replace('#', '&encryption=' . rawurlencode($encryption) . '#', $link);
                 }
-                return $link;
+                return $this->exitRelayEndpoint($link, $c['inbounds'][0]['settings']['clients'][$i], $pac);
 
         }
     }
@@ -25088,11 +25141,14 @@ DNS-over-HTTPS with IP:
         if ($native === '') {
             $this->subNotFound($this->i18n('vless encryption unavailable'));
         }
+        if ($relayRequested && !empty($client['exit_relay']) && !empty($client['exit_transport_ipv6'])) {
+            $this->subNotFound('IPv6 node profiles do not use relay endpoints.');
+        }
         $links  = [$native];
         if (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']])) {
             // Explicit relay requested: serve only that relay's node (unchanged).
             $links = [$this->relaySwapLink($native, $pac['relays'][$_GET['relay']], $client['email'], (string) $_GET['relay'])];
-        } elseif (!empty($pac['relay_aggregate'])) {
+        } elseif (!empty($pac['relay_aggregate']) && empty($client['exit_relay'])) {
             // Aggregated sub: origin node + one node per enabled & reachable relay,
             // so a single link exposes every exit as a selectable node.
             foreach ($this->activeRelaysForSub($pac) as $name => $relay) {
@@ -36647,6 +36703,14 @@ DNS-over-HTTPS with IP:
                     $data['reply_markup'] = json_encode($extra);
                 }
                 $r = $this->request('sendMessage', $data);
+                if ($reply === false) {
+                    if ($k === array_key_last($tails) && $button && !empty($r['ok'])) $this->rememberChatMenu($chat, (int) $r['result']['message_id']);
+                    else $this->rememberChatOutput($chat, $r);
+                } else {
+                    // У длинного force_reply состояние привязано к последнему
+                    // фрагменту; остальные тоже должны исчезнуть при ответе.
+                    if ($k !== array_key_last($tails)) $this->rememberChatOutput($chat, $r);
+                }
             }
         } else {
             $data = [
@@ -36661,6 +36725,10 @@ DNS-over-HTTPS with IP:
                 $data['reply_markup'] = json_encode($extra);
             }
             $r = $this->request('sendMessage', $data);
+            if ($reply === false) {
+                if ($button && !empty($r['ok'])) $this->rememberChatMenu($chat, (int) $r['result']['message_id']);
+                else $this->rememberChatOutput($chat, $r);
+            }
         }
         return $this->rememberProtocolOutput($r);
     }
@@ -36771,13 +36839,13 @@ DNS-over-HTTPS with IP:
 
     public function sendPhoto($chat, $id_url_cFile, $caption = false, $to = false)
     {
-        return $this->rememberProtocolOutput($this->request('sendPhoto', [
+        return $this->rememberChatOutput($chat, $this->rememberProtocolOutput($this->request('sendPhoto', [
             'chat_id'             => $chat,
             'photo'               => $id_url_cFile,
             'caption'             => $caption,
             'reply_to_message_id' => $to,
             'parse_mode'          => 'html',
-        ]));
+        ])));
     }
 
     public function sendFile($chat, $id_url_cFile, $caption = false, $to = false)
@@ -36824,10 +36892,21 @@ DNS-over-HTTPS with IP:
             'parse_mode'               => $mode,
             'disable_web_page_preview' => true,
         ];
-        if (!empty($extra)) {
-            $data['reply_markup'] = json_encode($extra);
+        $data['reply_markup'] = json_encode($extra ?? ['inline_keyboard' => []]);
+        $result = $this->request('editMessageText', $data);
+        $description = (string) ($result['description'] ?? '');
+        if (empty($result['ok']) && (int) ($result['error_code'] ?? 0) === 400
+            && preg_match("~message (?:to edit not found|can't be edited)~i", $description)) {
+            // Только определённый отказ Telegram, а не тайм-аут/429: повторная
+            // отправка при неопределённом результате создаёт дубликаты.
+            $result = $this->send($chat, $text, 0, $button, $reply, $mode);
+            if (!empty($result['ok']) && $this->chatOwnsOutput($chat)) {
+                $this->input['message_id'] = (int) $result['result']['message_id'];
+            }
+        } elseif ((!empty($result['ok']) || stripos($description, 'not modified') !== false) && $button) {
+            $this->rememberChatMenu($chat, (int) $message_id);
         }
-        return $this->request('editMessageText', $data);
+        return $result;
     }
 
     // Отмечаем, что на callback уже ответили: callbackCheck() в конце input()

@@ -45,6 +45,9 @@ trait BotProtocols
     // Only explicitly requested protocol files/QRs are temporary. Never sweep chat history.
     public function rememberProtocolOutput($result)
     {
+        if ($this->protocolOutput && $this->chatOwnsOutput($this->input['chat'] ?? '')) {
+            return $this->rememberChatOutput($this->input['chat'], $result);
+        }
         if ($this->protocolOutput && !empty($result['result']['message_id'])) {
             $key = $this->input['chat'] . ':' . $this->input['message_id'];
             $this->sessionApply(function () use ($key, $result) {

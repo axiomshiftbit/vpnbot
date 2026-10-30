@@ -92,7 +92,7 @@ $statusFile = sys_get_temp_dir() . '/exit-status-' . getmypid() . '.json';
 
 // --- Меню без узлов --------------------------------------------------------
 $bot->exitNodesMenu();
-$check(str_contains($bot->last()[0], 'Узлов пока нет') && isset($bot->callbacks()['/exitAdd']) && isset($bot->callbacks()['/exitRelay']), 'пустое меню: добавить и профиль для узла');
+$check(str_contains($bot->last()[0], 'Узлов пока нет') && isset($bot->callbacks()['/exitCreate']) && isset($bot->callbacks()['/exitRelay']), 'пустое меню: добавить и профиль для узла');
 
 // --- Добавление: плохие ссылки, свой адрес, частный адрес -------------------
 $bot->exitAddPrompt();
@@ -122,13 +122,19 @@ $bot->stats = ['exits' => [$id => ['session' => ['up' => 2048, 'down' => 3 * 102
 $check(str_contains($bot->exitTrafficLine($id), '↑') && str_contains($bot->exitTrafficLine($id), '3') && $bot->exitTraffic($id)['up'] === 3072, 'трафик через узел: прошлые запуски + текущий');
 $folded = Bot::foldSession($bot->stats);
 $check($folded['exits'][$id]['global'] === ['up' => 3072, 'down' => 3 * 1024 * 1024] && $folded['exits'][$id]['session'] === ['up' => 0, 'down' => 0], 'перезапуск Xray сворачивает счётчик узла, не теряя его');
+$beforeReset = $bot->stats;
 $bot->exitTrafficReset($id);
+$check($bot->stats === $beforeReset && isset($bot->callbacks()["/exitTrafYes $id"]), 'сброс требует подтверждения');
+$bot->exitTrafficReset($id, true);
 $check($bot->exitTraffic($id)['up'] === 0 && $bot->exitTraffic($id)['down'] === 0 && str_contains($bot->last()[0], 'сброшен'), 'сброс счётчика узла');
 $bot->stats['exits'][$id]['session']['down'] += 500;
 $check($bot->exitTraffic($id)['down'] === 500 && Bot::foldSession($bot->stats)['exits'][$id]['global']['down'] === 500, 'после сброса считается только новое, и при перезапуске тоже');
 $bot->stats = [];
-foreach (['/exitCheck', '/exitRefresh', '/exitToggle', '/exitQuic', '/exitRoutes', '/exitSets', '/exitUsers', '/exitName', '/exitLink', '/exitDel'] as $cmd) {
-    $check((bool) array_filter(array_keys($bot->callbacks()), static fn($c) => str_starts_with($c, "$cmd $id")), 'кнопка ' . $cmd);
+foreach (['exitNodeMenu' => ['/exitCheck', '/exitToggle', '/exitRoutes', '/exitSets', '/exitUsers', '/exitSettings', '/exitDiag'],
+    'exitSettingsMenu' => ['/exitQuic', '/exitName', '/exitLink', '/exitDel', '/exitAuto', '/exitSub', '/exitFallback'],
+    'exitDiagnosticsMenu' => ['/exitSpeed', '/exitRefresh', '/exitTraf']] as $method => $commands) {
+    $bot->$method($id);
+    foreach ($commands as $cmd) $check((bool) array_filter(array_keys($bot->callbacks()), static fn($c) => str_starts_with($c, "$cmd $id")), 'кнопка ' . $cmd);
 }
 foreach ($buttons as $row) foreach ($row as $b) $check(strlen($b['callback_data'] ?? '') <= 64, 'callback ≤ 64 байт: ' . ($b['callback_data'] ?? ''));
 
@@ -249,7 +255,7 @@ $check($bot->confPac['exits'][$id]['name'] === 'bНидерландыb co' || !s
 // --- Новым пользователям -------------------------------------------------------
 $bot->exitYoutube($id);
 $bot->exitAuto($id);
-$check($bot->confPac['exits'][$id]['auto'] === 1 && $bot->exitAutoNodes($bot->confPac) === [$id] && str_contains($bot->last()[0], 'включается сразу'), 'флажок «новым» включён');
+$check($bot->confPac['exits'][$id]['auto'] === 1 && $bot->exitAutoNodes($bot->confPac) === [$id] && str_contains($bot->last()[0], 'назначать этот выход'), 'флажок «новым» включён');
 $bot->addxrus('carol');
 $carol = array_values(array_filter($bot->confXray['inbounds'][0]['settings']['clients'], static fn($c) => ($c['email'] ?? '') === 'carol'))[0] ?? [];
 $check(($carol['exit'] ?? null) === [$id], 'новый пользователь сразу получил узел');
@@ -501,10 +507,10 @@ $lid = 'a1b2c3d4';
 $legacy->confPac['exits'] = [$lid => ['link' => $link]];
 $legacy->saveExitSets('https://sets.example/broken.srs', $lid);
 $check(isset($legacy->exitNodes()[$lid]['rulesets']['https://sets.example/broken.srs']), 'обычная нода: набор добавляется, как раньше');
-$legacy->exitFallback($lid);
+$legacy->exitFallback($lid, 'block');
 $check($legacy->exitNodes()[$lid]['fallback'] === 'direct' && str_contains($legacy->last()[0], 'broken.srs'), 'переход в строгий режим отклонён, пока набор не скачан');
 $legacy->exitSetToggle($lid, Bot::exitEntryKey('https://sets.example/broken.srs'), true);
-$legacy->exitFallback($lid);
+$legacy->exitFallback($lid, 'block');
 $check($legacy->exitNodes()[$lid]['fallback'] === 'block', 'готовая нода переходит в строгий режим');
 // Тексты отказа строгого узла: уведомление и «Куда пойдёт домен» не обещают прямой выход.
 $legacy->status = [$lid => ['ok' => true, 'time' => time() - 60]];

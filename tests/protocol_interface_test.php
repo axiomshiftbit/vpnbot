@@ -37,7 +37,7 @@ class ProtocolInterfaceBot extends Bot {
     public function telemtWriteToml(string $toml): void {}
     protected function sessionApply(callable $fn) { $fn(); }
     public function getPacConf() { return self::PAC_DEFAULTS; }
-    public function stashReply($r, array $state) { $_SESSION['reply'][$r['result']['message_id']] = $state; }
+    public function stashReply($r, array $state) { $_SESSION['reply'][$r['result']['message_id']] = $state + ['chat' => $this->input['chat']]; }
 }
 function uiLast(ProtocolInterfaceBot $bot): array {
     [$method, $data] = end($bot->transport->calls);

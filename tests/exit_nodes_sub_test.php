@@ -95,6 +95,7 @@ esCheck($bot->exitAddressProblem('node.example.net') === '', 'чужой узе�
 $bot->saveExitAdd($link('node.example.net'));
 $id = array_key_first($bot->confPac['exits']);
 $bot->exitNodeMenu($id);
+$bot->exitSettingsMenu($id);
 esCheck(isset($bot->callbacks()["/exitSub $id"]) && str_contains($bot->last()[0], 'Подписка узла: нет'), 'карточка: кнопка и строка подписки');
 $bot->saveExitSub('http://node.example.net/sub', $id);
 esCheck($bot->exitNodes()[$id]['sub'] === '' && str_contains($bot->last()[0], 'не сохранена'), 'подписка только по https');

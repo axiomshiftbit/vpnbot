@@ -80,7 +80,7 @@ replyDedupeAssert(count($bot->deleted) === 2, 'повтор webhook снова �
 // имени через тот же stashReply → reply путь, который проверен выше.
 $source = (string) file_get_contents(__DIR__ . '/../app/bot.php');
 replyDedupeAssert(
-    str_contains($source, "if (!empty(\$this->input['callback_id']) || \$this->replyMenuEdit)"),
+    str_contains($source, "if (!empty(\$this->input['callback_id']) || \$this->replyMenuEdit || \$anchor)"),
     'menu() не учитывает reply-контекст и снова создаст второе окно'
 );
 foreach ([

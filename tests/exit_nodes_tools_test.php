@@ -131,7 +131,7 @@ $check(str_contains($bot->exitSpeedText($bot->exitSpeed($id)), 'узел вык�
 $bot->confPac['exits'][$id]['enabled'] = 1;
 $bot->exitSpeedCheck($id);
 $check(count($bot->answers) === 1 && str_contains($bot->last()[0], 'Скорость'), 'скорость: кнопка отвечает сразу и показывает итог в карточке');
-$bot->exitNodeMenu($id);
+$bot->exitDiagnosticsMenu($id);
 $check(isset($bot->callbacks()["/exitSpeed $id"]), 'карточка: кнопка «Скорость»');
 
 // --- Наборы сервисов --------------------------------------------------------

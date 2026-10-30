@@ -64,6 +64,15 @@ class Ipv6EgressTests(unittest.TestCase):
             direct['settings'] = {'domainStrategy': 'ForceIPv4', 'finalRules': [{'action': 'block', 'ip': ['::/0']}]}
             path.write_text(json.dumps({'outbounds': [direct]}))
             ipv6.check_xray(root)
+            direct['streamSettings'] = {'sockopt': {'domainStrategy': 'ForceIPv4'}}
+            del direct['settings']['domainStrategy']
+            path.write_text(json.dumps({'outbounds': [direct]}))
+            ipv6.check_xray(root)
+            for settings in ({'domainStrategy': 'AsIs'}, {'finalRules': []}):
+                unsafe = {**direct, 'settings': {**direct['settings'], **settings}}
+                path.write_text(json.dumps({'outbounds': [unsafe]}))
+                with self.subTest(settings=settings), self.assertRaises(ValueError):
+                    ipv6.check_xray(root)
         shapes = {'input': ('filter', 'input', 0, 'drop'), 'forward': ('filter', 'forward', 0, 'drop'),
                   'postrouting': ('nat', 'postrouting', 100, 'accept'), 'egress_guard': ('filter', 'postrouting', 110, 'accept')}
         objects = [{'chain': dict(zip(('name', 'type', 'hook', 'prio', 'policy'), (name, *shape)))} for name, shape in shapes.items()]
