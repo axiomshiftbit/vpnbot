@@ -14,6 +14,9 @@ import urllib.request
 
 
 class TelemtState:
+    PERIODS = ('daily', 'weekly', 'monthly')
+    SCHEDULE = ('quota_period', 'period_cursor_epoch_secs')
+
     def __init__(self, root='/telemt', api='http://127.0.0.1:9091'):
         self.root = Path(root)
         self.config = self.root / 'telemt.toml'
@@ -39,6 +42,9 @@ class TelemtState:
                 cls.integer(value.get(field)) for field in ('used_bytes', 'last_reset_epoch_secs')
             ):
                 raise ValueError('invalid_quota_user')
+            # TeleMT 3.5.15+ keeps the UTC calendar watermark in the same row.
+            if value.get('quota_period', 'daily') not in cls.PERIODS or not cls.integer(value.get('period_cursor_epoch_secs', 0)):
+                raise ValueError('invalid_quota_schedule')
         return data
 
     def read(self):
@@ -129,20 +135,28 @@ class TelemtState:
         self.validate({'last_reset_epoch_secs': 0, 'users': updates})
         if required - set(updates) or self.processes() != before:
             raise ValueError('incomplete_quota_snapshot')
-        state = self.read()
-        previous = json.dumps(state, sort_keys=True)
-        for name in required:
-            old = state['users'].get(name, {})
-            new = updates[name]
-            if new['last_reset_epoch_secs'] < old.get('last_reset_epoch_secs', 0) or (
-                new['last_reset_epoch_secs'] == old.get('last_reset_epoch_secs', 0)
-                and new['used_bytes'] < old.get('used_bytes', 0)
-            ):
-                raise ValueError('quota_counter_regressed')
-            state['users'][name] = new
-        state['last_reset_epoch_secs'] = max([0] + [v['last_reset_epoch_secs'] for v in state['users'].values()])
-        if json.dumps(state, sort_keys=True) != previous:
-            self.write(state)
+        # The core writes the same file (calendar watermarks, its own resets).
+        # Keep its schedule fields and retry if it rewrote the file meanwhile.
+        for _ in range(3):
+            raw = self.path.read_bytes() if self.path.exists() else None
+            state = self.read()
+            previous = json.dumps(state, sort_keys=True)
+            for name in required:
+                old = state['users'].get(name, {})
+                new = updates[name]
+                if new['last_reset_epoch_secs'] < old.get('last_reset_epoch_secs', 0) or (
+                    new['last_reset_epoch_secs'] == old.get('last_reset_epoch_secs', 0)
+                    and new['used_bytes'] < old.get('used_bytes', 0)
+                ):
+                    raise ValueError('quota_counter_regressed')
+                state['users'][name] = {**{k: old[k] for k in self.SCHEDULE if k in old}, **new}
+            state['last_reset_epoch_secs'] = max([0] + [v['last_reset_epoch_secs'] for v in state['users'].values()])
+            if json.dumps(state, sort_keys=True) == previous:
+                return
+            if (self.path.read_bytes() if self.path.exists() else None) == raw:
+                self.write(state)
+                return
+        raise ValueError('quota_state_busy')
 
     def ready(self):
         end = time.monotonic() + 10
@@ -219,7 +233,14 @@ class TelemtState:
         if set(access.get('user_data_quota', {})) - {name} - set(state['users']):
             raise ValueError('other_quota_state_missing')
         epoch = int(time.time())
-        state['users'][name] = {'used_bytes': 0, 'last_reset_epoch_secs': epoch}
+        old = state['users'].get(name, {})
+        # Same as the core's manual reset: the calendar keeps its cadence and the
+        # watermark moves through the reset time, so the next boundary still applies.
+        entry = {'used_bytes': 0, 'last_reset_epoch_secs': epoch}
+        if 'quota_period' in old or old.get('period_cursor_epoch_secs', 0) > 0:
+            entry.update({k: old[k] for k in self.SCHEDULE if k in old})
+            entry['period_cursor_epoch_secs'] = max(old.get('period_cursor_epoch_secs', 0), epoch)
+        state['users'][name] = entry
         state['last_reset_epoch_secs'] = max(epoch, state['last_reset_epoch_secs'])
         self.write(state)
 

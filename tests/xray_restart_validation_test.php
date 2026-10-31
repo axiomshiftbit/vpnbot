@@ -20,7 +20,7 @@ class RestartValidationBot extends Bot
         return $this->valid;
     }
     public function collectSession() { $this->collections++; }
-    protected function tryXrayHotApply(array $previous, array $target): bool { return $this->hot; }
+    protected function tryXrayHotApply(array $previous, array $target, string $action = 'apply'): bool { return $this->hot; }
     public function syncXrayNginxRoutes(array $config): bool { return $this->routesValid; }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {

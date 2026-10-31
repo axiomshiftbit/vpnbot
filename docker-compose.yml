@@ -338,6 +338,8 @@ services:
             - /var/run/docker.sock:/var/run/docker.sock
         hostname: dockerproxy
         container_name: dockerproxy-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         env_file:
             - path: ./.env
               required: true # default
@@ -362,7 +364,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.29}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.10.31}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -385,6 +387,8 @@ services:
             - ./config/sshd_config:/etc/ssh/sshd_config
         hostname: wireguard
         container_name: wireguard-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -418,7 +422,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.29}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.10.31}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -435,6 +439,8 @@ services:
             - ./config/sshd_config:/etc/ssh/sshd_config
         hostname: wireguard1
         container_name: wireguard1-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -487,6 +493,8 @@ services:
             - ./scripts/start_ad.sh:/start_ad.sh
         hostname: adguard
         container_name: adguard-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -516,7 +524,7 @@ services:
             dockerfile: dockerfile/telemt.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.24}
-                TELEMT_VERSION: ${TELEMT_VERSION:-3.5.14}
+                TELEMT_VERSION: ${TELEMT_VERSION:-3.5.16}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
@@ -528,6 +536,8 @@ services:
             - ./logs:/logs
         hostname: telemt
         container_name: telemt-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -577,6 +587,8 @@ services:
             - ./logs:/logs
         hostname: xray
         container_name: xray-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -620,6 +632,8 @@ services:
             - ./scripts/start_oc.sh:/start_oc.sh
         hostname: ocserv
         container_name: openconnect-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -668,6 +682,8 @@ services:
             - ./scripts/start_np.sh:/start_np.sh
         hostname: naive
         container_name: naive-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -699,7 +715,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.29}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.10.31}
         cap_add:
             - NET_ADMIN
         sysctls:
@@ -771,6 +787,8 @@ services:
             - ./scripts/start_proxy.sh:/start_proxy.sh
         hostname: proxy
         container_name: proxy-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -819,6 +837,8 @@ services:
             - ./logs/:/logs/
         hostname: shadowsocks
         container_name: shadowsocks-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -860,6 +880,8 @@ services:
             - ./scripts/start_dnstt.sh:/start_dnstt.sh
         hostname: dnstt
         container_name: dnstt-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         # Ограничиваем исходящие SSH-forward пользователя dnstt по UID.
         cap_add:
             - NET_ADMIN
@@ -904,6 +926,8 @@ services:
             - ./logs:/logs
         hostname: openvpn
         container_name: openvpn-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -953,6 +977,8 @@ services:
             - ./logs:/logs
         hostname: ipsec
         container_name: ipsec-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -1016,6 +1042,8 @@ services:
             - ./scripts/start_tt.sh:/start_tt.sh
         hostname: trusttunnel
         container_name: trusttunnel-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -1059,6 +1087,8 @@ services:
             - ./scripts/start_hysteria.sh:/start_hysteria.sh
         hostname: hysteria
         container_name: hysteria-${VER}
+        # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
+        restart: unless-stopped
         depends_on:
             php:
                 condition: service_healthy
@@ -1088,6 +1118,7 @@ services:
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
                 SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
+            GODEBUG: multipathtcp=0 # Go 1.24+ иначе слушает MPTCP (CVE-2026-98432)
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
             - ./config/protocols/anytls:/config:ro
@@ -1120,6 +1151,7 @@ services:
                 MIERU_VERSION: ${MIERU_VERSION:-v3.39.0}
                 MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-434198ea0558bc440379e9a0a97f6904ba8dd6b213dd6fb9d578388eba7d2f12}
         environment:
+            GODEBUG: multipathtcp=0 # Go 1.24+ иначе слушает MPTCP (CVE-2026-98432)
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
             - ./config/protocols/mieru:/config:ro
@@ -1159,6 +1191,7 @@ services:
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
                 SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
+            GODEBUG: multipathtcp=0 # Go 1.24+ иначе слушает MPTCP (CVE-2026-98432)
             PROTOCOL_KIND: tuic
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
@@ -1191,9 +1224,10 @@ services:
             dockerfile: masque.dockerfile
             args:
                 MASQUE_GO_VERSION: ${MASQUE_GO_VERSION:-1.27.3}
-                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.10.29}
-                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-ee22c6f21855f70a52e19bff02fa71f4b28ce071d83ff9154fafcaa0f315a642}
+                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.10.31}
+                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-be44f95d497ad4ba6e9d1dcfbbd71e8e51f812aff077d4c15c9947eff5e3046a}
         environment:
+            GODEBUG: multipathtcp=0 # Go 1.24+ иначе слушает MPTCP (CVE-2026-98432)
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
             - ./config/protocols/masque:/config:ro
@@ -1226,6 +1260,7 @@ services:
             context: .
             dockerfile: dockerfile/snolc.dockerfile
         environment:
+            GODEBUG: multipathtcp=0 # Go 1.24+ иначе слушает MPTCP (CVE-2026-98432)
             PROTOCOL_DESIRED: /config/desired.json
         volumes:
             - ./config/protocols/snolc:/config:ro
@@ -1263,6 +1298,7 @@ services:
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
                 SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
+            GODEBUG: multipathtcp=0 # Go 1.24+ иначе слушает MPTCP (CVE-2026-98432)
             PROTOCOL_KIND: shadowtls
             PROTOCOL_DESIRED: /config/desired.json
         volumes:

@@ -2,6 +2,12 @@
 
 trait BotTelemtLimits
 {
+    // Периодический сброс квоты ([access.user_quota_periods], telemt 3.5.15+):
+    // по UTC — полночь, понедельник, первое число месяца. Ядро требует
+    // положительную квоту, поэтому период без квоты в конфиг не попадает.
+    public const TELEMT_QUOTA_PERIODS = ['daily', 'weekly', 'monthly'];
+    public const TELEMT_QUOTA_PERIOD_MIN = '3.5.15';
+
     public function telemtLimitsOf(array $conf): array
     {
         $limits = $conf['telemt_user_limits'] ?? [];
@@ -15,6 +21,9 @@ trait BotTelemtLimits
                 if (!is_int($value) || $value < 0 || $value > $max) throw new RuntimeException($this->i18n('telemt limits invalid'));
                 if ($value > 0) $result[$name][$field] = $value;
             }
+            $period = $row['period'] ?? null;
+            if ($period !== null && !in_array($period, self::TELEMT_QUOTA_PERIODS, true)) throw new RuntimeException($this->i18n('telemt limits invalid'));
+            if ($period !== null && !empty($result[$name]['quota'])) $result[$name]['period'] = $period;
         }
         return $result;
     }
@@ -72,7 +81,11 @@ trait BotTelemtLimits
         }
         foreach ($state['users'] as $row) {
             if (!is_array($row) || !is_int($row['used_bytes'] ?? null) || $row['used_bytes'] < 0
-                || !is_int($row['last_reset_epoch_secs'] ?? null) || $row['last_reset_epoch_secs'] < 0) {
+                || !is_int($row['last_reset_epoch_secs'] ?? null) || $row['last_reset_epoch_secs'] < 0
+                // Календарь TeleMT 3.5.15+ в той же записи: ядро с периодами не
+                // запускается на неверном состоянии, поэтому ловим это заранее.
+                || (array_key_exists('quota_period', $row) && !in_array($row['quota_period'], self::TELEMT_QUOTA_PERIODS, true))
+                || !is_int($row['period_cursor_epoch_secs'] ?? 0) || ($row['period_cursor_epoch_secs'] ?? 0) < 0) {
                 throw new RuntimeException($this->i18n('telemt limits state error'));
             }
         }
@@ -128,21 +141,29 @@ trait BotTelemtLimits
         });
     }
 
-    public function telemtChangeLimit(string $name, string $field, int $value, string $fingerprint): void
+    public function telemtChangeLimit(string $name, string $field, int|string $value, string $fingerprint): void
     {
         if (!$this->admin) return;
         $this->withLock('telemt', function () use ($name, $field, $value, $fingerprint) {
-            if (!in_array($field, ['quota', 'ips', 'reset'], true)) throw new LogicException('TeleMT limit field');
+            if (!in_array($field, ['quota', 'ips', 'reset', 'period'], true)) throw new LogicException('TeleMT limit field');
+            if (($field === 'period') !== is_string($value) || ($field === 'period' && !in_array($value, ['', ...self::TELEMT_QUOTA_PERIODS], true))) {
+                throw new LogicException('TeleMT limit value');
+            }
             $conf = $this->getPacConf();
             if (!isset($conf['telemt_users'][$name]) || !hash_equals($fingerprint, hash('sha256', $conf['telemt_users'][$name]))) {
                 throw new RuntimeException($this->i18n('telemt limits stale'));
             }
             if (!$this->protocolModuleEnabled('telemt')) throw new RuntimeException($this->i18n('telemt limits service off'));
             $old = $conf['telemt_user_limits'][$name] ?? [];
-            if ($field !== 'reset' && ($old[$field] ?? 0) === $value) return;
+            if ($field === 'period') {
+                if (($old['period'] ?? '') === $value) return;
+                if ($value !== '' && empty($old['quota'])) throw new RuntimeException($this->i18n('telemt limits period needs quota'));
+                if ($value !== '' && !$this->telemtVersionAtLeast(self::TELEMT_QUOTA_PERIOD_MIN)) throw new RuntimeException($this->i18n('telemt limits period need core'));
+            } elseif ($field !== 'reset' && ($old[$field] ?? 0) === $value) return;
             $this->telemtStateRun('version');
             $new = $old;
-            if ($field !== 'reset') $new[$field] = $value;
+            if ($field === 'period' && $value === '') unset($new['period']);
+            elseif ($field !== 'reset') $new[$field] = $value;
             $candidate = $conf; $candidate['telemt_user_limits'][$name] = $new;
             $this->telemtLimitsOf($candidate); // Запрещаем обход валидации через прямой вызов.
             $reset = $field === 'reset' || ($field === 'quota' && $value > 0 && empty($old['quota']));
@@ -199,6 +220,35 @@ trait BotTelemtLimits
         ]);
     }
 
+    // Выбор периода: отпечаток секрета в кнопке не даёт устаревшему сообщению
+    // поменять период пересозданному под тем же именем пользователю.
+    public function telemtQuotaPeriod(string $name, int $page, string $relay, string $choice = '', string $key = ''): void
+    {
+        $conf = $this->getPacConf();
+        $secret = $conf['telemt_users'][$name] ?? '';
+        if ($secret === '') { $this->telemtUsers($relay, $page); return; }
+        $fingerprint = hash('sha256', $secret);
+        if ($choice !== '') {
+            try {
+                if (!hash_equals(substr($fingerprint, 0, 8), $key)) throw new RuntimeException($this->i18n('telemt limits stale'));
+                $this->telemtChangeLimit($name, 'period', $choice === 'off' ? '' : $choice, $fingerprint);
+                $message = $this->i18n('telemt limits saved');
+            } catch (Throwable $error) { $message = '❌ ' . $error->getMessage(); }
+            $this->telemtUserLimits($name, $page, $relay, $message);
+            return;
+        }
+        $current = $this->telemtLimitsOf($conf)[$name]['period'] ?? 'off';
+        $data = [];
+        foreach (['off', ...self::TELEMT_QUOTA_PERIODS] as $option) {
+            $label = $option === 'off' ? $this->i18n('off') : $this->i18n('telemt limits period ' . $option);
+            $data[] = [['text' => ($option === $current ? '✅ ' : '') . $label,
+                'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'period-' . $option . '-' . substr($fingerprint, 0, 8))]];
+        }
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'limits')]];
+        $this->update($this->input['chat'], $this->input['message_id'],
+            'TeleMT → <b>' . self::esc($name) . '</b> → ' . $this->i18n('telemt limits period') . "\n\n" . $this->i18n('telemt limits period about'), $data);
+    }
+
     public function telemtUserLimits(string $name, int $page = 0, string $relay = '', string $message = ''): void
     {
         $conf = $this->getPacConf();
@@ -227,11 +277,22 @@ trait BotTelemtLimits
                 . ($live ? '' : ' · ' . $this->i18n('telemt limits snapshot'));
             if (!empty($usage['last_reset_epoch_secs'])) $text[] = $this->i18n('telemt limits since') . ': ' . gmdate('Y-m-d H:i:s', $usage['last_reset_epoch_secs']) . ' UTC';
             if (($usage['used_bytes'] ?? 0) >= $quota) $text[] = $this->i18n('telemt limits exhausted');
+            $period = $limits['period'] ?? '';
+            $line = $this->i18n('telemt limits period') . ': ' . ($period === '' ? $this->i18n('off') : $this->i18n('telemt limits period ' . $period));
+            $state = $live ? (string) ($usage['quota_schedule_state'] ?? '') : '';
+            if ($period !== '' && $state === 'active' && is_int($usage['quota_next_reset_epoch_secs'] ?? null)) {
+                $line .= ' · ' . $this->i18n('telemt limits period next') . ': ' . gmdate('Y-m-d H:i', $usage['quota_next_reset_epoch_secs']) . ' UTC';
+            } elseif ($period !== '' && in_array($state, ['pending', 'overdue', 'error'], true)) {
+                $line .= ' · ' . $this->i18n('telemt limits period state ' . $state);
+            }
+            $text[] = $line;
         }
         $text[] = 'Limit IP: ' . ($ips ?: $this->i18n('off')) . ' · ' . $this->i18n('telemt limits active') . ': ' . ($active ?? '—');
         $text[] = $this->i18n('telemt limits apply note');
         $data = [];
-        foreach (['quota', 'ips', 'reset'] as $action) $data[] = [['text' => $this->i18n('telemt limits ' . $action), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, $action)]];
+        foreach ($quota ? ['quota', 'period', 'ips', 'reset'] : ['quota', 'ips', 'reset'] as $action) {
+            $data[] = [['text' => $this->i18n('telemt limits ' . ($action === 'period' ? 'period button' : $action)), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, $action)]];
+        }
         $data[] = [['text' => $this->i18n('refresh'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'limits')]];
         $context = substr(hash('sha256', $name), 0, 12) . '.' . $page . '.' . ($relay === '' ? 'direct' : substr(hash('sha256', $relay), 0, 12));
         $data[] = $this->menuHelpButton('telemt_limits', $context);

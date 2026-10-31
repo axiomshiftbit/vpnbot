@@ -235,7 +235,7 @@ INNER'''
   # Каталог наборов общий для обоих проходов: журнал первой попытки уносим в результаты с меткой прохода.
   for x in rows:
    if x.get('retried'):retries.append(label+'/'+x['case']);(R/'published-main'/(x['case']+'.attempt1.log')).replace(O/(label+'-'+x['case']+'.attempt1.log'));(O/'retries.json').write_text(json.dumps(retries))
-  check('native',label+'-complete',len(rows)==25 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
+  check('native',label+'-complete',len(rows)==26 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
   shutil.copy2(output,O/(label+'.json'))
   for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py")]:
    def attempt(name=label+"-"+name,script=script):

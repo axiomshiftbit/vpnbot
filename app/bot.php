@@ -1225,7 +1225,7 @@ class Bot
                 $this->trackTelemtOnline(true);
                 $this->telemtUsers($m[2] ?? '', (int) $m[1]);
                 break;
-            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|reset|log|logclear|refresh|qreset-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|reset|log|logclear|refresh|qreset-[a-f0-9]{8}|period|period-(?:off|daily|weekly|monthly)-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
                 $this->telemtUserAction($m[1], (int) $m[2], $m[3], $m[4] ?? '');
                 break;
             case preg_match('~^/tu ([tdr]) (\w+) (\d+) ([\w.\-]+)$~', $this->input['callback'], $m):
@@ -1759,14 +1759,15 @@ class Bot
             case preg_match('~^/resetXrStats$~', $this->input['callback'], $m):
                 $this->resetXrStats();
                 break;
-            case preg_match('~^/regenAllXr$~', $this->input['callback'], $m):
-                $this->regenAllXr();
+            // Ротации ключей и ссылок: первое нажатие — экран подтверждения.
+            case preg_match('~^/regenAllXr( ok)?$~', $this->input['callback'], $m):
+                empty($m[1]) ? $this->xrConfirm('regenAllXr') : $this->regenAllXr();
                 break;
-            case preg_match('~^/regenRealityXr$~', $this->input['callback'], $m):
-                $this->regenRealityXr();
+            case preg_match('~^/regenRealityXr( ok)?$~', $this->input['callback'], $m):
+                empty($m[1]) ? $this->xrConfirm('regenRealityXr') : $this->regenRealityXr();
                 break;
-            case preg_match('~^/regenIdXr (\d+)$~', $this->input['callback'], $m):
-                $this->regenIdXr($m[1]);
+            case preg_match('~^/regenIdXr (\d+)(?: ([a-f0-9]{8}))?$~', $this->input['callback'], $m):
+                $this->xrConfirmClient('regenIdXr', (int) $m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/v2ray$~', $this->input['callback'], $m):
                 $this->v2ray();
@@ -1894,14 +1895,14 @@ class Bot
             case preg_match('~^/extDel (\d+)_(\d+)(?:_([a-f0-9]{8}))?$~', $this->input['callback'], $m):
                 $this->extDel($m[1], $m[2], $m[3] ?? '');
                 break;
-            case preg_match('~^/rotateSub (\d+)$~', $this->input['callback'], $m):
-                $this->rotateSubToken($m[1]);
+            case preg_match('~^/rotateSub (\d+)(?: ([a-f0-9]{8}))?$~', $this->input['callback'], $m):
+                $this->xrConfirmClient('rotateSub', (int) $m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/switchSubtokenStrict$~', $this->input['callback'], $m):
                 $this->switchSubtokenStrict();
                 break;
-            case preg_match('~^/rotateAllSubTokens$~', $this->input['callback'], $m):
-                $this->rotateAllSubTokens();
+            case preg_match('~^/rotateAllSubTokens( ok)?$~', $this->input['callback'], $m):
+                empty($m[1]) ? $this->xrConfirm('rotateAllSubTokens') : $this->rotateAllSubTokens();
                 break;
             case preg_match('~^/choiceTemplate (.+)$~', $this->input['callback'], $m):
                 $this->choiceTemplate($m[1]);
@@ -2472,6 +2473,14 @@ class Bot
             foreach ($limits as $name => $row) if (!empty($row[$field])) $values[] = $q($name) . ' = ' . $row[$field];
             // В ядре quota=0 запрещает трафик; безлимит означает отсутствие ключа.
             if ($values) $t .= "\n[access.$table]\n" . implode("\n", $values) . "\n";
+        }
+        // Период сброса квоты — только при положительной квоте (её требует
+        // ядро) и только ядру 3.5.15+: строгий разбор ключей старого ядра
+        // отверг бы неизвестную таблицу, и TeleMT не запустился бы.
+        $periods = [];
+        foreach ($limits as $name => $row) if (!empty($row['period']) && !empty($row['quota'])) $periods[] = $q($name) . ' = ' . $q($row['period']);
+        if ($periods && $this->telemtVersionAtLeast(self::TELEMT_QUOTA_PERIOD_MIN)) {
+            $t .= "\n[access.user_quota_periods]\n" . implode("\n", $periods) . "\n";
         }
         $t .= "\n[[upstreams]]\n";
         $t .= "type = \"direct\"\n";
@@ -3692,19 +3701,25 @@ class Bot
             $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >> /logs/xray_stdout 2>&1 & '
                 . 'xray_pid=$!; python3 /xray_hot_apply.py mark --pid "$xray_pid" >/dev/null 2>&1 || true', 'xr');
         } else {
-            return $this->writeXrayJson($json);
+            $previous = $this->getXray() ?? [];
+            if (!$this->writeXrayJson($json)) return false;
+            // Запись без применения (срок, лимит, шаблоны): если ядро этих полей
+            // не видит, маркер горячего применения переносится на новый конфиг.
+            // Иначе следующее изменение (отключение, ключ) шло полным перезапуском.
+            $this->tryXrayHotApply($previous, $c, 'sync');
+            return true;
         }
         return true;
     }
 
-    protected function tryXrayHotApply(array $previous, array $target): bool
+    protected function tryXrayHotApply(array $previous, array $target, string $action = 'apply'): bool
     {
         if (!in_array('HandlerService', $previous['api']['services'] ?? [], true)
             || !in_array('RoutingService', $previous['api']['services'] ?? [], true)) return false;
         $input = json_encode(['previous' => $previous, 'target' => $target], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($input === false || strlen($input) > 32 * 1024 * 1024) return false;
-        $out = $this->sshInputCommand('python3 /xray_hot_apply.py apply --size ' . strlen($input) . ' 2>/dev/null', $input, 'xr');
-        return !$this->sshFailed && trim($out) === 'APPLIED';
+        $out = $this->sshInputCommand('python3 /xray_hot_apply.py ' . ($action === 'sync' ? 'sync' : 'apply') . ' --size ' . strlen($input) . ' 2>/dev/null', $input, 'xr');
+        return !$this->sshFailed && trim($out) === ($action === 'sync' ? 'SYNCED' : 'APPLIED');
     }
 
     // Подсеть docker-compose сборки: в ней живут adguard (10.10.0.5), панель,
@@ -4171,13 +4186,28 @@ class Bot
     // самом freedom (с v26.9.9 ядро тогда пишет warning и правила не строит):
     // на сервере такого freedom нет, dialerProxy живёт только в клиентских
     // конфигах подписки (applyDpiFragment).
+    //
+    // Аудит 2026-10-31: «allow 10.10.0.0/16» доверял запрету внутренней сети
+    // на уровне маршрутизации, а тот совпадает только по IP. При IPIfNonMatch
+    // ядро сначала проходит правила с ДОМЕННОЙ целью, и совпавшее доменное
+    // правило в direct (группа узлов «напрямую», запасной direct упавшего
+    // узла) выигрывало до правил по IP: клиент просил 10.10.0.15.nip.io и
+    // получал sshd service, AdGuard мимо пропуска nginx, dockerproxy
+    // (проверено на тестовом сервере лабораторным ядром с боевыми правилами). Теперь
+    // freedom сам пускает внутрь только то, что разрешают и гейты:
+    // DNS AdGuard и WARP-socks (TCP-порт и UDP-порты relay).
+    public const FREEDOM_LEGACY_INTERNAL = [['action' => 'allow', 'ip' => ['10.10.0.0/16']]];
+
     public function ensureFreedomCompat(array &$c): void
     {
         if (empty($c['outbounds']) || !is_array($c['outbounds'])) {
             return;
         }
+        $warp = $this->warpSocksIp();
         $finalRules = [
-            ['action' => 'allow', 'ip' => ['10.10.0.0/16']],
+            ['action' => 'allow', 'network' => 'tcp,udp', 'port' => '53', 'ip' => [self::INTERNAL_DNS]],
+            ['action' => 'allow', 'network' => 'tcp', 'port' => self::WARP_SOCKS_PORT, 'ip' => [$warp]],
+            ['action' => 'allow', 'network' => 'udp', 'port' => self::WARP_SOCKS_UDP_PORTS, 'ip' => [$warp]],
             ['action' => 'block', 'ip' => [
                 '0.0.0.0/8',
                 '10.0.0.0/8',
@@ -4206,8 +4236,18 @@ class Bot
             if (!isset($ob['settings']) || !is_array($ob['settings'])) {
                 $ob['settings'] = [];
             }
-            if (!array_key_exists('finalRules', $ob['settings'])) {
+            $current = $ob['settings']['finalRules'] ?? null;
+            if ($current === null) {
                 $ob['settings']['finalRules'] = $finalRules;
+                continue;
+            }
+            // Прежняя пара по умолчанию (allow 10.10.0.0/16 + тот же запрет)
+            // заменяется на месте: запрет ::/0 узлов IPv6 и собственные правила
+            // администратора остаются, где были.
+            $at = is_array($current) ? array_search(self::FREEDOM_LEGACY_INTERNAL[0], $current, true) : false;
+            if ($at !== false && ($current[$at + 1] ?? null) === $finalRules[3]) {
+                array_splice($current, $at, 2, $finalRules);
+                $ob['settings']['finalRules'] = $current;
             }
         }
         unset($ob);
@@ -18479,6 +18519,9 @@ DNS-over-HTTPS with IP:
         if (preg_match('~^qreset-([a-f0-9]{8})$~D', $action, $match)) {
             $this->telemtResetQuota($name, $page, $relay, $match[1]); return;
         }
+        if (preg_match('~^period(?:-(off|daily|weekly|monthly)-([a-f0-9]{8}))?$~D', $action, $match)) {
+            $this->telemtQuotaPeriod($name, $page, $relay, $match[1] ?? '', $match[2] ?? ''); return;
+        }
         switch ($action) {
             case 'limits': $this->telemtUserLimits($name, $page, $relay); return;
             case 'log': $this->telemtUserLog($name, $page, $relay); return;
@@ -20491,7 +20534,6 @@ DNS-over-HTTPS with IP:
 
         if (empty($type)) {
             $buttons = array_merge(...$this->filterProtocolButtons($data));
-            array_splice($buttons, -2, 0, $this->menuHelpButton('navigation'));
             $data = array_chunk($buttons, 2);
         }
 
@@ -25105,6 +25147,7 @@ DNS-over-HTTPS with IP:
     {
         $relayRequested = array_key_exists('relay', $_GET);
         $this->normalizeSubGet();
+        $this->useCachedXrayCoreProbe();
         $xr  = $this->getXray();
         // Тот же guard, что в sub() и subscription(): getXray() отдаёт null на
         // нечитаемом конфиге, а findClientBySid(array $xr, …) на нём — TypeError,
@@ -25562,6 +25605,53 @@ DNS-over-HTTPS with IP:
         $pac['subtoken_strict'] = $enable ? 1 : 0;
         $this->setPacConf($pac);
         $this->xray();
+    }
+
+    // Подтверждение ротаций: ключи и ссылки меняются необратимо, и случайное
+    // нажатие отключало пользователей. Для одного клиента в кнопку
+    // подтверждения вшит его отпечаток: если список изменился и номер теперь
+    // указывает на другого человека, действие не выполняется.
+    public function xrClientKey(array $client): string
+    {
+        return substr(hash('sha256', ($client['email'] ?? '') . "\n" . ($client['id'] ?? '')), 0, 8);
+    }
+
+    public function xrConfirm(string $action, ?int $i = null): void
+    {
+        $name = '';
+        $ok = "/$action ok";
+        $back = '/xray';
+        if ($i !== null) {
+            $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+            if ($client === null) {
+                $this->xray();
+                return;
+            }
+            $name = (string) ($client['email'] ?? '');
+            $ok = "/$action $i " . $this->xrClientKey($client);
+            $back = "/userXr $i";
+        }
+        $text = 'Menu -> ' . $this->i18n('xray') . ($name === '' ? '' : ' -> ' . self::esc($name)) . "\n\n"
+            . $this->i18n("confirm $action") . "\n\n" . $this->i18n('confirm irreversible');
+        $this->update($this->input['chat'], $this->input['message_id'], $text, [
+            [['text' => '✅ ' . $this->i18n('confirm yes'), 'callback_data' => $ok]],
+            [['text' => '↩️ ' . $this->i18n('cancel'), 'callback_data' => $back]],
+        ]);
+    }
+
+    public function xrConfirmClient(string $action, int $i, string $key): void
+    {
+        if ($key === '') {
+            $this->xrConfirm($action, $i);
+            return;
+        }
+        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+        if ($client === null || !hash_equals($this->xrClientKey($client), $key)) {
+            if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
+            $client === null ? $this->xray() : $this->userXr($i);
+            return;
+        }
+        $action === 'regenIdXr' ? $this->regenIdXr($i) : $this->rotateSubToken($i);
     }
 
     // Rotate a client's subtoken: previously shared/leaked sub URLs stop working,
@@ -26748,6 +26838,9 @@ DNS-over-HTTPS with IP:
         }
         $this->restartXray($c);
         $this->adguardXrayClients();
+        // Новый пользователь включён: если список был переключён на выключенных
+        // (общий для всех админов xtlslist), его не было бы видно в меню.
+        if (!empty($p['xtlslist'])) $this->pacConfUpdate(static function (&$conf) { $conf['xtlslist'] = 0; });
         if (count($users) == 1) {
             $this->userXr(count($c['inbounds'][0]['settings']['clients']) - 1);
         } else {
@@ -28050,7 +28143,7 @@ DNS-over-HTTPS with IP:
             }
         }
 
-        return $this->xrProbe = [
+        $this->xrProbe = [
             'ok'      => $ok,
             'fork'    => $ok && trim($p[0] ?? '') === '1',
             'active'  => $ok && trim($p[1] ?? '') === self::XRAY_BIN_FORK ? 'fork' : 'origin',
@@ -28062,6 +28155,42 @@ DNS-over-HTTPS with IP:
             'reality' => $reality,
             'reality_local' => $realityLocal,
         ];
+        // Кеш — только рядом с настоящим xray.json: тесты с подменой SSH и
+        // без своего конфига не пишут поддельную пробу никуда.
+        if ($ok && is_file($this->xrayConf)) {
+            $this->atomicJson($this->xrayCoreProbeFile(), ['time' => time(), 'probe' => $this->xrProbe]);
+        }
+        return $this->xrProbe;
+    }
+
+    // Проба ядра для выдачи подписок. Живая проба — SSH в xr, 150–250 мс на
+    // каждый запрос sing-box; ядро же меняется только кнопкой бота (после неё
+    // applyXrayCoreLocked() делает свежую пробу) и обновлением (cron при
+    // старте проверяет ядро сразу). Поэтому подписка берёт последнюю удачную
+    // пробу не старше XRAY_PROBE_CACHE_TTL: cron освежает её каждые 300 с.
+    // Файл лежит в /config, а не в /logs: /logs смонтирован на запись почти
+    // всем контейнерам протоколов, /config — только php и service.
+    public const XRAY_PROBE_CACHE_TTL = 600;
+
+    protected function xrayCoreProbeFile(): string
+    {
+        return dirname($this->xrayConf) . '/xray-core-probe.json';
+    }
+
+    public function useCachedXrayCoreProbe(): void
+    {
+        if ($this->xrProbe !== null) return;
+        $file = $this->xrayCoreProbeFile();
+        $data = is_file($file) ? json_decode((string) @file_get_contents($file), true) : null;
+        $probe = is_array($data) ? ($data['probe'] ?? null) : null;
+        if (!is_array($probe) || !is_int($data['time'] ?? null) || abs(time() - $data['time']) > self::XRAY_PROBE_CACHE_TTL) return;
+        $types = ['ok' => 'boolean', 'fork' => 'boolean', 'active' => 'string', 'brutal' => 'boolean', 'running' => 'string',
+            'selection' => 'string', 'running_selection' => 'string', 'version' => 'string', 'reality' => 'string', 'reality_local' => 'boolean'];
+        foreach ($types as $key => $type) {
+            if (gettype($probe[$key] ?? null) !== $type) return;
+        }
+        if ($probe['ok'] !== true || !in_array($probe['active'], ['fork', 'origin'], true) || !in_array($probe['running'], ['', 'fork', 'origin'], true)) return;
+        $this->xrProbe = array_intersect_key($probe, $types);
     }
 
     // Есть ли форк в образе вообще. Старый образ (до этой правки) второго
@@ -28617,6 +28746,12 @@ DNS-over-HTTPS with IP:
         }
         $type    = !empty($this->getPacConf()['xtlslist']);
         $clients = array_filter($c['inbounds'][0]['settings']['clients'], fn($e) => !$type ? empty($e['off']) : !empty($e['off']));
+        // Переключатель списка общий для всех администраторов: пустой выбранный
+        // список при непустом другом выглядел как «пользователи пропали».
+        if (!$clients && ($type ? $on : $off) > 0) {
+            $text[] = '';
+            $text[] = $this->i18n($type ? 'xray list off empty' : 'xray list on empty');
+        }
         uasort($clients, fn($a, $b) => (($a['time'] ?? 0) ?: PHP_INT_MAX) <=> (($b['time'] ?? 0) ?: PHP_INT_MAX));
 
         $wg  = json_decode(file_get_contents($this->clients), true) ?: [];
@@ -29092,46 +29227,53 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    // Limit IP: различные адреса клиента за окно ip_limit секунд (так обещает
+    // подсказка «300:2 — не больше 2 разных IP за 5 минут»). Аудит 2026-10-31:
+    // прежний счёт обнулялся после каждого уведомления, и два постоянно
+    // активных адреса давали уведомление каждые несколько строк журнала
+    // (на тестовом сервере — 446 сообщений на 3000 строк), IPv6 не учитывался вовсе, а
+    // служебный «Профиль для узла» (к нему ходит другой сервер) поднимал
+    // тревогу, хотя в HWID он уже исключён. Теперь — одно уведомление на
+    // пользователя за окно, оба семейства адресов, служебные профили — мимо.
     public function frequencyAnalyze($line, $pac)
     {
-        if (!empty($this->pool)) {
-            foreach ($this->pool as $i => $j) {
-                if (!empty($j['ips'])) {
-                    foreach ($j['ips'] as $k => $v) {
-                        if ($v + $pac['ip_limit'] < time()) {
-                            unset($this->pool[$i]['ips'][$k]);
-                        }
-                    }
-                }
-            }
-        }
-        if (empty(preg_match('~(?<date>.+)\sfrom\s(?<ip>\d+\.\d+\.\d+\.\d+)(?=.+email:\s(?<email>.+))~', $line, $m))) {
+        if (!preg_match('~\sfrom\s(?:tcp:|udp:)?\[?(?<ip>[0-9A-Fa-f:.]+?)\]?:\d+\s.*?email:\s(?<email>.+)~', (string) $line, $m)) {
             return;
         }
-        if (!empty($m['ip']) && !empty($m['email'])) {
-            $ip = ip2long($m['ip']);
-            if (!empty($this->pool[$m['email']]['ip']) && $this->pool[$m['email']]['ip'] != $ip) {
-                $this->pool[$m['email']]['ips'][$ip] = time();
+        $packed = @inet_pton($m['ip']);
+        $email  = trim($m['email']);
+        if ($packed === false || $email === '') {
+            return;
+        }
+        $now    = time();
+        $window = max(1, (int) $pac['ip_limit']);
+        $limit  = max(1, (int) (($pac['ip_count'] ?? 0) ?: 1));
+        $ips    = $this->pool[$email]['ips'] ?? [];
+        $ips[inet_ntop($packed)] = $now;
+        $ips = array_filter($ips, fn($seen) => $seen + $window >= $now);
+        $this->pool[$email]['ips'] = $ips;
+        if (count($ips) <= $limit || ($this->pool[$email]['alerted'] ?? 0) + $window > $now) {
+            return;
+        }
+        $xr = $this->getXray();
+        foreach ($xr['inbounds'][0]['settings']['clients'] ?? [] as $k => $v) {
+            if (($v['email'] ?? null) !== $email) {
+                continue;
             }
-            if (!empty($this->pool[$m['email']]['ips']) && count($this->pool[$m['email']]['ips']) > ($pac['ip_count'] ?: 1)) {
-                $xr = $this->getXray();
-                foreach ($xr['inbounds'][0]['settings']['clients'] as $k => $v) {
-                    if (empty($v['off']) && $v['email'] == $m['email']) {
-                        require __DIR__ . '/config.php';
-                        foreach ($c['admin'] as $admin) {
-                            $this->send($admin, "vless: {$m['email']} limit ip " . count($this->pool[$m['email']]['ips']) . ' > ' . ($pac['ip_count'] ?: 1), button: [[
-                                [
-                                    'text'          => $this->i18n(!empty($v['off']) ? 'off' : 'on'),
-                                    'callback_data' => "/switchXr $k",
-                                ],
-                            ]]);
-                        }
-                        unset($this->pool[$m['email']]);
-                        break;
-                    }
-                }
+            if (empty($v['off']) && empty($v['exit_relay'])) {
+                $this->pool[$email]['alerted'] = $now;
+                $this->ipLimitAlert('vless: ' . self::esc($email) . ' limit ip ' . count($ips) . ' > ' . $limit, (int) $k);
             }
-            $this->pool[$m['email']]['ip'] = $ip;
+            break;
+        }
+    }
+
+    protected function ipLimitAlert(string $text, int $client): void
+    {
+        $c = [];
+        require __DIR__ . '/config.php';
+        foreach ((array) ($c['admin'] ?? []) as $admin) {
+            $this->send($admin, $text, button: [[['text' => $this->i18n('on'), 'callback_data' => "/switchXr $client"]]]);
         }
     }
 
@@ -31722,6 +31864,7 @@ DNS-over-HTTPS with IP:
         $connectionOnly = $return === 'connection';
         $relayRequested = array_key_exists('relay', $_GET);
         $this->normalizeSubGet();
+        $this->useCachedXrayCoreProbe();
         $mihomoJson = ($_GET['t'] ?? '') === 'clj';
         if ($mihomoJson) $_GET['t'] = 'cl';
         switch ($_GET['t'] ?? '') {
@@ -32969,6 +33112,8 @@ DNS-over-HTTPS with IP:
     // Генерация ленивая (wgcf register — сетевой вызов к API Cloudflare) и
     // выполняется только когда шаблон реально просит warp-теги. Готовый
     // профиль дальше просто читается с тома.
+    public const WARP_CLIENT_RETRY = 300;
+
     public function warpClientProfile($email)
     {
         $email = (string) $email;
@@ -32980,6 +33125,11 @@ DNS-over-HTTPS with IP:
             $dir = $this->warpClientDir($email);
             $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
             if ($prof !== false) return $this->warpclients[$email] = $prof;
+            // Неудачная регистрация не повторяется на каждой выдаче подписки:
+            // иначе каждое обновление — SSH в wp и запрос к Cloudflare, который
+            // ограничивает регистрации с одного адреса.
+            $retry = "$dir.retry";
+            if ((int) @file_get_contents($retry) > time()) return $this->warpclients[$email] = false;
             $d = escapeshellarg($dir);
             $key = (string) ($this->getPacConf()['warp'] ?? '');
             $lic = preg_match('~^[A-Za-z0-9-]+$~', $key)
@@ -32997,7 +33147,10 @@ DNS-over-HTTPS with IP:
             );
             // Сохраняем аккаунт при сетевой ошибке: повтор генерирует профиль
             // из тех же credentials, не регистрируя ещё одно устройство.
-            return $this->warpclients[$email] = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
+            $prof = $this->parseWarpProfile(@file_get_contents("$dir/wgcf-profile.conf"));
+            if ($prof === false) @file_put_contents($retry, (string) (time() + self::WARP_CLIENT_RETRY));
+            else @unlink($retry);
+            return $this->warpclients[$email] = $prof;
         });
     }
 
@@ -33008,6 +33161,7 @@ DNS-over-HTTPS with IP:
         $this->withLock('warp-client-' . sha1((string) $email), function () use ($email) {
             unset($this->warpclients[(string) $email]);
             $this->ssh('rm -rf ' . escapeshellarg($this->warpClientDir($email)), 'wp');
+            @unlink($this->warpClientDir($email) . '.retry');
         });
     }
 
@@ -35657,9 +35811,14 @@ DNS-over-HTTPS with IP:
         return $d;
     }
 
+    // /etc/nginx/nginx.conf контейнера ng — это ./config/nginx.conf, смонтированный
+    // файлом, и бот пишет его только на месте (backupWriteInPlace), так что
+    // php видит тот же текст у себя в /config. Раньше здесь был SSH в ng:
+    // ~100–180 мс, до двух раз на каждую выдачу подписки.
     public function nginxGetTypeCert()
     {
-        $conf = $this->ssh('cat /etc/nginx/nginx.conf', 'ng');
+        $path = dirname($this->xrayConf) . '/nginx.conf';
+        $conf = is_file($path) ? (string) file_get_contents($path) : $this->ssh('cat /etc/nginx/nginx.conf', 'ng');
         preg_match("/#~([^\s]+)/", $conf, $m);
         return $m[1] ?? '';
     }

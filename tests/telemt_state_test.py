@@ -76,6 +76,63 @@ class TelemtStateTests(unittest.TestCase):
                 self.state.validate({'last_reset_epoch_secs': 0, 'users': {'alice': {'used_bytes': value, 'last_reset_epoch_secs': 0}}})
         self.state.validate({'last_reset_epoch_secs': 0, 'users': {'alice': {'used_bytes': 2**64-1, 'last_reset_epoch_secs': 0}}})
 
+    # TeleMT 3.5.15+ keeps quota_period and its UTC watermark in the same row.
+    def scheduled(self, used=100):
+        data = self.initial(used)
+        data['users']['alice'].update({'quota_period': 'monthly', 'period_cursor_epoch_secs': 1793000000})
+        self.state.write(data)
+        return data
+
+    def test_schedule_fields_validated(self):
+        self.scheduled()
+        for field, value in [('quota_period', 'yearly'), ('quota_period', None), ('period_cursor_epoch_secs', -1), ('period_cursor_epoch_secs', '1')]:
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                data = self.state.read(); data['users']['alice'][field] = value; self.state.validate(data)
+
+    def test_checkpoint_keeps_core_calendar(self):
+        self.scheduled()
+        with patch.object(self.state, 'processes', return_value={123: '456'}), patch.object(self.state, 'fetch', return_value=self.snapshot(used=250)):
+            self.state.checkpoint()
+        alice = self.state.read()['users']['alice']
+        self.assertEqual({'used_bytes': 250, 'last_reset_epoch_secs': 5, 'quota_period': 'monthly', 'period_cursor_epoch_secs': 1793000000}, alice)
+
+    def test_checkpoint_retries_when_core_rewrites_file(self):
+        self.scheduled()
+        original = self.state.read
+        calls = []
+        def read_then_core_writes():
+            data = original()
+            if not calls:
+                # The core's own period checkpoint lands between our read and write.
+                newer = json.loads(json.dumps(data)); newer['users']['alice']['period_cursor_epoch_secs'] = 1795000000
+                self.state.path.write_text(json.dumps(newer))
+            calls.append(1)
+            return data
+        with patch.object(self.state, 'processes', return_value={123: '456'}), patch.object(self.state, 'fetch', return_value=self.snapshot(used=260)), \
+                patch.object(self.state, 'read', side_effect=read_then_core_writes):
+            self.state.checkpoint()
+        alice = original()['users']['alice']
+        self.assertEqual(2, len(calls))
+        self.assertEqual((260, 1795000000), (alice['used_bytes'], alice['period_cursor_epoch_secs']))
+
+    def test_manual_reset_keeps_cadence(self):
+        self.scheduled(used=900)
+        before = int(time.time())
+        self.state.reset('alice')
+        alice = self.state.read()['users']['alice']
+        self.assertEqual((0, 'monthly'), (alice['used_bytes'], alice['quota_period']))
+        self.assertGreaterEqual(alice['period_cursor_epoch_secs'], max(before, 1793000000))
+        self.assertGreaterEqual(alice['last_reset_epoch_secs'], before)
+        self.assertEqual({'used_bytes': 333, 'last_reset_epoch_secs': 0}, self.state.read()['users']['bob'])
+        # Without a calendar the row stays in the legacy shape.
+        self.state.reset('bob')
+        self.assertEqual({'used_bytes', 'last_reset_epoch_secs'}, set(self.state.read()['users']['bob']))
+
+    def test_prepare_keeps_calendar(self):
+        self.scheduled()
+        self.state.prepare()
+        self.assertEqual('monthly', self.state.read()['users']['alice']['quota_period'])
+
     def test_symlink_rejected(self):
         self.initial()
         other = self.root / 'other'; other.write_text(self.state.path.read_text())

@@ -11,7 +11,13 @@ name: tests
 
 on:
   pull_request:
+  # Только тесты, без сборки и публикации: Actions → tests → Run workflow.
   workflow_dispatch:
+    inputs:
+      test_runner:
+        description: 'На домашней VM home-build (только для axiomshiftbit). Без отметки — на серверах GitHub'
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       test_runner:
@@ -57,8 +63,8 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-linux-64.zip
-          echo '8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2  Xray-linux-64.zip' | sha256sum --check
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip
+          echo 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
@@ -112,8 +118,8 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-linux-64.zip
-          echo '8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2  Xray-linux-64.zip' | sha256sum --check
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip
+          echo 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test

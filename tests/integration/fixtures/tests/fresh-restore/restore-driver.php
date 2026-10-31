@@ -546,6 +546,29 @@ switch ($action) {
         file_put_contents("$dir/share-link.txt",$b->linkXray(0));
         $result['transport']=$b->getPacConf()['transport'];
         break;
+    // Выдача подписки без SSH: свежая проба ядра пишет кеш, затем каждый
+    // формат собирается ботом, считающим вызовы SSH. Значения не выводятся.
+    case 'sub-nossh':
+        $b->xrayCoreProbe(true);
+        $counter=new class($c['key'],$i) extends Bot {
+            public int $sshCalls=0;
+            public function ssh($cmd,$service='wg',$wait=true,$log='/dev/null') { $this->sshCalls++; return parent::ssh($cmd,$service,$wait,$log); }
+        };
+        $x=$counter->getXray();
+        $client=$x['inbounds'][0]['settings']['clients'][0];
+        foreach (['s','si','cl','clj'] as $type) {
+            $_GET=['t'=>$type,'s'=>$counter->sidOf($client)];
+            $start=microtime(true);
+            $body=(string)$counter->subscription(true);
+            $result[$type]=['ssh'=>$counter->sshCalls,'bytes'=>strlen($body),'ms'=>(int)round((microtime(true)-$start)*1000),
+                'parsed'=>is_array($type==='cl'?yaml_parse($body):json_decode($body,true))];
+            $counter->sshCalls=0;
+        }
+        $cache=json_decode((string)@file_get_contents('/config/xray-core-probe.json'),true);
+        $result['cache']=['ok'=>($cache['probe']['ok'] ?? null)===true,'age'=>is_int($cache['time'] ?? null)?time()-$cache['time']:null,
+            'mode'=>sprintf('%o',@fileperms('/config/xray-core-probe.json') & 0777)];
+        $result['tls']=$b->nginxGetTypeCert();
+        break;
     // XDRIVE: те же действия, что выполняют кнопки меню.
     case 'xdrive-enable':
         $error=$b->applyXdrive(['enabled'=>1,'service'=>'webdav','url'=>$argv[2],'folder'=>$argv[3],'secrets'=>[$argv[4],$argv[5]]]);

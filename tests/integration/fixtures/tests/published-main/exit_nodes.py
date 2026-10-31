@@ -5,7 +5,7 @@ Xray с входом VLESS REALITY во внутренней сети, клие�
 цели: через узел — адрес узла, напрямую — адрес Xray бота. Проба бота идёт
 через узел к цели (узел разрешает имена сайтов пробы в её адрес); внешние
 сервисы не используются."""
-import json,os,pathlib,subprocess,time,urllib.parse
+import json,os,pathlib,socket,struct,subprocess,time,urllib.parse
 os.umask(0o077);R=pathlib.Path('/opt/vpnbot-hosted-ci/stand');O=R/'results/exit-nodes';O.mkdir(mode=0o700,exist_ok=True);results=[]
 TARGET='vpnbot-protocol-target';NET='vpnbot-protocol-test'
 # Имя с префиксом vpnbot-ci-retain-: оставшийся после сбоя контейнер убирает cleanup.
@@ -43,6 +43,23 @@ def source(host,limit=10):
 def via(host,limit=10):return source(host,limit)==EXIT_IP
 def direct(host,limit=10):
  src=source(host,limit);return src not in ('',EXIT_IP)
+# Сырой SOCKS5 к клиенту на VM: адрес — имя, ответ цели — байты (без содержимого в журнал).
+def socks_read(host,port,payload=b'',limit=6):
+ data=b''
+ try:
+  with socket.create_connection(('127.0.0.1',SOCKS),timeout=limit) as s:
+   s.sendall(b'\x05\x01\x00');s.recv(2)
+   h=host.encode();s.sendall(b'\x05\x01\x00\x03'+bytes([len(h)])+h+struct.pack('!H',port));s.recv(10)
+   if payload:s.sendall(payload)
+   while len(data)<4096:
+    chunk=s.recv(4096)
+    if not chunk:break
+    data+=chunk
+ except OSError:pass
+ return data
+DNSQ=b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01'
+def internal_ip(name):
+ return next((a for a in run('docker','inspect','--format','{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}',name).stdout.split() if a.startswith('10.10.')),'')
 def wait(cond,seconds):
  end=time.monotonic()+seconds
  while time.monotonic()<end:
@@ -89,6 +106,19 @@ try:
  before=bot('reset');check('clean-before-the-test',before['nodes']=={} and before['rules']==[] and before['outbounds']==[] and before['burst'] is None)
  email=before['clients'][0]['email']
  run('docker','exec','php-audit','php','/tmp/audit-driver.php','export',timeout=120).check_returncode()
+ # Подписка без SSH в соседние контейнеры: тип сертификата — из /config/nginx.conf,
+ # проба ядра — из кеша /config/xray-core-probe.json (пишут только php и service).
+ r=run('docker','exec','php-audit','php','/tmp/audit-driver.php','sub-nossh',timeout=120)
+ sub=json.loads(r.stdout)['result'] if r.returncode==0 else {}
+ (O/'sub-nossh.json').write_text(json.dumps(sub,indent=1))
+ check('subscription-formats-built',all(sub.get(t,{}).get('parsed') and sub[t]['bytes']>0 for t in ('s','si','cl','clj')))
+ check('subscription-without-ssh',all(sub.get(t,{}).get('ssh')==0 for t in ('s','si','cl','clj')))
+ age=sub.get('cache',{}).get('age');check('core-probe-cache-fresh',sub.get('cache',{}).get('ok') is True and isinstance(age,int) and 0<=age<600)
+ # Прямой выход: внутрь сети Docker — только DNS AdGuard и WARP-socks.
+ final=next((o.get('settings',{}).get('finalRules') for o in json.loads(run('docker','exec','xray-audit','cat','/xray.json').stdout or '{}').get('outbounds',[]) if o.get('tag')=='direct'),None) or []
+ allowed=[ip for rule in final if rule.get('action')=='allow' for ip in rule.get('ip',[])]
+ check('direct-final-rules-pin-internal-access',final and '10.10.0.0/16' not in allowed and all(ip.endswith('/32') for ip in allowed)
+  and any(r.get('action')=='block' and '10.0.0.0/8' in r.get('ip',[]) for r in final))
  # Клиент на самой VM, как в наборе транспортов nginx: выход proxy из
  # профиля бота, сервер — nginx стенда на 127.0.0.1:443, CA — сертификат
  # сервера (ядро 26.10.10+ читает SSL_CERT_FILE только с useSystemCa).
@@ -199,6 +229,17 @@ try:
  run('docker','stop','-t','1',EXIT).check_returncode()
  # burstObservatory: узел «мёртв», когда отказали все пробы окна (10 с × 3).
  check('node-down-traffic-goes-direct',wait(lambda:direct('video.exit.test',6),120))
+ # Аудит 2026-10-31: имя под маршрутом узла с адресом внутри сети Docker уходило
+ # в запасной direct мимо запрета по IP (правило по домену совпадает раньше),
+ # а freedom пускал всю 10.10.0.0/16: PHP бота в обход nginx, а без защиты хоста —
+ # sshd, AdGuard, dockerproxy. DNS AdGuard — положительный контроль того же пути.
+ php_ip=internal_ip('php-audit');GET=b'GET / HTTP/1.0\r\nHost: x\r\n\r\n'
+ run('docker','exec','xray-audit','sh','-c','echo "%s app.video.exit.test" >> /etc/hosts && echo "10.10.0.5 dns.video.exit.test" >> /etc/hosts'%php_ip).check_returncode()
+ check('internal-dns-reachable-through-direct-fallback',wait(lambda:len(socks_read('dns.video.exit.test',53,struct.pack('!H',len(DNSQ))+DNSQ))>12,30))
+ # Цель жива: из самого xr (откуда ходит freedom) PHP бота отвечает.
+ check('internal-app-alive-from-xray',php_ip!='' and run('docker','exec','xray-audit','sh','-c','printf "GET / HTTP/1.0\\r\\n\\r\\n" | nc -w 3 %s 80 | head -c 5'%php_ip).stdout=='HTTP/')
+ check('internal-app-closed-through-direct-fallback',php_ip!='' and not socks_read('app.video.exit.test',80,GET).startswith(b'HTTP/'))
+ check('internal-app-closed-by-address',php_ip!='' and not socks_read(php_ip,80,GET).startswith(b'HTTP/'))
  s=bot('check',nid);check('check-reports-the-dead-node',s['status'][nid]['ok'] is False and s['status'][nid].get('error')=='tcp' and said(s,'недоступен по TCP'))
  check('xray-running-with-a-dead-node',xray_alive())
  run('docker','start',EXIT).check_returncode()

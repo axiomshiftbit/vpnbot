@@ -8,15 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       test_runner:
-        description: 'Выполнить сборку и полный тестовый стенд на домашней Ubuntu VM'
+        description: 'Где собирать: отметка — домашняя VM home-build (тесты, сборка, стенд, публикация; только для axiomshiftbit); без отметки — серверы GitHub'
         type: boolean
-        default: false
+        default: true
       full_build:
         description: 'master: собрать и проверить заново, даже если комплект этого коммита уже допущен в dev'
         type: boolean
         default: false
       promote_master:
-        description: 'dev: после успешной публикации передвинуть master на этот же коммит и перенести комплект'
+        description: 'Автослияние: после успешной публикации dev передвинуть master на этот коммит и перенести комплект'
         type: boolean
         default: false
   # Раз в две недели на серверах GitHub: пересборка со свежими пакетами и

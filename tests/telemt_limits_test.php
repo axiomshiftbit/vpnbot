@@ -12,6 +12,8 @@ class TelemtLimitsBot extends Bot
     public string $root, $toml = '';
     public bool $image = true, $stateEnabled = true, $failReady = false, $failWrite = false;
     public int $starts = 0;
+    public string $version = '3.5.16';
+    public function telemtVersion(): string { return $this->version; }
     public function __construct(string $root, array $strings) {
         $this->root = $root; $this->i18n = $strings; $this->language = 'ru'; $this->admin = true;
         $this->ip = '203.0.113.10'; $this->key = 'fixture'; $this->protocolModulesFile = "$root/modules.json";
@@ -117,12 +119,14 @@ try {
     $check(str_contains($b->screen['text'], $b->i18n('telemt limits exhausted')), 'Исчерпанная квота видна в меню');
     $check(str_contains($b->screen['text'], $b->i18n('telemt limits snapshot')), 'Недоступная API не выдаётся за текущие данные');
     foreach ($b->screen['buttons'] as $row) foreach ($row as $button) $check(strlen($button['callback_data']) <= 64, 'Callback <=64');
-    $help = $b->screen['buttons'][4][0]['callback_data'];
+    $help = '';
+    foreach ($b->screen['buttons'] as $row) if (str_starts_with($row[0]['callback_data'], '/menuhelp telemt_limits ')) $help = $row[0]['callback_data'];
+    $check($help !== '', 'Кнопка справки на экране лимитов');
     $b->click($help);
     $check(end($b->screen['buttons'])[0]['callback_data'] === $card . ' limits','Справка возвращает в того же пользователя/relay');
     foreach (['ru', 'en'] as $language) {
         $b->language = $language;
-        for ($page = 0; $page <= 3; $page++) {
+        for ($page = 0; $page <= 4; $page++) {
             $b->click(str_replace(' 0 ', ' ' . $page . ' ', $help));
             $check($b->messageTextLength($b->screen['text']) <= 4096, 'Справка укладывается в Telegram');
             foreach ($b->screen['buttons'] as $row) foreach ($row as $button) $check(strlen($button['callback_data']) <= 64, 'Справка: callback <=64');
@@ -136,6 +140,63 @@ try {
     $b->apiFixture = ['/v1/stats/users/quota'=>['users'=>[['username'=>'alice','used_bytes'=>777,'last_reset_epoch_secs'=>5]]], '/v1/stats/users/active-ips'=>[['username'=>'alice','active_ips'=>['127.0.0.1','::1']]]];
     $b->click($card . ' limits');
     $check(!str_contains($b->screen['text'], $b->i18n('telemt limits snapshot')) && str_contains($b->screen['text'], 'активных IP: 2'), 'Текущие счётчики расхода и IP');
+    // ── Периодический сброс квоты (TeleMT 3.5.15+) ───────────────────────────
+    $labels = array_map(fn($row) => $row[0]['text'], $b->screen['buttons']);
+    $check(in_array($b->i18n('telemt limits period button'), $labels, true) && str_contains($b->screen['text'], $b->i18n('telemt limits period') . ': ' . $b->i18n('off')), 'Кнопка и строка периода при заданной квоте');
+    $b->click($card . ' period');
+    $choices = array_map(fn($row) => $row[0]['callback_data'], array_slice($b->screen['buttons'], 0, 4));
+    $key = substr($fp, 0, 8);
+    $check($choices === array_map(fn($p) => "$card period-$p-$key", ['off','daily','weekly','monthly']) && str_starts_with($b->screen['buttons'][0][0]['text'], '✅'), 'Экран выбора: четыре варианта, отмечен текущий');
+    foreach ($b->screen['buttons'] as $row) foreach ($row as $button) $check(strlen($button['callback_data']) <= 64, 'Период: callback <=64');
+    $check(strlen(str_replace(' 999999 ', ' 999999 ', $choices[3])) <= 64, 'Самая длинная кнопка периода укладывается в 64 байта');
+    $starts = $b->starts; $used = $b->telemtQuotaRead($b->conf)['users']['alice']['used_bytes'];
+    $b->click($choices[3]);
+    $check($b->conf['telemt_user_limits']['alice']['period'] === 'monthly' && str_contains($b->toml, "[access.user_quota_periods]\n\"alice\" = \"monthly\""), 'Период сохранён и попал в TOML');
+    $check($b->starts === $starts + 1 && $b->telemtQuotaRead($b->conf)['users']['alice']['used_bytes'] === $used, 'Включение периода не обнуляет расход');
+    $b->apiFixture['/v1/stats/users/quota']['users'][0] += ['quota_period'=>'monthly','active_quota_period'=>'monthly','quota_next_reset_epoch_secs'=>1798761600,'quota_schedule_state'=>'active'];
+    $b->click($card . ' limits');
+    $check(str_contains($b->screen['text'], $b->i18n('telemt limits period monthly') . ' · ' . $b->i18n('telemt limits period next') . ': 2027-01-01 00:00 UTC'), 'Дата следующего сброса от ядра');
+    $b->apiFixture['/v1/stats/users/quota']['users'][0]['quota_schedule_state'] = 'error';
+    $b->click($card . ' limits');
+    $check(str_contains($b->screen['text'], $b->i18n('telemt limits period state error')), 'Ошибка расписания видна');
+    $b->apiFixture['/v1/stats/users/quota']['users'][0]['quota_schedule_state'] = 'active';
+    $starts = $b->starts; $b->click($choices[3]);
+    $check($b->starts === $starts, 'Повтор того же периода не переподключает');
+    // Устаревшая кнопка: пользователь пересоздан с другим секретом.
+    $stale = str_replace("-$key", '-00000000', $choices[1]);
+    $b->click($stale);
+    $check(str_contains($b->screen['text'], $b->i18n('telemt limits stale')) && $b->conf['telemt_user_limits']['alice']['period'] === 'monthly', 'Чужой отпечаток не меняет период');
+    // Ядро старше 3.5.15: включать период нельзя, таблицы в TOML нет.
+    @mkdir($root . '/old', 0700);
+    $old = new TelemtLimitsBot($root . '/old', $i); $old->version = '3.5.14';
+    $old->conf = $b->conf; $old->telemtQuotaWrite($b->telemtQuotaRead($b->conf));
+    $check(!str_contains($old->telemtToml(), 'user_quota_periods'), 'Старое ядро не получает неизвестную таблицу');
+    $reject(fn() => $old->telemtChangeLimit('alice', 'period', 'daily', $fp), 'Старое ядро: период не включается');
+    $check($old->conf['telemt_user_limits']['alice']['period'] === 'monthly', 'Отказ не меняет PAC');
+    unlink($old->telemtQuotaPath()); rmdir($root . '/old');
+    // Без квоты период не включается и в TOML не попадает; выбор сохраняется.
+    $reject(fn() => $b->telemtChangeLimit('bob', 'period', 'daily', hash('sha256', $b->conf['telemt_users']['bob'])), 'Период без квоты отклонён');
+    foreach ([1, 'yearly'] as $value) {
+        try { $b->telemtChangeLimit('alice', 'period', $value, $fp); $check(false, 'Неверный тип периода принят'); }
+        catch (LogicException $error) { $check(true, 'Неверное значение периода в прямом вызове — ошибка программы'); }
+    }
+    foreach (['yearly', 1, ''] as $value) {
+        $bad = $b->conf; $bad['telemt_user_limits']['alice']['period'] = $value;
+        $reject(fn() => $b->telemtToml($bad), 'Неверный импортированный период отклонён: ' . var_export($value, true));
+    }
+    $noQuota = $b->conf; $noQuota['telemt_user_limits']['alice']['quota'] = 0;
+    $check(!str_contains($b->telemtToml($noQuota), 'user_quota_periods'), 'Без квоты таблицы периодов нет');
+    // Файл расхода с календарём ядра читается; испорченный календарь — отказ.
+    $state = $b->telemtQuotaRead($b->conf);
+    $state['users']['alice'] += ['quota_period' => 'monthly', 'period_cursor_epoch_secs' => 1793000000];
+    $b->telemtQuotaWrite($state);
+    $check($b->telemtQuotaRead($b->conf)['users']['alice']['period_cursor_epoch_secs'] === 1793000000, 'Календарь ядра сохраняется в файле расхода');
+    foreach ([['quota_period' => 'yearly'], ['quota_period' => null], ['period_cursor_epoch_secs' => -1], ['period_cursor_epoch_secs' => '5']] as $broken) {
+        $bad = $state; $bad['users']['alice'] = $broken + $bad['users']['alice'];
+        $reject(fn() => $b->telemtQuotaWrite($bad), 'Испорченный календарь отклонён: ' . json_encode($broken));
+    }
+    $b->click($choices[0]);
+    $check(!isset($b->conf['telemt_user_limits']['alice']['period']) && !str_contains($b->toml, 'user_quota_periods'), 'Выключение периода убирает таблицу');
     $b->click($card . ' reset');
     $confirm = $b->screen['buttons'][0][0]['callback_data'];
     $check($b->telemtQuotaRead($b->conf)['users']['alice']['used_bytes'] === 777, 'Сброс требует подтверждения');

@@ -175,8 +175,15 @@ try {
     $b = $reset(); $b->fail = 'generate';
     $check($b->warpClientProfile('retry') === false, 'Ошибка генерации не выдаёт профиль');
     $check(is_file($b->warpClientDir('retry') . '/wgcf-account.toml'), 'Ошибка генерации сохраняет аккаунт для повтора');
+    // Пауза после неудачи: следующая выдача подписки не ходит по SSH и не
+    // обращается к Cloudflare, пока не истечёт WARP_CLIENT_RETRY.
+    $b = new WarpLifecycleBot($root); $b->commands = [];
+    $check($b->warpClientProfile('retry') === false && !$b->commands, 'В паузе после неудачи нет ни SSH, ни повторной регистрации');
+    $check((int) file_get_contents($b->warpClientDir('retry') . '.retry') - time() <= Bot::WARP_CLIENT_RETRY, 'Пауза ограничена');
+    file_put_contents($b->warpClientDir('retry') . '.retry', (string) (time() - 1));
     $b = new WarpLifecycleBot($root);
     $check(is_array($b->warpClientProfile('retry')), 'Повтор генерации использует сохранённый аккаунт');
+    $check(!is_file($b->warpClientDir('retry') . '.retry'), 'Удачный повтор снимает отметку паузы');
     $b = $reset(); $b->fail = 'update';
     $check($b->warpClientProfile('plus-failure') === false, 'Ошибка применения WARP+ не выдаёт free-профиль молча');
     $profile = "[Interface]\nPrivateKey = KEY\nAddress = 172.16.0.2/32\n[Peer]\nPublicKey = PEER\nEndpoint = ENDPOINT\n";

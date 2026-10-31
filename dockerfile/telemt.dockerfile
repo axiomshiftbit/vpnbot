@@ -11,13 +11,13 @@
 # и поднимает `telemt run`. Entrypoint восстанавливает процесс после сбоя,
 # учитывая сохранённый выключатель сервиса и общую с ботом блокировку.
 ARG image=alpine:3.24
-ARG TELEMT_VERSION=3.5.14
+ARG TELEMT_VERSION=3.5.16
 
 FROM ghcr.io/telemt/telemt:${TELEMT_VERSION} AS dl
 
 FROM $image
 # ARG до FROM не виден после него — объявляем повторно для финальной стадии.
-ARG TELEMT_VERSION=3.5.14
+ARG TELEMT_VERSION=3.5.16
 COPY --from=dl /app/telemt /usr/local/bin/telemt
 # У бинаря telemt нет команды версии (неизвестный флаг уходит в Run), поэтому
 # версию впекаем в образ файлом — бот читает её по ssh из контейнера
