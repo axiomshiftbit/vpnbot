@@ -23,7 +23,29 @@
 # эфемерная карта «сообщение → wg-инстанс» (см. wgMsgFile в bot.php)
 /config/wg_msg.json
 /config/hwid.json
+/config/vpnbot.sqlite*
+/config/xray-core-probe.json
 /config/ipv6-egress.json
+# Рантайм бота на сервере (проверено по git status на рабочих серверах 2026-10-31):
+# секреты — закрытый ключ узла DNSTT, пользователи Hysteria, Cloak, ShadowTLS и
+# TeleMT; личные данные — журналы подключений, онлайн, статистика, кеши.
+/config/dnstt/
+/config/hysteria/
+/config/telemt/*
+!/config/telemt/.gitkeep
+/config/ckusers.json
+/config/stlsserver.json
+/config/connlog.json
+/config/wgconnlog.json
+/config/online.json
+/config/geoip.json
+/config/extsub.cache
+/config/exit-nodes.status.json
+/config/relay.health
+/config/telemtactivity.json
+/config/xray.stats
+/config/*.lock
+/config/.*.lock
 # лента веб-панели, загруженные/отданные файлы и хеш пароля-заглушки
 /config/panel/
 /config/protocols/

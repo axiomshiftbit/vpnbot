@@ -208,7 +208,8 @@ def api(command, *arguments):
         if command == 'adu':
             expected = sum(len(i['settings']['clients']) for i in json.loads(Path(arguments[0]).read_text())['inbounds'])
         else:
-            expected = len(arguments) - 1
+            # Emails follow '--': a name starting with '-' is never read as a flag.
+            expected = len(arguments) - arguments.index('--') - 1
         verb = b'Added' if command == 'adu' else b'Removed'
         match = re.search(rb'(?:\A|\n|\s)' + verb + rb' (\d+) user\(s\) in total\.\s*\Z', result.stdout)
         if not match or int(match[1]) != expected:
@@ -282,7 +283,7 @@ def apply(previous, target):
             api(command, payload)
         # Revocation first: from here on the core refuses new connections.
         for item in operations['revoke']:
-            api('rmu', '-tag=' + item['tag'], item['email'])
+            api('rmu', '-tag=' + item['tag'], '--', item['email'])
         if operations['outbounds']:
             invoke('ado', {'outbounds': operations['outbounds']})
         # Install access policy BEFORE enabling new accounts. Existing handlers

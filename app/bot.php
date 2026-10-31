@@ -19,6 +19,7 @@ require_once __DIR__ . '/BotOvpn.php';
 require_once __DIR__ . '/BotWarpMasque.php';
 require_once __DIR__ . '/BotAcme.php';
 require_once __DIR__ . '/BotChatNavigation.php';
+require_once __DIR__ . '/BotStore.php';
 
 class Bot
 {
@@ -37,6 +38,7 @@ class Bot
     use BotWarpMasque;
     use BotAcme;
     use BotChatNavigation;
+    use BotStore;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
     // Совместимость патчей и суммы исходников проверены для этой пары.
@@ -4291,7 +4293,7 @@ class Bot
     }
 
     public function collectSession() {
-        $this->setXrayStats(self::foldSession($this->getXrayStats()));
+        $this->withLock('xray-stats', fn() => $this->setXrayStats(self::foldSession($this->getXrayStats())));
     }
 
     public function setLang($lang)
@@ -6878,9 +6880,26 @@ NFT;
         $this->menu('client', "{$client}_$page");
     }
 
-    public function cron()
+    // Шаги разнесены по двум процессам (scripts/start_service.sh): access —
+    // сроки, лимиты, учёт и онлайн, только локальные операции; maintenance —
+    // сетевые и медленные проверки. Раньше один цикл ждал, например, пробу
+    // узлов выхода или загрузку .dat, и отключение по сроку и лимиту
+    // откладывалось на всё это время. Общие файлы шаги меняют под withLock().
+    public const CRON_ACCESS = [
+        'shutdownClient', 'shutdownClientXr', 'checkResetXrayStats', 'xrayStatsUser', 'checkTrafficLimits',
+        'syncXrayProtocolUsers', 'checkAccessPolicies', 'trackOnline', 'trackWgOnline', 'trackTelemtOnline', 'trackOvpnTraffic',
+    ];
+
+    public int $cronPeriod = 10;
+
+    protected function cronContinue(): bool
     {
-        $period = 10;
+        return true;
+    }
+
+    public function cron(string $group = 'all', ?string $maintenance = null)
+    {
+        $child = null;
         // cron.php — foreground-процесс service-контейнера. Любой неперехваченный
         // Throwable из шага ниже (часть из них без своего try/catch) уронил бы
         // весь процесс → контейнер уходит в рестарт-цикл, и на каждом рестарте
@@ -6927,7 +6946,22 @@ NFT;
             'refreshMenuStatusCache',
             'refreshMenuVersionsCache',
         ];
-        while (true) {
+        if ($group === 'access') {
+            $steps = self::CRON_ACCESS;
+        } elseif ($group === 'maintenance') {
+            $steps = array_values(array_diff($steps, self::CRON_ACCESS));
+        } elseif ($group !== 'all') {
+            throw new InvalidArgumentException('cron group');
+        }
+        while ($this->cronContinue()) {
+            // Надзор за maintenance: в образе нет pcntl, поэтому дочерний процесс
+            // через proc_open; упал — поднимается на следующем проходе.
+            if ($maintenance !== null && !($child && proc_get_status($child)['running'])) {
+                if ($child) proc_close($child);
+                $child = proc_open([PHP_BINARY, $maintenance, 'maintenance'],
+                    [0 => ['file', '/dev/null', 'r'], 1 => STDOUT, 2 => STDERR], $pipes) ?: null;
+                if (!$child) error_log('cron: maintenance process not started');
+            }
             foreach ($steps as $step) {
                 try {
                     $this->$step();
@@ -6935,8 +6969,9 @@ NFT;
                     error_log("cron[$step]: " . $e->getMessage());
                 }
             }
-            sleep($period);
+            sleep($this->cronPeriod);
         }
+        if ($child) proc_close($child);
     }
 
     // Все счётчики xray одним вызовом `xray api statsquery` вместо 2+2N вызовов
@@ -7060,102 +7095,111 @@ NFT;
                 if ($counters === null) {
                     return;
                 }
-                $x = $this->getXray();
-                // Конфиг нечитаем — снимок отложим до следующего тика: без
-                // списка клиентов users[] пришлось бы затирать пустым.
-                if (!is_array($x)) {
-                    return;
-                }
-                $p = $this->getXrayStats();
-                // Тег пользовательского inbound берём из конфига: он не обязан
-                // быть 'vless_tls' (restore бэкапа, правка xray.json из webapp),
-                // а захардкоженное имя давало тихий ноль без единого сообщения.
-                $tag = (string) ($x['inbounds'][0]['tag'] ?? 'vless_tls');
-                $session = [
-                    'download' => $counters["inbound>>>$tag>>>traffic>>>downlink"] ?? 0,
-                    'upload'   => $counters["inbound>>>$tag>>>traffic>>>uplink"] ?? 0,
-                ];
-                // session — АБСОЛЮТНЫЙ снимок счётчиков ядра, а они монотонно
-                // растут и обнуляются только его рестартом. Свой рестарт
-                // (restartXray) сворачивает session в global сам, а внешний
-                // (docker restart xr, OOM, ребут хоста, start_xray.sh) до сих
-                // пор просто терял накопленное: следующий тик записывал сюда
-                // нули, и квоты начинали считать заново. Просевший счётчик —
-                // это и есть признак чужого рестарта: сворачиваем прошлую
-                // сессию (общую и по каждому клиенту) до применения снимка.
-                if ($session['download'] < ($p['session']['download'] ?? 0)
-                    || $session['upload'] < ($p['session']['upload'] ?? 0)
-                ) {
-                    $p = self::foldSession($p);
-                }
-                $p['session'] = $session;
-                // Разбивка по inbound'ам, кроме служебного api. Нужна ради
-                // 'wg-in' (socks :10808, через него наружу ходят WG/AWG-клиенты):
-                // его трафик не попадает ни в session, ни в пользовательские
-                // счётчики, т.е. до сих пор не был виден нигде.
-                // session СМЫСЛА НЕ МЕНЯЕТ и остаётся только по inbounds[0]:
-                // он копится в global через collectSession() и участвует в
-                // квотах, подмешать туда wg-in задним числом нельзя.
-                $p['inbounds'] = [];
-                foreach (($x['inbounds'] ?? []) as $in) {
-                    $t = (string) ($in['tag'] ?? '');
-                    if ($t === '' || $t === 'api' || isset($p['inbounds'][$t])) {
-                        continue;
-                    }
-                    $p['inbounds'][$t] = [
-                        'download' => $counters["inbound>>>$t>>>traffic>>>downlink"] ?? 0,
-                        'upload'   => $counters["inbound>>>$t>>>traffic>>>uplink"] ?? 0,
-                    ];
-                }
-                // Трафик узлов выхода: копится так же, как у пользователей, —
-                // чтобы перезапуск Xray при каждой правке узлов его не обнулял.
-                $exits = [];
-                foreach (array_keys($this->exitNodes()) as $id) {
-                    $id = (string) $id;
-                    $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
-                    $current = ['up' => (int) ($counters[$name . 'uplink'] ?? 0), 'down' => (int) ($counters[$name . 'downlink'] ?? 0)];
-                    $previousExit = $p['exits'][$id] ?? [];
-                    // Пробы узла идут и при нулевом трафике основного inbound.
-                    // Его нули не обнаружат внешний restart: проверяем также
-                    // сам выход. Если foldSession уже сработал, session = 0
-                    // и повторного начисления здесь не будет.
-                    if ($current['up'] < ($previousExit['session']['up'] ?? 0)
-                        || $current['down'] < ($previousExit['session']['down'] ?? 0)) {
-                        foreach (['up', 'down'] as $direction) {
-                            $previousExit['global'][$direction] = ($previousExit['global'][$direction] ?? 0)
-                                + max(0, ($previousExit['session'][$direction] ?? 0) - ($previousExit['base'][$direction] ?? 0));
-                        }
-                        $previousExit['base'] = ['up' => 0, 'down' => 0];
-                    }
-                    $exits[$id] = ['session' => $current, 'global' => $previousExit['global'] ?? ['up' => 0, 'down' => 0],
-                        'base' => $previousExit['base'] ?? ['up' => 0, 'down' => 0], 'since' => (int) ($previousExit['since'] ?? time())];
-                }
-                if ($exits) $p['exits'] = $exits;
-                else unset($p['exits']);
-                if (!empty($users = $x['inbounds'][0]['settings']['clients'] ?? [])) {
-                    $tmp = [];
-                    foreach ($users as $k => $v) {
-                        $email = (string) ($v['email'] ?? '');
-                        $tmp[$k] = [
-                            'session' => [
-                                'download' => $counters["user>>>$email>>>traffic>>>downlink"] ?? 0,
-                                'upload'   => $counters["user>>>$email>>>traffic>>>uplink"] ?? 0,
-                            ],
-                            // ?? — у только что добавленного клиента записи в
-                            // xraystats.json ещё нет, прежний код сыпал здесь
-                            // «Undefined array key» на каждый цикл крона.
-                            'global' => [
-                                'download' => $p['users'][$k]['global']['download'] ?? 0,
-                                'upload'   => $p['users'][$k]['global']['upload'] ?? 0,
-                            ]
-                        ];
-                    }
-                    $p['users'] = $tmp;
-                }
-                $this->setXrayStats($p);
+                // Порядок блокировок xray → xray-stats, как у restartXray()
+                // (collectSession): с разделением cron перезапуск ядра из
+                // maintenance иначе свернул бы сессию между чтением и записью
+                // статистики здесь, и трафик посчитался бы неверно.
+                $this->withLock('xray', fn() => $this->withLock('xray-stats', fn() => $this->xrayStatsApply($counters)), 30);
             } catch (\Throwable $th) {
             }
         }
+    }
+
+    private function xrayStatsApply(array $counters): void
+    {
+        $x = $this->getXray();
+        // Конфиг нечитаем — снимок отложим до следующего тика: без
+        // списка клиентов users[] пришлось бы затирать пустым.
+        if (!is_array($x)) {
+            return;
+        }
+        $p = $this->getXrayStats();
+        // Тег пользовательского inbound берём из конфига: он не обязан
+        // быть 'vless_tls' (restore бэкапа, правка xray.json из webapp),
+        // а захардкоженное имя давало тихий ноль без единого сообщения.
+        $tag = (string) ($x['inbounds'][0]['tag'] ?? 'vless_tls');
+        $session = [
+            'download' => $counters["inbound>>>$tag>>>traffic>>>downlink"] ?? 0,
+            'upload'   => $counters["inbound>>>$tag>>>traffic>>>uplink"] ?? 0,
+        ];
+        // session — АБСОЛЮТНЫЙ снимок счётчиков ядра, а они монотонно
+        // растут и обнуляются только его рестартом. Свой рестарт
+        // (restartXray) сворачивает session в global сам, а внешний
+        // (docker restart xr, OOM, ребут хоста, start_xray.sh) до сих
+        // пор просто терял накопленное: следующий тик записывал сюда
+        // нули, и квоты начинали считать заново. Просевший счётчик —
+        // это и есть признак чужого рестарта: сворачиваем прошлую
+        // сессию (общую и по каждому клиенту) до применения снимка.
+        if ($session['download'] < ($p['session']['download'] ?? 0)
+            || $session['upload'] < ($p['session']['upload'] ?? 0)
+        ) {
+            $p = self::foldSession($p);
+        }
+        $p['session'] = $session;
+        // Разбивка по inbound'ам, кроме служебного api. Нужна ради
+        // 'wg-in' (socks :10808, через него наружу ходят WG/AWG-клиенты):
+        // его трафик не попадает ни в session, ни в пользовательские
+        // счётчики, т.е. до сих пор не был виден нигде.
+        // session СМЫСЛА НЕ МЕНЯЕТ и остаётся только по inbounds[0]:
+        // он копится в global через collectSession() и участвует в
+        // квотах, подмешать туда wg-in задним числом нельзя.
+        $p['inbounds'] = [];
+        foreach (($x['inbounds'] ?? []) as $in) {
+            $t = (string) ($in['tag'] ?? '');
+            if ($t === '' || $t === 'api' || isset($p['inbounds'][$t])) {
+                continue;
+            }
+            $p['inbounds'][$t] = [
+                'download' => $counters["inbound>>>$t>>>traffic>>>downlink"] ?? 0,
+                'upload'   => $counters["inbound>>>$t>>>traffic>>>uplink"] ?? 0,
+            ];
+        }
+        // Трафик узлов выхода: копится так же, как у пользователей, —
+        // чтобы перезапуск Xray при каждой правке узлов его не обнулял.
+        $exits = [];
+        foreach (array_keys($this->exitNodes()) as $id) {
+            $id = (string) $id;
+            $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
+            $current = ['up' => (int) ($counters[$name . 'uplink'] ?? 0), 'down' => (int) ($counters[$name . 'downlink'] ?? 0)];
+            $previousExit = $p['exits'][$id] ?? [];
+            // Пробы узла идут и при нулевом трафике основного inbound.
+            // Его нули не обнаружат внешний restart: проверяем также
+            // сам выход. Если foldSession уже сработал, session = 0
+            // и повторного начисления здесь не будет.
+            if ($current['up'] < ($previousExit['session']['up'] ?? 0)
+                || $current['down'] < ($previousExit['session']['down'] ?? 0)) {
+                foreach (['up', 'down'] as $direction) {
+                    $previousExit['global'][$direction] = ($previousExit['global'][$direction] ?? 0)
+                        + max(0, ($previousExit['session'][$direction] ?? 0) - ($previousExit['base'][$direction] ?? 0));
+                }
+                $previousExit['base'] = ['up' => 0, 'down' => 0];
+            }
+            $exits[$id] = ['session' => $current, 'global' => $previousExit['global'] ?? ['up' => 0, 'down' => 0],
+                'base' => $previousExit['base'] ?? ['up' => 0, 'down' => 0], 'since' => (int) ($previousExit['since'] ?? time())];
+        }
+        if ($exits) $p['exits'] = $exits;
+        else unset($p['exits']);
+        if (!empty($users = $x['inbounds'][0]['settings']['clients'] ?? [])) {
+            $tmp = [];
+            foreach ($users as $k => $v) {
+                $email = (string) ($v['email'] ?? '');
+                $tmp[$k] = [
+                    'session' => [
+                        'download' => $counters["user>>>$email>>>traffic>>>downlink"] ?? 0,
+                        'upload'   => $counters["user>>>$email>>>traffic>>>uplink"] ?? 0,
+                    ],
+                    // ?? — у только что добавленного клиента записи в
+                    // xraystats.json ещё нет, прежний код сыпал здесь
+                    // «Undefined array key» на каждый цикл крона.
+                    'global' => [
+                        'download' => $p['users'][$k]['global']['download'] ?? 0,
+                        'upload'   => $p['users'][$k]['global']['upload'] ?? 0,
+                    ]
+                ];
+            }
+            $p['users'] = $tmp;
+        }
+        $this->setXrayStats($p);
     }
 
     public function autoAnalyzeLogs()
@@ -7270,6 +7314,13 @@ NFT;
     }
 
     public function checkResetXrayStats()
+    {
+        // Под блокировкой xray: сброс перестраивает xray.json и статистику
+        // параллельно с maintenance (см. xrayStatsUser()).
+        $this->withLock('xray', fn() => $this->checkResetXrayStatsLocked(), 30);
+    }
+
+    private function checkResetXrayStatsLocked(): void
     {
         $pac = $this->getPacConf();
         if (!empty($pac['reset_monthly'])) {
@@ -7620,6 +7671,14 @@ NFT;
 
     public function shutdownClientXr()
     {
+        // Под блокировкой xray: с разделением cron (access/maintenance) этот
+        // шаг идёт параллельно с узлами выхода и обработчиками Telegram, и
+        // чтение-изменение-запись xray.json иначе теряло бы чужие правки.
+        $this->withLock('xray', fn() => $this->shutdownClientXrLocked(), 30);
+    }
+
+    private function shutdownClientXrLocked(): void
+    {
         try {
             $c = $this->getXray();
             foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
@@ -7667,6 +7726,16 @@ NFT;
     // 'traffic_off' so a stats reset can re-enable them. One restart for the batch.
     public function checkTrafficLimits()
     {
+        // Под блокировкой xray — см. shutdownClientXr(). Уведомление — после.
+        $disabled = $this->withLock('xray', fn() => $this->checkTrafficLimitsLocked(), 30, []);
+        if (!empty($disabled)) {
+            $this->notifyAdmins($this->t("vless: лимит трафика исчерпан, отключены:\n", "vless: traffic limit reached, disabled:\n") . implode("\n", $disabled));
+        }
+    }
+
+    private function checkTrafficLimitsLocked(): array
+    {
+        $disabled = [];
         try {
             $x  = $this->getXray();
             $st = $this->getXrayStats();
@@ -7687,15 +7756,13 @@ NFT;
                     $disabled[] = $v['email'];
                 }
             }
-            if (!empty($disabled)) {
-                $this->restartXray($x);
-                require __DIR__ . '/config.php';
-                foreach (($c['admin'] ?? []) as $admin) {
-                    $this->send($admin, $this->t("vless: лимит трафика исчерпан, отключены:\n", "vless: traffic limit reached, disabled:\n") . implode("\n", $disabled));
-                }
+            if (!empty($disabled) && $this->restartXray($x) === false) {
+                $disabled = [];
             }
         } catch (\Throwable $e) {
+            $disabled = [];
         }
+        return $disabled;
     }
 
     // Re-enable clients that were auto-disabled by the traffic quota (called when
@@ -7803,7 +7870,7 @@ NFT;
             // acme_requested — пометка запроса к службе acme-window ЭТОГО сервера:
             // в копию не идёт, на другом сервере она ничего не значит.
             'pac' => array_diff_key($telemtBackup['pac'], ['acme_requested' => true]),
-            'hwid' => file_exists($this->hwid) ? (json_decode(file_get_contents($this->hwid), true) ?: []) : [],
+            'hwid' => $this->getHwidStorage(),
             'ssl' => $ssl,
             'dnstt' => file_exists('/config/dnstt/server.key') ? [
                 'private' => file_get_contents('/config/dnstt/server.key'),
@@ -8302,7 +8369,10 @@ NFT;
                 $out[] = 'update hwid devices';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $data = is_array($json['hwid']) ? $json['hwid'] : [];
-                if (!$this->writePrivateKey($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))) throw new RuntimeException($this->t('Не удалось восстановить HWID', 'Could not restore HWID'));
+                $restored = $this->store()
+                    ? $this->setHwidStorage($data)
+                    : $this->writePrivateKey($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+                if (!$restored) throw new RuntimeException($this->t('Не удалось восстановить HWID', 'Could not restore HWID'));
             }
             // xray
             if (!empty($json['xray'])) {
@@ -22479,6 +22549,9 @@ DNS-over-HTTPS with IP:
 
     public function getHwidStorage()
     {
+        if ($this->store()) {
+            return $this->storeHwidRows();
+        }
         if (!file_exists($this->hwid)) {
             return [];
         }
@@ -22494,6 +22567,10 @@ DNS-over-HTTPS with IP:
     // везде: false превратился бы в пустой файл с рапортом об успехе.
     public function setHwidStorage(array $storage)
     {
+        if ($this->store()) {
+            $this->storeTransaction(fn() => $this->storeHwidReplace($storage));
+            return true;
+        }
         $json = json_encode($storage, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($json === false) {
             error_log('setHwidStorage: not written — ' . json_last_error_msg());
@@ -22600,6 +22677,14 @@ DNS-over-HTTPS with IP:
         // Лок на самом hwid.json нельзя: setHwidStorage пишет через tmp+rename,
         // то есть меняет инод, — поэтому отдельный .lock рядом. Исторически
         // именно здесь появился первый корректный RMW-лок в проекте.
+        if ($this->store()) {
+            return $this->storeTransaction(function () use ($fn) {
+                $storage = $this->storeHwidRows();
+                $result  = $fn($storage);
+                $this->storeHwidReplace($storage);
+                return $result;
+            });
+        }
         return $this->withLock('hwid', function () use ($fn) {
             $storage = $this->getHwidStorage();
             $result  = $fn($storage);
@@ -22611,6 +22696,9 @@ DNS-over-HTTPS with IP:
 
     public function getHwidDevicesByUser($uid)
     {
+        if ($this->store()) {
+            return $this->storeHwidRows((string) $uid)[(string) $uid] ?? [];
+        }
         $storage = $this->getHwidStorage();
         return $storage[$uid] ?? [];
     }
@@ -22620,6 +22708,11 @@ DNS-over-HTTPS with IP:
     // публичным endpoint'ом, и наоборот.
     public function setHwidDevice($uid, $hwid, array $info)
     {
+        if ($this->store()) {
+            $this->storeTransaction(fn(PDO $pdo) => $pdo->prepare('INSERT INTO hwid (uid, hwid, info) VALUES (?, ?, ?) ON CONFLICT (uid, hwid) DO UPDATE SET info = excluded.info')
+                ->execute([(string) $uid, (string) $hwid, json_encode($info, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)]));
+            return;
+        }
         $this->hwidUpdate(function (array &$storage) use ($uid, $hwid, $info) {
             $storage[$uid][$hwid] = $info;
         });
@@ -22627,6 +22720,10 @@ DNS-over-HTTPS with IP:
 
     public function deleteHwidDevice($uid, $hwid)
     {
+        if ($this->store()) {
+            $this->storeTransaction(fn(PDO $pdo) => $pdo->prepare('DELETE FROM hwid WHERE uid = ? AND hwid = ?')->execute([(string) $uid, (string) $hwid]));
+            return;
+        }
         $this->hwidUpdate(function (array &$storage) use ($uid, $hwid) {
             if (isset($storage[$uid][$hwid])) {
                 unset($storage[$uid][$hwid]);
@@ -22639,6 +22736,10 @@ DNS-over-HTTPS with IP:
 
     public function deleteHwidUser($uid)
     {
+        if ($this->store()) {
+            $this->storeTransaction(fn(PDO $pdo) => $pdo->prepare('DELETE FROM hwid WHERE uid = ?')->execute([(string) $uid]));
+            return;
+        }
         $this->hwidUpdate(function (array &$storage) use ($uid) {
             unset($storage[$uid]);
         });
@@ -22720,7 +22821,13 @@ DNS-over-HTTPS with IP:
             return true;
         }
 
-        $devices   = $this->getHwidDevicesByUser($client['id']);
+        try {
+            $devices = $this->getHwidDevicesByUser($client['id']);
+        } catch (Throwable $e) {
+            // Сбой хранилища не роняет выдачу подписки (ниже — тот же мягкий отказ).
+            error_log('processHwidRequest: ' . $e->getMessage());
+            $devices = [];
+        }
         // Нормализуем: это НЕаутентифицированный путь выдачи подписки, а
         // X-HWID становится ключом массива в hwid.json. nginx пропускает
         // заголовок размером в килобайты, то есть один запрос раздувал общий
@@ -22767,15 +22874,15 @@ DNS-over-HTTPS with IP:
         // Проверка лимита и запись — одной операцией под локом. Раздельно они
         // давали гонку: два новых устройства, пришедшие одновременно на разные
         // воркеры, оба видели свободное место и оба записывались.
-        $uid     = $client['id'];
-        $allowed = $this->hwidUpdate(function (array &$storage) use ($uid, $hwid, $limit, $info) {
-            $devices = $storage[$uid] ?? [];
-            if (!isset($devices[$hwid]) && count($devices) >= $limit) {
-                return false;
-            }
-            $storage[$uid][$hwid] = $info;
-            return true;
-        });
+        $uid = $client['id'];
+        try {
+            $allowed = $this->hwidRegister((string) $uid, $hwid, $limit, $info);
+        } catch (Throwable $e) {
+            // Как и прежде при сбое записи JSON: лимит мягкий, подписку не
+            // роняем, а сбой хранилища виден в журнале.
+            error_log('processHwidRequest: ' . $e->getMessage());
+            $allowed = true;
+        }
 
         if (!$allowed) {
             $message = 'HWID device limit exceeded';
@@ -23281,11 +23388,18 @@ DNS-over-HTTPS with IP:
     // accounted exactly once; read by the /vlessLog and /clientLog admin views.
     public function getConnLog(): array
     {
-        return json_decode(@file_get_contents('/config/connlog.json'), true) ?: [];
+        if ($this->store()) {
+            return $this->storeConnLogRead();
+        }
+        return json_decode(@file_get_contents($this->connLogFile()), true) ?: [];
     }
 
     public function setConnLog(array $log)
     {
+        if ($this->store()) {
+            $this->storeTransaction(fn() => $this->storeConnLogReplace($log));
+            return;
+        }
         $ttl = time() - 2592000; // 30 days
         foreach ($log as $email => $info) {
             foreach (($info['ips'] ?? []) as $ip => $rec) {
@@ -23323,7 +23437,7 @@ DNS-over-HTTPS with IP:
             $log = array_slice($log, 0, 200, true);
         }
         // atomic write (cron + webhook share the volume), same pattern as online.json
-        $this->atomicJson('/config/connlog.json', $log);
+        $this->atomicJson($this->connLogFile(), $log);
     }
 
     // Atomic JSON write shared by the online/connlog/geo caches: encode first, and
@@ -23352,6 +23466,10 @@ DNS-over-HTTPS with IP:
     public function recordConnLog(array $events)
     {
         if (empty($events)) {
+            return;
+        }
+        if ($this->store()) {
+            $this->storeConnLogRecord($events);
             return;
         }
         $log = $this->getConnLog();
@@ -25578,14 +25696,17 @@ DNS-over-HTTPS with IP:
         if (!empty($this->subtokens_done)) {
             return;
         }
-        $xr = $this->getXray();
-        if (!is_array($xr)) {
-            return; // retry next tick; don't feed null to ensureSubTokens(array&)
-        }
-        if ($this->ensureSubTokens($xr)) {
-            $this->saveXray($xr);
-        }
-        $this->subtokens_done = true;
+        // Под блокировкой xray — см. shutdownClientXr(); занято — следующий проход.
+        $this->subtokens_done = (bool) $this->withLock('xray', function () {
+            $xr = $this->getXray();
+            if (!is_array($xr)) {
+                return false; // retry next tick; don't feed null to ensureSubTokens(array&)
+            }
+            if ($this->ensureSubTokens($xr)) {
+                $this->saveXray($xr);
+            }
+            return true;
+        }, 30, false);
     }
 
     // Global toggle: strict subscription addressing. When ON, findClientBySid no

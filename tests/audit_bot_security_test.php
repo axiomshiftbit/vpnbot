@@ -153,7 +153,7 @@ secAssert(method_exists('Bot', 'withLock') && method_exists('Bot', 'pacConfUpdat
     && method_exists('Bot', 'xrayConfUpdate'),
     'примитив транзакций над конфигами введён');
 secAssert($bot->withLock('selftest', fn() => 'ok') === 'ok', 'withLock() возвращает результат замыкания');
-secAssert(str_contains(substr($src, strpos($src, 'public function hwidUpdate('), 600), 'withLock('),
+secAssert(str_contains(substr($src, strpos($src, 'public function hwidUpdate('), 1200), "withLock('hwid'"),
     'hwidUpdate() переведён на общий примитив, а не дублирует лок');
 
 // ── 5. НИЗКИЕ отчётов 01 и 02 ───────────────────────────────────────────────

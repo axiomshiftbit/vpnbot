@@ -168,8 +168,10 @@ cronAssert($bot->getHwidDevicesByUser('uid1') === [], 'пользователь 
 // Битый файл больше не значит «привязок нет»: json пишется атомарно, поэтому
 // читатель видит либо старое, либо новое целиком.
 $bot->setHwidDevice('uid2', 'dev1', ['time' => 1]);
-cronAssert(json_decode((string) file_get_contents($bot->hwid), true) !== null,
-    'на диске валидный json');
+// С pdo_sqlite (образ php) устройства лежат в базе: проверяем то хранилище,
+// которым бот действительно пользуется.
+cronAssert($bot->store() ? $bot->getHwidDevicesByUser('uid2') === ['dev1' => ['time' => 1]]
+    : json_decode((string) file_get_contents($bot->hwid), true) !== null, 'на диске валидные данные');
 @unlink($bot->hwid);
 @unlink($bot->hwid . '.lock');
 

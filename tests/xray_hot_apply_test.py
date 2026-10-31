@@ -131,10 +131,13 @@ class HotPlanTest(unittest.TestCase):
             with self.subTest(output=output), patch.object(hot.subprocess, 'run', return_value=
                     subprocess.CompletedProcess([], 0, stdout=output)):
                 if ok:
-                    hot.api('rmu', '-tag=vless', 'a')
+                    hot.api('rmu', '-tag=vless', '--', 'a')
                 else:
                     with self.assertRaises(ValueError):
-                        hot.api('rmu', '-tag=vless', 'a')
+                        hot.api('rmu', '-tag=vless', '--', 'a')
+        with patch.object(hot.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=b'Removed 1 user(s) in total.\n')) as run:
+            hot.api('rmu', '-tag=vless', '--', '-server=198.51.100.1:80')
+            self.assertEqual(run.call_args[0][0][-2:], ['--', '-server=198.51.100.1:80'], 'email after --, never a flag')
 
     def test_online_parsing(self):
         cases = [

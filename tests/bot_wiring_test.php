@@ -11,7 +11,7 @@ $source = file_get_contents(__DIR__ . '/../app/bot.php');
 $class = new ReflectionClass(Bot::class);
 
 // --- шаги cron
-$cron = substr($source, strpos($source, 'public function cron()'), 3000);
+$cron = substr($source, strpos($source, 'public function cron('), 3000);
 check(preg_match('~\$steps = \[(.*?)\];~s', $cron, $m) === 1, 'the list of cron steps is found');
 preg_match_all("~^\s*'([A-Za-z0-9_]+)',\s*$~m", $m[1], $steps);
 check(count($steps[1]) >= 25 && count($steps[1]) === count(array_unique($steps[1])), 'cron steps are listed once each');

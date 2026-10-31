@@ -44,6 +44,9 @@ RUN apk upgrade --no-cache \
     php85-intl \
     php85-pecl-ssh2 \
     php85-pecl-yaml \
+    # Хранилище SQLite (app/BotStore.php): устройства HWID и журнал подключений.
+    php85-pdo \
+    php85-pdo_sqlite \
     freeunit \
     freeunit-php85 \
     xxd \
@@ -57,7 +60,7 @@ RUN apk upgrade --no-cache \
     # Скрипты бота вызывают php; обновляем ссылку и при её наличии в APK.
     && ln -sf /usr/bin/php85 /usr/bin/php \
     # OPcache встроен в PHP 8.5, отдельного php85-opcache в Alpine нет.
-    && php -r 'foreach (["mbstring", "session", "phar", "zip", "curl", "openssl", "iconv", "intl", "ssh2", "yaml", "Zend OPcache"] as $module) { if (!extension_loaded($module)) { fwrite(STDERR, "Missing PHP module: $module\n"); exit(1); } }' \
+    && php -r 'foreach (["mbstring", "session", "phar", "zip", "curl", "openssl", "iconv", "intl", "ssh2", "yaml", "pdo_sqlite", "Zend OPcache"] as $module) { if (!extension_loaded($module)) { fwrite(STDERR, "Missing PHP module: $module\n"); exit(1); } }' \
     # Учебные сертификаты и закрытые ключи из тестов certbot и acme в работе не
     # нужны, а проверка слоёв образа допускает закрытые ключи только по списку.
     && find /usr/lib/python3*/site-packages/certbot /usr/lib/python3*/site-packages/acme -type d -name testdata -prune -exec rm -rf {} + \
