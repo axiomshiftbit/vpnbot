@@ -86,6 +86,10 @@ jobs:
           echo "php -l: чисто"
 
       - name: Тесты
+        env:
+          # Проверка доверенных путей допускает sticky /tmp, но не общие
+          # каталоги runner с правом записи группы.
+          TMPDIR: /tmp
         run: |
           python3 -m unittest discover -s tests -p '*_test.py' || exit 1
           fail=0
@@ -140,7 +144,7 @@ jobs:
           set -euo pipefail
           base=$(sed -n 's/^IMAGE=//p' .env)
           sh scripts/ci_retry.sh docker pull "$base"
-          docker run --rm \
+          docker run --rm --init \
             -v "$PWD:/workspace" \
             -v "$PWD/config/php.ini:/etc/php${PHP_SERIES}/php.ini:ro" \
             -v "$RUNNER_TEMP/vpnbot-xray/xray:/audit-xray:ro" \

@@ -43,7 +43,7 @@ function stRoot(): string
 }
 function stClean(string $root): void
 {
-    foreach (glob("$root/{,.}*", GLOB_BRACE) ?: [] as $f) if (is_file($f)) unlink($f);
+    foreach (scandir($root) ?: [] as $name) if (is_file("$root/$name")) unlink("$root/$name");
     rmdir($root);
 }
 // Порядок ключей у JSON и SQLite совпадать не обязан: сравниваем содержимое.

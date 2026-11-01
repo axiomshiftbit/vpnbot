@@ -135,7 +135,7 @@ try {
     $start = (string) file_get_contents(__DIR__ . '/../scripts/start_php.sh');
     nsCheck(str_contains($start, "\nrm -f /config/xray-core-probe.json\n"), 'запуск php сбрасывает пробу прежнего образа');
 } finally {
-    foreach (glob("$root/{,.}*", GLOB_BRACE) ?: [] as $f) if (is_file($f)) unlink($f);
+    foreach (scandir($root) ?: [] as $name) if (is_file("$root/$name")) unlink("$root/$name");
     rmdir($root);
 }
 
