@@ -99,6 +99,9 @@ def settings(value, core, transport):
         bounded(xmux[name], 0, 1000000)
     if xmux['maxConnections'] and any(int(n) for n in xmux['maxConcurrency'].split('-')):
         raise ValueError('XHTTP connection and concurrency limits conflict')
+    # uTLS android/360 samples negotiate no h2; gRPC and XHTTP never connect.
+    if transport in ('grpc', 'xhttp') and result['fingerprint'] in ('android', '360'):
+        raise ValueError('fingerprint has no HTTP/2 for this transport')
     if transport == 'reality':
         # The original versions bundled as origin/origin2 require hybrid ML-KEM.
         # origin3 and the fork without requireMlkem accept other TLS 1.3 samples.

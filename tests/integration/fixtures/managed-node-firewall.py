@@ -184,6 +184,15 @@ try:
         for target in ('10.77.0.2', 'fd42::2', '127.0.0.1', '11.77.0.4'):
             check(f'family{family}-private-egress-block-{target}', not connect(target, 18080, uid=995))
         check(f'family{family}-host-unaffected', connect('10.77.0.2', 18080))
+        # The node's own WAN segment: neighbours and router, whatever their addresses.
+        run(['nft', '-f', '-'], input='delete table inet vpnbot_node\n'+node.firewall(options, host | {
+            'onlink': ['11.77.0.0/24', '2606:4700:4700::/64', '2620:fe::fe/128']}), check=True)
+        for target in ('11.77.0.128', '2620:fe::fe'):
+            check(f'family{family}-onlink-egress-block-{target}', not connect(target, 18080, uid=995))
+            check(f'family{family}-onlink-host-unaffected-{target}', connect(target, 18080))
+        for version, address, trusted in [(4, '11.77.0.4', '11.77.0.2'), (6, '2606:4700:4700::1111', '2606:4700:4700::2')]:
+            check(f'family{family}-onlink-ingress{version}-still-open', connect(address, 443, trusted, remote=True))
+        run(['nft', '-f', '-'], input='delete table inet vpnbot_node\n'+node.firewall(options, host), check=True)
         cover_options = options | {'cover': True, 'domain': 'node.example.test'}
         run(['nft', '-f', '-'], input='delete table inet vpnbot_node\n'+node.firewall(cover_options, host), check=True)
         check(f'family{family}-core-to-cover-only-port', connect('127.0.0.1', 9443, uid=995))

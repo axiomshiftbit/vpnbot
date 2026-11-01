@@ -41,6 +41,24 @@ class Runtime:
     def __init__(self, store, host, guard=Path('/etc/vpnbot-node/guard.nft')):
         self.store, self.host, self.guard = store, config.deployment(host), Path(guard)
 
+    def routed_host(self):
+        """Deployment plus the WAN segment: its on-link networks and gateways.
+
+        Public neighbours and the provider's router are a local network of the
+        node; VPN clients must not reach them through the core's UID."""
+        networks = set()
+        for version in (4, 6):
+            result = command(['ip', '-j', '-'+str(version), 'route', 'show', 'dev', self.host['interface']], required=False)
+            for route in (json.loads(result.stdout or b'[]') if not result.returncode else []):
+                gateway, target = route.get('gateway'), route.get('dst', '')
+                if gateway:
+                    networks.add(ipaddress.ip_network(gateway))
+                elif target != 'default':
+                    networks.add(ipaddress.ip_network(target, strict=False))
+        # A very short prefix would be a misconfiguration, not a local segment.
+        keep = [str(net) for net in networks if net.is_global and net.prefixlen >= (16 if net.version == 4 else 32)]
+        return self.host | {'onlink': keep}
+
     def tls_probe(self):
         """Probe only the committed target; never accept an arbitrary URL/IP."""
         value = self.store.load()
@@ -223,7 +241,7 @@ class Runtime:
         # Reject an unavailable bot-to-node address before any stop/apply.
         config.endpoint(value['options'], self.host)
         directory = self.store.path(generation)/'runtime/core'
-        body = config.core_config(value['options'], self.host, value['identity'], value['peers'])
+        body = config.core_config(value['options'], self.routed_host(), value['identity'], value['peers'])
         files = {'xray.json': state.encode(body)}
         certificates = {name: base64.b64decode(encoded, validate=True) for name, encoded in value['tls'].items()}
         if value['options'].get('cover'):
@@ -293,7 +311,7 @@ class Runtime:
             command(['docker', 'run', '--rm', *self.cover_arguments(generation), '-t', '-c', '/node/nginx.conf'])
         if self.store.load(generation)['options'].get('amnezia', {}).get('enabled'):
             command(['docker', 'run', '--rm', *self.amnezia_arguments(generation), '-n', '-c', '/node/carrier.conf'])
-        rules = config.firewall(self.store.load(generation)['options'], self.host)
+        rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
         command(['nft', '-c', '-f', '-'], data=self.transaction(rules).encode())
 
     def transaction(self, rules):
@@ -306,7 +324,7 @@ class Runtime:
         self.container()
         self.container(COVER_CONTAINER)
         self.container(AWG_CONTAINER)
-        rules = config.firewall(value['options'], self.host)
+        rules = config.firewall(value['options'], self.routed_host())
         transaction = self.transaction(rules)
         command(['nft', '-c', '-f', '-'], data=transaction.encode())
         state.atomic(self.guard, rules.encode())

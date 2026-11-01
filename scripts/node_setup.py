@@ -15,7 +15,7 @@ import node_config as config
 import node_install as install
 import node_state as state
 import nft_host_setup
-from node_runtime import Runtime, command, CONTAINER, COVER_CONTAINER, LABEL
+from node_runtime import Runtime, command, CONTAINER, COVER_CONTAINER, AWG_CONTAINER, LABEL
 
 ROOT = Path('/var/lib/vpnbot-node')
 
@@ -60,7 +60,7 @@ def preflight(value):
     active = command(['docker', 'ps', '--format', '{{json .}}']).stdout.decode().splitlines()
     for line in active:
         name = json.loads(line)['Names']
-        if name not in (CONTAINER, COVER_CONTAINER):
+        if name not in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER):
             raise ValueError('На сервере работают другие контейнеры. Сначала подготовьте перенос существующей установки')
         owned = command(['docker', 'inspect', '--format', '{{index .Config.Labels "'+LABEL+'"}}', name]).stdout.strip()
         if owned != b'1':
@@ -127,7 +127,7 @@ def setup(value, source, channel='latest', bundle=None):
         try:
             # ACME is closed by default. Only certificate() creates a timed
             # TCP/80 element; SSH and VPN retain their source restrictions.
-            rules = config.firewall(node['options'], host)
+            rules = config.firewall(node['options'], backend.routed_host())
             command(['nft', '-c', '-f', '-'], data=rules.encode())
             command(['nft', '-f', '-'], data=rules.encode())
             # The UID/source guard is active before adapting the base profile.

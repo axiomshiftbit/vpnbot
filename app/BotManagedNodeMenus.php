@@ -74,6 +74,10 @@ trait BotManagedNodeMenus
             ['text'=>$this->t('📋 Шаблоны Fragment','📋 Fragment templates'), 'callback_data'=>"/nodePreset $id {$group}_fragment"],
             ['text'=>$this->t('📋 Шаблоны UDP noise','📋 UDP noise templates'), 'callback_data'=>"/nodePreset $id {$group}_noise"]];
         if ($group === 'dpi') $text[]=$this->t('Те же шаблоны, что в VLESS → Маскировка DPI основного бота. Они изменяют исходящее соединение основного бота с нодой. Начните с умеренного шаблона и проверьте задержку и скорость; для прямого WireGuard эти параметры VLESS не применяются.', 'The same templates as the main bot’s VLESS → DPI masking. They affect the outbound bot–node connection. Start with a moderate template and test latency and speed; these VLESS settings do not affect direct WireGuard.');
+        if ($group === 'basic' && self::managedNodeFingerprintRejected($options, (string) ($options['xray']['fingerprint'] ?? 'chrome'))) {
+            $text[] = $this->t('⚠ Клиент с этим отпечатком не подключится при выбранных транспорте и ядре, и нода не примет такие настройки. Варианты с ⚠ в списке отпечатков несовместимы.',
+                '⚠ A client with this fingerprint cannot connect with the selected transport and core, so the node rejects these settings. Options marked ⚠ in the fingerprint list are incompatible.');
+        }
         if ($group === 'domains') $data[] = [['text'=>$this->t('Управление сертификатом','Manage certificate'), 'callback_data'=>"/nodeCert $id"]];
         if (in_array($group,['reality','domains'],true)) $data[]=[['text'=>$this->t('Проверить TLS / ALPN h2','Check TLS / ALPN h2'),'callback_data'=>"/nodeTls $id $group"]];
         if ($group === 'finalmask') $text[]=$this->t('Шаблоны Fragment и UDP noise применяются на стороне ноды. Это отдельные настройки от DPI клиента: включайте их после проверки совместимости и скорости. UDP noise не маскирует TCP-соединения.', 'Fragment and UDP noise templates apply on the node side. These are separate from client DPI settings; test compatibility and speed. UDP noise does not mask TCP connections.');
@@ -118,7 +122,8 @@ trait BotManagedNodeMenus
         if ($field[3] === 'choice') {
             $data = [];
             foreach ($field[4] as $value) $data[] = [['text' => (ManagedNodeFields::get($options, $path) === $value ? '✓ ' : '')
-                . $this->managedNodeValueLabel($id, $path, $value), 'callback_data' => "/nodeChoice $id $path $value"]];
+                . $this->managedNodeValueLabel($id, $path, $value) . ($path === 'xray.fingerprint' && self::managedNodeFingerprintRejected($options, (string) $value) ? ' ⚠' : ''),
+                'callback_data' => "/nodeChoice $id $path $value"]];
             $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/nodeSettings $id {$field[0]}"]];
             $this->update($this->input['chat'], $this->input['message_id'], $this->managedNodeFieldTitle($node, $field), $data);
             return;
@@ -145,6 +150,17 @@ trait BotManagedNodeMenus
             default => $this->t('значение; <code>-</code> означает пустое поле', 'a value; <code>-</code> means an empty field'),
         };
         $this->exitPrompt($this->t($field[1], $field[2]) . ': ' . $hint, 'saveManagedNodeField', [$id, $path]);
+    }
+
+    /** Same rule as the node's validator and the main bot's fingerprintRejected(). */
+    private static function managedNodeFingerprintRejected(array $options, string $fingerprint): bool
+    {
+        $transport = $options['transport'] ?? '';
+        if (in_array($transport, ['grpc', 'xhttp'], true)) return in_array($fingerprint, self::FINGERPRINTS_NO_H2, true);
+        if ($transport !== 'reality') return false;
+        if (in_array($fingerprint, self::REALITY_NO_TLS13, true)) return true;
+        $mlkem = in_array($options['core'] ?? 'origin', ['origin', 'origin2'], true) || !empty($options['xray']['reality']['requireMlkem']);
+        return $mlkem && !in_array($fingerprint, self::REALITY_FINGERPRINTS, true);
     }
 
     private function managedNodeFieldTitle(array $node, array $field): string

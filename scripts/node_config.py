@@ -84,9 +84,14 @@ def settings(value):
 
 
 def deployment(value):
-    if not isinstance(value, dict) or set(value) - {'ssh_networks', 'cover_uid', 'awg_uid'} != {'public4', 'public6', 'sources', 'admins', 'routers', 'ssh_ports', 'interface', 'uid', 'gid'}:
+    if not isinstance(value, dict) or set(value) - {'ssh_networks', 'cover_uid', 'awg_uid', 'onlink'} != {'public4', 'public6', 'sources', 'admins', 'routers', 'ssh_ports', 'interface', 'uid', 'gid'}:
         raise ValueError('invalid deployment fields')
     result = dict(value)
+    if 'onlink' in value:
+        # Read from the host's routes at apply time, never stored or remotely set.
+        if not isinstance(value['onlink'], list) or len(value['onlink']) > 64:
+            raise ValueError('invalid on-link networks')
+        result['onlink'] = sorted({str(ipaddress.ip_network(net)) for net in value['onlink']})
     if 'cover_uid' in value and (type(value['cover_uid']) is not int or not 100 <= value['cover_uid'] <= 60000 or value['cover_uid'] == value['uid']):
         raise ValueError('cover site requires a separate service user')
     if 'awg_uid' in value and (type(value['awg_uid']) is not int or not 100 <= value['awg_uid'] <= 60000
@@ -201,6 +206,7 @@ def core_config(options, host, keys, external=None):
     # Xray normalizes IPv4-mapped addresses to IPv4 before evaluating IP rules;
     # its CIDR parser rejects the mapped /96. NFTables keeps that range below.
     denied = PRIVATE4 + [ip for ip in PRIVATE6 if ip != '::ffff:0:0/96'] + [ip for ip in (host['public4'], host['public6']) if ip]
+    denied += host.get('onlink', [])
     denied.append('::/0' if family == 4 else '0.0.0.0/0')
     client = {'id': keys['uuid'], 'email': 'controller'}
     transport = options['transport']
@@ -421,7 +427,10 @@ def firewall(options, host):
     for version, ranges in [(4, PRIVATE4), (6, PRIVATE6)]:
         proto = 'ip' if version == 4 else 'ip6'
         denied = ranges + ([host['public4' if version == 4 else 'public6']] if host['public4' if version == 4 else 'public6'] else [])
-        lines.append(f'  {proto} daddr {{ ' + ', '.join(denied) + ' } counter drop')
+        denied += [net for net in host.get('onlink', []) if ipaddress.ip_network(net).version == version]
+        # An on-link network contains the node's address; nft rejects overlaps.
+        networks = ipaddress.collapse_addresses(map(ipaddress.ip_network, denied))
+        lines.append(f'  {proto} daddr {{ ' + ', '.join(map(str, networks)) + ' } counter drop')
     network = 'ip daddr 0.0.0.0/0' if family == 4 else 'ip6 daddr 2000::/3'
     lines += [f'  oifname "{interface}" {network} meta l4proto {{ tcp, udp }} accept',
               '  counter drop', ' }', '}', '']

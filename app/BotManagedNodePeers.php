@@ -146,6 +146,6 @@ trait BotManagedNodePeers
                 $this->t('Личный профиль подключения. Требуются совместимое ядро и разрешённый IP сервера панели в my_server ноды.', 'Private connection profile. A compatible core and the panel server IP in the node’s my_server are required.'));
             if (empty($sent['ok'])) throw new RuntimeException('Private delivery failed');
             $this->managedNodePeerMenu($id, $key, $this->t('Файл отправлен в личный чат.', 'File sent to your private chat.'));
-        } catch (Throwable $e) { $this->managedNodePeerMenu($id, $key, $this->t('Профиль не отправлен. Для HTTPS-подписки настройте домен и SSL основного бота. Проверьте состояние ноды и откройте личный чат с ботом командой /start.', 'Profile was not sent. Check the node status and start a private chat with the bot using /start.')); }
+        } catch (Throwable $e) { $this->managedNodePeerMenu($id, $key, $this->t('Профиль не отправлен. Для HTTPS-подписки настройте домен и SSL основного бота. Проверьте состояние ноды и откройте личный чат с ботом командой /start.', 'Profile was not sent. An HTTPS subscription needs the main bot’s domain and SSL. Check the node status and start a private chat with the bot using /start.')); }
     }
 }

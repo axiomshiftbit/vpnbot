@@ -32,7 +32,7 @@ final class ManagedNodeFields
             'amnezia.enabled' => ['amnezia', 'ru' => 'Разрешить AmneziaWG', 'en' => 'Enable AmneziaWG', 'bool'],
             'amnezia.active' => ['amnezia', 'ru' => 'Связь бота через AmneziaWG', 'en' => 'Bot link over AmneziaWG', 'bool'],
             'amnezia.mtu' => ['amnezia', 'AmneziaWG MTU', 'AmneziaWG MTU', 'int'],
-            'xray.fingerprint' => ['basic', 'ru' => 'Отпечаток клиента', 'en' => 'Client fingerprint', 'choice', ['chrome', 'firefox', 'safari', 'ios', 'edge', 'qq', 'random', 'randomized', 'android', '360']],
+            'xray.fingerprint' => ['basic', 'ru' => 'Отпечаток клиента', 'en' => 'Client fingerprint', 'choice', ['chrome', 'firefox', 'safari', 'ios', 'edge', 'qq', 'random', 'android', '360']],
             'xray.encryption.auth' => ['crypto', 'VLESS Encryption', 'VLESS Encryption', 'choice', ['off', 'x25519', 'mlkem768']],
             'xray.encryption.mode' => ['crypto', 'ru' => 'Режим шифрования', 'en' => 'Encryption mode', 'choice', ['native', 'xorpub', 'random']],
             'xray.reality.mldsa' => ['crypto', 'ru' => 'Постквантовая подпись ML-DSA', 'en' => 'Post-quantum ML-DSA signature', 'bool'],
