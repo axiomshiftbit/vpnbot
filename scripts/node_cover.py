@@ -24,7 +24,7 @@ def nginx(options, keys, ipv6):
                      ' proxy_set_header Upgrade $http_upgrade;', ' proxy_set_header Connection "upgrade";',
                      ' proxy_set_header Host $host;', ' proxy_buffering off;', ' proxy_read_timeout 3600s;',
                      ' proxy_send_timeout 3600s;', ' proxy_intercept_errors on;', ' error_page 400 404 = @cover;', ' }']
-    elif transport in ('grpc', 'xhttp'):
+    elif transport in ('grpc', 'xhttp', 'trojan-grpc'):
         locations = ['location /'+keys['path']+' {', ' grpc_pass grpc://127.0.0.1:9444;',
                      ' grpc_read_timeout 3600s;', ' grpc_send_timeout 3600s;',
                      ' grpc_set_header Host $host;', ' grpc_socket_keepalive on;', ' }']

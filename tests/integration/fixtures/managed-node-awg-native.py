@@ -198,7 +198,7 @@ try:
     subprocess.Popen=diagnostic_popen
     carriers=supervisor.Carriers()
     for core,binary in [('origin','x31'),('fork','fork'),('origin2','origin2'),('origin3','origin3')]:
-        for transport in ('reality','ws','grpc','xhttp'):
+        for transport in ('reality','ws','grpc','xhttp','trojan-grpc'):
             for family in (4,6):
                 for connection in (4,6):
                     if os.environ.get('AWG_SINGLE') and (core,transport,family,connection)!=('origin','reality',4,4):

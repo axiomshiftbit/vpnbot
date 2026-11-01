@@ -43,14 +43,15 @@ trait BotManagedNodePeers
             $this->t('Смена ключа и удаление отключают старую ссылку. Изменение применяется после проверки связи основным ботом.',
                 'Rotating the identity and deleting the connection revoke the old link. Changes are applied after the main bot checks connectivity.')];
         $channel=$peer['channel'] ?? 'vless';
-        $text[]=$this->t('Протокол подключения: ','Connection protocol: ').strtoupper($channel);
-        if ($channel==='amnezia') $text[]=$this->t('Для 3x-ui 3.11.0 импортируйте оба outbound из JSON. Маршруты панели направляйте в первый, VLESS: он использует защищённый канал Amnezia. Обычная VLESS-ссылка этот канал не включает.',
-            'For 3x-ui 3.11.0 import both JSON outbounds. Route panel traffic to the first, VLESS, which uses the Amnezia carrier. A plain VLESS link does not include this carrier.');
+        $direct=self::managedNodeDirectLabel($this->managedNodes()[$id]['status']['options'] ?? []);
+        $text[]=$this->t('Протокол подключения: ','Connection protocol: ').strtoupper($channel==='vless' ? $direct : $channel);
+        if ($channel==='amnezia') $text[]=str_replace('VLESS',$direct,$this->t('Для 3x-ui 3.11.0 импортируйте оба outbound из JSON. Маршруты панели направляйте в первый, VLESS: он использует защищённый канал Amnezia. Обычная VLESS-ссылка этот канал не включает.',
+            'For 3x-ui 3.11.0 import both JSON outbounds. Route panel traffic to the first, VLESS, which uses the Amnezia carrier. A plain VLESS link does not include this carrier.'));
         $data = [];
-        foreach (['vless'=>'VLESS','wireguard'=>'WireGuard','amnezia'=>'AmneziaWG'] as $kind=>$title) {
+        foreach (['vless'=>$direct,'wireguard'=>'WireGuard','amnezia'=>'AmneziaWG'] as $kind=>$title) {
             $data[]=[['text'=>($channel===$kind?'✓ ':'').$title,'callback_data'=>"/nodePeerDo $id $key $kind"]];
         }
-        if ($peer['enabled']) foreach (['https' => ['ru' => '🌐 HTTPS-подписка (3x-ui)', 'en' => '🌐 HTTPS subscription (3x-ui)'], 'link' => ['ru' => '🔗 Ссылка VLESS', 'en' => '🔗 VLESS link'], 'json' => ['ru' => '📄 JSON для панели', 'en' => '📄 Panel JSON'],
+        if ($peer['enabled']) foreach (['https' => ['ru' => '🌐 HTTPS-подписка (3x-ui)', 'en' => '🌐 HTTPS subscription (3x-ui)'], 'link' => ['ru' => '🔗 Ссылка подключения', 'en' => '🔗 Connection link'], 'json' => ['ru' => '📄 JSON для панели', 'en' => '📄 Panel JSON'],
             'sub' => ['ru' => '📄 Подписка файлом', 'en' => '📄 Subscription file']] as $format => $label) {
             $data[] = [['text' => $this->t(...$label), 'callback_data' => "/nodePeerOut $id $key $format"]];
         }
@@ -76,7 +77,7 @@ trait BotManagedNodePeers
     {
         $status = $this->managedNodes()[$id]['status'] ?? [];
         $name = trim((string) $name); $peers = $this->managedNodePeers($id, $status);
-        if (!preg_match('~^[A-Za-z0-9_.-]{1,40}$~D', $name) || count($peers) >= 32 || in_array($name, array_column($peers, 'name'), true)) {
+        if (!preg_match('~^[A-Za-z0-9_.-]{1,40}$~D', $name) || count($peers) >= 32 || in_array(strtolower($name), ['controller', ...array_map('strtolower', array_column($peers, 'name'))], true)) {
             $this->managedNodePeersMenu($id, $this->t('Недопустимое или занятое имя, либо уже есть 32 подключения.', 'Invalid or duplicate name, or there are already 32 connections.')); return;
         }
         $peers[] = ['id' => self::xrayUuid(), 'name' => $name, 'enabled' => true];
@@ -124,7 +125,7 @@ trait BotManagedNodePeers
             if (($profile['channel']??'vless')!==($peer['channel']??'vless') || (($peer['channel']??'vless')!=='vless' && $format!=='json')) throw new RuntimeException('Wrong channel or export format');
             $core = (string) ($this->managedNodes()[$id]['status']['options']['core'] ?? 'origin');
             $parsed = ManagedNodeProfile::parse($profile, $core);
-            if (($parsed['outbound']['settings']['vnext'][0]['users'][0]['id'] ?? '') !== $peer['id']) throw new RuntimeException('Wrong peer');
+            if (ManagedNodeProfile::credential($parsed['outbound']) !== $peer['id']) throw new RuntimeException('Wrong peer');
             if ($format === 'https') {
                 $url = $this->managedNodeSubscriptionUrl($id, $key);
                 $sent = $this->send($this->input['from'], $this->t('HTTPS-подписка для импорта в панели, поддерживающие VLESS-подписки:', 'HTTPS subscription for panels supporting VLESS subscriptions:')

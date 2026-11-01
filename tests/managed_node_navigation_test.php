@@ -3,6 +3,12 @@ require_once __DIR__ . '/../app/bot.php';
 set_error_handler(static function ($n, $s, $f, $l) { if (error_reporting() & $n) throw new ErrorException($s, 0, $n, $f, $l); return true; });
 class NodeNavigationFixture extends Bot {
     public array $p, $screen = [], $replies = [];
+    public function showSetting(string $setting): void {
+        $transport = in_array($setting, ['reality', 'mask'], true) || str_starts_with($setting, 'xray.reality.') ? 'reality'
+            : ($setting === 'xhttp' || str_starts_with($setting, 'xray.xhttp.') ? 'xhttp' : 'ws');
+        $this->p['managed_nodes']['aabbccdd']['status']['options']['transport'] = $transport;
+        if (isset($this->p['managed_nodes']['aabbccdd']['draft'])) $this->p['managed_nodes']['aabbccdd']['draft']['transport'] = $transport;
+    }
     public function __construct() {
         require __DIR__ . '/../app/i18n.php'; $this->i18n = $i; $this->language = 'ru'; $this->admin = true;
         $this->input = ['chat'=>1,'from'=>1,'message_id'=>10,'callback_id'=>'fixture','callback'=>'','message'=>'','username'=>'admin'];
@@ -86,12 +92,12 @@ $check(!$b->managedNodeNavigation,'next regular exit screen has no stale node sc
 foreach (['ru','en'] as $lang) {
     $b=new NodeNavigationFixture(); $b->language=$lang;
     foreach (array_keys(ManagedNodeFields::GROUPS) as $group) {
-        $b->managedNodeSettingsMenu('aabbccdd',$group);
+        $b->showSetting($group); $b->managedNodeSettingsMenu('aabbccdd',$group);
         $check(end($b->screen[1])[0]['callback_data']==='/nodeSettings aabbccdd','every section returns to its hub');
         foreach ($b->callbacks() as $cb) $check(strlen($cb)<=64,'section callback fits Telegram: '.$cb);
     }
     foreach (ManagedNodeFields::all() as $path=>$field) {
-        $b->managedNodeField('aabbccdd',$path);
+        $b->showSetting($path); $b->managedNodeField('aabbccdd',$path);
         $check(end($b->screen[1])[0]['callback_data']===('/nodeSettings aabbccdd'.($field[3]==='bool'?'':' '.$field[0])),'field returns to its own section: '.$path);
         foreach ($b->callbacks() as $cb) $check(strlen($cb)<=64,'field callback fits Telegram: '.$cb);
     }

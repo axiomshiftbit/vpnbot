@@ -9,6 +9,12 @@ class ManagedFixtureBot extends Bot
     public array $screens = []; public array $events = [];
     public bool $probePass = true; public bool $corePass = true; public bool $lostConfirm = false; public bool $snapshotPass = true;
     public array $remoteStatus; public array $remoteJob; public array $profile;
+    // Reality and XHTTP screens exist only for their transport.
+    public function showSetting(string $setting): void {
+        $transport = in_array($setting, ['reality', 'mask'], true) || str_starts_with($setting, 'xray.reality.') ? 'reality'
+            : ($setting === 'xhttp' || str_starts_with($setting, 'xray.xhttp.') ? 'xhttp' : 'ws');
+        $this->pacState['managed_nodes']['aabbccdd']['status']['options']['transport'] = $transport;
+    }
     public function __construct()
     {
         $this->input = ['chat' => 1, 'from' => 1, 'message_id' => 5, 'callback_id' => 'fixture', 'username' => 'admin'];
@@ -102,8 +108,9 @@ foreach (['ru', 'en'] as $language) {
     $bot = new ManagedFixtureBot(); $bot->language = $language;
     $bot->pacState['managed_nodes']['aabbccdd']['job'] = null;
     $bot->managedNodesMenu(); $bot->managedNodeMenu('aabbccdd'); $bot->managedNodeMaintenance('aabbccdd');
-    foreach (array_keys(ManagedNodeFields::GROUPS) as $group) $bot->managedNodeSettingsMenu('aabbccdd', $group);
-    foreach (ManagedNodeFields::all() as $path => $field) if ($field[3] === 'choice') $bot->managedNodeField('aabbccdd', $path);
+    foreach (array_keys(ManagedNodeFields::GROUPS) as $group) { $bot->showSetting($group); $bot->managedNodeSettingsMenu('aabbccdd', $group); }
+    foreach (ManagedNodeFields::all() as $path => $field) if ($field[3] === 'choice') { $bot->showSetting($path); $bot->managedNodeField('aabbccdd', $path); }
+    $bot->showSetting('');
     foreach ($bot->screens as [$text, $rows]) {
         $check(mb_strlen($text) < 4096, 'screen fits Telegram');
         foreach ($rows as $row) foreach ($row as $button) $check(strlen($button['callback_data']) <= 64, 'callback fits Telegram');

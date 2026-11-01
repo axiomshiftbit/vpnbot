@@ -373,9 +373,9 @@ trait BotManagedNodes
                 . ' · VPN IPv' . ($options['connect_family'] ?? '?') . ' → IPv' . ($options['family'] ?? '?'));
             if (!empty($options['wireguard']['enabled'])) $text[] = !empty($options['wireguard']['active'])
                 ? $this->t('Связь с основным ботом: WireGuard UDP/51820.', 'Main bot link: WireGuard UDP/51820.')
-                : $this->t('Резерв WireGuard разрешён; основной бот использует VLESS.', 'WireGuard backup enabled; the main bot uses VLESS.');
+                : str_replace('VLESS', self::managedNodeDirectLabel($options), $this->t('Резерв WireGuard разрешён; основной бот использует VLESS.', 'WireGuard backup enabled; the main bot uses VLESS.'));
             if (!empty($options['amnezia']['enabled'])) $text[] = !empty($options['amnezia']['active'])
-                ? $this->t('Связь с основным ботом: VLESS через AmneziaWG UDP/51821.', 'Main bot link: VLESS over AmneziaWG UDP/51821.')
+                ? str_replace('VLESS', self::managedNodeDirectLabel($options), $this->t('Связь с основным ботом: VLESS через AmneziaWG UDP/51821.', 'Main bot link: VLESS over AmneziaWG UDP/51821.'))
                 : $this->t('Резерв AmneziaWG разрешён.', 'AmneziaWG backup enabled.');
             array_push($text, ...$this->managedNodeDomainSummary($node));
             $text[] = $this->t('Копия состояния ноды: ', 'Node state snapshot: ') . (!empty($node['backup_time'])

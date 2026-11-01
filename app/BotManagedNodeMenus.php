@@ -19,11 +19,15 @@ trait BotManagedNodeMenus
         if (!$node || !$node['connected']) { $this->managedNodesMenu(); return; }
         if ($group !== 'root' && !isset(ManagedNodeFields::GROUPS[$group])) { $this->managedNodeMenu($id); return; }
         $options = $node['draft'] ?? $node['status']['options'] ?? [];
+        if ($group !== 'root' && !ManagedNodeFields::groupActive($options, $group)) {
+            $group = 'root';
+            $notice = $this->t('Эти настройки не относятся к выбранному транспорту.', 'These settings do not apply to the selected transport.');
+        }
         $title = $group === 'root' ? ['ru'=>'Настройки ноды', 'en'=>'Node settings'] : ManagedNodeFields::GROUPS[$group];
         $text = [$this->t('Ноды → ', 'Nodes → ') . self::esc($node['name']) . ' → ' . $this->t(...$title)];
         $buttons = [];
         foreach (ManagedNodeFields::all() as $path => $field) {
-            if ($field[0] !== $group) continue;
+            if ($field[0] !== $group || !ManagedNodeFields::fieldActive($options, $path)) continue;
             $awgVersion=$options['amnezia']['version'] ?? '3.1';
             if (str_starts_with($path,'amnezia.parameters.')) {
                 $name=substr($path,strlen('amnezia.parameters.'));
@@ -36,7 +40,7 @@ trait BotManagedNodeMenus
         }
         $data = array_chunk($buttons, 2);
         $groups = [];
-        if ($group === 'root') foreach (ManagedNodeFields::GROUPS as $name => $label) $groups[] = ['text' => $this->t(...$label), 'callback_data' => "/nodeSettings $id $name"];
+        if ($group === 'root') foreach (ManagedNodeFields::GROUPS as $name => $label) if (ManagedNodeFields::groupActive($options, $name)) $groups[] = ['text' => $this->t(...$label), 'callback_data' => "/nodeSettings $id $name"];
         array_push($data, ...array_chunk($groups, 2));
         if ($group === 'network') {
             $text[] = $this->t('Первая часть — соединение основного бота с нодой. Вторая — выход ноды в интернет. Это не адреса телефона или телевизора. SSH настраивается отдельно в карточке ноды.',
@@ -56,7 +60,7 @@ trait BotManagedNodeMenus
         }
         if ($group === 'reserve') {
             $selected = !empty($options['amnezia']['active']) ? 'amnezia' : (!empty($options['wireguard']['active']) ? 'wireguard' : 'direct');
-            foreach (['direct'=>'VLESS', 'wireguard'=>'WireGuard', 'amnezia'=>'AmneziaWG'] as $channel=>$label) {
+            foreach (['direct'=>self::managedNodeDirectLabel($options), 'wireguard'=>'WireGuard', 'amnezia'=>'AmneziaWG'] as $channel=>$label) {
                 $data[] = [['text'=>($selected === $channel ? '✓ ' : '') . $label, 'callback_data'=>"/nodeChannel $id $channel"]];
             }
             $data[] = [['text'=>$this->t('Настройки WireGuard', 'WireGuard settings'), 'callback_data'=>"/nodeSettings $id wireguard"],
@@ -98,8 +102,8 @@ trait BotManagedNodeMenus
             'Own site uses a cover with an unknown random password. The domain must point to the node. TCP/80 opens only for ACME; SSH and VPN retain their access lists.');
         if ($group === 'crypto') $text[] = $this->t('ML-DSA требует подходящего сертификата сайта маскировки. Отпечаток задаётся клиенту — основному боту.',
             'ML-DSA needs a suitable camouflage site certificate. The fingerprint belongs to the client: the main bot.');
-        if ($group === 'reserve') $text[] = $this->t('WireGuard работает внутри Xray; AmneziaWG использует отдельный минимальный контейнер и передаёт VLESS с выбранным транспортом и шифрованием. Сначала разрешите канал, затем выберите его для связи основного бота. Одновременно активен один канал. UDP/51820 и UDP/51821 доступны только из MyServer. Переключение подтверждается проверкой трафика. Протокол каждого внешнего подключения выбирается отдельно.',
-            'WireGuard runs inside Xray; AmneziaWG uses a separate minimal container and carries VLESS with the selected transport and encryption. Enable a channel, then select it for the main bot link. One channel can be active. UDP/51820 and UDP/51821 are restricted to MyServer. A traffic test confirms the switch. Each external peer selects its own protocol.');
+        if ($group === 'reserve') $text[] = $this->t('WireGuard работает внутри Xray; AmneziaWG использует отдельный минимальный контейнер и передаёт VLESS или Trojan с выбранным транспортом и шифрованием. Сначала разрешите канал, затем выберите его для связи основного бота. Одновременно активен один канал. UDP/51820 и UDP/51821 доступны только из MyServer. Переключение подтверждается проверкой трафика. Протокол каждого внешнего подключения выбирается отдельно.',
+            'WireGuard runs inside Xray; AmneziaWG uses a separate minimal container and carries VLESS or Trojan with the selected transport and encryption. Enable a channel, then select it for the main bot link. One channel can be active. UDP/51820 and UDP/51821 are restricted to MyServer. A traffic test confirms the switch. Each external peer selects its own protocol.');
         if ($group === 'smux') $text[] = $this->t('SMUX требует fork на ноде и основном боте. При maxStreams > 0 maxConnections и minStreams не используются. Для h2mux половинное закрытие должно быть off.',
             'SMUX requires the fork on both servers. maxStreams > 0 disables maxConnections and minStreams. h2mux requires half-close off.');
         if ($notice !== '') $text[] = self::esc($notice);
@@ -115,6 +119,7 @@ trait BotManagedNodeMenus
         if (!$node || !$node['connected'] || !$field) return;
         if ($node['job']) { $this->managedNodeMenu($id, $this->t('Дождитесь завершения текущего изменения.', 'Wait for the current change to finish.')); return; }
         $options = $node['draft'] ?? $node['status']['options'] ?? [];
+        if (!ManagedNodeFields::fieldActive($options, $path)) { $this->managedNodeSettingsMenu($id); return; }
         if ($field[3] === 'bool') {
             $this->managedNodeDraft($id, $path, !ManagedNodeFields::get($options, $path));
             return;
@@ -156,11 +161,16 @@ trait BotManagedNodeMenus
     private static function managedNodeFingerprintRejected(array $options, string $fingerprint): bool
     {
         $transport = $options['transport'] ?? '';
-        if (in_array($transport, ['grpc', 'xhttp'], true)) return in_array($fingerprint, self::FINGERPRINTS_NO_H2, true);
+        if (in_array($transport, ['grpc', 'xhttp', 'trojan-grpc'], true)) return in_array($fingerprint, self::FINGERPRINTS_NO_H2, true);
         if ($transport !== 'reality') return false;
         if (in_array($fingerprint, self::REALITY_NO_TLS13, true)) return true;
         $mlkem = in_array($options['core'] ?? 'origin', ['origin', 'origin2'], true) || !empty($options['xray']['reality']['requireMlkem']);
         return $mlkem && !in_array($fingerprint, self::REALITY_FINGERPRINTS, true);
+    }
+
+    private static function managedNodeDirectLabel(array $options): string
+    {
+        return ($options['transport'] ?? '') === 'trojan-grpc' ? 'Trojan' : 'VLESS';
     }
 
     private function managedNodeFieldTitle(array $node, array $field): string
@@ -178,7 +188,7 @@ trait BotManagedNodeMenus
             return ($value === 'fork' ? 'fork (SMUX) ' : 'XTLS ') . $version;
         }
         if (in_array($path, ['family', 'connect_family'], true)) return 'IPv' . $value;
-        if ($path === 'transport') return ['reality'=>'REALITY', 'ws'=>'WebSocket + TLS', 'grpc'=>'gRPC + TLS', 'xhttp'=>'XHTTP + TLS'][$value] ?? '—';
+        if ($path === 'transport') return ['reality'=>'REALITY', 'ws'=>'WebSocket + TLS', 'grpc'=>'gRPC + TLS', 'xhttp'=>'XHTTP + TLS', 'trojan-grpc'=>'Trojan + gRPC + TLS'][$value] ?? '—';
         return is_bool($value) ? ($value ? '✅' : '❌') : (is_array($value) ? (string) count($value) : (string) ($value ?? '—'));
     }
 

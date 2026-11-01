@@ -6,7 +6,7 @@ foreach (['ru','en'] as $language) {
     foreach (ManagedNodeFields::all() as $path=>$field) {
         if ($field[3]!=='bool') continue;
         foreach ([false,true] as $initial) {
-            $b=new NodeChoiceDispatchFixture(); $b->language=$language;
+            $b=new NodeChoiceDispatchFixture(); $b->language=$language; $b->showSetting($path);
             $node=&$b->pacState['managed_nodes'][$id];
             $node['status']['options']=ManagedNodeFields::change($node['status']['options'],$path,$initial);
             $original=$node['status']['options'];

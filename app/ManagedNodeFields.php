@@ -4,7 +4,7 @@
 final class ManagedNodeFields
 {
     public const GROUPS = [
-        'basic' => ['ru' => 'Подключение VLESS', 'en' => 'VLESS connection'],
+        'basic' => ['ru' => 'Транспорт и ядро', 'en' => 'Transport and core'],
         'network' => ['ru' => 'IPv4 / IPv6', 'en' => 'IPv4 / IPv6'], 'domains' => ['ru' => 'Домены и сертификат', 'en' => 'Domains and certificate'],
         'crypto' => ['ru' => 'Шифрование', 'en' => 'Encryption'], 'reality' => ['ru' => 'REALITY', 'en' => 'REALITY'],
         'smux' => ['ru' => 'SMUX', 'en' => 'SMUX'], 'xhttp' => ['ru' => 'XHTTP', 'en' => 'XHTTP'],
@@ -17,7 +17,7 @@ final class ManagedNodeFields
     public static function all(): array
     {
         $fields = [
-            'transport' => ['basic', 'ru' => 'Транспорт', 'en' => 'Transport', 'choice', ['reality', 'ws', 'grpc', 'xhttp']],
+            'transport' => ['basic', 'ru' => 'Транспорт', 'en' => 'Transport', 'choice', ['reality', 'ws', 'grpc', 'xhttp', 'trojan-grpc']],
             'core' => ['basic', 'ru' => 'Ядро', 'en' => 'Core', 'choice', ['origin', 'origin2', 'origin3', 'fork']],
             'family' => ['network', 'ru' => 'Выход в интернет', 'en' => 'Internet egress', 'choice', [4, 6]],
             'connect_family' => ['network', 'ru' => 'Связь бот → нода', 'en' => 'Bot → node link', 'choice', [4, 6]],
@@ -85,6 +85,25 @@ final class ManagedNodeFields
         return array_map('array_values', $fields);
     }
 
+    /** Same scope as the main bot: settings of another transport stay out of the menu. */
+    public static function groupActive(array $options, string $group): bool
+    {
+        $transport = $options['transport'] ?? 'reality';
+        return match ($group) {
+            'reality' => $transport === 'reality',
+            'xhttp' => $transport === 'xhttp',
+            'crypto' => $transport !== 'trojan-grpc',
+            default => true,
+        };
+    }
+
+    public static function fieldActive(array $options, string $path): bool
+    {
+        $field = self::all()[$path] ?? null;
+        if (!$field || !self::groupActive($options, $field[0])) return false;
+        return !str_starts_with($path, 'xray.reality.') || ($options['transport'] ?? 'reality') === 'reality';
+    }
+
     public static function get(array $options, string $path)
     {
         $value = $options;
@@ -110,6 +129,13 @@ final class ManagedNodeFields
         if ($value === true && $path === 'wireguard.active') $options['amnezia']['active'] = false;
         if ($value === true && $path === 'amnezia.active') $options['wireguard']['active'] = false;
         if ($path === 'mask' && ($options['transport'] ?? '') === 'reality') $options['cover'] = false;
+        if ($path === 'transport') {
+            // These options would invalidate the new transport, and their screen
+            // is hidden there: never strand a draft the user cannot correct.
+            if ($value !== 'xhttp' && !empty($options['xray']['xhttp']['mux'])) $options['xray']['xhttp']['mux'] = false;
+            if ($value !== 'reality' && !empty($options['xray']['reality']['requireMlkem'])) $options['xray']['reality']['requireMlkem'] = false;
+            if ($value === 'trojan-grpc' && isset($options['xray']['encryption']['auth'])) $options['xray']['encryption']['auth'] = 'off';
+        }
         if ($value === false && in_array($path, ['wireguard.enabled', 'amnezia.enabled'], true)) $options[explode('.', $path)[0]]['active'] = false;
         if ($value === true && in_array($path, ['wireguard.active', 'amnezia.active'], true)) $options[explode('.', $path)[0]]['enabled'] = true;
         return $options;

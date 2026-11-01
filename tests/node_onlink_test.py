@@ -80,6 +80,17 @@ class Fingerprints(unittest.TestCase):
             node_config.settings(OPTIONS | {'transport': 'ws', 'domain': 'n.example.test', 'xray': {'fingerprint': fingerprint}})
 
 
+class PeerNames(unittest.TestCase):
+    def peer(self, number, name):
+        return dict(id=f'22222222-2222-4222-8222-22222222222{number}', name=name, enabled=True)
+
+    def test_names_the_core_would_reject_are_refused(self):
+        for names in (['controller'], ['Controller'], ['panel', 'Panel'], ['a1', 'a1']):
+            with self.subTest(names=names), self.assertRaises(ValueError):
+                node_config.peers([self.peer(i, n) for i, n in enumerate(names)])
+        self.assertEqual(len(node_config.peers([self.peer(0, 'panel'), self.peer(1, 'panel-2')])), 2)
+
+
 class Preflight(unittest.TestCase):
     def test_amnezia_helper_is_not_a_foreign_container(self):
         answers = {'ps': b'{"Names":"vpnbot-node-amnezia"}\n', 'inspect': b'1\n'}

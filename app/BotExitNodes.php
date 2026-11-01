@@ -533,13 +533,12 @@ trait BotExitNodes
             if ($outbound === null && $node['fallback'] !== 'block') continue;
             // Повреждённая ссылка строгой ноды не должна снимать её маршруты.
             $outbound ??= ['protocol' => 'blackhole'];
-            if (($node['managed_profile']['channel'] ?? '') === 'amnezia' && $outbound['protocol'] === 'vless') {
+            if (($node['managed_profile']['channel'] ?? '') === 'amnezia' && in_array($outbound['protocol'], ['vless', 'trojan'], true)) {
                 $parsed = ManagedNodeProfile::parse($node['managed_profile'], (string) ($p['xray_core'] ?? 'origin'));
                 $slot = $index - 1;
                 // Preserve TLS/REALITY and VLESS authentication inside the
                 // fixed AWG carrier. Neither endpoint comes from a raw dialer.
-                $outbound['settings']['vnext'][0]['address'] = '127.0.0.1';
-                $outbound['settings']['vnext'][0]['port'] = 10920 + $slot;
+                ManagedNodeProfile::setEndpoint($outbound, '127.0.0.1', 10920 + $slot);
                 $c['_vpnbot_amnezia'][(string) $slot] = ['client' => $parsed['managed_amnezia'],
                     'session' => $node['managed_session'] ?? '0000000000000000'];
             }

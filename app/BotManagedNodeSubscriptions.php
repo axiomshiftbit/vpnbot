@@ -53,7 +53,7 @@ trait BotManagedNodeSubscriptions
             $profile = $this->managedNodeRpc($id, ['action' => 'profile', 'peer' => $peer['id']]);
             if (($profile['channel'] ?? 'vless') !== 'vless') throw new RuntimeException('Peer channel changed');
             $parsed = ManagedNodeProfile::parse($profile, (string) ($status['options']['core'] ?? 'origin'));
-            if (($parsed['outbound']['settings']['vnext'][0]['users'][0]['id'] ?? '') !== $peer['id']) throw new RuntimeException('Wrong peer');
+            if (ManagedNodeProfile::credential($parsed['outbound']) !== $peer['id']) throw new RuntimeException('Wrong peer');
             $after = $this->managedNodeRpc($id, ['action' => 'status']);
             if (!empty($after['pending']) || ($after['generation'] ?? '') !== $status['generation']) throw new RuntimeException('Node changed during export');
             $document = ['mime' => $format === 'sub' ? 'text/plain' : 'application/json', 'name' => $peer['name'],

@@ -11,7 +11,8 @@ import node_wg
 import node_awg
 
 
-TRANSPORTS = ('reality', 'ws', 'grpc', 'xhttp')
+TRANSPORTS = ('reality', 'ws', 'grpc', 'xhttp', 'trojan-grpc')
+GRPC = ('grpc', 'trojan-grpc')
 CORES = {'origin': '/usr/bin/xray', 'origin2': '/usr/bin/xray-2', 'origin3': '/usr/bin/xray-3', 'fork': '/usr/bin/xray-smux'}
 PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
             '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24',
@@ -170,13 +171,17 @@ def identity(value):
 def peers(value):
     if not isinstance(value, list) or len(value) > 32:
         raise ValueError('invalid peer list')
-    result, seen = [], set()
+    # Xray compares user emails ignoring case; 'controller' is the main bot's.
+    result, seen, names = [], set(), {'controller'}
     for peer in value:
         if not isinstance(peer, dict) or set(peer)-{'channel'} != {'id', 'name', 'enabled'} \
                 or not isinstance(peer['id'], str) or str(uuid.UUID(peer['id'])) != peer['id'] \
                 or peer['id'] in seen or type(peer['enabled']) is not bool \
                 or not isinstance(peer['name'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,40}', peer['name']):
             raise ValueError('invalid peer')
+        if peer['name'].lower() in names:
+            raise ValueError('peer name is already in use')
+        names.add(peer['name'].lower())
         if peer.get('channel', 'vless') not in ('vless', 'wireguard', 'amnezia'):
             raise ValueError('invalid external channel')
         seen.add(peer['id'])
@@ -208,9 +213,11 @@ def core_config(options, host, keys, external=None):
     denied = PRIVATE4 + [ip for ip in PRIVATE6 if ip != '::ffff:0:0/96'] + [ip for ip in (host['public4'], host['public6']) if ip]
     denied += host.get('onlink', [])
     denied.append('::/0' if family == 4 else '0.0.0.0/0')
-    client = {'id': keys['uuid'], 'email': 'controller'}
     transport = options['transport']
-    stream = {'network': 'tcp' if transport == 'reality' else transport,
+    trojan = transport == 'trojan-grpc'
+    # Trojan has one credential; the same random identity serves as its password.
+    client = {'password' if trojan else 'id': keys['uuid'], 'email': 'controller'}
+    stream = {'network': network(transport),
               'security': 'reality' if transport == 'reality' else 'tls', 'sockopt': {'tcpMptcp': False}}
     if transport == 'reality':
         client['flow'] = 'xtls-rprx-vision'
@@ -220,7 +227,7 @@ def core_config(options, host, keys, external=None):
     else:
         stream['tlsSettings'] = {'minVersion': '1.2', 'alpn': ['http/1.1'] if transport == 'ws' else ['h2', 'http/1.1'],
                                  'certificates': [{'certificateFile': '/node/fullchain.pem', 'keyFile': '/node/privkey.pem'}]}
-        if transport == 'grpc':
+        if transport in GRPC:
             stream['grpcSettings'] = {'serviceName': keys['path']}
         elif transport == 'ws':
             stream['wsSettings'] = {'path': '/' + keys['path']}
@@ -231,14 +238,15 @@ def core_config(options, host, keys, external=None):
         if peer['id'] == keys['uuid']:
             raise ValueError('peer conflicts with controller identity')
         if peer['enabled'] and peer.get('channel', 'vless') != 'wireguard':
-            clients.append({'id': peer['id'], 'email': peer['name'],
+            clients.append({'password' if trojan else 'id': peer['id'], 'email': peer['name'],
                             **({'flow': 'xtls-rprx-vision'} if transport == 'reality' else {})})
     result = {
         'log': {'loglevel': 'none'},
         'dns': {'servers': ['1.1.1.1', '9.9.9.9'] if family == 4 else ['2606:4700:4700::1111', '2620:fe::fe'],
                 'queryStrategy': 'UseIPv4' if family == 4 else 'UseIPv6'},
         'inbounds': [{'tag': 'node', 'listen': '::' if host['public6'] else '0.0.0.0', 'port': 8443,
-                      'protocol': 'vless', 'settings': {'decryption': 'none', 'clients': clients},
+                      'protocol': 'trojan' if trojan else 'vless',
+                      'settings': {'clients': clients} if trojan else {'decryption': 'none', 'clients': clients},
                       'streamSettings': stream}],
         'outbounds': [{'tag': 'direct', 'protocol': 'freedom', 'sendThrough': source,
                        'settings': {'domainStrategy': strategy, 'finalRules': [
@@ -278,19 +286,25 @@ def client_link(options, host, keys):
     if ':' in address:
         address = '[' + address + ']'
     transport = options['transport']
-    params = {'encryption': 'none', 'type': 'tcp' if transport == 'reality' else transport,
+    params = {'encryption': 'none', 'type': network(transport),
               'security': 'reality' if transport == 'reality' else 'tls',
               'sni': options['mask'] if transport == 'reality' else options['domain'], 'fp': 'chrome'}
     if transport == 'reality':
         params.update(pbk=keys['public'], sid=keys['short_id'], flow='xtls-rprx-vision')
-    elif transport == 'grpc':
+    elif transport in GRPC:
         params['serviceName'] = keys['path']
     else:
         params['path'] = '/' + keys['path']
         if transport == 'xhttp':
             params['mode'] = 'auto'
     params.update(node_xray.link_parameters(options, keys))
-    return 'vless://' + keys['uuid'] + '@' + address + ':443?' + urlencode(params)
+    if transport == 'trojan-grpc':
+        params.pop('encryption')
+    return ('trojan://' if transport == 'trojan-grpc' else 'vless://') + keys['uuid'] + '@' + address + ':443?' + urlencode(params)
+
+
+def network(transport):
+    return 'tcp' if transport == 'reality' else 'grpc' if transport in GRPC else transport
 
 
 def endpoint(options, host):
@@ -307,11 +321,15 @@ def client_outbound(options, host, keys, tag='node'):
     if not isinstance(tag, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,40}', tag):
         raise ValueError('invalid outbound tag')
     transport = options['transport']
-    stream = {'network': 'tcp' if transport == 'reality' else transport,
+    stream = {'network': network(transport),
               'security': 'reality' if transport == 'reality' else 'tls'}
-    config = {'tag': tag, 'protocol': 'vless',
-              'settings': {'address': endpoint(options, host), 'port': 443,
-                           'id': keys['uuid'], 'encryption': 'none'}, 'streamSettings': stream}
+    settings_block = {'address': endpoint(options, host), 'port': 443}
+    if transport == 'trojan-grpc':
+        settings_block['password'] = keys['uuid']
+    else:
+        settings_block.update(id=keys['uuid'], encryption='none')
+    config = {'tag': tag, 'protocol': 'trojan' if transport == 'trojan-grpc' else 'vless',
+              'settings': settings_block, 'streamSettings': stream}
     if transport == 'reality':
         config['settings']['flow'] = 'xtls-rprx-vision'
         stream['realitySettings'] = {'serverName': options['mask'], 'publicKey': keys['public'],
@@ -319,7 +337,7 @@ def client_outbound(options, host, keys, tag='node'):
     else:
         stream['tlsSettings'] = {'serverName': options['domain'], 'fingerprint': 'chrome',
                                  'alpn': ['http/1.1'] if transport == 'ws' else ['h2', 'http/1.1']}
-        if transport == 'grpc':
+        if transport in GRPC:
             stream['grpcSettings'] = {'serviceName': keys['path']}
         elif transport == 'ws':
             stream['wsSettings'] = {'path': '/' + keys['path']}

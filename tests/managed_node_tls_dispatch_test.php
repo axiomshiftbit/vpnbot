@@ -10,7 +10,7 @@ class NodeTlsDispatchFixture extends NodeChoiceDispatchFixture {
 $checks=0;
 foreach(['ru','en'] as $language)foreach(['reality','domains'] as $group){
     foreach(['h2','http/1.1','','invalid'] as $alpn){
-        $bot=new NodeTlsDispatchFixture();$bot->language=$language;$bot->reply['alpn']=$alpn;
+        $bot=new NodeTlsDispatchFixture();$bot->language=$language;$bot->reply['alpn']=$alpn;$bot->showSetting($group);
         $before=$bot->pacState;$bot->click('/nodeSettings aabbccdd '.$group);$screen=end($bot->screens);
         $callbacks=array_column(array_merge(...$screen[1]),'callback_data');$callback='/nodeTls aabbccdd '.$group;
         if(!in_array($callback,$callbacks,true))throw new RuntimeException('Missing probe button');

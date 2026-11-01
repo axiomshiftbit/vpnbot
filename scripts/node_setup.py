@@ -188,7 +188,7 @@ def prompt():
                 interface=ask('Внешний интерфейс', 'eth0'),
                 ssh_ports=[int(x) for x in ask('Действующие порты SSH через пробел', '22').split()],
                 routers=ask('Link-local IPv6 доверенных маршрутизаторов, можно оставить пустым').split())
-    transport = ask('Транспорт reality / ws / grpc / xhttp', 'reality')
+    transport = ask('Транспорт reality / ws / grpc / xhttp / trojan-grpc', 'reality')
     cover = ask('Заглушка с паролем на своём домене: да / нет', 'нет').lower() == 'да'
     domain = ask('Собственный домен, A/AAAA должны указывать на ноду') if cover or transport != 'reality' else ''
     mask = domain if cover else ask('Домен сайта для REALITY', 'www.microsoft.com')

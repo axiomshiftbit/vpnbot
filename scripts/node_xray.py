@@ -100,7 +100,9 @@ def settings(value, core, transport):
     if xmux['maxConnections'] and any(int(n) for n in xmux['maxConcurrency'].split('-')):
         raise ValueError('XHTTP connection and concurrency limits conflict')
     # uTLS android/360 samples negotiate no h2; gRPC and XHTTP never connect.
-    if transport in ('grpc', 'xhttp') and result['fingerprint'] in ('android', '360'):
+    if transport == 'trojan-grpc' and enc['auth'] != 'off':
+        raise ValueError('VLESS Encryption does not apply to Trojan')
+    if transport in ('grpc', 'xhttp', 'trojan-grpc') and result['fingerprint'] in ('android', '360'):
         raise ValueError('fingerprint has no HTTP/2 for this transport')
     if transport == 'reality':
         # The original versions bundled as origin/origin2 require hybrid ML-KEM.
@@ -178,7 +180,8 @@ def smux_client(settings):
 
 def apply_server(inbound, options, keys):
     advanced = settings(options.get('xray', {}), options['core'], options['transport'])
-    inbound['settings']['decryption'] = encryption_pair(advanced, keys)['decryption']
+    if inbound['protocol'] == 'vless':
+        inbound['settings']['decryption'] = encryption_pair(advanced, keys)['decryption']
     stream = inbound['streamSettings']
     inbound['sniffing'] = node_dpi.sniffing(advanced['sniffing'], advanced['block_torrent'])
     mask = node_dpi.mask(advanced['finalmask'])
@@ -209,7 +212,8 @@ def apply_server(inbound, options, keys):
 
 def apply_client(outbound, options, keys):
     advanced = settings(options.get('xray', {}), options['core'], options['transport'])
-    outbound['settings']['encryption'] = encryption_pair(advanced, keys)['encryption']
+    if outbound['protocol'] == 'vless':
+        outbound['settings']['encryption'] = encryption_pair(advanced, keys)['encryption']
     stream = outbound['streamSettings']
     mask = node_dpi.mask(advanced['dpi'])
     if mask:
@@ -232,7 +236,9 @@ def apply_client(outbound, options, keys):
 
 def link_parameters(options, keys):
     advanced = settings(options.get('xray', {}), options['core'], options['transport'])
-    result = {'encryption': encryption_pair(advanced, keys)['encryption'], 'fp': advanced['fingerprint']}
+    result = {'fp': advanced['fingerprint']}
+    if options['transport'] != 'trojan-grpc':
+        result['encryption'] = encryption_pair(advanced, keys)['encryption']
     if options['transport'] == 'reality':
         if advanced['reality']['mldsa']:
             result['pqv'] = mldsa_identity(keys.get('mldsa'))['verify']

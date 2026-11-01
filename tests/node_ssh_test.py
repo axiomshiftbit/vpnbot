@@ -43,7 +43,7 @@ print('{"ok":true,"result":{"schema":1}}')
             self.assertEqual(counter.read_text(), '4')
 
     def test_busy_retries_are_bounded_and_ssh_failure_is_never_replayed(self):
-        for action, status, expected in [('status', 1, 4), ('submit', 1, 1), ('submit', 255, 1)]:
+        for action, status, expected in [('status', 1, 4), ('submit', 1, 4), ('confirm', 1, 1), ('submit', 255, 1)]:
             with tempfile.TemporaryDirectory() as tmp:
                 client = transport.Client('aabbccdd', Path(tmp)/'nodes')
                 command, counter = self.busy_peer(tmp, 100, status)

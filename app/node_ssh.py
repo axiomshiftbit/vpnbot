@@ -202,7 +202,9 @@ class Client:
             raise ValueError('request')
         args, body = self.ssh(target), encode(request)
         deadline = self.deadline
-        attempts = 4 if request['action'] in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'job') else 1
+        # submit too: "busy" means the node refused before queueing anything, and
+        # its one-second status/watch passes would otherwise fail a user's Apply.
+        attempts = 4 if request['action'] in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'job', 'submit') else 1
         for attempt in range(attempts):
             remaining = deadline-time.monotonic()
             if remaining <= 0:
@@ -211,8 +213,8 @@ class Client:
                 result = decode(run(args, body, timeout=min(15, remaining), rpc=True))
                 break
             except NodeBusy:
-                # Retry only reads with an explicit lock refusal. Mutations
-                # and ambiguous SSH failures are never replayed automatically.
+                # Retry only an explicit lock refusal: nothing ran. Ambiguous SSH
+                # failures and confirmations are never replayed automatically.
                 if attempt == attempts-1:
                     raise
                 time.sleep(min(.5*(attempt+1), max(0, deadline-time.monotonic())))

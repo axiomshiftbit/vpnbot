@@ -207,10 +207,10 @@ try:
     binaries = [('origin', cores/'x31'), ('fork', cores/'fork')]
     if os.environ.get('NODE_ADVANCED_CASES') == '1':
         for core_name, binary in binaries:
-            for transport, auth, mode in itertools.product(node.TRANSPORTS, ('x25519', 'mlkem768'), ('native', 'xorpub', 'random')):
+            for transport, auth, mode in itertools.product([t for t in node.TRANSPORTS if t != 'trojan-grpc'], ('x25519', 'mlkem768'), ('native', 'xorpub', 'random')):
                 cases.append((core_name, binary, 4, transport, auth+'-'+mode, {'encryption': {'auth': auth, 'mode': mode}}))
             cases.append((core_name, binary, 6, 'reality', 'mldsa', {'reality': {'mldsa': True}}))
-        for transport, protocol in itertools.product(('ws', 'xhttp', 'reality', 'grpc'), ('smux', 'h2mux')):
+        for transport, protocol in itertools.product(('ws', 'xhttp', 'reality', 'grpc', 'trojan-grpc'), ('smux', 'h2mux')):
             cases.append(('fork', cores/'fork', 6, transport, protocol,
                           {'smux': {'enabled': True, 'protocol': protocol, 'half_close': 'require' if protocol == 'smux' else 'off', 'h2mux_frame': 32768}}))
         cases.append(('fork', cores/'fork', 4, 'xhttp', 'mux-cool', {'xhttp': {'mux': True}}))
@@ -290,6 +290,9 @@ try:
         endpoint = outbound['settings'].get('vnext', [outbound['settings']])[0]
         endpoint.update(address='127.0.0.1' if connection == 4 else '::1', port=8443)
         client_stream = outbound['streamSettings']
+        if 'servers' in outbound['settings']:
+            endpoint = outbound['settings']['servers'][0]
+            endpoint.update(address='127.0.0.1' if connection == 4 else '::1', port=8443)
         user = endpoint.get('users', [endpoint])[0]
         if transport != 'reality':
             client_stream['tlsSettings']['certificates'] = [{'usage': 'verify', 'certificateFile': str(root/'cert.pem')}]
@@ -303,7 +306,7 @@ try:
             check(label+'-bittorrent-payload', torrent_request() == (not advanced['block_torrent']))
         check(label+'-private-target-blocked', not request('http://127.0.0.1:18080/'))
         stop(process)
-        user['id'] = str(uuid.uuid4())
+        user['password' if transport == 'trojan-grpc' else 'id'] = str(uuid.uuid4())
         process = start(cores/'fork' if advanced.get('smux', {}).get('enabled') else cores/'x31', label+'-unauthorized', client)
         check(label+'-wrong-identity-blocked', not request('http://'+target+':18080/'))
         stop(process)

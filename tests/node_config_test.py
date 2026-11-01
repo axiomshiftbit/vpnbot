@@ -28,14 +28,14 @@ class NodeConfig(unittest.TestCase):
                 options = OPTIONS | {'transport': transport, 'domain': 'node.example.test'}
                 config = node.core_config(options, HOST, KEYS)
                 inbound = config['inbounds'][0]
-                self.assertEqual(inbound['settings']['clients'][0]['id'], KEYS['uuid'])
+                self.assertEqual(inbound['settings']['clients'][0]['password' if transport == 'trojan-grpc' else 'id'], KEYS['uuid'])
                 self.assertEqual(inbound['port'], 8443)
                 self.assertEqual(inbound['streamSettings']['security'], 'reality' if transport == 'reality' else 'tls')
                 self.assertNotIn('api', config)
                 link = urlsplit(node.client_link(options, HOST, KEYS))
                 query = parse_qs(link.query)
                 self.assertEqual(link.port, 443)
-                self.assertEqual(query['type'], ['tcp' if transport == 'reality' else transport])
+                self.assertEqual(query['type'], ['tcp' if transport == 'reality' else 'grpc' if transport == 'trojan-grpc' else transport])
                 self.assertNotIn(KEYS['private'], link.geturl())
                 self.assertEqual(query['sni'], [options['mask'] if transport == 'reality' else options['domain']])
 
@@ -104,7 +104,7 @@ class NodeConfig(unittest.TestCase):
             options = OPTIONS | {'transport': transport, 'domain': 'node.example.test'}
             exported = node.export_profile(options, HOST, KEYS, peer)
             self.assertEqual(base64.b64decode(exported['subscription']).decode(), exported['link']+'\n')
-            self.assertEqual(exported['outbound']['settings']['id'], peer['id'])
+            self.assertEqual(exported['outbound']['settings']['password' if transport == 'trojan-grpc' else 'id'], peer['id'])
             self.assertEqual(exported['outbound']['settings']['port'], 443)
             self.assertNotIn(KEYS['private'], json.dumps(exported))
             self.assertNotIn(KEYS['uuid'], json.dumps(exported))

@@ -94,7 +94,7 @@ final class ManagedNodeProfile
         // Reuse the normal bot's link validator for identity, TLS, Reality,
         // encryption and paths. Ignore the peer's raw dialer/settings/address.
         $parsed = ExitNodeLink::parse($profile['link']);
-        if ($parsed['protocol'] !== 'vless') throw new InvalidArgumentException('A managed node requires VLESS');
+        if (!in_array($parsed['protocol'], ['vless', 'trojan'], true)) throw new InvalidArgumentException('A managed node requires VLESS or Trojan');
         $outbound = $parsed['outbound'];
         $extra = $profile['outbound'];
         if (($profile['channel'] ?? 'vless') === 'wireguard') {
@@ -163,12 +163,23 @@ final class ManagedNodeProfile
         foreach ($params as $key=>$value) $settings[lcfirst($key)]=$value;
         foreach (['H1','H2','H3'] as $key) if (count(array_unique(explode('-', $params[$key]))) > 1) $settings['randomTrailers']=false;
         $tag=$name.'-awg';
-        $outbound['settings']['vnext'][0]['address']='10.77.78.1';
-        $outbound['settings']['vnext'][0]['port']=443;
+        self::setEndpoint($outbound,'10.77.78.1',443);
         $outbound['streamSettings']['sockopt']['dialerProxy']=$tag;
         // The carrier exposes only the VLESS listener, never arbitrary LAN
         // forwarding. Route to the VLESS tag, which retains TLS/REALITY.
         return ['outbounds'=>[$outbound,['tag'=>$tag,'protocol'=>'amneziawg','settings'=>$settings]]];
+    }
+
+    public static function credential(array $outbound): string
+    {
+        return (string) ($outbound['settings']['vnext'][0]['users'][0]['id'] ?? $outbound['settings']['servers'][0]['password'] ?? '');
+    }
+
+    public static function setEndpoint(array &$outbound, string $address, int $port): void
+    {
+        $list = isset($outbound['settings']['servers']) ? 'servers' : 'vnext';
+        $outbound['settings'][$list][0]['address'] = $address;
+        $outbound['settings'][$list][0]['port'] = $port;
     }
 
     private static function amnezia($value, string $address): array

@@ -313,7 +313,8 @@ if __name__ == '__main__':
         main()
     except BlockingIOError:
         print('{"ok":false,"error":"busy"}')
-        sys.exit(1)
+        # The 15-second recovery pass simply runs again; a held lock is no failure.
+        sys.exit(0 if sys.argv[1:] == ['watch'] else 1)
     except Exception:
         print('{"ok":false,"error":"operation_failed"}')
         sys.exit(1)
