@@ -56,24 +56,21 @@ RUN set -eux; \
     { ls /usr/lib/ipsec/charon || ls /usr/lib/strongswan/charon || ls /usr/libexec/ipsec/charon; }; \
     openssl version
 
-# pppd 2.5.4 исправляет в том числе переполнение LCP до CHAP-аутентификации
-# (CVE-2026-85495). Alpine пока поставляет 2.5.3; digest взят из Releases.
-# Перед следующей сборкой: выпуск 2.5.5 (2026-10-31, исправления MPPE, RADIUS и
-# запуска ip-up) опубликован без архива. Если в Releases появился
-# ppp-2.5.5.tar.gz — перейти на него: PPP_VERSION, PPP_SHA256 из digest выпуска
-# (сверить со скачанным файлом), сборка ipsec и наборы стенда l2tp/ikev2.
-# Архив по тегу с codeload не подходит: в нём нет готового configure.
-ARG PPP_VERSION=2.5.4
-ARG PPP_SHA256=379a630a40d858a1347f6592d671791dde12101697a743ef9900012f3765be31
+# pppd 2.5.5 исправляет MPPE, проверку кадров RADIUS и запуск ip-up/ip-down.
+# У выпуска пока нет готового tarball с configure: закрепляем архив тега
+# и генерируем configure из проверенных исходников штатным autoreconf.
+ARG PPP_VERSION=2.5.5
+ARG PPP_SHA256=c75b2ee2cbc6f16407e2a908f5ae5802a2f8717d19a8faf0262d1bfa3cc4ba27
 RUN set -eux; \
     apk del ppp; \
     apk add --no-cache --virtual .ppp-build-deps \
-        build-base linux-headers openssl-dev libpcap-dev curl; \
-    curl -fsSL "https://github.com/ppp-project/ppp/releases/download/v${PPP_VERSION}/ppp-${PPP_VERSION}.tar.gz" -o /tmp/ppp.tar.gz; \
+        build-base linux-headers openssl-dev libpcap-dev curl autoconf automake libtool pkgconf; \
+    curl -fsSL "https://codeload.github.com/ppp-project/ppp/tar.gz/refs/tags/v${PPP_VERSION}" -o /tmp/ppp.tar.gz; \
     echo "${PPP_SHA256}  /tmp/ppp.tar.gz" | sha256sum -c -; \
     mkdir /tmp/ppp; \
     tar -xzf /tmp/ppp.tar.gz -C /tmp/ppp --strip-components=1; \
     cd /tmp/ppp; \
+    autoreconf -fi; \
     ./configure --prefix=/usr --sysconfdir=/etc --disable-eaptls --disable-peap; \
     make -j2; \
     make install-strip; \
