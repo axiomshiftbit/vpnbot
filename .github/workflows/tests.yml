@@ -92,9 +92,16 @@ jobs:
           TMPDIR: /tmp
         run: |
           python3 -m unittest discover -s tests -p '*_test.py' || exit 1
+          # /logs общий для четырёх пользователей runner. Сохраняем настоящие
+          # flock-проверки, но исключаем чужие файлы от предыдущего задания.
+          sudo unshare --mount --propagation private bash -s -- \
+            "$(id -u)" "$(id -g)" "$VLESS_TEST_XRAY" "$XRAY_FORK_TEST_BINARY" <<'BASH'
+          set -euo pipefail
+          mount -t tmpfs -o mode=1777,nodev,nosuid,size=128m tmpfs /logs
           fail=0
           for f in tests/*_test.php; do
-            if out=$(php "$f" 2>&1); then
+            if out=$(setpriv --reuid="$1" --regid="$2" --init-groups \
+              env TMPDIR=/tmp VLESS_TEST_XRAY="$3" XRAY_FORK_TEST_BINARY="$4" php "$f" 2>&1); then
               echo "ok   $(basename "$f")"
             else
               fail=1
@@ -103,6 +110,7 @@ jobs:
             fi
           done
           exit $fail
+          BASH
 
   alpine:
     runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
