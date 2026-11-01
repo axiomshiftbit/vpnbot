@@ -69,8 +69,8 @@ jobs:
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
           # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.10.28-1202/Xray-linux-64.zip
-          echo 'eed1647c164b0066029f3332eb60e1b591387d1bcb1e290f01b3e4637b5a6659  Xray-fork-linux-64.zip' | sha256sum --check
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.1-1424/Xray-linux-64.zip
+          echo 'b70be1d4c83932de1c49c7c68c3da67b2d2c2e1ef11d9a80f207e93cf2fb0d25  Xray-fork-linux-64.zip' | sha256sum --check
           mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
           chmod +x fork/xray
           sudo install -d -m 1777 /logs
@@ -136,8 +136,8 @@ jobs:
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
           # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.10.28-1202/Xray-linux-64.zip
-          echo 'eed1647c164b0066029f3332eb60e1b591387d1bcb1e290f01b3e4637b5a6659  Xray-fork-linux-64.zip' | sha256sum --check
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.1-1424/Xray-linux-64.zip
+          echo 'b70be1d4c83932de1c49c7c68c3da67b2d2c2e1ef11d9a80f207e93cf2fb0d25  Xray-fork-linux-64.zip' | sha256sum --check
           mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
           chmod +x fork/xray
 

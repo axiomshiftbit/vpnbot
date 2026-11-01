@@ -273,7 +273,7 @@ class HotPlanTest(unittest.TestCase):
 
     def test_only_verified_atomic_router_versions_are_allowed(self):
         for version, expected in [('26.7.28', False), ('26.9.30', True), ('26.10.29', True), ('26.10.31', True),
-                                  ('26.10.28-1202', True), ('26.10.28-unknown', False),
+                                  ('26.10.28-1202', True), ('26.11.1-1424', True), ('26.10.28-unknown', False),
                                   ('27.1.1', False)]:
             with self.subTest(version=version), patch.object(hot.subprocess, 'run', return_value=
                     subprocess.CompletedProcess([], 0, stdout=f'Xray {version} (Xray)\n'.encode())):
