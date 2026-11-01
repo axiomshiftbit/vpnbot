@@ -185,6 +185,9 @@
 
 --- a/Cargo.toml
 +++ b/Cargo.toml
+@@ -34 +34 @@
+-russh = { version = "=0.63.3", default-features = false, features = ["ring"] }
++russh = { version = "=0.65.0", default-features = false, features = ["ring"] }
 @@ -39,2 +39,2 @@
 -snolc = { version = "=0.0.4", git = "https://github.com/owenewans/snolc.git", rev = "1acd4bbffe2da418f95ce8188f5e9bd7793c145b" }
 -snolc-sdk = { version = "=0.0.4", git = "https://github.com/owenewans/snolc.git", rev = "1acd4bbffe2da418f95ce8188f5e9bd7793c145b" }
@@ -192,9 +195,23 @@
 +snolc-sdk = { version = "=0.0.4", path = "../build/crates/snolc-sdk" }
 --- a/Cargo.lock
 +++ b/Cargo.lock
+@@ -1676 +1676 @@
+-version = "0.63.3"
++version = "0.65.0"
+@@ -1678 +1678 @@
+-checksum = "036204edbd199552a5b3832f63c60dcdf395dc44c7f06b4af1c0e8139cc11bce"
++checksum = "3bb77a4b259312b2abbc541bca1c13cb4e9b61c560a7fd894068c3b92e0c9dc3"
 @@ -1990 +1989,0 @@
 -source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
 @@ -2011 +2009,0 @@
 -source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
 @@ -2139 +2136,0 @@
 -source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
+--- a/modules/carrier-ssh/src/lib.rs
++++ b/modules/carrier-ssh/src/lib.rs
+@@ -988 +988 @@
+-        public_key: &PublicKey,
++        key: server::VerifiedPublicKey<'_>,
+@@ -992 +992 @@
+-                if user == self.username && public_key == expected =>
++                if user == self.username && key.public_key == expected =>

@@ -8,7 +8,7 @@ SERVER = 'vpnbot-snolc-native-server'
 STATE = LAB / 'proto/snolc/runtime'
 CLIENT = LAB / 'client'
 PUBLIC, PRIVATE = '198.51.100.2', '10.77.99.2'
-VERSION = b'snolc 0.0.4+vpnbot.4 wire 1'
+VERSION = b'snolc 0.0.4+vpnbot.5 wire 1'
 TICK = os.sysconf('SC_CLK_TCK')
 # Доля ядра в простое. До исправлений vpnbot.1/vpnbot.3 простой стоил 15–18 %
 # и сервера, и клиента; после — около 1 %.
