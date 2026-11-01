@@ -33,6 +33,22 @@ class AmneziaVersions(Amnezia):
         old = self.value.copy(); old.pop('version', None)
         self.assertEqual(awg.validate_client(old), old, 'previous backups default to the existing 3.1 protocol')
 
+    def test_header_edits_keep_server_and_client_trailer_modes_identical(self):
+        fixed = {name: value.split('-')[0] for name, value in self.keys['parameters'].items() if name in ('H1', 'H2', 'H3')}
+        for version in ('1.5', '2.0', '3.0', '3.1'):
+            for broad in (None, 'H1', 'H2', 'H3'):
+                if version == '1.5' and broad:
+                    continue
+                with self.subTest(version=version, broad=broad):
+                    edits = dict(fixed)
+                    if broad:
+                        edits[broad] = self.keys['parameters'][broad]
+                    options = {'enabled': True, 'version': version, 'parameters': edits}
+                    profile = awg.profile(options, '1.1.1.1', self.keys)
+                    for text in (awg.server(options, self.keys), awg.client(profile, 0)):
+                        self.assertEqual('RandomTrailers = on' in text, version == '3.1' and broad is None)
+                        self.assertIn('DisableCookies = off', text)
+
 
 if __name__ == '__main__':
     unittest.main()
