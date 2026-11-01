@@ -26329,6 +26329,9 @@ DNS-over-HTTPS with IP:
     // addresses are ambiguous because ':' also separates the rule fields.
     public function curlResolveEntries(string $host, int $port, array $ips): array
     {
+        // A literal address has no DNS step to pin, and libcurl before 8.6 rejects
+        // a bracketed IPv6 name in CURLOPT_RESOLVE (error 49).
+        if (filter_var(trim($host, '[]'), FILTER_VALIDATE_IP)) return [];
         $addresses = array_map(
             static fn(string $ip): string => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)
                 ? "[$ip]"

@@ -51,8 +51,8 @@ class GitHub:
             self.writes.append('move')
             return {}
         if path == '/actions/workflows/images.yml/dispatches':
-            assert set(body) == {'ref', 'inputs'} and body['ref'] == 'master' and set(body['inputs']) == {'test_runner'}
-            self.dispatched = body['inputs']['test_runner']
+            assert set(body) == {'ref', 'inputs'} and body['ref'] == 'master' and set(body['inputs']) == {'home_runner'}
+            self.dispatched = body['inputs']['home_runner']
             self.writes.append('dispatch')
             return {}
         raise AssertionError('unexpected request ' + path)
@@ -77,7 +77,7 @@ class PromoteMasterTest(unittest.TestCase):
 
     def test_github_hosted_run_starts_the_master_run_on_github_servers(self):
         github = GitHub()
-        error, writes, _ = self.run_main(github, PROMOTE_TEST_RUNNER='false')
+        error, writes, _ = self.run_main(github, PROMOTE_HOME_RUNNER='false')
         self.assertIsNone(error)
         self.assertIn('dispatch', writes)
         self.assertEqual(github.dispatched, 'false')
@@ -163,10 +163,10 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn('||', condition)
         self.assertNotIn('always()', condition)
         runner = re.search(r'\n    runs-on: (.*)\n', self.job).group(1)
-        self.assertIn('inputs.test_runner', runner)
+        self.assertIn('inputs.home_runner', runner)
         self.assertIn('vpnbot-home', runner)
         self.assertIn("'ubuntu-24.04'", runner)
-        self.assertIn('PROMOTE_TEST_RUNNER: ${{ inputs.test_runner }}', self.job)
+        self.assertIn('PROMOTE_HOME_RUNNER: ${{ inputs.home_runner }}', self.job)
 
     def test_dedicated_token_is_visible_to_this_job_only_and_builtin_token_stays_read_only(self):
         self.assertEqual(self.workflow.count('secrets.PROMOTE_TOKEN'), 1)

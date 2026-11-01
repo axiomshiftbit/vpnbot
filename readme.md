@@ -758,13 +758,13 @@ WireGuard/WARP, OpenConnect, OpenVPN и IPsec: подмена репозитор
 
 | Что нужно | Workflow → **Run workflow**, ветка | Флажки |
 |---|---|---|
-| только тесты (без сборки и публикации) | `tests`, `dev` | `test_runner` — на home-build |
-| полный прогон: тесты, сборка, CVE, стенд, публикация комплекта `dev` | `images`, `dev` | `test_runner` |
-| то же с автослиянием в `master` | `images`, `dev` | `test_runner`, `promote_master` |
-| то же на серверах GitHub | `images`, `dev` | только `promote_master`, `test_runner` снять |
-| пересобрать `master` заново | `images`, `master` | `test_runner`, `full_build` |
+| только тесты (без сборки и публикации) | `tests`, `dev` | `home_runner` — на home-build |
+| полный прогон: тесты, сборка, CVE, стенд, публикация комплекта `dev` | `images`, `dev` | `home_runner` |
+| то же с автослиянием в `master` | `images`, `dev` | `home_runner`, `promote_master` |
+| то же на серверах GitHub | `images`, `dev` | только `promote_master`, `home_runner` снять |
+| пересобрать `master` заново | `images`, `master` | `home_runner`, `full_build` |
 
-`test_runner` (по умолчанию отмечен) отправляет задания на домашнюю Ubuntu VM с
+`home_runner` (по умолчанию отмечен) отправляет задания на домашнюю Ubuntu VM с
 меткой runner `vpnbot-home`, и только при запуске владельцем `axiomshiftbit`; без
 отметки задания идут на серверы GitHub (платные минуты). Секретов в workflow нет:
 токены лежат в секретах репозитория и на VM. Push и расписание домашнюю машину

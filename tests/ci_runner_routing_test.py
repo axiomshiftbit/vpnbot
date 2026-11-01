@@ -26,7 +26,7 @@ class RunnerRoutingTest(unittest.TestCase):
                     if not isinstance(job.get('runs-on'), str) or 'fromJSON' not in job['runs-on']:
                         continue
                     context = {'github': SimpleNamespace(repository=repository, actor=actor, event_name='workflow_dispatch'),
-                               'inputs': SimpleNamespace(test_runner=enabled)}
+                               'inputs': SimpleNamespace(home_runner=enabled)}
                     runner = evaluate(job['runs-on'], context)
                     local = isinstance(runner, list) and 'self-hosted' in runner
                     context['runner'] = SimpleNamespace(environment='self-hosted' if local else 'github-hosted')

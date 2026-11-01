@@ -69,7 +69,7 @@ def promote(secret):
         print('master moved forward to', source)
     else:
         print('master already points at', source)
-    retrying(api, '/actions/workflows/images.yml/dispatches', secret, {'ref': 'master', 'inputs': {'test_runner': os.environ.get('PROMOTE_TEST_RUNNER', 'true')}})
+    retrying(api, '/actions/workflows/images.yml/dispatches', secret, {'ref': 'master', 'inputs': {'home_runner': os.environ.get('PROMOTE_HOME_RUNNER', 'true')}})
     print('Started the master run that moves the latest channel to the same image set')
 
 
