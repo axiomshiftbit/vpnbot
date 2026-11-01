@@ -51,7 +51,8 @@ class GitHub:
             self.writes.append('move')
             return {}
         if path == '/actions/workflows/images.yml/dispatches':
-            assert body == {'ref': 'master', 'inputs': {'test_runner': 'true'}}
+            assert set(body) == {'ref', 'inputs'} and body['ref'] == 'master' and set(body['inputs']) == {'test_runner'}
+            self.dispatched = body['inputs']['test_runner']
             self.writes.append('dispatch')
             return {}
         raise AssertionError('unexpected request ' + path)
@@ -73,6 +74,13 @@ class PromoteMasterTest(unittest.TestCase):
         github = GitHub()
         self.assertEqual(self.run_main(github)[:2], (None, ['move', 'dispatch']))
         self.assertEqual(github.heads['master'], TESTED)
+
+    def test_github_hosted_run_starts_the_master_run_on_github_servers(self):
+        github = GitHub()
+        error, writes, _ = self.run_main(github, PROMOTE_TEST_RUNNER='false')
+        self.assertIsNone(error)
+        self.assertIn('dispatch', writes)
+        self.assertEqual(github.dispatched, 'false')
 
     def test_master_already_on_the_commit_only_starts_the_master_run(self):
         self.assertEqual(self.run_main(GitHub(master=TESTED))[:2], (None, ['dispatch']))
@@ -146,15 +154,19 @@ class WorkflowTest(unittest.TestCase):
         flag = re.search(r'\n      promote_master:\n(.*?)(?=\n      [a-z_]+:\n|\n  #)', self.workflow, re.S).group(1)
         self.assertIn('default: false', flag)
 
-    def test_job_runs_only_after_publication_of_a_manual_dev_run_on_the_home_runner(self):
+    def test_job_runs_only_after_publication_of_a_manual_dev_run_where_the_build_ran(self):
         self.assertIn('needs: publish\n', self.job)
         condition = re.search(r'\n    if: (.*)\n', self.job).group(1)
         for part in ("github.repository == 'axiomshiftbit/vpnbot'", "github.event_name == 'workflow_dispatch'", "github.actor == 'axiomshiftbit'",
-                     "github.ref == 'refs/heads/dev'", 'inputs.test_runner', 'inputs.promote_master'):
+                     "github.ref == 'refs/heads/dev'", 'inputs.promote_master'):
             self.assertIn(part, condition)
         self.assertNotIn('||', condition)
         self.assertNotIn('always()', condition)
-        self.assertIn('runs-on: [self-hosted, Linux, X64, vpnbot-home]', self.job)
+        runner = re.search(r'\n    runs-on: (.*)\n', self.job).group(1)
+        self.assertIn('inputs.test_runner', runner)
+        self.assertIn('vpnbot-home', runner)
+        self.assertIn("'ubuntu-24.04'", runner)
+        self.assertIn('PROMOTE_TEST_RUNNER: ${{ inputs.test_runner }}', self.job)
 
     def test_dedicated_token_is_visible_to_this_job_only_and_builtin_token_stays_read_only(self):
         self.assertEqual(self.workflow.count('secrets.PROMOTE_TOKEN'), 1)

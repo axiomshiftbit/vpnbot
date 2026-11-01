@@ -16,7 +16,7 @@ on:
         type: boolean
         default: false
       promote_master:
-        description: 'Автослияние: после успешной публикации dev передвинуть master на этот коммит и перенести комплект'
+        description: 'Автослияние: после успешной публикации dev передвинуть master на этот коммит и перенести комплект (и на VM, и на серверах GitHub)'
         type: boolean
         default: false
   # Раз в две недели на серверах GitHub: пересборка со свежими пакетами и
@@ -587,8 +587,8 @@ jobs:
   # Права встроенного токена не расширяются — работает отдельный PROMOTE_TOKEN.
   release:
     needs: publish
-    if: github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && github.ref == 'refs/heads/dev' && inputs.test_runner && inputs.promote_master
-    runs-on: [self-hosted, Linux, X64, vpnbot-home]
+    if: github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && github.ref == 'refs/heads/dev' && inputs.promote_master
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.test_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -599,6 +599,8 @@ jobs:
       - name: Передвинуть master на проверенный коммит и запустить перенос комплекта
         env:
           PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+          # Короткий прогон master идёт там же, где шла сборка dev.
+          PROMOTE_TEST_RUNNER: ${{ inputs.test_runner }}
         run: python3 scripts/ci_promote_master.py
   cleanup-artifacts:
     needs: [publish, release]

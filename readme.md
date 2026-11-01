@@ -761,6 +761,7 @@ WireGuard/WARP, OpenConnect, OpenVPN и IPsec: подмена репозитор
 | только тесты (без сборки и публикации) | `tests`, `dev` | `test_runner` — на home-build |
 | полный прогон: тесты, сборка, CVE, стенд, публикация комплекта `dev` | `images`, `dev` | `test_runner` |
 | то же с автослиянием в `master` | `images`, `dev` | `test_runner`, `promote_master` |
+| то же на серверах GitHub | `images`, `dev` | только `promote_master`, `test_runner` снять |
 | пересобрать `master` заново | `images`, `master` | `test_runner`, `full_build` |
 
 `test_runner` (по умолчанию отмечен) отправляет задания на домашнюю Ubuntu VM с
