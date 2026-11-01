@@ -2,6 +2,8 @@
 """Restricted SSH RPC and serialized node maintenance jobs (root only)."""
 import copy
 import fcntl
+import hashlib
+import base64
 import os
 from pathlib import Path
 import re
@@ -19,7 +21,7 @@ from node_runtime import Runtime, command
 
 ROOT = Path('/var/lib/vpnbot-node')
 DEPLOYMENT = Path('/etc/vpnbot-node/deployment.json')
-OPERATIONS = ('configure', 'peers', 'rotate', 'restart', 'rollback', 'restore', 'update', 'renew')
+OPERATIONS = ('configure', 'peers', 'rotate', 'restart', 'rollback', 'restore', 'update', 'renew', 'renew_force', 'certificate_delete')
 
 
 def operation(request):
@@ -82,18 +84,26 @@ class Manager:
             raise ValueError('another change awaits confirmation')
         name, data = request['operation'], request['value']
         value = self.store.load()
+        certificate_result = {}
         if name == 'restart':
             self.runtime.apply(self.store.current())
             return {'restarted': True}
         if name == 'configure':
             previous = value['options']
+            config.endpoint(data, self.runtime.host)
             value['options'] = data
-            if config.needs_certificate(data) and (not value['tls'] or previous['domain'] != data['domain']):
-                value['tls'] = self.runtime.certificate(data['domain'])
+            if config.needs_certificate(data) and (not value['tls'] or previous['domain'] != data['domain']
+                    or previous.get('domain_aliases', []) != data.get('domain_aliases', [])):
+                value['tls'] = self.certificate(data)
+                certificate_result = {'certificate_result': 'issued'}
             if 'xray' in data or data.get('cover') or any(data.get(channel, {}).get('enabled') for channel in ('wireguard', 'amnezia')):
                 self.runtime.ensure_keys(value)
         elif name == 'peers':
             value['peers'] = data
+            for peer in data:
+                channel=peer.get('channel','vless')
+                if channel != 'vless': value['options'].setdefault(channel,{})['enabled']=True
+            if any(peer.get('channel','vless') != 'vless' for peer in data): self.runtime.ensure_keys(value)
         elif name == 'rotate':
             if data == 'controller':
                 value['identity']['uuid'] = str(uuid.uuid4())
@@ -121,15 +131,36 @@ class Manager:
             value['images']['xr'] = read(path)['images']['xr']
             if value['options'].get('cover'):
                 value['images']['ng'] = read(path)['images']['ng']
-        elif name == 'renew':
+        elif name in ('renew', 'renew_force'):
             if not config.needs_certificate(value['options']):
-                return {'renewed': False}
-            value['tls'] = self.runtime.certificate(value['options']['domain'])
+                raise ValueError('this transport does not use a certificate')
+            previous = value['tls'].get('fullchain.pem')
+            value['tls'] = self.certificate(value['options'], force=name == 'renew_force')
+            if previous == value['tls'].get('fullchain.pem'):
+                return {'certificate_result': 'unchanged'}
+            certificate_result = {'certificate_result': 'renewed'}
+        elif name == 'certificate_delete':
+            if config.needs_certificate(value['options']):
+                raise ValueError('disable the cover and select external Reality before deleting TLS')
+            self.runtime.delete_certificate()
+            value['tls'] = {}
+            certificate_result = {'certificate_result': 'deleted'}
+        if name in ('peers','rotate') and ('external' in value['identity'] or any(peer.get('channel','vless') != 'vless' for peer in value['peers'])):
+            self.runtime.ensure_external_keys(value)
         if value['options'].get('cover'):
             self.runtime.ensure_images(value)
         value = state.snapshot(value)
         self.runtime.pull(value['images']['xr'])
-        return self.apply(value)
+        if certificate_result and value['tls']:
+            certificate_result['certificate_fingerprint'] = hashlib.sha256(base64.b64decode(value['tls']['fullchain.pem'], validate=True)).hexdigest()
+        return self.apply(value) | certificate_result
+
+    def certificate(self, options, force=False):
+        if force:
+            return self.runtime.certificate(options['domain'], options.get('domain_aliases', []), force=True)
+        if options.get('domain_aliases'):
+            return self.runtime.certificate(options['domain'], options['domain_aliases'])
+        return self.runtime.certificate(options['domain'])
 
     def submit(self, request):
         request = operation(request)
@@ -188,7 +219,7 @@ class Manager:
         if not isinstance(request, dict) or not isinstance(request.get('action'), str):
             raise ValueError('invalid RPC request')
         action = request['action']
-        fields = {'ping': set(), 'status': set(), 'backup': set(), 'profile': {'peer'},
+        fields = {'ping': set(), 'status': set(), 'tls_probe': set(), 'backup': set(), 'profile': {'peer'},
                   'confirm': {'nonce'}, 'submit': {'request'}, 'job': {'id'}}
         if action not in fields or set(request) != fields[action] | {'action'}:
             raise ValueError('unknown action or fields')
@@ -196,6 +227,8 @@ class Manager:
             return {'schema': 1}
         if action == 'status':
             return self.runtime.status()
+        if action == 'tls_probe':
+            return self.runtime.tls_probe()
         if action == 'backup':
             pending = self.store.pending()
             return self.store.load(pending['before'] if pending else None)
@@ -269,7 +302,8 @@ def main():
             if config.needs_certificate(store.load()['options']):
                 result = manager.execute({'operation': 'renew', 'value': None})
                 # The certificate job does not change routing, users or transport.
-                store.confirm(result['pending']['nonce'])
+                if result.get('pending'):
+                    store.confirm(result['pending']['nonce'])
     finally:
         os.close(descriptor)
 

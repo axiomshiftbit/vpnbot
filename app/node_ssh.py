@@ -198,11 +198,11 @@ class Client:
             path = self.directory/'endpoint.json'
             trusted(path)
             target = endpoint(decode(path.read_bytes()))
-        if not isinstance(request, dict) or request.get('action') not in ('ping', 'status', 'backup', 'profile', 'confirm', 'submit', 'job'):
+        if not isinstance(request, dict) or request.get('action') not in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job'):
             raise ValueError('request')
         args, body = self.ssh(target), encode(request)
         deadline = self.deadline
-        attempts = 4 if request['action'] in ('ping', 'status', 'backup', 'profile', 'job') else 1
+        attempts = 4 if request['action'] in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'job') else 1
         for attempt in range(attempts):
             remaining = deadline-time.monotonic()
             if remaining <= 0:

@@ -14,6 +14,7 @@ import image_bundle
 import node_config as config
 import node_install as install
 import node_state as state
+import nft_host_setup
 from node_runtime import Runtime, command, CONTAINER, COVER_CONTAINER, LABEL
 
 ROOT = Path('/var/lib/vpnbot-node')
@@ -129,8 +130,11 @@ def setup(value, source, channel='latest', bundle=None):
             rules = config.firewall(node['options'], host)
             command(['nft', '-c', '-f', '-'], data=rules.encode())
             command(['nft', '-f', '-'], data=rules.encode())
+            # The UID/source guard is active before adapting the base profile.
+            # Both layers then use the validated enrollment addresses/SSH ports.
+            nft_host_setup.configure(host=host, mode='node')
             if config.needs_certificate(node['options']):
-                node['tls'] = backend.certificate(node['options']['domain'])
+                node['tls'] = backend.certificate(node['options']['domain'], node['options'].get('domain_aliases', []))
             generation = store.create(node)
             backend.validate(generation)
             previous_ssh = install.install_ssh(value['controller_key'], host['sources'])

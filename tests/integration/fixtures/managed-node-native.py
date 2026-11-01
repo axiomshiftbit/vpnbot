@@ -214,6 +214,10 @@ try:
             cases.append(('fork', cores/'fork', 6, transport, protocol,
                           {'smux': {'enabled': True, 'protocol': protocol, 'half_close': 'require' if protocol == 'smux' else 'off', 'h2mux_frame': 32768}}))
         cases.append(('fork', cores/'fork', 4, 'xhttp', 'mux-cool', {'xhttp': {'mux': True}}))
+        for core_name, binary in binaries:
+            cases.append((core_name, binary, 4, 'xhttp', 'custom-xmux', {'xhttp': {'extra': {
+                'xmux': {'maxConcurrency': '8-16', 'hMaxRequestTimes': '30-60'}, 'noGRPCHeader': True,
+                'xPaddingBytes': '120-240', 'scMinPostsIntervalMs': 40}}}))
         for core_name in ('origin2', 'origin3'):
             if (cores/core_name).is_file():
                 for transport in node.TRANSPORTS:
@@ -228,14 +232,20 @@ try:
         for core_name, binary in binaries:
             for family, transport in itertools.product((4, 6), node.TRANSPORTS):
                 cases.append((core_name, binary, family, transport, 'base', {}))
+    # Explicitly cross the transport family and the internet egress family.
+    # Previous native coverage exercised only 4->4 and 6->6 for VLESS.
+    for core_name, binary in binaries+[(name, cores/name) for name in ('origin2', 'origin3') if (cores/name).is_file()]:
+        for family, connection, transport in itertools.product((4,6),(4,6),node.TRANSPORTS):
+            cases.append((core_name,binary,family,transport,'pair'+str(connection)+str(family),{}))
     for core_name, binary, family, transport, variant, advanced in cases:
         if os.environ.get('NODE_CASE_PREFIX') and not f'{core_name}-{family}-{transport}-{variant}'.startswith(os.environ['NODE_CASE_PREFIX']):
             continue
         label = f'{core_name}-{family}-{transport}-{variant}'
         if os.environ.get('NODE_CASE_FILTER') and not re.search(os.environ['NODE_CASE_FILTER'], label):
             continue
+        connection = int(variant[4]) if variant.startswith('pair') else family
         options = dict(transport=transport, family=family, core=core_name,
-                       domain='node.example.test', mask='mask.example.test', connect_family=family, **({'xray': advanced} if advanced else {}))
+                       domain='node.example.test', mask='mask.example.test', connect_family=connection, **({'xray': advanced} if advanced else {}))
         keys = copy.deepcopy(base_keys)
         if advanced.get('encryption', {}).get('auth', 'off') != 'off':
             import node_xray
@@ -278,7 +288,7 @@ try:
             check(label+'-main-bot-profile', imported.returncode == 0)
             outbound = json.loads(imported.stdout)
         endpoint = outbound['settings'].get('vnext', [outbound['settings']])[0]
-        endpoint.update(address='127.0.0.1' if family == 4 else '::1', port=8443)
+        endpoint.update(address='127.0.0.1' if connection == 4 else '::1', port=8443)
         client_stream = outbound['streamSettings']
         user = endpoint.get('users', [endpoint])[0]
         if transport != 'reality':

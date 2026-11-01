@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Host operations for the minimal node. No caller-supplied commands or paths."""
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
 import socket
+import ssl
+import ipaddress
 import re
 import subprocess
 import time
 import uuid
+from email.utils import parsedate_to_datetime
 
 import node_config as config
 import node_state as state
@@ -37,6 +41,77 @@ class Runtime:
     def __init__(self, store, host, guard=Path('/etc/vpnbot-node/guard.nft')):
         self.store, self.host, self.guard = store, config.deployment(host), Path(guard)
 
+    def tls_probe(self):
+        """Probe only the committed target; never accept an arbitrary URL/IP."""
+        value = self.store.load()
+        options = value['options']
+        own = bool(options.get('cover')) or options['transport'] != 'reality'
+        name = options['domain'] if own else options['mask']
+        config.hostname(name)
+        family = options['family']
+        if own:
+            # Probe the ordinary, unauthenticated TLS path. REALITY itself
+            # supplies any configured PROXY header to the loopback cover.
+            address, port = ('127.0.0.1' if self.host['public4'] else '::1'), 8443
+        else:
+            answers = {entry[4][0] for entry in socket.getaddrinfo(name, 443, type=socket.SOCK_STREAM)}
+            denied = [ipaddress.ip_network(net) for net in config.PRIVATE4 + config.PRIVATE6]
+            for address in answers:
+                config.public_ip(address)
+                ip = ipaddress.ip_address(address)
+                if address in (self.host['public4'], self.host['public6']) or any(ip in net for net in denied):
+                    raise ValueError('TLS probe target is not public')
+            eligible = sorted(address for address in answers if ipaddress.ip_address(address).version == family)
+            if not eligible:
+                raise ValueError('TLS probe address family unavailable')
+            address, port = eligible[0], 443
+        result = self.probe_tls(address, port, name, None if own else self.host['public'+str(family)])
+        return result | {'name': name, 'own': own, 'transport': options['transport'], 'time': int(time.time())}
+
+    @staticmethod
+    def probe_tls(address, port, name, source=None):
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.set_alpn_protocols(['h2', 'http/1.1'])
+        incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+        session = context.wrap_bio(incoming, outgoing, server_hostname=name)
+        pending, total, record = b'', 0, 0
+        deadline = time.monotonic()+8
+        # Connect to the validated literal: DNS is never resolved a second time.
+        with socket.create_connection((address, port), timeout=4, source_address=(source, 0) if source else None) as connection:
+            while True:
+                try:
+                    session.do_handshake()
+                    remaining = deadline-time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError('TLS probe timed out')
+                    connection.settimeout(remaining)
+                    # TLS 1.3 can finish locally with Client Finished still
+                    # buffered in the BIO. Deliver it before closing the socket.
+                    connection.sendall(outgoing.read())
+                    return {'tls': session.version(), 'alpn': session.selected_alpn_protocol() or '', 'record': record}
+                except ssl.SSLWantReadError:
+                    remaining = deadline-time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError('TLS probe timed out')
+                    connection.settimeout(remaining)
+                    connection.sendall(outgoing.read())
+                    data = connection.recv(16384)
+                    total += len(data)
+                    if not data or total > 65536:
+                        raise ValueError('TLS probe response exceeds bounds')
+                    pending += data
+                    while len(pending) >= 5:
+                        size = int.from_bytes(pending[3:5], 'big')
+                        if size > 18432:
+                            raise ValueError('TLS record exceeds bounds')
+                        if len(pending) < size+5:
+                            break
+                        if pending[0] == 23 and not record:
+                            record = size
+                        pending = pending[size+5:]
+                    incoming.write(data)
+
     def identity(self, image):
         result = self.core_command(image, 'origin', 'x25519')
         fields = {key.strip().lower().replace(' ', ''): value.strip() for key, value in
@@ -55,6 +130,11 @@ class Runtime:
 
     def ensure_keys(self, value, rotate=None):
         options, keys = value['options'], value['identity']
+        advanced = node_xray.settings(options.get('xray', {}), options['core'], options['transport'])
+        enabled = {'encryption': advanced['encryption']['auth'] != 'off', 'mldsa': advanced['reality']['mldsa'],
+                   'wireguard': options.get('wireguard', {}).get('enabled'), 'amnezia': options.get('amnezia', {}).get('enabled')}
+        if rotate in enabled and not enabled[rotate]:
+            raise ValueError('rotation target is disabled')
         if options.get('wireguard', {}).get('enabled') and (rotate == 'wireguard' or 'wireguard' not in keys):
             keys['wireguard'] = node_wg.generate(lambda: self.identity(value['images']['xr']))
         if options.get('amnezia', {}).get('enabled') and (rotate == 'amnezia' or 'amnezia' not in keys):
@@ -76,6 +156,23 @@ class Runtime:
             # Only the hash survives. No password in argv, state, logs or RPC.
             password = base64.urlsafe_b64encode(os.urandom(48))+b'\n'
             keys['cover_auth'] = node_cover.password_hash(command(['openssl', 'passwd', '-6', '-stdin'], data=password).stdout.decode().strip())
+
+    def ensure_external_keys(self, value):
+        keys=value['identity']
+        old=keys.get('external',{})
+        peers=[peer for peer in config.peers(value['peers']) if peer.get('channel','vless') != 'vless']
+        retained={peer['id']:old[peer['id']] for peer in peers if peer['id'] in old and old[peer['id']]['channel']==peer['channel']}
+        used={entry['slot'] for entry in retained.values()}
+        for peer in peers:
+            if peer['id'] in retained: continue
+            slot=next(n for n in range(1,33) if n not in used)
+            used.add(slot)
+            pair=self.identity(value['images']['xr'])
+            retained[peer['id']]={'slot':slot,'channel':peer['channel'],
+                **{name:base64.b64encode(base64.urlsafe_b64decode(pair[name]+'=')).decode() for name in ('private','public')},
+                'psk':base64.b64encode(os.urandom(32)).decode()}
+        if retained: keys['external']=config.node_wg.external(retained)
+        else: keys.pop('external',None)
 
     def ensure_images(self, value):
         if value['options'].get('cover') and 'ng' not in value['images']:
@@ -123,6 +220,8 @@ class Runtime:
 
     def prepare(self, generation):
         value = self.store.load(generation)
+        # Reject an unavailable bot-to-node address before any stop/apply.
+        config.endpoint(value['options'], self.host)
         directory = self.store.path(generation)/'runtime/core'
         body = config.core_config(value['options'], self.host, value['identity'], value['peers'])
         files = {'xray.json': state.encode(body)}
@@ -133,15 +232,17 @@ class Runtime:
                 'nginx.conf': node_cover.nginx(value['options'], value['identity'], bool(self.host['public6'])).encode(),
                 'htpasswd': ('admin:'+value['identity']['cover_auth']+'\n').encode()})
             self.write_runtime(cover/'site', {'index.html': b'<!doctype html><title>Restricted Content</title><p>Restricted Content</p>\n'})
-            self.check_certificate(cover, value['options']['domain'])
+            for name in [value['options']['domain'], *value['options'].get('domain_aliases', [])]:
+                self.check_certificate(cover, name)
         elif config.needs_certificate(value['options']):
             files.update(certificates)
         self.write_runtime(directory, files)
         if value['options'].get('amnezia', {}).get('enabled'):
             self.write_runtime(self.store.path(generation)/'runtime/amnezia', {
-                'carrier.conf': node_awg.server(value['options']['amnezia'], value['identity']['amnezia']).encode()})
+                'carrier.conf': node_awg.server(value['options']['amnezia'], value['identity']['amnezia'], config.external_peers(value['identity'],value['peers'],'amnezia')).encode()})
         if config.needs_certificate(value['options']) and not value['options'].get('cover'):
-            self.check_certificate(directory, value['options']['domain'])
+            for name in [value['options']['domain'], *value['options'].get('domain_aliases', [])]:
+                self.check_certificate(directory, name)
         return directory
 
     def check_certificate(self, directory, domain):
@@ -244,11 +345,15 @@ class Runtime:
                 time.sleep(.2)
         raise RuntimeError('node listener did not become ready')
 
-    def certificate(self, domain):
+    def certificate(self, domain, aliases=(), *, force=False):
         domain = config.hostname(domain)
-        answers = {answer[4][0] for answer in socket.getaddrinfo(domain, 80, type=socket.SOCK_STREAM)}
-        if not answers or not answers <= {self.host['public4'], self.host['public6']}:
-            raise ValueError('domain DNS must point only to this node')
+        if not isinstance(aliases, (list, tuple)) or len(aliases) > 12:
+            raise ValueError('invalid additional certificate names')
+        names = list(dict.fromkeys([domain, *(config.hostname(name) for name in aliases)]))
+        for name in names:
+            answers = {answer[4][0] for answer in socket.getaddrinfo(name, 80, type=socket.SOCK_STREAM)}
+            if not answers or not answers <= {self.host['public4'], self.host['public6']}:
+                raise ValueError('domain DNS must point only to this node')
         root = self.store.root/'acme'
         state.trusted(root)
         root.mkdir(mode=0o700, exist_ok=True)
@@ -256,14 +361,27 @@ class Runtime:
         try:
             command(['certbot', 'certonly', '--config', '/dev/null', '--non-interactive', '--agree-tos',
                      '--register-unsafely-without-email', '--standalone', '--preferred-challenges', 'http',
-                     '--http-01-port', '8080', '--keep-until-expiring', '--cert-name', 'vpnbot-node',
+                     '--http-01-port', '8080', '--force-renewal' if force else '--keep-until-expiring', '--cert-name', 'vpnbot-node',
                      '--config-dir', root/'config', '--work-dir', root/'work', '--logs-dir', root/'logs',
-                     '-d', domain], timeout=300)
+                     *[arg for name in names for arg in ('-d', name)]], timeout=300)
         finally:
             command(['nft', 'delete', 'element', 'inet', 'vpnbot_node', 'acme_http', '{ 80 }'], required=False)
         # Certbot owns its symlinks; export only the two fixed PEM files from this isolated ACME directory.
         live = root/'config/live/vpnbot-node'
         return {name: base64.b64encode((live/name).read_bytes()).decode() for name in ('fullchain.pem', 'privkey.pem')}
+
+    def delete_certificate(self):
+        # The manager rejects this while TLS or the cover is in use. Historical
+        # snapshots retain their certificate so rollback/restore remain possible.
+        root = self.store.root/'acme'
+        state.trusted(root)
+        if not (root/'config/renewal/vpnbot-node.conf').exists():
+            return
+        command(['certbot', 'delete', '--config', '/dev/null', '--non-interactive',
+                 '--cert-name', 'vpnbot-node', '--config-dir', root/'config',
+                 '--work-dir', root/'work', '--logs-dir', root/'logs'], timeout=60)
+        if (root/'config/renewal/vpnbot-node.conf').exists():
+            raise RuntimeError('certificate registration was not removed')
 
     def amnezia_arguments(self, generation):
         value = self.store.load(generation)
@@ -288,9 +406,59 @@ class Runtime:
             running = running and bool(helper and helper.get('State', {}).get('Running'))
         options = dict(value['options'])
         options['xray'] = node_xray.settings(options.get('xray', {}), options['core'], options['transport'])
+        options['wireguard'] = config.node_wg.settings(options.get('wireguard', {}))
+        options['amnezia'] = config.node_awg.settings(options.get('amnezia', {}))
+        if 'amnezia' in value['identity']:
+            options['amnezia']['parameters'] = {k:v for k,v in config.node_awg.effective(options['amnezia'], value['identity']['amnezia']).items() if k != 'HeaderProtectionKey'}
+        options.setdefault('domain_aliases', [])
         options.setdefault('cover', False)
         options.setdefault('connect_family', 4 if self.host['public4'] else 6)
         return {'running': running,
                 'options': options, 'public4': self.host['public4'], 'public6': self.host['public6'],
                 'sources': self.host['sources'], 'peers': value['peers'], 'generation': self.store.current(),
-                'pending': self.store.pending()}
+                'pending': self.store.pending(), 'cores': self.core_versions(info),
+                'certificate': self.certificate_summary(value['tls'])}
+
+    def core_versions(self, info):
+        versions = {}
+        if not info or not info.get('State', {}).get('Running'):
+            return versions
+        for core, binary in config.CORES.items():
+            try:
+                result = command(['docker', 'exec', CONTAINER, binary, 'version'], timeout=1, required=False)
+            except TimeoutError:
+                raise  # The RPC deadline must not be swallowed as optional metadata.
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+            match = re.match(rb'Xray\s+v?([0-9][A-Za-z0-9.+_-]{0,47})\s', result.stdout)
+            if result.returncode == 0 and match:
+                versions[core] = match[1].decode('ascii')
+        return versions
+
+    def certificate_summary(self, tls):
+        if 'fullchain.pem' not in tls:
+            return {}
+        # Inspect only the public certificate, never the private key.
+        try:
+            result = command(['openssl', 'x509', '-noout', '-enddate', '-ext', 'subjectAltName'],
+                             data=base64.b64decode(tls['fullchain.pem'], validate=True), timeout=3, required=False)
+        except TimeoutError:
+            raise
+        except (ValueError, subprocess.TimeoutExpired, OSError):
+            return {}
+        if result.returncode:
+            return {}
+        text = result.stdout.decode('ascii', errors='replace')
+        expiry = re.search(r'^notAfter=(.+)$', text, re.M)
+        try:
+            expires = int(parsedate_to_datetime(expiry[1]).timestamp()) if expiry else 0
+        except (ValueError, TypeError, OverflowError):
+            return {}
+        domains = []
+        for name in re.findall(r'DNS:([^,\s]+)', text):
+            try:
+                domains.append(config.hostname(name))
+            except ValueError:
+                continue
+        return {'expires': expires, 'domains': list(dict.fromkeys(domains))[:32],
+                'fingerprint': hashlib.sha256(base64.b64decode(tls['fullchain.pem'], validate=True)).hexdigest()}

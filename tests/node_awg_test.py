@@ -54,6 +54,10 @@ class Amnezia(unittest.TestCase):
             with self.assertRaises(ValueError):
                 awg.client(self.value, index)
 
+    def test_random_trailers_not_combined_with_broad_handshake_headers(self):
+        for value in (awg.server({'enabled': True}, self.keys), awg.client(self.value, 0)):
+            self.assertNotIn('RandomTrailers = on', value)
+
     def test_cookie_dos_defense_remains_enabled(self):
         # AWG 3.1 receive.go skips both MAC2 cookies and the handshake rate
         # limiter when DisableCookies is on. Keep those upstream defenses.

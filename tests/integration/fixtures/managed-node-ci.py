@@ -51,7 +51,7 @@ try:
                                   '/src/tests/integration/fixtures/freedom-guard-profile.php']))
         environment.update(NODE_SOURCE_DIR=str(source), CORE_TEST_DIR=str(cores),
                            AWG_PROXY=str(cores/'wireproxy'), FREEDOM_RULES=str(rules), NODE_ADVANCED_CASES='1')
-        for name in ('native', 'wg-native', 'awg-native', 'dns-guard', 'firewall'):
+        for name in ('native', 'wg-native', 'awg-native', 'dns-guard', 'firewall', 'nft-setup'):
             print('START managed-node-'+name, flush=True)
             environment['NODE_RESULTS_FILE'] = str(private/(name+'.json'))
             log = private/(name+'.log')

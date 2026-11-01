@@ -45,6 +45,8 @@ def window_closed():
 def command(args, **kwargs):
     global issues
     if args[0] != 'certbot': return real_command(args, **kwargs)
+    if args[1] == 'delete':
+        return real_command(args, **kwargs)
     issues += 1
     check('ACME window open only inside certificate operation', not window_closed())
     # Only the CA URL/trust root differ from production. The actual Certbot
@@ -116,6 +118,9 @@ try:
     same=backend.certificate('node-a.example.test')
     check('unexpired certificate reused',verify(same,'node-a.example.test')==first)
     check('ACME window closed after reuse',window_closed())
+    forced=backend.certificate('node-a.example.test',force=True)
+    check('forced issuance replaces unexpired certificate',verify(forced,'node-a.example.test')!=first)
+    check('ACME window closed after forced issuance',window_closed())
     renewal=root/'state/acme/config/renewal/vpnbot-node.conf'
     renewal.write_text('renew_before_expiry = 100 days\n'+renewal.read_text())
     renewed=backend.certificate('node-a.example.test')
@@ -142,6 +147,9 @@ try:
     try: backend.certificate('wrong.example.test')
     except ValueError: check('foreign DNS rejected before ACME',issues==before and window_closed())
     else: check('foreign DNS rejected before ACME',False)
+    backend.delete_certificate()
+    check('Certbot registration deleted',not renewal.exists() and not live.exists())
+    check('delete never opens ACME window',window_closed())
     print(f'PASS {checks} real ACME checks',flush=True)
 finally:
     runtime.command=real_command

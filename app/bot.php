@@ -582,6 +582,7 @@ class Bot
             $state['protocol_main'] = true;
         }
         if ($this->protocolRelayOrigin) $state['protocol_relay'] = $this->protocolRelayOrigin;
+        if ($this->managedNodeNavigation) $state['managed_node_navigation'] = $this->managedNodeNavigation;
         $this->sessionApply(function () use ($r, $state) {
             $_SESSION['reply'][$state['chat'] . ':' . $r['result']['message_id']] = $state;
         });
@@ -631,6 +632,7 @@ class Bot
     public function action()
     {
         $this->chatNavigationStart();
+        $this->managedNodeNavigationStart();
         $telemtRoute = (string) (($this->input['callback'] ?? '') ?: ($this->input['message'] ?? ''));
         if (preg_match('~^(?:/telemt(?:[A-Z]|$)|/tuc? )~', $telemtRoute) && !$this->protocolModuleEnabled('telemt')) {
             if ($this->admin) $this->protocolModulesMenu();
@@ -823,13 +825,25 @@ class Bot
             case preg_match('~^/nodeRefresh ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->managedNodeRefresh($m[1]);
                 break;
-            case preg_match('~^/nodeSettings ([a-f0-9]{8}) ([a-z]+)$~', $this->input['callback'], $m):
-                $this->managedNodeSettingsMenu($m[1], $m[2]);
+            case preg_match('~^/nodeSettings ([a-f0-9]{8})(?: ([a-z]+))?$~D', $this->input['callback'], $m):
+                $this->managedNodeSettingsMenu($m[1], $m[2] ?? 'root');
+                break;
+            case preg_match('~^/nodeChannel ([a-f0-9]{8}) (direct|wireguard|amnezia)$~D', $this->input['callback'], $m):
+                $this->managedNodeChannel($m[1], $m[2]);
+                break;
+            case preg_match('~^/nodeNetwork ([a-f0-9]{8}) (44|46|64|66)$~D', $this->input['callback'], $m):
+                $this->managedNodeNetwork($m[1], $m[2]);
+                break;
+            case preg_match('~^/nodeDomain ([a-f0-9]{8}) (own|auto)$~D', $this->input['callback'], $m):
+                $this->managedNodeOwnDomain($m[1], $m[2]);
+                break;
+            case preg_match('~^/nodeEdit ([a-f0-9]{8}) ([A-Za-z0-9_.]+)$~D', $this->input['callback'], $m):
+                $this->managedNodeEditPrompt($m[1], $m[2]);
                 break;
             case preg_match('~^/nodeField ([a-f0-9]{8}) ([A-Za-z0-9_.]+)$~', $this->input['callback'], $m):
                 $this->managedNodeField($m[1], $m[2]);
                 break;
-            case preg_match('~^/nodeChoice ([a-f0-9]{8}) ([A-Za-z0-9_.]+) ([A-Za-z0-9_-]+)$~', $this->input['callback'], $m):
+            case preg_match('~^/nodeChoice ([a-f0-9]{8}) ([A-Za-z0-9_.]+) ([A-Za-z0-9_.-]+)$~D', $this->input['callback'], $m):
                 $this->managedNodeChoice($m[1], $m[2], $m[3]);
                 break;
             case preg_match('~^/nodeApply ([a-f0-9]{8})$~', $this->input['callback'], $m):
@@ -837,6 +851,24 @@ class Bot
                 break;
             case preg_match('~^/nodeDiscard ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->managedNodeDiscard($m[1]);
+                break;
+            case preg_match('~^/nodePreset ([a-f0-9]{8}) ([a-z_1-5]+)(?: ([a-z_0-9]+))?$~D', $this->input['callback'], $m):
+                $this->managedNodePresets($m[1], $m[2], $m[3] ?? '');
+                break;
+            case preg_match('~^/nodeNewDomain ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->managedNodeNewDomain($m[1]);
+                break;
+            case preg_match('~^/nodeCert ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->managedNodeCertificateMenu($m[1]);
+                break;
+            case preg_match('~^/nodeTls ([a-f0-9]{8})(?: (reality|domains))?$~D', $this->input['callback'], $m):
+                $this->managedNodeTlsProbe($m[1], $m[2] ?? 'reality');
+                break;
+            case preg_match('~^/nodeBackup ([a-f0-9]{8})(?: (yes))?$~D', $this->input['callback'], $m):
+                $this->managedNodeBackup($m[1], isset($m[2]));
+                break;
+            case preg_match('~^/nodeHelp ([a-f0-9]{8}) ([0-2])$~D', $this->input['callback'], $m):
+                $this->managedNodeMaintenanceHelp($m[1], (int) $m[2]);
                 break;
             case preg_match('~^/nodeMaintenance ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->managedNodeMaintenance($m[1]);
@@ -850,10 +882,10 @@ class Bot
             case preg_match('~^/nodePeer ([a-f0-9]{8}) ([a-f0-9]{10})$~', $this->input['callback'], $m):
                 $this->managedNodePeerMenu($m[1], $m[2]);
                 break;
-            case preg_match('~^/nodePeerDo ([a-f0-9]{8}) ([a-f0-9]{10}) (on|off|rotate|delete)(?: (yes))?$~', $this->input['callback'], $m):
+            case preg_match('~^/nodePeerDo ([a-f0-9]{8}) ([a-f0-9]{10}) (on|off|rotate|delete|vless|wireguard|amnezia)(?: (yes))?$~', $this->input['callback'], $m):
                 $this->managedNodePeerAction($m[1], $m[2], $m[3], isset($m[4]));
                 break;
-            case preg_match('~^/nodePeerOut ([a-f0-9]{8}) ([a-f0-9]{10}) (link|json|sub)$~', $this->input['callback'], $m):
+            case preg_match('~^/nodePeerOut ([a-f0-9]{8}) ([a-f0-9]{10}) (link|json|sub|https)$~', $this->input['callback'], $m):
                 $this->managedNodePeerExport($m[1], $m[2], $m[3]);
                 break;
             case preg_match('~^/nodeRun ([a-f0-9]{8}) ([a-z_]+)(?: (yes))?$~', $this->input['callback'], $m):
@@ -8904,7 +8936,18 @@ NFT;
         if (!self::awgHeaderProtectionOk($keys)) {
             unset($keys['HeaderProtectionKey']);
         }
+        // Do not silently rewrite existing client exports: the live server
+        // keeps its old value until an explicit, coordinated AWG change.
         return $keys;
+    }
+
+    public static function awgRandomTrailersSafe(array $keys): bool
+    {
+        // Upstream amneziawg-go#186: broad H1-H3 can claim transport data.
+        foreach (['H1','H2','H3'] as $name) {
+            if (isset($keys[$name]) && count(array_unique(explode('-', (string) $keys[$name]))) > 1) return false;
+        }
+        return true;
     }
 
     // Дефолты amneziawg-go (device/constants.go) для полей, которые не заданы:
@@ -9272,41 +9315,8 @@ NFT;
             // Профиль внутри версии сохраняем (standard→standard и т.д.).
             $tpl_new = self::awgTemplateForVer($tpl, $ver);
             $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
-            if (!$keys) {
-                $keys = $this->generateAmneziaKeys($tpl_new, fn() => $this->genHeaderProtectionKey());
-            }
-
-            // Снять всё, что выше целевой версии.
-            for ($v = $ver + 1; $v <= 3; $v++) {
-                foreach (self::awgKeyNames($v) as $k) {
-                    unset($keys[$k]);
-                }
-            }
-            // Добить недостающее до целевой версии из свежего набора того же
-            // профиля — существующие поля не трогаем.
-            if ($ver >= 2) {
-                $fresh = $this->generateAmneziaKeys($tpl_new, fn() => $this->genHeaderProtectionKey());
-                for ($v = 2; $v <= $ver; $v++) {
-                    foreach (self::awgKeyNames($v) as $k) {
-                        if (!isset($keys[$k]) && isset($fresh[$k])) {
-                            $keys[$k] = $fresh[$k];
-                        }
-                    }
-                }
-            }
-            if ($ver === 3) {
-                $keys = self::enforceHeaderProtection($keys);
-            } else {
-                // Диапазонный PersistentKeepalive — тоже 3.0: на 1.x/2.0 он
-                // просто не разберётся.
-                unset($c[$prefix . 'amnezia_keepalive']);
-            }
-            if ($ver === 1) {
-                // Заголовки-диапазоны — фича 2.0; в 1.x они обязаны стать
-                // одиночными числами, иначе профиль «для старых клиентов» на
-                // старом клиенте не поднимется. См. awgHeadersToV1().
-                $keys = self::awgHeadersToV1($keys);
-            }
+            $keys = $this->amneziaKeysForVersion($keys, $ver, $tpl_new, fn() => $this->genHeaderProtectionKey());
+            if ($ver < 3) unset($c[$prefix . 'amnezia_keepalive']);
 
             $c[$prefix . 'amnezia']      = 1;
             $c[$prefix . 'amnezia_tpl']  = $tpl_new;
@@ -9320,6 +9330,25 @@ NFT;
         }
         $mutate();
         $this->switchAmnezia($page, false, false, 1);
+    }
+
+    /** Shared version migration for the full bot and managed nodes. */
+    public function amneziaKeysForVersion(array $keys, int $ver, string $template, ?callable $hpk = null): array
+    {
+        if (!in_array($ver,[1,2,3],true)) throw new InvalidArgumentException('Invalid Amnezia version');
+        $template=self::awgTemplateForVer($template,$ver);
+        if (!$keys) $keys=$this->generateAmneziaKeys($template,$hpk);
+        for ($v=$ver+1;$v<=3;$v++) foreach(self::awgKeyNames($v) as $name) unset($keys[$name]);
+        if ($ver<3) foreach(self::AWG_KEYS_31 as $name) unset($keys[$name]);
+        if ($ver>=2) {
+            $fresh=$this->generateAmneziaKeys($template,$hpk);
+            for ($v=2;$v<=$ver;$v++) foreach(self::awgKeyNames($v) as $name) {
+                if (!isset($keys[$name]) && isset($fresh[$name])) $keys[$name]=$fresh[$name];
+            }
+        }
+        if ($ver===3) $keys=self::enforceHeaderProtection($keys);
+        if ($ver===1) $keys=self::awgHeadersToV1($keys);
+        return $keys;
     }
 
     // ── Подменю AWG 3.0 ──────────────────────────────────────────────────────
@@ -9351,6 +9380,9 @@ NFT;
         $text[] = '';
         $text[] = $this->t('⚠️ Любое изменение здесь ломает уже розданные конфиги: клиентам нужно перекачать их заново. Header protection дополнительно требует S1–S4 ≥ ', '⚠️ Any change here breaks the configs already handed out: clients must download them again. Header protection also requires S1–S4 ≥ ') . self::AWG_HPK_MIN_S . '.';
         if ($dc === 'on') $text[] = $this->t('⚠️ DisableCookies отключает штатную защиту WireGuard от флуда подключений.', '⚠️ DisableCookies disables the standard WireGuard protection against connection floods.');
+        if ($rt === 'on' && !self::awgRandomTrailersSafe($keys)) $text[] = $this->t(
+            '⚠️ RandomTrailers с диапазонами H1–H3 может терять пакеты. Отключите RandomTrailers этой кнопкой и обновите конфиги клиентов. До применения экспорты сохраняют текущий режим сервера.',
+            '⚠️ RandomTrailers with H1–H3 ranges can drop packets. Disable it here and refresh client profiles. Until applied, exports preserve the current server mode.');
 
         $data = [
             [
@@ -9521,6 +9553,11 @@ NFT;
         }
         if ($cur !== 'on' && self::amneziaProtoVer($keys) !== 3) {
             $this->answer($this->input['callback_id'] ?? null, $this->t('сначала переключитесь на шаблон 3.0', 'switch to a 3.0 template first'), true);
+            return $this->menu('wg', $page);
+        }
+
+        if ($cur !== 'on' && !self::awgRandomTrailersSafe($keys)) {
+            $this->answer($this->input['callback_id'] ?? null, $this->t('RandomTrailers требует фиксированных H1–H3: диапазоны вызывают потерю пакетов в текущем AWG.', 'RandomTrailers requires fixed H1–H3: ranges cause packet loss in the current AWG.'), true);
             return $this->menu('wg', $page);
         }
 
@@ -11252,6 +11289,7 @@ NFT;
             $this->protocolReturnMain = !empty($state['protocol_main'])
                 && in_array($callback, ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true);
             $this->protocolRelayOrigin = $state['protocol_relay'] ?? [];
+            $this->managedNodeNavigation = $state['managed_node_navigation'] ?? [];
             // Только message_id: раньше сюда же присваивался callback_id, но
             // ответ на force_reply — это ОБЫЧНОЕ сообщение, никакого
             // callback_query у него нет. В качестве query id уходил message_id,
@@ -11287,6 +11325,7 @@ NFT;
                 $this->replyMenuEdit = false;
                 $this->protocolReturnMain = false;
                 $this->protocolRelayOrigin = [];
+                $this->managedNodeNavigation = [];
             }
         }
     }
@@ -37348,6 +37387,7 @@ DNS-over-HTTPS with IP:
 
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
     {
+        $button = $this->managedNodeNavigationButtons($button);
         $button = $this->protocolNavigationButtons($button);
         $button = $this->filterProtocolButtons($button);
         if (is_null($text)) {
@@ -37542,6 +37582,7 @@ DNS-over-HTTPS with IP:
 
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML')
     {
+        $button = $this->managedNodeNavigationButtons($button);
         $button = $this->protocolNavigationButtons($button);
         $button = $this->filterProtocolButtons($button);
         $text = (string) $text;

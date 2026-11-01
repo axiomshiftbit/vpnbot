@@ -55,6 +55,10 @@ def snapshot(value):
               'peers': peers(value['peers']), 'images': {}, 'tls': {}}
     if any(peer['id'] == result['identity']['uuid'] for peer in result['peers']):
         raise ValueError('peer conflicts with controller')
+    channels = {peer['id']: peer['channel'] for peer in result['peers'] if peer.get('channel', 'vless') != 'vless'}
+    external = result['identity'].get('external', {})
+    if set(external) != set(channels) or any(external[key]['channel'] != channel for key, channel in channels.items()):
+        raise ValueError('external channel identities do not match peers')
     if not isinstance(value['images'], dict) or 'xr' not in value['images'] or set(value['images'])-{'xr', 'ng'}:
         raise ValueError('invalid node images')
     for name, image in value['images'].items():

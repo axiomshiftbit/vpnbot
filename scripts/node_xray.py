@@ -2,6 +2,7 @@
 """Typed VLESS/REALITY/SMUX options shared by node server and exported clients."""
 import base64
 import copy
+import json
 import re
 import node_dpi
 
@@ -14,7 +15,11 @@ DEFAULTS = {
     'smux': {'enabled': False, 'protocol': 'smux', 'max_connections': 3, 'min_streams': 4,
              'max_streams': 0, 'padding': True, 'only_tcp': False, 'half_close': 'off',
              'h2mux_frame': 0, 'brutal': {'enabled': False, 'up': '100 Mbps', 'down': '100 Mbps'}},
-    'xhttp': {'mode': 'auto', 'mux': False},
+    'xhttp': {'mode': 'auto', 'mux': False, 'extra': {
+        'xmux': {'cMaxReuseTimes': 0, 'maxConcurrency': '16-32', 'maxConnections': 0,
+                 'hKeepAlivePeriod': 0, 'hMaxRequestTimes': '600-900', 'hMaxReusableSecs': '1800-3000'},
+        'noGRPCHeader': False, 'xPaddingBytes': '100-1000', 'scMaxEachPostBytes': 1000000,
+        'scMinPostsIntervalMs': 30, 'scStreamUpServerSecs': '20-80'}},
     'finalmask': {'fragment': node_dpi.FRAGMENT, 'noise': node_dpi.NOISE},
     'dpi': {'fragment': node_dpi.FRAGMENT, 'noise': node_dpi.NOISE},
     'sniffing': node_dpi.SNIFFING,
@@ -82,6 +87,18 @@ def settings(value, core, transport):
         raise ValueError('unsupported XHTTP mode')
     if xhttp['mux'] and (core != 'fork' or transport != 'xhttp'):
         raise ValueError('XHTTP Mux.Cool requires the fork and XHTTP')
+    extra = xhttp['extra']
+    for name, low, high in [('xPaddingBytes', 0, 65535), ('scStreamUpServerSecs', 0, 86400)]:
+        node_dpi.span(extra[name], low, high)
+    bounded(extra['scMaxEachPostBytes'], 1, 16000000)
+    bounded(extra['scMinPostsIntervalMs'], 0, 60000)
+    xmux = extra['xmux']
+    for name in ('maxConcurrency', 'hMaxRequestTimes', 'hMaxReusableSecs'):
+        node_dpi.span(xmux[name], 0, 1000000)
+    for name in ('cMaxReuseTimes', 'maxConnections', 'hKeepAlivePeriod'):
+        bounded(xmux[name], 0, 1000000)
+    if xmux['maxConnections'] and any(int(n) for n in xmux['maxConcurrency'].split('-')):
+        raise ValueError('XHTTP connection and concurrency limits conflict')
     if transport == 'reality':
         # The original versions bundled as origin/origin2 require hybrid ML-KEM.
         # origin3 and the fork without requireMlkem accept other TLS 1.3 samples.
@@ -173,8 +190,9 @@ def apply_server(inbound, options, keys):
             stream['realitySettings']['requireMlkem'] = True
     if options['transport'] == 'xhttp':
         stream['xhttpSettings']['mode'] = advanced['xhttp']['mode']
+        stream['xhttpSettings']['extra'] = copy.deepcopy(advanced['xhttp']['extra'])
         if advanced['xhttp']['mux']:
-            stream['xhttpSettings']['extra'] = {'muxKeepAliveSecs': '20-40', 'muxKeepAliveBytes': '64-512'}
+            stream['xhttpSettings']['extra'].update({'muxKeepAliveSecs': '20-40', 'muxKeepAliveBytes': '64-512'})
     smux = advanced['smux']
     block = {}
     if smux['enabled']:
@@ -204,6 +222,7 @@ def apply_client(outbound, options, keys):
         outbound['smux'] = smux_client(advanced['smux'])
     if options['transport'] == 'xhttp':
         stream['xhttpSettings']['mode'] = advanced['xhttp']['mode']
+        stream['xhttpSettings']['extra'] = copy.deepcopy(advanced['xhttp']['extra'])
         if advanced['xhttp']['mux']:
             outbound['mux'] = {'enabled': True, 'concurrency': 8, 'xudpConcurrency': 16, 'xudpProxyUDP443': 'allow'}
 
@@ -218,5 +237,6 @@ def link_parameters(options, keys):
             result['spx'] = advanced['reality']['spiderX']
     if options['transport'] == 'xhttp':
         result['mode'] = advanced['xhttp']['mode']
+        result['extra'] = json.dumps(advanced['xhttp']['extra'], separators=(',', ':'))
     # SMUX and Mux.Cool have no standard vless URI representation. JSON carries them.
     return result

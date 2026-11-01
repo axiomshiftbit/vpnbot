@@ -22,6 +22,7 @@ class RoundTripBot extends Bot {
  public function restoreBackupXray(array $config): bool { return !$this->rejectXray && parent::restoreBackupXray($config); }
  public function syncManagedUpstreams(): void { $this->syncedDomain=$this->getPacConf()['domain']??''; }
  public function __construct(public string $dir,array $translations){
+  $this->managedNodeRoot="$dir/nodes";
   $this->pac="$dir/config/pac.json";$this->clients="$dir/config/clients.json";$this->clients1="$dir/config/clients1.json";
   $this->protocolRoot="$dir/config/protocols";$this->protocolModulesFile="$dir/config/protocol-services.json";
   $this->protocolCertRoot="$dir/certs";$this->protocolNginxFile="$dir/absent-nginx";$this->upstreamFile="$dir/absent-upstream";
@@ -63,9 +64,15 @@ try{
    'enabled'=>1,'quic'=>'block','routes'=>['domain:youtube.com'=>1,'full:www.example.test'=>0],
    'rulesets'=>['https://example.test/yt.srs'=>['on'=>0,'behavior'=>'domain','interval'=>86400]],'auto'=>1,'created'=>1700000000,'status'=>[]]],
   'xdrive'=>['enabled'=>0,'service'=>'webdav','url'=>'https://dav.example.test','folder'=>'vpnbot-xdrive','login'=>'u','password'=>'synthetic','poll'=>500],
+  'managed_nodes'=>['a1b2c3d4'=>['name'=>'fixture-node','connected'=>false,
+   'subscriptions'=>['fixture'=>['peer'=>'00000000-0000-4000-8000-000000000004','token'=>str_repeat('c',64)]],
+   'draft'=>['domain'=>'node.example.test','domain_aliases'=>['alt.example.test'],'wireguard'=>['keepalive'=>17],
+    'amnezia'=>['keepalive'=>'18-24','parameters'=>['Jc'=>5]],'xray'=>['xhttp'=>['extra'=>['xmux'=>['maxConcurrency'=>'2-4']]]]]]],
   'warp_mode'=>'masque',
   // Сертификат Let's Encrypt и пометка запроса к acme-window этого сервера.
   'letsencrypt'=>'letsencrypt','acme_requested'=>1700000000];
+ mkdir("$root/nodes/a1b2c3d4",0700,true);
+ foreach (['key'=>'SYNTHETIC-PRIVATE-FIXTURE','key.pub'=>'SYNTHETIC-PUBLIC-FIXTURE'] as $n=>$v) file_put_contents("$root/nodes/a1b2c3d4/$n",$v);
  $b->setPacConf($pac);
  $b->ensureDefaultTemplates();
  $pac=$b->getPacConf();unset($pac['singtemplates']['15_dns_google']);
@@ -125,6 +132,7 @@ try{
  rtCheck($b->syncedDomain===$snapshot['pac']['domain'],'Маршруты протоколов применены после восстановления домена');
  $after=json_decode($b->export(),true,512,JSON_THROW_ON_ERROR);
  foreach(['pac','telemt_quota','extra_files','wg','wg1','ssl','ss','sl','xray','ad','tt'] as $section)rtCheck($after[$section]===$snapshot[$section],"$section: данные пережили полный цикл");
+ rtCheck($after['pac']['managed_nodes']===$pac['managed_nodes'],'Node HTTPS capabilities, aliases and advanced settings survive full export/import');
  rtCheck($after['hy_users']['state']['users']===$snapshot['hy_users']['state']['users'] && $after['hy_users']['usage']===$snapshot['hy_users']['usage'],'Пользователи и расход Hysteria сохранены');
  rtCheck($after['hwid']===$snapshot['hwid'],'HWID восстановлены в SQLite');
  rtCheck(!file_exists("$root/config/telemt/data/telemt.checkpoint.json"),'Старый checkpoint не перекрывает восстановленный расход');

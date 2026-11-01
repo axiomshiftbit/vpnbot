@@ -47,7 +47,7 @@ def hostname(value):
 
 def settings(value):
     """Remote callers can change only these settings, never a core config."""
-    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia'} != {'transport', 'family', 'core', 'domain', 'mask'}:
+    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases'} != {'transport', 'family', 'core', 'domain', 'mask'}:
         raise ValueError('invalid settings fields')
     if not isinstance(value['transport'], str) or not isinstance(value['core'], str) \
             or value['transport'] not in TRANSPORTS or value['core'] not in CORES \
@@ -66,6 +66,14 @@ def settings(value):
         raise ValueError('invalid node connection family')
     result['mask'] = hostname(value['mask'])
     result['domain'] = hostname(value['domain']) if value['domain'] else ''
+    if 'domain_aliases' in value:
+        aliases = value['domain_aliases']
+        if not isinstance(aliases, list) or len(aliases) > 12:
+            raise ValueError('at most twelve additional certificate names are supported')
+        result['domain_aliases'] = list(dict.fromkeys(hostname(name) for name in aliases))
+        result['domain_aliases'] = [name for name in result['domain_aliases'] if name != result['domain']]
+        if result['domain_aliases'] and not result['domain']:
+            raise ValueError('additional domains require a primary domain')
     if (value['transport'] != 'reality' or value.get('cover')) and not result['domain']:
         raise ValueError('TLS transports require the node domain')
     if value.get('cover') and value['transport'] == 'reality':
@@ -128,7 +136,7 @@ def needs_certificate(options):
 
 
 def identity(value):
-    if not isinstance(value, dict) or set(value)-{'encryption', 'mldsa', 'cover_auth', 'wireguard', 'amnezia'} != {'uuid', 'private', 'public', 'short_id', 'path'}:
+    if not isinstance(value, dict) or set(value)-{'encryption', 'mldsa', 'cover_auth', 'wireguard', 'amnezia', 'external'} != {'uuid', 'private', 'public', 'short_id', 'path'}:
         raise ValueError('invalid node identity')
     if not isinstance(value['uuid'], str) or str(uuid.UUID(value['uuid'])) != value['uuid']:
         raise ValueError('invalid client identity')
@@ -139,6 +147,8 @@ def identity(value):
             or not re.fullmatch(r'[a-f0-9]{16}', value['short_id']) or not re.fullmatch(r'[a-f0-9]{32}', value['path']):
         raise ValueError('invalid transport identity')
     result = dict(value)
+    if 'external' in value:
+        result['external'] = node_wg.external(value['external'])
     if 'wireguard' in value:
         result['wireguard'] = node_wg.identity(value['wireguard'])
     if 'amnezia' in value:
@@ -157,13 +167,27 @@ def peers(value):
         raise ValueError('invalid peer list')
     result, seen = [], set()
     for peer in value:
-        if not isinstance(peer, dict) or set(peer) != {'id', 'name', 'enabled'} \
+        if not isinstance(peer, dict) or set(peer)-{'channel'} != {'id', 'name', 'enabled'} \
                 or not isinstance(peer['id'], str) or str(uuid.UUID(peer['id'])) != peer['id'] \
                 or peer['id'] in seen or type(peer['enabled']) is not bool \
                 or not isinstance(peer['name'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,40}', peer['name']):
             raise ValueError('invalid peer')
+        if peer.get('channel', 'vless') not in ('vless', 'wireguard', 'amnezia'):
+            raise ValueError('invalid external channel')
         seen.add(peer['id'])
         result.append(dict(peer))
+    return result
+
+
+def external_peers(keys, external, channel):
+    result=[]
+    for peer in peers(external or []):
+        if peer.get('channel','vless') != channel or not peer['enabled']:
+            continue
+        entry=keys.get('external',{}).get(peer['id'])
+        if entry is None or entry['channel'] != channel:
+            raise ValueError('external channel identity missing')
+        result.append(entry)
     return result
 
 
@@ -200,7 +224,7 @@ def core_config(options, host, keys, external=None):
     for peer in peers(external or []):
         if peer['id'] == keys['uuid']:
             raise ValueError('peer conflicts with controller identity')
-        if peer['enabled']:
+        if peer['enabled'] and peer.get('channel', 'vless') != 'wireguard':
             clients.append({'id': peer['id'], 'email': peer['name'],
                             **({'flow': 'xtls-rprx-vision'} if transport == 'reality' else {})})
     result = {
@@ -223,6 +247,7 @@ def core_config(options, host, keys, external=None):
             raise ValueError('cover site account is not installed')
         if transport == 'reality':
             stream['realitySettings']['dest'] = '127.0.0.1:9443'
+            stream['realitySettings']['serverNames'] = [options['domain'], *options.get('domain_aliases', [])]
         else:
             result['inbounds'][0].update(listen='127.0.0.1', port=9444)
             stream['security'] = 'none'
@@ -233,7 +258,8 @@ def core_config(options, host, keys, external=None):
     if options.get('wireguard', {}).get('enabled'):
         for address in (host['public4'], host['public6']):
             if address:
-                inbound = node_wg.inbound(options['wireguard'], address, keys['wireguard'], result['inbounds'][0].get('sniffing'))
+                inbound = node_wg.inbound(options['wireguard'], address, keys['wireguard'], result['inbounds'][0].get('sniffing'),
+                    external_peers(keys, external, 'wireguard'))
                 result['inbounds'].append(inbound)
                 if options.get('xray', {}).get('block_torrent'):
                     result['routing']['rules'][0]['inboundTag'].append(inbound['tag'])
@@ -308,12 +334,19 @@ def export_profile(options, host, keys, peer=None):
     link = client_link(options, host, keys) + '#' + name
     result = {'link': link, 'outbound': client_outbound(options, host, keys, name),
               'subscription': base64.b64encode((link + '\n').encode()).decode()}
-    if peer is None and options.get('wireguard', {}).get('active'):
+    channel = peer.get('channel', 'vless') if peer else ('wireguard' if options.get('wireguard', {}).get('active') else 'amnezia' if options.get('amnezia', {}).get('active') else 'vless')
+    entry = external_peers(keys, [peer], channel)[0] if peer and channel != 'vless' else None
+    if channel == 'wireguard':
+        if not options.get('wireguard', {}).get('enabled'): raise ValueError('WireGuard channel disabled')
         result['channel'] = 'wireguard'
-        result['outbound'] = node_wg.outbound(options['wireguard'], endpoint(options, host), keys['wireguard'], family=options['family'])
-    if peer is None and options.get('amnezia', {}).get('active'):
+        result['outbound'] = node_wg.outbound(options['wireguard'], endpoint(options, host),
+            node_wg.peer_keys(keys['wireguard'],entry) if entry else keys['wireguard'], family=options['family'], slot=entry['slot'] if entry else 0)
+    if channel == 'amnezia':
+        if not options.get('amnezia', {}).get('enabled'): raise ValueError('Amnezia channel disabled')
         result['channel'] = 'amnezia'
-        result['amnezia'] = node_awg.profile(options['amnezia'], endpoint(options, host), keys['amnezia'])
+        result['amnezia'] = node_awg.profile(options['amnezia'], endpoint(options, host),
+            (node_wg.peer_keys({k:v for k,v in keys['amnezia'].items() if k != 'parameters'},entry) | {'parameters':keys['amnezia']['parameters']}) if entry else keys['amnezia'],
+            slot=entry['slot'] if entry else 0)
     return result
 
 

@@ -1259,6 +1259,12 @@ trait BotExitNodes
         $this->exitOrderMenu($error === '' ? $this->t('Приоритет сохранён', 'Priority saved') : $this->exitError($error));
     }
 
+    private function exitMenuBreadcrumb(string $id, array $node): string
+    {
+        if (($this->managedNodeNavigation['id'] ?? '') === $id) return $this->t('Ноды → ', 'Nodes → ') . $this->exitName($id, $node);
+        return 'Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node);
+    }
+
     public function exitNodeMenu(string $id, string $notice = ''): void
     {
         $node = $this->exitNodes()[$id] ?? null;
@@ -1268,7 +1274,7 @@ trait BotExitNodes
         $sets = count(array_filter($node['rulesets'], static fn($s) => is_array($s) && !empty($s['on'])));
         $users = count($this->exitNodeEmails($x, $id));
         try { $parsed = ExitNodeLink::parse($node['link']); } catch (InvalidArgumentException $e) { $parsed = null; }
-        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node),
+        $text = [$this->exitMenuBreadcrumb($id, $node),
             $this->exitStatusLine($id, $node)];
         if (!empty($node['enabled']) && ($history = $this->exitHistoryLine($this->exitStatus()[$id] ?? [])) !== '') $text[] = $history;
         array_push($text,
@@ -1556,7 +1562,8 @@ trait BotExitNodes
     public function exitCheck(string $id): void
     {
         $s = $this->exitProbe($id, true);
-        $this->exitNodeMenu($id, !empty($s['ok']) ? $this->t('Проверено: узел работает', 'Checked: the node is working') : $this->t('Проверено: ', 'Checked: ') . $this->exitErrorText((string) ($s['error'] ?? '')));
+        $menu = ($this->managedNodeNavigation['area'] ?? '') === 'd' ? 'exitDiagnosticsMenu' : 'exitNodeMenu';
+        $this->$menu($id, !empty($s['ok']) ? $this->t('Проверено: узел работает', 'Checked: the node is working') : $this->t('Проверено: ', 'Checked: ') . $this->exitErrorText((string) ($s['error'] ?? '')));
     }
 
     /**
@@ -1807,7 +1814,7 @@ trait BotExitNodes
         $entries = array_keys($node['routes']);
         $pages = max(1, (int) ceil(count($entries) / self::EXIT_PAGE));
         $page = max(0, min($page, $pages - 1));
-        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> Маршруты', ' -> Routes'),
+        $text = [$this->exitMenuBreadcrumb($id, $node) . $this->t(' -> Маршруты', ' -> Routes'),
             $this->t('Нажмите на запись, чтобы выключить или включить её; ✖ — удалить.', 'Tap an entry to turn it off or on; ✖ deletes it.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
@@ -1950,7 +1957,7 @@ trait BotExitNodes
     {
         $node = $this->exitNodes()[$id] ?? null;
         if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
-        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> Сервисы', ' -> Services'),
+        $text = [$this->exitMenuBreadcrumb($id, $node) . $this->t(' -> Сервисы', ' -> Services'),
             $this->t('Нажмите на сервис, чтобы добавить его домены в маршруты узла; ✅ — уже добавлен, повторное нажатие убирает его записи.', 'Tap a service to add its domains to the node routes; ✅ means it is added, tapping again removes its entries.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
@@ -1994,7 +2001,7 @@ trait BotExitNodes
         if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
         $others = array_filter($this->exitNodes(), static fn($n, $other) => (string) $other !== $id, ARRAY_FILTER_USE_BOTH);
         if (!$others) { $this->exitRoutesMenu($id, 0, $this->t('Другого узла нет: добавьте второй узел', 'There is no other node: add a second one')); return; }
-        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> В другой узел', ' -> To another node'),
+        $text = [$this->exitMenuBreadcrumb($id, $node) . $this->t(' -> В другой узел', ' -> To another node'),
             $this->t('Маршруты и наборы .srs/.mrs этого узла добавятся к выбранному (повторы пропускаются, его записи остаются). Пользователи не копируются.', 'Routes and .srs/.mrs sets of this node are added to the chosen one (duplicates are skipped, its own entries stay). Users are not copied.')];
         $data = [];
         foreach ($others as $other => $n) $data[] = [['text' => '🌍 ' . mb_substr($n['name'] !== '' ? $n['name'] : (string) $other, 0, 40), 'callback_data' => "/exitCopyTo $id $other"]];
@@ -2163,7 +2170,7 @@ trait BotExitNodes
     {
         $node = $this->exitNodes()[$id] ?? null;
         if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
-        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> Наборы правил', ' -> Rule sets'),
+        $text = [$this->exitMenuBreadcrumb($id, $node) . $this->t(' -> Наборы правил', ' -> Rule sets'),
             $this->t('Наборы sing-box (.srs) и Mihomo (.mrs) по ссылке https://. Бот сам скачивает их, раскладывает на домены и подсети и обновляет раз в сутки (и по «Обновить» в карточке узла). Xray .dat добавляются через кнопку «Xray .dat»: источник HTTPS, тип GeoSite/GeoIP и категории. Обновление .dat выполняется в общем реестре источников и по его расписанию.', 'sing-box (.srs) and Mihomo (.mrs) sets by https:// link. The bot downloads them itself, expands them into domains and subnets and refreshes them once a day (and on Refresh in the node card). Add Xray .dat using Xray .dat: HTTPS source, GeoSite/GeoIP type and categories. Update .dat in the shared source registry or on its schedule.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
@@ -2359,7 +2366,7 @@ trait BotExitNodes
         $list = array_filter($clients, static fn($c) => is_array($c) && empty($c['exit_relay']));
         $pages = max(1, (int) ceil(count($list) / self::EXIT_PAGE));
         $page = max(0, min($page, $pages - 1));
-        $text = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> ', ' -> Exit nodes -> ') . $this->exitName($id, $node) . $this->t(' -> Пользователи', ' -> Users'),
+        $text = [$this->exitMenuBreadcrumb($id, $node) . $this->t(' -> Пользователи', ' -> Users'),
             $this->t('Маршрут через узел работает только у отмеченных. Служебные учётки узлов здесь не показываются.', 'The route through the node works only for the checked users. Node service accounts are not shown here.')];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];

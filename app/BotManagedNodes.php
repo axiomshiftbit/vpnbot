@@ -3,11 +3,21 @@
 require_once __DIR__ . '/ManagedNodeProfile.php';
 require_once __DIR__ . '/ManagedNodeFields.php';
 require_once __DIR__ . '/BotManagedNodePeers.php';
+require_once __DIR__ . '/BotManagedNodeSubscriptions.php';
+require_once __DIR__ . '/BotManagedNodeNavigation.php';
+require_once __DIR__ . '/BotManagedNodeMenus.php';
+require_once __DIR__ . '/BotManagedNodeTools.php';
+require_once __DIR__ . '/BotManagedNodePresets.php';
 
 /** Host management is separate from the existing exit routing and user menus. */
 trait BotManagedNodes
 {
     use BotManagedNodePeers;
+    use BotManagedNodeSubscriptions;
+    use BotManagedNodeNavigation;
+    use BotManagedNodeMenus;
+    use BotManagedNodeTools;
+    use BotManagedNodePresets;
     public string $managedNodeRoot = '/ssh/nodes';
     private int $managedNodeCronAt = 0;
 
@@ -102,6 +112,19 @@ trait BotManagedNodes
 
     protected function managedNodeRpc(string $id, array $request): array
     {
+        // Associative json_decode loses the distinction between {} and [].
+        // Restore only the schema's empty maps; lists and invalid values keep
+        // their types so the node's strict validator can reject them.
+        if (($request['action'] ?? '') === 'submit') {
+            $operation = $request['request']['operation'] ?? '';
+            if ($operation === 'configure' || $operation === 'restore') {
+                if ($operation === 'configure') $options = &$request['request']['value'];
+                else $options = &$request['request']['value']['options'];
+                if (($options['amnezia']['parameters'] ?? null) === []) $options['amnezia']['parameters'] = (object) [];
+                unset($options);
+                if ($operation === 'restore' && ($request['request']['value']['tls'] ?? null) === []) $request['request']['value']['tls'] = (object) [];
+            }
+        }
         return $this->managedNodeTransport($id, 'rpc', $request);
     }
 
@@ -169,6 +192,8 @@ trait BotManagedNodes
     {
         $node = $this->managedNodes()[$id] ?? null;
         if (!$node || !$node['connected'] || $node['job']) throw new RuntimeException('Node is not ready');
+        if ($operation === 'configure' && $this->managedNodeNetworkProblem($value, $node) !== '') throw new RuntimeException('Node connection family is not prepared');
+        if (isset($node['draft']) && $operation !== 'configure') throw new RuntimeException('Apply or discard the settings draft first');
         if (!empty($node['recovery_required']) && $operation !== 'restore') throw new RuntimeException('Restore the saved node first');
         $exit = $this->exitNodes()[$id] ?? null;
         if (!$exit) throw new RuntimeException('Node route is missing');
@@ -177,8 +202,11 @@ trait BotManagedNodes
         $job = $this->managedNodeRpc($id, ['action' => 'submit', 'request' => ['operation' => $operation, 'value' => $value, 'generation' => $generation]]);
         if (!preg_match('~^[a-f0-9]{32}$~D', (string) ($job['job'] ?? ''))) throw new RuntimeException('Invalid node job');
         $before = array_intersect_key($exit, array_flip(['link', 'managed_profile']));
-        $this->managedNodeWrite($id, static function (&$node) use ($job, $before, $operation) {
-            $node['job'] = ['id' => $job['job'], 'operation' => $operation, 'before' => $before, 'phase' => 'waiting', 'started' => time()];
+        $draft = $operation === 'configure' ? array_intersect_key($node, array_flip(['draft', 'draft_generation'])) : [];
+        $origin = array_intersect_key($this->input ?? [], array_flip(['chat','message_id']));
+        $subject = $operation === 'rotate' && is_string($value) ? $value : '';
+        $this->managedNodeWrite($id, static function (&$node) use ($job, $before, $operation, $origin, $subject, $draft) {
+            $node['job'] = ['id' => $job['job'], 'operation' => $operation, 'before' => $before, 'phase' => 'waiting', 'started' => time(), 'origin' => $origin, 'subject' => $subject, 'draft' => $draft];
             unset($node['draft'], $node['draft_generation'], $node['error']);
         });
     }
@@ -222,9 +250,11 @@ trait BotManagedNodes
         $pending = $job['result']['pending'] ?? null;
         if (($job['state'] ?? '') !== 'done' || ($pending && empty($status['pending']) && ($status['generation'] ?? '') !== $pending['after'])) {
             $this->managedNodeRestoreClient($id, $saved['before']);
-            $this->managedNodeWrite($id, static function (&$node) use ($status) {
+            $this->managedNodeWrite($id, static function (&$node) use ($status, $saved) {
+                foreach (($saved['draft'] ?? []) as $key=>$value) $node[$key] = $value;
                 $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['error'] = 'rolled_back';
             });
+            $this->managedNodeOperationScreen($id, $saved);
             return;
         }
         if ($pending) {
@@ -233,6 +263,7 @@ trait BotManagedNodes
             try {
                 if ($this->managedNodeUseProfile($id, $profile) !== '') throw new RuntimeException('Client configuration rejected');
                 if (!$this->managedNodeTrafficReady($id)) throw new RuntimeException('Node traffic probe failed');
+                if (isset($job['result']['certificate_result']) && $this->managedNodeCertificateResult($job, $status) === 'unverified') throw new RuntimeException('Installed certificate not verified');
             } catch (Throwable $error) {
                 $this->managedNodeRestoreClient($id, $saved['before']);
                 $this->managedNodeWrite($id, static function (&$node) {
@@ -255,10 +286,13 @@ trait BotManagedNodes
         }
         $status = $this->managedNodeRpc($id, ['action' => 'status']);
         $this->managedNodeTransport($id, 'snapshot');
-        $this->managedNodeWrite($id, static function (&$node) use ($status, $saved) {
+        $certificateResult = isset($job['result']['certificate_result']) || in_array($saved['operation'] ?? '', ['renew','renew_force','certificate_delete'], true) ? $this->managedNodeCertificateResult($job, $status) : '';
+        $this->managedNodeWrite($id, static function (&$node) use ($status, $saved, $certificateResult) {
             $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['backup_time'] = time(); unset($node['error']);
+            $node['last_operation'] = ['operation'=>$saved['operation'] ?? '', 'subject'=>$saved['subject'] ?? '', 'time'=>time(), 'ok'=>true, 'certificate_result'=>$certificateResult];
             if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required']);
         });
+        $this->managedNodeOperationScreen($id, $saved);
     }
 
     public function checkManagedNodes(): void
@@ -266,8 +300,14 @@ trait BotManagedNodes
         if ($this->managedNodeCronAt && time() - $this->managedNodeCronAt < 15) return;
         $this->managedNodeCronAt = time();
         foreach ($this->managedNodes() as $id => $node) {
-            if (!$node['job']) continue;
-            try { $this->managedNodePoll((string) $id); }
+            try {
+                if ($node['job']) $this->managedNodePoll((string) $id);
+                else {
+                    $this->managedNodeAutoAmnezia((string) $id);
+                    $current=$this->managedNodes()[$id];
+                    if ($current['connected'] && !$current['job'] && time()-(int)($current['status_attempt'] ?? 0)>=60) $this->managedNodeCheckStatus((string)$id);
+                }
+            }
             catch (Throwable $error) { /* Retry without logging private requests or responses. */ }
         }
     }
@@ -323,8 +363,13 @@ trait BotManagedNodes
         } else {
             $status = $node['status'];
             $options = $status['options'] ?? [];
-            $text[] = $this->t('Состояние: ', 'State: ') . (!empty($status['running']) ? $this->t('работает', 'running') : $this->t('нужна проверка', 'check required'));
-            $text[] = self::esc(strtoupper((string) ($options['transport'] ?? '')) . ' · ' . ($options['core'] ?? '')
+            $fresh = !empty($node['checked']) && time()-(int)$node['checked']<=180;
+            $failed = !empty($node['status_error']) || ($fresh && empty($status['running']));
+            $text[] = $this->t('Состояние: ', 'State: ') . ($failed ? $this->t('🔴 не отвечает или остановлена', '🔴 unavailable or stopped')
+                : ($fresh ? $this->t('🟢 работает', '🟢 running') : $this->t('⚪ проверка устарела', '⚪ stale check')));
+            $text[] = $this->t('Проверка состояния — каждую минуту; последняя: ', 'Status checked every minute; last check: ')
+                . (!empty($node['status_attempt']) ? date('Y-m-d H:i:s', (int)$node['status_attempt']) : $this->t('ожидается', 'pending'));
+            $text[] = self::esc(strtoupper((string) ($options['transport'] ?? '')) . ' · ' . $this->managedNodeValueLabel($id, 'core', $options['core'] ?? 'origin')
                 . ' · VPN IPv' . ($options['connect_family'] ?? '?') . ' → IPv' . ($options['family'] ?? '?'));
             if (!empty($options['wireguard']['enabled'])) $text[] = !empty($options['wireguard']['active'])
                 ? $this->t('Связь с основным ботом: WireGuard UDP/51820.', 'Main bot link: WireGuard UDP/51820.')
@@ -332,6 +377,7 @@ trait BotManagedNodes
             if (!empty($options['amnezia']['enabled'])) $text[] = !empty($options['amnezia']['active'])
                 ? $this->t('Связь с основным ботом: VLESS через AmneziaWG UDP/51821.', 'Main bot link: VLESS over AmneziaWG UDP/51821.')
                 : $this->t('Резерв AmneziaWG разрешён.', 'AmneziaWG backup enabled.');
+            array_push($text, ...$this->managedNodeDomainSummary($node));
             $text[] = $this->t('Копия состояния ноды: ', 'Node state snapshot: ') . (!empty($node['backup_time'])
                 ? date('Y-m-d H:i', (int) $node['backup_time']) : $this->t('ещё не создана', 'not created yet'));
             if (!empty($node['recovery_required'])) {
@@ -339,19 +385,28 @@ trait BotManagedNodes
                     'Recovery after reinstall was requested. Verify SSH and restore the saved node snapshot: automatic snapshot refresh and other changes are blocked until then.');
                 $data[] = [['text' => $this->t('Восстановить копию ноды', 'Restore node snapshot'), 'callback_data' => "/nodeRestore $id"]];
             }
-            if ($node['job']) $text[] = $this->t('⏳ Выполняется изменение. Подтверждение — после проверки трафика; при отказе нода откатится автоматически.',
+            if (isset($node['draft'])) $text[] = $this->t('Есть черновик настроек. Перед обслуживанием или изменением внешних подключений примените либо отмените его в «Xray и подключение».', 'A settings draft is pending. Apply or discard it in Xray and connection before maintenance or external peer changes.');
+            if (!empty($node['last_operation']) && empty($node['error']) && !$node['job']) {
+                $last = $node['last_operation'];
+                if (!empty($last['certificate_result']) && empty($node['error']) && !$node['job']) $text[] = $this->managedNodeCertificateNotice($last['certificate_result']);
+                else $text[] = $this->t('✅ Последнее подтверждённое изменение: ', '✅ Last confirmed change: ') . self::esc($this->managedNodeOperationLabel($last))
+                    . ' · ' . date('Y-m-d H:i', (int) ($last['time'] ?? 0));
+                if (($last['operation'] ?? '') === 'rotate') $text[] = $this->t('Основной бот получил обновлённый профиль автоматически. После смены общих ключей REALITY, Encryption или ML-DSA обновите профили во внешних панелях. Секретные ключи в карточке не публикуются.',
+                    'The main bot received the updated profile automatically. After rotating shared REALITY, Encryption or ML-DSA keys, update profiles in external panels. Secret keys are not published in this card.');
+            }
+            if ($node['job']) $text[] = $this->managedNodeOperationLabel($node['job']) . ': ' . $this->t('⏳ Выполняется изменение. Подтверждение — после проверки трафика; при отказе нода откатится автоматически.',
                 '⏳ A change is in progress. It is confirmed after a traffic test; the node rolls back automatically on failure.');
             if (!empty($node['error'])) $text[] = $this->t('Последнее изменение не подтверждено; проверьте связь и состояние отката.', 'The last change was not confirmed; check connectivity and rollback status.');
-            $data[] = [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id basic"]];
-            $data[] = [['text' => $this->t('🧭 Маршруты и наборы', '🧭 Routes and rule sets'), 'callback_data' => "/exit $id"],
-                ['text' => $this->t('👥 Пользователи', '👥 Users'), 'callback_data' => "/exitUsers $id 0"]];
-            $data[] = [['text' => $this->t('📊 Диагностика', '📊 Diagnostics'), 'callback_data' => "/exitDiag $id"],
+            $data[] = [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id"]];
+            $data[] = [['text' => $this->t('🧭 Маршруты и наборы', '🧭 Routes and rule sets'), 'callback_data' => "/nr $id"],
+                ['text' => $this->t('👥 Пользователи', '👥 Users'), 'callback_data' => "/nuUsers $id 0"]];
+            $data[] = [['text' => $this->t('📊 Диагностика', '📊 Diagnostics'), 'callback_data' => "/ndDiag $id"],
                 ['text' => $this->t('🔄 Обновить состояние', '🔄 Refresh status'), 'callback_data' => "/nodeRefresh $id"]];
             $data[] = [['text' => $this->t('🔧 Обслуживание', '🔧 Maintenance'), 'callback_data' => "/nodeMaintenance $id"]];
             $data[] = [['text' => $this->t('🔐 SSH-адрес и порт', '🔐 SSH address and port'), 'callback_data' => "/nodeSsh $id"]];
             $data[] = [['text' => $this->t('🔗 Внешние панели и подключения', '🔗 External panels and connections'), 'callback_data' => "/nodePeers $id"]];
         }
-        $data[] = [['text' => $this->t('🗑 Удалить из основного бота', '🗑 Remove from main bot'), 'callback_data' => "/exitDel $id"]];
+        $data[] = [['text' => $this->t('🗑 Удалить из основного бота', '🗑 Remove from main bot'), 'callback_data' => "/ndDel $id"]];
         $data[] = $this->menuHelpButton('managednodes', $id);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => '/nodes']];
         if ($notice !== '') $text[] = self::esc($notice);
@@ -466,160 +521,101 @@ trait BotManagedNodes
         }
     }
 
+    private function managedNodeCheckStatus(string $id): void
+    {
+        $this->managedNodeWrite($id, static function (&$node) { $node['status_attempt']=time(); });
+        try {
+            $status=$this->managedNodeRpc($id, ['action'=>'status']);
+            $this->managedNodeWrite($id, static function (&$node) use ($status) {
+                $node['status']=$status; $node['checked']=time(); unset($node['status_error']);
+            });
+        } catch (Throwable $error) {
+            $this->managedNodeWrite($id, static function (&$node) { $node['status_error']=true; });
+            throw $error;
+        }
+    }
+
     public function managedNodeRefresh(string $id): void
     {
         try {
             $this->managedNodePoll($id);
-            $status = $this->managedNodeRpc($id, ['action' => 'status']);
-            $this->managedNodeWrite($id, static function (&$node) use ($status) { $node['status'] = $status; $node['checked'] = time(); });
+            $this->managedNodeCheckStatus($id);
             $this->managedNodeMenu($id);
         } catch (Throwable $error) { $this->managedNodeMenu($id, $this->t('SSH недоступен или нода занята. Состояние пока не обновлено.', 'SSH unavailable or node busy. Status has not been refreshed.')); }
     }
 
-    public function managedNodeSettingsMenu(string $id, string $group = 'basic', string $notice = ''): void
+    private function managedNodeOperationLabel(array $operation): string
     {
-        $node = $this->managedNodes()[$id] ?? null;
-        if (!$node || !$node['connected'] || !isset(ManagedNodeFields::GROUPS[$group])) { $this->managedNodesMenu(); return; }
-        $options = $node['draft'] ?? $node['status']['options'] ?? [];
-        $title = ManagedNodeFields::GROUPS[$group];
-        $text = [$this->t('Ноды → ', 'Nodes → ') . self::esc($node['name']) . ' → ' . $this->t(...$title)];
-        $buttons = [];
-        foreach (ManagedNodeFields::all() as $path => $field) {
-            if ($field[0] !== $group) continue;
-            $value = ManagedNodeFields::get($options, $path);
-            $display = is_bool($value) ? ($value ? '✅' : '❌') : (is_array($value) ? (string) count($value) : (string) ($value ?? '—'));
-            $buttons[] = ['text' => $this->t($field[1], $field[2]) . ': ' . mb_substr($display, 0, 28), 'callback_data' => "/nodeField $id $path"];
-        }
-        $data = array_chunk($buttons, 2);
-        $groups = [];
-        foreach (ManagedNodeFields::GROUPS as $name => $label) if ($name !== $group) $groups[] = ['text' => $this->t(...$label), 'callback_data' => "/nodeSettings $id $name"];
-        array_push($data, ...array_chunk($groups, 2));
-        if (isset($node['draft'])) {
-            $text[] = $this->t('Есть неприменённые изменения. Нода проверит конфигурацию и сертификат, основной бот — прохождение трафика. Если проверка не пройдёт, сохранится предыдущая конфигурация.',
-                'There are unapplied changes. The node checks configuration and certificate; the main bot tests traffic. Failed checks preserve the previous configuration.');
-            $data[] = [['text' => $this->t('✅ Применить', '✅ Apply'), 'callback_data' => "/nodeApply $id"],
-                ['text' => $this->t('Отменить правки', 'Discard edits'), 'callback_data' => "/nodeDiscard $id"]];
-        }
-        if ($group === 'basic') $text[] = $this->t('Свой сайт — та же заглушка с неизвестным случайным паролем. Домен должен указывать на ноду. TCP/80 открывается только для ACME; SSH и VPN остаются ограничены списками доступа.',
-            'Own site uses a cover with an unknown random password. The domain must point to the node. TCP/80 opens only for ACME; SSH and VPN retain their access lists.');
-        if ($group === 'crypto') $text[] = $this->t('ML-DSA требует подходящего сертификата сайта маскировки. Отпечаток задаётся клиенту — основному боту.',
-            'ML-DSA needs a suitable camouflage site certificate. The fingerprint belongs to the client: the main bot.');
-        if ($group === 'reserve') $text[] = $this->t('WireGuard работает внутри Xray; AmneziaWG 3.1 использует отдельный минимальный контейнер и передаёт VLESS с выбранным транспортом и шифрованием. Сначала разрешите канал, затем выберите его для связи основного бота. Одновременно активен один канал. UDP/51820 и UDP/51821 доступны только из MyServer. Переключение подтверждается проверкой трафика. Внешние панели продолжают использовать свои VLESS-подключения.',
-            'WireGuard runs inside Xray; AmneziaWG 3.1 uses a separate minimal container and carries VLESS with the selected transport and encryption. Enable a channel, then select it for the main bot link. One channel can be active. UDP/51820 and UDP/51821 are restricted to MyServer. A traffic test confirms the switch. External panels keep their VLESS connections.');
-        if ($group === 'smux') $text[] = $this->t('SMUX требует fork на ноде и основном боте. При maxStreams > 0 maxConnections и minStreams не используются. Для h2mux половинное закрытие должно быть off.',
-            'SMUX requires the fork on both servers. maxStreams > 0 disables maxConnections and minStreams. h2mux requires half-close off.');
-        if ($notice !== '') $text[] = self::esc($notice);
-        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/node $id"]];
-        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
+        $name = ($operation['operation'] ?? '') === 'rotate' ? 'rotate_' . ($operation['subject'] ?? '') : ($operation['operation'] ?? '');
+        $labels = ['restart'=>['ru'=>'перезапуск','en'=>'restart'], 'configure'=>['ru'=>'настройки','en'=>'settings'], 'peers'=>['ru'=>'внешние подключения','en'=>'external connections'],
+            'update'=>['ru'=>'обновление комплекта','en'=>'bundle update'], 'renew'=>['ru'=>'сертификат','en'=>'certificate'], 'rollback'=>['ru'=>'откат','en'=>'rollback'], 'restore'=>['ru'=>'восстановление','en'=>'restore'],
+            'renew_force'=>['ru'=>'принудительный выпуск сертификата','en'=>'forced certificate issuance'], 'certificate_delete'=>['ru'=>'удаление сертификата','en'=>'certificate deletion'],
+            'rotate_controller'=>['ru'=>'ключ клиента основного бота','en'=>'main bot client identity'], 'rotate_reality'=>['ru'=>'ключи REALITY','en'=>'REALITY keys'],
+            'rotate_encryption'=>['ru'=>'ключи VLESS Encryption','en'=>'VLESS Encryption keys'], 'rotate_mldsa'=>['ru'=>'ключи ML-DSA','en'=>'ML-DSA keys'],
+            'rotate_wireguard'=>['ru'=>'ключи WireGuard','en'=>'WireGuard keys'], 'rotate_amnezia'=>['ru'=>'ключи AmneziaWG','en'=>'AmneziaWG keys']];
+        return $this->t(...($labels[$name] ?? ['ru'=>'изменение ноды','en'=>'node change']));
     }
 
-    public function managedNodeField(string $id, string $path): void
+    private function managedNodeOperationScreen(string $id, array $job): void
     {
-        $node = $this->managedNodes()[$id] ?? null;
-        $field = ManagedNodeFields::all()[$path] ?? null;
-        if (!$node || !$node['connected'] || !$field) return;
-        if ($node['job']) { $this->managedNodeMenu($id, $this->t('Дождитесь завершения текущего изменения.', 'Wait for the current change to finish.')); return; }
-        $options = $node['draft'] ?? $node['status']['options'] ?? [];
-        if ($field[3] === 'bool') {
-            $this->managedNodeDraft($id, $path, !ManagedNodeFields::get($options, $path));
-            return;
-        }
-        if ($field[3] === 'choice') {
-            $data = [];
-            foreach ($field[4] as $value) $data[] = [['text' => (string) $value, 'callback_data' => "/nodeChoice $id $path $value"]];
-            $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/nodeSettings $id {$field[0]}"]];
-            $this->update($this->input['chat'], $this->input['message_id'], $this->t($field[1], $field[2]), $data);
-            return;
-        }
-        $hint = match ($field[3]) {
-            'int' => $this->t('целое неотрицательное число', 'a non-negative integer'),
-            'list' => $this->t('значения через пробел; <code>-</code> очищает список', 'space-separated values; <code>-</code> clears the list'),
-            'json' => $this->t('JSON-массив пакетов: поля type, packet, delay. <code>[]</code> — список по умолчанию', 'a JSON array of packets with type, packet, delay. <code>[]</code> uses the default list'),
-            default => $this->t('значение; <code>-</code> означает пустое поле', 'a value; <code>-</code> means an empty field'),
-        };
-        $this->exitPrompt($this->t($field[1], $field[2]) . ': ' . $hint, 'saveManagedNodeField', [$id, $path]);
-    }
-
-    public function managedNodeChoice(string $id, string $path, string $value): void
-    {
-        $field = ManagedNodeFields::all()[$path] ?? null;
-        if (!$field || $field[3] !== 'choice') return;
-        foreach ($field[4] as $choice) if ((string) $choice === $value) { $this->managedNodeDraft($id, $path, $choice); return; }
-    }
-
-    public function saveManagedNodeField($text, $id, $path): void
-    {
-        $field = ManagedNodeFields::all()[$path] ?? null;
-        if (!$field || !is_string($text) || strlen($text) > 8192) return;
-        $text = trim($text);
+        if (empty($job['origin']['chat']) || empty($job['origin']['message_id'])) return;
+        $input = $this->input;
         try {
-            $value = match ($field[3]) {
-                'int' => preg_match('~^[0-9]{1,8}$~D', $text) ? (int) $text : null,
-                'list' => $text === '-' ? [] : preg_split('~\s+~', $text),
-                'json' => json_decode($text, true, 8, JSON_THROW_ON_ERROR),
-                'string' => $text === '-' ? '' : $text,
-                default => null,
-            };
-            $this->managedNodeDraft($id, $path, $value);
-        } catch (Throwable $error) { $this->managedNodeSettingsMenu($id, $field[0], $this->t('Некорректное значение. Настройки не изменены.', 'Invalid value. Settings were not changed.')); }
-    }
-
-    private function managedNodeDraft(string $id, string $path, $value): void
-    {
-        $this->managedNodeWrite($id, static function (&$node) use ($path, $value) {
-            if (!$node || empty($node['connected']) || !empty($node['job'])) throw new RuntimeException('Node unavailable');
-            if (!isset($node['draft'])) $node['draft_generation'] = $node['status']['generation'] ?? '';
-            $node['draft'] = ManagedNodeFields::change($node['draft'] ?? $node['status']['options'] ?? [], $path, $value);
-        });
-        $this->managedNodeSettingsMenu($id, ManagedNodeFields::all()[$path][0]);
-    }
-
-    public function managedNodeDiscard(string $id): void
-    {
-        $this->managedNodeWrite($id, static function (&$node) { unset($node['draft'], $node['draft_generation']); });
-        $this->managedNodeSettingsMenu($id);
-    }
-
-    public function managedNodeApply(string $id): void
-    {
-        try {
-            $node = $this->managedNodes()[$id] ?? null;
-            if (!$node || !isset($node['draft'])) return;
-            $this->managedNodeSubmit($id, 'configure', $node['draft']);
+            $this->input = array_replace($input ?? [], $job['origin']);
             $this->managedNodeMenu($id);
-        } catch (Throwable $error) { $this->managedNodeSettingsMenu($id, 'basic', $this->t('Изменение не принято. Проверьте совместимость настроек и доступность SSH; черновик сохранён.',
-            'The change was not accepted. Check option compatibility and SSH availability; the draft is kept.')); }
+            $node=$this->managedNodes()[$id];
+            if (!empty($node['error']) && in_array($job['operation'] ?? '', ['renew','renew_force','certificate_delete'],true)) {
+                $this->send($this->input['chat'], self::esc($node['name'])."\n".$this->t('❌ Операция с сертификатом не подтверждена. Проверьте состояние ноды; сообщение об успешном обновлении не выдано.',
+                    '❌ Certificate operation was not confirmed. Check node status; renewal success was not reported.'));
+            } elseif (empty($node['error']) && !empty($node['last_operation']['certificate_result'])) {
+                $this->send($this->input['chat'], self::esc($node['name'])."\n".$this->managedNodeCertificateNotice($node['last_operation']['certificate_result']));
+            }
+        } catch (Throwable $e) { /* Confirmed state is durable even if Telegram is unavailable. */ }
+        finally { $this->input = $input; }
     }
 
-    public function managedNodeMaintenance(string $id): void
+    public function managedNodeMaintenance(string $id, string $notice = ''): void
     {
         if (!isset($this->managedNodes()[$id])) return;
         $data = [];
-        foreach (['restart' => ['ru' => 'Перезапустить', 'en' => 'Restart'], 'update_latest' => ['ru' => 'Обновить стабильный комплект', 'en' => 'Update stable bundle'],
-            'update_dev' => ['ru' => 'Обновить комплект dev', 'en' => 'Update dev bundle'], 'rollback' => ['ru' => 'Откатить последнее изменение', 'en' => 'Roll back last change'],
-            'renew' => ['ru' => 'Обновить сертификат', 'en' => 'Renew certificate'], 'rotate_controller' => ['ru' => 'Сменить ключ клиента основного бота', 'en' => 'Rotate the main bot client identity'],
+        foreach (['restart' => ['ru' => 'Перезапустить', 'en' => 'Restart'], 'update_latest' => ['ru' => 'Обновить с ветки master', 'en' => 'Update stable bundle'],
+            'update_dev' => ['ru' => 'Обновить с ветки dev', 'en' => 'Update dev bundle'], 'rollback' => ['ru' => 'Откатить последнее изменение', 'en' => 'Roll back last change'],
+            'rotate_controller' => ['ru' => 'Сменить ключ клиента основного бота', 'en' => 'Rotate the main bot client identity'],
             'rotate_reality' => ['ru' => 'Сменить ключи REALITY', 'en' => 'Rotate REALITY keys'], 'rotate_encryption' => ['ru' => 'Сменить ключи VLESS Encryption', 'en' => 'Rotate VLESS Encryption keys'],
             'rotate_mldsa' => ['ru' => 'Сменить ключи ML-DSA', 'en' => 'Rotate ML-DSA keys'],
             'rotate_wireguard' => ['ru' => 'Сменить ключи WireGuard', 'en' => 'Rotate WireGuard keys'],
             'rotate_amnezia' => ['ru' => 'Сменить ключи AmneziaWG', 'en' => 'Rotate AmneziaWG keys']] as $action => $label) {
             $data[] = [['text' => $this->t(...$label), 'callback_data' => "/nodeRun $id $action"]];
         }
+        $data[] = [['text'=>$this->t('Сертификат: выпуск, обновление, удаление','Certificate: issue, renew, delete'), 'callback_data'=>"/nodeCert $id"]];
+        $data[] = [['text'=>$this->t('Создать копию ноды','Create node snapshot'), 'callback_data'=>"/nodeBackup $id"]];
         $data[] = [['text' => $this->t('Восстановить сохранённую копию ноды', 'Restore saved node snapshot'), 'callback_data' => "/nodeRestore $id"]];
         $data[] = [['text' => $this->t('Привязать SSH после переустановки', 'Rebind SSH after reinstall'), 'callback_data' => "/nodeRebind $id"]];
+        $data[] = $this->menuHelpButton('nodemaint', $id);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/node $id"]];
-        $this->update($this->input['chat'], $this->input['message_id'], $this->t('Ноды → Обслуживание', 'Nodes → Maintenance'), $data);
+        $this->update($this->input['chat'], $this->input['message_id'], $this->t('Ноды → Обслуживание', 'Nodes → Maintenance') . ($notice === '' ? '' : "\n\n" . self::esc($notice)), $data);
     }
 
     public function managedNodeRun(string $id, string $action, bool $confirmed = false): void
     {
-        $operations = ['restart' => ['restart', null], 'rollback' => ['rollback', null], 'renew' => ['renew', null],
+        $operations = ['restart' => ['restart', null], 'rollback' => ['rollback', null], 'renew' => ['renew', null], 'renew_force'=>['renew_force', null], 'certificate_delete'=>['certificate_delete', null],
             'update_latest' => ['update', 'latest'], 'update_dev' => ['update', 'dev'],
             'rotate_controller' => ['rotate', 'controller'], 'rotate_reality' => ['rotate', 'reality'],
             'rotate_encryption' => ['rotate', 'encryption'], 'rotate_mldsa' => ['rotate', 'mldsa'], 'rotate_wireguard' => ['rotate', 'wireguard'],
             'rotate_amnezia' => ['rotate', 'amnezia']];
         if (!isset($operations[$action]) || !isset($this->managedNodes()[$id])) return;
+        $options = $this->managedNodes()[$id]['status']['options'] ?? [];
+        $active = match ($action) {
+            'rotate_wireguard' => !empty($options['wireguard']['enabled']),
+            'rotate_amnezia' => !empty($options['amnezia']['enabled']),
+            'rotate_encryption' => ($options['xray']['encryption']['auth'] ?? 'off') !== 'off',
+            'rotate_mldsa' => !empty($options['xray']['reality']['mldsa']),
+            default => true,
+        };
+        if (!$active) { $this->managedNodeMaintenance($id, $this->t('Этот протокол или вид шифрования отключён. Сначала включите и примените его настройки. Ключи не менялись.',
+            'This protocol or encryption feature is disabled. Enable and apply it first. No keys were changed.')); return; }
         if (!$confirmed) {
-            $this->update($this->input['chat'], $this->input['message_id'], $this->t('Операция может кратковременно прервать соединения ноды. Выполнить?', 'This operation may briefly interrupt node connections. Proceed?'),
+            $this->update($this->input['chat'], $this->input['message_id'], $this->managedNodeActionHelp($action) . "\n\n" . $this->t('Выполнить?', 'Proceed?'),
                 [[['text' => $this->t('Выполнить', 'Proceed'), 'callback_data' => "/nodeRun $id $action yes"]],
                  [['text' => $this->i18n('back'), 'callback_data' => "/nodeMaintenance $id"]]]);
             return;

@@ -36,7 +36,7 @@ def nginx(options, keys, ipv6):
         ' client_max_body_size 2m;', ' client_body_timeout 15s;', ' client_header_timeout 10s;',
         ' keepalive_timeout 30s;', ' send_timeout 60s;', ' ssl_protocols TLSv1.2 TLSv1.3;',
         ' ssl_certificate /node/fullchain.pem;', ' ssl_certificate_key /node/privkey.pem;',
-        ' server {', *listen, ' http2 on;', ' server_name '+domain+';',
+        ' server {', *listen, ' http2 on;', ' server_name '+' '.join([domain, *options.get('domain_aliases', [])])+';',
         ' root /node/site;', ' charset utf-8;', ' default_type text/html;',
         # Same closed-site behavior as the full bot: missing and incorrect
         # credentials both get a real Basic Auth challenge from NGINX.

@@ -124,7 +124,7 @@ try:
             for connection in (4, 6):
                 name = f'{core}-wg{connection}-egress{family}'
                 options = dict(transport='reality',core=core,family=family,connect_family=connection,domain='',mask='mask.example.test',
-                               wireguard=dict(enabled=True,active=True,mtu=1280))
+                               wireguard=dict(enabled=True,active=True,mtu=1280,keepalive=17))
                 value = config.core_config(options, public_host, keys)
                 # Test the actual optional inbound and the unchanged egress ACL.
                 value['inbounds'] = value['inbounds'][1:]

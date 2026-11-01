@@ -122,16 +122,67 @@ final class ManagedNodeProfile
             if (!is_array($stream['finalmask'])) throw new InvalidArgumentException('Invalid finalmask profile');
             $outbound['streamSettings']['finalmask'] = self::masks($stream['finalmask']);
         }
+        if (isset($outbound['streamSettings']['xhttpSettings']['extra'])) {
+            self::xhttpExtra($outbound['streamSettings']['xhttpSettings']['extra']);
+        }
         // MPTCP is never inherited from an external profile.
         $outbound['streamSettings']['sockopt'] = ['tcpMptcp' => false];
         return $parsed + ['managed_outbound' => $outbound] + ($amnezia === null ? [] : ['managed_amnezia' => $amnezia]);
+    }
+
+    private static function xhttpExtra(array $extra): void
+    {
+        self::fields($extra, ['xmux', 'noGRPCHeader', 'xPaddingBytes', 'scMaxEachPostBytes', 'scMinPostsIntervalMs', 'scStreamUpServerSecs']);
+        if (isset($extra['noGRPCHeader']) && !is_bool($extra['noGRPCHeader'])) throw new InvalidArgumentException('Invalid XHTTP header flag');
+        foreach (['xPaddingBytes'=>65535, 'scStreamUpServerSecs'=>86400] as $name=>$max) if (isset($extra[$name])) self::range($extra[$name], 0, $max);
+        if (isset($extra['scMaxEachPostBytes'])) self::integer($extra['scMaxEachPostBytes'], 1, 16000000);
+        if (isset($extra['scMinPostsIntervalMs'])) self::integer($extra['scMinPostsIntervalMs'], 0, 60000);
+        if (isset($extra['xmux'])) {
+            $mux = $extra['xmux'];
+            if (!is_array($mux)) throw new InvalidArgumentException('Invalid XHTTP mux');
+            self::fields($mux, ['cMaxReuseTimes','maxConcurrency','maxConnections','hKeepAlivePeriod','hMaxRequestTimes','hMaxReusableSecs']);
+            foreach (['maxConcurrency','hMaxRequestTimes','hMaxReusableSecs'] as $name) if (isset($mux[$name])) self::range($mux[$name], 0, 99999);
+            foreach (['cMaxReuseTimes','maxConnections','hKeepAlivePeriod'] as $name) if (isset($mux[$name])) self::integer($mux[$name], 0, 1000000);
+            if (!empty($mux['maxConnections']) && array_sum(array_map('intval', explode('-', $mux['maxConcurrency'] ?? '16-32')))) throw new InvalidArgumentException('Conflicting XHTTP mux limits');
+        }
+    }
+
+    /** Export only validated fields in the stable 3x-ui outbound format. */
+    public static function panel(array $profile, string $core, string $name): array
+    {
+        if (!preg_match('~^[A-Za-z0-9_.-]{1,40}$~D',$name)) throw new InvalidArgumentException('Invalid panel tag');
+        $parsed=self::parse($profile,$core);
+        $outbound=$parsed['managed_outbound']; $outbound['tag']=$name;
+        if (($profile['channel']??'vless')!=='amnezia') return $outbound;
+        $awg=$parsed['managed_amnezia']; $params=$awg['parameters'];
+        $settings=['secretKey'=>$awg['private'],'address'=>['10.77.78.'.(($awg['slot']??0)+2).'/32'],
+            'mtu'=>$awg['mtu'],'s3'=>0,'s4'=>0,'randomTrailers'=>($awg['version']??'3.1')==='3.1','disableCookies'=>false,
+            'peers'=>[['publicKey'=>$awg['public'],'presharedKey'=>$awg['psk'],'allowedIPs'=>['10.77.78.1/32'],
+                'endpoint'=>(str_contains($awg['endpoint'],':')?'['.$awg['endpoint'].']':$awg['endpoint']).':51821',
+                'keepAlive'=>(int)($awg['keepalive']??25)]]];
+        foreach ($params as $key=>$value) $settings[lcfirst($key)]=$value;
+        foreach (['H1','H2','H3'] as $key) if (count(array_unique(explode('-', $params[$key]))) > 1) $settings['randomTrailers']=false;
+        $tag=$name.'-awg';
+        $outbound['settings']['vnext'][0]['address']='10.77.78.1';
+        $outbound['settings']['vnext'][0]['port']=443;
+        $outbound['streamSettings']['sockopt']['dialerProxy']=$tag;
+        // The carrier exposes only the VLESS listener, never arbitrary LAN
+        // forwarding. Route to the VLESS tag, which retains TLS/REALITY.
+        return ['outbounds'=>[$outbound,['tag'=>$tag,'protocol'=>'amneziawg','settings'=>$settings]]];
     }
 
     private static function amnezia($value, string $address): array
     {
         if (!is_array($value)) throw new InvalidArgumentException('Invalid Amnezia profile');
         $fields = ['endpoint', 'port', 'private', 'public', 'psk', 'mtu', 'parameters'];
-        self::fields($value, $fields, $fields);
+        self::fields($value, [...$fields, 'keepalive', 'version', 'slot'], $fields);
+        if (isset($value['slot'])) self::integer($value['slot'],0,32);
+        $version=$value['version'] ?? '3.1';
+        if (!in_array($version,['1.5','2.0','3.0','3.1'],true)) throw new InvalidArgumentException('Invalid Amnezia version');
+        if (isset($value['keepalive'])) {
+            self::range($value['keepalive'], 0, 65535);
+            if (!str_starts_with($version,'3.') && !preg_match('~^[0-9]+$~D',$value['keepalive'])) throw new InvalidArgumentException('Legacy keepalive must be fixed');
+        }
         if ($value['endpoint'] !== $address || $value['port'] !== 51821) throw new InvalidArgumentException('Invalid Amnezia endpoint');
         self::integer($value['mtu'], 1280, 1420);
         foreach (['private', 'public', 'psk'] as $field) self::key($value[$field]);
@@ -142,26 +193,44 @@ final class ManagedNodeProfile
         $ranges = ['ContentPaddingAddition' => [10,40], 'RekeyAfterTime' => [110,130], 'RekeyTimeout' => [5,10],
             'RejectAfterTime' => [170,190], 'KeepaliveTimeout' => [10,15], 'MaxHandshakeAttempts' => [15,25],
             'H1' => [1,2147483647], 'H2' => [1,2147483647], 'H3' => [1,2147483647], 'H4' => [1,2147483647]];
-        $fields = [...array_keys($ints), ...array_keys($ranges), 'HeaderProtectionKey'];
-        self::fields($params, $fields, $fields);
+        if (!str_starts_with($version,'3.')) {
+            foreach ($ints as $name=>&$bounds) if (str_starts_with($name,'S')) $bounds[0]=0;
+            unset($bounds);
+            $ranges=array_intersect_key($ranges,array_flip(['H1','H2','H3','H4']));
+        }
+        if ($version==='1.5') {
+            unset($ints['S3'],$ints['S4']);
+            foreach ($ranges as &$bounds) $bounds[1]=4294967295;
+            unset($bounds);
+        }
+        $fields = [...array_keys($ints), ...array_keys($ranges), ...(str_starts_with($version,'3.')?['HeaderProtectionKey']:[])];
+        self::fields($params, [...$fields,'I1','I2','I3','I4','I5'], $fields);
+        foreach (['I1','I2','I3','I4','I5'] as $name) if (isset($params[$name]) && $params[$name] !== '') {
+            $valueCps = $params[$name];
+            if (!is_string($valueCps) || strlen($valueCps) > 4096 || substr_count($valueCps, '<t>') > 1
+                || !preg_match('~^(?:<b 0x[0-9a-fA-F]+>|<(?:r|rc|rd) [0-9]{1,4}>|<t>)+$~D', $valueCps)) throw new InvalidArgumentException('Invalid Amnezia signature');
+            preg_match_all('~<(?:r|rc|rd) ([0-9]+)>~', $valueCps, $matches);
+            foreach ($matches[1] as $length) if ((int)$length > 1000) throw new InvalidArgumentException('Amnezia signature field too long');
+            XrayNoise::expression($valueCps);
+        }
         foreach ($ints as $name => $bounds) self::integer($params[$name], ...$bounds);
-        $sizes = [$params['S1']+148, $params['S2']+92, $params['S3']+64, $params['S4']+32];
+        $sizes = [$params['S1']+148, $params['S2']+92, ($params['S3']??0)+64, ($params['S4']??0)+32];
         if ($params['Jmin'] > $params['Jmax'] || $params['S1'] === $params['S2'] || count(array_unique($sizes)) !== 4) {
             throw new InvalidArgumentException('Incompatible Amnezia padding');
         }
         $headers = [];
         foreach ($ranges as $name => [$low, $high]) {
-            if (!is_string($params[$name]) || !preg_match('~^([0-9]{1,10})-([0-9]{1,10})$~D', $params[$name], $match)) {
+            if (!is_string($params[$name]) || !preg_match($version==='1.5'?'~^([0-9]{1,10})$~D':'~^([0-9]{1,10})-([0-9]{1,10})$~D', $params[$name], $match)) {
                 throw new InvalidArgumentException('Invalid Amnezia range');
             }
-            [$left, $right] = [(int) $match[1], (int) $match[2]];
+            [$left, $right] = [(int) $match[1], (int) ($match[2] ?? $match[1])];
             if ($left < $low || $left > $right || $right > $high) throw new InvalidArgumentException('Invalid Amnezia range');
             if (str_starts_with($name, 'H')) {
                 foreach ($headers as [$a, $b]) if ($left <= $b && $a <= $right) throw new InvalidArgumentException('Overlapping Amnezia headers');
                 $headers[] = [$left, $right];
             }
         }
-        self::key($params['HeaderProtectionKey']);
+        if (str_starts_with($version,'3.')) self::key($params['HeaderProtectionKey']);
         return $value;
     }
 
@@ -181,10 +250,12 @@ final class ManagedNodeProfile
         $fields = ['secretKey', 'address', 'mtu', 'noKernelTun', 'peers', 'remoteDNS'];
         self::fields($settings, $fields, $fields);
         self::integer($settings['mtu'], 1280, 1420);
-        $family = match ($settings['address']) {
-            ['10.77.77.2/32'] => 4, ['fd42:7662:77::2/128'] => 6,
-            default => throw new InvalidArgumentException('Invalid WireGuard tunnel address'),
-        };
+        $family = null;
+        for ($slot=0;$slot<=32;$slot++) {
+            if ($settings['address']===['10.77.77.'.($slot+2).'/32']) $family=4;
+            if ($settings['address']===['fd42:7662:77::'.dechex($slot+2).'/128']) $family=6;
+        }
+        if ($family===null) throw new InvalidArgumentException('Invalid WireGuard tunnel address');
         $dns = $family === 4 ? ['1.1.1.1', '9.9.9.9'] : ['2606:4700:4700::1111', '2620:fe::fe'];
         if ($settings['noKernelTun'] !== true || $settings['remoteDNS'] !== $dns
             || !is_array($settings['peers']) || !array_is_list($settings['peers']) || count($settings['peers']) !== 1
@@ -193,9 +264,10 @@ final class ManagedNodeProfile
         $fields = ['publicKey', 'preSharedKey', 'endpoint', 'allowedIPs', 'keepAlive'];
         self::fields($peer, $fields, $fields);
         $endpoint = (str_contains($address, ':') ? "[$address]" : $address) . ':51820';
-        if ($peer['endpoint'] !== $endpoint || $peer['allowedIPs'] !== ['0.0.0.0/0', '::/0'] || $peer['keepAlive'] !== 25) {
+        if ($peer['endpoint'] !== $endpoint || $peer['allowedIPs'] !== ['0.0.0.0/0', '::/0']) {
             throw new InvalidArgumentException('Invalid WireGuard endpoint');
         }
+        self::integer($peer['keepAlive'], 0, 65535);
         foreach ([$settings['secretKey'], $peer['publicKey'], $peer['preSharedKey']] as $key) {
             $bytes = is_string($key) && strlen($key) === 44 ? base64_decode($key, true) : false;
             if (!is_string($bytes) || strlen($bytes) !== 32 || base64_encode($bytes) !== $key || $bytes === str_repeat("\0", 32)) {

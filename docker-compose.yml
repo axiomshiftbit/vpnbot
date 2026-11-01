@@ -587,6 +587,7 @@ services:
             - ./scripts/node_awg_client.py:/node-carrier/node_awg_client.py:ro
             - ./scripts/node_awg.py:/node-carrier/node_awg.py:ro
             - ./scripts/node_wg.py:/node-carrier/node_wg.py:ro
+            - ./scripts/node_dpi.py:/node-carrier/node_dpi.py:ro
             - ./logs:/logs
         hostname: xray
         container_name: xray-${VER}

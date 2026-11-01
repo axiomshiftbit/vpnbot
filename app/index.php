@@ -134,6 +134,11 @@ switch (true) {
         echo "/adguard$hash/";
         break;
 
+    case str_starts_with((string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), "/pac$hash/node/"):
+        if (preg_match('~^' . preg_quote("/pac$hash/node/", '~') . '([a-f0-9]{8})/([a-f0-9]{64})/(sub|json)$~D',
+            (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), $m)) $bot->managedNodeSubscription($m[1], $m[2], $m[3]);
+        else { $bot->subSecurityHeaders(); $bot->subRateLimit('', 'miss'); http_response_code(404); }
+        break;
     case str_starts_with((string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), "/pac$hash/protocol/"):
         if (preg_match('~^' . preg_quote("/pac$hash/protocol/", '~') . '(anytls|mieru|tuic|shadowtls|snolc|masque)/([a-f0-9]{64})/(singbox|mihomo|uri|native|native-uri)$~D',
             (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), $m)) {

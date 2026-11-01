@@ -29,6 +29,7 @@ trait BotManagedNodePeers
         foreach ($this->managedNodePeers($id) as $peer) $data[] = [['text' => ($peer['enabled'] ? '✅ ' : '⏸ ') . $peer['name'],
             'callback_data' => "/nodePeer $id " . self::exitEntryKey($peer['id'])]];
         if (count($data) < 32) $data[] = [['text' => $this->t('➕ Создать подключение', '➕ Create connection'), 'callback_data' => "/nodePeerAdd $id"]];
+        $data[] = $this->menuHelpButton('nodepeers', $id);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/node $id"]];
         if ($notice !== '') $text[] = self::esc($notice);
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
@@ -41,15 +42,24 @@ trait BotManagedNodePeers
         $text = [$this->t('Внешнее подключение: ', 'External connection: ') . self::esc($peer['name']),
             $this->t('Смена ключа и удаление отключают старую ссылку. Изменение применяется после проверки связи основным ботом.',
                 'Rotating the identity and deleting the connection revoke the old link. Changes are applied after the main bot checks connectivity.')];
+        $channel=$peer['channel'] ?? 'vless';
+        $text[]=$this->t('Протокол подключения: ','Connection protocol: ').strtoupper($channel);
+        if ($channel==='amnezia') $text[]=$this->t('Для 3x-ui 3.11.0 импортируйте оба outbound из JSON. Маршруты панели направляйте в первый, VLESS: он использует защищённый канал Amnezia. Обычная VLESS-ссылка этот канал не включает.',
+            'For 3x-ui 3.11.0 import both JSON outbounds. Route panel traffic to the first, VLESS, which uses the Amnezia carrier. A plain VLESS link does not include this carrier.');
         $data = [];
-        if ($peer['enabled']) foreach (['link' => ['ru' => '🔗 Ссылка VLESS', 'en' => '🔗 VLESS link'], 'json' => ['ru' => '📄 Xray outbound JSON', 'en' => '📄 Xray outbound JSON'],
+        foreach (['vless'=>'VLESS','wireguard'=>'WireGuard','amnezia'=>'AmneziaWG'] as $kind=>$title) {
+            $data[]=[['text'=>($channel===$kind?'✓ ':'').$title,'callback_data'=>"/nodePeerDo $id $key $kind"]];
+        }
+        if ($peer['enabled']) foreach (['https' => ['ru' => '🌐 HTTPS-подписка (3x-ui)', 'en' => '🌐 HTTPS subscription (3x-ui)'], 'link' => ['ru' => '🔗 Ссылка VLESS', 'en' => '🔗 VLESS link'], 'json' => ['ru' => '📄 JSON для панели', 'en' => '📄 Panel JSON'],
             'sub' => ['ru' => '📄 Подписка файлом', 'en' => '📄 Subscription file']] as $format => $label) {
             $data[] = [['text' => $this->t(...$label), 'callback_data' => "/nodePeerOut $id $key $format"]];
         }
+        if ($channel!=='vless') $data=array_values(array_filter($data,static fn($row)=>(!str_starts_with($row[0]['callback_data'],"/nodePeerOut $id $key ") || str_ends_with($row[0]['callback_data'],' json'))));
         $data[] = [['text' => $peer['enabled'] ? $this->t('⏸ Отключить', '⏸ Disable') : $this->t('▶️ Включить', '▶️ Enable'),
             'callback_data' => "/nodePeerDo $id $key " . ($peer['enabled'] ? 'off' : 'on')]];
         $data[] = [['text' => $this->t('🔑 Сменить ключ', '🔑 Rotate identity'), 'callback_data' => "/nodePeerDo $id $key rotate"],
             ['text' => $this->t('✖ Удалить', '✖ Delete'), 'callback_data' => "/nodePeerDo $id $key delete"]];
+        $data[] = $this->menuHelpButton('nodepeers', $id.'_'.$key);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/nodePeers $id"]];
         if ($notice !== '') $text[] = self::esc($notice);
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
@@ -77,10 +87,11 @@ trait BotManagedNodePeers
     public function managedNodePeerAction(string $id, string $key, string $action, bool $confirmed = false): void
     {
         $peer = $this->managedNodePeer($id, $key);
-        if (!$peer || !in_array($action, ['on', 'off', 'rotate', 'delete'], true)) { $this->managedNodePeersMenu($id); return; }
+        if (!$peer || !in_array($action, ['on', 'off', 'rotate', 'delete', 'vless', 'wireguard', 'amnezia'], true)) { $this->managedNodePeersMenu($id); return; }
         if (!$confirmed) {
             $label = $this->t(...['on' => ['включить', 'enable'], 'off' => ['отключить', 'disable'],
-                'rotate' => ['сменить ключ', 'rotate identity'], 'delete' => ['удалить', 'delete']][$action]);
+                'rotate' => ['сменить ключ', 'rotate identity'], 'delete' => ['удалить', 'delete'],
+                'vless'=>['использовать VLESS','use VLESS'], 'wireguard'=>['использовать WireGuard','use WireGuard'], 'amnezia'=>['использовать AmneziaWG','use AmneziaWG']][$action]);
             $this->update($this->input['chat'], $this->input['message_id'],
                 $this->t('Применить изменение к подключению ', 'Apply this change to connection ') . '<b>' . self::esc($peer['name']) . '</b> (' . $label . ')?',
                 [[['text' => $this->t('Применить', 'Apply'), 'callback_data' => "/nodePeerDo $id $key $action yes"]],
@@ -93,6 +104,7 @@ trait BotManagedNodePeers
             if ($item['id'] === $peer['id']) {
                 if ($action === 'delete') continue;
                 if ($action === 'rotate') $item['id'] = self::xrayUuid();
+                elseif (in_array($action,['vless','wireguard','amnezia'],true)) $item['channel']=$action;
                 else $item['enabled'] = $action === 'on';
             }
             $peers[] = $item;
@@ -104,25 +116,36 @@ trait BotManagedNodePeers
     public function managedNodePeerExport(string $id, string $key, string $format): void
     {
         $peer = $this->managedNodePeer($id, $key);
-        if (!$peer || !$peer['enabled'] || !in_array($format, ['link', 'json', 'sub'], true)) { $this->managedNodePeersMenu($id); return; }
+        if (!$peer || !$peer['enabled'] || !in_array($format, ['link', 'json', 'sub', 'https'], true)) { $this->managedNodePeersMenu($id); return; }
         try {
             if (!empty($this->managedNodes()[$id]['job'])) throw new RuntimeException('Node busy');
             if ((int) ($this->input['from'] ?? 0) <= 0) throw new RuntimeException('Private chat unavailable');
             $profile = $this->managedNodeRpc($id, ['action' => 'profile', 'peer' => $peer['id']]);
+            if (($profile['channel']??'vless')!==($peer['channel']??'vless') || (($peer['channel']??'vless')!=='vless' && $format!=='json')) throw new RuntimeException('Wrong channel or export format');
             $core = (string) ($this->managedNodes()[$id]['status']['options']['core'] ?? 'origin');
             $parsed = ManagedNodeProfile::parse($profile, $core);
             if (($parsed['outbound']['settings']['vnext'][0]['users'][0]['id'] ?? '') !== $peer['id']) throw new RuntimeException('Wrong peer');
+            if ($format === 'https') {
+                $url = $this->managedNodeSubscriptionUrl($id, $key);
+                $sent = $this->send($this->input['from'], $this->t('HTTPS-подписка для импорта в панели, поддерживающие VLESS-подписки:', 'HTTPS subscription for panels supporting VLESS subscriptions:')
+                    . "\n<code>" . self::esc($url) . "</code>\n\n"
+                    . $this->t('URL обслуживает основной бот. При изменении транспорта обновите подписку в панели. После смены ключа внешнего подключения получите новый URL. Для SMUX и других расширений используйте совместимое ядро и JSON-профиль.',
+                        'The main bot serves this URL. Refresh the panel subscription after transport changes. After rotating the external identity, obtain a new URL. SMUX and other extensions require a compatible core and the JSON profile.'));
+                if (empty($sent['ok'])) throw new RuntimeException('Private delivery failed');
+                $this->managedNodePeerMenu($id, $key, $this->t('HTTPS-подписка отправлена в личный чат.', 'HTTPS subscription sent to your private chat.'));
+                return;
+            }
             if ($format === 'link') {
                 $sent = $this->send($this->input['from'], '<code>' . self::esc($profile['link']) . '</code>');
                 if (empty($sent['ok'])) throw new RuntimeException('Private delivery failed');
                 $this->managedNodePeerMenu($id, $key, $this->t('Ссылка отправлена в личный чат.', 'Link sent to your private chat.'));
                 return;
             }
-            $body = $format === 'sub' ? base64_encode($profile['link'] . "\n") : json_encode($parsed['managed_outbound'] + ['tag' => $peer['name']], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            $body = $format === 'sub' ? base64_encode($profile['link'] . "\n") : json_encode(ManagedNodeProfile::panel($profile,$core,$peer['name']), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
             $sent = $this->sendFile($this->input['from'], new CURLStringFile($body, 'node-' . $key . ($format === 'sub' ? '.txt' : '.json'), $format === 'sub' ? 'text/plain' : 'application/json'),
                 $this->t('Личный профиль подключения. Требуются совместимое ядро и разрешённый IP сервера панели в my_server ноды.', 'Private connection profile. A compatible core and the panel server IP in the node’s my_server are required.'));
             if (empty($sent['ok'])) throw new RuntimeException('Private delivery failed');
             $this->managedNodePeerMenu($id, $key, $this->t('Файл отправлен в личный чат.', 'File sent to your private chat.'));
-        } catch (Throwable $e) { $this->managedNodePeerMenu($id, $key, $this->t('Профиль не отправлен. Проверьте состояние ноды и откройте личный чат с ботом командой /start.', 'Profile was not sent. Check the node status and start a private chat with the bot using /start.')); }
+        } catch (Throwable $e) { $this->managedNodePeerMenu($id, $key, $this->t('Профиль не отправлен. Для HTTPS-подписки настройте домен и SSL основного бота. Проверьте состояние ноды и откройте личный чат с ботом командой /start.', 'Profile was not sent. Check the node status and start a private chat with the bot using /start.')); }
     }
 }

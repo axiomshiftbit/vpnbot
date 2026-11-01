@@ -13,6 +13,14 @@ KEY = 'ssh-ed25519 '+base64.b64encode(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\
 
 
 class NodeSSH(unittest.TestCase):
+    def test_tls_probe_crosses_controller_transport_without_target_arguments(self):
+        reply={'tls':'TLSv1.3','alpn':'h2','record':36,'name':'node.example.test','own':True,'transport':'reality'}
+        with tempfile.TemporaryDirectory() as tmp:
+            client=transport.Client('aabbccdd',Path(tmp)/'nodes')
+            with patch.object(client,'ssh',return_value=['fixture-ssh']),patch.object(transport,'run',return_value=transport.encode({'ok':True,'result':reply})) as run:
+                self.assertEqual(client.request({'action':'tls_probe'},target={}),reply)
+                self.assertEqual(transport.decode(run.call_args.args[1]),{'action':'tls_probe'})
+
     def busy_peer(self, directory, busy_count, status=1):
         counter = Path(directory)/'calls'
         code = '''from pathlib import Path

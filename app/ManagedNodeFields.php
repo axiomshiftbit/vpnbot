@@ -3,28 +3,36 @@
 /** UI metadata only. The node's typed schema and real core validate an apply. */
 final class ManagedNodeFields
 {
-    public const GROUPS = ['basic' => ['ru' => 'Подключение и сайт', 'en' => 'Connection and site'], 'crypto' => ['ru' => 'Шифрование', 'en' => 'Encryption'],
-        'reality' => ['REALITY', 'REALITY'], 'smux' => ['SMUX', 'SMUX'], 'xhttp' => ['XHTTP', 'XHTTP'],
-        'dpi' => ['ru' => 'DPI клиента', 'en' => 'Client DPI'], 'finalmask' => ['ru' => 'Маски сервера', 'en' => 'Server masks'], 'sniffing' => ['ru' => 'Sniffing и торренты', 'en' => 'Sniffing and torrents'],
-        'reserve' => ['ru' => 'Резервный канал', 'en' => 'Backup channel']];
+    public const GROUPS = [
+        'basic' => ['ru' => 'Подключение VLESS', 'en' => 'VLESS connection'],
+        'network' => ['ru' => 'IPv4 / IPv6', 'en' => 'IPv4 / IPv6'], 'domains' => ['ru' => 'Домены и сертификат', 'en' => 'Domains and certificate'],
+        'crypto' => ['ru' => 'Шифрование', 'en' => 'Encryption'], 'reality' => ['ru' => 'REALITY', 'en' => 'REALITY'],
+        'smux' => ['ru' => 'SMUX', 'en' => 'SMUX'], 'xhttp' => ['ru' => 'XHTTP', 'en' => 'XHTTP'],
+        'dpi' => ['ru' => 'DPI клиента', 'en' => 'Client DPI'], 'finalmask' => ['ru' => 'Маски сервера', 'en' => 'Server masks'],
+        'sniffing' => ['ru' => 'Sniffing', 'en' => 'Sniffing'], 'torrent' => ['ru' => 'Торренты', 'en' => 'Torrents'],
+        'reserve' => ['ru' => 'Резервный канал', 'en' => 'Backup channel'],
+        'wireguard' => ['ru' => 'WireGuard', 'en' => 'WireGuard'], 'amnezia' => ['ru' => 'AmneziaWG', 'en' => 'AmneziaWG'],
+    ];
 
     public static function all(): array
     {
         $fields = [
             'transport' => ['basic', 'ru' => 'Транспорт', 'en' => 'Transport', 'choice', ['reality', 'ws', 'grpc', 'xhttp']],
             'core' => ['basic', 'ru' => 'Ядро', 'en' => 'Core', 'choice', ['origin', 'origin2', 'origin3', 'fork']],
-            'family' => ['basic', 'ru' => 'Выход в интернет', 'en' => 'Internet egress', 'choice', [4, 6]],
-            'connect_family' => ['basic', 'ru' => 'Связь бот → нода', 'en' => 'Bot → node link', 'choice', [4, 6]],
-            'domain' => ['basic', 'ru' => 'Свой домен', 'en' => 'Own domain', 'string'],
-            'cover' => ['basic', 'ru' => 'Заглушка с паролем', 'en' => 'Password cover', 'bool'],
-            'mask' => ['basic', 'ru' => 'Домен REALITY', 'en' => 'REALITY domain', 'string'],
-            'wireguard.enabled' => ['reserve', 'ru' => 'Разрешить WireGuard', 'en' => 'Enable WireGuard', 'bool'],
-            'wireguard.active' => ['reserve', 'ru' => 'Связь бота через WireGuard', 'en' => 'Bot link over WireGuard', 'bool'],
-            'wireguard.mtu' => ['reserve', 'WireGuard MTU', 'WireGuard MTU', 'int'],
-            'amnezia.enabled' => ['reserve', 'ru' => 'Разрешить AmneziaWG', 'en' => 'Enable AmneziaWG', 'bool'],
-            'amnezia.active' => ['reserve', 'ru' => 'Связь бота через AmneziaWG', 'en' => 'Bot link over AmneziaWG', 'bool'],
-            'amnezia.mtu' => ['reserve', 'AmneziaWG MTU', 'AmneziaWG MTU', 'int'],
-            'xray.fingerprint' => ['crypto', 'ru' => 'Отпечаток клиента', 'en' => 'Client fingerprint', 'choice', ['chrome', 'firefox', 'safari', 'ios', 'edge', 'qq', 'random', 'randomized', 'android', '360']],
+            'family' => ['network', 'ru' => 'Выход в интернет', 'en' => 'Internet egress', 'choice', [4, 6]],
+            'connect_family' => ['network', 'ru' => 'Связь бот → нода', 'en' => 'Bot → node link', 'choice', [4, 6]],
+            'domain' => ['domains', 'ru' => 'Свой домен', 'en' => 'Own domain', 'string'],
+            'domain_aliases' => ['domains', 'ru' => 'Дополнительные домены', 'en' => 'Additional domains', 'list'],
+            'cover' => ['domains', 'ru' => 'Заглушка с паролем', 'en' => 'Password cover', 'bool'],
+            'mask' => ['reality', 'ru' => 'Домен REALITY', 'en' => 'REALITY domain', 'string'],
+            'wireguard.enabled' => ['wireguard', 'ru' => 'Разрешить WireGuard', 'en' => 'Enable WireGuard', 'bool'],
+            'wireguard.active' => ['wireguard', 'ru' => 'Связь бота через WireGuard', 'en' => 'Bot link over WireGuard', 'bool'],
+            'wireguard.mtu' => ['wireguard', 'WireGuard MTU', 'WireGuard MTU', 'int'],
+            'amnezia.version' => ['amnezia', 'ru'=>'Версия протокола', 'en'=>'Protocol version', 'choice', ['1.5','2.0','3.0','3.1']],
+            'amnezia.enabled' => ['amnezia', 'ru' => 'Разрешить AmneziaWG', 'en' => 'Enable AmneziaWG', 'bool'],
+            'amnezia.active' => ['amnezia', 'ru' => 'Связь бота через AmneziaWG', 'en' => 'Bot link over AmneziaWG', 'bool'],
+            'amnezia.mtu' => ['amnezia', 'AmneziaWG MTU', 'AmneziaWG MTU', 'int'],
+            'xray.fingerprint' => ['basic', 'ru' => 'Отпечаток клиента', 'en' => 'Client fingerprint', 'choice', ['chrome', 'firefox', 'safari', 'ios', 'edge', 'qq', 'random', 'randomized', 'android', '360']],
             'xray.encryption.auth' => ['crypto', 'VLESS Encryption', 'VLESS Encryption', 'choice', ['off', 'x25519', 'mlkem768']],
             'xray.encryption.mode' => ['crypto', 'ru' => 'Режим шифрования', 'en' => 'Encryption mode', 'choice', ['native', 'xorpub', 'random']],
             'xray.reality.mldsa' => ['crypto', 'ru' => 'Постквантовая подпись ML-DSA', 'en' => 'Post-quantum ML-DSA signature', 'bool'],
@@ -54,14 +62,25 @@ final class ManagedNodeFields
             'xray.sniffing.destOverride' => ['sniffing', 'ru' => 'Протоколы: HTTP/TLS/QUIC', 'en' => 'Protocols: HTTP/TLS/QUIC', 'list'],
             'xray.sniffing.ipsExcluded' => ['sniffing', 'ru' => 'Исключения IP/CIDR', 'en' => 'IP/CIDR exclusions', 'list'],
             'xray.sniffing.domainsExcluded' => ['sniffing', 'ru' => 'Исключения доменов', 'en' => 'Domain exclusions', 'list'],
-            'xray.block_torrent' => ['sniffing', 'ru' => 'Блокировать BitTorrent', 'en' => 'Block BitTorrent', 'bool'],
+            'xray.block_torrent' => ['torrent', 'ru' => 'Блокировать BitTorrent', 'en' => 'Block BitTorrent', 'bool'],
         ];
+        $fields['wireguard.keepalive'] = ['wireguard', 'ru' => 'Keepalive, с', 'en' => 'Keepalive, s', 'int'];
+        $fields['amnezia.rotation_days'] = ['amnezia', 'ru'=>'Автогенерация: дней (0 — выкл.)', 'en'=>'Auto generation: days (0 = off)', 'choice', [0,1,3,7,14,30]];
+        $fields['amnezia.keepalive'] = ['amnezia', 'ru' => 'Keepalive, с (диапазон)', 'en' => 'Keepalive, s (range)', 'string'];
+        foreach (['Jc','Jmin','Jmax','S1','S2','S3','S4','H1','H2','H3','H4','I1','I2','I3','I4','I5',
+            'ContentPaddingAddition','RekeyAfterTime','RekeyTimeout','RejectAfterTime','KeepaliveTimeout','MaxHandshakeAttempts'] as $name) {
+            $fields['amnezia.parameters.'.$name] = ['amnezia', $name, $name, in_array($name,['Jc','Jmin','Jmax','S1','S2','S3','S4'],true) ? 'int' : 'string'];
+        }
+        foreach (['noGRPCHeader'=>'bool','xPaddingBytes'=>'string','scMaxEachPostBytes'=>'int',
+            'scMinPostsIntervalMs'=>'int','scStreamUpServerSecs'=>'string'] as $name=>$type) $fields['xray.xhttp.extra.'.$name] = ['xhttp', $name, $name, $type];
+        foreach (['cMaxReuseTimes'=>'int','maxConcurrency'=>'string','maxConnections'=>'int','hKeepAlivePeriod'=>'int',
+            'hMaxRequestTimes'=>'string','hMaxReusableSecs'=>'string'] as $name=>$type) $fields['xray.xhttp.extra.xmux.'.$name] = ['xhttp', 'XMUX '.$name, 'XMUX '.$name, $type];
         foreach (['dpi', 'finalmask'] as $group) {
-            foreach (['enabled' => ['ru' => 'Фрагментация', 'en' => 'Fragmentation', 'bool'], 'packets' => ['ru' => 'Пакеты', 'en' => 'Packets', 'string'],
-                'length' => ['ru' => 'Размер фрагмента', 'en' => 'Fragment size', 'string'], 'delay' => ['ru' => 'Задержка, мс', 'en' => 'Delay, ms', 'string'],
-                'maxSplit' => ['ru' => 'Предел разбиения', 'en' => 'Split limit', 'string']] as $name => $field) $fields["xray.$group.fragment.$name"] = [$group, ...$field];
-            foreach (['enabled' => ['UDP noise', 'UDP noise', 'bool'], 'reset' => ['ru' => 'Период шума', 'en' => 'Noise reset', 'string'],
-                'list' => ['ru' => 'Пакеты шума (JSON)', 'en' => 'Noise packets (JSON)', 'json']] as $name => $field) $fields["xray.$group.noise.$name"] = [$group, ...$field];
+            foreach (['enabled' => ['Fragment', 'Fragment', 'bool'], 'packets' => ['packets', 'packets', 'string'],
+                'length' => ['length', 'length', 'string'], 'delay' => ['interval (ms)', 'interval (ms)', 'string'],
+                'maxSplit' => ['maxSplit', 'maxSplit', 'string']] as $name => $field) $fields["xray.$group.fragment.$name"] = [$group, ...$field];
+            foreach (['enabled' => ['UDP noise', 'UDP noise', 'bool'], 'reset' => ['reset', 'reset', 'string'],
+                'list' => ['noise (JSON)', 'noise (JSON)', 'json']] as $name => $field) $fields["xray.$group.noise.$name"] = [$group, ...$field];
         }
         return array_map('array_values', $fields);
     }
@@ -90,6 +109,9 @@ final class ManagedNodeFields
         unset($target);
         if ($value === true && $path === 'wireguard.active') $options['amnezia']['active'] = false;
         if ($value === true && $path === 'amnezia.active') $options['wireguard']['active'] = false;
+        if ($path === 'mask' && ($options['transport'] ?? '') === 'reality') $options['cover'] = false;
+        if ($value === false && in_array($path, ['wireguard.enabled', 'amnezia.enabled'], true)) $options[explode('.', $path)[0]]['active'] = false;
+        if ($value === true && in_array($path, ['wireguard.active', 'amnezia.active'], true)) $options[explode('.', $path)[0]]['enabled'] = true;
         return $options;
     }
 }

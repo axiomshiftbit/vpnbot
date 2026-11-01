@@ -142,13 +142,16 @@ try:
             mapname = 'asn' if name == 'asn_nft' else name
             base = base.replace(f'include "/opt/maxmind/list/{name}/geoip-ipv4.nft"',
                                 f'map {mapname} {{ type ipv4_addr : mark; flags interval; elements = {{ {elements} }}; }}')
-        for name, elements in [('node6_sources', '2606:4700:4700::2, 2606:4700:4700::3'),
+        for name, elements in ([] if os.environ.get('NODE_BASE_AUTO') else [('node6_sources', '2606:4700:4700::2, 2606:4700:4700::3'),
                                ('node6_public', '2606:4700:4700::1111'), ('ipv6_routers', 'fe80::1'),
-                               ('ssh_asn6', '2606:4700:4700::201/128')]:
+                               ('ssh_asn6', '2606:4700:4700::201/128')]):
             kind = ' flags interval;' if name == 'ssh_asn6' else ''
             base = re.sub(r'(?ms)^    set '+name+r' \{\n.*?^    \}',
                           f'    set {name} {{ type ipv6_addr;{kind} elements = {{ {elements} }}; }}', base)
         base = re.sub(r'(?m)^include "/etc/[^\n]+\n', '', base)
+        if os.environ.get('NODE_BASE_AUTO'):
+            import nft_host_setup
+            base = nft_host_setup.render(base, host, 'node')
         check('installation-profile-atomic-load', run(['nft', '-f', '-'], input=base).returncode == 0)
     for family in (4, 6):
         options['family'] = family

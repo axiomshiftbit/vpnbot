@@ -205,9 +205,17 @@ try:
                         continue
                     if os.environ.get('AWG_CASE') and os.environ['AWG_CASE']!=f'{core}:{transport}:{family}:{connection}':
                         continue
+                    if os.environ.get('AWG_FILTER') and not re.search(os.environ['AWG_FILTER'],f'{core}:{transport}:{family}:{connection}'):
+                        continue
                     name=f'{core}-{transport}-awg{connection}-egress{family}'
                     options=dict(transport=transport,core=core,family=family,connect_family=connection,
-                                 domain='node.example.test',mask='node.example.test',amnezia={'enabled':True,'active':True,'mtu':1280})
+                                 domain='node.example.test',mask='node.example.test',amnezia={'enabled':True,'active':True,'mtu':1280,'keepalive':'18-24',
+                                 'parameters':{'Jc':5,'Jmin':70,'Jmax':900,'H1':'1-100','I1':'<b 0xaabb><r 16>'}})
+                    if os.environ.get('AWG_TEMPLATE_FILE'):
+                        template=json.loads(Path(os.environ['AWG_TEMPLATE_FILE']).read_text())[int(os.environ.get('AWG_TEMPLATE_INDEX','0'))]
+                        options['amnezia'].update(awg.settings(template))
+                        options['amnezia']['active']=True
+                        name += '-'+template['template']
                     value=config.core_config(options,host,keys)
                     stream=value['inbounds'][0]['streamSettings']
                     if transport=='reality':
