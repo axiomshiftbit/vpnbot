@@ -33,6 +33,8 @@ def prepare(root):
         return
     if not all(shutil.which(x) for x in ('nft', 'ip', 'nsenter', 'systemctl')):
         raise RuntimeError('Для защиты контейнеров нужны nftables, iproute2, util-linux и systemd')
+    if run([sys.executable, root / 'scripts/nft_node_sets.py']).returncode:
+        raise RuntimeError('Не удалось создать пустые IPv6-наборы; существующие адреса и правила сохранены')
     guard = root / 'scripts/container_origin_guard.py'
     config = Path('/etc/vpnbot-origin/config.json')
     if not config.exists() or not same(guard, Path('/usr/local/sbin/vpnbot-origin')):

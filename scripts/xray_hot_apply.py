@@ -349,9 +349,10 @@ def main():
         print({'apply': 'APPLIED', 'sync': 'SYNCED'}.get(args.action, 'MARKED'))
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        # Only the fixed reason text (never configuration or CLI output).
+        # Exception messages can contain CLI arguments, client names or input.
+        # Keep only the exception category, never its data.
         try:
-            (STATE / 'last-reason').write_text(f'{type(error).__name__}: {error}\n'[:200])
+            (STATE / 'last-reason').write_text(type(error).__name__ + '\n')
         except OSError:
             pass
         print('RESTART')

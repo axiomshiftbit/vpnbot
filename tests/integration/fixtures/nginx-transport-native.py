@@ -1,4 +1,4 @@
-import pathlib,subprocess,json,os,time,shutil,hashlib,signal,sys
+import pathlib,subprocess,json,os,time,shutil,hashlib,signal,sys,re,socket,ssl,uuid
 os.umask(0o077)
 B=pathlib.Path('/opt/vpnbot-hosted-ci/stand/bot');O=pathlib.Path(sys.argv[1]);O.mkdir(parents=True,exist_ok=True)
 P=O/'private';P.mkdir(exist_ok=True)
@@ -46,10 +46,44 @@ try:
   path='/'+inactive+h+('/Tun' if inactive=='grpc' else '')
   r=run('curl','-ksS','--noproxy','*','--http2','--connect-to','vpnbot.test:443:127.0.0.1:443','--max-time','5','-o','/dev/null','-w','%{http_code}','https://vpnbot.test'+path)
   check(str(i)+'-inactive-'+inactive+'-returns-404',r.stdout=='404')
+  # /ws: XHTTP идёт через grpc_pass (HTTP/2 до Xray), WebSocket — через
+  # proxy_pass. Активна ровно одна строка в каждой копии блока.
+  conf=(B/'config/nginx.conf').read_text();h2=network=='xhttp'
+  handler=re.findall(r'(?m)^[ \t]*((?:proxy|grpc)_pass) \S+; # vpnbot-(?:xray-h1|xhttp-h2)$',conf)
+  # После настройки домена оба server-блока могут быть активны.
+  check(str(i)+'-ws-handler-'+('grpc' if h2 else 'proxy'),bool(handler) and all(h==('grpc_pass' if h2 else 'proxy_pass') for h in handler))
   ns['fetch']()
+  if h2:
+   full=json.loads((O/'clients/full-xray.json').read_text());node=next(o for o in full['outbounds'] if o['protocol']=='vless')
+   check(str(i)+'-xray-profile-stream-up',node['streamSettings']['xhttpSettings']['mode']=='stream-up')
+   node=next(n for n in json.loads((O/'clients/full-mihomo.json').read_text())['proxies'] if n['type']=='vless')
+   check(str(i)+'-mihomo-profile-stream-up',node['xhttp-opts']['mode']=='stream-up')
   for engine in ('xray','mihomo') if transport=='xhttp' else ('xray','mihomo','sing-box'):
    before=len(ns['lab'].RESULTS);ns['exchange'](str(i)+'-'+transport,engine,binary=pathlib.Path('/opt/vpnbot-hosted-ci/tests/xray') if engine=='xray' else pathlib.Path('/opt/vpnbot-hosted-ci/clients')/engine)
    check(str(i)+'-'+engine+'-real-traffic',all(r['passed'] for r in ns['lab'].RESULTS[before:]))
+  if h2:
+   # packet-up читает всё тело до проверки VLESS. Незавершённый POST без
+   # авторизации должен закрыться за 60 с + lingering_time nginx (30 с).
+   context=ssl._create_unverified_context()  # Только сертификат vpnbot.test стенда.
+   with context.wrap_socket(socket.create_connection(('127.0.0.1',443),5),server_hostname='vpnbot.test') as slow:
+    slow.settimeout(100)
+    path='/ws'+h+'/'+str(uuid.uuid4())+'/invalid-sequence?x_padding='+'X'*150
+    slow.sendall(('POST '+path+' HTTP/1.1\r\nHost: vpnbot.test\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n').encode()+b'\0')
+    closed=False
+    try:
+     while slow.recv(4096):pass
+     closed=True
+    except socket.timeout:pass
+    check(str(i)+'-unauthorized-incomplete-packet-bounded',closed)
+   # Подписки до перехода (packet-up) проходят и через grpc_pass.
+   for kind,key in (('xray',None),('mihomo','xhttp-opts')):
+    f=O/('clients/full-'+kind+'.json');full=json.loads(f.read_text())
+    if kind=='xray':next(o for o in full['outbounds'] if o['protocol']=='vless')['streamSettings']['xhttpSettings']['mode']='packet-up'
+    else:next(n for n in full['proxies'] if n['type']=='vless')[key]['mode']='packet-up'
+    f.write_text(json.dumps(full))
+    before=len(ns['lab'].RESULTS);ns['exchange'](str(i)+'-legacy-packet-up',kind,binary=pathlib.Path('/opt/vpnbot-hosted-ci/tests/xray') if kind=='xray' else pathlib.Path('/opt/vpnbot-hosted-ci/clients')/kind)
+    check(str(i)+'-'+kind+'-legacy-packet-up-real-traffic',len(ns['lab'].RESULTS)>before and all(r['passed'] for r in ns['lab'].RESULTS[before:]))
+   ns['fetch']()
  # Mux.Cool поверх XHTTP (форк 26.10.5+): сервер с KeepAlive, клиент Xray берёт
  # блок mux из подписки. Ядро возвращаем сами: маркер ядра не входит в files.
  core0=json.loads((B/'config/pac.json').read_text()).get('xray_core','origin')

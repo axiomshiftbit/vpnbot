@@ -115,6 +115,61 @@ class TelemtStateTests(unittest.TestCase):
         self.assertEqual(2, len(calls))
         self.assertEqual((260, 1795000000), (alice['used_bytes'], alice['period_cursor_epoch_secs']))
 
+    def test_native_reset_between_compare_and_replace_survives(self):
+        self.scheduled()
+        native = self.state.read()
+        native['users']['alice'].update(used_bytes=0, last_reset_epoch_secs=1795000000,
+                                       period_cursor_epoch_secs=1795000000)
+        native['last_reset_epoch_secs'] = 1795000000
+        original = MODULE.os.replace
+        def core_commits_first(source, target):
+            # Ядро не берёт flock бота. Его атомарная запись может пройти
+            # сразу после проверки raw == current, перед rename помощника.
+            self.state.path.write_text(json.dumps(native))
+            original(source, target)
+        with patch.object(self.state, 'processes', return_value={123: '456'}), \
+             patch.object(self.state, 'fetch', return_value=self.snapshot(260)), \
+             patch.object(MODULE.os, 'replace', side_effect=core_commits_first):
+            self.state.checkpoint()
+        self.assertEqual(native, self.state.read())
+
+    def test_checkpoint_is_merged_only_while_core_is_stopped(self):
+        native = self.scheduled()
+        with patch.object(self.state, 'processes', return_value={123: '456'}), \
+             patch.object(self.state, 'fetch', return_value=self.snapshot(260)):
+            self.state.checkpoint()
+            with self.assertRaises(ValueError): self.state.prepare()
+        self.assertEqual(native, json.loads(self.state.path.read_text()))
+        self.assertEqual(0o600, self.state.checkpoint_path.stat().st_mode & 0o777)
+        self.state.prepare()
+        self.assertFalse(self.state.checkpoint_path.exists())
+        restored = json.loads(self.state.path.read_text())
+        self.assertEqual(260, restored['users']['alice']['used_bytes'])
+        self.assertEqual(1793000000, restored['users']['alice']['period_cursor_epoch_secs'])
+
+    def test_checkpoint_cannot_resurrect_removed_users_or_calendar(self):
+        self.scheduled()
+        with patch.object(self.state, 'processes', return_value={123: '456'}), \
+             patch.object(self.state, 'fetch', return_value=self.snapshot(260)):
+            self.state.checkpoint()
+        native = json.loads(self.state.path.read_text())
+        native['users']['alice'].pop('quota_period')
+        native['users']['alice'].pop('period_cursor_epoch_secs')
+        self.state.path.write_text(json.dumps(native))
+        self.assertNotIn('quota_period', self.state.read()['users']['alice'])
+        native['users'].pop('alice')
+        self.state.path.write_text(json.dumps(native))
+        self.assertNotIn('alice', self.state.read()['users'])
+
+    def test_manual_reset_discards_previous_checkpoint(self):
+        self.scheduled()
+        with patch.object(self.state, 'processes', return_value={123: '456'}), \
+             patch.object(self.state, 'fetch', return_value=self.snapshot(260)):
+            self.state.checkpoint()
+        self.state.reset('alice')
+        self.assertFalse(self.state.checkpoint_path.exists())
+        self.assertEqual(0, self.state.read()['users']['alice']['used_bytes'])
+
     def test_manual_reset_keeps_cadence(self):
         self.scheduled(used=900)
         before = int(time.time())

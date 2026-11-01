@@ -34,6 +34,8 @@ class XrayStatsTestBot extends Bot
     public array  $pacFake    = [];
     public array  $sshCmds    = [];
 
+    protected function withXrayApplyLock(callable $fn) { return $fn(); }
+
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $this->sshCmds[]   = $cmd;

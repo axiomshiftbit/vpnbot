@@ -237,13 +237,17 @@ INNER'''
    if x.get('retried'):retries.append(label+'/'+x['case']);(R/'published-main'/(x['case']+'.attempt1.log')).replace(O/(label+'-'+x['case']+'.attempt1.log'));(O/'retries.json').write_text(json.dumps(retries))
   check('native',label+'-complete',len(rows)==26 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
   shutil.copy2(output,O/(label+'.json'))
-  for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py")]:
+  for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py"),("backup-new-state","/opt/vpnbot-hosted-ci/backup-new-state-native.py")]:
    def attempt(name=label+"-"+name,script=script):
     result=O/name
     run(name,["python3",script,str(result)],timeout=900)
     extra=json.loads((result/"results.json").read_text())
     check("native",name+"-complete",len(extra)>40 and all(r["passed"] for r in extra));counts["native"]+=len(extra)
    twice(label+"-"+name,attempt)
+  node_result=O/(label+'-managed-node')
+  run(label+'-managed-node',['python3','/opt/vpnbot-hosted-ci/managed-node-ci.py',str(node_result),str(a.checkout)],timeout=2400)
+  node_rows=json.loads((node_result/'results.json').read_text())
+  check('native',label+'-managed-node-complete',len(node_rows)>1500 and all(r['passed'] for r in node_rows));counts['native']+=len(node_rows)
  native('native-before-restore')
  # Native backup roundtrip: change real saved client data, restore all sections,
  # then prove that the previously issued profiles still pass actual traffic.

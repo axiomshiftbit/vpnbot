@@ -11,8 +11,9 @@
 //     maxConcurrency", когда у обоих To > 0. У нас maxConcurrency = "16-32",
 //     значит maxConnections обязан оставаться нулём.
 //  3. mode должен быть одним из auto/packet-up/stream-up/stream-one.
-//     Клиент пинуется на packet-up: локация /ws у nginx на proxy_pass (её
-//     делит websocket), а stream-up официально требует grpc_pass.
+//     Клиент получает stream-up только при активном grpc_pass в /ws рабочего
+//     nginx.conf (официально stream-up за nginx требует grpc_pass), иначе
+//     packet-up — он проходит и через proxy_pass.
 //  4. Ссылка vless://…&extra=… и json-конфиг (t=s) обязаны нести один и тот
 //     же extra: это одно и то же ядро, импортированное двумя способами.
 
@@ -91,9 +92,41 @@ foreach (array_unique($m[1]) as $mode) {
     xhAssert(in_array($mode, ['auto', 'packet-up', 'stream-up', 'stream-one'], true),
         "unsupported mode: $mode");
 }
-// Клиентский режим — packet-up, серверный — auto (принимает любой).
-xhAssert(in_array('packet-up', $m[1], true), 'клиент должен быть на packet-up');
+// Серверный режим — auto (принимает любой), клиентский выбирает xhttpClientMode().
 xhAssert(in_array('auto', $m[1], true), 'сервер должен слушать mode=auto');
+xhAssert(substr_count($src, '"&mode=" . $this->xhttpClientMode()') === 1
+    && substr_count($src, '"mode"  => $this->xhttpClientMode()') === 1
+    && substr_count($src, "'mode'                     => \$this->xhttpClientMode()") === 1,
+    'ссылка vless://, профиль Xray и профиль Mihomo берут режим из xhttpClientMode()');
+
+$tmp = sys_get_temp_dir() . '/vpnbot-xhttp-' . bin2hex(random_bytes(6));
+mkdir($tmp, 0700);
+try {
+    $bot->xrayConf = "$tmp/xray.json";
+    $template = file_get_contents(__DIR__ . '/../config/nginx_default.conf');
+    $net = fn($n) => ['inbounds' => [['port' => 443, 'streamSettings' => ['network' => $n]]]];
+    $mode = function (?string $conf) use ($bot, $tmp) {
+        @unlink("$tmp/nginx.conf");
+        if ($conf !== null) file_put_contents("$tmp/nginx.conf", $conf);
+        return $bot->xhttpClientMode();
+    };
+    $xhttp = Bot::xrayNginxRoutes($template, $net('xhttp'));
+    $ws = Bot::xrayNginxRoutes($template, $net('ws'));
+    xhAssert($mode(null) === 'packet-up', 'нет nginx.conf — packet-up');
+    xhAssert($mode($template) === 'packet-up', 'шаблон (proxy_pass) — packet-up');
+    xhAssert($mode($xhttp) === 'stream-up', 'XHTTP на grpc_pass — stream-up');
+    xhAssert($mode($ws) === 'packet-up', 'вернулись на WebSocket — packet-up');
+    // grpc_pass включён только в закомментированной копии (#-domain) — она
+    // не действует, пока её не раскомментирует cloakNginx().
+    xhAssert($mode(str_replace('    #         # grpc_pass', '    #         grpc_pass', $ws)) === 'packet-up', 'закомментированный блок не в счёт');
+    // Свой обработчик без метки — режим не трогаем.
+    xhAssert($mode("location /ws {\n    grpc_pass grpc://custom:443;\n}\n") === 'packet-up', 'чужой grpc_pass без метки — packet-up');
+    // Отключённый транспорт (return 404) держит обработчик WebSocket.
+    xhAssert($mode(Bot::xrayNginxRoutes($xhttp, [])) === 'packet-up', 'без своего inbound — packet-up');
+} finally {
+    @unlink("$tmp/nginx.conf");
+    rmdir($tmp);
+}
 
 // --- sing-box: x_padding_bytes обязателен ------------------------------------
 // Форки sing-box с XHTTP проверяют СЫРОЕ поле, а не нормализованное, и без него
@@ -129,8 +162,11 @@ preg_match_all('~location /ws \{(.+?)\n\s*(?:#\s*)?\}~s', $nginx, $ws);
 xhAssert(count($ws[1]) === 2, 'в nginx должны быть обе локации /ws — активная и доменная, найдено: ' . count($ws[1]));
 foreach ($ws[1] as $body) {
     foreach ($sockopt['trustedXForwardedFor'] as $hdr) {
-        xhAssert((bool) preg_match('~^\s*#?\s*proxy_set_header ' . preg_quote($hdr, '~') . '\s+\$remote_addr;~mi', $body),
-            "nginx обязан сам ставить доверенный заголовок $hdr в локации /ws");
+        // proxy_set_header — для WebSocket, grpc_set_header — для XHTTP.
+        foreach (['proxy', 'grpc'] as $module) {
+            xhAssert((bool) preg_match('~^\s*#?\s*' . $module . '_set_header ' . preg_quote($hdr, '~') . '\s+\$remote_addr;~mi', $body),
+                "nginx обязан сам ставить доверенный заголовок $hdr в локации /ws ({$module}_set_header)");
+        }
     }
 }
 // Первый элемент XFF = реальный клиент только при $remote_addr. С

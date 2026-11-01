@@ -107,6 +107,38 @@ def migrate_nginx(text):
                   r'\g<1>http://10.10.0.6:8388/;', text)
 
 
+NGINX_XRAY_H1, NGINX_XHTTP_H2 = 'vpnbot-xray-h1', 'vpnbot-xhttp-h2'
+# Same lines as Bot::NGINX_XHTTP_LINES: /ws carries both handlers, one active.
+NGINX_XHTTP_LINES = (
+    'proxy_pass http://xr_backend; # vpnbot-xray-h1',
+    '# grpc_pass grpc://xr_backend; # vpnbot-xhttp-h2',
+    'grpc_set_header Host $host;',
+    'grpc_set_header X-Real-IP $remote_addr;',
+    'grpc_set_header X-Forwarded-For $remote_addr;',
+    'grpc_socket_keepalive on;',
+    'grpc_read_timeout 5d;',
+    'grpc_send_timeout 5d;',
+    'client_body_timeout 5d;',
+    '# location ~ ^/[^/]+/[^/]+/[^/]+ { grpc_pass grpc://xr_backend; client_body_timeout 60s; } # vpnbot-xhttp-packet-timeout',
+)
+
+
+def xray_nginx_handler(body, commented, h2):
+    # Counterpart of Bot::xrayNginxHandler: WebSocket via proxy_pass, XHTTP via
+    # grpc_pass (HTTP/2 to Xray, needed by stream-up behind nginx).
+    lead = r'[ \t]*#[ \t]*' if commented else r'[ \t]*'
+    body = re.sub(r'(?m)^(' + lead + r')proxy_pass\s+http://xr_backend\s*;[ \t]*$',
+                  lambda l: '\n'.join(l[1] + line for line in NGINX_XHTTP_LINES), body, count=1)
+    if 'vpnbot-xhttp-packet-timeout' not in body:
+        body = re.sub(r'(?m)^(' + lead + r')(?:#[ \t]*)?grpc_pass[^\n]*# ' + NGINX_XHTTP_H2 + r'[ \t]*$',
+                      lambda l: l[0] + '\n' + l[1] + NGINX_XHTTP_LINES[-1], body, count=1)
+    body = re.sub(r'(?m)^(' + lead + r')(?:#[ \t]*)?(location[^\n]*# vpnbot-xhttp-packet-timeout)[ \t]*$',
+                  lambda l: l[1] + ('' if h2 else '# ') + l[2], body)
+    want = NGINX_XHTTP_H2 if h2 else NGINX_XRAY_H1
+    return re.sub(r'(?m)^(' + lead + r')(?:#[ \t]*)?((?:proxy|grpc)_pass\s[^\n]*?# (' + NGINX_XRAY_H1 + '|' + NGINX_XHTTP_H2 + r'))[ \t]*$',
+                  lambda l: l[1] + ('' if l[3] == want else '# ') + l[2], body)
+
+
 def xray_nginx_routes(text, xray):
     # Cold update counterpart of Bot::xrayNginxRoutes. Keep the route enabled
     # only for the actual inbound on xr:443; preserve custom backends.
@@ -120,10 +152,11 @@ def xray_nginx_routes(text, xray):
     def route(m):
         backend = r'\bgrpc_pass\s+grpc://xr:443\s*;' if m[2] == 'grpc' else r'\bproxy_pass\s+http://xr_backend\s*;'
         if not re.search(backend, m[3]): return m[0]
-        active = 'grpc' in networks if m[2] == 'grpc' else bool(set(networks) & {'ws', 'xhttp'})
-        if active: return m[0]
         prefix = re.match(r'^([ \t]*(?:#[ \t]*)?)location', m[1])[1]
-        return m[1] + '\n' + prefix + '    return 404; # vpnbot-inactive-xray-route' + m[3]
+        body = xray_nginx_handler(m[3], '#' in prefix, 'xhttp' in networks) if m[2] == 'ws' else m[3]
+        active = 'grpc' in networks if m[2] == 'grpc' else bool(set(networks) & {'ws', 'xhttp'})
+        if active: return m[1] + body
+        return m[1] + '\n' + prefix + '    return 404; # vpnbot-inactive-xray-route' + body
     return re.sub(r'(^[ \t]*(?:#[ \t]*)?location[ \t]+/(ws|grpc)[A-Za-z0-9_-]*[ \t]*\{)(.*?^[ \t]*(?:#[ \t]*)?\})', route, text, flags=re.M | re.S)
 
 
@@ -167,6 +200,15 @@ def ensure_self_certificate(root):
     """nginx -t и сам nginx требуют /certs/self_*, а на свежей установке их ещё
     нет: start_php.sh создаёт пару только при первом запуске php, позже этой
     проверки. Создаём ту же пару той же командой; php её затем сохраняет."""
+    # Compose runs with umask 077. nginx workers must be able to traverse the
+    # HTTP-01 webroot, while TLS key files remain readable only by root.
+    for directory, mode in ((root / 'certs', 0o711),
+                            (root / 'certs/.well-known', 0o755),
+                            (root / 'certs/.well-known/acme-challenge', 0o755)):
+        if directory.is_symlink():
+            raise ValueError('ACME webroot must not contain symlinks')
+        directory.mkdir(exist_ok=True)
+        directory.chmod(mode)
     public, private = root / 'certs/self_public', root / 'certs/self_private'
     if all(path.is_file() and path.stat().st_size for path in (public, private)): return
     public.parent.mkdir(parents=True, exist_ok=True)

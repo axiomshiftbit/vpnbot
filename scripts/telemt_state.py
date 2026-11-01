@@ -21,6 +21,7 @@ class TelemtState:
         self.root = Path(root)
         self.config = self.root / 'telemt.toml'
         self.path = self.root / 'data/telemt.limit.json'
+        self.checkpoint_path = self.root / 'data/telemt.checkpoint.json'
         self.api = api
 
     def settings(self):
@@ -47,16 +48,34 @@ class TelemtState:
                 raise ValueError('invalid_quota_schedule')
         return data
 
-    def read(self):
-        if self.path.is_symlink():
+    def read_file(self, path):
+        if path.is_symlink():
             raise ValueError('invalid_quota_file')
-        if not self.path.exists():
+        if not path.exists():
             return {'last_reset_epoch_secs': 0, 'users': {}}
-        if self.path.stat().st_size > 16 * 1024 * 1024:
+        if path.stat().st_size > 16 * 1024 * 1024:
             raise ValueError('invalid_quota_file')
-        return self.validate(json.loads(self.path.read_bytes()))
+        return self.validate(json.loads(path.read_bytes()))
 
-    def write(self, data):
+    def read(self):
+        state = self.read_file(self.path)
+        checkpoint = self.read_file(self.checkpoint_path)
+        # Native resets/calendar changes win over an older checkpoint. Within
+        # the same period only usage is merged; the native calendar stays exact.
+        # Never resurrect a user deleted from the native state.
+        for name, native in state['users'].items():
+            saved = checkpoint['users'].get(name)
+            if not saved:
+                continue
+            if saved['last_reset_epoch_secs'] > native['last_reset_epoch_secs']:
+                state['users'][name] = saved
+            elif saved['last_reset_epoch_secs'] == native['last_reset_epoch_secs']:
+                native['used_bytes'] = max(native['used_bytes'], saved['used_bytes'])
+        state['last_reset_epoch_secs'] = max([state['last_reset_epoch_secs']] +
+                                            [v['last_reset_epoch_secs'] for v in state['users'].values()])
+        return state
+
+    def write(self, data, checkpoint=False):
         self.validate(data)
         payload = json.dumps(data, ensure_ascii=False) + '\n'
         if len(payload.encode()) > 16 * 1024 * 1024:
@@ -68,7 +87,9 @@ class TelemtState:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
+            os.replace(temporary, self.checkpoint_path if checkpoint else self.path)
+            if not checkpoint:
+                self.checkpoint_path.unlink(missing_ok=True)
             directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 os.fsync(directory)
@@ -107,6 +128,8 @@ class TelemtState:
         return result
 
     def prepare(self):
+        if self.processes():
+            raise ValueError('prepare_requires_stopped_core')
         access = self.settings()
         state = self.read()
         required = set(access.get('user_data_quota', {}))
@@ -135,8 +158,9 @@ class TelemtState:
         self.validate({'last_reset_epoch_secs': 0, 'users': updates})
         if required - set(updates) or self.processes() != before:
             raise ValueError('incomplete_quota_snapshot')
-        # The core writes the same file (calendar watermarks, its own resets).
-        # Keep its schedule fields and retry if it rewrote the file meanwhile.
+        # The core does not take our flock. A compare followed by rename cannot
+        # protect its concurrent calendar/reset commit. While it runs, write a
+        # separate checkpoint, merged into native state only before startup.
         for _ in range(3):
             raw = self.path.read_bytes() if self.path.exists() else None
             state = self.read()
@@ -154,7 +178,7 @@ class TelemtState:
             if json.dumps(state, sort_keys=True) == previous:
                 return
             if (self.path.read_bytes() if self.path.exists() else None) == raw:
-                self.write(state)
+                self.write(state, checkpoint=True)
                 return
         raise ValueError('quota_state_busy')
 

@@ -6,6 +6,17 @@ REPO_URL="git@axiomshiftbit:axiomshiftbit/vpnbot.git"
 INSTALL_DIR="/root/vpnbot"
 ARCHIVE_NAME="vpnbot.zip"
 
+MODE="${VPNBOT_MODE:-full}"
+if [ "${1:-}" = --mode ]; then
+    MODE="${2:-}"
+    shift 2
+fi
+case "$MODE" in full|node) ;; *) echo 'Режим установки: --mode full или --mode node' >&2; exit 1;; esac
+
+if [ "$MODE" = node ]; then
+    BRANCH="${1:-master}"
+else
+
 # Ключ бота предпочтительно передавать окружением: позиционный аргумент виден
 # в `ps` ВСЕМ процессам хоста на всё время работы скрипта и остаётся в
 # ~/.bash_history root'а. Форма с аргументом сохранена для совместимости с уже
@@ -32,6 +43,7 @@ fi
 if [ -z "$KEY" ]; then
     echo "usage: sudo VPNBOT_KEY=<TG_BOT_KEY> bash init.sh [BRANCH]" >&2
     exit 1
+fi
 fi
 
 # Ключ бота уходит в app/config.php внутри PHP-строки в одинарных кавычках и в
@@ -94,7 +106,7 @@ install_autostart() {
     fi
 }
 
-normalize_bot_key
+if [ "$MODE" = full ]; then normalize_bot_key; fi
 
 case "$BRANCH" in
     master|dev) ;;
@@ -234,6 +246,7 @@ install_ipp2p() {
     printf 'xt_ipp2p\n' > /etc/modules-load.d/vpnbot-ipp2p.conf
     echo "kernel module xt_ipp2p loaded (torrent signatures ready)"
 }
+if [ "$MODE" = full ]; then
 install_ipp2p
 
 # L2TP/IPsec (сервис ipsec) требует на ХОСТЕ модуль l2tp_ppp — контейнер его
@@ -266,6 +279,11 @@ if modprobe xfrm_interface 2>/dev/null; then
     echo 'xfrm_interface' > /etc/modules-load.d/vpnbot-xfrm.conf
 else
     echo "NOTE: kernel module xfrm_interface unavailable (IPv6 disabled in the kernel?) — IPsec works without it"
+fi
+fi
+
+if [ "$MODE" = node ]; then
+    apt install -y --no-install-recommends openssh-server sudo openssl certbot
 fi
 
 # Docker ставим из официального apt-репозитория с проверкой ключа, а не
@@ -404,6 +422,19 @@ else
 fi
 
 cd "$INSTALL_DIR"
+
+if [ "$MODE" = node ]; then
+    channel=dev
+    [ "$BRANCH" != master ] || channel=latest
+    node_args=(--channel "$channel")
+    if [ -n "${VPNBOT_NODE_CONFIG:-}" ]; then node_args+=(--config "$VPNBOT_NODE_CONFIG"); fi
+    if [ -s update/image-bundle.pending.json ]; then
+        node_args+=(--bundle update/image-bundle.pending.json)
+    elif [ -s update/image-bundle.json ]; then
+        node_args+=(--bundle update/image-bundle.json)
+    fi
+    exec python3 -I scripts/node_setup.py "${node_args[@]}"
+fi
 
 mkdir -p ./app
 if [ -s ./app/config.php ]; then

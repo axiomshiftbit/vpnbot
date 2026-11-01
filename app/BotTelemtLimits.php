@@ -100,6 +100,22 @@ trait BotTelemtLimits
         $path = $this->telemtQuotaPath();
         if (is_link($path) || (is_file($path) && filesize($path) > 16 * 1024 * 1024)) throw new RuntimeException($this->i18n('telemt limits state error'));
         $state = is_file($path) ? json_decode(file_get_contents($path), true) : ['last_reset_epoch_secs' => 0, 'users' => []];
+        $state = $this->telemtValidateQuotaState($state, $conf);
+        // Помощник не перезаписывает файл работающего ядра: его календарные
+        // сбросы не используют flock бота. Для меню и backup объединяем расход.
+        $checkpoint = dirname($path) . '/telemt.checkpoint.json';
+        if (is_link($checkpoint) || (is_file($checkpoint) && filesize($checkpoint) > 16 * 1024 * 1024)) throw new RuntimeException($this->i18n('telemt limits state error'));
+        if (is_file($checkpoint)) {
+            $saved = $this->telemtValidateQuotaState(json_decode(file_get_contents($checkpoint), true), []);
+            foreach ($state['users'] as $name => &$row) {
+                $extra = $saved['users'][$name] ?? null;
+                if ($extra === null) continue;
+                if ($extra['last_reset_epoch_secs'] > $row['last_reset_epoch_secs']) $row = $extra;
+                elseif ($extra['last_reset_epoch_secs'] === $row['last_reset_epoch_secs']) $row['used_bytes'] = max($row['used_bytes'], $extra['used_bytes']);
+                $state['last_reset_epoch_secs'] = max($state['last_reset_epoch_secs'], $row['last_reset_epoch_secs']);
+            }
+            unset($row);
+        }
         return $this->telemtValidateQuotaState($state, $conf);
     }
 
@@ -111,6 +127,10 @@ trait BotTelemtLimits
         if (strlen($payload) > 16 * 1024 * 1024) throw new RuntimeException($this->i18n('telemt limits state error'));
         @mkdir(dirname($this->telemtQuotaPath()), 0755, true);
         if (!$this->writePrivateKey($this->telemtQuotaPath(), $payload)) {
+            throw new RuntimeException($this->i18n('telemt limits state error'));
+        }
+        $checkpoint = dirname($this->telemtQuotaPath()) . '/telemt.checkpoint.json';
+        if ((is_file($checkpoint) || is_link($checkpoint)) && !unlink($checkpoint)) {
             throw new RuntimeException($this->i18n('telemt limits state error'));
         }
     }

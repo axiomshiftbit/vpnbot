@@ -73,7 +73,7 @@ class ProtocolTests(unittest.TestCase):
             private.write_bytes(b'')
             modules.ensure_self_certificate(root)
             self.assertNotEqual(before[0], public.read_bytes(), 'пустой ключ — новая пара')
-            self.assertEqual(['self_private', 'self_public'], sorted(p.name for p in (root/'certs').iterdir()))
+            self.assertEqual(['.well-known', 'self_private', 'self_public'], sorted(p.name for p in (root/'certs').iterdir()))
         calls = []
         with patch.object(modules, 'migrate_systemd_stop'), patch.object(modules, 'sync_certificates'), \
                 patch.object(modules, 'settings'), patch.object(modules, 'compose') as compose, \

@@ -6,7 +6,7 @@
 его конфигурация и его откат на встроенную страницу, на том же ядре.
 """
 from pathlib import Path
-import http.client, http.server, json, os, subprocess, sys, threading, time
+import http.client, http.server, ipaddress, json, os, socket, subprocess, sys, threading, time
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'support'))
 import probe_limits as p
@@ -40,12 +40,24 @@ class Origin:
 
             def log_message(self, *args):
                 pass
-        self.server = http.server.ThreadingHTTPServer((address, 0), Handler)
-        self.port = self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        # localhost может разрешаться в ::1 и несколько адресов 127/8.
+        # Ядро вправе выбрать любой: тестовый сайт должен слушать каждый.
+        addresses = list(dict.fromkeys(row[4][0] for row in socket.getaddrinfo(
+            address, 0, type=socket.SOCK_STREAM))) if address == 'localhost' else [address]
+        self.servers, self.port = [], 0
+        for host in addresses:
+            if address == 'localhost':
+                assert ipaddress.ip_address(host).is_loopback
+            class Server(http.server.ThreadingHTTPServer):
+                address_family = socket.AF_INET6 if ':' in host else socket.AF_INET
+            server = Server((host, self.port), Handler)
+            self.port = server.server_address[1]
+            self.servers.append(server)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
 
     def close(self):
-        self.server.shutdown(); self.server.server_close()
+        for server in self.servers:
+            server.shutdown(); server.server_close()
 
 
 def page(core, path='/'):
@@ -90,7 +102,7 @@ def refuses(name, decoy, timeouts='', within=6):
         log.close(); c.dc.shutdown(); c.dc.server_close()
 
 
-local = Origin('127.0.0.1')
+local = Origin('localhost')
 try:
     # ── Ядро: адрес ──────────────────────────────────────────────────────────
     c = core('literal', f'mode = "http_upstream"\nupstream = "http://127.0.0.1:{local.port}"').start()

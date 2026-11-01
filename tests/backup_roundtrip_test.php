@@ -2,9 +2,14 @@
 // Полный export/import на изолированных файлах; перезапуски служб подменены.
 $root=sys_get_temp_dir().'/vpnbot-roundtrip-'.bin2hex(random_bytes(6));mkdir($root,0700);
 foreach (['app','config','certs','logs','webapp','warp','config/telemt/data','config/trusttunnel','config/hysteria/runtime','config/dnstt'] as $d) mkdir("$root/$d",0700,true);
+foreach (['sing','clash'] as $type) {
+ mkdir("$root/config/templates/$type",0700,true);
+ foreach (glob(__DIR__."/../config/templates/$type/*.json") as $template) copy($template,"$root/config/templates/$type/".basename($template));
+}
 foreach (glob(__DIR__.'/../app/*.php') as $source) {
  if (in_array(basename($source),['config.php','debug.php'],true))continue;
  $body=file_get_contents($source);
+ if(basename($source)==='bot.php')$body=str_replace('dirname(__DIR__) . "/config/templates/', '"/config/templates/', $body);
  if(basename($source)==='bot.php')$body=str_replace(['/config/','/certs/','/logs/','/app/webapp/'],["$root/config/","$root/certs/","$root/logs/","$root/webapp/"],$body);
  file_put_contents("$root/app/".basename($source),$body);
 }
@@ -50,7 +55,7 @@ try{
  $b=new RoundTripBot($root,$i);
  $pac=['language'=>'ru','domain'=>'vpn.example.test','limitpage'=>5,'xray_core'=>'origin3','transport'=>'Websocket',
   'telemt_users'=>['test'=>str_repeat('a',32)],'telemt_web'=>1,'telemt_web_carrier'=>'https','telemt_web_path'=>'example-path',
-  'telemt_user_limits'=>['test'=>['quota'=>1073741824,'ips'=>2]],'finalmask'=>['enabled'=>false],
+  'telemt_user_limits'=>['test'=>['quota'=>1073741824,'ips'=>2,'period'=>'monthly']],'finalmask'=>['enabled'=>false],
   'blocklist'=>['domain:example.test','regexp:.*\\.ru$'],'singtemplates'=>['custom'=>['route'=>['rules'=>[]]]],
   'vless_encryption'=>['enabled'=>false],'relays'=>['relay.example.test'=>['host'=>'relay.example.test']],
   // Узел выхода, XDRIVE и режим WARP MASQUE живут в pac.json.
@@ -62,7 +67,13 @@ try{
   // Сертификат Let's Encrypt и пометка запроса к acme-window этого сервера.
   'letsencrypt'=>'letsencrypt','acme_requested'=>1700000000];
  $b->setPacConf($pac);
- $b->telemtQuotaWrite(['last_reset_epoch_secs'=>0,'users'=>['test'=>['used_bytes'=>123456,'last_reset_epoch_secs'=>0]]]);
+ $b->ensureDefaultTemplates();
+ $pac=$b->getPacConf();unset($pac['singtemplates']['15_dns_google']);
+ $pac['singtemplates']['15_direct']['audit_edit']='preserve';$b->setPacConf($pac);
+ $quota=['last_reset_epoch_secs'=>100,'users'=>['test'=>['used_bytes'=>123456,'last_reset_epoch_secs'=>100,'quota_period'=>'monthly','period_cursor_epoch_secs'=>100]]];
+ $b->telemtQuotaWrite($quota);
+ $quota['users']['test']['used_bytes']=222222;
+ file_put_contents("$root/config/telemt/data/telemt.checkpoint.json",json_encode($quota));
  foreach([0,1] as $n){
   $server=['interface'=>['PrivateKey'=>base64_encode(str_repeat(chr(65+$n),32)),'Address'=>"10.0.$n.1/24",'ListenPort'=>51820+$n],
    'peers'=>[['PublicKey'=>base64_encode(str_repeat('P',32)),'AllowedIPs'=>"10.0.$n.2/32"]]];
@@ -77,7 +88,7 @@ try{
   'ckserver.json'=>'{"Enabled":0,"BypassUID":[]}',
   // Отметки узла у пользователя и служебная учётка «Профиля для узла».
   'xray.json'=>json_encode(['inbounds'=>[['settings'=>['clients'=>[['id'=>'00000000-0000-4000-8000-000000000002','email'=>'user','exit'=>['a1b2c3d4']],
-   ['id'=>'00000000-0000-4000-8000-000000000003','email'=>'main-server','subtoken'=>str_repeat('a',32),'exit_relay'=>1]]]]],'outbounds'=>[],'routing'=>['rules'=>[]]]),
+   ['id'=>'00000000-0000-4000-8000-000000000003','email'=>'main-server','subtoken'=>str_repeat('a',32),'exit_relay'=>1,'exit_ipv6'=>1,'exit_transport_ipv6'=>1]]]]],'outbounds'=>[],'routing'=>['rules'=>[]]]),
   'xray.stats'=>'{"users":[]}','hwid.json'=>'{}'] as $name=>$body)file_put_contents("$root/config/$name",$body);
  $b->restoreBackupExtraFiles(['stlsserver.json'=>base64_encode('{"Enabled":1}'),'telemt/decoy/index.html'=>base64_encode('Custom decoy'),
  'warp/wgcf-profile.conf'=>base64_encode('synthetic-profile'),'sing.json'=>base64_encode('{"outbounds":[]}'),
@@ -85,7 +96,20 @@ try{
  $key=openssl_pkey_new(['private_key_bits'=>2048]);$csr=openssl_csr_new(['commonName'=>'example.test'],$key);$crt=openssl_csr_sign($csr,null,$key,1);
  openssl_pkey_export($key,$private);openssl_x509_export($crt,$public);
  file_put_contents("$root/certs/cert_private",$private);file_put_contents("$root/certs/cert_public",$public);
+ if (extension_loaded('pdo_sqlite')) {
+  $b->setHwidStorage(['fixture' => ['device' => ['time' => 1]]]);
+  // После миграции JSON больше не источник данных. Даже его повреждение
+  // не должно мешать экспорту актуальной базы и последующему восстановлению.
+  file_put_contents("$root/config/hwid.json", '{obsolete-broken');
+ }
+ file_put_contents("$root/config/ipv6-egress.json",json_encode(['enabled'=>true,'public'=>'2606:4700:4700::1111']));
  $json=$b->export();$snapshot=json_decode($json,true,512,JSON_THROW_ON_ERROR);file_put_contents($b->update,$json);
+ rtCheck(!isset($snapshot['extra_files']['ipv6-egress.json']),'Host IPv6 setup is not imported from another server');
+ $localMarker=json_encode(['enabled'=>true,'public'=>'2620:fe::fe']);
+ file_put_contents("$root/config/ipv6-egress.json",$localMarker);
+ if (extension_loaded('pdo_sqlite')) rtCheck($snapshot['hwid']===['fixture'=>['device'=>['time'=>1]]], 'Экспорт использует актуальную SQLite');
+ rtCheck($snapshot['telemt_quota']===$quota,'Копия объединяет checkpoint расхода с календарём ядра');
+ rtCheck(!isset($snapshot['pac']['singtemplates']['15_dns_google']) && !empty($snapshot['pac']['installed_templates']['sing']['15_dns_google']), 'Удаление штатного шаблона и отметка установки сохранены');
  rtCheck(count($snapshot)>=23,'Полный экспорт включает все секции');
  rtCheck(($snapshot['pac']['letsencrypt']??'')==='letsencrypt' && !array_key_exists('acme_requested',$snapshot['pac']),'Признак Let\'s Encrypt в копии, пометки запроса acme-window нет');
  rtCheck($snapshot['ssl']===['private'=>$private,'public'=>$public],'TLS-пара в копии целиком');
@@ -97,10 +121,15 @@ try{
  file_put_contents("$root/config/telemt/decoy/index.html",'changed');file_put_contents("$root/warp/wgcf-profile.conf",'changed');
  file_put_contents("$root/warp/masque/device.json",'{"id":"other"}');file_put_contents("$root/config/xray.json",'{"inbounds":[{"settings":{"clients":[]}}],"outbounds":[],"routing":{"rules":[]}}');
  rtCheck($b->importFile($b->update)===true,'Полное восстановление возвращает успех');
+ rtCheck(file_get_contents("$root/config/ipv6-egress.json")===$localMarker,'Restore preserves this host IPv6 network marker');
  rtCheck($b->syncedDomain===$snapshot['pac']['domain'],'Маршруты протоколов применены после восстановления домена');
  $after=json_decode($b->export(),true,512,JSON_THROW_ON_ERROR);
  foreach(['pac','telemt_quota','extra_files','wg','wg1','ssl','ss','sl','xray','ad','tt'] as $section)rtCheck($after[$section]===$snapshot[$section],"$section: данные пережили полный цикл");
  rtCheck($after['hy_users']['state']['users']===$snapshot['hy_users']['state']['users'] && $after['hy_users']['usage']===$snapshot['hy_users']['usage'],'Пользователи и расход Hysteria сохранены');
+ rtCheck($after['hwid']===$snapshot['hwid'],'HWID восстановлены в SQLite');
+ rtCheck(!file_exists("$root/config/telemt/data/telemt.checkpoint.json"),'Старый checkpoint не перекрывает восстановленный расход');
+ $b->ensureDefaultTemplates();
+ rtCheck($b->getPacConf()['singtemplates']===$snapshot['pac']['singtemplates'],'Удалённый шаблон не появляется снова, пользовательская правка сохранена');
  rtCheck(array_keys($b->exitNodes())===['a1b2c3d4'] && $b->exitNodes()['a1b2c3d4']['routes']===['domain:youtube.com'=>1,'full:www.example.test'=>0],'Узел выхода и его маршруты восстановлены');
  rtCheck($b->exitNodeEmails($b->getXray(),'a1b2c3d4')===['user'] && !empty($b->getXray()['inbounds'][0]['settings']['clients'][1]['exit_relay']),'Отметки узла у пользователей и служебная учётка восстановлены');
  rtCheck(($b->getPacConf()['xdrive']['url']??'')==='https://dav.example.test' && $b->warpMode()==='masque','XDRIVE и режим WARP восстановлены');
@@ -108,6 +137,18 @@ try{
  rtCheck(file_get_contents("$root/logs/xray_core")==='origin3','Выбор версии Xray восстановлен и при выключенном контейнере');
  rtCheck(file_get_contents("$root/certs/cert_public")===$public && file_get_contents("$root/certs/cert_private")===$private && ($b->getPacConf()['letsencrypt']??'')==='letsencrypt','Сертификат и признак Let\'s Encrypt восстановлены: служба продлит его по сроку');
  rtCheck($b->importFile($b->update)===true,'Повторное восстановление работает');
+ if (extension_loaded('pdo_sqlite')) {
+  // Новая БД и новый объект, как при переносе копии на чистую установку.
+  $b=null;gc_collect_cycles();
+  foreach (['vpnbot.sqlite','vpnbot.sqlite-wal','vpnbot.sqlite-shm','hwid.json'] as $file) if (is_file("$root/config/$file")) unlink("$root/config/$file");
+  $b=new RoundTripBot($root,$i);$b->setPacConf(['language'=>'ru']);
+  rtCheck($b->importFile($b->update)===true,'Восстановление на чистую SQLite');
+  rtCheck($b->getHwidStorage()===$snapshot['hwid'],'Все устройства перенесены в новую БД');
+  rtCheck(!$b->hwidRegister('fixture','new-device',1,[]),'Восстановленный HWID участвует в ограничении числа устройств');
+  rtCheck($b->telemtQuotaRead($b->getPacConf())===$quota,'Квота и календарь сохраняются при переносе');
+  $b->ensureDefaultTemplates();
+  rtCheck($b->getPacConf()['singtemplates']===$snapshot['pac']['singtemplates'],'Новая установка сохраняет удаление и правки шаблонов');
+ }
  $beforeStats=['users'=>[['global'=>['upload'=>123,'download'=>456]]]];
  $b->setXrayStats($beforeStats);$b->rejectXray=true;
  file_put_contents($b->update,json_encode(['xray'=>$snapshot['xray'],'xraystats'=>['users'=>[['global'=>['upload'=>99999,'download'=>77777]]]]]));

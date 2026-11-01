@@ -42,6 +42,7 @@
 /config/extsub.cache
 /config/exit-nodes.status.json
 /config/relay.health
+/config/relay.dns.json
 /config/telemtactivity.json
 /config/xray.stats
 /config/*.lock

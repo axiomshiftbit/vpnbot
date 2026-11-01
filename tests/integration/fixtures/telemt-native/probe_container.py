@@ -1,9 +1,10 @@
 from pathlib import Path
-import os,sys,json,subprocess,socket,time,re,hashlib,fcntl
+import os,sys,json,subprocess,socket,time,re,hashlib,fcntl,importlib.util
 HERE=Path(__file__).resolve().parent;sys.path.insert(0,str(HERE/'support'))
 import probe_limits as p
 p.ROOT=HERE/'container-cases';p.ROOT.mkdir(exist_ok=True)
 SOURCE=Path(os.environ['SOURCE_DIR']);IMAGE=os.environ['TELEMT_IMAGE'];NAME='vpnbot-telemt-php85-fixture';results=[]
+spec=importlib.util.spec_from_file_location('state',SOURCE/'scripts/telemt_state.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 def check(name,ok,**extra):
  results.append({'name':name,'ok':bool(ok),**extra});(HERE/'container-results.json').write_text(json.dumps(results,indent=2));print(name,'OK' if ok else 'FAIL',flush=True)
  if not ok:raise AssertionError(name)
@@ -26,7 +27,7 @@ def alive():
  try:return c.api('/v1/health')[0]==200
  except OSError:return False
 
-def saved():return json.loads(statepath.read_text())['users']['alice']['used_bytes']
+def saved():return m.TelemtState(c.root).read()['users']['alice']['used_bytes']
 def clients_close():
  for child in c.children:child.close()
  c.children=[]

@@ -80,8 +80,11 @@ trait BotStore
             $done = $pdo->prepare('SELECT 1 FROM meta WHERE key = ?');
             $done->execute(["imported:$name"]);
             if ($done->fetchColumn()) return;
-            $data = is_file($file) ? json_decode((string) file_get_contents($file), true) : [];
-            $replace(is_array($data) ? $data : []);
+            // Повреждённый или недоступный JSON нельзя отмечать как успешно
+            // импортированный: после ремонта источника перенос должен повториться.
+            $data = is_file($file) ? json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR) : [];
+            if (!is_array($data)) throw new RuntimeException('Invalid legacy store: ' . $name);
+            $replace($data);
             $pdo->prepare('INSERT INTO meta (key, value) VALUES (?, ?)')->execute(["imported:$name", (string) time()]);
         });
     }

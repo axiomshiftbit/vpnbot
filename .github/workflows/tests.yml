@@ -41,7 +41,7 @@ jobs:
           persist-credentials: false
 
       - name: Подготовить PHP CLI резервного тестового runner
-        if: inputs.test_runner
+        if: (runner.environment == 'self-hosted')
         run: |
           test "$(cat /etc/vpnbot-ci-test-host)" = home-build
           sh scripts/ci_retry.sh sudo apt-get update -qq

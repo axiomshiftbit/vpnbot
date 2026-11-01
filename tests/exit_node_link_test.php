@@ -46,6 +46,8 @@ exitLinkCheck($x['xhttpSettings'] === ['path' => '/wsabc', 'mode' => 'packet-up'
 exitLinkCheck($x['tlsSettings']['alpn'] === ['h2', 'http/1.1'], 'XHTTP: alpn');
 
 // Trojan + gRPC.
+$r = ExitNodeLink::parse("vless://$uuid@fi.example.org:443?type=grpc&serviceName=nodegrpc&security=tls&sni=fi.example.org&fp=chrome&alpn=h2");
+exitLinkCheck($r['outbound']['protocol'] === 'vless' && $r['outbound']['streamSettings']['grpcSettings']['serviceName'] === 'nodegrpc', 'VLESS: gRPC управляемой ноды');
 $r = ExitNodeLink::parse('trojan://' . rawurlencode('p@ss:word-123') . '@[2001:db8::7]:8443?type=grpc&serviceName=grpcabc&mode=gun&security=tls&sni=fi.example.org&fp=chrome&alpn=h2#t');
 exitLinkCheck($r['outbound']['protocol'] === 'trojan' && $r['address'] === '2001:db8::7' && $r['port'] === 8443, 'Trojan: адрес IPv6');
 exitLinkCheck($r['outbound']['settings']['servers'][0]['password'] === 'p@ss:word-123', 'Trojan: пароль');
@@ -89,7 +91,6 @@ foreach ([
     'path без слэша' => "vless://$uuid@fi.example.org:443?security=tls&type=ws&path=a&sni=fi.example.org",
     'path с кавычкой' => "vless://$uuid@fi.example.org:443?security=tls&type=ws&path=%2Fa%22b&sni=fi.example.org",
     'неизвестный транспорт' => "vless://$uuid@fi.example.org:443?security=tls&type=kcp&sni=fi.example.org",
-    'VLESS с gRPC' => "vless://$uuid@fi.example.org:443?security=tls&type=grpc&serviceName=a&sni=fi.example.org",
     'Trojan с ws' => 'trojan://password123@fi.example.org:443?type=ws&path=%2F&security=tls&sni=fi.example.org',
     'Trojan короткий пароль' => 'trojan://short@fi.example.org:443?type=grpc&serviceName=a&security=tls&sni=fi.example.org',
     'неверное шифрование' => "vless://$uuid@fi.example.org:443?security=tls&type=ws&path=%2F&sni=fi.example.org&encryption=aes",

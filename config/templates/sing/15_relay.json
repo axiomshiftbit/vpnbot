@@ -1,0 +1,372 @@
+{
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "store_fakeip": true,
+      "path": "cache.db"
+    },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "external_ui": "dashboard",
+      "external_ui_download_url": "https://github.com/Zephyruso/zashboard/archive/gh-pages.zip",
+      "default_mode": "SMART"
+    }
+  },
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "interface_name": "sing-tun",
+      "address": [
+        "172.19.0.1/30"
+      ],
+      "mtu": 1400,
+      "auto_route": true,
+      "strict_route": true,
+      "endpoint_independent_nat": true,
+      "stack": "mixed",
+      "platform": {
+        "http_proxy": {
+          "enabled": false,
+          "server": "127.0.0.1",
+          "server_port": 2080
+        }
+      }
+    },
+    {
+      "type": "mixed",
+      "tag": "in",
+      "listen": "127.0.0.1",
+      "listen_port": 2080
+    }
+  ],
+  "dns": {
+    "servers": [
+      {
+        "type": "tcp",
+        "tag": "dns-remote",
+        "server": "8.8.8.8"
+      },
+      {
+        "type": "tcp",
+        "tag": "dns-local",
+        "server": "8.8.4.4"
+      },
+      {
+        "type": "fakeip",
+        "tag": "fakeip",
+        "inet4_range": "198.18.0.0/15"
+      },
+      {
+        "type": "hosts",
+        "tag": "dns-hosts",
+        "path": [],
+        "predefined": {
+          "~domain~": "~ip~",
+          "~relay_hosts~": ""
+        }
+      },
+      {
+        "type": "https",
+        "tag": "dns_direct",
+        "server": "~domain~",
+        "path": "~dnspath~",
+        "domain_resolver": "dns-hosts"
+      }
+    ],
+    "rules": [
+      {
+        "query_type": [
+          "HTTPS",
+          "SVCB",
+          "AAAA"
+        ],
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "proxy:86400s:https://github.com/1andrevich/Re-filter-lists/releases/latest/download/ruleset-domain-refilter_domains.srs",
+          "domain_warp:86400s:https://github.com/SagerNet/sing-geosite/raw/rule-set/geosite-reddit.srs",
+          "domain_warp:86400s:https://github.com/burjuyz/RuRulesets/raw/main/ruleset-domain-torrent_websites.srs",
+          "domain_warp:86400s:https://github.com/SagerNet/sing-geosite/raw/refs/heads/rule-set/geosite-intel.srs",
+          "proxy:86400s:https://github.com/SagerNet/sing-geosite/raw/refs/heads/rule-set/geosite-gigabyte.srs",
+          "proxy:86400s:https://github.com/SagerNet/sing-geosite/raw/refs/heads/rule-set/geosite-nvidia.srs",
+          "proxy:86400s:https://github.com/axiomshiftbit/vpnbot/raw/refs/heads/master/rulesets/ruleset-ai.srs"
+        ],
+        "server": "fakeip"
+      }
+    ],
+    "final": "dns_direct",
+    "strategy": "prefer_ipv4",
+    "disable_cache": false,
+    "disable_expire": false
+  },
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "~outbound~",
+      "server": "~domain~",
+      "server_port": 443,
+      "domain_resolver": "dns-local",
+      "uuid": "~uid~",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "insecure": false,
+        "reality": {
+          "enabled": true,
+          "public_key": "~public_key~",
+          "short_id": "~short_id~"
+        },
+        "server_name": "~server_name~",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "~fingerprint~"
+        }
+      }
+    },
+    {
+      "type": "selector",
+      "tag": "domain_warp",
+      "outbounds": [
+        "~outbound~",
+        "warpSOCKS5"
+      ],
+      "default": "~outbound~"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "socks",
+      "tag": "warpSOCKS5",
+      "server": "10.10.0.13",
+      "server_port": 1080,
+      "version": "5",
+      "detour": "~outbound~"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "default_domain_resolver": {
+      "server": "dns-local",
+      "strategy": "ipv4_only"
+    },
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "port": [
+          5353,
+          5355
+        ],
+        "outbound": "direct"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "port": 853,
+        "action": "reject"
+      },
+      {
+        "domain_suffix": [
+          "cloudflare-dns.com",
+          "one.one.one.one",
+          "dns.nextdns.io",
+          "quad9.net",
+          "doh.opendns.com",
+          "adguard-dns.com",
+          "dns.adguard.com",
+          "cleanbrowsing.org",
+          "dns.sb",
+          "doh.pub",
+          "dot.pub",
+          "dns.alidns.com",
+          "doh.360.cn",
+          "dns.switch.ch",
+          "dns.mullvad.net",
+          "dns.controld.com",
+          "dns.google"
+        ],
+        "port": 443,
+        "action": "reject"
+      },
+      {
+        "ip_cidr": [
+          "1.1.1.1/32",
+          "1.0.0.1/32",
+          "9.9.9.9/32",
+          "149.112.112.112/32",
+          "208.67.222.222/32",
+          "208.67.220.220/32",
+          "94.140.14.14/32",
+          "94.140.15.15/32",
+          "8.8.8.8/32",
+          "8.8.4.4/32"
+        ],
+        "port": 443,
+        "action": "reject"
+      },
+      {
+        "protocol": "icmp",
+        "outbound": "direct"
+      },
+      {
+        "ip_cidr": [
+          "8.8.8.8/32",
+          "8.8.4.4/32"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "ip_cidr": [
+          "~relay_ips~"
+        ],
+        "outbound": "~outbound~"
+      },
+      {
+        "domain": [
+          "~domain~",
+          "~relay_domains~"
+        ],
+        "outbound": "~outbound~"
+      },
+      {
+        "clash_mode": "WARP",
+        "network": "udp",
+        "port": 443,
+        "action": "reject"
+      },
+      {
+        "clash_mode": "WARP",
+        "outbound": "warpSOCKS5"
+      },
+      {
+        "clash_mode": "GLOBAL",
+        "outbound": "~outbound~"
+      },
+      {
+        "inbound": "in",
+        "action": "resolve",
+        "server": "dns_direct",
+        "strategy": "prefer_ipv4"
+      },
+      {
+        "addruleset": true,
+        "outbound": "domain_warp"
+      },
+      {
+        "inbound": "in",
+        "action": "sniff",
+        "timeout": "1s"
+      },
+      {
+        "addruleset": true,
+        "outbound": "warpSOCKS5"
+      },
+      {
+        "addruleset": true,
+        "outbound": "direct"
+      },
+      {
+        "addruleset": true,
+        "createruleset": [
+          {
+            "name": "pac",
+            "interval": "30s",
+            "rules": [
+              {
+                "domain_suffix": "~pac~"
+              }
+            ]
+          }
+        ],
+        "outbound": "~outbound~"
+      },
+      {
+        "addruleset": true,
+        "createruleset": [
+          {
+            "name": "subnet",
+            "interval": "30s",
+            "rules": [
+              {
+                "ip_cidr": "~subnet~"
+              }
+            ]
+          }
+        ],
+        "outbound": "~outbound~"
+      },
+      {
+        "addruleset": true,
+        "createruleset": [
+          {
+            "name": "package",
+            "interval": "30s",
+            "rules": [
+              {
+                "package_name": "~package~"
+              }
+            ]
+          }
+        ],
+        "outbound": "~outbound~"
+      },
+      {
+        "addruleset": true,
+        "createruleset": [
+          {
+            "name": "process",
+            "interval": "30s",
+            "rules": [
+              {
+                "process_name": "~process~"
+              }
+            ]
+          }
+        ],
+        "outbound": "~outbound~"
+      },
+      {
+        "addruleset": true,
+        "createruleset": [
+          {
+            "name": "block",
+            "interval": "30s",
+            "rules": [
+              {
+                "domain_suffix": "~block~"
+              }
+            ]
+          }
+        ],
+        "action": "reject"
+      },
+      {
+        "addruleset": true,
+        "createruleset": [
+          {
+            "name": "warp",
+            "interval": "30s",
+            "rules": [
+              {
+                "domain_suffix": "~warp~"
+              }
+            ]
+          }
+        ],
+        "outbound": "~outbound~"
+      }
+    ],
+    "final": "direct"
+  }
+}

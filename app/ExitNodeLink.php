@@ -7,7 +7,7 @@ require_once __DIR__ . '/Lang.php';
  *
  * Узел — другой сервер с vpnbot; его «Профиль для узла» выдаёт обычную ссылку
  * пользователя (Bot::linkXray). Принимаются ровно её форматы: VLESS с REALITY,
- * TLS + WebSocket или TLS + XHTTP (с VLESS Encryption или без) и Trojan с TLS +
+ * TLS + WebSocket, XHTTP или gRPC (с VLESS Encryption или без) и Trojan с TLS +
  * gRPC. Соединение без проверки сервера (security=none, allowInsecure) не
  * принимается: узел получает весь трафик выбранных доменов пользователей.
  *
@@ -114,7 +114,6 @@ final class ExitNodeLink
             if (!preg_match('~^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$~D', strtolower($credential))) {
                 throw new InvalidArgumentException(Lang::t('неверный UUID пользователя', 'invalid user UUID'));
             }
-            if ($type === 'grpc') throw new InvalidArgumentException(Lang::t('VLESS с gRPC бот не выдаёт', 'the bot does not issue VLESS over gRPC'));
             $encryption = $q['encryption'] ?? 'none';
             if ($encryption !== 'none' && !preg_match('~^mlkem768x25519plus\.(native|xorpub|random)\.(0rtt|1rtt)\.[A-Za-z0-9_-]{40,3000}(?:\.[A-Za-z0-9_-]{40,3000})*$~D', $encryption)) {
                 throw new InvalidArgumentException(Lang::t('неверный VLESS Encryption', 'invalid VLESS Encryption'));

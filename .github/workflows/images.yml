@@ -101,7 +101,7 @@ jobs:
           persist-credentials: false
       - run: touch override.env
       - name: Проверить домашний тестовый хост перед сборкой
-        if: inputs.test_runner
+        if: (runner.environment == 'self-hosted')
         run: |
           test "$(cat /etc/vpnbot-ci-test-host)" = home-build
           # Публикация вызывает gh; на GitHub-hosted он предустановлен, здесь — нет.
@@ -121,13 +121,13 @@ jobs:
       - uses: ./.github/actions/setup-buildx
         with:
           driver-opts: |
-            ${{ inputs.test_runner && 'memory=3g' || '' }}
-            ${{ inputs.test_runner && 'memory-swap=4g' || '' }}
-            ${{ inputs.test_runner && 'cpu-period=100000' || '' }}
-            ${{ inputs.test_runner && 'cpu-quota=200000' || '' }}
+            ${{ (runner.environment == 'self-hosted') && 'memory=3g' || '' }}
+            ${{ (runner.environment == 'self-hosted') && 'memory-swap=4g' || '' }}
+            ${{ (runner.environment == 'self-hosted') && 'cpu-period=100000' || '' }}
+            ${{ (runner.environment == 'self-hosted') && 'cpu-quota=200000' || '' }}
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = ${{ inputs.test_runner && 4 || 1 }}
+              max-parallelism = ${{ (runner.environment == 'self-hosted') && 4 || 1 }}
               maxUsedSpace = "4GB"
               minFreeSpace = "3GB"
       # Сетевые шаги повторяются здесь же: перезапуск задания стоит полной
@@ -151,7 +151,7 @@ jobs:
             *.platform=linux/amd64
             *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
             *.cache-from=type=gha,scope=${{ matrix.service }}
-            *.cache-to=${{ inputs.test_runner && 'type=inline' || format('type=gha,mode=max,scope={0}', matrix.service) }}
+            *.cache-to=${{ (runner.environment == 'self-hosted') && 'type=inline' || format('type=gha,mode=max,scope={0}', matrix.service) }}
             *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             *.labels.org.opencontainers.image.revision=${{ github.sha }}
       # Сбой получения базового образа с Docker Hub длится дольше полуминуты:
@@ -173,7 +173,7 @@ jobs:
             *.platform=linux/amd64
             *.tags=ghcr.io/axiomshiftbit/vpnbot-${{ matrix.image }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
             *.cache-from=type=gha,scope=${{ matrix.service }}
-            *.cache-to=${{ inputs.test_runner && 'type=inline' || format('type=gha,mode=max,scope={0}', matrix.service) }}
+            *.cache-to=${{ (runner.environment == 'self-hosted') && 'type=inline' || format('type=gha,mode=max,scope={0}', matrix.service) }}
             *.labels.org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             *.labels.org.opencontainers.image.revision=${{ github.sha }}
       - name: Проверить версии sing-box, Mihomo и Mieru
@@ -410,7 +410,7 @@ jobs:
           name: descriptor-${{ matrix.image }}
           path: ${{ runner.temp }}/descriptor/*.json
       - name: Освободить локальную копию проверенного образа на резервном runner
-        if: always() && inputs.test_runner
+        if: always() && (runner.environment == 'self-hosted')
         env:
           IMAGE_NAME: ${{ matrix.image }}
         run: |
@@ -532,14 +532,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Загрузить точные образы и проверенные тестовые клиенты
-        run: python3 scripts/ci_hosted_test.py assets ${{ inputs.test_runner && '--local-test' || '' }} --manifest "$RUNNER_TEMP/bundle.json"
+        run: python3 scripts/ci_hosted_test.py assets ${{ (runner.environment == 'self-hosted') && '--local-test' || '' }} --manifest "$RUNNER_TEMP/bundle.json"
       - name: Удалить доступ к registry перед запуском VPN-стенда
         if: always()
         run: docker logout ghcr.io
       - name: Чистая установка, протоколы, бэкап, восстановление и откат
         run: |
           sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
-            python3 scripts/ci_hosted_test.py test ${{ inputs.test_runner && '--local-test' || '' }} \
+            python3 scripts/ci_hosted_test.py test ${{ (runner.environment == 'self-hosted') && '--local-test' || '' }} \
             --manifest "$RUNNER_TEMP/bundle.json" --output "$RUNNER_TEMP/native.json"
       - uses: ./.github/actions/upload-artifact
         with:
@@ -550,7 +550,7 @@ jobs:
         run: |
           if sudo test -f /opt/vpnbot-hosted-ci/owner; then
             sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
-              python3 scripts/ci_hosted_test.py cleanup ${{ inputs.test_runner && '--local-test' || '' }}
+              python3 scripts/ci_hosted_test.py cleanup ${{ (runner.environment == 'self-hosted') && '--local-test' || '' }}
           fi
   publish:
     needs: [build, tests, bundle, security, native]

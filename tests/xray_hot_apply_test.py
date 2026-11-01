@@ -27,6 +27,19 @@ def config():
 
 
 class HotPlanTest(unittest.TestCase):
+    def test_node_ipv6_user_revocation_covers_both_listeners(self):
+        old = config()
+        old['policy']['levels']['0']['statsUserOnline'] = True
+        node = copy.deepcopy(old['inbounds'][1])
+        node.update(tag='node6-reality', listen='fd42:7662:6::9')
+        old['inbounds'].append(node)
+        new = copy.deepcopy(old)
+        for inbound in new['inbounds'][1:]:
+            inbound['settings']['clients'][0]['id'] = 'rotated'
+        plan = hot.plan(old, new)
+        self.assertEqual({r['tag'] for r in plan['revoke']}, {'vless', 'node6-reality'})
+        self.assertEqual({r['tag'] for r in plan['inbounds']}, {'vless', 'node6-reality'})
+
     def test_noop(self):
         self.assertEqual(hot.plan(config(), config()), {'outbounds': [], 'inbounds': [], 'routing': None, 'revoke': []})
 

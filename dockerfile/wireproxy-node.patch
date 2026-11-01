@@ -1,0 +1,75 @@
+--- a/cmd/wireproxy/main.go
++++ b/cmd/wireproxy/main.go
+@@ -143,7 +143,7 @@
+ 		case *wireproxyawg.HTTPConfig:
+ 			rules = append(rules, landlock.BindTCP(extractPort(section.BindAddress)))
+ 		case *wireproxyawg.TCPClientTunnelConfig:
+-			rules = append(rules, landlock.ConnectTCP(uint16(section.BindAddress.Port)))
++			rules = append(rules, landlock.BindTCP(uint16(section.BindAddress.Port)))
+ 		case *wireproxyawg.Socks5Config:
+ 			rules = append(rules, landlock.BindTCP(extractPort(section.BindAddress)))
+ 		}
+--- a/routine.go
++++ b/routine.go
+@@ -198,8 +198,33 @@
+ 	}
+ }
+ 
++// tcpRelay preserves EOF in one direction while the other still carries a
++// response. Closing both sockets after the first Copy truncates half-closed
++// requests; all early dial failures must also close the accepted connection.
++func tcpRelay(left net.Conn, right net.Conn) {
++	defer left.Close()
++	defer right.Close()
++	var finished sync.WaitGroup
++	finished.Add(2)
++	copyOne := func(from net.Conn, to net.Conn) {
++		defer finished.Done()
++		if _, err := io.Copy(to, from); err != nil {
++			_ = left.Close()
++			_ = right.Close()
++		} else if writer, ok := to.(interface{ CloseWrite() error }); ok {
++			_ = writer.CloseWrite()
++		} else {
++			_ = to.Close()
++		}
++	}
++	go copyOne(left, right)
++	go copyOne(right, left)
++	finished.Wait()
++}
++
+ // tcpClientForward starts a new connection via wireguard and forward traffic from `conn`
+ func tcpClientForward(vt *VirtualTun, raddr *addressPort, conn net.Conn) {
++	defer conn.Close()
+ 	target, err := vt.resolveToAddrPort(raddr)
+ 	if err != nil {
+ 		errorLogger.Printf("TCP Server Tunnel to %s: %s\n", target, err.Error())
+@@ -214,8 +239,7 @@
+ 		return
+ 	}
+ 
+-	go connForward(sconn, conn)
+-	go connForward(conn, sconn)
++	tcpRelay(conn, sconn)
+ }
+ 
+ // STDIOTcpForward starts a new connection via wireguard and forward traffic from `conn`
+@@ -277,6 +301,7 @@
+ 
+ // tcpServerForward starts a new connection locally and forward traffic from `conn`
+ func tcpServerForward(vt *VirtualTun, raddr *addressPort, conn net.Conn) {
++	defer conn.Close()
+ 	target, err := vt.resolveToAddrPort(raddr)
+ 	if err != nil {
+ 		errorLogger.Printf("TCP Server Tunnel to %s: %s\n", target, err.Error())
+@@ -291,8 +316,7 @@
+ 		return
+ 	}
+ 
+-	go connForward(sconn, conn)
+-	go connForward(conn, sconn)
++	tcpRelay(conn, sconn)
+ 
+ }
+ 

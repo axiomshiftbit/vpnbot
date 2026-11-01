@@ -584,6 +584,9 @@ services:
             - ./config/xray.json:/xray.json:ro
             - ./scripts/start_xray.sh:/start_xray.sh
             - ./scripts/xray_hot_apply.py:/xray_hot_apply.py:ro
+            - ./scripts/node_awg_client.py:/node-carrier/node_awg_client.py:ro
+            - ./scripts/node_awg.py:/node-carrier/node_awg.py:ro
+            - ./scripts/node_wg.py:/node-carrier/node_wg.py:ro
             - ./logs:/logs
         hostname: xray
         container_name: xray-${VER}

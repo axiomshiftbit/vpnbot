@@ -15,6 +15,7 @@ require_once __DIR__ . '/BotTelemtActivity.php';
 require_once __DIR__ . '/BotBackup.php';
 require_once __DIR__ . '/BotXdrive.php';
 require_once __DIR__ . '/BotExitNodes.php';
+require_once __DIR__ . '/BotManagedNodes.php';
 require_once __DIR__ . '/BotOvpn.php';
 require_once __DIR__ . '/BotWarpMasque.php';
 require_once __DIR__ . '/BotAcme.php';
@@ -34,6 +35,7 @@ class Bot
     use BotBackup;
     use BotXdrive;
     use BotExitNodes;
+    use BotManagedNodes;
     use BotOvpn;
     use BotWarpMasque;
     use BotAcme;
@@ -226,6 +228,8 @@ class Bot
     // Замеры загрузки процессора для оповещения (шаг cron checkCpuLoad).
     public array $cpuWatch = ['prev' => null, 'at' => 0, 'samples' => [], 'alert' => false];
     public $time_relayhealth;
+    public $time_relaydns;
+    private bool $defaultTemplatesChecked = false;
     public $time_xraycore;
     // Кеш пробы контейнера xr на время запроса — см. xrayCoreProbe().
     private ?array $xrProbe = null;
@@ -798,6 +802,66 @@ class Bot
             case preg_match('~^/xdriveProfile ([a-f0-9]{16})$~', $this->input['callback'], $m):
                 $this->xdriveProfile($m[1]);
                 break;
+            case preg_match('~^/nodes$~', $this->input['callback'], $m):
+                $this->managedNodesMenu();
+                break;
+            case preg_match('~^/nodeAdd$~', $this->input['callback'], $m):
+                $this->managedNodeAddPrompt();
+                break;
+            case preg_match('~^/node ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodeMenu($m[1]);
+                break;
+            case preg_match('~^/nodeConnect ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodeConnectPrompt($m[1]);
+                break;
+            case preg_match('~^/nodeSsh ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodeSshPrompt($m[1]);
+                break;
+            case preg_match('~^/nodeRebind ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodeRebindPrompt($m[1]);
+                break;
+            case preg_match('~^/nodeRefresh ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodeRefresh($m[1]);
+                break;
+            case preg_match('~^/nodeSettings ([a-f0-9]{8}) ([a-z]+)$~', $this->input['callback'], $m):
+                $this->managedNodeSettingsMenu($m[1], $m[2]);
+                break;
+            case preg_match('~^/nodeField ([a-f0-9]{8}) ([A-Za-z0-9_.]+)$~', $this->input['callback'], $m):
+                $this->managedNodeField($m[1], $m[2]);
+                break;
+            case preg_match('~^/nodeChoice ([a-f0-9]{8}) ([A-Za-z0-9_.]+) ([A-Za-z0-9_-]+)$~', $this->input['callback'], $m):
+                $this->managedNodeChoice($m[1], $m[2], $m[3]);
+                break;
+            case preg_match('~^/nodeApply ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodeApply($m[1]);
+                break;
+            case preg_match('~^/nodeDiscard ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodeDiscard($m[1]);
+                break;
+            case preg_match('~^/nodeMaintenance ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodeMaintenance($m[1]);
+                break;
+            case preg_match('~^/nodePeers ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodePeersMenu($m[1]);
+                break;
+            case preg_match('~^/nodePeerAdd ([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->managedNodePeerAddPrompt($m[1]);
+                break;
+            case preg_match('~^/nodePeer ([a-f0-9]{8}) ([a-f0-9]{10})$~', $this->input['callback'], $m):
+                $this->managedNodePeerMenu($m[1], $m[2]);
+                break;
+            case preg_match('~^/nodePeerDo ([a-f0-9]{8}) ([a-f0-9]{10}) (on|off|rotate|delete)(?: (yes))?$~', $this->input['callback'], $m):
+                $this->managedNodePeerAction($m[1], $m[2], $m[3], isset($m[4]));
+                break;
+            case preg_match('~^/nodePeerOut ([a-f0-9]{8}) ([a-f0-9]{10}) (link|json|sub)$~', $this->input['callback'], $m):
+                $this->managedNodePeerExport($m[1], $m[2], $m[3]);
+                break;
+            case preg_match('~^/nodeRun ([a-f0-9]{8}) ([a-z_]+)(?: (yes))?$~', $this->input['callback'], $m):
+                $this->managedNodeRun($m[1], $m[2], isset($m[3]));
+                break;
+            case preg_match('~^/nodeRestore ([a-f0-9]{8})(?: ([a-f0-9]{16}))?$~', $this->input['callback'], $m):
+                $this->managedNodeRestore($m[1], $m[2] ?? '');
+                break;
             case preg_match('~^/exits$~', $this->input['callback'], $m):
                 $this->exitNodesMenu();
                 break;
@@ -855,7 +919,13 @@ class Bot
             case preg_match('~^/exitCopyTo ([a-f0-9]{8}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitCopyTo($m[1], $m[2]);
                 break;
-            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Auto|Speed|Presets|CopyTo|Export|Import|Traf|TrafYes|Sub|SubNow|Settings|Diag) ([a-f0-9]{8})$~', $this->input['callback'], $m):
+            case preg_match('~^/exitDC ([a-f0-9]{8}) (k[a-f0-9]{12}) ([di]) (\d{1,5})$~', $this->input['callback'], $m):
+                $this->exitDatCats($m[1], $m[2], $m[3], (int) $m[4]);
+                break;
+            case preg_match('~^/exitDT ([a-f0-9]{8}) (k[a-f0-9]{12}) ([di]) (\d{1,5}) ([a-f0-9]{10})$~', $this->input['callback'], $m):
+                $this->exitDatToggle($m[1], $m[2], $m[3], (int) $m[4], $m[5]);
+                break;
+            case preg_match('~^/exit(Check|Refresh|Toggle|Quic|Name|Link|Del|DelYes|RtAdd|RtClear|RtClearYes|Yt|Sets|SetAdd|Dat|Auto|Speed|Presets|CopyTo|Export|Import|Traf|TrafYes|Sub|SubNow|Settings|Diag) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 match ($m[1]) {
                     'Settings' => $this->exitSettingsMenu($m[2]), 'Diag' => $this->exitDiagnosticsMenu($m[2]),
                     'TrafYes' => $this->exitTrafficReset($m[2], true), 'SubNow' => $this->exitSubscriptionRefresh($m[2]),
@@ -864,6 +934,7 @@ class Bot
                     'Export' => $this->exitExport($m[2]), 'Import' => $this->exitImportPrompt($m[2]),
                     'RtClear' => $this->exitRoutesClear($m[2]), 'RtClearYes' => $this->exitRoutesClear($m[2], true),
                     'Auto' => $this->exitAuto($m[2]),
+                    'Dat' => $this->exitDatMenu($m[2]),
                     'Check' => $this->exitCheck($m[2]), 'Refresh' => $this->exitRefresh($m[2]), 'Toggle' => $this->exitToggle($m[2]),
                     'Quic' => $this->exitQuic($m[2]), 'Name' => $this->exitNamePrompt($m[2]), 'Link' => $this->exitLinkPrompt($m[2]),
                     'Del' => $this->exitDelete($m[2]), 'DelYes' => $this->exitDelete($m[2], true), 'RtAdd' => $this->exitRouteAddPrompt($m[2]),
@@ -3529,6 +3600,11 @@ class Bot
 
     public function restartXray($c, $norestart = false)
     {
+        return $this->withXrayApplyLock(fn() => $this->applyXrayConfig($c, $norestart));
+    }
+
+    protected function withXrayApplyLock(callable $fn)
+    {
         // Отдельный от xrayConfUpdate лок: сериализует запись/API/полный старт,
         // включая старые вызывающие методы, не использующие xrayConfUpdate.
         $path = $this->xrayConf . '.apply.lock';
@@ -3543,7 +3619,7 @@ class Bot
                 if (microtime(true) >= $deadline) return false;
                 usleep(100000);
             }
-            return $this->applyXrayConfig($c, $norestart);
+            return $fn();
         } finally {
             flock($lock, LOCK_UN);
             fclose($lock);
@@ -3621,6 +3697,9 @@ class Bot
         // До гейтов ниже: они собирают теги всех входов с пользователями, и
         // вход XDRIVE должен получить те же запреты, что и основной.
         $this->ensureXdriveInbound($c, $pac);
+        // IPv6 enters directly after DNAT, while IPv4 keeps nginx's PROXY protocol.
+        // Clone before policy gates so the direct listener receives all restrictions.
+        $this->ensureNode6Inbound($c, $pac);
         $this->ensureTrustedXff($c);
         $this->ensureFreedomCompat($c);
         // Строго до ensureWgGuard(): тот кладёт свои гейты в голову правил, и
@@ -4108,7 +4187,14 @@ class Bot
 
             return;
         }
-        $this->writeXrayJson($json);
+        $this->withXrayApplyLock(function () use ($json, $c) {
+            $previous = $this->getXray() ?? [];
+            if ($this->writeXrayJson($json)) {
+                // HWID, шаблон и ссылка подписки также должны обновлять
+                // маркер, иначе следующая правка зря перезапустит ядро.
+                $this->tryXrayHotApply($previous, $c, 'sync');
+            }
+        });
     }
 
     // Запись xray.json ТОЛЬКО поверх существующего inode. Файл читается
@@ -6939,7 +7025,10 @@ NFT;
             'checkCpuLoad',
             'backfillSubTokens',
             'checkRelayHealth',
+            'resolveRelayHosts',
+            'ensureDefaultTemplates',
             'checkExitNodes',
+            'checkManagedNodes',
             'checkXrayCore',
             'checkRealityMask',
             'warmGeoCache',
@@ -7088,18 +7177,20 @@ NFT;
         if (empty($this->time_xray_stats) || time() - $this->time_xray_stats > 60) {
             $this->time_xray_stats = time();
             try {
-                $counters = $this->xrayStatCounters();
-                // Прочитать не удалось — прежние показания НЕ трогаем. Раньше
-                // сюда приезжали нули, и session (меню, панель подписки,
-                // квоты) на цикл обнулялся из-за лежащего контейнера.
-                if ($counters === null) {
-                    return;
-                }
-                // Порядок блокировок xray → xray-stats, как у restartXray()
+                // Порядок блокировок xray → apply → xray-stats, как у restartXray()
                 // (collectSession): с разделением cron перезапуск ядра из
-                // maintenance иначе свернул бы сессию между чтением и записью
-                // статистики здесь, и трафик посчитался бы неверно.
-                $this->withLock('xray', fn() => $this->withLock('xray-stats', fn() => $this->xrayStatsApply($counters)), 30);
+                // maintenance иначе свернул бы сессию между чтением API и
+                // записью. Снимок снимаем уже ПОД xray-lock: старый снимок
+                // после свёртки повторно начислял весь трафик прежней сессии.
+                // apply-lock также защищает от старых обработчиков меню,
+                // которые вызывают restartXray без внешнего xray-lock.
+                $this->withLock('xray', fn() => $this->withXrayApplyLock(function () {
+                    $counters = $this->xrayStatCounters();
+                    // Отказ API не обнуляет последний успешный снимок.
+                    if ($counters !== null) {
+                        $this->withLock('xray-stats', fn() => $this->xrayStatsApply($counters));
+                    }
+                }), 30);
             } catch (\Throwable $th) {
             }
         }
@@ -7840,6 +7931,9 @@ NFT;
     {
         $this->syncOcUsers();
         foreach ([$this->xrayConf, $this->hwid, '/config/xray.stats', '/config/ssserver.json', '/config/sslocal.json', '/config/ckserver.json', '/config/ckusers.json'] as $path) {
+            // После миграции экспорт читает HWID из SQLite. Старый JSON
+            // остаётся для отката и не должен блокировать актуальную копию.
+            if ($path === $this->hwid && $this->store() !== null) continue;
             if (is_file($path) && !is_array(json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR))) {
                 throw new RuntimeException($this->t('Повреждён файл конфигурации: ', 'Damaged configuration file: ') . basename($path));
             }
@@ -7957,6 +8051,7 @@ NFT;
         $paths['webapp/override.html'] = dirname($this->htpasswd) . '/override.html';
         $panel = getenv('PANEL_DIR') ?: "$root/panel";
         foreach (['password-display.key', 'password-display.json', 'initial_password.txt'] as $name) $paths['panel/' . $name] = "$panel/$name";
+        $paths += $this->managedNodeBackupPaths();
         return $paths;
     }
 
@@ -7965,6 +8060,9 @@ NFT;
         $path = $this->backupExtraPaths()[$name] ?? null;
         if ($path === null && preg_match('~^warp/(?:(?:clients/[a-zA-Z0-9_.-]{1,48}/)?wgcf-(?:account\.toml|profile\.conf)|masque/(?:device\.json|key\.pem|license\.sha256))$~D', $name)) {
             $path = $this->backupWarpRoot . '/' . substr($name, 5);
+        }
+        if ($path === null && preg_match('~^nodes/[a-f0-9]{8}/(?:key|key\.pub|endpoint\.json|snapshot\.json)$~D', $name)) {
+            $path = $this->managedNodeRoot . '/' . substr($name, 6);
         }
         if ($path === null || str_contains($name, '..')) throw new RuntimeException($this->t('Посторонний файл в бэкапе', 'A foreign file in the backup'));
         for ($p = $path; $p !== dirname($p); $p = dirname($p)) {
@@ -7975,6 +8073,8 @@ NFT;
 
     public function backupExtraFiles(): array
     {
+        $this->managedNodeBackupRefresh();
+        $this->managedNodeBackupCheck();
         $paths = $this->backupExtraPaths();
         foreach (['wgcf-account.toml', 'wgcf-profile.conf', 'clients/*/wgcf-account.toml', 'clients/*/wgcf-profile.conf'] as $pattern) {
             foreach (glob($this->backupWarpRoot . '/' . $pattern) ?: [] as $path) {
@@ -8048,7 +8148,7 @@ NFT;
             if ($hadPending && !@unlink($pending)) throw new RuntimeException($this->t('Не удалось восстановить дополнительный файл', 'Could not restore an additional file'));
             foreach ($decoded as $name => $body) {
                 $path = $this->backupExtraPath($name);
-                $mode = str_starts_with($name, 'warp/masque/') ? 0700 : 0755;
+                $mode = str_starts_with($name, 'warp/masque/') || str_starts_with($name, 'nodes/') ? 0700 : 0755;
                 if (!is_dir(dirname($path)) && !@mkdir(dirname($path), $mode, true)) throw new RuntimeException($this->t('Не удалось создать каталог восстановления', 'Could not create the restore directory'));
                 // Запись может отказать уже после rename (например, на fsync).
                 $written[] = $path;
@@ -8385,7 +8485,7 @@ NFT;
                 if ($datNeeded) {
                     $out[] = 'update dat';
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                    $this->datSync(true);
+                    if ($this->datSync(true)) $failed('DAT');
                 }
                 if (!$this->restoreBackupXray($json['xray'])) {
                     $xrayApplied = false;
@@ -15095,8 +15195,9 @@ DNS-over-HTTPS with IP:
     // GeoIPList: подряд идущие записи поля 1, у каждой первым полем код
     // категории. Читаются только заголовки записей, тела пропускаются: geoip.dat
     // весит десятки мегабайт. null — файл не этого формата.
-    public function datParseCategories(string $path): ?array
+    public function datParseCategories(string $path, ?array &$types = null): ?array
     {
+        $types = [];
         $size = (int) @filesize($path);
         $fh   = $size > 0 ? @fopen($path, 'rb') : false;
         if ($fh === false) {
@@ -15130,6 +15231,22 @@ DNS-over-HTTPS with IP:
                         return null;
                     }
                     $cats[strtolower($code)] = true;
+                    // GeoSite и GeoIP имеют одинаковую оболочку, но разный
+                    // wire type полей первого Domain/CIDR. Ядро может принять
+                    // чужой тип как пустой набор: одной run -test недостаточно.
+                    // Читаем только заголовок первого элемента, без загрузки
+                    // многомегабайтного тела категории. Неизвестное проверит ядро.
+                    $i += $l;
+                    if (($head[$i] ?? '') === "\x12" && $pos + $i < $next) {
+                        $i++;
+                        $itemLength = self::pbVarint($head, $i);
+                        if ($itemLength !== null && $itemLength > 0 && $pos + $i + $itemLength <= $next) {
+                            $wire = ord($head[$i] ?? "\x00");
+                            $types[strtolower($code)] = match ($wire) {
+                                0x08, 0x12 => 'domain', 0x0a, 0x10 => 'ip', default => null,
+                            };
+                        }
+                    }
                 }
                 $pos = $next;
             }
@@ -15147,12 +15264,27 @@ DNS-over-HTTPS with IP:
             return null;
         }
         clearstatcache(true, $path);
-        $key = $path . '|' . filemtime($path) . '|' . filesize($path);
+        $key = $path . '|' . fileinode($path) . '|' . filemtime($path) . '|' . filesize($path);
         if (!array_key_exists($key, $memo)) {
             if (count($memo) > 32) {
                 $memo = []; // cron живёт неделями, файлы меняются — не копим
             }
             $memo[$key] = $this->datParseCategories($path);
+        }
+        return $memo[$key];
+    }
+
+    public function datCategoryTypes(string $name): array
+    {
+        static $memo = [];
+        $path = $this->datPath($name);
+        clearstatcache(true, $path);
+        if (!is_file($path)) return [];
+        $key = $path . '|' . fileinode($path) . '|' . filemtime($path) . '|' . filesize($path);
+        if (!array_key_exists($key, $memo)) {
+            if (count($memo) > 32) $memo = [];
+            $this->datParseCategories($path, $types);
+            $memo[$key] = $types;
         }
         return $memo[$key];
     }
@@ -15174,18 +15306,26 @@ DNS-over-HTTPS with IP:
         $cats = $file === '' ? null : $this->datCategories($file);
         // «!» — отрицание у geoip, «@» — атрибут у geosite: к имени не относятся.
         $tag = explode('@', ltrim(strtolower(trim($tag)), '!'), 2)[0];
+        $kind = $this->datCategoryTypes($file)[$tag] ?? null;
+        $expected = in_array($c['kind'], ['geoip', 'extip'], true) ? 'ip' : 'domain';
+        if ($kind !== null && $kind !== $expected) {
+            return $this->t("категория $tag в файле $file содержит ", "category $tag in file $file contains ")
+                . ($kind === 'domain' ? $this->t('домены, а не IP-подсети', 'domains, not IP subnets') : $this->t('IP-подсети, а не домены', 'IP subnets, not domains'));
+        }
         if ($cats === null || $tag === '' || in_array($tag, $cats, true)) {
             return null;
         }
         return $this->t("в файле $file нет категории $tag", "there is no category $tag in the file $file");
     }
 
-    // Сколько включённых записей block/WARP ссылается на файл через ext:/extip:.
+    // Включённые ссылки ext:/extip: в основных списках и маршрутах узлов.
     public function datRefCount(array $conf, string $name): int
     {
         $count = 0;
-        foreach (self::ROUTE_ENTRY_LISTS as $list) {
-            foreach (array_keys(array_filter($conf[$list] ?? [])) as $e) {
+        $lists = array_map(static fn($list) => $conf[$list] ?? [], self::ROUTE_ENTRY_LISTS);
+        foreach ($this->exitNodes($conf) as $node) $lists[] = $node['routes'];
+        foreach ($lists as $entries) {
+            foreach (array_keys(array_filter($entries)) as $e) {
                 $c = $this->classifyRouteEntry((string) $e);
                 if (in_array($c['kind'], ['ext', 'extip'], true) && $this->routeEntryUsable($c)
                     && strcasecmp(basename(explode(':', (string) $c['value'], 2)[0]), $name) === 0
@@ -15215,6 +15355,7 @@ DNS-over-HTTPS with IP:
     {
         $config = $this->getXray();
         if (!is_array($config)) return true; // ещё нет серверных правил
+        $types = $this->datCategoryTypes($temporary);
         $used = false;
         foreach ($config['routing']['rules'] ?? [] as $i => $rule) {
             foreach (['domain', 'ip'] as $field) {
@@ -15225,6 +15366,8 @@ DNS-over-HTTPS with IP:
                     } elseif (str_starts_with($token, "ext:$name:")) {
                         $tag = substr($token, strlen("ext:$name:"));
                     } else continue;
+                    $category = explode('@', ltrim(strtolower($tag), '!'), 2)[0];
+                    if (isset($types[$category]) && $types[$category] !== $field) return false;
                     $config['routing']['rules'][$i][$field][$j] = "ext:$temporary:$tag";
                     $used = true;
                 }
@@ -20562,6 +20705,10 @@ DNS-over-HTTPS with IP:
                                 'callback_data' => "/menu tt",
                             ],
                         ],
+                        [[
+                            'text' => $this->t('🖥 Ноды', '🖥 Nodes'),
+                            'callback_data' => '/nodes',
+                        ]],
                         [
                             [
                                 'text'          => $this->i18n('config'),
@@ -22623,6 +22770,8 @@ DNS-over-HTTPS with IP:
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null)
     {
         $lock = @fopen("/logs/.lock.$name", 'c');
+        // Ошибка хранилища не разрешает конкурентную запись без блокировки.
+        if ($lock === false) return $busy;
         if ($lock !== false) {
             if ($timeout > 0) {
                 $deadline = microtime(true) + $timeout;
@@ -22634,7 +22783,7 @@ DNS-over-HTTPS with IP:
                     usleep(200000);
                 }
             } else {
-                flock($lock, LOCK_EX);
+                if (!flock($lock, LOCK_EX)) { fclose($lock); return $busy; }
             }
         }
         try {
@@ -25183,7 +25332,7 @@ DNS-over-HTTPS with IP:
                                     . "&path=%2Fws$hash"
                                     . "&host=$domain"
                                     . "&flow="
-                                    . "&mode=packet-up"
+                                    . "&mode=" . $this->xhttpClientMode()
                                     . "&extra=" . rawurlencode(json_encode($this->xhttpClientExtra(), JSON_UNESCAPED_SLASHES))
                                     . "&sni=$domain"
                                     . "&fp=$fp"
@@ -25461,6 +25610,157 @@ DNS-over-HTTPS with IP:
     public function writeRelayHealth(array $health): void
     {
         file_put_contents('/config/relay.health', json_encode($health, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    // Адреса relay в шаблонах подписок: адреса и домены своих серверов в шаблон
+    // не пишутся, их подставляет бот из раздела Relay (все каналы всех relay).
+    //  ~relay_hosts~   — ключ в словаре hosts (sing-box dns.servers[hosts].
+    //                    predefined, dns.hosts Xray, hosts Mihomo): на его место
+    //                    встают записи «домен relay → его IPv4»;
+    //  ~relay_ips~     — элемент списка: адреса relay в виде CIDR (/32, /128);
+    //  ~relay_domains~ — элемент списка: домены relay.
+    // В строке («IP-CIDR,~relay_ips~,PROXY» у Mihomo) строка повторяется для
+    // каждого значения. Пустое раскрытие: строка выпадает, а правило, у
+    // которого список стал пустым, удаляется — пустой список условий у
+    // sing-box и Xray совпадал бы со всем трафиком.
+    public const RELAY_TEMPLATE_PLACEHOLDERS = ['~relay_hosts~', '~relay_ips~', '~relay_domains~'];
+
+    // Хост из поля адреса relay: IP, [IPv6] или домен, возможно с портом.
+    public static function relayHost(string $address): string
+    {
+        $a = trim($address);
+        if (preg_match('~^\[([0-9a-f:.]+)\](?::\d+)?$~i', $a, $m)) return $m[1];
+        if (filter_var($a, FILTER_VALIDATE_IP)) return $a;
+        return strtolower(preg_replace('~:\d+$~', '', $a));
+    }
+
+    public function relayTemplateData(array $pac): array
+    {
+        $file = dirname($this->pac) . '/relay.dns.json';
+        $resolved = is_file($file) ? json_decode((string) file_get_contents($file), true) : [];
+        if (!is_array($resolved)) $resolved = [];
+        $hosts = $ips = $domains = [];
+        foreach ($pac['relays'] ?? [] as $r) {
+            foreach (is_array($r) ? $r : [] as $field => $value) {
+                if (($field !== 'address' && !str_ends_with((string) $field, '_address')) || !is_string($value) || trim($value) === '') continue;
+                $host = self::relayHost($value);
+                if (filter_var($host, FILTER_VALIDATE_IP)) {
+                    $ips[$host] = true;
+                } elseif (str_contains($host, '.') && filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)) {
+                    $domains[$host] = true;
+                    $list = array_values(array_filter((array) ($resolved[$host]['ips'] ?? []), static fn($ip) => is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)));
+                    if ($list) {
+                        $hosts[$host] = $list;
+                        foreach ($list as $ip) $ips[$ip] = true;
+                    }
+                }
+            }
+        }
+        $cidr = static fn($ip) => $ip . (str_contains($ip, ':') ? '/128' : '/32');
+        return ['hosts' => $hosts, 'ips' => array_map($cidr, array_keys($ips)), 'domains' => array_keys($domains)];
+    }
+
+    // Раскрытие плейсхолдеров relay в уже собранном конфиге (после replaceTags).
+    public static function expandRelayPlaceholders(array $node, array $relay): array
+    {
+        $values = ['~relay_ips~' => $relay['ips'], '~relay_domains~' => $relay['domains']];
+        $list = array_is_list($node);
+        $out = [];
+        foreach ($node as $key => $value) {
+            if (!$list && $key === '~relay_hosts~') {
+                foreach ($relay['hosts'] as $host => $ips) {
+                    if (!array_key_exists($host, $node)) $out[$host] = $ips;
+                }
+                continue;
+            }
+            if (is_string($value) && preg_match('/~relay_(?:ips|domains)~/', $value)) {
+                $name = str_contains($value, '~relay_ips~') ? '~relay_ips~' : '~relay_domains~';
+                if ($value === $name) {
+                    if ($list) {
+                        array_push($out, ...$values[$name]);
+                    } else {
+                        if (!$values[$name]) return ['~relay_drop~' => true];
+                        $out[$key] = $values[$name];
+                    }
+                    continue;
+                }
+                foreach ($values[$name] as $v) {
+                    $line = str_replace($name, $v, $value);
+                    if ($name === '~relay_ips~' && str_contains($v, ':') && str_starts_with($line, 'IP-CIDR,')) {
+                        $line = 'IP-CIDR6,' . substr($line, 8);
+                    }
+                    if ($list) $out[] = $line; else { $out[$key] = $line; break; }
+                }
+                if (!$list && !isset($out[$key])) return ['~relay_drop~' => true];
+                continue;
+            }
+            if (is_array($value)) {
+                $had = $value !== [] && array_is_list($value) && array_filter($value, static fn($v) => is_string($v) && preg_match('/~relay_(?:ips|domains)~/', $v));
+                $value = self::expandRelayPlaceholders($value, $relay);
+                if (isset($value['~relay_drop~']) || ($had && $value === [])) {
+                    if ($list) continue;
+                    return ['~relay_drop~' => true];
+                }
+            }
+            if ($list) $out[] = $value; else $out[$key] = $value;
+        }
+        return $out;
+    }
+
+    // Шаг cron: IPv4 доменов relay для ~relay_hosts~ и ~relay_ips~. Раз в
+    // 10 минут; подписка читает только файл и DNS не ждёт. Неразрешившийся
+    // домен сохраняет прежние адреса.
+    public function resolveRelayHosts(): void
+    {
+        if (!empty($this->time_relaydns) && time() - $this->time_relaydns < 600) return;
+        $pac = $this->getPacConf();
+        if (!is_array($pac)) return;
+        $this->time_relaydns = time();
+        $file = dirname($this->pac) . '/relay.dns.json';
+        $old = is_file($file) ? json_decode((string) file_get_contents($file), true) : [];
+        if (!is_array($old)) $old = [];
+        $new = [];
+        foreach ($this->relayTemplateData(['relays' => $pac['relays'] ?? []])['domains'] as $host) {
+            $ips = $this->resolveRelayIpv4($host);
+            $new[$host] = is_array($ips) && $ips
+                ? ['ips' => array_values(array_unique($ips)), 'at' => time()]
+                : ($old[$host] ?? ['ips' => [], 'at' => time()]);
+        }
+        if ($new !== $old) {
+            $this->writePrivateKey($file, json_encode($new, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        }
+    }
+
+    protected function resolveRelayIpv4(string $host): array|false
+    {
+        return @gethostbynamel($host);
+    }
+
+    // Добавить комплект один раз. Существующие одноимённые шаблоны, выбор
+    // по умолчанию и намеренное удаление администратором сохраняются.
+    public function ensureDefaultTemplates(): void
+    {
+        if ($this->defaultTemplatesChecked) return;
+        $this->withLock('pac', function () {
+            $pac = $this->getPacConf();
+            $changed = false;
+            foreach (['sing', 'clash'] as $type) {
+                foreach (glob(dirname(__DIR__) . "/config/templates/$type/*.json") ?: [] as $file) {
+                    $name = basename($file, '.json');
+                    if (!empty($pac['installed_templates'][$type][$name])) continue;
+                    if (!array_key_exists($name, $pac["{$type}templates"] ?? [])) {
+                        $template = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+                        $validation = $this->validateTemplate($type, $template);
+                        if (!$validation['ok'] || $validation['warnings']) throw new RuntimeException('Invalid bundled template: ' . $name);
+                        $pac["{$type}templates"][$name] = $template;
+                    }
+                    $pac['installed_templates'][$type][$name] = true;
+                    $changed = true;
+                }
+            }
+            if ($changed && !$this->setPacConf($pac)) throw new RuntimeException('Cannot install bundled templates');
+            $this->defaultTemplatesChecked = true;
+        });
     }
 
     // Short human label for a relay's last probe: "✅ 42ms", "⛔ error", or ''
@@ -25766,13 +26066,17 @@ DNS-over-HTTPS with IP:
             $this->xrConfirm($action, $i);
             return;
         }
-        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
-        if ($client === null || !hash_equals($this->xrClientKey($client), $key)) {
-            if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
-            $client === null ? $this->xray() : $this->userXr($i);
-            return;
-        }
-        $action === 'regenIdXr' ? $this->regenIdXr($i) : $this->rotateSubToken($i);
+        // delxr переиндексирует клиентов под этим же lock. Отпечаток и
+        // действие должны видеть один список, иначе ротация затронет соседа.
+        $this->withLock('xray', function () use ($action, $i, $key) {
+            $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
+            if ($client === null || !hash_equals($this->xrClientKey($client), $key)) {
+                if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
+                $client === null ? $this->xray() : $this->userXr($i);
+                return;
+            }
+            $action === 'regenIdXr' ? $this->regenIdXr($i) : $this->rotateSubToken($i);
+        });
     }
 
     // Rotate a client's subtoken: previously shared/leaked sub URLs stop working,
@@ -27152,6 +27456,10 @@ DNS-over-HTTPS with IP:
         $rs['minClientVer'] = ((string) ($p['reality']['minClientVer'] ?? '')) ?: '0.0.0';
         $rs['maxClientVer'] = (string) ($p['reality']['maxClientVer'] ?? '');
         $rs['xver']         = max(0, (int) ($p['reality']['xver'] ?? 0));
+        if (in_array($rs['dest'] ?? '', ['10.10.1.2:443', '10.10.0.2:443'], true)) {
+            // Оба адреса — один штатный сайт: первый без PROXY, второй с ним.
+            $rs['dest'] = $rs['xver'] ? '10.10.0.2:443' : '10.10.1.2:443';
+        }
         if ($this->mldsaReady($p)) {
             $rs['mldsa65Seed'] = $p['reality']['mldsa65Seed'];
         } else {
@@ -27546,6 +27854,7 @@ DNS-over-HTTPS with IP:
 
     public function templates($type)
     {
+        $this->ensureDefaultTemplates();
         $pac    = $this->getPacConf();
         $domain = $this->getDomain();
         $hash   = $this->getHashBot();
@@ -27567,6 +27876,9 @@ DNS-over-HTTPS with IP:
             <code>~short_id~</code>
             <code>~email~</code>
             <code>~public_key~</code>
+            <code>~relay_hosts~</code>
+            <code>~relay_ips~</code>
+            <code>~relay_domains~</code>
             <code>~server_name~</code>
             <code>~fingerprint~</code>
             <code>~ip~</code>
@@ -27578,6 +27890,10 @@ DNS-over-HTTPS with IP:
         // чьё меню открыто, иначе подсказка отправляет класть плейсхолдер под
         // ключ, который клиент этого формата просто проигнорирует.
         $text[] = str_replace('%s', $type === 'sing' ? 'multiplex' : 'smux', $this->i18n('smux tpl hint'));
+        $text[] = $this->t(
+            'Готовые шаблоны добавляются один раз; ваши правки и удаление сохраняются. Relay: ~relay_hosts~ — ключ словаря hosts/predefined; ~relay_ips~ — элемент списка CIDR; ~relay_domains~ — элемент списка доменов. Адреса берутся из всех каналов меню Relay. DNS обновляется в фоне раз в 10 минут; при сбое сохраняется последний ответ. Пустое правило Relay удаляется.',
+            'Bundled templates are added once; your edits and deletions are preserved. Relay: ~relay_hosts~ is a hosts/predefined map key; ~relay_ips~ is a CIDR list item; ~relay_domains~ is a domain list item. All channels in the Relay menu supply addresses. DNS refreshes in the background every 10 minutes; a failure retains the last answer. Empty Relay rules are removed.'
+        );
         // ?? [] — до первого сохранённого шаблона ключа нет; ниже по нему идёт
         // foreach.
         $templates = $pac["{$type}templates"] ?? [];
@@ -27827,6 +28143,9 @@ DNS-over-HTTPS with IP:
     // Проба из контейнера xr — тем же путём, которым к маске ходит REALITY.
     public function realityMaskProbe(string $target, string $sni): array
     {
+        // openssl не добавляет PROXY-заголовок. Оба штатных входа ведут
+        // в тот же TLS server{} NGINX, поэтому проверяем его прямой вход.
+        if ($target === '10.10.0.2:443') $target = '10.10.1.2:443';
         $out = (string) $this->ssh(self::realityMaskCommand($target, $sni), 'xr');
         if ($this->sshFailed) {
             return ['status' => 'error', 'reason' => 'ssh', 'alpn' => '', 'record' => 0];
@@ -28715,6 +29034,12 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/relayMenu',
             ],
         ];
+        if ($p['transport'] == 'Reality') {
+            $data[array_key_last($data)][] = [
+                'text'          => $this->i18n('selfFakeDomain'),
+                'callback_data' => '/selfFakeDomain',
+            ];
+        }
         $data[] = [
             [
                 'text'          => $this->i18n('RLTY') . ' ' . ($p['transport'] == 'Reality' ? $this->i18n('on') : $this->i18n('off')),
@@ -28812,10 +29137,6 @@ DNS-over-HTTPS with IP:
                 [
                     'text'          => $this->i18n('changeFakeDomain'),
                     'callback_data' => "/changeFakeDomain",
-                ],
-                [
-                    'text'          => $this->i18n('selfFakeDomain'),
-                    'callback_data' => "/selfFakeDomain",
                 ],
                 [
                     'text'          => '🔍 ' . $this->i18n('check fake domain'),
@@ -32236,15 +32557,13 @@ DNS-over-HTTPS with IP:
                             "network"  => "xhttp",
                             "security" => "tls",
 
-                            // mode пинуем на packet-up, а не auto: при TLS+h2 auto
-                            // выбрал бы stream-up, а он за nginx требует grpc_pass
-                            // (см. XHTTP: Beyond REALITY). Локация /ws у нас на
-                            // proxy_pass и обслуживает ещё и websocket, поэтому
-                            // единственный совместимый режим — packet-up.
-                            // Сервер слушает mode=auto и принимает его.
+                            // Режим — явный, а не auto: stream-up, если /ws в
+                            // nginx переключён на grpc_pass, иначе packet-up
+                            // (см. xhttpClientMode()). Сервер слушает mode=auto
+                            // и принимает любой.
                             "xhttpSettings" => [
                                 "host"  => "~domain~",
-                                "mode"  => "packet-up",
+                                "mode"  => $this->xhttpClientMode(),
                                 "path"  => "/ws$hash",
                                 "extra" => $this->xhttpClientExtra(),
                             ],
@@ -32346,6 +32665,9 @@ DNS-over-HTTPS with IP:
                         // max_connections держим на "0": при обоих ненулевых форк
                         // отвечает "max_connections cannot be specified together
                         // with max_concurrency".
+                        // packet-up и при grpc_pass в /ws: он проходит через
+                        // оба обработчика nginx, а stream-up форков sing-box
+                        // не проверен.
                         $c['outbounds'][$index]["transport"] = [
                             "type" => "xhttp",
                             "host" => "~domain~",
@@ -32453,10 +32775,12 @@ DNS-over-HTTPS with IP:
                         // т.е. вдвое меньше параллелизма и переоткрытие соединения
                         // каждые 100-200 POST'ов (в packet-up один POST = один
                         // запрос, это секунды). Дефолт xray — 600-900.
+                        // Режим — как у Xray (xhttpClientMode()): mihomo 1.19.33
+                        // проверен в stream-up через grpc_pass.
                         $c['proxies'][$index]['xhttp-opts'] = [
                             'host'                     => '~domain~',
                             'path'                     => "/ws$hash",
-                            'mode'                     => 'packet-up',
+                            'mode'                     => $this->xhttpClientMode(),
                             'no-grpc-header'           => false,
                             'x-padding-bytes'          => '100-1000',
                             'sc-max-each-post-bytes'   => 1000000,
@@ -32607,6 +32931,8 @@ DNS-over-HTTPS with IP:
             '~ip~'           => $this->ip,
             '~outbound~'     => $outbound,
         ]), true);
+
+        $c = self::expandRelayPlaceholders($c, $this->relayTemplateData($pac));
 
         if ($connectionOnly) {
             return json_encode($c,
@@ -33867,6 +34193,36 @@ DNS-over-HTTPS with IP:
     // может принимать запросы: HTTP/1-ответ WS нельзя читать как HTTP/2 frame.
     // Старые ссылки получают 404, пока пользователь не обновит подписку.
     // Чужие backend/location и другие inbound Xray не изменяются.
+    //
+    // В /ws две строки обработчика с метками, активна одна: WebSocket — через
+    // proxy_pass (HTTP/1.1 с Upgrade, так у XTLS/Xray-examples VLESS-WSS-Nginx),
+    // XHTTP — через grpc_pass, то есть HTTP/2 без TLS до Xray. Это официальная
+    // схема XHTTP за nginx для stream-up и stream-one (XTLS/Xray-core#4113:
+    // «proxy_pass заменить на grpc_pass»); packet-up через неё тоже проходит,
+    // поэтому старые подписки после переключения продолжают работать.
+    // Установки до разметки получают строки здесь же (и в холодной миграции
+    // protocol_modules.py — тот же результат).
+    // client_body_timeout: в stream-up тело POST — весь поток выгрузки, и при
+    // скачивании без выгрузки умолчание nginx (60 с между чтениями) рвало
+    // туннель на 60–80-й секунде (замер 2026-10-31). Простой ограничивает сам
+    // Xray (connIdle 300 с), как в официальных примерах XTLS/Xray-examples.
+    // packet-up (/ws/session/seq) читает тело до проверки VLESS: для него
+    // оставляем 60 с. Это относится и к некорректному номеру пакета.
+    public const NGINX_XRAY_H1  = 'vpnbot-xray-h1';
+    public const NGINX_XHTTP_H2 = 'vpnbot-xhttp-h2';
+    public const NGINX_XHTTP_LINES = [
+        'proxy_pass http://xr_backend; # vpnbot-xray-h1',
+        '# grpc_pass grpc://xr_backend; # vpnbot-xhttp-h2',
+        'grpc_set_header Host $host;',
+        'grpc_set_header X-Real-IP $remote_addr;',
+        'grpc_set_header X-Forwarded-For $remote_addr;',
+        'grpc_socket_keepalive on;',
+        'grpc_read_timeout 5d;',
+        'grpc_send_timeout 5d;',
+        'client_body_timeout 5d;',
+        '# location ~ ^/[^/]+/[^/]+/[^/]+ { grpc_pass grpc://xr_backend; client_body_timeout 60s; } # vpnbot-xhttp-packet-timeout',
+    ];
+
     public static function xrayNginxRoutes(string $text, array $xray): string
     {
         $networks = [];
@@ -33884,11 +34240,45 @@ DNS-over-HTTPS with IP:
             static function ($m) use ($networks) {
                 $backend = $m[2] === 'grpc' ? '~\bgrpc_pass\s+grpc://xr:443\s*;~' : '~\bproxy_pass\s+http://xr_backend\s*;~';
                 if (!preg_match($backend, $m[3])) return $m[0];
-                $active = $m[2] === 'grpc' ? in_array('grpc', $networks, true) : (bool) array_intersect(['ws', 'xhttp'], $networks);
-                if ($active) return $m[0];
                 preg_match('~^([ \t]*(?:#[ \t]*)?)location~', $m[1], $prefix);
-                return $m[1] . "\n" . $prefix[1] . '    return 404; # vpnbot-inactive-xray-route' . $m[3];
+                $body = $m[2] === 'ws'
+                    ? self::xrayNginxHandler($m[3], str_contains($prefix[1], '#'), in_array('xhttp', $networks, true))
+                    : $m[3];
+                $active = $m[2] === 'grpc' ? in_array('grpc', $networks, true) : (bool) array_intersect(['ws', 'xhttp'], $networks);
+                if ($active) return $m[1] . $body;
+                return $m[1] . "\n" . $prefix[1] . '    return 404; # vpnbot-inactive-xray-route' . $body;
             }, $text);
+    }
+
+    // $commented — блок целиком закомментирован (копия #-domain): к его «#»
+    // добавляется или снимается второй.
+    private static function xrayNginxHandler(string $body, bool $commented, bool $h2): string
+    {
+        $lead = $commented ? '[ \t]*#[ \t]*' : '[ \t]*';
+        $body = preg_replace_callback('~^(' . $lead . ')proxy_pass\s+http://xr_backend\s*;[ \t]*$~m',
+            static fn($l) => implode("\n", array_map(static fn($line) => $l[1] . $line, self::NGINX_XHTTP_LINES)), $body, 1);
+        // Обновление уже размеченного HTTP/2-блока; старые строки сохраняются.
+        if (!str_contains($body, 'vpnbot-xhttp-packet-timeout')) {
+            $body = preg_replace_callback('~^(' . $lead . ')(?:#[ \t]*)?grpc_pass[^\n]*# ' . self::NGINX_XHTTP_H2 . '[ \t]*$~m',
+                static fn($l) => $l[0] . "\n" . $l[1] . self::NGINX_XHTTP_LINES[array_key_last(self::NGINX_XHTTP_LINES)], $body, 1);
+        }
+        $body = preg_replace_callback('~^(' . $lead . ')(?:#[ \t]*)?(location[^\n]*# vpnbot-xhttp-packet-timeout)[ \t]*$~m',
+            static fn($l) => $l[1] . ($h2 ? '' : '# ') . $l[2], $body);
+        $want = $h2 ? self::NGINX_XHTTP_H2 : self::NGINX_XRAY_H1;
+        return preg_replace_callback('~^(' . $lead . ')(?:#[ \t]*)?((?:proxy|grpc)_pass\s[^\n]*?# (' . self::NGINX_XRAY_H1 . '|' . self::NGINX_XHTTP_H2 . '))[ \t]*$~m',
+            static fn($l) => $l[1] . ($l[3] === $want ? '' : '# ') . $l[2], $body);
+    }
+
+    // Режим клиентов XHTTP. stream-up (один поток выгрузки вместо потока POST)
+    // официально требует grpc_pass, поэтому выдаётся только когда он активен
+    // в рабочем nginx.conf (тот же файл смонтирован в ng). Иначе — packet-up,
+    // который проходит и через proxy_pass: установка, где миграция не дошла,
+    // или свой обработчик /ws.
+    public function xhttpClientMode(): string
+    {
+        $path = dirname($this->xrayConf) . '/nginx.conf';
+        $conf = is_file($path) ? (string) file_get_contents($path) : '';
+        return preg_match('~^[ \t]*grpc_pass\s[^\n#]*;[ \t]*# ' . self::NGINX_XHTTP_H2 . '[ \t]*$~m', $conf) ? 'stream-up' : 'packet-up';
     }
 
     public function syncXrayNginxRoutes(array $xray): bool
@@ -35612,13 +36002,24 @@ DNS-over-HTTPS with IP:
         }
         $c = $this->getXray();
         $p = $this->getPacConf();
+        $before = $p;
+        $beforeXray = $c;
+        $destination = $self ? (!empty($p['reality']['xver']) ? '10.10.0.2:443' : '10.10.1.2:443') : "$domain:443";
         $c['inbounds'][0]['streamSettings']['realitySettings']['serverNames'][0] = $domain;
-        $c['inbounds'][0]['streamSettings']['realitySettings']['dest'] = $self ? "10.10.1.2:443" : "$domain:443";
+        $c['inbounds'][0]['streamSettings']['realitySettings']['dest'] = $destination;
         $p['reality']['domain'] = $domain;
-        $p['reality']['destination'] = $self ? "10.10.1.2:443" : "$domain:443";
-        $this->setPacConf($p);
-        $this->restartXray($c);
-        $this->setUpstreamDomain($domain);
+        $p['reality']['destination'] = $destination;
+        if ($this->setPacConf($p) === false || $this->restartXray($c) === false) {
+            $this->setPacConf($before);
+            $this->send($this->input['chat'], $this->i18n('reality mask not applied'), $this->input['message_id']);
+            return $this->xray();
+        }
+        if ($this->setUpstreamDomain($domain) === false) {
+            $this->setPacConf($before);
+            $this->restartXray($beforeXray);
+            $this->send($this->input['chat'], $this->i18n('reality mask not applied'), $this->input['message_id']);
+            return $this->xray();
+        }
         // Сразу проверить новую маску: меню ниже покажет предупреждение.
         $this->realityMaskCheck(true);
         $this->xray();

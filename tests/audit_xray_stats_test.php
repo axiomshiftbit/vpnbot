@@ -35,6 +35,8 @@ class XrStatsTestBot extends Bot
     public int $failWrites = 0;
     public array $deleted = [];
 
+    protected function withXrayApplyLock(callable $fn) { return $fn(); }
+
     public function getXray()
     {
         return $this->xray;

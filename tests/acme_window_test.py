@@ -94,7 +94,12 @@ nft = json.load(open(os.environ['FAKE_NFT_STATE']))
 a = sys.argv[1:]
 def record(entry):
     sc['calls'].append(entry)
-    json.dump(sc, open(sc_path, 'w'))
+    # Родитель опрашивает calls, пока этот процесс пишет результат.
+    # Обычный open('w') оставлял короткое окно с пустым JSON.
+    temporary = sc_path + '.tmp'
+    with open(temporary, 'w') as output:
+        json.dump(sc, output)
+    os.replace(temporary, sc_path)
 def window():
     return sorted(e['elem'] for v in nft['sets'].values() for e in v)
 if a[0] == 'ps':

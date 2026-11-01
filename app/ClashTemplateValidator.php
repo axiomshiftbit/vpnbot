@@ -15,6 +15,7 @@ class ClashTemplateValidator
         '~package~', '~subnet~', '~fingerprint~', '~ss~', '~t~', '~url~',
         '~warp_ip~', '~warp_mtu~', '~warp_port~', '~warp_private_key~',
         '~warp_public_key~', '~warp_server~',
+        '~relay_hosts~', '~relay_ips~', '~relay_domains~',
         // Мультиплекс: на месте значения ключа (multiplex/smux). Бот подставляет
         // блок или удаляет ключ целиком, если ядро апстримное либо smux выключен.
         // Форма с протоколом — '~smux:h2mux~', проверяется отдельно ниже.

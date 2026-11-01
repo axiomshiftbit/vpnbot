@@ -26,6 +26,9 @@ case "$(cat /logs/xray_core 2>/dev/null)" in
 esac
 mkdir -p /usr/local/bin
 ln -sf "$bin" /usr/local/bin/xray
+# Optional fixed AWG carriers are supervised separately from core restarts.
+# No keys are passed on the command line or written into logs.
+python3 -I /node-carrier/node_awg_client.py >/dev/null 2>&1 &
 uuid=$(jq -r '.inbounds[0].settings.clients[0].id // empty' /xray.json 2>/dev/null)
 if [ ! -x "$bin" ]; then
     # SSH остаётся доступен, чтобы выбрать имеющуюся версию из бота.

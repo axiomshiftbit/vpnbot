@@ -37,7 +37,7 @@ def ready():
 def row():
  try:return next((u for u in c.api('/v1/stats/users/quota')[1]['data']['users'] if u['username']=='alice'),None)
  except (OSError,KeyError,TypeError,ValueError):return None
-def state_row():return json.loads((c.root/'data/telemt.limit.json').read_text())['users'].get('alice',{})
+def state_row():return s.read()['users'].get('alice',{})
 def toml():return (c.root/'generated.toml').read_text()
 def boundary(period):
  now=datetime.now(timezone.utc);day=now.replace(hour=0,minute=0,second=0,microsecond=0)
@@ -72,7 +72,9 @@ try:
   check('traffic_with_period',works())
   check('core_writes_calendar',p.wait(lambda:state_row().get('quota_period')=='monthly' and state_row().get('period_cursor_epoch_secs',0)>0,20),state=state_row())
   cursor=state_row()['period_cursor_epoch_secs']
+  native_before=(c.root/'data/telemt.limit.json').read_bytes()
   s.checkpoint()
+  check('bot_checkpoint_does_not_overwrite_core',native_before==(c.root/'data/telemt.limit.json').read_bytes())
   check('bot_checkpoint_keeps_calendar',state_row().get('quota_period')=='monthly' and state_row()['period_cursor_epoch_secs']==cursor and state_row()['used_bytes']==c.used(),state=state_row())
   screen=call('click',op='limits')['screen']
   want=datetime.fromtimestamp(boundary('monthly'),timezone.utc).strftime('%Y-%m-%d %H:%M')
@@ -81,6 +83,16 @@ try:
   call('start');check('graceful_restart_with_period',p.wait(ready,10))
   check('restart_keeps_usage_and_calendar',c.used()==before and state_row().get('quota_period')=='monthly' and state_row()['period_cursor_epoch_secs']>=cursor
         and p.wait(lambda:(row() or {}).get('quota_schedule_state')=='active',20),used=c.used(),state=state_row(),row=row())
+  call('backup');saved_used=c.used();saved_cursor=state_row()['period_cursor_epoch_secs']
+  check('traffic_changes_usage_after_backup',works() and c.used()>saved_used)
+  call('click',op='period-daily-'+KEY)
+  check('changed_period_before_restore',p.wait(lambda:(row() or {}).get('active_quota_period')=='daily',20))
+  call('restore');check('backup_restore_starts_real_core',p.wait(ready,10))
+  check('backup_restore_exact_usage',c.used()==saved_used)
+  check('backup_restore_calendar',state_row().get('quota_period')=='monthly' and state_row()['period_cursor_epoch_secs']==saved_cursor
+        and p.wait(lambda:(row() or {}).get('active_quota_period')=='monthly',20) and row()['quota_next_reset_epoch_secs']==boundary('monthly'))
+  check('traffic_works_after_backup_restore',works())
+  call('restore');check('repeat_restore_exact_usage',p.wait(ready,10) and c.used()==saved_used)
   t0=int(time.time())
   call('reset');check('reset_restarts_core',p.wait(ready,10))
   check('manual_reset_keeps_period',c.used()==0 and state_row().get('quota_period')=='monthly' and state_row()['period_cursor_epoch_secs']>=t0,state=state_row())

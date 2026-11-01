@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Restricted SSH RPC and serialized node maintenance jobs (root only)."""
+import copy
+import fcntl
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import sys
+import time
+import uuid
+
+# Installed files and their parents are root-owned; -I ignores Python environment.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import node_config as config
+import node_state as state
+from node_runtime import Runtime, command
+
+ROOT = Path('/var/lib/vpnbot-node')
+DEPLOYMENT = Path('/etc/vpnbot-node/deployment.json')
+OPERATIONS = ('configure', 'peers', 'rotate', 'restart', 'rollback', 'restore', 'update', 'renew')
+
+
+def operation(request):
+    if not isinstance(request, dict) or set(request)-{'generation'} != {'operation', 'value'} \
+            or request['operation'] not in OPERATIONS:
+        raise ValueError('invalid operation')
+    name, value = request['operation'], request['value']
+    if name == 'configure':
+        value = config.settings(value)
+    elif name == 'peers':
+        value = config.peers(value)
+    elif name == 'rotate':
+        if not isinstance(value, str) or (value not in ('controller', 'reality', 'encryption', 'mldsa', 'wireguard', 'amnezia') and str(uuid.UUID(value)) != value):
+            raise ValueError('invalid rotation target')
+    elif name == 'restore':
+        value = state.snapshot(value)
+    elif name == 'update':
+        if value not in ('latest', 'dev'):
+            raise ValueError('invalid update channel')
+    elif value is not None:
+        raise ValueError('operation takes no parameters')
+    result = {'operation': name, 'value': value}
+    if 'generation' in request:
+        if not isinstance(request['generation'], str) or not state.GENERATION.fullmatch(request['generation']):
+            raise ValueError('invalid base generation')
+        result['generation'] = request['generation']
+    return result
+
+
+class Manager:
+    def __init__(self, store, runtime):
+        self.store, self.runtime = store, runtime
+
+    def apply(self, value):
+        generation = self.store.create(value)
+        self.runtime.validate(generation)
+        pending = self.store.begin(generation)
+        try:
+            self.runtime.apply(generation)
+            self.store.activate(generation)
+        except Exception:
+            # Keep pending until rollback is applied. Boot/watch can retry recovery.
+            self.runtime.apply(pending['before'])
+            self.store.rollback()
+            raise
+        return {'pending': pending}
+
+    def recover(self):
+        pending = self.store.pending()
+        if pending:
+            self.runtime.apply(pending['before'])
+            self.store.rollback()
+        return pending is not None
+
+    def execute(self, request):
+        request = operation(request)
+        if 'generation' in request and request['generation'] != self.store.current():
+            raise ValueError('node generation changed')
+        if self.store.pending():
+            raise ValueError('another change awaits confirmation')
+        name, data = request['operation'], request['value']
+        value = self.store.load()
+        if name == 'restart':
+            self.runtime.apply(self.store.current())
+            return {'restarted': True}
+        if name == 'configure':
+            previous = value['options']
+            value['options'] = data
+            if config.needs_certificate(data) and (not value['tls'] or previous['domain'] != data['domain']):
+                value['tls'] = self.runtime.certificate(data['domain'])
+            if 'xray' in data or data.get('cover') or any(data.get(channel, {}).get('enabled') for channel in ('wireguard', 'amnezia')):
+                self.runtime.ensure_keys(value)
+        elif name == 'peers':
+            value['peers'] = data
+        elif name == 'rotate':
+            if data == 'controller':
+                value['identity']['uuid'] = str(uuid.uuid4())
+            elif data in ('reality', 'encryption', 'mldsa', 'wireguard', 'amnezia'):
+                self.runtime.ensure_keys(value, rotate=data)
+            else:
+                found = False
+                for peer in value['peers']:
+                    if peer['id'] == data:
+                        peer['id'] = str(uuid.uuid4())
+                        found = True
+                if not found:
+                    raise ValueError('peer no longer exists')
+        elif name == 'restore':
+            value = data
+        elif name == 'rollback':
+            previous = self.store.read('previous.json')
+            if previous is None:
+                raise ValueError('no previous generation is available')
+            value = self.store.load(previous)
+        elif name == 'update':
+            from image_bundle import fetch, read
+            path = self.store.root/'release.json'
+            fetch(data, path)
+            value['images']['xr'] = read(path)['images']['xr']
+            if value['options'].get('cover'):
+                value['images']['ng'] = read(path)['images']['ng']
+        elif name == 'renew':
+            if not config.needs_certificate(value['options']):
+                return {'renewed': False}
+            value['tls'] = self.runtime.certificate(value['options']['domain'])
+        if value['options'].get('cover'):
+            self.runtime.ensure_images(value)
+        value = state.snapshot(value)
+        self.runtime.pull(value['images']['xr'])
+        return self.apply(value)
+
+    def submit(self, request):
+        request = operation(request)
+        if 'generation' in request and request['generation'] != self.store.current():
+            raise ValueError('node generation changed')
+        job = self.store.read('job.json')
+        if self.store.pending() or (job and job.get('state') in ('queued', 'running')):
+            raise ValueError('node is busy')
+        identifier = secrets.token_hex(16)
+        state.atomic(self.store.root/'request.json', state.encode(request))
+        state.atomic(self.store.root/'job.json', state.encode({'id': identifier, 'state': 'queued', 'time': int(time.time())}))
+        try:
+            command(['systemctl', 'start', '--no-block', 'vpnbot-node-worker.service'], timeout=5)
+        except Exception:
+            state.atomic(self.store.root/'job.json', state.encode({'id': identifier, 'state': 'failed', 'time': int(time.time())}))
+            (self.store.root/'request.json').unlink(missing_ok=True)
+            raise
+        return {'job': identifier}
+
+    def worker(self):
+        job = self.store.read('job.json')
+        if not job or job.get('state') != 'queued':
+            return
+        request = self.store.read('request.json')
+        job.update(state='running', time=int(time.time()))
+        state.atomic(self.store.root/'job.json', state.encode(job))
+        try:
+            result = self.execute(request)
+            job.update(state='done', result=result)
+        except Exception:
+            # No exception text: subprocess output and input can contain keys.
+            job.update(state='failed', error='operation_failed')
+        finally:
+            job['time'] = int(time.time())
+            state.atomic(self.store.root/'job.json', state.encode(job))
+            (self.store.root/'request.json').unlink(missing_ok=True)
+
+    def recover_job(self):
+        # SIGKILL and systemd timeouts cannot execute the worker's finally block.
+        # This runs under the same exclusive lock; an active worker cannot race it.
+        job = self.store.read('job.json')
+        if not job or job.get('state') not in ('queued', 'running'):
+            return
+        if job['state'] == 'queued' and time.time()-job['time'] < 30:
+            return
+        result = command(['systemctl', 'show', '--property=ActiveState', '--value',
+                          'vpnbot-node-worker.service'], timeout=5)
+        if result.stdout.strip() not in (b'inactive', b'failed'):
+            return
+        self.recover()
+        job.update(state='failed', error='operation_interrupted', time=int(time.time()))
+        state.atomic(self.store.root/'job.json', state.encode(job))
+        (self.store.root/'request.json').unlink(missing_ok=True)
+
+    def rpc(self, request):
+        if not isinstance(request, dict) or not isinstance(request.get('action'), str):
+            raise ValueError('invalid RPC request')
+        action = request['action']
+        fields = {'ping': set(), 'status': set(), 'backup': set(), 'profile': {'peer'},
+                  'confirm': {'nonce'}, 'submit': {'request'}, 'job': {'id'}}
+        if action not in fields or set(request) != fields[action] | {'action'}:
+            raise ValueError('unknown action or fields')
+        if action == 'ping':
+            return {'schema': 1}
+        if action == 'status':
+            return self.runtime.status()
+        if action == 'backup':
+            pending = self.store.pending()
+            return self.store.load(pending['before'] if pending else None)
+        if action == 'profile':
+            value = self.store.load()
+            peer = None
+            if request['peer'] is not None:
+                if self.store.pending():
+                    raise ValueError('external profile awaits confirmed state')
+                peer = next((p for p in value['peers'] if p['id'] == request['peer']), None)
+                if peer is None:
+                    raise ValueError('peer no longer exists')
+            return config.export_profile(value['options'], self.runtime.host, value['identity'], peer)
+        if action == 'confirm':
+            self.store.confirm(request['nonce'])
+            return {'confirmed': True}
+        if action == 'submit':
+            return self.submit(request['request'])
+        job = self.store.read('job.json')
+        if not isinstance(request['id'], str) or not re.fullmatch('[a-f0-9]{32}', request['id']):
+            raise ValueError('invalid job id')
+        if not job or not secrets.compare_digest(job['id'], request['id']):
+            # A restored controller backup can reference a job already replaced
+            # by later maintenance. Distinguish that from transport failure.
+            return {'state': 'missing'}
+        return job
+
+
+def main():
+    if os.geteuid() != 0 or len(sys.argv) != 2 or sys.argv[1] not in ('rpc', 'worker', 'boot', 'watch', 'stop', 'renew'):
+        raise ValueError('unsupported invocation')
+    os.umask(0o077)
+    mode = sys.argv[1]
+    if mode == 'rpc':
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError()))
+        signal.alarm(12)
+        request = state.decode(sys.stdin.buffer.read(state.MAX_BYTES+1))
+    store = state.Store(ROOT)
+    descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        # Workers can start before submit releases its lock; boot can race
+        # the recovery timer. Both must wait for serialized state access.
+        # RPC/watch still return busy without blocking polling.
+        fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if mode in ('worker', 'boot') else fcntl.LOCK_NB))
+        state.trusted(DEPLOYMENT)
+        with DEPLOYMENT.open('rb') as stream:
+            host = config.deployment(state.decode(stream.read(state.MAX_DEPLOYMENT_BYTES+1), state.MAX_DEPLOYMENT_BYTES))
+        manager = Manager(store, Runtime(store, host))
+        if mode == 'rpc':
+            result = manager.rpc(request)
+            sys.stdout.buffer.write(state.encode({'ok': True, 'result': result})+b'\n')
+        elif mode == 'worker':
+            manager.worker()
+        elif mode == 'boot':
+            if not manager.recover():
+                manager.runtime.apply(store.current())
+            job = store.read('job.json')
+            if job and job.get('state') in ('queued', 'running'):
+                job.update(state='failed', error='interrupted_by_restart')
+                state.atomic(ROOT/'job.json', state.encode(job))
+        elif mode == 'watch':
+            manager.recover_job()
+            pending = store.pending()
+            if pending and time.time() >= pending['deadline']:
+                manager.recover()
+            elif not manager.runtime.status()['running']:
+                manager.runtime.apply(store.current())
+        elif mode == 'stop':
+            manager.runtime.stop()
+        elif mode == 'renew':
+            if config.needs_certificate(store.load()['options']):
+                result = manager.execute({'operation': 'renew', 'value': None})
+                # The certificate job does not change routing, users or transport.
+                store.confirm(result['pending']['nonce'])
+    finally:
+        os.close(descriptor)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except BlockingIOError:
+        print('{"ok":false,"error":"busy"}')
+        sys.exit(1)
+    except Exception:
+        print('{"ok":false,"error":"operation_failed"}')
+        sys.exit(1)

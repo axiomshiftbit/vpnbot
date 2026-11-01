@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class InstallIpp2pTest(unittest.TestCase):
     def install(self, kernel, packages, **flags):
         source = (ROOT / 'scripts/init.sh').read_text()
-        function = 'install_ipp2p() {' + source.split('install_ipp2p() {', 1)[1].split('\ninstall_ipp2p\n', 1)[0]
+        function = 'install_ipp2p() {' + source.split('install_ipp2p() {', 1)[1].split('\n}', 1)[0] + '\n}'
         with tempfile.TemporaryDirectory() as tmp:
             function = function.replace('/etc/modules-load.d', tmp)
             env = dict(os.environ, TEST_KERNEL=kernel, TEST_PACKAGES=packages, **flags)

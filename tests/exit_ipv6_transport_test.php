@@ -5,7 +5,7 @@ class Ipv6TransportBot extends Bot {
     public array $network = [], $p = ['transport'=>'Reality'], $x = [], $screen=[];
     public function __construct($i) { $this->i18n=$i; $this->language='ru'; $this->admin=true; $this->input=['chat'=>1,'message_id'=>1]; }
     protected function exitIpv6Network(): array { return $this->network; }
-    public function applyExitNodes(callable $fn): string { return $fn($this->p,$this->x); }
+    public function applyExitNodes(callable $fn, bool $renewSession = false): string { return $fn($this->p,$this->x); }
     public function exitRelayLink(int $i, string $notice = ''): void { $this->screen=[$i,$notice]; }
 }
 $b=new Ipv6TransportBot($i); $n=0;
