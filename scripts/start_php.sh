@@ -39,6 +39,8 @@ for service in up ng service wg wg1 ad telemt xr oc np wp proxy ss ovpn ipsec tt
     if [ ! -s "$host_key" ] || [ ! -s "$host_key.pub" ]; then
         rm -f "$host_key" "$host_key.pub"
         ssh-keygen -q -t ed25519 -N '' -C "$service" -f "$host_key"
+        # ssh-keygen полагается на umask, а ACL каталога может его отменить.
+        chmod 600 "$host_key"
     fi
 done
 # Обновление образа не должно менять сертификат существующих клиентов.
