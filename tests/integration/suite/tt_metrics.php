@@ -11,6 +11,6 @@ elseif(($argv[1]??'')==='menu'){
  $b->ttClientMenu('audittt');$matches=array_values(array_filter($b->transport->calls,fn($x)=>isset($x[1]['text'])));$data=end($matches)[1]??[];$text=$data['text']??'';
  $result=['sessions'=>str_contains($text,'Активные сессии:'),'upload'=>str_contains($text,'Отправлено клиентом:'),'download'=>str_contains($text,'Получено клиентом:'),'lifetime'=>str_contains($text,'обнуляются'),'help'=>str_contains(json_encode($data),'menuhelp tt 0 audittt')];
 }elseif(($argv[1]??'')==='help'){
- $b->input['callback']='/menuhelp tt 1 audittt';$b->action();$call=end($b->transport->calls);$result=['help'=>$call!==false && str_contains($call[1]['text']??'','TrustTunnel')];
+ $b->input['callback']='/menuhelp tt 1 audittt';$b->action();$matches=array_values(array_filter($b->transport->calls,fn($x)=>isset($x[1]['text'])));$result=['help'=>$matches && str_contains(end($matches)[1]['text'],'TrustTunnel')];
 }else throw new RuntimeException('unknown proof');
 echo json_encode(['result'=>$result,'warning_count'=>count($warnings)],JSON_UNESCAPED_UNICODE);

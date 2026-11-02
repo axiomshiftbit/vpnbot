@@ -17,7 +17,7 @@ def build(built, destination):
         if hashlib.sha256(data).hexdigest() != releases[name]["sha256"]:
             raise ValueError("invalid_release_digest")
         files["archives/" + filename] = data
-    manifest = {"version": "0.0.4+vpnbot.5",
+    manifest = {"version": "0.0.4+vpnbot.6",
                 "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", json.dumps(manifest))

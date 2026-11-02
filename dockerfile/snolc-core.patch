@@ -457,7 +457,33 @@
          if self.write.is_none() {
              self.write = Some(PendingWrite {
                  bytes: self.frame(kind, stream, &[]),
-@@ -460,6 +467,9 @@
+@@ -432,23 +439,16 @@
+         if input.is_empty() {
+             return Poll::Ready(Ok(0));
+         }
+-        let accepted = self
+-            .stream_mut(stream)
+-            .map(|state| std::mem::take(&mut state.completed_write))
+-            .unwrap_or(0);
++        let accepted = self.take_completed_write(stream, input.len());
+         if accepted != 0 {
+             return Poll::Ready(Ok(accepted));
+         }
+         self.start_queued_control();
+         if let Some(write) = &self.write {
+             if write.kind == FRAME_DATA && write.stream == stream {
+-                let accepted = write.accepted;
+                 return match self.poll_flush_write(context) {
+                     Poll::Ready(Ok(())) => {
+-                        if let Some(state) = self.stream_mut(stream) {
+-                            state.completed_write = 0;
+-                        }
+-                        Poll::Ready(Ok(accepted))
++                        Poll::Ready(Ok(self.take_completed_write(stream, input.len())))
+                     }
+                     Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                     Poll::Pending => Poll::Pending,
+@@ -460,6 +460,9 @@
                  Poll::Pending => return Poll::Pending,
              }
          }
@@ -467,7 +493,37 @@
          let length = input.len().min(self.split_send_size);
          self.write = Some(PendingWrite {
              bytes: self.frame(FRAME_DATA, stream, &input[..length]),
-@@ -528,6 +538,19 @@
+@@ -469,17 +472,23 @@
+             accepted: length,
+         });
+         match self.poll_flush_write(context) {
+-            Poll::Ready(Ok(())) => {
+-                if let Some(state) = self.stream_mut(stream) {
+-                    state.completed_write = 0;
+-                }
+-                Poll::Ready(Ok(length))
+-            }
++            Poll::Ready(Ok(())) => Poll::Ready(Ok(self.take_completed_write(stream, input.len()))),
+             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+             Poll::Pending => Poll::Pending,
+         }
+     }
+ 
++    // vpnbot: кадр уже ушёл в канал, а повтор может прийти с меньшим буфером
++    // (бюджет Pump упал). Сообщаем не больше буфера, остаток — следующим вызовам.
++    fn take_completed_write(&mut self, stream: u32, limit: usize) -> usize {
++        let Some(state) = self.stream_mut(stream) else {
++            return 0;
++        };
++        let count = state.completed_write.min(limit);
++        state.completed_write -= count;
++        count
++    }
++
+     fn poll_flush_write(&mut self, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+         let Some(io) = self.io.as_mut() else {
+             return Poll::Ready(Err(io::ErrorKind::NotConnected.into()));
+@@ -528,6 +537,19 @@
          if frame.kind == FRAME_DATA {
              let remaining = frame.length - frame.wire_consumed;
              if frame.bytes.len() != remaining {
@@ -487,7 +543,7 @@
                  frame.bytes.resize(remaining, 0);
              }
          }
-@@ -577,9 +600,7 @@
+@@ -577,9 +599,7 @@
              let length =
                  u32::from_be_bytes(self.read_header[5..9].try_into().expect("size")) as usize;
              self.read_header_offset = 0;
@@ -498,7 +554,7 @@
                  return Poll::Ready(Err(io::Error::new(
                      io::ErrorKind::InvalidData,
                      "mux receive limit exceeded",
-@@ -674,6 +695,12 @@
+@@ -674,6 +694,12 @@
                      .ok_or_else(|| {
                          io::Error::new(io::ErrorKind::InvalidData, "unknown mux stream")
                      })?;
@@ -511,7 +567,7 @@
                  self.received_bytes += frame.bytes.len();
                  state.input.push_back(frame.bytes);
                  if let Some(waker) = state.reader.take() {
-@@ -708,6 +735,14 @@
+@@ -708,6 +734,14 @@
              });
          }
      }
@@ -526,7 +582,7 @@
  }
  
  impl<T> MuxStream<T> {
-@@ -722,10 +757,25 @@
+@@ -722,10 +756,25 @@
  
  impl<T> Drop for MuxStream<T> {
      fn drop(&mut self) {
@@ -553,7 +609,7 @@
          if !connection.closed {
              connection.controls.push_back((FRAME_FIN, self.id));
          }
-@@ -766,6 +816,9 @@
+@@ -766,6 +815,9 @@
          };
          if count != 0 {
              connection.received_bytes -= count;
@@ -563,7 +619,7 @@
              if let Some(mut bytes) = recycled {
                  bytes.clear();
                  connection.spare_reads.push(bytes);
-@@ -921,6 +974,183 @@
+@@ -921,6 +973,214 @@
      use crate::config::Config;
      use crate::wire::{Destination, OpenStatus};
  
@@ -592,6 +648,37 @@
 +        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
 +            Poll::Ready(Ok(()))
 +        }
++    }
++
++    // vpnbot: кадр уже передан каналу, а повторный вызов пришёл с меньшим буфером
++    // (бюджет Pump упал). Отчёт больше буфера модуль счёл бы внутренней ошибкой
++    // и закрыл поток: получатель видел FIN и обрезанные данные.
++    #[test]
++    fn vpnbot_completed_write_never_exceeds_retried_input() {
++        let config = Config::parse(
++            include_str!("../../../config/templates/snolc-server-low-memory.toml"),
++            Path::new("/etc/snolc"),
++        ).unwrap();
++        let mut client = MuxSession::new(BlockedWire { blocked: true, sent: Vec::new() }, Mode::Client, &config.yamux);
++        let flow = client.queue_stream().unwrap();
++        let mut connection = client.connection.borrow_mut();
++        let mut context = Context::from_waker(Waker::noop());
++        let payload = vec![7; 1000];
++        assert!(connection.poll_data(&mut context, flow.id, &payload).is_pending());
++        connection.io.as_mut().unwrap().blocked = false;
++        let mut accepted = 0;
++        for limit in [400, 100, 1000] {
++            match connection.poll_data(&mut context, flow.id, &payload[accepted..(accepted + limit).min(1000)]) {
++                Poll::Ready(Ok(count)) => {
++                    assert!(count <= limit, "принято {count}, передано {limit}");
++                    accepted += count;
++                }
++                other => panic!("{other:?}"),
++            }
++        }
++        assert_eq!(accepted, 1000);
++        // Кадр в канале один: повтор не отправил данные второй раз.
++        assert_eq!(connection.io.as_ref().unwrap().sent.len(), MUX_HEADER_BYTES + 1000);
 +    }
 +
 +    #[test]
@@ -850,7 +937,7 @@
              println!(
                  "snolc {} wire {}",
 -                env!("CARGO_PKG_VERSION"),
-+                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.5"),
++                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.6"),
                  snolc::WIRE_VERSION
              );
              Ok(())
