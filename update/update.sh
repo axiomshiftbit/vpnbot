@@ -69,7 +69,11 @@ do
                 continue
             fi
             # Keep the activator through checkout, including a branch switch.
-            cp "$pwd/scripts/image_bundle.py" "$pwd/update/image_bundle.py" || continue
+            if ! cp "$pwd/scripts/image_bundle.py" "$pwd/update/image_bundle.py"; then
+                tg_api sendMessage "{\"chat_id\":$_chat_id,\"text\":\"Update cancelled before stopping services: could not prepare update files. Check free space. Current services are unchanged.\"}"
+                : > "$pwd/update/pipe"
+                continue
+            fi
         fi
 
         # Restart also needs its selected images before any working container

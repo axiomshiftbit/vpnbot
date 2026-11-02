@@ -20811,14 +20811,7 @@ DNS-over-HTTPS with IP:
             return [$text, $data];
         }
 
-        $anchor = (empty($this->input['callback_id']) && !$this->replyMenuEdit
-            && in_array($this->input['message'] ?? '', ['/start', '/menu'], true))
-            ? $this->chatMenuAnchor($this->input['chat']) : 0;
-        if ($anchor) {
-            $this->delete($this->input['chat'], $this->input['message_id']);
-            $this->input['message_id'] = $anchor;
-        }
-        if (!empty($this->input['callback_id']) || $this->replyMenuEdit || $anchor) {
+        if (!empty($this->input['callback_id']) || $this->replyMenuEdit) {
             $r = $this->update(
                 $this->input['chat'],
                 $this->input['message_id'],
@@ -20844,14 +20837,18 @@ DNS-over-HTTPS with IP:
                 $this->setWgMsg(null);
             }
         } else {
+            // Команда меню всегда получает новое сообщение: после очистки истории
+            // у пользователя правка прежнего меню успешна, но её никто не увидит,
+            // а узнать об очистке бот не может. Прежнее меню удалит send().
+            $command = $this->chatOwnsOutput($this->input['chat'])
+                && in_array($this->input['message'] ?? '', ['/start', '/menu'], true);
             $r = $this->send(
                 $this->input['chat'],
                 $text,
-                $this->input['message_id'],
+                $command ? 0 : $this->input['message_id'],
                 $data ?: false,
             );
-            if (!empty($r['ok']) && $this->chatOwnsOutput($this->input['chat'])
-                && in_array($this->input['message'] ?? '', ['/start', '/menu'], true)) {
+            if (!empty($r['ok']) && $command) {
                 $this->delete($this->input['chat'], $this->input['message_id']);
             }
         }
@@ -35128,13 +35125,25 @@ DNS-over-HTTPS with IP:
         return trim($branch) === 'master' ? 'latest' : 'dev';
     }
 
+    // Команду забирает update.sh на хосте. Без него кнопка молча ничего не делала:
+    // черновик исчезает сам, а команда остаётся лежать в pipe.
+    protected function updateWorkerReady(): bool
+    {
+        $dir = dirname($this->update);
+        return is_file("$dir/update_pid") && trim((string) @file_get_contents("$dir/pipe")) === '';
+    }
+
     public function applyupdatebot()
     {
+        if (!$this->updateWorkerReady()) {
+            $this->send($this->input['from'], $this->i18n('update worker busy'));
+            return;
+        }
         if (!$this->pinBackup($this->update)) {
             $this->send($this->input['from'], $this->i18n('update backup failed'));
             return;
         }
-        $r = $this->sendDraft($this->input['from'], 1, 'update...');
+        $r = (array) $this->sendDraft($this->input['from'], 1, 'update...');
         if (!$this->queueUpdateCommand('1', $r)) {
             $this->send($this->input['from'], $this->i18n('update write failed'));
             return;
@@ -35144,7 +35153,11 @@ DNS-over-HTTPS with IP:
 
     public function restart()
     {
-        $r = $this->sendDraft($this->input['from'], 1, 'restart...');
+        if (!$this->updateWorkerReady()) {
+            $this->send($this->input['from'], $this->i18n('update worker busy'));
+            return;
+        }
+        $r = (array) $this->sendDraft($this->input['from'], 1, 'restart...');
         if (!$this->queueUpdateCommand('2', $r)) {
             $this->send($this->input['from'], $this->i18n('update write failed'));
             return;
@@ -35155,10 +35168,10 @@ DNS-over-HTTPS with IP:
     public function queueUpdateCommand(string $command, array $draft): bool
     {
         $files = [
-            'reload_message' => "{$this->input['from']}:{$draft['result']['message_id']}",
+            'reload_message' => "{$this->input['from']}:" . ($draft['result']['message_id'] ?? ''),
             'key' => $this->key,
             'curl' => json_encode(['chat_id' => $this->input['chat'],
-                'message_id' => $draft['result']['message_id'], 'text' => '~t~'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'message_id' => $draft['result']['message_id'] ?? null, 'text' => '~t~'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         ];
         foreach ($files as $name => $content) {
             // The bot token must never be created with the default 0644 mode.

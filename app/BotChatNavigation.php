@@ -49,14 +49,4 @@ trait BotChatNavigation
         });
         if ($previous > 0 && $previous !== $id) $this->delete($chat, $previous);
     }
-
-    protected function chatMenuAnchor($chat): int
-    {
-        if (!$this->chatOwnsOutput($chat)) return 0;
-        $id = 0;
-        $this->sessionApply(function () use ($chat, &$id) {
-            $id = (int) ($_SESSION['menu_anchor'][(string) $chat] ?? 0);
-        });
-        return $id;
-    }
 }

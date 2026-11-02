@@ -72,6 +72,15 @@ try {
     $cancel = new CancelUpdateBot("$tmp/cancel", $i);
     $cancel->input = ['from' => 1, 'chat' => 1, 'message_id' => 1];
     $cancel->applyupdatebot();
+    recoveryAssert(!$cancel->queued && $cancel->calls[0][1]['text'] === $cancel->i18n('update worker busy'), 'Без службы обновления команда не ставится и об этом сообщается');
+    file_put_contents("$tmp/cancel/update_pid", '1');
+    file_put_contents("$tmp/cancel/pipe", '1');
+    $cancel->calls = [];
+    $cancel->applyupdatebot();
+    recoveryAssert(!$cancel->queued && $cancel->calls[0][1]['text'] === $cancel->i18n('update worker busy'), 'Невзятая прошлая команда не перекрывается новой');
+    file_put_contents("$tmp/cancel/pipe", '');
+    $cancel->calls = [];
+    $cancel->applyupdatebot();
     recoveryAssert(!$cancel->queued, 'Отказ резервной копии не запускает обновление');
     recoveryAssert(count($cancel->calls) === 1 && $cancel->calls[0][0] === 'sendMessage', 'Отмена сообщается пользователю');
 

@@ -862,6 +862,10 @@ $i = [
         'en' => 'sing-box subscriptions use Vision/REALITY and Trojan/gRPC without SMUX/H2MUX: multiplexing these transports with the current fork can interrupt traffic. WebSocket, Xray and mihomo keep their multiplex settings.',
         'ru' => 'В подписках sing-box Vision/REALITY и Trojan/gRPC работают без SMUX/H2MUX: мультиплексирование этих транспортов с текущим форком может обрывать трафик. Для WebSocket, Xray и mihomo настройки мультиплексирования сохраняются.',
     ],
+    'update worker busy' => [
+        'en' => 'The update service on the server has not taken the command: it is not running or the previous command is still in progress. Wait a few minutes; if nothing changes, run systemctl restart vpnbot on the server.',
+        'ru' => 'Служба обновления на сервере не приняла команду: она не запущена или ещё выполняет прошлую. Подождите несколько минут; если ничего не изменится, выполните на сервере systemctl restart vpnbot.',
+    ],
     'update write failed' => [
         'en' => 'Could not prepare the update/restart files. Check free space and permissions on the update directory.',
         'ru' => 'Не удалось подготовить файлы обновления/перезапуска. Проверьте свободное место и права на каталог update.',

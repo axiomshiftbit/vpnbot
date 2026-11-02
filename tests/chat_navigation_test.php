@@ -9,10 +9,17 @@ class NavigationTransport {
     public array $messages = [], $calls = [];
     public int $next = 100;
     public ?array $error = null;
+    public array $clearedByUser = [];
     public function call($method, $data, $json = 0) {
         $this->calls[] = [$method,$data];
         $chat = (string) ($data['chat_id'] ?? 1);
         $id = $data['message_id'] ?? ++$this->next;
+        // После очистки истории у пользователя Telegram продолжает подтверждать
+        // правку: сообщение есть на стороне бота, но человек его не видит.
+        if (in_array($id, $this->clearedByUser[$chat] ?? [], true)) {
+            if ($method === 'deleteMessage') return ['ok'=>false,'error_code'=>400,'description'=>'Bad Request: message to delete not found'];
+            if ($method === 'editMessageText') return ['ok'=>true,'result'=>['message_id'=>$id]];
+        }
         if ($method === 'editMessageText') {
             if ($this->error) return $this->error;
             if (!isset($this->messages[$chat][$id])) return ['ok'=>false,'error_code'=>400,'description'=>'Bad Request: message to edit not found'];
@@ -71,11 +78,23 @@ try {
     $check($b->received===[[2,'chat2'],[1,'chat1']],'Одинаковые номера запросов в разных чатах независимы');
     $b->begin();
     foreach (range(0,2) as $repeat) {
+        $count=count($t->messages[1]);
         $cmd=++$t->next; $t->messages[1][$cmd]=['text'=>'/menu'];
         $b->input['message_id']=$cmd; $b->input['callback_id']=false; $b->input['message']='/menu';
         $b->menu('lang');
-        $check(!isset($t->messages[1][$cmd]) && isset($t->messages[1][1]),'Команда меню удаляется, прежнее меню редактируется');
+        $sent=array_filter($t->calls,static fn($call)=>$call[0]==='sendMessage');
+        $check(!isset($t->messages[1][$cmd]) && count($t->messages[1])===$count,'Команда удаляется, меню остаётся одно');
+        $check(empty(end($sent)[1]['reply_to_message_id']),'Меню не отвечает на удаляемую команду');
     }
+    foreach (['/start','/menu'] as $command) {
+        $t->clearedByUser[1]=array_map('intval',array_keys($t->messages[1]));
+        $b->begin(); $cmd=++$t->next; $t->messages[1][$cmd]=['text'=>$command];
+        $b->input['message_id']=$cmd; $b->input['callback_id']=false; $b->input['message']=$command;
+        $b->menu('lang');
+        $visible=array_diff(array_map('intval',array_keys($t->messages[1])),$t->clearedByUser[1]);
+        $check(count($visible)===1 && !empty($t->messages[1][reset($visible)]['reply_markup']),"$command показывает меню после очистки истории");
+    }
+    $t->clearedByUser=[];
     $b->begin(); unset($t->messages[1][1]);
     $b->update(1,1,'Restored',$buttons); $restored=$b->input['message_id'];
     $check($restored!==1 && isset($t->messages[1][$restored]),'Удалённый экран заменяется одним новым');

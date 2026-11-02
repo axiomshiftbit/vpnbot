@@ -38,7 +38,11 @@ $action=$argv[1] ?? '';
 $result=[];
 switch ($action) {
     case 'update-permissions':
+        $worker=!is_file('/update/update_pid');
+        if($worker)file_put_contents('/update/update_pid','1');
+        file_put_contents('/update/pipe','');
         $b->restart();$result=[];
+        if($worker)unlink('/update/update_pid');
         foreach (['key','curl','reload_message','pipe'] as $name) {
             clearstatcache(true,'/update/'.$name);
             $result[$name]=(fileperms('/update/'.$name)&0777)===0600;
