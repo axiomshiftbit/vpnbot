@@ -294,7 +294,7 @@ def main():
             pending = store.pending()
             if pending and time.time() >= pending['deadline']:
                 manager.recover()
-            elif not manager.runtime.status()['running']:
+            elif not manager.runtime.running():
                 manager.runtime.apply(store.current())
         elif mode == 'stop':
             manager.runtime.stop()

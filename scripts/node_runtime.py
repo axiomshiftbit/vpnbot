@@ -412,9 +412,10 @@ class Runtime:
                 '--mount', f'type=bind,src={directory},dst=/node,readonly',
                 '--entrypoint', '/usr/bin/wireproxy-node', value['images']['xr']]
 
-    def status(self):
-        info = self.container()
-        value = self.store.load()
+    def running(self, value=None, info=None):
+        """Container state only: the 15-second watch needs no status metadata."""
+        value = self.store.load() if value is None else value
+        info = self.container() if info is None else info
         cover = self.container(COVER_CONTAINER) if value['options'].get('cover') else None
         running = bool(info and info.get('State', {}).get('Running'))
         if value['options'].get('cover'):
@@ -422,6 +423,12 @@ class Runtime:
         if value['options'].get('amnezia', {}).get('enabled'):
             helper = self.container(AWG_CONTAINER)
             running = running and bool(helper and helper.get('State', {}).get('Running'))
+        return running
+
+    def status(self):
+        info = self.container()
+        value = self.store.load()
+        running = self.running(value, info or {})
         options = dict(value['options'])
         options['xray'] = node_xray.settings(options.get('xray', {}), options['core'], options['transport'])
         options['wireguard'] = config.node_wg.settings(options.get('wireguard', {}))
@@ -441,6 +448,20 @@ class Runtime:
         versions = {}
         if not info or not info.get('State', {}).get('Running'):
             return versions
+        # Binaries change only with a new container: the per-minute status RPC
+        # reuses the versions of this exact container start instead of 4 execs.
+        root = getattr(self.store, 'root', None)
+        started = info.get('Id'), info.get('State', {}).get('StartedAt')
+        cache = root/'core-versions.json' if isinstance(root, Path) and all(isinstance(v, str) and v for v in started) else None
+        if cache is not None:
+            try:
+                saved = self.store.read(cache.name)
+            except ValueError:
+                saved = None
+            if isinstance(saved, dict) and saved.get('container') == list(started) and isinstance(saved.get('versions'), dict) \
+                    and set(saved['versions']) == set(config.CORES) \
+                    and all(isinstance(v, str) and re.fullmatch(r'[0-9][A-Za-z0-9.+_-]{0,47}', v) for v in saved['versions'].values()):
+                return dict(saved['versions'])
         for core, binary in config.CORES.items():
             try:
                 result = command(['docker', 'exec', CONTAINER, binary, 'version'], timeout=1, required=False)
@@ -451,6 +472,12 @@ class Runtime:
             match = re.match(rb'Xray\s+v?([0-9][A-Za-z0-9.+_-]{0,47})\s', result.stdout)
             if result.returncode == 0 and match:
                 versions[core] = match[1].decode('ascii')
+        # Only a complete answer is reused; a timeout is retried next time.
+        if cache is not None and set(versions) == set(config.CORES):
+            try:
+                state.atomic(cache, state.encode({'container': list(started), 'versions': versions}))
+            except (OSError, ValueError):
+                pass
         return versions
 
     def certificate_summary(self, tls):

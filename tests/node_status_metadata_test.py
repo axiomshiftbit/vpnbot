@@ -58,6 +58,65 @@ class MetadataTest(unittest.TestCase):
             node_config.settings(status['options'])
             self.assertNotIn('HeaderProtectionKey',status['options']['amnezia']['parameters'])
 
+    def test_watch_state_matches_status_without_metadata_commands(self):
+        # watch runs every 15 s: it must not pay for four core version execs
+        # and the certificate parse, yet decide exactly like status().
+        import itertools
+        from unittest.mock import Mock
+        names = (node_runtime.CONTAINER, node_runtime.COVER_CONTAINER, node_runtime.AWG_CONTAINER)
+        for cover, awg, *states in itertools.product((False, True), (False, True), (None, False, True), (None, False, True), (None, False, True)):
+            store = Mock()
+            store.load.return_value = {'options': OPTIONS | {'cover': cover, 'amnezia': {'enabled': awg}},
+                                       'identity': KEYS, 'peers': [], 'tls': {}}
+            runtime = node_runtime.Runtime(store, HOST)
+            containers = {name: None if state is None else {'State': {'Running': state}} for name, state in zip(names, states)}
+            with patch.object(runtime, 'container', side_effect=lambda name=node_runtime.CONTAINER: containers[name]), \
+                    patch.object(runtime, 'core_versions', side_effect=AssertionError('no version execs in watch')), \
+                    patch.object(runtime, 'certificate_summary', side_effect=AssertionError('no certificate parse in watch')), \
+                    patch.object(node_runtime, 'command', side_effect=AssertionError('no host commands in watch')):
+                running = runtime.running()
+            with patch.object(runtime, 'container', side_effect=lambda name=node_runtime.CONTAINER: containers[name]), \
+                    patch.object(runtime, 'core_versions', return_value={}), patch.object(runtime, 'certificate_summary', return_value={}), \
+                    patch.object(node_runtime.config.node_awg, 'settings', return_value={}):
+                self.assertEqual(running, runtime.status()['running'], (cover, awg, states))
+        source = (Path(__file__).resolve().parents[1]/'scripts/node_manager.py').read_text()
+        self.assertIn('elif not manager.runtime.running():', source)
+        self.assertNotIn("runtime.status()['running']", source)
+
+    def test_core_versions_are_reused_only_for_the_same_container_start(self):
+        import node_state
+        with tempfile.TemporaryDirectory() as temp:
+            rt = node_runtime.Runtime(node_state.Store(Path(temp)/'state'), HOST)
+            calls = []
+            answer = {'value': b'Xray 26.10.31 (Xray, Penetrates Everything.)\n'}
+            def command(args, **kwargs):
+                calls.append(args)
+                if '/usr/bin/xray-3' in args and answer.get('fail3'):
+                    raise subprocess.TimeoutExpired('fixture', 1)
+                return subprocess.CompletedProcess(args, 0, answer['value'], b'')
+            first = {'Id': 'a'*64, 'State': {'Running': True, 'StartedAt': '2026-11-06T07:00:00Z'}}
+            with patch.object(node_runtime, 'command', command):
+                expected = {core: '26.10.31' for core in node_runtime.config.CORES}
+                self.assertEqual(rt.core_versions(first), expected)
+                self.assertEqual(len(calls), 4)
+                self.assertEqual(rt.core_versions(first), expected)
+                self.assertEqual(len(calls), 4, 'same container start: no version execs')
+                restarted = copy.deepcopy(first); restarted['State']['StartedAt'] = '2026-11-06T08:00:00Z'
+                answer['value'] = b'Xray 26.11.1 (Xray, Penetrates Everything.)\n'
+                self.assertEqual(set(rt.core_versions(restarted).values()), {'26.11.1'})
+                self.assertEqual(len(calls), 8, 'a restarted container is measured again')
+                other = copy.deepcopy(restarted); other['Id'] = 'b'*64; answer['fail3'] = True
+                self.assertNotIn('origin3', rt.core_versions(other))
+                self.assertEqual(len(rt.core_versions(other)), 3)
+                self.assertEqual(len(calls), 16, 'an incomplete answer is not reused')
+                (Path(temp)/'state/core-versions.json').write_bytes(b'{"container":')
+                answer.pop('fail3')
+                self.assertEqual(len(rt.core_versions(other)), 4, 'a damaged cache is ignored')
+                self.assertEqual(rt.core_versions({'State': {'Running': True}}), {core: '26.11.1' for core in node_runtime.config.CORES})
+                before = len(calls)
+                rt.core_versions({'State': {'Running': True}})
+                self.assertEqual(len(calls), before+4, 'no container identity: never cached')
+
     def test_metadata_timeouts_do_not_hide_service_status(self):
         rt = node_runtime.Runtime(None, HOST)
         with patch.object(node_runtime, 'command', side_effect=subprocess.TimeoutExpired('fixture', 3)):
