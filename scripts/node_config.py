@@ -420,8 +420,10 @@ def firewall(options, host):
     lines += ['  tcp dport 8080 ct status dnat ct original proto-dst @acme_http ct state new tcp flags & (fin|syn|rst|ack) == syn accept',
               '  limit rate 5/second burst 10 packets log prefix "INPUT-NODE-DROP: "',
               '  counter drop', ' }',
-              ' chain syn4 { meter node_syn4 size 65535 { ip saddr timeout 1m limit rate 50/second burst 100 packets } counter accept; counter drop; }',
-              ' chain syn6 { meter node_syn6 size 65535 { ip6 saddr timeout 1m limit rate 50/second burst 100 packets } counter accept; counter drop; }',
+              # Per trusted server address. All users of a main bot share its
+              # address; the margin also covers three servers behind one NAT.
+              ' chain syn4 { meter node_syn4 size 65535 { ip saddr timeout 1m limit rate 150/second burst 300 packets } counter accept; counter drop; }',
+              ' chain syn6 { meter node_syn6 size 65535 { ip6 saddr timeout 1m limit rate 150/second burst 300 packets } counter accept; counter drop; }',
               ' chain forward { type filter hook forward priority -20; policy drop; }',
               ' chain output { type filter hook output priority -20; policy accept;',
               '  ct state invalid drop', f'  meta skuid {uid} jump core_egress']

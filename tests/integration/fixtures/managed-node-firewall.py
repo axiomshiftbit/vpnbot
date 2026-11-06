@@ -49,6 +49,17 @@ if len(sys.argv) > 1:
         for address, port in value['sockets']:
             threading.Thread(target=datagram_listener if value.get('udp') else listener, args=(address, port), daemon=True).start()
         time.sleep(300)
+    elif action == 'burst':
+        # Unanswered half-open SYNs: nft counts each first SYN before any listen queue.
+        sockets = []
+        for _ in range(value['count']):
+            conn = socket.socket(socket.AF_INET6 if ':' in value['target'] else socket.AF_INET)
+            conn.setblocking(False)
+            conn.bind((value['source'], 0))
+            conn.connect_ex((value['target'], value['port']))
+            sockets.append(conn)
+        time.sleep(.5)  # Before the first SYN retransmission (1 s).
+        sys.exit(0)
     elif action in ('connect', 'datagram'):
         if value.get('uid'):
             os.setgroups([])
@@ -89,6 +100,24 @@ def connect(address, port, source='', uid=0, remote=False, ip_options=False, udp
     args = (['nsenter', '-t', str(peer.pid), '-n'] if remote else [])
     result = run(args + [sys.executable, script, 'datagram' if udp else 'connect', json.dumps(dict(target=address, port=port, source=source, uid=uid, ip_options=ip_options))])
     return result.returncode == 0
+
+
+def syn_counters(version):
+    counts = {'accept': 0, 'drop': 0}
+    for item in json.loads(run(['nft', '-j', 'list', 'chain', 'inet', 'vpnbot_node', f'syn{version}'], check=True).stdout)['nftables']:
+        expressions = item.get('rule', {}).get('expr', [])
+        packets = next((e['counter']['packets'] for e in expressions if 'counter' in e), 0)
+        counts['accept' if any('accept' in e for e in expressions) else 'drop'] += packets
+    return counts
+
+
+def syn_burst(version, address, source, count):
+    # Anonymous rule counters are not reset by 'nft reset counters': use deltas.
+    before = syn_counters(version)
+    run(['nsenter', '-t', str(peer.pid), '-n', sys.executable, script, 'burst',
+         json.dumps(dict(target=address, port=443, source=source, count=count))], check=True, timeout=30)
+    after = syn_counters(version)
+    return after['accept']-before['accept'], after['drop']-before['drop']
 
 
 def start_sockets(sockets, remote=False, uid=0, udp=False):
@@ -162,6 +191,16 @@ try:
                 (6, '2606:4700:4700::1111', '2606:4700:4700::2', '2606:4700:4700::3', '2606:4700:4700::200')]:
             label = f'egress{family}-ingress{version}'
             check(label+'-trusted-vpn', connect(address, 443, trusted, remote=True))
+            if family == 4:
+                # A busy main bot: 250 new connections at once from its one address.
+                accepted, dropped = syn_burst(version, address, trusted, 250)
+                print(f'INFO {label} burst 250: accepted {accepted}, dropped {dropped}', flush=True)
+                # A rare SYN retransmission may add a packet; nothing may be dropped.
+                check(label+'-trusted-burst-250-accepted', accepted >= 250 and dropped == 0)
+                accepted, dropped = syn_burst(version, address, trusted, 400)
+                print(f'INFO {label} flood 400: accepted {accepted}, dropped {dropped}', flush=True)
+                check(label+'-trusted-flood-still-limited', dropped > 0)
+                time.sleep(2)  # Half-open test sockets are reset before the next checks.
             if version == 4:
                 check(label+'-ipv4-options-block', not connect(address, 443, trusted, remote=True, ip_options=True))
             check(label+'-alien-vpn-block', not connect(address, 443, alien, remote=True))

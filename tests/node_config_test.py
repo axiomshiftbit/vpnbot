@@ -132,6 +132,9 @@ class NodeConfig(unittest.TestCase):
                          'ct original proto-dst @acme_http', 'timeout 10m', 'meta skuid 995',
                          'policy drop', 'ip6 saddr @ipv6_routers', 'node_syn4', 'node_syn6'):
             self.assertIn(fragment, rules)
+        # Separate budget per trusted server address, enough for a busy main bot.
+        for version in ('ip', 'ip6'):
+            self.assertIn('{ '+version+' saddr timeout 1m limit rate 150/second burst 300 packets }', rules)
         self.assertNotIn('flush ruleset', rules)
         self.assertNotIn('elements = { 80 }', rules)
         self.assertIn('ip6 daddr 2000::/3', rules)
