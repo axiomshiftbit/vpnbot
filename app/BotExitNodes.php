@@ -918,6 +918,8 @@ trait BotExitNodes
             $ch = curl_init($url);
             curl_setopt_array($ch, [
                 CURLOPT_RESOLVE => $this->curlResolveEntries((string) $parts['host'], (int) ($parts['port'] ?? 443), $ips),
+                // Прокси из окружения разрешает имя сам, мимо закреплённых адресов.
+                CURLOPT_PROXY => '',
                 CURLOPT_RETURNTRANSFER => false, CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
                 CURLOPT_CONNECTTIMEOUT => 15, CURLOPT_TIMEOUT => 90,

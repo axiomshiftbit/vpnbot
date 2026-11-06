@@ -90,11 +90,11 @@ class PinnedDownloadBot extends Bot {
 }
 echo json_encode((new PinnedDownloadBot())->download($argv[2]));
 '''
-                def download(host, path):
+                def download(host, path, environment=None):
                     result = subprocess.run(['php', '-d', f'curl.cainfo={cert}', '-r', code,
                                              str(ROOT), f'https://{host}:{port}{path}'],
                                             capture_output=True, text=True, timeout=15,
-                                            env={**os.environ, 'NO_PROXY': '*', 'no_proxy': '*'})
+                                            env=environment or {**os.environ, 'NO_PROXY': '*', 'no_proxy': '*'})
                     self.assertEqual(0, result.returncode, result.stderr)
                     return json.loads(result.stdout)
 
@@ -105,6 +105,26 @@ echo json_encode((new PinnedDownloadBot())->download($argv[2]));
                 self.assertIsNone(download('wrong.invalid', '/ok'), 'проверка TLS-имени не отключена')
                 self.assertIsNone(download('localhost', '/loop'), 'число переходов ограничено')
                 self.assertFalse(any(ip == '127.0.0.1' for ip, _ in seen), 'непроверенный адрес не получил запрос')
+                # Прокси из окружения сам разрешает имя: закреплённые адреса
+                # к нему не применяются. Скачивание обязано идти напрямую.
+                proxy = socket.socket()
+                proxy.bind(('127.0.0.1', 0))
+                proxy.listen()
+                proxy.settimeout(0.2)
+                try:
+                    address = 'http://127.0.0.1:%d' % proxy.getsockname()[1]
+                    environment = {k: v for k, v in os.environ.items() if k.lower() != 'no_proxy'}
+                    environment.update(HTTPS_PROXY=address, https_proxy=address, ALL_PROXY=address, all_proxy=address)
+                    result = download('localhost', '/ok', environment)
+                    try:
+                        proxy.accept()[0].close()
+                        used = True
+                    except socket.timeout:
+                        used = False
+                    self.assertFalse(used, 'прокси из окружения не используется')
+                    self.assertEqual('ruleset', result, 'скачивание идёт напрямую на проверенный IP')
+                finally:
+                    proxy.close()
             finally:
                 for server in servers:
                     server.shutdown()
