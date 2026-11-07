@@ -423,6 +423,9 @@ fi
 
 cd "$INSTALL_DIR"
 
+# Защита хоста для обоих режимов; сбой не прерывает установку.
+bash scripts/host_hardening.sh || echo 'WARN: host hardening was not fully applied' >&2
+
 if [ "$MODE" = node ]; then
     channel=dev
     [ "$BRANCH" != master ] || channel=latest
