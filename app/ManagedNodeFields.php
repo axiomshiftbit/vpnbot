@@ -21,6 +21,7 @@ final class ManagedNodeFields
             'core' => ['basic', 'ru' => 'Ядро', 'en' => 'Core', 'choice', ['origin', 'origin2', 'origin3', 'fork']],
             'family' => ['network', 'ru' => 'Выход в интернет', 'en' => 'Internet egress', 'choice', [4, 6]],
             'connect_family' => ['network', 'ru' => 'Связь бот → нода', 'en' => 'Bot → node link', 'choice', [4, 6]],
+            'vpn_sources' => ['network', 'ru' => 'Серверы только для VPN 443', 'en' => 'VPN-only servers (443)', 'list'],
             'domain' => ['domains', 'ru' => 'Свой домен', 'en' => 'Own domain', 'string'],
             'domain_aliases' => ['domains', 'ru' => 'Дополнительные домены', 'en' => 'Additional domains', 'list'],
             'cover' => ['domains', 'ru' => 'Заглушка с паролем', 'en' => 'Password cover', 'bool'],
@@ -111,6 +112,22 @@ final class ManagedNodeFields
         return $value;
     }
 
+    /** Public unicast IPv4/IPv6 only, as the node enforces; at most 32, deduplicated. */
+    public static function vpnSources(array $value): array
+    {
+        $result = [];
+        foreach ($value as $ip) {
+            $ip = is_string($ip) ? $ip : '';
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)
+                || filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && preg_match('~^(?:f[c-f]|ff)~i', $ip)) {
+                throw new InvalidArgumentException('VPN-only servers need public IP addresses');
+            }
+            $result[inet_ntop(inet_pton($ip))] = true;
+        }
+        if (count($result) > 32) throw new InvalidArgumentException('At most 32 VPN-only servers are supported');
+        return array_keys($result);
+    }
+
     public static function change(array $options, string $path, $value): array
     {
         $field = self::all()[$path] ?? null;
@@ -122,6 +139,7 @@ final class ManagedNodeFields
             || in_array($type, ['json', 'list'], true) && (!is_array($value) || !array_is_list($value) || count($value) > 128)) {
             throw new InvalidArgumentException('Invalid node setting');
         }
+        if ($path === 'vpn_sources') $value = self::vpnSources($value);
         $target =& $options;
         foreach (explode('.', $path) as $name) { if (!isset($target[$name])) $target[$name] = []; $target =& $target[$name]; }
         $target = $value;

@@ -48,7 +48,7 @@ def hostname(value):
 
 def settings(value):
     """Remote callers can change only these settings, never a core config."""
-    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases'} != {'transport', 'family', 'core', 'domain', 'mask'}:
+    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases', 'vpn_sources'} != {'transport', 'family', 'core', 'domain', 'mask'}:
         raise ValueError('invalid settings fields')
     if not isinstance(value['transport'], str) or not isinstance(value['core'], str) \
             or value['transport'] not in TRANSPORTS or value['core'] not in CORES \
@@ -81,6 +81,13 @@ def settings(value):
         result['mask'] = result['domain']
     if 'xray' in value:
         result['xray'] = node_xray.settings(value['xray'], value['core'], value['transport'])
+    if 'vpn_sources' in value:
+        # External servers (another panel, a relay) may reach only the VPN port.
+        # They never join the SSH admin list, unlike enrollment sources.
+        sources = value['vpn_sources']
+        if not isinstance(sources, list) or len(sources) > 32 or not all(isinstance(ip, str) for ip in sources):
+            raise ValueError('at most 32 VPN-only server addresses are supported')
+        result['vpn_sources'] = sorted(set(public_ip(ip) for ip in sources), key=lambda ip: (':' in ip, ip))
     return result
 
 
@@ -380,7 +387,8 @@ def firewall(options, host):
         raise ValueError('Amnezia service account is not installed')
     family, uid, interface = options['family'], host['uid'], host['interface']
     lines = ['table inet vpnbot_node {']
-    for name, values in [('my_server', host['sources']), ('admins', sorted(set(host['admins'] + host['sources'])))]:
+    vpn = sorted(set(host['sources'] + options.get('vpn_sources', [])))
+    for name, values in [('my_server', vpn), ('admins', sorted(set(host['admins'] + host['sources'])))]:
         for version in (4, 6):
             addresses = [ip for ip in values if ipaddress.ip_address(ip).version == version]
             elements = ' elements = { ' + ', '.join(addresses) + ' };' if addresses else ''

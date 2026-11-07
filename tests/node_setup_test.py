@@ -74,6 +74,26 @@ class NodeSetup(unittest.TestCase):
                     setup.setup(self.large_asn(), root, bundle=root/'bundle.json')
             self.assertEqual(len(json.loads((root/'deployment.json').read_bytes())['ssh_networks']), 6000)
 
+    def test_upgrade_code_only_on_settled_installed_node(self):
+        class Store:
+            current_value, pending_value, job = 'a'*32, None, {}
+            def __init__(self, root): pass
+            def current(self): return self.current_value
+            def pending(self): return self.pending_value
+            def read(self, name): return self.job if name == 'job.json' else None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(setup, 'ROOT', root), patch.object(setup.state, 'Store', Store), \
+                    patch.object(setup.install, 'install_code') as install_code:
+                setup.upgrade_code(root/'src')
+                install_code.assert_called_once_with(root/'src')
+                for field, value in (('current_value', None), ('pending_value', {'before': 'b'*32}), ('job', {'state': 'running'})):
+                    with self.subTest(blocked=field), patch.object(Store, field, value):
+                        install_code.reset_mock()
+                        with self.assertRaises(ValueError):
+                            setup.upgrade_code(root/'src')
+                        install_code.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

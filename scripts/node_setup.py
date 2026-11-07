@@ -36,6 +36,20 @@ def replace_controller(public_key):
         os.close(descriptor)
 
 
+def upgrade_code(source):
+    """Refresh node code and units in place; state, keys and firewall stay as they are."""
+    store = state.Store(ROOT)
+    descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        job = store.read('job.json') or {}
+        if not store.current() or store.pending() or job.get('state') in ('queued', 'running'):
+            raise ValueError('Нода не установлена или изменение ещё не завершено')
+        install.install_code(source)
+    finally:
+        os.close(descriptor)
+
+
 def enrollment(value):
     if not isinstance(value, dict) or set(value) != {'schema', 'controller_key', 'deployment', 'options'} \
             or type(value['schema']) is not int or value['schema'] != 1:
@@ -204,6 +218,7 @@ def main():
     inputs = parser.add_mutually_exclusive_group()
     inputs.add_argument('--config', type=Path, help='JSON с публичными параметрами подключения')
     inputs.add_argument('--controller-key', type=Path, help='Заменить ключ основного бота публичным ключом из файла; прежний доступ SSH отзывается')
+    inputs.add_argument('--upgrade-code', action='store_true', help='Обновить код установленной ноды из этой копии репозитория; настройки и ключи сохраняются')
     parser.add_argument('--bundle', type=Path, help='Проверенный опубликованный комплект образов')
     parser.add_argument('--channel', choices=('latest', 'dev'), default='latest')
     args = parser.parse_args()
@@ -219,6 +234,12 @@ def main():
             raise ValueError('Некорректный публичный ключ')
         replace_controller(key)
         print('Ключ управления заменён; прежний SSH-доступ отозван. Настройки ноды и её подключения сохранены.')
+        return
+    if args.upgrade_code:
+        if args.bundle:
+            raise ValueError('Обновление кода не меняет комплект образов')
+        upgrade_code(Path(__file__).resolve().parent)
+        print('Код ноды обновлён. Настройки, ключи и правила сохранены.')
         return
     if args.config:
         with args.config.open('rb') as stream:

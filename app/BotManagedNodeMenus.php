@@ -325,7 +325,12 @@ trait BotManagedNodeMenus
                 default => null,
             };
             $this->managedNodeDraft($id, $path, $value);
-        } catch (Throwable $error) { $this->managedNodeSettingsMenu($id, $field[0], $this->t('Некорректное значение. Настройки не изменены.', 'Invalid value. Settings were not changed.')); }
+        } catch (Throwable $error) {
+            $this->managedNodeSettingsMenu($id, $field[0], $path === 'vpn_sources'
+                ? $this->t('Нужны публичные IPv4/IPv6 через пробел, не больше 32. Частные, локальные адреса и сети не принимаются. Настройки не изменены.',
+                    'Enter public IPv4/IPv6 addresses separated by spaces, at most 32. Private or local addresses and networks are rejected. Settings were not changed.')
+                : $this->t('Некорректное значение. Настройки не изменены.', 'Invalid value. Settings were not changed.'));
+        }
     }
 
     private function managedNodeDraft(string $id, string $path, $value): void

@@ -140,6 +140,19 @@ class NodeConfig(unittest.TestCase):
         self.assertIn('ip6 daddr 2000::/3', rules)
         self.assertNotIn('oifname "eth0" ip daddr 0.0.0.0/0', rules)
 
+    def test_vpn_only_servers_reach_vpn_but_never_ssh(self):
+        options = node.settings(OPTIONS | {'vpn_sources': ['2606:4700:4700::1001', '11.77.0.200', '11.77.0.200']})
+        self.assertEqual(options['vpn_sources'], ['11.77.0.200', '2606:4700:4700::1001'])
+        rules = node.firewall(options, HOST)
+        sets = {line.split('{')[0].split()[-1]: line for line in rules.splitlines() if line.strip().startswith('set ')}
+        self.assertIn('11.77.0.200', sets['my_server4']); self.assertIn('11.77.0.2', sets['my_server4'])
+        self.assertIn('2606:4700:4700::1001', sets['my_server6'])
+        self.assertNotIn('11.77.0.200', sets['admins4']); self.assertNotIn('2606:4700:4700::1001', sets['admins6'])
+        self.assertNotIn('11.77.0.200', node.firewall(OPTIONS, HOST))
+        for bad in (['10.0.0.1'], ['127.0.0.1'], ['11.77.0.0/24'], ['fe80::1'], [1], '11.77.0.200', ['11.77.0.%d' % i for i in range(33)]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                node.settings(OPTIONS | {'vpn_sources': bad})
+
 
 if __name__ == '__main__':
     unittest.main()
