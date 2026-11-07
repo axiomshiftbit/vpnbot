@@ -651,6 +651,7 @@ class Bot
     {
         $this->chatNavigationStart();
         $this->managedNodeNavigationStart();
+        try { $this->managedNodeTrackScreen(); } catch (Throwable $e) { /* Navigation must never fail on node state. */ }
         $telemtRoute = (string) (($this->input['callback'] ?? '') ?: ($this->input['message'] ?? ''));
         if (preg_match('~^(?:/telemt(?:[A-Z]|$)|/tuc? )~', $telemtRoute) && !$this->protocolModuleEnabled('telemt')) {
             if ($this->admin) $this->protocolModulesMenu();

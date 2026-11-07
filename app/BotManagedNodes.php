@@ -561,9 +561,17 @@ trait BotManagedNodes
         if (empty($job['origin']['chat']) || empty($job['origin']['message_id'])) return;
         $input = $this->input;
         try {
-            $this->input = array_replace($input ?? [], $job['origin']);
-            $this->managedNodeMenu($id);
+            $this->input = array_replace($input ?? [], array_intersect_key($job['origin'], array_flip(['chat', 'message_id'])));
             $node=$this->managedNodes()[$id];
+            if (!empty($job['origin']['moved'])) {
+                // The admin opened another screen in this message: report by a
+                // notice instead of replacing the menu they are working in.
+                $this->send($this->input['chat'], self::esc($node['name'])."\n".(empty($node['error'])
+                    ? $this->t('✅ Завершено: ', '✅ Completed: ').self::esc($this->managedNodeOperationLabel($job))
+                    : $this->t('↩️ Не применено, нода вернула прежнее состояние: ', '↩️ Not applied, the node restored its previous state: ').self::esc($this->managedNodeOperationLabel($job))));
+            } else {
+                $this->managedNodeMenu($id);
+            }
             if (!empty($node['error']) && in_array($job['operation'] ?? '', ['renew','renew_force','certificate_delete'],true)) {
                 $this->send($this->input['chat'], self::esc($node['name'])."\n".$this->t('❌ Операция с сертификатом не подтверждена. Проверьте состояние ноды; сообщение об успешном обновлении не выдано.',
                     '❌ Certificate operation was not confirmed. Check node status; renewal success was not reported.'));

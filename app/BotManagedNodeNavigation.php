@@ -25,6 +25,27 @@ trait BotManagedNodeNavigation
         }
     }
 
+    /**
+     * A node job redraws its origin message when it finishes. Once the admin
+     * presses another button in that message, the screen belongs to them: the
+     * job then reports by a separate notice instead of replacing their menu.
+     */
+    public function managedNodeTrackScreen(): void
+    {
+        $callback = (string) ($this->input['callback'] ?? '');
+        if ($callback === '' || empty($this->input['message_id']) || empty($this->input['chat'])) return;
+        foreach ($this->managedNodes() as $id => $node) {
+            $origin = $node['job']['origin'] ?? null;
+            // The node screen itself and its refresh keep the origin owned by the job.
+            if (!is_array($origin) || !empty($origin['moved']) || in_array($callback, ["/node $id", "/nodeRefresh $id"], true)
+                || (string) ($origin['chat'] ?? '') !== (string) $this->input['chat']
+                || (int) ($origin['message_id'] ?? 0) !== (int) $this->input['message_id']) continue;
+            $this->managedNodeWrite((string) $id, static function (&$node) {
+                if (!empty($node['job']['origin'])) $node['job']['origin']['moved'] = true;
+            });
+        }
+    }
+
     private static function managedNodeDatCallback(string $callback): bool
     {
         return (bool) preg_match('~^/(?:xtlsdat|dat(?:schedule(?:set|custom|hour)?|files|refresh|cats|catsearch)|(?:change|delete)datlist)(?: |$)|^/(?:include|dedupeList|deleteAll|exportList|importList) datlist(?: |$)~D', $callback);
