@@ -37,7 +37,10 @@ def replace_controller(public_key):
 
 
 def upgrade_code(source):
-    """Refresh node code and units in place; state, keys and firewall stay as they are."""
+    """Refresh node code and units in place, then rebuild the node guard with that code.
+
+    State, keys and settings stay as they are. The node lock excludes a running
+    job or renewal, so no ACME window can be open while the guard is replaced."""
     store = state.Store(ROOT)
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -46,6 +49,8 @@ def upgrade_code(source):
         if not store.current() or store.pending() or job.get('state') in ('queued', 'running'):
             raise ValueError('Нода не установлена или изменение ещё не завершено')
         install.install_code(source)
+        host = config.deployment(state.decode((install.ETC/'deployment.json').read_bytes(), state.MAX_DEPLOYMENT_BYTES))
+        Runtime(store, host).load_firewall()
     finally:
         os.close(descriptor)
 
@@ -239,7 +244,7 @@ def main():
         if args.bundle:
             raise ValueError('Обновление кода не меняет комплект образов')
         upgrade_code(Path(__file__).resolve().parent)
-        print('Код ноды обновлён. Настройки, ключи и правила сохранены.')
+        print('Код ноды обновлён, правила ноды перестроены. Настройки и ключи сохранены.')
         return
     if args.config:
         with args.config.open('rb') as stream:

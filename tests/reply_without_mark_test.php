@@ -39,7 +39,8 @@ session_save_path(sys_get_temp_dir());
 function replyMarkBot(array $input): ReplyMarkTestBot
 {
     $bot = (new ReflectionClass(ReplyMarkTestBot::class))->newInstanceWithoutConstructor();
-    $bot->input = $input + ['chat' => 555, 'reply' => false, 'callback' => false, 'group' => false, 'file_id' => false, 'message' => ''];
+    // Личный чат: id чата совпадает с id отправителя.
+    $bot->input = $input + ['chat' => $input['from'], 'reply' => false, 'callback' => false, 'group' => false, 'file_id' => false, 'message' => ''];
     return $bot;
 }
 
@@ -103,10 +104,18 @@ replyMarkAssert(count($bot->calls) === 1 && $bot->calls[0][1] === 'marked', 'о�
 $sid = 'replymark' . bin2hex(random_bytes(6));
 $bot = replyMarkBot(['from' => $sid, 'message_id' => 705, 'message' => 'привет']);
 replyMarkStash($bot, 701, 'stale');
-$bot->input['from'] = $sid; session_id($sid); session_start(); $_SESSION['reply']['555:701']['time'] = time() - 3600; session_write_close();
+$bot->input['from'] = $sid; session_id($sid); session_start(); $_SESSION['reply']["$sid:701"]['time'] = time() - 3600; session_write_close();
 $bot->session();
 session_write_close();
 replyMarkAssert($bot->input['reply'] === false && $bot->deleted === [701], 'устаревший запрос перехватил сообщение');
+
+// 7. Супергруппа (type=supergroup, отрицательный id чата): обычное сообщение не ответ.
+$sid = 'replymark' . bin2hex(random_bytes(6));
+$bot = replyMarkBot(['from' => $sid, 'chat' => -1001234567890, 'message_id' => 805, 'message' => 'сообщение в супергруппе']);
+replyMarkStash($bot, 801, 'x');
+$bot->session();
+session_write_close();
+replyMarkAssert($bot->input['reply'] === false, 'сообщение в супергруппе перехвачено как ответ');
 
 if ($failed) {
     echo "FAILED: $failed\n";

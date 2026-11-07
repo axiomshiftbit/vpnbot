@@ -83,16 +83,22 @@ class NodeSetup(unittest.TestCase):
             def read(self, name): return self.job if name == 'job.json' else None
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root/'deployment.json').write_bytes(setup.state.encode(HOST, setup.state.MAX_DEPLOYMENT_BYTES))
             with patch.object(setup, 'ROOT', root), patch.object(setup.state, 'Store', Store), \
+                    patch.object(setup.install, 'ETC', root), patch.object(setup, 'Runtime') as runtime, \
                     patch.object(setup.install, 'install_code') as install_code:
                 setup.upgrade_code(root/'src')
                 install_code.assert_called_once_with(root/'src')
+                # The new code's guard is loaded at once, not at the next restart.
+                runtime.return_value.load_firewall.assert_called_once_with()
+                self.assertEqual(runtime.call_args.args[1]['sources'], HOST['sources'])
                 for field, value in (('current_value', None), ('pending_value', {'before': 'b'*32}), ('job', {'state': 'running'})):
                     with self.subTest(blocked=field), patch.object(Store, field, value):
-                        install_code.reset_mock()
+                        install_code.reset_mock(); runtime.reset_mock()
                         with self.assertRaises(ValueError):
                             setup.upgrade_code(root/'src')
                         install_code.assert_not_called()
+                        runtime.return_value.load_firewall.assert_not_called()
 
 
 if __name__ == '__main__':

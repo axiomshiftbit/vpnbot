@@ -318,17 +318,21 @@ class Runtime:
         exists = command(['nft', 'list', 'table', 'inet', 'vpnbot_node'], required=False).returncode == 0
         return ('delete table inet vpnbot_node\n' if exists else '') + rules
 
+    def load_firewall(self, generation=None):
+        """Build the guard from a generation with the installed code; check, persist, load atomically."""
+        rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
+        transaction = self.transaction(rules)
+        command(['nft', '-c', '-f', '-'], data=transaction.encode())
+        state.atomic(self.guard, rules.encode())
+        command(['nft', '-f', '-'], data=transaction.encode())
+
     def apply(self, generation):
         value = self.store.load(generation)
         self.prepare(generation)
         self.container()
         self.container(COVER_CONTAINER)
         self.container(AWG_CONTAINER)
-        rules = config.firewall(value['options'], self.routed_host())
-        transaction = self.transaction(rules)
-        command(['nft', '-c', '-f', '-'], data=transaction.encode())
-        state.atomic(self.guard, rules.encode())
-        command(['nft', '-f', '-'], data=transaction.encode())
+        self.load_firewall(generation)
         self.stop()
         command(['docker', 'run', '-d', '--name', CONTAINER, '--label', LABEL+'=1',
                  '--restart', 'no', '--log-driver', 'local', '--log-opt', 'max-size=1m', '--log-opt', 'max-file=2',

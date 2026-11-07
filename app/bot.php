@@ -558,7 +558,10 @@ class Bot
                 // и не применялась. В личном чате обычное сообщение — не команда и
                 // не кнопка — считается ответом на последний запрос бота.
                 $text = (string) ($this->input['message'] ?? '');
+                // Личный чат: id чата совпадает с id отправителя. Признак group
+                // не покрывает супергруппы (type=supergroup).
                 $answer = $pending && empty($this->input['callback']) && empty($this->input['group'])
+                    && (string) $this->input['chat'] === (string) $this->input['from']
                     && (($text !== '' && $text[0] !== '/') || !empty($this->input['file_id']));
                 if ($answer && $pending[$latest = max(array_keys($pending))][1]) {
                     $this->input['reply'] = $latest;

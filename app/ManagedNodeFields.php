@@ -112,17 +112,36 @@ final class ManagedNodeFields
         return $value;
     }
 
+    /** The node's reserved ranges (scripts/node_config.py PRIVATE4/PRIVATE6): bot and node agree. */
+    public const RESERVED = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+        '192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24',
+        '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4', '::/96', '::ffff:0:0/96', '64:ff9b::/96', '64:ff9b:1::/48',
+        '100::/64', '2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20', 'fc00::/7', 'fe80::/10', 'ff00::/8'];
+
+    private static function reserved(string $packed): bool
+    {
+        foreach (self::RESERVED as $network) {
+            [$base, $bits] = explode('/', $network);
+            $base = inet_pton($base);
+            if (strlen($base) !== strlen($packed)) continue;
+            $bytes = intdiv((int) $bits, 8); $rest = (int) $bits % 8;
+            if (strncmp($base, $packed, $bytes) !== 0) continue;
+            if ($rest === 0 || ((ord($base[$bytes]) ^ ord($packed[$bytes])) & (0xff << (8 - $rest)) & 0xff) === 0) return true;
+        }
+        return false;
+    }
+
     /** Public unicast IPv4/IPv6 only, as the node enforces; at most 32, deduplicated. */
     public static function vpnSources(array $value): array
     {
         $result = [];
         foreach ($value as $ip) {
-            $ip = is_string($ip) ? $ip : '';
-            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)
-                || filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && preg_match('~^(?:f[c-f]|ff)~i', $ip)) {
+            $packed = is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP) ? inet_pton($ip) : false;
+            // IPv6 outside 2000::/3 is not global unicast for the node either.
+            if ($packed === false || self::reserved($packed) || strlen($packed) === 16 && (ord($packed[0]) & 0xe0) !== 0x20) {
                 throw new InvalidArgumentException('VPN-only servers need public IP addresses');
             }
-            $result[inet_ntop(inet_pton($ip))] = true;
+            $result[inet_ntop($packed)] = true;
         }
         if (count($result) > 32) throw new InvalidArgumentException('At most 32 VPN-only servers are supported');
         return array_keys($result);
