@@ -1767,8 +1767,8 @@ trait BotExitNodes
         if (!$confirmed) {
             $this->update($this->input['chat'], $this->input['message_id'],
                 $this->t('Удалить узел <b>', 'Delete node <b>') . $this->exitName($id, $node) . $this->t('</b>? Его маршруты удалятся, у пользователей он выключится.', '</b>? Its routes are deleted and it is turned off for users.')
-                    . ($managed === null ? '' : $this->t("\nКарточка и локальные ключи управления тоже удалятся. Удалённый сервер и его внешние подключения продолжат работать; остановка сервера выполняется отдельно.",
-                        "\nThe card and local management keys will also be deleted. The remote server and its external connections keep running; stop the server separately.")),
+                    . ($managed === null ? '' : $this->t("\nКарточка удалится. Сервер и его внешние подключения продолжат работать; остановка сервера выполняется отдельно. Ключ управления, которому доверяет сервер, бот сохранит: при повторном добавлении этого же сервера он подставится сам, если сервер не принял новый ключ из карточки.",
+                        "\nThe card is deleted. The server and its external connections keep running; stop the server separately. The bot keeps the management key the server trusts: when this same server is added again, the key is used automatically if the server rejects the new key from the card.")),
                 [[['text' => $this->t('🗑 Да, удалить', '🗑 Yes, delete'), 'callback_data' => "/exitDelYes $id"], ['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]]]);
             return;
         }

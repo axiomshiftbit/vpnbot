@@ -16,6 +16,9 @@ import time
 
 LIMIT = 65536
 ROOT = Path('/ssh/nodes')
+# Controller keys of nodes removed from the bot. The node keeps trusting such a
+# key, so adding the same server again reuses it instead of a rejected new one.
+RETIRED = 'retired'
 
 
 class NodeBusy(ValueError):
@@ -72,6 +75,10 @@ def endpoint(value):
     if type(value['port']) is not int or not 1 <= value['port'] <= 65535:
         raise ValueError('port')
     return dict(address=str(address), port=value['port'], host_key=key(value['host_key']))
+
+
+def retired_directory(root, host_key):
+    return Path(root)/RETIRED/hashlib.sha256(key(host_key).encode()).hexdigest()[:32]
 
 
 def trusted(path):
@@ -225,10 +232,57 @@ class Client:
     def connect(self, target):
         target = endpoint(target)
         self.public()
-        if self.request({'action': 'ping'}, target) != {'schema': 1}:
-            raise ValueError('protocol')
+        try:
+            if self.request({'action': 'ping'}, target) != {'schema': 1}:
+                raise ValueError('protocol')
+        except NodeBusy:
+            raise
+        except ValueError:
+            if not self.adopt_retired(target):
+                raise
         atomic(self.directory/'endpoint.json', encode(target))
         return {'connected': True, 'fingerprint': fingerprint(target['host_key'])}
+
+    def adopt_retired(self, target):
+        """First enrollment only: the server still trusts the key of an earlier removal."""
+        directory = retired_directory(self.root, target['host_key'])
+        private, public, current = directory/'key', directory/'key.pub', self.directory/'endpoint.json'
+        for path in (directory, private, public, current):
+            trusted(path)
+        if current.exists() or not private.is_file() or not public.is_file():
+            return False
+        saved = {name: (self.directory/name).read_bytes() for name in ('key', 'key.pub')}
+        atomic(self.directory/'key', private.read_bytes())
+        atomic(self.directory/'key.pub', public.read_bytes())
+        try:
+            if self.request({'action': 'ping'}, target) != {'schema': 1}:
+                raise ValueError('protocol')
+        except Exception:
+            for name, body in saved.items():
+                atomic(self.directory/name, body)
+            raise
+        private.unlink()
+        public.unlink()
+        try:
+            directory.rmdir()
+        except OSError:
+            pass  # A foreign leftover must not fail an enrollment that already succeeded.
+        return True
+
+    def retire(self):
+        """Keep the controller key of a node being forgotten for a later re-enrollment."""
+        private, public, current = self.directory/'key', self.directory/'key.pub', self.directory/'endpoint.json'
+        for path in (private, public, current):
+            trusted(path)
+        if not (private.is_file() and public.is_file() and current.is_file()):
+            return
+        directory = retired_directory(self.root, endpoint(decode(current.read_bytes()))['host_key'])
+        trusted(directory.parent)
+        directory.parent.mkdir(mode=0o700, exist_ok=True)
+        trusted(directory)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        atomic(directory/'key', private.read_bytes())
+        atomic(directory/'key.pub', public.read_bytes())
 
     def reconnect(self, value):
         if not isinstance(value, dict) or set(value) != {'address', 'port'}:
@@ -269,6 +323,10 @@ class Client:
     def forget(self):
         # Only this node's fixed transport files; never recurse or follow links.
         names = {'key', 'key.pub', 'endpoint.json', 'snapshot.json', 'known_hosts', 'xr_known_hosts'}
+        try:
+            self.retire()
+        except (ValueError, OSError):
+            pass  # Removal still proceeds; only the later automatic reuse is lost.
         files = list(self.directory.iterdir())
         for path in files:
             trusted(path)

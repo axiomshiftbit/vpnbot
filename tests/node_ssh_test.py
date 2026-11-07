@@ -137,6 +137,64 @@ print('{"ok":true,"result":{"schema":1}}')
             self.assertFalse(client.directory.exists())
             self.assertEqual((other.directory/'key.pub').read_text(), 'other')
 
+    def retired_setup(self, root, host_key=KEY):
+        old = transport.Client('aabbccdd', root)
+        (old.directory/'key').write_text('old-private'); (old.directory/'key.pub').write_text('old-public')
+        (old.directory/'endpoint.json').write_bytes(transport.encode(dict(address='1.1.1.1', port=22, host_key=host_key)))
+        self.assertEqual(old.forget(), {'forgotten': True})
+        new = transport.Client('11223344', root)
+        (new.directory/'key').write_text('fresh-private'); (new.directory/'key.pub').write_text('fresh-public')
+        return new, transport.retired_directory(root, host_key)
+
+    def test_removed_node_key_is_reused_when_the_server_rejects_a_new_one(self):
+        target = dict(address='1.1.1.1', port=22, host_key=KEY)
+        with tempfile.TemporaryDirectory() as tmp:
+            new, retired = self.retired_setup(Path(tmp)/'nodes')
+            self.assertEqual((retired/'key').read_text(), 'old-private')
+            self.assertEqual((retired/'key').stat().st_mode & 0o777, 0o600)
+            used = []
+            def request(body, target=None):
+                used.append((new.directory/'key').read_text())
+                if used[-1] != 'old-private': raise ValueError('ssh_failed')
+                return {'schema': 1}
+            with patch.object(new, 'public', return_value=KEY), patch.object(new, 'request', side_effect=request):
+                self.assertTrue(new.connect(target)['connected'])
+            self.assertEqual(used, ['fresh-private', 'old-private'])
+            self.assertEqual((new.directory/'key').read_text(), 'old-private')
+            self.assertEqual((new.directory/'key.pub').read_text(), 'old-public')
+            self.assertFalse(retired.exists())
+            self.assertTrue((new.directory/'endpoint.json').exists())
+
+    def test_new_key_wins_and_failed_reuse_restores_fresh_key(self):
+        target = dict(address='1.1.1.1', port=22, host_key=KEY)
+        with tempfile.TemporaryDirectory() as tmp:
+            new, retired = self.retired_setup(Path(tmp)/'nodes')
+            with patch.object(new, 'public', return_value=KEY), patch.object(new, 'request', return_value={'schema': 1}):
+                new.connect(target)
+            self.assertEqual((new.directory/'key').read_text(), 'fresh-private')
+            self.assertTrue(retired.exists(), 'a reinstalled node with the new key keeps the archive untouched')
+        with tempfile.TemporaryDirectory() as tmp:
+            new, retired = self.retired_setup(Path(tmp)/'nodes')
+            with patch.object(new, 'public', return_value=KEY), patch.object(new, 'request', side_effect=ValueError('ssh_failed')), \
+                    self.assertRaises(ValueError):
+                new.connect(target)
+            self.assertEqual((new.directory/'key').read_text(), 'fresh-private')
+            self.assertEqual((new.directory/'key.pub').read_text(), 'fresh-public')
+            self.assertEqual((retired/'key').read_text(), 'old-private')
+            self.assertFalse((new.directory/'endpoint.json').exists())
+
+    def test_busy_node_or_other_server_never_gets_a_retired_key(self):
+        other = 'ssh-ed25519 '+base64.b64encode(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20'+b'z'*32).decode()
+        for host_key, error in ((KEY, transport.NodeBusy('node_busy')), (other, ValueError('ssh_failed'))):
+            with self.subTest(host_key=host_key[-6:], error=type(error).__name__), tempfile.TemporaryDirectory() as tmp:
+                new, retired = self.retired_setup(Path(tmp)/'nodes', host_key=KEY)
+                with patch.object(new, 'public', return_value=KEY), patch.object(new, 'request', side_effect=error) as request, \
+                        self.assertRaises(ValueError):
+                    new.connect(dict(address='1.1.1.1', port=22, host_key=host_key))
+                self.assertEqual(request.call_count, 1)
+                self.assertEqual((new.directory/'key').read_text(), 'fresh-private')
+                self.assertEqual((retired/'key').read_text(), 'old-private')
+
     def test_reconnect_keeps_pin_and_commits_only_healthy_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             client = transport.Client('aabbccdd', Path(tmp)/'nodes')
