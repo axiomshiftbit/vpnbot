@@ -130,11 +130,14 @@ class NodeConfig(unittest.TestCase):
         rules = node.firewall(OPTIONS, HOST)
         for fragment in ('priority -110', 'redirect to :8443', 'ct original proto-dst 443',
                          'ct original proto-dst @acme_http', 'timeout 10m', 'meta skuid 995',
-                         'policy drop', 'ip6 saddr @ipv6_routers', 'node_syn4', 'node_syn6'):
+                         'policy drop', 'ip6 saddr @ipv6_routers', 'chain syn4', 'chain syn6'):
             self.assertIn(fragment, rules)
-        # Separate budget per trusted server address, enough for a busy main bot.
-        for version in ('ip', 'ip6'):
-            self.assertIn('{ '+version+' saddr timeout 1m limit rate 150/second burst 300 packets }', rules)
+        # A forged-source flood must not be able to exhaust a per-source budget
+        # of the trusted bot: trusted VPN SYNs are counted, never rate limited.
+        self.assertNotIn('limit rate 150', rules)
+        self.assertNotIn('meter node_syn', rules)
+        self.assertIn(' chain syn4 { counter accept; }', rules)
+        self.assertIn(' chain syn6 { counter accept; }', rules)
         self.assertNotIn('flush ruleset', rules)
         self.assertNotIn('elements = { 80 }', rules)
         self.assertIn('ip6 daddr 2000::/3', rules)

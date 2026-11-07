@@ -428,10 +428,12 @@ def firewall(options, host):
     lines += ['  tcp dport 8080 ct status dnat ct original proto-dst @acme_http ct state new tcp flags & (fin|syn|rst|ack) == syn accept',
               '  limit rate 5/second burst 10 packets log prefix "INPUT-NODE-DROP: "',
               '  counter drop', ' }',
-              # Per trusted server address. All users of a main bot share its
-              # address; the margin also covers three servers behind one NAT.
-              ' chain syn4 { meter node_syn4 size 65535 { ip saddr timeout 1m limit rate 150/second burst 300 packets } counter accept; counter drop; }',
-              ' chain syn6 { meter node_syn6 size 65535 { ip6 saddr timeout 1m limit rate 150/second burst 300 packets } counter accept; counter drop; }',
+              # No per-source limit for trusted servers: a SYN flood forged with the
+              # bot's address exhausted it and cut off real users. Forged SYNs never
+              # finish the handshake: SYN cookies answer them statelessly, and their
+              # unconfirmed conntrack entries are evicted first when the table fills.
+              ' chain syn4 { counter accept; }',
+              ' chain syn6 { counter accept; }',
               ' chain forward { type filter hook forward priority -20; policy drop; }',
               ' chain output { type filter hook output priority -20; policy accept;',
               '  ct state invalid drop', f'  meta skuid {uid} jump core_egress']

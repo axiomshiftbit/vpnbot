@@ -30,6 +30,9 @@ wan="$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if 
     if [[ "$wan" =~ ^[A-Za-z0-9_-]{1,15}$ ]]; then
         echo "net.ipv4.conf.$wan.send_redirects = 0"
     fi
+    # Поддельный SYN-флуд гасится без хранения состояния, а не лимитом по
+    # адресу источника, который подделка исчерпывает.
+    echo 'net.ipv4.tcp_syncookies = 1'
 } | write /etc/sysctl.d/97-vpnbot-neighbor.conf
 sysctl -q -p "$ROOT/etc/sysctl.d/97-vpnbot-neighbor.conf" || echo 'WARN: neighbour sysctl partially applied' >&2
 

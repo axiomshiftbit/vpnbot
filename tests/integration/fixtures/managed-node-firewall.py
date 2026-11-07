@@ -197,9 +197,11 @@ try:
                 print(f'INFO {label} burst 250: accepted {accepted}, dropped {dropped}', flush=True)
                 # A rare SYN retransmission may add a packet; nothing may be dropped.
                 check(label+'-trusted-burst-250-accepted', accepted >= 250 and dropped == 0)
+                # No per-source budget: a flood forged with the bot's address must
+                # not be able to lock out the bot's real users.
                 accepted, dropped = syn_burst(version, address, trusted, 400)
                 print(f'INFO {label} flood 400: accepted {accepted}, dropped {dropped}', flush=True)
-                check(label+'-trusted-flood-still-limited', dropped > 0)
+                check(label+'-trusted-flood-not-rate-limited', accepted >= 400 and dropped == 0)
                 time.sleep(2)  # Half-open test sockets are reset before the next checks.
             if version == 4:
                 check(label+'-ipv4-options-block', not connect(address, 443, trusted, remote=True, ip_options=True))
