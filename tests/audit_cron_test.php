@@ -149,8 +149,11 @@ cronAssert(array_keys($r) === ['198.51.100.7'], 'скалярный фильтр
 @unlink($log);
 
 // ── 5. HWID: лимит и запись одной операцией под локом ───────────────────────
-$bot->hwid = sys_get_temp_dir() . '/hwid_' . getmypid() . '.json';
-@unlink($bot->hwid);
+// Свой каталог: база SQLite ложится рядом с hwid.json. Общий /tmp делят
+// runner под разными пользователями — файл 0600 другого runner не открыть.
+$hwidDir = sys_get_temp_dir() . '/cron_hwid_' . getmypid() . '_' . bin2hex(random_bytes(4));
+mkdir($hwidDir, 0700);
+$bot->hwid = "$hwidDir/hwid.json";
 $bot->setHwidDevice('uid1', 'dev1', ['time' => 1]);
 $bot->setHwidDevice('uid1', 'dev2', ['time' => 2]);
 cronAssert(count($bot->getHwidDevicesByUser('uid1')) === 2, 'два устройства записаны');
@@ -174,6 +177,8 @@ cronAssert($bot->store() ? $bot->getHwidDevicesByUser('uid2') === ['dev1' => ['t
     : json_decode((string) file_get_contents($bot->hwid), true) !== null, 'на диске валидные данные');
 @unlink($bot->hwid);
 @unlink($bot->hwid . '.lock');
+array_map('unlink', glob("$hwidDir/*") ?: []);
+@rmdir($hwidDir);
 
 // ── 6. Список логов: только файлы, операции по имени ────────────────────────
 // Раньше меню строилось прямо по scandir: в нём были «.», «..», каталог
