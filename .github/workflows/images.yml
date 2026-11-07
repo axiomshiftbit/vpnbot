@@ -19,6 +19,10 @@ on:
         description: 'Автослияние: после успешной публикации dev передвинуть master на этот коммит и перенести комплект (и на VM, и на серверах GitHub)'
         type: boolean
         default: false
+      allow_waivers:
+        description: 'Исключения уязвимостей: допустить точные находки из scripts/ci_vuln_waivers.json (уязвимость + компонент/пакет + версия, со сроком). Без отметки они блокируют'
+        type: boolean
+        default: false
   # Раз в две недели на серверах GitHub: пересборка со свежими пакетами и
   # проверка уязвимостей. На домашней VM тот же прогон запускает её собственный
   # таймер (scripts/ci_home_schedule.py): он навёрстывает пропуск после включения.
@@ -433,6 +437,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          # Только ручной запуск с явной отметкой; расписание и push — никогда.
+          CI_ALLOW_WAIVERS: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_waivers && '1' || '0' }}
         run: python3 scripts/ci_check_components.py
       # Адреса боевых серверов и другие приметы установки известны только
       # своему runner (файл /etc/vpnbot-ci-private-markers): ни в репозиторий,
@@ -477,6 +483,7 @@ jobs:
           IMAGE_NAME: ${{ matrix.image }}
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          CI_ALLOW_WAIVERS: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_waivers && '1' || '0' }}
         run: |
           set -euo pipefail
           image=$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/bundle.json"))["images"][os.environ["IMAGE_NAME"]])')

@@ -44,6 +44,7 @@ import urllib.parse
 import urllib.request
 
 from ci_retry import retrying
+import ci_waivers
 
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKING = {'HIGH', 'CRITICAL'}
@@ -385,7 +386,7 @@ def check(root=ROOT, token=None, freshness=True):
     return rows, blocked
 
 
-def report(rows, blocked):
+def report(rows, blocked, waived=frozenset()):
     lines = []
     for row in rows:
         state = 'нет источника данных' if not row['sources'] else ', '.join(row['sources'])
@@ -395,7 +396,10 @@ def report(rows, blocked):
         else:
             lines.append(f"{row['name']} {row['version']}: проверено по {state}" if row['sources'] else f"{row['name']} {row['version']}: {state}")
         for ident, level, fixable, source in row['findings']:
-            lines.append(f"  {'BLOCK' if (level in BLOCKING or source == 'nginx.org') and fixable else 'note '} {ident} {level} ({source})")
+            mark = 'BLOCK' if (level in BLOCKING or source == 'nginx.org') and fixable else 'note '
+            if mark == 'BLOCK' and (row['name'], row['version'], ident) in waived:
+                mark = 'WAIVE'
+            lines.append(f"  {mark} {ident} {level} ({source})")
         for note in row.get('notes', []):
             lines.append(f"  внимание: {note}")
         if row['newer']:
@@ -405,10 +409,25 @@ def report(rows, blocked):
     return '\n'.join(lines)
 
 
+def apply_waivers(blocked):
+    """Explicitly allowed exact findings (scripts/ci_vuln_waivers.json) stop blocking."""
+    blocked, waived, hints = ci_waivers.split(
+        blocked, lambda entries, f: ci_waivers.component_waiver(entries, f[2], f[0], f[1]))
+    lines = []
+    for (name, version, ident, level, _fixable, source), entry in waived:
+        lines.append(f'WAIVED {name} {version} {ident} {level} ({source}) — {ci_waivers.describe(entry)}')
+        ci_waivers.annotate('warning', f'Допуск с исключением: {name} {version} {ident} {level} — {ci_waivers.describe(entry)}')
+    for (name, version, ident, *_rest), entry in hints:
+        lines.append(f'есть исключение для {name} {version} {ident} ({ci_waivers.describe(entry)}); '
+                     'действует только при ручном запуске с allow_waivers')
+    return blocked, lines, frozenset((f[0], f[1], f[2]) for f, _entry in waived)
+
+
 def main():
     token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
     rows, blocked = check(token=token)
-    text = report(rows, blocked)
+    blocked, waiver_lines, waived = apply_waivers(blocked)
+    text = report(rows, blocked, waived) + ''.join('\n' + line for line in waiver_lines)
     print(text)
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary:

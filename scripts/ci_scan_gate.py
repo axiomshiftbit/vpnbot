@@ -6,7 +6,11 @@
 Уязвимости без исправления только перечисляются: обновлять пока не на что.
 """
 import json
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ci_waivers  # noqa: E402
 
 
 def gate(d):
@@ -34,12 +38,22 @@ def gate(d):
 
 def main(path):
     blocked, secrets, unfixed, medium = gate(json.load(open(path)))
+    # Only exact vulnerability + package + installed version, and only in a run
+    # that explicitly allowed waivers. Secrets are never waived.
+    blocked, waived, hints = ci_waivers.split(blocked, lambda entries, row: ci_waivers.package_waiver(entries, row[0], row[1], row[2]))
+    for row, entry in waived:
+        print('WAIVED', *row, '—', ci_waivers.describe(entry))
+        ci_waivers.annotate('warning', f'Допуск с исключением: {row[0]} {row[1]} {row[2]} — {ci_waivers.describe(entry)}')
+    for row, entry in hints:
+        print('note waiver', row[0], row[1], row[2], '— действует только при ручном запуске с allow_waivers')
     for row in blocked:
         print('BLOCK', *row)
     for row in secrets:
         print('BLOCK secret', *row)
     for row in unfixed:
         print('note unfixed', *row)
+    if waived:
+        print('Security gate waivers:', len(waived), 'fixable high/critical findings admitted by scripts/ci_vuln_waivers.json')
     print('Security gate:', len(blocked), 'fixable high/critical findings;', len(secrets), 'secrets;',
           len(unfixed), 'high/critical without a fix;', medium, 'fixable medium')
     return 1 if blocked or secrets else 0
