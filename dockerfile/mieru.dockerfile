@@ -15,7 +15,7 @@ COPY go-retry.sh /build-tools/go-retry.sh
 RUN patch -p1 --fuzz=0 < /policy/hooks.patch \
     && cp /policy/*.go pkg/socks5/
 RUN sh /build-tools/go-retry.sh go get google.golang.org/grpc@v1.83.2 golang.org/x/crypto@v0.57.0 \
-      golang.org/x/net@v0.60.0 golang.org/x/text@v0.42.0
+      golang.org/x/net@v0.62.0 golang.org/x/text@v0.42.0
 RUN sh /build-tools/go-retry.sh go test -vet=off ./pkg/socks5 -run TestVPNBot -count=1
 RUN sh /build-tools/go-retry.sh go test -vet=off ./internal/bufpool ./apis/common ./pkg/common ./pkg/appctl/appctlcommon ./pkg/protocol \
     -run 'Test.*(Buffer|Acquire|PacketTunnel|UDPAssociate|Idle|ServerTCP)' -count=1

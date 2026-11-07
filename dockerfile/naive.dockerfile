@@ -33,7 +33,7 @@ RUN sh /build-tools/go-retry.sh go install github.com/caddyserver/xcaddy/cmd/xca
     && /go/bin/xcaddy build ${CADDY_VERSION} \
         --replace github.com/caddyserver/caddy/v2=/caddy \
         --with github.com/caddyserver/forwardproxy=/forwardproxy \
-        --replace golang.org/x/net=golang.org/x/net@v0.60.0 \
+        --replace golang.org/x/net=golang.org/x/net@v0.62.0 \
     && ./caddy version | grep -q "${CADDY_VERSION}" \
     && ./caddy list-modules | grep -qx http.handlers.forward_proxy
 

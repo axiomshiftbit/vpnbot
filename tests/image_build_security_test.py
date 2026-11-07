@@ -20,7 +20,7 @@ class ImageBuildSecurityTests(unittest.TestCase):
             state = root / 'modules.json'
             state.write_text(json.dumps({'google.golang.org/grpc': 'v1.50.1',
                                          'golang.org/x/crypto': 'v0.21.0',
-                                         'golang.org/x/net': 'v0.60.0'}))
+                                         'golang.org/x/net': 'v0.62.0'}))
             go = root / 'go'
             go.write_text('''#!/usr/bin/env python3
 import json,pathlib,sys
@@ -40,7 +40,7 @@ else:
                                     capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual({'google.golang.org/grpc': 'v1.83.2', 'golang.org/x/crypto': 'v0.57.0',
-                              'golang.org/x/net': 'v0.60.0'}, json.loads(state.read_text()))
+                              'golang.org/x/net': 'v0.62.0'}, json.loads(state.read_text()))
 
     def test_unreviewed_source_is_rejected_before_download(self):
         result = subprocess.run(['sh', str(ROOT / 'dockerfile/go-source.sh'), 'example/core', 'v1.0.0',
