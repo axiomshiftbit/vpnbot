@@ -542,12 +542,29 @@ class Bot
         @session_start();
         if (!empty($_SESSION['reply'])) {
             if (empty($this->input['reply'])) {
+                $pending = [];
                 foreach ($_SESSION['reply'] as $k => $v) {
                     // Старые записи не содержат chat: их нельзя безопасно
                     // привязать к текущему чату по одному message_id.
                     if (!isset($v['chat'])) { unset($_SESSION['reply'][$k]); continue; }
                     if ((string) $v['chat'] !== (string) $this->input['chat']) continue;
                     $promptId = str_contains((string) $k, ':') ? (int) substr((string) $k, strrpos((string) $k, ':') + 1) : (int) $k;
+                    // Только свежий запрос может принять ответ без пометки reply:
+                    // давно брошенный ввод не должен получить случайное сообщение.
+                    $pending[$promptId] = [$k, time() - (int) ($v['time'] ?? 0) <= 1800];
+                }
+                // Ответ без пометки reply (вставка в Telegram Desktop, закрытая
+                // панель ответа) раньше отменял запрос: ссылка оставалась в чате
+                // и не применялась. В личном чате обычное сообщение — не команда и
+                // не кнопка — считается ответом на последний запрос бота.
+                $text = (string) ($this->input['message'] ?? '');
+                $answer = $pending && empty($this->input['callback']) && empty($this->input['group'])
+                    && (($text !== '' && $text[0] !== '/') || !empty($this->input['file_id']));
+                if ($answer && $pending[$latest = max(array_keys($pending))][1]) {
+                    $this->input['reply'] = $latest;
+                    unset($pending[$latest]);
+                }
+                foreach ($pending as $promptId => [$k]) {
                     $this->delete($this->input['chat'], $promptId);
                     unset($_SESSION['reply'][$k]);
                 }
@@ -578,6 +595,7 @@ class Bot
             return;
         }
         $state['chat'] = $this->input['chat'];
+        $state['time'] = time();
         if ($this->protocolReturnMain && in_array($state['callback'] ?? '', ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true)) {
             $state['protocol_main'] = true;
         }
