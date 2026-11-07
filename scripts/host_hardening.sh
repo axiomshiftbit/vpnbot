@@ -24,12 +24,15 @@ write() {
 wan="$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')"
 {
     echo '# VPNBot: защита от соседей по сети хостера (scripts/host_hardening.sh).'
-    for key in arp_ignore=1 arp_announce=2 send_redirects=0; do
+    for key in arp_ignore=1 arp_announce=2 send_redirects=0 accept_redirects=0 secure_redirects=0 accept_source_route=0; do
         for scope in all default; do echo "net.ipv4.conf.$scope.${key%%=*} = ${key#*=}"; done
     done
+    # send/secure redirects берутся по «или» с conf.all — интерфейс тоже по имени.
     if [[ "$wan" =~ ^[A-Za-z0-9_-]{1,15}$ ]]; then
-        echo "net.ipv4.conf.$wan.send_redirects = 0"
+        for key in send_redirects accept_redirects secure_redirects; do echo "net.ipv4.conf.$wan.$key = 0"; done
     fi
+    echo 'net.ipv4.icmp_echo_ignore_broadcasts = 1'
+    echo 'net.ipv4.icmp_ignore_bogus_error_responses = 1'
     # Поддельный SYN-флуд гасится без хранения состояния, а не лимитом по
     # адресу источника, который подделка исчерпывает.
     echo 'net.ipv4.tcp_syncookies = 1'

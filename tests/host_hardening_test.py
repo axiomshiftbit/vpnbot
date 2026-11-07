@@ -35,7 +35,10 @@ class HostHardening(unittest.TestCase):
             neighbour = (root / 'etc/sysctl.d/97-vpnbot-neighbor.conf').read_text()
             for line in ('net.ipv4.conf.all.arp_ignore = 1', 'net.ipv4.conf.default.arp_announce = 2',
                          'net.ipv4.conf.all.send_redirects = 0', 'net.ipv4.conf.eth0.send_redirects = 0',
-                         'net.ipv4.tcp_syncookies = 1'):
+                         'net.ipv4.tcp_syncookies = 1', 'net.ipv4.conf.all.accept_redirects = 0',
+                         'net.ipv4.conf.default.secure_redirects = 0', 'net.ipv4.conf.all.accept_source_route = 0',
+                         'net.ipv4.conf.eth0.accept_redirects = 0', 'net.ipv4.conf.eth0.secure_redirects = 0',
+                         'net.ipv4.icmp_echo_ignore_broadcasts = 1', 'net.ipv4.icmp_ignore_bogus_error_responses = 1'):
                 self.assertIn(line, neighbour)
             self.assertEqual((root / 'etc/modules-load.d/vpnbot-conntrack.conf').read_text(), 'nf_conntrack\n')
             self.assertIn('LLMNR=no', (root / 'etc/systemd/resolved.conf.d/90-vpnbot-no-llmnr.conf').read_text())
