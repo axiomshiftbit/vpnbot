@@ -1788,15 +1788,32 @@ trait BotExitNodes
             return '';
         }); };
         $error = 'exit busy';
+        $archiveFailed = false;
+        $cleanupFailed = false;
         try {
-            if ($managed !== null) $this->managedNodeLocked($id, function () use ($remove, &$error) { $error = $remove(); });
+            if ($managed !== null) $this->managedNodeLocked($id, function () use ($id, $remove, &$error, &$archiveFailed, &$cleanupFailed) {
+                if (!empty($this->managedNodes()[$id]['job'])) return;
+                // Preserve the card and routes if the controller key cannot be
+                // saved. Keep the same node lock through local key cleanup.
+                try { $this->managedNodeTransport($id, 'retire'); }
+                catch (Throwable $failure) { $archiveFailed = true; return; }
+                $error = $remove();
+                if ($error === '') {
+                    try { $this->managedNodeTransport($id, 'forget'); }
+                    catch (Throwable $failure) { $cleanupFailed = true; }
+                }
+            });
             else $error = $remove();
         } catch (Throwable $failure) { /* Preserve state when the controller is busy. */ }
+        if ($archiveFailed) {
+            $this->managedNodesMenu($this->t('Не удалось сохранить ключ управления нодой. Карточка, маршруты и исходные ключи сохранены. Проверьте свободное место и права каталога ноды, затем повторите удаление.',
+                'Could not archive the node management key. The card, routes and original keys were preserved. Check free space and node directory permissions, then retry deletion.'));
+            return;
+        }
         if ($error === '') {
             foreach (array_keys($node['rulesets']) as $url) $this->exitRulesetForget((string) $url);
             if ($managed !== null) {
-                try { $this->managedNodeTransport($id, 'forget'); }
-                catch (Throwable $failure) {
+                if ($cleanupFailed) {
                     $this->managedNodesMenu($this->t('Карточка и маршруты удалены, но локальные SSH-файлы удалить не удалось. Проверьте права каталога ноды.',
                         'Card and routes deleted, but local SSH files could not be removed. Check the node directory permissions.'));
                     return;

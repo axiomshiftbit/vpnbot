@@ -51,6 +51,7 @@ def upgrade_code(source):
         install.install_code(source)
         host = config.deployment(state.decode((install.ETC/'deployment.json').read_bytes(), state.MAX_DEPLOYMENT_BYTES))
         Runtime(store, host).load_firewall()
+        nft_host_setup.configure(host=host, mode='node')
     finally:
         os.close(descriptor)
 
@@ -200,8 +201,9 @@ def prompt():
     print('Минимальная нода: Xray и, при выборе своего сайта, NGINX. Токен Telegram не требуется.')
     print('Введите публичный SSH-ключ, созданный в разделе «Ноды» основного бота.')
     key = ask('Публичный ключ ssh-ed25519')
-    sources = ask('Публичные IPv4/IPv6 основного бота и других разрешённых VPN-серверов через пробел').split()
-    admins = ask('Адреса администратора для SSH через пробел', ' '.join(sources)).split()
+    sources = ask('Публичные IPv4/IPv6 основного бота через пробел (доступ к VPN и SSH)').split()
+    print('Другие серверы без доступа к SSH добавляйте в настройках ноды: «Серверы для VPN (без SSH)».')
+    admins = ask('Публичные IPv4/IPv6 администратора только для SSH через пробел', ' '.join(sources)).split()
     host = dict(public4=ask('Публичный IPv4 ноды, пусто при отсутствии'),
                 public6=ask('Публичный IPv6 ноды, пусто при отсутствии'), sources=sources, admins=admins,
                 interface=ask('Внешний интерфейс', 'eth0'),

@@ -28,6 +28,51 @@ class NodeSetup(unittest.TestCase):
         self.assertNotIn('private', result)
         self.assertEqual(result['options']['transport'], 'reality')
 
+    def test_prompt_answers_reach_both_firewall_layers(self):
+        import nft_host_setup
+        from nft_host_setup_test import NODE
+        key = self.value['controller_key']
+        answers = [key, '11.77.0.2 2606:4700:4700::2', '11.77.0.3 2606:4700:4700::3',
+                   '11.77.0.4', '2606:4700:4700::1111', 'eth0.100', '2222 7384', 'fe80::1',
+                   'reality', 'нет', 'www.example.test', 'origin', '6', '4']
+        with patch('builtins.input', side_effect=answers), contextlib.redirect_stdout(io.StringIO()):
+            value = setup.prompt()
+        host = value['deployment'] | {'uid':995, 'gid':995}
+        self.assertEqual(host['interface'], 'eth0.100')
+        self.assertEqual(host['ssh_ports'], [2222,7384])
+        self.assertEqual(host['routers'], ['fe80::1'])
+        self.assertEqual(value['options']['family'], 6)
+        self.assertEqual(value['options']['connect_family'], 4)
+        guard = setup.config.firewall(value['options'], host)
+        self.assertIn('iifname "eth0.100"', guard)
+        self.assertIn('tcp dport { 2222, 7384 }', guard)
+        base = nft_host_setup.render(NODE, host, 'node')
+        self.assertIn('iifname "eth0.100"', base)
+        self.assertIn('define NODE_SSH_PORTS = { 2222, 7384 }', base)
+        self.assertEqual(base, nft_host_setup.render(base, host, 'node'))
+        for family in (4,6):
+            for suffix, expected in [('sources', host['sources']), ('admins', host['sources']+host['admins'])]:
+                a,b = nft_host_setup.block(base, r'\bset\s+node'+str(family)+'_'+suffix+r'\s*\{')
+                for address in expected:
+                    if (':' in address) == (family == 6): self.assertIn(address, base[a:b])
+
+    def test_preflight_rejects_wrong_interface_address_ports_and_ssh_source(self):
+        value = setup.enrollment(self.value)
+        def command(args, **kwargs):
+            if args[0] == 'ip':
+                body = json.dumps([{'addr_info':[{'local':address} for address in (HOST['public4'],HOST['public6'])]}]).encode()
+            elif args[0] == 'sshd': body = b'port 22\n'
+            else: body = b''
+            return SimpleNamespace(stdout=body, returncode=0)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(setup, 'ROOT', Path(tmp)), \
+                patch.object(setup, 'command', side_effect=command), patch.dict(setup.os.environ, {'SSH_CONNECTION':'11.77.0.3 12345 11.77.0.4 22'}):
+            setup.preflight(value)
+            for field, changed in [('public4','11.77.0.200'), ('ssh_ports',[2222]), ('admins',['11.77.0.200'])]:
+                bad = copy.deepcopy(value); bad['deployment'][field] = changed
+                with self.subTest(field=field), self.assertRaises(ValueError): setup.preflight(bad)
+            with patch.object(setup, 'command', side_effect=lambda args, **kw: SimpleNamespace(stdout=b'[]', returncode=0) if args[0]=='ip' else command(args, **kw)), self.assertRaises(ValueError):
+                setup.preflight(value)
+
     def test_no_remote_uid_command_or_private_key(self):
         for field, value in [('uid', 0), ('command', 'id'), ('private_key', 'fixture')]:
             change = copy.deepcopy(self.value)
@@ -86,19 +131,22 @@ class NodeSetup(unittest.TestCase):
             (root/'deployment.json').write_bytes(setup.state.encode(HOST, setup.state.MAX_DEPLOYMENT_BYTES))
             with patch.object(setup, 'ROOT', root), patch.object(setup.state, 'Store', Store), \
                     patch.object(setup.install, 'ETC', root), patch.object(setup, 'Runtime') as runtime, \
+                    patch.object(setup.nft_host_setup, 'configure') as firewall, \
                     patch.object(setup.install, 'install_code') as install_code:
                 setup.upgrade_code(root/'src')
                 install_code.assert_called_once_with(root/'src')
                 # The new code's guard is loaded at once, not at the next restart.
                 runtime.return_value.load_firewall.assert_called_once_with()
+                firewall.assert_called_once_with(host=setup.config.deployment(HOST), mode='node')
                 self.assertEqual(runtime.call_args.args[1]['sources'], HOST['sources'])
                 for field, value in (('current_value', None), ('pending_value', {'before': 'b'*32}), ('job', {'state': 'running'})):
                     with self.subTest(blocked=field), patch.object(Store, field, value):
-                        install_code.reset_mock(); runtime.reset_mock()
+                        install_code.reset_mock(); runtime.reset_mock(); firewall.reset_mock()
                         with self.assertRaises(ValueError):
                             setup.upgrade_code(root/'src')
                         install_code.assert_not_called()
                         runtime.return_value.load_firewall.assert_not_called()
+                        firewall.assert_not_called()
 
 
 if __name__ == '__main__':

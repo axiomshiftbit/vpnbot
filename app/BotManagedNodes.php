@@ -31,12 +31,34 @@ trait BotManagedNodes
         if (!$done) throw new RuntimeException('Node controller busy');
     }
 
-    public function managedNodeBackupPaths(): array
+    public function managedNodeBackupPaths(bool $includeRetired = true): array
     {
         $paths = [];
         foreach ($this->managedNodes() as $id => $_) {
             foreach (['key', 'key.pub', 'endpoint.json', 'snapshot.json'] as $name) {
                 $paths["nodes/$id/$name"] = $this->managedNodeRoot . "/$id/$name";
+            }
+        }
+        if (!$includeRetired) return $paths;
+        $root = $this->managedNodeRoot . '/retired';
+        for ($parent = $root; $parent !== dirname($parent); $parent = dirname($parent)) {
+            if (is_link($parent)) throw new RuntimeException('Unsafe retired node directory');
+        }
+        if (is_dir($root)) {
+            $count = 0;
+            foreach (new DirectoryIterator($root) as $entry) {
+                if ($entry->isDot()) continue;
+                $id = $entry->getFilename();
+                if (++$count > 256 || !preg_match('~^[a-f0-9]{32}$~D', $id) || $entry->isLink() || !$entry->isDir()) {
+                    throw new RuntimeException('Invalid retired node archive');
+                }
+                foreach (['key', 'key.pub'] as $name) {
+                    $path = "$root/$id/$name";
+                    if (is_link($path) || !is_file($path) || filesize($path) === 0 || filesize($path) > 16384) {
+                        throw new RuntimeException('Incomplete retired node archive');
+                    }
+                    $paths["nodes/retired/$id/$name"] = $path;
+                }
             }
         }
         return $paths;
@@ -250,11 +272,10 @@ trait BotManagedNodes
         $pending = $job['result']['pending'] ?? null;
         if (($job['state'] ?? '') !== 'done' || ($pending && empty($status['pending']) && ($status['generation'] ?? '') !== $pending['after'])) {
             $this->managedNodeRestoreClient($id, $saved['before']);
-            $this->managedNodeWrite($id, static function (&$node) use ($status, $saved) {
+            $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved) {
                 foreach (($saved['draft'] ?? []) as $key=>$value) $node[$key] = $value;
                 $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['error'] = 'rolled_back';
             });
-            $this->managedNodeOperationScreen($id, $saved);
             return;
         }
         if ($pending) {
@@ -287,12 +308,24 @@ trait BotManagedNodes
         $status = $this->managedNodeRpc($id, ['action' => 'status']);
         $this->managedNodeTransport($id, 'snapshot');
         $certificateResult = isset($job['result']['certificate_result']) || in_array($saved['operation'] ?? '', ['renew','renew_force','certificate_delete'], true) ? $this->managedNodeCertificateResult($job, $status) : '';
-        $this->managedNodeWrite($id, static function (&$node) use ($status, $saved, $certificateResult) {
+        $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $certificateResult) {
             $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['backup_time'] = time(); unset($node['error']);
             $node['last_operation'] = ['operation'=>$saved['operation'] ?? '', 'subject'=>$saved['subject'] ?? '', 'time'=>time(), 'ok'=>true, 'certificate_result'=>$certificateResult];
             if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required']);
         });
-        $this->managedNodeOperationScreen($id, $saved);
+    }
+
+    private function managedNodeFinish(string $id, array $saved, callable $edit): void
+    {
+        // SSH and traffic probes have finished. Serialize only the final state
+        // write and Telegram redraw with navigation of this origin message.
+        $this->managedNodeScreenLocked($saved['origin'] ?? [], function () use ($id, $saved, $edit) {
+            $this->managedNodeWrite($id, static function (&$node) use (&$saved, $edit) {
+                $saved['origin'] = $node['job']['origin'] ?? $saved['origin'] ?? [];
+                $edit($node);
+            });
+            $this->managedNodeOperationScreen($id, $saved);
+        });
     }
 
     public function checkManagedNodes(): void

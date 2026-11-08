@@ -133,9 +133,37 @@ print('{"ok":true,"result":{"schema":1}}')
                 client.forget()
             self.assertTrue((client.directory/'endpoint.json').exists())
             (client.directory/'key').unlink()
+            with self.assertRaises(ValueError):
+                client.forget()  # An enrolled node with missing keys is not disposable.
+            (client.directory/'endpoint.json').unlink()
             self.assertEqual(client.forget(), {'forgotten': True})
             self.assertFalse(client.directory.exists())
             self.assertEqual((other.directory/'key.pub').read_text(), 'other')
+
+    def test_archive_failure_preserves_original_pair_and_retry(self):
+        import errno
+        for failed_name in ('key', 'key.pub'):
+            for code in (errno.ENOSPC, errno.EACCES):
+                with self.subTest(file=failed_name, code=code), tempfile.TemporaryDirectory() as tmp:
+                    client = transport.Client('aabbccdd', Path(tmp)/'nodes')
+                    original = {'key': b'fixture-private', 'key.pub': b'fixture-public',
+                                'endpoint.json': transport.encode(dict(address='1.1.1.1', port=22, host_key=KEY))}
+                    for name, body in original.items():
+                        (client.directory/name).write_bytes(body)
+                    atomic = transport.atomic
+                    def fail(path, body):
+                        if transport.RETIRED in path.parts and path.name == failed_name:
+                            raise OSError(code, 'injected archive failure')
+                        return atomic(path, body)
+                    with patch.object(transport, 'atomic', side_effect=fail), self.assertRaises(OSError):
+                        client.forget()
+                    for name, body in original.items():
+                        self.assertEqual((client.directory/name).read_bytes(), body)
+                    self.assertEqual(client.forget(), {'forgotten': True})
+                    retired = transport.retired_directory(client.root, KEY)
+                    for name in ('key', 'key.pub'):
+                        self.assertEqual((retired/name).read_bytes(), original[name])
+                        self.assertEqual((retired/name).stat().st_mode & 0o777, 0o600)
 
     def retired_setup(self, root, host_key=KEY):
         old = transport.Client('aabbccdd', root)

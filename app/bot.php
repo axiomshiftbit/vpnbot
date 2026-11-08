@@ -8095,7 +8095,7 @@ NFT;
 
     // Только данные пользователя. Конфиги Nginx, скрипты, Docker, токен бота
     // и системные SSH-ключи из загруженного JSON не исполняются/не заменяются.
-    public function backupExtraPaths(): array
+    public function backupExtraPaths(bool $includeRetired = true): array
     {
         $root = dirname($this->pac);
         $paths = [];
@@ -8105,18 +8105,16 @@ NFT;
         $paths['webapp/override.html'] = dirname($this->htpasswd) . '/override.html';
         $panel = getenv('PANEL_DIR') ?: "$root/panel";
         foreach (['password-display.key', 'password-display.json', 'initial_password.txt'] as $name) $paths['panel/' . $name] = "$panel/$name";
-        $paths += $this->managedNodeBackupPaths();
+        $paths += $this->managedNodeBackupPaths($includeRetired);
         return $paths;
     }
 
     private function backupExtraPath(string $name): string
     {
-        $path = $this->backupExtraPaths()[$name] ?? null;
+        $path = preg_match('~^nodes/(?:[a-f0-9]{8}/(?:key|key\.pub|endpoint\.json|snapshot\.json)|retired/[a-f0-9]{32}/(?:key|key\.pub))$~D', $name)
+            ? $this->managedNodeRoot . '/' . substr($name, 6) : ($this->backupExtraPaths(false)[$name] ?? null);
         if ($path === null && preg_match('~^warp/(?:(?:clients/[a-zA-Z0-9_.-]{1,48}/)?wgcf-(?:account\.toml|profile\.conf)|masque/(?:device\.json|key\.pem|license\.sha256))$~D', $name)) {
             $path = $this->backupWarpRoot . '/' . substr($name, 5);
-        }
-        if ($path === null && preg_match('~^nodes/[a-f0-9]{8}/(?:key|key\.pub|endpoint\.json|snapshot\.json)$~D', $name)) {
-            $path = $this->managedNodeRoot . '/' . substr($name, 6);
         }
         if ($path === null || str_contains($name, '..')) throw new RuntimeException($this->t('Посторонний файл в бэкапе', 'A foreign file in the backup'));
         for ($p = $path; $p !== dirname($p); $p = dirname($p)) {
@@ -8175,6 +8173,15 @@ NFT;
         }
         if (isset($decoded['warp/masque/device.json']) !== isset($decoded['warp/masque/key.pem'])) {
             throw new RuntimeException($this->t('Неполное устройство WARP MASQUE', 'Incomplete WARP MASQUE device'));
+        }
+        $retired = [];
+        foreach ($decoded as $name => $body) {
+            if (!str_starts_with($name, 'nodes/retired/')) continue;
+            $retired[dirname($name)] = true;
+            if ($body === '' || strlen($body) > 16384 || count($retired) > 256
+                || !isset($decoded[dirname($name) . '/key'], $decoded[dirname($name) . '/key.pub'])) {
+                throw new RuntimeException($this->t('Неполный или слишком большой архив ключей нод', 'Incomplete or oversized node key archive'));
+            }
         }
         // Ключ файлом был только у прежнего формата копии пароля (теперь ключ
         // выводится из токена бота): старому бэкапу без шифротекста он ни к чему.

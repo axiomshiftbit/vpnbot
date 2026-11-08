@@ -23,9 +23,10 @@ def enabled():
     return os.environ.get('CI_ALLOW_WAIVERS') == '1'
 
 
-def load(path=PATH, today=None):
+def load(path=None, today=None):
     """All valid entries; expired ones are returned with active=False."""
     today = today or datetime.date.today()
+    path = PATH if path is None else path
     if not Path(path).exists():
         return []
     entries = json.loads(Path(path).read_text())

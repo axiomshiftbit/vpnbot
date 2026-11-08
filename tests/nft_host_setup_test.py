@@ -81,6 +81,26 @@ class HostFirewallTest(unittest.TestCase):
         self.assertNotIn('2606:4700:4700::1111', out)
         self.assertIn('2606:4700:4700::2', out)
 
+    def test_node_vpn_only_channels_follow_guard_with_literal_or_defined_wan(self):
+        for defined in (False, True):
+            text = nft.render(NODE, HOST, 'node')
+            if defined:
+                text = text.replace('flush ruleset', 'define WAN = "ens3"\nflush ruleset').replace('iifname "ens3"', 'iifname $WAN')
+            # Reproduce the old base profile: TCP was supported, reserve UDP
+            # still required installer source lists. Upgrade adds it once.
+            text = '\n'.join(line for line in text.splitlines() if not ('ct status dnat ct original proto-dst { 51820, 51821 }' in line and 'saddr' not in line))+'\n'
+            host = HOST | {'interface':'eth0.100', 'ssh_ports':[2222,7384]}
+            out = nft.render(text, host, 'node')
+            for version in (4,6):
+                family = 'ip' if version == 4 else 'ip6'
+                a,b = nft.block(out, r'^\s*table\s+'+family+r'\s+filter\s*\{')
+                rules = out[a:b]
+                prefix = 'iifname $WAN' if defined else 'iifname "eth0.100"'
+                for ports in ('443 tcp dport 8443', '{ 51820, 51821 } udp dport { 51830, 51831 }'):
+                    self.assertEqual(rules.count(prefix+' ct status dnat ct original proto-dst '+ports+' counter accept'), 1)
+                self.assertIn('saddr @node'+str(version)+'_admins tcp dport $NODE_SSH_PORTS', rules)
+            self.assertEqual(out, nft.render(out, host, 'node'))
+
     def test_wrong_modes_injection_private_addresses_are_rejected(self):
         for mode, text in [('node',FULL), ('full',NODE)]:
             with self.assertRaises(ValueError): nft.render(text, HOST, mode)

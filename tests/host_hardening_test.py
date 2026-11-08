@@ -14,7 +14,7 @@ class HostHardening(unittest.TestCase):
         bin_dir = root / 'bin'; bin_dir.mkdir(exist_ok=True)
         log = root / 'calls.log'
         stubs = {
-            'ip': f'echo "default via 192.0.2.1 dev {wan} proto static"',
+            'ip': f'echo "2: {wan}: <UP> mtu 1500"',
             'sysctl': f'echo "sysctl $*" >> {log}; [ "$3" = - ] && cat >> {log}; true',
             'modprobe': f'echo "modprobe $*" >> {log}',
             'systemctl': f'echo "systemctl $*" >> {log}; [ "$2" != --quiet ] || {"true" if resolved else "false"}',
@@ -34,10 +34,10 @@ class HostHardening(unittest.TestCase):
             calls = self.run_script(root)
             neighbour = (root / 'etc/sysctl.d/97-vpnbot-neighbor.conf').read_text()
             for line in ('net.ipv4.conf.all.arp_ignore = 1', 'net.ipv4.conf.default.arp_announce = 2',
-                         'net.ipv4.conf.all.send_redirects = 0', 'net.ipv4.conf.eth0.send_redirects = 0',
+                         'net.ipv4.conf.all.send_redirects = 0', 'net/ipv4/conf/eth0/send_redirects = 0',
                          'net.ipv4.tcp_syncookies = 1', 'net.ipv4.conf.all.accept_redirects = 0',
                          'net.ipv4.conf.default.secure_redirects = 0', 'net.ipv4.conf.all.accept_source_route = 0',
-                         'net.ipv4.conf.eth0.accept_redirects = 0', 'net.ipv4.conf.eth0.secure_redirects = 0',
+                         'net/ipv4/conf/eth0/accept_redirects = 0', 'net/ipv4/conf/eth0/secure_redirects = 0',
                          'net.ipv4.icmp_echo_ignore_broadcasts = 1', 'net.ipv4.icmp_ignore_bogus_error_responses = 1'):
                 self.assertIn(line, neighbour)
             self.assertEqual((root / 'etc/modules-load.d/vpnbot-conntrack.conf').read_text(), 'nf_conntrack\n')
@@ -61,6 +61,15 @@ class HostHardening(unittest.TestCase):
             self.assertIn('net.ipv4.conf.all.send_redirects = 0', neighbour)
             self.assertFalse((root / 'etc/systemd/resolved.conf.d').exists())
             self.assertNotIn('try-restart', calls)
+
+    def test_vlan_and_multiple_interfaces_without_default_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_script(root, wan='eth0.100@eth0: <UP> mtu 1500\n3: ens18\n4: wg0')
+            neighbour = (root / 'etc/sysctl.d/97-vpnbot-neighbor.conf').read_text()
+            for interface in ('eth0.100', 'ens18', 'wg0'):
+                self.assertIn(f'net/ipv4/conf/{interface}/send_redirects = 0', neighbour)
+            self.assertNotIn('forwarding', neighbour)
 
     def test_init_runs_hardening_for_both_modes(self):
         source = (SCRIPT.parent / 'init.sh').read_text()

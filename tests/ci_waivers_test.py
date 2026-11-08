@@ -17,6 +17,7 @@ import ci_check_components  # noqa: E402
 import ci_scan_gate  # noqa: E402
 
 TODAY = datetime.date(2026, 11, 7)
+REAL_DATE = datetime.date
 ENTRY = dict(id='GHSA-r766-rf9f-588h', component='Caddy', version='v2.11.7', package='github.com/caddyserver/caddy/v2',
              installed='v2.11.7', expires='2026-12-15', reason='fork not released yet')
 
@@ -33,6 +34,11 @@ class Waivers(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'waivers.json'
+        class Day(datetime.date):
+            @classmethod
+            def today(cls): return TODAY
+        clock = patch.object(ci_waivers.datetime, 'date', Day)
+        clock.start(); self.addCleanup(clock.stop)
 
     def write(self, *entries):
         self.path.write_text(json.dumps(list(entries)))
@@ -47,8 +53,18 @@ class Waivers(unittest.TestCase):
                 self.write(bad); ci_waivers.load(self.path, TODAY)
 
     def test_repository_file_is_valid(self):
-        for entry in ci_waivers.load():
+        for entry in ci_waivers.load(today=REAL_DATE.today()):
             self.assertTrue(entry['reason'] and entry['expires'])
+
+    def test_configured_path_and_empty_waivers(self):
+        self.write()
+        with patch.object(ci_waivers, 'PATH', self.path):
+            self.assertEqual(ci_waivers.load(), [])
+            finding = ('Caddy', 'v2.11.7', ENTRY['id'], 'HIGH', True, 'GitHub')
+            with patch.dict(os.environ, {'CI_ALLOW_WAIVERS': '1'}):
+                blocked, _, waived = ci_check_components.apply_waivers([finding])
+            self.assertEqual(blocked, [finding])
+            self.assertFalse(waived)
 
     def split(self, findings, match, allow, today=TODAY):
         self.write(ENTRY)

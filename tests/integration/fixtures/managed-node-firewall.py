@@ -271,6 +271,17 @@ try:
             check(f'family{family}-awg-egress-denied-{target}-{port}',not connect(target,port,uid=994))
         run(['nft','-f','-'],input='delete table inet vpnbot_node\n'+node.firewall(options,host),check=True)
         check(f'family{family}-disabled-awg-exception-removed',not connect('127.0.0.1',8443,uid=994))
+    # VPN-only sources retain both optional reserve channels, but never SSH.
+    for protocol, port, backend in [('wireguard',51820,51830),('amnezia',51821,51831)]:
+        for enabled in (False, True):
+            selected = options | {protocol:{'enabled':enabled}, 'vpn_sources':['11.77.0.200','2606:4700:4700::200']}
+            run(['nft','-f','-'], input='delete table inet vpnbot_node\n'+node.firewall(selected,host), check=True)
+            for version, address, source in [(4,'11.77.0.4','11.77.0.200'),(6,'2606:4700:4700::1111','2606:4700:4700::200')]:
+                label=f'vpn-only-{protocol}-{version}-{enabled}'
+                check(label+'-tcp443', connect(address,443,source,remote=True))
+                check(label+'-ssh-denied', not connect(address,2222,source,remote=True))
+                check(label+'-reserve', connect(address,port,source,remote=True,udp=True) == enabled)
+                check(label+'-backend-denied', not connect(address,backend,source,remote=True,udp=True))
 finally:
     for process in reversed(processes):
         process.terminate()

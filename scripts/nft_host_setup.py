@@ -110,6 +110,18 @@ def node_fields(text):
             rules += prefix+'_sources ct status dnat ct original proto-dst 443 tcp dport 8443 counter accept\n'
             rules += prefix+'_sources ct status dnat ct original proto-dst { 51820, 51821 } udp dport { 51830, 51831 } counter accept\n'
             body = body[:pos]+rules+body[pos:]
+        # The runtime guard authorizes VPN-only sources and remaps only enabled
+        # channels. The base chain must also accept those DNAT packets when its
+        # installer/MyServer lists predate the node settings.
+        c, d = block(body, r'\bchain\s+input\s*\{')
+        match = re.search(r'(?m)^\s*(iifname (?:"[^"]+"|\$WAN))[^\n]*tcp dport \$NODE_SSH_PORTS[^\n]*jump ssh(?:_log)?\s*$', body[c:d])
+        if not match: raise ValueError('Unsupported minimal firewall SSH rule')
+        additions = []
+        for ports in ('443 tcp dport 8443', '{ 51820, 51821 } udp dport { 51830, 51831 }'):
+            rule = match[1]+' ct status dnat ct original proto-dst '+ports+' counter accept'
+            if not re.search(r'(?m)^\s*'+re.escape(rule)+r'\s*$', body[c:d]): additions.append('        '+rule+'\n')
+        pos = c+match.start()
+        if additions: body = body[:pos]+'\n'+''.join(additions)+body[pos:]
         text = text[:a]+body+text[b:]
     return text
 

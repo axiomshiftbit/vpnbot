@@ -5,6 +5,13 @@ trait BotManagedNodeNavigation
 {
     public array $managedNodeNavigation = [];
 
+    private function managedNodeScreenLocked(array $origin, callable $callback): void
+    {
+        $name = 'node-screen-' . hash('sha256', (string) ($origin['chat'] ?? ''));
+        $done = $this->withLock($name, static function () use ($callback) { $callback(); return true; });
+        if (!$done) throw new RuntimeException('Node screen unavailable');
+    }
+
     public function managedNodeNavigationStart(): void
     {
         $this->managedNodeNavigation = [];
@@ -34,16 +41,24 @@ trait BotManagedNodeNavigation
     {
         $callback = (string) ($this->input['callback'] ?? '');
         if ($callback === '' || empty($this->input['message_id']) || empty($this->input['chat'])) return;
-        foreach ($this->managedNodes() as $id => $node) {
-            $origin = $node['job']['origin'] ?? null;
-            // The node screen itself and its refresh keep the origin owned by the job.
-            if (!is_array($origin) || !empty($origin['moved']) || in_array($callback, ["/node $id", "/nodeRefresh $id"], true)
-                || (string) ($origin['chat'] ?? '') !== (string) $this->input['chat']
-                || (int) ($origin['message_id'] ?? 0) !== (int) $this->input['message_id']) continue;
-            $this->managedNodeWrite((string) $id, static function (&$node) {
-                if (!empty($node['job']['origin'])) $node['job']['origin']['moved'] = true;
-            });
-        }
+        // Lock before reading jobs: completion may already have cleared one
+        // while its final redraw is still in flight.
+        $this->managedNodeScreenLocked($this->input, function () use ($callback) {
+            foreach ($this->managedNodes() as $id => $node) {
+                $origin = $node['job']['origin'] ?? null;
+                // The node screen itself and its refresh keep the origin owned by the job.
+                if (!is_array($origin) || !empty($origin['moved']) || in_array($callback, ["/node $id", "/nodeRefresh $id"], true)
+                    || (string) ($origin['chat'] ?? '') !== (string) $this->input['chat']
+                    || (int) ($origin['message_id'] ?? 0) !== (int) $this->input['message_id']) continue;
+                $this->managedNodeWrite((string) $id, static function (&$node) use ($origin) {
+                    $current = $node['job']['origin'] ?? [];
+                    if ((string) ($current['chat'] ?? '') === (string) $origin['chat']
+                        && (int) ($current['message_id'] ?? 0) === (int) $origin['message_id']) {
+                        $node['job']['origin']['moved'] = true;
+                    }
+                });
+            }
+        });
     }
 
     private static function managedNodeDatCallback(string $callback): bool

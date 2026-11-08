@@ -274,15 +274,23 @@ class Client:
         private, public, current = self.directory/'key', self.directory/'key.pub', self.directory/'endpoint.json'
         for path in (private, public, current):
             trusted(path)
-        if not (private.is_file() and public.is_file() and current.is_file()):
+        if not current.exists():
             return
+        if not (private.is_file() and public.is_file() and current.is_file()):
+            raise ValueError('incomplete_controller')
         directory = retired_directory(self.root, endpoint(decode(current.read_bytes()))['host_key'])
         trusted(directory.parent)
         directory.parent.mkdir(mode=0o700, exist_ok=True)
         trusted(directory)
         directory.mkdir(mode=0o700, exist_ok=True)
-        atomic(directory/'key', private.read_bytes())
-        atomic(directory/'key.pub', public.read_bytes())
+        pair = {}
+        for path in (private, public):
+            with path.open('rb') as stream:
+                pair[path.name] = stream.read(16385)
+            if not pair[path.name] or len(pair[path.name]) > 16384:
+                raise ValueError('incomplete_controller')
+        for name, body in pair.items():
+            atomic(directory/name, body)
 
     def reconnect(self, value):
         if not isinstance(value, dict) or set(value) != {'address', 'port'}:
@@ -323,15 +331,14 @@ class Client:
     def forget(self):
         # Only this node's fixed transport files; never recurse or follow links.
         names = {'key', 'key.pub', 'endpoint.json', 'snapshot.json', 'known_hosts', 'xr_known_hosts'}
-        try:
-            self.retire()
-        except (ValueError, OSError):
-            pass  # Removal still proceeds; only the later automatic reuse is lost.
         files = list(self.directory.iterdir())
         for path in files:
             trusted(path)
             if path.name not in names or not path.is_file():
                 raise ValueError('unsafe_path')
+        # Never destroy the only usable key when archiving fails (including a
+        # partial pair write). The original pair remains available for retry.
+        self.retire()
         for path in files:
             path.unlink()
         self.directory.rmdir()
@@ -356,6 +363,9 @@ def main():
         result = client.request(value['value'])
     elif value['action'] == 'saved' and value['value'] is None:
         result = client.saved()
+    elif value['action'] == 'retire' and value['value'] is None:
+        client.retire()
+        result = {'retired': True}
     elif value['action'] == 'forget' and value['value'] is None:
         result = client.forget()
     elif value['action'] == 'snapshot' and value['value'] is None:

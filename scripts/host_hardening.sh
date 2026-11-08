@@ -19,18 +19,21 @@ write() {
     mv -f "$target.tmp" "$target"
 }
 
-# send_redirects для уже поднятого интерфейса задаётся только по имени:
-# значение default действует лишь на интерфейсы, созданные позже.
-wan="$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')"
+# Existing interfaces need explicit values even without an IPv4 default route.
+# Use link names, including VLANs and every WAN; default covers future links.
+interfaces="$(ip -o link show | awk -F ': ' '{print $2}' | cut -d @ -f 1)"
 {
     echo '# VPNBot: защита от соседей по сети хостера (scripts/host_hardening.sh).'
     for key in arp_ignore=1 arp_announce=2 send_redirects=0 accept_redirects=0 secure_redirects=0 accept_source_route=0; do
         for scope in all default; do echo "net.ipv4.conf.$scope.${key%%=*} = ${key#*=}"; done
     done
     # send/secure redirects берутся по «или» с conf.all — интерфейс тоже по имени.
-    if [[ "$wan" =~ ^[A-Za-z0-9_-]{1,15}$ ]]; then
-        for key in send_redirects accept_redirects secure_redirects; do echo "net.ipv4.conf.$wan.$key = 0"; done
-    fi
+    while IFS= read -r interface; do
+        if [[ "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ && "$interface" != . && "$interface" != .. ]]; then
+            # Slashes preserve a literal dot in names such as eth0.100.
+            for key in send_redirects accept_redirects secure_redirects; do echo "net/ipv4/conf/$interface/$key = 0"; done
+        fi
+    done <<< "$interfaces"
     echo 'net.ipv4.icmp_echo_ignore_broadcasts = 1'
     echo 'net.ipv4.icmp_ignore_bogus_error_responses = 1'
     # Поддельный SYN-флуд гасится без хранения состояния, а не лимитом по

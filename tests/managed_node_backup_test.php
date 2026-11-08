@@ -46,5 +46,35 @@ try {
     try { $bot->backupExtraFiles(); $rejected = false; }
     catch (Throwable $error) { $rejected = true; }
     $check($rejected, 'connected node without cached snapshot cannot produce complete backup');
+    $archiveBot = new NodeBackupFixture($root.'/archive-source');
+    $archiveId = str_repeat('a', 32);
+    $archive = $archiveBot->managedNodeRoot.'/retired/'.$archiveId;
+    mkdir($archive, 0700, true);
+    foreach (['key', 'key.pub'] as $name) file_put_contents("$archive/$name", "fixture-$name");
+    $backup = $archiveBot->backupExtraFiles();
+    $check(count($backup) === 2, 'deleted node keys exported without any live node cards');
+    $restored = new NodeBackupFixture($root.'/archive-restored');
+    $restored->restoreBackupExtraFiles($backup);
+    foreach (['key', 'key.pub'] as $name) {
+        $path = $restored->managedNodeRoot."/retired/$archiveId/$name";
+        $check(file_get_contents($path) === "fixture-$name" && (fileperms($path) & 0777) === 0600, 'retired key restored privately');
+    }
+    $check((fileperms(dirname($path)) & 0777) === 0700, 'retired directory private');
+    $check($restored->backupExtraFiles() === $backup, 'retired archive round trip');
+    $check($restored->validateBackupExtraFiles([]) === [], 'older backup without retired keys accepted');
+    foreach ([array_slice($backup, 0, 1), array_replace($backup, ["nodes/retired/$archiveId/key" => base64_encode(str_repeat('x', 16385))]),
+        ["nodes/retired/$archiveId/endpoint.json" => base64_encode('{}')], ['nodes/retired/../key' => base64_encode('fixture')]] as $bad) {
+        try { $restored->validateBackupExtraFiles($bad); $rejected = false; }
+        catch (Throwable $error) { $rejected = true; }
+        $check($rejected, 'incomplete oversized or foreign archive rejected');
+    }
+    unlink("$archive/key.pub");
+    try { $archiveBot->backupExtraFiles(); $rejected = false; }
+    catch (Throwable $error) { $rejected = true; }
+    $check($rejected, 'incomplete archive does not silently produce a backup');
+    symlink($root.'/archive-restored/nodes/retired/'.$archiveId.'/key.pub', "$archive/key.pub");
+    try { $archiveBot->backupExtraFiles(); $rejected = false; }
+    catch (Throwable $error) { $rejected = true; }
+    $check($rejected, 'archive symlink rejected');
     echo "PASS $checks managed node backup checks\n";
 } finally { $remove($root); }
