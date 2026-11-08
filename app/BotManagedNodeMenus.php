@@ -28,6 +28,7 @@ trait BotManagedNodeMenus
         $buttons = [];
         foreach (ManagedNodeFields::all() as $path => $field) {
             if ($field[0] !== $group || !ManagedNodeFields::fieldActive($options, $path)) continue;
+            if ($group === 'network' && in_array($path, ['family', 'connect_family'], true)) continue;
             $awgVersion=$options['amnezia']['version'] ?? '3.1';
             if (str_starts_with($path,'amnezia.parameters.')) {
                 $name=substr($path,strlen('amnezia.parameters.'));
@@ -45,7 +46,6 @@ trait BotManagedNodeMenus
         if ($group === 'network') {
             $text[] = $this->t('Первая часть — соединение основного бота с нодой. Вторая — выход ноды в интернет. Это не адреса телефона или телевизора. SSH настраивается отдельно в карточке ноды.',
                 'The first family is the main bot’s connection to the node. The second is the node’s internet egress. These are not your phone or TV addresses. SSH has separate settings in the node card.');
-            $data = [];
             foreach (['44', '46', '64', '66'] as $pair) $data[] = [['text' =>
                 (((int) ($options['connect_family'] ?? 4) === (int) $pair[0] && (int) ($options['family'] ?? 4) === (int) $pair[1]) ? '✓ ' : '')
                 . "IPv{$pair[0]} → IPv{$pair[1]}", 'callback_data' => "/nodeNetwork $id $pair"]];
