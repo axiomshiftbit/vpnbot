@@ -480,8 +480,12 @@ jobs:
           path: ${{ runner.temp }}
       - name: Инструменты проверяемой загрузки сканера
         run: |
-          sh scripts/ci_retry.sh sudo apt-get update -qq
-          sh scripts/ci_retry.sh sudo apt-get install -y curl jq
+          # Runner на HomeBuild делят host; инструменты уже поставлены tests.
+          # Не запускаем конкурирующие APT update в каждой ячейке матрицы.
+          if ! command -v curl >/dev/null || ! command -v jq >/dev/null; then
+            sh scripts/ci_retry.sh sudo apt-get update -qq
+            sh scripts/ci_retry.sh sudo apt-get install -y curl jq
+          fi
       - name: Проверка CVE точного digest
         env:
           IMAGE_NAME: ${{ matrix.image }}

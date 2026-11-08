@@ -348,6 +348,39 @@ class WorkflowRetryTest(unittest.TestCase):
     workflows = sorted((ROOT / '.github/workflows').glob('*.yml'))
     actions = sorted((ROOT / '.github/actions').glob('*/action.yml'))
 
+    def test_scanner_tools_skip_apt_when_present_and_keep_install_failures(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/images.yml').read_text())
+        step = next(s['run'] for s in workflow['jobs']['security']['steps']
+                    if s.get('name') == 'Инструменты проверяемой загрузки сканера')
+        for present, apt_exit in ((('curl', 'jq'), 100), (('curl',), 0), (('jq',), 0), ((), 100)):
+            with self.subTest(present=present, apt_exit=apt_exit), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                trace = root / 'apt-calls'
+                (root / 'sh').symlink_to('/bin/sh')
+                (root / 'sleep').symlink_to('/bin/true')
+                for name in present:
+                    (root / name).write_text('#!/bin/sh\nexit 0\n')
+                    (root / name).chmod(0o700)
+                sudo = root / 'sudo'
+                sudo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$APT_TRACE"\nexit "$APT_EXIT"\n')
+                sudo.chmod(0o700)
+                env = {'PATH': directory, 'APT_TRACE': str(trace), 'APT_EXIT': str(apt_exit),
+                       'CI_RETRY_DELAYS': '0 0 0'}
+                # Четыре runner делят уже подготовленный host; APT может быть занят.
+                processes = [subprocess.Popen(['/bin/bash', '-e', '-c', step], cwd=ROOT, env=env,
+                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                             for _ in range(4 if len(present) == 2 else 1)]
+                outputs = [process.communicate(timeout=10) for process in processes]
+                for process, (_, stderr) in zip(processes, outputs):
+                    self.assertEqual(0 if len(present) == 2 else apt_exit, process.returncode, stderr)
+                calls = trace.read_text().splitlines() if trace.exists() else []
+                if len(present) == 2:
+                    self.assertEqual([], calls)
+                elif apt_exit:
+                    self.assertEqual(['apt-get update -qq'] * 4, calls)
+                else:
+                    self.assertEqual(['apt-get update -qq', 'apt-get install -y curl jq'], calls)
+
     def test_network_actions_are_used_only_through_retrying_wrappers(self):
         direct = re.compile(r'uses:\s*(?:actions/(?:download|upload)-artifact|docker/login-action|docker/setup-buildx-action)@')
         for path in self.workflows:
