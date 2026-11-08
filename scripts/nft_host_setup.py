@@ -174,8 +174,14 @@ def render(text, host, mode):
         ports = host['ssh_ports']
         if not ports or any(type(p) != int or not 1 <= p <= 65535 for p in ports):
             raise ValueError('Invalid SSH ports')
-        text = re.sub(r'(?m)^(\s*define NODE_SSH_PORTS\s*=)[^\n]+',
+        # A bootstrap profile separates explicit management access from its
+        # legacy ASN port. Do not move that ASN policy to the management port.
+        binding = 'SERVER_SSH_PORTS' if re.search(r'(?m)^\s*define SERVER_SSH_PORTS\s*=', text) else 'NODE_SSH_PORTS'
+        text = re.sub(r'(?m)^(\s*define '+binding+r'\s*=)[^\n]+',
                       lambda m: m[1]+' { '+', '.join(map(str, sorted(set(ports))))+' }', text)
+        if binding == 'SERVER_SSH_PORTS':
+            text = re.sub(r'(@node[46]_(?:admins|ssh) tcp dport )\$NODE_SSH_PORTS',
+                          r'\1$SERVER_SSH_PORTS', text)
     return text
 
 

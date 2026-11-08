@@ -15,9 +15,50 @@ import node_config as config
 import node_install as install
 import node_state as state
 import nft_host_setup
+import node_host
 from node_runtime import Runtime, command, CONTAINER, COVER_CONTAINER, AWG_CONTAINER, LABEL
 
 ROOT = Path('/var/lib/vpnbot-node')
+
+
+def verify_firewall(backend, path=Path('/etc/nftables.conf')):
+    """Read back service, persistent configuration and live rules; never reload."""
+    fd = os.open('/run/lock/nft-docker-watch.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        expected = []
+        if path.exists():
+            reply = command(['systemctl', 'show', 'nftables.service', '--property=LoadState,ActiveState,SubState,Result,UnitFileState'])
+            status = dict(line.split('=', 1) for line in reply.stdout.decode().splitlines() if '=' in line)
+            if status.get('LoadState') != 'loaded' or status.get('ActiveState') != 'active' \
+                    or status.get('SubState') not in ('exited', 'running') or status.get('Result') != 'success' \
+                    or status.get('UnitFileState') != 'enabled':
+                raise ValueError('nftables service is not active and enabled')
+            text = node_host.read_profile(path)
+            expected.append(nft_host_setup.profile_rules(nft_host_setup.compile_rules(text), text))
+        # Without a base profile the node's systemd service owns persistence.
+        # Its guard must still match the disk file and the actual kernel rules.
+        state.trusted(backend.guard)
+        expected.append(nft_host_setup.compile_rules(backend.guard.read_text()))
+        live = json.loads(command(['nft', '-j', 'list', 'ruleset']).stdout)
+        for document in expected:
+            tables = {(x['family'], x['name']) for x in nft_host_setup.objects(document, 'table')}
+            for kind in ('table', 'chain', 'rule', 'set', 'map'):
+                wanted = nft_host_setup.objects(document, kind)
+                actual = [x for x in nft_host_setup.objects(live, kind)
+                          if (x['family'], x['name'] if kind == 'table' else x['table']) in tables]
+                # Dynamic meters contain live counters/expiring source entries.
+                # Their definitions and the rules using them must still match.
+                def stable(items):
+                    values = [nft_host_setup.clean({k: v for k, v in x.items()
+                            if not (k == 'elem' and 'dynamic' in x.get('flags', []))}) for x in items]
+                    # Object/chain enumeration may change after an atomic delta;
+                    # rule ordering within each chain remains significant.
+                    return sorted(values, key=lambda x: (x['family'], x.get('table', ''), x.get('chain', x.get('name', ''))))
+                if stable(wanted) != stable(actual):
+                    raise ValueError('nftables live rules differ from persistent configuration')
+    finally:
+        os.close(fd)
 
 
 def replace_controller(public_key):
@@ -52,6 +93,7 @@ def upgrade_code(source):
         host = config.deployment(state.decode((install.ETC/'deployment.json').read_bytes(), state.MAX_DEPLOYMENT_BYTES))
         Runtime(store, host).load_firewall()
         nft_host_setup.configure(host=host, mode='node')
+        verify_firewall(Runtime(store, host))
     finally:
         os.close(descriptor)
 
@@ -165,6 +207,8 @@ def setup(value, source, channel='latest', bundle=None):
             # and SSH policy are complete before handing control to systemd.
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             command(['systemctl', 'start', 'vpnbot-node.service', 'vpnbot-node-watch.timer', 'vpnbot-node-renew.timer'])
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            verify_firewall(backend)
         except Exception:
             # A failure after starting systemd must not leave timers reviving
             # a partially installed node. ExecStop needs the same state lock.
@@ -195,20 +239,28 @@ def setup(value, source, channel='latest', bundle=None):
 
 
 def prompt():
-    def ask(label, default=''):
-        return input(label+(' ['+default+']' if default else '')+': ').strip() or default
+    def ask(label, default='', optional=False):
+        answer = input(label+(' ['+default+']' if default else '')+': ').strip()
+        return '' if optional and answer == '-' else answer or default
 
     print('Минимальная нода: Xray и, при выборе своего сайта, NGINX. Токен Telegram не требуется.')
+    defaults = node_host.defaults()
+    if not defaults.get('network_detected', True):
+        print('WAN не определён автоматически. Проверьте сохранённые значения или введите сетевые параметры вручную.')
+    print('В скобках — найденные настройки. Enter сохраняет их; новое значение заменяет.')
+    print('Для отсутствующего семейства IP или удаления необязательного списка введите «-».')
     print('Введите публичный SSH-ключ, созданный в разделе «Ноды» основного бота.')
     key = ask('Публичный ключ ssh-ed25519')
-    sources = ask('Публичные IPv4/IPv6 основного бота через пробел (доступ к VPN и SSH)').split()
+    sources = ask('Публичные IPv4/IPv6 основного бота через пробел (доступ к VPN и SSH)', ' '.join(defaults['sources'])).split()
     print('Другие серверы без доступа к SSH добавляйте в настройках ноды: «Серверы для VPN (без SSH)».')
-    admins = ask('Публичные IPv4/IPv6 администратора только для SSH через пробел', ' '.join(sources)).split()
-    host = dict(public4=ask('Публичный IPv4 ноды, пусто при отсутствии'),
-                public6=ask('Публичный IPv6 ноды, пусто при отсутствии'), sources=sources, admins=admins,
-                interface=ask('Внешний интерфейс', 'eth0'),
-                ssh_ports=[int(x) for x in ask('Действующие порты SSH через пробел', '22').split()],
-                routers=ask('Link-local IPv6 доверенных маршрутизаторов, можно оставить пустым').split())
+    admins = ask('Публичные IPv4/IPv6 администратора только для SSH через пробел', ' '.join(defaults['admins'] or sources)).split()
+    host = dict(public4=ask('Публичный IPv4 ноды («-» при отсутствии)', defaults['public4'], optional=True),
+                public6=ask('Публичный IPv6 ноды («-» при отсутствии)', defaults['public6'], optional=True), sources=sources, admins=admins,
+                interface=ask('Внешний интерфейс', defaults['interface']),
+                ssh_ports=[int(x) for x in ask('Действующие порты SSH через пробел', ' '.join(map(str, defaults['ssh_ports']))).split()],
+                routers=ask('Link-local IPv6 доверенных маршрутизаторов', ' '.join(defaults['routers']), optional=True).split())
+    if defaults['ssh_networks']:
+        host['ssh_networks'] = ask('Разрешённые подсети SSH из профиля', ' '.join(defaults['ssh_networks']), optional=True).split()
     transport = ask('Транспорт reality / ws / grpc / xhttp / trojan-grpc', 'reality')
     cover = ask('Заглушка с паролем на своём домене: да / нет', 'нет').lower() == 'да'
     domain = ask('Собственный домен, A/AAAA должны указывать на ноду') if cover or transport != 'reality' else ''
@@ -218,6 +270,35 @@ def prompt():
                    connect_family=int(ask('Семейство подключения к ноде: 4 / 6', '4')),
                    domain=domain, mask=mask, cover=cover)
     return enrollment(dict(schema=1, controller_key=key, deployment=host, options=options))
+
+
+def failure_message(error):
+    # Only reviewed constant messages may reach the terminal. Never print an
+    # arbitrary exception: it can contain input, command output or a credential.
+    public_errors = {
+        'a public node address is required': 'Не задан публичный адрес ноды. Укажите IPv4 или IPv6.',
+        'nftables service is not active and enabled': 'Служба nftables должна быть активна и включена в автозапуск. Проверьте её состояние и /etc/nftables.conf.',
+        'nftables live rules differ from persistent configuration': 'Загруженные правила nftables не совпадают с сохранённой конфигурацией. Установка не подтверждена.',
+        'Firewall command failed; details suppressed to protect configuration data': 'Не удалось проверить или применить nftables. Проверьте синтаксис профиля и состояние фаервола.',
+        'Cannot discover public node address or SSH ports': 'Не удалось определить публичный адрес или действующие SSH-порты.',
+        'Cannot inspect effective SSH ports': 'Не удалось прочитать действующие порты через sshd -T.',
+        'Ambiguous WAN route': 'Не удалось однозначно определить внешний интерфейс.',
+        'IPv4 and IPv6 use different WAN interfaces': 'IPv4 и IPv6 используют разные внешние интерфейсы.',
+        'Default route has no stable assigned source': 'У внешнего маршрута нет стабильного назначенного IP-адреса.',
+        'Invalid node address set type': 'В /etc/nftables.conf неверно объявлен набор адресов ноды: проверьте type и elements.',
+        'Invalid node address set elements': 'В /etc/nftables.conf неверно записаны elements набора адресов ноды.',
+        'Missing or ambiguous node firewall declaration': 'В /etc/nftables.conf отсутствует или повторяется набор адресов ноды.',
+        'Incomplete node firewall declaration': 'В /etc/nftables.conf не закрыто объявление набора адресов ноды.',
+        'Unsafe node firewall profile path': 'Проверьте владельца, права и отсутствие симлинков у /etc/nftables.conf.',
+        'Unsafe node firewall profile file': 'Для /etc/nftables.conf нужен обычный файл допустимого размера.',
+    }
+    for message in ('Для выбранного семейства отсутствует публичный адрес',
+                    'Публичные адреса должны быть назначены указанному интерфейсу',
+                    'Порты SSH должны совпадать с действующей конфигурацией sshd',
+                    'Текущий адрес администратора отсутствует в разрешённом списке SSH'):
+        public_errors[message] = message+'.'
+    detail = public_errors.get(str(error)) if isinstance(error, ValueError) else None
+    return 'Установка ноды не завершена. '+(detail or 'Проверьте публичные параметры, порты и доступ к реестру образов.')
 
 
 def main():
@@ -254,6 +335,7 @@ def main():
     else:
         value = prompt()
     result = setup(value, Path(__file__).resolve().parent, args.channel, args.bundle)
+    print('Проверка nftables завершена: сохранённые и действующие правила ноды согласованы.')
     print('Нода установлена. Пользователь SSH: '+result['ssh_user'])
     print('Сверьте отпечаток ключа сервера при подключении основного бота: '+result['host_fingerprint'])
     print('Публичный ключ сервера для раздела «Ноды»: '+result['host_key'])
@@ -265,8 +347,8 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print('Установка прервана.', file=sys.stderr)
         sys.exit(1)
-    except Exception:
+    except Exception as error:
         # No subprocess diagnostics or enrollment values: future requests may
         # contain private data. Validation details are tested separately.
-        print('Установка ноды не завершена. Проверьте публичные параметры, порты и доступ к реестру образов.', file=sys.stderr)
+        print(failure_message(error), file=sys.stderr)
         sys.exit(1)

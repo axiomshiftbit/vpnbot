@@ -55,6 +55,17 @@ HOST = dict(interface='ens3', public4='11.77.0.4', public6='2606:4700:4700::1111
 
 
 class HostFirewallTest(unittest.TestCase):
+    def test_management_binding_does_not_move_legacy_asn_port(self):
+        prepared = nft.render(NODE, HOST, 'node')
+        prepared = 'define SERVER_SSH_PORTS = { 2222 }\n'+prepared
+        out = nft.render(prepared, HOST | {'ssh_ports': [7384]}, 'node')
+        self.assertIn('define NODE_SSH_PORTS = { 2222 }', out)
+        self.assertIn('define SERVER_SSH_PORTS = { 7384 }', out)
+        for version in (4, 6):
+            for name in ('admins', 'ssh'):
+                self.assertIn('@node'+str(version)+'_'+name+' tcp dport $SERVER_SSH_PORTS', out)
+        self.assertEqual(out, nft.render(out, HOST | {'ssh_ports': [7384]}, 'node'))
+
     def test_full_addresses_keep_trust_and_no_public_ingress(self):
         out = nft.render(FULL, HOST, 'full')
         self.assertIn('define PUBLIC_IP = 11.77.0.4', out)
