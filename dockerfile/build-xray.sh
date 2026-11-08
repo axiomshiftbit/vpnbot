@@ -4,8 +4,20 @@ repo=$1; version=$2; output=$3; tags=${4:-}; tests=${5:-}
 # Сохраняем выбор стабильного/prerelease, но новый источник обязан иметь
 # проверенную контрольную сумму. Слоты и выбор пользователя не меняются.
 case "$version" in
-    '') version=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | jq -er .tag_name) ;;
-    prerelease) version=$(curl -fsSL "https://api.github.com/repos/$repo/releases" | jq -er '[.[] | select(.prerelease==true)][0].tag_name') ;;
+    ''|prerelease)
+        metadata=$(mktemp)
+        trap 'rm -f "$metadata"' EXIT
+        endpoint="https://api.github.com/repos/$repo/releases"
+        [ "$version" = prerelease ] || endpoint="$endpoint/latest"
+        sh /build-tools/download-file.sh "$endpoint" "$metadata"
+        if [ "$version" = prerelease ]; then
+            version=$(jq -er '[.[] | select(.prerelease==true)][0].tag_name' "$metadata")
+        else
+            version=$(jq -er .tag_name "$metadata")
+        fi
+        rm -f "$metadata"
+        trap - EXIT
+        ;;
 esac
 source="/sources/$repo/$version"
 sh /build-tools/go-source.sh "$repo" "$version" "$source"

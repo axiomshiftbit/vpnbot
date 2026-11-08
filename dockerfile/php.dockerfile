@@ -7,7 +7,7 @@ ARG MIHOMO_VERSION=v1.19.33
 ARG SINGBOX_SOURCE_SHA256=0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18
 ARG MIHOMO_SOURCE_SHA256=e7c596b37ff27ec487d19b1920f73e0c97a78067ea35766530ee9659ade72711
 RUN apk add --no-cache ca-certificates curl git
-COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh ameshkov/dnslookup "$DNSLOOKUP_VERSION" /dnslookup \
     && cd /dnslookup && sh /build-tools/go-security.sh \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags "-s -w -X main.VersionString=${DNSLOOKUP_VERSION#v}" -o /out/dnslookup .

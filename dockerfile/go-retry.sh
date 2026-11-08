@@ -9,7 +9,7 @@ set -u
 export GOPROXY="${GOPROXY:-https://proxy.golang.org|direct}"
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-for delay in ${GO_RETRY_DELAYS:-10 30 60} last; do
+for delay in ${GO_RETRY_DELAYS:-10 30 60 90 120} last; do
     "$@" 2>"$log" && { cat "$log" >&2; exit 0; }
     code=$?
     cat "$log" >&2

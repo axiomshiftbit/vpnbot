@@ -21,6 +21,37 @@ spec.loader.exec_module(bootstrap)
 
 
 class HostedCITests(unittest.TestCase):
+    def test_client_downloader_exhaustion_is_not_retried_again(self):
+        error = subprocess.CalledProcessError(22, ['sh', 'download-file.sh'])
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(ci.subprocess, 'run', side_effect=error) as run, \
+                patch.object(ci.tarfile, 'open') as unpack:
+            with self.assertRaises(subprocess.CalledProcessError):
+                ci.client_downloads(Path(directory) / 'clients')
+        self.assertEqual(run.call_count, 1)
+        unpack.assert_not_called()
+
+    def test_client_downloader_timeout_is_fatal_and_bounded(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(ci.subprocess, 'run', side_effect=subprocess.TimeoutExpired('download', 900)) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                ci.download_client('https://example.test/archive', Path(directory) / 'archive')
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.kwargs['timeout'], 900)
+
+    def test_client_checksum_mismatch_is_not_retried_or_extracted(self):
+        def wrong_download(url, archive):
+            archive.write_bytes(b'wrong contents')
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(ci, 'download_client', side_effect=wrong_download) as download, \
+                patch.object(ci.tarfile, 'open') as unpack, patch.object(ci.ci_retry.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                ci.client_downloads(Path(directory) / 'clients')
+        self.assertEqual(download.call_count, 1)
+        unpack.assert_not_called()
+        sleep.assert_not_called()
+
     def test_fresh_users_wait_for_service_initialization_after_frontend_health(self):
         healthy = subprocess.CompletedProcess([], 0, json.dumps([
             {'State': {'Health': {'Status': 'healthy'}}},
@@ -219,11 +250,19 @@ class HostedCITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); suite = root / 'tests/integration'; suite.mkdir(parents=True)
             bootstrap = suite / 'bootstrap.py'; bootstrap.write_text('original setup')
+            helper = root / 'dockerfile/download-file.sh'; helper.parent.mkdir()
+            helper.write_text('original downloader')
             one = ci.identity(root)
             bootstrap.write_text('changed setup')
             self.assertNotEqual(one, ci.identity(root))
             one = ci.identity(root)
             (suite / 'protocol.py').write_text('changed protocol probe')
+            self.assertNotEqual(one, ci.identity(root))
+            one = ci.identity(root)
+            helper.write_text('changed downloader')
+            self.assertNotEqual(one, ci.identity(root))
+            one = ci.identity(root)
+            (helper.parent / 'go-retry.sh').write_text('changed module downloader')
             self.assertNotEqual(one, ci.identity(root))
 
 

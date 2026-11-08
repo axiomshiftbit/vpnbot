@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Повторы сетевых шагов CI: помощники и их подключение в workflow."""
 import os
+import http.server
+import json
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -68,7 +72,7 @@ class GoRetryTest(unittest.TestCase):
     """dockerfile/go-retry.sh: повтор только при сбое загрузки модулей."""
     NETWORK = 'go: github.com/x/y@v1.0.0: Get "https://proxy.golang.org/github.com/x/y/@v/v1.0.0.mod": net/http: TLS handshake timeout'
 
-    def run_go(self, failures, message, extra=''):
+    def run_go(self, failures, message, extra='', delays='0.05 0.05 0.05'):
         with tempfile.TemporaryDirectory() as directory:
             counter = Path(directory) / 'count'
             counter.write_text('0')
@@ -77,8 +81,17 @@ class GoRetryTest(unittest.TestCase):
                             'echo "stdout-line"\n[ "$n" -gt %d ] && exit 0\necho \'%s\' >&2\n%s\nexit 1\n'
                             % (counter, counter, failures, message.replace("'", "'\\''"), extra))
             fake.chmod(0o755)
+            env = dict(os.environ)
+            env.pop('GO_RETRY_DELAYS', None)
+            if delays is not None:
+                env['GO_RETRY_DELAYS'] = delays
+            else:
+                sleep = Path(directory) / 'sleep'
+                sleep.write_text('#!/bin/sh\nexit 0\n')
+                sleep.chmod(0o755)
+                env['PATH'] = directory + ':' + env['PATH']
             result = subprocess.run(['sh', str(ROOT / 'dockerfile/go-retry.sh'), str(fake), 'build', './...'],
-                                    env=os.environ | {'GO_RETRY_DELAYS': '0.05 0.05 0.05'}, capture_output=True, text=True)
+                                    env=env, capture_output=True, text=True)
             return result, int(counter.read_text())
 
     def test_success_passes_output_through_once(self):
@@ -112,6 +125,10 @@ class GoRetryTest(unittest.TestCase):
             result = subprocess.run(['sh', str(ROOT / 'dockerfile/go-retry.sh'), str(fake)], env=env | {'GOPROXY': 'off'}, capture_output=True, text=True)
             self.assertEqual(result.stdout.strip(), 'off')
 
+    def test_default_network_budget_is_six_attempts(self):
+        result, attempts = self.run_go(99, self.NETWORK, delays=None)
+        self.assertEqual((result.returncode, attempts), (1, 6))
+
     def test_compile_and_test_failures_are_not_retried(self):
         for message in ('./main.go:10:2: undefined: missing', '--- FAIL: TestDial (0.00s)\n    dial_test.go:9: dial tcp 127.0.0.1:1: i/o timeout',
                         'FAIL\tgithub.com/x/y\t0.012s', 'panic: runtime error', 'go: errors parsing go.mod'):
@@ -134,6 +151,137 @@ class GoRetryTest(unittest.TestCase):
         self.assertGreaterEqual(wrapped, 25)
         for name in ('protocol', 'mieru', 'masque', 'dnstt'):
             self.assertIn('go-retry.sh', re.findall(r'^COPY .*$', (ROOT / 'dockerfile' / (name + '.dockerfile')).read_text(), re.M).__str__(), name)
+
+
+class GitDownloadRetryTest(unittest.TestCase):
+    def test_source_fetches_recover_and_stop_before_checkout_when_exhausted(self):
+        paths = ('dockerfile/trusttunnel.dockerfile', 'dockerfile/dnstt.dockerfile',
+                 'tests/integration/clients.dockerfile')
+        for name in paths:
+            source = (ROOT / name).read_text().replace('\\\n', ' ')
+            loop = re.search(r'for attempt in 1 2 3 4 5 6; do\b.*?\bdone', source, re.S).group(0)
+            for failures, expected in ((2, 3), (99, 6)):
+                with self.subTest(source=name, failures=failures), tempfile.TemporaryDirectory() as directory:
+                    base = Path(directory)
+                    fake = base / 'git'
+                    fake.write_text('''#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+base=Path(__file__).parent
+if sys.argv[1]=='checkout':
+    (base/'checkout').touch(); sys.exit(0)
+counter=base/'count'
+n=int(counter.read_text())+1 if counter.exists() else 1
+counter.write_text(str(n))
+sys.exit(1 if n<=int(os.environ['FAILURES']) else 0)
+''')
+                    fake.chmod(0o755)
+                    sleep = base / 'sleep'; sleep.write_text('#!/bin/sh\nexit 0\n'); sleep.chmod(0o755)
+                    # Keep cleanup inside this disposable fixture.
+                    command = loop.replace('/go/dnstt', str(base / 'clone')).replace('/dnstt', str(base / 'clone'))
+                    result = subprocess.run(['sh', '-c', command + '\ngit checkout reviewed-pin'],
+                                            env=os.environ | {'PATH': directory + ':' + os.environ['PATH'],
+                                                              'TT_REF': 'v1.0', 'FAILURES': str(failures)},
+                                            capture_output=True, timeout=10)
+                    self.assertEqual(int((base / 'count').read_text()), expected)
+                    self.assertEqual(result.returncode == 0, failures < expected)
+                    self.assertEqual((base / 'checkout').exists(), failures < expected)
+
+
+class ArchiveDownloadRetryTest(unittest.TestCase):
+    def test_official_api_fallback_rejects_ambiguous_or_foreign_assets(self):
+        url = 'https://github.com/owner/repo/releases/download/v1/archive.tar.gz'
+        for mode, expected_calls in (('direct', 1), ('doh', 2), ('other-doh', 2), ('other-fail', 2), ('fallback', 4), ('duplicate', 3),
+                                     ('foreign', 3), ('numeric', 3), ('missing', 3), ('metadata-fail', 3), ('asset-fail', 4)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                requested_url = 'https://downloads.example.test/source.tar.gz' if mode.startswith('other-') else url
+                base = Path(directory)
+                fake = base / 'curl'
+                fake.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args=sys.argv[1:]; url=args[-1]; mode=os.environ['DOWNLOAD_TEST_MODE']
+output=Path(args[args.index('-o')+1])
+stage='metadata' if '/releases/tags/' in url else 'asset' if '/releases/assets/' in url else 'primary'
+with open(os.environ['DOWNLOAD_TEST_TRACE'],'a') as log: log.write(json.dumps({'stage':stage,'args':args})+'\\n')
+if stage=='primary':
+    success=mode=='direct' or (mode in ('doh','other-doh') and '--doh-url' in args)
+    output.write_bytes(b'synthetic archive' if success else b'partial')
+    sys.exit(0 if success else 22)
+if stage=='metadata':
+    if mode=='metadata-fail': sys.exit(22)
+    asset={'browser_download_url':os.environ['DOWNLOAD_TEST_URL'],
+           'url':'https://api.github.com/repos/owner/repo/releases/assets/123'}
+    if mode=='foreign': asset['url']='https://example.test/releases/assets/123'
+    if mode=='numeric': asset['url']='123'
+    rows=[] if mode=='missing' else [asset,asset] if mode=='duplicate' else [asset]
+    output.write_text(json.dumps({'assets':rows})); sys.exit(0)
+if 'Accept: application/octet-stream' not in args: sys.exit(7)
+if mode=='asset-fail': sys.exit(22)
+output.write_bytes(b'synthetic archive')
+''')
+                fake.chmod(0o755)
+                trace = base / 'trace'
+                target = base / 'archive'
+                env = os.environ | {'PATH': str(base) + ':' + os.environ['PATH'],
+                                     'DOWNLOAD_TEST_MODE': mode, 'DOWNLOAD_TEST_TRACE': str(trace),
+                                     'DOWNLOAD_TEST_URL': requested_url}
+                result = subprocess.run(['sh', str(ROOT/'dockerfile/download-file.sh'), requested_url, str(target)],
+                                        env=env, capture_output=True, timeout=15)
+                self.assertEqual(len(trace.read_text().splitlines()), expected_calls)
+                calls = [json.loads(line) for line in trace.read_text().splitlines()]
+                self.assertNotIn('--doh-url', calls[0]['args'])
+                for call in calls[1:]:
+                    args = call['args']
+                    self.assertEqual(args[args.index('--doh-url') + 1], 'https://cloudflare-dns.com/dns-query')
+                    self.assertFalse({'-k', '--insecure', '--doh-insecure'} & set(args))
+                if mode in ('direct', 'doh', 'other-doh', 'fallback'):
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(target.read_bytes(), b'synthetic archive')
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_real_curl_recovers_from_503_and_stops_on_persistent_failure(self):
+        source = (ROOT / 'dockerfile/download-file.sh').read_text()
+        prefix = re.search(r'^\s*(curl .+?) \"\$@\"', source, re.M).group(1)
+        args = shlex.split(prefix)
+        # Keep the actual retry count, shorten only the test's time budget.
+        for option, value in (('--retry-delay', '1'), ('--connect-timeout', '1'),
+                              ('--max-time', '5'), ('--retry-max-time', '20')):
+            args[args.index(option) + 1] = value
+        for failures, expected in ((2, 3), (99, 6)):
+            calls = []
+
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    calls.append(True)
+                    body = b'archive' if len(calls) > failures else b''
+                    self.send_response(200 if body else 503)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *args):
+                    pass
+
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as directory, \
+                    http.server.HTTPServer(('127.0.0.1', 0), Handler) as server:
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    archive = Path(directory) / 'archive'
+                    result = subprocess.run(args + ['-o', str(archive),
+                                            f'http://127.0.0.1:{server.server_port}/archive'],
+                                            capture_output=True, timeout=25)
+                    self.assertEqual(len(calls), expected)
+                    if failures < expected:
+                        self.assertEqual(result.returncode, 0)
+                        self.assertEqual(archive.read_bytes(), b'archive')
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                finally:
+                    server.shutdown()
+                    worker.join(timeout=5)
 
 
 class PythonRetryTest(unittest.TestCase):
@@ -250,7 +398,7 @@ class WorkflowRetryTest(unittest.TestCase):
                 with self.subTest(command[:60]):
                     self.assertIn('--retry-all-errors', command)
         # git clone сам не повторяется: он стоит в цикле, и неудачная попытка убирает за собой.
-        self.assertRegex(source, r'for attempt in 1 2 3 4 5; do\s+git clone \S+ /dnstt && break;\s+rm -rf /dnstt; sleep 10;\s+done')
+        self.assertRegex(source, r'for attempt in 1 2 3 4 5 6; do\s+git clone \S+ /dnstt && break;\s+rm -rf /dnstt;\s+\[ "\$attempt" -lt 6 \] \|\| exit 1;\s+sleep 10;\s+done')
         self.assertEqual(len(re.findall(r'\bgit clone\b', source)), 1)
         script = (ROOT / 'scripts/ci_hosted_test.py').read_text()
         self.assertIn('retrying(lambda: subprocess.run(args, check=True, timeout=1200), errors=(subprocess.CalledProcessError,))', script)
@@ -279,7 +427,7 @@ class WorkflowRetryTest(unittest.TestCase):
                     self.assertIn('retrying(move_channel)', source)
         scan = (ROOT / 'scripts/ci_scan_image.sh').read_text()
         self.assertEqual(len(re.findall(r'^sh "\$retry" "\$work/trivy" image ', scan, re.M)), 2)
-        self.assertIn('--retry-all-errors', scan)
+        self.assertIn('/../dockerfile/download-file.sh" https://github.com/aquasecurity/trivy/', scan)
 
 
 if __name__ == '__main__':

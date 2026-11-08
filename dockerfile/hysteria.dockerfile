@@ -4,7 +4,7 @@ FROM golang:${PROTOCOL_GO_VERSION}-alpine AS core
 ARG HYSTERIA_VERSION
 ENV GOWORK=off
 RUN apk add --no-cache ca-certificates curl git
-COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh apernet/hysteria "app/$HYSTERIA_VERSION" /source \
     && cd /source/app && sh /build-tools/go-security.sh \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath \

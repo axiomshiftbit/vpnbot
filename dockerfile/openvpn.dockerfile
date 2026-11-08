@@ -17,6 +17,7 @@ ARG APK_REFRESH=2026-10-05
 # configure те же, что у пакета Alpine. Когда пакет догонит, можно вернуться
 # к установке пакетом. Easy-RSA ставится из официального релиза.
 COPY dockerfile/sources.sha256 /sources.sha256
+COPY dockerfile/download-file.sh /build-tools/download-file.sh
 
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
@@ -37,7 +38,7 @@ RUN set -eux; \
         lzo \
         pkcs11-helper; \
     apk add --no-cache --virtual .build-deps \
-        build-base \
+        build-base curl jq \
         linux-headers \
         openssl-dev \
         libcap-ng-dev \
@@ -45,7 +46,7 @@ RUN set -eux; \
         lz4-dev \
         lzo-dev \
         pkcs11-helper-dev; \
-    wget -O /tmp/openvpn.tar.gz "https://github.com/OpenVPN/openvpn/releases/download/v${OPENVPN_VERSION}/openvpn-${OPENVPN_VERSION}.tar.gz"; \
+    sh /build-tools/download-file.sh "https://github.com/OpenVPN/openvpn/releases/download/v${OPENVPN_VERSION}/openvpn-${OPENVPN_VERSION}.tar.gz" /tmp/openvpn.tar.gz; \
     awk -v key="openvpn/${OPENVPN_VERSION}" '$2 == key {print $1 "  /tmp/openvpn.tar.gz"}' /sources.sha256 | sha256sum -c -; \
     tar -xzf /tmp/openvpn.tar.gz -C /tmp; \
     rm /tmp/openvpn.tar.gz; \
@@ -57,12 +58,12 @@ RUN set -eux; \
     make install-strip; \
     cd /; \
     rm -rf /tmp/openvpn-* /sources.sha256 /usr/share/man /usr/share/doc/openvpn /usr/include/openvpn /usr/lib/openvpn/plugins/*.la; \
-    apk del .build-deps; \
-    wget -O /tmp/easyrsa.tgz "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz"; \
+    sh /build-tools/download-file.sh "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz" /tmp/easyrsa.tgz; \
     echo "${EASYRSA_SHA256}  /tmp/easyrsa.tgz" | sha256sum -c -; \
     mkdir -p /usr/share/easy-rsa; \
     tar -xzf /tmp/easyrsa.tgz --strip-components=1 -C /usr/share/easy-rsa; \
-    rm /tmp/easyrsa.tgz; \
+    rm /tmp/easyrsa.tgz /build-tools/download-file.sh; \
+    apk del .build-deps; \
     ln -s /usr/share/easy-rsa/easyrsa /usr/bin/easyrsa; \
     mkdir -p /root/.ssh /etc/openvpn/ccd /etc/openvpn/clients; \
     openvpn --version | head -n1 | grep -F "OpenVPN ${OPENVPN_VERSION} "; \

@@ -4,7 +4,8 @@ ARG MASQUE_XRAY_VERSION=v26.10.31
 ARG MASQUE_SOURCE_SHA256=be44f95d497ad4ba6e9d1dcfbbd71e8e51f812aff077d4c15c9947eff5e3046a
 RUN apk add --no-cache ca-certificates curl tar patch
 WORKDIR /build
-RUN curl -fL --retry 3 "https://codeload.github.com/XTLS/Xray-core/tar.gz/refs/tags/${MASQUE_XRAY_VERSION}" -o source.tar.gz \
+COPY download-file.sh /build-tools/download-file.sh
+RUN sh /build-tools/download-file.sh "https://codeload.github.com/XTLS/Xray-core/tar.gz/refs/tags/${MASQUE_XRAY_VERSION}" source.tar.gz \
     && echo "${MASQUE_SOURCE_SHA256}  source.tar.gz" | sha256sum -c - \
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY masque-isolation.patch /masque-isolation.patch

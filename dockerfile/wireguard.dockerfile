@@ -6,7 +6,7 @@ ARG TUN2SOCKS_VERSION=v2.7.0
 ARG AWG_GO_VERSION=v3.1.20260828
 ARG XRAY_VERSION=v26.10.31
 RUN apk add --no-cache ca-certificates curl git jq
-COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 dockerfile/build-xray.sh /build-tools/
+COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 dockerfile/build-xray.sh /build-tools/
 # Прокси WARP собирается из того же ядра. В режиме MASQUE он сам держит туннель
 # до Cloudflare, поэтому на дереве с поднятыми зависимостями (go-security.sh)
 # прогоняются собственные тесты ядра для этого транспорта: рукопожатие WARP по

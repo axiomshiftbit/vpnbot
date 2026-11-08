@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Каждая загрузка при сборке образа проверяется до использования."""
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -23,11 +24,58 @@ def env_pins():
 
 
 class ImageSourcesTest(unittest.TestCase):
+    def test_each_downloaded_archive_is_checked_before_unpacking(self):
+        paths = DOCKERFILES + [ROOT / 'dockerfile/go-source.sh', ROOT / 'scripts/ci_scan_image.sh',
+                              ROOT / 'tests/integration/clients.dockerfile', ROOT / '.github/workflows/tests.yml']
+        count = 0
+        for path in paths:
+            lines = path.read_text().splitlines()
+            for index, line in enumerate(lines):
+                if 'download-file.sh' not in line or not re.search(r'(?<![\w/.-])sh\s', line):
+                    continue
+                target = shlex.split(line.rstrip().removesuffix('\\').strip().removesuffix(';'))[-1]
+                following = '\n'.join(lines[index + 1:])
+                unpack = re.search(r'(?<![\w/.-])(?:tar|unzip)\s+[-x]', following)
+                with self.subTest(path.name, archive=target):
+                    self.assertIsNotNone(unpack)
+                    checks = [entry for entry in following[:unpack.start()].splitlines() if 'sha256sum' in entry]
+                    self.assertTrue(any(target in entry for entry in checks), 'архив распаковывается без проверки своей суммы')
+                count += 1
+        self.assertGreaterEqual(count, 18)
+
+    def test_public_file_downloads_use_shared_fallback(self):
+        paths = DOCKERFILES + [ROOT / 'dockerfile/go-source.sh', ROOT / 'dockerfile/build-xray.sh',
+                              ROOT / 'scripts/ci_scan_image.sh', ROOT / 'tests/integration/clients.dockerfile',
+                              ROOT / '.github/workflows/tests.yml']
+        for path in paths:
+            for line in path.read_text().splitlines():
+                if line.lstrip().startswith('#'):
+                    continue
+                with self.subTest(path.name, command=line.strip()[:80]):
+                    self.assertNotRegex(line, r'(?<![\w-])(?:curl|wget)\s+-[^\n]*https?://')
+                    if line.startswith('COPY dockerfile/go-*.sh'):
+                        self.assertIn('dockerfile/download-file.sh', line)
+
+    def test_archive_downloads_have_bounded_network_retries(self):
+        paths = DOCKERFILES + [ROOT / 'dockerfile/go-source.sh', ROOT / 'dockerfile/download-file.sh',
+                              ROOT / 'tests/integration/clients.dockerfile',
+                              ROOT / '.github/workflows/tests.yml']
+        for path in paths:
+            for line in path.read_text().splitlines():
+                if not re.search(r'(?<![\w-])curl -', line) or line.lstrip().startswith('#'):
+                    continue
+                with self.subTest(path.name, command=line.strip()[:80]):
+                    self.assertRegex(line, r'--retry [1-5]\b')
+                    self.assertIn('--retry-all-errors', line)
+                    self.assertRegex(line, r'--connect-timeout [1-9][0-9]*\b')
+                    self.assertRegex(line, r'--max-time [1-9][0-9]*\b')
+                    self.assertRegex(line, r'--retry-max-time [1-9][0-9]*\b')
+
     def test_every_download_is_verified_in_the_same_step(self):
         seen = 0
         for path in DOCKERFILES:
             for run in instructions(path):
-                fetches = re.search(r'\b(?:curl|wget)\b[^;&|]*https?://|\bgit (?:clone|fetch)\b|\$\(asset ', run)
+                fetches = re.search(r'\b(?:curl|wget)\b[^;&|]*https?://|\bgit (?:clone|fetch)\b|\$\(asset |download-file\.sh', run)
                 if not fetches:
                     continue
                 seen += 1

@@ -53,6 +53,7 @@ else:
             root = Path(directory)
             script = root / 'go-source.sh'
             script.write_bytes((ROOT / 'dockerfile/go-source.sh').read_bytes())
+            (root / 'download-file.sh').write_bytes((ROOT / 'dockerfile/download-file.sh').read_bytes())
             commit = 'a' * 40
             for name, revision in [('reviewed', commit), ('moved', 'b' * 40)]:
                 with tarfile.open(root / (name + '.tar.gz'), 'w:gz',

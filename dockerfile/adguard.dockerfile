@@ -3,7 +3,7 @@ ARG PROTOCOL_GO_VERSION=1.27.3
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS source
 ARG ADGUARD_VERSION
 RUN apk add --no-cache ca-certificates curl git
-COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh AdguardTeam/AdGuardHome "$ADGUARD_VERSION" /source
 
 FROM node:24-alpine AS frontend
@@ -14,7 +14,7 @@ WORKDIR /source
 # client_v2 AdGuard пока выпускает только в канале edge; Makefile в тегах
 # указывает на него по умолчанию, поэтому сборка «как в Makefile» давала
 # стабильную версию с интерфейсом edge — не таким, как у официального архива.
-RUN npm --prefix client ci --no-audit --no-fund \
+RUN npm --prefix client ci --no-audit --no-fund --fetch-retries=5 \
     && npm --prefix client run build-prod
 
 FROM source AS core

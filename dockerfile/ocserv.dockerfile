@@ -14,6 +14,7 @@ ARG OCSERV_VERSION=1.6.0
 ARG APK_REFRESH=2026-10-05
 
 COPY dockerfile/sources.sha256 /sources.sha256
+COPY dockerfile/download-file.sh /build-tools/download-file.sh
 
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
@@ -44,7 +45,7 @@ RUN set -eux; \
         tar \
         protobuf-c-compiler \
         gperf; \
-    curl -fsSL "https://gitlab.com/openconnect/ocserv/-/archive/${OCSERV_VERSION}/ocserv-${OCSERV_VERSION}.tar.gz" -o /tmp/ocserv.tar.gz; \
+    sh /build-tools/download-file.sh "https://gitlab.com/openconnect/ocserv/-/archive/${OCSERV_VERSION}/ocserv-${OCSERV_VERSION}.tar.gz" /tmp/ocserv.tar.gz; \
     awk -v key="ocserv/${OCSERV_VERSION}" '$2 == key {print $1 "  /tmp/ocserv.tar.gz"}' /sources.sha256 | sha256sum -c -; \
     tar xzf /tmp/ocserv.tar.gz -C /tmp; \
     rm /tmp/ocserv.tar.gz; \
@@ -53,7 +54,7 @@ RUN set -eux; \
     ninja -C build; \
     meson install -C build; \
     cd /; \
-    rm -rf /tmp/ocserv-* /sources.sha256; \
+    rm -rf /tmp/ocserv-* /sources.sha256 /build-tools/download-file.sh; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
     # sanity: все нужные боту бинарники на месте, и ocserv запускается

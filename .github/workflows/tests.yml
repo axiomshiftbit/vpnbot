@@ -34,7 +34,7 @@ concurrency:
 jobs:
   tests:
     runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -54,7 +54,7 @@ jobs:
         run: |
           php_version=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
           sh scripts/ci_retry.sh sudo apt-get update -qq
-          sh scripts/ci_retry.sh sudo apt-get install -y "php${php_version}-yaml" python3-yaml
+          sh scripts/ci_retry.sh sudo apt-get install -y "php${php_version}-yaml" python3-yaml curl jq
           php -r 'exit(extension_loaded("yaml") ? 0 : 1);'
 
       - name: Xray для проверки конфигураций
@@ -63,13 +63,13 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip
+          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip" Xray-linux-64.zip
           echo 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
           # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.1-1424/Xray-linux-64.zip
+          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.1-1424/Xray-linux-64.zip" Xray-fork-linux-64.zip
           echo 'b70be1d4c83932de1c49c7c68c3da67b2d2c2e1ef11d9a80f207e93cf2fb0d25  Xray-fork-linux-64.zip' | sha256sum --check
           mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
           chmod +x fork/xray
@@ -114,7 +114,7 @@ jobs:
 
   alpine:
     runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -124,19 +124,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Инструменты проверяемой загрузки архивов
+        run: |
+          sh scripts/ci_retry.sh sudo apt-get update -qq
+          sh scripts/ci_retry.sh sudo apt-get install -y curl jq
+
       - name: Xray для проверки конфигураций
         run: |
           set -euo pipefail
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip
+          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip" Xray-linux-64.zip
           echo 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
           # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o Xray-fork-linux-64.zip https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.1-1424/Xray-linux-64.zip
+          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.1-1424/Xray-linux-64.zip" Xray-fork-linux-64.zip
           echo 'b70be1d4c83932de1c49c7c68c3da67b2d2c2e1ef11d9a80f207e93cf2fb0d25  Xray-fork-linux-64.zip' | sha256sum --check
           mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
           chmod +x fork/xray

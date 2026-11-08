@@ -478,6 +478,10 @@ jobs:
         with:
           name: image-bundle
           path: ${{ runner.temp }}
+      - name: Инструменты проверяемой загрузки сканера
+        run: |
+          sh scripts/ci_retry.sh sudo apt-get update -qq
+          sh scripts/ci_retry.sh sudo apt-get install -y curl jq
       - name: Проверка CVE точного digest
         env:
           IMAGE_NAME: ${{ matrix.image }}
@@ -530,7 +534,7 @@ jobs:
             test "$(cat /etc/vpnbot-ci-test-host)" = home-build
           fi
           sh scripts/ci_retry.sh sudo apt-get update -qq
-          sh scripts/ci_retry.sh sudo apt-get install -y python3-yaml python3-cryptography tcpdump curl openssl iptables kmod
+          sh scripts/ci_retry.sh sudo apt-get install -y python3-yaml python3-cryptography tcpdump curl jq openssl iptables kmod
           sudo modprobe wireguard
           sudo modprobe l2tp_ppp
           sudo modprobe -a xt_comment xt_mark xt_connmark

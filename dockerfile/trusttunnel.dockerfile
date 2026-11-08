@@ -21,6 +21,7 @@ RUN apk add --no-cache build-base cmake git clang-dev linux-headers perl pkgconf
 # -crt-static: сборочным скриптам (bindgen) нужна динамическая загрузка
 # libclang, а статически слинкованная программа на musl её не умеет.
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    CARGO_NET_RETRY=5 \
     RUSTUP_TOOLCHAIN=${RUST_VERSION} \
     RUSTFLAGS="-C target-feature=-crt-static"
 COPY sources.sha256 /sources.sha256
@@ -33,10 +34,14 @@ WORKDIR /src
 # в FETCH_HEAD теряет его имя. Сохраняем ref тега; SHA-пины тоже допустимы.
 RUN git init -q . \
     && git remote add origin https://github.com/TrustTunnel/TrustTunnel.git \
-    && case "${TT_REF}" in \
-        v[0-9]*) git fetch -q --depth 1 origin "refs/tags/${TT_REF}:refs/tags/${TT_REF}" ;; \
-        *) git fetch -q --depth 1 origin "${TT_REF}" ;; \
-    esac \
+    && for attempt in 1 2 3 4 5 6; do \
+         case "${TT_REF}" in \
+           v[0-9]*) git fetch -q --depth 1 origin "refs/tags/${TT_REF}:refs/tags/${TT_REF}" ;; \
+           *) git fetch -q --depth 1 origin "${TT_REF}" ;; \
+         esac && break; \
+         [ "$attempt" -lt 6 ] || exit 1; \
+         sleep 15; \
+       done \
     && git checkout -q FETCH_HEAD \
     # Тег можно переписать: коммит обязан совпасть с закреплённым для этой
     # версии. Пин на полный коммит проверяет сам себя.

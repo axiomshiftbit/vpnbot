@@ -9,6 +9,7 @@ ARG APK_REFRESH=2026-10-05
 ARG STRONGSWAN_VERSION=6.1.0
 # Архив проверен по PGP-подписи upstream (DF42C170B34DBA77).
 ARG STRONGSWAN_SHA256=fe6c97481298767213cfc2e9a1da29fdd8018d481ff4cb9cf0283099654f20d4
+COPY dockerfile/download-file.sh /build-tools/download-file.sh
 
 # В Alpine пока strongSwan 6.0.7 без исправлений безопасности 6.1.0.
 # Собираем проверенный upstream; IKEv1 с 6.1 нужно включать явно для L2TP.
@@ -32,7 +33,7 @@ RUN set -eux; \
         libcurl; \
     apk add --no-cache --virtual .build-deps \
         build-base linux-headers openssl-dev curl-dev curl bzip2; \
-    curl -fsSL "https://download.strongswan.org/strongswan-${STRONGSWAN_VERSION}.tar.bz2" -o /tmp/strongswan.tar.bz2; \
+    sh /build-tools/download-file.sh "https://download.strongswan.org/strongswan-${STRONGSWAN_VERSION}.tar.bz2" /tmp/strongswan.tar.bz2; \
     echo "${STRONGSWAN_SHA256}  /tmp/strongswan.tar.bz2" | sha256sum -c -; \
     mkdir /tmp/strongswan; \
     tar -xjf /tmp/strongswan.tar.bz2 -C /tmp/strongswan --strip-components=1; \
@@ -65,7 +66,7 @@ RUN set -eux; \
     apk del ppp; \
     apk add --no-cache --virtual .ppp-build-deps \
         build-base linux-headers openssl-dev libpcap-dev curl autoconf automake libtool pkgconf; \
-    curl -fsSL "https://codeload.github.com/ppp-project/ppp/tar.gz/refs/tags/v${PPP_VERSION}" -o /tmp/ppp.tar.gz; \
+    sh /build-tools/download-file.sh "https://codeload.github.com/ppp-project/ppp/tar.gz/refs/tags/v${PPP_VERSION}" /tmp/ppp.tar.gz; \
     echo "${PPP_SHA256}  /tmp/ppp.tar.gz" | sha256sum -c -; \
     mkdir /tmp/ppp; \
     tar -xzf /tmp/ppp.tar.gz -C /tmp/ppp --strip-components=1; \
@@ -75,7 +76,7 @@ RUN set -eux; \
     make -j2; \
     make install-strip; \
     cd /; \
-    rm -rf /tmp/ppp /tmp/ppp.tar.gz; \
+    rm -rf /tmp/ppp /tmp/ppp.tar.gz /build-tools/download-file.sh; \
     apk del .ppp-build-deps; \
     pppd --version; \
     test -f /usr/lib/pppd/${PPP_VERSION}/pppol2tp.so

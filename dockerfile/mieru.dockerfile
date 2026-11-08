@@ -6,7 +6,8 @@ ARG MIERU_VERSION
 ARG MIERU_SOURCE_SHA256
 RUN apk add --no-cache ca-certificates curl tar patch
 WORKDIR /build
-RUN curl -fL --retry 3 "https://codeload.github.com/enfein/mieru/tar.gz/refs/tags/v${MIERU_VERSION#v}" -o source.tar.gz \
+COPY download-file.sh /build-tools/download-file.sh
+RUN sh /build-tools/download-file.sh "https://codeload.github.com/enfein/mieru/tar.gz/refs/tags/v${MIERU_VERSION#v}" source.tar.gz \
     && echo "${MIERU_SOURCE_SHA256}  source.tar.gz" | sha256sum -c - \
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY mieru-control/main.go ./cmd/vpnbot-control/main.go

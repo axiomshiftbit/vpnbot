@@ -10,7 +10,7 @@ ARG XCADDY_VERSION
 ARG CADDY_VERSION
 ARG FORWARDPROXY_VERSION
 RUN apk add --no-cache ca-certificates curl git patch
-COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh caddyserver/caddy "$CADDY_VERSION" /caddy \
     && sh /build-tools/go-source.sh klzgrad/forwardproxy "$FORWARDPROXY_VERSION" /forwardproxy \
     && test "$(cat /forwardproxy/CADDY_VERSION)" = "$CADDY_VERSION" \

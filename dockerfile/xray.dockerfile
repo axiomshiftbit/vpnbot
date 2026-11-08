@@ -6,7 +6,7 @@ ARG XRAY_VERSION_2=""
 ARG XRAY_VERSION_3=""
 ARG XRAY_FORK_VERSION=""
 RUN apk add --no-cache ca-certificates curl git jq
-COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 /build-tools/
+COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 /build-tools/
 COPY dockerfile/build-xray.sh /build-tools/build-xray.sh
 RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/xray \
     && { [ -z "$XRAY_VERSION_2" ] || sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION_2" /out/xray-2; } \
@@ -16,7 +16,7 @@ RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/xray \
 
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS amnezia
 RUN apk add --no-cache ca-certificates curl git
-COPY dockerfile/go-*.sh dockerfile/go-sources.sha256 dockerfile/wireproxy-node.patch /build-tools/
+COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 dockerfile/wireproxy-node.patch /build-tools/
 RUN sh /build-tools/go-source.sh artem-russkikh/wireproxy-awg node-84f4795 /source
 WORKDIR /source
 RUN git apply --check /build-tools/wireproxy-node.patch \

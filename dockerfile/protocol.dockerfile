@@ -6,7 +6,8 @@ ARG SINGBOX_VERSION
 ARG SINGBOX_SOURCE_SHA256
 RUN apk add --no-cache ca-certificates curl tar patch
 WORKDIR /build
-RUN curl -fL --retry 3 "https://codeload.github.com/SagerNet/sing-box/tar.gz/refs/tags/v${SINGBOX_VERSION#v}" -o source.tar.gz \
+COPY download-file.sh /build-tools/download-file.sh
+RUN sh /build-tools/download-file.sh "https://codeload.github.com/SagerNet/sing-box/tar.gz/refs/tags/v${SINGBOX_VERSION#v}" source.tar.gz \
     && echo "${SINGBOX_SOURCE_SHA256}  source.tar.gz" | sha256sum -c - \
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY protocol-stats/main.go ./cmd/protocol-stats/main.go

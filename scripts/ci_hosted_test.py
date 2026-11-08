@@ -12,7 +12,6 @@ import sys
 import tarfile
 import tempfile
 import time
-import urllib.request
 
 import ci_retry
 from ci_retry import retrying
@@ -25,6 +24,13 @@ def network(*args):
 ROOT = Path('/opt/vpnbot-hosted-ci')
 GROUPS = {'unit', 'native', 'modules', 'backup_restore', 'update_rollback', 'faults', 'telegram_http'}
 CLIENT_IMAGE = 'vpnbot-hosted-clients:current'
+
+
+def download_client(url, archive):
+    # The shared downloader owns the bounded retries and GitHub API fallback.
+    # Do not multiply its attempts by wrapping it in another retry loop.
+    helper = Path(__file__).resolve().parents[1] / 'dockerfile/download-file.sh'
+    subprocess.run(['sh', str(helper), url, str(archive)], check=True, timeout=900)
 
 
 def client_downloads(destination):
@@ -45,7 +51,7 @@ def client_downloads(destination):
     for url, digest, names in releases:
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / 'client.tar'
-            retrying(urllib.request.urlretrieve, url, archive, errors=(OSError,))
+            download_client(url, archive)
             if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
                 raise ValueError('client archive checksum mismatch')
             with tarfile.open(archive) as tar:
@@ -60,7 +66,9 @@ def client_downloads(destination):
 
 def identity(checkout):
     digest = hashlib.sha256()
-    for p in sorted((checkout / 'tests/integration').rglob('*')):
+    files = list((checkout / 'tests/integration').rglob('*')) + [checkout / 'dockerfile' / name
+                                                            for name in ('download-file.sh', 'go-retry.sh')]
+    for p in sorted(files):
         if p.is_file() and '__pycache__' not in p.parts:
             digest.update(str(p.relative_to(checkout)).encode() + b'\0' + p.read_bytes())
     return digest.hexdigest()
@@ -157,7 +165,8 @@ def assets(checkout, manifest):
     atomic(manifest.with_name('rollback-images.json'), canonical(previous))
     values = dict(line.split('=', 1) for line in (checkout / '.env').read_text().splitlines()
                   if line and not line.startswith('#') and '=' in line)
-    args = ['docker', 'build', '--pull', '-t', CLIENT_IMAGE, '-f', str(checkout / 'tests/integration/clients.dockerfile')]
+    args = ['docker', 'build', '--pull', '--build-context', 'download-tools=' + str(checkout / 'dockerfile'),
+            '-t', CLIENT_IMAGE, '-f', str(checkout / 'tests/integration/clients.dockerfile')]
     inputs = {name.upper() + '_IMAGE': bundle['images'][name] for name in ('wg', 'php', 'ss', 'ipsec')}
     inputs['GO_IMAGE'] = 'golang:' + values['PROTOCOL_GO_VERSION'] + '-alpine'
     inputs.update({name: values[name] for name in ('MIERU_VERSION', 'MIERU_SOURCE_SHA256', 'DNSTT_REF',

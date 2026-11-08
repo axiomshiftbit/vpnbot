@@ -19,7 +19,12 @@ ARG DNSTT_REF
 # «fatal: dumb http transport does not support shallow capabilities».
 # Поэтому обычный clone и checkout; репозиторий на 3 МБ, платить нечем.
 RUN apk add --no-cache git \
-    && git clone https://www.bamsoftware.com/git/dnstt.git \
+    && for attempt in 1 2 3 4 5 6; do \
+         git clone https://www.bamsoftware.com/git/dnstt.git /go/dnstt && break; \
+         rm -rf /go/dnstt; \
+         [ "$attempt" -lt 6 ] || exit 1; \
+         sleep 10; \
+       done \
     && cd /go/dnstt \
     && git checkout -q "${DNSTT_REF}" \
     && sh /build-tools/go-security.sh \

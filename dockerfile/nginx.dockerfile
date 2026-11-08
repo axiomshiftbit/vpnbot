@@ -15,9 +15,10 @@ ARG NGINX_VERSION=1.30.6
 FROM $image AS build
 ARG NGINX_VERSION
 COPY sources.sha256 /sources.sha256
+COPY download-file.sh /build-tools/download-file.sh
 RUN set -eux; \
-    apk add --no-cache build-base linux-headers openssl-dev pcre2-dev zlib-dev; \
-    wget -O nginx.tar.gz "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"; \
+    apk add --no-cache build-base linux-headers openssl-dev pcre2-dev zlib-dev curl; \
+    sh /build-tools/download-file.sh "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" nginx.tar.gz; \
     # Без строки для этой версии sha256sum не получает ни одной суммы и отказывает.
     awk -v key="nginx/${NGINX_VERSION}" '$2 == key {print $1 "  nginx.tar.gz"}' /sources.sha256 | sha256sum -c -; \
     tar -xzf nginx.tar.gz; \

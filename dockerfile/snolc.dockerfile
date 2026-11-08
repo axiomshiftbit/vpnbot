@@ -13,7 +13,7 @@ FROM rust:${RUST_VERSION}-alpine AS sources
 ARG RUST_VERSION
 ARG CARGO_AUDITABLE_VERSION
 RUN apk add --no-cache patch
-ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION} CARGO_NET_RETRY=5
 # cargo auditable вшивает в бинарники список пакетов Cargo.lock: шлюз Trivy
 # видит их версии и блокирует уязвимые так же, как модули Go. Собираем тем же
 # компилятором (пакет Alpine потянул бы второй, системный cargo).
