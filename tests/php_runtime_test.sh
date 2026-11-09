@@ -8,7 +8,7 @@ php -r 'if (PHP_VERSION_ID < 80512 || PHP_VERSION_ID >= 80600) { fwrite(STDERR, 
 root=$(mktemp -d)
 pid=
 trap '[ -z "$pid" ] || kill "$pid" 2>/dev/null || true; rm -rf "$root"' EXIT
-mkdir "$root/www"
+mkdir "$root/www" "$root/state"
 cat > "$root/www/index.php" <<'PHP'
 <?php
 header('Content-Type: application/json');
