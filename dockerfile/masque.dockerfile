@@ -1,7 +1,7 @@
 ARG MASQUE_GO_VERSION=1.27.3
 FROM golang:${MASQUE_GO_VERSION}-alpine AS build
-ARG MASQUE_XRAY_VERSION=v26.10.31
-ARG MASQUE_SOURCE_SHA256=be44f95d497ad4ba6e9d1dcfbbd71e8e51f812aff077d4c15c9947eff5e3046a
+ARG MASQUE_XRAY_VERSION=v26.11.9
+ARG MASQUE_SOURCE_SHA256=d5a47bed1b85e1cdfe3cb2f88a02e2db7144f0f8bee541d20b84fafa8fdf6c8d
 RUN apk add --no-cache ca-certificates curl tar patch
 WORKDIR /build
 COPY download-file.sh /build-tools/download-file.sh
@@ -19,8 +19,8 @@ RUN patch -p1 --fuzz=0 < /masque-isolation.patch \
        -ldflags '-s -w -X github.com/xtls/xray-core/core.build=vpnbot-masque.1' -o /xray ./main
 
 FROM alpine:3.24
-ARG MASQUE_XRAY_VERSION=v26.10.31
-ARG MASQUE_SOURCE_SHA256=be44f95d497ad4ba6e9d1dcfbbd71e8e51f812aff077d4c15c9947eff5e3046a
+ARG MASQUE_XRAY_VERSION=v26.11.9
+ARG MASQUE_SOURCE_SHA256=d5a47bed1b85e1cdfe3cb2f88a02e2db7144f0f8bee541d20b84fafa8fdf6c8d
 LABEL io.vpnbot.masque.version=$MASQUE_XRAY_VERSION io.vpnbot.masque.source-sha256=$MASQUE_SOURCE_SHA256
 RUN apk upgrade --no-cache \
     && apk add --no-cache ca-certificates python3 openssl

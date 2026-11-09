@@ -307,7 +307,7 @@ class ComponentsTest(unittest.TestCase):
 
     def test_build_tools_git_refs_and_alpine_report_freshness(self):
         found = components.pins()
-        self.assertEqual(found['Trivy'], '0.76.1')
+        self.assertEqual(found['Trivy'], '0.76.2')
         head = 'f' * 40
         api = Api(git_head=head, tags={'amnezia-vpn/amneziawg-go': ['v9.9.20990101', 'v9.9.20990202-rc1']},
                   releases={'aquasecurity/trivy': [('v9.0.0', False)], 'TrustTunnel/TrustTunnel': [('v9.0.0-beta.1', True), (found['TrustTunnel'], False)],

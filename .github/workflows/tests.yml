@@ -63,8 +63,8 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip" Xray-linux-64.zip
-          echo 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214  Xray-linux-64.zip' | sha256sum --check
+          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip" Xray-linux-64.zip
+          echo 'b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
@@ -135,8 +135,8 @@ jobs:
           xray_test_dir="$RUNNER_TEMP/vpnbot-xray"
           mkdir -p "$xray_test_dir"
           cd "$xray_test_dir"
-          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip" Xray-linux-64.zip
-          echo 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214  Xray-linux-64.zip' | sha256sum --check
+          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip" Xray-linux-64.zip
+          echo 'b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82  Xray-linux-64.zip' | sha256sum --check
           unzip -q Xray-linux-64.zip xray
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test

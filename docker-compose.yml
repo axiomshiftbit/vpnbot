@@ -364,7 +364,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.31}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.11.9}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -422,7 +422,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.31}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.11.9}
         volumes:
             - ./logs:/logs
             - ./config/.profile:/root/.ashrc:ro
@@ -473,7 +473,7 @@ services:
                 # Форма :-default обязательна: голое ${ADGUARD_VERSION} при
                 # отсутствии переменной передаёт пустую строку, она перекрывает
                 # дефолт ARG, и FROM adguard/adguardhome: роняет сборку.
-                ADGUARD_VERSION: ${ADGUARD_VERSION:-v0.107.79}
+                ADGUARD_VERSION: ${ADGUARD_VERSION:-v0.107.80}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - type: volume
@@ -524,7 +524,7 @@ services:
             dockerfile: dockerfile/telemt.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.24}
-                TELEMT_VERSION: ${TELEMT_VERSION:-3.5.16}
+                TELEMT_VERSION: ${TELEMT_VERSION:-3.5.17}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro
@@ -719,7 +719,7 @@ services:
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
-                XRAY_VERSION: ${XRAY_VERSION:-v26.10.31}
+                XRAY_VERSION: ${XRAY_VERSION:-v26.11.9}
         cap_add:
             - NET_ADMIN
         sysctls:
@@ -913,7 +913,7 @@ services:
             dockerfile: dockerfile/openvpn.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.24}
-                OPENVPN_VERSION: ${OPENVPN_VERSION:-2.7.8}
+                OPENVPN_VERSION: ${OPENVPN_VERSION:-2.7.9}
                 EASYRSA_VERSION: ${EASYRSA_VERSION:-3.2.7}
                 EASYRSA_SHA256: ${EASYRSA_SHA256:-308743bc9fe871b902d47dbe98d749daff3a05b27531684f02625ce7208d4598}
         volumes:
@@ -1228,8 +1228,8 @@ services:
             dockerfile: masque.dockerfile
             args:
                 MASQUE_GO_VERSION: ${MASQUE_GO_VERSION:-1.27.3}
-                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.10.31}
-                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-be44f95d497ad4ba6e9d1dcfbbd71e8e51f812aff077d4c15c9947eff5e3046a}
+                MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.11.9}
+                MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-d5a47bed1b85e1cdfe3cb2f88a02e2db7144f0f8bee541d20b84fafa8fdf6c8d}
         environment:
             GODEBUG: multipathtcp=0 # Go 1.24+ иначе слушает MPTCP (CVE-2026-98432)
             PROTOCOL_DESIRED: /config/desired.json

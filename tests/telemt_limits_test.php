@@ -12,7 +12,7 @@ class TelemtLimitsBot extends Bot
     public string $root, $toml = '';
     public bool $image = true, $stateEnabled = true, $failReady = false, $failWrite = false;
     public int $starts = 0;
-    public string $version = '3.5.16';
+    public string $version = '3.5.17';
     public function telemtVersion(): string { return $this->version; }
     public function __construct(string $root, array $strings) {
         $this->root = $root; $this->i18n = $strings; $this->language = 'ru'; $this->admin = true;

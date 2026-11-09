@@ -4,7 +4,7 @@ FROM golang:${PROTOCOL_GO_VERSION}-alpine AS helpers
 ARG WGCF_VERSION=v2.3.1
 ARG TUN2SOCKS_VERSION=v2.7.0
 ARG AWG_GO_VERSION=v3.1.20260828
-ARG XRAY_VERSION=v26.10.31
+ARG XRAY_VERSION=v26.11.9
 RUN apk add --no-cache ca-certificates curl git jq
 COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 dockerfile/build-xray.sh /build-tools/
 # Прокси WARP собирается из того же ядра. В режиме MASQUE он сам держит туннель

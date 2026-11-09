@@ -4,8 +4,8 @@ set -euo pipefail
 image=$1
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-sh "$(dirname "$0")/../dockerfile/download-file.sh" https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz "$work/trivy.tar.gz"
-echo "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0  $work/trivy.tar.gz" | sha256sum -c -
+sh "$(dirname "$0")/../dockerfile/download-file.sh" https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz "$work/trivy.tar.gz"
+echo "bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf  $work/trivy.tar.gz" | sha256sum -c -
 tar -xzf "$work/trivy.tar.gz" -C "$work" trivy
 export TRIVY_CACHE_DIR="$work/cache"
 retry=$(dirname "$0")/ci_retry.sh
