@@ -59,11 +59,12 @@ trait BotMenuHelp
                     isset($match[2]) ? '/nodePeer '.$match[1].' '.$match[2] : '/nodePeers '.$match[1], $pages];
             case 'nodeconfig':
                 if (!preg_match('~^([a-f0-9]{8})_([a-z]+)$~D', $context, $match)
-                    || !isset($this->managedNodes()[$match[1]]) || !isset(ManagedNodeFields::GROUPS[$match[2]])) return [];
+                    || !isset($this->managedNodes()[$match[1]]) || !isset(ManagedNodeFields::GROUPS[$match[2]]) && $match[2] !== 'vpn') return [];
                 $pages = [];
                 foreach (ManagedNodeHelp::pages($match[2]) as $section) {
                     $pages[$t($section['ru'], $section['en'])] = $t($section['text']['ru'], $section['text']['en']);
                 }
+                if ($match[2] === 'vpn') return [$t('Ноды → Серверы для VPN (без SSH)', 'Nodes → VPN servers (no SSH)'), '/nodeVpn '.$match[1], $pages];
                 return [$t('Ноды → ', 'Nodes → ') . $t(...array_values(ManagedNodeFields::GROUPS[$match[2]])),
                     '/nodeSettings '.$match[1].' '.$match[2], $pages];
             case 'navigation':

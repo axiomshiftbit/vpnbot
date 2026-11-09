@@ -871,8 +871,11 @@ class Bot
             case preg_match('~^/nodeApply ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->managedNodeApply($m[1]);
                 break;
-            case preg_match('~^/nodeDiscard ([a-f0-9]{8})$~', $this->input['callback'], $m):
-                $this->managedNodeDiscard($m[1]);
+            case preg_match('~^/nodeDiscard ([a-f0-9]{8})(?: (vpn))?$~D', $this->input['callback'], $m):
+                $this->managedNodeDiscard($m[1], $m[2] ?? '');
+                break;
+            case preg_match('~^/nodeVpn ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->managedNodeVpnSourcesMenu($m[1]);
                 break;
             case preg_match('~^/nodePreset ([a-f0-9]{8}) ([a-z_1-5]+)(?: ([a-z_0-9]+))?$~D', $this->input['callback'], $m):
                 $this->managedNodePresets($m[1], $m[2], $m[3] ?? '');

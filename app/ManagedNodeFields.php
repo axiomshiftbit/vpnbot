@@ -21,7 +21,7 @@ final class ManagedNodeFields
             'core' => ['basic', 'ru' => 'Ядро', 'en' => 'Core', 'choice', ['origin', 'origin2', 'origin3', 'fork']],
             'family' => ['network', 'ru' => 'Выход в интернет', 'en' => 'Internet egress', 'choice', [4, 6]],
             'connect_family' => ['network', 'ru' => 'Связь бот → нода', 'en' => 'Bot → node link', 'choice', [4, 6]],
-            'vpn_sources' => ['network', 'ru' => 'Серверы для VPN (без SSH)', 'en' => 'VPN servers (no SSH)', 'list'],
+            'vpn_sources' => ['vpn', 'ru' => 'Серверы для VPN (без SSH)', 'en' => 'VPN servers (no SSH)', 'list'],
             'domain' => ['domains', 'ru' => 'Свой домен', 'en' => 'Own domain', 'string'],
             'domain_aliases' => ['domains', 'ru' => 'Дополнительные домены', 'en' => 'Additional domains', 'list'],
             'cover' => ['domains', 'ru' => 'Заглушка с паролем', 'en' => 'Password cover', 'bool'],

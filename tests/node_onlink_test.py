@@ -103,7 +103,8 @@ class Preflight(unittest.TestCase):
             if args[0] == 'sshd':
                 return SimpleNamespace(stdout=b'port 22\n')
             return SimpleNamespace(stdout=b'')
-        with patch.object(node_setup, 'command', command), patch.dict('os.environ', {'SSH_CONNECTION': ''}):
+        with patch.object(node_setup, 'command', command), patch.dict('os.environ', {'SSH_CONNECTION': ''}), \
+                patch.object(node_setup, 'docker_firewall_disabled'):
             node_setup.preflight({'deployment': HOST | {'public6': '', 'ssh_networks': []}})
 
 

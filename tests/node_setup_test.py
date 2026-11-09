@@ -100,8 +100,10 @@ class NodeSetup(unittest.TestCase):
             else: body = b''
             return SimpleNamespace(stdout=body, returncode=0)
         with tempfile.TemporaryDirectory() as tmp, patch.object(setup, 'ROOT', Path(tmp)), \
-                patch.object(setup, 'command', side_effect=command), patch.dict(setup.os.environ, {'SSH_CONNECTION':'11.77.0.3 12345 11.77.0.4 22'}):
+                patch.object(setup, 'command', side_effect=command), patch.dict(setup.os.environ, {'SSH_CONNECTION':'11.77.0.3 12345 11.77.0.4 22'}), \
+                patch.object(setup, 'docker_firewall_disabled') as docker:
             setup.preflight(value)
+            docker.assert_called_once_with()
             for field, changed in [('public4','11.77.0.200'), ('ssh_ports',[2222]), ('admins',['11.77.0.200'])]:
                 bad = copy.deepcopy(value); bad['deployment'][field] = changed
                 with self.subTest(field=field), self.assertRaises(ValueError): setup.preflight(bad)
@@ -200,6 +202,7 @@ class NodeSetup(unittest.TestCase):
                     patch.object(setup.install, 'ETC', root), patch.object(setup, 'Runtime') as runtime, \
                     patch.object(setup.nft_host_setup, 'configure') as firewall, \
                     patch.object(setup, 'verify_firewall') as health, \
+                    patch.object(setup, 'docker_firewall_disabled') as docker, \
                     patch.object(setup.install, 'install_code') as install_code:
                 setup.upgrade_code(root/'src')
                 install_code.assert_called_once_with(root/'src')
@@ -207,6 +210,14 @@ class NodeSetup(unittest.TestCase):
                 runtime.return_value.load_firewall.assert_called_once_with()
                 firewall.assert_called_once_with(host=setup.config.deployment(HOST), mode='node')
                 health.assert_called_once_with(runtime.return_value)
+                docker.assert_called_once_with()
+                # Docker managing the firewall stops the upgrade before any change.
+                docker.side_effect = ValueError('Docker firewall management is enabled')
+                install_code.reset_mock()
+                with self.assertRaisesRegex(ValueError, 'Docker firewall'):
+                    setup.upgrade_code(root/'src')
+                install_code.assert_not_called()
+                docker.side_effect = None
                 self.assertEqual(runtime.call_args.args[1]['sources'], HOST['sources'])
                 for field, value in (('current_value', None), ('pending_value', {'before': 'b'*32}), ('job', {'state': 'running'})):
                     with self.subTest(blocked=field), patch.object(Store, field, value):

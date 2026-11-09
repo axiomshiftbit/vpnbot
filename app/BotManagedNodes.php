@@ -437,6 +437,7 @@ trait BotManagedNodes
                 ['text' => $this->t('🔄 Обновить состояние', '🔄 Refresh status'), 'callback_data' => "/nodeRefresh $id"]];
             $data[] = [['text' => $this->t('🔧 Обслуживание', '🔧 Maintenance'), 'callback_data' => "/nodeMaintenance $id"]];
             $data[] = [['text' => $this->t('🔐 SSH-адрес и порт', '🔐 SSH address and port'), 'callback_data' => "/nodeSsh $id"]];
+            $data[] = [['text' => $this->t('🛡 Серверы для VPN (без SSH)', '🛡 VPN servers (no SSH)'), 'callback_data' => "/nodeVpn $id"]];
             $data[] = [['text' => $this->t('🔗 Внешние панели и подключения', '🔗 External panels and connections'), 'callback_data' => "/nodePeers $id"]];
         }
         $data[] = [['text' => $this->t('🗑 Удалить из основного бота', '🗑 Remove from main bot'), 'callback_data' => "/ndDel $id"]];

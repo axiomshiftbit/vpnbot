@@ -34,19 +34,31 @@ foreach (['ru', 'en'] as $lang) foreach (['reality', 'ws', 'grpc', 'xhttp', 'tro
     if ($state === 'draft') $node['draft'] = ['vpn_sources' => ['11.77.0.201']] + $node['status']['options'];
     $bot->pacState['managed_nodes'][$id] = $node;
     $before = $bot->pacState;
+    // The list moved from IPv4 / IPv6 settings to the node card.
     $bot->click("/nodeSettings $id network");
     $callbacks = $bot->callbacks();
-    $check(count(array_keys($callbacks, "/nodeField $id vpn_sources", true)) === 1, "VPN-only button $lang/$transport/$state");
-    $buttons = array_merge(...end($bot->screens)[1]);
-    $vpnButton = $buttons[array_search("/nodeField $id vpn_sources", $callbacks, true)];
-    $check(str_starts_with($vpnButton['text'], $lang === 'ru' ? 'Серверы для VPN (без SSH)' : 'VPN servers (no SSH)'), 'localized label');
+    $check(!in_array("/nodeField $id vpn_sources", $callbacks, true), "not in network settings $lang/$transport/$state");
     foreach (['44', '46', '64', '66'] as $pair) $check(count(array_keys($callbacks, "/nodeNetwork $id $pair", true)) === 1, 'family pair remains available');
     $check(!in_array("/nodeField $id family", $callbacks, true) && !in_array("/nodeField $id connect_family", $callbacks, true), 'no duplicate family controls');
+    $bot->click("/nodeSettings $id");
+    $check(!in_array("/nodeSettings $id vpn", $bot->callbacks(), true), 'no settings group for the list');
+    $bot->click("/node $id");
+    $callbacks = $bot->callbacks();
+    $check(count(array_keys($callbacks, "/nodeVpn $id", true)) === 1, "card button $lang/$transport/$state");
+    $buttons = array_merge(...end($bot->screens)[1]);
+    $vpnButton = $buttons[array_search("/nodeVpn $id", $callbacks, true)];
+    $check($vpnButton['text'] === ($lang === 'ru' ? '🛡 Серверы для VPN (без SSH)' : '🛡 VPN servers (no SSH)'), 'localized label');
     $bot->click($vpnButton['callback_data']);
+    $screen = end($bot->screens)[0];
     $check(in_array("/nodeEdit $id vpn_sources", $bot->callbacks(), true), 'list editor accessible');
-    $check(in_array("/nodeSettings $id network", $bot->callbacks(), true), 'back returns to network');
-    $expectedAddress = $state === 'draft' ? '11.77.0.201' : '11.77.0.200';
-    if ($state !== 'empty') $check(str_contains(end($bot->screens)[0], $expectedAddress), 'editor shows current draft or saved list');
+    $check(in_array("/node $id", $bot->callbacks(), true), 'back returns to the node card');
+    $check(in_array("/menuHelp nodeconfig {$id}_vpn", $bot->callbacks(), true) || count(array_filter($bot->callbacks(), static fn($c) => str_contains((string) $c, "{$id}_vpn"))) === 1, 'help button');
+    $check(str_contains($screen, $lang === 'ru' ? 'SSH им закрыт' : 'SSH stays closed'), 'explains SSH stays closed');
+    if ($state !== 'empty') $check(str_contains($screen, '11.77.0.200'), 'applied list shown');
+    if ($state === 'draft') $check(str_contains($screen, '11.77.0.201') && in_array("/nodeApply $id", $bot->callbacks(), true)
+        && in_array("/nodeDiscard $id vpn", $bot->callbacks(), true), 'draft list with Apply and Discard');
+    $bot->click("/nodeField $id vpn_sources");
+    $check(end($bot->screens)[0] === $screen, 'old field callback opens the new screen');
     $bot->click("/nodeEdit $id vpn_sources");
     $check($bot->prompt['callback'] === 'saveManagedNodeField' && $bot->prompt['args'] === [$id, 'vpn_sources'], 'prompt targets VPN-only list');
     $check($bot->pacState === $before && $bot->events === [], 'navigation does not write settings or contact node');
@@ -58,7 +70,8 @@ foreach (['ru', 'en'] as $lang) foreach (['reality', 'ws', 'grpc', 'xhttp', 'tro
     $oldOptions['vpn_sources'] = $expected;
     $check($node['draft'] === $oldOptions, 'other draft options preserved');
     $check($node['status'] === $before['managed_nodes'][$id]['status'] && $bot->events === [], 'saved settings untouched before Apply');
-    $check(in_array("/nodeApply $id", $bot->callbacks(), true), 'Apply available');
+    $check(in_array("/nodeApply $id", $bot->callbacks(), true) && in_array("/nodeDiscard $id vpn", $bot->callbacks(), true), 'Apply and Discard on the VPN screen');
+    $check(str_contains(end($bot->screens)[0], '2606:4700:4700::1001'), 'draft list shown after input');
     $bot->click("/nodeNetwork $id 46");
     $node = $bot->pacState['managed_nodes'][$id];
     $check($node['draft']['vpn_sources'] === $expected && $node['draft']['connect_family'] === 4 && $node['draft']['family'] === 6, 'family switch preserves VPN-only list');
@@ -71,5 +84,8 @@ foreach (['ru', 'en'] as $lang) foreach (['reality', 'ws', 'grpc', 'xhttp', 'tro
     $bot->saveManagedNodeField('-', $id, 'vpn_sources');
     $node = $bot->pacState['managed_nodes'][$id];
     $check($node['draft']['vpn_sources'] === [] && $node['draft']['family'] === 6 && $bot->events === [], 'clear changes only draft list');
+    $bot->click("/nodeDiscard $id vpn");
+    $node = $bot->pacState['managed_nodes'][$id];
+    $check(!isset($node['draft']) && in_array("/nodeEdit $id vpn_sources", $bot->callbacks(), true) && $bot->events === [], 'discard returns to the VPN screen');
 }
 echo "PASS $checks managed node VPN-only menu checks\n";

@@ -62,7 +62,9 @@ class NodeConfig(unittest.TestCase):
     def test_public_addresses_reject_private_special_and_injection(self):
         for ip in ('127.0.0.1', '10.0.0.1', '100.64.0.1', '169.254.169.254', '224.0.0.1',
                    '::1', 'fc00::1', 'fe80::1', 'ff0e::1', '2001:db8::1', '64:ff9b::808:808',
-                   '2606:4700::1%eth0', '11.77.0.2/32', '11.77.0.2;accept', None):
+                   '2606:4700::1%eth0', '11.77.0.2/32', '11.77.0.2;accept', None,
+                   # Outside global unicast 2000::/3, as the bot and node_ssh reject.
+                   'fec0::1', '5f00::1', '4000::1'):
             with self.subTest(ip=ip), self.assertRaises(ValueError):
                 node.public_ip(ip)
 
@@ -155,6 +157,20 @@ class NodeConfig(unittest.TestCase):
         for bad in (['10.0.0.1'], ['127.0.0.1'], ['11.77.0.0/24'], ['fe80::1'], [1], '11.77.0.200', ['11.77.0.%d' % i for i in range(33)]):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 node.settings(OPTIONS | {'vpn_sources': bad})
+
+    def test_removed_vpn_source_loses_established_flows(self):
+        # conntrack keeps a DNAT flow after the server leaves the list; every
+        # packet of such a flow is checked against the current set again.
+        cases = [({}, '443'), ({'wireguard': {'enabled': True}}, '{ 443, 51820 }'),
+                 ({'wireguard': {'enabled': True}, 'amnezia': {'enabled': True}}, '{ 443, 51820, 51821 }')]
+        for extra, ports in cases:
+            rules = node.firewall(OPTIONS | extra, HOST | {'awg_uid': 994}).splitlines()
+            established = rules.index('  ct state established,related accept')
+            for version, proto in ((4, 'ip'), (6, 'ip6')):
+                rule = f'  ct status dnat ct original proto-dst {ports} {proto} saddr != @my_server{version} counter drop'
+                with self.subTest(ports=ports, version=version):
+                    self.assertIn(rule, rules)
+                    self.assertLess(rules.index(rule), established)
 
 
 if __name__ == '__main__':

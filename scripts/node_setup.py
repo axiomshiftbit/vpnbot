@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -19,6 +20,39 @@ import node_host
 from node_runtime import Runtime, command, CONTAINER, COVER_CONTAINER, AWG_CONTAINER, LABEL
 
 ROOT = Path('/var/lib/vpnbot-node')
+DOCKER_DAEMON = Path('/etc/docker/daemon.json')
+
+
+def docker_firewall_disabled(daemon=DOCKER_DAEMON, proc=Path('/proc')):
+    """Only the nft profile and the node guard filter packets on a node.
+
+    By default dockerd creates its own chains and tables (DOCKER*, nat,
+    docker-bridges) after nftables.service on every boot. Node containers use
+    the host network, so Docker needs no packet filtering at all."""
+    settings = {}
+    if daemon.exists():
+        try:
+            value = state.decode(daemon.read_bytes(), 1024*1024)
+        except (ValueError, OSError):
+            value = None
+        if not isinstance(value, dict):
+            raise ValueError('Docker firewall management is enabled')
+        settings = {name: value[name] for name in ('iptables', 'ip6tables') if name in value}
+    # dockerd refuses a flag that conflicts with daemon.json; either source counts.
+    for process in proc.glob('[0-9]*'):
+        try:
+            if (process/'comm').read_text().strip() != 'dockerd':
+                continue
+            arguments = (process/'cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        for name in ('iptables', 'ip6tables'):
+            if ('--'+name+'=false').encode() in arguments:
+                settings[name] = False
+            elif ('--'+name).encode() in arguments or ('--'+name+'=true').encode() in arguments:
+                settings[name] = True
+    if settings.get('iptables') is not False or settings.get('ip6tables') is not False:
+        raise ValueError('Docker firewall management is enabled')
 
 
 def verify_firewall(backend, path=Path('/etc/nftables.conf')):
@@ -41,6 +75,12 @@ def verify_firewall(backend, path=Path('/etc/nftables.conf')):
         state.trusted(backend.guard)
         expected.append(nft_host_setup.compile_rules(backend.guard.read_text()))
         live = json.loads(command(['nft', '-j', 'list', 'ruleset']).stdout)
+        # Anywhere in the ruleset, not only in profile tables. dockerd names its
+        # iptables-nft chains DOCKER/DOCKER-* and its nftables backend tables
+        # docker-*; hand-written names such as "dockernat" are not Docker's.
+        if any(re.match(r'DOCKER(?:-|$)', x['name']) for x in nft_host_setup.objects(live, 'chain')) \
+                or any(x['name'].startswith('docker-') for x in nft_host_setup.objects(live, 'table')):
+            raise ValueError('Docker firewall rules are loaded')
         for document in expected:
             tables = {(x['family'], x['name']) for x in nft_host_setup.objects(document, 'table')}
             for kind in ('table', 'chain', 'rule', 'set', 'map'):
@@ -89,6 +129,7 @@ def upgrade_code(source):
         job = store.read('job.json') or {}
         if not store.current() or store.pending() or job.get('state') in ('queued', 'running'):
             raise ValueError('Нода не установлена или изменение ещё не завершено')
+        docker_firewall_disabled()
         install.install_code(source)
         host = config.deployment(state.decode((install.ETC/'deployment.json').read_bytes(), state.MAX_DEPLOYMENT_BYTES))
         Runtime(store, host).load_firewall()
@@ -119,6 +160,7 @@ def enrollment(value):
 
 def preflight(value):
     host = value['deployment']
+    docker_firewall_disabled()
     active = command(['docker', 'ps', '--format', '{{json .}}']).stdout.decode().splitlines()
     for line in active:
         name = json.loads(line)['Names']
@@ -252,7 +294,7 @@ def prompt():
     print('Введите публичный SSH-ключ, созданный в разделе «Ноды» основного бота.')
     key = ask('Публичный ключ ssh-ed25519')
     sources = ask('Публичные IPv4/IPv6 основного бота через пробел (доступ к VPN и SSH)', ' '.join(defaults['sources'])).split()
-    print('Другие серверы без доступа к SSH добавляйте в настройках ноды: «Серверы для VPN (без SSH)».')
+    print('Другие серверы без доступа к SSH добавляйте в карточке ноды основного бота: «Серверы для VPN (без SSH)».')
     admins = ask('Публичные IPv4/IPv6 администратора только для SSH через пробел', ' '.join(defaults['admins'] or sources)).split()
     host = dict(public4=ask('Публичный IPv4 ноды («-» при отсутствии)', defaults['public4'], optional=True),
                 public6=ask('Публичный IPv6 ноды («-» при отсутствии)', defaults['public6'], optional=True), sources=sources, admins=admins,
@@ -279,6 +321,8 @@ def failure_message(error):
         'a public node address is required': 'Не задан публичный адрес ноды. Укажите IPv4 или IPv6.',
         'nftables service is not active and enabled': 'Служба nftables должна быть активна и включена в автозапуск. Проверьте её состояние и /etc/nftables.conf.',
         'nftables live rules differ from persistent configuration': 'Загруженные правила nftables не совпадают с сохранённой конфигурацией. Установка не подтверждена.',
+        'Docker firewall management is enabled': 'Docker управляет фаерволом. Для ноды правила nftables задаются только вручную: добавьте в /etc/docker/daemon.json "iptables": false и "ip6tables": false (вопрос об этом есть в скрипты подготовки сервера) и перезапустите Docker.',
+        'Docker firewall rules are loaded': 'В nftables загружены цепочки или таблицы Docker. После отключения управления фаерволом в Docker перезагрузите сервер или заново загрузите /etc/nftables.conf.',
         'Firewall command failed; details suppressed to protect configuration data': 'Не удалось проверить или применить nftables. Проверьте синтаксис профиля и состояние фаервола.',
         'Cannot discover public node address or SSH ports': 'Не удалось определить публичный адрес или действующие SSH-порты.',
         'Cannot inspect effective SSH ports': 'Не удалось прочитать действующие порты через sshd -T.',

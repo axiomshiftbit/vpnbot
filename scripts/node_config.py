@@ -29,6 +29,7 @@ def public_ip(value, family=None):
     address = ipaddress.ip_address(value)
     reserved = PRIVATE4 if address.version == 4 else PRIVATE6
     if (family and address.version != family) or not address.is_global or address.is_multicast \
+            or address.version == 6 and address not in ipaddress.ip_network('2000::/3') \
             or any(address in ipaddress.ip_network(net) for net in reserved):
         raise ValueError('a public unicast address is required')
     return str(address)
@@ -386,6 +387,8 @@ def firewall(options, host):
     if options.get('amnezia', {}).get('enabled') and 'awg_uid' not in host:
         raise ValueError('Amnezia service account is not installed')
     family, uid, interface = options['family'], host['uid'], host['interface']
+    ports = [443] + [module.PORT for name, module in (('wireguard', node_wg), ('amnezia', node_awg)) if options.get(name, {}).get('enabled')]
+    vpn_ports = str(ports[0]) if len(ports) == 1 else '{ '+', '.join(map(str, ports))+' }'
     lines = ['table inet vpnbot_node {']
     vpn = sorted(set(host['sources'] + options.get('vpn_sources', [])))
     for name, values in [('my_server', vpn), ('admins', sorted(set(host['admins'] + host['sources'])))]:
@@ -415,6 +418,10 @@ def firewall(options, host):
               '  ct state invalid drop',
               '  icmpv6 type nd-redirect drop',
               f'  iifname "{interface}" ip6 hoplimit 255 icmpv6 code 0 icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert }} accept',
+              # conntrack keeps a VPN flow (notably WireGuard UDP) of a server
+              # removed from the list; revalidate each packet against the set.
+              *[f'  ct status dnat ct original proto-dst {vpn_ports} {proto} saddr != @my_server{version} counter drop'
+                for version, proto in ((4, 'ip'), (6, 'ip6'))],
               '  ct state established,related accept',
               f'  iifname "{interface}" ip6 saddr @ipv6_routers ip6 hoplimit 255 icmpv6 code 0 icmpv6 type nd-router-advert accept',
               f'  iifname "{interface}" icmpv6 type {{ destination-unreachable, packet-too-big, time-exceeded, parameter-problem }} accept',

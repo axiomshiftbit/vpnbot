@@ -1,11 +1,11 @@
 <?php
 // VPN-only servers: public addresses only, deduplicated, bounded; they live in
-// node options next to the other network settings and reach the node by Apply.
+// node options (own screen in the node card) and reach the node by Apply.
 require_once __DIR__ . '/../app/bot.php';
 $checks = 0;
 $check = static function ($ok, $name) use (&$checks) { $checks++; if (!$ok) throw new RuntimeException('FAIL '.$name); };
 $field = ManagedNodeFields::all()['vpn_sources'] ?? null;
-$check($field && $field[0] === 'network' && $field[3] === 'list', 'field is a list in the IPv4 / IPv6 group');
+$check($field && $field[0] === 'vpn' && $field[3] === 'list' && !isset(ManagedNodeFields::GROUPS['vpn']), 'list field outside settings groups (own screen)');
 $options = ['transport' => 'reality', 'family' => 4, 'core' => 'origin', 'domain' => '', 'mask' => 'www.example.test'];
 $changed = ManagedNodeFields::change($options, 'vpn_sources', ['11.77.0.200', '2606:4700:4700:0::1001', '11.77.0.200']);
 $check($changed['vpn_sources'] === ['11.77.0.200', '2606:4700:4700::1001'], 'deduplicated and canonical');

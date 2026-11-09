@@ -118,6 +118,7 @@ trait BotManagedNodeMenus
         $field = ManagedNodeFields::all()[$path] ?? null;
         if (!$node || !$node['connected'] || !$field) return;
         if ($node['job']) { $this->managedNodeMenu($id, $this->t('Дождитесь завершения текущего изменения.', 'Wait for the current change to finish.')); return; }
+        if ($path === 'vpn_sources') { $this->managedNodeVpnSourcesMenu($id); return; }
         $options = $node['draft'] ?? $node['status']['options'] ?? [];
         if (!ManagedNodeFields::fieldActive($options, $path)) { $this->managedNodeSettingsMenu($id); return; }
         if ($field[3] === 'bool') {
@@ -150,7 +151,9 @@ trait BotManagedNodeMenus
         if (!$node || !$field || $node['job'] || in_array($field[3], ['choice', 'bool'], true)) return;
         $hint = match ($field[3]) {
             'int' => $this->t('целое неотрицательное число', 'a non-negative integer'),
-            'list' => $this->t('значения через пробел; <code>-</code> очищает список', 'space-separated values; <code>-</code> clears the list'),
+            'list' => $path === 'vpn_sources'
+                ? $this->t('публичные IPv4/IPv6 через пробел, не больше 32; <code>-</code> очищает список', 'public IPv4/IPv6 addresses separated by spaces, at most 32; <code>-</code> clears the list')
+                : $this->t('значения через пробел; <code>-</code> очищает список', 'space-separated values; <code>-</code> clears the list'),
             'json' => $this->t('JSON-массив пакетов: поля type, packet, delay. <code>[]</code> — список по умолчанию', 'a JSON array of packets with type, packet, delay. <code>[]</code> uses the default list'),
             default => $this->t('значение; <code>-</code> означает пустое поле', 'a value; <code>-</code> means an empty field'),
         };
@@ -326,10 +329,12 @@ trait BotManagedNodeMenus
             };
             $this->managedNodeDraft($id, $path, $value);
         } catch (Throwable $error) {
-            $this->managedNodeSettingsMenu($id, $field[0], $path === 'vpn_sources'
-                ? $this->t('Нужны публичные IPv4/IPv6 через пробел, не больше 32. Частные, локальные адреса и сети не принимаются. Настройки не изменены.',
-                    'Enter public IPv4/IPv6 addresses separated by spaces, at most 32. Private or local addresses and networks are rejected. Settings were not changed.')
-                : $this->t('Некорректное значение. Настройки не изменены.', 'Invalid value. Settings were not changed.'));
+            if ($path === 'vpn_sources') {
+                $this->managedNodeVpnSourcesMenu($id, $this->t('Нужны публичные IPv4/IPv6 через пробел, не больше 32. Частные, локальные адреса и сети не принимаются. Настройки не изменены.',
+                    'Enter public IPv4/IPv6 addresses separated by spaces, at most 32. Private or local addresses and networks are rejected. Settings were not changed.'));
+                return;
+            }
+            $this->managedNodeSettingsMenu($id, $field[0], $this->t('Некорректное значение. Настройки не изменены.', 'Invalid value. Settings were not changed.'));
         }
     }
 
@@ -340,13 +345,44 @@ trait BotManagedNodeMenus
             if (!isset($node['draft'])) $node['draft_generation'] = $node['status']['generation'] ?? '';
             $node['draft'] = ManagedNodeFields::change($node['draft'] ?? $node['status']['options'] ?? [], $path, $value);
         });
+        if ($path === 'vpn_sources') { $this->managedNodeVpnSourcesMenu($id); return; }
         $this->managedNodeSettingsMenu($id, ManagedNodeFields::all()[$path][0]);
     }
 
-    public function managedNodeDiscard(string $id): void
+    public function managedNodeDiscard(string $id, string $screen = ''): void
     {
         $this->managedNodeDraftWrite($id, static function (&$node) { unset($node['draft'], $node['draft_generation']); });
+        if ($screen === 'vpn') { $this->managedNodeVpnSourcesMenu($id); return; }
         $this->managedNodeSettingsMenu($id);
+    }
+
+    /** Servers allowed to reach only the node's VPN ports; never SSH. */
+    public function managedNodeVpnSourcesMenu(string $id, string $notice = ''): void
+    {
+        $node = $this->managedNodes()[$id] ?? null;
+        if (!$node || !$node['connected']) { $this->managedNodesMenu(); return; }
+        $applied = $node['status']['options']['vpn_sources'] ?? [];
+        $text = [$this->t('Ноды → ', 'Nodes → ') . self::esc($node['name']) . $this->t(' → Серверы для VPN (без SSH)', ' → VPN servers (no SSH)'),
+            $this->t('Публичные адреса других серверов (внешняя панель, ретранслятор), которым нода разрешает только VPN: TCP/443, а при включённых резервных каналах — UDP/51820 и UDP/51821. SSH им закрыт. Основной бот и администраторы задаются при установке ноды и здесь не нужны.',
+                'Public addresses of other servers (an external panel, a relay) that the node allows to use VPN only: TCP/443 and, with backup channels enabled, UDP/51820 and UDP/51821. SSH stays closed to them. The main bot and administrators are set when the node is installed and are not needed here.'),
+            $this->t('Применено на ноде:', 'Applied on the node:') . "\n<code>" . self::esc($applied ? implode("\n", $applied) : $this->t('список пуст', 'empty list')) . '</code>'];
+        $data = [];
+        if (isset($node['draft'])) {
+            $draft = $node['draft']['vpn_sources'] ?? [];
+            if ($draft !== $applied) $text[] = $this->t('В черновике:', 'In the draft:') . "\n<code>" . self::esc($draft ? implode("\n", $draft) : $this->t('список пуст', 'empty list')) . '</code>';
+            $text[] = $this->t('«Применить» отправляет весь черновик настроек ноды, включая другие неприменённые правки. Нода проверит конфигурацию, основной бот — трафик; при отказе нода вернёт прежние правила.',
+                'Apply sends the whole node settings draft, including other unapplied edits. The node validates the configuration and the main bot tests traffic; on failure the node restores the previous rules.');
+        }
+        if ($node['job']) $text[] = $this->t('⏳ На ноде выполняется изменение. Дождитесь его завершения.', '⏳ A change is in progress on the node. Wait for it to finish.');
+        else {
+            $data[] = [['text' => $this->t('✏️ Изменить список', '✏️ Edit list'), 'callback_data' => "/nodeEdit $id vpn_sources"]];
+            if (isset($node['draft'])) $data[] = [['text' => $this->t('✅ Применить', '✅ Apply'), 'callback_data' => "/nodeApply $id"],
+                ['text' => $this->t('Отменить правки', 'Discard edits'), 'callback_data' => "/nodeDiscard $id vpn"]];
+        }
+        if ($notice !== '') $text[] = self::esc($notice);
+        $data[] = $this->menuHelpButton('nodeconfig', $id.'_vpn');
+        $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/node $id"]];
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
     }
 
     public function managedNodeApply(string $id): void

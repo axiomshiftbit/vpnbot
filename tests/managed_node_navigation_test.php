@@ -98,7 +98,9 @@ foreach (['ru','en'] as $lang) {
     }
     foreach (ManagedNodeFields::all() as $path=>$field) {
         $b->showSetting($path); $b->managedNodeField('aabbccdd',$path);
-        $check(end($b->screen[1])[0]['callback_data']===('/nodeSettings aabbccdd'.($field[3]==='bool'?'':' '.$field[0])),'field returns to its own section: '.$path);
+        // VPN-only servers have their own screen in the node card.
+        $back = $path === 'vpn_sources' ? '/node aabbccdd' : '/nodeSettings aabbccdd'.($field[3]==='bool'?'':' '.$field[0]);
+        $check(end($b->screen[1])[0]['callback_data']===$back,'field returns to its own section: '.$path);
         foreach ($b->callbacks() as $cb) $check(strlen($cb)<=64,'field callback fits Telegram: '.$cb);
     }
 }
