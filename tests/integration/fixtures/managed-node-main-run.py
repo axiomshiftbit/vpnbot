@@ -104,8 +104,10 @@ try:
         run(['nsenter', '-t', main_pid, '-n', 'ip', 'route', 'replace', '11.77.0.2/32', 'dev', 'mn-main'], check=True)
     # The target is outside the node namespace, so the real WAN egress guard
     # remains in force. Previous fixture suites used this address on loopback.
+    # Reach it through a gateway like an internet host: a route without one
+    # makes it an on-link neighbour, which the node's guard rightly blocks.
     run(['nsenter', '-t', node_pid, '-n', 'ip', 'address', 'del', '11.77.0.128/32', 'dev', 'lo'], check=True)
-    run(['nsenter', '-t', node_pid, '-n', 'ip', 'route', 'replace', '11.77.0.128/32', 'dev', 'mn-node'], check=True)
+    run(['nsenter', '-t', node_pid, '-n', 'ip', 'route', 'replace', '11.77.0.128/32', 'via', '11.77.0.3', 'dev', 'mn-node'], check=True)
     pin = run(['docker', 'exec', outer, 'cat', '/etc/ssh/ssh_host_ed25519_key.pub'], check=True).stdout
     (work/'work/host.pub').write_bytes(b' '.join(pin.split()[:2]))
     prepared = True
@@ -239,6 +241,16 @@ server.serve_forever()
     else:
         step('configure')
         poll()
+        step('vpn-sources')
+        poll()
+        step('vpn-sources-applied')
+        guard = run(['docker', 'exec', outer, 'nft', '-j', 'list', 'table', 'inet', 'vpnbot_node'], check=True).stdout.decode()
+        sets = {item['set']['name']: str(item['set'].get('elem', [])) for item in __import__('json').loads(guard)['nftables'] if 'set' in item}
+        ok = '11.77.0.200' in sets.get('my_server4', '') and '11.77.0.200' not in sets.get('admins4', '') \
+            and '2606:4700:4700::200' in sets.get('my_server6', '') and '2606:4700:4700::200' not in sets.get('admins6', '')
+        print(('PASS ' if ok else 'FAIL ')+'node guard: VPN-only servers reach VPN, not SSH', flush=True)
+        if not ok:
+            raise RuntimeError('VPN-only guard sets')
         step('backup')
         step('restore')
         step('node-restore')

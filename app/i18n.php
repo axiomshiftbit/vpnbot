@@ -116,6 +116,13 @@ $i = [
         'ru' => 'Введите целое число 0–1000. 0 — без ограничения IP. Например 2 или 3 для нескольких сетей. Это число одновременных адресов, а не устройств; IPv4 и IPv6 считаются отдельно.',
         'en' => 'Enter an integer from 0 to 1000. 0 disables the IP limit. Try 2 or 3 for multiple networks. This counts concurrent addresses, not devices; IPv4 and IPv6 are separate.',
     ],
+    'telemt limits deny' => ['ru' => '🚫 Запрет подсетей', 'en' => '🚫 Blocked networks'],
+    'telemt limits deny list' => ['ru' => 'Запрещённые подсети источника', 'en' => 'Blocked source networks'],
+    'telemt limits input deny' => [
+        'ru' => 'Введите IPv4/IPv6-адреса или подсети CIDR через пробел, не больше 32: например 198.51.100.0/24 2001:db8::/32. Подключения этого пользователя с этих адресов отклоняются, как с неверным секретом; остальные пользователи не затрагиваются. Одиночный адрес становится /32 или /128. <code>-</code> снимает запрет.',
+        'en' => 'Enter IPv4/IPv6 addresses or CIDR networks separated by spaces, at most 32: e.g. 198.51.100.0/24 2001:db8::/32. This user’s connections from these addresses are rejected like a wrong secret; other users are unaffected. A single address becomes /32 or /128. <code>-</code> removes the block.',
+    ],
+    'telemt limits deny need core' => ['ru' => 'Запрет подсетей требует TeleMT 3.5.17 или новее. Обновите бота и контейнер TeleMT.', 'en' => 'Blocked networks require TeleMT 3.5.17 or newer. Update the bot and the TeleMT container.'],
     'telemt limits apply note' => [
         'ru' => 'Квота и IP общие для MTProxy + WEB этого пользователя. Применение и сброс переподключают всех пользователей TeleMT.',
         'en' => 'Quota and IP limits are shared by this user’s MTProxy + WEB. Applying changes or resetting usage reconnects all TeleMT users.',

@@ -110,13 +110,14 @@ class FirewallHealth(unittest.TestCase):
                     (proc/'123'/'comm').write_text('dockerd\n')
                     (proc/'123'/'cmdline').write_bytes(b'\0'.join([b'/usr/bin/dockerd', *arguments])+b'\0')
             cases = [('absent-default', None, (), False),
-                     ('both-off', '{"iptables": false, "ip6tables": false, "userland-proxy": false}', (), True),
+                     ('all-off', '{"iptables": false, "ip6tables": false, "ip-forward": false, "userland-proxy": false}', (), True),
+                     ('forwarding-on-by-default', '{"iptables": false, "ip6tables": false}', (), False),
                      ('ipv6-on-by-default', '{"iptables": false}', (), False),
                      ('explicit-true', '{"iptables": true, "ip6tables": false}', (), False),
                      ('string-false', '{"iptables": "false", "ip6tables": false}', (), False),
                      ('invalid-json', '{"iptables": false,', (), False),
-                     ('flags-off', None, (b'--iptables=false', b'--ip6tables=false'), True),
-                     ('flag-on', '{"ip6tables": false}', (b'--iptables',), False)]
+                     ('flags-off', None, (b'--iptables=false', b'--ip6tables=false', b'--ip-forward=false'), True),
+                     ('flag-on', '{"ip6tables": false, "ip-forward": false}', (b'--iptables',), False)]
             for label, body, flags, allowed in cases:
                 daemon.unlink(missing_ok=True)
                 if body is not None: daemon.write_text(body)
@@ -130,6 +131,28 @@ class FirewallHealth(unittest.TestCase):
         message = setup.failure_message(ValueError('Docker firewall management is enabled'))
         self.assertIn('"iptables": false', message)
         self.assertIn('"ip6tables": false', message)
+        self.assertIn('"ip-forward": false', message)
+
+    def test_fresh_install_merges_docker_settings_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            daemon, proc = root/'docker'/'daemon.json', root/'proc'
+            proc.mkdir(); daemon.parent.mkdir()
+            daemon.write_text('{"log-driver": "local", "iptables": false}')
+            calls = []
+            with patch.object(setup, 'command', side_effect=lambda args, **kw: calls.append(args)):
+                self.assertTrue(setup.prepare_docker(daemon))
+                value = json.loads(daemon.read_text())
+                self.assertEqual(value, {'log-driver': 'local', 'iptables': False, 'ip6tables': False, 'ip-forward': False})
+                self.assertEqual(json.loads((root/'docker'/'daemon.json.before-vpnbot-node').read_text()), {'log-driver': 'local', 'iptables': False})
+                self.assertEqual(calls, [['systemctl', 'restart', 'docker.service']])
+                # Already prepared: no second restart, no rewrite.
+                self.assertFalse(setup.prepare_docker(daemon))
+                self.assertEqual(len(calls), 1)
+                daemon.write_text('not json')
+                with self.assertRaisesRegex(ValueError, 'Docker firewall management'):
+                    setup.prepare_docker(daemon)
+                self.assertEqual(len(calls), 1)
 
 if __name__ == '__main__':
     unittest.main()

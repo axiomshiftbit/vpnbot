@@ -7,6 +7,41 @@ trait BotTelemtLimits
     // положительную квоту, поэтому период без квоты в конфиг не попадает.
     public const TELEMT_QUOTA_PERIODS = ['daily', 'weekly', 'monthly'];
     public const TELEMT_QUOTA_PERIOD_MIN = '3.5.15';
+    // Запрет подсетей источника ([access.user_source_deny], telemt 3.5.17+):
+    // ядро отклоняет подключение после проверки секрета, как неверный секрет.
+    // Строгий разбор ключей старого ядра отверг бы таблицу целиком.
+    public const TELEMT_SOURCE_DENY_MIN = '3.5.17';
+    public const TELEMT_SOURCE_DENY_MAX = 32;
+
+    /** Канонический CIDR: адрес без хостовых битов; одиночный адрес — /32 или /128. */
+    public static function telemtCidr(string $text): ?string
+    {
+        if (!preg_match('~^([0-9A-Fa-f:.]+)(?:/(\d{1,3}))?$~D', $text, $m)) return null;
+        $packed = @inet_pton($m[1]);
+        if ($packed === false) return null;
+        $bits = strlen($packed) * 8;
+        $prefix = isset($m[2]) ? (int) $m[2] : $bits;
+        if ($prefix < 1 || $prefix > $bits || strlen($packed) === 16 && str_contains($m[1], '.')) return null;
+        for ($i = 0; $i < strlen($packed); $i++) {
+            $keep = max(0, min(8, $prefix - 8 * $i));
+            $packed[$i] = chr(ord($packed[$i]) & (0xff << (8 - $keep)) & 0xff);
+        }
+        return inet_ntop($packed) . '/' . $prefix;
+    }
+
+    public function telemtParseDeny(string $text): array
+    {
+        $text = trim($text);
+        if ($text === '-') return [];
+        $result = [];
+        foreach (preg_split('~[\s,]+~', $text, -1, PREG_SPLIT_NO_EMPTY) as $item) {
+            $net = self::telemtCidr($item);
+            if ($net === null) throw new RuntimeException($this->i18n('telemt limits input deny'));
+            $result[$net] = true;
+        }
+        if (!$result || count($result) > self::TELEMT_SOURCE_DENY_MAX) throw new RuntimeException($this->i18n('telemt limits input deny'));
+        return array_keys($result);
+    }
 
     public function telemtLimitsOf(array $conf): array
     {
@@ -21,6 +56,13 @@ trait BotTelemtLimits
                 if (!is_int($value) || $value < 0 || $value > $max) throw new RuntimeException($this->i18n('telemt limits invalid'));
                 if ($value > 0) $result[$name][$field] = $value;
             }
+            $deny = $row['deny'] ?? [];
+            if (!is_array($deny) || !array_is_list($deny) || count($deny) > self::TELEMT_SOURCE_DENY_MAX
+                || count(array_unique($deny, SORT_REGULAR)) !== count($deny)) throw new RuntimeException($this->i18n('telemt limits invalid'));
+            foreach ($deny as $net) {
+                if (!is_string($net) || self::telemtCidr($net) !== $net) throw new RuntimeException($this->i18n('telemt limits invalid'));
+            }
+            if ($deny) $result[$name]['deny'] = $deny;
             $period = $row['period'] ?? null;
             if ($period !== null && !in_array($period, self::TELEMT_QUOTA_PERIODS, true)) throw new RuntimeException($this->i18n('telemt limits invalid'));
             if ($period !== null && !empty($result[$name]['quota'])) $result[$name]['period'] = $period;
@@ -161,12 +203,13 @@ trait BotTelemtLimits
         });
     }
 
-    public function telemtChangeLimit(string $name, string $field, int|string $value, string $fingerprint): void
+    public function telemtChangeLimit(string $name, string $field, int|string|array $value, string $fingerprint): void
     {
         if (!$this->admin) return;
         $this->withLock('telemt', function () use ($name, $field, $value, $fingerprint) {
-            if (!in_array($field, ['quota', 'ips', 'reset', 'period'], true)) throw new LogicException('TeleMT limit field');
-            if (($field === 'period') !== is_string($value) || ($field === 'period' && !in_array($value, ['', ...self::TELEMT_QUOTA_PERIODS], true))) {
+            if (!in_array($field, ['quota', 'ips', 'reset', 'period', 'deny'], true)) throw new LogicException('TeleMT limit field');
+            if (($field === 'period') !== is_string($value) || ($field === 'period' && !in_array($value, ['', ...self::TELEMT_QUOTA_PERIODS], true))
+                || ($field === 'deny') !== is_array($value)) {
                 throw new LogicException('TeleMT limit value');
             }
             $conf = $this->getPacConf();
@@ -179,10 +222,13 @@ trait BotTelemtLimits
                 if (($old['period'] ?? '') === $value) return;
                 if ($value !== '' && empty($old['quota'])) throw new RuntimeException($this->i18n('telemt limits period needs quota'));
                 if ($value !== '' && !$this->telemtVersionAtLeast(self::TELEMT_QUOTA_PERIOD_MIN)) throw new RuntimeException($this->i18n('telemt limits period need core'));
+            } elseif ($field === 'deny') {
+                if (($old['deny'] ?? []) === $value) return;
+                if ($value && !$this->telemtVersionAtLeast(self::TELEMT_SOURCE_DENY_MIN)) throw new RuntimeException($this->i18n('telemt limits deny need core'));
             } elseif ($field !== 'reset' && ($old[$field] ?? 0) === $value) return;
             $this->telemtStateRun('version');
             $new = $old;
-            if ($field === 'period' && $value === '') unset($new['period']);
+            if ($field === 'period' && $value === '' || $field === 'deny' && $value === []) unset($new[$field]);
             elseif ($field !== 'reset') $new[$field] = $value;
             $candidate = $conf; $candidate['telemt_user_limits'][$name] = $new;
             $this->telemtLimitsOf($candidate); // Запрещаем обход валидации через прямой вызов.
@@ -204,7 +250,7 @@ trait BotTelemtLimits
     public function telemtLimitPrompt(string $name, int $page, string $relay, string $field): void
     {
         $conf = $this->getPacConf();
-        if (!isset($conf['telemt_users'][$name]) || !in_array($field, ['quota', 'ips'], true)) return;
+        if (!isset($conf['telemt_users'][$name]) || !in_array($field, ['quota', 'ips', 'deny'], true)) return;
         $hint = $this->i18n('telemt limits input ' . $field) . "\n" . $this->i18n('telemt limits apply note');
         $r = $this->send($this->input['chat'], $hint, $this->input['message_id'], reply: $this->i18n('telemt limits ' . $field));
         $this->stashReply($r, ['start_message' => $this->input['message_id'], 'callback' => 'telemtLimitReply',
@@ -214,7 +260,8 @@ trait BotTelemtLimits
     public function telemtLimitReply($text, string $name, int $page, string $relay, string $field, string $fingerprint): void
     {
         try {
-            $this->telemtChangeLimit($name, $field, $this->telemtParseLimit($field, (string) $text), $fingerprint);
+            $value = $field === 'deny' ? $this->telemtParseDeny((string) $text) : $this->telemtParseLimit($field, (string) $text);
+            $this->telemtChangeLimit($name, $field, $value, $fingerprint);
             $message = $this->i18n('telemt limits saved');
         } catch (Throwable $error) { $message = '❌ ' . $error->getMessage(); }
         $this->telemtUserLimits($name, $page, $relay, $message);
@@ -308,9 +355,12 @@ trait BotTelemtLimits
             $text[] = $line;
         }
         $text[] = 'Limit IP: ' . ($ips ?: $this->i18n('off')) . ' · ' . $this->i18n('telemt limits active') . ': ' . ($active ?? '—');
+        $deny = $limits['deny'] ?? [];
+        $text[] = $this->i18n('telemt limits deny list') . ': ' . ($deny ? "\n<code>" . self::esc(implode("\n", $deny)) . '</code>' : $this->i18n('off'));
+        if ($deny && !$this->telemtVersionAtLeast(self::TELEMT_SOURCE_DENY_MIN)) $text[] = '⚠️ ' . $this->i18n('telemt limits deny need core');
         $text[] = $this->i18n('telemt limits apply note');
         $data = [];
-        foreach ($quota ? ['quota', 'period', 'ips', 'reset'] : ['quota', 'ips', 'reset'] as $action) {
+        foreach ($quota ? ['quota', 'period', 'ips', 'deny', 'reset'] : ['quota', 'ips', 'deny', 'reset'] as $action) {
             $data[] = [['text' => $this->i18n('telemt limits ' . ($action === 'period' ? 'period button' : $action)), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, $action)]];
         }
         $data[] = [['text' => $this->i18n('refresh'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'limits')]];

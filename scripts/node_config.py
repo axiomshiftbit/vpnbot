@@ -418,6 +418,8 @@ def firewall(options, host):
               '  ct state invalid drop',
               '  icmpv6 type nd-redirect drop',
               f'  iifname "{interface}" ip6 hoplimit 255 icmpv6 code 0 icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert }} accept',
+              # MLD queries keep solicited-node groups alive on snooping switches.
+              f'  iifname "{interface}" ip6 saddr fe80::/10 ip6 hoplimit 1 icmpv6 code 0 icmpv6 type mld-listener-query accept',
               # conntrack keeps a VPN flow (notably WireGuard UDP) of a server
               # removed from the list; revalidate each packet against the set.
               *[f'  ct status dnat ct original proto-dst {vpn_ports} {proto} saddr != @my_server{version} counter drop'

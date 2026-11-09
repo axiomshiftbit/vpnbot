@@ -23,12 +23,16 @@ ROOT = Path('/var/lib/vpnbot-node')
 DOCKER_DAEMON = Path('/etc/docker/daemon.json')
 
 
+DOCKER_SETTINGS = ('iptables', 'ip6tables', 'ip-forward')
+FORWARDING = Path('/etc/sysctl.d/98-vpnbot-node-forwarding.conf')
+
+
 def docker_firewall_disabled(daemon=DOCKER_DAEMON, proc=Path('/proc')):
     """Only the nft profile and the node guard filter packets on a node.
 
     By default dockerd creates its own chains and tables (DOCKER*, nat,
-    docker-bridges) after nftables.service on every boot. Node containers use
-    the host network, so Docker needs no packet filtering at all."""
+    docker-bridges) after nftables.service on every boot and turns on IP
+    forwarding. Node containers use the host network: Docker needs neither."""
     settings = {}
     if daemon.exists():
         try:
@@ -37,7 +41,7 @@ def docker_firewall_disabled(daemon=DOCKER_DAEMON, proc=Path('/proc')):
             value = None
         if not isinstance(value, dict):
             raise ValueError('Docker firewall management is enabled')
-        settings = {name: value[name] for name in ('iptables', 'ip6tables') if name in value}
+        settings = {name: value[name] for name in DOCKER_SETTINGS if name in value}
     # dockerd refuses a flag that conflicts with daemon.json; either source counts.
     for process in proc.glob('[0-9]*'):
         try:
@@ -46,13 +50,57 @@ def docker_firewall_disabled(daemon=DOCKER_DAEMON, proc=Path('/proc')):
             arguments = (process/'cmdline').read_bytes().split(b'\0')
         except OSError:
             continue
-        for name in ('iptables', 'ip6tables'):
+        for name in DOCKER_SETTINGS:
             if ('--'+name+'=false').encode() in arguments:
                 settings[name] = False
             elif ('--'+name).encode() in arguments or ('--'+name+'=true').encode() in arguments:
                 settings[name] = True
-    if settings.get('iptables') is not False or settings.get('ip6tables') is not False:
+    if any(settings.get(name) is not False for name in DOCKER_SETTINGS):
         raise ValueError('Docker firewall management is enabled')
+
+
+def prepare_docker(daemon=DOCKER_DAEMON):
+    """Fresh installation only: merge the node's Docker settings and restart it.
+
+    Other daemon.json keys are kept; the previous file is saved next to it.
+    preflight() has already refused foreign running containers."""
+    try:
+        docker_firewall_disabled(daemon)
+        return False
+    except ValueError:
+        pass
+    state.trusted(daemon)
+    if daemon.exists():
+        if daemon.is_symlink() or not daemon.is_file() or daemon.stat().st_nlink != 1:
+            raise ValueError('Docker firewall management is enabled')
+        original = daemon.read_bytes()
+        try:
+            value = state.decode(original, 1024*1024)
+        except ValueError:
+            value = None
+        if not isinstance(value, dict):
+            raise ValueError('Docker firewall management is enabled')
+        backup = daemon.with_name(daemon.name+'.before-vpnbot-node')
+        state.trusted(backup)
+        if not backup.exists():
+            state.atomic(backup, original, 0o600)
+    else:
+        daemon.parent.mkdir(mode=0o755, exist_ok=True)
+        value = {}
+    value.update({name: False for name in DOCKER_SETTINGS})
+    state.atomic(daemon, json.dumps(value, indent=2, sort_keys=True).encode()+b'\n', 0o644)
+    command(['systemctl', 'restart', 'docker.service'], timeout=120)
+    docker_firewall_disabled(daemon)
+    return True
+
+
+def disable_forwarding():
+    """A node routes nothing; both forward chains drop, the kernel does not forward."""
+    body = b'# VPNBot node: no IP forwarding (Docker ip-forward=false, host network only).\n' \
+           b'net.ipv4.ip_forward = 0\nnet.ipv6.conf.all.forwarding = 0\n'
+    state.trusted(FORWARDING)
+    state.atomic(FORWARDING, body, 0o644)
+    command(['sysctl', '-q', '-p', FORWARDING])
 
 
 def verify_firewall(backend, path=Path('/etc/nftables.conf')):
@@ -130,6 +178,7 @@ def upgrade_code(source):
         if not store.current() or store.pending() or job.get('state') in ('queued', 'running'):
             raise ValueError('Нода не установлена или изменение ещё не завершено')
         docker_firewall_disabled()
+        disable_forwarding()
         install.install_code(source)
         host = config.deployment(state.decode((install.ETC/'deployment.json').read_bytes(), state.MAX_DEPLOYMENT_BYTES))
         Runtime(store, host).load_firewall()
@@ -158,9 +207,10 @@ def enrollment(value):
     return dict(schema=1, controller_key=install.public_key(value['controller_key']), deployment=host, options=options)
 
 
-def preflight(value):
+def preflight(value, docker=True):
     host = value['deployment']
-    docker_firewall_disabled()
+    if docker:
+        docker_firewall_disabled()
     active = command(['docker', 'ps', '--format', '{{json .}}']).stdout.decode().splitlines()
     for line in active:
         name = json.loads(line)['Names']
@@ -193,7 +243,7 @@ def preflight(value):
 
 def setup(value, source, channel='latest', bundle=None):
     value = enrollment(value)
-    preflight(value)
+    preflight(value, docker=False)
     store = state.Store(ROOT)
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -201,6 +251,9 @@ def setup(value, source, channel='latest', bundle=None):
         previous = store.current()
         if previous:
             raise ValueError('Нода уже установлена. Изменяйте настройки через основной бот')
+        # Only now: an installed node is never interrupted by a Docker restart.
+        prepare_docker()
+        disable_forwarding()
         account = install.accounts()
         host = config.deployment(value['deployment'] | {'uid': account.pw_uid, 'gid': account.pw_gid,
                                  'cover_uid': pwd.getpwnam(install.COVER).pw_uid, 'awg_uid': pwd.getpwnam(install.AWG).pw_uid})
@@ -321,7 +374,8 @@ def failure_message(error):
         'a public node address is required': 'Не задан публичный адрес ноды. Укажите IPv4 или IPv6.',
         'nftables service is not active and enabled': 'Служба nftables должна быть активна и включена в автозапуск. Проверьте её состояние и /etc/nftables.conf.',
         'nftables live rules differ from persistent configuration': 'Загруженные правила nftables не совпадают с сохранённой конфигурацией. Установка не подтверждена.',
-        'Docker firewall management is enabled': 'Docker управляет фаерволом. Для ноды правила nftables задаются только вручную: добавьте в /etc/docker/daemon.json "iptables": false и "ip6tables": false (вопрос об этом есть в скрипты подготовки сервера) и перезапустите Docker.',
+        'Docker firewall management is enabled': 'Docker управляет фаерволом или маршрутизацией. Для ноды правила nftables задаются только вручную: добавьте в /etc/docker/daemon.json "iptables": false, "ip6tables": false и "ip-forward": false и перезапустите Docker (первичная установка делает это сама).',
+        'Firewall profile does not match installation mode': 'В /etc/nftables.conf не профиль минимальной ноды. Сначала установите noda.conf (скрипты подготовки сервера), затем ноду.',
         'Docker firewall rules are loaded': 'В nftables загружены цепочки или таблицы Docker. После отключения управления фаерволом в Docker перезагрузите сервер или заново загрузите /etc/nftables.conf.',
         'Firewall command failed; details suppressed to protect configuration data': 'Не удалось проверить или применить nftables. Проверьте синтаксис профиля и состояние фаервола.',
         'Cannot discover public node address or SSH ports': 'Не удалось определить публичный адрес или действующие SSH-порты.',
@@ -339,8 +393,17 @@ def failure_message(error):
     for message in ('Для выбранного семейства отсутствует публичный адрес',
                     'Публичные адреса должны быть назначены указанному интерфейсу',
                     'Порты SSH должны совпадать с действующей конфигурацией sshd',
-                    'Текущий адрес администратора отсутствует в разрешённом списке SSH'):
+                    'Текущий адрес администратора отсутствует в разрешённом списке SSH',
+                    'Нода уже установлена. Изменяйте настройки через основной бот',
+                    'Нода не установлена или изменение ещё не завершено',
+                    'Некорректный файл подключения ноды', 'Некорректные параметры сети',
+                    'На сервере работают другие контейнеры. Сначала подготовьте перенос существующей установки',
+                    'Имя контейнера уже занято другой установкой',
+                    'Найдены действующие правила ноды без её состояния; требуется восстановление'):
         public_errors[message] = message+'.'
+    # Fixed text plus the number of a port this installer checks; no input data.
+    for port in (443, 8443, 9443, 9444, 8080):
+        public_errors['Необходимый порт уже занят: '+str(port)] = 'Необходимый порт уже занят: '+str(port)+'.'
     detail = public_errors.get(str(error)) if isinstance(error, ValueError) else None
     return 'Установка ноды не завершена. '+(detail or 'Проверьте публичные параметры, порты и доступ к реестру образов.')
 

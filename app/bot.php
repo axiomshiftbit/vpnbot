@@ -1355,7 +1355,7 @@ class Bot
                 $this->trackTelemtOnline(true);
                 $this->telemtUsers($m[2] ?? '', (int) $m[1]);
                 break;
-            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|reset|log|logclear|refresh|qreset-[a-f0-9]{8}|period|period-(?:off|daily|weekly|monthly)-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
+            case preg_match('~^/tuc ([a-f0-9]{12}) (\d{1,6}) (direct|[a-f0-9]{12})(?: (toggle|regen|regen-confirm|delete|delete-confirm|qr|web|limits|quota|ips|deny|reset|log|logclear|refresh|qreset-[a-f0-9]{8}|period|period-(?:off|daily|weekly|monthly)-[a-f0-9]{8}))?$~D', $this->input['callback'], $m):
                 $this->telemtUserAction($m[1], (int) $m[2], $m[3], $m[4] ?? '');
                 break;
             case preg_match('~^/tu ([tdr]) (\w+) (\d+) ([\w.\-]+)$~', $this->input['callback'], $m):
@@ -2611,6 +2611,11 @@ class Bot
         foreach ($limits as $name => $row) if (!empty($row['period']) && !empty($row['quota'])) $periods[] = $q($name) . ' = ' . $q($row['period']);
         if ($periods && $this->telemtVersionAtLeast(self::TELEMT_QUOTA_PERIOD_MIN)) {
             $t .= "\n[access.user_quota_periods]\n" . implode("\n", $periods) . "\n";
+        }
+        $deny = [];
+        foreach ($limits as $name => $row) if (!empty($row['deny'])) $deny[] = $q($name) . ' = [' . implode(', ', array_map($q, $row['deny'])) . ']';
+        if ($deny && $this->telemtVersionAtLeast(self::TELEMT_SOURCE_DENY_MIN)) {
+            $t .= "\n[access.user_source_deny]\n" . implode("\n", $deny) . "\n";
         }
         $t .= "\n[[upstreams]]\n";
         $t .= "type = \"direct\"\n";
@@ -18813,6 +18818,7 @@ DNS-over-HTTPS with IP:
             case 'logclear': $this->telemtUserLog($name, $page, $relay, true); return;
             case 'quota': $this->telemtLimitPrompt($name, $page, $relay, 'quota'); return;
             case 'ips': $this->telemtLimitPrompt($name, $page, $relay, 'ips'); return;
+            case 'deny': $this->telemtLimitPrompt($name, $page, $relay, 'deny'); return;
             case 'reset': $this->telemtResetQuota($name, $page, $relay); return;
             case 'toggle': $this->telemtToggleUser($name, $page, $relay, true); return;
             case 'regen-confirm': $this->telemtRegen($name, $page, $relay, true); return;

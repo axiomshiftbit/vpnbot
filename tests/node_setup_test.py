@@ -88,6 +88,10 @@ class NodeSetup(unittest.TestCase):
         result = setup.failure_message(ValueError('a public node address is required'))
         self.assertIn('Не задан публичный адрес', result)
         self.assertIn('sshd', setup.failure_message(ValueError('Порты SSH должны совпадать с действующей конфигурацией sshd')))
+        self.assertIn('noda.conf', setup.failure_message(ValueError('Firewall profile does not match installation mode')))
+        self.assertIn('Нода уже установлена', setup.failure_message(ValueError('Нода уже установлена. Изменяйте настройки через основной бот')))
+        self.assertIn('8443', setup.failure_message(ValueError('Необходимый порт уже занят: 8443')))
+        self.assertNotIn('1234', setup.failure_message(ValueError('Необходимый порт уже занят: 1234')))
         for error in (ValueError('synthetic-sensitive-input'), RuntimeError('synthetic-sensitive-output')):
             self.assertNotIn('synthetic-sensitive', setup.failure_message(error))
 
@@ -149,6 +153,7 @@ class NodeSetup(unittest.TestCase):
             account = SimpleNamespace(pw_uid=59999, pw_gid=59999)
             with patch.object(setup, 'ROOT', root/'state'), patch.object(setup.install, 'ETC', root), \
                     patch.object(setup, 'preflight'), patch.object(setup.install, 'accounts', return_value=account), \
+                    patch.object(setup, 'prepare_docker', return_value=False), patch.object(setup, 'disable_forwarding'), \
                     patch.object(setup.pwd, 'getpwnam', side_effect=lambda name: SimpleNamespace(pw_uid=59998 if name == setup.install.COVER else 59997)), \
                     patch.object(setup.install, 'install_code'), \
                     patch.object(setup.image_bundle, 'read', side_effect=ManifestReached):
@@ -166,6 +171,7 @@ class NodeSetup(unittest.TestCase):
                 return SimpleNamespace(stdout=b'', returncode=1 if args[:3] == ['nft', 'list', 'table'] else 0)
             with patch.object(setup, 'ROOT', root), patch.object(setup.install, 'ETC', root), \
                     patch.object(setup, 'preflight'), patch.object(setup.install, 'accounts', return_value=account), \
+                    patch.object(setup, 'prepare_docker', return_value=False), patch.object(setup, 'disable_forwarding'), \
                     patch.object(setup.pwd, 'getpwnam', side_effect=lambda name: SimpleNamespace(pw_uid=59998 if name == setup.install.COVER else 59997)), \
                     patch.object(setup.install, 'install_code'), patch.object(setup.install, 'install_ssh', return_value={'fixture': 'authorization'}), \
                     patch.object(setup.install, 'restore_ssh') as restore, \
@@ -188,6 +194,20 @@ class NodeSetup(unittest.TestCase):
                 self.assertFalse(backend.guard.exists())
                 self.assertTrue(any(args[:3] == ['systemctl', 'disable', '--now'] for args in calls))
 
+    def test_repeat_setup_never_restarts_docker_of_installed_node(self):
+        class Store:
+            def __init__(self, root): self.root = root
+            def current(self): return 'a'*32
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(setup, 'ROOT', root), patch.object(setup.state, 'Store', Store), \
+                    patch.object(setup, 'preflight'), patch.object(setup, 'prepare_docker') as docker, \
+                    patch.object(setup, 'disable_forwarding') as forwarding:
+                with self.assertRaisesRegex(ValueError, 'уже установлена'):
+                    setup.setup(self.value, root, bundle=root/'bundle.json')
+                docker.assert_not_called()
+                forwarding.assert_not_called()
+
     def test_upgrade_code_only_on_settled_installed_node(self):
         class Store:
             current_value, pending_value, job = 'a'*32, None, {}
@@ -203,6 +223,7 @@ class NodeSetup(unittest.TestCase):
                     patch.object(setup.nft_host_setup, 'configure') as firewall, \
                     patch.object(setup, 'verify_firewall') as health, \
                     patch.object(setup, 'docker_firewall_disabled') as docker, \
+                    patch.object(setup, 'disable_forwarding') as forwarding, \
                     patch.object(setup.install, 'install_code') as install_code:
                 setup.upgrade_code(root/'src')
                 install_code.assert_called_once_with(root/'src')
@@ -211,6 +232,7 @@ class NodeSetup(unittest.TestCase):
                 firewall.assert_called_once_with(host=setup.config.deployment(HOST), mode='node')
                 health.assert_called_once_with(runtime.return_value)
                 docker.assert_called_once_with()
+                forwarding.assert_called_once_with()
                 # Docker managing the firewall stops the upgrade before any change.
                 docker.side_effect = ValueError('Docker firewall management is enabled')
                 install_code.reset_mock()

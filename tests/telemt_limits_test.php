@@ -227,6 +227,47 @@ try {
         $bad = $b->conf; $bad['telemt_user_limits']['alice']['quota'] = $value;
         $reject(fn()=>$b->telemtToml($bad),'Невалидная импортированная квота не становится безлимитом');
     }
+    // [access.user_source_deny] (TeleMT 3.5.17+): канонический CIDR, до 32, только новое ядро.
+    foreach (['198.51.100.7' => ['198.51.100.7/32'], '198.51.100.77/24' => ['198.51.100.0/24'],
+              '2001:DB8:0:0::1/32, 198.51.100.0/24 198.51.100.0/24' => ['2001:db8::/32', '198.51.100.0/24'],
+              '2001:db8::5' => ['2001:db8::5/128'], '-' => []] as $input => $expected) {
+        $check($b->telemtParseDeny((string) $input) === $expected, 'Запрет подсетей: ' . $input);
+    }
+    foreach (['', '0.0.0.0/0', '198.51.100.0/33', '2001:db8::/129', '198.51.100.0/-1', 'example.test', '198.51.100.0/24;drop',
+              'fe80::1%eth0', '::ffff:198.51.100.1/120', '"198.51.100.1"', implode(' ', array_map(static fn($n) => "198.51.100.$n", range(1, 33)))] as $input) {
+        $reject(fn()=>$b->telemtParseDeny($input), 'Некорректный запрет подсетей: ' . substr($input, 0, 30));
+    }
+    $fpBob = hash('sha256', $b->conf['telemt_users']['bob']);
+    $b->click($b->telemtUserCallback('bob', 0, '', 'limits'));
+    $labels = array_column(array_merge(...$b->screen['buttons']), 'text');
+    $check(in_array($b->i18n('telemt limits deny'), $labels, true), 'Кнопка запрета подсетей в лимитах');
+    $b->click($b->telemtUserCallback('bob', 0, '', 'deny'));
+    $check(($b->prompt['callback'] ?? '') === 'telemtLimitReply' && $b->prompt['args'][3] === 'deny', 'Ввод запрета подсетей');
+    $starts = $b->starts;
+    $b->telemtLimitReply('198.51.100.9/24 2001:db8::/48', 'bob', 0, '', 'deny', $fpBob);
+    $check($b->conf['telemt_user_limits']['bob']['deny'] === ['198.51.100.0/24', '2001:db8::/48'], 'Запрет сохранён канонически');
+    $check(str_contains($b->toml, "[access.user_source_deny]\n\"bob\" = [\"198.51.100.0/24\", \"2001:db8::/48\"]"), 'Таблица user_source_deny в TOML');
+    $check(substr_count($b->toml, '[access.user_source_deny]') === 1 && strpos($b->toml, '[access.user_source_deny]') < strpos($b->toml, '[[upstreams]]'), 'Таблица внутри [access], до upstreams');
+    $check($b->starts === $starts + 1, 'Применение перезапускает TeleMT: наблюдатель файла запрет не подхватывает');
+    $check(str_contains($b->screen['text'], '198.51.100.0/24') && str_contains($b->screen['text'], $b->i18n('telemt limits deny list')), 'Список виден в меню');
+    $b->telemtLimitReply('bad', 'bob', 0, '', 'deny', $fpBob);
+    $check($b->conf['telemt_user_limits']['bob']['deny'] === ['198.51.100.0/24', '2001:db8::/48'] && str_contains($b->screen['text'], '❌'), 'Ошибка ввода не меняет запрет');
+    $bad = $b->conf; $bad['telemt_user_limits']['bob']['deny'] = ['198.51.100.9/24'];
+    $reject(fn()=>$b->telemtToml($bad), 'Неканонический запрет из импорта отклонён');
+    $bad['telemt_user_limits']['bob']['deny'] = ['198.51.100.0/24', '198.51.100.0/24'];
+    $reject(fn()=>$b->telemtToml($bad), 'Повтор подсети из импорта отклонён');
+    $b->version = '3.5.16';
+    $check(!str_contains($b->telemtToml(), 'user_source_deny'), 'Старое ядро не получает неизвестную таблицу');
+    $reject(fn()=>$b->telemtChangeLimit('alice', 'deny', ['198.51.100.0/24'], hash('sha256', $b->conf['telemt_users']['alice'])), 'Новый запрет требует TeleMT 3.5.17');
+    $b->click($b->telemtUserCallback('bob', 0, '', 'limits'));
+    $check(str_contains($b->screen['text'], $b->i18n('telemt limits deny need core')), 'Предупреждение о старом ядре в меню');
+    $b->telemtChangeLimit('bob', 'deny', [], $fpBob);
+    $check(!isset($b->conf['telemt_user_limits']['bob']['deny']) && !str_contains($b->toml, 'user_source_deny'), 'Снятие запрета на старом ядре разрешено');
+    $b->version = '3.5.17';
+    $b->language = 'en';
+    $b->click($b->telemtUserCallback('bob', 0, '', 'limits'));
+    $check(str_contains($b->screen['text'], 'Blocked source networks'), 'Английский текст');
+    $b->language = 'ru';
     $b->telemtDelUser('alice');
     $check(!isset($b->conf['telemt_user_limits']['alice']) && !isset($b->telemtQuotaRead($b->conf)['users']['alice']), 'Удаление очищает метаданные и расход');
     $b->conf['telemt_user_limits']['alice'] = ['quota'=>1,'ips'=>1];

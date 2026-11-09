@@ -94,6 +94,17 @@ try {
             $bot->managedNodeSubmit('aabbccdd', 'configure', $options);
             verify(!empty($bot->managedNodes()['aabbccdd']['job']), 'main saves asynchronous node job');
             break;
+        case 'vpn-sources':
+            // The card screen: list input -> draft -> Apply, as an administrator does it.
+            $bot->managedNodeVpnSourcesMenu('aabbccdd');
+            $bot->saveManagedNodeField('11.77.0.200 2606:4700:4700::200', 'aabbccdd', 'vpn_sources');
+            verify(($bot->managedNodes()['aabbccdd']['draft']['vpn_sources'] ?? null) === ['11.77.0.200', '2606:4700:4700::200'], 'VPN-only list saved in the draft');
+            $bot->managedNodeApply('aabbccdd');
+            verify(!empty($bot->managedNodes()['aabbccdd']['job']) && !isset($bot->managedNodes()['aabbccdd']['draft']), 'VPN-only list submitted to the node');
+            break;
+        case 'vpn-sources-applied':
+            verify(($bot->managedNodes()['aabbccdd']['status']['options']['vpn_sources'] ?? null) === ['11.77.0.200', '2606:4700:4700::200'], 'node reports the applied VPN-only list');
+            break;
         case 'wg-enable':
         case 'wg-disable':
         case 'awg-enable':
@@ -138,7 +149,11 @@ try {
             $bot->exitDelete('aabbccdd', true);
             verify(!isset($bot->managedNodes()['aabbccdd']) && !isset($bot->exitNodes()['aabbccdd']), 'native deletion removes controller card and route together');
             verify(!is_dir('/ssh/nodes/aabbccdd'), 'native deletion removes local SSH identity and snapshot');
-            verify($bot->backupExtraFiles() === [], 'deleted node credentials are excluded from later backups');
+            // Only the archived controller key stays (nodes/retired/...): the
+            // server still trusts it, and re-adding the server reuses it.
+            $extra = array_keys($bot->backupExtraFiles());
+            verify(count($extra) === 2 && !array_filter($extra, static fn($path) => !preg_match('~^nodes/retired/[a-f0-9]{32}/key(?:\.pub)?$~D', $path)),
+                'deleted node keeps only its archived controller key in later backups');
             break;
         case 'ssh-edit':
             $before = file_get_contents('/ssh/nodes/aabbccdd/endpoint.json');
