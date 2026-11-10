@@ -16,17 +16,21 @@ while read -r module fixed; do
         sh "$tools/go-retry.sh" go get "$module@$fixed"
     fi
 done <<'PINS'
-google.golang.org/grpc v1.83.2
-golang.org/x/crypto v0.56.0
+google.golang.org/grpc v1.85.0
+golang.org/x/crypto v0.58.0
 golang.org/x/net v0.62.0
-golang.org/x/text v0.39.0
-golang.org/x/mod v0.40.0
-github.com/klauspost/compress v1.18.7
-golang.org/x/crypto/x509roots/fallback v0.0.0-20261020153306-9f2b28d4331a
+golang.org/x/text v0.44.0
+golang.org/x/mod v0.43.0
+golang.org/x/sys v0.50.0
+golang.org/x/sync v0.25.0
+golang.org/x/tools v0.52.0
+google.golang.org/protobuf v1.36.12
+github.com/klauspost/compress v1.20.4
+golang.org/x/crypto/x509roots/fallback v0.0.0-20261109165751-4e10f38b063d
 github.com/go-jose/go-jose/v3 v3.0.5
-github.com/go-jose/go-jose/v4 v4.1.6
-github.com/smallstep/certificates v0.30.0
-go.opentelemetry.io/otel v1.43.0
-go.opentelemetry.io/otel/sdk v1.43.0
-github.com/go-chi/chi/v5 v5.4.0
+github.com/go-jose/go-jose/v4 v4.1.9
+github.com/smallstep/certificates v0.30.2
+go.opentelemetry.io/otel v1.47.0
+go.opentelemetry.io/otel/sdk v1.47.0
+github.com/go-chi/chi/v5 v5.5.0
 PINS

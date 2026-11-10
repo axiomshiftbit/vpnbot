@@ -54,8 +54,11 @@ if [ -n "$tests" ]; then
     # из архива исходников на Alpine. Тег http2legacy сверяется ниже по
     # готовому бинарнику. Тесты скорости splithttp идут отдельно, ниже.
     skip="Geodata|^TestAgentDocPathsExist\$|^TestExplicitBuildTagsKeepHTTP2Legacy\$|^TestSetupWorktree|^TestGates|$timing"
+    # На сборщике с 2 vCPU параллельные пакеты задерживают тесты отмены
+    # соединений с пределом 200–250 мс. Выполняем пакеты последовательно,
+    # сохраняя сами проверки и их исходные таймауты.
     # shellcheck disable=SC2086
-    [ -z "$present" ] || CGO_ENABLED=0 sh /build-tools/go-retry.sh go test ${tags:+-tags "$tags"} -count=1 -timeout 15m -skip "$skip" $present
+    [ -z "$present" ] || CGO_ENABLED=0 sh /build-tools/go-retry.sh go test ${tags:+-tags "$tags"} -p 1 -count=1 -timeout 15m -skip "$skip" $present
     case " $present " in
         *' ./transport/internet/splithttp/... '*) timing_tests ;;
     esac

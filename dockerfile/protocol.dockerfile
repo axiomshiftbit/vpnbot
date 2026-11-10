@@ -1,4 +1,4 @@
-ARG PROTOCOL_GO_VERSION=1.27.3
+ARG PROTOCOL_GO_VERSION=1.27.4
 ARG SINGBOX_VERSION=v1.14.4
 ARG SINGBOX_SOURCE_SHA256=0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS build
@@ -12,13 +12,12 @@ RUN sh /build-tools/download-file.sh "https://codeload.github.com/SagerNet/sing-
     && tar -xf source.tar.gz --strip-components=1 && rm source.tar.gz
 COPY protocol-stats/main.go ./cmd/protocol-stats/main.go
 COPY protocol-policy/ /policy/
-COPY go-retry.sh /build-tools/go-retry.sh
+COPY go-retry.sh go-security.sh /build-tools/
 RUN patch -p1 --fuzz=0 < /policy/hooks.patch \
     && cp /policy/*.go route/ \
     && cp /policy/tuic/*.go protocol/tuic/ \
     && cp /policy/anytls/*.go protocol/anytls/
-RUN sh /build-tools/go-retry.sh go get google.golang.org/grpc@v1.83.2 golang.org/x/crypto@v0.58.0 \
-      github.com/go-chi/chi/v5@v5.4.0 golang.org/x/mod@v0.41.0 golang.org/x/net@v0.62.0
+RUN sh /build-tools/go-security.sh
 RUN sh /build-tools/go-retry.sh go test -tags with_quic,with_utls,with_v2ray_api ./route ./protocol/tuic ./protocol/anytls -run TestVPNBot -count=1
 RUN CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -tags with_quic,with_utls,with_v2ray_api \
       -ldflags "-s -w -X github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION#v}" -o /sing-box ./cmd/sing-box \

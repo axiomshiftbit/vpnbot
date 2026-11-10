@@ -15,13 +15,12 @@ spec.loader.exec_module(pins)
 
 class VersionPinsTests(unittest.TestCase):
     def test_image_defaults_match_checked_in_pins(self):
-        keys = r'(?:SINGBOX|MIHOMO|MIERU)_(?:VERSION|SHA256|SOURCE_SHA256)'
+        keys = r'(?:(?:SINGBOX|MIHOMO|MIERU)_(?:VERSION|SHA256|SOURCE_SHA256)|(?:PROTOCOL|CADDY|MASQUE)_GO_VERSION)'
         values = dict(re.findall(r'^(' + keys + r')=(.+)$', (ROOT / '.env').read_text(), re.M))
-        for name in ('php', 'protocol', 'mieru'):
-            defaults = re.findall(r'^ARG (' + keys + r')=(.+)$', (ROOT / f'dockerfile/{name}.dockerfile').read_text(), re.M)
-            self.assertTrue(defaults)
+        for path in sorted((ROOT / 'dockerfile').glob('*.dockerfile')):
+            defaults = re.findall(r'^ARG (' + keys + r')=(.+)$', path.read_text(), re.M)
             for key, value in defaults:
-                self.assertEqual(values[key], value, f'{name}: {key}')
+                self.assertEqual(values[key], value, f'{path.name}: {key}')
         defaults = re.findall(r'\$\{(' + keys + r'):-([^}]+)\}', (ROOT / 'docker-compose.yml').read_text())
         self.assertTrue(defaults)
         for key, value in defaults:

@@ -1,6 +1,6 @@
 ARG image=alpine:3.24
 # Плагин требует патчи Caddy из того же стабильного релиза forwardproxy.
-ARG CADDY_GO_VERSION=1.27.3
+ARG CADDY_GO_VERSION=1.27.4
 ARG XCADDY_VERSION=v0.4.7
 ARG CADDY_VERSION=v2.11.7
 ARG FORWARDPROXY_VERSION=v2.11.7-naive2

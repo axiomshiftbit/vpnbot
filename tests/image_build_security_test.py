@@ -30,8 +30,8 @@ if sys.argv[1]=='list':
 else:
  name,version=sys.argv[-1].split('@');assert name in modules
  # Model grpc selecting a newer crypto via minimum version selection.
- assert name=='google.golang.org/grpc' and version=='v1.83.2'
- modules[name]=version;modules['golang.org/x/crypto']='v0.57.0'
+ assert name=='google.golang.org/grpc' and version=='v1.85.0'
+ modules[name]=version;modules['golang.org/x/crypto']='v0.59.0'
  p.write_text(json.dumps(modules))
 ''')
             go.chmod(0o700)
@@ -39,7 +39,7 @@ else:
                                     env=os.environ | {'PATH': str(root) + ':' + os.environ['PATH']},
                                     capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual({'google.golang.org/grpc': 'v1.83.2', 'golang.org/x/crypto': 'v0.57.0',
+            self.assertEqual({'google.golang.org/grpc': 'v1.85.0', 'golang.org/x/crypto': 'v0.59.0',
                               'golang.org/x/net': 'v0.62.0'}, json.loads(state.read_text()))
 
     def test_unreviewed_source_is_rejected_before_download(self):

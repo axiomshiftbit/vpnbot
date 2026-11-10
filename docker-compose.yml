@@ -152,7 +152,7 @@ services:
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
@@ -229,7 +229,7 @@ services:
         build:
             dockerfile: dockerfile/php.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
                 DNSLOOKUP_VERSION: ${DNSLOOKUP_VERSION:-v1.12.0}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
@@ -359,7 +359,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
@@ -417,7 +417,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
@@ -469,7 +469,7 @@ services:
         build:
             dockerfile: dockerfile/adguard.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 # Форма :-default обязательна: голое ${ADGUARD_VERSION} при
                 # отсутствии переменной передаёт пустую строку, она перекрывает
                 # дефолт ARG, и FROM adguard/adguardhome: роняет сборку.
@@ -566,7 +566,7 @@ services:
         build:
             dockerfile: dockerfile/xray.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
                 XRAY_VERSION: ${XRAY_VERSION:-}
                 XRAY_VERSION_2: ${XRAY_VERSION_2:-}
@@ -666,7 +666,7 @@ services:
             args:
                 image: ${IMAGE:-alpine:3.24}
                 # Независимые пины; совместимость проверяет нативный тест.
-                CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.27.3}
+                CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.27.4}
                 XCADDY_VERSION: ${XCADDY_VERSION:-v0.4.7}
                 CADDY_VERSION: ${CADDY_VERSION:-v2.11.7}
                 FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.7-naive2}
@@ -714,7 +714,7 @@ services:
         build:
             dockerfile: dockerfile/wireguard.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
                 AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
@@ -779,7 +779,7 @@ services:
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
         volumes:
             - ./logs:/logs
@@ -818,7 +818,7 @@ services:
         build:
             dockerfile: dockerfile/shadowsocks.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
                 # Пустое значение любого из четырёх = releases/latest
                 # (прежнее поведение). Значения по умолчанию — то, что стоит
@@ -872,7 +872,7 @@ services:
         build:
             dockerfile: dockerfile/dnstt.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
                 DNSTT_REF: ${DNSTT_REF:-0c5c52a57d899c05428c116898941761a2ed83c2}
         volumes:
@@ -1074,7 +1074,7 @@ services:
         build:
             dockerfile: dockerfile/hysteria.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 # :-default обязателен: пустая подстановка перекрыла бы дефолт
                 # ARG, и FROM с пустым тегом уронил бы сборку.
                 HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.13.0}
@@ -1118,7 +1118,7 @@ services:
             context: dockerfile
             dockerfile: protocol.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
                 SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
@@ -1151,7 +1151,7 @@ services:
             context: dockerfile
             dockerfile: mieru.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 MIERU_VERSION: ${MIERU_VERSION:-v3.39.0}
                 MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-434198ea0558bc440379e9a0a97f6904ba8dd6b213dd6fb9d578388eba7d2f12}
         environment:
@@ -1191,7 +1191,7 @@ services:
             context: dockerfile
             dockerfile: protocol.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
                 SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
@@ -1227,7 +1227,7 @@ services:
             context: dockerfile
             dockerfile: masque.dockerfile
             args:
-                MASQUE_GO_VERSION: ${MASQUE_GO_VERSION:-1.27.3}
+                MASQUE_GO_VERSION: ${MASQUE_GO_VERSION:-1.27.4}
                 MASQUE_XRAY_VERSION: ${MASQUE_XRAY_VERSION:-v26.11.9}
                 MASQUE_SOURCE_SHA256: ${MASQUE_SOURCE_SHA256:-d5a47bed1b85e1cdfe3cb2f88a02e2db7144f0f8bee541d20b84fafa8fdf6c8d}
         environment:
@@ -1298,7 +1298,7 @@ services:
             context: dockerfile
             dockerfile: protocol.dockerfile
             args:
-                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.3}
+                PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 SINGBOX_VERSION: ${SINGBOX_VERSION:-v1.14.4}
                 SINGBOX_SOURCE_SHA256: ${SINGBOX_SOURCE_SHA256:-0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18}
         environment:
