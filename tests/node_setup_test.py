@@ -7,12 +7,17 @@ import unittest
 import contextlib
 import io
 import json
+import os
+import stat
+import socket
+import subprocess
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 import node_setup as setup
+import node_runtime
 from node_config_test import HOST, OPTIONS
 
 
@@ -94,6 +99,140 @@ class NodeSetup(unittest.TestCase):
         self.assertNotIn('1234', setup.failure_message(ValueError('Необходимый порт уже занят: 1234')))
         for error in (ValueError('synthetic-sensitive-input'), RuntimeError('synthetic-sensitive-output')):
             self.assertNotIn('synthetic-sensitive', setup.failure_message(error))
+
+    def test_forwarding_with_and_without_kernel_ipv6(self):
+        for ipv6 in (False, True):
+            with self.subTest(ipv6=ipv6), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                ipv4_path = root/'proc/net/ipv4/ip_forward'
+                ipv6_path = root/'proc/net/ipv6/conf/all/forwarding'
+                paths = [ipv4_path, ipv6_path] if ipv6 else [ipv4_path]
+                for path in paths:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('1\n')
+                def sysctl(args):
+                    self.assertEqual(args[:3], ['sysctl', '-q', '-w'])
+                    for value in args[3:]:
+                        name, number = value.split('=')
+                        target = root/'proc'/name.replace('.', '/')
+                        self.assertTrue(target.exists())
+                        target.write_text(number+'\n')
+                with patch.object(setup, 'FORWARDING', root/'forwarding.conf'), patch.object(setup, 'command', side_effect=sysctl):
+                    setup.disable_forwarding(root/'proc')
+                self.assertTrue(all(path.read_text().strip() == '0' for path in paths))
+                # The boot policy protects a later boot with IPv6 enabled too.
+                self.assertIn('net.ipv6.conf.all.forwarding = 0', (root/'forwarding.conf').read_text())
+
+    def test_forwarding_never_ignores_write_failure_or_enabled_readback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ipv4 = root/'net/ipv4/ip_forward'
+            ipv4.parent.mkdir(parents=True)
+            ipv4.write_text('1\n')
+            with patch.object(setup, 'FORWARDING', root/'forwarding.conf'), patch.object(setup, 'command') as command:
+                with self.assertRaisesRegex(ValueError, 'IP forwarding remains enabled'):
+                    setup.disable_forwarding(root)
+                command.side_effect = node_runtime.HostOperationError('sysctl', 1, b'Operation not permitted')
+                with self.assertRaises(node_runtime.HostOperationError):
+                    setup.disable_forwarding(root)
+                ipv4.unlink()
+                command.side_effect = None
+                with self.assertRaises(FileNotFoundError):
+                    setup.disable_forwarding(root)
+
+    def test_command_diagnostics_discard_sensitive_output_and_arguments(self):
+        marker = 'synthetic-sensitive-credential'
+        result = SimpleNamespace(returncode=23, stdout=marker.encode(), stderr=b'TLS handshake timeout '+marker.encode())
+        with patch.object(node_runtime.subprocess, 'run', return_value=result):
+            with self.assertRaises(node_runtime.HostOperationError) as failed:
+                node_runtime.command(['docker', 'pull', marker], data=marker.encode())
+            error = failed.exception
+            self.assertEqual(error.category, 'timeout')
+            self.assertEqual(str(error), 'node host operation failed')
+            self.assertNotIn(marker, repr(vars(error)))
+            message = setup.failure_message(error)
+            self.assertIn('docker', message)
+            self.assertIn('23', message)
+            self.assertNotIn(marker, message)
+            self.assertIs(node_runtime.command(['docker', marker], required=False), result)
+
+    def test_safe_error_categories(self):
+        cases = [('sysctl', b'cannot stat /proc/sys/net/ipv6/conf/all/forwarding', 'missing_sysctl'),
+                 ('docker', b'pull access denied', 'registry_auth'),
+                 ('certbot', b'Some challenges have failed', 'acme_validation'),
+                 ('docker', b'no space left on device', 'disk_full'),
+                 ('nft', b'Operation not permitted', 'permission'),
+                 ('docker', b'no such host', 'dns'),
+                 ('openssl', b'certificate verify failed', 'tls'),
+                 ('certbot', b'Address already in use', 'port_busy')]
+        for program, stderr, category in cases:
+            with self.subTest(category=category):
+                error = node_runtime.HostOperationError(program, 1, stderr)
+                self.assertEqual(error.category, category)
+                self.assertNotIn('Неожиданный сбой', setup.failure_message(error))
+        for error in [RuntimeError('synthetic-sensitive'), ValueError('synthetic-sensitive'),
+                      socket.gaierror(-2, 'synthetic-sensitive'), TimeoutError('synthetic-sensitive'),
+                      FileNotFoundError(2, 'synthetic-sensitive', '/synthetic-sensitive'),
+                      subprocess.TimeoutExpired(['docker', 'synthetic-sensitive'], 30, output=b'synthetic-sensitive'),
+                      node_runtime.HostOperationError('synthetic-sensitive', 1, b'synthetic-sensitive')]:
+            self.assertNotIn('synthetic-sensitive', setup.failure_message(error))
+
+    def test_cli_log_contains_stage_and_safe_reason_only(self):
+        def fail():
+            setup.progress('forwarding')
+            raise node_runtime.HostOperationError('sysctl', 1, b'cannot stat synthetic-sensitive')
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp)/'log/setup.log'
+            # Exercise real log creation as its owner, including unprivileged CI.
+            reporter = setup.SetupLog(log)
+            with patch.object(setup, 'SetupLog', return_value=reporter), patch.object(setup, 'main', side_effect=fail), \
+                    patch.object(setup.os, 'geteuid', return_value=0), contextlib.redirect_stderr(io.StringIO()) as terminal:
+                self.assertEqual(setup.run(), 1)
+            for output in (terminal.getvalue(), log.read_text()):
+                self.assertIn('[forwarding]', output)
+                self.assertIn('параметр sysctl отсутствует', output)
+                self.assertIn('код завершения 1', output)
+                self.assertNotIn('synthetic-sensitive', output)
+            self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(log.parent.stat().st_mode), 0o700)
+
+    def test_log_rejects_symlinks_hardlinks_and_writable_parents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root/'target'
+            target.write_text('unchanged')
+            link = root/'log'
+            link.symlink_to(target)
+            with self.assertRaises(ValueError): setup.SetupLog(link)
+            link.unlink()
+            os.link(target, link)
+            with self.assertRaises(ValueError): setup.SetupLog(link)
+            link.unlink()
+            root.chmod(0o777)
+            with self.assertRaises(ValueError): setup.SetupLog(link)
+            root.chmod(0o700)
+            self.assertEqual(target.read_text(), 'unchanged')
+
+    def test_log_write_failure_does_not_hide_original_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = setup.SetupLog(Path(tmp)/'setup.log')
+            log.stream.close()
+            with patch.object(log, 'stream') as stream, contextlib.redirect_stderr(io.StringIO()) as terminal:
+                stream.write.side_effect = OSError(28, 'synthetic-sensitive')
+                log.write('Безопасная причина отказа.')
+                self.assertIn('Безопасная причина отказа.', terminal.getvalue())
+                self.assertIn('Не удалось записать журнал', terminal.getvalue())
+                self.assertNotIn('synthetic-sensitive', terminal.getvalue())
+
+    def test_disconnected_terminal_keeps_file_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'setup.log'
+            log = setup.SetupLog(path)
+            with patch.object(setup.sys, 'stderr') as terminal:
+                terminal.write.side_effect = BrokenPipeError()
+                log.write('Безопасная причина отказа.')
+            log.close()
+            self.assertIn('Безопасная причина отказа.', path.read_text())
 
     def test_preflight_rejects_wrong_interface_address_ports_and_ssh_source(self):
         value = setup.enrollment(self.value)

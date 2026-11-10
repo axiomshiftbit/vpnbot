@@ -28,12 +28,49 @@ AWG_CONTAINER = 'vpnbot-node-amnezia'
 LABEL = 'org.vpnbot.managed-node'
 
 
+HOST_PROGRAMS = {'docker', 'sysctl', 'systemctl', 'nft', 'ip', 'ss', 'sshd',
+                 'useradd', 'usermod', 'openssl', 'certbot', 'ssh-keygen', 'visudo'}
+
+
+def host_program(value):
+    # Never expose a command line, a path or an unknown executable name.
+    return value if isinstance(value, str) and value in HOST_PROGRAMS else 'системная команда'
+
+
+class HostOperationError(RuntimeError):
+    """Only allowlisted metadata survives a failed subprocess."""
+    def __init__(self, program, returncode, stderr=b''):
+        super().__init__('node host operation failed')
+        self.program = host_program(program)
+        self.returncode = returncode if type(returncode) is int else None
+        self.category = 'command_failed'
+        lowered = stderr.lower()
+        for category, markers in (
+                ('disk_full', (b'no space left on device',)),
+                ('permission', (b'permission denied', b'operation not permitted')),
+                ('timeout', (b'timed out', b'timeout', b'deadline exceeded')),
+                ('dns', (b'could not resolve', b'no such host', b'temporary failure in name resolution')),
+                ('tls', (b'certificate verify failed', b'certificate signed by unknown authority', b'tls handshake')),
+                ('port_busy', (b'address already in use', b'could not bind'))):
+            if any(marker in lowered for marker in markers):
+                self.category = category
+                break
+        if self.category == 'command_failed' and program == 'sysctl' and b'cannot stat' in lowered:
+            self.category = 'missing_sysctl'
+        if self.category == 'command_failed' and program == 'docker' \
+                and any(marker in lowered for marker in (b'unauthorized', b'authentication required', b'pull access denied')):
+            self.category = 'registry_auth'
+        if self.category == 'command_failed' and program == 'certbot' \
+                and any(marker in lowered for marker in (b'challenge failed', b'failed to authenticate', b'some challenges have failed')):
+            self.category = 'acme_validation'
+
+
 def command(args, *, data=None, timeout=30, required=True):
     result = subprocess.run(list(map(str, args)), input=data, capture_output=True, timeout=timeout,
                             env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8', 'GODEBUG': 'multipathtcp=0'})
     if required and result.returncode:
         # Commands may mention credentials, certificates or private URLs.
-        raise RuntimeError('node host operation failed')
+        raise HostOperationError(str(args[0]), result.returncode, result.stderr)
     return result
 
 

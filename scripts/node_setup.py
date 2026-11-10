@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Public enrollment document and installation of the minimal node host."""
 import argparse
+from datetime import datetime, timezone
 import fcntl
 import ipaddress
 import json
@@ -8,6 +9,9 @@ import os
 from pathlib import Path
 import pwd
 import re
+import socket
+import stat
+import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -17,7 +21,7 @@ import node_install as install
 import node_state as state
 import nft_host_setup
 import node_host
-from node_runtime import Runtime, command, CONTAINER, COVER_CONTAINER, AWG_CONTAINER, LABEL
+from node_runtime import Runtime, command, HostOperationError, host_program, CONTAINER, COVER_CONTAINER, AWG_CONTAINER, LABEL
 
 ROOT = Path('/var/lib/vpnbot-node')
 DOCKER_DAEMON = Path('/etc/docker/daemon.json')
@@ -25,6 +29,92 @@ DOCKER_DAEMON = Path('/etc/docker/daemon.json')
 
 DOCKER_SETTINGS = ('iptables', 'ip6tables', 'ip-forward')
 FORWARDING = Path('/etc/sysctl.d/98-vpnbot-node-forwarding.conf')
+LOG_PATH = Path('/var/log/vpnbot-node/setup.log')
+STAGES = {
+    'input': 'ввод и проверка параметров',
+    'preflight': 'проверка адресов, SSH, портов и контейнеров',
+    'state': 'проверка состояния и блокировки установки',
+    'docker': 'настройка Docker без управления фаерволом',
+    'forwarding': 'отключение маршрутизации IPv4/IPv6',
+    'accounts': 'создание служебных пользователей',
+    'code': 'установка кода и служб ноды',
+    'bundle': 'проверка опубликованного комплекта образов',
+    'pull': 'загрузка образов ноды',
+    'identity': 'подготовка идентификаторов ноды',
+    'firewall': 'проверка и применение защиты nftables',
+    'certificate': 'проверка DNS и получение TLS-сертификата',
+    'validate': 'проверка конфигурации Xray и сайта прикрытия',
+    'ssh': 'настройка ограниченного SSH-доступа основного бота',
+    'start': 'запуск контейнеров ноды',
+    'services': 'включение и запуск служб ноды',
+    'verify': 'итоговая проверка действующих правил фаервола',
+    'rollback': 'откат незавершённой установки',
+    'result': 'проверка публичного ключа сервера и завершение',
+}
+CURRENT_STAGE = 'input'
+REPORT = None
+
+
+def terminal(message):
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except OSError:
+        # A disconnected terminal must not abort installation or its rollback.
+        pass
+
+
+class SetupLog:
+    """Private append-only diagnostics: callers pass only reviewed safe text."""
+    def __init__(self, path):
+        state.trusted(path)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+                raise ValueError('unsafe setup log')
+            os.fchmod(fd, 0o600)
+            self.stream = os.fdopen(fd, 'a', encoding='utf-8')
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def write(self, message):
+        terminal(message)
+        if self.stream is not None:
+            try:
+                stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+                self.stream.write(stamp+' pid='+str(os.getpid())+' '+message+'\n')
+                self.stream.flush()
+            except OSError:
+                # A full log filesystem must not interrupt rollback or hide the
+                # original failure. Further safe diagnostics stay on stderr.
+                terminal('Не удалось записать журнал установки; сообщения доступны в терминале.')
+                self.close()
+
+    def close(self):
+        if self.stream is not None:
+            try:
+                self.stream.close()
+            except OSError:
+                pass
+            self.stream = None
+
+
+def progress(name):
+    global CURRENT_STAGE
+    CURRENT_STAGE = name
+    if REPORT:
+        REPORT.write('Этап ['+name+']: '+STAGES[name]+'.')
+
+
+def report_error(error):
+    message = 'Ошибка на этапе ['+CURRENT_STAGE+'] ('+STAGES[CURRENT_STAGE]+'). '+failure_message(error)
+    if REPORT:
+        REPORT.write(message)
+    else:
+        terminal(message)
 
 
 def docker_firewall_disabled(daemon=DOCKER_DAEMON, proc=Path('/proc')):
@@ -94,13 +184,25 @@ def prepare_docker(daemon=DOCKER_DAEMON):
     return True
 
 
-def disable_forwarding():
+def disable_forwarding(proc=Path('/proc/sys')):
     """A node routes nothing; both forward chains drop, the kernel does not forward."""
     body = b'# VPNBot node: no IP forwarding (Docker ip-forward=false, host network only).\n' \
            b'net.ipv4.ip_forward = 0\nnet.ipv6.conf.all.forwarding = 0\n'
     state.trusted(FORWARDING)
     state.atomic(FORWARDING, body, 0o644)
-    command(['sysctl', '-q', '-p', FORWARDING])
+    # Keep both families in the boot policy, including a future boot with IPv6
+    # enabled. A kernel booted with ipv6.disable=1 has no IPv6 sysctl at all.
+    parameters = ['net.ipv4.ip_forward']
+    try:
+        (proc/'net/ipv6/conf/all/forwarding').stat()
+    except FileNotFoundError:
+        if REPORT:
+            REPORT.write('IPv6 недоступен в ядре: параметр IPv6 пропущен; запрет IPv4-маршрутизации сохраняется.')
+    else:
+        parameters.append('net.ipv6.conf.all.forwarding')
+    command(['sysctl', '-q', '-w', *[name+'=0' for name in parameters]])
+    if any((proc/name.replace('.', '/')).read_text().strip() != '0' for name in parameters):
+        raise ValueError('IP forwarding remains enabled')
 
 
 def verify_firewall(backend, path=Path('/etc/nftables.conf')):
@@ -170,6 +272,7 @@ def upgrade_code(source):
 
     State, keys and settings stay as they are. The node lock excludes a running
     job or renewal, so no ACME window can be open while the guard is replaced."""
+    progress('state')
     store = state.Store(ROOT)
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -177,12 +280,17 @@ def upgrade_code(source):
         job = store.read('job.json') or {}
         if not store.current() or store.pending() or job.get('state') in ('queued', 'running'):
             raise ValueError('Нода не установлена или изменение ещё не завершено')
+        progress('docker')
         docker_firewall_disabled()
+        progress('forwarding')
         disable_forwarding()
+        progress('code')
         install.install_code(source)
         host = config.deployment(state.decode((install.ETC/'deployment.json').read_bytes(), state.MAX_DEPLOYMENT_BYTES))
+        progress('firewall')
         Runtime(store, host).load_firewall()
         nft_host_setup.configure(host=host, mode='node')
+        progress('verify')
         verify_firewall(Runtime(store, host))
     finally:
         os.close(descriptor)
@@ -242,8 +350,11 @@ def preflight(value, docker=True):
 
 
 def setup(value, source, channel='latest', bundle=None):
+    progress('input')
     value = enrollment(value)
+    progress('preflight')
     preflight(value, docker=False)
+    progress('state')
     store = state.Store(ROOT)
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -252,13 +363,18 @@ def setup(value, source, channel='latest', bundle=None):
         if previous:
             raise ValueError('Нода уже установлена. Изменяйте настройки через основной бот')
         # Only now: an installed node is never interrupted by a Docker restart.
+        progress('docker')
         prepare_docker()
+        progress('forwarding')
         disable_forwarding()
+        progress('accounts')
         account = install.accounts()
         host = config.deployment(value['deployment'] | {'uid': account.pw_uid, 'gid': account.pw_gid,
                                  'cover_uid': pwd.getpwnam(install.COVER).pw_uid, 'awg_uid': pwd.getpwnam(install.AWG).pw_uid})
+        progress('code')
         install.install_code(source)
         state.atomic(install.ETC/'deployment.json', state.encode(host, state.MAX_DEPLOYMENT_BYTES))
+        progress('bundle')
         release = ROOT/'release.json'
         if bundle:
             manifest = image_bundle.read(bundle)
@@ -270,11 +386,14 @@ def setup(value, source, channel='latest', bundle=None):
         images = {'xr': manifest['images']['xr']}
         if value['options'].get('cover'):
             images['ng'] = manifest['images']['ng']
+        progress('pull')
         for image in images.values():
             backend.pull(image)
+        progress('identity')
         node = dict(schema=1, options=value['options'], identity=backend.identity(images['xr']),
                     peers=[], images=images, tls={})
         backend.ensure_keys(node)
+        progress('firewall')
         existing = command(['nft', 'list', 'table', 'inet', 'vpnbot_node'], required=False).returncode == 0
         if existing:
             raise ValueError('Найдены действующие правила ноды без её состояния; требуется восстановление')
@@ -291,20 +410,29 @@ def setup(value, source, channel='latest', bundle=None):
             # Both layers then use the validated enrollment addresses/SSH ports.
             nft_host_setup.configure(host=host, mode='node')
             if config.needs_certificate(node['options']):
+                progress('certificate')
                 node['tls'] = backend.certificate(node['options']['domain'], node['options'].get('domain_aliases', []))
+            progress('validate')
             generation = store.create(node)
             backend.validate(generation)
+            progress('ssh')
             previous_ssh = install.install_ssh(value['controller_key'], host['sources'])
+            progress('start')
             backend.apply(generation)
             store.activate(generation)
+            progress('services')
             command(['systemctl', 'enable', 'vpnbot-node.service', 'vpnbot-node-watch.timer', 'vpnbot-node-renew.timer'])
             # The boot service takes the same lock in its own process. State
             # and SSH policy are complete before handing control to systemd.
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             command(['systemctl', 'start', 'vpnbot-node.service', 'vpnbot-node-watch.timer', 'vpnbot-node-renew.timer'])
             fcntl.flock(descriptor, fcntl.LOCK_EX)
+            progress('verify')
             verify_firewall(backend)
-        except Exception:
+        except Exception as error:
+            failed_stage = CURRENT_STAGE
+            report_error(error)
+            progress('rollback')
             # A failure after starting systemd must not leave timers reviving
             # a partially installed node. ExecStop needs the same state lock.
             fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -323,7 +451,9 @@ def setup(value, source, channel='latest', bundle=None):
             (store.root/'current.json').unlink(missing_ok=True)
             if previous_ssh is not None:
                 install.restore_ssh(previous_ssh)
+            progress(failed_stage)
             raise
+        progress('result')
         public = Path('/etc/ssh/ssh_host_ed25519_key.pub')
         fingerprint = command(['ssh-keygen', '-l', '-E', 'sha256', '-f', public]).stdout.decode().split()[1]
         return {'installed': True, 'ssh_user': install.CONTROL, 'host_fingerprint': fingerprint,
@@ -371,6 +501,19 @@ def failure_message(error):
     # Only reviewed constant messages may reach the terminal. Never print an
     # arbitrary exception: it can contain input, command output or a credential.
     public_errors = {
+        'IP forwarding remains enabled': 'Ядро не подтвердило отключение маршрутизации. Установка остановлена для сохранения изоляции ноды.',
+        'unsafe setup log': 'Небезопасный файл журнала /var/log/vpnbot-node/setup.log: нужны обычный файл, владелец root и отсутствие жёстких ссылок.',
+        'symlink in state path': 'В защищённом пути обнаружена символическая ссылка. Проверьте пути состояния и журнала ноды.',
+        'untrusted state path': 'У защищённого каталога неверный владелец или разрешена запись другим пользователям.',
+        'domain DNS must point only to this node': 'Все A/AAAA-записи домена должны указывать только на публичные адреса этой ноды. Проверьте также лишнюю AAAA-запись.',
+        'an ED25519 public key is required': 'Нужен полный публичный ключ ssh-ed25519 из карточки ноды основного бота.',
+        'invalid public key': 'Публичный SSH-ключ повреждён или обрезан. Скопируйте его полностью из карточки ноды.',
+        'invalid hostname': 'Некорректное доменное имя. Введите имя без https://, пути и порта.',
+        'account name is already in use': 'Служебный пользователь ноды уже существует, но её настройки отсутствуют. Требуется проверка незавершённой установки.',
+        'incompatible service account': 'Существующий служебный пользователь несовместим с установкой ноды. Проверьте UID и оболочку пользователя.',
+        'node core failed to start': 'Контейнер Xray не запустился. Проверьте выбранное ядро и конфигурацию ноды.',
+        'node listener did not become ready': 'VPN-порт ноды не стал доступен за отведённое время.',
+        'Запустите установку от root': 'Запустите установку от root.',
         'a public node address is required': 'Не задан публичный адрес ноды. Укажите IPv4 или IPv6.',
         'nftables service is not active and enabled': 'Служба nftables должна быть активна и включена в автозапуск. Проверьте её состояние и /etc/nftables.conf.',
         'nftables live rules differ from persistent configuration': 'Загруженные правила nftables не совпадают с сохранённой конфигурацией. Установка не подтверждена.',
@@ -404,8 +547,40 @@ def failure_message(error):
     # Fixed text plus the number of a port this installer checks; no input data.
     for port in (443, 8443, 9443, 9444, 8080):
         public_errors['Необходимый порт уже занят: '+str(port)] = 'Необходимый порт уже занят: '+str(port)+'.'
-    detail = public_errors.get(str(error)) if isinstance(error, ValueError) else None
-    return 'Установка ноды не завершена. '+(detail or 'Проверьте публичные параметры, порты и доступ к реестру образов.')
+    detail = public_errors.get(str(error)) if isinstance(error, (ValueError, RuntimeError)) else None
+    if isinstance(error, HostOperationError):
+        reasons = {
+            'command_failed': 'команда завершилась с ошибкой; проверьте компонент, указанный в текущем этапе',
+            'disk_full': 'недостаточно места на диске',
+            'permission': 'операция запрещена правами или ограничениями системы',
+            'timeout': 'истекло время ожидания ответа',
+            'dns': 'не удалось разрешить DNS-имя',
+            'tls': 'сбой TLS-соединения или проверки сертификата',
+            'port_busy': 'необходимый сетевой порт уже занят',
+            'missing_sysctl': 'параметр sysctl отсутствует в ядре',
+            'registry_auth': 'реестр отказал в доступе к образу',
+            'acme_validation': 'центр сертификации не подтвердил домен; проверьте DNS и доступность TCP/80',
+        }
+        detail = host_program(error.program)+': '+reasons.get(error.category, reasons['command_failed'])
+        if type(error.returncode) is int:
+            detail += ' (код завершения '+str(error.returncode)+')'
+        detail += '.'
+    elif isinstance(error, subprocess.TimeoutExpired):
+        program = host_program(error.cmd[0]) if isinstance(error.cmd, (list, tuple)) and error.cmd else host_program(None)
+        detail = program+': превышено время ожидания выполнения команды.'
+    elif isinstance(error, socket.gaierror):
+        detail = 'Не удалось разрешить DNS-имя. Проверьте DNS-записи домена и доступность DNS-сервера.'
+    elif isinstance(error, TimeoutError):
+        detail = 'Превышено время ожидания сетевой операции указанного этапа.'
+    elif isinstance(error, BlockingIOError):
+        detail = 'Нода занята другой операцией. Дождитесь её завершения; не запускайте установки одновременно.'
+    elif isinstance(error, FileNotFoundError):
+        detail = 'Не найден необходимый файл, системная команда или параметр ядра. Проверьте зависимости указанного этапа.'
+    elif isinstance(error, PermissionError):
+        detail = 'Недостаточно прав для указанного этапа. Проверьте владельца файлов и ограничения системы.'
+    elif isinstance(error, OSError) and error.errno == 28:
+        detail = 'Недостаточно места на диске для продолжения установки.'
+    return 'Установка ноды не завершена. '+(detail or 'Неожиданный сбой. Для диагностики сохраните номер этапа и безопасный журнал установки; повторная установка может потребовать восстановления.')
 
 
 def main():
@@ -421,6 +596,7 @@ def main():
         raise ValueError('Запустите установку от root')
     os.umask(0o077)
     if args.controller_key:
+        progress('ssh')
         if args.bundle or args.controller_key.is_symlink() or not args.controller_key.is_file():
             raise ValueError('Для передачи управления нужен обычный файл публичного ключа')
         with args.controller_key.open('r') as stream:
@@ -448,14 +624,32 @@ def main():
     print('Публичный ключ сервера для раздела «Ноды»: '+result['host_key'])
 
 
-if __name__ == '__main__':
+def run():
+    global REPORT, CURRENT_STAGE
+    CURRENT_STAGE = 'input'
     try:
+        if os.geteuid() == 0:
+            REPORT = SetupLog(LOG_PATH)
+            REPORT.write('Журнал установки: /var/log/vpnbot-node/setup.log (доступ только root).')
+        progress('input')
         main()
+        if REPORT:
+            REPORT.write('Операция завершена успешно.')
+        return 0
     except KeyboardInterrupt:
-        print('Установка прервана.', file=sys.stderr)
-        sys.exit(1)
+        if REPORT:
+            REPORT.write('Установка прервана пользователем на этапе ['+CURRENT_STAGE+'].')
+        else:
+            terminal('Установка прервана.')
+        return 1
     except Exception as error:
-        # No subprocess diagnostics or enrollment values: future requests may
-        # contain private data. Validation details are tested separately.
-        print(failure_message(error), file=sys.stderr)
-        sys.exit(1)
+        report_error(error)
+        return 1
+    finally:
+        if REPORT:
+            REPORT.close()
+            REPORT = None
+
+
+if __name__ == '__main__':
+    sys.exit(run())
