@@ -56,6 +56,18 @@ class LocalArtifactsTest(unittest.TestCase):
             self.store.download('', 'descriptor-*', True, str(self.work / 'out'))
         self.assertFalse((self.work / 'out').exists())
 
+    def test_all_admission_reports_are_required_and_survive_failed_job_retry(self):
+        names = sorted(n for n in artifacts.FILES if n.startswith('admission-'))
+        self.assertEqual(len(names), len(artifacts.IMAGES)+4)
+        for name in names[:-1]: self.upload(name)
+        retry = self.make_store(attempt='2')
+        with self.assertRaises(FileNotFoundError):
+            retry.download('', 'admission-*', True, str(self.work/'out'))
+        self.assertFalse((self.work/'out').exists())
+        self.upload(names[-1], store=retry)
+        retry.download('', 'admission-*', True, str(self.work/'out'))
+        self.assertEqual({p.name for p in (self.work/'out').iterdir()}, {artifacts.FILES[n] for n in names})
+
     def test_failed_job_retry_reuses_prior_attempt_but_not_another_run_or_commit(self):
         content = self.upload()
         retry = self.make_store(attempt='2')
@@ -148,6 +160,7 @@ class LocalArtifactsTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.make_store(**kwargs)
         self.store.root.mkdir(mode=0o755)
+        self.store.root.chmod(0o755)  # Keep this unsafe fixture independent of the caller's umask.
         with self.assertRaises(ValueError):
             self.upload()
 

@@ -21,12 +21,22 @@ import ci_publish_bundle as publish  # noqa: E402
 import image_bundle as bundles  # noqa: E402
 
 SOURCE, OTHER = 'a' * 40, 'b' * 40
+DIGEST = 'sha256:'+'c'*64
+ENVELOPE = bundles.BUNDLE_REPO+'@'+DIGEST
 
 
 def bundle(source=SOURCE, attempt=1):
     return dict(schema=1, source=source, run=123, attempt=attempt, state_epoch=1,
                 images={name: bundles.REGISTRY + name + '@sha256:' + '%064x' % index
                         for index, name in enumerate(bundles.IMAGES, 1)})
+
+
+def fetch_proof(ref, destination, *, admission, value=None):
+    value = bundle() if value is None else value
+    proof = dict(schema=1, source=value['source'], bundle=bundles.fingerprint(value),
+                 policy=dict(allow_test_failures=False, allow_vulnerabilities=False, allow_waivers=False), warnings=[])
+    admission.write_text(json.dumps(proof))
+    return value
 
 
 class CollectTest(unittest.TestCase):
@@ -75,13 +85,13 @@ class PromoteTest(unittest.TestCase):
             calls.append(args)
             if args[:2] == ('gh', 'api'):
                 return remote
-            return ''
+            return DIGEST if '--format' in args else ''
 
-        def fetch(ref, destination):
+        def fetch(ref, destination, *, admission):
             calls.append(('fetch', ref))
             if found is None:
                 raise RuntimeError('docker operation failed')
-            return found
+            return fetch_proof(ref, destination, admission=admission, value=found)
 
         env = dict(GITHUB_REF_NAME=branch, GITHUB_EVENT_NAME=event, GITHUB_SHA=SOURCE, FULL_BUILD=full,
                    GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
@@ -95,11 +105,11 @@ class PromoteTest(unittest.TestCase):
     def test_master_takes_the_set_admitted_for_its_commit(self):
         result, calls = self.run_promote()
         self.assertIs(result, True)
-        self.assertEqual(calls[0], ('fetch', bundles.BUNDLE_REPO + ':bundle-source-' + SOURCE))
-        inspected = [c[-1] for c in calls if c[:4] == ('docker', 'buildx', 'imagetools', 'inspect')]
+        self.assertEqual(calls[1], ('fetch', ENVELOPE))
+        inspected = [c[-1] for c in calls if c[:4] == ('docker', 'buildx', 'imagetools', 'inspect') and '--format' not in c]
         self.assertEqual(sorted(inspected), sorted(bundle()['images'].values()))
         self.assertEqual(calls[-1], ('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false', '--tag',
-                                     bundles.BUNDLE_REPO + ':bundle-latest', bundles.BUNDLE_REPO + ':bundle-source-' + SOURCE))
+                                     bundles.BUNDLE_REPO + ':bundle-latest', ENVELOPE))
         self.assertLess(calls.index(next(c for c in calls if c[:2] == ('gh', 'api'))), len(calls) - 1)
 
     def test_everything_else_builds_in_full_without_touching_the_registry(self):
@@ -116,7 +126,7 @@ class PromoteTest(unittest.TestCase):
         with patch.object(promote.retrying.__globals__['time'], 'sleep') as sleep:
             result, calls = self.run_promote(found=None)
         self.assertIs(result, False)
-        self.assertEqual(calls, [('fetch', bundles.BUNDLE_REPO + ':bundle-source-' + SOURCE)] * 4)
+        self.assertEqual([c for c in calls if c[0] == 'fetch'], [('fetch', ENVELOPE)] * 4)
         self.assertEqual(sleep.call_count, 3)
 
     def test_registry_hiccup_during_promotion_is_retried(self):
@@ -128,12 +138,12 @@ class PromoteTest(unittest.TestCase):
             if key in (('gh', 'api'), ('docker', 'buildx', 'imagetools', 'create')) and key not in failed:
                 failed.add(key)
                 raise RuntimeError('docker operation failed')
-            return SOURCE if args[:2] == ('gh', 'api') else ''
+            return SOURCE if args[:2] == ('gh', 'api') else DIGEST if '--format' in args else ''
 
         env = dict(GITHUB_REF_NAME='master', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_SHA=SOURCE, FULL_BUILD='',
                    GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
         with patch.dict(os.environ, env, clear=True), patch.object(promote, 'command', flaky), \
-                patch.object(promote, 'fetch_reference', lambda ref, destination: bundle()), patch('sys.stdout', io.StringIO()), \
+                patch.object(promote, 'fetch_reference', fetch_proof), patch('sys.stdout', io.StringIO()), \
                 patch.object(promote.retrying.__globals__['time'], 'sleep') as sleep:
             self.assertIs(promote.promote(), True)
         self.assertEqual((len(failed), sleep.call_count), (2, 2))
@@ -150,12 +160,12 @@ class PromoteTest(unittest.TestCase):
                 state['creates'] += 1
                 state['remote'] = OTHER
                 raise RuntimeError('docker operation failed')
-            return ''
+            return DIGEST if '--format' in args else ''
 
         env = dict(GITHUB_REF_NAME='master', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_SHA=SOURCE, FULL_BUILD='',
                    GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
         with patch.dict(os.environ, env, clear=True), patch.object(promote, 'command', command), \
-                patch.object(promote, 'fetch_reference', lambda ref, destination: bundle()), patch('sys.stdout', io.StringIO()), \
+                patch.object(promote, 'fetch_reference', fetch_proof), patch('sys.stdout', io.StringIO()), \
                 patch.object(promote.retrying.__globals__['time'], 'sleep'), self.assertRaisesRegex(ValueError, 'newer code'):
             promote.promote()
         self.assertEqual(state['creates'], 1)
@@ -189,16 +199,16 @@ class PublishTest(unittest.TestCase):
 
         def command(*args):
             calls.append(args)
-            return SOURCE if args[:2] == ('gh', 'api') else ''
+            return SOURCE if args[:2] == ('gh', 'api') else DIGEST if '--format' in args else ''
 
         with tempfile.TemporaryDirectory() as directory:
             manifest, evidence = Path(directory) / 'bundle.json', Path(directory) / 'native.json'
             manifest.write_bytes(bundles.canonical(value))
             evidence.write_text('{}')
             env = dict(CHECKS='{}', EXPECTED_BUNDLE=bundles.fingerprint(value), GITHUB_SHA=SOURCE, GITHUB_REF_NAME=branch,
-                       GITHUB_EVENT_NAME=event, GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
+                       CI_REPORT_DIRECTORY='unused', GITHUB_EVENT_NAME=event, GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
             with patch.dict(os.environ, env, clear=True), patch.object(publish, 'command', command), \
-                    patch.object(publish, 'admit', lambda *a: None), patch('sys.stdout', io.StringIO()), \
+                    patch.object(publish, 'admit', lambda *a, **k: None), patch.object(publish.release_policy, 'collect', return_value={'warnings': []}), patch('sys.stdout', io.StringIO()), \
                     patch.object(sys, 'argv', ['ci_publish_bundle.py', str(manifest), str(evidence)]):
                 publish.main()
         return [c[6] for c in calls if c[:4] == ('docker', 'buildx', 'imagetools', 'create')]
@@ -214,7 +224,7 @@ class PublishTest(unittest.TestCase):
                 seen.add(args)
                 raise RuntimeError('docker operation failed')
             calls.append(args)
-            return SOURCE if args[:2] == ('gh', 'api') else ''
+            return SOURCE if args[:2] == ('gh', 'api') else DIGEST if '--format' in args else ''
 
         value = bundle()
         with tempfile.TemporaryDirectory() as directory:
@@ -222,10 +232,10 @@ class PublishTest(unittest.TestCase):
             manifest.write_bytes(bundles.canonical(value))
             evidence.write_text('{}')
             env = dict(CHECKS='{}', EXPECTED_BUNDLE=bundles.fingerprint(value), GITHUB_SHA=SOURCE, GITHUB_REF_NAME='dev',
-                       GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
+                       CI_REPORT_DIRECTORY='unused', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
             # Сборка конверта получает временный каталог: его путь у каждой попытки свой.
             with patch.dict(os.environ, env, clear=True), patch.object(publish, 'command', flaky), \
-                    patch.object(publish, 'admit', lambda *a: None), patch('sys.stdout', io.StringIO()), \
+                    patch.object(publish, 'admit', lambda *a, **k: None), patch.object(publish.release_policy, 'collect', return_value={'warnings': []}), patch('sys.stdout', io.StringIO()), \
                     patch.object(sys, 'argv', ['ci_publish_bundle.py', str(manifest), str(evidence)]), \
                     patch.object(publish.retrying.__globals__['time'], 'sleep') as sleep:
                 publish.main()
@@ -243,16 +253,16 @@ class PublishTest(unittest.TestCase):
                 state['moves'] += 1
                 state['remote'] = OTHER
                 raise RuntimeError('docker operation failed')
-            return ''
+            return DIGEST if '--format' in args else ''
 
         with tempfile.TemporaryDirectory() as directory:
             manifest, evidence = Path(directory) / 'bundle.json', Path(directory) / 'native.json'
             manifest.write_bytes(bundles.canonical(value))
             evidence.write_text('{}')
             env = dict(CHECKS='{}', EXPECTED_BUNDLE=bundles.fingerprint(value), GITHUB_SHA=SOURCE, GITHUB_REF_NAME='dev',
-                       GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
+                       CI_REPORT_DIRECTORY='unused', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='axiomshiftbit/vpnbot')
             with patch.dict(os.environ, env, clear=True), patch.object(publish, 'command', command), \
-                    patch.object(publish, 'admit', lambda *a: None), patch('sys.stdout', io.StringIO()), \
+                    patch.object(publish, 'admit', lambda *a, **k: None), patch.object(publish.release_policy, 'collect', return_value={'warnings': []}), patch('sys.stdout', io.StringIO()), \
                     patch.object(sys, 'argv', ['ci_publish_bundle.py', str(manifest), str(evidence)]), \
                     patch.object(publish.retrying.__globals__['time'], 'sleep'), \
                     self.assertRaisesRegex(ValueError, 'branch moved'):

@@ -45,6 +45,7 @@ import urllib.request
 
 from ci_retry import retrying
 import ci_waivers
+import ci_release_policy as release
 
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKING = {'HIGH', 'CRITICAL'}
@@ -427,12 +428,21 @@ def main():
     token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
     rows, blocked = check(token=token)
     blocked, waiver_lines, waived = apply_waivers(blocked)
+    warnings = [release.warning('waiver', ident) for _name, _version, ident in sorted(waived)]
+    if blocked and release.policy()['allow_vulnerabilities']:
+        warnings += [release.warning('vulnerability', finding[2]) for finding in blocked]
+        waived = waived | frozenset((f[0], f[1], f[2]) for f in blocked)
+        blocked = []
     text = report(rows, blocked, waived) + ''.join('\n' + line for line in waiver_lines)
     print(text)
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary:
         with open(summary, 'a') as stream:
             stream.write('### Закреплённые версии\n\n```\n' + text + '\n```\n')
+    if not blocked and os.environ.get('CI_REPORT_FILE'):
+        release.write_report('components', warnings, len(rows))
+    elif warnings:
+        release.announce(warnings, 'components')
     return 1 if blocked else 0
 
 

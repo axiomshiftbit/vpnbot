@@ -23,6 +23,14 @@ on:
         description: 'Исключения уязвимостей: допустить точные находки из scripts/ci_vuln_waivers.json (уязвимость + компонент/пакет + версия, со сроком). Без отметки они блокируют'
         type: boolean
         default: false
+      allow_test_failures:
+        description: 'Допуск ошибок перечисленных функциональных тестов интерфейса; протоколы, безопасность и критические проверки обязательны'
+        type: boolean
+        default: false
+      allow_vulnerabilities:
+        description: 'Допуск найденных CVE с предупреждениями; поиск секретов, работа сканера и целостность обязательны'
+        type: boolean
+        default: false
   # Раз в две недели на серверах GitHub: пересборка со свежими пакетами и
   # проверка уязвимостей. На домашней VM тот же прогон запускает её собственный
   # таймер (scripts/ci_home_schedule.py): он навёрстывает пропуск после включения.
@@ -30,6 +38,10 @@ on:
     - cron: '0 4 1,15 * *'
 permissions:
   contents: read
+env:
+  CI_ALLOW_TEST_FAILURES: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_test_failures && '1' || '0' }}
+  CI_ALLOW_VULNERABILITIES: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_vulnerabilities && '1' || '0' }}
+  CI_ALLOW_WAIVERS: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_waivers && '1' || '0' }}
 concurrency:
   group: images-${{ github.ref }}
   cancel-in-progress: false
@@ -67,6 +79,9 @@ jobs:
     uses: ./.github/workflows/tests.yml
     with:
       home_runner: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner }}
+      allow_test_failures: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_test_failures || false }}
+      allow_vulnerabilities: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_vulnerabilities || false }}
+      allow_waivers: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_waivers || false }}
   build:
     needs: tests
     runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
@@ -438,8 +453,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
           # Только ручной запуск с явной отметкой; расписание и push — никогда.
-          CI_ALLOW_WAIVERS: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_waivers && '1' || '0' }}
+          CI_ALLOW_WAIVERS: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.actor == 'axiomshiftbit' && github.event_name == 'workflow_dispatch' && inputs.allow_waivers && '1' || '0' }}
+          CI_REPORT_FILE: ${{ runner.temp }}/admission/components.json
         run: python3 scripts/ci_check_components.py
+      - uses: ./.github/actions/upload-artifact
+        with:
+          name: admission-components
+          path: ${{ runner.temp }}/admission/components.json
       # Адреса боевых серверов и другие приметы установки известны только
       # своему runner (файл /etc/vpnbot-ci-private-markers): ни в репозиторий,
       # ни в секреты GitHub они не кладутся. Остальные правила те же, что в тестах.
@@ -491,11 +511,16 @@ jobs:
           IMAGE_NAME: ${{ matrix.image }}
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          CI_ALLOW_WAIVERS: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_waivers && '1' || '0' }}
+          CI_ALLOW_WAIVERS: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.actor == 'axiomshiftbit' && github.event_name == 'workflow_dispatch' && inputs.allow_waivers && '1' || '0' }}
+          CI_REPORT_FILE: ${{ runner.temp }}/admission/security-${{ matrix.image }}.json
         run: |
           set -euo pipefail
           image=$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/bundle.json"))["images"][os.environ["IMAGE_NAME"]])')
           bash scripts/ci_scan_image.sh "$image"
+      - uses: ./.github/actions/upload-artifact
+        with:
+          name: admission-security-${{ matrix.image }}
+          path: ${{ runner.temp }}/admission/security-${{ matrix.image }}.json
       # Trivy ищет секреты в итоговой файловой системе. Здесь каждый слой
       # разбирается отдельно: ключ, удалённый поздним слоем, остаётся в раннем.
       - name: Секреты и конфиденциальные данные в слоях
@@ -558,7 +583,8 @@ jobs:
         run: |
           sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
             python3 scripts/ci_hosted_test.py test ${{ (runner.environment == 'self-hosted') && '--local-test' || '' }} \
-            --manifest "$RUNNER_TEMP/bundle.json" --output "$RUNNER_TEMP/native.json"
+            --manifest "$RUNNER_TEMP/bundle.json" --output "$RUNNER_TEMP/native.json" \
+            ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_test_failures && '--allow-test-failures' || '' }}
       - uses: ./.github/actions/upload-artifact
         with:
           name: native-admission
@@ -589,6 +615,11 @@ jobs:
         with:
           name: native-admission
           path: ${{ runner.temp }}
+      - uses: ./.github/actions/download-artifact
+        with:
+          pattern: admission-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/admission-reports
       - uses: ./.github/actions/setup-buildx
       - uses: ./.github/actions/registry-login
         with:
@@ -599,6 +630,7 @@ jobs:
           CHECKS: '{"build":"${{ needs.build.result }}","tests":"${{ needs.tests.result }}","security":"${{ needs.security.result }}","native":"${{ needs.native.result }}"}'
           EXPECTED_BUNDLE: ${{ needs.bundle.outputs.fingerprint }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI_REPORT_DIRECTORY: ${{ runner.temp }}/admission-reports
         run: python3 scripts/ci_publish_bundle.py "$RUNNER_TEMP/release/bundle.json" "$RUNNER_TEMP/native.json"
   # Только по флажку и только после публикации комплекта dev: master двигается
   # вперёд на проверенный коммит, затем короткий прогон master переносит канал.
@@ -619,6 +651,9 @@ jobs:
           PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
           # Короткий прогон master идёт там же, где шла сборка dev.
           PROMOTE_HOME_RUNNER: ${{ inputs.home_runner }}
+          PROMOTE_ALLOW_TEST_FAILURES: ${{ inputs.allow_test_failures }}
+          PROMOTE_ALLOW_VULNERABILITIES: ${{ inputs.allow_vulnerabilities }}
+          PROMOTE_ALLOW_WAIVERS: ${{ inputs.allow_waivers }}
         run: python3 scripts/ci_promote_master.py
   cleanup-artifacts:
     needs: [publish, release]

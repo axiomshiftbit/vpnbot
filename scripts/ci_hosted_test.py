@@ -74,11 +74,16 @@ def identity(checkout):
     return digest.hexdigest()
 
 
-def evidence(bundle, checks, suite):
+def evidence(bundle, checks, suite, warnings=None, allow_test_failures=False):
     if set(checks) != GROUPS or any(type(n) is not int or n <= 0 for n in checks.values()):
         raise ValueError('incomplete native matrix')
-    return dict(source=bundle['source'], bundle=fingerprint(bundle), suite=suite,
-                status='success', checks=sum(checks.values()))
+    from ci_release_policy import validate_warnings
+    rows = validate_warnings(warnings if warnings is not None else [], {'allow_test_failures': allow_test_failures})
+    result = dict(source=bundle['source'], bundle=fingerprint(bundle), suite=suite,
+                  status='success_with_warnings' if rows else 'success', checks=sum(checks.values()))
+    if rows:
+        result['warnings'] = rows
+    return result
 
 
 def failed_protocols(checkout):
@@ -182,7 +187,7 @@ def assets(checkout, manifest):
     print('Candidate images, rollback pair and disposable clients prepared')
 
 
-def test(checkout, manifest, output):
+def test(checkout, manifest, output, allow_test_failures=False):
     if os.geteuid() != 0:
         raise ValueError('network namespace tests require root on the disposable VM')
     if ROOT.exists():
@@ -218,7 +223,8 @@ def test(checkout, manifest, output):
             shutil.copytree(manifest.with_name('client-tools'), ROOT / 'stand/bin')
             bootstrap.bootstrap(checkout, bundle, CLIENT_IMAGE)
             run = subprocess.run([sys.executable, str(ROOT / 'suite/run.py'), '--checkout', str(checkout),
-                                  '--manifest', str(manifest), '--results', str(results)], timeout=9000)
+                                  '--manifest', str(manifest), '--results', str(results)] +
+                                 (['--allow-test-failures'] if allow_test_failures else []), timeout=9000)
         finally:
             sys.stdout.flush(); sys.stderr.flush()
             os.dup2(original_out, 1); os.dup2(original_err, 2)
@@ -226,7 +232,8 @@ def test(checkout, manifest, output):
     if run.returncode:
         raise RuntimeError('ephemeral VPN matrix failed')
     checks = json.loads((results / 'summary.json').read_text())
-    result = evidence(bundle, checks, suite)
+    warnings = json.loads((results / 'warnings.json').read_text())
+    result = evidence(bundle, checks, suite, warnings, allow_test_failures)
     if identity(checkout) != suite or bundle != read(manifest):
         raise ValueError('test inputs changed')
     if command('git', '-C', str(checkout), 'rev-parse', 'HEAD') != bundle['source']:
@@ -234,6 +241,8 @@ def test(checkout, manifest, output):
     atomic(output, canonical(result))
     output.chmod(0o644)  # Only public identifiers; uploader runs without sudo.
     print('Ephemeral VPN stand: all required groups passed; checks:', result['checks'])
+    from ci_release_policy import announce
+    announce(warnings, 'native')
     retried = retried_suites(results)
     if retried:
         print('Passed on the second attempt:', ', '.join(retried))
@@ -270,11 +279,12 @@ def main():
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--local-test', action='store_true')
+    parser.add_argument('--allow-test-failures', action='store_true')
     args = parser.parse_args()
     host(args.local_test)
     checkout = Path(__file__).resolve().parents[1]
     if args.action == 'assets': assets(checkout, args.manifest.resolve())
-    elif args.action == 'test': test(checkout, args.manifest.resolve(), args.output.resolve())
+    elif args.action == 'test': test(checkout, args.manifest.resolve(), args.output.resolve(), args.allow_test_failures)
     else: cleanup()
 
 

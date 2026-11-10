@@ -127,7 +127,7 @@ cqAssert(str_contains($mk, 'tests/*_test.php'), 'цель test гоняет ве
 cqAssert(is_file(__DIR__ . '/../.github/workflows/tests.yml'), 'есть workflow с тестами');
 $ci = (string) file_get_contents(__DIR__ . '/../.github/workflows/tests.yml');
 cqAssert(str_contains($ci, 'php -l'), 'CI прогоняет линтер');
-cqAssert(str_contains($ci, 'tests/*_test.php'), 'CI прогоняет тесты');
+cqAssert(str_contains($ci, 'python3 scripts/ci_unit_tests.py'), 'CI запускает общий исполнитель PHP-тестов');
 // images.yml триггерится только на dockerfile/.env/compose — на правки PHP он
 // не запускается, поэтому workflow отдельный.
 cqAssert(!preg_match("~paths:~", substr($ci, 0, strpos($ci, 'jobs:'))),

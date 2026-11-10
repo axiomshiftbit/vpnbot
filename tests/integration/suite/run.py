@@ -3,7 +3,7 @@
 from pathlib import Path
 import argparse,hashlib,importlib.util,json,os,re,shutil,signal,subprocess,sys,time
 os.umask(0o077)
-p=argparse.ArgumentParser();p.add_argument('--checkout',type=Path,required=True);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--results',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--checkout',type=Path,required=True);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--results',type=Path,required=True);p.add_argument('--allow-test-failures',action='store_true');a=p.parse_args()
 B=Path('/opt/vpnbot-hosted-ci/stand/bot');R=Path('/opt/vpnbot-hosted-ci/tests');O=a.results
 sys.path.insert(0,str(a.checkout/'scripts'));import image_bundle as ib
 candidate=ib.read(a.manifest)
@@ -14,6 +14,7 @@ baseenv['VPNBOT_HOST_SERVICES']='off'  # Separate host-service tests own their i
 env=baseenv|{'VPNBOT_BUNDLE_FILE':str(O/'candidate.json')}
 ib.atomic(O/'candidate.json',ib.canonical(candidate))
 counts=dict.fromkeys(('unit','native','modules','backup_restore','update_rollback','faults','telegram_http'),0)
+warnings=[]
 worker=None;restored=False;paths=[];mutated=False;retained=[]
 def interrupted(signum,frame):raise InterruptedError('test interrupted')
 signal.signal(signal.SIGTERM,interrupted)
@@ -191,22 +192,14 @@ try:
  subprocess.run(['tar','-x','-C',str(unit)],input=archive,check=True)
  unitcode='''apk add --no-cache bash util-linux coreutils findutils make jq openssl php85-pcntl php85-sodium php85-tokenizer php85-pdo php85-pdo_sqlite py3-yaml >/tmp/packages.log 2>&1
 mkdir -p /logs
-python3 -m unittest discover -s tests -p '*_test.py' || exit 1
-python3 - <<'INNER'
-import pathlib,subprocess,re,json
-rows=[]
-for f in sorted(pathlib.Path('tests').glob('*_test.php')):
- p=subprocess.run(['php','-d','error_reporting=-1','-d','error_log=/dev/stderr','-d','display_errors=1',str(f)],capture_output=True,text=True,timeout=150)
- bad=p.returncode!=0 or bool(re.search(r'(?:PHP )?(?:Warning|Deprecated|Fatal error):',p.stdout+p.stderr))
- rows.append({'file':f.name,'ok':not bad})
- if bad: print('FAIL',f.name,p.stdout,p.stderr)
-pathlib.Path('/results/unit.json').write_text(json.dumps(rows))
-raise SystemExit(any(not x['ok'] for x in rows))
-INNER'''
+env CI_ALLOW_TEST_FAILURES=0 CI_ALLOW_VULNERABILITIES=0 CI_ALLOW_WAIVERS=0 GITHUB_STEP_SUMMARY= python3 -m unittest discover -s tests -p '*_test.py' || exit 1
+python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --local-result'''
  # Как у сервисов Compose: init убирает осиротевшие процессы после проверки
  # супервизоров, иначе pgrep видит зомби вместо перезапущенного ядра.
- run('unit-php85',['docker','run','--rm','--init','--name','vpnbot-ci-unit','-v',str(unit)+':/workspace','-v',str(O)+':/results','-v',str(R/'xray')+':/audit-xray:ro','-e','VLESS_TEST_XRAY=/audit-xray','-v',str(R/'xray-fork')+':/audit-xray-fork:ro','-e','XRAY_FORK_TEST_BINARY=/audit-xray-fork','-w','/workspace','--entrypoint','sh',candidate['images']['php'],'-ec',unitcode],timeout=1500)
- rows=json.loads((O/'unit.json').read_text());check('unit','all-PHP85-test-files',len(rows)>=121 and all(x['ok'] for x in rows));counts['unit']+=len(rows)
+ run('unit-php85',['docker','run','--rm','--init','--name','vpnbot-ci-unit','-v',str(unit)+':/workspace','-v',str(O)+':/results','-e','CI_ALLOW_TEST_FAILURES='+str(int(a.allow_test_failures)),'-v',str(R/'xray')+':/audit-xray:ro','-e','VLESS_TEST_XRAY=/audit-xray','-v',str(R/'xray-fork')+':/audit-xray-fork:ro','-e','XRAY_FORK_TEST_BINARY=/audit-xray-fork','-w','/workspace','--entrypoint','sh',candidate['images']['php'],'-ec',unitcode],timeout=1500)
+ from ci_release_policy import validate_warnings
+ rows=json.loads((O/'unit.json').read_text());check('unit','all-PHP85-test-files',type(rows['checks']) is int and rows['checks']>=121 and rows['blocked']==[]);counts['unit']+=rows['checks']-len(rows['warnings'])
+ warnings.extend(validate_warnings(rows['warnings'],{'allow_test_failures':a.allow_test_failures}))
  php("require '/app/bot.php';$b=(new ReflectionClass('Bot'))->newInstanceWithoutConstructor();$b->cleanDocker();")
  for name,ref in candidate['images'].items():
   check('faults','cleanup-keeps-candidate-'+name,bool(capture(['docker','image','inspect','--format','{{.Id}}',ref])))
@@ -364,6 +357,7 @@ finally:
   for name in retained:capture(['docker','rm',name])
 if not restored:raise RuntimeError('rollback incomplete')
 (O/'summary.json').write_text(json.dumps(counts,indent=2))
+(O/'warnings.json').write_text(json.dumps(warnings))
 print(json.dumps(counts),flush=True)
 
 # Only successful disposable unit checkouts are removed; failure evidence stays.

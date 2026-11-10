@@ -9,6 +9,7 @@ import tempfile
 
 from ci_retry import retrying
 from image_bundle import BUNDLE_REPO, REGISTRY, admit, command, fingerprint, read, source_reference
+import ci_release_policy as release_policy
 
 
 def network(*args):
@@ -18,7 +19,13 @@ def network(*args):
 def main():
     manifest, evidence = map(Path, sys.argv[1:])
     bundle = read(manifest)
-    admit(bundle, json.loads(evidence.read_text()), json.loads(os.environ['CHECKS']))
+    native = json.loads(evidence.read_text())
+    admit(bundle, native, json.loads(os.environ['CHECKS']),
+          allow_test_failures=release_policy.policy()['allow_test_failures'])
+    proof = release_policy.collect(os.environ['CI_REPORT_DIRECTORY'], bundle, native, release_policy.stages())
+    for stage in sorted(release_policy.stages() | {'native'}):
+        rows = [{k: v for k, v in row.items() if k != 'stage'} for row in proof['warnings'] if row['stage'] == stage]
+        release_policy.announce(rows, stage)
     if fingerprint(bundle) != os.environ['EXPECTED_BUNDLE'] or bundle['source'] != os.environ['GITHUB_SHA']:
         raise ValueError('wrong candidate')
     branch = os.environ['GITHUB_REF_NAME']
@@ -39,7 +46,8 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         (root / 'bundle.json').write_bytes(manifest.read_bytes())
-        (root / 'Dockerfile').write_text('FROM scratch\nCOPY bundle.json /bundle.json\nCMD ["/bundle.json"]\n')
+        (root / 'admission.json').write_text(json.dumps(proof, sort_keys=True)+'\n')
+        (root / 'Dockerfile').write_text('FROM scratch\nCOPY bundle.json admission.json /\nCMD ["/bundle.json"]\n')
         ref = BUNDLE_REPO + ':bundle-' + release
         network('docker', 'buildx', 'build', '--platform', 'linux/amd64', '--provenance=false', '--sbom=false',
                 '--label', 'org.opencontainers.image.source=https://github.com/axiomshiftbit/vpnbot',

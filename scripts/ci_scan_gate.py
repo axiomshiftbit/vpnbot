@@ -11,6 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ci_waivers  # noqa: E402
+import ci_release_policy as release
 
 
 def gate(d):
@@ -41,6 +42,7 @@ def main(path):
     # Only exact vulnerability + package + installed version, and only in a run
     # that explicitly allowed waivers. Secrets are never waived.
     blocked, waived, hints = ci_waivers.split(blocked, lambda entries, row: ci_waivers.package_waiver(entries, row[0], row[1], row[2]))
+    warnings = [release.warning('waiver', row[0]) for row, _entry in waived]
     for row, entry in waived:
         print('WAIVED', *row, '—', ci_waivers.describe(entry))
         ci_waivers.annotate('warning', f'Допуск с исключением: {row[0]} {row[1]} {row[2]} — {ci_waivers.describe(entry)}')
@@ -56,7 +58,16 @@ def main(path):
         print('Security gate waivers:', len(waived), 'fixable high/critical findings admitted by scripts/ci_vuln_waivers.json')
     print('Security gate:', len(blocked), 'fixable high/critical findings;', len(secrets), 'secrets;',
           len(unfixed), 'high/critical without a fix;', medium, 'fixable medium')
-    return 1 if blocked or secrets else 0
+    if secrets:
+        return 1
+    if blocked and release.policy()['allow_vulnerabilities']:
+        warnings += [release.warning('vulnerability', row[0]) for row in blocked]
+        blocked = []
+    if not blocked and os.environ.get('CI_REPORT_FILE'):
+        release.write_report('security-'+os.environ['IMAGE_NAME'], warnings, 1)
+    elif warnings:
+        release.announce(warnings, 'security')
+    return 1 if blocked else 0
 
 
 if __name__ == '__main__':

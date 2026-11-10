@@ -20,10 +20,12 @@ import tempfile
 import time
 
 from image_bundle import IMAGES
+from ci_release_policy import stages
 
 ROOT = Path('/var/lib/vpnbot-ci-artifacts')
 FILES = {'descriptor-' + image: image + '.json' for image in IMAGES}
 FILES.update({'image-bundle': 'bundle.json', 'native-admission': 'native.json'})
+FILES.update({'admission-'+stage: stage+'.json' for stage in stages()})
 MAX_BYTES = 16 * 1024 * 1024
 RETENTION = 7 * 24 * 3600
 
@@ -131,8 +133,8 @@ class Store:
     def download(self, name, pattern, merge, destination):
         if name in FILES and not pattern:
             names = [name]
-        elif not name and pattern == 'descriptor-*' and merge:
-            names = sorted(n for n in FILES if n.startswith('descriptor-'))
+        elif not name and pattern in ('descriptor-*', 'admission-*') and merge:
+            names = sorted(n for n in FILES if n.startswith(pattern[:-1]))
         else:
             raise ValueError('unsupported artifact selection')
         directory = self.local_path(destination)

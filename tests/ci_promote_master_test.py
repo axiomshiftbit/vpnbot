@@ -51,8 +51,9 @@ class GitHub:
             self.writes.append('move')
             return {}
         if path == '/actions/workflows/images.yml/dispatches':
-            assert set(body) == {'ref', 'inputs'} and body['ref'] == 'master' and set(body['inputs']) == {'home_runner'}
-            self.dispatched = body['inputs']['home_runner']
+            assert set(body) == {'ref', 'inputs'} and body['ref'] == 'master' and set(body['inputs']) == {'home_runner', 'allow_test_failures', 'allow_vulnerabilities', 'allow_waivers'}
+            self.inputs = body['inputs']
+            self.dispatched = self.inputs['home_runner']
             self.writes.append('dispatch')
             return {}
         raise AssertionError('unexpected request ' + path)
@@ -81,6 +82,20 @@ class PromoteMasterTest(unittest.TestCase):
         self.assertIsNone(error)
         self.assertIn('dispatch', writes)
         self.assertEqual(github.dispatched, 'false')
+
+    def test_dispatch_keeps_exact_policy_and_defaults_strict(self):
+        github = GitHub()
+        self.run_main(github)
+        self.assertEqual({k: v for k, v in github.inputs.items() if k != 'home_runner'},
+                         dict(allow_test_failures='false', allow_vulnerabilities='false', allow_waivers='false'))
+        self.run_main(github, PROMOTE_ALLOW_WAIVERS='true', PROMOTE_ALLOW_TEST_FAILURES='true')
+        self.assertEqual(github.inputs['allow_test_failures'], 'true')
+        self.assertEqual(github.inputs['allow_waivers'], 'true')
+        self.assertEqual(github.inputs['allow_vulnerabilities'], 'false')
+        github = GitHub()
+        error, writes, _ = self.run_main(github, PROMOTE_ALLOW_TEST_FAILURES='yes')
+        self.assertIn('invalid master dispatch policy', error)
+        self.assertEqual(writes, [])
 
     def test_master_already_on_the_commit_only_starts_the_master_run(self):
         self.assertEqual(self.run_main(GitHub(master=TESTED))[:2], (None, ['dispatch']))

@@ -6,6 +6,8 @@
 сборку, проверки CVE и стенд. Нет допущенного комплекта — обычный полный прогон.
 """
 import os
+import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +15,7 @@ import tempfile
 
 from ci_retry import retrying
 from image_bundle import BUNDLE_REPO, command, fetch_reference, source_reference
+import ci_release_policy as release_policy
 
 
 def network(*args):
@@ -25,14 +28,21 @@ def admitted(source):
         try:
             # Отсутствие ссылки и сбой сети реестр не различает, а ошибка здесь
             # стоит полной пересборки вместо переноса — повторяем и это.
-            bundle = retrying(fetch_reference, source_reference(source), Path(directory) / 'bundle.json',
+            digest = network('docker', 'buildx', 'imagetools', 'inspect', '--format', '{{.Manifest.Digest}}', source_reference(source))
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+                raise ValueError('invalid admitted envelope digest')
+            reference = BUNDLE_REPO+'@'+digest
+            proof_path = Path(directory)/'admission.json'
+            bundle = retrying(lambda: fetch_reference(reference, Path(directory) / 'bundle.json', admission=proof_path),
                               errors=(RuntimeError, subprocess.SubprocessError))
         except (RuntimeError, subprocess.SubprocessError):
             # Ссылки нет или реестр недоступен: безопасная сторона — собрать заново.
             return None
+        proof = release_policy.validate_proof(json.loads(proof_path.read_text()), bundle, release_policy.policy())
+        release_policy.announce([{k: v for k, v in row.items() if k != 'stage'} for row in proof['warnings']], 'master')
     if bundle['source'] != source:
         raise ValueError('admitted set belongs to another commit')
-    return bundle
+    return bundle, reference
 
 
 def promote():
@@ -40,9 +50,10 @@ def promote():
     # Расписание существует ради пересборки со свежими пакетами.
     if branch != 'master' or event == 'schedule' or os.environ.get('FULL_BUILD') == 'true':
         return False
-    bundle = admitted(source)
-    if bundle is None:
+    candidate = admitted(source)
+    if candidate is None:
         return False
+    bundle, reference = candidate
     for ref in bundle['images'].values():
         network('docker', 'buildx', 'imagetools', 'inspect', ref)
     def move_channel():
@@ -52,7 +63,7 @@ def promote():
         if remote != source:
             raise ValueError('newer code exists; stale run cannot publish')
         command('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false',
-                '--tag', BUNDLE_REPO + ':bundle-latest', source_reference(source))
+                '--tag', BUNDLE_REPO + ':bundle-latest', reference)
 
     retrying(move_channel)
     print('Promoted admitted image set: release-' + str(bundle['run']) + '-' + str(bundle['attempt']),

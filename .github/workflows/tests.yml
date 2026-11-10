@@ -23,9 +23,22 @@ on:
       home_runner:
         type: boolean
         default: false
+      allow_test_failures:
+        type: boolean
+        default: false
+      allow_vulnerabilities:
+        type: boolean
+        default: false
+      allow_waivers:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+env:
+  CI_ALLOW_TEST_FAILURES: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_test_failures && '1' || '0' }}
+  CI_ALLOW_VULNERABILITIES: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_vulnerabilities && '1' || '0' }}
+  CI_ALLOW_WAIVERS: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_waivers && '1' || '0' }}
 
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}
@@ -91,26 +104,22 @@ jobs:
           # каталоги runner с правом записи группы.
           TMPDIR: /tmp
         run: |
-          python3 -m unittest discover -s tests -p '*_test.py' || exit 1
+          env CI_ALLOW_TEST_FAILURES=0 CI_ALLOW_VULNERABILITIES=0 CI_ALLOW_WAIVERS=0 GITHUB_STEP_SUMMARY= python3 -m unittest discover -s tests -p '*_test.py' || exit 1
           # /logs общий для четырёх пользователей runner. Сохраняем настоящие
           # flock-проверки, но исключаем чужие файлы от предыдущего задания.
-          sudo unshare --mount --propagation private bash -s -- \
-            "$(id -u)" "$(id -g)" "$VLESS_TEST_XRAY" "$XRAY_FORK_TEST_BINARY" <<'BASH'
+          sudo --preserve-env=CI_ALLOW_TEST_FAILURES,CI_ALLOW_VULNERABILITIES,CI_ALLOW_WAIVERS,GITHUB_SHA,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_ACTIONS,GITHUB_STEP_SUMMARY \
+            unshare --mount --propagation private bash -s -- \
+            "$(id -u)" "$(id -g)" "$VLESS_TEST_XRAY" "$XRAY_FORK_TEST_BINARY" "$RUNNER_TEMP" <<'BASH'
           set -euo pipefail
           mount -t tmpfs -o mode=1777,nodev,nosuid,size=128m tmpfs /logs
-          fail=0
-          for f in tests/*_test.php; do
-            if out=$(setpriv --reuid="$1" --regid="$2" --init-groups \
-              env TMPDIR=/tmp VLESS_TEST_XRAY="$3" XRAY_FORK_TEST_BINARY="$4" php "$f" 2>&1); then
-              echo "ok   $(basename "$f")"
-            else
-              fail=1
-              echo "FAIL $(basename "$f")"
-              echo "$out"
-            fi
-          done
-          exit $fail
+          setpriv --reuid="$1" --regid="$2" --init-groups \
+            env TMPDIR=/tmp VLESS_TEST_XRAY="$3" XRAY_FORK_TEST_BINARY="$4" \
+            python3 scripts/ci_unit_tests.py --stage unit-host --report "$5/admission/unit-host.json"
           BASH
+      - uses: ./.github/actions/upload-artifact
+        with:
+          name: admission-unit-host
+          path: ${{ runner.temp }}/admission/unit-host.json
 
   alpine:
     runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
@@ -157,11 +166,15 @@ jobs:
           set -euo pipefail
           base=$(sed -n 's/^IMAGE=//p' .env)
           sh scripts/ci_retry.sh docker pull "$base"
+          mkdir -p "$RUNNER_TEMP/admission"
           docker run --rm --init \
             -v "$PWD:/workspace" \
             -v "$PWD/config/php.ini:/etc/php${PHP_SERIES}/php.ini:ro" \
             -v "$RUNNER_TEMP/vpnbot-xray/xray:/audit-xray:ro" \
             -v "$RUNNER_TEMP/vpnbot-xray/fork/xray:/audit-xray-fork:ro" \
+            -v "$RUNNER_TEMP/admission:/admission" \
+            -e CI_ALLOW_TEST_FAILURES -e CI_ALLOW_VULNERABILITIES -e CI_ALLOW_WAIVERS \
+            -e GITHUB_SHA -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT -e GITHUB_ACTIONS \
             -e PHP_SERIES -e VLESS_TEST_XRAY=/audit-xray -e XRAY_FORK_TEST_BINARY=/audit-xray-fork -w /workspace \
             "$base" sh -ec '
               sh scripts/ci_retry.sh apk add --no-cache bash util-linux coreutils findutils make git curl jq openssl openssh-keygen python3 py3-yaml \
@@ -172,19 +185,13 @@ jobs:
               ln -sf /usr/bin/php${PHP_SERIES} /usr/bin/php
               mkdir -p /logs
               php -v
-              python3 -m unittest discover -s tests -p "*_test.py"
+              env CI_ALLOW_TEST_FAILURES=0 CI_ALLOW_VULNERABILITIES=0 CI_ALLOW_WAIVERS=0 GITHUB_STEP_SUMMARY= python3 -m unittest discover -s tests -p "*_test.py"
               for f in app/*.php app/panel/*.php tests/*.php; do
                 php -d error_reporting=32767 -l "$f" >/dev/null
               done
-              failed=0
-              for f in tests/*_test.php; do
-                if output=$(php -d error_reporting=32767 -d error_log=/dev/stderr -d display_errors=1 "$f" 2>&1); then
-                  if printf "%s" "$output" | grep -q "Deprecated:"; then
-                    echo "DEPRECATED $f"; printf "%s\n" "$output"; failed=1
-                  fi
-                else
-                  echo "FAIL $f"; printf "%s\n" "$output"; failed=1
-                fi
-              done
-              exit "$failed"
+              python3 scripts/ci_unit_tests.py --stage unit-alpine${PHP_SERIES} --report /admission/unit-alpine${PHP_SERIES}.json
             '
+      - uses: ./.github/actions/upload-artifact
+        with:
+          name: admission-unit-alpine${{ matrix.php }}
+          path: ${{ runner.temp }}/admission/unit-alpine${{ matrix.php }}.json

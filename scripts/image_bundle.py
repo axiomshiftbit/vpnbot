@@ -132,7 +132,7 @@ def fetch(channel, destination):
     return fetch_reference(BUNDLE_REPO + ':bundle-' + channel, destination)
 
 
-def fetch_reference(ref, destination):
+def fetch_reference(ref, destination, *, admission=None):
     parent = Path(destination).parent
     parent.mkdir(parents=True, exist_ok=True)
     # Serialize metadata replacement against Bot.cleanDocker's inventory scan.
@@ -147,6 +147,10 @@ def fetch_reference(ref, destination):
                 target = Path(directory) / 'bundle.json'
                 command('docker', 'cp', container + ':/bundle.json', str(target))
                 bundle = read(target)
+                if admission is not None:
+                    proof = Path(directory) / 'admission.json'
+                    command('docker', 'cp', container + ':/admission.json', str(proof))
+                    atomic(admission, proof.read_bytes())
                 atomic(destination, canonical(bundle))
                 return bundle
         finally:
@@ -259,12 +263,18 @@ def compose_files(root, env):
     return [part for f in files + [str(target)] for part in ('-f', f)]
 
 
-def admit(bundle, evidence, statuses):
+def admit(bundle, evidence, statuses, *, allow_test_failures=False):
     if set(statuses) != {'build', 'tests', 'security', 'native'} or any(v != 'success' for v in statuses.values()):
         raise ValueError('required checks did not all succeed')
     if evidence.get('source') != bundle['source'] or evidence.get('bundle') != fingerprint(bundle):
         raise ValueError('test evidence does not match this candidate')
-    if evidence.get('status') != 'success' or type(evidence.get('checks')) is not int or evidence['checks'] < 1:
+    warnings = evidence.get('warnings', [])
+    if 'warnings' in evidence:
+        # CI-only dependency, never required by installed clients fetching a bundle.
+        from ci_release_policy import validate_warnings
+        validate_warnings(warnings, {'allow_test_failures': allow_test_failures})
+    expected = 'success_with_warnings' if warnings else 'success'
+    if evidence.get('status') != expected or type(evidence.get('checks')) is not int or evidence['checks'] < 1:
         raise ValueError('native testing is incomplete')
     if not re.fullmatch('[0-9a-f]{64}', evidence.get('suite', '')):
         raise ValueError('test suite identity is missing')

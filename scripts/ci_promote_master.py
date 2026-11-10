@@ -49,6 +49,11 @@ def head(branch, secret):
 
 
 def promote(secret):
+    inputs = {'home_runner': os.environ.get('PROMOTE_HOME_RUNNER', 'true')}
+    for name in ('allow_test_failures', 'allow_vulnerabilities', 'allow_waivers'):
+        inputs[name] = os.environ.get('PROMOTE_'+name.upper(), 'false')
+    if any(value not in ('true', 'false') for value in inputs.values()):
+        raise Rejected('invalid master dispatch policy')
     source = os.environ['GITHUB_SHA']
     if os.environ['GITHUB_REF'] != 'refs/heads/dev' or os.environ['GITHUB_EVENT_NAME'] != 'workflow_dispatch':
         raise Rejected('only a manual run of dev is promoted')
@@ -69,7 +74,7 @@ def promote(secret):
         print('master moved forward to', source)
     else:
         print('master already points at', source)
-    retrying(api, '/actions/workflows/images.yml/dispatches', secret, {'ref': 'master', 'inputs': {'home_runner': os.environ.get('PROMOTE_HOME_RUNNER', 'true')}})
+    retrying(api, '/actions/workflows/images.yml/dispatches', secret, {'ref': 'master', 'inputs': inputs})
     print('Started the master run that moves the latest channel to the same image set')
 
 
