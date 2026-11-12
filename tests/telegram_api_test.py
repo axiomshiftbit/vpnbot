@@ -83,9 +83,13 @@ class TelegramApiFormatTest(unittest.TestCase):
     # Стенд гоняет тесты на копии git archive без .git — там проверять нечего.
     @unittest.skipUnless((ROOT / '.git').exists() and shutil.which('git'), 'нужен git checkout')
     def test_runtime_files_are_ignored_by_git_clean(self):
+        if not (ROOT/'.git').exists():
+            self.skipTest('copy without .git (stand): .gitignore is checked in the repository jobs')
         for path in ('config/telegram_api', 'config/telegram_api.0123.tmp', 'update/api', 'logs/nginx_tgrelay_access', 'config/tg_relay.lock'):
             with self.subTest(path=path):
-                result = subprocess.run(['git', 'check-ignore', '-q', path], cwd=ROOT)
+                # The CI container runs as root over a checkout owned by the
+                # runner user: without safe.directory git refuses (exit 128).
+                result = subprocess.run(['git', '-c', 'safe.directory=*', 'check-ignore', '-q', path], cwd=ROOT)
                 self.assertEqual(0, result.returncode, f'{path} должен быть в .gitignore: update.sh делает git clean -fd')
 
 
