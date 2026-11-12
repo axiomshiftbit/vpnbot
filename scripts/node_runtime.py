@@ -339,7 +339,9 @@ class Runtime:
                 '--pids-limit', '64', '--memory', '96m', '--memory-swap', '96m',
                 '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=32m',
                 '--mount', f'type=bind,src={directory},dst=/node,readonly',
-                '--entrypoint', '/usr/sbin/nginx', value['images']['ng']]
+                # -e: the read-only image cannot open the compiled-in error log
+                # before /node/nginx.conf is read; that printed an alert each start.
+                '--entrypoint', '/usr/sbin/nginx', value['images']['ng'], '-e', 'stderr']
 
     def validate(self, generation):
         self.prepare(generation)

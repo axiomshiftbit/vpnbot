@@ -22,6 +22,8 @@ $idle = static function (bool $upgrade): UpgradeFixtureBot {
 $b = $idle(false);
 $b->managedNodeRun('aabbccdd', 'update_latest');
 $check(str_contains(end($b->screens)[0], 'только образы'), 'old node: confirmation explains image-only update');
+// The help itself must not promise a code update on such a node.
+$check(str_contains(end($b->screens)[0], 'Устанавливает опубликованные образы') && !str_contains(end($b->screens)[0], 'Полное обновление'), 'old node: help describes image update only');
 $b->managedNodeRun('aabbccdd', 'update_latest', true);
 $check(($b->submitted[0]['operation'] ?? '') === 'update' && $b->submitted[0]['value'] === 'latest', 'old node: image update submitted');
 $b->managedNodeMaintenance('aabbccdd');
@@ -42,7 +44,7 @@ $check(str_contains(end($b->screens)[0], '<code>7777777</code>'), 'maintenance s
 $check(str_contains(json_encode(end($b->screens)[1], JSON_UNESCAPED_UNICODE), 'Обновить с ветки master'), 'button label kept');
 
 // A failed code phase is reported with its stage and never confirmed.
-foreach (['downgrade' => 'старее', 'fetch' => 'deploy-ключ', 'setup_firewall' => '[firewall]', '<b>x' => 'непредвиденный'] as $stage => $needle) {
+foreach (['downgrade' => 'старее', 'fetch' => 'deploy-ключ', 'setup_firewall' => '[firewall]', 'setup_docker' => '[docker]', '<b>x' => 'непредвиденный'] as $stage => $needle) {
     $b = new UpgradeFixtureBot();
     $b->pacState['managed_nodes']['aabbccdd']['job']['operation'] = 'upgrade';
     $b->remoteJob = ['state' => 'failed', 'error' => 'code_upgrade_failed', 'stage' => $stage];
@@ -53,6 +55,8 @@ foreach (['downgrade' => 'старее', 'fetch' => 'deploy-ключ', 'setup_fi
     $b->managedNodeMenu('aabbccdd');
     $text = end($b->screens)[0];
     $check(str_contains($text, $needle) && str_contains($text, 'Образы не менялись') && !str_contains($text, '<b>x'), 'card explains code failure '.$stage);
+    // Only stages after the module copy say that the new code is in place.
+    $check(str_contains($text, 'уже скопирован') === in_array($stage, ['setup_firewall', 'setup_verify'], true), 'card tells whether code was copied '.$stage);
 }
 $b->language = 'en';
 $b->managedNodeMenu('aabbccdd');

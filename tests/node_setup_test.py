@@ -22,6 +22,25 @@ from node_config_test import HOST, OPTIONS
 
 
 class NodeSetup(unittest.TestCase):
+    def test_install_code_writes_nothing_when_a_module_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root/'src'
+            source.mkdir()
+            for name in ('node_manager.py', 'node_runtime.py', 'node_config.py'):
+                (source/name).write_text('# new\n')
+            written = []
+            with patch.object(setup.install, 'LIB', root/'lib'), patch.object(setup.install, 'ETC', root/'etc'), \
+                    patch.object(setup.install, 'Path', side_effect=lambda value: root/'var' if value == '/var/lib/vpnbot-node' else Path(value)), \
+                    patch.object(setup.install.state, 'trusted'), \
+                    patch.object(setup.install.state, 'atomic', side_effect=lambda path, *args: written.append(path)), \
+                    patch.object(setup.install, 'command') as command:
+                with self.assertRaises(FileNotFoundError):
+                    setup.install.install_code(source)
+            # Old and new modules are never mixed on the node.
+            self.assertEqual(written, [])
+            command.assert_not_called()
+
     def setUp(self):
         key = base64.b64encode(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20'+b'k'*32).decode()
         self.value = dict(schema=1, controller_key='ssh-ed25519 '+key,

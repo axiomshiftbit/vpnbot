@@ -674,8 +674,9 @@ trait BotManagedNodes
         if (!$active) { $this->managedNodeMaintenance($id, $this->t('Этот протокол или вид шифрования отключён. Сначала включите и примените его настройки. Ключи не менялись.',
             'This protocol or encryption feature is disabled. Enable and apply it first. No keys were changed.')); return; }
         if (!$confirmed) {
-            $help = $this->managedNodeActionHelp($action);
-            if (!$upgrade && $operations[$action][0] === 'update') $help .= "\n\n" . $this->managedNodeManualCode();
+            $imagesOnly = !$upgrade && $operations[$action][0] === 'update';
+            $help = $this->managedNodeActionHelp($imagesOnly ? 'images_' . $operations[$action][1] : $action);
+            if ($imagesOnly) $help .= "\n\n" . $this->managedNodeManualCode();
             $this->update($this->input['chat'], $this->input['message_id'], $help . "\n\n" . $this->t('Выполнить?', 'Proceed?'),
                 [[['text' => $this->t('Выполнить', 'Proceed'), 'callback_data' => "/nodeRun $id $action yes"]],
                  [['text' => $this->i18n('back'), 'callback_data' => "/nodeMaintenance $id"]]]);

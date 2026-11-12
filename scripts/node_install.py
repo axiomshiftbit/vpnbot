@@ -126,9 +126,15 @@ def install_code(source):
         directory.mkdir(mode=0o755 if directory == LIB else 0o700, parents=True, exist_ok=True)
     # The control user must traverse ETC to read only its root-owned public key.
     os.chmod(ETC, 0o711)
-    for name in ('node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py', 'node_wg.py', 'node_awg.py', 'node_state.py', 'node_upgrade.py', 'image_bundle.py'):
-        state.atomic(LIB/name, (Path(source)/name).read_bytes(), 0o644)
-    for name, text in units().items():
+    # Read every module first: a missing or unreadable source file must fail
+    # before the first write, never leave old and new modules mixed.
+    modules = {name: (Path(source)/name).read_bytes() for name in (
+        'node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py',
+        'node_wg.py', 'node_awg.py', 'node_state.py', 'node_upgrade.py', 'image_bundle.py')}
+    services = units()
+    for name, data in modules.items():
+        state.atomic(LIB/name, data, 0o644)
+    for name, text in services.items():
         state.atomic(Path('/etc/systemd/system')/name, text.encode(), 0o644)
     command(['systemctl', 'daemon-reload'])
 

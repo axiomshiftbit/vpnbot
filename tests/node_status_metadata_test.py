@@ -43,6 +43,16 @@ class MetadataTest(unittest.TestCase):
             self.assertNotIn('identity', status)
             self.assertNotIn('tls', status)
 
+    def test_cover_nginx_logs_to_stderr_before_reading_config(self):
+        from unittest.mock import Mock
+        store = Mock()
+        store.load.return_value = {'options': OPTIONS | {'cover': True}, 'images': {'xr': 'x', 'ng': 'ng-image'}}
+        store.path.return_value = Path('/nonexistent/generation')
+        runtime = node_runtime.Runtime(store, HOST | {'cover_uid': 1001, 'gid': 1001})
+        arguments = runtime.cover_arguments('a'*32)
+        # The read-only image cannot open its compiled-in error log path.
+        self.assertEqual(arguments[arguments.index('ng-image')+1:], ['-e', 'stderr'])
+
     def test_legacy_awg_status_can_be_submitted_unchanged(self):
         from unittest.mock import Mock
         import node_awg, node_config
