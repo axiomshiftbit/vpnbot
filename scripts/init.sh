@@ -65,18 +65,21 @@ normalize_bot_key() {
 # URL с ключом передаётся curl через stdin (-K -), а не аргументом: аргументы
 # видны в ps всем процессам хоста.
 check_bot_key() {
-    local reply api host_re='^[][A-Za-z0-9.:-]+$'
-    # TELEGRAM_API — имя хоста (как в .env и в боте: api.telegram.org или своё
-    # зеркало), схема всегда https. Без неё curl ушёл бы по http и передал ключ
-    # бота открытым текстом; явный http:// не принимается.
+    local reply api
+    local api_re='^https://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]{2,45}\])(:[1-9][0-9]{0,4})?(/[A-Za-z0-9._~-]{1,64}){0,8}$'
+    # TELEGRAM_API — имя хоста Bot API (api.telegram.org или своё зеркало),
+    # можно с портом и путём ретранслятора: host[:port][/путь]. Схема всегда
+    # https: без неё curl ушёл бы по http и передал ключ бота открытым текстом;
+    # явный http:// не принимается. Формат — как у TelegramApi::normalize().
     api="${TELEGRAM_API:-api.telegram.org}"
-    api="${api#https://}"
-    api="${api%/}"
-    if [[ "$api" == *://* || ! "$api" =~ $host_re ]]; then
-        echo "TELEGRAM_API должен быть именем хоста Bot API (например api.telegram.org), запрос идёт только по https" >&2
+    [[ "$api" == *://* ]] || api="https://$api"
+    while [[ "$api" == */ ]]; do api="${api%/}"; done
+    if [[ ${#api} -gt 255 || ! "$api" =~ $api_re || "$api/" == *"/./"* || "$api/" == *"/../"* ]] \
+        || { [[ "$api" =~ ^https://[^/]*:([0-9]+)(/|$) ]] && (( 10#${BASH_REMATCH[1]} > 65535 )); }; then
+        echo "TELEGRAM_API должен быть адресом Bot API вида api.telegram.org или домен[:порт][/путь], запрос идёт только по https" >&2
         exit 1
     fi
-    if ! reply="$(printf 'url = "https://%s/bot%s/getMe"\n' "$api" "$KEY" \
+    if ! reply="$(printf 'url = "%s/bot%s/getMe"\n' "$api" "$KEY" \
             | curl -sS --max-time 15 -K - 2>/dev/null)"; then
         echo "WARN: Telegram недоступен — ключ бота не проверен; бот запустится и будет ждать Telegram" >&2
         return 0

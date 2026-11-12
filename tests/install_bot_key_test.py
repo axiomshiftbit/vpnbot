@@ -44,14 +44,18 @@ class InstallBotKeyTest(unittest.TestCase):
         # В .env и readme TELEGRAM_API — имя хоста: без схемы curl ушёл бы по http
         # и передал ключ открытым текстом.
         for api, expected in (('api.telegram.org', 'https://api.telegram.org/bot'), ('tg.example.org', 'https://tg.example.org/bot'),
-                              ('https://tg.example.org/', 'https://tg.example.org/bot'), (None, 'https://api.telegram.org/bot')):
+                              ('https://tg.example.org/', 'https://tg.example.org/bot'), (None, 'https://api.telegram.org/bot'),
+                              # Ретранслятор Telegram API: домен и секретный префикс.
+                              ('relay.example.org/0123456789abcdef', 'https://relay.example.org/0123456789abcdef/bot'),
+                              ('https://relay.example.org:8443/p/', 'https://relay.example.org:8443/p/bot')):
             with self.subTest(api=api):
                 result = self.run_key(KEY, 'ok', api)
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertIn(f'url = "{expected}{KEY}/getMe"', (self.tmp / 'curl.stdin').read_text())
 
     def test_plain_http_api_is_refused_before_any_request(self):
-        for api in ('http://tg.example.org', 'tg.example.org/x?y', 'ftp://tg.example.org'):
+        for api in ('http://tg.example.org', 'tg.example.org/x?y', 'ftp://tg.example.org', 'https://u@tg.example.org',
+                    'tg.example.org/../x', 'tg.example.org/a b', 'tg.example.org:65536', 'tg.example.org/a"b'):
             with self.subTest(api=api):
                 (self.tmp / 'curl.args').unlink(missing_ok=True)
                 result = self.run_key(KEY, 'ok', api)

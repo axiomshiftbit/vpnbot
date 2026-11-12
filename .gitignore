@@ -46,6 +46,10 @@
 /config/telemtactivity.json
 /config/xray.stats
 /config/*.lock
+# Адрес Bot API из бота/CLI (TelegramApi): git clean в update.sh не должен
+# удалять его при обновлении.
+/config/telegram_api
+/config/telegram_api.*.tmp
 /config/.*.lock
 # лента веб-панели, загруженные/отданные файлы и хеш пароля-заглушки
 /config/panel/

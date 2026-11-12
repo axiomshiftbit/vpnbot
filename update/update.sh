@@ -2,9 +2,30 @@
 update_umask=$(umask)
 umask 077
 pwd=$(pwd)
-chmod 600 "$pwd/update/key" "$pwd/update/curl" "$pwd/update/reload_message" 2>/dev/null || true
+chmod 600 "$pwd/update/key" "$pwd/update/curl" "$pwd/update/reload_message" "$pwd/update/api" 2>/dev/null || true
 TELEGRAM_API=$(grep -m1 '^TELEGRAM_API=' "$pwd/.env" 2>/dev/null | cut -d'=' -f2-)
 TELEGRAM_API=${TELEGRAM_API:-api.telegram.org}
+# Адрес Bot API в форме TelegramApi::normalize(): https://имя[:порт][/путь],
+# без пробелов, логина, query и сегментов «.»/«..» — в путь подставляется
+# токен бота. tests/telegram_api_test.py сверяет с PHP.
+telegram_api_base() {
+    local v="$1" re='^https://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]{2,45}\])(:[1-9][0-9]{0,4})?(/[A-Za-z0-9._~-]{1,64}){0,8}$'
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    [[ -n "$v" ]] || return 1
+    [[ "$v" == *://* ]] || v="https://$v"
+    while [[ "$v" == */ ]]; do v="${v%/}"; done
+    [[ ${#v} -le 255 && "$v" =~ $re && "$v/" != *"/./"* && "$v/" != *"/../"* ]] || return 1
+    if [[ "$v" =~ ^https://[^/]*:([0-9]+)(/|$) ]] && (( 10#${BASH_REMATCH[1]} > 65535 )); then return 1; fi
+    printf '%s' "$v"
+}
+# Бот кладёт в update/api адрес, которым пользуется сам (ретранслятор из
+# config/telegram_api); без файла — TELEGRAM_API из .env.
+telegram_api_current() {
+    telegram_api_base "$(head -c 1024 "$pwd/update/api" 2>/dev/null)" \
+        || telegram_api_base "$TELEGRAM_API" || printf '%s' 'https://api.telegram.org'
+}
+_api=$(telegram_api_current)
 # Взаимное исключение через flock, а не через «убить всё похожее».
 # Было: pgrep -f "$pwd/update/update.sh" + kill -9. Это матчило ЛЮБУЮ командную
 # строку с этой подстрокой — `tail -f …/update.sh`, `vim …/update.sh`,
@@ -37,7 +58,7 @@ umask "$update_umask"
 # обновления, а оно длится минуты.
 tg_api() {
     local method="$1" data="$2"
-    printf 'url = "https://%s/bot%s/%s"\n' "$TELEGRAM_API" "$_key" "$method" \
+    printf 'url = "%s/bot%s/%s"\n' "$_api" "$_key" "$method" \
         | curl -s -K - -H "Content-Type: application/json" -X POST -d "$data" > /dev/null
 }
 
@@ -55,6 +76,7 @@ do
     if [[ -n "$cmd" ]]
     then
         _key=$(cat "$pwd/update/key")
+        _api=$(telegram_api_current)
         _curl_data=$(cat "$pwd/update/curl")
         _chat_id=$(echo "$_curl_data" | grep -o '"chat_id":[0-9-]*' | head -1 | cut -d: -f2)
         _message_id=$(echo "$_curl_data" | grep -o '"message_id":[0-9]*' | head -1 | cut -d: -f2)
@@ -214,6 +236,7 @@ do
 
         : > "$pwd/update/key"
         : > "$pwd/update/curl"
+        : > "$pwd/update/api"
 
         if [[ $start_rc -eq 0 ]]
         then

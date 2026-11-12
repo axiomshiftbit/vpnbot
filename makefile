@@ -73,6 +73,8 @@ dv: # остановка контейнеров
 r: pull
 	$(MAKE) d
 	$(MAKE) u
+tgapi: # адрес Bot API и ретранслятор Telegram: make tgapi cmd="status" (список: cmd=help)
+	docker compose exec -T php php /app/tgapi.php $(or $(cmd),help)
 ps: # список контейнеров
 	docker compose ps
 l: # логи из контейнеров

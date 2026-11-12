@@ -21,6 +21,8 @@ require_once __DIR__ . '/BotWarpMasque.php';
 require_once __DIR__ . '/BotAcme.php';
 require_once __DIR__ . '/BotChatNavigation.php';
 require_once __DIR__ . '/BotStore.php';
+require_once __DIR__ . '/TelegramApi.php';
+require_once __DIR__ . '/BotTelegramApi.php';
 
 class Bot
 {
@@ -41,6 +43,7 @@ class Bot
     use BotAcme;
     use BotChatNavigation;
     use BotStore;
+    use BotTelegramApi;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
     // Совместимость патчей и суммы исходников проверены для этой пары.
@@ -263,10 +266,10 @@ class Bot
 
     public function __construct($key, $i18n)
     {
-        $api = getenv('TELEGRAM_API') ?: 'api.telegram.org';
         $this->key      = $key;
-        $this->api      = "https://$api/bot$key/";
-        $this->file     = "https://$api/file/bot$key/";
+        // Адрес из бота/CLI (config/telegram_api), затем TELEGRAM_API из .env,
+        // затем api.telegram.org — см. TelegramApi::current().
+        $this->telegramApiUse(TelegramApi::current($this->telegramApiFile)['url']);
         $this->ip       = getenv('IP');
         $this->i18n     = $i18n;
         $this->language = $this->getPacConf()['language'] ?: 'en';
@@ -1970,6 +1973,9 @@ class Bot
                 break;
             case preg_match('~^/setSSL (\w+)$~', $this->input['callback'], $m):
                 $this->setSSL($m[1]);
+                break;
+            case preg_match('~^/tgapi(?: (client|relay)(?: (set|check|reset|on|off|bot|delbot|ip|delip|rotate)(?: ([0-9]{5,15}|[a-f0-9]{8}|yes))?)?)?$~D', $this->input['callback'], $m):
+                $this->telegramApiMenu($m[1] ?? '', $m[2] ?? '', $m[3] ?? '');
                 break;
             case preg_match('~^/acmeMenu( refresh)?$~', $this->input['callback'], $m):
                 empty($m[1]) ? $this->acmeMenu() : $this->acmeRefresh();
@@ -34470,8 +34476,17 @@ DNS-over-HTTPS with IP:
         $template = preg_replace('~(location /adguard.+?})\s*location~s', $r, $template);
         $template = preg_replace('~(/webapp|/pac|/adguard|/ws|/grpc|/v2ray|location /dns-query)~', '${1}' . $h, $template);
         if (is_string($template)) $template = self::xrayNginxRoutes($template, $this->getXray() ?? []);
-        if (!is_string($template) || $template === ''
-            || !$this->editProtocolProxyConfig('/config/nginx.conf', 'ng', static fn($before) => $template)) return false;
+        if (!is_string($template) || $template === '') return false;
+        // Ретранслятор Telegram API живёт только в nginx.conf (в шаблоне его
+        // нет). Если nginx не принял его блок, домен и остальные сервисы
+        // всё равно применяются — ретранслятор покажет «не применён».
+        $relay = $this->telegramRelayConf();
+        $withRelay = self::telegramRelayNginx($template, $relay);
+        if (!$this->editProtocolProxyConfig('/config/nginx.conf', 'ng', static fn($before) => $withRelay)) {
+            if ($withRelay === $template) return false;
+            error_log('cloakNginx: telegram relay block rejected by nginx, applied without it');
+            if (!$this->editProtocolProxyConfig('/config/nginx.conf', 'ng', static fn($before) => $template)) return false;
+        }
         $x = $this->getXray();
         if (!empty($x['inbounds'][0]['streamSettings']['wsSettings']['path'])) {
             $x['inbounds'][0]['streamSettings']['wsSettings']['path'] = "/ws$h";
@@ -35208,6 +35223,9 @@ DNS-over-HTTPS with IP:
         $files = [
             'reload_message' => "{$this->input['from']}:" . ($draft['result']['message_id'] ?? ''),
             'key' => $this->key,
+            // update.sh шлёт ход обновления тем же адресом Bot API, что и бот
+            // (ретранслятор из config/telegram_api, а не только .env).
+            'api' => $this->telegramApiBase(),
             'curl' => json_encode(['chat_id' => $this->input['chat'],
                 'message_id' => $draft['result']['message_id'] ?? null, 'text' => '~t~'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         ];
@@ -35341,6 +35359,10 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/acmeMenu',
             ]];
         }
+        $data[] = [[
+            'text'          => '📡 Telegram API' . ($this->telegramRelayConf()['enabled'] ? ' · ' . $this->t('ретранслятор', 'relay') : ''),
+            'callback_data' => '/tgapi',
+        ]];
         $data[] = [
             [
                 'text'          => $this->i18n('Ports'),
@@ -37316,6 +37338,7 @@ DNS-over-HTTPS with IP:
         if ($this->transport) {
             return $this->transport->call($method, $data, $json_header);
         }
+        $this->telegramApiRefresh();
         $ch = curl_init();
         curl_setopt_array($ch, [
             CURLOPT_URL            => $this->api . $method,
