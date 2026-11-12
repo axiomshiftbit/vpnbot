@@ -416,6 +416,7 @@ trait BotManagedNodes
             if (!empty($options['amnezia']['enabled'])) $text[] = !empty($options['amnezia']['active'])
                 ? str_replace('VLESS', self::managedNodeDirectLabel($options), $this->t('Связь с основным ботом: VLESS через AmneziaWG UDP/51821.', 'Main bot link: VLESS over AmneziaWG UDP/51821.'))
                 : $this->t('Резерв AmneziaWG разрешён.', 'AmneziaWG backup enabled.');
+            array_push($text, ...$this->managedNodeCardDetails($id, $node));
             array_push($text, ...$this->managedNodeDomainSummary($node));
             $text[] = $this->t('Копия состояния ноды: ', 'Node state snapshot: ') . (!empty($node['backup_time'])
                 ? date('Y-m-d H:i', (int) $node['backup_time']) : $this->t('ещё не создана', 'not created yet'));
@@ -642,13 +643,14 @@ trait BotManagedNodes
         $data[] = [['text'=>$this->t('Сертификат: выпуск, обновление, удаление','Certificate: issue, renew, delete'), 'callback_data'=>"/nodeCert $id"]];
         $data[] = [['text'=>$this->t('Создать копию ноды','Create node snapshot'), 'callback_data'=>"/nodeBackup $id"]];
         $data[] = [['text' => $this->t('Восстановить сохранённую копию ноды', 'Restore saved node snapshot'), 'callback_data' => "/nodeRestore $id"]];
+        $data[] = [['text' => $this->t('📥 Скачать копию ноды', '📥 Download node snapshot'), 'callback_data' => "/nodeExport $id"],
+                   ['text' => $this->t('📤 Загрузить копию ноды', '📤 Upload node snapshot'), 'callback_data' => "/nodeImport $id"]];
         $data[] = [['text' => $this->t('Привязать SSH после переустановки', 'Rebind SSH after reinstall'), 'callback_data' => "/nodeRebind $id"]];
         $data[] = $this->menuHelpButton('nodemaint', $id);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/node $id"]];
-        $code = $this->managedNodes()[$id]['status']['code'] ?? null;
-        if (($code['upgrade'] ?? false) !== true) $line = $this->managedNodeManualCode();
-        elseif (preg_match('~^[a-f0-9]{40}$~D', (string) ($code['source'] ?? ''))) $line = $this->t('Код ноды: коммит ', 'Node code: commit ') . '<code>' . substr($code['source'], 0, 7) . '</code>';
-        else $line = $this->t('Код ноды установлен вручную; кнопки обновления обновят и код, и образы.', 'Node code was installed manually; the update buttons update both code and images.');
+        $status = $this->managedNodes()[$id]['status'] ?? [];
+        if ((($status['code'] ?? [])['upgrade'] ?? false) !== true) $line = $this->managedNodeManualCode();
+        else $line = $this->managedNodeVersionLine(is_array($status) ? $status : []) . "\n" . $this->t('Кнопки обновления обновляют и код, и образы.', 'The update buttons update both code and images.');
         $this->update($this->input['chat'], $this->input['message_id'], $this->t('Ноды → Обслуживание', 'Nodes → Maintenance') . "\n\n" . $line . ($notice === '' ? '' : "\n\n" . self::esc($notice)), $data);
     }
 

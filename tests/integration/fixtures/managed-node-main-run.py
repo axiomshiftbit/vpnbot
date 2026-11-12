@@ -158,7 +158,16 @@ server.serve_forever()
                       'import socket;socket.create_connection(("2606:4700:4700::1111",443),timeout=3).close()'])
         print(('PASS ' if direct.returncode == 0 else 'FAIL ')+'native IPv6 TCP listener reachable', flush=True)
     step('connect')
-    if '--cold-restore' in sys.argv:
+    if '--card-file' in sys.argv:
+        step('card')
+        step('backup-full')
+        step('file-export')
+        step('peer-add')
+        poll()
+        step('file-import')
+        poll()
+        step('file-restored')
+    elif '--cold-restore' in sys.argv:
         if '--amnezia' in sys.argv:
             step('awg-enable')
             poll()

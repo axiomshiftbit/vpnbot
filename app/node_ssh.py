@@ -328,6 +328,17 @@ class Client:
             raise ValueError('snapshot')
         return {'snapshot': value, 'hash': hashlib.sha256(body).hexdigest()[:16]}
 
+    def store(self, snapshot):
+        """Replace the saved snapshot with one uploaded by the administrator.
+
+        Only the fixed snapshot fields are accepted here; the node validates
+        the full contents when the snapshot is restored."""
+        if not isinstance(snapshot, dict) or set(snapshot) != {'schema', 'options', 'identity', 'peers', 'images', 'tls'} \
+                or type(snapshot['schema']) is not int or snapshot['schema'] != 1:
+            raise ValueError('snapshot')
+        atomic(self.directory/'snapshot.json', encode(snapshot))
+        return self.saved()
+
     def forget(self):
         # Only this node's fixed transport files; never recurse or follow links.
         names = {'key', 'key.pub', 'endpoint.json', 'snapshot.json', 'known_hosts', 'xr_known_hosts'}
@@ -368,6 +379,9 @@ def main():
         result = {'retired': True}
     elif value['action'] == 'forget' and value['value'] is None:
         result = client.forget()
+    elif value['action'] == 'import' and isinstance(value['value'], dict) and set(value['value']) == {'snapshot'}:
+        saved = client.store(value['value']['snapshot'])
+        result = {'hash': saved['hash']}
     elif value['action'] == 'snapshot' and value['value'] is None:
         snapshot = client.request({'action': 'backup'})
         atomic(client.directory/'snapshot.json', encode(snapshot))

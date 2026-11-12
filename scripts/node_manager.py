@@ -4,10 +4,12 @@ import copy
 import fcntl
 import hashlib
 import base64
+import ipaddress
 import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import signal
 import sys
 import time
@@ -24,6 +26,133 @@ DEPLOYMENT = Path('/etc/vpnbot-node/deployment.json')
 OPERATIONS = ('configure', 'peers', 'rotate', 'restart', 'rollback', 'restore', 'update', 'upgrade', 'renew', 'renew_force', 'certificate_delete')
 # Full update: vpnbot-node-upgrade.service installs the code, then the worker the images.
 UPGRADE_UNIT = 'vpnbot-node-upgrade.service'
+
+
+# Node card in the main bot: values read from the kernel at status time. A
+# source that cannot be read is omitted; nothing is estimated or cached.
+PROC = Path('/proc')
+# nftables redirects TCP/443 of the permitted servers to this listener.
+VPN_TCP_PORT = 8443
+UDP_PORTS = (51820, 51821)
+CONNTRACK_LIMIT = 8 * 1024 * 1024
+
+
+def proc_address(value):
+    """Address in /proc/net/tcp{,6} hex form; an IPv4-mapped IPv6 as IPv4."""
+    raw = bytes.fromhex(value)
+    if len(raw) == 4:
+        return str(ipaddress.IPv4Address(raw[::-1]))
+    if len(raw) != 16:
+        raise ValueError('address')
+    address = ipaddress.IPv6Address(b''.join(raw[i:i+4][::-1] for i in range(0, 16, 4)))
+    return str(address.ipv4_mapped or address)
+
+
+def tcp_connections(proc=PROC, port=VPN_TCP_PORT):
+    """Established TCP connections to the VPN listener now, per remote address."""
+    counts, readable = {}, False
+    for name in ('tcp', 'tcp6'):
+        try:
+            lines = (proc/'net'/name).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        readable = True
+        for line in lines:
+            fields = line.split()
+            try:
+                if len(fields) < 4 or fields[3] != '01' or int(fields[1].rsplit(':', 1)[1], 16) != port:
+                    continue
+                address = proc_address(fields[2].rsplit(':', 1)[0])
+            except (ValueError, IndexError):
+                continue
+            counts[address] = counts.get(address, 0) + 1
+    return counts if readable else None
+
+
+def udp_peers(proc=PROC, ports=UDP_PORTS):
+    """Sources of UDP flows to WireGuard/AmneziaWG that the node answered.
+
+    conntrack keeps such a flow for about two minutes after the last packet."""
+    try:
+        with (proc/'net'/'nf_conntrack').open('rb') as stream:
+            data = stream.read(CONNTRACK_LIMIT + 1)
+    except OSError:
+        return None
+    if len(data) > CONNTRACK_LIMIT:
+        return None
+    result = set()
+    for line in data.decode('ascii', 'replace').splitlines():
+        fields = line.split()
+        if len(fields) < 4 or fields[2] != 'udp' or '[UNREPLIED]' in fields:
+            continue
+        values = {}
+        for field in fields:
+            name, mark, value = field.partition('=')
+            if mark:
+                values.setdefault(name, value)  # the first tuple is the original direction
+        try:
+            if int(values.get('dport', '')) in ports:
+                result.add(str(ipaddress.ip_address(values['src'])))
+        except (KeyError, ValueError):
+            continue
+    return result
+
+
+def connections(sources, vpn_sources, proc=PROC):
+    """Permitted servers (main bot, VPN-only sources) and their live connections."""
+    tcp, udp = tcp_connections(proc), udp_peers(proc)
+    servers, known = [], set()
+    for role, addresses in (('main', sources), ('vpn', vpn_sources)):
+        for value in addresses:
+            address = str(ipaddress.ip_address(value))
+            if address in known:
+                continue
+            known.add(address)
+            servers.append({'address': address, 'role': role, 'tcp': None if tcp is None else tcp.get(address, 0),
+                            'udp': None if udp is None else address in udp})
+    result = {'servers': servers}
+    if tcp is not None:
+        # Loopback: VLESS carried inside AmneziaWG reaches the listener locally.
+        result['local'] = sum(n for a, n in tcp.items() if ipaddress.ip_address(a).is_loopback)
+        result['other'] = sum(n for a, n in tcp.items() if a not in known and not ipaddress.ip_address(a).is_loopback)
+    return result
+
+
+def host_metrics(interface, proc=PROC, root='/'):
+    result = {'cpus': os.cpu_count() or 0}
+    try:
+        result['uptime'] = int(float((proc/'uptime').read_text().split()[0]))
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        result['load'] = [round(value, 2) for value in os.getloadavg()]
+    except OSError:
+        pass
+    try:
+        memory = {}
+        for line in (proc/'meminfo').read_text().splitlines():
+            name, _, rest = line.partition(':')
+            if name in ('MemTotal', 'MemAvailable'):
+                memory[name] = int(rest.split()[0]) * 1024
+        if len(memory) == 2:
+            result['memory'] = {'total': memory['MemTotal'], 'available': memory['MemAvailable']}
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        usage = shutil.disk_usage(root)
+        result['disk'] = {'total': usage.total, 'free': usage.free}
+    except OSError:
+        pass
+    if interface:
+        try:
+            for line in (proc/'net'/'dev').read_text().splitlines()[2:]:
+                name, _, rest = line.partition(':')
+                if name.strip() == interface:
+                    values = rest.split()
+                    result['network'] = {'rx': int(values[0]), 'tx': int(values[8])}
+        except (OSError, ValueError, IndexError):
+            pass
+    return result
 
 
 def operation(request):
@@ -242,8 +371,16 @@ class Manager:
             return {'schema': 1}
         if action == 'status':
             import node_upgrade
+            status = self.runtime.status()
             # 'upgrade': this node accepts the full code and image update.
-            return self.runtime.status() | {'code': {'source': node_upgrade.installed(self.store), 'upgrade': True}}
+            code = node_upgrade.code_status(self.store) | {'images': node_upgrade.images_source(self.store)}
+            try:
+                options = status.get('options') if isinstance(status.get('options'), dict) else {}
+                host = host_metrics((getattr(self.runtime, 'host', None) or {}).get('interface'))
+                host |= connections(status.get('sources') or [], options.get('vpn_sources') or [])
+            except Exception:
+                host = {}
+            return status | {'code': code, 'host': host}
         if action == 'tls_probe':
             return self.runtime.tls_probe()
         if action == 'backup':

@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import image_bundle
 import node_config as config
 import node_install as install
+import node_upgrade
 import node_state as state
 import nft_host_setup
 import node_host
@@ -305,6 +306,8 @@ def upgrade_code(source, job_id=None):
         disable_forwarding()
         progress('code')
         install.install_code(source)
+        # The node status reports the installed commit and checks the files.
+        node_upgrade.record(ROOT, source, job_id is None)
         host = config.deployment(state.decode((install.ETC/'deployment.json').read_bytes(), state.MAX_DEPLOYMENT_BYTES))
         progress('firewall')
         Runtime(store, host).load_firewall()
@@ -392,6 +395,7 @@ def setup(value, source, channel='latest', bundle=None):
                                  'cover_uid': pwd.getpwnam(install.COVER).pw_uid, 'awg_uid': pwd.getpwnam(install.AWG).pw_uid})
         progress('code')
         install.install_code(source)
+        node_upgrade.record(ROOT, source, True)
         state.atomic(install.ETC/'deployment.json', state.encode(host, state.MAX_DEPLOYMENT_BYTES))
         progress('bundle')
         release = ROOT/'release.json'

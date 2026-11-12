@@ -121,6 +121,26 @@ print('{"ok":true,"result":{"schema":1}}')
             with self.assertRaises(ValueError):
                 client.saved()
 
+    def test_uploaded_snapshot_replaces_saved_one_only_with_fixed_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = transport.Client('aabbccdd', Path(tmp)/'nodes')
+            path = client.directory/'snapshot.json'
+            path.write_text('{"fixture":1}')
+            value = {'schema': 1, 'options': {'amnezia': {'parameters': {}}}, 'identity': {}, 'peers': [], 'images': {'xr': 'x'}, 'tls': {}}
+            result = client.store(value)
+            self.assertEqual(client.saved(), result)
+            self.assertEqual(transport.decode(path.read_bytes()), value)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            for bad in ([], value | {'extra': 1}, {k: v for k, v in value.items() if k != 'tls'}, value | {'schema': True}, value | {'schema': 2}):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    client.store(bad)
+            self.assertEqual(transport.decode(path.read_bytes()), value)
+            path.unlink()
+            path.symlink_to(Path(tmp)/'elsewhere')
+            with self.assertRaises(ValueError):
+                client.store(value)
+            self.assertFalse((Path(tmp)/'elsewhere').exists())
+
     def test_forget_only_own_fixed_files_and_no_links(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)/'nodes'

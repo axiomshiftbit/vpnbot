@@ -201,9 +201,10 @@ class ManagerUpgrade(unittest.TestCase):
         self.assertEqual(self.store.read('job.json')['state'], 'failed')
 
     def test_status_reports_capability_and_installed_commit(self):
-        self.assertEqual(self.manager.rpc({'action': 'status'})['code'], {'source': None, 'upgrade': True})
+        self.assertEqual(self.manager.rpc({'action': 'status'})['code'], {'source': None, 'upgrade': True, 'origin': None, 'images': None})
         state.atomic(self.store.root/'code.json', state.encode({'source': 'c'*40, 'time': 0}))
-        self.assertEqual(self.manager.rpc({'action': 'status'})['code']['source'], 'c'*40)
+        code = self.manager.rpc({'action': 'status'})['code']
+        self.assertEqual((code['source'], code['origin']), ('c'*40, 'button'))
 
 
 if __name__ == '__main__':

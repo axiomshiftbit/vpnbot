@@ -9,6 +9,7 @@ import shutil
 
 import node_config as config
 import node_state as state
+import node_upgrade
 from node_runtime import command
 
 LIB = Path('/usr/local/lib/vpnbot-node')
@@ -128,9 +129,7 @@ def install_code(source):
     os.chmod(ETC, 0o711)
     # Read every module first: a missing or unreadable source file must fail
     # before the first write, never leave old and new modules mixed.
-    modules = {name: (Path(source)/name).read_bytes() for name in (
-        'node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py',
-        'node_wg.py', 'node_awg.py', 'node_state.py', 'node_upgrade.py', 'image_bundle.py')}
+    modules = {name: (Path(source)/name).read_bytes() for name in node_upgrade.MODULES}
     services = units()
     for name, data in modules.items():
         state.atomic(LIB/name, data, 0o644)

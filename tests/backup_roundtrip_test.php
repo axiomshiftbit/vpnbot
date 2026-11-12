@@ -73,6 +73,15 @@ try{
   'letsencrypt'=>'letsencrypt','acme_requested'=>1700000000];
  mkdir("$root/nodes/a1b2c3d4",0700,true);
  foreach (['key'=>'SYNTHETIC-PRIVATE-FIXTURE','key.pub'=>'SYNTHETIC-PUBLIC-FIXTURE'] as $n=>$v) file_put_contents("$root/nodes/a1b2c3d4/$n",$v);
+ // Подключённая нода: в общий бэкап обязаны попасть ключ управления,
+ // закреплённый адрес/ключ хоста и последняя подтверждённая копия ноды.
+ $pac['managed_nodes']['c0ffee00']=['name'=>'connected-node','connected'=>true,'job'=>null,'backup_time'=>1700000000];
+ $nodeFiles=['key'=>"SYNTHETIC-CONTROLLER-PRIVATE\n",'key.pub'=>"SYNTHETIC-CONTROLLER-PUBLIC\n",
+  'endpoint.json'=>'{"address":"198.51.100.20","port":22,"host_key":"SYNTHETIC"}',
+  'snapshot.json'=>json_encode(['schema'=>1,'options'=>['transport'=>'reality'],'identity'=>['uuid'=>'synthetic'],'peers'=>[],
+   'images'=>['xr'=>'ghcr.io/axiomshiftbit/vpnbot-xr@sha256:'.str_repeat('a',64)],'tls'=>new stdClass,'pad'=>str_repeat('s',3000)])];
+ mkdir("$root/nodes/c0ffee00",0700,true);
+ foreach ($nodeFiles as $n=>$v) { file_put_contents("$root/nodes/c0ffee00/$n",$v); chmod("$root/nodes/c0ffee00/$n",0600); }
  $b->setPacConf($pac);
  $b->ensureDefaultTemplates();
  $pac=$b->getPacConf();unset($pac['singtemplates']['15_dns_google']);
@@ -112,6 +121,12 @@ try{
  file_put_contents("$root/config/ipv6-egress.json",json_encode(['enabled'=>true,'public'=>'2606:4700:4700::1111']));
  $json=$b->export();$snapshot=json_decode($json,true,512,JSON_THROW_ON_ERROR);file_put_contents($b->update,$json);
  rtCheck(!isset($snapshot['extra_files']['ipv6-egress.json']),'Host IPv6 setup is not imported from another server');
+ foreach ($nodeFiles as $n=>$v) rtCheck(($snapshot['extra_files']["nodes/c0ffee00/$n"]??null)===base64_encode($v),"Общий бэкап содержит файл ноды $n побайтно");
+ rtCheck(!isset($snapshot['extra_files']['nodes/a1b2c3d4/snapshot.json']) && isset($snapshot['extra_files']['nodes/a1b2c3d4/key']),'Неподключённая нода: только ключ, без несуществующей копии');
+ // Размер файла растёт ровно на закодированные файлы ноды: копия сама по себе невелика.
+ $withNode=strlen(json_encode($snapshot,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT));
+ $node=$snapshot;foreach (array_keys($nodeFiles) as $n) unset($node['extra_files']["nodes/c0ffee00/$n"]);
+ rtCheck($withNode-strlen(json_encode($node,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT))>4000,'Копия ноды заметно увеличивает файл экспорта');
  $localMarker=json_encode(['enabled'=>true,'public'=>'2620:fe::fe']);
  file_put_contents("$root/config/ipv6-egress.json",$localMarker);
  if (extension_loaded('pdo_sqlite')) rtCheck($snapshot['hwid']===['fixture'=>['device'=>['time'=>1]]], 'Экспорт использует актуальную SQLite');
@@ -127,7 +142,11 @@ try{
  $b->setPacConf(['language'=>'ru']);file_put_contents("$root/certs/cert_public",'changed');file_put_contents("$root/certs/cert_private",'changed');file_put_contents("$root/config/wg0.conf",'changed');file_put_contents("$root/config/wg1.conf",'changed');
  file_put_contents("$root/config/telemt/decoy/index.html",'changed');file_put_contents("$root/warp/wgcf-profile.conf",'changed');
  file_put_contents("$root/warp/masque/device.json",'{"id":"other"}');file_put_contents("$root/config/xray.json",'{"inbounds":[{"settings":{"clients":[]}}],"outbounds":[],"routing":{"rules":[]}}');
+ foreach (array_keys($nodeFiles) as $n) unlink("$root/nodes/c0ffee00/$n");
+ rmdir("$root/nodes/c0ffee00");
  rtCheck($b->importFile($b->update)===true,'Полное восстановление возвращает успех');
+ foreach ($nodeFiles as $n=>$v) rtCheck(file_get_contents("$root/nodes/c0ffee00/$n")===$v && (fileperms("$root/nodes/c0ffee00/$n")&0777)===0600,"Файл ноды $n восстановлен побайтно и закрыт");
+ rtCheck((fileperms("$root/nodes/c0ffee00")&0777)===0700 && ($b->managedNodes()['c0ffee00']['backup_time']??0)===1700000000,'Каталог ноды закрыт, время копии восстановлено');
  rtCheck(file_get_contents("$root/config/ipv6-egress.json")===$localMarker,'Restore preserves this host IPv6 network marker');
  rtCheck($b->syncedDomain===$snapshot['pac']['domain'],'Маршруты протоколов применены после восстановления домена');
  $after=json_decode($b->export(),true,512,JSON_THROW_ON_ERROR);

@@ -16,6 +16,7 @@ require_once __DIR__ . '/BotBackup.php';
 require_once __DIR__ . '/BotXdrive.php';
 require_once __DIR__ . '/BotExitNodes.php';
 require_once __DIR__ . '/BotManagedNodes.php';
+require_once __DIR__ . '/BotManagedNodeCard.php';
 require_once __DIR__ . '/BotOvpn.php';
 require_once __DIR__ . '/BotWarpMasque.php';
 require_once __DIR__ . '/BotAcme.php';
@@ -38,6 +39,7 @@ class Bot
     use BotXdrive;
     use BotExitNodes;
     use BotManagedNodes;
+    use BotManagedNodeCard;
     use BotOvpn;
     use BotWarpMasque;
     use BotAcme;
@@ -891,6 +893,12 @@ class Bot
                 break;
             case preg_match('~^/nodeTls ([a-f0-9]{8})(?: (reality|domains))?$~D', $this->input['callback'], $m):
                 $this->managedNodeTlsProbe($m[1], $m[2] ?? 'reality');
+                break;
+            case preg_match('~^/nodeExport ([a-f0-9]{8})(?: (yes))?$~D', $this->input['callback'], $m):
+                $this->managedNodeExport($m[1], isset($m[2]));
+                break;
+            case preg_match('~^/nodeImport ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->managedNodeImportPrompt($m[1]);
                 break;
             case preg_match('~^/nodeBackup ([a-f0-9]{8})(?: (yes))?$~D', $this->input['callback'], $m):
                 $this->managedNodeBackup($m[1], isset($m[2]));
@@ -7571,6 +7579,7 @@ NFT;
     {
         require __DIR__ . '/config.php';
         $bot  = preg_replace('~[\W]~iu', '_', $this->request('getMyName', [])['result']['name'] ?? 'VPNBot');
+        $started = time();
         try { $json = $this->export(); }
         catch (Throwable $error) {
             error_log('pinBackup: ' . get_class($error) . ' at ' . basename($error->getFile()) . ':' . $error->getLine());
@@ -7592,7 +7601,7 @@ NFT;
         // файла с обычными правами чтения в /logs.
         $sent = $this->sendFile($c['admin'][0], new CURLStringFile(
             $json, "{$bot}_export_" . date('d_m_Y_H_i') . '.json', 'application/json'
-        ));
+        ), $this->managedNodeBackupCaption($started));
         if (empty($sent['ok']) || !is_int($sent['result']['message_id'] ?? null)) return false;
         // Экспорт/Telegram могут занять секунды. Не возвращаем на диск старую
         // копию PAC поверх настроек, изменённых за это время.

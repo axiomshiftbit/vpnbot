@@ -5,6 +5,7 @@ Runs as vpnbot-node-upgrade.service (root, outside the worker sandbox: it
 writes /usr/local/lib, systemd units, nftables and sysctl like the manual
 upgrade). The image phase then runs in the ordinary worker with the new code."""
 import fcntl
+import hashlib
 import io
 import os
 from pathlib import Path
@@ -53,6 +54,96 @@ def installed(store):
     value = store.read(CODE)
     if isinstance(value, dict) and isinstance(value.get('source'), str) and image_bundle.COMMIT.fullmatch(value['source']):
         return value['source']
+    return None
+
+
+# Modules copied to the node's code directory by node_setup.py --upgrade-code.
+MODULES = ('node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py',
+           'node_wg.py', 'node_awg.py', 'node_state.py', 'node_upgrade.py', 'image_bundle.py')
+LIB = Path('/usr/local/lib/vpnbot-node')
+INSTALLED = 'code-installed.json'
+
+
+def digest(directory=None):
+    """SHA-256 over the installed modules: names, sizes and contents."""
+    result = hashlib.sha256()
+    for name in MODULES:
+        data = (Path(directory or LIB)/name).read_bytes()
+        result.update(name.encode() + b'\0' + str(len(data)).encode() + b'\0' + data)
+    return result.hexdigest()
+
+
+def checkout_commit(source):
+    """Commit of the Git checkout that holds exactly these modules in scripts/, else None.
+
+    A manual --upgrade-code may run from a clone with local edits or from an
+    unpacked archive: then no commit is claimed for the installed code."""
+    source = Path(source)
+    if source.name != 'scripts':
+        return None
+    def run(*args):
+        result = subprocess.run(['git', '-C', str(source.parent), *args], capture_output=True, timeout=30,
+                                env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8',
+                                     'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_NOSYSTEM': '1'})
+        return result.stdout if result.returncode == 0 else None
+    try:
+        head = (run('rev-parse', '--verify', '-q', 'HEAD^{commit}') or b'').decode().strip()
+        if not image_bundle.COMMIT.fullmatch(head):
+            return None
+        for name in MODULES:
+            if run('show', head + ':scripts/' + name) != (source/name).read_bytes():
+                return None
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+    return head
+
+
+def record(root, source, manual):
+    """After installation: what was installed, for the node status."""
+    path = Path(root)/INSTALLED
+    try:
+        value = {'digest': digest(), 'manual': bool(manual), 'time': int(time.time()),
+                 'source': checkout_commit(source) if manual else None}
+        state.atomic(path, state.encode(value))
+    except Exception:
+        # Never report an earlier installation as the current one.
+        path.unlink(missing_ok=True)
+
+
+def code_status(store, directory=None):
+    """Installed code: commit, how it was installed and whether files still match."""
+    try:
+        recorded = store.read(INSTALLED)
+    except (OSError, ValueError):
+        recorded = None
+    if not isinstance(recorded, dict) or not re.fullmatch('[a-f0-9]{64}', str(recorded.get('digest', ''))):
+        recorded = None
+    button = installed(store)
+    manual = recorded['source'] if recorded and recorded.get('manual') and isinstance(recorded.get('source'), str) \
+        and image_bundle.COMMIT.fullmatch(recorded['source']) else None
+    result = {'source': button or manual, 'upgrade': True,
+              'origin': 'button' if button else ('manual' if recorded and recorded.get('manual') else None)}
+    if recorded:
+        try:
+            result['verified'] = digest(directory) == recorded['digest']
+        except OSError:
+            result['verified'] = False
+    return result
+
+
+def images_source(store):
+    """Commit of the downloaded bundle whose images the confirmed state runs, else None."""
+    try:
+        images = store.load()['images']
+    except Exception:
+        return None
+    for name in (RELEASE, 'release.json'):
+        try:
+            bundle = image_bundle.read(store.root/name)
+        except Exception:
+            continue
+        if all(bundle['images'].get(image) == images.get(image) for image in ('xr', 'ng') if images.get(image)) and images.get('xr'):
+            return bundle['source']
     return None
 
 

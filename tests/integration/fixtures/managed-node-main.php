@@ -52,13 +52,23 @@ class NativeManagedBot extends Bot {
         curl_close($curl);
         return ['ok' => $body === "managed-main-pass\n"];
     }
-    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') {}
+    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') {
+        file_put_contents('/work/screen.json', json_encode([$text, $button ?: []], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+    }
+    protected function managedNodeImportDownload(): ?string {
+        return ($this->input['file_id'] ?? '') === 'node-file' && is_file('/work/node-upload.json') ? file_get_contents('/work/node-upload.json') : null;
+    }
+    public function screen(): string { return json_decode(file_get_contents('/work/screen.json'), true, 64, JSON_THROW_ON_ERROR)[0]; }
     public function notifyAdmins(string $text): void {}
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) {
         file_put_contents('/work/peer-link.txt', $text); return ['ok' => true];
     }
     public function sendFile($chat, $file, $caption = false, $to = false) {
         if (!($file instanceof CURLStringFile)) throw new RuntimeException('unexpected export');
+        if (str_starts_with($file->postname, 'node-') && str_starts_with($file->data, '{') && str_contains($file->data, '"vpnbot-node-snapshot"')) {
+            file_put_contents('/work/node-file.json', $file->data); file_put_contents('/work/node-file.caption', (string) $caption);
+            return ['ok' => true, 'result' => ['message_id' => 2]];
+        }
         file_put_contents('/work/peer-'.(str_ends_with($file->postname, '.json') ? 'outbound.json' : 'subscription.txt'), $file->data);
         return ['ok' => true];
     }
@@ -240,6 +250,73 @@ try {
         case 'submit-restart':
             $bot->managedNodeSubmit('aabbccdd', $argv[1] === 'rotate' ? 'rotate' : 'restart', $argv[1] === 'rotate' ? 'controller' : null);
             verify(!empty($bot->managedNodes()['aabbccdd']['job']), 'maintenance submitted');
+            break;
+        case 'card':
+            // Exact count: the main bot's own Xray may keep connections to the
+            // node, so one extra test socket must add one and its close remove it.
+            $mainTcp = static function () use ($bot): ?int {
+                $bot->managedNodeRefresh('aabbccdd');
+                $main = array_values(array_filter($bot->managedNodes()['aabbccdd']['status']['host']['servers'] ?? [], static fn($s) => ($s['role'] ?? '') === 'main' && ($s['address'] ?? '') === '11.77.0.3'))[0] ?? [];
+                return is_int($main['tcp'] ?? null) ? $main['tcp'] : null;
+            };
+            $base = $mainTcp();
+            verify(is_int($base), 'node status reports main bot connections');
+            $socket = stream_socket_client('tcp://11.77.0.4:443', $errno, $error, 3);
+            verify($socket !== false, 'main bot opens a TCP connection to the node VPN port');
+            usleep(200000);
+            verify($mainTcp() === $base + 1, 'node status counts the live test connection exactly');
+            $text = $bot->screen();
+            verify(str_contains($text, '🟢 основной бот <code>11.77.0.3</code> — TCP ' . ($base + 1)), 'card shows the main bot online with the measured count');
+            verify(str_contains($text, 'Версия ноды:') && str_contains($text, 'образы <code>') && str_contains($text, 'Сервер ноды: работает') && str_contains($text, 'сеть с загрузки'), 'card shows node version, images and server state');
+            $host = $bot->managedNodes()['aabbccdd']['status']['host'];
+            verify(is_int($host['uptime'] ?? null) && ($host['memory']['total'] ?? 0) > 0 && ($host['disk']['total'] ?? 0) > 0 && isset($host['network']['rx']), 'node reports measured host metrics');
+            fclose($socket);
+            $after = null;
+            // The main bot's own idle connections may close meanwhile: never more than before.
+            for ($i = 0; $i < 10 && !(is_int($after) && $after <= $base); $i++) { usleep(200000); $after = $mainTcp(); }
+            verify(is_int($after) && $after <= $base, 'closed test connection is no longer counted');
+            verify(str_contains($bot->screen(), $after > 0 ? '🟢 основной бот <code>11.77.0.3</code> — TCP '.$after : '⚫ основной бот <code>11.77.0.3</code> — нет соединений'), 'card matches the measured count after closing');
+            verify(($bot->managedNodes()['aabbccdd']['status']['code']['upgrade'] ?? false) === true, 'node reports its code status');
+            break;
+        case 'backup-full':
+            $started = time();
+            $extra = $bot->backupExtraFiles();
+            verify(count(array_filter(array_keys($extra), static fn($k) => str_starts_with($k, 'nodes/aabbccdd/'))) === 4, 'main backup includes the four node files');
+            $saved = json_decode(base64_decode($extra['nodes/aabbccdd/snapshot.json']), true, 64, JSON_THROW_ON_ERROR);
+            $node = $bot->transport('rpc', ['action' => 'backup']);
+            verify($saved == $node && ($saved['peers'] ?? null) === ($bot->managedNodes()['aabbccdd']['status']['peers'] ?? null), 'snapshot in the main backup equals the confirmed node state');
+            verify(base64_decode($extra['nodes/aabbccdd/key.pub']) === file_get_contents('/ssh/nodes/aabbccdd/key.pub') && base64_decode($extra['nodes/aabbccdd/key']) === file_get_contents('/ssh/nodes/aabbccdd/key'), 'controller key pair in the main backup');
+            verify(($bot->managedNodes()['aabbccdd']['backup_time'] ?? 0) >= $started && str_contains($bot->managedNodeBackupCaption($started), '(свежая)'), 'backup refreshed the snapshot and its caption says so');
+            break;
+        case 'file-export':
+            @unlink('/work/node-file.json');
+            $bot->managedNodeExport('aabbccdd', true);
+            $file = json_decode((string) @file_get_contents('/work/node-file.json'), true, 64, JSON_THROW_ON_ERROR);
+            verify(($file['type'] ?? '') === 'vpnbot-node-snapshot' && $file['controller_key'] === implode(' ', array_slice(preg_split('~\s+~', trim(file_get_contents('/ssh/nodes/aabbccdd/key.pub'))), 0, 2)), 'node file sent with its controller binding');
+            verify(!str_contains(file_get_contents('/work/node-file.json'), trim(file_get_contents('/ssh/nodes/aabbccdd/key'))), 'node file has no SSH private key');
+            verify($file['snapshot'] == $bot->transport('rpc', ['action' => 'backup']) && str_contains($bot->screen(), 'Свежая копия'), 'node file holds the fresh confirmed node state');
+            copy('/work/node-file.json', '/work/node-upload.json');
+            break;
+        case 'file-import':
+            verify(count($bot->managedNodes()['aabbccdd']['status']['peers']) === 1, 'node changed after the download');
+            $edited = str_replace('"transport": "', '"transport": "x', file_get_contents('/work/node-upload.json'));
+            file_put_contents('/work/node-upload.json', $edited);
+            $before = hash_file('sha256', '/ssh/nodes/aabbccdd/snapshot.json');
+            $bot->input['file_id'] = 'node-file';
+            $bot->managedNodeImportFile('', 'aabbccdd');
+            verify(hash_file('sha256', '/ssh/nodes/aabbccdd/snapshot.json') === $before && str_contains($bot->screen(), 'контрольная сумма'), 'edited node file rejected, saved snapshot unchanged');
+            copy('/work/node-file.json', '/work/node-upload.json');
+            $bot->managedNodeImportFile('', 'aabbccdd');
+            verify(str_contains(json_encode(json_decode(file_get_contents('/work/screen.json'), true)[1]), '/nodeRestore aabbccdd '), 'uploaded node file leads to restore confirmation');
+            verify(empty($bot->managedNodes()['aabbccdd']['job']), 'upload alone does not change the node');
+            $saved = $bot->transport('saved');
+            verify($saved['snapshot'] == json_decode(file_get_contents('/work/node-file.json'), true)['snapshot'], 'saved snapshot replaced by the uploaded file');
+            $bot->managedNodeRestore('aabbccdd', $saved['hash']);
+            verify(!empty($bot->managedNodes()['aabbccdd']['job']), 'restore of the uploaded snapshot submitted');
+            break;
+        case 'file-restored':
+            verify($bot->managedNodes()['aabbccdd']['status']['peers'] === [] && empty($bot->managedNodes()['aabbccdd']['error']), 'node returned to the uploaded snapshot');
+            verify($bot->exitProbe('aabbccdd')['ok'], 'restored node carries real traffic');
             break;
         case 'peer-add':
             $bot->saveManagedNodePeerAdd('external-panel', 'aabbccdd');
