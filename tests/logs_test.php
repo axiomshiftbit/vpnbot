@@ -13,7 +13,8 @@ class LogMenuTestBot extends Bot
     public function getPacConf() { return $this->pacFake; }
     public function setPacConf(array $conf) { $this->pacFake = $conf; return true; }
     public function i18n(string $menu): string { return $menu; }
-    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->buttons = $button; }
+    public string $lastText = '';
+    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->buttons = $button; $this->lastText = $text; }
     public function sendFile($chat, $id_url_cFile, $caption = false, $to = false) { $this->files[] = $id_url_cFile->getFilename(); }
     public function answer($callback_id, $textNotify = false, $notify = false) { $this->answers[] = $textNotify; }
 }
@@ -92,7 +93,24 @@ try {
             if (str_starts_with($button['callback_data'], '/getLog ')) $seen[] = substr($button['callback_data'], 8);
         }
     }
-    logCheck($seen === $b->logFiles(), 'Пагинация показывает каждый журнал ровно один раз');
+    $all = $b->logFiles(); sort($all); $sorted = $seen; sort($sorted);
+    logCheck($sorted === $all && count($seen) === count(array_unique($seen)), 'Пагинация показывает каждый журнал ровно один раз');
+    touch("$b->dir/extra_7", time() + 60); touch("$b->dir/wireguard", time() + 30);
+    $b->logs(0);
+    $first = array_values(array_filter(array_merge(...$b->buttons), static fn($x) => str_starts_with($x['callback_data'], '/getLog ')));
+    logCheck($first[0]['callback_data'] === '/getLog extra_7' && $first[1]['callback_data'] === '/getLog wireguard', 'Свежие журналы сверху');
+    logCheck(str_contains($first[0]['text'], 'extra_7') && preg_match('~ · \d\d\.\d\d \d\d:\d\d$~', $first[0]['text']) === 1, 'Размер и время изменения на кнопке');
+    $rows = array_filter($b->buttons, static fn($r) => str_starts_with($r[0]['callback_data'] ?? '', '/getLog '));
+    foreach ($rows as $r) logCheck(count($r) === 3 && $r[1]['callback_data'] === '/tailLog ' . substr($r[0]['callback_data'], 8) && str_starts_with($r[2]['callback_data'], '/clearLog '), 'Строка журнала: файл, просмотр, очистка');
+    file_put_contents("$b->dir/shadowsocks", implode("\n", array_map(static fn($n) => "line $n <b>x</b>", range(1, 100))) . "\n");
+    $b->tailLog('shadowsocks');
+    logCheck(strpos($b->lastText, 'line 100') < strpos($b->lastText, 'line 99') && !str_contains($b->lastText, 'line 60 ') && str_contains($b->lastText, '&lt;b&gt;x&lt;/b&gt;')
+        && !str_contains($b->lastText, '<b>x</b>'), 'Последние 40 строк, новые сверху, HTML экранирован');
+    file_put_contents("$b->dir/shadowsocks", str_repeat('A', 70000) . "\nlast \xff line\n");
+    $b->tailLog('shadowsocks');
+    logCheck(mb_check_encoding($b->lastText, 'UTF-8') && str_contains($b->lastText, 'last') && mb_strlen(strip_tags($b->lastText)) < 4096, 'Большой журнал: только хвост, корректный UTF-8, в пределах сообщения');
+    $before = $b->lastText; $b->tailLog('../outside');
+    logCheck(!str_contains($b->lastText, 'keep'), 'Обход пути не показывается');
     foreach (['wrong', 'now', '/1 day', 'now/1 day/extra', 'now/1 day'] as $schedule) { $b->pacFake = ['autocleanlogs' => $schedule]; $b->logs(999); }
     $b->logs(-10);
     $b->input = [];

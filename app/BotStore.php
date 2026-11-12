@@ -13,6 +13,7 @@
 // момент переноса.
 trait BotStore
 {
+    public const CONNLOG_DAY_HOSTS = 300;
     private ?PDO $storePdo = null;
     private bool $storeOpened = false;
 
@@ -40,6 +41,13 @@ trait BotStore
             $pdo->exec('CREATE TABLE IF NOT EXISTS hwid (uid TEXT NOT NULL, hwid TEXT NOT NULL, info TEXT NOT NULL, UNIQUE (uid, hwid))');
             $pdo->exec('CREATE TABLE IF NOT EXISTS connlog_ip (email TEXT NOT NULL, ip TEXT NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, count INTEGER NOT NULL, UNIQUE (email, ip))');
             $pdo->exec('CREATE TABLE IF NOT EXISTS connlog_dst (email TEXT NOT NULL, ip TEXT NOT NULL, host TEXT NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, count INTEGER NOT NULL, UNIQUE (email, ip, host))');
+            // Приложения, которые скачивают подписку пользователя: User-Agent и
+            // заголовки устройства (их шлют Happ, Hiddify и др.), адрес и время.
+            $pdo->exec('CREATE TABLE IF NOT EXISTS sub_client (email TEXT NOT NULL, key TEXT NOT NULL, ua TEXT NOT NULL, os TEXT NOT NULL, osver TEXT NOT NULL, model TEXT NOT NULL, ip TEXT NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, count INTEGER NOT NULL, UNIQUE (email, key))');
+            // По дням: какие адреса клиент открывал в каждый день (первое и
+            // последнее обращение за день, число, адрес устройства). Итоги
+            // connlog_dst не дают хронологии, а журнал читают по датам.
+            $pdo->exec('CREATE TABLE IF NOT EXISTS connlog_day (email TEXT NOT NULL, day TEXT NOT NULL, host TEXT NOT NULL, ip TEXT NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, count INTEGER NOT NULL, UNIQUE (email, day, host))');
             @chmod($this->storeFile(), 0600);
             $this->storePdo = $pdo;
             $this->storeImport('hwid', $this->hwid, fn(array $data) => $this->storeHwidReplace($data));
@@ -163,6 +171,8 @@ trait BotStore
             }
         }
         $this->storeConnLogPrune($pdo);
+        // A cleared client (or a cleared log) loses its daily history at once.
+        $pdo->exec('DELETE FROM connlog_day WHERE email NOT IN (SELECT email FROM connlog_ip)');
     }
 
     private function storeConnLogRead(): array
@@ -187,9 +197,15 @@ trait BotStore
                 ON CONFLICT (email, ip) DO UPDATE SET last = excluded.last, count = count + 1');
             $dst = $pdo->prepare('INSERT INTO connlog_dst (email, ip, host, first, last, count) VALUES (?, ?, ?, ?, ?, 1)
                 ON CONFLICT (email, ip, host) DO UPDATE SET last = excluded.last, count = count + 1');
+            $day = $pdo->prepare('INSERT INTO connlog_day (email, day, host, ip, first, last, count) VALUES (?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT (email, day, host) DO UPDATE SET first = MIN(first, excluded.first), last = MAX(last, excluded.last),
+                ip = CASE WHEN excluded.last >= last THEN excluded.ip ELSE ip END, count = count + 1');
             foreach ($events as $e) {
                 $ip->execute([(string) $e['email'], (string) $e['ip'], (int) $e['ts'], (int) $e['ts']]);
-                if (!empty($e['dst'])) $dst->execute([(string) $e['email'], (string) $e['ip'], (string) $e['dst'], (int) $e['ts'], (int) $e['ts']]);
+                if (!empty($e['dst'])) {
+                    $dst->execute([(string) $e['email'], (string) $e['ip'], (string) $e['dst'], (int) $e['ts'], (int) $e['ts']]);
+                    $day->execute([(string) $e['email'], date('Y-m-d', (int) $e['ts']), (string) $e['dst'], (string) $e['ip'], (int) $e['ts'], (int) $e['ts']]);
+                }
             }
             $this->storeConnLogPrune($pdo);
         });
@@ -208,5 +224,56 @@ trait BotStore
             (PARTITION BY email ORDER BY last DESC) AS n FROM connlog_ip) WHERE n > 50)');
         $pdo->exec('DELETE FROM connlog_ip WHERE email NOT IN (SELECT email FROM connlog_ip GROUP BY email ORDER BY MAX(last) DESC LIMIT 200)');
         $pdo->exec('DELETE FROM connlog_dst WHERE NOT EXISTS (SELECT 1 FROM connlog_ip i WHERE i.email = connlog_dst.email AND i.ip = connlog_dst.ip)');
+        // История по дням: тот же срок и те же клиенты; не больше
+        // CONNLOG_DAY_HOSTS адресов за день (по числу, затем по свежести).
+        // Окно по всей таблице дорогое: не чаще раза в 10 минут.
+        $pdo->prepare('DELETE FROM connlog_day WHERE last < ?')->execute([$ttl]);
+        $mark = $pdo->query("SELECT value FROM meta WHERE key = 'connlog_day_prune'")->fetchColumn();
+        if ($mark === false || (int) $mark < time() - 600) {
+            $pdo->exec('DELETE FROM connlog_day WHERE rowid IN (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER
+                (PARTITION BY email, day ORDER BY count DESC, last DESC) AS n FROM connlog_day) WHERE n > ' . self::CONNLOG_DAY_HOSTS . ')');
+            $pdo->exec('DELETE FROM connlog_day WHERE email NOT IN (SELECT email FROM connlog_ip)');
+            $pdo->prepare("INSERT INTO meta (key, value) VALUES ('connlog_day_prune', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")->execute([(string) time()]);
+        }
+    }
+
+    /** One subscription request: the app and device it came from. */
+    public function storeSubClientRecord(string $email, array $device, string $ip): void
+    {
+        $pdo = $this->store();
+        if ($pdo === null) return;
+        $fields = [$device['ua'] ?? '', $device['os'] ?? '', $device['osver'] ?? '', $device['model'] ?? ''];
+        $key = substr(hash('sha256', implode("\0", $fields)), 0, 16);
+        $now = time();
+        $this->storeTransaction(function (PDO $pdo) use ($email, $key, $fields, $ip, $now) {
+            $pdo->prepare('INSERT INTO sub_client (email, key, ua, os, osver, model, ip, first, last, count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT (email, key) DO UPDATE SET ip = excluded.ip, last = excluded.last, count = count + 1')
+                ->execute([$email, $key, ...$fields, $ip, $now, $now]);
+            $pdo->prepare('DELETE FROM sub_client WHERE last < ?')->execute([$now - 2592000]);
+            $pdo->prepare('DELETE FROM sub_client WHERE email = ? AND rowid NOT IN (SELECT rowid FROM sub_client WHERE email = ? ORDER BY last DESC LIMIT 10)')
+                ->execute([$email, $email]);
+        });
+    }
+
+    /** Apps that fetched this user's subscription, newest first; null without SQLite. */
+    public function storeSubClients(string $email): ?array
+    {
+        $pdo = $this->store();
+        if ($pdo === null) return null;
+        $rows = $pdo->prepare('SELECT ua, os, osver, model, ip, first, last, count FROM sub_client WHERE email = ? ORDER BY last DESC');
+        $rows->execute([$email]);
+        return array_map(static fn($r) => ['ua' => (string) $r[0], 'os' => (string) $r[1], 'osver' => (string) $r[2], 'model' => (string) $r[3],
+            'ip' => (string) $r[4], 'first' => (int) $r[5], 'last' => (int) $r[6], 'count' => (int) $r[7]], $rows->fetchAll(PDO::FETCH_NUM));
+    }
+
+    /** Daily history of one client, newest first; null without SQLite. */
+    public function storeConnLogDays(string $email): ?array
+    {
+        $pdo = $this->store();
+        if ($pdo === null) return null;
+        $rows = $pdo->prepare('SELECT day, host, ip, first, last, count FROM connlog_day WHERE email = ? ORDER BY last DESC LIMIT 5000');
+        $rows->execute([$email]);
+        return array_map(static fn($r) => ['day' => (string) $r[0], 'host' => (string) $r[1], 'ip' => (string) $r[2],
+            'first' => (int) $r[3], 'last' => (int) $r[4], 'count' => (int) $r[5]], $rows->fetchAll(PDO::FETCH_NUM));
     }
 }

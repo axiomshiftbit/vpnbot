@@ -17,6 +17,7 @@ require_once __DIR__ . '/BotXdrive.php';
 require_once __DIR__ . '/BotExitNodes.php';
 require_once __DIR__ . '/BotManagedNodes.php';
 require_once __DIR__ . '/BotManagedNodeCard.php';
+require_once __DIR__ . '/BotConnLogView.php';
 require_once __DIR__ . '/BotOvpn.php';
 require_once __DIR__ . '/BotWarpMasque.php';
 require_once __DIR__ . '/BotAcme.php';
@@ -40,6 +41,7 @@ class Bot
     use BotExitNodes;
     use BotManagedNodes;
     use BotManagedNodeCard;
+    use BotConnLogView;
     use BotOvpn;
     use BotWarpMasque;
     use BotAcme;
@@ -1229,8 +1231,11 @@ class Bot
             case preg_match('~^/vlessLogClear$~', $this->input['callback'], $m):
                 $this->vlessLogClear();
                 break;
-            case preg_match('~^/clientLog (\d+)$~', $this->input['callback'], $m):
-                $this->clientLogView((int) $m[1]);
+            case preg_match('~^/clientLog (\d+)(?: ([tsd])(\d{1,4}) ([01]))?$~', $this->input['callback'], $m):
+                $this->clientLogView((int) $m[1], $m[2] ?? 't', (int) ($m[3] ?? 0), ($m[4] ?? '0') === '1');
+                break;
+            case preg_match('~^/clientLogFile (\d+)$~', $this->input['callback'], $m):
+                $this->clientLogFile((int) $m[1]);
                 break;
             case preg_match('~^/clientLogClear (\d+)$~', $this->input['callback'], $m):
                 $this->clientLogClear((int) $m[1]);
@@ -1536,6 +1541,9 @@ class Bot
                 break;
             case preg_match('~^/getLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->getLog($m['arg']);
+                break;
+            case preg_match('~^/tailLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
+                $this->tailLog($m['arg']);
                 break;
             case preg_match('~^/clearLog (?P<arg>[\w.\-]+)$~', $this->input['callback'], $m):
                 $this->clearLog($m['arg']);
@@ -23037,6 +23045,8 @@ DNS-over-HTTPS with IP:
     // 'Mozilla/5.0'` качал конфиг мимо учёта устройств с любого эндпоинта.
     public function processHwidRequest(array $client, bool $htmlPreview = false)
     {
+        // The app and device behind each subscription request, for the user's log.
+        $this->recordSubClient($client);
         $pac = $this->getPacConf();
         // Informational HWID headers (Remnawave/Hiddify convention): let clients
         // display device-limit status instead of just getting a 429.
@@ -24381,62 +24391,6 @@ DNS-over-HTTPS with IP:
             $this->answer($this->input['callback_id'], '🗑 ' . $this->i18n('log cleared'));
         }
         $this->vlessLogView(0);
-    }
-
-    // Admin view: full connection history for a single client (by xray client index),
-    // with per-IP first/last, counts and top destinations. Back button → /userXr $i.
-    public function clientLogView(int $i)
-    {
-        $cl = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
-        if (empty($cl['email'])) {
-            $this->update($this->input['chat'], $this->input['message_id'], $this->i18n('no log'), [[
-                ['text' => $this->i18n('back'), 'callback_data' => "/userXr $i"],
-            ]]);
-            return;
-        }
-        $email = $cl['email'];
-        $this->trackOnline(); // flush pending access-log lines into history first
-        $info = $this->getConnLog()[$email] ?? [];
-
-        $text[] = 'Menu -> ' . $this->i18n('connection log');
-        $text[] = htmlspecialchars($email, ENT_QUOTES);
-        $text[] = '';
-        if (empty($info['ips'])) {
-            $text[] = $this->i18n('no log');
-        } else {
-            $geo    = $this->getGeoCache();
-            $before = $geo;
-            $text[] = '<code>';
-            foreach ($this->connLogCard($email, $info, $geo, true) as $line) {
-                $text[] = $line;
-            }
-            $text[] = '</code>';
-            if ($geo !== $before) {
-                $this->setGeoCache($geo);
-            }
-        }
-
-        $data   = [];
-        $data[] = [[
-            'text'          => '🔄 ' . $this->i18n('refresh'),
-            'callback_data' => "/clientLog $i",
-        ]];
-        if (!empty($info['ips'])) {
-            $data[] = [[
-                'text'          => '🗑 ' . $this->i18n('clear log'),
-                'callback_data' => "/clientLogClear $i",
-            ]];
-        }
-        $data[] = [[
-            'text'          => $this->i18n('back'),
-            'callback_data' => "/userXr $i",
-        ]];
-        $this->update(
-            $this->input['chat'],
-            $this->input['message_id'],
-            implode("\n", $text),
-            $data,
-        );
     }
 
     // Drop just this client's entry from the vless connection log, then re-render.
@@ -35870,21 +35824,23 @@ DNS-over-HTTPS with IP:
     public function logs($page = 0)
     {
         $p = $this->getPacConf();
-        $paths = $this->logPaths();
+        $paths = $this->logPathsByTime();
         $pages = max(1, (int) ceil(count($paths) / 20));
         $page = max(0, min((int) $page, $pages - 1));
         $data = [];
         foreach (array_slice($paths, $page * 20, 20, true) as $v => $path) {
-            $size   = filesize($path);
+            $size   = (int) @filesize($path);
+            $time   = (int) @filemtime($path);
             // Кнопка несёт ИМЯ файла, а не позицию в scandir: позиции ехали от
             // появления нового файла, и «очистить» попадало в соседний лог.
             $data[] = [
                 [
-                    'text'          => "$size $v",
+                    'text'          => "📄 $v · " . ($size ? $this->getBytes($size) : $this->t('пусто', 'empty')) . ($time ? ' · ' . date('d.m H:i', $time) : ''),
                     'callback_data' => "/getLog $v",
                 ],
+                ['text' => '👁', 'callback_data' => "/tailLog $v"],
                 [
-                    'text'          => $this->i18n('clean'),
+                    'text'          => '🧹',
                     'callback_data' => "/clearLog $v",
                 ],
             ];
@@ -35925,9 +35881,54 @@ DNS-over-HTTPS with IP:
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
-            implode("\n", ['...']),
+            implode("\n", ['Menu -> config -> ' . $this->t('логи', 'logs'),
+                $this->t('Свежие сверху (по времени последней записи). 📄 — скачать файл, 👁 — последние строки в чате, 🧹 — очистить.',
+                    'Newest first (by last write). 📄 downloads the file, 👁 shows the last lines here, 🧹 clears it.')]),
             $data ?: false,
         );
+    }
+
+    /** Log files, most recently written first; ties by name. */
+    protected function logPathsByTime(): array
+    {
+        $paths = $this->logPaths();
+        uksort($paths, static fn($a, $b) => ((int) @filemtime($paths[$b]) <=> (int) @filemtime($paths[$a])) ?: strcmp($a, $b));
+        return $paths;
+    }
+
+    /** The last lines of a log in the chat, newest first; the whole file stays one tap away. */
+    public function tailLog($name)
+    {
+        $f = $this->logFileOr404((string) $name);
+        if ($f === null) return $this->logs();
+        $size = (int) @filesize($f);
+        $lines = [];
+        if ($size > 0 && ($h = @fopen($f, 'rb')) !== false) {
+            fseek($h, max(0, $size - 65536));
+            $chunk = (string) stream_get_contents($h);
+            fclose($h);
+            $all = preg_split('~\r?\n~', rtrim(mb_scrub($chunk, 'UTF-8')));
+            if ($size > 65536) array_shift($all); // the first line may be cut
+            $lines = array_reverse(array_slice($all, -40));
+        }
+        $text = ['Menu -> config -> ' . $this->t('логи', 'logs') . ' -> ' . htmlspecialchars((string) $name, ENT_QUOTES),
+            ($size ? $this->getBytes($size) : $this->t('пусто', 'empty')) . ((int) @filemtime($f) ? $this->t(' · изменён ', ' · modified ') . date('d.m.Y H:i:s', (int) filemtime($f)) : '')];
+        if ($lines) {
+            $text[] = $this->t('Последние строки, новые сверху:', 'Last lines, newest first:');
+            $body = '';
+            foreach ($lines as $line) {
+                $line = mb_substr(preg_replace('~[[:cntrl:]]~u', ' ', $line), 0, 300);
+                if (mb_strlen($body) + mb_strlen($line) > 3300) break;
+                $body .= $line . "\n";
+            }
+            $text[] = '<pre>' . htmlspecialchars(rtrim($body), ENT_QUOTES) . '</pre>';
+        } else {
+            $text[] = $this->i18n('log empty');
+        }
+        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), [
+            [['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => "/tailLog $name"], ['text' => '📄 ' . $this->t('Файл', 'File'), 'callback_data' => "/getLog $name"]],
+            [['text' => $this->i18n('back'), 'callback_data' => '/logs']],
+        ]);
     }
 
     // Имя приходит из кнопки, а уходит в путь: принимаем только то, что
