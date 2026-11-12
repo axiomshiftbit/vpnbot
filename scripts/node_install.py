@@ -83,6 +83,15 @@ def units():
             'Requires=docker.service\n\n[Service]\nType=oneshot\n'+hardening+
             'TimeoutStartSec=600\nExecStart='+executable+action+'\n'+extra+
             ('\n[Install]\nWantedBy=multi-user.target\n' if name == 'vpnbot-node' else ''))
+    # The code phase of a full update writes the same host paths as a manual
+    # node_setup.py --upgrade-code (library, units, nftables, sysctl, clone):
+    # it cannot run inside the worker sandbox. Its input is only a commit of
+    # a published bundle that is reachable from the release branch.
+    result['vpnbot-node-upgrade.service'] = ('[Unit]\nDescription=VPNBot managed node code upgrade\n'
+        'After=docker.service nftables.service network-online.target\nWants=network-online.target\n'
+        'Requires=docker.service\n\n[Service]\nType=oneshot\nUser=root\nGroup=root\nUMask=0077\n'
+        'Environment=HOME=/root\nStandardOutput=null\nStandardError=journal\n'
+        'TimeoutStartSec=1800\nExecStart='+executable+'upgrade\n')
     result['vpnbot-node-watch.timer'] = ('[Unit]\nDescription=VPNBot node recovery timer\n'
         '[Timer]\nOnBootSec=30s\nOnUnitActiveSec=15s\nAccuracySec=1s\n'
         '[Install]\nWantedBy=timers.target\n')
@@ -117,7 +126,7 @@ def install_code(source):
         directory.mkdir(mode=0o755 if directory == LIB else 0o700, parents=True, exist_ok=True)
     # The control user must traverse ETC to read only its root-owned public key.
     os.chmod(ETC, 0o711)
-    for name in ('node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py', 'node_wg.py', 'node_awg.py', 'node_state.py', 'image_bundle.py'):
+    for name in ('node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py', 'node_wg.py', 'node_awg.py', 'node_state.py', 'node_upgrade.py', 'image_bundle.py'):
         state.atomic(LIB/name, (Path(source)/name).read_bytes(), 0o644)
     for name, text in units().items():
         state.atomic(Path('/etc/systemd/system')/name, text.encode(), 0o644)

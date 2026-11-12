@@ -13,6 +13,7 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import image_bundle
@@ -267,19 +268,37 @@ def replace_controller(public_key):
         os.close(descriptor)
 
 
-def upgrade_code(source):
+def upgrade_code(source, job_id=None):
     """Refresh node code and units in place, then rebuild the node guard with that code.
 
     State, keys and settings stay as they are. The node lock excludes a running
-    job or renewal, so no ACME window can be open while the guard is replaced."""
+    job or renewal, so no ACME window can be open while the guard is replaced.
+    job_id: the code phase of the bot's full update, which owns the running job."""
     progress('state')
     store = state.Store(ROOT)
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # The bot keeps polling and the watch timer runs every 15 s; each holds
+        # the lock briefly. The button's code phase waits for them, a manual
+        # run still reports a busy node at once.
+        attempts = 120 if job_id is not None else 1
+        for attempt in range(attempts):
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if attempt == attempts-1:
+                    raise
+                time.sleep(.5)
         job = store.read('job.json') or {}
-        if not store.current() or store.pending() or job.get('state') in ('queued', 'running'):
+        owned = job_id is not None and job.get('id') == job_id and job.get('state') == 'running' and job.get('phase') == 'code'
+        if not store.current() or store.pending() or (job.get('state') in ('queued', 'running') and not owned) \
+                or (job_id is not None and not owned):
             raise ValueError('Нода не установлена или изменение ещё не завершено')
+        if job_id is None:
+            # Manually installed code is no longer the commit recorded by the
+            # bot's last full update; the next one compares with the clone.
+            (ROOT/'code.json').unlink(missing_ok=True)
         progress('docker')
         docker_firewall_disabled()
         progress('forwarding')
@@ -589,9 +608,12 @@ def main():
     inputs.add_argument('--config', type=Path, help='JSON с публичными параметрами подключения')
     inputs.add_argument('--controller-key', type=Path, help='Заменить ключ основного бота публичным ключом из файла; прежний доступ SSH отзывается')
     inputs.add_argument('--upgrade-code', action='store_true', help='Обновить код установленной ноды из этой копии репозитория; настройки и ключи сохраняются')
+    parser.add_argument('--job', help=argparse.SUPPRESS)
     parser.add_argument('--bundle', type=Path, help='Проверенный опубликованный комплект образов')
     parser.add_argument('--channel', choices=('latest', 'dev'), default='latest')
     args = parser.parse_args()
+    if args.job is not None and not args.upgrade_code:
+        parser.error('--job используется только с --upgrade-code')
     if os.geteuid() != 0:
         raise ValueError('Запустите установку от root')
     os.umask(0o077)
@@ -609,7 +631,9 @@ def main():
     if args.upgrade_code:
         if args.bundle:
             raise ValueError('Обновление кода не меняет комплект образов')
-        upgrade_code(Path(__file__).resolve().parent)
+        if args.job is not None and not re.fullmatch('[a-f0-9]{32}', args.job):
+            raise ValueError('Нода не установлена или изменение ещё не завершено')
+        upgrade_code(Path(__file__).resolve().parent, args.job)
         print('Код ноды обновлён, правила ноды перестроены. Настройки и ключи сохранены.')
         return
     if args.config:

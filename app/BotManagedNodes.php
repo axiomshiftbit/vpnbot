@@ -272,9 +272,12 @@ trait BotManagedNodes
         $pending = $job['result']['pending'] ?? null;
         if (($job['state'] ?? '') !== 'done' || ($pending && empty($status['pending']) && ($status['generation'] ?? '') !== $pending['after'])) {
             $this->managedNodeRestoreClient($id, $saved['before']);
-            $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved) {
+            // The code phase of a full update stopped before any image change.
+            $stage = ($job['error'] ?? '') === 'code_upgrade_failed' ? (preg_match('~^[a-z_]{1,24}$~D', (string) ($job['stage'] ?? '')) ? $job['stage'] : 'unexpected') : '';
+            $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $stage) {
                 foreach (($saved['draft'] ?? []) as $key=>$value) $node[$key] = $value;
-                $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['error'] = 'rolled_back';
+                $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['error'] = $stage === '' ? 'rolled_back' : 'code_upgrade_failed';
+                if ($stage === '') unset($node['error_stage']); else $node['error_stage'] = $stage;
             });
             return;
         }
@@ -308,9 +311,12 @@ trait BotManagedNodes
         $status = $this->managedNodeRpc($id, ['action' => 'status']);
         $this->managedNodeTransport($id, 'snapshot');
         $certificateResult = isset($job['result']['certificate_result']) || in_array($saved['operation'] ?? '', ['renew','renew_force','certificate_delete'], true) ? $this->managedNodeCertificateResult($job, $status) : '';
-        $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $certificateResult) {
-            $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['backup_time'] = time(); unset($node['error']);
+        // Full update: whether the node's Git clone advanced or kept local edits.
+        $checkout = ($saved['operation'] ?? '') === 'upgrade' && in_array($job['checkout'] ?? '', ['updated', 'current', 'kept'], true) ? $job['checkout'] : '';
+        $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $certificateResult, $checkout) {
+            $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['backup_time'] = time(); unset($node['error'], $node['error_stage']);
             $node['last_operation'] = ['operation'=>$saved['operation'] ?? '', 'subject'=>$saved['subject'] ?? '', 'time'=>time(), 'ok'=>true, 'certificate_result'=>$certificateResult];
+            if ($checkout !== '') $node['last_operation']['checkout'] = $checkout;
             if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required']);
         });
     }
@@ -429,7 +435,10 @@ trait BotManagedNodes
             }
             if ($node['job']) $text[] = $this->managedNodeOperationLabel($node['job']) . ': ' . $this->t('⏳ Выполняется изменение. Подтверждение — после проверки трафика; при отказе нода откатится автоматически.',
                 '⏳ A change is in progress. It is confirmed after a traffic test; the node rolls back automatically on failure.');
-            if (!empty($node['error'])) $text[] = $this->t('Последнее изменение не подтверждено; проверьте связь и состояние отката.', 'The last change was not confirmed; check connectivity and rollback status.');
+            if (($node['error'] ?? '') === 'code_upgrade_failed') $text[] = $this->managedNodeUpgradeFailure((string) ($node['error_stage'] ?? ''));
+            elseif (!empty($node['error'])) $text[] = $this->t('Последнее изменение не подтверждено; проверьте связь и состояние отката.', 'The last change was not confirmed; check connectivity and rollback status.');
+            if (($node['last_operation']['checkout'] ?? '') === 'kept' && empty($node['error']) && !$node['job']) $text[] = $this->t('Код ноды обновлён. Каталог /root/vpnbot на ноде оставлен без изменений: в нём локальные правки, другая ветка или более новый коммит.',
+                'Node code was updated. The /root/vpnbot directory on the node was left unchanged: it has local edits, another branch or a newer commit.');
             $data[] = [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id"]];
             $data[] = [['text' => $this->t('🧭 Маршруты и наборы', '🧭 Routes and rule sets'), 'callback_data' => "/nr $id"],
                 ['text' => $this->t('👥 Пользователи', '👥 Users'), 'callback_data' => "/nuUsers $id 0"]];
@@ -582,7 +591,7 @@ trait BotManagedNodes
     {
         $name = ($operation['operation'] ?? '') === 'rotate' ? 'rotate_' . ($operation['subject'] ?? '') : ($operation['operation'] ?? '');
         $labels = ['restart'=>['ru'=>'перезапуск','en'=>'restart'], 'configure'=>['ru'=>'настройки','en'=>'settings'], 'peers'=>['ru'=>'внешние подключения','en'=>'external connections'],
-            'update'=>['ru'=>'обновление комплекта','en'=>'bundle update'], 'renew'=>['ru'=>'сертификат','en'=>'certificate'], 'rollback'=>['ru'=>'откат','en'=>'rollback'], 'restore'=>['ru'=>'восстановление','en'=>'restore'],
+            'update'=>['ru'=>'обновление комплекта','en'=>'bundle update'], 'upgrade'=>['ru'=>'обновление кода и образов','en'=>'code and image update'], 'renew'=>['ru'=>'сертификат','en'=>'certificate'], 'rollback'=>['ru'=>'откат','en'=>'rollback'], 'restore'=>['ru'=>'восстановление','en'=>'restore'],
             'renew_force'=>['ru'=>'принудительный выпуск сертификата','en'=>'forced certificate issuance'], 'certificate_delete'=>['ru'=>'удаление сертификата','en'=>'certificate deletion'],
             'rotate_controller'=>['ru'=>'ключ клиента основного бота','en'=>'main bot client identity'], 'rotate_reality'=>['ru'=>'ключи REALITY','en'=>'REALITY keys'],
             'rotate_encryption'=>['ru'=>'ключи VLESS Encryption','en'=>'VLESS Encryption keys'], 'rotate_mldsa'=>['ru'=>'ключи ML-DSA','en'=>'ML-DSA keys'],
@@ -602,7 +611,8 @@ trait BotManagedNodes
                 // notice instead of replacing the menu they are working in.
                 $this->send($this->input['chat'], self::esc($node['name'])."\n".(empty($node['error'])
                     ? $this->t('✅ Завершено: ', '✅ Completed: ').self::esc($this->managedNodeOperationLabel($job))
-                    : $this->t('↩️ Не применено, нода вернула прежнее состояние: ', '↩️ Not applied, the node restored its previous state: ').self::esc($this->managedNodeOperationLabel($job))));
+                    : (($node['error'] ?? '') === 'code_upgrade_failed' ? $this->managedNodeUpgradeFailure((string) ($node['error_stage'] ?? ''))
+                    : $this->t('↩️ Не применено, нода вернула прежнее состояние: ', '↩️ Not applied, the node restored its previous state: ').self::esc($this->managedNodeOperationLabel($job)))));
             } else {
                 $this->managedNodeMenu($id);
             }
@@ -635,7 +645,11 @@ trait BotManagedNodes
         $data[] = [['text' => $this->t('Привязать SSH после переустановки', 'Rebind SSH after reinstall'), 'callback_data' => "/nodeRebind $id"]];
         $data[] = $this->menuHelpButton('nodemaint', $id);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/node $id"]];
-        $this->update($this->input['chat'], $this->input['message_id'], $this->t('Ноды → Обслуживание', 'Nodes → Maintenance') . ($notice === '' ? '' : "\n\n" . self::esc($notice)), $data);
+        $code = $this->managedNodes()[$id]['status']['code'] ?? null;
+        if (($code['upgrade'] ?? false) !== true) $line = $this->managedNodeManualCode();
+        elseif (preg_match('~^[a-f0-9]{40}$~D', (string) ($code['source'] ?? ''))) $line = $this->t('Код ноды: коммит ', 'Node code: commit ') . '<code>' . substr($code['source'], 0, 7) . '</code>';
+        else $line = $this->t('Код ноды установлен вручную; кнопки обновления обновят и код, и образы.', 'Node code was installed manually; the update buttons update both code and images.');
+        $this->update($this->input['chat'], $this->input['message_id'], $this->t('Ноды → Обслуживание', 'Nodes → Maintenance') . "\n\n" . $line . ($notice === '' ? '' : "\n\n" . self::esc($notice)), $data);
     }
 
     public function managedNodeRun(string $id, string $action, bool $confirmed = false): void
@@ -646,6 +660,9 @@ trait BotManagedNodes
             'rotate_encryption' => ['rotate', 'encryption'], 'rotate_mldsa' => ['rotate', 'mldsa'], 'rotate_wireguard' => ['rotate', 'wireguard'],
             'rotate_amnezia' => ['rotate', 'amnezia']];
         if (!isset($operations[$action]) || !isset($this->managedNodes()[$id])) return;
+        // A node with the upgrade unit updates its code and then its images.
+        $upgrade = ($this->managedNodes()[$id]['status']['code']['upgrade'] ?? false) === true;
+        if ($upgrade && $operations[$action][0] === 'update') $operations[$action][0] = 'upgrade';
         $options = $this->managedNodes()[$id]['status']['options'] ?? [];
         $active = match ($action) {
             'rotate_wireguard' => !empty($options['wireguard']['enabled']),
@@ -657,7 +674,9 @@ trait BotManagedNodes
         if (!$active) { $this->managedNodeMaintenance($id, $this->t('Этот протокол или вид шифрования отключён. Сначала включите и примените его настройки. Ключи не менялись.',
             'This protocol or encryption feature is disabled. Enable and apply it first. No keys were changed.')); return; }
         if (!$confirmed) {
-            $this->update($this->input['chat'], $this->input['message_id'], $this->managedNodeActionHelp($action) . "\n\n" . $this->t('Выполнить?', 'Proceed?'),
+            $help = $this->managedNodeActionHelp($action);
+            if (!$upgrade && $operations[$action][0] === 'update') $help .= "\n\n" . $this->managedNodeManualCode();
+            $this->update($this->input['chat'], $this->input['message_id'], $help . "\n\n" . $this->t('Выполнить?', 'Proceed?'),
                 [[['text' => $this->t('Выполнить', 'Proceed'), 'callback_data' => "/nodeRun $id $action yes"]],
                  [['text' => $this->i18n('back'), 'callback_data' => "/nodeMaintenance $id"]]]);
             return;

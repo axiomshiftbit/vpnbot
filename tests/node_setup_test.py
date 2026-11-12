@@ -388,6 +388,39 @@ class NodeSetup(unittest.TestCase):
                         install_code.assert_not_called()
                         runtime.return_value.load_firewall.assert_not_called()
                         firewall.assert_not_called()
+                # The bot's full update owns its running code-phase job only.
+                (root/'code.json').write_text('{}')
+                owned = {'id': 'e'*32, 'state': 'running', 'phase': 'code'}
+                with patch.object(Store, 'job', owned):
+                    install_code.reset_mock()
+                    setup.upgrade_code(root/'src', 'e'*32)
+                    install_code.assert_called_once_with(root/'src')
+                    self.assertTrue((root/'code.json').exists())
+                    for job_id in ('f'*32,):
+                        with self.subTest(job=job_id), self.assertRaises(ValueError):
+                            setup.upgrade_code(root/'src', job_id)
+                with patch.object(Store, 'job', owned | {'phase': 'images'}), self.assertRaises(ValueError):
+                    setup.upgrade_code(root/'src', 'e'*32)
+                with self.assertRaises(ValueError):
+                    setup.upgrade_code(root/'src', 'e'*32)  # no job at all
+                # A manual upgrade drops the commit recorded by the bot.
+                setup.upgrade_code(root/'src')
+                self.assertFalse((root/'code.json').exists())
+                # A short poll/watch lock delays the button's code phase only;
+                # a manual run still reports the busy node at once.
+                import fcntl, os, threading
+                holder = os.open(root/'lock', os.O_RDWR)
+                fcntl.flock(holder, fcntl.LOCK_EX)
+                with self.assertRaises(BlockingIOError):
+                    setup.upgrade_code(root/'src')
+                release = threading.Timer(.8, lambda: fcntl.flock(holder, fcntl.LOCK_UN))
+                release.start()
+                with patch.object(Store, 'job', owned):
+                    install_code.reset_mock()
+                    setup.upgrade_code(root/'src', 'e'*32)
+                    install_code.assert_called_once_with(root/'src')
+                release.join()
+                os.close(holder)
 
 
 if __name__ == '__main__':

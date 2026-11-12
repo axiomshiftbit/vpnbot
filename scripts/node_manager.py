@@ -21,7 +21,9 @@ from node_runtime import Runtime, command
 
 ROOT = Path('/var/lib/vpnbot-node')
 DEPLOYMENT = Path('/etc/vpnbot-node/deployment.json')
-OPERATIONS = ('configure', 'peers', 'rotate', 'restart', 'rollback', 'restore', 'update', 'renew', 'renew_force', 'certificate_delete')
+OPERATIONS = ('configure', 'peers', 'rotate', 'restart', 'rollback', 'restore', 'update', 'upgrade', 'renew', 'renew_force', 'certificate_delete')
+# Full update: vpnbot-node-upgrade.service installs the code, then the worker the images.
+UPGRADE_UNIT = 'vpnbot-node-upgrade.service'
 
 
 def operation(request):
@@ -38,7 +40,7 @@ def operation(request):
             raise ValueError('invalid rotation target')
     elif name == 'restore':
         value = state.snapshot(value)
-    elif name == 'update':
+    elif name in ('update', 'upgrade'):
         if value not in ('latest', 'dev'):
             raise ValueError('invalid update channel')
     elif value is not None:
@@ -124,10 +126,17 @@ class Manager:
             if previous is None:
                 raise ValueError('no previous generation is available')
             value = self.store.load(previous)
-        elif name == 'update':
+        elif name in ('update', 'upgrade'):
             from image_bundle import fetch, read
-            path = self.store.root/'release.json'
-            fetch(data, path)
+            if name == 'upgrade':
+                # Images of exactly the commit whose code the upgrade unit installed.
+                import node_upgrade
+                path = self.store.root/node_upgrade.RELEASE
+                if read(path)['source'] != node_upgrade.installed(self.store):
+                    raise ValueError('installed code and image bundle differ')
+            else:
+                path = self.store.root/'release.json'
+                fetch(data, path)
             value['images']['xr'] = read(path)['images']['xr']
             if value['options'].get('cover'):
                 value['images']['ng'] = read(path)['images']['ng']
@@ -173,7 +182,8 @@ class Manager:
         state.atomic(self.store.root/'request.json', state.encode(request))
         state.atomic(self.store.root/'job.json', state.encode({'id': identifier, 'state': 'queued', 'time': int(time.time())}))
         try:
-            command(['systemctl', 'start', '--no-block', 'vpnbot-node-worker.service'], timeout=5)
+            command(['systemctl', 'start', '--no-block', UPGRADE_UNIT if request['operation'] == 'upgrade'
+                     else 'vpnbot-node-worker.service'], timeout=5)
         except Exception:
             state.atomic(self.store.root/'job.json', state.encode({'id': identifier, 'state': 'failed', 'time': int(time.time())}))
             (self.store.root/'request.json').unlink(missing_ok=True)
@@ -185,6 +195,8 @@ class Manager:
         if not job or job.get('state') != 'queued':
             return
         request = self.store.read('request.json')
+        if isinstance(request, dict) and request.get('operation') == 'upgrade' and job.get('phase') != 'images':
+            return  # The code phase belongs to the upgrade unit.
         job.update(state='running', time=int(time.time()))
         state.atomic(self.store.root/'job.json', state.encode(job))
         try:
@@ -206,8 +218,11 @@ class Manager:
             return
         if job['state'] == 'queued' and time.time()-job['time'] < 30:
             return
+        request = self.store.read('request.json')
+        code = job.get('phase') == 'code' or (job['state'] == 'queued' and 'phase' not in job
+                and isinstance(request, dict) and request.get('operation') == 'upgrade')
         result = command(['systemctl', 'show', '--property=ActiveState', '--value',
-                          'vpnbot-node-worker.service'], timeout=5)
+                          UPGRADE_UNIT if code else 'vpnbot-node-worker.service'], timeout=5)
         if result.stdout.strip() not in (b'inactive', b'failed'):
             return
         self.recover()
@@ -226,7 +241,9 @@ class Manager:
         if action == 'ping':
             return {'schema': 1}
         if action == 'status':
-            return self.runtime.status()
+            import node_upgrade
+            # 'upgrade': this node accepts the full code and image update.
+            return self.runtime.status() | {'code': {'source': node_upgrade.installed(self.store), 'upgrade': True}}
         if action == 'tls_probe':
             return self.runtime.tls_probe()
         if action == 'backup':
@@ -258,10 +275,16 @@ class Manager:
 
 
 def main():
-    if os.geteuid() != 0 or len(sys.argv) != 2 or sys.argv[1] not in ('rpc', 'worker', 'boot', 'watch', 'stop', 'renew'):
+    if os.geteuid() != 0 or len(sys.argv) != 2 or sys.argv[1] not in ('rpc', 'worker', 'boot', 'watch', 'stop', 'renew', 'upgrade'):
         raise ValueError('unsupported invocation')
     os.umask(0o077)
     mode = sys.argv[1]
+    if mode == 'upgrade':
+        # The installer of the new code takes the node lock itself; this
+        # process holds it only while changing the job state.
+        import node_upgrade
+        node_upgrade.run(state.Store(ROOT), ROOT/'lock')
+        return
     if mode == 'rpc':
         signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError()))
         signal.alarm(12)

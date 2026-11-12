@@ -42,8 +42,8 @@ trait BotManagedNodeTools
     {
         return $this->t(...(match ($action) {
             'restart' => ['ru'=>'Перезапускает контейнеры ноды с текущей конфигурацией. Ключи и пользователи сохраняются; бот проверит соединение.', 'en'=>'Restarts node containers with the current configuration. Keys and peers stay; the bot tests connectivity.'],
-            'update_latest' => ['ru'=>'Устанавливает опубликованные образы из ветки master. Проверяет конфигурацию и трафик; при отказе возвращает предыдущую версию.', 'en'=>'Installs published master images, validates configuration and traffic, and rolls back on failure.'],
-            'update_dev' => ['ru'=>'Устанавливает опубликованные тестовые образы из ветки dev. Это предварительная версия; при неудачной проверке выполняется откат.', 'en'=>'Installs published dev images. This is a preview version; failed checks cause rollback.'],
+            'update_latest' => ['ru'=>'Полное обновление до последнего опубликованного комплекта ветки master, прошедшего CI. Нода получает его коммит из GitHub по своему deploy-ключу, устанавливает управляющий код и службы, перестраивает защиту nftables, затем заменяет образы. Настройки, ключи и подключения сохраняются; образы подтверждаются только после проверки трафика, при отказе возвращаются прежние. Более старый код не устанавливается: ноду с dev нельзя откатить кнопкой master. Локальные правки в /root/vpnbot на ноде не трогаются.', 'en'=>'Full update to the latest published master bundle that passed CI. The node fetches its commit from GitHub with its deploy key, installs the control code and services, rebuilds the nftables guard, then replaces the images. Settings, keys and peers stay; images are confirmed only after a traffic test and restored on failure. Older code is never installed: a dev node cannot be downgraded by the master button. Local edits in /root/vpnbot on the node are left alone.'],
+            'update_dev' => ['ru'=>'Полное обновление до опубликованного тестового комплекта ветки dev: сначала управляющий код ноды из коммита комплекта, затем образы с проверкой трафика и откатом образов при отказе. Это предварительная версия; вернуться на master можно только после выхода в master не менее нового коммита.', 'en'=>'Full update to the published dev preview bundle: first the node control code from the bundle commit, then the images with a traffic test and image rollback on failure. This is a preview version; returning to master requires a master release at least as new.'],
             'rollback' => ['ru'=>'Возвращает предыдущую подтверждённую конфигурацию ноды, её образы, сертификат и ключи. Внешним клиентам могут потребоваться прежние профили.', 'en'=>'Restores the previous confirmed configuration, images, certificate and keys. External clients may need their previous profiles.'],
             'renew' => ['ru'=>'Проверяет срок сертификата и продлевает его, когда это требуется. Если сертификат ещё действителен и не заменён, бот сообщит, что продление не требовалось. TCP/80 открывается только на время ACME.', 'en'=>'Checks certificate renewal. A certificate kept by the CA is reported as unchanged. TCP/80 opens only during ACME.'],
             'renew_force' => ['ru'=>'Запрашивает новый сертификат даже до истечения текущего. Возможны ограничения удостоверяющего центра. Успех подтверждается заменой сертификата, проверкой доменов и трафика; до этого рабочий сертификат сохраняется.', 'en'=>'Requests a new certificate even before expiry. CA limits apply. Success requires a changed installed certificate, domain validation and a traffic test.'],
@@ -60,6 +60,29 @@ trait BotManagedNodeTools
             'backup' => ['ru'=>'Сохраняет подтверждённую конфигурацию ноды, ключи, сертификат и внешние подключения на основном сервере. Копия заменяет предыдущую сохранённую копию ноды. Для скачивания архива используйте общий бэкап бота: он включает также SSH-привязку, маршруты и подписки.', 'en'=>'Saves confirmed node settings, keys, certificate and peers on the main server, replacing its saved snapshot. Download a full bot backup to include SSH enrollment, routes and subscriptions too.'],
             default => ['ru'=>'Операция может кратковременно прервать соединения ноды.', 'en'=>'This operation may briefly interrupt node connections.'],
         }));
+    }
+
+    private function managedNodeManualCode(): string
+    {
+        return $this->t('Код этой ноды ещё не поддерживает обновление кнопкой: кнопки обновят только образы. Один раз обновите код на ноде вручную по разделу readme «Обновление кода ноды с сервера» — после этого кнопки будут обновлять и код, и образы.',
+            'This node’s code does not support updating by button yet: the buttons update only images. Update the code on the node manually once, as in the readme section on updating node code from the server; afterwards the buttons update both code and images.');
+    }
+
+    private function managedNodeUpgradeFailure(string $stage): string
+    {
+        $reason = match ($stage) {
+            'bundle' => ['ru'=>'не удалось получить опубликованный комплект образов из реестра','en'=>'the published image bundle could not be fetched from the registry'],
+            'repository' => ['ru'=>'на ноде нет Git-клона /root/vpnbot (установка из архива); обновите код вручную','en'=>'the node has no Git clone in /root/vpnbot (archive installation); update the code manually'],
+            'fetch' => ['ru'=>'нода не получила коммит из GitHub: проверьте deploy-ключ и доступ к ssh.github.com:443','en'=>'the node could not fetch the commit from GitHub: check its deploy key and access to ssh.github.com:443'],
+            'downgrade' => ['ru'=>'опубликованный комплект старее установленного кода (например, нода установлена с dev); более старый код не устанавливается','en'=>'the published bundle is older than the installed code (for example, a dev node); older code is never installed'],
+            'source' => ['ru'=>'не удалось извлечь исходники коммита','en'=>'the commit sources could not be extracted'],
+            default => str_starts_with($stage, 'setup_')
+                ? ['ru'=>'установщик кода остановился на этапе [%s]; подробности в /var/log/vpnbot-node/setup.log на ноде','en'=>'the code installer stopped at stage [%s]; see /var/log/vpnbot-node/setup.log on the node']
+                : ['ru'=>'непредвиденный сбой; подробности в /var/log/vpnbot-node/setup.log на ноде','en'=>'unexpected failure; see /var/log/vpnbot-node/setup.log on the node'],
+        };
+        $reason = str_replace('%s', substr($stage, 6), $this->t(...$reason));
+        return $this->t('❌ Обновление кода ноды не выполнено: ', '❌ Node code update failed: ') . self::esc($reason) . '. '
+            . $this->t('Образы не менялись, контейнеры продолжают работать. Устраните причину и повторите обновление.', 'Images were not changed and the containers keep running. Fix the cause and repeat the update.');
     }
 
     private function managedNodeMaintenancePages(): array
