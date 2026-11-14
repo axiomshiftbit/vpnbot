@@ -64,7 +64,7 @@ class Templates(unittest.TestCase):
 
     def test_templates_hold_only_examples_and_public_services(self):
         for path in sorted((ROOT / 'nftables').rglob('*')):
-            if not path.is_file():
+            if not path.is_file() or '__pycache__' in path.parts:
                 continue
             text = path.read_text()
             for m in re.finditer(r'(?<![\w.:])((?:\d{1,3}\.){3}\d{1,3}|[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7})(?:/\d+)?(?![\w.:])', text, re.I):

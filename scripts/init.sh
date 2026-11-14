@@ -233,6 +233,9 @@ apt install -y \
     rsync \
     iptables \
     nftables \
+    rsyslog \
+    logrotate \
+    cron \
     util-linux \
     iproute2
 
@@ -454,6 +457,15 @@ cd "$INSTALL_DIR"
 # Защита хоста для обоих режимов; сбой не прерывает установку.
 bash scripts/host_hardening.sh || echo 'WARN: host hardening was not fully applied' >&2
 
+# Журналы nftables в /var/log/nftables (rsyslog + logrotate) — только при
+# профиле VPNBot и при первой установке; сбой не прерывает установку.
+install_nft_logging() {
+    [ ! -s /etc/rsyslog.d/10-nftables.conf ] || return 0
+    head -5 /etc/nftables.conf 2>/dev/null | grep -q '^# VPNBot:' || return 0
+    systemctl enable --now rsyslog.service cron.service >/dev/null 2>&1 || true
+    bash "nftables/logging/$1" || echo 'WARN: журналирование nftables не настроено (см. nftables/logging/)' >&2
+}
+
 # Профиль nftables из каталога nftables/: вопросы об адресах, WAN и SSH,
 # применение с подтверждением нового SSH-входа и автоматическим откатом.
 # Ноде профиль обязателен; полный бот без него работает, но без защиты хоста.
@@ -475,8 +487,15 @@ if [ "$MODE" = node ]; then
     elif [ -s update/image-bundle.json ]; then
         node_args+=(--bundle update/image-bundle.json)
     fi
-    exec python3 -I scripts/node_setup.py "${node_args[@]}"
+    # Журналы — после установщика ноды: ACTION берётся из уже загруженных правил.
+    if python3 -I scripts/node_setup.py "${node_args[@]}"; then
+        install_nft_logging noda.sh
+        exit 0
+    else
+        exit $?
+    fi
 fi
+install_nft_logging nftables.sh
 
 mkdir -p ./app
 if [ -s ./app/config.php ]; then

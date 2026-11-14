@@ -192,6 +192,13 @@ VPNBot разворачивает на вашем сервере набор VPN-
    даже если связь с установщиком оборвётся. Отказаться от профиля можно — бот
    будет работать, но без защиты хоста.
 
+   Вместе с профилем настраиваются журналы nftables в `/var/log/nftables/`
+   (rsyslog и logrotate): события разложены по `host.log`, `vpn.log`,
+   `docker.log`, `network.log`, `security.log` и `rkn-blacklist.log`, в каждой
+   записи — действие правила (`ACTION=DROP/ACCEPT`). Описание —
+   `/var/log/nftables/README_RU.txt`, повторная настройка —
+   `bash nftables/logging/nftables.sh` (для ноды — `noda.sh`).
+
 4. Дождитесь запуска и проверьте контейнеры: `cd /root/vpnbot && make ps`
    (журналы — `make l`).
 

@@ -75,7 +75,14 @@ class HostHardening(unittest.TestCase):
         source = (SCRIPT.parent / 'init.sh').read_text()
         hardening = source.index('bash scripts/host_hardening.sh')
         self.assertLess(source.index('cd "$INSTALL_DIR"'), hardening)
-        self.assertLess(hardening, source.index('exec python3 -I scripts/node_setup.py'))
+        self.assertLess(hardening, source.index('python3 -I scripts/node_setup.py'))
+        # Профиль nftables ставится после защиты хоста и до установщика ноды,
+        # журналирование — после установщика ноды и после профиля полного бота.
+        profile = source.index('python3 -I scripts/nft_profile_install.py')
+        self.assertLess(hardening, profile)
+        self.assertLess(profile, source.index('python3 -I scripts/node_setup.py'))
+        self.assertLess(source.index('python3 -I scripts/node_setup.py'), source.index('install_nft_logging noda.sh'))
+        self.assertLess(profile, source.index('install_nft_logging nftables.sh'))
 
 
 if __name__ == '__main__':
