@@ -138,6 +138,12 @@ reset:
 	make u
 backup:
 	docker compose exec php php backup.php > backup.json
+restore: # восстановление из резервной копии без Telegram: make restore FILE=backup.json
+	@test -f "$(or $(FILE),backup.json)" || { echo "нет файла / no file: $(or $(FILE),backup.json)"; exit 1; }
+	docker compose exec -T php php /app/restore.php < "$(or $(FILE),backup.json)"
+restore-check: # проверить файл копии, ничего не меняя: make restore-check FILE=backup.json
+	@test -f "$(or $(FILE),backup.json)" || { echo "нет файла / no file: $(or $(FILE),backup.json)"; exit 1; }
+	docker compose exec -T php php /app/restore.php --check < "$(or $(FILE),backup.json)"
 cron: # установка задачи в cron для автозапуска при перезагрузке
 	@(crontab -l 2>/dev/null | grep -v "cd /root/vpnbot && make r"; echo "@reboot cd /root/vpnbot && make r") | crontab -
 uncron: # удаление задачи из cron

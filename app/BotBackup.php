@@ -7,6 +7,9 @@ trait BotBackup
     protected const BACKUP_APPLY_TIMEOUT = 60;
     // Код исключения: снимок лёг частично, прежние файлы вернуть не удалось.
     public const BACKUP_PARTIAL = 2;
+    // Разделы, по которым файл узнаётся как резервная копия бота.
+    public const BACKUP_SECTIONS = ['pac', 'wg', 'wg1', 'ad', 'hwid', 'ssl', 'dnstt', 'xray', 'hy', 'hy_users',
+        'oc', 'ocu', 'tt', 'ss', 'sl', 'cloak', 'ckusers', 'ovpn', 'ipsec', 'xraystats', 'managed_protocols', 'extra_files'];
 
     // php и service видят один каталог конфигурации. Две операции restore
     // либо export/restore не должны перемешивать разделы разных снимков.
@@ -32,6 +35,15 @@ trait BotBackup
             flock($lock, LOCK_UN);
             fclose($lock);
         }
+    }
+
+    // app/restore.php: файл с диска сервера (make restore FILE=…). Тот же
+    // путь, что у копии из Telegram: проверки, блокировка, откат.
+    public function importCliFile(string $path): bool
+    {
+        try { return $this->withBackupLock(fn() => $this->restoreBackup($path)); }
+        catch (Throwable $error) { return $this->backupImportError('apply', true, $error); }
+        finally { unset($this->wg); }
     }
 
     private function backupReadFile(string $path): string

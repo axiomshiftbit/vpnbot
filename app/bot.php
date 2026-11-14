@@ -1990,7 +1990,7 @@ class Bot
             case preg_match('~^/setSSL (\w+)$~', $this->input['callback'], $m):
                 $this->setSSL($m[1]);
                 break;
-            case preg_match('~^/tgapi(?: (client|relay)(?: (set|check|reset|on|off|bot|delbot|ip|delip|rotate)(?: ([0-9]{5,15}|[a-f0-9]{8}|yes))?)?)?$~D', $this->input['callback'], $m):
+            case preg_match('~^/tgapi(?: (client|relay)(?: (set|check|reset|worker|on|off|bot|delbot|ip|delip|rotate)(?: ([0-9]{5,15}|[a-f0-9]{8}|yes))?)?)?$~D', $this->input['callback'], $m):
                 $this->telegramApiMenu($m[1] ?? '', $m[2] ?? '', $m[3] ?? '');
                 break;
             case preg_match('~^/acmeMenu( refresh)?$~', $this->input['callback'], $m):
@@ -8429,10 +8429,7 @@ NFT;
         if (!is_string($raw) || strlen($raw) > self::BACKUP_MAX_BYTES) return $this->backupImportError('file', !empty($file));
         $json = json_decode($raw, true, 128);
         unset($raw);
-        if (empty($json) || !is_array($json) || !array_intersect(array_keys($json), [
-            'pac', 'wg', 'wg1', 'ad', 'hwid', 'ssl', 'dnstt', 'xray', 'hy', 'hy_users',
-            'oc', 'ocu', 'tt', 'ss', 'sl', 'cloak', 'ckusers', 'ovpn', 'ipsec', 'xraystats', 'managed_protocols', 'extra_files',
-        ])) {
+        if (empty($json) || !is_array($json) || !array_intersect(array_keys($json), self::BACKUP_SECTIONS)) {
             return $this->backupImportError('file', !empty($file));
         } else {
             try { $this->validateBackup($json); }

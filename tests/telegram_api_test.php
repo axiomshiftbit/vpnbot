@@ -125,6 +125,10 @@ class RelayBot extends Bot
         return '';
     }
     public function last(): array { return end($this->updated) ?: ['', []]; }
+    public array $files = [];
+    public bool $fileOk = true;
+    public function sendFile($chat, $id_url_cFile, $caption = false, $to = false)
+    { $this->files[] = [$id_url_cFile, $caption]; return ['ok' => $this->fileOk]; }
 }
 
 $template = file_get_contents(__DIR__ . '/../config/nginx_default.conf');
@@ -239,7 +243,7 @@ check($okOn && $bot->telegramRelayStatus()['state'] === 'on', '«включит�
 check($bot->telegramRelayChange('on') === [true, 'без изменений'], 'уже применён — без изменений');
 
 // ── меню ────────────────────────────────────────────────────────────────
-$route = '~^/tgapi(?: (client|relay)(?: (set|check|reset|on|off|bot|delbot|ip|delip|rotate)(?: ([0-9]{5,15}|[a-f0-9]{8}|yes))?)?)?$~D';
+$route = '~^/tgapi(?: (client|relay)(?: (set|check|reset|worker|on|off|bot|delbot|ip|delip|rotate)(?: ([0-9]{5,15}|[a-f0-9]{8}|yes))?)?)?$~D';
 check(str_contains(file_get_contents(__DIR__ . '/../app/bot.php'), "preg_match('" . $route . "'"), 'маршрут в action() совпадает с тестом');
 $allButtons = static function (array $rows): array { $out = []; foreach ($rows as $row) foreach ($row as $b) $out[] = $b['callback_data']; return $out; };
 foreach (['ru', 'en'] as $lang) {
@@ -268,7 +272,7 @@ foreach (['ru', 'en'] as $lang) {
     [$text] = $menuBot->last();
     check(!str_contains($text, $prefix), "$lang главный экран без префикса");
     $help = $menuBot->menuHelpContent('tgapi');
-    check($help && $help[1] === '/tgapi' && count($help[2]) === 5, "$lang справка");
+    check($help && $help[1] === '/tgapi' && count($help[2]) === 6, "$lang справка");
     foreach ($help[2] as $title => $page) check(!str_contains($page, SECRET) && ($lang === 'ru' || preg_match('~[а-яё]~iu', $title . $page) === 0), "$lang справка $title");
 }
 $menuBot->conf['tg_relay']['enabled'] = false;
@@ -339,6 +343,37 @@ check($run(['bogus'])[0] === 2 && $run(['relay-bot-add'])[0] === 2 && $run(['api
 check($code === 0 && !$cli->telegramRelayConf()['enabled'] && $run(['relay-url'])[0] === 1, 'relay-off');
 [$code] = $run(['relay-bot-add', '7777777']);
 check($code === 0 && in_array('7777777', $cli->telegramRelayConf()['bots'], true), 'relay-bot-add');
+
+// ── Cloudflare Worker ───────────────────────────────────────────────────
+$script = Bot::telegramWorkerScript(str_repeat('ab', 16), '1234567890');
+check(!str_contains($script, '__PREFIX__') && !str_contains($script, '__BOT__') && substr_count($script, str_repeat('ab', 16)) === 5, 'скрипт: префикс подставлен');
+check(str_contains($script, "const BOT = '1234567890';") && str_contains($script, "'https://api.telegram.org' + path"), 'скрипт: ID бота и адрес Telegram');
+check(!str_contains($script, SECRET) && !preg_match('~[а-яё]~iu', preg_replace('~^//.*$~m', '', $script)), 'скрипт: без токена, кириллица только в комментариях');
+foreach ([['short', '1234567890'], [str_repeat('AB', 16), '1234567890'], [str_repeat('ab', 16), "1'; x"], [str_repeat('ab', 16), '12']] as [$p, $b]) {
+    try { Bot::telegramWorkerScript($p, $b); check(false, "скрипт отвергает $p/$b"); } catch (InvalidArgumentException $e) { check(true, 'отказ'); }
+}
+check(TelegramApi::normalize('https://vpnbot-relay.example.workers.dev/' . str_repeat('ab', 16)) === 'https://vpnbot-relay.example.workers.dev/' . str_repeat('ab', 16), 'адрес Worker с префиксом принимается');
+foreach (['ru', 'en'] as $lang) {
+    $wb = new RelayBot($lang);
+    $wb->telegramApiFile = "$root/worker_api";
+    $wb->telegramApiMenu('client', 'worker');
+    [$file, $caption] = $wb->files[0];
+    check($file instanceof CURLStringFile && $file->postname === 'vpnbot-telegram-worker.js', "$lang worker: файл");
+    check(preg_match("~const PREFIX = '/([a-f0-9]{32})';~", $file->data, $pm) === 1 && str_contains($caption, $pm[1]) && str_contains($file->data, "const BOT = '1234567890';"), "$lang worker: префикс в файле и подписи");
+    check(mb_strlen(strip_tags($caption)) <= 1024 && !str_contains($caption . $file->data, SECRET), "$lang worker: подпись в пределах Telegram, без токена");
+    check($lang === 'ru' || preg_match('~[а-яё]~iu', $caption) === 0, "$lang worker: язык подписи");
+    check(str_contains($wb->last()[0], '✅') && !file_exists("$root/worker_api"), "$lang worker: адрес бота не меняется");
+    $wb->fileOk = false;
+    $wb->telegramApiMenu('client', 'worker');
+    check(str_contains($wb->last()[0], '❌'), "$lang worker: отказ отправки виден");
+    $wb->telegramApiMenu('client');
+    check(in_array('/tgapi client worker', $allButtons($wb->last()[1]), true), "$lang worker: кнопка");
+}
+$wb->telegramApiMenu('client', 'worker');
+check(!str_contains($wb->files[1][0]->data, $pm[1]), 'каждая кнопка — новый префикс');
+[$code, $outText] = $run(['cf-worker']);
+check($code === 0 && str_starts_with($outText, '// VPNBot') && str_contains($outText, "const BOT = '1234567890';") && preg_match("~const PREFIX = '/[a-f0-9]{32}';~", $outText) === 1, 'CLI cf-worker');
+check(str_contains($run(['help'])[1], 'cf-worker'), 'help: cf-worker');
 
 // ── CLI-файл не исполняется через веб ───────────────────────────────────
 check(str_starts_with(trim(substr(file_get_contents(__DIR__ . '/../app/tgapi.php'), 5)), '//') && str_contains(file_get_contents(__DIR__ . '/../app/tgapi.php'), "PHP_SAPI !== 'cli'"), 'tgapi.php только для CLI');

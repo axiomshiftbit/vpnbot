@@ -128,6 +128,94 @@ trait BotTelegramApi
         };
     }
 
+    // ── Ретранслятор на Cloudflare Workers ────────────────────────────────
+    //
+    // Для сервера без своего второго сервера: Worker в бесплатном аккаунте
+    // Cloudflare пересылает запросы бота в api.telegram.org. Скрипт
+    // создаётся под этого бота: случайный префикс 128 бит и ID бота; любой
+    // другой путь, бот или метод — 404 без обращения к Telegram. Заголовки
+    // клиента (адрес, cookie, cf-*) в Telegram не уходят. Cloudflare видит
+    // токен и сообщения бота — об этом говорят меню и справка.
+    private const TG_WORKER_JS = <<<'JS'
+// VPNBot: ретранслятор Telegram Bot API на Cloudflare Workers.
+// Адрес для бота: https://<адрес этого Worker>/__PREFIX__
+//   Menu → config → Telegram API → Адрес Bot API → указать адрес ретранслятора
+//   или на сервере: make tgapi cmd="api-set https://<адрес Worker>/__PREFIX__"
+// Пропускает к api.telegram.org только запросы Bot API бота __BOT__;
+// остальное получает 404. Cloudflare видит токен и сообщения бота.
+//
+// VPNBot: Telegram Bot API relay on Cloudflare Workers.
+// Address for the bot: https://<this Worker address>/__PREFIX__
+//   Menu → config → Telegram API → Bot API address → set the relay address
+//   or on the server: make tgapi cmd="api-set https://<Worker address>/__PREFIX__"
+// Passes only Bot API requests of bot __BOT__ to api.telegram.org;
+// everything else gets 404. Cloudflare sees the bot token and messages.
+const PREFIX = '/__PREFIX__';
+const BOT = '__BOT__';
+const PATH = /^\/(?:file\/)?bot([0-9]{5,15}):[A-Za-z0-9_-]{30,64}\/[A-Za-z0-9_.\/-]{1,512}$/;
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    const path = url.pathname.startsWith(PREFIX + '/') ? url.pathname.slice(PREFIX.length) : '';
+    const bot = PATH.exec(path);
+    if (!bot || bot[1] !== BOT || path.includes('..') || !['GET', 'POST'].includes(request.method)) {
+      return new Response('Not Found', { status: 404 });
+    }
+    const headers = new Headers();
+    for (const name of ['content-type', 'content-length']) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    const init = { method: request.method, headers, redirect: 'manual' };
+    if (request.method === 'POST') init.body = request.body;
+    const answer = await fetch('https://api.telegram.org' + path + url.search, init);
+    const out = new Headers();
+    for (const name of ['content-type', 'content-disposition']) {
+      const value = answer.headers.get(name);
+      if (value) out.set(name, value);
+    }
+    return new Response(answer.body, { status: answer.status, headers: out });
+  },
+};
+
+JS;
+
+    public static function telegramWorkerScript(string $prefix, string $botId): string
+    {
+        if (!preg_match('~^[a-f0-9]{32}$~D', $prefix) || !preg_match('~^[0-9]{5,15}$~D', $botId)) {
+            throw new InvalidArgumentException('Cloudflare Worker: prefix or bot ID');
+        }
+        return strtr(self::TG_WORKER_JS, ['__PREFIX__' => $prefix, '__BOT__' => $botId]);
+    }
+
+    // [префикс, скрипт]. Префикс не хранится: адрес с ним администратор
+    // задаёт боту сам, после проверки getMe он ляжет в config/telegram_api.
+    public function telegramWorker(): array
+    {
+        $prefix = bin2hex(random_bytes(16));
+        return [$prefix, self::telegramWorkerScript($prefix, TelegramApi::botId((string) $this->key))];
+    }
+
+    public function telegramWorkerSteps(string $prefix): string
+    {
+        return $this->t(
+            "1. dash.cloudflare.com → Workers &amp; Pages → Create → Worker (Start with Hello World) → Deploy.\n2. Edit code: удалите пример, вставьте файл целиком → Deploy.\n3. Скопируйте адрес вида <code>https://имя.аккаунт.workers.dev</code> (или подключите свой домен: Settings → Domains &amp; Routes).\n4. Здесь: Адрес Bot API → указать адрес ретранслятора → <code>https://адрес-worker/$prefix</code>. Бот сохранит его только после успешной проверки getMe.",
+            "1. dash.cloudflare.com → Workers &amp; Pages → Create → Worker (Start with Hello World) → Deploy.\n2. Edit code: delete the sample, paste the whole file → Deploy.\n3. Copy the address like <code>https://name.account.workers.dev</code> (or attach your domain: Settings → Domains &amp; Routes).\n4. Here: Bot API address → set the relay address → <code>https://worker-address/$prefix</code>. The bot saves it only after a successful getMe check."
+        );
+    }
+
+    public function telegramWorkerSend()
+    {
+        [$prefix, $script] = $this->telegramWorker();
+        $caption = '☁️ Cloudflare Worker' . "\n\n" . $this->telegramWorkerSteps($prefix) . "\n\n⚠ "
+            . $this->t('Cloudflare видит токен и сообщения бота. Путь с префиксом — секрет, как пароль.', 'Cloudflare sees the bot token and messages. The path with the prefix is a secret, like a password.');
+        $r = $this->sendFile($this->input['chat'], new CURLStringFile($script, 'vpnbot-telegram-worker.js', 'text/javascript'), $caption);
+        return $this->telegramApiClientMenu(!empty($r['ok'])
+            ? '✅ ' . $this->t('скрипт Worker отправлен файлом', 'the Worker script is sent as a file')
+            : '❌ ' . $this->t('не удалось отправить файл', 'could not send the file'));
+    }
+
     // ── Ретранслятор: настройка ───────────────────────────────────────────
 
     public static function telegramRelayCidr(string $value): ?string
@@ -444,6 +532,7 @@ trait BotTelegramApi
             if ($action === 'set') return $this->telegramApiPrompt('client');
             if ($action === 'check') { [$ok, $msg] = $this->telegramApiCheck(); return $this->telegramApiClientMenu(($ok ? '✅ ' : '❌ ') . $msg); }
             if ($action === 'reset') { [$ok, $msg] = $this->telegramApiResetUrl(); return $this->telegramApiClientMenu(($ok ? '✅ ' : '❌ ') . $msg); }
+            if ($action === 'worker') return $this->telegramWorkerSend();
             return $this->telegramApiClientMenu($notice);
         }
         if ($section === 'relay') {
@@ -504,10 +593,12 @@ trait BotTelegramApi
         $text[] = '';
         $text[] = $this->t('Ретранслятор нужен, если с этого сервера не открывается api.telegram.org. На сервере с ретранслятором добавьте ID этого бота, затем укажите здесь его адрес. Новый адрес сохраняется только после успешной проверки getMe через него.',
             'Use a relay when this server cannot reach api.telegram.org. Add this bot ID on the relay server, then enter its address here. A new address is saved only after a successful getMe through it.');
-        $text[] = '⚠ ' . $this->t('Ретранслятор получает токен и все сообщения бота: указывайте только свой сервер.', 'The relay receives the bot token and all messages: use only your own server.');
+        $text[] = $this->t('Нет второго сервера — подойдёт Worker в бесплатном аккаунте Cloudflare: кнопка ниже пришлёт готовый скрипт.', 'No second server? A Worker in a free Cloudflare account works too: the button below sends a ready script.');
+        $text[] = '⚠ ' . $this->t('Ретранслятор получает токен и все сообщения бота: указывайте только свой сервер или свой Worker.', 'The relay receives the bot token and all messages: use only your own server or your own Worker.');
         $data = [
             [['text' => '✏️ ' . $this->t('указать адрес ретранслятора', 'set the relay address'), 'callback_data' => '/tgapi client set']],
             [['text' => '✅ ' . $this->t('проверить связь', 'check the connection'), 'callback_data' => '/tgapi client check']],
+            [['text' => '☁️ ' . $this->t('ретранслятор на Cloudflare Workers', 'relay on Cloudflare Workers'), 'callback_data' => '/tgapi client worker']],
         ];
         if ($state['source'] === 'file' || in_array('file', $state['invalid'], true)) {
             $data[] = [['text' => '↩️ ' . $this->t('вернуть ', 'go back to ') . TelegramApi::mask(TelegramApi::fallback()), 'callback_data' => '/tgapi client reset']];
@@ -614,6 +705,9 @@ trait BotTelegramApi
                 return $result($this->telegramApiSetUrl($value));
             case $cmd === 'api-reset':
                 return $result($this->telegramApiResetUrl($value === '--force'));
+            case $cmd === 'cf-worker':
+                fwrite($out, $this->telegramWorker()[1]);
+                return 0;
             case $cmd === 'relay-url':
                 $url = $this->telegramRelayUrl();
                 if ($url === '' || $this->telegramRelayStatus()['state'] !== 'on') { $print('ERROR: ' . $this->telegramRelayStateText($this->telegramRelayStatus()['state'])); return 1; }
@@ -627,6 +721,7 @@ trait BotTelegramApi
                     'api-check               ' . $this->t('проверить getMe через текущий адрес', 'check getMe through the current address'),
                     'api-set <url>           ' . $this->t('ходить через ретранслятор (после проверки getMe)', 'use a relay (after a getMe check)'),
                     'api-reset [--force]     ' . $this->t('вернуть TELEGRAM_API из .env или api.telegram.org', 'go back to TELEGRAM_API from .env or api.telegram.org'),
+                    'cf-worker               ' . $this->t('скрипт ретранслятора для Cloudflare Workers (адрес — в его первых строках)', 'relay script for Cloudflare Workers (the address is in its first lines)'),
                     'relay-on | relay-off    ' . $this->t('включить или выключить ретранслятор', 'turn the relay on or off'),
                     'relay-bot-add <id>      ' . $this->t('разрешить бота (ID — часть токена до двоеточия)', 'allow a bot (ID is the token part before the colon)'),
                     'relay-bot-del <id>      ' . $this->t('запретить бота', 'remove a bot'),

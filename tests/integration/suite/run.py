@@ -251,6 +251,16 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
  check('backup_restore','runtime-changed-before-restore',identities()!=baseline_identity)
  restored_result=bot('backup-restore');check('backup_restore','full-restore',restored_result.get('ok') and restored_result.get('error_messages')==0)
  check('backup_restore','restored-clients-and-identities',identities()==baseline_identity)
+ # The same snapshot through the server CLI (make restore): no Telegram, progress
+ # in stdout, exit code 0; native-after-restore then checks this restored state.
+ v=json.loads(clients.read_text());v[first]['name']='CI changed before CLI restore';clients.write_text(json.dumps(v))
+ check('backup_restore','runtime-changed-before-cli-restore',identities()!=baseline_identity)
+ print('START backup-cli-restore',flush=True)
+ with (B/'logs/audit-full-backup.json').open('rb') as snapshot:
+  q=subprocess.run(['docker','exec','-i','php-audit','php','/app/restore.php'],cwd=B,env=env,stdin=snapshot,capture_output=True,timeout=900)
+ (O/'backup-cli-restore.log').write_bytes(q.stdout+q.stderr)
+ check('backup_restore','cli-restore',q.returncode==0 and '✅'.encode() in q.stdout and not q.stderr.strip())
+ check('backup_restore','cli-restored-clients-and-identities',identities()==baseline_identity)
  run('backup-resume-cron',['docker','start','service-audit']);native('native-after-restore')
  # Optional native client probes use the established isolated target network.
  for service in ('masque',):
