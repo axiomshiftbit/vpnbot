@@ -23,6 +23,17 @@ class HostServicesTest(unittest.TestCase):
         with patch.object(host,'supported',return_value=True),patch.object(host.shutil,'which',return_value='/bin/tool'),patch.object(host,'same',return_value=False),patch.object(host,'run',return_value=CompletedProcess([],1)):
             with self.assertRaises(RuntimeError):host.prepare(Path('/synthetic'))
 
+    def test_missing_unit_file_reinstalls_the_guard(self):
+        calls=[]
+        def run(args,timeout=180):
+            calls.append([str(a) for a in args]);return CompletedProcess([],0)
+        exists=lambda self: str(self)!='/etc/systemd/system/vpnbot-origin.service'
+        with patch.object(host,'supported',return_value=True),patch.object(host.shutil,'which',return_value='/bin/tool'),\
+             patch.object(host,'same',return_value=True),patch.object(Path,'exists',exists),patch.object(host,'run',side_effect=run):
+            host.prepare(Path('/root/vpnbot'))
+        self.assertTrue(any(c[-3:-2]==['install'] or 'install' in c for c in calls if c[1].endswith('container_origin_guard.py')))
+        self.assertFalse(any(c[:2]==['systemctl','start'] for c in calls))
+
     def test_finalize_refuses_missing_firewall_for_existing_acme(self):
         with patch.object(host,'supported',return_value=True),patch.object(Path,'exists',return_value=True),patch.object(host,'run',side_effect=[CompletedProcess([],0),CompletedProcess([],1)]):
             with self.assertRaises(RuntimeError):host.finalize(Path('/synthetic'))

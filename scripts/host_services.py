@@ -39,7 +39,10 @@ def prepare(root):
         raise RuntimeError('Не удалось создать пустые IPv6-наборы; существующие адреса и правила сохранены')
     guard = root / 'scripts/container_origin_guard.py'
     config = Path('/etc/vpnbot-origin/config.json')
-    if not config.exists() or not same(guard, Path('/usr/local/sbin/vpnbot-origin')):
+    # Без unit-файла службы (ручная очистка, перенос) защиту ставим заново:
+    # иначе запуск отсутствующей службы обрывал установку.
+    unit = Path('/etc/systemd/system/vpnbot-origin.service')
+    if not config.exists() or not unit.exists() or not same(guard, Path('/usr/local/sbin/vpnbot-origin')):
         result = run([sys.executable, guard, 'install', '--bot-dir', root])
         if result.returncode:
             raise RuntimeError('Установка защиты контейнеров не завершена; запустите scripts/container_origin_guard.py install для диагностики')
