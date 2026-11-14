@@ -269,8 +269,20 @@ do
                 | sed -n 's/^VER=//p' | head -n1)
         fi
         apply_ver=${apply_ver:-${running_ver:-}}
-        VER="${apply_ver:-$(git -C "$pwd" describe --tags --always 2>/dev/null || echo local)}" \
-            python3 "$pwd/scripts/protocol_modules.py" apply >/dev/null 2>&1 || true
+        # Python раз в секунду стоил ~4 с CPU в минуту. apply запускается, когда
+        # меняются его входы (выключатели, desired.json, nginx/upstream), и не
+        # реже раз в 10 с: там сверка контейнеров (~30 с) и копия продлённых
+        # сертификатов. Неуспешный запуск (lock занят, ошибка) — через секунду.
+        modules_inputs=$(stat -c '%n %y %s %i' "$pwd/config/protocol-services.json" "$pwd"/config/protocols/*/desired.json \
+            "$pwd/config/nginx.conf" "$pwd/config/nginx_default.conf" "$pwd/config/upstream.conf" 2>/dev/null)
+        printf -v modules_now '%(%s)T' -1
+        if [[ "$modules_inputs" != "${modules_seen-}" ]] || (( modules_now - ${modules_at:-0} >= 10 )); then
+            if VER="${apply_ver:-$(git -C "$pwd" describe --tags --always 2>/dev/null || echo local)}" \
+                python3 "$pwd/scripts/protocol_modules.py" apply >/dev/null 2>&1; then
+                modules_seen=$modules_inputs
+                modules_at=$modules_now
+            fi
+        fi
     fi
     sleep 1
 done

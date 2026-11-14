@@ -36,6 +36,18 @@ DOCKER = ['docker', '--host', 'unix:///var/run/docker.sock']
 NAME = re.compile(r'[A-Za-z0-9_.:-]{1,15}\Z')
 SERVICES = frozenset(('php service dockerproxy ng up xr wg wg1 ad wp proxy ss np oc ovpn '
                       'hy tt dnstt telemt ipsec anytls mieru tuic shadowtls snolc masque').split())
+# Полная сверка с Docker запускает десятки процессов docker/nsenter/ip. Раньше
+# она шла каждые 2 с и на каждое событие Docker, включая exec_* от healthcheck,
+# и занимала ~20 % ядра. Теперь: по событиям, меняющим endpoint, и раз в
+# FULL_SYNC как страховка от потерянного события. Между ними раз в RETRY —
+# одна команда nft, сверяющая свою таблицу (снята/заменена — сразу полная
+# сверка). Неподтверждённый работающий endpoint повторяется через RETRY.
+FULL_SYNC = 60
+RETRY = 2
+EVENTS = [*DOCKER, 'events', '--format', '{{.Type}} {{.Action}}',
+          '--filter', 'type=container', '--filter', 'type=network',
+          *(x for e in ('create', 'start', 'restart', 'die', 'stop', 'destroy', 'connect', 'disconnect')
+            for x in ('--filter', 'event=' + e))]
 INSPECT = '''{"id":{{json .Id}},"pid":{{.State.Pid}},"running":{{.State.Running}},"sandbox":{{json .NetworkSettings.SandboxKey}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"root":{{json (index .Config.Labels "com.docker.compose.project.working_dir")}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"mode":{{json .HostConfig.NetworkMode}},"privileged":{{.HostConfig.Privileged}},"networks":{{json .NetworkSettings.Networks}}}'''
 
 
@@ -200,7 +212,10 @@ def client_networks(container):
     return result
 
 
-def inventory(cfg):
+def inventory(cfg, pending=None):
+    # pending: сюда отмечаются работающие endpoint, которые пока не удалось
+    # подтвердить; watch повторит сверку через RETRY, а не через FULL_SYNC.
+    pending = [] if pending is None else pending
     root = cfg['bot_dir']
     hosts = {x['ifindex']: x for x in json.loads(run(['ip', '-j', 'link', 'show']))}
     endpoints, bridges, protected = [], set(cfg['bridges']), []
@@ -216,6 +231,7 @@ def inventory(cfg):
         try:
             links = json.loads(run(['nsenter', '-t', str(c['pid']), '-n', 'ip', '-j', 'link', 'show', 'type', 'veth']))
         except (Refuse, subprocess.SubprocessError):
+            pending.append(c['id'])
             continue  # No allowance for this endpoint until it can be verified.
         routed = client_networks(c)
         for network, ep in c['networks'].items():
@@ -232,9 +248,8 @@ def inventory(cfg):
             # Match by peer/master, not a MAC supplied by packets/container.
             candidates = [hosts[l['link_index']] for l in links if l.get('link_index') in hosts
                           and hosts[l['link_index']].get('master') == bridge]
-            if len(candidates) != 1:
-                continue
-            if not ep['MacAddress']:
+            if len(candidates) != 1 or not ep['MacAddress']:
+                pending.append(c['id'])
                 continue
             h = candidates[0]
             endpoints.append({'container': c['id'], 'host': h['ifname'], 'index': h['ifindex'], 'bridge': bridge,
@@ -252,6 +267,7 @@ def inventory(cfg):
     after = {(c['id'], c['pid'], json.dumps(c['networks'], sort_keys=True)) for c in containers(root)}
     before = {(c['id'], c['pid'], json.dumps(c['networks'], sort_keys=True)) for c in cs}
     stable = {item[0] for item in before & after}
+    pending.extend(e['container'] for e in endpoints if e['container'] not in stable)
     endpoints = [e for e in endpoints if e.pop('container') in stable]
     return sorted(bridges), endpoints
 
@@ -261,22 +277,34 @@ def baseline(bridges, prefixes=PREFIXES):
             'include "/run/vpnbot-origin/active*.nft"\n')
 
 
-def sync(cfg, locked=False):
-    bridges, endpoints = inventory(cfg)
+def applied(transaction, bridges, prefixes):
+    """None — таблицы нет; True — ядро, /run снимок и BASE уже такие. Без Docker."""
+    current = subprocess.run(['nft', '-j', 'list', 'table', 'bridge', TABLE], capture_output=True, text=True)
+    if current.returncode:
+        return None
+    if not (RUNTIME / 'active.nft').exists():
+        return False
+    generation = re.search(r'comment "(origin:[a-f0-9]+)"', transaction).group(1)
+    tables = [o['table'] for o in json.loads(current.stdout)['nftables'] if 'table' in o]
+    return (any(t.get('comment') == generation for t in tables) and
+            (RUNTIME / 'active.nft').read_text() == transaction and
+            BASE.is_file() and BASE.read_text() == baseline(bridges, prefixes))
+
+
+def sync(cfg, locked=False, report=None):
+    pending = []
+    bridges, endpoints = inventory(cfg, pending)
     prefixes = sorted(set(cfg.get('prefixes', PREFIXES)) | {x for e in endpoints for x in e['networks'] + e['routed']})
     rules = render(bridges, endpoints, prefixes)
     transaction = f'delete table bridge {TABLE}\n' + rules
+    if report is not None:
+        report.update(pending=bool(pending), check=(transaction, bridges, prefixes))
     with contextlib.nullcontext() if locked else lock():
         # First install creates BASE without loading arbitrary host firewall.
-        current = subprocess.run(['nft', '-j', 'list', 'table', 'bridge', TABLE], capture_output=True, text=True)
-        if current.returncode == 0 and (RUNTIME / 'active.nft').exists():
-            generation = re.search(r'comment "(origin:[a-f0-9]+)"', rules).group(1)
-            tables = [o['table'] for o in json.loads(current.stdout)['nftables'] if 'table' in o]
-            if (any(t.get('comment') == generation for t in tables) and
-                    (RUNTIME / 'active.nft').read_text() == transaction and
-                    BASE.is_file() and BASE.read_text() == baseline(bridges, prefixes)):
-                return len(endpoints)
-        live = transaction if current.returncode == 0 else rules
+        state = applied(transaction, bridges, prefixes)
+        if state:
+            return len(endpoints)
+        live = transaction if state is not None else rules
         run(['nft', '-c', '-f', '-'], live)
         write(RUNTIME / 'active.nft', transaction)
         if bridges != cfg['bridges'] or prefixes != cfg.get('prefixes'):
@@ -311,24 +339,32 @@ def boot():
 def watch():
     selector = selectors.DefaultSelector()
     events = None
-    last_error, last_digest, last_check = '', '', 0.0
+    last_error, last_digest = '', ''
+    due, check = 0.0, None  # срок полной сверки; что сверять с nft между ними
     try:
         while True:
             if events is None or events.poll() is not None:
                 if events is not None:
                     selector.unregister(events.stdout)
                     events.stdout.close()
-                events = subprocess.Popen(DOCKER + ['events', '--format', '{{.Type}} {{.Action}}'],
-                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                events = subprocess.Popen(EVENTS, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 os.set_blocking(events.stdout.fileno(), False)
                 selector.register(events.stdout, selectors.EVENT_READ)
-            ready = selector.select(timeout=max(0, 2 - (time.monotonic() - last_check)))
+                due = 0.0  # Пока поток не работал, события могли потеряться.
+            now = time.monotonic()
+            ready = selector.select(timeout=max(0, min(due, now + RETRY) - now))
             if ready:
                 os.read(events.stdout.fileno(), 65536)
                 time.sleep(0.05)
+                due = 0.0
             try:
+                if check is not None and time.monotonic() < due and applied(*check):
+                    continue
                 cfg = load()
-                count = sync(cfg)
+                report = {}
+                count = sync(cfg, report=report)
+                check = report['check']
+                due = time.monotonic() + (RETRY if report['pending'] else FULL_SYNC)
                 digest = hashlib.sha256((RUNTIME / 'active.nft').read_bytes()).hexdigest()
                 if digest != last_digest or last_error:
                     print(f'Защита активна: интерфейсов {count}', flush=True)
@@ -339,8 +375,8 @@ def watch():
                 if message != last_error:
                     print(message, file=sys.stderr, flush=True)
                 last_error = message
+                check = None  # Следующий проход — снова полная сверка.
                 time.sleep(0.3)
-            last_check = time.monotonic()
     finally:
         if events is not None:
             events.terminate()
