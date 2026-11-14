@@ -398,6 +398,8 @@ class Manager:
             return config.export_profile(value['options'], self.runtime.host, value['identity'], peer)
         if action == 'confirm':
             self.store.confirm(request['nonce'])
+            # Confirmed: only the current generation's VPNBot images are kept.
+            self.runtime.prune_images()
             return {'confirmed': True}
         if action == 'submit':
             return self.submit(request['request'])

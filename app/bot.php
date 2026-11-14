@@ -26597,9 +26597,12 @@ DNS-over-HTTPS with IP:
         $c = [];
         $protected = [];
         $bundled = false;
-        // Образы выключенных протоколов, подготовленного обновления и отката
-        // могут не иметь контейнеров. Их нельзя удалять при старте service.
-        foreach (['image-bundle.json', 'image-bundle.previous.json', 'image-bundle.pending.json'] as $name) {
+        // Образы выключенных протоколов и подготовленного обновления могут не
+        // иметь контейнеров. Их нельзя удалять при старте service. Образы
+        // предыдущего комплекта не хранятся (~2 ГБ диска): автоматического
+        // отката нет, для ручного манифест image-bundle.previous.json остаётся,
+        // а его образы скачиваются из реестра по digest.
+        foreach (['image-bundle.json', 'image-bundle.pending.json'] as $name) {
             $path = dirname($this->update) . '/' . $name;
             if (!file_exists($path)) {
                 continue;

@@ -157,7 +157,9 @@ try {
     fclose($held);
     $b->cleanDocker();
     $deleted = array_values(array_filter($b->calls, static fn($x) => $x[1] === 'DELETE'));
-    t($deleted === [['/images/obsolete', 'DELETE']], 'сохраняются 53 digest (предыдущий комплект без snolc), используемый и чужой образы; удаляется только устаревший');
+    $previous = array_map(static fn($name) => ['/images/' . $name . '1', 'DELETE'], array_values(array_diff($names, ['snolc'])));
+    sort($deleted); $expected = array_merge([['/images/obsolete', 'DELETE']], $previous); sort($expected);
+    t($deleted === $expected, 'сохраняются 36 digest активного и подготовленного комплектов, используемый и чужой образы; удаляются устаревший и 17 образов предыдущего комплекта');
     t(!in_array(['/images/prune', 'POST'], $b->calls, true), 'глобальный prune не удаляет digest выключенных протоколов');
     foreach (['{', '{"schema":1,"images":[]}', '{"schema":2,"images":{}}'] as $broken) {
         file_put_contents($dir . '/image-bundle.pending.json', $broken);

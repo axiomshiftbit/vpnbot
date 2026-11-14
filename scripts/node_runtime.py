@@ -239,6 +239,34 @@ class Runtime:
         for image in value['images'].values():
             self.pull(image)
 
+    def prune_images(self):
+        """Keep only the VPNBot images of the current generation and of a pending change.
+
+        Every update pulled new xr/ng images and a new bundle manifest image,
+        and none were removed (gigabytes on a node). Automatic recovery uses
+        only the pending change's "before" generation, kept here until
+        confirmation. The manual rollback button pulls missing images before it
+        stops anything. A node host runs no other VPNBot installation (setup
+        refuses foreign containers and Docker firewall management), so every
+        other ghcr.io/axiomshiftbit/vpnbot-* image is unused. Docker refuses to remove
+        an image used by a container; any doubt or error keeps the images.
+        """
+        removed = 0
+        try:
+            pending = self.store.pending()
+            generations = {self.store.current()} | ({pending['before'], pending['after']} if pending else set())
+            keep = {image for generation in generations for image in self.store.load(generation)['images'].values()}
+            listed = command(['docker', 'image', 'ls', '--digests', '--format', '{{.Repository}}@{{.Digest}}'],
+                             timeout=20, required=False)
+            if listed.returncode:
+                return 0
+            for ref in sorted(set(listed.stdout.decode().split())):
+                if ref not in keep and re.fullmatch(r'ghcr\.io/axiomshiftbit/vpnbot-[a-z0-9]+@sha256:[a-f0-9]{64}', ref):
+                    removed += command(['docker', 'image', 'rm', ref], timeout=60, required=False).returncode == 0
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            pass
+        return removed
+
     def pull(self, image):
         # The image passed here has already been validated by snapshot().
         # A digest is immutable. Existing installations must remain manageable

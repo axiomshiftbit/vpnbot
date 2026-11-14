@@ -314,6 +314,17 @@ print('killed-one-application-worker')'''
  traffic="require '/app/bot.php';$b=(new ReflectionClass('Bot'))->newInstanceWithoutConstructor();echo $b->xrUserTraffic($b->getXrayStats(),0);"
  used=int(php(traffic))
  previous=json.loads(Path('/opt/vpnbot-hosted-ci/rollback-images.json').read_text())
+ # Штатная очистка (cleanDocker при старте service) не хранит образы прежнего
+ # комплекта: ручной откат скачивает их из реестра по digest.
+ # Совпадающий с активным или подготовленным комплектом образ защищён законно.
+ protected=set()
+ for name in ('image-bundle.json','image-bundle.pending.json'):
+  if (B/'update'/name).exists():protected|=set(json.loads((B/'update'/name).read_text())['images'].values())
+ check('update_rollback','previous-release-images-not-retained',all(subprocess.run(['docker','image','inspect',image],capture_output=True).returncode for image in previous.values() if image not in protected))
+ for image in previous.values():
+  for attempt in range(3):
+   if subprocess.run(['docker','pull','-q',image],capture_output=True,timeout=300).returncode==0:break
+   time.sleep(15)
  expected_php=capture(['docker','run','--rm','--network','none','--entrypoint','php',previous['php'],'-r','echo PHP_VERSION;']).strip()
  rollback=dict(services={s:{'image':previous['php']} for s in ('php','service')})
  rollback['services'].update({s:{'image':previous['ng']} for s in ('ng','up','dockerproxy')})

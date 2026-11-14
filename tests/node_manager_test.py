@@ -35,6 +35,10 @@ class Backend:
     def pull(self, image):
         pass
 
+    def prune_images(self):
+        self.pruned = getattr(self, 'pruned', 0) + 1
+        return 0
+
 
 class NodeManager(unittest.TestCase):
     def setUp(self):
