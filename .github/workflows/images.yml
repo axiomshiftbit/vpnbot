@@ -50,7 +50,7 @@ jobs:
   # проверки CVE и стенд в dev, получает ТЕ ЖЕ образы без пересборки. Во всех
   # остальных случаях задание отвечает promoted=false и идёт полный прогон.
   promote:
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -78,13 +78,13 @@ jobs:
     if: needs.promote.outputs.promoted != 'true'
     uses: ./.github/workflows/tests.yml
     with:
-      home_runner: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner }}
+      home_runner: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner }}
       allow_test_failures: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_test_failures || false }}
       allow_vulnerabilities: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_vulnerabilities || false }}
       allow_waivers: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_waivers || false }}
   build:
     needs: tests
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -439,7 +439,7 @@ jobs:
           fi
   bundle:
     needs: build
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     outputs:
       fingerprint: ${{ steps.manifest.outputs.fingerprint }}
     steps:
@@ -481,7 +481,7 @@ jobs:
           path: ${{ runner.temp }}/bundle.json
   security:
     needs: bundle
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -537,7 +537,7 @@ jobs:
     # делить машину с параллельными проверками CVE.
     needs: [bundle, tests, security]
     if: github.repository == 'axiomshiftbit/vpnbot' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit'))
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 180
     permissions:
       contents: read
@@ -598,7 +598,7 @@ jobs:
           fi
   publish:
     needs: [build, tests, bundle, security, native]
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -638,7 +638,7 @@ jobs:
   release:
     needs: publish
     if: github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && github.ref == 'refs/heads/dev' && inputs.promote_master
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -657,7 +657,7 @@ jobs:
         run: python3 scripts/ci_promote_master.py
   cleanup-artifacts:
     needs: [publish, release]
-    if: always() && github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.home_runner && needs.publish.result == 'success' && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    if: always() && github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && needs.publish.result == 'success' && (needs.release.result == 'success' || needs.release.result == 'skipped')
     runs-on: [self-hosted, Linux, X64, vpnbot-home]
     timeout-minutes: 5
     steps:
