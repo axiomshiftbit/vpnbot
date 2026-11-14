@@ -234,8 +234,13 @@ class State(Base):
         (self.lists / 'my_server').mkdir(parents=True)
         (self.lists / 'my_server/geoip-ipv4.nft').write_text('# own list\n')
         self.config.write_text('# debian default\n')
-        with patch('builtins.print'):
+        calls = []
+        with patch.object(installer, 'run', fake_run(calls)), patch('builtins.print'):
             installer.install_node()
+        # Нода: Docker без своих правил, маршрутизации и userland-proxy, затем перезапуск.
+        self.assertEqual({'ip-forward': False, 'ip6tables': False, 'iptables': False, 'userland-proxy': False},
+                         json.loads(self.daemon.read_text()))
+        self.assertIn(['systemctl', 'restart', 'docker.service'], calls)
         self.assertIn(installer.NODE_MARKER, self.config.read_text())
         self.assertEqual('# own list\n', (self.lists / 'my_server/geoip-ipv4.nft').read_text())
         self.assertTrue((self.lists / 'tg/geoip-ipv4.nft').exists())

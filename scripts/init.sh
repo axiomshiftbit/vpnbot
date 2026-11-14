@@ -456,6 +456,8 @@ cd "$INSTALL_DIR"
 
 # Защита хоста для обоих режимов; сбой не прерывает установку.
 bash scripts/host_hardening.sh || echo 'WARN: host hardening was not fully applied' >&2
+# Сетевые параметры ядра (BBR, буферы, TCP, conntrack; полный бот — ip_forward=1).
+bash scripts/host_sysctl.sh "$MODE" || echo 'WARN: host sysctl was not fully applied' >&2
 
 # Журналы nftables в /var/log/nftables (rsyslog + logrotate) — только при
 # профиле VPNBot и при первой установке; сбой не прерывает установку.

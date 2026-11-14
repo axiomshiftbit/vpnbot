@@ -41,6 +41,9 @@ LISTS = Path('/opt/maxmind/list')
 BACKUPS = Path('/var/backups/vpnbot-nftables')
 DAEMON = Path('/etc/docker/daemon.json')
 DOCKER_SETTINGS = {'iptables': False, 'ip6tables': False, 'userland-proxy': False}
+# Нода: контейнеры в сети хоста, маршрутизация не нужна (node_setup.py
+# требует iptables/ip6tables/ip-forward=false и сам их проверяет).
+NODE_DOCKER_SETTINGS = {'ip-forward': False, 'ip6tables': False, 'iptables': False, 'userland-proxy': False}
 CONFIRM_SECONDS = 120
 NODE_MARKER = '# VPNBOT_MANAGED_NODE_HOST'
 
@@ -227,19 +230,19 @@ def confirmed(seconds, stream=sys.stdin):
     return False
 
 
-def docker_rules():
+def docker_rules(settings=DOCKER_SETTINGS):
     """Docker не создаёт свои цепочки: сеть контейнеров обслуживает профиль."""
     value = json.loads(DAEMON.read_text()) if DAEMON.exists() else {}
     if not isinstance(value, dict):
         raise ValueError('/etc/docker/daemon.json не JSON-объект')
-    if all(value.get(k) is v for k, v in DOCKER_SETTINGS.items()):
+    if all(value.get(k) is v for k, v in settings.items()):
         return False
     if DAEMON.exists():
         backup = DAEMON.with_name(DAEMON.name + '.before-vpnbot')
         if not backup.exists():
             shutil.copyfile(DAEMON, backup)
     DAEMON.parent.mkdir(mode=0o755, exist_ok=True)
-    sets.atomic(DAEMON, json.dumps(value | DOCKER_SETTINGS, indent=2, sort_keys=True) + '\n', 0o644)
+    sets.atomic(DAEMON, json.dumps(value | settings, indent=2, sort_keys=True) + '\n', 0o644)
     run(['systemctl', 'restart', 'docker.service'], timeout=180)
     return True
 
@@ -292,6 +295,8 @@ def install_node():
         if not backup.exists():
             shutil.copyfile(CONFIG, backup)
     sets.atomic(CONFIG, (TEMPLATES / 'noda.conf').read_text(), 0o600)
+    # Новая нода: контейнеров ещё нет, перезапуск Docker ничего не прерывает.
+    docker_rules(NODE_DOCKER_SETTINGS)
     print('[OK] Шаблон nftables ноды записан в /etc/nftables.conf; адреса задаст установщик ноды')
     return True
 
