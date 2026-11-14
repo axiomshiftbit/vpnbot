@@ -8476,6 +8476,9 @@ NFT;
             if (array_key_exists('managed_protocols', $json)) {
                 try { $this->importManagedProtocols($json['managed_protocols'], false); }
                 catch (Throwable $e) { return $this->backupImportError('protocols', !empty($file), $e); }
+            } else {
+                try { $this->restoreLegacyModules($json); }
+                catch (Throwable $e) { return $this->backupImportError('protocols', !empty($file), $e); }
             }
             if (array_key_exists('extra_files', $json)) $this->restoreBackupExtraFiles($json['extra_files']);
             // certs

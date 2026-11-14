@@ -46,6 +46,17 @@ trait BotBackup
         finally { unset($this->wg); }
     }
 
+    // Полная копия до переключателей модулей (без managed_protocols) снята с
+    // сервера, где работал набор по умолчанию. Новая установка запускает только
+    // TeleMT — восстановление такой копии возвращает прежние протоколы.
+    // Частичная копия (без pac) переключатели не трогает.
+    public function restoreLegacyModules(array $json): void
+    {
+        if (array_key_exists('managed_protocols', $json) || !array_key_exists('pac', $json)) return;
+        $modules = new ProtocolModules($this->protocolModulesFile);
+        if ($modules->read() !== ProtocolModules::DEFAULTS) $modules->setMany(ProtocolModules::DEFAULTS);
+    }
+
     private function backupReadFile(string $path): string
     {
         if (!is_file($path) || is_link($path)) throw new RuntimeException($this->t('Файл бэкапа недоступен', 'The backup file is unavailable'));

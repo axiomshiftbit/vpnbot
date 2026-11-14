@@ -97,6 +97,21 @@ try {
     rewind($b->cliOut);
     check(stream_get_contents($b->cliOut) === "a\nb\nc & d\ne\n", 'вывод хода');
 
+    // Копия старого формата на новой установке (только TeleMT) возвращает набор по умолчанию.
+    $b = new CliBot($root, $i); $b->protocolModulesFile = "$root/protocol-services.json";
+    $fresh = array_map(static fn($k) => $k === 'telemt', array_combine(array_keys(ProtocolModules::DEFAULTS), array_keys(ProtocolModules::DEFAULTS)));
+    file_put_contents($b->protocolModulesFile, json_encode($fresh));
+    $b->restoreLegacyModules(['dnstt' => []]);
+    check(json_decode(file_get_contents($b->protocolModulesFile), true) === $fresh, 'частичная копия не трогает модули');
+    $b->restoreLegacyModules(['pac' => [], 'managed_protocols' => ['modules' => [], 'protocols' => []]]);
+    check(json_decode(file_get_contents($b->protocolModulesFile), true) === $fresh, 'новый формат переключает модули сам');
+    $b->restoreLegacyModules(['pac' => [], 'wg' => []]);
+    check((new ProtocolModules($b->protocolModulesFile))->read() === ProtocolModules::DEFAULTS, 'полная копия старого формата — набор по умолчанию');
+    $b->protocolModulesFile = "$root/missing/protocol-services.json";
+    $b->restoreLegacyModules(['pac' => []]);
+    check(!file_exists($b->protocolModulesFile), 'без файла (уже по умолчанию) ничего не пишется');
+    check(str_contains(file_get_contents(__DIR__ . '/../app/bot.php'), '$this->restoreLegacyModules($json)'), 'restoreBackup вызывает restoreLegacyModules');
+
     // Список разделов один для меню и CLI.
     $src = file_get_contents(__DIR__ . '/../app/bot.php');
     check(str_contains($src, 'array_intersect(array_keys($json), self::BACKUP_SECTIONS)'), 'restoreBackup использует BACKUP_SECTIONS');
