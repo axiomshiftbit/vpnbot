@@ -793,7 +793,7 @@ NGINX/сайта он не включён. Wildcard SNI ShadowTLS, отключ�
 Мультиплексирование ShadowTLS по умолчанию выключено; при включении без
 явного выбора транспорта используется `smux`. Для `h2mux` нужен клиент с
 исправлением [GO-2026-4918](https://pkg.go.dev/vuln/GO-2026-4918): официальный
-Mihomo 1.19.33 ещё включает затронутый `golang.org/x/net`. В образе бота
+Mihomo 1.19.34 ещё включает затронутый `golang.org/x/net`. В образе бота
 эта зависимость обновляется при сборке; для внешнего клиента проверяйте его сборку.
 
 Для службы управления на хосте нужен Python 3.9 или новее; установщик
@@ -840,14 +840,14 @@ Compose. AnyTLS, TUIC и ShadowTLS используют образ
 в трёх отдельных контейнерах. Mieru использует
 `ghcr.io/axiomshiftbit/vpnbot-mieru:dev` с сервером mita.
 `SINGBOX_VERSION=v1.14.4` управляет ядром трёх протоколов и утилитой PHP;
-`MIHOMO_VERSION=v1.19.33` — утилитой PHP; `MIERU_VERSION=v3.39.0` — mita.
+`MIHOMO_VERSION=v1.19.34` — утилитой PHP; `MIERU_VERSION=v3.39.0` — mita.
 `PROTOCOL_GO_VERSION` выбирает Go для сборки серверов и вспомогательных утилит. TUIC v5 и ShadowTLS v3
 обозначают версии протокола, а не исполняемого файла.
 
 Чтобы выбрать стабильные версии вместе с проверяемыми контрольными суммами:
 
 ```bash
-python3 scripts/update_protocol_versions.py --singbox v1.14.4 --mihomo v1.19.33 --mieru v3.39.0
+python3 scripts/update_protocol_versions.py --singbox v1.14.4 --mihomo v1.19.34 --mieru v3.39.0
 # Проверить текущие стабильные релизы без изменения файла:
 python3 scripts/update_protocol_versions.py --singbox latest --mihomo latest --mieru latest --dry-run
 ```
@@ -1297,7 +1297,7 @@ path-style (по умолчанию включён), папка-префикс, 
 
 Версии задаются в `.env` (для локальной сборки — в `override.env`):
 `XRAY_VERSION=v26.11.9`, `XRAY_VERSION_2=v26.10.31`,
-`XRAY_VERSION_3=v26.7.28`, `XRAY_FORK_VERSION=v26.11.1-1424`.
+`XRAY_VERSION_3=v26.7.28`, `XRAY_FORK_VERSION=v26.11.10-1249`.
 Слоты хранят место, а не версию: выбранный слот после обновления образа `xr`
 запускает ту версию, что теперь в нём лежит. В этом выпуске основной слот —
 `v26.11.9` вместо `v26.10.31`, второй — `v26.10.31` вместо `v26.9.30`;

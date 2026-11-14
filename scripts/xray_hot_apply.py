@@ -237,7 +237,7 @@ def atomic_router():
     match = re.match(rb'Xray (\S+) ', result.stdout)
     # Explicitly exercised cores. Unknown/future forks use a full restart until
     # their ReloadRules implementation has also been checked for atomicity.
-    return bool(match and match[1] in (b'26.9.30', b'26.10.29', b'26.10.31', b'26.11.9', b'26.10.28-1202', b'26.11.1-1424'))
+    return bool(match and match[1] in (b'26.9.30', b'26.10.29', b'26.10.31', b'26.11.9', b'26.10.28-1202', b'26.11.1-1424', b'26.11.10-1249'))
 
 
 def mark(pid):

@@ -148,8 +148,8 @@ final class ProtocolOptionHelp
                     'On: pad multiplexed streams with service bytes; the server will require the same mode from the client. Off: no padding.')
                 : $t('Дополнительные случайные байты в середине и конце сегмента Mieru. Меняют размеры пакетов и увеличивают трафик.',
                     'Extra random bytes in the middle and at the end of a Mieru segment. They change packet sizes and increase traffic.'),
-            'protocol' => $t('Формат объединения потоков: smux — лёгкий мультиплексор (штатный выбор бота), yamux — другой формат мультиплексирования, h2mux — на основе HTTP/2. Для h2mux нужен клиент с исправлением GO-2026-4918; официальный Mihomo 1.19.33 содержит старый x/net.',
-                'Stream multiplexing format: smux, a light multiplexer (the bot\'s standard choice); yamux, another multiplexing format; h2mux, based on HTTP/2. h2mux needs a client with the GO-2026-4918 fix; the official Mihomo 1.19.33 ships an old x/net.'),
+            'protocol' => $t('Формат объединения потоков: smux — лёгкий мультиплексор (штатный выбор бота), yamux — другой формат мультиплексирования, h2mux — на основе HTTP/2. Для h2mux нужен клиент с исправлением GO-2026-4918; официальный Mihomo 1.19.34 содержит старый x/net.',
+                'Stream multiplexing format: smux, a light multiplexer (the bot\'s standard choice); yamux, another multiplexing format; h2mux, based on HTTP/2. h2mux needs a client with the GO-2026-4918 fix; the official Mihomo 1.19.34 ships an old x/net.'),
             'max_connections' => $t('Максимум соединений для мультиплексирования. В каждом могут передаваться несколько потоков.',
                 'Maximum connections for multiplexing. Each may carry several streams.'),
             'min_streams' => $t('Минимум потоков в соединении перед открытием следующего. Не задавайте одновременно с ненулевым max_streams.',

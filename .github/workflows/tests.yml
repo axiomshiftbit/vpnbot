@@ -82,8 +82,8 @@ jobs:
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
           # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
-          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.1-1424/Xray-linux-64.zip" Xray-fork-linux-64.zip
-          echo 'b70be1d4c83932de1c49c7c68c3da67b2d2c2e1ef11d9a80f207e93cf2fb0d25  Xray-fork-linux-64.zip' | sha256sum --check
+          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.10-1249/Xray-linux-64.zip" Xray-fork-linux-64.zip
+          echo 'fdf5013e2b2ea6abf5a34b5b462a493b65fda424ea15fafcf75457a9f6134048  Xray-fork-linux-64.zip' | sha256sum --check
           mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
           chmod +x fork/xray
           sudo install -d -m 1777 /logs
@@ -150,8 +150,8 @@ jobs:
           chmod +x xray
           # Форк-ядро того же пина, что XRAY_FORK_VERSION в .env: xray_fork_core_test
           # сверяет версию и отказывает, если пин обновили, а эту ссылку — нет.
-          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.1-1424/Xray-linux-64.zip" Xray-fork-linux-64.zip
-          echo 'b70be1d4c83932de1c49c7c68c3da67b2d2c2e1ef11d9a80f207e93cf2fb0d25  Xray-fork-linux-64.zip' | sha256sum --check
+          sh "$GITHUB_WORKSPACE/dockerfile/download-file.sh" "https://github.com/Jolymmiles/Xray-core/releases/download/v26.11.10-1249/Xray-linux-64.zip" Xray-fork-linux-64.zip
+          echo 'fdf5013e2b2ea6abf5a34b5b462a493b65fda424ea15fafcf75457a9f6134048  Xray-fork-linux-64.zip' | sha256sum --check
           mkdir -p fork && unzip -q Xray-fork-linux-64.zip xray -d fork
           chmod +x fork/xray
 
