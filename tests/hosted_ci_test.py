@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 spec = importlib.util.spec_from_file_location('hosted_ci', ROOT / 'scripts/ci_hosted_test.py')
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
-from image_bundle import IMAGES
+from image_bundle import IMAGES, REGISTRY
 sys.path.pop(0)
 spec = importlib.util.spec_from_file_location('hosted_bootstrap', ROOT / 'tests/integration/bootstrap.py')
 bootstrap = importlib.util.module_from_spec(spec)
@@ -162,6 +162,31 @@ class HostedCITests(unittest.TestCase):
             for invalid in ('not JSON', '{}'):
                 (results / 'retries.json').write_text(invalid)
                 self.assertEqual(ci.retried_suites(results), [])
+
+    def test_first_release_flag_uses_the_candidate_as_its_rollback_pair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'checkout').mkdir()
+            (root / 'checkout/.env').write_text('PROTOCOL_GO_VERSION=1\nMIERU_VERSION=v\nMIERU_SOURCE_SHA256=x\nDNSTT_REF=r\nSINGBOX_VERSION=v\nSINGBOX_SHA256=y\n')
+            bundle = {'schema': 1, 'source': 'a' * 40, 'run': 1, 'attempt': 1, 'state_epoch': 1,
+                      'images': {name: REGISTRY + name + '@sha256:' + 'b' * 64 for name in IMAGES}}
+            manifest = root / 'bundle.json'
+            manifest.write_text(json.dumps(bundle))
+            for flag, calls in (('1', 0), ('0', 1)):
+                with patch.dict(os.environ, {'CI_FIRST_RELEASE': flag, 'GITHUB_REF_NAME': 'dev'}), \
+                        patch.object(ci, 'network'), patch.object(ci, 'retrying'), patch.object(ci, 'client_downloads'), \
+                        patch.object(ci, 'command', return_value='id'), \
+                        patch.object(ci, 'rollback_reference', side_effect=RuntimeError('cannot resolve')) as reference:
+                    if calls:
+                        with self.assertRaises(RuntimeError): ci.assets(root / 'checkout', manifest)
+                    else:
+                        ci.assets(root / 'checkout', manifest)
+                        pair = json.loads((root / 'rollback-images.json').read_text())
+                        self.assertEqual(pair, {name: bundle['images'][name] for name in ('php', 'ng')})
+                    self.assertEqual(calls, reference.call_count)
+        workflow = (ROOT / '.github/workflows/images.yml').read_text()
+        self.assertIn("inputs.first_release && '1' || '0'", workflow)
+        self.assertIn("github.ref == 'refs/heads/dev'", workflow.split('CI_FIRST_RELEASE:')[1].splitlines()[0])
 
     def test_first_stable_release_uses_only_an_existing_admitted_channel(self):
         stable = ci.BUNDLE_REPO + ':bundle-latest'

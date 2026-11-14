@@ -150,17 +150,23 @@ def assets(checkout, manifest):
         network('docker', 'pull', image)
     # The former complete release is a rollback input, never an admission report.
     # It may lack the snolc image (image_bundle.ABSENT_BEFORE).
-    ref = rollback_reference(os.environ.get('GITHUB_REF_NAME'))
-    network('docker', 'pull', ref)
-    image = command('docker', 'image', 'inspect', '--format', '{{.Id}}', ref)
-    container = command('docker', 'create', '--network', 'none', image, '/bundle.json')
-    try:
-        with tempfile.TemporaryDirectory() as directory:
-            previous = Path(directory) / 'bundle.json'
-            command('docker', 'cp', container + ':/bundle.json', str(previous))
-            previous = read(previous, previous=True)
-    finally:
-        command('docker', 'rm', container)
+    if os.environ.get('CI_FIRST_RELEASE') == '1':
+        # Явный флажок первой публикации в новом реестре: прежнего допущенного
+        # комплекта ещё нет, откат проверяется на сам кандидат.
+        print('First release: no admitted release yet; rollback checks use the candidate itself')
+        previous = read(manifest, previous=True)
+    else:
+        ref = rollback_reference(os.environ.get('GITHUB_REF_NAME'))
+        network('docker', 'pull', ref)
+        image = command('docker', 'image', 'inspect', '--format', '{{.Id}}', ref)
+        container = command('docker', 'create', '--network', 'none', image, '/bundle.json')
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                previous = Path(directory) / 'bundle.json'
+                command('docker', 'cp', container + ':/bundle.json', str(previous))
+                previous = read(previous, previous=True)
+        finally:
+            command('docker', 'rm', container)
     # The pair changes together; current protocol data is never replaced by an
     # old backup during rollback. No mutable tag is used to select these images.
     atomic(manifest.with_name('rollback-bundle.json'), canonical(previous))

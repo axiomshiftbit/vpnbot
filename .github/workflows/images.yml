@@ -27,6 +27,10 @@ on:
         description: 'Допуск найденных CVE с предупреждениями; поиск секретов, работа сканера и целостность обязательны'
         type: boolean
         default: false
+      first_release:
+        description: 'Первая публикация в новом реестре: прежнего комплекта нет, стенд проверяет откат на сам кандидат'
+        type: boolean
+        default: false
   # Раз в две недели на серверах GitHub: пересборка со свежими пакетами и
   # проверка уязвимостей.
   schedule:
@@ -578,6 +582,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Загрузить точные образы и проверенные тестовые клиенты
+        env:
+          CI_FIRST_RELEASE: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && github.ref == 'refs/heads/dev' && inputs.first_release && '1' || '0' }}
         run: python3 scripts/ci_hosted_test.py assets ${{ (runner.environment == 'self-hosted') && '--local-test' || '' }} --manifest "$RUNNER_TEMP/bundle.json"
       - name: Удалить доступ к registry перед запуском VPN-стенда
         if: always()
