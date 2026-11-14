@@ -29,6 +29,8 @@ class CliBot extends BackupCli
     public function cloakNginx() {}
     public function menu($type = false, $arg = false, $return = false) { throw new LogicException('CLI не показывает меню'); }
     public function getPacConf() { return ['language' => $this->language, 'limitpage' => 5]; }
+    public array $sshWaited = [];
+    public function waitForSshService(string $service, int $timeout = 30): bool { $this->sshWaited[] = $service; return true; }
     public function run(array $args, string $stdin): array
     {
         $in = fopen('php://memory', 'w+'); fwrite($in, $stdin); rewind($in);
@@ -111,6 +113,25 @@ try {
     $b->restoreLegacyModules(['pac' => []]);
     check(!file_exists($b->protocolModulesFile), 'без файла (уже по умолчанию) ничего не пишется');
     check(str_contains(file_get_contents(__DIR__ . '/../app/bot.php'), '$this->restoreLegacyModules($json)'), 'restoreBackup вызывает restoreLegacyModules');
+
+    // Восстановление ждёт, пока обработчик хоста применит включённые копией модули.
+    $b = new CliBot($root, $i); $b->protocolModulesFile = "$root/mods/protocol-services.json"; @mkdir("$root/mods", 0700);
+    file_put_contents($b->protocolModulesFile, json_encode($fresh));
+    $before = $b->protocolModulesSnapshot();
+    $t = microtime(true);
+    check($b->waitProtocolModulesApplied($before, 5) && microtime(true) - $t < 1, 'без изменений — сразу');
+    check($b->waitProtocolModulesApplied(null, 5), 'повреждённый файл до восстановления — не ждём');
+    file_put_contents($b->protocolModulesFile, json_encode(ProtocolModules::DEFAULTS));
+    check(!$b->waitProtocolModulesApplied($before, 5) && microtime(true) - $t < 1, 'нет файла состояния — обработчик не работал, не ждём');
+    $status = "$root/mods/protocol-services.status.json";
+    file_put_contents($status, json_encode(['ok' => false, 'settings' => $fresh, 'errors' => ['oc' => 'operation_pending']]));
+    $t = microtime(true);
+    check(!$b->waitProtocolModulesApplied($before, 2) && microtime(true) - $t >= 1.5, 'не применено — ждёт до предела');
+    file_put_contents($status, json_encode(['ok' => false, 'settings' => array_replace(ProtocolModules::DEFAULTS, ['ss' => false]), 'errors' => ['ss' => 'operation_failed']]));
+    $b->sshWaited = [];
+    check($b->waitProtocolModulesApplied($before, 5), 'отказ модуля не держит восстановление');
+    check($b->sshWaited === ['oc', 'ovpn', 'tt', 'hy', 'dnstt', 'ipsec'], 'ждёт SSH только впервые включённых и запущенных сервисов');
+    check(preg_match('~\$modulesBefore = \$this->protocolModulesSnapshot\(\);.*?\$this->waitProtocolModulesApplied\(\$modulesBefore\);~s', file_get_contents(__DIR__ . '/../app/bot.php')) === 1, 'restoreBackup ждёт применения модулей');
 
     // Список разделов один для меню и CLI.
     $src = file_get_contents(__DIR__ . '/../app/bot.php');

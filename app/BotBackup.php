@@ -57,6 +57,45 @@ trait BotBackup
         if ($modules->read() !== ProtocolModules::DEFAULTS) $modules->setMany(ProtocolModules::DEFAULTS);
     }
 
+    public function protocolModulesSnapshot(): ?array
+    {
+        try { return (new ProtocolModules($this->protocolModulesFile))->read(); }
+        catch (Throwable $e) { return null; }
+    }
+
+    // Переключатели модулей применяет обработчик хоста (update/update.sh).
+    // Если копия включила модули, сервисы восстанавливаются только после того,
+    // как он запустит их контейнеры: иначе перезапуск Shadowsocks, Hysteria и
+    // др. уходил в ещё не созданный контейнер и восстановление на новой
+    // установке (только TeleMT) заканчивалось отказом. Без файла состояния
+    // обработчик не работал — ждать нечего.
+    public function waitProtocolModulesApplied(?array $before, int $timeout = 150): bool
+    {
+        $after = $this->protocolModulesSnapshot();
+        if ($before === null || $after === null || $after === $before) return true;
+        $status = dirname($this->protocolModulesFile) . '/protocol-services.status.json';
+        if (!is_file($status)) return false;
+        $deadline = time() + $timeout;
+        do {
+            $applied = json_decode((string) @file_get_contents($status), true);
+            $settled = is_array($applied) && is_array($applied['settings'] ?? null);
+            foreach ($settled ? $after : [] as $key => $value) {
+                $error = $applied['errors'][$key] ?? '';
+                if (($applied['settings'][$key] ?? null) !== $value && ($error === '' || $error === 'operation_pending')) { $settled = false; break; }
+            }
+            if ($settled) {
+                foreach (['oc', 'ovpn', 'tt', 'hy', 'ss', 'dnstt', 'ipsec', 'telemt'] as $service) {
+                    if (empty($before[$service]) && ($applied['settings'][$service] ?? false) === true && $this->protocolModuleEnabled($service)
+                        && !$this->waitForSshService($service, max(1, min(30, $deadline - time())))) return false;
+                }
+                return true;
+            }
+            sleep(1);
+        } while (time() < $deadline);
+        error_log('importFile: protocol modules were not applied in time');
+        return false;
+    }
+
     private function backupReadFile(string $path): string
     {
         if (!is_file($path) || is_link($path)) throw new RuntimeException($this->t('Файл бэкапа недоступен', 'The backup file is unavailable'));
@@ -272,7 +311,11 @@ trait BotBackup
         if ((isset($json['hy_users']) || !empty($json['hy'])) && $this->protocolModuleEnabled('hy')) {
             $state = $this->hysteriaUsersStore()->read();
             if (is_file($this->hysteriaUsersRoot . '/users.json')) {
-                $pending['Hysteria'] = [$this->hysteriaUsersRoot . '/runtime', $state['revision'], $state['restore_usage']['id'] ?? null];
+                // Без пользователей и общего пароля Hysteria обслуживать некого:
+                // ядро не настроено и законно не запускается — это не отказ копии.
+                if ($state['users'] || !empty($pac['hysteria_pass'])) {
+                    $pending['Hysteria'] = [$this->hysteriaUsersRoot . '/runtime', $state['revision'], $state['restore_usage']['id'] ?? null];
+                }
             } elseif (!empty($pac['hysteria_pass']) && trim($this->ssh('pgrep -x hysteria >/dev/null && printf VPNBOT_SERVICE_READY', 'hy')) !== 'VPNBOT_SERVICE_READY') {
                 $failed[] = 'Hysteria';
             }

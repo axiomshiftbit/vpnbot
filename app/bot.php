@@ -8473,6 +8473,7 @@ NFT;
                 try { HysteriaUsers::validateSnapshot($json['hy_users']); }
                 catch (Throwable $e) { return $this->backupImportError('hysteria', !empty($file), $e); }
             }
+            $modulesBefore = $this->protocolModulesSnapshot();
             if (array_key_exists('managed_protocols', $json)) {
                 try { $this->importManagedProtocols($json['managed_protocols'], false); }
                 catch (Throwable $e) { return $this->backupImportError('protocols', !empty($file), $e); }
@@ -8480,6 +8481,7 @@ NFT;
                 try { $this->restoreLegacyModules($json); }
                 catch (Throwable $e) { return $this->backupImportError('protocols', !empty($file), $e); }
             }
+            $this->waitProtocolModulesApplied($modulesBefore);
             if (array_key_exists('extra_files', $json)) $this->restoreBackupExtraFiles($json['extra_files']);
             // certs
             if (!empty($json['ssl'])) {
