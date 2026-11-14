@@ -76,6 +76,14 @@ class Templates(unittest.TestCase):
                     self.assertTrue(not ip.is_global or ip.is_multicast or str(ip) in self.ALLOWED
                                     or any(ip in n for n in self.NETS), 'реальный адрес в шаблоне')
 
+    def test_node_template_access_sets_are_empty_for_the_node_installer(self):
+        # node_host читает наборы доступа из /etc/nftables.conf и требует в них
+        # только публичные адреса: примеры из документационных сетей роняли
+        # установку ноды на первом же этапе.
+        import node_host
+        text = (ROOT / 'nftables/noda.conf').read_text()
+        self.assertEqual({'sources': [], 'admins': [], 'ssh_networks': []}, node_host.access(text))
+
     def test_ssh_port_and_markers(self):
         main = (ROOT / 'nftables/nftables.conf').read_text()
         node = (ROOT / 'nftables/noda.conf').read_text()
