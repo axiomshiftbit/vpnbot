@@ -234,10 +234,13 @@ networks:
     run('docker', 'network', 'create', '--subnet', '11.77.0.0/24',
         '--ip-range', '11.77.0.128/25', '--internal', 'vpnbot-protocol-test')
     print('START fresh-installation', flush=True)
-    # Start the real 26-service installation. Module choices are synthetic input.
-    write(BOT / 'config/protocol-services.json', {n: True for n in
-          ('oc', 'ovpn', 'ipsec', 'ikev2', 'l2tp', 'tt', 'hy', 'ss', 'dnstt', 'telemt',
-           'anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque')})
+    # A clean server starts with TeleMT only, exactly as init.sh writes it; the
+    # other protocol containers are switched on through the bot further below.
+    run('python3', 'scripts/protocol_modules.py', 'fresh-minimal', cwd=BOT)
+    if json.loads((BOT / 'config/protocol-services.json').read_text()) != {
+            n: n == 'telemt' for n in ('oc', 'ovpn', 'tt', 'hy', 'ss', 'dnstt', 'telemt', 'ipsec', 'ikev2', 'l2tp',
+                                       'anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque')}:
+        raise RuntimeError('fresh installation must enable TeleMT only')
     config = json.loads(run('docker', 'compose', '--profile', '*', '--env-file', '.env',
                             '--env-file', 'override.env', 'config', '--format', 'json', cwd=BOT))
     validate_compose_inputs(config)
@@ -247,6 +250,7 @@ networks:
                      'vpnbot.hosted-ci=true', '--entrypoint', '/bin/true', client_image).strip()
     run('python3', 'scripts/protocol_modules.py', 'compose', 'up', '-d', '--no-build', '--pull', 'never', cwd=BOT, timeout=500)
     wait_frontend()
+    enable_protocols_after_fresh_install()
     ids = run('docker', 'ps', '-aq', '--filter', 'label=com.docker.compose.project=vpnbot-audit').split()
     for container in json.loads(run('docker', 'inspect', *ids)):
         for bindings in (container['HostConfig'].get('PortBindings') or {}).values():
@@ -289,6 +293,46 @@ networks:
         subprocess.Popen(['bash', 'update/update.sh'], cwd=BOT, env=ENV,
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
     print('Fresh synthetic stand provisioned', flush=True)
+
+
+def compose_services():
+    return set(run('docker', 'ps', '--format', '{{.Label "com.docker.compose.service"}}',
+                   '--filter', 'label=com.docker.compose.project=vpnbot-audit').split())
+
+
+def enable_protocols_after_fresh_install():
+    classic = ['oc', 'ovpn', 'tt', 'hy', 'ss', 'dnstt', 'ipsec']
+    managed = ['anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque']
+    # Only TeleMT of the protocol containers runs after the clean installation.
+    running = compose_services()
+    if running & set(classic + managed) or 'telemt' not in running:
+        raise RuntimeError('fresh installation started an unexpected protocol container set')
+    # The administrator switches classic protocols on with the same menu buttons
+    # as in Telegram; the host worker step then starts them for the first time.
+    script = '''require '/app/config.php'; require '/app/bot.php'; require '/app/i18n.php';
+class T { public function call($m, $d, $j = 0) { return ['ok' => true, 'result' => ['message_id' => 1, 'chat' => ['id' => 1]]]; } }
+$b = new Bot($c['key'], $i); $b->transport = new T(); $b->admin = true;
+foreach (['oc', 'ovpn', 'tt', 'hy', 'ss', 'dnstt', 'ipsec', 'ikev2', 'l2tp'] as $m) {
+    $b->input = ['chat' => 1, 'from' => 1, 'message_id' => 1, 'callback_id' => 'ci', 'username' => 'ci', 'callback' => "/protocolModules $m"];
+    $b->action();
+}
+$s = (new ProtocolModules($b->protocolModulesFile))->read();
+foreach (['oc', 'ovpn', 'tt', 'hy', 'ss', 'dnstt', 'ipsec', 'ikev2', 'l2tp'] as $m) if (!$s[$m]) throw new RuntimeException("module $m is still off");
+echo "enabled\n";'''
+    if run('docker', 'exec', 'php-audit', 'php', '-r', script).strip() != 'enabled':
+        raise RuntimeError('protocol modules were not enabled through the bot')
+    run('python3', 'scripts/protocol_modules.py', 'apply', cwd=BOT, timeout=600)
+    status = json.loads((BOT / 'config/protocol-services.status.json').read_text())
+    missing = set(classic) - compose_services()
+    if not status.get('ok') or status.get('errors') or missing:
+        raise RuntimeError('first start of the enabled protocol containers failed: '
+                           + ','.join(sorted(set(status.get('errors') or {}) | missing)))
+    # Optional managed cores stay synthetic input, configured by the suites.
+    run('docker', 'exec', 'php-audit', 'php', '-r', "require '/app/ProtocolModules.php'; (new ProtocolModules())->setMany("
+        + "array_fill_keys(['anytls', 'mieru', 'tuic', 'shadowtls', 'snolc', 'masque'], true));")
+    run('python3', 'scripts/protocol_modules.py', 'compose', 'up', '-d', '--no-build', '--pull', 'never', cwd=BOT, timeout=500)
+    wait_frontend()
+    print('Protocols enabled after the fresh installation', flush=True)
 
 
 def candidate_services():

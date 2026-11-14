@@ -12,6 +12,10 @@ import time
 import uuid
 
 DEFAULTS = {"oc": True, "ovpn": True, "tt": True, "hy": True, "ss": True, "dnstt": True, "telemt": True, "ipsec": True, "ikev2": True, "l2tp": True, "anytls": False, "mieru": False, "tuic": False, "shadowtls": False, "snolc": False, "masque": False}
+# Новая установка (init.sh): только TeleMT, остальные контейнеры протоколов
+# включает администратор в боте. Без файла настроек (установки до появления
+# модулей) по-прежнему действуют DEFAULTS, поэтому работающие серверы это не меняет.
+FRESH = {name: name == "telemt" for name in DEFAULTS}
 SERVICES = ("oc", "ovpn", "tt", "hy", "ss", "dnstt", "telemt", "ipsec", "anytls", "mieru", "tuic", "shadowtls", "snolc", "masque")
 SYSTEMD_UNIT = Path('/etc/systemd/system/vpnbot.service')
 
@@ -265,6 +269,25 @@ def settings(root):
     if not isinstance(value, dict) or value.keys() - DEFAULTS.keys() or any(type(v) is not bool for v in value.values()):
         raise ValueError("invalid module settings")
     return DEFAULTS | value
+
+
+def fresh_minimal(root):
+    """Write the minimal module set for a brand-new installation; never overwrite."""
+    path = root / "config/protocol-services.json"
+    if path.exists() or path.is_symlink():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with open(temporary, "x") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(json.dumps(FRESH, indent=4) + "\n")
+        os.link(temporary, path)
+    except FileExistsError:
+        return False
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
 
 
 def enabled(s, service):
@@ -557,6 +580,9 @@ def main():
         return 0
     if command == "apply":
         apply(root)
+        return 0
+    if command == "fresh-minimal":
+        print("protocol modules: TeleMT only" if fresh_minimal(root) else "protocol modules: settings kept")
         return 0
     if command == "compose":
         if sys.argv[2:3] == ["up"]:

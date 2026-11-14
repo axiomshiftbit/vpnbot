@@ -75,6 +75,41 @@ class ProtocolModulesTests(unittest.TestCase):
         self.desired.write_text(json.dumps(settings))
         self.status.write_text(json.dumps({'ok': True, 'settings': settings, 'bindings': self.ports}))
 
+    def test_fresh_install_starts_only_telemt_and_never_overwrites(self):
+        self.assertTrue(modules.fresh_minimal(self.root))
+        saved = json.loads(self.desired.read_text())
+        self.assertEqual(saved, {name: name == 'telemt' for name in modules.DEFAULTS})
+        self.assertEqual(self.desired.stat().st_mode & 0o777, 0o600)
+        current = modules.settings(self.root)
+        self.assertEqual([s for s in modules.SERVICES if modules.enabled(current, s)], ['telemt'])
+        self.assertEqual(modules.environment(current)['COMPOSE_PROFILES'], 'telemt')
+        # Повторный вызов и переустановка не меняют выбор администратора.
+        self.desired.write_text(json.dumps({'oc': True}))
+        self.assertFalse(modules.fresh_minimal(self.root))
+        self.assertEqual(json.loads(self.desired.read_text()), {'oc': True})
+        self.assertEqual(list(self.root.glob('config/*.tmp')), [])
+        # Установка без файла (до модулей) по-прежнему работает со штатным набором.
+        self.desired.unlink()
+        self.assertEqual(modules.settings(self.root), modules.DEFAULTS)
+        # Включённый позже модуль поднимается штатным apply.
+        modules.fresh_minimal(self.root)
+        self.state(modules.settings(self.root))
+        enabled = modules.settings(self.root) | {'oc': True, 'hy': True}
+        self.desired.write_text(json.dumps(enabled))
+        with patch.object(modules, 'container_states', return_value={'telemt': 'running'}), \
+             patch.object(modules, 'compose', return_value=subprocess.CompletedProcess([], 0)) as compose:
+            modules.apply(self.root)
+        started = [call.args[1] for call in compose.call_args_list if call.args[1][:1] == ['up']]
+        self.assertEqual(sorted(args[-1] for args in started), ['hy', 'oc'])
+
+    def test_init_writes_minimal_modules_only_for_a_new_installation(self):
+        source = (ROOT / 'scripts/init.sh').read_text()
+        branch = source[source.index('if [ -s ./app/config.php ]; then'):source.index('make u\n')]
+        kept, created = branch.split('else', 1)
+        self.assertNotIn('fresh-minimal', kept)
+        self.assertIn('python3 scripts/protocol_modules.py fresh-minimal', created)
+        self.assertLess(created.index('cat > ./app/config.php'), created.index('fresh-minimal'))
+
     def test_php_and_host_agree_on_defaults_and_ipsec_dependencies(self):
         code = 'require $argv[1]; echo json_encode(ProtocolModules::DEFAULTS);'
         result = subprocess.run(['php', '-r', code, str(ROOT / 'app/ProtocolModules.php')],
