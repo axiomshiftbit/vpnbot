@@ -438,7 +438,15 @@ def configure(path=Path('/etc/nftables.conf'), host=None, mode='full', check=Fal
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         changed = ensure(path, host if host is not None else discover(), mode, check)
-        if not check: run(['systemctl', 'enable', 'nftables.service'])
+        if not check:
+            run(['systemctl', 'enable', 'nftables.service'])
+            # Нода на чистом сервере: служба выключена, а итоговая проверка
+            # установщика требует её активной. Профиль ноды уже записан с
+            # адресами и подключает защиту ноды (guard*.nft), поэтому запуск
+            # перезагружает те же правила. Основной бот службу не запускает:
+            # при Docker с iptables flush ruleset снял бы его цепочки.
+            if mode == 'node' and subprocess.run(['systemctl', 'is-active', '--quiet', 'nftables.service']).returncode:
+                run(['systemctl', 'start', 'nftables.service'])
         return changed
     finally:
         os.close(fd)

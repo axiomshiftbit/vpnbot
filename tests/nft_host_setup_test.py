@@ -55,6 +55,22 @@ HOST = dict(interface='ens3', public4='11.77.0.4', public6='2606:4700:4700::1111
 
 
 class HostFirewallTest(unittest.TestCase):
+    def test_service_is_started_only_for_an_inactive_node(self):
+        import os, subprocess, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / 'nftables.conf'
+            profile.write_text('# profile\n')
+            for mode, active, expected in (('node', 1, True), ('node', 0, False), ('full', 1, False)):
+                calls = []
+                with self.subTest(mode=mode, active=active), \
+                        patch.object(nft.os, 'open', return_value=os.open(os.devnull, os.O_RDONLY)), \
+                        patch.object(nft.fcntl, 'flock'), patch.object(nft, 'ensure', return_value=False), \
+                        patch.object(nft, 'run', side_effect=lambda args, data=None: calls.append(list(args)) or ''), \
+                        patch.object(nft.subprocess, 'run', return_value=subprocess.CompletedProcess([], active)):
+                    nft.configure(profile, host={}, mode=mode)
+                self.assertIn(['systemctl', 'enable', 'nftables.service'], calls)
+                self.assertEqual(expected, ['systemctl', 'start', 'nftables.service'] in calls)
+
     def test_management_binding_does_not_move_legacy_asn_port(self):
         prepared = nft.render(NODE, HOST, 'node')
         prepared = 'define SERVER_SSH_PORTS = { 2222 }\n'+prepared
