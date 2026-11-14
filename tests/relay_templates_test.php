@@ -37,6 +37,9 @@ class RelayTemplatesBot extends Bot {
     public function subscriptionCompatibilityError(array $xr, array $pac, string $type): string { return ''; }
     public function smuxActive(?array $p = null): bool { return false; }
     public function subTemplate(string $template, string $type, array $pac) { return $this->tpl; }
+    public array $updated = [];
+    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->updated[] = [$text, $button]; return ['ok' => true]; }
+    public function getDomain($cdn = false) { return 'vpn.example.test'; }
 }
 
 $root = sys_get_temp_dir() . '/vpnbot-relay-tpl-' . bin2hex(random_bytes(6));
@@ -119,6 +122,13 @@ try {
             foreach ($conf['route']['rules'] ?? [] as $rule) {
                 rtCheck($rule !== ['outbound' => 'proxy'], 'Нет безусловного proxy из пустого списка relay');
             }
+            if (basename($file) === '15_relay.json') {
+                $cidrs = array_merge(...array_map(static fn($r) => $r['ip_cidr'] ?? [], $conf['route']['rules']));
+                rtCheck(in_array('192.0.2.1/32', $cidrs, true), '15_relay: IP своего сервера идёт через outbound');
+                $hosts = array_values(array_filter($conf['dns']['servers'], static fn($x) => ($x['type'] ?? '') === 'hosts'))[0]['predefined'];
+                rtCheck(empty($relays) ? !in_array('192.0.2.10/32', $cidrs, true) : in_array('192.0.2.10/32', $cidrs, true), '15_relay: адреса relay из раздела Relay');
+                rtCheck(isset($hosts['vpn.example.test']) && !array_filter(array_keys($hosts), static fn($k) => str_contains($k, '~')), '15_relay: hosts без плейсхолдеров');
+            }
         }
         $bot->tpl = json_decode(file_get_contents(__DIR__ . '/../config/v2ray.json'), true);
         $bot->tpl['routing']['rules'][] = ['type' => 'field', 'ip' => ['~relay_ips~'], 'outboundTag' => '~outbound~'];
@@ -127,6 +137,33 @@ try {
         if ($output = getenv('VPNBOT_TEST_OUTPUT')) file_put_contents($output . '/' . (empty($relays) ? 'empty-' : 'relay-') . 'xray.json', $result);
         rtCheck(is_array(json_decode($result, true)) && !str_contains($result, '~relay_'), 'Xray origin и relay-подстановка');
     }
+    // ♻️ — вернуть штатный шаблон вместо старой копии с вписанными адресами.
+    rtCheck(Bot::bundledTemplate('sing', '15_relay') === json_decode(file_get_contents(__DIR__ . '/../config/templates/sing/15_relay.json'), true), 'Штатный шаблон читается');
+    foreach ([['sing', '../pac'], ['sing', 'missing'], ['other', '15_relay'], ['sing', '']] as [$type, $name]) rtCheck(Bot::bundledTemplate($type, $name) === null, "Нет штатного: $type/$name");
+    $pac = $bot->getPacConf();
+    $old = Bot::bundledTemplate('sing', '15_relay');
+    $old['dns']['servers'][3]['predefined'] = ['~domain~' => '~ip~', 'relay.example.test' => '192.0.2.10'];
+    $pac['singtemplates'] = ['15_relay' => $old, 'mine' => ['custom' => true]];
+    $bot->setPacConf($pac);
+    $bot->input = ['chat' => 1, 'message_id' => 2, 'callback_id' => 3];
+    $bot->templates('sing');
+    $rows = end($bot->updated)[1];
+    $resets = array_merge(...array_map(static fn($row) => array_values(array_filter(array_column($row, 'callback_data'), static fn($c) => str_starts_with((string) $c, '/resetTemplate'))), $rows));
+    rtCheck($resets === ['/resetTemplate sing ' . base64_encode('15_relay')], 'Кнопка ♻️ только у изменённой копии штатного шаблона');
+    $route = '~^/resetTemplate (sing|clash) ([A-Za-z0-9+/=]{1,40})( yes)?$~D';
+    rtCheck(str_contains(file_get_contents(__DIR__ . '/../app/bot.php'), "preg_match('$route'") && preg_match($route, $resets[0] . ' yes') === 1, 'Маршрут кнопки');
+    $bot->resetTemplate('sing', base64_encode('15_relay'));
+    [$text, $buttons] = end($bot->updated);
+    rtCheck($bot->getPacConf()['singtemplates']['15_relay'] === $old && str_contains($text, '⚠') && $buttons[0][0]['callback_data'] === $resets[0] . ' yes', 'Сначала подтверждение, шаблон не тронут');
+    $bot->resetTemplate('sing', base64_encode('15_relay'), true);
+    $after = $bot->getPacConf();
+    rtCheck($after['singtemplates']['15_relay'] === Bot::bundledTemplate('sing', '15_relay') && $after['singtemplates']['mine'] === ['custom' => true], 'Заменён только этот шаблон');
+    rtCheck(!str_contains(json_encode($after['singtemplates']['15_relay']), 'relay.example.test'), 'Вписанные адреса ушли');
+    $bot->templates('sing');
+    rtCheck(!str_contains(json_encode(end($bot->updated)[1]), '/resetTemplate'), 'После замены кнопки нет');
+    $bot->resetTemplate('sing', base64_encode('mine'), true);
+    rtCheck($bot->getPacConf()['singtemplates']['mine'] === ['custom' => true], 'Свой шаблон без штатного не заменяется');
+
     file_put_contents("$root/pac.json", '{broken');
     try { (new RelayTemplatesBot($root))->ensureDefaultTemplates(); rtCheck(false, 'Повреждённый pac должен отклоняться'); }
     catch (RuntimeException $e) { rtCheck(file_get_contents("$root/pac.json") === '{broken', 'Повреждённый конфиг не затирается'); }

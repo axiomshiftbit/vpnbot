@@ -2363,6 +2363,9 @@ class Bot
             case preg_match('~^/defaultTemplate (\w+)(?: (.+))?$~', $this->input['callback'], $m):
                 $this->defaultTemplate($m[1], $m[2] ?? false);
                 break;
+            case preg_match('~^/resetTemplate (sing|clash) ([A-Za-z0-9+/=]{1,40})( yes)?$~D', $this->input['callback'], $m):
+                $this->resetTemplate($m[1], $m[2], !empty($m[3]));
+                break;
             case preg_match('~^/templates (\w+)$~', $this->input['callback'], $m):
                 $this->templates($m[1]);
                 break;
@@ -27897,6 +27900,49 @@ DNS-over-HTTPS with IP:
         $this->templates($type);
     }
 
+    // Штатный шаблон из config/templates/<тип>/<имя>.json: ensureDefaultTemplates()
+    // добавляет его один раз, дальше в pac.json живёт копия администратора.
+    public static function bundledTemplate(string $type, string $name): ?array
+    {
+        if (!in_array($type, ['sing', 'clash'], true) || !preg_match('~^[A-Za-z0-9_.-]{1,64}$~D', $name)) return null;
+        $file = dirname(__DIR__) . "/config/templates/$type/$name.json";
+        if (!is_file($file)) return null;
+        $template = json_decode((string) file_get_contents($file), true);
+        return is_array($template) ? $template : null;
+    }
+
+    // Заменить сохранённую копию штатного шаблона версией из комплекта — так
+    // старая копия получает новые плейсхолдеры (например, ~relay_hosts~ вместо
+    // вписанных вручную адресов relay). Правки администратора теряются, поэтому
+    // сначала подтверждение.
+    public function resetTemplate(string $type, string $name64, bool $confirm = false)
+    {
+        $name = (string) base64_decode($name64, true);
+        $bundled = self::bundledTemplate($type, $name);
+        if ($bundled === null) return $this->templates($type);
+        if (!$confirm) {
+            return $this->update($this->input['chat'], $this->input['message_id'],
+                "Menu -> " . $this->i18n('xray') . " -> " . $this->i18n($type) . " templates -> " . self::esc($name) . "\n\n⚠ "
+                . $this->t('Сохранённый шаблон будет заменён штатным из текущей версии бота. Ваши правки в нём пропадут; адреса relay штатный шаблон берёт из раздела Relay (~relay_hosts~, ~relay_ips~, ~relay_domains~). Скачайте шаблон перед заменой, если правки нужны.',
+                    'The saved template will be replaced with the bundled one from the current bot version. Your edits in it will be lost; the bundled template takes relay addresses from the Relay section (~relay_hosts~, ~relay_ips~, ~relay_domains~). Download the template first if you need the edits.'),
+                [
+                    [['text' => '♻️ ' . $this->t('заменить штатным', 'replace with bundled'), 'callback_data' => "/resetTemplate $type $name64 yes"]],
+                    [['text' => $this->i18n('download'), 'callback_data' => "/downloadTemplate $type $name64"]],
+                    [['text' => $this->i18n('cancel'), 'callback_data' => "/templates $type"]],
+                ]);
+        }
+        $v = $this->validateTemplate($type, $bundled);
+        if (!$v['ok']) return $this->templates($type);
+        $this->withLock('pac', function () use ($type, $name, $bundled) {
+            $pac = $this->getPacConf();
+            if (!is_array($pac)) return;
+            $pac["{$type}templates"][$name] = $bundled;
+            $pac['installed_templates'][$type][$name] = true;
+            $this->setPacConf($pac);
+        });
+        return $this->templates($type);
+    }
+
     public function templates($type)
     {
         $this->ensureDefaultTemplates();
@@ -27982,10 +28028,15 @@ DNS-over-HTTPS with IP:
                     'callback_data' => "/delTemplate $type " . base64_encode($k),
                 ],
                 [
-                    'text'          => $this->i18n($pac["default{$type}template"] == base64_encode($k) ? 'on' : 'off'),
+                    'text'          => $this->i18n(($pac["default{$type}template"] ?? '') == base64_encode($k) ? 'on' : 'off'),
                     'callback_data' => "/defaultTemplate $type " . base64_encode($k),
                 ],
             ];
+            // Копия штатного шаблона отличается от комплекта — можно вернуть штатный.
+            $bundled = self::bundledTemplate($type, (string) $k);
+            if ($bundled !== null && $bundled !== $v) {
+                $data[array_key_last($data)][] = ['text' => '♻️', 'callback_data' => "/resetTemplate $type " . base64_encode($k)];
+            }
         }
 
         $data[] = [

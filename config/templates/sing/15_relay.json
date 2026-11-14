@@ -228,6 +228,7 @@
       },
       {
         "ip_cidr": [
+          "~ip~/32",
           "~relay_ips~"
         ],
         "outbound": "~outbound~"
