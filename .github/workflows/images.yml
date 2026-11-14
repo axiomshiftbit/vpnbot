@@ -7,10 +7,6 @@ on:
     branches: [dev, master]
   workflow_dispatch:
     inputs:
-      home_runner:
-        description: 'Home Runner — собирать на домашней VM home-build (только для axiomshiftbit). Без отметки — на серверах GitHub'
-        type: boolean
-        default: true
       full_build:
         description: 'master: собрать и проверить заново, даже если комплект этого коммита уже допущен в dev'
         type: boolean
@@ -49,7 +45,7 @@ jobs:
   # проверки CVE и стенд в dev, получает ТЕ ЖЕ образы без пересборки. Во всех
   # остальных случаях задание отвечает promoted=false и идёт полный прогон.
   promote:
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -77,13 +73,12 @@ jobs:
     if: needs.promote.outputs.promoted != 'true'
     uses: ./.github/workflows/tests.yml
     with:
-      home_runner: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner }}
       allow_test_failures: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_test_failures || false }}
       allow_vulnerabilities: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_vulnerabilities || false }}
       allow_waivers: ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_waivers || false }}
   build:
     needs: tests
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
       contents: read
@@ -438,7 +433,7 @@ jobs:
           fi
   bundle:
     needs: build
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     outputs:
       fingerprint: ${{ steps.manifest.outputs.fingerprint }}
     steps:
@@ -480,7 +475,7 @@ jobs:
           path: ${{ runner.temp }}/bundle.json
   security:
     needs: bundle
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -536,7 +531,7 @@ jobs:
     # делить машину с параллельными проверками CVE.
     needs: [bundle, tests, security]
     if: github.repository == 'axiomshiftbit/vpnbot' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit'))
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
       contents: read
@@ -597,7 +592,7 @@ jobs:
           fi
   publish:
     needs: [build, tests, bundle, security, native]
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -637,7 +632,7 @@ jobs:
   release:
     needs: publish
     if: github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && github.ref == 'refs/heads/dev' && inputs.promote_master
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -648,27 +643,9 @@ jobs:
       - name: Передвинуть master на проверенный коммит и запустить перенос комплекта
         env:
           PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
-          # Короткий прогон master идёт там же, где шла сборка dev.
-          PROMOTE_HOME_RUNNER: ${{ inputs.home_runner }}
           PROMOTE_ALLOW_TEST_FAILURES: ${{ inputs.allow_test_failures }}
           PROMOTE_ALLOW_VULNERABILITIES: ${{ inputs.allow_vulnerabilities }}
           PROMOTE_ALLOW_WAIVERS: ${{ inputs.allow_waivers }}
         run: python3 scripts/ci_promote_master.py
-  cleanup-artifacts:
-    needs: [publish, release]
-    if: always() && github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && needs.publish.result == 'success' && (needs.release.result == 'success' || needs.release.result == 'skipped')
-    runs-on: [self-hosted, Linux, X64, vpnbot-home]
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - name: Удалить промежуточные JSON завершённого запуска
-        run: |
-          sudo env -i PATH=/usr/bin:/bin \
-            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
-            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" RUNNER_TEMP="$RUNNER_TEMP" \
-            python3 scripts/ci_local_artifacts.py cleanup
 # Old sha-only garbage collection could delete images referenced by a retained
 # bundle. Keep released candidates until a bundle-aware retention job is added.

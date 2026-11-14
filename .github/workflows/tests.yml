@@ -13,16 +13,8 @@ on:
   pull_request:
   # Только тесты, без сборки и публикации: Actions → tests → Run workflow.
   workflow_dispatch:
-    inputs:
-      home_runner:
-        description: 'Home Runner — на домашней VM home-build (только для axiomshiftbit). Без отметки — на серверах GitHub'
-        type: boolean
-        default: true
   workflow_call:
     inputs:
-      home_runner:
-        type: boolean
-        default: false
       allow_test_failures:
         type: boolean
         default: false
@@ -46,7 +38,7 @@ concurrency:
 
 jobs:
   tests:
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -122,7 +114,7 @@ jobs:
           path: ${{ runner.temp }}/admission/unit-host.json
 
   alpine:
-    runs-on: ${{ github.repository == 'axiomshiftbit/vpnbot' && github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && vars.VPNBOT_HOME_RUNNER == 'enabled' && inputs.home_runner && fromJSON('["self-hosted","Linux","X64","vpnbot-home"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false

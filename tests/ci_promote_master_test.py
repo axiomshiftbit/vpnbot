@@ -51,9 +51,9 @@ class GitHub:
             self.writes.append('move')
             return {}
         if path == '/actions/workflows/images.yml/dispatches':
-            assert set(body) == {'ref', 'inputs'} and body['ref'] == 'master' and set(body['inputs']) == {'home_runner', 'allow_test_failures', 'allow_vulnerabilities', 'allow_waivers'}
+            assert set(body) == {'ref', 'inputs'} and body['ref'] == 'master' and set(body['inputs']) == {'allow_test_failures', 'allow_vulnerabilities', 'allow_waivers'}
             self.inputs = body['inputs']
-            self.dispatched = self.inputs['home_runner']
+            self.dispatched = True
             self.writes.append('dispatch')
             return {}
         raise AssertionError('unexpected request ' + path)
@@ -76,17 +76,18 @@ class PromoteMasterTest(unittest.TestCase):
         self.assertEqual(self.run_main(github)[:2], (None, ['move', 'dispatch']))
         self.assertEqual(github.heads['master'], TESTED)
 
-    def test_github_hosted_run_starts_the_master_run_on_github_servers(self):
+    def test_master_run_is_started_without_a_home_runner_input(self):
+        # Публичный репозиторий: входа home_runner нет, прогон master — на серверах GitHub.
         github = GitHub()
-        error, writes, _ = self.run_main(github, PROMOTE_HOME_RUNNER='false')
+        error, writes, _ = self.run_main(github, PROMOTE_HOME_RUNNER='true')
         self.assertIsNone(error)
         self.assertIn('dispatch', writes)
-        self.assertEqual(github.dispatched, 'false')
+        self.assertNotIn('home_runner', github.inputs)
 
     def test_dispatch_keeps_exact_policy_and_defaults_strict(self):
         github = GitHub()
         self.run_main(github)
-        self.assertEqual({k: v for k, v in github.inputs.items() if k != 'home_runner'},
+        self.assertEqual(github.inputs,
                          dict(allow_test_failures='false', allow_vulnerabilities='false', allow_waivers='false'))
         self.run_main(github, PROMOTE_ALLOW_WAIVERS='true', PROMOTE_ALLOW_TEST_FAILURES='true')
         self.assertEqual(github.inputs['allow_test_failures'], 'true')
@@ -178,10 +179,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn('||', condition)
         self.assertNotIn('always()', condition)
         runner = re.search(r'\n    runs-on: (.*)\n', self.job).group(1)
-        self.assertIn('inputs.home_runner', runner)
-        self.assertIn('vpnbot-home', runner)
-        self.assertIn("'ubuntu-24.04'", runner)
-        self.assertIn('PROMOTE_HOME_RUNNER: ${{ inputs.home_runner }}', self.job)
+        self.assertEqual('ubuntu-24.04', runner)
+        self.assertNotIn('PROMOTE_HOME_RUNNER', self.job)
 
     def test_dedicated_token_is_visible_to_this_job_only_and_builtin_token_stays_read_only(self):
         self.assertEqual(self.workflow.count('secrets.PROMOTE_TOKEN'), 1)

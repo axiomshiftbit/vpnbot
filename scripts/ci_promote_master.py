@@ -49,7 +49,8 @@ def head(branch, secret):
 
 
 def promote(secret):
-    inputs = {'home_runner': os.environ.get('PROMOTE_HOME_RUNNER', 'true')}
+    # Публичный репозиторий: короткий прогон master — только на серверах GitHub.
+    inputs = {}
     for name in ('allow_test_failures', 'allow_vulnerabilities', 'allow_waivers'):
         inputs[name] = os.environ.get('PROMOTE_'+name.upper(), 'false')
     if any(value not in ('true', 'false') for value in inputs.values()):
