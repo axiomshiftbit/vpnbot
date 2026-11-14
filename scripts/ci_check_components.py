@@ -129,11 +129,13 @@ def pins(root=ROOT):
 
 def http_json(url, token=None):
     request = urllib.request.Request(url, headers={'Accept': 'application/json', 'User-Agent': 'vpnbot-ci'})
-    if token:
-        # NVD принимает ключ своим заголовком, GitHub — как Bearer.
-        if 'nvd.nist.gov' in url:
+    parts = urllib.parse.urlsplit(url)
+    if token and parts.scheme == 'https':
+        # Ключ уходит только своему адресату по точному имени хоста: NVD —
+        # своим заголовком, GitHub — как Bearer; остальным адресам — без ключа.
+        if parts.hostname == 'services.nvd.nist.gov':
             request.add_header('apiKey', token)
-        else:
+        elif parts.hostname == 'api.github.com':
             request.add_header('Authorization', 'Bearer ' + token)
     with urllib.request.urlopen(request, timeout=40) as response:
         return json.load(response)

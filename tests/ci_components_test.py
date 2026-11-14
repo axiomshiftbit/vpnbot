@@ -335,5 +335,32 @@ class ComponentsTest(unittest.TestCase):
                 self.assertEqual(sum('alpinelinux.org' in url for url, _ in api.calls), 1)
 
 
+
+class TokenRecipientTest(unittest.TestCase):
+    def test_keys_reach_only_their_exact_hosts_over_https(self):
+        sent = []
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, *a): return b'{}'
+
+        def urlopen(request, timeout):
+            sent.append((request.full_url, dict(request.header_items())))
+            return Response()
+
+        cases = [('https://services.nvd.nist.gov/rest', 'Apikey'), ('https://api.github.com/repos/x', 'Authorization'),
+                 ('https://evil.example/?services.nvd.nist.gov', None), ('https://nvd.nist.gov.evil.example/', None),
+                 ('https://api.github.com.evil.example/', None), ('http://api.github.com/repos/x', None),
+                 ('https://gitlab.com/api/v4/projects/x', None)]
+        with patch.object(components.urllib.request, 'urlopen', urlopen), patch.object(components.json, 'load', lambda r: {}):
+            for url, header in cases:
+                sent.clear()
+                components.http_json(url, 'SYNTHETIC-TOKEN')
+                headers = sent[0][1]
+                with self.subTest(url=url):
+                    leaked = [k for k, v in headers.items() if 'SYNTHETIC-TOKEN' in v]
+                    self.assertEqual([header] if header else [], leaked)
+
 if __name__ == '__main__':
     unittest.main()
