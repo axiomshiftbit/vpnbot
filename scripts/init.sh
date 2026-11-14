@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO_URL="git@axiomshiftbit:axiomshiftbit/vpnbot.git"
+REPO_URL="https://github.com/axiomshiftbit/vpnbot.git"
 INSTALL_DIR="/root/vpnbot"
 ARCHIVE_NAME="vpnbot.zip"
 
@@ -176,6 +176,23 @@ EOF
 use_deploy_key() {
     git -C "$INSTALL_DIR" config core.sshCommand "ssh -F $DEPLOY_DIR/config"
     # set-url заодно лечит установки, где в origin остался вшитый PAT.
+    if git -C "$INSTALL_DIR" remote get-url origin >/dev/null 2>&1; then
+        git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
+    else
+        git -C "$INSTALL_DIR" remote add origin "$REPO_URL"
+    fi
+    git -C "$INSTALL_DIR" config --unset-all credential.helper || true
+    rm -f "$CRED_FILE"
+}
+
+# Публичный репозиторий (REPO_URL вида https://…) читается без ключа:
+# клон, обновления из бота и ноды идут по HTTPS, deploy-ключ не создаётся.
+repo_is_public() {
+    case "$REPO_URL" in https://*) return 0 ;; *) return 1 ;; esac
+}
+
+use_public_origin() {
+    git -C "$INSTALL_DIR" config --unset-all core.sshCommand || true
     if git -C "$INSTALL_DIR" remote get-url origin >/dev/null 2>&1; then
         git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
     else
@@ -381,17 +398,25 @@ install_from_git() {
         # загрузки, а повторный запуск продолжает с того же места.
         git init -q "$INSTALL_DIR"
     fi
-    setup_deploy_key
-    if ! GIT_SSH_COMMAND="ssh -F $DEPLOY_DIR/config" git -C "$INSTALL_DIR" \
-            ls-remote --exit-code "$REPO_URL" "refs/heads/$BRANCH" >/dev/null 2>&1; then
-        echo "GitHub не принял deploy-ключ этого сервера (или недоступен ssh.github.com:443)." >&2
-        echo "Добавьте публичный ключ в axiomshiftbit/vpnbot: Settings → Deploy keys → Add deploy key," >&2
-        echo "БЕЗ галочки «Allow write access», затем запустите установку ещё раз:" >&2
-        echo >&2
-        cat "$INSTALL_DIR/$DEPLOY_DIR/id_ed25519.pub" >&2
-        exit 1
+    if repo_is_public; then
+        if ! git -C "$INSTALL_DIR" ls-remote --exit-code "$REPO_URL" "refs/heads/$BRANCH" >/dev/null 2>&1; then
+            echo "Не удалось прочитать $REPO_URL (ветка $BRANCH): проверьте доступ к github.com и запустите установку ещё раз." >&2
+            exit 1
+        fi
+        use_public_origin
+    else
+        setup_deploy_key
+        if ! GIT_SSH_COMMAND="ssh -F $DEPLOY_DIR/config" git -C "$INSTALL_DIR" \
+                ls-remote --exit-code "$REPO_URL" "refs/heads/$BRANCH" >/dev/null 2>&1; then
+            echo "GitHub не принял deploy-ключ этого сервера (или недоступен ssh.github.com:443)." >&2
+            echo "Добавьте публичный ключ в axiomshiftbit/vpnbot: Settings → Deploy keys → Add deploy key," >&2
+            echo "БЕЗ галочки «Allow write access», затем запустите установку ещё раз:" >&2
+            echo >&2
+            cat "$INSTALL_DIR/$DEPLOY_DIR/id_ed25519.pub" >&2
+            exit 1
+        fi
+        use_deploy_key
     fi
-    use_deploy_key
     git -C "$INSTALL_DIR" fetch origin "$BRANCH"
     if [ -f "$INSTALL_DIR/update/image-bundle.json" ]; then
         # Рабочая установка: код и образы переключает вместе только обновление

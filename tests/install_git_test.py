@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Установка из git: deploy-ключ, привязка кода к опубликованному комплекту."""
+"""Установка из git: deploy-ключ или открытый HTTPS, привязка кода к опубликованному комплекту."""
 import os
 import re
 import shutil
@@ -91,6 +91,39 @@ class InstallFromGitTest(unittest.TestCase):
         self.assertEqual(str(self.origin), self.git('config', 'remote.origin.url', cwd=self.target))
         self.assertFalse((self.tmp / 'cred').exists())
         self.assertEqual(1, subprocess.run(['git', 'config', 'credential.helper'], cwd=self.target, env=self.env).returncode)
+
+    def public(self, target):
+        # https:// адрес публичного репозитория указывает на локальный origin.
+        url = 'https://github.com/example/vpnbot.git'
+        with (self.tmp / 'gitconfig').open('a') as config:
+            config.write(f'[url "{target}"]\n\tinsteadOf = {url}\n')
+        return url
+
+    def test_public_repository_installs_without_deploy_key(self):
+        url = self.public(self.origin)
+        # Переход частной установки на публичный источник снимает ключ и токен.
+        self.git('init', '-q', self.target)
+        self.git('config', 'core.sshCommand', 'ssh -F .git/vpnbot-readonly-ssh/config', cwd=self.target)
+        self.git('config', 'credential.helper', 'store --file=' + str(self.tmp / 'cred'), cwd=self.target)
+        (self.tmp / 'cred').write_text('token')
+        result = self.install(url)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(self.released, self.git('rev-parse', 'HEAD', cwd=self.target))
+        self.assertEqual('origin/dev', self.git('rev-parse', '--abbrev-ref', 'dev@{u}', cwd=self.target))
+        self.assertEqual(url, self.git('config', 'remote.origin.url', cwd=self.target))
+        self.assertFalse((self.target / '.git/vpnbot-readonly-ssh').exists())
+        self.assertFalse((self.tmp / 'cred').exists())
+        for key in ('core.sshCommand', 'credential.helper'):
+            self.assertEqual(1, subprocess.run(['git', 'config', key], cwd=self.target, env=self.env).returncode, key)
+        self.assertNotIn('deploy', result.stderr.lower())
+
+    def test_unreachable_public_repository_fails_without_key(self):
+        url = self.public(self.tmp / 'missing')
+        result = self.install(url)
+        self.assertEqual(1, result.returncode)
+        self.assertIn('github.com', result.stderr)
+        self.assertNotIn('ssh-ed25519', result.stderr)
+        self.assertFalse((self.target / '.git/vpnbot-readonly-ssh').exists())
 
 
 if __name__ == '__main__':

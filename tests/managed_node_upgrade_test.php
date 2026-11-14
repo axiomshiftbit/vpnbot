@@ -44,7 +44,7 @@ $check(str_contains(end($b->screens)[0], '<code>7777777</code>'), 'maintenance s
 $check(str_contains(json_encode(end($b->screens)[1], JSON_UNESCAPED_UNICODE), 'Обновить с ветки master'), 'button label kept');
 
 // A failed code phase is reported with its stage and never confirmed.
-foreach (['downgrade' => 'старее', 'fetch' => 'deploy-ключ', 'setup_firewall' => '[firewall]', 'setup_docker' => '[docker]', '<b>x' => 'непредвиденный'] as $stage => $needle) {
+foreach (['downgrade' => 'старее', 'fetch' => 'github.com', 'setup_firewall' => '[firewall]', 'setup_docker' => '[docker]', '<b>x' => 'непредвиденный'] as $stage => $needle) {
     $b = new UpgradeFixtureBot();
     $b->pacState['managed_nodes']['aabbccdd']['job']['operation'] = 'upgrade';
     $b->remoteJob = ['state' => 'failed', 'error' => 'code_upgrade_failed', 'stage' => $stage];
