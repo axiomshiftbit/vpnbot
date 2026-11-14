@@ -1,0 +1,9 @@
+# Пример: замените адресами своей сети. Реальные адреса в репозиторий не кладутся.
+map my_server {
+    type ipv4_addr : mark
+    flags interval
+    elements = {
+        203.0.113.10/32 : $MY_SERVER,
+        203.0.113.20/32 : $MY_SERVER
+    }
+}

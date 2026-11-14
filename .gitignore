@@ -92,6 +92,7 @@ i18n.override.php
 /nft_conf/
 /nft/
 nftables.conf
+!/nftables/nftables.conf
 .venv/
 .codex/
 .claude/

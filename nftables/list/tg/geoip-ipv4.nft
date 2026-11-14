@@ -1,0 +1,11 @@
+map tg {
+    type ipv4_addr : mark
+    flags interval
+    elements = {
+        91.108.4.0/22 : $TG,
+        91.108.8.0/22 : $TG,
+        91.108.58.0/23 : $TG,
+        95.161.64.0/20 : $TG,
+        149.154.160.0/21 : $TG
+    }
+}

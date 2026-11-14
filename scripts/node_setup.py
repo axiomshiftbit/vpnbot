@@ -541,7 +541,7 @@ def failure_message(error):
         'nftables service is not active and enabled': 'Служба nftables должна быть активна и включена в автозапуск. Проверьте её состояние и /etc/nftables.conf.',
         'nftables live rules differ from persistent configuration': 'Загруженные правила nftables не совпадают с сохранённой конфигурацией. Установка не подтверждена.',
         'Docker firewall management is enabled': 'Docker управляет фаерволом или маршрутизацией. Для ноды правила nftables задаются только вручную: добавьте в /etc/docker/daemon.json "iptables": false, "ip6tables": false и "ip-forward": false и перезапустите Docker (первичная установка делает это сама).',
-        'Firewall profile does not match installation mode': 'В /etc/nftables.conf не профиль минимальной ноды. Сначала установите noda.conf (скрипты подготовки сервера), затем ноду.',
+        'Firewall profile does not match installation mode': 'В /etc/nftables.conf не профиль минимальной ноды. Установите шаблон nftables/noda.conf: bash scripts/init.sh --mode node делает это сам.',
         'Docker firewall rules are loaded': 'В nftables загружены цепочки или таблицы Docker. После отключения управления фаерволом в Docker перезагрузите сервер или заново загрузите /etc/nftables.conf.',
         'Firewall command failed; details suppressed to protect configuration data': 'Не удалось проверить или применить nftables. Проверьте синтаксис профиля и состояние фаервола.',
         'Cannot discover public node address or SSH ports': 'Не удалось определить публичный адрес или действующие SSH-порты.',

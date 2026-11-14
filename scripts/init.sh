@@ -454,6 +454,17 @@ cd "$INSTALL_DIR"
 # Защита хоста для обоих режимов; сбой не прерывает установку.
 bash scripts/host_hardening.sh || echo 'WARN: host hardening was not fully applied' >&2
 
+# Профиль nftables из каталога nftables/: вопросы об адресах, WAN и SSH,
+# применение с подтверждением нового SSH-входа и автоматическим откатом.
+# Ноде профиль обязателен; полный бот без него работает, но без защиты хоста.
+if ! python3 -I scripts/nft_profile_install.py --mode "$MODE"; then
+    if [ "$MODE" = node ]; then
+        echo 'Профиль nftables ноды не установлен; установка остановлена (см. readme, раздел о ноде).' >&2
+        exit 1
+    fi
+    echo 'WARN: профиль nftables не установлен; бот будет работать без защиты хоста (см. readme).' >&2
+fi
+
 if [ "$MODE" = node ]; then
     channel=dev
     [ "$BRANCH" != master ] || channel=latest
