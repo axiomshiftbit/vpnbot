@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+for name in kernel vm fs; do
+ mount --bind /proc/sys/$name /proc/sys/$name
+ mount -o remount,bind,ro /proc/sys/$name
+done
+mkdir -p /etc/docker
+printf '%s\n' '{"storage-driver":"vfs","iptables":false,"ip6tables":false,"ip-forward":false,"bridge":"none","userland-proxy":false}' > /etc/docker/daemon.json
+exec /lib/systemd/systemd

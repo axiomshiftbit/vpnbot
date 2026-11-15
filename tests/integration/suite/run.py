@@ -258,12 +258,13 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
  for name,script,extra,minimum in [
   ('backup-wg-awg-payload','wg-payload.py',['--source',str(a.checkout),'--php-image',candidate['images']['php'],'--wg-image',candidate['images']['wg'],'--hosted-ci'],97),
   ('backup-protocols-native','stand-entry.py',[],40),
+  ('backup-node-cold','node-cold.py',['--source',str(a.checkout),'--php-image',candidate['images']['php'],'--xray-image',candidate['images']['xr'],'--ng-image',candidate['images']['ng']],30),
  ]:
   output=O/name
   run(name,['python3',str(backup_native/script),'--out',str(output),*extra],timeout=1800)
   result=json.loads((output/'results.json').read_text())
   rows=result['checks']
-  check('backup_restore',name+'-complete',not result['error'] and len(rows)>=minimum and all(r['passed'] for r in rows))
+  check('backup_restore',name+'-complete',not result['error'] and len(rows)>=minimum and all(r['passed'] for r in rows) and (name!='backup-node-cold' or result.get('cleanup') is True))
   counts['backup_restore']+=len(rows)
  # Native backup roundtrip: change real saved client data, restore all sections,
  # then prove that the previously issued profiles still pass actual traffic.

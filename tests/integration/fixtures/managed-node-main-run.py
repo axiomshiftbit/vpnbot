@@ -13,8 +13,10 @@ import tempfile
 import time
 
 os.umask(0o077)
-lab = Path('/root/vpnbot-managed-node-lab')
-outer, main = 'vpnbot-managed-node-lab', 'vpnbot-managed-main-fixture'
+lab = Path(os.environ.get('VPNBOT_NODE_LAB', '/root/vpnbot-managed-node-lab'))
+outer = os.environ.get('VPNBOT_NODE_OUTER', 'vpnbot-managed-node-lab')
+main = os.environ.get('VPNBOT_NODE_MAIN', 'vpnbot-managed-main-fixture')
+php_image = os.environ.get('VPNBOT_NODE_PHP_IMAGE', 'vpnbot-audit1031-php:final')
 work = Path(tempfile.mkdtemp(prefix='main-fixture-', dir=lab))
 prepared = False
 server = None
@@ -68,7 +70,7 @@ try:
          *(['--cap-add','CHOWN','--cap-add','SETUID','--cap-add','SETGID','--cap-add','KILL',
             '-v',f'{lab}/wireproxy-node:/usr/bin/wireproxy-node:ro'] if '--amnezia' in sys.argv else []),
          '-v', f'{lab}:/lab:ro', '-v', f'{work}/ssh:/ssh', '-v', f'{work}/work:/work',
-         '--entrypoint', 'sleep', 'vpnbot-audit1031-php:final', '1800'], check=True)
+         '--entrypoint', 'sleep', php_image, '1800'], check=True)
     step('init')
     if '--amnezia' in sys.argv:
         run(['docker','exec','-d',main,'python3','-c',
