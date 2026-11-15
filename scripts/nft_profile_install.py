@@ -194,18 +194,26 @@ def render_full(values):
 
 def restore(directory):
     """Вернуть правила и файл, сохранённые до применения."""
-    dump = directory / 'ruleset.nft'
-    if run(['nft', '-f', '-'], 'flush ruleset\n' + dump.read_text(), check=False).returncode:
-        # Правила iptables-nft Docker не всегда загружаются обратно через nft:
-        # тогда фильтр открывается, а Docker сам восстанавливает свои цепочки.
-        run(['nft', 'flush', 'ruleset'], check=False)
-        run(['systemctl', 'restart', 'docker.service'], check=False)
-    previous = directory / 'nftables.conf'
-    if previous.exists():
-        sets.atomic(CONFIG, previous.read_text(), 0o600)
-    else:
-        CONFIG.unlink(missing_ok=True)
-    (directory / 'rolled-back').write_text('1\n')
+    try:
+        dump = directory / 'ruleset.nft'
+        # Flush и загрузка выполняются одной транзакцией ядра. При отказе
+        # действующий фильтр остаётся на месте; отдельный flush недопустим.
+        if run(['nft', '-f', '-'], 'flush ruleset\n' + dump.read_text(), check=False).returncode:
+            raise ValueError('Не удалось загрузить прежние правила nftables')
+        previous = directory / 'nftables.conf'
+        if previous.exists():
+            sets.atomic(CONFIG, previous.read_text(), 0o600)
+        else:
+            CONFIG.unlink(missing_ok=True)
+        (directory / 'rolled-back').write_text('1\n')
+        (directory / 'rollback-failed').unlink(missing_ok=True)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        try:
+            (directory / 'rollback-failed').write_text('1\n')
+        except OSError:
+            pass
+        raise ValueError('Откат nftables не завершён; фильтр не сбрасывался. '
+                         'Требуется проверка сохранённых правил и файла конфигурации.') from error
 
 
 def watchdog(directory, seconds):

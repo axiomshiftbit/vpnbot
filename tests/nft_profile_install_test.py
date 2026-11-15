@@ -144,6 +144,38 @@ class Interaction(Base):
 
 
 class Apply(Base):
+    def test_failed_atomic_restore_keeps_filter_and_config(self):
+        directory = self.backups / 'failed'
+        directory.mkdir(parents=True)
+        (directory / 'ruleset.nft').write_text('table inet broken {\n')
+        (directory / 'nftables.conf').write_text('# old\n')
+        self.config.write_text('# active\n')
+        with patch.object(installer, 'run', fake_run(self.calls, fail=('nft',))), self.assertRaises(ValueError):
+            installer.restore(directory)
+        self.assertEqual([['nft', '-f', '-']], self.calls)
+        self.assertEqual('# active\n', self.config.read_text())
+        self.assertFalse((directory / 'rolled-back').exists())
+        self.assertTrue((directory / 'rollback-failed').exists())
+        with patch.object(installer, 'run', fake_run(self.calls)):
+            installer.restore(directory)
+        self.assertEqual('# old\n', self.config.read_text())
+        self.assertTrue((directory / 'rolled-back').exists())
+        self.assertFalse((directory / 'rollback-failed').exists())
+
+    def test_restore_file_failure_is_reported_after_kernel_restore(self):
+        directory = self.backups / 'file-failed'
+        directory.mkdir(parents=True)
+        (directory / 'ruleset.nft').write_text('table inet previous { }\n')
+        (directory / 'nftables.conf').write_text('# old\n')
+        self.config.write_text('# active\n')
+        with patch.object(installer, 'run', fake_run(self.calls)), \
+                patch.object(installer.sets, 'atomic', side_effect=OSError('synthetic disk failure')), \
+                self.assertRaises(ValueError):
+            installer.restore(directory)
+        self.assertEqual([['nft', '-f', '-']], self.calls)
+        self.assertFalse((directory / 'rolled-back').exists())
+        self.assertTrue((directory / 'rollback-failed').exists())
+
     def prepare(self):
         self.config.write_text('# previous\n')
         values = dict(HOST, sources6=[], ssh_port=22, admins=['198.51.100.7/32'])
