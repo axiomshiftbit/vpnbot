@@ -76,12 +76,16 @@ class ProbeHttpBot extends Bot {
     }
     public function probeRequest(string $url): array { return $this->xdriveHttp('GET', $url); }
 }
+// Ограничиваем HTTP-запрос, когда исходники Bot уже скомпилированы.
+if (ini_set('memory_limit', '32M') === false) throw new RuntimeException('HTTP memory limit unavailable');
 [$status, $body] = (new ProbeHttpBot())->probeRequest($argv[2]);
 echo json_encode(['status' => $status, 'bytes' => strlen($body), 'peak' => memory_get_peak_usage(true)]);
 '''
 
+            # Компиляция Bot на PHP8.5 временно требует >32 MiB; после неё
+            # сам HTTP-запрос по-прежнему выполняется с лимитом 32 MiB.
             def request(url, environment=None):
-                result = subprocess.run(['php', '-d', f'curl.cainfo={cert}', '-d', 'memory_limit=32M',
+                result = subprocess.run(['php', '-d', f'curl.cainfo={cert}', '-d', 'memory_limit=128M', '-d', 'display_errors=stderr',
                                          '-r', code, str(ROOT), url], capture_output=True, text=True, timeout=20,
                                         env=environment or {**os.environ, 'NO_PROXY': '*', 'no_proxy': '*'})
                 self.assertEqual(result.returncode, 0, result.stderr)
