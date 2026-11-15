@@ -87,7 +87,7 @@ save(); sys.exit(2)
 '''
 
 FAKE_DOCKER = r'''#!PYTHON
-import json, os, shutil, sys, time
+import hashlib, json, os, shutil, sys, time
 sc_path = os.environ['FAKE_DOCKER']
 sc = json.load(open(sc_path))
 nft = json.load(open(os.environ['FAKE_NFT_STATE']))
@@ -124,12 +124,24 @@ if a[0] == 'exec':
                 time.sleep(120)
             if sc['issue'] == 'fail':
                 print('Challenge failed for domain localhost'); sys.exit(1)
+            print(json.dumps({'issued_certificate': hashlib.sha256(open(sc['new_cert'], 'rb').read()).hexdigest() if sc.get('new_cert') else ''}))
             sys.exit(0)
+        if op == 'reapply':
+            fingerprint = hashlib.sha256(open(sc['cert_file'], 'rb').read()).hexdigest()
+            if fingerprint != cmd[3]:
+                print(json.dumps({'installed': False, 'stale': True})); sys.exit(4)
+            print(json.dumps({'installed': True, 'certificate': fingerprint})); sys.exit(0)
         if op == 'install':
+            def fingerprint():
+                return hashlib.sha256(open(sc['cert_file'], 'rb').read()).hexdigest() if os.path.isfile(sc['cert_file']) else ''
+            if len(cmd) > 5 and fingerprint() != cmd[5]:
+                print(json.dumps({'stale': True, 'installed': False})); sys.exit(4)
             if sc['install'] == 'fail':
+                print(json.dumps({'installed': False, 'certificate': fingerprint()}))
                 sys.exit(1)
             if sc.get('new_cert'):
                 shutil.copyfile(sc['new_cert'], sc['cert_file'])
+            print(json.dumps({'installed': True, 'certificate': fingerprint()}))
             sys.exit(0)
         if op == 'notify':
             sys.exit(0)
@@ -137,7 +149,7 @@ if a[0] == 'exec':
         record({'op': 'nginx-ssl', 'args': cmd, 'window': window()})
         if sc['issue'] == 'fail':
             sys.exit(1)
-        if cmd[0] == 'sh' and sc.get('new_cert'):
+        if cmd[0] == 'sh' and 'certbot' in cmd[-1] and sc.get('new_cert'):
             shutil.copyfile(sc['new_cert'], sc['cert_file'])
         sys.exit(0)
 sys.exit(3)
@@ -346,9 +358,90 @@ class AcmeWindowTests(Base):
                 patch.object(acme, 'SERVED_PAUSES', (0, 0, 0)):
             acme.main(['run'])
         ts = self.state()['vpnbot']
-        self.assertEqual(ts['last_result'], 'ok_served_old')
-        self.assertEqual(ts['failures'], 0, 'выпуск состоялся: повторять его нельзя')
+        self.assertEqual(ts['last_result'], 'fail_served_old')
+        self.assertEqual(ts['failures'], 1)
+        self.assertTrue(ts['pending_install'])
+        self.assertEqual(len(ts['issued']), 1)
+        self.assertEqual(ts['last_success'], 0)
+        self.assertEqual(acme.next_attempt(ts, acme.cert_info(str(self.cert))), when + acme.BACKOFF[0])
         self.assertEqual(probe.call_count, 3, 'nginx даётся время перечитать сертификат')
+
+    def test_pending_retries_install_without_issue_or_window(self):
+        _, when = self.due_cert()
+        with patch.object(acme, 'now', return_value=when), patch.object(acme, 'served_serial', return_value='OLD'), \
+                patch.object(acme, 'SERVED_PAUSES', (0,)):
+            acme.main(['run'])
+        count = len(self.adds())
+        with patch.object(acme, 'now', return_value=when + acme.BACKOFF[0]):
+            acme.main(['run'])
+        ts = self.state()['vpnbot']
+        self.assertEqual(ts['last_result'], 'ok')
+        self.assertIsNone(ts['pending_install'])
+        self.assertEqual(len(self.calls('issue')), 1)
+        self.assertEqual(len(self.calls('install')), 2)
+        self.assertEqual(len(self.adds()), count)
+        self.assertEqual(len(ts['issued']), 1)
+
+    def test_pending_does_not_overwrite_same_name_restore(self):
+        _, when = self.due_cert()
+        with patch.object(acme, 'now', return_value=when), patch.object(acme, 'served_serial', return_value='OLD'), \
+                patch.object(acme, 'SERVED_PAUSES', (0,)):
+            acme.main(['run'])
+        make_cert(self.cert)
+        restored = self.cert.read_bytes()
+        with patch.object(acme, 'now', return_value=when + acme.BACKOFF[0]):
+            acme.main(['run'])
+        ts = self.state()['vpnbot']
+        self.assertEqual(ts['last_result'], 'fail_changed')
+        self.assertIsNone(ts['pending_install'])
+        self.assertEqual(len(self.calls('issue')), 1)
+        self.assertEqual(len(self.calls('install')), 1)
+        self.assertEqual(self.cert.read_bytes(), restored)
+
+    def test_pending_does_not_apply_after_names_change(self):
+        _, when = self.due_cert()
+        with patch.object(acme, 'now', return_value=when), patch.object(acme, 'served_serial', return_value='OLD'), \
+                patch.object(acme, 'SERVED_PAUSES', (0,)):
+            acme.main(['run'])
+        scenario = json.loads(self.scenario.read_text())
+        scenario['domains'] = ['localhost', 'changed.example.test']
+        self.scenario.write_text(json.dumps(scenario))
+        with patch.object(acme, 'now', return_value=when + acme.BACKOFF[0]):
+            acme.main(['run'])
+        self.assertEqual(self.state()['vpnbot']['last_result'], 'fail_changed')
+        self.assertEqual(len(self.calls('issue')), 1)
+        self.assertEqual(len(self.calls('install')), 1)
+
+    def test_legacy_served_old_reapplies_current_pair_without_ca(self):
+        self.cert.write_bytes(self.new_cert.read_bytes())
+        original = self.cert.read_bytes()
+        when = acme.now()
+        state = {'targets': {}}
+        ts = acme.target_state(state, 'vpnbot', True)
+        ts.update(last_result='ok_served_old', last_attempt=when - 60, last_success=when - 60,
+                  issued=[when - 60] * acme.ISSUE_LIMIT[0])
+        self.state_dir.mkdir(exist_ok=True)
+        (self.state_dir / 'state.json').write_text(json.dumps(state))
+        acme.main(['run'])
+        self.assertEqual(self.state()['vpnbot']['last_result'], 'ok')
+        self.assertEqual(len(self.calls('reapply')), 1)
+        self.assertEqual(len(self.calls('issue')), 0)
+        self.assertEqual(len(self.calls('install')), 0)
+        self.assertEqual(self.adds(), [])
+        self.assertEqual(self.cert.read_bytes(), original)
+
+    def test_issue_checkpoint_survives_interrupted_install(self):
+        _, when = self.due_cert()
+        with patch.object(acme, 'now', return_value=when), \
+                patch.object(acme.Target, 'install', side_effect=acme.Terminated()):
+            self.assertNotEqual(acme.main(['run']), 0)
+        ts = self.state()['vpnbot']
+        self.assertTrue(ts['pending_install'])
+        self.assertEqual(len(ts['issued']), 1)
+        with patch.object(acme, 'now', return_value=when + 60):
+            acme.main(['run'])
+        self.assertEqual(self.state()['vpnbot']['last_result'], 'ok')
+        self.assertEqual(len(self.calls('issue')), 1)
 
     def test_failed_install_still_counts_toward_issue_limit(self):
         _, when = self.due_cert()

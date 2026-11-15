@@ -22,9 +22,8 @@ class RulesetLimitsTests(unittest.TestCase):
 
     def test_srs_only_supported_fields_and_flat_rules(self):
         code, body = self.normalize(json.dumps({'rules': [
-            {'domain': ['a.example'], 'domain_suffix': ['b.example'], 'ip_cidr': ['192.0.2.0/24'], 'port': [443]},
+            {'domain': ['a.example'], 'domain_suffix': ['b.example'], 'ip_cidr': ['192.0.2.0/24']},
             {'domain_regex': ['^x'], 'domain_keyword': ['keyword']},
-            {'type': 'logical', 'rules': [{'domain': ['ignored.example']}]},
         ]}))
         self.assertEqual(code, 0)
         rule = json.loads(body)['rules'][0]
@@ -32,6 +31,36 @@ class RulesetLimitsTests(unittest.TestCase):
         self.assertEqual(rule['ip_cidr'], ['192.0.2.0/24'])
         self.assertEqual(rule['domain_regex'], ['^x'])
         self.assertNotIn('port', rule)
+
+    def test_srs_rejects_semantics_that_cannot_be_preserved(self):
+        unsupported = [
+            {},
+            {'domain': []},
+            {'domain_suffix': ['example.test'], 'invert': True},
+            {'domain_suffix': ['example.test'], 'port': [443]},
+            {'domain_suffix': ['example.test'], 'network': ['tcp']},
+            {'domain_suffix': ['example.test'], 'source_ip_cidr': ['192.0.2.0/24']},
+            {'type': 'logical', 'mode': 'and', 'rules': [{'domain': ['nested.example']}]},
+        ]
+        for rule in unsupported:
+            for rules in ([rule], [{'domain': ['kept.example']}, rule]):
+                with self.subTest(rules=rules):
+                    code, body = self.normalize(json.dumps({'rules': rules}))
+                    self.assertNotEqual(code, 0)
+                    self.assertEqual(body, '')
+
+    def test_srs_default_rule_and_false_invert_are_supported(self):
+        code, body = self.normalize(json.dumps({'rules': [
+            {'type': 'default', 'domain_suffix': ['example.test'], 'invert': False},
+        ]}))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(body)['rules'][0]['domain_suffix'], ['example.test'])
+
+    def test_srs_malformed_rule_or_invert_is_not_silently_ignored(self):
+        for rule in (None, [], 'rule', {'domain': ['example.test'], 'invert': 0},
+                     {'domain': ['example.test'], 'invert': 'false'}):
+            with self.subTest(rule=rule):
+                self.assertNotEqual(self.normalize(json.dumps({'rules': [{'domain': ['kept.example']}, rule]}))[0], 0)
 
     def test_bad_json_shapes_and_non_string_entries_fail(self):
         for value in ([], {}, {'rules': {}}, {'rules': [{'domain': 1}]},

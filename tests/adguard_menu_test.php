@@ -33,10 +33,14 @@ class AdguardTestBot extends Bot
     public array $apiReply = [];
     public bool $apiDown = false;
     public bool $dotPublished = false;
+    public bool $failWrite = false;
 
     public function getXray() { return $this->xrayFake; }
+    // Этот однопроцессный тест не зависит от глобального /logs контейнера.
+    public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
     public function stopAd() { $this->stops++; return ''; }
     public function startAd() { $this->starts++; return ''; }
+    public function adguardWrite(array $c): bool { return !$this->failWrite && parent::adguardWrite($c); }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->sent[] = $text; return []; }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screens[] = [$text, is_array($button) ? $button : []]; }
     public function menu($type = false, $arg = false, $return = false) { $this->screens[] = ['menu ' . $type, []]; }
@@ -125,6 +129,21 @@ try {
     $bot->xrayFake['inbounds'][0]['settings']['clients'][] = ['id' => $u2, 'email' => 'bob'];
     $bot->adguardXrayClients();
     adgAssert($yaml()['dns']['allowed_clients'] === ['10.10.0.0/24', 'my-key', $id1, $id2], 'список разрешённых: ' . json_encode($yaml()['dns']['allowed_clients']));
+    // Удаление последнего управляемого ClientID не превращает ACL в allow-all.
+    $c = $yaml(); $c['dns']['allowed_clients'] = [$id1, $id2]; yaml_emit_file($bot->adguard, $c);
+    $bot->xrayFake['inbounds'][0]['settings']['clients'] = [];
+    $bot->adguardXrayClients();
+    adgAssert($yaml()['dns']['allowed_clients'] === ['127.0.0.1/32', '::1/128'], 'после удаления последнего пользователя ACL остаётся закрытым');
+    adgAssert($yaml()['dns']['upstream_dns'] === ['tls://1.1.1.1'], 'закрытие ACL не меняет свои upstream');
+    $bot->xrayFake['inbounds'][0]['settings']['clients'] = [['id' => $u1, 'email' => 'alice']];
+    $bot->adguardXrayClients();
+    adgAssert($yaml()['dns']['allowed_clients'] === ['127.0.0.1/32', '::1/128', $id1], 'новый клиент добавляется к закрытому ACL');
+    $prior = $yaml(); $starts = $bot->starts; $bot->failWrite = true;
+    $bot->xrayFake['inbounds'][0]['settings']['clients'] = [];
+    try { $bot->adguardXrayClients(); adgAssert(false, 'ошибка записи клиентов DNS не сообщена'); }
+    catch (RuntimeException $e) { adgAssert(true, 'ошибка записи клиентов DNS сообщена'); }
+    adgAssert($yaml() === $prior && $bot->starts === $starts + 1, 'при отказе записи DNS старый конфиг сохранён и сервис запускается');
+    $bot->failWrite = false;
     // Нечитаемые файлы: ничего не пишется и не перезапускается.
     $stops = $bot->stops; file_put_contents($bot->adguard, '');
     $bot->adguardXrayClients(); $bot->adguardSync();

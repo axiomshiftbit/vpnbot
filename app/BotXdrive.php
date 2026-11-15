@@ -33,6 +33,7 @@ trait BotXdrive
     // имён у серверов разный (d:, D:, lp1:), сама папка заканчивается на «/».
     public const XDRIVE_WEBDAV_NAMES = '<(?:[A-Za-z0-9]+:)?href>[^<]*/([^/<]+)</(?:[A-Za-z0-9]+:)?href>';
     public const XDRIVE_POLL = [500, 10000];
+    public const XDRIVE_PROBE_MAX_BYTES = 1024 * 1024;
     private ?array $xdriveInventory = null;
 
     public static function xdriveDefaults(): array
@@ -101,17 +102,30 @@ trait BotXdrive
     // внутреннюю сеть Docker и на сам сервер.
     public function xdriveHostPublic(string $url): bool
     {
+        return $this->xdrivePublicIps($url) !== [];
+    }
+
+    protected function xdrivePublicIps(string $url): array
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts) || !in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+            || empty($parts['host']) || isset($parts['user']) || isset($parts['pass'])) return [];
         $host = (string) parse_url($url, PHP_URL_HOST);
         $host = trim($host, '[]');
         $addresses = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : $this->xdriveResolve($host);
-        if (!$addresses) return false;
+        if (!$addresses) return [];
         foreach ($addresses as $address) {
-            if (!filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) return false;
+            $packed = @inet_pton($address);
+            if ($packed !== false && strlen($packed) === 16
+                && substr($packed, 0, 12) === str_repeat("\0", 10) . "\xff\xff") {
+                $address = inet_ntop(substr($packed, 12));
+            }
+            if (!filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) return [];
             // CGNAT 100.64.0.0/10 и NAT64 64:ff9b::/96 (через него достижим и
             // 127.0.0.1) фильтр PHP частными не считает.
-            if (self::isCarrierRange($address)) return false;
+            if (self::isCarrierRange($address)) return [];
         }
-        return true;
+        return array_values(array_unique($addresses));
     }
 
     // Удалось ли вообще узнать адрес. Имя, которое сейчас не разрешается
@@ -324,16 +338,30 @@ trait BotXdrive
     // HTTP-запрос к хранилищу; в тестах подменяется. [код, тело] либо [0, ''].
     protected function xdriveHttp(string $method, string $url, array $headers = [], ?string $body = null): array
     {
+        // Проверяем каждый запрос заново и закрепляем именно эти адреса:
+        // предварительная проверка настроек не защищает от смены DNS.
+        $ips = $this->xdrivePublicIps($url);
+        if (!$ips) return [0, ''];
+        $parts = parse_url($url);
+        $port = (int) ($parts['port'] ?? (strtolower($parts['scheme']) === 'https' ? 443 : 80));
+        $answer = '';
         $ch = curl_init($url);
         curl_setopt_array($ch, [
-            CURLOPT_CUSTOMREQUEST => $method, CURLOPT_HTTPHEADER => $headers, CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => $method, CURLOPT_HTTPHEADER => $headers, CURLOPT_RETURNTRANSFER => false,
             CURLOPT_CONNECTTIMEOUT => 6, CURLOPT_TIMEOUT => 12, CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_PROXY => '',
+            CURLOPT_RESOLVE => $this->curlResolveEntries($parts['host'], $port, $ips),
+            CURLOPT_WRITEFUNCTION => static function ($ch, string $chunk) use (&$answer): int {
+                if (strlen($answer) + strlen($chunk) > self::XDRIVE_PROBE_MAX_BYTES) return 0;
+                $answer .= $chunk;
+                return strlen($chunk);
+            },
         ]);
         if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-        $answer = curl_exec($ch);
+        $ok = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        return [$answer === false ? 0 : $code, $answer === false ? '' : (string) $answer];
+        return $ok === false ? [0, ''] : [$code, $answer];
     }
 
     // Проверка хранилища теми же действиями, что выполняет ядро: список,

@@ -219,7 +219,7 @@ $sets = $bot->confPac['exits'][$id]['rulesets'];
 $check(array_keys($sets) === ['https://raw.example/geo/youtube.srs', 'https://raw.example/geo/telegram.mrs'] && $sets['https://raw.example/geo/telegram.mrs']['behavior'] === 'ipcidr', 'наборы: только https .srs/.mrs');
 $check(str_contains($bot->last()[0], 'не подошло') , 'сообщение о неподошедших ссылках');
 $srs = json_encode(['version' => 3, 'rules' => [['domain' => ['www.youtube.com'], 'domain_suffix' => ['.googlevideo.com', 'ytimg.com'], 'domain_keyword' => ['youtube'],
-    'domain_regex' => ['^yt[0-9]+\\.example$'], 'ip_cidr' => ['203.0.113.0/24', 'bad']], ['type' => 'logical', 'rules' => []]]]);
+    'domain_regex' => ['^yt[0-9]+\\.example$'], 'ip_cidr' => ['203.0.113.0/24', 'bad']]]]);
 $bot->toolOutput = $srs;
 $check($bot->exitRulesetConvert('BIN', 'srs', 'domain') === ['full:www.youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'keyword:youtube', 'regexp:^yt[0-9]+\.example$', '203.0.113.0/24'], '.srs раскладывается, «bad» из ip_cidr отброшен');
 $check(end($bot->tools)[0] === 'sing-box' && end($bot->tools)[1] === 'rule-set' && end($bot->tools)[2] === 'decompile', 'для .srs — sing-box rule-set decompile');
@@ -375,7 +375,7 @@ $bot->language = 'ru';
 
 // --- Обновление набора: новое содержимое сначала проверяет ядро -------------
 $sets = new class extends ExitMenuBot {
-    public string $dir = ''; public string $binary = 'BIN'; public bool $coreOk = true; public array $validated = [];
+    public string $dir = ''; public ?string $binary = 'BIN'; public bool $coreOk = true; public array $validated = [];
     public function exitRulesetFile(string $key): string { return $this->dir . '/' . substr(hash('sha256', $key), 0, 24) . '.json'; }
     protected function exitRulesetDownload(string $url): ?string { return $this->binary; }
     public function validateXrayConfig(array $config, string $binary = 'xray'): bool { $this->validated[] = $config; return $this->coreOk; }
@@ -408,6 +408,25 @@ $sets->binary = 'BIN2'; $sets->coreOk = false;
 $sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_regex' => ['(']]]]);
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'core' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'],
     'набор, который ядро не принимает, не заменяет прежний');
+// Проверенный новым parser кэш переживает неподдерживаемое обновление.
+$sets->coreOk = true;
+$sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_suffix' => ['video.example'], 'invert' => true]]]);
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'parse' && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'],
+    'семантически неверное обновление не заменяет проверенный предыдущий набор');
+$legacy = $sets->exitRulesetCache($url); $legacy['parser'] = '2:srs:domain'; $legacy['error'] = '';
+file_put_contents($sets->exitRulesetFile($url), json_encode($legacy));
+$sets->binary = null;
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'download' && ($sets->exitRulesetCache($url)['entries'] ?? null) === $legacy['entries'],
+    'отказ скачивания не доказывает невалидность старого кэша');
+$sets->binary = 'BIN'; $sets->toolOutput = null;
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'parse' && ($sets->exitRulesetCache($url)['entries'] ?? null) === $legacy['entries'],
+    'отказ инструмента не удаляет старый кэш');
+$sets->toolOutput = json_encode(['version' => 3, 'rules' => [['domain_suffix' => ['video.example'], 'port' => [443]]]]);
+$beforeRejection = $sets->exitRulesetCache($url);
+$check($sets->exitRulesetRefresh($url, ['on' => 1]) === 'parse' && ($sets->exitRulesetCache($url)['entries'] ?? null) === []
+    && ($sets->exitRulesetCache($url)['hash'] ?? null) === '', 'parser 2: доказанно неверные записи того же бинарника больше не активны');
+$check(json_decode(file_get_contents($sets->exitRulesetFile($url) . '.previous'), true) === $beforeRejection,
+    'предыдущий неверный разбор сохранён отдельно для диагностики');
 // Узел перезапускает Xray, когда записи изменились — в том числе без нового файла.
 $node = new class extends ExitMenuBot {
     public string $dir = ''; public bool $coreOk = true;

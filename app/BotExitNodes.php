@@ -41,7 +41,7 @@ trait BotExitNodes
     public const EXIT_RULESET_MAX_ENTRIES = 200000;
     // Версия разбора наборов: при её смене кэш разбирается заново, даже если
     // файл источника не изменился.
-    public const EXIT_RULESET_PARSER = 2;
+    public const EXIT_RULESET_PARSER = 3;
     // Домены YouTube без зависимости от geosite.dat (кнопка «YouTube»).
     public const EXIT_YOUTUBE = ['domain:youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'domain:ggpht.com',
         'domain:youtu.be', 'domain:youtube-nocookie.com', 'domain:youtubei.googleapis.com', 'domain:youtubekids.com',
@@ -952,16 +952,18 @@ trait BotExitNodes
         return $code === 0;
     }
 
-    private function exitRulesetNormalize(string $file, string $format): bool
+    private function exitRulesetNormalize(string $file, string $format, bool &$unsupported): bool
     {
         $command = ['python3', __DIR__ . '/exit_ruleset.py', 'normalize', $file, "$file.safe", $format];
         exec('timeout 30 ' . implode(' ', array_map('escapeshellarg', $command)) . ' >/dev/null 2>&1', $out, $code);
+        $unsupported = $code === 2;
         return $code === 0 && rename("$file.safe", $file);
     }
 
     /** Разложить содержимое набора в записи маршрута. null — формат не разобран. */
-    public function exitRulesetConvert(string $binary, string $format, string $behavior): ?array
+    public function exitRulesetConvert(string $binary, string $format, string $behavior, bool &$unsupported = false): ?array
     {
+        $unsupported = false;
         $dir = sys_get_temp_dir() . '/exit-ruleset-' . bin2hex(random_bytes(6));
         if (!@mkdir($dir, 0700)) return null;
         $in = "$dir/in.$format";
@@ -971,7 +973,7 @@ trait BotExitNodes
             $entries = $ips = [];
             if ($format === 'srs') {
                 if (!$this->exitRulesetTool(['sing-box', 'rule-set', 'decompile', $in, '-o', $outFile])) return null;
-                if (!$this->exitRulesetNormalize($outFile, $format)) return null;
+                if (!$this->exitRulesetNormalize($outFile, $format, $unsupported)) return null;
                 $json = json_decode((string) @file_get_contents($outFile), true);
                 if (!is_array($json['rules'] ?? null)) return null;
                 foreach ($json['rules'] as $rule) {
@@ -985,7 +987,7 @@ trait BotExitNodes
             } else {
                 if (!in_array($behavior, ['domain', 'ipcidr'], true)) return null;
                 if (!$this->exitRulesetTool(['mihomo', 'convert-ruleset', $behavior, 'mrs', $in, $outFile])) return null;
-                if (!$this->exitRulesetNormalize($outFile, 'mrs')) return null;
+                if (!$this->exitRulesetNormalize($outFile, 'mrs', $unsupported)) return null;
                 foreach (preg_split('~\R~', (string) @file_get_contents($outFile)) as $line) {
                     $line = trim($line);
                     if ($line === '' || str_starts_with($line, '#')) continue;
@@ -1025,13 +1027,24 @@ trait BotExitNodes
         // разобраны и проверены ядром, распаковывать заново незачем.
         $same = $binary !== null && ($cache['error'] ?? '') === '' && !empty($cache['entries'])
             && ($cache['parser'] ?? '') === $parser && hash('sha256', $binary) === ($cache['hash'] ?? '');
-        $entries = $binary === null ? null : ($same ? $cache['entries'] : $this->exitRulesetConvert($binary, $format, $behavior));
+        $unsupported = false;
+        $entries = $binary === null ? null : ($same ? $cache['entries'] : $this->exitRulesetConvert($binary, $format, $behavior, $unsupported));
         $error = $binary === null ? 'download' : ($entries === null ? 'parse' : (!$entries ? 'empty' : ''));
         // Записи набора попадают в каждую сборку конфига: битая регулярка из
         // чужого источника сделала бы так, что ядро отвергает любое изменение
         // Xray. Всё, что разобрано заново, сначала проверяет выбранное ядро —
         // и новый файл, и прежний файл после смены версии разбора или типа.
         if ($error === '' && !$same && !$this->exitRulesetCoreAccepts($entries)) $error = 'core';
+        // Старый parser мог молча отбросить invert/port/logical. Снимаем
+        // только доказанно неверный разбор ТОГО ЖЕ файла; новый плохой файл,
+        // сбой скачивания или инструмента не обесценивают последний кэш.
+        if ($unsupported && $format === 'srs' && ($cache['parser'] ?? '') !== $parser
+            && hash('sha256', $binary) === ($cache['hash'] ?? '') && !empty($cache['entries'])) {
+            @copy($this->exitRulesetFile($url), $this->exitRulesetFile($url) . '.previous');
+            $cache['entries'] = [];
+            $cache['hash'] = '';
+            $cache['parser'] = '';
+        }
         $cache = ['key' => $url, 'time' => time(), 'error' => $error]
             + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary), 'parser' => $parser]
                 : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '', 'parser' => $cache['parser'] ?? '']);

@@ -11798,7 +11798,6 @@ NFT;
 
     public function adguardSync()
     {
-        $pac = $this->getPacConf();
         // md5(time()) выводится из момента установки: окно сужается по notBefore
         // TLS-сертификата до десятков тысяч кандидатов и подбирается офлайн, а
         // панель доступна снаружи через cloakNginx() по $hash из подписки.
@@ -11808,8 +11807,10 @@ NFT;
         // (гейт на cookie держится на публичном hash из ссылок подписки, а при
         // включённом adgbrowser он и вовсе снимается). 64 бита для единственного
         // барьера мало. Ветка ?: сохраняет уже выданный пароль.
-        $pac['adpswd'] = $pac['adpswd'] ?: bin2hex(random_bytes(16));
-        $this->setPacConf($pac);
+        $pac = $this->pacConfUpdate(static function (array &$pac) {
+            $pac['adpswd'] = $pac['adpswd'] ?: bin2hex(random_bytes(16));
+            return $pac;
+        });
         $ssl = $this->nginxGetTypeCert();
         if (($c = $this->adguardConf()) === null) {
             error_log('adguardSync: AdGuardHome.yaml не читается, конфиг не тронут');
@@ -11821,8 +11822,13 @@ NFT;
             $c['tls']['enabled']     = true;
             $c['tls']['server_name'] = $pac['domain'];
         }
-        $this->adguardWrite($c);
-        $this->startAd();
+        try {
+            if (!$this->adguardWrite($c)) {
+                throw new RuntimeException($this->t('Не удалось сохранить настройки DNS', 'Could not save DNS settings'));
+            }
+        } finally {
+            $this->startAd();
+        }
     }
 
     // Конфиг AdGuardHome массивом; null — файла нет или он не разобрался.
@@ -13551,7 +13557,10 @@ NFT;
                     $list[] = $id;
                 }
             }
-            $ad['dns']['allowed_clients'] = $list;
+            // В AdGuard пустой список означает доступ всем. После удаления
+            // последнего управляемого клиента сохраняем закрытый режим;
+            // явно открытый администратором список сюда не попадает.
+            $ad['dns']['allowed_clients'] = $list ?: ['127.0.0.1/32', '::1/128'];
         }
         // Ничего не изменилось — AdGuard не перезапускаем: каждый перезапуск
         // это секунды без DNS у всех пользователей.
@@ -13559,8 +13568,13 @@ NFT;
             return;
         }
         $this->stopAd();
-        $this->adguardWrite($ad);
-        $this->startAd();
+        try {
+            if (!$this->adguardWrite($ad)) {
+                throw new RuntimeException($this->t('Не удалось сохранить клиентов DNS', 'Could not save DNS clients'));
+            }
+        } finally {
+            $this->startAd();
+        }
     }
 
     // Идентификатор, который выдаёт бот (dohClientId): «doh-» и 16 hex.
@@ -19354,7 +19368,11 @@ DNS-over-HTTPS with IP:
     public function telemtWebSync(): void
     {
         if (!empty($this->getPacConf()['telemt_web'])) {
-            $this->restartTelemt();
+            $enabled = $this->protocolModuleEnabled('telemt');
+            if ($this->restartTelemt() === false
+                || ($enabled && ($this->sshFailed || empty($this->getPacConf()['telemt_web'])))) {
+                throw new RuntimeException($this->t('Не удалось применить SSL TeleMT', 'Could not apply TeleMT SSL'));
+            }
         }
     }
 

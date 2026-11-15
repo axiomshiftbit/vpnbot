@@ -15,6 +15,10 @@ NORMALIZED_BYTES = 8 * 1024 * 1024
 MAX_ENTRIES = 200000
 
 
+class UnsupportedRule(ValueError):
+    pass
+
+
 def normalize(source, destination, fmt):
     resource.setrlimit(resource.RLIMIT_AS, (192 * 1024 * 1024,) * 2)
     if Path(source).stat().st_size > UNPACKED_BYTES:
@@ -27,8 +31,15 @@ def normalize(source, destination, fmt):
         combined = {key: [] for key in ('domain', 'domain_suffix', 'domain_keyword', 'domain_regex', 'ip_cidr')}
         count = 0
         for rule in data['rules']:
-            if not isinstance(rule, dict) or 'type' in rule:
-                continue
+            # Плоский список маршрутов не выражает отрицание, логические
+            # группы и ограничения по порту/сети. Частичный импорт меняет
+            # смысл набора, поэтому отказываем целиком, сохраняя старый кэш.
+            if (not isinstance(rule, dict)
+                    or rule.get('type', 'default') != 'default'
+                    or rule.get('invert', False) is not False
+                    or set(rule) - (set(combined) | {'type', 'invert'})):
+                raise UnsupportedRule('unsupported rule semantics')
+            before_count = count
             for key, values in combined.items():
                 entries = rule.get(key, [])
                 # sing-box Listable serializes a single value as a string.
@@ -40,6 +51,8 @@ def normalize(source, destination, fmt):
                 if count > MAX_ENTRIES or any(not isinstance(v, str) for v in entries):
                     raise ValueError('invalid rule entries')
                 values.extend(entries)
+            if count == before_count:
+                raise UnsupportedRule('empty rule cannot be represented')
         body = json.dumps({'rules': [combined]}, ensure_ascii=False, separators=(',', ':')).encode()
     elif fmt == 'mrs':
         lines = []
@@ -75,6 +88,9 @@ def main():
 if __name__ == '__main__':
     try:
         main()
+    except UnsupportedRule:
+        # Отличаем доказанную потерю семантики от временного отказа инструмента.
+        sys.exit(2)
     except (OSError, ValueError, TypeError, MemoryError, RecursionError, IndexError):
         # Внешний файл не выводится ни в stderr, ни в журналы бота.
         sys.exit(1)

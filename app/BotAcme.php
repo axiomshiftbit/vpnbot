@@ -146,6 +146,8 @@ trait BotAcme
             ''                => '—',
             'ok'              => '✅ ' . $this->t('сертификат обновлён', 'certificate renewed'),
             'ok_served_old'   => '⚠️ ' . $this->t('сертификат выпущен, но сервер отдаёт прежний', 'certificate issued, but the server still serves the old one'),
+            'fail_served_old' => '❌ ' . $this->t('сервер отдаёт прежний сертификат; применение будет повторено', 'server still serves the old certificate; application will be retried'),
+            'fail_changed'    => '⚠️ ' . $this->t('состояние SSL изменилось; прежняя установка отменена', 'SSL state changed; previous installation cancelled'),
             'dry_run_ok'      => '✅ ' . $this->t('пробный выпуск прошёл', 'test issuance passed'),
             'dry_run_fail'    => '❌ ' . $this->t('пробный выпуск не прошёл', 'test issuance failed'),
             'fail_issue'      => '❌ ' . $this->t("Let's Encrypt не выдал сертификат", "Let's Encrypt did not issue the certificate"),
@@ -393,6 +395,47 @@ trait BotAcme
         }, $this->acmeInstallLockWait);
     }
 
+    // Receipt и проверка поколения под той же блокировкой, что restore.
+    public function installLetsencryptReceipt(string $domain, array $names, ?string $expected, ?string $issued): array
+    {
+        return $this->withBackupLock(function () use ($domain, $names, $expected, $issued) {
+            $fingerprint = fn() => @hash_file('sha256', $this->protocolCertRoot . '/cert_public') ?: '';
+            if (($expected !== null && $fingerprint() !== $expected)
+                || ($issued !== null && (@hash_file('sha256', "/etc/letsencrypt/live/$domain/fullchain.pem") ?: '') !== $issued)) {
+                return ['installed' => false, 'stale' => true];
+            }
+            try {
+                $installed = $this->installLetsencrypt($domain, $names);
+            } catch (Throwable $error) {
+                // Сообщение транспорта может содержать адреса; наружу только статус.
+                $installed = false;
+            }
+            return ['installed' => $installed, 'certificate' => $fingerprint()];
+        }, $this->acmeInstallLockWait);
+    }
+
+    // Миграция старого ok_served_old: перечитать именно установленную пару,
+    // не брать потенциально другую цепочку из lineage и не выпускать заново.
+    public function reapplyCertificateReceipt(string $expected): array
+    {
+        return $this->withBackupLock(function () use ($expected) {
+            $fingerprint = fn() => @hash_file('sha256', $this->protocolCertRoot . '/cert_public') ?: '';
+            $conf = $this->getPacConf();
+            if ($fingerprint() !== $expected || !$this->acmeWantsLetsencrypt($conf)) {
+                return ['installed' => false, 'stale' => true];
+            }
+            $public = @file_get_contents($this->protocolCertRoot . '/cert_public');
+            $private = @file_get_contents($this->protocolCertRoot . '/cert_private');
+            try {
+                $installed = is_string($public) && is_string($private)
+                    && $this->applyCertificateBundle(rtrim($private) . "\n" . ltrim($public), $conf);
+            } catch (Throwable $error) {
+                $installed = false;
+            }
+            return ['installed' => $installed, 'certificate' => $fingerprint()];
+        }, $this->acmeInstallLockWait);
+    }
+
     // Кнопка Let's Encrypt при работающей службе только ставит acme_requested:
     // первый выпуск тоже идёт через окно, а свой сертификат служба не трогает.
     public function acmeWantsLetsencrypt(array $conf): bool
@@ -438,10 +481,12 @@ trait BotAcme
                 return false;
             }
             $this->adguardSync();
-            $this->cloakNginx();
-            $this->restartTt();
+            $nginx = $this->cloakNginx();
+            $trusttunnel = $this->restartTt();
             $this->telemtWebSync();
-            return true;
+            // Валидная пара уже записана и остаётся для повторного применения.
+            // Отказ потребителя нельзя выдавать за полностью применённый SSL.
+            return $nginx !== false && $trusttunnel !== false;
         }, $this->acmeInstallLockWait);
     }
 }

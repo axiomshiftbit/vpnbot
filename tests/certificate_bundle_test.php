@@ -12,6 +12,8 @@ class CertificateBundleBot extends Bot
     public string $failFile = '';
     public bool $failRename = false;
     public bool $failSettings = false;
+    public bool $nginxOk = true;
+    public bool $ttOk = true;
     public function __construct(string $root) { $this->protocolCertRoot = $root; $this->pac = "$root/pac.json"; }
     public function getPacConf() { return $this->conf; }
     public function setPacConf(array $conf) { if ($this->failSettings) return false; $this->conf = $conf; return true; }
@@ -24,8 +26,8 @@ class CertificateBundleBot extends Bot
         return parent::backupRename($from, $to);
     }
     public function adguardSync() { $this->reloads++; }
-    public function cloakNginx() {}
-    public function restartTt() {}
+    public function cloakNginx() { return $this->nginxOk; }
+    public function restartTt() { return $this->ttOk; }
     public function telemtWebSync(): void {}
 }
 
@@ -100,4 +102,53 @@ foreach ([$key . $certificate, $key . $certificate . $oldCertificate] as $bundle
     }
     $checks++;
 }
+foreach (['nginxOk', 'ttOk'] as $consumer) {
+    $bot->$consumer = false;
+    if ($bot->applyCertificateBundle($key . $certificate, ['letsencrypt' => 'self']) !== false
+        || !openssl_x509_check_private_key(file_get_contents("$root/cert_public"), file_get_contents("$root/cert_private"))) {
+        throw new RuntimeException('Отказ потребителя SSL должен сообщаться, сохраняя новую валидную пару');
+    }
+    $bot->$consumer = true;
+    if (!$bot->applyCertificateBundle($key . $certificate, ['letsencrypt' => 'self'])) {
+        throw new RuntimeException('Повторное применение той же пары должно восстанавливаться');
+    }
+    $checks++;
+}
+$receiptBot = new class($root) extends CertificateBundleBot {
+    public int $installs = 0;
+    public string $next = '';
+    public bool $throwInstall = false;
+    public function installLetsencrypt(string $domain, array $expectedNames = [], ?array $expectedState = null): bool {
+        $this->installs++;
+        file_put_contents($this->protocolCertRoot . '/cert_public', $this->next);
+        if ($this->throwInstall) throw new RuntimeException('synthetic reload failure');
+        return false;
+    }
+};
+$receiptBot->next = $oldCertificate;
+$fingerprint = hash_file('sha256', "$root/cert_public");
+$stale = $receiptBot->installLetsencryptReceipt('certificate.example.org', [], str_repeat('0', 64), null);
+if (empty($stale['stale']) || $receiptBot->installs !== 0) throw new RuntimeException('Restore того же домена нельзя перезаписать старым pending');
+$checks++;
+foreach ([false, true] as $throw) {
+    $receiptBot->throwInstall = $throw;
+    $receipt = $receiptBot->installLetsencryptReceipt('certificate.example.org', [], $fingerprint, null);
+    if ($receipt['installed'] !== false || $receipt['certificate'] !== hash('sha256', $oldCertificate)) {
+        throw new RuntimeException('Receipt обязан сохранить fingerprint нашей записи при отказе reload');
+    }
+    $fingerprint = $receipt['certificate'];
+    $checks++;
+}
+$bot->applyCertificateBundle($key . $certificate, ['domain' => 'certificate.example.org', 'letsencrypt' => 'letsencrypt']);
+$fingerprint = hash_file('sha256', "$root/cert_public");
+$receipt = $bot->reapplyCertificateReceipt($fingerprint);
+if (!$receipt['installed'] || !openssl_x509_check_private_key(file_get_contents("$root/cert_public"), $key)) {
+    throw new RuntimeException('Миграция должна применять текущую пару без обращения к lineage');
+}
+$checks++;
+$bot->conf['letsencrypt'] = 'self';
+if (empty($bot->reapplyCertificateReceipt($receipt['certificate'])['stale'])) {
+    throw new RuntimeException('Миграция не должна трогать восстановленный собственный сертификат');
+}
+$checks++;
 echo "certificate_bundle_test: $checks проверок OK\n";

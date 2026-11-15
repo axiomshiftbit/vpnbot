@@ -28,6 +28,7 @@ req-*) и state/ (пишет только служба, у бота только
 import argparse
 import calendar
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -247,6 +248,7 @@ def target_state(state, name, default_auto):
         ts.setdefault(key, 0)
     ts.setdefault('last_result', '')
     ts.setdefault('last_detail', '')
+    ts.setdefault('pending_install', None)
     return ts
 
 
@@ -291,6 +293,17 @@ def due_at(info):
         return 0
     start = info.get('not_before', info['not_after'] - 90 * 86400)
     return int(info['not_after'] - (info['not_after'] - start) * RENEW_FRACTION)
+
+
+def certificate_fingerprint(path):
+    try:
+        with open(path, 'rb') as stream:
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(65536), b''):
+                digest.update(block)
+            return digest.hexdigest()
+    except OSError:
+        return ''
 
 
 def served_serial(host, port, name):
@@ -345,6 +358,10 @@ class Target:
         self.cfg, self.t = cfg, t
         self.php = None
         self.names = []
+        self.expected_certificate = None
+        self.issued_certificate = None
+        self.installed_certificate = None
+        self.reapply_installed = False
 
     def preflight(self):
         """Проверки до открытия окна; возвращает имена сертификата."""
@@ -390,18 +407,42 @@ class Target:
         code, out, err = run(cmd, timeout=ISSUE_TIMEOUT)
         if code != 0:
             raise Fail('fail_issue', tail(err + '\n' + out))
+        if t['kind'] == 'vpnbot' and not dry_run:
+            try:
+                self.issued_certificate = json.loads(out.splitlines()[-1])['issued_certificate']
+            except (ValueError, IndexError, KeyError, TypeError):
+                # Совместимость с предыдущим CLI; fingerprint активного файла
+                # всё равно проверяется, receipt появится после обновления PHP.
+                self.issued_certificate = None
         return tail(out)
 
     def install(self):
         if self.t['kind'] != 'vpnbot':
+            code, _, _ = run(['docker', 'exec', self.t['container'], 'sh', '-c', 'nginx -t && nginx -s reload'], timeout=INSTALL_TIMEOUT)
+            if code != 0:
+                raise Fail('fail_install', 'nginx reload failed')
+            self.installed_certificate = certificate_fingerprint(self.t['cert_file'])
             return
         # Все имена фиксируются до выпуска: восстановление могло сменить и
         # основной домен, и только алиасы. PHP сверит их под блокировкой бэкапа.
-        code, out, err = run(['docker', 'exec', self.php, 'php', '/app/acme_renew.php', 'install',
-                             self.names[0], json.dumps(self.names)],
+        args = [self.names[0], json.dumps(self.names)]
+        if self.expected_certificate is not None:
+            args.append(self.expected_certificate)
+            if self.issued_certificate is not None:
+                args.append(self.issued_certificate)
+        command = ['reapply', self.expected_certificate] if self.reapply_installed else ['install', *args]
+        code, out, err = run(['docker', 'exec', self.php, 'php', '/app/acme_renew.php', *command],
                              timeout=INSTALL_TIMEOUT)
+        try:
+            receipt = json.loads(out)
+            if isinstance(receipt.get('certificate'), str):
+                self.installed_certificate = receipt['certificate']
+        except (ValueError, AttributeError):
+            pass
+        if code == 4:
+            raise Fail('fail_changed', 'certificate generation changed')
         if code != 0:
-            raise Fail('fail_install', tail(err + '\n' + out))
+            raise Fail('fail_install', 'certificate application failed')
 
     def open_lines(self):
         t = self.t
@@ -412,14 +453,20 @@ class Target:
         return lines
 
 
-def attempt(cfg, t, dry_run=False):
+def attempt(cfg, t, dry_run=False, pending=None, checkpoint=None):
     """Выпуск через окно. Возвращает (код, пояснение) или бросает Fail.
 
     К выходу из функции окно закрыто при любом исходе, включая сигнал."""
     target = Target(cfg, t)
     sets = ALL_SETS
     before = cert_info(t['cert_file'])
+    before_fingerprint = certificate_fingerprint(t['cert_file'])
     names = target.preflight()
+    if pending:
+        if (sorted(names) != sorted(pending['names']) or pending['cert_file'] != t['cert_file']
+                or pending['kind'] != t['kind'] or before_fingerprint != pending['certificate']):
+            raise Fail('fail_changed', 'pending certificate generation changed')
+        return apply_pending(cfg, t, target, pending, checkpoint)
     check_dns(cfg['public_ip'], names)
     for s in windows_of(cfg):
         if not set_exists(s):
@@ -431,6 +478,14 @@ def attempt(cfg, t, dry_run=False):
         if not set_elements(FWD_SET):
             raise Fail('fail_window', 'window did not open')
         detail = target.issue(dry_run)
+        if not dry_run:
+            pending = {'names': names, 'kind': t['kind'], 'cert_file': t['cert_file'],
+                       'before_serial': before['serial'] if before else '',
+                       'certificate': before_fingerprint if t['kind'] == 'vpnbot' else certificate_fingerprint(t['cert_file']),
+                       'issued_certificate': target.issued_certificate}
+            # Выпуск учтён до install: сбой/сигнал не запускает certbot повторно.
+            if checkpoint:
+                checkpoint(pending, True)
     except BaseException:
         # Отказ закрытия не должен подменить исходную причину (в том числе
         # сигнал остановки): элементы всё равно истекут по времени жизни.
@@ -445,32 +500,49 @@ def attempt(cfg, t, dry_run=False):
         log('%s: окно закрыто' % t['name'])
         if dry_run:
             return 'dry_run_ok', detail
-        target.install()
-        after = cert_info(t['cert_file'])
-        if not after or (before and after['serial'] == before['serial']):
-            raise Fail('fail_verify', 'certificate file did not change')
+        return apply_pending(cfg, t, target, pending, checkpoint)
     except Fail as e:
         # Let's Encrypt сертификат уже выдал: попытка идёт в лимит выпусков,
         # иначе повторы при сломанной установке исчерпали бы лимит Let's Encrypt.
         e.issued = not dry_run
         raise
+
+
+def apply_pending(cfg, t, target, pending, checkpoint):
+    """Только install/verify уже выпущенного сертификата; без certbot и окна."""
+    target.expected_certificate = pending['certificate']
+    target.issued_certificate = pending.get('issued_certificate')
+    target.reapply_installed = pending.get('reapply_installed', False)
+    try:
+        target.install()
+    finally:
+        if target.installed_certificate is not None:
+            pending['certificate'] = target.installed_certificate
+            if checkpoint:
+                checkpoint(pending, False)
+    after = cert_info(t['cert_file'])
+    if not after or after['serial'] == pending['before_serial']:
+        raise Fail('fail_verify', 'certificate file did not change')
     for pause in SERVED_PAUSES:
         time.sleep(pause)
-        serial = served_serial(cfg['public_ip'], t['verify_port'], names[0])
+        serial = served_serial(cfg['public_ip'], t['verify_port'], pending['names'][0])
         if serial == after['serial']:
             return 'ok', ''
-    return 'ok_served_old', 'served %s, file %s' % (serial or '?', after['serial'])
+    raise Fail('fail_served_old', 'served certificate does not match installed file')
 
 
 def next_attempt(ts, info):
     """Время следующей плановой попытки; 0 — автообновление выключено."""
     if not ts['auto']:
         return 0
-    start = due_at(info)
+    pending = bool(ts.get('pending_install')) or ts['last_result'] == 'ok_served_old'
+    start = ts['last_attempt'] if pending else due_at(info)
     if ts['failures']:
         urgent = info is None or info['not_after'] - now() < URGENT_SECONDS
         delay = URGENT_BACKOFF if urgent else BACKOFF[min(ts['failures'], len(BACKOFF)) - 1]
         start = max(start, ts['last_attempt'] + delay)
+    if pending:
+        return start  # Лимиты CA относятся к выпуску, не к reload уже выпущенного.
     issued = recent(ts['issued'], ISSUE_LIMIT[1])
     if len(issued) >= ISSUE_LIMIT[0]:
         start = max(start, min(issued) + ISSUE_LIMIT[1])
@@ -590,8 +662,14 @@ class Runner:
     def one(self, t, manual=False, dry_run=False):
         """Попытка для цели, если она нужна. Возвращает код результата или None."""
         ts = self.ts(t)
+        if not dry_run and not ts.get('pending_install') and ts['last_result'] == 'ok_served_old':
+            info = cert_info(t['cert_file'])
+            if info:
+                ts['pending_install'] = {'names': info.get('names', []), 'kind': t['kind'], 'cert_file': t['cert_file'],
+                    'before_serial': '', 'certificate': certificate_fingerprint(t['cert_file']), 'reapply_installed': True}
+                self.save()
         if not dry_run:
-            if limited(ts) or (manual and now() - ts['last_manual'] < MANUAL_INTERVAL):
+            if (limited(ts) and not ts.get('pending_install')) or (manual and now() - ts['last_manual'] < MANUAL_INTERVAL):
                 if not manual:
                     return None
                 # Последний настоящий результат не затираем: отказ — отдельное поле.
@@ -608,9 +686,19 @@ class Runner:
         self.publish(t, busy=True)
         started = now()
         issued = False
+        recorded_issue = False
+        pending = None if dry_run else ts.get('pending_install')
+        def checkpoint(value, newly_issued):
+            nonlocal recorded_issue
+            ts['pending_install'] = value
+            ts['last_attempt'] = started
+            if newly_issued:
+                recorded_issue = True
+                ts['issued'] = recent(ts['issued'], ISSUE_LIMIT[1]) + [now()]
+            self.save()
         try:
-            result, detail = attempt(self.cfg, t, dry_run)
-            issued = result.startswith('ok')
+            result, detail = attempt(self.cfg, t, dry_run, pending, checkpoint)
+            issued = result == 'ok' and not pending
         except Fail as e:
             result, detail, issued = e.code, e.detail, e.issued
         log(('%s: %s %s' % (t['name'], result, detail)).rstrip())
@@ -619,15 +707,19 @@ class Runner:
             ts['last_detail'] = detail
         elif result == 'not_letsencrypt':
             ts['last_result'], ts['last_detail'] = result, ''
+            ts['pending_install'] = None
         else:
             ts['last_attempt'] = started
             ts['last_result'], ts['last_detail'] = result, detail
-            if issued:
+            if issued and not recorded_issue:
                 ts['issued'] = recent(ts['issued'], ISSUE_LIMIT[1]) + [now()]
-            if result.startswith('ok'):
+            if result == 'ok':
+                ts['pending_install'] = None
                 ts['failures'] = 0
                 ts['last_success'] = now()
             else:
+                if result == 'fail_changed':
+                    ts['pending_install'] = None
                 ts['failures'] += 1
                 if result == 'fail_issue':
                     ts['failed_at'] = recent(ts['failed_at'], FAIL_LIMIT[1]) + [now()]

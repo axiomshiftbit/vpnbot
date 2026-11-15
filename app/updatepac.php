@@ -154,9 +154,17 @@ function start()
         $pac     = <<<PAC
                     function FindProxyForURL(t, e) {
                         var n = JSON.parse('$domains'),
-                        r = e.match(/((?:.+\.)*(.+))\.([^.]+)$/);
-                        if (r && n.hasOwnProperty(r[3]) && (n[r[3]].hasOwnProperty(r[1].length) && (-1 !== n[r[3]][r[1].length].indexOf(r[1])) || n[r[3]].hasOwnProperty(r[2].length) && (-1 !== n[r[3]][r[2].length].indexOf(r[2])))) {
-                            return "SOCKS5 ~address~:~port~; DIRECT";
+                        r = e.match(/(.+)\.([^.]+)$/);
+                        if (r && n.hasOwnProperty(r[2])) {
+                            var suffix = r[1], group = n[r[2]];
+                            while (suffix) {
+                                if (group.hasOwnProperty(suffix.length) && group[suffix.length].indexOf(suffix) !== -1) {
+                                    return "SOCKS5 ~address~:~port~; DIRECT";
+                                }
+                                var dot = suffix.indexOf('.');
+                                if (dot === -1) break;
+                                suffix = suffix.slice(dot + 1);
+                            }
                         }
                         return "DIRECT";
                     }
@@ -232,9 +240,17 @@ function start()
         $pac     = <<<PAC
                     function FindProxyForURL(t, e) {
                         var n = JSON.parse('$domains'),
-                        r = e.match(/((?:.+\.)*(.+))\.([^.]+)$/);
-                        if (r && n.hasOwnProperty(r[3]) && (n[r[3]].hasOwnProperty(r[1].length) && (-1 !== n[r[3]][r[1].length].indexOf(r[1])) || n[r[3]].hasOwnProperty(r[2].length) && (-1 !== n[r[3]][r[2].length].indexOf(r[2])))) {
-                            return "DIRECT";
+                        r = e.match(/(.+)\.([^.]+)$/);
+                        if (r && n.hasOwnProperty(r[2])) {
+                            var suffix = r[1], group = n[r[2]];
+                            while (suffix) {
+                                if (group.hasOwnProperty(suffix.length) && group[suffix.length].indexOf(suffix) !== -1) {
+                                    return "DIRECT";
+                                }
+                                var dot = suffix.indexOf('.');
+                                if (dot === -1) break;
+                                suffix = suffix.slice(dot + 1);
+                            }
                         }
                         return "SOCKS5 ~address~:~port~";
                     }
