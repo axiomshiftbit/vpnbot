@@ -25,6 +25,8 @@ class XdCoreBot extends Bot
     // Хранилище теста живёт на этом же компьютере: проверяется транспорт, а
     // запрет внутренних адресов — в xdrive_test.php.
     public function xdriveHostPublic(string $url): bool { return true; }
+    // xdriveHttp закрепляет адреса каждого запроса: тестовой заглушке — только loopback.
+    protected function xdrivePublicIps(string $url): array { return trim((string) parse_url($url, PHP_URL_HOST), '[]') === '127.0.0.1' ? ['127.0.0.1'] : []; }
 }
 
 function xdAssert(bool $ok, string $message): void
@@ -85,6 +87,7 @@ try {
     xdAssert(isset($pairs['mlkem768']) && VlessEncryption::pair($pairs['mlkem768']) !== null, 'ядро выдало пару ключей ML-KEM-768');
 
     $bot = new XdCoreBot();
+    $bot->xrayConf = "$work/xray.json";
     $bot->coreVersion = $v[1];
     $dav = xdPort(); $web = xdPort(); $socks = xdPort(); $stranger = xdPort();
     $base = ['enabled' => 1, 'enc' => $pairs['mlkem768']];

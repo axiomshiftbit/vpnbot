@@ -10,6 +10,7 @@ class ConcurrentSharedBot extends Bot {
         $this->fixture = $root;
         $this->protocolRoot = "$root/protocols";
         $this->protocolModulesFile = "$root/modules.json";
+        $this->xrayConf = "$root/xray.json";
     }
     public function getXray() {
         $config = ManagedProtocol::readJson($this->fixture . '/xray.json');

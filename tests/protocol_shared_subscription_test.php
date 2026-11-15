@@ -36,7 +36,7 @@ set_error_handler(static function ($level, $message, $file, $line) {
     return false;
 });
 try {
-    $bot = new SharedProtocolBot(); $bot->protocolRoot = "$root/protocols"; $bot->protocolModulesFile = "$root/modules.json";
+    $bot = new SharedProtocolBot(); $bot->protocolRoot = "$root/protocols"; $bot->protocolModulesFile = "$root/modules.json"; $bot->xrayConf = "$root/xray.json";
     $bot->upstreamFile = "$root/upstream.conf"; file_put_contents($bot->upstreamFile, "vpn.example.test anytls_bridge;\n");
     $bot->conf = array_fill_keys(['includelist', 'blocklist', 'warplist', 'processlist', 'packagelist', 'subnetlist', 'rulessetlist'], []) + ['domain' => 'vpn.example.test', 'outbound' => 'proxy', 'transport' => 'Reality', 'xray' => rtrim(strtr(base64_encode(str_repeat('p', 32)), '+/', '-_'), '=')];
     $client = ['id' => Bot::xrayUuid(), 'subtoken' => bin2hex(random_bytes(16)), 'email' => 'Одинаковое имя', 'time' => 0, 'traffic' => 0];

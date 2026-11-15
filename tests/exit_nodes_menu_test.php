@@ -18,6 +18,7 @@ class ExitMenuBot extends Bot
         $this->language = 'ru';
         $this->ip = '198.51.100.1';
         $this->key = 'fixture';
+        $this->xrayConf = sys_get_temp_dir() . '/exit-xray-' . getmypid() . '.json';
         require __DIR__ . '/../app/i18n.php';
         $this->i18n = $i;
         $this->confXray = ['inbounds' => [['tag' => 'vless_reality', 'port' => 443, 'protocol' => 'vless',
@@ -549,6 +550,7 @@ $check(str_contains($v6->last()[0], 'не подготовлена'), 'проф�
 array_map('unlink', glob("$datDir/*") ?: []);
 @rmdir($datDir);
 @unlink($statusFile);
+@unlink(sys_get_temp_dir() . '/exit-xray-' . getmypid() . '.json.apply.lock');
 $cacheDir = sys_get_temp_dir() . '/exit-rulesets-test-' . getmypid();
 array_map('unlink', glob("$cacheDir/*") ?: []);
 @rmdir($cacheDir);

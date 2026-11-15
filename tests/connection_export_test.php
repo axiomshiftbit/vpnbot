@@ -53,7 +53,7 @@ $root = sys_get_temp_dir() . '/vpnbot-exports-' . bin2hex(random_bytes(6)); mkdi
 session_save_path("$root/sessions"); ob_start();
 set_error_handler(static function ($level, $message, $file, $line) { if (error_reporting() & $level) throw new ErrorException($message, 0, $level, $file, $line); return false; });
 try {
-    $bot = new ConnectionExportBot($i); $bot->protocolRoot = "$root/protocols"; $bot->protocolModulesFile = "$root/modules.json";
+    $bot = new ConnectionExportBot($i); $bot->protocolRoot = "$root/protocols"; $bot->protocolModulesFile = "$root/modules.json"; $bot->xrayConf = "$root/xray.json";
     $bot->upstreamFile = "$root/upstream.conf"; file_put_contents($bot->upstreamFile, "vpn.example.test anytls_bridge;\n");
     $bot->conf = array_fill_keys(['includelist', 'blocklist', 'warplist', 'processlist', 'packagelist', 'subnetlist', 'rulessetlist'], [])
         + ['domain' => 'vpn.example.test', 'outbound' => 'proxy', 'transport' => 'Websocket', 'xray' => rtrim(strtr(base64_encode(str_repeat('p', 32)), '+/', '-_'), '=')];

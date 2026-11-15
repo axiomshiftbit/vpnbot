@@ -1,5 +1,8 @@
 <?php
 require_once __DIR__ . '/../app/bot.php';
+define('BACKUP_CORE_ROOT', sys_get_temp_dir() . '/vpnbot-backup-core-' . bin2hex(random_bytes(6)));
+mkdir(BACKUP_CORE_ROOT, 0700);
+register_shutdown_function(static function () { @unlink(BACKUP_CORE_ROOT . '/xray.json.apply.lock'); @rmdir(BACKUP_CORE_ROOT); });
 class BackupCoreBot extends Bot {
     public string $desired = 'origin2';
     public string $active = 'origin';
@@ -7,7 +10,7 @@ class BackupCoreBot extends Bot {
     public string $stored = '{"previous":true}';
     public string $fail = '';
     public array $validated = [];
-    public function __construct() {}
+    public function __construct() { $this->xrayConf = BACKUP_CORE_ROOT . '/xray.json'; }
     public function getPacConf() { return ['xray_core'=>$this->desired,'smux'=>['enabled'=>false]]; }
     public function protocolModuleEnabled(string $service): bool { return $this->fail !== 'disabled'; }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }

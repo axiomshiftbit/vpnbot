@@ -96,7 +96,7 @@ set_error_handler(static function ($level, $message, $file, $line) {
     return false;
 });
 try {
-    $bot = new ProtocolChatBot($i); $bot->protocolRoot = $root . '/protocols';
+    $bot = new ProtocolChatBot($i); $bot->protocolRoot = $root . '/protocols'; $bot->xrayConf = $root . '/xray.json';
     $bot->protocolModulesFile = $root . '/modules.json'; $bot->upstreamFile = $root . '/upstream.conf';
     foreach (ManagedProtocol::NAMES as $protocol => $name) {
         $store = $bot->protocolStore($protocol);
