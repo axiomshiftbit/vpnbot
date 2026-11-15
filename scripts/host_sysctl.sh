@@ -83,6 +83,13 @@ mv -f "$target.tmp" "$target"
 # BBR — модуль ядра: без него параметр не применится и сейчас, и после загрузки.
 if [ -z "$ROOT" ]; then
     if modprobe tcp_bbr 2>/dev/null; then echo tcp_bbr > /etc/modules-load.d/vpnbot-bbr.conf; fi
-    sysctl -q -p "$target" || echo 'WARN: часть параметров 99-vpnbot-sysctl.conf ядро не приняло' >&2
+    # Ядро без IPv6 (ipv6.disable=1) не имеет ключей net.ipv6.*: их пропускаем
+    # сейчас, а systemd-sysctl при загрузке пропускает отсутствующие сам.
+    while IFS= read -r line; do
+        case "$line" in
+            net.ipv6.*) [ -d /proc/sys/net/ipv6 ] || continue ;;
+        esac
+        printf '%s\n' "$line"
+    done < "$target" | sysctl -q -p - || echo 'WARN: часть параметров 99-vpnbot-sysctl.conf ядро не приняло' >&2
 fi
 echo "Host sysctl ($mode): 99-vpnbot-sysctl.conf"
