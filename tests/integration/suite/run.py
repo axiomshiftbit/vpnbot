@@ -220,6 +220,9 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
   else:raise RuntimeError('missing enabled container was not recovered: '+service)
   check('faults','external-removal-recovered-'+service,True)
  time.sleep(6)
+ case_spec=importlib.util.spec_from_file_location('native_case_registry',R/'published-main/registry.py')
+ case_registry=importlib.util.module_from_spec(case_spec);case_spec.loader.exec_module(case_registry)
+ expected_cases=case_registry.load_cases(R/'published-main')
  def native(label):
   output=R/'published-main/results.json';output.unlink(missing_ok=True)
   # 25 наборов идут ~1300 с; запас — на повтор упавшего набора (published-main/run.py).
@@ -228,7 +231,7 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
   # Каталог наборов общий для обоих проходов: журнал первой попытки уносим в результаты с меткой прохода.
   for x in rows:
    if x.get('retried'):retries.append(label+'/'+x['case']);(R/'published-main'/(x['case']+'.attempt1.log')).replace(O/(label+'-'+x['case']+'.attempt1.log'));(O/'retries.json').write_text(json.dumps(retries))
-  check('native',label+'-complete',len(rows)==26 and all(x['exit']==0 and x.get('passed',0)>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
+  check('native',label+'-complete',case_registry.validate_results(rows,expected_cases));counts['native']+=sum(x['total'] for x in rows)
   shutil.copy2(output,O/(label+'.json'))
   for name,script in [("warp-udp",'/opt/vpnbot-hosted-ci/warp-udp-native/run.py'),("nginx-transports","/opt/vpnbot-hosted-ci/nginx-transport-native.py"),("warp-modules","/opt/vpnbot-hosted-ci/warp-modules-native.py"),("backup-new-state","/opt/vpnbot-hosted-ci/backup-new-state-native.py")]:
    def attempt(name=label+"-"+name,script=script):

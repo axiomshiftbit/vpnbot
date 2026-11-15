@@ -1,7 +1,8 @@
 from pathlib import Path
 import subprocess,time,json,re
+from registry import load_cases,validate_results
 base=Path(__file__).parent
-cases=['wireguard','wireguard_extra','openvpn','openvpn_extra','ikev2','l2tp','openconnect','adguard','shadowsocks','proxies','trusttunnel_native','xdrive_native','dat_routes','routes_cores','exit_nodes','reality_fingerprints','naive_native','dnstt','dnstt_identity','hysteria_extra','warp_network','telemt','telemt_web','panel','ssh_host_keys','mptcp_listeners']
+cases=load_cases(base)
 rows=[]
 def attempt(name):
  start=time.monotonic()
@@ -31,4 +32,5 @@ for name in cases:
  rows.append(row);(base/'results.json').write_text(json.dumps(rows,indent=2))
  print(json.dumps(row),flush=True)
 print('POSTRESTORE NATIVE COMPLETE',flush=True)
+validate_results(rows,cases)
 raise SystemExit(1 if any(r['exit'] for r in rows) else 0)

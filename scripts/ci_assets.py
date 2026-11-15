@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 import zipfile
 
 
@@ -124,8 +124,12 @@ def inventory(root):
 def verify_scan(report, bom):
     if report.get('ArtifactType') != 'cyclonedx' or not bom.get('components'):
         raise ValueError('asset scan missing')
-    expected = {unquote(c['purl']) for c in bom['components']}
-    actual = {unquote(p.get('Identifier', {}).get('PURL', ''))
+    # Trivy канонизирует регистр GitHub namespace в PURL, но сохраняет
+    # точные Name/Version. Сравниваем их вместе с типом анализатора.
+    expected = {(c['purl'].split('/', 1)[0].removeprefix('pkg:'), c['name'], c['version'])
+                for c in bom['components']}
+    ecosystems = {'gobinary': 'golang', 'node-pkg': 'npm'}
+    actual = {(ecosystems.get(r.get('Type')), p.get('Name'), p.get('Version'))
               for r in report.get('Results', []) if r.get('Class') == 'lang-pkgs'
               for p in r.get('Packages', [])}
     if not expected <= actual:

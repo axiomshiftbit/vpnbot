@@ -78,10 +78,12 @@ class AssetTest(unittest.TestCase):
 
     def test_every_sbom_component_must_reach_trivy(self):
         packages = [dict(Name=p['name'], Version=p['version'], Identifier={'PURL': p['purl']}) for p in self.bom['components']]
-        report = dict(ArtifactType='cyclonedx', Results=[dict(Class='lang-pkgs', Packages=packages)])
+        results = [dict(Class='lang-pkgs', Type=kind, Packages=[p for p in packages if p['Identifier']['PURL'].startswith(prefix)])
+                   for prefix,kind in [('pkg:golang/','gobinary'),('pkg:npm/','node-pkg')]]
+        report = dict(ArtifactType='cyclonedx', Results=results)
         self.assertEqual(assets.verify_scan(report, self.bom), len(packages))
         self.assertEqual(scan.gate(report, 'assets', self.bom)[0], [])
-        report['Results'][0]['Packages'] = packages[:-1]
+        report['Results'][0]['Packages'].pop()
         with self.assertRaisesRegex(ValueError, 'incomplete'):
             scan.gate(report, 'assets', self.bom)
         with self.assertRaises(ValueError):
@@ -90,12 +92,24 @@ class AssetTest(unittest.TestCase):
     def test_fixable_dependency_blocks_and_native_gaps_are_not_false_findings(self):
         package = self.bom['components'][0]
         bom = dict(components=[package])
-        report = dict(ArtifactType='cyclonedx', Results=[dict(Class='lang-pkgs',
-            Packages=[dict(Identifier={'PURL': package['purl']})], Vulnerabilities=[dict(
+        report = dict(ArtifactType='cyclonedx', Results=[dict(Class='lang-pkgs', Type='gobinary',
+            Packages=[dict(Name=package['name'],Version=package['version'],Identifier={'PURL': package['purl']})], Vulnerabilities=[dict(
                 VulnerabilityID='SYNTHETIC-HIGH', PkgName=package['name'], InstalledVersion=package['version'],
                 Severity='HIGH', FixedVersion='99.0.0')])])
         self.assertEqual(scan.gate(report, 'assets', bom)[0][0][0], 'SYNTHETIC-HIGH')
         self.assertFalse(any(c.get('cpe') == 'google:chrome' for c in components.COMPONENTS))
+
+    def test_purl_normalization_does_not_hide_missing_or_wrong_packages(self):
+        package = dict(name='github.com/RyuaNerin/go-krypto',version='v1.3.0',purl='pkg:golang/github.com/RyuaNerin/go-krypto@v1.3.0')
+        row = dict(Name=package['name'],Version=package['version'],Identifier={'PURL':package['purl'].lower()})
+        report = dict(ArtifactType='cyclonedx',Results=[dict(Class='lang-pkgs',Type='gobinary',Packages=[row])])
+        self.assertEqual(assets.verify_scan(report,dict(components=[package])),1)
+        row['Version']='v1.2.0'
+        with self.assertRaises(ValueError):
+            assets.verify_scan(report,dict(components=[package]))
+        row['Version']=package['version'];report['Results'][0]['Type']='node-pkg'
+        with self.assertRaises(ValueError):
+            assets.verify_scan(report,dict(components=[package]))
 
     def test_actual_browser_client_and_winsw_versions_are_queried(self):
         items = [c for c in components.COMPONENTS if c['pin'].startswith('asset:')]
