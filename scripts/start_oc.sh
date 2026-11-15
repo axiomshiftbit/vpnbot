@@ -24,10 +24,13 @@ if [ -z "$VPN_DEVICE" ]; then
     echo 'FATAL: ocserv device is empty — client isolation cannot be installed' >&2
     exit 1
 fi
-iptables -A INPUT -i "${VPN_DEVICE}+" -j REJECT
-iptables -A FORWARD -i "${VPN_DEVICE}+" -d 10.10.0.5 -p udp --dport 53 -j ACCEPT
-iptables -A FORWARD -i "${VPN_DEVICE}+" -d 10.10.0.5 -p tcp --dport 53 -j ACCEPT
-iptables -A FORWARD -i "${VPN_DEVICE}+" -d 10.10.0.0/16 -j REJECT
+oc_guard() {
+    iptables "$@" || { echo 'FATAL: ocserv client firewall was not installed' >&2; exit 1; }
+}
+oc_guard -A INPUT -i "${VPN_DEVICE}+" -j REJECT
+oc_guard -A FORWARD -i "${VPN_DEVICE}+" -d 10.10.0.5 -p udp --dport 53 -j ACCEPT
+oc_guard -A FORWARD -i "${VPN_DEVICE}+" -d 10.10.0.5 -p tcp --dport 53 -j ACCEPT
+oc_guard -A FORWARD -i "${VPN_DEVICE}+" -d 10.10.0.0/16 -j REJECT
 iptables -t nat -A POSTROUTING --destination 10.10.0.5 -j ACCEPT
 iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE
 mkdir -p /logs

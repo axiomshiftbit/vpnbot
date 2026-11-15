@@ -205,6 +205,7 @@ case "$SOCKS_PORT" in ''|*[!0-9]*) echo "Invalid SOCKS_PORT" >&2; exit 1;; esac
 MASQUE_ENDPOINT=""
 MASQUE_PROTO=udp
 MS_PID=""
+PROXY_FIREWALL_READY=0
 # Цепочка зависит от режима и перестраивается с нуля. Пока в ней нет
 # завершающего REJECT, она пропускает всё, поэтому при работающем прокси
 # функция отказывает: сначала socks_stop.
@@ -212,17 +213,18 @@ proxy_firewall() {
     if [ -n "$MS_PID" ] && kill -0 "$MS_PID" 2>/dev/null; then
         return 1
     fi
+    PROXY_FIREWALL_READY=0
     for firewall in iptables ip6tables; do
-        "$firewall" -N WARP_PROXY_OUT 2>/dev/null || "$firewall" -F WARP_PROXY_OUT
-        "$firewall" -A WARP_PROXY_OUT -p tcp --sport "$SOCKS_PORT" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN
-        "$firewall" -A WARP_PROXY_OUT -p udp --sport "$SOCKS_UDP_PORTS" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN
+        "$firewall" -N WARP_PROXY_OUT 2>/dev/null || "$firewall" -F WARP_PROXY_OUT || return 1
+        "$firewall" -A WARP_PROXY_OUT -p tcp --sport "$SOCKS_PORT" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN || return 1
+        "$firewall" -A WARP_PROXY_OUT -p udp --sport "$SOCKS_UDP_PORTS" -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j RETURN || return 1
         if [ "$firewall" = iptables ]; then
             private_nets="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4"
         else
             private_nets="::/128 ::1/128 ::ffff:0:0/96 fc00::/7 fe80::/10 ff00::/8"
         fi
         for net in $private_nets; do
-            "$firewall" -A WARP_PROXY_OUT -d "$net" -j REJECT
+            "$firewall" -A WARP_PROXY_OUT -d "$net" -j REJECT || return 1
         done
         if [ "$MODE" = masque ]; then
             # Интерфейса туннеля нет: соединение с узлом Cloudflare держит сам
@@ -233,10 +235,11 @@ proxy_firewall() {
                 "$firewall" -A WARP_PROXY_OUT -d "$MASQUE_ENDPOINT" -p "$MASQUE_PROTO" --dport 443 -j RETURN || return 1
             fi
         else
-            "$firewall" -A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN
+            "$firewall" -A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN || return 1
         fi
         "$firewall" -A WARP_PROXY_OUT -j REJECT || return 1
     done
+    PROXY_FIREWALL_READY=1
 }
 proxy_firewall
 
@@ -409,6 +412,11 @@ socks_running() {
     [ -n "$MS_PID" ] && kill -0 "$MS_PID" 2>/dev/null
 }
 socks_start() {
+    [ "${PROXY_FIREWALL_READY:-0}" = 1 ] || return 1
+    for firewall in iptables ip6tables; do
+        "$firewall" -C WARP_PROXY_OUT -j REJECT || return 1
+        "$firewall" -C OUTPUT -m owner --uid-owner "$PROXY_UID" -j WARP_PROXY_OUT || return 1
+    done
     # WireGuard сохраняет владельца исходного сокета у зашифрованного UDP
     # пакета. Его выпускаем по fwmark wg-quick; непривилегированный процесс
     # SOCKS сам выставить этот mark не может. Без исключения UID-фильтр
@@ -568,6 +576,11 @@ FAILS=0
 BOUNCES=0
 while true; do
     wait_tick
+    # После отказа перестройки прокси остаётся остановлен. На следующем
+    # проходе повторяем установку всех правил до попытки запуска SOCKS.
+    if [ "$PROXY_FIREWALL_READY" != 1 ]; then
+        proxy_firewall || continue
+    fi
     # Бот сменил режим или транспорт MASQUE: прокси гасим первым, прежний
     # туннель убираем, фильтр перестраиваем под новый режим — и дальше обычный
     # путь «туннеля нет → поднять».
@@ -581,7 +594,10 @@ while true; do
         MODE=$want_mode
         ALPN=$want_alpn
         MASQUE_ENDPOINT=""
-        proxy_firewall || echo "[warp] kill-switch chain was NOT rebuilt"
+        if ! proxy_firewall; then
+            echo "[warp] kill-switch chain was NOT rebuilt; SOCKS stays stopped"
+            continue
+        fi
         FAILS=0
         BOUNCES=0
     fi

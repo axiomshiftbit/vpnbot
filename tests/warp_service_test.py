@@ -74,7 +74,7 @@ class WarpModeTest(unittest.TestCase):
 
     def shell(self, script, **env):
         prelude = '''
-SOCKS_PORT=1080; SOCKS_UDP_PORTS=20000:29999; WGCF_IF=wgcf-profile; WGCF_CONF=/nonexistent/wgcf-profile.conf
+SOCKS_PORT=1080; SOCKS_UDP_PORTS=20000:29999; WGCF_IF=wgcf-profile; WGCF_CONF=/nonexistent/wgcf-profile.conf; PROXY_UID=30000
 iptables() { echo "iptables $*" >> "$LOG"; }
 ip6tables() { echo "ip6tables $*" >> "$LOG"; }
 '''
@@ -241,12 +241,12 @@ link_down; echo "after-down ready=$MASQUE_READY"
         (self.dir / 'run/warp-mode').unlink(missing_ok=True)
         functions = self.piece('mode_name() {', '# Отпечаток аккаунта MASQUE') + self.piece('socks_running() {', 'socks_stop() {')
         script = '''
-MODE=%s; ALPN=h3; MASQUE_READY=%s; MS_PID=""
+MODE=%s; ALPN=h3; MASQUE_READY=%s; MS_PID=""; PROXY_FIREWALL_READY=1
 wg() { echo "wg $*" >> "$LOG"; echo 0xca6c; }
 su() { echo "su $*" >> "$LOG"; }
 # Правила с меткой ещё нет: проверка -C отвечает «нет», и скрипт обязан его вставить.
-iptables() { echo "iptables $*" >> "$LOG"; [ "$1" != -C ]; }
-ip6tables() { echo "ip6tables $*" >> "$LOG"; [ "$1" != -C ]; }
+iptables() { echo "iptables $*" >> "$LOG"; case "$*" in '-C WARP_PROXY_OUT -p udp -m mark '*) return 1;; esac; }
+ip6tables() { echo "ip6tables $*" >> "$LOG"; case "$*" in '-C WARP_PROXY_OUT -p udp -m mark '*) return 1;; esac; }
 ''' % (mode, ready) + functions + 'socks_start; echo "start=$?"; cat "%s/run/warp-mode" 2>/dev/null\n' % self.dir
         return self.shell(script).stdout.splitlines(), self.log.read_text()
 

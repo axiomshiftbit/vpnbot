@@ -204,19 +204,47 @@ use_public_origin() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-ARCHIVE=""
-for candidate in \
-    "${VPNBOT_ARCHIVE:-}" \
-    "$PWD/$ARCHIVE_NAME" \
-    "$SCRIPT_DIR/$ARCHIVE_NAME" \
-    "$SCRIPT_DIR/../$ARCHIVE_NAME" \
-    "/root/$ARCHIVE_NAME" \
-    "/tmp/$ARCHIVE_NAME"; do
-    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
-        ARCHIVE="$(readlink -f "$candidate")"
-        break
+trusted_archive() {
+    local archive_path="$1" archive_owner archive_mode
+    [ -f "$archive_path" ] && [ ! -L "$archive_path" ] || return 1
+    case "$archive_path" in /*) ;; *) archive_path="$PWD/$archive_path";; esac
+    # Файл и каждый родитель должны принадлежать root и быть недоступны
+    # для записи другим пользователям. Sticky bit /tmp этого не заменяет.
+    while :; do
+        [ ! -L "$archive_path" ] || return 1
+        read -r archive_owner archive_mode < <(stat -c '%u %a' -- "$archive_path") || return 1
+        [[ "$archive_owner" = 0 && "$archive_mode" =~ ^[0-7]{3,4}$ ]] || return 1
+        (( (8#$archive_mode & 022) == 0 )) || return 1
+        [ "$archive_path" != / ] || break
+        archive_path="$(dirname -- "$archive_path")"
+    done
+}
+
+archive_target_empty() {
+    if [ -L "$INSTALL_DIR" ] || { [ -e "$INSTALL_DIR" ] && { [ ! -d "$INSTALL_DIR" ] \
+        || [ -n "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; }; }; then
+        echo 'Архивная установка требует пустой каталог. Существующие настройки и .git сохранены; используйте штатное обновление или новый пустой каталог.' >&2
+        return 1
     fi
-done
+}
+
+ARCHIVE=""
+if [ -n "${VPNBOT_ARCHIVE:-}" ]; then
+    if ! trusted_archive "$VPNBOT_ARCHIVE"; then
+        echo 'VPNBOT_ARCHIVE: нужен обычный root-owned архив в каталоге без записи для других пользователей и без symlink.' >&2
+        exit 1
+    fi
+    ARCHIVE="$(readlink -f -- "$VPNBOT_ARCHIVE")"
+else
+    for candidate in "$SCRIPT_DIR/$ARCHIVE_NAME" "$SCRIPT_DIR/../$ARCHIVE_NAME" "/root/$ARCHIVE_NAME"; do
+        if trusted_archive "$candidate"; then
+            ARCHIVE="$(readlink -f -- "$candidate")"
+            break
+        fi
+    done
+fi
+
+if [ -n "$ARCHIVE" ]; then archive_target_empty || exit 1; fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt update
@@ -347,6 +375,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 install_from_archive() {
+    archive_target_empty || return 1
     echo "installing from archive: $ARCHIVE"
     local tmp src nested
     tmp="$(mktemp -d)"
@@ -365,11 +394,6 @@ install_from_archive() {
     if [ ! -d "$src/app" ] && [ ! -f "$src/makefile" ] && [ ! -f "$src/Makefile" ]; then
         echo "archive $ARCHIVE does not look like a vpnbot project (missing app/ or makefile)" >&2
         exit 1
-    fi
-
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        echo "removing old .git from $INSTALL_DIR"
-        rm -rf "$INSTALL_DIR/.git"
     fi
 
     mkdir -p "$INSTALL_DIR"

@@ -374,20 +374,23 @@ chmod +x /etc/ipsec-updown.sh
 
 # Адреса PPP задаёт пул xl2tpd: ipcp-accept-* позволяли клиенту согласовать
 # адрес служебного контейнера. Пакеты с посторонним source тоже отбрасываем.
-iptables -A FORWARD -i ppp+ ! -s "$L2TP_SUBNET" -j DROP
-iptables -A INPUT -i ppp+ -j REJECT
+ipsec_guard() {
+    iptables "$@" || { log 'FATAL: IPsec client firewall was not installed'; exit 1; }
+}
+ipsec_guard -A FORWARD -i ppp+ ! -s "$L2TP_SUBNET" -j DROP
+ipsec_guard -A INPUT -i ppp+ -j REJECT
 # L2TP принимаем только внутри IPsec, в том числе из соседних контейнеров.
-iptables -A INPUT -p udp --dport 1701 -m policy --dir in --pol ipsec -j ACCEPT
-iptables -A INPUT -p udp --dport 1701 -j DROP
+ipsec_guard -A INPUT -p udp --dport 1701 -m policy --dir in --pol ipsec -j ACCEPT
+ipsec_guard -A INPUT -p udp --dport 1701 -j DROP
 
 # Клиентам L2TP/IKEv2 нужен только DNS внутри сети сборки. Без этих правил
 # MASQUERADE давал им доступ к SSH, Docker API и панели соседних контейнеров.
 # INPUT отдельно закрывает службы самого IPsec-контейнера (включая SSH).
 for CLIENT_SUBNET in "$L2TP_SUBNET" "$IKEV2_SUBNET"; do
-    iptables -A INPUT -s "$CLIENT_SUBNET" -j REJECT
-    iptables -A FORWARD -s "$CLIENT_SUBNET" -d "$DNS" -p udp --dport 53 -j ACCEPT
-    iptables -A FORWARD -s "$CLIENT_SUBNET" -d "$DNS" -p tcp --dport 53 -j ACCEPT
-    iptables -A FORWARD -s "$CLIENT_SUBNET" -d 10.10.0.0/16 -j REJECT
+    ipsec_guard -A INPUT -s "$CLIENT_SUBNET" -j REJECT
+    ipsec_guard -A FORWARD -s "$CLIENT_SUBNET" -d "$DNS" -p udp --dport 53 -j ACCEPT
+    ipsec_guard -A FORWARD -s "$CLIENT_SUBNET" -d "$DNS" -p tcp --dport 53 -j ACCEPT
+    ipsec_guard -A FORWARD -s "$CLIENT_SUBNET" -d 10.10.0.0/16 -j REJECT
 done
 
 # ─── NAT + MSS clamp ─────────────────────────────────────────────────────

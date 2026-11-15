@@ -244,10 +244,13 @@ sh /ovpn_migrate.sh "$SRV"
 flock -u 8
 
 # VPN-клиентам разрешён только DNS внутри служебной сети сборки.
-iptables -A INPUT -i tun+ -j REJECT
-iptables -A FORWARD -i tun+ -d 10.10.0.5 -p udp --dport 53 -j ACCEPT
-iptables -A FORWARD -i tun+ -d 10.10.0.5 -p tcp --dport 53 -j ACCEPT
-iptables -A FORWARD -i tun+ -d 10.10.0.0/16 -j REJECT
+ovpn_guard() {
+    iptables "$@" || { echo 'FATAL: OpenVPN client firewall was not installed' >&2; exit 1; }
+}
+ovpn_guard -A INPUT -i tun+ -j REJECT
+ovpn_guard -A FORWARD -i tun+ -d 10.10.0.5 -p udp --dport 53 -j ACCEPT
+ovpn_guard -A FORWARD -i tun+ -d 10.10.0.5 -p tcp --dport 53 -j ACCEPT
+ovpn_guard -A FORWARD -i tun+ -d 10.10.0.0/16 -j REJECT
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true
 
 mkdir -p /dev/net
