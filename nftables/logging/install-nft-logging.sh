@@ -36,8 +36,15 @@ check_file() {
 }
 for nft_dir in /etc/rsyslog.d /etc/logrotate.d /etc/cron.d /var/log /var/backups /run /var/lib/logrotate; do
     [[ -d $nft_dir ]] || die "нет каталога $nft_dir"
-    # /var/log в Ubuntu — root:syslog 0775; проверяется ниже, после rsyslog.
-    [[ $nft_dir == /var/log ]] || check_dir "$nft_dir"
+    # Защищаем весь путь, включая родителя root-owned каталога журналов.
+    # Разрешение группе syslog переименовать nftables/ небезопасно также
+    # после установки: logrotate обращается к тем же путям от root.
+    nft_parent=$nft_dir
+    while :; do
+        check_dir "$nft_parent"
+        [[ $nft_parent == / ]] && break
+        nft_parent=$(dirname -- "$nft_parent")
+    done
 done
 nft_script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 nft_verdict_helper=$nft_script_dir/nft-log-verdicts.py
@@ -62,13 +69,6 @@ nft_pid=$(systemctl show --value -p MainPID rsyslog.service)
 SYSLOG_USER=$(ps -o euser= -p "$nft_pid" | tr -d ' ')
 SYSLOG_GROUP=$(ps -o egroup= -p "$nft_pid" | tr -d ' ')
 [[ $SYSLOG_USER =~ ^[a-zA-Z0-9_-]+$ && $SYSLOG_GROUP =~ ^[a-zA-Z0-9_-]+$ ]] || die 'не удалось определить владельца журналов'
-# Запись группой в /var/log допустима только для группы самого rsyslog.
-[[ ! -L /var/log && $(stat -c %u /var/log) == 0 ]] || die 'необычный каталог или владелец: /var/log'
-nft_mode=$(stat -c %a /var/log)
-(( (8#$nft_mode & 0002) == 0 )) || die '/var/log доступен для записи всем'
-if (( (8#$nft_mode & 0020) != 0 )) && [[ $(stat -c %G /var/log) != "$SYSLOG_GROUP" ]]; then
-    die '/var/log доступен для записи посторонней группе'
-fi
 if [[ $SYSLOG_USER == root ]] && getent group adm >/dev/null; then SYSLOG_GROUP=adm; fi
 
 LOGS_DIR=/var/log/nftables
@@ -299,6 +299,9 @@ ACTION=INFO — служебная запись. GROUP — категория с
 повторите установку для обновления соответствий; имя префикса не определяет действие.
 ACCEPT означает разрешение этим правилом: последующие цепочки могут запретить пакет.
 Исходный rate limit сохранён: журнал не является полным учётом всего трафика.
+Журналы не защищены от подделки процессом с правом записи в них или от root.
+Facility kern сам по себе не удостоверяет источник: дополнительные сетевые
+входы rsyslog должны использовать отдельный ruleset и не попадать в эти правила.
 Старая история не переписывается; отметки добавляются только к новым событиям.
 
 archive/ — ротация новых журналов: .1 ещё без сжатия, .2.gz ... .10.gz.
@@ -321,6 +324,9 @@ legacy/<дата>/deleted/ — восстановленные открытые, 
 Для общего просмотра используйте tail -F *.log: отдельного nft-all.log больше нет.
 Не удаляйте и не обнуляйте активные файлы: их переоткрытием управляет logrotate.
 Конфиги и проверки каждой установки: /var/backups/nftables-logging.* (root).
+Родительские каталоги, включая /var/log, должны принадлежать root и быть
+недоступны для записи группе и другим пользователям. Установщик не меняет
+эти системные права автоматически; /var/log с режимом 0775 отклоняется.
 README
 nft_changed=1
 say "Установка конфигурации; резерв: $nft_backup."

@@ -117,6 +117,15 @@ jobs:
         with:
           name: nft-security
           path: ${{ runner.temp }}/admission/nft-security.json
+      - name: Установка и ротация журналов nftables в изолированном стенде
+        run: |
+          sh scripts/ci_retry.sh sudo apt-get install -y rsyslog logrotate
+          sudo python3 tests/integration/nft_logging_namespace.py --report "$RUNNER_TEMP/admission/nft-logging.json"
+      - uses: ./.github/actions/upload-artifact
+        if: always()
+        with:
+          name: nft-logging
+          path: ${{ runner.temp }}/admission/nft-logging.json
       - uses: ./.github/actions/upload-artifact
         with:
           name: admission-unit-host
