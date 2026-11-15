@@ -22,6 +22,13 @@ try {
     $b->chCaddyVersion($pins['CADDY_VERSION']);
     if ($b->writes !== $pins) $failed[] = 'выбор текущей версии сохраняет проверенную ревизию forwardproxy';
     if (getenv('FORWARDPROXY_VERSION') !== $pins['FORWARDPROXY_VERSION']) $failed[] = 'меню немедленно видит правильную ревизию';
+    foreach (['v2.11.7', 'v2.11.9'] as $version) {
+        $b->writes = [];
+        $b->chCaddyVersion($version);
+        if ($b->writes !== ['CADDY_VERSION'=>$version, 'FORWARDPROXY_VERSION'=>'v2.11.7-naive2']) {
+            $failed[] = 'старая и security-пара сохраняют закреплённый forwardproxy';
+        }
+    }
     $b->writes = [];
     $b->chCaddyVersion('v99.99.99');
     if ($b->writes || !$b->messages) $failed[] = 'непроверенная пара отклоняется до записи';

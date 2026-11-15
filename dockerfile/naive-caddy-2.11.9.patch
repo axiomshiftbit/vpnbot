@@ -1,0 +1,45 @@
+--- a/caddy-sing-quic-bbrv1.patch
++++ b/caddy-sing-quic-bbrv1.patch
+@@ -17,7 +17,7 @@
+ diff --git a/modules/caddyhttp/server.go b/modules/caddyhttp/server.go
+ --- a/modules/caddyhttp/server.go
+ +++ b/modules/caddyhttp/server.go
+-@@ -32,7 +32,9 @@
++@@ -32,8 +32,10 @@
+  	"time"
+  
+  	"github.com/caddyserver/certmagic"
+@@ -27,6 +27,7 @@
+ +	bbr "github.com/sagernet/sing-quic/congestion_meta2"
+  	"go.uber.org/zap"
+  	"go.uber.org/zap/zapcore"
++ 	"golang.org/x/net/http/httpguts"
+  
+ @@ -1071,6 +1073,11 @@
+  			// listener and call ServeListener, so anything set here is ignored.
+@@ -67,3 +68,25 @@
+  	github.com/smallstep/certificates v0.30.2
+  	github.com/smallstep/nosql v0.8.0
+  	github.com/smallstep/truststore v0.13.0
++--- a/modules/caddyhttp/reverseproxy/reverseproxy.go
+++++ b/modules/caddyhttp/reverseproxy/reverseproxy.go
++@@ -38,7 +38,7 @@
++ 	"time"
++ 
++ 	"github.com/dunglas/httpsfv"
++-	"github.com/quic-go/quic-go/http3"
+++	"github.com/sagernet/quic-go/http3"
++ 	"go.uber.org/zap"
++ 	"go.uber.org/zap/zapcore"
++ 	"golang.org/x/net/http/httpguts"
++--- a/modules/caddyhttp/reverseproxy/client_disconnect_test.go
+++++ b/modules/caddyhttp/reverseproxy/client_disconnect_test.go
++@@ -9,7 +9,7 @@
++ 	"sync"
++ 	"testing"
++ 
++-	"github.com/quic-go/quic-go/http3"
+++	"github.com/sagernet/quic-go/http3"
++ 	"go.uber.org/zap"
++ 	"go.uber.org/zap/zapcore"
++ 	"go.uber.org/zap/zaptest/observer"

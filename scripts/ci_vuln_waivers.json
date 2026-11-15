@@ -1,11 +1,1 @@
-[
-  {
-    "id": "GHSA-r766-rf9f-588h",
-    "component": "Caddy",
-    "version": "v2.11.7",
-    "package": "github.com/caddyserver/caddy/v2",
-    "installed": "v2.11.7",
-    "expires": "2026-12-15",
-    "reason": "Caddy исправлен в 2.11.8, но форк klzgrad/forwardproxy (naive) ещё не выпущен под 2.11.8+, а naive.dockerfile сверяет их версии. Уязвимость требует root на основе {host}; в Caddyfile naive его нет. Снять, когда выйдет тег форка: поднять CADDY_VERSION и FORWARDPROXY_VERSION."
-  }
-]
+[]

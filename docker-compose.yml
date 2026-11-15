@@ -676,7 +676,7 @@ services:
                 # Независимые пины; совместимость проверяет нативный тест.
                 CADDY_GO_VERSION: ${CADDY_GO_VERSION:-1.27.4}
                 XCADDY_VERSION: ${XCADDY_VERSION:-v0.4.7}
-                CADDY_VERSION: ${CADDY_VERSION:-v2.11.7}
+                CADDY_VERSION: ${CADDY_VERSION:-v2.11.9}
                 FORWARDPROXY_VERSION: ${FORWARDPROXY_VERSION:-v2.11.7-naive2}
         volumes:
             - ./config/.profile:/root/.ashrc:ro

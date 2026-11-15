@@ -55,7 +55,7 @@ class Bot
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
     // Совместимость патчей и суммы исходников проверены для этой пары.
-    public const NAIVE_VERSION_PAIRS = ['v2.11.7' => 'v2.11.7-naive2'];
+    public const NAIVE_VERSION_PAIRS = ['v2.11.7' => 'v2.11.7-naive2', 'v2.11.9' => 'v2.11.7-naive2'];
 
     // ── AmneziaWG: набор ключей [Interface] по версиям протокола ──────────────
     // ЕДИНСТВЕННЫЙ источник правды. Любой новый параметр обязан попасть сюда,

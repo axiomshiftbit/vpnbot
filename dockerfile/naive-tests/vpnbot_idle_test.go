@@ -2,6 +2,8 @@ package caddyhttp
 
 import (
 	"context"
+	"io"
+	"strings"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,8 +20,10 @@ func TestVPNBotIdleOverrideScopeAndHardDeadline(t *testing.T) {
 	r := &IdleTimeoutReader{
 		Ctrl: http.NewResponseController(w), Logger: zap.NewNop(),
 		Deadline: IdleDeadline{Timeout: time.Minute, HardDeadline: hard},
-		deadlineSet: true,
+		ReadCloser: io.NopCloser(strings.NewReader("xx")),
 	}
+	if _, err := r.Read(make([]byte, 1)); err != nil { t.Fatal(err) }
+	before := len(w.snapshot())
 	ctx := ContextWithIdleTimeouts(context.Background(), r, nil)
 	reader, writer := IdleTimeoutsFromContext(ctx)
 	if reader != r || writer != nil {
@@ -27,12 +31,12 @@ func TestVPNBotIdleOverrideScopeAndHardDeadline(t *testing.T) {
 	}
 	restore := reader.Override(24*time.Hour, 0)
 	deadlines := w.snapshot()
-	if len(deadlines) != 1 || !deadlines[0].Equal(hard) {
+	if len(deadlines) != before+1 || !deadlines[before].Equal(hard) {
 		t.Fatal("hard timeout was extended by CONNECT override")
 	}
 	restore()
 	deadlines = w.snapshot()
-	if len(deadlines) != 2 || deadlines[1].After(time.Now().Add(2*time.Minute)) || r.Deadline.Timeout != time.Minute {
+	if len(deadlines) != before+2 || deadlines[before+1].After(time.Now().Add(2*time.Minute)) || r.Deadline.Timeout != time.Minute {
 		t.Fatal("original idle deadline was not rearmed")
 	}
 	if reader, writer := IdleTimeoutsFromContext(context.Background()); reader != nil || writer != nil {
@@ -44,16 +48,19 @@ func TestVPNBotIdleOverrideRearmsActiveRead(t *testing.T) {
 	w := &readDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 	r := &IdleTimeoutReader{
 		Ctrl: http.NewResponseController(w), Logger: zap.NewNop(),
-		Deadline: IdleDeadline{Timeout: time.Minute}, deadlineSet: true,
+		Deadline: IdleDeadline{Timeout: time.Minute},
+		ReadCloser: io.NopCloser(strings.NewReader("xx")),
 	}
+	if _, err := r.Read(make([]byte, 1)); err != nil { t.Fatal(err) }
+	before := len(w.snapshot())
 	r.Override(24*time.Hour, 0)
 	deadlines := w.snapshot()
-	if len(deadlines) != 1 || time.Until(deadlines[0]) < 23*time.Hour {
+	if len(deadlines) != before+1 || time.Until(deadlines[before]) < 23*time.Hour {
 		t.Fatal("already armed read timeout still closes an idle CONNECT")
 	}
 	r.finished = true
 	r.Override(time.Second, 0)
-	if len(w.snapshot()) != 1 {
+	if len(w.snapshot()) != before+1 {
 		t.Fatal("override rearmed a completed request")
 	}
 }
