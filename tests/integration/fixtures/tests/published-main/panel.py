@@ -7,7 +7,7 @@
 Состояние стенда (состав администраторов, pac.json, лента) возвращается.
 """
 import concurrent.futures as cf
-import http.client, json, os, pathlib, re, secrets, subprocess, time
+import http.client, json, os, pathlib, re, secrets, subprocess, sys, time
 from urllib.parse import urlencode
 
 os.umask(0o077)
@@ -217,6 +217,9 @@ try:
     check('template-save-type-traversal-refused', json.loads(post(C, 'tsave', {'name': 'origin', 'type': '../app/x', 'json': '{}'})[3]).get('status') is False)
     s, _, _, body = req('GET', P + '/editor?ty=sing&te=%3C%2Fscript%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E', headers={'Cookie': C})
     check('editor-name-cannot-close-script', s == 200 and b'</script><script>alert(1)' not in body)
+
+    security = run(sys.executable, pathlib.Path(__file__).resolve().parent / 'panel_security/run.py', timeout=180)
+    check('unit-tls-legacy-cookie-and-editor-regressions', security.returncode == 0)
 
     # ── пароль из панели ──────────────────────────────────────────────────────
     m = open_menu(C, 'config')
