@@ -29,6 +29,9 @@ class AssetTest(unittest.TestCase):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
+        rebuild = ROOT / 'singbox_windows/security-rebuild'
+        if rebuild.is_dir():
+            shutil.copytree(rebuild, root / 'singbox_windows/security-rebuild')
         return root
 
     def test_actual_release_inventory_contains_js_modules_and_go_stdlib(self):

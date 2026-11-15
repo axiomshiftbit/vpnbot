@@ -2,14 +2,45 @@
   "schema": 1,
   "platform": "windows-amd64",
   "sing_box": {
-    "version": "1.14.4",
+    "version": "1.14.4+vpnbot.security.20261115",
     "release_url": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
-    "archive_url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip",
-    "archive_sha256": "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df",
     "files": {
-      "sing-box.exe": "8f30682ee198855440d2a7fe070d5d3653793b2d01bb8c85eea88f93bbe7c8b9",
+      "sing-box.exe": "fff314697b9066c63a4ef391ef49fa88439f648d4a4c9bd0dc70af05a7bec4ce",
       "libcronet.dll": "3217c6260fbca5f16072e0b79735742f40109a63bb0ff88fd6b96dd6b54a2928",
       "LICENSE": "bb3805862b583aee73ad6f7805ec634747a37257a637a3069857843f05ea589c"
+    },
+    "build_kind": "source_security_rebuild",
+    "upstream_release_archive": {
+      "url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip",
+      "sha256": "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df",
+      "used_files": [
+        "libcronet.dll",
+        "LICENSE"
+      ]
+    },
+    "rebuild": {
+      "source_version": "1.14.4",
+      "source_url": "https://codeload.github.com/SagerNet/sing-box/tar.gz/refs/tags/v1.14.4",
+      "source_sha256": "0958ccd23b1ea9a141d715d15478b1e040fd04bcca19d8ff5529636b1b753e18",
+      "source_commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
+      "go_version": "1.27.4",
+      "go_image": "golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf",
+      "go_module_version": "(devel)",
+      "inputs": {
+        "DEFAULT_BUILD_TAGS_WINDOWS": "4e06ed88fa49dc635b8fbc93dbf1f6fbec76e32eca1b07d0cc29cb563e770981",
+        "Dockerfile": "fb2a17391c93d21ff7b84a35a0f28a1cd6c62f17aa2aa7edeaa3d28092146df3",
+        "LDFLAGS": "d0a3a04eb9ac5f3018978515e4864ba61cca69d9a99101d11d7970e537a1991d",
+        "go.mod": "6380ff67ead83e48e31d19d6a59e9603c3d249291e00cf569acba15703b0d515",
+        "go.sum": "035f6cd52151300d52fbb9b13c59e3d8e25bc91f3e175d1015e1d2898ed2f1a7"
+      },
+      "reproducibility": {
+        "independent_empty_compiler_caches": 2,
+        "identical_binary_sha256": "fff314697b9066c63a4ef391ef49fa88439f648d4a4c9bd0dc70af05a7bec4ce"
+      },
+      "dependency_minimums_helper_sha256": "af9de92c4e9327e10215178473bfe59bad19575d8666f2c9be41803eeb7a31d9",
+      "additional_dependency_updates": {
+        "golang.org/x/crypto": "v0.59.0"
+      }
     }
   },
   "preserved_files": {
@@ -21,5 +52,5 @@
     "uninstall.cmd": "c91a16b0978c67f074452dafd2899acbb29e9251016a44a7ff0948fc4382a231",
     "winsw3.exe": "a2daa6a33a9c2b791ae31d9092e7935c339d1e03e89bfb747618ce2f4e819e20"
   },
-  "bundle_sha256": "e13f6f5a8c73446a5aca0115502e81d70b3f563a06456948eaa5ebabc7144381"
+  "bundle_sha256": "6c005ff4b2cd0f0bde9086be109b1cda0ffa25193f82ba963fd52697717bdf4b"
 }
