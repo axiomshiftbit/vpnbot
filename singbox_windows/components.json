@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "platform": "windows-amd64",
+  "sing_box": {
+    "version": "1.14.4",
+    "release_url": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
+    "archive_url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip",
+    "archive_sha256": "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df",
+    "files": {
+      "sing-box.exe": "8f30682ee198855440d2a7fe070d5d3653793b2d01bb8c85eea88f93bbe7c8b9",
+      "libcronet.dll": "3217c6260fbca5f16072e0b79735742f40109a63bb0ff88fd6b96dd6b54a2928",
+      "LICENSE": "bb3805862b583aee73ad6f7805ec634747a37257a637a3069857843f05ea589c"
+    }
+  },
+  "preserved_files": {
+    "install.cmd": "0ea0644b55bd733e24e79e1d433f3570d4bd9ccb237f20bcdc017598d0aec88e",
+    "restart.cmd": "94275925c60fe3ab0b78ea58045b83ed5bdf1348513cd0fc26afcc2646a35feb",
+    "start.cmd": "0c3d5a72092c872d2c42209bc87dfbe68b11ad11700f3f5efe762c632b942b5e",
+    "status.cmd": "65b22ae90a879a2f2fb47d13af0ba3ccaa0baacf1eb3022d2f434fea00a7f0e5",
+    "stop.cmd": "f7875acb1dc2ae46278683ba69babd12accfda44348973c7554b33e3fc57262a",
+    "uninstall.cmd": "c91a16b0978c67f074452dafd2899acbb29e9251016a44a7ff0948fc4382a231",
+    "winsw3.exe": "a2daa6a33a9c2b791ae31d9092e7935c339d1e03e89bfb747618ce2f4e819e20"
+  },
+  "bundle_sha256": "e13f6f5a8c73446a5aca0115502e81d70b3f563a06456948eaa5ebabc7144381"
+}
