@@ -32,6 +32,10 @@ for name in ('tmp', 'run', 'proc', 'dev', 'etc'):
 (root/'tmp').chmod(0o1777)
 for name in ('null', 'zero', 'random', 'urandom'):
     bind('/dev/'+name, '/dev/'+name, False)
+# nft 1.0.x opens `-f -` as the path /dev/stdin; keep the standard stdio links.
+(root/'dev/fd').symlink_to('/proc/self/fd')
+for number, name in enumerate(('stdin', 'stdout', 'stderr')):
+    (root/'dev'/name).symlink_to('/proc/self/fd/%d' % number)
 run('mount', '-t', 'proc', '-o', 'nosuid,nodev,noexec', 'proc', str(root/'proc'))
 bind('/proc/sys', '/proc/sys')
 bind('/proc/sys/net', '/proc/sys/net', False)
