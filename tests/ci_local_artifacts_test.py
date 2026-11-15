@@ -58,7 +58,9 @@ class LocalArtifactsTest(unittest.TestCase):
 
     def test_all_admission_reports_are_required_and_survive_failed_job_retry(self):
         names = sorted(n for n in artifacts.FILES if n.startswith('admission-'))
-        self.assertEqual(len(names), len(artifacts.IMAGES)+4)
+        extra = {'admission-components', 'admission-security-assets', 'admission-unit-host',
+                 'admission-unit-alpine84', 'admission-unit-alpine85'}
+        self.assertEqual(set(names), extra | {'admission-security-'+image for image in artifacts.IMAGES})
         for name in names[:-1]: self.upload(name)
         retry = self.make_store(attempt='2')
         with self.assertRaises(FileNotFoundError):

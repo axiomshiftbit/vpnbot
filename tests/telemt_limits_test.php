@@ -205,8 +205,9 @@ try {
     $check($state['users']['alice']['used_bytes'] === 0 && $state['users']['bob']['used_bytes'] === 888, 'Подтверждение сбрасывает только выбранного');
     $check($b->conf['telemt_user_limits']['alice'] === ['quota'=>500,'ips'=>2], 'Сброс сохраняет оба лимита');
     $b->conf['telemt_users']['alice'] = str_repeat('ef',16);
+    $rotatedConf = $b->conf; $rotatedStarts = $b->starts;
     $b->click($confirm);
-    $check(str_contains($b->screen['text'], $b->i18n('telemt limits stale')), 'Старое подтверждение после ротации отвергнуто');
+    $check($b->conf === $rotatedConf && $b->starts === $rotatedStarts, 'Старое подтверждение после ротации не меняет новую учётную запись');
     $reject(fn()=>$b->telemtChangeLimit('alice','quota',0,$fp), 'Старый ответ после ротации отвергнут');
     $fp = hash('sha256',$b->conf['telemt_users']['alice']);
     $b->telemtChangeLimit('alice','quota',0,$fp);

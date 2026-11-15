@@ -6,7 +6,7 @@ if(Bot::amneziaKeysUsable($keys,true,true)['RandomTrailers']!=='on')throw new Ru
 class TrailersFixture extends Bot {
     public array $state=[];public int $applied=0;public array $notices=[];
     public function __construct(){$this->language='ru';$this->input=['callback_id'=>'test'];}
-    public function getInstanceWG($k=false){return $k?'':'wg0';}
+    public function getInstanceWG($k=false){return $k?'':'wg';}
     public function getPacConf(){return $this->state;}
     public function setPacConf(array $conf){$this->state=$conf;return true;}
     public function awgSupports31():?bool{return true;}

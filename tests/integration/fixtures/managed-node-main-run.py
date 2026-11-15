@@ -175,6 +175,12 @@ server.serve_forever()
         step('peer-add')
         poll()
         step('peer-export')
+        result = run(['docker', 'exec', main, 'php', '/lab/tests/integration/fixtures/backup-protocols-native/node-importer.php'])
+        for line in result.stdout.decode().splitlines():
+            if line.startswith(('PASS ', 'FAIL ')):
+                print(line, flush=True)
+        if result.returncode:
+            raise RuntimeError('common node backup importer')
         step('backup')
         inner('reinstall', check=True)
         new_pin = run(['docker', 'exec', outer, 'cat', '/run/managed-main-fixture/new-host-key.pub'], check=True).stdout

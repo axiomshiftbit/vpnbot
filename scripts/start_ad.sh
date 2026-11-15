@@ -23,15 +23,6 @@ cp -p /hostkey/ssh_host_ed25519_key /hostkey/ssh_host_ed25519_key.pub /etc/ssh/ 
 # то есть работает как обычный фоновый запуск, но читается как «заменить
 # текущий процесс» (то же пояснение есть в start_wp.sh).
 /usr/sbin/sshd -D -e "$@" &
-# ВНИМАНИЕ: `tail -f /dev/null` ниже — НЕ мёртвый код, что бы ни казалось по
-# чтению. Жизненным циклом AdGuardHome управляет БОТ, а не entrypoint:
-# stopAd() делает `kill -15 $(cat pid)` по ssh, startAd() запускает демон
-# заново — и так на каждый adguardSync() (а его безусловно зовёт service.php
-# при каждом старте, плюс смена сертификата, домена и пароля). Пока tail есть,
-# контейнер переживает эти циклы; без него первый же stopAd() убивал
-# единственный процесс переднего плана, контейнер завершался с кодом 0, а
-# startAd() было уже некуда достучаться: DNS всей установки ложился, а nginx
-# уходил в unhealthy, потому что не резолвился upstream «ad».
-# Проверено на рабочем сервере 2026-08-18: снятие этой строки положило AdGuard.
-/opt/adguardhome/AdGuardHome --no-check-update --pidfile /opt/adguardhome/pid -c /config/AdGuardHome.yaml -h 0.0.0.0 -w /opt/adguardhome/work
-tail -f /dev/null
+# Supervisor сохраняет контейнер и SSH при intentional stopAd().
+# Только аварийная остановка процесса при desired-on вызывает новый запуск.
+exec /bin/sh /service_supervisor.sh supervise ad

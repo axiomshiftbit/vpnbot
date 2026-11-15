@@ -207,6 +207,7 @@ JS;
 
     public function telegramWorkerSend()
     {
+        if (!$this->telegramApiOwnerAllowed()) return;
         [$prefix, $script] = $this->telegramWorker();
         $caption = '☁️ Cloudflare Worker' . "\n\n" . $this->telegramWorkerSteps($prefix) . "\n\n⚠ "
             . $this->t('Cloudflare видит токен и сообщения бота. Путь с префиксом — секрет, как пароль.', 'Cloudflare sees the bot token and messages. The path with the prefix is a secret, like a password.');
@@ -414,16 +415,15 @@ JS;
     public function telegramRelayApply(array $relay): bool
     {
         $relay = self::telegramRelayNormalize($relay);
-        $conf = $this->getPacConf();
-        $before = $conf['tg_relay'] ?? null;
-        $conf['tg_relay'] = $relay;
-        $this->setPacConf($conf);
+        $before = $this->pacConfUpdate(function (&$conf) use ($relay) {
+            $before = $conf;
+            $conf['tg_relay'] = $relay;
+            return $before;
+        });
         $path = $this->telegramRelayNginxPath();
         $ok = is_file($path) && $this->editProtocolProxyConfig($path, 'ng', static fn($text) => self::telegramRelayNginx($text, $relay));
         if (!$ok) {
-            $conf = $this->getPacConf();
-            if ($before === null) unset($conf['tg_relay']); else $conf['tg_relay'] = $before;
-            $this->setPacConf($conf);
+            if (!$this->restorePacFields($before, ['tg_relay' => $relay], ['tg_relay'])) throw new RuntimeException($this->t('Настройки изменились; восстановление предыдущего состояния не подтверждено', 'Settings changed; restoration of the previous state is unconfirmed'));
         }
         return $ok;
     }
@@ -529,6 +529,7 @@ JS;
     public function telegramApiMenu(string $section = '', string $action = '', string $arg = '', string $notice = '')
     {
         if ($section === 'client') {
+            if (in_array($action, ['set', 'reset', 'worker'], true) && !$this->telegramApiOwnerAllowed()) return;
             if ($action === 'set') return $this->telegramApiPrompt('client');
             if ($action === 'check') { [$ok, $msg] = $this->telegramApiCheck(); return $this->telegramApiClientMenu(($ok ? '✅ ' : '❌ ') . $msg); }
             if ($action === 'reset') { [$ok, $msg] = $this->telegramApiResetUrl(); return $this->telegramApiClientMenu(($ok ? '✅ ' : '❌ ') . $msg); }
@@ -581,6 +582,7 @@ JS;
 
     public function telegramApiClientMenu(string $notice = '')
     {
+        $owner = $this->isOwner();
         $state = TelegramApi::current($this->telegramApiFile);
         $text = ['Menu -> ' . $this->i18n('config') . ' -> Telegram API -> ' . $this->t('адрес Bot API', 'Bot API address')];
         if ($notice !== '') $text[] = self::esc($notice);
@@ -600,7 +602,11 @@ JS;
             [['text' => '✅ ' . $this->t('проверить связь', 'check the connection'), 'callback_data' => '/tgapi client check']],
             [['text' => '☁️ ' . $this->t('ретранслятор на Cloudflare Workers', 'relay on Cloudflare Workers'), 'callback_data' => '/tgapi client worker']],
         ];
-        if ($state['source'] === 'file' || in_array('file', $state['invalid'], true)) {
+        if (!$owner) {
+            $data = [$data[1]];
+            $text[] = $this->t('Адрес Bot API может менять только владелец через Telegram.', 'Only the owner can change the Bot API address through Telegram.');
+        }
+        if ($owner && ($state['source'] === 'file' || in_array('file', $state['invalid'], true))) {
             $data[] = [['text' => '↩️ ' . $this->t('вернуть ', 'go back to ') . TelegramApi::mask(TelegramApi::fallback()), 'callback_data' => '/tgapi client reset']];
         }
         $data[] = $this->menuHelpButton('tgapi');
@@ -642,6 +648,7 @@ JS;
 
     public function telegramApiPrompt(string $kind)
     {
+        if ($kind === 'client' && !$this->telegramApiOwnerAllowed()) return;
         $question = match ($kind) {
             'client' => $this->t('отправьте адрес ретранслятора вида https://домен/префикс (его показывает бот на сервере ретранслятора)', 'send the relay address like https://domain/prefix (the bot on the relay server shows it)'),
             'bot' => $this->t('отправьте числовой ID бота — часть его токена до двоеточия; секретную часть токена отправлять не нужно', 'send the numeric bot ID, the part of its token before the colon; do not send the secret part'),
@@ -658,6 +665,7 @@ JS;
 
     public function telegramApiReply($text, string $kind = '')
     {
+        if ($kind === 'client' && !$this->telegramApiOwnerAllowed()) return;
         $text = trim((string) $text);
         if ($kind === 'client') {
             [$ok, $msg] = $this->telegramApiSetUrl($text);
@@ -678,6 +686,15 @@ JS;
     }
 
     // ── CLI: php /app/tgapi.php <команда> (make tgapi cmd="…") ─────────────
+
+    private function telegramApiOwnerAllowed(): bool
+    {
+        if ($this->isOwner()) return true;
+        $notice = $this->t('Адрес Bot API может менять только владелец через Telegram.', 'Only the owner can change the Bot API address through Telegram.');
+        if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $notice, true);
+        elseif (!empty($this->input['chat'])) $this->send($this->input['chat'], $notice);
+        return false;
+    }
 
     public function telegramApiCli(array $args, $out = STDOUT): int
     {

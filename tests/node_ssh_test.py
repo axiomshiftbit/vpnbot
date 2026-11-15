@@ -186,6 +186,10 @@ print('{"ok":true,"result":{"schema":1}}')
                         self.assertEqual((retired/name).stat().st_mode & 0o777, 0o600)
 
     def retired_setup(self, root, host_key=KEY):
+        # These existing transport fixtures contain inert labels, not SSH keys.
+        validation = patch.object(transport, 'validate_pair')
+        validation.start()
+        self.addCleanup(validation.stop)
         old = transport.Client('aabbccdd', root)
         (old.directory/'key').write_text('old-private'); (old.directory/'key.pub').write_text('old-public')
         (old.directory/'endpoint.json').write_bytes(transport.encode(dict(address='1.1.1.1', port=22, host_key=host_key)))

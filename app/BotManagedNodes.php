@@ -31,10 +31,51 @@ trait BotManagedNodes
         if (!$done) throw new RuntimeException('Node controller busy');
     }
 
-    public function managedNodeBackupPaths(bool $includeRetired = true): array
+    // Те же стабильные inode, что у node_ssh.py: каталог ноды может
+    // атомарно обмениваться при возврате архивной пары. RPC здесь запрещены.
+    private function withManagedNodeBackupLocks(array $ids, int $operation, callable $action)
+    {
+        $ids = array_values(array_unique($ids));
+        sort($ids, SORT_STRING);
+        foreach ($ids as $id) {
+            if (!preg_match('~^[a-f0-9]{8}$~D', (string) $id)) throw new RuntimeException('Invalid node');
+        }
+        for ($path = $this->managedNodeRoot; $path !== dirname($path); $path = dirname($path)) {
+            if (is_link($path)) throw new RuntimeException('Unsafe node lock directory');
+        }
+        if (!is_dir($this->managedNodeRoot) && !@mkdir($this->managedNodeRoot, 0700, true)) throw new RuntimeException('Node lock directory unavailable');
+        $paths = array_map(fn($id) => $this->managedNodeRoot . '/.lock-' . $id, $ids);
+        $paths[] = $this->managedNodeRoot . '/.retired.lock';
+        $held = [];
+        $deadline = microtime(true) + 30;
+        try {
+            foreach ($paths as $path) {
+                if (is_link($path)) throw new RuntimeException('Unsafe node lock');
+                $mask = umask(0077);
+                try { $lock = @fopen($path, 'c'); }
+                finally { umask($mask); }
+                if ($lock === false) throw new RuntimeException('Node lock unavailable');
+                $held[] = $lock;
+                $opened = fstat($lock);
+                clearstatcache(true, $path);
+                $entry = lstat($path);
+                if (!$opened || !$entry || ($entry['mode'] & 0170000) !== 0100000
+                    || $entry['dev'] !== $opened['dev'] || $entry['ino'] !== $opened['ino']) throw new RuntimeException('Unsafe node lock');
+                while (!flock($lock, $operation | LOCK_NB)) {
+                    if (microtime(true) >= $deadline) throw new RuntimeException('Node files busy');
+                    usleep(50000);
+                }
+            }
+            return $action();
+        } finally {
+            foreach (array_reverse($held) as $lock) { flock($lock, LOCK_UN); fclose($lock); }
+        }
+    }
+
+    public function managedNodeBackupPaths(bool $includeRetired = true, ?array $nodes = null): array
     {
         $paths = [];
-        foreach ($this->managedNodes() as $id => $_) {
+        foreach ($nodes ?? $this->managedNodes() as $id => $_) {
             foreach (['key', 'key.pub', 'endpoint.json', 'snapshot.json'] as $name) {
                 $paths["nodes/$id/$name"] = $this->managedNodeRoot . "/$id/$name";
             }
@@ -78,9 +119,9 @@ trait BotManagedNodes
         }
     }
 
-    public function managedNodeBackupCheck(): void
+    public function managedNodeBackupCheck(?array $nodes = null): void
     {
-        foreach ($this->managedNodes() as $id => $node) {
+        foreach ($nodes ?? $this->managedNodes() as $id => $node) {
             $required = !empty($node['connected']) ? ['key', 'key.pub', 'endpoint.json', 'snapshot.json'] : ['key', 'key.pub'];
             foreach ($required as $name) {
                 $path = $this->managedNodeRoot . "/$id/$name";
@@ -154,6 +195,7 @@ trait BotManagedNodes
     {
         $saved = $this->withLock('pac', function () use ($id, $edit) {
             $pac = $this->getPacConf();
+            if (!is_array($pac)) throw new RuntimeException('Node settings unavailable');
             $nodes = $this->managedNodes($pac);
             $node = $nodes[$id] ?? null;
             $edit($node);

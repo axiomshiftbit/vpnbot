@@ -3,6 +3,7 @@
 trait BotBackup
 {
     private bool $backupLocked = false;
+    private array $backupModuleFailures = [];
     public const BACKUP_MAX_BYTES = 20 * 1024 * 1024;
     protected const BACKUP_APPLY_TIMEOUT = 60;
     // Код исключения: снимок лёг частично, прежние файлы вернуть не удалось.
@@ -46,6 +47,21 @@ trait BotBackup
         finally { unset($this->wg); }
     }
 
+    private function preflightBackupWireguard(array $json): void
+    {
+        foreach (['wg' => 'amnezia', 'wg1' => 'wg1_amnezia'] as $service => $modeKey) {
+            $checked = $this->withWireguardLock(function () use ($json, $service, $modeKey) {
+                if ($this->hasWireguardPending()) throw new RuntimeException($this->t('WireGuard ожидает подтверждения; восстановление не начато', 'WireGuard confirmation is pending; restore has not started'));
+                if (isset($json['pac']) && empty($json[$service]['server'])
+                    && !empty($json['pac'][$modeKey]) !== !empty($this->getPacConf()[$modeKey])) {
+                    throw new RuntimeException($this->t('Смена режима WireGuard требует его конфигурации в бэкапе', 'Changing WireGuard mode requires its configuration in the backup'));
+                }
+                return true;
+            }, $service, 120, false);
+            if (!$checked) throw new RuntimeException('WireGuard restore lock unavailable');
+        }
+    }
+
     // Полная копия до переключателей модулей (без managed_protocols) снята с
     // сервера, где работал набор по умолчанию. Новая установка запускает только
     // TeleMT — восстановление такой копии возвращает прежние протоколы.
@@ -71,27 +87,43 @@ trait BotBackup
     // обработчик не работал — ждать нечего.
     public function waitProtocolModulesApplied(?array $before, int $timeout = 150): bool
     {
+        $this->backupModuleFailures = [];
         $after = $this->protocolModulesSnapshot();
-        if ($before === null || $after === null || $after === $before) return true;
+        if ($before === null || $after === null) {
+            $this->backupModuleFailures = ['Protocol modules'];
+            return false;
+        }
+        if ($after === $before) return true;
+        $changed = array_keys(array_filter($after, static fn($key) => ($before[$key] ?? null) !== $after[$key], ARRAY_FILTER_USE_KEY));
         $status = dirname($this->protocolModulesFile) . '/protocol-services.status.json';
-        if (!is_file($status)) return false;
+        if (!is_file($status)) { $this->backupModuleFailures = $changed; return false; }
         $deadline = time() + $timeout;
         do {
             $applied = json_decode((string) @file_get_contents($status), true);
             $settled = is_array($applied) && is_array($applied['settings'] ?? null);
+            $pending = [];
             foreach ($settled ? $after : [] as $key => $value) {
                 $error = $applied['errors'][$key] ?? '';
-                if (($applied['settings'][$key] ?? null) !== $value && ($error === '' || $error === 'operation_pending')) { $settled = false; break; }
+                if ($error !== '' && $error !== 'operation_pending') {
+                    $this->backupModuleFailures[] = $key;
+                }
+                if (($applied['settings'][$key] ?? null) !== $value || $error !== '') $pending[] = $key;
             }
-            if ($settled) {
+            if ($this->backupModuleFailures) return false;
+            if ($settled && !$pending && ($applied['ok'] ?? false) === true) {
                 foreach (['oc', 'ovpn', 'tt', 'hy', 'ss', 'dnstt', 'ipsec', 'telemt'] as $service) {
                     if (empty($before[$service]) && ($applied['settings'][$service] ?? false) === true && $this->protocolModuleEnabled($service)
-                        && !$this->waitForSshService($service, max(1, min(30, $deadline - time())))) return false;
+                        && !$this->waitForSshService($service, max(1, min(30, $deadline - time())))) {
+                        $this->backupModuleFailures[] = $service;
+                        return false;
+                    }
                 }
                 return true;
             }
+            if (time() >= $deadline) break;
             sleep(1);
         } while (time() < $deadline);
+        $this->backupModuleFailures = $pending ?: $changed;
         error_log('importFile: protocol modules were not applied in time');
         return false;
     }
@@ -241,30 +273,48 @@ trait BotBackup
         } finally { flock($handle, LOCK_UN); fclose($handle); }
     }
 
-    private function restoreBackupShadowsocks(string $section, array $config): bool
+    private function restoreBackupShadowsocks(array $sections): bool
     {
-        $server = $section === 'ss';
-        $service = $server ? 'ss' : 'proxy';
-        $binary = $server ? 'ssserver' : 'sslocal';
-        $path = dirname($this->pac) . '/' . $binary . '.json';
-        $before = is_file($path) ? $this->backupReadFile($path) : null;
-        if ($server && empty($config['acl'])) $config['acl'] = '/config/ss.acl';
-        if (!$this->backupWriteInPlace($path, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))) {
-            throw new RuntimeException($this->t('Не удалось восстановить Shadowsocks', 'Could not restore Shadowsocks'));
-        }
-        if (!$this->protocolModuleEnabled($service)) return true;
-        $start = function (array $state) use ($service, $binary, $server): void {
-            $this->ssh('pkill ' . $binary . ' 2>/dev/null; for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -x ' . $binary . ' >/dev/null || break; sleep 0.2; done', $service);
-            if ($server) $this->warpSocksAllowSS(self::ssWarpOn($state));
-            $this->ssh($binary . ' -v -d -c /config.json', $service);
-        };
-        $start($config);
-        if (!$this->verifyBackupServices([$section => $config])) return true;
-        // Невалидный шифр/порт может обнаружить только само ядро. В этом
-        // случае возвращаем рабочий файл и поднимаем прежний процесс.
-        if (!($before === null ? @unlink($path) : $this->backupWriteInPlace($path, $before))) throw new RuntimeException($this->t('Откат Shadowsocks не завершён', 'The Shadowsocks rollback did not finish'));
-        if ($before !== null) $start(json_decode($before, true) ?: []);
-        return false;
+        return (bool) $this->withShadowsocksLock(function () use ($sections) {
+            if (isset($sections['ss']) && empty($sections['ss']['acl'])) $sections['ss']['acl'] = '/config/ss.acl';
+            return $this->applyShadowsocksConfigsLocked($sections, true);
+        });
+    }
+
+    private function restoreBackupSimpleTls(string $body): bool
+    {
+        $config = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($config)) throw new RuntimeException('Invalid simple-tls backup');
+        return (bool) $this->withShadowsocksLock(function () use ($body, $config) {
+            $path = $this->backupExtraPath('stlsserver.json');
+            if (file_exists($path) && !is_file($path)) return false;
+            $before = is_file($path) ? file_get_contents($path) : null;
+            if ($before === false) return false;
+            $mode = $before === null ? null : fileperms($path) & 0777;
+            $enabled = $this->protocolModuleEnabled('ss');
+            if ($enabled && !$this->controlContainerService('ss', 'simple-tls', 'stop')) return false;
+            $starting = false;
+            try {
+                if (!$this->writePrivateKey($path, $body)) throw new RuntimeException('Could not save simple-tls');
+                if (!$enabled || empty($config['Enabled'])) return true;
+                $starting = true;
+                if ($this->controlContainerService('ss', 'simple-tls', 'start')) return true;
+            } catch (Throwable $error) {
+                // A failed write may already have published the new file.
+            }
+            // A failed start may still have spawned a process: confirm stop
+            // before restoring the old generation. No PAC/node locks on SSH.
+            if ($starting && !$this->controlContainerService('ss', 'simple-tls', 'stop')) {
+                throw new RuntimeException('Could not stop simple-tls during rollback', self::BACKUP_PARTIAL);
+            }
+            $restored = $before === null ? (!file_exists($path) || @unlink($path))
+                : ($this->writePrivateKey($path, $before) && @chmod($path, $mode));
+            if ($restored && $enabled && !empty(json_decode($before ?? '{}', true)['Enabled'])) {
+                $restored = $this->controlContainerService('ss', 'simple-tls', 'start');
+            }
+            if (!$restored) throw new RuntimeException('Could not roll back simple-tls', self::BACKUP_PARTIAL);
+            return false;
+        });
     }
 
     // Подтверждаем процессы и применение нужной ревизии supervisor, а не
@@ -273,20 +323,25 @@ trait BotBackup
     public function verifyBackupServices(array $json): array
     {
         $failed = []; $checks = []; $pac = $this->getPacConf();
-        foreach (['ss'=>['ss','ssserver'], 'sl'=>['proxy','sslocal'],
-            'ovpn'=>['ovpn','openvpn']] as $section => [$service, $process]) {
-            if (!empty($json[$section])) $checks[$section] = [$service, "pgrep -x $process >/dev/null"];
+        $supervised = [];
+        foreach (['ss'=>['ss','ssserver'], 'sl'=>['proxy','sslocal'], 'ad'=>['ad','adguard']] as $section => [$service, $daemon]) {
+            if (!empty($json[$section])) $supervised[$section === 'ad' ? 'AdGuard' : $section] = [$service, $daemon, true];
         }
-        if (!empty($json['ad'])) $checks['AdGuard'] = ['ad',
-            'test -s /opt/adguardhome/pid && test "$(readlink /proc/$(cat /opt/adguardhome/pid)/exe)" = /opt/adguardhome/AdGuardHome'];
-        if ((isset($json['pac']) || !empty($json['dnstt'])) && !empty($pac['dnsttDomain']) && !empty($pac['dnsttPassword'])) {
-            $checks['DNSTT'] = ['dnstt', 'pgrep -x dnstt-server >/dev/null'];
+        if (!empty($json['ovpn'])) $checks['ovpn'] = ['ovpn', 'pgrep -x openvpn >/dev/null'];
+        if (isset($json['pac']) || !empty($json['dnstt'])) {
+            $supervised['DNSTT'] = ['dnstt', 'dnstt', !empty($pac['dnsttDomain']) && !empty($pac['dnsttPassword'])];
         }
         if (!empty($json['ipsec'])) $checks['IPsec'] = ['ipsec', 'pgrep -x charon >/dev/null'
             . ($this->protocolModuleEnabled('l2tp') ? ' && pgrep -x xl2tpd >/dev/null' : '')];
-        if (isset($json['tt']) && $this->getClientsTt()) $checks['TrustTunnel'] = ['tt', 'pgrep -f "[t]rusttunnel_endpoint" >/dev/null'];
-        if (!empty($json['cloak']['Enabled'])) $checks['Cloak'] = ['ss', 'pgrep -x ck-server >/dev/null'];
-        if (isset($json['pac']) && self::naiveReady($pac)) $checks['NaiveProxy'] = ['np', 'pgrep -x caddy >/dev/null'];
+        if (isset($json['tt'])) $supervised['TrustTunnel'] = ['tt', 'trusttunnel', (bool) $this->getClientsTt()];
+        if (!empty($json['cloak'])) $supervised['Cloak'] = ['ss', 'ck-server', !empty($json['cloak']['Enabled'])];
+        if (isset($json['extra_files']['stlsserver.json'])) $supervised['simple-tls'] = ['ss', 'simple-tls', !empty($this->getStlsConfig()['Enabled'])];
+        if (isset($json['pac'])) $supervised['NaiveProxy'] = ['np', 'naive', self::naiveReady($pac)];
+        foreach ($supervised as $name => [$service, $daemon, $running]) {
+            $check = '/bin/sh /service_supervisor.sh status ' . $daemon;
+            if (!$running) $check = '{ ' . $check . '; [ "$?" -eq 3 ]; }';
+            $checks[$name] = [$service, $check];
+        }
         if (isset($json['pac']) && $this->backupHasTelemt($json['pac']) && !empty($pac['telemt_users'])) {
             $checks['TeleMT'] = ['telemt', 'pgrep -x telemt >/dev/null'];
             foreach (['telemt_web','telemt_web_negotiation'] as $key) {
@@ -298,7 +353,8 @@ trait BotBackup
             if (!$this->protocolModuleEnabled($service)) continue;
             $cmd = 'for n in 1 2 3 4 5 6 7 8 9 10; do if ' . $check
                 . '; then sleep 0.2; ' . $check . ' && printf VPNBOT_SERVICE_READY; exit; fi; sleep 0.2; done; exit 1';
-            if (trim($this->ssh($cmd, $service)) !== 'VPNBOT_SERVICE_READY') $failed[] = $name;
+            $output = $this->ssh($cmd, $service);
+            if ($this->sshFailed || trim($output) !== 'VPNBOT_SERVICE_READY') $failed[] = $name;
         }
         $pending = [];
         foreach ($json['managed_protocols']['protocols'] ?? [] as $name => $_) {
@@ -316,8 +372,9 @@ trait BotBackup
                 if ($state['users'] || !empty($pac['hysteria_pass'])) {
                     $pending['Hysteria'] = [$this->hysteriaUsersRoot . '/runtime', $state['revision'], $state['restore_usage']['id'] ?? null];
                 }
-            } elseif (!empty($pac['hysteria_pass']) && trim($this->ssh('pgrep -x hysteria >/dev/null && printf VPNBOT_SERVICE_READY', 'hy')) !== 'VPNBOT_SERVICE_READY') {
-                $failed[] = 'Hysteria';
+            } elseif (!empty($pac['hysteria_pass'])) {
+                $output = $this->ssh('pgrep -x hysteria >/dev/null && printf VPNBOT_SERVICE_READY', 'hy');
+                if ($this->sshFailed || trim($output) !== 'VPNBOT_SERVICE_READY') $failed[] = 'Hysteria';
             }
         }
         // Host-worker создаёт контейнеры последовательно. При восстановлении
@@ -344,10 +401,19 @@ trait BotBackup
     // Проверка конфигов самими ядрами остаётся обязательной при применении.
     public function validateBackup(array $json): void
     {
+        // Export and every import use the same limit, including base64 and JSON
+        // formatting overhead. A structurally valid but unrestorable copy fails
+        // before it can replace the last backup or mutate live settings.
+        $encoded = json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        if (strlen($encoded) > self::BACKUP_MAX_BYTES) {
+            throw new InvalidArgumentException($this->t('Размер бэкапа превышает предел восстановления (20 МиБ)', 'Backup exceeds the restore limit (20 MiB)'));
+        }
+        unset($encoded);
         foreach (['pac', 'wg', 'wg1', 'ad', 'hwid', 'xray', 'hy', 'hy_users', 'ss', 'sl',
             'xraystats', 'managed_protocols', 'extra_files', 'telemt_quota'] as $key) {
             if (array_key_exists($key, $json) && !is_array($json[$key])) throw new InvalidArgumentException($this->t('Неверный раздел: ', 'Invalid section: ') . $key);
         }
+        if (array_key_exists('xraystats', $json)) self::normalizeXrayStats($json['xraystats']);
         foreach (['ssl', 'dnstt', 'cloak', 'ckusers', 'ovpn', 'ipsec'] as $key) {
             if (isset($json[$key]) && $json[$key] !== false && !is_array($json[$key])) throw new InvalidArgumentException($this->t('Неверный раздел: ', 'Invalid section: ') . $key);
         }
@@ -398,7 +464,21 @@ trait BotBackup
             }
         }
         if (isset($json['hy_users'])) HysteriaUsers::validateSnapshot($json['hy_users']);
-        if (isset($json['extra_files'])) $this->validateBackupExtraFiles($json['extra_files']);
+        $extra = $this->validateBackupExtraFiles($json['extra_files'] ?? []);
+        if (isset($pac['managed_nodes']) && !is_array($pac['managed_nodes'])) {
+            throw new InvalidArgumentException($this->t('Неверный список нод', 'Invalid node list'));
+        }
+        foreach ($pac['managed_nodes'] ?? [] as $id => $node) {
+            if (!preg_match('~\A[a-f0-9]{8}\z~D', (string) $id) || !is_array($node)) {
+                throw new InvalidArgumentException($this->t('Неверная нода в бэкапе', 'Invalid node in backup'));
+            }
+            $required = !empty($node['connected']) ? ['key', 'key.pub', 'endpoint.json', 'snapshot.json'] : ['key', 'key.pub'];
+            foreach ($required as $name) {
+                if (!isset($extra["nodes/$id/$name"]) || $extra["nodes/$id/$name"] === '') {
+                    throw new InvalidArgumentException($this->t('Неполная копия ноды: отсутствуют обязательные файлы управления', 'Incomplete node backup: required management files are missing'));
+                }
+            }
+        }
         $limits = $this->telemtLimitsOf($pac);
         if (isset($json['telemt_quota'])) $this->telemtValidateQuotaState($json['telemt_quota'], $pac);
         elseif (array_filter($limits, static fn($row) => !empty($row['quota']))) throw new InvalidArgumentException($this->t('Нет расхода TeleMT', 'No TeleMT usage'));

@@ -50,15 +50,13 @@ if ! grep -qE '^status-version[[:space:]]' "$SRV"; then
     printf 'status-version 2\n' >> "$SRV"
 fi
 
-# #3: hook журнала подключений (CN + адрес клиента). Требует script-security 2.
-if ! grep -qE '^script-security[[:space:]]' "$SRV"; then
-    printf '\nscript-security 2\n' >> "$SRV"
-fi
-if ! grep -qE '^client-connect[[:space:]]' "$SRV"; then
-    printf 'client-connect /etc/openvpn/connect.sh\n' >> "$SRV"
-fi
-if ! grep -qE '^client-disconnect[[:space:]]' "$SRV"; then
-    printf 'client-disconnect /etc/openvpn/connect.sh\n' >> "$SRV"
+# #3: mandatory durable traffic hooks, including restored legacy configs.
+if [ "$(grep -Ec '^[[:space:]]*(--)?(script-security|client-connect|client-disconnect)[[:space:]]' "$SRV")" != 3 ] \
+    || ! grep -Fxq 'script-security 2' "$SRV" \
+    || ! grep -Fxq 'client-connect "/usr/bin/python3 /ovpn_traffic.py"' "$SRV" \
+    || ! grep -Fxq 'client-disconnect "/usr/bin/python3 /ovpn_traffic.py"' "$SRV"; then
+    sed -i '/^[[:space:]]*\(--\)\?\(script-security\|client-connect\|client-disconnect\)[[:space:]]/d' "$SRV"
+    printf '\nscript-security 2\nclient-connect "/usr/bin/python3 /ovpn_traffic.py"\nclient-disconnect "/usr/bin/python3 /ovpn_traffic.py"\n' >> "$SRV"
 fi
 
 # #4: `push "block-outside-dns"` роняет ВСЕХ не-Windows клиентов — опция

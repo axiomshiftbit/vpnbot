@@ -108,6 +108,9 @@ class RelayBot extends Bot
         $this->i18n = $i;
         $this->input = ['chat' => 1, 'message_id' => 2, 'callback_id' => 3, 'callback' => '', 'username' => 'admin'];
     }
+    public function isOwner(): bool { return true; }
+    public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
+
     public function getPacConf() { return $this->conf; }
     public function setPacConf(array $conf) { $this->conf = $conf; }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)

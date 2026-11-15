@@ -14,9 +14,13 @@ class TtLifecycleBot extends Bot {
         try { return $fn(); } finally { flock($lock, LOCK_UN); fclose($lock); }
     }
     public function writePrivateKey(string $path, string $data): bool { return !$this->failWrite && parent::writePrivateKey($path, $data); }
-    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->sshCalls++; return str_contains($cmd, 'VPNBOT_TT_STOPPED') ? 'VPNBOT_TT_STOPPED' : ''; }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->sshCalls++; return str_contains($cmd, 'service_supervisor.sh stop') ? 'VPNBOT_SERVICE_STOPPED:trusttunnel' : 'VPNBOT_SERVICE_READY:trusttunnel'; }
     public function menu($type = false, $arg = false, $return = false) {}
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { return []; }
+}
+if (($argv[1] ?? '') === '--child') {
+    $bot = new TtLifecycleBot($argv[2]); $bot->slow = true;
+    $bot->addttus($argv[3]); exit(0);
 }
 $root = sys_get_temp_dir() . '/vpnbot-tt-lifecycle-' . bin2hex(random_bytes(6)); mkdir($root, 0700);
 $failures=[]; $check=static function ($ok,$name) use (&$failures) {if (!$ok) $failures[]=$name;};
@@ -32,9 +36,11 @@ try {
     $check($bot->sshCalls === 0 && $bot->getClientsTt()['alice'] === 'original', 'Ошибка записи не останавливает ядро и не меняет пароль');
     $bot->failWrite=false; $bot->slow=true; $children=[];
     for($i=0;$i<6;$i++) {
-        $pid=pcntl_fork(); if($pid===0) {$bot->addttus('parallel'.$i);exit(0);} $children[]=$pid;
+        $process=proc_open([PHP_BINARY,__FILE__,'--child',$root,'parallel'.$i], [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],2=>['file',"$root/child-$i.err",'w']], $pipes);
+        if (!is_resource($process)) throw new RuntimeException('Cannot start concurrency worker');
+        $children[]=$process;
     }
-    foreach($children as $pid) {pcntl_waitpid($pid,$status);$check(pcntl_wexitstatus($status)===0,'Параллельный процесс завершился');}
+    foreach($children as $process) {$check(proc_close($process)===0,'Параллельный процесс завершился');}
     $check(count($bot->getClientsTt())===7,'Параллельное создание не теряет пользователей');
     $bot->delttus('alice',true); $bot->restartTt();
     $check(!isset($bot->getClientsTt()['alice']),'Удалённые реквизиты не воскресают после restart');

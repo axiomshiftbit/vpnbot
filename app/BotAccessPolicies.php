@@ -4,13 +4,14 @@ trait BotAccessPolicies
 {
     public function subscriptionCardSummary(array $client, int|string $index): array
     {
-        $used = $this->xrUserTraffic($this->getXrayStats(), $index) + array_sum($this->xrayProtocolUsage($client));
+        try { $used = $this->xrUserTraffic($this->getXrayStats(), $index) + array_sum($this->xrayProtocolUsage($client)); }
+        catch (Throwable $error) { $used = null; }
         $limit = (int) ($client['traffic'] ?? 0); $expires = (int) ($client['time'] ?? 0);
-        $status = !empty($client['off']) ? (!empty($client['traffic_off']) ? $this->t('квота исчерпана', 'quota used up') : $this->t('выключен', 'disabled'))
-            : ($expires && $expires <= time() ? $this->t('срок истёк', 'expired') : ($limit && $used >= $limit ? $this->t('квота исчерпана', 'quota used up') : $this->t('доступен', 'available')));
+        $status = !empty($client['traffic_usage_unavailable']) || ($used === null && $limit) ? $this->t('общий расход недоступен', 'shared usage unavailable') : (!empty($client['off']) ? (!empty($client['traffic_off']) ? $this->t('квота исчерпана', 'quota used up') : $this->t('выключен', 'disabled'))
+            : ($expires && $expires <= time() ? $this->t('срок истёк', 'expired') : ($limit && $used >= $limit ? $this->t('квота исчерпана', 'quota used up') : $this->t('доступен', 'available'))));
         return [$this->t('<b>Доступ: ', '<b>Access: ') . $status . '</b>',
             $this->t('Срок (UTC): ', 'Expiry (UTC): ') . ($expires ? gmdate('Y-m-d H:i', $expires) : $this->t('без ограничения', 'unlimited')),
-            $this->t('Общий расход: ', 'Total usage: ') . $this->getBytes($used) . $this->t('; осталось: ', '; remaining: ') . ($limit ? $this->getBytes(max(0, $limit - $used)) : $this->t('без лимита', 'no limit'))];
+            $this->t('Общий расход: ', 'Total usage: ') . ($used === null ? $this->t('недоступен', 'unavailable') : $this->getBytes($used)) . $this->t('; осталось: ', '; remaining: ') . ($limit ? ($used === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(max(0, $limit - $used))) : $this->t('без лимита', 'no limit'))];
     }
 
     public function accessStore(string $scope): HysteriaUsers|ManagedProtocol

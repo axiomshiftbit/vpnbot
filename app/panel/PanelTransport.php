@@ -28,6 +28,15 @@ class PanelTransport
 
     public function call($method, $data, $json_header = 0)
     {
+        try {
+            return $this->dispatchCall($method, $data, $json_header);
+        } catch (PanelStoreWriteException $error) {
+            return ['ok' => false, 'error_code' => 500, 'description' => 'Panel storage is unavailable'];
+        }
+    }
+
+    private function dispatchCall($method, $data, $json_header)
+    {
         // setMyCommands/sendMessageDraft уходят JSON-строкой ($json_header=1).
         if (is_string($data)) {
             $data = json_decode($data, true) ?: [];
@@ -163,6 +172,7 @@ class PanelTransport
     {
         $src  = $data[$kind] ?? null;
         $file = $this->ingest($src);
+        if ($file === null) return ['ok' => false, 'error_code' => 400, 'description' => 'Attachment is unavailable'];
         $id   = $this->store->put([
             'text'   => (string) ($data['caption'] ?? ''),
             'attach' => $file,

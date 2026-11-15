@@ -491,6 +491,8 @@ services:
             - ./certs/:/certs/:ro
             - ./logs/:/logs/
             - ./scripts/start_ad.sh:/start_ad.sh
+            - ./scripts/service_supervisor.sh:/service_supervisor.sh:ro
+            - ./scripts/service_daemon.sh:/service_daemon.sh:ro
         hostname: adguard
         container_name: adguard-${VER}
         # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
@@ -513,6 +515,12 @@ services:
         cap_add:
             - NET_ADMIN
         entrypoint: ["/bin/sh", "/start_ad.sh"]
+        healthcheck:
+            test: ["CMD", "/bin/sh", "/service_supervisor.sh", "health"]
+            interval: 15s
+            timeout: 10s
+            retries: 3
+            start_period: 45s
         mem_limit: 1g
         pids_limit: 512
         init: true
@@ -684,6 +692,8 @@ services:
             # бы в эфемерной ФС контейнера и пропадал при recreate.
             - ./logs/:/logs/
             - ./scripts/start_np.sh:/start_np.sh
+            - ./scripts/service_supervisor.sh:/service_supervisor.sh:ro
+            - ./scripts/service_daemon.sh:/service_daemon.sh:ro
         hostname: naive
         container_name: naive-${VER}
         # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
@@ -698,6 +708,12 @@ services:
               required: false
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_np.sh"]
+        healthcheck:
+            test: ["CMD", "/bin/sh", "/service_supervisor.sh", "health"]
+            interval: 15s
+            timeout: 10s
+            retries: 3
+            start_period: 45s
         # cap_add: NET_ADMIN убран (аудит 2026-08-18): start_np.sh не трогает ни
         # ip, ни iptables, ни tc, а caddy биндит 443 от root. Привилегия
         # добавлялась ПОВЕРХ дефолтного набора и при компрометации caddy давала
@@ -789,6 +805,8 @@ services:
             - ./ssh/hosts/proxy:/hostkey:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./scripts/start_proxy.sh:/start_proxy.sh
+            - ./scripts/service_supervisor.sh:/service_supervisor.sh:ro
+            - ./scripts/service_daemon.sh:/service_daemon.sh:ro
         hostname: proxy
         container_name: proxy-${VER}
         # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
@@ -808,6 +826,12 @@ services:
               required: false
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_proxy.sh"]
+        healthcheck:
+            test: ["CMD", "/bin/sh", "/service_supervisor.sh", "health"]
+            interval: 15s
+            timeout: 10s
+            retries: 3
+            start_period: 45s
         mem_limit: 512m
         pids_limit: 512
         init: true
@@ -838,6 +862,8 @@ services:
             - ./ssh/hosts/ss:/hostkey:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./scripts/start_ss.sh:/start_ss.sh
+            - ./scripts/service_supervisor.sh:/service_supervisor.sh:ro
+            - ./scripts/service_daemon.sh:/service_daemon.sh:ro
             - ./logs/:/logs/
         hostname: shadowsocks
         container_name: shadowsocks-${VER}
@@ -859,6 +885,12 @@ services:
             - ${STLSPORT:-3443}:${STLSPORT:-3443}/tcp
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_ss.sh"]
+        healthcheck:
+            test: ["CMD", "/bin/sh", "/service_supervisor.sh", "health"]
+            interval: 15s
+            timeout: 10s
+            retries: 3
+            start_period: 45s
         networks:
             default:
                 ipv4_address: 10.10.0.6
@@ -882,6 +914,8 @@ services:
             - ./config/sshd_config:/etc/ssh/sshd_config
             - ./config/dnstt:/dnstt
             - ./scripts/start_dnstt.sh:/start_dnstt.sh
+            - ./scripts/service_supervisor.sh:/service_supervisor.sh:ro
+            - ./scripts/service_daemon.sh:/service_daemon.sh:ro
         hostname: dnstt
         container_name: dnstt-${VER}
         # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
@@ -899,6 +933,12 @@ services:
               required: false
         stop_grace_period: 1s
         command: ["/bin/sh", "/start_dnstt.sh"]
+        healthcheck:
+            test: ["CMD", "/bin/sh", "/service_supervisor.sh", "health"]
+            interval: 15s
+            timeout: 10s
+            retries: 3
+            start_period: 45s
         networks:
             default:
                 ipv4_address: 10.10.0.16
@@ -924,6 +964,8 @@ services:
             # Миграции server.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ovpn_migrate.sh:/ovpn_migrate.sh
+            - ./scripts/ovpn_firewall.sh:/ovpn_firewall.sh:ro
+            - ./scripts/ovpn_traffic.py:/ovpn_traffic.py:ro
             - ./ssh/pub:/ssh:ro
             - ./ssh/hosts/ovpn:/hostkey:ro
             - ./config/sshd_config:/etc/ssh/sshd_config
@@ -974,6 +1016,7 @@ services:
             # Миграции swanctl.conf отдельным файлом: их дёргает и стартовый
             # скрипт, и бот после восстановления конфигурации из бэкапа.
             - ./scripts/ipsec_migrate.sh:/ipsec_migrate.sh
+            - ./scripts/ipsec_credentials.py:/ipsec_credentials.py:ro
             - ./scripts/protocol_modules.py:/protocol_modules.py:ro
             - ./ssh/pub:/ssh:ro
             - ./ssh/hosts/ipsec:/hostkey:ro
@@ -1044,6 +1087,8 @@ services:
             - ./certs:/certs:ro
             - ./logs:/logs
             - ./scripts/start_tt.sh:/start_tt.sh
+            - ./scripts/service_supervisor.sh:/service_supervisor.sh:ro
+            - ./scripts/service_daemon.sh:/service_daemon.sh:ro
         hostname: trusttunnel
         container_name: trusttunnel-${VER}
         # Перезапуск демона Docker (обновление пакета) без перезагрузки иначе оставлял службу выключенной.
@@ -1058,6 +1103,12 @@ services:
               required: false
         stop_grace_period: 1s
         entrypoint: ["/bin/sh", "/start_tt.sh"]
+        healthcheck:
+            test: ["CMD", "/bin/sh", "/service_supervisor.sh", "health"]
+            interval: 15s
+            timeout: 10s
+            retries: 3
+            start_period: 45s
         ports:
             - ${TTPORT:-2443}:8443/tcp
             - ${TTPORT:-2443}:8443/udp

@@ -279,12 +279,18 @@ class SnolcSupervisor(Supervisor):
         self.collect()
 
     def tick(self):
+        if self.sync_quarantined():
+            return
         if not self.desired.exists():
             self.stop()
             self.write_status(None, "disabled")
             return
-        state = read_json(self.desired)
-        self.validate(state)
+        state = self.read_desired()
+        try:
+            self.validate(state)
+        except (OSError, ValueError, KeyError, TypeError):
+            self.stop()
+            raise RuntimeError("desired_unavailable") from None
         self.last_valid_state = state
         if not state["enabled"]:
             self.stop()
@@ -304,7 +310,7 @@ class SnolcSupervisor(Supervisor):
             self.start_core(state)
             self.sync_users(state)
             self.stop()
-            if read_json(self.desired) != state:
+            if self.sync_quarantined() or self.read_desired() != state:
                 return
             active = [uid for uid, user in state["users"].items() if user["enabled"]
                       and (user["expires"] is None or user["expires"] > time.time())]

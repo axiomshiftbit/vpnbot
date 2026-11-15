@@ -18,6 +18,7 @@ class BackupStatusBot extends Bot {
         $this->hysteriaUsersRoot="$root/hysteria"; $this->hysteriaConf="$root/hysteria.yaml";
         $this->clients="$root/clients.json"; $this->clients1="$root/clients1.json";
         $this->backupWarpRoot="$root/warp";
+        $this->managedNodeRoot="$root/ssh/nodes";
         $this->input=['chat'=>1,'message_id'=>1,'callback_id'=>false];
         $this->setPacConf(['language'=>'ru','limitpage'=>5,'domain'=>'example.test','hysteria_pass'=>'synthetic-secret']);
         foreach (['vpn','rules'] as $name) file_put_contents("$root/$name.toml", "# fixture\n");
@@ -33,8 +34,8 @@ class BackupStatusBot extends Bot {
         if (!$this->protocolModuleEnabled($service)) return parent::ssh($cmd,$service,$wait,$log);
         if (str_contains($cmd,'VPNBOT_SERVICE_READY')) return $this->startFails ? '' : 'VPNBOT_SERVICE_READY';
         if ($service==='hy') return $this->managed ? 'managed' : '';
-        if ($service==='tt' && str_contains($cmd,'VPNBOT_TT_STOPPED')) return $this->stopFails ? '' : 'VPNBOT_TT_STOPPED';
-        if ($service==='tt') $this->sshFailed=$this->startFails;
+        if ($service==='tt' && str_contains($cmd,'service_supervisor.sh stop')) return $this->stopFails ? '' : 'VPNBOT_SERVICE_STOPPED:trusttunnel';
+        if ($service==='tt') return $this->stopFails || $this->startFails ? '' : 'VPNBOT_SERVICE_READY:trusttunnel';
         return '';
     }
     public function verifyBackupServices(array $json): array {
@@ -72,7 +73,7 @@ try {
 
     $modules->setMany(['hy'=>true,'tt'=>true]); $b->commands=[];
     protocolStatusCheck($b->importFile($b->update)===true,'Включённые протоколы восстанавливаются через настоящие обработчики');
-    protocolStatusCheck(count($b->commands)===4,'Проверены supervisor Hysteria и stop/start TrustTunnel');
+    protocolStatusCheck(count($b->commands)===3,'Проверены supervisor Hysteria и синхронный restart TrustTunnel');
     $b->managed=false; file_put_contents($b->update,json_encode(['hy'=>$hy]));
     protocolStatusCheck($b->importFile($b->update)===false && str_contains(end($b->messages),'❌ Hysteria:'),'Сбой включённой Hysteria назван в итоговом сообщении');
     $b->managed=true;
@@ -85,7 +86,9 @@ try {
     $b->stopFails=false; $b->startFails=false; $b->blockers=[]; $b->commands=[];
     file_put_contents($b->update,json_encode(['tt'=>'']));
     protocolStatusCheck($b->importFile($b->update)===true && !$b->getClientsTt(),'Пустой список отозвал доступы без ложного отказа');
-    protocolStatusCheck(count($b->commands)===1 && str_contains($b->commands[0][1],'VPNBOT_TT_STOPPED'),'При пустом списке демон остановлен, новый запуск не требуется');
+    protocolStatusCheck(count($b->commands)===2 && str_contains($b->commands[0][1],'service_supervisor.sh stop trusttunnel')
+        && str_contains($b->commands[1][1],'service_supervisor.sh status trusttunnel') && str_contains($b->commands[1][1],'-eq 3'),
+        'При пустом списке демон остановлен и выключенное состояние подтверждено');
 
     foreach (['wg'=>'WireGuard','wg1'=>'WireGuard 1','oc'=>'OpenConnect'] as $key=>$label) {
         $data=$key==='oc' ? 'tcp-port = 443' : ['server'=>['interface'=>['PrivateKey'=>'synthetic','Address'=>'10.0.0.1/24']],'clients'=>[]];

@@ -105,8 +105,11 @@ fi
 # развёрнутые клиентские профили продолжают работать).
 SAN_OK=0
 if [ -s "$PKI/server.crt" ] && [ -s "$PKI/server.key" ] && [ -n "$IP" ]; then
-    if openssl x509 -in "$PKI/server.crt" -noout -text 2>/dev/null | grep -q "IP Address:$IP"; then
-        if [ -z "$DOMAIN" ] || openssl x509 -in "$PKI/server.crt" -noout -text 2>/dev/null | grep -q "DNS:$DOMAIN"; then
+    if openssl x509 -in "$PKI/server.crt" -noout -checkip "$IP" >/dev/null 2>&1 \
+        && openssl x509 -in "$PKI/server.crt" -noout -checkend 0 >/dev/null 2>&1; then
+        # DNS SAN должен совпасть целиком: без regex, CN fallback и wildcard.
+        if [ -z "$DOMAIN" ] || openssl x509 -in "$PKI/server.crt" -noout -ext subjectAltName 2>/dev/null \
+            | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -Fxiq -- "DNS:$DOMAIN"; then
             SAN_OK=1
         fi
     fi
@@ -131,22 +134,11 @@ ln -sfn "$PKI/ca.crt"     /etc/swanctl/x509ca/ca.crt       2>>"$LOG" || log "PKI
 ln -sfn "$PKI/server.crt" /etc/swanctl/x509/server.crt     2>>"$LOG" || log "PKI link FAILED"
 ln -sfn "$PKI/server.key" /etc/swanctl/private/server.key 2>>"$LOG" || log "PKI link FAILED"
 
-# ─── secrets.conf: PSK + EAP-юзеры (правит бот) ──────────────────────────
-# Формат swanctl. Начальный файл — только PSK; дальше бот РЕГЕНЕРИРУЕТ файл
-# целиком из users_ikev2.json (секции eap-1, eap-2, … c id = юзер).
-# Создаём только если нет — иначе затёрли бы юзеров бота.
-if [ ! -f "$CONF/secrets.conf" ]; then
-    log "create secrets.conf"
-    cat > "$CONF/secrets.conf" <<EOF
-# Managed by vpnbot — do not edit section markers by hand.
-secrets {
-    ike-l2tp {
-        secret = "$PSK"
-    }
-#eap-users
-}
-EOF
-    chmod 600 "$CONF/secrets.conf" 2>/dev/null
+# users_ikev2.json includes durable pending revocations. Rebuild derived
+# secrets before any daemon can reuse credentials from an interrupted update.
+if ! python3 /ipsec_credentials.py; then
+    echo "FATAL: IPsec credential preparation failed" >&2
+    exit 1
 fi
 
 # ─── swanctl.conf (правится редко; создаём только если нет) ──────────────

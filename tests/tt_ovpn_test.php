@@ -230,7 +230,7 @@ ttAssert(
     'бот применяет миграции сам (иначе restore бэкапа откатывает их)'
 );
 ttAssert(
-    (bool) preg_match('~function restartOvpn\(\)\s*\{\s*\$this->migrateOvpnServerConf\(\);~', $botSrc),
+    (bool) preg_match('~function restartOvpn\(\)\s*\{[^}]*\$this->migrateOvpnServerConf\(\);~s', $botSrc),
     'restartOvpn() применяет миграции до старта демона'
 );
 // Ядро с модулем ovpn (DCO) оставляет интерфейс убитого демона: без очистки

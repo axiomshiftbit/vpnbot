@@ -39,6 +39,9 @@ def traffic(name, expected=True):
     r=curl('https://example.com/',8); check(name,r.returncode==0 and 'Example Domain' in r.stdout,expected)
 
 try:
+    retry=run(sys.executable,str(ROOT.parent/'wireguard-apply/run.py'),'--source',str(ROOT/'bot'),
+              '--out',str(OUT/'apply-retry'),timeout=300)
+    check('native-WG-AWG-failed-apply-cron-retry',retry.returncode==0)
     for inst in (0,1):
         prefix=f'awg{inst}'
         bot('wg-mode',inst,3)

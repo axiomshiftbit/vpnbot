@@ -25,7 +25,7 @@ class IpsecProfileBot extends Bot
     public function ipsecPorts() { return $this->t_ports; }
     public function ipsecHost() { return '203.0.113.9'; }
     public function getL2tpOnline() { return []; }
-    public function getIkev2Status() { return []; }
+    public function getIkev2Status(bool $forRevoke = false) { return []; }
     public function ipsecLastSeen($user) { return null; }
     public function menu($type = false, $arg = false, $return = false) { $this->t_menus[] = $type; }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false, $entities = false, $forum = false) { $this->t_messages[] = [$chat, $text]; return ['ok' => true]; }

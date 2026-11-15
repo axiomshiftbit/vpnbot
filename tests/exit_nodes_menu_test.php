@@ -73,6 +73,7 @@ class ExitMenuBot extends Bot
     public function nginxGetTypeCert() { return 'letsencrypt'; }
     public function deleteHwidUser($uid) { $this->removed[] = ['hwid', $uid]; }
     public function deleteWarpClient($email) { $this->removed[] = ['warp', $email]; }
+    protected function userXrLocked($i) { return $this->userXr($i); }
     public function userXr($i) { $this->screens[] = ['user ' . $i, []]; }
     public function xray($page = 0) { $this->screens[] = ["xray", []]; }
     public function callbacks(): array { $all = []; foreach ($this->last()[1] as $row) foreach ($row as $b) $all[$b['callback_data'] ?? ''] = $b['text']; return $all; }

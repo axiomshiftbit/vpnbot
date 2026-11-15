@@ -7,7 +7,8 @@ CASES = (
     'openconnect', 'adguard', 'shadowsocks', 'proxies', 'trusttunnel_native',
     'xdrive_native', 'dat_routes', 'routes_cores', 'exit_nodes', 'reality_fingerprints',
     'naive_native', 'dnstt', 'dnstt_identity', 'hysteria_extra', 'warp_network',
-    'telemt', 'telemt_web', 'panel', 'ssh_host_keys', 'mptcp_listeners',
+    'telemt', 'telemt_web', 'panel', 'ssh_host_keys', 'mptcp_listeners', 'managed_sync_failure', 'service_lifecycle',
+    'classic_proxy_apply', 'protocol_regressions',
 )
 # Эти модули поддерживают сценарии, но не запускаются как отдельные тесты.
 HELPERS = {'run', 'registry', 'proxy_helpers'}

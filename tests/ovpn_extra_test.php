@@ -241,11 +241,11 @@ check($bot->ovpnTraffic('bob')['since'] === 0 && !str_contains($bot->ovpnTraffic
 $saved = filemtime($bot->ovpnTrafficPath());
 $bot->status(['alice' => [5000, 7000, '2026-10-10 10:00:00', 1]]);
 $bot->ovpnTrafficSync();
-check($bot->ovpnTraffic('alice')['rx'] === 1000, 'growing counters are not written to disk on every pass');
+check($bot->ovpnTraffic('alice')['rx'] === 5000, 'every changed live sample is durable before disconnect');
 $data = json_decode(file_get_contents($bot->ovpnTrafficPath()), true); $data['saved'] = time() - 61;
 file_put_contents($bot->ovpnTrafficPath(), json_encode($data));
 $bot->ovpnTrafficSync();
-check($bot->ovpnTraffic('alice')['rx'] === 5000 && $bot->ovpnTraffic('alice')['tx'] === 7000, 'they are written once a minute');
+check($bot->ovpnTraffic('alice')['rx'] === 5000 && $bot->ovpnTraffic('alice')['tx'] === 7000, 'unchanged samples preserve the durable total');
 $bot->status(['alice' => [4000, 6000, '2026-10-10 10:00:00', 1]]);
 $bot->ovpnTrafficSync(static fn($users) => $users);
 check($bot->ovpnTraffic('alice')['rx'] === 5000, 'a stale smaller reading never lowers the total');
@@ -334,7 +334,9 @@ $bot->t_module = false; $bot->enableOvpnUser('alice'); file_put_contents("$bot->
 check(!$bot->isOvpnUserDisabled('alice'), 'a switched-off OpenVPN module is not policed');
 $bot->t_module = true;
 file_put_contents($bot->ovpnTrafficPath(), '{broken');
-check($bot->ovpnTraffic('alice')['rx'] >= 0 && $bot->ovpnTrafficSync() === [], 'a damaged counters file does not break the bot');
+try { $bot->ovpnTrafficSync(); check(false, 'a damaged counters file is rejected'); }
+catch (RuntimeException $expected) {}
+check(file_get_contents($bot->ovpnTrafficPath()) === '{broken', 'a damaged counters file is never overwritten with zero');
 
 // --- меню
 $bot = new OvpnLabBot($fresh);

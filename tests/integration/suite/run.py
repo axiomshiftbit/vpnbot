@@ -225,7 +225,7 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
  expected_cases=case_registry.load_cases(R/'published-main')
  def native(label):
   output=R/'published-main/results.json';output.unlink(missing_ok=True)
-  # 25 наборов идут ~1300 с; запас — на повтор упавшего набора (published-main/run.py).
+  # Общий предел оставляет запас на повтор одного упавшего набора.
   run(label,['python3',str(R/'published-main/run.py')],timeout=2700)
   rows=json.loads(output.read_text())
   # Каталог наборов общий для обоих проходов: журнал первой попытки уносим в результаты с меткой прохода.
@@ -244,7 +244,27 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
   run(label+'-managed-node',['python3','/opt/vpnbot-hosted-ci/managed-node-ci.py',str(node_result),str(a.checkout)],timeout=2400)
   node_rows=json.loads((node_result/'results.json').read_text())
   check('native',label+'-managed-node-complete',len(node_rows)>1500 and all(r['passed'] for r in node_rows));counts['native']+=len(node_rows)
+ ledger_result=O/'xray-stats-native'
+ run('xray-stats-native',['python3',str(a.checkout/'tests/integration/fixtures/xray-stats-native/entry.py'),
+     '--source',str(a.checkout),'--out',str(ledger_result),'--php-image',candidate['images']['php'],
+     '--xray-image',candidate['images']['xr']],timeout=300)
+ ledger=json.loads((ledger_result/'results.json').read_text())
+ check('native','xray-ledger-failure-complete',ledger['cleanup'] and not ledger['error'] and len(ledger['checks'])>=12 and all(r['ok'] for r in ledger['checks']))
+ counts['native']+=len(ledger['checks'])
  native('native-before-restore')
+ # The ordinary importer must restore previously issued profiles, including
+ # a real apply failure followed by retry. No fresh client credentials here.
+ backup_native=a.checkout/'tests/integration/fixtures/backup-protocols-native'
+ for name,script,extra,minimum in [
+  ('backup-wg-awg-payload','wg-payload.py',['--source',str(a.checkout),'--php-image',candidate['images']['php'],'--wg-image',candidate['images']['wg'],'--hosted-ci'],97),
+  ('backup-protocols-native','stand-entry.py',[],40),
+ ]:
+  output=O/name
+  run(name,['python3',str(backup_native/script),'--out',str(output),*extra],timeout=1800)
+  result=json.loads((output/'results.json').read_text())
+  rows=result['checks']
+  check('backup_restore',name+'-complete',not result['error'] and len(rows)>=minimum and all(r['passed'] for r in rows))
+  counts['backup_restore']+=len(rows)
  # Native backup roundtrip: change real saved client data, restore all sections,
  # then prove that the previously issued profiles still pass actual traffic.
  run('backup-pause-cron',['docker','stop','service-audit']);saved=bot('backup-save');check('backup_restore','full-export-sections',saved['sections']>=23)

@@ -137,7 +137,7 @@ reset:
 	docker volume rm vpnbot_adguard vpnbot_warp
 	make u
 backup:
-	docker compose exec php php backup.php > backup.json
+	python3 scripts/backup_file.py
 restore: # восстановление из резервной копии без Telegram: make restore FILE=backup.json
 	@test -f "$(or $(FILE),backup.json)" || { echo "нет файла / no file: $(or $(FILE),backup.json)"; exit 1; }
 	docker compose exec -T php php /app/restore.php < "$(or $(FILE),backup.json)"

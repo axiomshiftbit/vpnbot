@@ -129,8 +129,10 @@ $box = new class ($dir) extends Bot {
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $this->sshCalls[] = $cmd;
-        return '';
+        if (str_contains($cmd, '--load-creds')) return 'VPNBOT_IKEV2_CREDS_OK';
+        return str_contains($cmd, 'VPNBOT_IKEV2_STATUS_OK') ? 'VPNBOT_IKEV2_STATUS_OK' : '';
     }
+    public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
 };
 file_put_contents($dir . '/psk', "test-psk-value\n");
 
@@ -253,17 +255,23 @@ foreach (glob($dir . '/*') ?: [] as $f) {
 }
 @rmdir($dir);
 
-$restart = new class extends Bot {
+$restartRoot = sys_get_temp_dir() . '/ipsec-restart-' . bin2hex(random_bytes(8));
+mkdir($restartRoot, 0700);
+$restart = new class($restartRoot) extends Bot {
     public bool $enabled = true;
     public bool $pkiReady = true;
     public bool $loadReady = true;
     public array $commands = [];
-    public function __construct() {}
+    public function __construct(public string $root) {}
+    public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
+    public function ipsecPaths() { return ['conf' => $this->root, 'users' => "$this->root/users_ikev2.json", 'secrets' => "$this->root/secrets.conf"]; }
+    public function getIpsecPsk() { return 'synthetic-restart-psk'; }
     public function protocolModuleEnabled(string $service): bool { return $this->enabled; }
     public function ssh($cmd,$service='wg',$wait=true,$log='/dev/null') {
         $this->commands[]=$cmd;
         if (str_contains($cmd,'VPNBOT_IPSEC_PKI_READY')) return $this->pkiReady ? 'VPNBOT_IPSEC_PKI_READY' : '';
         if (str_contains($cmd,'VPNBOT_IPSEC_READY')) return $this->loadReady ? 'VPNBOT_IPSEC_READY' : '';
+        if (str_contains($cmd,'VPNBOT_IKEV2_CREDS_OK')) return 'VPNBOT_IKEV2_CREDS_OK';
         return '';
     }
 };
@@ -274,6 +282,8 @@ $restart->pkiReady=true;$restart->loadReady=false;
 ipsecAssert($restart->restartIpsec()===false,'Ошибка swanctl видна вызывающему коду');
 $restart->enabled=false;$restart->commands=[];
 ipsecAssert($restart->restartIpsec()===true && !$restart->commands,'Выключенный IPsec сохраняет настройки без обращения к контейнеру');
+foreach (glob($restartRoot . '/*') as $file) unlink($file);
+rmdir($restartRoot);
 if ($failed) {
     echo "$failed test(s) failed\n";
     exit(1);

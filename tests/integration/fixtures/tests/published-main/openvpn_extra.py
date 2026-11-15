@@ -10,6 +10,11 @@ def check(n,a,e=True):
  ok=a==e;results.append(dict(name=n,passed=ok,actual=a,expected=e));(OUT/'results.json').write_text(json.dumps(results,indent=2));print(('PASS ' if ok else 'FAIL ')+n,flush=True)
 def save(n,r): (OUT/(n+'.log')).write_text(r.stdout+r.stderr)
 def stop(): exe('pkill','openvpn');time.sleep(.3)
+def hook_state():
+ r=run('docker','exec','openvpn-audit','python3','-c',
+       'import json;v=json.load(open("/etc/openvpn/traffic.json"));s=[x for x in v.get("sessions",{}).values() if x.get("cn")=="auditov"];'
+       'print(json.dumps({"hook":v.get("hook_version"),"closed":sum(bool(x.get("closed")) for x in s),"live":len(v.get("users",{}).get("auditov",{}).get("live",{}))}))')
+ r.check_returncode();return json.loads(r.stdout)
 def connect(label):
  stop();exe('rm','-f','/tmp/audit-openvpn.log')
  r=exe('openvpn','--config','/tmp/audit.ovpn','--daemon','--log','/tmp/audit-openvpn.log','--connect-retry-max','1','--connect-retry','1','--tls-exit');r.check_returncode()
@@ -88,6 +93,7 @@ try:
  # Сессию закрывает сам сервер (блокировка): иначе он ждал бы пропавшего клиента минуту.
  bot('ovpn-disable');stop();check('session-ends',offline());kept=bot('ovpn-traffic')
  check('traffic-survives-disconnect',kept['rx']>=used['rx'] and kept['tx']>=used['tx'])
+ state=hook_state();check('disconnect-hook-closed-durable-session',state['hook']==1 and state['closed']>0 and state['live']==0)
  bot('ovpn-enable')
  # Лимит: клиент блокируется, включить его нельзя, пока лимит исчерпан.
  check('limit-blocks-client',bot('ovpn-limit','1')['disabled']);check('limited-login-rejected',connect('limited'),False)

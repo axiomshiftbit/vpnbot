@@ -18,6 +18,8 @@ ARG APK_REFRESH=2026-10-05
 # к установке пакетом. Easy-RSA ставится из официального релиза.
 COPY dockerfile/sources.sha256 /sources.sha256
 COPY dockerfile/download-file.sh /build-tools/download-file.sh
+COPY scripts/ovpn_firewall.sh /ovpn_firewall.sh
+COPY scripts/ovpn_traffic.py /ovpn_traffic.py
 
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
@@ -28,6 +30,7 @@ RUN set -eux; \
     apk add --no-cache \
         openssh \
         bash \
+        python3 \
         iptables \
         iproute2 \
         openssl \

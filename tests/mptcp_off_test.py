@@ -11,6 +11,7 @@ GODEBUG=multipathtcp=0 в трёх местах: .env (процессы скри
 """
 from pathlib import Path
 import re
+import runpy
 import unittest
 
 import yaml
@@ -69,7 +70,8 @@ class MptcpOffTest(unittest.TestCase):
     def test_stand_checks_live_listeners(self):
         suite = ROOT / 'tests/integration/fixtures/tests/published-main/mptcp_listeners.py'
         self.assertTrue(suite.is_file())
-        self.assertIn("'mptcp_listeners'", (suite.parent / 'run.py').read_text())
+        registry = runpy.run_path(suite.parent / 'registry.py')
+        self.assertIn('mptcp_listeners', registry['load_cases'](suite.parent))
 
 
 if __name__ == '__main__':

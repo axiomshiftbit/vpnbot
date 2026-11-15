@@ -71,37 +71,12 @@ if ! flock 8; then
     exit 1
 fi
 
-# Hook для client-connect/disconnect: пишет UP/DOWN-события с CN и реальным
-# IP клиента в отдельный журнал /logs/openvpn-connections.log. Без script-
-# security 2 openvpn игнорирует этот хук. Обязательный `exit 0` — чтобы
-# падение скрипта не разорвало клиентскую сессию.
-HOOK=/etc/openvpn/connect.sh
-cat > "$HOOK" <<'HOOKEOF'
-#!/bin/sh
-# OpenVPN client-connect / client-disconnect hook.
-# Вызывается openvpn'ом с env vars:
-#   script_type             — client-connect | client-disconnect
-#   common_name             — CN клиента из TLS-сертификата
-#   trusted_ip, trusted_port — реальный публичный адрес клиента
-#   ifconfig_pool_remote_ip  — выданный внутренний IP (10.8.0.x)
-#   bytes_received, bytes_sent — только на disconnect
-LOG=/logs/openvpn-connections.log
-TS=$(date '+%Y-%m-%d %H:%M:%S')
-case "$script_type" in
-    client-connect)
-        printf '%s UP   %-20s %s:%s -> %s\n' \
-            "$TS" "$common_name" "$trusted_ip" "$trusted_port" \
-            "$ifconfig_pool_remote_ip" >> "$LOG"
-        ;;
-    client-disconnect)
-        printf '%s DOWN %-20s %s:%s  rx=%s tx=%s\n' \
-            "$TS" "$common_name" "$trusted_ip" "$trusted_port" \
-            "${bytes_received:-0}" "${bytes_sent:-0}" >> "$LOG"
-        ;;
-esac
-exit 0
-HOOKEOF
-chmod +x "$HOOK"
+# Счётчики пишутся hook-ом до допуска клиента и при завершении сессии.
+# Ошибка durable storage не разрешает запуск без учёта.
+if ! python3 /ovpn_traffic.py --prepare; then
+    echo "FATAL: OpenVPN traffic accounting is unavailable" >&2
+    exit 1
+fi
 
 log() { echo "[start_ovpn $(date +%H:%M:%S)] $*" >> /logs/openvpn.log; }
 
@@ -226,8 +201,8 @@ management /var/run/openvpn-mgmt.sock unix
 # Журнал подключений (UP/DOWN + real IP) через внешний hook.
 # script-security 2 разрешает вызов системных скриптов.
 script-security 2
-client-connect /etc/openvpn/connect.sh
-client-disconnect /etc/openvpn/connect.sh
+client-connect "/usr/bin/python3 /ovpn_traffic.py"
+client-disconnect "/usr/bin/python3 /ovpn_traffic.py"
 
 # persist-key не пишем: 2.7 отвечает «DEPRECATED OPTION: --persist-key
 # option ignored. Keys are now always persisted across restarts.»
@@ -252,6 +227,7 @@ ovpn_guard -A FORWARD -i tun+ -d 10.10.0.5 -p udp --dport 53 -j ACCEPT
 ovpn_guard -A FORWARD -i tun+ -d 10.10.0.5 -p tcp --dport 53 -j ACCEPT
 ovpn_guard -A FORWARD -i tun+ -d 10.10.0.0/16 -j REJECT
 iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$INTERFACE" -j MASQUERADE 2>/dev/null || true
+sh /ovpn_firewall.sh "$SRV" || exit 1
 
 mkdir -p /dev/net
 [ -c /dev/net/tun ] || mknod /dev/net/tun c 10 200

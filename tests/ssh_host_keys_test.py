@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import re
+import runpy
 import shutil
 import subprocess
 import tempfile
@@ -105,10 +106,11 @@ class HostKeysTest(unittest.TestCase):
 
     def test_stand_checks_every_sshd_service_on_live_containers(self):
         cases = ROOT / 'tests/integration/fixtures/tests/published-main'
-        listed_cases = re.search(r"^cases=\[([^\]]+)\]$", (cases / 'run.py').read_text(), re.M).group(1).split(',')
-        self.assertIn("'ssh_host_keys'", listed_cases)
-        # Стенд сверяет число выполненных наборов с ожидаемым: новый набор без правки числа уронил бы прогон.
-        self.assertIn(f"len(rows)=={len(listed_cases)} and", (ROOT / 'tests/integration/suite/run.py').read_text())
+        registry = runpy.run_path(cases / 'registry.py')
+        listed_cases = registry['load_cases'](cases)
+        self.assertIn('ssh_host_keys', listed_cases)
+        # Полный прогон сверяет фактические результаты с тем же реестром.
+        self.assertIn('validate_results', (ROOT / 'tests/integration/suite/run.py').read_text())
         text = (cases / 'ssh_host_keys.py').read_text()
         listed = re.search(r"^SERVICES=\[([^\]]+)\]$", text, re.M).group(1).replace("'", '').split(',')
         self.assertEqual(set(listed), set(with_sshd()))

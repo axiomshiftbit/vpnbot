@@ -54,7 +54,10 @@ foreach (['scripts/start_wg.sh', 'scripts/start_oc.sh', 'scripts/start_ovpn.sh',
 // панели, AdGuard UI и SSH самого VPN-контейнера отвергаются.
 foreach (['scripts/start_ovpn.sh' => '-i tun+', 'scripts/start_ipsec.sh' => '-s "$CLIENT_SUBNET"', 'scripts/start_oc.sh' => '-i "${VPN_DEVICE}+"'] as $path => $selector) {
     $body = $read($path);
-    shAssert(str_contains($body, "iptables -A INPUT $selector -j REJECT"), "$path: службы самого контейнера закрыты от VPN");
+    $guard = str_replace(['scripts/start_', '.sh'], '', $path) . '_guard';
+    shAssert(str_contains($body, "$guard -A INPUT $selector -j REJECT")
+        && str_contains($body, "$guard() {") && str_contains($body, 'iptables "$@" ||'),
+        "$path: службы самого контейнера закрыты от VPN с проверкой применения");
     $deny = strpos($body, "$selector -d 10.10.0.0/16 -j REJECT");
     shAssert($deny !== false, "$path: служебная сеть закрыта от VPN");
     foreach (['udp', 'tcp'] as $proto) {
@@ -153,14 +156,10 @@ foreach (glob(__DIR__ . '/../scripts/*.sh') as $p) {
     shAssert(!str_contains((string) file_get_contents($p), 'exec /usr/sbin/sshd -D -e "$@" &'),
         basename($p) . ': нет `exec cmd &` (это обычный фоновый запуск, а читается наоборот)');
 }
-// Сторож РАЗВЁРНУТ после инцидента на рабочем сервере 2026-08-18: `tail -f /dev/null` здесь
-// обязателен и удалять его нельзя. Жизненным циклом AdGuardHome управляет бот
-// (stopAd = kill -15 по ssh, startAd = запуск заново), а adguardSync() зовётся
-// безусловно при каждом старте service.php. Без tail первый же stopAd убивал
-// единственный процесс переднего плана: контейнер завершался, DNS всей
-// установки ложился, nginx уходил в unhealthy на «host not found in upstream ad».
-shAssert((bool) preg_match('~^tail -f /dev/null~m', $read('scripts/start_ad.sh')),
-    'start_ad.sh: tail держит контейнер живым между stopAd/startAd — удалять нельзя');
+// Контейнер обязан переживать intentional stopAd/startAd. Supervisor также
+// восстанавливает процесс после аварии; runtime регрессии проверяют оба пути.
+shAssert(str_contains($read('scripts/start_ad.sh'), 'exec /bin/sh /service_supervisor.sh supervise ad'),
+    'start_ad.sh: supervisor сохраняет SSH между stopAd/startAd');
 
 // install_as_service.sh и diagnose_bot.sh
 $ias = $read('scripts/install_as_service.sh');

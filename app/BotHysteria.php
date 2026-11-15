@@ -242,36 +242,37 @@ trait BotHysteria
 
     public function hyTune(string $action = ''): void
     {
-        $pac = $this->getPacConf();
-        $before = $pac;
         $notice = '';
-        switch ($action) {
-            case 'obfs':
-                if (empty($pac['hysteria_obfs'])) break;
-                if ($this->hyObfsType($pac) === 'salamander' && !$this->hyGeckoSupported()) {
-                    $notice = $this->t('Gecko требует ядро Hysteria 2.9.2 или новее: обновите образ.', 'Gecko needs Hysteria core 2.9.2 or newer: update the image.');
+        [$before, $pac] = $this->pacConfUpdate(function (&$pac) use ($action, &$notice) {
+            $before = $pac;
+            switch ($action) {
+                case 'obfs':
+                    if (empty($pac['hysteria_obfs'])) break;
+                    if ($this->hyObfsType($pac) === 'salamander' && !$this->hyGeckoSupported()) {
+                        $notice = $this->t('Gecko требует ядро Hysteria 2.9.2 или новее: обновите образ.', 'Gecko needs Hysteria core 2.9.2 or newer: update the image.');
+                        break;
+                    }
+                    $pac['hysteria_obfs_type'] = $this->hyObfsType($pac) === 'gecko' ? 'salamander' : 'gecko';
                     break;
-                }
-                $pac['hysteria_obfs_type'] = $this->hyObfsType($pac) === 'gecko' ? 'salamander' : 'gecko';
-                break;
-            case 'cc':
-                $keys = array_keys(self::HY_CC);
-                $pac['hysteria_cc'] = $keys[(array_search($this->hyCc($pac), $keys, true) + 1) % count($keys)];
-                break;
-            case 'loss':
-            case 'ignorebw':
-            case 'sniff':
-                $key = ['loss' => 'hysteria_no_loss_comp', 'ignorebw' => 'hysteria_ignore_client_bw', 'sniff' => 'hysteria_sniff'][$action];
-                if (empty($pac[$key])) $pac[$key] = 1;
-                else unset($pac[$key]);
-                break;
-        }
+                case 'cc':
+                    $keys = array_keys(self::HY_CC);
+                    $pac['hysteria_cc'] = $keys[(array_search($this->hyCc($pac), $keys, true) + 1) % count($keys)];
+                    break;
+                case 'loss':
+                case 'ignorebw':
+                case 'sniff':
+                    $key = ['loss' => 'hysteria_no_loss_comp', 'ignorebw' => 'hysteria_ignore_client_bw', 'sniff' => 'hysteria_sniff'][$action];
+                    if (empty($pac[$key])) $pac[$key] = 1;
+                    else unset($pac[$key]);
+                    break;
+            }
+            return [$before, $pac];
+        });
         if ($pac !== $before) {
-            $this->setPacConf($pac);
             if (!$this->restartHysteria()) {
                 // Конфиг не записан или ядро его не приняло: настройку не оставляем.
-                $this->setPacConf($before);
-                $pac = $before;
+                if (!$this->restorePacFields($before, $pac, ['hysteria_obfs_type', 'hysteria_cc', 'hysteria_no_loss_comp', 'hysteria_ignore_client_bw', 'hysteria_sniff'])) throw new RuntimeException($this->t('Настройки изменились; восстановление предыдущего состояния не подтверждено', 'Settings changed; restoration of the previous state is unconfirmed'));
+                $pac = $this->getPacConf();
                 $notice = $this->t('Не удалось применить настройку: конфигурация Hysteria не изменена.', 'Could not apply the setting: the Hysteria configuration is unchanged.');
             }
         }

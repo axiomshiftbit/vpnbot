@@ -21,15 +21,22 @@ class LegacySettingsBot extends Bot
     public array $clientsFake = [['interface' => ['Address' => '10.0.0.2/32']]];
     public function __construct(string $root, array $translations) {
         $this->pac = "$root/config/pac.json";
+        $this->clients = "$root/config/clients.json";
+        $this->clients1 = "$root/config/clients1.json";
         $this->i18n = $translations; $this->language = 'ru'; $this->limit = 5;
     }
     public function readConfig() { return ['interface' => ['Address' => '10.0.0.1/24'], 'peers' => [$this->peer]]; }
     public function readStatus() { return ['peers' => []]; }
     public function realStatus() { return parent::readStatus(); }
     public function readClients(): array { return $this->clientsFake; }
+    public function getPorts() { return ['wg' => ['port' => 51820], 'wg1' => ['port' => 51821]]; }
     public function saveClients(array $clients) { $this->clientsFake = $clients; return true; }
-    public function createConfig($data) { return json_encode($data); }
-    public function restartWG($conf, $norestart = false) { $this->peer = json_decode($conf, true)['peers'][0]; return true; }
+    public function restartWG($conf, $norestart = false) {
+        $parsed = (new ReflectionMethod(Bot::class, 'parseWireGuardConfig'))->invoke($this, $conf);
+        $this->peer = $parsed['peers'][0];
+        return true;
+    }
+    protected function verifyWireguardPeers(string $config): bool { return true; }
     public function menu($type = false, $arg = false, $return = false) {}
     public function realMenu($type) { return parent::menu($type); }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') {

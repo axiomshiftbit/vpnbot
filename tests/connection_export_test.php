@@ -29,6 +29,7 @@ class ConnectionExportBot extends Bot {
     public function realityRequiresMlkem(): bool { return false; }
     public function subTemplate(string $template, string $type, array $pac) { return $this->templates[$type]; }
     public function warpClientProfile($email) { throw new RuntimeException('Экспорт не должен регистрировать посторонний WARP'); }
+    protected function userXrLocked($index) { return $this->userXr($index); }
     public function userXr($index) { $this->update(1, 1, "User $index"); }
     public function xray($page = 0) { $this->update(1, 1, 'Users'); }
 }

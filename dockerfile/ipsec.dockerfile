@@ -10,6 +10,7 @@ ARG STRONGSWAN_VERSION=6.1.0
 # Архив проверен по PGP-подписи upstream (DF42C170B34DBA77).
 ARG STRONGSWAN_SHA256=fe6c97481298767213cfc2e9a1da29fdd8018d481ff4cb9cf0283099654f20d4
 COPY dockerfile/download-file.sh /build-tools/download-file.sh
+COPY scripts/ipsec_credentials.py /ipsec_credentials.py
 
 # В Alpine пока strongSwan 6.0.7 без исправлений безопасности 6.1.0.
 # Собираем проверенный upstream; IKEv1 с 6.1 нужно включать явно для L2TP.

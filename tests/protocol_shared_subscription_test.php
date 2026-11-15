@@ -196,7 +196,15 @@ try {
     foreach (array_keys(ManagedProtocol::NAMES) as $p) sharedCheck(sharedUser($bot->protocolStore($p), $client)[1]['quota'] === 1000 - 200 - (count(ManagedProtocol::NAMES) - 1) * 100, 'Общая квота учитывает остальные протоколы и сохраняет локальный расход');
     $bot->stats['users'][0]['session']['upload'] = 600; $bot->syncXrayProtocolUsers();
     foreach (array_keys(ManagedProtocol::NAMES) as $p) sharedCheck(!sharedUser($bot->protocolStore($p), $client)[1]['enabled'], 'Исчерпанный общий лимит закрывает каждый протокол');
-    $bot->resetXrayProtocolUsage($client); $bot->stats = []; $bot->syncXrayProtocolUsers();
+    $bot->resetXrayProtocolUsage($client); $bot->stats = [];
+    // The actual supervisor acknowledges the new period before its counters
+    // can be treated as known zero. This test supplies that explicit snapshot.
+    foreach (array_keys(ManagedProtocol::NAMES) as $p) {
+        $s = $bot->protocolStore($p); $rows = [];
+        foreach ($s->read()['users'] as $id => $u) $rows[$id] = ['upload' => 0, 'download' => 0, 'reset' => $u['reset']];
+        ManagedProtocol::writeJson($s->directory() . '/runtime/usage.json', ['users' => $rows]);
+    }
+    $bot->syncXrayProtocolUsers();
     sharedCheck(array_sum($bot->xrayProtocolUsage($client)) === 0, 'Старые счётчики не возвращаются после сброса');
     foreach (array_keys(ManagedProtocol::NAMES) as $p) sharedCheck(sharedUser($bot->protocolStore($p), $client)[1]['enabled'], 'Сброс общей квоты восстанавливает доступ');
     $bot->xr['inbounds'][0]['settings']['clients'] = [$other]; $bot->syncXrayProtocolUsers();

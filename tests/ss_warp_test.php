@@ -127,13 +127,13 @@ $body = $bm[0] ?? '';
 swAssert($body !== '', 'тело ssWarp() найдено');
 // Перезапускать надо только ssserver: sslocal живёт в другом контейнере и
 // цепочки не касается.
-swAssert(str_contains($body, "pkill ssserver"), 'тумблер перезапускает ssserver');
-swAssert(str_contains($body, "nohup setsid ssserver -v -c /config.json"), 'и поднимает его обратно');
+swAssert(str_contains($body, "withShadowsocksLock"), 'тумблер сериализован со сменой пароля');
+swAssert(str_contains($body, "applyShadowsocksConfigsLocked(['ss' => \$c])"), 'тумблер подтверждает применение только ssserver');
 // Именно вызовы, а не слово: в комментарии тела sslocal упомянут по делу.
 swAssert(!preg_match('~ssh\(\s*.[^\n]*sslocal~', $body), 'sslocal тумблер не перезапускает');
 // Порядок в ветке включения: сначала ACL, потом конфиг и рестарт — иначе
 // ssserver стартует раньше, чем ему разрешат ходить в прокси.
-swAssert(strpos($body, 'warpSocksAllowSS(true)') < strpos($body, 'file_put_contents'),
+swAssert(strpos($body, 'warpSocksAllowSS(true)') < strpos($body, 'applyShadowsocksConfigsLocked'),
     'ACL ставится до перезаписи конфига');
 // Включение только после успешной пробы: отката на direct у ядра нет.
 swAssert(strpos($body, 'warpStatus()') < strpos($body, 'warpSocksAllowSS(true)'),
@@ -143,7 +143,7 @@ swAssert(strpos($body, 'warpStatus()') < strpos($body, 'warpSocksAllowSS(true)')
 // конфиг с outbound_proxy уедет к ssserver без ACCEPT в WARP_SOCKS.
 swAssert((bool) preg_match('~if \(!\$this->warpSocksAllowSS\(true\)\) \{~', $body),
     'включение отменяется по результату установки ACL');
-swAssert(strpos($body, 'warpSocksAllowSS(true)') < strpos($body, 'file_put_contents'),
+swAssert(strpos($body, 'warpSocksAllowSS(true)') < strpos($body, 'applyShadowsocksConfigsLocked'),
     'и отменяется ДО записи конфига');
 swAssert(str_contains($body, "i18n('ss warp acl failed')"), 'и админ видит, почему тумблер не включился');
 
@@ -164,14 +164,16 @@ swAssert(!preg_match('~\(string\)\s*\(\$ss\[self::SS_WARP_KEY\]~', $menu),
 // в WARP_SOCKS с ним не едет. Без примирения бэкап С ключом на хосте БЕЗ
 // правила молча роняет весь TCP клиентов ss, а бэкап БЕЗ ключа оставляет
 // лишний ACCEPT висеть до пересоздания wp.
-preg_match('~\n\s+// ss\n.*?\n\s+// sl\n~s', $src, $im);
+preg_match('~// SS sections.*?// hwid~s', $src, $im);
 $imp = $im[0] ?? '';
-swAssert($imp !== '', 'ветка ss в импорте настроек найдена');
+swAssert(str_contains($imp, 'restoreBackupShadowsocks($ssSections)'), 'импортирует обе legacy секции вместе');
 $restore = file_get_contents(__DIR__ . '/../app/BotBackup.php');
-swAssert(str_contains($imp, "restoreBackupShadowsocks('ss'") && str_contains($restore, 'warpSocksAllowSS(self::ssWarpOn('),
-    'импорт выставляет ACL по приехавшему ssserver.json');
-swAssert(strpos($restore, 'warpSocksAllowSS') < strpos($restore, ' -v -d -c /config.json'),
-    'и делает это ДО старта ssserver — как в самом тумблере');
+swAssert(str_contains($restore, 'withShadowsocksLock') && str_contains($restore, 'applyShadowsocksConfigsLocked($sections, true)'),
+    'импорт использует общий lock и проверенное применение');
+preg_match('~private function applyShadowsocksConfigsLocked.*?public function sspwdch~s', $src, $am);
+$apply = $am[0] ?? '';
+swAssert(strpos($apply, 'warpSocksAllowSS(true)') < strpos($apply, "'start'"), 'ACL включается до старта ssserver');
+swAssert(str_contains($apply, 'warpSocksAllowSS(false)'), 'импорт без WARP снимает прежний ACL');
 
 if ($failed) {
     echo "ss_warp_test: провалено проверок — $failed\n";

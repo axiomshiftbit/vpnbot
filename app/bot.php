@@ -25,6 +25,8 @@ require_once __DIR__ . '/BotChatNavigation.php';
 require_once __DIR__ . '/BotStore.php';
 require_once __DIR__ . '/TelegramApi.php';
 require_once __DIR__ . '/BotTelegramApi.php';
+require_once __DIR__ . '/BotWireguardState.php';
+require_once __DIR__ . '/BotXrayStats.php';
 
 class Bot
 {
@@ -48,6 +50,8 @@ class Bot
     use BotChatNavigation;
     use BotStore;
     use BotTelegramApi;
+    use BotWireguardState;
+    use BotXrayStats;
     private const OC_CAMOUFLAGE_SECRET = 'ocserv_camouflage_secret';
     private const OC_USERS = 'ocserv_users';
     // Совместимость патчей и суммы исходников проверены для этой пары.
@@ -604,6 +608,9 @@ class Bot
         if (empty($r['result']['message_id'])) {
             return;
         }
+        if (in_array($state['callback'] ?? '', ['setTimerXr', 'setXrPwd', 'renXrUs', 'saveTrafficXr', 'saveHwidUserLimit', 'extAddSave', 'extRenameSave'], true)) {
+            $state['xray_source'] = $this->xrayActionSource ?? '';
+        }
         $state['chat'] = $this->input['chat'];
         $state['time'] = time();
         if ($this->protocolReturnMain && in_array($state['callback'] ?? '', ['protocolReply', 'protocolOptionReply', 'protocolRelayReply'], true)) {
@@ -657,8 +664,84 @@ class Bot
         }
     }
 
+    private ?string $xrayActionSource = null;
+
+    private static function xrayCallbackIndex(string $command): ?int
+    {
+        $command = preg_replace('~^wg[01]:~', '', $command);
+        if (preg_match('~^/(?:userXr|switchXr|delxr|renameXrUser|changeXrPwd|genXrPwd|resetXrUser|setTrafficXr|timerXr|regenIdXr|rotateSub|hwidUser|hwidUserToggle|hwidUserDefault|setHwidUserLimit|hwidUserDel|extUser|extAdd|extRename|extToggle|extDel|setVlessLink) ([0-9]+)(?:[ _]|$)~D', $command, $m)) return (int) $m[1];
+        if (preg_match('~^/templateUser \w+ ([0-9]+)$~D', $command, $m)) return (int) $m[1];
+        if (preg_match('~^/choiceTemplate [a-z]+_([0-9]+)(?:_|$)~D', $command, $m)) return (int) $m[1];
+        return null;
+    }
+
+    // Full 128-bit identity for state-changing buttons. The compact template
+    // route uses a 64-bit locator and resolves exactly one full identity before dispatch.
+    public function xrayIdentityButtons(array $buttons, array $xray): array
+    {
+        foreach ($buttons as &$row) foreach ($row as &$button) {
+            $command = $button['callback_data'] ?? '';
+            $index = self::xrayCallbackIndex($command);
+            $client = $index === null ? null : ($xray['inbounds'][0]['settings']['clients'][$index] ?? null);
+            if ($client === null) continue;
+            $source = ManagedProtocol::xraySource($client);
+            if (preg_match('~^/choiceTemplate ([a-z]+)_[0-9]+(?:_(.*))?$~D', $command, $m)) {
+                $token = rtrim(strtr(base64_encode(hex2bin(substr($source, 0, 16))), '+/', '-_'), '=');
+                $button['callback_data'] = '/ct ' . $token . ' ' . $m[1] . ' ' . (($m[2] ?? '') ?: '-');
+            } else {
+                $token = rtrim(strtr(base64_encode(hex2bin($source)), '+/', '-_'), '=');
+                $button['callback_data'] = $command . ' !' . $token;
+            }
+        }
+        unset($row, $button);
+        return $buttons;
+    }
+
+    private function xrayClientMatches(int $index): bool
+    {
+        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$index] ?? null;
+        return $client !== null && ($this->xrayActionSource === null
+            || hash_equals($this->xrayActionSource, ManagedProtocol::xraySource($client)));
+    }
+
+    private function staleXrayAction(): void
+    {
+        if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
+        else $this->send($this->input['chat'] ?? '', $this->i18n('confirm stale'));
+        $this->xray();
+    }
+
     public function action()
     {
+        $previous = $this->xrayActionSource;
+        $this->xrayActionSource = null;
+        try { return $this->actionDispatch(); }
+        finally { $this->xrayActionSource = $previous; }
+    }
+
+    private function actionDispatch()
+    {
+        $command = (string) ($this->input['callback'] ?? '');
+        if (preg_match('~^/ct ([A-Za-z0-9_-]{11}) ([a-z]+) ([A-Za-z0-9+/=]+|-)\z~', $command, $m)) {
+            $bytes = base64_decode(strtr($m[1], '-_', '+/') . '=', true);
+            $matches = [];
+            if (is_string($bytes) && strlen($bytes) === 8) foreach ($this->getXray()['inbounds'][0]['settings']['clients'] ?? [] as $index => $client) {
+                $source = ManagedProtocol::xraySource($client);
+                if (hash_equals(bin2hex($bytes), substr($source, 0, 16))) $matches[$index] = $source;
+            }
+            if (count($matches) !== 1) return $this->staleXrayAction();
+            $index = array_key_first($matches); $this->xrayActionSource = $matches[$index];
+            $this->input['callback'] = '/choiceTemplate ' . $m[2] . '_' . $index . ($m[3] === '-' ? '' : '_' . $m[3]);
+        } elseif (preg_match('~^(.*) !([A-Za-z0-9_-]{22})\z~s', $command, $m)) {
+            $bytes = base64_decode(strtr($m[2], '-_', '+/') . '==', true);
+            if (!is_string($bytes) || strlen($bytes) !== 16 || self::xrayCallbackIndex($m[1]) === null) return $this->staleXrayAction();
+            $this->xrayActionSource = bin2hex($bytes);
+            $this->input['callback'] = $m[1];
+        } elseif (self::xrayCallbackIndex($command) !== null) {
+            // Pre-upgrade numeric buttons have no stable target and cannot mutate a replacement user.
+            return $this->staleXrayAction();
+        }
+
         $this->chatNavigationStart();
         $this->managedNodeNavigationStart();
         try { $this->managedNodeTrackScreen(); } catch (Throwable $e) { /* Navigation must never fail on node state. */ }
@@ -1375,8 +1458,7 @@ class Bot
                 $this->telemtUserAction($m[1], (int) $m[2], $m[3], $m[4] ?? '');
                 break;
             case preg_match('~^/tu ([tdr]) (\w+) (\d+) ([\w.\-]+)$~', $this->input['callback'], $m):
-                $method = ['t' => 'telemtToggleUser', 'd' => 'telemtDelUser', 'r' => 'telemtRegen'][$m[1]];
-                $this->$method($m[2], (int) $m[3], $m[4]);
+                $this->telemtUsers($m[4], (int) $m[3]);
                 break;
             case preg_match('~^/telemtMode$~', $this->input['callback'], $m):
                 $this->telemtMode();
@@ -1456,13 +1538,13 @@ class Bot
                 $this->telemtAddUser();
                 break;
             case preg_match('~^/telemtToggleUser (\w+)(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->telemtToggleUser($m[1], (int) ($m[2] ?? 0));
+                $this->telemtUsers('', (int) ($m[2] ?? 0));
                 break;
             case preg_match('~^/telemtDelUser (\w+)(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->telemtDelUser($m[1], (int) ($m[2] ?? 0));
+                $this->telemtUsers('', (int) ($m[2] ?? 0));
                 break;
             case preg_match('~^/telemtRegen (\w+)(?: (\d+))?$~', $this->input['callback'], $m):
-                $this->telemtRegen($m[1], (int) ($m[2] ?? 0));
+                $this->telemtUsers('', (int) ($m[2] ?? 0));
                 break;
             case preg_match('~^/telemtQr (?P<n>\w+)(?: (?P<r>[\w.\-]+))?$~', $this->input['callback'], $m):
                 $this->telemtQr($m['n'], $m['r'] ?? '');
@@ -2800,13 +2882,7 @@ class Bot
 
     private function telemtSave(callable $fn)
     {
-        return $this->withLock('pac', function () use ($fn) {
-            $conf = $this->getPacConf();
-            $before = $conf;
-            $result = $fn($conf);
-            if ($conf !== $before && !$this->setPacConf($conf)) throw new RuntimeException($this->t('Не удалось сохранить настройки Telemt', 'Could not save the Telemt settings'));
-            return $result;
-        });
+        return $this->pacConfUpdate($fn);
     }
 
     private function applyTelemt(?string $resetQuota = null, bool $deferStart = false)
@@ -3690,11 +3766,19 @@ class Bot
         return $this->withXrayApplyLock(fn() => $this->applyXrayConfig($c, $norestart));
     }
 
+    private ?string $heldXrayApplyPath = null;
+
     protected function withXrayApplyLock(callable $fn)
     {
         // Отдельный от xrayConfUpdate лок: сериализует запись/API/полный старт,
         // включая старые вызывающие методы, не использующие xrayConfUpdate.
         $path = $this->xrayConf . '.apply.lock';
+        // Reset/restore keep apply locked across ledger publication and restart.
+        // Re-entry is restricted to this instance and the pinned pathname.
+        if ($this->heldXrayApplyPath !== null) {
+            if ($this->heldXrayApplyPath !== $path) throw new RuntimeException('Xray apply lock path changed');
+            return $fn();
+        }
         if (is_link($path)) return false;
         $mask = umask(0077);
         $lock = @fopen($path, 'c');
@@ -3706,8 +3790,10 @@ class Bot
                 if (microtime(true) >= $deadline) return false;
                 usleep(100000);
             }
+            $this->heldXrayApplyPath = $path;
             return $fn();
         } finally {
+            $this->heldXrayApplyPath = null;
             flock($lock, LOCK_UN);
             fclose($lock);
         }
@@ -3715,6 +3801,7 @@ class Bot
 
     private function applyXrayConfig($c, $norestart = false)
     {
+        $c = $this->guardXrayUnknownStats($c);
         $c['inbounds'][0]['settings']['clients'] = array_values($c['inbounds'][0]['settings']['clients']);
         $c['log']['access'] = '/logs/xray';
         foreach ($c['inbounds'] as $v) {
@@ -3860,14 +3947,17 @@ class Bot
                 $this->syncXrayNginxRoutes($previous);
                 return false;
             }
-            if ($this->tryXrayHotApply($previous, $c)) return true;
+            if (!$this->xrayStatsResetting && $this->tryXrayHotApply($previous, $c)) return true;
             $this->collectSession();
-            $this->ssh('pkill xray', 'xr');
+            $stopped = $this->ssh('pkill xray; code=$?; [ "$code" -le 1 ] || exit "$code"; n=0; while pgrep -f "[x]ray run" >/dev/null; do [ "$n" -lt 25 ] || exit 1; n=$((n+1)); sleep 0.2; done; printf VPNBOT_XRAY_STOPPED', 'xr');
+            if ($this->sshFailed || trim((string) $stopped) !== 'VPNBOT_XRAY_STOPPED') return false;
             // XRAY_LOCATION_ASSET указывает ядру, где искать .dat (ext:/extip: из
             // routes → dat лежат в общем /logs/geodata). Задаём прямо в команде
             // старта — не требует правки override.env и совпадает с datDir().
-            $this->ssh('mkdir -p /logs/geodata; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >> /logs/xray_stdout 2>&1 & '
-                . 'xray_pid=$!; python3 /xray_hot_apply.py mark --pid "$xray_pid" >/dev/null 2>&1 || true', 'xr');
+            $started = $this->ssh('mkdir -p /logs/geodata || exit 1; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >> /logs/xray_stdout 2>&1 & '
+                . 'xray_pid=$!; python3 /xray_hot_apply.py mark --pid "$xray_pid" >/dev/null 2>&1 || true; kill -0 "$xray_pid" 2>/dev/null && printf VPNBOT_XRAY_LAUNCHED', 'xr');
+            if ($this->sshFailed || trim((string) $started) !== 'VPNBOT_XRAY_LAUNCHED') return false;
+            return $this->xrayCoreStarted($this->xrayCoreSelection($pac));
         } else {
             $previous = $this->getXray() ?? [];
             if (!$this->writeXrayJson($json)) return false;
@@ -4272,16 +4362,19 @@ class Bot
         if (false === $json) {
             error_log('saveXray: xray.json not written — ' . json_last_error_msg());
 
-            return;
+            throw new RuntimeException($this->t('Не удалось кодировать настройки Xray', 'Could not encode Xray settings'));
         }
-        $this->withXrayApplyLock(function () use ($json, $c) {
+        $saved = $this->withXrayApplyLock(function () use ($json, $c) {
             $previous = $this->getXray() ?? [];
             if ($this->writeXrayJson($json)) {
                 // HWID, шаблон и ссылка подписки также должны обновлять
                 // маркер, иначе следующая правка зря перезапустит ядро.
                 $this->tryXrayHotApply($previous, $c, 'sync');
+                return true;
             }
+            return false;
         });
+        if ($saved !== true) throw new RuntimeException($this->t('Не удалось сохранить настройки Xray', 'Could not save Xray settings'));
     }
 
     // Запись xray.json ТОЛЬКО поверх существующего inode. Файл читается
@@ -4316,6 +4409,11 @@ class Bot
     }
 
     public function writeXrayJson(string $json): bool
+    {
+        return $this->withXrayApplyLock(fn() => $this->writeXrayJsonLocked($json)) === true;
+    }
+
+    private function writeXrayJsonLocked(string $json): bool
     {
         $ok = $this->backupWriteInPlace($this->xrayConf, $json);
         if (!$ok) error_log('writeXrayJson: write failed; previous data restored where possible');
@@ -4466,15 +4564,24 @@ class Bot
     }
 
     public function collectSession() {
-        $this->withLock('xray-stats', fn() => $this->setXrayStats(self::foldSession($this->getXrayStats())));
+        try {
+            $this->withXrayStatsLock(function () {
+                if ($this->setXrayStats(self::foldSession($this->getXrayStats())) === false) {
+                    throw new RuntimeException('Could not persist Xray statistics');
+                }
+            });
+        } catch (XrayStatsUnavailable $error) {
+            // Preserve unknown state, but permit independent revocations and
+            // quota enforcement to reach the running core.
+            error_log('collectSession: Xray statistics unavailable; ledger preserved');
+        }
     }
 
     public function setLang($lang)
     {
-        $conf = $this->getPacConf();
-        $this->language = $conf['language'] = $lang;
+        $this->pacConfUpdate(function (&$conf) use ($lang) { $conf['language'] = $lang; });
+        $this->language = $lang;
         Lang::$en = $this->language === 'en';
-        $this->setPacConf($conf);
         $this->menu('config');
     }
 
@@ -4547,13 +4654,13 @@ class Bot
     public function setPanelPassword(string $plain): void
     {
         if (strlen($plain) < 8 || strlen($plain) > 72) throw new InvalidArgumentException($this->t('Пароль панели: от 8 до 72 байт', 'Panel password: 8 to 72 bytes'));
-        $c              = $this->getPacConf();
-        if (!is_array($c)) throw new RuntimeException($this->t('Настройки недоступны — пароль не изменён', 'Settings are unavailable; the password is unchanged'));
-        $c['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
         $dir = getenv('PANEL_DIR') ?: '/config/panel';
-        if (!PanelPasswordVault::remember($dir, $plain, $c['panelpswd'], (string) $this->key)) throw new RuntimeException($this->t('Не удалось сохранить защищённую копию — пароль не изменён', 'Could not save the protected copy; the password is unchanged'));
-        if ($this->setPacConf($c) === false) throw new RuntimeException($this->t('Не удалось записать настройки — пароль не изменён', 'Could not write the settings; the password is unchanged'));
-        PanelPasswordVault::settle($dir, $c['panelpswd']);
+        $hash = $this->pacConfUpdate(function (&$c) use ($plain, $dir) {
+            $c['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
+            if (!PanelPasswordVault::remember($dir, $plain, $c['panelpswd'], (string) $this->key)) throw new RuntimeException($this->t('Не удалось сохранить защищённую копию — пароль не изменён', 'Could not save the protected copy; the password is unchanged'));
+            return $c['panelpswd'];
+        });
+        PanelPasswordVault::settle($dir, $hash);
         // Как Panel::setPassword(): протухший initial_password.txt с уже
         // недействительным паролем не должен пережить смену.
         @unlink($dir . '/initial_password.txt');
@@ -4926,8 +5033,12 @@ class Bot
             if ($legacy !== false && $legacy !== '') {
                 $secret = $legacy;
                 if ($migrate) {
-                    $pac[self::OC_CAMOUFLAGE_SECRET] = $secret;
-                    $this->setPacConf($pac);
+                    $secret = $this->pacConfUpdate(function (&$pac) use ($secret) {
+                        $current = $this->normalizeOcCamouflageSecret($pac[self::OC_CAMOUFLAGE_SECRET] ?? '');
+                        if ($current !== false && $current !== '') return $current;
+                        $pac[self::OC_CAMOUFLAGE_SECRET] = $secret;
+                        return $secret;
+                    });
                 }
             }
         }
@@ -4991,26 +5102,45 @@ class Bot
 
     protected function syncOcUsers(?array $clients = null): array
     {
-        $clients = $clients ?? $this->getClientsOc();
-        $pac     = $this->getPacConf() ?: [];
-        $current = is_array($pac[self::OC_USERS] ?? null) ? $pac[self::OC_USERS] : [];
-        $legacy  = (string) ($pac['ocserv'] ?? '');
-        $users   = [];
-
-        foreach ($clients as $user) {
-            if (array_key_exists($user, $current)) {
-                $users[$user] = (string) $current[$user];
-            } elseif ($legacy !== '') {
-                $users[$user] = $legacy;
-            }
-        }
-
-        if (($pac[self::OC_USERS] ?? null) !== $users) {
-            $pac[self::OC_USERS] = $users;
-            $this->setPacConf($pac);
-        }
-
+        $users = $this->withLock('oc-users', fn() => $this->syncOcUsersLocked($clients));
+        if (!is_array($users)) throw new RuntimeException($this->t('Не удалось заблокировать пользователей OpenConnect', 'Could not lock OpenConnect users'));
         return $users;
+    }
+
+    // Только под oc-users; pac удерживается лишь на recovery/commit, без RPC.
+    private function syncOcUsersLocked(?array $clients = null): array
+    {
+        if ($this->withLock('pac', fn() => $this->recoverOcPasswordUpdateLocked(), 20, false) !== true) {
+            throw new RuntimeException($this->t('Восстановление паролей OpenConnect не подтверждено', 'OpenConnect password recovery is not confirmed'));
+        }
+        $clients = $clients ?? $this->getClientsOc();
+        return $this->pacConfUpdate(function (&$pac) use ($clients) {
+            $current = is_array($pac[self::OC_USERS] ?? null) ? $pac[self::OC_USERS] : [];
+            $legacy = (string) ($pac['ocserv'] ?? '');
+            $users = [];
+            foreach ($clients as $user) {
+                if (array_key_exists($user, $current)) $users[$user] = (string) $current[$user];
+                elseif ($legacy !== '') $users[$user] = $legacy;
+            }
+            $pac[self::OC_USERS] = $users;
+            return $users;
+        });
+    }
+
+    // callback получает согласованный passwd; его PAC/TeleMT snapshot надо
+    // прочитать здесь же. Не вызывать из callback другие владельцы oc-users.
+    protected function withOcUsersSnapshot(callable $fn)
+    {
+        $entered = false;
+        $result = $this->withLock('oc-users', function () use ($fn, &$entered) {
+            $entered = true;
+            $this->syncOcUsersLocked();
+            $raw = @file_get_contents($this->ocPasswordPath());
+            if ($raw === false) throw new RuntimeException('OpenConnect password snapshot is unavailable');
+            return $fn($raw);
+        });
+        if (!$entered) throw new RuntimeException('OpenConnect snapshot lock is unavailable');
+        return $result;
     }
 
     public static function ocPasswordFile(string $contents, string $user, ?string $hash): string
@@ -5028,25 +5158,124 @@ class Bot
         return $lines ? implode("\n", $lines) . "\n" : '';
     }
 
+    protected function ocPasswordPath(): string
+    {
+        return '/config/ocserv.passwd';
+    }
+
+    // Вызывается только под oc-users → pac. Prepared означает: публикация
+    // двух файлов не подтверждена; следующий процесс обязан вернуть оба.
+    private function recoverOcPasswordUpdateLocked(bool $rollback = false): bool
+    {
+        $path = $this->ocPasswordPath(); $journal = $path . '.update.json';
+        if (!file_exists($journal) && !is_link($journal)) return true;
+        if (is_link($journal) || !is_file($journal)) return false;
+        try {
+            $intent = json_decode((string) file_get_contents($journal), true, 32, JSON_THROW_ON_ERROR);
+            if (($intent['version'] ?? null) !== 1 || !in_array($intent['phase'] ?? '', ['prepared', 'committed'], true)
+                || !is_string($intent['password_file'] ?? null) || !is_bool($intent['users_present'] ?? null)
+                || !is_array($intent['users'] ?? null)
+                || (array_key_exists('password_present', $intent) && !is_bool($intent['password_present']))
+                || (array_key_exists('legacy_present', $intent) && (!is_bool($intent['legacy_present']) || !is_string($intent['legacy'] ?? null)))) return false;
+            $raw = base64_decode($intent['password_file'], true);
+            if ($raw === false) return false;
+            if ($rollback || $intent['phase'] === 'prepared') {
+                $pac = $this->getPacConf();
+                if (!is_array($pac)) return false;
+                if ($intent['users_present']) $pac[self::OC_USERS] = $intent['users']; else unset($pac[self::OC_USERS]);
+                // Старые version=1 journals не содержали legacy/presence полей.
+                if (array_key_exists('legacy_present', $intent)) {
+                    if ($intent['legacy_present']) $pac['ocserv'] = $intent['legacy']; else unset($pac['ocserv']);
+                }
+                // false после rename/fsync тоже требует компенсации ОБОИХ файлов.
+                $passwordRestored = ($intent['password_present'] ?? true)
+                    ? $this->writePrivateKey($path, $raw)
+                    : ((!file_exists($path) && !is_link($path)) || @unlink($path));
+                $pacRestored = $this->setPacConf($pac) !== false;
+                if (!$passwordRestored || !$pacRestored) return false;
+            }
+            if (!@unlink($journal)) return false;
+            $dir = @fopen(dirname($journal), 'r');
+            if ($dir === false) return false;
+            try { return fsync($dir); } finally { fclose($dir); }
+        } catch (Throwable $e) {
+            error_log('OpenConnect password recovery not confirmed');
+            return false;
+        }
+    }
+
+    // Вызывать только под oc-users → pac, после recovery. Содержимое двух
+    // файлов публикуется вместе; prepared journal восстанавливает только OC.
+    private function writeOcPasswordPairLocked(string $raw, array $next): bool
+    {
+        $path = $this->ocPasswordPath(); $journal = $path . '.update.json';
+        $present = file_exists($path) || is_link($path);
+        $old = $present ? @file_get_contents($path) : '';
+        $pac = $this->getPacConf();
+        if ($old === false || !is_array($pac)) return false;
+        $intent = ['version' => 1, 'phase' => 'prepared', 'password_file' => base64_encode($old), 'password_present' => $present,
+            'users_present' => array_key_exists(self::OC_USERS, $pac), 'users' => is_array($pac[self::OC_USERS] ?? null) ? $pac[self::OC_USERS] : [],
+            'legacy_present' => array_key_exists('ocserv', $pac), 'legacy' => (string) ($pac['ocserv'] ?? '')];
+        try {
+            if (!$this->writePrivateKey($journal, json_encode($intent, JSON_THROW_ON_ERROR))) {
+                $this->recoverOcPasswordUpdateLocked(true);
+                return false;
+            }
+            $passwordSaved = $this->writePrivateKey($path, $raw);
+            $pacSaved = $passwordSaved && $this->setPacConf($next) !== false;
+            if (!$pacSaved) {
+                if (!$this->recoverOcPasswordUpdateLocked(true)) error_log('OpenConnect password rollback not confirmed');
+                return false;
+            }
+            $intent['phase'] = 'committed';
+            if (!$this->writePrivateKey($journal, json_encode($intent, JSON_THROW_ON_ERROR))) {
+                if (!$this->recoverOcPasswordUpdateLocked(true)) error_log('OpenConnect password rollback not confirmed');
+                return false;
+            }
+            // Committed intent is safe to retain: recovery only removes it.
+            $this->recoverOcPasswordUpdateLocked();
+            return true;
+        } catch (Throwable $e) {
+            if (!$this->recoverOcPasswordUpdateLocked(true)) error_log('OpenConnect password rollback not confirmed');
+            return false;
+        }
+    }
+
+    // Полная замена только OC-пары: остальные PAC поля всегда берутся свежими.
+    // Ранний full PAC restore должен сохранять текущие ocserv/ocserv_users.
+    protected function restoreOcPasswordPair(string $raw, array $sourcePac): bool
+    {
+        if (array_key_exists(self::OC_USERS, $sourcePac) && !is_array($sourcePac[self::OC_USERS])) return false;
+        if (array_key_exists('ocserv', $sourcePac) && !is_string($sourcePac['ocserv'])) return false;
+        foreach ($sourcePac[self::OC_USERS] ?? [] as $pass) if (!is_string($pass)) return false;
+        return $this->withLock('oc-users', function () use ($raw, $sourcePac) {
+            return $this->withLock('pac', function () use ($raw, $sourcePac) {
+                if (!$this->recoverOcPasswordUpdateLocked()) return false;
+                $next = $this->getPacConf();
+                if (!is_array($next)) return false;
+                foreach ([self::OC_USERS, 'ocserv'] as $key) {
+                    if (array_key_exists($key, $sourcePac)) $next[$key] = $sourcePac[$key]; else unset($next[$key]);
+                }
+                return $this->writeOcPasswordPairLocked($raw, $next);
+            }, 20, false);
+        }, 20, false) === true;
+    }
+
     protected function saveOcPassword(string $user, ?string $pass): bool
     {
-        // Каталог конфигурации в ocserv намеренно :ro. Его меняет PHP,
-        // атомарно и с 0600; пароль не попадает в командную строку SSH.
         return $this->withLock('oc-users', function () use ($user, $pass) {
-            return $this->pacConfUpdate(function (&$pac) use ($user, $pass) {
-                $path = '/config/ocserv.passwd';
-                $raw = @file_get_contents($path);
-                if ($raw === false) return false;
+            return $this->withLock('pac', function () use ($user, $pass) {
+                if (!$this->recoverOcPasswordUpdateLocked()) return false;
+                $raw = @file_get_contents($this->ocPasswordPath()); $pac = $this->getPacConf();
+                if ($raw === false || !is_array($pac)) return false;
                 $hash = $pass === null ? null : crypt($pass, '$6$' . bin2hex(random_bytes(8)) . '$');
                 if ($hash !== null && !str_starts_with($hash, '$6$')) return false;
-                if (!$this->writePrivateKey($path, self::ocPasswordFile($raw, $user, $hash))) return false;
                 $users = is_array($pac[self::OC_USERS] ?? null) ? $pac[self::OC_USERS] : [];
-                if ($pass === null) unset($users[$user]);
-                else $users[$user] = $pass;
+                if ($pass === null) unset($users[$user]); else $users[$user] = $pass;
                 $pac[self::OC_USERS] = $users;
-                return true;
-            });
-        });
+                return $this->writeOcPasswordPairLocked(self::ocPasswordFile($raw, $user, $hash), $pac);
+            }, 20, false);
+        }, 20, false) === true;
     }
 
     protected function setOcUserPassword(string $user, string $pass): bool
@@ -5095,6 +5324,14 @@ class Bot
     }
 
     public function restartOcserv($conf, bool $syncCamouflage = true)
+    {
+        return $this->withLock('oc-users', function () use ($conf, $syncCamouflage) {
+            if ($this->withLock('pac', fn() => $this->recoverOcPasswordUpdateLocked(), 20, false) !== true) return false;
+            return $this->restartOcservLocked($conf, $syncCamouflage);
+        }, 20, false);
+    }
+
+    private function restartOcservLocked($conf, bool $syncCamouflage = true)
     {
         if ($syncCamouflage) {
             $conf = $this->applyOcCamouflage($conf, $this->ocCamouflageSecretForConf($conf, true));
@@ -5175,6 +5412,16 @@ class Bot
         return $this->withLock('naive', fn() => $this->applyNaive());
     }
 
+    public function controlContainerService(string $container, string $service, string $action): bool
+    {
+        if (!preg_match('~^[a-z0-9-]+$~D', $container)
+            || !in_array($service, ['adguard', 'ssserver', 'sslocal', 'ck-server', 'simple-tls', 'naive', 'trusttunnel', 'dnstt'], true)
+            || !in_array($action, ['start', 'stop', 'restart'], true)) throw new InvalidArgumentException('Invalid service operation');
+        $result = $this->ssh('/bin/sh /service_supervisor.sh ' . $action . ' ' . $service, $container);
+        $marker = $action === 'stop' ? 'VPNBOT_SERVICE_STOPPED:' : 'VPNBOT_SERVICE_READY:';
+        return !$this->sshFailed && trim((string) $result) === $marker . $service;
+    }
+
     public static function migrateNaiveTimeout(string $conf): string
     {
         // Дополняем только штатный servers-блок без ручной timeout-политики.
@@ -5214,33 +5461,26 @@ class Bot
 
             return false;
         }
-        // Caddy получает каталог /config: атомарная замена видна контейнеру.
-        // При отказе записи работающий процесс остаётся с прежним конфигом.
-        if (!$this->writePrivateKey('/config/Caddyfile', $t)) {
-            throw new RuntimeException($this->t('Не удалось сохранить конфигурацию Naive', 'Could not save the Naive configuration'));
-        }
-        $this->ssh('pkill caddy', 'np');
         if (!$ok || empty($this->getHashSubdomain('np'))) {
             return false;
         }
-        // Проверяем конфиг ДО старта: caddy запускается в фоне и раньше при
-        // любой ошибке молча не поднимался — в меню это выглядело как «naive
-        // off» без причины. Вывод validate короткий и в чат не уходит целиком.
-        $v = (string) $this->ssh('caddy validate -c /config/Caddyfile 2>&1', 'np');
-        if (!preg_match('~Valid configuration~', $v)) {
-            error_log('restartNaive: caddy validate failed — ' . strtok($v, "\n"));
-            if (!empty($this->input['chat'])) {
-                $this->send(
-                    $this->input['chat'],
-                    $this->t('naive: caddy отверг конфиг, сервис не запущен — ', 'naive: caddy rejected the config, the service is not running: ') . htmlspecialchars(strtok($v, "\n"), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
-                    $this->input['message_id'] ?? null
-                );
+        // Проверяем отдельный кандидат до замены активного файла и остановки.
+        // Вывод валидатора может содержать реквизиты, поэтому нужен только marker.
+        $candidate = '/config/Caddyfile.pending-' . bin2hex(random_bytes(8));
+        try {
+            if (!$this->writePrivateKey($candidate, $t)) {
+                throw new RuntimeException($this->t('Не удалось сохранить конфигурацию Naive', 'Could not save the Naive configuration'));
             }
-
-            return false;
+            $v = $this->ssh('caddy validate -c ' . escapeshellarg($candidate) . ' >/dev/null 2>&1 && printf VPNBOT_NAIVE_VALID', 'np');
+            if ($this->sshFailed || trim((string) $v) !== 'VPNBOT_NAIVE_VALID') return false;
+            // /config монтируется каталогом: атомарная замена видна контейнеру.
+            if (!$this->writePrivateKey('/config/Caddyfile', $t)) {
+                throw new RuntimeException($this->t('Не удалось сохранить конфигурацию Naive', 'Could not save the Naive configuration'));
+            }
+        } finally {
+            if (is_file($candidate)) unlink($candidate);
         }
-        $this->ssh('caddy run -c /config/Caddyfile', 'np', false, '/logs/caddy');
-        return true;
+        return $this->controlContainerService('np', 'naive', 'restart');
     }
 
     public static function hysteriaGuard(array $conf): array
@@ -5426,18 +5666,15 @@ class Bot
 
     public function chOcSubdomain($domain)
     {
-        $pac = $this->getPacConf();
-        if ($domain == -1) {
-            unset($pac["oc_domain"]);
-        } elseif (self::isSubdomainLabel($domain)) {
-            $pac["oc_domain"] = $domain;
-        } else {
-            // Без проверки строка вида «x;}\nserver { listen 443; }» уезжала в
-            // /config/upstream.conf и в default-domain ocserv.conf.
+        if ($domain != -1 && !self::isSubdomainLabel($domain)) {
             $this->send($this->input['chat'], $this->t("$domain: неверный формат поддомена", "$domain - wrong subdomain format"), $this->input['message_id']);
             return $this->menu('oc');
         }
-        $this->setPacConf($pac);
+        $pac = $this->pacConfUpdate(function (&$pac) use ($domain) {
+            if ($domain == -1) unset($pac['oc_domain']);
+            else $pac['oc_domain'] = $domain;
+            return $pac;
+        });
         // ?? '' — поддомен можно задать до основного домена: тогда обе функции
         // получают пустую строку (их штатный «сброс»), а не warning.
         $this->chocdomain($pac['domain'] ?? '');
@@ -5447,17 +5684,18 @@ class Bot
 
     public function chNpSubdomain($domain)
     {
-        $pac = $this->getPacConf();
-        if ($domain == -1) {
-            unset($pac['np_domain']);
-        } elseif (self::isSubdomainLabel($domain)) {
-            $pac['np_domain'] = $domain;
-        } else {
+        if ($domain != -1 && !self::isSubdomainLabel($domain)) {
             $this->send($this->input['chat'], $this->t("$domain: неверный формат поддомена", "$domain - wrong subdomain format"), $this->input['message_id']);
             return $this->menu('naive');
         }
-        $this->setPacConf($pac);
-        $this->restartNaive();
+        $pac = $this->pacConfUpdate(function (&$pac) use ($domain) {
+            if ($domain == -1) unset($pac['np_domain']);
+            else $pac['np_domain'] = $domain;
+            return $pac;
+        });
+        if ($this->restartNaive() === false) throw new RuntimeException($this->t(
+            'Naive: настройки сохранены, но применение не подтверждено. Прежний доступ может ещё действовать; повторите операцию.',
+            'Naive: settings were saved but application was not confirmed. Previous access may still work; retry the operation.'));
         $this->setUpstreamDomainNaive($pac['domain'] ?? '');
         $this->menu('naive');
     }
@@ -5482,12 +5720,10 @@ class Bot
         if (!self::naiveCredOk($user)) {
             return $this->naiveCredReject();
         }
-        $this->withLock('pac', function () use ($user) {
-            $pac = $this->getPacConf();
-            $pac['naive']['user'] = $user;
-            if (!$this->setPacConf($pac)) throw new RuntimeException($this->t('Не удалось сохранить логин Naive', 'Could not save the Naive login'));
-        });
-        $this->restartNaive();
+        $this->pacConfUpdate(function (&$pac) use ($user) { $pac['naive']['user'] = $user; });
+        if ($this->restartNaive() === false) throw new RuntimeException($this->t(
+            'Naive: настройки сохранены, но применение не подтверждено. Прежний доступ может ещё действовать; повторите операцию.',
+            'Naive: settings were saved but application was not confirmed. Previous access may still work; retry the operation.'));
         $this->menu('naive');
     }
 
@@ -5497,12 +5733,10 @@ class Bot
         if (!self::naiveCredOk($pass)) {
             return $this->naiveCredReject();
         }
-        $this->withLock('pac', function () use ($pass) {
-            $pac = $this->getPacConf();
-            $pac['naive']['pass'] = $pass;
-            if (!$this->setPacConf($pac)) throw new RuntimeException($this->t('Не удалось сохранить пароль Naive', 'Could not save the Naive password'));
-        });
-        $this->restartNaive();
+        $this->pacConfUpdate(function (&$pac) use ($pass) { $pac['naive']['pass'] = $pass; });
+        if ($this->restartNaive() === false) throw new RuntimeException($this->t(
+            'Naive: настройки сохранены, но применение не подтверждено. Прежний доступ может ещё действовать; повторите операцию.',
+            'Naive: settings were saved but application was not confirmed. Previous access may still work; retry the operation.'));
         $this->menu('naive');
     }
 
@@ -5515,13 +5749,13 @@ class Bot
 
     public function chhypass($pass)
     {
-        $pac = $this->getPacConf();
-        if (!empty($pass)) {
-            $pac['hysteria_pass'] = $pass;
-        } else {
-            unset($pac['hysteria_pass']);
-        }
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($pass) {
+            if (!empty($pass)) {
+                $pac['hysteria_pass'] = $pass;
+            } else {
+                unset($pac['hysteria_pass']);
+            }
+        });
         $this->restartHysteria();
         $this->menu('hy');
     }
@@ -5557,16 +5791,11 @@ class Bot
     public function chHySNI($name)
     {
         $name = trim($name);
-        $pac  = $this->getPacConf();
-        // Пустое сообщение Telegram не отправит: возврат к домену бота — нулём.
-        if ($name === '' || $name === '0') {
-            unset($pac['hysteria_sni']);
-        } elseif (preg_match('~^[A-Za-z0-9.-]+$~', $name)) {
-            $pac['hysteria_sni'] = $name;
-        } else {
-            return $this->menu('hy');
-        }
-        $this->setPacConf($pac);
+        if ($name !== '' && $name !== '0' && !preg_match('~^[A-Za-z0-9.-]+$~D', $name)) return $this->menu('hy');
+        $this->pacConfUpdate(function (&$pac) use ($name) {
+            if ($name === '' || $name === '0') unset($pac['hysteria_sni']);
+            else $pac['hysteria_sni'] = $name;
+        });
         $this->restartHysteria();
         $this->menu('hy');
     }
@@ -5576,14 +5805,14 @@ class Bot
     // же секрет) — просто помечаем выключенным пустым значением.
     public function toggleHyObfs()
     {
-        $pac = $this->getPacConf();
-        if (!empty($pac['hysteria_obfs'])) {
-            $pac['hysteria_obfs_saved'] = $pac['hysteria_obfs'];
-            unset($pac['hysteria_obfs']);
-        } else {
-            $pac['hysteria_obfs'] = $pac['hysteria_obfs_saved'] ?? bin2hex(random_bytes(12));
-        }
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) {
+            if (!empty($pac['hysteria_obfs'])) {
+                $pac['hysteria_obfs_saved'] = $pac['hysteria_obfs'];
+                unset($pac['hysteria_obfs']);
+            } else {
+                $pac['hysteria_obfs'] = $pac['hysteria_obfs_saved'] ?? bin2hex(random_bytes(12));
+            }
+        });
         $this->restartHysteria();
         $this->menu('hy');
     }
@@ -5592,13 +5821,12 @@ class Bot
     // все клиенты должны обновить obfs-password из новой hy2://-ссылки.
     public function genHyObfs()
     {
-        $pac = $this->getPacConf();
-        if (empty($pac['hysteria_obfs'])) {
-            return $this->menu('hy');
-        }
-        $pac['hysteria_obfs'] = bin2hex(random_bytes(12));
-        $this->setPacConf($pac);
-        $this->restartHysteria();
+        $changed = $this->pacConfUpdate(function (&$pac) {
+            if (empty($pac['hysteria_obfs'])) return false;
+            $pac['hysteria_obfs'] = bin2hex(random_bytes(12));
+            return true;
+        });
+        if ($changed) $this->restartHysteria();
         $this->menu('hy');
     }
 
@@ -5679,15 +5907,14 @@ class Bot
             $this->send($this->input['chat'], $this->i18n('port hopping bad') . ': <code>' . htmlspecialchars((string) $text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>');
             return $this->menu('hy');
         }
-        $pac = $this->getPacConf();
+        $this->pacConfUpdate(function (&$pac) use ($hop) {
+            if ($hop === '') unset($pac['hysteria_hop']);
+            else $pac['hysteria_hop'] = $hop;
+        });
         if ($hop === '') {
-            unset($pac['hysteria_hop']);
-            $this->setPacConf($pac);
             $this->send($this->input['chat'], 'port hopping: ' . $this->i18n('off'));
             return $this->menu('hy');
         }
-        $pac['hysteria_hop'] = $hop;
-        $this->setPacConf($pac);
         // Сервер не трогаем — слушает один порт; правило firewall на стороне юзера.
         $this->send($this->input['chat'], "port hopping: <code>$hop</code> ✅");
         $this->hyHopNft();
@@ -5864,9 +6091,9 @@ NFT;
         if (!isset($presets[$i])) {
             return $this->hyMasqMenu();
         }
-        $pac = $this->getPacConf();
-        $pac['hysteria_sni'] = $presets[$i];
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($presets, $i) {
+            $pac['hysteria_sni'] = $presets[$i];
+        });
         $this->restartHysteria();
         $this->hyMasqMenu();
     }
@@ -5890,17 +6117,17 @@ NFT;
     // Парсим "up down" в mbps. Пусто/0 → удаляем bandwidth (Brutal off → BBR).
     public function chHyBw($text)
     {
-        $pac = $this->getPacConf();
-        $nums = preg_split('~[\s,]+~', trim((string) $text), -1, PREG_SPLIT_NO_EMPTY);
-        $up   = (int) ($nums[0] ?? 0);
-        $down = (int) ($nums[1] ?? $nums[0] ?? 0);
-        if ($up <= 0 || $down <= 0) {
-            unset($pac['hysteria_bw_up'], $pac['hysteria_bw_down']);
-        } else {
-            $pac['hysteria_bw_up']   = "$up mbps";
-            $pac['hysteria_bw_down'] = "$down mbps";
-        }
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($text) {
+            $nums = preg_split('~[\s,]+~', trim((string) $text), -1, PREG_SPLIT_NO_EMPTY);
+            $up   = (int) ($nums[0] ?? 0);
+            $down = (int) ($nums[1] ?? $nums[0] ?? 0);
+            if ($up <= 0 || $down <= 0) {
+                unset($pac['hysteria_bw_up'], $pac['hysteria_bw_down']);
+            } else {
+                $pac['hysteria_bw_up']   = "$up mbps";
+                $pac['hysteria_bw_down'] = "$down mbps";
+            }
+        });
         $this->restartHysteria();
         $this->menu('hy');
     }
@@ -5909,13 +6136,13 @@ NFT;
     // иначе TLS-handshake клиента падает). На сервер не влияет.
     public function toggleHyInsecure()
     {
-        $pac = $this->getPacConf();
-        if (!empty($pac['hysteria_insecure'])) {
-            unset($pac['hysteria_insecure']);
-        } else {
-            $pac['hysteria_insecure'] = 1;
-        }
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) {
+            if (!empty($pac['hysteria_insecure'])) {
+                unset($pac['hysteria_insecure']);
+            } else {
+                $pac['hysteria_insecure'] = 1;
+            }
+        });
         $this->menu('hy');
     }
 
@@ -5928,13 +6155,13 @@ NFT;
             return;
         }
 
-        $pac = $this->getPacConf() ?: [];
-        if ($pass === '') {
-            unset($pac[self::OC_CAMOUFLAGE_SECRET]);
-        } else {
-            $pac[self::OC_CAMOUFLAGE_SECRET] = $pass;
-        }
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($pass) {
+            if ($pass === '') {
+                unset($pac[self::OC_CAMOUFLAGE_SECRET]);
+            } else {
+                $pac[self::OC_CAMOUFLAGE_SECRET] = $pass;
+            }
+        });
 
         $c = file_get_contents('/config/ocserv.conf');
         $t = $this->applyOcCamouflage($c, $pass);
@@ -5979,32 +6206,120 @@ NFT;
         $this->chocpass($this->genOcPassword(), $i);
     }
 
+    private int $shadowsocksLockDepth = 0;
+
+    public function withShadowsocksLock(callable $fn)
+    {
+        // Scoped reentrancy only for this SS pair and this Bot instance.
+        // Common withLock remains non-reentrant.
+        if ($this->shadowsocksLockDepth > 0) {
+            $this->shadowsocksLockDepth++;
+            try { return $fn(); }
+            finally { $this->shadowsocksLockDepth--; }
+        }
+        $entered = false;
+        $result = $this->withLock('shadowsocks', function () use ($fn, &$entered) {
+            $entered = true; $this->shadowsocksLockDepth = 1;
+            try { return $fn(); }
+            finally { $this->shadowsocksLockDepth = 0; }
+        }, 120, false);
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Shadowsocks', 'Could not lock Shadowsocks'));
+        return $result;
+    }
+
+    private function shadowsocksConfig(string $section): array
+    {
+        $path = dirname($this->pac) . '/' . ($section === 'ss' ? 'ssserver' : 'sslocal') . '.json';
+        if (is_link($path) || !is_file($path)) throw new RuntimeException('Shadowsocks configuration unavailable');
+        $raw = @file_get_contents($path);
+        $config = is_string($raw) ? json_decode($raw, true) : null;
+        if (!is_array($config)) throw new RuntimeException('Shadowsocks configuration invalid');
+        return $config;
+    }
+
+    // Caller holds shadowsocks across snapshot, writes and confirmed apply.
+    // Configs are individual bind mounts: preserve every existing inode.
+    private function applyShadowsocksConfigsLocked(array $configs, bool $restorePrevious = false): bool
+    {
+        $files = []; $before = []; $bodies = []; $services = [];
+        foreach ($configs as $section => $config) {
+            if (!in_array($section, ['ss', 'sl'], true) || !is_array($config)
+                || !is_string($config['password'] ?? null) || $config['password'] === ''
+                || strlen($config['password']) > 1024 || str_contains($config['password'], "\0")
+                || !is_int($config['server_port'] ?? null) || $config['server_port'] < 1 || $config['server_port'] > 65535
+                || (isset($config['method']) && (!is_string($config['method']) || $config['method'] === ''))) return false;
+            $binary = $section === 'ss' ? 'ssserver' : 'sslocal';
+            $file = dirname($this->pac) . '/' . $binary . '.json';
+            if (is_link($file) || (file_exists($file) && !is_file($file)) || (!$restorePrevious && !is_file($file))) return false;
+            $before[$file] = is_file($file) ? @file_get_contents($file) : null;
+            if ($before[$file] === false) return false;
+            $files[$section] = $file;
+            $bodies[$file] = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            $container = $section === 'ss' ? 'ss' : 'proxy';
+            if ($this->protocolModuleEnabled($container)) $services[$container] = $binary;
+        }
+        // No destructive operation until the whole local candidate is valid.
+        if (isset($configs['ss']) && self::ssWarpOn($configs['ss']) && !$this->warpSocksAllowSS(true)) return false;
+        $stopped = true;
+        foreach ($services as $container => $binary) if (!$this->controlContainerService($container, $binary, 'stop')) $stopped = false;
+        if (!$stopped) return false;
+        try {
+            foreach ($bodies as $file => $body) if (!$this->backupWriteInPlace($file, $body)) throw new RuntimeException('Shadowsocks write failed');
+            if (isset($configs['ss']) && !self::ssWarpOn($configs['ss']) && $this->protocolModuleEnabled('wp')) {
+                $oldServer = $before[$files['ss']] === null ? null : json_decode($before[$files['ss']], true);
+                if (($restorePrevious || self::ssWarpOn($oldServer)) && !$this->warpSocksAllowSS(false)) throw new RuntimeException('Shadowsocks ACL apply failed');
+            }
+            foreach ($services as $container => $binary) if (!$this->controlContainerService($container, $binary, 'start')) throw new RuntimeException('Shadowsocks apply failed');
+            return true;
+        } catch (Throwable $error) {
+            $safe = true;
+            foreach ($services as $container => $binary) if (!$this->controlContainerService($container, $binary, 'stop')) $safe = false;
+            foreach ($before as $file => $raw) {
+                if (!($raw === null ? (!file_exists($file) || @unlink($file)) : $this->backupWriteInPlace($file, $raw))) $safe = false;
+            }
+            // Import may restore its previous working generation. Credential
+            // rotation never automatically starts the old credentials again.
+            if ($restorePrevious && $safe) {
+                if (isset($files['ss']) && $before[$files['ss']] !== null) {
+                    $old = json_decode($before[$files['ss']], true);
+                    if (is_array($old) && self::ssWarpOn($old) && !$this->warpSocksAllowSS(true)) $safe = false;
+                }
+                if ($safe) foreach ($services as $container => $binary) {
+                    $file = dirname($this->pac) . '/' . $binary . '.json';
+                    if ($before[$file] !== null && !$this->controlContainerService($container, $binary, 'start')) $safe = false;
+                }
+            }
+            if (!$safe) throw new RuntimeException($this->t('Применение или откат Shadowsocks не подтверждены', 'Shadowsocks apply or rollback is unconfirmed'));
+            return false;
+        }
+    }
+
     public function sspwdch($pass, $nomenu = false)
     {
-        $this->ssh('pkill sslocal', 'proxy');
-        $this->ssh('pkill ssserver', 'ss');
-        $c = $this->getSSConfig();
-        $l = $this->getSSLocalConfig();
-        if (empty($c['acl'])) $c['acl'] = '/config/ss.acl';
-        $c['password'] = $l['password'] = $pass;
-        file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->chmodSecret('/config/ssserver.json');
-        file_put_contents('/config/sslocal.json', json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->ssh('mkdir -p /logs; nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &', 'ss');
-        $this->ssh('mkdir -p /logs; nohup setsid sslocal -v -c /config.json </dev/null >>/logs/shadowsocks_proxy 2>&1 &', 'proxy');
-
-        if (empty($nomenu)) {
-            $this->menu('ss');
+        if (!is_string($pass) || $pass === '' || strlen($pass) > 1024 || str_contains($pass, "\0")) {
+            throw new InvalidArgumentException($this->t('Некорректный пароль Shadowsocks', 'Invalid Shadowsocks password'));
         }
+        $ok = $this->withShadowsocksLock(function () use ($pass) {
+            $c = $this->shadowsocksConfig('ss'); $l = $this->shadowsocksConfig('sl');
+            if (empty($c['acl'])) $c['acl'] = '/config/ss.acl';
+            $c['password'] = $l['password'] = $pass;
+            return $this->applyShadowsocksConfigsLocked(['ss' => $c, 'sl' => $l]);
+        });
+        if (!$ok) throw new RuntimeException($this->t('Не удалось применить пароль Shadowsocks; отзыв прежнего доступа не подтверждён', 'Could not apply the Shadowsocks password; previous access revocation is unconfirmed'));
+        if (empty($nomenu)) $this->menu('ss');
+        return true;
     }
 
     public function v2ray()
     {
-        $this->ssh('pkill sslocal', 'proxy');
-        $this->ssh('pkill ssserver', 'ss');
+        return $this->withShadowsocksLock(fn() => $this->v2rayLocked());
+    }
+
+    private function v2rayLocked()
+    {
         $ssl = $this->nginxGetTypeCert();
-        $c = $this->getSSConfig();
-        $l = $this->getSSLocalConfig();
+        $c = $this->shadowsocksConfig('ss');
+        $l = $this->shadowsocksConfig('sl');
         $domain = $this->getPacConf()['domain'] ?: $this->ip;
         // ?? — в ssserver.json ключа plugin нет, пока плагин ни разу не
         // включали (шаблон в репозитории без него): голое $c['plugin'] давало
@@ -6036,11 +6351,9 @@ NFT;
             $l['plugin']      = 'v2ray-plugin';
             $l['plugin_opts'] = ($ssl ? 'tls;' : '') . "fast-open;path=/v2ray$hash;host=$domain";
         }
-        file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->chmodSecret('/config/ssserver.json');
-        file_put_contents('/config/sslocal.json', json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->ssh('mkdir -p /logs; nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &', 'ss');
-        $this->ssh('mkdir -p /logs; nohup setsid sslocal -v -c /config.json </dev/null >>/logs/shadowsocks_proxy 2>&1 &', 'proxy');
+        if (!$this->applyShadowsocksConfigsLocked(['ss' => $c, 'sl' => $l])) {
+            throw new RuntimeException($this->t('Не удалось применить Shadowsocks', 'Could not apply Shadowsocks'));
+        }
         $this->menu('ss');
     }
 
@@ -6052,15 +6365,20 @@ NFT;
 
     public function setStlsConfig(array $c)
     {
-        file_put_contents(
-            '/config/stlsserver.json',
-            json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-        );
+        if (!$this->writePrivateKey('/config/stlsserver.json', json_encode($c,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))) {
+            throw new RuntimeException('Could not save simple-tls settings');
+        }
     }
 
     // simple-tls работает поверх plain ssserver (как cloak), но UI держит
     // транспорты взаимоисключающими: при включении одного глушим остальные.
     public function simpleTls()
+    {
+        return $this->withShadowsocksLock(fn() => $this->simpleTlsLocked());
+    }
+
+    private function simpleTlsLocked()
     {
         $c = $this->getStlsConfig();
         if (!empty($c['Enabled'])) {
@@ -6076,13 +6394,7 @@ NFT;
             $c['Enabled']    = 1;
             $c['ServerName'] = $c['ServerName'] ?? $domain;
             $this->setStlsConfig($c);
-            $this->ssh(self::PKILL_STLS, 'ss');
-            $port = (int) (getenv('STLSPORT') ?: 3443);
-            $ssport = self::SS_INTERNAL_PORT;
-            $cert = $this->ssh('[ -s /certs/cert_public ] && [ -s /certs/cert_private ] && echo cert || echo self', 'ss');
-            $cert = trim($cert) === 'cert' ? '/certs/cert_public:/certs/cert_private' : '/certs/self_public:/certs/self_private';
-            [$cp, $kp] = explode(':', $cert);
-            $this->ssh("nohup setsid simple-tls -s -b :$port -d 127.0.0.1:$ssport -cert $cp -key $kp </dev/null >>/logs/simple-tls.log 2>&1 &", 'ss');
+            $this->requireSsTransportControl('simple-tls', 'restart');
         }
         $this->menu('ss');
     }
@@ -6105,15 +6417,20 @@ NFT;
 
     public function chStlsPort($port)
     {
+        return $this->withShadowsocksLock(fn() => $this->chStlsPortLocked($port));
+    }
+
+    private function chStlsPortLocked($port)
+    {
         $port = (int) $port;
         if ($port < 1 || $port > 65535) {
             $this->menu('ss');
             return;
         }
         $this->setEnvVar('STLSPORT', (string) $port);
-        $pac = $this->getPacConf();
-        $pac['restart'] = 1;
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) {
+            $pac['restart'] = 1;
+        });
         $this->menu('ss');
     }
 
@@ -6134,6 +6451,11 @@ NFT;
     }
 
     public function chStlsSNI($name)
+    {
+        return $this->withShadowsocksLock(fn() => $this->chStlsSNILocked($name));
+    }
+
+    private function chStlsSNILocked($name)
     {
         $name = trim($name);
         if (!preg_match('~^[A-Za-z0-9.-]+$~', $name)) {
@@ -6211,10 +6533,10 @@ NFT;
 
     public function setCloakConfig(array $c)
     {
-        file_put_contents(
-            '/config/ckserver.json',
-            json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-        );
+        if (!$this->writePrivateKey('/config/ckserver.json', json_encode($c,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))) {
+            throw new RuntimeException('Could not save Cloak settings');
+        }
     }
 
     // Лениво создаём ключи и UID через ck-server -key / -uid в ss-контейнере.
@@ -6225,6 +6547,11 @@ NFT;
     // UID = 16 байт = 22 символа + '==' (24 всего). Создаём один раз и
     // храним, чтобы клиентские ссылки переживали recreate.
     public function ensureCloakIdentity()
+    {
+        return $this->withShadowsocksLock(fn() => $this->ensureCloakIdentityLocked());
+    }
+
+    private function ensureCloakIdentityLocked()
     {
         $c = $this->getCloakConfig();
         if (empty($c['PrivateKey']) || empty($c['PublicKey']) || empty($c['UID'])) {
@@ -6242,40 +6569,20 @@ NFT;
         return $c;
     }
 
-    // ck-server не понимает поле Enabled (плюс пустые AdminUID/DatabasePath
-    // ломают bind), поэтому передаём ему очищенную копию через /tmp.
-    // Тот же приём, что и в start_ss.sh. Извлечено в один метод, потому что
-    // вызывается из cloak/cloakDomain/cloakMethod/regen/addUser/delUser.
-    // ВАЖНО про `pkill -f`: он матчит ПОЛНУЮ командную строку, включая строку
-    // самого шелла, которому мы её отдали (sshd запускает команду как
-    // `sh -c "<вся строка>"`). Строка ниже содержит «ck-server», поэтому
-    // беззащитный `pkill -f ck-server` убивал СВОЙ ЖЕ шелл — цепочка
-    // обрывалась на первой команде, jq и ck-server не выполнялись вообще, и
-    // /logs/ck-server.log даже не создавался. Снаружи это выглядело как
-    // «включил cloak в боте, а он не работает и молчит»: Enabled=1 в конфиге,
-    // процесса нет, лога нет. Поднимался ck-server только при рестарте
-    // контейнера — там его запускает start_ss.sh, где pkill нет.
-    //
-    // -f всё ещё убивает свой shell, когда далее в той же команде есть
-    // буквальное «ck-server». -x сравнивает имя процесса, а не SSH-команду.
-    public const PKILL_CK = 'pkill -x ck-server';
-    public const PKILL_STLS = "pkill -f '[s]imple-tls'";
-
-    private function ckServerRestartCmd(): string
+    // Intentional stop is recorded by the supervisor; a later crash recovery
+    // must not silently undo it. Success requires its exact readiness marker.
+    private function requireSsTransportControl(string $service, string $action): void
     {
-        return self::PKILL_CK . '; '
-            . 'jq "del(.Enabled) '
-            . '| if (.AdminUID // \"\") == \"\" then del(.AdminUID) else . end '
-            . '| if (.DatabasePath // \"\") == \"\" then del(.DatabasePath) else . end" '
-            . '/config/ckserver.json > /tmp/ckserver.json '
-            . '&& nohup setsid ck-server -c /tmp/ckserver.json </dev/null >>/logs/ck-server.log 2>&1 &';
+        if (!$this->controlContainerService('ss', $service, $action)) {
+            throw new RuntimeException($this->t('Применение транспорта не подтверждено: ', 'Transport application is unconfirmed: ') . $service);
+        }
     }
 
     private function restartCloakIfRunning(): void
     {
         $c = $this->getCloakConfig();
         if (!empty($c['Enabled'])) {
-            $this->ssh($this->ckServerRestartCmd(), 'ss');
+            $this->requireSsTransportControl('ck-server', 'restart');
         }
     }
 
@@ -6286,6 +6593,11 @@ NFT;
     // → "default", всё, что лежало в BypassUID отдельно — "user2", "user3"…
     // BypassUID всегда пересчитывается из ckusers.json через syncCloakBypassUIDs().
     public function getCloakUsers(): array
+    {
+        return $this->withShadowsocksLock(fn() => $this->getCloakUsersLocked());
+    }
+
+    private function getCloakUsersLocked(): array
     {
         $f = '/config/ckusers.json';
         $list = file_exists($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
@@ -6314,10 +6626,10 @@ NFT;
 
     public function setCloakUsers(array $list): void
     {
-        file_put_contents(
-            '/config/ckusers.json',
-            json_encode(array_values($list), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-        );
+        if (!$this->writePrivateKey('/config/ckusers.json', json_encode(array_values($list),
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))) {
+            throw new RuntimeException('Could not save Cloak users');
+        }
     }
 
     // sha1-prefix как route id: UID содержит '/' и '+' и не лезет в callback
@@ -6352,15 +6664,20 @@ NFT;
     // start_ss.sh и для UI бота.
     public function cloak()
     {
+        return $this->withShadowsocksLock(fn() => $this->cloakLocked());
+    }
+
+    private function cloakLocked()
+    {
         $c = $this->ensureCloakIdentity();
         $domain = $this->getPacConf()['domain'] ?: $this->ip;
         $port   = (int) (getenv('CKPORT') ?: 7443);
         $ssport = self::SS_INTERNAL_PORT;
 
         if (!empty($c['Enabled'])) {
+            $this->requireSsTransportControl('ck-server', 'stop');
             $c['Enabled'] = 0;
             $this->setCloakConfig($c);
-            $this->ssh(self::PKILL_CK, 'ss');
         } else {
             // v2ray-plugin несовместим с cloak (ssserver слушал бы с плагином,
             // не plain). Раньше тут был return после v2ray()-toggle, что давало
@@ -6388,7 +6705,7 @@ NFT;
             $c['ServerName'] = ($c['ServerName'] ?? '') ?: $c['RedirAddr'];
             $this->setCloakConfig($c);
             $this->syncCloakBypassUIDs();
-            $this->ssh($this->ckServerRestartCmd(), 'ss');
+            $this->requireSsTransportControl('ck-server', 'restart');
         }
         $this->menu('ss');
     }
@@ -6399,9 +6716,9 @@ NFT;
         if (empty($c['Enabled'])) {
             return;
         }
+        $this->requireSsTransportControl('ck-server', 'stop');
         $c['Enabled'] = 0;
         $this->setCloakConfig($c);
-        $this->ssh(self::PKILL_CK, 'ss');
     }
 
     private function disableSimpleTlsIfOn(): void
@@ -6410,9 +6727,9 @@ NFT;
         if (empty($c['Enabled'])) {
             return;
         }
+        $this->requireSsTransportControl('simple-tls', 'stop');
         $c['Enabled'] = 0;
         $this->setStlsConfig($c);
-        $this->ssh(self::PKILL_STLS, 'ss');
     }
 
     // Снимает плагин v2ray-plugin с ssserver/sslocal без перерисовки меню.
@@ -6422,23 +6739,24 @@ NFT;
     // выделено и вызывается inline перед собственным enable.
     private function disableV2rayPluginIfOn(): void
     {
-        $c = $this->getSSConfig();
+        $this->withShadowsocksLock(fn() => $this->disableV2rayPluginIfOnLocked());
+    }
+
+    private function disableV2rayPluginIfOnLocked(): void
+    {
+        $c = $this->shadowsocksConfig('ss');
         if (empty($c['plugin'])) {
             return;
         }
-        $this->ssh('pkill sslocal', 'proxy');
-        $this->ssh('pkill ssserver', 'ss');
-        $l = $this->getSSLocalConfig();
+        $l = $this->shadowsocksConfig('sl');
         unset($c['plugin'], $c['plugin_opts'], $l['plugin'], $l['plugin_opts']);
         $ssport = self::SS_INTERNAL_PORT;
         $l['server']      = 'ss';
         $l['server_port'] = $ssport;
         $c['server_port'] = $ssport;
-        file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->chmodSecret('/config/ssserver.json');
-        file_put_contents('/config/sslocal.json',  json_encode($l, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->ssh('mkdir -p /logs; nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &', 'ss');
-        $this->ssh('mkdir -p /logs; nohup setsid sslocal -v -c /config.json </dev/null >>/logs/shadowsocks_proxy 2>&1 &', 'proxy');
+        if (!$this->applyShadowsocksConfigsLocked(['ss' => $c, 'sl' => $l])) {
+            throw new RuntimeException($this->t('Не удалось применить Shadowsocks', 'Could not apply Shadowsocks'));
+        }
     }
 
     // ---- SS через WARP (outbound_proxy у ssserver) --------------------------
@@ -6531,7 +6849,12 @@ NFT;
 
     public function ssWarp()
     {
-        $c = $this->getSSConfig();
+        return $this->withShadowsocksLock(fn() => $this->ssWarpLocked());
+    }
+
+    private function ssWarpLocked()
+    {
+        $c = $this->shadowsocksConfig('ss');
         // Битый/пропавший ssserver.json: json_decode отдаёт null, и запись ниже
         // сделала бы из конфига объект С ОДНИМ ключом outbound_proxy — то есть
         // снесла бы пароль, шифр и режим. Лучше ничего не менять.
@@ -6571,12 +6894,9 @@ NFT;
             }
             $c[self::SS_WARP_KEY] = $this->ssWarpUrl();
         }
-        file_put_contents('/config/ssserver.json', json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $this->chmodSecret('/config/ssserver.json');
-        // Только ssserver: sslocal в контейнере proxy ходит в ss:8388, его
-        // исходящие — это уже туннель, цепочка к ним отношения не имеет.
-        $this->ssh('pkill ssserver', 'ss');
-        $this->ssh('mkdir -p /logs; nohup setsid ssserver -v -c /config.json </dev/null >>/logs/shadowsocks 2>&1 &', 'ss');
+        if (!$this->applyShadowsocksConfigsLocked(['ss' => $c])) {
+            throw new RuntimeException($this->t('Не удалось применить Shadowsocks', 'Could not apply Shadowsocks'));
+        }
         $this->menu('ss');
     }
 
@@ -6598,6 +6918,11 @@ NFT;
 
     public function chCloakPort($port)
     {
+        return $this->withShadowsocksLock(fn() => $this->chCloakPortLocked($port));
+    }
+
+    private function chCloakPortLocked($port)
+    {
         $port = (int) $port;
         if ($port < 1 || $port > 65535) {
             $this->menu('ss');
@@ -6613,9 +6938,9 @@ NFT;
             $c['BindAddr'] = [":$port"];
             $this->setCloakConfig($c);
         }
-        $pac = $this->getPacConf();
-        $pac['restart'] = 1;
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) {
+            $pac['restart'] = 1;
+        });
         $this->menu('ss');
     }
 
@@ -6636,6 +6961,11 @@ NFT;
     }
 
     public function chCloakDomain($domain)
+    {
+        return $this->withShadowsocksLock(fn() => $this->chCloakDomainLocked($domain));
+    }
+
+    private function chCloakDomainLocked($domain)
     {
         $domain = trim($domain);
         if (!preg_match('~^[A-Za-z0-9.-]+$~', $domain)) {
@@ -6661,6 +6991,11 @@ NFT;
     // шифрования с разными ключами.
     public function cycleCloakMethod()
     {
+        return $this->withShadowsocksLock(fn() => $this->cycleCloakMethodLocked());
+    }
+
+    private function cycleCloakMethodLocked()
+    {
         $methods = ['aes-256-gcm', 'aes-128-gcm', 'chacha20-poly1305', 'plain'];
         $c       = $this->getCloakConfig();
         $cur     = $c['EncryptionMethod'] ?? 'aes-256-gcm';
@@ -6673,10 +7008,15 @@ NFT;
 
     public function regenCloakKeys()
     {
+        return $this->withShadowsocksLock(fn() => $this->regenCloakKeysLocked());
+    }
+
+    private function regenCloakKeysLocked()
+    {
         $c     = $this->getCloakConfig();
         $wasOn = !empty($c['Enabled']);
 
-        $this->ssh(self::PKILL_CK, 'ss');
+        $this->requireSsTransportControl('ck-server', 'stop');
 
         // Сбрасываем идентификационные поля. ensureCloakIdentity() их
         // восстановит через ck-server -key / -uid.
@@ -6715,7 +7055,7 @@ NFT;
             // BypassUID — иначе ck-server стартует с пустым allow-list.
             $this->getCloakUsers();
             $this->syncCloakBypassUIDs();
-            $this->ssh($this->ckServerRestartCmd(), 'ss');
+            $this->requireSsTransportControl('ck-server', 'restart');
         }
 
         $this->menu('ss');
@@ -6747,6 +7087,11 @@ NFT;
     // рестартуем ck-server, если он крутится.
     public function addCkUserSubmit($name)
     {
+        return $this->withShadowsocksLock(fn() => $this->addCkUserSubmitLocked($name));
+    }
+
+    private function addCkUserSubmitLocked($name)
+    {
         $name = preg_replace('~[^a-zA-Z0-9_.\- ]~', '', (string) $name);
         $name = trim($name);
         if ($name === '') {
@@ -6777,6 +7122,11 @@ NFT;
     // регенерации, и часть кода (ensureCloakIdentity) на него полагается.
     public function delCloakUser($hash)
     {
+        return $this->withShadowsocksLock(fn() => $this->delCloakUserLocked($hash));
+    }
+
+    private function delCloakUserLocked($hash)
+    {
         $u = $this->findCloakUserByHash($hash);
         if (!$u) {
             return $this->menuCkUsers();
@@ -6790,8 +7140,12 @@ NFT;
             $this->getCloakUsers(),
             fn($x) => ($x['uid'] ?? '') !== ($u['uid'] ?? '')
         ));
+        // Confirm revocation of the old generation before removing its retry
+        // identity. A failed later write/start must not leave that UID live.
+        if (!empty($c['Enabled'])) $this->requireSsTransportControl('ck-server', 'stop');
+        $c['BypassUID'] = array_values(array_unique(array_filter(array_column($list, 'uid'))));
+        $this->setCloakConfig($c);
         $this->setCloakUsers($list);
-        $this->syncCloakBypassUIDs();
         $this->restartCloakIfRunning();
         $this->menuCkUsers();
     }
@@ -7006,13 +7360,18 @@ NFT;
 
     public function timerClient(string $time, int $client, $page = 0, $inst = null)
     {
+        return $this->withWireguardUpdate(fn() => $this->timerClientLocked($time, $client, $page, $inst), ($inst === null || !in_array((int) $inst, [0, 1], true) ? null : ((int) $inst === 1 ? 'wg1' : 'wg')));
+    }
+
+    private function timerClientLocked(string $time, int $client, $page = 0, $inst = null)
+    {
         $this->promptInstWG($inst);
         $clients = $this->readClients();
         if (empty($clients[$client])) {
             return $this->menu('wg', $page);
         }
         if (!empty($clients[$client]['# off'])) {
-            $this->switchClient($client);
+            if ($this->switchClient($client) === false) return false;
             $clients = $this->readClients();
         }
         $server = $this->readConfig();
@@ -7048,8 +7407,7 @@ NFT;
                 }
                 break;
         }
-        $this->saveClients($clients);
-        $this->restartWG($this->createConfig($server));
+        if (!$this->applyWgConfig($this->createConfig($server), $clients)) throw new RuntimeException($this->t('WireGuard: применение не подтверждено; cron повторит операцию', 'WireGuard: application is unconfirmed; cron will retry the operation'));
         $this->menu('client', "{$client}_$page");
     }
 
@@ -7060,7 +7418,7 @@ NFT;
     // откладывалось на всё это время. Общие файлы шаги меняют под withLock().
     public const CRON_ACCESS = [
         'shutdownClient', 'shutdownClientXr', 'checkResetXrayStats', 'xrayStatsUser', 'checkTrafficLimits',
-        'syncXrayProtocolUsers', 'checkAccessPolicies', 'trackOnline', 'trackWgOnline', 'trackTelemtOnline', 'trackOvpnTraffic',
+        'syncXrayProtocolUsers', 'checkAccessPolicies', 'trackOnline', 'trackWgOnline', 'trackTelemtOnline', 'trackOvpnTraffic', 'retryIkev2Users',
     ];
 
     public int $cronPeriod = 10;
@@ -7105,6 +7463,7 @@ NFT;
             'trackWgOnline',
             'trackTelemtOnline',
             'trackOvpnTraffic',
+            'retryIkev2Users',
             'rotateAmneziaCron',
             'refreshExtSubCache',
             'checkDatUpdates',
@@ -7275,7 +7634,7 @@ NFT;
                     $counters = $this->xrayStatCounters();
                     // Отказ API не обнуляет последний успешный снимок.
                     if ($counters !== null) {
-                        $this->withLock('xray-stats', fn() => $this->xrayStatsApply($counters));
+                        $this->withXrayStatsLock(fn() => $this->xrayStatsApply($counters));
                     }
                 }), 30);
             } catch (\Throwable $th) {
@@ -7482,9 +7841,9 @@ NFT;
                 // Если последний бэкап был сделан до начала текущего периода - делаем бэкап
                 if ($lastBackupTime < $lastScheduledBackup) {
                     if ($this->pinBackup()) {
-                        $c = $this->getPacConf();
-                        $c['last_backup_time'] = $now;
-                        $this->setPacConf($c);
+                        $this->pacConfUpdate(function (&$current) use ($c, $now) {
+                            if (($current['backup'] ?? '') === $c['backup']) $current['last_backup_time'] = $now;
+                        });
                     }
                 }
             }
@@ -7501,64 +7860,32 @@ NFT;
     private function checkResetXrayStatsLocked(): void
     {
         $pac = $this->getPacConf();
-        if (!empty($pac['reset_monthly'])) {
-            $now  = time();
-            $last = (int) ($pac['last_reset_xray_time'] ?? 0);
-            // Первое включение тумблера: только ставим метку. Раньше её никто
-            // не инициализировал (switchMonthlyStats пишет лишь reset_monthly),
-            // и на ближайшем тике 0 оказывался меньше начала периода — ВСЯ
-            // статистика стиралась сразу, снимались все баны по трафику, а
-            // админам уходило «vless: reset stats».
-            if ($last <= 0) {
-                $pac['last_reset_xray_time'] = $now;
-                $this->setPacConf($pac);
-                return;
-            }
-            // Сброс — раз в КАЛЕНДАРНЫЙ месяц, первого числа. Прежняя
-            // арифметика брала «1 month» от эпохи (ровно 31 день) и заново
-            // считала точку отсчёта на каждом вызове, из-за чего «ежемесячный»
-            // сброс съезжал: 01.01, 01.02, 04.03, 01.04, 02.05…
-            $lastScheduledReset = strtotime('first day of this month midnight');
-
-            if ($lastScheduledReset !== false) {
-                // Если последний сброс был сделан до начала текущего периода - делаем сброс
-                if ($last < $lastScheduledReset) {
-                    $pac['last_reset_xray_time'] = $now;
-                    $this->setPacConf($pac);
-                    $this->resetXrStats(1);
-                    // Уведомление — не повод падать: config.php читается здесь
-                    // из ФС, а сброс уже выполнен и записан.
-                    if (is_file(__DIR__ . '/config.php')) {
-                        require __DIR__ . '/config.php';
-                        foreach (($c['admin'] ?? []) as $admin) {
-                            $this->send($admin, $this->t("vless: статистика сброшена", "vless: reset stats"));
-                        }
-                    }
-                }
-            }
+        if (empty($pac['reset_monthly'])) return;
+        $now = time(); $last = (int) ($pac['last_reset_xray_time'] ?? 0);
+        $scheduled = strtotime('first day of this month midnight');
+        if ($last > 0 && ($scheduled === false || $last >= $scheduled)) return;
+        if ($last > 0) $this->resetXrStatsLocked(1);
+        $this->pacConfUpdate(function (&$pac) use ($last, $now) {
+            if (!empty($pac['reset_monthly']) && (int) ($pac['last_reset_xray_time'] ?? 0) === $last) $pac['last_reset_xray_time'] = $now;
+        });
+        if ($last > 0 && is_file(__DIR__ . '/config.php')) {
+            require __DIR__ . '/config.php';
+            foreach (($c['admin'] ?? []) as $admin) $this->send($admin, $this->t('vless: статистика сброшена', 'vless: reset stats'));
         }
     }
 
     public function checkLogs()
     {
-        $c = $this->getPacConf();
-        if (!empty($c['autocleanlogs'])) {
+        $clean = $this->pacConfUpdate(function (&$c) {
+            if (empty($c['autocleanlogs'])) return false;
             $now = time();
             [$start, $period] = array_pad(explode('/', $c['autocleanlogs']), 2, '');
-            $lastScheduledClean = self::lastScheduled((int) strtotime(trim($start)), trim($period), $now);
-
-            if ($lastScheduledClean > 0) {
-                // Проверяем, делали ли уже очистку в этом периоде
-                $lastCleanTime = $c['last_clean_logs_time'] ?? 0;
-
-                // Если последняя очистка была сделана до начала текущего периода - делаем очистку
-                if ($lastCleanTime < $lastScheduledClean) {
-                    $c['last_clean_logs_time'] = $now;
-                    $this->setPacConf($c);
-                    $this->cleanLog(true);
-                }
-            }
-        }
+            $scheduled = self::lastScheduled((int) strtotime(trim($start)), trim($period), $now);
+            if ($scheduled <= 0 || ($c['last_clean_logs_time'] ?? 0) >= $scheduled) return false;
+            $c['last_clean_logs_time'] = $now;
+            return true;
+        });
+        if ($clean) $this->cleanLog(true);
     }
 
     public function cleanQueue(): void
@@ -7616,13 +7943,15 @@ NFT;
         if (empty($sent['ok']) || !is_int($sent['result']['message_id'] ?? null)) return false;
         // Экспорт/Telegram могут занять секунды. Не возвращаем на диск старую
         // копию PAC поверх настроек, изменённых за это время.
-        $conf = $this->getPacConf();
-        $previous = $conf['pinbackup'] ?? null;
-        $conf['pinbackup'] = $sent['result']['message_id'];
-        if ($this->setPacConf($conf) === false) return false;
-        $pinned = $this->pinAdmin($conf['pinbackup']);
+        $pin = $sent['result']['message_id'];
+        $previous = $this->pacConfUpdate(function (&$conf) use ($pin) {
+            $previous = $conf['pinbackup'] ?? null;
+            $conf['pinbackup'] = $pin;
+            return $previous;
+        });
+        $pinned = $this->pinAdmin($pin);
         // Не теряем прежнее закрепление при отказе отправки или закрепления.
-        if (!empty($pinned['ok']) && !empty($previous) && $previous !== $conf['pinbackup']) {
+        if (!empty($pinned['ok']) && !empty($previous) && $previous !== $pin) {
             $this->pinAdmin($previous, 1);
         }
         return true;
@@ -7825,25 +8154,33 @@ NFT;
 
     public function shutdownClient()
     {
+        $previous = $this->wg ?? null;
         try {
-            for ($i=0; $i < 2; $i++) {
-                $this->wg = $i;
-                $clients  = $this->readClients();
-                if ($clients) {
-                    foreach ($clients as $k => $v) {
-                        if (!empty($v['interface']['## time'])) {
-                            if (strtotime($v['interface']['## time']) < time()) {
-                                $this->switchClient($k);
+            for ($instance = 0; $instance < 2; $instance++) {
+                $this->wg = $instance;
+                try {
+                    if (!$this->retryWireguardApply()) continue;
+                    $this->withWireguardUpdate(function () {
+                        $clients = $this->readClients();
+                        foreach (array_keys($clients) as $index) {
+                            $clients = $this->readClients();
+                            $client = $clients[$index] ?? [];
+                            if (empty($client['interface']['## time']) || strtotime($client['interface']['## time']) >= time()) continue;
+                            // Expiry is an idempotent revoke, never an enable toggle.
+                            if (!empty($client['# off'])) {
+                                unset($clients[$index]['interface']['## time']);
+                                if ($this->saveClients($clients) === false) throw new RuntimeException('WireGuard expiry save failed');
+                            } elseif ($this->switchClient($index) === false) {
+                                break;
                             }
                         }
-                    }
+                    });
+                } catch (Throwable $error) {
+                    error_log('WireGuard expiry/apply is unconfirmed; retry next tick');
                 }
             }
-        } catch (Exception $e) {
         } finally {
-            // не оставляем выбранный инстанс протекать в последующие шаги cron
-            // (getInstanceWG читает $this->wg раньше pac-конфига) — как syncPortClients
-            unset($this->wg);
+            if ($previous === null) unset($this->wg); else $this->wg = $previous;
         }
     }
 
@@ -7866,7 +8203,7 @@ NFT;
                 // (checkTrafficLimits ставит 'off', 'time' не трогает), после
                 // наступления даты снова включался — со старой ссылкой.
                 if (!empty($v['time']) && ($v['time'] < time()) && empty($v['off'])) {
-                    $this->switchXr($k, 1);
+                    $this->switchXrLocked($k, 1);
                 }
             }
         } catch (Exception $e) {
@@ -7907,7 +8244,7 @@ NFT;
         // Под блокировкой xray — см. shutdownClientXr(). Уведомление — после.
         $disabled = $this->withLock('xray', fn() => $this->checkTrafficLimitsLocked(), 30, []);
         if (!empty($disabled)) {
-            $this->notifyAdmins($this->t("vless: лимит трафика исчерпан, отключены:\n", "vless: traffic limit reached, disabled:\n") . implode("\n", $disabled));
+            $this->notifyAdmins($this->t("vless: контроль общего лимита, отключены:\n", "vless: shared quota enforcement, disabled:\n") . implode("\n", $disabled));
         }
     }
 
@@ -7916,14 +8253,19 @@ NFT;
         $disabled = [];
         try {
             $x  = $this->getXray();
-            $st = $this->getXrayStats();
+            $statsKnown = true;
+            try { $st = $this->getXrayStats(); if (!is_array($st)) throw new RuntimeException('Xray usage unavailable'); }
+            catch (Throwable $error) { $st = []; $statsKnown = false; }
             $disabled = [];
             foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
                 $limit = (int) ($v['traffic'] ?? 0);
                 if ($limit <= 0 || !empty($v['off'])) {
                     continue;
                 }
-                if ($this->xrUserTraffic($st, $k) + array_sum($this->xrayProtocolUsage($v)) >= $limit) {
+                $known = $statsKnown; $exhausted = false;
+                try { $exhausted = $this->xrUserTraffic($st, $k) + array_sum($this->xrayProtocolUsage($v)) >= $limit; }
+                catch (Throwable $error) { $known = false; }
+                if (!$known || $exhausted) {
                     $x['inbounds'][0]['settings']['clients'][$k]['off'] = $v['id'];
                     $x['inbounds'][0]['settings']['clients'][$k]['id']  = self::xrayUuid();
                     if (isset($v['password'])) {
@@ -7931,7 +8273,9 @@ NFT;
                         $x['inbounds'][0]['settings']['clients'][$k]['password'] = self::xrayUuid();
                     }
                     $x['inbounds'][0]['settings']['clients'][$k]['traffic_off'] = 1;
-                    $disabled[] = $v['email'];
+                    if (!$known) $x['inbounds'][0]['settings']['clients'][$k]['traffic_usage_unavailable'] = 1;
+                    else unset($x['inbounds'][0]['settings']['clients'][$k]['traffic_usage_unavailable']);
+                    $disabled[] = $v['email'] . (!$known ? $this->t(' (общий расход недоступен)', ' (shared usage unavailable)') : '');
                 }
             }
             if (!empty($disabled) && $this->restartXray($x) === false) {
@@ -7964,12 +8308,17 @@ NFT;
                 }
                 unset($x['inbounds'][0]['settings']['clients'][$k]['off']);
             }
-            unset($x['inbounds'][0]['settings']['clients'][$k]['traffic_off']);
+            unset($x['inbounds'][0]['settings']['clients'][$k]['traffic_off'], $x['inbounds'][0]['settings']['clients'][$k]['traffic_usage_unavailable']);
         }
         return $x;
     }
 
     public function renameClient(string $name, int $client, $page = 0, $inst = null)
+    {
+        return $this->withWireguardUpdate(fn() => $this->renameClientLocked($name, $client, $page, $inst), ($inst === null || !in_array((int) $inst, [0, 1], true) ? null : ((int) $inst === 1 ? 'wg1' : 'wg')));
+    }
+
+    private function renameClientLocked(string $name, int $client, $page = 0, $inst = null)
     {
         $this->promptInstWG($inst);
         $name    = self::sanitizeConfValue($name);
@@ -7986,7 +8335,6 @@ NFT;
             return $this->menu('client', "{$client}_$page");
         }
         $clients[$client]['interface']['## name'] = $name;
-        $this->saveClients($clients);
         // peerIndexByClient понимает и выключенного пира ('# AllowedIPs'):
         // раньше переименование выключенного клиента меняло только
         // clients.json, а в wg0.conf оставалось старое имя, и оно
@@ -7996,7 +8344,7 @@ NFT;
             $off = !isset($server['peers'][$i]['AllowedIPs']);
             $server['peers'][$i][$off ? '# ## name' : '## name'] = $name;
         }
-        $this->restartWG($this->createConfig($server));
+        if (!$this->applyWgConfig($this->createConfig($server), $clients)) throw new RuntimeException($this->t('WireGuard: применение не подтверждено; cron повторит операцию', 'WireGuard: application is unconfirmed; cron will retry the operation'));
         $this->menu('client', "{$client}_$page");
     }
 
@@ -8016,8 +8364,7 @@ NFT;
 
     private function exportBackup()
     {
-        $this->syncOcUsers();
-        foreach ([$this->xrayConf, $this->hwid, '/config/xray.stats', '/config/ssserver.json', '/config/sslocal.json', '/config/ckserver.json', '/config/ckusers.json'] as $path) {
+        foreach ([$this->xrayConf, $this->hwid, '/config/xray.stats', '/config/ckserver.json', '/config/ckusers.json'] as $path) {
             // После миграции экспорт читает HWID из SQLite. Старый JSON
             // остаётся для отката и не должен блокировать актуальную копию.
             if ($path === $this->hwid && $this->store() !== null) continue;
@@ -8025,13 +8372,24 @@ NFT;
                 throw new RuntimeException($this->t('Повреждён файл конфигурации: ', 'Damaged configuration file: ') . basename($path));
             }
         }
-        $wg = $this->backupWireGuard(0);
-        $wg1 = $this->backupWireGuard(1);
+        $wgModes = [];
+        $wg = $this->backupWireGuard(0, $wgModes);
+        $wg1 = $this->backupWireGuard(1, $wgModes);
         // Инстанс, выбранный для снятия дампа, не должен протекать в остаток
         // запроса (финальный menu(), getInstanceWG-рендеры) — как в import()
         // и shutdownClient/syncPortClients.
         unset($this->wg);
-        $telemtBackup = $this->telemtBackupSnapshot();
+        $ocBackup = $this->withOcUsersSnapshot(fn(string $raw) => [
+            'telemt' => $this->telemtBackupSnapshot(),
+            'oc' => file_get_contents('/config/ocserv.conf'),
+            'ocu' => $raw,
+        ]);
+        $telemtBackup = $ocBackup['telemt'];
+        // Each mode belongs to its interface snapshot, not to a later PAC read.
+        foreach ($wgModes as $key => $mode) {
+            if ($mode['present']) $telemtBackup['pac'][$key] = $mode['value'];
+            else unset($telemtBackup['pac'][$key]);
+        }
         $ssl = false;
         if (is_file($this->protocolCertRoot . '/cert_private') !== is_file($this->protocolCertRoot . '/cert_public')) {
             throw new RuntimeException($this->t('Неполная TLS-пара', 'Incomplete TLS pair'));
@@ -8044,6 +8402,15 @@ NFT;
             }
             $ssl = ['private' => $private, 'public' => $public];
         }
+        $xraySnapshot = $this->withLock('xray', fn() => $this->withXrayApplyLock(fn() => [$this->getXray(), $this->getXrayStats()]), 30);
+        if (!is_array($xraySnapshot)) throw new RuntimeException('Could not lock Xray backup');
+        $ssSnapshot = $this->withShadowsocksLock(function () {
+            $server = $this->getSSConfig(); $local = $this->getSSLocalConfig();
+            if (!is_array($server) || !is_array($local)) throw new RuntimeException('Shadowsocks backup configuration unavailable');
+            $cloak = is_file('/config/ckserver.json') ? json_decode(file_get_contents('/config/ckserver.json'), true, 512, JSON_THROW_ON_ERROR) : null;
+            $users = is_file('/config/ckusers.json') ? json_decode(file_get_contents('/config/ckusers.json'), true, 512, JSON_THROW_ON_ERROR) : null;
+            return [$server, $local, $cloak, $users, $this->backupSimpleTlsFileLocked()];
+        });
         $conf = [
             'wg'  => $wg,
             'wg1' => $wg1,
@@ -8061,23 +8428,23 @@ NFT;
                 'ssh_public' => is_file('/config/dnstt/ssh_host_ed25519_key.pub')
                     ? file_get_contents('/config/dnstt/ssh_host_ed25519_key.pub') : '',
             ] : false,
-            'xray'          => $this->getXray(),
+            'xray'          => $xraySnapshot[0],
             'hy'            => yaml_parse_file('/config/hysteria.yaml'),
             'hy_users'      => $this->hysteriaUsersStore()->snapshot(),
-            'oc'            => file_get_contents('/config/ocserv.conf'),
-            'ocu'           => file_get_contents('/config/ocserv.passwd'),
+            'oc'            => $ocBackup['oc'],
+            'ocu'           => $ocBackup['ocu'],
             'tt'            => file_exists('/config/trusttunnel/credentials.toml') ? file_get_contents('/config/trusttunnel/credentials.toml') : '',
-            'ss'            => $this->getSSConfig(),
-            'sl'            => $this->getSSLocalConfig(),
-            'cloak'         => file_exists('/config/ckserver.json') ? (json_decode(file_get_contents('/config/ckserver.json'), true) ?: null) : null,
-            'ckusers'       => file_exists('/config/ckusers.json') ? (json_decode(file_get_contents('/config/ckusers.json'), true) ?: null) : null,
+            'ss'            => $ssSnapshot[0],
+            'sl'            => $ssSnapshot[1],
+            'cloak'         => $ssSnapshot[2],
+            'ckusers'       => $ssSnapshot[3],
             'ovpn'          => $this->exportOvpnPki(),
             'ovpn_limits'   => $this->ovpnLimitsSnapshot(),
             'ipsec'         => $this->exportIpsecPki(),
-            'xraystats'     => $this->getXrayStats(),
+            'xraystats'     => $xraySnapshot[1],
             'managed_protocols' => $this->exportManagedProtocols(),
             'telemt_quota' => $telemtBackup['telemt_quota'],
-            'extra_files' => $this->backupExtraFiles(),
+            'extra_files' => array_diff_key($this->backupExtraFiles(), ['stlsserver.json' => true]) + $ssSnapshot[4],
         ];
         foreach (['ad', 'hy', 'oc', 'ocu', 'tt'] as $key) {
             if ($conf[$key] === false) throw new RuntimeException($this->t('Не удалось прочитать раздел бэкапа: ', 'Could not read the backup section: ') . $key);
@@ -8086,7 +8453,21 @@ NFT;
         return json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
-    private function backupWireGuard(int $instance): array
+    private function backupWireGuard(int $instance, array &$modes = []): array
+    {
+        $snapshot = $this->withWireguardLock(function () use ($instance, &$modes) {
+            if ($this->hasWireguardPending()) throw new RuntimeException($this->t('WireGuard ожидает применения; повторите резервное копирование после подтверждения', 'WireGuard apply is pending; retry the backup after confirmation'));
+            $snapshot = $this->backupWireGuardLocked($instance);
+            $key = $instance ? 'wg1_amnezia' : 'amnezia';
+            $pac = $this->getPacConf();
+            $modes[$key] = ['present' => array_key_exists($key, $pac), 'value' => $pac[$key] ?? null];
+            return $snapshot;
+        }, $instance ? 'wg1' : 'wg', 120, false);
+        if (!is_array($snapshot)) throw new RuntimeException($this->t('Не удалось заблокировать WireGuard для копирования', 'Could not lock WireGuard for the backup'));
+        return $snapshot;
+    }
+
+    private function backupWireGuardLocked(int $instance): array
     {
         $clients = $instance ? $this->clients1 : $this->clients;
         $path = dirname($clients) . '/wg' . $instance . '.conf';
@@ -8098,37 +8479,92 @@ NFT;
             if ($body === false) throw new RuntimeException($this->t('Конфигурация WireGuard недоступна', 'The WireGuard configuration is unavailable'));
             $server = $this->parseWireGuardConfig($body);
         } else {
-            $this->wg = $instance;
-            try { $server = $this->readConfig(); }
-            finally { unset($this->wg); }
+            $server = $this->readConfig();
             if ($this->sshFailed) throw new RuntimeException($this->t('Не удалось сохранить WireGuard', 'Could not save WireGuard'));
         }
         if ($users && empty($server['interface'])) throw new RuntimeException($this->t('Неполная конфигурация WireGuard', 'Incomplete WireGuard configuration'));
         return ['server' => $server, 'clients' => $users];
     }
 
-    private function restoreBackupWireGuard(array $snapshot, int $switch): bool
+    private function restoreBackupWireGuard(array $snapshot, int $switch, ?bool $mode = null): bool
     {
         $instance = $this->getInstanceWG() === 'wg1' ? 1 : 0;
-        $path = dirname($instance ? $this->clients1 : $this->clients) . '/wg' . $instance . '.conf';
-        $body = $this->createConfig($snapshot['server']);
-        // Сохраняем inode: этот файл отдельно примонтирован в WG-контейнер.
-        $old = is_file($path) ? file_get_contents($path) : null;
-        if (!$this->backupWriteInPlace($path, $body)) return false;
-        $this->chmodSecret($path);
-        if ($this->saveClients($snapshot['clients'] ?? []) === false) {
-            if (is_string($old)) $this->backupWriteInPlace($path, $old);
+        $service = $instance ? 'wg1' : 'wg';
+        return (bool) $this->withWireguardLock(function () use ($snapshot, $switch, $instance, $service, $mode) {
+            if ($this->hasWireguardPending()) return false;
+            $clients = $instance ? $this->clients1 : $this->clients;
+            $path = dirname($clients) . '/wg' . $instance . '.conf';
+            $before = [];
+            foreach ([$path, $clients] as $file) {
+                if (is_link($file) || (file_exists($file) && !is_file($file))) return false;
+                $before[$file] = is_file($file) ? file_get_contents($file) : null;
+                if ($before[$file] === false) return false;
+            }
+            $body = $this->createConfig($snapshot['server']);
+            $modeKey = $instance ? 'wg1_amnezia' : 'amnezia';
+            $currentMode = !empty($this->getPacConf()[$modeKey]);
+            $desiredMode = $mode ?? $currentMode;
+            $wasAmnezia = $mode === null && $switch ? !$currentMode : $currentMode;
+            if ($mode !== null) $switch = (int) ($wasAmnezia !== $desiredMode);
+            $enabled = $this->protocolModuleEnabled($service);
+            $filesStarted = false;
+            try {
+                if ($mode !== null && $switch) {
+                    $this->pacConfUpdate(function (&$pac) use ($modeKey, $desiredMode) {
+                        $pac[$modeKey] = (int) $desiredMode;
+                    });
+                }
+                $filesStarted = true;
+                // The server config is a file bind mount: retain its inode.
+                $saved = $this->backupWriteInPlace($path, $body);
+                if ($saved) $this->chmodSecret($path);
+                if ($saved && $this->saveClients($snapshot['clients'] ?? []) !== false) {
+                    if (!$enabled) return true;
+                    if ($this->restartWG($body, $switch)) {
+                        $this->iptablesWG();
+                        if (!$this->sshFailed) return true;
+                    }
+                }
+            } catch (Throwable $error) {
+                // A write can fail after publishing its new inode. Compensate
+                // both files regardless of which step reported the failure.
+            }
+            $restored = true;
+            foreach ($filesStarted ? $before : [] as $file => $raw) {
+                $ok = $raw === null ? (!file_exists($file) || @unlink($file))
+                    : ($file === $path ? $this->backupWriteInPlace($file, $raw) : $this->writePrivateKey($file, $raw));
+                if (!$ok) $restored = false;
+            }
+            if ($switch) {
+                $modeRestored = $this->withLock('pac', function () use ($modeKey, $desiredMode, $wasAmnezia) {
+                    try {
+                        $pac = $this->getPacConf();
+                        $currentMode = !empty($pac[$modeKey]);
+                        // Отказ до rename уже оставил прежний режим.
+                        if ($currentMode === $wasAmnezia) return true;
+                        if ($currentMode !== $desiredMode) return false;
+                        $pac[$modeKey] = (int) $wasAmnezia;
+                        try { $this->setPacConf($pac); }
+                        catch (Throwable $error) { /* Проверяем опубликованное значение ниже. */ }
+                        // Возврат false/исключение после rename не означает,
+                        // что откат не опубликован; до rename останется desired.
+                        return !empty($this->getPacConf()[$modeKey]) === $wasAmnezia;
+                    } catch (Throwable $error) { return false; }
+                }, 0, false);
+                if (!$modeRestored) $restored = false;
+            }
+            if ($restored && $filesStarted && $enabled && $before[$path] !== null) {
+                $restored = $this->restartWG($before[$path], $switch);
+                if ($restored) { $this->iptablesWG(); $restored = !$this->sshFailed; }
+            }
+            if (!$restored) throw new RuntimeException($this->t('Откат WireGuard не завершён; проверьте прежние файлы и интерфейс', 'WireGuard rollback did not finish; check the previous files and interface'), self::BACKUP_PARTIAL);
             return false;
-        }
-        if (!$this->protocolModuleEnabled($instance ? 'wg1' : 'wg')) return true;
-        if (!$this->restartWG($body, $switch)) return false;
-        $this->iptablesWG();
-        return !$this->sshFailed;
+        }, $service, 120, false);
     }
 
     // Только данные пользователя. Конфиги Nginx, скрипты, Docker, токен бота
     // и системные SSH-ключи из загруженного JSON не исполняются/не заменяются.
-    public function backupExtraPaths(bool $includeRetired = true): array
+    public function backupExtraPaths(bool $includeRetired = true, ?array $nodes = null): array
     {
         $root = dirname($this->pac);
         $paths = [];
@@ -8138,7 +8574,7 @@ NFT;
         $paths['webapp/override.html'] = dirname($this->htpasswd) . '/override.html';
         $panel = getenv('PANEL_DIR') ?: "$root/panel";
         foreach (['password-display.key', 'password-display.json', 'initial_password.txt'] as $name) $paths['panel/' . $name] = "$panel/$name";
-        $paths += $this->managedNodeBackupPaths($includeRetired);
+        $paths += $this->managedNodeBackupPaths($includeRetired, $nodes);
         return $paths;
     }
 
@@ -8159,8 +8595,29 @@ NFT;
     public function backupExtraFiles(): array
     {
         $this->managedNodeBackupRefresh();
-        $this->managedNodeBackupCheck();
-        $paths = $this->backupExtraPaths();
+        $nodes = $this->managedNodes();
+        $files = $this->withManagedNodeBackupLocks(array_keys($nodes), LOCK_SH, fn() => $this->backupExtraFilesLocked($nodes));
+        return $files + $this->withShadowsocksLock(fn() => $this->backupSimpleTlsFileLocked());
+    }
+
+    // Caller holds the short Shadowsocks lock; never nest node locks here.
+    private function backupSimpleTlsFileLocked(): array
+    {
+        $path = $this->backupExtraPath('stlsserver.json');
+        if (!file_exists($path)) return [];
+        if (!is_file($path) || filesize($path) > 4 * 1024 * 1024 || ($body = file_get_contents($path)) === false) {
+            throw new RuntimeException('simple-tls backup configuration unavailable');
+        }
+        $files = ['stlsserver.json' => base64_encode($body)];
+        $this->validateBackupExtraFiles($files);
+        return $files;
+    }
+
+    private function backupExtraFilesLocked(array $nodes): array
+    {
+        $this->managedNodeBackupCheck($nodes);
+        $paths = $this->backupExtraPaths(true, $nodes);
+        unset($paths['stlsserver.json']);
         foreach (['wgcf-account.toml', 'wgcf-profile.conf', 'clients/*/wgcf-account.toml', 'clients/*/wgcf-profile.conf'] as $pattern) {
             foreach (glob($this->backupWarpRoot . '/' . $pattern) ?: [] as $path) {
                 $paths['warp/' . substr($path, strlen($this->backupWarpRoot) + 1)] = $path;
@@ -8227,6 +8684,19 @@ NFT;
     public function restoreBackupExtraFiles(array $files): void
     {
         $decoded = $this->validateBackupExtraFiles($files);
+        $stls = $decoded['stlsserver.json'] ?? null;
+        unset($decoded['stlsserver.json']);
+        $ids = [];
+        foreach (array_keys($decoded) as $name) {
+            if (preg_match('~^nodes/([a-f0-9]{8})/~D', $name, $match)) $ids[] = $match[1];
+        }
+        $this->withManagedNodeBackupLocks($ids, LOCK_EX, fn() => $this->restoreBackupExtraFilesLocked($decoded));
+        // Standalone imports also apply STLS, after releasing every node lock.
+        if ($stls !== null && !$this->restoreBackupSimpleTls($stls)) throw new RuntimeException('Could not restore simple-tls');
+    }
+
+    private function restoreBackupExtraFilesLocked(array $decoded): void
+    {
         $before = [];
         foreach ($decoded as $name => $_) {
             $path = $this->backupExtraPath($name);
@@ -8276,21 +8746,19 @@ NFT;
                 return !empty($this->getPacConf()['warpoff']) || $this->warpCommand('{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf; }');
             })) $failed[] = 'WARP';
         }
-        if (isset($files['stlsserver.json']) && $this->protocolModuleEnabled('ss')) {
-            $this->ssh(self::PKILL_STLS, 'ss');
-            if (!empty($this->getStlsConfig()['Enabled'])) {
-                $port = (int) (getenv('STLSPORT') ?: 3443);
-                $cmd = 'if [ -s /certs/cert_public ] && [ -s /certs/cert_private ]; then c=/certs/cert; else c=/certs/self; fi; '
-                    . 'nohup setsid simple-tls -s -b :' . $port . ' -d 127.0.0.1:' . self::SS_INTERNAL_PORT
-                    . ' -cert "${c}_public" -key "${c}_private" </dev/null >>/logs/simple-tls.log 2>&1 & '
-                    . 'sleep 1; pgrep -f "[s]imple-tls -s" >/dev/null && printf STLS_OK';
-                if (trim($this->ssh($cmd, 'ss')) !== 'STLS_OK') $failed[] = 'simple-tls';
-            }
+        if (isset($files['stlsserver.json'])) {
+            $decoded = $this->validateBackupExtraFiles(['stlsserver.json' => $files['stlsserver.json']]);
+            if (!$this->restoreBackupSimpleTls($decoded['stlsserver.json'])) $failed[] = 'simple-tls';
         }
         return $failed;
     }
 
     public function restoreBackupXray(array $config): bool
+    {
+        return $this->withLock('xray', fn() => $this->withXrayApplyLock(fn() => $this->restoreBackupXrayLocked($config)), 30, false) === true;
+    }
+
+    protected function restoreBackupXrayLocked(array $config): bool
     {
         // Наборы правил узлов выхода, как и .dat, в копию не входят: разбираем
         // их до сборки конфига, иначе их маршруты появились бы только с cron.
@@ -8300,24 +8768,22 @@ NFT;
             return $this->writeXrayJson(json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR))
                 && $this->writeCoreMarker($core);
         }
-        return $this->withLock('xray', function () use ($config, $core) {
-            $probe = $this->xrayCoreProbe(true);
-            $old = $probe['selection'] ?? '';
-            if (empty($probe['ok']) || !isset(self::XRAY_BINARIES[$old])) return false;
-            if (!$this->validateXrayConfig($config, self::XRAY_BINARIES[$core])) return false;
-            $before = $this->readXrayJson();
-            $link = fn($selection) => trim($this->ssh('ln -sf ' . self::XRAY_BINARIES[$selection]
-                . ' /usr/local/bin/xray && printf XRAY_LINK_OK', 'xr')) === 'XRAY_LINK_OK';
-            if (!$link($core)) return false;
-            $this->xrProbe = null;
-            if ($this->writeCoreMarker($core) && $this->restartXray($config) && $this->xrayCoreStarted($core)) return true;
-            $link($old);
-            $this->writeCoreMarker($old);
-            if ($before !== '') $this->writeXrayJson($before);
-            $this->xrProbe = null;
-            $this->ssh('pkill xray; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >>/logs/xray_stdout 2>&1 &', 'xr');
-            return false;
-        });
+        $probe = $this->xrayCoreProbe(true);
+        $old = $probe['selection'] ?? '';
+        if (empty($probe['ok']) || !isset(self::XRAY_BINARIES[$old])) return false;
+        if (!$this->validateXrayConfig($config, self::XRAY_BINARIES[$core])) return false;
+        $before = $this->readXrayJson();
+        $link = fn($selection) => trim($this->ssh('ln -sf ' . self::XRAY_BINARIES[$selection]
+            . ' /usr/local/bin/xray && printf XRAY_LINK_OK', 'xr')) === 'XRAY_LINK_OK';
+        if (!$link($core)) return false;
+        $this->xrProbe = null;
+        if ($this->writeCoreMarker($core) && $this->restartXray($config) && $this->xrayCoreStarted($core)) return true;
+        $link($old);
+        $this->writeCoreMarker($old);
+        if ($before !== '') $this->writeXrayJson($before);
+        $this->xrProbe = null;
+        $this->ssh('pkill xray; XRAY_LOCATION_ASSET=/logs/geodata xray run -config /xray.json >>/logs/xray_stdout 2>&1 &', 'xr');
+        return false;
     }
 
     private function restoreBackupCertificates(array $pair): bool
@@ -8366,6 +8832,19 @@ NFT;
             $incoming['panelpswd'] = $current['panelpswd'];
         }
 
+        return $incoming;
+    }
+
+    // OpenConnect восстанавливается отдельной согласованной парой ниже;
+    // ранняя замена PAC не должна менять пароль раньше passwd-файла.
+    // Режимы WG публикуются отдельно под lock нужного интерфейса.
+    public function preserveBackupSettings(array $incoming, array $current): array
+    {
+        $incoming = $this->preservePanelPswd($incoming, $current);
+        foreach ([self::OC_USERS, 'ocserv', 'amnezia', 'wg1_amnezia'] as $key) {
+            if (array_key_exists($key, $current)) $incoming[$key] = $current[$key];
+            else unset($incoming[$key]);
+        }
         return $incoming;
     }
 
@@ -8446,12 +8925,19 @@ NFT;
             $ok = true;
             $xrayApplied = true;
             $out = [];
-            $failed = function (string $protocol) use (&$ok, &$out): void {
+            $failed = function (string $protocol, ?string $detail = null) use (&$ok, &$out): void {
                 $ok = false;
-                $out[] = '❌ ' . $protocol . ': ' . $this->i18n('backup protocol failed');
+                $out[] = '❌ ' . $protocol . ': ' . ($detail ?? $this->i18n('backup protocol failed'));
                 error_log('importFile: apply failed: ' . $protocol);
             };
-            $switch_amnezia = $switch_wg1amnezia = 0;
+            $restoreWg = function (array $snapshot, ?bool $mode, string $label) use ($failed): void {
+                try {
+                    if (!$this->restoreBackupWireGuard($snapshot, 0, $mode)) $failed($label);
+                } catch (Throwable $error) {
+                    if ($error->getCode() !== self::BACKUP_PARTIAL) throw $error;
+                    $failed($label, $this->t('Откат не завершён. Проверьте прежние файлы и состояние интерфейса.', 'Rollback did not finish. Check the previous files and interface state.'));
+                }
+            };
             if (array_key_exists('extra_files', $json)) $this->validateBackupExtraFiles($json['extra_files']);
             if (!empty($json['ssl']) && (!is_string($json['ssl']['public'] ?? null)
                 || !is_string($json['ssl']['private'] ?? null)
@@ -8473,6 +8959,7 @@ NFT;
                 try { HysteriaUsers::validateSnapshot($json['hy_users']); }
                 catch (Throwable $e) { return $this->backupImportError('hysteria', !empty($file), $e); }
             }
+            $this->preflightBackupWireguard($json);
             $modulesBefore = $this->protocolModulesSnapshot();
             if (array_key_exists('managed_protocols', $json)) {
                 try { $this->importManagedProtocols($json['managed_protocols'], false); }
@@ -8481,8 +8968,12 @@ NFT;
                 try { $this->restoreLegacyModules($json); }
                 catch (Throwable $e) { return $this->backupImportError('protocols', !empty($file), $e); }
             }
-            $this->waitProtocolModulesApplied($modulesBefore);
-            if (array_key_exists('extra_files', $json)) $this->restoreBackupExtraFiles($json['extra_files']);
+            if (!$this->waitProtocolModulesApplied($modulesBefore)) {
+                foreach ($this->backupModuleFailures ?: ['Protocol modules'] as $service) $failed($service);
+            }
+            // STLS must wait for certificates and SS/Cloak restore, then use
+            // its own stop/write/apply lock in restoreBackupExtraServices.
+            if (array_key_exists('extra_files', $json)) $this->restoreBackupExtraFiles(array_diff_key($json['extra_files'], ['stlsserver.json' => true]));
             // certs
             if (!empty($json['ssl'])) {
                 $out[] = 'update certificates';
@@ -8495,20 +8986,15 @@ NFT;
             if (!empty($json['pac'])) {
                 $out[] = 'update pac';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                // ?? — бэкап, снятый до появления второго инстанса, не содержит
-                // wg1_amnezia, а свежая установка не содержит и amnezia
-                // (pac.json = {}): без фолбэка restore сыпал «Undefined array key».
-                // Сравнение приводим к 0/1, чтобы null и 0 не считались сменой.
-                if ((int) ($this->getPacConf()['amnezia'] ?? 0) != (int) ($json['pac']['amnezia'] ?? 0)) {
-                    $switch_amnezia = 1;
-                }
-                if ((int) ($this->getPacConf()['wg1_amnezia'] ?? 0) != (int) ($json['pac']['wg1_amnezia'] ?? 0)) {
-                    $switch_wg1amnezia = 1;
-                }
-                $json['pac'] = $this->preservePanelPswd($json['pac'], $this->getPacConf());
+                // Режимы WG сохраняются до восстановления соответствующего
+                // интерфейса под его lock; pending может появиться после preflight.
                 if ($this->backupHasTelemt($json['pac'])) {
                     $this->telemtQuotaRestore($json['telemt_quota'] ?? null, $json['pac']);
-                } elseif ($this->setPacConf($json['pac']) === false) return $this->backupImportError('settings', !empty($file));
+                } else {
+                    $this->pacConfUpdate(function (&$current) use ($json) {
+                        $current = $this->preserveBackupSettings($json['pac'], $current);
+                    });
+                }
                 $out[] = 'update naiveproxy';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if (!$this->restartNaive() && self::naiveReady($json['pac'])) $failed('NaiveProxy');
@@ -8519,14 +9005,14 @@ NFT;
                 $out[] = 'update wireguard';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->wg = 0;
-                if (!$this->restoreBackupWireGuard($json['wg'], $switch_amnezia)) $failed('WireGuard');
+                $restoreWg($json['wg'], isset($json['pac']) ? !empty($json['pac']['amnezia']) : null, 'WireGuard');
             }
             // wg1
             if (!empty($json['wg1']['server'])) {
                 $out[] = 'update wireguard 1';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 $this->wg = 1;
-                if (!$this->restoreBackupWireGuard($json['wg1'], $switch_wg1amnezia)) $failed('WireGuard 1');
+                $restoreWg($json['wg1'], isset($json['pac']) ? !empty($json['pac']['wg1_amnezia']) : null, 'WireGuard 1');
             }
             // выбранный для restore инстанс не должен протекать в остаток
             // запроса (финальный menu(), getInstanceWG-рендеры) — как в
@@ -8548,17 +9034,14 @@ NFT;
                     if (!$this->backupWriteInPlace($this->adguard, yaml_emit($json['ad']))) throw new RuntimeException($this->t('Не удалось восстановить AdGuard', 'Could not restore AdGuard'));
                 } finally { $this->startAd(); }
             }
-            // ss
-            if (!empty($json['ss'])) {
-                $out[] = 'update shadowsocks server';
+            // SS sections may be absent in legacy backups. If both exist,
+            // their snapshot and apply share the same Shadowsocks transaction.
+            $ssSections = [];
+            foreach (['ss', 'sl'] as $section) if (!empty($json[$section])) $ssSections[$section] = $json[$section];
+            if ($ssSections) {
+                $out[] = 'update shadowsocks';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                if (!$this->restoreBackupShadowsocks('ss', $json['ss'])) $failed('Shadowsocks');
-            }
-            // sl
-            if (!empty($json['sl'])) {
-                $out[] = 'update shadowsocks proxy';
-                $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                if (!$this->restoreBackupShadowsocks('sl', $json['sl'])) $failed('Shadowsocks proxy');
+                if (!$this->restoreBackupShadowsocks($ssSections)) $failed('Shadowsocks');
             }
             // hwid
             if (array_key_exists('hwid', $json)) {
@@ -8583,7 +9066,7 @@ NFT;
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                     if ($this->datSync(true)) $failed('DAT');
                 }
-                if (!$this->restoreBackupXray($json['xray'])) {
+                if (!$this->restoreBackupXraySnapshot($json['xray'], $json['xraystats'] ?? null)) {
                     $xrayApplied = false;
                     $ok = false;
                     $out[] = '❌ xray: configuration rejected; previous configuration preserved';
@@ -8598,18 +9081,17 @@ NFT;
             // xraystats
             // Индексы счётчиков относятся к пользователям снимка. При отказе
             // Xray остаётся прежний список: его расход менять нельзя.
-            if (array_key_exists('xraystats', $json) && $xrayApplied) {
+            if (array_key_exists('xraystats', $json) && empty($json['xray']) && $xrayApplied) {
                 $out[] = 'update xray stats';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                if (!$this->setXrayStats($json['xraystats'])) $failed('Xray statistics');
+                if (!$this->withLock('xray', fn() => $this->withXrayApplyLock(fn() => $this->setXrayStats($json['xraystats'])), 30, false)) $failed('Xray statistics');
             }
             // ocserv
             if (!empty($json['oc'])) {
                 $out[] = 'update ocserv';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if (array_key_exists('ocu', $json)) {
-                    if (!$this->writePrivateKey('/config/ocserv.passwd', $json['ocu'])) throw new RuntimeException($this->t('Не удалось восстановить пользователей OpenConnect', 'Could not restore OpenConnect users'));
-                    $this->chmodSecret('/config/ocserv.passwd');
+                    if (!$this->restoreOcPasswordPair($json['ocu'], $json['pac'] ?? $this->getPacConf())) throw new RuntimeException($this->t('Не удалось восстановить пользователей OpenConnect', 'Could not restore OpenConnect users'));
                     $this->syncOcUsers();
                 }
                 if ($this->restartOcserv($json['oc']) === false) $failed('OpenConnect');
@@ -8646,21 +9128,23 @@ NFT;
             if (!empty($json['cloak'])) {
                 $out[] = 'update cloak';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                if (!$this->writePrivateKey(
-                    '/config/ckserver.json',
-                    json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-                )) throw new RuntimeException($this->t('Не удалось восстановить Cloak', 'Could not restore Cloak'));
-                // Восстанавливаем side-store с именами; если в бэкапе нет
-                // (старый формат) — getCloakUsers() забутстрапит из BypassUID.
-                if (!empty($json['ckusers']) && is_array($json['ckusers'])) {
-                    if (!$this->writePrivateKey('/config/ckusers.json', json_encode(array_values($json['ckusers']), JSON_THROW_ON_ERROR))) throw new RuntimeException($this->t('Не удалось восстановить пользователей Cloak', 'Could not restore Cloak users'));
-                } else {
-                    if (file_exists('/config/ckusers.json') && !unlink('/config/ckusers.json')) throw new RuntimeException($this->t('Не удалось обновить пользователей Cloak', 'Could not update Cloak users'));
-                }
-                $this->ssh(self::PKILL_CK, 'ss');
-                if (!empty($json['cloak']['Enabled'])) {
-                    $this->ssh($this->ckServerRestartCmd(), 'ss');
-                }
+                $this->withShadowsocksLock(function () use ($json, $failed) {
+                    if (!$this->writePrivateKey(
+                        '/config/ckserver.json',
+                        json_encode($json['cloak'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                    )) throw new RuntimeException($this->t('Не удалось восстановить Cloak', 'Could not restore Cloak'));
+                    // Восстанавливаем side-store с именами; если в бэкапе нет
+                    // (старый формат) — getCloakUsers() забутстрапит из BypassUID.
+                    if (!empty($json['ckusers']) && is_array($json['ckusers'])) {
+                        if (!$this->writePrivateKey('/config/ckusers.json', json_encode(array_values($json['ckusers']), JSON_THROW_ON_ERROR))) throw new RuntimeException($this->t('Не удалось восстановить пользователей Cloak', 'Could not restore Cloak users'));
+                    } else {
+                        if (file_exists('/config/ckusers.json') && !unlink('/config/ckusers.json')) throw new RuntimeException($this->t('Не удалось обновить пользователей Cloak', 'Could not update Cloak users'));
+                    }
+                    if ($this->protocolModuleEnabled('ss')) {
+                        $action = !empty($json['cloak']['Enabled']) ? 'restart' : 'stop';
+                        if (!$this->controlContainerService('ss', 'ck-server', $action)) $failed('Cloak');
+                    }
+                });
             }
             // openvpn (PKI + server.conf + ccd, восстановленные из inline-base64)
             if (!empty($json['ovpn']) && is_array($json['ovpn'])) {
@@ -8811,46 +9295,31 @@ NFT;
 
     public function switchClient($client)
     {
+        return $this->withWireguardUpdate(fn() => $this->switchClientLocked($client), null);
+    }
+
+    private function switchClientLocked($client)
+    {
         $clients = $this->readClients();
-        if (empty($clients[$client])) {
-            return;
-        }
-        // Пира ищем по адресу, а не по индексу: при рассинхроне clients.json и
-        // wg0.conf тумблер «по индексу» выключал СОСЕДНЕГО клиента (см.
-        // peerIndexByClient). Локальный флаг переключаем в любом случае —
-        // иначе истёкший клиент, пира которого на сервере уже нет, каждые 10
-        // секунд заново приезжал бы в shutdownClient и сыпал в лог.
+        if (empty($clients[$client])) return false;
         $server = $this->readConfig();
-        $i      = $this->peerIndexByClient($server, $clients[$client]);
-
-        if (!empty($clients[$client]['# off'])) {
-            unset($clients[$client]['# off']);
-        } else {
-            $clients[$client]['# off'] = 1;
-        }
+        if (empty($server['interface'])) return false;
+        $peer = $this->peerIndexByClient($server, $clients[$client]);
+        $off = empty($clients[$client]['# off']);
+        if ($off) $clients[$client]['# off'] = 1; else unset($clients[$client]['# off']);
         unset($clients[$client]['interface']['## time']);
-        $this->saveClients($clients);
-
-        if ($i === null) {
-            error_log('switchClient: peer not found in ' . $this->getInstanceWG() . ' config for client #' . $client);
-
-            return;
-        }
-
-        $new = [];
-        if (array_key_exists('# PublicKey', $server['peers'][$i])) {
-            foreach ($server['peers'][$i] as $k => $v) {
-                $new[trim(preg_replace('~#~', '', $k, 1))] = $v;
+        if ($peer !== null) {
+            $updated = [];
+            foreach ($server['peers'][$peer] as $key => $value) {
+                $key = str_starts_with($key, '# ') ? substr($key, 2) : $key;
+                if ($key === '## time') continue;
+                $updated[$off ? '# ' . $key : $key] = $value;
             }
-        } else {
-            foreach ($server['peers'][$i] as $k => $v) {
-                $new["# $k"] = $v;
-            }
+            $server['peers'][$peer] = $updated;
         }
-        unset($new['## time']);
-        unset($new['# ## time']);
-        $server['peers'][$i] = $new;
-        $this->restartWG($this->createConfig($server));
+        $ok = $this->applyWgConfig($this->createConfig($server), $clients);
+        if (!$ok && isset($this->input['chat'])) $this->wgConfUnavailable($this->t('применение не подтверждено; cron повторит операцию', 'application is unconfirmed; cron will retry the operation'));
+        return $ok;
     }
 
     // ── AmneziaWG: чистые хелперы (без ssh/pac.json, покрыты awg3_test.php) ───
@@ -9212,6 +9681,11 @@ NFT;
 
     public function applyAmneziaTemplate($template, $page = 0)
     {
+        return $this->withWireguardUpdate(fn() => $this->applyAmneziaTemplateLocked($template, $page), null);
+    }
+
+    private function applyAmneziaTemplateLocked($template, $page = 0)
+    {
         if (!isset(self::AMNEZIA_TEMPLATE_LABELS[$template])) {
             return $this->menu('wg', $page);
         }
@@ -9222,25 +9696,25 @@ NFT;
         }
         $prefix = $this->getInstanceWG(1);
         $mutate = function () use ($template, $prefix, $is3) {
-            $c = $this->getPacConf();
-            $c[$prefix . 'amnezia']      = 1;
-            $c[$prefix . 'amnezia_tpl']  = $template;
-            $c[$prefix . 'amnezia_keys'] = $this->generateAmneziaKeys(
-                $template,
-                $is3 ? fn() => $this->genHeaderProtectionKey() : null
-            );
-            // Сбросить ротационный таймер: ручная смена шаблона = свежая генерация
-            // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
-            if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
-                $c[$prefix . 'amnezia_last_rotation'] = time();
-            }
-            // Диапазонный PersistentKeepalive — фича 3.0: на 2.0-шаблоне он не
-            // разберётся, а раньше оставался от прежнего набора и уезжал в
-            // клиентские конфиги. Так же поступают setAmneziaProto и resetAwg3.
-            if (!$is3) {
-                unset($c[$prefix . 'amnezia_keepalive']);
-            }
-            $this->setPacConf($c);
+            $this->pacConfUpdate(function (&$c) use ($template, $prefix, $is3) {
+                $c[$prefix . 'amnezia']      = 1;
+                $c[$prefix . 'amnezia_tpl']  = $template;
+                $c[$prefix . 'amnezia_keys'] = $this->generateAmneziaKeys(
+                    $template,
+                    $is3 ? fn() => $this->genHeaderProtectionKey() : null
+                );
+                // Сбросить ротационный таймер: ручная смена шаблона = свежая генерация
+                // I1-I5, нет смысла дёргать ротацию повторно через несколько часов.
+                if ((int) ($c[$prefix . 'amnezia_rotation_period'] ?? 0) > 0) {
+                    $c[$prefix . 'amnezia_last_rotation'] = time();
+                }
+                // Диапазонный PersistentKeepalive — фича 3.0: на 2.0-шаблоне он не
+                // разберётся, а раньше оставался от прежнего набора и уезжал в
+                // клиентские конфиги. Так же поступают setAmneziaProto и resetAwg3.
+                if (!$is3) {
+                    unset($c[$prefix . 'amnezia_keepalive']);
+                }
+            });
         };
         // 3.0-шаблон способен получить отказ от setconf (например, если в
         // контейнере вдруг оказались старые tools) — применяем с откатом.
@@ -9363,6 +9837,11 @@ NFT;
     // это отдельное действие (templates / reset obf-keys).
     public function setAmneziaProto($ver, $page = 0)
     {
+        return $this->withWireguardUpdate(fn() => $this->setAmneziaProtoLocked($ver, $page), null);
+    }
+
+    private function setAmneziaProtoLocked($ver, $page = 0)
+    {
         $ver    = (int) $ver;
         $prefix = $this->getInstanceWG(1);
         if (!in_array($ver, [1, 2, 3], true)) {
@@ -9374,18 +9853,18 @@ NFT;
         }
 
         $mutate = function () use ($ver, $prefix) {
-            $c   = $this->getPacConf();
-            $tpl = $c[$prefix . 'amnezia_tpl'] ?? 'standard_2';
-            // Профиль внутри версии сохраняем (standard→standard и т.д.).
-            $tpl_new = self::awgTemplateForVer($tpl, $ver);
-            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
-            $keys = $this->amneziaKeysForVersion($keys, $ver, $tpl_new, fn() => $this->genHeaderProtectionKey());
-            if ($ver < 3) unset($c[$prefix . 'amnezia_keepalive']);
+            $this->pacConfUpdate(function (&$c) use ($ver, $prefix) {
+                $tpl = $c[$prefix . 'amnezia_tpl'] ?? 'standard_2';
+                // Профиль внутри версии сохраняем (standard→standard и т.д.).
+                $tpl_new = self::awgTemplateForVer($tpl, $ver);
+                $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+                $keys = $this->amneziaKeysForVersion($keys, $ver, $tpl_new, fn() => $this->genHeaderProtectionKey());
+                if ($ver < 3) unset($c[$prefix . 'amnezia_keepalive']);
 
-            $c[$prefix . 'amnezia']      = 1;
-            $c[$prefix . 'amnezia_tpl']  = $tpl_new;
-            $c[$prefix . 'amnezia_keys'] = $keys;
-            $this->setPacConf($c);
+                $c[$prefix . 'amnezia']      = 1;
+                $c[$prefix . 'amnezia_tpl']  = $tpl_new;
+                $c[$prefix . 'amnezia_keys'] = $keys;
+            });
         };
 
         if ($ver === 3) {
@@ -9523,15 +10002,18 @@ NFT;
 
     public function toggleHeaderProtection($page = 0)
     {
+        return $this->withWireguardUpdate(fn() => $this->toggleHeaderProtectionLocked($page), null);
+    }
+
+    private function toggleHeaderProtectionLocked($page = 0)
+    {
         $prefix = $this->getInstanceWG(1);
         $c      = $this->getPacConf();
         $keys   = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
 
         if (!empty($keys['HeaderProtectionKey'])) {
             $this->awgApplyGuarded($page, function () use ($prefix) {
-                $c = $this->getPacConf();
-                unset($c[$prefix . 'amnezia_keys']['HeaderProtectionKey']);
-                $this->setPacConf($c);
+                $this->pacConfUpdate(function (&$c) use ($prefix) { unset($c[$prefix . 'amnezia_keys']['HeaderProtectionKey']); });
             });
             return;
         }
@@ -9548,15 +10030,20 @@ NFT;
         }
 
         $this->awgApplyGuarded($page, function () use ($prefix) {
-            $c    = $this->getPacConf();
-            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
-            $keys['HeaderProtectionKey'] = $this->genHeaderProtectionKey();
-            $c[$prefix . 'amnezia_keys'] = self::enforceHeaderProtection($keys);
-            $this->setPacConf($c);
+            $this->pacConfUpdate(function (&$c) use ($prefix) {
+                $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+                $keys['HeaderProtectionKey'] = $this->genHeaderProtectionKey();
+                $c[$prefix . 'amnezia_keys'] = self::enforceHeaderProtection($keys);
+            });
         });
     }
 
     public function regenHeaderProtection($page = 0)
+    {
+        return $this->withWireguardUpdate(fn() => $this->regenHeaderProtectionLocked($page), null);
+    }
+
+    private function regenHeaderProtectionLocked($page = 0)
     {
         $prefix = $this->getInstanceWG(1);
         $c      = $this->getPacConf();
@@ -9564,9 +10051,9 @@ NFT;
             return $this->menu('wg', $page);
         }
         $this->awgApplyGuarded($page, function () use ($prefix) {
-            $c = $this->getPacConf();
-            $c[$prefix . 'amnezia_keys']['HeaderProtectionKey'] = $this->genHeaderProtectionKey();
-            $this->setPacConf($c);
+            $this->pacConfUpdate(function (&$c) use ($prefix) {
+                $c[$prefix . 'amnezia_keys']['HeaderProtectionKey'] = $this->genHeaderProtectionKey();
+            });
         });
     }
 
@@ -9581,21 +10068,26 @@ NFT;
 
     public function resetAwg3($page = 0)
     {
+        return $this->withWireguardUpdate(fn() => $this->resetAwg3Locked($page), null);
+    }
+
+    private function resetAwg3Locked($page = 0)
+    {
         $prefix = $this->getInstanceWG(1);
         $this->awgApplyGuarded($page, function () use ($prefix) {
-            $c = $this->getPacConf();
-            foreach (array_merge(self::AWG_KEYS_3, self::AWG_KEYS_31) as $k) {
-                unset($c[$prefix . 'amnezia_keys'][$k]);
-            }
-            unset($c[$prefix . 'amnezia_keepalive']);
-            // Шаблон обязан уехать вместе с полями: AWG_ROTATE_KEYS содержит
-            // весь блок 3.0, и ближайшая ротация по оставшемуся *_3 вернула бы
-            // его целиком — вместе с header protection, который только что сняли.
-            $tpl = (string) ($c[$prefix . 'amnezia_tpl'] ?? '');
-            if (substr($tpl, -2) === '_3') {
-                $c[$prefix . 'amnezia_tpl'] = self::awgTemplateForVer($tpl, 2);
-            }
-            $this->setPacConf($c);
+            $this->pacConfUpdate(function (&$c) use ($prefix) {
+                foreach (array_merge(self::AWG_KEYS_3, self::AWG_KEYS_31) as $k) {
+                    unset($c[$prefix . 'amnezia_keys'][$k]);
+                }
+                unset($c[$prefix . 'amnezia_keepalive']);
+                // Шаблон обязан уехать вместе с полями: AWG_ROTATE_KEYS содержит
+                // весь блок 3.0, и ближайшая ротация по оставшемуся *_3 вернула бы
+                // его целиком — вместе с header protection, который только что сняли.
+                $tpl = (string) ($c[$prefix . 'amnezia_tpl'] ?? '');
+                if (substr($tpl, -2) === '_3') {
+                    $c[$prefix . 'amnezia_tpl'] = self::awgTemplateForVer($tpl, 2);
+                }
+            });
         });
     }
 
@@ -9605,6 +10097,11 @@ NFT;
     // подтверждённой поддержке tools >= 3.1 — при включении. Выключить (заведомо безопасная
     // операция) можно всегда, чтобы застрявший на 'on' тумблер не блокировался версией.
     public function toggleRandomTrailers($page = 0)
+    {
+        return $this->withWireguardUpdate(fn() => $this->toggleRandomTrailersLocked($page), null);
+    }
+
+    private function toggleRandomTrailersLocked($page = 0)
     {
         $prefix = $this->getInstanceWG(1);
         $c      = $this->getPacConf();
@@ -9626,15 +10123,20 @@ NFT;
         }
 
         $this->awgApplyGuarded($page, function () use ($prefix, $cur) {
-            $c    = $this->getPacConf();
-            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
-            $keys['RandomTrailers'] = $cur === 'on' ? 'off' : 'on';
-            $c[$prefix . 'amnezia_keys'] = $keys;
-            $this->setPacConf($c);
+            $this->pacConfUpdate(function (&$c) use ($prefix, $cur) {
+                $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+                $keys['RandomTrailers'] = $cur === 'on' ? 'off' : 'on';
+                $c[$prefix . 'amnezia_keys'] = $keys;
+            });
         });
     }
 
     public function toggleDisableCookies($page = 0)
+    {
+        return $this->withWireguardUpdate(fn() => $this->toggleDisableCookiesLocked($page), null);
+    }
+
+    private function toggleDisableCookiesLocked($page = 0)
     {
         $prefix = $this->getInstanceWG(1);
         $c      = $this->getPacConf();
@@ -9651,11 +10153,11 @@ NFT;
         }
 
         $this->awgApplyGuarded($page, function () use ($prefix, $cur) {
-            $c    = $this->getPacConf();
-            $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
-            $keys['DisableCookies'] = $cur === 'on' ? 'off' : 'on';
-            $c[$prefix . 'amnezia_keys'] = $keys;
-            $this->setPacConf($c);
+            $this->pacConfUpdate(function (&$c) use ($prefix, $cur) {
+                $keys = is_array($c[$prefix . 'amnezia_keys'] ?? null) ? $c[$prefix . 'amnezia_keys'] : [];
+                $keys['DisableCookies'] = $cur === 'on' ? 'off' : 'on';
+                $c[$prefix . 'amnezia_keys'] = $keys;
+            });
         });
     }
 
@@ -9685,9 +10187,9 @@ NFT;
     // только то, что отдаётся в подписке.
     public function toggleMihomoAwg3($page = 0)
     {
-        $c = $this->getPacConf();
-        $c['mihomo_awg3'] = empty($c['mihomo_awg3']) ? 1 : 0;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['mihomo_awg3'] = empty($c['mihomo_awg3']) ? 1 : 0;
+        });
         $this->awg3Menu($page);
     }
 
@@ -9726,6 +10228,11 @@ NFT;
     // Легаси-защиты вида «args=[$page]» здесь нет намеренно: колбэк новый,
     // стэшей старого формата для него не существует.
     public function setAwg3FieldValue($text, $tok = '', $inst = 0, $page = 0)
+    {
+        return $this->withWireguardUpdate(fn() => $this->setAwg3FieldValueLocked($text, $tok, $inst, $page), in_array((int) $inst, [0, 1], true) ? ((int) $inst ? 'wg1' : 'wg') : null);
+    }
+
+    private function setAwg3FieldValueLocked($text, $tok = '', $inst = 0, $page = 0)
     {
         if (!isset(self::AWG3_FIELDS[$tok])) {
             return $this->menu('wg', $page);
@@ -9766,13 +10273,10 @@ NFT;
 
         if ($reset) {
             $this->awgApplyGuarded($page, function () use ($prefix, $key) {
-                $c = $this->getPacConf();
-                if ($key === 'PersistentKeepalive') {
-                    unset($c[$prefix . 'amnezia_keepalive']);
-                } else {
-                    unset($c[$prefix . 'amnezia_keys'][$key]);
-                }
-                $this->setPacConf($c);
+                $this->pacConfUpdate(function (&$c) use ($prefix, $key) {
+                    if ($key === 'PersistentKeepalive') unset($c[$prefix . 'amnezia_keepalive']);
+                    else unset($c[$prefix . 'amnezia_keys'][$key]);
+                });
             });
             return;
         }
@@ -9787,13 +10291,13 @@ NFT;
         }
 
         $this->awgApplyGuarded($page, function () use ($prefix, $key, $text) {
-            $c = $this->getPacConf();
-            if ($key === 'PersistentKeepalive') {
-                $c[$prefix . 'amnezia_keepalive'] = $text;
-            } else {
-                $c[$prefix . 'amnezia_keys'][$key] = $text;
-            }
-            $this->setPacConf($c);
+            $this->pacConfUpdate(function (&$c) use ($prefix, $key, $text) {
+                if ($key === 'PersistentKeepalive') {
+                    $c[$prefix . 'amnezia_keepalive'] = $text;
+                } else {
+                    $c[$prefix . 'amnezia_keys'][$key] = $text;
+                }
+            });
         });
     }
 
@@ -10441,6 +10945,11 @@ NFT;
 
     public function setAmneziaI1Value($text, $inst = 0, $page = 0)
     {
+        return $this->withWireguardUpdate(fn() => $this->setAmneziaI1ValueLocked($text, $inst, $page), in_array((int) $inst, [0, 1], true) ? ((int) $inst ? 'wg1' : 'wg') : null);
+    }
+
+    private function setAmneziaI1ValueLocked($text, $inst = 0, $page = 0)
+    {
         // Стэш, созданный до деплоя, нёс args=[$page]: старая страница
         // приходит в $inst. Значение вне 0/1 — легаси-страница: возвращаем её
         // в $page и берём текущий глобальный инстанс (прежнее поведение).
@@ -10450,14 +10959,16 @@ NFT;
         }
         $this->selectWG($inst);
         $text   = trim($text);
-        $c      = $this->getPacConf();
         $prefix = $this->getInstanceWG(1);
         $k      = $prefix . 'amnezia_keys';
 
         if ($text === '0' || $text === '') {
-            if (!empty($c[$k])) {
+            $changed = $this->pacConfUpdate(function (&$c) use ($k) {
+                if (empty($c[$k])) return false;
                 unset($c[$k]['I1']);
-                $this->setPacConf($c);
+                return true;
+            });
+            if ($changed) {
                 $this->switchAmnezia($page, false, false, 1);
                 return;
             }
@@ -10473,12 +10984,11 @@ NFT;
             return;
         }
 
-        if (empty($c[$k])) {
-            $c[$k] = $this->generateAmneziaKeys($c[$prefix . 'amnezia_tpl'] ?? 'standard_2');
-        }
-        $c[$k]['I1']       = $text;
-        $c[$prefix . 'amnezia'] = 1;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($k, $prefix, $text) {
+            if (empty($c[$k])) $c[$k] = $this->generateAmneziaKeys($c[$prefix . 'amnezia_tpl'] ?? 'standard_2');
+            $c[$k]['I1'] = $text;
+            $c[$prefix . 'amnezia'] = 1;
+        });
         $this->switchAmnezia($page, false, false, 1);
     }
 
@@ -10517,6 +11027,11 @@ NFT;
 
     public function switchAmnezia($page = 0, $reset = false, $reduce = false, $apply = false, $silent = false)
     {
+        return $this->withWireguardUpdate(fn() => $this->switchAmneziaLocked($page, $reset, $reduce, $apply, $silent), null);
+    }
+
+    private function switchAmneziaLocked($page = 0, $reset = false, $reduce = false, $apply = false, $silent = false)
+    {
         // Серверный конфиг читаем ДО любых записей: readConfig() штатно отдаёт
         // null при недоступном контейнере, а ниже $wg['interface'][$j] = $i
         // авто-вивифицировал бы null и createConfig(null) дал заглушку из одной
@@ -10535,36 +11050,38 @@ NFT;
             }
             return;
         }
-        $orig = $c = $this->getPacConf();
-        switch (true) {
-            case !empty($reset):
-                $amnezia = 1;
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keys']);
-                unset($c[$this->getInstanceWG(1) . 'presharedkey']);
-                unset($c[$this->getInstanceWG(1) . 'amnezia_keepalive']);
-                break;
-            case !empty($reduce):
-                // Понижение до 1.x: снимаем 2.0-, 3.0- и 3.1-поля. Оставить
-                // HeaderProtectionKey без S3/S4 нельзя — конфиг был бы отвергнут.
-                // AWG_KEYS_31 сюда же: тумблеры RandomTrailers/DisableCookies
-                // включаются только при amneziaProtoVer() === 3 (см. toggleRandomTrailers/
-                // toggleDisableCookies) — оставшись висеть на «1.x»-наборе, они бы
-                // нарушили этот инвариант и продолжали молча уезжать в wg0.conf.
-                $amnezia = 1;
-                foreach (array_merge(self::AWG_KEYS_2, self::AWG_KEYS_3, self::AWG_KEYS_31) as $j) {
-                    unset($c[$this->getInstanceWG(1) . 'amnezia_keys'][$j]);
-                }
-                break;
-            case !empty($apply):
-                // Caller (applyAmneziaTemplate) has already set keys + amnezia=1.
-                $amnezia = 1;
-                break;
+        [$orig, $c, $amnezia] = $this->pacConfUpdate(function (&$c) use ($reset, $reduce, $apply) {
+            $orig = $c;
+            switch (true) {
+                case !empty($reset):
+                    $amnezia = 1;
+                    unset($c[$this->getInstanceWG(1) . 'amnezia_keys']);
+                    unset($c[$this->getInstanceWG(1) . 'presharedkey']);
+                    unset($c[$this->getInstanceWG(1) . 'amnezia_keepalive']);
+                    break;
+                case !empty($reduce):
+                    // Понижение до 1.x: снимаем 2.0-, 3.0- и 3.1-поля. Оставить
+                    // HeaderProtectionKey без S3/S4 нельзя — конфиг был бы отвергнут.
+                    // AWG_KEYS_31 сюда же: тумблеры RandomTrailers/DisableCookies
+                    // включаются только при amneziaProtoVer() === 3 (см. toggleRandomTrailers/
+                    // toggleDisableCookies) — оставшись висеть на «1.x»-наборе, они бы
+                    // нарушили этот инвариант и продолжали молча уезжать в wg0.conf.
+                    $amnezia = 1;
+                    foreach (array_merge(self::AWG_KEYS_2, self::AWG_KEYS_3, self::AWG_KEYS_31) as $j) {
+                        unset($c[$this->getInstanceWG(1) . 'amnezia_keys'][$j]);
+                    }
+                    break;
+                case !empty($apply):
+                    // Caller (applyAmneziaTemplate) has already set keys + amnezia=1.
+                    $amnezia = 1;
+                    break;
 
-            default:
-                $amnezia = $c[$this->getInstanceWG(1) . 'amnezia'] = ($c[$this->getInstanceWG(1) . 'amnezia'] ?? false) ? 0 : 1;
-                break;
-        }
-        $this->setPacConf($c);
+                default:
+                    $amnezia = $c[$this->getInstanceWG(1) . 'amnezia'] = ($c[$this->getInstanceWG(1) . 'amnezia'] ?? false) ? 0 : 1;
+                    break;
+            }
+            return [$orig, $c, $amnezia];
+        });
 
         // presharedKey() отдаёт '' только когда контейнер не ответил (см. там же).
         // Писать конфиги с пустым PresharedKey нельзя, а pac.json к этому моменту
@@ -10572,7 +11089,8 @@ NFT;
         // бы amnezia включённой при неизменившихся конфигах.
         $pk = $this->presharedKey();
         if (!empty($amnezia) && $pk === '') {
-            $this->setPacConf($orig);
+            $prefix = $this->getInstanceWG(1);
+            if (!$this->restorePacFields($orig, $c, array_map(fn($key) => $prefix . $key, ['amnezia', 'amnezia_keys', 'presharedkey', 'amnezia_keepalive']))) throw new RuntimeException($this->t('Настройки изменились; восстановление предыдущего состояния не подтверждено', 'Settings changed; restoration of the previous state is unconfirmed'));
             if (empty($silent)) {
                 $this->send(
                     $this->input['chat'] ?? '',
@@ -10718,6 +11236,15 @@ NFT;
 
     public function rotateAllPeerKeys($page, $confirm = false)
     {
+        $service = $this->getInstanceWG();
+        $mapping = $this->withWireguardUpdate(fn() => $this->rotateAllPeerKeysLocked($page, $confirm));
+        if (!is_array($mapping)) return $mapping;
+        if (!$this->completeWireguardRemap($service)) throw new RuntimeException($this->t('WireGuard: обновление привязок не подтверждено', 'WireGuard: link update is unconfirmed'));
+        $this->menu('wg', $page);
+    }
+
+    private function rotateAllPeerKeysLocked($page, $confirm = false)
+    {
         if (!$confirm) {
             $text = 'Menu -> ' . $this->i18n('wg_title') . "\n⚠ " . $this->i18n('confirm rotate peer keys');
             $inst = $this->wgNum();
@@ -10745,9 +11272,7 @@ NFT;
         if ($amnezia) {
             // unset кэша заставляет presharedKey() сгенерировать новый — тот
             // же приём, что switchAmnezia($reset=true).
-            $p = $this->getPacConf();
-            unset($p[$this->getInstanceWG(1) . 'presharedkey']);
-            $this->setPacConf($p);
+            $this->pacConfUpdate(function (&$p) { unset($p[$this->getInstanceWG(1) . 'presharedkey']); });
             $psk = $this->presharedKey();
             if ($psk === '') {
                 $this->wgConfUnavailable($this->t('не удалось получить presharedkey (контейнер недоступен), ключи не изменены', 'could not get the presharedkey (the container is unavailable), keys unchanged'));
@@ -10780,19 +11305,14 @@ NFT;
 
         $r = $this->applyRotatedPeerKeys($clients, $conf, $pairs, $psk);
 
-        if ($r['oldToNew']) {
-            $xr = $this->remapVlessAwgLinks($this->getXray(), $r['oldToNew']);
-            $this->restartXray($xr, 1);
-        }
 
-        $this->saveClients($r['clients']);
-        $this->restartWG($this->createConfig($r['conf']));
+        if (!$this->applyWgConfig($this->createConfig($r['conf']), $r['clients'], false, $r['oldToNew'])) throw new RuntimeException($this->t('WireGuard: ротация не подтверждена; cron повторит операцию', 'WireGuard: rotation is unconfirmed; cron will retry the operation'));
 
         $this->answer(
             $this->input['callback_id'] ?? '',
             "🔄 rotated {$r['rotated']}/" . count($clients) . ($r['skipped'] ? ", skipped {$r['skipped']}" : '')
         );
-        $this->menu('wg', $page);
+        return $r['oldToNew'];
     }
 
     // Поднялся ли интерфейс. `awg show wg0` печатает «interface: wg0» только для
@@ -10819,6 +11339,11 @@ NFT;
     // восстановление целого файла затёрло бы его работу.
     public function awgApplyGuarded(int $page, callable $mutate, bool $silent = false): bool
     {
+        return $this->withWireguardUpdate(fn() => $this->awgApplyGuardedLocked($page, $mutate, $silent), null);
+    }
+
+    private function awgApplyGuardedLocked(int $page, callable $mutate, bool $silent = false): bool
+    {
         $prefix = $this->getInstanceWG(1);
         $snapKeys = [
             $prefix . 'amnezia_keys',
@@ -10830,13 +11355,10 @@ NFT;
             // сдвинутым, то есть следующая попытка откладывалась на весь период.
             $prefix . 'amnezia_last_rotation',
         ];
-        $before = [];
-        $c = $this->getPacConf();
-        foreach ($snapKeys as $k) {
-            $before[$k] = $c[$k] ?? null;
-        }
+        $before = $this->getPacConf();
 
         $mutate();
+        $expected = $this->getPacConf();
         $this->switchAmnezia($page, false, false, 1, true);
 
         if ($this->awgLinkUp()) {
@@ -10846,15 +11368,7 @@ NFT;
             return true;
         }
 
-        $c = $this->getPacConf();
-        foreach ($before as $k => $v) {
-            if ($v === null) {
-                unset($c[$k]);
-            } else {
-                $c[$k] = $v;
-            }
-        }
-        $this->setPacConf($c);
+        if (!$this->restorePacFields($before, $expected, $snapKeys)) throw new RuntimeException($this->t('Настройки Amnezia изменились; откат отменён', 'Amnezia settings changed; rollback cancelled'));
         $this->switchAmnezia($page, false, false, 1, true);
         if (!$silent) {
             // Не alert-попапом: сюда приходят и нажатия кнопок, и ответы на
@@ -10874,6 +11388,11 @@ NFT;
     // нужно перекачать конфиги: рассинхрон HeaderProtectionKey рвёт связь молча.
     public function rotateAmneziaJunk($silent = false, $page = 0)
     {
+        return $this->withWireguardUpdate(fn() => $this->rotateAmneziaJunkLocked($silent, $page), null);
+    }
+
+    private function rotateAmneziaJunkLocked($silent = false, $page = 0)
+    {
         $c = $this->getPacConf();
         $prefix = $this->getInstanceWG(1);
         if (empty($c[$prefix . 'amnezia'])) {
@@ -10886,8 +11405,7 @@ NFT;
         // classic_1 — это 1.x-режим без I1-I5/S3-S4. Ротировать нечего, но
         // обновим last_rotation чтобы maybeRotate не дёргался каждый менеджмент.
         if ($tpl === 'classic_1') {
-            $c[$prefix . 'amnezia_last_rotation'] = time();
-            $this->setPacConf($c);
+            $this->pacConfUpdate(function (&$c) use ($prefix) { $c[$prefix . 'amnezia_last_rotation'] = time(); });
             if (!$silent) {
                 $this->menu('wg', $page);
             }
@@ -10910,22 +11428,22 @@ NFT;
             $tpl = self::awgTemplateForVer($tpl, $has3 ? 3 : 2);
         }
         $mutate = function () use ($prefix, $tpl) {
-            $c   = $this->getPacConf();
-            $new = $this->generateAmneziaKeys($tpl, fn() => $this->genHeaderProtectionKey());
-            foreach (self::AWG_ROTATE_KEYS as $k) {
-                if (isset($new[$k])) {
-                    $c[$prefix . 'amnezia_keys'][$k] = $new[$k];
-                } else {
-                    unset($c[$prefix . 'amnezia_keys'][$k]);
+            $this->pacConfUpdate(function (&$c) use ($prefix, $tpl) {
+                $new = $this->generateAmneziaKeys($tpl, fn() => $this->genHeaderProtectionKey());
+                foreach (self::AWG_ROTATE_KEYS as $k) {
+                    if (isset($new[$k])) {
+                        $c[$prefix . 'amnezia_keys'][$k] = $new[$k];
+                    } else {
+                        unset($c[$prefix . 'amnezia_keys'][$k]);
+                    }
                 }
-            }
-            // Свежие S3/S4 из 2.0-шаблона могут выпасть меньше 12 — при живом
-            // header protection это тихо уронит интерфейс после ротации.
-            if (!empty($c[$prefix . 'amnezia_keys']['HeaderProtectionKey'])) {
-                $c[$prefix . 'amnezia_keys'] = self::enforceHeaderProtection($c[$prefix . 'amnezia_keys']);
-            }
-            $c[$prefix . 'amnezia_last_rotation'] = time();
-            $this->setPacConf($c);
+                // Свежие S3/S4 из 2.0-шаблона могут выпасть меньше 12 — при живом
+                // header protection это тихо уронит интерфейс после ротации.
+                if (!empty($c[$prefix . 'amnezia_keys']['HeaderProtectionKey'])) {
+                    $c[$prefix . 'amnezia_keys'] = self::enforceHeaderProtection($c[$prefix . 'amnezia_keys']);
+                }
+                $c[$prefix . 'amnezia_last_rotation'] = time();
+            });
         };
         if ($has3) {
             $this->awgApplyGuarded($page, $mutate, $silent);
@@ -11008,6 +11526,11 @@ NFT;
 
     public function setAmneziaRotationValue($text, $inst = 0, $page = 0)
     {
+        return $this->withWireguardUpdate(fn() => $this->setAmneziaRotationValueLocked($text, $inst, $page), in_array((int) $inst, [0, 1], true) ? ((int) $inst ? 'wg1' : 'wg') : null);
+    }
+
+    private function setAmneziaRotationValueLocked($text, $inst = 0, $page = 0)
+    {
         // Легаси-стэш args=[$page] — та же миграционная защита, что и в
         // setAmneziaI1Value.
         if ((int) $inst !== 0 && (int) $inst !== 1) {
@@ -11023,24 +11546,30 @@ NFT;
             return;
         }
         $days = min((int) $text, 365);
-        $c = $this->getPacConf();
-        $prefix = $this->getInstanceWG(1);
-        $c[$prefix . 'amnezia_rotation_period'] = $days;
-        if ($days > 0 && empty($c[$prefix . 'amnezia_last_rotation'])) {
-            $c[$prefix . 'amnezia_last_rotation'] = time();
-        }
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($days) {
+            $prefix = $this->getInstanceWG(1);
+            $c[$prefix . 'amnezia_rotation_period'] = $days;
+            if ($days > 0 && empty($c[$prefix . 'amnezia_last_rotation'])) {
+                $c[$prefix . 'amnezia_last_rotation'] = time();
+            }
+        });
         $this->menu('wg', $page);
     }
 
     public function switchTorrent($page = 0, $restart = false)
     {
-        $c = $this->getPacConf();
-        // !empty — на свежей установке (pac.json = {}) ключа ещё нет, и первое
-        // же нажатие тумблера сыпало «Undefined array key»; в iptablesWG()
-        // фолбэк для этих же ключей давно есть.
-        $c[$this->getInstanceWG(1) . 'blocktorrent'] = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']) ? 0 : 1;
-        $this->setPacConf($c);
+        return $this->withWireguardUpdate(fn() => $this->switchTorrentLocked($page, $restart), null);
+    }
+
+    private function switchTorrentLocked($page = 0, $restart = false)
+    {
+        $c = $this->pacConfUpdate(function (&$c) {
+            // !empty — на свежей установке (pac.json = {}) ключа ещё нет, и первое
+            // же нажатие тумблера сыпало «Undefined array key»; в iptablesWG()
+            // фолбэк для этих же ключей давно есть.
+            $c[$this->getInstanceWG(1) . 'blocktorrent'] = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']) ? 0 : 1;
+            return $c;
+        });
         $this->iptablesWG();
         $on = !empty($c[$this->getInstanceWG(1) . 'blocktorrent']);
         $note = $on && !$this->wgTorrentRulesReady() ? 'torrent wg incomplete' : ($on ? 'torrent wg on' : 'torrent wg off');
@@ -11058,9 +11587,14 @@ NFT;
 
     public function switchEndpoint($page = 0)
     {
-        $c = $this->getPacConf();
-        $c[$this->getInstanceWG(1) . 'endpoint'] = $c[$this->getInstanceWG(1) . 'endpoint'] ? 0 : 1;
-        $this->setPacConf($c);
+        return $this->withWireguardUpdate(fn() => $this->switchEndpointLocked($page), null);
+    }
+
+    private function switchEndpointLocked($page = 0)
+    {
+        $this->pacConfUpdate(function (&$c) {
+            $c[$this->getInstanceWG(1) . 'endpoint'] = $c[$this->getInstanceWG(1) . 'endpoint'] ? 0 : 1;
+        });
         $this->menu('wg', $page);
     }
 
@@ -11117,15 +11651,20 @@ NFT;
     // так же лечится и устаревшая запись после удаления relay.
     public function setWgRelay($page = 0, $name = '')
     {
-        $c   = $this->getPacConf();
-        $key = $this->getInstanceWG(1) . 'relay';
-        $r   = $c['relays'][$name] ?? null;
-        if ($name === '' || !is_array($r) || empty($r['awg_address'])) {
-            unset($c[$key]);
-        } else {
-            $c[$key] = $name;
-        }
-        $this->setPacConf($c);
+        return $this->withWireguardUpdate(fn() => $this->setWgRelayLocked($page, $name), null);
+    }
+
+    private function setWgRelayLocked($page = 0, $name = '')
+    {
+        $this->pacConfUpdate(function (&$c) use ($name) {
+            $key = $this->getInstanceWG(1) . 'relay';
+            $r   = $c['relays'][$name] ?? null;
+            if ($name === '' || !is_array($r) || empty($r['awg_address'])) {
+                unset($c[$key]);
+            } else {
+                $c[$key] = $name;
+            }
+        });
         $this->wgRelayMenu($page);
     }
 
@@ -11170,9 +11709,15 @@ NFT;
     }
     public function switchExchange($page)
     {
-        $c = $this->getPacConf();
-        $c[$this->getInstanceWG(1) . 'exchange'] = !empty($c[$this->getInstanceWG(1) . 'exchange']) ? 0 : 1;
-        $this->setPacConf($c);
+        return $this->withWireguardUpdate(fn() => $this->switchExchangeLocked($page), null);
+    }
+
+    private function switchExchangeLocked($page)
+    {
+        $c = $this->pacConfUpdate(function (&$c) {
+            $c[$this->getInstanceWG(1) . 'exchange'] = !empty($c[$this->getInstanceWG(1) . 'exchange']) ? 0 : 1;
+            return $c;
+        });
         $this->iptablesWG();
         $this->answer($this->input['callback_id'], $this->t('обмен между пользователями ', 'traffic between users ') . ($c[$this->getInstanceWG(1) . 'exchange'] ? $this->t('заблокирован', 'blocked') : $this->t('разблокирован', 'unblocked')), true);
         $this->menu('wg', $page);
@@ -11180,9 +11725,9 @@ NFT;
 
     public function blinkmenuswitch()
     {
-        $c = $this->getPacConf();
-        $c['blinkmenu'] = !empty($c['blinkmenu']) ? 0 : 1;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['blinkmenu'] = !empty($c['blinkmenu']) ? 0 : 1;
+        });
         $this->menu('config');
     }
 
@@ -11370,6 +11915,8 @@ NFT;
             // finally обязателен для long-polling: один Bot обслуживает там
             // несколько апдейтов подряд, и флаг не должен утечь в следующий.
             $this->replyMenuEdit = true;
+            $previousSource = $this->xrayActionSource;
+            if (in_array($callback, ['setTimerXr', 'setXrPwd', 'renXrUs', 'saveTrafficXr', 'saveHwidUserLimit', 'extAddSave', 'extRenameSave'], true)) $this->xrayActionSource = (string) ($state['xray_source'] ?? '');
             try {
                 $this->{$callback}($this->input['message'], ...$state['args']);
             } catch (Throwable $e) {
@@ -11386,6 +11933,7 @@ NFT;
                 );
                 $this->menu();
             } finally {
+                $this->xrayActionSource = $previousSource;
                 $this->replyMenuEdit = false;
                 $this->protocolReturnMain = false;
                 $this->protocolRelayOrigin = [];
@@ -11417,9 +11965,9 @@ NFT;
                 $this->send($this->input['chat'] ?? '', $this->t("$domain: неверный формат домена", "$domain - wrong domain format"), $this->input['message_id'] ?? null);
                 return empty($nomenu) ? $this->menu('config') : null;
             }
-            $conf = $this->getPacConf();
-            $conf['domain'] = $ascii;
-            $this->setPacConf($conf);
+            $this->pacConfUpdate(function (&$conf) use ($ascii) {
+                $conf['domain'] = $ascii;
+            });
             $this->chocdomain($ascii);
             $this->syncManagedSelfHosts();
             $this->reconcileManagedUpstreams();
@@ -11458,7 +12006,6 @@ NFT;
     public function addDomainAlias($domain)
     {
         $domain = (string) idn_to_ascii(trim((string) $domain));
-        $conf   = $this->getPacConf();
         // Домен уходит в exec (certbot) и в nginx.conf — принимаем только
         // безопасный синтаксис hostname, никаких shell-метасимволов.
         if (!preg_match(self::DOMAIN_RE, $domain)) {
@@ -11466,12 +12013,12 @@ NFT;
             $this->menu('config');
             return;
         }
-        if ($domain === ($conf['domain'] ?? '') || in_array($domain, $conf['domain_aliases'] ?? [], true)) {
-            $this->menu('config');
-            return;
-        }
-        $conf['domain_aliases'][] = $domain;
-        $this->setPacConf($conf);
+        $added = $this->pacConfUpdate(function (&$conf) use ($domain) {
+            if ($domain === ($conf['domain'] ?? '') || in_array($domain, $conf['domain_aliases'] ?? [], true)) return false;
+            $conf['domain_aliases'][] = $domain;
+            return true;
+        });
+        if (!$added) return $this->menu('config');
         // nginx начинает принимать алиас сразу; серт — после «renew SSL».
         $this->cloakNginx();
         $this->send($this->input['chat'], $this->t("алиас добавлен; нажмите «обновить SSL», чтобы он попал в сертификат", "alias added — press «renew SSL» to include it in the certificate"), $this->input['message_id']);
@@ -11480,16 +12027,16 @@ NFT;
 
     public function delDomainAlias($i)
     {
-        $conf    = $this->getPacConf();
-        $aliases = array_values($conf['domain_aliases'] ?? []);
-        unset($aliases[(int) $i]);
-        $aliases = array_values($aliases);
-        if ($aliases) {
-            $conf['domain_aliases'] = $aliases;
-        } else {
-            unset($conf['domain_aliases']);
-        }
-        $this->setPacConf($conf);
+        $this->pacConfUpdate(function (&$conf) use ($i) {
+            $aliases = array_values($conf['domain_aliases'] ?? []);
+            unset($aliases[(int) $i]);
+            $aliases = array_values($aliases);
+            if ($aliases) {
+                $conf['domain_aliases'] = $aliases;
+            } else {
+                unset($conf['domain_aliases']);
+            }
+        });
         $this->cloakNginx();
         $this->menu('config');
     }
@@ -11554,9 +12101,9 @@ NFT;
                     throw new RuntimeException($this->t('Не удалось удалить сертификат', 'Could not remove the certificate'));
                 }
             }
-            $conf = $this->getPacConf();
-            unset($conf['letsencrypt'], $conf['acme_requested']);
-            $this->setPacConf($conf);
+            $this->pacConfUpdate(function (&$conf) {
+                unset($conf['letsencrypt'], $conf['acme_requested']);
+            });
             $this->adguardSync();
             $this->cloakNginx();
             $this->telemtWebSync();
@@ -11589,9 +12136,7 @@ NFT;
                 // она откроет порт только на время проверки (см. BotAcme).
                 if ($this->acmeAgent() && ($target = $this->acmeSelfTarget())) {
                     // Перечитываем: letsencryptNames() мог дописать хеши поддоменов.
-                    $conf = $this->getPacConf();
-                    $conf['acme_requested'] = time();
-                    $this->setPacConf($conf);
+                    $this->pacConfUpdate(function (&$conf) { $conf['acme_requested'] = time(); });
                     if (!$this->acmeRequest('renew', $target)) {
                         $this->send($this->input['chat'], '❌ ' . $this->t('запрос службе хоста не записан', 'the request to the host service was not written'));
                         return $this->menu('config');
@@ -11674,11 +12219,11 @@ NFT;
     public function delDomain()
     {
         $this->deleteSSL(1);
-        $conf = $this->getPacConf();
-        unset($conf['domain']);
-        // Алиасы без основного домена не имеют смысла (серт удалён).
-        unset($conf['domain_aliases']);
-        $this->setPacConf($conf);
+        $this->pacConfUpdate(function (&$conf) {
+            unset($conf['domain']);
+            // Алиасы без основного домена не имеют смысла (серт удалён).
+            unset($conf['domain_aliases']);
+        });
         $this->setUpstreamDomainOcserv('');
         // Сброс SNI-маршрутов naive (основной поддомен + адреса relay): серт
         // удалён, а строки в map пережили бы удаление домена.
@@ -11798,6 +12343,7 @@ NFT;
 
     public function adguardSync()
     {
+        if (!$this->protocolModuleEnabled('ad')) return;
         // md5(time()) выводится из момента установки: окно сужается по notBefore
         // TLS-сертификата до десятков тысяч кандидатов и подбирается офлайн, а
         // панель доступна снаружи через cloakNginx() по $hash из подписки.
@@ -11813,8 +12359,7 @@ NFT;
         });
         $ssl = $this->nginxGetTypeCert();
         if (($c = $this->adguardConf()) === null) {
-            error_log('adguardSync: AdGuardHome.yaml не читается, конфиг не тронут');
-            return;
+            throw new RuntimeException($this->t('Настройки AdGuard недоступны; применение не выполнено', 'AdGuard settings are unavailable; changes were not applied'));
         }
         $this->stopAd();
         $c['users'][0]['password'] = self::adguardPasswordHash((string) $pac['adpswd']);
@@ -12177,13 +12722,13 @@ NFT;
 
     public function setLinkDomain($text)
     {
-        $c = $this->getPacConf();
-        if (empty($text)) {
-            unset($c['linkdomain']);
-        } else {
-            $c['linkdomain'] = trim($text);
-        }
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($text) {
+            if (empty($text)) {
+                unset($c['linkdomain']);
+            } else {
+                $c['linkdomain'] = trim($text);
+            }
+        });
         $this->xray();
     }
 
@@ -13152,13 +13697,13 @@ NFT;
 
     public function setSubdomain($text)
     {
-        $c = $this->getPacConf();
-        if (empty($text)) {
-            unset($c['subdomain']);
-        } else {
-            $c['subdomain'] = array_filter(explode(',', $text), fn($e) => !empty(trim($e)));
-        }
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($text) {
+            if (empty($text)) {
+                unset($c['subdomain']);
+            } else {
+                $c['subdomain'] = array_filter(explode(',', $text), fn($e) => !empty(trim($e)));
+            }
+        });
         $this->menu('config');
     }
 
@@ -13178,7 +13723,6 @@ NFT;
     }
 
     public function setPage($text) {
-        $c = $this->getPacConf();
         // Границы обязательны: значение уходит в $this->limit, а тот делит и
         // режет списки. Отрицательное (фолбэк `?: 5` отсекал только ноль)
         // давало отрицательное число страниц и array_slice с отрицательной
@@ -13189,8 +13733,7 @@ NFT;
             $this->send($this->input['chat'] ?? '', $this->t('размер страницы: число от 1 до 50', 'page size: a number from 1 to 50'), $this->input['message_id'] ?? null);
             return $this->menu('config');
         }
-        $c['limitpage'] = $n;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($n) { $c['limitpage'] = $n; });
         $this->menu('config');
     }
 
@@ -13848,7 +14391,7 @@ DNS-over-HTTPS with IP:
         // Синхронно: запись YAML и следующий запуск допустимы лишь после
         // завершения старого процесса, а не после отправки ему SIGTERM.
         $result = $this->ssh('sh -c ' . escapeshellarg($script) . ' -- ' . $action, 'ad');
-        if (trim($result) !== $marker) {
+        if ($this->sshFailed || trim($result) !== $marker) {
             throw new RuntimeException($this->t('Не удалось остановить или запустить AdGuard', 'Could not stop or start AdGuard'));
         }
         return '';
@@ -14323,7 +14866,7 @@ DNS-over-HTTPS with IP:
                             $errors[] = $missing;
                         }
                     }
-                    if ($errors || $this->xrayUpdateRules($before) === false) {
+                    if ($errors || $this->xrayUpdateRulesLocked($before) === false) {
                         $restored = true;
                         foreach ($backups as $file => $copy) {
                             if (!@rename($copy, $file)) $restored = false;
@@ -14796,6 +15339,17 @@ DNS-over-HTTPS with IP:
     }
 
     public function xrayUpdateRules(?array $previousPac = null)
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($previousPac, &$entered) {
+            $entered = true;
+            return $this->xrayUpdateRulesLocked($previousPac);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    protected function xrayUpdateRulesLocked(?array $previousPac = null)
     {
         $c  = $this->getPacConf();
         $xr = $this->getXray();
@@ -15682,7 +16236,7 @@ DNS-over-HTTPS with IP:
             $this->datRecordUpdate($runAt);
             $changed = false;
             $errors = $this->datSync(true, $changed);
-            if ($changed && $this->xrayUpdateRules() === false) $errors['xray'] = $this->t('правила не применены', 'rules not applied');
+            if ($changed && $this->xrayUpdateRulesLocked() === false) $errors['xray'] = $this->t('правила не применены', 'rules not applied');
             if (!$errors) {
                 $this->datRecordUpdate($runAt, true);
             }
@@ -15740,7 +16294,7 @@ DNS-over-HTTPS with IP:
             $changed = false;
             $errors  = $this->datSync(true, $changed);
             if ($changed) {
-                if ($this->xrayUpdateRules() === false) $errors['xray'] = $this->t('правила не применены', 'rules not applied');
+                if ($this->xrayUpdateRulesLocked() === false) $errors['xray'] = $this->t('правила не применены', 'rules not applied');
             }
             $wasFailing = !empty($conf['dat_update_failed']);
             if (!$errors) {
@@ -16191,15 +16745,15 @@ DNS-over-HTTPS with IP:
         $domains = explode(',', $domains);
         $domains = array_filter($domains, fn($x) => !empty(trim($x)));
         if (!empty($domains)) {
-            $conf = $this->getPacConf();
-            foreach ($domains as $k => $v) {
-                $conf['reverselist'][idn_to_ascii(trim($v))] = true;
-            }
-            ksort($conf['reverselist']);
-            $this->setPacConf($conf);
-            $page = (int) floor(array_search($v, array_keys($conf['reverselist'])) / $count);
+            $page = $this->pacConfUpdate(function (&$conf) use ($domains, $count) {
+                foreach ($domains as $k => $v) {
+                    $conf['reverselist'][idn_to_ascii(trim($v))] = true;
+                }
+                ksort($conf['reverselist']);
+                return (int) floor(array_search($v, array_keys($conf['reverselist'])) / $count);
+            });
         }
-        $page = $page ?: -2;
+        $page = ($page ?? 0) ?: -2;
         $this->menu('reverselist', $page);
     }
 
@@ -16223,15 +16777,15 @@ DNS-over-HTTPS with IP:
         $domains = explode(',', $domains);
         $domains = array_filter($domains, fn($x) => !empty(trim($x)));
         if (!empty($domains)) {
-            $conf = $this->getPacConf();
-            foreach ($domains as $k => $v) {
-                $conf['subzoneslist'][idn_to_ascii(trim($v))] = true;
-            }
-            ksort($conf['subzoneslist']);
-            $this->setPacConf($conf);
-            $page = (int) floor(array_search($v, array_keys($conf['subzoneslist'])) / $count);
+            $page = $this->pacConfUpdate(function (&$conf) use ($domains, $count) {
+                foreach ($domains as $k => $v) {
+                    $conf['subzoneslist'][idn_to_ascii(trim($v))] = true;
+                }
+                ksort($conf['subzoneslist']);
+                return (int) floor(array_search($v, array_keys($conf['subzoneslist'])) / $count);
+            });
         }
-        $page = $page ?: -2;
+        $page = ($page ?? 0) ?: -2;
         $this->menu('subzoneslist', $page);
     }
 
@@ -16254,13 +16808,13 @@ DNS-over-HTTPS with IP:
     {
         $reg = trim($reg);
         if (!empty($reg)) {
-            $conf = $this->getPacConf();
-            $conf['excludelist'][$reg] = true;
-            ksort($conf['excludelist']);
-            $this->setPacConf($conf);
-            $page = (int) floor(array_search($reg, array_keys($conf['excludelist'])) / $count);
+            $page = $this->pacConfUpdate(function (&$conf) use ($reg, $count) {
+                $conf['excludelist'][$reg] = true;
+                ksort($conf['excludelist']);
+                return (int) floor(array_search($reg, array_keys($conf['excludelist'])) / $count);
+            });
         }
-        $page = $page ?: -2;
+        $page = ($page ?? 0) ?: -2;
         $this->menu('excludelist', $page);
     }
 
@@ -16347,35 +16901,32 @@ DNS-over-HTTPS with IP:
 
     public function deletePeer($client, $page, $menu = true)
     {
-        $conf    = $this->readConfig();
-        $clients = $this->readClients();
-        if (empty($clients[$client])) {
-            return $menu ? $this->menu('wg', $page) : null;
-        }
-        // Без конфига удаление прошло бы только локально: запись из clients.json
-        // исчезла, а пир на сервере продолжает пускать трафик, и вернуть его в
-        // меню уже нечем.
+        return $this->withWireguardUpdate(fn() => $this->deletePeerLocked($client, $page, $menu), null);
+    }
+
+    private function deletePeerLocked($client, $page, $menu = true)
+    {
+        $conf = $this->readConfig(); $clients = $this->readClients();
+        if (empty($clients[$client])) return $menu ? $this->menu('wg', $page) : null;
         if (empty($conf['interface'])) {
             $this->wgConfUnavailable($this->t('клиент не удалён', 'client not deleted'));
             return $menu ? $this->menu('wg', $page) : null;
         }
-        // Пира ищем по адресу, а не по индексу: если совпадения нет, значит на
-        // сервере его уже нет — удаление «по индексу» в этом случае снесло бы
-        // ЧУЖОГО пира, то есть отключило бы постороннего клиента.
-        $i = $this->peerIndexByClient($conf, $clients[$client]);
-        $this->deleteClient($client);
-        if ($i !== null) {
-            unset($conf['peers'][$i]);
-            $this->restartWG($this->createConfig($conf));
-        } else {
-            error_log('deletePeer: peer not found in ' . $this->getInstanceWG() . ' config for client #' . $client);
-        }
-        if ($menu) {
-            $this->menu('wg', $page);
-        }
+        $peer = $this->peerIndexByClient($conf, $clients[$client]);
+        if ($peer !== null) unset($conf['peers'][$peer]);
+        unset($clients[$client]);
+        $ok = $this->applyWgConfig($this->createConfig($conf), array_values($clients));
+        if (!$ok) $this->wgConfUnavailable($this->t('удаление не подтверждено; клиент сохранён для повторной попытки cron', 'deletion is unconfirmed; the client is retained for a cron retry'));
+        if ($menu) $this->menu('wg', $page);
+        return $ok;
     }
 
     public function dnsPeer($client, $page)
+    {
+        return $this->withWireguardUpdate(fn() => $this->dnsPeerLocked($client, $page), null);
+    }
+
+    private function dnsPeerLocked($client, $page)
     {
         $clients = $this->readClients();
         // Индекс клиента приходит из кнопки, а список мог переиндексироваться
@@ -16386,15 +16937,20 @@ DNS-over-HTTPS with IP:
             return $this->menu('wg', $page);
         }
         $clients[$client]['interface']['DNS'] = '10.10.0.5';
-        $this->saveClients($clients);
+        if ($this->saveClients($clients) === false) throw new RuntimeException($this->t('Не удалось сохранить клиентов WireGuard', 'Could not save WireGuard clients'));
         $this->menu('client', "{$client}_$page");
     }
 
     public function deletednsPeer($client, $page)
     {
+        return $this->withWireguardUpdate(fn() => $this->deletednsPeerLocked($client, $page), null);
+    }
+
+    private function deletednsPeerLocked($client, $page)
+    {
         $clients = $this->readClients();
         unset($clients[$client]['interface']['DNS']);
-        $this->saveClients($clients);
+        if ($this->saveClients($clients) === false) throw new RuntimeException($this->t('Не удалось сохранить клиентов WireGuard', 'Could not save WireGuard clients'));
         $this->menu('client', "{$client}_$page");
     }
 
@@ -16484,9 +17040,7 @@ DNS-over-HTTPS with IP:
             // «версия неизвестна» и «версия старая» должны различаться.
             return is_array($cache) && !empty($cache['v']) ? $cache['v'] : null;
         }
-        $c = $this->getPacConf();
-        $c[$prefix . 'awg_tools_ver'] = ['v' => $v, 'at' => time()];
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($prefix, $v) { $c[$prefix . 'awg_tools_ver'] = ['v' => $v, 'at' => time()]; });
         return $v;
     }
 
@@ -16864,15 +17418,20 @@ DNS-over-HTTPS with IP:
 
     public function setDNS($text, $page = 0, $inst = null)
     {
+        return $this->withWireguardUpdate(fn() => $this->setDNSLocked($text, $page, $inst), $inst === null ? null : ((int) $inst ? 'wg1' : 'wg'));
+    }
+
+    private function setDNSLocked($text, $page = 0, $inst = null)
+    {
         $this->promptInstWG($inst);
         $text = self::sanitizeConfValue($text);
-        $c = $this->getPacConf();
-        if ($text) {
-            $c[$this->getInstanceWG(1) . 'dns'] = $text;
-        } else {
-            unset($c[$this->getInstanceWG(1) . 'dns']);
-        }
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($text) {
+            if ($text) {
+                $c[$this->getInstanceWG(1) . 'dns'] = $text;
+            } else {
+                unset($c[$this->getInstanceWG(1) . 'dns']);
+            }
+        });
         $this->menu('wg', $page);
     }
 
@@ -16895,23 +17454,32 @@ DNS-over-HTTPS with IP:
 
     public function setMTU($text, $page = 0, $inst = null)
     {
+        return $this->withWireguardUpdate(fn() => $this->setMTULocked($text, $page, $inst), $inst === null ? null : ((int) $inst ? 'wg1' : 'wg'));
+    }
+
+    private function setMTULocked($text, $page = 0, $inst = null)
+    {
         $this->promptInstWG($inst);
         $text = trim((string) self::sanitizeConfValue($text));
-        $c    = $this->getPacConf();
-        if ($text === '' || $text === '0') {
-            unset($c[$this->getInstanceWG(1) . 'mtu']);
-        } elseif ($err = self::validateMTU($text)) {
+        if ($text !== '' && $text !== '0' && ($err = self::validateMTU($text))) {
             $this->update($this->input['chat'], $this->input['message_id'], $err);
             sleep(3);
             return $this->menu('wg', $page);
-        } else {
-            $c[$this->getInstanceWG(1) . 'mtu'] = (int) $text;
         }
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($text) {
+            $key = $this->getInstanceWG(1) . 'mtu';
+            if ($text === '' || $text === '0') unset($c[$key]);
+            else $c[$key] = (int) $text;
+        });
         $this->menu('wg', $page);
     }
 
     public function changeClientMTU($text, $client, $page = 0, $inst = null)
+    {
+        return $this->withWireguardUpdate(fn() => $this->changeClientMTULocked($text, $client, $page, $inst), ($inst === null || !in_array((int) $inst, [0, 1], true) ? null : ((int) $inst === 1 ? 'wg1' : 'wg')));
+    }
+
+    private function changeClientMTULocked($text, $client, $page = 0, $inst = null)
     {
         $this->promptInstWG($inst);
         $clients = $this->readClients();
@@ -16930,7 +17498,7 @@ DNS-over-HTTPS with IP:
         } else {
             $clients[$client]['interface']['MTU'] = (int) $text;
         }
-        $this->saveClients($clients);
+        if ($this->saveClients($clients) === false) throw new RuntimeException($this->t('Не удалось сохранить клиентов WireGuard', 'Could not save WireGuard clients'));
         $this->menu('client', "{$client}_$page");
     }
 
@@ -16952,24 +17520,22 @@ DNS-over-HTTPS with IP:
 
     public function subnetSave($text, $wgpage, $page, $openconnect)
     {
-        $c = $this->getPacConf();
-        $subnets = explode(',', $text);
+        $subnets = array_filter(array_map('trim', explode(',', $text)));
         if ($subnets) {
-            $c['subnets'] = array_merge($c['subnets'] ?: [], array_filter(array_map(fn ($e) => trim($e), $subnets)));
-            $this->setPacConf($c);
-            $page = floor(count($c['subnets']) / $this->limit);
+            $page = $this->pacConfUpdate(function (&$c) use ($subnets) {
+                $c['subnets'] = array_merge($c['subnets'] ?? [], $subnets);
+                return floor(count($c['subnets']) / $this->limit);
+            });
         }
-        if (!empty($openconnect)) {
-            $this->ocservRoute();
-        }
+        if (!empty($openconnect)) $this->ocservRoute();
         $this->subnet($wgpage, $page, $openconnect);
     }
 
     public function subnetDelete($wgpage, $k, $page = 0, $openconnect = 0)
     {
-        $c = $this->getPacConf();
-        unset($c['subnets'][$k]);
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($k) {
+            unset($c['subnets'][$k]);
+        });
         if (!empty($openconnect)) {
             $this->ocservRoute();
         }
@@ -17215,13 +17781,18 @@ DNS-over-HTTPS with IP:
     // из changeIps идут в том же запросе и инстанс уже верный — там null.
     public function setIps($ips, $k, $page = 0, $inst = null)
     {
+        return $this->withWireguardUpdate(fn() => $this->setIpsLocked($ips, $k, $page, $inst), ($inst === null || !in_array((int) $inst, [0, 1], true) ? null : ((int) $inst === 1 ? 'wg1' : 'wg')));
+    }
+
+    private function setIpsLocked($ips, $k, $page = 0, $inst = null)
+    {
         $this->promptInstWG($inst);
         $clients = $this->readClients();
         if (empty($clients[$k])) {
             return $this->menu('wg', $page);
         }
         $clients[$k]['peers'][0]['AllowedIPs'] = self::sanitizeAllowedIps($ips);
-        $this->saveClients($clients);
+        if ($this->saveClients($clients) === false) throw new RuntimeException($this->t('Не удалось сохранить клиентов WireGuard', 'Could not save WireGuard clients'));
         $this->menu('client', "{$k}_$page");
     }
 
@@ -17383,6 +17954,18 @@ DNS-over-HTTPS with IP:
 
     public function setVlessLink($cl, $wg, $page_wg = 0)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($cl, $wg, $page_wg, &$entered) {
+            $entered = true;
+            return $this->setVlessLinkLocked($cl, $wg, $page_wg);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function setVlessLinkLocked($cl, $wg, $page_wg = 0)
+    {
+        if (!$this->xrayClientMatches((int) $cl)) return $this->staleXrayAction();
         $c = $this->getXray();
         $w = $this->readClients();
         $privatekey = $w[$wg]['interface']['PrivateKey'];
@@ -17393,11 +17976,22 @@ DNS-over-HTTPS with IP:
                 unset($c['inbounds'][0]['settings']['clients'][$i]['awg']);
             }
         }
-        $this->restartXray($c, 1);
+        if ($this->restartXray($c, 1) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->menu('wg', $page_wg);
     }
 
     public function unsetVlessLink($wg, $page_wg = 0)
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($wg, $page_wg, &$entered) {
+            $entered = true;
+            return $this->unsetVlessLinkLocked($wg, $page_wg);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function unsetVlessLinkLocked($wg, $page_wg = 0)
     {
         $c = $this->getXray();
         $w = $this->readClients();
@@ -17407,7 +18001,7 @@ DNS-over-HTTPS with IP:
                 unset($c['inbounds'][0]['settings']['clients'][$i]['awg']);
             }
         }
-        $this->restartXray($c, 1);
+        if ($this->restartXray($c, 1) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->menu('wg', $page_wg);
     }
 
@@ -17462,6 +18056,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/menu wg {$this->wgNum()} $page_wg",
             ],
         ];
+        $data = $this->xrayIdentityButtons($data, $c);
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
@@ -17554,25 +18149,25 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'] ?? '', $this->t('не удалось скачать список: ', 'could not download the list: ') . htmlspecialchars($url, ENT_QUOTES, 'UTF-8'), $this->input['message_id'] ?? null);
             return;
         }
-        $pac   = $this->getPacConf();
-        $added = 0;
-        foreach (preg_split('~\r\n|\r|\n~', $body) as $line) {
-            $line = trim($line);
-            if ($line === '' || str_starts_with($line, '#')) {
-                continue;
+        $this->pacConfUpdate(function (&$pac) use ($body) {
+            $added = 0;
+            foreach (preg_split('~\r\n|\r|\n~', $body) as $line) {
+                $line = trim($line);
+                if ($line === '' || str_starts_with($line, '#')) {
+                    continue;
+                }
+                $key = $this->normalizeRouteEntry($line);
+                if (!$this->routeEntryUsable($this->classifyRouteEntry($key))) {
+                    continue;
+                }
+                if (!array_key_exists($key, $pac['includelist'] ?? [])) {
+                    $added++;
+                }
+                $pac['includelist'][$key] = true;
             }
-            $key = $this->normalizeRouteEntry($line);
-            if (!$this->routeEntryUsable($this->classifyRouteEntry($key))) {
-                continue;
-            }
-            if (!array_key_exists($key, $pac['includelist'] ?? [])) {
-                $added++;
-            }
-            $pac['includelist'][$key] = true;
-        }
-        ['list' => $pac['includelist']] = $this->dedupeRouteList($pac['includelist'] ?? []);
-        ksort($pac['includelist']);
-        $this->setPacConf($pac);
+            ['list' => $pac['includelist']] = $this->dedupeRouteList($pac['includelist'] ?? []);
+            ksort($pac['includelist']);
+        });
         $this->pacUpdate();
     }
 
@@ -17857,17 +18452,17 @@ DNS-over-HTTPS with IP:
 
     public function tunpackagemode()
     {
-        $c = $this->getPacConf();
-        $c['tunpackagemode'] = !empty($c['tunpackagemode']) ? 0 : 1;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['tunpackagemode'] = !empty($c['tunpackagemode']) ? 0 : 1;
+        });
         $this->tun();
     }
 
     public function tunprocessmode()
     {
-        $c = $this->getPacConf();
-        $c['tunprocessmode'] = !empty($c['tunprocessmode']) ? 0 : 1;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['tunprocessmode'] = !empty($c['tunprocessmode']) ? 0 : 1;
+        });
         $this->tun();
     }
 
@@ -18229,9 +18824,9 @@ DNS-over-HTTPS with IP:
 
     public function pacZapret()
     {
-        $conf = $this->getPacConf();
-        $conf['zapret'] = !$conf['zapret'];
-        $this->setPacConf($conf);
+        $this->pacConfUpdate(function (&$conf) {
+            $conf['zapret'] = !$conf['zapret'];
+        });
         $this->menu('pac');
     }
 
@@ -18482,16 +19077,8 @@ DNS-over-HTTPS with IP:
     public function selectWG($i)
     {
         $i = (int) $i ? 1 : 0;
+        $this->pacConfUpdate(function (&$conf) use ($i) { $conf['wg_instance'] = $i; });
         $this->wg = $i;
-        $c = $this->getPacConf();
-        // Пишем только при реальной смене: инструментированные кнопки зовут
-        // selectWG на каждый клик, а read-modify-write всего pac.json — это ещё
-        // и окно для затирания параллельной записи (второй воркер, cron-ротация).
-        // Строгое !== с int заодно один раз нормализует легаси-строку "0"/"1".
-        if (($c['wg_instance'] ?? null) !== $i) {
-            $c['wg_instance'] = $i;
-            $this->setPacConf($c);
-        }
     }
 
     // Текущий инстанс как число 0/1 — для подстановки в callback_data.
@@ -18693,14 +19280,18 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'], $this->t('dnstt: пароль до 128 символов, без перевода строки', 'dnstt: password up to 128 characters, without line breaks'));
             return;
         }
-        $c = $this->getPacConf();
-        if ($text) {
-            $c['dnsttPassword'] = $text;
-        } else {
-            unset($c['dnsttPassword']);
-        }
-        $this->setPacConf($c);
-        $this->dnsttStart();
+        $ok = $this->withLock('dnstt', function () use ($text) {
+            $this->pacConfUpdate(function (&$c) use ($text) {
+                $c['dnstt_apply_pending'] = 1;
+                if ($text) {
+                    $c['dnsttPassword'] = $text;
+                } else {
+                    unset($c['dnsttPassword']);
+                }
+            });
+            return $this->dnsttStartLocked();
+        }, 120, false);
+        if (!$ok) throw new RuntimeException($this->t('DNSTT: применение не подтверждено; прежний доступ может оставаться активным', 'DNSTT apply is unconfirmed; previous access may remain active'));
         $this->dnstt();
     }
 
@@ -18711,14 +19302,18 @@ DNS-over-HTTPS with IP:
             $this->send($this->input['chat'], $this->t('dnstt: некорректный домен', 'dnstt: invalid domain'));
             return;
         }
-        $c = $this->getPacConf();
-        if ($text) {
-            $c['dnsttDomain'] = $text;
-        } else {
-            unset($c['dnsttDomain']);
-        }
-        $this->setPacConf($c);
-        $this->dnsttStart();
+        $ok = $this->withLock('dnstt', function () use ($text) {
+            $this->pacConfUpdate(function (&$c) use ($text) {
+                $c['dnstt_apply_pending'] = 1;
+                if ($text) {
+                    $c['dnsttDomain'] = $text;
+                } else {
+                    unset($c['dnsttDomain']);
+                }
+            });
+            return $this->dnsttStartLocked();
+        }, 120, false);
+        if (!$ok) throw new RuntimeException($this->t('DNSTT: применение не подтверждено; прежний доступ может оставаться активным', 'DNSTT apply is unconfirmed; previous access may remain active'));
         $this->dnstt();
     }
 
@@ -18829,19 +19424,24 @@ DNS-over-HTTPS with IP:
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
     }
 
-    // Ключи зависят от имён, а не от позиции в списке: старая кнопка после
-    // удаления соседа не должна управлять другим пользователем. Сокращённые
-    // ключи оставляют место для страницы и relay в 64 байтах callback_data.
+    // Кнопка привязана к текущему секрету: удаление и повторное создание имени
+    // или ротация делают старую кнопку недействительной. Ключ повторно
+    // проверяется под telemt/pac lock непосредственно перед изменением.
+    private function telemtUserIdentity(string $name, array $conf): string
+    {
+        return substr(hash('sha256', $name . "\0" . ($conf['telemt_users'][$name] ?? '')), 0, 12);
+    }
+
     public function telemtUserCallback(string $name, int $page = 0, string $relay = '', string $action = ''): string
     {
-        return '/tuc ' . substr(hash('sha256', $name), 0, 12) . ' ' . max(0, $page) . ' '
+        return '/tuc ' . $this->telemtUserIdentity($name, $this->getPacConf()) . ' ' . max(0, $page) . ' '
             . ($relay === '' ? 'direct' : substr(hash('sha256', $relay), 0, 12)) . ($action === '' ? '' : ' ' . $action);
     }
 
     public function telemtUserAction(string $key, int $page, string $relayKey, string $action = ''): void
     {
         $conf = $this->getPacConf();
-        $names = array_values(array_filter(array_keys($conf['telemt_users'] ?? []), fn($name) => substr(hash('sha256', (string) $name), 0, 12) === $key));
+        $names = array_values(array_filter(array_keys($conf['telemt_users'] ?? []), fn($name) => $this->telemtUserIdentity((string) $name, $conf) === $key));
         $relays = array_values(array_filter(array_keys($conf['telemt_relays'] ?? []), fn($name) => substr(hash('sha256', (string) $name), 0, 12) === $relayKey));
         $relay = count($relays) === 1 ? (string) $relays[0] : '';
         if (count($names) !== 1) { $this->telemtUsers($relay, $page); return; }
@@ -18861,9 +19461,9 @@ DNS-over-HTTPS with IP:
             case 'ips': $this->telemtLimitPrompt($name, $page, $relay, 'ips'); return;
             case 'deny': $this->telemtLimitPrompt($name, $page, $relay, 'deny'); return;
             case 'reset': $this->telemtResetQuota($name, $page, $relay); return;
-            case 'toggle': $this->telemtToggleUser($name, $page, $relay, true); return;
-            case 'regen-confirm': $this->telemtRegen($name, $page, $relay, true); return;
-            case 'delete-confirm': $this->telemtDelUser($name, $page, $relay); return;
+            case 'toggle': $this->telemtToggleUser($name, $page, $relay, true, $key); return;
+            case 'regen-confirm': $this->telemtRegen($name, $page, $relay, true, $key); return;
+            case 'delete-confirm': $this->telemtDelUser($name, $page, $relay, $key); return;
             case 'qr': $this->telemtQr($name, $relay, true); return;
             case 'web': $this->telemtWebLink($name, true); return;
             case 'regen':
@@ -19695,10 +20295,11 @@ DNS-over-HTTPS with IP:
         $this->telemtDiagnostics();
     }
 
-    public function telemtToggleUser($name, int $page = 0, string $relay = '', bool $card = false)
+    public function telemtToggleUser($name, int $page = 0, string $relay = '', bool $card = false, ?string $identity = null)
     {
-        $changed = $this->telemtConfUpdate(static function (&$conf) use ($name) {
+        $changed = $this->telemtConfUpdate(function (&$conf) use ($name, $identity) {
             if (empty($conf['telemt_users'][$name])) return false;
+            if ($identity !== null && $this->telemtUserIdentity((string) $name, $conf) !== $identity) return false;
             if (!is_array($conf['telemt_user_enabled'] ?? null)) $conf['telemt_user_enabled'] = [];
             $cur = array_key_exists($name, $conf['telemt_user_enabled']) ? !empty($conf['telemt_user_enabled'][$name]) : true;
             $conf['telemt_user_enabled'][$name] = $cur ? 0 : 1;
@@ -20065,23 +20666,29 @@ DNS-over-HTTPS with IP:
         $this->telemtUsers();
     }
 
-    public function telemtDelUser($name, int $page = 0, string $relay = '')
+    public function telemtDelUser($name, int $page = 0, string $relay = '', ?string $identity = null)
     {
         $was = $this->telemtWebEnabled($this->getPacConf());
-        $this->telemtConfUpdate(static function (&$conf) use ($name) {
+        $changed = $this->telemtConfUpdate(function (&$conf) use ($name, $identity) {
+            if (!isset($conf['telemt_users'][$name])) return false;
+            if ($identity !== null && $this->telemtUserIdentity((string) $name, $conf) !== $identity) return false;
             unset($conf['telemt_users'][$name], $conf['telemt_user_enabled'][$name], $conf['telemt_user_limits'][$name]);
+            return true;
         });
         // Новый пользователь с тем же именем не наследует чужой журнал и трафик.
-        $this->telemtActivityForget((string) $name);
-        $this->restartTelemt();
-        $this->telemtWebRefresh($was);
+        if ($changed) {
+            $this->telemtActivityForget((string) $name);
+            $this->restartTelemt();
+            $this->telemtWebRefresh($was);
+        }
         $this->telemtUsers($relay, $page);
     }
 
-    public function telemtRegen($name, int $page = 0, string $relay = '', bool $card = false)
+    public function telemtRegen($name, int $page = 0, string $relay = '', bool $card = false, ?string $identity = null)
     {
-        $changed = $this->telemtConfUpdate(function (&$conf) use ($name) {
+        $changed = $this->telemtConfUpdate(function (&$conf) use ($name, $identity) {
             if (!isset($conf['telemt_users'][$name])) return false;
+            if ($identity !== null && $this->telemtUserIdentity((string) $name, $conf) !== $identity) return false;
             $conf['telemt_users'][$name] = $this->telemtSecret();
             return true;
         });
@@ -20129,25 +20736,34 @@ DNS-over-HTTPS with IP:
 
     public function dnsttStart()
     {
-        $c = $this->getPacConf();
-        $settings = [];
-        if (!empty($c['dnsttDomain']) && !empty($c['dnsttPassword'])) {
-            if (!self::dnsttDomainOk($c['dnsttDomain'])) return false;
-            $settings = [
-                'domain' => $c['dnsttDomain'],
-                'password_hash' => crypt($c['dnsttPassword'], '$6$' . bin2hex(random_bytes(8)) . '$'),
-            ];
-        }
-        // Хэш и домен переживают recreate. Пароль больше не попадает в argv
-        // SSH/chpasswd; общий sshd_config всех контейнеров остаётся строгим.
-        if (!is_dir('/config/dnstt')) mkdir('/config/dnstt', 0700, true);
-        if (!$this->writePrivateKey('/config/dnstt/settings.json', json_encode($settings))) return false;
-        if (!$this->protocolModuleEnabled('dnstt')) return true;
-        $out = $this->ssh('/bin/sh /start_dnstt.sh --reload', 'dnstt');
-        if ($this->sshFailed || !str_contains((string) $out, 'dnstt-ready')) return false;
-        // sshd перечитал ключ узла из настроек: теперь он отдаёт именно его.
-        $this->sshHostKeyRememberDnstt();
-        return true;
+        return (bool) $this->withLock('dnstt', fn() => $this->dnsttStartLocked(), 120, false);
+    }
+
+    private function dnsttStartLocked(): bool
+    {
+        try {
+            $c = $this->getPacConf(); $settings = [];
+            if (!empty($c['dnsttDomain']) && !empty($c['dnsttPassword'])) {
+                if (!is_string($c['dnsttDomain']) || !self::dnsttDomainOk($c['dnsttDomain'])
+                    || !is_string($c['dnsttPassword']) || strlen($c['dnsttPassword']) > 128 || preg_match('~[\x00\r\n]~', $c['dnsttPassword'])) return false;
+                $hash = crypt($c['dnsttPassword'], '$6$' . bin2hex(random_bytes(8)) . '$');
+                if (!str_starts_with($hash, '$6$')) return false;
+                $settings = ['domain' => $c['dnsttDomain'], 'password_hash' => $hash];
+            }
+            $this->pacConfUpdate(static function (&$pac) { $pac['dnstt_apply_pending'] = 1; });
+            $directory = dirname($this->pac) . '/dnstt';
+            if (!is_dir($directory) && !@mkdir($directory, 0700, true)) return false;
+            if (!$this->writePrivateKey($directory . '/settings.json', json_encode($settings, JSON_THROW_ON_ERROR))) return false;
+            if ($this->protocolModuleEnabled('dnstt')) {
+                // The wrapper confirms controller readiness AND reloads restored
+                // sshd host keys; the marker appears only after both succeed.
+                $out = $this->ssh('/bin/sh /start_dnstt.sh --reload', 'dnstt');
+                if ($this->sshFailed || trim((string) $out) !== 'dnstt-ready') return false;
+                $this->sshHostKeyRememberDnstt();
+            }
+            $this->pacConfUpdate(static function (&$pac) { unset($pac['dnstt_apply_pending']); });
+            return true;
+        } catch (Throwable $error) { return false; }
     }
 
     public function dnsttDownload()
@@ -20161,6 +20777,7 @@ DNS-over-HTTPS with IP:
         $c      = $this->getPacConf();
         $pubkey = is_file('/config/dnstt/server.pub') ? file_get_contents('/config/dnstt/server.pub') : '';
         $text[] = "dnstt";
+        if (!empty($c['dnstt_apply_pending'])) $text[] = $this->t('⚠️ Настройки ожидают подтверждения применения. Прежние сеансы могут оставаться активными.', '⚠️ Settings await confirmed apply. Previous sessions may remain active.');
         if (!empty($c['dnsttDomain']) && !empty($c['dnsttPassword'])) {
             // dnsttDomain и dnsttPassword — сырой ввод (сеттеры кладут trim
             // как есть), а сообщение уходит с parse_mode=HTML.
@@ -20232,7 +20849,10 @@ DNS-over-HTTPS with IP:
     public const SS_INTERNAL_PORT = 8388;
 
     public const PORT_FALLBACK = [
+        'wg' => '51820',
         'wg1' => '51821',
+        'telemt' => '9443',
+        'hy' => '5443',
     ];
 
     public function getPorts()
@@ -20939,31 +21559,31 @@ DNS-over-HTTPS with IP:
 
     public function switchScanIp()
     {
-        $c = $this->getPacConf();
-        $c['autoscan'] = $c['autoscan'] ? 0 : 1;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['autoscan'] = $c['autoscan'] ? 0 : 1;
+        });
         $this->ipMenu();
     }
 
     public function switchBanIp()
     {
-        $c = $this->getPacConf();
-        $c['autodeny'] = $c['autodeny'] ? 0 : 1;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['autodeny'] = $c['autodeny'] ? 0 : 1;
+        });
         $this->ipMenu();
     }
 
     public function switchMonthlyStats()
     {
-        $c = $this->getPacConf();
-        $c['reset_monthly'] = !empty($c['reset_monthly']) ? 0 : 1;
-        // Отметку ставим сразу при включении: расписание считает «сброс уже
-        // был в этом месяце», и первый же тик крона не стирает накопленное.
-        // checkResetXrayStats() перестраховывается тем же условием.
-        if ($c['reset_monthly'] && empty($c['last_reset_xray_time'])) {
-            $c['last_reset_xray_time'] = time();
-        }
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['reset_monthly'] = !empty($c['reset_monthly']) ? 0 : 1;
+            // Отметку ставим сразу при включении: расписание считает «сброс уже
+            // был в этом месяце», и первый же тик крона не стирает накопленное.
+            // checkResetXrayStats() перестраховывается тем же условием.
+            if ($c['reset_monthly'] && empty($c['last_reset_xray_time'])) {
+                $c['last_reset_xray_time'] = time();
+            }
+        });
         $this->xray();
     }
 
@@ -21143,6 +21763,17 @@ DNS-over-HTTPS with IP:
 
     public function changeFingerprint($fingerprint = false)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($fingerprint, &$entered) {
+            $entered = true;
+            return $this->changeFingerprintLocked($fingerprint);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function changeFingerprintLocked($fingerprint = false)
+    {
         $allowed = $this->fingerprintsFor();
         $c       = $this->getPacConf();
         if ($fingerprint && in_array($fingerprint, $allowed, true)) {
@@ -21153,7 +21784,7 @@ DNS-over-HTTPS with IP:
             $i                = array_search($current, $allowed, true);
             $c['fingerprint'] = $allowed[($i === false ? 0 : $i + 1) % count($allowed)];
         }
-        $this->setPacConf($c);
+        $this->patchPacFields($c, ['fingerprint']);
         // Выбор сохранён; если клиенты с ним не подключатся — сказать сразу.
         // Окно answerCallbackQuery вмещает 200 символов: в нём главное
         // предупреждение, полный список — в меню ниже.
@@ -21451,6 +22082,16 @@ DNS-over-HTTPS with IP:
     // Клиентская настройка (freedom-outbound в подписке) — рестарт xray не нужен.
     public function dpiFragPreset($key): void
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($key, &$entered) {
+            $entered = true;
+            return $this->dpiFragPresetLocked($key);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+    }
+
+    private function dpiFragPresetLocked($key): void
+    {
         $presets = $this->fragmentPresets();
         if (!isset($presets[$key])) {
             $this->answer($this->input['callback_id'], 'unknown preset', true);
@@ -21463,7 +22104,7 @@ DNS-over-HTTPS with IP:
         $p['dpi']['fragment']['length']   = $ps['length'];
         $p['dpi']['fragment']['interval'] = $ps['interval'];
         $p['dpi']['fragment']['maxSplit'] = $ps['maxSplit'];
-        $this->setPacConf($p);
+        $this->patchPacFields($p, ['dpi']);
         $this->answer($this->input['callback_id'], $ps['label']);
         $this->dpiMenu();
     }
@@ -21576,6 +22217,16 @@ DNS-over-HTTPS with IP:
     // Клиентская настройка (freedom-outbound в подписке) — рестарт xray не нужен.
     public function dpiNoisePreset($key): void
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($key, &$entered) {
+            $entered = true;
+            return $this->dpiNoisePresetLocked($key);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+    }
+
+    private function dpiNoisePresetLocked($key): void
+    {
         $presets = $this->noisePresets();
         if (!isset($presets[$key])) {
             $this->answer($this->input['callback_id'], 'unknown preset', true);
@@ -21587,7 +22238,7 @@ DNS-over-HTTPS with IP:
         $p['dpi']['noise']['list']    = $ps['list'];
         // Legacy одиночный noise больше не источник истины — убираем, как в dpiNoiseAdd.
         unset($p['dpi']['noise']['type'], $p['dpi']['noise']['packet'], $p['dpi']['noise']['delay']);
-        $this->setPacConf($p);
+        $this->patchPacFields($p, ['dpi']);
         $this->answer($this->input['callback_id'], $ps['label']);
         $this->dpiMenu();
     }
@@ -21596,10 +22247,20 @@ DNS-over-HTTPS with IP:
     // running inbound and restart, so toggles/edits take effect immediately.
     public function syncRealityLive(array $p): void
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($p, &$entered) {
+            $entered = true;
+            return $this->syncRealityLiveLocked($p);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+    }
+
+    protected function syncRealityLiveLocked(array $p): void
+    {
         $x = $this->getXray();
         if (!empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
             $this->applyRealityServerExtras($x['inbounds'][0]['streamSettings']['realitySettings'], $p);
-            $this->restartXray($x);
+            if ($this->restartXray($x) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         }
     }
 
@@ -21716,9 +22377,19 @@ DNS-over-HTTPS with IP:
 
     public function syncSniffingLive(array $p): void
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($p, &$entered) {
+            $entered = true;
+            return $this->syncSniffingLiveLocked($p);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+    }
+
+    protected function syncSniffingLiveLocked(array $p): void
+    {
         $x = $this->getXray();
         $this->applySniffingToXray($x, $p);
-        $this->restartXray($x);
+        if ($this->restartXray($x) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
     }
 
     public function isDefaultValue(string $val): bool
@@ -21784,16 +22455,27 @@ DNS-over-HTTPS with IP:
 
     public function dpiToggle($what)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($what, &$entered) {
+            $entered = true;
+            return $this->dpiToggleLocked($what);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function dpiToggleLocked($what)
+    {
         $p = $this->getPacConf();
         switch ($what) {
             case 'fragment':
                 $p['dpi']['fragment']['enabled'] = empty($p['dpi']['fragment']['enabled']) ? 1 : 0;
-                $this->setPacConf($p);
+                $this->patchPacFields($p, ['dpi', 'sniffing', 'reality']);
                 break;
             case 'format':
                 // Только формат клиентских профилей (t=s): сервер не перезапускается.
                 $p['dpi']['format'] = ($p['dpi']['format'] ?? '') === 'finalmask' ? 'freedom' : 'finalmask';
-                $this->setPacConf($p);
+                $this->patchPacFields($p, ['dpi', 'sniffing', 'reality']);
                 break;
             case 'noise':
                 $p['dpi']['noise']['enabled'] = empty($p['dpi']['noise']['enabled']) ? 1 : 0;
@@ -21802,28 +22484,28 @@ DNS-over-HTTPS with IP:
                 if (!empty($p['dpi']['noise']['enabled']) && !$this->dpiNoiseList($p)) {
                     $p['dpi']['noise']['list'] = [['type' => 'rand', 'packet' => '10-20', 'delay' => '10-16']];
                 }
-                $this->setPacConf($p);
+                $this->patchPacFields($p, ['dpi', 'sniffing', 'reality']);
                 break;
             case 'sniffing':
                 $x = $this->getXray();
                 $p['sniffing'] = $this->sniffingSettings($p, $x['inbounds'][0]['sniffing'] ?? null);
                 $p['sniffing']['enabled'] = empty($p['sniffing']['enabled']);
-                $this->setPacConf($p);
-                $this->syncSniffingLive($p);
+                $this->patchPacFields($p, ['dpi', 'sniffing', 'reality']);
+                $this->syncSniffingLiveLocked($p);
                 break;
             case 'sniffingMetadataOnly':
                 $x = $this->getXray();
                 $p['sniffing'] = $this->sniffingSettings($p, $x['inbounds'][0]['sniffing'] ?? null);
                 $p['sniffing']['metadataOnly'] = empty($p['sniffing']['metadataOnly']);
-                $this->setPacConf($p);
-                $this->syncSniffingLive($p);
+                $this->patchPacFields($p, ['dpi', 'sniffing', 'reality']);
+                $this->syncSniffingLiveLocked($p);
                 break;
             case 'sniffingRouteOnly':
                 $x = $this->getXray();
                 $p['sniffing'] = $this->sniffingSettings($p, $x['inbounds'][0]['sniffing'] ?? null);
                 $p['sniffing']['routeOnly'] = empty($p['sniffing']['routeOnly']);
-                $this->setPacConf($p);
-                $this->syncSniffingLive($p);
+                $this->patchPacFields($p, ['dpi', 'sniffing', 'reality']);
+                $this->syncSniffingLiveLocked($p);
                 break;
             case 'mldsa':
                 if ($this->mldsaReady($p)) {
@@ -21839,8 +22521,8 @@ DNS-over-HTTPS with IP:
                     }
                     $p['reality']['mldsa'] = 1;
                 }
-                $this->setPacConf($p);
-                $this->syncRealityLive($p);
+                $this->patchPacFields($p, ['dpi', 'sniffing', 'reality']);
+                $this->syncRealityLiveLocked($p);
                 break;
             case 'requireMlkem':
                 $enable = empty($p['reality']['requireMlkem']);
@@ -21855,8 +22537,8 @@ DNS-over-HTTPS with IP:
                     }
                 }
                 $p['reality']['requireMlkem'] = $enable ? 1 : 0;
-                $this->setPacConf($p);
-                $this->syncRealityLive($p);
+                $this->patchPacFields($p, ['dpi', 'sniffing', 'reality']);
+                $this->syncRealityLiveLocked($p);
                 break;
         }
         $this->dpiMenu();
@@ -22020,17 +22702,39 @@ DNS-over-HTTPS with IP:
     // Клиентская настройка (freedom-outbound в подписке) — рестарт xray не нужен.
     public function dpiNoiseAdd()
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use (&$entered) {
+            $entered = true;
+            return $this->dpiNoiseAddLocked();
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function dpiNoiseAddLocked()
+    {
         $p = $this->getPacConf();
         $list = $this->dpiNoiseList($p);
         $list[] = ['type' => 'rand', 'packet' => '50-150', 'delay' => '10-16'];
         $p['dpi']['noise']['list'] = array_values($list);
         // Legacy-поля больше не источник истины — убираем, чтобы не дублировать.
         unset($p['dpi']['noise']['type'], $p['dpi']['noise']['packet'], $p['dpi']['noise']['delay']);
-        $this->setPacConf($p);
+        $this->patchPacFields($p, ['dpi']);
         $this->dpiMenu();
     }
 
     public function dpiNoiseDel($i)
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, &$entered) {
+            $entered = true;
+            return $this->dpiNoiseDelLocked($i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function dpiNoiseDelLocked($i)
     {
         $p = $this->getPacConf();
         $list = $this->dpiNoiseList($p);
@@ -22039,7 +22743,7 @@ DNS-over-HTTPS with IP:
         }
         $p['dpi']['noise']['list'] = array_values($list);
         unset($p['dpi']['noise']['type'], $p['dpi']['noise']['packet'], $p['dpi']['noise']['delay']);
-        $this->setPacConf($p);
+        $this->patchPacFields($p, ['dpi']);
         $this->dpiMenu();
     }
 
@@ -22047,13 +22751,35 @@ DNS-over-HTTPS with IP:
     // new links pick it up.
     public function dpiGenSpiderX()
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use (&$entered) {
+            $entered = true;
+            return $this->dpiGenSpiderXLocked();
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function dpiGenSpiderXLocked()
+    {
         $p = $this->getPacConf();
         $p['reality']['spiderX'] = $this->genSpiderX();
-        $this->setPacConf($p);
+        $this->patchPacFields($p, ['reality']);
         $this->dpiMenu();
     }
 
     public function dpiGenMldsa()
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use (&$entered) {
+            $entered = true;
+            return $this->dpiGenMldsaLocked();
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function dpiGenMldsaLocked()
     {
         $mk = $this->genMldsaKeys();
         if (empty($mk['seed']) || empty($mk['verify'])) {
@@ -22064,8 +22790,8 @@ DNS-over-HTTPS with IP:
         $p['reality']['mldsa']         = 1;
         $p['reality']['mldsa65Seed']   = $mk['seed'];
         $p['reality']['mldsa65Verify'] = $mk['verify'];
-        $this->setPacConf($p);
-        $this->syncRealityLive($p);
+        $this->patchPacFields($p, ['reality']);
+        $this->syncRealityLiveLocked($p);
         $this->dpiMenu();
     }
 
@@ -22088,6 +22814,17 @@ DNS-over-HTTPS with IP:
     }
 
     public function dpiDefault($field)
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($field, &$entered) {
+            $entered = true;
+            return $this->dpiDefaultLocked($field);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function dpiDefaultLocked($field)
     {
         $p = $this->getPacConf();
         $liveReality = false;
@@ -22126,17 +22863,28 @@ DNS-over-HTTPS with IP:
                 $liveSniffing = true;
                 break;
         }
-        $this->setPacConf($p);
+        $this->patchPacFields($p, ['reality', 'sniffing']);
         if ($liveReality) {
-            $this->syncRealityLive($p);
+            $this->syncRealityLiveLocked($p);
         }
         if ($liveSniffing) {
-            $this->syncSniffingLive($p);
+            $this->syncSniffingLiveLocked($p);
         }
         $this->dpiMenu();
     }
 
     public function saveDpi($val, $field)
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($val, $field, &$entered) {
+            $entered = true;
+            return $this->saveDpiLocked($val, $field);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function saveDpiLocked($val, $field)
     {
         $val = trim((string) $val);
         $p   = $this->getPacConf();
@@ -22152,7 +22900,7 @@ DNS-over-HTTPS with IP:
                 $list[$idx][$nm[2]] = $this->isDefaultValue($val) ? '' : $val;
                 $p['dpi']['noise']['list'] = array_values($list);
                 unset($p['dpi']['noise']['type'], $p['dpi']['noise']['packet'], $p['dpi']['noise']['delay']);
-                $this->setPacConf($p);
+                $this->patchPacFields($p, ['dpi', 'reality', 'sniffing']);
             }
             return $this->dpiMenu();
         }
@@ -22187,12 +22935,12 @@ DNS-over-HTTPS with IP:
                 $liveSniffing = true;
                 break;
         }
-        $this->setPacConf($p);
+        $this->patchPacFields($p, ['dpi', 'reality', 'sniffing']);
         if ($liveReality) {
-            $this->syncRealityLive($p);
+            $this->syncRealityLiveLocked($p);
         }
         if ($liveSniffing) {
-            $this->syncSniffingLive($p);
+            $this->syncSniffingLiveLocked($p);
         }
         $this->dpiMenu();
     }
@@ -22212,7 +22960,7 @@ DNS-over-HTTPS with IP:
         $fork  = $probe['fork'];
         if ($probe['ok'] && !$fork) {
             $this->withLock('xray', fn() => $this->withLock('pac',
-                fn() => $this->repairXrayCore(), 20, false), 20, false);
+                fn() => $this->repairXrayCoreLocked(), 20, false), 20, false);
             $p = $this->getPacConf();
         }
         $s    = $this->smuxSettings($p);
@@ -22395,10 +23143,21 @@ DNS-over-HTTPS with IP:
     // честный ответ о том, заработает ли оно (см. xrayTorrentReady()).
     public function switchXrayTorrent()
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use (&$entered) {
+            $entered = true;
+            return $this->switchXrayTorrentLocked();
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function switchXrayTorrentLocked()
+    {
         $p = $this->getPacConf();
         $p['xray_blocktorrent'] = empty($p['xray_blocktorrent']) ? 1 : 0;
-        $this->setPacConf($p);
-        $this->restartXray($this->getXray());
+        $this->patchPacFields($p, ['xray_blocktorrent']);
+        if ($this->restartXray($this->getXray()) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
 
         $note = $this->i18n($p['xray_blocktorrent'] ? 'torrent xray on' : 'torrent xray off');
         if (!empty($p['xray_blocktorrent'])) {
@@ -22412,10 +23171,21 @@ DNS-over-HTTPS with IP:
 
     public function smuxToggle($what)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($what, &$entered) {
+            $entered = true;
+            return $this->smuxToggleLocked($what);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $this->smuxMenu();
+    }
+
+    private function smuxToggleLocked($what)
+    {
         $p = $this->getPacConf();
         if ($what === 'enabled' && $this->xrayCore($p) !== 'fork') {
             $this->answer($this->input['callback_id'], $this->i18n('smux select fork'), true);
-            return $this->smuxMenu();
+            return;
         }
         $old = $p;
         $s = $this->smuxSettings($p);
@@ -22449,28 +23219,29 @@ DNS-over-HTTPS with IP:
                 if (empty($s['brutal']['enabled']) && !$this->brutalAvailable()) {
                     $this->answer($this->input['callback_id'], $this->i18n('smux brutal warn'), true);
 
-                    return $this->smuxMenu();
+                    return;
                 }
                 $s['brutal']['enabled'] = empty($s['brutal']['enabled']) ? 1 : 0;
                 break;
             default:
-                return $this->smuxMenu();
+                return;
         }
         $s['configured'] = 1;
         $p['smux']       = $s;
-        if ($this->setPacConf($p) === false) {
+        try {
+            $this->patchPacFields($p, ['smux']);
+        } catch (RuntimeException $error) {
             $this->answer($this->input['callback_id'], $this->i18n('smux apply failed'), true);
-            return $this->smuxMenu();
+            return;
         }
-        if (!$this->syncSmuxLive($p)) {
-            $this->setPacConf($old);
+        if (!$this->syncSmuxLiveLocked($p)) {
+            if (!$this->restorePacFields($old, $p, ['smux'])) throw new RuntimeException($this->t('Настройки изменились; восстановление предыдущего состояния не подтверждено', 'Settings changed; restoration of the previous state is unconfirmed'));
             $this->answer($this->input['callback_id'], $this->i18n('smux apply failed'), true);
-            return $this->smuxMenu();
+            return;
         }
         if ($what === 'enabled') {
             $this->answer($this->input['callback_id'], $this->i18n($s['enabled'] ? 'smux enabled' : 'smux disabled'), true);
         }
-        $this->smuxMenu();
     }
 
     // ---- Mux.Cool поверх XHTTP (форк 26.10.5+) ------------------------------
@@ -22557,6 +23328,17 @@ DNS-over-HTTPS with IP:
     // Возвращает ключ сообщения об отказе либо пустую строку.
     public function applyXhttpMux(bool $enable): string
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($enable, &$entered) {
+            $entered = true;
+            return $this->applyXhttpMuxLocked($enable);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function applyXhttpMuxLocked(bool $enable): string
+    {
         $p = $this->getPacConf();
         if ($enable) {
             $refuse = match (true) {
@@ -22576,8 +23358,8 @@ DNS-over-HTTPS with IP:
         $this->ensureXhttpMuxInbound($c, $p);
         $now = $c['inbounds'][0]['streamSettings']['xhttpSettings']['extra'] ?? null;
         // Сначала настройка: restartXray() читает её сам при сборке конфига.
-        if ($this->setPacConf($p) === false || ($was !== $now && $this->restartXray($c) === false)) {
-            $this->setPacConf($old);
+        if ($this->patchPacFields($p, ['xhttp_mux']) === false || ($was !== $now && $this->restartXray($c) === false)) {
+            if (!$this->restorePacFields($old, $p, ['xhttp_mux'])) throw new RuntimeException($this->t('Настройки изменились; восстановление предыдущего состояния не подтверждено', 'Settings changed; restoration of the previous state is unconfirmed'));
 
             return 'smux apply failed';
         }
@@ -22616,6 +23398,17 @@ DNS-over-HTTPS with IP:
 
     public function saveSmux($val, $field)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($val, $field, &$entered) {
+            $entered = true;
+            return $this->saveSmuxLocked($val, $field);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $this->smuxMenu();
+    }
+
+    private function saveSmuxLocked($val, $field)
+    {
         $val = trim((string) $val);
         $p   = $this->getPacConf();
         $s   = $this->smuxSettings($p);
@@ -22647,13 +23440,12 @@ DNS-over-HTTPS with IP:
                 $s['h2mux_frame'] = self::smuxFrameSize($val);
                 break;
             default:
-                return $this->smuxMenu();
+                return;
         }
         $s['configured'] = 1;
         $p['smux']       = $s;
-        $this->setPacConf($p);
-        $this->syncSmuxLive($p);
-        $this->smuxMenu();
+        $this->patchPacFields($p, ['smux']);
+        $this->syncSmuxLiveLocked($p);
     }
 
     public function smuxFieldHint(string $field): string
@@ -22695,6 +23487,17 @@ DNS-over-HTTPS with IP:
     // изменился — иначе каждое нажатие рвало бы всем клиентам соединения.
     public function syncSmuxLive(array $p): bool
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($p, &$entered) {
+            $entered = true;
+            return $this->syncSmuxLiveLocked($p);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    protected function syncSmuxLiveLocked(array $p): bool
+    {
         $c   = $this->getXray();
         $was = $c['inbounds'][0]['smux'] ?? null;
         $this->ensureSmuxInbound($c, $p);
@@ -22716,15 +23519,15 @@ DNS-over-HTTPS with IP:
         $seconds = str_starts_with($raw, '-') ? 0 : (int) ($parts[0] ?? 0);
         $count   = (int) ($parts[1] ?? 0);
 
-        $c = $this->getPacConf();
-        if ($seconds <= 0) {
-            unset($c['ip_limit']);
-            unset($c['ip_count']);
-        } else {
-            $c['ip_limit'] = $seconds;
-            $c['ip_count'] = max(1, $count);
-        }
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($seconds, $count) {
+            if ($seconds <= 0) {
+                unset($c['ip_limit']);
+                unset($c['ip_count']);
+            } else {
+                $c['ip_limit'] = $seconds;
+                $c['ip_count'] = max(1, $count);
+            }
+        });
         $this->xray();
     }
 
@@ -22767,12 +23570,12 @@ DNS-over-HTTPS with IP:
 
     public function toggleHwidLimit($context = null)
     {
-        $pac = $this->getPacConf();
-        $pac['hwid_limit_enabled'] = !empty($pac['hwid_limit_enabled']) ? 0 : 1;
-        if (!empty($pac['hwid_limit_enabled']) && empty($pac['hwid_device_count'])) {
-            $pac['hwid_device_count'] = 1;
-        }
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) {
+            $pac['hwid_limit_enabled'] = !empty($pac['hwid_limit_enabled']) ? 0 : 1;
+            if (!empty($pac['hwid_limit_enabled']) && empty($pac['hwid_device_count'])) {
+                $pac['hwid_device_count'] = 1;
+            }
+        });
         $this->answer($this->input['callback_id'], $this->i18n('hwid notice'), true);
         if ($context === 'xray') {
             $this->xray();
@@ -22802,9 +23605,9 @@ DNS-over-HTTPS with IP:
         if ($count <= 0) {
             $count = 1;
         }
-        $pac = $this->getPacConf();
-        $pac['hwid_device_count'] = $count;
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($count) {
+            $pac['hwid_device_count'] = $count;
+        });
         $this->send($this->input['chat'], $this->i18n('hwid notice'), $this->input['message_id']);
         if ($context === 'xray') {
             $this->xray();
@@ -22877,10 +23680,9 @@ DNS-over-HTTPS with IP:
     // пишется in-place под своим LOCK_EX, и лок на нём же дал бы взаимную
     // блокировку с writeXrayJson().
     //
-    // ВНИМАНИЕ: это примитив для нового кода. Существующие ~190 точек записи
-    // pac.json и ~30 точек xray.json на него ещё НЕ переведены — перевод
-    // требует отдельного прохода с проверкой на живом стенде, потому что
-    // транзакция должна охватывать обе стороны гонки, иначе смысла нет.
+    // Обёртки RMW получают lock до чтения; полные restore и rollback
+    // остаются явными транзакциями. setPacConf/writeXrayJson сами доменный
+    // lock не получают: вызывающий обязан определить границу операции.
     // $timeout > 0 — ждать лок не дольше указанного числа секунд и вернуть
     // $busy, если так и не дождались (вместо бесконечного ожидания, при котором
     // воркер вебхука висит молча). Флок НЕ реентерабелен: второй fopen+flock
@@ -22919,25 +23721,69 @@ DNS-over-HTTPS with IP:
     // Имя НЕ pacUpdate: так уже называется запуск updatepac.php.
     public function pacConfUpdate(callable $fn)
     {
-        return $this->withLock('pac', function () use ($fn) {
+        $entered = false;
+        $out = $this->withLock('pac', function () use ($fn, &$entered) {
+            $entered = true;
             $conf   = $this->getPacConf();
+            if (!is_array($conf)) throw new RuntimeException($this->t('Настройки недоступны или повреждены', 'Settings are unavailable or damaged'));
+            $before = $conf;
             $result = $fn($conf);
-            $this->setPacConf($conf);
+            if ($conf !== $before && $this->setPacConf($conf) === false) {
+                throw new RuntimeException($this->t('Не удалось сохранить настройки', 'Could not save the settings'));
+            }
 
             return $result;
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать настройки', 'Could not lock the settings'));
+        return $out;
+    }
+
+    // Явный patch верхних полей после вычисления под доменным lock (Xray/WG).
+    // Вызывающий перечисляет принадлежащие операции поля, включая удаления.
+    public function patchPacFields(array $values, array $keys): bool
+    {
+        return $this->pacConfUpdate(function (&$pac) use ($values, $keys) {
+            foreach ($keys as $key) {
+                if (array_key_exists($key, $values)) $pac[$key] = $values[$key];
+                else unset($pac[$key]);
+            }
+            return true;
+        });
+    }
+
+    // Откат после внешнего применения: чужая более новая правка этих полей
+    // запрещает компенсацию. Полная замена restore остаётся в setPacConf.
+    public function restorePacFields(array $before, array $expected, array $keys): bool
+    {
+        return $this->pacConfUpdate(function (&$pac) use ($before, $expected, $keys) {
+            foreach ($keys as $key) {
+                if (array_key_exists($key, $pac) !== array_key_exists($key, $expected)
+                    || ($pac[$key] ?? null) !== ($expected[$key] ?? null)) return false;
+            }
+            foreach ($keys as $key) {
+                if (array_key_exists($key, $before)) $pac[$key] = $before[$key];
+                else unset($pac[$key]);
+            }
+            return true;
         });
     }
 
     // То же для xray.json. $norestart прокидывается в restartXray().
     public function xrayConfUpdate(callable $fn, $norestart = false)
     {
-        return $this->withLock('xray', function () use ($fn, $norestart) {
-            $conf   = $this->getXray();
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($fn, $norestart, &$entered) {
+            $entered = true;
+            $conf = $this->getXray();
+            if (!is_array($conf)) throw new RuntimeException($this->t('Настройки Xray недоступны', 'Xray settings are unavailable'));
+            $before = $conf;
             $result = $fn($conf);
-            $this->restartXray($conf, $norestart);
-
+            if ($conf === $before) return $result;
+            if ($this->restartXray($conf, $norestart) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
             return $result;
         });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
     }
 
     public function hwidUpdate(callable $fn)
@@ -23202,9 +24048,9 @@ DNS-over-HTTPS with IP:
 
     public function switchSilence()
     {
-        $c = $this->getPacConf();
-        $c['silence'] = (($c['silence'] ?: 0) + 1) % 3;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) {
+            $c['silence'] = (($c['silence'] ?: 0) + 1) % 3;
+        });
         $this->ipMenu();
     }
 
@@ -24114,9 +24960,11 @@ DNS-over-HTTPS with IP:
 
             // map vless email -> cumulative traffic (global + current session)
             $xray  = $this->getXray();
-            $stats = $this->getXrayStats();
+            try { $stats = $this->getXrayStats(); }
+            catch (XrayStatsUnavailable $error) { $stats = null; }
             $byEmail = [];
             foreach (($xray['inbounds'][0]['settings']['clients'] ?? []) as $k => $cl) {
+                if ($stats === null) continue;
                 $byEmail[$cl['email']] = [
                     'down' => ($stats['users'][$k]['global']['download'] ?? 0) + ($stats['users'][$k]['session']['download'] ?? 0),
                     'up'   => ($stats['users'][$k]['global']['upload'] ?? 0) + ($stats['users'][$k]['session']['upload'] ?? 0),
@@ -24134,7 +24982,7 @@ DNS-over-HTTPS with IP:
                 // an unescaped & or < would 400 the whole view — escape it.
                 $text[] = '🟢 ' . htmlspecialchars($email, ENT_QUOTES) . ' (' . count($ips) . ')';
 
-                $line = '   ';
+                $line = $stats === null ? $this->t('   расход недоступен · ', '   usage unavailable · ') : '   ';
                 if ($tr = $byEmail[$email] ?? null) {
                     $line .= '↓' . $this->fmtBytes($tr['down']) . '  ↑' . $this->fmtBytes($tr['up']) . '  · ';
                 }
@@ -25137,30 +25985,30 @@ DNS-over-HTTPS with IP:
 
     public function cleanDeny($white = 0)
     {
-        $pac = $this->getPacConf();
-        unset($pac[$white ? 'white' : 'deny']);
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($white) {
+            unset($pac[$white ? 'white' : 'deny']);
+        });
         $this->syncDeny();
         $this->ipMenu();
     }
 
     public function denyIp($ip, $fun = false, $page = 0, $white = 0)
     {
-        $pac = $this->getPacConf();
-        if (is_array($ip)) {
-            foreach ($ip as $v) {
-                $pac['deny'][] = $v;
-                if (($t = array_search($v, $pac['white'] ?: [])) !== false) {
+        $this->pacConfUpdate(function (&$pac) use ($ip) {
+            if (is_array($ip)) {
+                foreach ($ip as $v) {
+                    $pac['deny'][] = $v;
+                    if (($t = array_search($v, $pac['white'] ?: [])) !== false) {
+                        unset($pac['white'][$t]);
+                    }
+                }
+            } else {
+                $pac['deny'][] = $ip;
+                if (($t = array_search($ip, $pac['white'] ?: [])) !== false) {
                     unset($pac['white'][$t]);
                 }
             }
-        } else {
-            $pac['deny'][] = $ip;
-            if (($t = array_search($ip, $pac['white'] ?: [])) !== false) {
-                unset($pac['white'][$t]);
-            }
-        }
-        $this->setPacConf($pac);
+        });
         if (empty($fun)) {
             $this->delete($this->input['from'], $this->input['message_id']);
         }
@@ -25189,21 +26037,21 @@ DNS-over-HTTPS with IP:
 
     public function whiteIp($ip, $fun = false, $page = 0, $white = 0)
     {
-        $pac = $this->getPacConf();
-        if (is_array($ip)) {
-            foreach ($ip as $v) {
-                $pac['white'][] = $v;
-                if (($t = array_search($v, $pac['deny'] ?: [])) !== false) {
+        $this->pacConfUpdate(function (&$pac) use ($ip) {
+            if (is_array($ip)) {
+                foreach ($ip as $v) {
+                    $pac['white'][] = $v;
+                    if (($t = array_search($v, $pac['deny'] ?: [])) !== false) {
+                        unset($pac['deny'][$t]);
+                    }
+                }
+            } else {
+                $pac['white'][] = $ip;
+                if (($t = array_search($ip, $pac['deny'] ?: [])) !== false) {
                     unset($pac['deny'][$t]);
                 }
             }
-        } else {
-            $pac['white'][] = $ip;
-            if (($t = array_search($ip, $pac['deny'] ?: [])) !== false) {
-                unset($pac['deny'][$t]);
-            }
-        }
-        $this->setPacConf($pac);
+        });
         if (empty($fun)) {
             $this->delete($this->input['from'], $this->input['message_id']);
         }
@@ -25213,18 +26061,14 @@ DNS-over-HTTPS with IP:
 
     public function allowIp($ip, $page, $white = 0)
     {
-        $pac = $this->getPacConf();
-        $key = $white ? 'white' : 'deny';
-        // array_search при промахе возвращает false, а unset($arr[false]) — это
-        // unset($arr[0]): вместо ненайденного адреса удалялась ПЕРВАЯ запись
-        // списка. Промах реален — кнопка из устаревшего меню, двойной клик.
-        $i = array_search($ip, $pac[$key] ?? [], false);
-        if ($i === false) {
-            return $this->denyList($page, $white);
-        }
-        unset($pac[$key][$i]);
-        $this->setPacConf($pac);
-        $this->syncDeny();
+        $changed = $this->pacConfUpdate(function (&$pac) use ($ip, $white) {
+            $key = $white ? 'white' : 'deny';
+            $i = array_search($ip, $pac[$key] ?? [], false);
+            if ($i === false) return false;
+            unset($pac[$key][$i]);
+            return true;
+        });
+        if ($changed) $this->syncDeny();
         $this->denyList($page, $white);
     }
 
@@ -25270,7 +26114,6 @@ DNS-over-HTTPS with IP:
 
     public function syncDeny()
     {
-        $pac = $this->getPacConf();
         // Инициализация и @: лог может отсутствовать (свежая установка,
         // очищенные логи) — тогда переменная оставалась необъявленной, и её
         // чтение ниже сыпало warning'ами на каждый ban/unban.
@@ -25284,40 +26127,42 @@ DNS-over-HTTPS with IP:
             }
             fclose($r);
         }
-        $text = '';
-        if (!empty($xr)) {
-            foreach (array_keys($xr) as $v) {
-                $text .= "allow $v;\n";
-            }
-        }
-        // Фильтруем ОБА списка перед записью, а не только на входе: в
-        // pac.json уже могли осесть старые записи (в том числе из импорта
-        // backup'а, который пишет deny/white как есть). Невалидное просто
-        // выпадает из конфига и из pac.json.
-        if (!empty($pac['white'])) {
-            $pac['white'] = array_values(array_filter(array_unique($pac['white']), [self::class, 'ipOrCidr']));
-            sort($pac['white']);
-            foreach ($pac['white'] as $v) {
-                $text .= "allow $v;\n";
-            }
-        }
-        if (!empty($pac['deny'])) {
-            $pac['deny'] = array_unique($pac['deny']);
-            sort($pac['deny']);
-            foreach ($pac['deny'] as $k => $v) {
-                if (!self::ipOrCidr($v)) {
-                    unset($pac['deny'][$k]);
-                    continue;
-                }
-                if (!in_array($v, $pac['white'] ?? []) && !isset($xr[$v])) {
-                    $text .= "deny $v;\n";
-                } else {
-                    unset($pac['deny'][$k]);
+        $text = $this->pacConfUpdate(function (&$pac) use ($xr) {
+            $text = '';
+            if (!empty($xr)) {
+                foreach (array_keys($xr) as $v) {
+                    $text .= "allow $v;\n";
                 }
             }
-            $pac['deny'] = array_values($pac['deny']);
-        }
-        $this->setPacConf($pac);
+            // Фильтруем ОБА списка перед записью, а не только на входе: в
+            // pac.json уже могли осесть старые записи (в том числе из импорта
+            // backup'а, который пишет deny/white как есть). Невалидное просто
+            // выпадает из конфига и из pac.json.
+            if (!empty($pac['white'])) {
+                $pac['white'] = array_values(array_filter(array_unique($pac['white']), [self::class, 'ipOrCidr']));
+                sort($pac['white']);
+                foreach ($pac['white'] as $v) {
+                    $text .= "allow $v;\n";
+                }
+            }
+            if (!empty($pac['deny'])) {
+                $pac['deny'] = array_unique($pac['deny']);
+                sort($pac['deny']);
+                foreach ($pac['deny'] as $k => $v) {
+                    if (!self::ipOrCidr($v)) {
+                        unset($pac['deny'][$k]);
+                        continue;
+                    }
+                    if (!in_array($v, $pac['white'] ?? []) && !isset($xr[$v])) {
+                        $text .= "deny $v;\n";
+                    } else {
+                        unset($pac['deny'][$k]);
+                    }
+                }
+                $pac['deny'] = array_values($pac['deny']);
+            }
+            return $text;
+        });
         file_put_contents($this->denyConf, $text ?: '');
         // nginx -t перед reload: reload с невалидным конфигом молча оставляет
         // старый, а вот РЕСТАРТ контейнера после этого уже не поднимет 443.
@@ -25496,8 +26341,7 @@ DNS-over-HTTPS with IP:
         // не мгновенно, а base64-подписка до этого выдавала ему ссылки.
         if ($client === null || !empty($client['off'])
             || ((int) ($client['time'] ?? 0) > 0 && $client['time'] <= time())
-            || ((int) ($client['traffic'] ?? 0) > 0 && $this->xrUserTraffic($this->getXrayStats(), $i)
-                + array_sum($this->xrayProtocolUsage($client)) >= (int) $client['traffic'])) {
+            || $this->xrayQuotaUnavailableOrExhausted($client, $i)) {
             // Ведро промахов — как в sub()/subscription(): без него перебор sid
             // через t=vl не ограничен ничем.
             $this->subRateLimit('', 'miss');
@@ -25806,9 +26650,7 @@ DNS-over-HTTPS with IP:
     public function ensureDefaultTemplates(): void
     {
         if ($this->defaultTemplatesChecked) return;
-        $this->withLock('pac', function () {
-            $pac = $this->getPacConf();
-            $changed = false;
+        $this->pacConfUpdate(function (&$pac) {
             foreach (['sing', 'clash'] as $type) {
                 foreach (glob(dirname(__DIR__) . "/config/templates/$type/*.json") ?: [] as $file) {
                     $name = basename($file, '.json');
@@ -25820,12 +26662,10 @@ DNS-over-HTTPS with IP:
                         $pac["{$type}templates"][$name] = $template;
                     }
                     $pac['installed_templates'][$type][$name] = true;
-                    $changed = true;
                 }
             }
-            if ($changed && !$this->setPacConf($pac)) throw new RuntimeException('Cannot install bundled templates');
-            $this->defaultTemplatesChecked = true;
         });
+        $this->defaultTemplatesChecked = true;
     }
 
     // Short human label for a relay's last probe: "✅ 42ms", "⛔ error", or ''
@@ -26080,16 +26920,21 @@ DNS-over-HTTPS with IP:
     // subscription breaks for lack of one.
     public function switchSubtokenStrict()
     {
-        $pac    = $this->getPacConf();
-        $enable = empty($pac['subtoken_strict']);
-        if ($enable) {
-            $xr = $this->getXray();
-            if (is_array($xr) && $this->ensureSubTokens($xr)) {
-                $this->saveXray($xr);
-            }
-        }
-        $pac['subtoken_strict'] = $enable ? 1 : 0;
-        $this->setPacConf($pac);
+        // Общий порядок: xray → pac → apply. Список и переключатель видят
+        // один снимок; новые subtokens должны сохраниться до strict cutoff.
+        $done = $this->withLock('xray', function () {
+            $this->pacConfUpdate(function (&$pac) {
+                $enable = empty($pac['subtoken_strict']);
+                if ($enable) {
+                    $xr = $this->getXray();
+                    if (!is_array($xr)) throw new RuntimeException($this->t('Настройки Xray недоступны', 'Xray settings are unavailable'));
+                    if ($this->ensureSubTokens($xr)) $this->saveXray($xr);
+                }
+                $pac['subtoken_strict'] = $enable ? 1 : 0;
+            });
+            return true;
+        });
+        if ($done !== true) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
         $this->xray();
     }
 
@@ -26115,7 +26960,9 @@ DNS-over-HTTPS with IP:
             }
             $name = (string) ($client['email'] ?? '');
             $ok = "/$action $i " . $this->xrClientKey($client);
-            $back = "/userXr $i";
+            $token = rtrim(strtr(base64_encode(hex2bin(ManagedProtocol::xraySource($client))), '+/', '-_'), '=');
+            $ok .= ' !' . $token;
+            $back = "/userXr $i !" . $token;
         }
         $text = 'Menu -> ' . $this->i18n('xray') . ($name === '' ? '' : ' -> ' . self::esc($name)) . "\n\n"
             . $this->i18n("confirm $action") . "\n\n" . $this->i18n('confirm irreversible');
@@ -26128,19 +26975,23 @@ DNS-over-HTTPS with IP:
     public function xrConfirmClient(string $action, int $i, string $key): void
     {
         if ($key === '') {
-            $this->xrConfirm($action, $i);
+            $this->withLock('xray', function () use ($action, $i) {
+                if (!$this->xrayClientMatches($i)) return $this->staleXrayAction();
+                $this->xrConfirm($action, $i);
+            });
             return;
         }
         // delxr переиндексирует клиентов под этим же lock. Отпечаток и
         // действие должны видеть один список, иначе ротация затронет соседа.
         $this->withLock('xray', function () use ($action, $i, $key) {
+            if (!$this->xrayClientMatches($i)) return $this->staleXrayAction();
             $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
             if ($client === null || !hash_equals($this->xrClientKey($client), $key)) {
                 if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
-                $client === null ? $this->xray() : $this->userXr($i);
+                $client === null ? $this->xray() : $this->userXrLocked($i);
                 return;
             }
-            $action === 'regenIdXr' ? $this->regenIdXr($i) : $this->rotateSubToken($i);
+            $action === 'regenIdXr' ? $this->regenIdXrLocked($i) : $this->rotateSubTokenLocked($i);
         });
     }
 
@@ -26148,6 +26999,18 @@ DNS-over-HTTPS with IP:
     // while the uuid credential (and thus the actual VPN access) is untouched.
     public function rotateSubToken($i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, &$entered) {
+            $entered = true;
+            return $this->rotateSubTokenLocked($i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    protected function rotateSubTokenLocked($i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $c    = $this->getXray();
         $done = false;
         if (isset($c['inbounds'][0]['settings']['clients'][$i])) {
@@ -26169,7 +27032,7 @@ DNS-over-HTTPS with IP:
                     : '⚠ not found'
             );
         }
-        $this->userXr($i);
+        $this->userXrLocked($i);
     }
 
     // Массовая ротация ссылок подписок: новый subtoken у ВСЕХ клиентов — все
@@ -26178,6 +27041,17 @@ DNS-over-HTTPS with IP:
     // выключенном subtoken_strict старые uuid-ссылки продолжают резолвиться
     // (fallback) — предупреждаем в ответе.
     public function rotateAllSubTokens()
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use (&$entered) {
+            $entered = true;
+            return $this->rotateAllSubTokensLocked();
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function rotateAllSubTokensLocked()
     {
         $c = $this->getXray();
         if (!is_array($c) || empty($c['inbounds'][0]['settings']['clients'])) {
@@ -27230,23 +28104,32 @@ DNS-over-HTTPS with IP:
 
     public function delxr($i, $menu = true, ?string $expectedSource = null)
     {
-        $ok = $this->withLock('xray', function () use ($i, $expectedSource) {
+        $ok = $this->withLock('xray', fn() => $this->withXrayApplyLock(function () use ($i, $expectedSource) {
+            if (!$this->xrayClientMatches((int) $i)) return false;
             $r = $this->getXray();
             $client = $r['inbounds'][0]['settings']['clients'][$i] ?? null;
             if ($client === null || ($expectedSource !== null && !hash_equals($expectedSource, ManagedProtocol::xraySource($client)))) return false;
-            $before = $this->getXrayStats(); $st = $before;
+            $beforeClients = $r['inbounds'][0]['settings']['clients'];
+            try { $before = $this->getXrayStats(); }
+            catch (XrayStatsUnavailable $error) { $before = null; }
+            $st = $before ?? [];
             unset($r['inbounds'][0]['settings']['clients'][$i], $st['users'][$i]);
             // restartXray переиндексирует клиентов и сворачивает session в
             // global. Счётчики должны иметь тот же порядок до его вызова.
-            if (!empty($st['users'])) $st['users'] = array_values($st['users']);
+            $rows = $st['users'] ?? []; $st['users'] = [];
+            foreach (array_keys($r['inbounds'][0]['settings']['clients']) as $newIndex => $oldIndex) {
+                // A reset user may have no row. Its position still belongs to
+                // that user; array_values(rows) would charge its neighbour.
+                if (isset($rows[$oldIndex])) $st['users'][$newIndex] = $rows[$oldIndex];
+            }
             $applied = false;
             try {
-                if ($this->setXrayStats($st) === false) return false;
+                if ($before !== null && $this->setXrayStats($st) === false) return false;
                 if ($this->restartXray($r) === false) return false;
                 $applied = true;
             } finally {
-                if (!$applied && $this->setXrayStats($before) === false) {
-                    throw new RuntimeException($this->t('Не удалось вернуть статистику Xray', 'Could not restore Xray statistics'));
+                if (!$applied && $before !== null && !$this->rollbackXrayStats($before, $beforeClients)) {
+                    throw new RuntimeException($this->t('Не удалось вернуть статистику Xray', 'Could not restore Xray statistics'), self::BACKUP_PARTIAL);
                 }
             }
             $this->deleteHwidUser($client['id']);
@@ -27254,9 +28137,9 @@ DNS-over-HTTPS with IP:
             $this->deleteWarpClient($client['email'] ?? '');
             $this->adguardXrayClients();
             return true;
-        });
+        }));
         if ($menu) {
-            if (!$ok) $this->send($this->input['chat'], $this->t('Не удалось удалить пользователя Xray. Прежний доступ сохранён.', 'Could not delete the Xray user. The previous access is preserved.'));
+            if (!$ok) $this->send($this->input['chat'], $this->t('Удаление пользователя Xray не подтверждено. Проверьте состояние пользователя.', 'Xray user deletion is unconfirmed. Check the user state.'));
             $this->xray();
         }
         return $ok;
@@ -27296,6 +28179,17 @@ DNS-over-HTTPS with IP:
 
     public function addxrus($users)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($users, &$entered) {
+            $entered = true;
+            return $this->addxrusLocked($users);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function addxrusLocked($users)
+    {
         $c     = $this->getXray();
         $p     = $this->getPacConf();
         $users = array_map(fn ($e) => trim($e), explode(',', $users));
@@ -27332,13 +28226,13 @@ DNS-over-HTTPS with IP:
             $uuids[]  = $uuid;
             $emails[] = $user[0];
         }
-        $this->restartXray($c);
+        if ($this->restartXray($c) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->adguardXrayClients();
         // Новый пользователь включён: если список был переключён на выключенных
         // (общий для всех админов xtlslist), его не было бы видно в меню.
         if (!empty($p['xtlslist'])) $this->pacConfUpdate(static function (&$conf) { $conf['xtlslist'] = 0; });
         if (count($users) == 1) {
-            $this->userXr(count($c['inbounds'][0]['settings']['clients']) - 1);
+            $this->userXrLocked(count($c['inbounds'][0]['settings']['clients']) - 1);
         } else {
             $this->xray();
         }
@@ -27346,6 +28240,18 @@ DNS-over-HTTPS with IP:
 
     public function setTimerXr($time, $i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($time, $i, &$entered) {
+            $entered = true;
+            return $this->setTimerXrLocked($time, $i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function setTimerXrLocked($time, $i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $c = $this->getXray();
         if (empty($time)) {
             unset($c['inbounds'][0]['settings']['clients'][$i]['time']);
@@ -27357,16 +28263,28 @@ DNS-over-HTTPS with IP:
             }
             $c['inbounds'][0]['settings']['clients'][$i]['time'] = $time;
         }
-        $this->restartXray($c, 1);
+        if ($this->restartXray($c, 1) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         if (!empty($c['inbounds'][0]['settings']['clients'][$i]['off'])) {
-            $this->switchXr($i, 0, 1);
+            $this->switchXrLocked($i, 0, 1);
         } else {
-            $this->userXr($i);
+            $this->userXrLocked($i);
         }
     }
 
     public function switchXr($i, $nm = 0, $time = false)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, $nm, $time, &$entered) {
+            $entered = true;
+            return $this->switchXrLocked($i, $nm, $time);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    protected function switchXrLocked($i, $nm = 0, $time = false)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $c = $this->getXray();
         if (empty($time)) {
             unset($c['inbounds'][0]['settings']['clients'][$i]['time']);
@@ -27390,10 +28308,10 @@ DNS-over-HTTPS with IP:
         // A manual enable/disable overrides any traffic-quota ban: drop the marker
         // so a later stats reset (reenableTrafficClients) can't silently flip this
         // client back, and userXr doesn't show a stale ⛔ on an enabled client.
-        unset($c['inbounds'][0]['settings']['clients'][$i]['traffic_off']);
-        $this->restartXray($c);
+        unset($c['inbounds'][0]['settings']['clients'][$i]['traffic_off'], $c['inbounds'][0]['settings']['clients'][$i]['traffic_usage_unavailable']);
+        if ($this->restartXray($c) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         if (empty($nm)) {
-            $this->userXr($i);
+            $this->userXrLocked($i);
         }
     }
 
@@ -27415,6 +28333,18 @@ DNS-over-HTTPS with IP:
 
     public function setXrPwd($pwd, $i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($pwd, $i, &$entered) {
+            $entered = true;
+            return $this->setXrPwdLocked($pwd, $i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function setXrPwdLocked($pwd, $i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $c        = $this->getXray();
         if (!isset($c['inbounds'][0]['settings']['clients'][$i])) {
             $this->xray();
@@ -27423,8 +28353,8 @@ DNS-over-HTTPS with IP:
         $password = trim($pwd) ?: bin2hex(random_bytes(16));
         $field = empty($c['inbounds'][0]['settings']['clients'][$i]['off']) ? 'password' : 'off_pwd';
         $c['inbounds'][0]['settings']['clients'][$i][$field] = $password;
-        $this->restartXray($c);
-        $this->userXr($i);
+        if ($this->restartXray($c) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
+        $this->userXrLocked($i);
     }
 
     // Generate a fresh Reality keypair (matched private/public) + shortId.
@@ -27592,6 +28522,17 @@ DNS-over-HTTPS with IP:
 
     public function regenRealityXr()
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use (&$entered) {
+            $entered = true;
+            return $this->regenRealityXrLocked();
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function regenRealityXrLocked()
+    {
         $x = $this->getXray();
         $p = $this->getPacConf();
         if (empty($x['inbounds'][0]['streamSettings']['realitySettings'])) {
@@ -27600,8 +28541,8 @@ DNS-over-HTTPS with IP:
         if (!$this->rotateRealityKeys($p, $x)) {
             return $this->answer($this->input['callback_id'], 'keygen failed', true);
         }
-        $this->setPacConf($p);
-        $this->restartXray($x);
+        $this->patchPacFields($p, ['reality', 'xray']);
+        if ($this->restartXray($x) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->xray();
     }
 
@@ -27610,6 +28551,18 @@ DNS-over-HTTPS with IP:
     // 'id' is a throwaway), so rotate 'off' too. Invalidates only this client.
     public function regenIdXr($i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, &$entered) {
+            $entered = true;
+            return $this->regenIdXrLocked($i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    protected function regenIdXrLocked($i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $x = $this->getXray();
         if (!isset($x['inbounds'][0]['settings']['clients'][$i])) {
             return $this->xray();
@@ -27619,13 +28572,24 @@ DNS-over-HTTPS with IP:
             $x['inbounds'][0]['settings']['clients'][$i]['off'] = $this->guidv4();
         }
         $x['inbounds'][0]['settings']['clients'][$i]['id'] = $this->guidv4();
-        $this->restartXray($x);
-        $this->userXr($i);
+        if ($this->restartXray($x) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
+        $this->userXrLocked($i);
     }
 
     // Full rotation: shared Reality pbk+sid (if Reality) AND every client's UUID.
     // One restart, all configs written consistently. Invalidates every link.
     public function regenAllXr()
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use (&$entered) {
+            $entered = true;
+            return $this->regenAllXrLocked();
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function regenAllXrLocked()
     {
         $x = $this->getXray();
         $p = $this->getPacConf();
@@ -27645,61 +28609,93 @@ DNS-over-HTTPS with IP:
             }
             $x['inbounds'][0]['settings']['clients'][$key]['id'] = $this->guidv4();
         }
-        $this->setPacConf($p);
-        $this->restartXray($x);
+        $this->patchPacFields($p, ['reality', 'xray']);
+        if ($this->restartXray($x) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->xray();
     }
 
     public function renXrUs($name, $i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($name, $i, &$entered) {
+            $entered = true;
+            return $this->renXrUsLocked($name, $i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function renXrUsLocked($name, $i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $c = $this->getXray();
         $c['inbounds'][0]['settings']['clients'][$i]['email'] = $name;
-        $this->restartXray($c);
+        if ($this->restartXray($c) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->adguardXrayClients();
-        $this->userXr($i);
-    }
-
-    public function getXrayStats()
-    {
-        return json_decode((string) @file_get_contents('/config/xray.stats'), true) ?: [];
-    }
-
-    public function setXrayStats($x)
-    {
-        return $this->writePrivateKey('/config/xray.stats', json_encode($x, JSON_THROW_ON_ERROR));
+        $this->userXrLocked($i);
     }
 
     public function resetXrUser($i)
     {
-        $client = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
-        if ($client !== null) $this->resetXrayProtocolUsage($client);
-        $c = $this->getXrayStats();
-        unset($c['users'][$i]);
-        // Persist the zeroed usage before restartXray (its collectSession()
-        // re-reads the stats file, so an unsaved unset would be discarded).
-        $this->setXrayStats($c);
-        // Zeroing this user's usage starts a new quota period — lift its ban.
-        $this->restartXray($this->reenableTrafficClients($this->getXray(), $i));
-        $this->userXr($i);
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, &$entered) {
+            $entered = true;
+            return $this->resetXrUserLocked($i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function resetXrUserLocked($i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
+        $this->resetXrayStatsAndClients($i);
+        $this->userXrLocked($i);
     }
 
     public function resetXrStats($nomenu = false)
     {
-        $this->resetXrayProtocolUsage();
-        // Zeroing usage starts a new quota period, so lift any traffic-quota bans.
-        $this->restartXray($this->reenableTrafficClients($this->getXray()));
-        $this->setXrayStats([]);
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($nomenu, &$entered) {
+            $entered = true;
+            return $this->resetXrStatsLocked($nomenu);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    protected function resetXrStatsLocked($nomenu = false)
+    {
+        $this->resetXrayStatsAndClients();
+        if (empty($nomenu)) $this->xray();
+    }
+
+    private function resetXrayStatsAndClients($only = null): void
+    {
+        $ok = $this->withXrayApplyLock(function () use ($only) {
+            $x = $this->getXray();
+            $client = $only === null ? null : ($x['inbounds'][0]['settings']['clients'][$only] ?? null);
+            if ($only !== null && $client === null) return false;
+            // A user reset cannot replace an unknown shared ledger with zero.
+            $this->withXrayStatsLock(function () use ($only) {
+                $stats = $only === null ? [] : $this->getXrayStats();
+                if ($only !== null) unset($stats['users'][$only]);
+                if ($this->setXrayStats($stats) === false) throw new RuntimeException('Could not reset Xray statistics');
+            });
+            $this->resetXrayProtocolUsage($client);
+            $this->xrayStatsResetting = true;
+            try { return $this->restartXray($this->reenableTrafficClients($x, $only)); }
+            finally { $this->xrayStatsResetting = false; }
+        });
+        if ($ok === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->syncXrayProtocolUsers();
-        if (empty($nomenu)) {
-            $this->xray();
-        }
     }
 
     public function listXr($i)
     {
-        $c = $this->getPacConf();
-        $c['xtlslist'] = $i;
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($i) {
+            $c['xtlslist'] = $i;
+        });
         $this->xray();
     }
 
@@ -27737,17 +28733,15 @@ DNS-over-HTTPS with IP:
 
     public function setAutoScanTimeout($time)
     {
-        $pac = $this->getPacConf();
-        if (empty($time)) {
-            unset($pac['autoscan_timeout']);
-            unset($pac['autoscan']);
-        } elseif ($t = strtotime($time, 0)) {
-            $pac['autoscan_timeout'] = $t;
-            $pac['autoscan'] = 1;
-        } else {
+        $t = empty($time) ? 0 : strtotime($time, 0);
+        if ($t === false || (!empty($time) && !$t)) {
             $this->send($this->input['from'], "$time - wrong format", $this->input['message_id']);
+        } else {
+            $this->pacConfUpdate(function (&$pac) use ($t) {
+                if (!$t) unset($pac['autoscan_timeout'], $pac['autoscan']);
+                else { $pac['autoscan_timeout'] = $t; $pac['autoscan'] = 1; }
+            });
         }
-        $this->setPacConf($pac);
         $this->ipMenu();
     }
 
@@ -27788,9 +28782,9 @@ DNS-over-HTTPS with IP:
         if ($v['warnings']) {
             $this->send($this->input['chat'], "⚠ template warnings:\n" . implode("\n", array_slice($v['warnings'], 0, 10)));
         }
-        $pac = $this->getPacConf();
-        $pac["{$type}templates"][$this->input['caption']] = $json;
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($type, $json) {
+            $pac["{$type}templates"][$this->input['caption']] = $json;
+        });
         $this->templates($type);
     }
 
@@ -27843,27 +28837,19 @@ DNS-over-HTTPS with IP:
                 'message' => implode('; ', array_slice($v['errors'], 0, 5)),
             ];
         }
-        $pac = $this->getPacConf();
-        // getPacConf() отдаёт null, если pac.json недоступен или битый. Дальше
-        // $pac["{$type}templates"][$name] = … создало бы массив из ОДНОГО ключа
-        // и setPacConf() записал бы его поверх конфига: клиенты, ключи reality,
-        // остальные шаблоны — всё пропало бы ради сохранения одного шаблона.
-        if (!is_array($pac)) {
-            return [
-                'status'  => false,
-                'message' => 'pac.json unavailable',
-            ];
+        try {
+            if ($name === 'origin') {
+                if (!is_array($this->getPacConf())) throw new RuntimeException('pac.json unavailable');
+                $encoded = json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                if ($encoded === false || file_put_contents("/config/$type.json", $encoded) !== strlen($encoded)) {
+                    throw new RuntimeException('template write failed');
+                }
+            } else {
+                $this->pacConfUpdate(function (&$pac) use ($type, $name, $decoded) { $pac["{$type}templates"][$name] = $decoded; });
+            }
+        } catch (RuntimeException $e) {
+            return ['status' => false, 'message' => 'template not saved'];
         }
-        switch ($name) {
-            case 'origin':
-                file_put_contents("/config/$type.json", json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-                break;
-
-            default:
-                $pac["{$type}templates"][$name] = $decoded;
-                break;
-        }
-        $this->setPacConf($pac);
         return [
             'status'  => true,
             'message' => $v['warnings'] ? '⚠ ' . implode('; ', array_slice($v['warnings'], 0, 5)) : '',
@@ -27872,29 +28858,18 @@ DNS-over-HTTPS with IP:
 
     public function delTemplate($type, $name)
     {
-        $pac = $this->getPacConf();
-        // Как и в saveTemplate(): null вместо конфига — не повод записать поверх
-        // pac.json массив из одних шаблонов.
-        if (!is_array($pac)) {
-            $this->templates($type);
-
-            return;
+        if (is_array($this->getPacConf())) {
+            $this->pacConfUpdate(function (&$pac) use ($type, $name) { unset($pac["{$type}templates"][base64_decode($name)]); });
         }
-        unset($pac["{$type}templates"][base64_decode($name)]);
-        $this->setPacConf($pac);
         $this->templates($type);
     }
 
     public function copyTemplate($name, $type)
     {
-        $pac = $this->getPacConf();
-        if (!is_array($pac)) {
-            $this->templates($type);
-
-            return;
+        if (is_array($this->getPacConf())) {
+            $template = json_decode(file_get_contents("/config/$type.json"), true);
+            $this->pacConfUpdate(function (&$pac) use ($name, $type, $template) { $pac["{$type}templates"][$name] = $template; });
         }
-        $pac["{$type}templates"][$name] = json_decode(file_get_contents("/config/$type.json"), true);
-        $this->setPacConf($pac);
         $this->templates($type);
     }
 
@@ -27913,13 +28888,13 @@ DNS-over-HTTPS with IP:
 
     public function defaultTemplate($type, $name)
     {
-        $pac = $this->getPacConf();
-        if (!empty($name)) {
-            $pac["default{$type}template"] = $name;
-        } else {
-            unset($pac["default{$type}template"]);
-        }
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($type, $name) {
+            if (!empty($name)) {
+                $pac["default{$type}template"] = $name;
+            } else {
+                unset($pac["default{$type}template"]);
+            }
+        });
         $this->templates($type);
     }
 
@@ -27956,12 +28931,9 @@ DNS-over-HTTPS with IP:
         }
         $v = $this->validateTemplate($type, $bundled);
         if (!$v['ok']) return $this->templates($type);
-        $this->withLock('pac', function () use ($type, $name, $bundled) {
-            $pac = $this->getPacConf();
-            if (!is_array($pac)) return;
+        $this->pacConfUpdate(function (&$pac) use ($type, $name, $bundled) {
             $pac["{$type}templates"][$name] = $bundled;
             $pac['installed_templates'][$type][$name] = true;
-            $this->setPacConf($pac);
         });
         return $this->templates($type);
     }
@@ -28094,13 +29066,13 @@ DNS-over-HTTPS with IP:
 
     public function setMainOutbound($text)
     {
-        $pac = $this->getPacConf();
-        if (!empty($text)) {
-            $pac['outbound'] = $text;
-        } else {
-            unset($pac['outbound']);
-        }
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) use ($text) {
+            if (!empty($text)) {
+                $pac['outbound'] = $text;
+            } else {
+                unset($pac['outbound']);
+            }
+        });
         $this->xray();
     }
 
@@ -28473,7 +29445,7 @@ DNS-over-HTTPS with IP:
                     return 'vless encryption save failed';
                 }
                 if ($this->restartXray($x) === false) {
-                    $this->setPacConf($old);
+                    if ($this->setPacConf($old) === false) throw new RuntimeException($this->t('Не удалось восстановить настройки Xray', 'Could not restore Xray settings'));
                     return 'vless encryption save failed';
                 }
                 return '';
@@ -28820,7 +29792,7 @@ DNS-over-HTTPS with IP:
             return;
         }
         if (!$probe['fork']) {
-            $this->repairXrayCore($p);
+            $this->repairXrayCoreLocked($p);
 
             return;
         }
@@ -28828,11 +29800,11 @@ DNS-over-HTTPS with IP:
         // это не расхождение). Всё сходится: счётчик попыток можно обнулить.
         if ($probe['active'] === 'fork' && $probe['running'] !== 'origin') {
             $this->xrLinkFix = 0;
-            $this->healSmuxHalfClose($p);
+            $this->healSmuxHalfCloseLocked($p);
 
             return;
         }
-        $this->restoreXrayLink();
+        $this->restoreXrayLinkLocked();
     }
 
     // Откат образа xr на форк старее 26.8.25 оставил бы клиентов с require в
@@ -28843,13 +29815,26 @@ DNS-over-HTTPS with IP:
     // подписки, а require вернётся кнопкой, как только образ обновят.
     public function healSmuxHalfClose(array $p): void
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($p, &$entered) {
+            return $this->withLock('pac', function () use ($p, &$entered) {
+            $entered = true;
+            return $this->healSmuxHalfCloseLocked($p);
+            });
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать настройки Xray', 'Could not lock Xray settings'));
+    }
+
+    private function healSmuxHalfCloseLocked(array $p): void
+    {
+        $p = $this->getPacConf();
         if (self::smuxHalfClose($p['smux']['half_close'] ?? '') !== 'require'
             || $this->smuxHalfCloseReady()
         ) {
             return;
         }
         $p['smux']['half_close'] = 'auto';
-        $this->setPacConf($p);
+        if ($this->setPacConf($p) === false) throw new RuntimeException($this->t('Не удалось сохранить настройки Xray', 'Could not save Xray settings'));
         error_log('healSmuxHalfClose: xray core older than 26.8.25 — half-close require downgraded to auto');
     }
 
@@ -28878,6 +29863,19 @@ DNS-over-HTTPS with IP:
     // маркер, и починка стала бы вечной. false — починить не вышло.
     public function restoreXrayLink(): bool
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use (&$entered) {
+            return $this->withLock('pac', function () use (&$entered) {
+            $entered = true;
+            return $this->restoreXrayLinkLocked();
+            });
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать настройки Xray', 'Could not lock Xray settings'));
+        return $result;
+    }
+
+    private function restoreXrayLinkLocked(): bool
+    {
         // Три безуспешные попытки подряд — перестаём дёргать ядро каждые пять
         // минут: рестарт рвёт живые сессии, а причина явно не в симлинке
         // (слой контейнера только для чтения, xray поднят мимо start_xray.sh).
@@ -28885,7 +29883,7 @@ DNS-over-HTTPS with IP:
         // перечитают подписку, — это лучше гарантированной тишины у всех.
         if (++$this->xrLinkFix > 3) {
             $this->xrLinkFix = 0;
-            $this->repairXrayCore(null, 'fork core kept losing to the upstream one');
+            $this->repairXrayCoreLocked(null, 'fork core kept losing to the upstream one');
 
             return false;
         }
@@ -28895,10 +29893,10 @@ DNS-over-HTTPS with IP:
         if ($this->sshFailed) {
             return false;
         }
-        $this->writeCoreMarker('fork');
+        if (!$this->writeCoreMarker('fork')) return false;
         error_log('restoreXrayLink: xray core symlink returned to the fork (attempt ' . $this->xrLinkFix . ')');
         // Рестарт уже уходит в форк: pkill + `xray run` идут через симлинк.
-        $this->restartXray($this->getXray());
+        if ($this->restartXray($this->getXray()) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         // Кеш пробы устарел, но перечитывать его здесь нечем: xray только что
         // стартовал, и /proc отдаст либо ещё старый pid, либо ничего. Просто
         // сбрасываем — следующий checkXrayCore() спросит заново.
@@ -28911,7 +29909,20 @@ DNS-over-HTTPS with IP:
     // действительно пришлось.
     public function repairXrayCore(?array $p = null, string $why = 'fork binary gone from the xr image'): bool
     {
-        $p = $p ?? $this->getPacConf();
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($p, $why, &$entered) {
+            return $this->withLock('pac', function () use ($p, $why, &$entered) {
+            $entered = true;
+            return $this->repairXrayCoreLocked($p, $why);
+            });
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать настройки Xray', 'Could not lock Xray settings'));
+        return $result;
+    }
+
+    private function repairXrayCoreLocked(?array $p = null, string $why = 'fork binary gone from the xr image'): bool
+    {
+        $p = $this->getPacConf();
         if (!is_array($p) || $this->xrayCore($p) !== 'fork') {
             return false;
         }
@@ -28919,10 +29930,10 @@ DNS-over-HTTPS with IP:
         $p['smux']['enabled']           = 0;
         $p['smux']['brutal']['enabled'] = 0;
         $p['xhttp_mux']                 = ['enabled' => 0];
-        $this->setPacConf($p);
-        $this->writeCoreMarker('origin');
+        if ($this->setPacConf($p) === false) throw new RuntimeException($this->t('Не удалось сохранить настройки Xray', 'Could not save Xray settings'));
+        if (!$this->writeCoreMarker('origin')) return false;
         error_log('repairXrayCore: ' . $why . ' — smux disabled, core reset to upstream');
-        $this->restartXray($this->getXray());
+        if ($this->restartXray($this->getXray()) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
 
         return true;
     }
@@ -29098,12 +30109,13 @@ DNS-over-HTTPS with IP:
             $text[] = $this->i18n('vless encryption singbox');
         }
         $text[] = 'fingerprint: ' . $this->fingerprint();
-        $st = $this->getXrayStats();
+        try { $st = $this->getXrayStats(); }
+        catch (XrayStatsUnavailable $error) { $st = null; }
         // ?? 0 — на свежей установке (или сразу после resetXrStats) файла
         // статистики нет вовсе, и меню xray открывалось с warning'ами.
         $td = $this->getBytes(($st['global']['download'] ?? 0) + ($st['session']['download'] ?? 0));
         $tu = $this->getBytes(($st['global']['upload'] ?? 0) + ($st['session']['upload'] ?? 0));
-        $text[] = "↓$td  ↑$tu";
+        $text[] = $st === null ? $this->t("Статистика недоступна; требуется восстановление или сброс", "Statistics unavailable; restore or reset required") : "↓$td  ↑$tu";
         // Строка выше — global+session ПОЛЬЗОВАТЕЛЬСКОГО inbound'а. Ниже —
         // только текущая сессия (счётчики xray обнуляются его рестартом) и
         // только по тем inbound'ам, которых в ней не видно: прежде всего
@@ -29338,8 +30350,8 @@ DNS-over-HTTPS with IP:
         foreach ($clients as $k => $v) {
             // Тот же ?? 0, что в userXr() и sub(): у только что добавленного
             // клиента записи в статистике ещё нет.
-            $download = $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
-            $upload   = $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
+            $download = $st === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
+            $upload   = $st === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
             $time     = !empty($v['time']) ? $this->getTime($v['time']) : '';
             $data[]   = [
                 [
@@ -29393,6 +30405,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/menu",
             ],
         ];
+        $data = $this->xrayIdentityButtons($data ?: [], $c);
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
@@ -29651,8 +30664,7 @@ DNS-over-HTTPS with IP:
             };
             // Меняем только свои поля, перечитывая pac под общей блокировкой.
             $save = function ($disabled, $commit = false) use ($before, $key) {
-                $this->withLock('pac', function () use ($disabled, $commit, $before, $key) {
-                    $p = $this->getPacConf();
+                $this->pacConfUpdate(function (&$p) use ($disabled, $commit, $before, $key) {
                     if ($disabled) $p['warpoff'] = 1;
                     elseif (array_key_exists('warpoff', $before)) $p['warpoff'] = $before['warpoff'];
                     else unset($p['warpoff']);
@@ -29660,7 +30672,6 @@ DNS-over-HTTPS with IP:
                         if ($key === '') unset($p['warp']);
                         else $p['warp'] = $key;
                     }
-                    if (!$this->setPacConf($p)) throw new RuntimeException($this->t('Не удалось сохранить настройки WARP', 'Could not save the WARP settings'));
                 });
             };
             // Не удаляем оставшийся после аварии backup: в нём может быть
@@ -29833,8 +30844,9 @@ DNS-over-HTTPS with IP:
     {
         $c = [];
         require __DIR__ . '/config.php';
+        $buttons = $this->xrayIdentityButtons([[['text' => $this->i18n('on'), 'callback_data' => "/switchXr $client"]]], $this->getXray());
         foreach ((array) ($c['admin'] ?? []) as $admin) {
-            $this->send($admin, $text, button: [[['text' => $this->i18n('on'), 'callback_data' => "/switchXr $client"]]]);
+            $this->send($admin, $text, button: $buttons);
         }
     }
 
@@ -29855,11 +30867,9 @@ DNS-over-HTTPS with IP:
                 return;
             }
             $save = function ($disabled) {
-                $this->withLock('pac', function () use ($disabled) {
-                    $p = $this->getPacConf();
+                $this->pacConfUpdate(function (&$p) use ($disabled) {
                     if ($disabled) $p['warpoff'] = 1;
                     else unset($p['warpoff']);
-                    if (!$this->setPacConf($p)) throw new RuntimeException($this->t('Не удалось сохранить настройки WARP', 'Could not save the WARP settings'));
                 });
             };
             $stop = 'pkill -x warp-socks 2>/dev/null || true; pkill -x microsocks 2>/dev/null || true; wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null || true';
@@ -29997,6 +31007,18 @@ DNS-over-HTTPS with IP:
 
     public function choiceTemplate($arg)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($arg, &$entered) {
+            $entered = true;
+            return $this->choiceTemplateLocked($arg);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function choiceTemplateLocked($arg)
+    {
+        if (!$this->xrayClientMatches((int) (int) (explode('_', $arg)[1] ?? -1))) return $this->staleXrayAction();
         $arg = explode('_', $arg);
         $c   = $this->getXray();
         if (!empty($arg[2])) {
@@ -30005,11 +31027,23 @@ DNS-over-HTTPS with IP:
             unset($c['inbounds'][0]['settings']['clients'][$arg[1]]["{$arg[0]}template"]);
         }
         $this->saveXray($c);
-        $this->userXr($arg[1]);
+        $this->userXrLocked($arg[1]);
     }
 
     public function templateUser($type, $i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($type, $i, &$entered) {
+            $entered = true;
+            return $this->templateUserLocked($type, $i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function templateUserLocked($type, $i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $c   = $this->getXray();
         $pac = $this->getPacConf();
         // Клиент мог быть удалён кнопкой из другого сообщения — тогда меню
@@ -30046,6 +31080,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/userXr $i",
             ],
         ];
+        $data = $this->xrayIdentityButtons($data ?: [], $c);
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
@@ -30056,6 +31091,18 @@ DNS-over-HTTPS with IP:
 
     public function userXr($i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, &$entered) {
+            $entered = true;
+            return $this->userXrLocked($i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    protected function userXrLocked($i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $xray   = $this->getXray();
         $c      = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
         if ($c === null) {
@@ -30131,13 +31178,14 @@ DNS-over-HTTPS with IP:
 
         $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$stok}'>windows service</a>";
         $text[]   = $this->t('Файлы из кнопок загрузки временные: сохраните их до следующего нажатия в этом меню.', 'Files from the download buttons are temporary: save them before the next tap in this menu.');
-        $st       = $this->getXrayStats();
-        $protocolUsage = $this->xrayProtocolUsage($c);
-        $download = $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0) + $protocolUsage['download']);
-        $upload   = $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0) + $protocolUsage['upload']);
+        $st = [];
+        try { $st = $this->getXrayStats(); $protocolUsage = $this->xrayProtocolUsage($c); }
+        catch (Throwable $error) { $protocolUsage = null; }
+        $download = $protocolUsage === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(($st['users'][$i]['global']['download'] ?? 0) + ($st['users'][$i]['session']['download'] ?? 0) + $protocolUsage['download']);
+        $upload   = $protocolUsage === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(($st['users'][$i]['global']['upload'] ?? 0) + ($st['users'][$i]['session']['upload'] ?? 0) + $protocolUsage['upload']);
         $limit    = (int) ($c['traffic'] ?? 0);
         if ($limit > 0) {
-            $used = $this->getBytes($this->xrUserTraffic($st, $i) + array_sum($this->xrayProtocolUsage($c)));
+            $used = $protocolUsage === null ? $this->t('неизвестно', 'unknown') : $this->getBytes($this->xrUserTraffic($st, $i) + array_sum($protocolUsage));
             $text[] = $this->i18n('traffic limit') . ": $used / " . $this->getBytes($limit)
                 . (!empty($c['traffic_off']) ? ' ⛔' : '');
         }
@@ -30313,6 +31361,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/dw $i uri",
             ]]);
         }
+        $data = $this->xrayIdentityButtons($data ?: [], $xray);
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
@@ -30337,7 +31386,7 @@ DNS-over-HTTPS with IP:
     private function extRowMatches(array $c, $i, $k, string $h): bool
     {
         $e = $c['inbounds'][0]['settings']['clients'][$i]['ext'][$k] ?? null;
-        return is_array($e) && $h !== '' && hash_equals(self::extRowKey($e), $h);
+        return $this->xrayClientMatches((int) $i) && is_array($e) && $h !== '' && hash_equals(self::extRowKey($e), $h);
     }
 
     // Изменение ext под локом xray.json. Ядро поле ext не читает, поэтому
@@ -30359,6 +31408,7 @@ DNS-over-HTTPS with IP:
 
     public function extUser($i, string $notice = '')
     {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $xray = $this->getXray();
         $c    = $xray['inbounds'][0]['settings']['clients'][$i] ?? null;
         if ($c === null) {
@@ -30447,6 +31497,7 @@ DNS-over-HTTPS with IP:
                 'callback_data' => "/userXr $i",
             ],
         ];
+        $data = $this->xrayIdentityButtons($data, $xray);
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
@@ -30594,7 +31645,7 @@ DNS-over-HTTPS with IP:
             }
         }
         $result = $add ? $this->extUpdate(function (&$c) use ($i, $kind, $add) {
-            if (!isset($c['inbounds'][0]['settings']['clients'][$i])) {
+            if (!$this->xrayClientMatches((int) $i) || !isset($c['inbounds'][0]['settings']['clients'][$i])) {
                 return null;
             }
             $have = [];
@@ -30873,6 +31924,18 @@ DNS-over-HTTPS with IP:
 
     public function hwidUser($i, $page = 0)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, $page, &$entered) {
+            $entered = true;
+            return $this->hwidUserLocked($i, $page);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function hwidUserLocked($i, $page = 0)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $xray   = $this->getXray();
         $client = $xray['inbounds'][0]['settings']['clients'][$i];
         $pac    = $this->getPacConf();
@@ -30987,6 +32050,7 @@ DNS-over-HTTPS with IP:
             ],
         ];
 
+        $data = $this->xrayIdentityButtons($data ?: [], $xray);
         $this->update(
             $this->input['chat'],
             $this->input['message_id'],
@@ -30997,6 +32061,18 @@ DNS-over-HTTPS with IP:
 
     public function hwidUserToggle($i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, &$entered) {
+            $entered = true;
+            return $this->hwidUserToggleLocked($i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function hwidUserToggleLocked($i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $xray = $this->getXray();
         if (!empty($xray['inbounds'][0]['settings']['clients'][$i]['hwid_disabled'])) {
             unset($xray['inbounds'][0]['settings']['clients'][$i]['hwid_disabled']);
@@ -31005,15 +32081,27 @@ DNS-over-HTTPS with IP:
         }
         $this->saveXray($xray);
         $this->answer($this->input['callback_id'], $this->i18n('hwid notice'), true);
-        $this->hwidUser($i);
+        $this->hwidUserLocked($i);
     }
 
     public function hwidUserDefault($i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, &$entered) {
+            $entered = true;
+            return $this->hwidUserDefaultLocked($i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function hwidUserDefaultLocked($i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $xray = $this->getXray();
         unset($xray['inbounds'][0]['settings']['clients'][$i]['hwid_limit']);
         $this->saveXray($xray);
-        $this->hwidUser($i);
+        $this->hwidUserLocked($i);
     }
 
     public function setHwidUserLimit($i)
@@ -31033,6 +32121,18 @@ DNS-over-HTTPS with IP:
 
     public function saveHwidUserLimit($count, $i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($count, $i, &$entered) {
+            $entered = true;
+            return $this->saveHwidUserLimitLocked($count, $i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function saveHwidUserLimitLocked($count, $i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $xray = $this->getXray();
         $count = (int) $count;
         if ($count > 0) {
@@ -31042,7 +32142,7 @@ DNS-over-HTTPS with IP:
         }
         $this->saveXray($xray);
         $this->send($this->input['chat'], $this->i18n('hwid notice'), $this->input['message_id']);
-        $this->hwidUser($i);
+        $this->hwidUserLocked($i);
     }
 
     public function setTrafficXr($i)
@@ -31063,6 +32163,18 @@ DNS-over-HTTPS with IP:
 
     public function saveTrafficXr($gb, $i)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($gb, $i, &$entered) {
+            $entered = true;
+            return $this->saveTrafficXrLocked($gb, $i);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function saveTrafficXrLocked($gb, $i)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $x  = $this->getXray();
         if (!isset($x['inbounds'][0]['settings']['clients'][$i])) {
             $this->xray();
@@ -31076,7 +32188,7 @@ DNS-over-HTTPS with IP:
             $x['inbounds'][0]['settings']['clients'][$i]['traffic'] = $limit;
             // Raising the limit above current usage lifts this client's quota ban.
             if (!empty($x['inbounds'][0]['settings']['clients'][$i]['traffic_off'])
-                && $this->xrUserTraffic($this->getXrayStats(), $i) < $limit) {
+                && !$this->xrayQuotaUnavailableOrExhausted($x['inbounds'][0]['settings']['clients'][$i], $i)) {
                 $x = $this->reenableTrafficClients($x, $i);
                 $needsRestart = true;
             }
@@ -31092,12 +32204,24 @@ DNS-over-HTTPS with IP:
         // Persist via restartXray so the stats:{} object is normalized (raw
         // json_encode turns {} into [] and xray rejects it). norestart unless we
         // re-enabled a client — the limit value itself is bot-side only.
-        $this->restartXray($x, !$needsRestart);
-        $this->userXr($i);
+        if ($this->restartXray($x, !$needsRestart) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
+        $this->userXrLocked($i);
     }
 
     public function hwidUserDel($i, $page, $hwid)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($i, $page, $hwid, &$entered) {
+            $entered = true;
+            return $this->hwidUserDelLocked($i, $page, $hwid);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function hwidUserDelLocked($i, $page, $hwid)
+    {
+        if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $xray = $this->getXray();
         $uid    = $xray['inbounds'][0]['settings']['clients'][$i]['id'];
         $scope  = $this->getHwidTokenScope($i);
@@ -31105,7 +32229,7 @@ DNS-over-HTTPS with IP:
         if ($decoded !== '') {
             $this->deleteHwidDevice($uid, $decoded);
         }
-        $this->hwidUser($i, $page);
+        $this->hwidUserLocked($i, $page);
     }
 
     public function getDomain($cdn = false)
@@ -31165,7 +32289,8 @@ DNS-over-HTTPS with IP:
             $this->subNotFound('Subscription temporarily unavailable.');
         }
         $pac    = $this->getPacConf();
-        $st     = $this->getXrayStats();
+        try { $st = $this->getXrayStats(); }
+        catch (XrayStatsUnavailable $error) { $st = null; }
         $domain = $this->subDomain($pac);
         $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
         $hash   = $this->getHashBot();
@@ -31175,7 +32300,7 @@ DNS-over-HTTPS with IP:
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
         // Missing/disabled id: clean 404 instead of rendering the page with
         // undefined fields (which would warn and break the body).
-        if ($client === null || !empty($client['off'])) {
+        if ($client === null || !empty($client['off']) || $this->xrayQuotaUnavailableOrExhausted($client, $k)) {
             // Ведро промахов — см. subscription(): ключ основного ведра
             // содержит sid, поэтому перебор им не ограничивался.
             $this->subRateLimit('', 'miss');
@@ -31188,8 +32313,8 @@ DNS-over-HTTPS with IP:
         $expire = $client['time'] ?? '';
         $stok   = $this->sidOf($client); // subscription locator (not the credential)
         $suburl   = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
-        $download = $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
-        $upload   = $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
+        $download = $st === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
+        $upload   = $st === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
         $singbox  = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
             'h' => $hash,
             't' => 'si',
@@ -32470,8 +33595,7 @@ DNS-over-HTTPS with IP:
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
         if ($client === null || !empty($client['off'])
             || ((int) ($client['time'] ?? 0) > 0 && $client['time'] <= time())
-            || ((int) ($client['traffic'] ?? 0) > 0 && $this->xrUserTraffic($this->getXrayStats(), $k)
-                + array_sum($this->xrayProtocolUsage($client)) >= (int) $client['traffic'])) {
+            || $this->xrayQuotaUnavailableOrExhausted($client, $k)) {
             if (!empty($return)) {
                 return '';
             }
@@ -34298,14 +35422,13 @@ DNS-over-HTTPS with IP:
     public function getHashBot($notset = false)
     {
         $p = $this->getPacConf();
-        if (!empty($p['hashbot'])) {
+        if (!empty($p['hashbot'])) return $p['hashbot'];
+        $hash = substr(hash('sha256', $this->key), 0, 8);
+        if ($notset) return $hash;
+        return $this->pacConfUpdate(function (&$p) use ($hash) {
+            if (empty($p['hashbot'])) $p['hashbot'] = $hash;
             return $p['hashbot'];
-        }
-        $p['hashbot'] = substr(hash('sha256', $this->key), 0, 8);
-        if (empty($notset)) {
-            $this->setPacConf($p);
-        }
-        return $p['hashbot'];
+        });
     }
 
     // /ws и /grpc ведут на один xr:443. Только транспорт фактического inbound
@@ -34523,19 +35646,14 @@ DNS-over-HTTPS with IP:
             error_log('cloakNginx: telegram relay block rejected by nginx, applied without it');
             if (!$this->editProtocolProxyConfig('/config/nginx.conf', 'ng', static fn($before) => $template)) return false;
         }
-        $x = $this->getXray();
-        if (!empty($x['inbounds'][0]['streamSettings']['wsSettings']['path'])) {
-            $x['inbounds'][0]['streamSettings']['wsSettings']['path'] = "/ws$h";
-            $this->restartXray($x);
-        }
-        if (!empty($x['inbounds'][0]['streamSettings']['xhttpSettings']['path'])) {
-            $x['inbounds'][0]['streamSettings']['xhttpSettings']['path'] = "/ws$h";
-            $this->restartXray($x);
-        }
-        if (!empty($x['inbounds'][0]['streamSettings']['grpcSettings']['serviceName'])) {
-            $x['inbounds'][0]['streamSettings']['grpcSettings']['serviceName'] = "grpc$h";
-            $this->restartXray($x);
-        }
+        $this->xrayConfUpdate(function (&$x) use ($h) {
+            foreach (['wsSettings', 'xhttpSettings'] as $kind) {
+                if (!empty($x['inbounds'][0]['streamSettings'][$kind]['path'])) $x['inbounds'][0]['streamSettings'][$kind]['path'] = "/ws$h";
+            }
+            if (!empty($x['inbounds'][0]['streamSettings']['grpcSettings']['serviceName'])) {
+                $x['inbounds'][0]['streamSettings']['grpcSettings']['serviceName'] = "grpc$h";
+            }
+        });
 
         return trim($this->ssh('nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1 && printf VPNBOT_NGINX_READY', 'ng')) === 'VPNBOT_NGINX_READY';
     }
@@ -34547,13 +35665,13 @@ DNS-over-HTTPS with IP:
     // ближайшем рестарте контейнера (живой nginx reload просто отвергнет).
     public function getHashSubdomain($subdomain)
     {
+        $key = "{$subdomain}_domain";
         $p = $this->getPacConf();
-        if (isset($p["{$subdomain}_domain"])) {
-            return self::isSubdomainLabel($p["{$subdomain}_domain"]) ? $p["{$subdomain}_domain"] : '';
-        }
-        $p["{$subdomain}_domain"] = substr(hash('sha256', "$subdomain{$this->key}"), 0, 8);
-        $this->setPacConf($p);
-        return $p["{$subdomain}_domain"];
+        if (isset($p[$key])) return self::isSubdomainLabel($p[$key]) ? $p[$key] : '';
+        return $this->pacConfUpdate(function (&$p) use ($subdomain, $key) {
+            if (!isset($p[$key])) $p[$key] = substr(hash('sha256', "$subdomain{$this->key}"), 0, 8);
+            return self::isSubdomainLabel($p[$key]) ? $p[$key] : '';
+        });
     }
 
     public function addWg($page)
@@ -34690,9 +35808,10 @@ DNS-over-HTTPS with IP:
 
     public function adguardChBr()
     {
-        $c = $this->getPacConf();
-        $c['adgbrowser'] = !empty($c['adgbrowser']) ? 0 : 1;
-        $this->setPacConf($c);
+        $c = $this->pacConfUpdate(function (&$c) {
+            $c['adgbrowser'] = !empty($c['adgbrowser']) ? 0 : 1;
+            return $c;
+        });
         $this->cloakNginx();
         $this->answer($this->input['callback_id'], $this->i18n($c['adgbrowser'] ? 'browser_notify_on' : 'browser_notify_off'), true);
         // Прежние ссылки и пропуска браузеров не отзываются переключателем:
@@ -35683,9 +36802,9 @@ DNS-over-HTTPS with IP:
             file_put_contents($f, $this->emitComposeWithOverrides($c, $overrides));
         }
 
-        $pac = $this->getPacConf();
-        $pac['restart'] = 1;
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) {
+            $pac['restart'] = 1;
+        });
         $this->ports();
     }
 
@@ -35764,9 +36883,9 @@ DNS-over-HTTPS with IP:
             $this->setEnvVar('OVPNPORT', (string) $listen);
         }
 
-        $pac = $this->getPacConf();
-        $pac['restart'] = 1;
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) {
+            $pac['restart'] = 1;
+        });
         $this->ports();
     }
 
@@ -36116,9 +37235,7 @@ DNS-over-HTTPS with IP:
         } catch (\Throwable $e) {
             error_log('selfUpdate migrateDohClientIds: ' . $e->getMessage());
         }
-        $pac = $this->getPacConf();
-        unset($pac['restart']);
-        return $this->setPacConf($pac) !== false;
+        return $this->pacConfUpdate(function (&$pac) { unset($pac['restart']); return true; });
     }
 
     public function backup()
@@ -36171,6 +37288,17 @@ DNS-over-HTTPS with IP:
 
     public function setFakeDomain($domain, $self = false)
     {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($domain, $self, &$entered) {
+            $entered = true;
+            return $this->setFakeDomainLocked($domain, $self);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function setFakeDomainLocked($domain, $self = false)
+    {
         // $domain — сырой текст ответа на промпт (reply() отдаёт его первым
         // аргументом). Без проверки состояние расходилось: xray.json и
         // pac.json['reality'] уже переписаны мусором и ядро перезапущено, а
@@ -36207,14 +37335,14 @@ DNS-over-HTTPS with IP:
         $c['inbounds'][0]['streamSettings']['realitySettings']['dest'] = $destination;
         $p['reality']['domain'] = $domain;
         $p['reality']['destination'] = $destination;
-        if ($this->setPacConf($p) === false || $this->restartXray($c) === false) {
-            $this->setPacConf($before);
+        if ($this->patchPacFields($p, ['reality']) === false || $this->restartXray($c) === false) {
+            if (!$this->restorePacFields($before, $p, ['reality'])) throw new RuntimeException($this->t('Настройки изменились; восстановление предыдущего состояния не подтверждено', 'Settings changed; restoration of the previous state is unconfirmed'));
             $this->send($this->input['chat'], $this->i18n('reality mask not applied'), $this->input['message_id']);
             return $this->xray();
         }
         if ($this->setUpstreamDomain($domain) === false) {
-            $this->setPacConf($before);
-            $this->restartXray($beforeXray);
+            if (!$this->restorePacFields($before, $p, ['reality'])) throw new RuntimeException($this->t('Настройки изменились; восстановление предыдущего состояния не подтверждено', 'Settings changed; restoration of the previous state is unconfirmed'));
+            if ($this->restartXray($beforeXray) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
             $this->send($this->input['chat'], $this->i18n('reality mask not applied'), $this->input['message_id']);
             return $this->xray();
         }
@@ -36234,6 +37362,17 @@ DNS-over-HTTPS with IP:
     }
 
     public function changeTransport($transport)
+    {
+        $entered = false;
+        $result = $this->withLock('xray', function () use ($transport, &$entered) {
+            $entered = true;
+            return $this->changeTransportLocked($transport);
+        });
+        if (!$entered) throw new RuntimeException($this->t('Не удалось заблокировать Xray', 'Could not lock Xray'));
+        return $result;
+    }
+
+    private function changeTransportLocked($transport)
     {
         $p = $this->getPacConf();
         $x = $this->getXray();
@@ -36409,40 +37548,40 @@ DNS-over-HTTPS with IP:
     public function setBackup($text)
     {
         $text = trim($text);
-        $c    = $this->getPacConf();
-        if (empty($text)) {
-            $c['backup'] = '';
-        } else {
-            [$start, $period] = explode('/', $text);
-            if (!empty(strtotime($start)) && !empty(strtotime($period))) {
-                $c['backup'] = implode(' / ', [date('Y-m-d H:i', strtotime($start)), trim($period)]);
-            } else {
+        $value = '';
+        if ($text !== '') {
+            [$start, $period] = array_pad(explode('/', $text, 2), 2, '');
+            if (!strtotime($start) || !strtotime($period)) {
                 $this->send($this->input['from'], $this->input['message'] . ' - wrong format');
+                $this->menu('config');
+                return;
             }
+            $value = implode(' / ', [date('Y-m-d H:i', strtotime($start)), trim($period)]);
         }
-        if ($c['pinbackup']) {
-            $this->pinAdmin($c['pinbackup'], 1);
+        $pin = $this->pacConfUpdate(function (&$c) use ($value) {
+            $c['backup'] = $value;
+            $pin = $c['pinbackup'] ?? '';
             $c['pinbackup'] = '';
-        }
-        $this->setPacConf($c);
+            return $pin;
+        });
+        if ($pin) $this->pinAdmin($pin, 1);
         $this->menu('config');
     }
 
     public function setAutoCleanLogs($text)
     {
         $text = trim($text);
-        $c    = $this->getPacConf();
-        if (empty($text)) {
-            $c['autocleanlogs'] = '';
-        } else {
-            [$start, $period] = explode('/', $text);
-            if (!empty(strtotime($start)) && !empty(strtotime($period))) {
-                $c['autocleanlogs'] = implode(' / ', [date('Y-m-d H:i', strtotime($start)), trim($period)]);
-            } else {
+        $value = '';
+        if ($text !== '') {
+            [$start, $period] = array_pad(explode('/', $text, 2), 2, '');
+            if (!strtotime($start) || !strtotime($period)) {
                 $this->send($this->input['from'], $this->input['message'] . ' - wrong format');
+                $this->logs();
+                return;
             }
+            $value = implode(' / ', [date('Y-m-d H:i', strtotime($start)), trim($period)]);
         }
-        $this->setPacConf($c);
+        $this->pacConfUpdate(function (&$c) use ($value) { $c['autocleanlogs'] = $value; });
         $this->logs();
     }
 
@@ -36468,6 +37607,28 @@ DNS-over-HTTPS with IP:
             }
         }
         return [];
+    }
+
+    private ?string $wireguardLockService = null;
+
+    public function withWireguardLock(callable $fn, ?string $service = null, int $timeout = 20, $busy = false)
+    {
+        $service ??= $this->getInstanceWG();
+        if (!in_array($service, ['wg', 'wg1'], true)) throw new InvalidArgumentException('Invalid WireGuard instance');
+        if ($this->wireguardLockService !== null) {
+            if ($service !== $this->wireguardLockService) throw new LogicException('Nested WireGuard instances are not allowed');
+            return $fn();
+        }
+        return $this->withLock('wireguard-' . $service, function () use ($fn, $service) {
+            $previous = $this->wg ?? null;
+            $this->wg = $service === 'wg1' ? 1 : 0;
+            $this->wireguardLockService = $service;
+            try { return $fn(); }
+            finally {
+                $this->wireguardLockService = null;
+                if ($previous === null) unset($this->wg); else $this->wg = $previous;
+            }
+        }, $timeout, $busy);
     }
 
     public function getInstanceWG($k = false)
@@ -36712,16 +37873,20 @@ DNS-over-HTTPS with IP:
     // результат и не писать конфиги на пустом ключе.
     public function presharedKey()
     {
+        return $this->withWireguardUpdate(fn() => $this->presharedKeyLocked(), null);
+    }
+
+    private function presharedKeyLocked()
+    {
+        $key = $this->getInstanceWG(1) . 'presharedkey';
         $c = $this->getPacConf();
-        if (empty($c[$this->getInstanceWG(1) . 'presharedkey'])) {
-            $psk = trim($this->ssh("{$this->getWGType()} genpsk", $this->getInstanceWG()));
-            if (!preg_match('~^[A-Za-z0-9+/]{43}=$~', $psk)) {
-                return '';
-            }
-            $c[$this->getInstanceWG(1) . 'presharedkey'] = $psk;
-            $this->setPacConf($c);
-        }
-        return $c[$this->getInstanceWG(1) . 'presharedkey'];
+        if (!empty($c[$key])) return $c[$key];
+        $psk = trim($this->ssh("{$this->getWGType()} genpsk", $this->getInstanceWG()));
+        if ($this->sshFailed || !preg_match('~^[A-Za-z0-9+/]{43}=$~D', $psk)) return '';
+        return $this->pacConfUpdate(function (&$c) use ($key, $psk) {
+            if (empty($c[$key])) $c[$key] = $psk;
+            return $c[$key];
+        });
     }
 
     // ВАЖНО — симметрия server↔client.
@@ -36739,13 +37904,17 @@ DNS-over-HTTPS with IP:
     // импорта клиентских конфигов.
     public function amneziaKeys()
     {
-        $c = $this->getPacConf();
-        $k = $this->getInstanceWG(1) . 'amnezia_keys';
-        if (empty($c[$k])) {
-            $c[$k] = $this->generateAmneziaKeys($c[$this->getInstanceWG(1) . 'amnezia_tpl'] ?? 'standard_2');
-            $this->setPacConf($c);
-        }
-        return $c[$k];
+        return $this->withWireguardUpdate(fn() => $this->amneziaKeysLocked(), null);
+    }
+
+    private function amneziaKeysLocked()
+    {
+        $prefix = $this->getInstanceWG(1);
+        return $this->pacConfUpdate(function (&$c) use ($prefix) {
+            $k = $prefix . 'amnezia_keys';
+            if (empty($c[$k])) $c[$k] = $this->generateAmneziaKeys($c[$prefix . 'amnezia_tpl'] ?? 'standard_2');
+            return $c[$k];
+        });
     }
 
     // Набор, который РЕАЛЬНО можно записать в конфиг прямо сейчас.
@@ -37041,6 +38210,11 @@ DNS-over-HTTPS with IP:
 
     public function createPeer($ips_user = false, $name = false, $inst = null)
     {
+        return $this->withWireguardUpdate(fn() => $this->createPeerLocked($ips_user, $name, $inst), ($inst === null || !in_array((int) $inst, [0, 1], true) ? null : ((int) $inst === 1 ? 'wg1' : 'wg')));
+    }
+
+    private function createPeerLocked($ips_user = false, $name = false, $inst = null)
+    {
         $this->promptInstWG($inst);
         $conf      = $this->readConfig();
         // readConfig() возвращает null, если контейнер недоступен: без проверки
@@ -37147,35 +38321,48 @@ DNS-over-HTTPS with IP:
                     ),
                 ],
         ];
-        $k = $this->saveClient($client_conf);
-        $this->restartWG($this->createConfig($conf));
+        $clients = $this->readClients(); $clients[] = $client_conf; $k = count($clients) - 1;
+        if (!$this->applyWgConfig($this->createConfig($conf), $clients)) throw new RuntimeException($this->t('WireGuard: создание клиента не подтверждено; cron повторит операцию', 'WireGuard: client creation is unconfirmed; cron will retry the operation'));
         $this->menu('client', "{$k}_-2");
     }
 
     public function deleteClient(int $client)
     {
+        return $this->withWireguardUpdate(fn() => $this->deleteClientLocked($client), null);
+    }
+
+    private function deleteClientLocked(int $client)
+    {
         $clients = $this->readClients();
         unset($clients[$client]);
-        $this->saveClients(array_values($clients));
+        if ($this->saveClients(array_values($clients)) === false) throw new RuntimeException($this->t('Не удалось сохранить клиентов WireGuard', 'Could not save WireGuard clients'));
     }
 
     public function saveClient(array $client)
     {
+        return $this->withWireguardUpdate(fn() => $this->saveClientLocked($client), null);
+    }
+
+    private function saveClientLocked(array $client)
+    {
         $r = array_merge($this->readClients(), [$client]);
-        $this->saveClients($r);
+        if ($this->saveClients($r) === false) throw new RuntimeException($this->t('Не удалось сохранить клиентов WireGuard', 'Could not save WireGuard clients'));
         return count($r) - 1;
     }
 
     public function syncPortClients()
     {
-        for ($i=0; $i < 2; $i++) {
-            $this->wg = $i;
-            $this->saveClients($this->readClients());
-        }
-        unset($this->wg);
+        foreach (['wg', 'wg1'] as $service) $this->withWireguardUpdate(function () {
+            if ($this->saveClients($this->readClients()) === false) throw new RuntimeException('WireGuard clients save failed');
+        }, $service);
     }
 
     public function saveClients(array $clients)
+    {
+        return $this->withWireguardUpdate(fn() => $this->saveClientsLocked($clients), null);
+    }
+
+    private function saveClientsLocked(array $clients)
     {
         $c      = $this->getPacConf();
         $ports  = $this->getPorts();
@@ -37209,6 +38396,11 @@ DNS-over-HTTPS with IP:
 
     public function restartWG($conf_str, $switch = false)
     {
+        return $this->withWireguardLock(fn() => $this->restartWGLocked($conf_str, $switch), null);
+    }
+
+    private function restartWGLocked($conf_str, $switch = false)
+    {
         // Конфиг пишем через base64, а НЕ `echo '$conf_str'`. Имя клиента
         // (## name) — сырой пользовательский ввод (см. renameClient/addWg), и
         // одиночная кавычка в нём рвала bash-строку `echo '...'` →
@@ -37237,9 +38429,9 @@ DNS-over-HTTPS with IP:
 
     public function autoupdate()
     {
-        $p = $this->getPacConf();
-        $p['autoupdate'] = !$p['autoupdate'];
-        $this->setPacConf($p);
+        $this->pacConfUpdate(function (&$p) {
+            $p['autoupdate'] = !$p['autoupdate'];
+        });
         $this->menu('config');
     }
 
@@ -37381,9 +38573,11 @@ DNS-over-HTTPS with IP:
             if ($wait) {
                 // Только для синхронных команд читаем вывод
                 stream_set_blocking($s, true);
+                stream_set_timeout($s, max(60, (int) ini_get('default_socket_timeout')));
                 while ($buf = fread($s, 4096)) {
                     $data .= $buf;
                 }
+                if (stream_get_meta_data($s)['timed_out']) throw new RuntimeException('SSH command timeout');
             } else {
                 // Для фоновых команд просто даем время запуститься
                 stream_set_blocking($s, false);
@@ -38023,27 +39217,13 @@ DNS-over-HTTPS with IP:
             if ($migrated !== $conf && !$this->writePrivateKey($p['vpn'], $migrated)) return false;
         }
 
-        // Linux truncates /proc/<pid>/comm to 15 chars, so the binary name
-        // "trusttunnel_endpoint" only matches via -f (full cmdline).
-        // [t] исключает саму SSH-оболочку из совпадения с её командной строкой.
-        $stopped = $this->ssh('pkill -9 -f "[t]rusttunnel_endpoint" 2>/dev/null || true; '
-            . 'for n in 1 2 3 4 5; do '
-            . 'if ! pgrep -f "[t]rusttunnel_endpoint" >/dev/null; then printf VPNBOT_TT_STOPPED; exit 0; fi; '
-            . 'sleep 0.2; done; exit 1', 'tt');
-        if (trim($stopped) !== 'VPNBOT_TT_STOPPED') return false;
         // Пустой снимок должен отозвать более новые доступы и остановить ядро.
         // Отсутствие клиентов в таком случае — успешный итог восстановления.
-        if (!$hasClients) return true;
+        if (!$hasClients) return $this->controlContainerService('tt', 'trusttunnel', 'stop');
         if (!empty($this->ttBlockers())) {
             return false;
         }
-        $this->ssh(
-            'cd /trusttunnel_endpoint && trusttunnel_endpoint vpn.toml hosts.toml',
-            'tt',
-            false,
-            $p['log']
-        );
-        return !$this->sshFailed;
+        return $this->controlContainerService('tt', 'trusttunnel', 'restart');
     }
 
     private function ttUsersUpdate(callable $edit): bool
@@ -38052,7 +39232,9 @@ DNS-over-HTTPS with IP:
             $users = $this->getClientsTt();
             if ($edit($users) === false) return false;
             $this->writeTtCredentials($users);
-            $this->restartTtLocked();
+            if (!$this->restartTtLocked()) throw new RuntimeException($this->t(
+                'TrustTunnel: изменения сохранены, но применение не подтверждено. Прежний доступ может ещё действовать; повторите перезапуск.',
+                'TrustTunnel: changes were saved but application was not confirmed. Previous access may still work; retry the restart.'));
             return true;
         });
     }
@@ -38507,6 +39689,12 @@ DNS-over-HTTPS with IP:
     // клиент→IP — вернуть его из бэкапа значит раздать вчерашние адреса.
     public const OVPN_RUNTIME_FILES = ['openvpn-status.log', 'ipp.txt', 'traffic.json', 'traffic.json.tmp'];
 
+    public static function isOvpnRuntimePath(string $relative): bool
+    {
+        return in_array(basename($relative), self::OVPN_RUNTIME_FILES, true)
+            || (bool) preg_match('~^(?:traffic\.json\.tmp\.[a-f0-9]{16}|\.traffic-[a-zA-Z0-9_]+)$~D', $relative);
+    }
+
     // Без этих файлов PKI нерабочий — снимок с пропуском отвергаем целиком.
     public const OVPN_SNAPSHOT_CORE = [
         'pki/ca.crt',
@@ -38559,7 +39747,6 @@ DNS-over-HTTPS with IP:
         if (!is_dir($root)) {
             return null;
         }
-        $skipBasenames = self::OVPN_RUNTIME_FILES;
         $files         = [];
         $rii = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
@@ -38568,10 +39755,10 @@ DNS-over-HTTPS with IP:
             if (!$f->isFile() || $f->isLink()) {
                 continue;
             }
-            if (in_array($f->getFilename(), $skipBasenames, true)) {
+            $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
+            if (self::isOvpnRuntimePath($rel)) {
                 continue;
             }
-            $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
             $files[$rel] = base64_encode($this->backupReadFile($f->getPathname()));
         }
         return $files ?: null;
@@ -38622,6 +39809,9 @@ DNS-over-HTTPS with IP:
         $root = dirname($this->ovpnPaths()['pki']);
         try {
             $decoded = $this->decodeBackupTree($files, $root, self::OVPN_SNAPSHOT_CORE);
+            foreach ($decoded as $relative => $_) {
+                if (self::isOvpnRuntimePath($relative)) unset($decoded[$relative]);
+            }
             $this->validateBackupPki($decoded, 'ovpn');
             if (!is_dir($root) && !mkdir($root, 0755, true)) throw new RuntimeException($this->t('Не удалось создать каталог OpenVPN', 'Could not create the OpenVPN directory'));
             $keep = array_fill_keys(array_merge(array_keys($decoded), self::OVPN_SNAPSHOT_OPTIONAL), true);
@@ -38632,7 +39822,7 @@ DNS-over-HTTPS with IP:
                     $relative = substr($entry->getPathname(), strlen($root) + 1);
                     if (str_starts_with($relative, '.restore-')) continue;
                     if ($entry->isLink()) throw new RuntimeException($this->t('Симлинк в каталоге OpenVPN', 'A symlink in the OpenVPN directory'));
-                    if (!$entry->isFile() || isset($keep[$relative]) || in_array($entry->getFilename(), self::OVPN_RUNTIME_FILES, true)) continue;
+                    if (!$entry->isFile() || isset($keep[$relative]) || self::isOvpnRuntimePath($relative)) continue;
                     $remove[] = $relative;
                 }
             }
@@ -38736,6 +39926,7 @@ DNS-over-HTTPS with IP:
                 'rx'      => (int) ($cols[5] ?? 0),
                 'tx'      => (int) ($cols[6] ?? 0),
                 'since'   => $cols[7] ?? '',
+                'epoch'   => (int) ($cols[8] ?? 0),
                 'cid'     => $cols[10] ?? '',
             ];
         }
@@ -38890,28 +40081,40 @@ DNS-over-HTTPS with IP:
 
     public function restartOvpn()
     {
-        $this->migrateOvpnServerConf();
-        // Без всех PKI-файлов openvpn немедленно падает с «Cannot pre-load
-        // keyfile» и бот показывает on→off. Лучше ничего не запускать, чтобы
-        // статус честно оставался off и пользователь увидел причину в меню.
-        if ($this->ovpnPkiMissing()) {
-            $this->ssh('pkill -9 openvpn 2>/dev/null; '
-                . 'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep openvpn >/dev/null || break; sleep 0.2; done; '
-                . self::OVPN_DROP_STALE_TUN . 'true', 'ovpn');
-            return;
-        }
-        // Гарантированная остановка: pkill -9 + ждём полного отсутствия
-        // процесса. Ранее, при быстрых двух toggleProto подряд, успевало
-        // подняться два демона (один TCP, один UDP на одном порту — не
-        // конфликтуют). Дополнительно убираем stale unix-socket.
-        $this->ssh(
-            'pkill -9 openvpn 2>/dev/null; ' .
-            'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep openvpn >/dev/null || break; sleep 0.2; done; ' .
-            self::OVPN_DROP_STALE_TUN .
-            'rm -f /var/run/openvpn-mgmt.sock',
-            'ovpn'
-        );
-        $this->ssh('openvpn --config /etc/openvpn/server.conf', 'ovpn', false, '/dev/null');
+        return $this->withLock('ovpn-restart', function () {
+            $this->migrateOvpnServerConf();
+            // Без всех PKI-файлов openvpn немедленно падает с «Cannot pre-load
+            // keyfile» и бот показывает on→off. Лучше ничего не запускать, чтобы
+            // статус честно оставался off и пользователь увидел причину в меню.
+            if ($this->ovpnPkiMissing()) {
+                $this->ssh('pkill -9 openvpn 2>/dev/null; '
+                    . 'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep openvpn >/dev/null || break; sleep 0.2; done; '
+                    . self::OVPN_DROP_STALE_TUN . 'true', 'ovpn');
+                return false;
+            }
+            // Гарантированная остановка: pkill -9 + ждём полного отсутствия
+            // процесса. Ранее, при быстрых двух toggleProto подряд, успевало
+            // подняться два демона (один TCP, один UDP на одном порту — не
+            // конфликтуют). Дополнительно убираем stale unix-socket.
+            $guard = $this->ssh(
+                'pkill -9 openvpn 2>/dev/null; ' .
+                'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep openvpn >/dev/null || break; sleep 0.2; done; ' .
+                'if pgrep openvpn >/dev/null; then exit 1; fi; ' .
+                self::OVPN_DROP_STALE_TUN .
+                'rm -f /var/run/openvpn-mgmt.sock; ' .
+                'python3 /ovpn_traffic.py --prepare && sh /ovpn_firewall.sh /etc/openvpn/server.conf && printf VPNBOT_OVPN_GUARD_OK',
+                'ovpn'
+            );
+            if ($this->sshFailed || trim((string) $guard) !== 'VPNBOT_OVPN_GUARD_OK') {
+                if (isset($this->input['chat'])) {
+                    $this->send($this->input['chat'], $this->t('OpenVPN не запущен: не удалось применить изоляцию клиентов. Повторите перезапуск.',
+                        'OpenVPN was not started: client isolation could not be applied. Retry the restart.'));
+                }
+                return false;
+            }
+            $this->ssh('openvpn --config /etc/openvpn/server.conf', 'ovpn', false, '/dev/null');
+            return !$this->sshFailed;
+        }, 25, false);
     }
 
     public function addOvpnUser()
@@ -39191,20 +40394,14 @@ DNS-over-HTTPS with IP:
 
     public function isOvpnIsolated()
     {
-        // "Isolated" means clients CANNOT reach each other → server.conf has
-        // NO `client-to-client` directive between markers. Default is isolated.
-        // Use `.*?` (not `.+?`) so the empty initial block generated by
-        // start_ovpn.sh — two adjacent marker lines with nothing between —
-        // still matches; otherwise the toggle silently no-ops.
+        // Match the daemon and ovpn_firewall.sh, including legacy directives
+        // outside the bot markers restored from an older backup.
         $p = $this->ovpnPaths();
         if (!file_exists($p['srv'])) {
             return true;
         }
         $cfg = file_get_contents($p['srv']);
-        if (!preg_match('~^[ \t]*#ovpn-isolation[ \t]*\R(.*?)^[ \t]*#ovpn-isolation[ \t]*$~sm', $cfg, $m)) {
-            return true;
-        }
-        return !preg_match('~^\s*client-to-client\s*$~m', $m[1]);
+        return !preg_match('~^[ \t]*(?:--)?client-to-client[ \t]*(?:[#;][^\r\n]*)?\r?$~m', $cfg);
     }
 
     // Windows-only защита от DNS-leak. Живёт между маркерами #ovpn-winblockdns,
@@ -39346,8 +40543,12 @@ DNS-over-HTTPS with IP:
         if (!preg_match($re, $cfg)) {
             return $this->menu('ovpn');
         }
+        // Remove legacy active directives outside the markers as well.
+        $cfg = preg_replace('~^[ \t]*(?:--)?client-to-client[ \t]*(?:[#;][^\r\n]*)?\r?$~m', '', $cfg);
         $cfg = preg_replace($re, $block, $cfg);
-        file_put_contents($p['srv'], $cfg);
+        if (file_put_contents($p['srv'], $cfg) === false) {
+            return $this->menu('ovpn');
+        }
         $this->restartOvpn();
         $this->menu('ovpn');
     }
@@ -39849,9 +41050,9 @@ DNS-over-HTTPS with IP:
         // Контейнер ipsec читает .env через env_file — после `make r` (recreate)
         // start_ipsec.sh перепишет charon.port/port_nat_t. Флаг restart в pac
         // заставит бот напомнить про пересоздание (как у cloak/stls).
-        $pac = $this->getPacConf();
-        $pac['restart'] = 1;
-        $this->setPacConf($pac);
+        $this->pacConfUpdate(function (&$pac) {
+            $pac['restart'] = 1;
+        });
         $this->send(
             $this->input['chat'],
             $this->t("⚠️ nft на хосте правится вручную: define IPSEC_IKE = {$this->ipsecPorts()['ike']}, ", "⚠️ nft on the host is edited by hand: define IPSEC_IKE = {$this->ipsecPorts()['ike']}, ")
@@ -39865,7 +41066,18 @@ DNS-over-HTTPS with IP:
     // swanctl.conf. Все файлы маленькие, runtime-файлов в каталоге нет.
     public function exportIpsecPki()
     {
-        $root = '/config/ipsec';
+        $entered = false;
+        $files = $this->withLock('ipsec-users', function () use (&$entered) {
+            $entered = true;
+            return $this->exportIpsecPkiLocked();
+        });
+        if (!$entered) throw new RuntimeException('IPsec backup lock unavailable');
+        return $files;
+    }
+
+    private function exportIpsecPkiLocked()
+    {
+        $root = $this->ipsecPaths()['conf'];
         if (!is_dir($root)) {
             return null;
         }
@@ -39889,10 +41101,12 @@ DNS-over-HTTPS with IP:
         try {
             $decoded = $this->decodeBackupTree($files, $root);
             if (array_filter(array_keys($decoded), static fn($name) => str_starts_with($name, 'pki/'))) $this->validateBackupPki($decoded, 'ipsec');
-            if (!is_dir($root) && !@mkdir($root, 0700, true)) return false;
-            if (!chmod($root, 0700)) return false;
-            $this->restoreBackupTree($decoded, $root);
-            return true;
+            return $this->withLock('ipsec-users', function () use ($decoded, $root) {
+                if (!is_dir($root) && !@mkdir($root, 0700, true)) return false;
+                if (!chmod($root, 0700)) return false;
+                $this->restoreBackupTree($decoded, $root);
+                return true;
+            }, 0, false);
         } catch (Throwable $error) {
             error_log('importIpsecPki: ' . get_class($error));
             return false;
@@ -39911,6 +41125,7 @@ DNS-over-HTTPS with IP:
     public function restartIpsec()
     {
         if (!$this->protocolModuleEnabled('ipsec')) return true;
+        return $this->withLock('ipsec-users', function () {
         // Старые контейнеры держат копии PKI в /etc/swanctl. После restore
         // они устаревали: процесс работал, но клиенты получали старый CA.
         // Ссылки нужны и здесь для уже созданных контейнеров, и в entrypoint.
@@ -39929,11 +41144,16 @@ DNS-over-HTTPS with IP:
             'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep charon >/dev/null || break; sleep 0.2; done',
             'ipsec'
         );
+        $users = $this->getIkev2Users();
+        $managed = is_file($this->ipsecPaths()['users']);
+        if ($managed) $this->writeIkev2CredentialsLocked($users);
         // Дополнительная загрузка проверяет и старый run_ipsec_daemons.sh,
         // который не возвращал ошибку swanctl. Наличия charon недостаточно.
         $result = $this->ssh('sh /etc/run_ipsec_daemons.sh >/dev/null 2>&1'
             . ' && swanctl --load-all --noprompt >>/logs/ipsec.log 2>&1 && printf VPNBOT_IPSEC_READY', 'ipsec');
-        return trim($result) === 'VPNBOT_IPSEC_READY';
+        if ($this->sshFailed || trim($result) !== 'VPNBOT_IPSEC_READY') return false;
+        return !$managed || $this->applyIkev2UsersLocked($users);
+        }, 25, false);
     }
 
     // Явный рестарт charon+xl2tpd из меню: после ручных правок swanctl.conf,
@@ -39953,35 +41173,75 @@ DNS-over-HTTPS with IP:
 
     // Файл пишет только бот, формат канонический: `"user" * "pass" *`,
     // заблокированный юзер — та же строка, закомментированная `#`.
-    public function getL2tpUsers()
+    private function ipsecWritePrivate(string $path, string $body): void
     {
-        $p = $this->ipsecPaths();
-        if (!file_exists($p['chap'])) {
-            return [];
+        $tmp = $path . '.tmp.' . bin2hex(random_bytes(8));
+        $stream = fopen($tmp, 'x');
+        if ($stream === false) throw new RuntimeException('IPsec storage write failed');
+        try {
+            if (!chmod($tmp, 0600) || fwrite($stream, $body) !== strlen($body) || !fflush($stream)
+                || !fsync($stream) || !rename($tmp, $path)) throw new RuntimeException('IPsec storage write failed');
+            $directory = fopen(dirname($path), 'r');
+            if ($directory === false) throw new RuntimeException('IPsec directory sync failed');
+            try { if (!fsync($directory)) throw new RuntimeException('IPsec directory sync failed'); }
+            finally { fclose($directory); }
+        } finally {
+            fclose($stream);
+            if (file_exists($tmp)) unlink($tmp);
         }
-        $users = [];
-        foreach (explode("\n", file_get_contents($p['chap'])) as $line) {
-            if (preg_match('~^(#)?"([a-zA-Z0-9_.\-]+)"\s+\*\s+"([^"]*)"\s+\*$~', trim($line), $m)) {
-                $users[$m[2]] = [
-                    'pass'     => $m[3],
-                    'disabled' => $m[1] === '#',
-                ];
+    }
+
+    private static function validateIpsecUsers(array $users): void
+    {
+        foreach ($users as $name => $row) {
+            if (!preg_match('~^[a-zA-Z0-9_.\-]{1,64}$~D', (string) $name) || !is_array($row)
+                || !is_string($row['pass'] ?? null) || preg_match('~[\x00-\x1f"\\\\]~', $row['pass'])
+                || !is_bool($row['disabled'] ?? null)
+                || (isset($row['pending']) && !in_array($row['pending'], ['reload', 'disable', 'delete'], true))) {
+                throw new RuntimeException('IPsec users file is invalid');
             }
         }
+    }
+
+    public function getL2tpUsers()
+    {
+        $path = $this->ipsecPaths()['chap'];
+        if (!file_exists($path)) return [];
+        $raw = file_get_contents($path);
+        if ($raw === false) throw new RuntimeException('L2TP users are unreadable');
+        $users = [];
+        foreach (explode("\n", $raw) as $line) {
+            $line = trim($line);
+            if (preg_match('~^(#)?"([a-zA-Z0-9_.\-]+)"\s+\*\s+"([^"\\\\]*)"\s+\*$~', $line, $m)) {
+                if (isset($users[$m[2]])) throw new RuntimeException('Duplicate L2TP user');
+                $users[$m[2]] = ['pass' => $m[3], 'disabled' => $m[1] === '#'];
+            } elseif ($line !== '' && (!str_starts_with($line, '#') || str_starts_with($line, '#"'))) {
+                throw new RuntimeException('L2TP users file is invalid');
+            }
+        }
+        self::validateIpsecUsers($users);
         ksort($users);
         return $users;
     }
 
+    public function updateL2tpUsers(callable $mutate): bool
+    {
+        return (bool) $this->withLock('ipsec-users', function () use ($mutate) {
+            $users = $this->getL2tpUsers();
+            $mutate($users);
+            self::validateIpsecUsers($users);
+            $p = $this->ipsecPaths();
+            if (!is_dir($p['conf']) && !mkdir($p['conf'], 0700, true)) throw new RuntimeException('IPsec directory unavailable');
+            $lines = ['# Managed by vpnbot — chap-secrets for xl2tpd/pppd.'];
+            foreach ($users as $u => $v) $lines[] = ($v['disabled'] ? '#' : '') . "\"$u\" * \"{$v['pass']}\" *";
+            $this->ipsecWritePrivate($p['chap'], implode("\n", $lines) . "\n");
+            return true;
+        }, 20, false);
+    }
+
     public function saveL2tpUsers(array $users)
     {
-        $p     = $this->ipsecPaths();
-        $lines = ['# Managed by vpnbot — chap-secrets for xl2tpd/pppd.'];
-        foreach ($users as $u => $v) {
-            $lines[] = ($v['disabled'] ? '#' : '') . "\"$u\" * \"{$v['pass']}\" *";
-        }
-        @mkdir($p['conf'], 0755, true);
-        file_put_contents($p['chap'], implode("\n", $lines) . "\n", LOCK_EX);
-        @chmod($p['chap'], 0600);
+        return $this->updateL2tpUsers(static function (&$current) use ($users) { $current = $users; });
     }
 
     // Живые сессии из /var/run/l2tp-sessions (ведут ip-up/ip-down хуки pppd):
@@ -40129,8 +41389,14 @@ DNS-over-HTTPS with IP:
             return $this->menu('l2tp');
         }
         // 16 hex-символов: безопасно для chap-secrets/MSCHAPv2/копипасты.
-        $users[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
-        $this->saveL2tpUsers($users);
+        $created = false;
+        $ok = $this->updateL2tpUsers(static function (&$current) use ($user, &$created) {
+            if (isset($current[$user])) return;
+            $current[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
+            $created = true;
+        });
+        $this->ipsecPendingNotice($ok);
+        if (!$created || !$ok) return $this->menu('l2tp');
         // Сразу отдаём реквизиты — как auto-send .ovpn у OpenVPN.
         $this->sendL2tpCreds($user);
         $this->menu('l2tp');
@@ -40188,8 +41454,8 @@ DNS-over-HTTPS with IP:
             ];
             return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
         }
-        unset($users[$user]);
-        $this->saveL2tpUsers($users);
+        $ok = $this->updateL2tpUsers(static function (&$current) use ($user) { unset($current[$user]); });
+        $this->ipsecPendingNotice($ok);
         $this->kickL2tpSession($user);
         $this->menu('l2tp');
     }
@@ -40201,8 +41467,8 @@ DNS-over-HTTPS with IP:
         if (empty($user) || !isset($users[$user])) {
             return $this->menu('l2tp');
         }
-        $users[$user]['disabled'] = true;
-        $this->saveL2tpUsers($users);
+        $ok = $this->updateL2tpUsers(static function (&$current) use ($user) { if (isset($current[$user])) $current[$user]['disabled'] = true; });
+        $this->ipsecPendingNotice($ok);
         // chap-secrets проверяется только на новых коннектах — живую сессию
         // рвём принудительно.
         $this->kickL2tpSession($user);
@@ -40216,8 +41482,8 @@ DNS-over-HTTPS with IP:
         if (empty($user) || !isset($users[$user])) {
             return $this->menu('l2tp');
         }
-        $users[$user]['disabled'] = false;
-        $this->saveL2tpUsers($users);
+        $ok = $this->updateL2tpUsers(static function (&$current) use ($user) { if (isset($current[$user])) $current[$user]['disabled'] = false; });
+        $this->ipsecPendingNotice($ok);
         $this->l2tpClientMenu($user);
     }
 
@@ -40460,26 +41726,54 @@ XML;
 
     public function getIkev2Users()
     {
-        $p = $this->ipsecPaths();
-        if (!file_exists($p['users'])) {
-            return [];
-        }
-        $u = json_decode(file_get_contents($p['users']), true);
-        return is_array($u) ? $u : [];
+        $path = $this->ipsecPaths()['users'];
+        if (!file_exists($path)) return [];
+        $raw = file_get_contents($path);
+        $users = $raw === false ? null : json_decode($raw, true);
+        if (!is_array($users)) throw new RuntimeException('IKEv2 users are unreadable');
+        self::validateIpsecUsers($users);
+        return $users;
     }
 
-    // JSON — source of truth; swanctl-файл секретов регенерируется целиком
-    // (PSK для l2tp-конна + eap-секции только НЕзаблокированных юзеров),
-    // затем charon перечитывает креды. Блокировка = юзер выпадает из
-    // secrets.conf, EAP сразу перестаёт проходить.
+    public function updateIkev2Users(callable $mutate): bool
+    {
+        return (bool) $this->withLock('ipsec-users', function () use ($mutate) {
+            $before = $this->getIkev2Users();
+            $users = $before;
+            $mutate($users);
+            self::validateIpsecUsers($users);
+            $removed = [];
+            foreach ($before as $name => $row) {
+                if (!isset($users[$name])) {
+                    $users[$name] = ['disabled' => true, 'pending' => 'delete'] + $row;
+                    $removed[$name] = true;
+                }
+            }
+            foreach ($users as $name => &$row) {
+                if (($before[$name] ?? null) !== $row && !isset($removed[$name])) {
+                    $row['pending'] = $row['disabled'] ? 'disable' : 'reload';
+                }
+            }
+            unset($row);
+            $p = $this->ipsecPaths();
+            if (!is_dir($p['conf']) && !mkdir($p['conf'], 0700, true)) throw new RuntimeException('IPsec directory unavailable');
+            // The durable intent is written first; retry never needs the old request.
+            $this->ipsecWritePrivate($p['users'], json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+            return $this->applyIkev2UsersLocked($users);
+        }, 20, false);
+    }
+
     public function saveIkev2Users(array $users)
     {
-        $p = $this->ipsecPaths();
-        @mkdir($p['conf'], 0755, true);
-        file_put_contents($p['users'], json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
-        @chmod($p['users'], 0600);
+        return $this->updateIkev2Users(static function (&$current) use ($users) { $current = $users; });
+    }
 
+    private function writeIkev2CredentialsLocked(array $users): void
+    {
+        $p = $this->ipsecPaths();
         $psk   = $this->getIpsecPsk();
+        if ($psk === '' || preg_match('~[\x00-\x1f]~', $psk)) throw new RuntimeException('Invalid IPsec PSK');
+        $psk = str_replace(['\\', '"'], ['\\\\', '\"'], $psk);
         $out   = [];
         $out[] = '# Managed by vpnbot — regenerated from users_ikev2.json, do not edit.';
         $out[] = 'secrets {';
@@ -40491,7 +41785,7 @@ XML;
         // всё равно только значение id.
         $i = 0;
         foreach ($users as $u => $v) {
-            if (!empty($v['disabled'])) {
+            if (!empty($v['disabled']) || in_array($v['pending'] ?? '', ['disable', 'delete'], true)) {
                 continue;
             }
             $i++;
@@ -40501,9 +41795,44 @@ XML;
             $out[] = '    }';
         }
         $out[] = '}';
-        file_put_contents($p['secrets'], implode("\n", $out) . "\n", LOCK_EX);
-        @chmod($p['secrets'], 0600);
-        $this->ssh('swanctl --load-creds >/dev/null 2>&1; true', 'ipsec');
+        $this->ipsecWritePrivate($p['secrets'], implode("\n", $out) . "\n");
+    }
+
+    private function applyIkev2UsersLocked(array $users): bool
+    {
+        $p = $this->ipsecPaths();
+        $this->writeIkev2CredentialsLocked($users);
+        $result = $this->ssh('swanctl --load-creds --clear --noprompt >/dev/null 2>&1 && printf VPNBOT_IKEV2_CREDS_OK', 'ipsec');
+        if ($this->sshFailed || trim((string) $result) !== 'VPNBOT_IKEV2_CREDS_OK') return false;
+        foreach ($users as $name => $row) {
+            if (in_array($row['pending'] ?? '', ['disable', 'delete'], true) && !$this->kickIkev2Session($name)) return false;
+        }
+        foreach ($users as $name => &$row) {
+            if (($row['pending'] ?? '') === 'delete') unset($users[$name]);
+            else unset($row['pending']);
+        }
+        unset($row);
+        $this->ipsecWritePrivate($p['users'], json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+        return true;
+    }
+
+    public function retryIkev2Users(): void
+    {
+        if (!$this->protocolModuleEnabled('ipsec')) return;
+        $this->withLock('ipsec-users', function () {
+            $users = $this->getIkev2Users();
+            foreach ($users as $row) {
+                if (!empty($row['pending'])) { $this->applyIkev2UsersLocked($users); break; }
+            }
+        }, 1, null);
+    }
+
+    private function ipsecPendingNotice(bool $ok): void
+    {
+        if (!$ok && !empty($this->input['chat'])) {
+            $this->send($this->input['chat'], $this->t('⚠️ Изменение не подтверждено. Проверьте состояние; сохранённые запросы IKEv2 повторяются автоматически.',
+                '⚠️ Change not confirmed. Check its state; saved IKEv2 requests will be retried automatically.'));
+        }
     }
 
     // Онлайн-статус IKEv2 из `swanctl --list-sas`: юзер → uid IKE_SA (для kick),
@@ -40516,9 +41845,13 @@ XML;
     // шлют IKE-id = логин и блок EAP не выводится вовсе — раньше такие сессии
     // терялись, клиент висел в меню как ⚪ offline и не киковался. Проверено
     // на живом сервере обоими вариантами клиента.
-    public function getIkev2Status()
+    public function getIkev2Status(bool $forRevoke = false)
     {
-        $raw = (string) $this->ssh('swanctl --list-sas 2>/dev/null', 'ipsec');
+        $raw = (string) $this->ssh('swanctl --list-sas 2>/dev/null'
+            . ($forRevoke ? ' && printf "\\nVPNBOT_IKEV2_STATUS_OK"' : ''), 'ipsec');
+        if ($forRevoke && ($this->sshFailed || !str_ends_with(trim($raw), 'VPNBOT_IKEV2_STATUS_OK'))) {
+            throw new RuntimeException('IKEv2 status unavailable');
+        }
         $out = [];
         $cur = null;
         $key = null;
@@ -40535,7 +41868,7 @@ XML;
                     $cur['uids'] = array_merge($out[$key]['uids'] ?? [], [$cur['uid']]);
                     $out[$key] = $cur;
                 }
-                $cur = $m[2] === 'ESTABLISHED' && $m[3] === 'IKEv2'
+                $cur = ($m[2] === 'ESTABLISHED' || ($forRevoke && $m[2] !== 'CLOSED')) && $m[3] === 'IKEv2'
                     ? ['uid' => (int) $m[1], 'real' => '', 'virtual' => '', 'rx' => 0, 'tx' => 0, 'since' => ''] : null;
                 $key = null;
                 continue;
@@ -40651,7 +41984,7 @@ XML;
             'callback_data' => '/refreshIkev2',
         ]];
         foreach ($users as $u => $v) {
-            $marker = !empty($v['disabled']) ? '🚫' : (isset($online[$u]) ? '🟢' : '⚪');
+            $marker = !empty($v['pending']) ? '⏳' : (!empty($v['disabled']) ? '🚫' : (isset($online[$u]) ? '🟢' : '⚪'));
             $data[] = [[
                 'text'          => "$marker $u",
                 'callback_data' => "/ikev2ClientMenu $u",
@@ -40705,8 +42038,14 @@ XML;
             $this->send($this->input['chat'], $this->t('PKI не готов: сначала перезапустите контейнер ipsec', 'PKI not ready — restart ipsec container first'));
             return $this->menu('ikev2');
         }
-        $users[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
-        $this->saveIkev2Users($users);
+        $created = false;
+        $ok = $this->updateIkev2Users(static function (&$current) use ($user, &$created) {
+            if (isset($current[$user])) return;
+            $current[$user] = ['pass' => bin2hex(random_bytes(8)), 'disabled' => false];
+            $created = true;
+        });
+        $this->ipsecPendingNotice($ok);
+        if (!$created || !$ok) return $this->menu('ikev2');
         // Профиль iOS/macOS + реквизиты сразу, без похода в подменю.
         $this->sendIkev2Profile($user);
         $this->sendIkev2Creds($user);
@@ -40947,9 +42286,8 @@ XML;
             ];
             return $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
         }
-        unset($users[$user]);
-        $this->saveIkev2Users($users);
-        $this->kickIkev2Session($user);
+        $ok = $this->updateIkev2Users(static function (&$current) use ($user) { unset($current[$user]); });
+        $this->ipsecPendingNotice($ok);
         $this->menu('ikev2');
     }
 
@@ -40960,11 +42298,8 @@ XML;
         if (empty($user) || !isset($users[$user])) {
             return $this->menu('ikev2');
         }
-        $users[$user]['disabled'] = true;
-        // saveIkev2Users выкидывает юзера из secrets.conf + load-creds —
-        // новые коннекты отвалятся; живую SA рвём явно.
-        $this->saveIkev2Users($users);
-        $this->kickIkev2Session($user);
+        $ok = $this->updateIkev2Users(static function (&$current) use ($user) { if (isset($current[$user])) $current[$user]['disabled'] = true; });
+        $this->ipsecPendingNotice($ok);
         $this->ikev2ClientMenu($user);
     }
 
@@ -40975,18 +42310,24 @@ XML;
         if (empty($user) || !isset($users[$user])) {
             return $this->menu('ikev2');
         }
-        $users[$user]['disabled'] = false;
-        $this->saveIkev2Users($users);
+        $ok = $this->updateIkev2Users(static function (&$current) use ($user) { if (isset($current[$user])) $current[$user]['disabled'] = false; });
+        $this->ipsecPendingNotice($ok);
         $this->ikev2ClientMenu($user);
     }
 
     // Разорвать IKE_SA юзера по uid из swanctl --list-sas.
     public function kickIkev2Session($user)
     {
-        $s = $this->getIkev2Status()[$user] ?? null;
-        foreach ($s['uids'] ?? [] as $uid) {
-            $uid = (int) $uid;
-            $this->ssh("swanctl --terminate --ike-id $uid >/dev/null 2>&1; true", 'ipsec');
+        try {
+            $s = $this->getIkev2Status(true)[$user] ?? null;
+            foreach ($s['uids'] ?? [] as $uid) {
+                $uid = (int) $uid;
+                $result = $this->ssh("swanctl --terminate --ike-id $uid >/dev/null 2>&1 && printf VPNBOT_IKEV2_TERMINATED", 'ipsec');
+                if ($this->sshFailed || trim((string) $result) !== 'VPNBOT_IKEV2_TERMINATED') return false;
+            }
+            return !isset($this->getIkev2Status(true)[$user]);
+        } catch (Throwable $error) {
+            return false;
         }
     }
 
@@ -41014,7 +42355,9 @@ XML;
         $online = $this->getIkev2Status();
         $s      = $online[$user] ?? null;
 
-        if ($isDis) {
+        if (!empty($users[$user]['pending'])) {
+            $status = '⏳ ' . $this->t('ожидает применения; доступ не подтверждён', 'pending; enforcement not confirmed');
+        } elseif ($isDis) {
             $status = '🚫 ' . $this->i18n('disabled');
         } elseif ($s) {
             $status = '🟢 ' . $this->i18n('online')

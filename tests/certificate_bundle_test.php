@@ -73,7 +73,14 @@ foreach (['settings', 'cert_private', 'cert_public', 'rename'] as $failure) {
     $bot->failSettings = $failure === 'settings';
     $bot->failFile = $failure;
     $bot->failRename = $failure === 'rename';
-    if ($bot->applyCertificateBundle($key . $certificate, ['letsencrypt' => 'self'])
+    try {
+        $applied = $bot->applyCertificateBundle($key . $certificate, ['letsencrypt' => 'self']);
+    } catch (RuntimeException $error) {
+        // Checked PAC storage reports an explicit write failure by exception.
+        if ($failure !== 'settings') throw $error;
+        $applied = false;
+    }
+    if ($applied
         || file_get_contents("$root/cert_private") !== $oldKey
         || file_get_contents("$root/cert_public") !== $oldCertificate
         || $bot->conf !== ['letsencrypt' => 'letsencrypt'] || $bot->reloads !== 0) {
@@ -139,7 +146,10 @@ foreach ([false, true] as $throw) {
     $fingerprint = $receipt['certificate'];
     $checks++;
 }
-$bot->applyCertificateBundle($key . $certificate, ['domain' => 'certificate.example.org', 'letsencrypt' => 'letsencrypt']);
+$bot->conf['domain'] = 'certificate.example.org';
+if (!$bot->applyCertificateBundle($key . $certificate, ['domain' => 'certificate.example.org', 'letsencrypt' => 'letsencrypt'])) {
+    throw new RuntimeException('Текущий домен должен принять совпадающую пару сертификата');
+}
 $fingerprint = hash_file('sha256', "$root/cert_public");
 $receipt = $bot->reapplyCertificateReceipt($fingerprint);
 if (!$receipt['installed'] || !openssl_x509_check_private_key(file_get_contents("$root/cert_public"), $key)) {

@@ -8,7 +8,11 @@ class IpsecSessionsBot extends Bot {
     public function __construct() {}
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
         $this->commands[] = $cmd;
-        if (str_contains($cmd, '--list-sas')) return $this->sas;
+        if (str_contains($cmd, '--list-sas')) return $this->sas . (str_contains($cmd, 'VPNBOT_IKEV2_STATUS_OK') ? "\nVPNBOT_IKEV2_STATUS_OK" : '');
+        if (preg_match('~--terminate --ike-id (\d+)~', $cmd, $m)) {
+            $this->sas = preg_replace('~^ikev2: #' . $m[1] . ',.*?(?=^ikev2:|\z)~ms', '', $this->sas);
+            return 'VPNBOT_IKEV2_TERMINATED';
+        }
         if (str_starts_with($cmd, 'for f in ')) return $this->sessions;
         return '';
     }
@@ -29,7 +33,7 @@ $check(($state['alice']['uids'] ?? []) === [1, 2], 'Все IKEv2 SA пользо
 $check(($state['alice']['rx'] ?? 0) === 3072 && ($state['alice']['tx'] ?? 0) === 3072, 'Трафик всех установленных IKEv2 SA суммируется');
 $b->kickIkev2Session('alice');
 $kicks = array_values(array_filter($b->commands, fn($cmd) => str_contains($cmd, '--terminate')));
-$check(count($kicks) === 2 && str_contains($kicks[0], '--ike-id 1 ') && str_contains($kicks[1], '--ike-id 2 '), 'Отзыв закрывает оба SA и не затрагивает другого пользователя');
+$check(count($kicks) === 3 && str_contains($kicks[0], '--ike-id 1 ') && str_contains($kicks[1], '--ike-id 2 ') && str_contains($kicks[2], '--ike-id 4 '), 'Отзыв закрывает установленные и устанавливающиеся IKEv2 SA, не затрагивая IKEv1/другого пользователя');
 $b->sessions = "alice.111 10.9.1.2 111 alice\nalice.222 10.9.1.3 222 alice\nbob 10.9.1.4 333\n";
 $state = $b->getL2tpOnline();
 $check(($state['alice']['pids'] ?? []) === [111, 222], 'Две PPP-сессии одного логина сохранены');

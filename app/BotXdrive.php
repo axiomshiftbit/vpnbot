@@ -518,7 +518,7 @@ trait BotXdrive
                 if (!empty($s['enabled']) && !$this->validateXrayConfig($x)) return 'xdrive check failed';
                 if ($this->setPacConf($p) === false) return 'xdrive save failed';
                 if ($this->restartXray($x) === false) {
-                    $this->setPacConf($old);
+                    if ($this->setPacConf($old) === false) throw new RuntimeException($this->t('Не удалось восстановить настройки Xdrive', 'Could not restore Xdrive settings'));
                     return 'xdrive save failed';
                 }
                 return '';

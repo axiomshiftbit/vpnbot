@@ -61,8 +61,7 @@ trait BotConnectionExports
         if (!isset((['vless' => 'VLESS'] + ManagedProtocol::NAMES)[$protocol])) throw new InvalidArgumentException($this->t('Неизвестный протокол.', 'Unknown protocol.'));
         if (!isset($this->connectionFormats($protocol)[$format])) throw new InvalidArgumentException($this->t('Формат не поддерживается с текущими настройками. Выберите другой файл.', 'The format is not supported with the current settings. Choose another file.'));
         if (!empty($client['off']) || ((int) ($client['time'] ?? 0) > 0 && $client['time'] <= time())
-            || ((int) ($client['traffic'] ?? 0) > 0 && $this->xrUserTraffic($this->getXrayStats(), $index)
-                + array_sum($this->xrayProtocolUsage($client)) >= (int) $client['traffic'])) {
+            || $this->xrayQuotaUnavailableOrExhausted($client, $index)) {
             throw new RuntimeException($this->t('Доступ отключён, истёк или исчерпан.', 'Access is disabled, expired or used up.'));
         }
         $type = $format === 'clj' ? 'cl' : $format;

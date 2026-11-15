@@ -356,7 +356,7 @@ try {
 $src = file_get_contents(__DIR__ . '/../app/bot.php');
 rmkAssert(str_contains($src, "case preg_match('~^/checkFakeDomain$~'"), 'кнопка подключена');
 rmkAssert(preg_match("~'checkXrayCore',\s*'checkRealityMask',~", $src) === 1, 'шаг cron');
-$fake = substr($src, strpos($src, 'public function setFakeDomain('), 3600);
+$fake = substr($src, strpos($src, 'private function setFakeDomainLocked('), 5000);
 rmkAssert(str_contains($fake, '$this->realityMaskCheck(true);'), 'смена маски сразу её проверяет');
 require __DIR__ . '/../app/i18n.php';
 $i18n = $i;

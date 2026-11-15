@@ -59,6 +59,7 @@ class CronBot extends Bot
     public function restartXray($c, $norestart = false) { $this->locks[] = ['restartXray', count($this->locks)]; $this->xr = $c; return $this->restartOk; }
     public function saveXray(array $c): void { $this->locks[] = ['saveXray', 0]; }
     public function notifyAdmins(string $text): void { $this->sent[] = $text; }
+    protected function switchXrLocked($i, $nm = 0, $time = false) { return $this->switchXr($i, $nm, $time); }
     public function switchXr($i, $nm = 0, $time = false) { $this->locks[] = ['switchXr', $i]; }
     public function ensureSubTokens(array &$xr): bool { return true; }
 }
@@ -89,6 +90,7 @@ try {
         public function trackWgOnline(): void { $this->ran[] = 'trackWgOnline'; }
         public function trackTelemtOnline(bool $force = false): bool { $this->ran[] = 'trackTelemtOnline'; return true; }
         public function trackOvpnTraffic(): void { $this->ran[] = 'trackOvpnTraffic'; }
+        public function retryIkev2Users(): void { $this->ran[] = 'retryIkev2Users'; }
     };
     $access->cron('access', $script);
     $runs = file("$dir/runs", FILE_IGNORE_NEW_LINES) ?: [];

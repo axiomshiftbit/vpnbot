@@ -53,6 +53,8 @@ class PanelPswdTestBot extends Bot
         return 'deadbeef';
     }
 
+    public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
+
     public function getPacConf()
     {
         return $this->conf;

@@ -10,6 +10,8 @@ class BackupLockBot extends Bot {
     public function setUpstreamDomainOcserv($domain) {}
     public function setUpstreamDomainNaive($domain) {}
     public function cloakNginx() { return true; }
+    // This fixture tests the backup mutex; service readiness has its own suite.
+    public function verifyBackupServices(array $json): array { return []; }
 }
 function lockCheck(bool $ok,string $message): void { if (!$ok) throw new RuntimeException($message); }
 $root=sys_get_temp_dir().'/vpnbot-backup-lock-'.bin2hex(random_bytes(6));mkdir($root,0700);

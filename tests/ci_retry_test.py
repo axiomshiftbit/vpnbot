@@ -459,7 +459,8 @@ class WorkflowRetryTest(unittest.TestCase):
                 if 'move_channel' in source:
                     self.assertIn('retrying(move_channel)', source)
         scan = (ROOT / 'scripts/ci_scan_image.sh').read_text()
-        self.assertEqual(len(re.findall(r'^sh "\$retry" "\$work/trivy" image ', scan, re.M)), 2)
+        self.assertEqual(len(re.findall(r'^\s*sh "\$retry" "\$work/trivy" image ', scan, re.M)), 2)
+        self.assertEqual(len(re.findall(r'^\s*sh "\$retry" "\$work/trivy" sbom ', scan, re.M)), 1)
         self.assertIn('/../dockerfile/download-file.sh" https://github.com/aquasecurity/trivy/', scan)
 
 

@@ -465,15 +465,22 @@ trait BotAcme
         $public = preg_replace('~[^\s]+BEGIN PRIVATE KEY.+?END PRIVATE KEY[^\s]+~s', '', $bundle);
         if (!self::certificatePairValid($public, $m[0])) return false;
         return $this->withBackupLock(function () use ($conf, $m, $public) {
-            $previous = $this->getPacConf();
-            if ($this->setPacConf($conf) === false) return false;
+            $previous = $this->pacConfUpdate(function (&$current) use ($conf) {
+                foreach (['domain', 'domain_aliases'] as $key) if (($current[$key] ?? null) !== ($conf[$key] ?? null)) return false;
+                $previous = $current;
+                foreach (['letsencrypt', 'acme_requested'] as $key) {
+                    if (array_key_exists($key, $conf)) $current[$key] = $conf[$key]; else unset($current[$key]);
+                }
+                return $previous;
+            });
+            if ($previous === false) return false;
             try {
                 // Сначала готовим оба файла; ошибка записи/переименования
                 // откатывает пару тем же механизмом, что восстановление бэкапа.
                 $this->restoreBackupTree(['cert_private' => $m[0], 'cert_public' => $public],
                     $this->protocolCertRoot, ['cert_private' => 0600, 'cert_public' => 0644]);
             } catch (Throwable $error) {
-                if ($this->setPacConf($previous) === false) {
+                if (!$this->restorePacFields($previous, $conf, ['letsencrypt', 'acme_requested'])) {
                     throw new RuntimeException($this->t('Не удалось вернуть настройки SSL', 'Could not restore SSL settings'), 0, $error);
                 }
                 if ($error->getCode() === self::BACKUP_PARTIAL) throw $error;

@@ -17,10 +17,5 @@ cp -p /hostkey/ssh_host_ed25519_key /hostkey/ssh_host_ed25519_key.pub /etc/ssh/ 
 # Certificate Transparency.
 if grep -qE '^[[:space:]]*basic_auth[[:space:]]+(CHANGEME[[:space:]]+CHANGEME|_[[:space:]]+__)[[:space:]]*$' /config/Caddyfile; then
     echo "naive: basic_auth не настроен (плейсхолдер) — caddy не запущен, задайте логин/пароль в боте" >> /logs/caddy
-else
-    # stdout/stderr в /logs/caddy, а не в /dev/null: сюда падают ошибки старта,
-    # которых раньше не было видно нигде (в docker logs только sshd).
-    caddy run -c /config/Caddyfile >> /logs/caddy 2>&1 &
 fi
-
-tail -f /dev/null
+exec /bin/sh /service_supervisor.sh supervise np

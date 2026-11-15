@@ -24,6 +24,8 @@ class VaultDisplayBot extends Bot {
         $this->input = ['chat' => 1, 'message_id' => 1, 'message' => '', 'reply' => false];
         $this->transport = new VaultDisplayTransport();
     }
+    public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
+
     public function getPacConf() { return $this->conf; }
     public function setPacConf(array $c) { if (!$this->writable) return false; $this->conf = $c; return true; }
     public function getHashBot($notset = false) { return 'fixture'; }

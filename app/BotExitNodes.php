@@ -658,7 +658,7 @@ trait BotExitNodes
                 if ($p === $oldPac && $x === $oldXray && !$renewSession) return '';
                 if ($p !== $oldPac && $this->setPacConf($p) === false) return 'exit save failed';
                 if ($this->restartXray($x) === false) {
-                    if ($p !== $oldPac) $this->setPacConf($oldPac);
+                    if ($p !== $oldPac && $this->setPacConf($oldPac) === false) throw new RuntimeException($this->t('Не удалось восстановить настройки узлов выхода', 'Could not restore exit-node settings'));
                     return 'exit check failed';
                 }
                 return '';
@@ -1373,7 +1373,8 @@ trait BotExitNodes
 
     public function exitTrafficLine(string $id): string
     {
-        $t = $this->exitTraffic($id);
+        try { $t = $this->exitTraffic($id); }
+        catch (XrayStatsUnavailable $error) { return $this->t('Трафик через узел: недоступен', 'Node traffic: unavailable'); }
         if (!$t['since']) return $this->t('Трафик через узел: ещё не подсчитан (обновляется раз в минуту)', 'Traffic through the node: not counted yet (updated once a minute)');
         return $this->t('Трафик через узел с ', 'Traffic through the node since ') . date('d.m.Y H:i', $t['since']) . ': ↑' . $this->getBytes($t['up']) . ' ↓' . $this->getBytes($t['down']);
     }
@@ -1391,11 +1392,13 @@ trait BotExitNodes
                 ]);
             return;
         }
-        $p = $this->getXrayStats();
-        $e = $p['exits'][$id] ?? [];
-        $p['exits'][$id] = ['session' => $e['session'] ?? ['up' => 0, 'down' => 0], 'global' => ['up' => 0, 'down' => 0],
-            'base' => $e['session'] ?? ['up' => 0, 'down' => 0], 'since' => time()];
-        $this->setXrayStats($p);
+        $this->withXrayStatsLock(function () use ($id) {
+            $p = $this->getXrayStats();
+            $e = $p['exits'][$id] ?? [];
+            $p['exits'][$id] = ['session' => $e['session'] ?? ['up' => 0, 'down' => 0], 'global' => ['up' => 0, 'down' => 0],
+                'base' => $e['session'] ?? ['up' => 0, 'down' => 0], 'since' => time()];
+            if ($this->setXrayStats($p) === false) throw new RuntimeException('Could not reset node traffic');
+        });
         $this->exitDiagnosticsMenu($id, $this->t('Счётчик трафика узла сброшен', 'The node traffic counter was reset'));
     }
 

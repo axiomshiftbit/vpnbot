@@ -82,6 +82,7 @@ class DatRollbackTestBot extends DatDownloadTestBot
         return null;
     }
 
+    protected function xrayUpdateRulesLocked(?array $previousPac = null) { return $this->xrayUpdateRules($previousPac); }
     public function xrayUpdateRules(?array $previousPac = null)
     {
         return $this->rulesOk;
@@ -126,6 +127,7 @@ class DatScheduleTestBot extends Bot
         $this->sent[] = $text;
     }
 
+    protected function xrayUpdateRulesLocked(?array $previousPac = null) { return $this->xrayUpdateRules($previousPac); }
     public function xrayUpdateRules(?array $previousPac = null)
     {
         $this->restartCount++;

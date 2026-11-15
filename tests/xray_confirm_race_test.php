@@ -22,6 +22,7 @@ class ConfirmRaceBot extends Bot {
     }
     public function saveXray(array $c): void { $this->saved = $c; }
     public function restartXray($c, $norestart = false) { $this->saved = $c; return true; }
+    protected function userXrLocked($i, $back = null) { return $this->userXr($i, $back); }
     public function userXr($i, $back = null) {}
     public function xray($page = 0) {}
 }

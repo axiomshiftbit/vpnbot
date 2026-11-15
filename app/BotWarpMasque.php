@@ -85,8 +85,7 @@ trait BotWarpMasque
 
     private function warpSaveMode(string $mode, ?bool $h2 = null): void
     {
-        $this->withLock('pac', function () use ($mode, $h2) {
-            $p = $this->getPacConf();
+        $this->pacConfUpdate(function (&$p) use ($mode, $h2) {
             if ($mode === 'masque') {
                 $p['warp_mode'] = 'masque';
             } else {
@@ -96,9 +95,6 @@ trait BotWarpMasque
                 $p['warp_masque_h2'] = 1;
             } elseif ($h2 === false) {
                 unset($p['warp_masque_h2']);
-            }
-            if (!$this->setPacConf($p)) {
-                throw new RuntimeException($this->t('Не удалось сохранить настройки WARP', 'Could not save the WARP settings'));
             }
         });
     }

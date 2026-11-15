@@ -15,6 +15,7 @@ const SECRET = 'SYNTHETIC_SECRET_DO_NOT_PRINT';
 class CliBot extends BackupCli
 {
     public bool $failProtocols = false;
+    public bool $writeModules = false;
     public int $applied = 0;
     public function __construct(public string $root, array $translations, string $language = 'ru')
     {
@@ -24,7 +25,11 @@ class CliBot extends BackupCli
     }
     public function request($method, $data, $json_header = 0) { throw new LogicException("CLI не обращается к Telegram: $method"); }
     public function getWgMsg() { return null; }
-    public function importManagedProtocols(array $data, bool $syncUpstreams = true): void { if ($this->failProtocols) throw new RuntimeException(SECRET); $this->applied++; }
+    public function importManagedProtocols(array $data, bool $syncUpstreams = true): void {
+        if ($this->failProtocols) throw new RuntimeException(SECRET);
+        if ($this->writeModules) (new ProtocolModules($this->protocolModulesFile))->setMany($data['modules']);
+        $this->applied++;
+    }
     public function syncManagedUpstreams(): void {}
     public function cloakNginx() {}
     public function menu($type = false, $arg = false, $return = false) { throw new LogicException('CLI не показывает меню'); }
@@ -120,7 +125,7 @@ try {
     $before = $b->protocolModulesSnapshot();
     $t = microtime(true);
     check($b->waitProtocolModulesApplied($before, 5) && microtime(true) - $t < 1, 'без изменений — сразу');
-    check($b->waitProtocolModulesApplied(null, 5), 'повреждённый файл до восстановления — не ждём');
+    check(!$b->waitProtocolModulesApplied(null, 5), 'повреждённый файл до восстановления — отказ без ложного успеха');
     file_put_contents($b->protocolModulesFile, json_encode(ProtocolModules::DEFAULTS));
     check(!$b->waitProtocolModulesApplied($before, 5) && microtime(true) - $t < 1, 'нет файла состояния — обработчик не работал, не ждём');
     $status = "$root/mods/protocol-services.status.json";
@@ -129,9 +134,26 @@ try {
     check(!$b->waitProtocolModulesApplied($before, 2) && microtime(true) - $t >= 1.5, 'не применено — ждёт до предела');
     file_put_contents($status, json_encode(['ok' => false, 'settings' => array_replace(ProtocolModules::DEFAULTS, ['ss' => false]), 'errors' => ['ss' => 'operation_failed']]));
     $b->sshWaited = [];
-    check($b->waitProtocolModulesApplied($before, 5), 'отказ модуля не держит восстановление');
-    check($b->sshWaited === ['oc', 'ovpn', 'tt', 'hy', 'dnstt', 'ipsec'], 'ждёт SSH только впервые включённых и запущенных сервисов');
-    check(preg_match('~\$modulesBefore = \$this->protocolModulesSnapshot\(\);.*?\$this->waitProtocolModulesApplied\(\$modulesBefore\);~s', file_get_contents(__DIR__ . '/../app/bot.php')) === 1, 'restoreBackup ждёт применения модулей');
+    check(!$b->waitProtocolModulesApplied($before, 5), 'отказ модуля завершает ожидание ошибкой');
+    check($b->sshWaited === [], 'терминальная ошибка не выдаётся за готовность контейнеров');
+    file_put_contents($status, json_encode(['ok' => true, 'settings' => ProtocolModules::DEFAULTS, 'errors' => []]));
+    check($b->waitProtocolModulesApplied($before, 5), 'подтверждённое включение успешно');
+    check($b->sshWaited === ['oc', 'ovpn', 'tt', 'hy', 'ss', 'dnstt', 'ipsec'], 'ждёт SSH только впервые включённых сервисов');
+
+    // Общий импорт также обязан сообщить об отказе выключения контейнера.
+    foreach (['missing', 'failed', 'applied'] as $case) {
+        $b = new CliBot($root, $i); $b->writeModules = true;
+        $b->protocolModulesFile = "$root/protocol-services.json";
+        file_put_contents($b->protocolModulesFile, json_encode(ProtocolModules::DEFAULTS));
+        $status = "$root/protocol-services.status.json";
+        if ($case === 'missing') @unlink($status);
+        else file_put_contents($status, json_encode(['ok' => $case === 'applied',
+            'settings' => array_replace(ProtocolModules::DEFAULTS, ['ss' => $case !== 'applied']),
+            'errors' => $case === 'failed' ? ['ss' => 'operation_failed'] : []]));
+        [$code, $out] = $b->run([], json_encode(['managed_protocols' => ['modules' => ['ss' => false], 'protocols' => []]]));
+        check($code === ($case === 'applied' ? 0 : 1), "$case: CLI учитывает результат host worker");
+        if ($case !== 'applied') check(str_contains($out, '❌ ss:') && !str_contains($out, '✅ Восстановление завершено.'), "$case: имя модуля и неполный итог");
+    }
 
     // Список разделов один для меню и CLI.
     $src = file_get_contents(__DIR__ . '/../app/bot.php');

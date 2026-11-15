@@ -40,7 +40,7 @@ class InstalledCode(unittest.TestCase):
         self.store = state.Store(self.base/'state')
         self.store.activate(self.store.create(VALUE))
         self.lib = self.base/'lib'
-        self.lib.mkdir()
+        self.lib.mkdir(mode=0o755)
         for name in upgrade.MODULES:
             (self.lib/name).write_text(name)
         patcher = patch.object(upgrade, 'LIB', self.lib)

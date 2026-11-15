@@ -15,7 +15,14 @@ class BackupDataBot extends Bot {
         $this->protocolCertRoot="$dir/certs"; mkdir($this->protocolCertRoot, 0700);
         $this->upstreamFile="$dir/absent-upstream"; $this->telemtDecoyDir="$dir/telemt/decoy";
         $this->htpasswd="$dir/webapp/.htpasswd"; $this->backupWarpRoot="$dir/warp";
+        $this->managedNodeRoot="$dir/ssh/nodes";
         $this->setPacConf(['language'=>'ru']);
+    }
+    // Data round-trip fixture: no containers. Lifecycle/failure proof is in
+    // backup_transport_snapshot_test with the actual checked SSH controller.
+    public function controlContainerService(string $container, string $service, string $action): bool {
+        if ($container !== 'ss' || $service !== 'simple-tls' || !in_array($action, ['stop', 'start'], true)) throw new LogicException('Unexpected fixture service');
+        return true;
     }
     public function writePrivateKey(string $path, string $data): bool {
         if ($this->failName !== null && str_ends_with($path, $this->failName)) {

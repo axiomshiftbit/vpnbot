@@ -6,6 +6,7 @@ require __DIR__ . '/../app/i18n.php';
 // саму проверку готовности и возврат прежнего файла не подменяем.
 class BackupServiceRollbackBot extends Bot {
     public bool $running = true;
+    public int $controlCalls = 0;
     public array $messages = [];
     public function __construct(public string $root, array $translations) {
         $this->pac="$root/pac.json"; $this->update="$root/backup.json";
@@ -13,8 +14,19 @@ class BackupServiceRollbackBot extends Bot {
         $this->input=['chat'=>1,'message_id'=>1];
         $this->setPacConf(['language'=>'ru','limitpage'=>5]);
     }
+    public function withLock(string $name, callable $fn, int $timeout=0, $busy=null) {
+        $h=fopen($this->root.'/.lock.'.$name,'c');if(!$h||!flock($h,LOCK_EX))return $busy;
+        try{return $fn();}finally{flock($h,LOCK_UN);fclose($h);}
+    }
     public function protocolModuleEnabled(string $service): bool { return in_array($service,['ss','proxy'],true); }
     public function ssh($cmd,$service='wg',$wait=true,$log='/dev/null') {
+        if (preg_match('~^/bin/sh /service_supervisor.sh (stop|start) (ssserver|sslocal)$~',$cmd,$m)) {
+            $this->controlCalls++;
+            if ($m[1]==='stop') { $this->running=false; return 'VPNBOT_SERVICE_STOPPED:'.$m[2]; }
+            $conf=json_decode(file_get_contents($this->root.'/'.$m[2].'.json'),true);
+            $this->running=($conf['method']??'')==='chacha20-ietf-poly1305';
+            return $this->running ? 'VPNBOT_SERVICE_READY:'.$m[2] : '';
+        }
         if (str_contains($cmd,'VPNBOT_SERVICE_READY')) return $this->running ? 'VPNBOT_SERVICE_READY' : '';
         if (str_starts_with($cmd,'pkill ')) $this->running=false;
         if (str_contains($cmd,' -v -d -c /config.json')) {
@@ -38,10 +50,12 @@ try {
         file_put_contents($b->update,json_encode([$section=>$invalid]));
         if ($b->importFile($b->update)!==false || !str_contains(end($b->messages),'❌ Shadowsocks')) throw new RuntimeException('Отказ ядра не показан');
         clearstatcache();
+        if ($b->controlCalls < 4) throw new RuntimeException('Применение и откат не исполнялись');
         if (file_get_contents($path)!==$before || fileinode($path)!==$inode || !$b->running) throw new RuntimeException('Прежний файл и сервис не восстановлены');
     }
     echo "backup_service_rollback_test OK\n";
 } finally {
     foreach (glob("$root/*") as $file) unlink($file);
+    foreach (glob("$root/.lock.*") as $file) unlink($file);
     @unlink("$root/.backup.lock");rmdir($root);
 }

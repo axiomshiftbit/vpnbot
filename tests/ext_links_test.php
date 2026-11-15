@@ -70,7 +70,8 @@ class ExtLinksBot extends Bot
     {
         $this->screen = [$text, is_array($button) ? $button : []];
     }
-    public function click(string $callback): void { $this->input['callback'] = $callback; $this->action(); $this->input['callback'] = ''; }
+    public function fresh(string $callback): string { return $this->xrayIdentityButtons([[['callback_data' => $callback]]], $this->xr)[0][0]['callback_data']; }
+    public function click(string $callback): void { $this->input['callback'] = str_contains($callback, ' !') ? $callback : $this->fresh($callback); $this->action(); $this->input['callback'] = ''; }
     public function callbacks(): array { return array_column(array_merge(...($this->screen[1] ?: [[]])), 'callback_data'); }
     public function ext(int $i = 0): array { return $this->xr['inbounds'][0]['settings']['clients'][$i]['ext'] ?? []; }
     public function subRateLimit($sid, $scope = '') {}
@@ -108,8 +109,8 @@ foreach (['ru', 'en'] as $lang) {
     $bot->click('/extUser 0');
     [$text, $cbs] = elScreen($bot, "$lang пустой экран");
     elCheck(str_contains($text, 'Ann &amp; &lt;b&gt;'), "$lang: имя пользователя экранировано");
-    elCheck(str_contains($text, 'base64') && in_array('/extAdd 0 link', $cbs, true) && in_array('/extAdd 0 sub', $cbs, true)
-        && in_array('/extUA 0', $cbs, true) && in_array('/menuhelp ext 0 0', $cbs, true) && end($cbs) === '/userXr 0', "$lang: кнопки и пояснение");
+    elCheck(str_contains($text, 'base64') && in_array($bot->fresh('/extAdd 0 link'), $cbs, true) && in_array($bot->fresh('/extAdd 0 sub'), $cbs, true)
+        && in_array('/extUA 0', $cbs, true) && in_array('/menuhelp ext 0 0', $cbs, true) && end($cbs) === $bot->fresh('/userXr 0'), "$lang: кнопки и пояснение");
     if ($lang === 'en') elCheck(!preg_match('~\p{Cyrillic}~u', strip_tags($text . implode(' ', array_column(array_merge(...$bot->screen[1]), 'text')))), 'en: без русского');
 
     // ── 2. Добавление ссылок ────────────────────────────────────────────────
@@ -136,7 +137,7 @@ foreach (['ru', 'en'] as $lang) {
     elCheck(str_contains($text, 'http 403 &lt;x&gt;') && (str_contains($text, '· узлов: 2') || str_contains($text, '· nodes: 2')), "$lang: ошибка экранирована, видны узлы прошлой загрузки");
     $keys = array_map(fn($e) => Bot::extRowKey($e), $bot->ext());
     foreach ($keys as $k => $h) {
-        foreach (['extToggle', 'extRename', 'extDel'] as $action) elCheck(in_array("/$action 0_{$k}_$h", $cbs, true), "$lang: кнопка $action несёт отпечаток");
+        foreach (['extToggle', 'extRename', 'extDel'] as $action) elCheck(in_array($bot->fresh("/$action 0_{$k}_$h"), $cbs, true), "$lang: кнопка $action несёт отпечаток");
     }
 
     // ── 5. Старые кнопки и отпечатки ────────────────────────────────────────

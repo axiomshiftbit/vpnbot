@@ -14,6 +14,33 @@ def save(name,r): (OUT/(name+'.log')).write_text(r.stdout+r.stderr)
 def connect(name):
     r=exe('swanctl','--initiate','--child','audit-tunnel','--timeout','15',timeout=22);save(name,r);return r.returncode==0
 def terminate(): exe('swanctl','--terminate','--ike','auditike','--timeout','5',timeout=10)
+def pending():
+    # Only the synthetic user's non-secret enforcement state leaves the container.
+    program='$u=json_decode(file_get_contents("/config/ipsec/users_ikev2.json"),true);echo json_encode(["disabled"=>!empty($u["auditike"]["disabled"]),"pending"=>$u["auditike"]["pending"]??null]);'
+    r=run('docker','exec','php-audit','php','-r',program);r.check_returncode();return json.loads(r.stdout)
+def install_reload_fault():
+    # This container belongs to the disposable stand. All other swanctl commands
+    # still use the original binary; only credential reload deliberately fails.
+    script='''set -eu
+binary=$(command -v swanctl)
+case "$binary" in /usr/bin/swanctl|/usr/sbin/swanctl) ;; *) exit 1;; esac
+test ! -e "$binary.audit-real"
+printf '%s\n' "$binary" > /tmp/vpnbot-audit-swanctl-path
+printf '#!/bin/sh\nif [ "${1:-}" = --load-creds ]; then exit 42; fi\nexec "%s.audit-real" "$@"\n' "$binary" > "$binary.audit-wrapper"
+chmod 755 "$binary.audit-wrapper"
+mv "$binary" "$binary.audit-real"
+mv "$binary.audit-wrapper" "$binary"
+'''
+    r=run('docker','exec','ipsec-audit','sh','-c',script);r.check_returncode()
+def remove_reload_fault():
+    script='''set -eu
+test -f /tmp/vpnbot-audit-swanctl-path || exit 0
+read -r binary < /tmp/vpnbot-audit-swanctl-path
+case "$binary" in /usr/bin/swanctl|/usr/sbin/swanctl) ;; *) exit 1;; esac
+if [ -f "$binary.audit-real" ]; then mv "$binary.audit-real" "$binary"; fi
+rm -f "$binary.audit-wrapper" /tmp/vpnbot-audit-swanctl-path
+'''
+    run('docker','exec','ipsec-audit','sh','-c',script).check_returncode()
 def restart_client():
     exe('pkill','charon')
     time.sleep(.2)
@@ -98,7 +125,15 @@ try:
             r=http(scheme+'://example.com/');save(scheme,r);check(scheme+'-traffic',r.returncode==0 and 'Example Domain' in r.stdout)
         for name,url in [('docker-api','http://10.10.0.8:2375/version'),('panel','http://10.10.0.7:8090/'),('adguard-admin','http://10.10.0.5:80/')]:
             r=http(url,4);save(name,r);check(name+'-network-isolation',r.returncode!=0)
+        try:
+            install_reload_fault()
+            bot('ike-disable')
+            check('reload-failure-retains-durable-pending',pending(),{'disabled':True,'pending':'disable'})
+            check('reload-failure-does-not-claim-disconnected',bot('ike-status')['result']['online'])
+        finally:
+            remove_reload_fault()
         bot('ike-disable');time.sleep(.5)
+        check('successful-retry-clears-pending',pending(),{'disabled':True,'pending':None})
         check('disabled-session-kicked',bot('ike-status')['result']['online'],False)
         # strongSwan 6.0.7 в этом Alpine-клиенте падает на повторном vici
         # initiate после peer-initiated DELETE. Для независимой проверки
@@ -110,7 +145,7 @@ try:
         if os.environ.get('IKE_REUSE_CLIENT') != '1': restart_client()
         check('enabled-credential-reconnects',connect('enabled-connect'))
 finally:
-    terminate();bot('ike-enable')
+    remove_reload_fault();terminate();bot('ike-enable')
 menu=bot('ipsec-menu')['result'];check('client-menu-renders-with-new-button',(menu['ikev2_auto'],menu['ikev2_buttons'],menu['fits']),(True,9,True))
 print(json.dumps({'passed':sum(x['passed'] for x in results),'total':len(results)}))
 raise SystemExit(0 if all(x['passed'] for x in results) else 1)

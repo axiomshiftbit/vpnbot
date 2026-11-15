@@ -38,9 +38,12 @@ class ConfirmBot extends Bot
     public function regenAllXr() { $this->done[] = 'regenAllXr'; }
     public function regenRealityXr() { $this->done[] = 'regenRealityXr'; }
     public function rotateAllSubTokens() { $this->done[] = 'rotateAllSubTokens'; }
+    protected function regenIdXrLocked($i) { return $this->regenIdXr($i); }
     public function regenIdXr($i) { $this->done[] = "regenIdXr:$i"; }
+    protected function rotateSubTokenLocked($i) { return $this->rotateSubToken($i); }
     public function rotateSubToken($i) { $this->done[] = "rotateSub:$i"; }
     public function xray($page = 0) { $this->screen = ['text' => 'xray', 'buttons' => []]; }
+    protected function userXrLocked($i, $back = null) { return $this->userXr($i, $back); }
     public function userXr($i, $back = null) { $this->screen = ['text' => "user $i", 'buttons' => []]; }
     public function answer($callback_id, $textNotify = false, $notify = false) { $this->answers[] = $textNotify; }
     public function update($chat, $message, $text, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->screen = ['text' => $text, 'buttons' => $button]; }
@@ -63,11 +66,13 @@ foreach (['regenAllXr', 'regenRealityXr', 'rotateAllSubTokens'] as $action) {
 // ── 2. Действия над одним пользователем ─────────────────────────────────────
 foreach (['regenIdXr' => 'regenIdXr', 'rotateSub' => 'rotateSub'] as $route => $done) {
     $b->done = [];
-    $b->click("/$route 1");
+    $initial = $b->xrayIdentityButtons([[['callback_data' => "/$route 1"]]], $b->xr)[0][0]['callback_data'];
+    $suffix = substr($initial, strlen("/$route 1"));
+    $b->click($initial);
     cfCheck($b->done === [], "$route: первое нажатие ничего не меняет");
     $confirm = $b->screen['buttons'][0][0]['callback_data'];
     $key = $b->xrClientKey($b->xr['inbounds'][0]['settings']['clients'][1]);
-    cfCheck($confirm === "/$route 1 $key" && $b->screen['buttons'][1][0]['callback_data'] === '/userXr 1', "$route: подтверждение с отпечатком, отмена — в карточку");
+    cfCheck($confirm === "/$route 1 $key$suffix" && $b->screen['buttons'][1][0]['callback_data'] === "/userXr 1$suffix", "$route: подтверждение с отпечатком, отмена — в карточку");
     cfCheck(str_contains($b->screen['text'], 'Боб &lt;b&gt;') && !str_contains($b->screen['text'], 'Боб <b>'), "$route: имя экранировано");
     $b->click($confirm);
     cfCheck($b->done === ["$done:1"], "$route: подтверждение выполняет действие для того же пользователя");
@@ -80,8 +85,11 @@ foreach (['regenIdXr' => 'regenIdXr', 'rotateSub' => 'rotateSub'] as $route => $
     $b->click($confirm);
     cfCheck($b->done === [] && $b->answers === [$i['confirm stale']['ru']], "$route: устаревшее подтверждение отклонено");
     $b->xr = $saved;
-    $b->click("/$route 1 00000000");
+    $b->click("/$route 1 00000000$suffix");
     cfCheck($b->done === [], "$route: чужой отпечаток отклонён");
+    $b->click("/$route 1");
+    cfCheck($b->done === [], "$route: старый числовой callback отклонён");
+    cfCheck(strlen($confirm) <= 64, "$route: callback с идентичностью помещается в Telegram");
     $b->click("/$route 9");
     cfCheck($b->done === [] && $b->screen['text'] === 'xray', "$route: несуществующий пользователь — в меню");
     $b->click("/$route 9 $key");

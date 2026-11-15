@@ -11,8 +11,6 @@ trait BotOvpn
     public const OVPN_ROUTES_MAX = 40;
     // Адрес DNS сборки: при выборочной маршрутизации клиенту нужен путь к нему.
     public const OVPN_DNS = '10.10.0.5';
-    // Как часто счётчики трафика пишутся на диск, пока сессии не менялись.
-    public const OVPN_TRAFFIC_FLUSH = 60;
 
     public function ovpnTrafficPath(): string
     {
@@ -272,21 +270,37 @@ trait BotOvpn
 
     public function ovpnTrafficLoad(): array
     {
-        $data = json_decode((string) @file_get_contents($this->ovpnTrafficPath()), true);
-        return is_array($data) && is_array($data['users'] ?? null) ? $data : ['users' => [], 'saved' => 0];
+        $path = $this->ovpnTrafficPath();
+        if (!file_exists($path)) return ['users' => [], 'saved' => 0];
+        $raw = file_get_contents($path);
+        $data = $raw === false ? null : json_decode($raw, true);
+        if (!is_array($data) || !is_array($data['users'] ?? null)
+            || (isset($data['sessions']) && !is_array($data['sessions']))) {
+            throw new RuntimeException('OpenVPN traffic counters are unreadable');
+        }
+        return $data;
     }
 
     private function ovpnTrafficSave(array $data): void
     {
         $path = $this->ovpnTrafficPath();
-        if (!is_dir(dirname($path))) {
-            return;
-        }
         $data['saved'] = time();
-        $tmp = $path . '.tmp';
-        if (file_put_contents($tmp, json_encode($data, JSON_UNESCAPED_SLASHES)) !== false) {
-            @chmod($tmp, 0600);
-            rename($tmp, $path);
+        $tmp = $path . '.tmp.' . bin2hex(random_bytes(8));
+        $stream = fopen($tmp, 'x');
+        if ($stream === false) throw new RuntimeException('OpenVPN traffic checkpoint failed');
+        try {
+            $body = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            if (!chmod($tmp, 0600) || fwrite($stream, $body) !== strlen($body) || !fflush($stream)
+                || !fsync($stream) || !rename($tmp, $path)) {
+                throw new RuntimeException('OpenVPN traffic checkpoint failed');
+            }
+            $directory = fopen(dirname($path), 'r');
+            if ($directory === false) throw new RuntimeException('OpenVPN traffic directory sync failed');
+            try { if (!fsync($directory)) throw new RuntimeException('OpenVPN traffic directory sync failed'); }
+            finally { fclose($directory); }
+        } finally {
+            fclose($stream);
+            if (file_exists($tmp)) unlink($tmp);
         }
     }
 
@@ -311,6 +325,24 @@ trait BotOvpn
             $before = $data['users'];
             $users = array_flip($this->getOvpnUsers());
             $status = $this->getOvpnStatus();
+            $keys = [];
+            foreach ($status as $cn => $session) {
+                if (empty($data['hook_version'])) {
+                    $keys[$cn] = $session['since'] . '|' . $session['cid'];
+                    continue;
+                }
+                // The hook owns session identity and final counters. A stale
+                // status row must never recreate an already closed session.
+                foreach ($data['sessions'] ?? [] as $id => $meta) {
+                    if (empty($meta['closed']) && ($meta['cn'] ?? '') === (string) $cn
+                        && (int) ($meta['epoch'] ?? 0) === (int) ($session['epoch'] ?? 0)
+                        && in_array($session['real'] ?? '', [($meta['address'] ?? '') . ':' . ($meta['port'] ?? ''),
+                            '[' . ($meta['address'] ?? '') . ']:' . ($meta['port'] ?? '')], true)) {
+                        $keys[$cn] = $id;
+                        break;
+                    }
+                }
+            }
             $ended = false;
             foreach ($data['users'] as $cn => $row) {
                 // Клиента нет в списке — не трогаем: во время перевыпуска
@@ -319,9 +351,9 @@ trait BotOvpn
                     continue;
                 }
                 $row = self::ovpnTrafficUser($row);
-                $key = isset($status[$cn]) ? $status[$cn]['since'] . '|' . $status[$cn]['cid'] : null;
+                $key = $keys[$cn] ?? null;
                 foreach ($row['live'] as $session => $bytes) {
-                    if ($session === $key) {
+                    if ($session === $key || str_starts_with((string) $session, 'hook:')) {
                         continue;
                     }
                     $row['rx'] += max(0, (int) ($bytes[0] ?? 0) - (int) ($bytes[2] ?? 0));
@@ -332,11 +364,11 @@ trait BotOvpn
                 $data['users'][$cn] = $row;
             }
             foreach ($status as $cn => $session) {
-                if (!isset($users[$cn])) {
+                if (!isset($users[$cn], $keys[$cn])) {
                     continue;
                 }
                 $row = self::ovpnTrafficUser($data['users'][$cn] ?? []);
-                $key = $session['since'] . '|' . $session['cid'];
+                $key = $keys[$cn];
                 // Счётчик сессии только растёт; меньшее значение — устаревшее чтение.
                 // Третье и четвёртое числа — сколько байт сессии уже было на
                 // момент сброса счётчика: они в итог не идут.
@@ -364,8 +396,7 @@ trait BotOvpn
                 }
                 $data['users'][$cn] = $row;
             }
-            if ($mutate !== null || $ended || $crossed
-                || ($data['users'] != $before && time() - (int) ($data['saved'] ?? 0) >= self::OVPN_TRAFFIC_FLUSH)) {
+            if ($mutate !== null || $ended || $crossed || $data['users'] != $before) {
                 $this->ovpnTrafficSave($data);
             }
             return $limited;

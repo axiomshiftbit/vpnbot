@@ -67,6 +67,7 @@ class CronTestBot extends Bot
         return null;
     }
 
+    protected function resetXrStatsLocked($nomenu = false) { return $this->resetXrStats($nomenu); }
     public function resetXrStats($nomenu = false)
     {
         $this->resetCalls++;

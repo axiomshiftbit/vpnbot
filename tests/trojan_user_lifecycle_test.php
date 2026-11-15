@@ -8,6 +8,7 @@ class TrojanLifecycleBot extends Bot
     public function __construct() {}
     public function getXray() { return $this->config; }
     public function restartXray($c = false, $norestart = false) { if (is_array($c)) $this->config = $c; return true; }
+    protected function userXrLocked($i) { return $this->userXr($i); }
     public function userXr($i) {}
     public function xray($page = 0) {}
 }

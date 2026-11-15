@@ -108,6 +108,16 @@ jobs:
             env TMPDIR=/tmp VLESS_TEST_XRAY="$3" XRAY_FORK_TEST_BINARY="$4" \
             python3 scripts/ci_unit_tests.py --stage unit-host --report "$5/admission/unit-host.json"
           BASH
+      - name: Восстановление ноды после прерывания обновления
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/node-code-native"
+          sudo python3 tests/integration/node_code_namespace.py 2>&1 | tee "$RUNNER_TEMP/node-code-native/result.log"
+      - uses: ./.github/actions/upload-artifact
+        if: always()
+        with:
+          name: node-code-native
+          path: ${{ runner.temp }}/node-code-native
       - name: Полные nftables-профили и сетевые атаки в изолированном стенде
         run: |
           sh scripts/ci_retry.sh sudo apt-get install -y nftables iproute2 util-linux

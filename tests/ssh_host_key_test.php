@@ -88,7 +88,7 @@ try {
     unlink($bot->dnsttHostKey);
     $check($bot->sshHostKeyTrusted('dnstt', $print($own)), 'dnstt: без файла настроек действует запомненный ключ');
     // Перезагрузка — место, где ключ запоминается; без этого две замены подряд блокируют бота.
-    $start = substr($source = file_get_contents(__DIR__ . '/../app/bot.php'), strpos($source, 'public function dnsttStart()'), 1800);
+    $start = substr($source = file_get_contents(__DIR__ . '/../app/bot.php'), strpos($source, 'public function dnsttStart()'), 2800);
     $check(strpos($start, "start_dnstt.sh --reload") < strpos($start, '$this->sshHostKeyRememberDnstt();'), 'dnstt: ключ запоминается после успешной перезагрузки');
 } finally {
     exec('rm -rf ' . escapeshellarg($root));

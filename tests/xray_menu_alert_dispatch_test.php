@@ -27,11 +27,11 @@ class XrayMenuAlertFixture extends Bot
         $this->admin = true;
         $this->limit = 10;
         $this->input = ['chat' => 123, 'message_id' => 1, 'callback' => '', 'message' => ''];
-        $this->settings = self::PAC_DEFAULTS;
+        $this->settings = self::PAC_DEFAULTS + ['transport' => 'Reality'];
         $this->clients = $this->clients1 = "$dir/clients.json";
     }
     public function getPacConf() { return $this->settings; }
-    public function getXray() { return ['inbounds' => [['settings' => ['clients' => []]]]]; }
+    public function getXray() { return ['inbounds' => [['settings' => ['clients' => array_map(static fn($n) => ['id' => 'synthetic-' . $n, 'email' => 'synthetic-' . $n], range(0, 7))]]]]; }
     public function getXrayVersion() { return 'test'; }
     public function getXrayStats() { return []; }
     public function onlineClients(int $window = 60): array { return []; }
@@ -42,6 +42,7 @@ class XrayMenuAlertFixture extends Bot
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->buttons = $button; return []; }
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)
     { $this->sent[] = [$chat, $text, $button]; return []; }
+    protected function switchXrLocked($i, $nm = 0, $time = false) { return $this->switchXr($i, $nm, $time); }
     public function switchXr($i, $nm = 0, $time = false) { $this->selected[] = (int) $i; }
     public function notifyLimit(int $client): void { $this->ipLimitAlert('synthetic limit', $client); }
 }

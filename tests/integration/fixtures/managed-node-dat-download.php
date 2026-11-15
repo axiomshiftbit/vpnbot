@@ -4,6 +4,7 @@ require '/lab/tests/integration/fixtures/managed-node-dat.php';
 class DatRestoreNative extends NativeDatBot {
     public function __construct() {
         parent::__construct();
+        $this->xrayConf = '/work/xray.json';
         $this->update = '/work/restore.json';
         $this->pacState = ['language' => 'ru', 'limitpage' => 5, 'transport' => 'Reality'];
         $this->xrayState = ['inbounds' => [], 'outbounds' => [['tag' => 'direct', 'protocol' => 'freedom']], 'routing' => ['rules' => []]];
@@ -14,7 +15,7 @@ class DatRestoreNative extends NativeDatBot {
         exec('XRAY_LOCATION_ASSET=/work/downloaded /xray run -test -c /work/candidate.json >/dev/null 2>&1', $unused, $code);
         return $code === 0;
     }
-    public function restoreBackupXray(array $config): bool { return $this->validateXrayConfig($config) && $this->restartXray($config); }
+    protected function restoreBackupXrayLocked(array $config): bool { return $this->validateXrayConfig($config) && $this->restartXray($config); }
     public function xrayUpdateRules(?array $previousPac = null) { return $this->restartXray($this->xrayState); }
     public function restartNaive() { return true; }
     public function pacUpdate($import = '') {}

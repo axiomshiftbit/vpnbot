@@ -335,13 +335,17 @@ trait BotProtocols
     public function xraySubscriptionMetadata(array $client, int $index): void
     {
         header('Profile-Update-Interval: 12');
-        $info = []; $managed = $this->xrayProtocolUsage($client);
-        if (is_file('/config/xray.stats')) {
-            $stats = $this->getXrayStats()['users'][$index] ?? null;
-            if (is_array($stats) && isset($stats['session']['upload'], $stats['session']['download'])) {
-                foreach (['upload', 'download'] as $direction) {
-                    $managed[$direction] += max(0, (int) $stats['session'][$direction] + (int) ($stats['global'][$direction] ?? 0));
-                }
+        $info = [];
+        try { $managed = $this->xrayProtocolUsage($client); $stats = $this->getXrayStats()['users'][$index] ?? null; }
+        catch (Throwable $error) {
+            // Unknown counters are omitted, never advertised as zero. A quota
+            // bound export remains denied; unlimited credentials stay independent.
+            if ((int) ($client['traffic'] ?? 0) > 0) throw $error;
+            return;
+        }
+        if (is_array($stats) && isset($stats['session']['upload'], $stats['session']['download'])) {
+            foreach (['upload', 'download'] as $direction) {
+                $managed[$direction] += max(0, (int) $stats['session'][$direction] + (int) ($stats['global'][$direction] ?? 0));
             }
         }
         if (array_sum($managed)) foreach ($managed as $direction => $bytes) $info[] = "$direction=$bytes";
@@ -511,19 +515,19 @@ trait BotProtocols
     {
         if (!$this->admin) return;
         try {
-            $conf = $this->getPacConf();
-            if (!isset(ManagedProtocol::NAMES[$protocol], $conf['relays'][$name])) throw new InvalidArgumentException($this->t('Relay не найден', 'Relay not found'));
-            $input = trim((string) $input);
-            if ($input === '0') {
-                unset($conf['relays'][$name][$protocol . '_address'], $conf['relays'][$name][$protocol . '_port']);
-            } else {
-                $parts = preg_split('/\s+/', $input);
-                $endpoint = ['host' => $parts[0], 'port' => count($parts) === 2 ? (int) self::relayPortInput($parts[1]) : 0];
-                ManagedProtocol::validateClientEndpoint($endpoint);
-                $conf['relays'][$name][$protocol . '_address'] = $endpoint['host'];
-                $conf['relays'][$name][$protocol . '_port'] = $endpoint['port'];
-            }
-            if ($this->setPacConf($conf) === false) throw new RuntimeException($this->t('Не удалось сохранить relay', 'Could not save the relay'));
+            $this->pacConfUpdate(function (&$conf) use ($input, $protocol, $name) {
+                if (!isset(ManagedProtocol::NAMES[$protocol], $conf['relays'][$name])) throw new InvalidArgumentException($this->t('Relay не найден', 'Relay not found'));
+                $input = trim((string) $input);
+                if ($input === '0') {
+                    unset($conf['relays'][$name][$protocol . '_address'], $conf['relays'][$name][$protocol . '_port']);
+                } else {
+                    $parts = preg_split('/\s+/', $input);
+                    $endpoint = ['host' => $parts[0], 'port' => count($parts) === 2 ? (int) self::relayPortInput($parts[1]) : 0];
+                    ManagedProtocol::validateClientEndpoint($endpoint);
+                    $conf['relays'][$name][$protocol . '_address'] = $endpoint['host'];
+                    $conf['relays'][$name][$protocol . '_port'] = $endpoint['port'];
+                }
+            });
             $this->relayEdit($name);
         } catch (InvalidArgumentException | RuntimeException $e) {
             $this->protocolError($e->getMessage(), "/relayEdit $name", "/prset $protocol $name");

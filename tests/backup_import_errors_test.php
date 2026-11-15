@@ -25,13 +25,24 @@ class BackupErrorBot extends Bot {
 }
 class BackupWriteErrorBot extends BackupErrorBot {
     public array $commands = [];
-    protected function backupWriteInPlace(string $path, string $body): bool { return false; }
+    public array $updates = [];
+    public int $writeAttempts = 0;
+    protected function backupWriteInPlace(string $path, string $body): bool {
+        if (++$this->writeAttempts === 1) return false;
+        return parent::backupWriteInPlace($path, $body);
+    }
+    public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->updates[] = $text; }
+    public function protocolModuleEnabled(string $service): bool { return in_array($service, ['ss', 'proxy', 'ad'], true); }
+    public function controlContainerService(string $container, string $service, string $action): bool {
+        $this->commands[] = $container . ':' . $action; return true;
+    }
     public function ssh($cmd, $service='wg', $wait=true, $log='/dev/null') {
         if (str_contains($cmd,'VPNBOT_AD_STOPPED')) { $this->commands[]='wait-ad'; return 'VPNBOT_AD_STOPPED'; }
         $this->commands[]=$cmd; return '';
     }
     public function stopAd() { $this->commands[]='stop-ad'; }
     public function startAd() { $this->commands[]='start-ad'; }
+    public function verifyBackupServices(array $json): array { return []; }
 }
 function backupCheck(bool $ok, string $name): void { if (!$ok) throw new RuntimeException($name); }
 $root = sys_get_temp_dir() . '/vpnbot-backup-errors-' . bin2hex(random_bytes(6)); mkdir($root, 0700);
@@ -76,9 +87,16 @@ try {
     }
     foreach (['ss','sl','ad'] as $section) {
         $b = new BackupWriteErrorBot($root, $i);
-        file_put_contents("$root/upload.json",json_encode([$section=>['test'=>'synthetic']]));
-        backupCheck($b->importFile()===false && count($b->messages)===1, "$section: отказ записи виден");
-        backupCheck($b->commands===($section==='ad' ? ['stop-ad','wait-ad','start-ad'] : []), "$section: отказ записи не оставляет прежний сервис остановленным");
+        $config = $section === 'ad' ? ['test'=>'synthetic'] : ['server_port'=>8388, 'password'=>'synthetic-new', 'method'=>'chacha20-ietf-poly1305'];
+        $path = "$root/" . ($section === 'ss' ? 'ssserver' : 'sslocal') . '.json';
+        if ($section !== 'ad') file_put_contents($path, json_encode($config + ['fixture'=>'previous']));
+        $before = $section === 'ad' ? null : file_get_contents($path);
+        file_put_contents("$root/upload.json",json_encode([$section=>$config]));
+        backupCheck($b->importFile()===false && $b->writeAttempts > 0, "$section: отказ именно записи достигнут");
+        backupCheck($section === 'ad' ? count($b->messages)===1 : str_contains(implode("\n", $b->updates), '❌ Shadowsocks'), "$section: отказ записи виден");
+        $service = $section === 'ss' ? 'ss' : 'proxy';
+        backupCheck($b->commands===($section==='ad' ? ['stop-ad','wait-ad','start-ad'] : [$service.':stop',$service.':stop',$service.':start']), "$section: отказ записи не оставляет прежний сервис остановленным");
+        if ($section !== 'ad') backupCheck(file_get_contents($path)===$before, "$section: прежний файл сохранён");
     }
     echo "backup_import_errors_test OK\n";
 } finally {

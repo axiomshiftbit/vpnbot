@@ -83,8 +83,30 @@ vcAssert(str_contains($blk, "\$c['dns']['nameserver'] = array_values(array_uniqu
 
 // ── 5. Права на конфиги с секретами ─────────────────────────────────────────
 vcAssert(method_exists('Bot', 'chmodSecret'), 'есть общий хелпер прав на конфиги');
-vcAssert(substr_count($src, 'chmodSecret(') >= 7,
-    'права ставятся на xray.json, clients.json, ssserver.json, hysteria.yaml, ocserv.passwd');
+// Writers now enforce permissions themselves; count actual outcomes instead
+// of calls to the older chmod helper.
+$privateRoot = sys_get_temp_dir() . '/vpn-config-permissions-' . bin2hex(random_bytes(6));
+mkdir($privateRoot, 0700);
+$privateBot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
+$inPlace = new ReflectionMethod(Bot::class, 'backupWriteInPlace');
+try {
+    foreach (['xray.json', 'clients.json', 'ssserver.json', 'hysteria.yaml', 'ocserv.passwd'] as $name) {
+        $path = "$privateRoot/$name";
+        file_put_contents($path, 'synthetic-old'); chmod($path, 0644);
+        $inode = fileinode($path);
+        vcAssert($inPlace->invoke($privateBot, $path, 'synthetic-new'), "$name: запись bind-mounted файла");
+        clearstatcache(true, $path);
+        vcAssert((fileperms($path) & 0777) === 0600 && fileinode($path) === $inode,
+            "$name: приватные права без замены inode");
+        chmod($path, 0644);
+        vcAssert($privateBot->writePrivateKey($path, 'synthetic-atomic'), "$name: атомарная запись");
+        clearstatcache(true, $path);
+        vcAssert((fileperms($path) & 0777) === 0600, "$name: атомарная запись остаётся приватной");
+    }
+} finally {
+    foreach (glob("$privateRoot/*") as $path) unlink($path);
+    rmdir($privateRoot);
+}
 // Окно в БАЙТАХ, комментарии кириллицей — по два байта на символ.
 $wx = substr($src, strpos($src, 'public function writeXrayJson('), 4200);
 vcAssert(str_contains($wx, 'backupWriteInPlace($this->xrayConf, $json)'),

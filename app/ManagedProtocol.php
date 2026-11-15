@@ -32,6 +32,24 @@ final class ManagedProtocol
 
     public function directory(): string { return $this->root . '/' . $this->protocol; }
 
+    // Separate from desired.json: even corrupt/unwritable desired state must
+    // stop its old generation. The supervisor only tests marker presence.
+    public function quarantineXraySync(): void
+    {
+        self::writeJson($this->directory() . '/xray-sync.quarantine.json', ['reason' => 'xray_sync_unavailable']);
+    }
+
+    public function clearXraySyncQuarantine(): void
+    {
+        $path = $this->directory() . '/xray-sync.quarantine.json';
+        if (!file_exists($path) && !is_link($path)) return;
+        if (!@unlink($path)) throw new RuntimeException('Protocol quarantine cleanup is unconfirmed');
+        $dir = @fopen(dirname($path), 'r');
+        if ($dir === false) throw new RuntimeException('Protocol quarantine cleanup is unconfirmed');
+        try { if (!fsync($dir)) throw new RuntimeException('Protocol quarantine cleanup is unconfirmed'); }
+        finally { fclose($dir); }
+    }
+
     public function defaults(): array
     {
         $state = ['schema' => 1, 'protocol' => $this->protocol, 'revision' => 0, 'enabled' => false,
@@ -135,6 +153,7 @@ final class ManagedProtocol
         try {
             if (!flock($lock, LOCK_EX)) throw new RuntimeException(Lang::t('Не удалось заблокировать состояние', 'Could not lock the state'));
             $state = $this->read();
+            $emptyBefore = !$state['users'];
             if ($this->protocol === 'snolc' && $state['settings']['server_seed'] === '') {
                 $state['settings']['server_seed'] = bin2hex(random_bytes(32));
             }
@@ -145,6 +164,11 @@ final class ManagedProtocol
             $state['revision']++;
             $this->validate($state);
             $state['config'] = $this->serverConfig($state);
+            // Инициализация до первых пользователей отличает чистую установку
+            // от потери счётчиков уже существующего доступа.
+            if ($this->protocol !== 'snolc' && $emptyBefore && !file_exists($dir . '/runtime/usage.json')) {
+                self::writeJson($dir . '/runtime/usage.json', ['users' => (object) []]);
+            }
             self::writeJson($dir . '/desired.json', $state);
             return $state;
         } finally {
@@ -368,7 +392,13 @@ final class ManagedProtocol
     public function usage(): array
     {
         $file = $this->directory() . '/runtime/usage.json';
-        return is_file($file) ? self::readJson($file) : [];
+        if (is_file($file)) return self::readJson($file);
+        $state = $this->read();
+        if ($this->protocol !== 'snolc' && $state['users'] && empty($state['restore_usage'])) {
+            throw new RuntimeException(Lang::t('Отсутствуют счётчики протокола; восстановите их из резервной копии',
+                'Protocol counters are missing; restore them from a backup'));
+        }
+        return [];
     }
 
     public function snapshot(): array

@@ -72,8 +72,15 @@ class Supervisor:
         self.stopping = False
         self.last_valid_state = None
         path = self.root / "usage.json"
-        # A corrupt counter file must never silently grant a fresh quota.
-        self.usage = read_json(path) if path.exists() else {"users": {}}
+        # Missing persisted counters are not a fresh quota. A clean store writes
+        # its initial empty ledger before publishing its first desired state.
+        if path.exists():
+            self.usage = read_json(path)
+        else:
+            state = read_json(self.desired) if self.desired.exists() else {}
+            if self.protocol != "snolc" and state.get("users") and not state.get("restore_usage"):
+                raise ValueError("missing_usage")
+            self.usage = {"users": {}}
         if not isinstance(self.usage.get("users"), dict):
             raise ValueError("invalid_usage")
         for user in self.usage["users"].values():
@@ -313,7 +320,38 @@ class Supervisor:
                     import errno
                     raise RuntimeError("port_in_use" if exc.errno == errno.EADDRINUSE else "port_unavailable") from exc
 
+    def sync_quarantined(self):
+        marker = self.desired.with_name("xray-sync.quarantine.json")
+        if not marker.exists() and not marker.is_symlink():
+            return False
+        self.stop()
+        self.error = "xray_sync_unavailable"
+        self.write_status(None, "quarantined")
+        return True
+
+    def read_desired(self):
+        try:
+            state = read_json(self.desired)
+            if (state.get("schema") != 1 or state.get("protocol") != self.protocol
+                    or type(state.get("enabled")) is not bool or type(state.get("revision")) is not int
+                    or not isinstance(state.get("users"), dict) or not isinstance(state.get("config"), dict)):
+                raise ValueError("invalid_state")
+            restore = state.get("restore_usage")
+            if restore is not None:
+                if not isinstance(restore, dict) or not isinstance(restore.get("id"), str) or not isinstance(restore.get("users"), dict):
+                    raise ValueError("invalid_usage_restore")
+                if any(not isinstance(row, dict) or any(type(row.get(k)) is not int or row[k] < 0 for k in ("upload", "download")) for row in restore["users"].values()):
+                    raise ValueError("invalid_usage_restore")
+            return state
+        except (OSError, ValueError, KeyError, TypeError):
+            # An unreadable target cannot prove that old credentials remain
+            # authorized. Do not run forever from last_valid_state.
+            self.stop()
+            raise RuntimeError("desired_unavailable") from None
+
     def tick(self):
+        if self.sync_quarantined():
+            return
         # Keep the child's append-only descriptor valid while bounding disk
         # usage even during a sustained stream of failed authentication.
         log_path = self.root / 'core.log'
@@ -327,7 +365,7 @@ class Supervisor:
             self.stop()
             self.write_status(None, "disabled")
             return
-        state = read_json(desired)
+        state = self.read_desired()
         restore = state.get("restore_usage")
         if restore and self.usage.get("restored") != restore["id"]:
             records = restore["users"]
@@ -349,7 +387,11 @@ class Supervisor:
                 if any(u.get("quota") or u.get("rolling_quota") for u in state.get("users", {}).values()) and time.time() - self.stats_time > 15:
                     self.stop()
                     raise RuntimeError("quota_stats_unavailable")
-        config, users = self.prepare(state)
+        try:
+            config, users = self.prepare(state)
+        except (OSError, ValueError, KeyError, TypeError):
+            self.stop()
+            raise RuntimeError("desired_unavailable") from None
         self.last_valid_state = state
         cover_only = self.protocol == "anytls" and bool(config["inbounds"][0].get("fallback_server_name"))
         if not state["enabled"] or (not users and not cover_only):
@@ -369,7 +411,12 @@ class Supervisor:
         directory, fingerprint = self.candidate(config, state)
         if directory:
             # A concurrent edit during validation must not be overwritten.
-            if read_json(desired) != state:
+            try:
+                current = self.read_desired()
+            except Exception:
+                shutil.rmtree(directory)
+                raise
+            if self.sync_quarantined() or current != state:
                 shutil.rmtree(directory)
                 return
             old_directory, old_users = self.current, list(self.active)
@@ -378,13 +425,15 @@ class Supervisor:
             try:
                 self.start(directory, users)
             except Exception:
-                self.stop()
-                # A failed update must not resurrect a removed or rotated credential.
-                old_auth = self.authentication(old_config) if old_config else []
-                allowed = self.credentials_allowed(old_auth, users)
-                if old_directory and allowed:
-                    self.start(old_directory, old_users)
-                shutil.rmtree(directory)
+                try:
+                    self.stop()
+                    # A failed update must not resurrect a removed or rotated credential.
+                    old_auth = self.authentication(old_config) if old_config else []
+                    allowed = self.credentials_allowed(old_auth, users)
+                    if old_directory and allowed:
+                        self.start(old_directory, old_users)
+                finally:
+                    shutil.rmtree(directory)
                 raise
             self.current, self.fingerprint = directory, fingerprint
             self.last_success = int(time.time())

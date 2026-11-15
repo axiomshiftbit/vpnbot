@@ -7,6 +7,9 @@ mkdir -p /dnstt /logs
 chmod 700 /dnstt
 
 if [ "${1:-}" != "--reload" ]; then
+    # Старый пароль не должен оставаться доступен при disabled settings после
+    # перезапуска контейнера. Адаптер включит учётку только при запуске DNSTT.
+    /bin/sh /service_daemon.sh stopped dnstt
     cat /ssh/key.pub > /root/.ssh/authorized_keys
     ssh-keygen -A
     if [ ! -s /dnstt/ssh_host_ed25519_key ]; then
@@ -61,27 +64,13 @@ else
     fi
 fi
 
-pkill -x dnstt-server || true
-# Отзываем уже открытые SSH-сеансы при смене пароля или отключении.
-pkill -u vpnbot || true
-# Пустые настройки бота сериализуются как []; это штатный выключенный
-# туннель, а не ошибка jq при обращении к полям объекта.
-if [ -s /dnstt/settings.json ] && jq -e '
-    if type == "object" then
-        (.domain | type == "string") and (.password_hash | type == "string")
-        and (.domain != "") and (.password_hash != "")
-    else false end' /dnstt/settings.json >/dev/null; then
-    jq -r '"vpnbot:" + .password_hash' /dnstt/settings.json | chpasswd -e
-    if [ ! -s /dnstt/server.key ]; then
-        dnstt-server -gen-key -privkey-file /dnstt/server.key -pubkey-file /dnstt/server.pub >/dev/null
+if [ "${1:-}" = "--reload" ]; then
+    if /bin/sh /service_daemon.sh enabled dnstt; then
+        /bin/sh /service_supervisor.sh restart dnstt >/dev/null
+    else
+        /bin/sh /service_supervisor.sh stop dnstt >/dev/null
     fi
-    chmod 400 /dnstt/server.key
-    domain=$(jq -r '.domain' /dnstt/settings.json)
-    nohup dnstt-server -udp :53 -privkey-file /dnstt/server.key "$domain" 127.0.0.1:22 </dev/null >>/logs/dnstt 2>&1 &
+    echo dnstt-ready
 else
-    # BusyBox passwd -l возвращает 1, если adduser уже заблокировал пароль.
-    # С set -e это роняло совершенно новый контейнер без settings.json.
-    printf 'vpnbot:!\n' | chpasswd -e
+    exec /bin/sh /service_supervisor.sh supervise dnstt
 fi
-echo dnstt-ready
-[ "${1:-}" = "--reload" ] || exec tail -f /dev/null

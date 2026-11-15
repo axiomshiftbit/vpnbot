@@ -8,6 +8,7 @@ import re
 import shutil
 
 import node_config as config
+import node_code
 import node_state as state
 import node_upgrade
 from node_runtime import command
@@ -131,11 +132,8 @@ def install_code(source):
     # before the first write, never leave old and new modules mixed.
     modules = {name: (Path(source)/name).read_bytes() for name in node_upgrade.MODULES}
     services = units()
-    for name, data in modules.items():
-        state.atomic(LIB/name, data, 0o644)
-    for name, text in services.items():
-        state.atomic(Path('/etc/systemd/system')/name, text.encode(), 0o644)
-    command(['systemctl', 'daemon-reload'])
+    node_code.install(LIB, Path('/etc/systemd/system'), modules, services,
+                      (Path(source)/'node_code.py').read_bytes(), command)
 
 
 def restore_ssh(original):

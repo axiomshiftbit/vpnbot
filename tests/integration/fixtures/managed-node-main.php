@@ -85,6 +85,7 @@ class NativeManagedBot extends Bot {
     public function transport(string $action, $value = null): array { return $this->managedNodeTransport('aabbccdd', $action, $value); }
 }
 function verify($ok, $name) { echo ($ok ? 'PASS ' : 'FAIL ').$name.PHP_EOL; if (!$ok) throw new RuntimeException('fixture assertion'); }
+if (defined('VPNBOT_MANAGED_NATIVE_LIBRARY')) return;
 try {
     $bot = new NativeManagedBot();
     switch ($argv[1] ?? '') {

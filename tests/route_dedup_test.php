@@ -51,6 +51,7 @@ class RouteDedupTestBot extends Bot
     }
 
     public function datSync(bool $force = false, ?bool &$changed = null): array { return []; }
+    protected function xrayUpdateRulesLocked(?array $previousPac = null) { return $this->xrayUpdateRules($previousPac); }
     public function xrayUpdateRules(?array $previousPac = null) { return true; }
 
     public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false)

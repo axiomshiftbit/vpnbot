@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Pinned, bounded SSH transport for managed nodes; no shell from user input."""
 import base64
+from contextlib import contextmanager
+import ctypes
+import errno
+import fcntl
+from functools import wraps
 import hashlib
 import ipaddress
 import json
@@ -100,8 +105,65 @@ def atomic(path, body):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        sync_directory(path.parent)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def transport_lock(path, deadline):
+    trusted(path)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        trusted(path)
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise NodeBusy('node_busy_timeout')
+                time.sleep(.05)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def key_locked(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self.locked():
+            return method(self, *args, **kwargs)
+    return call
+
+
+def exchange_directories(first, second):
+    """Linux atomic exchange; unsupported filesystems fail without a fallback."""
+    rename = getattr(ctypes.CDLL(None, use_errno=True), 'renameat2', None)
+    if rename is None:
+        raise OSError(errno.ENOTSUP, 'atomic directory exchange unavailable')
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    sync_directory(first.parent)
+    if rename(-100, os.fsencode(first), -100, os.fsencode(second), 2) != 0:
+        raise OSError(ctypes.get_errno(), 'atomic directory exchange failed')
+    sync_directory(first.parent)
+
+
+def validate_pair(directory):
+    # ssh-keygen emits only the derived PUBLIC half; never log its input/output.
+    derived = ' '.join(run(['ssh-keygen', '-y', '-P', '', '-f', directory/'key']).decode().split()[:2])
+    public = ' '.join((directory/'key.pub').read_text().split()[:2])
+    if key(derived) != key(public):
+        raise ValueError('controller_key_mismatch')
 
 
 def run(args, data=b'', timeout=15, *, rpc=False):
@@ -160,12 +222,28 @@ class Client:
         # and rebinding can issue several RPCs; they share one smaller budget.
         self.deadline = time.monotonic()+20
         self.root, self.hop_root = Path(root), Path(hop_root)
+        self.lock_path = self.root/('.lock-'+identifier)
+        self.lock_depth = 0
         trusted(self.root)
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.directory = self.root/identifier
         trusted(self.directory)
         self.directory.mkdir(mode=0o700, exist_ok=True)
 
+    @contextmanager
+    def locked(self):
+        # The lock inode is outside the directory exchanged during adoption.
+        if self.lock_depth:
+            yield
+            return
+        with transport_lock(self.lock_path, self.deadline):
+            self.lock_depth += 1
+            try:
+                yield
+            finally:
+                self.lock_depth -= 1
+
+    @key_locked
     def public(self):
         private = self.directory/'key'
         trusted(private)
@@ -177,6 +255,7 @@ class Client:
             raise ValueError('missing_public_key')
         return key(' '.join(public.read_text().split()[:2]))
 
+    @key_locked
     def ssh(self, target):
         target = endpoint(target)
         known = self.directory/'known_hosts'
@@ -200,6 +279,7 @@ class Client:
             args[-1:-1] = ['-o', 'ProxyCommand='+shlex.join(proxy)]
         return args
 
+    @key_locked
     def request(self, request, target=None):
         if target is None:
             path = self.directory/'endpoint.json'
@@ -229,6 +309,7 @@ class Client:
             raise ValueError('rpc_failed')
         return result['result']
 
+    @key_locked
     def connect(self, target):
         target = endpoint(target)
         self.public()
@@ -243,24 +324,45 @@ class Client:
         atomic(self.directory/'endpoint.json', encode(target))
         return {'connected': True, 'fingerprint': fingerprint(target['host_key'])}
 
+    @key_locked
     def adopt_retired(self, target):
         """First enrollment only: the server still trusts the key of an earlier removal."""
+        with transport_lock(self.root/'.retired.lock', self.deadline):
+            return self._adopt_retired_locked(target)
+
+    def _adopt_retired_locked(self, target):
         directory = retired_directory(self.root, target['host_key'])
         private, public, current = directory/'key', directory/'key.pub', self.directory/'endpoint.json'
         for path in (directory, private, public, current):
             trusted(path)
         if current.exists() or not private.is_file() or not public.is_file():
             return False
-        saved = {name: (self.directory/name).read_bytes() for name in ('key', 'key.pub')}
-        atomic(self.directory/'key', private.read_bytes())
-        atomic(self.directory/'key.pub', public.read_bytes())
-        try:
-            if self.request({'action': 'ping'}, target) != {'schema': 1}:
-                raise ValueError('protocol')
-        except Exception:
-            for name, body in saved.items():
-                atomic(self.directory/name, body)
-            raise
+        active = self.directory
+        names = {'key', 'key.pub', 'known_hosts', 'xr_known_hosts', 'snapshot.json'}
+        with tempfile.TemporaryDirectory(prefix='.adopt-', dir=self.root) as temporary:
+            candidate = Path(temporary)
+            for path in active.iterdir():
+                trusted(path)
+                if path.name not in names or not path.is_file():
+                    raise ValueError('unsafe_path')
+                if path.name not in ('key', 'key.pub'):
+                    atomic(candidate/path.name, path.read_bytes())
+            for path in (private, public):
+                body = path.read_bytes()
+                if not body or len(body) > 16384:
+                    raise ValueError('incomplete_controller')
+                atomic(candidate/path.name, body)
+            validate_pair(candidate)
+            # SSH opens the candidate private key; active files remain intact.
+            self.directory = candidate
+            try:
+                if self.request({'action': 'ping'}, target) != {'schema': 1}:
+                    raise ValueError('protocol')
+            finally:
+                self.directory = active
+            sync_directory(candidate)
+            exchange_directories(active, candidate)
+            # TemporaryDirectory now contains only the previous complete set.
         private.unlink()
         public.unlink()
         try:
@@ -269,8 +371,13 @@ class Client:
             pass  # A foreign leftover must not fail an enrollment that already succeeded.
         return True
 
+    @key_locked
     def retire(self):
         """Keep the controller key of a node being forgotten for a later re-enrollment."""
+        with transport_lock(self.root/'.retired.lock', self.deadline):
+            return self._retire_locked()
+
+    def _retire_locked(self):
         private, public, current = self.directory/'key', self.directory/'key.pub', self.directory/'endpoint.json'
         for path in (private, public, current):
             trusted(path)
@@ -292,6 +399,7 @@ class Client:
         for name, body in pair.items():
             atomic(directory/name, body)
 
+    @key_locked
     def reconnect(self, value):
         if not isinstance(value, dict) or set(value) != {'address', 'port'}:
             raise ValueError('endpoint')
@@ -303,6 +411,7 @@ class Client:
         # server cannot take over an existing node through this form.
         return self.rebind(target)
 
+    @key_locked
     def rebind(self, target):
         target = endpoint(target)
         path = self.directory/'endpoint.json'
@@ -318,6 +427,7 @@ class Client:
         atomic(path, encode(target))
         return {'status': status}
 
+    @key_locked
     def saved(self):
         path = self.directory/'snapshot.json'
         trusted(path)
@@ -328,6 +438,7 @@ class Client:
             raise ValueError('snapshot')
         return {'snapshot': value, 'hash': hashlib.sha256(body).hexdigest()[:16]}
 
+    @key_locked
     def store(self, snapshot):
         """Replace the saved snapshot with one uploaded by the administrator.
 
@@ -339,6 +450,7 @@ class Client:
         atomic(self.directory/'snapshot.json', encode(snapshot))
         return self.saved()
 
+    @key_locked
     def forget(self):
         # Only this node's fixed transport files; never recurse or follow links.
         names = {'key', 'key.pub', 'endpoint.json', 'snapshot.json', 'known_hosts', 'xr_known_hosts'}
@@ -362,33 +474,34 @@ def main():
     if not isinstance(value, dict) or set(value) != {'id', 'action', 'value'}:
         raise ValueError('request')
     client = Client(value['id'])
-    if value['action'] == 'public' and value['value'] is None:
-        result = {'public_key': client.public()}
-    elif value['action'] == 'connect':
-        result = client.connect(value['value'])
-    elif value['action'] == 'reconnect':
-        result = client.reconnect(value['value'])
-    elif value['action'] == 'rebind':
-        result = client.rebind(value['value'])
-    elif value['action'] == 'rpc':
-        result = client.request(value['value'])
-    elif value['action'] == 'saved' and value['value'] is None:
-        result = client.saved()
-    elif value['action'] == 'retire' and value['value'] is None:
-        client.retire()
-        result = {'retired': True}
-    elif value['action'] == 'forget' and value['value'] is None:
-        result = client.forget()
-    elif value['action'] == 'import' and isinstance(value['value'], dict) and set(value['value']) == {'snapshot'}:
-        saved = client.store(value['value']['snapshot'])
-        result = {'hash': saved['hash']}
-    elif value['action'] == 'snapshot' and value['value'] is None:
-        snapshot = client.request({'action': 'backup'})
-        atomic(client.directory/'snapshot.json', encode(snapshot))
-        result = {'saved': True}
-    else:
-        raise ValueError('action')
-    sys.stdout.buffer.write(encode({'ok': True, 'result': result}))
+    with client.locked():
+        if value['action'] == 'public' and value['value'] is None:
+            result = {'public_key': client.public()}
+        elif value['action'] == 'connect':
+            result = client.connect(value['value'])
+        elif value['action'] == 'reconnect':
+            result = client.reconnect(value['value'])
+        elif value['action'] == 'rebind':
+            result = client.rebind(value['value'])
+        elif value['action'] == 'rpc':
+            result = client.request(value['value'])
+        elif value['action'] == 'saved' and value['value'] is None:
+            result = client.saved()
+        elif value['action'] == 'retire' and value['value'] is None:
+            client.retire()
+            result = {'retired': True}
+        elif value['action'] == 'forget' and value['value'] is None:
+            result = client.forget()
+        elif value['action'] == 'import' and isinstance(value['value'], dict) and set(value['value']) == {'snapshot'}:
+            saved = client.store(value['value']['snapshot'])
+            result = {'hash': saved['hash']}
+        elif value['action'] == 'snapshot' and value['value'] is None:
+            snapshot = client.request({'action': 'backup'})
+            atomic(client.directory/'snapshot.json', encode(snapshot))
+            result = {'saved': True}
+        else:
+            raise ValueError('action')
+        sys.stdout.buffer.write(encode({'ok': True, 'result': result}))
 
 
 if __name__ == '__main__':

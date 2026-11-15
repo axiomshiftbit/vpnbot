@@ -19,7 +19,7 @@ require __DIR__.'/../app/i18n.php';
 class RoundTripBot extends Bot {
  public string $syncedDomain = '';
  public bool $rejectXray = false;
- public function restoreBackupXray(array $config): bool { return !$this->rejectXray && parent::restoreBackupXray($config); }
+ protected function restoreBackupXrayLocked(array $config): bool { return !$this->rejectXray && parent::restoreBackupXrayLocked($config); }
  public function syncManagedUpstreams(): void { $this->syncedDomain=$this->getPacConf()['domain']??''; }
  public function __construct(public string $dir,array $translations){
   $this->managedNodeRoot="$dir/nodes";
@@ -177,7 +177,7 @@ try{
   rtCheck($b->getPacConf()['singtemplates']===$snapshot['pac']['singtemplates'],'Новая установка сохраняет удаление и правки шаблонов');
  }
  $beforeStats=['users'=>[['global'=>['upload'=>123,'download'=>456]]]];
- $b->setXrayStats($beforeStats);$b->rejectXray=true;
+ $b->setXrayStats($beforeStats);$beforeStats=$b->getXrayStats();$b->rejectXray=true;
  file_put_contents($b->update,json_encode(['xray'=>$snapshot['xray'],'xraystats'=>['users'=>[['global'=>['upload'=>99999,'download'=>77777]]]]]));
  rtCheck($b->importFile($b->update)===false,'Отказ ядра возвращает неполное восстановление');
  rtCheck($b->getXrayStats()===$beforeStats,'Отвергнутый снимок Xray не меняет расход прежних пользователей');

@@ -24,43 +24,27 @@ function ssAssert(bool $cond, string $msg): void
     }
 }
 
-// ── 1. pkill-шаблоны не должны матчить собственную командную строку ─────────
-// Модель: шелл получает всю строку в argv, поэтому «сама себя» = шаблон как
-// регулярка, приложенная к тексту команды.
-$selfMatches = function (string $pattern, string $cmdline): bool {
-    return (bool) preg_match('~' . $pattern . '~', $cmdline);
-};
-
-foreach (['PKILL_STLS' => Bot::PKILL_STLS] as $name => $cmd) {
-    ssAssert(str_contains($cmd, '['), "$name использует bracket-форму шаблона");
-    // Вытаскиваем шаблон из «pkill -f '<pattern>'»
-    ssAssert((bool) preg_match("~pkill -f '([^']+)'~", $cmd, $m), "$name разбирается");
-    $pattern = $m[1];
-    ssAssert(!$selfMatches($pattern, $cmd), "$name НЕ матчит собственную строку (иначе шелл убьёт сам себя)");
+// Lifecycle uses the supervisor instead of a shell-wide process-name kill.
+class SsControllerTestBot extends Bot {
+    public string $command = '';
+    public string $reply = '';
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
+        $this->command = $cmd;
+        return $this->reply;
+    }
 }
-
-// Тот же шаблон обязан по-прежнему находить реальный процесс.
-ssAssert($selfMatches('[c]k-server', 'ck-server -c /tmp/ckserver.json'),
-    'шаблон cloak находит реальный ck-server');
-ssAssert($selfMatches('[s]imple-tls', 'simple-tls -s -b :3443 -d 127.0.0.1:8388'),
-    'шаблон simple-tls находит реальный процесс');
-
-// Регрессия: старый, беззащитный вид обязан проваливать проверку выше —
-// иначе тест бесполезен.
-ssAssert($selfMatches('ck-server', 'pkill -f ck-server; jq … && ck-server -c /tmp/x'),
-    'контроль: старый шаблон действительно матчил свою же строку');
-
-// Команда рестарта cloak целиком: в ней есть и pkill, и запуск ck-server —
-// именно эта комбинация и самоубивалась.
-$restart = (new ReflectionMethod(Bot::class, 'ckServerRestartCmd'))->invoke(
-    (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor()
-);
-ssAssert(str_starts_with($restart, 'pkill -x ck-server; '), 'полная команда рестарта ищет имя процесса, а не свой SSH argv');
-ssAssert($selfMatches('[c]k-server', "pkill -f '[c]k-server'; jq … && ck-server -c /tmp/x"),
-    'bracket-шаблон тоже матчится на полный рестарт — одного теста pkill недостаточно');
-ssAssert(!preg_match('~(?<!\[)\bpkill -f ck-server\b~', $restart), 'в ckServerRestartCmd нет голого pkill -f ck-server');
-ssAssert(str_contains($restart, 'nohup setsid ck-server'), 'ckServerRestartCmd всё ещё запускает ck-server');
-ssAssert(str_contains($restart, '/logs/ck-server.log'), 'вывод ck-server уходит в лог');
+$controller = (new ReflectionClass(SsControllerTestBot::class))->newInstanceWithoutConstructor();
+foreach (['ck-server', 'simple-tls'] as $service) {
+    foreach (['restart' => 'READY', 'stop' => 'STOPPED'] as $action => $marker) {
+        $controller->reply = "VPNBOT_SERVICE_$marker:$service";
+        ssAssert($controller->controlContainerService('ss', $service, $action), 'confirmed '.$service.' '.$action);
+        ssAssert(!str_contains($controller->command, 'pkill') && !str_contains($controller->command, 'nohup'),
+            'supervisor owns process termination and launch');
+        $controller->reply = '';
+        ssAssert(!$controller->controlContainerService('ss', $service, $action), 'missing marker is failure');
+    }
+}
+$adapter = file_get_contents(__DIR__ . '/../scripts/service_daemon.sh');
 
 $acl = file_get_contents(__DIR__ . '/../config/ss.acl');
 $ssTemplate = json_decode(file_get_contents(__DIR__ . '/../config/ssserver.json'), true);
@@ -107,9 +91,9 @@ ssAssert(in_array($ck['BrowserSig'], ['chrome', 'firefox', 'safari'], true), 'ck
 ssAssert(in_array($ck['Transport'], ['direct', 'CDN'], true), 'ckclient.json: Transport валиден');
 
 // ck-server не понимает наше служебное поле Enabled и пустые AdminUID/
-// DatabasePath — их обязаны вырезать и start_ss.sh, и команда бота.
+// DatabasePath — их вырезает общий адаптер запуска службы.
 foreach (['Enabled', 'AdminUID', 'DatabasePath'] as $k) {
-    ssAssert(str_contains($restart, $k), "ckServerRestartCmd вычищает $k");
+    ssAssert(str_contains($adapter, $k), "service adapter вычищает $k");
 }
 
 // v2ray-plugin: серверная сторона поднимается без path (дефолт '/'), поэтому

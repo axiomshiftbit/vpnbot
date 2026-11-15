@@ -25,6 +25,9 @@ class RestartValidationBot extends Bot
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')
     {
         $this->commands[] = $cmd;
+        if (str_contains($cmd, 'VPNBOT_XRAY_STOPPED')) return 'VPNBOT_XRAY_STOPPED';
+        if (str_contains($cmd, 'VPNBOT_XRAY_LAUNCHED')) return 'VPNBOT_XRAY_LAUNCHED';
+        if (str_contains($cmd, 'XRAY_STARTED')) return 'XRAY_STARTED';
         return '';
     }
 }
@@ -52,7 +55,7 @@ try {
         throw new RuntimeException('Отказ NGINX изменил конфиг или остановил Xray');
     }
     $bot->routesValid = true;
-    if (!$bot->restartXray($config) || $bot->collections !== 1 || count($bot->commands) !== 2
+    if (!$bot->restartXray($config) || $bot->collections !== 1 || count($bot->commands) !== 3
         || file_get_contents($bot->xrayConf) === '{"previous":true}') {
         throw new RuntimeException('Корректный конфиг не применён');
     }

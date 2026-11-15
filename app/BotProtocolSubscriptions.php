@@ -2,18 +2,33 @@
 
 trait BotProtocolSubscriptions
 {
+    private function xrayProtocolUsageRows(ManagedProtocol $store, array $state): array
+    {
+        $usage = $store->usage();
+        if ($usage === [] && !$state['users']) return [];
+        if (!is_array($usage['users'] ?? null)) throw new RuntimeException('Protocol usage is unavailable');
+        foreach ($usage['users'] as $row) {
+            if (!is_array($row) || !is_int($row['upload'] ?? null) || !is_int($row['download'] ?? null)
+                || $row['upload'] < 0 || $row['download'] < 0 || !is_string($row['reset'] ?? null)) {
+                throw new RuntimeException('Protocol usage is invalid');
+            }
+        }
+        return $usage['users'];
+    }
+
     public function xrayProtocolUsage(array $client): array
     {
         $source = ManagedProtocol::xraySource($client); $total = ['upload' => 0, 'download' => 0];
         foreach (array_keys(ManagedProtocol::NAMES) as $protocol) {
             $store = $this->protocolStore($protocol);
-            if (!is_file($store->directory() . '/desired.json')) continue;
-            $usage = $store->usage();
-            foreach ($store->read()['users'] as $id => $user) {
+            if (!file_exists($store->directory() . '/desired.json') && !is_link($store->directory() . '/desired.json')) continue;
+            $state = $store->read(); $usage = null;
+            foreach ($state['users'] as $id => $user) {
                 if (($user['xray_source'] ?? '') !== $source) continue;
-                $bytes = $usage['users'][$id] ?? [];
-                if (($bytes['reset'] ?? '') !== $user['reset']) continue;
-                foreach ($total as $direction => $_) $total[$direction] += (int) ($bytes[$direction] ?? 0);
+                $usage ??= $this->xrayProtocolUsageRows($store, $state);
+                $bytes = $usage[$id] ?? [];
+                if (($bytes['reset'] ?? '') !== $user['reset']) throw new RuntimeException($this->t('Общий расход недоступен; дождитесь подтверждения счётчиков', 'Shared usage is unavailable; wait for confirmed counters'));
+                foreach ($total as $direction => $_) $total[$direction] += $bytes[$direction];
             }
         }
         return $total;
@@ -22,6 +37,18 @@ trait BotProtocolSubscriptions
     public function syncXrayProtocolUsers(): void
     {
         if (!is_dir($this->protocolRoot)) return;
+        // Snapshot config and its indexed ledger only outside an in-flight
+        // reset/delete/restore. Order: apply -> xray-sync -> xray-stats.
+        $entered = false;
+        $this->withXrayApplyLock(function () use (&$entered) {
+            $entered = true;
+            $this->syncXrayProtocolUsersWithApplyLock();
+        });
+        if (!$entered) throw new RuntimeException('Could not lock the Xray protocol snapshot');
+    }
+
+    private function syncXrayProtocolUsersWithApplyLock(): void
+    {
         // Serialize the snapshot AND its application across cron and UI workers.
         // Per-protocol write locks alone let an older snapshot undo a revocation.
         $old = umask(0077);
@@ -39,51 +66,75 @@ trait BotProtocolSubscriptions
 
     private function syncXrayProtocolUsersLocked(): void
     {
-        $stores = []; $states = []; $usage = []; $totals = [];
+        $stores = [];
         foreach (array_keys(ManagedProtocol::NAMES) as $protocol) {
             $store = $this->protocolStore($protocol);
-            if (!is_file($store->directory() . '/desired.json')) continue;
-            $stores[$protocol] = $store; $states[$protocol] = $store->read(); $usage[$protocol] = $store->usage();
-            foreach ($states[$protocol]['users'] as $id => $user) {
-                if (!isset($user['xray_source'])) continue;
-                $bytes = $usage[$protocol]['users'][$id] ?? [];
-                if (($bytes['reset'] ?? '') !== $user['reset']) continue;
-                $totals[$user['xray_source']] = ($totals[$user['xray_source']] ?? 0) + (int) ($bytes['upload'] ?? 0) + (int) ($bytes['download'] ?? 0);
-            }
+            if (file_exists($store->directory() . '/desired.json') || is_link($store->directory() . '/desired.json')) $stores[$protocol] = $store;
         }
         if (!$stores) return;
+        // The trusted source snapshot is independent of every derived store.
+        // xray-sync.lock still covers this read AND every following update.
         $xray = $this->getXray();
         if (!is_array($xray) || !is_array($xray['inbounds'][0]['settings']['clients'] ?? null)) {
             throw new RuntimeException($this->t('Не удалось прочитать пользователей VLESS для синхронизации', 'Could not read VLESS users for the sync'));
         }
-        $stats = $this->getXrayStats();
+        $states = []; $usage = []; $totals = []; $unknown = []; $unknownAll = false; $errors = []; $failed = false;
         foreach ($stores as $protocol => $store) {
-            $entries = []; $state = $states[$protocol];
-            $active = $state['enabled'] && $this->protocolModuleEnabled($protocol);
-            $previous = [];
-            foreach ($state['users'] as $id => $user) if (isset($user['xray_source'])) $previous[$user['xray_source']] = [$id, $user];
-            foreach ($xray['inbounds'][0]['settings']['clients'] as $index => $client) {
-                if (empty($client['id'])) continue;
-                $source = ManagedProtocol::xraySource($client);
-                // Disabled modules retain existing credentials, without creating new access.
-                if (!$active && !isset($previous[$source])) continue;
-                $total = $this->xrUserTraffic($stats, $index) + ($totals[$source] ?? 0);
-                $limit = max(0, (int) ($client['traffic'] ?? 0)); $own = 0;
-                if (isset($previous[$source])) {
-                    [$id, $user] = $previous[$source]; $bytes = $usage[$protocol]['users'][$id] ?? [];
-                    if (($bytes['reset'] ?? '') === $user['reset']) $own = (int) ($bytes['upload'] ?? 0) + (int) ($bytes['download'] ?? 0);
-                }
-                $name = trim((string) ($client['email'] ?? '')) ?: 'VLESS';
-                $name = mb_substr(preg_replace('/[\x00-\x1f\x7f]/', ' ', $name), 0, 100);
-                $entries[$source] = ['name' => $name, 'enabled' => $active && empty($client['off'])
-                    && ($client['managed_protocols'][$protocol] ?? true) !== false && (!$limit || $total < $limit),
-                    'expires' => (int) ($client['time'] ?? 0) > 0 ? (int) $client['time'] : null,
-                    // Each supervisor enforces the remaining COMMON quota locally.
-                    'quota' => $limit ? max(1, $own + max(0, $limit - $total)) : null,
-                    'xray_credential' => ManagedProtocol::xrayCredential($client)];
+            try { $states[$protocol] = $store->read(); }
+            catch (Throwable $error) {
+                $unknownAll = true; $failed = true; $errors[$protocol] = 'state_unavailable';
+                try { $store->quarantineXraySync(); } catch (Throwable $failure) { $errors[$protocol] = 'quarantine_unconfirmed'; }
+                continue;
             }
-            $store->syncXrayUsers($entries);
+            try { $usage[$protocol] = $this->xrayProtocolUsageRows($store, $states[$protocol]); }
+            catch (Throwable $error) { $usage[$protocol] = []; $errors[$protocol] = 'usage_unavailable'; }
+            foreach ($states[$protocol]['users'] as $id => $user) {
+                if (!isset($user['xray_source'])) continue;
+                $bytes = $usage[$protocol][$id] ?? [];
+                if (($bytes['reset'] ?? '') !== $user['reset']) { $unknown[$user['xray_source']] = true; continue; }
+                $totals[$user['xray_source']] = ($totals[$user['xray_source']] ?? 0) + $bytes['upload'] + $bytes['download'];
+            }
         }
+        try { $stats = $this->getXrayStats(); if (!is_array($stats)) throw new RuntimeException('Xray usage unavailable'); }
+        catch (Throwable $error) { $stats = []; $unknownAll = true; $errors['xray'] = 'usage_unavailable'; }
+        foreach ($stores as $protocol => $store) {
+            if (!isset($states[$protocol])) continue;
+            try {
+                $entries = []; $state = $states[$protocol];
+                $active = $state['enabled'] && $this->protocolModuleEnabled($protocol);
+                $previous = [];
+                foreach ($state['users'] as $id => $user) if (isset($user['xray_source'])) $previous[$user['xray_source']] = [$id, $user];
+                foreach ($xray['inbounds'][0]['settings']['clients'] as $index => $client) {
+                    if (empty($client['id'])) continue;
+                    $source = ManagedProtocol::xraySource($client);
+                    if (!$active && !isset($previous[$source])) continue;
+                    $known = !$unknownAll && !isset($unknown[$source]);
+                    $total = $this->xrUserTraffic($stats, $index) + ($totals[$source] ?? 0);
+                    $limit = max(0, (int) ($client['traffic'] ?? 0)); $own = 0;
+                    if (isset($previous[$source])) {
+                        [$id, $user] = $previous[$source]; $bytes = $usage[$protocol][$id] ?? [];
+                        if (($bytes['reset'] ?? '') === $user['reset']) $own = $bytes['upload'] + $bytes['download'];
+                    }
+                    $name = trim((string) ($client['email'] ?? '')) ?: 'VLESS';
+                    $name = mb_substr(preg_replace('/[\x00-\x1f\x7f]/', ' ', $name), 0, 100);
+                    $entries[$source] = ['name' => $name, 'enabled' => $active && empty($client['off'])
+                        && ($client['managed_protocols'][$protocol] ?? true) !== false && (!$limit || ($known && $total < $limit)),
+                        'expires' => (int) ($client['time'] ?? 0) > 0 ? (int) $client['time'] : null,
+                        // Unknown aggregate never grants a fresh quota. Disabled
+                        // entries use a positive sentinel until counters recover.
+                        'quota' => $limit ? ($known ? max(1, $own + max(0, $limit - $total)) : 1) : null,
+                        'xray_credential' => ManagedProtocol::xrayCredential($client)];
+                }
+                $store->syncXrayUsers($entries);
+                $store->clearXraySyncQuarantine();
+            } catch (Throwable $error) {
+                $failed = true; $errors[$protocol] = 'apply_unavailable';
+                try { $store->quarantineXraySync(); } catch (Throwable $failure) { $errors[$protocol] = 'quarantine_unconfirmed'; }
+            }
+        }
+        ManagedProtocol::writeJson($this->protocolRoot . '/xray-sync.status.json', ['time' => time(), 'complete' => !$errors && !$unknownAll && !$unknown,
+            'access_applied' => !$failed, 'errors' => $errors, 'quota_unknown' => $unknownAll || (bool) $unknown]);
+        if ($failed) throw new RuntimeException($this->t('Часть протоколов ожидает восстановления состояния; остальные обновлены', 'Some protocols await state recovery; the others have been updated'));
     }
 
     public function resetXrayProtocolUsage(?array $client = null): void

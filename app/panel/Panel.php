@@ -400,16 +400,14 @@ class Panel
      */
     public function ensurePassword()
     {
-        $conf = $this->pacConf();
-        if (!empty($conf['panelpswd'])) {
-            return null;
-        }
-        $plain            = bin2hex(random_bytes(9));
-        $conf['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
-        // Без токена бота ключа для копии нет: пароль задаём, просмотр в боте
-        // появится после входа, когда токен будет записан.
-        if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException(Lang::t('Не удалось сохранить защищённую копию пароля', 'Could not save the protected password copy'));
-        if ($this->bot->setPacConf($conf) === false) throw new RuntimeException(Lang::t('Не удалось сохранить пароль панели', 'Could not save the panel password'));
+        $plain = $this->bot->pacConfUpdate(function (&$conf) {
+            if (!empty($conf['panelpswd'])) return null;
+            $plain = bin2hex(random_bytes(9));
+            $conf['panelpswd'] = password_hash($plain, PASSWORD_DEFAULT);
+            if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException(Lang::t('Не удалось сохранить защищённую копию пароля', 'Could not save the protected password copy'));
+            return $plain;
+        });
+        if ($plain === null) return null;
         $f = $this->store->dir() . '/initial_password.txt';
         @touch($f);
         @chmod($f, 0600);
@@ -421,29 +419,13 @@ class Panel
     public function setPassword($plain)
     {
         if (strlen((string) $plain) < 8 || strlen((string) $plain) > 72) throw new InvalidArgumentException(Lang::t('Пароль панели: от 8 до 72 байт', 'Panel password: 8 to 72 bytes'));
-        $conf              = $this->pacConf();
-        $conf['panelpswd'] = password_hash((string) $plain, PASSWORD_DEFAULT);
-        if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), (string) $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException(Lang::t('Не удалось сохранить защищённую копию пароля', 'Could not save the protected password copy'));
-        if ($this->bot->setPacConf($conf) === false) throw new RuntimeException(Lang::t('Не удалось сохранить пароль панели', 'Could not save the panel password'));
+        $hash = $this->bot->pacConfUpdate(function (&$conf) use ($plain) {
+            $conf['panelpswd'] = password_hash((string) $plain, PASSWORD_DEFAULT);
+            if ('' !== $this->key && !PanelPasswordVault::remember($this->store->dir(), (string) $plain, $conf['panelpswd'], $this->key)) throw new RuntimeException(Lang::t('Не удалось сохранить защищённую копию пароля', 'Could not save the protected password copy'));
+            return $conf['panelpswd'];
+        });
         @unlink($this->store->dir() . '/initial_password.txt');
-        PanelPasswordVault::settle($this->store->dir(), $conf['panelpswd']);
-    }
-
-    /**
-     * pac.json перед записью пароля. getPacConf() отдаёт null, если файл
-     * недоступен или битый: с прежним `?: []` мы записали бы поверх него
-     * конфиг из одного поля panelpswd, то есть потеряли бы все настройки бота
-     * (клиентов, ключи reality, шаблоны). Пустой МАССИВ — законное состояние
-     * («{}»), а null — нет.
-     */
-    private function pacConf()
-    {
-        $conf = $this->bot->getPacConf();
-        if (!is_array($conf)) {
-            throw new RuntimeException(Lang::t('pac.json недоступен или повреждён — пароль панели не записан', 'pac.json is unavailable or damaged; the panel password is not written'));
-        }
-
-        return $conf;
+        PanelPasswordVault::settle($this->store->dir(), $hash);
     }
 
     private function passwordHash()
@@ -582,7 +564,7 @@ class Panel
         // Трёхчастная кука — мультиадминство (exp.adminId.hmac). Двухчастная —
         // прежний формат для установок с одним админом: он не менялся, чтобы
         // не рвать уже выданные сессии там, где выбирать всё равно не из чего.
-        if (preg_match('~^(\d+)\.(-?\d+)\.([0-9a-f]{64})$~', $v, $m)) {
+        if (preg_match('~^(\d+)\.(-?\d+)\.([0-9a-f]{64})$~D', $v, $m)) {
             $exp   = (int) $m[1];
             $admin = (int) $m[2];
             if ($exp < time() || !in_array($admin, $this->admins, true)) {
@@ -595,7 +577,7 @@ class Panel
 
             return true;
         }
-        if (preg_match('~^(\d+)\.([0-9a-f]{64})$~', $v, $m)) {
+        if (preg_match('~^(\d+)\.([0-9a-f]{64})$~D', $v, $m)) {
             $exp = (int) $m[1];
             if ($exp < time() || !hash_equals($this->sign($exp), $m[2]) || $this->revoked($v)) {
                 return false;
@@ -868,15 +850,14 @@ class Panel
         $q    = parse_url($url, PHP_URL_QUERY) ?: '';
         $path = parse_url($url, PHP_URL_PATH) ?: '/';
         parse_str($q, $p);
-        $origin = 'http://' . ($_SERVER['HTTP_HOST'] ?? ('127.0.0.1:' . self::port()));
         if (($p['t'] ?? '') === 'te') {
-            return $origin . $this->prefix . '/editor?' . http_build_query([
+            return $this->prefix . '/editor?' . http_build_query([
                 'ty' => $p['ty'] ?? '',
                 'te' => $p['te'] ?? '',
             ]);
         }
 
-        return $origin . $path . ($q ? '?' . $q : '');
+        return '/' . ltrim($path, '/') . ($q ? '?' . $q : '');
     }
 
     private function asset($name)
@@ -1196,12 +1177,16 @@ class Panel
         // бабл ДО того, как обработчик прочитает файл), поэтому их не
         // подчистит вытеснение ленты — убираем старьё сами.
         $this->store->pruneUploads();
-        $body = (string) file_get_contents($f['tmp_name']);
+        $body = @file_get_contents($f['tmp_name']);
+        if ($body === false) return $this->json(['ok' => false, 'error' => 'upload failed'], 500);
         $name = (string) ($f['name'] ?? 'file');
         // Имя в хранилище работает как file_id: обработчики импорта берут
         // содержимое через getFile() + Bot::$file, который в панель-режиме
         // указывает в ту же папку.
-        $id      = $this->store->storeFile($body, $name);
+        try { $id = $this->store->storeFile($body, $name); }
+        catch (PanelStoreWriteException $error) {
+            return $this->json(['ok' => false, 'error' => 'storage unavailable'], 500);
+        }
         $caption = (string) ($_POST['caption'] ?? '');
 
         return $this->dispatch($this->userMessage([

@@ -277,6 +277,26 @@ def fresh_minimal(root):
     if path.exists() or path.is_symlink():
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Only init.sh's new-install path calls this. Existing overrides, including
+    # an intentionally empty file, retain their exposure policy and custom ports.
+    override = root / 'docker-compose.override.yml'
+    ports_tmp = override.with_name(override.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with open(ports_tmp, 'x') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write('services:\n'
+                         '  wg:\n    ports: ["51820:51820/udp"]\n'
+                         '  wg1:\n    ports: ["51821:51820/udp"]\n'
+                         '  telemt:\n    ports: ["9443:443/tcp"]\n'
+                         '  hy:\n    ports: ["5443:443/udp"]\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(ports_tmp, override)
+        except FileExistsError:
+            pass
+    finally:
+        ports_tmp.unlink(missing_ok=True)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         with open(temporary, "x") as stream:

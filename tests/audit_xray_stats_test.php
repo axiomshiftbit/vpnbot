@@ -72,6 +72,7 @@ class XrStatsTestBot extends Bot
         $this->restarted = true;
     }
 
+    protected function switchXrLocked($i, $nm = 0, $time = false) { return $this->switchXr($i, $nm, $time); }
     public function switchXr($i, $nm = 0, $time = false)
     {
         $this->switched[] = $i;

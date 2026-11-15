@@ -28,7 +28,8 @@ class WgKeyShellBot extends Bot
         proc_close($proc);
         return $out;
     }
-    public function saveClient(array $client) { $this->client = $client; return 0; }
+    public function readClients(): array { return []; }
+    public function applyWgConfig(string $conf, ?array $clients = null, bool $switch = false, array $remap = []): bool { $this->client = $clients[0]; $this->server = $conf; return true; }
     public function createConfig($data) { return json_encode($data); }
     public function restartWG($conf, $norestart = false) { $this->server = $conf; return true; }
     public function menu($type = false, $arg = false, $return = false) {}

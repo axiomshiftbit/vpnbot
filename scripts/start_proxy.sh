@@ -21,6 +21,4 @@ then
     [ -s "$tmp" ] && cat "$tmp" > /config.json
     rm -f "$tmp"
 fi
-mkdir -p /logs
-nohup setsid sslocal -v -c /config.json </dev/null >>/logs/shadowsocks_proxy 2>&1 &
-tail -f /dev/null
+exec /bin/sh /service_supervisor.sh supervise proxy

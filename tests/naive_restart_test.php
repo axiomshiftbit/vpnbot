@@ -27,8 +27,11 @@ class NaiveRestartBot extends Bot
     }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
         $this->commands[] = $cmd;
-        if (str_starts_with($cmd, 'caddy run')) copy("$this->root/Caddyfile", "$this->root/active");
-        return str_starts_with($cmd, 'caddy validate') ? 'Valid configuration' : '';
+        if (str_contains($cmd, 'service_supervisor.sh restart naive')) {
+            copy("$this->root/Caddyfile", "$this->root/active");
+            return 'VPNBOT_SERVICE_READY:naive';
+        }
+        return str_starts_with($cmd, 'caddy validate') ? 'VPNBOT_NAIVE_VALID' : '';
     }
     public function menu($type = false, $arg = false, $return = false) {}
 }

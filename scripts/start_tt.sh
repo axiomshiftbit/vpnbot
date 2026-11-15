@@ -41,7 +41,4 @@ if [ "$start_ok" = 1 ] && { [ ! -f /certs/cert_public ] || [ ! -f /certs/cert_pr
     start_ok=0
 fi
 
-if [ "$start_ok" = 1 ]; then
-    cd "$CFG" && trusttunnel_endpoint vpn.toml hosts.toml >>/logs/trusttunnel.log 2>&1 &
-fi
-tail -f /dev/null
+exec /bin/sh /service_supervisor.sh supervise tt

@@ -19,6 +19,8 @@
  * процессами unit (см. applications/panel в config/unit.json), и опрос ленты
  * идёт параллельно с длинным обработчиком.
  */
+class PanelStoreWriteException extends RuntimeException {}
+
 class PanelStore
 {
     /**
@@ -86,24 +88,35 @@ class PanelStore
     public function mutate(callable $fn)
     {
         $lock = @fopen($this->file . '.lock', 'c');
-        if ($lock) {
-            @chmod($this->file . '.lock', 0600);
-            flock($lock, LOCK_EX);
-        }
+        if (!$lock) throw new PanelStoreWriteException('Panel storage is unavailable');
+        @chmod($this->file . '.lock', 0600);
+        if (!flock($lock, LOCK_EX)) { fclose($lock); throw new PanelStoreWriteException('Panel storage is unavailable'); }
         try {
             $state = $this->read();
+            $previousFiles = $this->messageFiles($state);
             $state['rev']++;
             $out = $fn($state);
             $this->trim($state);
             $this->save($state);
+            foreach (array_diff($previousFiles, $this->messageFiles($state)) as $file) {
+                @unlink($this->filesDir . '/' . $file);
+            }
 
             return $out;
         } finally {
-            if ($lock) {
-                flock($lock, LOCK_UN);
-                fclose($lock);
-            }
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
+    }
+
+    private function messageFiles(array $state): array
+    {
+        $files = [];
+        foreach ($state['messages'] as $message) {
+            $file = $message['attach']['file'] ?? null;
+            if (is_string($file) && $this->isSafeId($file)) $files[] = $file;
+        }
+        return array_unique($files);
     }
 
     private function save(array $state)
@@ -115,22 +128,38 @@ class PanelStore
         // (SUBSTITUTE подставит U+FFFD), чем всю переписку.
         $json = json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (false === $json) {
-            error_log('panel store: json_encode failed — ' . json_last_error_msg());
+            throw new PanelStoreWriteException('Panel state cannot be encoded');
+        }
+        $this->writeFile($this->file, $json);
+    }
 
-            return;
+    private function writeFile(string $path, string $contents): void
+    {
+        $tmp = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        $mask = umask(0077);
+        try { $stream = @fopen($tmp, 'x'); }
+        finally { umask($mask); }
+        if (!$stream) throw new PanelStoreWriteException('Panel storage is unavailable');
+        try {
+            try {
+                $ok = @chmod($tmp, 0600) && fwrite($stream, $contents) === strlen($contents)
+                    && fflush($stream) && fsync($stream);
+            } finally {
+                $closed = fclose($stream);
+            }
+            if (!$ok || !$closed || !@rename($tmp, $path)) {
+                throw new PanelStoreWriteException('Panel data was not saved');
+            }
+            $directory = @fopen(dirname($path), 'r');
+            if (!$directory) throw new PanelStoreWriteException('Panel data durability is unconfirmed');
+            try { $synced = fsync($directory); }
+            finally { fclose($directory); }
+            if (!$synced) throw new PanelStoreWriteException('Panel data durability is unconfirmed');
+        } catch (Throwable $error) {
+            throw new PanelStoreWriteException('Panel data was not saved');
+        } finally {
+            if (is_file($tmp)) @unlink($tmp);
         }
-        $tmp = $this->file . '.tmp';
-        if (!file_exists($this->file)) {
-            @touch($this->file);
-            @chmod($this->file, 0600);
-        }
-        if (file_put_contents($tmp, $json) === false) {
-            @unlink($tmp);
-
-            return;
-        }
-        @chmod($tmp, 0600);
-        rename($tmp, $this->file);
     }
 
     /** Вытесняем самые старые сообщения вместе с их вложениями. */
@@ -142,10 +171,6 @@ class PanelStore
         }
         ksort($state['messages'], SORT_NUMERIC);
         foreach (array_slice(array_keys($state['messages']), 0, $over) as $id) {
-            $att = $state['messages'][$id]['attach'] ?? null;
-            if (!empty($att['file'])) {
-                @unlink($this->filesDir . '/' . $att['file']);
-            }
             unset($state['messages'][$id]);
         }
     }
@@ -194,10 +219,6 @@ class PanelStore
             if (empty($state['messages'][$id])) {
                 return false;
             }
-            $att = $state['messages'][$id]['attach'] ?? null;
-            if (!empty($att['file'])) {
-                @unlink($this->filesDir . '/' . $att['file']);
-            }
             $state['messages'][$id]['deleted'] = true;
             $state['messages'][$id]['attach']  = null;
             $state['messages'][$id]['buttons'] = [];
@@ -232,8 +253,7 @@ class PanelStore
         $safe = preg_replace('~[^\w.-]~u', '_', (string) $name) ?: 'file';
         $safe = trim(str_replace('..', '_', $safe), '.') ?: 'file';
         $id   = bin2hex(random_bytes(8)) . '_' . $safe;
-        file_put_contents($this->filesDir . '/' . $id, $contents);
-        @chmod($this->filesDir . '/' . $id, 0600);
+        $this->writeFile($this->filesDir . '/' . $id, (string) $contents);
 
         return $id;
     }
@@ -317,11 +337,6 @@ class PanelStore
     public function reset()
     {
         $this->mutate(function (&$state) {
-            foreach ($state['messages'] as $m) {
-                if (!empty($m['attach']['file'])) {
-                    @unlink($this->filesDir . '/' . $m['attach']['file']);
-                }
-            }
             $next             = $state['next_id'];
             $rev              = $state['rev'];
             $state            = $this->blank();

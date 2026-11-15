@@ -146,7 +146,9 @@ try {
     $bot->failWrite = false;
     // Нечитаемые файлы: ничего не пишется и не перезапускается.
     $stops = $bot->stops; file_put_contents($bot->adguard, '');
-    $bot->adguardXrayClients(); $bot->adguardSync();
+    $bot->adguardXrayClients();
+    try { $bot->adguardSync(); adgAssert(false, 'ошибка чтения настроек DNS не сообщена'); }
+    catch (RuntimeException $e) { adgAssert(true, 'ошибка чтения настроек DNS сообщена'); }
     adgAssert($bot->stops === $stops && file_get_contents($bot->adguard) === '', 'нечитаемый конфиг перезаписан');
     adgAssert($bot->adguardConf() === null, 'пустой файл принят за конфиг');
     yaml_emit_file($bot->adguard, $base); $bot->xrayFake = null;

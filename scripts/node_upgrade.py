@@ -16,6 +16,7 @@ import tarfile
 import time
 
 import image_bundle
+import node_code
 import node_state as state
 from node_runtime import command
 
@@ -59,7 +60,7 @@ def installed(store):
 
 # Modules copied to the node's code directory by node_setup.py --upgrade-code.
 MODULES = ('node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py',
-           'node_wg.py', 'node_awg.py', 'node_state.py', 'node_upgrade.py', 'image_bundle.py')
+           'node_wg.py', 'node_awg.py', 'node_state.py', 'node_upgrade.py', 'image_bundle.py', 'node_code.py')
 LIB = Path('/usr/local/lib/vpnbot-node')
 INSTALLED = 'code-installed.json'
 
@@ -67,8 +68,9 @@ INSTALLED = 'code-installed.json'
 def digest(directory=None):
     """SHA-256 over the installed modules: names, sizes and contents."""
     result = hashlib.sha256()
+    directory = Path(directory) if directory is not None else node_code.active_path(LIB)
     for name in MODULES:
-        data = (Path(directory or LIB)/name).read_bytes()
+        data = (directory/name).read_bytes()
         result.update(name.encode() + b'\0' + str(len(data)).encode() + b'\0' + data)
     return result.hexdigest()
 

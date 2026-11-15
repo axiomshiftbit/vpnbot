@@ -198,7 +198,9 @@ trait BotTelemtLimits
                 $this->telemtStop();
             }
             if ($state !== null) $this->telemtQuotaWrite($state);
-            $this->telemtSave(static function (&$current) use ($conf) { $current = $conf; });
+            $this->telemtSave(function (&$current) use ($conf) {
+                $current = $this->preserveBackupSettings($conf, $current);
+            });
             $this->applyTelemt();
         });
     }
@@ -364,7 +366,7 @@ trait BotTelemtLimits
             $data[] = [['text' => $this->i18n('telemt limits ' . ($action === 'period' ? 'period button' : $action)), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, $action)]];
         }
         $data[] = [['text' => $this->i18n('refresh'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay, 'limits')]];
-        $context = substr(hash('sha256', $name), 0, 12) . '.' . $page . '.' . ($relay === '' ? 'direct' : substr(hash('sha256', $relay), 0, 12));
+        $context = $this->telemtUserIdentity($name, $this->getPacConf()) . '.' . $page . '.' . ($relay === '' ? 'direct' : substr(hash('sha256', $relay), 0, 12));
         $data[] = $this->menuHelpButton('telemt_limits', $context);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => $this->telemtUserCallback($name, $page, $relay)]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n\n", $text), $data);
