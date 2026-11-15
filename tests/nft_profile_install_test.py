@@ -238,6 +238,21 @@ class State(Base):
         self.config.write_text((ROOT / 'nftables/noda.conf').read_text())
         self.assertEqual('ok', installer.profile_state(self.config, 'node'))
 
+    def test_declined_own_profile_counts_as_protection_and_keeps_docker(self):
+        self.config.write_text('#!/usr/sbin/nft -f\n# own profile\n')
+        self.daemon.write_text('{"iptables": true}')
+        for mode, expected in (('full', True), ('node', False)):
+            out = io.StringIO()
+            with patch.object(sys, 'argv', ['nft_profile_install.py', '--mode', mode]), patch.object(installer.os, 'geteuid', return_value=0), \
+                    patch.object(sys.stdin, 'isatty', return_value=True), patch('builtins.input', return_value='n'), \
+                    patch.object(installer, 'run', side_effect=AssertionError('nothing may run')), patch('sys.stdout', out):
+                self.assertIs(expected, installer.main())
+            self.assertEqual('#!/usr/sbin/nft -f\n# own profile\n', self.config.read_text())
+            self.assertEqual('{"iptables": true}', self.daemon.read_text())
+            if mode == 'full':
+                self.assertIn('оставлен собственный', out.getvalue())
+                self.assertIn('userland-proxy = false', out.getvalue())
+
     def test_node_template_and_lists_installed_without_overwriting_admin_lists(self):
         (self.lists / 'my_server').mkdir(parents=True)
         (self.lists / 'my_server/geoip-ipv4.nft').write_text('# own list\n')

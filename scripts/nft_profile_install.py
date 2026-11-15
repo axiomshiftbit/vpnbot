@@ -321,8 +321,19 @@ def main():
     if interactive and state == 'foreign':
         answer = input('/etc/nftables.conf не профиль VPNBot. Заменить профилем из nftables/ (прежний сохранится)? [y/N]: ')
         if answer.strip().lower() not in ('y', 'yes', 'д', 'да'):
-            print('[INFO] nftables: профиль не установлен по выбору администратора')
-            return False
+            if args.mode == 'node':
+                print('[INFO] nftables: профиль ноды не установлен по выбору администратора')
+                return False
+            # Свой профиль администратора — тоже защита хоста; Docker не трогаем.
+            print('[INFO] nftables: оставлен собственный /etc/nftables.conf; /etc/docker/daemon.json не менялся')
+            try:
+                value = json.loads(DAEMON.read_text()) if DAEMON.exists() else {}
+            except ValueError:
+                value = None
+            if not isinstance(value, dict) or any(value.get(k) is not v for k, v in DOCKER_SETTINGS.items()):
+                print('[INFO] Docker сам управляет iptables и NAT. Если ваш профиль рассчитан на Docker без своих правил, '
+                      'задайте в daemon.json iptables, ip6tables и userland-proxy = false и перезапустите Docker.')
+            return True
     return install_node() if args.mode == 'node' else install_full(interactive)
 
 
