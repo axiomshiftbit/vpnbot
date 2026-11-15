@@ -4,6 +4,10 @@ set -euo pipefail
 image=$1
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+if [ "$image" = --assets ]; then
+    export IMAGE_NAME=assets
+    python3 "$(dirname "$0")/ci_assets.py" "${2:-.}" "$work/assets.cdx.json"
+fi
 sh "$(dirname "$0")/../dockerfile/download-file.sh" https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz "$work/trivy.tar.gz"
 echo "bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf  $work/trivy.tar.gz" | sha256sum -c -
 tar -xzf "$work/trivy.tar.gz" -C "$work" trivy
@@ -21,6 +25,12 @@ assert d['Version']==2, 'unknown vulnerability DB schema'
 PY
 # Находки не меняют код возврата Trivy (их разбирает проверка ниже), поэтому
 # повтор касается только сбоя загрузки образа из реестра.
-sh "$retry" "$work/trivy" image --skip-db-update --no-progress --scanners vuln,secret \
-    --pkg-types os,library --format json --output "$work/result.json" "$image"
-python3 "$(dirname "$0")/ci_scan_gate.py" "$work/result.json"
+if [ "$image" = --assets ]; then
+    sh "$retry" "$work/trivy" sbom --skip-db-update --no-progress --scanners vuln \
+        --list-all-pkgs --format json --output "$work/result.json" "$work/assets.cdx.json"
+    python3 "$(dirname "$0")/ci_scan_gate.py" "$work/result.json" "$work/assets.cdx.json"
+else
+    sh "$retry" "$work/trivy" image --skip-db-update --no-progress --scanners vuln,secret \
+        --pkg-types os,library --list-all-pkgs --format json --output "$work/result.json" "$image"
+    python3 "$(dirname "$0")/ci_scan_gate.py" "$work/result.json"
+fi

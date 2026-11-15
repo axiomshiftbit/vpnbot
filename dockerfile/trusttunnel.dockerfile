@@ -10,11 +10,13 @@ ARG TT_REF=v1.1.0
 # Последний стабильный Rust; rust-toolchain.toml апстрима закрепляет канал
 # 1.95, RUSTUP_TOOLCHAIN ниже его заменяет.
 ARG RUST_VERSION=1.99.1
+ARG CARGO_AUDITABLE_VERSION=0.7.7
 ARG image=alpine:3.24
 
 FROM rust:${RUST_VERSION}-alpine AS build
 ARG TT_REF
 ARG RUST_VERSION
+ARG CARGO_AUDITABLE_VERSION
 RUN apk add --no-cache build-base cmake git clang-dev linux-headers perl pkgconf
 # RUSTUP_TOOLCHAIN: компилятор уже в образе; без переменной rustup по
 # rust-toolchain.toml апстрима скачал бы тот же канал заново.
@@ -24,6 +26,7 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
     CARGO_NET_RETRY=5 \
     RUSTUP_TOOLCHAIN=${RUST_VERSION} \
     RUSTFLAGS="-C target-feature=-crt-static"
+RUN cargo install --locked cargo-auditable --version "=${CARGO_AUDITABLE_VERSION}"
 COPY sources.sha256 /sources.sha256
 WORKDIR /src
 # Фетчим ровно нужный ref, а не клонируем ветку: `clone --depth 50` + checkout
@@ -46,17 +49,22 @@ RUN git init -q . \
     # Тег можно переписать: коммит обязан совпасть с закреплённым для этой
     # версии. Пин на полный коммит проверяет сам себя.
     && pinned=$(awk -v key="trusttunnel/${TT_REF}" '$2 == key {print $1}' /sources.sha256) \
-    && test "$(git rev-parse HEAD)" = "${pinned:-$TT_REF}"
-RUN cargo build --release --bin trusttunnel_endpoint \
-    && cargo build --release --bin setup_wizard \
+    && test "$(git rev-parse HEAD)" = "${pinned:-$TT_REF}" \
+    && test -s Cargo.lock && sha256sum Cargo.lock > /tmp/cargo-lock.sha256
+RUN cargo auditable build --locked --release --bin trusttunnel_endpoint \
+    && cargo auditable build --locked --release --bin setup_wizard \
     && strip target/release/trusttunnel_endpoint target/release/setup_wizard
 # 1.1.0: внутренний HTTP/1 обработчик метрик паникует, если публичный HTTP/1
 # выключен. Оставляем публичную политику прежней; исправляем только default.
 COPY trusttunnel-metrics.patch /trusttunnel-metrics.patch
 RUN git apply --check /trusttunnel-metrics.patch && git apply /trusttunnel-metrics.patch \
-    && cargo test --release -p trusttunnel --lib metrics_without_public_http1 \
-    && cargo build --release --bin trusttunnel_endpoint --bin setup_wizard \
-    && strip target/release/trusttunnel_endpoint target/release/setup_wizard
+    && cargo test --locked --release -p trusttunnel --lib metrics_without_public_http1 \
+    && cargo auditable build --locked --release --bin trusttunnel_endpoint --bin setup_wizard \
+    && strip target/release/trusttunnel_endpoint target/release/setup_wizard \
+    && sha256sum -c /tmp/cargo-lock.sha256 \
+    && for binary in target/release/trusttunnel_endpoint target/release/setup_wizard; do \
+         readelf -S "$binary" | grep -q '\.dep-v0'; \
+       done
 
 FROM $image
 # Alpine вместо Debian: в образе на Debian сканер находил десятки уязвимостей
@@ -68,6 +76,7 @@ RUN apk upgrade --no-cache --available \
     && mkdir -p /root/.ssh /trusttunnel_endpoint /usr/local/libexec
 COPY --from=build /src/target/release/trusttunnel_endpoint /usr/local/libexec/
 COPY --from=build /src/target/release/setup_wizard         /usr/local/bin/
+COPY --from=build /src/Cargo.lock /usr/local/share/trusttunnel/Cargo.lock
 # Распределитель памяти musl плохо переносит многопоточную нагрузку: при пяти
 # одновременных клиентах endpoint тратил втрое-вчетверо больше процессора и
 # отдавал в 2,5 раза меньше, чем сборка под glibc (замер 2026-10-10: 2,6 против

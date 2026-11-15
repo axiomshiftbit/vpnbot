@@ -76,7 +76,7 @@ class PolicyTest(unittest.TestCase):
             root = Path(directory); self.reports(root)
             proof = release.collect(root, bundle(), {}, release.stages())
             self.assertEqual(proof['warnings'], [])
-            self.assertEqual(len(release.stages()), len(bundles.IMAGES)+4)
+            self.assertEqual(len(release.stages()), len(bundles.IMAGES)+5)
             (root/'components.json').unlink()
             with self.assertRaises(ValueError): release.collect(root, bundle(), {}, release.stages())
 

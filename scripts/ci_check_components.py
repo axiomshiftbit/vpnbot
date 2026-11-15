@@ -4,8 +4,8 @@
 Trivy видит пакеты Alpine и модули внутри Go-бинарников. Он не видит программы,
 собранные из исходников на C (nginx, strongSwan, pppd, ocserv), готовые
 бинарники на Rust (TeleMT, shadowsocks-rust) и уязвимости самих приложений,
-объявленные их авторами. snolc собирается cargo auditable: зависимости его
-ядра и модулей Trivy видит сам. Этот скрипт сверяет закреплённые версии с NVD (по
+объявленные их авторами. snolc и TrustTunnel собираются cargo auditable:
+зависимости проверяет Trivy. Этот скрипт сверяет закреплённые версии с NVD (по
 CPE продукта) и с объявлениями безопасности репозиториев GitHub.
 
 У ocserv нет записей ни в NVD, ни на GitHub: автор отмечает исправления
@@ -44,6 +44,7 @@ import urllib.parse
 import urllib.request
 
 from ci_retry import retrying
+import ci_assets
 import ci_waivers
 import ci_release_policy as release
 
@@ -60,12 +61,17 @@ COMPONENTS = [
     dict(name='Easy-RSA', pin='EASYRSA_VERSION', cpe='openvpn:easy-rsa', repo='OpenVPN/easy-rsa'),
     dict(name='AdGuard Home', pin='ADGUARD_VERSION', cpe='adguard:adguardhome', repo='AdguardTeam/AdGuardHome'),
     dict(name='sing-box', pin='SINGBOX_VERSION', cpe='sagernet:sing-box', repo='SagerNet/sing-box'),
+    dict(name='sing-box Windows', pin='asset:sing-box Windows', repo='SagerNet/sing-box'),
+    dict(name='jQuery webapp', pin='asset:jquery', repo='jquery/jquery'),
+    dict(name='JSONEditor webapp', pin='asset:jsoneditor', repo='josdejong/jsoneditor'),
+    dict(name='WinSW Windows', pin='asset:WinSW', repo='winsw/winsw'),
     dict(name='mihomo', pin='MIHOMO_VERSION', cpe='metacubex:mihomo', repo='MetaCubeX/mihomo'),
     dict(name='Caddy', pin='CADDY_VERSION', cpe='caddyserver:caddy', repo='caddyserver/caddy'),
     dict(name='Xray', pin='XRAY_VERSION', repo='XTLS/Xray-core'),
     dict(name='Xray (fork)', pin='XRAY_FORK_VERSION', repo='Jolymmiles/Xray-core'),
     dict(name='Hysteria', pin='HYSTERIA_VERSION', repo='apernet/hysteria', tag_prefix='app/'),
     dict(name='TeleMT', pin='TELEMT_VERSION', repo='telemt/telemt'),
+    dict(name='TrustTunnel', pin='dockerfile/trusttunnel.dockerfile:TT_REF', repo='TrustTunnel/TrustTunnel'),
     dict(name='shadowsocks-rust', pin='SS_RUST_VERSION', repo='shadowsocks/shadowsocks-rust'),
     dict(name='Mieru', pin='MIERU_VERSION', repo='enfein/mieru'),
     dict(name='AmneziaWG', pin='AWG_GO_VERSION', repo='amnezia-vpn/amneziawg-go'),
@@ -89,8 +95,8 @@ COMPONENTS = [
     dict(name='Cloak', pin='CLOAK_VERSION', release='cbeuw/Cloak'),
     dict(name='simple-tls', pin='SIMPLE_TLS_VERSION', release='IrineSistiana/simple-tls'),
     dict(name='tun2socks', pin='dockerfile/wireguard.dockerfile:TUN2SOCKS_VERSION', release='xjasonlyu/tun2socks'),
-    dict(name='TrustTunnel', pin='dockerfile/trusttunnel.dockerfile:TT_REF', release='TrustTunnel/TrustTunnel'),
     dict(name='cargo-auditable', pin='dockerfile/snolc.dockerfile:CARGO_AUDITABLE_VERSION', release='rust-secure-code/cargo-auditable'),
+    dict(name='cargo-auditable (TrustTunnel)', pin='dockerfile/trusttunnel.dockerfile:CARGO_AUDITABLE_VERSION', release='rust-secure-code/cargo-auditable'),
     dict(name='Trivy', pin='scripts/ci_scan_image.sh:TRIVY', pattern=r'/trivy/releases/download/v([0-9.]+)/', release='aquasecurity/trivy'),
     dict(name='DNSTT', pin='dockerfile/dnstt.dockerfile:DNSTT_REF', git='https://www.bamsoftware.com/git/dnstt.git'),
     dict(name='Alpine', pin='IMAGE', alpine=True),
@@ -112,10 +118,14 @@ def numbers(version):
 def pins(root=ROOT):
     env = dict(line.split('=', 1) for line in (root / '.env').read_text().splitlines()
                if re.match(r'^[A-Z0-9_]+=', line))
-    found = {}
+    found, assets = {}, None
     for item in COMPONENTS:
         source = item['pin']
-        if ':' in source:
+        if source.startswith('asset:'):
+            if assets is None:
+                assets, _bom = ci_assets.inventory(root)
+            value = assets[source.removeprefix('asset:')]
+        elif ':' in source:
             path, key = source.split(':')
             match = re.search(item.get('pattern') or rf'^ARG {key}=(\S+)$', (root / path).read_text(), re.M)
             value = match.group(1) if match else ''
@@ -179,21 +189,56 @@ def nvd_findings(cpe, version):
                   if item['cve'].get('vulnStatus') != 'Rejected')
 
 
+def advisory_version(version):
+    """SemVer для advisories: prerelease ниже выпуска, build metadata не сравнивается.
+
+    Сокращённые границы 1/1.2 означают 1.0.0/1.2.0. Неизвестный формат
+    останавливает проверку, вместо извлечения произвольных цифр из строки.
+    """
+    match = re.fullmatch(r'v?(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?(?:\.(0|[1-9]\d*))?'
+                         r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', str(version))
+    if not match:
+        raise ValueError('unsupported advisory version')
+    core = tuple(int(value or 0) for value in match.group(1, 2, 3))
+    prerelease = match.group(4)
+    parts = []
+    for value in prerelease.split('.') if prerelease else []:
+        if value.isdigit():
+            if len(value) > 1 and value.startswith('0'):
+                raise ValueError('invalid numeric prerelease')
+            parts.append((0, int(value)))
+        else:
+            parts.append((1, value))
+    return core, prerelease is None, tuple(parts)
+
+
+def advisory_fix_available(patched):
+    if patched is None or patched == '':
+        return False
+    if not isinstance(patched, str):
+        raise ValueError('unsupported patched versions')
+    for version in patched.split(','):
+        advisory_version(version.strip())
+    return True
+
+
 def affected(version, vulnerable, patched):
-    """Попадает ли версия в диапазон объявления GitHub («>= 2.0.0, < 2.9.2»)."""
-    current = numbers(version)
-    for clause in filter(None, (part.strip() for part in (vulnerable or '').split(','))):
-        match = re.match(r'^(<=|>=|<|>|=)\s*v?([0-9][^\s]*)$', clause)
-        if not match:
-            # Нераспознанная запись диапазона: надёжнее считать версию затронутой
-            # и сверить по версии с исправлением ниже.
-            continue
-        operator, bound = match.group(1), numbers(match.group(2))
-        if not {'<': current < bound, '<=': current <= bound, '>': current > bound,
-                '>=': current >= bound, '=': current == bound}[operator]:
-            return False
-    fixed = numbers(patched or '')
-    return not fixed or current < fixed
+    """Только диапазон определяет применимость; patched — отдельный набор веток."""
+    current = advisory_version(version)
+    if not isinstance(vulnerable, str) or not vulnerable.strip():
+        raise ValueError('missing vulnerable version range')
+    groups = []
+    for group in vulnerable.split('||'):
+        clauses = []
+        for clause in group.split(','):
+            match = re.fullmatch(r'\s*(<=|>=|<|>|=)?\s*([^\s,|]+)\s*', clause)
+            if not match:
+                raise ValueError('unsupported vulnerable version range')
+            operator, bound = match.group(1) or '=', advisory_version(match.group(2))
+            clauses.append({'<': current < bound, '<=': current <= bound, '>': current > bound,
+                            '>=': current >= bound, '=': current == bound}[operator])
+        groups.append(all(clauses))
+    return any(groups)
 
 
 def advisory_findings(repo, version, token):
@@ -206,7 +251,7 @@ def advisory_findings(repo, version, token):
         for item in advisory.get('vulnerabilities') or []:
             if affected(version, item.get('vulnerable_version_range'), item.get('patched_versions')):
                 found.append((advisory.get('cve_id') or advisory['ghsa_id'], (advisory.get('severity') or 'unknown').upper(),
-                              bool(numbers(item.get('patched_versions') or ''))))
+                              advisory_fix_available(item.get('patched_versions'))))
                 break
     return sorted(set(found))
 

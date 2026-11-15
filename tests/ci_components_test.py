@@ -111,11 +111,13 @@ class ComponentsTest(unittest.TestCase):
     def test_advisory_ranges(self):
         cases = [('2.9.1', '< 2.9.2', '2.9.2', True), ('2.9.2', '< 2.9.2', '2.9.2', False), ('v2.13.0', '>= 2.0.0, < 2.9.2', '2.9.2', False),
                  ('2.5.0', '>= 2.0.0, < 2.9.2', '2.9.2', True), ('1.9.0', '>= 2.0.0, < 2.9.2', '2.9.2', False), ('2.9.2', '<= 2.9.2', '2.9.3', True),
-                 ('2.9.2', '= 2.9.2', '', True), ('3.0.0', '= 2.9.2', '', False), ('1.0.0', '', '1.2.0', True), ('1.2.0', '', '1.2.0', False),
-                 ('1.0.0', 'все версии', '1.2.0', True), ('5.0.0', 'все версии', '1.2.0', False), ('1.0.0', '', '', True)]
+                 ('2.9.2', '= 2.9.2', '', True), ('3.0.0', '= 2.9.2', '', False)]
         for version, vulnerable, patched, expected in cases:
             with self.subTest(version=version, vulnerable=vulnerable, patched=patched):
                 self.assertIs(components.affected(version, vulnerable, patched), expected)
+        for vulnerable in ('', 'все версии'):
+            with self.subTest(vulnerable=vulnerable), self.assertRaises(ValueError):
+                components.affected('1.2.0', vulnerable, '1.2.0')
 
     def test_clean_state_passes_and_asks_every_source(self):
         api = Api()

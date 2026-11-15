@@ -15,7 +15,7 @@ FUNCTIONAL_TESTS = frozenset(name+'_test.php' for name in (
 
 def stages():
     from image_bundle import IMAGES
-    return {'components', 'unit-host', 'unit-alpine84', 'unit-alpine85'} | {'security-'+name for name in IMAGES}
+    return {'components', 'security-assets', 'unit-host', 'unit-alpine84', 'unit-alpine85'} | {'security-'+name for name in IMAGES}
 
 
 def validate_stage(stage):

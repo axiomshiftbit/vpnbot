@@ -467,6 +467,14 @@ jobs:
         with:
           name: admission-components
           path: ${{ runner.temp }}/admission/components.json
+      - name: Уязвимости поставляемых JS и Windows Go зависимостей
+        env:
+          CI_REPORT_FILE: ${{ runner.temp }}/admission/security-assets.json
+        run: bash scripts/ci_scan_image.sh --assets .
+      - uses: ./.github/actions/upload-artifact
+        with:
+          name: admission-security-assets
+          path: ${{ runner.temp }}/admission/security-assets.json
       # Адреса боевых серверов и другие приметы установки известны только
       # своему runner (файл /etc/vpnbot-ci-private-markers): ни в репозиторий,
       # ни в секреты GitHub они не кладутся. Остальные правила те же, что в тестах.

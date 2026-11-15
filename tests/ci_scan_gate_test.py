@@ -73,6 +73,30 @@ class ScanGateTest(unittest.TestCase):
         data['Results'].append({'Class': 'secret', 'Target': 'x', 'Secrets': None})
         self.assertEqual(self.run_gate(data)[0], 0)
 
+    def test_trusttunnel_requires_both_real_rust_inventories(self):
+        data = report()
+        with patch.dict('os.environ', {'IMAGE_NAME': 'tt'}):
+            for target in ('usr/local/libexec/trusttunnel_endpoint', 'usr/local/bin/setup_wizard'):
+                with self.assertRaisesRegex(AssertionError, 'Rust package scan missing'):
+                    self.run_gate(data)
+                data['Results'].append({'Class': 'lang-pkgs', 'Type': 'rustbinary', 'Target': target,
+                                        'Packages': [{'Name': 'synthetic-crate', 'Version': '1.0.0'}]})
+            self.assertEqual(self.run_gate(data)[0], 0)
+            data['Results'][-1]['Packages'] = []
+            with self.assertRaisesRegex(AssertionError, 'Rust package scan missing'):
+                self.run_gate(data)
+
+    def test_trusttunnel_rust_vulnerability_reaches_gate(self):
+        data = report()
+        for target in ('/usr/local/libexec/trusttunnel_endpoint', '/usr/local/bin/setup_wizard'):
+            data['Results'].append({'Class': 'lang-pkgs', 'Type': 'rustbinary', 'Target': target,
+                                    'Packages': [{'Name': 'synthetic-crate', 'Version': '1.0.0'}],
+                                    'Vulnerabilities': [vuln('SYNTHETIC-RUST-HIGH', 'HIGH', package='synthetic-crate')]})
+        with patch.dict('os.environ', {'IMAGE_NAME': 'tt'}):
+            code, text = self.run_gate(data)
+        self.assertEqual(code, 1)
+        self.assertIn('BLOCK SYNTHETIC-RUST-HIGH synthetic-crate', text)
+
     def test_scan_script_enables_secret_scanning_and_uses_this_gate(self):
         script = (ROOT / 'scripts/ci_scan_image.sh').read_text()
         self.assertIn('--scanners vuln,secret', script)

@@ -7,6 +7,7 @@
 """
 import json
 import os
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -14,13 +15,26 @@ import ci_waivers  # noqa: E402
 import ci_release_policy as release
 
 
-def gate(d):
+def gate(d, image_name=None, asset_bom=None):
     os = d.get('Metadata', {}).get('OS', {})
     # Только Alpine: для Debian сканер показывал десятки уязвимостей высокой
     # важности без исправления, и блокировать по ним было нечем.
-    assert os.get('Family') == 'alpine' and not os.get('EOSL', False), 'unsupported/EOL operating system'
     results = d.get('Results', [])
-    assert any(x.get('Class') == 'os-pkgs' for x in results), 'OS package scan missing'
+    if image_name == 'assets':
+        import ci_assets
+        ci_assets.verify_scan(d, asset_bom or {})
+    else:
+        assert os.get('Family') == 'alpine' and not os.get('EOSL', False), 'unsupported/EOL operating system'
+        assert any(x.get('Class') == 'os-pkgs' for x in results), 'OS package scan missing'
+    if image_name == 'tt':
+        # Отчёт без Rust inventory не доказывает проверку зависимостей.
+        # --list-all-pkgs оставляет список и у полностью чистого бинарника.
+        targets = {x.get('Target', '').lstrip('/') for x in results
+                   if x.get('Class') == 'lang-pkgs' and x.get('Type') == 'rustbinary'
+                   and x.get('Packages')
+                   and all(p.get('Name') and p.get('Version') for p in x['Packages'])}
+        expected = {'usr/local/libexec/trusttunnel_endpoint', 'usr/local/bin/setup_wizard'}
+        assert expected <= targets, 'Rust package scan missing: ' + ', '.join(sorted(expected - targets))
     blocked, unfixed, secrets, medium = [], [], [], 0
     for result in results:
         for v in result.get('Vulnerabilities') or []:
@@ -37,8 +51,9 @@ def gate(d):
     return sorted(set(blocked)), sorted(set(secrets)), sorted(set(unfixed)), medium
 
 
-def main(path):
-    blocked, secrets, unfixed, medium = gate(json.load(open(path)))
+def main(path, asset_bom_path=None):
+    asset_bom = json.loads(Path(asset_bom_path).read_text()) if asset_bom_path else None
+    blocked, secrets, unfixed, medium = gate(json.loads(Path(path).read_text()), os.environ.get('IMAGE_NAME'), asset_bom)
     # Only exact vulnerability + package + installed version, and only in a run
     # that explicitly allowed waivers. Secrets are never waived.
     blocked, waived, hints = ci_waivers.split(blocked, lambda entries, row: ci_waivers.package_waiver(entries, row[0], row[1], row[2]))
@@ -71,4 +86,4 @@ def main(path):
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None))
