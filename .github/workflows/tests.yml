@@ -108,6 +108,15 @@ jobs:
             env TMPDIR=/tmp VLESS_TEST_XRAY="$3" XRAY_FORK_TEST_BINARY="$4" \
             python3 scripts/ci_unit_tests.py --stage unit-host --report "$5/admission/unit-host.json"
           BASH
+      - name: Полные nftables-профили и сетевые атаки в изолированном стенде
+        run: |
+          sh scripts/ci_retry.sh sudo apt-get install -y nftables iproute2 util-linux
+          sudo python3 tests/integration/nft_security_namespace.py --report "$RUNNER_TEMP/admission/nft-security.json"
+      - uses: ./.github/actions/upload-artifact
+        if: always()
+        with:
+          name: nft-security
+          path: ${{ runner.temp }}/admission/nft-security.json
       - uses: ./.github/actions/upload-artifact
         with:
           name: admission-unit-host
