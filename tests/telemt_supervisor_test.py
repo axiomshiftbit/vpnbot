@@ -44,7 +44,7 @@ class TelemtSupervisorTest(unittest.TestCase):
                     try:
                         if Path('/proc', pid, 'stat').read_text().split(') ')[1][0] != 'Z':
                             alive.append(int(pid))
-                    except FileNotFoundError:
+                    except (FileNotFoundError, ProcessLookupError):
                         pass  # Процесс мог завершиться между pgrep и чтением stat.
                 return alive
 
