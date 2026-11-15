@@ -131,7 +131,7 @@ class PolicyTest(unittest.TestCase):
         with self.assertRaises(ValueError): hosted.evidence(bundle(), counts|{'native': 0}, 'c'*64, [row], True)
 
     def test_vulnerability_exception_never_waives_secrets_or_missing_os_scan(self):
-        data = {'Metadata': {'OS': {'Family': 'alpine'}}, 'Results': [{'Class': 'os-pkgs', 'Vulnerabilities': [
+        data = {'Metadata': {'OS': {'Family': 'alpine'}}, 'Results': [{'Class': 'os-pkgs', 'Packages': [{'Name': 'musl', 'Version': '1.0'}], 'Vulnerabilities': [
             dict(VulnerabilityID='CVE-2026-12345', Severity='HIGH', FixedVersion='2', PkgName='pkg', InstalledVersion='1')]}]}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'scan.json'; path.write_text(json.dumps(data))

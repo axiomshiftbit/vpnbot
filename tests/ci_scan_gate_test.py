@@ -14,7 +14,7 @@ import ci_scan_gate as scan  # noqa: E402
 
 
 def report(vulns=(), secrets=(), family='alpine', eosl=False, os_class=True):
-    results = [{'Class': 'os-pkgs' if os_class else 'lang-pkgs', 'Target': 'image (alpine 3.24)', 'Vulnerabilities': list(vulns)}]
+    results = [{'Class': 'os-pkgs' if os_class else 'lang-pkgs', 'Packages': [{'Name': 'musl', 'Version': '1.0'}], 'Target': 'image (alpine 3.24)', 'Vulnerabilities': list(vulns)}]
     if secrets:
         results.append({'Class': 'secret', 'Target': '/root/.ssh/id_ed25519', 'Secrets': list(secrets)})
     return {'Metadata': {'OS': {'Family': family, 'EOSL': eosl}}, 'Results': results}

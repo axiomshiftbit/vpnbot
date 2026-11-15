@@ -24,7 +24,7 @@ ENTRY = dict(id='GHSA-r766-rf9f-588h', component='Caddy', version='v2.11.7', pac
 
 def trivy(*vulns, secrets=()):
     return {'Metadata': {'OS': {'Family': 'alpine'}}, 'Results': [
-        {'Class': 'os-pkgs', 'Target': 'alpine', 'Vulnerabilities': []},
+        {'Class': 'os-pkgs', 'Packages': [{'Name': 'musl', 'Version': '1.0'}], 'Target': 'alpine', 'Vulnerabilities': []},
         {'Class': 'lang-pkgs', 'Target': 'usr/bin/caddy', 'Vulnerabilities': [
             dict(VulnerabilityID=i, PkgName=p, InstalledVersion=v, FixedVersion=f, Severity='HIGH') for i, p, v, f in vulns],
          'Secrets': [dict(RuleID=r) for r in secrets]}]}
