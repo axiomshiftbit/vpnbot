@@ -346,7 +346,9 @@ class PythonRetryTest(unittest.TestCase):
 
 class WorkflowRetryTest(unittest.TestCase):
     workflows = sorted((ROOT / '.github/workflows').glob('*.yml'))
-    actions = sorted((ROOT / '.github/actions').glob('*/action.yml'))
+    # prepare-native-host only runs shell commands (apt via ci_retry.sh).
+    actions = sorted(p for p in (ROOT / '.github/actions').glob('*/action.yml')
+                     if p.parent.name != 'prepare-native-host')
 
     def test_scanner_tools_skip_apt_when_present_and_keep_install_failures(self):
         workflow = yaml.safe_load((ROOT / '.github/workflows/images.yml').read_text())
@@ -388,6 +390,10 @@ class WorkflowRetryTest(unittest.TestCase):
                 self.assertIsNone(direct.search(path.read_text()))
         self.assertEqual({p.parent.name for p in self.actions},
                          {'download-artifact', 'upload-artifact', 'registry-login', 'setup-buildx'})
+        host = yaml.safe_load((ROOT / '.github/actions/prepare-native-host/action.yml').read_text())['runs']['steps']
+        self.assertEqual([s for s in host if 'uses' in s], [])
+        self.assertTrue(all('apt-get' not in line or 'ci_retry.sh' in line
+                            for s in host for line in s['run'].splitlines()))
 
     def test_each_wrapper_makes_four_attempts_and_only_the_last_decides(self):
         for path in self.actions:

@@ -567,31 +567,7 @@ jobs:
         with:
           name: image-bundle
           path: ${{ runner.temp }}
-      - name: Подготовить одноразовую виртуальную машину
-        run: |
-          set -euo pipefail
-          if [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]; then
-            # Только стандартные ненужные SDK свежего GitHub runner.
-            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-            # ACL по умолчанию на /opt отменяет umask: закрытые ключи стенда
-            # получали 0644, и sshd отказывался их использовать.
-            sudo setfacl -b /opt
-          else
-            test "$(cat /etc/vpnbot-ci-test-host)" = home-build
-          fi
-          sh scripts/ci_retry.sh sudo apt-get update -qq
-          sh scripts/ci_retry.sh sudo apt-get install -y python3-yaml python3-cryptography tcpdump curl jq openssl iptables kmod
-          sudo modprobe wireguard
-          sudo modprobe l2tp_ppp
-          sudo modprobe -a xt_comment xt_mark xt_connmark
-          # ocserv installs REJECT rules for its clients and refuses to start
-          # without them (fail closed); containers cannot load kernel modules.
-          for module in nft_compat xt_REJECT ipt_REJECT nf_reject_ipv4 nft_reject nft_reject_ipv4 nft_reject_inet; do
-            sudo modprobe "$module" 2>/dev/null || true
-          done
-          sudo mkdir -p /dev/net
-          test -c /dev/net/tun || sudo mknod /dev/net/tun c 10 200
-          test -c /dev/ppp || sudo mknod /dev/ppp c 108 0
+      - uses: ./.github/actions/prepare-native-host
       - uses: ./.github/actions/registry-login
         with:
           username: ${{ github.actor }}
@@ -603,16 +579,27 @@ jobs:
       - name: Удалить доступ к registry перед запуском VPN-стенда
         if: always()
         run: docker logout ghcr.io
+      # На раннерах GitHub самостоятельные наборы идут параллельно в
+      # native-isolated, а native-gate собирает общий допуск. Домашний раннер
+      # (одна машина) проходит всё последовательно и сразу даёт допуск.
       - name: Чистая установка, протоколы, бэкап, восстановление и откат
         run: |
           sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
             python3 scripts/ci_hosted_test.py test ${{ (runner.environment == 'self-hosted') && '--local-test' || '' }} \
-            --manifest "$RUNNER_TEMP/bundle.json" --output "$RUNNER_TEMP/native.json" \
+            ${{ (runner.environment == 'github-hosted') && '--split core' || '' }} \
+            --manifest "$RUNNER_TEMP/bundle.json" \
+            --output "$RUNNER_TEMP/${{ (runner.environment == 'self-hosted') && 'native.json' || 'native-part-core.json' }}" \
             ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_test_failures && '--allow-test-failures' || '' }}
       - uses: ./.github/actions/upload-artifact
+        if: runner.environment == 'self-hosted'
         with:
           name: native-admission
           path: ${{ runner.temp }}/native.json
+      - uses: ./.github/actions/upload-artifact
+        if: runner.environment == 'github-hosted'
+        with:
+          name: native-part-core
+          path: ${{ runner.temp }}/native-part-core.json
       # Подробности отказа — только шифротекстом (CMS AES-256-GCM, RSA-OAEP)
       # для .github/ci-diagnostics.crt; закрытый ключ вне GitHub. В журнал
       # попадают лишь счётчики и SHA-256 шифротекста; токен служит для сверки.
@@ -639,8 +626,122 @@ jobs:
             sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
               python3 scripts/ci_hosted_test.py cleanup ${{ (runner.environment == 'self-hosted') && '--local-test' || '' }}
           fi
+  native-isolated:
+    # Самостоятельные наборы (свои контейнеры, только образы-кандидаты) на
+    # отдельных раннерах GitHub, параллельно со стендом. На домашнем раннере
+    # шаги пропускаются: там те же наборы проходят внутри native.
+    needs: [bundle, tests, security]
+    if: github.repository == 'axiomshiftbit/vpnbot' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: backup-upgrade
+            cases: backup-node-cold,naive-upgrade,mieru-idle,ocserv-upgrade
+          - group: telemt-snolc
+            cases: telemt-native,snolc-native
+          - group: masque-hysteria
+            cases: masque-native,hysteria-native
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        if: runner.environment == 'github-hosted'
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/download-artifact
+        if: runner.environment == 'github-hosted'
+        with:
+          name: image-bundle
+          path: ${{ runner.temp }}
+      - uses: ./.github/actions/prepare-native-host
+        if: runner.environment == 'github-hosted'
+      - uses: ./.github/actions/registry-login
+        if: runner.environment == 'github-hosted'
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Загрузить точные образы и проверенные тестовые клиенты
+        if: runner.environment == 'github-hosted'
+        run: python3 scripts/ci_hosted_test.py assets --manifest "$RUNNER_TEMP/bundle.json"
+      - name: Удалить доступ к registry перед запуском наборов
+        if: always() && runner.environment == 'github-hosted'
+        run: docker logout ghcr.io
+      - name: Самостоятельные наборы ${{ matrix.group }}
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci_hosted_test.py test --cases ${{ matrix.cases }} \
+            --manifest "$RUNNER_TEMP/bundle.json" --output "$RUNNER_TEMP/native-part-${{ matrix.group }}.json"
+      - uses: ./.github/actions/upload-artifact
+        if: runner.environment == 'github-hosted'
+        with:
+          name: native-part-${{ matrix.group }}
+          path: ${{ runner.temp }}/native-part-${{ matrix.group }}.json
+      - name: Зашифровать журналы отказавших наборов
+        id: diagnostics
+        if: failure() && runner.environment == 'github-hosted'
+        env:
+          CI_DIAG_FORBIDDEN_1: ${{ github.token }}
+        run: |
+          if sudo test -f /opt/vpnbot-hosted-ci/owner; then
+            sudo --preserve-env=CI_DIAG_FORBIDDEN_1 python3 scripts/ci_diagnostics.py \
+              --certificate .github/ci-diagnostics.crt --output "$RUNNER_TEMP/native-diagnostics.cms"
+          fi
+          if [ -s "$RUNNER_TEMP/native-diagnostics.cms" ]; then echo produced=true >> "$GITHUB_OUTPUT"; fi
+      - uses: ./.github/actions/upload-artifact
+        if: failure() && steps.diagnostics.outputs.produced == 'true'
+        with:
+          name: native-diagnostics-encrypted-${{ matrix.group }}
+          path: ${{ runner.temp }}/native-diagnostics.cms
+      - name: Удалить одноразовые данные наборов
+        if: always() && runner.environment == 'github-hosted'
+        run: |
+          if sudo test -f /opt/vpnbot-hosted-ci/owner; then
+            sudo env -i PATH="$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+              python3 scripts/ci_hosted_test.py cleanup
+          fi
+  native-gate:
+    # Общий допуск только из долей этого прогона: тот же коммит, комплект
+    # образов и набор тестов; каждый самостоятельный набор ровно один раз.
+    needs: [bundle, native, native-isolated]
+    if: github.repository == 'axiomshiftbit/vpnbot' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        if: runner.environment == 'github-hosted'
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/download-artifact
+        if: runner.environment == 'github-hosted'
+        with:
+          name: image-bundle
+          path: ${{ runner.temp }}
+      - uses: ./.github/actions/download-artifact
+        if: runner.environment == 'github-hosted'
+        with:
+          pattern: native-part-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/native-parts
+      - name: Собрать общий допуск native
+        if: runner.environment == 'github-hosted'
+        run: |
+          python3 scripts/ci_hosted_test.py merge --manifest "$RUNNER_TEMP/bundle.json" \
+            --parts "$RUNNER_TEMP/native-parts" --output "$RUNNER_TEMP/native.json" \
+            ${{ github.event_name == 'workflow_dispatch' && github.actor == 'axiomshiftbit' && inputs.allow_test_failures && '--allow-test-failures' || '' }}
+      - uses: ./.github/actions/upload-artifact
+        if: runner.environment == 'github-hosted'
+        with:
+          name: native-admission
+          path: ${{ runner.temp }}/native.json
   publish:
-    needs: [build, tests, bundle, security, native]
+    needs: [build, tests, bundle, security, native, native-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -670,7 +771,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Допуск, защита от устаревшего запуска, атомарная публикация комплекта
         env:
-          CHECKS: '{"build":"${{ needs.build.result }}","tests":"${{ needs.tests.result }}","security":"${{ needs.security.result }}","native":"${{ needs.native.result }}"}'
+          # native-gate успешен только после успеха native и native-isolated
+          # (неявное success() в условии); он же собирает native.json.
+          CHECKS: '{"build":"${{ needs.build.result }}","tests":"${{ needs.tests.result }}","security":"${{ needs.security.result }}","native":"${{ needs.native-gate.result }}"}'
           EXPECTED_BUNDLE: ${{ needs.bundle.outputs.fingerprint }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CI_REPORT_DIRECTORY: ${{ runner.temp }}/admission-reports

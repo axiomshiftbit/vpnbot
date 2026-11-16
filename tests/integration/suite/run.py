@@ -58,6 +58,15 @@ def check(group,name,ok):
  counts[group]+=1
  (O/'partial.json').write_text(json.dumps(counts))
 
+# Self-contained suites share their definitions with isolated.py. With
+# VPNBOT_NATIVE_SPLIT=core they run on separate runners instead of here.
+spec=importlib.util.spec_from_file_location('isolated_cases',Path(__file__).with_name('isolated_cases.py'))
+isolated=importlib.util.module_from_spec(spec);spec.loader.exec_module(isolated)
+SPLIT=os.environ.get('VPNBOT_NATIVE_SPLIT','')
+if SPLIT not in ('','core'):raise RuntimeError('unknown native split')
+def isolated_case(name):
+ if SPLIT!='core':isolated.run_case(name,dict(candidate=candidate,checkout=a.checkout,results=O,run=run,check=check,counts=counts,twice=twice))
+
 def containers():
  ids=capture(['docker','ps','-aq','--filter','label=com.docker.compose.project=vpnbot-audit']).split()
  data=json.loads(capture(['docker','inspect',*ids])) if ids else []
@@ -258,14 +267,14 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
  for name,script,extra,minimum in [
   ('backup-wg-awg-payload','wg-payload.py',['--source',str(a.checkout),'--php-image',candidate['images']['php'],'--wg-image',candidate['images']['wg'],'--hosted-ci'],97),
   ('backup-protocols-native','stand-entry.py',[],40),
-  ('backup-node-cold','node-cold.py',['--source',str(a.checkout),'--php-image',candidate['images']['php'],'--xray-image',candidate['images']['xr'],'--ng-image',candidate['images']['ng']],30),
  ]:
   output=O/name
   run(name,['python3',str(backup_native/script),'--out',str(output),*extra],timeout=1800)
   result=json.loads((output/'results.json').read_text())
   rows=result['checks']
-  check('backup_restore',name+'-complete',not result['error'] and len(rows)>=minimum and all(r['passed'] for r in rows) and (name!='backup-node-cold' or result.get('cleanup') is True))
+  check('backup_restore',name+'-complete',not result['error'] and len(rows)>=minimum and all(r['passed'] for r in rows))
   counts['backup_restore']+=len(rows)
+ isolated_case('backup-node-cold')
  # Native backup roundtrip: change real saved client data, restore all sections,
  # then prove that the previously issued profiles still pass actual traffic.
  run('backup-pause-cron',['docker','stop','service-audit']);saved=bot('backup-save');check('backup_restore','full-export-sections',saved['sections']>=23)
@@ -296,20 +305,9 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
  rows=json.loads((R/'published-optional-results.json').read_text());check('native','optional-HTTP-HTTPS-TCP-UDP',len(rows)==38 and all(x['ok'] for x in rows));counts['native']+=len(rows)
  run('naive-idle',['python3',str(Path(__file__).with_name('naive_idle.py'))],environ=env|{'VPNBOT_TEST_RESULTS':str(O)},timeout=140)
  rows=json.loads((O/'naive-idle.json').read_text());check('native','Naive75-seconds-idle',len(rows)==5 and all(x['ok'] for x in rows));counts['native']+=len(rows)
- run('naive-upgrade',['python3',str(Path('/opt/vpnbot-hosted-ci/naive-upgrade/run.py')),candidate['images']['np'],candidate['images']['php'],str(Path('/opt/vpnbot-hosted-ci/stand/bin/naive')),str(O/'naive-upgrade')],timeout=180)
- rows=json.loads((O/'naive-upgrade/results.json').read_text());check('native','Naive-H2-H3-auth-idle',len(rows)==15 and all(x['passed'] for x in rows));counts['native']+=len(rows)
- run('mieru-idle',['python3','/opt/vpnbot-hosted-ci/mieru-idle/run.py',str(a.checkout),candidate['images']['mieru'],candidate['images']['php'],'/opt/vpnbot-hosted-ci/stand/bin/mieru-previous',str(O/'mieru-idle')],timeout=150)
- rows=json.loads((O/'mieru-idle/results.json').read_text());check('native','Mieru-idle-old-client',len(rows)==9 and all(x['passed'] for x in rows));counts['native']+=len(rows)
- run('ocserv-upgrade',['python3','/opt/vpnbot-hosted-ci/ocserv-upgrade/run.py',candidate['images']['oc'],'vpnbot-hosted-clients:current',str(O/'ocserv-upgrade')],timeout=240)
- rows=json.loads((O/'ocserv-upgrade/results.json').read_text());check('native','ocserv-TLS13-DTLS-strict-config',len(rows)==15 and all(x['passed'] for x in rows));counts['native']+=len(rows)
+ for name in ('naive-upgrade','mieru-idle','ocserv-upgrade'):isolated_case(name)
  # Отдельные мини-стенды на настоящих ядрах проверяемых образов Telemt, MASQUE, Hysteria и snolc.
- for name,extra in [('telemt-native',[candidate['images']['telemt'],candidate['images']['php'],candidate['images']['ng']]),('masque-native',[candidate['images']['masque'],candidate['images']['php'],str(R/'xray')]),('hysteria-native',[candidate['images']['hysteria'],candidate['images']['php']]),('snolc-native',[candidate['images']['snolc'],candidate['images']['php']])]:
-  def attempt(name=name,extra=extra):
-   result=Path('/opt/vpnbot-hosted-ci')/name/'results.json';result.unlink(missing_ok=True)
-   run(name,['python3',str(result.with_name('run.py')),str(a.checkout),*extra],timeout=1500)
-   rows=json.loads(result.read_text());check('native',name+'-complete',bool(rows) and all(x['exit']==0 and x['total']>0 and x['passed']==x['total'] for x in rows));counts['native']+=sum(x['total'] for x in rows)
-   shutil.copy2(result,O/(name+'.json'))
-  twice(name,attempt)
+ for name in isolated.NATIVE_MINI:isolated_case(name)
  # FreeUnit must replace a killed PHP application worker without losing config.
  script='''import pathlib,json,os
 pids=[]

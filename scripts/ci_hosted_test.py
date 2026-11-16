@@ -86,6 +86,49 @@ def evidence(bundle, checks, suite, warnings=None, allow_test_failures=False):
     return result
 
 
+# Self-contained suites that may run on separate runners; must equal
+# tests/integration/suite/isolated_cases.py CASES (checked by a unit test).
+ISOLATED = ('backup-node-cold', 'naive-upgrade', 'mieru-idle', 'ocserv-upgrade',
+            'telemt-native', 'masque-native', 'hysteria-native', 'snolc-native')
+
+
+def part(bundle, counts, suite, split, cases=(), warnings=None):
+    """Counters of one runner's share; merge() turns all shares into evidence."""
+    if set(counts) != GROUPS or any(type(n) is not int or n < 0 for n in counts.values()):
+        raise ValueError('malformed native counters')
+    return dict(source=bundle['source'], bundle=fingerprint(bundle), suite=suite, split=split,
+                cases=sorted(cases), counts=counts, warnings=warnings or [])
+
+
+def merge(bundle, parts, allow_test_failures=False):
+    """One admission from the core stand and the isolated runners of this run.
+
+    Every share must describe this very candidate and test suite; the isolated
+    shares must cover each self-contained suite exactly once.
+    """
+    if any(p.get('source') != bundle['source'] or p.get('bundle') != fingerprint(bundle) for p in parts):
+        raise ValueError('native share of another candidate')
+    suites = {p.get('suite') for p in parts}
+    if len(suites) != 1 or not re.fullmatch('[0-9a-f]{64}', next(iter(suites)) or ''):
+        raise ValueError('native shares of different test suites')
+    core = [p for p in parts if p.get('split') == 'core']
+    isolated = [p for p in parts if p.get('split') == 'isolated']
+    if len(core) != 1 or len(core) + len(isolated) != len(parts) or core[0]['cases']:
+        raise ValueError('exactly one core stand share is required')
+    covered = [case for p in isolated for case in p['cases']]
+    if not all(p['cases'] and not p['warnings'] for p in isolated) or sorted(covered) != sorted(ISOLATED):
+        raise ValueError('isolated native suites missing or repeated')
+    counts = dict.fromkeys(GROUPS, 0)
+    for p in parts:
+        if set(p['counts']) != GROUPS or any(type(n) is not int or n < 0 for n in p['counts'].values()):
+            raise ValueError('malformed native counters')
+        for group, n in p['counts'].items():
+            counts[group] += n
+    if not all(p['counts']['native'] + p['counts']['backup_restore'] > 0 for p in isolated):
+        raise ValueError('isolated native share without checks')
+    return evidence(bundle, counts, core[0]['suite'], core[0]['warnings'], allow_test_failures)
+
+
 def failed_checks(group, limit=10):
     """Names (only) of failed checks in a failed group, and the last check run."""
     try:
@@ -207,7 +250,7 @@ def assets(checkout, manifest):
     print('Candidate images, rollback pair and disposable clients prepared')
 
 
-def test(checkout, manifest, output, allow_test_failures=False):
+def test(checkout, manifest, output, allow_test_failures=False, split=None, cases=None):
     if os.geteuid() != 0:
         raise ValueError('network namespace tests require root on the disposable VM')
     if ROOT.exists():
@@ -241,10 +284,24 @@ def test(checkout, manifest, output, allow_test_failures=False):
             sys.stdout.flush(); sys.stderr.flush()
             os.dup2(log.fileno(), 1); os.dup2(log.fileno(), 2)
             shutil.copytree(manifest.with_name('client-tools'), ROOT / 'stand/bin')
-            bootstrap.bootstrap(checkout, bundle, CLIENT_IMAGE)
-            run = subprocess.run([sys.executable, str(ROOT / 'suite/run.py'), '--checkout', str(checkout),
-                                  '--manifest', str(manifest), '--results', str(results)] +
-                                 (['--allow-test-failures'] if allow_test_failures else []), timeout=9000)
+            if cases:
+                # No stand: only what the self-contained suites read.
+                if command('docker', 'ps', '-aq'):
+                    raise RuntimeError('isolated suites require a Docker host without containers')
+                source = checkout / 'tests/integration'
+                shutil.copytree(source / 'fixtures', ROOT, dirs_exist_ok=True)
+                shutil.copytree(source / 'suite', ROOT / 'suite', dirs_exist_ok=True)
+                bootstrap.docker_file(bundle['images']['masque'], '/usr/local/bin/xray', ROOT / 'tests/xray')
+                run = subprocess.run([sys.executable, str(ROOT / 'suite/isolated.py'), '--checkout', str(checkout),
+                                      '--manifest', str(manifest), '--results', str(results),
+                                      '--cases', ','.join(cases)], timeout=6600)  # 2 suites x 2 attempts x 1500 s
+            else:
+                bootstrap.bootstrap(checkout, bundle, CLIENT_IMAGE)
+                if split == 'core':
+                    os.environ['VPNBOT_NATIVE_SPLIT'] = 'core'
+                run = subprocess.run([sys.executable, str(ROOT / 'suite/run.py'), '--checkout', str(checkout),
+                                      '--manifest', str(manifest), '--results', str(results)] +
+                                     (['--allow-test-failures'] if allow_test_failures else []), timeout=9000)
         finally:
             sys.stdout.flush(); sys.stderr.flush()
             os.dup2(original_out, 1); os.dup2(original_err, 2)
@@ -253,14 +310,20 @@ def test(checkout, manifest, output, allow_test_failures=False):
         raise RuntimeError('ephemeral VPN matrix failed')
     checks = json.loads((results / 'summary.json').read_text())
     warnings = json.loads((results / 'warnings.json').read_text())
-    result = evidence(bundle, checks, suite, warnings, allow_test_failures)
+    if cases or split == 'core':
+        result = part(bundle, checks, suite, 'isolated' if cases else 'core', cases or (), warnings)
+        if cases and warnings:
+            raise ValueError('isolated suites produce no warnings')
+    else:
+        result = evidence(bundle, checks, suite, warnings, allow_test_failures)
     if identity(checkout) != suite or bundle != read(manifest):
         raise ValueError('test inputs changed')
     if command('git', '-C', str(checkout), 'rev-parse', 'HEAD') != bundle['source']:
         raise ValueError('checkout changed during tests')
     atomic(output, canonical(result))
     output.chmod(0o644)  # Only public identifiers; uploader runs without sudo.
-    print('Ephemeral VPN stand: all required groups passed; checks:', result['checks'])
+    print('Ephemeral VPN stand: all required groups passed; checks:',
+          result['checks'] if 'checks' in result else sum(result['counts'].values()))
     from ci_release_policy import announce
     announce(warnings, 'native')
     retried = retried_suites(results)
@@ -295,16 +358,34 @@ def cleanup():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=('assets', 'test', 'cleanup'))
+    parser.add_argument('action', choices=('assets', 'test', 'cleanup', 'merge'))
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--local-test', action='store_true')
     parser.add_argument('--allow-test-failures', action='store_true')
+    # Split native testing (GitHub-hosted only): the stand without the
+    # self-contained suites, or a comma-separated set of those suites.
+    parser.add_argument('--split', choices=('core',))
+    parser.add_argument('--cases')
+    parser.add_argument('--parts', type=Path)
     args = parser.parse_args()
+    cases = args.cases.split(',') if args.cases else None
+    if cases is not None and (len(set(cases)) != len(cases) or not set(cases) <= set(ISOLATED)):
+        raise ValueError('unknown or repeated isolated native suite')
+    if (args.split or cases) and (args.local_test or args.action != 'test' or (args.split and cases)):
+        raise ValueError('split native testing runs on GitHub-hosted runners only')
+    if args.action == 'merge':
+        # Only reads shares already produced by the runners of this run.
+        bundle = read(args.manifest.resolve())
+        parts = [json.loads(path.read_text()) for path in sorted(args.parts.glob('*.json'))]
+        atomic(args.output.resolve(), canonical(merge(bundle, parts, args.allow_test_failures)))
+        print('Native admission merged from', len(parts), 'shares')
+        return
     host(args.local_test)
     checkout = Path(__file__).resolve().parents[1]
     if args.action == 'assets': assets(checkout, args.manifest.resolve())
-    elif args.action == 'test': test(checkout, args.manifest.resolve(), args.output.resolve(), args.allow_test_failures)
+    elif args.action == 'test': test(checkout, args.manifest.resolve(), args.output.resolve(), args.allow_test_failures,
+                                     args.split, cases)
     else: cleanup()
 
 

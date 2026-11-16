@@ -1,0 +1,31 @@
+# Одинаковая подготовка машины для стенда и для самостоятельных наборов native.
+name: Подготовить одноразовую машину для native-проверок
+description: Пакеты, модули ядра и устройства для VPN-стенда
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]; then
+          # Только стандартные ненужные SDK свежего GitHub runner.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          # ACL по умолчанию на /opt отменяет umask: закрытые ключи стенда
+          # получали 0644, и sshd отказывался их использовать.
+          sudo setfacl -b /opt
+        else
+          test "$(cat /etc/vpnbot-ci-test-host)" = home-build
+        fi
+        sh scripts/ci_retry.sh sudo apt-get update -qq
+        sh scripts/ci_retry.sh sudo apt-get install -y python3-yaml python3-cryptography tcpdump curl jq openssl iptables kmod
+        sudo modprobe wireguard
+        sudo modprobe l2tp_ppp
+        sudo modprobe -a xt_comment xt_mark xt_connmark
+        # ocserv installs REJECT rules for its clients and refuses to start
+        # without them (fail closed); containers cannot load kernel modules.
+        for module in nft_compat xt_REJECT ipt_REJECT nf_reject_ipv4 nft_reject nft_reject_ipv4 nft_reject_inet; do
+          sudo modprobe "$module" 2>/dev/null || echo "kernel module unavailable: $module"
+        done
+        sudo mkdir -p /dev/net
+        test -c /dev/net/tun || sudo mknod /dev/net/tun c 10 200
+        test -c /dev/ppp || sudo mknod /dev/ppp c 108 0

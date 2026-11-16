@@ -28,15 +28,29 @@ class NodeColdDiscoveryTest(unittest.TestCase):
         for value in [b'',self.output()+b'FAIL owned cleanup\n']:
             with self.subTest(value_empty=not value),self.assertRaises(RuntimeError):module.parse_checks(value)
     def test_full_suite_dispatches_exact_candidate_images_and_checks_cleanup(self):
-        source=(ROOT/'tests/integration/suite/run.py').read_text();tree=ast.parse(source);entries=None
-        for node in ast.walk(tree):
-            if isinstance(node,ast.For) and isinstance(node.iter,ast.List) and any(isinstance(x,ast.Tuple) and x.elts and isinstance(x.elts[0],ast.Constant) and x.elts[0].value=='backup-wg-awg-payload' for x in node.iter.elts):
-                entries=eval(compile(ast.Expression(node.iter),'<suite-dispatch>','eval'),{'a':SimpleNamespace(checkout=ROOT),'candidate':{'images':{'php':'candidate-php','xr':'candidate-xr','ng':'candidate-ng','wg':'candidate-wg'}}})
-        self.assertIsNotNone(entries)
-        matches=[row for row in entries if row[0]=='backup-node-cold'];self.assertEqual(len(matches),1)
-        _,name,args,minimum=matches[0];self.assertEqual(name,'node-cold.py');self.assertGreaterEqual(minimum,30)
-        self.assertEqual(dict(zip(args[::2],args[1::2])),{'--source':str(ROOT),'--php-image':'candidate-php','--xray-image':'candidate-xr','--ng-image':'candidate-ng'})
-        self.assertIn("name!='backup-node-cold' or result.get('cleanup') is True",source)
+        # The stand and the separate runners both dispatch through isolated_cases.
+        self.assertIn("isolated_case('backup-node-cold')",(ROOT/'tests/integration/suite/run.py').read_text())
+        spec=importlib.util.spec_from_file_location('isolated_cases',ROOT/'tests/integration/suite/isolated_cases.py')
+        cases=importlib.util.module_from_spec(spec);spec.loader.exec_module(cases)
+        import json,tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            out=Path(directory);calls=[];passed=[]
+            def run(name,cmd,timeout=180):
+                calls.append(cmd);(out/name).mkdir();(out/name/'results.json').write_text(json.dumps(result))
+            def check(group,name,ok):
+                if not ok:raise RuntimeError(name)
+                passed.append(group)
+            ctx=dict(candidate={'images':{'php':'candidate-php','xr':'candidate-xr','ng':'candidate-ng'}},checkout=ROOT,
+                     results=out,run=run,check=check,counts={'backup_restore':0},twice=None)
+            result=dict(error=None,checks=[{'passed':True}]*30,cleanup=True)
+            cases.run_case('backup-node-cold',ctx)
+            self.assertEqual(Path(calls[0][1]),SCRIPT);args=calls[0][4:]
+            self.assertEqual(dict(zip(args[::2],args[1::2])),{'--source':str(ROOT),'--php-image':'candidate-php','--xray-image':'candidate-xr','--ng-image':'candidate-ng'})
+            self.assertEqual(ctx['counts']['backup_restore'],30)
+            for index,broken in enumerate((dict(result,cleanup=False),dict(result,checks=[{'passed':True}]*29),dict(result,error='x'))):
+                result=broken;(out/'backup-node-cold/results.json').unlink();(out/'backup-node-cold').rmdir()
+                with self.subTest(index=index),self.assertRaises(RuntimeError):
+                    cases.run_case('backup-node-cold',ctx)
 
 
 def oci_archive(path, manifests, corrupt=False):
