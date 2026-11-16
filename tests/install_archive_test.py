@@ -25,6 +25,9 @@ class ArchiveInstallTest(unittest.TestCase):
         with zipfile.ZipFile(self.archive, 'w') as archive:
             archive.writestr('app/example.txt', 'fresh code')
             archive.writestr('config/state.json', '{"synthetic":"default"}')
+            # The installer records the commit from the ZIP comment (INS-03).
+            archive.write(ROOT / 'scripts/image_bundle.py', 'scripts/image_bundle.py')
+            archive.comment = b'e' * 40
         source = (ROOT / 'scripts/init.sh').read_text()
         self.functions = '\n'.join(function(source, name) for name in ('archive_target_empty', 'install_from_archive'))
 
@@ -49,6 +52,14 @@ class ArchiveInstallTest(unittest.TestCase):
             result = self.install(target)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((target / 'app/example.txt').read_text(), 'fresh code')
+            self.assertEqual((target / 'update/archive-source').read_text(), 'e' * 40 + '\n')
+
+    def test_archive_without_commit_id_is_refused(self):
+        with zipfile.ZipFile(self.archive, 'a') as archive:
+            archive.comment = b''
+        result = self.install(self.root / 'target')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('commit id', result.stderr)
 
     def test_symlink_installation_is_rejected(self):
         actual = self.root / 'actual'; actual.mkdir(); target = self.root / 'link'; target.symlink_to(actual)

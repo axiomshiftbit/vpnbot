@@ -41,7 +41,7 @@ else
     fi
 fi
 if [ -z "$KEY" ]; then
-    echo "usage: sudo VPNBOT_KEY=<TG_BOT_KEY> bash init.sh [BRANCH]" >&2
+    echo "usage: sudo VPNBOT_KEY=<TG_BOT_KEY> VPNBOT_ADMIN_ID=<TELEGRAM_ID> bash init.sh [BRANCH]" >&2
     exit 1
 fi
 fi
@@ -55,6 +55,25 @@ normalize_bot_key() {
     KEY="$(printf '%s' "$KEY" | tr -d ' \t\r\n')"
     if ! [[ "$KEY" =~ ^[0-9]{5,15}:[A-Za-z0-9_-]{30,64}$ ]]; then
         echo "ключ бота не похож на токен Telegram (ожидается вид 123456789:AA…): скопируйте его у @BotFather заново" >&2
+        exit 1
+    fi
+}
+
+# Владелец бота задаётся при установке: раньше права владельца получал первый
+# написавший боту, то есть любой посторонний, успевший раньше. Нужен числовой
+# Telegram ID владельца (его показывает, например, @userinfobot). Существующий
+# config.php (переустановка, перенос) уже хранит владельца и не меняется.
+normalize_admin_id() {
+    ADMIN_ID="${VPNBOT_ADMIN_ID:-}"
+    if [ -s "$INSTALL_DIR/app/config.php" ]; then
+        return 0
+    fi
+    if [ -z "$ADMIN_ID" ] && [ -t 0 ]; then
+        read -r -p 'Telegram ID владельца бота (число, например от @userinfobot): ' ADMIN_ID || true
+    fi
+    ADMIN_ID="$(printf '%s' "$ADMIN_ID" | tr -d ' \t\r\n')"
+    if ! [[ "$ADMIN_ID" =~ ^[1-9][0-9]{0,15}$ ]]; then
+        echo "Укажите владельца бота: VPNBOT_ADMIN_ID=<ваш числовой Telegram ID> (узнать можно у @userinfobot)" >&2
         exit 1
     fi
 }
@@ -109,7 +128,7 @@ install_autostart() {
     fi
 }
 
-if [ "$MODE" = full ]; then normalize_bot_key; fi
+if [ "$MODE" = full ]; then normalize_bot_key; normalize_admin_id; fi
 
 case "$BRANCH" in
     master|dev) ;;
@@ -409,7 +428,11 @@ install_from_archive() {
             echo "archive already on branch: $BRANCH"
         fi
     else
-        echo "archive does not contain .git; skipping branch switch"
+        # Без .git коммит кода известен только из комментария ZIP (GitHub
+        # «Download ZIP», git archive): по нему make u возьмёт опубликованный
+        # комплект образов именно этого коммита. Обновление из бота требует Git.
+        echo "archive does not contain .git; using the commit recorded in the archive"
+        ( cd "$INSTALL_DIR" && python3 -I scripts/image_bundle.py archive-source "$ARCHIVE" )
     fi
 }
 
@@ -532,7 +555,7 @@ else
     cat > ./app/config.php <<EOF
 <?php
 
-\$c = ['key' => '$KEY'];
+\$c = ['key' => '$KEY', 'admin' => [$ADMIN_ID]];
 EOF
     # Новая установка: из контейнеров протоколов запускается только TeleMT,
     # чтобы бот помещался на сервер с малыми ресурсами. Остальные включаются

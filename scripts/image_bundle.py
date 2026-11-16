@@ -157,10 +157,41 @@ def fetch_reference(ref, destination, *, admission=None):
             command('docker', 'rm', container)
 
 
+ARCHIVE_SOURCE = 'update/archive-source'
+
+
+class ArchiveSourceError(ValueError):
+    """Fixed, data-free message shown to the installing administrator."""
+
+
+def checkout_source(root):
+    """Commit of the installed code: Git HEAD, or the commit recorded from the
+    archive of an installation without .git (GitHub ZIP comment)."""
+    root = Path(root)
+    marker = root / ARCHIVE_SOURCE
+    if (root / '.git').exists() or not marker.is_file():
+        return command('git', '-C', str(root), 'rev-parse', 'HEAD')
+    value = marker.read_text().strip()
+    if not COMMIT.fullmatch(value):
+        raise ValueError('archive installation without a recorded source commit')
+    return value
+
+
+def record_archive_source(archive, root):
+    """`git archive` and GitHub "Download ZIP" store the commit id as the ZIP comment."""
+    import zipfile
+    with zipfile.ZipFile(archive) as z:
+        comment = z.comment.decode('ascii', 'replace').strip()
+    if not COMMIT.fullmatch(comment):
+        raise ArchiveSourceError('archive has no commit id: use a GitHub ZIP or `git archive` of a published commit, or install from Git')
+    atomic(Path(root) / ARCHIVE_SOURCE, (comment + '\n').encode())
+    return comment
+
+
 def activate(root, bundle):
     root = Path(root)
     validate(bundle)
-    if command('git', '-C', str(root), 'rev-parse', 'HEAD') != bundle['source']:
+    if checkout_source(root) != bundle['source']:
         raise ValueError('code does not match the tested image set')
     # The JSON manifest is the only pointer. Compose derives its overlay from it;
     # there is no second mutable file which could select half of another release.
@@ -210,7 +241,7 @@ def ensure(root):
     path = root / 'update/image-bundle.json'
     if path.exists():
         value = read(path)
-        if value['source'] != command('git', '-C', str(root), 'rev-parse', 'HEAD'):
+        if value['source'] != checkout_source(root):
             raise ValueError('checkout and active bundle differ')
         check_image_overrides(root)
         return value
@@ -218,6 +249,13 @@ def ensure(root):
     for file in (root / '.env', root / 'override.env'):
         if file.exists() and re.search(r'^VPNBOT_TAG=sha-', file.read_text(), re.M):
             return None
+    if not (root / '.git').exists() and (root / ARCHIVE_SOURCE).is_file():
+        # Archive installation: exactly the image set admitted for its commit.
+        source = checkout_source(root)
+        check_image_overrides(root)
+        value = fetch_reference(source_reference(source), root / 'update/image-bundle.pending.json')
+        activate(root, value)
+        return value
     branch = command('git', '-C', str(root), 'rev-parse', '--abbrev-ref', 'HEAD')
     if branch not in ('dev', 'master'):
         raise ValueError('start requires a released branch or an explicit image pin')
@@ -248,7 +286,7 @@ def compose_files(root, env):
             raise ValueError('requested image bundle is missing')
         return [part for f in files for part in ('-f', f)] if enabled6 else []
     bundle = read(path)
-    if not selected and command('git', '-C', str(root), 'rev-parse', 'HEAD') != bundle['source']:
+    if not selected and checkout_source(root) != bundle['source']:
         raise ValueError('image bundle belongs to a different code revision')
     # Respect explicit rollback pins; do not silently replace them on an update.
     if env.get('VPNBOT_TAG', '').startswith('sha-') and not selected:
@@ -289,6 +327,7 @@ def main():
     p = sub.add_parser('fetch'); p.add_argument('channel'); p.add_argument('output')
     p = sub.add_parser('prepare'); p.add_argument('branch'); p.add_argument('output'); p.add_argument('--root', default='.')
     p = sub.add_parser('ensure'); p.add_argument('--root', default='.')
+    p = sub.add_parser('archive-source'); p.add_argument('archive'); p.add_argument('--root', default='.')
     p = sub.add_parser('activate'); p.add_argument('manifest'); p.add_argument('--root', default='.')
     p = sub.add_parser('overlay'); p.add_argument('manifest'); p.add_argument('output')
     p = sub.add_parser('verify'); p.add_argument('manifest')
@@ -318,6 +357,9 @@ def main():
         bundle = prepare(args.root, args.branch, args.output)
         print(bundle['source'])
         return
+    elif args.action == 'archive-source':
+        print(record_archive_source(args.archive, args.root))
+        return
     elif args.action == 'ensure':
         bundle = ensure(args.root)
         if bundle is None:
@@ -337,5 +379,6 @@ if __name__ == '__main__':
     try:
         main()
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
-        print('image bundle: ' + type(error).__name__ + ': operation rejected', file=sys.stderr)
+        detail = str(error) if isinstance(error, ArchiveSourceError) else 'operation rejected'
+        print('image bundle: ' + type(error).__name__ + ': ' + detail, file=sys.stderr)
         sys.exit(1)
