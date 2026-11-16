@@ -22,8 +22,11 @@ filtering:
       answer: 198.51.100.123
       enabled: true
 YAML
+# The supervisor record (PID + start time) is the source of truth; AdGuard's
+# own --pidfile is only a hint that a duplicate start can overwrite.
+core_pid() { read -r pid start < /run/vpnbot-services/adguard/pid && printf '%s' "$pid"; }
 check_pid() {
-    test "$(readlink "/proc/$(cat /opt/adguardhome/pid)/exe")" = /opt/adguardhome/AdGuardHome
+    test "$(readlink "/proc/$(core_pid)/exe")" = /opt/adguardhome/AdGuardHome
 }
 control() { sh /control-under-test.sh "$1" >/dev/null; }
 live_count() {
@@ -40,12 +43,19 @@ check_dns() {
     nslookup -type=A probe.example.test 127.0.0.1 2>/dev/null | grep -q '198.51.100.123'
 }
 
+# As start_ad.sh: the supervisor (guardian) owns the core and serves control.
+[ -f /service_supervisor.sh ] && [ -f /service_daemon.sh ]
+/bin/sh /service_supervisor.sh supervise ad >/tmp/supervisor.log 2>&1 &
+guardian_wait=0
+until [ -s /run/vpnbot-services/guardian ] || [ "$guardian_wait" -ge 50 ]; do
+    sleep .2; guardian_wait=$((guardian_wait + 1))
+done
 control start
 check_pid
 check_dns
-original_pid=$(cat /opt/adguardhome/pid)
+original_pid=$(core_pid)
 control start
-[ "$(cat /opt/adguardhome/pid)" = "$original_pid" ]
+[ "$(core_pid)" = "$original_pid" ]
 [ "$(live_count)" = 1 ]
 printf 'PASS start is idempotent; DNS and HTTP respond\n'
 
@@ -54,12 +64,15 @@ if /opt/adguardhome/AdGuardHome --no-check-update --pidfile /opt/adguardhome/pid
     -c /config/AdGuardHome.yaml -h 0.0.0.0 -w /opt/adguardhome/work >/tmp/duplicate.log 2>&1; then
     echo 'FAIL duplicate unexpectedly started'; exit 1
 fi
-if check_pid; then echo 'FAIL stale pidfile was not reproduced'; exit 1; fi
+if [ "$(readlink "/proc/$(cat /opt/adguardhome/pid)/exe" 2>/dev/null)" = /opt/adguardhome/AdGuardHome ]; then
+    echo 'FAIL stale pidfile was not reproduced'; exit 1
+fi
 check_dns
 control start
 check_pid
-[ "$(cat /opt/adguardhome/pid)" = "$original_pid" ]
-printf 'PASS failed duplicate reproduced; stale PID repaired without restarting DNS\n'
+[ "$(core_pid)" = "$original_pid" ]
+[ "$(live_count)" = 1 ]
+printf 'PASS failed duplicate reproduced; the running core and DNS are kept\n'
 
 # A stale PID may have been reused by an unrelated process: never signal it.
 sleep 60 & unrelated=$!
@@ -85,7 +98,7 @@ check_dns
 printf 'PASS four concurrent starts keep one core\n'
 
 # Delayed SIGTERM handling deterministically exposes the old stop/start race.
-pid=$(cat /opt/adguardhome/pid)
+pid=$(core_pid)
 kill -STOP "$pid"
 (sleep 1; kill -CONT "$pid") & resume=$!
 control stop

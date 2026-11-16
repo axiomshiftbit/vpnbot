@@ -13,6 +13,9 @@ for path in /usr/sbin/sshd /opt/adguardhome/AdGuardHome \
     printf '#!/bin/sh\nexit 0\n' > "$path"
     chmod +x "$path"
 done
+# Entrypoint завершает работу передачей управления supervisor (в Compose он
+# подключается томом). Заглушка лишь записывает, кому передано управление.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" > /tmp/route-test/supervisor\n' > /service_supervisor.sh
 cat > /tmp/route-test/bin/getent <<'SH'
 #!/bin/sh
 case "$2" in
@@ -37,5 +40,6 @@ for TEST_OC_IP in '' '10.10.0.23'; do
     grep -qx 'route replace 10.0.3.0/24 via 10.10.0.14' /tmp/route-test/routes
     grep -qx "route replace 10.0.2.0/24 via ${TEST_OC_IP:-10.10.0.11}" /tmp/route-test/routes
     [ "$(wc -l < /tmp/route-test/routes)" -eq 3 ]
+    grep -qx 'supervise ad' /tmp/route-test/supervisor
     printf 'PASS AdGuard routes: OpenConnect %s\n' "${TEST_OC_IP:-not yet running}"
 done
