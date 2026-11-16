@@ -584,6 +584,11 @@ jobs:
           sudo modprobe wireguard
           sudo modprobe l2tp_ppp
           sudo modprobe -a xt_comment xt_mark xt_connmark
+          # ocserv installs REJECT rules for its clients and refuses to start
+          # without them (fail closed); containers cannot load kernel modules.
+          for module in nft_compat xt_REJECT ipt_REJECT nf_reject_ipv4 nft_reject nft_reject_ipv4 nft_reject_inet; do
+            sudo modprobe "$module" 2>/dev/null || true
+          done
           sudo mkdir -p /dev/net
           test -c /dev/net/tun || sudo mknod /dev/net/tun c 10 200
           test -c /dev/ppp || sudo mknod /dev/ppp c 108 0
