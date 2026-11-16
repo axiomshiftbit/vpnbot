@@ -516,8 +516,8 @@ trait BotOvpn
         $this->ovpnClientMenu($user);
     }
 
-    // Лимит — настройка клиента и входит в резервную копию. Счётчики в неё не
-    // входят: восстановление не должно откатывать их назад.
+    // Лимит — настройка клиента и входит в резервную копию; расход — отдельным
+    // разделом (ovpnUsageSnapshot), который счётчики назад не откатывает.
     public function ovpnLimitsSnapshot(): array
     {
         $limits = [];
@@ -538,13 +538,58 @@ trait BotOvpn
         }
     }
 
-    // Полное восстановление: у клиентов без лимита в копии лимит снимается.
-    public function restoreOvpnLimits(array $limits): void
+    // Израсходованный трафик тоже входит в копию: на чистом сервере (перенос)
+    // квота продолжается, а не выдаётся заново. Поверх существующих счётчиков
+    // восстановление их не уменьшает.
+    public function ovpnUsageSnapshot(): array
     {
-        $this->ovpnTrafficSync(function (array $users) use ($limits) {
-            foreach ($limits as $cn => $_) $users[(string) $cn] ??= [];
+        $usage = [];
+        foreach ($this->ovpnTrafficLoad()['users'] as $cn => $row) {
+            $row = self::ovpnTrafficUser(is_array($row) ? $row : []);
+            $total = self::ovpnTrafficTotal($row);
+            if ($total['rx'] + $total['tx'] > 0) $usage[(string) $cn] = ['rx' => $total['rx'], 'tx' => $total['tx'], 'since' => max(0, $row['since'])];
+        }
+        return $usage;
+    }
+
+    public static function validateOvpnUsage(mixed $usage): void
+    {
+        if (!is_array($usage) || count($usage) > 10000) throw new InvalidArgumentException(Lang::t('Неверный расход OpenVPN', 'Invalid OpenVPN usage'));
+        foreach ($usage as $cn => $row) {
+            if (!preg_match('~^[a-zA-Z0-9_.\-]{1,40}$~D', (string) $cn) || !is_array($row) || array_diff(array_keys($row), ['rx', 'tx', 'since'])
+                || !is_int($row['rx'] ?? null) || !is_int($row['tx'] ?? null) || $row['rx'] < 0 || $row['tx'] < 0
+                || (isset($row['since']) && (!is_int($row['since']) || $row['since'] < 0))) {
+                throw new InvalidArgumentException(Lang::t('Неверный расход OpenVPN', 'Invalid OpenVPN usage'));
+            }
+        }
+    }
+
+    // Разделы счётчиков OpenVPN полной копии и их восстановление.
+    public function ovpnBackupSections(): array
+    {
+        return ['ovpn_limits' => $this->ovpnLimitsSnapshot(), 'ovpn_usage' => $this->ovpnUsageSnapshot()];
+    }
+
+    public function restoreOvpnBackupSections(array $json): void
+    {
+        // Старая копия без раздела лимитов прежние лимиты не трогает.
+        if (isset($json['ovpn_limits'])) $this->restoreOvpnLimits($json['ovpn_limits'], (array) ($json['ovpn_usage'] ?? []));
+    }
+
+    // Полное восстановление: у клиентов без лимита в копии лимит снимается.
+    public function restoreOvpnLimits(array $limits, array $usage = []): void
+    {
+        $this->ovpnTrafficSync(function (array $users) use ($limits, $usage) {
+            foreach ($limits + $usage as $cn => $_) $users[(string) $cn] ??= [];
             foreach ($users as $cn => $row) {
-                $users[$cn] = ['limit' => (int) ($limits[(string) $cn] ?? 0)] + self::ovpnTrafficUser(is_array($row) ? $row : []);
+                $row = self::ovpnTrafficUser(is_array($row) ? $row : []);
+                if (isset($usage[$cn])) {
+                    $total = self::ovpnTrafficTotal($row);
+                    $row['rx'] += max(0, (int) $usage[$cn]['rx'] - $total['rx']);
+                    $row['tx'] += max(0, (int) $usage[$cn]['tx'] - $total['tx']);
+                    if (!empty($usage[$cn]['since'])) $row['since'] = min($row['since'], (int) $usage[$cn]['since']);
+                }
+                $users[$cn] = ['limit' => (int) ($limits[(string) $cn] ?? 0)] + $row;
             }
             return $users;
         });

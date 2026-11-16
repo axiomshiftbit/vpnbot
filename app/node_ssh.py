@@ -321,7 +321,12 @@ class Client:
         except ValueError:
             if not self.adopt_retired(target):
                 raise
-        atomic(self.directory/'endpoint.json', encode(target))
+            # The archived copy is the only key the node trusts until the card
+            # is connected: drop it only after endpoint.json is written.
+            atomic(self.directory/'endpoint.json', encode(target))
+            self.discard_retired(target)
+        else:
+            atomic(self.directory/'endpoint.json', encode(target))
         return {'connected': True, 'fingerprint': fingerprint(target['host_key'])}
 
     @key_locked
@@ -363,13 +368,27 @@ class Client:
             sync_directory(candidate)
             exchange_directories(active, candidate)
             # TemporaryDirectory now contains only the previous complete set.
-        private.unlink()
-        public.unlink()
-        try:
-            directory.rmdir()
-        except OSError:
-            pass  # A foreign leftover must not fail an enrollment that already succeeded.
         return True
+
+    @key_locked
+    def discard_retired(self, target):
+        """The adopted pair is now recorded as this card's key: remove its archive."""
+        with transport_lock(self.root/'.retired.lock', self.deadline):
+            directory = retired_directory(self.root, target['host_key'])
+            private, public = directory/'key', directory/'key.pub'
+            for path in (directory, private, public):
+                trusted(path)
+            if not (private.is_file() and public.is_file()):
+                return
+            # Never remove an archive that is not the active key (e.g. replaced).
+            if private.read_bytes() != (self.directory/'key').read_bytes():
+                return
+            private.unlink()
+            public.unlink()
+            try:
+                directory.rmdir()
+            except OSError:
+                pass  # A foreign leftover must not fail an enrollment that already succeeded.
 
     @key_locked
     def retire(self):

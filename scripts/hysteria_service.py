@@ -104,6 +104,9 @@ class Supervisor:
         self.log = None
         self.config = None
         self.fingerprint = None
+        # SHA-256 of the hysteria.yaml bytes now running: the bot confirms an
+        # applied change by it (a rejected file keeps the previous digest).
+        self.applied_sha = ""
         self.authorized = {}
         self.ready = False
         self.stats_time = 0
@@ -308,8 +311,11 @@ class Supervisor:
             self.state = state
             if self.alive():
                 self.collect()
+            raw_sha = checked_sha = self.applied_sha
             try:
-                config = yaml.safe_load(self.config_path.read_text())
+                raw = self.config_path.read_bytes()
+                raw_sha = checked_sha = hashlib.sha256(raw).hexdigest()
+                config = yaml.safe_load(raw.decode())
                 if not isinstance(config, dict) or not isinstance(config.get("auth"), dict):
                     raise ValueError("invalid_config")
                 # Native API auth can preserve password-mode installations only.
@@ -325,7 +331,7 @@ class Supervisor:
             except (OSError, ValueError, KeyError, TypeError, RuntimeError, yaml.YAMLError) as exc:
                 # Keep the last valid server configuration, but still enforce
                 # the current credential state while an unrelated edit is invalid.
-                config, fingerprint = self.config, self.fingerprint
+                config, fingerprint, raw_sha = self.config, self.fingerprint, self.applied_sha
                 self.error = str(exc) if isinstance(exc, RuntimeError) else "configuration_rejected"
             else:
                 self.error = ""
@@ -347,7 +353,11 @@ class Supervisor:
                     self.error = "configuration_rejected"
                 else:
                     self.fingerprint = fingerprint
+                    self.applied_sha = raw_sha
                     self.last_success = int(time.time())
+            elif fingerprint == self.fingerprint:
+                # Same effective configuration (e.g. reformatted file).
+                self.applied_sha = raw_sha
             log = self.root / "core.log"
             if log.exists() and log.stat().st_size > 1024 * 1024:
                 with log.open("r+b") as stream:
@@ -359,7 +369,8 @@ class Supervisor:
             atomic_json(self.root / "status.json", {"schema": 1, "time": int(time.time()), "running": self.alive(),
                         "stats_time": int(time.time() - (time.monotonic() - self.stats_time)) if self.stats_time else 0,
                         "last_success": self.last_success, "last_validation": self.last_validation,
-                        "revision": state["revision"], "error": self.error, "users": len(state["users"])})
+                        "revision": state["revision"], "error": self.error, "users": len(state["users"]),
+                        "config_sha256": self.applied_sha, "checked_sha256": checked_sha})
 
     def run(self):
         self.serve_auth()
@@ -373,9 +384,12 @@ class Supervisor:
                         self.stop()
                     # No exception strings: parsers may include credentials.
                     try:
+                        # Keep the digest fields: without them the bot would take
+                        # this for an old image and accept an unapplied change.
                         atomic_json(self.root / "status.json", {"schema": 1, "time": int(time.time()), "running": False,
                                     "last_success": self.last_success, "last_validation": self.last_validation,
-                                    "error": self.error or (str(exc) if isinstance(exc, RuntimeError) else "state_or_io_error")})
+                                    "error": self.error or (str(exc) if isinstance(exc, RuntimeError) else "state_or_io_error"),
+                                    "config_sha256": self.applied_sha, "checked_sha256": ""})
                     except OSError:
                         pass
                 while not self.stopping and time.monotonic() - started < 1:

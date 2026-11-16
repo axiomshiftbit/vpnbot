@@ -272,6 +272,9 @@ trait BotHysteria
             if (!$this->restartHysteria()) {
                 // Конфиг не записан или ядро его не приняло: настройку не оставляем.
                 if (!$this->restorePacFields($before, $pac, ['hysteria_obfs_type', 'hysteria_cc', 'hysteria_no_loss_comp', 'hysteria_ignore_client_bw', 'hysteria_sniff'])) throw new RuntimeException($this->t('Настройки изменились; восстановление предыдущего состояния не подтверждено', 'Settings changed; restoration of the previous state is unconfirmed'));
+                // YAML на диске снова соответствует работающей конфигурации: иначе
+                // служба каждую секунду заново проверяла бы отвергнутый файл.
+                $this->restartHysteria();
                 $pac = $this->getPacConf();
                 $notice = $this->t('Не удалось применить настройку: конфигурация Hysteria не изменена.', 'Could not apply the setting: the Hysteria configuration is unchanged.');
             }

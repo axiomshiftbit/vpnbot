@@ -399,6 +399,41 @@ trait BotBackup
 
     // Структурная проверка ВСЕХ разделов до первой записи/перезапуска.
     // Проверка конфигов самими ядрами остаётся обязательной при применении.
+    // Открытый ключ X25519 (Noise DNSTT) выводится из закрытого через OpenSSL:
+    // расширения sodium в образе php нет.
+    public static function x25519PairValid(string $private, string $public): bool
+    {
+        if (!preg_match('/\A([0-9a-fA-F]{64})\s*\z/D', $private, $p) || !preg_match('/\A([0-9a-fA-F]{64})\s*\z/D', $public, $q)) return false;
+        $der = hex2bin('302e020100300506032b656e04220420') . hex2bin($p[1]);
+        $key = @openssl_pkey_get_private("-----BEGIN PRIVATE KEY-----\n" . chunk_split(base64_encode($der), 64, "\n") . "-----END PRIVATE KEY-----\n");
+        $derived = $key === false ? null : (openssl_pkey_get_details($key)['x25519']['pub_key'] ?? null);
+        return is_string($derived) && hash_equals($derived, hex2bin($q[1]));
+    }
+
+    // Незашифрованный закрытый ключ OpenSSH хранит свой открытый ключ открыто:
+    // он должен совпасть с ssh_host_ed25519_key.pub.
+    public static function ed25519SshPairValid(string $private, string $public): bool
+    {
+        if (!preg_match('~\A-----BEGIN OPENSSH PRIVATE KEY-----\s+([A-Za-z0-9+/=\s]+?)\s*-----END OPENSSH PRIVATE KEY-----\s*\z~D', $private, $m)
+            || !preg_match('~\Assh-ed25519 ([A-Za-z0-9+/]+={0,2})(?: [^\r\n]*)?\s*\z~D', $public, $n)) return false;
+        $blob = base64_decode(preg_replace('~\s+~', '', $m[1]), true);
+        $pub = base64_decode($n[1], true);
+        if (!is_string($blob) || !is_string($pub) || !str_starts_with($blob, "openssh-key-v1\0")) return false;
+        $at = 15;
+        $string = static function () use ($blob, &$at): ?string {
+            if (strlen($blob) < $at + 4) return null;
+            $len = unpack('N', substr($blob, $at, 4))[1];
+            if ($len > strlen($blob) - $at - 4) return null;
+            $value = substr($blob, $at + 4, $len); $at += 4 + $len;
+            return $value;
+        };
+        $cipher = $string(); $kdf = $string(); $string();
+        if ($cipher !== 'none' || $kdf !== 'none' || strlen($blob) < $at + 4 || unpack('N', substr($blob, $at, 4))[1] !== 1) return false;
+        $at += 4;
+        $embedded = $string();
+        return $embedded !== null && hash_equals($embedded, $pub) && str_starts_with($pub, "\0\0\0\x0bssh-ed25519\0\0\0\x20") && strlen($pub) === 51;
+    }
+
     public function validateBackup(array $json): void
     {
         // Export and every import use the same limit, including base64 and JSON
@@ -449,8 +484,12 @@ trait BotBackup
                 || !preg_match('/\A[0-9a-fA-F]{64}\s*\z/D', $json['dnstt'][$key])) throw new InvalidArgumentException($this->t('Неверная пара DNSTT', 'Invalid DNSTT pair'));
             foreach (['ssh_private', 'ssh_public'] as $key) if (isset($json['dnstt'][$key]) && !is_string($json['dnstt'][$key])) throw new InvalidArgumentException($this->t('Неверный ключ SSH DNSTT', 'Invalid DNSTT SSH key'));
             if (empty($json['dnstt']['ssh_private']) !== empty($json['dnstt']['ssh_public'])) throw new InvalidArgumentException($this->t('Неполная пара SSH DNSTT', 'Incomplete DNSTT SSH pair'));
+            // Демон читает server.key, клиенты получают server.pub: пара обязана совпадать.
+            if (!self::x25519PairValid($json['dnstt']['private'], $json['dnstt']['public'])) throw new InvalidArgumentException($this->t('Неверная пара DNSTT', 'Invalid DNSTT pair'));
+            if (!empty($json['dnstt']['ssh_private']) && !self::ed25519SshPairValid($json['dnstt']['ssh_private'], $json['dnstt']['ssh_public'])) throw new InvalidArgumentException($this->t('Неверный ключ SSH DNSTT', 'Invalid DNSTT SSH key'));
         }
         if (array_key_exists('ovpn_limits', $json)) self::validateOvpnLimits($json['ovpn_limits']);
+        if (array_key_exists('ovpn_usage', $json)) self::validateOvpnUsage($json['ovpn_usage']);
         if (!empty($json['ovpn'])) $this->validateBackupPki($this->decodeBackupTree($json['ovpn'], dirname($this->ovpnPaths()['pki']), self::OVPN_SNAPSHOT_CORE), 'ovpn');
         if (!empty($json['ipsec'])) {
             $pki = $this->decodeBackupTree($json['ipsec'], $this->ipsecPaths()['conf']);

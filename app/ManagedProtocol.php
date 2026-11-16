@@ -429,6 +429,13 @@ final class ManagedProtocol
         if (isset($snapshot['usage']['native_metrics']) && ($this->protocol !== 'mieru'
             || !is_string($snapshot['usage']['native_metrics']) || strlen($snapshot['usage']['native_metrics']) > 32 * 1024 * 1024
             || base64_decode($snapshot['usage']['native_metrics'], true) === false)) throw new InvalidArgumentException(Lang::t('Неверная история квоты Mieru', 'Invalid Mieru quota history'));
+        // Периодическая квота считается по корзинам времени ядра, а не по сумме:
+        // без истории периода восстановление начало бы период заново.
+        if ($this->protocol === 'mieru' && ($snapshot['usage']['native_metrics'] ?? '') === '') {
+            foreach ($snapshot['state']['users'] as $user) if (!empty($user['rolling_quota'])) {
+                throw new InvalidArgumentException(Lang::t('Копия Mieru не содержит историю периодической квоты: дождитесь учёта трафика', 'The Mieru backup lacks the rolling quota history: wait for the traffic accounting'));
+            }
+        }
         foreach ($snapshot['usage']['users'] ?? [] as $id => $record) {
             if (!preg_match('/\A[a-f0-9]{16}\z/D', (string) $id) || !is_array($record)) throw new InvalidArgumentException(Lang::t('Неверные счётчики', 'Invalid counters'));
             foreach (['upload', 'download'] as $key) if (!is_int($record[$key] ?? null) || $record[$key] < 0) throw new InvalidArgumentException(Lang::t('Неверные счётчики', 'Invalid counters'));

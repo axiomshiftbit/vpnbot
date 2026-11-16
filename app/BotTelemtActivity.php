@@ -71,23 +71,23 @@ trait BotTelemtActivity
         if (!$names) {
             return false;
         }
-        $api  = $this->telemtApiFetch(['/v1/users', '/v1/system/info', '/v1/stats/users/quota']);
-        $rows = $api['/v1/users'] ?? null;
-        if (!is_array($rows)) {
-            return false;
-        }
-        $boot = (int) ($api['/v1/system/info']['process_started_at_epoch_secs'] ?? 0);
-        // Расход квоты ядро отдаёт только для пользователей с квотой.
-        $quota = [];
-        foreach ((array) ($api['/v1/stats/users/quota']['users'] ?? []) as $item) {
-            if (is_array($item) && is_string($item['username'] ?? null) && is_int($item['used_bytes'] ?? null)) {
-                $quota[$item['username']] = max(0, $item['used_bytes']);
+        // Меню и cron — разные процессы. Запрос к API тоже под блокировкой:
+        // иначе снимок, полученный раньше, но записанный позже, выглядел бы
+        // сбросом счётчика и прибавлялся бы к трафику целиком.
+        return (bool) $this->withLock('telemtactivity', function () use ($names) {
+            $api  = $this->telemtApiFetch(['/v1/users', '/v1/system/info', '/v1/stats/users/quota']);
+            $rows = $api['/v1/users'] ?? null;
+            if (!is_array($rows)) {
+                return false;
             }
-        }
-
-        // Меню и cron — разные процессы: без блокировки два снимка подряд
-        // дважды прибавили бы один и тот же прирост трафика.
-        return (bool) $this->withLock('telemtactivity', function () use ($rows, $names, $boot, $quota) {
+            $boot = (int) ($api['/v1/system/info']['process_started_at_epoch_secs'] ?? 0);
+            // Расход квоты ядро отдаёт только для пользователей с квотой.
+            $quota = [];
+            foreach ((array) ($api['/v1/stats/users/quota']['users'] ?? []) as $item) {
+                if (is_array($item) && is_string($item['username'] ?? null) && is_int($item['used_bytes'] ?? null)) {
+                    $quota[$item['username']] = max(0, $item['used_bytes']);
+                }
+            }
             $state = $this->getTelemtActivity();
             $now   = time();
             // Ядро перезапускалось — его счётчик начался с нуля. Без времени

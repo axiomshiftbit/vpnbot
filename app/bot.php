@@ -514,17 +514,15 @@ class Bot
         $file = __DIR__ . '/config.php';
         require $file;
         if (empty($c['admin'])) {
-            // Первым апдейтом может прийти что угодно, включая тип, у которого
-            // 'from' не извлекается вовсе. Раньше в config.php записывалось
-            // array(0 => NULL), после чего empty([null]) уже ложно, а
-            // in_array($realUserId, [null]) ложно для всех — бот навсегда
-            // оставался «занятым», без единого админа, и чинился только
-            // правкой config.php руками.
-            if (empty($this->input['from'])) {
-                return;
+            // Владелец задаётся при установке (VPNBOT_ADMIN_ID). Раньше права
+            // владельца получал первый написавший боту — любой посторонний,
+            // успевший раньше настоящего владельца. ID отправителя пишется в
+            // журнал, чтобы владелец мог вписать свой: 'admin' => [ID].
+            if (!empty($this->input['from']) && is_scalar($this->input['from']) && preg_match('~^[1-9][0-9]{0,15}$~D', (string) $this->input['from'])) {
+                error_log('vpnbot: owner is not configured; ignored Telegram ID ' . $this->input['from']
+                    . ". To make it the owner add 'admin' => [" . $this->input['from'] . '] to app/config.php');
             }
-            $c['admin'] = [$this->input['from']];
-            file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
+            return;
         } elseif (!is_array($c['admin'])) {
             $c['admin'] = [$c['admin']];
             file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
@@ -5505,6 +5503,33 @@ class Bot
         return $conf;
     }
 
+    public int $hysteriaApplyTimeout = 30;
+
+    // runtime/status.json службы: config_sha256 — работающий файл, checked_sha256 —
+    // последний проверенный. Отказ окончателен, только когда отвергнут именно наш файл.
+    private function hysteriaConfirmApplied(string $sha): bool
+    {
+        $file = $this->hysteriaUsersRoot . '/runtime/status.json';
+        $deadline = microtime(true) + $this->hysteriaApplyTimeout;
+        do {
+            clearstatcache(true, $file);
+            $status = json_decode((string) @file_get_contents($file), true);
+            if (is_array($status)) {
+                // Служба прежнего образа не сообщает, какой файл работает.
+                if (!array_key_exists('config_sha256', $status)) return true;
+                $error = (string) ($status['error'] ?? '');
+                if ($status['config_sha256'] === $sha && !empty($status['running']) && $error === '') return true;
+                if ($error !== '' && ($status['checked_sha256'] ?? null) === $sha && $status['config_sha256'] !== $sha) {
+                    error_log('Hysteria: the service rejected the new configuration; the previous one keeps running');
+                    return false;
+                }
+            }
+            usleep(200000);
+        } while (microtime(true) < $deadline);
+        error_log('Hysteria: the service did not confirm the new configuration');
+        return false;
+    }
+
     public function restartHysteria()
     {
         return $this->withLock('hysteria', fn() => $this->restartHysteriaLocked());
@@ -5544,7 +5569,11 @@ class Bot
         if (!$this->protocolModuleEnabled('hy')) return true;
         // New images validate/apply changes and enforce personal restrictions
         // themselves. Old images keep the shared-password lifecycle.
-        if (trim((string) $this->ssh('test -f /hysteria_service.py && printf managed', 'hy')) === 'managed') return true;
+        // Служба проверяет файл и при отказе продолжает работать с прежним, поэтому
+        // успех — только её подтверждение SHA-256 именно записанного YAML.
+        if (trim((string) $this->ssh('test -f /hysteria_service.py && printf managed', 'hy')) === 'managed') {
+            return $this->hysteriaConfirmApplied(hash('sha256', $yaml));
+        }
         if (is_file($this->hysteriaUsersRoot . '/users.json')) return false;
         $this->ssh('pkill hysteria', 'hy');
         if (!empty($pac['hysteria_pass'])) {
@@ -5755,14 +5784,23 @@ class Bot
 
     public function chhypass($pass)
     {
-        $this->pacConfUpdate(function (&$pac) use ($pass) {
+        [$before, $after] = $this->pacConfUpdate(function (&$pac) use ($pass) {
+            $before = $pac;
             if (!empty($pass)) {
                 $pac['hysteria_pass'] = $pass;
             } else {
                 unset($pac['hysteria_pass']);
             }
+            return [$before, $pac];
         });
-        $this->restartHysteria();
+        if (!$this->restartHysteria()) {
+            // Служба не приняла пароль и работает со старым: настройки и YAML
+            // возвращаются к нему, чтобы ссылки клиентов совпадали с сервером.
+            $restored = $this->restorePacFields($before, $after, ['hysteria_pass']) && $this->restartHysteria();
+            $this->send($this->input['chat'], $restored
+                ? $this->t('Hysteria не приняла новый пароль: действует прежний.', 'Hysteria rejected the new password: the previous one stays in effect.')
+                : $this->t('Hysteria не приняла новый пароль; возврат прежнего не подтверждён — проверьте службу.', 'Hysteria rejected the new password; restoring the previous one is unconfirmed — check the service.'));
+        }
         $this->menu('hy');
     }
 
@@ -8445,7 +8483,7 @@ NFT;
             'cloak'         => $ssSnapshot[2],
             'ckusers'       => $ssSnapshot[3],
             'ovpn'          => $this->exportOvpnPki(),
-            'ovpn_limits'   => $this->ovpnLimitsSnapshot(),
+            ...$this->ovpnBackupSections(),
             'ipsec'         => $this->exportIpsecPki(),
             'xraystats'     => $xraySnapshot[1],
             'managed_protocols' => $this->exportManagedProtocols(),
@@ -9157,8 +9195,7 @@ NFT;
                 $out[] = 'update openvpn';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if ($this->importOvpnPki($json['ovpn'])) {
-                    // Старая копия без раздела лимитов прежние лимиты не трогает.
-                    if (isset($json['ovpn_limits'])) $this->restoreOvpnLimits($json['ovpn_limits']);
+                    $this->restoreOvpnBackupSections($json);
                     $this->restartOvpn();
                 } else {
                     $ok = false;
@@ -24623,7 +24660,17 @@ DNS-over-HTTPS with IP:
     // it is immune to TZ/format quirks. Called every cron tick AND on each online
     // read, so a single missed connection no longer makes a client flicker out: they
     // stay listed until the window elapses without any new connection.
+    // Меню и cron вызывают это одновременно: чтение offset, разбор хвоста
+    // журнала, запись истории и сохранение offset — одна операция, иначе одни
+    // и те же строки учитывались бы дважды. Занятый замок — другой процесс как
+    // раз обновляет состояние: отдаётся последнее сохранённое.
     public function trackOnline(): array
+    {
+        $seen = $this->withLock('online-track', fn() => $this->trackOnlineLocked(), 15, null);
+        return is_array($seen) ? $seen : (array) ($this->getOnlineState()['seen'] ?? []);
+    }
+
+    private function trackOnlineLocked(): array
     {
         $path = $this->xrayLog;
         // Раньше отсутствие лога означало ранний выход. Теперь нет: карта живых
@@ -30601,16 +30648,17 @@ DNS-over-HTTPS with IP:
             }
             // Оборванная смена ключа в режиме MASQUE могла оставить и новое
             // устройство MASQUE неподтверждённым: его судьба та же, что у копии.
-            $masque = '[ ! -f /warp_masque.sh ] || sh /warp_masque.sh ';
+            // Отказ вложенного сценария — отказ всей операции: копия остаётся.
+            $masque = fn(string $step) => '{ [ ! -f /warp_masque.sh ] || sh /warp_masque.sh ' . $step . '; }';
             if ($action === 'drop') {
-                $this->send($chat, $this->i18n($this->warpCommand($masque . 'commit; rm -rf /etc/warp/.bak') ? 'warp backup dropped' : 'warp backup failed'));
+                $this->send($chat, $this->i18n($this->warpCommand($masque('commit') . ' && rm -rf /etc/warp/.bak') ? 'warp backup dropped' : 'warp backup failed'));
                 return;
             }
             $p   = $this->getPacConf();
             $off = !empty($p['warpoff']);
             // Возвращаются только те файлы, что есть в копии: чего в ней нет,
             // то на момент обрыва ещё не успели заменить.
-            $ok = $this->warpCommand(self::WARP_STOP . '; ' . $masque . 'rollback; cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
+            $ok = $this->warpCommand(self::WARP_STOP . '; ' . $masque('rollback') . ' && cd /etc/warp && for f in wgcf-profile.conf wgcf-account.toml; do '
                 . 'if [ -f ".bak/$f" ]; then cp -p ".bak/$f" "$f" || exit 1; fi; done');
             // В режиме MASQUE туннель WireGuard не поднимается: прокси запустит сторож.
             if ($ok && !$off && $this->warpMode($p) === 'wireguard') {
@@ -38681,7 +38729,9 @@ DNS-over-HTTPS with IP:
                 'timeout' => 5,
             ]);
             if (!empty($r['description'])) {
-                error_log('getUpdates error: ' . $r['description']);
+                // Как и request(): только код. description внешнего API может
+                // содержать отражённый URL запроса с токеном.
+                error_log('getUpdates error: code ' . (int) ($r['error_code'] ?? 0));
                 sleep(3);
                 continue;
             }

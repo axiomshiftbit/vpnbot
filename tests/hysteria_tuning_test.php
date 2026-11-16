@@ -10,7 +10,7 @@ class HyTuneBot extends Bot
     public array $conf = ['domain' => 'vpn.example', 'hysteria_pass' => 'shared', 'language' => 'ru'];
     public array $screen = [], $commands = [];
     public string $core = 'v2.13.0';
-    public bool $writeFail = false;
+    public bool $writeFail = false, $reject = false;
     public function __construct(string $root, array $strings) {
         $this->pac = "$root/pac.json"; $this->hysteriaUsersRoot = "$root/hysteria"; $this->hysteriaConf = "$root/hysteria.yaml";
         $this->i18n = $strings; $this->language = 'ru'; $this->ip = '203.0.113.10'; $this->admin = true;
@@ -27,7 +27,13 @@ class HyTuneBot extends Bot
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
         $this->commands[] = $cmd;
         if (str_contains($cmd, 'hysteria version')) return $this->core === '' ? '' : "Version:\t{$this->core}\n";
-        return str_contains($cmd, 'printf managed') ? 'managed' : '';
+        if (!str_contains($cmd, 'printf managed')) return '';
+        // Служба принимает записанный YAML и сообщает его SHA-256 (MAN-01).
+        $sha = hash_file('sha256', $this->hysteriaConf);
+        @mkdir("{$this->hysteriaUsersRoot}/runtime", 0700, true);
+        file_put_contents("{$this->hysteriaUsersRoot}/runtime/status.json", json_encode(['time' => time(), 'running' => true,
+            'error' => $this->reject ? 'configuration_rejected' : '', 'config_sha256' => $this->reject ? 'previous' : $sha, 'checked_sha256' => $sha]));
+        return 'managed';
     }
     public function writePrivateKey(string $path, string $data): bool { return !$this->writeFail && parent::writePrivateKey($path, $data); }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screen = ['text' => $text, 'buttons' => is_array($button) ? $button : []]; }
@@ -120,6 +126,12 @@ try {
         $check($b->conf === $before && file_get_contents($b->hysteriaConf) === $yaml && str_contains($b->screen['text'], '⚠️'), "отказ записи: «{$action}» не сохраняется и объясняется");
     }
     $b->writeFail = false;
+
+    // ── служба отвергла новую конфигурацию: настройка тоже не сохраняется (MAN-01)
+    $before = $b->conf; $b->reject = true;
+    $b->click('/hyTune sniff');
+    $check($b->conf === $before && str_contains($b->screen['text'], '⚠️'), 'отказ службы: настройка не сохраняется и объясняется');
+    $b->reject = false;
 
     // ── кнопки и маршрутизация ──────────────────────────────────────────────
     $b->conf['hysteria_obfs'] = 'x'; $b->click('/hyTune');
