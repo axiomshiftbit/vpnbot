@@ -5462,7 +5462,13 @@ class Bot
             return false;
         }
         if (!$ok || empty($this->getHashSubdomain('np'))) {
-            return false;
+            // Пока реквизиты неполные или нет поддомена, Naive выключен: заглушка
+            // отзывает прежний пароль (start_np.sh по ней caddy не поднимает), а
+            // служба останавливается. null — выключено намеренно, false — отказ.
+            if (!$this->writePrivateKey('/config/Caddyfile', $t)) {
+                throw new RuntimeException($this->t('Не удалось сохранить конфигурацию Naive', 'Could not save the Naive configuration'));
+            }
+            return $this->controlContainerService('np', 'naive', 'stop') ? null : false;
         }
         // Проверяем отдельный кандидат до замены активного файла и остановки.
         // Вывод валидатора может содержать реквизиты, поэтому нужен только marker.

@@ -25,8 +25,13 @@ class NaiveRestartBot extends Bot
     public function writePrivateKey(string $path, string $data): bool {
         return !$this->failWrite && parent::writePrivateKey($path, $data);
     }
+    public bool $failStop = false;
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
         $this->commands[] = $cmd;
+        if (str_contains($cmd, 'service_supervisor.sh stop naive')) {
+            @unlink("$this->root/active");
+            return $this->failStop ? '' : 'VPNBOT_SERVICE_STOPPED:naive';
+        }
         if (str_contains($cmd, 'service_supervisor.sh restart naive')) {
             copy("$this->root/Caddyfile", "$this->root/active");
             return 'VPNBOT_SERVICE_READY:naive';
@@ -67,6 +72,20 @@ try {
     $b->commands = []; $b->restartNaive();
     $check(!array_filter($b->commands, static fn($cmd) => str_starts_with($cmd, 'caddy run')),
         'Плейсхолдер не запускает сервис с общеизвестным паролем');
+    // Fresh setup sets the login before the password: saved, service off, no error.
+    $b->setPacConf(['domain' => 'vpn.example.test', 'naive' => ['user' => 'before', 'pass' => 'latest']]);
+    $b->restartNaive();
+    $b->setPacConf(['domain' => 'vpn.example.test', 'naive' => ['user' => 'before']]);
+    $b->commands = []; $error = null;
+    try { $b->chnplogin('fresh'); } catch (RuntimeException $e) { $error = $e; }
+    $check($error === null && str_contains(file_get_contents("$root/Caddyfile"), 'basic_auth CHANGEME CHANGEME')
+        && !str_contains(file_get_contents("$root/Caddyfile"), 'latest') && !is_file("$root/active")
+        && in_array('/bin/sh /service_supervisor.sh stop naive', $b->commands, true),
+        'Неполные реквизиты: логин сохраняется, прежний пароль отозван, служба остановлена');
+    $b->failStop = true; $error = null;
+    try { $b->chnplogin('fresh2'); } catch (RuntimeException $e) { $error = $e; }
+    $check($error !== null, 'Неполные реквизиты: неподтверждённая остановка остаётся видимой ошибкой');
+    $b->failStop = false;
     $b->setPacConf(['domain' => 'vpn.example.test', 'naive' => ['user' => 'before', 'pass' => 'latest']]);
     file_put_contents("$root/Caddyfile", "forward_proxy {\n    hide_ip\n}\n"); $b->commands = [];
     $check($b->restartNaive() === false && !$b->commands,
