@@ -272,7 +272,7 @@ class PublishTest(unittest.TestCase):
     def test_only_a_dev_publication_leaves_the_commit_reference(self):
         reference = bundles.BUNDLE_REPO + ':bundle-source-' + SOURCE
         dev = self.publish('dev')
-        self.assertEqual(dev[-2:], [bundles.BUNDLE_REPO + ':bundle-dev', reference])
+        self.assertEqual(dev[-2:], [reference, bundles.BUNDLE_REPO + ':bundle-dev'])
         self.assertNotIn(reference, self.publish('master'))
         self.assertNotIn(reference, self.publish('dev', 'schedule'))
         self.assertNotIn(reference, self.publish('feature'))

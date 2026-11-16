@@ -96,6 +96,29 @@ class NodeColdImageIdentityTest(unittest.TestCase):
         path, manifests = self.archive()
         with self.assertRaisesRegex(RuntimeError, 'every candidate'): module.archive_ids(path, {manifests[0], 'sha256:' + '9' * 64})
 
+    def test_classic_docker28_untagged_save_lists_configs_only_in_manifest_json(self):
+        # docker save of several image IDs (Docker 28, overlay2): index.json names
+        # one manifest; manifest.json names every config blob.
+        import hashlib, io, json, tarfile, tempfile
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        bodies = [b'{"config":"one"}', b'{"config":"two"}', b'{"config":"three"}']
+        configs = ['sha256:' + hashlib.sha256(b).hexdigest() for b in bodies]
+        def build(path, tamper=False):
+            with tarfile.open(path, 'w') as archive:
+                def add(name, data):
+                    info = tarfile.TarInfo(name); info.size = len(data); archive.addfile(info, io.BytesIO(data))
+                for config, body in zip(configs, bodies):
+                    add('blobs/sha256/' + config[7:], body + (b' ' if tamper and config == configs[2] else b''))
+                manifest = json.dumps({'schemaVersion': 2, 'config': {'digest': configs[0]}}).encode()
+                digest = 'sha256:' + hashlib.sha256(manifest).hexdigest()
+                add('blobs/sha256/' + digest[7:], manifest)
+                add('index.json', json.dumps({'manifests': [{'digest': digest}]}).encode())
+                add('manifest.json', json.dumps([{'Config': 'blobs/sha256/' + c[7:]} for c in configs]).encode())
+        path = Path(directory.name) / 'images.tar'; build(path)
+        self.assertEqual(module.archive_ids(path, set(configs)), {c: c for c in configs})
+        tampered = Path(directory.name) / 'tampered.tar'; build(tampered, tamper=True)
+        with self.assertRaisesRegex(RuntimeError, 'config digest mismatch'): module.archive_ids(tampered, set(configs))
+
     def test_multi_platform_index_is_not_trusted_as_one_image(self):
         path, manifests = self.archive(manifests=[None])
         with self.assertRaisesRegex(RuntimeError, 'single-platform'): module.archive_ids(path, set(manifests))

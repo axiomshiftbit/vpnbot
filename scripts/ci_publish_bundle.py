@@ -63,12 +63,14 @@ def main():
                 command('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false',
                         '--tag', BUNDLE_REPO + ':bundle-' + channel, ref)
 
-            retrying(move_channel)
             if channel == 'dev':
                 # По этой ссылке master, перемотанный ровно на этот коммит,
-                # берёт уже проверенный комплект без пересборки.
+                # берёт уже проверенный комплект без пересборки. Она неизменяема
+                # и создаётся ДО переключения канала: сбой здесь не оставит
+                # bundle-dev переключённым при отказавшей публикации.
                 network('docker', 'buildx', 'imagetools', 'create', '--prefer-index=false',
                         '--tag', source_reference(bundle['source']), ref)
+            retrying(move_channel)
     print('Published image set:', release, 'channel:', channel or 'candidate only', 'source:', bundle['source'])
 
 

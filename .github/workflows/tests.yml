@@ -45,6 +45,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # До сборки: задания build выгружают образы-кандидаты в реестр (в публичном
+      # репозитории он открыт), поэтому секрет в файлах должен остановить прогон
+      # раньше. Задание bundle повторяет проверку с приметами своего runner.
+      - name: Секреты в файлах репозитория до сборки образов
+        run: python3 scripts/ci_scan_layers.py --tree .
+
       - name: Подготовить PHP CLI резервного тестового runner
         if: (runner.environment == 'self-hosted')
         run: |

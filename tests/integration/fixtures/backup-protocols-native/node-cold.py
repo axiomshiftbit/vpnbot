@@ -54,6 +54,22 @@ def archive_ids(path, host_ids):
             for host_id in host_ids:
                 if host_id in (digest, config):
                     nested[host_id] = config
+        # Classic Docker 28 saving several untagged IDs lists one manifest in
+        # index.json; manifest.json (what the classic nested daemon loads) names
+        # every config. Its config blob is verified against its digest name.
+        try:
+            legacy = json.load(archive.extractfile('manifest.json'))
+        except KeyError:
+            legacy = []
+        for entry in legacy:
+            name = entry.get('Config', '') if isinstance(entry, dict) else ''
+            if not re.fullmatch(r'blobs/sha256/[a-f0-9]{64}', name):
+                raise RuntimeError('archive config reference invalid')
+            config = 'sha256:' + name.rsplit('/', 1)[1]
+            if 'sha256:' + hashlib.sha256(archive.extractfile(name).read()).hexdigest() != config:
+                raise RuntimeError('archive config digest mismatch')
+            if config in host_ids:
+                nested[config] = config
     if set(nested) != set(host_ids):
         raise RuntimeError('saved archive does not contain every candidate image')
     return nested
