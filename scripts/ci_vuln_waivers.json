@@ -1,1 +1,11 @@
-[]
+[
+  {
+    "id": "CVE-2026-118664",
+    "component": "AdGuard Home",
+    "version": "v0.107.80",
+    "package": "decode-uri-component",
+    "installed": "0.2.2",
+    "expires": "2026-12-31",
+    "reason": "AdGuard Home v0.107.80 frontend: query-string 6 (CommonJS) requires decode-uri-component 0.2.x; the only fix, 0.5.1, is ESM-only and breaks the UI build. Browser-side DoS in the admin UI only; no newer AdGuard release. Approved by the owner 2026-11-15."
+  }
+]
