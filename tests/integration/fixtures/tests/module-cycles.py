@@ -36,6 +36,9 @@ def ready(service):
     # реализации pgrep: procps сравнивает с обрезанным именем, busybox (Alpine) —
     # с полным. Ищем так же, как бот: по командной строке.
     if service=='tt':return run('docker','exec',i,'pgrep','-f','[t]rusttunnel_endpoint').returncode==0
+    # ssserver запускает supervisor по полному пути: BusyBox pgrep -x сравнивает
+    # argv[0] (/usr/bin/ssserver) целиком. Бот проверяет так же, без -x.
+    if service=='ss':return run('docker','exec',i,'pgrep','ssserver').returncode==0
     pattern={'oc':'ocserv','ovpn':'openvpn','hy':'hysteria','ss':'ssserver','dnstt':'dnstt-server','telemt':'telemt','ipsec':'charon'}[service]
     return run('docker','exec',i,'pgrep','-x',pattern).returncode==0
 def wait(predicate,seconds=70):
