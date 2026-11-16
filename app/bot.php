@@ -2094,8 +2094,14 @@ class Bot
             case preg_match('~^/dw (\w+) (\w+)$~', $this->input['callback'], $m):
                 $this->dw($m[1], $m[2]);
                 break;
-            case preg_match('~^/deloc (\d+)$~', $this->input['callback'], $m):
-                $this->deloc($m[1]);
+            case preg_match('~^/deloc (\d+)_([a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->deloc($m[1], $m[2]);
+                break;
+            // Кнопка до обновления — только номер строки: после перенумерации
+            // она удалила бы соседа. Такие кнопки не удаляют никого.
+            case preg_match('~^/deloc \d+$~', $this->input['callback']):
+                if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
+                $this->menu('oc');
                 break;
             case preg_match('~^/ocUser (\d+)$~', $this->input['callback'], $m):
                 $this->ocUser($m[1]);
@@ -2308,8 +2314,14 @@ class Bot
             case preg_match('~^/delupstream (\d+)$~', $this->input['callback'], $m):
                 $this->delupstream($m[1]);
                 break;
-            case preg_match('~^/delete (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
-                $this->deletePeer(...explode('_', $m['arg']));
+            case preg_match('~^/delete (?P<client>\d+)_(?P<page>-?\d+)_(?P<tok>[a-f0-9]{8})$~', $this->input['callback'], $m):
+                $this->deletePeer($m['client'], $m['page'], true, $m['tok']);
+                break;
+            // Кнопка до обновления адресовала клиента только номером: после
+            // перенумерации она удалила бы соседа. Такие кнопки не удаляют никого.
+            case preg_match('~^/delete \d+(?:_-?\d+)?$~', $this->input['callback']):
+                if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
+                $this->menu('wg');
                 break;
             case preg_match('~^/dns (?P<arg>\d+(?:_(?:-)?\d+)?)$~', $this->input['callback'], $m):
                 $this->dnsPeer(...explode('_', $m['arg']));
@@ -2833,9 +2845,32 @@ class Bot
         return $t;
     }
 
+    // Удаление пользователя и смена секрета сначала переписывают telemt.toml, а
+    // работающий процесс держит прежние секреты до остановки. Метка снимается
+    // только после успешного применения; при отказе (например, остановки) её
+    // видит cron (retryTelemtApply) и повторяет, пока отзыв не применится.
+    public function telemtApplyPendingPath(): string { return '/config/telemt/apply.pending'; }
+
     public function restartTelemt()
     {
-        return $this->withLock('telemt', fn() => $this->applyTelemt());
+        return $this->withLock('telemt', function () {
+            $pending = $this->telemtApplyPendingPath();
+            @mkdir(dirname($pending), 0755, true);
+            if (@file_put_contents($pending, (string) time()) === false) error_log('restartTelemt: apply marker was not written');
+            $result = $this->applyTelemt();
+            @unlink($pending);
+            return $result;
+        });
+    }
+
+    public function retryTelemtApply(): void
+    {
+        if (!is_file($this->telemtApplyPendingPath()) || !$this->protocolModuleEnabled('telemt')) return;
+        try {
+            $this->restartTelemt();
+        } catch (Throwable $e) {
+            error_log('retryTelemtApply: ' . get_class($e));
+        }
     }
 
     public function telemtWriteServiceState(bool $enabled): void
@@ -2883,7 +2918,7 @@ class Bot
         return $this->pacConfUpdate($fn);
     }
 
-    private function applyTelemt(?string $resetQuota = null, bool $deferStart = false)
+    protected function applyTelemt(?string $resetQuota = null, bool $deferStart = false)
     {
         if (!$this->protocolModuleEnabled('telemt')) {
             $this->telemtWriteServiceState(false);
@@ -7463,6 +7498,7 @@ NFT;
     public const CRON_ACCESS = [
         'shutdownClient', 'shutdownClientXr', 'checkResetXrayStats', 'xrayStatsUser', 'checkTrafficLimits',
         'syncXrayProtocolUsers', 'checkAccessPolicies', 'trackOnline', 'trackWgOnline', 'trackTelemtOnline', 'trackOvpnTraffic', 'retryIkev2Users',
+        'retryTelemtApply',
     ];
 
     public int $cronPeriod = 10;
@@ -7508,6 +7544,7 @@ NFT;
             'trackTelemtOnline',
             'trackOvpnTraffic',
             'retryIkev2Users',
+            'retryTelemtApply',
             'rotateAmneziaCron',
             'refreshExtSubCache',
             'checkDatUpdates',
@@ -16942,15 +16979,26 @@ DNS-over-HTTPS with IP:
         return null;
     }
 
-    public function deletePeer($client, $page, $menu = true)
+    // Метка клиента для кнопок: адрес переиспользуется новым клиентом, ключ — нет.
+    public function wgClientToken(array $client): string
     {
-        return $this->withWireguardUpdate(fn() => $this->deletePeerLocked($client, $page, $menu), null);
+        return substr(hash('sha256', 'wg-client|' . ($client['interface']['Address'] ?? '') . '|' . ($client['interface']['PrivateKey'] ?? '')), 0, 8);
     }
 
-    private function deletePeerLocked($client, $page, $menu = true)
+    public function deletePeer($client, $page, $menu = true, ?string $token = null)
+    {
+        return $this->withWireguardUpdate(fn() => $this->deletePeerLocked($client, $page, $menu, $token), null);
+    }
+
+    private function deletePeerLocked($client, $page, $menu = true, ?string $token = null)
     {
         $conf = $this->readConfig(); $clients = $this->readClients();
         if (empty($clients[$client])) return $menu ? $this->menu('wg', $page) : null;
+        // Кнопка из устаревшего меню: под этим номером теперь другой клиент.
+        if ($token !== null && !hash_equals($this->wgClientToken($clients[$client]), $token)) {
+            if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
+            return $menu ? $this->menu('wg', $page) : null;
+        }
         if (empty($conf['interface'])) {
             $this->wgConfUnavailable($this->t('клиент не удалён', 'client not deleted'));
             return $menu ? $this->menu('wg', $page) : null;
@@ -17979,7 +18027,7 @@ DNS-over-HTTPS with IP:
                     [
                         [
                             'text'          => $this->i18n('delete'),
-                            'callback_data' => $this->cbWG("/delete {$client}_$page"),
+                            'callback_data' => $this->cbWG("/delete {$client}_{$page}_" . $this->wgClientToken($clients[$client])),
                         ],
                         [
                             'text'          => $this->i18n('back'),
@@ -28112,7 +28160,7 @@ DNS-over-HTTPS with IP:
         $data[] = [
             [
                 'text'          => $this->i18n('delete'),
-                'callback_data' => "/deloc $i",
+                'callback_data' => "/deloc {$i}_" . $this->ocClientToken($clients[$i]),
             ],
         ];
         $data[] = [
@@ -28139,16 +28187,31 @@ DNS-over-HTTPS with IP:
         $this->menu('oc');
     }
 
-    public function deloc($i)
+    public function ocClientToken(string $name): string
+    {
+        return substr(hash('sha256', 'oc-user|' . $name), 0, 8);
+    }
+
+    public function deloc($i, ?string $token = null)
     {
         $clients = $this->getClientsOc();
         foreach ($clients as $k => $v) {
             if ($i == $k) {
+                // Кнопка из устаревшего меню: под этим номером теперь другой пользователь.
+                if ($token !== null && !hash_equals($this->ocClientToken((string) $v), $token)) {
+                    if (!empty($this->input['callback_id'])) $this->answer($this->input['callback_id'], $this->i18n('confirm stale'), true);
+                    break;
+                }
                 if (!$this->saveOcPassword($v, null)) {
                     $this->send($this->input['chat'], $this->t('OpenConnect: не удалось удалить пользователя', 'OpenConnect: could not delete the user'));
                     break;
                 }
+                // Пароль уже удалён, но живая сессия держится до отключения.
                 $this->ssh('occtl disconnect user ' . escapeshellarg($v), 'oc');
+                if ($this->sshFailed || !empty($this->getOcOnlineUsers([$v])[$v])) {
+                    $this->send($this->input['chat'], $this->t("OpenConnect: пользователь $v удалён, но его активная сессия не завершена — повторите удаление сессии перезапуском службы",
+                        "OpenConnect: user $v is deleted but the active session was not closed — restart the service to end it"));
+                }
                 break;
             }
         }

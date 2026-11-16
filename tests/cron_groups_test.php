@@ -91,6 +91,7 @@ try {
         public function trackTelemtOnline(bool $force = false): bool { $this->ran[] = 'trackTelemtOnline'; return true; }
         public function trackOvpnTraffic(): void { $this->ran[] = 'trackOvpnTraffic'; }
         public function retryIkev2Users(): void { $this->ran[] = 'retryIkev2Users'; }
+        public function retryTelemtApply(): void { $this->ran[] = 'retryTelemtApply'; }
     };
     $access->cron('access', $script);
     $runs = file("$dir/runs", FILE_IGNORE_NEW_LINES) ?: [];
