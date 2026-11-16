@@ -97,11 +97,15 @@ foreach (glob(__DIR__ . '/../dockerfile/*.dockerfile') as $file) {
     }
 }
 $ss = (string) file_get_contents(__DIR__ . '/../dockerfile/shadowsocks.dockerfile');
-chAssert(str_contains($ss, 'apk del git xz unzip'),
-    'shadowsocks: сборочные утилиты удалены из рантайм-образа');
-chAssert(strpos($ss, 'tar -xf shadowsocks-rust.tar.xz') < strpos($ss, 'apk del'),
-    'удаление идёт ПОСЛЕ распаковки (tar.xz без xz не распакуется)');
-chAssert(!preg_match('~apk del[^\n]*\bjq\b~', $ss),
+// Бинарники собираются в стадии ss_build; рантайм-стадия (после последнего
+// FROM) сборочных утилит не ставит вовсе и не держит скрипт загрузки.
+$ssRuntime = substr($ss, strrpos($ss, "\nFROM "));
+preg_match_all('~apk add[^\n]*~', $ssRuntime, $ssAdds);
+chAssert($ssAdds[0] && !preg_match('~\b(git|xz|unzip|curl|build-base|cargo)\b~', implode("\n", $ssAdds[0])),
+    'shadowsocks: в рантайм-образ не ставятся сборочные утилиты');
+chAssert(!str_contains($ssRuntime, 'download-file.sh') && !str_contains($ssRuntime, '/sources.sha256'),
+    'shadowsocks: скрипт загрузки и манифест сумм не попадают в рантайм-образ');
+chAssert(preg_match('~apk add[^\n]*\bjq\b~', $ssRuntime) === 1,
     'jq остаётся: его зовёт start_ss.sh в рантайме');
 
 // ── НИЗКИЕ того же отчёта ───────────────────────────────────────────────────
