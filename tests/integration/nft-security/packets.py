@@ -228,6 +228,13 @@ try:
         check('main-l2-'+dmac,wan,'11.77.0.2','11.77.0.10',dmac=dmac)
     for src in ('2606:4700:77::2','::1','fc00::2','2606:4700:77::10'):
         for port in (22,443,8090): check('main-ipv6-'+src+'-'+str(port),wan,src,'2606:4700:77::10',port)
+    # ICMP errors reach the host only as related to a tracked flow; NDP is
+    # on-link (hop limit 255) and rate-limited.
+    check('main-ipv4-unsolicited-icmp-error',wan,'11.77.0.2','11.77.0.10',proto='icmp',type=3,code=4)
+    check('main-ipv6-unsolicited-packet-too-big',wan,'2606:4700:77::2','2606:4700:77::10',proto='icmp6',type=2)
+    check('main-ipv6-neighbor-solicit-accepted',wan,'2606:4700:77::2','2606:4700:77::10',proto='icmp6',type=135,hop=255,nd_target='2606:4700:77::10',expected=True)
+    check('main-ipv6-neighbor-solicit-offlink',wan,'2606:4700:77::2','2606:4700:77::10',proto='icmp6',type=135,hop=64,nd_target='2606:4700:77::10')
+    check('main-ipv6-neighbor-solicit-flood-limited',wan,'2606:4700:77::2','2606:4700:77::10',proto='icmp6',type=135,hop=255,nd_target='2606:4700:77::10',expected=True,count=1000,maximum=400)
     nft('add element ip filter asn { 11.77.0.7 : 102 }')
     check('main-trusted-syn-burst-limited',wan,'11.77.0.7','11.77.0.10',443,expected=True,count=1000,maximum=400)
     # Actual established flow: distinguish a new-source ACL from live revocation.
