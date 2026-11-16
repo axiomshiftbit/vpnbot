@@ -42,25 +42,27 @@ $stale = static function (string $failing) use ($root): WarpBackupMasqueBot {
     file_put_contents("$root/pac.json", json_encode(['warpoff' => 1, 'warp_mode' => 'masque']));
     return new WarpBackupMasqueBot($root);
 };
+// Каталог удаляет внешняя команда (sh): кеш stat PHP иначе отвечает по старому состоянию.
+$gone = static function (string $path): bool { clearstatcache(true, $path); return !is_dir($path); };
 try {
     $b = $stale('rollback'); $b->warpBackup('restore');
-    $check(is_dir("$root/warp/.bak") && file_get_contents("$root/warp/.bak/wgcf-account.toml") === 'PAID ACCOUNT',
+    $check(!$gone("$root/warp/.bak") && file_get_contents("$root/warp/.bak/wgcf-account.toml") === 'PAID ACCOUNT',
         'Отказ rollback MASQUE: копия прежнего аккаунта не удаляется');
     $check(count($b->sent) === 1 && $b->sent[0] === $b->i18n('warp backup failed'), 'Отказ rollback MASQUE: пользователь видит ошибку');
 
     $b = $stale('commit'); $b->warpBackup('drop');
-    $check(is_dir("$root/warp/.bak"), 'Отказ commit MASQUE: копия не удаляется');
+    $check(!$gone("$root/warp/.bak"), 'Отказ commit MASQUE: копия не удаляется');
     $check(count($b->sent) === 1 && $b->sent[0] === $b->i18n('warp backup failed'), 'Отказ commit MASQUE: пользователь видит ошибку');
 
     // Успешные rollback/commit по-прежнему завершают операцию.
     $b = $stale('none'); $b->warpBackup('restore');
-    $check(!is_dir("$root/warp/.bak") && file_get_contents("$root/warp/wgcf-account.toml") === 'PAID ACCOUNT'
+    $check($gone("$root/warp/.bak") && file_get_contents("$root/warp/wgcf-account.toml") === 'PAID ACCOUNT'
         && $b->sent[0] === $b->i18n('warp backup restored'), 'Успешный rollback: аккаунт возвращён, копия удалена');
     $b = $stale('none'); $b->warpBackup('drop');
-    $check(!is_dir("$root/warp/.bak") && $b->sent[0] === $b->i18n('warp backup dropped'), 'Успешный commit: копия удалена');
+    $check($gone("$root/warp/.bak") && $b->sent[0] === $b->i18n('warp backup dropped'), 'Успешный commit: копия удалена');
     // Без сценария MASQUE (режим WireGuard-образа) поведение прежнее.
     $b = $stale('none'); unlink("$root/warp_masque.sh"); $b->warpBackup('drop');
-    $check(!is_dir("$root/warp/.bak") && $b->sent[0] === $b->i18n('warp backup dropped'), 'Без warp_masque.sh удаление копии работает');
+    $check($gone("$root/warp/.bak") && $b->sent[0] === $b->i18n('warp backup dropped'), 'Без warp_masque.sh удаление копии работает');
 } finally {
     exec('rm -rf ' . escapeshellarg($root));
 }

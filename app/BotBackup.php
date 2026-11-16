@@ -406,8 +406,12 @@ trait BotBackup
         if (!preg_match('/\A([0-9a-fA-F]{64})\s*\z/D', $private, $p) || !preg_match('/\A([0-9a-fA-F]{64})\s*\z/D', $public, $q)) return false;
         $der = hex2bin('302e020100300506032b656e04220420') . hex2bin($p[1]);
         $key = @openssl_pkey_get_private("-----BEGIN PRIVATE KEY-----\n" . chunk_split(base64_encode($der), 64, "\n") . "-----END PRIVATE KEY-----\n");
-        $derived = $key === false ? null : (openssl_pkey_get_details($key)['x25519']['pub_key'] ?? null);
-        return is_string($derived) && hash_equals($derived, hex2bin($q[1]));
+        // Открытый ключ — из PEM SubjectPublicKeyInfo: поле x25519 в деталях
+        // есть только с PHP 8.4, PEM отдают все версии.
+        $pem = $key === false ? null : (openssl_pkey_get_details($key)['key'] ?? null);
+        $spki = is_string($pem) ? base64_decode((string) preg_replace('~-----[^-]+-----|\s~', '', $pem), true) : false;
+        return is_string($spki) && strlen($spki) === 44 && str_starts_with($spki, hex2bin('302a300506032b656e032100'))
+            && hash_equals(substr($spki, 12), hex2bin($q[1]));
     }
 
     // Незашифрованный закрытый ключ OpenSSH хранит свой открытый ключ открыто:
