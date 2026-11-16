@@ -35,7 +35,8 @@ INCLUDE = [
 ]
 EXCLUDED_NAME = re.compile(r'(key|secret|passw|token|credential|cookie|\.pem$|\.crt$|\.p12$|\.env$|config\.php$|'
                            r'authorized_keys|id_(rsa|ed25519|ecdsa)|known_hosts|\.conf$)', re.I)
-EXCLUDED_DIR = re.compile(r'(^|/)(ssh|certs?|pki|keys?|secrets?|backups?|bot|state|\.git)(/|$)', re.I)
+# results/unit is a disposable checkout with generated (synthetic) configs.
+EXCLUDED_DIR = re.compile(r'(^|/)(ssh|certs?|pki|keys?|secrets?|backups?|bot|state|config|\.git)(/|$)|^results/unit/', re.I)
 MAX_FILE, MAX_TOTAL = 4 * 1024 * 1024, 48 * 1024 * 1024
 # Credential formats that must never be packed, even encrypted.
 PATTERNS = [

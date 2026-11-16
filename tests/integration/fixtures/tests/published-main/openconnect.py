@@ -26,7 +26,15 @@ exe('sh','-c',"printf 'nameserver 1.1.1.1\n' > /etc/resolv.conf").check_returnco
 try:
  check('wrong-password-rejected',connect('wrong-password','invalid-audit-password',True),False)
  ok=connect('connect',auth['password']);check('tls-certificate-password-handshake',ok)
- if not ok:raise SystemExit(1)
+ if not ok:
+  # Server side of a failed handshake (stays on the runner; diagnostics are
+  # encrypted): start_oc.sh output, ocserv log tail and the client firewall.
+  srv='openconnect-audit'
+  save('server-container',run('docker','logs','--tail','200',srv))
+  save('server-ocserv',run('docker','exec',srv,'tail','-n','200','/logs/ocserv.log'))
+  save('server-firewall',run('docker','exec',srv,'iptables','-S'))
+  save('server-processes',run('docker','exec',srv,'ps','-o','pid,args'))
+  raise SystemExit(1)
  time.sleep(2)
  dtls=exe('cat','/tmp/audit-oc-client.log');save('dtls',dtls)
  check('dtls-channel-established','Established DTLS connection' in dtls.stdout)

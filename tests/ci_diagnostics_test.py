@@ -64,6 +64,8 @@ class DiagnosticsTest(unittest.TestCase):
                 'results/ssh/id_ed25519': b'k', 'masque-native/certs/cert_private': b'k',
                 'masque-native/state/usage.json': b'{}', 'stand/results/backups/full.json': b'{}',
                 'tests/driver.php': b'code', 'other/random.log': b'x',
+                'results/unit/config/sslocal.json': b'{}', 'results/unit/tests/unit.log': b'x',
+                'stand/results/x/config/client.json': b'{}',
             }
             for name, data in files.items():
                 path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
