@@ -216,14 +216,34 @@ def advisory_version(version):
     return core, prerelease is None, tuple(parts)
 
 
-def advisory_fix_available(patched):
+def patched_versions(patched):
+    """Исправленные версии; авторы иногда пишут «>= v1.2.3» или «v.1.2.3»."""
     if patched is None or patched == '':
-        return False
+        return []
     if not isinstance(patched, str):
         raise ValueError('unsupported patched versions')
-    for version in patched.split(','):
-        advisory_version(version.strip())
-    return True
+    versions = []
+    for value in patched.split(','):
+        value = re.sub(r'^(?:>=|=)\s*', '', value.strip())
+        versions.append(advisory_version(re.sub(r'^v\.(?=\d)', 'v', value)))
+    return versions
+
+
+def advisory_fix_available(patched):
+    return bool(patched_versions(patched))
+
+
+def normalize_range(vulnerable):
+    """Свободные формы, которые авторы пишут в объявлениях репозиториев."""
+    text = vulnerable.strip()
+    match = re.fullmatch(r'(\S+)\s+to\s+(\S+)', text)
+    if match:
+        return f'>= {match.group(1)}, <= {match.group(2)}'
+    match = re.fullmatch(r'(\S+)\s+and\s+(?:later|above|newer)', text)
+    if match:
+        return '>= ' + match.group(1)
+    # «>=1.0.3 <3.5.0»: условия через пробел вместо запятой.
+    return re.sub(r'(?<=[^\s,|])\s+(?=(?:<=|>=|<|>|=)\s*v?\d)', ', ', text)
 
 
 def affected(version, vulnerable, patched):
@@ -231,6 +251,21 @@ def affected(version, vulnerable, patched):
     current = advisory_version(version)
     if not isinstance(vulnerable, str) or not vulnerable.strip():
         raise ValueError('missing vulnerable version range')
+    fixed = patched_versions(patched)
+    try:
+        matched = range_matches(current, normalize_range(vulnerable))
+    except ValueError:
+        # Непонятный текст диапазона не решает ничего, кроме случая, когда все
+        # исправленные версии строго старше закреплённой: тогда она не затронута.
+        if fixed and all(current > version for version in fixed):
+            return False
+        raise
+    # Открытый диапазон («>= v26.1.13») при исправлении во всех ветках не
+    # старше закреплённой версии: она уже содержит исправление.
+    return matched and not (fixed and all(current >= version for version in fixed))
+
+
+def range_matches(current, vulnerable):
     groups = []
     for group in vulnerable.split('||'):
         clauses = []

@@ -111,13 +111,27 @@ class ComponentsTest(unittest.TestCase):
     def test_advisory_ranges(self):
         cases = [('2.9.1', '< 2.9.2', '2.9.2', True), ('2.9.2', '< 2.9.2', '2.9.2', False), ('v2.13.0', '>= 2.0.0, < 2.9.2', '2.9.2', False),
                  ('2.5.0', '>= 2.0.0, < 2.9.2', '2.9.2', True), ('1.9.0', '>= 2.0.0, < 2.9.2', '2.9.2', False), ('2.9.2', '<= 2.9.2', '2.9.3', True),
-                 ('2.9.2', '= 2.9.2', '', True), ('3.0.0', '= 2.9.2', '', False)]
+                 ('2.9.2', '= 2.9.2', '', True), ('3.0.0', '= 2.9.2', '', False),
+                 # Free-form ranges seen in repository advisories (pppd, jQuery, Caddy).
+                 ('2.5.5', '2.5.0 to 2.5.3', '', False), ('2.5.3', '2.4.9 to 2.5.3', '2.5.4', True),
+                 ('3.7.1', '>=1.0.3 <3.5.0', '3.5.0', False), ('3.4.1', '>=1.2 <3.5.0', '3.5.0', True),
+                 ('v2.11.9', 'v2.4.0 and later', 'v2.11.3', False), ('v2.11.2', 'v2.4.0 and later', 'v2.11.3', True), ('v2.3.0', 'v2.4.0 and later', 'v2.11.3', False),
+                 ('v2.11.9', '(confirmed on main @ e0f8d9b)', 'v2.11.0', False),
+                 # Free-form patched versions and an open range already fixed.
+                 ('v2.11.9', '< v2.11.5', 'v.2.11.5', False), ('v2.11.4', '< v2.11.5', 'v.2.11.5', True),
+                 ('v26.11.9', '>= v26.1.13', '>= v26.7.11', False), ('v26.5.0', '>= v26.1.13', '>= v26.7.11', True),
+                 ('3.15.2', '>= 3.0.0, < 3.15.2 || >= 4.0.0, < 4.3.2', '4.3.2, 3.15.2', False),
+                 ('3.15.1', '>= 3.0.0, < 3.15.2 || >= 4.0.0, < 4.3.2', '4.3.2, 3.15.2', True)]
         for version, vulnerable, patched, expected in cases:
             with self.subTest(version=version, vulnerable=vulnerable, patched=patched):
                 self.assertIs(components.affected(version, vulnerable, patched), expected)
         for vulnerable in ('', 'все версии'):
             with self.subTest(vulnerable=vulnerable), self.assertRaises(ValueError):
                 components.affected('1.2.0', vulnerable, '1.2.0')
+        # Unreadable text without a strictly older fix still stops the gate.
+        for patched in ('', 'v2.12.0', 'v2.11.9', 'v2.10.0, v3.0.0'):
+            with self.subTest(patched=patched), self.assertRaises(ValueError):
+                components.affected('v2.11.9', '(confirmed on main @ e0f8d9b)', patched)
 
     def test_clean_state_passes_and_asks_every_source(self):
         api = Api()
