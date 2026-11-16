@@ -608,6 +608,25 @@ jobs:
         with:
           name: native-admission
           path: ${{ runner.temp }}/native.json
+      # Подробности отказа — только шифротекстом (CMS AES-256-GCM, RSA-OAEP)
+      # для .github/ci-diagnostics.crt; закрытый ключ вне GitHub. В журнал
+      # попадают лишь счётчики и SHA-256 шифротекста; токен служит для сверки.
+      - name: Зашифровать журналы отказавшего стенда
+        id: diagnostics
+        if: failure() && runner.environment == 'github-hosted'
+        env:
+          CI_DIAG_FORBIDDEN_1: ${{ github.token }}
+        run: |
+          if sudo test -f /opt/vpnbot-hosted-ci/owner; then
+            sudo --preserve-env=CI_DIAG_FORBIDDEN_1 python3 scripts/ci_diagnostics.py \
+              --certificate .github/ci-diagnostics.crt --output "$RUNNER_TEMP/native-diagnostics.cms"
+          fi
+          if [ -s "$RUNNER_TEMP/native-diagnostics.cms" ]; then echo produced=true >> "$GITHUB_OUTPUT"; fi
+      - uses: ./.github/actions/upload-artifact
+        if: failure() && steps.diagnostics.outputs.produced == 'true'
+        with:
+          name: native-diagnostics-encrypted
+          path: ${{ runner.temp }}/native-diagnostics.cms
       - name: Удалить одноразовые ключи, конфиги и бэкапы
         if: always()
         run: |
