@@ -23,14 +23,43 @@ class ClientFirewallFailureTest(unittest.TestCase):
                 with self.subTest(service=service, failed_rule=fail):
                     script = '''
 VPN_DEVICE=vpns; L2TP_SUBNET=10.7.0.0/24; IKEV2_SUBNET=10.9.0.0/24; DNS=10.10.0.5
-count=0
-iptables() { count=$((count + 1)); [ "$count" != "$FAIL_RULE" ]; }
+count=0; retry=0
+# Правило номер FAIL_RULE не ставится никак: ни REJECT, ни его замена DROP.
+iptables() {
+    if [ "$retry" = 1 ]; then retry=0; return 1; fi
+    count=$((count + 1)); last=; for a in "$@"; do last=$a; done
+    if [ "$count" = "$FAIL_RULE" ]; then [ "$last" = REJECT ] && retry=1; return 1; fi
+    return 0
+}
 log() { printf '%s\\n' "$*" >&2; }
 ''' + block + '\nprintf "DAEMON_START_REACHED\\n"\n'
                     result = subprocess.run(['sh', '-c', script], env=os.environ | {'FAIL_RULE': str(fail)},
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0 if fail == 0 else 1, result.stderr)
                     self.assertEqual('DAEMON_START_REACHED' in result.stdout, fail == 0)
+
+
+    def test_missing_reject_support_falls_back_to_drop(self):
+        # Без модулей REJECT (так на раннерах GitHub) клиенты изолируются DROP.
+        for service, guard in [('oc', 'oc_guard'), ('ovpn', 'ovpn_guard'), ('ipsec', 'ipsec_guard')]:
+            source = (ROOT / ('scripts/start_' + service + '.sh')).read_text()
+            block = source[source.index(guard + '() {'):]
+            block = block[:block.index('\niptables -t nat')]
+            script = '''
+VPN_DEVICE=vpns; L2TP_SUBNET=10.7.0.0/24; IKEV2_SUBNET=10.9.0.0/24; DNS=10.10.0.5
+iptables() { last=; for a in "$@"; do last=$a; done; [ "$last" = REJECT ] && return 1; printf 'RULE %s\\n' "$*"; }
+log() { printf '%s\\n' "$*" >&2; }
+''' + block + '\nprintf "DAEMON_START_REACHED\\n"\n'
+            with self.subTest(service=service):
+                result = subprocess.run(['sh', '-c', script], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('DAEMON_START_REACHED', result.stdout)
+                rules = [l for l in result.stdout.splitlines() if l.startswith('RULE ')]
+                # Каждое правило поставлено (у IPsec часть — в цикле по подсетям).
+                self.assertGreaterEqual(len(rules), block.count(guard + ' -'))
+                self.assertFalse([r for r in rules if r.endswith(' REJECT')])
+                self.assertGreaterEqual(sum(r.endswith(' -j DROP') for r in rules), block.count('-j REJECT') + block.count('-j DROP'))
+                self.assertIn('WARN: REJECT is unavailable', result.stderr)
 
 
 class WarpFirewallFailureTest(unittest.TestCase):

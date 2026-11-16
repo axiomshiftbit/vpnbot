@@ -24,8 +24,22 @@ if [ -z "$VPN_DEVICE" ]; then
     echo 'FATAL: ocserv device is empty — client isolation cannot be installed' >&2
     exit 1
 fi
+# REJECT нужны дополнительные модули ядра (их нет на части хостов), DROP
+# изолирует клиентов так же, только без ответа об отказе. Если не встало ни то,
+# ни другое — служба не запускается.
 oc_guard() {
-    iptables "$@" || { echo 'FATAL: ocserv client firewall was not installed' >&2; exit 1; }
+    iptables "$@" && return 0
+    reject=0; n=$#; i=0
+    for arg in "$@"; do
+        [ "$i" -eq 0 ] && set --
+        i=$((i + 1))
+        if [ "$i" -eq "$n" ] && [ "$arg" = REJECT ]; then reject=1; set -- "$@" DROP; else set -- "$@" "$arg"; fi
+    done
+    if [ "$reject" = 1 ] && iptables "$@"; then
+        echo 'WARN: REJECT is unavailable; ocserv clients are isolated with DROP' >&2
+        return 0
+    fi
+    echo 'FATAL: ocserv client firewall was not installed' >&2; exit 1
 }
 oc_guard -A INPUT -i "${VPN_DEVICE}+" -j REJECT
 oc_guard -A FORWARD -i "${VPN_DEVICE}+" -d 10.10.0.5 -p udp --dport 53 -j ACCEPT

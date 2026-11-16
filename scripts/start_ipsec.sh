@@ -366,8 +366,22 @@ chmod +x /etc/ipsec-updown.sh
 
 # Адреса PPP задаёт пул xl2tpd: ipcp-accept-* позволяли клиенту согласовать
 # адрес служебного контейнера. Пакеты с посторонним source тоже отбрасываем.
+# REJECT нужны дополнительные модули ядра (их нет на части хостов), DROP
+# изолирует клиентов так же, только без ответа об отказе. Если не встало ни то,
+# ни другое — служба не запускается.
 ipsec_guard() {
-    iptables "$@" || { log 'FATAL: IPsec client firewall was not installed'; exit 1; }
+    iptables "$@" && return 0
+    reject=0; n=$#; i=0
+    for arg in "$@"; do
+        [ "$i" -eq 0 ] && set --
+        i=$((i + 1))
+        if [ "$i" -eq "$n" ] && [ "$arg" = REJECT ]; then reject=1; set -- "$@" DROP; else set -- "$@" "$arg"; fi
+    done
+    if [ "$reject" = 1 ] && iptables "$@"; then
+        log 'WARN: REJECT is unavailable; IPsec clients are isolated with DROP'
+        return 0
+    fi
+    log 'FATAL: IPsec client firewall was not installed'; exit 1
 }
 ipsec_guard -A FORWARD -i ppp+ ! -s "$L2TP_SUBNET" -j DROP
 ipsec_guard -A INPUT -i ppp+ -j REJECT

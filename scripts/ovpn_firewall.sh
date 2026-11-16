@@ -31,15 +31,23 @@ esac
 for family in iptables ip6tables; do
     # --noflush сохраняет остальные правила. Flush нашей цепочки и новая
     # политика применяются одной транзакцией, без промежуточной пустой цепочки.
-    {
-        printf '*filter\n:VPNBOT_OVPN_CLIENTS - [0:0]\n-F VPNBOT_OVPN_CLIENTS\n'
-        if [ "$allow" != 1 ]; then
-            printf '%s\n' "-A VPNBOT_OVPN_CLIENTS -i $device -o $device -j REJECT"
+    # REJECT требует дополнительных модулей ядра; DROP изолирует так же.
+    installed=0
+    for target in REJECT DROP; do
+        if {
+            printf '*filter\n:VPNBOT_OVPN_CLIENTS - [0:0]\n-F VPNBOT_OVPN_CLIENTS\n'
+            if [ "$allow" != 1 ]; then
+                printf '%s\n' "-A VPNBOT_OVPN_CLIENTS -i $device -o $device -j $target"
+            fi
+            printf 'COMMIT\n'
+        } | "$family-restore" --wait 5 --noflush; then
+            installed=1
+            [ "$target" = REJECT ] || echo 'WARN: REJECT is unavailable; OpenVPN clients are isolated with DROP' >&2
+            break
         fi
-        printf 'COMMIT\n'
-    } | "$family-restore" --wait 5 --noflush || {
-        echo 'FATAL: OpenVPN client isolation was not installed' >&2; exit 1;
-    }
+        [ "$allow" != 1 ] || break
+    done
+    [ "$installed" = 1 ] || { echo 'FATAL: OpenVPN client isolation was not installed' >&2; exit 1; }
     "$family" --wait 5 -C FORWARD -j VPNBOT_OVPN_CLIENTS 2>/dev/null \
         || "$family" --wait 5 -I FORWARD 1 -j VPNBOT_OVPN_CLIENTS \
         || { echo 'FATAL: OpenVPN client isolation hook was not installed' >&2; exit 1; }

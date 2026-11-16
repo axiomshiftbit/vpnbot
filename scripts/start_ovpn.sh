@@ -219,8 +219,22 @@ sh /ovpn_migrate.sh "$SRV"
 flock -u 8
 
 # VPN-клиентам разрешён только DNS внутри служебной сети сборки.
+# REJECT нужны дополнительные модули ядра (их нет на части хостов), DROP
+# изолирует клиентов так же, только без ответа об отказе. Если не встало ни то,
+# ни другое — служба не запускается.
 ovpn_guard() {
-    iptables "$@" || { echo 'FATAL: OpenVPN client firewall was not installed' >&2; exit 1; }
+    iptables "$@" && return 0
+    reject=0; n=$#; i=0
+    for arg in "$@"; do
+        [ "$i" -eq 0 ] && set --
+        i=$((i + 1))
+        if [ "$i" -eq "$n" ] && [ "$arg" = REJECT ]; then reject=1; set -- "$@" DROP; else set -- "$@" "$arg"; fi
+    done
+    if [ "$reject" = 1 ] && iptables "$@"; then
+        echo 'WARN: REJECT is unavailable; OpenVPN clients are isolated with DROP' >&2
+        return 0
+    fi
+    echo 'FATAL: OpenVPN client firewall was not installed' >&2; exit 1
 }
 ovpn_guard -A INPUT -i tun+ -j REJECT
 ovpn_guard -A FORWARD -i tun+ -d 10.10.0.5 -p udp --dport 53 -j ACCEPT

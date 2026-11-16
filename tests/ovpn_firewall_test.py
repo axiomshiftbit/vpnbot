@@ -21,7 +21,9 @@ class OpenVpnFirewallTest(unittest.TestCase):
             'iptables-restore': '''#!/bin/sh
 name=${0##*/}
 printf '%s %s\\n' "$name" "$*" >> "$LOG"
-cat >> "$LOG"
+rules=$(cat); printf '%s\\n' "$rules" >> "$LOG"
+# NO_REJECT: the kernel lacks REJECT support, DROP still works.
+case "$NO_REJECT:$rules" in 1:*'-j REJECT'*) exit 1;; esac
 [ "$FAIL" != "$name" ]
 ''',
             'iptables': '''#!/bin/sh
@@ -61,6 +63,15 @@ case "$*" in *' -C '*) [ "$EXISTS" = 1 ];; *) [ "$FAIL" != "$name" ];; esac
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(log.count('-i tun7 -o tun7 -j REJECT'), 2)
         self.assertNotIn('-I FORWARD', log)
+
+    def test_missing_reject_support_isolates_with_drop(self):
+        result, log = self.apply('dev tun\n', NO_REJECT='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.count('-i tun+ -o tun+ -j DROP'), 2)
+        self.assertIn('WARN: REJECT is unavailable', result.stderr)
+        # Allowed client-to-client needs no isolation rule and no retry.
+        result, log = self.apply('dev tun\nclient-to-client\n', NO_REJECT='1')
+        self.assertEqual((result.returncode, log.count('-j DROP'), log.count('--noflush')), (0, 0, 2), result.stderr)
 
     def test_each_required_restore_or_hook_failure_prevents_start(self):
         for command in ('iptables-restore', 'ip6tables-restore', 'iptables', 'ip6tables'):

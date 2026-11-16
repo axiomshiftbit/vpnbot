@@ -55,8 +55,11 @@ foreach (['scripts/start_wg.sh', 'scripts/start_oc.sh', 'scripts/start_ovpn.sh',
 foreach (['scripts/start_ovpn.sh' => '-i tun+', 'scripts/start_ipsec.sh' => '-s "$CLIENT_SUBNET"', 'scripts/start_oc.sh' => '-i "${VPN_DEVICE}+"'] as $path => $selector) {
     $body = $read($path);
     $guard = str_replace(['scripts/start_', '.sh'], '', $path) . '_guard';
+    // Защита обязана встать: REJECT, при его недоступности DROP, иначе FATAL и выход.
+    $function = preg_match('~^' . preg_quote($guard, '~') . '\(\) \{\n(.*?)^\}~ms', $body, $m) ? $m[1] : '';
     shAssert(str_contains($body, "$guard -A INPUT $selector -j REJECT")
-        && str_contains($body, "$guard() {") && str_contains($body, 'iptables "$@" ||'),
+        && str_contains($function, 'iptables "$@" && return 0') && str_contains($function, 'set -- "$@" DROP')
+        && preg_match('~FATAL: [^\n]*client firewall was not installed[^\n]*; exit 1\n\}?~', $function . "\n") === 1,
         "$path: службы самого контейнера закрыты от VPN с проверкой применения");
     $deny = strpos($body, "$selector -d 10.10.0.0/16 -j REJECT");
     shAssert($deny !== false, "$path: служебная сеть закрыта от VPN");
