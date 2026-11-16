@@ -21,6 +21,9 @@ def create():
  run(args+[IMAGE,'/masque_service.py','/state'])
  info=json.loads(run(['docker','inspect',NAME]))[0];pid=str(info['State']['Pid']);run(['nsenter','-t',pid,'-n','ip','addr','add','198.51.100.23/32','dev','lo']);return info
 for n in ['lifecycle-state','lifecycle-config']:(ROOT/n).mkdir(mode=0o700,exist_ok=True)
+# A clean protocol store writes its empty usage ledger before its first desired state.
+ledger=ROOT/'lifecycle-state/usage.json'
+if not ledger.exists():ledger.write_text(json.dumps({'users':{}}));ledger.chmod(0o600)
 s=json.loads((ROOT/'desired.json').read_text());save(s)
 try:
  info=create();check('real_entrypoint_running',wait(lambda:status().get('phase')=='running'))

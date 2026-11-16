@@ -28,6 +28,8 @@ def apply(state):
  return wait_for(lambda:status().get('revision')==state['revision'] and status().get('phase') in ('running','idle','disabled'))
 
 def server_start():
+ # A clean protocol store writes its empty usage ledger before its first desired state.
+ if not (STATE/'usage.json').exists():write(STATE/'usage.json',{'users':{}})
  env=os.environ|{'PROTOCOL_DESIRED':str(DESIRED)}
  f=open(ROOT/'supervisor.log','ab');p=subprocess.Popen(['python3','/lab/source/scripts/masque_service.py','/state'],env=env,stdout=f,stderr=f);children.append(p);f.close();return p
 

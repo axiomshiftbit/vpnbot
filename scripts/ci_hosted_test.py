@@ -294,6 +294,9 @@ def main():
     else: cleanup()
 
 
+FINALLY_STAGES = {'stop-worker', 'final-pause-cron', 'restore-baseline'}
+
+
 if __name__ == '__main__':
     try:
         main()
@@ -308,4 +311,9 @@ if __name__ == '__main__':
             stages = re.findall(r'^START ([a-z][a-z0-9-]{0,70})$', log.read_text(errors='replace'), re.M)
             if stages:
                 print('Last test stage: ' + stages[-1], file=sys.stderr)
+            # After a failure the suite still runs its finally stages; name the
+            # stage that failed before them (names only, no output).
+            work = [stage for stage in stages if stage not in FINALLY_STAGES]
+            if work and work[-1] != stages[-1]:
+                print('Failed test stage: ' + work[-1], file=sys.stderr)
         sys.exit(1)
