@@ -306,6 +306,12 @@ try:
         for tag,src,allow in [('own',own,True),('alien',alien,False)]:
             check('node-guard-v'+str(version)+'-'+tag+'-vpn',wan,src,public,443,expected=allow)
             for port in (80,8080,8443,8090,2375): check('node-guard-v'+str(version)+'-'+tag+'-closed-'+str(port),wan,src,public,port)
+    # Node host profile: unsolicited ICMP errors dropped, NDP on-link and rate-limited.
+    check('node-ipv4-unsolicited-icmp-error',wan,'11.77.0.3','11.77.0.10',proto='icmp',type=3,code=4)
+    check('node-ipv6-unsolicited-packet-too-big',wan,'2606:4700:77::3','2606:4700:77::10',proto='icmp6',type=2)
+    check('node-ipv6-neighbor-solicit-accepted',wan,'2606:4700:77::3','2606:4700:77::10',proto='icmp6',type=135,hop=255,nd_target='2606:4700:77::10',expected=True)
+    check('node-ipv6-neighbor-solicit-offlink',wan,'2606:4700:77::3','2606:4700:77::10',proto='icmp6',type=135,hop=64,nd_target='2606:4700:77::10')
+    check('node-ipv6-neighbor-solicit-flood-limited',wan,'2606:4700:77::3','2606:4700:77::10',proto='icmp6',type=135,hop=255,nd_target='2606:4700:77::10',expected=True,count=1000,maximum=400)
     nft('add element inet vpnbot_node acme_http { 80 timeout 2s }')
     check('node-acme-window-open',wan,'11.77.0.200','11.77.0.10',80,expected=True)
     time.sleep(2.1)
