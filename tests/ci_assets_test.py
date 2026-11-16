@@ -36,7 +36,7 @@ class AssetTest(unittest.TestCase):
 
     def test_actual_release_inventory_contains_js_modules_and_go_stdlib(self):
         packages = {(p['name'], p['version']) for p in self.bom['components']}
-        for row in (('jquery', '3.7.1'), ('jsoneditor', '10.1.0'), ('ajv', '6.12.6'),
+        for row in (('jquery', '3.7.1'), ('jsoneditor', '10.4.3'), ('ajv', '6.14.0'),
                     ('github.com/sagernet/sing-box', self.versions['sing-box Windows'])):
             self.assertIn(row, packages)
         self.assertTrue(any(n == 'stdlib' for n, v in packages))

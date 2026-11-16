@@ -9,7 +9,7 @@ ARG TT_REF=v1.1.0
 # (без контрольной суммы) больше не нужен.
 # Последний стабильный Rust; rust-toolchain.toml апстрима закрепляет канал
 # 1.95, RUSTUP_TOOLCHAIN ниже его заменяет.
-ARG RUST_VERSION=1.99.1
+ARG RUST_VERSION=1.100.0
 ARG CARGO_AUDITABLE_VERSION=0.7.7
 ARG image=alpine:3.24
 

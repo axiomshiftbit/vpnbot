@@ -361,7 +361,7 @@ services:
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20261116}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
                 XRAY_VERSION: ${XRAY_VERSION:-v26.11.9}
@@ -419,7 +419,7 @@ services:
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20261116}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
                 XRAY_VERSION: ${XRAY_VERSION:-v26.11.9}
@@ -732,7 +732,7 @@ services:
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 image: ${IMAGE:-alpine:3.24}
-                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20260828}
+                AWG_GO_VERSION: ${AWG_GO_VERSION:-v3.1.20261116}
                 AWG_TOOLS_VERSION: ${AWG_TOOLS_VERSION:-v3.1.20260812}
                 WGCF_VERSION: ${WGCF_VERSION:-v2.3.1}
                 XRAY_VERSION: ${XRAY_VERSION:-v26.11.9}
@@ -1128,7 +1128,7 @@ services:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
                 # :-default обязателен: пустая подстановка перекрыла бы дефолт
                 # ARG, и FROM с пустым тегом уронил бы сборку.
-                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.13.0}
+                HYSTERIA_VERSION: ${HYSTERIA_VERSION:-v2.14.0}
         volumes:
             - ./config/.profile:/root/.ashrc:ro
             - ./ssh/pub:/ssh:ro

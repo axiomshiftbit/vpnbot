@@ -194,7 +194,7 @@ class ComponentsTest(unittest.TestCase):
     def test_toolchains_and_snolc_report_freshness_without_blocking(self):
         found = components.pins()
         self.assertEqual(found['snolc'], '0.0.4')
-        self.assertEqual(found['Rust (snolc)'], '1.99.1')
+        self.assertEqual(found['Rust (snolc)'], '1.100.0')
         api = Api(go=[{'version': 'go1.99.0rc1', 'stable': False}, {'version': 'go1.98.4', 'stable': True}],
                   releases={'rust-lang/rust': [('1.200.0', False)], 'owenewans/snolc': [('v0.0.5', False), ('v0.1.0-rc1', True)]})
         rows, blocked = self.run_check(api)

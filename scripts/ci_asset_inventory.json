@@ -12,12 +12,12 @@
     {
       "path": "app/webapp/jsoneditor.min.js",
       "name": "jsoneditor",
-      "version": "10.1.0",
-      "sha256": "8fe830a6fcafb1d7710a6fbbc36f8d4cb2d94083fc09cc86a538620cf23a8f39",
-      "source_url": "https://registry.npmjs.org/jsoneditor/-/jsoneditor-10.1.0.tgz",
-      "archive_sha512": "s+BP/x9Rx9ukNyTjeWCvIAGTEvXwCw6l4NX4mlxXfkK87F1ZgsesHbD9SsyZDLP27dvcFgr9H/j1jy/Bzzk07Q==",
-      "source_lock_url": "https://raw.githubusercontent.com/josdejong/jsoneditor/v10.1.0/package-lock.json",
-      "source_lock_sha256": "3e7570973dbfeeec2a39906ad3a75315b9373e8a8bde7c05cdf86f75e11f823d",
+      "version": "10.4.3",
+      "sha256": "360304912c19bcc2ec39e15af0031903634a2f19c47f0f1afeff3e93aafdbae4",
+      "source_url": "https://registry.npmjs.org/jsoneditor/-/jsoneditor-10.4.3.tgz",
+      "archive_sha512": "XBVYLkhgiHySC0PkGlac/Mbk738EpNnqBnxCJD4ttKKJ1JRIRngV8bf2zgw/J025jp4AqxOf2G3uDs/27cWHTQ==",
+      "source_lock_url": "https://raw.githubusercontent.com/josdejong/jsoneditor/v10.4.3/package-lock.json",
+      "source_lock_sha256": "3b7fdefe8c2bfa48de10a5fc735075f62fc8ea873c27c137289b6ec6e5f0c511",
       "coverage": "runtime dependency closure of upstream release lock; conservative superset of bundled modules; executable bundle bytes match npm release",
       "dependencies": [
         {
@@ -26,11 +26,11 @@
         },
         {
           "name": "ace-builds",
-          "version": "1.35.0"
+          "version": "1.43.6"
         },
         {
           "name": "ajv",
-          "version": "6.12.6"
+          "version": "6.14.0"
         },
         {
           "name": "fast-deep-equal",
@@ -58,11 +58,7 @@
         },
         {
           "name": "jsonrepair",
-          "version": "3.8.0"
-        },
-        {
-          "name": "mobius1-selectr",
-          "version": "2.4.13"
+          "version": "3.13.3"
         },
         {
           "name": "picomodal",

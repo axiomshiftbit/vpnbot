@@ -1,7 +1,7 @@
 # snolc 0.0.4 с исправлениями VPNBot: ядро и модули из закреплённых исходников.
 # Последний стабильный Rust. rust-toolchain.toml апстрима закрепляет 1.98.1
 # (это и минимальная версия, rust-version); RUSTUP_TOOLCHAIN ниже его заменяет.
-ARG RUST_VERSION=1.99.1
+ARG RUST_VERSION=1.100.0
 ARG CARGO_AUDITABLE_VERSION=0.7.7
 # Закреплённый выпуск snolc (исходники в dockerfile/snolc-sources).
 ARG SNOLC_VERSION=0.0.4
