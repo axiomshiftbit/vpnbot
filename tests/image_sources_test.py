@@ -97,7 +97,9 @@ class ImageSourcesTest(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
         env = env_pins()
         ocserv = re.search(r'^OCSERV_VERSION=(\S+)$', (ROOT / '.env').read_text(), re.M).group(1)
-        for key in ('nginx/' + env['NGINX_VERSION'], 'ocserv/' + ocserv, 'shadowsocks-rust/' + env['SS_RUST_VERSION'],
+        for key in ('nginx/' + env['NGINX_VERSION'], 'ocserv/' + ocserv,
+                    'shadowsocks-rust-commit/' + env['SS_RUST_VERSION'], 'shadowsocks-rust-source/' + env['SS_RUST_VERSION'],
+                    'telemt-commit/' + env['TELEMT_VERSION'], 'telemt-source/' + env['TELEMT_VERSION'],
                     'amneziawg-tools/' + env['AWG_TOOLS_VERSION'], 'trusttunnel/' + env['TT_REF'],
                     'openvpn/' + env['OPENVPN_VERSION']):
             with self.subTest(key):
@@ -212,7 +214,8 @@ class ImageSourcesTest(unittest.TestCase):
     def test_dockerfiles_use_the_same_verification_command(self):
         for name, key, target in (('nginx.dockerfile', 'nginx/${NGINX_VERSION}', 'nginx.tar.gz'),
                                   ('ocserv.dockerfile', 'ocserv/${OCSERV_VERSION}', '/tmp/ocserv.tar.gz'),
-                                  ('shadowsocks.dockerfile', 'shadowsocks-rust/${SS_RUST_VERSION}', 'shadowsocks-rust.tar.xz'),
+                                  ('shadowsocks.dockerfile', 'shadowsocks-rust-source/${SS_RUST_VERSION}', 'source.tar.gz'),
+                                  ('telemt.dockerfile', 'telemt-source/${TELEMT_VERSION}', 'source.tar.gz'),
                                   ('openvpn.dockerfile', 'openvpn/${OPENVPN_VERSION}', '/tmp/openvpn.tar.gz')):
             expected = "awk -v key=\"%s\" '$2 == key {print $1 \"  %s\"}' /sources.sha256 | sha256sum -c -" % (key, target)
             with self.subTest(name):

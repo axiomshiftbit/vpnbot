@@ -82,6 +82,8 @@ COMPONENTS = [
     dict(name='Go (MASQUE)', pin='MASQUE_GO_VERSION', toolchain='go'),
     dict(name='Rust (snolc)', pin='dockerfile/snolc.dockerfile:RUST_VERSION', release='rust-lang/rust'),
     dict(name='Rust (TrustTunnel)', pin='dockerfile/trusttunnel.dockerfile:RUST_VERSION', release='rust-lang/rust'),
+    dict(name='Rust (TeleMT)', pin='dockerfile/telemt.dockerfile:RUST_VERSION', release='rust-lang/rust'),
+    dict(name='Rust (shadowsocks)', pin='dockerfile/shadowsocks.dockerfile:RUST_VERSION', release='rust-lang/rust'),
     dict(name='snolc', pin='dockerfile/snolc.dockerfile:SNOLC_VERSION', release='owenewans/snolc'),
     # Только свежесть: у этих проектов нет ни CPE в NVD, ни объявлений GitHub,
     # либо это инструменты сборки, не попадающие в образ.
@@ -97,6 +99,8 @@ COMPONENTS = [
     dict(name='tun2socks', pin='dockerfile/wireguard.dockerfile:TUN2SOCKS_VERSION', release='xjasonlyu/tun2socks'),
     dict(name='cargo-auditable', pin='dockerfile/snolc.dockerfile:CARGO_AUDITABLE_VERSION', release='rust-secure-code/cargo-auditable'),
     dict(name='cargo-auditable (TrustTunnel)', pin='dockerfile/trusttunnel.dockerfile:CARGO_AUDITABLE_VERSION', release='rust-secure-code/cargo-auditable'),
+    dict(name='cargo-auditable (TeleMT)', pin='dockerfile/telemt.dockerfile:CARGO_AUDITABLE_VERSION', release='rust-secure-code/cargo-auditable'),
+    dict(name='cargo-auditable (shadowsocks)', pin='dockerfile/shadowsocks.dockerfile:CARGO_AUDITABLE_VERSION', release='rust-secure-code/cargo-auditable'),
     dict(name='Trivy', pin='scripts/ci_scan_image.sh:TRIVY', pattern=r'/trivy/releases/download/v([0-9.]+)/', release='aquasecurity/trivy'),
     dict(name='DNSTT', pin='dockerfile/dnstt.dockerfile:DNSTT_REF', git='https://www.bamsoftware.com/git/dnstt.git'),
     dict(name='Alpine', pin='IMAGE', alpine=True),

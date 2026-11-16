@@ -403,7 +403,7 @@ class RepositoryTest(unittest.TestCase):
 class DockerfileTest(unittest.TestCase):
     DOCKERFILES = sorted((ROOT / 'dockerfile').glob('*.dockerfile'))
     # Готовые образы авторов программ; остальное собирается на Alpine.
-    UPSTREAM = ('adguard/adguardhome:', 'tobyxdd/hysteria:', 'ghcr.io/telemt/telemt:')
+    UPSTREAM = ('adguard/adguardhome:', 'tobyxdd/hysteria:')
     # Клиент snolc выдаётся для Linux с glibc: эта стадия только собирает файлы
     # ZIP клиента, сам образ остаётся на Alpine.
     GLIBC_CLIENT = ('snolc.dockerfile', 'rust:${RUST_VERSION}-slim-trixie', 'client')

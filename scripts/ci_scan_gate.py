@@ -69,6 +69,16 @@ def require_packages(results, kind, expected, label):
     assert expected <= targets, label + ' package scan missing: ' + ', '.join(sorted(expected - targets))
 
 
+def require_embedded_npm(results, label):
+    # Trivy reads npm lock files only in filesystem scans. In an image it reads
+    # the CycloneDX SBOM written by the frontend build; BOMRef marks its entries.
+    packages = [p for result in results if result.get('Class') == 'lang-pkgs' and result.get('Type') == 'node-pkg'
+                for p in result.get('Packages') or [] if (p.get('Identifier') or {}).get('BOMRef')]
+    valid = packages and all(p.get('Name') and p.get('Version')
+                             and str((p.get('Identifier') or {}).get('PURL', '')).startswith('pkg:npm/') for p in packages)
+    assert valid, label + ' package scan missing: embedded CycloneDX npm SBOM'
+
+
 def gate(d, image_name=None, asset_bom=None):
     os = d.get('Metadata', {}).get('OS', {})
     # Только Alpine: для Debian сканер показывал десятки уязвимостей высокой
@@ -85,7 +95,7 @@ def gate(d, image_name=None, asset_bom=None):
     require_packages(results, 'rustbinary', RUST_TARGETS.get(image_name, set()), 'Rust')
     require_packages(results, 'gobinary', GO_TARGETS.get(image_name, set()), 'Go')
     if image_name == 'ad':
-        require_packages(results, 'npm', {'usr/local/share/vpnbot/adguard-frontend/package-lock.json'}, 'AdGuard frontend npm')
+        require_embedded_npm(results, 'AdGuard frontend npm')
     blocked, unfixed, secrets, medium = [], [], [], 0
     for result in results:
         for v in result.get('Vulnerabilities') or []:

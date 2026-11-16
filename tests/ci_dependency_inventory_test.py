@@ -13,7 +13,7 @@ SPECS = {
     'snolc': [('rustbinary', 'opt/snolc/runtime/bin/snolc'), ('rustbinary', 'opt/snolc/sbom/vpnbot-snolc-modules')],
     'ss': [('rustbinary', 'usr/bin/' + n) for n in ('sslocal', 'ssserver', 'ssmanager', 'ssservice', 'ssurl')]
           + [('gobinary', 'usr/bin/' + n) for n in ('ck-client', 'ck-server', 'simple-tls', 'v2ray-plugin')],
-    'ad': [('gobinary', 'opt/adguardhome/AdGuardHome'), ('npm', 'usr/local/share/vpnbot/adguard-frontend/package-lock.json')],
+    'ad': [('gobinary', 'opt/adguardhome/AdGuardHome'), ('node-pkg', 'Node.js')],
     'php': [('gobinary', 'usr/bin/' + n) for n in ('dnslookup', 'sing-box', 'mihomo')],
     'wg': [('gobinary', 'usr/bin/' + n) for n in ('warp-socks', 'wgcf', 'tun2socks', 'amneziawg-go')],
     'xr': [('gobinary', 'usr/bin/' + n) for n in ('xray', 'xray-smux', 'wireproxy-node')],
@@ -29,7 +29,9 @@ def report(image):
     return {'Metadata': {'OS': {'Family': 'alpine'}}, 'Results': [
         {'Class': 'os-pkgs', 'Type': 'alpine', 'Target': 'fixture', 'Packages': [{'Name': 'musl', 'Version': '1.0'}]}]
         + [{'Class': 'lang-pkgs', 'Type': kind, 'Target': '/' + target,
-            'Packages': [{'Name': 'synthetic-package', 'Version': '1.0.0'}] +
+            'Packages': [{'Name': 'synthetic-package', 'Version': '1.0.0'} | (
+                {'Identifier': {'PURL': 'pkg:npm/synthetic-package@1.0.0', 'BOMRef': 'synthetic-package@1.0.0'}}
+                if kind == 'node-pkg' else {})] +
                 ([{'Name': 'stdlib', 'Version': 'v1.27.4'}] if kind == 'gobinary' else [])} for kind, target in SPECS[image]]}
 
 class DependencyInventoryTest(unittest.TestCase):
@@ -60,6 +62,13 @@ class DependencyInventoryTest(unittest.TestCase):
                 with self.subTest(image=image, change=change):
                     data = report(image); data['Results'][-1].update(change)
                     with self.assertRaisesRegex(AssertionError, 'package scan missing'): scan.gate(data, image)
+
+    def test_frontend_inventory_must_come_from_the_embedded_npm_sbom(self):
+        for change in ({'Identifier': {'PURL': 'pkg:npm/synthetic-package@1.0.0'}},
+                       {'Identifier': {'PURL': 'pkg:golang/synthetic-package@1.0.0', 'BOMRef': 'synthetic-package@1.0.0'}}):
+            with self.subTest(change=change):
+                data = report('ad'); data['Results'][-1]['Packages'][0].update(change)
+                with self.assertRaisesRegex(AssertionError, 'npm package scan missing'): scan.gate(data, 'ad')
 
     def test_matching_filename_with_unrelated_target_cannot_fill_a_gap(self):
         data = report('telemt'); data['Results'][1]['Target'] = '/tmp/telemt'
