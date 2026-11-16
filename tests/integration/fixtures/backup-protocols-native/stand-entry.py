@@ -76,7 +76,11 @@ rm -f "$b.backup-native-wrapper" /tmp/backup-native-swanctl-path
   for c in ['php-audit','service-audit','wireguard-audit','wireguard1-audit','ipsec-audit','openconnect-audit','vpnbot-audit-wgclient','vpnbot-audit-ovpnclient','vpnbot-audit-ipsecclient']:
    check(run(['docker','inspect','--format','{{.State.Running}}',c]).stdout.strip()==b'true','required-'+c)
   check(exe('php-audit','php','-r','exit(getenv("TELEGRAM_API")==="tg-audit:8443"?0:1);').returncode==0,'synthetic-telegram-only');guarded=True
-  check(exe('vpnbot-audit-ipsecclient','test','-s','/etc/swanctl/swanctl.conf').returncode==0,'old-ike-profile-prepared-by-native-before')
+  # l2tp.py runs after ikev2.py and replaces the client's swanctl.conf with its
+  # IKEv1 profile. Reuse the exact IKEv2 profile ikev2.py generated before the
+  # backup; no client credential is created here.
+  old_ike=pathlib.Path('/opt/vpnbot-hosted-ci/stand/results/ikev2/swanctl.conf')
+  check(old_ike.is_file() and run(['docker','cp',str(old_ike),'vpnbot-audit-ipsecclient:/etc/swanctl/swanctl.conf']).returncode==0,'old-ike-profile-prepared-by-native-before')
   check(run(['docker','cp',str(pathlib.Path(__file__).with_name('stand-driver.php')),'php-audit:/tmp/backup-protocols-stand-driver.php']).returncode==0,'driver-installed')
   check(run(['docker','stop','service-audit']).returncode==0,'cron-paused');paused=True
   bot('save');saved=True
