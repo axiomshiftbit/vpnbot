@@ -55,6 +55,9 @@ def main():
     result['passed'] = all(row['passed'] and row['exit'] == 0 for row in result['cases'])
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
+    # The stand runs under sudo with umask 077; upload-artifact reads the
+    # report as the runner user. It holds only results and source hashes.
+    args.report.chmod(0o644)
     print(json.dumps({'passed': result['passed'], 'cases': len(result['cases'])}))
     return 0 if result['passed'] else 1
 
